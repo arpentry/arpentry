@@ -45,18 +45,3 @@ else()
     target_copy_webgpu_binaries(arpentry)
 endif()
 
-# ── Tests (native only) ─────────────────────────────────────────────────
-
-if(NOT EMSCRIPTEN)
-    add_executable(test_brotli tests/test_brotli.c)
-    target_link_libraries(test_brotli PRIVATE brotlienc brotlidec unity)
-    add_test(NAME test_brotli COMMAND test_brotli)
-
-    add_executable(test_flatbuf tests/test_flatbuf.c)
-    add_dependencies(test_flatbuf flatcc_generate)
-    target_include_directories(test_flatbuf PRIVATE
-        ${FLATCC_GENERATED_DIR} ${flatcc_SOURCE_DIR}/include
-    )
-    target_link_libraries(test_flatbuf PRIVATE flatccrt unity)
-    add_test(NAME test_flatbuf COMMAND test_flatbuf)
-endif()

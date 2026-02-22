@@ -54,6 +54,7 @@ if(NOT unity_POPULATED)
 endif()
 add_library(unity STATIC ${unity_SOURCE_DIR}/src/unity.c)
 target_include_directories(unity PUBLIC ${unity_SOURCE_DIR}/src)
+target_compile_definitions(unity PUBLIC UNITY_INCLUDE_DOUBLE)
 
 # ── FlatBuffers schema compilation ───────────────────────────────────────
 
@@ -83,5 +84,6 @@ add_custom_target(flatcc_generate DEPENDS
 
 # ── Subdirectories ───────────────────────────────────────────────────────
 
+add_subdirectory(common)
 add_subdirectory(client)
 add_subdirectory(server)
