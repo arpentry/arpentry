@@ -67,19 +67,21 @@ else()
     set(FLATCC_EXE $<TARGET_FILE:flatcc_cli>)
 endif()
 
-set(FLATCC_SCHEMAS ${CMAKE_SOURCE_DIR}/schemas/example.fbs)
+set(FLATCC_SCHEMAS ${CMAKE_SOURCE_DIR}/schemas/arpentry_tiles.fbs)
 
 add_custom_command(
     OUTPUT
-        ${FLATCC_GENERATED_DIR}/example_builder.h
-        ${FLATCC_GENERATED_DIR}/example_reader.h
+        ${FLATCC_GENERATED_DIR}/arpentry_tiles_builder.h
+        ${FLATCC_GENERATED_DIR}/arpentry_tiles_reader.h
+        ${FLATCC_GENERATED_DIR}/arpentry_tiles_verifier.h
     COMMAND ${FLATCC_EXE} -a -o ${FLATCC_GENERATED_DIR} ${FLATCC_SCHEMAS}
     DEPENDS ${FLATCC_SCHEMAS}
     COMMENT "Compiling FlatBuffers schemas"
 )
 add_custom_target(flatcc_generate DEPENDS
-    ${FLATCC_GENERATED_DIR}/example_builder.h
-    ${FLATCC_GENERATED_DIR}/example_reader.h
+    ${FLATCC_GENERATED_DIR}/arpentry_tiles_builder.h
+    ${FLATCC_GENERATED_DIR}/arpentry_tiles_reader.h
+    ${FLATCC_GENERATED_DIR}/arpentry_tiles_verifier.h
 )
 
 # ── Subdirectories ───────────────────────────────────────────────────────

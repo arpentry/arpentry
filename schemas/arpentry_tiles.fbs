@@ -1,0 +1,99 @@
+namespace arpentry.tiles;
+file_identifier "arpt";
+file_extension "arpt";
+
+enum PropertyValueType : uint8 {
+  String = 0, Int = 1, Double = 2, Bool = 3
+}
+
+struct Color {
+  r: uint8;
+  g: uint8;
+  b: uint8;
+  a: uint8;
+}
+
+struct Part {
+  first_index: uint32;          // offset into indices array
+  index_count: uint32;          // number of indices (triangles = index_count / 3)
+  color: Color;                 // RGBA base color; a=0 means client-styled
+  roughness: uint8;             // 0-255 maps to 0.0-1.0; ignored when a=0
+  metalness: uint8;             // 0-255 maps to 0.0-1.0; ignored when a=0
+  // 2 bytes padding (uint32 alignment) -- 16 bytes total
+}
+
+// --- Per-topology geometry tables ---
+// All tables share x/y/z coordinate arrays (SoA layout).
+// uint16 coordinates: extent 32768, buffer 16384 per side.
+// Tile proper: [16384, 49151]; buffer: [0, 16383] and [49152, 65535].
+// z: int32 millimeters above WGS84 ellipsoid.
+
+table PointGeometry {
+  x: [uint16] (required);
+  y: [uint16] (required);
+  z: [int32] (required);
+}
+
+table LineGeometry {
+  x: [uint16] (required);
+  y: [uint16] (required);
+  z: [int32] (required);
+  line_offsets: [uint32];      // N+1 vertex offsets partitioning into linestrings
+}
+
+table PolygonGeometry {
+  x: [uint16] (required);
+  y: [uint16] (required);
+  z: [int32] (required);
+  ring_offsets: [uint32];      // N+1 vertex offsets partitioning into rings (exterior first, then holes)
+  polygon_offsets: [uint32];  // MultiPolygon: ring offsets partitioning into polygons
+}
+
+table MeshGeometry {
+  x: [uint16] (required);
+  y: [uint16] (required);
+  z: [int32] (required);
+  indices: [uint32] (required);  // triangle indices
+  normals: [int8];               // octahedral int8x2 per-vertex normals
+  parts: [Part];                 // per-part index range + material (absent = single client-styled draw)
+  edge_west: [uint32];           // terrain edge stitching
+  edge_south: [uint32];
+  edge_east: [uint32];
+  edge_north: [uint32];
+}
+
+union Geometry { PointGeometry, LineGeometry, PolygonGeometry, MeshGeometry }
+
+table Value {
+  type: PropertyValueType;
+  string_value: string;              // when type = String
+  int_value: int64;                  // when type = Int
+  double_value: float64;             // when type = Double
+  bool_value: bool;                  // when type = Bool
+}
+
+struct Property {
+  key: uint32;                     // index into Tile.keys
+  value: uint32;                   // index into Tile.values
+}
+
+table Feature {
+  id: uint64 = 0;
+  geometry: Geometry (required);
+  properties: [Property];          // key-value pairs referencing Tile.keys / Tile.values
+}
+
+table Layer {
+  name: string (required);
+  features: [Feature];
+}
+
+// Layers ordered by decode priority (terrain first). See Section 9.
+table Tile {
+  version: uint16 = 1;            // format version (see Section 7)
+  layers: [Layer];
+  keys: [string];                   // property key dictionary: deduplicated key names (see Section 4)
+  values: [Value];                 // property value dictionary: deduplicated typed values (see Section 4)
+}
+
+root_type Tile;

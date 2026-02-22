@@ -2,6 +2,7 @@
 
 add_library(arpentry_common STATIC
     src/common.c
+    src/tile_io.c
 )
 
 target_include_directories(arpentry_common PUBLIC
@@ -30,4 +31,8 @@ if(NOT EMSCRIPTEN)
     add_executable(test_flatbuf tests/test_flatbuf.c)
     target_link_libraries(test_flatbuf PRIVATE arpentry_common unity)
     add_test(NAME test_flatbuf COMMAND test_flatbuf)
+
+    add_executable(test_tile tests/test_tile.c)
+    target_link_libraries(test_tile PRIVATE arpentry_common unity)
+    add_test(NAME test_tile COMMAND test_tile)
 endif()
