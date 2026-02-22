@@ -1,0 +1,10 @@
+namespace Example;
+
+table Point {
+    x: float;
+    y: float;
+    z: float;
+    label: string;
+}
+
+root_type Point;
