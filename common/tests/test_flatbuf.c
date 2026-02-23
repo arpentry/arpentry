@@ -1,6 +1,6 @@
-#include "arpentry_tiles_builder.h"
-#include "arpentry_tiles_reader.h"
-#include "arpentry_tiles_verifier.h"
+#include "tile_builder.h"
+#include "tile_reader.h"
+#include "tile_verifier.h"
 #include "unity.h"
 #include <stdlib.h>
 #include <string.h>

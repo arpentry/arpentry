@@ -1,6 +1,6 @@
-#include "arpentry_tiles_builder.h"
-#include "arpentry_tiles_reader.h"
-#include "arpentry/tile_io.h"
+#include "tile_builder.h"
+#include "tile_reader.h"
+#include "tile.h"
 #include "unity.h"
 #include <stdlib.h>
 #include <string.h>
@@ -28,100 +28,111 @@ static void build_minimal_tile(void **buf, size_t *size) {
     flatcc_builder_clear(&builder);
 }
 
-/* ── Compress / Decompress roundtrip ────────────────────────────────────── */
+/* ── Encode / Decode roundtrip ─────────────────────────────────────────── */
 
-void test_compress_decompress_roundtrip(void) {
+void test_encode_decode_roundtrip(void) {
     void *tile_buf; size_t tile_size;
     build_minimal_tile(&tile_buf, &tile_size);
     TEST_ASSERT_NOT_NULL(tile_buf);
 
-    /* Compress */
-    uint8_t *compressed = NULL;
-    size_t compressed_size = 0;
-    TEST_ASSERT_TRUE(arpt_compress((uint8_t *)tile_buf, tile_size,
-                                    &compressed, &compressed_size, 4));
-    TEST_ASSERT_NOT_NULL(compressed);
-    TEST_ASSERT_TRUE(compressed_size > 0);
+    /* Encode */
+    uint8_t *encoded = NULL;
+    size_t encoded_size = 0;
+    TEST_ASSERT_TRUE(arpt_encode(tile_buf, tile_size,
+                                 &encoded, &encoded_size, 4));
+    TEST_ASSERT_NOT_NULL(encoded);
+    TEST_ASSERT_TRUE(encoded_size > 0);
 
-    /* Decompress */
-    uint8_t *decompressed = NULL;
-    size_t decompressed_size = 0;
-    TEST_ASSERT_TRUE(arpt_decompress(compressed, compressed_size,
-                                      &decompressed, &decompressed_size));
-    TEST_ASSERT_NOT_NULL(decompressed);
+    /* Decode — returns verified FlatBuffer */
+    uint8_t *decoded = NULL;
+    size_t decoded_size = 0;
+    TEST_ASSERT_TRUE(arpt_decode(encoded, encoded_size,
+                                 &decoded, &decoded_size));
+    TEST_ASSERT_NOT_NULL(decoded);
 
-    /* Verify roundtrip */
-    TEST_ASSERT_EQUAL(tile_size, decompressed_size);
-    TEST_ASSERT_EQUAL_MEMORY(tile_buf, decompressed, tile_size);
+    /* Byte-for-byte match with original FlatBuffer */
+    TEST_ASSERT_EQUAL(tile_size, decoded_size);
+    TEST_ASSERT_EQUAL_MEMORY(tile_buf, decoded, tile_size);
 
     free(tile_buf);
-    free(compressed);
-    free(decompressed);
+    free(encoded);
+    free(decoded);
 }
 
-/* ── Verify valid tile ──────────────────────────────────────────────────── */
+/* ── Decoded buffer is usable by FlatCC reader ─────────────────────────── */
 
-void test_verify_valid_tile(void) {
-    void *buf; size_t size;
-    build_minimal_tile(&buf, &size);
-    TEST_ASSERT_NOT_NULL(buf);
+void test_decode_produces_readable_tile(void) {
+    void *tile_buf; size_t tile_size;
+    build_minimal_tile(&tile_buf, &tile_size);
+    TEST_ASSERT_NOT_NULL(tile_buf);
 
-    TEST_ASSERT_TRUE(arpt_tile_verify(buf, size));
+    uint8_t *encoded = NULL;
+    size_t encoded_size = 0;
+    TEST_ASSERT_TRUE(arpt_encode(tile_buf, tile_size,
+                                 &encoded, &encoded_size, 4));
 
-    free(buf);
+    uint8_t *decoded = NULL;
+    size_t decoded_size = 0;
+    TEST_ASSERT_TRUE(arpt_decode(encoded, encoded_size,
+                                 &decoded, &decoded_size));
+
+    /* Use FlatCC reader directly on decoded buffer */
+    arpentry_tiles_Tile_table_t tile =
+        arpentry_tiles_Tile_as_root_with_identifier(decoded, "arpt");
+    TEST_ASSERT_NOT_NULL(tile);
+    TEST_ASSERT_EQUAL_UINT16(1, arpentry_tiles_Tile_version(tile));
+
+    arpentry_tiles_Layer_vec_t layers = arpentry_tiles_Tile_layers(tile);
+    TEST_ASSERT_EQUAL(1, arpentry_tiles_Layer_vec_len(layers));
+    TEST_ASSERT_EQUAL_STRING("terrain",
+        arpentry_tiles_Layer_name(arpentry_tiles_Layer_vec_at(layers, 0)));
+
+    free(tile_buf);
+    free(encoded);
+    free(decoded);
 }
 
-/* ── Reject invalid data ────────────────────────────────────────────────── */
+/* ── Decode rejects garbage ────────────────────────────────────────────── */
 
-void test_verify_rejects_garbage(void) {
-    uint8_t garbage[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x00};
-    TEST_ASSERT_FALSE(arpt_tile_verify(garbage, sizeof(garbage)));
-}
-
-void test_verify_rejects_null(void) {
-    TEST_ASSERT_FALSE(arpt_tile_verify(NULL, 0));
-}
-
-void test_verify_rejects_too_small(void) {
-    uint8_t tiny[] = {0x01, 0x02, 0x03, 0x04};
-    TEST_ASSERT_FALSE(arpt_tile_verify(tiny, sizeof(tiny)));
-}
-
-/* ── Reject wrong file identifier ───────────────────────────────────────── */
-
-void test_verify_rejects_wrong_identifier(void) {
-    /* Build a valid tile then corrupt the file identifier bytes */
-    void *buf; size_t size;
-    build_minimal_tile(&buf, &size);
-    TEST_ASSERT_NOT_NULL(buf);
-
-    /* FlatBuffer file identifier is at bytes 4-7 */
-    memcpy((uint8_t *)buf + 4, "XXXX", 4);
-
-    /* Verifier should reject: wrong identifier */
-    TEST_ASSERT_FALSE(arpt_tile_verify(buf, size));
-
-    free(buf);
-}
-
-/* ── Decompress rejects invalid input ───────────────────────────────────── */
-
-void test_decompress_rejects_garbage(void) {
+void test_decode_rejects_garbage(void) {
     uint8_t garbage[] = {0xFF, 0xFF, 0xFF, 0xFF};
-    uint8_t *output = NULL;
-    size_t output_size = 0;
-    TEST_ASSERT_FALSE(arpt_decompress(garbage, sizeof(garbage),
-                                       &output, &output_size));
+    uint8_t *out = NULL;
+    size_t out_size = 0;
+    TEST_ASSERT_FALSE(arpt_decode(garbage, sizeof(garbage),
+                                  &out, &out_size));
+}
+
+void test_decode_rejects_null(void) {
+    uint8_t *out = NULL;
+    size_t out_size = 0;
+    TEST_ASSERT_FALSE(arpt_decode(NULL, 0, &out, &out_size));
+}
+
+/* ── Decode rejects valid Brotli with bad FlatBuffer ───────────────────── */
+
+void test_decode_rejects_corrupt_flatbuffer(void) {
+    /* Encode a valid tile, then corrupt the compressed payload so that
+       decompression succeeds but verification fails. Easiest: compress
+       arbitrary non-FlatBuffer data. */
+    const char *junk = "this is not a flatbuffer";
+    uint8_t *encoded = NULL;
+    size_t encoded_size = 0;
+    TEST_ASSERT_TRUE(arpt_encode(junk, strlen(junk),
+                                 &encoded, &encoded_size, 1));
+
+    uint8_t *out = NULL;
+    size_t out_size = 0;
+    TEST_ASSERT_FALSE(arpt_decode(encoded, encoded_size, &out, &out_size));
+
+    free(encoded);
 }
 
 int main(void) {
     UNITY_BEGIN();
-    RUN_TEST(test_compress_decompress_roundtrip);
-    RUN_TEST(test_verify_valid_tile);
-    RUN_TEST(test_verify_rejects_garbage);
-    RUN_TEST(test_verify_rejects_null);
-    RUN_TEST(test_verify_rejects_too_small);
-    RUN_TEST(test_verify_rejects_wrong_identifier);
-    RUN_TEST(test_decompress_rejects_garbage);
+    RUN_TEST(test_encode_decode_roundtrip);
+    RUN_TEST(test_decode_produces_readable_tile);
+    RUN_TEST(test_decode_rejects_garbage);
+    RUN_TEST(test_decode_rejects_null);
+    RUN_TEST(test_decode_rejects_corrupt_flatbuffer);
     return UNITY_END();
 }

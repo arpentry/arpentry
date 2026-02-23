@@ -1,12 +1,12 @@
 # ── arpentry_common: shared library for client & server ─────────────────
 
 add_library(arpentry_common STATIC
-    src/common.c
-    src/tile_io.c
+    src/coords.c
+    src/tile.c
 )
 
 target_include_directories(arpentry_common PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 # Shared deps from root (FlatCC generated headers + runtime, Brotli)

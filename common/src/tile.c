@@ -1,18 +1,16 @@
-#include "arpentry/tile_io.h"
+#include "tile.h"
 
 #include <stdlib.h>
 #include <string.h>
 #include <brotli/encode.h>
 #include <brotli/decode.h>
 
-#include "arpentry_tiles_verifier.h"
+#include "tile_verifier.h"
 
-/* ── Compress ───────────────────────────────────────────────────────────── */
+/* ── Internals ─────────────────────────────────────────────────────────── */
 
-bool arpt_compress(const uint8_t *input, size_t input_size,
-                   uint8_t **output, size_t *output_size, int quality) {
-    if (!input || !output || !output_size) return false;
-
+static bool compress(const uint8_t *input, size_t input_size,
+                     uint8_t **output, size_t *output_size, int quality) {
     size_t max_size = BrotliEncoderMaxCompressedSize(input_size);
     if (max_size == 0) max_size = input_size + 64;
 
@@ -34,12 +32,8 @@ bool arpt_compress(const uint8_t *input, size_t input_size,
     return true;
 }
 
-/* ── Decompress ─────────────────────────────────────────────────────────── */
-
-bool arpt_decompress(const uint8_t *input, size_t input_size,
-                     uint8_t **output, size_t *output_size) {
-    if (!input || !output || !output_size) return false;
-
+static bool decompress(const uint8_t *input, size_t input_size,
+                       uint8_t **output, size_t *output_size) {
     BrotliDecoderState *state = BrotliDecoderCreateInstance(NULL, NULL, NULL);
     if (!state) return false;
 
@@ -79,7 +73,6 @@ bool arpt_decompress(const uint8_t *input, size_t input_size,
             capacity = new_capacity;
             continue;
         }
-        /* BROTLI_DECODER_RESULT_ERROR or NEEDS_MORE_INPUT with no input left */
         free(buf);
         BrotliDecoderDestroyInstance(state);
         return false;
@@ -87,16 +80,40 @@ bool arpt_decompress(const uint8_t *input, size_t input_size,
 
     BrotliDecoderDestroyInstance(state);
 
-    *output = buf;
+    /* Shrink to exact size */
+    uint8_t *shrunk = realloc(buf, total_out);
+    *output = shrunk ? shrunk : buf;
     *output_size = total_out;
     return true;
 }
 
-/* ── Verify ─────────────────────────────────────────────────────────────── */
-
-bool arpt_tile_verify(const void *buf, size_t size) {
+static bool verify(const void *buf, size_t size) {
     if (!buf || size < 8) return false;
+    return arpentry_tiles_Tile_verify_as_root_with_identifier(buf, size, "arpt") == 0;
+}
 
-    int ret = arpentry_tiles_Tile_verify_as_root_with_identifier(buf, size, "arpt");
-    return ret == 0;
+/* ── Public API ────────────────────────────────────────────────────────── */
+
+bool arpt_encode(const void *buf, size_t size,
+                 uint8_t **out, size_t *out_size, int quality) {
+    if (!buf || !out || !out_size) return false;
+    return compress((const uint8_t *)buf, size, out, out_size, quality);
+}
+
+bool arpt_decode(const uint8_t *data, size_t size,
+                 uint8_t **out, size_t *out_size) {
+    if (!data || !out || !out_size) return false;
+
+    uint8_t *buf = NULL;
+    size_t buf_size = 0;
+    if (!decompress(data, size, &buf, &buf_size)) return false;
+
+    if (!verify(buf, buf_size)) {
+        free(buf);
+        return false;
+    }
+
+    *out = buf;
+    *out_size = buf_size;
+    return true;
 }

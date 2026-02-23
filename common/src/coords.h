@@ -1,5 +1,5 @@
-#ifndef ARPENTRY_COMMON_H
-#define ARPENTRY_COMMON_H
+#ifndef ARPENTRY_COORDS_H
+#define ARPENTRY_COORDS_H
 
 #include <stdint.h>
 #include <math.h>
@@ -51,16 +51,7 @@ typedef struct {
  *   x: 0 .. 2^(level+1) - 1
  *   y: 0 .. 2^level - 1  (south to north)
  */
-static inline arpt_bounds_t arpt_tile_bounds(int level, int x, int y) {
-    double lon_span = 360.0 / (1 << (level + 1));
-    double lat_span = 180.0 / (1 << level);
-    arpt_bounds_t b;
-    b.west  = -180.0 + x * lon_span;
-    b.south = -90.0  + y * lat_span;
-    b.east  = b.west  + lon_span;
-    b.north = b.south + lat_span;
-    return b;
-}
+arpt_bounds_t arpt_tile_bounds(int level, int x, int y);
 
 /* ── Geodetic quantization ──────────────────────────────────────────────── */
 
@@ -132,4 +123,4 @@ static inline double arpt_screen_space_error(double geometric_error,
            (2.0 * distance * tan(fov_radians * 0.5));
 }
 
-#endif /* ARPENTRY_COMMON_H */
+#endif /* ARPENTRY_COORDS_H */
