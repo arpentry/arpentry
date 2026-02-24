@@ -31,13 +31,27 @@ FetchContent_MakeAvailable(glfw3webgpu)
 
 # ── Main executable ──────────────────────────────────────────────────────
 
-add_executable(arpentry src/main.c)
-target_link_libraries(arpentry PRIVATE webgpu glfw3webgpu)
+add_executable(arpentry src/main.c src/tile_fetch.c)
+add_dependencies(arpentry flatcc_generate)
+target_link_libraries(arpentry PRIVATE webgpu glfw3webgpu arpentry_common)
+
+# ── Tests (native only) ──────────────────────────────────────────────
+if(NOT EMSCRIPTEN)
+    add_executable(test_tile_fetch tests/test_tile_fetch.c src/tile_fetch.c
+        ${CMAKE_SOURCE_DIR}/server/src/demo_tile.c)
+    add_dependencies(test_tile_fetch flatcc_generate)
+    target_include_directories(test_tile_fetch PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/server/src
+    )
+    target_link_libraries(test_tile_fetch PRIVATE unity arpentry_common)
+    add_test(NAME test_tile_fetch COMMAND test_tile_fetch)
+endif()
 
 if(EMSCRIPTEN)
     # -sUSE_WEBGPU is provided by the webgpu target's INTERFACE link options
     target_link_options(arpentry PRIVATE
-        -sUSE_GLFW=3 -sASYNCIFY -sALLOW_MEMORY_GROWTH
+        -sUSE_GLFW=3 -sASYNCIFY -sALLOW_MEMORY_GROWTH -sFETCH
     )
     set_target_properties(arpentry PROPERTIES SUFFIX ".html")
 else()

@@ -3,6 +3,8 @@
 add_library(arpentry_common STATIC
     src/coords.c
     src/tile.c
+    src/buf.c
+    src/hashmap.c
 )
 
 target_include_directories(arpentry_common PUBLIC

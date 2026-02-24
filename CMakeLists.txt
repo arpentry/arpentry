@@ -56,21 +56,6 @@ add_library(unity STATIC ${unity_SOURCE_DIR}/src/unity.c)
 target_include_directories(unity PUBLIC ${unity_SOURCE_DIR}/src)
 target_compile_definitions(unity PUBLIC UNITY_INCLUDE_DOUBLE)
 
-# Civetweb (embedded HTTP server for tile serving)
-if(NOT EMSCRIPTEN)
-    set(CIVETWEB_ENABLE_SERVER_EXECUTABLE OFF CACHE BOOL "" FORCE)
-    set(CIVETWEB_BUILD_TESTING            OFF CACHE BOOL "" FORCE)
-    set(CIVETWEB_ENABLE_SSL               OFF CACHE BOOL "" FORCE)
-    set(CIVETWEB_ENABLE_CXX               OFF CACHE BOOL "" FORCE)
-    set(CIVETWEB_ENABLE_ASAN              OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(civetweb
-        GIT_REPOSITORY https://github.com/civetweb/civetweb.git
-        GIT_TAG        v1.16
-        GIT_SHALLOW    TRUE
-    )
-    FetchContent_MakeAvailable(civetweb)
-endif()
-
 # ── FlatBuffers schema compilation ───────────────────────────────────────
 
 set(FLATCC_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/flatcc")
