@@ -31,8 +31,17 @@ FetchContent_MakeAvailable(glfw3webgpu)
 
 # ── Main executable ──────────────────────────────────────────────────────
 
-add_executable(arpentry src/main.c src/tile_fetch.c)
+add_executable(arpentry
+    src/main.c
+    src/tile_fetch.c
+    src/camera.c
+    src/tile_decode.c
+    src/renderer.c
+    src/tile_visible.c
+    src/tile_manager.c
+)
 add_dependencies(arpentry flatcc_generate)
+target_include_directories(arpentry PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(arpentry PRIVATE webgpu glfw3webgpu arpentry_common)
 
 # ── Tests (native only) ──────────────────────────────────────────────
