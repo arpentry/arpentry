@@ -96,7 +96,7 @@ static arpt_dmat4 compute_tilt_matrix(double tilt, double bearing) {
 arpt_mat4 arpt_camera_projection(const arpt_camera *cam) {
     float aspect = (float)cam->vp_width / (float)cam->vp_height;
     float near = (float)fmax(1.0, cam->altitude * 0.01);
-    float far = (float)(cam->altitude * 10.0);
+    float far = (float)(cam->altitude + 2.0 * ARPT_WGS84_A);
     return arpt_mat4_perspective((float)CAM_FOV, aspect, near, far);
 }
 

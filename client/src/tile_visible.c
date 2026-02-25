@@ -52,6 +52,11 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
 
     if (hit_count == 0) return 0;
 
+    /* When some rays miss, the globe's limb is visible on screen.
+       Track this so we can pad the tile range to cover limb tiles
+       that fall between sample grid points. */
+    bool limb_visible = (hit_count < SAMPLE_COUNT);
+
     /* Detect antimeridian crossing: >180° gap means the shorter
        path wraps across the ±180° meridian. */
     bool crosses_antimeridian = false;
@@ -101,6 +106,15 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
     int x_max = (int)floor((max_lon + 180.0) / tile_w);
     int y_min = (int)floor((min_lat + 90.0) / tile_h);
     int y_max = (int)floor((max_lat + 90.0) / tile_h);
+
+    /* When the globe edge is on screen, pad by 1 tile to cover limb
+       tiles that no sample ray hit. */
+    if (limb_visible) {
+        x_min -= 1;
+        x_max += 1;
+        y_min -= 1;
+        y_max += 1;
+    }
 
     /* Clamp y to valid range */
     if (y_min < 0) y_min = 0;
