@@ -29,42 +29,6 @@ double arpt_camera_bearing(const arpt_camera *cam);
 int    arpt_camera_vp_width(const arpt_camera *cam);
 int    arpt_camera_vp_height(const arpt_camera *cam);
 
-/* ── Input actions ─────────────────────────────────────────────────────── */
-
-/** Pan the interest point by (dx, dy) pixels. Sensitivity scales with altitude. */
-void arpt_camera_pan(arpt_camera *cam, double dx, double dy);
-
-/** Zoom: multiply altitude by factor (e.g. 0.9 = zoom in, 1.1 = zoom out). */
-void arpt_camera_zoom(arpt_camera *cam, double factor);
-
-/** Adjust tilt and bearing by delta radians. */
-void arpt_camera_tilt_bearing(arpt_camera *cam, double dtilt, double dbearing);
-
-/* ── Navigation / inertia ─────────────────────────────────────────────── */
-
-/** Advance damping and fly-to animation by dt seconds. Call once per frame. */
-void arpt_camera_update(arpt_camera *cam, double dt);
-
-/** Zoom centered on cursor screen position. Factor < 1 = zoom in. */
-void arpt_camera_zoom_at(arpt_camera *cam, double factor,
-                          double screen_x, double screen_y);
-
-/** Animated fly-to: zoom in one level centered on screen point. */
-void arpt_camera_fly_to_screen(arpt_camera *cam,
-                                double screen_x, double screen_y);
-
-/** Set pan velocity (px/sec) for inertia after drag release. */
-void arpt_camera_set_pan_velocity(arpt_camera *cam, double vx, double vy);
-
-/** Set tilt/bearing velocity (rad/sec) for inertia after drag release. */
-void arpt_camera_set_tilt_velocity(arpt_camera *cam, double vt, double vb);
-
-/** Track cursor position for zoom-to-cursor. */
-void arpt_camera_set_cursor(arpt_camera *cam, double sx, double sy);
-
-/** True if camera has active velocity or animation (for frame scheduling). */
-bool arpt_camera_is_moving(const arpt_camera *cam);
-
 /* ── Computed matrices ─────────────────────────────────────────────────── */
 
 /** Perspective projection matrix (float32 for GPU). */
