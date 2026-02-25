@@ -138,7 +138,7 @@ static void init_viewer(void) {
     /* Tile manager for server-provided tiles */
     arpt_tile_manager_config tm_config = {
         .base_url = "http://localhost:8090",
-        .root_error = 50000.0,
+        .root_error = 200000.0,
         .min_level = 0,
         .max_level = 16,
         .max_tiles = 200,

@@ -12,11 +12,12 @@
 
 #define TERRAIN_GRID        32
 #define TERRAIN_VERTS       (TERRAIN_GRID + 1)  /* 33x33 = 1089 vertices */
-#define TERRAIN_OCTAVES     10
-#define TERRAIN_BASE_FREQ   2.0
-#define TERRAIN_AMPLITUDE   4000.0   /* peak ~4000m */
+#define TERRAIN_OCTAVES     16
+#define TERRAIN_BASE_FREQ   4.0
+#define TERRAIN_AMPLITUDE   8000.0   /* peak ~8000m */
 #define TERRAIN_LACUNARITY  2.0
-#define TERRAIN_PERSISTENCE 0.5
+#define TERRAIN_PERSISTENCE 0.65
+#define TERRAIN_REDISTRIBUTE 0.45  /* power curve exponent: < 1 pushes toward extremes */
 #define BROTLI_QUALITY      4
 
 #define PI 3.14159265358979323846
@@ -24,11 +25,20 @@
 /* ── Helpers ────────────────────────────────────────────────────────── */
 
 static double terrain_elevation(double lon_deg, double lat_deg) {
-    double lon_rad = lon_deg * (PI / 180.0);
-    double lat_rad = lat_deg * (PI / 180.0);
-    double n = arpt_fbm2(lon_rad, lat_rad, TERRAIN_OCTAVES,
+    double lon_r = lon_deg * (PI / 180.0);
+    double lat_r = lat_deg * (PI / 180.0);
+    double cos_lat = cos(lat_r);
+    double sx = cos_lat * cos(lon_r);
+    double sy = cos_lat * sin(lon_r);
+    double sz = sin(lat_r);
+    double n = arpt_fbm3(sx * TERRAIN_BASE_FREQ, sy * TERRAIN_BASE_FREQ,
+                         sz * TERRAIN_BASE_FREQ, TERRAIN_OCTAVES,
                          TERRAIN_LACUNARITY, TERRAIN_PERSISTENCE);
-    return n * TERRAIN_AMPLITUDE * TERRAIN_BASE_FREQ;
+    /* Redistribute: sign(n) * |n|^exp pushes values away from zero,
+     * creating more pronounced mountains and valleys. */
+    double sign = n >= 0.0 ? 1.0 : -1.0;
+    n = sign * pow(fabs(n), TERRAIN_REDISTRIBUTE);
+    return n * TERRAIN_AMPLITUDE;
 }
 
 /* Octahedral encoding: unit normal -> int8x2 */
@@ -74,22 +84,28 @@ bool arpt_generate_terrain(int level, int x, int y,
     double cell_w_m = (lon_span / TERRAIN_GRID) * meters_per_deg_lon;
     double cell_h_m = (lat_span / TERRAIN_GRID) * meters_per_deg_lat;
 
-    /* Compute elevations on a (VERTS x VERTS) grid */
+    /* Compute elevations on a padded grid: (VERTS+2) x (VERTS+2).
+     * The 1-cell border beyond the tile boundary allows centered finite
+     * differences at every output vertex, eliminating normal seams between
+     * adjacent tiles. */
     int nv = TERRAIN_VERTS * TERRAIN_VERTS;
-    double *elev = malloc((size_t)nv * sizeof(double));
+    int pad_w = TERRAIN_VERTS + 2;    /* 35 */
+    int pad_n = pad_w * pad_w;        /* 35x35 = 1225 */
+    double *elev = malloc((size_t)pad_n * sizeof(double));
     if (!elev) return false;
 
-    for (int row = 0; row < TERRAIN_VERTS; row++) {
-        double t_lat = (double)row / TERRAIN_GRID;
-        double lat = bounds.south + t_lat * lat_span;
-        for (int col = 0; col < TERRAIN_VERTS; col++) {
-            double t_lon = (double)col / TERRAIN_GRID;
-            double lon = bounds.west + t_lon * lon_span;
-            elev[row * TERRAIN_VERTS + col] = terrain_elevation(lon, lat);
+    double cell_lon = lon_span / TERRAIN_GRID;
+    double cell_lat = lat_span / TERRAIN_GRID;
+
+    for (int row = -1; row <= TERRAIN_VERTS; row++) {
+        double lat = bounds.south + (double)row * cell_lat;
+        for (int col = -1; col <= TERRAIN_VERTS; col++) {
+            double lon = bounds.west + (double)col * cell_lon;
+            elev[(row + 1) * pad_w + (col + 1)] = terrain_elevation(lon, lat);
         }
     }
 
-    /* Build vertex arrays */
+    /* Build vertex arrays (only the inner VERTS x VERTS) */
     uint16_t *vx = malloc((size_t)nv * sizeof(uint16_t));
     uint16_t *vy = malloc((size_t)nv * sizeof(uint16_t));
     int32_t  *vz = malloc((size_t)nv * sizeof(int32_t));
@@ -97,35 +113,21 @@ bool arpt_generate_terrain(int level, int x, int y,
     if (!vx || !vy || !vz || !normals) goto fail;
 
     for (int row = 0; row < TERRAIN_VERTS; row++) {
-        double t_lat = (double)row / TERRAIN_GRID;
-        double lat = bounds.south + t_lat * lat_span;
+        double lat = bounds.south + (double)row * cell_lat;
         for (int col = 0; col < TERRAIN_VERTS; col++) {
             int idx = row * TERRAIN_VERTS + col;
-            double t_lon = (double)col / TERRAIN_GRID;
-            double lon = bounds.west + t_lon * lon_span;
+            double lon = bounds.west + (double)col * cell_lon;
+
+            /* Padded grid index: offset by +1 for the border */
+            int pi = (row + 1) * pad_w + (col + 1);
 
             vx[idx] = arpt_quantize_lon(lon, bounds);
             vy[idx] = arpt_quantize_lat(lat, bounds);
-            vz[idx] = arpt_meters_to_mm(elev[idx]);
+            vz[idx] = arpt_meters_to_mm(elev[pi]);
 
-            /* Compute terrain slopes from finite differences */
-            double dz_dx, dz_dy;
-            if (col > 0 && col < TERRAIN_VERTS - 1)
-                dz_dx = (elev[idx + 1] - elev[idx - 1]) / (2.0 * cell_w_m);
-            else if (col == 0)
-                dz_dx = (elev[idx + 1] - elev[idx]) / cell_w_m;
-            else
-                dz_dx = (elev[idx] - elev[idx - 1]) / cell_w_m;
-
-            if (row > 0 && row < TERRAIN_VERTS - 1)
-                dz_dy = (elev[(row + 1) * TERRAIN_VERTS + col] -
-                         elev[(row - 1) * TERRAIN_VERTS + col]) / (2.0 * cell_h_m);
-            else if (row == 0)
-                dz_dy = (elev[(row + 1) * TERRAIN_VERTS + col] -
-                         elev[idx]) / cell_h_m;
-            else
-                dz_dy = (elev[idx] -
-                         elev[(row - 1) * TERRAIN_VERTS + col]) / cell_h_m;
+            /* Centered finite differences using padded neighbors */
+            double dz_dx = (elev[pi + 1] - elev[pi - 1]) / (2.0 * cell_w_m);
+            double dz_dy = (elev[pi + pad_w] - elev[pi - pad_w]) / (2.0 * cell_h_m);
 
             /* Compute normal in ECEF coordinates.
              * The shader transforms normals by the tile model matrix which

@@ -152,6 +152,7 @@ struct arpt_renderer {
 
     WGPUBuffer global_uniform_buf;
     WGPUBindGroup global_bind_group;
+    global_uniforms_t prev_globals; /* skip upload when unchanged */
 
     WGPUTexture depth_texture;
     WGPUTextureView depth_view;
@@ -419,6 +420,11 @@ void arpt_renderer_set_globals(arpt_renderer *r,
     u.sun_dir[1] = sun_dir.y;
     u.sun_dir[2] = sun_dir.z;
     u._pad = 0.0f;
+
+    if (memcmp(&u, &r->prev_globals, sizeof(u)) == 0)
+        return;
+
+    r->prev_globals = u;
     wgpuQueueWriteBuffer(r->queue, r->global_uniform_buf, 0, &u, sizeof(u));
 }
 

@@ -11,6 +11,7 @@
 #include <string.h>
 
 #define MAX_VISIBLE_TILES 256
+#define MAX_RETRIES 3
 
 /* ── Internal types ────────────────────────────────────────────────────── */
 
@@ -29,6 +30,8 @@ typedef struct {
     arpt_bounds_t bounds;
     double center_lon_rad;
     double center_lat_rad;
+    int retries;
+    uint64_t retry_after;
 } tile_entry;
 
 struct arpt_tile_manager {
@@ -37,6 +40,11 @@ struct arpt_tile_manager {
     struct hashmap *cache;
     uint64_t frame;
     int active_fetches;
+
+    /* Cached per-frame visible tile list (computed once in update, reused in draw) */
+    arpt_tile_key visible[MAX_VISIBLE_TILES];
+    int visible_count;
+    int visible_level;
 };
 
 /* ── Hashmap callbacks ─────────────────────────────────────────────────── */
@@ -70,13 +78,15 @@ static void tile_entry_free(void *item) {
 typedef struct {
     arpt_tile_manager *tm;
     arpt_tile_key key;
+    int retries;
 } fetch_ctx;
 
-static void on_tile_fetched(bool success, const void *flatbuf, size_t size,
+static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
                              void *userdata) {
     fetch_ctx *ctx = userdata;
     arpt_tile_manager *tm = ctx->tm;
     arpt_tile_key key = ctx->key;
+    int retries = ctx->retries;
     free(ctx);
 
     tm->active_fetches--;
@@ -84,12 +94,17 @@ static void on_tile_fetched(bool success, const void *flatbuf, size_t size,
     /* Look up the entry; it may have been evicted while loading */
     tile_entry lookup = { .key = key };
     const tile_entry *existing = hashmap_get(tm->cache, &lookup);
-    if (!existing || existing->state != TILE_LOADING) return;
+    if (!existing || existing->state != TILE_LOADING) {
+        free(flatbuf);
+        return;
+    }
 
     tile_entry updated = *existing;
 
     if (!success) {
         updated.state = TILE_FAILED;
+        updated.retries = retries + 1;
+        updated.retry_after = tm->frame + (1u << updated.retries);
         hashmap_set(tm->cache, &updated);
         return;
     }
@@ -97,13 +112,17 @@ static void on_tile_fetched(bool success, const void *flatbuf, size_t size,
     arpt_terrain_mesh mesh = {0};
     if (!arpt_decode_terrain(flatbuf, size, &mesh)) {
         updated.state = TILE_FAILED;
+        updated.retries = MAX_RETRIES; /* decode error is permanent */
         hashmap_set(tm->cache, &updated);
+        free(flatbuf);
         return;
     }
 
+    /* wgpuQueueWriteBuffer copies synchronously, safe to free after */
     updated.gpu = arpt_renderer_upload_tile(tm->renderer, &mesh);
     updated.state = updated.gpu ? TILE_READY : TILE_FAILED;
     hashmap_set(tm->cache, &updated);
+    free(flatbuf);
 }
 
 /* ── LRU eviction ──────────────────────────────────────────────────────── */
@@ -153,31 +172,115 @@ arpt_tile_manager *arpt_tile_manager_create(arpt_tile_manager_config config,
         return NULL;
     }
 
+    if (!arpt_fetch_init(config.max_concurrent)) {
+        hashmap_free(tm->cache);
+        free(tm);
+        return NULL;
+    }
+
     return tm;
 }
 
 void arpt_tile_manager_free(arpt_tile_manager *tm) {
     if (!tm) return;
+    arpt_fetch_shutdown();
     hashmap_free(tm->cache);
     free(tm);
 }
 
+/* Start a fetch for a tile key, inserting a LOADING entry into the cache.
+   prev_retries is the retry count carried from a previous failed attempt (0 for new). */
+static void start_fetch(arpt_tile_manager *tm, arpt_tile_key key, int prev_retries) {
+    arpt_bounds_t bounds = arpt_tile_bounds(key.level, key.x, key.y);
+    double center_lon = (bounds.west + bounds.east) / 2.0 * M_PI / 180.0;
+    double center_lat = (bounds.south + bounds.north) / 2.0 * M_PI / 180.0;
+
+    tile_entry new_entry = {
+        .key = key,
+        .state = TILE_LOADING,
+        .gpu = NULL,
+        .last_used = tm->frame,
+        .bounds = bounds,
+        .center_lon_rad = center_lon,
+        .center_lat_rad = center_lat,
+        .retries = prev_retries,
+    };
+    hashmap_set(tm->cache, &new_entry);
+
+    fetch_ctx *ctx = malloc(sizeof(*ctx));
+    if (!ctx) return;
+    ctx->tm = tm;
+    ctx->key = key;
+    ctx->retries = prev_retries;
+
+    tm->active_fetches++;
+    if (!arpt_fetch_tile(tm->config.base_url,
+                          key.level, key.x, key.y,
+                          on_tile_fetched, ctx)) {
+        tm->active_fetches--;
+        tile_entry failed = new_entry;
+        failed.state = TILE_FAILED;
+        failed.retries = prev_retries + 1;
+        failed.retry_after = tm->frame + (1u << failed.retries);
+        hashmap_set(tm->cache, &failed);
+        free(ctx);
+    }
+}
+
 void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
+    arpt_fetch_drain();
     tm->frame++;
+
+    /* Pre-fetch level-0 root tiles on the first frame so that
+       find_ready_entry() always has a fallback ancestor. */
+    if (tm->frame == 1) {
+        arpt_tile_key roots[2] = { {0, 0, 0}, {0, 1, 0} };
+        for (int r = 0; r < 2; r++) {
+            tile_entry lookup = { .key = roots[r] };
+            if (!hashmap_get(tm->cache, &lookup)) {
+                start_fetch(tm, roots[r], 0);
+            }
+        }
+    }
 
     int level = arpt_camera_zoom_level(cam, tm->config.root_error,
                                         tm->config.min_level,
                                         tm->config.max_level);
 
-    arpt_tile_key visible[MAX_VISIBLE_TILES];
-    int n = arpt_enumerate_visible_tiles(cam, level, visible, MAX_VISIBLE_TILES);
+    tm->visible_level = level;
+    tm->visible_count = arpt_enumerate_visible_tiles(cam, level,
+                            tm->visible, MAX_VISIBLE_TILES);
 
-    for (int i = 0; i < n; i++) {
-        tile_entry lookup = { .key = visible[i] };
+    for (int i = 0; i < tm->visible_count; i++) {
+        tile_entry lookup = { .key = tm->visible[i] };
         const tile_entry *existing = hashmap_get(tm->cache, &lookup);
 
         if (existing) {
-            /* Touch for LRU */
+            if (existing->state == TILE_FAILED) {
+                if (existing->retries >= MAX_RETRIES) {
+                    /* Permanently failed — stop retrying */
+                    tile_entry updated = *existing;
+                    updated.last_used = tm->frame;
+                    hashmap_set(tm->cache, &updated);
+                    continue;
+                }
+                if (tm->frame < existing->retry_after) {
+                    /* Backoff not elapsed yet */
+                    tile_entry updated = *existing;
+                    updated.last_used = tm->frame;
+                    hashmap_set(tm->cache, &updated);
+                    continue;
+                }
+                /* Backoff elapsed — delete and re-fetch */
+                int prev_retries = existing->retries;
+                hashmap_delete(tm->cache, &lookup);
+
+                if (tm->active_fetches < tm->config.max_concurrent)
+                    start_fetch(tm, tm->visible[i], prev_retries);
+                continue;
+            }
+
+            /* LOADING or READY — touch for LRU */
             tile_entry updated = *existing;
             updated.last_used = tm->frame;
             hashmap_set(tm->cache, &updated);
@@ -188,31 +291,7 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
         if (tm->active_fetches >= tm->config.max_concurrent)
             continue;
 
-        arpt_bounds_t bounds = arpt_tile_bounds(visible[i].level,
-                                                 visible[i].x, visible[i].y);
-        double center_lon = (bounds.west + bounds.east) / 2.0 * M_PI / 180.0;
-        double center_lat = (bounds.south + bounds.north) / 2.0 * M_PI / 180.0;
-
-        tile_entry new_entry = {
-            .key = visible[i],
-            .state = TILE_LOADING,
-            .gpu = NULL,
-            .last_used = tm->frame,
-            .bounds = bounds,
-            .center_lon_rad = center_lon,
-            .center_lat_rad = center_lat,
-        };
-        hashmap_set(tm->cache, &new_entry);
-
-        fetch_ctx *ctx = malloc(sizeof(*ctx));
-        if (!ctx) continue;
-        ctx->tm = tm;
-        ctx->key = visible[i];
-
-        tm->active_fetches++;
-        arpt_fetch_tile(tm->config.base_url,
-                         visible[i].level, visible[i].x, visible[i].y,
-                         on_tile_fetched, ctx);
+        start_fetch(tm, tm->visible[i], 0);
     }
 
     evict_oldest(tm);
@@ -256,16 +335,8 @@ static const tile_entry *find_ready_entry(struct hashmap *cache,
 
 void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
                               const arpt_camera *cam) {
-    int level = arpt_camera_zoom_level(cam, tm->config.root_error,
-                                        tm->config.min_level,
-                                        tm->config.max_level);
-
-    arpt_tile_key visible[MAX_VISIBLE_TILES];
-    int n = arpt_enumerate_visible_tiles(cam, level, visible,
-                                          MAX_VISIBLE_TILES);
-
-    for (int i = 0; i < n; i++) {
-        const tile_entry *e = find_ready_entry(tm->cache, visible[i]);
+    for (int i = 0; i < tm->visible_count; i++) {
+        const tile_entry *e = find_ready_entry(tm->cache, tm->visible[i]);
         if (e) draw_entry(r, cam, e);
     }
 }

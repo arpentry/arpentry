@@ -86,6 +86,15 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
         if (lats[i] > max_lat) max_lat = lats[i];
     }
 
+    /* If the longitude span in [0,360) space exceeds 180°, the view covers
+       more than half the globe (e.g. near a pole).  The antimeridian wrapping
+       logic would invert the range, so fall back to the full longitude span. */
+    if (crosses_antimeridian && (max_lon - min_lon) > 180.0) {
+        crosses_antimeridian = false;
+        min_lon = -180.0;
+        max_lon = 180.0;
+    }
+
     /* Shift back if we were in [0, 360) space */
     if (crosses_antimeridian) {
         if (min_lon > 180.0) min_lon -= 360.0;
@@ -107,14 +116,13 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
     int y_min = (int)floor((min_lat + 90.0) / tile_h);
     int y_max = (int)floor((max_lat + 90.0) / tile_h);
 
-    /* When the globe edge is on screen, pad by 1 tile to cover limb
-       tiles that no sample ray hit. */
-    if (limb_visible) {
-        x_min -= 1;
-        x_max += 1;
-        y_min -= 1;
-        y_max += 1;
-    }
+    /* Always pad by 1 tile: covers limb tiles missed by the sample grid
+       and tiles whose elevated terrain (mountains) protrudes into the
+       viewport even though their ellipsoid footprint is off-screen. */
+    x_min -= 1;
+    x_max += 1;
+    y_min -= 1;
+    y_max += 1;
 
     /* Clamp y to valid range */
     if (y_min < 0) y_min = 0;

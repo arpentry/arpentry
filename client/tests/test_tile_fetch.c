@@ -13,6 +13,8 @@
 #include <unistd.h>
 
 #define TEST_PORT 19200
+#define DRAIN_TIMEOUT_US 5000000 /* 5 seconds */
+#define DRAIN_POLL_US    1000    /* 1 ms */
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -78,9 +80,9 @@ static void *server_thread(void *arg) {
 
 static bool g_fetch_success;
 static size_t g_fetch_size;
-static bool g_fetch_called;
+static volatile bool g_fetch_called;
 
-static void on_tile_fetched(bool success, const void *flatbuf, size_t size,
+static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
                             void *userdata) {
     (void)userdata;
     g_fetch_success = success;
@@ -102,6 +104,21 @@ static void on_tile_fetched(bool success, const void *flatbuf, size_t size,
         printf("  Fetched tile: %zu bytes, %zu layers\n",
                size, arpentry_tiles_Layer_vec_len(layers));
     }
+
+    free(flatbuf);
+}
+
+/* ── Drain helper with timeout ─────────────────────────────────────────── */
+
+static bool drain_until_called(void) {
+    int elapsed = 0;
+    while (!g_fetch_called && elapsed < DRAIN_TIMEOUT_US) {
+        arpt_fetch_drain();
+        usleep(DRAIN_POLL_US);
+        elapsed += DRAIN_POLL_US;
+    }
+    arpt_fetch_drain(); /* one final drain */
+    return g_fetch_called;
 }
 
 /* ── Tests ─────────────────────────────────────────────────────────────── */
@@ -116,7 +133,7 @@ void test_fetch_tile_success(void) {
 
     bool initiated = arpt_fetch_tile(base_url, 0, 0, 0, on_tile_fetched, NULL);
     TEST_ASSERT_TRUE(initiated);
-    TEST_ASSERT_TRUE(g_fetch_called);
+    TEST_ASSERT_TRUE(drain_until_called());
     TEST_ASSERT_TRUE(g_fetch_success);
     TEST_ASSERT_TRUE(g_fetch_size > 0);
 }
@@ -129,7 +146,7 @@ void test_fetch_tile_different_coords(void) {
 
     bool initiated = arpt_fetch_tile(base_url, 5, 32, 16, on_tile_fetched, NULL);
     TEST_ASSERT_TRUE(initiated);
-    TEST_ASSERT_TRUE(g_fetch_called);
+    TEST_ASSERT_TRUE(drain_until_called());
     TEST_ASSERT_TRUE(g_fetch_success);
 }
 
@@ -140,7 +157,7 @@ void test_fetch_tile_bad_url(void) {
                                       on_tile_fetched, NULL);
     /* Should initiate but callback reports failure (connection refused) */
     TEST_ASSERT_TRUE(initiated);
-    TEST_ASSERT_TRUE(g_fetch_called);
+    TEST_ASSERT_TRUE(drain_until_called());
     TEST_ASSERT_FALSE(g_fetch_success);
 }
 
@@ -195,6 +212,16 @@ int main(void) {
     pthread_t tid;
     pthread_create(&tid, NULL, server_thread, NULL);
 
+    /* Initialize the fetch thread pool */
+    if (!arpt_fetch_init(2)) {
+        fprintf(stderr, "Failed to init fetch pool\n");
+        g_server_running = 0;
+        close(g_listenfd);
+        pthread_join(tid, NULL);
+        free(g_demo_tile);
+        return 1;
+    }
+
     int result;
     UNITY_BEGIN();
     RUN_TEST(test_fetch_tile_success);
@@ -203,7 +230,8 @@ int main(void) {
     RUN_TEST(test_fetch_tile_null_url);
     result = UNITY_END();
 
-    /* Shut down server */
+    /* Shut down fetch pool, then server */
+    arpt_fetch_shutdown();
     g_server_running = 0;
     close(g_listenfd);
     pthread_join(tid, NULL);

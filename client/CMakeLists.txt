@@ -33,6 +33,7 @@ FetchContent_MakeAvailable(glfw3webgpu)
 
 add_executable(arpentry
     src/main.c
+    src/http.c
     src/tile_fetch.c
     src/camera.c
     src/control.c
@@ -47,14 +48,16 @@ target_link_libraries(arpentry PRIVATE webgpu glfw3webgpu arpentry_common)
 
 # ── Tests (native only) ──────────────────────────────────────────────
 if(NOT EMSCRIPTEN)
-    add_executable(test_tile_fetch tests/test_tile_fetch.c src/tile_fetch.c
+    find_package(Threads REQUIRED)
+
+    add_executable(test_tile_fetch tests/test_tile_fetch.c src/tile_fetch.c src/http.c
         ${CMAKE_SOURCE_DIR}/server/src/demo_tile.c)
     add_dependencies(test_tile_fetch flatcc_generate)
     target_include_directories(test_tile_fetch PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/server/src
     )
-    target_link_libraries(test_tile_fetch PRIVATE unity arpentry_common)
+    target_link_libraries(test_tile_fetch PRIVATE unity arpentry_common Threads::Threads)
     add_test(NAME test_tile_fetch COMMAND test_tile_fetch)
 endif()
 
@@ -65,7 +68,7 @@ if(EMSCRIPTEN)
     )
     set_target_properties(arpentry PROPERTIES SUFFIX ".html")
 else()
-    target_link_libraries(arpentry PRIVATE glfw)
+    target_link_libraries(arpentry PRIVATE glfw Threads::Threads)
     target_copy_webgpu_binaries(arpentry)
 endif()
 
