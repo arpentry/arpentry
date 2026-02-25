@@ -1,5 +1,6 @@
 #include "http.h"
 #include "net.h"
+#include "terrain_gen.h"
 #include "tile_path.h"
 
 #include <stdio.h>
@@ -152,8 +153,15 @@ static void dispatch_request(struct net_conn *conn, struct server_ctx *ctx,
     /* Tile request: /{level}/{x}/{y}.arpt */
     int level, x, y;
     if (arpt_parse_tile_path(uri, &level, &x, &y)) {
-        write_response(conn, 200, "application/x-arpt", "br",
-                       ctx->demo_tile, ctx->demo_tile_size);
+        uint8_t *tile_data = NULL;
+        size_t tile_size = 0;
+        if (arpt_generate_terrain(level, x, y, &tile_data, &tile_size)) {
+            write_response(conn, 200, "application/x-arpt", "br",
+                           tile_data, tile_size);
+            free(tile_data);
+        } else {
+            write_error(conn, 500);
+        }
         return;
     }
 

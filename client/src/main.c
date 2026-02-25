@@ -54,6 +54,16 @@ typedef struct {
     /* Mouse state for drag detection */
     double last_mouse_x, last_mouse_y;
     bool left_dragging, right_dragging;
+
+    /* Inertia: last drag delta for velocity estimation */
+    double prev_dx, prev_dy;
+
+    /* Double-click detection */
+    double last_click_time;
+    double last_click_x, last_click_y;
+
+    /* Frame timing */
+    double last_frame_time;
 } App;
 
 static App app = {0};
@@ -147,21 +157,56 @@ static void on_device_error(WGPUErrorType type, const char *msg, void *ud) {
 }
 
 static void on_scroll(GLFWwindow *w, double xoff, double yoff) {
-    (void)w; (void)xoff;
-    double factor = yoff > 0 ? 0.9 : 1.1;
-    arpt_camera_zoom(app.camera, factor);
+    (void)xoff;
+    if (yoff == 0.0) return;
+    /* Scale factor by scroll magnitude — handles trackpad continuous deltas */
+    double factor = pow(0.95, yoff);
+    double cx, cy;
+    glfwGetCursorPos(w, &cx, &cy);
+    arpt_camera_zoom_at(app.camera, factor, cx, cy);
 }
 
 static void on_mouse_button(GLFWwindow *w, int button, int action, int mods) {
     (void)mods;
     double x, y;
     glfwGetCursorPos(w, &x, &y);
+
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
-        app.left_dragging = (action == GLFW_PRESS);
+        if (action == GLFW_PRESS) {
+            /* Double-click detection */
+            double now = glfwGetTime();
+            double dt = now - app.last_click_time;
+            double dist = sqrt((x - app.last_click_x) * (x - app.last_click_x) +
+                               (y - app.last_click_y) * (y - app.last_click_y));
+            if (dt < 0.4 && dist < 10.0) {
+                arpt_camera_fly_to_screen(app.camera, x, y);
+                app.last_click_time = 0.0; /* reset to avoid triple-click */
+                return;
+            }
+            app.last_click_time = now;
+            app.last_click_x = x;
+            app.last_click_y = y;
+
+            app.left_dragging = true;
+            app.prev_dx = app.prev_dy = 0.0;
+        } else {
+            app.left_dragging = false;
+            arpt_camera_set_pan_velocity(app.camera,
+                                          app.prev_dx * 60.0,
+                                          app.prev_dy * 60.0);
+        }
         app.last_mouse_x = x;
         app.last_mouse_y = y;
     } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-        app.right_dragging = (action == GLFW_PRESS);
+        if (action == GLFW_PRESS) {
+            app.right_dragging = true;
+            app.prev_dx = app.prev_dy = 0.0;
+        } else {
+            app.right_dragging = false;
+            arpt_camera_set_tilt_velocity(app.camera,
+                                           -app.prev_dy * TILT_SENSITIVITY * 60.0,
+                                           app.prev_dx * BEARING_SENSITIVITY * 60.0);
+        }
         app.last_mouse_x = x;
         app.last_mouse_y = y;
     }
@@ -174,13 +219,19 @@ static void on_cursor_pos(GLFWwindow *w, double x, double y) {
     app.last_mouse_x = x;
     app.last_mouse_y = y;
 
+    arpt_camera_set_cursor(app.camera, x, y);
+
     if (app.left_dragging) {
         arpt_camera_pan(app.camera, dx, dy);
+        app.prev_dx = dx;
+        app.prev_dy = dy;
     }
     if (app.right_dragging) {
         arpt_camera_tilt_bearing(app.camera,
                                   -dy * TILT_SENSITIVITY,
                                   dx * BEARING_SENSITIVITY);
+        app.prev_dx = dx;
+        app.prev_dy = dy;
     }
 }
 
@@ -203,10 +254,56 @@ static void on_framebuffer_resize(GLFWwindow *w, int width, int height) {
     wgpuSurfaceConfigure(app.surface, &cfg);
 }
 
+static void on_key(GLFWwindow *w, int key, int scancode, int action, int mods) {
+    (void)w; (void)scancode;
+    if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
+
+    bool shift = (mods & GLFW_MOD_SHIFT) != 0;
+    double pan_step = 100.0;
+    double tilt_step = 10.0 * M_PI / 180.0;
+    double bearing_step = 15.0 * M_PI / 180.0;
+
+    switch (key) {
+    case GLFW_KEY_UP:
+        if (shift) arpt_camera_tilt_bearing(app.camera, tilt_step, 0.0);
+        else       arpt_camera_pan(app.camera, 0.0, -pan_step);
+        break;
+    case GLFW_KEY_DOWN:
+        if (shift) arpt_camera_tilt_bearing(app.camera, -tilt_step, 0.0);
+        else       arpt_camera_pan(app.camera, 0.0, pan_step);
+        break;
+    case GLFW_KEY_LEFT:
+        if (shift) arpt_camera_tilt_bearing(app.camera, 0.0, -bearing_step);
+        else       arpt_camera_pan(app.camera, -pan_step, 0.0);
+        break;
+    case GLFW_KEY_RIGHT:
+        if (shift) arpt_camera_tilt_bearing(app.camera, 0.0, bearing_step);
+        else       arpt_camera_pan(app.camera, pan_step, 0.0);
+        break;
+    case GLFW_KEY_EQUAL:  /* + / = key */
+    case GLFW_KEY_KP_ADD:
+        arpt_camera_zoom(app.camera, 0.95);
+        break;
+    case GLFW_KEY_MINUS:
+    case GLFW_KEY_KP_SUBTRACT:
+        arpt_camera_zoom(app.camera, 1.0 / 0.95);
+        break;
+    default:
+        break;
+    }
+}
+
 /* ── Render frame ──────────────────────────────────────────────────────── */
 
 static void render_frame(void) {
     glfwPollEvents();
+
+    /* Delta-time for camera animation/damping */
+    double now = glfwGetTime();
+    double dt = now - app.last_frame_time;
+    app.last_frame_time = now;
+    if (dt > 0.1) dt = 0.1;  /* cap to avoid jumps after stalls */
+    arpt_camera_update(app.camera, dt);
 
     WGPUSurfaceTexture st;
     wgpuSurfaceGetCurrentTexture(app.surface, &st);
@@ -305,11 +402,15 @@ static void init_viewer(void) {
     };
     app.tile_manager = arpt_tile_manager_create(tm_config, app.renderer);
 
+    /* Initialize frame timing */
+    app.last_frame_time = glfwGetTime();
+
     /* Install GLFW callbacks */
     glfwSetScrollCallback(app.window, on_scroll);
     glfwSetMouseButtonCallback(app.window, on_mouse_button);
     glfwSetCursorPosCallback(app.window, on_cursor_pos);
     glfwSetFramebufferSizeCallback(app.window, on_framebuffer_resize);
+    glfwSetKeyCallback(app.window, on_key);
 }
 
 /* ── WebGPU init chain ─────────────────────────────────────────────────── */

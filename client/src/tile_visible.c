@@ -13,14 +13,19 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
     int vp_h = arpt_camera_vp_height(cam);
     if (vp_w <= 0 || vp_h <= 0) return 0;
 
-    /* Sample screen points: corners + center + edge midpoints */
-    #define SAMPLE_COUNT 9
-    double pts[SAMPLE_COUNT][2] = {
-        {0, 0}, {vp_w, 0}, {vp_w, vp_h}, {0, vp_h},
-        {vp_w / 2.0, vp_h / 2.0},
-        {vp_w / 2.0, 0}, {vp_w, vp_h / 2.0},
-        {vp_w / 2.0, vp_h}, {0, vp_h / 2.0},
-    };
+    /* Sample a 7x7 grid of screen points for robust coverage.
+     * The original 9-point scheme (corners + edge midpoints + center)
+     * fails when the globe is small on screen: most rays miss the globe
+     * and the bounding box collapses to a single tile. */
+    #define GRID_N 7
+    #define SAMPLE_COUNT (GRID_N * GRID_N)
+    double pts[SAMPLE_COUNT][2];
+    for (int r = 0; r < GRID_N; r++) {
+        for (int c = 0; c < GRID_N; c++) {
+            pts[r * GRID_N + c][0] = vp_w * (double)c / (GRID_N - 1);
+            pts[r * GRID_N + c][1] = vp_h * (double)r / (GRID_N - 1);
+        }
+    }
 
     /* Cast rays and collect geodetic hit points */
     double lons[SAMPLE_COUNT], lats[SAMPLE_COUNT];

@@ -36,8 +36,6 @@ int http_parse_request(const char *data, size_t len,
 
 struct server_ctx {
     const char *tile_dir;
-    uint8_t *demo_tile;
-    size_t demo_tile_size;
 };
 
 typedef struct {

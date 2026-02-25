@@ -1,5 +1,4 @@
 #include "http.h"
-#include "demo_tile.h"
 #include "net.h"
 #include "xmalloc.h"
 
@@ -54,18 +53,9 @@ int main(int argc, char *argv[]) {
     int nthreads = argc >= 4 ? atoi(argv[3]) : 1;
     if (nthreads < 1) nthreads = 1;
 
-    /* Build demo tile once */
     struct server_ctx ctx = {
         .tile_dir = tile_dir,
-        .demo_tile = NULL,
-        .demo_tile_size = 0,
     };
-
-    if (!arpt_build_demo_tile(&ctx.demo_tile, &ctx.demo_tile_size)) {
-        fprintf(stderr, "Failed to build demo tile\n");
-        return 1;
-    }
-    printf("Built demo tile (%zu bytes compressed)\n", ctx.demo_tile_size);
 
     xmalloc_init(nthreads);
 
@@ -95,6 +85,5 @@ int main(int argc, char *argv[]) {
     net_main(&opts);
 
     /* Unreachable, but tidy */
-    free(ctx.demo_tile);
     return 0;
 }

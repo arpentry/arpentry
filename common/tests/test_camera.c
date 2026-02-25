@@ -127,6 +127,140 @@ void test_zoom_level_clamped(void) {
     arpt_camera_free(cam);
 }
 
+/* ── Navigation / inertia ─────────────────────────────────────────────── */
+
+void test_update_no_velocity_no_change(void) {
+    arpt_camera *cam = arpt_camera_create();
+    arpt_camera_set_position(cam, DEG2RAD(10.0), DEG2RAD(45.0), 5000.0);
+    arpt_camera_set_viewport(cam, 800, 600);
+    double lon_before = arpt_camera_lon(cam);
+    double lat_before = arpt_camera_lat(cam);
+    double alt_before = arpt_camera_altitude(cam);
+
+    arpt_camera_update(cam, 0.016);
+
+    TEST_ASSERT_DOUBLE_WITHIN(1e-15, lon_before, arpt_camera_lon(cam));
+    TEST_ASSERT_DOUBLE_WITHIN(1e-15, lat_before, arpt_camera_lat(cam));
+    TEST_ASSERT_DOUBLE_WITHIN(1e-6, alt_before, arpt_camera_altitude(cam));
+    arpt_camera_free(cam);
+}
+
+void test_pan_velocity_decays(void) {
+    arpt_camera *cam = arpt_camera_create();
+    arpt_camera_set_position(cam, 0.0, 0.0, 5000.0);
+    arpt_camera_set_viewport(cam, 800, 600);
+
+    arpt_camera_set_pan_velocity(cam, 1000.0, 1000.0);
+    TEST_ASSERT_TRUE(arpt_camera_is_moving(cam));
+
+    /* Simulate ~3 seconds at 60fps — velocities should decay to near zero */
+    for (int i = 0; i < 180; i++)
+        arpt_camera_update(cam, 1.0 / 60.0);
+
+    TEST_ASSERT_FALSE(arpt_camera_is_moving(cam));
+    arpt_camera_free(cam);
+}
+
+void test_zoom_at_center_matches_zoom(void) {
+    arpt_camera *cam_a = arpt_camera_create();
+    arpt_camera *cam_b = arpt_camera_create();
+    arpt_camera_set_position(cam_a, DEG2RAD(7.4), DEG2RAD(46.9), 50000.0);
+    arpt_camera_set_position(cam_b, DEG2RAD(7.4), DEG2RAD(46.9), 50000.0);
+    arpt_camera_set_viewport(cam_a, 800, 600);
+    arpt_camera_set_viewport(cam_b, 800, 600);
+
+    /* Zoom at screen center should behave like plain zoom */
+    arpt_camera_zoom_at(cam_a, 0.5, 400.0, 300.0);
+    arpt_camera_zoom(cam_b, 0.5);
+
+    /* Altitude should match exactly */
+    TEST_ASSERT_DOUBLE_WITHIN(1.0, arpt_camera_altitude(cam_b),
+                              arpt_camera_altitude(cam_a));
+    /* Position should be very close (center ray hits near interest point) */
+    TEST_ASSERT_DOUBLE_WITHIN(DEG2RAD(0.5),
+                              arpt_camera_lon(cam_b),
+                              arpt_camera_lon(cam_a));
+    TEST_ASSERT_DOUBLE_WITHIN(DEG2RAD(0.5),
+                              arpt_camera_lat(cam_b),
+                              arpt_camera_lat(cam_a));
+
+    arpt_camera_free(cam_a);
+    arpt_camera_free(cam_b);
+}
+
+void test_fly_to_screen_activates_animation(void) {
+    arpt_camera *cam = arpt_camera_create();
+    arpt_camera_set_position(cam, 0.0, 0.0, 500000.0);
+    arpt_camera_set_viewport(cam, 800, 600);
+
+    /* Fly to screen center (should hit the globe) */
+    arpt_camera_fly_to_screen(cam, 400.0, 300.0);
+    TEST_ASSERT_TRUE(arpt_camera_is_moving(cam));
+    arpt_camera_free(cam);
+}
+
+void test_animation_completes(void) {
+    arpt_camera *cam = arpt_camera_create();
+    arpt_camera_set_position(cam, 0.0, 0.0, 500000.0);
+    arpt_camera_set_viewport(cam, 800, 600);
+
+    arpt_camera_fly_to_screen(cam, 400.0, 300.0);
+    TEST_ASSERT_TRUE(arpt_camera_is_moving(cam));
+
+    /* Run enough frames to exceed the 0.4s animation duration */
+    for (int i = 0; i < 60; i++)
+        arpt_camera_update(cam, 1.0 / 60.0);
+
+    TEST_ASSERT_FALSE(arpt_camera_is_moving(cam));
+    /* Altitude should be approximately half the original */
+    TEST_ASSERT_DOUBLE_WITHIN(50000.0, 250000.0, arpt_camera_altitude(cam));
+    arpt_camera_free(cam);
+}
+
+void test_is_moving_false_at_rest(void) {
+    arpt_camera *cam = arpt_camera_create();
+    TEST_ASSERT_FALSE(arpt_camera_is_moving(cam));
+    arpt_camera_free(cam);
+}
+
+/* ── Zoom-at stability ─────────────────────────────────────────────────── */
+
+void test_zoom_at_no_drift(void) {
+    arpt_camera *cam = arpt_camera_create();
+    arpt_camera_set_position(cam, DEG2RAD(7.4), DEG2RAD(46.9), 500000.0);
+    arpt_camera_set_viewport(cam, 800, 600);
+
+    /* Off-center cursor */
+    double cx = 600.0, cy = 200.0;
+
+    /* Record the globe point under cursor before any zoom */
+    arpt_dvec3 origin, dir;
+    TEST_ASSERT_TRUE(arpt_camera_screen_to_ray(cam, cx, cy, &origin, &dir));
+    double t;
+    TEST_ASSERT_TRUE(arpt_ray_ellipsoid(origin, dir, &t));
+    arpt_dvec3 hit0 = arpt_dvec3_add(origin, arpt_dvec3_scale(dir, t));
+    double anchor_lon, anchor_lat, anchor_alt;
+    arpt_ecef_to_geodetic(hit0, &anchor_lon, &anchor_lat, &anchor_alt);
+
+    /* Zoom in 50 times (scroll ticks) */
+    for (int i = 0; i < 50; i++)
+        arpt_camera_zoom_at(cam, 0.95, cx, cy);
+
+    /* After all zooms, cast ray from same cursor position */
+    TEST_ASSERT_TRUE(arpt_camera_screen_to_ray(cam, cx, cy, &origin, &dir));
+    TEST_ASSERT_TRUE(arpt_ray_ellipsoid(origin, dir, &t));
+    arpt_dvec3 hit_final = arpt_dvec3_add(origin, arpt_dvec3_scale(dir, t));
+    double final_lon, final_lat, final_alt;
+    arpt_ecef_to_geodetic(hit_final, &final_lon, &final_lat, &final_alt);
+
+    /* The globe point under cursor should still be the anchor.
+       0.01 degrees ≈ 1 km — well within acceptable drift for 50 ticks. */
+    TEST_ASSERT_DOUBLE_WITHIN(DEG2RAD(0.01), anchor_lon, final_lon);
+    TEST_ASSERT_DOUBLE_WITHIN(DEG2RAD(0.01), anchor_lat, final_lat);
+
+    arpt_camera_free(cam);
+}
+
 /* ── Pan / Zoom / Tilt ─────────────────────────────────────────────────── */
 
 void test_pan_changes_position(void) {
@@ -171,5 +305,12 @@ int main(void) {
     RUN_TEST(test_pan_changes_position);
     RUN_TEST(test_zoom_changes_altitude);
     RUN_TEST(test_tilt_bearing);
+    RUN_TEST(test_update_no_velocity_no_change);
+    RUN_TEST(test_pan_velocity_decays);
+    RUN_TEST(test_zoom_at_center_matches_zoom);
+    RUN_TEST(test_fly_to_screen_activates_animation);
+    RUN_TEST(test_animation_completes);
+    RUN_TEST(test_is_moving_false_at_rest);
+    RUN_TEST(test_zoom_at_no_drift);
     return UNITY_END();
 }
