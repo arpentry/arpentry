@@ -76,41 +76,35 @@ bool arpt_ray_ellipsoid(arpt_dvec3 origin, arpt_dvec3 dir, double *t) {
 }
 
 arpt_dmat4 arpt_globe_rotation(double lon, double lat) {
-    /* Build a rotation that maps the ECEF position at (lon, lat) to face -Z.
-       At the interest point, the local East-North-Up frame in ECEF is:
+    /* Build a proper rotation that maps the ECEF position at (lon, lat)
+       so the surface faces the camera (which looks along -Z).
+
+       The local East-North-Up frame in ECEF is:
          east  = (-sin(lon), cos(lon), 0)
          north = (-sin(lat)*cos(lon), -sin(lat)*sin(lon), cos(lat))
          up    = (cos(lat)*cos(lon), cos(lat)*sin(lon), sin(lat))
 
-       We want the camera frame to have:
-         camera X = east direction
-         camera Y = north direction (up on screen)
-         camera Z = -up direction (into the globe, since camera looks along -Z)
+       Camera convention: looks along -Z, +Y is screen up, +X is screen right.
+       The surface outward normal (up) must point toward the camera = +Z.
 
-       So R_globe maps:  east → X,  north → Y,  -up → Z
-       As a rotation matrix (rows are the target basis vectors):
-         row 0 = east
-         row 1 = north
-         row 2 = -up
-       Since our matrices are column-major, we store these as columns of
-       the transpose, i.e., columns of R_globe^T... but actually we want
-       columns of R_globe, so:
-         col 0 = (east.x, north.x, -up.x)
-         col 1 = (east.y, north.y, -up.y)
-         col 2 = (east.z, north.z, -up.z)
+       R_globe maps:  east → X,  north → Y,  up → Z
+       det(R_globe) = +1 (proper rotation, no reflection).
+
+       Column-major storage — column j holds where ECEF j-axis maps to:
+         col 0 = (east.x, north.x, up.x)
+         col 1 = (east.y, north.y, up.y)
+         col 2 = (east.z, north.z, up.z)
     */
     double sin_lon = sin(lon), cos_lon = cos(lon);
     double sin_lat = sin(lat), cos_lat = cos(lat);
 
-    arpt_dvec3 east  = {-sin_lon, cos_lon, 0.0};
+    arpt_dvec3 east = {-sin_lon, cos_lon, 0.0};
     arpt_dvec3 north = {-sin_lat * cos_lon, -sin_lat * sin_lon, cos_lat};
-    arpt_dvec3 neg_up = {-cos_lat * cos_lon, -cos_lat * sin_lon, -sin_lat};
+    arpt_dvec3 up = {cos_lat * cos_lon, cos_lat * sin_lon, sin_lat};
 
-    /* R_globe: columns are where ECEF X, Y, Z axes map to in camera space.
-       Column j = (east[j], north[j], neg_up[j]) */
-    arpt_dvec3 c0 = {east.x, north.x, neg_up.x};
-    arpt_dvec3 c1 = {east.y, north.y, neg_up.y};
-    arpt_dvec3 c2 = {east.z, north.z, neg_up.z};
+    arpt_dvec3 c0 = {east.x, north.x, up.x};
+    arpt_dvec3 c1 = {east.y, north.y, up.y};
+    arpt_dvec3 c2 = {east.z, north.z, up.z};
 
     return arpt_dmat4_from_cols(c0, c1, c2, (arpt_dvec3){0, 0, 0});
 }

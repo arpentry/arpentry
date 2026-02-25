@@ -14,6 +14,10 @@ struct arpt_camera {
     double lon_rad, lat_rad, altitude;
     double tilt_rad, bearing_rad;
     int vp_width, vp_height;
+
+    /* Pan anchor (ray-cast pan) */
+    double anchor_lon, anchor_lat;
+    bool anchor_valid;
 };
 
 static void clamp_position(arpt_camera *cam) {
@@ -120,6 +124,103 @@ arpt_mat4 arpt_camera_tile_model(const arpt_camera *cam,
     M.m[15] = 1.0;
 
     return arpt_dmat4_to_mat4(M);
+}
+
+/* ── Manipulation ─────────────────────────────────────────────────────── */
+
+/**
+ * Helper: cast ray from screen coords (sx,sy), intersect ellipsoid,
+ * convert hit to geodetic. Returns true on hit.
+ */
+static bool screen_to_geodetic(const arpt_camera *cam, double sx, double sy,
+                                double *out_lon, double *out_lat) {
+    arpt_dvec3 origin, dir;
+    if (!arpt_camera_screen_to_ray(cam, sx, sy, &origin, &dir))
+        return false;
+    double t;
+    if (!arpt_ray_ellipsoid(origin, dir, &t))
+        return false;
+    arpt_dvec3 hit = arpt_dvec3_add(origin, arpt_dvec3_scale(dir, t));
+    double alt;
+    arpt_ecef_to_geodetic(hit, out_lon, out_lat, &alt);
+    return true;
+}
+
+bool arpt_camera_screen_to_geodetic(const arpt_camera *cam, double sx, double sy,
+                                     double *out_lon, double *out_lat) {
+    return screen_to_geodetic(cam, sx, sy, out_lon, out_lat);
+}
+
+void arpt_camera_pan_begin(arpt_camera *cam, double sx, double sy) {
+    cam->anchor_valid = screen_to_geodetic(cam, sx, sy,
+                                            &cam->anchor_lon, &cam->anchor_lat);
+}
+
+void arpt_camera_pan_move(arpt_camera *cam, double sx, double sy) {
+    if (!cam->anchor_valid) {
+        /* Fallback: linear pan from the delta is not available here,
+           so just return. Control layer should track deltas for fallback. */
+        return;
+    }
+
+    /* Iterative convergence: adjust lon/lat so anchor stays under cursor */
+    for (int i = 0; i < 3; i++) {
+        double cursor_lon, cursor_lat;
+        if (!screen_to_geodetic(cam, sx, sy, &cursor_lon, &cursor_lat)) {
+            cam->anchor_valid = false;
+            return;
+        }
+        cam->lon_rad += cam->anchor_lon - cursor_lon;
+        cam->lat_rad += cam->anchor_lat - cursor_lat;
+        clamp_position(cam);
+    }
+}
+
+void arpt_camera_pan(arpt_camera *cam, double dx, double dy) {
+    /* Linear pan: convert pixel delta to radians */
+    double half_h = tan(CAM_FOV * 0.5);
+    double rad_per_px = 2.0 * cam->altitude * half_h /
+                        (cam->vp_height * ARPT_WGS84_A);
+
+    /* Rotate pixel delta by bearing */
+    double cb = cos(cam->bearing_rad), sb = sin(cam->bearing_rad);
+    double rx = dx * cb + dy * sb;
+    double ry = -dx * sb + dy * cb;
+
+    /* Apply with cos(lat) correction on longitude.
+       Sign convention: negative dy (drag up / UP arrow) → increase latitude.
+       Negative dx (drag left / LEFT arrow) → decrease longitude. */
+    double cos_lat = cos(cam->lat_rad);
+    if (cos_lat > 1e-6)
+        cam->lon_rad += rx * rad_per_px / cos_lat;
+    cam->lat_rad -= ry * rad_per_px;
+    clamp_position(cam);
+}
+
+void arpt_camera_zoom_at(arpt_camera *cam, double sx, double sy, double factor) {
+    /* Cast ray to find anchor point on globe */
+    double anchor_lon, anchor_lat;
+    bool has_anchor = screen_to_geodetic(cam, sx, sy, &anchor_lon, &anchor_lat);
+
+    /* Apply zoom */
+    cam->altitude = fmax(CAM_MIN_ALT, fmin(CAM_MAX_ALT, cam->altitude * factor));
+
+    if (!has_anchor) return;
+
+    /* Iterative convergence: adjust lon/lat so anchor stays at same screen pos */
+    for (int i = 0; i < 3; i++) {
+        double cursor_lon, cursor_lat;
+        if (!screen_to_geodetic(cam, sx, sy, &cursor_lon, &cursor_lat))
+            return;
+        cam->lon_rad += anchor_lon - cursor_lon;
+        cam->lat_rad += anchor_lat - cursor_lat;
+        clamp_position(cam);
+    }
+}
+
+void arpt_camera_tilt_bearing(arpt_camera *cam, double d_tilt, double d_bearing) {
+    arpt_camera_set_tilt(cam, cam->tilt_rad + d_tilt);
+    arpt_camera_set_bearing(cam, cam->bearing_rad + d_bearing);
 }
 
 /* ── Tile management helpers ───────────────────────────────────────────── */

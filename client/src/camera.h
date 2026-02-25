@@ -29,6 +29,30 @@ double arpt_camera_bearing(const arpt_camera *cam);
 int    arpt_camera_vp_width(const arpt_camera *cam);
 int    arpt_camera_vp_height(const arpt_camera *cam);
 
+/* ── Manipulation ─────────────────────────────────────────────────────── */
+
+/** Begin a pan gesture — store the anchor point under the cursor. */
+void arpt_camera_pan_begin(arpt_camera *cam, double sx, double sy);
+
+/** Continue a pan gesture — adjust interest point so anchor stays under cursor. */
+void arpt_camera_pan_move(arpt_camera *cam, double sx, double sy);
+
+/** Linear pan by pixel delta (keyboard / inertia). Rotated by bearing. */
+void arpt_camera_pan(arpt_camera *cam, double dx, double dy);
+
+/** Zoom anchored at screen point: multiply altitude by factor, keep point fixed. */
+void arpt_camera_zoom_at(arpt_camera *cam, double sx, double sy, double factor);
+
+/** Adjust tilt and bearing by deltas (radians). Tilt clamped [0, 60°]. */
+void arpt_camera_tilt_bearing(arpt_camera *cam, double d_tilt, double d_bearing);
+
+/**
+ * Cast ray from screen point and return the geodetic coordinates on the globe.
+ * Returns false if the ray misses the ellipsoid.
+ */
+bool arpt_camera_screen_to_geodetic(const arpt_camera *cam, double sx, double sy,
+                                     double *out_lon, double *out_lat);
+
 /* ── Computed matrices ─────────────────────────────────────────────────── */
 
 /** Perspective projection matrix (float32 for GPU). */

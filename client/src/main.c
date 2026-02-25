@@ -6,11 +6,10 @@
 #include "glfw3webgpu.h"
 
 #include "camera.h"
+#include "control.h"
 #include "renderer.h"
-#include "tile_decode.h"
 #include "tile_manager.h"
 #include "coords.h"
-#include "tile_builder.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -26,8 +25,6 @@
 #define WINDOW_W         800
 #define WINDOW_H         600
 
-#define DEMO_GRID 5
-
 /* ── App state ─────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -40,98 +37,14 @@ typedef struct {
     WGPUTextureFormat surface_format;
 
     arpt_camera *camera;
+    arpt_control *control;
     arpt_renderer *renderer;
     arpt_tile_manager *tile_manager;
-    arpt_tile_gpu *demo_tile;
-
-    /* Demo tile geodetic center (radians) */
-    double tile_center_lon;
-    double tile_center_lat;
-
+    double last_time;
 } App;
 
 static App app = {0};
 
-/* ── Demo terrain tile builder ─────────────────────────────────────────── */
-
-/* Build a DEMO_GRID x DEMO_GRID terrain grid tile for the given bounds. */
-static void *build_demo_terrain(size_t *out_size,
-                                 arpt_bounds_t bounds) {
-    flatcc_builder_t b;
-    flatcc_builder_init(&b);
-
-    arpentry_tiles_Tile_start_as_root(&b);
-    arpentry_tiles_Tile_version_add(&b, 1);
-
-    arpentry_tiles_Tile_layers_start(&b);
-    arpentry_tiles_Tile_layers_push_start(&b);
-    arpentry_tiles_Layer_name_create_str(&b, "terrain");
-
-    arpentry_tiles_Layer_features_start(&b);
-    arpentry_tiles_Layer_features_push_start(&b);
-    arpentry_tiles_Feature_id_add(&b, 1);
-
-    int nv = DEMO_GRID * DEMO_GRID;
-    int ni = (DEMO_GRID - 1) * (DEMO_GRID - 1) * 6;
-
-    uint16_t xs[DEMO_GRID * DEMO_GRID], ys[DEMO_GRID * DEMO_GRID];
-    int32_t zs[DEMO_GRID * DEMO_GRID];
-    int8_t normals[DEMO_GRID * DEMO_GRID * 2];
-
-    for (int row = 0; row < DEMO_GRID; row++) {
-        for (int col = 0; col < DEMO_GRID; col++) {
-            int idx = row * DEMO_GRID + col;
-            double u = (double)col / (DEMO_GRID - 1);
-            double v = (double)row / (DEMO_GRID - 1);
-            double lon = bounds.west + u * (bounds.east - bounds.west);
-            double lat = bounds.south + v * (bounds.north - bounds.south);
-            xs[idx] = arpt_quantize_lon(lon, bounds);
-            ys[idx] = arpt_quantize_lat(lat, bounds);
-
-            /* Simple elevation: a smooth hill */
-            double cx = u - 0.5, cy = v - 0.5;
-            double elev = 2000.0 * exp(-(cx * cx + cy * cy) * 8.0);
-            zs[idx] = arpt_meters_to_mm(elev);
-
-            /* Up-facing normals (octahedral encoding of (0,0,1) = (0,0)) */
-            normals[idx * 2] = 0;
-            normals[idx * 2 + 1] = 0;
-        }
-    }
-
-    uint32_t indices[(DEMO_GRID - 1) * (DEMO_GRID - 1) * 6];
-    int ii = 0;
-    for (int row = 0; row < DEMO_GRID - 1; row++) {
-        for (int col = 0; col < DEMO_GRID - 1; col++) {
-            uint32_t tl = (uint32_t)(row * DEMO_GRID + col);
-            uint32_t tr = tl + 1;
-            uint32_t bl = tl + DEMO_GRID;
-            uint32_t br = bl + 1;
-            indices[ii++] = tl; indices[ii++] = bl; indices[ii++] = tr;
-            indices[ii++] = tr; indices[ii++] = bl; indices[ii++] = br;
-        }
-    }
-
-    arpentry_tiles_MeshGeometry_start(&b);
-    arpentry_tiles_MeshGeometry_x_create(&b, xs, nv);
-    arpentry_tiles_MeshGeometry_y_create(&b, ys, nv);
-    arpentry_tiles_MeshGeometry_z_create(&b, zs, nv);
-    arpentry_tiles_MeshGeometry_indices_create(&b, indices, ni);
-    arpentry_tiles_MeshGeometry_normals_create(&b, normals, nv * 2);
-
-    arpentry_tiles_MeshGeometry_ref_t ref = arpentry_tiles_MeshGeometry_end(&b);
-    arpentry_tiles_Feature_geometry_MeshGeometry_add(&b, ref);
-
-    arpentry_tiles_Layer_features_push_end(&b);
-    arpentry_tiles_Layer_features_end(&b);
-    arpentry_tiles_Tile_layers_push_end(&b);
-    arpentry_tiles_Tile_layers_end(&b);
-    arpentry_tiles_Tile_end_as_root(&b);
-
-    void *buf = flatcc_builder_finalize_buffer(&b, out_size);
-    flatcc_builder_clear(&b);
-    return buf;
-}
 
 /* ── GLFW callbacks ────────────────────────────────────────────────────── */
 
@@ -164,6 +77,13 @@ static void on_framebuffer_resize(GLFWwindow *w, int width, int height) {
 static void render_frame(void) {
     glfwPollEvents();
 
+    /* Compute dt and advance control */
+    double now = glfwGetTime();
+    double dt = now - app.last_time;
+    app.last_time = now;
+    if (app.control)
+        arpt_control_update(app.control, dt);
+
     WGPUSurfaceTexture st;
     wgpuSurfaceGetCurrentTexture(app.surface, &st);
     if (st.status != WGPUSurfaceGetCurrentTextureStatus_Success)
@@ -186,24 +106,6 @@ static void render_frame(void) {
     if (app.tile_manager)
         arpt_tile_manager_draw(app.tile_manager, app.renderer, app.camera);
 
-    /* Always draw the demo tile as fallback */
-    if (app.demo_tile) {
-        arpt_mat4 model = arpt_camera_tile_model(app.camera,
-                                                  app.tile_center_lon,
-                                                  app.tile_center_lat, 0.0);
-        arpt_bounds_t bounds = arpt_tile_bounds(DEMO_LEVEL, DEMO_X, DEMO_Y);
-        float bounds_rad[4] = {
-            (float)(bounds.west * M_PI / 180.0),
-            (float)(bounds.south * M_PI / 180.0),
-            (float)(bounds.east * M_PI / 180.0),
-            (float)(bounds.north * M_PI / 180.0),
-        };
-        arpt_tile_gpu_set_uniforms(app.demo_tile, model, bounds_rad,
-                                    (float)app.tile_center_lon,
-                                    (float)app.tile_center_lat);
-        arpt_renderer_draw_tile(app.renderer, app.demo_tile);
-    }
-
     arpt_renderer_end_frame(app.renderer);
 
     wgpuTextureViewRelease(view);
@@ -224,8 +126,6 @@ static void init_viewer(void) {
     arpt_bounds_t bounds = arpt_tile_bounds(DEMO_LEVEL, DEMO_X, DEMO_Y);
     double center_lon = (bounds.west + bounds.east) / 2.0 * M_PI / 180.0;
     double center_lat = (bounds.south + bounds.north) / 2.0 * M_PI / 180.0;
-    app.tile_center_lon = center_lon;
-    app.tile_center_lat = center_lat;
     arpt_camera_set_position(app.camera, center_lon, center_lat,
                               INITIAL_ALTITUDE);
     arpt_camera_set_viewport(app.camera, fb_w, fb_h);
@@ -234,21 +134,6 @@ static void init_viewer(void) {
     app.renderer = arpt_renderer_create(app.device, app.queue,
                                          app.surface_format,
                                          (uint32_t)fb_w, (uint32_t)fb_h);
-
-    /* Build and upload demo terrain tile */
-    size_t tile_size;
-    void *tile_buf = build_demo_terrain(&tile_size, bounds);
-    if (tile_buf) {
-        arpt_terrain_mesh mesh = {0};
-        if (arpt_decode_terrain(tile_buf, tile_size, &mesh)) {
-            app.demo_tile = arpt_renderer_upload_tile(app.renderer, &mesh);
-        }
-        free(tile_buf);
-    }
-
-    if (!app.demo_tile) {
-        fprintf(stderr, "Failed to create demo tile\n");
-    }
 
     /* Tile manager for server-provided tiles */
     arpt_tile_manager_config tm_config = {
@@ -261,7 +146,34 @@ static void init_viewer(void) {
     };
     app.tile_manager = arpt_tile_manager_create(tm_config, app.renderer);
 
-    /* Install GLFW callbacks */
+    /* Diagnostic: verify camera position */
+    {
+        int win_w, win_h;
+        glfwGetWindowSize(app.window, &win_w, &win_h);
+        printf("Window: %dx%d, Framebuffer: %dx%d, Scale: %.1fx\n",
+               win_w, win_h, fb_w, fb_h, (double)fb_w / win_w);
+        printf("Camera: lon=%.4f° lat=%.4f° alt=%.0fm tilt=%.1f° bearing=%.1f°\n",
+               arpt_camera_lon(app.camera) * 180.0 / M_PI,
+               arpt_camera_lat(app.camera) * 180.0 / M_PI,
+               arpt_camera_altitude(app.camera),
+               arpt_camera_tilt(app.camera) * 180.0 / M_PI,
+               arpt_camera_bearing(app.camera) * 180.0 / M_PI);
+        /* Cast ray from screen center — should hit near the interest point */
+        double hit_lon, hit_lat;
+        if (arpt_camera_screen_to_geodetic(app.camera, fb_w / 2.0, fb_h / 2.0,
+                                            &hit_lon, &hit_lat)) {
+            printf("Center ray hits: lon=%.4f° lat=%.4f° (should match camera)\n",
+                   hit_lon * 180.0 / M_PI, hit_lat * 180.0 / M_PI);
+        } else {
+            printf("Center ray MISSES the globe! Camera may be inside.\n");
+        }
+    }
+
+    /* Map control (mouse/keyboard/touch input) */
+    app.control = arpt_control_create(app.camera, app.window);
+    app.last_time = glfwGetTime();
+
+    /* Install GLFW callbacks (framebuffer resize is separate from input) */
     glfwSetFramebufferSizeCallback(app.window, on_framebuffer_resize);
 }
 
@@ -363,8 +275,8 @@ int main(void) {
 #ifndef __EMSCRIPTEN__
     /* Cleanup */
     if (app.tile_manager) arpt_tile_manager_free(app.tile_manager);
-    if (app.demo_tile) arpt_tile_gpu_free(app.demo_tile);
     if (app.renderer) arpt_renderer_free(app.renderer);
+    if (app.control) arpt_control_free(app.control);
     if (app.camera) arpt_camera_free(app.camera);
     wgpuSurfaceUnconfigure(app.surface);
     if (app.queue) wgpuQueueRelease(app.queue);

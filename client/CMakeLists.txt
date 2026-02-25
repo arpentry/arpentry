@@ -35,6 +35,7 @@ add_executable(arpentry
     src/main.c
     src/tile_fetch.c
     src/camera.c
+    src/control.c
     src/tile_decode.c
     src/renderer.c
     src/tile_visible.c

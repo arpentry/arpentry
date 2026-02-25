@@ -111,8 +111,9 @@ void test_ray_miss(void) {
 
 /* ── Globe rotation ────────────────────────────────────────────────────── */
 
-void test_globe_rotation_maps_normal_to_neg_z(void) {
-    /* R_globe maps the geodetic surface normal at the interest point to -Z. */
+void test_globe_rotation_maps_normal_to_pos_z(void) {
+    /* R_globe maps the geodetic surface normal at the interest point to +Z
+       (toward the camera, which looks along -Z). */
     double lon = DEG2RAD(7.4474);
     double lat = DEG2RAD(46.9480);
 
@@ -122,12 +123,12 @@ void test_globe_rotation_maps_normal_to_neg_z(void) {
 
     TEST_ASSERT_DOUBLE_WITHIN(1e-10, 0.0, cam.x);
     TEST_ASSERT_DOUBLE_WITHIN(1e-10, 0.0, cam.y);
-    TEST_ASSERT_DOUBLE_WITHIN(1e-10, -1.0, cam.z);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-10, 1.0, cam.z);
 }
 
-void test_globe_rotation_ecef_mostly_neg_z(void) {
-    /* The ECEF position should be mostly along -Z, with small x/y
-       deviation due to ellipsoidal flattening. */
+void test_globe_rotation_ecef_mostly_pos_z(void) {
+    /* The ECEF position should be mostly along +Z (surface faces camera),
+       with small x/y deviation due to ellipsoidal flattening. */
     double lon = DEG2RAD(7.4474);
     double lat = DEG2RAD(46.9480);
 
@@ -139,7 +140,7 @@ void test_globe_rotation_ecef_mostly_neg_z(void) {
     TEST_ASSERT_DOUBLE_WITHIN(1.0, 0.0, cam.x);
     /* y deviation is < 22 km due to ellipsoidal flattening */
     TEST_ASSERT_TRUE(fabs(cam.y) < 25000.0);
-    TEST_ASSERT_TRUE(cam.z < 0.0);
+    TEST_ASSERT_TRUE(cam.z > 0.0);
 }
 
 void test_globe_rotation_is_orthonormal(void) {
@@ -168,8 +169,8 @@ int main(void) {
     RUN_TEST(test_surface_normal_north_pole);
     RUN_TEST(test_ray_hit);
     RUN_TEST(test_ray_miss);
-    RUN_TEST(test_globe_rotation_maps_normal_to_neg_z);
-    RUN_TEST(test_globe_rotation_ecef_mostly_neg_z);
+    RUN_TEST(test_globe_rotation_maps_normal_to_pos_z);
+    RUN_TEST(test_globe_rotation_ecef_mostly_pos_z);
     RUN_TEST(test_globe_rotation_is_orthonormal);
     return UNITY_END();
 }
