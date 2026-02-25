@@ -84,6 +84,27 @@ A flat JSON file (no recursive children tree) describes the tileset:
     { "name": "landmarks",      "geometry_types": ["Mesh"],        "min_level": 13, "max_level": 16 },
     { "name": "vegetation",     "geometry_types": ["Point"],       "min_level": 14, "max_level": 16 },
     { "name": "pois",           "geometry_types": ["Point"],       "min_level": 10, "max_level": 16 }
+  ],
+  "rasters": [
+    {
+      "name": "landcover",
+      "min_level": 4,
+      "max_level": 16,
+      "resolution": 256,
+      "buffer": 2,
+      "channels": 1,
+      "classes": {
+        "0": "bare",
+        "1": "grass",
+        "2": "forest",
+        "3": "shrub",
+        "4": "rock",
+        "5": "ice",
+        "6": "sand",
+        "7": "wetland",
+        "8": "urban"
+      }
+    }
   ]
 }
 ```
@@ -226,6 +247,53 @@ Part is a FlatBuffers struct (16 bytes, contiguous in the `parts` vector). When 
 #### Edge Stitching
 
 Edge index arrays (`edge_west`/`south`/`east`/`north`) on MeshGeometry list vertex indices along each tile edge for seamless terrain stitching between adjacent tiles. Only used by terrain mesh features.
+
+### 3.5 Raster Data
+
+Rasters are regular grids at tile scope, independent from vector layers. They carry per-pixel data such as landcover classification or blend masks for GPU effects. The `Tile.rasters` field holds zero or more named raster grids.
+
+Each `Raster` has:
+
+- **name**: string identifier (e.g., `"landcover"`)
+- **width**, **height**: total grid dimensions including buffer pixels
+- **buffer**: extra pixels per side for seamless filtering at tile edges
+- **channels**: bytes per pixel (1=R, 2=RG, 3=RGB, 4=RGBA; default 1)
+- **data**: pixel values, row-major, bottom-to-top (row 0 = south)
+
+#### Grid Layout
+
+The data array is `width * height * channels` bytes. Pixels are stored row-major with row 0 at the south edge (bottom-to-top), consistent with the vector coordinate system where y increases south to north. Each pixel is `channels` consecutive uint8 values.
+
+A raster with resolution 256 and buffer 2 has total dimensions 260×260. The tile proper spans pixels [buffer, buffer + resolution) on each axis; pixels outside are buffer zones for bilinear filtering at tile edges.
+
+#### Buffer Zones
+
+The `buffer` field specifies extra pixels per side. The extent (tile-proper resolution) is derived:
+
+```
+extent_w = width - 2 * buffer
+extent_h = height - 2 * buffer
+```
+
+Buffer pixels overlap with neighboring tiles, enabling bilinear/bicubic filtering without neighbor tile lookups.
+
+#### Coordinate Mapping
+
+To map a pixel (col, row) to geographic coordinates:
+
+```
+lon = lon_west + ((col - buffer) / extent_w) * (lon_east - lon_west)
+lat = lat_south + ((row - buffer) / extent_h) * (lat_north - lat_south)
+```
+
+Where `extent_w = width - 2 * buffer` and `extent_h = height - 2 * buffer`. Buffer pixels map to coordinates outside the tile bounds.
+
+#### Interpretation
+
+The raster `name` determines semantics:
+
+- **Classification rasters** (e.g., `"landcover"`): each pixel is a uint8 class ID. The tileset JSON maps class IDs to names (see Section 2). The client styles based on class identity.
+- **Continuous rasters**: pixel values are direct uint8 intensities (0–255 → 0.0–1.0). Used for noise textures, blend masks, or shader data.
 
 ---
 
@@ -407,12 +475,26 @@ table Layer {
   features: [Feature];
 }
 
+// --- Raster data ---
+// Regular grids at tile scope, independent from vector layers.
+// Row-major, bottom-to-top (row 0 = south). Length = width * height * channels.
+
+table Raster {
+  name: string (required);        // channel identifier, e.g. "landcover"
+  width: uint16;                  // total grid width including buffer
+  height: uint16;                 // total grid height including buffer
+  buffer: uint8;                  // extra pixels per side (0 = no buffer)
+  channels: uint8 = 1;           // bytes per pixel (1=R, 2=RG, 3=RGB, 4=RGBA)
+  data: [uint8] (required);      // row-major, bottom-to-top, length = width * height * channels
+}
+
 // Layers ordered by decode priority (terrain first). See Section 9.
 table Tile {
   version: uint16 = 1;            // format version (see Section 7)
   layers: [Layer];
   keys: [string];                   // property key dictionary: deduplicated key names (see Section 4)
   values: [Value];                 // property value dictionary: deduplicated typed values (see Section 4)
+  rasters: [Raster];               // named raster grids (see Section 3.5)
 }
 
 root_type Tile;
@@ -574,6 +656,36 @@ Points of interest for labels and icons. Rendered as screen-space UI, not 3D geo
 | name | string | Display name |
 | rank | int | Label priority (lower = more important) |
 
+### landcover (raster)
+
+Classification raster: each pixel is a uint8 class ID identifying physical ground cover from satellite-derived data.
+
+- **Type**: Raster (single channel)
+- **Zoom range**: 4–16
+- **Resolution**: 256×256 (with 2px buffer → 260×260)
+- **Classes**: defined in tileset JSON (see Section 2)
+
+Reference class mapping:
+
+| ID | Class |
+|----|-------|
+| 0 | bare |
+| 1 | grass |
+| 2 | forest |
+| 3 | shrub |
+| 4 | rock |
+| 5 | ice |
+| 6 | sand |
+| 7 | wetland |
+| 8 | urban |
+
+#### Relationship to the landuse Layer
+
+- **landuse** (vector) = human-defined zones (parks, residential areas) from OpenStreetMap — polygon features with class properties
+- **landcover** (raster) = physical ground cover (forest, rock, ice) from satellite classification — per-pixel grid
+
+Both can coexist in the same tile. The renderer composites landcover as a base terrain texture; landuse polygons overlay where relevant (e.g., a park polygon over grass/forest landcover).
+
 ---
 
 ## 10. Styling Contract
@@ -587,6 +699,8 @@ The format provides data for styling. For PointGeometry, LineGeometry, and Polyg
 5. **Feature ID** — interaction (hover, click, selection)
 
 For MeshGeometry, each Part carries an inline material (color, roughness, metalness). When `color.a > 0`, the client uses it directly for PBR-lite shading. When `color.a == 0`, the client styles the part based on feature properties, as with other topologies. When no `parts` array is present, the entire mesh is one client-styled draw call.
+
+Raster data is styled by the client based on raster name and class/value mapping from the tileset metadata. Classification rasters map class IDs to visual styles (color, texture, noise parameters). Continuous rasters provide shader inputs directly (0–255 → 0.0–1.0).
 
 Style specification is defined in a separate document.
 
@@ -602,8 +716,10 @@ Style specification is defined in a separate document.
 | Vector features (buildings) | 20-100 KB | 5-30 KB |
 | Combined urban tile | 100-500 KB | 30-150 KB |
 | Dense urban max | 500 KB - 1 MB | 150-300 KB |
+| Raster 256×256×1 (landcover) | 64 KB | 5-15 KB |
+| Raster 260×260×1 (with buffer) | 67.6 KB | 5-16 KB |
 
-95th percentile target: < 500 KB uncompressed, < 150 KB compressed.
+95th percentile target: < 600 KB uncompressed, < 200 KB compressed (including rasters).
 
 ### Decode Times (mid-range 2023 device)
 

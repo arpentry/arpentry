@@ -88,12 +88,26 @@ table Layer {
   features: [Feature];
 }
 
+// --- Raster data ---
+// Regular grids at tile scope, independent from vector layers.
+// Row-major, bottom-to-top (row 0 = south). Length = width * height * channels.
+
+table Raster {
+  name: string (required);        // channel identifier, e.g. "landcover"
+  width: uint16;                  // total grid width including buffer
+  height: uint16;                 // total grid height including buffer
+  buffer: uint8;                  // extra pixels per side (0 = no buffer)
+  channels: uint8 = 1;           // bytes per pixel (1=R, 2=RG, 3=RGB, 4=RGBA)
+  data: [uint8] (required);      // row-major, bottom-to-top, length = width * height * channels
+}
+
 // Layers ordered by decode priority (terrain first). See Section 9.
 table Tile {
   version: uint16 = 1;            // format version (see Section 7)
   layers: [Layer];
   keys: [string];                   // property key dictionary: deduplicated key names (see Section 4)
   values: [Value];                 // property value dictionary: deduplicated typed values (see Section 4)
+  rasters: [Raster];               // named raster grids (see Section 3.5)
 }
 
 root_type Tile;
