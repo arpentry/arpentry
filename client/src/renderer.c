@@ -137,7 +137,7 @@ static const char *landuse_wgsl =
 /* ── Landuse color table ───────────────────────────────────────────────── */
 
 #define LANDUSE_TEX_SIZE 512
-#define LANDUSE_MARGIN 0.125  /* = LANDUSE_BUFFER / LANDUSE_GRID = 4/32 */
+#define LANDUSE_MARGIN 0.125  /* = LANDUSE_BUFFER / LANDUSE_GRID = 8/64 */
 
 typedef struct { float r, g, b, a; } landuse_color_t;
 
@@ -204,6 +204,17 @@ struct arpt_renderer {
     WGPUSampler landuse_sampler;
     WGPUTexture default_landuse_tex;
     WGPUTextureView default_landuse_view;
+
+    /* Placeholder flat quads for tiles still loading */
+    WGPUBuffer ph_buf_xy;
+    WGPUBuffer ph_buf_z;
+    WGPUBuffer ph_buf_normals;
+    WGPUBuffer ph_buf_indices;
+    uint32_t ph_index_count;
+    WGPUTexture ph_texture;
+    WGPUTextureView ph_texture_view;
+    WGPUBuffer ph_uniform_bufs[ARPT_MAX_PLACEHOLDERS];
+    WGPUBindGroup ph_bind_groups[ARPT_MAX_PLACEHOLDERS];
 
     WGPUCommandEncoder encoder;
     WGPURenderPassEncoder pass;
@@ -583,11 +594,118 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
                                     .entryCount = 1, .entries = &bg_e});
 
     create_depth_texture(r);
+
+    /* ── Placeholder grid mesh ─────────────────────────────────────────── */
+    {
+        /* Subdivided grid so the placeholder follows globe curvature.
+           The vertex shader does geodetic→ECEF per vertex, so more vertices
+           means a smoother curved surface. */
+        #define PH_GRID  16
+        #define PH_VERTS (PH_GRID + 1)  /* 17×17 = 289 vertices */
+        #define PH_NV    (PH_VERTS * PH_VERTS)
+        #define PH_NI    (PH_GRID * PH_GRID * 6)  /* 1536 indices */
+
+        uint16_t xy_data[PH_NV * 2];
+        int32_t  z_data[PH_NV];
+        int8_t   norm_data[PH_NV * 4]; /* padded to 4 bytes per vertex */
+        uint32_t idx_data[PH_NI];
+
+        /* Vertices: regular grid over tile proper [16384, 49151] */
+        for (int row = 0; row < PH_VERTS; row++) {
+            for (int col = 0; col < PH_VERTS; col++) {
+                int vi = row * PH_VERTS + col;
+                xy_data[vi * 2]     = (uint16_t)(16384 + col * 32767 / PH_GRID);
+                xy_data[vi * 2 + 1] = (uint16_t)(16384 + row * 32767 / PH_GRID);
+                z_data[vi] = 0;
+                /* Octahedral (0,0) → normal (0,0,1), padded */
+                norm_data[vi * 4]     = 0;
+                norm_data[vi * 4 + 1] = 0;
+                norm_data[vi * 4 + 2] = 0;
+                norm_data[vi * 4 + 3] = 0;
+            }
+        }
+
+        /* Indices: same winding as terrain_gen (tl, bl, tr, tr, bl, br) */
+        int ii = 0;
+        for (int row = 0; row < PH_GRID; row++) {
+            for (int col = 0; col < PH_GRID; col++) {
+                uint32_t tl = (uint32_t)(row * PH_VERTS + col);
+                uint32_t tr = tl + 1;
+                uint32_t bl = tl + PH_VERTS;
+                uint32_t br = bl + 1;
+                idx_data[ii++] = tl;
+                idx_data[ii++] = bl;
+                idx_data[ii++] = tr;
+                idx_data[ii++] = tr;
+                idx_data[ii++] = bl;
+                idx_data[ii++] = br;
+            }
+        }
+
+        r->ph_index_count = PH_NI;
+        r->ph_buf_xy = create_buffer(device, queue, WGPUBufferUsage_Vertex,
+                                      xy_data, sizeof(xy_data));
+        r->ph_buf_z = create_buffer(device, queue, WGPUBufferUsage_Vertex,
+                                     z_data, sizeof(z_data));
+        r->ph_buf_normals = create_buffer(device, queue, WGPUBufferUsage_Vertex,
+                                           norm_data, sizeof(norm_data));
+        r->ph_buf_indices = create_buffer(device, queue, WGPUBufferUsage_Index,
+                                           idx_data, sizeof(idx_data));
+
+        #undef PH_GRID
+        #undef PH_VERTS
+        #undef PH_NV
+        #undef PH_NI
+
+        /* 1×1 placeholder texture: neutral dark blue-gray */
+        WGPUTextureDescriptor ph_td = {
+            .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
+            .size = {1, 1, 1},
+            .format = WGPUTextureFormat_RGBA8Unorm,
+            .dimension = WGPUTextureDimension_2D,
+            .mipLevelCount = 1,
+            .sampleCount = 1,
+        };
+        r->ph_texture = wgpuDeviceCreateTexture(device, &ph_td);
+        r->ph_texture_view = wgpuTextureCreateView(r->ph_texture, NULL);
+        uint8_t ph_pixel[4] = {50, 60, 75, 255};
+        WGPUImageCopyTexture ph_dst = {.texture = r->ph_texture};
+        WGPUTextureDataLayout ph_layout = {.bytesPerRow = 4, .rowsPerImage = 1};
+        WGPUExtent3D ph_extent = {1, 1, 1};
+        wgpuQueueWriteTexture(queue, &ph_dst, ph_pixel, 4, &ph_layout, &ph_extent);
+
+        /* Pool of uniform buffers + bind groups for placeholder draws */
+        for (int i = 0; i < ARPT_MAX_PLACEHOLDERS; i++) {
+            r->ph_uniform_bufs[i] = create_buffer(device, queue,
+                WGPUBufferUsage_Uniform, NULL, sizeof(tile_uniforms_t));
+            WGPUBindGroupEntry ph_entries[] = {
+                {.binding = 0, .buffer = r->ph_uniform_bufs[i],
+                 .offset = 0, .size = sizeof(tile_uniforms_t)},
+                {.binding = 1, .textureView = r->ph_texture_view},
+                {.binding = 2, .sampler = r->landuse_sampler},
+            };
+            r->ph_bind_groups[i] = wgpuDeviceCreateBindGroup(device,
+                &(WGPUBindGroupDescriptor){.layout = r->tile_bgl,
+                                            .entryCount = 3,
+                                            .entries = ph_entries});
+        }
+    }
+
     return r;
 }
 
 void arpt_renderer_free(arpt_renderer *r) {
     if (!r) return;
+    for (int i = 0; i < ARPT_MAX_PLACEHOLDERS; i++) {
+        if (r->ph_bind_groups[i]) wgpuBindGroupRelease(r->ph_bind_groups[i]);
+        if (r->ph_uniform_bufs[i]) wgpuBufferRelease(r->ph_uniform_bufs[i]);
+    }
+    if (r->ph_buf_xy) wgpuBufferRelease(r->ph_buf_xy);
+    if (r->ph_buf_z) wgpuBufferRelease(r->ph_buf_z);
+    if (r->ph_buf_normals) wgpuBufferRelease(r->ph_buf_normals);
+    if (r->ph_buf_indices) wgpuBufferRelease(r->ph_buf_indices);
+    if (r->ph_texture_view) wgpuTextureViewRelease(r->ph_texture_view);
+    if (r->ph_texture) wgpuTextureRelease(r->ph_texture);
     if (r->depth_view) wgpuTextureViewRelease(r->depth_view);
     if (r->depth_texture) wgpuTextureRelease(r->depth_texture);
     if (r->global_bind_group) wgpuBindGroupRelease(r->global_bind_group);
@@ -702,6 +820,37 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     if (tile->landuse_view) wgpuTextureViewRelease(tile->landuse_view);
     if (tile->landuse_texture) wgpuTextureRelease(tile->landuse_texture);
     free(tile);
+}
+
+/* ── Placeholder rendering ─────────────────────────────────────────────── */
+
+void arpt_renderer_draw_placeholder(arpt_renderer *r, int slot,
+                                     arpt_mat4 model,
+                                     const float bounds[4],
+                                     float center_lon, float center_lat) {
+    if (slot < 0 || slot >= ARPT_MAX_PLACEHOLDERS) return;
+
+    tile_uniforms_t u;
+    memcpy(u.model, model.m, sizeof(u.model));
+    memcpy(u.bounds, bounds, sizeof(u.bounds));
+    u.center_lon = center_lon;
+    u.center_lat = center_lat;
+    u._pad0 = 0.0f;
+    u._pad1 = 0.0f;
+    wgpuQueueWriteBuffer(r->queue, r->ph_uniform_bufs[slot], 0, &u, sizeof(u));
+
+    wgpuRenderPassEncoderSetBindGroup(r->pass, 1, r->ph_bind_groups[slot],
+                                       0, NULL);
+    wgpuRenderPassEncoderSetVertexBuffer(r->pass, 0, r->ph_buf_xy, 0,
+                                          wgpuBufferGetSize(r->ph_buf_xy));
+    wgpuRenderPassEncoderSetVertexBuffer(r->pass, 1, r->ph_buf_z, 0,
+                                          wgpuBufferGetSize(r->ph_buf_z));
+    wgpuRenderPassEncoderSetVertexBuffer(r->pass, 2, r->ph_buf_normals, 0,
+                                          wgpuBufferGetSize(r->ph_buf_normals));
+    wgpuRenderPassEncoderSetIndexBuffer(r->pass, r->ph_buf_indices,
+                                         WGPUIndexFormat_Uint32, 0,
+                                         wgpuBufferGetSize(r->ph_buf_indices));
+    wgpuRenderPassEncoderDrawIndexed(r->pass, r->ph_index_count, 1, 0, 0, 0);
 }
 
 /* ── Frame rendering ───────────────────────────────────────────────────── */

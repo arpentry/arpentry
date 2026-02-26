@@ -34,6 +34,17 @@ void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile,
 
 void arpt_tile_gpu_free(arpt_tile_gpu *tile);
 
+/* ── Placeholder rendering ─────────────────────────────────────────────── */
+
+#define ARPT_MAX_PLACEHOLDERS 256
+
+/** Draw a flat placeholder quad for a tile that is still loading.
+ *  slot indexes into a pre-allocated pool [0, ARPT_MAX_PLACEHOLDERS). */
+void arpt_renderer_draw_placeholder(arpt_renderer *r, int slot,
+                                     arpt_mat4 model,
+                                     const float bounds[4],
+                                     float center_lon, float center_lat);
+
 /* ── Frame rendering ───────────────────────────────────────────────────── */
 
 /** Set global uniforms for this frame (projection, sun direction). */

@@ -62,7 +62,9 @@ void arpt_tile_manager_free(arpt_tile_manager *tm);
 void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam);
 
 /**
- * Draw all ready tiles (with ancestor fallback for tiles still loading).
+ * Draw visible tiles at the target zoom level.  READY tiles are drawn
+ * normally; tiles still loading are shown as flat placeholder quads.
+ * All tiles belong to the same zoom level — no ancestor mixing.
  */
 void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
                               const arpt_camera *cam);

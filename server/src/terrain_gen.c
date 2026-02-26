@@ -10,8 +10,8 @@
 
 /* ── Terrain parameters ────────────────────────────────────────────── */
 
-#define TERRAIN_GRID        32
-#define TERRAIN_VERTS       (TERRAIN_GRID + 1)  /* 33x33 = 1089 vertices */
+#define TERRAIN_GRID        64
+#define TERRAIN_VERTS       (TERRAIN_GRID + 1)  /* 65x65 = 4225 vertices */
 #define TERRAIN_OCTAVES     16
 #define TERRAIN_BASE_FREQ   4.0
 #define TERRAIN_AMPLITUDE   8000.0   /* peak ~8000m */
@@ -20,10 +20,10 @@
 #define TERRAIN_REDISTRIBUTE 0.45  /* power curve exponent: < 1 pushes toward extremes */
 #define BROTLI_QUALITY      4
 
-#define LANDUSE_GRID        32      /* 32x32 marching squares grid (matches terrain) */
-#define LANDUSE_BUFFER      4       /* extra cells of buffer on each side */
-#define LANDUSE_TOTAL       (LANDUSE_GRID + 2 * LANDUSE_BUFFER)  /* 40 */
-#define LANDUSE_VERTS       (LANDUSE_TOTAL + 1)  /* 41x41 classification vertices */
+#define LANDUSE_GRID        64      /* 64x64 marching squares grid (matches terrain) */
+#define LANDUSE_BUFFER      8       /* extra cells of buffer on each side */
+#define LANDUSE_TOTAL       (LANDUSE_GRID + 2 * LANDUSE_BUFFER)  /* 80 */
+#define LANDUSE_VERTS       (LANDUSE_TOTAL + 1)  /* 81x81 classification vertices */
 
 /* Landuse class indices into the tile-scope value dictionary */
 #define LANDUSE_VAL_GRASS   0

@@ -236,7 +236,7 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
     tm->frame++;
 
     /* Pre-fetch level-0 root tiles on the first frame so that
-       find_ready_entry() always has a fallback ancestor. */
+       draw always has a fallback level to render. */
     if (tm->frame == 1) {
         arpt_tile_key roots[2] = { {0, 0, 0}, {0, 1, 0} };
         for (int r = 0; r < 2; r++) {
@@ -319,28 +319,30 @@ static void draw_entry(arpt_renderer *r, const arpt_camera *cam,
     arpt_renderer_draw_tile(r, (arpt_tile_gpu *)e->gpu);
 }
 
-static const tile_entry *find_ready_entry(struct hashmap *cache,
-                                           arpt_tile_key key) {
-    tile_entry lookup = { .key = key };
-    const tile_entry *e = hashmap_get(cache, &lookup);
-    if (e && e->state == TILE_READY && e->gpu) return e;
-
-    /* Walk ancestors */
-    int al = key.level, ax = key.x, ay = key.y;
-    int pl, px, py;
-    while (arpt_tile_ancestor(al, ax, ay, &pl, &px, &py)) {
-        lookup.key = (arpt_tile_key){ pl, px, py };
-        e = hashmap_get(cache, &lookup);
-        if (e && e->state == TILE_READY && e->gpu) return e;
-        al = pl; ax = px; ay = py;
-    }
-    return NULL;
-}
-
 void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
                               const arpt_camera *cam) {
+    int ph_slot = 0;
     for (int i = 0; i < tm->visible_count; i++) {
-        const tile_entry *e = find_ready_entry(tm->cache, tm->visible[i]);
-        if (e) draw_entry(r, cam, e);
+        tile_entry lookup = { .key = tm->visible[i] };
+        const tile_entry *e = hashmap_get(tm->cache, &lookup);
+
+        if (e && e->state == TILE_READY && e->gpu) {
+            draw_entry(r, cam, e);
+        } else if (ph_slot < ARPT_MAX_PLACEHOLDERS) {
+            /* Draw flat placeholder quad while tile loads */
+            arpt_bounds_t bounds = arpt_tile_bounds(
+                tm->visible[i].level, tm->visible[i].x, tm->visible[i].y);
+            double clon = (bounds.west + bounds.east) / 2.0 * M_PI / 180.0;
+            double clat = (bounds.south + bounds.north) / 2.0 * M_PI / 180.0;
+            arpt_mat4 model = arpt_camera_tile_model(cam, clon, clat, 0.0);
+            float bounds_rad[4] = {
+                (float)(bounds.west * M_PI / 180.0),
+                (float)(bounds.south * M_PI / 180.0),
+                (float)(bounds.east * M_PI / 180.0),
+                (float)(bounds.north * M_PI / 180.0),
+            };
+            arpt_renderer_draw_placeholder(r, ph_slot++, model, bounds_rad,
+                                            (float)clon, (float)clat);
+        }
     }
 }
