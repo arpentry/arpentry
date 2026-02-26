@@ -9,53 +9,59 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
                                   arpt_tile_key *out, int max_count) {
     if (!cam || !out || max_count <= 0 || level < 0) return 0;
 
+    int n_cols = 1 << (level + 1);
+    int n_rows = 1 << level;
+
+    /* At low zoom levels the total tile count is small enough to
+       enumerate every tile.  This sidesteps all ray-casting edge cases
+       (limb under-sampling, antimeridian, polar convergence) and
+       guarantees no visible tile is ever missed. */
+    int total_tiles = n_cols * n_rows;
+    if (total_tiles <= max_count) {
+        int count = 0;
+        for (int y = 0; y < n_rows; y++)
+            for (int x = 0; x < n_cols; x++)
+                out[count++] = (arpt_tile_key){ level, x, y };
+        return count;
+    }
+
+    /* At higher zoom levels the globe fills most of the viewport,
+       so a coarse screen-space ray grid samples the visible region
+       reliably.  Cast a 7x7 grid and build a geodetic bounding box. */
     int vp_w = arpt_camera_vp_width(cam);
     int vp_h = arpt_camera_vp_height(cam);
     if (vp_w <= 0 || vp_h <= 0) return 0;
 
-    /* Sample a 7x7 grid of screen points for robust coverage.
-     * The original 9-point scheme (corners + edge midpoints + center)
-     * fails when the globe is small on screen: most rays miss the globe
-     * and the bounding box collapses to a single tile. */
     #define GRID_N 7
-    #define SAMPLE_COUNT (GRID_N * GRID_N)
-    double pts[SAMPLE_COUNT][2];
+    #define GRID_COUNT (GRID_N * GRID_N)
+
+    double lons[GRID_COUNT], lats[GRID_COUNT];
+    int hit_count = 0;
+
     for (int r = 0; r < GRID_N; r++) {
         for (int c = 0; c < GRID_N; c++) {
-            pts[r * GRID_N + c][0] = vp_w * (double)c / (GRID_N - 1);
-            pts[r * GRID_N + c][1] = vp_h * (double)r / (GRID_N - 1);
+            double sx = vp_w * (double)c / (GRID_N - 1);
+            double sy = vp_h * (double)r / (GRID_N - 1);
+
+            arpt_dvec3 origin, dir;
+            if (!arpt_camera_screen_to_ray(cam, sx, sy, &origin, &dir))
+                continue;
+
+            double t;
+            if (!arpt_ray_ellipsoid(origin, dir, &t))
+                continue;
+
+            arpt_dvec3 hit = arpt_dvec3_add(origin, arpt_dvec3_scale(dir, t));
+            double lon, lat, alt;
+            arpt_ecef_to_geodetic(hit, &lon, &lat, &alt);
+
+            lons[hit_count] = lon * 180.0 / M_PI;
+            lats[hit_count] = lat * 180.0 / M_PI;
+            hit_count++;
         }
     }
 
-    /* Cast rays and collect geodetic hit points */
-    double lons[SAMPLE_COUNT], lats[SAMPLE_COUNT];
-    int hit_count = 0;
-
-    for (int i = 0; i < SAMPLE_COUNT; i++) {
-        arpt_dvec3 origin, dir;
-        if (!arpt_camera_screen_to_ray(cam, pts[i][0], pts[i][1],
-                                        &origin, &dir))
-            continue;
-
-        double t;
-        if (!arpt_ray_ellipsoid(origin, dir, &t))
-            continue;
-
-        arpt_dvec3 hit = arpt_dvec3_add(origin, arpt_dvec3_scale(dir, t));
-        double lon, lat, alt;
-        arpt_ecef_to_geodetic(hit, &lon, &lat, &alt);
-
-        lons[hit_count] = lon * 180.0 / M_PI;
-        lats[hit_count] = lat * 180.0 / M_PI;
-        hit_count++;
-    }
-
     if (hit_count == 0) return 0;
-
-    /* When some rays miss, the globe's limb is visible on screen.
-       Track this so we can pad the tile range to cover limb tiles
-       that fall between sample grid points. */
-    bool limb_visible = (hit_count < SAMPLE_COUNT);
 
     /* Detect antimeridian crossing: >180° gap means the shorter
        path wraps across the ±180° meridian. */
@@ -105,9 +111,7 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
     if (min_lat < -90.0) min_lat = -90.0;
     if (max_lat > 90.0) max_lat = 90.0;
 
-    /* Convert bbox to tile indices at the given level */
-    int n_cols = 1 << (level + 1);
-    int n_rows = 1 << level;
+    /* Convert bbox to tile indices */
     double tile_w = 360.0 / n_cols;
     double tile_h = 180.0 / n_rows;
 
@@ -116,9 +120,8 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
     int y_min = (int)floor((min_lat + 90.0) / tile_h);
     int y_max = (int)floor((max_lat + 90.0) / tile_h);
 
-    /* Always pad by 1 tile: covers limb tiles missed by the sample grid
-       and tiles whose elevated terrain (mountains) protrudes into the
-       viewport even though their ellipsoid footprint is off-screen. */
+    /* Pad by 1 tile: covers terrain that protrudes into the viewport
+       even though its ellipsoid footprint is off-screen. */
     x_min -= 1;
     x_max += 1;
     y_min -= 1;
@@ -128,29 +131,28 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
     if (y_min < 0) y_min = 0;
     if (y_max >= n_rows) y_max = n_rows - 1;
 
-    /* Generate tile list */
+    /* Generate tile list.
+       When the x range wraps past the grid boundary (either from
+       antimeridian crossing or from padding near lon ±180°), emit
+       two sub-ranges: [x_min, n_cols-1] and [0, x_max]. */
     int count = 0;
+    bool x_wraps = (x_min < 0 || x_max >= n_cols ||
+                    (crosses_antimeridian && x_min > x_max));
 
-    if (crosses_antimeridian && x_min > x_max) {
-        /* Wrapping: two ranges [x_min, n_cols-1] and [0, x_max] */
+    if (x_wraps) {
+        int lo = ((x_min % n_cols) + n_cols) % n_cols;
+        int hi = ((x_max % n_cols) + n_cols) % n_cols;
+
         for (int y = y_min; y <= y_max && count < max_count; y++) {
-            for (int x = x_min; x < n_cols && count < max_count; x++) {
+            for (int x = lo; x < n_cols && count < max_count; x++)
                 out[count++] = (arpt_tile_key){ level, x, y };
-            }
-            for (int x = 0; x <= x_max && count < max_count; x++) {
+            for (int x = 0; x <= hi && count < max_count; x++)
                 out[count++] = (arpt_tile_key){ level, x, y };
-            }
         }
     } else {
-        /* Clamp x to valid range */
-        if (x_min < 0) x_min = 0;
-        if (x_max >= n_cols) x_max = n_cols - 1;
-
-        for (int y = y_min; y <= y_max && count < max_count; y++) {
-            for (int x = x_min; x <= x_max && count < max_count; x++) {
+        for (int y = y_min; y <= y_max && count < max_count; y++)
+            for (int x = x_min; x <= x_max && count < max_count; x++)
                 out[count++] = (arpt_tile_key){ level, x, y };
-            }
-        }
     }
 
     return count;

@@ -20,6 +20,16 @@
 #define TERRAIN_REDISTRIBUTE 0.45  /* power curve exponent: < 1 pushes toward extremes */
 #define BROTLI_QUALITY      4
 
+#define LANDUSE_GRID        32      /* 32x32 marching squares grid (matches terrain) */
+#define LANDUSE_BUFFER      4       /* extra cells of buffer on each side */
+#define LANDUSE_TOTAL       (LANDUSE_GRID + 2 * LANDUSE_BUFFER)  /* 40 */
+#define LANDUSE_VERTS       (LANDUSE_TOTAL + 1)  /* 41x41 classification vertices */
+
+/* Landuse class indices into the tile-scope value dictionary */
+#define LANDUSE_VAL_GRASS   0
+#define LANDUSE_VAL_FOREST  1
+#define LANDUSE_VAL_SAND    2
+
 #define PI 3.14159265358979323846
 
 /* ── Helpers ────────────────────────────────────────────────────────── */
@@ -110,6 +120,9 @@ bool arpt_generate_terrain(int level, int x, int y,
     uint16_t *vy = malloc((size_t)nv * sizeof(uint16_t));
     int32_t  *vz = malloc((size_t)nv * sizeof(int32_t));
     int8_t   *normals = malloc((size_t)nv * 2 * sizeof(int8_t));
+    struct ms_patch { uint16_t x[9], y[9]; int count, cls; };
+    struct ms_patch *patches = NULL;
+    int patch_count = 0;
     if (!vx || !vy || !vz || !normals) goto fail;
 
     for (int row = 0; row < TERRAIN_VERTS; row++) {
@@ -178,6 +191,98 @@ bool arpt_generate_terrain(int level, int x, int y,
         }
     }
 
+    /* Classify landuse at each vertex of the extended marching squares grid.
+     * Uses terrain_elevation() directly so buffer-zone vertices beyond
+     * the tile proper are classified identically by adjacent tiles. */
+    int vert_class[LANDUSE_VERTS * LANDUSE_VERTS];
+    {
+        for (int vr = 0; vr < LANDUSE_VERTS; vr++) {
+            double v = (double)(vr - LANDUSE_BUFFER) / LANDUSE_GRID;
+            double lat = bounds.south + v * lat_span;
+            for (int vc = 0; vc < LANDUSE_VERTS; vc++) {
+                double u = (double)(vc - LANDUSE_BUFFER) / LANDUSE_GRID;
+                double lon = bounds.west + u * lon_span;
+                double e = terrain_elevation(lon, lat);
+
+                int cls;
+                if (e < 200.0)       cls = LANDUSE_VAL_GRASS;
+                else if (e < 800.0)  cls = LANDUSE_VAL_FOREST;
+                else if (e < 1500.0) cls = LANDUSE_VAL_GRASS;
+                else                 cls = LANDUSE_VAL_SAND;
+
+                vert_class[vr * LANDUSE_VERTS + vc] = cls;
+            }
+        }
+    }
+
+    /* Generate landuse polygon patches using marching squares.
+     * For each cell, walk the perimeter clockwise collecting vertices where
+     * the target class appears: cell corners that match + edge midpoints
+     * where the boundary crosses. Saddle cases (diagonal same-class) are
+     * split into two separate triangles per class. */
+    patches = malloc((size_t)(LANDUSE_TOTAL * LANDUSE_TOTAL * 4)
+                     * sizeof(struct ms_patch));
+    if (!patches) goto fail;
+
+    for (int r = 0; r < LANDUSE_TOTAL; r++) {
+        for (int c = 0; c < LANDUSE_TOTAL; c++) {
+            int cl_tl = vert_class[r * LANDUSE_VERTS + c];
+            int cl_tr = vert_class[r * LANDUSE_VERTS + c + 1];
+            int cl_bl = vert_class[(r+1) * LANDUSE_VERTS + c];
+            int cl_br = vert_class[(r+1) * LANDUSE_VERTS + c + 1];
+
+            /* Find unique classes in this cell */
+            int unique[4], n_unique = 0;
+            int corners[4] = {cl_tl, cl_tr, cl_bl, cl_br};
+            for (int i = 0; i < 4; i++) {
+                int found = 0;
+                for (int j = 0; j < n_unique; j++)
+                    if (unique[j] == corners[i]) { found = 1; break; }
+                if (!found) unique[n_unique++] = corners[i];
+            }
+
+            /* Quantized cell corner and edge-midpoint coordinates.
+             * Offset by -LANDUSE_BUFFER so tile proper is at [0, 1]. */
+            uint16_t xl = arpt_quantize((double)(c - LANDUSE_BUFFER) / LANDUSE_GRID);
+            uint16_t xm = arpt_quantize((c - LANDUSE_BUFFER + 0.5) / LANDUSE_GRID);
+            uint16_t xr = arpt_quantize((double)(c - LANDUSE_BUFFER + 1) / LANDUSE_GRID);
+            uint16_t yt = arpt_quantize((double)(r - LANDUSE_BUFFER) / LANDUSE_GRID);
+            uint16_t ym = arpt_quantize((r - LANDUSE_BUFFER + 0.5) / LANDUSE_GRID);
+            uint16_t yb = arpt_quantize((double)(r - LANDUSE_BUFFER + 1) / LANDUSE_GRID);
+
+            for (int ui = 0; ui < n_unique; ui++) {
+                int cls = unique[ui];
+
+                /* Perimeter walk (clockwise from TL).
+                 * For saddle cases this produces overlapping hexagons —
+                 * acceptable since the rasterizer paints over the overlap. */
+                struct ms_patch *p = &patches[patch_count];
+                p->cls = cls;
+                int n = 0;
+
+                #define MS_V(px,py) do { p->x[n]=(px); p->y[n]=(py); n++; } while(0)
+                if (cl_tl == cls) MS_V(xl, yt);
+                if (cl_tl != cl_tr && (cl_tl == cls || cl_tr == cls))
+                    MS_V(xm, yt);
+                if (cl_tr == cls) MS_V(xr, yt);
+                if (cl_tr != cl_br && (cl_tr == cls || cl_br == cls))
+                    MS_V(xr, ym);
+                if (cl_br == cls) MS_V(xr, yb);
+                if (cl_bl != cl_br && (cl_bl == cls || cl_br == cls))
+                    MS_V(xm, yb);
+                if (cl_bl == cls) MS_V(xl, yb);
+                if (cl_tl != cl_bl && (cl_tl == cls || cl_bl == cls))
+                    MS_V(xl, ym);
+                #undef MS_V
+
+                if (n < 3) continue;
+                p->x[n] = p->x[0]; p->y[n] = p->y[0];
+                p->count = n + 1;
+                patch_count++;
+            }
+        }
+    }
+
     /* Build FlatBuffer */
     flatcc_builder_t builder;
     flatcc_builder_init(&builder);
@@ -185,10 +290,34 @@ bool arpt_generate_terrain(int level, int x, int y,
     arpentry_tiles_Tile_start_as_root(&builder);
     arpentry_tiles_Tile_version_add(&builder, 1);
 
-    /* No properties needed for terrain */
+    /* Tile-scope property dictionary for landuse "class" key */
+    arpentry_tiles_Tile_keys_start(&builder);
+    arpentry_tiles_Tile_keys_push_create_str(&builder, "class");
+    arpentry_tiles_Tile_keys_end(&builder);
+
+    /* Value dictionary: index 0="grass", 1="forest", 2="sand" */
+    arpentry_tiles_Tile_values_start(&builder);
+    {
+        arpentry_tiles_Tile_values_push_start(&builder);
+        arpentry_tiles_Value_type_add(&builder, arpentry_tiles_PropertyValueType_String);
+        arpentry_tiles_Value_string_value_create_str(&builder, "grass");
+        arpentry_tiles_Tile_values_push_end(&builder);
+
+        arpentry_tiles_Tile_values_push_start(&builder);
+        arpentry_tiles_Value_type_add(&builder, arpentry_tiles_PropertyValueType_String);
+        arpentry_tiles_Value_string_value_create_str(&builder, "forest");
+        arpentry_tiles_Tile_values_push_end(&builder);
+
+        arpentry_tiles_Tile_values_push_start(&builder);
+        arpentry_tiles_Value_type_add(&builder, arpentry_tiles_PropertyValueType_String);
+        arpentry_tiles_Value_string_value_create_str(&builder, "sand");
+        arpentry_tiles_Tile_values_push_end(&builder);
+    }
+    arpentry_tiles_Tile_values_end(&builder);
 
     arpentry_tiles_Tile_layers_start(&builder);
     {
+        /* ── Layer 0: terrain (existing) ─────────────────────────────── */
         arpentry_tiles_Tile_layers_push_start(&builder);
         arpentry_tiles_Layer_name_create_str(&builder, "terrain");
 
@@ -229,6 +358,45 @@ bool arpt_generate_terrain(int level, int x, int y,
         }
         arpentry_tiles_Layer_features_end(&builder);
         arpentry_tiles_Tile_layers_push_end(&builder);
+
+        /* ── Layer 1: landuse (marching squares patches) ────────────── */
+        arpentry_tiles_Tile_layers_push_start(&builder);
+        arpentry_tiles_Layer_name_create_str(&builder, "landuse");
+
+        arpentry_tiles_Layer_features_start(&builder);
+        for (int pi = 0; pi < patch_count; pi++) {
+            struct ms_patch *p = &patches[pi];
+            int32_t pz[9] = {0};
+            uint32_t ring_off[2] = {0, (uint32_t)p->count};
+
+            arpentry_tiles_Layer_features_push_start(&builder);
+            arpentry_tiles_Feature_id_add(&builder, (uint64_t)(pi + 2));
+
+            arpentry_tiles_PolygonGeometry_ref_t poly_ref;
+            arpentry_tiles_PolygonGeometry_start(&builder);
+            arpentry_tiles_PolygonGeometry_x_create(&builder, p->x,
+                                                     (size_t)p->count);
+            arpentry_tiles_PolygonGeometry_y_create(&builder, p->y,
+                                                     (size_t)p->count);
+            arpentry_tiles_PolygonGeometry_z_create(&builder, pz,
+                                                     (size_t)p->count);
+            arpentry_tiles_PolygonGeometry_ring_offsets_create(
+                &builder, ring_off, 2);
+            poly_ref = arpentry_tiles_PolygonGeometry_end(&builder);
+            arpentry_tiles_Feature_geometry_PolygonGeometry_add(
+                &builder, poly_ref);
+
+            arpentry_tiles_Feature_properties_start(&builder);
+            arpentry_tiles_Property_t prop;
+            prop.key = 0;
+            prop.value = (uint32_t)p->cls;
+            arpentry_tiles_Feature_properties_push(&builder, &prop);
+            arpentry_tiles_Feature_properties_end(&builder);
+
+            arpentry_tiles_Layer_features_push_end(&builder);
+        }
+        arpentry_tiles_Layer_features_end(&builder);
+        arpentry_tiles_Tile_layers_push_end(&builder);
     }
     arpentry_tiles_Tile_layers_end(&builder);
 
@@ -238,13 +406,14 @@ bool arpt_generate_terrain(int level, int x, int y,
     void *fb = flatcc_builder_finalize_buffer(&builder, &fb_size);
     flatcc_builder_clear(&builder);
 
-    /* Clean up vertex/index arrays */
+    /* Clean up vertex/index/patch arrays */
     free(elev);
     free(vx);
     free(vy);
     free(vz);
     free(normals);
     free(indices);
+    free(patches);
 
     if (!fb) return false;
 
@@ -259,5 +428,6 @@ fail:
     free(vz);
     free(normals);
     free(indices);
+    free(patches);
     return false;
 }
