@@ -66,7 +66,7 @@ if(EMSCRIPTEN)
     # -sUSE_WEBGPU is provided by the webgpu target's INTERFACE link options
     target_link_options(arpentry_client PRIVATE
         -sUSE_GLFW=3 -sASYNCIFY -sALLOW_MEMORY_GROWTH -sFETCH
-        --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/shell.html
+        --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html
     )
     set_target_properties(arpentry_client PROPERTIES SUFFIX ".html")
 else()
