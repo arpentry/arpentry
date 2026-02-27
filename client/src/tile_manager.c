@@ -73,6 +73,20 @@ static void tile_entry_free(void *item) {
     if (e->gpu) arpt_tile_gpu_free(e->gpu);
 }
 
+static void tm_hashmap_set(arpt_tile_manager *tm, const tile_entry *entry) {
+    const tile_entry *replaced = hashmap_set(tm->cache, entry);
+    if (replaced && replaced->gpu && replaced->gpu != entry->gpu) {
+        arpt_tile_gpu_free(replaced->gpu);
+    }
+}
+
+static void tm_hashmap_delete(arpt_tile_manager *tm, const tile_entry *entry) {
+    const tile_entry *removed = hashmap_delete(tm->cache, entry);
+    if (removed && removed->gpu) {
+        arpt_tile_gpu_free(removed->gpu);
+    }
+}
+
 /* ── Fetch callback ────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -105,7 +119,7 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
         updated.state = TILE_FAILED;
         updated.retries = retries + 1;
         updated.retry_after = tm->frame + (1u << updated.retries);
-        hashmap_set(tm->cache, &updated);
+        tm_hashmap_set(tm, &updated);
         return;
     }
 
@@ -113,7 +127,7 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
     if (!arpt_decode_terrain(flatbuf, size, &mesh)) {
         updated.state = TILE_FAILED;
         updated.retries = MAX_RETRIES; /* decode error is permanent */
-        hashmap_set(tm->cache, &updated);
+        tm_hashmap_set(tm, &updated);
         free(flatbuf);
         return;
     }
@@ -124,7 +138,7 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
     /* wgpuQueueWriteBuffer copies synchronously, safe to free after */
     updated.gpu = arpt_renderer_upload_tile(tm->renderer, &mesh, &landuse);
     updated.state = updated.gpu ? TILE_READY : TILE_FAILED;
-    hashmap_set(tm->cache, &updated);
+    tm_hashmap_set(tm, &updated);
     arpt_landuse_data_free(&landuse);
     free(flatbuf);
 }
@@ -156,7 +170,7 @@ static void evict_oldest(arpt_tile_manager *tm) {
 
         if (!found) break;
         tile_entry del = { .key = oldest_key };
-        hashmap_delete(tm->cache, &del);
+        tm_hashmap_delete(tm, &del);
     }
 }
 
@@ -209,7 +223,7 @@ static void start_fetch(arpt_tile_manager *tm, arpt_tile_key key, int prev_retri
         .center_lat_rad = center_lat,
         .retries = prev_retries,
     };
-    hashmap_set(tm->cache, &new_entry);
+    tm_hashmap_set(tm, &new_entry);
 
     fetch_ctx *ctx = malloc(sizeof(*ctx));
     if (!ctx) return;
@@ -226,7 +240,7 @@ static void start_fetch(arpt_tile_manager *tm, arpt_tile_key key, int prev_retri
         failed.state = TILE_FAILED;
         failed.retries = prev_retries + 1;
         failed.retry_after = tm->frame + (1u << failed.retries);
-        hashmap_set(tm->cache, &failed);
+        tm_hashmap_set(tm, &failed);
         free(ctx);
     }
 }
@@ -265,19 +279,19 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
                     /* Permanently failed — stop retrying */
                     tile_entry updated = *existing;
                     updated.last_used = tm->frame;
-                    hashmap_set(tm->cache, &updated);
+                    tm_hashmap_set(tm, &updated);
                     continue;
                 }
                 if (tm->frame < existing->retry_after) {
                     /* Backoff not elapsed yet */
                     tile_entry updated = *existing;
                     updated.last_used = tm->frame;
-                    hashmap_set(tm->cache, &updated);
+                    tm_hashmap_set(tm, &updated);
                     continue;
                 }
                 /* Backoff elapsed — delete and re-fetch */
                 int prev_retries = existing->retries;
-                hashmap_delete(tm->cache, &lookup);
+                tm_hashmap_delete(tm, &lookup);
 
                 if (tm->active_fetches < tm->config.max_concurrent)
                     start_fetch(tm, tm->visible[i], prev_retries);
@@ -287,7 +301,7 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
             /* LOADING or READY — touch for LRU */
             tile_entry updated = *existing;
             updated.last_used = tm->frame;
-            hashmap_set(tm->cache, &updated);
+            tm_hashmap_set(tm, &updated);
             continue;
         }
 
