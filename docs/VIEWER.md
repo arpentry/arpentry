@@ -10,7 +10,7 @@ A WebGPU-based 3D globe renderer that displays `.arpt` terrain tiles (see `FORMA
 
 ### Fixed Camera
 
-The camera is fixed at the origin, looking down -Z. Navigation moves and rotates the globe around the camera (not the camera through the scene). The view matrix is identity.
+The camera is fixed at the origin, looking down -Z. Navigation moves and rotates the globe around the camera (not the camera through the scene). The view matrix is identity. See `CONTROL.md` for camera parameters, input bindings, and interaction behavior.
 
 ### Coordinate Pipeline
 
@@ -32,7 +32,7 @@ GPU vertex shader (float32, per vertex):
   5. projection * camera_pos
 ```
 
-Precision: the tile-relative ECEF subtraction on GPU uses the same float32 trig for both vertex and tile center, so systematic errors cancel. The pipeline preserves the full uint16 quantization precision (9 mm at level 16) at all zoom levels.
+Precision: the tile-relative ECEF subtraction on GPU uses the same float32 trig for both vertex and tile center, so systematic errors cancel. The pipeline preserves full uint16 quantization precision (9 mm at level 16) at all zoom levels.
 
 ### Dequantization (GPU)
 
@@ -55,31 +55,7 @@ Computed twice per vertex (vertex + tile center). WGS84 constants (`a = 6,378,13
 
 ---
 
-## 2. Camera
-
-### Parameters
-
-| Parameter | Description | Range |
-|-----------|-------------|-------|
-| `longitude` | Interest point longitude | -180° to +180° |
-| `latitude` | Interest point latitude | -89° to +89° |
-| `altitude` | Height above ellipsoid surface | 500 m to 30,000 km |
-| `tilt` | Angle from nadir (0° = straight down) | 0° to 60° |
-| `bearing` | Compass direction when tilted (clockwise from north) | 0° to 360° |
-
-Default: nadir view (tilt = 0). Max tilt of 60° guarantees the horizon is never visible (topmost ray reaches 52.5° from nadir with 45° FOV).
-
-### Globe Transform
-
-The camera parameters produce a globe transform (no view matrix):
-
-1. `R_globe`: rotates globe so interest point faces camera (closest to origin along -Z)
-2. `R_tilt`: applies tilt and bearing
-3. Translation: places interest point at `(0, 0, -altitude)`
-
-These feed into the per-tile model matrices (Section 1).
-
-### Projection
+## 2. Projection
 
 | Parameter | Value |
 |-----------|-------|
@@ -87,14 +63,6 @@ These feed into the per-tile model matrices (Section 1).
 | Near | `max(1.0, altitude * 0.01)` |
 | Far | `altitude * 10` |
 | Aspect | `viewport_width / viewport_height` |
-
-### Input
-
-| Input | Action |
-|-------|--------|
-| Left-drag | Pan: move interest point (sensitivity scales with altitude) |
-| Scroll | Zoom: altitude × 0.95^yoff per scroll tick |
-| Right-drag | Tilt (vertical) + bearing (horizontal) |
 
 ---
 
