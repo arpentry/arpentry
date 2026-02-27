@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── Helpers ─────────────────────────────────────────────────────────── */
+/* Helpers */
 
 static const char *status_text(int status) {
     switch (status) {
@@ -20,7 +20,7 @@ static const char *status_text(int status) {
     }
 }
 
-/* ── Pure request parsing ────────────────────────────────────────────── */
+/* Pure request parsing */
 
 int http_parse_request(const char *data, size_t len,
                        char *method, size_t method_sz,
@@ -65,7 +65,7 @@ int http_parse_request(const char *data, size_t len,
     return (int)(end - data) + 2;
 }
 
-/* ── Response writing via net_conn ───────────────────────────────────── */
+/* Response writing via net_conn */
 
 static void write_response(struct net_conn *conn, int status,
                            const char *content_type,
@@ -139,7 +139,7 @@ static void write_file_response(struct net_conn *conn, int status,
     free(buf);
 }
 
-/* ── Request dispatch ────────────────────────────────────────────────── */
+/* Request dispatch */
 
 static void dispatch_request(struct net_conn *conn, struct server_ctx *ctx,
                              const char *method, const char *uri)
@@ -177,7 +177,7 @@ static void dispatch_request(struct net_conn *conn, struct server_ctx *ctx,
     write_error(conn, 404);
 }
 
-/* ── Per-connection state ────────────────────────────────────────────── */
+/* Per-connection state */
 
 http_conn *http_conn_new(void) {
     http_conn *hc = calloc(1, sizeof(http_conn));

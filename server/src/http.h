@@ -10,7 +10,7 @@ struct net_conn;
 /* Maximum size of an HTTP request we'll buffer before rejecting. */
 #define HTTP_MAX_REQUEST 8192
 
-/* ── Pure request parsing (no I/O, testable) ───────────────────────── */
+/* Pure request parsing (no I/O, testable) */
 
 /**
  * Parse an HTTP request line from a byte buffer.
@@ -32,7 +32,7 @@ int http_parse_request(const char *data, size_t len,
                        char *method, size_t method_sz,
                        char *uri, size_t uri_sz);
 
-/* ── Per-connection HTTP state ─────────────────────────────────────── */
+/* Per-connection HTTP state */
 
 struct server_ctx {
     const char *tile_dir;

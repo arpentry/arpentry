@@ -6,7 +6,7 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-/* ── http_parse_request tests ────────────────────────────────────────── */
+/* http_parse_request tests */
 
 void test_parse_valid_get(void) {
     const char *raw = "GET /0/0/0.arpt HTTP/1.1\r\nHost: localhost\r\n\r\n";
@@ -90,7 +90,7 @@ void test_parse_returns_correct_consumed(void) {
     TEST_ASSERT_EQUAL_INT(16, consumed);
 }
 
-/* ── Main ────────────────────────────────────────────────────────────── */
+/* Main */
 
 int main(void) {
     UNITY_BEGIN();

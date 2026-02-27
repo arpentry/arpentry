@@ -8,7 +8,7 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-/* ── arpt_tile_ancestor tests ──────────────────────────────────────────── */
+/* arpt_tile_ancestor tests */
 
 void test_ancestor_basic(void) {
     int pl, px, py;
@@ -36,7 +36,7 @@ void test_ancestor_chain(void) {
     TEST_ASSERT_EQUAL_INT(0, l);
 }
 
-/* ── arpt_enumerate_visible_tiles tests ────────────────────────────────── */
+/* arpt_enumerate_visible_tiles tests */
 
 void test_enumerate_at_switzerland(void) {
     /* Camera over Switzerland at ~500km altitude (roughly zoom level 5) */

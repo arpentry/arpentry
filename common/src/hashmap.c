@@ -396,7 +396,7 @@ bool hashmap_iter(struct hashmap *map, size_t *i, void **item) {
     return true;
 }
 
-/* ── Hash functions ──────────────────────────────────────────────────── */
+/* Hash functions */
 
 /* SipHash-2-4 (Jean-Philippe Aumasson, Daniel J. Bernstein — public domain) */
 static uint64_t SIP64(const uint8_t *in, const size_t inlen, uint64_t seed0,

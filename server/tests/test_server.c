@@ -4,7 +4,7 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-/* ── Valid paths ──────────────────────────────────────────────────────── */
+/* Valid paths */
 
 void test_parse_level0(void) {
     int level, x, y;
@@ -41,7 +41,7 @@ void test_parse_max_level(void) {
     TEST_ASSERT_EQUAL_INT(2097151, y);
 }
 
-/* ── Invalid paths ────────────────────────────────────────────────────── */
+/* Invalid paths */
 
 void test_reject_wrong_extension(void) {
     int level, x, y;

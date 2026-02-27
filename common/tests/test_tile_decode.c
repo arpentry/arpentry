@@ -7,7 +7,7 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-/* ── Helpers ───────────────────────────────────────────────────────────── */
+/* Helpers */
 
 /* Build a tile with a terrain layer containing a MeshGeometry.
    If include_normals is false, omits the normals array. */
@@ -91,7 +91,7 @@ static void *build_points_only_tile(size_t *out_size) {
     return buf;
 }
 
-/* ── Tests ─────────────────────────────────────────────────────────────── */
+/* Tests */
 
 void test_basic_extraction(void) {
     size_t size;

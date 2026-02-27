@@ -31,7 +31,7 @@ typedef struct {
 bool arpt_decode_terrain(const void *flatbuf, size_t size,
                           arpt_terrain_mesh *out);
 
-/* ── Landuse decoding ──────────────────────────────────────────────────── */
+/* Landuse decoding */
 
 typedef enum {
     ARPT_LANDUSE_UNKNOWN = 0,

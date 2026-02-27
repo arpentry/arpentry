@@ -13,7 +13,7 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-/* ── 2D simplex noise tests ───────────────────────────────────────── */
+/* 2D simplex noise tests */
 
 void test_simplex_deterministic(void) {
     double a = arpt_simplex2(1.23, 4.56);
@@ -41,7 +41,7 @@ void test_simplex_varies(void) {
                               "simplex2 should vary for different inputs");
 }
 
-/* ── 3D simplex noise tests ───────────────────────────────────────── */
+/* 3D simplex noise tests */
 
 void test_simplex3_deterministic(void) {
     double a = arpt_simplex3(1.23, 4.56, 7.89);
@@ -70,7 +70,7 @@ void test_simplex3_varies(void) {
                               "simplex3 should vary for different inputs");
 }
 
-/* ── fBm tests ─────────────────────────────────────────────────────── */
+/* fBm tests */
 
 void test_fbm_deterministic(void) {
     double a = arpt_fbm2(1.0, 2.0, 6, 2.0, 0.5);
@@ -112,7 +112,7 @@ void test_fbm3_more_octaves_more_detail(void) {
                               "Higher octaves should add noticeable detail (3D)");
 }
 
-/* ── Sphere continuity tests ──────────────────────────────────────── */
+/* Sphere continuity tests */
 
 void test_pole_continuity(void) {
     /* At the north pole (lat=90), all longitudes map to the same
@@ -171,7 +171,7 @@ void test_antimeridian_continuity(void) {
     }
 }
 
-/* ── Terrain generation tests ──────────────────────────────────────── */
+/* Terrain generation tests */
 
 void test_generate_terrain_valid(void) {
     uint8_t *data = NULL;
@@ -267,7 +267,7 @@ void test_adjacent_tiles_match(void) {
     }
 }
 
-/* ── Main ──────────────────────────────────────────────────────────── */
+/* Main */
 
 int main(void) {
     UNITY_BEGIN();

@@ -8,7 +8,7 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-/* ── Helpers ────────────────────────────────────────────────────────────── */
+/* Helpers */
 
 /**
  * Build a minimal valid Tile with one "pois" layer containing a single
@@ -86,7 +86,7 @@ static void build_test_tile(void **buf, size_t *size) {
     flatcc_builder_clear(&builder);
 }
 
-/* ── Tests ──────────────────────────────────────────────────────────────── */
+/* Tests */
 
 void test_file_identifier(void) {
     void *buf; size_t size;

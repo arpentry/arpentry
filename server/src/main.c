@@ -9,7 +9,7 @@
 /* Required by net.c (extern const int verb) */
 const int verb = 0;
 
-/* ── net_main callbacks ──────────────────────────────────────────────── */
+/* net_main callbacks */
 
 static void on_listening(void *udata) {
     (void)udata;
@@ -40,7 +40,7 @@ static void on_data(struct net_conn *conn, const void *data, size_t nbytes,
     http_conn_feed(hc, conn, ctx, data, nbytes);
 }
 
-/* ── Entry point ─────────────────────────────────────────────────────── */
+/* Entry point */
 
 int main(int argc, char *argv[]) {
     if (argc < 2 || argc > 4) {

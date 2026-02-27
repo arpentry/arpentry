@@ -103,7 +103,7 @@ bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
 #include <stdlib.h>
 #include <string.h>
 
-/* ── Job: main thread → worker ─────────────────────────────────────────── */
+/* Job: main thread → worker */
 
 typedef struct fetch_job {
     struct fetch_job *next;
@@ -114,7 +114,7 @@ typedef struct fetch_job {
     void *userdata;
 } fetch_job;
 
-/* ── Result: worker → main thread ──────────────────────────────────────── */
+/* Result: worker → main thread */
 
 typedef struct fetch_result {
     struct fetch_result *next;
@@ -125,7 +125,7 @@ typedef struct fetch_result {
     void *userdata;
 } fetch_result;
 
-/* ── Thread pool state ─────────────────────────────────────────────────── */
+/* Thread pool state */
 
 static struct {
     pthread_t *threads;
@@ -146,7 +146,7 @@ static struct {
     bool initialized;
 } g_pool;
 
-/* ── Queue helpers ─────────────────────────────────────────────────────── */
+/* Queue helpers */
 
 static void enqueue_job(fetch_job *job) {
     job->next = NULL;
@@ -184,7 +184,7 @@ static void enqueue_result(fetch_result *result) {
     pthread_mutex_unlock(&g_pool.result_mutex);
 }
 
-/* ── Worker thread ─────────────────────────────────────────────────────── */
+/* Worker thread */
 
 static void *worker_func(void *arg) {
     (void)arg;
@@ -261,7 +261,7 @@ static void *worker_func(void *arg) {
     return NULL;
 }
 
-/* ── Public API ────────────────────────────────────────────────────────── */
+/* Public API */
 
 bool arpt_fetch_init(int max_concurrent) {
     if (g_pool.initialized) return false;

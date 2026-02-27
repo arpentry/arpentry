@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── WGSL Shader ───────────────────────────────────────────────────────── */
+/* WGSL Shader */
 
 static const char *terrain_wgsl =
     "const WGS84_A: f32 = 6378137.0;\n"
@@ -120,7 +120,7 @@ static const char *terrain_wgsl =
     "    return vec4<f32>(out, 1.0);\n"
     "}\n";
 
-/* ── Landuse rasterization shader ──────────────────────────────────────── */
+/* Landuse rasterization shader */
 
 static const char *landuse_wgsl =
     "struct VsOut {\n"
@@ -149,7 +149,7 @@ static const char *landuse_wgsl =
     "    return color;\n"
     "}\n";
 
-/* ── Landuse color table ───────────────────────────────────────────────── */
+/* Landuse color table */
 
 #define LANDUSE_TEX_SIZE 1024
 #define LANDUSE_MARGIN 0.125  /* = LANDUSE_BUFFER / LANDUSE_GRID = 8/64 */
@@ -163,7 +163,7 @@ static const landuse_color_t landuse_colors[] = {
     [ARPT_LANDUSE_SAND]    = {0.72f, 0.65f, 0.52f, 1.0f},
 };
 
-/* ── Uniform layouts ───────────────────────────────────────────────────── */
+/* Uniform layouts */
 
 typedef struct {
     float projection[16];
@@ -180,7 +180,7 @@ typedef struct {
     float _pad1;
 } tile_uniforms_t;
 
-/* ── Tile GPU state ────────────────────────────────────────────────────── */
+/* Tile GPU state */
 
 struct arpt_tile_gpu {
     WGPUBuffer buf_xy;      /* interleaved uint16 x,y pairs */
@@ -195,7 +195,7 @@ struct arpt_tile_gpu {
     arpt_renderer *renderer;
 };
 
-/* ── Renderer state ────────────────────────────────────────────────────── */
+/* Renderer state */
 
 struct arpt_renderer {
     WGPUDevice device;
@@ -235,7 +235,7 @@ struct arpt_renderer {
     WGPURenderPassEncoder pass;
 };
 
-/* ── Helpers ───────────────────────────────────────────────────────────── */
+/* Helpers */
 
 static WGPUBuffer create_buffer(WGPUDevice device, WGPUQueue queue,
                                  WGPUBufferUsageFlags usage,
@@ -268,7 +268,7 @@ static void create_depth_texture(arpt_renderer *r) {
     r->depth_view = wgpuTextureCreateView(r->depth_texture, NULL);
 }
 
-/* ── Pipeline creation ─────────────────────────────────────────────────── */
+/* Pipeline creation */
 
 static WGPURenderPipeline create_pipeline(WGPUDevice device,
                                            WGPUTextureFormat format,
@@ -333,7 +333,7 @@ static WGPURenderPipeline create_pipeline(WGPUDevice device,
     return pipeline;
 }
 
-/* ── Landuse pipeline creation ──────────────────────────────────────────── */
+/* Landuse pipeline creation */
 
 static WGPURenderPipeline create_landuse_pipeline(WGPUDevice device) {
     WGPUShaderModuleWGSLDescriptor wgsl_desc = {
@@ -379,7 +379,7 @@ static WGPURenderPipeline create_landuse_pipeline(WGPUDevice device) {
     return pipeline;
 }
 
-/* ── Landuse rasterization (offscreen, once per tile) ──────────────────── */
+/* Landuse rasterization (offscreen, once per tile) */
 
 typedef struct {
     uint16_t x, y;  /* quantized position */
@@ -516,7 +516,7 @@ static WGPUTexture rasterize_landuse(arpt_renderer *r,
     return tex;
 }
 
-/* ── Renderer lifecycle ────────────────────────────────────────────────── */
+/* Renderer lifecycle */
 
 arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
                                      WGPUTextureFormat format,
@@ -610,7 +610,7 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
 
     create_depth_texture(r);
 
-    /* ── Placeholder grid mesh ─────────────────────────────────────────── */
+    /* Placeholder grid mesh */
     {
         /* Subdivided grid so the placeholder follows globe curvature.
            The vertex shader does geodetic→ECEF per vertex, so more vertices
@@ -741,7 +741,7 @@ void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height) {
     create_depth_texture(r);
 }
 
-/* ── Tile GPU ──────────────────────────────────────────────────────────── */
+/* Tile GPU */
 
 arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
                                           const arpt_terrain_mesh *mesh,
@@ -837,7 +837,7 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     free(tile);
 }
 
-/* ── Placeholder rendering ─────────────────────────────────────────────── */
+/* Placeholder rendering */
 
 void arpt_renderer_draw_placeholder(arpt_renderer *r, int slot,
                                      arpt_mat4 model,
@@ -868,7 +868,7 @@ void arpt_renderer_draw_placeholder(arpt_renderer *r, int slot,
     wgpuRenderPassEncoderDrawIndexed(r->pass, r->ph_index_count, 1, 0, 0, 0);
 }
 
-/* ── Frame rendering ───────────────────────────────────────────────────── */
+/* Frame rendering */
 
 void arpt_renderer_set_globals(arpt_renderer *r,
                                 arpt_mat4 projection, arpt_vec3 sun_dir) {

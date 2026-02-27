@@ -3,7 +3,7 @@
 #include <string.h>
 #include <math.h>
 
-/* ── WGSL Shader ───────────────────────────────────────────────────────── */
+/* WGSL Shader */
 
 static const char *ui_wgsl =
     "struct Uniforms {\n"
@@ -195,7 +195,7 @@ static const char *ui_wgsl =
     "    return vec4<f32>(col, a);\n"
     "}\n";
 
-/* ── Layout constants (must match shader) ──────────────────────────────── */
+/* Layout constants (must match shader) */
 
 #define UI_CY      48.0f
 #define UI_COMP_R  32.0f
@@ -209,7 +209,7 @@ static const char *ui_wgsl =
 #define UI_ZOOM_R  19.0f
 #define UI_ZOOM_CX 157.0f
 
-/* ── Uniform buffer layout ─────────────────────────────────────────────── */
+/* Uniform buffer layout */
 
 typedef struct {
     float screen[2];
@@ -221,7 +221,7 @@ typedef struct {
     float _pad;
 } ui_uniforms_t;
 
-/* ── Internal struct ───────────────────────────────────────────────────── */
+/* Internal struct */
 
 struct arpt_ui {
     WGPUDevice device;
@@ -237,7 +237,7 @@ struct arpt_ui {
     float cursor_x, cursor_y;
 };
 
-/* ── SDF helpers (C, for hit testing) ──────────────────────────────────── */
+/* SDF helpers (C, for hit testing) */
 
 static float sd_box_c(float px, float py, float bx, float by, float r) {
     float qx = fabsf(px) - bx + r;
@@ -251,7 +251,7 @@ static float sd_circle_c(float px, float py, float r) {
     return sqrtf(px * px + py * py) - r;
 }
 
-/* ── Public API ────────────────────────────────────────────────────────── */
+/* Public API */
 
 arpt_ui *arpt_ui_create(WGPUDevice device, WGPUQueue queue,
                          WGPUTextureFormat surface_format,

@@ -28,7 +28,7 @@ static void build_minimal_tile(void **buf, size_t *size) {
     flatcc_builder_clear(&builder);
 }
 
-/* ── Encode / Decode roundtrip ─────────────────────────────────────────── */
+/* Encode / Decode roundtrip */
 
 void test_encode_decode_roundtrip(void) {
     void *tile_buf; size_t tile_size;
@@ -59,7 +59,7 @@ void test_encode_decode_roundtrip(void) {
     free(decoded);
 }
 
-/* ── Decoded buffer is usable by FlatCC reader ─────────────────────────── */
+/* Decoded buffer is usable by FlatCC reader */
 
 void test_decode_produces_readable_tile(void) {
     void *tile_buf; size_t tile_size;
@@ -92,7 +92,7 @@ void test_decode_produces_readable_tile(void) {
     free(decoded);
 }
 
-/* ── Decode rejects garbage ────────────────────────────────────────────── */
+/* Decode rejects garbage */
 
 void test_decode_rejects_garbage(void) {
     uint8_t garbage[] = {0xFF, 0xFF, 0xFF, 0xFF};
@@ -108,7 +108,7 @@ void test_decode_rejects_null(void) {
     TEST_ASSERT_FALSE(arpt_decode(NULL, 0, &out, &out_size));
 }
 
-/* ── Decode rejects valid Brotli with bad FlatBuffer ───────────────────── */
+/* Decode rejects valid Brotli with bad FlatBuffer */
 
 void test_decode_rejects_corrupt_flatbuffer(void) {
     /* Encode a valid tile, then corrupt the compressed payload so that

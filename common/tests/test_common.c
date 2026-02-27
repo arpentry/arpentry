@@ -5,7 +5,7 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-/* ── Existing low-level quantization tests ──────────────────────────────── */
+/* Existing low-level quantization tests */
 
 void test_dequantize_tile_origin(void) {
     /* q = 16384 → origin (0.0) */
@@ -35,7 +35,7 @@ void test_quantize_clamps_high(void) {
     TEST_ASSERT_EQUAL_UINT16(65535, arpt_quantize(2.0));
 }
 
-/* ── Tile bounds ────────────────────────────────────────────────────────── */
+/* Tile bounds */
 
 void test_tile_bounds_root_west(void) {
     /* Level 0, tile (0,0): western hemisphere */
@@ -66,7 +66,7 @@ void test_tile_bounds_level5(void) {
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, -90.0 + 17 * lat_span, b.north);
 }
 
-/* ── Geodetic quantization ──────────────────────────────────────────────── */
+/* Geodetic quantization */
 
 void test_geodetic_quantize_lon_roundtrip(void) {
     arpt_bounds_t b = arpt_tile_bounds(10, 500, 300);
@@ -96,7 +96,7 @@ void test_geodetic_quantize_tile_origin(void) {
     TEST_ASSERT_EQUAL_UINT16(ARPT_BUFFER, qy);
 }
 
-/* ── Elevation ──────────────────────────────────────────────────────────── */
+/* Elevation */
 
 void test_elevation_roundtrip(void) {
     double meters = 4478.123;  /* Matterhorn-ish */
@@ -112,7 +112,7 @@ void test_elevation_negative(void) {
     TEST_ASSERT_DOUBLE_WITHIN(0.001, meters, arpt_mm_to_meters(mm));
 }
 
-/* ── Level of Detail ────────────────────────────────────────────────────── */
+/* Level of Detail */
 
 void test_geometric_error(void) {
     double root = 50000.0;

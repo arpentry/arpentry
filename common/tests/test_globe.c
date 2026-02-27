@@ -7,7 +7,7 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-/* ── Geodetic → ECEF ───────────────────────────────────────────────────── */
+/* Geodetic → ECEF */
 
 void test_ecef_equator_prime_meridian(void) {
     /* (0, 0, 0) → X = a, Y = 0, Z = 0 */
@@ -40,7 +40,7 @@ void test_ecef_lon90(void) {
     TEST_ASSERT_DOUBLE_WITHIN(0.001, 0.0, p.z);
 }
 
-/* ── Roundtrip geodetic ↔ ECEF ─────────────────────────────────────────── */
+/* Roundtrip geodetic ↔ ECEF */
 
 void test_ecef_roundtrip(void) {
     double lon_in = DEG2RAD(7.4474);   /* Bern-ish */
@@ -70,7 +70,7 @@ void test_ecef_roundtrip_high_altitude(void) {
     TEST_ASSERT_DOUBLE_WITHIN(1.0, alt_in, alt_out);
 }
 
-/* ── Surface normal ────────────────────────────────────────────────────── */
+/* Surface normal */
 
 void test_surface_normal_equator(void) {
     arpt_dvec3 n = arpt_surface_normal(0.0, 0.0);
@@ -89,7 +89,7 @@ void test_surface_normal_north_pole(void) {
     TEST_ASSERT_DOUBLE_WITHIN(0.01, 1.0, n.z);
 }
 
-/* ── Ray-ellipsoid ─────────────────────────────────────────────────────── */
+/* Ray-ellipsoid */
 
 void test_ray_hit(void) {
     /* Ray from 2× semi-major along +X, aiming at origin */
@@ -109,7 +109,7 @@ void test_ray_miss(void) {
     TEST_ASSERT_FALSE(arpt_ray_ellipsoid(origin, dir, &t));
 }
 
-/* ── Globe rotation ────────────────────────────────────────────────────── */
+/* Globe rotation */
 
 void test_globe_rotation_maps_normal_to_pos_z(void) {
     /* R_globe maps the geodetic surface normal at the interest point to +Z

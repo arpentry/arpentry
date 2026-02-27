@@ -8,7 +8,7 @@
 #include <emscripten/html5.h>
 #endif
 
-/* ── Constants ─────────────────────────────────────────────────────────── */
+/* Constants */
 
 #define DAMPING             0.12
 #define TILT_SENSITIVITY    0.005   /* rad/px */
@@ -24,7 +24,7 @@
 
 #define DEG2RAD(d) ((d) * M_PI / 180.0)
 
-/* ── Drag mode ─────────────────────────────────────────────────────────── */
+/* Drag mode */
 
 typedef enum {
     DRAG_IDLE,
@@ -32,7 +32,7 @@ typedef enum {
     DRAG_ROTATE,
 } drag_mode_t;
 
-/* ── Fly-to state ──────────────────────────────────────────────────────── */
+/* Fly-to state */
 
 typedef struct {
     bool active;
@@ -41,7 +41,7 @@ typedef struct {
     double target_lon, target_lat, target_alt;
 } flyto_t;
 
-/* ── Main struct ───────────────────────────────────────────────────────── */
+/* Main struct */
 
 struct arpt_control {
     arpt_camera *cam;
@@ -77,7 +77,7 @@ struct arpt_control {
 #endif
 };
 
-/* ── Helpers ───────────────────────────────────────────────────────────── */
+/* Helpers */
 
 static inline double wrap_lon(double delta) {
     while (delta > M_PI) delta -= 2.0 * M_PI;
@@ -101,7 +101,7 @@ static void cancel_animation(arpt_control *ctrl) {
     ctrl->vel_tilt = ctrl->vel_bearing = 0.0;
 }
 
-/* ── GLFW callbacks ────────────────────────────────────────────────────── */
+/* GLFW callbacks */
 
 static void on_mouse_button(GLFWwindow *window, int button, int action,
                              int mods) {
@@ -267,7 +267,7 @@ static void on_key(GLFWwindow *window, int key, int scancode, int action,
     }
 }
 
-/* ── Emscripten touch handlers ─────────────────────────────────────────── */
+/* Emscripten touch handlers */
 
 #ifdef __EMSCRIPTEN__
 
@@ -360,7 +360,7 @@ static EM_BOOL on_touchend(int type, const EmscriptenTouchEvent *e, void *ud) {
 
 #endif /* __EMSCRIPTEN__ */
 
-/* ── Public API ────────────────────────────────────────────────────────── */
+/* Public API */
 
 arpt_control *arpt_control_create(arpt_camera *cam, GLFWwindow *window) {
     arpt_control *ctrl = calloc(1, sizeof(*ctrl));
@@ -388,7 +388,7 @@ arpt_control *arpt_control_create(arpt_camera *cam, GLFWwindow *window) {
 void arpt_control_update(arpt_control *ctrl, double dt) {
     if (!ctrl || dt <= 0.0) return;
 
-    /* ── Fly-to animation ──────────────────────────────────────────────── */
+    /* Fly-to animation */
     if (ctrl->flyto.active) {
         ctrl->flyto.elapsed += dt;
         double t = ctrl->flyto.elapsed / FLYTO_DURATION;
@@ -409,7 +409,7 @@ void arpt_control_update(arpt_control *ctrl, double dt) {
         return; /* Skip inertia during fly-to */
     }
 
-    /* ── Inertia decay ─────────────────────────────────────────────────── */
+    /* Inertia decay */
     if (ctrl->drag_mode != DRAG_IDLE) return; /* No inertia while dragging */
 
     double decay = pow(1.0 - DAMPING, dt * 60.0);

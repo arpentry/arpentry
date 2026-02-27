@@ -7,7 +7,7 @@
 
 #include "tile_verifier.h"
 
-/* ── Internals ─────────────────────────────────────────────────────────── */
+/* Internals */
 
 static bool compress(const uint8_t *input, size_t input_size,
                      uint8_t **output, size_t *output_size, int quality) {
@@ -92,7 +92,7 @@ static bool verify(const void *buf, size_t size) {
     return arpentry_tiles_Tile_verify_as_root_with_identifier(buf, size, "arpt") == 0;
 }
 
-/* ── Public API ────────────────────────────────────────────────────────── */
+/* Public API */
 
 bool arpt_encode(const void *buf, size_t size,
                  uint8_t **out, size_t *out_size, int quality) {

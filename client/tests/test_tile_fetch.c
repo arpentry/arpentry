@@ -19,7 +19,7 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-/* ── In-process tile server (pthread) ────────────────────────────────── */
+/* In-process tile server (pthread) */
 
 static uint8_t *g_demo_tile;
 static size_t   g_demo_tile_size;
@@ -76,7 +76,7 @@ static void *server_thread(void *arg) {
     return NULL;
 }
 
-/* ── Fetch callback results ───────────────────────────────────────────── */
+/* Fetch callback results */
 
 static bool g_fetch_success;
 static size_t g_fetch_size;
@@ -108,7 +108,7 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
     free(flatbuf);
 }
 
-/* ── Drain helper with timeout ─────────────────────────────────────────── */
+/* Drain helper with timeout */
 
 static bool drain_until_called(void) {
     int elapsed = 0;
@@ -121,7 +121,7 @@ static bool drain_until_called(void) {
     return g_fetch_called;
 }
 
-/* ── Tests ─────────────────────────────────────────────────────────────── */
+/* Tests */
 
 void test_fetch_tile_success(void) {
     g_fetch_called = false;
@@ -166,7 +166,7 @@ void test_fetch_tile_null_url(void) {
     TEST_ASSERT_FALSE(initiated);
 }
 
-/* ── Main ──────────────────────────────────────────────────────────────── */
+/* Main */
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);

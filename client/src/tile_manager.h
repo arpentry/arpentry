@@ -6,7 +6,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* ── Tile key ──────────────────────────────────────────────────────────── */
+/* Tile key */
 
 typedef struct {
     int level;
@@ -14,7 +14,7 @@ typedef struct {
     int y;
 } arpt_tile_key;
 
-/* ── Pure geometry functions (testable without GPU) ────────────────────── */
+/* Pure geometry functions (testable without GPU) */
 
 /**
  * Enumerate tiles visible from the current camera at the given zoom level.
@@ -38,7 +38,7 @@ static inline bool arpt_tile_ancestor(int level, int x, int y,
     return true;
 }
 
-/* ── Tile manager (requires renderer) ──────────────────────────────────── */
+/* Tile manager (requires renderer) */
 
 typedef struct arpt_tile_manager arpt_tile_manager;
 typedef struct arpt_renderer arpt_renderer;

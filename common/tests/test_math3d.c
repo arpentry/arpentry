@@ -5,7 +5,7 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-/* ── dvec3 ─────────────────────────────────────────────────────────────── */
+/* dvec3 */
 
 void test_dvec3_add(void) {
     arpt_dvec3 a = {1, 2, 3}, b = {4, 5, 6};
@@ -62,7 +62,7 @@ void test_dvec3_normalize_zero(void) {
     TEST_ASSERT_DOUBLE_WITHIN(1e-15, 0.0, n.z);
 }
 
-/* ── dmat4 ─────────────────────────────────────────────────────────────── */
+/* dmat4 */
 
 void test_dmat4_identity_multiply(void) {
     arpt_dmat4 id = arpt_dmat4_identity();
@@ -96,7 +96,7 @@ void test_dmat4_rotate(void) {
     TEST_ASSERT_DOUBLE_WITHIN(1e-12, 0.0, d.z);
 }
 
-/* ── mat4 perspective ──────────────────────────────────────────────────── */
+/* mat4 perspective */
 
 void test_perspective_depth_range(void) {
     /* WebGPU: near maps to z=0, far maps to z=1 */
@@ -114,7 +114,7 @@ void test_perspective_depth_range(void) {
     TEST_ASSERT_FLOAT_WITHIN(1e-5f, 1.0f, ndc_far);
 }
 
-/* ── Conversions ───────────────────────────────────────────────────────── */
+/* Conversions */
 
 void test_dmat4_to_mat4(void) {
     arpt_dmat4 d = arpt_dmat4_identity();

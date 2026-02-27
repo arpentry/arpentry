@@ -51,7 +51,7 @@ bool http_parse_url(const char *url,
     return true;
 }
 
-/* ── Low-level helpers ─────────────────────────────────────────────────── */
+/* Low-level helpers */
 
 static int tcp_connect(const char *host, int port) {
     char port_str[16];
@@ -138,7 +138,7 @@ static bool header_contains(const char *headers, size_t hdr_len,
     return false;
 }
 
-/* ── HTTP GET ──────────────────────────────────────────────────────────── */
+/* HTTP GET */
 
 bool http_get(const char *host, int port, const char *path,
               http_response_t *resp) {

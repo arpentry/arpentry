@@ -17,7 +17,7 @@
 #include <emscripten/html5.h> /* emscripten_get_element_css_size */
 #endif
 
-/* ── Constants ─────────────────────────────────────────────────────────── */
+/* Constants */
 
 #define DEMO_LEVEL  5
 #define DEMO_X      34
@@ -27,7 +27,7 @@
 #define WINDOW_W         800
 #define WINDOW_H         600
 
-/* ── App state ─────────────────────────────────────────────────────────── */
+/* App state */
 
 typedef struct {
     GLFWwindow *window;
@@ -49,7 +49,7 @@ typedef struct {
 static App app = {0};
 
 
-/* ── GLFW callbacks ────────────────────────────────────────────────────── */
+/* GLFW callbacks */
 
 static void on_device_error(WGPUErrorType type, const char *msg, void *ud) {
     (void)ud;
@@ -91,7 +91,7 @@ static void on_framebuffer_resize(GLFWwindow *w, int width, int height) {
 #endif
 }
 
-/* ── Emscripten canvas sync ────────────────────────────────────────────── */
+/* Emscripten canvas sync */
 
 #ifdef __EMSCRIPTEN__
 static void sync_canvas_size(void) {
@@ -144,7 +144,7 @@ static void sync_canvas_size(void) {
 }
 #endif
 
-/* ── Render frame ──────────────────────────────────────────────────────── */
+/* Render frame */
 
 static void render_frame(void) {
     glfwPollEvents();
@@ -202,7 +202,7 @@ static void render_frame(void) {
     wgpuTextureRelease(st.texture);
 }
 
-/* ── UI event filter ───────────────────────────────────────────────────── */
+/* UI event filter */
 
 #define UI_ZOOM_FACTOR 0.8  /* zoom in: altitude *= 0.8; zoom out: *= 1.25 */
 
@@ -240,7 +240,7 @@ static bool ui_event_filter(int button, int action, double sx, double sy,
     return true;
 }
 
-/* ── Init after device ─────────────────────────────────────────────────── */
+/* Init after device */
 
 static void init_viewer(void) {
     int fb_w, fb_h;
@@ -310,7 +310,7 @@ static void init_viewer(void) {
     glfwSetFramebufferSizeCallback(app.window, on_framebuffer_resize);
 }
 
-/* ── WebGPU init chain ─────────────────────────────────────────────────── */
+/* WebGPU init chain */
 
 static void on_device_done(WGPURequestDeviceStatus status, WGPUDevice device,
                            const char *msg, void *ud) {

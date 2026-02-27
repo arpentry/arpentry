@@ -8,7 +8,7 @@
 typedef struct arpt_renderer arpt_renderer;
 typedef struct arpt_tile_gpu arpt_tile_gpu;
 
-/* ── Renderer lifecycle ────────────────────────────────────────────────── */
+/* Renderer lifecycle */
 
 arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
                                      WGPUTextureFormat format,
@@ -18,7 +18,7 @@ void arpt_renderer_free(arpt_renderer *r);
 /** Recreate depth texture after window resize. */
 void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height);
 
-/* ── Tile GPU resources ────────────────────────────────────────────────── */
+/* Tile GPU resources */
 
 /** Upload a decoded terrain mesh to GPU buffers.
  *  If landuse is non-NULL and has polygons, rasterizes them to a texture. */
@@ -34,7 +34,7 @@ void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile,
 
 void arpt_tile_gpu_free(arpt_tile_gpu *tile);
 
-/* ── Placeholder rendering ─────────────────────────────────────────────── */
+/* Placeholder rendering */
 
 #define ARPT_MAX_PLACEHOLDERS 256
 
@@ -45,7 +45,7 @@ void arpt_renderer_draw_placeholder(arpt_renderer *r, int slot,
                                      const float bounds[4],
                                      float center_lon, float center_lat);
 
-/* ── Frame rendering ───────────────────────────────────────────────────── */
+/* Frame rendering */
 
 /** Set global uniforms for this frame (projection, sun direction). */
 void arpt_renderer_set_globals(arpt_renderer *r,

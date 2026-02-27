@@ -13,7 +13,7 @@
 #define MAX_VISIBLE_TILES 256
 #define MAX_RETRIES 3
 
-/* ── Internal types ────────────────────────────────────────────────────── */
+/* Internal types */
 
 typedef enum {
     TILE_EMPTY = 0,
@@ -47,7 +47,7 @@ struct arpt_tile_manager {
     int visible_level;
 };
 
-/* ── Hashmap callbacks ─────────────────────────────────────────────────── */
+/* Hashmap callbacks */
 
 static uint64_t tile_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     const tile_entry *e = item;
@@ -87,7 +87,7 @@ static void tm_hashmap_delete(arpt_tile_manager *tm, const tile_entry *entry) {
     }
 }
 
-/* ── Fetch callback ────────────────────────────────────────────────────── */
+/* Fetch callback */
 
 typedef struct {
     arpt_tile_manager *tm;
@@ -143,7 +143,7 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
     free(flatbuf);
 }
 
-/* ── LRU eviction ──────────────────────────────────────────────────────── */
+/* LRU eviction */
 
 static void evict_oldest(arpt_tile_manager *tm) {
     size_t count = hashmap_count(tm->cache);
@@ -174,7 +174,7 @@ static void evict_oldest(arpt_tile_manager *tm) {
     }
 }
 
-/* ── Public API ────────────────────────────────────────────────────────── */
+/* Public API */
 
 arpt_tile_manager *arpt_tile_manager_create(arpt_tile_manager_config config,
                                              arpt_renderer *r) {
@@ -315,7 +315,7 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
     evict_oldest(tm);
 }
 
-/* ── Draw helpers ──────────────────────────────────────────────────────── */
+/* Draw helpers */
 
 static void draw_entry(arpt_renderer *r, const arpt_camera *cam,
                         const tile_entry *e) {

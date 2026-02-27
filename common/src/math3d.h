@@ -4,21 +4,21 @@
 #include <math.h>
 #include <string.h>
 
-/* ── Float32 types (GPU upload) ────────────────────────────────────────── */
+/* Float32 types (GPU upload) */
 
 typedef struct { float x, y, z; } arpt_vec3;
 
 /* Column-major 4x4 matrix: m[col*4 + row], matching WGSL mat4x4<f32>. */
 typedef struct { float m[16]; } arpt_mat4;
 
-/* ── Float64 types (CPU precision) ─────────────────────────────────────── */
+/* Float64 types (CPU precision) */
 
 typedef struct { double x, y, z; } arpt_dvec3;
 
 /* Column-major 4x4 matrix in double precision. */
 typedef struct { double m[16]; } arpt_dmat4;
 
-/* ── dvec3 operations ──────────────────────────────────────────────────── */
+/* dvec3 operations */
 
 static inline arpt_dvec3 arpt_dvec3_add(arpt_dvec3 a, arpt_dvec3 b) {
     return (arpt_dvec3){a.x + b.x, a.y + b.y, a.z + b.z};
@@ -54,7 +54,7 @@ static inline arpt_dvec3 arpt_dvec3_normalize(arpt_dvec3 v) {
     return arpt_dvec3_scale(v, 1.0 / len);
 }
 
-/* ── dmat4 operations ──────────────────────────────────────────────────── */
+/* dmat4 operations */
 
 static inline arpt_dmat4 arpt_dmat4_identity(void) {
     arpt_dmat4 r;
@@ -110,7 +110,7 @@ static inline arpt_dvec3 arpt_dmat4_rotate(arpt_dmat4 m, arpt_dvec3 v) {
     };
 }
 
-/* ── mat4 operations ───────────────────────────────────────────────────── */
+/* mat4 operations */
 
 /**
  * Perspective projection for WebGPU (z clip = [0, 1]).
@@ -130,7 +130,7 @@ static inline arpt_mat4 arpt_mat4_perspective(float fov_y, float aspect,
     return r;
 }
 
-/* ── Conversions ───────────────────────────────────────────────────────── */
+/* Conversions */
 
 static inline arpt_mat4 arpt_dmat4_to_mat4(arpt_dmat4 d) {
     arpt_mat4 r;

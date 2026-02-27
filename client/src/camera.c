@@ -38,7 +38,7 @@ arpt_camera *arpt_camera_create(void) {
 
 void arpt_camera_free(arpt_camera *cam) { free(cam); }
 
-/* ── Setters ───────────────────────────────────────────────────────────── */
+/* Setters */
 
 void arpt_camera_set_position(arpt_camera *cam, double lon_rad, double lat_rad,
                                double altitude) {
@@ -62,7 +62,7 @@ void arpt_camera_set_viewport(arpt_camera *cam, int width, int height) {
     cam->vp_height = height > 1 ? height : 1;
 }
 
-/* ── Getters ───────────────────────────────────────────────────────────── */
+/* Getters */
 
 double arpt_camera_lon(const arpt_camera *cam) { return cam->lon_rad; }
 double arpt_camera_lat(const arpt_camera *cam) { return cam->lat_rad; }
@@ -72,7 +72,7 @@ double arpt_camera_bearing(const arpt_camera *cam) { return cam->bearing_rad; }
 int arpt_camera_vp_width(const arpt_camera *cam) { return cam->vp_width; }
 int arpt_camera_vp_height(const arpt_camera *cam) { return cam->vp_height; }
 
-/* ── Internal helpers ──────────────────────────────────────────────────── */
+/* Internal helpers */
 
 /* R_tilt: applies bearing rotation (around -Z) then tilt (around X). */
 static arpt_dmat4 compute_tilt_matrix(double tilt, double bearing) {
@@ -91,7 +91,7 @@ static arpt_dmat4 compute_tilt_matrix(double tilt, double bearing) {
     return arpt_dmat4_mul(Rt, Rb);
 }
 
-/* ── Computed matrices ─────────────────────────────────────────────────── */
+/* Computed matrices */
 
 arpt_mat4 arpt_camera_projection(const arpt_camera *cam) {
     float aspect = (float)cam->vp_width / (float)cam->vp_height;
@@ -126,7 +126,7 @@ arpt_mat4 arpt_camera_tile_model(const arpt_camera *cam,
     return arpt_dmat4_to_mat4(M);
 }
 
-/* ── Manipulation ─────────────────────────────────────────────────────── */
+/* Manipulation */
 
 /**
  * Helper: cast ray from screen coords (sx,sy), intersect ellipsoid,
@@ -223,7 +223,7 @@ void arpt_camera_tilt_bearing(arpt_camera *cam, double d_tilt, double d_bearing)
     arpt_camera_set_bearing(cam, cam->bearing_rad + d_bearing);
 }
 
-/* ── Tile management helpers ───────────────────────────────────────────── */
+/* Tile management helpers */
 
 int arpt_camera_zoom_level(const arpt_camera *cam, double root_error,
                             int min_level, int max_level) {

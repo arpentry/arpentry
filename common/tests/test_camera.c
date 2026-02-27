@@ -8,7 +8,7 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-/* ── Defaults ──────────────────────────────────────────────────────────── */
+/* Defaults */
 
 void test_camera_defaults(void) {
     arpt_camera *cam = arpt_camera_create();
@@ -20,7 +20,7 @@ void test_camera_defaults(void) {
     arpt_camera_free(cam);
 }
 
-/* ── Projection ────────────────────────────────────────────────────────── */
+/* Projection */
 
 void test_projection_near_far(void) {
     arpt_camera *cam = arpt_camera_create();
@@ -37,7 +37,7 @@ void test_projection_near_far(void) {
     arpt_camera_free(cam);
 }
 
-/* ── Tile model matrix ─────────────────────────────────────────────────── */
+/* Tile model matrix */
 
 void test_tile_model_at_interest(void) {
     arpt_camera *cam = arpt_camera_create();
@@ -68,7 +68,7 @@ void test_tile_model_nearby_tile(void) {
     arpt_camera_free(cam);
 }
 
-/* ── Globe rotation correctness ────────────────────────────────────────── */
+/* Globe rotation correctness */
 
 void test_screen_center_ray_along_neg_z(void) {
     arpt_camera *cam = arpt_camera_create();
@@ -96,7 +96,7 @@ void test_screen_center_ray_along_neg_z(void) {
     arpt_camera_free(cam);
 }
 
-/* ── Pan ───────────────────────────────────────────────────────────────── */
+/* Pan */
 
 void test_pan_begin_stores_anchor(void) {
     /* pan_begin + pan_move at the same point → camera should not move */
@@ -149,7 +149,7 @@ void test_pan_linear_north(void) {
     arpt_camera_free(cam);
 }
 
-/* ── Zoom ──────────────────────────────────────────────────────────────── */
+/* Zoom */
 
 void test_zoom_at_center(void) {
     /* Zoom at screen center with zero tilt → lon/lat unchanged, alt scaled */
@@ -196,7 +196,7 @@ void test_zoom_at_corner(void) {
     arpt_camera_free(cam);
 }
 
-/* ── Tilt / Bearing ────────────────────────────────────────────────────── */
+/* Tilt / Bearing */
 
 void test_tilt_bearing_basic(void) {
     arpt_camera *cam = arpt_camera_create();
@@ -218,7 +218,7 @@ void test_tilt_bearing_clamp(void) {
     arpt_camera_free(cam);
 }
 
-/* ── Zoom level ────────────────────────────────────────────────────────── */
+/* Zoom level */
 
 void test_zoom_level_high_altitude(void) {
     arpt_camera *cam = arpt_camera_create();

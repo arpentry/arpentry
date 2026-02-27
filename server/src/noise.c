@@ -3,7 +3,7 @@
 #include <math.h>
 #include <stdint.h>
 
-/* ── Permutation table (fixed seed for reproducibility) ────────────── */
+/* Permutation table (fixed seed for reproducibility) */
 
 static const uint8_t perm[512] = {
     151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,
@@ -41,7 +41,7 @@ static const uint8_t perm[512] = {
     222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180,
 };
 
-/* ── 2D gradient vectors ───────────────────────────────────────────── */
+/* 2D gradient vectors */
 
 static const double grad2[][2] = {
     { 1, 1}, {-1, 1}, { 1,-1}, {-1,-1},
@@ -53,7 +53,7 @@ static inline double dot2(const double g[2], double x, double y) {
     return g[0] * x + g[1] * y;
 }
 
-/* ── 2D simplex noise ──────────────────────────────────────────────── */
+/* 2D simplex noise */
 
 #define F2  0.3660254037844386   /* (sqrt(3) - 1) / 2 */
 #define G2  0.21132486540518713  /* (3 - sqrt(3)) / 6 */
@@ -107,7 +107,7 @@ double arpt_simplex2(double x, double y) {
     return 70.0 * (n0 + n1 + n2);
 }
 
-/* ── Fractal Brownian motion (2D) ──────────────────────────────────── */
+/* Fractal Brownian motion (2D) */
 
 double arpt_fbm2(double x, double y, int octaves,
                  double lacunarity, double persistence)
@@ -127,7 +127,7 @@ double arpt_fbm2(double x, double y, int octaves,
     return sum / max_amp;
 }
 
-/* ── 3D gradient vectors (12 cube-edge midpoints) ─────────────────── */
+/* 3D gradient vectors (12 cube-edge midpoints) */
 
 static const double grad3[][3] = {
     { 1, 1, 0}, {-1, 1, 0}, { 1,-1, 0}, {-1,-1, 0},
@@ -139,7 +139,7 @@ static inline double dot3(const double g[3], double x, double y, double z) {
     return g[0] * x + g[1] * y + g[2] * z;
 }
 
-/* ── 3D simplex noise ─────────────────────────────────────────────── */
+/* 3D simplex noise */
 
 #define F3  (1.0 / 3.0)
 #define G3  (1.0 / 6.0)
@@ -217,7 +217,7 @@ double arpt_simplex3(double x, double y, double z) {
     return 32.0 * (n0 + n1 + n2 + n3);
 }
 
-/* ── Fractal Brownian motion (3D) ──────────────────────────────────── */
+/* Fractal Brownian motion (3D) */
 
 double arpt_fbm3(double x, double y, double z, int octaves,
                  double lacunarity, double persistence)

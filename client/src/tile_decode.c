@@ -73,7 +73,7 @@ bool arpt_decode_terrain(const void *flatbuf, size_t size,
     return true;
 }
 
-/* ── Landuse decoding ──────────────────────────────────────────────────── */
+/* Landuse decoding */
 
 static arpt_landuse_class classify_string(flatbuffers_string_t s) {
     if (!s) return ARPT_LANDUSE_UNKNOWN;

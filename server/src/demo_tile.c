@@ -4,7 +4,7 @@
 
 #include <stdlib.h>
 
-/* ── Property dictionary indices ───────────────────────────────────────── */
+/* Property dictionary indices */
 
 /* Keys (Tile.keys) */
 enum {
@@ -34,7 +34,7 @@ enum {
     VAL_COUNT     = 13
 };
 
-/* ── Helpers ───────────────────────────────────────────────────────────── */
+/* Helpers */
 
 static void build_keys(flatcc_builder_t *b) {
     arpentry_tiles_Tile_keys_start(b);
@@ -92,7 +92,7 @@ static void build_values(flatcc_builder_t *b) {
     arpentry_tiles_Tile_values_end(b);
 }
 
-/* ── Layer 1: points ───────────────────────────────────────────────────── */
+/* Layer 1: points */
 
 static void build_points_layer(flatcc_builder_t *b) {
     arpentry_tiles_Tile_layers_push_start(b);
@@ -185,7 +185,7 @@ static void build_points_layer(flatcc_builder_t *b) {
     arpentry_tiles_Tile_layers_push_end(b);
 }
 
-/* ── Layer 2: roads (LineGeometry) ─────────────────────────────────────── */
+/* Layer 2: roads (LineGeometry) */
 
 static void build_roads_layer(flatcc_builder_t *b) {
     arpentry_tiles_Tile_layers_push_start(b);
@@ -226,7 +226,7 @@ static void build_roads_layer(flatcc_builder_t *b) {
     arpentry_tiles_Tile_layers_push_end(b);
 }
 
-/* ── Layer 3: buildings (PolygonGeometry) ──────────────────────────────── */
+/* Layer 3: buildings (PolygonGeometry) */
 
 static void build_buildings_layer(flatcc_builder_t *b) {
     arpentry_tiles_Tile_layers_push_start(b);
@@ -276,7 +276,7 @@ static void build_buildings_layer(flatcc_builder_t *b) {
     arpentry_tiles_Tile_layers_push_end(b);
 }
 
-/* ── Layer 4: terrain (MeshGeometry) ───────────────────────────────────── */
+/* Layer 4: terrain (MeshGeometry) */
 
 static void build_terrain_layer(flatcc_builder_t *b) {
     arpentry_tiles_Tile_layers_push_start(b);
@@ -343,7 +343,7 @@ static void build_terrain_layer(flatcc_builder_t *b) {
     arpentry_tiles_Tile_layers_push_end(b);
 }
 
-/* ── Public API ────────────────────────────────────────────────────────── */
+/* Public API */
 
 bool arpt_build_demo_tile(uint8_t **out, size_t *out_size) {
     if (!out || !out_size) return false;

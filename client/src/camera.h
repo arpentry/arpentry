@@ -6,12 +6,12 @@
 
 typedef struct arpt_camera arpt_camera;
 
-/* ── Lifecycle ─────────────────────────────────────────────────────────── */
+/* Lifecycle */
 
 arpt_camera *arpt_camera_create(void);
 void arpt_camera_free(arpt_camera *cam);
 
-/* ── Setters ───────────────────────────────────────────────────────────── */
+/* Setters */
 
 void arpt_camera_set_position(arpt_camera *cam, double lon_rad, double lat_rad,
                                double altitude);
@@ -19,7 +19,7 @@ void arpt_camera_set_tilt(arpt_camera *cam, double tilt_rad);
 void arpt_camera_set_bearing(arpt_camera *cam, double bearing_rad);
 void arpt_camera_set_viewport(arpt_camera *cam, int width, int height);
 
-/* ── Getters ───────────────────────────────────────────────────────────── */
+/* Getters */
 
 double arpt_camera_lon(const arpt_camera *cam);
 double arpt_camera_lat(const arpt_camera *cam);
@@ -29,7 +29,7 @@ double arpt_camera_bearing(const arpt_camera *cam);
 int    arpt_camera_vp_width(const arpt_camera *cam);
 int    arpt_camera_vp_height(const arpt_camera *cam);
 
-/* ── Manipulation ─────────────────────────────────────────────────────── */
+/* Manipulation */
 
 /** Begin a pan gesture — store the anchor point under the cursor. */
 void arpt_camera_pan_begin(arpt_camera *cam, double sx, double sy);
@@ -53,7 +53,7 @@ void arpt_camera_tilt_bearing(arpt_camera *cam, double d_tilt, double d_bearing)
 bool arpt_camera_screen_to_geodetic(const arpt_camera *cam, double sx, double sy,
                                      double *out_lon, double *out_lat);
 
-/* ── Computed matrices ─────────────────────────────────────────────────── */
+/* Computed matrices */
 
 /** Perspective projection matrix (float32 for GPU). */
 arpt_mat4 arpt_camera_projection(const arpt_camera *cam);
@@ -68,7 +68,7 @@ arpt_mat4 arpt_camera_tile_model(const arpt_camera *cam,
                                   double center_lon, double center_lat,
                                   double center_alt);
 
-/* ── Tile management helpers ───────────────────────────────────────────── */
+/* Tile management helpers */
 
 /**
  * Compute the uniform zoom level for the current view.

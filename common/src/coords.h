@@ -4,12 +4,12 @@
 #include <stdint.h>
 #include <math.h>
 
-/* ── Constants ──────────────────────────────────────────────────────────── */
+/* Constants */
 
 #define ARPT_EXTENT  32768
 #define ARPT_BUFFER  16384
 
-/* ── Low-level quantization (normalized tile space) ─────────────────────── */
+/* Low-level quantization (normalized tile space) */
 
 /**
  * Dequantize a uint16 coordinate back to normalized tile space.
@@ -35,7 +35,7 @@ static inline uint16_t arpt_quantize(double x) {
     return (uint16_t)(v + 0.5);
 }
 
-/* ── Tile bounds ────────────────────────────────────────────────────────── */
+/* Tile bounds */
 
 typedef struct {
     double west;
@@ -53,7 +53,7 @@ typedef struct {
  */
 arpt_bounds_t arpt_tile_bounds(int level, int x, int y);
 
-/* ── Geodetic quantization ──────────────────────────────────────────────── */
+/* Geodetic quantization */
 
 /**
  * Quantize a longitude to uint16 within the given tile bounds.
@@ -85,7 +85,7 @@ static inline double arpt_dequantize_lat(uint16_t qy, arpt_bounds_t bounds) {
     return bounds.south + arpt_dequantize(qy) * (bounds.north - bounds.south);
 }
 
-/* ── Elevation ──────────────────────────────────────────────────────────── */
+/* Elevation */
 
 /**
  * Convert meters to int32 millimeters (the z encoding used in .arpt).
@@ -101,7 +101,7 @@ static inline double arpt_mm_to_meters(int32_t mm) {
     return (double)mm * 0.001;
 }
 
-/* ── Level of Detail ────────────────────────────────────────────────────── */
+/* Level of Detail */
 
 /**
  * Deterministic geometric error for a tile at the given level.

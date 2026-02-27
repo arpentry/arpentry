@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── Terrain parameters ────────────────────────────────────────────── */
+/* Terrain parameters */
 
 #define TERRAIN_GRID        64
 #define TERRAIN_VERTS       (TERRAIN_GRID + 1)  /* 65x65 = 4225 vertices */
@@ -32,7 +32,7 @@
 
 #define PI 3.14159265358979323846
 
-/* ── Helpers ────────────────────────────────────────────────────────── */
+/* Helpers */
 
 static double terrain_elevation(double lon_deg, double lat_deg) {
     double lon_r = lon_deg * (PI / 180.0);
@@ -75,7 +75,7 @@ static void encode_octahedral(double nx, double ny, double nz,
     *oy = (int8_t)(cv >= 0.0 ? cv + 0.5 : cv - 0.5);
 }
 
-/* ── Public API ────────────────────────────────────────────────────── */
+/* Public API */
 
 bool arpt_generate_terrain(int level, int x, int y,
                            uint8_t **out, size_t *out_size)
@@ -317,7 +317,7 @@ bool arpt_generate_terrain(int level, int x, int y,
 
     arpentry_tiles_Tile_layers_start(&builder);
     {
-        /* ── Layer 0: terrain (existing) ─────────────────────────────── */
+        /* Layer 0: terrain (existing) */
         arpentry_tiles_Tile_layers_push_start(&builder);
         arpentry_tiles_Layer_name_create_str(&builder, "terrain");
 
@@ -359,7 +359,7 @@ bool arpt_generate_terrain(int level, int x, int y,
         arpentry_tiles_Layer_features_end(&builder);
         arpentry_tiles_Tile_layers_push_end(&builder);
 
-        /* ── Layer 1: landuse (marching squares patches) ────────────── */
+        /* Layer 1: landuse (marching squares patches) */
         arpentry_tiles_Tile_layers_push_start(&builder);
         arpentry_tiles_Layer_name_create_str(&builder, "landuse");
 
