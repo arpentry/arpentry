@@ -26,9 +26,9 @@ void arpt_control_free(arpt_control *ctrl);
  * Return true to consume the event (prevent map interaction).
  */
 typedef bool (*arpt_event_filter_fn)(int button, int action, double sx,
-                                      double sy, void *userdata);
+                                     double sy, void *userdata);
 
-void arpt_control_set_event_filter(arpt_control *ctrl,
-                                    arpt_event_filter_fn fn, void *userdata);
+void arpt_control_set_event_filter(arpt_control *ctrl, arpt_event_filter_fn fn,
+                                   void *userdata);
 
 #endif /* ARPENTRY_CONTROL_H */

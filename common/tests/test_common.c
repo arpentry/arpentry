@@ -1,5 +1,6 @@
 #include "unity.h"
 #include "coords.h"
+
 #include <math.h>
 
 void setUp(void) {}
@@ -41,25 +42,25 @@ void test_tile_bounds_root_west(void) {
     /* Level 0, tile (0,0): western hemisphere */
     arpt_bounds b = arpt_tile_bounds(0, 0, 0);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, -180.0, b.west);
-    TEST_ASSERT_DOUBLE_WITHIN(1e-9,    0.0, b.east);
-    TEST_ASSERT_DOUBLE_WITHIN(1e-9,  -90.0, b.south);
-    TEST_ASSERT_DOUBLE_WITHIN(1e-9,   90.0, b.north);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 0.0, b.east);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, -90.0, b.south);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 90.0, b.north);
 }
 
 void test_tile_bounds_root_east(void) {
     /* Level 0, tile (1,0): eastern hemisphere */
     arpt_bounds b = arpt_tile_bounds(0, 1, 0);
-    TEST_ASSERT_DOUBLE_WITHIN(1e-9,   0.0, b.west);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 0.0, b.west);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, 180.0, b.east);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, -90.0, b.south);
-    TEST_ASSERT_DOUBLE_WITHIN(1e-9,  90.0, b.north);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 90.0, b.north);
 }
 
 void test_tile_bounds_level5(void) {
     /* Level 5, tile (32, 16): should be in a known range */
     arpt_bounds b = arpt_tile_bounds(5, 32, 16);
-    double lon_span = 360.0 / 64.0;  /* 2^(5+1) = 64 */
-    double lat_span = 180.0 / 32.0;  /* 2^5 = 32 */
+    double lon_span = 360.0 / 64.0; /* 2^(5+1) = 64 */
+    double lat_span = 180.0 / 32.0; /* 2^5 = 32 */
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, -180.0 + 32 * lon_span, b.west);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, -180.0 + 33 * lon_span, b.east);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, -90.0 + 16 * lat_span, b.south);
@@ -99,14 +100,14 @@ void test_geodetic_quantize_tile_origin(void) {
 /* Elevation */
 
 void test_elevation_roundtrip(void) {
-    double meters = 4478.123;  /* Matterhorn-ish */
+    double meters = 4478.123; /* Matterhorn-ish */
     int32_t mm = arpt_meters_to_mm(meters);
     double recovered = arpt_mm_to_meters(mm);
     TEST_ASSERT_DOUBLE_WITHIN(0.001, meters, recovered);
 }
 
 void test_elevation_negative(void) {
-    double meters = -422.0;  /* Dead Sea-ish */
+    double meters = -422.0; /* Dead Sea-ish */
     int32_t mm = arpt_meters_to_mm(meters);
     TEST_ASSERT_EQUAL_INT32(-422000, mm);
     TEST_ASSERT_DOUBLE_WITHIN(0.001, meters, arpt_mm_to_meters(mm));
@@ -119,7 +120,7 @@ void test_geometric_error(void) {
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, 50000.0, arpt_geometric_error(root, 0));
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, 25000.0, arpt_geometric_error(root, 1));
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, 12500.0, arpt_geometric_error(root, 2));
-    TEST_ASSERT_DOUBLE_WITHIN(0.1,  1562.5,  arpt_geometric_error(root, 5));
+    TEST_ASSERT_DOUBLE_WITHIN(0.1, 1562.5, arpt_geometric_error(root, 5));
 }
 
 void test_screen_space_error(void) {

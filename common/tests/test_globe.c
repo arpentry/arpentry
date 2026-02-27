@@ -1,5 +1,6 @@
 #include "unity.h"
 #include "globe.h"
+
 #include <math.h>
 
 #define DEG2RAD(d) ((d) * M_PI / 180.0)
@@ -43,7 +44,7 @@ void test_ecef_lon90(void) {
 /* Roundtrip geodetic ↔ ECEF */
 
 void test_ecef_roundtrip(void) {
-    double lon_in = DEG2RAD(7.4474);   /* Bern-ish */
+    double lon_in = DEG2RAD(7.4474); /* Bern-ish */
     double lat_in = DEG2RAD(46.9480);
     double alt_in = 540.0;
 
@@ -53,13 +54,13 @@ void test_ecef_roundtrip(void) {
 
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, lon_in, lon_out);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, lat_in, lat_out);
-    TEST_ASSERT_DOUBLE_WITHIN(0.001, alt_in, alt_out);  /* < 1mm */
+    TEST_ASSERT_DOUBLE_WITHIN(0.001, alt_in, alt_out); /* < 1mm */
 }
 
 void test_ecef_roundtrip_high_altitude(void) {
     double lon_in = DEG2RAD(-122.4194);
     double lat_in = DEG2RAD(37.7749);
-    double alt_in = 35786000.0;  /* geostationary orbit */
+    double alt_in = 35786000.0; /* geostationary orbit */
 
     arpt_dvec3 ecef = arpt_geodetic_to_ecef(lon_in, lat_in, alt_in);
     double lon_out, lat_out, alt_out;

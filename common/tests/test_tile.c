@@ -2,6 +2,7 @@
 #include "tile_reader.h"
 #include "tile.h"
 #include "unity.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -31,23 +32,24 @@ static void build_minimal_tile(void **buf, size_t *size) {
 /* Encode / Decode roundtrip */
 
 void test_encode_decode_roundtrip(void) {
-    void *tile_buf; size_t tile_size;
+    void *tile_buf;
+    size_t tile_size;
     build_minimal_tile(&tile_buf, &tile_size);
     TEST_ASSERT_NOT_NULL(tile_buf);
 
     /* Encode */
     uint8_t *encoded = NULL;
     size_t encoded_size = 0;
-    TEST_ASSERT_TRUE(arpt_encode(tile_buf, tile_size,
-                                 &encoded, &encoded_size, 4));
+    TEST_ASSERT_TRUE(
+        arpt_encode(tile_buf, tile_size, &encoded, &encoded_size, 4));
     TEST_ASSERT_NOT_NULL(encoded);
     TEST_ASSERT_TRUE(encoded_size > 0);
 
     /* Decode — returns verified FlatBuffer */
     uint8_t *decoded = NULL;
     size_t decoded_size = 0;
-    TEST_ASSERT_TRUE(arpt_decode(encoded, encoded_size,
-                                 &decoded, &decoded_size));
+    TEST_ASSERT_TRUE(
+        arpt_decode(encoded, encoded_size, &decoded, &decoded_size));
     TEST_ASSERT_NOT_NULL(decoded);
 
     /* Byte-for-byte match with original FlatBuffer */
@@ -62,19 +64,20 @@ void test_encode_decode_roundtrip(void) {
 /* Decoded buffer is usable by FlatCC reader */
 
 void test_decode_produces_readable_tile(void) {
-    void *tile_buf; size_t tile_size;
+    void *tile_buf;
+    size_t tile_size;
     build_minimal_tile(&tile_buf, &tile_size);
     TEST_ASSERT_NOT_NULL(tile_buf);
 
     uint8_t *encoded = NULL;
     size_t encoded_size = 0;
-    TEST_ASSERT_TRUE(arpt_encode(tile_buf, tile_size,
-                                 &encoded, &encoded_size, 4));
+    TEST_ASSERT_TRUE(
+        arpt_encode(tile_buf, tile_size, &encoded, &encoded_size, 4));
 
     uint8_t *decoded = NULL;
     size_t decoded_size = 0;
-    TEST_ASSERT_TRUE(arpt_decode(encoded, encoded_size,
-                                 &decoded, &decoded_size));
+    TEST_ASSERT_TRUE(
+        arpt_decode(encoded, encoded_size, &decoded, &decoded_size));
 
     /* Use FlatCC reader directly on decoded buffer */
     arpentry_tiles_Tile_table_t tile =
@@ -84,7 +87,8 @@ void test_decode_produces_readable_tile(void) {
 
     arpentry_tiles_Layer_vec_t layers = arpentry_tiles_Tile_layers(tile);
     TEST_ASSERT_EQUAL(1, arpentry_tiles_Layer_vec_len(layers));
-    TEST_ASSERT_EQUAL_STRING("terrain",
+    TEST_ASSERT_EQUAL_STRING(
+        "terrain",
         arpentry_tiles_Layer_name(arpentry_tiles_Layer_vec_at(layers, 0)));
 
     free(tile_buf);
@@ -98,8 +102,7 @@ void test_decode_rejects_garbage(void) {
     uint8_t garbage[] = {0xFF, 0xFF, 0xFF, 0xFF};
     uint8_t *out = NULL;
     size_t out_size = 0;
-    TEST_ASSERT_FALSE(arpt_decode(garbage, sizeof(garbage),
-                                  &out, &out_size));
+    TEST_ASSERT_FALSE(arpt_decode(garbage, sizeof(garbage), &out, &out_size));
 }
 
 void test_decode_rejects_null(void) {
@@ -117,8 +120,8 @@ void test_decode_rejects_corrupt_flatbuffer(void) {
     const char *junk = "this is not a flatbuffer";
     uint8_t *encoded = NULL;
     size_t encoded_size = 0;
-    TEST_ASSERT_TRUE(arpt_encode(junk, strlen(junk),
-                                 &encoded, &encoded_size, 1));
+    TEST_ASSERT_TRUE(
+        arpt_encode(junk, strlen(junk), &encoded, &encoded_size, 1));
 
     uint8_t *out = NULL;
     size_t out_size = 0;

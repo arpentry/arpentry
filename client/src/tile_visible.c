@@ -6,7 +6,7 @@
 #include <math.h>
 
 int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
-                                  arpt_tile_key *out, int max_count) {
+                                 arpt_tile_key *out, int max_count) {
     if (!cam || !out || max_count <= 0 || level < 0) return 0;
 
     int n_cols = 1 << (level + 1);
@@ -21,7 +21,7 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
         int count = 0;
         for (int y = 0; y < n_rows; y++)
             for (int x = 0; x < n_cols; x++)
-                out[count++] = (arpt_tile_key){ level, x, y };
+                out[count++] = (arpt_tile_key){level, x, y};
         return count;
     }
 
@@ -32,8 +32,8 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
     int vp_h = arpt_camera_vp_height(cam);
     if (vp_w <= 0 || vp_h <= 0) return 0;
 
-    #define GRID_N 7
-    #define GRID_COUNT (GRID_N * GRID_N)
+#define GRID_N 7
+#define GRID_COUNT (GRID_N * GRID_N)
 
     double lons[GRID_COUNT], lats[GRID_COUNT];
     int hit_count = 0;
@@ -48,8 +48,7 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
                 continue;
 
             double t;
-            if (!arpt_ray_ellipsoid(origin, dir, &t))
-                continue;
+            if (!arpt_ray_ellipsoid(origin, dir, &t)) continue;
 
             arpt_dvec3 hit = arpt_dvec3_add(origin, arpt_dvec3_scale(dir, t));
             double lon, lat, alt;
@@ -145,14 +144,14 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
 
         for (int y = y_min; y <= y_max && count < max_count; y++) {
             for (int x = lo; x < n_cols && count < max_count; x++)
-                out[count++] = (arpt_tile_key){ level, x, y };
+                out[count++] = (arpt_tile_key){level, x, y};
             for (int x = 0; x <= hi && count < max_count; x++)
-                out[count++] = (arpt_tile_key){ level, x, y };
+                out[count++] = (arpt_tile_key){level, x, y};
         }
     } else {
         for (int y = y_min; y <= y_max && count < max_count; y++)
             for (int x = x_min; x <= x_max && count < max_count; x++)
-                out[count++] = (arpt_tile_key){ level, x, y };
+                out[count++] = (arpt_tile_key){level, x, y};
     }
 
     return count;

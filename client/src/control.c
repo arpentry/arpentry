@@ -10,17 +10,17 @@
 
 /* Constants */
 
-#define DAMPING             0.12
-#define TILT_SENSITIVITY    0.005   /* rad/px */
-#define BEARING_SENSITIVITY 0.005   /* rad/px */
-#define KEY_PAN_PX          100.0   /* pixels per keypress */
-#define KEY_TILT_DEG        10.0
-#define KEY_BEARING_DEG     15.0
-#define ZOOM_BASE           0.95
-#define FLYTO_DURATION      0.4     /* seconds */
-#define DBLCLICK_INTERVAL   0.3     /* seconds */
-#define DBLCLICK_DIST       5.0     /* pixels */
-#define VEL_EPSILON         1e-6
+#define DAMPING 0.12
+#define TILT_SENSITIVITY 0.005    /* rad/px */
+#define BEARING_SENSITIVITY 0.005 /* rad/px */
+#define KEY_PAN_PX 100.0          /* pixels per keypress */
+#define KEY_TILT_DEG 10.0
+#define KEY_BEARING_DEG 15.0
+#define ZOOM_BASE 0.95
+#define FLYTO_DURATION 0.4    /* seconds */
+#define DBLCLICK_INTERVAL 0.3 /* seconds */
+#define DBLCLICK_DIST 5.0     /* pixels */
+#define VEL_EPSILON 1e-6
 
 #define DEG2RAD(d) ((d) * M_PI / 180.0)
 
@@ -50,7 +50,7 @@ struct arpt_control {
     /* Drag state */
     drag_mode_t drag_mode;
     double last_sx, last_sy;
-    double prev_sx, prev_sy;  /* for velocity capture: position two frames ago */
+    double prev_sx, prev_sy; /* for velocity capture: position two frames ago */
 
     /* Inertia velocities (per second) */
     double vel_pan_x, vel_pan_y;
@@ -80,21 +80,22 @@ struct arpt_control {
 /* Helpers */
 
 static inline double wrap_lon(double delta) {
-    while (delta > M_PI) delta -= 2.0 * M_PI;
-    while (delta < -M_PI) delta += 2.0 * M_PI;
+    while (delta > M_PI)
+        delta -= 2.0 * M_PI;
+    while (delta < -M_PI)
+        delta += 2.0 * M_PI;
     return delta;
 }
 
 static inline double ease_in_out_cubic(double t) {
-    return t < 0.5 ? 4.0 * t * t * t
-                    : 1.0 - pow(-2.0 * t + 2.0, 3.0) / 2.0;
+    return t < 0.5 ? 4.0 * t * t * t : 1.0 - pow(-2.0 * t + 2.0, 3.0) / 2.0;
 }
 
 static inline bool has_modifier(int mods) {
     return (mods & (GLFW_MOD_CONTROL | GLFW_MOD_SUPER | GLFW_MOD_SHIFT)) != 0;
 }
 
-/** Cancel fly-to and zero velocities (any user input does this). */
+/* Cancel fly-to and zero velocities (any user input does this). */
 static void cancel_animation(arpt_control *ctrl) {
     ctrl->flyto.active = false;
     ctrl->vel_pan_x = ctrl->vel_pan_y = 0.0;
@@ -104,7 +105,7 @@ static void cancel_animation(arpt_control *ctrl) {
 /* GLFW callbacks */
 
 static void on_mouse_button(GLFWwindow *window, int button, int action,
-                             int mods) {
+                            int mods) {
     arpt_control *ctrl = glfwGetWindowUserPointer(window);
     if (!ctrl) return;
 
@@ -147,7 +148,7 @@ static void on_mouse_button(GLFWwindow *window, int button, int action,
                 /* Trigger fly-to: zoom to half altitude centered on click */
                 double click_lon, click_lat;
                 if (arpt_camera_screen_to_geodetic(ctrl->cam, sx, sy,
-                                                    &click_lon, &click_lat)) {
+                                                   &click_lon, &click_lat)) {
                     ctrl->flyto.active = true;
                     ctrl->flyto.elapsed = 0.0;
                     ctrl->flyto.start_lon = arpt_camera_lon(ctrl->cam);
@@ -200,7 +201,7 @@ static void on_cursor_pos(GLFWwindow *window, double sx, double sy) {
         ctrl->prev_sx = ctrl->last_sx;
         ctrl->prev_sy = ctrl->last_sy;
         arpt_camera_tilt_bearing(ctrl->cam, -dy * TILT_SENSITIVITY,
-                                  dx * BEARING_SENSITIVITY);
+                                 dx * BEARING_SENSITIVITY);
         ctrl->last_sx = sx;
         ctrl->last_sy = sy;
     }
@@ -220,7 +221,7 @@ static void on_scroll(GLFWwindow *window, double xoffset, double yoffset) {
 }
 
 static void on_key(GLFWwindow *window, int key, int scancode, int action,
-                    int mods) {
+                   int mods) {
     (void)scancode;
     arpt_control *ctrl = glfwGetWindowUserPointer(window);
     if (!ctrl) return;
@@ -233,34 +234,39 @@ static void on_key(GLFWwindow *window, int key, int scancode, int action,
 
     switch (key) {
     case GLFW_KEY_UP:
-        if (shift) arpt_camera_tilt_bearing(ctrl->cam, DEG2RAD(KEY_TILT_DEG), 0.0);
-        else arpt_camera_pan(ctrl->cam, 0.0, -KEY_PAN_PX);
+        if (shift)
+            arpt_camera_tilt_bearing(ctrl->cam, DEG2RAD(KEY_TILT_DEG), 0.0);
+        else
+            arpt_camera_pan(ctrl->cam, 0.0, -KEY_PAN_PX);
         break;
     case GLFW_KEY_DOWN:
-        if (shift) arpt_camera_tilt_bearing(ctrl->cam, DEG2RAD(-KEY_TILT_DEG), 0.0);
-        else arpt_camera_pan(ctrl->cam, 0.0, KEY_PAN_PX);
+        if (shift)
+            arpt_camera_tilt_bearing(ctrl->cam, DEG2RAD(-KEY_TILT_DEG), 0.0);
+        else
+            arpt_camera_pan(ctrl->cam, 0.0, KEY_PAN_PX);
         break;
     case GLFW_KEY_LEFT:
-        if (shift) arpt_camera_tilt_bearing(ctrl->cam, 0.0, DEG2RAD(-KEY_BEARING_DEG));
-        else arpt_camera_pan(ctrl->cam, -KEY_PAN_PX, 0.0);
+        if (shift)
+            arpt_camera_tilt_bearing(ctrl->cam, 0.0, DEG2RAD(-KEY_BEARING_DEG));
+        else
+            arpt_camera_pan(ctrl->cam, -KEY_PAN_PX, 0.0);
         break;
     case GLFW_KEY_RIGHT:
-        if (shift) arpt_camera_tilt_bearing(ctrl->cam, 0.0, DEG2RAD(KEY_BEARING_DEG));
-        else arpt_camera_pan(ctrl->cam, KEY_PAN_PX, 0.0);
+        if (shift)
+            arpt_camera_tilt_bearing(ctrl->cam, 0.0, DEG2RAD(KEY_BEARING_DEG));
+        else
+            arpt_camera_pan(ctrl->cam, KEY_PAN_PX, 0.0);
         break;
-    case GLFW_KEY_EQUAL:   /* + / = */
+    case GLFW_KEY_EQUAL: /* + / = */
     case GLFW_KEY_KP_ADD:
-        arpt_camera_zoom_at(ctrl->cam,
-            arpt_camera_vp_width(ctrl->cam) / 2.0,
-            arpt_camera_vp_height(ctrl->cam) / 2.0,
-            ZOOM_BASE);
+        arpt_camera_zoom_at(ctrl->cam, arpt_camera_vp_width(ctrl->cam) / 2.0,
+                            arpt_camera_vp_height(ctrl->cam) / 2.0, ZOOM_BASE);
         break;
     case GLFW_KEY_MINUS:
     case GLFW_KEY_KP_SUBTRACT:
-        arpt_camera_zoom_at(ctrl->cam,
-            arpt_camera_vp_width(ctrl->cam) / 2.0,
-            arpt_camera_vp_height(ctrl->cam) / 2.0,
-            1.0 / ZOOM_BASE);
+        arpt_camera_zoom_at(ctrl->cam, arpt_camera_vp_width(ctrl->cam) / 2.0,
+                            arpt_camera_vp_height(ctrl->cam) / 2.0,
+                            1.0 / ZOOM_BASE);
         break;
     default:
         break;
@@ -271,7 +277,8 @@ static void on_key(GLFWwindow *window, int key, int scancode, int action,
 
 #ifdef __EMSCRIPTEN__
 
-static EM_BOOL on_touchstart(int type, const EmscriptenTouchEvent *e, void *ud) {
+static EM_BOOL on_touchstart(int type, const EmscriptenTouchEvent *e,
+                             void *ud) {
     (void)type;
     arpt_control *ctrl = ud;
     cancel_animation(ctrl);
@@ -330,17 +337,22 @@ static EM_BOOL on_touchmove(int type, const EmscriptenTouchEvent *e, void *ud) {
         double new_angle = atan2(dy, dx);
         double d_angle = new_angle - ctrl->pinch_angle;
         /* Wrap */
-        while (d_angle > M_PI) d_angle -= 2.0 * M_PI;
-        while (d_angle < -M_PI) d_angle += 2.0 * M_PI;
+        while (d_angle > M_PI)
+            d_angle -= 2.0 * M_PI;
+        while (d_angle < -M_PI)
+            d_angle += 2.0 * M_PI;
         arpt_camera_tilt_bearing(ctrl->cam, 0.0, -d_angle);
         ctrl->pinch_angle = new_angle;
 
         /* Vertical midpoint delta → tilt */
         double vert_delta = new_my - old_my;
-        arpt_camera_tilt_bearing(ctrl->cam, -vert_delta * TILT_SENSITIVITY, 0.0);
+        arpt_camera_tilt_bearing(ctrl->cam, -vert_delta * TILT_SENSITIVITY,
+                                 0.0);
 
-        ctrl->touch0_x = t0x; ctrl->touch0_y = t0y;
-        ctrl->touch1_x = t1x; ctrl->touch1_y = t1y;
+        ctrl->touch0_x = t0x;
+        ctrl->touch0_y = t0y;
+        ctrl->touch1_x = t1x;
+        ctrl->touch1_y = t1y;
     }
     return EM_TRUE;
 }
@@ -417,9 +429,7 @@ void arpt_control_update(arpt_control *ctrl, double dt) {
     /* Pan inertia */
     if (fabs(ctrl->vel_pan_x) > VEL_EPSILON ||
         fabs(ctrl->vel_pan_y) > VEL_EPSILON) {
-        arpt_camera_pan(ctrl->cam,
-                         ctrl->vel_pan_x * dt,
-                         ctrl->vel_pan_y * dt);
+        arpt_camera_pan(ctrl->cam, ctrl->vel_pan_x * dt, ctrl->vel_pan_y * dt);
         ctrl->vel_pan_x *= decay;
         ctrl->vel_pan_y *= decay;
         if (fabs(ctrl->vel_pan_x) < VEL_EPSILON) ctrl->vel_pan_x = 0.0;
@@ -429,9 +439,8 @@ void arpt_control_update(arpt_control *ctrl, double dt) {
     /* Tilt/bearing inertia */
     if (fabs(ctrl->vel_tilt) > VEL_EPSILON ||
         fabs(ctrl->vel_bearing) > VEL_EPSILON) {
-        arpt_camera_tilt_bearing(ctrl->cam,
-                                  ctrl->vel_tilt * dt,
-                                  ctrl->vel_bearing * dt);
+        arpt_camera_tilt_bearing(ctrl->cam, ctrl->vel_tilt * dt,
+                                 ctrl->vel_bearing * dt);
         ctrl->vel_tilt *= decay;
         ctrl->vel_bearing *= decay;
         if (fabs(ctrl->vel_tilt) < VEL_EPSILON) ctrl->vel_tilt = 0.0;
@@ -439,8 +448,8 @@ void arpt_control_update(arpt_control *ctrl, double dt) {
     }
 }
 
-void arpt_control_set_event_filter(arpt_control *ctrl,
-                                    arpt_event_filter_fn fn, void *userdata) {
+void arpt_control_set_event_filter(arpt_control *ctrl, arpt_event_filter_fn fn,
+                                   void *userdata) {
     if (!ctrl) return;
     ctrl->event_filter = fn;
     ctrl->filter_ud = userdata;

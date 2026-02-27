@@ -3,12 +3,12 @@
 #include <math.h>
 #include <stdlib.h>
 
-#define CAM_FOV      (M_PI / 4.0)  /* 45 degrees */
-#define CAM_MIN_ALT  500.0
-#define CAM_MAX_ALT  30000000.0    /* 30,000 km */
+#define CAM_FOV (M_PI / 4.0) /* 45 degrees */
+#define CAM_MIN_ALT 500.0
+#define CAM_MAX_ALT 30000000.0 /* 30,000 km */
 #define CAM_MAX_TILT (60.0 * M_PI / 180.0)
-#define MAX_LAT_RAD  (89.0 * M_PI / 180.0)
-#define TWO_PI       (2.0 * M_PI)
+#define MAX_LAT_RAD (89.0 * M_PI / 180.0)
+#define TWO_PI (2.0 * M_PI)
 
 struct arpt_camera {
     double lon_rad, lat_rad, altitude;
@@ -23,25 +23,29 @@ struct arpt_camera {
 static void clamp_position(arpt_camera *cam) {
     if (cam->lat_rad > MAX_LAT_RAD) cam->lat_rad = MAX_LAT_RAD;
     if (cam->lat_rad < -MAX_LAT_RAD) cam->lat_rad = -MAX_LAT_RAD;
-    while (cam->lon_rad > M_PI) cam->lon_rad -= TWO_PI;
-    while (cam->lon_rad < -M_PI) cam->lon_rad += TWO_PI;
+    while (cam->lon_rad > M_PI)
+        cam->lon_rad -= TWO_PI;
+    while (cam->lon_rad < -M_PI)
+        cam->lon_rad += TWO_PI;
 }
 
 arpt_camera *arpt_camera_create(void) {
     arpt_camera *cam = calloc(1, sizeof(*cam));
     if (!cam) return NULL;
-    cam->altitude = 10000000.0;  /* 10,000 km default */
+    cam->altitude = 10000000.0; /* 10,000 km default */
     cam->vp_width = 800;
     cam->vp_height = 600;
     return cam;
 }
 
-void arpt_camera_free(arpt_camera *cam) { free(cam); }
+void arpt_camera_free(arpt_camera *cam) {
+    free(cam);
+}
 
 /* Setters */
 
 void arpt_camera_set_position(arpt_camera *cam, double lon_rad, double lat_rad,
-                               double altitude) {
+                              double altitude) {
     cam->lon_rad = lon_rad;
     cam->lat_rad = lat_rad;
     clamp_position(cam);
@@ -64,13 +68,27 @@ void arpt_camera_set_viewport(arpt_camera *cam, int width, int height) {
 
 /* Getters */
 
-double arpt_camera_lon(const arpt_camera *cam) { return cam->lon_rad; }
-double arpt_camera_lat(const arpt_camera *cam) { return cam->lat_rad; }
-double arpt_camera_altitude(const arpt_camera *cam) { return cam->altitude; }
-double arpt_camera_tilt(const arpt_camera *cam) { return cam->tilt_rad; }
-double arpt_camera_bearing(const arpt_camera *cam) { return cam->bearing_rad; }
-int arpt_camera_vp_width(const arpt_camera *cam) { return cam->vp_width; }
-int arpt_camera_vp_height(const arpt_camera *cam) { return cam->vp_height; }
+double arpt_camera_lon(const arpt_camera *cam) {
+    return cam->lon_rad;
+}
+double arpt_camera_lat(const arpt_camera *cam) {
+    return cam->lat_rad;
+}
+double arpt_camera_altitude(const arpt_camera *cam) {
+    return cam->altitude;
+}
+double arpt_camera_tilt(const arpt_camera *cam) {
+    return cam->tilt_rad;
+}
+double arpt_camera_bearing(const arpt_camera *cam) {
+    return cam->bearing_rad;
+}
+int arpt_camera_vp_width(const arpt_camera *cam) {
+    return cam->vp_width;
+}
+int arpt_camera_vp_height(const arpt_camera *cam) {
+    return cam->vp_height;
+}
 
 /* Internal helpers */
 
@@ -78,15 +96,15 @@ int arpt_camera_vp_height(const arpt_camera *cam) { return cam->vp_height; }
 static arpt_dmat4 compute_tilt_matrix(double tilt, double bearing) {
     /* Bearing: rotate around Z by -bearing (clockwise from north = +Y) */
     double cb = cos(-bearing), sb = sin(-bearing);
-    arpt_dmat4 Rb = arpt_dmat4_from_cols(
-        (arpt_dvec3){cb, sb, 0}, (arpt_dvec3){-sb, cb, 0},
-        (arpt_dvec3){0, 0, 1}, (arpt_dvec3){0, 0, 0});
+    arpt_dmat4 Rb =
+        arpt_dmat4_from_cols((arpt_dvec3){cb, sb, 0}, (arpt_dvec3){-sb, cb, 0},
+                             (arpt_dvec3){0, 0, 1}, (arpt_dvec3){0, 0, 0});
 
     /* Tilt: rotate around X by -tilt (tilt 0 = nadir = looking along -Z) */
     double ct = cos(-tilt), st = sin(-tilt);
-    arpt_dmat4 Rt = arpt_dmat4_from_cols(
-        (arpt_dvec3){1, 0, 0}, (arpt_dvec3){0, ct, st},
-        (arpt_dvec3){0, -st, ct}, (arpt_dvec3){0, 0, 0});
+    arpt_dmat4 Rt =
+        arpt_dmat4_from_cols((arpt_dvec3){1, 0, 0}, (arpt_dvec3){0, ct, st},
+                             (arpt_dvec3){0, -st, ct}, (arpt_dvec3){0, 0, 0});
 
     return arpt_dmat4_mul(Rt, Rb);
 }
@@ -100,16 +118,15 @@ arpt_mat4 arpt_camera_projection(const arpt_camera *cam) {
     return arpt_mat4_perspective((float)CAM_FOV, aspect, near, far);
 }
 
-arpt_mat4 arpt_camera_tile_model(const arpt_camera *cam,
-                                  double center_lon, double center_lat,
-                                  double center_alt) {
+arpt_mat4 arpt_camera_tile_model(const arpt_camera *cam, double center_lon,
+                                 double center_lat, double center_alt) {
     arpt_dmat4 R_globe = arpt_globe_rotation(cam->lon_rad, cam->lat_rad);
     arpt_dmat4 R_tilt = compute_tilt_matrix(cam->tilt_rad, cam->bearing_rad);
 
-    arpt_dvec3 tile_center_ecef = arpt_geodetic_to_ecef(center_lon, center_lat,
-                                                         center_alt);
-    arpt_dvec3 interest_ecef = arpt_geodetic_to_ecef(cam->lon_rad, cam->lat_rad,
-                                                      0.0);
+    arpt_dvec3 tile_center_ecef =
+        arpt_geodetic_to_ecef(center_lon, center_lat, center_alt);
+    arpt_dvec3 interest_ecef =
+        arpt_geodetic_to_ecef(cam->lon_rad, cam->lat_rad, 0.0);
     arpt_dvec3 delta = arpt_dvec3_sub(tile_center_ecef, interest_ecef);
 
     arpt_dmat4 R = arpt_dmat4_mul(R_tilt, R_globe);
@@ -128,32 +145,29 @@ arpt_mat4 arpt_camera_tile_model(const arpt_camera *cam,
 
 /* Manipulation */
 
-/**
- * Helper: cast ray from screen coords (sx,sy), intersect ellipsoid,
- * convert hit to geodetic. Returns true on hit.
- */
+/* Cast ray from screen coords (sx,sy), intersect ellipsoid,
+   convert hit to geodetic. Returns true on hit. */
 static bool screen_to_geodetic(const arpt_camera *cam, double sx, double sy,
-                                double *out_lon, double *out_lat) {
+                               double *out_lon, double *out_lat) {
     arpt_dvec3 origin, dir;
-    if (!arpt_camera_screen_to_ray(cam, sx, sy, &origin, &dir))
-        return false;
+    if (!arpt_camera_screen_to_ray(cam, sx, sy, &origin, &dir)) return false;
     double t;
-    if (!arpt_ray_ellipsoid(origin, dir, &t))
-        return false;
+    if (!arpt_ray_ellipsoid(origin, dir, &t)) return false;
     arpt_dvec3 hit = arpt_dvec3_add(origin, arpt_dvec3_scale(dir, t));
     double alt;
     arpt_ecef_to_geodetic(hit, out_lon, out_lat, &alt);
     return true;
 }
 
-bool arpt_camera_screen_to_geodetic(const arpt_camera *cam, double sx, double sy,
-                                     double *out_lon, double *out_lat) {
+bool arpt_camera_screen_to_geodetic(const arpt_camera *cam, double sx,
+                                    double sy, double *out_lon,
+                                    double *out_lat) {
     return screen_to_geodetic(cam, sx, sy, out_lon, out_lat);
 }
 
 void arpt_camera_pan_begin(arpt_camera *cam, double sx, double sy) {
-    cam->anchor_valid = screen_to_geodetic(cam, sx, sy,
-                                            &cam->anchor_lon, &cam->anchor_lat);
+    cam->anchor_valid =
+        screen_to_geodetic(cam, sx, sy, &cam->anchor_lon, &cam->anchor_lat);
 }
 
 void arpt_camera_pan_move(arpt_camera *cam, double sx, double sy) {
@@ -179,8 +193,8 @@ void arpt_camera_pan_move(arpt_camera *cam, double sx, double sy) {
 void arpt_camera_pan(arpt_camera *cam, double dx, double dy) {
     /* Linear pan: convert pixel delta to radians */
     double half_h = tan(CAM_FOV * 0.5);
-    double rad_per_px = 2.0 * cam->altitude * half_h /
-                        (cam->vp_height * ARPT_WGS84_A);
+    double rad_per_px =
+        2.0 * cam->altitude * half_h / (cam->vp_height * ARPT_WGS84_A);
 
     /* Rotate pixel delta by bearing */
     double cb = cos(cam->bearing_rad), sb = sin(cam->bearing_rad);
@@ -191,34 +205,36 @@ void arpt_camera_pan(arpt_camera *cam, double dx, double dy) {
        Sign convention: negative dy (drag up / UP arrow) → increase latitude.
        Negative dx (drag left / LEFT arrow) → decrease longitude. */
     double cos_lat = cos(cam->lat_rad);
-    if (cos_lat > 1e-6)
-        cam->lon_rad += rx * rad_per_px / cos_lat;
+    if (cos_lat > 1e-6) cam->lon_rad += rx * rad_per_px / cos_lat;
     cam->lat_rad -= ry * rad_per_px;
     clamp_position(cam);
 }
 
-void arpt_camera_zoom_at(arpt_camera *cam, double sx, double sy, double factor) {
+void arpt_camera_zoom_at(arpt_camera *cam, double sx, double sy,
+                         double factor) {
     /* Cast ray to find anchor point on globe */
     double anchor_lon, anchor_lat;
     bool has_anchor = screen_to_geodetic(cam, sx, sy, &anchor_lon, &anchor_lat);
 
     /* Apply zoom */
-    cam->altitude = fmax(CAM_MIN_ALT, fmin(CAM_MAX_ALT, cam->altitude * factor));
+    cam->altitude =
+        fmax(CAM_MIN_ALT, fmin(CAM_MAX_ALT, cam->altitude * factor));
 
     if (!has_anchor) return;
 
-    /* Iterative convergence: adjust lon/lat so anchor stays at same screen pos */
+    /* Iterative convergence: adjust lon/lat so anchor stays at same screen pos
+     */
     for (int i = 0; i < 3; i++) {
         double cursor_lon, cursor_lat;
-        if (!screen_to_geodetic(cam, sx, sy, &cursor_lon, &cursor_lat))
-            return;
+        if (!screen_to_geodetic(cam, sx, sy, &cursor_lon, &cursor_lat)) return;
         cam->lon_rad += anchor_lon - cursor_lon;
         cam->lat_rad += anchor_lat - cursor_lat;
         clamp_position(cam);
     }
 }
 
-void arpt_camera_tilt_bearing(arpt_camera *cam, double d_tilt, double d_bearing) {
+void arpt_camera_tilt_bearing(arpt_camera *cam, double d_tilt,
+                              double d_bearing) {
     arpt_camera_set_tilt(cam, cam->tilt_rad + d_tilt);
     arpt_camera_set_bearing(cam, cam->bearing_rad + d_bearing);
 }
@@ -226,8 +242,9 @@ void arpt_camera_tilt_bearing(arpt_camera *cam, double d_tilt, double d_bearing)
 /* Tile management helpers */
 
 int arpt_camera_zoom_level(const arpt_camera *cam, double root_error,
-                            int min_level, int max_level) {
-    /* L = floor(log2(root_error * vp_height / (2 * altitude * tan(fov/2) * 8))) */
+                           int min_level, int max_level) {
+    /* L = floor(log2(root_error * vp_height / (2 * altitude * tan(fov/2) * 8)))
+     */
     double val = root_error * cam->vp_height /
                  (2.0 * cam->altitude * tan(CAM_FOV * 0.5) * 8.0);
     if (val <= 1.0) return min_level;
@@ -238,7 +255,7 @@ int arpt_camera_zoom_level(const arpt_camera *cam, double root_error,
 }
 
 bool arpt_camera_screen_to_ray(const arpt_camera *cam, double sx, double sy,
-                                arpt_dvec3 *origin, arpt_dvec3 *dir) {
+                               arpt_dvec3 *origin, arpt_dvec3 *dir) {
     /* Convert screen (pixels) to NDC [-1, 1] */
     double ndc_x = (2.0 * sx / cam->vp_width - 1.0);
     double ndc_y = (1.0 - 2.0 * sy / cam->vp_height);
@@ -274,9 +291,10 @@ bool arpt_camera_screen_to_ray(const arpt_camera *cam, double sx, double sy,
        Camera is at origin. So the camera in "rotated ECEF" space is at
        the position where interest_ecef would be plus the offset.
        cam_ecef = interest_ecef + R_inv * (0, 0, altitude) */
-    arpt_dvec3 interest_ecef = arpt_geodetic_to_ecef(cam->lon_rad, cam->lat_rad,
-                                                      0.0);
-    arpt_dvec3 cam_offset = arpt_dmat4_rotate(R_inv, (arpt_dvec3){0, 0, cam->altitude});
+    arpt_dvec3 interest_ecef =
+        arpt_geodetic_to_ecef(cam->lon_rad, cam->lat_rad, 0.0);
+    arpt_dvec3 cam_offset =
+        arpt_dmat4_rotate(R_inv, (arpt_dvec3){0, 0, cam->altitude});
     *origin = arpt_dvec3_add(interest_ecef, cam_offset);
     *dir = arpt_dmat4_rotate(R_inv, cam_dir);
 

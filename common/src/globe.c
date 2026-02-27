@@ -4,16 +4,16 @@
 arpt_dvec3 arpt_geodetic_to_ecef(double lon, double lat, double alt) {
     double sin_lat = sin(lat), cos_lat = cos(lat);
     double sin_lon = sin(lon), cos_lon = cos(lon);
-    double N = ARPT_WGS84_A / sqrt(1.0 - ARPT_WGS84_E2 * sin_lat * sin_lat);
+    double n = ARPT_WGS84_A / sqrt(1.0 - ARPT_WGS84_E2 * sin_lat * sin_lat);
     return (arpt_dvec3){
-        (N + alt) * cos_lat * cos_lon,
-        (N + alt) * cos_lat * sin_lon,
-        (N * (1.0 - ARPT_WGS84_E2) + alt) * sin_lat,
+        (n + alt) * cos_lat * cos_lon,
+        (n + alt) * cos_lat * sin_lon,
+        (n * (1.0 - ARPT_WGS84_E2) + alt) * sin_lat,
     };
 }
 
-void arpt_ecef_to_geodetic(arpt_dvec3 ecef,
-                            double *lon, double *lat, double *alt) {
+void arpt_ecef_to_geodetic(arpt_dvec3 ecef, double *lon, double *lat,
+                           double *alt) {
     /* Bowring's iterative method (converges in 2-3 iterations) */
     double x = ecef.x, y = ecef.y, z = ecef.z;
     double p = sqrt(x * x + y * y);
@@ -22,19 +22,19 @@ void arpt_ecef_to_geodetic(arpt_dvec3 ecef,
 
     /* Initial estimate */
     double lat_i = atan2(z, p * (1.0 - ARPT_WGS84_E2));
-    double N;
+    double n;
     for (int i = 0; i < 5; i++) {
         double sin_lat = sin(lat_i);
-        N = ARPT_WGS84_A / sqrt(1.0 - ARPT_WGS84_E2 * sin_lat * sin_lat);
-        lat_i = atan2(z + ARPT_WGS84_E2 * N * sin_lat, p);
+        n = ARPT_WGS84_A / sqrt(1.0 - ARPT_WGS84_E2 * sin_lat * sin_lat);
+        lat_i = atan2(z + ARPT_WGS84_E2 * n * sin_lat, p);
     }
     *lat = lat_i;
 
     double sin_lat = sin(lat_i);
-    N = ARPT_WGS84_A / sqrt(1.0 - ARPT_WGS84_E2 * sin_lat * sin_lat);
+    n = ARPT_WGS84_A / sqrt(1.0 - ARPT_WGS84_E2 * sin_lat * sin_lat);
     double cos_lat = cos(lat_i);
     if (fabs(cos_lat) > 1e-10)
-        *alt = p / cos_lat - N;
+        *alt = p / cos_lat - n;
     else
         *alt = fabs(z) - ARPT_WGS84_A * sqrt(1.0 - ARPT_WGS84_E2);
 }
@@ -56,22 +56,27 @@ bool arpt_ray_ellipsoid(arpt_dvec3 origin, arpt_dvec3 dir, double *t) {
     double a2 = ARPT_WGS84_A * ARPT_WGS84_A;
     double b2 = ARPT_WGS84_B * ARPT_WGS84_B;
 
-    double A = (dir.x * dir.x + dir.y * dir.y) / a2 +
-               (dir.z * dir.z) / b2;
-    double B = 2.0 * ((origin.x * dir.x + origin.y * dir.y) / a2 +
+    double qa = (dir.x * dir.x + dir.y * dir.y) / a2 + (dir.z * dir.z) / b2;
+    double qb = 2.0 * ((origin.x * dir.x + origin.y * dir.y) / a2 +
                        (origin.z * dir.z) / b2);
-    double C = (origin.x * origin.x + origin.y * origin.y) / a2 +
-               (origin.z * origin.z) / b2 - 1.0;
+    double qc = (origin.x * origin.x + origin.y * origin.y) / a2 +
+                (origin.z * origin.z) / b2 - 1.0;
 
-    double disc = B * B - 4.0 * A * C;
+    double disc = qb * qb - 4.0 * qa * qc;
     if (disc < 0.0) return false;
 
     double sqrt_disc = sqrt(disc);
-    double t0 = (-B - sqrt_disc) / (2.0 * A);
-    double t1 = (-B + sqrt_disc) / (2.0 * A);
+    double t0 = (-qb - sqrt_disc) / (2.0 * qa);
+    double t1 = (-qb + sqrt_disc) / (2.0 * qa);
 
-    if (t0 > 0.0) { *t = t0; return true; }
-    if (t1 > 0.0) { *t = t1; return true; }
+    if (t0 > 0.0) {
+        *t = t0;
+        return true;
+    }
+    if (t1 > 0.0) {
+        *t = t1;
+        return true;
+    }
     return false;
 }
 

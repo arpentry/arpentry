@@ -1,0 +1,49 @@
+---
+Language: Cpp
+
+# Based on LLVM, tuned to match STYLE.md
+BasedOnStyle: LLVM
+
+# 4 spaces, no tabs
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+# ~80 columns
+ColumnLimit: 80
+
+# K&R braces (opening brace on same line)
+BreakBeforeBraces: Attach
+
+# void *ptr (star next to name)
+PointerAlignment: Right
+
+# Space before ( in control statements only
+SpaceBeforeParens: ControlStatements
+
+# Align wrapped params to opening paren:
+#   bool arpt_decode(const uint8_t *data, size_t size,
+#                    uint8_t **out, size_t *out_size);
+AlignAfterOpenBracket: Align
+
+# Single-line guards: if (!ptr) return NULL;
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: false
+
+# Keep short functions on one line only if empty
+AllowShortFunctionsOnASingleLine: Empty
+# switch/case: don't indent case labels
+IndentCaseLabels: false
+
+# Don't reorder includes (we have specific grouping rules)
+SortIncludes: Never
+
+# No space after casts: (uint8_t *)ptr
+SpaceAfterCStyleCast: false
+
+# Keep bin-packing (multiple params per line)
+BinPackParameters: true
+BinPackArguments: true
+
+# Align backslash continuations in macros
+AlignEscapedNewlines: Left

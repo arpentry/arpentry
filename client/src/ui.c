@@ -67,7 +67,8 @@ static const char *ui_wgsl =
     "const ZOOM_R: f32  = 19.0;\n"
     "const ZOOM_CX: f32 = 157.0;\n"
     "\n"
-    "@fragment fn fs(@location(0) pixel: vec2<f32>) -> @location(0) vec4<f32> {\n"
+    "@fragment fn fs(@location(0) pixel: vec2<f32>) -> @location(0) vec4<f32> "
+    "{\n"
     "    let lp = pixel / u.scale;\n"
     "    let scr = u.screen / u.scale;\n"
     "    let br = scr - lp;\n"
@@ -128,7 +129,8 @@ static const char *ui_wgsl =
     "    col = mix(col, icon, ring * ic);\n"
     "    a = max(a, ring * ic);\n"
     "\n"
-    "    // Rotate for bearing (convert br-coords to math coords by flipping x)\n"
+    "    // Rotate for bearing (convert br-coords to math coords by flipping "
+    "x)\n"
     "    let mcp = vec2<f32>(-comp_p.x, comp_p.y);\n"
     "    let ca = -u.bearing;\n"
     "    let cc = cos(ca);\n"
@@ -197,16 +199,16 @@ static const char *ui_wgsl =
 
 /* Layout constants (must match shader) */
 
-#define UI_CY      48.0f
-#define UI_COMP_R  32.0f
+#define UI_CY 48.0f
+#define UI_COMP_R 32.0f
 #define UI_COMP_CX 48.0f
 #define UI_TILT_HW 19.0f
 #define UI_TILT_HH 32.0f
-#define UI_TILT_R  19.0f
+#define UI_TILT_R 19.0f
 #define UI_TILT_CX 109.0f
 #define UI_ZOOM_HW 19.0f
 #define UI_ZOOM_HH 32.0f
-#define UI_ZOOM_R  19.0f
+#define UI_ZOOM_R 19.0f
 #define UI_ZOOM_CX 157.0f
 
 /* Uniform buffer layout */
@@ -254,9 +256,8 @@ static float sd_circle_c(float px, float py, float r) {
 /* Public API */
 
 arpt_ui *arpt_ui_create(WGPUDevice device, WGPUQueue queue,
-                         WGPUTextureFormat surface_format,
-                         uint32_t fb_width, uint32_t fb_height,
-                         float pixel_ratio) {
+                        WGPUTextureFormat surface_format, uint32_t fb_width,
+                        uint32_t fb_height, float pixel_ratio) {
     arpt_ui *ui = calloc(1, sizeof(*ui));
     if (!ui) return NULL;
 
@@ -283,13 +284,14 @@ arpt_ui *arpt_ui_create(WGPUDevice device, WGPUQueue queue,
         .buffer = {.type = WGPUBufferBindingType_Uniform,
                    .minBindingSize = sizeof(ui_uniforms_t)},
     };
-    ui->bgl = wgpuDeviceCreateBindGroupLayout(device,
+    ui->bgl = wgpuDeviceCreateBindGroupLayout(
+        device,
         &(WGPUBindGroupLayoutDescriptor){.entryCount = 1, .entries = &bgle});
 
     /* Pipeline layout */
-    WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(device,
-        &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 1,
-                                         .bindGroupLayouts = &ui->bgl});
+    WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
+        device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 1,
+                                                .bindGroupLayouts = &ui->bgl});
 
     /* Color target with alpha blending for glass effect */
     WGPUBlendState blend = {
@@ -314,15 +316,17 @@ arpt_ui *arpt_ui_create(WGPUDevice device, WGPUQueue queue,
         .depthWriteEnabled = false,
         .depthCompare = WGPUCompareFunction_Always,
         .stencilFront = {.compare = WGPUCompareFunction_Always},
-        .stencilBack  = {.compare = WGPUCompareFunction_Always},
-        .stencilReadMask  = 0,
+        .stencilBack = {.compare = WGPUCompareFunction_Always},
+        .stencilReadMask = 0,
         .stencilWriteMask = 0,
     };
 
     WGPURenderPipelineDescriptor pip = {
         .layout = pl,
-        .vertex = {.module = sm, .entryPoint = "vs",
-                   .bufferCount = 0, .buffers = NULL},
+        .vertex = {.module = sm,
+                   .entryPoint = "vs",
+                   .bufferCount = 0,
+                   .buffers = NULL},
         .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
                       .cullMode = WGPUCullMode_None},
         .fragment = &frag,
@@ -343,12 +347,14 @@ arpt_ui *arpt_ui_create(WGPUDevice device, WGPUQueue queue,
 
     /* Bind group */
     WGPUBindGroupEntry bg_entry = {
-        .binding = 0, .buffer = ui->uniform_buf,
-        .offset = 0, .size = sizeof(ui_uniforms_t),
+        .binding = 0,
+        .buffer = ui->uniform_buf,
+        .offset = 0,
+        .size = sizeof(ui_uniforms_t),
     };
-    ui->bind_group = wgpuDeviceCreateBindGroup(device,
-        &(WGPUBindGroupDescriptor){.layout = ui->bgl,
-                                    .entryCount = 1, .entries = &bg_entry});
+    ui->bind_group = wgpuDeviceCreateBindGroup(
+        device, &(WGPUBindGroupDescriptor){
+                    .layout = ui->bgl, .entryCount = 1, .entries = &bg_entry});
 
     return ui;
 }
@@ -363,7 +369,7 @@ void arpt_ui_free(arpt_ui *ui) {
 }
 
 void arpt_ui_resize(arpt_ui *ui, uint32_t fb_width, uint32_t fb_height,
-                     float pixel_ratio) {
+                    float pixel_ratio) {
     ui->fb_width = fb_width;
     ui->fb_height = fb_height;
     ui->pixel_ratio = pixel_ratio;
@@ -379,8 +385,8 @@ void arpt_ui_set_cursor(arpt_ui *ui, float screen_x, float screen_y) {
     ui->cursor_y = screen_y;
 }
 
-arpt_ui_action arpt_ui_hit_test(const arpt_ui *ui,
-                                  float screen_x, float screen_y) {
+arpt_ui_action arpt_ui_hit_test(const arpt_ui *ui, float screen_x,
+                                float screen_y) {
     float scr_w = (float)ui->fb_width / ui->pixel_ratio;
     float scr_h = (float)ui->fb_height / ui->pixel_ratio;
     float bx = scr_w - screen_x;
@@ -388,8 +394,7 @@ arpt_ui_action arpt_ui_hit_test(const arpt_ui *ui,
 
     /* Compass (rightmost) */
     float dx = bx - UI_COMP_CX, dy = by - UI_CY;
-    if (sd_circle_c(dx, dy, UI_COMP_R) < 0.0f)
-        return ARPT_UI_RESET_NORTH;
+    if (sd_circle_c(dx, dy, UI_COMP_R) < 0.0f) return ARPT_UI_RESET_NORTH;
 
     /* Tilt (middle) */
     dx = bx - UI_TILT_CX;

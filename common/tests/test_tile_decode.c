@@ -1,6 +1,7 @@
 #include "unity.h"
 #include "tile_decode.h"
 #include "tile_builder.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -28,9 +29,9 @@ static void *build_terrain_tile(size_t *out_size, bool include_normals) {
 
     uint16_t xs[] = {16384, 49151, 49151, 16384};
     uint16_t ys[] = {16384, 16384, 49151, 49151};
-    int32_t  zs[] = {0, 100000, 200000, 50000};
+    int32_t zs[] = {0, 100000, 200000, 50000};
     uint32_t indices[] = {0, 1, 2, 0, 2, 3};
-    int8_t   normals[] = {0, 127, 0, 127, 0, 127, 0, 127};
+    int8_t normals[] = {0, 127, 0, 127, 0, 127, 0, 127};
 
     arpentry_tiles_MeshGeometry_start(&b);
     arpentry_tiles_MeshGeometry_x_create(&b, xs, 4);
@@ -71,13 +72,14 @@ static void *build_points_only_tile(size_t *out_size) {
 
     uint16_t xs[] = {32768};
     uint16_t ys[] = {32768};
-    int32_t  zs[] = {0};
+    int32_t zs[] = {0};
 
     arpentry_tiles_PointGeometry_start(&b);
     arpentry_tiles_PointGeometry_x_create(&b, xs, 1);
     arpentry_tiles_PointGeometry_y_create(&b, ys, 1);
     arpentry_tiles_PointGeometry_z_create(&b, zs, 1);
-    arpentry_tiles_PointGeometry_ref_t ref = arpentry_tiles_PointGeometry_end(&b);
+    arpentry_tiles_PointGeometry_ref_t ref =
+        arpentry_tiles_PointGeometry_end(&b);
     arpentry_tiles_Feature_geometry_PointGeometry_add(&b, ref);
 
     arpentry_tiles_Layer_features_push_end(&b);

@@ -23,14 +23,14 @@ void test_simplex_deterministic(void) {
 
 void test_simplex_range(void) {
     double inputs[][2] = {
-        {0.0, 0.0}, {1.0, 1.0}, {-3.7, 2.1}, {100.0, -50.0},
+        {0.0, 0.0},     {1.0, 1.0},     {-3.7, 2.1},  {100.0, -50.0},
         {0.001, 0.001}, {-180.0, 90.0}, {3.14, 2.72},
     };
     int n = sizeof(inputs) / sizeof(inputs[0]);
     for (int i = 0; i < n; i++) {
         double v = arpt_simplex2(inputs[i][0], inputs[i][1]);
         TEST_ASSERT_TRUE_MESSAGE(v >= -1.0 && v <= 1.0,
-                                  "simplex2 output out of [-1, 1]");
+                                 "simplex2 output out of [-1, 1]");
     }
 }
 
@@ -38,7 +38,7 @@ void test_simplex_varies(void) {
     double a = arpt_simplex2(0.0, 0.0);
     double b = arpt_simplex2(10.0, 10.0);
     TEST_ASSERT_TRUE_MESSAGE(fabs(a - b) > 1e-6,
-                              "simplex2 should vary for different inputs");
+                             "simplex2 should vary for different inputs");
 }
 
 /* 3D simplex noise tests */
@@ -51,15 +51,15 @@ void test_simplex3_deterministic(void) {
 
 void test_simplex3_range(void) {
     double inputs[][3] = {
-        {0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}, {-3.7, 2.1, 0.5},
-        {100.0, -50.0, 25.0}, {0.001, 0.001, 0.001},
-        {-1.0, 0.0, 0.0}, {0.0, -1.0, 0.0}, {0.0, 0.0, 1.0},
+        {0.0, 0.0, 0.0},      {1.0, 1.0, 1.0},       {-3.7, 2.1, 0.5},
+        {100.0, -50.0, 25.0}, {0.001, 0.001, 0.001}, {-1.0, 0.0, 0.0},
+        {0.0, -1.0, 0.0},     {0.0, 0.0, 1.0},
     };
     int n = sizeof(inputs) / sizeof(inputs[0]);
     for (int i = 0; i < n; i++) {
         double v = arpt_simplex3(inputs[i][0], inputs[i][1], inputs[i][2]);
         TEST_ASSERT_TRUE_MESSAGE(v >= -1.0 && v <= 1.0,
-                                  "simplex3 output out of [-1, 1]");
+                                 "simplex3 output out of [-1, 1]");
     }
 }
 
@@ -67,7 +67,7 @@ void test_simplex3_varies(void) {
     double a = arpt_simplex3(0.5, 1.7, 3.2);
     double b = arpt_simplex3(7.3, -2.1, 4.8);
     TEST_ASSERT_TRUE_MESSAGE(fabs(a - b) > 1e-6,
-                              "simplex3 should vary for different inputs");
+                             "simplex3 should vary for different inputs");
 }
 
 /* fBm tests */
@@ -83,13 +83,13 @@ void test_fbm_more_octaves_more_detail(void) {
     double diff_sum = 0.0;
     for (int i = 0; i < N; i++) {
         double x = (double)i * 0.1;
-        double low  = arpt_fbm2(x, 0.5, 2, 2.0, 0.5);
+        double low = arpt_fbm2(x, 0.5, 2, 2.0, 0.5);
         double high = arpt_fbm2(x, 0.5, 10, 2.0, 0.5);
         diff_sum += fabs(high - low);
     }
     double avg_diff = diff_sum / N;
     TEST_ASSERT_TRUE_MESSAGE(avg_diff > 1e-4,
-                              "Higher octaves should add noticeable detail");
+                             "Higher octaves should add noticeable detail");
 }
 
 void test_fbm3_deterministic(void) {
@@ -103,13 +103,13 @@ void test_fbm3_more_octaves_more_detail(void) {
     double diff_sum = 0.0;
     for (int i = 0; i < N; i++) {
         double x = (double)i * 0.1;
-        double low  = arpt_fbm3(x, 0.5, 0.3, 2, 2.0, 0.5);
+        double low = arpt_fbm3(x, 0.5, 0.3, 2, 2.0, 0.5);
         double high = arpt_fbm3(x, 0.5, 0.3, 16, 2.0, 0.5);
         diff_sum += fabs(high - low);
     }
     double avg_diff = diff_sum / N;
-    TEST_ASSERT_TRUE_MESSAGE(avg_diff > 1e-4,
-                              "Higher octaves should add noticeable detail (3D)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        avg_diff > 1e-4, "Higher octaves should add noticeable detail (3D)");
 }
 
 /* Sphere continuity tests */
@@ -127,8 +127,8 @@ void test_pole_continuity(void) {
         double lon_r = (double)lon_deg * (PI / 180.0);
         double sx = cos_lat * cos(lon_r);
         double sy = cos_lat * sin(lon_r);
-        double elev = arpt_fbm3(sx * base_freq, sy * base_freq,
-                                sz * base_freq, 16, 2.0, 0.5);
+        double elev = arpt_fbm3(sx * base_freq, sy * base_freq, sz * base_freq,
+                                16, 2.0, 0.5);
         if (ref < -998.0) {
             ref = elev;
         } else {
@@ -150,7 +150,7 @@ void test_antimeridian_continuity(void) {
         double sz = sin(lat_r);
 
         double lon_neg = -180.0 * (PI / 180.0);
-        double lon_pos =  180.0 * (PI / 180.0);
+        double lon_pos = 180.0 * (PI / 180.0);
 
         double sx_a = cos_lat * cos(lon_neg);
         double sy_a = cos_lat * sin(lon_neg);
@@ -213,8 +213,7 @@ void test_generate_terrain_different_tiles(void) {
     TEST_ASSERT_TRUE(arpt_generate_terrain(0, 1, 0, &b, &b_sz));
 
     /* Different tiles should produce different output */
-    TEST_ASSERT_TRUE(a_sz != b_sz ||
-                     memcmp(a, b, a_sz) != 0);
+    TEST_ASSERT_TRUE(a_sz != b_sz || memcmp(a, b, a_sz) != 0);
 
     free(a);
     free(b);
@@ -236,7 +235,7 @@ void test_adjacent_tiles_match(void) {
     int level = 2;
     int x_left = 3, x_right = 4, y = 1;
 
-    arpt_bounds b_left  = arpt_tile_bounds(level, x_left, y);
+    arpt_bounds b_left = arpt_tile_bounds(level, x_left, y);
     arpt_bounds b_right = arpt_tile_bounds(level, x_right, y);
 
     /* The shared edge is at b_left.east == b_right.west */

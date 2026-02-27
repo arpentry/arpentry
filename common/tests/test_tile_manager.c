@@ -29,7 +29,9 @@ void test_ancestor_chain(void) {
     int pl, px, py;
     int steps = 0;
     while (arpt_tile_ancestor(l, x, y, &pl, &px, &py)) {
-        l = pl; x = px; y = py;
+        l = pl;
+        x = px;
+        y = py;
         steps++;
     }
     TEST_ASSERT_EQUAL_INT(5, steps);

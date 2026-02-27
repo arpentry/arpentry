@@ -33,8 +33,7 @@ static void on_closed(struct net_conn *conn, void *udata) {
 }
 
 static void on_data(struct net_conn *conn, const void *data, size_t nbytes,
-                    void *udata)
-{
+                    void *udata) {
     struct server_ctx *ctx = udata;
     http_conn *hc = net_conn_udata(conn);
     http_conn_feed(hc, conn, ctx, data, nbytes);
@@ -78,8 +77,8 @@ int main(int argc, char *argv[]) {
         .data = on_data,
     };
 
-    printf("Listening on %s:%s (%d thread%s)\n",
-           opts.host, opts.port, nthreads, nthreads > 1 ? "s" : "");
+    printf("Listening on %s:%s (%d thread%s)\n", opts.host, opts.port, nthreads,
+           nthreads > 1 ? "s" : "");
 
     /* Blocks forever */
     net_main(&opts);

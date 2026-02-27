@@ -10,25 +10,26 @@
 
 /* Terrain parameters */
 
-#define TERRAIN_GRID        64
-#define TERRAIN_VERTS       (TERRAIN_GRID + 1)  /* 65x65 = 4225 vertices */
-#define TERRAIN_OCTAVES     16
-#define TERRAIN_BASE_FREQ   4.0
-#define TERRAIN_AMPLITUDE   8000.0   /* peak ~8000m */
-#define TERRAIN_LACUNARITY  2.0
+#define TERRAIN_GRID 64
+#define TERRAIN_VERTS (TERRAIN_GRID + 1) /* 65x65 = 4225 vertices */
+#define TERRAIN_OCTAVES 16
+#define TERRAIN_BASE_FREQ 4.0
+#define TERRAIN_AMPLITUDE 8000.0 /* peak ~8000m */
+#define TERRAIN_LACUNARITY 2.0
 #define TERRAIN_PERSISTENCE 0.65
-#define TERRAIN_REDISTRIBUTE 0.45  /* power curve exponent: < 1 pushes toward extremes */
-#define BROTLI_QUALITY      4
+#define TERRAIN_REDISTRIBUTE \
+    0.45 /* power curve exponent: < 1 pushes toward extremes */
+#define BROTLI_QUALITY 4
 
-#define LANDUSE_GRID        64      /* 64x64 marching squares grid (matches terrain) */
-#define LANDUSE_BUFFER      8       /* extra cells of buffer on each side */
-#define LANDUSE_TOTAL       (LANDUSE_GRID + 2 * LANDUSE_BUFFER)  /* 80 */
-#define LANDUSE_VERTS       (LANDUSE_TOTAL + 1)  /* 81x81 classification vertices */
+#define LANDUSE_GRID 64  /* 64x64 marching squares grid (matches terrain) */
+#define LANDUSE_BUFFER 8 /* extra cells of buffer on each side */
+#define LANDUSE_TOTAL (LANDUSE_GRID + 2 * LANDUSE_BUFFER) /* 80 */
+#define LANDUSE_VERTS (LANDUSE_TOTAL + 1) /* 81x81 classification vertices */
 
 /* Landuse class indices into the tile-scope value dictionary */
-#define LANDUSE_VAL_GRASS   0
-#define LANDUSE_VAL_FOREST  1
-#define LANDUSE_VAL_SAND    2
+#define LANDUSE_VAL_GRASS 0
+#define LANDUSE_VAL_FOREST 1
+#define LANDUSE_VAL_SAND 2
 
 #define PI 3.14159265358979323846
 
@@ -58,11 +59,15 @@ static double terrain_elevation(double lon_deg, double lat_deg) {
 }
 
 /* Octahedral encoding: unit normal -> int8x2 */
-static void encode_octahedral(double nx, double ny, double nz,
-                               int8_t *ox, int8_t *oy) {
+static void encode_octahedral(double nx, double ny, double nz, int8_t *ox,
+                              int8_t *oy) {
     double ax = fabs(nx), ay = fabs(ny), az = fabs(nz);
     double sum = ax + ay + az;
-    if (sum < 1e-15) { *ox = 0; *oy = 127; return; }
+    if (sum < 1e-15) {
+        *ox = 0;
+        *oy = 127;
+        return;
+    }
 
     double u = nx / sum;
     double v = ny / sum;
@@ -83,10 +88,10 @@ static void encode_octahedral(double nx, double ny, double nz,
 
 /* Phase 1: Build padded elevation grid.
  * Returns (TERRAIN_VERTS+2)^2 doubles, or NULL on failure. */
-static double *build_elevation_grid(arpt_bounds bounds,
-                                    double cell_lon, double cell_lat) {
-    int pad_w = TERRAIN_VERTS + 2;    /* 67 */
-    int pad_n = pad_w * pad_w;        /* 67x67 = 4489 */
+static double *build_elevation_grid(arpt_bounds bounds, double cell_lon,
+                                    double cell_lat) {
+    int pad_w = TERRAIN_VERTS + 2; /* 67 */
+    int pad_n = pad_w * pad_w;     /* 67x67 = 4489 */
     double *elev = malloc((size_t)pad_n * sizeof(double));
     if (!elev) return NULL;
 
@@ -101,12 +106,10 @@ static double *build_elevation_grid(arpt_bounds bounds,
 }
 
 /* Phase 2: Build vertex arrays from elevation grid. */
-static void build_vertices(arpt_bounds bounds,
-                           double cell_lon, double cell_lat,
-                           double cell_w_m, double cell_h_m,
-                           const double *elev, int pad_w,
-                           uint16_t *vx, uint16_t *vy,
-                           int32_t *vz, int8_t *normals) {
+static void build_vertices(arpt_bounds bounds, double cell_lon, double cell_lat,
+                           double cell_w_m, double cell_h_m, const double *elev,
+                           int pad_w, uint16_t *vx, uint16_t *vy, int32_t *vz,
+                           int8_t *normals) {
     for (int row = 0; row < TERRAIN_VERTS; row++) {
         double lat = bounds.south + (double)row * cell_lat;
         for (int col = 0; col < TERRAIN_VERTS; col++) {
@@ -120,7 +123,8 @@ static void build_vertices(arpt_bounds bounds,
 
             /* Centered finite differences using padded neighbors */
             double dz_dx = (elev[pi + 1] - elev[pi - 1]) / (2.0 * cell_w_m);
-            double dz_dy = (elev[pi + pad_w] - elev[pi - pad_w]) / (2.0 * cell_h_m);
+            double dz_dy =
+                (elev[pi + pad_w] - elev[pi - pad_w]) / (2.0 * cell_h_m);
 
             /* ECEF normal from ENU basis vectors */
             double lon_r = lon * (PI / 180.0);
@@ -128,17 +132,21 @@ static void build_vertices(arpt_bounds bounds,
             double sin_lon = sin(lon_r), cos_lon = cos(lon_r);
             double sin_lat = sin(lat_r), cos_lat = cos(lat_r);
 
-            double ex = -sin_lon,           ey = cos_lon,            ez = 0.0;
-            double nx_e = -sin_lat*cos_lon, ny_e = -sin_lat*sin_lon, nz_e = cos_lat;
-            double ux = cos_lat*cos_lon,    uy = cos_lat*sin_lon,    uz = sin_lat;
+            double ex = -sin_lon, ey = cos_lon, ez = 0.0;
+            double nx_e = -sin_lat * cos_lon, ny_e = -sin_lat * sin_lon,
+                   nz_e = cos_lat;
+            double ux = cos_lat * cos_lon, uy = cos_lat * sin_lon, uz = sin_lat;
 
             double nx = ux - dz_dx * ex - dz_dy * nx_e;
             double ny = uy - dz_dx * ey - dz_dy * ny_e;
             double nz = uz - dz_dx * ez - dz_dy * nz_e;
-            double len = sqrt(nx*nx + ny*ny + nz*nz);
-            nx /= len; ny /= len; nz /= len;
+            double len = sqrt(nx * nx + ny * ny + nz * nz);
+            nx /= len;
+            ny /= len;
+            nz /= len;
 
-            encode_octahedral(nx, ny, nz, &normals[idx * 2], &normals[idx * 2 + 1]);
+            encode_octahedral(nx, ny, nz, &normals[idx * 2],
+                              &normals[idx * 2 + 1]);
         }
     }
 }
@@ -165,9 +173,8 @@ static void build_indices(uint32_t *indices) {
 }
 
 /* Phase 4: Classify landuse at each vertex of the marching squares grid. */
-static void classify_landuse(arpt_bounds bounds,
-                             double lon_span, double lat_span,
-                             int *vert_class) {
+static void classify_landuse(arpt_bounds bounds, double lon_span,
+                             double lat_span, int *vert_class) {
     for (int vr = 0; vr < LANDUSE_VERTS; vr++) {
         double v = (double)(vr - LANDUSE_BUFFER) / LANDUSE_GRID;
         double lat = bounds.south + v * lat_span;
@@ -177,10 +184,14 @@ static void classify_landuse(arpt_bounds bounds,
             double e = terrain_elevation(lon, lat);
 
             int cls;
-            if (e < 200.0)       cls = LANDUSE_VAL_GRASS;
-            else if (e < 800.0)  cls = LANDUSE_VAL_FOREST;
-            else if (e < 1500.0) cls = LANDUSE_VAL_GRASS;
-            else                 cls = LANDUSE_VAL_SAND;
+            if (e < 200.0)
+                cls = LANDUSE_VAL_GRASS;
+            else if (e < 800.0)
+                cls = LANDUSE_VAL_FOREST;
+            else if (e < 1500.0)
+                cls = LANDUSE_VAL_GRASS;
+            else
+                cls = LANDUSE_VAL_SAND;
 
             vert_class[vr * LANDUSE_VERTS + vc] = cls;
         }
@@ -188,16 +199,15 @@ static void classify_landuse(arpt_bounds bounds,
 }
 
 /* Phase 5: Generate landuse polygon patches via marching squares. */
-static int generate_landuse_patches(const int *vert_class,
-                                    ms_patch *patches) {
+static int generate_landuse_patches(const int *vert_class, ms_patch *patches) {
     int patch_count = 0;
 
     for (int r = 0; r < LANDUSE_TOTAL; r++) {
         for (int c = 0; c < LANDUSE_TOTAL; c++) {
             int cl_tl = vert_class[r * LANDUSE_VERTS + c];
             int cl_tr = vert_class[r * LANDUSE_VERTS + c + 1];
-            int cl_bl = vert_class[(r+1) * LANDUSE_VERTS + c];
-            int cl_br = vert_class[(r+1) * LANDUSE_VERTS + c + 1];
+            int cl_bl = vert_class[(r + 1) * LANDUSE_VERTS + c];
+            int cl_br = vert_class[(r + 1) * LANDUSE_VERTS + c + 1];
 
             /* Find unique classes in this cell */
             int unique[4], n_unique = 0;
@@ -205,17 +215,26 @@ static int generate_landuse_patches(const int *vert_class,
             for (int i = 0; i < 4; i++) {
                 int found = 0;
                 for (int j = 0; j < n_unique; j++)
-                    if (unique[j] == corners[i]) { found = 1; break; }
+                    if (unique[j] == corners[i]) {
+                        found = 1;
+                        break;
+                    }
                 if (!found) unique[n_unique++] = corners[i];
             }
 
             /* Quantized cell corner and edge-midpoint coordinates */
-            uint16_t xl = arpt_quantize((double)(c - LANDUSE_BUFFER) / LANDUSE_GRID);
-            uint16_t xm = arpt_quantize((c - LANDUSE_BUFFER + 0.5) / LANDUSE_GRID);
-            uint16_t xr = arpt_quantize((double)(c - LANDUSE_BUFFER + 1) / LANDUSE_GRID);
-            uint16_t yt = arpt_quantize((double)(r - LANDUSE_BUFFER) / LANDUSE_GRID);
-            uint16_t ym = arpt_quantize((r - LANDUSE_BUFFER + 0.5) / LANDUSE_GRID);
-            uint16_t yb = arpt_quantize((double)(r - LANDUSE_BUFFER + 1) / LANDUSE_GRID);
+            uint16_t xl =
+                arpt_quantize((double)(c - LANDUSE_BUFFER) / LANDUSE_GRID);
+            uint16_t xm =
+                arpt_quantize((c - LANDUSE_BUFFER + 0.5) / LANDUSE_GRID);
+            uint16_t xr =
+                arpt_quantize((double)(c - LANDUSE_BUFFER + 1) / LANDUSE_GRID);
+            uint16_t yt =
+                arpt_quantize((double)(r - LANDUSE_BUFFER) / LANDUSE_GRID);
+            uint16_t ym =
+                arpt_quantize((r - LANDUSE_BUFFER + 0.5) / LANDUSE_GRID);
+            uint16_t yb =
+                arpt_quantize((double)(r - LANDUSE_BUFFER + 1) / LANDUSE_GRID);
 
             for (int ui = 0; ui < n_unique; ui++) {
                 int cls = unique[ui];
@@ -225,7 +244,12 @@ static int generate_landuse_patches(const int *vert_class,
                 p->cls = cls;
                 int n = 0;
 
-                #define MS_V(px,py) do { p->x[n]=(px); p->y[n]=(py); n++; } while(0)
+#define MS_V(px, py)    \
+    do {                \
+        p->x[n] = (px); \
+        p->y[n] = (py); \
+        n++;            \
+    } while (0)
                 if (cl_tl == cls) MS_V(xl, yt);
                 if (cl_tl != cl_tr && (cl_tl == cls || cl_tr == cls))
                     MS_V(xm, yt);
@@ -238,10 +262,11 @@ static int generate_landuse_patches(const int *vert_class,
                 if (cl_bl == cls) MS_V(xl, yb);
                 if (cl_tl != cl_bl && (cl_tl == cls || cl_bl == cls))
                     MS_V(xl, ym);
-                #undef MS_V
+#undef MS_V
 
                 if (n < 3) continue;
-                p->x[n] = p->x[0]; p->y[n] = p->y[0];
+                p->x[n] = p->x[0];
+                p->y[n] = p->y[0];
                 p->count = n + 1;
                 patch_count++;
             }
@@ -254,10 +279,9 @@ static int generate_landuse_patches(const int *vert_class,
 /* Phase 6: Build FlatBuffer tile from terrain + landuse data. */
 static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
                                    const int32_t *vz, const int8_t *normals,
-                                   int nv,
-                                   const uint32_t *indices, int num_indices,
-                                   const ms_patch *patches, int patch_count,
-                                   size_t *fb_size) {
+                                   int nv, const uint32_t *indices,
+                                   int num_indices, const ms_patch *patches,
+                                   int patch_count, size_t *fb_size) {
     flatcc_builder_t builder;
     flatcc_builder_init(&builder);
 
@@ -273,17 +297,20 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
     arpentry_tiles_Tile_values_start(&builder);
     {
         arpentry_tiles_Tile_values_push_start(&builder);
-        arpentry_tiles_Value_type_add(&builder, arpentry_tiles_PropertyValueType_String);
+        arpentry_tiles_Value_type_add(&builder,
+                                      arpentry_tiles_PropertyValueType_String);
         arpentry_tiles_Value_string_value_create_str(&builder, "grass");
         arpentry_tiles_Tile_values_push_end(&builder);
 
         arpentry_tiles_Tile_values_push_start(&builder);
-        arpentry_tiles_Value_type_add(&builder, arpentry_tiles_PropertyValueType_String);
+        arpentry_tiles_Value_type_add(&builder,
+                                      arpentry_tiles_PropertyValueType_String);
         arpentry_tiles_Value_string_value_create_str(&builder, "forest");
         arpentry_tiles_Tile_values_push_end(&builder);
 
         arpentry_tiles_Tile_values_push_start(&builder);
-        arpentry_tiles_Value_type_add(&builder, arpentry_tiles_PropertyValueType_String);
+        arpentry_tiles_Value_type_add(&builder,
+                                      arpentry_tiles_PropertyValueType_String);
         arpentry_tiles_Value_string_value_create_str(&builder, "sand");
         arpentry_tiles_Tile_values_push_end(&builder);
     }
@@ -306,9 +333,9 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
             arpentry_tiles_MeshGeometry_y_create(&builder, vy, (size_t)nv);
             arpentry_tiles_MeshGeometry_z_create(&builder, vz, (size_t)nv);
             arpentry_tiles_MeshGeometry_indices_create(&builder, indices,
-                                                        (size_t)num_indices);
+                                                       (size_t)num_indices);
             arpentry_tiles_MeshGeometry_normals_create(&builder, normals,
-                                                        (size_t)(nv * 2));
+                                                       (size_t)(nv * 2));
 
             arpentry_tiles_MeshGeometry_parts_start(&builder);
             arpentry_tiles_Part_t part = {0};
@@ -318,7 +345,8 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
             arpentry_tiles_MeshGeometry_parts_end(&builder);
 
             mesh_ref = arpentry_tiles_MeshGeometry_end(&builder);
-            arpentry_tiles_Feature_geometry_MeshGeometry_add(&builder, mesh_ref);
+            arpentry_tiles_Feature_geometry_MeshGeometry_add(&builder,
+                                                             mesh_ref);
 
             arpentry_tiles_Layer_features_push_end(&builder);
         }
@@ -341,16 +369,16 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
             arpentry_tiles_PolygonGeometry_ref_t poly_ref;
             arpentry_tiles_PolygonGeometry_start(&builder);
             arpentry_tiles_PolygonGeometry_x_create(&builder, p->x,
-                                                     (size_t)p->count);
+                                                    (size_t)p->count);
             arpentry_tiles_PolygonGeometry_y_create(&builder, p->y,
-                                                     (size_t)p->count);
+                                                    (size_t)p->count);
             arpentry_tiles_PolygonGeometry_z_create(&builder, pz,
-                                                     (size_t)p->count);
-            arpentry_tiles_PolygonGeometry_ring_offsets_create(
-                &builder, ring_off, 2);
+                                                    (size_t)p->count);
+            arpentry_tiles_PolygonGeometry_ring_offsets_create(&builder,
+                                                               ring_off, 2);
             poly_ref = arpentry_tiles_PolygonGeometry_end(&builder);
-            arpentry_tiles_Feature_geometry_PolygonGeometry_add(
-                &builder, poly_ref);
+            arpentry_tiles_Feature_geometry_PolygonGeometry_add(&builder,
+                                                                poly_ref);
 
             arpentry_tiles_Feature_properties_start(&builder);
             arpentry_tiles_Property_t prop;
@@ -375,9 +403,8 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
 
 /* Public API */
 
-bool arpt_generate_terrain(int level, int x, int y,
-                           uint8_t **out, size_t *out_size)
-{
+bool arpt_generate_terrain(int level, int x, int y, uint8_t **out,
+                           size_t *out_size) {
     if (!out || !out_size) return false;
 
     arpt_bounds bounds = arpt_tile_bounds(level, x, y);
@@ -403,14 +430,14 @@ bool arpt_generate_terrain(int level, int x, int y,
     /* Phase 2-3: vertex + index arrays */
     uint16_t *vx = malloc((size_t)nv * sizeof(uint16_t));
     uint16_t *vy = malloc((size_t)nv * sizeof(uint16_t));
-    int32_t  *vz = malloc((size_t)nv * sizeof(int32_t));
-    int8_t   *normals = malloc((size_t)nv * 2 * sizeof(int8_t));
+    int32_t *vz = malloc((size_t)nv * sizeof(int32_t));
+    int8_t *normals = malloc((size_t)nv * 2 * sizeof(int8_t));
     uint32_t *indices = malloc((size_t)num_indices * sizeof(uint32_t));
     ms_patch *patches = NULL;
     if (!vx || !vy || !vz || !normals || !indices) goto fail;
 
-    build_vertices(bounds, cell_lon, cell_lat, cell_w_m, cell_h_m,
-                   elev, pad_w, vx, vy, vz, normals);
+    build_vertices(bounds, cell_lon, cell_lat, cell_w_m, cell_h_m, elev, pad_w,
+                   vx, vy, vz, normals);
     build_indices(indices);
     free(elev);
     elev = NULL;
@@ -420,20 +447,27 @@ bool arpt_generate_terrain(int level, int x, int y,
     if (!vert_class) goto fail;
     classify_landuse(bounds, lon_span, lat_span, vert_class);
 
-    patches = malloc((size_t)(LANDUSE_TOTAL * LANDUSE_TOTAL * 4)
-                     * sizeof(ms_patch));
-    if (!patches) { free(vert_class); goto fail; }
+    patches =
+        malloc((size_t)(LANDUSE_TOTAL * LANDUSE_TOTAL * 4) * sizeof(ms_patch));
+    if (!patches) {
+        free(vert_class);
+        goto fail;
+    }
     int patch_count = generate_landuse_patches(vert_class, patches);
     free(vert_class);
 
     /* Phase 6: FlatBuffer + Brotli compression */
     size_t fb_size;
-    void *fb = build_tile_flatbuffer(vx, vy, vz, normals, nv,
-                                     indices, num_indices,
-                                     patches, patch_count, &fb_size);
+    void *fb =
+        build_tile_flatbuffer(vx, vy, vz, normals, nv, indices, num_indices,
+                              patches, patch_count, &fb_size);
 
-    free(vx); free(vy); free(vz); free(normals);
-    free(indices); free(patches);
+    free(vx);
+    free(vy);
+    free(vz);
+    free(normals);
+    free(indices);
+    free(patches);
 
     if (!fb) return false;
 
@@ -443,7 +477,11 @@ bool arpt_generate_terrain(int level, int x, int y,
 
 fail:
     free(elev);
-    free(vx); free(vy); free(vz); free(normals);
-    free(indices); free(patches);
+    free(vx);
+    free(vy);
+    free(vz);
+    free(normals);
+    free(indices);
+    free(patches);
     return false;
 }

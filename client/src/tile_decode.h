@@ -11,10 +11,10 @@
  * the buffer is alive.
  */
 typedef struct {
-    const uint16_t *x;       /* horizontal positions */
-    const uint16_t *y;       /* vertical positions */
-    const int32_t  *z;       /* elevation in millimeters */
-    const int8_t   *normals; /* octahedral int8x2, NULL if absent */
+    const uint16_t *x;     /* horizontal positions */
+    const uint16_t *y;     /* vertical positions */
+    const int32_t *z;      /* elevation in millimeters */
+    const int8_t *normals; /* octahedral int8x2, NULL if absent */
     size_t vertex_count;
     const uint32_t *indices;
     size_t index_count;
@@ -29,7 +29,7 @@ typedef struct {
  * Returns false if no terrain layer, no features, or wrong geometry type.
  */
 bool arpt_decode_terrain(const void *flatbuf, size_t size,
-                          arpt_terrain_mesh *out);
+                         arpt_terrain_mesh *out);
 
 /* Landuse decoding */
 
@@ -41,13 +41,13 @@ typedef enum {
 } arpt_landuse_class;
 
 typedef struct {
-    const uint16_t *x, *y;       /* zero-copy into FlatBuffer */
+    const uint16_t *x, *y; /* zero-copy into FlatBuffer */
     size_t vertex_count;
     arpt_landuse_class cls;
 } arpt_landuse_polygon;
 
 typedef struct {
-    arpt_landuse_polygon *polygons;  /* malloc'd array */
+    arpt_landuse_polygon *polygons; /* malloc'd array */
     size_t count;
 } arpt_landuse_data;
 
@@ -61,7 +61,7 @@ typedef struct {
  * Returns false only on allocation failure.
  */
 bool arpt_decode_landuse(const void *flatbuf, size_t size,
-                          arpt_landuse_data *out);
+                         arpt_landuse_data *out);
 
 void arpt_landuse_data_free(arpt_landuse_data *data);
 

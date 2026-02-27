@@ -4,7 +4,8 @@
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Emscripten path — browser Fetch API (inherently async)
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
 
 #include <emscripten/fetch.h>
 #include <stdio.h>
@@ -15,10 +16,10 @@
 typedef struct {
     arpt_tile_fetch_cb cb;
     void *userdata;
-} FetchRequest;
+} fetch_request;
 
 static void on_fetch_success(emscripten_fetch_t *fetch) {
-    FetchRequest *req = (FetchRequest *)fetch->userData;
+    fetch_request *req = (fetch_request *)fetch->userData;
 
     int rc = arpentry_tiles_Tile_verify_as_root_with_identifier(
         fetch->data, (size_t)fetch->numBytes, "arpt");
@@ -33,7 +34,8 @@ static void on_fetch_success(emscripten_fetch_t *fetch) {
             req->cb(false, NULL, 0, req->userdata);
         }
     } else {
-        fprintf(stderr, "tile_fetch: FlatBuffer verification failed (rc=%d)\n", rc);
+        fprintf(stderr, "tile_fetch: FlatBuffer verification failed (rc=%d)\n",
+                rc);
         req->cb(false, NULL, 0, req->userdata);
     }
 
@@ -42,7 +44,7 @@ static void on_fetch_success(emscripten_fetch_t *fetch) {
 }
 
 static void on_fetch_error(emscripten_fetch_t *fetch) {
-    FetchRequest *req = (FetchRequest *)fetch->userData;
+    fetch_request *req = (fetch_request *)fetch->userData;
     fprintf(stderr, "tile_fetch: HTTP %d for %s\n", fetch->status, fetch->url);
     req->cb(false, NULL, 0, req->userdata);
     emscripten_fetch_close(fetch);
@@ -65,10 +67,11 @@ bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
     if (!base_url || !cb) return false;
 
     char url[512];
-    int n = snprintf(url, sizeof(url), "%s/%d/%d/%d.arpt", base_url, level, x, y);
+    int n =
+        snprintf(url, sizeof(url), "%s/%d/%d/%d.arpt", base_url, level, x, y);
     if (n < 0 || (size_t)n >= sizeof(url)) return false;
 
-    FetchRequest *req = malloc(sizeof(*req));
+    fetch_request *req = malloc(sizeof(*req));
     if (!req) return false;
     req->cb = cb;
     req->userdata = userdata;
@@ -92,7 +95,8 @@ bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
  *
  * Workers do HTTP + decode off the main thread.
  * Main thread drains results and fires callbacks (safe for GPU/cache ops).
- * ═══════════════════════════════════════════════════════════════════════════ */
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
 
 #include "http.h"
 #include "tile_verifier.h"
@@ -116,7 +120,7 @@ typedef struct fetch_job {
 typedef struct fetch_result {
     struct fetch_result *next;
     bool success;
-    uint8_t *flatbuf;   /* malloc'd, owned by result until callback */
+    uint8_t *flatbuf; /* malloc'd, owned by result until callback */
     size_t size;
     arpt_tile_fetch_cb cb;
     void *userdata;
@@ -203,7 +207,10 @@ static void *worker_func(void *arg) {
 
         /* Do blocking HTTP + decode off the main thread */
         fetch_result *result = malloc(sizeof(*result));
-        if (!result) { free(job); continue; }
+        if (!result) {
+            free(job);
+            continue;
+        }
 
         result->cb = job->cb;
         result->userdata = job->userdata;
@@ -211,15 +218,16 @@ static void *worker_func(void *arg) {
         result->size = 0;
         result->success = false;
 
-        http_response_t resp;
-        if (!http_get(job->url, &resp)) {
+        arpt_http_response resp;
+        if (!arpt_http_get(job->url, &resp)) {
             enqueue_result(result);
             free(job);
             continue;
         }
 
         if (resp.status != 200) {
-            fprintf(stderr, "tile_fetch: HTTP %d for %s\n", resp.status, job->url);
+            fprintf(stderr, "tile_fetch: HTTP %d for %s\n", resp.status,
+                    job->url);
             free(resp.body);
             enqueue_result(result);
             free(job);
@@ -285,8 +293,8 @@ bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
     fetch_job *job = malloc(sizeof(*job));
     if (!job) return false;
 
-    int n = snprintf(job->url, sizeof(job->url), "%s/%d/%d/%d.arpt",
-                     base_url, level, x, y);
+    int n = snprintf(job->url, sizeof(job->url), "%s/%d/%d/%d.arpt", base_url,
+                     level, x, y);
     if (n < 0 || (size_t)n >= sizeof(job->url)) {
         free(job);
         return false;

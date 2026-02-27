@@ -1,6 +1,7 @@
 #include "unity.h"
 #include "camera.h"
 #include "globe.h"
+
 #include <math.h>
 
 #define DEG2RAD(d) ((d) * M_PI / 180.0)
@@ -170,28 +171,28 @@ void test_zoom_at_center(void) {
 }
 
 void test_zoom_at_corner(void) {
-    /* Zoom at corner → the point under the corner should stay approximately fixed */
+    /* Zoom at corner: the point under the corner stays ~fixed */
     arpt_camera *cam = arpt_camera_create();
     arpt_camera_set_position(cam, DEG2RAD(10.0), DEG2RAD(45.0), 500000.0);
     arpt_camera_set_viewport(cam, 800, 600);
 
     /* Get the geodetic point under the corner before zoom */
     double corner_lon_before, corner_lat_before;
-    bool hit_before = arpt_camera_screen_to_geodetic(cam, 200.0, 150.0,
-                                                      &corner_lon_before,
-                                                      &corner_lat_before);
+    bool hit_before = arpt_camera_screen_to_geodetic(
+        cam, 200.0, 150.0, &corner_lon_before, &corner_lat_before);
     TEST_ASSERT_TRUE(hit_before);
 
     arpt_camera_zoom_at(cam, 200.0, 150.0, 0.5);
 
-    /* After zoom, the same screen point should hit near the same geodetic coords */
+    /* Same screen point should hit near same geodetic coords */
     double corner_lon_after, corner_lat_after;
-    bool hit_after = arpt_camera_screen_to_geodetic(cam, 200.0, 150.0,
-                                                     &corner_lon_after,
-                                                     &corner_lat_after);
+    bool hit_after = arpt_camera_screen_to_geodetic(
+        cam, 200.0, 150.0, &corner_lon_after, &corner_lat_after);
     TEST_ASSERT_TRUE(hit_after);
-    TEST_ASSERT_DOUBLE_WITHIN(DEG2RAD(0.5), corner_lon_before, corner_lon_after);
-    TEST_ASSERT_DOUBLE_WITHIN(DEG2RAD(0.5), corner_lat_before, corner_lat_after);
+    TEST_ASSERT_DOUBLE_WITHIN(DEG2RAD(0.5), corner_lon_before,
+                              corner_lon_after);
+    TEST_ASSERT_DOUBLE_WITHIN(DEG2RAD(0.5), corner_lat_before,
+                              corner_lat_after);
 
     arpt_camera_free(cam);
 }
@@ -202,8 +203,10 @@ void test_tilt_bearing_basic(void) {
     arpt_camera *cam = arpt_camera_create();
     arpt_camera_tilt_bearing(cam, DEG2RAD(30.0), DEG2RAD(90.0));
 
-    TEST_ASSERT_DOUBLE_WITHIN(DEG2RAD(0.1), DEG2RAD(30.0), arpt_camera_tilt(cam));
-    TEST_ASSERT_DOUBLE_WITHIN(DEG2RAD(0.1), DEG2RAD(90.0), arpt_camera_bearing(cam));
+    TEST_ASSERT_DOUBLE_WITHIN(DEG2RAD(0.1), DEG2RAD(30.0),
+                              arpt_camera_tilt(cam));
+    TEST_ASSERT_DOUBLE_WITHIN(DEG2RAD(0.1), DEG2RAD(90.0),
+                              arpt_camera_bearing(cam));
 
     arpt_camera_free(cam);
 }
@@ -213,7 +216,8 @@ void test_tilt_bearing_clamp(void) {
     arpt_camera *cam = arpt_camera_create();
     arpt_camera_tilt_bearing(cam, DEG2RAD(90.0), 0.0);
 
-    TEST_ASSERT_DOUBLE_WITHIN(DEG2RAD(0.1), DEG2RAD(60.0), arpt_camera_tilt(cam));
+    TEST_ASSERT_DOUBLE_WITHIN(DEG2RAD(0.1), DEG2RAD(60.0),
+                              arpt_camera_tilt(cam));
 
     arpt_camera_free(cam);
 }
@@ -222,7 +226,7 @@ void test_tilt_bearing_clamp(void) {
 
 void test_zoom_level_high_altitude(void) {
     arpt_camera *cam = arpt_camera_create();
-    arpt_camera_set_position(cam, 0.0, 0.0, 20000000.0);  /* 20,000 km */
+    arpt_camera_set_position(cam, 0.0, 0.0, 20000000.0); /* 20,000 km */
     arpt_camera_set_viewport(cam, 800, 600);
     int level = arpt_camera_zoom_level(cam, 50000.0, 0, 16);
     /* At very high altitude, should be level 0 or 1 */

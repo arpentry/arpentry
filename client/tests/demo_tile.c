@@ -8,30 +8,30 @@
 
 /* Keys (Tile.keys) */
 enum {
-    KEY_CLASS    = 0,
-    KEY_NAME     = 1,
-    KEY_POP      = 2,
-    KEY_ELEV     = 3,
-    KEY_ONEWAY   = 4,
-    KEY_COUNT    = 5
+    KEY_CLASS = 0,
+    KEY_NAME = 1,
+    KEY_POP = 2,
+    KEY_ELEV = 3,
+    KEY_ONEWAY = 4,
+    KEY_COUNT = 5
 };
 
 /* Values (Tile.values) */
 enum {
-    VAL_PEAK      = 0,  /* String "peak"           */
-    VAL_SUMMIT    = 1,  /* String "Summit Point"   */
+    VAL_PEAK = 0,       /* String "peak"           */
+    VAL_SUMMIT = 1,     /* String "Summit Point"   */
     VAL_VIEWPOINT = 2,  /* String "viewpoint"      */
-    VAL_LOOKOUT   = 3,  /* String "The Lookout"    */
-    VAL_SADDLE    = 4,  /* String "saddle"         */
-    VAL_LOW_PASS  = 5,  /* String "Low Pass"       */
-    VAL_POP_1200  = 6,  /* Int 1200                */
-    VAL_ELEV_850  = 7,  /* Double 850.5            */
-    VAL_TRUE      = 8,  /* Bool true               */
-    VAL_ROAD      = 9,  /* String "road"           */
-    VAL_MAIN_ST   = 10, /* String "Main Street"    */
-    VAL_BUILDING  = 11, /* String "building"       */
+    VAL_LOOKOUT = 3,    /* String "The Lookout"    */
+    VAL_SADDLE = 4,     /* String "saddle"         */
+    VAL_LOW_PASS = 5,   /* String "Low Pass"       */
+    VAL_POP_1200 = 6,   /* Int 1200                */
+    VAL_ELEV_850 = 7,   /* Double 850.5            */
+    VAL_TRUE = 8,       /* Bool true               */
+    VAL_ROAD = 9,       /* String "road"           */
+    VAL_MAIN_ST = 10,   /* String "Main Street"    */
+    VAL_BUILDING = 11,  /* String "building"       */
     VAL_TOWN_HALL = 12, /* String "Town Hall"      */
-    VAL_COUNT     = 13
+    VAL_COUNT = 13
 };
 
 /* Helpers */
@@ -76,19 +76,19 @@ static void push_bool_value(flatcc_builder_t *b, bool v) {
 
 static void build_values(flatcc_builder_t *b) {
     arpentry_tiles_Tile_values_start(b);
-    push_string_value(b, "peak");           /* 0  */
-    push_string_value(b, "Summit Point");   /* 1  */
-    push_string_value(b, "viewpoint");      /* 2  */
-    push_string_value(b, "The Lookout");    /* 3  */
-    push_string_value(b, "saddle");         /* 4  */
-    push_string_value(b, "Low Pass");       /* 5  */
-    push_int_value(b, 1200);               /* 6  */
-    push_double_value(b, 850.5);           /* 7  */
-    push_bool_value(b, true);              /* 8  */
-    push_string_value(b, "road");          /* 9  */
-    push_string_value(b, "Main Street");   /* 10 */
-    push_string_value(b, "building");      /* 11 */
-    push_string_value(b, "Town Hall");     /* 12 */
+    push_string_value(b, "peak");         /* 0  */
+    push_string_value(b, "Summit Point"); /* 1  */
+    push_string_value(b, "viewpoint");    /* 2  */
+    push_string_value(b, "The Lookout");  /* 3  */
+    push_string_value(b, "saddle");       /* 4  */
+    push_string_value(b, "Low Pass");     /* 5  */
+    push_int_value(b, 1200);              /* 6  */
+    push_double_value(b, 850.5);          /* 7  */
+    push_bool_value(b, true);             /* 8  */
+    push_string_value(b, "road");         /* 9  */
+    push_string_value(b, "Main Street");  /* 10 */
+    push_string_value(b, "building");     /* 11 */
+    push_string_value(b, "Town Hall");    /* 12 */
     arpentry_tiles_Tile_values_end(b);
 }
 
@@ -107,7 +107,7 @@ static void build_points_layer(flatcc_builder_t *b) {
 
         uint16_t xs[] = {32768};
         uint16_t ys[] = {32768};
-        int32_t  zs[] = {2000000};  /* 2000m in mm */
+        int32_t zs[] = {2000000}; /* 2000m in mm */
 
         arpentry_tiles_PointGeometry_ref_t ref;
         arpentry_tiles_PointGeometry_start(b);
@@ -119,9 +119,9 @@ static void build_points_layer(flatcc_builder_t *b) {
 
         arpentry_tiles_Property_t props[] = {
             {KEY_CLASS, VAL_PEAK},
-            {KEY_NAME,  VAL_SUMMIT},
-            {KEY_POP,   VAL_POP_1200},
-            {KEY_ELEV,  VAL_ELEV_850},
+            {KEY_NAME, VAL_SUMMIT},
+            {KEY_POP, VAL_POP_1200},
+            {KEY_ELEV, VAL_ELEV_850},
         };
         arpentry_tiles_Feature_properties_create(b, props, 4);
 
@@ -135,7 +135,7 @@ static void build_points_layer(flatcc_builder_t *b) {
 
         uint16_t xs[] = {24576};
         uint16_t ys[] = {40960};
-        int32_t  zs[] = {500000};
+        int32_t zs[] = {500000};
 
         arpentry_tiles_PointGeometry_ref_t ref;
         arpentry_tiles_PointGeometry_start(b);
@@ -147,7 +147,7 @@ static void build_points_layer(flatcc_builder_t *b) {
 
         arpentry_tiles_Property_t props[] = {
             {KEY_CLASS, VAL_VIEWPOINT},
-            {KEY_NAME,  VAL_LOOKOUT},
+            {KEY_NAME, VAL_LOOKOUT},
         };
         arpentry_tiles_Feature_properties_create(b, props, 2);
 
@@ -161,7 +161,7 @@ static void build_points_layer(flatcc_builder_t *b) {
 
         uint16_t xs[] = {40960};
         uint16_t ys[] = {24576};
-        int32_t  zs[] = {0};
+        int32_t zs[] = {0};
 
         arpentry_tiles_PointGeometry_ref_t ref;
         arpentry_tiles_PointGeometry_start(b);
@@ -172,8 +172,8 @@ static void build_points_layer(flatcc_builder_t *b) {
         arpentry_tiles_Feature_geometry_PointGeometry_add(b, ref);
 
         arpentry_tiles_Property_t props[] = {
-            {KEY_CLASS,  VAL_SADDLE},
-            {KEY_NAME,   VAL_LOW_PASS},
+            {KEY_CLASS, VAL_SADDLE},
+            {KEY_NAME, VAL_LOW_PASS},
             {KEY_ONEWAY, VAL_TRUE},
         };
         arpentry_tiles_Feature_properties_create(b, props, 3);
@@ -200,8 +200,9 @@ static void build_roads_layer(flatcc_builder_t *b) {
 
         uint16_t xs[] = {16384, 24576, 32768, 40960, 49151};
         uint16_t ys[] = {32768, 36864, 32768, 28672, 32768};
-        int32_t  zs[] = {0, 0, 0, 0, 0};
-        uint32_t offsets[] = {0, 3, 5};  /* line 0: verts 0-2, line 1: verts 3-4 */
+        int32_t zs[] = {0, 0, 0, 0, 0};
+        uint32_t offsets[] = {0, 3,
+                              5}; /* line 0: verts 0-2, line 1: verts 3-4 */
 
         arpentry_tiles_LineGeometry_ref_t ref;
         arpentry_tiles_LineGeometry_start(b);
@@ -214,7 +215,7 @@ static void build_roads_layer(flatcc_builder_t *b) {
 
         arpentry_tiles_Property_t props[] = {
             {KEY_CLASS, VAL_ROAD},
-            {KEY_NAME,  VAL_MAIN_ST},
+            {KEY_NAME, VAL_MAIN_ST},
             {KEY_ONEWAY, VAL_TRUE},
         };
         arpentry_tiles_Feature_properties_create(b, props, 3);
@@ -239,19 +240,19 @@ static void build_buildings_layer(flatcc_builder_t *b) {
         arpentry_tiles_Layer_features_push_start(b);
         arpentry_tiles_Feature_id_add(b, 20);
 
-        /* Exterior ring: 5 verts (closed square), hole: 5 verts (closed inner square) */
+        /* Exterior ring: 5 verts (closed square), hole: 5 verts (closed inner
+         * square) */
         uint16_t xs[] = {
-            /* exterior */  28672, 36864, 36864, 28672, 28672,
-            /* hole */      30720, 34816, 34816, 30720, 30720
-        };
+            /* exterior */ 28672, 36864, 36864, 28672, 28672,
+            /* hole */ 30720,     34816, 34816, 30720, 30720};
         uint16_t ys[] = {
-            /* exterior */  28672, 28672, 36864, 36864, 28672,
-            /* hole */      30720, 30720, 34816, 34816, 30720
-        };
+            /* exterior */ 28672, 28672, 36864, 36864, 28672,
+            /* hole */ 30720,     30720, 34816, 34816, 30720};
         int32_t zs[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
-        uint32_t ring_offsets[] = {0, 5, 10};     /* ring 0: exterior, ring 1: hole */
-        uint32_t polygon_offsets[] = {0, 2};       /* polygon 0 uses rings 0-1 */
+        uint32_t ring_offsets[] = {0, 5,
+                                   10}; /* ring 0: exterior, ring 1: hole */
+        uint32_t polygon_offsets[] = {0, 2}; /* polygon 0 uses rings 0-1 */
 
         arpentry_tiles_PolygonGeometry_ref_t ref;
         arpentry_tiles_PolygonGeometry_start(b);
@@ -259,13 +260,14 @@ static void build_buildings_layer(flatcc_builder_t *b) {
         arpentry_tiles_PolygonGeometry_y_create(b, ys, 10);
         arpentry_tiles_PolygonGeometry_z_create(b, zs, 10);
         arpentry_tiles_PolygonGeometry_ring_offsets_create(b, ring_offsets, 3);
-        arpentry_tiles_PolygonGeometry_polygon_offsets_create(b, polygon_offsets, 2);
+        arpentry_tiles_PolygonGeometry_polygon_offsets_create(
+            b, polygon_offsets, 2);
         ref = arpentry_tiles_PolygonGeometry_end(b);
         arpentry_tiles_Feature_geometry_PolygonGeometry_add(b, ref);
 
         arpentry_tiles_Property_t props[] = {
             {KEY_CLASS, VAL_BUILDING},
-            {KEY_NAME,  VAL_TOWN_HALL},
+            {KEY_NAME, VAL_TOWN_HALL},
         };
         arpentry_tiles_Feature_properties_create(b, props, 2);
 
@@ -291,8 +293,8 @@ static void build_terrain_layer(flatcc_builder_t *b) {
 
         uint16_t xs[] = {16384, 49151, 49151, 16384};
         uint16_t ys[] = {16384, 16384, 49151, 49151};
-        int32_t  zs[] = {0, 100000, 200000, 50000};  /* varying elevation */
-        uint32_t indices[] = {0, 1, 2, 0, 2, 3};     /* 2 triangles */
+        int32_t zs[] = {0, 100000, 200000, 50000}; /* varying elevation */
+        uint32_t indices[] = {0, 1, 2, 0, 2, 3};   /* 2 triangles */
 
         /* Octahedral normals: int8x2 per vertex (8 values for 4 verts) */
         int8_t normals[] = {0, 127, 0, 127, 0, 127, 0, 127};

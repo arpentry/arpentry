@@ -11,7 +11,7 @@ typedef struct {
     uint8_t *body;
     size_t body_size;
     int status;
-} http_response_t;
+} arpt_http_response;
 
 /**
  * Perform an HTTP GET for the given URL and return the response body.
@@ -19,7 +19,7 @@ typedef struct {
  * Brotli-compressed responses are decompressed automatically.
  * Caller must free resp->body on success.
  */
-bool http_get(const char *url, http_response_t *resp);
+bool arpt_http_get(const char *url, arpt_http_response *resp);
 
 #endif /* !__EMSCRIPTEN__ */
 #endif /* ARPENTRY_HTTP_H */

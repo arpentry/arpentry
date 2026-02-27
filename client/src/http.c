@@ -12,9 +12,7 @@
 
 /* URL parsing (internal) */
 
-static bool parse_url(const char *url,
-                      char *host, size_t host_cap,
-                      int *port,
+static bool parse_url(const char *url, char *host, size_t host_cap, int *port,
                       char *path, size_t path_cap) {
     const char *p = url;
 
@@ -23,7 +21,8 @@ static bool parse_url(const char *url,
 
     /* Host */
     const char *host_start = p;
-    while (*p && *p != ':' && *p != '/') p++;
+    while (*p && *p != ':' && *p != '/')
+        p++;
     size_t hlen = (size_t)(p - host_start);
     if (hlen == 0 || hlen >= host_cap) return false;
     memcpy(host, host_start, hlen);
@@ -43,7 +42,8 @@ static bool parse_url(const char *url,
     /* Path (may be empty) */
     if (*p == '/') {
         size_t plen = strlen(p);
-        while (plen > 1 && p[plen - 1] == '/') plen--;
+        while (plen > 1 && p[plen - 1] == '/')
+            plen--;
         if (plen >= path_cap) return false;
         memcpy(path, p, plen);
         path[plen] = '\0';
@@ -60,7 +60,8 @@ static int tcp_connect(const char *host, int port) {
     char port_str[16];
     snprintf(port_str, sizeof(port_str), "%d", port);
 
-    struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
+    struct addrinfo hints = {.ai_family = AF_UNSPEC,
+                             .ai_socktype = SOCK_STREAM};
     struct addrinfo *res;
     if (getaddrinfo(host, port_str, &hints, &res) != 0) return -1;
 
@@ -93,8 +94,7 @@ static const uint8_t *find_bytes(const uint8_t *haystack, size_t hlen,
                                  const uint8_t *needle, size_t nlen) {
     if (nlen > hlen) return NULL;
     for (size_t i = 0; i <= hlen - nlen; i++) {
-        if (memcmp(haystack + i, needle, nlen) == 0)
-            return haystack + i;
+        if (memcmp(haystack + i, needle, nlen) == 0) return haystack + i;
     }
     return NULL;
 }
@@ -116,7 +116,10 @@ static bool header_contains(const char *headers, size_t hdr_len,
                 char b = name[i];
                 if (a >= 'A' && a <= 'Z') a += 32;
                 if (b >= 'A' && b <= 'Z') b += 32;
-                if (a != b) { match = false; break; }
+                if (a != b) {
+                    match = false;
+                    break;
+                }
             }
             if (match && p[nlen] == ':') {
                 size_t vlen = strlen(value);
@@ -129,21 +132,25 @@ static bool header_contains(const char *headers, size_t hdr_len,
                         char b = value[j];
                         if (a >= 'A' && a <= 'Z') a += 32;
                         if (b >= 'A' && b <= 'Z') b += 32;
-                        if (a != b) { vmatch = false; break; }
+                        if (a != b) {
+                            vmatch = false;
+                            break;
+                        }
                     }
                     if (vmatch) return true;
                 }
             }
         }
         p = (eol < end && eol[0] == '\r' && eol + 1 < end && eol[1] == '\n')
-            ? eol + 2 : eol + 1;
+                ? eol + 2
+                : eol + 1;
     }
     return false;
 }
 
 /* HTTP GET */
 
-bool http_get(const char *url, http_response_t *resp) {
+bool arpt_http_get(const char *url, arpt_http_response *resp) {
     memset(resp, 0, sizeof(*resp));
 
     char host[256], path[512];
@@ -171,14 +178,21 @@ bool http_get(const char *url, http_response_t *resp) {
 
     size_t capacity = 8192;
     uint8_t *buf = malloc(capacity);
-    if (!buf) { close(fd); return false; }
+    if (!buf) {
+        close(fd);
+        return false;
+    }
 
     size_t total = 0;
     for (;;) {
         if (total >= capacity) {
             capacity *= 2;
             uint8_t *tmp = realloc(buf, capacity);
-            if (!tmp) { free(buf); close(fd); return false; }
+            if (!tmp) {
+                free(buf);
+                close(fd);
+                return false;
+            }
             buf = tmp;
         }
         ssize_t nr = read(fd, buf + total, capacity - total);
@@ -202,11 +216,12 @@ bool http_get(const char *url, http_response_t *resp) {
         free(buf);
         return false;
     }
-    resp->status = (buf[9] - '0') * 100 + (buf[10] - '0') * 10 + (buf[11] - '0');
+    resp->status =
+        (buf[9] - '0') * 100 + (buf[10] - '0') * 10 + (buf[11] - '0');
 
     /* Decompress Brotli if Content-Encoding: br */
-    bool is_brotli = header_contains((const char *)buf, hdr_len,
-                                     "Content-Encoding", "br");
+    bool is_brotli =
+        header_contains((const char *)buf, hdr_len, "Content-Encoding", "br");
     if (is_brotli) {
         uint8_t *decoded = NULL;
         size_t decoded_size = 0;
@@ -219,7 +234,10 @@ bool http_get(const char *url, http_response_t *resp) {
         }
     } else {
         resp->body = malloc(body_len);
-        if (!resp->body) { free(buf); return false; }
+        if (!resp->body) {
+            free(buf);
+            return false;
+        }
         memcpy(resp->body, body_start, body_len);
         resp->body_size = body_len;
     }

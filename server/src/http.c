@@ -11,21 +11,25 @@
 
 static const char *status_text(int status) {
     switch (status) {
-    case 200: return "OK";
-    case 400: return "Bad Request";
-    case 404: return "Not Found";
-    case 405: return "Method Not Allowed";
-    case 500: return "Internal Server Error";
-    default:  return "Unknown";
+    case 200:
+        return "OK";
+    case 400:
+        return "Bad Request";
+    case 404:
+        return "Not Found";
+    case 405:
+        return "Method Not Allowed";
+    case 500:
+        return "Internal Server Error";
+    default:
+        return "Unknown";
     }
 }
 
 /* Pure request parsing */
 
-int http_parse_request(const char *data, size_t len,
-                       char *method, size_t method_sz,
-                       char *uri, size_t uri_sz)
-{
+int http_parse_request(const char *data, size_t len, char *method,
+                       size_t method_sz, char *uri, size_t uri_sz) {
     /* Find the end of the request line (\r\n) */
     const char *end = NULL;
     for (size_t i = 0; i + 1 < len; i++) {
@@ -69,9 +73,8 @@ int http_parse_request(const char *data, size_t len,
 
 static void write_response(struct net_conn *conn, int status,
                            const char *content_type,
-                           const char *content_encoding,
-                           const void *body, size_t body_len)
-{
+                           const char *content_encoding, const void *body,
+                           size_t body_len) {
     char hdr[1024];
     int n = snprintf(hdr, sizeof(hdr),
                      "HTTP/1.1 %d %s\r\n"
@@ -79,8 +82,7 @@ static void write_response(struct net_conn *conn, int status,
                      "Content-Length: %zu\r\n"
                      "Connection: close\r\n"
                      "Access-Control-Allow-Origin: *\r\n",
-                     status, status_text(status),
-                     content_type, body_len);
+                     status, status_text(status), content_type, body_len);
     if (n < 0 || (size_t)n >= sizeof(hdr)) return;
 
     if (content_encoding) {
@@ -106,9 +108,7 @@ static void write_error(struct net_conn *conn, int status) {
 }
 
 static void write_file_response(struct net_conn *conn, int status,
-                                const char *content_type,
-                                const char *path)
-{
+                                const char *content_type, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) {
         write_error(conn, 404);
@@ -142,8 +142,7 @@ static void write_file_response(struct net_conn *conn, int status,
 /* Request dispatch */
 
 static void dispatch_request(struct net_conn *conn, struct server_ctx *ctx,
-                             const char *method, const char *uri)
-{
+                             const char *method, const char *uri) {
     /* Only accept GET */
     if (strcmp(method, "GET") != 0) {
         write_error(conn, 405);
@@ -156,8 +155,8 @@ static void dispatch_request(struct net_conn *conn, struct server_ctx *ctx,
         uint8_t *tile_data = NULL;
         size_t tile_size = 0;
         if (arpt_generate_terrain(level, x, y, &tile_data, &tile_size)) {
-            write_response(conn, 200, "application/x-arpt", "br",
-                           tile_data, tile_size);
+            write_response(conn, 200, "application/x-arpt", "br", tile_data,
+                           tile_size);
             free(tile_data);
         } else {
             write_error(conn, 500);
@@ -194,9 +193,7 @@ void http_conn_free(http_conn *hc) {
 }
 
 void http_conn_feed(http_conn *hc, struct net_conn *conn,
-                    struct server_ctx *ctx,
-                    const void *data, size_t len)
-{
+                    struct server_ctx *ctx, const void *data, size_t len) {
     /* Accumulate incoming data */
     if (len > 0) {
         size_t space = sizeof(hc->buf) - hc->filled;
@@ -215,9 +212,8 @@ void http_conn_feed(http_conn *hc, struct net_conn *conn,
     /* Try to parse a complete request */
     char method[8];
     char uri[2048];
-    int consumed = http_parse_request(hc->buf, hc->filled,
-                                      method, sizeof(method),
-                                      uri, sizeof(uri));
+    int consumed = http_parse_request(hc->buf, hc->filled, method,
+                                      sizeof(method), uri, sizeof(uri));
     if (consumed == 0) {
         /* Incomplete, wait for more data */
         return;

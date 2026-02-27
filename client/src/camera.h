@@ -14,7 +14,7 @@ void arpt_camera_free(arpt_camera *cam);
 /* Setters */
 
 void arpt_camera_set_position(arpt_camera *cam, double lon_rad, double lat_rad,
-                               double altitude);
+                              double altitude);
 void arpt_camera_set_tilt(arpt_camera *cam, double tilt_rad);
 void arpt_camera_set_bearing(arpt_camera *cam, double bearing_rad);
 void arpt_camera_set_viewport(arpt_camera *cam, int width, int height);
@@ -26,32 +26,34 @@ double arpt_camera_lat(const arpt_camera *cam);
 double arpt_camera_altitude(const arpt_camera *cam);
 double arpt_camera_tilt(const arpt_camera *cam);
 double arpt_camera_bearing(const arpt_camera *cam);
-int    arpt_camera_vp_width(const arpt_camera *cam);
-int    arpt_camera_vp_height(const arpt_camera *cam);
+int arpt_camera_vp_width(const arpt_camera *cam);
+int arpt_camera_vp_height(const arpt_camera *cam);
 
 /* Manipulation */
 
 /** Begin a pan gesture — store the anchor point under the cursor. */
 void arpt_camera_pan_begin(arpt_camera *cam, double sx, double sy);
 
-/** Continue a pan gesture — adjust interest point so anchor stays under cursor. */
+/* Continue pan: adjust interest so the anchor stays under cursor. */
 void arpt_camera_pan_move(arpt_camera *cam, double sx, double sy);
 
 /** Linear pan by pixel delta (keyboard / inertia). Rotated by bearing. */
 void arpt_camera_pan(arpt_camera *cam, double dx, double dy);
 
-/** Zoom anchored at screen point: multiply altitude by factor, keep point fixed. */
+/* Zoom at screen point: multiply altitude by factor, keep point fixed. */
 void arpt_camera_zoom_at(arpt_camera *cam, double sx, double sy, double factor);
 
 /** Adjust tilt and bearing by deltas (radians). Tilt clamped [0, 60°]. */
-void arpt_camera_tilt_bearing(arpt_camera *cam, double d_tilt, double d_bearing);
+void arpt_camera_tilt_bearing(arpt_camera *cam, double d_tilt,
+                              double d_bearing);
 
 /**
  * Cast ray from screen point and return the geodetic coordinates on the globe.
  * Returns false if the ray misses the ellipsoid.
  */
-bool arpt_camera_screen_to_geodetic(const arpt_camera *cam, double sx, double sy,
-                                     double *out_lon, double *out_lat);
+bool arpt_camera_screen_to_geodetic(const arpt_camera *cam, double sx,
+                                    double sy, double *out_lon,
+                                    double *out_lat);
 
 /* Computed matrices */
 
@@ -64,9 +66,8 @@ arpt_mat4 arpt_camera_projection(const arpt_camera *cam);
  * center_lon, center_lat in radians; center_alt in meters.
  * This computes: M_tile = mat4(R_tilt * R_globe, tile_pos_cam) per VIEWER.md.
  */
-arpt_mat4 arpt_camera_tile_model(const arpt_camera *cam,
-                                  double center_lon, double center_lat,
-                                  double center_alt);
+arpt_mat4 arpt_camera_tile_model(const arpt_camera *cam, double center_lon,
+                                 double center_lat, double center_alt);
 
 /* Tile management helpers */
 
@@ -76,7 +77,7 @@ arpt_mat4 arpt_camera_tile_model(const arpt_camera *cam,
  * Clamped to [min_level, max_level].
  */
 int arpt_camera_zoom_level(const arpt_camera *cam, double root_error,
-                            int min_level, int max_level);
+                           int min_level, int max_level);
 
 /**
  * Cast a ray from screen coordinates (sx, sy) in pixels through the camera.
@@ -84,6 +85,6 @@ int arpt_camera_zoom_level(const arpt_camera *cam, double root_error,
  * Returns false if the screen point is outside the viewport.
  */
 bool arpt_camera_screen_to_ray(const arpt_camera *cam, double sx, double sy,
-                                arpt_dvec3 *origin, arpt_dvec3 *dir);
+                               arpt_dvec3 *origin, arpt_dvec3 *dir);
 
 #endif /* ARPENTRY_CAMERA_H */

@@ -24,13 +24,13 @@ typedef struct {
  * Returns the number of tiles written to out (at most max_count).
  */
 int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
-                                  arpt_tile_key *out, int max_count);
+                                 arpt_tile_key *out, int max_count);
 
 /**
  * Get the parent tile key. Returns false at level 0 (no parent).
  */
-static inline bool arpt_tile_ancestor(int level, int x, int y,
-                                       int *plevel, int *px, int *py) {
+static inline bool arpt_tile_ancestor(int level, int x, int y, int *plevel,
+                                      int *px, int *py) {
     if (level <= 0) return false;
     *plevel = level - 1;
     *px = x / 2;
@@ -48,12 +48,12 @@ typedef struct {
     double root_error;
     int min_level;
     int max_level;
-    int max_tiles;       /* LRU cache capacity */
-    int max_concurrent;  /* max in-flight fetches */
+    int max_tiles;      /* LRU cache capacity */
+    int max_concurrent; /* max in-flight fetches */
 } arpt_tile_manager_config;
 
 arpt_tile_manager *arpt_tile_manager_create(arpt_tile_manager_config config,
-                                             arpt_renderer *r);
+                                            arpt_renderer *r);
 void arpt_tile_manager_free(arpt_tile_manager *tm);
 
 /**
@@ -67,6 +67,6 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam);
  * All tiles belong to the same zoom level — no ancestor mixing.
  */
 void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
-                              const arpt_camera *cam);
+                            const arpt_camera *cam);
 
 #endif /* ARPENTRY_TILE_MANAGER_H */

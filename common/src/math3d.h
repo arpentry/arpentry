@@ -6,17 +6,25 @@
 
 /* Float32 types (GPU upload) */
 
-typedef struct { float x, y, z; } arpt_vec3;
+typedef struct {
+    float x, y, z;
+} arpt_vec3;
 
 /* Column-major 4x4 matrix: m[col*4 + row], matching WGSL mat4x4<f32>. */
-typedef struct { float m[16]; } arpt_mat4;
+typedef struct {
+    float m[16];
+} arpt_mat4;
 
 /* Float64 types (CPU precision) */
 
-typedef struct { double x, y, z; } arpt_dvec3;
+typedef struct {
+    double x, y, z;
+} arpt_dvec3;
 
 /* Column-major 4x4 matrix in double precision. */
-typedef struct { double m[16]; } arpt_dmat4;
+typedef struct {
+    double m[16];
+} arpt_dmat4;
 
 /* dvec3 operations */
 
@@ -65,17 +73,26 @@ static inline arpt_dmat4 arpt_dmat4_identity(void) {
 
 /* Build a 4x4 from 3x3 rotation columns + translation. */
 static inline arpt_dmat4 arpt_dmat4_from_cols(arpt_dvec3 cx, arpt_dvec3 cy,
-                                               arpt_dvec3 cz, arpt_dvec3 t) {
+                                              arpt_dvec3 cz, arpt_dvec3 t) {
     arpt_dmat4 r;
     memset(&r, 0, sizeof(r));
     /* Column 0 */
-    r.m[0] = cx.x;  r.m[1] = cx.y;  r.m[2] = cx.z;
+    r.m[0] = cx.x;
+    r.m[1] = cx.y;
+    r.m[2] = cx.z;
     /* Column 1 */
-    r.m[4] = cy.x;  r.m[5] = cy.y;  r.m[6] = cy.z;
+    r.m[4] = cy.x;
+    r.m[5] = cy.y;
+    r.m[6] = cy.z;
     /* Column 2 */
-    r.m[8] = cz.x;  r.m[9] = cz.y;  r.m[10] = cz.z;
+    r.m[8] = cz.x;
+    r.m[9] = cz.y;
+    r.m[10] = cz.z;
     /* Column 3 (translation) */
-    r.m[12] = t.x;  r.m[13] = t.y;  r.m[14] = t.z;  r.m[15] = 1.0;
+    r.m[12] = t.x;
+    r.m[13] = t.y;
+    r.m[14] = t.z;
+    r.m[15] = 1.0;
     return r;
 }
 
@@ -95,34 +112,31 @@ static inline arpt_dmat4 arpt_dmat4_mul(arpt_dmat4 a, arpt_dmat4 b) {
 /* Transform a point (w=1) by a dmat4. */
 static inline arpt_dvec3 arpt_dmat4_transform(arpt_dmat4 m, arpt_dvec3 v) {
     return (arpt_dvec3){
-        m.m[0]*v.x + m.m[4]*v.y + m.m[8]*v.z  + m.m[12],
-        m.m[1]*v.x + m.m[5]*v.y + m.m[9]*v.z  + m.m[13],
-        m.m[2]*v.x + m.m[6]*v.y + m.m[10]*v.z + m.m[14],
+        m.m[0] * v.x + m.m[4] * v.y + m.m[8] * v.z + m.m[12],
+        m.m[1] * v.x + m.m[5] * v.y + m.m[9] * v.z + m.m[13],
+        m.m[2] * v.x + m.m[6] * v.y + m.m[10] * v.z + m.m[14],
     };
 }
 
 /* Rotate a direction (w=0) by a dmat4's upper-3x3. */
 static inline arpt_dvec3 arpt_dmat4_rotate(arpt_dmat4 m, arpt_dvec3 v) {
     return (arpt_dvec3){
-        m.m[0]*v.x + m.m[4]*v.y + m.m[8]*v.z,
-        m.m[1]*v.x + m.m[5]*v.y + m.m[9]*v.z,
-        m.m[2]*v.x + m.m[6]*v.y + m.m[10]*v.z,
+        m.m[0] * v.x + m.m[4] * v.y + m.m[8] * v.z,
+        m.m[1] * v.x + m.m[5] * v.y + m.m[9] * v.z,
+        m.m[2] * v.x + m.m[6] * v.y + m.m[10] * v.z,
     };
 }
 
 /* mat4 operations */
 
-/**
- * Perspective projection for WebGPU (z clip = [0, 1]).
- * fov_y in radians, aspect = width / height.
- */
+/* Perspective projection for WebGPU (z clip = [0, 1]). */
 static inline arpt_mat4 arpt_mat4_perspective(float fov_y, float aspect,
-                                               float near, float far) {
+                                              float near, float far) {
     float f = 1.0f / tanf(fov_y * 0.5f);
     arpt_mat4 r;
     memset(&r, 0, sizeof(r));
-    r.m[0]  = f / aspect;
-    r.m[5]  = f;
+    r.m[0] = f / aspect;
+    r.m[5] = f;
     /* WebGPU NDC z = [0, 1]: maps near → 0, far → 1 */
     r.m[10] = far / (near - far);
     r.m[11] = -1.0f;

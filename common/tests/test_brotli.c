@@ -1,14 +1,16 @@
+#include "unity.h"
+
 #include <string.h>
 #include <stdlib.h>
 #include <brotli/encode.h>
 #include <brotli/decode.h>
-#include "unity.h"
 
 void setUp(void) {}
 void tearDown(void) {}
 
 void test_brotli_roundtrip(void) {
-    const char *input = "Hello, Brotli! This string will be compressed and decompressed.";
+    const char *input = "Hello, Brotli! "
+                        "This string will be compressed and decompressed.";
     size_t input_size = strlen(input);
 
     /* Compress */
@@ -18,8 +20,7 @@ void test_brotli_roundtrip(void) {
 
     BROTLI_BOOL ok = BrotliEncoderCompress(
         BROTLI_DEFAULT_QUALITY, BROTLI_DEFAULT_WINDOW, BROTLI_DEFAULT_MODE,
-        input_size, (const uint8_t *)input,
-        &compressed_size, compressed);
+        input_size, (const uint8_t *)input, &compressed_size, compressed);
     TEST_ASSERT_EQUAL(BROTLI_TRUE, ok);
 
     /* Decompress */
@@ -28,8 +29,7 @@ void test_brotli_roundtrip(void) {
     TEST_ASSERT_NOT_NULL(decompressed);
 
     BrotliDecoderResult result = BrotliDecoderDecompress(
-        compressed_size, compressed,
-        &decompressed_size, decompressed);
+        compressed_size, compressed, &decompressed_size, decompressed);
     TEST_ASSERT_EQUAL(BROTLI_DECODER_RESULT_SUCCESS, result);
 
     /* Verify */

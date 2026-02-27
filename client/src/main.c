@@ -19,13 +19,13 @@
 
 /* Constants */
 
-#define DEMO_LEVEL  5
-#define DEMO_X      34
-#define DEMO_Y      22
+#define DEMO_LEVEL 5
+#define DEMO_X 34
+#define DEMO_Y 22
 
 #define INITIAL_ALTITUDE 500000.0
-#define WINDOW_W         800
-#define WINDOW_H         600
+#define WINDOW_W 800
+#define WINDOW_H 600
 
 /* App state */
 
@@ -48,7 +48,6 @@ typedef struct {
 
 static App app = {0};
 
-
 /* GLFW callbacks */
 
 static void on_device_error(WGPUErrorType type, const char *msg, void *ud) {
@@ -63,7 +62,8 @@ static void on_framebuffer_resize(GLFWwindow *w, int width, int height) {
     /* On web, sync_canvas_size() handles all resize logic each frame.
        This callback only needs to serve native targets. */
 #ifdef __EMSCRIPTEN__
-    (void)width; (void)height;
+    (void)width;
+    (void)height;
     return;
 #else
     /* On native: framebuffer pixels are physical; window pixels are logical
@@ -79,13 +79,13 @@ static void on_framebuffer_resize(GLFWwindow *w, int width, int height) {
         arpt_ui_resize(app.ui, (uint32_t)width, (uint32_t)height, ratio);
 
     WGPUSurfaceConfiguration cfg = {
-        .device      = app.device,
-        .format      = app.surface_format,
-        .usage       = WGPUTextureUsage_RenderAttachment,
-        .width       = (uint32_t)width,
-        .height      = (uint32_t)height,
+        .device = app.device,
+        .format = app.surface_format,
+        .usage = WGPUTextureUsage_RenderAttachment,
+        .width = (uint32_t)width,
+        .height = (uint32_t)height,
         .presentMode = WGPUPresentMode_Fifo,
-        .alphaMode   = WGPUCompositeAlphaMode_Auto,
+        .alphaMode = WGPUCompositeAlphaMode_Auto,
     };
     wgpuSurfaceConfigure(app.surface, &cfg);
 #endif
@@ -98,10 +98,12 @@ static void sync_canvas_size(void) {
     /* Read CSS display size and DPR directly from JavaScript to avoid any
        discrepancy with the C-wrapper versions of these queries. */
     int css_w = EM_ASM_INT({
-        return Math.round(document.getElementById('canvas').getBoundingClientRect().width);
+        return Math.round(
+            document.getElementById('canvas').getBoundingClientRect().width);
     });
     int css_h = EM_ASM_INT({
-        return Math.round(document.getElementById('canvas').getBoundingClientRect().height);
+        return Math.round(
+            document.getElementById('canvas').getBoundingClientRect().height);
     });
     double dpr = EM_ASM_DOUBLE({ return window.devicePixelRatio || 1.0; });
     if (css_w == 0 || css_h == 0) return;
@@ -112,32 +114,41 @@ static void sync_canvas_size(void) {
     /* Pin the canvas drawing buffer to physical pixels.  Browsers display the
        canvas at the CSS size regardless of canvas.width/height, so this gives
        crisp 1:1 physical-pixel rendering on HiDPI screens.  We set this every
-       frame because glfwSetWindowSize (called elsewhere) resets it to CSS size. */
-    EM_ASM({
-        var c = document.getElementById('canvas');
-        if (c.width !== $0 || c.height !== $1) { c.width = $0; c.height = $1; }
-    }, phys_w, phys_h);
+       frame because glfwSetWindowSize (called elsewhere) resets it to CSS size.
+     */
+    EM_ASM(
+        {
+            var c = document.getElementById('canvas');
+            if (c.width != = $0 || c.height != = $1) {
+                c.width = $0;
+                c.height = $1;
+            }
+        },
+        phys_w, phys_h);
 
-    /* Camera viewport lives in CSS-pixel space so it matches glfwGetCursorPos. */
-    if (arpt_camera_vp_width(app.camera)  != css_w ||
+    /* Camera viewport lives in CSS-pixel space so it matches glfwGetCursorPos.
+     */
+    if (arpt_camera_vp_width(app.camera) != css_w ||
         arpt_camera_vp_height(app.camera) != css_h)
         arpt_camera_set_viewport(app.camera, css_w, css_h);
 
     /* Renderer and WebGPU surface use physical pixels. */
     static int s_phys_w, s_phys_h;
     if (s_phys_w != phys_w || s_phys_h != phys_h) {
-        s_phys_w = phys_w; s_phys_h = phys_h;
+        s_phys_w = phys_w;
+        s_phys_h = phys_h;
         arpt_renderer_resize(app.renderer, (uint32_t)phys_w, (uint32_t)phys_h);
         if (app.ui)
-            arpt_ui_resize(app.ui, (uint32_t)phys_w, (uint32_t)phys_h, (float)dpr);
+            arpt_ui_resize(app.ui, (uint32_t)phys_w, (uint32_t)phys_h,
+                           (float)dpr);
         WGPUSurfaceConfiguration cfg = {
-            .device      = app.device,
-            .format      = app.surface_format,
-            .usage       = WGPUTextureUsage_RenderAttachment,
-            .width       = (uint32_t)phys_w,
-            .height      = (uint32_t)phys_h,
+            .device = app.device,
+            .format = app.surface_format,
+            .usage = WGPUTextureUsage_RenderAttachment,
+            .width = (uint32_t)phys_w,
+            .height = (uint32_t)phys_h,
             .presentMode = WGPUPresentMode_Fifo,
-            .alphaMode   = WGPUCompositeAlphaMode_Auto,
+            .alphaMode = WGPUCompositeAlphaMode_Auto,
         };
         wgpuSurfaceConfigure(app.surface, &cfg);
     }
@@ -157,13 +168,11 @@ static void render_frame(void) {
     double now = glfwGetTime();
     double dt = now - app.last_time;
     app.last_time = now;
-    if (app.control)
-        arpt_control_update(app.control, dt);
+    if (app.control) arpt_control_update(app.control, dt);
 
     WGPUSurfaceTexture st;
     wgpuSurfaceGetCurrentTexture(app.surface, &st);
-    if (st.status != WGPUSurfaceGetCurrentTextureStatus_Success)
-        return;
+    if (st.status != WGPUSurfaceGetCurrentTextureStatus_Success) return;
 
     WGPUTextureView view = wgpuTextureCreateView(st.texture, NULL);
 
@@ -187,9 +196,8 @@ static void render_frame(void) {
         double cx, cy;
         glfwGetCursorPos(app.window, &cx, &cy);
         arpt_ui_set_cursor(app.ui, (float)cx, (float)cy);
-        arpt_ui_set_state(app.ui,
-            (float)arpt_camera_bearing(app.camera),
-            (float)arpt_camera_tilt(app.camera));
+        arpt_ui_set_state(app.ui, (float)arpt_camera_bearing(app.camera),
+                          (float)arpt_camera_tilt(app.camera));
     }
 
     arpt_renderer_end_frame(app.renderer);
@@ -210,29 +218,26 @@ static void ui_overlay(WGPURenderPassEncoder pass, void *ud) {
 
 /* UI event filter */
 
-#define UI_ZOOM_FACTOR 0.8  /* zoom in: altitude *= 0.8; zoom out: *= 1.25 */
+#define UI_ZOOM_FACTOR 0.8 /* zoom in: altitude *= 0.8; zoom out: *= 1.25 */
 
 static bool ui_event_filter(int button, int action, double sx, double sy,
-                             void *ud) {
+                            void *ud) {
     (void)ud;
-    if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS)
-        return false;
+    if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS) return false;
 
     arpt_ui_action a = arpt_ui_hit_test(app.ui, (float)sx, (float)sy);
     if (a == ARPT_UI_NONE) return false;
 
     switch (a) {
     case ARPT_UI_ZOOM_IN:
-        arpt_camera_zoom_at(app.camera,
-            arpt_camera_vp_width(app.camera) / 2.0,
-            arpt_camera_vp_height(app.camera) / 2.0,
-            UI_ZOOM_FACTOR);
+        arpt_camera_zoom_at(app.camera, arpt_camera_vp_width(app.camera) / 2.0,
+                            arpt_camera_vp_height(app.camera) / 2.0,
+                            UI_ZOOM_FACTOR);
         break;
     case ARPT_UI_ZOOM_OUT:
-        arpt_camera_zoom_at(app.camera,
-            arpt_camera_vp_width(app.camera) / 2.0,
-            arpt_camera_vp_height(app.camera) / 2.0,
-            1.0 / UI_ZOOM_FACTOR);
+        arpt_camera_zoom_at(app.camera, arpt_camera_vp_width(app.camera) / 2.0,
+                            arpt_camera_vp_height(app.camera) / 2.0,
+                            1.0 / UI_ZOOM_FACTOR);
         break;
     case ARPT_UI_RESET_NORTH:
         arpt_camera_set_bearing(app.camera, 0.0);
@@ -260,15 +265,16 @@ static void init_viewer(void) {
     double center_lon = (bounds.west + bounds.east) / 2.0 * M_PI / 180.0;
     double center_lat = (bounds.south + bounds.north) / 2.0 * M_PI / 180.0;
     arpt_camera_set_position(app.camera, center_lon, center_lat,
-                              INITIAL_ALTITUDE);
-    /* Viewport in window (logical) pixels so cursor coords match on all targets.
-       On Retina native fb_w > win_w; on web sync_canvas_size keeps them equal. */
+                             INITIAL_ALTITUDE);
+    /* Viewport in window (logical) pixels so cursor coords match on all
+       targets. On Retina native fb_w > win_w; on web sync_canvas_size keeps
+       them equal. */
     arpt_camera_set_viewport(app.camera, win_w, win_h);
 
     /* Renderer */
-    app.renderer = arpt_renderer_create(app.device, app.queue,
-                                         app.surface_format,
-                                         (uint32_t)fb_w, (uint32_t)fb_h);
+    app.renderer =
+        arpt_renderer_create(app.device, app.queue, app.surface_format,
+                             (uint32_t)fb_w, (uint32_t)fb_h);
 
     /* Tile manager for server-provided tiles */
     arpt_tile_manager_config tm_config = {
@@ -283,20 +289,22 @@ static void init_viewer(void) {
 
     /* Diagnostic: verify camera position */
     {
-        printf("Window: %dx%d, Framebuffer: %dx%d, Scale: %.1fx\n",
-               win_w, win_h, fb_w, fb_h, (double)fb_w / win_w);
-        printf("Camera: lon=%.4f° lat=%.4f° alt=%.0fm tilt=%.1f° bearing=%.1f°\n",
-               arpt_camera_lon(app.camera) * 180.0 / M_PI,
-               arpt_camera_lat(app.camera) * 180.0 / M_PI,
-               arpt_camera_altitude(app.camera),
-               arpt_camera_tilt(app.camera) * 180.0 / M_PI,
-               arpt_camera_bearing(app.camera) * 180.0 / M_PI);
+        printf("Window: %dx%d, Framebuffer: %dx%d, Scale: %.1fx\n", win_w,
+               win_h, fb_w, fb_h, (double)fb_w / win_w);
+        printf(
+            "Camera: lon=%.4f° lat=%.4f° alt=%.0fm tilt=%.1f° bearing=%.1f°\n",
+            arpt_camera_lon(app.camera) * 180.0 / M_PI,
+            arpt_camera_lat(app.camera) * 180.0 / M_PI,
+            arpt_camera_altitude(app.camera),
+            arpt_camera_tilt(app.camera) * 180.0 / M_PI,
+            arpt_camera_bearing(app.camera) * 180.0 / M_PI);
         /* Cast ray from screen center — should hit near the interest point */
         double hit_lon, hit_lat;
         if (arpt_camera_screen_to_geodetic(app.camera, win_w / 2.0, win_h / 2.0,
-                                            &hit_lon, &hit_lat)) {
-            printf("Center ray hits: lon=%.4f° lat=%.4f° (should match camera)\n",
-                   hit_lon * 180.0 / M_PI, hit_lat * 180.0 / M_PI);
+                                           &hit_lon, &hit_lat)) {
+            printf(
+                "Center ray hits: lon=%.4f° lat=%.4f° (should match camera)\n",
+                hit_lon * 180.0 / M_PI, hit_lat * 180.0 / M_PI);
         } else {
             printf("Center ray MISSES the globe! Camera may be inside.\n");
         }
@@ -305,7 +313,7 @@ static void init_viewer(void) {
     /* UI overlay */
     float pixel_ratio = (win_w > 0) ? (float)fb_w / (float)win_w : 1.0f;
     app.ui = arpt_ui_create(app.device, app.queue, app.surface_format,
-                             (uint32_t)fb_w, (uint32_t)fb_h, pixel_ratio);
+                            (uint32_t)fb_w, (uint32_t)fb_h, pixel_ratio);
     arpt_renderer_set_overlay(app.renderer, ui_overlay, app.ui);
 
     /* Map control (mouse/keyboard/touch input) */
@@ -356,8 +364,8 @@ static void on_device_done(WGPURequestDeviceStatus status, WGPUDevice device,
 #endif
 }
 
-static void on_adapter_done(WGPURequestAdapterStatus status, WGPUAdapter adapter,
-                            const char *msg, void *ud) {
+static void on_adapter_done(WGPURequestAdapterStatus status,
+                            WGPUAdapter adapter, const char *msg, void *ud) {
     (void)ud;
     if (status != WGPURequestAdapterStatus_Success) {
         fprintf(stderr, "Adapter request failed: %s\n", msg ? msg : "unknown");
@@ -373,8 +381,8 @@ static void on_adapter_done(WGPURequestAdapterStatus status, WGPUAdapter adapter
 #else
     WGPUAdapterProperties props = {0};
     wgpuAdapterGetProperties(adapter, &props);
-    printf("Adapter: %s (backend %d)\n",
-           props.name ? props.name : "N/A", props.backendType);
+    printf("Adapter: %s (backend %d)\n", props.name ? props.name : "N/A",
+           props.backendType);
 #endif
 
     WGPUDeviceDescriptor desc = {0};

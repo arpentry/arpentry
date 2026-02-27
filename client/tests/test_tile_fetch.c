@@ -14,7 +14,7 @@
 
 #define TEST_PORT 19200
 #define DRAIN_TIMEOUT_US 5000000 /* 5 seconds */
-#define DRAIN_POLL_US    1000    /* 1 ms */
+#define DRAIN_POLL_US 1000       /* 1 ms */
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -22,8 +22,8 @@ void tearDown(void) {}
 /* In-process tile server (pthread) */
 
 static uint8_t *g_demo_tile;
-static size_t   g_demo_tile_size;
-static int      g_listenfd;
+static size_t g_demo_tile_size;
+static int g_listenfd;
 static volatile int g_server_running;
 
 static void server_write_all(int fd, const void *buf, size_t size) {
@@ -52,14 +52,14 @@ static void server_handle(int fd) {
     /* Send tile response */
     char hdr[512];
     int hlen = snprintf(hdr, sizeof(hdr),
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/x-arpt\r\n"
-        "Content-Length: %zu\r\n"
-        "Content-Encoding: br\r\n"
-        "Connection: close\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "\r\n",
-        g_demo_tile_size);
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: application/x-arpt\r\n"
+                        "Content-Length: %zu\r\n"
+                        "Content-Encoding: br\r\n"
+                        "Connection: close\r\n"
+                        "Access-Control-Allow-Origin: *\r\n"
+                        "\r\n",
+                        g_demo_tile_size);
 
     server_write_all(fd, hdr, (size_t)hlen);
     server_write_all(fd, g_demo_tile, g_demo_tile_size);
@@ -91,18 +91,16 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
 
     if (success && flatbuf) {
         /* Verify we can read the tile */
-        arpentry_tiles_Tile_table_t tile =
-            arpentry_tiles_Tile_as_root(flatbuf);
+        arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root(flatbuf);
         TEST_ASSERT_NOT_NULL(tile);
 
         /* Check that layers exist */
-        arpentry_tiles_Layer_vec_t layers =
-            arpentry_tiles_Tile_layers(tile);
+        arpentry_tiles_Layer_vec_t layers = arpentry_tiles_Tile_layers(tile);
         TEST_ASSERT_NOT_NULL(layers);
         TEST_ASSERT_TRUE(arpentry_tiles_Layer_vec_len(layers) > 0);
 
-        printf("  Fetched tile: %zu bytes, %zu layers\n",
-               size, arpentry_tiles_Layer_vec_len(layers));
+        printf("  Fetched tile: %zu bytes, %zu layers\n", size,
+               arpentry_tiles_Layer_vec_len(layers));
     }
 
     free(flatbuf);
@@ -144,7 +142,8 @@ void test_fetch_tile_different_coords(void) {
     char base_url[64];
     snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d", TEST_PORT);
 
-    bool initiated = arpt_fetch_tile(base_url, 5, 32, 16, on_tile_fetched, NULL);
+    bool initiated =
+        arpt_fetch_tile(base_url, 5, 32, 16, on_tile_fetched, NULL);
     TEST_ASSERT_TRUE(initiated);
     TEST_ASSERT_TRUE(drain_until_called());
     TEST_ASSERT_TRUE(g_fetch_success);
@@ -153,8 +152,8 @@ void test_fetch_tile_different_coords(void) {
 void test_fetch_tile_bad_url(void) {
     g_fetch_called = false;
 
-    bool initiated = arpt_fetch_tile("http://127.0.0.1:1", 0, 0, 0,
-                                      on_tile_fetched, NULL);
+    bool initiated =
+        arpt_fetch_tile("http://127.0.0.1:1", 0, 0, 0, on_tile_fetched, NULL);
     /* Should initiate but callback reports failure (connection refused) */
     TEST_ASSERT_TRUE(initiated);
     TEST_ASSERT_TRUE(drain_until_called());

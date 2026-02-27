@@ -30,11 +30,10 @@ void buf_ensure(struct buf *buf, size_t len) {
 }
 
 void buf_append(struct buf *buf, const void *data, size_t len) {
-    if (len > 0) {
-        buf_ensure(buf, len);
-        memcpy(buf->data + buf->len, data, len);
-        buf->len += len;
-    }
+    if (len == 0) return;
+    buf_ensure(buf, len);
+    memcpy(buf->data + buf->len, data, len);
+    buf->len += len;
 }
 
 void buf_append_byte(struct buf *buf, char byte) {
@@ -49,5 +48,5 @@ void buf_clear(struct buf *buf) {
     if (buf->cap) {
         free(buf->data);
     }
-    memset(buf, 0, sizeof(struct buf));
+    memset(buf, 0, sizeof(*buf));
 }

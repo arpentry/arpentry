@@ -4,7 +4,7 @@
 #include <string.h>
 
 bool arpt_decode_terrain(const void *flatbuf, size_t size,
-                          arpt_terrain_mesh *out) {
+                         arpt_terrain_mesh *out) {
     if (!flatbuf || !out || size < 8) return false;
 
     arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root(flatbuf);
@@ -18,7 +18,8 @@ bool arpt_decode_terrain(const void *flatbuf, size_t size,
     /* Find the "terrain" layer by name */
     arpentry_tiles_Layer_table_t terrain_layer = NULL;
     for (size_t i = 0; i < n_layers; i++) {
-        arpentry_tiles_Layer_table_t layer = arpentry_tiles_Layer_vec_at(layers, i);
+        arpentry_tiles_Layer_table_t layer =
+            arpentry_tiles_Layer_vec_at(layers, i);
         flatbuffers_string_t name = arpentry_tiles_Layer_name(layer);
         if (name && strcmp(name, "terrain") == 0) {
             terrain_layer = layer;
@@ -27,20 +28,24 @@ bool arpt_decode_terrain(const void *flatbuf, size_t size,
     }
     if (!terrain_layer) return false;
 
-    arpentry_tiles_Feature_vec_t features = arpentry_tiles_Layer_features(terrain_layer);
+    arpentry_tiles_Feature_vec_t features =
+        arpentry_tiles_Layer_features(terrain_layer);
     if (!features || arpentry_tiles_Feature_vec_len(features) == 0)
         return false;
 
     /* First feature */
-    arpentry_tiles_Feature_table_t feat = arpentry_tiles_Feature_vec_at(features, 0);
+    arpentry_tiles_Feature_table_t feat =
+        arpentry_tiles_Feature_vec_at(features, 0);
     if (!feat) return false;
 
     /* Check geometry type is MeshGeometry */
-    if (arpentry_tiles_Feature_geometry_type(feat) != arpentry_tiles_Geometry_MeshGeometry)
+    if (arpentry_tiles_Feature_geometry_type(feat) !=
+        arpentry_tiles_Geometry_MeshGeometry)
         return false;
 
     arpentry_tiles_MeshGeometry_table_t mesh =
-        (arpentry_tiles_MeshGeometry_table_t)arpentry_tiles_Feature_geometry(feat);
+        (arpentry_tiles_MeshGeometry_table_t)arpentry_tiles_Feature_geometry(
+            feat);
     if (!mesh) return false;
 
     /* Extract arrays (zero-copy) */
@@ -77,14 +82,14 @@ bool arpt_decode_terrain(const void *flatbuf, size_t size,
 
 static arpt_landuse_class classify_string(flatbuffers_string_t s) {
     if (!s) return ARPT_LANDUSE_UNKNOWN;
-    if (strcmp(s, "grass") == 0)  return ARPT_LANDUSE_GRASS;
+    if (strcmp(s, "grass") == 0) return ARPT_LANDUSE_GRASS;
     if (strcmp(s, "forest") == 0) return ARPT_LANDUSE_FOREST;
-    if (strcmp(s, "sand") == 0)   return ARPT_LANDUSE_SAND;
+    if (strcmp(s, "sand") == 0) return ARPT_LANDUSE_SAND;
     return ARPT_LANDUSE_UNKNOWN;
 }
 
 bool arpt_decode_landuse(const void *flatbuf, size_t size,
-                          arpt_landuse_data *out) {
+                         arpt_landuse_data *out) {
     out->polygons = NULL;
     out->count = 0;
 
@@ -100,7 +105,8 @@ bool arpt_decode_landuse(const void *flatbuf, size_t size,
     arpentry_tiles_Layer_table_t landuse_layer = NULL;
     size_t n_layers = arpentry_tiles_Layer_vec_len(layers);
     for (size_t i = 0; i < n_layers; i++) {
-        arpentry_tiles_Layer_table_t layer = arpentry_tiles_Layer_vec_at(layers, i);
+        arpentry_tiles_Layer_table_t layer =
+            arpentry_tiles_Layer_vec_at(layers, i);
         flatbuffers_string_t name = arpentry_tiles_Layer_name(layer);
         if (name && strcmp(name, "landuse") == 0) {
             landuse_layer = layer;
@@ -143,7 +149,8 @@ bool arpt_decode_landuse(const void *flatbuf, size_t size,
         if (!feat) continue;
 
         if (arpentry_tiles_Feature_geometry_type(feat) !=
-            arpentry_tiles_Geometry_PolygonGeometry) continue;
+            arpentry_tiles_Geometry_PolygonGeometry)
+            continue;
 
         arpentry_tiles_PolygonGeometry_table_t poly =
             (arpentry_tiles_PolygonGeometry_table_t)

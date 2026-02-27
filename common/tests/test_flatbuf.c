@@ -2,6 +2,7 @@
 #include "tile_reader.h"
 #include "tile_verifier.h"
 #include "unity.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,10 +11,8 @@ void tearDown(void) {}
 
 /* Helpers */
 
-/**
- * Build a minimal valid Tile with one "pois" layer containing a single
- * PointGeometry feature with properties. Returns the FlatBuffer via buf and size.
- */
+/* Build a minimal valid Tile with one "pois" layer containing a single
+ * PointGeometry feature with properties. Returns via buf and size. */
 static void build_test_tile(void **buf, size_t *size) {
     flatcc_builder_t builder;
     flatcc_builder_init(&builder);
@@ -31,12 +30,14 @@ static void build_test_tile(void **buf, size_t *size) {
     arpentry_tiles_Tile_values_start(&builder);
 
     arpentry_tiles_Tile_values_push_start(&builder);
-    arpentry_tiles_Value_type_add(&builder, arpentry_tiles_PropertyValueType_String);
+    arpentry_tiles_Value_type_add(&builder,
+                                  arpentry_tiles_PropertyValueType_String);
     arpentry_tiles_Value_string_value_create_str(&builder, "cafe");
     arpentry_tiles_Tile_values_push_end(&builder);
 
     arpentry_tiles_Tile_values_push_start(&builder);
-    arpentry_tiles_Value_type_add(&builder, arpentry_tiles_PropertyValueType_String);
+    arpentry_tiles_Value_type_add(&builder,
+                                  arpentry_tiles_PropertyValueType_String);
     arpentry_tiles_Value_string_value_create_str(&builder, "Central Perk");
     arpentry_tiles_Tile_values_push_end(&builder);
 
@@ -57,7 +58,7 @@ static void build_test_tile(void **buf, size_t *size) {
     /* PointGeometry */
     uint16_t xs[] = {32768};
     uint16_t ys[] = {32768};
-    int32_t zs[] = {100000};  /* 100m in mm */
+    int32_t zs[] = {100000}; /* 100m in mm */
 
     arpentry_tiles_PointGeometry_ref_t point_ref;
     arpentry_tiles_PointGeometry_start(&builder);
@@ -70,8 +71,10 @@ static void build_test_tile(void **buf, size_t *size) {
 
     /* Properties: class=cafe, name=Central Perk */
     arpentry_tiles_Property_t props[2];
-    props[0].key = 0; props[0].value = 0;
-    props[1].key = 1; props[1].value = 1;
+    props[0].key = 0;
+    props[0].value = 0;
+    props[1].key = 1;
+    props[1].value = 1;
     arpentry_tiles_Feature_properties_create(&builder, props, 2);
 
     arpentry_tiles_Layer_features_push_end(&builder);
@@ -89,7 +92,8 @@ static void build_test_tile(void **buf, size_t *size) {
 /* Tests */
 
 void test_file_identifier(void) {
-    void *buf; size_t size;
+    void *buf;
+    size_t size;
     build_test_tile(&buf, &size);
     TEST_ASSERT_NOT_NULL(buf);
 
@@ -99,11 +103,13 @@ void test_file_identifier(void) {
 }
 
 void test_tile_roundtrip(void) {
-    void *buf; size_t size;
+    void *buf;
+    size_t size;
     build_test_tile(&buf, &size);
     TEST_ASSERT_NOT_NULL(buf);
 
-    arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root_with_identifier(buf, "arpt");
+    arpentry_tiles_Tile_table_t tile =
+        arpentry_tiles_Tile_as_root_with_identifier(buf, "arpt");
     TEST_ASSERT_NOT_NULL(tile);
 
     /* Version */
@@ -120,11 +126,13 @@ void test_tile_roundtrip(void) {
     TEST_ASSERT_EQUAL(2, arpentry_tiles_Value_vec_len(values));
 
     arpentry_tiles_Value_table_t v0 = arpentry_tiles_Value_vec_at(values, 0);
-    TEST_ASSERT_EQUAL(arpentry_tiles_PropertyValueType_String, arpentry_tiles_Value_type(v0));
+    TEST_ASSERT_EQUAL(arpentry_tiles_PropertyValueType_String,
+                      arpentry_tiles_Value_type(v0));
     TEST_ASSERT_EQUAL_STRING("cafe", arpentry_tiles_Value_string_value(v0));
 
     arpentry_tiles_Value_table_t v1 = arpentry_tiles_Value_vec_at(values, 1);
-    TEST_ASSERT_EQUAL_STRING("Central Perk", arpentry_tiles_Value_string_value(v1));
+    TEST_ASSERT_EQUAL_STRING("Central Perk",
+                             arpentry_tiles_Value_string_value(v1));
 
     /* Layers */
     arpentry_tiles_Layer_vec_t layers = arpentry_tiles_Tile_layers(tile);
@@ -137,17 +145,21 @@ void test_tile_roundtrip(void) {
 }
 
 void test_point_geometry(void) {
-    void *buf; size_t size;
+    void *buf;
+    size_t size;
     build_test_tile(&buf, &size);
     TEST_ASSERT_NOT_NULL(buf);
 
-    arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root_with_identifier(buf, "arpt");
+    arpentry_tiles_Tile_table_t tile =
+        arpentry_tiles_Tile_as_root_with_identifier(buf, "arpt");
     arpentry_tiles_Layer_vec_t layers = arpentry_tiles_Tile_layers(tile);
     arpentry_tiles_Layer_table_t layer = arpentry_tiles_Layer_vec_at(layers, 0);
-    arpentry_tiles_Feature_vec_t features = arpentry_tiles_Layer_features(layer);
+    arpentry_tiles_Feature_vec_t features =
+        arpentry_tiles_Layer_features(layer);
     TEST_ASSERT_EQUAL(1, arpentry_tiles_Feature_vec_len(features));
 
-    arpentry_tiles_Feature_table_t feat = arpentry_tiles_Feature_vec_at(features, 0);
+    arpentry_tiles_Feature_table_t feat =
+        arpentry_tiles_Feature_vec_at(features, 0);
     TEST_ASSERT_EQUAL_UINT64(42, arpentry_tiles_Feature_id(feat));
 
     /* Union discriminator */
@@ -155,7 +167,8 @@ void test_point_geometry(void) {
                       arpentry_tiles_Feature_geometry_type(feat));
 
     arpentry_tiles_PointGeometry_table_t geom =
-        (arpentry_tiles_PointGeometry_table_t)arpentry_tiles_Feature_geometry(feat);
+        (arpentry_tiles_PointGeometry_table_t)arpentry_tiles_Feature_geometry(
+            feat);
     TEST_ASSERT_NOT_NULL(geom);
 
     flatbuffers_uint16_vec_t x = arpentry_tiles_PointGeometry_x(geom);
@@ -170,36 +183,47 @@ void test_point_geometry(void) {
 }
 
 void test_property_dictionary(void) {
-    void *buf; size_t size;
+    void *buf;
+    size_t size;
     build_test_tile(&buf, &size);
     TEST_ASSERT_NOT_NULL(buf);
 
-    arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root_with_identifier(buf, "arpt");
+    arpentry_tiles_Tile_table_t tile =
+        arpentry_tiles_Tile_as_root_with_identifier(buf, "arpt");
     arpentry_tiles_Layer_vec_t layers = arpentry_tiles_Tile_layers(tile);
     arpentry_tiles_Layer_table_t layer = arpentry_tiles_Layer_vec_at(layers, 0);
-    arpentry_tiles_Feature_vec_t features = arpentry_tiles_Layer_features(layer);
-    arpentry_tiles_Feature_table_t feat = arpentry_tiles_Feature_vec_at(features, 0);
+    arpentry_tiles_Feature_vec_t features =
+        arpentry_tiles_Layer_features(layer);
+    arpentry_tiles_Feature_table_t feat =
+        arpentry_tiles_Feature_vec_at(features, 0);
 
-    arpentry_tiles_Property_vec_t props = arpentry_tiles_Feature_properties(feat);
+    arpentry_tiles_Property_vec_t props =
+        arpentry_tiles_Feature_properties(feat);
     TEST_ASSERT_EQUAL(2, arpentry_tiles_Property_vec_len(props));
 
     /* Dereference property 0: key=0 ("class"), value=0 ("cafe") */
-    TEST_ASSERT_EQUAL_UINT32(0, arpentry_tiles_Property_key(arpentry_tiles_Property_vec_at(props, 0)));
-    TEST_ASSERT_EQUAL_UINT32(0, arpentry_tiles_Property_value(arpentry_tiles_Property_vec_at(props, 0)));
+    arpentry_tiles_Property_struct_t p0 =
+        arpentry_tiles_Property_vec_at(props, 0);
+    TEST_ASSERT_EQUAL_UINT32(0, arpentry_tiles_Property_key(p0));
+    TEST_ASSERT_EQUAL_UINT32(0, arpentry_tiles_Property_value(p0));
 
     /* Dereference property 1: key=1 ("name"), value=1 ("Central Perk") */
-    TEST_ASSERT_EQUAL_UINT32(1, arpentry_tiles_Property_key(arpentry_tiles_Property_vec_at(props, 1)));
-    TEST_ASSERT_EQUAL_UINT32(1, arpentry_tiles_Property_value(arpentry_tiles_Property_vec_at(props, 1)));
+    arpentry_tiles_Property_struct_t p1 =
+        arpentry_tiles_Property_vec_at(props, 1);
+    TEST_ASSERT_EQUAL_UINT32(1, arpentry_tiles_Property_key(p1));
+    TEST_ASSERT_EQUAL_UINT32(1, arpentry_tiles_Property_value(p1));
 
     free(buf);
 }
 
 void test_verifier(void) {
-    void *buf; size_t size;
+    void *buf;
+    size_t size;
     build_test_tile(&buf, &size);
     TEST_ASSERT_NOT_NULL(buf);
 
-    int ret = arpentry_tiles_Tile_verify_as_root_with_identifier(buf, size, "arpt");
+    int ret =
+        arpentry_tiles_Tile_verify_as_root_with_identifier(buf, size, "arpt");
     TEST_ASSERT_EQUAL_INT(0, ret);
 
     free(buf);
@@ -262,19 +286,23 @@ void test_mesh_geometry(void) {
     TEST_ASSERT_NOT_NULL(buf);
 
     /* Read back */
-    arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root_with_identifier(buf, "arpt");
+    arpentry_tiles_Tile_table_t tile =
+        arpentry_tiles_Tile_as_root_with_identifier(buf, "arpt");
     TEST_ASSERT_NOT_NULL(tile);
 
     arpentry_tiles_Layer_vec_t layers = arpentry_tiles_Tile_layers(tile);
     arpentry_tiles_Layer_table_t layer = arpentry_tiles_Layer_vec_at(layers, 0);
-    arpentry_tiles_Feature_vec_t features = arpentry_tiles_Layer_features(layer);
-    arpentry_tiles_Feature_table_t feat = arpentry_tiles_Feature_vec_at(features, 0);
+    arpentry_tiles_Feature_vec_t features =
+        arpentry_tiles_Layer_features(layer);
+    arpentry_tiles_Feature_table_t feat =
+        arpentry_tiles_Feature_vec_at(features, 0);
 
     TEST_ASSERT_EQUAL(arpentry_tiles_Geometry_MeshGeometry,
                       arpentry_tiles_Feature_geometry_type(feat));
 
     arpentry_tiles_MeshGeometry_table_t mesh =
-        (arpentry_tiles_MeshGeometry_table_t)arpentry_tiles_Feature_geometry(feat);
+        (arpentry_tiles_MeshGeometry_table_t)arpentry_tiles_Feature_geometry(
+            feat);
 
     flatbuffers_uint32_vec_t idx = arpentry_tiles_MeshGeometry_indices(mesh);
     TEST_ASSERT_EQUAL(3, flatbuffers_uint32_vec_len(idx));

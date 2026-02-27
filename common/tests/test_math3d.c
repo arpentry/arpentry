@@ -1,5 +1,6 @@
 #include "unity.h"
 #include "math3d.h"
+
 #include <math.h>
 
 void setUp(void) {}
@@ -26,8 +27,8 @@ void test_dvec3_sub(void) {
 void test_dvec3_scale(void) {
     arpt_dvec3 v = {2, 3, 4};
     arpt_dvec3 r = arpt_dvec3_scale(v, 2.5);
-    TEST_ASSERT_DOUBLE_WITHIN(1e-15, 5.0,  r.x);
-    TEST_ASSERT_DOUBLE_WITHIN(1e-15, 7.5,  r.y);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-15, 5.0, r.x);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-15, 7.5, r.y);
     TEST_ASSERT_DOUBLE_WITHIN(1e-15, 10.0, r.z);
 }
 
@@ -66,18 +67,18 @@ void test_dvec3_normalize_zero(void) {
 
 void test_dmat4_identity_multiply(void) {
     arpt_dmat4 id = arpt_dmat4_identity();
-    arpt_dmat4 a = arpt_dmat4_from_cols(
-        (arpt_dvec3){1, 0, 0}, (arpt_dvec3){0, 1, 0},
-        (arpt_dvec3){0, 0, 1}, (arpt_dvec3){5, 6, 7});
+    arpt_dmat4 a =
+        arpt_dmat4_from_cols((arpt_dvec3){1, 0, 0}, (arpt_dvec3){0, 1, 0},
+                             (arpt_dvec3){0, 0, 1}, (arpt_dvec3){5, 6, 7});
     arpt_dmat4 r = arpt_dmat4_mul(id, a);
     for (int i = 0; i < 16; i++)
         TEST_ASSERT_DOUBLE_WITHIN(1e-12, a.m[i], r.m[i]);
 }
 
 void test_dmat4_transform(void) {
-    arpt_dmat4 t = arpt_dmat4_from_cols(
-        (arpt_dvec3){1, 0, 0}, (arpt_dvec3){0, 1, 0},
-        (arpt_dvec3){0, 0, 1}, (arpt_dvec3){10, 20, 30});
+    arpt_dmat4 t =
+        arpt_dmat4_from_cols((arpt_dvec3){1, 0, 0}, (arpt_dvec3){0, 1, 0},
+                             (arpt_dvec3){0, 0, 1}, (arpt_dvec3){10, 20, 30});
     arpt_dvec3 p = {1, 2, 3};
     arpt_dvec3 r = arpt_dmat4_transform(t, p);
     TEST_ASSERT_DOUBLE_WITHIN(1e-12, 11.0, r.x);
@@ -87,9 +88,9 @@ void test_dmat4_transform(void) {
 
 void test_dmat4_rotate(void) {
     /* 90-degree rotation around Z: X→Y, Y→-X */
-    arpt_dmat4 rz = arpt_dmat4_from_cols(
-        (arpt_dvec3){0, 1, 0}, (arpt_dvec3){-1, 0, 0},
-        (arpt_dvec3){0, 0, 1}, (arpt_dvec3){99, 99, 99});
+    arpt_dmat4 rz =
+        arpt_dmat4_from_cols((arpt_dvec3){0, 1, 0}, (arpt_dvec3){-1, 0, 0},
+                             (arpt_dvec3){0, 0, 1}, (arpt_dvec3){99, 99, 99});
     arpt_dvec3 d = arpt_dmat4_rotate(rz, (arpt_dvec3){1, 0, 0});
     TEST_ASSERT_DOUBLE_WITHIN(1e-12, 0.0, d.x);
     TEST_ASSERT_DOUBLE_WITHIN(1e-12, 1.0, d.y);
@@ -100,7 +101,8 @@ void test_dmat4_rotate(void) {
 
 void test_perspective_depth_range(void) {
     /* WebGPU: near maps to z=0, far maps to z=1 */
-    arpt_mat4 p = arpt_mat4_perspective((float)(M_PI / 4.0), 1.0f, 1.0f, 100.0f);
+    arpt_mat4 p =
+        arpt_mat4_perspective((float)(M_PI / 4.0), 1.0f, 1.0f, 100.0f);
     /* Point at near plane: (0, 0, -near, 1) → clip z should map to 0 */
     float z_near = p.m[10] * (-1.0f) + p.m[14];
     float w_near = p.m[11] * (-1.0f);

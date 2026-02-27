@@ -1,5 +1,5 @@
-#ifndef TILE_FETCH_H
-#define TILE_FETCH_H
+#ifndef ARPENTRY_TILE_FETCH_H
+#define ARPENTRY_TILE_FETCH_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -12,8 +12,7 @@
  * and must free() it after use.
  * On failure: flatbuf is NULL.
  */
-typedef void (*arpt_tile_fetch_cb)(bool success,
-                                   uint8_t *flatbuf, size_t size,
+typedef void (*arpt_tile_fetch_cb)(bool success, uint8_t *flatbuf, size_t size,
                                    void *userdata);
 
 /**
@@ -53,4 +52,4 @@ int arpt_fetch_drain(void);
  */
 void arpt_fetch_shutdown(void);
 
-#endif /* TILE_FETCH_H */
+#endif /* ARPENTRY_TILE_FETCH_H */
