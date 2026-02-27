@@ -31,7 +31,7 @@ FetchContent_MakeAvailable(glfw3webgpu)
 
 # ── Main executable ──────────────────────────────────────────────────────
 
-add_executable(arpentry
+add_executable(arpentry_client
     src/main.c
     src/http.c
     src/tile_fetch.c
@@ -43,9 +43,9 @@ add_executable(arpentry
     src/tile_manager.c
     src/ui.c
 )
-add_dependencies(arpentry flatcc_generate)
-target_include_directories(arpentry PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(arpentry PRIVATE webgpu glfw3webgpu arpentry_common)
+add_dependencies(arpentry_client flatcc_generate)
+target_include_directories(arpentry_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(arpentry_client PRIVATE webgpu glfw3webgpu arpentry_common)
 
 # ── Tests (native only) ──────────────────────────────────────────────
 if(NOT EMSCRIPTEN)
@@ -64,13 +64,13 @@ endif()
 
 if(EMSCRIPTEN)
     # -sUSE_WEBGPU is provided by the webgpu target's INTERFACE link options
-    target_link_options(arpentry PRIVATE
+    target_link_options(arpentry_client PRIVATE
         -sUSE_GLFW=3 -sASYNCIFY -sALLOW_MEMORY_GROWTH -sFETCH
         --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/shell.html
     )
-    set_target_properties(arpentry PROPERTIES SUFFIX ".html")
+    set_target_properties(arpentry_client PROPERTIES SUFFIX ".html")
 else()
-    target_link_libraries(arpentry PRIVATE glfw Threads::Threads)
-    target_copy_webgpu_binaries(arpentry)
+    target_link_libraries(arpentry_client PRIVATE glfw Threads::Threads)
+    target_copy_webgpu_binaries(arpentry_client)
 endif()
 

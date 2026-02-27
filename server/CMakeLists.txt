@@ -11,7 +11,7 @@ set(POGOCACHE_SOURCES
     src/uring.c
 )
 
-add_executable(arpt_server
+add_executable(arpentry_server
     src/main.c
     src/http.c
     src/tile_path.c
@@ -20,16 +20,16 @@ add_executable(arpt_server
     ${POGOCACHE_SOURCES}
 )
 
-target_compile_definitions(arpt_server PRIVATE NOOPENSSL NOURING)
+target_compile_definitions(arpentry_server PRIVATE NOOPENSSL NOURING)
 
-add_dependencies(arpt_server flatcc_generate)
+add_dependencies(arpentry_server flatcc_generate)
 
-target_include_directories(arpt_server PRIVATE
+target_include_directories(arpentry_server PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 find_package(Threads REQUIRED)
-target_link_libraries(arpt_server PRIVATE arpentry_common Threads::Threads)
+target_link_libraries(arpentry_server PRIVATE arpentry_common Threads::Threads)
 
 # ── Tests ──────────────────────────────────────────────────────────────
 

@@ -26,7 +26,7 @@ ctest --test-dir build --output-on-failure
 ./build/common/test_common
 
 # Run the client (WebGPU viewer)
-./build/client/arpentry
+./build/client/arpentry_client
 
 # Emscripten build (two-step: host compiler first, then cross-compile)
 cmake -B build-native -DCMAKE_BUILD_TYPE=Release
