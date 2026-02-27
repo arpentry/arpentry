@@ -263,11 +263,11 @@ The existing `camera.c` API covers most of this specification:
 
 | Section | API Function | Status |
 |---------|-------------|--------|
-| §3 Pan (ray-cast) | `arpt_camera_pan_begin` / `arpt_camera_pan_move` | **Change**: replace linear model with ray-cast anchor tracking |
-| §4 Zoom | `arpt_camera_zoom_at` | Exists — no change needed |
-| §5 Rotate | `arpt_camera_tilt_bearing` | Exists — no change needed |
-| §6.1 Modifier swap | `control.c` callbacks | **Add**: check modifier keys in mouse-button callback |
-| §6.3 Touch | Emscripten event handlers | **Add**: new for Emscripten build |
-| §7 Inertia | `arpt_camera_update` | Exists — no change needed |
-| §8 Fly-to | `arpt_camera_fly_to_screen` | Exists — no change needed |
-| §9 Ray-cast | `arpt_camera_screen_to_ray` | Exists — no change needed |
+| §3 Pan (ray-cast) | `arpt_camera_pan_begin` / `arpt_camera_pan_move` | Implemented |
+| §4 Zoom | `arpt_camera_zoom_at` | Implemented |
+| §5 Rotate | `arpt_camera_tilt_bearing` | Implemented |
+| §6.1 Modifier swap | `control.c` `has_modifier()` | Implemented |
+| §6.3 Touch | Emscripten `on_touchstart` / `on_touchmove` / `on_touchend` | Implemented |
+| §7 Inertia | `arpt_control_update` | Implemented |
+| §8 Fly-to | `arpt_control_update` (flyto state) | Implemented |
+| §9 Ray-cast | `arpt_camera_screen_to_ray` / `arpt_camera_screen_to_geodetic` | Implemented |

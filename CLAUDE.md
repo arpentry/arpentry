@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Arpentry is a system for stylized 3D globe maps, consisting of three components:
 
 - **Tile format** (.arpt) — A compact binary tile format using FlatBuffers for zero-copy encoding and Brotli for compression. Carries geometry + properties for client-side styling; 3D meshes can include lightweight inline materials. The full format specification is in `FORMAT.md`.
-- **Tile server** — A C backend that produces .arpt tiles from source geodata (elevation, OpenStreetMap vectors). Currently a placeholder (`server/`).
+- **Tile server** — A C backend that produces .arpt tiles from source geodata. Includes HTTP serving, procedural terrain generation, and demo tile building (`server/`).
 - **Tile viewer** — A WebGPU-based 3D globe renderer written in C, targeting both native (macOS/Linux/Windows via GLFW) and WebAssembly (via Emscripten). Lives in `client/`.
 
 ## Build Commands
@@ -43,9 +43,9 @@ python3 -m http.server 8080 --bind localhost -d build-web/client
 
 - `scripts/` — Shell scripts for building and running the native and web targets
 - `schemas/` — FlatBuffers schemas (compiled by flatcc at build time)
-- `common/` — Shared static library (`arpentry_common`) used by client and server. Includes quantization helpers and links FlatCC runtime + Brotli.
+- `common/` — Shared static library (`arpentry_common`) used by client and server. Includes coordinate/quantization helpers, WGS84 globe math, hashmap, buffer utilities, 3D math, and tile encode/decode. Links FlatCC runtime + Brotli.
 - `client/` — WebGPU + GLFW viewer targeting native and WebAssembly
-- `server/` — Placeholder for future C backend
+- `server/` — Tile server with HTTP handling, procedural terrain generation, and demo tiles
 - `FORMAT.md` — Authoritative format specification for Arpentry Tiles
 
 Generated FlatBuffers headers go to `${CMAKE_BINARY_DIR}/generated/flatcc/`. The `flatcc_generate` custom target compiles schemas.
@@ -78,4 +78,4 @@ Follow the principles in `DESIGN.md` (deep modules, pull complexity downward, de
 - **FlatCC on newer Clang** needs `-Wno-error=c23-extensions`, `-Wno-error=unused-but-set-variable`, `-Wno-error=implicit-int-conversion` (already configured in root CMakeLists.txt)
 - **glfw3webgpu v1.2.0**: the surface function is `glfwGetWGPUSurface()` (not `glfwCreateWindowWGPUSurface`)
 - Tests use the **Unity** framework (setUp/tearDown, UNITY_BEGIN/RUN_TEST/UNITY_END pattern)
-- Test executables are registered with CTest and live in `common/tests/`
+- Test executables are registered with CTest and live in `common/tests/`, `client/tests/`, and `server/tests/`

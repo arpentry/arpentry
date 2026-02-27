@@ -63,7 +63,7 @@ Computed twice per vertex (vertex + tile center). WGS84 constants (`a = 6,378,13
 |-----------|-------------|-------|
 | `longitude` | Interest point longitude | -180° to +180° |
 | `latitude` | Interest point latitude | -89° to +89° |
-| `altitude` | Height above ellipsoid surface | 100 m to 30,000 km |
+| `altitude` | Height above ellipsoid surface | 500 m to 30,000 km |
 | `tilt` | Angle from nadir (0° = straight down) | 0° to 60° |
 | `bearing` | Compass direction when tilted (clockwise from north) | 0° to 360° |
 
@@ -93,7 +93,7 @@ These feed into the per-tile model matrices (Section 1).
 | Input | Action |
 |-------|--------|
 | Left-drag | Pan: move interest point (sensitivity scales with altitude) |
-| Scroll | Zoom: altitude × 0.9 (in) / × 1.1 (out) |
+| Scroll | Zoom: altitude × 0.95^yoff per scroll tick |
 | Right-drag | Tilt (vertical) + bearing (horizontal) |
 
 ---
@@ -178,18 +178,24 @@ Uploaded once per tile, freed on eviction. No re-upload on camera movement.
 | Module | Responsibility |
 |--------|---------------|
 | `globe` | WGS84 math: geodetic ↔ ECEF, surface normals, tile bounds, ray-ellipsoid intersection |
-| `camera` | Camera state, globe transform, projection matrix, input handling |
-| `tile_manager` | Zoom level, visible tile enumeration, tile state machine, loading, cache, model matrices |
+| `camera` | Camera state, globe transform, projection matrix, ray casting |
+| `control` | GLFW input callbacks, mouse/keyboard/touch bindings, inertia, fly-to animation |
+| `tile_manager` | Zoom level, tile state machine, loading, cache, model matrices |
+| `tile_visible` | Visible tile enumeration from camera frustum |
 | `tile_decode` | Extract raw FlatBuffer arrays (x/y/z, normals, indices) for GPU upload |
+| `tile_fetch` | HTTP tile fetching |
 | `renderer` | WebGPU pipeline, GPU buffers, draw calls, uniforms, depth buffer |
-| `app` | Window (GLFW/Emscripten), main loop, resize, module wiring |
-| `tile_fetch` | HTTP tile fetching (exists) |
+| `ui` | WebGPU UI overlay (compass, zoom buttons, tilt controls) |
+| `http` | Low-level HTTP client (native sockets / Emscripten fetch) |
+| `main` | Window (GLFW/Emscripten), main loop, resize, module wiring |
 
 ```
-app
+main
  ├── camera → globe
+ ├── control → camera
  ├── renderer
- └── tile_manager → tile_fetch, tile_decode, camera, globe
+ ├── ui
+ └── tile_manager → tile_fetch → http, tile_decode, tile_visible, camera, globe
 ```
 
 ### Platform
