@@ -27,7 +27,7 @@ typedef struct {
     tile_state_t state;
     arpt_tile_gpu *gpu;
     uint64_t last_used;
-    arpt_bounds_t bounds;
+    arpt_bounds bounds;
     double center_lon_rad;
     double center_lat_rad;
     int retries;
@@ -209,7 +209,7 @@ void arpt_tile_manager_free(arpt_tile_manager *tm) {
 /* Start a fetch for a tile key, inserting a LOADING entry into the cache.
    prev_retries is the retry count carried from a previous failed attempt (0 for new). */
 static void start_fetch(arpt_tile_manager *tm, arpt_tile_key key, int prev_retries) {
-    arpt_bounds_t bounds = arpt_tile_bounds(key.level, key.x, key.y);
+    arpt_bounds bounds = arpt_tile_bounds(key.level, key.x, key.y);
     double center_lon = (bounds.west + bounds.east) / 2.0 * M_PI / 180.0;
     double center_lat = (bounds.south + bounds.north) / 2.0 * M_PI / 180.0;
 
@@ -344,7 +344,7 @@ void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
             draw_entry(r, cam, e);
         } else if (ph_slot < ARPT_MAX_PLACEHOLDERS) {
             /* Draw flat placeholder quad while tile loads */
-            arpt_bounds_t bounds = arpt_tile_bounds(
+            arpt_bounds bounds = arpt_tile_bounds(
                 tm->visible[i].level, tm->visible[i].x, tm->visible[i].y);
             double clon = (bounds.west + bounds.east) / 2.0 * M_PI / 180.0;
             double clat = (bounds.south + bounds.north) / 2.0 * M_PI / 180.0;

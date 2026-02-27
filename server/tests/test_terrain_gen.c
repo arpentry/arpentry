@@ -236,8 +236,8 @@ void test_adjacent_tiles_match(void) {
     int level = 2;
     int x_left = 3, x_right = 4, y = 1;
 
-    arpt_bounds_t b_left  = arpt_tile_bounds(level, x_left, y);
-    arpt_bounds_t b_right = arpt_tile_bounds(level, x_right, y);
+    arpt_bounds b_left  = arpt_tile_bounds(level, x_left, y);
+    arpt_bounds b_right = arpt_tile_bounds(level, x_right, y);
 
     /* The shared edge is at b_left.east == b_right.west */
     TEST_ASSERT_DOUBLE_WITHIN(1e-10, b_left.east, b_right.west);

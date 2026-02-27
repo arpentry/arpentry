@@ -250,7 +250,7 @@ static void init_viewer(void) {
 
     /* Camera: start looking at a tile in Switzerland */
     app.camera = arpt_camera_create();
-    arpt_bounds_t bounds = arpt_tile_bounds(DEMO_LEVEL, DEMO_X, DEMO_Y);
+    arpt_bounds bounds = arpt_tile_bounds(DEMO_LEVEL, DEMO_X, DEMO_Y);
     double center_lon = (bounds.west + bounds.east) / 2.0 * M_PI / 180.0;
     double center_lat = (bounds.south + bounds.north) / 2.0 * M_PI / 180.0;
     arpt_camera_set_position(app.camera, center_lon, center_lat,

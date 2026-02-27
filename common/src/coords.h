@@ -42,7 +42,7 @@ typedef struct {
     double south;
     double east;
     double north;
-} arpt_bounds_t;
+} arpt_bounds;
 
 /**
  * Compute the geodetic bounds (degrees) for a tile at the given level, x, y.
@@ -51,14 +51,14 @@ typedef struct {
  *   x: 0 .. 2^(level+1) - 1
  *   y: 0 .. 2^level - 1  (south to north)
  */
-arpt_bounds_t arpt_tile_bounds(int level, int x, int y);
+arpt_bounds arpt_tile_bounds(int level, int x, int y);
 
 /* Geodetic quantization */
 
 /**
  * Quantize a longitude to uint16 within the given tile bounds.
  */
-static inline uint16_t arpt_quantize_lon(double lon, arpt_bounds_t bounds) {
+static inline uint16_t arpt_quantize_lon(double lon, arpt_bounds bounds) {
     double normalized = (lon - bounds.west) / (bounds.east - bounds.west);
     return arpt_quantize(normalized);
 }
@@ -66,7 +66,7 @@ static inline uint16_t arpt_quantize_lon(double lon, arpt_bounds_t bounds) {
 /**
  * Quantize a latitude to uint16 within the given tile bounds.
  */
-static inline uint16_t arpt_quantize_lat(double lat, arpt_bounds_t bounds) {
+static inline uint16_t arpt_quantize_lat(double lat, arpt_bounds bounds) {
     double normalized = (lat - bounds.south) / (bounds.north - bounds.south);
     return arpt_quantize(normalized);
 }
@@ -74,14 +74,14 @@ static inline uint16_t arpt_quantize_lat(double lat, arpt_bounds_t bounds) {
 /**
  * Dequantize a uint16 x coordinate back to longitude (degrees).
  */
-static inline double arpt_dequantize_lon(uint16_t qx, arpt_bounds_t bounds) {
+static inline double arpt_dequantize_lon(uint16_t qx, arpt_bounds bounds) {
     return bounds.west + arpt_dequantize(qx) * (bounds.east - bounds.west);
 }
 
 /**
  * Dequantize a uint16 y coordinate back to latitude (degrees).
  */
-static inline double arpt_dequantize_lat(uint16_t qy, arpt_bounds_t bounds) {
+static inline double arpt_dequantize_lat(uint16_t qy, arpt_bounds bounds) {
     return bounds.south + arpt_dequantize(qy) * (bounds.north - bounds.south);
 }
 

@@ -41,7 +41,7 @@ void test_ancestor_chain(void) {
 void test_enumerate_at_switzerland(void) {
     /* Camera over Switzerland at ~500km altitude (roughly zoom level 5) */
     arpt_camera *cam = arpt_camera_create();
-    arpt_bounds_t bounds = arpt_tile_bounds(5, 34, 22);
+    arpt_bounds bounds = arpt_tile_bounds(5, 34, 22);
     double center_lon = (bounds.west + bounds.east) / 2.0 * M_PI / 180.0;
     double center_lat = (bounds.south + bounds.north) / 2.0 * M_PI / 180.0;
     arpt_camera_set_position(cam, center_lon, center_lat, 500000.0);

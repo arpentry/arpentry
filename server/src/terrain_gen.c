@@ -82,7 +82,7 @@ bool arpt_generate_terrain(int level, int x, int y,
 {
     if (!out || !out_size) return false;
 
-    arpt_bounds_t bounds = arpt_tile_bounds(level, x, y);
+    arpt_bounds bounds = arpt_tile_bounds(level, x, y);
     double lon_span = bounds.east - bounds.west;
     double lat_span = bounds.north - bounds.south;
 

@@ -39,7 +39,7 @@ void test_quantize_clamps_high(void) {
 
 void test_tile_bounds_root_west(void) {
     /* Level 0, tile (0,0): western hemisphere */
-    arpt_bounds_t b = arpt_tile_bounds(0, 0, 0);
+    arpt_bounds b = arpt_tile_bounds(0, 0, 0);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, -180.0, b.west);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9,    0.0, b.east);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9,  -90.0, b.south);
@@ -48,7 +48,7 @@ void test_tile_bounds_root_west(void) {
 
 void test_tile_bounds_root_east(void) {
     /* Level 0, tile (1,0): eastern hemisphere */
-    arpt_bounds_t b = arpt_tile_bounds(0, 1, 0);
+    arpt_bounds b = arpt_tile_bounds(0, 1, 0);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9,   0.0, b.west);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, 180.0, b.east);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, -90.0, b.south);
@@ -57,7 +57,7 @@ void test_tile_bounds_root_east(void) {
 
 void test_tile_bounds_level5(void) {
     /* Level 5, tile (32, 16): should be in a known range */
-    arpt_bounds_t b = arpt_tile_bounds(5, 32, 16);
+    arpt_bounds b = arpt_tile_bounds(5, 32, 16);
     double lon_span = 360.0 / 64.0;  /* 2^(5+1) = 64 */
     double lat_span = 180.0 / 32.0;  /* 2^5 = 32 */
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, -180.0 + 32 * lon_span, b.west);
@@ -69,7 +69,7 @@ void test_tile_bounds_level5(void) {
 /* Geodetic quantization */
 
 void test_geodetic_quantize_lon_roundtrip(void) {
-    arpt_bounds_t b = arpt_tile_bounds(10, 500, 300);
+    arpt_bounds b = arpt_tile_bounds(10, 500, 300);
     double lon = (b.west + b.east) / 2.0; /* tile center */
     uint16_t q = arpt_quantize_lon(lon, b);
     double recovered = arpt_dequantize_lon(q, b);
@@ -79,7 +79,7 @@ void test_geodetic_quantize_lon_roundtrip(void) {
 }
 
 void test_geodetic_quantize_lat_roundtrip(void) {
-    arpt_bounds_t b = arpt_tile_bounds(10, 500, 300);
+    arpt_bounds b = arpt_tile_bounds(10, 500, 300);
     double lat = (b.south + b.north) / 2.0;
     uint16_t q = arpt_quantize_lat(lat, b);
     double recovered = arpt_dequantize_lat(q, b);
@@ -89,7 +89,7 @@ void test_geodetic_quantize_lat_roundtrip(void) {
 
 void test_geodetic_quantize_tile_origin(void) {
     /* Tile origin should quantize to ARPT_BUFFER (16384) */
-    arpt_bounds_t b = arpt_tile_bounds(5, 10, 8);
+    arpt_bounds b = arpt_tile_bounds(5, 10, 8);
     uint16_t qx = arpt_quantize_lon(b.west, b);
     uint16_t qy = arpt_quantize_lat(b.south, b);
     TEST_ASSERT_EQUAL_UINT16(ARPT_BUFFER, qx);
