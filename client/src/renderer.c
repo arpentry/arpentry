@@ -11,6 +11,7 @@ static const char *terrain_wgsl =
     "struct GlobalUniforms {\n"
     "    projection: mat4x4<f32>,\n"
     "    sun_dir: vec3<f32>,\n"
+    "    apply_gamma: f32,\n"
     "};\n"
     "\n"
     "struct TileUniforms {\n"
@@ -96,13 +97,27 @@ static const char *terrain_wgsl =
     ") -> @location(0) vec4<f32> {\n"
     "    let margin = 0.125;\n"
     "    let tex_uv = (uv + vec2<f32>(margin, margin)) / (1.0 + 2.0 * margin);\n"
-    "    let color = textureSample(landuse_tex, landuse_samp, tex_uv).rgb;\n"
+    "    let albedo = textureSample(landuse_tex, landuse_samp, tex_uv).rgb;\n"
     "\n"
     "    let n = normalize(normal_cam);\n"
-    "    let diffuse = max(dot(n, normalize(globals.sun_dir)), 0.0);\n"
-    "    let lit = color * (0.15 + 0.85 * diffuse);\n"
+    "    let sun = normalize(globals.sun_dir);\n"
+    "    let NdotL = dot(n, sun);\n"
     "\n"
-    "    return vec4<f32>(lit, 1.0);\n"
+    "    // Hemisphere ambient: cool blue in shadow, warm fill on lit side\n"
+    "    let shadow_color = vec3<f32>(0.20, 0.22, 0.28);\n"
+    "    let fill_color   = vec3<f32>(0.28, 0.26, 0.22);\n"
+    "    let hemi_t = NdotL * 0.5 + 0.5;\n"
+    "    let ambient = mix(shadow_color, fill_color, hemi_t);\n"
+    "\n"
+    "    // Direct sunlight: clamped Lambertian at moderate intensity\n"
+    "    let sun_color = vec3<f32>(0.65, 0.63, 0.58);\n"
+    "    let direct = sun_color * max(NdotL, 0.0);\n"
+    "\n"
+    "    let lit = albedo * (ambient + direct);\n"
+    "\n"
+    "    // Apply sRGB gamma when surface format is non-sRGB (e.g. WebGPU in browser)\n"
+    "    let out = select(lit, pow(lit, vec3<f32>(1.0 / 2.2)), globals.apply_gamma > 0.5);\n"
+    "    return vec4<f32>(out, 1.0);\n"
     "}\n";
 
 /* ── Landuse rasterization shader ──────────────────────────────────────── */
@@ -136,7 +151,7 @@ static const char *landuse_wgsl =
 
 /* ── Landuse color table ───────────────────────────────────────────────── */
 
-#define LANDUSE_TEX_SIZE 512
+#define LANDUSE_TEX_SIZE 1024
 #define LANDUSE_MARGIN 0.125  /* = LANDUSE_BUFFER / LANDUSE_GRID = 8/64 */
 
 typedef struct { float r, g, b, a; } landuse_color_t;
@@ -153,7 +168,7 @@ static const landuse_color_t landuse_colors[] = {
 typedef struct {
     float projection[16];
     float sun_dir[3];
-    float _pad;
+    float apply_gamma; /* 1.0 when surface is non-sRGB (needs manual correction) */
 } global_uniforms_t;
 
 typedef struct {
@@ -862,7 +877,10 @@ void arpt_renderer_set_globals(arpt_renderer *r,
     u.sun_dir[0] = sun_dir.x;
     u.sun_dir[1] = sun_dir.y;
     u.sun_dir[2] = sun_dir.z;
-    u._pad = 0.0f;
+    /* Non-sRGB formats need manual gamma correction in the shader */
+    u.apply_gamma = (r->surface_format == WGPUTextureFormat_BGRA8UnormSrgb ||
+                     r->surface_format == WGPUTextureFormat_RGBA8UnormSrgb)
+                    ? 0.0f : 1.0f;
 
     if (memcmp(&u, &r->prev_globals, sizeof(u)) == 0)
         return;
@@ -912,6 +930,10 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
                                          WGPUIndexFormat_Uint32, 0,
                                          wgpuBufferGetSize(tile->buf_indices));
     wgpuRenderPassEncoderDrawIndexed(r->pass, tile->index_count, 1, 0, 0, 0);
+}
+
+WGPURenderPassEncoder arpt_renderer_pass(arpt_renderer *r) {
+    return r->pass;
 }
 
 void arpt_renderer_end_frame(arpt_renderer *r) {

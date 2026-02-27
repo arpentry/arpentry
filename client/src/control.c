@@ -63,6 +63,10 @@ struct arpt_control {
     /* Fly-to animation */
     flyto_t flyto;
 
+    /* Optional event filter (for UI click interception) */
+    arpt_event_filter_fn event_filter;
+    void *filter_ud;
+
 #ifdef __EMSCRIPTEN__
     /* Touch state */
     int touch_count;
@@ -106,6 +110,11 @@ static void on_mouse_button(GLFWwindow *window, int button, int action,
 
     double sx, sy;
     glfwGetCursorPos(window, &sx, &sy);
+
+    /* Let UI consume the event before map interaction */
+    if (ctrl->event_filter &&
+        ctrl->event_filter(button, action, sx, sy, ctrl->filter_ud))
+        return;
 
     if (action == GLFW_PRESS) {
         cancel_animation(ctrl);
@@ -428,6 +437,12 @@ void arpt_control_update(arpt_control *ctrl, double dt) {
         if (fabs(ctrl->vel_tilt) < VEL_EPSILON) ctrl->vel_tilt = 0.0;
         if (fabs(ctrl->vel_bearing) < VEL_EPSILON) ctrl->vel_bearing = 0.0;
     }
+}
+
+void arpt_control_set_event_filter(arpt_control *ctrl,
+                                    arpt_event_filter_fn fn, void *userdata) {
+    ctrl->event_filter = fn;
+    ctrl->filter_ud = userdata;
 }
 
 void arpt_control_free(arpt_control *ctrl) {

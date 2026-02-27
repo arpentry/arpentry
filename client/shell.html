@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arpentry</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+
+body {
+  display: flex;
+}
+
+#canvas {
+  flex: 1;
+  min-width: 0;
+  height: 100vh;
+  display: block;
+}
+
+#console-panel {
+  width: 360px;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 10px 12px;
+  font: 12px/1.5 monospace;
+  color: #ccc;
+  background: #111;
+  border-left: 1px solid #222;
+}
+#console-panel .err { color: #e55; }
+</style>
+</head>
+<body>
+<canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+<div id="console-panel"></div>
+
+<script>
+var consolePanel = document.getElementById('console-panel');
+var autoScroll = true;
+
+consolePanel.addEventListener('scroll', function() {
+  var atBottom = consolePanel.scrollTop + consolePanel.clientHeight >= consolePanel.scrollHeight - 4;
+  autoScroll = atBottom;
+});
+
+function appendLine(text, cls) {
+  var line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = text;
+  consolePanel.appendChild(line);
+  if (autoScroll) line.scrollIntoView();
+}
+
+var Module = {
+  canvas: document.getElementById('canvas'),
+  print: function(text) {
+    console.log(text);
+    appendLine(text);
+  },
+  printErr: function(text) {
+    console.warn(text);
+    appendLine(text, 'err');
+  }
+};
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

@@ -57,6 +57,9 @@ void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view);
 /** Draw one tile. */
 void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile);
 
+/** Access the current render pass encoder (valid between begin/end frame). */
+WGPURenderPassEncoder arpt_renderer_pass(arpt_renderer *r);
+
 /** End the frame: finish render pass, submit command buffer. */
 void arpt_renderer_end_frame(arpt_renderer *r);
 

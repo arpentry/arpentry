@@ -9,10 +9,12 @@
 #include "control.h"
 #include "renderer.h"
 #include "tile_manager.h"
+#include "ui.h"
 #include "coords.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+#include <emscripten/html5.h> /* emscripten_get_element_css_size */
 #endif
 
 /* ── Constants ─────────────────────────────────────────────────────────── */
@@ -40,6 +42,7 @@ typedef struct {
     arpt_control *control;
     arpt_renderer *renderer;
     arpt_tile_manager *tile_manager;
+    arpt_ui *ui;
     double last_time;
 } App;
 
@@ -59,6 +62,12 @@ static void on_framebuffer_resize(GLFWwindow *w, int width, int height) {
     arpt_camera_set_viewport(app.camera, width, height);
     arpt_renderer_resize(app.renderer, (uint32_t)width, (uint32_t)height);
 
+    int win_w, win_h;
+    glfwGetWindowSize(app.window, &win_w, &win_h);
+    float ratio = (win_w > 0) ? (float)width / (float)win_w : 1.0f;
+    if (app.ui)
+        arpt_ui_resize(app.ui, (uint32_t)width, (uint32_t)height, ratio);
+
     /* Reconfigure surface */
     WGPUSurfaceConfiguration cfg = {
         .device = app.device,
@@ -72,10 +81,31 @@ static void on_framebuffer_resize(GLFWwindow *w, int width, int height) {
     wgpuSurfaceConfigure(app.surface, &cfg);
 }
 
+/* ── Emscripten canvas sync ────────────────────────────────────────────── */
+
+#ifdef __EMSCRIPTEN__
+static void sync_canvas_size(void) {
+    double css_w, css_h;
+    emscripten_get_element_css_size("#canvas", &css_w, &css_h);
+    int w = (int)css_w;
+    int h = (int)css_h;
+
+    int cur_w, cur_h;
+    glfwGetWindowSize(app.window, &cur_w, &cur_h);
+    if (cur_w != w || cur_h != h) {
+        glfwSetWindowSize(app.window, w, h);
+    }
+}
+#endif
+
 /* ── Render frame ──────────────────────────────────────────────────────── */
 
 static void render_frame(void) {
     glfwPollEvents();
+
+#ifdef __EMSCRIPTEN__
+    sync_canvas_size();
+#endif
 
     /* Compute dt and advance control */
     double now = glfwGetTime();
@@ -106,6 +136,17 @@ static void render_frame(void) {
     if (app.tile_manager)
         arpt_tile_manager_draw(app.tile_manager, app.renderer, app.camera);
 
+    /* Draw UI overlay */
+    if (app.ui) {
+        double cx, cy;
+        glfwGetCursorPos(app.window, &cx, &cy);
+        arpt_ui_set_cursor(app.ui, (float)cx, (float)cy);
+        arpt_ui_set_state(app.ui,
+            (float)arpt_camera_bearing(app.camera),
+            (float)arpt_camera_tilt(app.camera));
+        arpt_ui_draw(app.ui, arpt_renderer_pass(app.renderer));
+    }
+
     arpt_renderer_end_frame(app.renderer);
 
     wgpuTextureViewRelease(view);
@@ -113,6 +154,44 @@ static void render_frame(void) {
     wgpuSurfacePresent(app.surface);
 #endif
     wgpuTextureRelease(st.texture);
+}
+
+/* ── UI event filter ───────────────────────────────────────────────────── */
+
+#define UI_ZOOM_FACTOR 0.8  /* zoom in: altitude *= 0.8; zoom out: *= 1.25 */
+
+static bool ui_event_filter(int button, int action, double sx, double sy,
+                             void *ud) {
+    (void)ud;
+    if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS)
+        return false;
+
+    arpt_ui_action a = arpt_ui_hit_test(app.ui, (float)sx, (float)sy);
+    if (a == ARPT_UI_NONE) return false;
+
+    switch (a) {
+    case ARPT_UI_ZOOM_IN:
+        arpt_camera_zoom_at(app.camera,
+            arpt_camera_vp_width(app.camera) / 2.0,
+            arpt_camera_vp_height(app.camera) / 2.0,
+            UI_ZOOM_FACTOR);
+        break;
+    case ARPT_UI_ZOOM_OUT:
+        arpt_camera_zoom_at(app.camera,
+            arpt_camera_vp_width(app.camera) / 2.0,
+            arpt_camera_vp_height(app.camera) / 2.0,
+            1.0 / UI_ZOOM_FACTOR);
+        break;
+    case ARPT_UI_RESET_NORTH:
+        arpt_camera_set_bearing(app.camera, 0.0);
+        break;
+    case ARPT_UI_RESET_TILT:
+        arpt_camera_set_tilt(app.camera, 0.0);
+        break;
+    default:
+        break;
+    }
+    return true;
 }
 
 /* ── Init after device ─────────────────────────────────────────────────── */
@@ -140,7 +219,7 @@ static void init_viewer(void) {
         .base_url = "http://localhost:8090",
         .root_error = 200000.0,
         .min_level = 0,
-        .max_level = 16,
+        .max_level = 19,
         .max_tiles = 200,
         .max_concurrent = 6,
     };
@@ -169,8 +248,16 @@ static void init_viewer(void) {
         }
     }
 
+    /* UI overlay */
+    int win_w, win_h;
+    glfwGetWindowSize(app.window, &win_w, &win_h);
+    float pixel_ratio = (win_w > 0) ? (float)fb_w / (float)win_w : 1.0f;
+    app.ui = arpt_ui_create(app.device, app.queue, app.surface_format,
+                             (uint32_t)fb_w, (uint32_t)fb_h, pixel_ratio);
+
     /* Map control (mouse/keyboard/touch input) */
     app.control = arpt_control_create(app.camera, app.window);
+    arpt_control_set_event_filter(app.control, ui_event_filter, NULL);
     app.last_time = glfwGetTime();
 
     /* Install GLFW callbacks (framebuffer resize is separate from input) */
@@ -275,6 +362,7 @@ int main(void) {
 #ifndef __EMSCRIPTEN__
     /* Cleanup */
     if (app.tile_manager) arpt_tile_manager_free(app.tile_manager);
+    if (app.ui) arpt_ui_free(app.ui);
     if (app.renderer) arpt_renderer_free(app.renderer);
     if (app.control) arpt_control_free(app.control);
     if (app.camera) arpt_camera_free(app.camera);

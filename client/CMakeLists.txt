@@ -41,6 +41,7 @@ add_executable(arpentry
     src/renderer.c
     src/tile_visible.c
     src/tile_manager.c
+    src/ui.c
 )
 add_dependencies(arpentry flatcc_generate)
 target_include_directories(arpentry PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -65,6 +66,7 @@ if(EMSCRIPTEN)
     # -sUSE_WEBGPU is provided by the webgpu target's INTERFACE link options
     target_link_options(arpentry PRIVATE
         -sUSE_GLFW=3 -sASYNCIFY -sALLOW_MEMORY_GROWTH -sFETCH
+        --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/shell.html
     )
     set_target_properties(arpentry PROPERTIES SUFFIX ".html")
 else()
