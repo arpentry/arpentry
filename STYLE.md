@@ -34,7 +34,7 @@ Short (10–40 lines). Early returns for guards. Performance-critical helpers go
 
 ## Comments
 
-Explain *why*, not *what*. Brief comment on public API — one line if possible. No `@param` tags; the type signature speaks for itself.
+Explain *why*, not *what*.
 
 ```c
 /* Decompress and verify an .arpt tile. Caller frees *out. */
