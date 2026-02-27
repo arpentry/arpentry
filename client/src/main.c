@@ -182,7 +182,7 @@ static void render_frame(void) {
     if (app.tile_manager)
         arpt_tile_manager_draw(app.tile_manager, app.renderer, app.camera);
 
-    /* Draw UI overlay */
+    /* Update UI state (draw happens via overlay callback in end_frame) */
     if (app.ui) {
         double cx, cy;
         glfwGetCursorPos(app.window, &cx, &cy);
@@ -190,7 +190,6 @@ static void render_frame(void) {
         arpt_ui_set_state(app.ui,
             (float)arpt_camera_bearing(app.camera),
             (float)arpt_camera_tilt(app.camera));
-        arpt_ui_draw(app.ui, arpt_renderer_pass(app.renderer));
     }
 
     arpt_renderer_end_frame(app.renderer);
@@ -200,6 +199,13 @@ static void render_frame(void) {
     wgpuSurfacePresent(app.surface);
 #endif
     wgpuTextureRelease(st.texture);
+}
+
+/* UI overlay callback (invoked by renderer at end of frame) */
+
+static void ui_overlay(WGPURenderPassEncoder pass, void *ud) {
+    arpt_ui *ui = ud;
+    arpt_ui_draw(ui, pass);
 }
 
 /* UI event filter */
@@ -300,6 +306,7 @@ static void init_viewer(void) {
     float pixel_ratio = (win_w > 0) ? (float)fb_w / (float)win_w : 1.0f;
     app.ui = arpt_ui_create(app.device, app.queue, app.surface_format,
                              (uint32_t)fb_w, (uint32_t)fb_h, pixel_ratio);
+    arpt_renderer_set_overlay(app.renderer, ui_overlay, app.ui);
 
     /* Map control (mouse/keyboard/touch input) */
     app.control = arpt_control_create(app.camera, app.window);

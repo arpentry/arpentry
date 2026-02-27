@@ -24,10 +24,7 @@ struct server_ctx {
     const char *tile_dir;
 };
 
-typedef struct {
-    char buf[HTTP_MAX_REQUEST];
-    size_t filled;
-} http_conn;
+typedef struct http_conn http_conn;
 
 /* Create a new per-connection HTTP state. Returns NULL on allocation failure. */
 http_conn *http_conn_new(void);

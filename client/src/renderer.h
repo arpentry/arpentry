@@ -47,6 +47,13 @@ void arpt_renderer_draw_placeholder(arpt_renderer *r, int slot,
 
 /* Frame rendering */
 
+/** Overlay draw callback, invoked during end_frame before the pass closes. */
+typedef void (*arpt_overlay_fn)(WGPURenderPassEncoder pass, void *userdata);
+
+/** Register an overlay callback (e.g. for UI drawing). */
+void arpt_renderer_set_overlay(arpt_renderer *r,
+                                arpt_overlay_fn fn, void *userdata);
+
 /** Set global uniforms for this frame (projection, sun direction). */
 void arpt_renderer_set_globals(arpt_renderer *r,
                                 arpt_mat4 projection, arpt_vec3 sun_dir);
@@ -56,9 +63,6 @@ void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view);
 
 /** Draw one tile. */
 void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile);
-
-/** Access the current render pass encoder (valid between begin/end frame). */
-WGPURenderPassEncoder arpt_renderer_pass(arpt_renderer *r);
 
 /** End the frame: finish render pass, submit command buffer. */
 void arpt_renderer_end_frame(arpt_renderer *r);

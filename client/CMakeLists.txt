@@ -52,11 +52,11 @@ if(NOT EMSCRIPTEN)
     find_package(Threads REQUIRED)
 
     add_executable(test_tile_fetch tests/test_tile_fetch.c src/tile_fetch.c src/http.c
-        ${CMAKE_SOURCE_DIR}/server/src/demo_tile.c)
+        tests/demo_tile.c)
     add_dependencies(test_tile_fetch flatcc_generate)
     target_include_directories(test_tile_fetch PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CMAKE_SOURCE_DIR}/server/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
     )
     target_link_libraries(test_tile_fetch PRIVATE unity arpentry_common Threads::Threads)
     add_test(NAME test_tile_fetch COMMAND test_tile_fetch)

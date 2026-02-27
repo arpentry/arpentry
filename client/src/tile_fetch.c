@@ -90,12 +90,11 @@ bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
 /* ═══════════════════════════════════════════════════════════════════════════
  * Native path — pthread thread pool
  *
- * Workers do HTTP + Brotli decompression off the main thread.
+ * Workers do HTTP + decode off the main thread.
  * Main thread drains results and fires callbacks (safe for GPU/cache ops).
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 #include "http.h"
-#include "tile.h"
 #include "tile_verifier.h"
 
 #include <pthread.h>
@@ -107,9 +106,7 @@ bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
 
 typedef struct fetch_job {
     struct fetch_job *next;
-    char host[256];
-    char path[512];
-    int port;
+    char url[768];
     arpt_tile_fetch_cb cb;
     void *userdata;
 } fetch_job;
@@ -215,42 +212,29 @@ static void *worker_func(void *arg) {
         result->success = false;
 
         http_response_t resp;
-        if (!http_get(job->host, job->port, job->path, &resp)) {
-            /* Connection failed */
+        if (!http_get(job->url, &resp)) {
             enqueue_result(result);
             free(job);
             continue;
         }
 
         if (resp.status != 200) {
-            fprintf(stderr, "tile_fetch: HTTP %d for %s\n", resp.status, job->path);
+            fprintf(stderr, "tile_fetch: HTTP %d for %s\n", resp.status, job->url);
             free(resp.body);
             enqueue_result(result);
             free(job);
             continue;
         }
 
-        if (resp.brotli) {
-            uint8_t *decoded = NULL;
-            size_t decoded_size = 0;
-            if (arpt_decode(resp.body, resp.body_size, &decoded, &decoded_size)) {
-                result->success = true;
-                result->flatbuf = decoded;
-                result->size = decoded_size;
-            } else {
-                fprintf(stderr, "tile_fetch: arpt_decode failed\n");
-            }
+        int rc = arpentry_tiles_Tile_verify_as_root_with_identifier(
+            resp.body, resp.body_size, "arpt");
+        if (rc == 0) {
+            result->success = true;
+            result->flatbuf = resp.body;
+            result->size = resp.body_size;
+            resp.body = NULL; /* transfer ownership */
         } else {
-            int rc = arpentry_tiles_Tile_verify_as_root_with_identifier(
-                resp.body, resp.body_size, "arpt");
-            if (rc == 0) {
-                result->success = true;
-                result->flatbuf = resp.body;
-                result->size = resp.body_size;
-                resp.body = NULL; /* transfer ownership */
-            } else {
-                fprintf(stderr, "tile_fetch: verification failed (rc=%d)\n", rc);
-            }
+            fprintf(stderr, "tile_fetch: verification failed (rc=%d)\n", rc);
         }
 
         free(resp.body);
@@ -298,20 +282,12 @@ bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
                      arpt_tile_fetch_cb cb, void *userdata) {
     if (!base_url || !cb) return false;
 
-    char host[256], path_prefix[256];
-    int port;
-    if (!http_parse_url(base_url, host, sizeof(host), &port,
-                        path_prefix, sizeof(path_prefix)))
-        return false;
-
     fetch_job *job = malloc(sizeof(*job));
     if (!job) return false;
 
-    memcpy(job->host, host, sizeof(job->host));
-    job->port = port;
-    int n = snprintf(job->path, sizeof(job->path), "%s/%d/%d/%d.arpt",
-                     path_prefix, level, x, y);
-    if (n < 0 || (size_t)n >= sizeof(job->path)) {
+    int n = snprintf(job->url, sizeof(job->url), "%s/%d/%d/%d.arpt",
+                     base_url, level, x, y);
+    if (n < 0 || (size_t)n >= sizeof(job->url)) {
         free(job);
         return false;
     }

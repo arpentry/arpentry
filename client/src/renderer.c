@@ -233,6 +233,10 @@ struct arpt_renderer {
 
     WGPUCommandEncoder encoder;
     WGPURenderPassEncoder pass;
+
+    /* Overlay callback (e.g. UI) invoked before pass ends */
+    arpt_overlay_fn overlay_fn;
+    void *overlay_ud;
 };
 
 /* Helpers */
@@ -769,7 +773,7 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
     /* Pad normals to 4-byte stride (Sint8x2 + 2 padding bytes) */
     {
         int8_t *padded = calloc(vc, 4);
-        if (!padded) { free(t); return NULL; }
+        if (!padded) { arpt_tile_gpu_free(t); return NULL; }
         for (size_t i = 0; i < vc; i++) {
             if (mesh->normals) {
                 padded[i * 4]     = mesh->normals[i * 2];
@@ -932,11 +936,17 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
     wgpuRenderPassEncoderDrawIndexed(r->pass, tile->index_count, 1, 0, 0, 0);
 }
 
-WGPURenderPassEncoder arpt_renderer_pass(arpt_renderer *r) {
-    return r->pass;
+void arpt_renderer_set_overlay(arpt_renderer *r,
+                                arpt_overlay_fn fn, void *userdata) {
+    if (!r) return;
+    r->overlay_fn = fn;
+    r->overlay_ud = userdata;
 }
 
 void arpt_renderer_end_frame(arpt_renderer *r) {
+    /* Invoke overlay (e.g. UI) before closing the pass */
+    if (r->overlay_fn)
+        r->overlay_fn(r->pass, r->overlay_ud);
     wgpuRenderPassEncoderEnd(r->pass);
     wgpuRenderPassEncoderRelease(r->pass);
     r->pass = NULL;

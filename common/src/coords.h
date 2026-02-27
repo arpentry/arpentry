@@ -108,6 +108,8 @@ static inline double arpt_mm_to_meters(int32_t mm) {
  * geometric_error(level) = root_error / 2^level
  */
 static inline double arpt_geometric_error(double root_error, int level) {
+    if (level < 0) level = 0;
+    if (level > 30) level = 30;
     return root_error / (double)(1 << level);
 }
 
@@ -119,8 +121,9 @@ static inline double arpt_screen_space_error(double geometric_error,
                                               double viewport_height,
                                               double distance,
                                               double fov_radians) {
-    return (geometric_error * viewport_height) /
-           (2.0 * distance * tan(fov_radians * 0.5));
+    double denom = 2.0 * distance * tan(fov_radians * 0.5);
+    if (denom < 1e-10) return 1e18;
+    return (geometric_error * viewport_height) / denom;
 }
 
 #endif /* ARPENTRY_COORDS_H */

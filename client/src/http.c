@@ -1,6 +1,7 @@
 #ifndef __EMSCRIPTEN__
 
 #include "http.h"
+#include "tile.h"
 
 #include <netdb.h>
 #include <stdio.h>
@@ -9,10 +10,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-bool http_parse_url(const char *url,
-                    char *host, size_t host_cap,
-                    int *port,
-                    char *path, size_t path_cap) {
+/* URL parsing (internal) */
+
+static bool parse_url(const char *url,
+                      char *host, size_t host_cap,
+                      int *port,
+                      char *path, size_t path_cap) {
     const char *p = url;
 
     /* Skip scheme */
@@ -140,9 +143,13 @@ static bool header_contains(const char *headers, size_t hdr_len,
 
 /* HTTP GET */
 
-bool http_get(const char *host, int port, const char *path,
-              http_response_t *resp) {
+bool http_get(const char *url, http_response_t *resp) {
     memset(resp, 0, sizeof(*resp));
+
+    char host[256], path[512];
+    int port;
+    if (!parse_url(url, host, sizeof(host), &port, path, sizeof(path)))
+        return false;
 
     int fd = tcp_connect(host, port);
     if (fd < 0) {
@@ -197,13 +204,25 @@ bool http_get(const char *host, int port, const char *path,
     }
     resp->status = (buf[9] - '0') * 100 + (buf[10] - '0') * 10 + (buf[11] - '0');
 
-    resp->brotli = header_contains((const char *)buf, hdr_len,
-                                   "Content-Encoding", "br");
-
-    resp->body = malloc(body_len);
-    if (!resp->body) { free(buf); return false; }
-    memcpy(resp->body, body_start, body_len);
-    resp->body_size = body_len;
+    /* Decompress Brotli if Content-Encoding: br */
+    bool is_brotli = header_contains((const char *)buf, hdr_len,
+                                     "Content-Encoding", "br");
+    if (is_brotli) {
+        uint8_t *decoded = NULL;
+        size_t decoded_size = 0;
+        if (arpt_decode(body_start, body_len, &decoded, &decoded_size)) {
+            resp->body = decoded;
+            resp->body_size = decoded_size;
+        } else {
+            free(buf);
+            return false;
+        }
+    } else {
+        resp->body = malloc(body_len);
+        if (!resp->body) { free(buf); return false; }
+        memcpy(resp->body, body_start, body_len);
+        resp->body_size = body_len;
+    }
 
     free(buf);
     return true;

@@ -179,6 +179,11 @@ static void dispatch_request(struct net_conn *conn, struct server_ctx *ctx,
 
 /* Per-connection state */
 
+struct http_conn {
+    char buf[HTTP_MAX_REQUEST];
+    size_t filled;
+};
+
 http_conn *http_conn_new(void) {
     http_conn *hc = calloc(1, sizeof(http_conn));
     return hc;

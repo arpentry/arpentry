@@ -32,6 +32,12 @@
 
 #define PI 3.14159265358979323846
 
+/* Marching squares patch: a single polygon from one grid cell */
+typedef struct {
+    uint16_t x[9], y[9];
+    int count, cls;
+} ms_patch;
+
 /* Helpers */
 
 static double terrain_elevation(double lon_deg, double lat_deg) {
@@ -75,37 +81,14 @@ static void encode_octahedral(double nx, double ny, double nz,
     *oy = (int8_t)(cv >= 0.0 ? cv + 0.5 : cv - 0.5);
 }
 
-/* Public API */
-
-bool arpt_generate_terrain(int level, int x, int y,
-                           uint8_t **out, size_t *out_size)
-{
-    if (!out || !out_size) return false;
-
-    arpt_bounds bounds = arpt_tile_bounds(level, x, y);
-    double lon_span = bounds.east - bounds.west;
-    double lat_span = bounds.north - bounds.south;
-
-    /* Approximate cell size in meters (for normal computation) */
-    double mid_lat = (bounds.south + bounds.north) * 0.5;
-    double cos_lat = cos(mid_lat * PI / 180.0);
-    double meters_per_deg_lon = 111319.5 * cos_lat;
-    double meters_per_deg_lat = 111319.5;
-    double cell_w_m = (lon_span / TERRAIN_GRID) * meters_per_deg_lon;
-    double cell_h_m = (lat_span / TERRAIN_GRID) * meters_per_deg_lat;
-
-    /* Compute elevations on a padded grid: (VERTS+2) x (VERTS+2).
-     * The 1-cell border beyond the tile boundary allows centered finite
-     * differences at every output vertex, eliminating normal seams between
-     * adjacent tiles. */
-    int nv = TERRAIN_VERTS * TERRAIN_VERTS;
-    int pad_w = TERRAIN_VERTS + 2;    /* 35 */
-    int pad_n = pad_w * pad_w;        /* 35x35 = 1225 */
+/* Phase 1: Build padded elevation grid.
+ * Returns (TERRAIN_VERTS+2)^2 doubles, or NULL on failure. */
+static double *build_elevation_grid(arpt_bounds bounds,
+                                    double cell_lon, double cell_lat) {
+    int pad_w = TERRAIN_VERTS + 2;    /* 67 */
+    int pad_n = pad_w * pad_w;        /* 67x67 = 4489 */
     double *elev = malloc((size_t)pad_n * sizeof(double));
-    if (!elev) return false;
-
-    double cell_lon = lon_span / TERRAIN_GRID;
-    double cell_lat = lat_span / TERRAIN_GRID;
+    if (!elev) return NULL;
 
     for (int row = -1; row <= TERRAIN_VERTS; row++) {
         double lat = bounds.south + (double)row * cell_lat;
@@ -114,24 +97,21 @@ bool arpt_generate_terrain(int level, int x, int y,
             elev[(row + 1) * pad_w + (col + 1)] = terrain_elevation(lon, lat);
         }
     }
+    return elev;
+}
 
-    /* Build vertex arrays (only the inner VERTS x VERTS) */
-    uint16_t *vx = malloc((size_t)nv * sizeof(uint16_t));
-    uint16_t *vy = malloc((size_t)nv * sizeof(uint16_t));
-    int32_t  *vz = malloc((size_t)nv * sizeof(int32_t));
-    int8_t   *normals = malloc((size_t)nv * 2 * sizeof(int8_t));
-    struct ms_patch { uint16_t x[9], y[9]; int count, cls; };
-    struct ms_patch *patches = NULL;
-    int patch_count = 0;
-    if (!vx || !vy || !vz || !normals) goto fail;
-
+/* Phase 2: Build vertex arrays from elevation grid. */
+static void build_vertices(arpt_bounds bounds,
+                           double cell_lon, double cell_lat,
+                           double cell_w_m, double cell_h_m,
+                           const double *elev, int pad_w,
+                           uint16_t *vx, uint16_t *vy,
+                           int32_t *vz, int8_t *normals) {
     for (int row = 0; row < TERRAIN_VERTS; row++) {
         double lat = bounds.south + (double)row * cell_lat;
         for (int col = 0; col < TERRAIN_VERTS; col++) {
             int idx = row * TERRAIN_VERTS + col;
             double lon = bounds.west + (double)col * cell_lon;
-
-            /* Padded grid index: offset by +1 for the border */
             int pi = (row + 1) * pad_w + (col + 1);
 
             vx[idx] = arpt_quantize_lon(lon, bounds);
@@ -142,21 +122,16 @@ bool arpt_generate_terrain(int level, int x, int y,
             double dz_dx = (elev[pi + 1] - elev[pi - 1]) / (2.0 * cell_w_m);
             double dz_dy = (elev[pi + pad_w] - elev[pi - pad_w]) / (2.0 * cell_h_m);
 
-            /* Compute normal in ECEF coordinates.
-             * The shader transforms normals by the tile model matrix which
-             * operates in ECEF space, so we need ECEF normals (not tangent-plane).
-             * N = normalize(up - dz_dx * east - dz_dy * north) */
+            /* ECEF normal from ENU basis vectors */
             double lon_r = lon * (PI / 180.0);
             double lat_r = lat * (PI / 180.0);
             double sin_lon = sin(lon_r), cos_lon = cos(lon_r);
             double sin_lat = sin(lat_r), cos_lat = cos(lat_r);
 
-            /* ENU basis vectors in ECEF */
             double ex = -sin_lon,           ey = cos_lon,            ez = 0.0;
             double nx_e = -sin_lat*cos_lon, ny_e = -sin_lat*sin_lon, nz_e = cos_lat;
             double ux = cos_lat*cos_lon,    uy = cos_lat*sin_lon,    uz = sin_lat;
 
-            /* N_ecef = up - dz_dx * east - dz_dy * north */
             double nx = ux - dz_dx * ex - dz_dy * nx_e;
             double ny = uy - dz_dx * ey - dz_dy * ny_e;
             double nz = uz - dz_dx * ez - dz_dy * nz_e;
@@ -166,13 +141,10 @@ bool arpt_generate_terrain(int level, int x, int y,
             encode_octahedral(nx, ny, nz, &normals[idx * 2], &normals[idx * 2 + 1]);
         }
     }
+}
 
-    /* Build triangle indices: 2 triangles per quad, TERRAIN_GRID^2 quads */
-    int num_triangles = TERRAIN_GRID * TERRAIN_GRID * 2;
-    int num_indices = num_triangles * 3;
-    uint32_t *indices = malloc((size_t)num_indices * sizeof(uint32_t));
-    if (!indices) goto fail;
-
+/* Phase 3: Build triangle indices. */
+static void build_indices(uint32_t *indices) {
     int ii = 0;
     for (int row = 0; row < TERRAIN_GRID; row++) {
         for (int col = 0; col < TERRAIN_GRID; col++) {
@@ -190,39 +162,35 @@ bool arpt_generate_terrain(int level, int x, int y,
             indices[ii++] = br;
         }
     }
+}
 
-    /* Classify landuse at each vertex of the extended marching squares grid.
-     * Uses terrain_elevation() directly so buffer-zone vertices beyond
-     * the tile proper are classified identically by adjacent tiles. */
-    int vert_class[LANDUSE_VERTS * LANDUSE_VERTS];
-    {
-        for (int vr = 0; vr < LANDUSE_VERTS; vr++) {
-            double v = (double)(vr - LANDUSE_BUFFER) / LANDUSE_GRID;
-            double lat = bounds.south + v * lat_span;
-            for (int vc = 0; vc < LANDUSE_VERTS; vc++) {
-                double u = (double)(vc - LANDUSE_BUFFER) / LANDUSE_GRID;
-                double lon = bounds.west + u * lon_span;
-                double e = terrain_elevation(lon, lat);
+/* Phase 4: Classify landuse at each vertex of the marching squares grid. */
+static void classify_landuse(arpt_bounds bounds,
+                             double lon_span, double lat_span,
+                             int *vert_class) {
+    for (int vr = 0; vr < LANDUSE_VERTS; vr++) {
+        double v = (double)(vr - LANDUSE_BUFFER) / LANDUSE_GRID;
+        double lat = bounds.south + v * lat_span;
+        for (int vc = 0; vc < LANDUSE_VERTS; vc++) {
+            double u = (double)(vc - LANDUSE_BUFFER) / LANDUSE_GRID;
+            double lon = bounds.west + u * lon_span;
+            double e = terrain_elevation(lon, lat);
 
-                int cls;
-                if (e < 200.0)       cls = LANDUSE_VAL_GRASS;
-                else if (e < 800.0)  cls = LANDUSE_VAL_FOREST;
-                else if (e < 1500.0) cls = LANDUSE_VAL_GRASS;
-                else                 cls = LANDUSE_VAL_SAND;
+            int cls;
+            if (e < 200.0)       cls = LANDUSE_VAL_GRASS;
+            else if (e < 800.0)  cls = LANDUSE_VAL_FOREST;
+            else if (e < 1500.0) cls = LANDUSE_VAL_GRASS;
+            else                 cls = LANDUSE_VAL_SAND;
 
-                vert_class[vr * LANDUSE_VERTS + vc] = cls;
-            }
+            vert_class[vr * LANDUSE_VERTS + vc] = cls;
         }
     }
+}
 
-    /* Generate landuse polygon patches using marching squares.
-     * For each cell, walk the perimeter clockwise collecting vertices where
-     * the target class appears: cell corners that match + edge midpoints
-     * where the boundary crosses. Saddle cases (diagonal same-class) are
-     * split into two separate triangles per class. */
-    patches = malloc((size_t)(LANDUSE_TOTAL * LANDUSE_TOTAL * 4)
-                     * sizeof(struct ms_patch));
-    if (!patches) goto fail;
+/* Phase 5: Generate landuse polygon patches via marching squares. */
+static int generate_landuse_patches(const int *vert_class,
+                                    ms_patch *patches) {
+    int patch_count = 0;
 
     for (int r = 0; r < LANDUSE_TOTAL; r++) {
         for (int c = 0; c < LANDUSE_TOTAL; c++) {
@@ -241,8 +209,7 @@ bool arpt_generate_terrain(int level, int x, int y,
                 if (!found) unique[n_unique++] = corners[i];
             }
 
-            /* Quantized cell corner and edge-midpoint coordinates.
-             * Offset by -LANDUSE_BUFFER so tile proper is at [0, 1]. */
+            /* Quantized cell corner and edge-midpoint coordinates */
             uint16_t xl = arpt_quantize((double)(c - LANDUSE_BUFFER) / LANDUSE_GRID);
             uint16_t xm = arpt_quantize((c - LANDUSE_BUFFER + 0.5) / LANDUSE_GRID);
             uint16_t xr = arpt_quantize((double)(c - LANDUSE_BUFFER + 1) / LANDUSE_GRID);
@@ -253,10 +220,8 @@ bool arpt_generate_terrain(int level, int x, int y,
             for (int ui = 0; ui < n_unique; ui++) {
                 int cls = unique[ui];
 
-                /* Perimeter walk (clockwise from TL).
-                 * For saddle cases this produces overlapping hexagons —
-                 * acceptable since the rasterizer paints over the overlap. */
-                struct ms_patch *p = &patches[patch_count];
+                /* Perimeter walk (clockwise from TL) */
+                ms_patch *p = &patches[patch_count];
                 p->cls = cls;
                 int n = 0;
 
@@ -283,7 +248,16 @@ bool arpt_generate_terrain(int level, int x, int y,
         }
     }
 
-    /* Build FlatBuffer */
+    return patch_count;
+}
+
+/* Phase 6: Build FlatBuffer tile from terrain + landuse data. */
+static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
+                                   const int32_t *vz, const int8_t *normals,
+                                   int nv,
+                                   const uint32_t *indices, int num_indices,
+                                   const ms_patch *patches, int patch_count,
+                                   size_t *fb_size) {
     flatcc_builder_t builder;
     flatcc_builder_init(&builder);
 
@@ -317,7 +291,7 @@ bool arpt_generate_terrain(int level, int x, int y,
 
     arpentry_tiles_Tile_layers_start(&builder);
     {
-        /* Layer 0: terrain (existing) */
+        /* Layer 0: terrain */
         arpentry_tiles_Tile_layers_push_start(&builder);
         arpentry_tiles_Layer_name_create_str(&builder, "terrain");
 
@@ -326,7 +300,6 @@ bool arpt_generate_terrain(int level, int x, int y,
             arpentry_tiles_Layer_features_push_start(&builder);
             arpentry_tiles_Feature_id_add(&builder, 1);
 
-            /* Build MeshGeometry */
             arpentry_tiles_MeshGeometry_ref_t mesh_ref;
             arpentry_tiles_MeshGeometry_start(&builder);
             arpentry_tiles_MeshGeometry_x_create(&builder, vx, (size_t)nv);
@@ -337,17 +310,10 @@ bool arpt_generate_terrain(int level, int x, int y,
             arpentry_tiles_MeshGeometry_normals_create(&builder, normals,
                                                         (size_t)(nv * 2));
 
-            /* Single part covering all triangles, client-styled (a=0) */
             arpentry_tiles_MeshGeometry_parts_start(&builder);
             arpentry_tiles_Part_t part = {0};
             part.first_index = 0;
             part.index_count = (uint32_t)num_indices;
-            part.color.r = 0;
-            part.color.g = 0;
-            part.color.b = 0;
-            part.color.a = 0;
-            part.roughness = 0;
-            part.metalness = 0;
             arpentry_tiles_MeshGeometry_parts_push(&builder, &part);
             arpentry_tiles_MeshGeometry_parts_end(&builder);
 
@@ -359,13 +325,13 @@ bool arpt_generate_terrain(int level, int x, int y,
         arpentry_tiles_Layer_features_end(&builder);
         arpentry_tiles_Tile_layers_push_end(&builder);
 
-        /* Layer 1: landuse (marching squares patches) */
+        /* Layer 1: landuse */
         arpentry_tiles_Tile_layers_push_start(&builder);
         arpentry_tiles_Layer_name_create_str(&builder, "landuse");
 
         arpentry_tiles_Layer_features_start(&builder);
         for (int pi = 0; pi < patch_count; pi++) {
-            struct ms_patch *p = &patches[pi];
+            const ms_patch *p = &patches[pi];
             int32_t pz[9] = {0};
             uint32_t ring_off[2] = {0, (uint32_t)p->count};
 
@@ -402,18 +368,72 @@ bool arpt_generate_terrain(int level, int x, int y,
 
     arpentry_tiles_Tile_end_as_root(&builder);
 
-    size_t fb_size;
-    void *fb = flatcc_builder_finalize_buffer(&builder, &fb_size);
+    void *fb = flatcc_builder_finalize_buffer(&builder, fb_size);
     flatcc_builder_clear(&builder);
+    return fb;
+}
 
-    /* Clean up vertex/index/patch arrays */
+/* Public API */
+
+bool arpt_generate_terrain(int level, int x, int y,
+                           uint8_t **out, size_t *out_size)
+{
+    if (!out || !out_size) return false;
+
+    arpt_bounds bounds = arpt_tile_bounds(level, x, y);
+    double lon_span = bounds.east - bounds.west;
+    double lat_span = bounds.north - bounds.south;
+    double cell_lon = lon_span / TERRAIN_GRID;
+    double cell_lat = lat_span / TERRAIN_GRID;
+
+    /* Approximate cell size in meters (for normal computation) */
+    double mid_lat = (bounds.south + bounds.north) * 0.5;
+    double cos_lat = cos(mid_lat * PI / 180.0);
+    double cell_w_m = cell_lon * 111319.5 * cos_lat;
+    double cell_h_m = cell_lat * 111319.5;
+
+    int nv = TERRAIN_VERTS * TERRAIN_VERTS;
+    int num_indices = TERRAIN_GRID * TERRAIN_GRID * 2 * 3;
+    int pad_w = TERRAIN_VERTS + 2;
+
+    /* Phase 1: padded elevation grid */
+    double *elev = build_elevation_grid(bounds, cell_lon, cell_lat);
+    if (!elev) return false;
+
+    /* Phase 2-3: vertex + index arrays */
+    uint16_t *vx = malloc((size_t)nv * sizeof(uint16_t));
+    uint16_t *vy = malloc((size_t)nv * sizeof(uint16_t));
+    int32_t  *vz = malloc((size_t)nv * sizeof(int32_t));
+    int8_t   *normals = malloc((size_t)nv * 2 * sizeof(int8_t));
+    uint32_t *indices = malloc((size_t)num_indices * sizeof(uint32_t));
+    ms_patch *patches = NULL;
+    if (!vx || !vy || !vz || !normals || !indices) goto fail;
+
+    build_vertices(bounds, cell_lon, cell_lat, cell_w_m, cell_h_m,
+                   elev, pad_w, vx, vy, vz, normals);
+    build_indices(indices);
     free(elev);
-    free(vx);
-    free(vy);
-    free(vz);
-    free(normals);
-    free(indices);
-    free(patches);
+    elev = NULL;
+
+    /* Phase 4-5: landuse classification + marching squares */
+    int *vert_class = malloc(LANDUSE_VERTS * LANDUSE_VERTS * sizeof(int));
+    if (!vert_class) goto fail;
+    classify_landuse(bounds, lon_span, lat_span, vert_class);
+
+    patches = malloc((size_t)(LANDUSE_TOTAL * LANDUSE_TOTAL * 4)
+                     * sizeof(ms_patch));
+    if (!patches) { free(vert_class); goto fail; }
+    int patch_count = generate_landuse_patches(vert_class, patches);
+    free(vert_class);
+
+    /* Phase 6: FlatBuffer + Brotli compression */
+    size_t fb_size;
+    void *fb = build_tile_flatbuffer(vx, vy, vz, normals, nv,
+                                     indices, num_indices,
+                                     patches, patch_count, &fb_size);
+
+    free(vx); free(vy); free(vz); free(normals);
+    free(indices); free(patches);
 
     if (!fb) return false;
 
@@ -423,11 +443,7 @@ bool arpt_generate_terrain(int level, int x, int y,
 
 fail:
     free(elev);
-    free(vx);
-    free(vy);
-    free(vz);
-    free(normals);
-    free(indices);
-    free(patches);
+    free(vx); free(vy); free(vz); free(normals);
+    free(indices); free(patches);
     return false;
 }

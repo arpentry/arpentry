@@ -441,6 +441,7 @@ void arpt_control_update(arpt_control *ctrl, double dt) {
 
 void arpt_control_set_event_filter(arpt_control *ctrl,
                                     arpt_event_filter_fn fn, void *userdata) {
+    if (!ctrl) return;
     ctrl->event_filter = fn;
     ctrl->filter_ud = userdata;
 }
