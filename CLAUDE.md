@@ -25,8 +25,11 @@ ctest --test-dir build --output-on-failure
 # Run a single test
 ./build/common/test_common
 
-# Run the client (WebGPU viewer)
-./build/client/arpentry_client
+# Run the native client (WebGPU viewer)
+./scripts/run-native.sh
+
+# Run the WebAssembly client
+./scripts/run-web.sh
 
 # Emscripten build (two-step: host compiler first, then cross-compile)
 cmake -B build-native -DCMAKE_BUILD_TYPE=Release
@@ -38,6 +41,7 @@ python3 -m http.server 8080 --bind localhost -d build-web/client
 
 ## Project Structure
 
+- `scripts/` — Shell scripts for building and running the native and web targets
 - `schemas/` — FlatBuffers schemas (compiled by flatcc at build time)
 - `common/` — Shared static library (`arpentry_common`) used by client and server. Includes quantization helpers and links FlatCC runtime + Brotli.
 - `client/` — WebGPU + GLFW viewer targeting native and WebAssembly

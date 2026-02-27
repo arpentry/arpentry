@@ -59,41 +59,87 @@ static void on_device_error(WGPUErrorType type, const char *msg, void *ud) {
 static void on_framebuffer_resize(GLFWwindow *w, int width, int height) {
     (void)w;
     if (width == 0 || height == 0) return;
-    arpt_camera_set_viewport(app.camera, width, height);
-    arpt_renderer_resize(app.renderer, (uint32_t)width, (uint32_t)height);
 
+    /* On web, sync_canvas_size() handles all resize logic each frame.
+       This callback only needs to serve native targets. */
+#ifdef __EMSCRIPTEN__
+    (void)width; (void)height;
+    return;
+#else
+    /* On native: framebuffer pixels are physical; window pixels are logical
+       and match glfwGetCursorPos. */
     int win_w, win_h;
     glfwGetWindowSize(app.window, &win_w, &win_h);
+    arpt_camera_set_viewport(app.camera, win_w, win_h);
+
+    arpt_renderer_resize(app.renderer, (uint32_t)width, (uint32_t)height);
+
     float ratio = (win_w > 0) ? (float)width / (float)win_w : 1.0f;
     if (app.ui)
         arpt_ui_resize(app.ui, (uint32_t)width, (uint32_t)height, ratio);
 
-    /* Reconfigure surface */
     WGPUSurfaceConfiguration cfg = {
-        .device = app.device,
-        .format = app.surface_format,
-        .usage = WGPUTextureUsage_RenderAttachment,
-        .width = (uint32_t)width,
-        .height = (uint32_t)height,
+        .device      = app.device,
+        .format      = app.surface_format,
+        .usage       = WGPUTextureUsage_RenderAttachment,
+        .width       = (uint32_t)width,
+        .height      = (uint32_t)height,
         .presentMode = WGPUPresentMode_Fifo,
-        .alphaMode = WGPUCompositeAlphaMode_Auto,
+        .alphaMode   = WGPUCompositeAlphaMode_Auto,
     };
     wgpuSurfaceConfigure(app.surface, &cfg);
+#endif
 }
 
 /* ── Emscripten canvas sync ────────────────────────────────────────────── */
 
 #ifdef __EMSCRIPTEN__
 static void sync_canvas_size(void) {
-    double css_w, css_h;
-    emscripten_get_element_css_size("#canvas", &css_w, &css_h);
-    int w = (int)css_w;
-    int h = (int)css_h;
+    /* Read CSS display size and DPR directly from JavaScript to avoid any
+       discrepancy with the C-wrapper versions of these queries. */
+    int css_w = EM_ASM_INT({
+        return Math.round(document.getElementById('canvas').getBoundingClientRect().width);
+    });
+    int css_h = EM_ASM_INT({
+        return Math.round(document.getElementById('canvas').getBoundingClientRect().height);
+    });
+    double dpr = EM_ASM_DOUBLE({ return window.devicePixelRatio || 1.0; });
+    if (css_w == 0 || css_h == 0) return;
 
-    int cur_w, cur_h;
-    glfwGetWindowSize(app.window, &cur_w, &cur_h);
-    if (cur_w != w || cur_h != h) {
-        glfwSetWindowSize(app.window, w, h);
+    int phys_w = (int)(css_w * dpr);
+    int phys_h = (int)(css_h * dpr);
+
+    /* Pin the canvas drawing buffer to physical pixels.  Browsers display the
+       canvas at the CSS size regardless of canvas.width/height, so this gives
+       crisp 1:1 physical-pixel rendering on HiDPI screens.  We set this every
+       frame because glfwSetWindowSize (called elsewhere) resets it to CSS size. */
+    EM_ASM({
+        var c = document.getElementById('canvas');
+        if (c.width !== $0 || c.height !== $1) { c.width = $0; c.height = $1; }
+    }, phys_w, phys_h);
+
+    /* Camera viewport lives in CSS-pixel space so it matches glfwGetCursorPos. */
+    if (arpt_camera_vp_width(app.camera)  != css_w ||
+        arpt_camera_vp_height(app.camera) != css_h)
+        arpt_camera_set_viewport(app.camera, css_w, css_h);
+
+    /* Renderer and WebGPU surface use physical pixels. */
+    static int s_phys_w, s_phys_h;
+    if (s_phys_w != phys_w || s_phys_h != phys_h) {
+        s_phys_w = phys_w; s_phys_h = phys_h;
+        arpt_renderer_resize(app.renderer, (uint32_t)phys_w, (uint32_t)phys_h);
+        if (app.ui)
+            arpt_ui_resize(app.ui, (uint32_t)phys_w, (uint32_t)phys_h, (float)dpr);
+        WGPUSurfaceConfiguration cfg = {
+            .device      = app.device,
+            .format      = app.surface_format,
+            .usage       = WGPUTextureUsage_RenderAttachment,
+            .width       = (uint32_t)phys_w,
+            .height      = (uint32_t)phys_h,
+            .presentMode = WGPUPresentMode_Fifo,
+            .alphaMode   = WGPUCompositeAlphaMode_Auto,
+        };
+        wgpuSurfaceConfigure(app.surface, &cfg);
     }
 }
 #endif
@@ -199,6 +245,8 @@ static bool ui_event_filter(int button, int action, double sx, double sy,
 static void init_viewer(void) {
     int fb_w, fb_h;
     glfwGetFramebufferSize(app.window, &fb_w, &fb_h);
+    int win_w, win_h;
+    glfwGetWindowSize(app.window, &win_w, &win_h);
 
     /* Camera: start looking at a tile in Switzerland */
     app.camera = arpt_camera_create();
@@ -207,7 +255,9 @@ static void init_viewer(void) {
     double center_lat = (bounds.south + bounds.north) / 2.0 * M_PI / 180.0;
     arpt_camera_set_position(app.camera, center_lon, center_lat,
                               INITIAL_ALTITUDE);
-    arpt_camera_set_viewport(app.camera, fb_w, fb_h);
+    /* Viewport in window (logical) pixels so cursor coords match on all targets.
+       On Retina native fb_w > win_w; on web sync_canvas_size keeps them equal. */
+    arpt_camera_set_viewport(app.camera, win_w, win_h);
 
     /* Renderer */
     app.renderer = arpt_renderer_create(app.device, app.queue,
@@ -227,8 +277,6 @@ static void init_viewer(void) {
 
     /* Diagnostic: verify camera position */
     {
-        int win_w, win_h;
-        glfwGetWindowSize(app.window, &win_w, &win_h);
         printf("Window: %dx%d, Framebuffer: %dx%d, Scale: %.1fx\n",
                win_w, win_h, fb_w, fb_h, (double)fb_w / win_w);
         printf("Camera: lon=%.4f° lat=%.4f° alt=%.0fm tilt=%.1f° bearing=%.1f°\n",
@@ -239,7 +287,7 @@ static void init_viewer(void) {
                arpt_camera_bearing(app.camera) * 180.0 / M_PI);
         /* Cast ray from screen center — should hit near the interest point */
         double hit_lon, hit_lat;
-        if (arpt_camera_screen_to_geodetic(app.camera, fb_w / 2.0, fb_h / 2.0,
+        if (arpt_camera_screen_to_geodetic(app.camera, win_w / 2.0, win_h / 2.0,
                                             &hit_lon, &hit_lat)) {
             printf("Center ray hits: lon=%.4f° lat=%.4f° (should match camera)\n",
                    hit_lon * 180.0 / M_PI, hit_lat * 180.0 / M_PI);
@@ -249,8 +297,6 @@ static void init_viewer(void) {
     }
 
     /* UI overlay */
-    int win_w, win_h;
-    glfwGetWindowSize(app.window, &win_w, &win_h);
     float pixel_ratio = (win_w > 0) ? (float)fb_w / (float)win_w : 1.0f;
     app.ui = arpt_ui_create(app.device, app.queue, app.surface_format,
                              (uint32_t)fb_w, (uint32_t)fb_h, pixel_ratio);
