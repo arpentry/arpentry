@@ -2,10 +2,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BUILD_DIR="$SCRIPT_DIR/build"
-WEB_BUILD_DIR="$SCRIPT_DIR/build-web"
+ROOT_DIR="$SCRIPT_DIR/.."
+BUILD_DIR="$ROOT_DIR/build"
+WEB_BUILD_DIR="$ROOT_DIR/build-web"
 WEB_DIR="$WEB_BUILD_DIR/client"
-TILE_DIR="$SCRIPT_DIR/tiles"
+TILE_DIR="$ROOT_DIR/tiles"
 HTTP_PORT=8080
 
 SERVER="$BUILD_DIR/server/arpentry_server"

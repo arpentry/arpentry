@@ -2,8 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BUILD_DIR="$SCRIPT_DIR/build"
-TILE_DIR="$SCRIPT_DIR/tiles"
+ROOT_DIR="$SCRIPT_DIR/.."
+BUILD_DIR="$ROOT_DIR/build"
+TILE_DIR="$ROOT_DIR/tiles"
 
 SERVER="$BUILD_DIR/server/arpentry_server"
 CLIENT="$BUILD_DIR/client/arpentry_client"
