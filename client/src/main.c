@@ -119,7 +119,7 @@ static void sync_canvas_size(void) {
     EM_ASM(
         {
             var c = document.getElementById('canvas');
-            if (c.width != = $0 || c.height != = $1) {
+            if (c.width !== $0 || c.height !== $1) {
                 c.width = $0;
                 c.height = $1;
             }
