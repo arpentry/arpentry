@@ -12,29 +12,27 @@ Three components:
 
 Requires CMake 3.20+ and a C11 compiler. All dependencies fetched via CMake FetchContent.
 
+### Native
+
 ```bash
-# Native build
 cmake -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
-
-# Run tests
 ctest --test-dir build --output-on-failure
-
-# Run the native viewer
 ./scripts/run-native.sh
-
-# Run the WebAssembly viewer
-./scripts/run-web.sh
 ```
 
-Emscripten cross-compilation (two-step: host compiler first, then cross-compile):
+### Web (Emscripten)
+
+Requires [Emscripten](https://emscripten.org/docs/getting_started/downloads.html).
+
+The web build is a cross-compilation. FlatBuffers schemas must be compiled by a native host binary (`flatcc`), so `setup-web.sh` bootstraps a native build first, then configures the Emscripten build against it. This one-time setup only needs to be re-run after a `clean.sh`.
 
 ```bash
-cmake -B build-native -DCMAKE_BUILD_TYPE=Release
-cmake --build build-native --target flatcc_cli
-emcmake cmake -B build-web -DFLATCC_HOST_COMPILER=$(pwd)/build-native/_deps/flatcc-src/bin/flatcc
-cmake --build build-web
-python3 -m http.server 8080 --bind localhost -d build-web/client
+# One-time setup (configures build-native and build-web)
+./scripts/setup-web.sh
+
+# Build and run (rebuilds incrementally on each invocation)
+./scripts/run-web.sh
 ```
 
 ## Project Structure
