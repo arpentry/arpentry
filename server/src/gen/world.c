@@ -12,24 +12,52 @@
 
 #define TERRAIN_GRID 64
 #define TERRAIN_VERTS (TERRAIN_GRID + 1) /* 65x65 = 4225 vertices */
-#define TERRAIN_OCTAVES 16
-#define TERRAIN_BASE_FREQ 4.0
-#define TERRAIN_AMPLITUDE 8000.0 /* peak ~8000m */
-#define TERRAIN_LACUNARITY 2.0
-#define TERRAIN_PERSISTENCE 0.65
-#define TERRAIN_REDISTRIBUTE \
-    0.45 /* power curve exponent: < 1 pushes toward extremes */
 #define BROTLI_QUALITY 4
+
+/* Continental shape: low-frequency smooth fBm */
+#define CONTINENT_OCTAVES    6
+#define CONTINENT_FREQ       1.8
+#define CONTINENT_LACUNARITY 2.0
+#define CONTINENT_PERSIST    0.5
+#define CONTINENT_BIAS       0.45   /* ~55-60% ocean */
+
+/* Mountain ridges: ridged noise at mountain-chain scale.
+ * Freq 40 → ~160 km features at the coarsest octave.
+ * 5 octaves with high persistence (0.75) so the fine-scale
+ * octaves (~10-4 km) carry real weight → steep slopes. */
+#define RIDGE_OCTAVES    5
+#define RIDGE_FREQ       40.0
+#define RIDGE_LACUNARITY 2.5
+#define RIDGE_PERSIST    0.75
+/* Spatial offset to decorrelate ridge pattern from continental shape */
+#define RIDGE_OFFSET_X   53.7
+#define RIDGE_OFFSET_Y   91.2
+#define RIDGE_OFFSET_Z   37.4
+
+/* Elevation scaling */
+#define TERRAIN_LAND_HEIGHT 9500.0  /* max land peak (m) — beyond Everest for drama */
+#define TERRAIN_OCEAN_DEPTH 11000.0 /* max ocean depth (m) — Mariana */
+
+/* Moisture parameters */
+#define MOISTURE_FREQ 3.0
+#define MOISTURE_OCTAVES 6
+#define MOISTURE_OFFSET_X 17.3
+#define MOISTURE_OFFSET_Y 31.7
+#define MOISTURE_OFFSET_Z 5.9
 
 #define SURFACE_GRID 64  /* 64x64 marching squares grid (matches terrain) */
 #define SURFACE_BUFFER 8 /* extra cells of buffer on each side */
 #define SURFACE_TOTAL (SURFACE_GRID + 2 * SURFACE_BUFFER) /* 80 */
 #define SURFACE_VERTS (SURFACE_TOTAL + 1) /* 81x81 classification vertices */
 
-/* Landuse class indices into the tile-scope value dictionary */
-#define SURFACE_VAL_GRASS 0
-#define SURFACE_VAL_FOREST 1
-#define SURFACE_VAL_SAND 2
+/* Surface class indices into the tile-scope value dictionary */
+#define SURFACE_VAL_WATER     0
+#define SURFACE_VAL_DESERT    1
+#define SURFACE_VAL_FOREST    2
+#define SURFACE_VAL_GRASSLAND 3
+#define SURFACE_VAL_CROPLAND  4
+#define SURFACE_VAL_SHRUB     5
+#define SURFACE_VAL_ICE       6
 
 #define PI 3.14159265358979323846
 
@@ -41,6 +69,31 @@ typedef struct {
 
 /* Helpers */
 
+/* Ridged fBm: each octave is individually ridged before summing.
+ * (1-|n|)² per octave gives full [0,1] range at every scale —
+ * sharp peaks at zero-crossings with deep valleys between.
+ * High persistence (0.75) means fine-scale octaves carry real
+ * weight, producing steep slopes when zoomed in.  Returns [0, 1]. */
+static double ridged_fbm3(double x, double y, double z, int octaves,
+                          double lacunarity, double persistence) {
+    double signal = 0.0;
+    double freq = 1.0;
+    double amp = 1.0;
+    double amp_sum = 0.0;
+
+    for (int i = 0; i < octaves; i++) {
+        double n = arpt_simplex3(x * freq, y * freq, z * freq);
+        n = 1.0 - fabs(n);
+        n = n * n;
+        signal += n * amp;
+        amp_sum += amp;
+        freq *= lacunarity;
+        amp *= persistence;
+    }
+
+    return signal / amp_sum;
+}
+
 static double terrain_elevation(double lon_deg, double lat_deg) {
     double lon_r = lon_deg * (PI / 180.0);
     double lat_r = lat_deg * (PI / 180.0);
@@ -48,14 +101,55 @@ static double terrain_elevation(double lon_deg, double lat_deg) {
     double sx = cos_lat * cos(lon_r);
     double sy = cos_lat * sin(lon_r);
     double sz = sin(lat_r);
-    double n = arpt_fbm3(sx * TERRAIN_BASE_FREQ, sy * TERRAIN_BASE_FREQ,
-                         sz * TERRAIN_BASE_FREQ, TERRAIN_OCTAVES,
-                         TERRAIN_LACUNARITY, TERRAIN_PERSISTENCE);
-    /* Redistribute: sign(n) * |n|^exp pushes values away from zero,
-     * creating more pronounced mountains and valleys. */
-    double sign = n >= 0.0 ? 1.0 : -1.0;
-    n = sign * pow(fabs(n), TERRAIN_REDISTRIBUTE);
-    return n * TERRAIN_AMPLITUDE;
+
+    /* Layer 1 — continental shape: low-frequency smooth fBm.
+     * Determines land vs ocean and the broad elevation envelope. */
+    double cn = arpt_fbm3(sx * CONTINENT_FREQ, sy * CONTINENT_FREQ,
+                          sz * CONTINENT_FREQ, CONTINENT_OCTAVES,
+                          CONTINENT_LACUNARITY, CONTINENT_PERSIST);
+    double ce = (cn + 1.0) * 0.5; /* [0, 1] */
+
+    /* Ocean */
+    if (ce < CONTINENT_BIAS) {
+        double t = 1.0 - ce / CONTINENT_BIAS;
+        return -t * t * TERRAIN_OCEAN_DEPTH;
+    }
+
+    /* Land envelope: normalise to [0, 1] */
+    double t = (ce - CONTINENT_BIAS) / (1.0 - CONTINENT_BIAS);
+
+    /* Layer 2 — ridged multifractal: each octave is individually
+     * ridged and weighted by the previous octave, concentrating
+     * fine detail at ridge crests.  Returns [0, 1]. */
+    double ridge = ridged_fbm3(sx * RIDGE_FREQ + RIDGE_OFFSET_X,
+                               sy * RIDGE_FREQ + RIDGE_OFFSET_Y,
+                               sz * RIDGE_FREQ + RIDGE_OFFSET_Z,
+                               RIDGE_OCTAVES, RIDGE_LACUNARITY,
+                               RIDGE_PERSIST);
+
+    /* Combine: sqrt envelope rises quickly from the coast, giving
+     * most of the land area full mountain-height ridge contrast.
+     * No lowland strip — ridged terrain starts right at the coast. */
+    double mt = sqrt(t);
+    return mt * ridge * TERRAIN_LAND_HEIGHT;
+}
+
+/* Moisture noise: separate fBm pass decorrelated from elevation via offset. */
+static double terrain_moisture(double lon_deg, double lat_deg) {
+    double lon_r = lon_deg * (PI / 180.0);
+    double lat_r = lat_deg * (PI / 180.0);
+    double cos_lat = cos(lat_r);
+    double sx = cos_lat * cos(lon_r);
+    double sy = cos_lat * sin(lon_r);
+    double sz = sin(lat_r);
+
+    double m = arpt_fbm3(sx * MOISTURE_FREQ + MOISTURE_OFFSET_X,
+                         sy * MOISTURE_FREQ + MOISTURE_OFFSET_Y,
+                         sz * MOISTURE_FREQ + MOISTURE_OFFSET_Z,
+                         MOISTURE_OCTAVES, 2.0, 0.5);
+
+    /* Map [-1, 1] → [0, 1] */
+    return (m + 1.0) * 0.5;
 }
 
 /* Octahedral encoding: unit normal -> int8x2 */
@@ -172,26 +266,52 @@ static void build_indices(uint32_t *indices) {
     }
 }
 
-/* Phase 4: Classify surface type at each vertex of the marching squares grid. */
+/* Phase 4: Classify surface type at each vertex of the marching squares grid.
+ *
+ * Two independent noise fields drive biome placement:
+ *   - terrain elevation  (from terrain_elevation)
+ *   - moisture          (from terrain_moisture)
+ *
+ * 2D biome lookup (elevation bands × moisture bands) following the
+ * Red Blob Games terrain-from-noise approach.  No latitude overrides —
+ * biomes are distributed evenly across the globe.
+ *
+ *   Elev / Moisture    Dry (<0.25)   Medium (0.25-0.55)   Wet (>0.55)
+ *   High (>3000m)      ice           ice                  ice
+ *   Mid-high (1500-3k) shrub         shrub                forest
+ *   Mid (400-1500)     grassland     grassland            forest
+ *   Low (0-400)        desert        cropland             forest
+ */
 static void classify_surface(arpt_bounds bounds, double lon_span,
                              double lat_span, int *vert_class) {
     for (int vr = 0; vr < SURFACE_VERTS; vr++) {
         double v = (double)(vr - SURFACE_BUFFER) / SURFACE_GRID;
         double lat = bounds.south + v * lat_span;
+
         for (int vc = 0; vc < SURFACE_VERTS; vc++) {
             double u = (double)(vc - SURFACE_BUFFER) / SURFACE_GRID;
             double lon = bounds.west + u * lon_span;
             double e = terrain_elevation(lon, lat);
+            double m = terrain_moisture(lon, lat);
 
             int cls;
-            if (e < 200.0)
-                cls = SURFACE_VAL_GRASS;
-            else if (e < 800.0)
-                cls = SURFACE_VAL_FOREST;
-            else if (e < 1500.0)
-                cls = SURFACE_VAL_GRASS;
-            else
-                cls = SURFACE_VAL_SAND;
+            if (e < 0.0) {
+                cls = SURFACE_VAL_WATER;
+            } else if (e > 3000.0) {
+                cls = SURFACE_VAL_ICE;
+            } else if (e > 1500.0) {
+                cls = (m > 0.55) ? SURFACE_VAL_FOREST : SURFACE_VAL_SHRUB;
+            } else if (e > 400.0) {
+                cls = (m > 0.55) ? SURFACE_VAL_FOREST : SURFACE_VAL_GRASSLAND;
+            } else {
+                /* Low elevation: desert / cropland / forest */
+                if (m > 0.55)
+                    cls = SURFACE_VAL_FOREST;
+                else if (m > 0.25)
+                    cls = SURFACE_VAL_CROPLAND;
+                else
+                    cls = SURFACE_VAL_DESERT;
+            }
 
             vert_class[vr * SURFACE_VERTS + vc] = cls;
         }
@@ -293,28 +413,25 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
     arpentry_tiles_Tile_keys_push_create_str(&builder, "class");
     arpentry_tiles_Tile_keys_end(&builder);
 
-    /* Value dictionary: index 0="grass", 1="forest", 2="sand" */
+    /* Value dictionary: must match SURFACE_VAL_* index order */
+#define PUSH_STR(s)                                                       \
+    do {                                                                  \
+        arpentry_tiles_Tile_values_push_start(&builder);                  \
+        arpentry_tiles_Value_type_add(                                    \
+            &builder, arpentry_tiles_PropertyValueType_String);           \
+        arpentry_tiles_Value_string_value_create_str(&builder, (s));      \
+        arpentry_tiles_Tile_values_push_end(&builder);                    \
+    } while (0)
     arpentry_tiles_Tile_values_start(&builder);
-    {
-        arpentry_tiles_Tile_values_push_start(&builder);
-        arpentry_tiles_Value_type_add(&builder,
-                                      arpentry_tiles_PropertyValueType_String);
-        arpentry_tiles_Value_string_value_create_str(&builder, "grass");
-        arpentry_tiles_Tile_values_push_end(&builder);
-
-        arpentry_tiles_Tile_values_push_start(&builder);
-        arpentry_tiles_Value_type_add(&builder,
-                                      arpentry_tiles_PropertyValueType_String);
-        arpentry_tiles_Value_string_value_create_str(&builder, "forest");
-        arpentry_tiles_Tile_values_push_end(&builder);
-
-        arpentry_tiles_Tile_values_push_start(&builder);
-        arpentry_tiles_Value_type_add(&builder,
-                                      arpentry_tiles_PropertyValueType_String);
-        arpentry_tiles_Value_string_value_create_str(&builder, "sand");
-        arpentry_tiles_Tile_values_push_end(&builder);
-    }
+    PUSH_STR("water");     /* 0 */
+    PUSH_STR("desert");    /* 1 */
+    PUSH_STR("forest");    /* 2 */
+    PUSH_STR("grassland"); /* 3 */
+    PUSH_STR("cropland");  /* 4 */
+    PUSH_STR("shrub");     /* 5 */
+    PUSH_STR("ice");       /* 6 */
     arpentry_tiles_Tile_values_end(&builder);
+#undef PUSH_STR
 
     arpentry_tiles_Tile_layers_start(&builder);
     {

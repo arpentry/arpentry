@@ -34,10 +34,14 @@ bool arpt_decode_terrain(const void *flatbuf, size_t size,
 /* Surface decoding */
 
 typedef enum {
-    ARPT_SURFACE_UNKNOWN = 0,
-    ARPT_SURFACE_GRASS,
+    ARPT_SURFACE_UNKNOWN   = 0,
+    ARPT_SURFACE_WATER,
+    ARPT_SURFACE_DESERT,
     ARPT_SURFACE_FOREST,
-    ARPT_SURFACE_SAND,
+    ARPT_SURFACE_GRASSLAND,
+    ARPT_SURFACE_CROPLAND,
+    ARPT_SURFACE_SHRUB,
+    ARPT_SURFACE_ICE,
 } arpt_surface_class;
 
 typedef struct {

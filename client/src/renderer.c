@@ -165,10 +165,14 @@ typedef struct {
 } surface_color_t;
 
 static const surface_color_t surface_colors[] = {
-    [ARPT_SURFACE_UNKNOWN] = {0.35f, 0.52f, 0.22f, 1.0f}, /* default: grass */
-    [ARPT_SURFACE_GRASS] = {0.35f, 0.52f, 0.22f, 1.0f},
-    [ARPT_SURFACE_FOREST] = {0.15f, 0.35f, 0.12f, 1.0f},
-    [ARPT_SURFACE_SAND] = {0.72f, 0.65f, 0.52f, 1.0f},
+    [ARPT_SURFACE_UNKNOWN]   = {0.42f, 0.62f, 0.28f, 1.0f},
+    [ARPT_SURFACE_WATER]     = {0.09f, 0.22f, 0.45f, 1.0f},
+    [ARPT_SURFACE_DESERT]    = {0.78f, 0.68f, 0.47f, 1.0f},
+    [ARPT_SURFACE_FOREST]    = {0.10f, 0.30f, 0.08f, 1.0f},
+    [ARPT_SURFACE_GRASSLAND] = {0.42f, 0.62f, 0.28f, 1.0f},
+    [ARPT_SURFACE_CROPLAND]  = {0.65f, 0.72f, 0.30f, 1.0f},
+    [ARPT_SURFACE_SHRUB]     = {0.50f, 0.52f, 0.32f, 1.0f},
+    [ARPT_SURFACE_ICE]       = {0.88f, 0.93f, 0.98f, 1.0f},
 };
 
 /* Uniform layouts */

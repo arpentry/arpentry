@@ -82,9 +82,13 @@ bool arpt_decode_terrain(const void *flatbuf, size_t size,
 
 static arpt_surface_class classify_string(flatbuffers_string_t s) {
     if (!s) return ARPT_SURFACE_UNKNOWN;
-    if (strcmp(s, "grass") == 0) return ARPT_SURFACE_GRASS;
-    if (strcmp(s, "forest") == 0) return ARPT_SURFACE_FOREST;
-    if (strcmp(s, "sand") == 0) return ARPT_SURFACE_SAND;
+    if (strcmp(s, "water")     == 0) return ARPT_SURFACE_WATER;
+    if (strcmp(s, "desert")    == 0) return ARPT_SURFACE_DESERT;
+    if (strcmp(s, "forest")    == 0) return ARPT_SURFACE_FOREST;
+    if (strcmp(s, "grassland") == 0) return ARPT_SURFACE_GRASSLAND;
+    if (strcmp(s, "cropland")  == 0) return ARPT_SURFACE_CROPLAND;
+    if (strcmp(s, "shrub")     == 0) return ARPT_SURFACE_SHRUB;
+    if (strcmp(s, "ice")       == 0) return ARPT_SURFACE_ICE;
     return ARPT_SURFACE_UNKNOWN;
 }
 
