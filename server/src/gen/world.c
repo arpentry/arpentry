@@ -45,6 +45,13 @@
 #define MOISTURE_OFFSET_Y 31.7
 #define MOISTURE_OFFSET_Z 5.9
 
+/* Biome classification thresholds */
+#define BIOME_ELEV_ICE  3000.0  /* above → ice */
+#define BIOME_ELEV_MID  1500.0  /* above → shrub / forest */
+#define BIOME_ELEV_LOW   400.0  /* above → grassland / forest */
+#define BIOME_MOIST_WET    0.55 /* above → forest */
+#define BIOME_MOIST_DRY    0.25 /* below → desert */
+
 #define SURFACE_GRID 64  /* 64x64 marching squares grid (matches terrain) */
 #define SURFACE_BUFFER 8 /* extra cells of buffer on each side */
 #define SURFACE_TOTAL (SURFACE_GRID + 2 * SURFACE_BUFFER) /* 80 */
@@ -68,6 +75,17 @@ typedef struct {
 } ms_patch;
 
 /* Helpers */
+
+/* Geodetic (lon, lat) in degrees → unit-sphere (x, y, z). */
+static void lonlat_to_sphere(double lon_deg, double lat_deg, double *sx,
+                              double *sy, double *sz) {
+    double lon_r = lon_deg * (PI / 180.0);
+    double lat_r = lat_deg * (PI / 180.0);
+    double cos_lat = cos(lat_r);
+    *sx = cos_lat * cos(lon_r);
+    *sy = cos_lat * sin(lon_r);
+    *sz = sin(lat_r);
+}
 
 /* Ridged fBm: each octave is individually ridged before summing.
  * (1-|n|)² per octave gives full [0,1] range at every scale —
@@ -95,12 +113,8 @@ static double ridged_fbm3(double x, double y, double z, int octaves,
 }
 
 static double terrain_elevation(double lon_deg, double lat_deg) {
-    double lon_r = lon_deg * (PI / 180.0);
-    double lat_r = lat_deg * (PI / 180.0);
-    double cos_lat = cos(lat_r);
-    double sx = cos_lat * cos(lon_r);
-    double sy = cos_lat * sin(lon_r);
-    double sz = sin(lat_r);
+    double sx, sy, sz;
+    lonlat_to_sphere(lon_deg, lat_deg, &sx, &sy, &sz);
 
     /* Layer 1 — continental shape: low-frequency smooth fBm.
      * Determines land vs ocean and the broad elevation envelope. */
@@ -118,9 +132,8 @@ static double terrain_elevation(double lon_deg, double lat_deg) {
     /* Land envelope: normalise to [0, 1] */
     double t = (ce - CONTINENT_BIAS) / (1.0 - CONTINENT_BIAS);
 
-    /* Layer 2 — ridged multifractal: each octave is individually
-     * ridged and weighted by the previous octave, concentrating
-     * fine detail at ridge crests.  Returns [0, 1]. */
+    /* Layer 2 — ridged fBm: each octave is individually ridged
+     * before summing.  Returns [0, 1]. */
     double ridge = ridged_fbm3(sx * RIDGE_FREQ + RIDGE_OFFSET_X,
                                sy * RIDGE_FREQ + RIDGE_OFFSET_Y,
                                sz * RIDGE_FREQ + RIDGE_OFFSET_Z,
@@ -136,12 +149,8 @@ static double terrain_elevation(double lon_deg, double lat_deg) {
 
 /* Moisture noise: separate fBm pass decorrelated from elevation via offset. */
 static double terrain_moisture(double lon_deg, double lat_deg) {
-    double lon_r = lon_deg * (PI / 180.0);
-    double lat_r = lat_deg * (PI / 180.0);
-    double cos_lat = cos(lat_r);
-    double sx = cos_lat * cos(lon_r);
-    double sy = cos_lat * sin(lon_r);
-    double sz = sin(lat_r);
+    double sx, sy, sz;
+    lonlat_to_sphere(lon_deg, lat_deg, &sx, &sy, &sz);
 
     double m = arpt_fbm3(sx * MOISTURE_FREQ + MOISTURE_OFFSET_X,
                          sy * MOISTURE_FREQ + MOISTURE_OFFSET_Y,
@@ -276,11 +285,11 @@ static void build_indices(uint32_t *indices) {
  * Red Blob Games terrain-from-noise approach.  No latitude overrides —
  * biomes are distributed evenly across the globe.
  *
- *   Elev / Moisture    Dry (<0.25)   Medium (0.25-0.55)   Wet (>0.55)
- *   High (>3000m)      ice           ice                  ice
- *   Mid-high (1500-3k) shrub         shrub                forest
- *   Mid (400-1500)     grassland     grassland            forest
- *   Low (0-400)        desert        cropland             forest
+ *   Elev / Moisture      Dry            Medium          Wet
+ *   High (>ICE)         ice            ice             ice
+ *   Mid-high (MID-ICE)  shrub          shrub           forest
+ *   Mid (LOW-MID)       grassland      grassland       forest
+ *   Low (0-LOW)         desert         cropland        forest
  */
 static void classify_surface(arpt_bounds bounds, double lon_span,
                              double lat_span, int *vert_class) {
@@ -297,17 +306,18 @@ static void classify_surface(arpt_bounds bounds, double lon_span,
             int cls;
             if (e < 0.0) {
                 cls = SURFACE_VAL_WATER;
-            } else if (e > 3000.0) {
+            } else if (e > BIOME_ELEV_ICE) {
                 cls = SURFACE_VAL_ICE;
-            } else if (e > 1500.0) {
-                cls = (m > 0.55) ? SURFACE_VAL_FOREST : SURFACE_VAL_SHRUB;
-            } else if (e > 400.0) {
-                cls = (m > 0.55) ? SURFACE_VAL_FOREST : SURFACE_VAL_GRASSLAND;
+            } else if (e > BIOME_ELEV_MID) {
+                cls = (m > BIOME_MOIST_WET) ? SURFACE_VAL_FOREST
+                                            : SURFACE_VAL_SHRUB;
+            } else if (e > BIOME_ELEV_LOW) {
+                cls = (m > BIOME_MOIST_WET) ? SURFACE_VAL_FOREST
+                                            : SURFACE_VAL_GRASSLAND;
             } else {
-                /* Low elevation: desert / cropland / forest */
-                if (m > 0.55)
+                if (m > BIOME_MOIST_WET)
                     cls = SURFACE_VAL_FOREST;
-                else if (m > 0.25)
+                else if (m > BIOME_MOIST_DRY)
                     cls = SURFACE_VAL_CROPLAND;
                 else
                     cls = SURFACE_VAL_DESERT;
