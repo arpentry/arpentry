@@ -1,4 +1,4 @@
-#include "terrain_gen.h"
+#include "world.h"
 #include "noise.h"
 #include "coords.h"
 #include "tile.h"
@@ -21,15 +21,15 @@
     0.45 /* power curve exponent: < 1 pushes toward extremes */
 #define BROTLI_QUALITY 4
 
-#define LANDUSE_GRID 64  /* 64x64 marching squares grid (matches terrain) */
-#define LANDUSE_BUFFER 8 /* extra cells of buffer on each side */
-#define LANDUSE_TOTAL (LANDUSE_GRID + 2 * LANDUSE_BUFFER) /* 80 */
-#define LANDUSE_VERTS (LANDUSE_TOTAL + 1) /* 81x81 classification vertices */
+#define SURFACE_GRID 64  /* 64x64 marching squares grid (matches terrain) */
+#define SURFACE_BUFFER 8 /* extra cells of buffer on each side */
+#define SURFACE_TOTAL (SURFACE_GRID + 2 * SURFACE_BUFFER) /* 80 */
+#define SURFACE_VERTS (SURFACE_TOTAL + 1) /* 81x81 classification vertices */
 
 /* Landuse class indices into the tile-scope value dictionary */
-#define LANDUSE_VAL_GRASS 0
-#define LANDUSE_VAL_FOREST 1
-#define LANDUSE_VAL_SAND 2
+#define SURFACE_VAL_GRASS 0
+#define SURFACE_VAL_FOREST 1
+#define SURFACE_VAL_SAND 2
 
 #define PI 3.14159265358979323846
 
@@ -172,42 +172,42 @@ static void build_indices(uint32_t *indices) {
     }
 }
 
-/* Phase 4: Classify landuse at each vertex of the marching squares grid. */
-static void classify_landuse(arpt_bounds bounds, double lon_span,
+/* Phase 4: Classify surface type at each vertex of the marching squares grid. */
+static void classify_surface(arpt_bounds bounds, double lon_span,
                              double lat_span, int *vert_class) {
-    for (int vr = 0; vr < LANDUSE_VERTS; vr++) {
-        double v = (double)(vr - LANDUSE_BUFFER) / LANDUSE_GRID;
+    for (int vr = 0; vr < SURFACE_VERTS; vr++) {
+        double v = (double)(vr - SURFACE_BUFFER) / SURFACE_GRID;
         double lat = bounds.south + v * lat_span;
-        for (int vc = 0; vc < LANDUSE_VERTS; vc++) {
-            double u = (double)(vc - LANDUSE_BUFFER) / LANDUSE_GRID;
+        for (int vc = 0; vc < SURFACE_VERTS; vc++) {
+            double u = (double)(vc - SURFACE_BUFFER) / SURFACE_GRID;
             double lon = bounds.west + u * lon_span;
             double e = terrain_elevation(lon, lat);
 
             int cls;
             if (e < 200.0)
-                cls = LANDUSE_VAL_GRASS;
+                cls = SURFACE_VAL_GRASS;
             else if (e < 800.0)
-                cls = LANDUSE_VAL_FOREST;
+                cls = SURFACE_VAL_FOREST;
             else if (e < 1500.0)
-                cls = LANDUSE_VAL_GRASS;
+                cls = SURFACE_VAL_GRASS;
             else
-                cls = LANDUSE_VAL_SAND;
+                cls = SURFACE_VAL_SAND;
 
-            vert_class[vr * LANDUSE_VERTS + vc] = cls;
+            vert_class[vr * SURFACE_VERTS + vc] = cls;
         }
     }
 }
 
-/* Phase 5: Generate landuse polygon patches via marching squares. */
-static int generate_landuse_patches(const int *vert_class, ms_patch *patches) {
+/* Phase 5: Generate surface polygon patches via marching squares. */
+static int generate_surface_patches(const int *vert_class, ms_patch *patches) {
     int patch_count = 0;
 
-    for (int r = 0; r < LANDUSE_TOTAL; r++) {
-        for (int c = 0; c < LANDUSE_TOTAL; c++) {
-            int cl_tl = vert_class[r * LANDUSE_VERTS + c];
-            int cl_tr = vert_class[r * LANDUSE_VERTS + c + 1];
-            int cl_bl = vert_class[(r + 1) * LANDUSE_VERTS + c];
-            int cl_br = vert_class[(r + 1) * LANDUSE_VERTS + c + 1];
+    for (int r = 0; r < SURFACE_TOTAL; r++) {
+        for (int c = 0; c < SURFACE_TOTAL; c++) {
+            int cl_tl = vert_class[r * SURFACE_VERTS + c];
+            int cl_tr = vert_class[r * SURFACE_VERTS + c + 1];
+            int cl_bl = vert_class[(r + 1) * SURFACE_VERTS + c];
+            int cl_br = vert_class[(r + 1) * SURFACE_VERTS + c + 1];
 
             /* Find unique classes in this cell */
             int unique[4], n_unique = 0;
@@ -224,17 +224,17 @@ static int generate_landuse_patches(const int *vert_class, ms_patch *patches) {
 
             /* Quantized cell corner and edge-midpoint coordinates */
             uint16_t xl =
-                arpt_quantize((double)(c - LANDUSE_BUFFER) / LANDUSE_GRID);
+                arpt_quantize((double)(c - SURFACE_BUFFER) / SURFACE_GRID);
             uint16_t xm =
-                arpt_quantize((c - LANDUSE_BUFFER + 0.5) / LANDUSE_GRID);
+                arpt_quantize((c - SURFACE_BUFFER + 0.5) / SURFACE_GRID);
             uint16_t xr =
-                arpt_quantize((double)(c - LANDUSE_BUFFER + 1) / LANDUSE_GRID);
+                arpt_quantize((double)(c - SURFACE_BUFFER + 1) / SURFACE_GRID);
             uint16_t yt =
-                arpt_quantize((double)(r - LANDUSE_BUFFER) / LANDUSE_GRID);
+                arpt_quantize((double)(r - SURFACE_BUFFER) / SURFACE_GRID);
             uint16_t ym =
-                arpt_quantize((r - LANDUSE_BUFFER + 0.5) / LANDUSE_GRID);
+                arpt_quantize((r - SURFACE_BUFFER + 0.5) / SURFACE_GRID);
             uint16_t yb =
-                arpt_quantize((double)(r - LANDUSE_BUFFER + 1) / LANDUSE_GRID);
+                arpt_quantize((double)(r - SURFACE_BUFFER + 1) / SURFACE_GRID);
 
             for (int ui = 0; ui < n_unique; ui++) {
                 int cls = unique[ui];
@@ -276,7 +276,7 @@ static int generate_landuse_patches(const int *vert_class, ms_patch *patches) {
     return patch_count;
 }
 
-/* Phase 6: Build FlatBuffer tile from terrain + landuse data. */
+/* Phase 6: Build FlatBuffer tile from terrain + surface data. */
 static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
                                    const int32_t *vz, const int8_t *normals,
                                    int nv, const uint32_t *indices,
@@ -288,7 +288,7 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
     arpentry_tiles_Tile_start_as_root(&builder);
     arpentry_tiles_Tile_version_add(&builder, 1);
 
-    /* Tile-scope property dictionary for landuse "class" key */
+    /* Tile-scope property dictionary for surface "class" key */
     arpentry_tiles_Tile_keys_start(&builder);
     arpentry_tiles_Tile_keys_push_create_str(&builder, "class");
     arpentry_tiles_Tile_keys_end(&builder);
@@ -353,9 +353,9 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
         arpentry_tiles_Layer_features_end(&builder);
         arpentry_tiles_Tile_layers_push_end(&builder);
 
-        /* Layer 1: landuse */
+        /* Layer 1: surface */
         arpentry_tiles_Tile_layers_push_start(&builder);
-        arpentry_tiles_Layer_name_create_str(&builder, "landuse");
+        arpentry_tiles_Layer_name_create_str(&builder, "surface");
 
         arpentry_tiles_Layer_features_start(&builder);
         for (int pi = 0; pi < patch_count; pi++) {
@@ -442,18 +442,18 @@ bool arpt_generate_terrain(int level, int x, int y, uint8_t **out,
     free(elev);
     elev = NULL;
 
-    /* Phase 4-5: landuse classification + marching squares */
-    int *vert_class = malloc(LANDUSE_VERTS * LANDUSE_VERTS * sizeof(int));
+    /* Phase 4-5: surface classification + marching squares */
+    int *vert_class = malloc(SURFACE_VERTS * SURFACE_VERTS * sizeof(int));
     if (!vert_class) goto fail;
-    classify_landuse(bounds, lon_span, lat_span, vert_class);
+    classify_surface(bounds, lon_span, lat_span, vert_class);
 
     patches =
-        malloc((size_t)(LANDUSE_TOTAL * LANDUSE_TOTAL * 4) * sizeof(ms_patch));
+        malloc((size_t)(SURFACE_TOTAL * SURFACE_TOTAL * 4) * sizeof(ms_patch));
     if (!patches) {
         free(vert_class);
         goto fail;
     }
-    int patch_count = generate_landuse_patches(vert_class, patches);
+    int patch_count = generate_surface_patches(vert_class, patches);
     free(vert_class);
 
     /* Phase 6: FlatBuffer + Brotli compression */

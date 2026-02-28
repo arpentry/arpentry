@@ -78,18 +78,18 @@ bool arpt_decode_terrain(const void *flatbuf, size_t size,
     return true;
 }
 
-/* Landuse decoding */
+/* Surface decoding */
 
-static arpt_landuse_class classify_string(flatbuffers_string_t s) {
-    if (!s) return ARPT_LANDUSE_UNKNOWN;
-    if (strcmp(s, "grass") == 0) return ARPT_LANDUSE_GRASS;
-    if (strcmp(s, "forest") == 0) return ARPT_LANDUSE_FOREST;
-    if (strcmp(s, "sand") == 0) return ARPT_LANDUSE_SAND;
-    return ARPT_LANDUSE_UNKNOWN;
+static arpt_surface_class classify_string(flatbuffers_string_t s) {
+    if (!s) return ARPT_SURFACE_UNKNOWN;
+    if (strcmp(s, "grass") == 0) return ARPT_SURFACE_GRASS;
+    if (strcmp(s, "forest") == 0) return ARPT_SURFACE_FOREST;
+    if (strcmp(s, "sand") == 0) return ARPT_SURFACE_SAND;
+    return ARPT_SURFACE_UNKNOWN;
 }
 
-bool arpt_decode_landuse(const void *flatbuf, size_t size,
-                         arpt_landuse_data *out) {
+bool arpt_decode_surface(const void *flatbuf, size_t size,
+                         arpt_surface_data *out) {
     out->polygons = NULL;
     out->count = 0;
 
@@ -98,22 +98,22 @@ bool arpt_decode_landuse(const void *flatbuf, size_t size,
     arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root(flatbuf);
     if (!tile) return true;
 
-    /* Find "landuse" layer */
+    /* Find "surface" layer */
     arpentry_tiles_Layer_vec_t layers = arpentry_tiles_Tile_layers(tile);
     if (!layers) return true;
 
-    arpentry_tiles_Layer_table_t landuse_layer = NULL;
+    arpentry_tiles_Layer_table_t surface_layer = NULL;
     size_t n_layers = arpentry_tiles_Layer_vec_len(layers);
     for (size_t i = 0; i < n_layers; i++) {
         arpentry_tiles_Layer_table_t layer =
             arpentry_tiles_Layer_vec_at(layers, i);
         flatbuffers_string_t name = arpentry_tiles_Layer_name(layer);
-        if (name && strcmp(name, "landuse") == 0) {
-            landuse_layer = layer;
+        if (name && strcmp(name, "surface") == 0) {
+            surface_layer = layer;
             break;
         }
     }
-    if (!landuse_layer) return true;
+    if (!surface_layer) return true;
 
     /* Resolve tile-scope property dictionary */
     flatbuffers_string_vec_t keys = arpentry_tiles_Tile_keys(tile);
@@ -133,13 +133,13 @@ bool arpt_decode_landuse(const void *flatbuf, size_t size,
     }
 
     arpentry_tiles_Feature_vec_t features =
-        arpentry_tiles_Layer_features(landuse_layer);
+        arpentry_tiles_Layer_features(surface_layer);
     if (!features) return true;
 
     size_t n_feat = arpentry_tiles_Feature_vec_len(features);
     if (n_feat == 0) return true;
 
-    out->polygons = malloc(n_feat * sizeof(arpt_landuse_polygon));
+    out->polygons = malloc(n_feat * sizeof(arpt_surface_polygon));
     if (!out->polygons) return false;
 
     size_t count = 0;
@@ -165,7 +165,7 @@ bool arpt_decode_landuse(const void *flatbuf, size_t size,
         if (flatbuffers_uint16_vec_len(yv) != vc || vc == 0) continue;
 
         /* Resolve class from properties */
-        arpt_landuse_class cls = ARPT_LANDUSE_UNKNOWN;
+        arpt_surface_class cls = ARPT_SURFACE_UNKNOWN;
         if (class_key_idx != UINT32_MAX && values) {
             arpentry_tiles_Property_vec_t props =
                 arpentry_tiles_Feature_properties(feat);
@@ -199,7 +199,7 @@ bool arpt_decode_landuse(const void *flatbuf, size_t size,
     return true;
 }
 
-void arpt_landuse_data_free(arpt_landuse_data *data) {
+void arpt_surface_data_free(arpt_surface_data *data) {
     if (data) {
         free(data->polygons);
         data->polygons = NULL;

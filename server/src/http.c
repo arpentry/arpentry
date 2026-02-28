@@ -1,6 +1,6 @@
 #include "http.h"
 #include "net.h"
-#include "terrain_gen.h"
+#include "gen/world.h"
 #include "tile_path.h"
 
 #include <stdio.h>

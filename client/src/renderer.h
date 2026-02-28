@@ -21,10 +21,10 @@ void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height);
 /* Tile GPU resources */
 
 /** Upload a decoded terrain mesh to GPU buffers.
- *  If landuse is non-NULL and has polygons, rasterizes them to a texture. */
+ *  If surface is non-NULL and has polygons, rasterizes them to a texture. */
 arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
                                          const arpt_terrain_mesh *mesh,
-                                         const arpt_landuse_data *landuse);
+                                         const arpt_surface_data *surface);
 
 /** Update per-tile uniforms (model matrix, bounds, center). */
 void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile, arpt_mat4 model,

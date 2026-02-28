@@ -1,5 +1,5 @@
-#ifndef ARPENTRY_TERRAIN_GEN_H
-#define ARPENTRY_TERRAIN_GEN_H
+#ifndef ARPENTRY_GEN_WORLD_H
+#define ARPENTRY_GEN_WORLD_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -11,4 +11,4 @@
 bool arpt_generate_terrain(int level, int x, int y, uint8_t **out,
                            size_t *out_size);
 
-#endif /* ARPENTRY_TERRAIN_GEN_H */
+#endif /* ARPENTRY_GEN_WORLD_H */

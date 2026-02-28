@@ -31,38 +31,38 @@ typedef struct {
 bool arpt_decode_terrain(const void *flatbuf, size_t size,
                          arpt_terrain_mesh *out);
 
-/* Landuse decoding */
+/* Surface decoding */
 
 typedef enum {
-    ARPT_LANDUSE_UNKNOWN = 0,
-    ARPT_LANDUSE_GRASS,
-    ARPT_LANDUSE_FOREST,
-    ARPT_LANDUSE_SAND,
-} arpt_landuse_class;
+    ARPT_SURFACE_UNKNOWN = 0,
+    ARPT_SURFACE_GRASS,
+    ARPT_SURFACE_FOREST,
+    ARPT_SURFACE_SAND,
+} arpt_surface_class;
 
 typedef struct {
     const uint16_t *x, *y; /* zero-copy into FlatBuffer */
     size_t vertex_count;
-    arpt_landuse_class cls;
-} arpt_landuse_polygon;
+    arpt_surface_class cls;
+} arpt_surface_polygon;
 
 typedef struct {
-    arpt_landuse_polygon *polygons; /* malloc'd array */
+    arpt_surface_polygon *polygons; /* malloc'd array */
     size_t count;
-} arpt_landuse_data;
+} arpt_surface_data;
 
 /**
- * Extract landuse polygons from a verified FlatBuffer tile.
+ * Extract surface polygons from a verified FlatBuffer tile.
  *
- * Finds the "landuse" layer, resolves the "class" property key,
+ * Finds the "surface" layer, resolves the "class" property key,
  * and extracts PolygonGeometry features with their class.
  *
- * Returns true even if no landuse layer is found (count=0).
+ * Returns true even if no surface layer is found (count=0).
  * Returns false only on allocation failure.
  */
-bool arpt_decode_landuse(const void *flatbuf, size_t size,
-                         arpt_landuse_data *out);
+bool arpt_decode_surface(const void *flatbuf, size_t size,
+                         arpt_surface_data *out);
 
-void arpt_landuse_data_free(arpt_landuse_data *data);
+void arpt_surface_data_free(arpt_surface_data *data);
 
 #endif /* ARPENTRY_TILE_DECODE_H */

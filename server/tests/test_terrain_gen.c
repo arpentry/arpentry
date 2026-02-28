@@ -1,6 +1,6 @@
 #include "unity.h"
-#include "noise.h"
-#include "terrain_gen.h"
+#include "gen/noise.h"
+#include "gen/world.h"
 #include "tile.h"
 #include "coords.h"
 

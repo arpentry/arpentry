@@ -76,35 +76,12 @@ A flat JSON file (no recursive children tree) describes the tileset:
   "geometric_error": 50000.0,
   "tile_url_template": "{base_url}/{level}/{x}/{y}.arpt",
   "layers": [
-    { "name": "terrain",        "geometry_types": ["Mesh"],         "min_level": 0,  "max_level": 16 },
-    { "name": "water",          "geometry_types": ["Polygon"],     "min_level": 4,  "max_level": 16 },
-    { "name": "landuse",        "geometry_types": ["Polygon"],     "min_level": 6,  "max_level": 16 },
-    { "name": "transportation", "geometry_types": ["Line", "Polygon"], "min_level": 8, "max_level": 16 },
-    { "name": "buildings",      "geometry_types": ["Polygon"],     "min_level": 13, "max_level": 16 },
-    { "name": "landmarks",      "geometry_types": ["Mesh"],        "min_level": 13, "max_level": 16 },
-    { "name": "vegetation",     "geometry_types": ["Point"],       "min_level": 14, "max_level": 16 },
-    { "name": "pois",           "geometry_types": ["Point"],       "min_level": 10, "max_level": 16 }
-  ],
-  "rasters": [
-    {
-      "name": "landcover",
-      "min_level": 4,
-      "max_level": 16,
-      "resolution": 256,
-      "buffer": 2,
-      "channels": 1,
-      "classes": {
-        "0": "bare",
-        "1": "grass",
-        "2": "forest",
-        "3": "shrub",
-        "4": "rock",
-        "5": "ice",
-        "6": "sand",
-        "7": "wetland",
-        "8": "urban"
-      }
-    }
+    { "name": "terrain",  "geometry_types": ["Mesh"],    "min_level": 0,  "max_level": 16 },
+    { "name": "surface",  "geometry_types": ["Polygon"], "min_level": 0,  "max_level": 16 },
+    { "name": "highway",  "geometry_types": ["Line"],    "min_level": 8,  "max_level": 16 },
+    { "name": "tree",     "geometry_types": ["Point"],   "min_level": 14, "max_level": 16 },
+    { "name": "building", "geometry_types": ["Polygon"], "min_level": 13, "max_level": 16 },
+    { "name": "poi",      "geometry_types": ["Point"],   "min_level": 10, "max_level": 16 }
   ]
 }
 ```
@@ -144,10 +121,10 @@ Geometry is a union of four topology-specific tables:
 
 | Table | Use Cases |
 |---|---|
-| PointGeometry | POI markers, trees, streetlights, clustered points |
-| LineGeometry | Roads, rivers, boundaries |
-| PolygonGeometry | Building footprints, water, landuse, road surfaces |
-| MeshGeometry | Terrain, landmark buildings, bridge structures |
+| PointGeometry | Trees, POIs |
+| LineGeometry | Highways |
+| PolygonGeometry | Surface zones, building footprints |
+| MeshGeometry | Terrain |
 
 Each table carries only the fields relevant to its topology. The union discriminator identifies which type is present — no separate topology enum is needed. Multi-part geometry is expressed by the presence of offset arrays on the geometry table.
 
@@ -250,50 +227,25 @@ Edge index arrays (`edge_west`/`south`/`east`/`north`) on MeshGeometry list vert
 
 ### 3.5 Raster Data
 
-Rasters are regular grids at tile scope, independent from vector layers. They carry per-pixel data such as landcover classification or blend masks for GPU effects. The `Tile.rasters` field holds zero or more named raster grids.
+Rasters are regular grids at tile scope, independent from vector layers. Used for blend masks and shader inputs (e.g., terrain noise, surface blending). The `Tile.rasters` field holds zero or more named raster grids.
 
 Each `Raster` has:
 
-- **name**: string identifier (e.g., `"landcover"`)
+- **name**: string identifier
 - **width**, **height**: total grid dimensions including buffer pixels
 - **buffer**: extra pixels per side for seamless filtering at tile edges
 - **channels**: bytes per pixel (1=R, 2=RG, 3=RGB, 4=RGBA; default 1)
-- **data**: pixel values, row-major, bottom-to-top (row 0 = south)
+- **data**: uint8 pixel values, row-major, bottom-to-top (row 0 = south)
 
-#### Grid Layout
-
-The data array is `width * height * channels` bytes. Pixels are stored row-major with row 0 at the south edge (bottom-to-top), consistent with the vector coordinate system where y increases south to north. Each pixel is `channels` consecutive uint8 values.
-
-A raster with resolution 256 and buffer 2 has total dimensions 260×260. The tile proper spans pixels [buffer, buffer + resolution) on each axis; pixels outside are buffer zones for bilinear filtering at tile edges.
-
-#### Buffer Zones
-
-The `buffer` field specifies extra pixels per side. The extent (tile-proper resolution) is derived:
+Pixel values are uint8 intensities (0–255 → 0.0–1.0) passed directly to the shader. The `buffer` field specifies extra pixels per side that overlap with neighboring tiles, enabling seamless bilinear filtering without neighbor tile lookups:
 
 ```
-extent_w = width - 2 * buffer
+extent_w = width  - 2 * buffer
 extent_h = height - 2 * buffer
-```
 
-Buffer pixels overlap with neighboring tiles, enabling bilinear/bicubic filtering without neighbor tile lookups.
-
-#### Coordinate Mapping
-
-To map a pixel (col, row) to geographic coordinates:
-
-```
-lon = lon_west + ((col - buffer) / extent_w) * (lon_east - lon_west)
+lon = lon_west  + ((col - buffer) / extent_w) * (lon_east  - lon_west)
 lat = lat_south + ((row - buffer) / extent_h) * (lat_north - lat_south)
 ```
-
-Where `extent_w = width - 2 * buffer` and `extent_h = height - 2 * buffer`. Buffer pixels map to coordinates outside the tile bounds.
-
-#### Interpretation
-
-The raster `name` determines semantics:
-
-- **Classification rasters** (e.g., `"landcover"`): each pixel is a uint8 class ID. The tileset JSON maps class IDs to names (see Section 2). The client styles based on class identity.
-- **Continuous rasters**: pixel values are direct uint8 intensities (0–255 → 0.0–1.0). Used for noise textures, blend masks, or shader data.
 
 ---
 
@@ -480,7 +432,7 @@ table Layer {
 // Row-major, bottom-to-top (row 0 = south). Length = width * height * channels.
 
 table Raster {
-  name: string (required);        // channel identifier, e.g. "landcover"
+  name: string (required);        // channel identifier
   width: uint16;                  // total grid width including buffer
   height: uint16;                 // total grid height including buffer
   buffer: uint8;                  // extra pixels per side (0 = no buffer)
@@ -525,109 +477,57 @@ External compression only - no internal compression within the FlatBuffer:
 
 ## 9. Layer Schema
 
-The format supports arbitrary named layers. This section defines the reference schema for 3D globe maps. Zoom ranges shown are for the reference schema; the tiling scheme supports up to level 22 (see Section 2).
+The format supports arbitrary named layers. This section defines the reference schema. Zoom ranges shown are for the reference schema; the tiling scheme supports up to level 22 (see Section 2).
 
 ### Layer Ordering
 
 Layers in the `layers` vector MUST be ordered by decode priority (first decoded, first rendered). For the reference schema, the required order is:
 
 1. terrain
-2. water
-3. landuse
-4. transportation
-5. buildings
-6. landmarks
-7. vegetation
-8. pois
+2. surface
+3. highway
+4. tree
+5. building
+6. poi
 
 This ordering enables progressive decode: the client can read `layers[0]` (terrain), submit it to the GPU for an initial frame, and decode remaining layers across subsequent frames. FlatBuffers' lazy access means untouched layers incur no decode cost. Layers not present in a tile are simply omitted (indices shift down); the layer name field disambiguates.
 
 ### terrain
 
-Ground elevation surface. One Mesh feature per tile (single mesh, no material).
+Ground elevation. One Mesh feature per tile.
 
 - **Geometry**: Mesh
 - **Zoom range**: 0-16
 - **Properties**: none
 
-The tile producer generates an adaptive triangulation (RTIN) from elevation data, targeting 500-5000 vertices per tile. Edge index arrays on the geometry enable seamless stitching between adjacent tiles. Elevation precision: 1mm (int32 millimeters).
+### surface
 
-### water
-
-Oceans, lakes, rivers, ponds, docks, swimming pools. Rendered as flat surfaces draped on terrain.
+Physical ground cover. Polygon fills styled by class.
 
 - **Geometry**: Polygon
-- **Zoom range**: 4-16
+- **Zoom range**: 0-16
 - **Properties**:
 
 | Key | Type | Values |
 |---|---|---|
-| class | string | `ocean`, `lake`, `river`, `pond`, `dock`, `swimming_pool` |
+| class | string | `grass`, `forest`, `water`, `rock`, `sand`, `ice` |
 
-### landuse
+### highway
 
-Ground-plane fills beneath buildings and roads. Parks, plazas, forests, urban zones.
+Roads and paths.
 
-- **Geometry**: Polygon
-- **Zoom range**: 6-16
-- **Properties**:
-
-| Key | Type | Values |
-|---|---|---|
-| class | string | `park`, `grass`, `forest`, `residential`, `commercial`, `industrial`, `cemetery`, `plaza`, `pitch`, `sand`, `wetland` |
-
-### transportation
-
-Roads, railways, paths, and their surfaces. At low zoom, features use Line topology with width/lane properties. At high zoom, the tile producer may emit pre-tessellated Polygon features for road surfaces with complex intersection geometry.
-
-- **Geometry**: Line, Polygon
+- **Geometry**: Line
 - **Zoom range**: 8-16
 - **Properties**:
 
 | Key | Type | Values |
 |---|---|---|
-| class | string | `motorway`, `trunk`, `primary`, `secondary`, `tertiary`, `residential`, `service`, `path`, `footway`, `cycleway`, `rail`, `tram`, `subway` |
-| subclass | string | `motorway_link`, `trunk_link`, `primary_link`, `pedestrian`, `steps`, `living_street` |
-| brunnel | string | `bridge`, `tunnel` |
-| surface | string | `paved`, `unpaved` |
-| width | double | Road width in meters |
-| lanes | int | Lane count |
-| level | int | Vertical stacking (-1 tunnel, 0 ground, 1+ elevated) |
-| oneway | bool | One-way traffic |
+| class | string | `motorway`, `primary`, `secondary`, `local` |
 | name | string | Street name |
-| ref | string | Route number (e.g., "I-80", "A1") |
 
-### buildings
+### tree
 
-Extruded building footprints. The client computes extrusion from `min_height` (base) to `height` (top). Multi-part buildings (stepped towers, podiums) are represented as multiple Polygon features with different height values.
-
-- **Geometry**: Polygon
-- **Zoom range**: 13-16
-- **Properties**:
-
-| Key | Type | Values |
-|---|---|---|
-| class | string | `residential`, `commercial`, `industrial`, `retail`, `office`, `civic`, `religious`, `warehouse`, `garage` |
-| height | double | Top of building in meters above ellipsoid |
-| min_height | double | Base of building in meters above ellipsoid |
-| name | string | Building name |
-
-### landmarks
-
-Detailed 3D meshes for recognizable structures that cannot be represented as simple extrusions: iconic buildings, stadiums, major bridge structures (cables, towers, deck). The road on a bridge is in the transportation layer; the physical bridge structure is a landmark Mesh. A landmark Mesh may contain multiple parts (via the `parts` array) with different materials (e.g., stone, glass, metal).
-
-- **Geometry**: Mesh
-- **Zoom range**: 13-16
-- **Properties**:
-
-| Key | Type | Values |
-|---|---|---|
-| class | string | `building`, `bridge`, `stadium`, `monument`, `tower` |
-| name | string | Landmark name |
-
-### vegetation
-
-Individual trees and shrubs. The client renders these as instanced geometry from a small library of templates.
+Individual trees.
 
 - **Geometry**: Point
 - **Zoom range**: 14-16
@@ -635,15 +535,26 @@ Individual trees and shrubs. The client renders these as instanced geometry from
 
 | Key | Type | Values |
 |---|---|---|
-| class | string | `tree`, `hedge`, `bush` |
-| height | double | Plant height in meters above ground |
-| leaf_type | string | `broadleaved`, `needleleaved` |
+| class | string | `broadleaf`, `conifer` |
+| height | double | Height in meters above ground |
 
-At lower zoom, forests are represented as Polygon features in the landuse layer with `class=forest`, not as individual tree points.
+### building
 
-### pois
+Extruded building footprints. The client computes extrusion from `min_height` (base) to `height` (top).
 
-Points of interest for labels and icons. Rendered as screen-space UI, not 3D geometry.
+- **Geometry**: Polygon
+- **Zoom range**: 13-16
+- **Properties**:
+
+| Key | Type | Values |
+|---|---|---|
+| class | string | `residential`, `commercial`, `industrial`, `civic` |
+| height | double | Top in meters above ellipsoid |
+| min_height | double | Base in meters above ellipsoid |
+
+### poi
+
+Points of interest for labels and icons.
 
 - **Geometry**: Point
 - **Zoom range**: 10-16
@@ -651,40 +562,9 @@ Points of interest for labels and icons. Rendered as screen-space UI, not 3D geo
 
 | Key | Type | Values |
 |---|---|---|
-| class | string | `restaurant`, `cafe`, `hotel`, `shop`, `parking`, `fuel`, `transit_stop`, `school`, `hospital`, `bank`, `museum`, `place_of_worship` |
-| subclass | string | Original fine-grained classification |
+| class | string | `restaurant`, `hotel`, `shop`, `transit`, `school`, `hospital` |
 | name | string | Display name |
 | rank | int | Label priority (lower = more important) |
-
-### landcover (raster)
-
-Classification raster: each pixel is a uint8 class ID identifying physical ground cover from satellite-derived data.
-
-- **Type**: Raster (single channel)
-- **Zoom range**: 4–16
-- **Resolution**: 256×256 (with 2px buffer → 260×260)
-- **Classes**: defined in tileset JSON (see Section 2)
-
-Reference class mapping:
-
-| ID | Class |
-|----|-------|
-| 0 | bare |
-| 1 | grass |
-| 2 | forest |
-| 3 | shrub |
-| 4 | rock |
-| 5 | ice |
-| 6 | sand |
-| 7 | wetland |
-| 8 | urban |
-
-#### Relationship to the landuse Layer
-
-- **landuse** (vector) = human-defined zones (parks, residential areas) from OpenStreetMap — polygon features with class properties
-- **landcover** (raster) = physical ground cover (forest, rock, ice) from satellite classification — per-pixel grid
-
-Both can coexist in the same tile. The renderer composites landcover as a base terrain texture; landuse polygons overlay where relevant (e.g., a park polygon over grass/forest landcover).
 
 ---
 
@@ -700,7 +580,7 @@ The format provides data for styling. For PointGeometry, LineGeometry, and Polyg
 
 For MeshGeometry, each Part carries an inline material (color, roughness, metalness). When `color.a > 0`, the client uses it directly for PBR-lite shading. When `color.a == 0`, the client styles the part based on feature properties, as with other topologies. When no `parts` array is present, the entire mesh is one client-styled draw call.
 
-Raster data is styled by the client based on raster name and class/value mapping from the tileset metadata. Classification rasters map class IDs to visual styles (color, texture, noise parameters). Continuous rasters provide shader inputs directly (0–255 → 0.0–1.0).
+Raster data is consumed as shader inputs directly (0–255 → 0.0–1.0), keyed by raster name.
 
 Style specification is defined in a separate document.
 
@@ -716,8 +596,6 @@ Style specification is defined in a separate document.
 | Vector features (buildings) | 20-100 KB | 5-30 KB |
 | Combined urban tile | 100-500 KB | 30-150 KB |
 | Dense urban max | 500 KB - 1 MB | 150-300 KB |
-| Raster 256×256×1 (landcover) | 64 KB | 5-15 KB |
-| Raster 260×260×1 (with buffer) | 67.6 KB | 5-16 KB |
 
 95th percentile target: < 600 KB uncompressed, < 200 KB compressed (including rasters).
 

@@ -93,7 +93,7 @@ table Layer {
 // Row-major, bottom-to-top (row 0 = south). Length = width * height * channels.
 
 table Raster {
-  name: string (required);        // channel identifier, e.g. "landcover"
+  name: string (required);        // channel identifier
   width: uint16;                  // total grid width including buffer
   height: uint16;                 // total grid height including buffer
   buffer: uint8;                  // extra pixels per side (0 = no buffer)

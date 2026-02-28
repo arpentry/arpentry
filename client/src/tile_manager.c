@@ -133,14 +133,14 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
         return;
     }
 
-    arpt_landuse_data landuse = {0};
-    arpt_decode_landuse(flatbuf, size, &landuse);
+    arpt_surface_data surface = {0};
+    arpt_decode_surface(flatbuf, size, &surface);
 
     /* wgpuQueueWriteBuffer copies synchronously, safe to free after */
-    updated.gpu = arpt_renderer_upload_tile(tm->renderer, &mesh, &landuse);
+    updated.gpu = arpt_renderer_upload_tile(tm->renderer, &mesh, &surface);
     updated.state = updated.gpu ? TILE_READY : TILE_FAILED;
     tm_hashmap_set(tm, &updated);
-    arpt_landuse_data_free(&landuse);
+    arpt_surface_data_free(&surface);
     free(flatbuf);
 }
 

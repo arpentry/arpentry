@@ -25,8 +25,8 @@ static const char *terrain_wgsl =
     "\n"
     "@group(0) @binding(0) var<uniform> globals: GlobalUniforms;\n"
     "@group(1) @binding(0) var<uniform> tile: TileUniforms;\n"
-    "@group(1) @binding(1) var landuse_tex: texture_2d<f32>;\n"
-    "@group(1) @binding(2) var landuse_samp: sampler;\n"
+    "@group(1) @binding(1) var surface_tex: texture_2d<f32>;\n"
+    "@group(1) @binding(2) var surface_samp: sampler;\n"
     "\n"
     "struct VsOut {\n"
     "    @builtin(position) pos: vec4<f32>,\n"
@@ -101,7 +101,7 @@ static const char *terrain_wgsl =
     "    let margin = 0.125;\n"
     "    let tex_uv = (uv + vec2<f32>(margin, margin)) / (1.0 + 2.0 * "
     "margin);\n"
-    "    let albedo = textureSample(landuse_tex, landuse_samp, tex_uv).rgb;\n"
+    "    let albedo = textureSample(surface_tex, surface_samp, tex_uv).rgb;\n"
     "\n"
     "    let n = normalize(normal_cam);\n"
     "    let sun = normalize(globals.sun_dir);\n"
@@ -126,9 +126,9 @@ static const char *terrain_wgsl =
     "    return vec4<f32>(out, 1.0);\n"
     "}\n";
 
-/* Landuse rasterization shader */
+/* Surface rasterization shader */
 
-static const char *landuse_wgsl =
+static const char *surface_wgsl =
     "struct VsOut {\n"
     "    @builtin(position) pos: vec4<f32>,\n"
     "    @location(0) color: vec4<f32>,\n"
@@ -155,20 +155,20 @@ static const char *landuse_wgsl =
     "    return color;\n"
     "}\n";
 
-/* Landuse color table */
+/* Surface color table */
 
-#define LANDUSE_TEX_SIZE 1024
-#define LANDUSE_MARGIN 0.125 /* = LANDUSE_BUFFER / LANDUSE_GRID = 8/64 */
+#define SURFACE_TEX_SIZE 1024
+#define SURFACE_MARGIN 0.125 /* = SURFACE_BUFFER / SURFACE_GRID = 8/64 */
 
 typedef struct {
     float r, g, b, a;
-} landuse_color_t;
+} surface_color_t;
 
-static const landuse_color_t landuse_colors[] = {
-    [ARPT_LANDUSE_UNKNOWN] = {0.35f, 0.52f, 0.22f, 1.0f}, /* default: grass */
-    [ARPT_LANDUSE_GRASS] = {0.35f, 0.52f, 0.22f, 1.0f},
-    [ARPT_LANDUSE_FOREST] = {0.15f, 0.35f, 0.12f, 1.0f},
-    [ARPT_LANDUSE_SAND] = {0.72f, 0.65f, 0.52f, 1.0f},
+static const surface_color_t surface_colors[] = {
+    [ARPT_SURFACE_UNKNOWN] = {0.35f, 0.52f, 0.22f, 1.0f}, /* default: grass */
+    [ARPT_SURFACE_GRASS] = {0.35f, 0.52f, 0.22f, 1.0f},
+    [ARPT_SURFACE_FOREST] = {0.15f, 0.35f, 0.12f, 1.0f},
+    [ARPT_SURFACE_SAND] = {0.72f, 0.65f, 0.52f, 1.0f},
 };
 
 /* Uniform layouts */
@@ -198,8 +198,8 @@ struct arpt_tile_gpu {
     WGPUBuffer buf_indices; /* uint32 triangle indices */
     WGPUBuffer uniform_buf;
     WGPUBindGroup bind_group;
-    WGPUTexture landuse_texture;
-    WGPUTextureView landuse_view;
+    WGPUTexture surface_texture;
+    WGPUTextureView surface_view;
     uint32_t index_count;
     arpt_renderer *renderer;
 };
@@ -223,11 +223,11 @@ struct arpt_renderer {
     WGPUTexture depth_texture;
     WGPUTextureView depth_view;
 
-    /* Landuse offscreen rasterization */
-    WGPURenderPipeline landuse_pipeline;
-    WGPUSampler landuse_sampler;
-    WGPUTexture default_landuse_tex;
-    WGPUTextureView default_landuse_view;
+    /* Surface offscreen rasterization */
+    WGPURenderPipeline surface_pipeline;
+    WGPUSampler surface_sampler;
+    WGPUTexture default_surface_tex;
+    WGPUTextureView default_surface_view;
 
     /* Placeholder flat quads for tiles still loading */
     WGPUBuffer ph_buf_xy;
@@ -353,22 +353,22 @@ static WGPURenderPipeline create_pipeline(WGPUDevice device,
     return pipeline;
 }
 
-/* Landuse pipeline creation */
+/* Surface pipeline creation */
 
-static WGPURenderPipeline create_landuse_pipeline(WGPUDevice device) {
+static WGPURenderPipeline create_surface_pipeline(WGPUDevice device) {
     WGPUShaderModuleWGSLDescriptor wgsl_desc = {
         .chain = {.sType = WGPUSType_ShaderModuleWGSLDescriptor},
-        .code = landuse_wgsl,
+        .code = surface_wgsl,
     };
     WGPUShaderModuleDescriptor sm_desc = {.nextInChain = &wgsl_desc.chain};
     WGPUShaderModule sm = wgpuDeviceCreateShaderModule(device, &sm_desc);
 
-    /* No bind groups needed for landuse rasterization */
+    /* No bind groups needed for surface rasterization */
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
         device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 0,
                                                 .bindGroupLayouts = NULL});
 
-    WGPUVertexAttribute landuse_attrs[] = {
+    WGPUVertexAttribute surface_attrs[] = {
         {.format = WGPUVertexFormat_Uint16x2, .offset = 0, .shaderLocation = 0},
         {.format = WGPUVertexFormat_Float32x4,
          .offset = 4,
@@ -378,7 +378,7 @@ static WGPURenderPipeline create_landuse_pipeline(WGPUDevice device) {
         .arrayStride = 20, /* 4 bytes xy + 16 bytes color */
         .stepMode = WGPUVertexStepMode_Vertex,
         .attributeCount = 2,
-        .attributes = landuse_attrs,
+        .attributes = surface_attrs,
     };
 
     WGPUColorTargetState ct = {.format = WGPUTextureFormat_RGBA8Unorm,
@@ -404,20 +404,20 @@ static WGPURenderPipeline create_landuse_pipeline(WGPUDevice device) {
     return pipeline;
 }
 
-/* Landuse rasterization (offscreen, once per tile) */
+/* Surface rasterization (offscreen, once per tile) */
 
 typedef struct {
     uint16_t x, y; /* quantized position */
     float r, g, b, a;
-} landuse_vertex_t;
+} surface_vertex_t;
 
-static WGPUTexture rasterize_landuse(arpt_renderer *r,
-                                     const arpt_landuse_data *landuse) {
+static WGPUTexture rasterize_surface(arpt_renderer *r,
+                                     const arpt_surface_data *surface) {
     /* Create 256x256 RGBA8 offscreen texture */
     WGPUTextureDescriptor tex_desc = {
         .usage =
             WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding,
-        .size = {LANDUSE_TEX_SIZE, LANDUSE_TEX_SIZE, 1},
+        .size = {SURFACE_TEX_SIZE, SURFACE_TEX_SIZE, 1},
         .format = WGPUTextureFormat_RGBA8Unorm,
         .dimension = WGPUTextureDimension_2D,
         .mipLevelCount = 1,
@@ -428,8 +428,8 @@ static WGPUTexture rasterize_landuse(arpt_renderer *r,
     /* Build vertex + index buffers for all polygons as triangle fans */
     size_t total_verts = 0;
     size_t total_indices = 0;
-    for (size_t i = 0; i < landuse->count; i++) {
-        size_t vc = landuse->polygons[i].vertex_count;
+    for (size_t i = 0; i < surface->count; i++) {
+        size_t vc = surface->polygons[i].vertex_count;
         if (vc < 3) continue;
         total_verts += vc;
         total_indices += (vc - 2) * 3; /* triangle fan */
@@ -465,7 +465,7 @@ static WGPUTexture rasterize_landuse(arpt_renderer *r,
         return tex;
     }
 
-    landuse_vertex_t *verts = malloc(total_verts * sizeof(landuse_vertex_t));
+    surface_vertex_t *verts = malloc(total_verts * sizeof(surface_vertex_t));
     uint32_t *idxs = malloc(total_indices * sizeof(uint32_t));
     if (!verts || !idxs) {
         free(verts);
@@ -474,11 +474,11 @@ static WGPUTexture rasterize_landuse(arpt_renderer *r,
     }
 
     size_t vi = 0, ii = 0;
-    for (size_t i = 0; i < landuse->count; i++) {
-        const arpt_landuse_polygon *p = &landuse->polygons[i];
+    for (size_t i = 0; i < surface->count; i++) {
+        const arpt_surface_polygon *p = &surface->polygons[i];
         if (p->vertex_count < 3) continue;
 
-        landuse_color_t c = landuse_colors[p->cls];
+        surface_color_t c = surface_colors[p->cls];
         uint32_t base = (uint32_t)vi;
 
         for (size_t v = 0; v < p->vertex_count; v++) {
@@ -500,7 +500,7 @@ static WGPUTexture rasterize_landuse(arpt_renderer *r,
     }
 
     WGPUBuffer vbuf = create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex,
-                                    verts, vi * sizeof(landuse_vertex_t));
+                                    verts, vi * sizeof(surface_vertex_t));
     WGPUBuffer ibuf = create_buffer(r->device, r->queue, WGPUBufferUsage_Index,
                                     idxs, ii * sizeof(uint32_t));
     free(verts);
@@ -524,9 +524,9 @@ static WGPUTexture rasterize_landuse(arpt_renderer *r,
     };
     WGPURenderPassEncoder pass =
         wgpuCommandEncoderBeginRenderPass(enc, &rp_desc);
-    wgpuRenderPassEncoderSetPipeline(pass, r->landuse_pipeline);
+    wgpuRenderPassEncoderSetPipeline(pass, r->surface_pipeline);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 0, vbuf, 0,
-                                         vi * sizeof(landuse_vertex_t));
+                                         vi * sizeof(surface_vertex_t));
     wgpuRenderPassEncoderSetIndexBuffer(pass, ibuf, WGPUIndexFormat_Uint32, 0,
                                         ii * sizeof(uint32_t));
     wgpuRenderPassEncoderDrawIndexed(pass, (uint32_t)ii, 1, 0, 0, 0);
@@ -595,8 +595,8 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
 
     r->pipeline = create_pipeline(device, format, r->global_bgl, r->tile_bgl);
 
-    /* Landuse offscreen pipeline + sampler */
-    r->landuse_pipeline = create_landuse_pipeline(device);
+    /* Surface offscreen pipeline + sampler */
+    r->surface_pipeline = create_surface_pipeline(device);
     WGPUSamplerDescriptor samp_desc = {
         .addressModeU = WGPUAddressMode_ClampToEdge,
         .addressModeV = WGPUAddressMode_ClampToEdge,
@@ -605,9 +605,9 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
         .maxAnisotropy = 1,
         .lodMaxClamp = 32.0f,
     };
-    r->landuse_sampler = wgpuDeviceCreateSampler(device, &samp_desc);
+    r->surface_sampler = wgpuDeviceCreateSampler(device, &samp_desc);
 
-    /* Default 1x1 grass-colored landuse texture for tiles without landuse */
+    /* Default 1x1 grass-colored surface texture for tiles without surface data */
     {
         WGPUTextureDescriptor dt = {
             .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
@@ -617,11 +617,11 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
             .mipLevelCount = 1,
             .sampleCount = 1,
         };
-        r->default_landuse_tex = wgpuDeviceCreateTexture(device, &dt);
-        r->default_landuse_view =
-            wgpuTextureCreateView(r->default_landuse_tex, NULL);
+        r->default_surface_tex = wgpuDeviceCreateTexture(device, &dt);
+        r->default_surface_view =
+            wgpuTextureCreateView(r->default_surface_tex, NULL);
         uint8_t pixel[4] = {89, 133, 56, 255}; /* 0.35, 0.52, 0.22 */
-        WGPUImageCopyTexture dst = {.texture = r->default_landuse_tex};
+        WGPUImageCopyTexture dst = {.texture = r->default_surface_tex};
         WGPUTextureDataLayout layout = {.bytesPerRow = 4, .rowsPerImage = 1};
         WGPUExtent3D extent = {1, 1, 1};
         wgpuQueueWriteTexture(queue, &dst, pixel, 4, &layout, &extent);
@@ -735,7 +735,7 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
                  .offset = 0,
                  .size = sizeof(tile_uniforms_t)},
                 {.binding = 1, .textureView = r->ph_texture_view},
-                {.binding = 2, .sampler = r->landuse_sampler},
+                {.binding = 2, .sampler = r->surface_sampler},
             };
             r->ph_bind_groups[i] = wgpuDeviceCreateBindGroup(
                 device, &(WGPUBindGroupDescriptor){.layout = r->tile_bgl,
@@ -764,11 +764,11 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->global_bind_group) wgpuBindGroupRelease(r->global_bind_group);
     if (r->global_uniform_buf) wgpuBufferRelease(r->global_uniform_buf);
     if (r->pipeline) wgpuRenderPipelineRelease(r->pipeline);
-    if (r->landuse_pipeline) wgpuRenderPipelineRelease(r->landuse_pipeline);
-    if (r->landuse_sampler) wgpuSamplerRelease(r->landuse_sampler);
-    if (r->default_landuse_view)
-        wgpuTextureViewRelease(r->default_landuse_view);
-    if (r->default_landuse_tex) wgpuTextureRelease(r->default_landuse_tex);
+    if (r->surface_pipeline) wgpuRenderPipelineRelease(r->surface_pipeline);
+    if (r->surface_sampler) wgpuSamplerRelease(r->surface_sampler);
+    if (r->default_surface_view)
+        wgpuTextureViewRelease(r->default_surface_view);
+    if (r->default_surface_tex) wgpuTextureRelease(r->default_surface_tex);
     if (r->global_bgl) wgpuBindGroupLayoutRelease(r->global_bgl);
     if (r->tile_bgl) wgpuBindGroupLayoutRelease(r->tile_bgl);
     free(r);
@@ -784,7 +784,7 @@ void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height) {
 
 arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
                                          const arpt_terrain_mesh *mesh,
-                                         const arpt_landuse_data *landuse) {
+                                         const arpt_surface_data *surface) {
     arpt_tile_gpu *t = calloc(1, sizeof(*t));
     if (!t) return NULL;
     t->renderer = r;
@@ -831,14 +831,14 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
         create_buffer(r->device, r->queue, WGPUBufferUsage_Index, mesh->indices,
                       mesh->index_count * sizeof(uint32_t));
 
-    /* Rasterize landuse polygons to offscreen texture */
-    if (landuse && landuse->count > 0) {
-        t->landuse_texture = rasterize_landuse(r, landuse);
-        t->landuse_view = wgpuTextureCreateView(t->landuse_texture, NULL);
+    /* Rasterize surface polygons to offscreen texture */
+    if (surface && surface->count > 0) {
+        t->surface_texture = rasterize_surface(r, surface);
+        t->surface_view = wgpuTextureCreateView(t->surface_texture, NULL);
     }
 
     WGPUTextureView lu_view =
-        t->landuse_view ? t->landuse_view : r->default_landuse_view;
+        t->surface_view ? t->surface_view : r->default_surface_view;
 
     /* Per-tile uniform buffer + bind group (uniform + texture + sampler) */
     t->uniform_buf = create_buffer(r->device, r->queue, WGPUBufferUsage_Uniform,
@@ -849,7 +849,7 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
          .offset = 0,
          .size = sizeof(tile_uniforms_t)},
         {.binding = 1, .textureView = lu_view},
-        {.binding = 2, .sampler = r->landuse_sampler},
+        {.binding = 2, .sampler = r->surface_sampler},
     };
     t->bind_group = wgpuDeviceCreateBindGroup(
         r->device, &(WGPUBindGroupDescriptor){.layout = r->tile_bgl,
@@ -881,8 +881,8 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     if (tile->buf_indices) wgpuBufferRelease(tile->buf_indices);
     if (tile->uniform_buf) wgpuBufferRelease(tile->uniform_buf);
     if (tile->bind_group) wgpuBindGroupRelease(tile->bind_group);
-    if (tile->landuse_view) wgpuTextureViewRelease(tile->landuse_view);
-    if (tile->landuse_texture) wgpuTextureRelease(tile->landuse_texture);
+    if (tile->surface_view) wgpuTextureViewRelease(tile->surface_view);
+    if (tile->surface_texture) wgpuTextureRelease(tile->surface_texture);
     free(tile);
 }
 
