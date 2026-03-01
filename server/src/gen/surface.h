@@ -6,7 +6,7 @@
 #include <stdint.h>
 
 /* Surface grid resolution */
-#define SURFACE_GRID 64  /* 64x64 marching squares grid (matches terrain) */
+#define SURFACE_GRID 128 /* 128x128 marching squares grid (matches terrain) */
 #define SURFACE_BUFFER 8 /* extra cells of buffer on each side */
 #define SURFACE_TOTAL (SURFACE_GRID + 2 * SURFACE_BUFFER) /* 80 */
 #define SURFACE_VERTS (SURFACE_TOTAL + 1) /* 81x81 classification vertices */

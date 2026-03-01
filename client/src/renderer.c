@@ -98,7 +98,7 @@ static const char *terrain_wgsl =
     "    @location(0) uv: vec2<f32>,\n"
     "    @location(1) normal_cam: vec3<f32>,\n"
     ") -> @location(0) vec4<f32> {\n"
-    "    let margin = 0.125;\n"
+    "    let margin = 0.0625;\n"
     "    let tex_uv = (uv + vec2<f32>(margin, margin)) / (1.0 + 2.0 * "
     "margin);\n"
     "    let albedo = textureSample(surface_tex, surface_samp, tex_uv).rgb;\n"
@@ -141,7 +141,7 @@ static const char *surface_wgsl =
     "    let u = (f32(qxy.x) - 16384.0) / 32768.0;\n"
     "    let v = (f32(qxy.y) - 16384.0) / 32768.0;\n"
     "    var out: VsOut;\n"
-    "    let margin = 0.125;\n"
+    "    let margin = 0.0625;\n"
     "    let scale = 1.0 / (1.0 + 2.0 * margin);\n"
     "    out.pos = vec4<f32>((u + margin) * scale * 2.0 - 1.0,\n"
     "                        1.0 - (v + margin) * scale * 2.0, 0.0, 1.0);\n"
@@ -158,7 +158,7 @@ static const char *surface_wgsl =
 /* Surface color table */
 
 #define SURFACE_TEX_SIZE 1024
-#define SURFACE_MARGIN 0.125 /* = SURFACE_BUFFER / SURFACE_GRID = 8/64 */
+#define SURFACE_MARGIN 0.0625 /* = SURFACE_BUFFER / SURFACE_GRID = 8/128 */
 
 typedef struct {
     float r, g, b, a;
