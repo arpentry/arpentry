@@ -40,13 +40,10 @@ void test_ancestor_chain(void) {
 
 /* arpt_enumerate_visible_tiles tests */
 
-void test_enumerate_at_switzerland(void) {
-    /* Camera over Switzerland at ~500km altitude (roughly zoom level 5) */
+void test_enumerate_at_origin(void) {
+    /* Camera over (0,0) at ~500km altitude (roughly zoom level 5) */
     arpt_camera *cam = arpt_camera_create();
-    arpt_bounds bounds = arpt_tile_bounds(5, 34, 22);
-    double center_lon = (bounds.west + bounds.east) / 2.0 * M_PI / 180.0;
-    double center_lat = (bounds.south + bounds.north) / 2.0 * M_PI / 180.0;
-    arpt_camera_set_position(cam, center_lon, center_lat, 500000.0);
+    arpt_camera_set_position(cam, 0.0, 0.0, 500000.0);
     arpt_camera_set_viewport(cam, 800, 600);
 
     int level = arpt_camera_zoom_level(cam, 50000.0, 0, 16);
@@ -62,11 +59,9 @@ void test_enumerate_at_switzerland(void) {
         TEST_ASSERT_EQUAL_INT(level, tiles[i].level);
     }
 
-    /* The tile containing our camera center should be in the list */
+    /* The tile containing our camera center (lon=0) should be in the list */
     int n_cols = 1 << (level + 1);
-    double tile_w = 360.0 / n_cols;
-    double center_lon_deg = center_lon * 180.0 / M_PI;
-    int expected_x = (int)floor((center_lon_deg + 180.0) / tile_w);
+    int expected_x = n_cols / 2;
 
     bool found_center = false;
     for (int i = 0; i < n; i++) {
@@ -124,7 +119,7 @@ int main(void) {
     RUN_TEST(test_ancestor_basic);
     RUN_TEST(test_ancestor_level_zero);
     RUN_TEST(test_ancestor_chain);
-    RUN_TEST(test_enumerate_at_switzerland);
+    RUN_TEST(test_enumerate_at_origin);
     RUN_TEST(test_enumerate_returns_zero_for_sky);
     RUN_TEST(test_enumerate_null_camera);
     RUN_TEST(test_zoom_level_varies_with_altitude);

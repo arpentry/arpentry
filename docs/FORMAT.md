@@ -68,8 +68,8 @@ A flat JSON file (no recursive children tree) describes the tileset:
 ```json
 {
   "arpentry_tiles": "1.0",
-  "name": "Switzerland",
-  "bounds": { "west": 5.95, "south": 45.81, "east": 10.49, "north": 47.81 },
+  "name": "Example Tileset",
+  "bounds": { "west": -180.0, "south": -90.0, "east": 180.0, "north": 90.0 },
   "elevation_range": { "min": -500.0, "max": 4800.0 },
   "min_level": 0,
   "max_level": 16,

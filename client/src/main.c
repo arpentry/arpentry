@@ -10,7 +10,6 @@
 #include "renderer.h"
 #include "tile_manager.h"
 #include "ui.h"
-#include "coords.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -18,10 +17,6 @@
 #endif
 
 /* Constants */
-
-#define DEMO_LEVEL 5
-#define DEMO_X 34
-#define DEMO_Y 22
 
 #define INITIAL_ALTITUDE 500000.0
 #define WINDOW_W 800
@@ -259,13 +254,8 @@ static void init_viewer(void) {
     int win_w, win_h;
     glfwGetWindowSize(app.window, &win_w, &win_h);
 
-    /* Camera: start looking at a tile in Switzerland */
     app.camera = arpt_camera_create();
-    arpt_bounds bounds = arpt_tile_bounds(DEMO_LEVEL, DEMO_X, DEMO_Y);
-    double center_lon = (bounds.west + bounds.east) / 2.0 * M_PI / 180.0;
-    double center_lat = (bounds.south + bounds.north) / 2.0 * M_PI / 180.0;
-    arpt_camera_set_position(app.camera, center_lon, center_lat,
-                             INITIAL_ALTITUDE);
+    arpt_camera_set_position(app.camera, 0.0, 0.0, INITIAL_ALTITUDE);
     /* Viewport in window (logical) pixels so cursor coords match on all
        targets. On Retina native fb_w > win_w; on web sync_canvas_size keeps
        them equal. */
