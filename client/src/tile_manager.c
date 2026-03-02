@@ -152,7 +152,8 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
     arpt_decode_highways(flatbuf, size, &highways);
 
     arpt_surface_data buildings = {0};
-    arpt_decode_buildings(flatbuf, size, &buildings);
+    if (key.level >= 13)
+        arpt_decode_buildings(flatbuf, size, &buildings);
 
     /* wgpuQueueWriteBuffer copies synchronously, safe to free after */
     updated.gpu = arpt_renderer_upload_tile(tm->renderer, &mesh, &surface,

@@ -200,6 +200,82 @@ static const char *highway_wgsl =
     "    return vec4<f32>(color.rgb, alpha);\n"
     "}\n";
 
+/* Wireframe SDF shader — anti-aliased lines via screen-space distance field */
+
+static const char *wireframe_wgsl =
+    "const WGS84_A: f32 = 6378137.0;\n"
+    "const WGS84_E2: f32 = 0.00669437999014;\n"
+    "\n"
+    "struct GlobalUniforms {\n"
+    "    projection: mat4x4<f32>,\n"
+    "    sun_dir: vec3<f32>,\n"
+    "    apply_gamma: f32,\n"
+    "};\n"
+    "\n"
+    "struct TileUniforms {\n"
+    "    model: mat4x4<f32>,\n"
+    "    bounds: vec4<f32>,\n"
+    "    center_lon: f32,\n"
+    "    center_lat: f32,\n"
+    "    _pad0: f32,\n"
+    "    _pad1: f32,\n"
+    "};\n"
+    "\n"
+    "@group(0) @binding(0) var<uniform> globals: GlobalUniforms;\n"
+    "@group(1) @binding(0) var<uniform> tile: TileUniforms;\n"
+    "\n"
+    "fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {\n"
+    "    let sin_lat = sin(lat);\n"
+    "    let cos_lat = cos(lat);\n"
+    "    let sin_lon = sin(lon);\n"
+    "    let cos_lon = cos(lon);\n"
+    "    let N = WGS84_A / sqrt(1.0 - WGS84_E2 * sin_lat * sin_lat);\n"
+    "    return vec3<f32>(\n"
+    "        (N + alt) * cos_lat * cos_lon,\n"
+    "        (N + alt) * cos_lat * sin_lon,\n"
+    "        (N * (1.0 - WGS84_E2) + alt) * sin_lat,\n"
+    "    );\n"
+    "}\n"
+    "\n"
+    "struct VsOut {\n"
+    "    @builtin(position) pos: vec4<f32>,\n"
+    "    @location(0) dist: f32,\n"
+    "};\n"
+    "\n"
+    "@vertex fn vs(\n"
+    "    @location(0) qxy: vec2<u32>,\n"
+    "    @location(1) qz: i32,\n"
+    "    @location(2) dist: f32,\n"
+    ") -> VsOut {\n"
+    "    let u = (f32(qxy.x) - 16384.0) / 32768.0;\n"
+    "    let v = (f32(qxy.y) - 16384.0) / 32768.0;\n"
+    "    let lon = tile.bounds.x + u * (tile.bounds.z - tile.bounds.x);\n"
+    "    let lat = tile.bounds.y + v * (tile.bounds.w - tile.bounds.y);\n"
+    "    let alt = f32(qz) * 0.001;\n"
+    "    let ecef = geodetic_to_ecef(lon, lat, alt);\n"
+    "    let center_ecef = geodetic_to_ecef(tile.center_lon, tile.center_lat, "
+    "0.0);\n"
+    "    let local_ecef = ecef - center_ecef;\n"
+    "    let world_pos = tile.model * vec4<f32>(local_ecef, 1.0);\n"
+    "    var out: VsOut;\n"
+    "    out.pos = globals.projection * world_pos;\n"
+    "    out.dist = dist;\n"
+    "    return out;\n"
+    "}\n"
+    "\n"
+    "@fragment fn fs(\n"
+    "    @location(0) dist: f32,\n"
+    ") -> @location(0) vec4<f32> {\n"
+    "    let hw_px = 0.75;\n" /* half-width in screen pixels */
+    "    let aa = fwidth(dist);\n"
+    "    let hw = hw_px * aa;\n"
+    "    let alpha = 1.0 - smoothstep(hw, hw + aa, abs(dist));\n"
+    "    let color = vec3<f32>(0.25, 0.28, 0.33);\n"
+    "    let out = select(color, pow(color, vec3<f32>(1.0 / 2.2)), "
+    "globals.apply_gamma > 0.5);\n"
+    "    return vec4<f32>(out, alpha);\n"
+    "}\n";
+
 /* Surface color table */
 
 #define SURFACE_TEX_SIZE 2048
@@ -303,12 +379,21 @@ struct arpt_renderer {
     WGPUBuffer ph_uniform_bufs[ARPT_MAX_PLACEHOLDERS];
     WGPUBindGroup ph_bind_groups[ARPT_MAX_PLACEHOLDERS];
 
+    /* Wireframe SDF overlay for placeholders */
+    WGPURenderPipeline wireframe_pipeline;
+    WGPUBuffer ph_wire_buf_xy;
+    WGPUBuffer ph_wire_buf_z;
+    WGPUBuffer ph_wire_buf_dist;
+    WGPUBuffer ph_wire_indices;
+    uint32_t ph_wire_index_count;
+
     WGPUCommandEncoder encoder;
     WGPURenderPassEncoder pass;
 
     /* Overlay callback (e.g. UI) invoked before pass ends */
     arpt_overlay_fn overlay_fn;
     void *overlay_ud;
+
 };
 
 /* Helpers */
@@ -525,6 +610,89 @@ static WGPURenderPipeline create_highway_pipeline(WGPUDevice device) {
         .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
                       .cullMode = WGPUCullMode_None},
         .fragment = &frag,
+        .multisample = {.count = 1, .mask = ~0u},
+    };
+    WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
+
+    wgpuPipelineLayoutRelease(pl);
+    wgpuShaderModuleRelease(sm);
+    return pipeline;
+}
+
+/* Wireframe pipeline — SDF quads with alpha blending and depth bias */
+
+static WGPURenderPipeline create_wireframe_pipeline(WGPUDevice device,
+                                                     WGPUTextureFormat format,
+                                                     WGPUBindGroupLayout global_bgl,
+                                                     WGPUBindGroupLayout tile_bgl) {
+    WGPUShaderModuleWGSLDescriptor wgsl_desc = {
+        .chain = {.sType = WGPUSType_ShaderModuleWGSLDescriptor},
+        .code = wireframe_wgsl,
+    };
+    WGPUShaderModuleDescriptor sm_desc = {.nextInChain = &wgsl_desc.chain};
+    WGPUShaderModule sm = wgpuDeviceCreateShaderModule(device, &sm_desc);
+
+    WGPUBindGroupLayout bgls[] = {global_bgl, tile_bgl};
+    WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
+        device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 2,
+                                                .bindGroupLayouts = bgls});
+
+    WGPUVertexAttribute attr_xy = {
+        .format = WGPUVertexFormat_Uint16x2, .offset = 0, .shaderLocation = 0};
+    WGPUVertexAttribute attr_z = {
+        .format = WGPUVertexFormat_Sint32, .offset = 0, .shaderLocation = 1};
+    WGPUVertexAttribute attr_dist = {
+        .format = WGPUVertexFormat_Float32, .offset = 0, .shaderLocation = 2};
+    WGPUVertexBufferLayout vbls[] = {
+        {.arrayStride = 4,
+         .stepMode = WGPUVertexStepMode_Vertex,
+         .attributeCount = 1,
+         .attributes = &attr_xy},
+        {.arrayStride = 4,
+         .stepMode = WGPUVertexStepMode_Vertex,
+         .attributeCount = 1,
+         .attributes = &attr_z},
+        {.arrayStride = 4,
+         .stepMode = WGPUVertexStepMode_Vertex,
+         .attributeCount = 1,
+         .attributes = &attr_dist},
+    };
+
+    WGPUBlendState blend = {
+        .color = {.srcFactor = WGPUBlendFactor_SrcAlpha,
+                  .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha,
+                  .operation = WGPUBlendOperation_Add},
+        .alpha = {.srcFactor = WGPUBlendFactor_One,
+                  .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha,
+                  .operation = WGPUBlendOperation_Add},
+    };
+    WGPUColorTargetState ct = {.format = format,
+                               .blend = &blend,
+                               .writeMask = WGPUColorWriteMask_All};
+    WGPUFragmentState frag = {
+        .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
+    WGPUDepthStencilState ds = {
+        .format = WGPUTextureFormat_Depth24Plus,
+        .depthWriteEnabled = false, /* overlay: read depth but don't write */
+        .depthCompare = WGPUCompareFunction_LessEqual,
+        .depthBias = -2, /* pull quads toward camera to overlay on fill */
+        .depthBiasSlopeScale = -1.0f,
+        .stencilFront = {.compare = WGPUCompareFunction_Always},
+        .stencilBack = {.compare = WGPUCompareFunction_Always},
+        .stencilReadMask = 0,
+        .stencilWriteMask = 0,
+    };
+
+    WGPURenderPipelineDescriptor pip = {
+        .layout = pl,
+        .vertex = {.module = sm,
+                   .entryPoint = "vs",
+                   .bufferCount = 3,
+                   .buffers = vbls},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
+                      .cullMode = WGPUCullMode_None},
+        .fragment = &frag,
+        .depthStencil = &ds,
         .multisample = {.count = 1, .mask = ~0u},
     };
     WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
@@ -806,6 +974,7 @@ static WGPUTexture rasterize_surface(arpt_renderer *r,
     wgpuCommandBufferRelease(cmd);
     wgpuCommandEncoderRelease(enc);
     wgpuTextureViewRelease(view);
+
     if (poly_vbuf) wgpuBufferRelease(poly_vbuf);
     if (poly_ibuf) wgpuBufferRelease(poly_ibuf);
     if (hw_vbuf) wgpuBufferRelease(hw_vbuf);
@@ -863,6 +1032,8 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
                                                  .entries = tile_entries});
 
     r->pipeline = create_pipeline(device, format, r->global_bgl, r->tile_bgl);
+    r->wireframe_pipeline =
+        create_wireframe_pipeline(device, format, r->global_bgl, r->tile_bgl);
 
     /* Surface offscreen pipeline + sampler */
     r->surface_pipeline = create_surface_pipeline(device);
@@ -990,6 +1161,70 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
         r->ph_buf_indices = create_buffer(device, queue, WGPUBufferUsage_Index,
                                           idx_data, sizeof(idx_data));
 
+        /* Wireframe SDF quads: expand each grid edge into a quad with
+         * signed distance for anti-aliased rendering.  Half-width in
+         * quantized units — the shader adapts to screen-space via fwidth. */
+#define PH_WIRE_HW 200
+#define PH_EDGE_COUNT (PH_VERTS * PH_GRID + PH_GRID * PH_VERTS) /* 544 */
+#define PH_WIRE_NV (PH_EDGE_COUNT * 4)  /* 4 vertices per quad  */
+#define PH_WIRE_NI2 (PH_EDGE_COUNT * 6) /* 6 indices per quad   */
+
+        uint16_t w_xy[PH_WIRE_NV * 2];
+        int32_t w_z[PH_WIRE_NV];
+        float w_dist[PH_WIRE_NV];
+        uint32_t w_idx[PH_WIRE_NI2];
+        int wv = 0, wi = 0;
+
+        /* Horizontal edges: expand perpendicular (y ± hw) */
+        for (int row = 0; row < PH_VERTS; row++) {
+            for (int col = 0; col < PH_GRID; col++) {
+                uint16_t x0 = (uint16_t)(16384 + col * 32767 / PH_GRID);
+                uint16_t x1 = (uint16_t)(16384 + (col + 1) * 32767 / PH_GRID);
+                int y = 16384 + row * 32767 / PH_GRID;
+                uint16_t yl = (uint16_t)(y - PH_WIRE_HW);
+                uint16_t yh = (uint16_t)(y + PH_WIRE_HW);
+                uint32_t base = (uint32_t)wv;
+                w_xy[wv*2]=x0; w_xy[wv*2+1]=yl; w_z[wv]=0; w_dist[wv]=(float)-PH_WIRE_HW; wv++;
+                w_xy[wv*2]=x0; w_xy[wv*2+1]=yh; w_z[wv]=0; w_dist[wv]=(float)+PH_WIRE_HW; wv++;
+                w_xy[wv*2]=x1; w_xy[wv*2+1]=yl; w_z[wv]=0; w_dist[wv]=(float)-PH_WIRE_HW; wv++;
+                w_xy[wv*2]=x1; w_xy[wv*2+1]=yh; w_z[wv]=0; w_dist[wv]=(float)+PH_WIRE_HW; wv++;
+                w_idx[wi++]=base; w_idx[wi++]=base+1; w_idx[wi++]=base+2;
+                w_idx[wi++]=base+2; w_idx[wi++]=base+1; w_idx[wi++]=base+3;
+            }
+        }
+
+        /* Vertical edges: expand perpendicular (x ± hw) */
+        for (int col = 0; col < PH_VERTS; col++) {
+            for (int row = 0; row < PH_GRID; row++) {
+                int x = 16384 + col * 32767 / PH_GRID;
+                uint16_t y0 = (uint16_t)(16384 + row * 32767 / PH_GRID);
+                uint16_t y1 = (uint16_t)(16384 + (row + 1) * 32767 / PH_GRID);
+                uint16_t xl = (uint16_t)(x - PH_WIRE_HW);
+                uint16_t xh = (uint16_t)(x + PH_WIRE_HW);
+                uint32_t base = (uint32_t)wv;
+                w_xy[wv*2]=xl; w_xy[wv*2+1]=y0; w_z[wv]=0; w_dist[wv]=(float)-PH_WIRE_HW; wv++;
+                w_xy[wv*2]=xh; w_xy[wv*2+1]=y0; w_z[wv]=0; w_dist[wv]=(float)+PH_WIRE_HW; wv++;
+                w_xy[wv*2]=xl; w_xy[wv*2+1]=y1; w_z[wv]=0; w_dist[wv]=(float)-PH_WIRE_HW; wv++;
+                w_xy[wv*2]=xh; w_xy[wv*2+1]=y1; w_z[wv]=0; w_dist[wv]=(float)+PH_WIRE_HW; wv++;
+                w_idx[wi++]=base; w_idx[wi++]=base+1; w_idx[wi++]=base+2;
+                w_idx[wi++]=base+2; w_idx[wi++]=base+1; w_idx[wi++]=base+3;
+            }
+        }
+
+        r->ph_wire_index_count = PH_WIRE_NI2;
+        r->ph_wire_buf_xy = create_buffer(device, queue, WGPUBufferUsage_Vertex,
+                                          w_xy, sizeof(w_xy));
+        r->ph_wire_buf_z = create_buffer(device, queue, WGPUBufferUsage_Vertex,
+                                         w_z, sizeof(w_z));
+        r->ph_wire_buf_dist = create_buffer(device, queue, WGPUBufferUsage_Vertex,
+                                            w_dist, sizeof(w_dist));
+        r->ph_wire_indices = create_buffer(device, queue, WGPUBufferUsage_Index,
+                                           w_idx, sizeof(w_idx));
+#undef PH_WIRE_HW
+#undef PH_EDGE_COUNT
+#undef PH_WIRE_NV
+#undef PH_WIRE_NI2
+
 #undef PH_GRID
 #undef PH_VERTS
 #undef PH_NV
@@ -1046,6 +1281,11 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->ph_buf_z) wgpuBufferRelease(r->ph_buf_z);
     if (r->ph_buf_normals) wgpuBufferRelease(r->ph_buf_normals);
     if (r->ph_buf_indices) wgpuBufferRelease(r->ph_buf_indices);
+    if (r->ph_wire_buf_xy) wgpuBufferRelease(r->ph_wire_buf_xy);
+    if (r->ph_wire_buf_z) wgpuBufferRelease(r->ph_wire_buf_z);
+    if (r->ph_wire_buf_dist) wgpuBufferRelease(r->ph_wire_buf_dist);
+    if (r->ph_wire_indices) wgpuBufferRelease(r->ph_wire_indices);
+    if (r->wireframe_pipeline) wgpuRenderPipelineRelease(r->wireframe_pipeline);
     if (r->ph_texture_view) wgpuTextureViewRelease(r->ph_texture_view);
     if (r->ph_texture) wgpuTextureRelease(r->ph_texture);
     if (r->depth_view) wgpuTextureViewRelease(r->depth_view);
@@ -1491,6 +1731,25 @@ void arpt_renderer_draw_placeholder(arpt_renderer *r, int slot, arpt_mat4 model,
                                         WGPUIndexFormat_Uint32, 0,
                                         wgpuBufferGetSize(r->ph_buf_indices));
     wgpuRenderPassEncoderDrawIndexed(r->pass, r->ph_index_count, 1, 0, 0, 0);
+
+    /* Wireframe SDF overlay */
+    wgpuRenderPassEncoderSetPipeline(r->pass, r->wireframe_pipeline);
+    wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0, NULL);
+    wgpuRenderPassEncoderSetBindGroup(r->pass, 1, r->ph_bind_groups[slot], 0,
+                                      NULL);
+    wgpuRenderPassEncoderSetVertexBuffer(r->pass, 0, r->ph_wire_buf_xy, 0,
+                                         wgpuBufferGetSize(r->ph_wire_buf_xy));
+    wgpuRenderPassEncoderSetVertexBuffer(r->pass, 1, r->ph_wire_buf_z, 0,
+                                         wgpuBufferGetSize(r->ph_wire_buf_z));
+    wgpuRenderPassEncoderSetVertexBuffer(r->pass, 2, r->ph_wire_buf_dist, 0,
+                                         wgpuBufferGetSize(r->ph_wire_buf_dist));
+    wgpuRenderPassEncoderSetIndexBuffer(r->pass, r->ph_wire_indices,
+                                        WGPUIndexFormat_Uint32, 0,
+                                        wgpuBufferGetSize(r->ph_wire_indices));
+    wgpuRenderPassEncoderDrawIndexed(r->pass, r->ph_wire_index_count, 1, 0, 0,
+                                     0);
+    wgpuRenderPassEncoderSetPipeline(r->pass, r->pipeline);
+    wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0, NULL);
 }
 
 /* Frame rendering */
