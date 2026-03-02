@@ -29,6 +29,41 @@ FetchContent_Declare(glfw3webgpu
 )
 FetchContent_MakeAvailable(glfw3webgpu)
 
+# ── Embed WGSL shaders as C headers ─────────────────────────────────────
+
+set(SHADER_DIR     ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
+set(SHADER_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/shaders)
+file(MAKE_DIRECTORY ${SHADER_GEN_DIR})
+
+set(SHADER_SOURCES
+    terrain.wgsl
+    surface.wgsl
+    highway.wgsl
+    wireframe.wgsl
+    ui.wgsl
+)
+
+set(SHADER_HEADERS)
+foreach(SHADER ${SHADER_SOURCES})
+    string(REPLACE "." "_" VAR_NAME ${SHADER})   # e.g. terrain_wgsl
+    set(INPUT  ${SHADER_DIR}/${SHADER})
+    set(OUTPUT ${SHADER_GEN_DIR}/${SHADER}.h)
+    add_custom_command(
+        OUTPUT  ${OUTPUT}
+        COMMAND ${CMAKE_COMMAND}
+            -DINPUT=${INPUT}
+            -DINPUT_NAME=${SHADER}
+            -DOUTPUT=${OUTPUT}
+            -DVAR_NAME=${VAR_NAME}
+            -P ${CMAKE_SOURCE_DIR}/cmake/embed_shader.cmake
+        DEPENDS ${INPUT} ${CMAKE_SOURCE_DIR}/cmake/embed_shader.cmake
+        COMMENT "Embedding shader ${SHADER}"
+    )
+    list(APPEND SHADER_HEADERS ${OUTPUT})
+endforeach()
+
+add_custom_target(embed_shaders DEPENDS ${SHADER_HEADERS})
+
 # ── Main executable ──────────────────────────────────────────────────────
 
 add_executable(arpentry_client
@@ -43,8 +78,11 @@ add_executable(arpentry_client
     src/tile_manager.c
     src/ui.c
 )
-add_dependencies(arpentry_client flatcc_generate)
-target_include_directories(arpentry_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_dependencies(arpentry_client flatcc_generate embed_shaders)
+target_include_directories(arpentry_client PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${SHADER_GEN_DIR}
+)
 target_link_libraries(arpentry_client PRIVATE webgpu glfw3webgpu arpentry_common)
 
 # ── Tests (native only) ──────────────────────────────────────────────
