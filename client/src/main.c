@@ -39,6 +39,7 @@ typedef struct {
     arpt_tile_manager *tile_manager;
     arpt_ui *ui;
     double last_time;
+    double smoothed_ground_elev;
 } App;
 
 static App app = {0};
@@ -174,6 +175,18 @@ static void render_frame(void) {
     /* Update tile manager (fetch new tiles, evict old ones) */
     if (app.tile_manager)
         arpt_tile_manager_update(app.tile_manager, app.camera);
+
+    /* Update ground elevation from loaded tiles */
+    if (app.tile_manager) {
+        double target = arpt_tile_manager_ground_elevation(
+            app.tile_manager, arpt_camera_lon(app.camera),
+            arpt_camera_lat(app.camera));
+        double alpha = 1.0 - exp(-dt * 8.0);
+        app.smoothed_ground_elev +=
+            (target - app.smoothed_ground_elev) * alpha;
+        arpt_camera_set_ground_elevation(app.camera,
+                                         app.smoothed_ground_elev);
+    }
 
     /* Update global uniforms */
     arpt_mat4 projection = arpt_camera_projection(app.camera);

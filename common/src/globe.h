@@ -22,6 +22,10 @@ arpt_dvec3 arpt_surface_normal(double lon, double lat);
 /* Ray-WGS84 intersection. On hit, *t = nearest positive parameter. */
 bool arpt_ray_ellipsoid(arpt_dvec3 origin, arpt_dvec3 dir, double *t);
 
+/* Ray intersection with WGS84 inflated by elevation (meters). */
+bool arpt_ray_ellipsoid_at(arpt_dvec3 origin, arpt_dvec3 dir,
+                            double elevation, double *t);
+
 /* Globe rotation: rotates ECEF so (lon, lat) faces -Z. lon, lat in radians. */
 arpt_dmat4 arpt_globe_rotation(double lon, double lat);
 

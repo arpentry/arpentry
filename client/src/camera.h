@@ -18,6 +18,7 @@ void arpt_camera_set_position(arpt_camera *cam, double lon_rad, double lat_rad,
 void arpt_camera_set_tilt(arpt_camera *cam, double tilt_rad);
 void arpt_camera_set_bearing(arpt_camera *cam, double bearing_rad);
 void arpt_camera_set_viewport(arpt_camera *cam, int width, int height);
+void arpt_camera_set_ground_elevation(arpt_camera *cam, double elevation);
 
 /* Getters */
 
@@ -28,6 +29,7 @@ double arpt_camera_tilt(const arpt_camera *cam);
 double arpt_camera_bearing(const arpt_camera *cam);
 int arpt_camera_vp_width(const arpt_camera *cam);
 int arpt_camera_vp_height(const arpt_camera *cam);
+double arpt_camera_ground_elevation(const arpt_camera *cam);
 
 /* Manipulation */
 

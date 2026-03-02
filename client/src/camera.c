@@ -13,6 +13,7 @@
 struct arpt_camera {
     double lon_rad, lat_rad, altitude;
     double tilt_rad, bearing_rad;
+    double ground_elevation;
     int vp_width, vp_height;
 
     /* Pan anchor (ray-cast pan) */
@@ -66,6 +67,10 @@ void arpt_camera_set_viewport(arpt_camera *cam, int width, int height) {
     cam->vp_height = height > 1 ? height : 1;
 }
 
+void arpt_camera_set_ground_elevation(arpt_camera *cam, double elevation) {
+    cam->ground_elevation = elevation;
+}
+
 /* Getters */
 
 double arpt_camera_lon(const arpt_camera *cam) {
@@ -88,6 +93,9 @@ int arpt_camera_vp_width(const arpt_camera *cam) {
 }
 int arpt_camera_vp_height(const arpt_camera *cam) {
     return cam->vp_height;
+}
+double arpt_camera_ground_elevation(const arpt_camera *cam) {
+    return cam->ground_elevation;
 }
 
 /* Internal helpers */
@@ -125,8 +133,8 @@ arpt_mat4 arpt_camera_tile_model(const arpt_camera *cam, double center_lon,
 
     arpt_dvec3 tile_center_ecef =
         arpt_geodetic_to_ecef(center_lon, center_lat, center_alt);
-    arpt_dvec3 interest_ecef =
-        arpt_geodetic_to_ecef(cam->lon_rad, cam->lat_rad, 0.0);
+    arpt_dvec3 interest_ecef = arpt_geodetic_to_ecef(
+        cam->lon_rad, cam->lat_rad, cam->ground_elevation);
     arpt_dvec3 delta = arpt_dvec3_sub(tile_center_ecef, interest_ecef);
 
     arpt_dmat4 R = arpt_dmat4_mul(R_tilt, R_globe);
@@ -152,7 +160,8 @@ static bool screen_to_geodetic(const arpt_camera *cam, double sx, double sy,
     arpt_dvec3 origin, dir;
     if (!arpt_camera_screen_to_ray(cam, sx, sy, &origin, &dir)) return false;
     double t;
-    if (!arpt_ray_ellipsoid(origin, dir, &t)) return false;
+    if (!arpt_ray_ellipsoid_at(origin, dir, cam->ground_elevation, &t))
+        return false;
     arpt_dvec3 hit = arpt_dvec3_add(origin, arpt_dvec3_scale(dir, t));
     double alt;
     arpt_ecef_to_geodetic(hit, out_lon, out_lat, &alt);
@@ -291,8 +300,8 @@ bool arpt_camera_screen_to_ray(const arpt_camera *cam, double sx, double sy,
        Camera is at origin. So the camera in "rotated ECEF" space is at
        the position where interest_ecef would be plus the offset.
        cam_ecef = interest_ecef + R_inv * (0, 0, altitude) */
-    arpt_dvec3 interest_ecef =
-        arpt_geodetic_to_ecef(cam->lon_rad, cam->lat_rad, 0.0);
+    arpt_dvec3 interest_ecef = arpt_geodetic_to_ecef(
+        cam->lon_rad, cam->lat_rad, cam->ground_elevation);
     arpt_dvec3 cam_offset =
         arpt_dmat4_rotate(R_inv, (arpt_dvec3){0, 0, cam->altitude});
     *origin = arpt_dvec3_add(interest_ecef, cam_offset);

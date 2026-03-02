@@ -157,9 +157,52 @@ static const char *surface_wgsl =
     "    return color;\n"
     "}\n";
 
+/* Highway SDF shader — round caps + anti-aliased edges */
+
+static const char *highway_wgsl =
+    "struct VsOut {\n"
+    "    @builtin(position) pos: vec4<f32>,\n"
+    "    @location(0) color: vec4<f32>,\n"
+    "    @location(1) local: vec2<f32>,\n"
+    "    @location(2) hw_len: vec2<f32>,\n"
+    "};\n"
+    "\n"
+    "@vertex fn vs(\n"
+    "    @location(0) qxy: vec2<u32>,\n"
+    "    @location(1) color: vec4<f32>,\n"
+    "    @location(2) local: vec2<f32>,\n"
+    "    @location(3) hw_len: vec2<f32>,\n"
+    ") -> VsOut {\n"
+    "    let u = (f32(qxy.x) - 16384.0) / 32768.0;\n"
+    "    let v = (f32(qxy.y) - 16384.0) / 32768.0;\n"
+    "    var out: VsOut;\n"
+    "    let margin = 0.0625;\n"
+    "    let scale = 1.0 / (1.0 + 2.0 * margin);\n"
+    "    out.pos = vec4<f32>((u + margin) * scale * 2.0 - 1.0,\n"
+    "                        1.0 - (v + margin) * scale * 2.0, 0.0, 1.0);\n"
+    "    out.color = color;\n"
+    "    out.local = local;\n"
+    "    out.hw_len = hw_len;\n"
+    "    return out;\n"
+    "}\n"
+    "\n"
+    "@fragment fn fs(\n"
+    "    @location(0) color: vec4<f32>,\n"
+    "    @location(1) local: vec2<f32>,\n"
+    "    @location(2) hw_len: vec2<f32>,\n"
+    ") -> @location(0) vec4<f32> {\n"
+    "    let hw = hw_len.x;\n"
+    "    let seg_len = hw_len.y;\n"
+    "    let cx = clamp(local.x, 0.0, seg_len);\n"
+    "    let dist = length(vec2<f32>(local.x - cx, local.y));\n"
+    "    let px = fwidth(local.y);\n"
+    "    let alpha = color.a * (1.0 - smoothstep(hw - px, hw, dist));\n"
+    "    return vec4<f32>(color.rgb, alpha);\n"
+    "}\n";
+
 /* Surface color table */
 
-#define SURFACE_TEX_SIZE 1024
+#define SURFACE_TEX_SIZE 2048
 #define SURFACE_MARGIN 0.0625 /* = SURFACE_BUFFER / SURFACE_GRID = 8/128 */
 
 typedef struct {
@@ -177,7 +220,7 @@ static const surface_color_t surface_colors[] = {
     [ARPT_SURFACE_ICE]         = {0.88f, 0.93f, 0.98f, 1.0f},
     [ARPT_SURFACE_PRIMARY]     = {0.35f, 0.33f, 0.30f, 1.0f}, /* dark asphalt */
     [ARPT_SURFACE_RESIDENTIAL] = {0.45f, 0.43f, 0.40f, 1.0f}, /* lighter road */
-    [ARPT_SURFACE_BUILDING]    = {0.60f, 0.55f, 0.50f, 1.0f}, /* warm gray */
+    [ARPT_SURFACE_BUILDING]    = {0.82f, 0.77f, 0.70f, 1.0f}, /* warm sandstone */
 };
 
 /* Uniform layouts */
@@ -217,6 +260,7 @@ struct arpt_tile_gpu {
     WGPUBuffer bldg_buf_z;
     WGPUBuffer bldg_buf_normals;
     WGPUBuffer bldg_buf_indices;
+    WGPUBindGroup bldg_bind_group;
     uint32_t bldg_index_count;
 };
 
@@ -241,9 +285,12 @@ struct arpt_renderer {
 
     /* Surface offscreen rasterization */
     WGPURenderPipeline surface_pipeline;
+    WGPURenderPipeline highway_pipeline;
     WGPUSampler surface_sampler;
     WGPUTexture default_surface_tex;
     WGPUTextureView default_surface_view;
+    WGPUTexture building_tex;
+    WGPUTextureView building_view;
 
     /* Placeholder flat quads for tiles still loading */
     WGPUBuffer ph_buf_xy;
@@ -420,12 +467,86 @@ static WGPURenderPipeline create_surface_pipeline(WGPUDevice device) {
     return pipeline;
 }
 
+/* Highway pipeline — alpha-blended SDF lines with round caps */
+
+static WGPURenderPipeline create_highway_pipeline(WGPUDevice device) {
+    WGPUShaderModuleWGSLDescriptor wgsl_desc = {
+        .chain = {.sType = WGPUSType_ShaderModuleWGSLDescriptor},
+        .code = highway_wgsl,
+    };
+    WGPUShaderModuleDescriptor sm_desc = {.nextInChain = &wgsl_desc.chain};
+    WGPUShaderModule sm = wgpuDeviceCreateShaderModule(device, &sm_desc);
+
+    WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
+        device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 0,
+                                                .bindGroupLayouts = NULL});
+
+    WGPUVertexAttribute highway_attrs[] = {
+        {.format = WGPUVertexFormat_Uint16x2,
+         .offset = 0,
+         .shaderLocation = 0},
+        {.format = WGPUVertexFormat_Float32x4,
+         .offset = 4,
+         .shaderLocation = 1},
+        {.format = WGPUVertexFormat_Float32x2,
+         .offset = 20,
+         .shaderLocation = 2},
+        {.format = WGPUVertexFormat_Float32x2,
+         .offset = 28,
+         .shaderLocation = 3},
+    };
+    WGPUVertexBufferLayout vbl = {
+        .arrayStride = 36, /* 4 + 16 + 8 + 8 */
+        .stepMode = WGPUVertexStepMode_Vertex,
+        .attributeCount = 4,
+        .attributes = highway_attrs,
+    };
+
+    WGPUBlendState blend = {
+        .color = {.srcFactor = WGPUBlendFactor_SrcAlpha,
+                  .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha,
+                  .operation = WGPUBlendOperation_Add},
+        .alpha = {.srcFactor = WGPUBlendFactor_One,
+                  .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha,
+                  .operation = WGPUBlendOperation_Add},
+    };
+    WGPUColorTargetState ct = {.format = WGPUTextureFormat_RGBA8Unorm,
+                               .blend = &blend,
+                               .writeMask = WGPUColorWriteMask_All};
+    WGPUFragmentState frag = {
+        .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
+
+    WGPURenderPipelineDescriptor pip = {
+        .layout = pl,
+        .vertex = {.module = sm,
+                   .entryPoint = "vs",
+                   .bufferCount = 1,
+                   .buffers = &vbl},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
+                      .cullMode = WGPUCullMode_None},
+        .fragment = &frag,
+        .multisample = {.count = 1, .mask = ~0u},
+    };
+    WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
+
+    wgpuPipelineLayoutRelease(pl);
+    wgpuShaderModuleRelease(sm);
+    return pipeline;
+}
+
 /* Surface rasterization (offscreen, once per tile) */
 
 typedef struct {
     uint16_t x, y; /* quantized position */
     float r, g, b, a;
 } surface_vertex_t;
+
+typedef struct {
+    uint16_t x, y;         /* quantized position */
+    float r, g, b, a;      /* color */
+    float local_u, local_v; /* local SDF coordinates */
+    float hw, seg_len;     /* half-width and segment length */
+} highway_vertex_t;
 
 /* Road half-widths in quantized units.
  * 1 quantized unit ≈ 0.028 pixels on the 1024-pixel surface texture.
@@ -470,15 +591,15 @@ static void emit_polygons(const arpt_surface_data *data,
     }
 }
 
-/* Expand highway line segments to quads and append to the buffers. */
-static void emit_highway_quads(const arpt_highway_data *data,
-                                surface_vertex_t *verts, uint32_t *idxs,
-                                size_t *vi, size_t *ii) {
+/* Expand highway segments to SDF quads (extended for round caps). */
+static void emit_highway_sdf_quads(const arpt_highway_data *data,
+                                    highway_vertex_t *verts, uint32_t *idxs,
+                                    size_t *vi, size_t *ii) {
     if (!data) return;
     for (size_t i = 0; i < data->count; i++) {
         const arpt_highway_line *line = &data->lines[i];
-        int hw = (line->cls == ARPT_SURFACE_PRIMARY) ? ROAD_HW_PRIMARY
-                                                     : ROAD_HW_RESIDENTIAL;
+        double hw = (line->cls == ARPT_SURFACE_PRIMARY) ? ROAD_HW_PRIMARY
+                                                        : ROAD_HW_RESIDENTIAL;
         surface_color_t c = surface_colors[line->cls];
 
         for (size_t s = 0; s + 1 < line->vertex_count; s++) {
@@ -488,23 +609,35 @@ static void emit_highway_quads(const arpt_highway_data *data,
             double len = sqrt(dx * dx + dy * dy);
             if (len < 1.0) continue;
 
-            double nx = (-dy / len) * hw;
-            double ny = (dx / len) * hw;
+            /* Unit direction and perpendicular */
+            double ux = dx / len, uy = dy / len;
+            double nx = -uy, ny = ux;
 
-            /* Clamp to uint16 range */
+            /* Extend quad by hw along segment direction for round caps */
+            double ex1 = x1 - ux * hw, ey1 = y1 - uy * hw;
+            double ex2 = x2 + ux * hw, ey2 = y2 + uy * hw;
+
 #define CLAMP16(v) ((uint16_t)((v) < 0 ? 0 : (v) > 65535 ? 65535 : (v)))
             uint32_t base = (uint32_t)*vi;
-            verts[*vi] = (surface_vertex_t){CLAMP16(x1 - nx), CLAMP16(y1 - ny),
-                                             c.r, c.g, c.b, c.a};
+            verts[*vi] = (highway_vertex_t){
+                CLAMP16(ex1 - nx * hw), CLAMP16(ey1 - ny * hw),
+                c.r, c.g, c.b, c.a,
+                (float)(-hw), (float)(-hw), (float)hw, (float)len};
             (*vi)++;
-            verts[*vi] = (surface_vertex_t){CLAMP16(x1 + nx), CLAMP16(y1 + ny),
-                                             c.r, c.g, c.b, c.a};
+            verts[*vi] = (highway_vertex_t){
+                CLAMP16(ex1 + nx * hw), CLAMP16(ey1 + ny * hw),
+                c.r, c.g, c.b, c.a,
+                (float)(-hw), (float)(hw), (float)hw, (float)len};
             (*vi)++;
-            verts[*vi] = (surface_vertex_t){CLAMP16(x2 + nx), CLAMP16(y2 + ny),
-                                             c.r, c.g, c.b, c.a};
+            verts[*vi] = (highway_vertex_t){
+                CLAMP16(ex2 + nx * hw), CLAMP16(ey2 + ny * hw),
+                c.r, c.g, c.b, c.a,
+                (float)(len + hw), (float)(hw), (float)hw, (float)len};
             (*vi)++;
-            verts[*vi] = (surface_vertex_t){CLAMP16(x2 - nx), CLAMP16(y2 - ny),
-                                             c.r, c.g, c.b, c.a};
+            verts[*vi] = (highway_vertex_t){
+                CLAMP16(ex2 - nx * hw), CLAMP16(ey2 - ny * hw),
+                c.r, c.g, c.b, c.a,
+                (float)(len + hw), (float)(-hw), (float)hw, (float)len};
             (*vi)++;
 #undef CLAMP16
 
@@ -532,20 +665,23 @@ static WGPUTexture rasterize_surface(arpt_renderer *r,
     };
     WGPUTexture tex = wgpuDeviceCreateTexture(r->device, &tex_desc);
 
-    /* Count geometry across all layers */
-    size_t total_verts = 0, total_indices = 0;
-    count_polygon_geom(surface, &total_verts, &total_indices);
+    /* Count polygon and highway geometry separately */
+    size_t poly_verts = 0, poly_indices = 0;
+    count_polygon_geom(surface, &poly_verts, &poly_indices);
 
-    /* Highway lines: each segment → 4 verts + 6 indices */
+    size_t hw_verts = 0, hw_indices = 0;
     if (highways) {
         for (size_t i = 0; i < highways->count; i++) {
             size_t segs = highways->lines[i].vertex_count - 1;
-            total_verts += segs * 4;
-            total_indices += segs * 6;
+            hw_verts += segs * 4;
+            hw_indices += segs * 6;
         }
     }
 
-    if (total_verts == 0 || total_indices == 0) {
+    bool has_polys = poly_verts > 0 && poly_indices > 0;
+    bool has_highways = hw_verts > 0 && hw_indices > 0;
+
+    if (!has_polys && !has_highways) {
         WGPUTextureView view = wgpuTextureCreateView(tex, NULL);
         WGPUCommandEncoder enc =
             wgpuDeviceCreateCommandEncoder(r->device, NULL);
@@ -574,27 +710,51 @@ static WGPUTexture rasterize_surface(arpt_renderer *r,
         return tex;
     }
 
-    surface_vertex_t *verts = malloc(total_verts * sizeof(surface_vertex_t));
-    uint32_t *idxs = malloc(total_indices * sizeof(uint32_t));
-    if (!verts || !idxs) {
-        free(verts);
-        free(idxs);
-        return tex;
+    /* Build polygon GPU buffers */
+    WGPUBuffer poly_vbuf = NULL, poly_ibuf = NULL;
+    size_t poly_vb_size = 0, poly_draw_n = 0;
+    if (has_polys) {
+        surface_vertex_t *pv = malloc(poly_verts * sizeof(surface_vertex_t));
+        uint32_t *pi = malloc(poly_indices * sizeof(uint32_t));
+        if (pv && pi) {
+            size_t vi = 0, ii = 0;
+            emit_polygons(surface, pv, pi, &vi, &ii);
+            poly_vb_size = vi * sizeof(surface_vertex_t);
+            poly_vbuf = create_buffer(r->device, r->queue,
+                                      WGPUBufferUsage_Vertex, pv,
+                                      poly_vb_size);
+            poly_ibuf = create_buffer(r->device, r->queue,
+                                      WGPUBufferUsage_Index, pi,
+                                      ii * sizeof(uint32_t));
+            poly_draw_n = ii;
+        }
+        free(pv);
+        free(pi);
     }
 
-    /* Emit in painter's order: surface → highways (buildings are 3D only) */
-    size_t vi = 0, ii = 0;
-    emit_polygons(surface, verts, idxs, &vi, &ii);
-    emit_highway_quads(highways, verts, idxs, &vi, &ii);
+    /* Build highway GPU buffers */
+    WGPUBuffer hw_vbuf = NULL, hw_ibuf = NULL;
+    size_t hw_vb_size = 0, hw_draw_n = 0;
+    if (has_highways) {
+        highway_vertex_t *hv = malloc(hw_verts * sizeof(highway_vertex_t));
+        uint32_t *hi = malloc(hw_indices * sizeof(uint32_t));
+        if (hv && hi) {
+            size_t vi = 0, ii = 0;
+            emit_highway_sdf_quads(highways, hv, hi, &vi, &ii);
+            hw_vb_size = vi * sizeof(highway_vertex_t);
+            hw_vbuf = create_buffer(r->device, r->queue,
+                                    WGPUBufferUsage_Vertex, hv,
+                                    hw_vb_size);
+            hw_ibuf = create_buffer(r->device, r->queue,
+                                    WGPUBufferUsage_Index, hi,
+                                    ii * sizeof(uint32_t));
+            hw_draw_n = ii;
+        }
+        free(hv);
+        free(hi);
+    }
 
-    WGPUBuffer vbuf = create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex,
-                                    verts, vi * sizeof(surface_vertex_t));
-    WGPUBuffer ibuf = create_buffer(r->device, r->queue, WGPUBufferUsage_Index,
-                                    idxs, ii * sizeof(uint32_t));
-    free(verts);
-    free(idxs);
-
-    /* Render pass */
+    /* Render pass: polygons (opaque), then highways (alpha-blended SDF) */
     WGPUTextureView view = wgpuTextureCreateView(tex, NULL);
     WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(r->device, NULL);
     WGPURenderPassColorAttachment color = {
@@ -612,12 +772,31 @@ static WGPUTexture rasterize_surface(arpt_renderer *r,
     };
     WGPURenderPassEncoder pass =
         wgpuCommandEncoderBeginRenderPass(enc, &rp_desc);
-    wgpuRenderPassEncoderSetPipeline(pass, r->surface_pipeline);
-    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, vbuf, 0,
-                                         vi * sizeof(surface_vertex_t));
-    wgpuRenderPassEncoderSetIndexBuffer(pass, ibuf, WGPUIndexFormat_Uint32, 0,
-                                        ii * sizeof(uint32_t));
-    wgpuRenderPassEncoderDrawIndexed(pass, (uint32_t)ii, 1, 0, 0, 0);
+
+    /* Draw 1: surface polygons (opaque) */
+    if (poly_draw_n > 0) {
+        wgpuRenderPassEncoderSetPipeline(pass, r->surface_pipeline);
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, poly_vbuf, 0,
+                                             poly_vb_size);
+        wgpuRenderPassEncoderSetIndexBuffer(pass, poly_ibuf,
+                                            WGPUIndexFormat_Uint32, 0,
+                                            poly_draw_n * sizeof(uint32_t));
+        wgpuRenderPassEncoderDrawIndexed(pass, (uint32_t)poly_draw_n, 1, 0, 0,
+                                         0);
+    }
+
+    /* Draw 2: highways (alpha-blended SDF with round caps) */
+    if (hw_draw_n > 0) {
+        wgpuRenderPassEncoderSetPipeline(pass, r->highway_pipeline);
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, hw_vbuf, 0,
+                                             hw_vb_size);
+        wgpuRenderPassEncoderSetIndexBuffer(pass, hw_ibuf,
+                                            WGPUIndexFormat_Uint32, 0,
+                                            hw_draw_n * sizeof(uint32_t));
+        wgpuRenderPassEncoderDrawIndexed(pass, (uint32_t)hw_draw_n, 1, 0, 0,
+                                         0);
+    }
+
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
 
@@ -627,8 +806,10 @@ static WGPUTexture rasterize_surface(arpt_renderer *r,
     wgpuCommandBufferRelease(cmd);
     wgpuCommandEncoderRelease(enc);
     wgpuTextureViewRelease(view);
-    wgpuBufferRelease(vbuf);
-    wgpuBufferRelease(ibuf);
+    if (poly_vbuf) wgpuBufferRelease(poly_vbuf);
+    if (poly_ibuf) wgpuBufferRelease(poly_ibuf);
+    if (hw_vbuf) wgpuBufferRelease(hw_vbuf);
+    if (hw_ibuf) wgpuBufferRelease(hw_ibuf);
 
     return tex;
 }
@@ -685,6 +866,7 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
 
     /* Surface offscreen pipeline + sampler */
     r->surface_pipeline = create_surface_pipeline(device);
+    r->highway_pipeline = create_highway_pipeline(device);
     WGPUSamplerDescriptor samp_desc = {
         .addressModeU = WGPUAddressMode_ClampToEdge,
         .addressModeV = WGPUAddressMode_ClampToEdge,
@@ -710,6 +892,25 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
             wgpuTextureCreateView(r->default_surface_tex, NULL);
         uint8_t pixel[4] = {89, 133, 56, 255}; /* 0.35, 0.52, 0.22 */
         WGPUImageCopyTexture dst = {.texture = r->default_surface_tex};
+        WGPUTextureDataLayout layout = {.bytesPerRow = 4, .rowsPerImage = 1};
+        WGPUExtent3D extent = {1, 1, 1};
+        wgpuQueueWriteTexture(queue, &dst, pixel, 4, &layout, &extent);
+    }
+
+    /* 1x1 gray building texture */
+    {
+        WGPUTextureDescriptor dt = {
+            .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
+            .size = {1, 1, 1},
+            .format = WGPUTextureFormat_RGBA8Unorm,
+            .dimension = WGPUTextureDimension_2D,
+            .mipLevelCount = 1,
+            .sampleCount = 1,
+        };
+        r->building_tex = wgpuDeviceCreateTexture(device, &dt);
+        r->building_view = wgpuTextureCreateView(r->building_tex, NULL);
+        uint8_t pixel[4] = {189, 186, 182, 255}; /* light neutral gray */
+        WGPUImageCopyTexture dst = {.texture = r->building_tex};
         WGPUTextureDataLayout layout = {.bytesPerRow = 4, .rowsPerImage = 1};
         WGPUExtent3D extent = {1, 1, 1};
         wgpuQueueWriteTexture(queue, &dst, pixel, 4, &layout, &extent);
@@ -853,10 +1054,13 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->global_uniform_buf) wgpuBufferRelease(r->global_uniform_buf);
     if (r->pipeline) wgpuRenderPipelineRelease(r->pipeline);
     if (r->surface_pipeline) wgpuRenderPipelineRelease(r->surface_pipeline);
+    if (r->highway_pipeline) wgpuRenderPipelineRelease(r->highway_pipeline);
     if (r->surface_sampler) wgpuSamplerRelease(r->surface_sampler);
     if (r->default_surface_view)
         wgpuTextureViewRelease(r->default_surface_view);
     if (r->default_surface_tex) wgpuTextureRelease(r->default_surface_tex);
+    if (r->building_view) wgpuTextureViewRelease(r->building_view);
+    if (r->building_tex) wgpuTextureRelease(r->building_tex);
     if (r->global_bgl) wgpuBindGroupLayoutRelease(r->global_bgl);
     if (r->tile_bgl) wgpuBindGroupLayoutRelease(r->tile_bgl);
     free(r);
@@ -1208,6 +1412,22 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
                                               .entryCount = 3,
                                               .entries = entries});
 
+    /* Building bind group: same uniforms, but solid gray texture */
+    if (t->bldg_index_count > 0) {
+        WGPUBindGroupEntry bldg_entries[] = {
+            {.binding = 0,
+             .buffer = t->uniform_buf,
+             .offset = 0,
+             .size = sizeof(tile_uniforms_t)},
+            {.binding = 1, .textureView = r->building_view},
+            {.binding = 2, .sampler = r->surface_sampler},
+        };
+        t->bldg_bind_group = wgpuDeviceCreateBindGroup(
+            r->device, &(WGPUBindGroupDescriptor){.layout = r->tile_bgl,
+                                                  .entryCount = 3,
+                                                  .entries = bldg_entries});
+    }
+
     return t;
 }
 
@@ -1237,6 +1457,7 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     if (tile->bldg_buf_indices) wgpuBufferRelease(tile->bldg_buf_indices);
     if (tile->uniform_buf) wgpuBufferRelease(tile->uniform_buf);
     if (tile->bind_group) wgpuBindGroupRelease(tile->bind_group);
+    if (tile->bldg_bind_group) wgpuBindGroupRelease(tile->bldg_bind_group);
     if (tile->surface_view) wgpuTextureViewRelease(tile->surface_view);
     if (tile->surface_texture) wgpuTextureRelease(tile->surface_texture);
     free(tile);
@@ -1338,8 +1559,10 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
                                         wgpuBufferGetSize(tile->buf_indices));
     wgpuRenderPassEncoderDrawIndexed(r->pass, tile->index_count, 1, 0, 0, 0);
 
-    /* Draw extruded buildings (same pipeline, same bind group) */
+    /* Draw extruded buildings (same pipeline, building bind group) */
     if (tile->bldg_index_count > 0) {
+        wgpuRenderPassEncoderSetBindGroup(r->pass, 1, tile->bldg_bind_group, 0,
+                                          NULL);
         wgpuRenderPassEncoderSetVertexBuffer(
             r->pass, 0, tile->bldg_buf_xy, 0,
             wgpuBufferGetSize(tile->bldg_buf_xy));

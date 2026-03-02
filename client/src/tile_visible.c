@@ -48,7 +48,8 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
                 continue;
 
             double t;
-            if (!arpt_ray_ellipsoid(origin, dir, &t)) continue;
+            double elev = arpt_camera_ground_elevation(cam);
+            if (!arpt_ray_ellipsoid_at(origin, dir, elev, &t)) continue;
 
             arpt_dvec3 hit = arpt_dvec3_add(origin, arpt_dvec3_scale(dir, t));
             double lon, lat, alt;

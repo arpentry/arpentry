@@ -80,6 +80,37 @@ bool arpt_ray_ellipsoid(arpt_dvec3 origin, arpt_dvec3 dir, double *t) {
     return false;
 }
 
+bool arpt_ray_ellipsoid_at(arpt_dvec3 origin, arpt_dvec3 dir,
+                            double elevation, double *t) {
+    double a = ARPT_WGS84_A + elevation;
+    double b = ARPT_WGS84_B + elevation;
+    double a2 = a * a;
+    double b2 = b * b;
+
+    double qa = (dir.x * dir.x + dir.y * dir.y) / a2 + (dir.z * dir.z) / b2;
+    double qb = 2.0 * ((origin.x * dir.x + origin.y * dir.y) / a2 +
+                       (origin.z * dir.z) / b2);
+    double qc = (origin.x * origin.x + origin.y * origin.y) / a2 +
+                (origin.z * origin.z) / b2 - 1.0;
+
+    double disc = qb * qb - 4.0 * qa * qc;
+    if (disc < 0.0) return false;
+
+    double sqrt_disc = sqrt(disc);
+    double t0 = (-qb - sqrt_disc) / (2.0 * qa);
+    double t1 = (-qb + sqrt_disc) / (2.0 * qa);
+
+    if (t0 > 0.0) {
+        *t = t0;
+        return true;
+    }
+    if (t1 > 0.0) {
+        *t = t1;
+        return true;
+    }
+    return false;
+}
+
 arpt_dmat4 arpt_globe_rotation(double lon, double lat) {
     /* Build a proper rotation that maps the ECEF position at (lon, lat)
        so the surface faces the camera (which looks along -Z).

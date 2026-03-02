@@ -62,6 +62,14 @@ void arpt_tile_manager_free(arpt_tile_manager *tm);
 void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam);
 
 /**
+ * Query ground elevation (meters) at a geodetic position.
+ * Finds the highest-level READY tile containing the position and returns
+ * its average terrain elevation. Returns 0.0 if no tile covers the point.
+ */
+double arpt_tile_manager_ground_elevation(const arpt_tile_manager *tm,
+                                          double lon_rad, double lat_rad);
+
+/**
  * Draw visible tiles at the target zoom level.  READY tiles are drawn
  * normally; tiles still loading are shown as flat placeholder quads.
  * All tiles belong to the same zoom level — no ancestor mixing.

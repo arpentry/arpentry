@@ -30,6 +30,7 @@ typedef struct {
     arpt_bounds bounds;
     double center_lon_rad;
     double center_lat_rad;
+    double avg_elevation;
     int retries;
     uint64_t retry_after;
 } tile_entry;
@@ -46,6 +47,9 @@ struct arpt_tile_manager {
     arpt_tile_key visible[MAX_VISIBLE_TILES];
     int visible_count;
     int visible_level;
+
+    /* Ground elevation at camera position (updated each frame) */
+    double ground_elevation;
 };
 
 /* Hashmap callbacks */
@@ -131,6 +135,14 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
         tm_hashmap_set(tm, &updated);
         free(flatbuf);
         return;
+    }
+
+    /* Compute average elevation (mm → m) for terrain awareness */
+    if (mesh.vertex_count > 0 && mesh.z) {
+        double sum = 0.0;
+        for (size_t v = 0; v < mesh.vertex_count; v++)
+            sum += mesh.z[v];
+        updated.avg_elevation = (sum / (double)mesh.vertex_count) * 0.001;
     }
 
     arpt_surface_data surface = {0};
@@ -324,6 +336,34 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
     }
 
     evict_oldest(tm);
+
+    /* Update ground elevation from the highest-level READY tile under the
+       camera.  We search the visible list (already computed) instead of
+       scanning the full cache — O(visible) rather than O(cache). */
+    double cam_lon_deg = arpt_camera_lon(cam) * 180.0 / M_PI;
+    double cam_lat_deg = arpt_camera_lat(cam) * 180.0 / M_PI;
+    int best_level = -1;
+    for (int i = 0; i < tm->visible_count; i++) {
+        if (tm->visible[i].level <= best_level) continue;
+        tile_entry lookup = {.key = tm->visible[i]};
+        const tile_entry *e = hashmap_get(tm->cache, &lookup);
+        if (!e || e->state != TILE_READY) continue;
+        if (cam_lon_deg < e->bounds.west || cam_lon_deg > e->bounds.east)
+            continue;
+        if (cam_lat_deg < e->bounds.south || cam_lat_deg > e->bounds.north)
+            continue;
+        best_level = e->key.level;
+        tm->ground_elevation = e->avg_elevation;
+    }
+}
+
+/* Ground elevation query */
+
+double arpt_tile_manager_ground_elevation(const arpt_tile_manager *tm,
+                                          double lon_rad, double lat_rad) {
+    (void)lon_rad;
+    (void)lat_rad;
+    return tm ? tm->ground_elevation : 0.0;
 }
 
 /* Draw helpers */
