@@ -82,62 +82,138 @@ bool arpt_decode_terrain(const void *flatbuf, size_t size,
 
 static arpt_surface_class classify_string(flatbuffers_string_t s) {
     if (!s) return ARPT_SURFACE_UNKNOWN;
-    if (strcmp(s, "water")     == 0) return ARPT_SURFACE_WATER;
-    if (strcmp(s, "desert")    == 0) return ARPT_SURFACE_DESERT;
-    if (strcmp(s, "forest")    == 0) return ARPT_SURFACE_FOREST;
-    if (strcmp(s, "grassland") == 0) return ARPT_SURFACE_GRASSLAND;
-    if (strcmp(s, "cropland")  == 0) return ARPT_SURFACE_CROPLAND;
-    if (strcmp(s, "shrub")     == 0) return ARPT_SURFACE_SHRUB;
-    if (strcmp(s, "ice")       == 0) return ARPT_SURFACE_ICE;
+    if (strcmp(s, "water")       == 0) return ARPT_SURFACE_WATER;
+    if (strcmp(s, "desert")      == 0) return ARPT_SURFACE_DESERT;
+    if (strcmp(s, "forest")      == 0) return ARPT_SURFACE_FOREST;
+    if (strcmp(s, "grassland")   == 0) return ARPT_SURFACE_GRASSLAND;
+    if (strcmp(s, "cropland")    == 0) return ARPT_SURFACE_CROPLAND;
+    if (strcmp(s, "shrub")       == 0) return ARPT_SURFACE_SHRUB;
+    if (strcmp(s, "ice")         == 0) return ARPT_SURFACE_ICE;
+    if (strcmp(s, "primary")     == 0) return ARPT_SURFACE_PRIMARY;
+    if (strcmp(s, "residential") == 0) return ARPT_SURFACE_RESIDENTIAL;
+    if (strcmp(s, "building")    == 0) return ARPT_SURFACE_BUILDING;
     return ARPT_SURFACE_UNKNOWN;
 }
 
-bool arpt_decode_surface(const void *flatbuf, size_t size,
-                         arpt_surface_data *out) {
-    out->polygons = NULL;
-    out->count = 0;
+/* Resolve the "class" property of a feature via the tile-scope dictionary. */
+static arpt_surface_class resolve_class(arpentry_tiles_Feature_table_t feat,
+                                        uint32_t class_key_idx,
+                                        arpentry_tiles_Value_vec_t values) {
+    if (class_key_idx == UINT32_MAX || !values) return ARPT_SURFACE_UNKNOWN;
+    arpentry_tiles_Property_vec_t props =
+        arpentry_tiles_Feature_properties(feat);
+    if (!props) return ARPT_SURFACE_UNKNOWN;
+    size_t np = arpentry_tiles_Property_vec_len(props);
+    for (size_t p = 0; p < np; p++) {
+        arpentry_tiles_Property_struct_t pr =
+            arpentry_tiles_Property_vec_at(props, p);
+        if (pr && pr->key == class_key_idx) {
+            size_t vi = pr->value;
+            if (vi < arpentry_tiles_Value_vec_len(values)) {
+                arpentry_tiles_Value_table_t val =
+                    arpentry_tiles_Value_vec_at(values, vi);
+                return classify_string(
+                    arpentry_tiles_Value_string_value(val));
+            }
+            break;
+        }
+    }
+    return ARPT_SURFACE_UNKNOWN;
+}
 
-    if (!flatbuf || size < 8) return true; /* no data is OK */
+/* Resolve an integer property of a feature via the tile-scope dictionary. */
+static int32_t resolve_int_property(arpentry_tiles_Feature_table_t feat,
+                                    uint32_t key_idx,
+                                    arpentry_tiles_Value_vec_t values) {
+    if (key_idx == UINT32_MAX || !values) return 0;
+    arpentry_tiles_Property_vec_t props =
+        arpentry_tiles_Feature_properties(feat);
+    if (!props) return 0;
+    size_t np = arpentry_tiles_Property_vec_len(props);
+    for (size_t p = 0; p < np; p++) {
+        arpentry_tiles_Property_struct_t pr =
+            arpentry_tiles_Property_vec_at(props, p);
+        if (pr && pr->key == key_idx) {
+            size_t vi = pr->value;
+            if (vi < arpentry_tiles_Value_vec_len(values)) {
+                arpentry_tiles_Value_table_t val =
+                    arpentry_tiles_Value_vec_at(values, vi);
+                return (int32_t)arpentry_tiles_Value_int_value(val);
+            }
+            break;
+        }
+    }
+    return 0;
+}
+
+/* Find a layer by name and resolve "class" and "height" key indices. */
+static arpentry_tiles_Layer_table_t
+find_layer(const void *flatbuf, size_t size, const char *name,
+           uint32_t *class_key_idx, uint32_t *height_key_idx,
+           arpentry_tiles_Value_vec_t *values) {
+    *class_key_idx = UINT32_MAX;
+    *height_key_idx = UINT32_MAX;
+    *values = NULL;
+
+    if (!flatbuf || size < 8) return NULL;
 
     arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root(flatbuf);
-    if (!tile) return true;
+    if (!tile) return NULL;
 
-    /* Find "surface" layer */
     arpentry_tiles_Layer_vec_t layers = arpentry_tiles_Tile_layers(tile);
-    if (!layers) return true;
+    if (!layers) return NULL;
 
-    arpentry_tiles_Layer_table_t surface_layer = NULL;
+    arpentry_tiles_Layer_table_t found = NULL;
     size_t n_layers = arpentry_tiles_Layer_vec_len(layers);
     for (size_t i = 0; i < n_layers; i++) {
         arpentry_tiles_Layer_table_t layer =
             arpentry_tiles_Layer_vec_at(layers, i);
-        flatbuffers_string_t name = arpentry_tiles_Layer_name(layer);
-        if (name && strcmp(name, "surface") == 0) {
-            surface_layer = layer;
+        flatbuffers_string_t lname = arpentry_tiles_Layer_name(layer);
+        if (lname && strcmp(lname, name) == 0) {
+            found = layer;
             break;
         }
     }
-    if (!surface_layer) return true;
+    if (!found) return NULL;
 
-    /* Resolve tile-scope property dictionary */
+    /* Resolve property dictionary */
+    *values = arpentry_tiles_Tile_values(tile);
     flatbuffers_string_vec_t keys = arpentry_tiles_Tile_keys(tile);
-    arpentry_tiles_Value_vec_t values = arpentry_tiles_Tile_values(tile);
-
-    /* Find index of "class" key */
-    uint32_t class_key_idx = UINT32_MAX;
     if (keys) {
         size_t nkeys = flatbuffers_string_vec_len(keys);
         for (size_t i = 0; i < nkeys; i++) {
             flatbuffers_string_t k = flatbuffers_string_vec_at(keys, i);
-            if (k && strcmp(k, "class") == 0) {
-                class_key_idx = (uint32_t)i;
-                break;
-            }
+            if (k && strcmp(k, "class") == 0)
+                *class_key_idx = (uint32_t)i;
+            else if (k && strcmp(k, "height") == 0)
+                *height_key_idx = (uint32_t)i;
         }
     }
 
+    return found;
+}
+
+/* Decode all PolygonGeometry features from a named layer. */
+static bool decode_polygon_layer(const void *flatbuf, size_t size,
+                                 const char *layer_name,
+                                 uint32_t height_key_override,
+                                 arpt_surface_data *out) {
+    out->polygons = NULL;
+    out->count = 0;
+
+    uint32_t class_key_idx;
+    uint32_t height_key_idx;
+    arpentry_tiles_Value_vec_t values;
+    arpentry_tiles_Layer_table_t layer = find_layer(
+        flatbuf, size, layer_name, &class_key_idx, &height_key_idx, &values);
+    if (!layer) return true;
+
+    /* Allow caller to suppress height resolution */
+    if (height_key_override != UINT32_MAX)
+        height_key_idx = height_key_override;
+
     arpentry_tiles_Feature_vec_t features =
-        arpentry_tiles_Layer_features(surface_layer);
+        arpentry_tiles_Layer_features(layer);
     if (!features) return true;
 
     size_t n_feat = arpentry_tiles_Feature_vec_len(features);
@@ -168,34 +244,13 @@ bool arpt_decode_surface(const void *flatbuf, size_t size,
         size_t vc = flatbuffers_uint16_vec_len(xv);
         if (flatbuffers_uint16_vec_len(yv) != vc || vc == 0) continue;
 
-        /* Resolve class from properties */
-        arpt_surface_class cls = ARPT_SURFACE_UNKNOWN;
-        if (class_key_idx != UINT32_MAX && values) {
-            arpentry_tiles_Property_vec_t props =
-                arpentry_tiles_Feature_properties(feat);
-            if (props) {
-                size_t np = arpentry_tiles_Property_vec_len(props);
-                for (size_t p = 0; p < np; p++) {
-                    arpentry_tiles_Property_struct_t pr =
-                        arpentry_tiles_Property_vec_at(props, p);
-                    if (pr && pr->key == class_key_idx) {
-                        size_t vi = pr->value;
-                        if (vi < arpentry_tiles_Value_vec_len(values)) {
-                            arpentry_tiles_Value_table_t val =
-                                arpentry_tiles_Value_vec_at(values, vi);
-                            cls = classify_string(
-                                arpentry_tiles_Value_string_value(val));
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-
         out->polygons[count].x = xv;
         out->polygons[count].y = yv;
+        out->polygons[count].z = arpentry_tiles_PolygonGeometry_z(poly);
         out->polygons[count].vertex_count = vc;
-        out->polygons[count].cls = cls;
+        out->polygons[count].cls = resolve_class(feat, class_key_idx, values);
+        out->polygons[count].height_m =
+            resolve_int_property(feat, height_key_idx, values);
         count++;
     }
 
@@ -203,10 +258,89 @@ bool arpt_decode_surface(const void *flatbuf, size_t size,
     return true;
 }
 
+bool arpt_decode_surface(const void *flatbuf, size_t size,
+                         arpt_surface_data *out) {
+    return decode_polygon_layer(flatbuf, size, "surface", UINT32_MAX, out);
+}
+
+bool arpt_decode_buildings(const void *flatbuf, size_t size,
+                           arpt_surface_data *out) {
+    /* Pass 0 placeholder — find_layer resolves "height" key automatically;
+       height_key_override != UINT32_MAX would override, so we pass UINT32_MAX
+       to keep the auto-resolved key. */
+    return decode_polygon_layer(flatbuf, size, "building", UINT32_MAX, out);
+}
+
 void arpt_surface_data_free(arpt_surface_data *data) {
     if (data) {
         free(data->polygons);
         data->polygons = NULL;
+        data->count = 0;
+    }
+}
+
+/* Highway decoding */
+
+bool arpt_decode_highways(const void *flatbuf, size_t size,
+                          arpt_highway_data *out) {
+    out->lines = NULL;
+    out->count = 0;
+
+    uint32_t class_key_idx;
+    uint32_t height_key_idx;
+    arpentry_tiles_Value_vec_t values;
+    arpentry_tiles_Layer_table_t layer =
+        find_layer(flatbuf, size, "highway", &class_key_idx, &height_key_idx,
+                   &values);
+    if (!layer) return true;
+
+    arpentry_tiles_Feature_vec_t features =
+        arpentry_tiles_Layer_features(layer);
+    if (!features) return true;
+
+    size_t n_feat = arpentry_tiles_Feature_vec_len(features);
+    if (n_feat == 0) return true;
+
+    out->lines = malloc(n_feat * sizeof(arpt_highway_line));
+    if (!out->lines) return false;
+
+    size_t count = 0;
+    for (size_t i = 0; i < n_feat; i++) {
+        arpentry_tiles_Feature_table_t feat =
+            arpentry_tiles_Feature_vec_at(features, i);
+        if (!feat) continue;
+
+        if (arpentry_tiles_Feature_geometry_type(feat) !=
+            arpentry_tiles_Geometry_LineGeometry)
+            continue;
+
+        arpentry_tiles_LineGeometry_table_t line =
+            (arpentry_tiles_LineGeometry_table_t)
+                arpentry_tiles_Feature_geometry(feat);
+        if (!line) continue;
+
+        flatbuffers_uint16_vec_t xv = arpentry_tiles_LineGeometry_x(line);
+        flatbuffers_uint16_vec_t yv = arpentry_tiles_LineGeometry_y(line);
+        if (!xv || !yv) continue;
+
+        size_t vc = flatbuffers_uint16_vec_len(xv);
+        if (flatbuffers_uint16_vec_len(yv) != vc || vc < 2) continue;
+
+        out->lines[count].x = xv;
+        out->lines[count].y = yv;
+        out->lines[count].vertex_count = vc;
+        out->lines[count].cls = resolve_class(feat, class_key_idx, values);
+        count++;
+    }
+
+    out->count = count;
+    return true;
+}
+
+void arpt_highway_data_free(arpt_highway_data *data) {
+    if (data) {
+        free(data->lines);
+        data->lines = NULL;
         data->count = 0;
     }
 }

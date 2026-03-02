@@ -1,6 +1,7 @@
 #ifndef ARPENTRY_RENDERER_H
 #define ARPENTRY_RENDERER_H
 
+#include "coords.h"
 #include "math3d.h"
 #include "tile_decode.h"
 #include <webgpu/webgpu.h>
@@ -21,10 +22,14 @@ void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height);
 /* Tile GPU resources */
 
 /** Upload a decoded terrain mesh to GPU buffers.
- *  If surface is non-NULL and has polygons, rasterizes them to a texture. */
+ *  Rasterizes surface, highway, and building features to a texture.
+ *  Extrudes buildings with height_m > 0 into 3D wall + roof geometry. */
 arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
                                          const arpt_terrain_mesh *mesh,
-                                         const arpt_surface_data *surface);
+                                         const arpt_surface_data *surface,
+                                         const arpt_highway_data *highways,
+                                         const arpt_surface_data *buildings,
+                                         arpt_bounds bounds);
 
 /** Update per-tile uniforms (model matrix, bounds, center). */
 void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile, arpt_mat4 model,

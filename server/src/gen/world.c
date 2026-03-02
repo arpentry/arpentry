@@ -1,6 +1,7 @@
 #include "world.h"
 #include "terrain.h"
 #include "surface.h"
+#include "town.h"
 #include "coords.h"
 #include "tile.h"
 #include "tile_builder.h"
@@ -10,25 +11,29 @@
 
 #define PI 3.14159265358979323846
 #define BROTLI_QUALITY 4
+#define M_TO_DEG (1.0 / 111319.5) /* meters to degrees at equator */
 
-/* Build FlatBuffer tile from terrain + surface data. */
+/* Build FlatBuffer tile from terrain + surface + town data. */
 static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
                                    const int32_t *vz, const int8_t *normals,
                                    int nv, const uint32_t *indices,
                                    int num_indices, const ms_patch *patches,
-                                   int patch_count, size_t *fb_size) {
+                                   int patch_count, arpt_bounds bounds,
+                                   size_t *fb_size) {
+    bool has_town = town_overlaps(bounds);
     flatcc_builder_t builder;
     flatcc_builder_init(&builder);
 
     arpentry_tiles_Tile_start_as_root(&builder);
     arpentry_tiles_Tile_version_add(&builder, 1);
 
-    /* Tile-scope property dictionary for surface "class" key */
+    /* Tile-scope property dictionary: keys */
     arpentry_tiles_Tile_keys_start(&builder);
-    arpentry_tiles_Tile_keys_push_create_str(&builder, "class");
+    arpentry_tiles_Tile_keys_push_create_str(&builder, "class");  /* 0 */
+    arpentry_tiles_Tile_keys_push_create_str(&builder, "height"); /* 1 */
     arpentry_tiles_Tile_keys_end(&builder);
 
-    /* Value dictionary: must match SURFACE_VAL_* index order */
+    /* Value dictionary: must match SURFACE_VAL_* / TOWN_VAL_* index order */
 #define PUSH_STR(s)                                                       \
     do {                                                                  \
         arpentry_tiles_Tile_values_push_start(&builder);                  \
@@ -37,15 +42,32 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
         arpentry_tiles_Value_string_value_create_str(&builder, (s));      \
         arpentry_tiles_Tile_values_push_end(&builder);                    \
     } while (0)
+#define PUSH_INT(v)                                                       \
+    do {                                                                  \
+        arpentry_tiles_Tile_values_push_start(&builder);                  \
+        arpentry_tiles_Value_type_add(                                    \
+            &builder, arpentry_tiles_PropertyValueType_Int);              \
+        arpentry_tiles_Value_int_value_add(&builder, (int64_t)(v));       \
+        arpentry_tiles_Tile_values_push_end(&builder);                    \
+    } while (0)
     arpentry_tiles_Tile_values_start(&builder);
-    PUSH_STR("water");     /* 0 */
-    PUSH_STR("desert");    /* 1 */
-    PUSH_STR("forest");    /* 2 */
-    PUSH_STR("grassland"); /* 3 */
-    PUSH_STR("cropland");  /* 4 */
-    PUSH_STR("shrub");     /* 5 */
-    PUSH_STR("ice");       /* 6 */
+    PUSH_STR("water");       /* 0  */
+    PUSH_STR("desert");      /* 1  */
+    PUSH_STR("forest");      /* 2  */
+    PUSH_STR("grassland");   /* 3  */
+    PUSH_STR("cropland");    /* 4  */
+    PUSH_STR("shrub");       /* 5  */
+    PUSH_STR("ice");         /* 6  */
+    PUSH_STR("primary");     /* 7  TOWN_VAL_PRIMARY */
+    PUSH_STR("residential"); /* 8  TOWN_VAL_RESIDENTIAL */
+    PUSH_STR("building");    /* 9  TOWN_VAL_BUILDING */
+    PUSH_INT(5);             /* 10 TOWN_VAL_H5 */
+    PUSH_INT(8);             /* 11 TOWN_VAL_H8 */
+    PUSH_INT(10);            /* 12 TOWN_VAL_H10 */
+    PUSH_INT(12);            /* 13 TOWN_VAL_H12 */
+    PUSH_INT(15);            /* 14 TOWN_VAL_H15 */
     arpentry_tiles_Tile_values_end(&builder);
+#undef PUSH_INT
 #undef PUSH_STR
 
     arpentry_tiles_Tile_layers_start(&builder);
@@ -123,6 +145,109 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
         }
         arpentry_tiles_Layer_features_end(&builder);
         arpentry_tiles_Tile_layers_push_end(&builder);
+
+        /* Layer 2: highway (only when tile overlaps the town) */
+        if (has_town) {
+            const town_road *roads = town_get_roads();
+            int road_count = town_road_count();
+
+            arpentry_tiles_Tile_layers_push_start(&builder);
+            arpentry_tiles_Layer_name_create_str(&builder, "highway");
+
+            arpentry_tiles_Layer_features_start(&builder);
+            for (int ri = 0; ri < road_count; ri++) {
+                const town_road *r = &roads[ri];
+                uint16_t rx[2] = {arpt_quantize_lon(r->lon1, bounds),
+                                  arpt_quantize_lon(r->lon2, bounds)};
+                uint16_t ry[2] = {arpt_quantize_lat(r->lat1, bounds),
+                                  arpt_quantize_lat(r->lat2, bounds)};
+                int32_t rz[2] = {0, 0};
+
+                arpentry_tiles_Layer_features_push_start(&builder);
+                arpentry_tiles_Feature_id_add(&builder,
+                                              (uint64_t)(100000 + ri));
+
+                arpentry_tiles_LineGeometry_ref_t line_ref;
+                arpentry_tiles_LineGeometry_start(&builder);
+                arpentry_tiles_LineGeometry_x_create(&builder, rx, 2);
+                arpentry_tiles_LineGeometry_y_create(&builder, ry, 2);
+                arpentry_tiles_LineGeometry_z_create(&builder, rz, 2);
+                line_ref = arpentry_tiles_LineGeometry_end(&builder);
+                arpentry_tiles_Feature_geometry_LineGeometry_add(&builder,
+                                                                 line_ref);
+
+                arpentry_tiles_Feature_properties_start(&builder);
+                arpentry_tiles_Property_t rprop = {0};
+                rprop.key = 0;
+                rprop.value = (uint32_t)r->cls;
+                arpentry_tiles_Feature_properties_push(&builder, &rprop);
+                arpentry_tiles_Feature_properties_end(&builder);
+
+                arpentry_tiles_Layer_features_push_end(&builder);
+            }
+            arpentry_tiles_Layer_features_end(&builder);
+            arpentry_tiles_Tile_layers_push_end(&builder);
+        }
+
+        /* Layer 3: building (only when tile overlaps the town) */
+        if (has_town) {
+            const town_building *bldgs = town_get_buildings();
+            int bldg_count = town_building_count();
+
+            arpentry_tiles_Tile_layers_push_start(&builder);
+            arpentry_tiles_Layer_name_create_str(&builder, "building");
+
+            arpentry_tiles_Layer_features_start(&builder);
+            for (int bi = 0; bi < bldg_count; bi++) {
+                const town_building *b = &bldgs[bi];
+                double hw = b->w_m * M_TO_DEG * 0.5;
+                double hh = b->h_m * M_TO_DEG * 0.5;
+
+                /* CCW ring (matching surface convention): SW SE NE NW close */
+                uint16_t bx[5], by[5];
+                double lons[5] = {b->lon - hw, b->lon + hw, b->lon + hw,
+                                  b->lon - hw, b->lon - hw};
+                double lats[5] = {b->lat - hh, b->lat - hh, b->lat + hh,
+                                  b->lat + hh, b->lat - hh};
+                for (int vi = 0; vi < 5; vi++) {
+                    bx[vi] = arpt_quantize_lon(lons[vi], bounds);
+                    by[vi] = arpt_quantize_lat(lats[vi], bounds);
+                }
+                int32_t base_z =
+                    arpt_meters_to_mm(terrain_elevation(b->lon, b->lat));
+                int32_t bz[5] = {base_z, base_z, base_z, base_z, base_z};
+                uint32_t ring_off[2] = {0, 5};
+
+                arpentry_tiles_Layer_features_push_start(&builder);
+                arpentry_tiles_Feature_id_add(&builder,
+                                              (uint64_t)(200000 + bi));
+
+                arpentry_tiles_PolygonGeometry_ref_t bpoly_ref;
+                arpentry_tiles_PolygonGeometry_start(&builder);
+                arpentry_tiles_PolygonGeometry_x_create(&builder, bx, 5);
+                arpentry_tiles_PolygonGeometry_y_create(&builder, by, 5);
+                arpentry_tiles_PolygonGeometry_z_create(&builder, bz, 5);
+                arpentry_tiles_PolygonGeometry_ring_offsets_create(
+                    &builder, ring_off, 2);
+                bpoly_ref = arpentry_tiles_PolygonGeometry_end(&builder);
+                arpentry_tiles_Feature_geometry_PolygonGeometry_add(
+                    &builder, bpoly_ref);
+
+                arpentry_tiles_Feature_properties_start(&builder);
+                arpentry_tiles_Property_t bprop = {0};
+                bprop.key = 0;
+                bprop.value = (uint32_t)b->cls;
+                arpentry_tiles_Feature_properties_push(&builder, &bprop);
+                bprop.key = TOWN_KEY_HEIGHT;
+                bprop.value = (uint32_t)b->height_val;
+                arpentry_tiles_Feature_properties_push(&builder, &bprop);
+                arpentry_tiles_Feature_properties_end(&builder);
+
+                arpentry_tiles_Layer_features_push_end(&builder);
+            }
+            arpentry_tiles_Layer_features_end(&builder);
+            arpentry_tiles_Tile_layers_push_end(&builder);
+        }
     }
     arpentry_tiles_Tile_layers_end(&builder);
 
@@ -192,7 +317,7 @@ bool arpt_generate_terrain(int level, int x, int y, uint8_t **out,
     size_t fb_size;
     void *fb =
         build_tile_flatbuffer(vx, vy, vz, normals, nv, indices, num_indices,
-                              patches, patch_count, &fb_size);
+                              patches, patch_count, bounds, &fb_size);
 
     free(vx);
     free(vy);

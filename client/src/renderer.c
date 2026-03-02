@@ -1,4 +1,6 @@
 #include "renderer.h"
+#include "coords.h"
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -165,14 +167,17 @@ typedef struct {
 } surface_color_t;
 
 static const surface_color_t surface_colors[] = {
-    [ARPT_SURFACE_UNKNOWN]   = {0.42f, 0.62f, 0.28f, 1.0f},
-    [ARPT_SURFACE_WATER]     = {0.09f, 0.22f, 0.45f, 1.0f},
-    [ARPT_SURFACE_DESERT]    = {0.78f, 0.68f, 0.47f, 1.0f},
-    [ARPT_SURFACE_FOREST]    = {0.10f, 0.30f, 0.08f, 1.0f},
-    [ARPT_SURFACE_GRASSLAND] = {0.42f, 0.62f, 0.28f, 1.0f},
-    [ARPT_SURFACE_CROPLAND]  = {0.65f, 0.72f, 0.30f, 1.0f},
-    [ARPT_SURFACE_SHRUB]     = {0.50f, 0.52f, 0.32f, 1.0f},
-    [ARPT_SURFACE_ICE]       = {0.88f, 0.93f, 0.98f, 1.0f},
+    [ARPT_SURFACE_UNKNOWN]     = {0.42f, 0.62f, 0.28f, 1.0f},
+    [ARPT_SURFACE_WATER]       = {0.09f, 0.22f, 0.45f, 1.0f},
+    [ARPT_SURFACE_DESERT]      = {0.78f, 0.68f, 0.47f, 1.0f},
+    [ARPT_SURFACE_FOREST]      = {0.10f, 0.30f, 0.08f, 1.0f},
+    [ARPT_SURFACE_GRASSLAND]   = {0.42f, 0.62f, 0.28f, 1.0f},
+    [ARPT_SURFACE_CROPLAND]    = {0.65f, 0.72f, 0.30f, 1.0f},
+    [ARPT_SURFACE_SHRUB]       = {0.50f, 0.52f, 0.32f, 1.0f},
+    [ARPT_SURFACE_ICE]         = {0.88f, 0.93f, 0.98f, 1.0f},
+    [ARPT_SURFACE_PRIMARY]     = {0.35f, 0.33f, 0.30f, 1.0f}, /* dark asphalt */
+    [ARPT_SURFACE_RESIDENTIAL] = {0.45f, 0.43f, 0.40f, 1.0f}, /* lighter road */
+    [ARPT_SURFACE_BUILDING]    = {0.60f, 0.55f, 0.50f, 1.0f}, /* warm gray */
 };
 
 /* Uniform layouts */
@@ -206,6 +211,13 @@ struct arpt_tile_gpu {
     WGPUTextureView surface_view;
     uint32_t index_count;
     arpt_renderer *renderer;
+
+    /* Building extrusion (separate draw call, same pipeline) */
+    WGPUBuffer bldg_buf_xy;
+    WGPUBuffer bldg_buf_z;
+    WGPUBuffer bldg_buf_normals;
+    WGPUBuffer bldg_buf_indices;
+    uint32_t bldg_index_count;
 };
 
 /* Renderer state */
@@ -415,9 +427,100 @@ typedef struct {
     float r, g, b, a;
 } surface_vertex_t;
 
+/* Road half-widths in quantized units.
+ * 1 quantized unit ≈ 0.028 pixels on the 1024-pixel surface texture.
+ * Primary: ~4 px, residential: ~2.5 px. */
+#define ROAD_HW_PRIMARY     140
+#define ROAD_HW_RESIDENTIAL  90
+
+/* Count vertices and triangle-fan indices for a set of surface polygons. */
+static void count_polygon_geom(const arpt_surface_data *data,
+                                size_t *out_verts, size_t *out_indices) {
+    if (!data) return;
+    for (size_t i = 0; i < data->count; i++) {
+        size_t vc = data->polygons[i].vertex_count;
+        if (vc < 3) continue;
+        *out_verts += vc;
+        *out_indices += (vc - 2) * 3;
+    }
+}
+
+/* Append polygon vertices/indices into the combined buffers. */
+static void emit_polygons(const arpt_surface_data *data,
+                           surface_vertex_t *verts, uint32_t *idxs,
+                           size_t *vi, size_t *ii) {
+    if (!data) return;
+    for (size_t i = 0; i < data->count; i++) {
+        const arpt_surface_polygon *p = &data->polygons[i];
+        if (p->vertex_count < 3) continue;
+
+        surface_color_t c = surface_colors[p->cls];
+        uint32_t base = (uint32_t)*vi;
+
+        for (size_t v = 0; v < p->vertex_count; v++) {
+            verts[*vi] = (surface_vertex_t){p->x[v], p->y[v],
+                                             c.r, c.g, c.b, c.a};
+            (*vi)++;
+        }
+        for (size_t v = 1; v + 1 < p->vertex_count; v++) {
+            idxs[(*ii)++] = base;
+            idxs[(*ii)++] = base + (uint32_t)v;
+            idxs[(*ii)++] = base + (uint32_t)v + 1;
+        }
+    }
+}
+
+/* Expand highway line segments to quads and append to the buffers. */
+static void emit_highway_quads(const arpt_highway_data *data,
+                                surface_vertex_t *verts, uint32_t *idxs,
+                                size_t *vi, size_t *ii) {
+    if (!data) return;
+    for (size_t i = 0; i < data->count; i++) {
+        const arpt_highway_line *line = &data->lines[i];
+        int hw = (line->cls == ARPT_SURFACE_PRIMARY) ? ROAD_HW_PRIMARY
+                                                     : ROAD_HW_RESIDENTIAL;
+        surface_color_t c = surface_colors[line->cls];
+
+        for (size_t s = 0; s + 1 < line->vertex_count; s++) {
+            double x1 = line->x[s], y1 = line->y[s];
+            double x2 = line->x[s + 1], y2 = line->y[s + 1];
+            double dx = x2 - x1, dy = y2 - y1;
+            double len = sqrt(dx * dx + dy * dy);
+            if (len < 1.0) continue;
+
+            double nx = (-dy / len) * hw;
+            double ny = (dx / len) * hw;
+
+            /* Clamp to uint16 range */
+#define CLAMP16(v) ((uint16_t)((v) < 0 ? 0 : (v) > 65535 ? 65535 : (v)))
+            uint32_t base = (uint32_t)*vi;
+            verts[*vi] = (surface_vertex_t){CLAMP16(x1 - nx), CLAMP16(y1 - ny),
+                                             c.r, c.g, c.b, c.a};
+            (*vi)++;
+            verts[*vi] = (surface_vertex_t){CLAMP16(x1 + nx), CLAMP16(y1 + ny),
+                                             c.r, c.g, c.b, c.a};
+            (*vi)++;
+            verts[*vi] = (surface_vertex_t){CLAMP16(x2 + nx), CLAMP16(y2 + ny),
+                                             c.r, c.g, c.b, c.a};
+            (*vi)++;
+            verts[*vi] = (surface_vertex_t){CLAMP16(x2 - nx), CLAMP16(y2 - ny),
+                                             c.r, c.g, c.b, c.a};
+            (*vi)++;
+#undef CLAMP16
+
+            idxs[(*ii)++] = base;
+            idxs[(*ii)++] = base + 1;
+            idxs[(*ii)++] = base + 2;
+            idxs[(*ii)++] = base;
+            idxs[(*ii)++] = base + 2;
+            idxs[(*ii)++] = base + 3;
+        }
+    }
+}
+
 static WGPUTexture rasterize_surface(arpt_renderer *r,
-                                     const arpt_surface_data *surface) {
-    /* Create 256x256 RGBA8 offscreen texture */
+                                     const arpt_surface_data *surface,
+                                     const arpt_highway_data *highways) {
     WGPUTextureDescriptor tex_desc = {
         .usage =
             WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding,
@@ -429,18 +532,20 @@ static WGPUTexture rasterize_surface(arpt_renderer *r,
     };
     WGPUTexture tex = wgpuDeviceCreateTexture(r->device, &tex_desc);
 
-    /* Build vertex + index buffers for all polygons as triangle fans */
-    size_t total_verts = 0;
-    size_t total_indices = 0;
-    for (size_t i = 0; i < surface->count; i++) {
-        size_t vc = surface->polygons[i].vertex_count;
-        if (vc < 3) continue;
-        total_verts += vc;
-        total_indices += (vc - 2) * 3; /* triangle fan */
+    /* Count geometry across all layers */
+    size_t total_verts = 0, total_indices = 0;
+    count_polygon_geom(surface, &total_verts, &total_indices);
+
+    /* Highway lines: each segment → 4 verts + 6 indices */
+    if (highways) {
+        for (size_t i = 0; i < highways->count; i++) {
+            size_t segs = highways->lines[i].vertex_count - 1;
+            total_verts += segs * 4;
+            total_indices += segs * 6;
+        }
     }
 
     if (total_verts == 0 || total_indices == 0) {
-        /* No polygons — render a clear pass with default color */
         WGPUTextureView view = wgpuTextureCreateView(tex, NULL);
         WGPUCommandEncoder enc =
             wgpuDeviceCreateCommandEncoder(r->device, NULL);
@@ -477,31 +582,10 @@ static WGPUTexture rasterize_surface(arpt_renderer *r,
         return tex;
     }
 
+    /* Emit in painter's order: surface → highways (buildings are 3D only) */
     size_t vi = 0, ii = 0;
-    for (size_t i = 0; i < surface->count; i++) {
-        const arpt_surface_polygon *p = &surface->polygons[i];
-        if (p->vertex_count < 3) continue;
-
-        surface_color_t c = surface_colors[p->cls];
-        uint32_t base = (uint32_t)vi;
-
-        for (size_t v = 0; v < p->vertex_count; v++) {
-            verts[vi].x = p->x[v];
-            verts[vi].y = p->y[v];
-            verts[vi].r = c.r;
-            verts[vi].g = c.g;
-            verts[vi].b = c.b;
-            verts[vi].a = c.a;
-            vi++;
-        }
-
-        /* Triangle fan: (0, 1, 2), (0, 2, 3), ... */
-        for (size_t v = 1; v + 1 < p->vertex_count; v++) {
-            idxs[ii++] = base;
-            idxs[ii++] = base + (uint32_t)v;
-            idxs[ii++] = base + (uint32_t)v + 1;
-        }
-    }
+    emit_polygons(surface, verts, idxs, &vi, &ii);
+    emit_highway_quads(highways, verts, idxs, &vi, &ii);
 
     WGPUBuffer vbuf = create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex,
                                     verts, vi * sizeof(surface_vertex_t));
@@ -517,7 +601,7 @@ static WGPUTexture rasterize_surface(arpt_renderer *r,
         .view = view,
         .loadOp = WGPULoadOp_Clear,
         .storeOp = WGPUStoreOp_Store,
-        .clearValue = {0.35, 0.52, 0.22, 1.0}, /* default: grass */
+        .clearValue = {0.35, 0.52, 0.22, 1.0},
 #ifdef __EMSCRIPTEN__
         .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
 #endif
@@ -784,15 +868,271 @@ void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height) {
     create_depth_texture(r);
 }
 
+/* Building extrusion */
+
+#define DEG_TO_RAD (M_PI / 180.0)
+
+/* Encode a unit ECEF normal vector to octahedral int8x2. */
+static void encode_octahedral(double nx, double ny, double nz, int8_t *ox,
+                               int8_t *oy) {
+    double ax = fabs(nx), ay = fabs(ny), az = fabs(nz);
+    double sum = ax + ay + az;
+    if (sum < 1e-15) {
+        *ox = 0;
+        *oy = 127;
+        return;
+    }
+    double u = nx / sum;
+    double v = ny / sum;
+    if (nz < 0.0) {
+        double old_u = u, old_v = v;
+        u = (1.0 - fabs(old_v)) * (old_u >= 0.0 ? 1.0 : -1.0);
+        v = (1.0 - fabs(old_u)) * (old_v >= 0.0 ? 1.0 : -1.0);
+    }
+    double cu = u * 127.0;
+    double cv = v * 127.0;
+    *ox = (int8_t)(cu >= 0.0 ? cu + 0.5 : cu - 0.5);
+    *oy = (int8_t)(cv >= 0.0 ? cv + 0.5 : cv - 0.5);
+}
+
+/* A building is "owned" by this tile if its centroid falls within the tile
+ * proper [ARPT_BUFFER, ARPT_BUFFER + ARPT_EXTENT).  Buildings whose centroid
+ * lies in the buffer zone belong to the adjacent tile, avoiding double render. */
+static bool building_in_tile_proper(const arpt_surface_polygon *b) {
+    size_t n = b->vertex_count - 1; /* closed ring: last == first */
+    uint32_t sx = 0, sy = 0;
+    for (size_t v = 0; v < n; v++) {
+        sx += b->x[v];
+        sy += b->y[v];
+    }
+    uint16_t cx = (uint16_t)(sx / n);
+    uint16_t cy = (uint16_t)(sy / n);
+    return cx >= ARPT_BUFFER && cx < (ARPT_BUFFER + ARPT_EXTENT) &&
+           cy >= ARPT_BUFFER && cy < (ARPT_BUFFER + ARPT_EXTENT);
+}
+
+/* Count building extrusion vertices and indices.
+ * For a building with N vertices (closed ring, N-1 unique):
+ *   Wall: (N-1)*4 verts, (N-1)*6 indices
+ *   Roof: (N-1) verts, (N-3)*3 indices */
+static void count_building_extrusion(const arpt_surface_data *buildings,
+                                     size_t *extra_verts,
+                                     size_t *extra_indices) {
+    if (!buildings) return;
+    for (size_t i = 0; i < buildings->count; i++) {
+        const arpt_surface_polygon *b = &buildings->polygons[i];
+        if (b->height_m <= 0 || b->vertex_count < 4) continue;
+        if (!building_in_tile_proper(b)) continue;
+        size_t n = b->vertex_count - 1; /* unique vertices (closed ring) */
+        *extra_verts += n * 4 + n;       /* wall + roof */
+        *extra_indices += n * 6 + (n - 2) * 3;
+    }
+}
+
+/* Emit building wall + roof geometry into pre-allocated arrays.
+ * east/north/up are ENU basis vectors in ECEF at tile center.
+ * base_idx is added to all generated index values. */
+static void emit_building_extrusion(const arpt_surface_data *buildings,
+                                    double east[3], double north[3],
+                                    double up[3], arpt_bounds bounds,
+                                    uint16_t *xy, int32_t *z, int8_t *norms,
+                                    uint32_t *indices, size_t *vi,
+                                    size_t *ii) {
+    if (!buildings) return;
+
+    /* Precompute roof normal in octahedral encoding */
+    int8_t roof_ox, roof_oy;
+    encode_octahedral(up[0], up[1], up[2], &roof_ox, &roof_oy);
+
+    for (size_t bi = 0; bi < buildings->count; bi++) {
+        const arpt_surface_polygon *b = &buildings->polygons[bi];
+        if (b->height_m <= 0 || b->vertex_count < 4) continue;
+        if (!building_in_tile_proper(b)) continue;
+
+        size_t n = b->vertex_count - 1; /* unique vertices */
+        int32_t base_z = (b->z && b->vertex_count > 0) ? b->z[0] : 0;
+        int32_t height_mm = base_z + b->height_m * 1000;
+
+        /* Wall quads: one quad per edge A→B */
+        for (size_t e = 0; e < n; e++) {
+            size_t next = (e + 1) % n;
+            uint16_t ax = b->x[e], ay = b->y[e];
+            uint16_t bx = b->x[next], by = b->y[next];
+
+            /* Outward perpendicular in dequantized tile space.
+             * Edge direction: (dx, dy) in normalized tile coords.
+             * Outward normal (for CCW ring): (dy, -dx). */
+            double dx = arpt_dequantize(bx) - arpt_dequantize(ax);
+            double dy = arpt_dequantize(by) - arpt_dequantize(ay);
+            double len = sqrt(dx * dx + dy * dy);
+            if (len < 1e-12) len = 1e-12;
+
+            /* Perpendicular scaled to approximate lon/lat */
+            double lon_span = bounds.east - bounds.west;
+            double lat_span = bounds.north - bounds.south;
+            double perp_e = (dy / len) * lon_span;
+            double perp_n = (-dx / len) * lat_span;
+            double plen = sqrt(perp_e * perp_e + perp_n * perp_n);
+            if (plen < 1e-12) plen = 1e-12;
+            perp_e /= plen;
+            perp_n /= plen;
+
+            /* Wall normal in ECEF = perp_e * East + perp_n * North */
+            double wnx = perp_e * east[0] + perp_n * north[0];
+            double wny = perp_e * east[1] + perp_n * north[1];
+            double wnz = perp_e * east[2] + perp_n * north[2];
+            double wnlen = sqrt(wnx * wnx + wny * wny + wnz * wnz);
+            if (wnlen > 1e-12) {
+                wnx /= wnlen;
+                wny /= wnlen;
+                wnz /= wnlen;
+            }
+            int8_t wall_ox, wall_oy;
+            encode_octahedral(wnx, wny, wnz, &wall_ox, &wall_oy);
+
+            /* 4 vertices: A_bottom, A_top, B_top, B_bottom */
+            uint32_t base = (uint32_t)*vi;
+
+            xy[*vi * 2] = ax;
+            xy[*vi * 2 + 1] = ay;
+            z[*vi] = base_z;
+            norms[*vi * 2] = wall_ox;
+            norms[*vi * 2 + 1] = wall_oy;
+            (*vi)++;
+
+            xy[*vi * 2] = ax;
+            xy[*vi * 2 + 1] = ay;
+            z[*vi] = height_mm;
+            norms[*vi * 2] = wall_ox;
+            norms[*vi * 2 + 1] = wall_oy;
+            (*vi)++;
+
+            xy[*vi * 2] = bx;
+            xy[*vi * 2 + 1] = by;
+            z[*vi] = height_mm;
+            norms[*vi * 2] = wall_ox;
+            norms[*vi * 2 + 1] = wall_oy;
+            (*vi)++;
+
+            xy[*vi * 2] = bx;
+            xy[*vi * 2 + 1] = by;
+            z[*vi] = base_z;
+            norms[*vi * 2] = wall_ox;
+            norms[*vi * 2 + 1] = wall_oy;
+            (*vi)++;
+
+            /* 2 CW triangles: (bottom_a, top_a, top_b), (bottom_a, top_b,
+             * bottom_b) */
+            indices[(*ii)++] = base;
+            indices[(*ii)++] = base + 1;
+            indices[(*ii)++] = base + 2;
+            indices[(*ii)++] = base;
+            indices[(*ii)++] = base + 2;
+            indices[(*ii)++] = base + 3;
+        }
+
+        /* Roof: triangle fan from vertex 0 (CW winding) */
+        uint32_t roof_base = (uint32_t)*vi;
+        for (size_t v = 0; v < n; v++) {
+            xy[*vi * 2] = b->x[v];
+            xy[*vi * 2 + 1] = b->y[v];
+            z[*vi] = height_mm;
+            norms[*vi * 2] = roof_ox;
+            norms[*vi * 2 + 1] = roof_oy;
+            (*vi)++;
+        }
+        for (size_t v = 1; v + 1 < n; v++) {
+            indices[(*ii)++] = roof_base;
+            indices[(*ii)++] = roof_base + (uint32_t)(v + 1);
+            indices[(*ii)++] = roof_base + (uint32_t)v;
+        }
+    }
+}
+
+/* Upload building extrusion geometry into separate GPU buffers on tile. */
+static void upload_building_extrusion(arpt_tile_gpu *t, arpt_renderer *r,
+                                      const arpt_surface_data *buildings,
+                                      arpt_bounds bounds) {
+    size_t nv = 0, ni = 0;
+    count_building_extrusion(buildings, &nv, &ni);
+    if (nv == 0 || ni == 0) return;
+
+    /* Allocate building-only arrays */
+    uint16_t *xy = malloc(nv * 4);
+    int32_t *z = malloc(nv * sizeof(int32_t));
+    int8_t *norms = calloc(nv, 2);
+    uint32_t *idx = malloc(ni * sizeof(uint32_t));
+    if (!xy || !z || !norms || !idx) {
+        free(xy);
+        free(z);
+        free(norms);
+        free(idx);
+        return;
+    }
+
+    /* Compute ENU basis at tile center */
+    double clon = (bounds.west + bounds.east) * 0.5 * DEG_TO_RAD;
+    double clat = (bounds.south + bounds.north) * 0.5 * DEG_TO_RAD;
+    double slon = sin(clon), clon_c = cos(clon);
+    double slat = sin(clat), clat_c = cos(clat);
+
+    double east_v[3] = {-slon, clon_c, 0.0};
+    double north_v[3] = {-slat * clon_c, -slat * slon, clat_c};
+    double up_v[3] = {clat_c * clon_c, clat_c * slon, slat};
+
+    /* Building indices start at 0 (separate index buffer) */
+    size_t vi = 0, ii = 0;
+    emit_building_extrusion(buildings, east_v, north_v, up_v, bounds, xy, z,
+                            norms, idx, &vi, &ii);
+
+    /* Upload to GPU */
+    t->bldg_buf_xy =
+        create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex, xy, nv * 4);
+    free(xy);
+
+    t->bldg_buf_z = create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex,
+                                  z, nv * sizeof(int32_t));
+    free(z);
+
+    /* Pad normals to 4-byte stride */
+    {
+        int8_t *padded = calloc(nv, 4);
+        if (!padded) {
+            free(norms);
+            return;
+        }
+        for (size_t i = 0; i < nv; i++) {
+            padded[i * 4] = norms[i * 2];
+            padded[i * 4 + 1] = norms[i * 2 + 1];
+        }
+        t->bldg_buf_normals = create_buffer(
+            r->device, r->queue, WGPUBufferUsage_Vertex, padded, nv * 4);
+        free(padded);
+    }
+    free(norms);
+
+    t->bldg_buf_indices = create_buffer(r->device, r->queue,
+                                        WGPUBufferUsage_Index, idx,
+                                        ni * sizeof(uint32_t));
+    free(idx);
+
+    t->bldg_index_count = (uint32_t)ni;
+}
+
 /* Tile GPU */
 
 arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
                                          const arpt_terrain_mesh *mesh,
-                                         const arpt_surface_data *surface) {
+                                         const arpt_surface_data *surface,
+                                         const arpt_highway_data *highways,
+                                         const arpt_surface_data *buildings,
+                                         arpt_bounds bounds) {
     arpt_tile_gpu *t = calloc(1, sizeof(*t));
     if (!t) return NULL;
     t->renderer = r;
     t->index_count = (uint32_t)mesh->index_count;
+
+    /* Upload terrain buffers (original zero-copy path) */
 
     /* Interleave x,y into uint16 pairs for Uint16x2 vertex format */
     size_t vc = mesh->vertex_count;
@@ -835,9 +1175,17 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
         create_buffer(r->device, r->queue, WGPUBufferUsage_Index, mesh->indices,
                       mesh->index_count * sizeof(uint32_t));
 
-    /* Rasterize surface polygons to offscreen texture */
-    if (surface && surface->count > 0) {
-        t->surface_texture = rasterize_surface(r, surface);
+    /* Upload building extrusion as separate buffers */
+    upload_building_extrusion(t, r, buildings, bounds);
+
+    /* Rasterize surface + highway features to offscreen texture */
+    bool has_surface = surface && surface->count > 0;
+    bool has_highways = highways && highways->count > 0;
+    bool has_buildings = buildings && buildings->count > 0;
+    if (has_surface || has_highways) {
+        t->surface_texture =
+            rasterize_surface(r, has_surface ? surface : NULL,
+                              has_highways ? highways : NULL);
         t->surface_view = wgpuTextureCreateView(t->surface_texture, NULL);
     }
 
@@ -883,6 +1231,10 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     if (tile->buf_z) wgpuBufferRelease(tile->buf_z);
     if (tile->buf_normals) wgpuBufferRelease(tile->buf_normals);
     if (tile->buf_indices) wgpuBufferRelease(tile->buf_indices);
+    if (tile->bldg_buf_xy) wgpuBufferRelease(tile->bldg_buf_xy);
+    if (tile->bldg_buf_z) wgpuBufferRelease(tile->bldg_buf_z);
+    if (tile->bldg_buf_normals) wgpuBufferRelease(tile->bldg_buf_normals);
+    if (tile->bldg_buf_indices) wgpuBufferRelease(tile->bldg_buf_indices);
     if (tile->uniform_buf) wgpuBufferRelease(tile->uniform_buf);
     if (tile->bind_group) wgpuBindGroupRelease(tile->bind_group);
     if (tile->surface_view) wgpuTextureViewRelease(tile->surface_view);
@@ -973,6 +1325,8 @@ void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view) {
 
 void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
     wgpuRenderPassEncoderSetBindGroup(r->pass, 1, tile->bind_group, 0, NULL);
+
+    /* Draw terrain mesh */
     wgpuRenderPassEncoderSetVertexBuffer(r->pass, 0, tile->buf_xy, 0,
                                          wgpuBufferGetSize(tile->buf_xy));
     wgpuRenderPassEncoderSetVertexBuffer(r->pass, 1, tile->buf_z, 0,
@@ -983,6 +1337,24 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
                                         WGPUIndexFormat_Uint32, 0,
                                         wgpuBufferGetSize(tile->buf_indices));
     wgpuRenderPassEncoderDrawIndexed(r->pass, tile->index_count, 1, 0, 0, 0);
+
+    /* Draw extruded buildings (same pipeline, same bind group) */
+    if (tile->bldg_index_count > 0) {
+        wgpuRenderPassEncoderSetVertexBuffer(
+            r->pass, 0, tile->bldg_buf_xy, 0,
+            wgpuBufferGetSize(tile->bldg_buf_xy));
+        wgpuRenderPassEncoderSetVertexBuffer(
+            r->pass, 1, tile->bldg_buf_z, 0,
+            wgpuBufferGetSize(tile->bldg_buf_z));
+        wgpuRenderPassEncoderSetVertexBuffer(
+            r->pass, 2, tile->bldg_buf_normals, 0,
+            wgpuBufferGetSize(tile->bldg_buf_normals));
+        wgpuRenderPassEncoderSetIndexBuffer(
+            r->pass, tile->bldg_buf_indices, WGPUIndexFormat_Uint32, 0,
+            wgpuBufferGetSize(tile->bldg_buf_indices));
+        wgpuRenderPassEncoderDrawIndexed(r->pass, tile->bldg_index_count, 1, 0,
+                                         0, 0);
+    }
 }
 
 void arpt_renderer_set_overlay(arpt_renderer *r, arpt_overlay_fn fn,
