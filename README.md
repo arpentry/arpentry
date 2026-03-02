@@ -1,12 +1,18 @@
 # Arpentry
 
-A system for stylized 3D globe maps, written in C.
+An experimental stylized 3D globe maps, written in C by Claude.
 
 Three components:
 
 - **Tile format** (`.arpt`) — Compact binary tiles using FlatBuffers (zero-copy) and Brotli (compression). Carries geometry and properties for client-side styling; meshes can embed lightweight materials.
 - **Tile server** — Produces `.arpt` tiles from source geodata. HTTP serving, procedural terrain, demo tiles.
 - **Tile viewer** — WebGPU 3D globe renderer. Native (macOS/Linux/Windows via GLFW) and WebAssembly (via Emscripten).
+
+## Screenshots
+
+![Arpentry Native](images/screenshot-1.png)
+
+![Arpentry Web](images/screenshot-2.png)
 
 ## Building
 
@@ -52,6 +58,7 @@ The web build is a cross-compilation. FlatBuffers schemas must be compiled by a 
 | `docs/FORMAT.md` | Tile format specification: tiling scheme, geometry encoding, properties, coordinate system |
 | `docs/VIEWER.md` | Viewer specification: coordinate pipeline, tile management, rendering |
 | `docs/CONTROL.md` | Map control specification: pan, zoom, rotate, inertia, fly-to, input bindings |
+| `docs/MOTIVATION.md` | Project motivation and background |
 | `docs/DESIGN.md` | Design principles: deep modules, information hiding, error handling |
 | `docs/STYLE.md` | C coding style guide |
 
