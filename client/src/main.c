@@ -107,11 +107,24 @@ static void sync_canvas_size(void) {
     int phys_w = (int)(css_w * dpr);
     int phys_h = (int)(css_h * dpr);
 
+    /* Sync GLFW's internal window size to the actual CSS display size.
+       glfwCreateWindow(800,600) leaves GLFW.active.width/height at 800×600
+       even though the flex-layout canvas may be much larger.  Emscripten's
+       GLFW3 port scales cursor coordinates by (GLFW.active.width / rect.width),
+       so a stale value makes glfwGetCursorPos return wrong coordinates.
+       Calling glfwSetWindowSize updates GLFW's internal bookkeeping (and
+       briefly sets canvas.width = css_w); we then override the drawing
+       buffer to physical pixels right after. */
+    static int s_css_w, s_css_h;
+    if (s_css_w != css_w || s_css_h != css_h) {
+        s_css_w = css_w;
+        s_css_h = css_h;
+        glfwSetWindowSize(app.window, css_w, css_h);
+    }
+
     /* Pin the canvas drawing buffer to physical pixels.  Browsers display the
        canvas at the CSS size regardless of canvas.width/height, so this gives
-       crisp 1:1 physical-pixel rendering on HiDPI screens.  We set this every
-       frame because glfwSetWindowSize (called elsewhere) resets it to CSS size.
-     */
+       crisp 1:1 physical-pixel rendering on HiDPI screens. */
     EM_ASM(
         {
             var c = document.getElementById('canvas');
@@ -122,8 +135,8 @@ static void sync_canvas_size(void) {
         },
         phys_w, phys_h);
 
-    /* Camera viewport lives in CSS-pixel space so it matches glfwGetCursorPos.
-     */
+    /* Camera viewport lives in CSS-pixel space so it matches glfwGetCursorPos
+       (now correctly reporting CSS pixels after the glfwSetWindowSize above). */
     if (arpt_camera_vp_width(app.camera) != css_w ||
         arpt_camera_vp_height(app.camera) != css_h)
         arpt_camera_set_viewport(app.camera, css_w, css_h);
