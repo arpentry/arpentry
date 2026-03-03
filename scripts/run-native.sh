@@ -21,6 +21,7 @@ pkill -x arpentry_client 2>/dev/null || true
 # ── Ensure tile directory exists ─────────────────────────────────────────────
 
 mkdir -p "$TILE_DIR"
+cp -n "$ROOT_DIR/style.json" "$TILE_DIR/style.json" 2>/dev/null || true
 
 # ── Start server in background ───────────────────────────────────────────────
 

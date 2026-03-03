@@ -1,0 +1,42 @@
+namespace arpentry.tiles;
+file_identifier "arts";
+file_extension "arts";
+
+enum GeometryType : uint8 {
+  Point   = 0,
+  Line    = 1,
+  Polygon = 2,
+  Mesh    = 3
+}
+
+struct Bounds {
+  west:  float64;
+  south: float64;
+  east:  float64;
+  north: float64;
+}
+
+struct ElevationRange {
+  min: float64;
+  max: float64;
+}
+
+table LayerInfo {
+  name:           string (required);
+  geometry_types: [GeometryType];
+  min_level:      uint8;
+  max_level:      uint8;
+}
+
+table Tileset {
+  version:         uint16 = 1;
+  name:            string;
+  bounds:          Bounds;
+  elevation_range: ElevationRange;
+  min_level:       uint8;
+  max_level:       uint8;
+  root_error:      float64;
+  layers:          [LayerInfo];
+}
+
+root_type Tileset;

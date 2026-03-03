@@ -11,28 +11,8 @@
 #include "highway.wgsl.h"
 #include "wireframe.wgsl.h"
 
-/* Surface color table */
-
 #define SURFACE_TEX_SIZE 2048
 #define SURFACE_MARGIN 0.0625 /* = SURFACE_BUFFER / SURFACE_GRID = 8/128 */
-
-typedef struct {
-    float r, g, b, a;
-} surface_color_t;
-
-static const surface_color_t surface_colors[] = {
-    [ARPT_SURFACE_UNKNOWN]     = {0.42f, 0.62f, 0.28f, 1.0f},
-    [ARPT_SURFACE_WATER]       = {0.09f, 0.22f, 0.45f, 1.0f},
-    [ARPT_SURFACE_DESERT]      = {0.78f, 0.68f, 0.47f, 1.0f},
-    [ARPT_SURFACE_FOREST]      = {0.10f, 0.30f, 0.08f, 1.0f},
-    [ARPT_SURFACE_GRASSLAND]   = {0.42f, 0.62f, 0.28f, 1.0f},
-    [ARPT_SURFACE_CROPLAND]    = {0.65f, 0.72f, 0.30f, 1.0f},
-    [ARPT_SURFACE_SHRUB]       = {0.50f, 0.52f, 0.32f, 1.0f},
-    [ARPT_SURFACE_ICE]         = {0.88f, 0.93f, 0.98f, 1.0f},
-    [ARPT_SURFACE_PRIMARY]     = {0.35f, 0.33f, 0.30f, 1.0f}, /* dark asphalt */
-    [ARPT_SURFACE_RESIDENTIAL] = {0.45f, 0.43f, 0.40f, 1.0f}, /* lighter road */
-    [ARPT_SURFACE_BUILDING]    = {0.82f, 0.77f, 0.70f, 1.0f}, /* warm sandstone */
-};
 
 /* Uniform layouts */
 
@@ -82,6 +62,7 @@ struct arpt_renderer {
     WGPUQueue queue;
     WGPUTextureFormat surface_format;
     uint32_t width, height;
+    arpt_style style;
 
     WGPURenderPipeline pipeline;
     WGPUBindGroupLayout global_bgl;
@@ -451,11 +432,7 @@ typedef struct {
     float hw, seg_len;     /* half-width and segment length */
 } highway_vertex_t;
 
-/* Road half-widths in quantized units.
- * 1 quantized unit ≈ 0.028 pixels on the 1024-pixel surface texture.
- * Primary: ~4 px, residential: ~2.5 px. */
-#define ROAD_HW_PRIMARY     140
-#define ROAD_HW_RESIDENTIAL  90
+/* Road half-widths come from the style (stroke_widths[cls]). */
 
 /* Count vertices and triangle-fan indices for a set of surface polygons. */
 static void count_polygon_geom(const arpt_surface_data *data,
@@ -471,6 +448,7 @@ static void count_polygon_geom(const arpt_surface_data *data,
 
 /* Append polygon vertices/indices into the combined buffers. */
 static void emit_polygons(const arpt_surface_data *data,
+                           const arpt_style *style,
                            surface_vertex_t *verts, uint32_t *idxs,
                            size_t *vi, size_t *ii) {
     if (!data) return;
@@ -478,12 +456,12 @@ static void emit_polygons(const arpt_surface_data *data,
         const arpt_surface_polygon *p = &data->polygons[i];
         if (p->vertex_count < 3) continue;
 
-        surface_color_t c = surface_colors[p->cls];
+        const float *c = style->colors[p->cls];
         uint32_t base = (uint32_t)*vi;
 
         for (size_t v = 0; v < p->vertex_count; v++) {
             verts[*vi] = (surface_vertex_t){p->x[v], p->y[v],
-                                             c.r, c.g, c.b, c.a};
+                                             c[0], c[1], c[2], c[3]};
             (*vi)++;
         }
         for (size_t v = 1; v + 1 < p->vertex_count; v++) {
@@ -496,14 +474,14 @@ static void emit_polygons(const arpt_surface_data *data,
 
 /* Expand highway segments to SDF quads (extended for round caps). */
 static void emit_highway_sdf_quads(const arpt_highway_data *data,
+                                    const arpt_style *style,
                                     highway_vertex_t *verts, uint32_t *idxs,
                                     size_t *vi, size_t *ii) {
     if (!data) return;
     for (size_t i = 0; i < data->count; i++) {
         const arpt_highway_line *line = &data->lines[i];
-        double hw = (line->cls == ARPT_SURFACE_PRIMARY) ? ROAD_HW_PRIMARY
-                                                        : ROAD_HW_RESIDENTIAL;
-        surface_color_t c = surface_colors[line->cls];
+        double hw = style->stroke_widths[line->cls];
+        const float *c = style->colors[line->cls];
 
         for (size_t s = 0; s + 1 < line->vertex_count; s++) {
             double x1 = line->x[s], y1 = line->y[s];
@@ -524,22 +502,22 @@ static void emit_highway_sdf_quads(const arpt_highway_data *data,
             uint32_t base = (uint32_t)*vi;
             verts[*vi] = (highway_vertex_t){
                 CLAMP16(ex1 - nx * hw), CLAMP16(ey1 - ny * hw),
-                c.r, c.g, c.b, c.a,
+                c[0], c[1], c[2], c[3],
                 (float)(-hw), (float)(-hw), (float)hw, (float)len};
             (*vi)++;
             verts[*vi] = (highway_vertex_t){
                 CLAMP16(ex1 + nx * hw), CLAMP16(ey1 + ny * hw),
-                c.r, c.g, c.b, c.a,
+                c[0], c[1], c[2], c[3],
                 (float)(-hw), (float)(hw), (float)hw, (float)len};
             (*vi)++;
             verts[*vi] = (highway_vertex_t){
                 CLAMP16(ex2 + nx * hw), CLAMP16(ey2 + ny * hw),
-                c.r, c.g, c.b, c.a,
+                c[0], c[1], c[2], c[3],
                 (float)(len + hw), (float)(hw), (float)hw, (float)len};
             (*vi)++;
             verts[*vi] = (highway_vertex_t){
                 CLAMP16(ex2 - nx * hw), CLAMP16(ey2 - ny * hw),
-                c.r, c.g, c.b, c.a,
+                c[0], c[1], c[2], c[3],
                 (float)(len + hw), (float)(-hw), (float)hw, (float)len};
             (*vi)++;
 #undef CLAMP16
@@ -592,7 +570,10 @@ static WGPUTexture rasterize_surface(arpt_renderer *r,
             .view = view,
             .loadOp = WGPULoadOp_Clear,
             .storeOp = WGPUStoreOp_Store,
-            .clearValue = {0.35, 0.52, 0.22, 1.0},
+            .clearValue = {r->style.colors[ARPT_SURFACE_UNKNOWN][0],
+                          r->style.colors[ARPT_SURFACE_UNKNOWN][1],
+                          r->style.colors[ARPT_SURFACE_UNKNOWN][2],
+                          r->style.colors[ARPT_SURFACE_UNKNOWN][3]},
 #ifdef __EMSCRIPTEN__
             .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
 #endif
@@ -621,7 +602,7 @@ static WGPUTexture rasterize_surface(arpt_renderer *r,
         uint32_t *pi = malloc(poly_indices * sizeof(uint32_t));
         if (pv && pi) {
             size_t vi = 0, ii = 0;
-            emit_polygons(surface, pv, pi, &vi, &ii);
+            emit_polygons(surface, &r->style, pv, pi, &vi, &ii);
             poly_vb_size = vi * sizeof(surface_vertex_t);
             poly_vbuf = create_buffer(r->device, r->queue,
                                       WGPUBufferUsage_Vertex, pv,
@@ -643,7 +624,7 @@ static WGPUTexture rasterize_surface(arpt_renderer *r,
         uint32_t *hi = malloc(hw_indices * sizeof(uint32_t));
         if (hv && hi) {
             size_t vi = 0, ii = 0;
-            emit_highway_sdf_quads(highways, hv, hi, &vi, &ii);
+            emit_highway_sdf_quads(highways, &r->style, hv, hi, &vi, &ii);
             hw_vb_size = vi * sizeof(highway_vertex_t);
             hw_vbuf = create_buffer(r->device, r->queue,
                                     WGPUBufferUsage_Vertex, hv,
@@ -664,7 +645,10 @@ static WGPUTexture rasterize_surface(arpt_renderer *r,
         .view = view,
         .loadOp = WGPULoadOp_Clear,
         .storeOp = WGPUStoreOp_Store,
-        .clearValue = {0.35, 0.52, 0.22, 1.0},
+        .clearValue = {r->style.colors[ARPT_SURFACE_UNKNOWN][0],
+                       r->style.colors[ARPT_SURFACE_UNKNOWN][1],
+                       r->style.colors[ARPT_SURFACE_UNKNOWN][2],
+                       r->style.colors[ARPT_SURFACE_UNKNOWN][3]},
 #ifdef __EMSCRIPTEN__
         .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
 #endif
@@ -722,13 +706,14 @@ static WGPUTexture rasterize_surface(arpt_renderer *r,
 
 arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
                                     WGPUTextureFormat format, uint32_t width,
-                                    uint32_t height) {
+                                    uint32_t height, const arpt_style *style) {
     arpt_renderer *r = calloc(1, sizeof(*r));
     if (!r) return NULL;
 
     r->device = device;
     r->queue = queue;
     r->surface_format = format;
+    r->style = *style;
     r->width = width;
     r->height = height;
 
@@ -783,7 +768,7 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     };
     r->surface_sampler = wgpuDeviceCreateSampler(device, &samp_desc);
 
-    /* Default 1x1 grass-colored surface texture for tiles without surface data */
+    /* Default 1x1 surface texture from style background color */
     {
         WGPUTextureDescriptor dt = {
             .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
@@ -796,14 +781,18 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
         r->default_surface_tex = wgpuDeviceCreateTexture(device, &dt);
         r->default_surface_view =
             wgpuTextureCreateView(r->default_surface_tex, NULL);
-        uint8_t pixel[4] = {89, 133, 56, 255}; /* 0.35, 0.52, 0.22 */
+        const float *bg = r->style.colors[ARPT_SURFACE_UNKNOWN];
+        uint8_t pixel[4] = {(uint8_t)(bg[0] * 255.0f + 0.5f),
+                            (uint8_t)(bg[1] * 255.0f + 0.5f),
+                            (uint8_t)(bg[2] * 255.0f + 0.5f),
+                            (uint8_t)(bg[3] * 255.0f + 0.5f)};
         WGPUImageCopyTexture dst = {.texture = r->default_surface_tex};
         WGPUTextureDataLayout layout = {.bytesPerRow = 4, .rowsPerImage = 1};
         WGPUExtent3D extent = {1, 1, 1};
         wgpuQueueWriteTexture(queue, &dst, pixel, 4, &layout, &extent);
     }
 
-    /* 1x1 gray building texture */
+    /* 1x1 building material texture from style */
     {
         WGPUTextureDescriptor dt = {
             .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
@@ -815,7 +804,11 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
         };
         r->building_tex = wgpuDeviceCreateTexture(device, &dt);
         r->building_view = wgpuTextureCreateView(r->building_tex, NULL);
-        uint8_t pixel[4] = {189, 186, 182, 255}; /* light neutral gray */
+        const float *bm = r->style.building;
+        uint8_t pixel[4] = {(uint8_t)(bm[0] * 255.0f + 0.5f),
+                            (uint8_t)(bm[1] * 255.0f + 0.5f),
+                            (uint8_t)(bm[2] * 255.0f + 0.5f),
+                            (uint8_t)(bm[3] * 255.0f + 0.5f)};
         WGPUImageCopyTexture dst = {.texture = r->building_tex};
         WGPUTextureDataLayout layout = {.bytesPerRow = 4, .rowsPerImage = 1};
         WGPUExtent3D extent = {1, 1, 1};

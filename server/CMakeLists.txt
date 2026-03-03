@@ -32,7 +32,7 @@ target_include_directories(arpentry_server PRIVATE
 )
 
 find_package(Threads REQUIRED)
-target_link_libraries(arpentry_server PRIVATE arpentry_common Threads::Threads)
+target_link_libraries(arpentry_server PRIVATE arpentry_common json_c Threads::Threads)
 
 # ── Tests ──────────────────────────────────────────────────────────────
 
@@ -49,7 +49,7 @@ add_dependencies(test_http flatcc_generate)
 target_include_directories(test_http PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-target_link_libraries(test_http PRIVATE arpentry_common unity)
+target_link_libraries(test_http PRIVATE arpentry_common json_c unity)
 add_test(NAME test_http COMMAND test_http)
 
 add_executable(test_terrain_gen tests/test_terrain_gen.c src/gen/noise.c src/gen/terrain.c src/gen/surface.c src/gen/town.c src/gen/world.c)

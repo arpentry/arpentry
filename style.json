@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "name": "Default",
+  "background": [107, 158, 71, 255],
+  "building": [189, 186, 182, 255],
+  "layers": [
+    {
+      "source_layer": "surface",
+      "paint": [
+        { "class": "water",     "color": [23, 56, 115, 255] },
+        { "class": "desert",    "color": [199, 173, 120, 255] },
+        { "class": "forest",    "color": [26, 77, 20, 255] },
+        { "class": "grassland", "color": [107, 158, 71, 255] },
+        { "class": "cropland",  "color": [166, 184, 77, 255] },
+        { "class": "shrub",     "color": [128, 133, 82, 255] },
+        { "class": "ice",       "color": [224, 237, 250, 255] }
+      ]
+    },
+    {
+      "source_layer": "highway",
+      "paint": [
+        { "class": "primary",     "color": [89, 84, 77, 255],   "width": 140 },
+        { "class": "residential", "color": [115, 110, 102, 255], "width": 90 }
+      ]
+    },
+    {
+      "source_layer": "building",
+      "paint": [
+        { "class": "building", "color": [209, 196, 179, 255] }
+      ]
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <string.h>
 #include <webgpu/webgpu.h>
 #include <GLFW/glfw3.h>
 #include "glfw3webgpu.h"
@@ -8,12 +9,23 @@
 #include "camera.h"
 #include "control.h"
 #include "renderer.h"
+#include "style.h"
 #include "tile_manager.h"
 #include "ui.h"
+#include "style_reader.h"
+#include "style_verifier.h"
+#include "tileset_reader.h"
+#include "tileset_verifier.h"
+
+#ifndef __EMSCRIPTEN__
+#include "http.h"
+#include "tile.h"
+#endif
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #include <emscripten/html5.h> /* emscripten_get_element_css_size */
+#include <emscripten/fetch.h>
 #endif
 
 /* Constants */
@@ -290,6 +302,190 @@ static bool ui_event_filter(int button, int action, double sx, double sy,
     return true;
 }
 
+/* Fetch and parse tileset.arts, filling config fields from the FlatBuffer.
+   base_url, max_tiles, and max_concurrent must be set by the caller. */
+
+static bool fetch_tileset(const char *base_url,
+                          arpt_tile_manager_config *config) {
+    char url[512];
+    int n = snprintf(url, sizeof(url), "%s/tileset.arts", base_url);
+    if (n < 0 || (size_t)n >= sizeof(url)) return false;
+
+    uint8_t *buf = NULL;
+    size_t buf_size = 0;
+
+#ifdef __EMSCRIPTEN__
+    emscripten_fetch_attr_t attr;
+    emscripten_fetch_attr_init(&attr);
+    strcpy(attr.requestMethod, "GET");
+    attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_SYNCHRONOUS;
+    emscripten_fetch_t *fetch = emscripten_fetch(&attr, url);
+    if (!fetch || fetch->status != 200) {
+        if (fetch) emscripten_fetch_close(fetch);
+        return false;
+    }
+    buf_size = (size_t)fetch->numBytes;
+    buf = malloc(buf_size);
+    if (!buf) {
+        emscripten_fetch_close(fetch);
+        return false;
+    }
+    memcpy(buf, fetch->data, buf_size);
+    emscripten_fetch_close(fetch);
+#else
+    arpt_http_response resp;
+    if (!arpt_http_get(url, &resp) || resp.status != 200) {
+        free(resp.body);
+        return false;
+    }
+    buf = resp.body;
+    buf_size = resp.body_size;
+#endif
+
+    int rc = arpentry_tiles_Tileset_verify_as_root_with_identifier(
+        buf, buf_size, "arts");
+    if (rc != 0) {
+        fprintf(stderr, "tileset: verification failed (rc=%d)\n", rc);
+        free(buf);
+        return false;
+    }
+
+    arpentry_tiles_Tileset_table_t ts = arpentry_tiles_Tileset_as_root(buf);
+    config->root_error = arpentry_tiles_Tileset_root_error(ts);
+    config->min_level = arpentry_tiles_Tileset_min_level(ts);
+    config->max_level = arpentry_tiles_Tileset_max_level(ts);
+
+    flatbuffers_string_t name = arpentry_tiles_Tileset_name(ts);
+    if (name)
+        printf("Tileset: %s (levels %d-%d, root_error=%.0f)\n", name,
+               config->min_level, config->max_level, config->root_error);
+
+    free(buf);
+    return true;
+}
+
+/* Map a class name string to surface class enum. */
+
+static arpt_surface_class class_from_name(const char *s) {
+    if (!s) return ARPT_SURFACE_UNKNOWN;
+    if (strcmp(s, "water")       == 0) return ARPT_SURFACE_WATER;
+    if (strcmp(s, "desert")      == 0) return ARPT_SURFACE_DESERT;
+    if (strcmp(s, "forest")      == 0) return ARPT_SURFACE_FOREST;
+    if (strcmp(s, "grassland")   == 0) return ARPT_SURFACE_GRASSLAND;
+    if (strcmp(s, "cropland")    == 0) return ARPT_SURFACE_CROPLAND;
+    if (strcmp(s, "shrub")       == 0) return ARPT_SURFACE_SHRUB;
+    if (strcmp(s, "ice")         == 0) return ARPT_SURFACE_ICE;
+    if (strcmp(s, "primary")     == 0) return ARPT_SURFACE_PRIMARY;
+    if (strcmp(s, "residential") == 0) return ARPT_SURFACE_RESIDENTIAL;
+    if (strcmp(s, "building")    == 0) return ARPT_SURFACE_BUILDING;
+    return ARPT_SURFACE_UNKNOWN;
+}
+
+/* Fetch and parse style.arss, filling the arpt_style struct.
+   Returns true on success. */
+
+static bool fetch_style(const char *base_url, arpt_style *style) {
+    char url[512];
+    int n = snprintf(url, sizeof(url), "%s/style.arss", base_url);
+    if (n < 0 || (size_t)n >= sizeof(url)) return false;
+
+    uint8_t *buf = NULL;
+    size_t buf_size = 0;
+
+#ifdef __EMSCRIPTEN__
+    emscripten_fetch_attr_t attr;
+    emscripten_fetch_attr_init(&attr);
+    strcpy(attr.requestMethod, "GET");
+    attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_SYNCHRONOUS;
+    emscripten_fetch_t *fetch = emscripten_fetch(&attr, url);
+    if (!fetch || fetch->status != 200) {
+        if (fetch) emscripten_fetch_close(fetch);
+        return false;
+    }
+    buf_size = (size_t)fetch->numBytes;
+    buf = malloc(buf_size);
+    if (!buf) {
+        emscripten_fetch_close(fetch);
+        return false;
+    }
+    memcpy(buf, fetch->data, buf_size);
+    emscripten_fetch_close(fetch);
+#else
+    arpt_http_response resp;
+    if (!arpt_http_get(url, &resp) || resp.status != 200) {
+        free(resp.body);
+        return false;
+    }
+    buf = resp.body;
+    buf_size = resp.body_size;
+#endif
+
+    int rc = arpentry_tiles_Style_verify_as_root_with_identifier(
+        buf, buf_size, "arss");
+    if (rc != 0) {
+        fprintf(stderr, "style: verification failed (rc=%d)\n", rc);
+        free(buf);
+        return false;
+    }
+
+    arpentry_tiles_Style_table_t st = arpentry_tiles_Style_as_root(buf);
+
+    /* Parse background → colors[ARPT_SURFACE_UNKNOWN] */
+    const arpentry_tiles_RGBA_t *bg = arpentry_tiles_Style_background(st);
+    if (bg) {
+        style->colors[ARPT_SURFACE_UNKNOWN][0] = bg->r / 255.0f;
+        style->colors[ARPT_SURFACE_UNKNOWN][1] = bg->g / 255.0f;
+        style->colors[ARPT_SURFACE_UNKNOWN][2] = bg->b / 255.0f;
+        style->colors[ARPT_SURFACE_UNKNOWN][3] = bg->a / 255.0f;
+    }
+
+    /* Parse building extrusion material */
+    const arpentry_tiles_RGBA_t *bm = arpentry_tiles_Style_building(st);
+    if (bm) {
+        style->building[0] = bm->r / 255.0f;
+        style->building[1] = bm->g / 255.0f;
+        style->building[2] = bm->b / 255.0f;
+        style->building[3] = bm->a / 255.0f;
+    }
+
+    /* Parse layers */
+    arpentry_tiles_LayerStyle_vec_t layers = arpentry_tiles_Style_layers(st);
+    size_t layer_count = layers ? arpentry_tiles_LayerStyle_vec_len(layers) : 0;
+    for (size_t i = 0; i < layer_count; i++) {
+        arpentry_tiles_LayerStyle_table_t layer =
+            arpentry_tiles_LayerStyle_vec_at(layers, i);
+        arpentry_tiles_PaintEntry_vec_t paint =
+            arpentry_tiles_LayerStyle_paint(layer);
+        size_t paint_count = paint ? arpentry_tiles_PaintEntry_vec_len(paint) : 0;
+        for (size_t j = 0; j < paint_count; j++) {
+            arpentry_tiles_PaintEntry_table_t entry =
+                arpentry_tiles_PaintEntry_vec_at(paint, j);
+            flatbuffers_string_t cls_str =
+                arpentry_tiles_PaintEntry_class(entry);
+            arpt_surface_class cls = class_from_name(cls_str);
+            if (cls == ARPT_SURFACE_UNKNOWN) continue;
+
+            const arpentry_tiles_RGBA_t *c =
+                arpentry_tiles_PaintEntry_color(entry);
+            if (c) {
+                style->colors[cls][0] = c->r / 255.0f;
+                style->colors[cls][1] = c->g / 255.0f;
+                style->colors[cls][2] = c->b / 255.0f;
+                style->colors[cls][3] = c->a / 255.0f;
+            }
+            float w = arpentry_tiles_PaintEntry_width(entry);
+            if (w > 0) style->stroke_widths[cls] = w;
+        }
+    }
+
+    flatbuffers_string_t name = arpentry_tiles_Style_name(st);
+    if (name)
+        printf("Style: %s\n", name);
+
+    free(buf);
+    return true;
+}
+
 /* Init after device */
 
 static void init_viewer(void) {
@@ -305,20 +501,29 @@ static void init_viewer(void) {
        them equal. */
     arpt_camera_set_viewport(app.camera, win_w, win_h);
 
+    /* Fetch style (before renderer creation) */
+    const char *base_url = "http://localhost:8090";
+    arpt_style style;
+    arpt_style_defaults(&style);
+    if (!fetch_style(base_url, &style))
+        fprintf(stderr, "Warning: style.arss fetch failed, using defaults\n");
+
     /* Renderer */
     app.renderer =
         arpt_renderer_create(app.device, app.queue, app.surface_format,
-                             (uint32_t)fb_w, (uint32_t)fb_h);
+                             (uint32_t)fb_w, (uint32_t)fb_h, &style);
 
-    /* Tile manager for server-provided tiles */
+    /* Tile manager: fetch tileset metadata, then create manager */
     arpt_tile_manager_config tm_config = {
-        .base_url = "http://localhost:8090",
+        .base_url = base_url,
         .root_error = 200000.0,
         .min_level = 0,
         .max_level = 19,
         .max_tiles = 200,
         .max_concurrent = 6,
     };
+    if (!fetch_tileset(base_url, &tm_config))
+        fprintf(stderr, "Warning: tileset.arts fetch failed, using defaults\n");
     app.tile_manager = arpt_tile_manager_create(tm_config, app.renderer);
 
     /* Diagnostic: verify camera position */

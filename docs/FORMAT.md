@@ -63,37 +63,31 @@ lat_north = lat_south + (180 / 2^level)
 
 ### Tileset Metadata
 
-A flat JSON file (no recursive children tree) describes the tileset:
+A binary `.arts` file (FlatBuffer with identifier `"arts"`, Brotli-compressed) describes the tileset. The schema is defined in Section 6.2.
 
-```json
-{
-  "arpentry_tiles": "1.0",
-  "name": "Example Tileset",
-  "bounds": { "west": -180.0, "south": -90.0, "east": 180.0, "north": 90.0 },
-  "elevation_range": { "min": -500.0, "max": 4800.0 },
-  "min_level": 0,
-  "max_level": 16,
-  "geometric_error": 50000.0,
-  "tile_url_template": "{base_url}/{level}/{x}/{y}.arpt",
-  "layers": [
-    { "name": "terrain",  "geometry_types": ["Mesh"],    "min_level": 0,  "max_level": 16 },
-    { "name": "surface",  "geometry_types": ["Polygon"], "min_level": 0,  "max_level": 16 },
-    { "name": "highway",  "geometry_types": ["Line"],    "min_level": 8,  "max_level": 16 },
-    { "name": "tree",     "geometry_types": ["Point"],   "min_level": 14, "max_level": 16 },
-    { "name": "building", "geometry_types": ["Polygon"], "min_level": 13, "max_level": 16 },
-    { "name": "poi",      "geometry_types": ["Point"],   "min_level": 10, "max_level": 16 }
-  ]
-}
-```
+| Field | Type | Description |
+|---|---|---|
+| `version` | uint16 | Format version (default 1) |
+| `name` | string | Human-readable tileset name |
+| `bounds` | Bounds | Geographic extent (west, south, east, north in degrees) |
+| `elevation_range` | ElevationRange | Min/max elevation in meters |
+| `min_level` | uint8 | Coarsest available level |
+| `max_level` | uint8 | Finest available level |
+| `root_error` | float64 | Geometric error at level 0 in meters |
+| `layers` | [LayerInfo] | Layer descriptors in decode-priority order (Section 9) |
 
-The `geometry_types` array uses these string values, mapping to the Geometry union members in the schema:
+Each `LayerInfo` entry describes one layer:
 
-| JSON string | Schema type |
-|-------------|-------------|
-| `"Point"` | `PointGeometry` |
-| `"Line"` | `LineGeometry` |
-| `"Polygon"` | `PolygonGeometry` |
-| `"Mesh"` | `MeshGeometry` |
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | Layer name (required) |
+| `geometry_types` | [GeometryType] | Geometry types present in this layer |
+| `min_level` | uint8 | First level where the layer appears |
+| `max_level` | uint8 | Last level where the layer appears |
+
+`GeometryType` enum ordinals (Point=0, Line=1, Polygon=2, Mesh=3) match the `Geometry` union member order in the tile schema.
+
+The tile URL pattern is deterministic (Section 7) and not stored in the tileset file.
 
 ---
 
@@ -334,7 +328,9 @@ Client reconstructs world coordinates: quantized → geodetic → ECEF (or local
 
 ---
 
-## 6. FlatBuffers Schema
+## 6. FlatBuffers Schemas
+
+### 6.1 Tile Schema
 
 ```flatbuffers
 namespace arpentry.tiles;
@@ -452,25 +448,126 @@ table Tile {
 root_type Tile;
 ```
 
+### 6.2 Tileset Schema
+
+```flatbuffers
+namespace arpentry.tiles;
+file_identifier "arts";
+file_extension "arts";
+
+enum GeometryType : uint8 {
+  Point   = 0,
+  Line    = 1,
+  Polygon = 2,
+  Mesh    = 3
+}
+
+struct Bounds {
+  west:  float64;
+  south: float64;
+  east:  float64;
+  north: float64;
+}
+
+struct ElevationRange {
+  min: float64;
+  max: float64;
+}
+
+table LayerInfo {
+  name:           string (required);
+  geometry_types: [GeometryType];
+  min_level:      uint8;
+  max_level:      uint8;
+}
+
+table Tileset {
+  version:         uint16 = 1;
+  name:            string;
+  bounds:          Bounds;
+  elevation_range: ElevationRange;
+  min_level:       uint8;
+  max_level:       uint8;
+  root_error:      float64;
+  layers:          [LayerInfo];
+}
+
+root_type Tileset;
+```
+
+### 6.3 Style Schema
+
+```flatbuffers
+namespace arpentry.tiles;
+file_identifier "arss";
+file_extension "arss";
+
+struct RGBA {
+  r: uint8;
+  g: uint8;
+  b: uint8;
+  a: uint8;
+}
+
+table PaintEntry {
+  class:        string (required);  // class value to match ("water", "primary", ...)
+  color:        RGBA;               // fill or line color
+  width:        float32;            // line half-width in quantized units (0 for fills)
+}
+
+table LayerStyle {
+  source_layer: string (required);  // tile layer name ("surface", "highway", ...)
+  paint:        [PaintEntry];       // class -> visual properties
+}
+
+table Style {
+  version:      uint16 = 1;
+  name:         string;
+  background:   RGBA;               // fallback for unmatched classes
+  building:     RGBA;               // building extrusion material
+  layers:       [LayerStyle];
+}
+
+root_type Style;
+```
+
 ---
 
 ## 7. File Format
 
-An `.arpt` file is a standard FlatBuffer with file identifier `"arpt"`. There is no custom header — the FlatBuffer starts at byte 0.
+All file types are standard FlatBuffers with no custom header — the FlatBuffer starts at byte 0.
 
-- **File identification**: The decoder calls `Tile_identifier_is(buffer)` to verify the 4-byte file identifier (`"arpt"` at offset 4-7, per the FlatBuffers spec).
+### Tile (`.arpt`)
+
+- **File identification**: `Tile_identifier_is(buffer)` verifies `"arpt"` at offset 4–7.
 - **Versioning**: `Tile.version` (uint16, default 1). The decoder MUST reject unknown versions. FlatBuffers schema evolution handles backward-compatible additions without incrementing the version — new optional fields are silently ignored by older decoders.
 - **MIME type**: `application/x-arpt`
 - **Extension**: `.arpt`
 - **URL pattern**: `{base_url}/{level}/{x}/{y}.arpt`
 
+### Tileset (`.arts`)
+
+- **File identification**: `Tileset_identifier_is(buffer)` verifies `"arts"` at offset 4–7.
+- **Versioning**: `Tileset.version` (uint16, default 1). Same versioning rules as tiles.
+- **MIME type**: `application/x-arts`
+- **Extension**: `.arts`
+- **URL**: `{base_url}/tileset.arts`
+
+### Style (`.arss`)
+
+- **File identification**: `Style_identifier_is(buffer)` verifies `"arss"` at offset 4–7.
+- **Versioning**: `Style.version` (uint16, default 1). Same versioning rules as tiles.
+- **MIME type**: `application/x-arss`
+- **Extension**: `.arss`
+- **URL**: `{base_url}/style.arss`
+
 ---
 
 ## 8. Compression
 
-External compression only - no internal compression within the FlatBuffer:
+External compression only — no internal compression within the FlatBuffer:
 
-- **Compression**: Brotli everywhere. Files on disk and over the wire are always Brotli-compressed; `Content-Encoding: br` enables transparent browser decompression. Brotli achieves 70-80% reduction on quantized integer data, and a single codec simplifies the toolchain.
+- **Compression**: Brotli everywhere. All binary files (`.arpt` tiles, `.arts` tileset, `.arss` style) are Brotli-compressed on disk and over the wire; `Content-Encoding: br` enables transparent browser decompression. Brotli achieves 70–80% reduction on quantized integer data, and a single codec simplifies the toolchain.
 - **Rationale**: FlatBuffers zero-copy requires uncompressed buffers in memory. Quantized integers are highly compressible, so external compression is sufficient.
 
 ---
@@ -570,19 +667,38 @@ Points of interest for labels and icons.
 
 ## 10. Styling Contract
 
-The format provides data for styling. For PointGeometry, LineGeometry, and PolygonGeometry, the client determines all visual appearance based on:
+Visual styling is defined by a **Style** file (`.arss`, Section 6.3) served alongside the tileset. The style maps tile layer names and feature class values to visual properties (color, line width).
 
-1. **Layer name** — which style rules apply
+### Style Model
+
+The style uses two concepts inspired by MapLibre:
+
+- **`LayerStyle`**: references a tile layer by name (`source_layer`), analogous to MapLibre's `source-layer`.
+- **`PaintEntry`**: maps a feature class string to color and line half-width, a simplified version of MapLibre's `filter` + `paint`.
+
+### Client Application
+
+The client fetches `{base_url}/style.arss` at startup and applies it as follows:
+
+1. **Surface fills**: For each `PaintEntry` in the `"surface"` `LayerStyle`, match the feature's `class` property to the entry's `class` string. Use the entry's `color` as the fill color.
+2. **Highway lines**: For each `PaintEntry` in the `"highway"` `LayerStyle`, match the feature's `class` property. Use the entry's `color` and `width` (half-width in quantized units) for SDF line rendering.
+3. **Building fills**: For each `PaintEntry` in the `"building"` `LayerStyle`, match the feature's `class` property. Use the entry's `color` as the footprint fill color.
+4. **Background**: `Style.background` provides the fallback color for unmatched surface classes.
+5. **Building extrusion**: `Style.building` provides the material color for 3D building walls and roofs.
+
+### Tile Data Contract
+
+The tile format provides data for styling. For PointGeometry, LineGeometry, and PolygonGeometry, the client determines all visual appearance based on:
+
+1. **Layer name** — which `LayerStyle` rules apply
 2. **Geometry type** — which union member is present determines the rendering method (fill, line, extrusion, mesh)
-3. **Feature class/subclass** — primary style discriminator
+3. **Feature class/subclass** — primary style discriminator, matched against `PaintEntry.class`
 4. **Numeric properties** — data-driven styling (height → extrusion, width → line thickness)
 5. **Feature ID** — interaction (hover, click, selection)
 
 For MeshGeometry, each Part carries an inline material (color, roughness, metalness). When `color.a > 0`, the client uses it directly for PBR-lite shading. When `color.a == 0`, the client styles the part based on feature properties, as with other topologies. When no `parts` array is present, the entire mesh is one client-styled draw call.
 
 Raster data is consumed as shader inputs directly (0–255 → 0.0–1.0), keyed by raster name.
-
-Style specification is defined in a separate document.
 
 ---
 

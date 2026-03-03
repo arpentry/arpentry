@@ -225,7 +225,7 @@ bool arpt_http_get(const char *url, arpt_http_response *resp) {
     if (is_brotli) {
         uint8_t *decoded = NULL;
         size_t decoded_size = 0;
-        if (arpt_decode(body_start, body_len, &decoded, &decoded_size)) {
+        if (arpt_brotli_decode(body_start, body_len, &decoded, &decoded_size)) {
             resp->body = decoded;
             resp->body_size = decoded_size;
         } else {

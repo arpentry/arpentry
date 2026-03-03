@@ -56,6 +56,19 @@ add_library(unity STATIC ${unity_SOURCE_DIR}/src/unity.c)
 target_include_directories(unity PUBLIC ${unity_SOURCE_DIR}/src)
 target_compile_definitions(unity PUBLIC UNITY_INCLUDE_DOUBLE)
 
+# json.c — lightweight JSON parser (no upstream CMake — built manually)
+FetchContent_Declare(json_c
+    GIT_REPOSITORY https://github.com/tidwall/json.c.git
+    GIT_TAG        v1.1.8
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(json_c)
+if(NOT json_c_POPULATED)
+    FetchContent_Populate(json_c)
+endif()
+add_library(json_c STATIC ${json_c_SOURCE_DIR}/json.c)
+target_include_directories(json_c PUBLIC ${json_c_SOURCE_DIR})
+
 # ── FlatBuffers schema compilation ───────────────────────────────────────
 
 set(FLATCC_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/flatcc")
@@ -67,13 +80,23 @@ else()
     set(FLATCC_EXE $<TARGET_FILE:flatcc_cli>)
 endif()
 
-set(FLATCC_SCHEMAS ${CMAKE_SOURCE_DIR}/schemas/tile.fbs)
+set(FLATCC_SCHEMAS
+    ${CMAKE_SOURCE_DIR}/schemas/tile.fbs
+    ${CMAKE_SOURCE_DIR}/schemas/tileset.fbs
+    ${CMAKE_SOURCE_DIR}/schemas/style.fbs
+)
 
 add_custom_command(
     OUTPUT
         ${FLATCC_GENERATED_DIR}/tile_builder.h
         ${FLATCC_GENERATED_DIR}/tile_reader.h
         ${FLATCC_GENERATED_DIR}/tile_verifier.h
+        ${FLATCC_GENERATED_DIR}/tileset_builder.h
+        ${FLATCC_GENERATED_DIR}/tileset_reader.h
+        ${FLATCC_GENERATED_DIR}/tileset_verifier.h
+        ${FLATCC_GENERATED_DIR}/style_builder.h
+        ${FLATCC_GENERATED_DIR}/style_reader.h
+        ${FLATCC_GENERATED_DIR}/style_verifier.h
     COMMAND ${FLATCC_EXE} -a -o ${FLATCC_GENERATED_DIR} ${FLATCC_SCHEMAS}
     DEPENDS ${FLATCC_SCHEMAS}
     COMMENT "Compiling FlatBuffers schemas"
@@ -82,6 +105,12 @@ add_custom_target(flatcc_generate DEPENDS
     ${FLATCC_GENERATED_DIR}/tile_builder.h
     ${FLATCC_GENERATED_DIR}/tile_reader.h
     ${FLATCC_GENERATED_DIR}/tile_verifier.h
+    ${FLATCC_GENERATED_DIR}/tileset_builder.h
+    ${FLATCC_GENERATED_DIR}/tileset_reader.h
+    ${FLATCC_GENERATED_DIR}/tileset_verifier.h
+    ${FLATCC_GENERATED_DIR}/style_builder.h
+    ${FLATCC_GENERATED_DIR}/style_reader.h
+    ${FLATCC_GENERATED_DIR}/style_verifier.h
 )
 
 # ── Subdirectories ───────────────────────────────────────────────────────

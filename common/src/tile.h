@@ -10,6 +10,10 @@
 bool arpt_encode(const void *buf, size_t size, uint8_t **out, size_t *out_size,
                  int quality);
 
+/* Brotli-decompress without FlatBuffer verification. Caller frees *out. */
+bool arpt_brotli_decode(const uint8_t *data, size_t size, uint8_t **out,
+                        size_t *out_size);
+
 /* Decompress and verify an .arpt tile. Caller frees *out. */
 bool arpt_decode(const uint8_t *data, size_t size, uint8_t **out,
                  size_t *out_size);

@@ -100,6 +100,12 @@ bool arpt_encode(const void *buf, size_t size, uint8_t **out, size_t *out_size,
     return compress((const uint8_t *)buf, size, out, out_size, quality);
 }
 
+bool arpt_brotli_decode(const uint8_t *data, size_t size, uint8_t **out,
+                        size_t *out_size) {
+    if (!data || !out || !out_size) return false;
+    return decompress(data, size, out, out_size);
+}
+
 bool arpt_decode(const uint8_t *data, size_t size, uint8_t **out,
                  size_t *out_size) {
     if (!data || !out || !out_size) return false;

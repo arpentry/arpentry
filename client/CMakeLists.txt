@@ -74,6 +74,7 @@ add_executable(arpentry_client
     src/control.c
     src/tile_decode.c
     src/renderer.c
+    src/style.c
     src/tile_visible.c
     src/tile_manager.c
     src/ui.c

@@ -1,0 +1,31 @@
+namespace arpentry.tiles;
+file_identifier "arss";
+file_extension "arss";
+
+struct RGBA {
+  r: uint8;
+  g: uint8;
+  b: uint8;
+  a: uint8;
+}
+
+table PaintEntry {
+  class:        string (required);  // class value to match ("water", "primary", ...)
+  color:        RGBA;               // fill or line color
+  width:        float32;            // line half-width in quantized units (0 for fills)
+}
+
+table LayerStyle {
+  source_layer: string (required);  // tile layer name ("surface", "highway", ...)
+  paint:        [PaintEntry];       // class -> visual properties
+}
+
+table Style {
+  version:      uint16 = 1;
+  name:         string;
+  background:   RGBA;               // fallback for unmatched classes
+  building:     RGBA;               // building extrusion material
+  layers:       [LayerStyle];
+}
+
+root_type Style;

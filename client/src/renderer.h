@@ -3,6 +3,7 @@
 
 #include "coords.h"
 #include "math3d.h"
+#include "style.h"
 #include "tile_decode.h"
 #include <webgpu/webgpu.h>
 
@@ -13,7 +14,7 @@ typedef struct arpt_tile_gpu arpt_tile_gpu;
 
 arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
                                     WGPUTextureFormat format, uint32_t width,
-                                    uint32_t height);
+                                    uint32_t height, const arpt_style *style);
 void arpt_renderer_free(arpt_renderer *r);
 
 /** Recreate depth texture after window resize. */

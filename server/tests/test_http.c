@@ -19,13 +19,13 @@ void test_parse_valid_get(void) {
 }
 
 void test_parse_valid_get_tileset(void) {
-    const char *raw = "GET /tileset.json HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const char *raw = "GET /tileset.arts HTTP/1.1\r\nHost: localhost\r\n\r\n";
     char method[8], uri[2048];
     int consumed = http_parse_request(raw, strlen(raw), method, sizeof(method),
                                       uri, sizeof(uri));
     TEST_ASSERT_GREATER_THAN(0, consumed);
     TEST_ASSERT_EQUAL_STRING("GET", method);
-    TEST_ASSERT_EQUAL_STRING("/tileset.json", uri);
+    TEST_ASSERT_EQUAL_STRING("/tileset.arts", uri);
 }
 
 void test_parse_post_method(void) {
