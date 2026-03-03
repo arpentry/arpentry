@@ -34,6 +34,16 @@ GPU vertex shader (float32, per vertex):
 
 Precision: the tile-relative ECEF subtraction on GPU uses the same float32 trig for both vertex and tile center, so systematic errors cancel. The pipeline preserves full uint16 quantization precision (9 mm at level 16) at all zoom levels.
 
+### Redraw Policy
+
+The main loop skips the GPU render pass when nothing has changed. Three conditions trigger a redraw:
+
+1. **Control input** — any mouse/keyboard/touch callback, active inertia, or fly-to animation (tracked by `arpt_control_needs_redraw`)
+2. **In-flight tile fetches** — tiles still loading may complete and need rendering
+3. **Resize** — framebuffer size changed
+
+On native, the loop uses `glfwWaitEventsTimeout(0.1)` when idle instead of `glfwPollEvents`, dropping CPU usage to near zero. The 100 ms timeout ensures tile fetch completions are still polled. On web, the browser controls frame rate via `requestAnimationFrame`.
+
 ### Dequantization (GPU)
 
 ```

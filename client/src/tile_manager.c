@@ -358,6 +358,10 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
     }
 }
 
+int arpt_tile_manager_active_fetches(const arpt_tile_manager *tm) {
+    return tm ? tm->active_fetches : 0;
+}
+
 /* Ground elevation query */
 
 double arpt_tile_manager_ground_elevation(const arpt_tile_manager *tm,

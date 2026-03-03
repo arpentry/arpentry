@@ -2,6 +2,7 @@
 #define ARPENTRY_CONTROL_H
 
 #include "camera.h"
+#include <stdbool.h>
 
 typedef struct GLFWwindow GLFWwindow;
 typedef struct arpt_control arpt_control;
@@ -17,6 +18,9 @@ arpt_control *arpt_control_create(arpt_camera *cam, GLFWwindow *window);
  * glfwPollEvents() and before rendering.
  */
 void arpt_control_update(arpt_control *ctrl, double dt);
+
+/** Returns true if the control needs a redraw (input, inertia, fly-to). */
+bool arpt_control_needs_redraw(arpt_control *ctrl);
 
 /** Free the control. Does not restore GLFW callbacks. */
 void arpt_control_free(arpt_control *ctrl);

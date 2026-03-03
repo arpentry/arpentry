@@ -63,6 +63,9 @@ struct arpt_control {
     /* Fly-to animation */
     flyto_t flyto;
 
+    /* Redraw flag: set by input callbacks and update, cleared by query */
+    bool needs_redraw;
+
     /* Optional event filter (for UI click interception) */
     arpt_event_filter_fn event_filter;
     void *filter_ud;
@@ -114,8 +117,12 @@ static void on_mouse_button(GLFWwindow *window, int button, int action,
 
     /* Let UI consume the event before map interaction */
     if (ctrl->event_filter &&
-        ctrl->event_filter(button, action, sx, sy, ctrl->filter_ud))
+        ctrl->event_filter(button, action, sx, sy, ctrl->filter_ud)) {
+        ctrl->needs_redraw = true;
         return;
+    }
+
+    ctrl->needs_redraw = true;
 
     if (action == GLFW_PRESS) {
         cancel_animation(ctrl);
@@ -189,6 +196,9 @@ static void on_cursor_pos(GLFWwindow *window, double sx, double sy) {
     arpt_control *ctrl = glfwGetWindowUserPointer(window);
     if (!ctrl) return;
 
+    if (ctrl->drag_mode != DRAG_IDLE)
+        ctrl->needs_redraw = true;
+
     if (ctrl->drag_mode == DRAG_PAN) {
         ctrl->prev_sx = ctrl->last_sx;
         ctrl->prev_sy = ctrl->last_sy;
@@ -213,6 +223,7 @@ static void on_scroll(GLFWwindow *window, double xoffset, double yoffset) {
     if (!ctrl) return;
 
     cancel_animation(ctrl);
+    ctrl->needs_redraw = true;
 
     double sx, sy;
     glfwGetCursorPos(window, &sx, &sy);
@@ -229,6 +240,7 @@ static void on_key(GLFWwindow *window, int key, int scancode, int action,
     if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
 
     cancel_animation(ctrl);
+    ctrl->needs_redraw = true;
 
     bool shift = (mods & GLFW_MOD_SHIFT) != 0;
 
@@ -282,6 +294,7 @@ static EM_BOOL on_touchstart(int type, const EmscriptenTouchEvent *e,
     (void)type;
     arpt_control *ctrl = ud;
     cancel_animation(ctrl);
+    ctrl->needs_redraw = true;
 
     ctrl->touch_count = e->numTouches;
     if (e->numTouches >= 1) {
@@ -305,6 +318,7 @@ static EM_BOOL on_touchstart(int type, const EmscriptenTouchEvent *e,
 static EM_BOOL on_touchmove(int type, const EmscriptenTouchEvent *e, void *ud) {
     (void)type;
     arpt_control *ctrl = ud;
+    ctrl->needs_redraw = true;
 
     if (e->numTouches == 1) {
         /* One-finger: pan */
@@ -402,6 +416,7 @@ void arpt_control_update(arpt_control *ctrl, double dt) {
 
     /* Fly-to animation */
     if (ctrl->flyto.active) {
+        ctrl->needs_redraw = true;
         ctrl->flyto.elapsed += dt;
         double t = ctrl->flyto.elapsed / FLYTO_DURATION;
         if (t >= 1.0) {
@@ -423,6 +438,14 @@ void arpt_control_update(arpt_control *ctrl, double dt) {
 
     /* Inertia decay */
     if (ctrl->drag_mode != DRAG_IDLE) return; /* No inertia while dragging */
+
+    bool has_velocity =
+        fabs(ctrl->vel_pan_x) > VEL_EPSILON ||
+        fabs(ctrl->vel_pan_y) > VEL_EPSILON ||
+        fabs(ctrl->vel_tilt) > VEL_EPSILON ||
+        fabs(ctrl->vel_bearing) > VEL_EPSILON;
+    if (has_velocity)
+        ctrl->needs_redraw = true;
 
     double decay = pow(1.0 - DAMPING, dt * 60.0);
 
@@ -446,6 +469,13 @@ void arpt_control_update(arpt_control *ctrl, double dt) {
         if (fabs(ctrl->vel_tilt) < VEL_EPSILON) ctrl->vel_tilt = 0.0;
         if (fabs(ctrl->vel_bearing) < VEL_EPSILON) ctrl->vel_bearing = 0.0;
     }
+}
+
+bool arpt_control_needs_redraw(arpt_control *ctrl) {
+    if (!ctrl) return false;
+    bool v = ctrl->needs_redraw;
+    ctrl->needs_redraw = false;
+    return v;
 }
 
 void arpt_control_set_event_filter(arpt_control *ctrl, arpt_event_filter_fn fn,

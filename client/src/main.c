@@ -40,6 +40,7 @@ typedef struct {
     arpt_ui *ui;
     double last_time;
     double smoothed_ground_elev;
+    bool needs_redraw;
 } App;
 
 static App app = {0};
@@ -62,6 +63,7 @@ static void on_framebuffer_resize(GLFWwindow *w, int width, int height) {
     (void)height;
     return;
 #else
+    app.needs_redraw = true;
     /* On native: framebuffer pixels are physical; window pixels are logical
        and match glfwGetCursorPos. */
     int win_w, win_h;
@@ -146,6 +148,7 @@ static void sync_canvas_size(void) {
     if (s_phys_w != phys_w || s_phys_h != phys_h) {
         s_phys_w = phys_w;
         s_phys_h = phys_h;
+        app.needs_redraw = true;
         arpt_renderer_resize(app.renderer, (uint32_t)phys_w, (uint32_t)phys_h);
         if (app.ui)
             arpt_ui_resize(app.ui, (uint32_t)phys_w, (uint32_t)phys_h,
@@ -167,10 +170,16 @@ static void sync_canvas_size(void) {
 /* Render frame */
 
 static void render_frame(void) {
-    glfwPollEvents();
-
 #ifdef __EMSCRIPTEN__
+    glfwPollEvents();
     sync_canvas_size();
+#else
+    /* When idle, block instead of spinning to save CPU/battery.
+       The 100ms timeout ensures tile fetch completions are polled. */
+    if (app.needs_redraw)
+        glfwPollEvents();
+    else
+        glfwWaitEventsTimeout(0.1);
 #endif
 
     /* Compute dt and advance control */
@@ -179,15 +188,24 @@ static void render_frame(void) {
     app.last_time = now;
     if (app.control) arpt_control_update(app.control, dt);
 
+    /* Drain tile fetch callbacks (lightweight even when idle) */
+    if (app.tile_manager)
+        arpt_tile_manager_update(app.tile_manager, app.camera);
+
+    /* Decide whether a redraw is needed */
+    bool redraw = app.needs_redraw
+               || arpt_control_needs_redraw(app.control)
+               || (app.tile_manager &&
+                   arpt_tile_manager_active_fetches(app.tile_manager) > 0);
+    app.needs_redraw = false;
+
+    if (!redraw) return;
+
     WGPUSurfaceTexture st;
     wgpuSurfaceGetCurrentTexture(app.surface, &st);
     if (st.status != WGPUSurfaceGetCurrentTextureStatus_Success) return;
 
     WGPUTextureView view = wgpuTextureCreateView(st.texture, NULL);
-
-    /* Update tile manager (fetch new tiles, evict old ones) */
-    if (app.tile_manager)
-        arpt_tile_manager_update(app.tile_manager, app.camera);
 
     /* Update ground elevation from loaded tiles */
     if (app.tile_manager) {
@@ -339,6 +357,8 @@ static void init_viewer(void) {
 
     /* Install GLFW callbacks (framebuffer resize is separate from input) */
     glfwSetFramebufferSizeCallback(app.window, on_framebuffer_resize);
+
+    app.needs_redraw = true; /* force first frame */
 }
 
 /* WebGPU init chain */
