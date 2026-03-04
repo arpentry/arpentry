@@ -2,6 +2,7 @@
 #include "terrain.h"
 #include "surface.h"
 #include "town.h"
+#include "tree.h"
 #include "coords.h"
 #include "tile.h"
 #include "tile_builder.h"
@@ -66,6 +67,7 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
     PUSH_INT(10);            /* 12 TOWN_VAL_H10 */
     PUSH_INT(12);            /* 13 TOWN_VAL_H12 */
     PUSH_INT(15);            /* 14 TOWN_VAL_H15 */
+    PUSH_STR("tree");        /* 15 TREE_VAL_TREE */
     arpentry_tiles_Tile_values_end(&builder);
 #undef PUSH_INT
 #undef PUSH_STR
@@ -247,6 +249,49 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
             }
             arpentry_tiles_Layer_features_end(&builder);
             arpentry_tiles_Tile_layers_push_end(&builder);
+        }
+
+        /* Layer 4: tree (forest point features) */
+        {
+            tree_point trees[TREE_GRID_MAX];
+            int tree_count = generate_trees(bounds, trees, TREE_GRID_MAX);
+
+            if (tree_count > 0) {
+                arpentry_tiles_Tile_layers_push_start(&builder);
+                arpentry_tiles_Layer_name_create_str(&builder, "tree");
+
+                arpentry_tiles_Layer_features_start(&builder);
+                for (int ti = 0; ti < tree_count; ti++) {
+                    uint16_t tx = arpt_quantize_lon(trees[ti].lon, bounds);
+                    uint16_t ty = arpt_quantize_lat(trees[ti].lat, bounds);
+                    int32_t tz = arpt_meters_to_mm(
+                        terrain_elevation(trees[ti].lon, trees[ti].lat));
+
+                    arpentry_tiles_Layer_features_push_start(&builder);
+                    arpentry_tiles_Feature_id_add(&builder,
+                                                  (uint64_t)(300000 + ti));
+
+                    arpentry_tiles_PointGeometry_ref_t pt_ref;
+                    arpentry_tiles_PointGeometry_start(&builder);
+                    arpentry_tiles_PointGeometry_x_create(&builder, &tx, 1);
+                    arpentry_tiles_PointGeometry_y_create(&builder, &ty, 1);
+                    arpentry_tiles_PointGeometry_z_create(&builder, &tz, 1);
+                    pt_ref = arpentry_tiles_PointGeometry_end(&builder);
+                    arpentry_tiles_Feature_geometry_PointGeometry_add(&builder,
+                                                                      pt_ref);
+
+                    arpentry_tiles_Feature_properties_start(&builder);
+                    arpentry_tiles_Property_t tprop = {0};
+                    tprop.key = 0;
+                    tprop.value = TREE_VAL_TREE;
+                    arpentry_tiles_Feature_properties_push(&builder, &tprop);
+                    arpentry_tiles_Feature_properties_end(&builder);
+
+                    arpentry_tiles_Layer_features_push_end(&builder);
+                }
+                arpentry_tiles_Layer_features_end(&builder);
+                arpentry_tiles_Tile_layers_push_end(&builder);
+            }
         }
     }
     arpentry_tiles_Tile_layers_end(&builder);
