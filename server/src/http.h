@@ -21,6 +21,7 @@ int http_parse_request(const char *data, size_t len, char *method,
 
 struct server_ctx {
     const char *tile_dir;
+    const char *style_file;
 };
 
 typedef struct http_conn http_conn;

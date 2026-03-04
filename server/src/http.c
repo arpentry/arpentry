@@ -220,9 +220,9 @@ static bool build_tileset(uint8_t **out, size_t *out_size) {
     return ok;
 }
 
-/* Load style.json from tile_dir and build a Brotli-compressed Style
-   FlatBuffer. Caller frees *out. Reloads the file on every request so
-   edits take effect without restarting the server. */
+/* Load style.json and build a Brotli-compressed Style FlatBuffer.
+   Caller frees *out. Reloads the file on every request so edits take
+   effect without restarting the server. */
 
 static char *read_file(const char *path, size_t *out_size) {
     FILE *f = fopen(path, "rb");
@@ -251,22 +251,18 @@ static arpentry_tiles_RGBA_t parse_rgba(struct json arr) {
     return c;
 }
 
-static bool build_style(const char *tile_dir, uint8_t **out, size_t *out_size) {
-    /* Build path to style.json */
-    char path[1024];
-    int n = snprintf(path, sizeof(path), "%s/style.json", tile_dir);
-    if (n < 0 || (size_t)n >= sizeof(path)) return false;
-
+static bool build_style(const char *style_file, uint8_t **out,
+                        size_t *out_size) {
     size_t json_size;
-    char *json_str = read_file(path, &json_size);
+    char *json_str = read_file(style_file, &json_size);
     if (!json_str) {
-        fprintf(stderr, "style: cannot read %s\n", path);
+        fprintf(stderr, "style: cannot read %s\n", style_file);
         return false;
     }
 
     struct json root = json_parse(json_str);
     if (!json_exists(root)) {
-        fprintf(stderr, "style: invalid JSON in %s\n", path);
+        fprintf(stderr, "style: invalid JSON in %s\n", style_file);
         free(json_str);
         return false;
     }
@@ -412,7 +408,7 @@ static void dispatch_request(struct net_conn *conn, struct server_ctx *ctx,
     if (strcmp(uri, "/style.arss") == 0) {
         uint8_t *arss_data = NULL;
         size_t arss_size = 0;
-        if (build_style(ctx->tile_dir, &arss_data, &arss_size)) {
+        if (build_style(ctx->style_file, &arss_data, &arss_size)) {
             write_response(conn, 200, "application/x-arss", "br", arss_data,
                            arss_size);
             free(arss_data);

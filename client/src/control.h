@@ -22,6 +22,9 @@ void arpt_control_update(arpt_control *ctrl, double dt);
 /** Returns true if the control needs a redraw (input, inertia, fly-to). */
 bool arpt_control_needs_redraw(arpt_control *ctrl);
 
+/** Returns true if the user requested a full refresh (R key). */
+bool arpt_control_needs_refresh(arpt_control *ctrl);
+
 /** Free the control. Does not restore GLFW callbacks. */
 void arpt_control_free(arpt_control *ctrl);
 

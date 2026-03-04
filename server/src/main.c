@@ -42,18 +42,21 @@ static void on_data(struct net_conn *conn, const void *data, size_t nbytes,
 /* Entry point */
 
 int main(int argc, char *argv[]) {
-    if (argc < 2 || argc > 4) {
-        fprintf(stderr, "Usage: arpt_server <tile_dir> [port] [threads]\n");
+    if (argc < 3 || argc > 5) {
+        fprintf(stderr,
+                "Usage: arpt_server <tile_dir> <style_file> [port] [threads]\n");
         return 1;
     }
 
     const char *tile_dir = argv[1];
-    const char *port = argc >= 3 ? argv[2] : "8090";
-    int nthreads = argc >= 4 ? atoi(argv[3]) : 1;
+    const char *style_file = argv[2];
+    const char *port = argc >= 4 ? argv[3] : "8090";
+    int nthreads = argc >= 5 ? atoi(argv[4]) : 1;
     if (nthreads < 1) nthreads = 1;
 
     struct server_ctx ctx = {
         .tile_dir = tile_dir,
+        .style_file = style_file,
     };
 
     xmalloc_init(nthreads);

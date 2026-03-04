@@ -66,6 +66,9 @@ struct arpt_control {
     /* Redraw flag: set by input callbacks and update, cleared by query */
     bool needs_redraw;
 
+    /* Refresh flag: set by R key, cleared by query */
+    bool needs_refresh;
+
     /* Optional event filter (for UI click interception) */
     arpt_event_filter_fn event_filter;
     void *filter_ud;
@@ -280,6 +283,9 @@ static void on_key(GLFWwindow *window, int key, int scancode, int action,
                             arpt_camera_vp_height(ctrl->cam) / 2.0,
                             1.0 / ZOOM_BASE);
         break;
+    case GLFW_KEY_R:
+        ctrl->needs_refresh = true;
+        break;
     default:
         break;
     }
@@ -475,6 +481,13 @@ bool arpt_control_needs_redraw(arpt_control *ctrl) {
     if (!ctrl) return false;
     bool v = ctrl->needs_redraw;
     ctrl->needs_redraw = false;
+    return v;
+}
+
+bool arpt_control_needs_refresh(arpt_control *ctrl) {
+    if (!ctrl) return false;
+    bool v = ctrl->needs_refresh;
+    ctrl->needs_refresh = false;
     return v;
 }
 

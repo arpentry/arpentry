@@ -34,7 +34,7 @@ mkdir -p "$TILE_DIR"
 
 # ── Start server in background ───────────────────────────────────────────────
 
-"$SERVER" "$TILE_DIR" &
+"$SERVER" "$TILE_DIR" "$ROOT_DIR/style.json" &
 SERVER_PID=$!
 echo "arpentry_server started (pid $SERVER_PID)"
 

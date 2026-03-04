@@ -53,9 +53,16 @@ typedef struct {
     double last_time;
     double smoothed_ground_elev;
     bool needs_redraw;
+    char base_url[256];
 } App;
 
 static App app = {0};
+
+/* Forward declarations for refresh logic */
+static bool fetch_tileset(const char *base_url,
+                           arpt_tile_manager_config *config);
+static bool fetch_style(const char *base_url, arpt_style *style);
+static void ui_overlay(WGPURenderPassEncoder pass, void *ud);
 
 /* GLFW callbacks */
 
@@ -203,6 +210,42 @@ static void render_frame(void) {
     /* Drain tile fetch callbacks (lightweight even when idle) */
     if (app.tile_manager)
         arpt_tile_manager_update(app.tile_manager, app.camera);
+
+    /* Handle full refresh (R key): re-fetch style/tileset, recreate renderer
+       and tile manager so tiles are re-uploaded with new colors. */
+    if (arpt_control_needs_refresh(app.control)) {
+        arpt_style style;
+        arpt_style_defaults(&style);
+        fetch_style(app.base_url, &style);
+
+        arpt_tile_manager_config tm_config = {
+            .base_url = app.base_url,
+            .root_error = 200000.0,
+            .min_level = 0,
+            .max_level = 19,
+            .max_tiles = 200,
+            .max_concurrent = 6,
+        };
+        fetch_tileset(app.base_url, &tm_config);
+
+        /* Tile manager must be freed before renderer (GPU resource deps) */
+        arpt_tile_manager_free(app.tile_manager);
+        arpt_renderer_free(app.renderer);
+
+        int fb_w, fb_h;
+        glfwGetFramebufferSize(app.window, &fb_w, &fb_h);
+        app.renderer =
+            arpt_renderer_create(app.device, app.queue, app.surface_format,
+                                 (uint32_t)fb_w, (uint32_t)fb_h, &style);
+        app.tile_manager = arpt_tile_manager_create(tm_config, app.renderer);
+
+        /* Restore UI overlay on the new renderer */
+        if (app.ui)
+            arpt_renderer_set_overlay(app.renderer, ui_overlay, app.ui);
+
+        app.needs_redraw = true;
+        printf("Refreshed style, tileset, and tiles\n");
+    }
 
     /* Decide whether a redraw is needed */
     bool redraw = app.needs_redraw
@@ -502,7 +545,8 @@ static void init_viewer(void) {
     arpt_camera_set_viewport(app.camera, win_w, win_h);
 
     /* Fetch style (before renderer creation) */
-    const char *base_url = "http://localhost:8090";
+    snprintf(app.base_url, sizeof(app.base_url), "http://localhost:8090");
+    const char *base_url = app.base_url;
     arpt_style style;
     arpt_style_defaults(&style);
     if (!fetch_style(base_url, &style))
