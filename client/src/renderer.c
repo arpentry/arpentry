@@ -51,8 +51,8 @@ typedef struct {
 typedef struct {
     float glyph_scale;
     float atlas_size;
-    float _pad1;
-    float _pad2;
+    float viewport_width;
+    float viewport_height;
 } poi_uniforms_t;
 
 /* Tile GPU state */
@@ -1063,8 +1063,10 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
 
         /* POI uniform buffer */
         poi_uniforms_t pu = {
-            .glyph_scale = 40.0f, /* 40 m per font unit */
+            .glyph_scale = r->font_pixel_height,
             .atlas_size = (float)FONT_ATLAS_SIZE,
+            .viewport_width = (float)r->width,
+            .viewport_height = (float)r->height,
         };
         r->poi_uniform_buf =
             create_buffer(device, queue, WGPUBufferUsage_Uniform, &pu,
@@ -1386,6 +1388,18 @@ void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height) {
     r->width = width;
     r->height = height;
     create_depth_texture(r);
+
+    /* Re-upload POI uniforms with new viewport dimensions */
+    if (r->poi_uniform_buf) {
+        poi_uniforms_t pu = {
+            .glyph_scale = r->font_pixel_height,
+            .atlas_size = (float)FONT_ATLAS_SIZE,
+            .viewport_width = (float)width,
+            .viewport_height = (float)height,
+        };
+        wgpuQueueWriteBuffer(r->queue, r->poi_uniform_buf, 0, &pu,
+                             sizeof(poi_uniforms_t));
+    }
 }
 
 /* Building extrusion */
@@ -1841,10 +1855,12 @@ static void upload_poi_instances(arpt_tile_gpu *t, arpt_renderer *r,
                 instances[idx].v0 = g->v0;
                 instances[idx].u1 = g->u1;
                 instances[idx].v1 = g->v1;
-                /* Offset in normalized units (divided by font_size) */
+                /* Offset in normalized units (divided by font_size).
+                 * bearing_y (stbtt yoff) is negative = above baseline,
+                 * so negate it to get screen-up position of quad top. */
                 instances[idx].offset_x =
                     (cursor + g->bearing_x - half_w) / font_size;
-                instances[idx].offset_y = 1.5f + g->bearing_y / font_size;
+                instances[idx].offset_y = 0.3f - g->bearing_y / font_size;
                 idx++;
             }
             cursor += g->advance;

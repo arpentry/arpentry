@@ -18,10 +18,10 @@ struct TileUniforms {
 };
 
 struct PoiUniforms {
-    glyph_scale: f32,   /* world-space meters per font unit */
+    glyph_scale: f32,   /* pixel scale factor (1.0 = 1:1 pixel mapping) */
     atlas_size: f32,    /* atlas texture size in pixels */
-    _pad1: f32,
-    _pad2: f32,
+    viewport_width: f32,
+    viewport_height: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: GlobalUniforms;
@@ -78,39 +78,28 @@ fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {
     let inst_lat = lat_south + v * (lat_north - lat_south);
     let inst_alt = f32(inst_qz) * 0.001;
 
-    // ENU basis at instance position
-    let slat = sin(inst_lat);
-    let clat = cos(inst_lat);
-    let slon = sin(inst_lon);
-    let clon = cos(inst_lon);
-    let east  = vec3<f32>(-slon, clon, 0.0);
-    let north = vec3<f32>(-slat * clon, -slat * slon, clat);
-    let up    = vec3<f32>(clat * clon, clat * slon, slat);
+    // Project anchor to clip space
+    let inst_ecef = geodetic_to_ecef(inst_lon, inst_lat, inst_alt);
+    let center_ecef = geodetic_to_ecef(tile.center_lon, tile.center_lat, 0.0);
+    let local_ecef = inst_ecef - center_ecef;
+    let anchor_clip = globals.projection * tile.model * vec4<f32>(local_ecef, 1.0);
 
     // Glyph size in atlas pixels (derived from UV rect)
     let glyph_w_px = (inst_uv.z - inst_uv.x) * poi.atlas_size;
     let glyph_h_px = (inst_uv.w - inst_uv.y) * poi.atlas_size;
 
-    // Position: inst_offset is in normalized font units
-    let gs = poi.glyph_scale;
-    let base_x = inst_offset.x * gs;
-    let base_y = inst_offset.y * gs;
+    // Recover pixel offsets (inst_offset is normalized by font_pixel_height)
+    let gs = poi.glyph_scale; /* = font_pixel_height */
+    let px_x = inst_offset.x * gs;
+    let px_y = inst_offset.y * gs;
 
-    // Quad size in world meters (proportional to actual glyph pixel size)
-    let quad_w = glyph_w_px / poi.atlas_size * gs * 2.5;
-    let quad_h = glyph_h_px / poi.atlas_size * gs * 2.5;
+    // Corner offset in pixels (quad = actual atlas glyph size)
+    let local_px_x = px_x + corner_x * glyph_w_px;
+    let local_px_y = px_y - corner_y * glyph_h_px;
 
-    let local_x = base_x + corner_x * quad_w;
-    let local_y = base_y - corner_y * quad_h;  // Y down in glyph space
-
-    // Apply as ENU offset (east=right, up=above)
-    let ecef_offset = east * local_x + up * local_y;
-
-    let inst_ecef = geodetic_to_ecef(inst_lon, inst_lat, inst_alt);
-    let center_ecef = geodetic_to_ecef(tile.center_lon, tile.center_lat, 0.0);
-    let local_ecef = (inst_ecef + ecef_offset) - center_ecef;
-
-    let world_pos = tile.model * vec4<f32>(local_ecef, 1.0);
+    // Convert pixel offset to clip-space offset (screen-aligned billboard)
+    let clip_dx = local_px_x * 2.0 / poi.viewport_width * anchor_clip.w;
+    let clip_dy = local_px_y * 2.0 / poi.viewport_height * anchor_clip.w;
 
     // Interpolate UV
     let uv = vec2<f32>(
@@ -118,8 +107,12 @@ fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {
         mix(inst_uv.y, inst_uv.w, corner_y),
     );
 
+    // Place all labels at a fixed near depth along the camera ray
+    // (keeps screen x/y from POI projection, but overrides z so labels
+    // are never occluded by terrain/buildings and all sit at same depth)
+    let near_z = 0.01 * anchor_clip.w;
     var out: VsOut;
-    out.pos = globals.projection * world_pos;
+    out.pos = vec4<f32>(anchor_clip.x + clip_dx, anchor_clip.y + clip_dy, near_z, anchor_clip.w);
     out.uv = uv;
     return out;
 }
