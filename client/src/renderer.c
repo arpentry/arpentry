@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "coords.h"
+#include "font.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,7 @@
 #include "highway.wgsl.h"
 #include "wireframe.wgsl.h"
 #include "tree.wgsl.h"
+#include "poi.wgsl.h"
 
 #define SURFACE_TEX_SIZE 2048
 #define SURFACE_MARGIN 0.0625 /* = SURFACE_BUFFER / SURFACE_GRID = 8/128 */
@@ -46,6 +48,13 @@ typedef struct {
     float _pad3;
 } model_uniforms_t;
 
+typedef struct {
+    float glyph_scale;
+    float atlas_size;
+    float _pad1;
+    float _pad2;
+} poi_uniforms_t;
+
 /* Tile GPU state */
 
 struct arpt_tile_gpu {
@@ -71,6 +80,10 @@ struct arpt_tile_gpu {
     /* Tree instances split by model index */
     WGPUBuffer tree_instance_bufs[ARPT_MAX_MODELS];
     uint32_t tree_instance_counts[ARPT_MAX_MODELS];
+
+    /* POI text label instances */
+    WGPUBuffer poi_instance_buf;
+    uint32_t poi_instance_count;
 };
 
 /* Renderer state */
@@ -134,6 +147,17 @@ struct arpt_renderer {
         float min_scale;
         float max_scale;
     } models[ARPT_MAX_MODELS];
+
+    /* POI text label rendering */
+    WGPURenderPipeline poi_pipeline;
+    WGPUBindGroupLayout poi_bgl;
+    WGPUTexture font_texture;
+    WGPUTextureView font_view;
+    WGPUSampler font_sampler;
+    WGPUBuffer poi_uniform_buf;
+    WGPUBindGroup poi_bind_group;
+    font_glyph glyphs[FONT_CHAR_COUNT];
+    float font_pixel_height;
 
     WGPUCommandEncoder encoder;
     WGPURenderPassEncoder pass;
@@ -535,6 +559,92 @@ static WGPURenderPipeline create_tree_pipeline(WGPUDevice device,
     return pipeline;
 }
 
+/* POI text pipeline */
+
+static WGPURenderPipeline create_poi_pipeline(WGPUDevice device,
+                                               WGPUTextureFormat format,
+                                               WGPUBindGroupLayout global_bgl,
+                                               WGPUBindGroupLayout tile_bgl,
+                                               WGPUBindGroupLayout poi_bgl) {
+    WGPUShaderModuleWGSLDescriptor wgsl_desc = {
+        .chain = {.sType = WGPUSType_ShaderModuleWGSLDescriptor},
+        .code = poi_wgsl,
+    };
+    WGPUShaderModuleDescriptor sm_desc = {.nextInChain = &wgsl_desc.chain};
+    WGPUShaderModule sm = wgpuDeviceCreateShaderModule(device, &sm_desc);
+
+    WGPUBindGroupLayout bgls[] = {global_bgl, tile_bgl, poi_bgl};
+    WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
+        device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 3,
+                                                .bindGroupLayouts = bgls});
+
+    /* Per-instance attributes:
+     * Buffer 0: qxy(uint16x2) + qz(int32) + uv(float32x4) + offset(float32x2)
+     * = 4 + 4 + 16 + 8 = 32 bytes per instance */
+    WGPUVertexAttribute inst_attrs[] = {
+        {.format = WGPUVertexFormat_Uint16x2,
+         .offset = 0,
+         .shaderLocation = 0},
+        {.format = WGPUVertexFormat_Sint32,
+         .offset = 4,
+         .shaderLocation = 1},
+        {.format = WGPUVertexFormat_Float32x4,
+         .offset = 8,
+         .shaderLocation = 2},
+        {.format = WGPUVertexFormat_Float32x2,
+         .offset = 24,
+         .shaderLocation = 3},
+    };
+
+    WGPUVertexBufferLayout vbl = {
+        .arrayStride = 32,
+        .stepMode = WGPUVertexStepMode_Instance,
+        .attributeCount = 4,
+        .attributes = inst_attrs,
+    };
+
+    WGPUBlendState blend = {
+        .color = {.srcFactor = WGPUBlendFactor_SrcAlpha,
+                  .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha,
+                  .operation = WGPUBlendOperation_Add},
+        .alpha = {.srcFactor = WGPUBlendFactor_One,
+                  .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha,
+                  .operation = WGPUBlendOperation_Add},
+    };
+    WGPUColorTargetState ct = {.format = format,
+                               .blend = &blend,
+                               .writeMask = WGPUColorWriteMask_All};
+    WGPUFragmentState frag = {
+        .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
+    WGPUDepthStencilState ds = {
+        .format = WGPUTextureFormat_Depth24Plus,
+        .depthWriteEnabled = false, /* transparent text, no depth write */
+        .depthCompare = WGPUCompareFunction_LessEqual,
+        .stencilFront = {.compare = WGPUCompareFunction_Always},
+        .stencilBack = {.compare = WGPUCompareFunction_Always},
+        .stencilReadMask = 0,
+        .stencilWriteMask = 0,
+    };
+
+    WGPURenderPipelineDescriptor pip = {
+        .layout = pl,
+        .vertex = {.module = sm,
+                   .entryPoint = "vs",
+                   .bufferCount = 1,
+                   .buffers = &vbl},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleStrip,
+                      .cullMode = WGPUCullMode_None},
+        .fragment = &frag,
+        .depthStencil = &ds,
+        .multisample = {.count = 1, .mask = ~0u},
+    };
+    WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
+
+    wgpuPipelineLayoutRelease(pl);
+    wgpuShaderModuleRelease(sm);
+    return pipeline;
+}
+
 /* Surface rasterization (offscreen, once per tile) */
 
 typedef struct {
@@ -886,6 +996,95 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     r->tree_pipeline = create_tree_pipeline(device, format, r->global_bgl,
                                             r->tile_bgl, r->model_bgl);
 
+    /* POI text label pipeline + font atlas */
+    {
+        WGPUBindGroupLayoutEntry poi_entries[] = {
+            {
+                .binding = 0,
+                .visibility = WGPUShaderStage_Vertex,
+                .buffer = {.type = WGPUBufferBindingType_Uniform,
+                           .minBindingSize = sizeof(poi_uniforms_t)},
+            },
+            {
+                .binding = 1,
+                .visibility = WGPUShaderStage_Fragment,
+                .texture = {.sampleType = WGPUTextureSampleType_Float,
+                            .viewDimension = WGPUTextureViewDimension_2D},
+            },
+            {
+                .binding = 2,
+                .visibility = WGPUShaderStage_Fragment,
+                .sampler = {.type = WGPUSamplerBindingType_Filtering},
+            },
+        };
+        r->poi_bgl = wgpuDeviceCreateBindGroupLayout(
+            device, &(WGPUBindGroupLayoutDescriptor){.entryCount = 3,
+                                                     .entries = poi_entries});
+
+        r->poi_pipeline = create_poi_pipeline(device, format, r->global_bgl,
+                                              r->tile_bgl, r->poi_bgl);
+
+        /* Generate font atlas */
+        size_t atlas_bytes = FONT_ATLAS_SIZE * FONT_ATLAS_SIZE * 4;
+        uint8_t *atlas_data = malloc(atlas_bytes);
+        if (atlas_data) {
+            r->font_pixel_height = font_generate_atlas(atlas_data, r->glyphs);
+
+            WGPUTextureDescriptor ftd = {
+                .usage = WGPUTextureUsage_TextureBinding |
+                         WGPUTextureUsage_CopyDst,
+                .size = {FONT_ATLAS_SIZE, FONT_ATLAS_SIZE, 1},
+                .format = WGPUTextureFormat_RGBA8Unorm,
+                .dimension = WGPUTextureDimension_2D,
+                .mipLevelCount = 1,
+                .sampleCount = 1,
+            };
+            r->font_texture = wgpuDeviceCreateTexture(device, &ftd);
+            r->font_view = wgpuTextureCreateView(r->font_texture, NULL);
+
+            WGPUImageCopyTexture dst = {.texture = r->font_texture};
+            WGPUTextureDataLayout layout = {
+                .bytesPerRow = FONT_ATLAS_SIZE * 4,
+                .rowsPerImage = FONT_ATLAS_SIZE};
+            WGPUExtent3D extent = {FONT_ATLAS_SIZE, FONT_ATLAS_SIZE, 1};
+            wgpuQueueWriteTexture(queue, &dst, atlas_data, atlas_bytes,
+                                  &layout, &extent);
+            free(atlas_data);
+        }
+
+        WGPUSamplerDescriptor fsd = {
+            .addressModeU = WGPUAddressMode_ClampToEdge,
+            .addressModeV = WGPUAddressMode_ClampToEdge,
+            .magFilter = WGPUFilterMode_Linear,
+            .minFilter = WGPUFilterMode_Linear,
+            .maxAnisotropy = 1,
+        };
+        r->font_sampler = wgpuDeviceCreateSampler(device, &fsd);
+
+        /* POI uniform buffer */
+        poi_uniforms_t pu = {
+            .glyph_scale = 40.0f, /* 40 m per font unit */
+            .atlas_size = (float)FONT_ATLAS_SIZE,
+        };
+        r->poi_uniform_buf =
+            create_buffer(device, queue, WGPUBufferUsage_Uniform, &pu,
+                          sizeof(poi_uniforms_t));
+
+        /* POI bind group */
+        WGPUBindGroupEntry poi_bg_entries[] = {
+            {.binding = 0,
+             .buffer = r->poi_uniform_buf,
+             .offset = 0,
+             .size = sizeof(poi_uniforms_t)},
+            {.binding = 1, .textureView = r->font_view},
+            {.binding = 2, .sampler = r->font_sampler},
+        };
+        r->poi_bind_group = wgpuDeviceCreateBindGroup(
+            device, &(WGPUBindGroupDescriptor){.layout = r->poi_bgl,
+                                               .entryCount = 3,
+                                               .entries = poi_bg_entries});
+    }
+
     /* Surface offscreen pipeline + sampler */
     r->surface_pipeline = create_surface_pipeline(device);
     r->highway_pipeline = create_highway_pipeline(device);
@@ -1152,6 +1351,13 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->global_bind_group) wgpuBindGroupRelease(r->global_bind_group);
     if (r->global_uniform_buf) wgpuBufferRelease(r->global_uniform_buf);
     if (r->tree_pipeline) wgpuRenderPipelineRelease(r->tree_pipeline);
+    if (r->poi_pipeline) wgpuRenderPipelineRelease(r->poi_pipeline);
+    if (r->poi_bind_group) wgpuBindGroupRelease(r->poi_bind_group);
+    if (r->poi_uniform_buf) wgpuBufferRelease(r->poi_uniform_buf);
+    if (r->font_view) wgpuTextureViewRelease(r->font_view);
+    if (r->font_texture) wgpuTextureRelease(r->font_texture);
+    if (r->font_sampler) wgpuSamplerRelease(r->font_sampler);
+    if (r->poi_bgl) wgpuBindGroupLayoutRelease(r->poi_bgl);
     for (int mi = 0; mi < ARPT_MAX_MODELS; mi++) {
         if (r->models[mi].buf_pos) wgpuBufferRelease(r->models[mi].buf_pos);
         if (r->models[mi].buf_indices)
@@ -1566,6 +1772,92 @@ static void upload_tree_instances(arpt_tile_gpu *t, arpt_renderer *r,
     }
 }
 
+/* POI glyph instance buffer layout:
+ * uint16 qx, uint16 qy, int32 qz, float4 uv, float2 offset = 32 bytes */
+
+typedef struct {
+    uint16_t qx, qy;
+    int32_t qz;
+    float u0, v0, u1, v1; /* glyph atlas UVs */
+    float offset_x;       /* glyph column offset */
+    float offset_y;       /* vertical offset above POI */
+} poi_instance_t;
+
+static void upload_poi_instances(arpt_tile_gpu *t, arpt_renderer *r,
+                                 const arpt_poi_data *pois) {
+    if (!pois || pois->count == 0) return;
+
+    /* Count total glyphs across all POIs (skip spaces with no bitmap) */
+    size_t total_glyphs = 0;
+    for (size_t i = 0; i < pois->count; i++) {
+        const char *name = pois->points[i].name;
+        for (size_t c = 0; name[c]; c++) {
+            int ch = (unsigned char)name[c];
+            if (ch < FONT_FIRST_CHAR || ch > FONT_LAST_CHAR) continue;
+            int gi = ch - FONT_FIRST_CHAR;
+            if (r->glyphs[gi].width > 0) total_glyphs++;
+        }
+    }
+    if (total_glyphs == 0) return;
+
+    poi_instance_t *instances = malloc(total_glyphs * sizeof(poi_instance_t));
+    if (!instances) return;
+
+    /* Normalize glyph positions: offset is in "advance units" where
+     * 1.0 = one average glyph advance. The shader multiplies by glyph_scale. */
+    float font_size = r->font_pixel_height;
+    if (font_size < 1.0f) font_size = 40.0f;
+
+    size_t idx = 0;
+    for (size_t i = 0; i < pois->count; i++) {
+        const arpt_poi_point *p = &pois->points[i];
+        const char *name = p->name;
+        size_t len = strlen(name);
+
+        /* Compute total string width in pixels */
+        float total_w = 0;
+        for (size_t c = 0; c < len; c++) {
+            int ch = (unsigned char)name[c];
+            if (ch < FONT_FIRST_CHAR || ch > FONT_LAST_CHAR)
+                ch = FONT_FIRST_CHAR;
+            total_w += r->glyphs[ch - FONT_FIRST_CHAR].advance;
+        }
+        float half_w = total_w * 0.5f;
+
+        /* Emit glyph instances */
+        float cursor = 0;
+        for (size_t c = 0; c < len; c++) {
+            int ch = (unsigned char)name[c];
+            if (ch < FONT_FIRST_CHAR || ch > FONT_LAST_CHAR)
+                ch = FONT_FIRST_CHAR;
+            int gi = ch - FONT_FIRST_CHAR;
+            const font_glyph *g = &r->glyphs[gi];
+
+            if (g->width > 0) {
+                instances[idx].qx = p->qx;
+                instances[idx].qy = p->qy;
+                instances[idx].qz = p->z;
+                instances[idx].u0 = g->u0;
+                instances[idx].v0 = g->v0;
+                instances[idx].u1 = g->u1;
+                instances[idx].v1 = g->v1;
+                /* Offset in normalized units (divided by font_size) */
+                instances[idx].offset_x =
+                    (cursor + g->bearing_x - half_w) / font_size;
+                instances[idx].offset_y = 1.5f + g->bearing_y / font_size;
+                idx++;
+            }
+            cursor += g->advance;
+        }
+    }
+
+    t->poi_instance_buf =
+        create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex,
+                      instances, idx * sizeof(poi_instance_t));
+    t->poi_instance_count = (uint32_t)idx;
+    free(instances);
+}
+
 /* Tile GPU */
 
 arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
@@ -1574,6 +1866,7 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
                                          const arpt_highway_data *highways,
                                          const arpt_surface_data *buildings,
                                          const arpt_tree_data *trees,
+                                         const arpt_poi_data *pois,
                                          arpt_bounds bounds) {
     arpt_tile_gpu *t = calloc(1, sizeof(*t));
     if (!t) return NULL;
@@ -1628,6 +1921,9 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
 
     /* Upload tree instances */
     upload_tree_instances(t, r, trees);
+
+    /* Upload POI glyph instances */
+    upload_poi_instances(t, r, pois);
 
     /* Rasterize surface + highway features to offscreen texture */
     bool has_surface = surface && surface->count > 0;
@@ -1706,6 +2002,7 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
         if (tile->tree_instance_bufs[mi])
             wgpuBufferRelease(tile->tree_instance_bufs[mi]);
     }
+    if (tile->poi_instance_buf) wgpuBufferRelease(tile->poi_instance_buf);
     if (tile->uniform_buf) wgpuBufferRelease(tile->uniform_buf);
     if (tile->bind_group) wgpuBindGroupRelease(tile->bind_group);
     if (tile->bldg_bind_group) wgpuBindGroupRelease(tile->bldg_bind_group);
@@ -1878,6 +2175,27 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
                                          0);
     }
     if (drew_trees) {
+        /* Restore terrain pipeline for subsequent tiles */
+        wgpuRenderPassEncoderSetPipeline(r->pass, r->pipeline);
+        wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0,
+                                          NULL);
+    }
+
+    /* Draw POI text labels */
+    if (tile->poi_instance_count > 0 && r->poi_pipeline) {
+        wgpuRenderPassEncoderSetPipeline(r->pass, r->poi_pipeline);
+        wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0,
+                                          NULL);
+        wgpuRenderPassEncoderSetBindGroup(r->pass, 1, tile->bind_group, 0,
+                                          NULL);
+        wgpuRenderPassEncoderSetBindGroup(r->pass, 2, r->poi_bind_group, 0,
+                                          NULL);
+        wgpuRenderPassEncoderSetVertexBuffer(
+            r->pass, 0, tile->poi_instance_buf, 0,
+            wgpuBufferGetSize(tile->poi_instance_buf));
+        /* Triangle strip with 4 vertices per instance (quad) */
+        wgpuRenderPassEncoderDraw(r->pass, 4, tile->poi_instance_count, 0, 0);
+
         /* Restore terrain pipeline for subsequent tiles */
         wgpuRenderPassEncoderSetPipeline(r->pass, r->pipeline);
         wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0,

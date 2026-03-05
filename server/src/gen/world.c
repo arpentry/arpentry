@@ -3,6 +3,7 @@
 #include "surface.h"
 #include "town.h"
 #include "tree.h"
+#include "poi.h"
 #include "coords.h"
 #include "tile.h"
 #include "tile_builder.h"
@@ -32,6 +33,7 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
     arpentry_tiles_Tile_keys_start(&builder);
     arpentry_tiles_Tile_keys_push_create_str(&builder, "class");  /* 0 */
     arpentry_tiles_Tile_keys_push_create_str(&builder, "height"); /* 1 */
+    arpentry_tiles_Tile_keys_push_create_str(&builder, "name");   /* 2 POI_KEY_NAME */
     arpentry_tiles_Tile_keys_end(&builder);
 
     /* Value dictionary: must match SURFACE_VAL_* / TOWN_VAL_* index order */
@@ -70,6 +72,14 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
     PUSH_STR("oak");          /* 15 TREE_VAL_OAK */
     PUSH_STR("pine");         /* 16 TREE_VAL_PINE */
     PUSH_STR("birch");        /* 17 TREE_VAL_BIRCH */
+    PUSH_STR("poi");          /* 18 POI_VAL_POI */
+    /* POI name strings (19+) — must match poi_get_points() order */
+    {
+        const poi_point *pp = poi_get_points();
+        int np = poi_count();
+        for (int pi = 0; pi < np; pi++)
+            PUSH_STR(pp[pi].name);
+    }
     arpentry_tiles_Tile_values_end(&builder);
 #undef PUSH_INT
 #undef PUSH_STR
@@ -299,6 +309,52 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
                 arpentry_tiles_Layer_features_end(&builder);
                 arpentry_tiles_Tile_layers_push_end(&builder);
             }
+        }
+
+        /* Layer 5: poi (named point features) */
+        if (poi_overlaps(bounds)) {
+            const poi_point *pp = poi_get_points();
+            int np = poi_count();
+
+            arpentry_tiles_Tile_layers_push_start(&builder);
+            arpentry_tiles_Layer_name_create_str(&builder, "poi");
+
+            arpentry_tiles_Layer_features_start(&builder);
+            for (int pi = 0; pi < np; pi++) {
+                uint16_t px = arpt_quantize_lon(pp[pi].lon, bounds);
+                uint16_t py = arpt_quantize_lat(pp[pi].lat, bounds);
+                int32_t pz = arpt_meters_to_mm(
+                    terrain_elevation(pp[pi].lon, pp[pi].lat));
+
+                arpentry_tiles_Layer_features_push_start(&builder);
+                arpentry_tiles_Feature_id_add(&builder,
+                                              (uint64_t)(400000 + pi));
+
+                arpentry_tiles_PointGeometry_ref_t poi_ref;
+                arpentry_tiles_PointGeometry_start(&builder);
+                arpentry_tiles_PointGeometry_x_create(&builder, &px, 1);
+                arpentry_tiles_PointGeometry_y_create(&builder, &py, 1);
+                arpentry_tiles_PointGeometry_z_create(&builder, &pz, 1);
+                poi_ref = arpentry_tiles_PointGeometry_end(&builder);
+                arpentry_tiles_Feature_geometry_PointGeometry_add(&builder,
+                                                                   poi_ref);
+
+                arpentry_tiles_Feature_properties_start(&builder);
+                arpentry_tiles_Property_t pprop = {0};
+                /* class = "poi" */
+                pprop.key = 0;
+                pprop.value = POI_VAL_POI;
+                arpentry_tiles_Feature_properties_push(&builder, &pprop);
+                /* name = poi name string */
+                pprop.key = POI_KEY_NAME;
+                pprop.value = (uint32_t)(POI_VAL_NAME_BASE + pi);
+                arpentry_tiles_Feature_properties_push(&builder, &pprop);
+                arpentry_tiles_Feature_properties_end(&builder);
+
+                arpentry_tiles_Layer_features_push_end(&builder);
+            }
+            arpentry_tiles_Layer_features_end(&builder);
+            arpentry_tiles_Tile_layers_push_end(&builder);
         }
     }
     arpentry_tiles_Tile_layers_end(&builder);

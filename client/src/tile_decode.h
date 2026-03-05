@@ -131,4 +131,26 @@ bool arpt_decode_trees(const void *flatbuf, size_t size,
 
 void arpt_tree_data_free(arpt_tree_data *data);
 
+/* POI decoding (PointGeometry with name property) */
+
+typedef struct {
+    uint16_t qx, qy;
+    int32_t z;
+    char name[64]; /* copied from value dictionary */
+} arpt_poi_point;
+
+typedef struct {
+    arpt_poi_point *points; /* malloc'd array */
+    size_t count;
+} arpt_poi_data;
+
+/**
+ * Extract POI points from a verified FlatBuffer tile.
+ * Finds the "poi" layer, extracts PointGeometry features with "name" string.
+ */
+bool arpt_decode_pois(const void *flatbuf, size_t size,
+                      arpt_poi_data *out);
+
+void arpt_poi_data_free(arpt_poi_data *data);
+
 #endif /* ARPENTRY_TILE_DECODE_H */

@@ -42,6 +42,7 @@ set(SHADER_SOURCES
     wireframe.wgsl
     ui.wgsl
     tree.wgsl
+    poi.wgsl
 )
 
 set(SHADER_HEADERS)
@@ -65,6 +66,27 @@ endforeach()
 
 add_custom_target(embed_shaders DEPENDS ${SHADER_HEADERS})
 
+# ── Embed binary assets as C headers ────────────────────────────────────
+
+set(ASSET_DIR     ${CMAKE_CURRENT_SOURCE_DIR}/assets)
+set(ASSET_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/assets)
+file(MAKE_DIRECTORY ${ASSET_GEN_DIR})
+
+set(FONT_INPUT  ${ASSET_DIR}/Inter-Regular.ttf)
+set(FONT_OUTPUT ${ASSET_GEN_DIR}/Inter-Regular.ttf.h)
+add_custom_command(
+    OUTPUT  ${FONT_OUTPUT}
+    COMMAND ${CMAKE_COMMAND}
+        -DINPUT=${FONT_INPUT}
+        -DINPUT_NAME=Inter-Regular.ttf
+        -DOUTPUT=${FONT_OUTPUT}
+        -DVAR_NAME=inter_regular_ttf
+        -P ${CMAKE_SOURCE_DIR}/cmake/embed_binary.cmake
+    DEPENDS ${FONT_INPUT} ${CMAKE_SOURCE_DIR}/cmake/embed_binary.cmake
+    COMMENT "Embedding font Inter-Regular.ttf"
+)
+add_custom_target(embed_assets DEPENDS ${FONT_OUTPUT})
+
 # ── Main executable ──────────────────────────────────────────────────────
 
 add_executable(arpentry_client
@@ -79,11 +101,14 @@ add_executable(arpentry_client
     src/tile_visible.c
     src/tile_manager.c
     src/ui.c
+    src/font.c
+    src/stb_truetype_impl.c
 )
-add_dependencies(arpentry_client flatcc_generate embed_shaders)
+add_dependencies(arpentry_client flatcc_generate embed_shaders embed_assets)
 target_include_directories(arpentry_client PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${SHADER_GEN_DIR}
+    ${ASSET_GEN_DIR}
 )
 target_link_libraries(arpentry_client PRIVATE webgpu glfw3webgpu arpentry_common)
 

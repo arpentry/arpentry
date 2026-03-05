@@ -51,13 +51,15 @@ int arpt_renderer_model_count(const arpt_renderer *r);
 /** Upload a decoded terrain mesh to GPU buffers.
  *  Rasterizes surface, highway, and building features to a texture.
  *  Extrudes buildings with height_m > 0 into 3D wall + roof geometry.
- *  Optionally uploads tree instance data for instanced rendering. */
+ *  Optionally uploads tree instance data for instanced rendering.
+ *  Optionally uploads POI glyph instances for text label rendering. */
 arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
                                          const arpt_terrain_mesh *mesh,
                                          const arpt_surface_data *surface,
                                          const arpt_highway_data *highways,
                                          const arpt_surface_data *buildings,
                                          const arpt_tree_data *trees,
+                                         const arpt_poi_data *pois,
                                          arpt_bounds bounds);
 
 /** Update per-tile uniforms (model matrix, bounds, center). */
