@@ -344,3 +344,88 @@ void arpt_highway_data_free(arpt_highway_data *data) {
         data->count = 0;
     }
 }
+
+/* Tree decoding */
+
+bool arpt_decode_trees(const void *flatbuf, size_t size,
+                       arpt_tree_data *out) {
+    out->points = NULL;
+    out->count = 0;
+
+    uint32_t class_key_idx;
+    uint32_t height_key_idx;
+    arpentry_tiles_Value_vec_t values;
+    arpentry_tiles_Layer_table_t layer =
+        find_layer(flatbuf, size, "tree", &class_key_idx, &height_key_idx,
+                   &values);
+    if (!layer) return true;
+
+    arpentry_tiles_Feature_vec_t features =
+        arpentry_tiles_Layer_features(layer);
+    if (!features) return true;
+
+    size_t n_feat = arpentry_tiles_Feature_vec_len(features);
+    if (n_feat == 0) return true;
+
+    /* Count total points across all features */
+    size_t total = 0;
+    for (size_t i = 0; i < n_feat; i++) {
+        arpentry_tiles_Feature_table_t feat =
+            arpentry_tiles_Feature_vec_at(features, i);
+        if (!feat) continue;
+        if (arpentry_tiles_Feature_geometry_type(feat) !=
+            arpentry_tiles_Geometry_PointGeometry)
+            continue;
+        arpentry_tiles_PointGeometry_table_t pt =
+            (arpentry_tiles_PointGeometry_table_t)
+                arpentry_tiles_Feature_geometry(feat);
+        if (!pt) continue;
+        flatbuffers_uint16_vec_t xv = arpentry_tiles_PointGeometry_x(pt);
+        if (xv) total += flatbuffers_uint16_vec_len(xv);
+    }
+    if (total == 0) return true;
+
+    out->points = malloc(total * sizeof(arpt_tree_point));
+    if (!out->points) return false;
+
+    size_t count = 0;
+    for (size_t i = 0; i < n_feat; i++) {
+        arpentry_tiles_Feature_table_t feat =
+            arpentry_tiles_Feature_vec_at(features, i);
+        if (!feat) continue;
+        if (arpentry_tiles_Feature_geometry_type(feat) !=
+            arpentry_tiles_Geometry_PointGeometry)
+            continue;
+        arpentry_tiles_PointGeometry_table_t pt =
+            (arpentry_tiles_PointGeometry_table_t)
+                arpentry_tiles_Feature_geometry(feat);
+        if (!pt) continue;
+
+        flatbuffers_uint16_vec_t xv = arpentry_tiles_PointGeometry_x(pt);
+        flatbuffers_uint16_vec_t yv = arpentry_tiles_PointGeometry_y(pt);
+        flatbuffers_int32_vec_t zv = arpentry_tiles_PointGeometry_z(pt);
+        if (!xv || !yv || !zv) continue;
+
+        size_t vc = flatbuffers_uint16_vec_len(xv);
+        if (flatbuffers_uint16_vec_len(yv) != vc) continue;
+        if (flatbuffers_int32_vec_len(zv) != vc) continue;
+
+        for (size_t v = 0; v < vc; v++) {
+            out->points[count].qx = xv[v];
+            out->points[count].qy = yv[v];
+            out->points[count].z = zv[v];
+            count++;
+        }
+    }
+
+    out->count = count;
+    return true;
+}
+
+void arpt_tree_data_free(arpt_tree_data *data) {
+    if (data) {
+        free(data->points);
+        data->points = NULL;
+        data->count = 0;
+    }
+}

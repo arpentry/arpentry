@@ -10,6 +10,7 @@
 #include "surface.wgsl.h"
 #include "highway.wgsl.h"
 #include "wireframe.wgsl.h"
+#include "tree.wgsl.h"
 
 #define SURFACE_TEX_SIZE 2048
 #define SURFACE_MARGIN 0.0625 /* = SURFACE_BUFFER / SURFACE_GRID = 8/128 */
@@ -53,6 +54,10 @@ struct arpt_tile_gpu {
     WGPUBuffer bldg_buf_indices;
     WGPUBindGroup bldg_bind_group;
     uint32_t bldg_index_count;
+
+    /* Tree instances (instanced draw call, tree pipeline) */
+    WGPUBuffer tree_instance_buf;
+    uint32_t tree_instance_count;
 };
 
 /* Renderer state */
@@ -102,6 +107,15 @@ struct arpt_renderer {
     WGPUBuffer ph_wire_buf_dist;
     WGPUBuffer ph_wire_indices;
     uint32_t ph_wire_index_count;
+
+    /* Tree instancing */
+    WGPURenderPipeline tree_pipeline;
+    WGPUBuffer tree_model_buf_pos;    /* model vertex positions (sint16x4) */
+    WGPUBuffer tree_model_buf_indices; /* model index buffer */
+    uint32_t tree_model_index_count;
+    float tree_color[4];
+    float tree_min_scale;
+    float tree_max_scale;
 
     WGPUCommandEncoder encoder;
     WGPURenderPassEncoder pass;
@@ -407,6 +421,90 @@ static WGPURenderPipeline create_wireframe_pipeline(WGPUDevice device,
                    .buffers = vbls},
         .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
                       .cullMode = WGPUCullMode_None},
+        .fragment = &frag,
+        .depthStencil = &ds,
+        .multisample = {.count = 1, .mask = ~0u},
+    };
+    WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
+
+    wgpuPipelineLayoutRelease(pl);
+    wgpuShaderModuleRelease(sm);
+    return pipeline;
+}
+
+/* Tree instanced pipeline */
+
+static WGPURenderPipeline create_tree_pipeline(WGPUDevice device,
+                                                WGPUTextureFormat format,
+                                                WGPUBindGroupLayout global_bgl,
+                                                WGPUBindGroupLayout tile_bgl) {
+    WGPUShaderModuleWGSLDescriptor wgsl_desc = {
+        .chain = {.sType = WGPUSType_ShaderModuleWGSLDescriptor},
+        .code = tree_wgsl,
+    };
+    WGPUShaderModuleDescriptor sm_desc = {.nextInChain = &wgsl_desc.chain};
+    WGPUShaderModule sm = wgpuDeviceCreateShaderModule(device, &sm_desc);
+
+    WGPUBindGroupLayout bgls[] = {global_bgl, tile_bgl};
+    WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
+        device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 2,
+                                                .bindGroupLayouts = bgls});
+
+    /* Buffer 0 (per-vertex): model position as Sint16x4 = 8 bytes */
+    WGPUVertexAttribute attr_model_pos = {
+        .format = WGPUVertexFormat_Sint16x4,
+        .offset = 0,
+        .shaderLocation = 0,
+    };
+
+    /* Buffer 1 (per-instance): qxy(uint16x2) + qz(sint32) + yaw_scale(float32)
+       = 4 + 4 + 4 = 12 bytes */
+    WGPUVertexAttribute inst_attrs[] = {
+        {.format = WGPUVertexFormat_Uint16x2,
+         .offset = 0,
+         .shaderLocation = 1},
+        {.format = WGPUVertexFormat_Sint32,
+         .offset = 4,
+         .shaderLocation = 2},
+        {.format = WGPUVertexFormat_Float32,
+         .offset = 8,
+         .shaderLocation = 3},
+    };
+
+    WGPUVertexBufferLayout vbls[] = {
+        {.arrayStride = 8,
+         .stepMode = WGPUVertexStepMode_Vertex,
+         .attributeCount = 1,
+         .attributes = &attr_model_pos},
+        {.arrayStride = 12,
+         .stepMode = WGPUVertexStepMode_Instance,
+         .attributeCount = 3,
+         .attributes = inst_attrs},
+    };
+
+    WGPUColorTargetState ct = {.format = format,
+                               .writeMask = WGPUColorWriteMask_All};
+    WGPUFragmentState frag = {
+        .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
+    WGPUDepthStencilState ds = {
+        .format = WGPUTextureFormat_Depth24Plus,
+        .depthWriteEnabled = true,
+        .depthCompare = WGPUCompareFunction_LessEqual,
+        .stencilFront = {.compare = WGPUCompareFunction_Always},
+        .stencilBack = {.compare = WGPUCompareFunction_Always},
+        .stencilReadMask = 0,
+        .stencilWriteMask = 0,
+    };
+
+    WGPURenderPipelineDescriptor pip = {
+        .layout = pl,
+        .vertex = {.module = sm,
+                   .entryPoint = "vs",
+                   .bufferCount = 2,
+                   .buffers = vbls},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
+                      .cullMode = WGPUCullMode_Back,
+                      .frontFace = WGPUFrontFace_CCW},
         .fragment = &frag,
         .depthStencil = &ds,
         .multisample = {.count = 1, .mask = ~0u},
@@ -754,6 +852,8 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     r->pipeline = create_pipeline(device, format, r->global_bgl, r->tile_bgl);
     r->wireframe_pipeline =
         create_wireframe_pipeline(device, format, r->global_bgl, r->tile_bgl);
+    r->tree_pipeline =
+        create_tree_pipeline(device, format, r->global_bgl, r->tile_bgl);
 
     /* Surface offscreen pipeline + sampler */
     r->surface_pipeline = create_surface_pipeline(device);
@@ -1020,6 +1120,9 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->depth_texture) wgpuTextureRelease(r->depth_texture);
     if (r->global_bind_group) wgpuBindGroupRelease(r->global_bind_group);
     if (r->global_uniform_buf) wgpuBufferRelease(r->global_uniform_buf);
+    if (r->tree_pipeline) wgpuRenderPipelineRelease(r->tree_pipeline);
+    if (r->tree_model_buf_pos) wgpuBufferRelease(r->tree_model_buf_pos);
+    if (r->tree_model_buf_indices) wgpuBufferRelease(r->tree_model_buf_indices);
     if (r->pipeline) wgpuRenderPipelineRelease(r->pipeline);
     if (r->surface_pipeline) wgpuRenderPipelineRelease(r->surface_pipeline);
     if (r->highway_pipeline) wgpuRenderPipelineRelease(r->highway_pipeline);
@@ -1291,6 +1394,81 @@ static void upload_building_extrusion(arpt_tile_gpu *t, arpt_renderer *r,
     t->bldg_index_count = (uint32_t)ni;
 }
 
+/* Upload tree model geometry to GPU (called once after model fetch). */
+
+void arpt_renderer_upload_model(arpt_renderer *r, const arpt_model *model) {
+    if (!r || !model || model->vertex_count == 0) return;
+
+    /* Pad int16 x/y/z to int16x4 (8 bytes per vertex) */
+    size_t nv = model->vertex_count;
+    int16_t *padded = calloc(nv, 8);
+    if (!padded) return;
+    for (size_t i = 0; i < nv; i++) {
+        padded[i * 4 + 0] = model->x[i];
+        padded[i * 4 + 1] = model->y[i];
+        padded[i * 4 + 2] = model->z[i];
+        padded[i * 4 + 3] = 0; /* padding */
+    }
+    r->tree_model_buf_pos = create_buffer(r->device, r->queue,
+                                          WGPUBufferUsage_Vertex, padded,
+                                          nv * 8);
+    free(padded);
+
+    r->tree_model_buf_indices = create_buffer(
+        r->device, r->queue, WGPUBufferUsage_Index, model->indices,
+        model->index_count * sizeof(uint32_t));
+    r->tree_model_index_count = (uint32_t)model->index_count;
+
+    memcpy(r->tree_color, model->color, sizeof(r->tree_color));
+    r->tree_min_scale = model->min_scale;
+    r->tree_max_scale = model->max_scale;
+}
+
+/* Tree instance buffer layout: uint16 qx, uint16 qy, int32 qz, float yaw_scale
+   = 12 bytes per instance */
+
+typedef struct {
+    uint16_t qx, qy;
+    int32_t qz;
+    float yaw_scale;
+} tree_instance_t;
+
+static void upload_tree_instances(arpt_tile_gpu *t, arpt_renderer *r,
+                                  const arpt_tree_data *trees) {
+    if (!trees || trees->count == 0) return;
+    if (!r->tree_model_buf_pos) return; /* no model uploaded yet */
+
+    size_t n = trees->count;
+    tree_instance_t *instances = malloc(n * sizeof(tree_instance_t));
+    if (!instances) return;
+
+    float min_s = r->tree_min_scale;
+    float max_s = r->tree_max_scale;
+
+    for (size_t i = 0; i < n; i++) {
+        uint16_t qx = trees->points[i].qx;
+        uint16_t qy = trees->points[i].qy;
+        instances[i].qx = qx;
+        instances[i].qy = qy;
+        instances[i].qz = trees->points[i].z;
+
+        /* Deterministic hash for yaw + scale */
+        uint32_t hash = (uint32_t)qx * 73856093u ^ (uint32_t)qy * 19349663u;
+        float yaw_01 = (float)(hash & 0xFF) / 255.0f;
+        float scale_01 = (float)((hash >> 8) & 0xFF) / 255.0f;
+        /* Pack: yaw index (0-255) in integer part, scale_01 in fractional part.
+           The shader reconstructs: yaw = integer/256 * 2pi,
+           scale = min_scale + fract * (max_scale - min_scale). */
+        instances[i].yaw_scale = (float)((int)(yaw_01 * 256.0f)) + scale_01;
+    }
+
+    t->tree_instance_buf = create_buffer(r->device, r->queue,
+                                         WGPUBufferUsage_Vertex, instances,
+                                         n * sizeof(tree_instance_t));
+    t->tree_instance_count = (uint32_t)n;
+    free(instances);
+}
+
 /* Tile GPU */
 
 arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
@@ -1298,6 +1476,7 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
                                          const arpt_surface_data *surface,
                                          const arpt_highway_data *highways,
                                          const arpt_surface_data *buildings,
+                                         const arpt_tree_data *trees,
                                          arpt_bounds bounds) {
     arpt_tile_gpu *t = calloc(1, sizeof(*t));
     if (!t) return NULL;
@@ -1349,6 +1528,9 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
 
     /* Upload building extrusion as separate buffers */
     upload_building_extrusion(t, r, buildings, bounds);
+
+    /* Upload tree instances */
+    upload_tree_instances(t, r, trees);
 
     /* Rasterize surface + highway features to offscreen texture */
     bool has_surface = surface && surface->count > 0;
@@ -1423,6 +1605,7 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     if (tile->bldg_buf_z) wgpuBufferRelease(tile->bldg_buf_z);
     if (tile->bldg_buf_normals) wgpuBufferRelease(tile->bldg_buf_normals);
     if (tile->bldg_buf_indices) wgpuBufferRelease(tile->bldg_buf_indices);
+    if (tile->tree_instance_buf) wgpuBufferRelease(tile->tree_instance_buf);
     if (tile->uniform_buf) wgpuBufferRelease(tile->uniform_buf);
     if (tile->bind_group) wgpuBindGroupRelease(tile->bind_group);
     if (tile->bldg_bind_group) wgpuBindGroupRelease(tile->bldg_bind_group);
@@ -1564,6 +1747,31 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
             wgpuBufferGetSize(tile->bldg_buf_indices));
         wgpuRenderPassEncoderDrawIndexed(r->pass, tile->bldg_index_count, 1, 0,
                                          0, 0);
+    }
+
+    /* Draw instanced trees */
+    if (tile->tree_instance_count > 0 && r->tree_model_buf_pos) {
+        wgpuRenderPassEncoderSetPipeline(r->pass, r->tree_pipeline);
+        wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0,
+                                          NULL);
+        wgpuRenderPassEncoderSetBindGroup(r->pass, 1, tile->bind_group, 0,
+                                          NULL);
+        wgpuRenderPassEncoderSetVertexBuffer(
+            r->pass, 0, r->tree_model_buf_pos, 0,
+            wgpuBufferGetSize(r->tree_model_buf_pos));
+        wgpuRenderPassEncoderSetVertexBuffer(
+            r->pass, 1, tile->tree_instance_buf, 0,
+            wgpuBufferGetSize(tile->tree_instance_buf));
+        wgpuRenderPassEncoderSetIndexBuffer(
+            r->pass, r->tree_model_buf_indices, WGPUIndexFormat_Uint32, 0,
+            wgpuBufferGetSize(r->tree_model_buf_indices));
+        wgpuRenderPassEncoderDrawIndexed(r->pass, r->tree_model_index_count,
+                                         tile->tree_instance_count, 0, 0, 0);
+
+        /* Restore terrain pipeline for subsequent tiles */
+        wgpuRenderPassEncoderSetPipeline(r->pass, r->pipeline);
+        wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0,
+                                          NULL);
     }
 }
 

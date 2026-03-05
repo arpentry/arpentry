@@ -41,6 +41,7 @@ set(SHADER_SOURCES
     highway.wgsl
     wireframe.wgsl
     ui.wgsl
+    tree.wgsl
 )
 
 set(SHADER_HEADERS)

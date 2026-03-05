@@ -13,6 +13,9 @@ table PaintEntry {
   class:        string (required);  // class value to match ("water", "primary", ...)
   color:        RGBA;               // fill or line color
   width:        float32;            // line half-width in quantized units (0 for fills)
+  model:        string;             // model name in ModelLibrary (e.g. "broadleaf_01")
+  min_scale:    float32 = 1.0;     // instance scale range lower bound
+  max_scale:    float32 = 1.0;     // instance scale range upper bound
 }
 
 table LayerStyle {

@@ -28,6 +28,12 @@
       "paint": [
         { "class": "building", "color": [209, 196, 179, 255] }
       ]
+    },
+    {
+      "source_layer": "tree",
+      "paint": [
+        { "class": "tree", "model": "tree_01", "min_scale": 0.7, "max_scale": 1.3 }
+      ]
     }
   ]
 }

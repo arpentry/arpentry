@@ -1,60 +1,53 @@
 #include "tree.h"
 #include "terrain.h"
 #include "noise.h"
+#include <math.h>
 
-/* Biome thresholds (same as surface.c) */
-#define BIOME_ELEV_ICE  3000.0
-#define BIOME_ELEV_MID  1500.0
-#define BIOME_ELEV_LOW   400.0
-#define BIOME_MOIST_WET    0.55
+/* Fixed global grid spacing in degrees (~55 m at equator). */
+#define CELL_DEG 0.0005
 
-/* Grid resolution for candidate placement */
-#define TREE_GRID 32
+/* Noise frequency for jitter. */
+#define JITTER_FREQ 50.0
 
-/* Noise frequency for jitter and density */
-#define JITTER_FREQ  50.0
-#define DENSITY_FREQ 12.0
-#define DENSITY_THRESHOLD 0.1
-
-/* Return true if the biome at (lon, lat) is forest. */
-static int is_forest(double lon, double lat) {
-    double e = terrain_elevation(lon, lat);
-    if (e <= 0.0) return 0;
-
-    double m = terrain_moisture(lon, lat);
-    if (m <= BIOME_MOIST_WET) return 0;
-
-    if (e > BIOME_ELEV_ICE) return 0;
-    /* Mid-high, mid, or low elevation with wet moisture => forest */
-    return 1;
-}
+/* Trees only within this radius (degrees) of the town center (0,0). */
+#define TREE_RADIUS_DEG 0.15
 
 int generate_trees(arpt_bounds bounds, tree_point *out, int max_count) {
-    double lon_span = bounds.east - bounds.west;
-    double lat_span = bounds.north - bounds.south;
-    double cell_lon = lon_span / TREE_GRID;
-    double cell_lat = lat_span / TREE_GRID;
+    /* Clamp iteration to the tree area */
+    double lo_lon = fmax(bounds.west,  -TREE_RADIUS_DEG);
+    double hi_lon = fmin(bounds.east,   TREE_RADIUS_DEG);
+    double lo_lat = fmax(bounds.south, -TREE_RADIUS_DEG);
+    double hi_lat = fmin(bounds.north,  TREE_RADIUS_DEG);
+
+    /* No overlap with tree area */
+    if (lo_lon >= hi_lon || lo_lat >= hi_lat) return 0;
+
+    /* Snap to the global grid */
+    int c0 = (int)floor(lo_lon / CELL_DEG);
+    int c1 = (int)ceil(hi_lon / CELL_DEG);
+    int r0 = (int)floor(lo_lat / CELL_DEG);
+    int r1 = (int)ceil(hi_lat / CELL_DEG);
+
     int count = 0;
 
-    for (int r = 0; r < TREE_GRID && count < max_count; r++) {
-        for (int c = 0; c < TREE_GRID && count < max_count; c++) {
-            /* Cell center */
-            double lon = bounds.west + ((double)c + 0.5) * cell_lon;
-            double lat = bounds.south + ((double)r + 0.5) * cell_lat;
+    for (int r = r0; r <= r1 && count < max_count; r++) {
+        for (int c = c0; c <= c1 && count < max_count; c++) {
+            double lon = ((double)c + 0.5) * CELL_DEG;
+            double lat = ((double)r + 0.5) * CELL_DEG;
+
+            /* Only within radius */
+            double d2 = lon * lon + lat * lat;
+            if (d2 > TREE_RADIUS_DEG * TREE_RADIUS_DEG) continue;
+
+            /* Skip water */
+            if (terrain_elevation(lon, lat) <= 0.0) continue;
 
             /* Deterministic jitter using simplex noise */
             double jx = arpt_simplex2(lon * JITTER_FREQ, lat * JITTER_FREQ);
             double jy = arpt_simplex2(lat * JITTER_FREQ + 100.0,
                                       lon * JITTER_FREQ + 100.0);
-            lon += jx * cell_lon * 0.4;
-            lat += jy * cell_lat * 0.4;
-
-            /* Density noise pass */
-            double d = arpt_simplex2(lon * DENSITY_FREQ, lat * DENSITY_FREQ);
-            if (d < DENSITY_THRESHOLD) continue;
-
-            /* Biome check */
-            if (!is_forest(lon, lat)) continue;
+            lon += jx * CELL_DEG * 0.4;
+            lat += jy * CELL_DEG * 0.4;
 
             out[count].lon = lon;
             out[count].lat = lat;

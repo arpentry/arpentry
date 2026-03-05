@@ -35,4 +35,8 @@ void arpt_style_defaults(arpt_style *s) {
     s->building[1] = 186.0f / 255.0f;
     s->building[2] = 182.0f / 255.0f;
     s->building[3] = 255.0f / 255.0f;
+
+    /* Tree instance scale range */
+    s->tree_min_scale = 0.7f;
+    s->tree_max_scale = 1.3f;
 }

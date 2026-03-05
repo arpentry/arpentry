@@ -10,6 +10,18 @@
 typedef struct arpt_renderer arpt_renderer;
 typedef struct arpt_tile_gpu arpt_tile_gpu;
 
+/* Tree model (decoded from ModelLibrary) */
+
+typedef struct {
+    const int16_t *x, *y, *z; /* model-local mm (zero-copy) */
+    size_t vertex_count;
+    const uint32_t *indices;
+    size_t index_count;
+    float color[4];            /* from Part */
+    float min_scale;
+    float max_scale;
+} arpt_model;
+
 /* Renderer lifecycle */
 
 arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
@@ -20,16 +32,21 @@ void arpt_renderer_free(arpt_renderer *r);
 /** Recreate depth texture after window resize. */
 void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height);
 
+/** Upload a tree model's geometry to GPU (call once after model fetch). */
+void arpt_renderer_upload_model(arpt_renderer *r, const arpt_model *model);
+
 /* Tile GPU resources */
 
 /** Upload a decoded terrain mesh to GPU buffers.
  *  Rasterizes surface, highway, and building features to a texture.
- *  Extrudes buildings with height_m > 0 into 3D wall + roof geometry. */
+ *  Extrudes buildings with height_m > 0 into 3D wall + roof geometry.
+ *  Optionally uploads tree instance data for instanced rendering. */
 arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
                                          const arpt_terrain_mesh *mesh,
                                          const arpt_surface_data *surface,
                                          const arpt_highway_data *highways,
                                          const arpt_surface_data *buildings,
+                                         const arpt_tree_data *trees,
                                          arpt_bounds bounds);
 
 /** Update per-tile uniforms (model matrix, bounds, center). */

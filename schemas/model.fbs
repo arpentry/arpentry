@@ -1,0 +1,22 @@
+include "tile.fbs";
+
+namespace arpentry.tiles;
+file_identifier "arpm";
+file_extension "arpm";
+
+table Model {
+  name: string (required);        // e.g. "broadleaf_01", "conifer_01"
+  x: [int16] (required);          // model-local X mm (32.767 m range)
+  y: [int16] (required);          // model-local Y mm
+  z: [int16] (required);          // model-local Z mm (height above base)
+  indices: [uint32] (required);   // triangle indices
+  normals: [int8];                // octahedral int8x2 per-vertex normals
+  parts: [Part];                  // per-part material (reuses Part/Color from tile.fbs)
+}
+
+table ModelLibrary {
+  version: uint16 = 1;
+  models: [Model];
+}
+
+root_type ModelLibrary;

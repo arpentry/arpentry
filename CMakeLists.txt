@@ -84,6 +84,7 @@ set(FLATCC_SCHEMAS
     ${CMAKE_SOURCE_DIR}/schemas/tile.fbs
     ${CMAKE_SOURCE_DIR}/schemas/tileset.fbs
     ${CMAKE_SOURCE_DIR}/schemas/style.fbs
+    ${CMAKE_SOURCE_DIR}/schemas/model.fbs
 )
 
 add_custom_command(
@@ -97,6 +98,9 @@ add_custom_command(
         ${FLATCC_GENERATED_DIR}/style_builder.h
         ${FLATCC_GENERATED_DIR}/style_reader.h
         ${FLATCC_GENERATED_DIR}/style_verifier.h
+        ${FLATCC_GENERATED_DIR}/model_builder.h
+        ${FLATCC_GENERATED_DIR}/model_reader.h
+        ${FLATCC_GENERATED_DIR}/model_verifier.h
     COMMAND ${FLATCC_EXE} -a -o ${FLATCC_GENERATED_DIR} ${FLATCC_SCHEMAS}
     DEPENDS ${FLATCC_SCHEMAS}
     COMMENT "Compiling FlatBuffers schemas"
@@ -111,6 +115,9 @@ add_custom_target(flatcc_generate DEPENDS
     ${FLATCC_GENERATED_DIR}/style_builder.h
     ${FLATCC_GENERATED_DIR}/style_reader.h
     ${FLATCC_GENERATED_DIR}/style_verifier.h
+    ${FLATCC_GENERATED_DIR}/model_builder.h
+    ${FLATCC_GENERATED_DIR}/model_reader.h
+    ${FLATCC_GENERATED_DIR}/model_verifier.h
 )
 
 # ── Subdirectories ───────────────────────────────────────────────────────

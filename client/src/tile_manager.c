@@ -155,15 +155,20 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
     if (key.level >= 13)
         arpt_decode_buildings(flatbuf, size, &buildings);
 
+    arpt_tree_data trees = {0};
+    if (key.level >= 13)
+        arpt_decode_trees(flatbuf, size, &trees);
+
     /* wgpuQueueWriteBuffer copies synchronously, safe to free after */
     updated.gpu = arpt_renderer_upload_tile(tm->renderer, &mesh, &surface,
-                                            &highways, &buildings,
+                                            &highways, &buildings, &trees,
                                             updated.bounds);
     updated.state = updated.gpu ? TILE_READY : TILE_FAILED;
     tm_hashmap_set(tm, &updated);
     arpt_surface_data_free(&surface);
     arpt_highway_data_free(&highways);
     arpt_surface_data_free(&buildings);
+    arpt_tree_data_free(&trees);
     free(flatbuf);
 }
 

@@ -105,4 +105,25 @@ void arpt_highway_data_free(arpt_highway_data *data);
 bool arpt_decode_buildings(const void *flatbuf, size_t size,
                            arpt_surface_data *out);
 
+/* Tree decoding (PointGeometry) */
+
+typedef struct {
+    uint16_t qx, qy;
+    int32_t z;
+} arpt_tree_point;
+
+typedef struct {
+    arpt_tree_point *points; /* malloc'd array */
+    size_t count;
+} arpt_tree_data;
+
+/**
+ * Extract tree point positions from a verified FlatBuffer tile.
+ * Finds the "tree" layer, extracts PointGeometry features.
+ */
+bool arpt_decode_trees(const void *flatbuf, size_t size,
+                       arpt_tree_data *out);
+
+void arpt_tree_data_free(arpt_tree_data *data);
+
 #endif /* ARPENTRY_TILE_DECODE_H */

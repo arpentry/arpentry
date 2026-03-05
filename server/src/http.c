@@ -5,7 +5,10 @@
 #include "tile.h"
 #include "tileset_builder.h"
 #include "style_builder.h"
+#include "model_builder.h"
 #include "json.h"
+
+#include <math.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -207,6 +210,16 @@ static bool build_tileset(uint8_t **out, size_t *out_size) {
     arpentry_tiles_LayerInfo_max_level_add(&builder, 19);
     arpentry_tiles_Tileset_layers_push_end(&builder);
 
+    /* tree: Point, 13-19 */
+    arpentry_tiles_Tileset_layers_push_start(&builder);
+    arpentry_tiles_LayerInfo_name_create_str(&builder, "tree");
+    arpentry_tiles_GeometryType_enum_t point_types[] = {
+        arpentry_tiles_GeometryType_Point};
+    arpentry_tiles_LayerInfo_geometry_types_create(&builder, point_types, 1);
+    arpentry_tiles_LayerInfo_min_level_add(&builder, 13);
+    arpentry_tiles_LayerInfo_max_level_add(&builder, 19);
+    arpentry_tiles_Tileset_layers_push_end(&builder);
+
     arpentry_tiles_Tileset_layers_end(&builder);
     arpentry_tiles_Tileset_end_as_root(&builder);
 
@@ -340,6 +353,24 @@ static bool build_style(const char *style_file, uint8_t **out,
                         arpentry_tiles_PaintEntry_width_add(
                             &builder, (float)json_double(jwidth));
 
+                    struct json jmodel = json_object_get(jentry, "model");
+                    if (json_exists(jmodel)) {
+                        char model_buf[128];
+                        json_string_copy(jmodel, model_buf, sizeof(model_buf));
+                        arpentry_tiles_PaintEntry_model_create_str(&builder,
+                                                                    model_buf);
+                    }
+
+                    struct json jmin_s = json_object_get(jentry, "min_scale");
+                    if (json_exists(jmin_s))
+                        arpentry_tiles_PaintEntry_min_scale_add(
+                            &builder, (float)json_double(jmin_s));
+
+                    struct json jmax_s = json_object_get(jentry, "max_scale");
+                    if (json_exists(jmax_s))
+                        arpentry_tiles_PaintEntry_max_scale_add(
+                            &builder, (float)json_double(jmax_s));
+
                     arpentry_tiles_LayerStyle_paint_push_end(&builder);
                     jentry = json_next(jentry);
                 }
@@ -358,6 +389,91 @@ static bool build_style(const char *style_file, uint8_t **out,
     void *fb = flatcc_builder_finalize_buffer(&builder, &fb_size);
     flatcc_builder_clear(&builder);
     free(json_str);
+    if (!fb) return false;
+
+    bool ok = arpt_encode(fb, fb_size, out, out_size, BROTLI_QUALITY);
+    free(fb);
+    return ok;
+}
+
+/* Build a Brotli-compressed ModelLibrary FlatBuffer with a low-poly cone
+   tree model (~17 vertices, 24 triangles). Caller frees *out. */
+
+static bool build_models(uint8_t **out, size_t *out_size) {
+    flatcc_builder_t builder;
+    flatcc_builder_init(&builder);
+
+    arpentry_tiles_ModelLibrary_start_as_root(&builder);
+    arpentry_tiles_ModelLibrary_version_add(&builder, 1);
+
+    arpentry_tiles_ModelLibrary_models_start(&builder);
+    arpentry_tiles_ModelLibrary_models_push_start(&builder);
+
+    arpentry_tiles_Model_name_create_str(&builder, "tree_01");
+
+    /* 8-sided cone: 8 base ring vertices at z=0, 1 apex at z=15000mm.
+       Radius ~5000mm (5m), height 15000mm (15m). */
+#define TREE_SIDES 8
+#define TREE_VERTS (TREE_SIDES + 1) /* ring + apex */
+#define TREE_TRIS (TREE_SIDES * 2)  /* cone sides + base cap */
+
+    int16_t vx[TREE_VERTS], vy[TREE_VERTS], vz[TREE_VERTS];
+    for (int i = 0; i < TREE_SIDES; i++) {
+        double angle = 2.0 * M_PI * i / TREE_SIDES;
+        vx[i] = (int16_t)(5000.0 * cos(angle));
+        vy[i] = (int16_t)(5000.0 * sin(angle));
+        vz[i] = 0;
+    }
+    /* Apex */
+    vx[TREE_SIDES] = 0;
+    vy[TREE_SIDES] = 0;
+    vz[TREE_SIDES] = 15000;
+
+    arpentry_tiles_Model_x_create(&builder, vx, TREE_VERTS);
+    arpentry_tiles_Model_y_create(&builder, vy, TREE_VERTS);
+    arpentry_tiles_Model_z_create(&builder, vz, TREE_VERTS);
+
+    /* Indices: cone sides (apex=8, base ring CW from outside) + base cap */
+    uint32_t indices[TREE_TRIS * 3];
+    int idx = 0;
+    /* Cone sides: triangles (apex, ring[i], ring[(i+1)%8]) */
+    for (int i = 0; i < TREE_SIDES; i++) {
+        indices[idx++] = TREE_SIDES; /* apex */
+        indices[idx++] = (uint32_t)i;
+        indices[idx++] = (uint32_t)((i + 1) % TREE_SIDES);
+    }
+    /* Base cap: triangle fan from vertex 0, CW when viewed from below */
+    for (int i = 1; i < TREE_SIDES - 1; i++) {
+        indices[idx++] = 0;
+        indices[idx++] = (uint32_t)(i + 1);
+        indices[idx++] = (uint32_t)i;
+    }
+
+    arpentry_tiles_Model_indices_create(&builder, indices, (size_t)idx);
+
+    /* Single Part with green color */
+    arpentry_tiles_Model_parts_start(&builder);
+    arpentry_tiles_Part_t part = {
+        .first_index = 0,
+        .index_count = (uint32_t)idx,
+        .color = {.r = 40, .g = 90, .b = 30, .a = 255},
+        .roughness = 200,
+        .metalness = 0,
+    };
+    arpentry_tiles_Model_parts_push(&builder, &part);
+    arpentry_tiles_Model_parts_end(&builder);
+
+#undef TREE_SIDES
+#undef TREE_VERTS
+#undef TREE_TRIS
+
+    arpentry_tiles_ModelLibrary_models_push_end(&builder);
+    arpentry_tiles_ModelLibrary_models_end(&builder);
+    arpentry_tiles_ModelLibrary_end_as_root(&builder);
+
+    size_t fb_size;
+    void *fb = flatcc_builder_finalize_buffer(&builder, &fb_size);
+    flatcc_builder_clear(&builder);
     if (!fb) return false;
 
     bool ok = arpt_encode(fb, fb_size, out, out_size, BROTLI_QUALITY);
@@ -412,6 +528,20 @@ static void dispatch_request(struct net_conn *conn, struct server_ctx *ctx,
             write_response(conn, 200, "application/x-arss", "br", arss_data,
                            arss_size);
             free(arss_data);
+        } else {
+            write_error(conn, 500);
+        }
+        return;
+    }
+
+    /* Models */
+    if (strcmp(uri, "/models.arpm") == 0) {
+        uint8_t *arpm_data = NULL;
+        size_t arpm_size = 0;
+        if (build_models(&arpm_data, &arpm_size)) {
+            write_response(conn, 200, "application/x-arpm", "br", arpm_data,
+                           arpm_size);
+            free(arpm_data);
         } else {
             write_error(conn, 500);
         }

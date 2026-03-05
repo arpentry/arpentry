@@ -9,6 +9,8 @@ typedef struct {
     float colors[ARPT_STYLE_CLASS_COUNT][4];     /* RGBA per class */
     float stroke_widths[ARPT_STYLE_CLASS_COUNT]; /* half-width per class */
     float building[4];                            /* RGBA building material */
+    float tree_min_scale;                         /* tree instance scale range */
+    float tree_max_scale;
 } arpt_style;
 
 /** Fill style with hardcoded defaults (fallback if server unavailable). */

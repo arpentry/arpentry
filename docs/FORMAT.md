@@ -513,6 +513,9 @@ table PaintEntry {
   class:        string (required);  // class value to match ("water", "primary", ...)
   color:        RGBA;               // fill or line color
   width:        float32;            // line half-width in quantized units (0 for fills)
+  model:        string;             // model name in ModelLibrary (e.g. "broadleaf_01")
+  min_scale:    float32 = 1.0;     // instance scale range lower bound
+  max_scale:    float32 = 1.0;     // instance scale range upper bound
 }
 
 table LayerStyle {
@@ -530,6 +533,48 @@ table Style {
 
 root_type Style;
 ```
+
+When `model` is present on a `PaintEntry`, the client renders features matching that class as instanced 3D models (see Section 6.4). Per-instance yaw (0-360 degrees) and scale (`min_scale` to `max_scale`) are derived procedurally by the client using a deterministic hash of the point position. When `model` is absent, the entry works as before (fill/line styling).
+
+### 6.4 Model Library Schema
+
+A standalone FlatBuffers file (`.arpm`, identifier `"arpm"`) containing named model meshes for GPU instancing. Each model reuses the same concepts as MeshGeometry (SoA vertices, indices, normals, Parts) but in **model-local coordinates** (millimeters, int16, origin at base center).
+
+```flatbuffers
+include "tile.fbs";
+
+namespace arpentry.tiles;
+file_identifier "arpm";
+file_extension "arpm";
+
+table Model {
+  name: string (required);        // e.g. "broadleaf_01", "conifer_01"
+  x: [int16] (required);          // model-local X mm (32.767 m range)
+  y: [int16] (required);          // model-local Y mm
+  z: [int16] (required);          // model-local Z mm (height above base)
+  indices: [uint32] (required);   // triangle indices
+  normals: [int8];                // octahedral int8x2 per-vertex normals
+  parts: [Part];                  // per-part material (reuses Part/Color from tile.fbs)
+}
+
+table ModelLibrary {
+  version: uint16 = 1;
+  models: [Model];
+}
+
+root_type ModelLibrary;
+```
+
+**Coordinate space:** int16 millimeters give a range of roughly 32.767 m per axis, sufficient for trees (~30 m tall, ~10 m wide). Origin `(0, 0, 0)` is the ground contact point (base center). The client scales and places each instance at the tile point position.
+
+**Instancing contract:** The style maps feature class to model name. For each PointGeometry feature with a matching `PaintEntry.model`, the client:
+
+1. Looks up the named `Model` in the `ModelLibrary`
+2. Places one instance per point at the tile x/y/z position
+3. Applies per-instance yaw and scale derived from a deterministic hash of point position
+4. Renders via GPU instancing (shared vertex/index buffers, per-instance transform)
+
+The `ModelLibrary` reuses `Part` and `Color` structs from the tile schema. Parts with `color.a > 0` use embedded materials; parts with `color.a == 0` are client-styled.
 
 ---
 
@@ -560,6 +605,14 @@ All file types are standard FlatBuffers with no custom header — the FlatBuffer
 - **MIME type**: `application/x-arss`
 - **Extension**: `.arss`
 - **URL**: `{base_url}/style.arss`
+
+### Model Library (`.arpm`)
+
+- **File identification**: `ModelLibrary_identifier_is(buffer)` verifies `"arpm"` at offset 4–7.
+- **Versioning**: `ModelLibrary.version` (uint16, default 1). Same versioning rules as tiles.
+- **MIME type**: `application/x-arpm`
+- **Extension**: `.arpm`
+- **URL**: `{base_url}/models.arpm`
 
 ---
 
@@ -674,7 +727,7 @@ Visual styling is defined by a **Style** file (`.arss`, Section 6.3) served alon
 The style uses two concepts inspired by MapLibre:
 
 - **`LayerStyle`**: references a tile layer by name (`source_layer`), analogous to MapLibre's `source-layer`.
-- **`PaintEntry`**: maps a feature class string to color and line half-width, a simplified version of MapLibre's `filter` + `paint`.
+- **`PaintEntry`**: maps a feature class string to color, line half-width, and optionally a model name for instanced rendering, a simplified version of MapLibre's `filter` + `paint`.
 
 ### Client Application
 
@@ -683,8 +736,9 @@ The client fetches `{base_url}/style.arss` at startup and applies it as follows:
 1. **Surface fills**: For each `PaintEntry` in the `"surface"` `LayerStyle`, match the feature's `class` property to the entry's `class` string. Use the entry's `color` as the fill color.
 2. **Highway lines**: For each `PaintEntry` in the `"highway"` `LayerStyle`, match the feature's `class` property. Use the entry's `color` and `width` (half-width in quantized units) for SDF line rendering.
 3. **Building fills**: For each `PaintEntry` in the `"building"` `LayerStyle`, match the feature's `class` property. Use the entry's `color` as the footprint fill color.
-4. **Background**: `Style.background` provides the fallback color for unmatched surface classes.
-5. **Building extrusion**: `Style.building` provides the material color for 3D building walls and roofs.
+4. **Model instancing**: When a `PaintEntry` has a `model` field, the client renders matching PointGeometry features as instanced 3D models from the `ModelLibrary` (Section 6.4). Per-instance yaw and scale are derived from `min_scale`/`max_scale` and a deterministic hash of point position.
+5. **Background**: `Style.background` provides the fallback color for unmatched surface classes.
+6. **Building extrusion**: `Style.building` provides the material color for 3D building walls and roofs.
 
 ### Tile Data Contract
 
