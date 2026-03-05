@@ -17,8 +17,22 @@ struct TileUniforms {
     _pad1: f32,
 };
 
+struct ModelUniforms {
+    center: vec3<f32>,
+    _pad: f32,
+    crown_color: vec3<f32>,
+    random_yaw: u32,
+    min_scale: f32,
+    max_scale: f32,
+    random_scale: u32,
+    _pad2: f32,
+    trunk_color: vec3<f32>,
+    _pad3: f32,
+};
+
 @group(0) @binding(0) var<uniform> globals: GlobalUniforms;
 @group(1) @binding(0) var<uniform> tile: TileUniforms;
+@group(2) @binding(0) var<uniform> mdl: ModelUniforms;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -40,8 +54,8 @@ fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {
 }
 
 @vertex fn vs(
-    // Per-vertex: model-local position (int16x4 unpacked as sint16x4)
-    @location(0) model_pos: vec4<i32>,
+    // Per-vertex: model-local position (uint16x4)
+    @location(0) model_pos: vec4<u32>,
     // Per-instance: tile-quantized position + yaw/scale packed
     @location(1) inst_qxy: vec2<u32>,
     @location(2) inst_qz: i32,
@@ -52,22 +66,34 @@ fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {
     let packed = inst_yaw_scale;
     let yaw_part = floor(packed);
     let scale_01 = packed - yaw_part;
-    let yaw = yaw_part / 256.0 * 2.0 * PI;
-    // Reconstruct actual scale: hardcoded range matching style defaults
-    // (min_scale=0.7, max_scale=1.3 from style.json)
-    let scale = 0.7 + scale_01 * 0.6;
 
-    // Model position in mm -> meters
-    let mx = f32(model_pos.x) * 0.001 * scale;
-    let my = f32(model_pos.y) * 0.001 * scale;
-    let mz = f32(model_pos.z) * 0.001 * scale;
+    // Use style-driven scale range, optionally randomized
+    var scale: f32;
+    if (mdl.random_scale != 0u) {
+        scale = mdl.min_scale + scale_01 * (mdl.max_scale - mdl.min_scale);
+    } else {
+        scale = (mdl.min_scale + mdl.max_scale) * 0.5;
+    }
 
-    // Rotate model around Z axis by yaw
-    let cy = cos(yaw);
-    let sy = sin(yaw);
-    let rx = mx * cy - my * sy;
-    let ry = mx * sy + my * cy;
+    // Model position in mm -> meters, recentered around bbox center
+    let mx = (f32(model_pos.x) * 0.001 - mdl.center.x) * scale;
+    let my = (f32(model_pos.y) * 0.001 - mdl.center.y) * scale;
+    let mz = (f32(model_pos.z) * 0.001 - mdl.center.z) * scale;
+
+    // Conditionally apply yaw rotation based on style
+    var rx: f32;
+    var ry: f32;
     let rz = mz;
+    if (mdl.random_yaw != 0u) {
+        let yaw = yaw_part / 256.0 * 2.0 * PI;
+        let cy = cos(yaw);
+        let sy = sin(yaw);
+        rx = mx * cy - my * sy;
+        ry = mx * sy + my * cy;
+    } else {
+        rx = mx;
+        ry = my;
+    }
 
     // Dequantize instance tile position
     let lon_west = tile.bounds.x;
@@ -104,7 +130,7 @@ fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {
     // Simplified: compute upward-biased normal from model position
     let model_r = sqrt(mx * mx + my * my);
     var obj_normal: vec3<f32>;
-    if (model_pos.z > 0 && model_r < 0.001) {
+    if (model_pos.z > 0u && model_r < 0.001) {
         // Apex: point up
         obj_normal = up;
     } else if (model_r > 0.001) {
@@ -118,10 +144,19 @@ fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {
     let model3 = mat3x3<f32>(tile.model[0].xyz, tile.model[1].xyz, tile.model[2].xyz);
     let normal_cam = normalize(model3 * obj_normal);
 
+    // Select color based on part index (w component)
+    let part = model_pos.w;
+    var part_color: vec3<f32>;
+    if (part == 0u) {
+        part_color = mdl.trunk_color;
+    } else {
+        part_color = mdl.crown_color;
+    }
+
     var out: VsOut;
     out.pos = globals.projection * world_pos;
     out.normal_cam = normal_cam;
-    out.color = vec3<f32>(40.0 / 255.0, 90.0 / 255.0, 30.0 / 255.0);
+    out.color = part_color;
     return out;
 }
 

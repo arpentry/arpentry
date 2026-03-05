@@ -371,6 +371,16 @@ static bool build_style(const char *style_file, uint8_t **out,
                         arpentry_tiles_PaintEntry_max_scale_add(
                             &builder, (float)json_double(jmax_s));
 
+                    struct json jryaw = json_object_get(jentry, "random_yaw");
+                    if (json_exists(jryaw))
+                        arpentry_tiles_PaintEntry_random_yaw_add(
+                            &builder, json_bool(jryaw));
+
+                    struct json jrscale = json_object_get(jentry, "random_scale");
+                    if (json_exists(jrscale))
+                        arpentry_tiles_PaintEntry_random_scale_add(
+                            &builder, json_bool(jrscale));
+
                     arpentry_tiles_LayerStyle_paint_push_end(&builder);
                     jentry = json_next(jentry);
                 }
@@ -396,8 +406,218 @@ static bool build_style(const char *style_file, uint8_t **out,
     return ok;
 }
 
-/* Build a Brotli-compressed ModelLibrary FlatBuffer with a low-poly cone
-   tree model (~17 vertices, 24 triangles). Caller frees *out. */
+/* Build a Brotli-compressed ModelLibrary FlatBuffer with 3 tree models
+   (oak, pine, birch), each with a trunk cylinder + crown shape.
+   The w component of uint16x4 vertex data stores part index (0=trunk, 1=crown).
+   Caller frees *out. */
+
+#define SIDES 8
+#define CX 5000 /* model center x/y in mm */
+#define CY 5000
+
+/* Generate an 8-sided cylinder. Returns number of vertices written.
+   part_idx is stored for later packing into the w component. */
+static int gen_cylinder(uint16_t *vx, uint16_t *vy, uint16_t *vz,
+                        uint16_t *vw, uint32_t *indices, int vi, int ii,
+                        uint16_t radius, uint16_t z_bot, uint16_t z_top,
+                        uint16_t part_idx) {
+    int base = vi;
+    /* Bottom ring */
+    for (int i = 0; i < SIDES; i++) {
+        double a = 2.0 * M_PI * i / SIDES;
+        vx[vi] = (uint16_t)(CX + radius * cos(a));
+        vy[vi] = (uint16_t)(CY + radius * sin(a));
+        vz[vi] = z_bot;
+        vw[vi] = part_idx;
+        vi++;
+    }
+    /* Top ring */
+    for (int i = 0; i < SIDES; i++) {
+        double a = 2.0 * M_PI * i / SIDES;
+        vx[vi] = (uint16_t)(CX + radius * cos(a));
+        vy[vi] = (uint16_t)(CY + radius * sin(a));
+        vz[vi] = z_top;
+        vw[vi] = part_idx;
+        vi++;
+    }
+    int bot0 = base;
+    int top0 = base + SIDES;
+    /* Side quads (2 tris each) */
+    for (int i = 0; i < SIDES; i++) {
+        int n = (i + 1) % SIDES;
+        indices[ii++] = (uint32_t)(bot0 + i);
+        indices[ii++] = (uint32_t)(bot0 + n);
+        indices[ii++] = (uint32_t)(top0 + i);
+        indices[ii++] = (uint32_t)(top0 + i);
+        indices[ii++] = (uint32_t)(bot0 + n);
+        indices[ii++] = (uint32_t)(top0 + n);
+    }
+    /* Bottom cap */
+    for (int i = 1; i < SIDES - 1; i++) {
+        indices[ii++] = (uint32_t)(bot0);
+        indices[ii++] = (uint32_t)(bot0 + i + 1);
+        indices[ii++] = (uint32_t)(bot0 + i);
+    }
+    /* Top cap */
+    for (int i = 1; i < SIDES - 1; i++) {
+        indices[ii++] = (uint32_t)(top0);
+        indices[ii++] = (uint32_t)(top0 + i);
+        indices[ii++] = (uint32_t)(top0 + i + 1);
+    }
+    (void)vi; /* suppress unused */
+    return ii; /* return updated index position */
+}
+
+/* Generate an 8-sided cone. Returns updated index count. */
+static int gen_cone(uint16_t *vx, uint16_t *vy, uint16_t *vz, uint16_t *vw,
+                    uint32_t *indices, int vi, int ii, uint16_t radius,
+                    uint16_t z_base, uint16_t z_apex, uint16_t part_idx,
+                    int *out_vi) {
+    int base = vi;
+    /* Base ring */
+    for (int i = 0; i < SIDES; i++) {
+        double a = 2.0 * M_PI * i / SIDES;
+        vx[vi] = (uint16_t)(CX + radius * cos(a));
+        vy[vi] = (uint16_t)(CY + radius * sin(a));
+        vz[vi] = z_base;
+        vw[vi] = part_idx;
+        vi++;
+    }
+    /* Apex */
+    vx[vi] = CX;
+    vy[vi] = CY;
+    vz[vi] = z_apex;
+    vw[vi] = part_idx;
+    int apex = vi;
+    vi++;
+    /* Side triangles */
+    for (int i = 0; i < SIDES; i++) {
+        int n = (i + 1) % SIDES;
+        indices[ii++] = (uint32_t)apex;
+        indices[ii++] = (uint32_t)(base + i);
+        indices[ii++] = (uint32_t)(base + n);
+    }
+    /* Base cap */
+    for (int i = 1; i < SIDES - 1; i++) {
+        indices[ii++] = (uint32_t)base;
+        indices[ii++] = (uint32_t)(base + i + 1);
+        indices[ii++] = (uint32_t)(base + i);
+    }
+    *out_vi = vi;
+    return ii;
+}
+
+/* Generate a UV sphere approximation. Returns updated index count. */
+#define SPHERE_LAT 4
+#define SPHERE_LON 8
+
+static int gen_sphere(uint16_t *vx, uint16_t *vy, uint16_t *vz, uint16_t *vw,
+                      uint32_t *indices, int vi, int ii, uint16_t radius,
+                      uint16_t cz, uint16_t part_idx, int *out_vi) {
+    int base = vi;
+    /* Top pole */
+    vx[vi] = CX;
+    vy[vi] = CY;
+    vz[vi] = (uint16_t)(cz + radius);
+    vw[vi] = part_idx;
+    vi++;
+    /* Latitude rings */
+    for (int lat = 1; lat < SPHERE_LAT; lat++) {
+        double phi = M_PI * lat / SPHERE_LAT;
+        double sp = sin(phi);
+        double cp = cos(phi);
+        for (int lon = 0; lon < SPHERE_LON; lon++) {
+            double theta = 2.0 * M_PI * lon / SPHERE_LON;
+            vx[vi] = (uint16_t)(CX + radius * sp * cos(theta));
+            vy[vi] = (uint16_t)(CY + radius * sp * sin(theta));
+            vz[vi] = (uint16_t)(cz + (int16_t)(radius * cp));
+            vw[vi] = part_idx;
+            vi++;
+        }
+    }
+    /* Bottom pole */
+    vx[vi] = CX;
+    vy[vi] = CY;
+    vz[vi] = (uint16_t)(cz - radius);
+    vw[vi] = part_idx;
+    int bot_pole = vi;
+    vi++;
+
+    int top_pole = base;
+    /* Top cap triangles */
+    for (int i = 0; i < SPHERE_LON; i++) {
+        int n = (i + 1) % SPHERE_LON;
+        indices[ii++] = (uint32_t)top_pole;
+        indices[ii++] = (uint32_t)(base + 1 + i);
+        indices[ii++] = (uint32_t)(base + 1 + n);
+    }
+    /* Middle quads */
+    for (int lat = 0; lat < SPHERE_LAT - 2; lat++) {
+        int row0 = base + 1 + lat * SPHERE_LON;
+        int row1 = row0 + SPHERE_LON;
+        for (int i = 0; i < SPHERE_LON; i++) {
+            int n = (i + 1) % SPHERE_LON;
+            indices[ii++] = (uint32_t)(row0 + i);
+            indices[ii++] = (uint32_t)(row1 + i);
+            indices[ii++] = (uint32_t)(row0 + n);
+            indices[ii++] = (uint32_t)(row0 + n);
+            indices[ii++] = (uint32_t)(row1 + i);
+            indices[ii++] = (uint32_t)(row1 + n);
+        }
+    }
+    /* Bottom cap triangles */
+    int last_row = base + 1 + (SPHERE_LAT - 2) * SPHERE_LON;
+    for (int i = 0; i < SPHERE_LON; i++) {
+        int n = (i + 1) % SPHERE_LON;
+        indices[ii++] = (uint32_t)bot_pole;
+        indices[ii++] = (uint32_t)(last_row + n);
+        indices[ii++] = (uint32_t)(last_row + i);
+    }
+    *out_vi = vi;
+    return ii;
+}
+
+/* Write one model into the builder: name, x/y/z/w arrays, indices, 2 Parts. */
+static void emit_model(flatcc_builder_t *b, const char *name,
+                        const uint16_t *vx, const uint16_t *vy,
+                        const uint16_t *vz, const uint16_t *vw, int nv,
+                        const uint32_t *indices, int ni, int trunk_last_idx,
+                        arpentry_tiles_Color_t trunk_col,
+                        arpentry_tiles_Color_t crown_col) {
+    arpentry_tiles_ModelLibrary_models_push_start(b);
+    arpentry_tiles_Model_name_create_str(b, name);
+
+    arpentry_tiles_Model_x_create(b, vx, (size_t)nv);
+    arpentry_tiles_Model_y_create(b, vy, (size_t)nv);
+    arpentry_tiles_Model_z_create(b, vz, (size_t)nv);
+    arpentry_tiles_Model_w_create(b, vw, (size_t)nv);
+    arpentry_tiles_Model_indices_create(b, indices, (size_t)ni);
+
+    arpentry_tiles_Model_parts_start(b);
+    arpentry_tiles_Part_t trunk_part = {
+        .first_index = 0,
+        .index_count = (uint32_t)trunk_last_idx,
+        .roughness = 200,
+        .metalness = 0,
+    };
+    trunk_part.color = trunk_col;
+    arpentry_tiles_Model_parts_push(b, &trunk_part);
+    arpentry_tiles_Part_t crown_part = {
+        .first_index = (uint32_t)trunk_last_idx,
+        .index_count = (uint32_t)(ni - trunk_last_idx),
+        .roughness = 200,
+        .metalness = 0,
+    };
+    crown_part.color = crown_col;
+    arpentry_tiles_Model_parts_push(b, &crown_part);
+    arpentry_tiles_Model_parts_end(b);
+
+    arpentry_tiles_ModelLibrary_models_push_end(b);
+}
+
+/* Max vertices/indices per model: trunk(16v) + sphere(26v) = 42v, ~600 idx */
+#define MAX_MODEL_V 64
+#define MAX_MODEL_I 1024
 
 static bool build_models(uint8_t **out, size_t *out_size) {
     flatcc_builder_t builder;
@@ -405,69 +625,54 @@ static bool build_models(uint8_t **out, size_t *out_size) {
 
     arpentry_tiles_ModelLibrary_start_as_root(&builder);
     arpentry_tiles_ModelLibrary_version_add(&builder, 1);
-
     arpentry_tiles_ModelLibrary_models_start(&builder);
-    arpentry_tiles_ModelLibrary_models_push_start(&builder);
 
-    arpentry_tiles_Model_name_create_str(&builder, "tree_01");
+    uint16_t vx[MAX_MODEL_V], vy[MAX_MODEL_V], vz[MAX_MODEL_V],
+        vw[MAX_MODEL_V];
+    uint32_t indices[MAX_MODEL_I];
 
-    /* 8-sided cone: 8 base ring vertices at z=0, 1 apex at z=15000mm.
-       Radius ~5000mm (5m), height 15000mm (15m). */
-#define TREE_SIDES 8
-#define TREE_VERTS (TREE_SIDES + 1) /* ring + apex */
-#define TREE_TRIS (TREE_SIDES * 2)  /* cone sides + base cap */
-
-    int16_t vx[TREE_VERTS], vy[TREE_VERTS], vz[TREE_VERTS];
-    for (int i = 0; i < TREE_SIDES; i++) {
-        double angle = 2.0 * M_PI * i / TREE_SIDES;
-        vx[i] = (int16_t)(5000.0 * cos(angle));
-        vy[i] = (int16_t)(5000.0 * sin(angle));
-        vz[i] = 0;
-    }
-    /* Apex */
-    vx[TREE_SIDES] = 0;
-    vy[TREE_SIDES] = 0;
-    vz[TREE_SIDES] = 15000;
-
-    arpentry_tiles_Model_x_create(&builder, vx, TREE_VERTS);
-    arpentry_tiles_Model_y_create(&builder, vy, TREE_VERTS);
-    arpentry_tiles_Model_z_create(&builder, vz, TREE_VERTS);
-
-    /* Indices: cone sides (apex=8, base ring CW from outside) + base cap */
-    uint32_t indices[TREE_TRIS * 3];
-    int idx = 0;
-    /* Cone sides: triangles (apex, ring[i], ring[(i+1)%8]) */
-    for (int i = 0; i < TREE_SIDES; i++) {
-        indices[idx++] = TREE_SIDES; /* apex */
-        indices[idx++] = (uint32_t)i;
-        indices[idx++] = (uint32_t)((i + 1) % TREE_SIDES);
-    }
-    /* Base cap: triangle fan from vertex 0, CW when viewed from below */
-    for (int i = 1; i < TREE_SIDES - 1; i++) {
-        indices[idx++] = 0;
-        indices[idx++] = (uint32_t)(i + 1);
-        indices[idx++] = (uint32_t)i;
+    /* --- Oak: short trunk (2m, r=400mm) + wide sphere crown (r=6m, cz=8m) */
+    {
+        int vi = 0, ii = 0;
+        /* Trunk: bottom ring 0-7, top ring 8-15 */
+        ii = gen_cylinder(vx, vy, vz, vw, indices, vi, ii, 400, 0, 2000, 0);
+        vi = SIDES * 2;
+        int trunk_ii = ii;
+        /* Crown sphere at z=8000, radius=6000 */
+        ii = gen_sphere(vx, vy, vz, vw, indices, vi, ii, 6000, 8000, 1, &vi);
+        arpentry_tiles_Color_t trunk = {.r = 101, .g = 67, .b = 33, .a = 255};
+        arpentry_tiles_Color_t crown = {.r = 34, .g = 85, .b = 25, .a = 255};
+        emit_model(&builder, "oak", vx, vy, vz, vw, vi, indices, ii, trunk_ii,
+                   trunk, crown);
     }
 
-    arpentry_tiles_Model_indices_create(&builder, indices, (size_t)idx);
+    /* --- Pine: medium trunk (4m, r=300mm) + tall cone crown (base 4m, apex 18m, r=3m) */
+    {
+        int vi = 0, ii = 0;
+        ii = gen_cylinder(vx, vy, vz, vw, indices, vi, ii, 300, 0, 4000, 0);
+        vi = SIDES * 2;
+        int trunk_ii = ii;
+        ii = gen_cone(vx, vy, vz, vw, indices, vi, ii, 3000, 4000, 18000, 1,
+                      &vi);
+        arpentry_tiles_Color_t trunk = {.r = 101, .g = 67, .b = 33, .a = 255};
+        arpentry_tiles_Color_t crown = {.r = 20, .g = 70, .b = 20, .a = 255};
+        emit_model(&builder, "pine", vx, vy, vz, vw, vi, indices, ii,
+                   trunk_ii, trunk, crown);
+    }
 
-    /* Single Part with green color */
-    arpentry_tiles_Model_parts_start(&builder);
-    arpentry_tiles_Part_t part = {
-        .first_index = 0,
-        .index_count = (uint32_t)idx,
-        .color = {.r = 40, .g = 90, .b = 30, .a = 255},
-        .roughness = 200,
-        .metalness = 0,
-    };
-    arpentry_tiles_Model_parts_push(&builder, &part);
-    arpentry_tiles_Model_parts_end(&builder);
+    /* --- Birch: slender trunk (5m, r=200mm) + small sphere crown (r=3m, cz=10m) */
+    {
+        int vi = 0, ii = 0;
+        ii = gen_cylinder(vx, vy, vz, vw, indices, vi, ii, 200, 0, 5000, 0);
+        vi = SIDES * 2;
+        int trunk_ii = ii;
+        ii = gen_sphere(vx, vy, vz, vw, indices, vi, ii, 3000, 10000, 1, &vi);
+        arpentry_tiles_Color_t trunk = {.r = 200, .g = 200, .b = 195, .a = 255};
+        arpentry_tiles_Color_t crown = {.r = 80, .g = 160, .b = 50, .a = 255};
+        emit_model(&builder, "birch", vx, vy, vz, vw, vi, indices, ii,
+                   trunk_ii, trunk, crown);
+    }
 
-#undef TREE_SIDES
-#undef TREE_VERTS
-#undef TREE_TRIS
-
-    arpentry_tiles_ModelLibrary_models_push_end(&builder);
     arpentry_tiles_ModelLibrary_models_end(&builder);
     arpentry_tiles_ModelLibrary_end_as_root(&builder);
 
@@ -480,6 +685,14 @@ static bool build_models(uint8_t **out, size_t *out_size) {
     free(fb);
     return ok;
 }
+
+#undef SIDES
+#undef CX
+#undef CY
+#undef SPHERE_LAT
+#undef SPHERE_LON
+#undef MAX_MODEL_V
+#undef MAX_MODEL_I
 
 /* Request dispatch */
 

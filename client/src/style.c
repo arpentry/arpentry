@@ -36,7 +36,13 @@ void arpt_style_defaults(arpt_style *s) {
     s->building[2] = 182.0f / 255.0f;
     s->building[3] = 255.0f / 255.0f;
 
-    /* Tree instance scale range */
-    s->tree_min_scale = 0.7f;
-    s->tree_max_scale = 1.3f;
+    /* tree_style_count = 0; populated dynamically from style fetch */
+}
+
+int arpt_style_tree_index(const arpt_style *s, const char *class_name) {
+    if (!s || !class_name) return -1;
+    for (int i = 0; i < s->tree_style_count; i++) {
+        if (strcmp(s->trees[i].class_name, class_name) == 0) return i;
+    }
+    return -1;
 }

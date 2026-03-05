@@ -33,6 +33,19 @@ typedef struct {
     float _pad1;
 } tile_uniforms_t;
 
+typedef struct {
+    float center[3];       /* bbox center in meters */
+    float _pad;
+    float crown_color[3];  /* crown color */
+    uint32_t random_yaw;   /* 0 or 1 */
+    float min_scale;
+    float max_scale;
+    uint32_t random_scale; /* 0 or 1 */
+    float _pad2;
+    float trunk_color[3];  /* trunk color */
+    float _pad3;
+} model_uniforms_t;
+
 /* Tile GPU state */
 
 struct arpt_tile_gpu {
@@ -55,9 +68,9 @@ struct arpt_tile_gpu {
     WGPUBindGroup bldg_bind_group;
     uint32_t bldg_index_count;
 
-    /* Tree instances (instanced draw call, tree pipeline) */
-    WGPUBuffer tree_instance_buf;
-    uint32_t tree_instance_count;
+    /* Tree instances split by model index */
+    WGPUBuffer tree_instance_bufs[ARPT_MAX_MODELS];
+    uint32_t tree_instance_counts[ARPT_MAX_MODELS];
 };
 
 /* Renderer state */
@@ -108,14 +121,19 @@ struct arpt_renderer {
     WGPUBuffer ph_wire_indices;
     uint32_t ph_wire_index_count;
 
-    /* Tree instancing */
+    /* Tree instancing — per-model GPU resources */
     WGPURenderPipeline tree_pipeline;
-    WGPUBuffer tree_model_buf_pos;    /* model vertex positions (sint16x4) */
-    WGPUBuffer tree_model_buf_indices; /* model index buffer */
-    uint32_t tree_model_index_count;
-    float tree_color[4];
-    float tree_min_scale;
-    float tree_max_scale;
+    WGPUBindGroupLayout model_bgl;
+    int model_count;
+    struct {
+        WGPUBuffer buf_pos;         /* model vertex positions (uint16x4) */
+        WGPUBuffer buf_indices;     /* model index buffer */
+        uint32_t index_count;
+        WGPUBuffer uniform_buf;
+        WGPUBindGroup bind_group;
+        float min_scale;
+        float max_scale;
+    } models[ARPT_MAX_MODELS];
 
     WGPUCommandEncoder encoder;
     WGPURenderPassEncoder pass;
@@ -437,7 +455,8 @@ static WGPURenderPipeline create_wireframe_pipeline(WGPUDevice device,
 static WGPURenderPipeline create_tree_pipeline(WGPUDevice device,
                                                 WGPUTextureFormat format,
                                                 WGPUBindGroupLayout global_bgl,
-                                                WGPUBindGroupLayout tile_bgl) {
+                                                WGPUBindGroupLayout tile_bgl,
+                                                WGPUBindGroupLayout model_bgl) {
     WGPUShaderModuleWGSLDescriptor wgsl_desc = {
         .chain = {.sType = WGPUSType_ShaderModuleWGSLDescriptor},
         .code = tree_wgsl,
@@ -445,14 +464,14 @@ static WGPURenderPipeline create_tree_pipeline(WGPUDevice device,
     WGPUShaderModuleDescriptor sm_desc = {.nextInChain = &wgsl_desc.chain};
     WGPUShaderModule sm = wgpuDeviceCreateShaderModule(device, &sm_desc);
 
-    WGPUBindGroupLayout bgls[] = {global_bgl, tile_bgl};
+    WGPUBindGroupLayout bgls[] = {global_bgl, tile_bgl, model_bgl};
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
-        device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 2,
+        device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 3,
                                                 .bindGroupLayouts = bgls});
 
-    /* Buffer 0 (per-vertex): model position as Sint16x4 = 8 bytes */
+    /* Buffer 0 (per-vertex): model position as Uint16x4 = 8 bytes */
     WGPUVertexAttribute attr_model_pos = {
-        .format = WGPUVertexFormat_Sint16x4,
+        .format = WGPUVertexFormat_Uint16x4,
         .offset = 0,
         .shaderLocation = 0,
     };
@@ -504,7 +523,7 @@ static WGPURenderPipeline create_tree_pipeline(WGPUDevice device,
                    .buffers = vbls},
         .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
                       .cullMode = WGPUCullMode_Back,
-                      .frontFace = WGPUFrontFace_CCW},
+                      .frontFace = WGPUFrontFace_CW},
         .fragment = &frag,
         .depthStencil = &ds,
         .multisample = {.count = 1, .mask = ~0u},
@@ -852,8 +871,20 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     r->pipeline = create_pipeline(device, format, r->global_bgl, r->tile_bgl);
     r->wireframe_pipeline =
         create_wireframe_pipeline(device, format, r->global_bgl, r->tile_bgl);
-    r->tree_pipeline =
-        create_tree_pipeline(device, format, r->global_bgl, r->tile_bgl);
+
+    /* Model bind group layout: @group(2) @binding(0) uniform for model params */
+    WGPUBindGroupLayoutEntry model_entry = {
+        .binding = 0,
+        .visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment,
+        .buffer = {.type = WGPUBufferBindingType_Uniform,
+                   .minBindingSize = sizeof(model_uniforms_t)},
+    };
+    r->model_bgl = wgpuDeviceCreateBindGroupLayout(
+        device, &(WGPUBindGroupLayoutDescriptor){.entryCount = 1,
+                                                 .entries = &model_entry});
+
+    r->tree_pipeline = create_tree_pipeline(device, format, r->global_bgl,
+                                            r->tile_bgl, r->model_bgl);
 
     /* Surface offscreen pipeline + sampler */
     r->surface_pipeline = create_surface_pipeline(device);
@@ -1121,8 +1152,16 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->global_bind_group) wgpuBindGroupRelease(r->global_bind_group);
     if (r->global_uniform_buf) wgpuBufferRelease(r->global_uniform_buf);
     if (r->tree_pipeline) wgpuRenderPipelineRelease(r->tree_pipeline);
-    if (r->tree_model_buf_pos) wgpuBufferRelease(r->tree_model_buf_pos);
-    if (r->tree_model_buf_indices) wgpuBufferRelease(r->tree_model_buf_indices);
+    for (int mi = 0; mi < ARPT_MAX_MODELS; mi++) {
+        if (r->models[mi].buf_pos) wgpuBufferRelease(r->models[mi].buf_pos);
+        if (r->models[mi].buf_indices)
+            wgpuBufferRelease(r->models[mi].buf_indices);
+        if (r->models[mi].bind_group)
+            wgpuBindGroupRelease(r->models[mi].bind_group);
+        if (r->models[mi].uniform_buf)
+            wgpuBufferRelease(r->models[mi].uniform_buf);
+    }
+    if (r->model_bgl) wgpuBindGroupLayoutRelease(r->model_bgl);
     if (r->pipeline) wgpuRenderPipelineRelease(r->pipeline);
     if (r->surface_pipeline) wgpuRenderPipelineRelease(r->surface_pipeline);
     if (r->highway_pipeline) wgpuRenderPipelineRelease(r->highway_pipeline);
@@ -1394,34 +1433,83 @@ static void upload_building_extrusion(arpt_tile_gpu *t, arpt_renderer *r,
     t->bldg_index_count = (uint32_t)ni;
 }
 
-/* Upload tree model geometry to GPU (called once after model fetch). */
+/* Upload tree model geometry to GPU at the given index. */
 
-void arpt_renderer_upload_model(arpt_renderer *r, const arpt_model *model) {
+void arpt_renderer_upload_model(arpt_renderer *r, int model_index,
+                                const arpt_model *model) {
     if (!r || !model || model->vertex_count == 0) return;
+    if (model_index < 0 || model_index >= ARPT_MAX_MODELS) return;
 
-    /* Pad int16 x/y/z to int16x4 (8 bytes per vertex) */
+    /* Pack uint16 x/y/z/w into uint16x4 (8 bytes per vertex) */
     size_t nv = model->vertex_count;
-    int16_t *padded = calloc(nv, 8);
+    uint16_t *padded = calloc(nv, 8);
     if (!padded) return;
+
+    /* Compute bounding box to find center */
+    uint16_t min_x = model->x[0], max_x = model->x[0];
+    uint16_t min_y = model->y[0], max_y = model->y[0];
+    uint16_t min_z = model->z[0], max_z = model->z[0];
     for (size_t i = 0; i < nv; i++) {
         padded[i * 4 + 0] = model->x[i];
         padded[i * 4 + 1] = model->y[i];
         padded[i * 4 + 2] = model->z[i];
-        padded[i * 4 + 3] = 0; /* padding */
+        padded[i * 4 + 3] = model->w ? model->w[i] : 0;
+        if (model->x[i] < min_x) min_x = model->x[i];
+        if (model->x[i] > max_x) max_x = model->x[i];
+        if (model->y[i] < min_y) min_y = model->y[i];
+        if (model->y[i] > max_y) max_y = model->y[i];
+        if (model->z[i] < min_z) min_z = model->z[i];
+        if (model->z[i] > max_z) max_z = model->z[i];
     }
-    r->tree_model_buf_pos = create_buffer(r->device, r->queue,
-                                          WGPUBufferUsage_Vertex, padded,
-                                          nv * 8);
+
+    r->models[model_index].buf_pos =
+        create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex, padded,
+                      nv * 8);
     free(padded);
 
-    r->tree_model_buf_indices = create_buffer(
+    r->models[model_index].buf_indices = create_buffer(
         r->device, r->queue, WGPUBufferUsage_Index, model->indices,
         model->index_count * sizeof(uint32_t));
-    r->tree_model_index_count = (uint32_t)model->index_count;
+    r->models[model_index].index_count = (uint32_t)model->index_count;
+    r->models[model_index].min_scale = model->min_scale;
+    r->models[model_index].max_scale = model->max_scale;
 
-    memcpy(r->tree_color, model->color, sizeof(r->tree_color));
-    r->tree_min_scale = model->min_scale;
-    r->tree_max_scale = model->max_scale;
+    /* Model uniform buffer: bbox center + colors + style params */
+    model_uniforms_t mu = {
+        .center = {(float)(min_x + max_x) * 0.5f * 0.001f,
+                   (float)(min_y + max_y) * 0.5f * 0.001f,
+                   0.0f}, /* z=0: anchor at base, not bbox center */
+        .crown_color = {model->crown_color[0], model->crown_color[1],
+                        model->crown_color[2]},
+        .random_yaw = model->random_yaw ? 1 : 0,
+        .min_scale = model->min_scale,
+        .max_scale = model->max_scale,
+        .random_scale = model->random_scale ? 1 : 0,
+        .trunk_color = {model->trunk_color[0], model->trunk_color[1],
+                        model->trunk_color[2]},
+    };
+    r->models[model_index].uniform_buf =
+        create_buffer(r->device, r->queue, WGPUBufferUsage_Uniform, &mu,
+                      sizeof(mu));
+
+    /* Create model bind group */
+    WGPUBindGroupEntry bg_entry = {
+        .binding = 0,
+        .buffer = r->models[model_index].uniform_buf,
+        .size = sizeof(mu),
+    };
+    r->models[model_index].bind_group = wgpuDeviceCreateBindGroup(
+        r->device,
+        &(WGPUBindGroupDescriptor){.layout = r->model_bgl,
+                                   .entryCount = 1,
+                                   .entries = &bg_entry});
+
+    if (model_index >= r->model_count)
+        r->model_count = model_index + 1;
+}
+
+int arpt_renderer_model_count(const arpt_renderer *r) {
+    return r ? r->model_count : 0;
 }
 
 /* Tree instance buffer layout: uint16 qx, uint16 qy, int32 qz, float yaw_scale
@@ -1436,37 +1524,46 @@ typedef struct {
 static void upload_tree_instances(arpt_tile_gpu *t, arpt_renderer *r,
                                   const arpt_tree_data *trees) {
     if (!trees || trees->count == 0) return;
-    if (!r->tree_model_buf_pos) return; /* no model uploaded yet */
+    if (r->model_count == 0) return;
 
-    size_t n = trees->count;
-    tree_instance_t *instances = malloc(n * sizeof(tree_instance_t));
-    if (!instances) return;
-
-    float min_s = r->tree_min_scale;
-    float max_s = r->tree_max_scale;
-
-    for (size_t i = 0; i < n; i++) {
-        uint16_t qx = trees->points[i].qx;
-        uint16_t qy = trees->points[i].qy;
-        instances[i].qx = qx;
-        instances[i].qy = qy;
-        instances[i].qz = trees->points[i].z;
-
-        /* Deterministic hash for yaw + scale */
-        uint32_t hash = (uint32_t)qx * 73856093u ^ (uint32_t)qy * 19349663u;
-        float yaw_01 = (float)(hash & 0xFF) / 255.0f;
-        float scale_01 = (float)((hash >> 8) & 0xFF) / 255.0f;
-        /* Pack: yaw index (0-255) in integer part, scale_01 in fractional part.
-           The shader reconstructs: yaw = integer/256 * 2pi,
-           scale = min_scale + fract * (max_scale - min_scale). */
-        instances[i].yaw_scale = (float)((int)(yaw_01 * 256.0f)) + scale_01;
+    /* Count instances per model */
+    size_t counts[ARPT_MAX_MODELS] = {0};
+    for (size_t i = 0; i < trees->count; i++) {
+        int mi = trees->points[i].model_index;
+        if (mi >= 0 && mi < r->model_count) counts[mi]++;
     }
 
-    t->tree_instance_buf = create_buffer(r->device, r->queue,
-                                         WGPUBufferUsage_Vertex, instances,
-                                         n * sizeof(tree_instance_t));
-    t->tree_instance_count = (uint32_t)n;
-    free(instances);
+    /* Build instance buffers per model */
+    for (int mi = 0; mi < r->model_count; mi++) {
+        if (counts[mi] == 0 || !r->models[mi].buf_pos) continue;
+
+        tree_instance_t *instances = malloc(counts[mi] * sizeof(tree_instance_t));
+        if (!instances) continue;
+
+        size_t idx = 0;
+        for (size_t i = 0; i < trees->count; i++) {
+            if (trees->points[i].model_index != mi) continue;
+
+            uint16_t qx = trees->points[i].qx;
+            uint16_t qy = trees->points[i].qy;
+            instances[idx].qx = qx;
+            instances[idx].qy = qy;
+            instances[idx].qz = trees->points[i].z;
+
+            uint32_t hash = trees->points[i].id * 2654435761u;
+            float yaw_01 = (float)(hash & 0xFF) / 255.0f;
+            float scale_01 = (float)((hash >> 8) & 0xFF) / 255.0f;
+            instances[idx].yaw_scale =
+                (float)((int)(yaw_01 * 256.0f)) + scale_01;
+            idx++;
+        }
+
+        t->tree_instance_bufs[mi] =
+            create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex,
+                          instances, counts[mi] * sizeof(tree_instance_t));
+        t->tree_instance_counts[mi] = (uint32_t)counts[mi];
+        free(instances);
+    }
 }
 
 /* Tile GPU */
@@ -1605,7 +1702,10 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     if (tile->bldg_buf_z) wgpuBufferRelease(tile->bldg_buf_z);
     if (tile->bldg_buf_normals) wgpuBufferRelease(tile->bldg_buf_normals);
     if (tile->bldg_buf_indices) wgpuBufferRelease(tile->bldg_buf_indices);
-    if (tile->tree_instance_buf) wgpuBufferRelease(tile->tree_instance_buf);
+    for (int mi = 0; mi < ARPT_MAX_MODELS; mi++) {
+        if (tile->tree_instance_bufs[mi])
+            wgpuBufferRelease(tile->tree_instance_bufs[mi]);
+    }
     if (tile->uniform_buf) wgpuBufferRelease(tile->uniform_buf);
     if (tile->bind_group) wgpuBindGroupRelease(tile->bind_group);
     if (tile->bldg_bind_group) wgpuBindGroupRelease(tile->bldg_bind_group);
@@ -1749,25 +1849,35 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
                                          0, 0);
     }
 
-    /* Draw instanced trees */
-    if (tile->tree_instance_count > 0 && r->tree_model_buf_pos) {
-        wgpuRenderPassEncoderSetPipeline(r->pass, r->tree_pipeline);
-        wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0,
-                                          NULL);
-        wgpuRenderPassEncoderSetBindGroup(r->pass, 1, tile->bind_group, 0,
-                                          NULL);
+    /* Draw instanced trees — one draw call per model type */
+    bool drew_trees = false;
+    for (int mi = 0; mi < r->model_count; mi++) {
+        if (tile->tree_instance_counts[mi] == 0 || !r->models[mi].buf_pos)
+            continue;
+        if (!drew_trees) {
+            wgpuRenderPassEncoderSetPipeline(r->pass, r->tree_pipeline);
+            wgpuRenderPassEncoderSetBindGroup(r->pass, 0,
+                                              r->global_bind_group, 0, NULL);
+            wgpuRenderPassEncoderSetBindGroup(r->pass, 1, tile->bind_group, 0,
+                                              NULL);
+            drew_trees = true;
+        }
+        wgpuRenderPassEncoderSetBindGroup(r->pass, 2,
+                                          r->models[mi].bind_group, 0, NULL);
         wgpuRenderPassEncoderSetVertexBuffer(
-            r->pass, 0, r->tree_model_buf_pos, 0,
-            wgpuBufferGetSize(r->tree_model_buf_pos));
+            r->pass, 0, r->models[mi].buf_pos, 0,
+            wgpuBufferGetSize(r->models[mi].buf_pos));
         wgpuRenderPassEncoderSetVertexBuffer(
-            r->pass, 1, tile->tree_instance_buf, 0,
-            wgpuBufferGetSize(tile->tree_instance_buf));
+            r->pass, 1, tile->tree_instance_bufs[mi], 0,
+            wgpuBufferGetSize(tile->tree_instance_bufs[mi]));
         wgpuRenderPassEncoderSetIndexBuffer(
-            r->pass, r->tree_model_buf_indices, WGPUIndexFormat_Uint32, 0,
-            wgpuBufferGetSize(r->tree_model_buf_indices));
-        wgpuRenderPassEncoderDrawIndexed(r->pass, r->tree_model_index_count,
-                                         tile->tree_instance_count, 0, 0, 0);
-
+            r->pass, r->models[mi].buf_indices, WGPUIndexFormat_Uint32, 0,
+            wgpuBufferGetSize(r->models[mi].buf_indices));
+        wgpuRenderPassEncoderDrawIndexed(r->pass, r->models[mi].index_count,
+                                         tile->tree_instance_counts[mi], 0, 0,
+                                         0);
+    }
+    if (drew_trees) {
         /* Restore terrain pipeline for subsequent tiles */
         wgpuRenderPassEncoderSetPipeline(r->pass, r->pipeline);
         wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0,

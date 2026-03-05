@@ -49,8 +49,18 @@ int generate_trees(arpt_bounds bounds, tree_point *out, int max_count) {
             lon += jx * CELL_DEG * 0.4;
             lat += jy * CELL_DEG * 0.4;
 
+            /* Deterministic tree type from position hash */
+            uint32_t th = (uint32_t)(c * 73856093) ^ (uint32_t)(r * 19349663);
+            int rem = (int)(th % 3);
+            tree_type tt = (rem == 0) ? TREE_TYPE_OAK
+                         : (rem == 1) ? TREE_TYPE_PINE
+                                      : TREE_TYPE_BIRCH;
+
             out[count].lon = lon;
             out[count].lat = lat;
+            out[count].type = tt;
+            out[count].id = ((uint64_t)(uint32_t)c << 32) |
+                            (uint64_t)(uint32_t)r;
             count++;
         }
     }

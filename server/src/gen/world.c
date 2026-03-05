@@ -67,7 +67,9 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
     PUSH_INT(10);            /* 12 TOWN_VAL_H10 */
     PUSH_INT(12);            /* 13 TOWN_VAL_H12 */
     PUSH_INT(15);            /* 14 TOWN_VAL_H15 */
-    PUSH_STR("tree");        /* 15 TREE_VAL_TREE */
+    PUSH_STR("oak");          /* 15 TREE_VAL_OAK */
+    PUSH_STR("pine");         /* 16 TREE_VAL_PINE */
+    PUSH_STR("birch");        /* 17 TREE_VAL_BIRCH */
     arpentry_tiles_Tile_values_end(&builder);
 #undef PUSH_INT
 #undef PUSH_STR
@@ -268,8 +270,7 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
                         terrain_elevation(trees[ti].lon, trees[ti].lat));
 
                     arpentry_tiles_Layer_features_push_start(&builder);
-                    arpentry_tiles_Feature_id_add(&builder,
-                                                  (uint64_t)(300000 + ti));
+                    arpentry_tiles_Feature_id_add(&builder, trees[ti].id);
 
                     arpentry_tiles_PointGeometry_ref_t pt_ref;
                     arpentry_tiles_PointGeometry_start(&builder);
@@ -280,10 +281,16 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
                     arpentry_tiles_Feature_geometry_PointGeometry_add(&builder,
                                                                       pt_ref);
 
+                    uint32_t tree_val;
+                    switch (trees[ti].type) {
+                    case TREE_TYPE_PINE:  tree_val = TREE_VAL_PINE;  break;
+                    case TREE_TYPE_BIRCH: tree_val = TREE_VAL_BIRCH; break;
+                    default:              tree_val = TREE_VAL_OAK;   break;
+                    }
                     arpentry_tiles_Feature_properties_start(&builder);
                     arpentry_tiles_Property_t tprop = {0};
                     tprop.key = 0;
-                    tprop.value = TREE_VAL_TREE;
+                    tprop.value = tree_val;
                     arpentry_tiles_Feature_properties_push(&builder, &tprop);
                     arpentry_tiles_Feature_properties_end(&builder);
 

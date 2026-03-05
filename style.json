@@ -32,7 +32,9 @@
     {
       "source_layer": "tree",
       "paint": [
-        { "class": "tree", "model": "tree_01", "min_scale": 0.7, "max_scale": 1.3 }
+        { "class": "oak",   "model": "oak",   "min_scale": 0.7, "max_scale": 1.3, "random_yaw": true, "random_scale": true },
+        { "class": "pine",  "model": "pine",  "min_scale": 0.8, "max_scale": 1.2, "random_yaw": true, "random_scale": true },
+        { "class": "birch", "model": "birch", "min_scale": 0.7, "max_scale": 1.1, "random_yaw": true, "random_scale": true }
       ]
     }
   ]

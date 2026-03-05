@@ -2,15 +2,27 @@
 #define ARPENTRY_GEN_TREE_H
 
 #include "coords.h"
+#include <stdint.h>
 
-/* Tree value index into the tile-scope value dictionary (continued from
+/* Tree value indices into the tile-scope value dictionary (continued from
  * TOWN_VAL_H15 = 14 in town.h). */
-#define TREE_VAL_TREE 15
+#define TREE_VAL_OAK   15
+#define TREE_VAL_PINE  16
+#define TREE_VAL_BIRCH 17
 #define TREE_GRID_MAX 4096 /* max trees per tile */
 
-/* A single tree position in geodetic coordinates. */
+/* Tree type enum (maps 1:1 to TREE_VAL_* offsets). */
+typedef enum {
+    TREE_TYPE_OAK   = 0,
+    TREE_TYPE_PINE  = 1,
+    TREE_TYPE_BIRCH = 2,
+} tree_type;
+
+/* A single tree position in geodetic coordinates with type. */
 typedef struct {
     double lon, lat;
+    tree_type type;
+    uint64_t id;  /* stable ID from global grid cell hash */
 } tree_point;
 
 /* Generate tree positions within the given tile bounds.

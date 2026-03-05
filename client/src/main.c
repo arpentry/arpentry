@@ -65,8 +65,8 @@ static App app = {0};
 static bool fetch_tileset(const char *base_url,
                            arpt_tile_manager_config *config);
 static bool fetch_style(const char *base_url, arpt_style *style);
-static bool fetch_models(const char *base_url, arpt_model *model,
-                          uint8_t **model_buf_out);
+static int fetch_models(const char *base_url, arpt_model *models,
+                         int max_models, uint8_t **model_buf_out);
 static void ui_overlay(WGPURenderPassEncoder pass, void *ud);
 
 /* GLFW callbacks */
@@ -234,11 +234,10 @@ static void render_frame(void) {
         fetch_tileset(app.base_url, &tm_config);
 
         /* Fetch model library */
-        arpt_model refresh_model = {0};
+        arpt_model refresh_models[ARPT_MAX_MODELS];
         if (app.model_buf) { free(app.model_buf); app.model_buf = NULL; }
-        fetch_models(app.base_url, &refresh_model, &app.model_buf);
-        refresh_model.min_scale = style.tree_min_scale;
-        refresh_model.max_scale = style.tree_max_scale;
+        int nmodels = fetch_models(app.base_url, refresh_models,
+                                   ARPT_MAX_MODELS, &app.model_buf);
 
         /* Tile manager must be freed before renderer (GPU resource deps) */
         arpt_tile_manager_free(app.tile_manager);
@@ -250,10 +249,25 @@ static void render_frame(void) {
             arpt_renderer_create(app.device, app.queue, app.surface_format,
                                  (uint32_t)fb_w, (uint32_t)fb_h, &style);
 
-        if (refresh_model.vertex_count > 0)
-            arpt_renderer_upload_model(app.renderer, &refresh_model);
+        /* Upload models, matching style params by model name */
+        for (int si = 0; si < style.tree_style_count; si++) {
+            for (int mi = 0; mi < nmodels; mi++) {
+                if (strcmp(refresh_models[mi].name,
+                           style.trees[si].model_name) == 0) {
+                    refresh_models[mi].min_scale = style.trees[si].min_scale;
+                    refresh_models[mi].max_scale = style.trees[si].max_scale;
+                    refresh_models[mi].random_yaw = style.trees[si].random_yaw;
+                    refresh_models[mi].random_scale =
+                        style.trees[si].random_scale;
+                    arpt_renderer_upload_model(app.renderer, si,
+                                              &refresh_models[mi]);
+                    break;
+                }
+            }
+        }
 
-        app.tile_manager = arpt_tile_manager_create(tm_config, app.renderer);
+        app.tile_manager =
+            arpt_tile_manager_create(tm_config, app.renderer, &style);
 
         /* Restore UI overlay on the new renderer */
         if (app.ui)
@@ -521,28 +535,41 @@ static bool fetch_style(const char *base_url, arpt_style *style) {
                 arpentry_tiles_PaintEntry_vec_at(paint, j);
             flatbuffers_string_t cls_str =
                 arpentry_tiles_PaintEntry_class(entry);
-            arpt_surface_class cls = class_from_name(cls_str);
-            if (cls == ARPT_SURFACE_UNKNOWN) continue;
-
-            const arpentry_tiles_RGBA_t *c =
-                arpentry_tiles_PaintEntry_color(entry);
-            if (c) {
-                style->colors[cls][0] = c->r / 255.0f;
-                style->colors[cls][1] = c->g / 255.0f;
-                style->colors[cls][2] = c->b / 255.0f;
-                style->colors[cls][3] = c->a / 255.0f;
-            }
-            float w = arpentry_tiles_PaintEntry_width(entry);
-            if (w > 0) style->stroke_widths[cls] = w;
-
-            /* Extract model scale range for tree layer */
+            /* Extract tree model style params from paint entries with "model" */
             flatbuffers_string_t model_str =
                 arpentry_tiles_PaintEntry_model(entry);
-            if (model_str) {
+            if (model_str && style->tree_style_count < ARPT_MAX_TREE_STYLES) {
+                int ti = style->tree_style_count;
+                if (cls_str) {
+                    strncpy(style->trees[ti].class_name, cls_str,
+                            sizeof(style->trees[ti].class_name) - 1);
+                }
+                strncpy(style->trees[ti].model_name, model_str,
+                        sizeof(style->trees[ti].model_name) - 1);
                 float ms = arpentry_tiles_PaintEntry_min_scale(entry);
                 float xs = arpentry_tiles_PaintEntry_max_scale(entry);
-                if (ms > 0) style->tree_min_scale = ms;
-                if (xs > 0) style->tree_max_scale = xs;
+                style->trees[ti].min_scale = ms > 0 ? ms : 1.0f;
+                style->trees[ti].max_scale = xs > 0 ? xs : 1.0f;
+                style->trees[ti].random_yaw =
+                    arpentry_tiles_PaintEntry_random_yaw(entry);
+                style->trees[ti].random_scale =
+                    arpentry_tiles_PaintEntry_random_scale(entry);
+                style->tree_style_count++;
+            }
+
+            /* Surface/highway/building color and stroke width */
+            arpt_surface_class cls = class_from_name(cls_str);
+            if (cls != ARPT_SURFACE_UNKNOWN) {
+                const arpentry_tiles_RGBA_t *c =
+                    arpentry_tiles_PaintEntry_color(entry);
+                if (c) {
+                    style->colors[cls][0] = c->r / 255.0f;
+                    style->colors[cls][1] = c->g / 255.0f;
+                    style->colors[cls][2] = c->b / 255.0f;
+                    style->colors[cls][3] = c->a / 255.0f;
+                }
+                float w = arpentry_tiles_PaintEntry_width(entry);
+                if (w > 0) style->stroke_widths[cls] = w;
             }
         }
     }
@@ -556,11 +583,12 @@ static bool fetch_style(const char *base_url, arpt_style *style) {
 }
 
 /* Fetch and decode model library (models.arpm).
-   Populates an arpt_model struct from the first model in the library.
-   The caller must keep model_buf alive while arpt_model pointers are used. */
+   Populates an array of arpt_model structs from the library.
+   The caller must keep model_buf alive while arpt_model pointers are used.
+   Returns the number of models loaded. */
 
-static bool fetch_models(const char *base_url, arpt_model *model,
-                         uint8_t **model_buf_out) {
+static int fetch_models(const char *base_url, arpt_model *models,
+                        int max_models, uint8_t **model_buf_out) {
     char url[512];
     int n = snprintf(url, sizeof(url), "%s/models.arpm", base_url);
     if (n < 0 || (size_t)n >= sizeof(url)) return false;
@@ -606,56 +634,80 @@ static bool fetch_models(const char *base_url, arpt_model *model,
 
     arpentry_tiles_ModelLibrary_table_t lib =
         arpentry_tiles_ModelLibrary_as_root(buf);
-    arpentry_tiles_Model_vec_t models = arpentry_tiles_ModelLibrary_models(lib);
-    if (!models || arpentry_tiles_Model_vec_len(models) == 0) {
+    arpentry_tiles_Model_vec_t model_vec =
+        arpentry_tiles_ModelLibrary_models(lib);
+    if (!model_vec || arpentry_tiles_Model_vec_len(model_vec) == 0) {
         fprintf(stderr, "models: no models in library\n");
         free(buf);
-        return false;
+        return 0;
     }
 
-    arpentry_tiles_Model_table_t m = arpentry_tiles_Model_vec_at(models, 0);
-    flatbuffers_int16_vec_t mx = arpentry_tiles_Model_x(m);
-    flatbuffers_int16_vec_t my = arpentry_tiles_Model_y(m);
-    flatbuffers_int16_vec_t mz = arpentry_tiles_Model_z(m);
-    flatbuffers_uint32_vec_t mi = arpentry_tiles_Model_indices(m);
-    if (!mx || !my || !mz || !mi) {
-        free(buf);
-        return false;
-    }
+    size_t n_models = arpentry_tiles_Model_vec_len(model_vec);
+    int loaded = 0;
 
-    model->x = mx;
-    model->y = my;
-    model->z = mz;
-    model->vertex_count = flatbuffers_int16_vec_len(mx);
-    model->indices = mi;
-    model->index_count = flatbuffers_uint32_vec_len(mi);
+    for (size_t mi = 0; mi < n_models && loaded < max_models; mi++) {
+        arpentry_tiles_Model_table_t m =
+            arpentry_tiles_Model_vec_at(model_vec, mi);
+        flatbuffers_uint16_vec_t mx = arpentry_tiles_Model_x(m);
+        flatbuffers_uint16_vec_t my = arpentry_tiles_Model_y(m);
+        flatbuffers_uint16_vec_t mz = arpentry_tiles_Model_z(m);
+        flatbuffers_uint32_vec_t mindices = arpentry_tiles_Model_indices(m);
+        if (!mx || !my || !mz || !mindices) continue;
 
-    /* Extract color from first Part */
-    model->color[0] = 40.0f / 255.0f;
-    model->color[1] = 90.0f / 255.0f;
-    model->color[2] = 30.0f / 255.0f;
-    model->color[3] = 1.0f;
-    arpentry_tiles_Part_vec_t parts = arpentry_tiles_Model_parts(m);
-    if (parts && arpentry_tiles_Part_vec_len(parts) > 0) {
-        arpentry_tiles_Part_struct_t p = arpentry_tiles_Part_vec_at(parts, 0);
-        if (p) {
-            model->color[0] = (float)p->color.r / 255.0f;
-            model->color[1] = (float)p->color.g / 255.0f;
-            model->color[2] = (float)p->color.b / 255.0f;
-            model->color[3] = (float)p->color.a / 255.0f;
+        arpt_model *mdl = &models[loaded];
+        memset(mdl, 0, sizeof(*mdl));
+        mdl->x = mx;
+        mdl->y = my;
+        mdl->z = mz;
+        mdl->w = arpentry_tiles_Model_w(m); /* may be NULL */
+        mdl->vertex_count = flatbuffers_uint16_vec_len(mx);
+        mdl->indices = mindices;
+        mdl->index_count = flatbuffers_uint32_vec_len(mindices);
+
+        /* Extract name */
+        flatbuffers_string_t name = arpentry_tiles_Model_name(m);
+        if (name) strncpy(mdl->name, name, sizeof(mdl->name) - 1);
+
+        /* Extract colors from Parts: Part[0]=trunk, Part[1]=crown */
+        arpentry_tiles_Part_vec_t parts = arpentry_tiles_Model_parts(m);
+        size_t nparts = parts ? arpentry_tiles_Part_vec_len(parts) : 0;
+        if (nparts >= 1) {
+            arpentry_tiles_Part_struct_t p0 =
+                arpentry_tiles_Part_vec_at(parts, 0);
+            if (p0) {
+                mdl->trunk_color[0] = (float)p0->color.r / 255.0f;
+                mdl->trunk_color[1] = (float)p0->color.g / 255.0f;
+                mdl->trunk_color[2] = (float)p0->color.b / 255.0f;
+                mdl->trunk_color[3] = (float)p0->color.a / 255.0f;
+            }
         }
+        if (nparts >= 2) {
+            arpentry_tiles_Part_struct_t p1 =
+                arpentry_tiles_Part_vec_at(parts, 1);
+            if (p1) {
+                mdl->crown_color[0] = (float)p1->color.r / 255.0f;
+                mdl->crown_color[1] = (float)p1->color.g / 255.0f;
+                mdl->crown_color[2] = (float)p1->color.b / 255.0f;
+                mdl->crown_color[3] = (float)p1->color.a / 255.0f;
+            }
+        } else if (nparts == 1) {
+            /* Single part: use trunk color for crown too */
+            memcpy(mdl->crown_color, mdl->trunk_color,
+                   sizeof(mdl->crown_color));
+        }
+
+        mdl->min_scale = 1.0f;
+        mdl->max_scale = 1.0f;
+        mdl->random_yaw = true;
+        mdl->random_scale = true;
+
+        printf("Model: %s (%zu verts, %zu indices)\n",
+               mdl->name, mdl->vertex_count, mdl->index_count);
+        loaded++;
     }
-
-    model->min_scale = 1.0f;
-    model->max_scale = 1.0f;
-
-    flatbuffers_string_t name = arpentry_tiles_Model_name(m);
-    if (name)
-        printf("Model: %s (%zu verts, %zu indices)\n", name,
-               model->vertex_count, model->index_count);
 
     *model_buf_out = buf; /* caller keeps alive for zero-copy pointers */
-    return true;
+    return loaded;
 }
 
 /* Init after device */
@@ -682,23 +734,33 @@ static void init_viewer(void) {
         fprintf(stderr, "Warning: style.arss fetch failed, using defaults\n");
 
     /* Fetch model library */
-    arpt_model tree_model = {0};
+    arpt_model tree_models[ARPT_MAX_MODELS];
     if (app.model_buf) { free(app.model_buf); app.model_buf = NULL; }
-    if (!fetch_models(base_url, &tree_model, &app.model_buf))
+    int nmodels = fetch_models(base_url, tree_models, ARPT_MAX_MODELS,
+                               &app.model_buf);
+    if (nmodels == 0)
         fprintf(stderr, "Warning: models.arpm fetch failed\n");
-
-    /* Apply style scale range to model */
-    tree_model.min_scale = style.tree_min_scale;
-    tree_model.max_scale = style.tree_max_scale;
 
     /* Renderer */
     app.renderer =
         arpt_renderer_create(app.device, app.queue, app.surface_format,
                              (uint32_t)fb_w, (uint32_t)fb_h, &style);
 
-    /* Upload tree model to GPU */
-    if (tree_model.vertex_count > 0)
-        arpt_renderer_upload_model(app.renderer, &tree_model);
+    /* Upload tree models to GPU, matching style entries by model name.
+       Each style tree entry (si) maps to a renderer model slot. */
+    for (int si = 0; si < style.tree_style_count; si++) {
+        for (int mi = 0; mi < nmodels; mi++) {
+            if (strcmp(tree_models[mi].name,
+                       style.trees[si].model_name) == 0) {
+                tree_models[mi].min_scale = style.trees[si].min_scale;
+                tree_models[mi].max_scale = style.trees[si].max_scale;
+                tree_models[mi].random_yaw = style.trees[si].random_yaw;
+                tree_models[mi].random_scale = style.trees[si].random_scale;
+                arpt_renderer_upload_model(app.renderer, si, &tree_models[mi]);
+                break;
+            }
+        }
+    }
 
     /* Tile manager: fetch tileset metadata, then create manager */
     arpt_tile_manager_config tm_config = {
@@ -711,7 +773,7 @@ static void init_viewer(void) {
     };
     if (!fetch_tileset(base_url, &tm_config))
         fprintf(stderr, "Warning: tileset.arts fetch failed, using defaults\n");
-    app.tile_manager = arpt_tile_manager_create(tm_config, app.renderer);
+    app.tile_manager = arpt_tile_manager_create(tm_config, app.renderer, &style);
 
     /* Diagnostic: verify camera position */
     {

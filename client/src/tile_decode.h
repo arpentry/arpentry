@@ -110,6 +110,8 @@ bool arpt_decode_buildings(const void *flatbuf, size_t size,
 typedef struct {
     uint16_t qx, qy;
     int32_t z;
+    uint8_t model_index; /* index into style tree_styles array */
+    uint32_t id;         /* stable ID for deterministic randomness */
 } arpt_tree_point;
 
 typedef struct {
@@ -120,8 +122,11 @@ typedef struct {
 /**
  * Extract tree point positions from a verified FlatBuffer tile.
  * Finds the "tree" layer, extracts PointGeometry features.
+ * class_names is an array of class_count class name strings; each tree's
+ * model_index is set to the matching index, or 0 if no match.
  */
 bool arpt_decode_trees(const void *flatbuf, size_t size,
+                       const char *const *class_names, int class_count,
                        arpt_tree_data *out);
 
 void arpt_tree_data_free(arpt_tree_data *data);

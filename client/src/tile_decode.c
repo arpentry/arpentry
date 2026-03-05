@@ -347,7 +347,42 @@ void arpt_highway_data_free(arpt_highway_data *data) {
 
 /* Tree decoding */
 
+/* Map tree class name to model index using the caller-provided class list. */
+static uint8_t tree_model_from_class(arpentry_tiles_Feature_table_t feat,
+                                     uint32_t class_key_idx,
+                                     arpentry_tiles_Value_vec_t values,
+                                     const char *const *class_names,
+                                     int class_count) {
+    if (class_key_idx == UINT32_MAX || !values) return 0;
+    arpentry_tiles_Property_vec_t props =
+        arpentry_tiles_Feature_properties(feat);
+    if (!props) return 0;
+    size_t np = arpentry_tiles_Property_vec_len(props);
+    for (size_t p = 0; p < np; p++) {
+        arpentry_tiles_Property_struct_t pr =
+            arpentry_tiles_Property_vec_at(props, p);
+        if (pr && pr->key == class_key_idx) {
+            size_t vi = pr->value;
+            if (vi < arpentry_tiles_Value_vec_len(values)) {
+                arpentry_tiles_Value_table_t val =
+                    arpentry_tiles_Value_vec_at(values, vi);
+                flatbuffers_string_t s =
+                    arpentry_tiles_Value_string_value(val);
+                if (s) {
+                    for (int ci = 0; ci < class_count; ci++) {
+                        if (strcmp(s, class_names[ci]) == 0)
+                            return (uint8_t)ci;
+                    }
+                }
+            }
+            break;
+        }
+    }
+    return 0;
+}
+
 bool arpt_decode_trees(const void *flatbuf, size_t size,
+                       const char *const *class_names, int class_count,
                        arpt_tree_data *out) {
     out->points = NULL;
     out->count = 0;
@@ -410,10 +445,16 @@ bool arpt_decode_trees(const void *flatbuf, size_t size,
         if (flatbuffers_uint16_vec_len(yv) != vc) continue;
         if (flatbuffers_int32_vec_len(zv) != vc) continue;
 
+        uint8_t mi = tree_model_from_class(feat, class_key_idx, values,
+                                                 class_names, class_count);
+        uint64_t fid = arpentry_tiles_Feature_id(feat);
+        uint32_t id32 = (uint32_t)(fid ^ (fid >> 32));
         for (size_t v = 0; v < vc; v++) {
             out->points[count].qx = xv[v];
             out->points[count].qy = yv[v];
             out->points[count].z = zv[v];
+            out->points[count].model_index = mi;
+            out->points[count].id = id32;
             count++;
         }
     }

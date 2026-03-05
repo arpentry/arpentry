@@ -1,5 +1,6 @@
 #include "tile_manager.h"
 #include "renderer.h"
+#include "style.h"
 #include "tile_decode.h"
 #include "tile_fetch.h"
 #include "globe.h"
@@ -41,6 +42,11 @@ struct arpt_tile_manager {
     struct hashmap *cache;
     uint64_t frame;
     int active_fetches;
+
+    /* Tree class names from style (for tree decode). Copies stored inline. */
+    char tree_class_names_buf[ARPT_MAX_TREE_STYLES][32];
+    const char *tree_class_names[ARPT_MAX_TREE_STYLES];
+    int tree_class_count;
 
     /* Cached per-frame visible tile list (computed once in update, reused in
      * draw) */
@@ -157,7 +163,8 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
 
     arpt_tree_data trees = {0};
     if (key.level >= 13)
-        arpt_decode_trees(flatbuf, size, &trees);
+        arpt_decode_trees(flatbuf, size, tm->tree_class_names,
+                          tm->tree_class_count, &trees);
 
     /* wgpuQueueWriteBuffer copies synchronously, safe to free after */
     updated.gpu = arpt_renderer_upload_tile(tm->renderer, &mesh, &surface,
@@ -207,12 +214,24 @@ static void evict_oldest(arpt_tile_manager *tm) {
 /* Public API */
 
 arpt_tile_manager *arpt_tile_manager_create(arpt_tile_manager_config config,
-                                            arpt_renderer *r) {
+                                            arpt_renderer *r,
+                                            const arpt_style *style) {
     arpt_tile_manager *tm = calloc(1, sizeof(*tm));
     if (!tm) return NULL;
 
     tm->config = config;
     tm->renderer = r;
+
+    /* Cache tree class names from style for decode-time mapping. */
+    if (style) {
+        tm->tree_class_count = style->tree_style_count;
+        for (int i = 0; i < style->tree_style_count; i++) {
+            strncpy(tm->tree_class_names_buf[i], style->trees[i].class_name,
+                    sizeof(tm->tree_class_names_buf[i]) - 1);
+            tm->tree_class_names_buf[i][31] = '\0';
+            tm->tree_class_names[i] = tm->tree_class_names_buf[i];
+        }
+    }
     tm->cache = hashmap_new(sizeof(tile_entry), 64, 0, 0, tile_hash,
                             tile_compare, tile_entry_free, NULL);
     if (!tm->cache) {

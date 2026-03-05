@@ -52,8 +52,11 @@ typedef struct {
     int max_concurrent; /* max in-flight fetches */
 } arpt_tile_manager_config;
 
+typedef struct arpt_style arpt_style;
+
 arpt_tile_manager *arpt_tile_manager_create(arpt_tile_manager_config config,
-                                            arpt_renderer *r);
+                                            arpt_renderer *r,
+                                            const arpt_style *style);
 void arpt_tile_manager_free(arpt_tile_manager *tm);
 
 /**
