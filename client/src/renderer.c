@@ -570,7 +570,7 @@ static WGPURenderPipeline create_tree_pipeline(WGPUDevice device,
                    .buffers = vbls},
         .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
                       .cullMode = WGPUCullMode_Back,
-                      .frontFace = WGPUFrontFace_CW},
+                      .frontFace = WGPUFrontFace_CCW},
         .fragment = &frag,
         .depthStencil = &ds,
         .multisample = {.count = 1, .mask = ~0u},
@@ -641,7 +641,7 @@ static WGPURenderPipeline create_poi_pipeline(WGPUDevice device,
         .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
     WGPUDepthStencilState ds = {
         .format = WGPUTextureFormat_Depth24Plus,
-        .depthWriteEnabled = false, /* transparent text, no depth write */
+        .depthWriteEnabled = true, /* protect labels from later tile draws */
         .depthCompare = WGPUCompareFunction_LessEqual,
         .stencilFront = {.compare = WGPUCompareFunction_Always},
         .stencilBack = {.compare = WGPUCompareFunction_Always},
