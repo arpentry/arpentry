@@ -1,6 +1,7 @@
 #include "renderer.h"
 #include "coords.h"
 #include "font.h"
+#include "globe.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -84,6 +85,23 @@ struct arpt_tile_gpu {
     /* POI text label instances */
     WGPUBuffer poi_instance_buf;
     uint32_t poi_instance_count;
+
+    /* Per-POI metadata for CPU-side collision detection */
+    struct {
+        uint16_t qx, qy;
+        int32_t qz;
+        float label_w_px; /* total label width in pixels */
+        float label_h_px; /* label height in pixels */
+        uint32_t first_instance;
+        uint32_t instance_count;
+    } *poi_labels;
+    int poi_label_count;
+
+    /* Cached tile uniforms for CPU-side POI projection */
+    float cached_model[16];
+    float cached_bounds[4];
+    float cached_center_lon;
+    float cached_center_lat;
 };
 
 /* Renderer state */
@@ -161,6 +179,11 @@ struct arpt_renderer {
 
     WGPUCommandEncoder encoder;
     WGPURenderPassEncoder pass;
+
+    /* POI label collision detection (reset each frame) */
+    arpt_mat4 cached_projection; /* projection matrix for CPU-side projection */
+    struct { float x0, y0, x1, y1; } placed_labels[512];
+    int placed_label_count;
 
     /* Overlay callback (e.g. UI) invoked before pass ends */
     arpt_overlay_fn overlay_fn;
@@ -1817,6 +1840,11 @@ static void upload_poi_instances(arpt_tile_gpu *t, arpt_renderer *r,
     poi_instance_t *instances = malloc(total_glyphs * sizeof(poi_instance_t));
     if (!instances) return;
 
+    /* Allocate per-POI metadata for collision detection */
+    t->poi_labels = malloc(pois->count * sizeof(*t->poi_labels));
+    if (!t->poi_labels) { free(instances); return; }
+    t->poi_label_count = 0;
+
     /* Normalize glyph positions: offset is in "advance units" where
      * 1.0 = one average glyph advance. The shader multiplies by glyph_scale. */
     float font_size = r->font_pixel_height;
@@ -1830,13 +1858,18 @@ static void upload_poi_instances(arpt_tile_gpu *t, arpt_renderer *r,
 
         /* Compute total string width in pixels */
         float total_w = 0;
+        float max_h = 0;
         for (size_t c = 0; c < len; c++) {
             int ch = (unsigned char)name[c];
             if (ch < FONT_FIRST_CHAR || ch > FONT_LAST_CHAR)
                 ch = FONT_FIRST_CHAR;
-            total_w += r->glyphs[ch - FONT_FIRST_CHAR].advance;
+            const font_glyph *g = &r->glyphs[ch - FONT_FIRST_CHAR];
+            total_w += g->advance;
+            if (g->height > max_h) max_h = g->height;
         }
         float half_w = total_w * 0.5f;
+
+        uint32_t first_inst = (uint32_t)idx;
 
         /* Emit glyph instances */
         float cursor = 0;
@@ -1864,6 +1897,18 @@ static void upload_poi_instances(arpt_tile_gpu *t, arpt_renderer *r,
                 idx++;
             }
             cursor += g->advance;
+        }
+
+        uint32_t glyph_count = (uint32_t)idx - first_inst;
+        if (glyph_count > 0) {
+            int li = t->poi_label_count++;
+            t->poi_labels[li].qx = p->qx;
+            t->poi_labels[li].qy = p->qy;
+            t->poi_labels[li].qz = p->z;
+            t->poi_labels[li].label_w_px = total_w;
+            t->poi_labels[li].label_h_px = max_h;
+            t->poi_labels[li].first_instance = first_inst;
+            t->poi_labels[li].instance_count = glyph_count;
         }
     }
 
@@ -2000,6 +2045,12 @@ void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile, arpt_mat4 model,
     u.center_lat = center_lat;
     u._pad0 = 0.0f;
     u._pad1 = 0.0f;
+    /* Cache for CPU-side POI projection */
+    memcpy(tile->cached_model, model.m, sizeof(tile->cached_model));
+    memcpy(tile->cached_bounds, bounds, sizeof(tile->cached_bounds));
+    tile->cached_center_lon = center_lon;
+    tile->cached_center_lat = center_lat;
+
     wgpuQueueWriteBuffer(tile->renderer->queue, tile->uniform_buf, 0, &u,
                          sizeof(u));
 }
@@ -2019,6 +2070,7 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
             wgpuBufferRelease(tile->tree_instance_bufs[mi]);
     }
     if (tile->poi_instance_buf) wgpuBufferRelease(tile->poi_instance_buf);
+    free(tile->poi_labels);
     if (tile->uniform_buf) wgpuBufferRelease(tile->uniform_buf);
     if (tile->bind_group) wgpuBindGroupRelease(tile->bind_group);
     if (tile->bldg_bind_group) wgpuBindGroupRelease(tile->bldg_bind_group);
@@ -2094,6 +2146,7 @@ void arpt_renderer_set_globals(arpt_renderer *r, arpt_mat4 projection,
     if (memcmp(&u, &r->prev_globals, sizeof(u)) == 0) return;
 
     r->prev_globals = u;
+    memcpy(r->cached_projection.m, projection.m, sizeof(r->cached_projection.m));
     wgpuQueueWriteBuffer(r->queue, r->global_uniform_buf, 0, &u, sizeof(u));
 }
 
@@ -2122,6 +2175,7 @@ void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view) {
     };
 
     r->pass = wgpuCommandEncoderBeginRenderPass(r->encoder, &rp);
+    r->placed_label_count = 0;
     wgpuRenderPassEncoderSetPipeline(r->pass, r->pipeline);
     wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0,
                                       NULL);
@@ -2197,25 +2251,111 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
                                           NULL);
     }
 
-    /* Draw POI text labels */
-    if (tile->poi_instance_count > 0 && r->poi_pipeline) {
-        wgpuRenderPassEncoderSetPipeline(r->pass, r->poi_pipeline);
-        wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0,
-                                          NULL);
-        wgpuRenderPassEncoderSetBindGroup(r->pass, 1, tile->bind_group, 0,
-                                          NULL);
-        wgpuRenderPassEncoderSetBindGroup(r->pass, 2, r->poi_bind_group, 0,
-                                          NULL);
-        wgpuRenderPassEncoderSetVertexBuffer(
-            r->pass, 0, tile->poi_instance_buf, 0,
-            wgpuBufferGetSize(tile->poi_instance_buf));
-        /* Triangle strip with 4 vertices per instance (quad) */
-        wgpuRenderPassEncoderDraw(r->pass, 4, tile->poi_instance_count, 0, 0);
+    /* Draw POI text labels with AABB collision detection */
+    if (tile->poi_label_count > 0 && r->poi_pipeline) {
+        bool drew_any = false;
+        const float *proj = r->cached_projection.m;
+        const float *mdl = tile->cached_model;
+        float vw = (float)r->width;
+        float vh = (float)r->height;
 
-        /* Restore terrain pipeline for subsequent tiles */
-        wgpuRenderPassEncoderSetPipeline(r->pass, r->pipeline);
-        wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0,
-                                          NULL);
+        for (int li = 0; li < tile->poi_label_count; li++) {
+            /* Dequantize anchor to geodetic (same as shader) */
+            float lon_w = tile->cached_bounds[0];
+            float lat_s = tile->cached_bounds[1];
+            float lon_e = tile->cached_bounds[2];
+            float lat_n = tile->cached_bounds[3];
+            float u = ((float)tile->poi_labels[li].qx - 16384.0f) / 32768.0f;
+            float v = ((float)tile->poi_labels[li].qy - 16384.0f) / 32768.0f;
+            double lon = lon_w + u * (lon_e - lon_w);
+            double lat = lat_s + v * (lat_n - lat_s);
+            double alt = (double)tile->poi_labels[li].qz * 0.001;
+
+            /* Geodetic to ECEF, then to tile-local ECEF */
+            arpt_dvec3 ecef = arpt_geodetic_to_ecef(lon, lat, alt);
+            arpt_dvec3 center_ecef = arpt_geodetic_to_ecef(
+                (double)tile->cached_center_lon,
+                (double)tile->cached_center_lat, 0.0);
+            float lx = (float)(ecef.x - center_ecef.x);
+            float ly = (float)(ecef.y - center_ecef.y);
+            float lz = (float)(ecef.z - center_ecef.z);
+
+            /* model * local_ecef (column-major) */
+            float mx = mdl[0]*lx + mdl[4]*ly + mdl[8]*lz + mdl[12];
+            float my = mdl[1]*lx + mdl[5]*ly + mdl[9]*lz + mdl[13];
+            float mz = mdl[2]*lx + mdl[6]*ly + mdl[10]*lz + mdl[14];
+            float mw = mdl[3]*lx + mdl[7]*ly + mdl[11]*lz + mdl[15];
+
+            /* projection * model_pos → clip space */
+            float cx = proj[0]*mx + proj[4]*my + proj[8]*mz + proj[12]*mw;
+            float cy = proj[1]*mx + proj[5]*my + proj[9]*mz + proj[13]*mw;
+            float cw = proj[3]*mx + proj[7]*my + proj[11]*mz + proj[15]*mw;
+
+            /* Skip labels behind camera */
+            if (cw <= 0.0f) continue;
+
+            /* NDC to screen pixels */
+            float sx = (cx / cw * 0.5f + 0.5f) * vw;
+            float sy = (1.0f - (cy / cw * 0.5f + 0.5f)) * vh;
+
+            /* Label AABB in screen pixels (centered horizontally, above anchor)
+             */
+            float hw = tile->poi_labels[li].label_w_px * 0.5f;
+            float lh = tile->poi_labels[li].label_h_px;
+            float pad = 4.0f; /* extra padding between labels */
+            float x0 = sx - hw - pad;
+            float y0 = sy - lh - pad;
+            float x1 = sx + hw + pad;
+            float y1 = sy + pad;
+
+            /* Check overlap against already-placed labels */
+            bool collides = false;
+            for (int pi = 0; pi < r->placed_label_count; pi++) {
+                if (x0 < r->placed_labels[pi].x1 &&
+                    x1 > r->placed_labels[pi].x0 &&
+                    y0 < r->placed_labels[pi].y1 &&
+                    y1 > r->placed_labels[pi].y0) {
+                    collides = true;
+                    break;
+                }
+            }
+            if (collides) continue;
+
+            /* Register this label as placed */
+            if (r->placed_label_count < 512) {
+                r->placed_labels[r->placed_label_count].x0 = x0;
+                r->placed_labels[r->placed_label_count].y0 = y0;
+                r->placed_labels[r->placed_label_count].x1 = x1;
+                r->placed_labels[r->placed_label_count].y1 = y1;
+                r->placed_label_count++;
+            }
+
+            /* Draw this label's glyphs */
+            if (!drew_any) {
+                wgpuRenderPassEncoderSetPipeline(r->pass, r->poi_pipeline);
+                wgpuRenderPassEncoderSetBindGroup(r->pass, 0,
+                                                  r->global_bind_group, 0,
+                                                  NULL);
+                wgpuRenderPassEncoderSetBindGroup(r->pass, 1, tile->bind_group,
+                                                  0, NULL);
+                wgpuRenderPassEncoderSetBindGroup(r->pass, 2, r->poi_bind_group,
+                                                  0, NULL);
+                wgpuRenderPassEncoderSetVertexBuffer(
+                    r->pass, 0, tile->poi_instance_buf, 0,
+                    wgpuBufferGetSize(tile->poi_instance_buf));
+                drew_any = true;
+            }
+            wgpuRenderPassEncoderDraw(
+                r->pass, 4, tile->poi_labels[li].instance_count, 0,
+                tile->poi_labels[li].first_instance);
+        }
+
+        if (drew_any) {
+            /* Restore terrain pipeline for subsequent tiles */
+            wgpuRenderPassEncoderSetPipeline(r->pass, r->pipeline);
+            wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group,
+                                              0, NULL);
+        }
     }
 }
 
