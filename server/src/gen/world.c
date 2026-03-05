@@ -321,6 +321,12 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
 
             arpentry_tiles_Layer_features_start(&builder);
             for (int pi = 0; pi < np; pi++) {
+                /* Only emit POI if it falls within this tile's proper area
+                 * (not buffer zone) so each POI appears in exactly one tile. */
+                if (pp[pi].lon < bounds.west || pp[pi].lon >= bounds.east ||
+                    pp[pi].lat < bounds.south || pp[pi].lat >= bounds.north)
+                    continue;
+
                 uint16_t px = arpt_quantize_lon(pp[pi].lon, bounds);
                 uint16_t py = arpt_quantize_lat(pp[pi].lat, bounds);
                 int32_t pz = arpt_meters_to_mm(
