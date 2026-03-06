@@ -77,7 +77,7 @@ WGPURenderPipeline arpt__label_create_pipeline(WGPUDevice device,
                       .cullMode = WGPUCullMode_None},
         .fragment = &frag,
         .depthStencil = &ds,
-        .multisample = {.count = 1, .mask = ~0u},
+        .multisample = {.count = 4, .mask = ~0u},
     };
     WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
 

@@ -23,6 +23,12 @@ typedef struct {
 } global_uniforms_t;
 
 typedef struct {
+    float inv_projection[16];
+    float sun_dir[3];
+    float altitude;
+} sky_uniforms_t;
+
+typedef struct {
     float model[16];
     float bounds[4];
     float center_lon;
@@ -64,6 +70,13 @@ struct arpt_tile_gpu {
     WGPUTextureView surface_view;
     uint32_t index_count;
     arpt_renderer *renderer;
+
+    /* Terrain skirts (edge stitching, same pipeline) */
+    WGPUBuffer skirt_buf_xy;
+    WGPUBuffer skirt_buf_z;
+    WGPUBuffer skirt_buf_normals;
+    WGPUBuffer skirt_buf_indices;
+    uint32_t skirt_index_count;
 
     /* Building extrusion (separate draw call, same pipeline) */
     WGPUBuffer bldg_buf_xy;
@@ -119,6 +132,15 @@ struct arpt_renderer {
 
     WGPUTexture depth_texture;
     WGPUTextureView depth_view;
+
+    WGPUTexture msaa_texture;
+    WGPUTextureView msaa_view;
+
+    /* Sky / atmosphere */
+    WGPURenderPipeline sky_pipeline;
+    WGPUBindGroupLayout sky_bgl;
+    WGPUBuffer sky_uniform_buf;
+    WGPUBindGroup sky_bind_group;
 
     /* Surface offscreen rasterization */
     WGPURenderPipeline surface_pipeline;
@@ -211,7 +233,10 @@ WGPURenderPipeline arpt__mesh_create_pipeline(WGPUDevice device,
                                                WGPUBindGroupLayout tile_bgl);
 void arpt__mesh_upload_terrain(arpt_renderer *r, arpt_tile_gpu *t,
                                const arpt_mesh_prim *prim);
+void arpt__mesh_upload_skirts(arpt_renderer *r, arpt_tile_gpu *t,
+                               const arpt_mesh_prim *prim);
 void arpt__mesh_draw_terrain(arpt_renderer *r, arpt_tile_gpu *tile);
+void arpt__mesh_draw_skirts(arpt_renderer *r, arpt_tile_gpu *tile);
 void arpt__mesh_draw_extrusion(arpt_renderer *r, arpt_tile_gpu *tile);
 
 /* render_texture.c */
@@ -248,6 +273,12 @@ void arpt__label_upload(arpt_renderer *r, arpt_tile_gpu *t,
                         const arpt_label_prim *prim);
 void arpt__label_draw(arpt_renderer *r, arpt_tile_gpu *tile);
 void arpt__label_cleanup(arpt_renderer *r);
+
+/* render_sky.c */
+WGPURenderPipeline arpt__sky_create_pipeline(WGPUDevice device,
+                                              WGPUTextureFormat format,
+                                              WGPUBindGroupLayout sky_bgl);
+void arpt__sky_draw(arpt_renderer *r);
 
 /* render_placeholder.c */
 WGPURenderPipeline arpt__placeholder_create_wireframe_pipeline(

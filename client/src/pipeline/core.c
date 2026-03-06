@@ -2,6 +2,66 @@
 
 #include <stdlib.h>
 
+/* 4x4 matrix inverse (column-major, general case) */
+static void mat4_inverse(const float m[16], float out[16]) {
+    float inv[16];
+    inv[0]  =  m[5]*m[10]*m[15] - m[5]*m[11]*m[14] - m[9]*m[6]*m[15]
+             + m[9]*m[7]*m[14] + m[13]*m[6]*m[11] - m[13]*m[7]*m[10];
+    inv[4]  = -m[4]*m[10]*m[15] + m[4]*m[11]*m[14] + m[8]*m[6]*m[15]
+             - m[8]*m[7]*m[14] - m[12]*m[6]*m[11] + m[12]*m[7]*m[10];
+    inv[8]  =  m[4]*m[9]*m[15] - m[4]*m[11]*m[13] - m[8]*m[5]*m[15]
+             + m[8]*m[7]*m[13] + m[12]*m[5]*m[11] - m[12]*m[7]*m[9];
+    inv[12] = -m[4]*m[9]*m[14] + m[4]*m[10]*m[13] + m[8]*m[5]*m[14]
+             - m[8]*m[6]*m[13] - m[12]*m[5]*m[10] + m[12]*m[6]*m[9];
+    inv[1]  = -m[1]*m[10]*m[15] + m[1]*m[11]*m[14] + m[9]*m[2]*m[15]
+             - m[9]*m[3]*m[14] - m[13]*m[2]*m[11] + m[13]*m[3]*m[10];
+    inv[5]  =  m[0]*m[10]*m[15] - m[0]*m[11]*m[14] - m[8]*m[2]*m[15]
+             + m[8]*m[3]*m[14] + m[12]*m[2]*m[11] - m[12]*m[3]*m[10];
+    inv[9]  = -m[0]*m[9]*m[15] + m[0]*m[11]*m[13] + m[8]*m[1]*m[15]
+             - m[8]*m[3]*m[13] - m[12]*m[1]*m[11] + m[12]*m[3]*m[9];
+    inv[13] =  m[0]*m[9]*m[14] - m[0]*m[10]*m[13] - m[8]*m[1]*m[14]
+             + m[8]*m[2]*m[13] + m[12]*m[1]*m[10] - m[12]*m[2]*m[9];
+    inv[2]  =  m[1]*m[6]*m[15] - m[1]*m[7]*m[14] - m[5]*m[2]*m[15]
+             + m[5]*m[3]*m[14] + m[13]*m[2]*m[7] - m[13]*m[3]*m[6];
+    inv[6]  = -m[0]*m[6]*m[15] + m[0]*m[7]*m[14] + m[4]*m[2]*m[15]
+             - m[4]*m[3]*m[14] - m[12]*m[2]*m[7] + m[12]*m[3]*m[6];
+    inv[10] =  m[0]*m[5]*m[15] - m[0]*m[7]*m[13] - m[4]*m[1]*m[15]
+             + m[4]*m[3]*m[13] + m[12]*m[1]*m[7] - m[12]*m[3]*m[5];
+    inv[14] = -m[0]*m[5]*m[14] + m[0]*m[6]*m[13] + m[4]*m[1]*m[14]
+             - m[4]*m[2]*m[13] - m[12]*m[1]*m[6] + m[12]*m[2]*m[5];
+    inv[3]  = -m[1]*m[6]*m[11] + m[1]*m[7]*m[10] + m[5]*m[2]*m[11]
+             - m[5]*m[3]*m[10] - m[9]*m[2]*m[7] + m[9]*m[3]*m[6];
+    inv[7]  =  m[0]*m[6]*m[11] - m[0]*m[7]*m[10] - m[4]*m[2]*m[11]
+             + m[4]*m[3]*m[10] + m[8]*m[2]*m[7] - m[8]*m[3]*m[6];
+    inv[11] = -m[0]*m[5]*m[11] + m[0]*m[7]*m[9] + m[4]*m[1]*m[11]
+             - m[4]*m[3]*m[9] - m[8]*m[1]*m[7] + m[8]*m[3]*m[5];
+    inv[15] =  m[0]*m[5]*m[10] - m[0]*m[6]*m[9] - m[4]*m[1]*m[10]
+             + m[4]*m[2]*m[9] + m[8]*m[1]*m[6] - m[8]*m[2]*m[5];
+
+    float det = m[0]*inv[0] + m[1]*inv[4] + m[2]*inv[8] + m[3]*inv[12];
+    if (det == 0.0f) { memset(out, 0, 64); return; }
+    det = 1.0f / det;
+    for (int i = 0; i < 16; i++) out[i] = inv[i] * det;
+}
+
+/* MSAA color texture (re)creation */
+
+static void create_msaa_texture(arpt_renderer *r) {
+    if (r->msaa_view) wgpuTextureViewRelease(r->msaa_view);
+    if (r->msaa_texture) wgpuTextureRelease(r->msaa_texture);
+
+    WGPUTextureDescriptor desc = {
+        .usage = WGPUTextureUsage_RenderAttachment,
+        .size = {r->width, r->height, 1},
+        .format = r->surface_format,
+        .dimension = WGPUTextureDimension_2D,
+        .mipLevelCount = 1,
+        .sampleCount = 4,
+    };
+    r->msaa_texture = wgpuDeviceCreateTexture(r->device, &desc);
+    r->msaa_view = wgpuTextureCreateView(r->msaa_texture, NULL);
+}
+
 /* Depth texture (re)creation */
 
 static void create_depth_texture(arpt_renderer *r) {
@@ -14,7 +74,7 @@ static void create_depth_texture(arpt_renderer *r) {
         .format = WGPUTextureFormat_Depth24Plus,
         .dimension = WGPUTextureDimension_2D,
         .mipLevelCount = 1,
-        .sampleCount = 1,
+        .sampleCount = 4,
     };
     r->depth_texture = wgpuDeviceCreateTexture(r->device, &desc);
     r->depth_view = wgpuTextureCreateView(r->depth_texture, NULL);
@@ -150,6 +210,35 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
         arpt__label_init_font(r);
     }
 
+    /* Sky / atmosphere pipeline */
+    {
+        WGPUBindGroupLayoutEntry sky_entry = {
+            .binding = 0,
+            .visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment,
+            .buffer = {.type = WGPUBufferBindingType_Uniform,
+                       .minBindingSize = sizeof(sky_uniforms_t)},
+        };
+        r->sky_bgl = wgpuDeviceCreateBindGroupLayout(
+            device, &(WGPUBindGroupLayoutDescriptor){.entryCount = 1,
+                                                     .entries = &sky_entry});
+        r->sky_pipeline =
+            arpt__sky_create_pipeline(device, format, r->sky_bgl);
+
+        r->sky_uniform_buf =
+            create_buffer(device, queue, WGPUBufferUsage_Uniform, NULL,
+                          sizeof(sky_uniforms_t));
+        WGPUBindGroupEntry sky_bg_e = {
+            .binding = 0,
+            .buffer = r->sky_uniform_buf,
+            .offset = 0,
+            .size = sizeof(sky_uniforms_t),
+        };
+        r->sky_bind_group = wgpuDeviceCreateBindGroup(
+            device, &(WGPUBindGroupDescriptor){.layout = r->sky_bgl,
+                                               .entryCount = 1,
+                                               .entries = &sky_bg_e});
+    }
+
     /* Surface offscreen pipelines + sampler */
     r->surface_pipeline = arpt__texture_create_surface_pipeline(device);
     r->highway_pipeline = arpt__texture_create_highway_pipeline(device);
@@ -186,6 +275,7 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
                                            .entryCount = 1,
                                            .entries = &bg_e});
 
+    create_msaa_texture(r);
     create_depth_texture(r);
     arpt__placeholder_init(r);
 
@@ -197,10 +287,16 @@ void arpt_renderer_free(arpt_renderer *r) {
     arpt__placeholder_cleanup(r);
     arpt__label_cleanup(r);
     arpt__instance_cleanup(r);
+    if (r->msaa_view) wgpuTextureViewRelease(r->msaa_view);
+    if (r->msaa_texture) wgpuTextureRelease(r->msaa_texture);
     if (r->depth_view) wgpuTextureViewRelease(r->depth_view);
     if (r->depth_texture) wgpuTextureRelease(r->depth_texture);
     if (r->global_bind_group) wgpuBindGroupRelease(r->global_bind_group);
     if (r->global_uniform_buf) wgpuBufferRelease(r->global_uniform_buf);
+    if (r->sky_bind_group) wgpuBindGroupRelease(r->sky_bind_group);
+    if (r->sky_uniform_buf) wgpuBufferRelease(r->sky_uniform_buf);
+    if (r->sky_pipeline) wgpuRenderPipelineRelease(r->sky_pipeline);
+    if (r->sky_bgl) wgpuBindGroupLayoutRelease(r->sky_bgl);
     if (r->pipeline) wgpuRenderPipelineRelease(r->pipeline);
     if (r->surface_pipeline) wgpuRenderPipelineRelease(r->surface_pipeline);
     if (r->highway_pipeline) wgpuRenderPipelineRelease(r->highway_pipeline);
@@ -218,6 +314,7 @@ void arpt_renderer_free(arpt_renderer *r) {
 void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height) {
     r->width = width;
     r->height = height;
+    create_msaa_texture(r);
     create_depth_texture(r);
 
     /* Re-upload POI uniforms with new viewport dimensions */
@@ -260,8 +357,9 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
     if (!t) return NULL;
     t->renderer = r;
 
-    /* Upload terrain mesh */
+    /* Upload terrain mesh + edge skirts */
     arpt__mesh_upload_terrain(r, t, &prims->terrain);
+    arpt__mesh_upload_skirts(r, t, &prims->terrain);
 
     /* Upload building extrusion */
     arpt__extrusion_upload(r, t, &prims->extrusion);
@@ -344,6 +442,10 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     if (tile->buf_z) wgpuBufferRelease(tile->buf_z);
     if (tile->buf_normals) wgpuBufferRelease(tile->buf_normals);
     if (tile->buf_indices) wgpuBufferRelease(tile->buf_indices);
+    if (tile->skirt_buf_xy) wgpuBufferRelease(tile->skirt_buf_xy);
+    if (tile->skirt_buf_z) wgpuBufferRelease(tile->skirt_buf_z);
+    if (tile->skirt_buf_normals) wgpuBufferRelease(tile->skirt_buf_normals);
+    if (tile->skirt_buf_indices) wgpuBufferRelease(tile->skirt_buf_indices);
     if (tile->bldg_buf_xy) wgpuBufferRelease(tile->bldg_buf_xy);
     if (tile->bldg_buf_z) wgpuBufferRelease(tile->bldg_buf_z);
     if (tile->bldg_buf_normals) wgpuBufferRelease(tile->bldg_buf_normals);
@@ -392,14 +494,26 @@ void arpt_renderer_set_globals(arpt_renderer *r, arpt_mat4 projection,
     wgpuQueueWriteBuffer(r->queue, r->global_uniform_buf, 0, &u, sizeof(u));
 }
 
+void arpt_renderer_set_sky(arpt_renderer *r, arpt_mat4 projection,
+                            arpt_vec3 sun_dir, float altitude) {
+    sky_uniforms_t u = {0};
+    mat4_inverse(projection.m, u.inv_projection);
+    u.sun_dir[0] = sun_dir.x;
+    u.sun_dir[1] = sun_dir.y;
+    u.sun_dir[2] = sun_dir.z;
+    u.altitude = altitude;
+    wgpuQueueWriteBuffer(r->queue, r->sky_uniform_buf, 0, &u, sizeof(u));
+}
+
 void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view) {
     r->encoder = wgpuDeviceCreateCommandEncoder(r->device, NULL);
 
     WGPURenderPassColorAttachment color = {
-        .view = target_view,
+        .view = r->msaa_view,
+        .resolveTarget = target_view,
         .loadOp = WGPULoadOp_Clear,
-        .storeOp = WGPUStoreOp_Store,
-        .clearValue = {0.05, 0.05, 0.08, 1.0},
+        .storeOp = WGPUStoreOp_Discard,
+        .clearValue = {0.0, 0.0, 0.0, 1.0},
 #ifdef __EMSCRIPTEN__
         .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
 #endif
@@ -418,13 +532,16 @@ void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view) {
 
     r->pass = wgpuCommandEncoderBeginRenderPass(r->encoder, &rp);
     r->placed_label_count = 0;
-    wgpuRenderPassEncoderSetPipeline(r->pass, r->pipeline);
-    wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0,
-                                      NULL);
+
+    /* Draw sky first (writes depth=1.0 everywhere, terrain overwrites) */
+    arpt__sky_draw(r);
+
+    /* Set terrain pipeline for subsequent tile draws */
 }
 
 void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
     arpt__mesh_draw_terrain(r, tile);
+    arpt__mesh_draw_skirts(r, tile);
     arpt__mesh_draw_extrusion(r, tile);
     arpt__instance_draw(r, tile);
     arpt__label_draw(r, tile);

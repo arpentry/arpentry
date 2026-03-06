@@ -50,6 +50,7 @@ set(SHADER_SOURCES
     ui.wgsl
     tree.wgsl
     poi.wgsl
+    sky.wgsl
 )
 
 set(SHADER_HEADERS)
@@ -111,6 +112,7 @@ add_executable(arpentry_client
     src/pipeline/instance.c
     src/pipeline/label.c
     src/pipeline/placeholder.c
+    src/pipeline/sky.c
     src/style.c
     src/tile/visible.c
     src/tile/manager.c

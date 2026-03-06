@@ -141,7 +141,7 @@ arpt_ui *arpt_ui_create(WGPUDevice device, WGPUQueue queue,
                       .cullMode = WGPUCullMode_None},
         .fragment = &frag,
         .depthStencil = &ds,
-        .multisample = {.count = 1, .mask = ~0u},
+        .multisample = {.count = 4, .mask = ~0u},
     };
     ui->pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
 

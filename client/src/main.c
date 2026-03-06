@@ -378,6 +378,8 @@ static void render_frame(void) {
     arpt_mat4 projection = arpt_camera_projection(app.camera);
     arpt_vec3 sun_dir = {0.3f, 0.8f, 0.5f};
     arpt_renderer_set_globals(app.renderer, projection, sun_dir);
+    arpt_renderer_set_sky(app.renderer, projection, sun_dir,
+                          (float)arpt_camera_altitude(app.camera));
 
 #ifndef __EMSCRIPTEN__
     /* Screenshot capture: render to an offscreen texture instead of the

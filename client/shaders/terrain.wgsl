@@ -75,7 +75,6 @@ fn decode_octahedral(enc: vec2<f32>) -> vec3<f32> {
     var out: VsOut;
     out.pos = globals.projection * world_pos;
     out.uv = vec2<f32>(u, v);
-
     let enc = vec2<f32>(f32(oct_norm.x) / 127.0, f32(oct_norm.y) / 127.0);
     let obj_normal = decode_octahedral(enc);
     let model3 = mat3x3<f32>(tile.model[0].xyz, tile.model[1].xyz, tile.model[2].xyz);
