@@ -30,12 +30,6 @@ void arpt_style_defaults(arpt_style *s) {
     s->stroke_widths[ARPT_SURFACE_PRIMARY]     = 140.0f;
     s->stroke_widths[ARPT_SURFACE_RESIDENTIAL] =  90.0f;
 
-    /* Building extrusion material */
-    s->building[0] = 189.0f / 255.0f;
-    s->building[1] = 186.0f / 255.0f;
-    s->building[2] = 182.0f / 255.0f;
-    s->building[3] = 255.0f / 255.0f;
-
     /* tree_style_count = 0; populated dynamically from style fetch */
 }
 

@@ -274,13 +274,6 @@ static bool build_style(const char *style_file, uint8_t **out,
         arpentry_tiles_Style_background_add(&builder, &bg);
     }
 
-    /* building */
-    struct json jbldg = json_object_get(root, "building");
-    if (json_exists(jbldg)) {
-        arpentry_tiles_RGBA_t bldg = parse_rgba(jbldg);
-        arpentry_tiles_Style_building_add(&builder, &bldg);
-    }
-
     /* layers */
     struct json jlayers = json_object_get(root, "layers");
     if (json_exists(jlayers)) {
@@ -296,6 +289,30 @@ static bool build_style(const char *style_file, uint8_t **out,
                 arpentry_tiles_LayerStyle_source_layer_create_str(&builder,
                                                                    sl_buf);
             }
+
+            struct json jtype = json_object_get(jlayer, "type");
+            if (json_exists(jtype)) {
+                char type_buf[32];
+                json_string_copy(jtype, type_buf, sizeof(type_buf));
+                arpentry_tiles_LayerType_enum_t lt =
+                    arpentry_tiles_LayerType_Texture;
+                if (strcmp(type_buf, "terrain") == 0)
+                    lt = arpentry_tiles_LayerType_Terrain;
+                else if (strcmp(type_buf, "texture") == 0)
+                    lt = arpentry_tiles_LayerType_Texture;
+                else if (strcmp(type_buf, "extrusion") == 0)
+                    lt = arpentry_tiles_LayerType_Extrusion;
+                else if (strcmp(type_buf, "instance") == 0)
+                    lt = arpentry_tiles_LayerType_Instance;
+                else if (strcmp(type_buf, "label") == 0)
+                    lt = arpentry_tiles_LayerType_Label;
+                arpentry_tiles_LayerStyle_type_add(&builder, lt);
+            }
+
+            struct json jminlvl = json_object_get(jlayer, "min_level");
+            if (json_exists(jminlvl))
+                arpentry_tiles_LayerStyle_min_level_add(
+                    &builder, (uint8_t)json_int(jminlvl));
 
             struct json jpaint = json_object_get(jlayer, "paint");
             if (json_exists(jpaint)) {

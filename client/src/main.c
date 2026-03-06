@@ -512,21 +512,27 @@ static bool fetch_style(const char *base_url, arpt_style *style) {
         style->colors[ARPT_SURFACE_UNKNOWN][3] = bg->a / 255.0f;
     }
 
-    /* Parse building extrusion material */
-    const arpentry_tiles_RGBA_t *bm = arpentry_tiles_Style_building(st);
-    if (bm) {
-        style->building[0] = bm->r / 255.0f;
-        style->building[1] = bm->g / 255.0f;
-        style->building[2] = bm->b / 255.0f;
-        style->building[3] = bm->a / 255.0f;
-    }
-
     /* Parse layers */
     arpentry_tiles_LayerStyle_vec_t layers = arpentry_tiles_Style_layers(st);
     size_t layer_count = layers ? arpentry_tiles_LayerStyle_vec_len(layers) : 0;
     for (size_t i = 0; i < layer_count; i++) {
         arpentry_tiles_LayerStyle_table_t layer =
             arpentry_tiles_LayerStyle_vec_at(layers, i);
+
+        /* Extract layer metadata (source_layer, type, min_level) */
+        if (style->layer_count < ARPT_MAX_STYLE_LAYERS) {
+            arpt_layer_entry *le = &style->layers[style->layer_count];
+            memset(le, 0, sizeof(*le));
+            flatbuffers_string_t sl =
+                arpentry_tiles_LayerStyle_source_layer(layer);
+            if (sl)
+                strncpy(le->source_layer, sl,
+                        sizeof(le->source_layer) - 1);
+            le->type = (arpt_layer_type)arpentry_tiles_LayerStyle_type(layer);
+            le->min_level = arpentry_tiles_LayerStyle_min_level(layer);
+            style->layer_count++;
+        }
+
         arpentry_tiles_PaintEntry_vec_t paint =
             arpentry_tiles_LayerStyle_paint(layer);
         size_t paint_count = paint ? arpentry_tiles_PaintEntry_vec_len(paint) : 0;

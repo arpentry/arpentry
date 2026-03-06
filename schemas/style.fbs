@@ -20,8 +20,12 @@ table PaintEntry {
   random_scale: bool = true;       // apply random scale variation per instance
 }
 
+enum LayerType : uint8 { Terrain = 0, Texture = 1, Extrusion = 2, Instance = 3, Label = 4 }
+
 table LayerStyle {
   source_layer: string (required);  // tile layer name ("surface", "highway", ...)
+  type:         LayerType = Texture; // how to render this layer
+  min_level:    uint8 = 0;          // skip decoding below this zoom level
   paint:        [PaintEntry];       // class -> visual properties
 }
 
@@ -29,7 +33,6 @@ table Style {
   version:      uint16 = 1;
   name:         string;
   background:   RGBA;               // fallback for unmatched classes
-  building:     RGBA;               // building extrusion material
   layers:       [LayerStyle];
 }
 

@@ -39,6 +39,7 @@ typedef struct {
 struct arpt_tile_manager {
     arpt_tile_manager_config config;
     arpt_renderer *renderer;
+    arpt_style style;
     struct hashmap *cache;
     uint64_t frame;
     int active_fetches;
@@ -152,23 +153,36 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
     }
 
     arpt_surface_data surface = {0};
-    arpt_decode_surface(flatbuf, size, &surface);
-
     arpt_highway_data highways = {0};
-    arpt_decode_highways(flatbuf, size, &highways);
-
     arpt_surface_data buildings = {0};
-    if (key.level >= 13)
-        arpt_decode_buildings(flatbuf, size, &buildings);
-
     arpt_tree_data trees = {0};
-    if (key.level >= 13)
-        arpt_decode_trees(flatbuf, size, tm->tree_class_names,
-                          tm->tree_class_count, &trees);
-
     arpt_poi_data pois = {0};
-    if (key.level >= 13)
-        arpt_decode_pois(flatbuf, size, &pois);
+
+    for (int li = 0; li < tm->style.layer_count; li++) {
+        const arpt_layer_entry *le = &tm->style.layers[li];
+        if (key.level < le->min_level) continue;
+        switch (le->type) {
+        case ARPT_LAYER_TERRAIN:
+            /* Already decoded above */
+            break;
+        case ARPT_LAYER_TEXTURE:
+            if (strcmp(le->source_layer, "surface") == 0)
+                arpt_decode_surface(flatbuf, size, &surface);
+            else if (strcmp(le->source_layer, "highway") == 0)
+                arpt_decode_highways(flatbuf, size, &highways);
+            break;
+        case ARPT_LAYER_EXTRUSION:
+            arpt_decode_buildings(flatbuf, size, &buildings);
+            break;
+        case ARPT_LAYER_INSTANCE:
+            arpt_decode_trees(flatbuf, size, tm->tree_class_names,
+                              tm->tree_class_count, &trees);
+            break;
+        case ARPT_LAYER_LABEL:
+            arpt_decode_pois(flatbuf, size, &pois);
+            break;
+        }
+    }
 
     /* wgpuQueueWriteBuffer copies synchronously, safe to free after */
     updated.gpu = arpt_renderer_upload_tile(tm->renderer, &mesh, &surface,
@@ -226,6 +240,7 @@ arpt_tile_manager *arpt_tile_manager_create(arpt_tile_manager_config config,
 
     tm->config = config;
     tm->renderer = r;
+    if (style) tm->style = *style;
 
     /* Cache tree class names from style for decode-time mapping. */
     if (style) {

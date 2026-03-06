@@ -1159,7 +1159,7 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
         };
         r->building_tex = wgpuDeviceCreateTexture(device, &dt);
         r->building_view = wgpuTextureCreateView(r->building_tex, NULL);
-        const float *bm = r->style.building;
+        const float *bm = r->style.colors[ARPT_SURFACE_BUILDING];
         uint8_t pixel[4] = {(uint8_t)(bm[0] * 255.0f + 0.5f),
                             (uint8_t)(bm[1] * 255.0f + 0.5f),
                             (uint8_t)(bm[2] * 255.0f + 0.5f),

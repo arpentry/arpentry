@@ -2,10 +2,15 @@
   "version": 1,
   "name": "Default",
   "background": [107, 158, 71, 255],
-  "building": [189, 186, 182, 255],
   "layers": [
     {
+      "source_layer": "terrain",
+      "type": "terrain",
+      "paint": []
+    },
+    {
       "source_layer": "surface",
+      "type": "texture",
       "paint": [
         { "class": "water",     "color": [23, 56, 115, 255] },
         { "class": "desert",    "color": [199, 173, 120, 255] },
@@ -18,6 +23,7 @@
     },
     {
       "source_layer": "highway",
+      "type": "texture",
       "paint": [
         { "class": "primary",     "color": [89, 84, 77, 255],   "width": 140 },
         { "class": "residential", "color": [115, 110, 102, 255], "width": 90 }
@@ -25,17 +31,27 @@
     },
     {
       "source_layer": "building",
+      "type": "extrusion",
+      "min_level": 13,
       "paint": [
         { "class": "building", "color": [209, 196, 179, 255] }
       ]
     },
     {
       "source_layer": "tree",
+      "type": "instance",
+      "min_level": 13,
       "paint": [
         { "class": "oak",   "model": "oak",   "min_scale": 0.7, "max_scale": 1.3, "random_yaw": true, "random_scale": true },
         { "class": "pine",  "model": "pine",  "min_scale": 0.8, "max_scale": 1.2, "random_yaw": true, "random_scale": true },
         { "class": "birch", "model": "birch", "min_scale": 0.7, "max_scale": 1.1, "random_yaw": true, "random_scale": true }
       ]
+    },
+    {
+      "source_layer": "poi",
+      "type": "label",
+      "min_level": 13,
+      "paint": []
     }
   ]
 }

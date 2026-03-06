@@ -5,6 +5,24 @@
 
 #define ARPT_STYLE_CLASS_COUNT (ARPT_SURFACE_BUILDING + 1)
 
+/* Layer rendering type, matching LayerType enum in style.fbs. */
+typedef enum {
+    ARPT_LAYER_TERRAIN   = 0,
+    ARPT_LAYER_TEXTURE   = 1,
+    ARPT_LAYER_EXTRUSION = 2,
+    ARPT_LAYER_INSTANCE  = 3,
+    ARPT_LAYER_LABEL     = 4,
+} arpt_layer_type;
+
+/* Per-layer entry parsed from the style. */
+#define ARPT_MAX_STYLE_LAYERS 16
+
+typedef struct {
+    char source_layer[32];
+    arpt_layer_type type;
+    uint8_t min_level;
+} arpt_layer_entry;
+
 /* Per-tree-model style parameters, populated from style paint entries. */
 #define ARPT_MAX_TREE_STYLES 8
 
@@ -20,9 +38,10 @@ typedef struct {
 typedef struct arpt_style {
     float colors[ARPT_STYLE_CLASS_COUNT][4];     /* RGBA per class */
     float stroke_widths[ARPT_STYLE_CLASS_COUNT]; /* half-width per class */
-    float building[4];                            /* RGBA building material */
     arpt_tree_style trees[ARPT_MAX_TREE_STYLES]; /* per-model tree params */
     int tree_style_count;                         /* populated from style */
+    arpt_layer_entry layers[ARPT_MAX_STYLE_LAYERS];
+    int layer_count;
 } arpt_style;
 
 /** Find tree style index by class name. Returns -1 if not found. */
