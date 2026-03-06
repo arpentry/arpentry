@@ -9,6 +9,7 @@
 #include "camera.h"
 #include "control.h"
 #include "renderer.h"
+#include "tile_prepare.h"
 #include "style.h"
 #include "tile_manager.h"
 #include "ui.h"
@@ -245,9 +246,12 @@ static void render_frame(void) {
 
         int fb_w, fb_h;
         glfwGetFramebufferSize(app.window, &fb_w, &fb_h);
+        int rbci = arpt_style_class_index(&style, "building");
+        const float *rbldg = style.colors[rbci];
         app.renderer =
             arpt_renderer_create(app.device, app.queue, app.surface_format,
-                                 (uint32_t)fb_w, (uint32_t)fb_h, &style);
+                                 (uint32_t)fb_w, (uint32_t)fb_h,
+                                 style.colors[0], rbldg);
 
         /* Upload models, matching style params by model name */
         for (int si = 0; si < style.tree_style_count; si++) {
@@ -733,9 +737,12 @@ static void init_viewer(void) {
         fprintf(stderr, "Warning: models.arpm fetch failed\n");
 
     /* Renderer */
+    int bci = arpt_style_class_index(&style, "building");
+    const float *bldg_color = style.colors[bci];
     app.renderer =
         arpt_renderer_create(app.device, app.queue, app.surface_format,
-                             (uint32_t)fb_w, (uint32_t)fb_h, &style);
+                             (uint32_t)fb_w, (uint32_t)fb_h, style.colors[0],
+                             bldg_color);
 
     /* Upload tree models to GPU, matching style entries by model name.
        Each style tree entry (si) maps to a renderer model slot. */

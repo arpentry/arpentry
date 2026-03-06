@@ -96,7 +96,14 @@ add_executable(arpentry_client
     src/camera.c
     src/control.c
     src/tile_decode.c
-    src/renderer.c
+    src/tile_prepare.c
+    src/pipeline/core.c
+    src/pipeline/mesh.c
+    src/pipeline/texture.c
+    src/pipeline/extrusion.c
+    src/pipeline/instance.c
+    src/pipeline/label.c
+    src/pipeline/placeholder.c
     src/style.c
     src/tile_visible.c
     src/tile_manager.c

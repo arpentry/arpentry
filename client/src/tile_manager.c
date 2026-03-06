@@ -1,5 +1,6 @@
 #include "tile_manager.h"
 #include "renderer.h"
+#include "tile_prepare.h"
 #include "style.h"
 #include "tile_decode.h"
 #include "tile_fetch.h"
@@ -187,12 +188,22 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
         }
     }
 
+    /* Convert decoded domain data to renderer primitives */
+    arpt_tile_prims prims = {0};
+    prims.bounds = updated.bounds;
+    arpt_prepare_terrain(&mesh, &prims.terrain);
+    arpt_prepare_texture(&surface, &highways, &tm->style, &prims.texture);
+    arpt_prepare_extrusion(&buildings, updated.bounds, &prims.extrusion);
+    arpt_prepare_instances(&trees, arpt_renderer_model_count(tm->renderer),
+                           &prims.instances);
+    arpt_prepare_labels(&pois, arpt_renderer_font_glyphs(tm->renderer),
+                        arpt_renderer_font_height(tm->renderer), &prims.labels);
+
     /* wgpuQueueWriteBuffer copies synchronously, safe to free after */
-    updated.gpu = arpt_renderer_upload_tile(tm->renderer, &mesh, &surface,
-                                            &highways, &buildings, &trees,
-                                            &pois, updated.bounds);
+    updated.gpu = arpt_renderer_upload_tile(tm->renderer, &prims);
     updated.state = updated.gpu ? TILE_READY : TILE_FAILED;
     tm_hashmap_set(tm, &updated);
+    arpt_tile_prims_free(&prims);
     arpt_surface_data_free(&surface);
     arpt_highway_data_free(&highways);
     arpt_surface_data_free(&buildings);
