@@ -437,23 +437,6 @@ static bool fetch_tileset(const char *base_url,
     return true;
 }
 
-/* Map a class name string to surface class enum. */
-
-static arpt_surface_class class_from_name(const char *s) {
-    if (!s) return ARPT_SURFACE_UNKNOWN;
-    if (strcmp(s, "water")       == 0) return ARPT_SURFACE_WATER;
-    if (strcmp(s, "desert")      == 0) return ARPT_SURFACE_DESERT;
-    if (strcmp(s, "forest")      == 0) return ARPT_SURFACE_FOREST;
-    if (strcmp(s, "grassland")   == 0) return ARPT_SURFACE_GRASSLAND;
-    if (strcmp(s, "cropland")    == 0) return ARPT_SURFACE_CROPLAND;
-    if (strcmp(s, "shrub")       == 0) return ARPT_SURFACE_SHRUB;
-    if (strcmp(s, "ice")         == 0) return ARPT_SURFACE_ICE;
-    if (strcmp(s, "primary")     == 0) return ARPT_SURFACE_PRIMARY;
-    if (strcmp(s, "residential") == 0) return ARPT_SURFACE_RESIDENTIAL;
-    if (strcmp(s, "building")    == 0) return ARPT_SURFACE_BUILDING;
-    return ARPT_SURFACE_UNKNOWN;
-}
-
 /* Fetch and parse style.arss, filling the arpt_style struct.
    Returns true on success. */
 
@@ -503,13 +486,13 @@ static bool fetch_style(const char *base_url, arpt_style *style) {
 
     arpentry_tiles_Style_table_t st = arpentry_tiles_Style_as_root(buf);
 
-    /* Parse background → colors[ARPT_SURFACE_UNKNOWN] */
+    /* Parse background → colors[0] (unknown/background) */
     const arpentry_tiles_RGBA_t *bg = arpentry_tiles_Style_background(st);
     if (bg) {
-        style->colors[ARPT_SURFACE_UNKNOWN][0] = bg->r / 255.0f;
-        style->colors[ARPT_SURFACE_UNKNOWN][1] = bg->g / 255.0f;
-        style->colors[ARPT_SURFACE_UNKNOWN][2] = bg->b / 255.0f;
-        style->colors[ARPT_SURFACE_UNKNOWN][3] = bg->a / 255.0f;
+        style->colors[0][0] = bg->r / 255.0f;
+        style->colors[0][1] = bg->g / 255.0f;
+        style->colors[0][2] = bg->b / 255.0f;
+        style->colors[0][3] = bg->a / 255.0f;
     }
 
     /* Parse layers */
@@ -564,8 +547,10 @@ static bool fetch_style(const char *base_url, arpt_style *style) {
             }
 
             /* Surface/highway/building color and stroke width */
-            arpt_surface_class cls = class_from_name(cls_str);
-            if (cls != ARPT_SURFACE_UNKNOWN) {
+            if (cls_str) {
+                char name_buf[32] = {0};
+                strncpy(name_buf, cls_str, sizeof(name_buf) - 1);
+                int cls = arpt_style_class_index(style, name_buf);
                 const arpentry_tiles_RGBA_t *c =
                     arpentry_tiles_PaintEntry_color(entry);
                 if (c) {

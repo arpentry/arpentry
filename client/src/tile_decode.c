@@ -80,29 +80,17 @@ bool arpt_decode_terrain(const void *flatbuf, size_t size,
 
 /* Surface decoding */
 
-static arpt_surface_class classify_string(flatbuffers_string_t s) {
-    if (!s) return ARPT_SURFACE_UNKNOWN;
-    if (strcmp(s, "water")       == 0) return ARPT_SURFACE_WATER;
-    if (strcmp(s, "desert")      == 0) return ARPT_SURFACE_DESERT;
-    if (strcmp(s, "forest")      == 0) return ARPT_SURFACE_FOREST;
-    if (strcmp(s, "grassland")   == 0) return ARPT_SURFACE_GRASSLAND;
-    if (strcmp(s, "cropland")    == 0) return ARPT_SURFACE_CROPLAND;
-    if (strcmp(s, "shrub")       == 0) return ARPT_SURFACE_SHRUB;
-    if (strcmp(s, "ice")         == 0) return ARPT_SURFACE_ICE;
-    if (strcmp(s, "primary")     == 0) return ARPT_SURFACE_PRIMARY;
-    if (strcmp(s, "residential") == 0) return ARPT_SURFACE_RESIDENTIAL;
-    if (strcmp(s, "building")    == 0) return ARPT_SURFACE_BUILDING;
-    return ARPT_SURFACE_UNKNOWN;
-}
-
-/* Resolve the "class" property of a feature via the tile-scope dictionary. */
-static arpt_surface_class resolve_class(arpentry_tiles_Feature_table_t feat,
-                                        uint32_t class_key_idx,
-                                        arpentry_tiles_Value_vec_t values) {
-    if (class_key_idx == UINT32_MAX || !values) return ARPT_SURFACE_UNKNOWN;
+/* Resolve the "class" property of a feature via the tile-scope dictionary,
+   returning the index into the caller-provided class name list (0 = unknown). */
+static uint8_t resolve_class(arpentry_tiles_Feature_table_t feat,
+                              uint32_t class_key_idx,
+                              arpentry_tiles_Value_vec_t values,
+                              const char (*class_names)[32],
+                              int class_count) {
+    if (class_key_idx == UINT32_MAX || !values) return 0;
     arpentry_tiles_Property_vec_t props =
         arpentry_tiles_Feature_properties(feat);
-    if (!props) return ARPT_SURFACE_UNKNOWN;
+    if (!props) return 0;
     size_t np = arpentry_tiles_Property_vec_len(props);
     for (size_t p = 0; p < np; p++) {
         arpentry_tiles_Property_struct_t pr =
@@ -112,13 +100,19 @@ static arpt_surface_class resolve_class(arpentry_tiles_Feature_table_t feat,
             if (vi < arpentry_tiles_Value_vec_len(values)) {
                 arpentry_tiles_Value_table_t val =
                     arpentry_tiles_Value_vec_at(values, vi);
-                return classify_string(
-                    arpentry_tiles_Value_string_value(val));
+                flatbuffers_string_t s =
+                    arpentry_tiles_Value_string_value(val);
+                if (s) {
+                    for (int ci = 0; ci < class_count; ci++) {
+                        if (strcmp(s, class_names[ci]) == 0)
+                            return (uint8_t)ci;
+                    }
+                }
             }
             break;
         }
     }
-    return ARPT_SURFACE_UNKNOWN;
+    return 0;
 }
 
 /* Resolve an integer property of a feature via the tile-scope dictionary. */
@@ -211,6 +205,8 @@ find_layer(const void *flatbuf, size_t size, const char *name,
 static bool decode_polygon_layer(const void *flatbuf, size_t size,
                                  const char *layer_name,
                                  uint32_t height_key_override,
+                                 const char (*class_names)[32],
+                                 int class_count,
                                  arpt_surface_data *out) {
     out->polygons = NULL;
     out->count = 0;
@@ -262,7 +258,8 @@ static bool decode_polygon_layer(const void *flatbuf, size_t size,
         out->polygons[count].y = yv;
         out->polygons[count].z = arpentry_tiles_PolygonGeometry_z(poly);
         out->polygons[count].vertex_count = vc;
-        out->polygons[count].cls = resolve_class(feat, class_key_idx, values);
+        out->polygons[count].cls = resolve_class(feat, class_key_idx, values,
+                                                    class_names, class_count);
         out->polygons[count].height_m =
             resolve_int_property(feat, height_key_idx, values);
         count++;
@@ -273,16 +270,17 @@ static bool decode_polygon_layer(const void *flatbuf, size_t size,
 }
 
 bool arpt_decode_surface(const void *flatbuf, size_t size,
+                         const char (*class_names)[32], int class_count,
                          arpt_surface_data *out) {
-    return decode_polygon_layer(flatbuf, size, "surface", UINT32_MAX, out);
+    return decode_polygon_layer(flatbuf, size, "surface", UINT32_MAX,
+                                class_names, class_count, out);
 }
 
 bool arpt_decode_buildings(const void *flatbuf, size_t size,
+                           const char (*class_names)[32], int class_count,
                            arpt_surface_data *out) {
-    /* Pass 0 placeholder — find_layer resolves "height" key automatically;
-       height_key_override != UINT32_MAX would override, so we pass UINT32_MAX
-       to keep the auto-resolved key. */
-    return decode_polygon_layer(flatbuf, size, "building", UINT32_MAX, out);
+    return decode_polygon_layer(flatbuf, size, "building", UINT32_MAX,
+                                class_names, class_count, out);
 }
 
 void arpt_surface_data_free(arpt_surface_data *data) {
@@ -296,6 +294,7 @@ void arpt_surface_data_free(arpt_surface_data *data) {
 /* Highway decoding */
 
 bool arpt_decode_highways(const void *flatbuf, size_t size,
+                          const char (*class_names)[32], int class_count,
                           arpt_highway_data *out) {
     out->lines = NULL;
     out->count = 0;
@@ -343,7 +342,8 @@ bool arpt_decode_highways(const void *flatbuf, size_t size,
         out->lines[count].x = xv;
         out->lines[count].y = yv;
         out->lines[count].vertex_count = vc;
-        out->lines[count].cls = resolve_class(feat, class_key_idx, values);
+        out->lines[count].cls = resolve_class(feat, class_key_idx, values,
+                                                  class_names, class_count);
         count++;
     }
 

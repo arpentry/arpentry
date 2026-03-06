@@ -515,8 +515,8 @@ static int gen_sphere(uint16_t *vx, uint16_t *vy, uint16_t *vz, uint16_t *vw,
         double cp = cos(phi);
         for (int lon = 0; lon < SPHERE_LON; lon++) {
             double theta = 2.0 * M_PI * lon / SPHERE_LON;
-            vx[vi] = (uint16_t)(CX + radius * sp * cos(theta));
-            vy[vi] = (uint16_t)(CY + radius * sp * sin(theta));
+            vx[vi] = (uint16_t)(int)(CX + radius * sp * cos(theta));
+            vy[vi] = (uint16_t)(int)(CY + radius * sp * sin(theta));
             vz[vi] = (uint16_t)(cz + (int16_t)(radius * cp));
             vw[vi] = part_idx;
             vi++;

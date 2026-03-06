@@ -33,25 +33,13 @@ bool arpt_decode_terrain(const void *flatbuf, size_t size,
 
 /* Surface decoding */
 
-typedef enum {
-    ARPT_SURFACE_UNKNOWN     = 0,
-    ARPT_SURFACE_WATER,
-    ARPT_SURFACE_DESERT,
-    ARPT_SURFACE_FOREST,
-    ARPT_SURFACE_GRASSLAND,
-    ARPT_SURFACE_CROPLAND,
-    ARPT_SURFACE_SHRUB,
-    ARPT_SURFACE_ICE,
-    ARPT_SURFACE_PRIMARY,     /* primary road */
-    ARPT_SURFACE_RESIDENTIAL, /* residential road */
-    ARPT_SURFACE_BUILDING,    /* building footprint */
-} arpt_surface_class;
+#define ARPT_MAX_CLASSES 32
 
 typedef struct {
     const uint16_t *x, *y; /* zero-copy into FlatBuffer */
     const int32_t *z;      /* elevation in millimeters (NULL for surface) */
     size_t vertex_count;
-    arpt_surface_class cls;
+    uint8_t cls;      /* index into style class registry; 0 = unknown */
     int32_t height_m; /* building height in meters (0 for surface polygons) */
 } arpt_surface_polygon;
 
@@ -70,6 +58,7 @@ typedef struct {
  * Returns false only on allocation failure.
  */
 bool arpt_decode_surface(const void *flatbuf, size_t size,
+                         const char (*class_names)[32], int class_count,
                          arpt_surface_data *out);
 
 void arpt_surface_data_free(arpt_surface_data *data);
@@ -79,7 +68,7 @@ void arpt_surface_data_free(arpt_surface_data *data);
 typedef struct {
     const uint16_t *x, *y; /* zero-copy into FlatBuffer */
     size_t vertex_count;
-    arpt_surface_class cls;
+    uint8_t cls; /* index into style class registry; 0 = unknown */
 } arpt_highway_line;
 
 typedef struct {
@@ -92,6 +81,7 @@ typedef struct {
  * Finds the "highway" layer, extracts LineGeometry features.
  */
 bool arpt_decode_highways(const void *flatbuf, size_t size,
+                          const char (*class_names)[32], int class_count,
                           arpt_highway_data *out);
 
 void arpt_highway_data_free(arpt_highway_data *data);
@@ -103,6 +93,7 @@ void arpt_highway_data_free(arpt_highway_data *data);
  * Finds the "building" layer, extracts PolygonGeometry features.
  */
 bool arpt_decode_buildings(const void *flatbuf, size_t size,
+                           const char (*class_names)[32], int class_count,
                            arpt_surface_data *out);
 
 /* Tree decoding (PointGeometry) */

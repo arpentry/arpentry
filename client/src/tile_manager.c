@@ -167,12 +167,15 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
             break;
         case ARPT_LAYER_TEXTURE:
             if (strcmp(le->source_layer, "surface") == 0)
-                arpt_decode_surface(flatbuf, size, &surface);
+                arpt_decode_surface(flatbuf, size, tm->style.class_names,
+                                    tm->style.class_count, &surface);
             else if (strcmp(le->source_layer, "highway") == 0)
-                arpt_decode_highways(flatbuf, size, &highways);
+                arpt_decode_highways(flatbuf, size, tm->style.class_names,
+                                     tm->style.class_count, &highways);
             break;
         case ARPT_LAYER_EXTRUSION:
-            arpt_decode_buildings(flatbuf, size, &buildings);
+            arpt_decode_buildings(flatbuf, size, tm->style.class_names,
+                                  tm->style.class_count, &buildings);
             break;
         case ARPT_LAYER_INSTANCE:
             arpt_decode_trees(flatbuf, size, tm->tree_class_names,

@@ -50,7 +50,7 @@ int generate_trees(arpt_bounds bounds, tree_point *out, int max_count) {
             lat += jy * CELL_DEG * 0.4;
 
             /* Deterministic tree type from position hash */
-            uint32_t th = (uint32_t)(c * 73856093) ^ (uint32_t)(r * 19349663);
+            uint32_t th = ((uint32_t)c * 73856093u) ^ ((uint32_t)r * 19349663u);
             int rem = (int)(th % 3);
             tree_type tt = (rem == 0) ? TREE_TYPE_OAK
                          : (rem == 1) ? TREE_TYPE_PINE

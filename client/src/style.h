@@ -3,8 +3,6 @@
 
 #include "tile_decode.h"
 
-#define ARPT_STYLE_CLASS_COUNT (ARPT_SURFACE_BUILDING + 1)
-
 /* Layer rendering type, matching LayerType enum in style.fbs. */
 typedef enum {
     ARPT_LAYER_TERRAIN   = 0,
@@ -36,16 +34,22 @@ typedef struct {
 } arpt_tree_style;
 
 typedef struct arpt_style {
-    float colors[ARPT_STYLE_CLASS_COUNT][4];     /* RGBA per class */
-    float stroke_widths[ARPT_STYLE_CLASS_COUNT]; /* half-width per class */
-    arpt_tree_style trees[ARPT_MAX_TREE_STYLES]; /* per-model tree params */
-    int tree_style_count;                         /* populated from style */
+    char class_names[ARPT_MAX_CLASSES][32];       /* runtime class registry */
+    int class_count;                              /* number of registered classes */
+    float colors[ARPT_MAX_CLASSES][4];            /* RGBA per class */
+    float stroke_widths[ARPT_MAX_CLASSES];        /* half-width per class */
+    arpt_tree_style trees[ARPT_MAX_TREE_STYLES];  /* per-model tree params */
+    int tree_style_count;                          /* populated from style */
     arpt_layer_entry layers[ARPT_MAX_STYLE_LAYERS];
     int layer_count;
 } arpt_style;
 
 /** Find tree style index by class name. Returns -1 if not found. */
 int arpt_style_tree_index(const arpt_style *s, const char *class_name);
+
+/** Get or register a class name in the style registry.
+ *  Returns the index (0 = "unknown"). Appends if not found. */
+int arpt_style_class_index(arpt_style *s, const char *name);
 
 /** Fill style with hardcoded defaults (fallback if server unavailable). */
 void arpt_style_defaults(arpt_style *s);

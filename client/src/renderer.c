@@ -820,10 +820,10 @@ static WGPUTexture rasterize_surface(arpt_renderer *r,
             .view = view,
             .loadOp = WGPULoadOp_Clear,
             .storeOp = WGPUStoreOp_Store,
-            .clearValue = {r->style.colors[ARPT_SURFACE_UNKNOWN][0],
-                          r->style.colors[ARPT_SURFACE_UNKNOWN][1],
-                          r->style.colors[ARPT_SURFACE_UNKNOWN][2],
-                          r->style.colors[ARPT_SURFACE_UNKNOWN][3]},
+            .clearValue = {r->style.colors[0][0],
+                          r->style.colors[0][1],
+                          r->style.colors[0][2],
+                          r->style.colors[0][3]},
 #ifdef __EMSCRIPTEN__
             .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
 #endif
@@ -895,10 +895,10 @@ static WGPUTexture rasterize_surface(arpt_renderer *r,
         .view = view,
         .loadOp = WGPULoadOp_Clear,
         .storeOp = WGPUStoreOp_Store,
-        .clearValue = {r->style.colors[ARPT_SURFACE_UNKNOWN][0],
-                       r->style.colors[ARPT_SURFACE_UNKNOWN][1],
-                       r->style.colors[ARPT_SURFACE_UNKNOWN][2],
-                       r->style.colors[ARPT_SURFACE_UNKNOWN][3]},
+        .clearValue = {r->style.colors[0][0],
+                       r->style.colors[0][1],
+                       r->style.colors[0][2],
+                       r->style.colors[0][3]},
 #ifdef __EMSCRIPTEN__
         .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
 #endif
@@ -1136,7 +1136,7 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
         r->default_surface_tex = wgpuDeviceCreateTexture(device, &dt);
         r->default_surface_view =
             wgpuTextureCreateView(r->default_surface_tex, NULL);
-        const float *bg = r->style.colors[ARPT_SURFACE_UNKNOWN];
+        const float *bg = r->style.colors[0];
         uint8_t pixel[4] = {(uint8_t)(bg[0] * 255.0f + 0.5f),
                             (uint8_t)(bg[1] * 255.0f + 0.5f),
                             (uint8_t)(bg[2] * 255.0f + 0.5f),
@@ -1159,7 +1159,8 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
         };
         r->building_tex = wgpuDeviceCreateTexture(device, &dt);
         r->building_view = wgpuTextureCreateView(r->building_tex, NULL);
-        const float *bm = r->style.colors[ARPT_SURFACE_BUILDING];
+        int bci = arpt_style_class_index(&r->style, "building");
+        const float *bm = r->style.colors[bci];
         uint8_t pixel[4] = {(uint8_t)(bm[0] * 255.0f + 0.5f),
                             (uint8_t)(bm[1] * 255.0f + 0.5f),
                             (uint8_t)(bm[2] * 255.0f + 0.5f),
