@@ -399,8 +399,8 @@ static bool build_style(const char *style_file, uint8_t **out,
    Caller frees *out. */
 
 #define SIDES 8
-#define CX 5000 /* model center x/y in mm */
-#define CY 5000
+#define CX 10000 /* model center x/y in mm (must exceed largest radius) */
+#define CY 10000
 
 /* Generate an 8-sided cylinder. Returns number of vertices written.
    part_idx is stored for later packing into the w component. */

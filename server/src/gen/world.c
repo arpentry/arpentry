@@ -274,6 +274,12 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
 
                 arpentry_tiles_Layer_features_start(&builder);
                 for (int ti = 0; ti < tree_count; ti++) {
+                    /* Only emit tree if it falls within this tile's proper area
+                     * (not buffer zone) so each tree appears in exactly one tile. */
+                    if (trees[ti].lon < bounds.west || trees[ti].lon >= bounds.east ||
+                        trees[ti].lat < bounds.south || trees[ti].lat >= bounds.north)
+                        continue;
+
                     uint16_t tx = arpt_quantize_lon(trees[ti].lon, bounds);
                     uint16_t ty = arpt_quantize_lat(trees[ti].lat, bounds);
                     int32_t tz = arpt_meters_to_mm(
