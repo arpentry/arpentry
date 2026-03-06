@@ -65,8 +65,7 @@ static inline arpt_dvec3 arpt_dvec3_normalize(arpt_dvec3 v) {
 /* dmat4 operations */
 
 static inline arpt_dmat4 arpt_dmat4_identity(void) {
-    arpt_dmat4 r;
-    memset(&r, 0, sizeof(r));
+    arpt_dmat4 r = {0};
     r.m[0] = r.m[5] = r.m[10] = r.m[15] = 1.0;
     return r;
 }
@@ -74,8 +73,7 @@ static inline arpt_dmat4 arpt_dmat4_identity(void) {
 /* Build a 4x4 from 3x3 rotation columns + translation. */
 static inline arpt_dmat4 arpt_dmat4_from_cols(arpt_dvec3 cx, arpt_dvec3 cy,
                                               arpt_dvec3 cz, arpt_dvec3 t) {
-    arpt_dmat4 r;
-    memset(&r, 0, sizeof(r));
+    arpt_dmat4 r = {0};
     /* Column 0 */
     r.m[0] = cx.x;
     r.m[1] = cx.y;
@@ -97,7 +95,7 @@ static inline arpt_dmat4 arpt_dmat4_from_cols(arpt_dvec3 cx, arpt_dvec3 cy,
 }
 
 static inline arpt_dmat4 arpt_dmat4_mul(arpt_dmat4 a, arpt_dmat4 b) {
-    arpt_dmat4 r;
+    arpt_dmat4 r = {0};
     for (int c = 0; c < 4; c++) {
         for (int row = 0; row < 4; row++) {
             double sum = 0.0;
@@ -133,8 +131,7 @@ static inline arpt_dvec3 arpt_dmat4_rotate(arpt_dmat4 m, arpt_dvec3 v) {
 static inline arpt_mat4 arpt_mat4_perspective(float fov_y, float aspect,
                                               float near, float far) {
     float f = 1.0f / tanf(fov_y * 0.5f);
-    arpt_mat4 r;
-    memset(&r, 0, sizeof(r));
+    arpt_mat4 r = {0};
     r.m[0] = f / aspect;
     r.m[5] = f;
     /* WebGPU NDC z = [0, 1]: maps near → 0, far → 1 */

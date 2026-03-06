@@ -4,7 +4,9 @@
 
 void arpt__extrusion_upload(arpt_renderer *r, arpt_tile_gpu *t,
                             const arpt_extrusion_prim *prim) {
-    if (!prim || prim->vertex_count == 0 || prim->index_count == 0) return;
+    if (!prim || prim->vertex_count == 0 || prim->index_count == 0 ||
+        !prim->normals)
+        return;
 
     size_t nv = prim->vertex_count;
     size_t ni = prim->index_count;

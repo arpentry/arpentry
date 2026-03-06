@@ -15,8 +15,8 @@ bool arpt_parse_tile_path(const char *uri, int *level, int *x, int *y) {
     if (l < 0 || l > 21) return false;
 
     /* x in [0, 2^(level+1) - 1], y in [0, 2^level - 1] */
-    int max_x = (1 << (l + 1)) - 1;
-    int max_y = (1 << l) - 1;
+    int max_x = (int)((1u << (l + 1)) - 1);
+    int max_y = (int)((1u << l) - 1);
     if (tx < 0 || tx > max_x) return false;
     if (ty < 0 || ty > max_y) return false;
 

@@ -288,7 +288,7 @@ static void render_frame(void) {
     /* Handle full refresh (R key): re-fetch style/tileset, recreate renderer
        and tile manager so tiles are re-uploaded with new colors. */
     if (arpt_control_needs_refresh(app.control)) {
-        arpt_style style;
+        arpt_style style = {0};
         arpt_style_defaults(&style);
         fetch_style(app.base_url, &style);
 
@@ -450,7 +450,7 @@ static void render_frame(void) {
 
 static void ui_overlay(WGPURenderPassEncoder pass, void *ud) {
     arpt_ui *ui = ud;
-    arpt_ui_draw(ui, pass);
+    if (ui) arpt_ui_draw(ui, pass);
 }
 
 /* UI event filter */
@@ -519,7 +519,7 @@ static bool fetch_tileset(const char *base_url,
     memcpy(buf, fetch->data, buf_size);
     emscripten_fetch_close(fetch);
 #else
-    arpt_http_response resp;
+    arpt_http_response resp = {0};
     if (!arpt_http_get(url, &resp) || resp.status != 200) {
         free(resp.body);
         return false;
@@ -580,7 +580,7 @@ static bool fetch_style(const char *base_url, arpt_style *style) {
     memcpy(buf, fetch->data, buf_size);
     emscripten_fetch_close(fetch);
 #else
-    arpt_http_response resp;
+    arpt_http_response resp = {0};
     if (!arpt_http_get(url, &resp) || resp.status != 200) {
         free(resp.body);
         return false;
@@ -719,7 +719,7 @@ static int fetch_models(const char *base_url, arpt_model *models,
     memcpy(buf, fetch->data, buf_size);
     emscripten_fetch_close(fetch);
 #else
-    arpt_http_response resp;
+    arpt_http_response resp = {0};
     if (!arpt_http_get(url, &resp) || resp.status != 200) {
         free(resp.body);
         return false;
@@ -823,6 +823,10 @@ static void init_viewer(void) {
     glfwGetWindowSize(app.window, &win_w, &win_h);
 
     app.camera = arpt_camera_create();
+    if (!app.camera) {
+        fprintf(stderr, "Fatal: failed to create camera\n");
+        return;
+    }
 
 #ifndef __EMSCRIPTEN__
     {
@@ -848,7 +852,7 @@ static void init_viewer(void) {
     snprintf(app.base_url, sizeof(app.base_url), "http://localhost:8090");
 #endif
     const char *base_url = app.base_url;
-    arpt_style style;
+    arpt_style style = {0};
     arpt_style_defaults(&style);
     if (!fetch_style(base_url, &style))
         fprintf(stderr, "Warning: style.arss fetch failed, using defaults\n");
@@ -868,6 +872,10 @@ static void init_viewer(void) {
         arpt_renderer_create(app.device, app.queue, app.surface_format,
                              (uint32_t)fb_w, (uint32_t)fb_h, style.colors[0],
                              bldg_color);
+    if (!app.renderer) {
+        fprintf(stderr, "Fatal: failed to create renderer\n");
+        return;
+    }
 
     /* Upload tree models to GPU, matching style entries by model name.
        Each style tree entry (si) maps to a renderer model slot. */
@@ -897,6 +905,10 @@ static void init_viewer(void) {
     if (!fetch_tileset(base_url, &tm_config))
         fprintf(stderr, "Warning: tileset.arts fetch failed, using defaults\n");
     app.tile_manager = arpt_tile_manager_create(tm_config, app.renderer, &style);
+    if (!app.tile_manager) {
+        fprintf(stderr, "Fatal: failed to create tile manager\n");
+        return;
+    }
 
     /* Structured logging: camera position */
     printf("[CAMERA] lon=%.4f lat=%.4f alt=%.0f\n",
@@ -935,6 +947,10 @@ static void init_viewer(void) {
 
     /* Map control (mouse/keyboard/touch input) */
     app.control = arpt_control_create(app.camera, app.window);
+    if (!app.control) {
+        fprintf(stderr, "Fatal: failed to create control\n");
+        return;
+    }
     arpt_control_set_event_filter(app.control, ui_event_filter, NULL);
     app.last_time = glfwGetTime();
 

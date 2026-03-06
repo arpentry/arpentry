@@ -78,7 +78,7 @@ static inline double arpt_mm_to_meters(int32_t mm) {
 static inline double arpt_geometric_error(double root_error, int level) {
     if (level < 0) level = 0;
     if (level > 30) level = 30;
-    return root_error / (double)(1 << level);
+    return root_error / (double)(1u << level);
 }
 
 /* Screen-space error in pixels for LOD selection. */

@@ -323,13 +323,11 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
 void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile, arpt_mat4 model,
                                 const float bounds[4], float center_lon,
                                 float center_lat) {
-    tile_uniforms_t u;
+    tile_uniforms_t u = {0};
     memcpy(u.model, model.m, sizeof(u.model));
     memcpy(u.bounds, bounds, sizeof(u.bounds));
     u.center_lon = center_lon;
     u.center_lat = center_lat;
-    u._pad0 = 0.0f;
-    u._pad1 = 0.0f;
     /* Cache for CPU-side POI projection */
     memcpy(tile->cached_model, model.m, sizeof(tile->cached_model));
     memcpy(tile->cached_bounds, bounds, sizeof(tile->cached_bounds));
@@ -376,7 +374,7 @@ void arpt_renderer_draw_placeholder(arpt_renderer *r, int slot, arpt_mat4 model,
 
 void arpt_renderer_set_globals(arpt_renderer *r, arpt_mat4 projection,
                                arpt_vec3 sun_dir) {
-    global_uniforms_t u;
+    global_uniforms_t u = {0};
     memcpy(u.projection, projection.m, sizeof(u.projection));
     u.sun_dir[0] = sun_dir.x;
     u.sun_dir[1] = sun_dir.y;

@@ -24,7 +24,9 @@ void buf_ensure(struct buf *buf, size_t len) {
         while (buf->len + len > newcap) {
             newcap *= 2;
         }
-        buf->data = realloc(buf->data, newcap);
+        void *tmp = realloc(buf->data, newcap);
+        if (!tmp) return;
+        buf->data = tmp;
         buf->cap = newcap;
     }
 }

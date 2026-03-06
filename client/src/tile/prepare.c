@@ -238,7 +238,7 @@ static void emit_building_extrusion(const arpt_surface_data *buildings,
 
         size_t n = b->vertex_count - 1;
         int32_t base_z = (b->z && b->vertex_count > 0) ? b->z[0] : 0;
-        int32_t height_mm = base_z + b->height_m * 1000;
+        int32_t height_mm = base_z + (int32_t)((int64_t)b->height_m * 1000);
 
         /* Wall quads */
         for (size_t e = 0; e < n; e++) {

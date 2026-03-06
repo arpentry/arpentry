@@ -23,6 +23,7 @@ static void on_ready(void *udata) {
 static void on_opened(struct net_conn *conn, void *udata) {
     (void)udata;
     http_conn *hc = http_conn_new();
+    if (!hc) { net_conn_close(conn); return; }
     net_conn_setudata(conn, hc);
 }
 
@@ -51,7 +52,7 @@ int main(int argc, char *argv[]) {
     const char *tile_dir = argv[1];
     const char *style_file = argv[2];
     const char *port = argc >= 4 ? argv[3] : "8090";
-    int nthreads = argc >= 5 ? atoi(argv[4]) : 1;
+    int nthreads = argc >= 5 ? atoi(argv[4]) : 8;
     if (nthreads < 1) nthreads = 1;
 
     struct server_ctx ctx = {

@@ -242,13 +242,11 @@ void arpt__placeholder_draw(arpt_renderer *r, int slot, arpt_mat4 model,
                             float center_lat) {
     if (slot < 0 || slot >= ARPT_MAX_PLACEHOLDERS) return;
 
-    tile_uniforms_t u;
+    tile_uniforms_t u = {0};
     memcpy(u.model, model.m, sizeof(u.model));
     memcpy(u.bounds, bounds, sizeof(u.bounds));
     u.center_lon = center_lon;
     u.center_lat = center_lat;
-    u._pad0 = 0.0f;
-    u._pad1 = 0.0f;
     wgpuQueueWriteBuffer(r->queue, r->ph_uniform_bufs[slot], 0, &u, sizeof(u));
 
     wgpuRenderPassEncoderSetBindGroup(r->pass, 1, r->ph_bind_groups[slot], 0,

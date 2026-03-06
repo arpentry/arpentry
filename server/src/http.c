@@ -760,7 +760,7 @@ struct http_conn {
 };
 
 http_conn *http_conn_new(void) {
-    http_conn *hc = calloc(1, sizeof(http_conn));
+    http_conn *hc = calloc(1, sizeof(*hc));
     return hc;
 }
 

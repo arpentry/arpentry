@@ -197,6 +197,7 @@ static inline WGPUBuffer create_buffer(WGPUDevice device, WGPUQueue queue,
         .size = aligned,
     };
     WGPUBuffer buf = wgpuDeviceCreateBuffer(device, &desc);
+    if (!buf) return NULL;
     if (data) wgpuQueueWriteBuffer(queue, buf, 0, data, size);
     return buf;
 }
