@@ -436,7 +436,8 @@ static void render_frame(void) {
         glfwGetCursorPos(app.window, &cx, &cy);
         arpt_ui_set_cursor(app.ui, (float)cx, (float)cy);
         arpt_ui_set_state(app.ui, (float)arpt_camera_bearing(app.camera),
-                          (float)arpt_camera_tilt(app.camera));
+                          (float)arpt_camera_tilt(app.camera),
+                          arpt_camera_ortho(app.camera));
     }
 
     arpt_renderer_end_frame(app.renderer);
@@ -483,6 +484,10 @@ static bool ui_event_filter(int button, int action, double sx, double sy,
         break;
     case ARPT_UI_RESET_TILT:
         arpt_camera_set_tilt(app.camera, 0.0);
+        break;
+    case ARPT_UI_TOGGLE_ORTHO:
+        arpt_camera_set_ortho(app.camera,
+                              !arpt_camera_ortho(app.camera));
         break;
     default:
         break;

@@ -20,6 +20,10 @@
 #define UI_ZOOM_HH 32.0f
 #define UI_ZOOM_R 19.0f
 #define UI_ZOOM_CX 157.0f
+#define UI_PROJ_HW 19.0f
+#define UI_PROJ_HH 19.0f
+#define UI_PROJ_R 19.0f
+#define UI_PROJ_CX 205.0f
 
 /* Uniform buffer layout */
 
@@ -30,7 +34,7 @@ typedef struct {
     float tilt;
     float cursor_x;
     float cursor_y;
-    float _pad;
+    float ortho;
 } ui_uniforms_t;
 
 /* Internal struct */
@@ -46,6 +50,7 @@ struct arpt_ui {
     uint32_t fb_width, fb_height;
     float pixel_ratio;
     float bearing, tilt;
+    bool ortho;
     float cursor_x, cursor_y;
 };
 
@@ -185,9 +190,11 @@ void arpt_ui_resize(arpt_ui *ui, uint32_t fb_width, uint32_t fb_height,
     ui->pixel_ratio = pixel_ratio;
 }
 
-void arpt_ui_set_state(arpt_ui *ui, float bearing_rad, float tilt_rad) {
+void arpt_ui_set_state(arpt_ui *ui, float bearing_rad, float tilt_rad,
+                        bool ortho) {
     ui->bearing = bearing_rad;
     ui->tilt = tilt_rad;
+    ui->ortho = ortho;
 }
 
 void arpt_ui_set_cursor(arpt_ui *ui, float screen_x, float screen_y) {
@@ -212,11 +219,17 @@ arpt_ui_action arpt_ui_hit_test(const arpt_ui *ui, float screen_x,
     if (sd_box_c(dx, dy, UI_TILT_HW, UI_TILT_HH, UI_TILT_R) < 0.0f)
         return ARPT_UI_RESET_TILT;
 
-    /* Zoom (leftmost, vertical — top half = plus, bottom half = minus) */
+    /* Zoom (vertical — top half = plus, bottom half = minus) */
     dx = bx - UI_ZOOM_CX;
     dy = by - UI_CY;
     if (sd_box_c(dx, dy, UI_ZOOM_HW, UI_ZOOM_HH, UI_ZOOM_R) < 0.0f)
         return dy > 0.0f ? ARPT_UI_ZOOM_IN : ARPT_UI_ZOOM_OUT;
+
+    /* Projection toggle (leftmost) */
+    dx = bx - UI_PROJ_CX;
+    dy = by - UI_CY;
+    if (sd_box_c(dx, dy, UI_PROJ_HW, UI_PROJ_HH, UI_PROJ_R) < 0.0f)
+        return ARPT_UI_TOGGLE_ORTHO;
 
     return ARPT_UI_NONE;
 }
@@ -229,6 +242,7 @@ void arpt_ui_draw(arpt_ui *ui, WGPURenderPassEncoder pass) {
         .tilt = ui->tilt,
         .cursor_x = ui->cursor_x,
         .cursor_y = ui->cursor_y,
+        .ortho = ui->ortho ? 1.0f : 0.0f,
     };
     wgpuQueueWriteBuffer(ui->queue, ui->uniform_buf, 0, &u, sizeof(u));
 

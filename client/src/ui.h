@@ -13,6 +13,7 @@ typedef enum {
     ARPT_UI_ZOOM_OUT,
     ARPT_UI_RESET_NORTH,
     ARPT_UI_RESET_TILT,
+    ARPT_UI_TOGGLE_ORTHO,
 } arpt_ui_action;
 
 /**
@@ -29,8 +30,9 @@ void arpt_ui_free(arpt_ui *ui);
 void arpt_ui_resize(arpt_ui *ui, uint32_t fb_width, uint32_t fb_height,
                     float pixel_ratio);
 
-/** Update compass bearing and tilt indicator (radians). */
-void arpt_ui_set_state(arpt_ui *ui, float bearing_rad, float tilt_rad);
+/** Update compass bearing, tilt indicator (radians), and ortho mode. */
+void arpt_ui_set_state(arpt_ui *ui, float bearing_rad, float tilt_rad,
+                        bool ortho);
 
 /** Update cursor position for hover effects (screen/window coordinates). */
 void arpt_ui_set_cursor(arpt_ui *ui, float screen_x, float screen_y);

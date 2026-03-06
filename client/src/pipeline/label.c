@@ -239,9 +239,13 @@ void arpt__label_draw(arpt_renderer *r, arpt_tile_gpu *tile) {
 
         float cx = proj[0]*mx + proj[4]*my + proj[8]*mz + proj[12]*mw;
         float cy = proj[1]*mx + proj[5]*my + proj[9]*mz + proj[13]*mw;
+        float cz = proj[2]*mx + proj[6]*my + proj[10]*mz + proj[14]*mw;
         float cw = proj[3]*mx + proj[7]*my + proj[11]*mz + proj[15]*mw;
 
-        if (cw <= 0.0f) continue;
+        /* Cull labels behind camera: under perspective cw<=0 suffices;
+           under ortho cw is always 1, so also reject when cz<0
+           (before the near plane). */
+        if (cw <= 0.0f || cz < 0.0f) continue;
 
         float sx = (cx / cw * 0.5f + 0.5f) * vw;
         float sy = (1.0f - (cy / cw * 0.5f + 0.5f)) * vh;

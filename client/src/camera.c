@@ -14,6 +14,7 @@ struct arpt_camera {
     double lon_rad, lat_rad, altitude;
     double tilt_rad, bearing_rad;
     double ground_elevation;
+    bool ortho;
     int vp_width, vp_height;
 
     /* Pan anchor (ray-cast pan) */
@@ -71,6 +72,10 @@ void arpt_camera_set_ground_elevation(arpt_camera *cam, double elevation) {
     cam->ground_elevation = elevation;
 }
 
+void arpt_camera_set_ortho(arpt_camera *cam, bool ortho) {
+    cam->ortho = ortho;
+}
+
 /* Getters */
 
 double arpt_camera_lon(const arpt_camera *cam) {
@@ -96,6 +101,9 @@ int arpt_camera_vp_height(const arpt_camera *cam) {
 }
 double arpt_camera_ground_elevation(const arpt_camera *cam) {
     return cam->ground_elevation;
+}
+bool arpt_camera_ortho(const arpt_camera *cam) {
+    return cam->ortho;
 }
 
 /* Internal helpers */
@@ -123,6 +131,12 @@ arpt_mat4 arpt_camera_projection(const arpt_camera *cam) {
     float aspect = (float)cam->vp_width / (float)cam->vp_height;
     float near = (float)fmax(1.0, cam->altitude * 0.01);
     float far = (float)(cam->altitude + 2.0 * ARPT_WGS84_A);
+    if (cam->ortho) {
+        float half_h = (float)(cam->altitude * tan(CAM_FOV * 0.5));
+        float half_w = half_h * aspect;
+        return arpt_mat4_orthographic(-half_w, half_w, -half_h, half_h,
+                                      near, far);
+    }
     return arpt_mat4_perspective((float)CAM_FOV, aspect, near, far);
 }
 

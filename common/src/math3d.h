@@ -141,6 +141,21 @@ static inline arpt_mat4 arpt_mat4_perspective(float fov_y, float aspect,
     return r;
 }
 
+/* Orthographic projection for WebGPU (z clip = [0, 1]). */
+static inline arpt_mat4 arpt_mat4_orthographic(float left, float right,
+                                                float bottom, float top,
+                                                float near, float far) {
+    arpt_mat4 r = {0};
+    r.m[0] = 2.0f / (right - left);
+    r.m[5] = 2.0f / (top - bottom);
+    r.m[10] = 1.0f / (near - far);
+    r.m[12] = -(right + left) / (right - left);
+    r.m[13] = -(top + bottom) / (top - bottom);
+    r.m[14] = near / (near - far);
+    r.m[15] = 1.0f;
+    return r;
+}
+
 /* Conversions */
 
 static inline arpt_mat4 arpt_dmat4_to_mat4(arpt_dmat4 d) {

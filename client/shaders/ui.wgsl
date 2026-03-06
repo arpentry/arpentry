@@ -5,7 +5,7 @@ struct Uniforms {
     tilt: f32,
     cursor_x: f32,
     cursor_y: f32,
-    _pad: f32,
+    ortho: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -58,6 +58,10 @@ const ZOOM_HW: f32 = 19.0;
 const ZOOM_HH: f32 = 32.0;
 const ZOOM_R: f32  = 19.0;
 const ZOOM_CX: f32 = 157.0;
+const PROJ_HW: f32 = 19.0;
+const PROJ_HH: f32 = 19.0;
+const PROJ_R: f32  = 19.0;
+const PROJ_CX: f32 = 205.0;
 
 @fragment fn fs(@location(0) pixel: vec2<f32>) -> @location(0) vec4<f32> {
     let lp = pixel / u.scale;
@@ -68,12 +72,14 @@ const ZOOM_CX: f32 = 157.0;
     let tilt_p = br - vec2<f32>(TILT_CX, CY);
     let comp_p = br - vec2<f32>(COMP_CX, CY);
     let zoom_p = br - vec2<f32>(ZOOM_CX, CY);
+    let proj_p = br - vec2<f32>(PROJ_CX, CY);
 
     // Shape SDFs
     let d_tilt = sd_box(tilt_p, vec2<f32>(TILT_HW, TILT_HH), TILT_R);
     let d_comp = sd_circle(comp_p, COMP_R);
     let d_zoom = sd_box(zoom_p, vec2<f32>(ZOOM_HW, ZOOM_HH), ZOOM_R);
-    let d_any = min(d_tilt, min(d_comp, d_zoom));
+    let d_proj = sd_box(proj_p, vec2<f32>(PROJ_HW, PROJ_HH), PROJ_R);
+    let d_any = min(d_proj, min(d_tilt, min(d_comp, d_zoom)));
 
     if (d_any > 1.5) { discard; }
 
@@ -164,6 +170,26 @@ const ZOOM_CX: f32 = 157.0;
     col = mix(col, icon, td_a);
     a = max(a, td_a);
 
+    // ── Projection toggle ──────────────────────────
+    let ip = fill(d_proj);
+
+    if (u.ortho < 0.5) {
+        // Perspective icon: trapezoid (wider at bottom)
+        let tp = proj_p;
+        let tw = 4.0 + 5.0 * clamp(0.5 - tp.y / 20.0, 0.0, 1.0);
+        let d_trap = max(abs(tp.x) - tw, abs(tp.y) - 10.0);
+        let trap_a = fill(abs(d_trap) - 0.8) * ip;
+        col = mix(col, icon, trap_a);
+        a = max(a, trap_a);
+    } else {
+        // Ortho icon: rectangle
+        let rp = proj_p;
+        let d_rect = max(abs(rp.x) - 7.0, abs(rp.y) - 10.0);
+        let rect_a = fill(abs(d_rect) - 0.8) * ip;
+        col = mix(col, icon, rect_a);
+        a = max(a, rect_a);
+    }
+
     // ── Hover highlight ────────────────────────────
     let cur = scr - vec2<f32>(u.cursor_x, u.cursor_y);
     let hd_zoom = sd_box(cur - vec2<f32>(ZOOM_CX, CY),
@@ -182,6 +208,10 @@ const ZOOM_CX: f32 = 157.0;
     }
     if (hd_comp < 0.0 && d_comp < 0.0) { hover = 0.06; }
     if (hd_tilt < 0.0 && d_tilt < 0.0) { hover = 0.06; }
+
+    let hd_proj = sd_box(cur - vec2<f32>(PROJ_CX, CY),
+                          vec2<f32>(PROJ_HW, PROJ_HH), PROJ_R);
+    if (hd_proj < 0.0 && d_proj < 0.0) { hover = 0.06; }
     col = col + vec3<f32>(hover);
 
     return vec4<f32>(col, a);
