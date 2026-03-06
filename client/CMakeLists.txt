@@ -29,6 +29,13 @@ FetchContent_Declare(glfw3webgpu
 )
 FetchContent_MakeAvailable(glfw3webgpu)
 
+FetchContent_Declare(stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG        master
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(stb)
+
 # ── Embed WGSL shaders as C headers ─────────────────────────────────────
 
 set(SHADER_DIR     ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
@@ -109,13 +116,13 @@ add_executable(arpentry_client
     src/tile/manager.c
     src/ui.c
     src/font.c
-    src/stb_truetype_impl.c
 )
 add_dependencies(arpentry_client flatcc_generate embed_shaders embed_assets)
 target_include_directories(arpentry_client PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${SHADER_GEN_DIR}
     ${ASSET_GEN_DIR}
+    ${stb_SOURCE_DIR}
 )
 target_link_libraries(arpentry_client PRIVATE webgpu glfw3webgpu arpentry_common arpentry_warnings)
 
