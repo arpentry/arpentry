@@ -13,6 +13,7 @@
 #include "style.h"
 #include "tile/manager.h"
 #include "ui.h"
+#include "screenshot.h"
 #include "style_reader.h"
 #include "style_verifier.h"
 #include "tileset_reader.h"
@@ -37,6 +38,66 @@
 #define WINDOW_W 800
 #define WINDOW_H 600
 
+/* CLI options (native only) */
+
+#ifndef __EMSCRIPTEN__
+typedef struct {
+    char url[256];
+    double lon;     /* degrees */
+    double lat;     /* degrees */
+    double alt;     /* meters */
+    double bearing; /* degrees */
+    double tilt;    /* degrees */
+    int width;
+    int height;
+    char screenshot[512]; /* empty string = interactive mode */
+} cli_opts;
+
+static cli_opts opts = {
+    .url = "http://localhost:8090",
+    .lon = 0.0,
+    .lat = 0.0,
+    .alt = INITIAL_ALTITUDE,
+    .bearing = 0.0,
+    .tilt = 0.0,
+    .width = WINDOW_W,
+    .height = WINDOW_H,
+    .screenshot = "",
+};
+
+static void parse_args(int argc, char **argv) {
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--url") == 0 && i + 1 < argc) {
+            snprintf(opts.url, sizeof(opts.url), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--lon") == 0 && i + 1 < argc) {
+            opts.lon = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--lat") == 0 && i + 1 < argc) {
+            opts.lat = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--alt") == 0 && i + 1 < argc) {
+            opts.alt = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--bearing") == 0 && i + 1 < argc) {
+            opts.bearing = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--tilt") == 0 && i + 1 < argc) {
+            opts.tilt = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--width") == 0 && i + 1 < argc) {
+            opts.width = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--height") == 0 && i + 1 < argc) {
+            opts.height = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
+            snprintf(opts.screenshot, sizeof(opts.screenshot), "%s",
+                     argv[++i]);
+        } else {
+            fprintf(stderr,
+                    "Usage: %s [--url <base>] [--lon <deg>] [--lat <deg>] "
+                    "[--alt <m>] [--bearing <deg>] [--tilt <deg>] "
+                    "[--width <px>] [--height <px>] [--screenshot <path>]\n",
+                    argv[0]);
+            exit(EXIT_FAILURE);
+        }
+    }
+}
+#endif /* __EMSCRIPTEN__ */
+
 /* App state */
 
 typedef struct {
@@ -58,6 +119,13 @@ typedef struct {
     bool needs_redraw;
     char base_url[256];
     uint8_t *model_buf; /* kept alive for zero-copy model pointers */
+
+#ifndef __EMSCRIPTEN__
+    bool capture_next;
+    bool screenshot_ok;
+    int idle_frames; /* consecutive frames with 0 active fetches */
+    int exit_code;
+#endif
 } App;
 
 static App app = {0};
@@ -294,8 +362,6 @@ static void render_frame(void) {
     wgpuSurfaceGetCurrentTexture(app.surface, &st);
     if (st.status != WGPUSurfaceGetCurrentTextureStatus_Success) return;
 
-    WGPUTextureView view = wgpuTextureCreateView(st.texture, NULL);
-
     /* Update ground elevation from loaded tiles */
     if (app.tile_manager) {
         double target = arpt_tile_manager_ground_elevation(
@@ -312,6 +378,49 @@ static void render_frame(void) {
     arpt_mat4 projection = arpt_camera_projection(app.camera);
     arpt_vec3 sun_dir = {0.3f, 0.8f, 0.5f};
     arpt_renderer_set_globals(app.renderer, projection, sun_dir);
+
+#ifndef __EMSCRIPTEN__
+    /* Screenshot capture: render to an offscreen texture instead of the
+       surface, because wgpu-native doesn't support copying from surface
+       textures. */
+    if (app.capture_next) {
+        app.capture_next = false;
+        uint32_t tw = wgpuTextureGetWidth(st.texture);
+        uint32_t th = wgpuTextureGetHeight(st.texture);
+        WGPUTextureDescriptor offscreen_desc = {
+            .label = "screenshot_target",
+            .usage = WGPUTextureUsage_RenderAttachment |
+                     WGPUTextureUsage_CopySrc,
+            .dimension = WGPUTextureDimension_2D,
+            .size = {tw, th, 1},
+            .format = app.surface_format,
+            .mipLevelCount = 1,
+            .sampleCount = 1,
+        };
+        WGPUTexture offscreen = wgpuDeviceCreateTexture(app.device,
+                                                        &offscreen_desc);
+        WGPUTextureView offscreen_view =
+            wgpuTextureCreateView(offscreen, NULL);
+
+        arpt_renderer_begin_frame(app.renderer, offscreen_view);
+        if (app.tile_manager)
+            arpt_tile_manager_draw(app.tile_manager, app.renderer, app.camera);
+        arpt_renderer_end_frame(app.renderer);
+
+        app.screenshot_ok = arpt_screenshot_save(
+            app.instance, app.device, app.queue, offscreen,
+            app.surface_format, tw, th, opts.screenshot);
+        app.exit_code = app.screenshot_ok ? EXIT_SUCCESS : EXIT_FAILURE;
+
+        wgpuTextureViewRelease(offscreen_view);
+        wgpuTextureRelease(offscreen);
+        wgpuTextureRelease(st.texture);
+        glfwSetWindowShouldClose(app.window, GLFW_TRUE);
+        return;
+    }
+#endif
+
+    WGPUTextureView view = wgpuTextureCreateView(st.texture, NULL);
 
     arpt_renderer_begin_frame(app.renderer, view);
 
@@ -714,14 +823,30 @@ static void init_viewer(void) {
     glfwGetWindowSize(app.window, &win_w, &win_h);
 
     app.camera = arpt_camera_create();
+
+#ifndef __EMSCRIPTEN__
+    {
+        double lon_rad = opts.lon * M_PI / 180.0;
+        double lat_rad = opts.lat * M_PI / 180.0;
+        arpt_camera_set_position(app.camera, lon_rad, lat_rad, opts.alt);
+        arpt_camera_set_bearing(app.camera, opts.bearing * M_PI / 180.0);
+        arpt_camera_set_tilt(app.camera, opts.tilt * M_PI / 180.0);
+    }
+#else
     arpt_camera_set_position(app.camera, 0.0, 0.0, INITIAL_ALTITUDE);
+#endif
+
     /* Viewport in window (logical) pixels so cursor coords match on all
        targets. On Retina native fb_w > win_w; on web sync_canvas_size keeps
        them equal. */
     arpt_camera_set_viewport(app.camera, win_w, win_h);
 
     /* Fetch style (before renderer creation) */
+#ifndef __EMSCRIPTEN__
+    snprintf(app.base_url, sizeof(app.base_url), "%s", opts.url);
+#else
     snprintf(app.base_url, sizeof(app.base_url), "http://localhost:8090");
+#endif
     const char *base_url = app.base_url;
     arpt_style style;
     arpt_style_defaults(&style);
@@ -773,17 +898,16 @@ static void init_viewer(void) {
         fprintf(stderr, "Warning: tileset.arts fetch failed, using defaults\n");
     app.tile_manager = arpt_tile_manager_create(tm_config, app.renderer, &style);
 
+    /* Structured logging: camera position */
+    printf("[CAMERA] lon=%.4f lat=%.4f alt=%.0f\n",
+           arpt_camera_lon(app.camera) * 180.0 / M_PI,
+           arpt_camera_lat(app.camera) * 180.0 / M_PI,
+           arpt_camera_altitude(app.camera));
+
     /* Diagnostic: verify camera position */
     {
         printf("Window: %dx%d, Framebuffer: %dx%d, Scale: %.1fx\n", win_w,
                win_h, fb_w, fb_h, (double)fb_w / win_w);
-        printf(
-            "Camera: lon=%.4f° lat=%.4f° alt=%.0fm tilt=%.1f° bearing=%.1f°\n",
-            arpt_camera_lon(app.camera) * 180.0 / M_PI,
-            arpt_camera_lat(app.camera) * 180.0 / M_PI,
-            arpt_camera_altitude(app.camera),
-            arpt_camera_tilt(app.camera) * 180.0 / M_PI,
-            arpt_camera_bearing(app.camera) * 180.0 / M_PI);
         /* Cast ray from screen center — should hit near the interest point */
         double hit_lon, hit_lat;
         if (arpt_camera_screen_to_geodetic(app.camera, win_w / 2.0, win_h / 2.0,
@@ -796,11 +920,18 @@ static void init_viewer(void) {
         }
     }
 
-    /* UI overlay */
-    float pixel_ratio = (win_w > 0) ? (float)fb_w / (float)win_w : 1.0f;
-    app.ui = arpt_ui_create(app.device, app.queue, app.surface_format,
-                            (uint32_t)fb_w, (uint32_t)fb_h, pixel_ratio);
-    arpt_renderer_set_overlay(app.renderer, ui_overlay, app.ui);
+    /* UI overlay — skip in screenshot mode to avoid compass/zoom on capture */
+#ifndef __EMSCRIPTEN__
+    bool screenshot_mode = (opts.screenshot[0] != '\0');
+#else
+    bool screenshot_mode = false;
+#endif
+    if (!screenshot_mode) {
+        float pixel_ratio = (win_w > 0) ? (float)fb_w / (float)win_w : 1.0f;
+        app.ui = arpt_ui_create(app.device, app.queue, app.surface_format,
+                                (uint32_t)fb_w, (uint32_t)fb_h, pixel_ratio);
+        arpt_renderer_set_overlay(app.renderer, ui_overlay, app.ui);
+    }
 
     /* Map control (mouse/keyboard/touch input) */
     app.control = arpt_control_create(app.camera, app.window);
@@ -829,6 +960,7 @@ static void on_device_done(WGPURequestDeviceStatus status, WGPUDevice device,
     /* Configure surface */
     int fb_w, fb_h;
     glfwGetFramebufferSize(app.window, &fb_w, &fb_h);
+
     WGPUSurfaceConfiguration cfg = {
         .device = device,
         .format = wgpuSurfaceGetPreferredFormat(app.surface, app.adapter),
@@ -847,8 +979,30 @@ static void on_device_done(WGPURequestDeviceStatus status, WGPUDevice device,
 #ifdef __EMSCRIPTEN__
     emscripten_set_main_loop(render_frame, 0, 0);
 #else
-    while (!glfwWindowShouldClose(app.window))
-        render_frame();
+    if (opts.screenshot[0] != '\0') {
+        /* Screenshot mode: render until tiles are loaded, then capture */
+        while (!glfwWindowShouldClose(app.window)) {
+            render_frame();
+
+            int active = app.tile_manager
+                             ? arpt_tile_manager_active_fetches(app.tile_manager)
+                             : 0;
+            if (active == 0)
+                app.idle_frames++;
+            else
+                app.idle_frames = 0;
+
+            if (app.idle_frames >= 3 && !app.capture_next) {
+                printf("[READY] all visible tiles loaded\n");
+                app.capture_next = true;
+                /* Force one more redraw for capture */
+                app.needs_redraw = true;
+            }
+        }
+    } else {
+        while (!glfwWindowShouldClose(app.window))
+            render_frame();
+    }
 #endif
 }
 
@@ -878,8 +1032,15 @@ static void on_adapter_done(WGPURequestAdapterStatus status,
     wgpuAdapterRequestDevice(adapter, &desc, on_device_done, NULL);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
+
+#ifndef __EMSCRIPTEN__
+    parse_args(argc, argv);
+#else
+    (void)argc;
+    (void)argv;
+#endif
 
     if (!glfwInit()) {
         fprintf(stderr, "Failed to initialize GLFW\n");
@@ -887,7 +1048,13 @@ int main(void) {
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
+#ifndef __EMSCRIPTEN__
+    app.window = glfwCreateWindow(opts.width, opts.height,
+                                  "Arpentry", NULL, NULL);
+#else
     app.window = glfwCreateWindow(WINDOW_W, WINDOW_H, "Arpentry", NULL, NULL);
+#endif
     if (!app.window) {
         fprintf(stderr, "Failed to create window\n");
         glfwTerminate();
@@ -926,5 +1093,9 @@ int main(void) {
     glfwTerminate();
 #endif
 
+#ifndef __EMSCRIPTEN__
+    return app.exit_code;
+#else
     return EXIT_SUCCESS;
+#endif
 }
