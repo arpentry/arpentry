@@ -1,9 +1,9 @@
-#include "tile_manager.h"
+#include "manager.h"
 #include "renderer.h"
-#include "tile_prepare.h"
+#include "prepare.h"
 #include "style.h"
-#include "tile_decode.h"
-#include "tile_fetch.h"
+#include "decode.h"
+#include "fetch.h"
 #include "globe.h"
 #include "hashmap.h"
 

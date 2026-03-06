@@ -1,7 +1,7 @@
 #ifndef ARPENTRY_STYLE_H
 #define ARPENTRY_STYLE_H
 
-#include "tile_decode.h"
+#include "tile/decode.h"
 
 /* Layer rendering type, matching LayerType enum in style.fbs. */
 typedef enum {

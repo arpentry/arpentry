@@ -1,4 +1,4 @@
-#include "tile_decode.h"
+#include "decode.h"
 #include "tile_reader.h"
 #include <stdlib.h>
 #include <string.h>

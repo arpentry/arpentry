@@ -92,11 +92,11 @@ add_custom_target(embed_assets DEPENDS ${FONT_OUTPUT})
 add_executable(arpentry_client
     src/main.c
     src/http.c
-    src/tile_fetch.c
+    src/tile/fetch.c
     src/camera.c
     src/control.c
-    src/tile_decode.c
-    src/tile_prepare.c
+    src/tile/decode.c
+    src/tile/prepare.c
     src/pipeline/core.c
     src/pipeline/mesh.c
     src/pipeline/texture.c
@@ -105,8 +105,8 @@ add_executable(arpentry_client
     src/pipeline/label.c
     src/pipeline/placeholder.c
     src/style.c
-    src/tile_visible.c
-    src/tile_manager.c
+    src/tile/visible.c
+    src/tile/manager.c
     src/ui.c
     src/font.c
     src/stb_truetype_impl.c
@@ -123,7 +123,7 @@ target_link_libraries(arpentry_client PRIVATE webgpu glfw3webgpu arpentry_common
 if(NOT EMSCRIPTEN)
     find_package(Threads REQUIRED)
 
-    add_executable(test_tile_fetch tests/test_tile_fetch.c src/tile_fetch.c src/http.c
+    add_executable(test_tile_fetch tests/test_tile_fetch.c src/tile/fetch.c src/http.c
         tests/demo_tile.c)
     add_dependencies(test_tile_fetch flatcc_generate)
     target_include_directories(test_tile_fetch PRIVATE

@@ -1,5 +1,5 @@
 #include "unity.h"
-#include "tile_decode.h"
+#include "tile/decode.h"
 #include "tile_builder.h"
 
 #include <stdlib.h>

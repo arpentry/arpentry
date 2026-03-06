@@ -59,7 +59,7 @@ if(NOT EMSCRIPTEN)
     add_test(NAME test_camera COMMAND test_camera)
 
     add_executable(test_tile_decode tests/test_tile_decode.c
-        ${CMAKE_SOURCE_DIR}/client/src/tile_decode.c)
+        ${CMAKE_SOURCE_DIR}/client/src/tile/decode.c)
     add_dependencies(test_tile_decode flatcc_generate)
     target_include_directories(test_tile_decode PRIVATE
         ${CMAKE_SOURCE_DIR}/client/src)
@@ -67,7 +67,7 @@ if(NOT EMSCRIPTEN)
     add_test(NAME test_tile_decode COMMAND test_tile_decode)
 
     add_executable(test_tile_manager tests/test_tile_manager.c
-        ${CMAKE_SOURCE_DIR}/client/src/tile_visible.c
+        ${CMAKE_SOURCE_DIR}/client/src/tile/visible.c
         ${CMAKE_SOURCE_DIR}/client/src/camera.c)
     target_include_directories(test_tile_manager PRIVATE
         ${CMAKE_SOURCE_DIR}/client/src)

@@ -1,4 +1,4 @@
-#include "tile_manager.h"
+#include "manager.h"
 #include "globe.h"
 #include "coords.h"
 #include "camera.h"

@@ -2,7 +2,7 @@
 #define ARPENTRY_PIPELINE_INTERNAL_H
 
 #include "renderer.h"
-#include "tile_prepare.h"
+#include "tile/prepare.h"
 #include "math3d.h"
 
 #include <stdbool.h>

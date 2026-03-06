@@ -1,4 +1,4 @@
-#include "tile_fetch.h"
+#include "fetch.h"
 
 #ifdef __EMSCRIPTEN__
 

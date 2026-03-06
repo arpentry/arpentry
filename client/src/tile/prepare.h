@@ -4,7 +4,7 @@
 #include "coords.h"
 #include "font.h"
 #include "style.h"
-#include "tile_decode.h"
+#include "decode.h"
 
 #include <stdbool.h>
 #include <stddef.h>
