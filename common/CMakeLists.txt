@@ -19,6 +19,10 @@ target_include_directories(arpentry_common PUBLIC
     ${flatcc_SOURCE_DIR}/include
 )
 target_link_libraries(arpentry_common PUBLIC flatccrt brotlienc brotlidec)
+target_link_libraries(arpentry_common PRIVATE arpentry_warnings)
+if(ARPENTRY_SANITIZERS)
+    target_link_libraries(arpentry_common PUBLIC arpentry_sanitizers)
+endif()
 
 # ── Tests (native only) ────────────────────────────────────────────────
 

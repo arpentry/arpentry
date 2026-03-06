@@ -114,37 +114,7 @@ static void write_error(struct net_conn *conn, int status) {
     write_response(conn, status, "text/plain", NULL, NULL, 0);
 }
 
-static void write_file_response(struct net_conn *conn, int status,
-                                const char *content_type, const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        write_error(conn, 404);
-        return;
-    }
 
-    fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    if (fsize <= 0) {
-        fclose(f);
-        write_error(conn, 404);
-        return;
-    }
-
-    uint8_t *buf = malloc((size_t)fsize);
-    if (!buf) {
-        fclose(f);
-        write_error(conn, 500);
-        return;
-    }
-
-    size_t nread = fread(buf, 1, (size_t)fsize, f);
-    fclose(f);
-
-    write_response(conn, status, content_type, NULL, buf, nread);
-    free(buf);
-}
 
 /* Build a Brotli-compressed Tileset FlatBuffer. Caller frees *out. */
 

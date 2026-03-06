@@ -34,7 +34,7 @@ target_include_directories(arpentry_server PRIVATE
 )
 
 find_package(Threads REQUIRED)
-target_link_libraries(arpentry_server PRIVATE arpentry_common json_c Threads::Threads)
+target_link_libraries(arpentry_server PRIVATE arpentry_common json_c Threads::Threads arpentry_warnings)
 
 # ── Tests ──────────────────────────────────────────────────────────────
 

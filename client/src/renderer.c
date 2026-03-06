@@ -1989,7 +1989,6 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
     /* Rasterize surface + highway features to offscreen texture */
     bool has_surface = surface && surface->count > 0;
     bool has_highways = highways && highways->count > 0;
-    bool has_buildings = buildings && buildings->count > 0;
     if (has_surface || has_highways) {
         t->surface_texture =
             rasterize_surface(r, has_surface ? surface : NULL,

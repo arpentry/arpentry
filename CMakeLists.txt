@@ -7,6 +7,27 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 include(FetchContent)
 include(CTest)
 
+# ── Project-wide compiler options ─────────────────────────────────────
+
+# Strict warnings for our own code (applied per-target below, not globally)
+add_library(arpentry_warnings INTERFACE)
+target_compile_options(arpentry_warnings INTERFACE
+    -Wall -Wextra -Wpedantic -Werror
+    -Wno-unused-parameter          # too noisy for callback-heavy code
+    -Wno-overlength-strings        # embedded shaders exceed C99 minimum
+    -Wno-c23-extensions            # flatcc headers use [[]] attributes
+)
+
+# Optional sanitizers (on by default for Debug builds)
+option(ARPENTRY_SANITIZERS "Enable ASan + UBSan" OFF)
+if(ARPENTRY_SANITIZERS)
+    add_library(arpentry_sanitizers INTERFACE)
+    target_compile_options(arpentry_sanitizers INTERFACE
+        -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(arpentry_sanitizers INTERFACE
+        -fsanitize=address,undefined)
+endif()
+
 # ── Shared dependencies ─────────────────────────────────────────────────
 
 # Brotli (static)

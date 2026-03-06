@@ -110,7 +110,7 @@ target_include_directories(arpentry_client PRIVATE
     ${SHADER_GEN_DIR}
     ${ASSET_GEN_DIR}
 )
-target_link_libraries(arpentry_client PRIVATE webgpu glfw3webgpu arpentry_common)
+target_link_libraries(arpentry_client PRIVATE webgpu glfw3webgpu arpentry_common arpentry_warnings)
 
 # ── Tests (native only) ──────────────────────────────────────────────
 if(NOT EMSCRIPTEN)
