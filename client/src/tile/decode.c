@@ -534,6 +534,23 @@ bool arpt_decode_pois(const void *flatbuf, size_t size,
                       &name_key_idx, &values);
     if (!layer) return true;
 
+    /* Resolve "icon" key index from the tile-scope key dictionary */
+    uint32_t icon_key_idx = UINT32_MAX;
+    {
+        arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root(flatbuf);
+        flatbuffers_string_vec_t keys = arpentry_tiles_Tile_keys(tile);
+        if (keys) {
+            size_t nkeys = flatbuffers_string_vec_len(keys);
+            for (size_t i = 0; i < nkeys; i++) {
+                flatbuffers_string_t k = flatbuffers_string_vec_at(keys, i);
+                if (k && strcmp(k, "icon") == 0) {
+                    icon_key_idx = (uint32_t)i;
+                    break;
+                }
+            }
+        }
+    }
+
     arpentry_tiles_Feature_vec_t features =
         arpentry_tiles_Layer_features(layer);
     if (!features) return true;
@@ -584,15 +601,18 @@ bool arpt_decode_pois(const void *flatbuf, size_t size,
         if (flatbuffers_uint16_vec_len(yv) != vc) continue;
         if (flatbuffers_int32_vec_len(zv) != vc) continue;
 
-        /* Resolve name once per feature (all points share same name) */
+        /* Resolve name and icon once per feature */
         char name[64];
         resolve_string_property(feat, name_key_idx, values, name, sizeof(name));
+        char icon[32];
+        resolve_string_property(feat, icon_key_idx, values, icon, sizeof(icon));
 
         for (size_t v = 0; v < vc; v++) {
             out->points[count].qx = xv[v];
             out->points[count].qy = yv[v];
             out->points[count].z = zv[v];
             memcpy(out->points[count].name, name, sizeof(name));
+            memcpy(out->points[count].icon, icon, sizeof(icon));
             count++;
         }
     }

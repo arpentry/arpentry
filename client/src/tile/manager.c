@@ -197,7 +197,11 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
     arpt_prepare_instances(&trees, arpt_renderer_model_count(tm->renderer),
                            &prims.instances);
     arpt_prepare_labels(&pois, arpt_renderer_font_glyphs(tm->renderer),
-                        arpt_renderer_font_height(tm->renderer), &prims.labels);
+                        arpt_renderer_font_height(tm->renderer),
+                        arpt_renderer_icon_glyphs(tm->renderer),
+                        arpt_renderer_icon_count(tm->renderer),
+                        arpt_renderer_icon_height(tm->renderer),
+                        &prims.labels);
 
     /* wgpuQueueWriteBuffer copies synchronously, safe to free after */
     updated.gpu = arpt_renderer_upload_tile(tm->renderer, &prims);

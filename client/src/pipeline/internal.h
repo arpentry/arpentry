@@ -3,6 +3,7 @@
 
 #include "renderer.h"
 #include "tile/prepare.h"
+#include "icon.h"
 #include "math3d.h"
 
 #include <stdbool.h>
@@ -93,6 +94,10 @@ struct arpt_tile_gpu {
     /* POI text label instances */
     WGPUBuffer poi_instance_buf;
     uint32_t poi_instance_count;
+
+    /* POI icon instances */
+    WGPUBuffer icon_instance_buf;
+    uint32_t icon_instance_count;
 
     /* Per-POI metadata for CPU-side collision detection */
     struct {
@@ -194,6 +199,16 @@ struct arpt_renderer {
     WGPUBindGroup poi_bind_group;
     font_glyph glyphs[FONT_CHAR_COUNT];
     float font_pixel_height;
+
+    /* Icon atlas rendering (reuses poi_pipeline, separate bind group) */
+    WGPUTexture icon_texture;
+    WGPUTextureView icon_view;
+    WGPUSampler icon_sampler;
+    WGPUBuffer icon_uniform_buf;
+    WGPUBindGroup icon_bind_group;
+    icon_glyph icon_glyphs[64]; /* max icons (actual count in icon_glyph_count) */
+    int icon_glyph_count;
+    float icon_pixel_height;
 
     WGPUCommandEncoder encoder;
     WGPURenderPassEncoder pass;

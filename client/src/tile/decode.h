@@ -128,6 +128,7 @@ typedef struct {
     uint16_t qx, qy;
     int32_t z;
     char name[64]; /* copied from value dictionary */
+    char icon[32]; /* Maki icon name (e.g. "hospital") */
 } arpt_poi_point;
 
 typedef struct {

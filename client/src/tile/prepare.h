@@ -3,6 +3,7 @@
 
 #include "coords.h"
 #include "font.h"
+#include "icon.h"
 #include "style.h"
 #include "decode.h"
 
@@ -108,11 +109,21 @@ typedef struct {
     uint32_t first, count;
 } arpt_label_meta;
 
+/* Icon instance (one per POI, same vertex format as glyph for reuse) */
+typedef struct {
+    uint16_t qx, qy;
+    int32_t qz;
+    float u0, v0, u1, v1;
+    float ox, oy;
+} arpt_icon_inst;
+
 typedef struct {
     arpt_glyph_inst *glyphs;
     size_t glyph_count;
     arpt_label_meta *labels;
     int label_count;
+    arpt_icon_inst *icons;
+    size_t icon_count;
 } arpt_label_prim;
 
 /* Everything the renderer needs to upload one tile */
@@ -141,7 +152,9 @@ void arpt_prepare_instances(const arpt_tree_data *trees, int model_count,
                             arpt_instance_prim *out);
 
 void arpt_prepare_labels(const arpt_poi_data *pois, const font_glyph *glyphs,
-                         float font_height, arpt_label_prim *out);
+                         float font_height, const icon_glyph *icons,
+                         int num_icons, float icon_height,
+                         arpt_label_prim *out);
 
 void arpt_tile_prims_free(arpt_tile_prims *p);
 

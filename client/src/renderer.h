@@ -3,6 +3,7 @@
 
 #include "coords.h"
 #include "font.h"
+#include "icon.h"
 #include "math3d.h"
 #include <webgpu/webgpu.h>
 
@@ -37,6 +38,15 @@ const font_glyph *arpt_renderer_font_glyphs(const arpt_renderer *r);
 
 /** Font pixel height for tile_prepare label layout. */
 float arpt_renderer_font_height(const arpt_renderer *r);
+
+/** Icon glyph metrics for tile_prepare icon layout. */
+const icon_glyph *arpt_renderer_icon_glyphs(const arpt_renderer *r);
+
+/** Number of icons in the icon atlas. */
+int arpt_renderer_icon_count(const arpt_renderer *r);
+
+/** Icon pixel height for tile_prepare icon layout. */
+float arpt_renderer_icon_height(const arpt_renderer *r);
 
 /* Tile GPU resources */
 

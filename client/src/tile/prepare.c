@@ -416,12 +416,16 @@ void arpt_prepare_instances(const arpt_tree_data *trees, int model_count,
 /* Labels — lay out POI glyph instances */
 
 void arpt_prepare_labels(const arpt_poi_data *pois, const font_glyph *glyphs,
-                         float font_height, arpt_label_prim *out) {
+                         float font_height, const icon_glyph *icon_glyphs,
+                         int num_icons, float icon_height,
+                         arpt_label_prim *out) {
     memset(out, 0, sizeof(*out));
     if (!pois || pois->count == 0 || !glyphs) return;
 
     float font_size = font_height;
     if (font_size < 1.0f) font_size = 40.0f;
+    float icon_size = icon_height;
+    if (icon_size < 1.0f) icon_size = 64.0f;
 
     /* Count total renderable glyphs */
     size_t total_glyphs = 0;
@@ -438,15 +442,18 @@ void arpt_prepare_labels(const arpt_poi_data *pois, const font_glyph *glyphs,
 
     out->glyphs = malloc(total_glyphs * sizeof(arpt_glyph_inst));
     out->labels = malloc(pois->count * sizeof(arpt_label_meta));
-    if (!out->glyphs || !out->labels) {
+    out->icons = malloc(pois->count * sizeof(arpt_icon_inst));
+    if (!out->glyphs || !out->labels || !out->icons) {
         free(out->glyphs);
         free(out->labels);
+        free(out->icons);
         memset(out, 0, sizeof(*out));
         return;
     }
 
     size_t idx = 0;
     int label_count = 0;
+    size_t icon_idx = 0;
 
     for (size_t i = 0; i < pois->count; i++) {
         const arpt_poi_point *p = &pois->points[i];
@@ -504,10 +511,28 @@ void arpt_prepare_labels(const arpt_poi_data *pois, const font_glyph *glyphs,
             lm->first = first_inst;
             lm->count = glyph_count;
         }
+
+        /* Emit icon instance (one per POI, centered above the text) */
+        int ii = icon_find(p->icon);
+        if (ii >= 0 && ii < num_icons && icon_glyphs[ii].width > 0) {
+            const icon_glyph *ig = &icon_glyphs[ii];
+            out->icons[icon_idx].qx = p->qx;
+            out->icons[icon_idx].qy = p->qy;
+            out->icons[icon_idx].qz = p->z;
+            out->icons[icon_idx].u0 = ig->u0;
+            out->icons[icon_idx].v0 = ig->v0;
+            out->icons[icon_idx].u1 = ig->u1;
+            out->icons[icon_idx].v1 = ig->v1;
+            /* Center the icon horizontally, position above the text */
+            out->icons[icon_idx].ox = -ig->width * 0.5f / icon_size;
+            out->icons[icon_idx].oy = -0.8f;
+            icon_idx++;
+        }
     }
 
     out->glyph_count = idx;
     out->label_count = label_count;
+    out->icon_count = icon_idx;
 }
 
 /* Cleanup */
@@ -538,4 +563,5 @@ void arpt_tile_prims_free(arpt_tile_prims *p) {
     /* labels */
     free(p->labels.glyphs);
     free(p->labels.labels);
+    free(p->labels.icons);
 }

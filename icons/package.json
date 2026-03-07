@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "description": "Generate Maki icon font for Arpentry",
+  "scripts": {
+    "generate": "node generate.js"
+  },
+  "dependencies": {
+    "svg2ttf": "^6.0.3",
+    "svgicons2svgfont": "^15.0.1"
+  }
+}

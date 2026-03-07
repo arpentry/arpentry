@@ -34,6 +34,7 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
     arpentry_tiles_Tile_keys_push_create_str(&builder, "class");  /* 0 */
     arpentry_tiles_Tile_keys_push_create_str(&builder, "height"); /* 1 */
     arpentry_tiles_Tile_keys_push_create_str(&builder, "name");   /* 2 POI_KEY_NAME */
+    arpentry_tiles_Tile_keys_push_create_str(&builder, "icon");   /* 3 POI_KEY_ICON */
     arpentry_tiles_Tile_keys_end(&builder);
 
     /* Value dictionary: must match SURFACE_VAL_* / TOWN_VAL_* index order */
@@ -79,6 +80,9 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
         int np = poi_count();
         for (int pi = 0; pi < np; pi++)
             PUSH_STR(pp[pi].name);
+        /* POI icon strings (19 + np ...) */
+        for (int pi = 0; pi < np; pi++)
+            PUSH_STR(pp[pi].icon);
     }
     arpentry_tiles_Tile_values_end(&builder);
 #undef PUSH_INT
@@ -361,6 +365,10 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
                 pprop.key = POI_KEY_NAME;
                 pprop.value = (uint32_t)(POI_VAL_NAME_BASE + pi);
                 arpentry_tiles_Feature_properties_push(&builder, &pprop);
+                /* icon = poi icon string */
+                pprop.key = POI_KEY_ICON;
+                pprop.value = (uint32_t)(POI_VAL_NAME_BASE + np + pi);
+                arpentry_tiles_Feature_properties_push(&builder, &pprop);
                 arpentry_tiles_Feature_properties_end(&builder);
 
                 arpentry_tiles_Layer_features_push_end(&builder);
@@ -375,6 +383,7 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
 
     void *fb = flatcc_builder_finalize_buffer(&builder, fb_size);
     flatcc_builder_clear(&builder);
+
     return fb;
 }
 

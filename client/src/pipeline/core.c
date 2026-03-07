@@ -349,6 +349,18 @@ float arpt_renderer_font_height(const arpt_renderer *r) {
     return r ? r->font_pixel_height : 0.0f;
 }
 
+const icon_glyph *arpt_renderer_icon_glyphs(const arpt_renderer *r) {
+    return r ? r->icon_glyphs : NULL;
+}
+
+int arpt_renderer_icon_count(const arpt_renderer *r) {
+    return r ? r->icon_glyph_count : 0;
+}
+
+float arpt_renderer_icon_height(const arpt_renderer *r) {
+    return r ? r->icon_pixel_height : 0.0f;
+}
+
 /* Tile upload */
 
 arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
@@ -455,6 +467,7 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
             wgpuBufferRelease(tile->tree_instance_bufs[mi]);
     }
     if (tile->poi_instance_buf) wgpuBufferRelease(tile->poi_instance_buf);
+    if (tile->icon_instance_buf) wgpuBufferRelease(tile->icon_instance_buf);
     free(tile->poi_labels);
     if (tile->uniform_buf) wgpuBufferRelease(tile->uniform_buf);
     if (tile->bind_group) wgpuBindGroupRelease(tile->bind_group);

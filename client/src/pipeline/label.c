@@ -86,64 +86,86 @@ WGPURenderPipeline arpt__label_create_pipeline(WGPUDevice device,
     return pipeline;
 }
 
-void arpt__label_init_font(arpt_renderer *r) {
-    size_t atlas_bytes = FONT_ATLAS_SIZE * FONT_ATLAS_SIZE * 4;
-    uint8_t *atlas_data = malloc(atlas_bytes);
-    if (!atlas_data) return;
+/* Helper: create an SDF atlas texture + sampler + bind group */
+static void init_sdf_atlas(arpt_renderer *r, uint8_t *atlas_data,
+                            size_t atlas_size, float pixel_height,
+                            WGPUTexture *tex, WGPUTextureView *view,
+                            WGPUSampler *samp, WGPUBuffer *ubuf,
+                            WGPUBindGroup *bg) {
+    size_t atlas_bytes = atlas_size * atlas_size * 4;
 
-    r->font_pixel_height = font_generate_atlas(atlas_data, r->glyphs);
-
-    WGPUTextureDescriptor ftd = {
+    WGPUTextureDescriptor td = {
         .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
-        .size = {FONT_ATLAS_SIZE, FONT_ATLAS_SIZE, 1},
+        .size = {(uint32_t)atlas_size, (uint32_t)atlas_size, 1},
         .format = WGPUTextureFormat_RGBA8Unorm,
         .dimension = WGPUTextureDimension_2D,
         .mipLevelCount = 1,
         .sampleCount = 1,
     };
-    r->font_texture = wgpuDeviceCreateTexture(r->device, &ftd);
-    r->font_view = wgpuTextureCreateView(r->font_texture, NULL);
+    *tex = wgpuDeviceCreateTexture(r->device, &td);
+    *view = wgpuTextureCreateView(*tex, NULL);
 
-    WGPUImageCopyTexture dst = {.texture = r->font_texture};
+    WGPUImageCopyTexture dst = {.texture = *tex};
     WGPUTextureDataLayout layout = {
-        .bytesPerRow = FONT_ATLAS_SIZE * 4,
-        .rowsPerImage = FONT_ATLAS_SIZE};
-    WGPUExtent3D extent = {FONT_ATLAS_SIZE, FONT_ATLAS_SIZE, 1};
+        .bytesPerRow = (uint32_t)(atlas_size * 4),
+        .rowsPerImage = (uint32_t)atlas_size};
+    WGPUExtent3D extent = {(uint32_t)atlas_size, (uint32_t)atlas_size, 1};
     wgpuQueueWriteTexture(r->queue, &dst, atlas_data, atlas_bytes,
                           &layout, &extent);
-    free(atlas_data);
 
-    WGPUSamplerDescriptor fsd = {
+    WGPUSamplerDescriptor sd = {
         .addressModeU = WGPUAddressMode_ClampToEdge,
         .addressModeV = WGPUAddressMode_ClampToEdge,
         .magFilter = WGPUFilterMode_Linear,
         .minFilter = WGPUFilterMode_Linear,
         .maxAnisotropy = 1,
     };
-    r->font_sampler = wgpuDeviceCreateSampler(r->device, &fsd);
+    *samp = wgpuDeviceCreateSampler(r->device, &sd);
 
     poi_uniforms_t pu = {
-        .glyph_scale = r->font_pixel_height,
-        .atlas_size = (float)FONT_ATLAS_SIZE,
+        .glyph_scale = pixel_height,
+        .atlas_size = (float)atlas_size,
         .viewport_width = (float)r->width,
         .viewport_height = (float)r->height,
     };
-    r->poi_uniform_buf =
-        create_buffer(r->device, r->queue, WGPUBufferUsage_Uniform, &pu,
-                      sizeof(poi_uniforms_t));
+    *ubuf = create_buffer(r->device, r->queue, WGPUBufferUsage_Uniform,
+                          &pu, sizeof(poi_uniforms_t));
 
-    WGPUBindGroupEntry poi_bg_entries[] = {
-        {.binding = 0,
-         .buffer = r->poi_uniform_buf,
-         .offset = 0,
+    WGPUBindGroupEntry entries[] = {
+        {.binding = 0, .buffer = *ubuf, .offset = 0,
          .size = sizeof(poi_uniforms_t)},
-        {.binding = 1, .textureView = r->font_view},
-        {.binding = 2, .sampler = r->font_sampler},
+        {.binding = 1, .textureView = *view},
+        {.binding = 2, .sampler = *samp},
     };
-    r->poi_bind_group = wgpuDeviceCreateBindGroup(
+    *bg = wgpuDeviceCreateBindGroup(
         r->device, &(WGPUBindGroupDescriptor){.layout = r->poi_bgl,
                                                .entryCount = 3,
-                                               .entries = poi_bg_entries});
+                                               .entries = entries});
+}
+
+void arpt__label_init_font(arpt_renderer *r) {
+    /* Font atlas */
+    size_t font_bytes = FONT_ATLAS_SIZE * FONT_ATLAS_SIZE * 4;
+    uint8_t *font_data = malloc(font_bytes);
+    if (!font_data) return;
+
+    r->font_pixel_height = font_generate_atlas(font_data, r->glyphs);
+    init_sdf_atlas(r, font_data, FONT_ATLAS_SIZE, r->font_pixel_height,
+                   &r->font_texture, &r->font_view, &r->font_sampler,
+                   &r->poi_uniform_buf, &r->poi_bind_group);
+    free(font_data);
+
+    /* Icon atlas */
+    size_t icon_bytes = ICON_ATLAS_SIZE * ICON_ATLAS_SIZE * 4;
+    uint8_t *icon_data = malloc(icon_bytes);
+    if (!icon_data) return;
+
+    r->icon_pixel_height = icon_generate_atlas(icon_data, r->icon_glyphs,
+                                                &r->icon_glyph_count);
+    init_sdf_atlas(r, icon_data, ICON_ATLAS_SIZE, r->icon_pixel_height,
+                   &r->icon_texture, &r->icon_view, &r->icon_sampler,
+                   &r->icon_uniform_buf, &r->icon_bind_group);
+    free(icon_data);
 }
 
 /* POI GPU instance layout: matches arpt_glyph_inst but with GPU-friendly
@@ -157,33 +179,50 @@ typedef struct {
     float offset_y;
 } poi_instance_t;
 
-void arpt__label_upload(arpt_renderer *r, arpt_tile_gpu *t,
-                        const arpt_label_prim *prim) {
-    (void)r;
-    if (!prim || prim->glyph_count == 0) return;
-
-    /* Convert arpt_glyph_inst to GPU layout */
-    poi_instance_t *instances = malloc(prim->glyph_count * sizeof(poi_instance_t));
+static void upload_instances(arpt_renderer *r, WGPUBuffer *buf,
+                              uint32_t *count, const void *src,
+                              size_t n, size_t elem_size) {
+    poi_instance_t *instances = malloc(n * sizeof(poi_instance_t));
     if (!instances) return;
 
-    for (size_t i = 0; i < prim->glyph_count; i++) {
-        const arpt_glyph_inst *g = &prim->glyphs[i];
-        instances[i].qx = g->qx;
-        instances[i].qy = g->qy;
-        instances[i].qz = g->qz;
-        instances[i].u0 = g->u0;
-        instances[i].v0 = g->v0;
-        instances[i].u1 = g->u1;
-        instances[i].v1 = g->v1;
-        instances[i].offset_x = g->ox;
-        instances[i].offset_y = g->oy;
+    /* Both arpt_glyph_inst and arpt_icon_inst have the same layout */
+    const arpt_glyph_inst *glyphs = src;
+    for (size_t i = 0; i < n; i++) {
+        instances[i].qx = glyphs[i].qx;
+        instances[i].qy = glyphs[i].qy;
+        instances[i].qz = glyphs[i].qz;
+        instances[i].u0 = glyphs[i].u0;
+        instances[i].v0 = glyphs[i].v0;
+        instances[i].u1 = glyphs[i].u1;
+        instances[i].v1 = glyphs[i].v1;
+        instances[i].offset_x = glyphs[i].ox;
+        instances[i].offset_y = glyphs[i].oy;
     }
 
-    t->poi_instance_buf =
-        create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex,
-                      instances, prim->glyph_count * sizeof(poi_instance_t));
-    t->poi_instance_count = (uint32_t)prim->glyph_count;
+    (void)elem_size;
+    *buf = create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex,
+                         instances, n * sizeof(poi_instance_t));
+    *count = (uint32_t)n;
     free(instances);
+}
+
+void arpt__label_upload(arpt_renderer *r, arpt_tile_gpu *t,
+                        const arpt_label_prim *prim) {
+    if (!prim) return;
+
+    /* Upload text glyph instances */
+    if (prim->glyph_count > 0) {
+        upload_instances(r, &t->poi_instance_buf, &t->poi_instance_count,
+                         prim->glyphs, prim->glyph_count,
+                         sizeof(arpt_glyph_inst));
+    }
+
+    /* Upload icon instances */
+    if (prim->icon_count > 0) {
+        upload_instances(r, &t->icon_instance_buf, &t->icon_instance_count,
+                         prim->icons, prim->icon_count,
+                         sizeof(arpt_icon_inst));
+    }
 
     /* Copy per-label metadata for CPU-side collision detection */
     if (prim->label_count > 0) {
@@ -207,11 +246,16 @@ void arpt__label_upload(arpt_renderer *r, arpt_tile_gpu *t,
 void arpt__label_draw(arpt_renderer *r, arpt_tile_gpu *tile) {
     if (tile->poi_label_count == 0 || !r->poi_pipeline) return;
 
-    bool drew_any = false;
+    bool drew_text = false;
+    bool drew_icon = false;
     const float *proj = r->cached_projection.m;
     const float *mdl = tile->cached_model;
     float vw = (float)r->width;
     float vh = (float)r->height;
+
+    /* Collect non-colliding label indices first */
+    int visible[512];
+    int n_visible = 0;
 
     for (int li = 0; li < tile->poi_label_count; li++) {
         float lon_w = tile->cached_bounds[0];
@@ -242,9 +286,6 @@ void arpt__label_draw(arpt_renderer *r, arpt_tile_gpu *tile) {
         float cz = proj[2]*mx + proj[6]*my + proj[10]*mz + proj[14]*mw;
         float cw = proj[3]*mx + proj[7]*my + proj[11]*mz + proj[15]*mw;
 
-        /* Cull labels behind camera: under perspective cw<=0 suffices;
-           under ortho cw is always 1, so also reject when cz<0
-           (before the near plane). */
         if (cw <= 0.0f || cz < 0.0f) continue;
 
         float sx = (cx / cw * 0.5f + 0.5f) * vw;
@@ -252,9 +293,10 @@ void arpt__label_draw(arpt_renderer *r, arpt_tile_gpu *tile) {
 
         float hw = tile->poi_labels[li].label_w_px * 0.5f;
         float lh = tile->poi_labels[li].label_h_px;
+        float icon_h = (tile->icon_instance_count > 0) ? 48.0f : 0.0f;
         float pad = 4.0f;
         float x0 = sx - hw - pad;
-        float y0 = sy - lh - pad;
+        float y0 = sy - lh - icon_h - pad;
         float x1 = sx + hw + pad;
         float y1 = sy + pad;
 
@@ -278,26 +320,58 @@ void arpt__label_draw(arpt_renderer *r, arpt_tile_gpu *tile) {
             r->placed_label_count++;
         }
 
-        if (!drew_any) {
-            wgpuRenderPassEncoderSetPipeline(r->pass, r->poi_pipeline);
-            wgpuRenderPassEncoderSetBindGroup(r->pass, 0,
-                                              r->global_bind_group, 0,
-                                              NULL);
-            wgpuRenderPassEncoderSetBindGroup(r->pass, 1, tile->bind_group,
-                                              0, NULL);
-            wgpuRenderPassEncoderSetBindGroup(r->pass, 2, r->poi_bind_group,
-                                              0, NULL);
-            wgpuRenderPassEncoderSetVertexBuffer(
-                r->pass, 0, tile->poi_instance_buf, 0,
-                wgpuBufferGetSize(tile->poi_instance_buf));
-            drew_any = true;
-        }
-        wgpuRenderPassEncoderDraw(
-            r->pass, 4, tile->poi_labels[li].instance_count, 0,
-            tile->poi_labels[li].first_instance);
+        if (n_visible < 512) visible[n_visible++] = li;
     }
 
-    if (drew_any) {
+    if (n_visible == 0) return;
+
+    /* Draw icons first (they sit above the text) */
+    if (tile->icon_instance_buf && tile->icon_instance_count > 0 &&
+        r->icon_bind_group) {
+        wgpuRenderPassEncoderSetPipeline(r->pass, r->poi_pipeline);
+        wgpuRenderPassEncoderSetBindGroup(r->pass, 0,
+                                          r->global_bind_group, 0, NULL);
+        wgpuRenderPassEncoderSetBindGroup(r->pass, 1, tile->bind_group,
+                                          0, NULL);
+        wgpuRenderPassEncoderSetBindGroup(r->pass, 2, r->icon_bind_group,
+                                          0, NULL);
+        wgpuRenderPassEncoderSetVertexBuffer(
+            r->pass, 0, tile->icon_instance_buf, 0,
+            wgpuBufferGetSize(tile->icon_instance_buf));
+
+        for (int vi = 0; vi < n_visible; vi++) {
+            int li = visible[vi];
+            /* Icon instances are 1:1 with labels (same index) */
+            if (li < (int)tile->icon_instance_count) {
+                wgpuRenderPassEncoderDraw(r->pass, 4, 1, 0, (uint32_t)li);
+            }
+        }
+        drew_icon = true;
+    }
+
+    /* Draw text labels */
+    if (tile->poi_instance_buf && tile->poi_instance_count > 0) {
+        wgpuRenderPassEncoderSetPipeline(r->pass, r->poi_pipeline);
+        wgpuRenderPassEncoderSetBindGroup(r->pass, 0,
+                                          r->global_bind_group, 0, NULL);
+        wgpuRenderPassEncoderSetBindGroup(r->pass, 1, tile->bind_group,
+                                          0, NULL);
+        wgpuRenderPassEncoderSetBindGroup(r->pass, 2, r->poi_bind_group,
+                                          0, NULL);
+        wgpuRenderPassEncoderSetVertexBuffer(
+            r->pass, 0, tile->poi_instance_buf, 0,
+            wgpuBufferGetSize(tile->poi_instance_buf));
+
+        for (int vi = 0; vi < n_visible; vi++) {
+            int li = visible[vi];
+            wgpuRenderPassEncoderDraw(
+                r->pass, 4, tile->poi_labels[li].instance_count, 0,
+                tile->poi_labels[li].first_instance);
+        }
+        drew_text = true;
+    }
+
+    if (drew_text || drew_icon) {
         wgpuRenderPassEncoderSetPipeline(r->pass, r->pipeline);
         wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group,
                                           0, NULL);
@@ -311,5 +385,10 @@ void arpt__label_cleanup(arpt_renderer *r) {
     if (r->font_view) wgpuTextureViewRelease(r->font_view);
     if (r->font_texture) wgpuTextureRelease(r->font_texture);
     if (r->font_sampler) wgpuSamplerRelease(r->font_sampler);
+    if (r->icon_bind_group) wgpuBindGroupRelease(r->icon_bind_group);
+    if (r->icon_uniform_buf) wgpuBufferRelease(r->icon_uniform_buf);
+    if (r->icon_view) wgpuTextureViewRelease(r->icon_view);
+    if (r->icon_texture) wgpuTextureRelease(r->icon_texture);
+    if (r->icon_sampler) wgpuSamplerRelease(r->icon_sampler);
     if (r->poi_bgl) wgpuBindGroupLayoutRelease(r->poi_bgl);
 }

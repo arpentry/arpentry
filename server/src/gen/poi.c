@@ -14,14 +14,14 @@
 #define POI_NORTH   0.010
 
 static const poi_point pois[] = {
-    { 0.0000,  0.0000, "Town Hall"},
-    {-0.0030,  0.0025, "Library"},
-    { 0.0035, -0.0020, "Market"},
-    {-0.0050, -0.0040, "Park"},
-    { 0.0040,  0.0035, "School"},
-    { 0.0020, -0.0050, "Station"},
-    {-0.0045,  0.0050, "Hospital"},
-    { 0.0055,  0.0010, "Museum"},
+    { 0.0000,  0.0000, "Town Hall",  "town-hall"},
+    {-0.0030,  0.0025, "Library",    "library"},
+    { 0.0035, -0.0020, "Market",     "grocery"},
+    {-0.0050, -0.0040, "Park",       "park"},
+    { 0.0040,  0.0035, "School",     "school"},
+    { 0.0020, -0.0050, "Station",    "rail"},
+    {-0.0045,  0.0050, "Hospital",   "hospital"},
+    { 0.0055,  0.0010, "Museum",     "museum"},
 };
 
 #define N_POIS ((int)(sizeof(pois) / sizeof(pois[0])))

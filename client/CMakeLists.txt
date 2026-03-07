@@ -93,7 +93,22 @@ add_custom_command(
     DEPENDS ${FONT_INPUT} ${CMAKE_SOURCE_DIR}/cmake/embed_binary.cmake
     COMMENT "Embedding font Inter-Regular.ttf"
 )
-add_custom_target(embed_assets DEPENDS ${FONT_OUTPUT})
+
+set(ICON_INPUT  ${ASSET_DIR}/maki-icons.ttf)
+set(ICON_OUTPUT ${ASSET_GEN_DIR}/maki-icons.ttf.h)
+add_custom_command(
+    OUTPUT  ${ICON_OUTPUT}
+    COMMAND ${CMAKE_COMMAND}
+        -DINPUT=${ICON_INPUT}
+        -DINPUT_NAME=maki-icons.ttf
+        -DOUTPUT=${ICON_OUTPUT}
+        -DVAR_NAME=maki_icons_ttf
+        -P ${CMAKE_SOURCE_DIR}/cmake/embed_binary.cmake
+    DEPENDS ${ICON_INPUT} ${CMAKE_SOURCE_DIR}/cmake/embed_binary.cmake
+    COMMENT "Embedding icon font maki-icons.ttf"
+)
+
+add_custom_target(embed_assets DEPENDS ${FONT_OUTPUT} ${ICON_OUTPUT})
 
 # ── Main executable ──────────────────────────────────────────────────────
 
@@ -118,6 +133,7 @@ add_executable(arpentry_client
     src/tile/manager.c
     src/ui.c
     src/font.c
+    src/icon.c
     src/screenshot.c
 )
 add_dependencies(arpentry_client flatcc_generate embed_shaders embed_assets)
