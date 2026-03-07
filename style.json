@@ -51,6 +51,14 @@
       "source_layer": "poi",
       "type": "label",
       "min_level": 13,
+      "text_size": 22,
+      "text_color": [26, 26, 26, 255],
+      "text_halo_color": [255, 255, 255, 255],
+      "text_halo_width": 0.4,
+      "icon_size": 24,
+      "icon_color": [26, 26, 26, 255],
+      "icon_halo_color": [255, 255, 255, 255],
+      "icon_halo_width": 0.6,
       "paint": []
     }
   ]

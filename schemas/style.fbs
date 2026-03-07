@@ -23,10 +23,18 @@ table PaintEntry {
 enum LayerType : uint8 { Terrain = 0, Texture = 1, Extrusion = 2, Instance = 3, Label = 4 }
 
 table LayerStyle {
-  source_layer: string (required);  // tile layer name ("surface", "highway", ...)
-  type:         LayerType = Texture; // how to render this layer
-  min_level:    uint8 = 0;          // skip decoding below this zoom level
-  paint:        [PaintEntry];       // class -> visual properties
+  source_layer:   string (required);  // tile layer name ("surface", "highway", ...)
+  type:           LayerType = Texture; // how to render this layer
+  min_level:      uint8 = 0;          // skip decoding below this zoom level
+  paint:          [PaintEntry];       // class -> visual properties
+  text_size:      float32 = 14.0;    // label text size in pixels
+  text_color:     RGBA;              // label text fill color
+  text_halo_color:RGBA;              // label text halo color
+  text_halo_width:float32 = 2.0;    // label text halo width in pixels
+  icon_size:      float32 = 20.0;   // label icon size in pixels
+  icon_color:     RGBA;              // label icon fill color
+  icon_halo_color:RGBA;              // label icon halo color
+  icon_halo_width:float32 = 0.5;    // label icon halo width in pixels
 }
 
 table Style {

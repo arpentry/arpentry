@@ -320,6 +320,10 @@ static void render_frame(void) {
             arpt_renderer_create(app.device, app.queue, app.surface_format,
                                  (uint32_t)fb_w, (uint32_t)fb_h,
                                  style.colors[0], rbldg);
+        arpt_renderer_set_label_style(app.renderer,
+            style.text_size, style.text_color, style.text_halo_color,
+            style.text_halo_width, style.icon_size, style.icon_color,
+            style.icon_halo_color, style.icon_halo_width);
 
         /* Upload models, matching style params by model name */
         for (int si = 0; si < style.tree_style_count; si++) {
@@ -636,6 +640,51 @@ static bool fetch_style(const char *base_url, arpt_style *style) {
             style->layer_count++;
         }
 
+        /* Parse label style fields (only meaningful for Label layers) */
+        if (arpentry_tiles_LayerStyle_type(layer) == arpentry_tiles_LayerType_Label) {
+            float ts = arpentry_tiles_LayerStyle_text_size(layer);
+            if (ts > 0) style->text_size = ts;
+            const arpentry_tiles_RGBA_t *tc =
+                arpentry_tiles_LayerStyle_text_color(layer);
+            if (tc) {
+                style->text_color[0] = tc->r / 255.0f;
+                style->text_color[1] = tc->g / 255.0f;
+                style->text_color[2] = tc->b / 255.0f;
+                style->text_color[3] = tc->a / 255.0f;
+            }
+            const arpentry_tiles_RGBA_t *thc =
+                arpentry_tiles_LayerStyle_text_halo_color(layer);
+            if (thc) {
+                style->text_halo_color[0] = thc->r / 255.0f;
+                style->text_halo_color[1] = thc->g / 255.0f;
+                style->text_halo_color[2] = thc->b / 255.0f;
+                style->text_halo_color[3] = thc->a / 255.0f;
+            }
+            float thw = arpentry_tiles_LayerStyle_text_halo_width(layer);
+            if (thw > 0) style->text_halo_width = thw;
+
+            float is = arpentry_tiles_LayerStyle_icon_size(layer);
+            if (is > 0) style->icon_size = is;
+            const arpentry_tiles_RGBA_t *ic =
+                arpentry_tiles_LayerStyle_icon_color(layer);
+            if (ic) {
+                style->icon_color[0] = ic->r / 255.0f;
+                style->icon_color[1] = ic->g / 255.0f;
+                style->icon_color[2] = ic->b / 255.0f;
+                style->icon_color[3] = ic->a / 255.0f;
+            }
+            const arpentry_tiles_RGBA_t *ihc =
+                arpentry_tiles_LayerStyle_icon_halo_color(layer);
+            if (ihc) {
+                style->icon_halo_color[0] = ihc->r / 255.0f;
+                style->icon_halo_color[1] = ihc->g / 255.0f;
+                style->icon_halo_color[2] = ihc->b / 255.0f;
+                style->icon_halo_color[3] = ihc->a / 255.0f;
+            }
+            float ihw = arpentry_tiles_LayerStyle_icon_halo_width(layer);
+            if (ihw > 0) style->icon_halo_width = ihw;
+        }
+
         arpentry_tiles_PaintEntry_vec_t paint =
             arpentry_tiles_LayerStyle_paint(layer);
         size_t paint_count = paint ? arpentry_tiles_PaintEntry_vec_len(paint) : 0;
@@ -879,6 +928,12 @@ static void init_viewer(void) {
         arpt_renderer_create(app.device, app.queue, app.surface_format,
                              (uint32_t)fb_w, (uint32_t)fb_h, style.colors[0],
                              bldg_color);
+    if (app.renderer) {
+        arpt_renderer_set_label_style(app.renderer,
+            style.text_size, style.text_color, style.text_halo_color,
+            style.text_halo_width, style.icon_size, style.icon_color,
+            style.icon_halo_color, style.icon_halo_width);
+    }
     if (!app.renderer) {
         fprintf(stderr, "Fatal: failed to create renderer\n");
         return;

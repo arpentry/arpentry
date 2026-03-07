@@ -18,10 +18,16 @@ struct TileUniforms {
 };
 
 struct PoiUniforms {
-    glyph_scale: f32,   /* pixel scale factor (1.0 = 1:1 pixel mapping) */
-    atlas_size: f32,    /* atlas texture size in pixels */
+    glyph_scale: f32,
+    atlas_size: f32,
     viewport_width: f32,
     viewport_height: f32,
+    display_scale: f32,
+    halo_width: f32,
+    _pad0: f32,
+    _pad1: f32,
+    fill_color: vec4<f32>,
+    halo_color: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals: GlobalUniforms;
@@ -93,9 +99,10 @@ fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {
     let px_x = inst_offset.x * gs;
     let px_y = inst_offset.y * gs;
 
-    // Corner offset in pixels (quad = actual atlas glyph size)
-    let local_px_x = px_x + corner_x * glyph_w_px;
-    let local_px_y = px_y - corner_y * glyph_h_px;
+    // Apply display scale to shrink/grow the glyph on screen
+    let scale = poi.display_scale;
+    let local_px_x = (px_x + corner_x * glyph_w_px) * scale;
+    let local_px_y = (px_y - corner_y * glyph_h_px) * scale;
 
     // Convert pixel offset to clip-space offset (screen-aligned billboard)
     let clip_dx = local_px_x * 2.0 / poi.viewport_width * anchor_clip.w;
@@ -133,20 +140,24 @@ fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {
 
     // SDF rendering: 0.5 (=128/255) is the edge
     let edge = 0.5;
-    let width = fwidth(sdf) * 0.7;
-    let alpha = smoothstep(edge - width, edge + width, sdf);
+    // Clamp width: fwidth() can return very large values at quad edges
+    // where screen-space derivatives are undefined, causing the smoothstep
+    // to widen enough that SDF=0 (padding region) produces visible alpha.
+    let width = min(fwidth(sdf) * 0.7, 0.1);
+
+    // Halo edge: smaller edge = wider halo around the glyph
+    let halo_edge = edge - poi.halo_width * 0.1;
+    let alpha = smoothstep(halo_edge - width, halo_edge + width, sdf);
 
     if (alpha < 0.01) {
         discard;
     }
 
-    // White text with dark outline for readability
-    let text_color = vec3<f32>(1.0, 1.0, 1.0);
-    let outline_color = vec3<f32>(0.1, 0.1, 0.15);
-    let outline_edge = 0.35;
-    let outline_alpha = smoothstep(outline_edge - width, outline_edge + width, sdf);
-
-    let color = mix(outline_color, text_color, outline_alpha);
+    // Blend from halo color to fill color at the glyph edge
+    let text_alpha = smoothstep(edge - width, edge + width, sdf);
+    let color = mix(poi.halo_color.rgb, poi.fill_color.rgb, text_alpha);
     let out = select(color, pow(color, vec3<f32>(1.0 / 2.2)), globals.apply_gamma > 0.5);
-    return vec4<f32>(out, alpha);
+    // Premultiplied alpha output — prevents white seams where adjacent
+    // glyph quads overlap (halo blending on top of fill).
+    return vec4<f32>(out * alpha, alpha);
 }

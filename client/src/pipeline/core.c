@@ -179,12 +179,26 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     r->tree_pipeline = arpt__instance_create_pipeline(
         device, format, r->global_bgl, r->tile_bgl, r->model_bgl);
 
+    /* Set default label style before font init */
+    r->text_size = 14.0f;
+    r->text_color[0] = 0.2f; r->text_color[1] = 0.2f;
+    r->text_color[2] = 0.2f; r->text_color[3] = 1.0f;
+    r->text_halo_color[0] = 1.0f; r->text_halo_color[1] = 1.0f;
+    r->text_halo_color[2] = 1.0f; r->text_halo_color[3] = 1.0f;
+    r->text_halo_width = 2.0f;
+    r->icon_size = 20.0f;
+    r->icon_color[0] = 0.2f; r->icon_color[1] = 0.2f;
+    r->icon_color[2] = 0.2f; r->icon_color[3] = 1.0f;
+    r->icon_halo_color[0] = 1.0f; r->icon_halo_color[1] = 1.0f;
+    r->icon_halo_color[2] = 1.0f; r->icon_halo_color[3] = 1.0f;
+    r->icon_halo_width = 0.5f;
+
     /* POI text label pipeline + font atlas */
     {
         WGPUBindGroupLayoutEntry poi_entries[] = {
             {
                 .binding = 0,
-                .visibility = WGPUShaderStage_Vertex,
+                .visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment,
                 .buffer = {.type = WGPUBufferBindingType_Uniform,
                            .minBindingSize = sizeof(poi_uniforms_t)},
             },
@@ -324,8 +338,81 @@ void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height) {
             .atlas_size = (float)FONT_ATLAS_SIZE,
             .viewport_width = (float)width,
             .viewport_height = (float)height,
+            .display_scale = r->text_display_scale,
+            .halo_width = r->text_halo_width,
         };
+        memcpy(pu.fill_color, r->text_color, sizeof(pu.fill_color));
+        memcpy(pu.halo_color, r->text_halo_color, sizeof(pu.halo_color));
         wgpuQueueWriteBuffer(r->queue, r->poi_uniform_buf, 0, &pu,
+                             sizeof(poi_uniforms_t));
+    }
+    if (r->icon_uniform_buf) {
+        poi_uniforms_t pu = {
+            .glyph_scale = r->icon_pixel_height,
+            .atlas_size = (float)ICON_ATLAS_SIZE,
+            .viewport_width = (float)width,
+            .viewport_height = (float)height,
+            .display_scale = r->icon_display_scale,
+            .halo_width = r->icon_halo_width,
+        };
+        memcpy(pu.fill_color, r->icon_color, sizeof(pu.fill_color));
+        memcpy(pu.halo_color, r->icon_halo_color, sizeof(pu.halo_color));
+        wgpuQueueWriteBuffer(r->queue, r->icon_uniform_buf, 0, &pu,
+                             sizeof(poi_uniforms_t));
+    }
+}
+
+/* Label style setter */
+
+void arpt_renderer_set_label_style(arpt_renderer *r,
+                                    float text_size, const float text_color[4],
+                                    const float text_halo_color[4],
+                                    float text_halo_width,
+                                    float icon_size, const float icon_color[4],
+                                    const float icon_halo_color[4],
+                                    float icon_halo_width) {
+    if (!r) return;
+    r->text_size = text_size;
+    memcpy(r->text_color, text_color, sizeof(r->text_color));
+    memcpy(r->text_halo_color, text_halo_color, sizeof(r->text_halo_color));
+    r->text_halo_width = text_halo_width;
+    r->icon_size = icon_size;
+    memcpy(r->icon_color, icon_color, sizeof(r->icon_color));
+    memcpy(r->icon_halo_color, icon_halo_color, sizeof(r->icon_halo_color));
+    r->icon_halo_width = icon_halo_width;
+
+    r->text_display_scale = (r->font_pixel_height > 0)
+        ? text_size / r->font_pixel_height : 1.0f;
+    r->icon_display_scale = (r->icon_pixel_height > 0)
+        ? icon_size / r->icon_pixel_height : 1.0f;
+
+    /* Update GPU uniform buffers */
+    if (r->poi_uniform_buf) {
+        poi_uniforms_t pu = {
+            .glyph_scale = r->font_pixel_height,
+            .atlas_size = (float)FONT_ATLAS_SIZE,
+            .viewport_width = (float)r->width,
+            .viewport_height = (float)r->height,
+            .display_scale = r->text_display_scale,
+            .halo_width = r->text_halo_width,
+        };
+        memcpy(pu.fill_color, r->text_color, sizeof(pu.fill_color));
+        memcpy(pu.halo_color, r->text_halo_color, sizeof(pu.halo_color));
+        wgpuQueueWriteBuffer(r->queue, r->poi_uniform_buf, 0, &pu,
+                             sizeof(poi_uniforms_t));
+    }
+    if (r->icon_uniform_buf) {
+        poi_uniforms_t pu = {
+            .glyph_scale = r->icon_pixel_height,
+            .atlas_size = (float)ICON_ATLAS_SIZE,
+            .viewport_width = (float)r->width,
+            .viewport_height = (float)r->height,
+            .display_scale = r->icon_display_scale,
+            .halo_width = r->icon_halo_width,
+        };
+        memcpy(pu.fill_color, r->icon_color, sizeof(pu.fill_color));
+        memcpy(pu.halo_color, r->icon_halo_color, sizeof(pu.halo_color));
+        wgpuQueueWriteBuffer(r->queue, r->icon_uniform_buf, 0, &pu,
                              sizeof(poi_uniforms_t));
     }
 }
@@ -545,6 +632,7 @@ void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view) {
 
     r->pass = wgpuCommandEncoderBeginRenderPass(r->encoder, &rp);
     r->placed_label_count = 0;
+    r->pending_label_count = 0;
 
     /* Draw sky first (writes depth=1.0 everywhere, terrain overwrites) */
     arpt__sky_draw(r);
@@ -557,7 +645,7 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
     arpt__mesh_draw_skirts(r, tile);
     arpt__mesh_draw_extrusion(r, tile);
     arpt__instance_draw(r, tile);
-    arpt__label_draw(r, tile);
+    arpt__label_collect(r, tile);
 }
 
 void arpt_renderer_set_overlay(arpt_renderer *r, arpt_overlay_fn fn,
@@ -568,6 +656,9 @@ void arpt_renderer_set_overlay(arpt_renderer *r, arpt_overlay_fn fn,
 }
 
 void arpt_renderer_end_frame(arpt_renderer *r) {
+    /* Draw all labels sorted by depth (closest first) */
+    arpt__label_draw_all(r);
+
     /* Invoke overlay (e.g. UI) before closing the pass */
     if (r->overlay_fn) r->overlay_fn(r->pass, r->overlay_ud);
     wgpuRenderPassEncoderEnd(r->pass);

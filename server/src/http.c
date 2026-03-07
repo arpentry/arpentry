@@ -314,6 +314,50 @@ static bool build_style(const char *style_file, uint8_t **out,
                 arpentry_tiles_LayerStyle_min_level_add(
                     &builder, (uint8_t)json_int(jminlvl));
 
+            struct json jtext_size = json_object_get(jlayer, "text_size");
+            if (json_exists(jtext_size))
+                arpentry_tiles_LayerStyle_text_size_add(
+                    &builder, (float)json_double(jtext_size));
+
+            struct json jtext_color = json_object_get(jlayer, "text_color");
+            if (json_exists(jtext_color)) {
+                arpentry_tiles_RGBA_t c = parse_rgba(jtext_color);
+                arpentry_tiles_LayerStyle_text_color_add(&builder, &c);
+            }
+
+            struct json jtext_halo_color = json_object_get(jlayer, "text_halo_color");
+            if (json_exists(jtext_halo_color)) {
+                arpentry_tiles_RGBA_t c = parse_rgba(jtext_halo_color);
+                arpentry_tiles_LayerStyle_text_halo_color_add(&builder, &c);
+            }
+
+            struct json jtext_halo_width = json_object_get(jlayer, "text_halo_width");
+            if (json_exists(jtext_halo_width))
+                arpentry_tiles_LayerStyle_text_halo_width_add(
+                    &builder, (float)json_double(jtext_halo_width));
+
+            struct json jicon_size = json_object_get(jlayer, "icon_size");
+            if (json_exists(jicon_size))
+                arpentry_tiles_LayerStyle_icon_size_add(
+                    &builder, (float)json_double(jicon_size));
+
+            struct json jicon_color = json_object_get(jlayer, "icon_color");
+            if (json_exists(jicon_color)) {
+                arpentry_tiles_RGBA_t c = parse_rgba(jicon_color);
+                arpentry_tiles_LayerStyle_icon_color_add(&builder, &c);
+            }
+
+            struct json jicon_halo_color = json_object_get(jlayer, "icon_halo_color");
+            if (json_exists(jicon_halo_color)) {
+                arpentry_tiles_RGBA_t c = parse_rgba(jicon_halo_color);
+                arpentry_tiles_LayerStyle_icon_halo_color_add(&builder, &c);
+            }
+
+            struct json jicon_halo_width = json_object_get(jlayer, "icon_halo_width");
+            if (json_exists(jicon_halo_width))
+                arpentry_tiles_LayerStyle_icon_halo_width_add(
+                    &builder, (float)json_double(jicon_halo_width));
+
             struct json jpaint = json_object_get(jlayer, "paint");
             if (json_exists(jpaint)) {
                 arpentry_tiles_LayerStyle_paint_start(&builder);

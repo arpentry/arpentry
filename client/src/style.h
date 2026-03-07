@@ -42,6 +42,16 @@ typedef struct arpt_style {
     int tree_style_count;                          /* populated from style */
     arpt_layer_entry layers[ARPT_MAX_STYLE_LAYERS];
     int layer_count;
+
+    /* Label style (Mapbox-like defaults) */
+    float text_size;            /* default 14 */
+    float text_color[4];        /* default dark gray */
+    float text_halo_color[4];   /* default white */
+    float text_halo_width;      /* default 2.0 */
+    float icon_size;            /* default 20 */
+    float icon_color[4];        /* default dark gray */
+    float icon_halo_color[4];   /* default white */
+    float icon_halo_width;      /* default 0.5 */
 } arpt_style;
 
 /** Find tree style index by class name. Returns -1 if not found. */

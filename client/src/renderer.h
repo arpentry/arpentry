@@ -33,6 +33,15 @@ void arpt_renderer_upload_model(arpt_renderer *r, int model_index,
 /** Return the number of uploaded models. */
 int arpt_renderer_model_count(const arpt_renderer *r);
 
+/** Set label style parameters (text/icon size, colors, halo). */
+void arpt_renderer_set_label_style(arpt_renderer *r,
+                                    float text_size, const float text_color[4],
+                                    const float text_halo_color[4],
+                                    float text_halo_width,
+                                    float icon_size, const float icon_color[4],
+                                    const float icon_halo_color[4],
+                                    float icon_halo_width);
+
 /** Font glyph metrics for tile_prepare label layout. */
 const font_glyph *arpt_renderer_font_glyphs(const arpt_renderer *r);
 

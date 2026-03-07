@@ -56,6 +56,11 @@ typedef struct {
     float atlas_size;
     float viewport_width;
     float viewport_height;
+    float display_scale;
+    float halo_width;
+    float _poi_pad0, _poi_pad1;
+    float fill_color[4];
+    float halo_color[4];
 } poi_uniforms_t;
 
 /* Tile GPU state */
@@ -116,6 +121,15 @@ struct arpt_tile_gpu {
     float cached_center_lon;
     float cached_center_lat;
 };
+
+/* Pending label candidate for depth-sorted collision resolution */
+
+typedef struct {
+    arpt_tile_gpu *tile;
+    int label_index;
+    float depth;
+    float x0, y0, x1, y1;
+} arpt_pending_label;
 
 /* Renderer state */
 
@@ -210,6 +224,18 @@ struct arpt_renderer {
     int icon_glyph_count;
     float icon_pixel_height;
 
+    /* Label style parameters (from style.json) */
+    float text_size;
+    float text_color[4];
+    float text_halo_color[4];
+    float text_halo_width;
+    float icon_size;
+    float icon_color[4];
+    float icon_halo_color[4];
+    float icon_halo_width;
+    float text_display_scale;   /* text_size / font_pixel_height */
+    float icon_display_scale;   /* icon_size / icon_pixel_height */
+
     WGPUCommandEncoder encoder;
     WGPURenderPassEncoder pass;
 
@@ -217,6 +243,10 @@ struct arpt_renderer {
     arpt_mat4 cached_projection;
     struct { float x0, y0, x1, y1; } placed_labels[512];
     int placed_label_count;
+
+    /* Deferred label candidates (collected per tile, sorted & drawn at end) */
+    arpt_pending_label pending_labels[512];
+    int pending_label_count;
 
     /* Overlay callback (e.g. UI) invoked before pass ends */
     arpt_overlay_fn overlay_fn;
@@ -286,7 +316,8 @@ WGPURenderPipeline arpt__label_create_pipeline(WGPUDevice device,
 void arpt__label_init_font(arpt_renderer *r);
 void arpt__label_upload(arpt_renderer *r, arpt_tile_gpu *t,
                         const arpt_label_prim *prim);
-void arpt__label_draw(arpt_renderer *r, arpt_tile_gpu *tile);
+void arpt__label_collect(arpt_renderer *r, arpt_tile_gpu *tile);
+void arpt__label_draw_all(arpt_renderer *r);
 void arpt__label_cleanup(arpt_renderer *r);
 
 /* render_sky.c */

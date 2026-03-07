@@ -6,7 +6,7 @@
 #include <string.h>
 
 /* Embedded Inter font (generated at build time) */
-#include "Inter-Regular.ttf.h"
+#include "Inter-SemiBold.ttf.h"
 
 /*
  * Generate an SDF font atlas for ASCII 32-126 using stb_truetype.
@@ -32,8 +32,8 @@ float font_generate_atlas(uint8_t *rgba_out, font_glyph *glyphs_out) {
 
     /* Initialize stb_truetype */
     stbtt_fontinfo font;
-    if (!stbtt_InitFont(&font, inter_regular_ttf,
-                        stbtt_GetFontOffsetForIndex(inter_regular_ttf, 0))) {
+    if (!stbtt_InitFont(&font, inter_semibold_ttf,
+                        stbtt_GetFontOffsetForIndex(inter_semibold_ttf, 0))) {
         /* Fallback: leave atlas blank */
         memset(glyphs_out, 0, FONT_CHAR_COUNT * sizeof(font_glyph));
         return FONT_SIZE;

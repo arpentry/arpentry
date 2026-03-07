@@ -56,6 +56,20 @@ void arpt_style_defaults(arpt_style *s) {
     s->stroke_widths[pri] = 140.0f;
     s->stroke_widths[res] =  90.0f;
 
+    /* Label style (Mapbox-like defaults) */
+    s->text_size = 14.0f;
+    s->text_color[0] = 0.2f; s->text_color[1] = 0.2f;
+    s->text_color[2] = 0.2f; s->text_color[3] = 1.0f;
+    s->text_halo_color[0] = 1.0f; s->text_halo_color[1] = 1.0f;
+    s->text_halo_color[2] = 1.0f; s->text_halo_color[3] = 1.0f;
+    s->text_halo_width = 2.0f;
+    s->icon_size = 20.0f;
+    s->icon_color[0] = 0.2f; s->icon_color[1] = 0.2f;
+    s->icon_color[2] = 0.2f; s->icon_color[3] = 1.0f;
+    s->icon_halo_color[0] = 1.0f; s->icon_halo_color[1] = 1.0f;
+    s->icon_halo_color[2] = 1.0f; s->icon_halo_color[3] = 1.0f;
+    s->icon_halo_width = 0.5f;
+
     /* tree_style_count = 0; populated dynamically from style fetch */
 }
 

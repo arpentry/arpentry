@@ -494,7 +494,7 @@ void arpt_prepare_labels(const arpt_poi_data *pois, const font_glyph *glyphs,
                 out->glyphs[idx].v1 = g->v1;
                 out->glyphs[idx].ox =
                     (cursor + g->bearing_x - half_w) / font_size;
-                out->glyphs[idx].oy = 0.3f - g->bearing_y / font_size;
+                out->glyphs[idx].oy = 0.8f - g->bearing_y / font_size;
                 idx++;
             }
             cursor += g->advance;
@@ -523,9 +523,9 @@ void arpt_prepare_labels(const arpt_poi_data *pois, const font_glyph *glyphs,
             out->icons[icon_idx].v0 = ig->v0;
             out->icons[icon_idx].u1 = ig->u1;
             out->icons[icon_idx].v1 = ig->v1;
-            /* Center the icon horizontally, position above the text */
+            /* Center the icon on the POI location */
             out->icons[icon_idx].ox = -ig->width * 0.5f / icon_size;
-            out->icons[icon_idx].oy = -0.8f;
+            out->icons[icon_idx].oy = ig->height * 0.5f / icon_size;
             icon_idx++;
         }
     }

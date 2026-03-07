@@ -80,18 +80,18 @@ set(ASSET_DIR     ${CMAKE_CURRENT_SOURCE_DIR}/assets)
 set(ASSET_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/assets)
 file(MAKE_DIRECTORY ${ASSET_GEN_DIR})
 
-set(FONT_INPUT  ${ASSET_DIR}/Inter-Regular.ttf)
-set(FONT_OUTPUT ${ASSET_GEN_DIR}/Inter-Regular.ttf.h)
+set(FONT_INPUT  ${ASSET_DIR}/Inter-SemiBold.ttf)
+set(FONT_OUTPUT ${ASSET_GEN_DIR}/Inter-SemiBold.ttf.h)
 add_custom_command(
     OUTPUT  ${FONT_OUTPUT}
     COMMAND ${CMAKE_COMMAND}
         -DINPUT=${FONT_INPUT}
-        -DINPUT_NAME=Inter-Regular.ttf
+        -DINPUT_NAME=Inter-SemiBold.ttf
         -DOUTPUT=${FONT_OUTPUT}
-        -DVAR_NAME=inter_regular_ttf
+        -DVAR_NAME=inter_semibold_ttf
         -P ${CMAKE_SOURCE_DIR}/cmake/embed_binary.cmake
     DEPENDS ${FONT_INPUT} ${CMAKE_SOURCE_DIR}/cmake/embed_binary.cmake
-    COMMENT "Embedding font Inter-Regular.ttf"
+    COMMENT "Embedding font Inter-SemiBold.ttf"
 )
 
 set(ICON_INPUT  ${ASSET_DIR}/maki-icons.ttf)
