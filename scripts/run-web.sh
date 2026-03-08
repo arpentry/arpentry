@@ -11,6 +11,13 @@ HTTP_PORT=8080
 
 SERVER="$BUILD_DIR/server/arpentry_server"
 
+# ── Check native build is configured ─────────────────────────────────────────
+
+if [ ! -f "$BUILD_DIR/CMakeCache.txt" ]; then
+    echo "Configuring native build..."
+    cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Debug
+fi
+
 # ── Check web build is configured ────────────────────────────────────────────
 
 if [ ! -d "$WEB_BUILD_DIR" ]; then

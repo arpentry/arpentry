@@ -247,3 +247,6 @@ bool arpt_http_get(const char *url, arpt_http_response *resp) {
 }
 
 #endif /* !__EMSCRIPTEN__ */
+
+/* ISO C requires at least one declaration per translation unit. */
+typedef int arpt_http_unused_;

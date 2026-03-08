@@ -13,7 +13,9 @@
 #include "style.h"
 #include "tile/manager.h"
 #include "ui.h"
+#ifndef __EMSCRIPTEN__
 #include "screenshot.h"
+#endif
 #include "style_reader.h"
 #include "style_verifier.h"
 #include "tileset_reader.h"
@@ -30,6 +32,30 @@
 #include <emscripten.h>
 #include <emscripten/html5.h> /* emscripten_get_element_css_size */
 #include <emscripten/fetch.h>
+
+/* Synchronous HTTP GET via XHR (avoids Asyncify issues with emscripten_fetch).
+   Caller must free *out_buf.  Returns true on HTTP 200. */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wextra-semi"
+EM_JS(int, em_sync_get, (const char *url_ptr, void *out_buf_ptr,
+                          void *out_size_ptr), {
+    var url = UTF8ToString(url_ptr);
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, false);
+    xhr.overrideMimeType('text/plain; charset=x-user-defined');
+    try { xhr.send(); } catch(e) { return 0; }
+    if (xhr.status !== 200) return 0;
+    var text = xhr.responseText;
+    var len = text.length;
+    var ptr = _malloc(len);
+    if (!ptr) return 0;
+    for (var i = 0; i < len; i++)
+        HEAPU8[ptr + i] = text.charCodeAt(i) & 0xff;
+    setValue(out_buf_ptr, ptr, 'i32');
+    setValue(out_size_ptr, len, 'i32');
+    return 1;
+});
+#pragma clang diagnostic pop
 #endif
 
 /* Constants */
@@ -220,6 +246,8 @@ static void sync_canvas_size(void) {
     /* Pin the canvas drawing buffer to physical pixels.  Browsers display the
        canvas at the CSS size regardless of canvas.width/height, so this gives
        crisp 1:1 physical-pixel rendering on HiDPI screens. */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdollar-in-identifier-extension"
     EM_ASM(
         {
             var c = document.getElementById('canvas');
@@ -229,6 +257,7 @@ static void sync_canvas_size(void) {
             }
         },
         phys_w, phys_h);
+#pragma clang diagnostic pop
 
     /* Camera viewport lives in CSS-pixel space so it matches glfwGetCursorPos
        (now correctly reporting CSS pixels after the glfwSetWindowSize above). */
@@ -512,23 +541,7 @@ static bool fetch_tileset(const char *base_url,
     size_t buf_size = 0;
 
 #ifdef __EMSCRIPTEN__
-    emscripten_fetch_attr_t attr;
-    emscripten_fetch_attr_init(&attr);
-    strcpy(attr.requestMethod, "GET");
-    attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_SYNCHRONOUS;
-    emscripten_fetch_t *fetch = emscripten_fetch(&attr, url);
-    if (!fetch || fetch->status != 200) {
-        if (fetch) emscripten_fetch_close(fetch);
-        return false;
-    }
-    buf_size = (size_t)fetch->numBytes;
-    buf = malloc(buf_size);
-    if (!buf) {
-        emscripten_fetch_close(fetch);
-        return false;
-    }
-    memcpy(buf, fetch->data, buf_size);
-    emscripten_fetch_close(fetch);
+    if (!em_sync_get(url, &buf, &buf_size)) return false;
 #else
     arpt_http_response resp = {0};
     if (!arpt_http_get(url, &resp) || resp.status != 200) {
@@ -573,23 +586,7 @@ static bool fetch_style(const char *base_url, arpt_style *style) {
     size_t buf_size = 0;
 
 #ifdef __EMSCRIPTEN__
-    emscripten_fetch_attr_t attr;
-    emscripten_fetch_attr_init(&attr);
-    strcpy(attr.requestMethod, "GET");
-    attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_SYNCHRONOUS;
-    emscripten_fetch_t *fetch = emscripten_fetch(&attr, url);
-    if (!fetch || fetch->status != 200) {
-        if (fetch) emscripten_fetch_close(fetch);
-        return false;
-    }
-    buf_size = (size_t)fetch->numBytes;
-    buf = malloc(buf_size);
-    if (!buf) {
-        emscripten_fetch_close(fetch);
-        return false;
-    }
-    memcpy(buf, fetch->data, buf_size);
-    emscripten_fetch_close(fetch);
+    if (!em_sync_get(url, &buf, &buf_size)) return false;
 #else
     arpt_http_response resp = {0};
     if (!arpt_http_get(url, &resp) || resp.status != 200) {
@@ -757,23 +754,7 @@ static int fetch_models(const char *base_url, arpt_model *models,
     size_t buf_size = 0;
 
 #ifdef __EMSCRIPTEN__
-    emscripten_fetch_attr_t attr;
-    emscripten_fetch_attr_init(&attr);
-    strcpy(attr.requestMethod, "GET");
-    attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_SYNCHRONOUS;
-    emscripten_fetch_t *fetch = emscripten_fetch(&attr, url);
-    if (!fetch || fetch->status != 200) {
-        if (fetch) emscripten_fetch_close(fetch);
-        return false;
-    }
-    buf_size = (size_t)fetch->numBytes;
-    buf = malloc(buf_size);
-    if (!buf) {
-        emscripten_fetch_close(fetch);
-        return false;
-    }
-    memcpy(buf, fetch->data, buf_size);
-    emscripten_fetch_close(fetch);
+    if (!em_sync_get(url, &buf, &buf_size)) return false;
 #else
     arpt_http_response resp = {0};
     if (!arpt_http_get(url, &resp) || resp.status != 200) {

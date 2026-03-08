@@ -134,7 +134,7 @@ add_executable(arpentry_client
     src/ui.c
     src/font.c
     src/icon.c
-    src/screenshot.c
+    $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:src/screenshot.c>
 )
 add_dependencies(arpentry_client flatcc_generate embed_shaders embed_assets)
 target_include_directories(arpentry_client PRIVATE

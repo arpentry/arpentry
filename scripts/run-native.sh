@@ -9,6 +9,13 @@ TILE_DIR="$ROOT_DIR/tiles"
 SERVER="$BUILD_DIR/server/arpentry_server"
 CLIENT="$BUILD_DIR/client/arpentry_client"
 
+# ── Check native build is configured ─────────────────────────────────────────
+
+if [ ! -f "$BUILD_DIR/CMakeCache.txt" ]; then
+    echo "Configuring native build..."
+    cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Debug
+fi
+
 # ── Build ─────────────────────────────────────────────────────────────────────
 
 cmake --build "$BUILD_DIR"
