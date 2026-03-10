@@ -25,7 +25,12 @@ target_include_directories(arpentry_tiler PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(arpentry_tiler PRIVATE arpentry_warnings carquet json_c)
+add_dependencies(arpentry_tiler flatcc_generate)
+target_include_directories(arpentry_tiler PUBLIC
+    ${FLATCC_GENERATED_DIR}
+    ${flatcc_SOURCE_DIR}/include
+)
+target_link_libraries(arpentry_tiler PRIVATE arpentry_warnings carquet json_c flatccrt brotlienc brotlidec)
 if(ARPENTRY_SANITIZERS)
     target_link_libraries(arpentry_tiler PUBLIC arpentry_sanitizers)
 endif()
@@ -59,7 +64,7 @@ target_link_libraries(test_sort PRIVATE arpentry_tiler unity)
 add_test(NAME test_sort COMMAND test_sort)
 
 add_executable(test_tile_build tests/test_tile_build.c)
-target_link_libraries(test_tile_build PRIVATE arpentry_tiler unity)
+target_link_libraries(test_tile_build PRIVATE arpentry_tiler arpentry_common unity)
 add_test(NAME test_tile_build COMMAND test_tile_build)
 
 add_executable(test_archive tests/test_archive.c)
@@ -67,7 +72,7 @@ target_link_libraries(test_archive PRIVATE arpentry_tiler unity)
 add_test(NAME test_archive COMMAND test_archive)
 
 add_executable(test_pipeline tests/test_pipeline.c)
-target_link_libraries(test_pipeline PRIVATE arpentry_tiler unity)
+target_link_libraries(test_pipeline PRIVATE arpentry_tiler arpentry_common unity)
 add_test(NAME test_pipeline COMMAND test_pipeline)
 
 add_executable(test_parquet tests/test_parquet.c)
