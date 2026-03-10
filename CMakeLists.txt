@@ -146,3 +146,4 @@ add_custom_target(flatcc_generate DEPENDS
 add_subdirectory(common)
 add_subdirectory(client)
 add_subdirectory(server)
+add_subdirectory(tiler)
