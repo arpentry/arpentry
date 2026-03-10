@@ -81,3 +81,9 @@ add_test(NAME test_geoparquet COMMAND test_geoparquet)
 add_executable(test_overture tests/test_overture.c)
 target_link_libraries(test_overture PRIVATE arpentry_tiler carquet unity)
 add_test(NAME test_overture COMMAND test_overture)
+
+add_executable(test_overture_integration tests/test_overture_integration.c)
+target_compile_definitions(test_overture_integration PRIVATE
+    FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/overture")
+target_link_libraries(test_overture_integration PRIVATE arpentry_tiler carquet unity)
+add_test(NAME test_overture_integration COMMAND test_overture_integration)

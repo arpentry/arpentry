@@ -119,6 +119,20 @@ arpt_overture *arpt_overture_open(const char *path)
     return ov;
 }
 
+/* Count set bits in a null bitmap up to (but not including) position pos.
+ * In carquet's batch reader, set bits mark NULL values and the data array
+ * is packed (only non-null values). The sparse index of a non-null row is
+ * its row number minus the number of nulls (set bits) before it. */
+static int64_t count_nulls_before(const uint8_t *nulls, int64_t pos)
+{
+    int64_t count = 0;
+    for (int64_t i = 0; i < pos; i++) {
+        if (nulls[i / 8] & (1u << (i % 8)))
+            count++;
+    }
+    return count;
+}
+
 /* Read a BYTE_ARRAY string at row index as a C string pointer.
  * The pointer is valid until the next batch advance. */
 static const char *read_string(arpt_overture *ov, int32_t proj_col, int64_t row)
@@ -128,20 +142,20 @@ static const char *read_string(arpt_overture *ov, int32_t proj_col, int64_t row)
         (const arpt_parquet_bytes *)arpt_parquet_cursor_data(ov->cursor, proj_col);
     if (!arr) return NULL;
 
-    /* Check null bitmap */
+    /* Check null bitmap — in carquet's batch reader, a set bit means NULL
+     * and the data array is sparse (packed non-null values only). */
     const uint8_t *nulls = arpt_parquet_cursor_nulls(ov->cursor, proj_col);
     if (nulls) {
         uint8_t bit = nulls[row / 8] & (1u << (row % 8));
-        if (!bit) return NULL;  /* value is null */
+        if (bit) return NULL;  /* bit set = value is null */
     }
 
-    const arpt_parquet_bytes *ba = &arr[row];
+    /* Compute sparse data index: row minus nulls before it */
+    int64_t data_idx = nulls ? row - count_nulls_before(nulls, row) : row;
+
+    const arpt_parquet_bytes *ba = &arr[data_idx];
     if (!ba->data || ba->length <= 0) return NULL;
 
-    /* The data is not null-terminated in parquet. We return a pointer
-     * into the batch memory; for display purposes the caller should
-     * use the length. For simplicity, we treat it as-is since the
-     * batch memory typically has extra space. */
     return (const char *)ba->data;
 }
 
@@ -182,17 +196,17 @@ bool arpt_overture_next(arpt_overture *ov, arpt_overture_feature *out)
     out->type = read_string(ov, ov->col_type, row);
     out->subtype = read_string(ov, ov->col_subtype, row);
 
-    /* Bbox columns */
+    /* Bbox columns — Overture uses FLOAT (32-bit) for bbox fields */
     if (ov->col_bbox_xmin >= 0) {
-        const double *xmin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_xmin);
-        const double *ymin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_ymin);
-        const double *xmax = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_xmax);
-        const double *ymax = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_ymax);
+        const float *xmin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_xmin);
+        const float *ymin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_ymin);
+        const float *xmax = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_xmax);
+        const float *ymax = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_ymax);
         if (xmin && ymin && xmax && ymax) {
-            out->bbox[0] = xmin[row];
-            out->bbox[1] = ymin[row];
-            out->bbox[2] = xmax[row];
-            out->bbox[3] = ymax[row];
+            out->bbox[0] = (double)xmin[row];
+            out->bbox[1] = (double)ymin[row];
+            out->bbox[2] = (double)xmax[row];
+            out->bbox[3] = (double)ymax[row];
             out->has_bbox = true;
         }
     }

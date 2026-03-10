@@ -126,12 +126,61 @@ const char *arpt_parquet_key_value(const arpt_parquet *pq, const char *key) {
 
 /* ── Dot-Path Column Finder ────────────────────────────────────────── */
 
+/* Walk a dot-separated path (e.g. "bbox.xmin") through the schema tree.
+ * At each segment, find the matching child node; on the final segment,
+ * return its leaf-column index.  Returns -1 if the path is not found. */
 int32_t arpt_parquet_find_column_path(const arpt_parquet *pq, const char *dotpath)
 {
     if (!pq || !dotpath) return -1;
-    /* carquet_schema_find_column supports dot-separated paths for nested schemas */
+
+    /* If no dots, fall back to simple find. */
+    if (!strchr(dotpath, '.'))
+        return arpt_parquet_find_column(pq, dotpath);
+
     const carquet_schema_t *schema = carquet_reader_schema(pq->reader);
-    return carquet_schema_find_column(schema, dotpath);
+    int32_t n_elements = carquet_schema_num_elements(schema);
+
+    /* Parse dot-separated segments and walk the tree. */
+    const char *p = dotpath;
+    int32_t parent_idx = 0;  /* start at root node */
+    int32_t found_idx = -1;
+
+    while (*p) {
+        /* Extract next segment */
+        const char *dot = strchr(p, '.');
+        size_t seg_len = dot ? (size_t)(dot - p) : strlen(p);
+
+        /* Search children of parent for matching name */
+        found_idx = -1;
+        for (int32_t i = parent_idx + 1; i < n_elements; i++) {
+            const carquet_schema_node_t *node = carquet_schema_get_element(schema, i);
+            if (!node) continue;
+            const char *name = carquet_schema_node_name(node);
+            if (name && strlen(name) == seg_len && memcmp(name, p, seg_len) == 0) {
+                found_idx = i;
+                break;
+            }
+        }
+
+        if (found_idx < 0) return -1;
+
+        parent_idx = found_idx;
+        p += seg_len;
+        if (*p == '.') p++;
+    }
+
+    if (found_idx < 0) return -1;
+
+    /* found_idx is the schema element index — convert to leaf-column index */
+    const carquet_schema_node_t *node = carquet_schema_get_element(schema, found_idx);
+    if (!node || !carquet_schema_node_is_leaf(node)) return -1;
+
+    int32_t leaf = 0;
+    for (int32_t i = 0; i < found_idx; i++) {
+        const carquet_schema_node_t *n = carquet_schema_get_element(schema, i);
+        if (n && carquet_schema_node_is_leaf(n)) leaf++;
+    }
+    return leaf;
 }
 
 /* ── Cursor ─────────────────────────────────────────────────────────── */
