@@ -82,4 +82,14 @@ const uint8_t *arpt_parquet_cursor_nulls(const arpt_parquet_cursor *cur, int32_t
 /* Free a cursor and its resources. */
 void arpt_parquet_cursor_free(arpt_parquet_cursor *cur);
 
+/* Number of file-level key-value metadata pairs. */
+int32_t arpt_parquet_num_key_values(const arpt_parquet *pq);
+
+/* Get value for a given key. Returns NULL if not found. */
+const char *arpt_parquet_key_value(const arpt_parquet *pq, const char *key);
+
+/* Find a leaf column by dot-separated path (e.g. "bbox.xmin").
+   Returns column index (>= 0), or -1 if not found. */
+int32_t arpt_parquet_find_column_path(const arpt_parquet *pq, const char *dotpath);
+
 #endif

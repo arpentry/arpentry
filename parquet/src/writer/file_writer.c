@@ -136,6 +136,11 @@ struct carquet_writer {
     int64_t total_rows;
     bool header_written;
 
+    /* File-level key-value metadata */
+    parquet_key_value_t *kv_metadata;
+    int32_t num_kv;
+    int32_t kv_capacity;
+
     /* Arena for metadata allocations */
     carquet_arena_t arena;
 };
@@ -439,6 +444,24 @@ static carquet_status_t build_file_metadata(
         }
     }
 
+    /* Key-value metadata */
+    if (writer->kv_metadata && writer->num_kv > 0) {
+        metadata->num_key_value = writer->num_kv;
+        metadata->key_value_metadata = carquet_arena_calloc(&writer->arena,
+            writer->num_kv, sizeof(parquet_key_value_t));
+        if (!metadata->key_value_metadata) {
+            return CARQUET_ERROR_OUT_OF_MEMORY;
+        }
+        for (int32_t i = 0; i < writer->num_kv; i++) {
+            metadata->key_value_metadata[i].key = carquet_arena_strdup(
+                &writer->arena, writer->kv_metadata[i].key);
+            if (writer->kv_metadata[i].value) {
+                metadata->key_value_metadata[i].value = carquet_arena_strdup(
+                    &writer->arena, writer->kv_metadata[i].value);
+            }
+        }
+    }
+
     /* Row groups */
     metadata->num_row_groups = writer->num_row_groups;
     metadata->row_groups = carquet_arena_calloc(&writer->arena, writer->num_row_groups,
@@ -609,6 +632,38 @@ carquet_writer_t* carquet_writer_create_file(
     return writer;
 }
 
+carquet_status_t carquet_writer_set_key_value(
+    carquet_writer_t *writer,
+    const char *key,
+    const char *value) {
+
+    /* writer and key are nonnull per API contract */
+    if (writer->num_kv >= writer->kv_capacity) {
+        int32_t new_cap = writer->kv_capacity == 0 ? 4 : writer->kv_capacity * 2;
+        parquet_key_value_t *new_kv = realloc(writer->kv_metadata,
+            (size_t)new_cap * sizeof(parquet_key_value_t));
+        if (!new_kv) {
+            return CARQUET_ERROR_OUT_OF_MEMORY;
+        }
+        writer->kv_metadata = new_kv;
+        writer->kv_capacity = new_cap;
+    }
+
+    parquet_key_value_t *kv = &writer->kv_metadata[writer->num_kv];
+    kv->key = strdup(key);
+    if (!kv->key) {
+        return CARQUET_ERROR_OUT_OF_MEMORY;
+    }
+    kv->value = value ? strdup(value) : NULL;
+    if (value && !kv->value) {
+        free(kv->key);
+        return CARQUET_ERROR_OUT_OF_MEMORY;
+    }
+    writer->num_kv++;
+
+    return CARQUET_OK;
+}
+
 carquet_status_t carquet_writer_write_batch(
     carquet_writer_t* writer,
     int32_t column_index,
@@ -762,6 +817,15 @@ cleanup:
         free(writer->schema_elements);
     }
 
+    /* Free key-value metadata */
+    if (writer->kv_metadata) {
+        for (int32_t i = 0; i < writer->num_kv; i++) {
+            free(writer->kv_metadata[i].key);
+            free(writer->kv_metadata[i].value);
+        }
+        free(writer->kv_metadata);
+    }
+
     free(writer->column_values_written);
     free(writer->row_groups);
     free(writer->path);
@@ -804,6 +868,15 @@ void carquet_writer_abort(carquet_writer_t* writer) {
             free(writer->schema_elements[i].name);
         }
         free(writer->schema_elements);
+    }
+
+    /* Free key-value metadata */
+    if (writer->kv_metadata) {
+        for (int32_t i = 0; i < writer->num_kv; i++) {
+            free(writer->kv_metadata[i].key);
+            free(writer->kv_metadata[i].value);
+        }
+        free(writer->kv_metadata);
     }
 
     free(writer->column_values_written);

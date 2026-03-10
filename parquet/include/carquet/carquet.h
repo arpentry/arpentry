@@ -1045,6 +1045,43 @@ carquet_status_t carquet_reader_row_group_metadata(
     int32_t row_group_index,
     carquet_row_group_metadata_t* metadata);
 
+/* ============================================================================
+ * File-Level Key-Value Metadata API
+ * ============================================================================
+ *
+ * Parquet files can store arbitrary key-value string pairs in the file metadata.
+ * GeoParquet uses a "geo" key to describe geometry columns and CRS.
+ */
+
+/**
+ * @brief Get the number of file-level key-value metadata pairs.
+ *
+ * @param[in] reader File reader
+ * @return Number of key-value pairs (>= 0)
+ *
+ * @note Thread-safe: Yes (read-only)
+ */
+CARQUET_API CARQUET_PURE CARQUET_NONNULL(1)
+int32_t carquet_reader_num_key_values(const carquet_reader_t *reader);
+
+/**
+ * @brief Get a file-level key-value metadata pair by index.
+ *
+ * @param[in] reader File reader
+ * @param[in] index Key-value pair index (0 to num_key_values - 1)
+ * @param[out] key Pointer set to the key string (owned by reader)
+ * @param[out] value Pointer set to the value string (owned by reader, may be NULL)
+ * @return CARQUET_OK on success, error code if index is out of range
+ *
+ * @note Thread-safe: Yes (read-only)
+ */
+CARQUET_API CARQUET_NONNULL(1, 3, 4)
+carquet_status_t carquet_reader_key_value(
+    const carquet_reader_t *reader,
+    int32_t index,
+    const char **key,
+    const char **value);
+
 /**
  * @brief Get a column reader for a specific row group and column.
  *
@@ -1764,6 +1801,25 @@ carquet_status_t carquet_writer_close(carquet_writer_t* writer);
  */
 CARQUET_API
 void carquet_writer_abort(carquet_writer_t* writer);
+
+/**
+ * @brief Add a file-level key-value metadata pair to the writer.
+ *
+ * Key-value pairs are written into the Parquet file footer metadata.
+ * Must be called before carquet_writer_close().
+ *
+ * @param[in] writer Writer instance
+ * @param[in] key Metadata key (copied)
+ * @param[in] value Metadata value (copied, may be NULL)
+ * @return CARQUET_OK on success, error code on failure
+ *
+ * @note Thread-safe: No
+ */
+CARQUET_API CARQUET_NONNULL(1, 2)
+carquet_status_t carquet_writer_set_key_value(
+    carquet_writer_t *writer,
+    const char *key,
+    const char *value);
 
 /* ============================================================================
  * Utility Functions

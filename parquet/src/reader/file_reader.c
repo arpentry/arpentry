@@ -490,6 +490,33 @@ carquet_status_t carquet_reader_row_group_metadata(
 }
 
 /* ============================================================================
+ * Key-Value Metadata Implementation
+ * ============================================================================
+ */
+
+int32_t carquet_reader_num_key_values(const carquet_reader_t *reader) {
+    /* reader is nonnull per API contract */
+    return reader->metadata.num_key_value;
+}
+
+carquet_status_t carquet_reader_key_value(
+    const carquet_reader_t *reader,
+    int32_t index,
+    const char **key,
+    const char **value) {
+
+    /* reader, key, value are nonnull per API contract */
+    if (index < 0 || index >= reader->metadata.num_key_value) {
+        return CARQUET_ERROR_INVALID_ARGUMENT;
+    }
+
+    const parquet_key_value_t *kv = &reader->metadata.key_value_metadata[index];
+    *key = kv->key;
+    *value = kv->value;
+    return CARQUET_OK;
+}
+
+/* ============================================================================
  * Column Reader Implementation
  * ============================================================================
  */

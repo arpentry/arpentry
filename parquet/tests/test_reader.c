@@ -182,6 +182,82 @@ static int test_write_simple_file(void) {
     return 0;
 }
 
+static int test_key_value_metadata(void) {
+    carquet_error_t err = CARQUET_ERROR_INIT;
+
+    /* Create schema */
+    carquet_schema_t* schema = carquet_schema_create(&err);
+    if (!schema) {
+        TEST_FAIL("key_value_metadata", "schema creation failed");
+    }
+
+    carquet_schema_add_column(schema, "id", CARQUET_PHYSICAL_INT32, NULL,
+        CARQUET_REPETITION_REQUIRED, 0, 0);
+
+    /* Create writer with KV metadata */
+    carquet_writer_options_t opts;
+    carquet_writer_options_init(&opts);
+
+    carquet_writer_t* writer = carquet_writer_create(TEST_FILE, schema, &opts, &err);
+    if (!writer) {
+        carquet_schema_free(schema);
+        TEST_FAIL("key_value_metadata", "writer creation failed");
+    }
+
+    /* Set key-value metadata */
+    carquet_status_t status = carquet_writer_set_key_value(writer, "geo",
+        "{\"primary_column\":\"geometry\",\"columns\":{\"geometry\":{\"encoding\":\"WKB\"}}}");
+    assert(status == CARQUET_OK);
+
+    status = carquet_writer_set_key_value(writer, "version", "1.0");
+    assert(status == CARQUET_OK);
+
+    /* Write a row so the file is valid */
+    int32_t id = 42;
+    carquet_writer_write_batch(writer, 0, &id, 1, NULL, NULL);
+
+    status = carquet_writer_close(writer);
+    if (status != CARQUET_OK) {
+        carquet_schema_free(schema);
+        TEST_FAIL("key_value_metadata", "writer close failed");
+    }
+    carquet_schema_free(schema);
+
+    /* Read back and verify KV metadata */
+    carquet_reader_t* reader = carquet_reader_open(TEST_FILE, NULL, &err);
+    if (!reader) {
+        remove(TEST_FILE);
+        TEST_FAIL("key_value_metadata", "reader open failed");
+    }
+
+    int32_t num_kv = carquet_reader_num_key_values(reader);
+    assert(num_kv == 2);
+
+    const char* key = NULL;
+    const char* value = NULL;
+
+    status = carquet_reader_key_value(reader, 0, &key, &value);
+    assert(status == CARQUET_OK);
+    assert(strcmp(key, "geo") == 0);
+    assert(value != NULL);
+    assert(strstr(value, "geometry") != NULL);
+
+    status = carquet_reader_key_value(reader, 1, &key, &value);
+    assert(status == CARQUET_OK);
+    assert(strcmp(key, "version") == 0);
+    assert(strcmp(value, "1.0") == 0);
+
+    /* Out of range should fail */
+    status = carquet_reader_key_value(reader, 99, &key, &value);
+    assert(status != CARQUET_OK);
+
+    carquet_reader_close(reader);
+    remove(TEST_FILE);
+
+    TEST_PASS("key_value_metadata");
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 
@@ -193,6 +269,7 @@ int main(void) {
     failures += test_type_names();
     failures += test_status_strings();
     failures += test_write_simple_file();
+    failures += test_key_value_metadata();
 
     printf("\n");
     if (failures == 0) {

@@ -2,7 +2,7 @@
  * @file test_compression.c
  * @brief Tests for compression codecs (from carquet upstream)
  *
- * Tests for LZ4 and Snappy only — GZIP and ZSTD are stubbed out.
+ * Tests for LZ4, Snappy, and ZSTD. GZIP is stubbed out.
  */
 
 #include <stdio.h>
@@ -47,6 +47,21 @@ size_t carquet_snappy_compress_bound(size_t src_size);
 
 carquet_status_t carquet_snappy_get_uncompressed_length(
     const uint8_t* src, size_t src_size, size_t* length);
+
+/* ============================================================================
+ * ZSTD Function Declarations
+ * ============================================================================
+ */
+
+carquet_status_t carquet_zstd_compress(
+    const uint8_t* src, size_t src_size,
+    uint8_t* dst, size_t dst_capacity, size_t* dst_size, int level);
+
+carquet_status_t carquet_zstd_decompress(
+    const uint8_t* src, size_t src_size,
+    uint8_t* dst, size_t dst_capacity, size_t* dst_size);
+
+size_t carquet_zstd_compress_bound(size_t src_size);
 
 /* ============================================================================
  * Test Helpers
@@ -520,6 +535,244 @@ static int test_snappy_large(void) {
 }
 
 /* ============================================================================
+ * ZSTD Tests
+ * ============================================================================
+ */
+
+static int test_zstd_small_literal(void) {
+    uint8_t input[] = "Hello";
+    size_t input_size = 5;
+
+    size_t bound = carquet_zstd_compress_bound(input_size);
+    uint8_t* compressed = malloc(bound);
+    size_t compressed_size;
+
+    carquet_status_t status = carquet_zstd_compress(
+        input, input_size, compressed, bound, &compressed_size, 0);
+    if (status != CARQUET_OK) {
+        free(compressed);
+        TEST_FAIL("zstd_small_literal", "compress failed");
+    }
+
+    uint8_t output[16];
+    size_t output_size;
+    status = carquet_zstd_decompress(
+        compressed, compressed_size, output, sizeof(output), &output_size);
+    if (status != CARQUET_OK) {
+        free(compressed);
+        TEST_FAIL("zstd_small_literal", "decompress failed");
+    }
+
+    if (output_size != input_size || memcmp(output, input, input_size) != 0) {
+        free(compressed);
+        TEST_FAIL("zstd_small_literal", "data mismatch");
+    }
+
+    free(compressed);
+    TEST_PASS("zstd_small_literal");
+    return 0;
+}
+
+static int test_zstd_compressible(void) {
+    size_t input_size = 4096;
+    uint8_t* input = malloc(input_size);
+    fill_compressible_data(input, input_size);
+
+    size_t bound = carquet_zstd_compress_bound(input_size);
+    uint8_t* compressed = malloc(bound);
+    size_t compressed_size;
+
+    carquet_status_t status = carquet_zstd_compress(
+        input, input_size, compressed, bound, &compressed_size, 0);
+    if (status != CARQUET_OK) {
+        free(input);
+        free(compressed);
+        TEST_FAIL("zstd_compressible", "compress failed");
+    }
+
+    /* Verify it actually compressed */
+    if (compressed_size >= input_size) {
+        free(input);
+        free(compressed);
+        TEST_FAIL("zstd_compressible", "not compressed");
+    }
+
+    uint8_t* output = malloc(input_size);
+    size_t output_size;
+    status = carquet_zstd_decompress(
+        compressed, compressed_size, output, input_size, &output_size);
+    if (status != CARQUET_OK) {
+        free(input);
+        free(compressed);
+        free(output);
+        TEST_FAIL("zstd_compressible", "decompress failed");
+    }
+
+    if (output_size != input_size || memcmp(output, input, input_size) != 0) {
+        free(input);
+        free(compressed);
+        free(output);
+        TEST_FAIL("zstd_compressible", "data mismatch");
+    }
+
+    free(input);
+    free(compressed);
+    free(output);
+    TEST_PASS("zstd_compressible");
+    return 0;
+}
+
+static int test_zstd_random(void) {
+    size_t input_size = 2048;
+    uint8_t* input = malloc(input_size);
+    fill_random_data(input, input_size, 77777);
+
+    size_t bound = carquet_zstd_compress_bound(input_size);
+    uint8_t* compressed = malloc(bound);
+    size_t compressed_size;
+
+    carquet_status_t status = carquet_zstd_compress(
+        input, input_size, compressed, bound, &compressed_size, 0);
+    if (status != CARQUET_OK) {
+        free(input);
+        free(compressed);
+        TEST_FAIL("zstd_random", "compress failed");
+    }
+
+    uint8_t* output = malloc(input_size);
+    size_t output_size;
+    status = carquet_zstd_decompress(
+        compressed, compressed_size, output, input_size, &output_size);
+    if (status != CARQUET_OK) {
+        free(input);
+        free(compressed);
+        free(output);
+        TEST_FAIL("zstd_random", "decompress failed");
+    }
+
+    if (output_size != input_size || memcmp(output, input, input_size) != 0) {
+        free(input);
+        free(compressed);
+        free(output);
+        TEST_FAIL("zstd_random", "data mismatch");
+    }
+
+    free(input);
+    free(compressed);
+    free(output);
+    TEST_PASS("zstd_random");
+    return 0;
+}
+
+static int test_zstd_zeros(void) {
+    size_t input_size = 8192;
+    uint8_t* input = malloc(input_size);
+    fill_zeros(input, input_size);
+
+    size_t bound = carquet_zstd_compress_bound(input_size);
+    uint8_t* compressed = malloc(bound);
+    size_t compressed_size;
+
+    carquet_status_t status = carquet_zstd_compress(
+        input, input_size, compressed, bound, &compressed_size, 0);
+    if (status != CARQUET_OK) {
+        free(input);
+        free(compressed);
+        TEST_FAIL("zstd_zeros", "compress failed");
+    }
+
+    uint8_t* output = malloc(input_size);
+    size_t output_size;
+    status = carquet_zstd_decompress(
+        compressed, compressed_size, output, input_size, &output_size);
+    if (status != CARQUET_OK) {
+        free(input);
+        free(compressed);
+        free(output);
+        TEST_FAIL("zstd_zeros", "decompress failed");
+    }
+
+    if (output_size != input_size || memcmp(output, input, input_size) != 0) {
+        free(input);
+        free(compressed);
+        free(output);
+        TEST_FAIL("zstd_zeros", "data mismatch");
+    }
+
+    free(input);
+    free(compressed);
+    free(output);
+    TEST_PASS("zstd_zeros");
+    return 0;
+}
+
+static int test_zstd_empty(void) {
+    uint8_t* input = NULL;
+    size_t input_size = 0;
+
+    uint8_t compressed[64];
+    size_t compressed_size;
+
+    carquet_status_t status = carquet_zstd_compress(
+        input, input_size, compressed, sizeof(compressed), &compressed_size, 0);
+    if (status != CARQUET_OK) {
+        TEST_FAIL("zstd_empty", "compress failed");
+    }
+
+    if (compressed_size != 0) {
+        TEST_FAIL("zstd_empty", "compressed not empty");
+    }
+
+    TEST_PASS("zstd_empty");
+    return 0;
+}
+
+static int test_zstd_large(void) {
+    size_t input_size = 65536;
+    uint8_t* input = malloc(input_size);
+
+    /* Mix of compressible and random data */
+    fill_compressible_data(input, input_size / 2);
+    fill_random_data(input + input_size / 2, input_size / 2, 88888);
+
+    size_t bound = carquet_zstd_compress_bound(input_size);
+    uint8_t* compressed = malloc(bound);
+    size_t compressed_size;
+
+    carquet_status_t status = carquet_zstd_compress(
+        input, input_size, compressed, bound, &compressed_size, 0);
+    if (status != CARQUET_OK) {
+        free(input);
+        free(compressed);
+        TEST_FAIL("zstd_large", "compress failed");
+    }
+
+    uint8_t* output = malloc(input_size);
+    size_t output_size;
+    status = carquet_zstd_decompress(
+        compressed, compressed_size, output, input_size, &output_size);
+    if (status != CARQUET_OK) {
+        free(input);
+        free(compressed);
+        free(output);
+        TEST_FAIL("zstd_large", "decompress failed");
+    }
+
+    if (output_size != input_size || memcmp(output, input, input_size) != 0) {
+        free(input);
+        free(compressed);
+        free(output);
+        TEST_FAIL("zstd_large", "data mismatch");
+    }
+
+    free(input);
+    free(compressed);
+    free(output);
+    TEST_PASS("zstd_large");
+    return 0;
+}
+
+/* ============================================================================
  * Main
  * ============================================================================
  */
@@ -543,6 +796,14 @@ int main(void) {
     failures += test_snappy_zeros();
     failures += test_snappy_empty();
     failures += test_snappy_large();
+
+    printf("\n--- ZSTD Tests ---\n");
+    failures += test_zstd_small_literal();
+    failures += test_zstd_compressible();
+    failures += test_zstd_random();
+    failures += test_zstd_zeros();
+    failures += test_zstd_empty();
+    failures += test_zstd_large();
 
     printf("\n");
     if (failures == 0) {

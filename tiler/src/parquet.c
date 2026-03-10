@@ -104,6 +104,36 @@ int32_t arpt_parquet_find_column(const arpt_parquet *pq, const char *name) {
     return carquet_schema_find_column(schema, name);
 }
 
+/* ── Key-Value Metadata ─────────────────────────────────────────────── */
+
+int32_t arpt_parquet_num_key_values(const arpt_parquet *pq) {
+    if (!pq) return 0;
+    return carquet_reader_num_key_values(pq->reader);
+}
+
+const char *arpt_parquet_key_value(const arpt_parquet *pq, const char *key) {
+    if (!pq || !key) return NULL;
+    int32_t n = carquet_reader_num_key_values(pq->reader);
+    for (int32_t i = 0; i < n; i++) {
+        const char *k = NULL;
+        const char *v = NULL;
+        if (carquet_reader_key_value(pq->reader, i, &k, &v) == CARQUET_OK) {
+            if (k && strcmp(k, key) == 0) return v;
+        }
+    }
+    return NULL;
+}
+
+/* ── Dot-Path Column Finder ────────────────────────────────────────── */
+
+int32_t arpt_parquet_find_column_path(const arpt_parquet *pq, const char *dotpath)
+{
+    if (!pq || !dotpath) return -1;
+    /* carquet_schema_find_column supports dot-separated paths for nested schemas */
+    const carquet_schema_t *schema = carquet_reader_schema(pq->reader);
+    return carquet_schema_find_column(schema, dotpath);
+}
+
 /* ── Cursor ─────────────────────────────────────────────────────────── */
 
 struct arpt_parquet_cursor {

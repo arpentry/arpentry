@@ -17,13 +17,15 @@ add_library(arpentry_tiler STATIC
     src/archive.c
     src/pipeline.c
     src/parquet.c
+    src/geoparquet.c
+    src/overture.c
 )
 
 target_include_directories(arpentry_tiler PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(arpentry_tiler PRIVATE arpentry_warnings carquet)
+target_link_libraries(arpentry_tiler PRIVATE arpentry_warnings carquet json_c)
 if(ARPENTRY_SANITIZERS)
     target_link_libraries(arpentry_tiler PUBLIC arpentry_sanitizers)
 endif()
@@ -71,3 +73,11 @@ add_test(NAME test_pipeline COMMAND test_pipeline)
 add_executable(test_parquet tests/test_parquet.c)
 target_link_libraries(test_parquet PRIVATE arpentry_tiler carquet unity)
 add_test(NAME test_parquet COMMAND test_parquet)
+
+add_executable(test_geoparquet tests/test_geoparquet.c)
+target_link_libraries(test_geoparquet PRIVATE arpentry_tiler unity)
+add_test(NAME test_geoparquet COMMAND test_geoparquet)
+
+add_executable(test_overture tests/test_overture.c)
+target_link_libraries(test_overture PRIVATE arpentry_tiler carquet unity)
+add_test(NAME test_overture COMMAND test_overture)

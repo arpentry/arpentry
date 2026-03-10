@@ -182,6 +182,75 @@ static void test_parquet_column_projection(void) {
     remove(TEST_FILE);
 }
 
+/* ── KV metadata tests ───────────────────────────────────────────── */
+
+static void test_parquet_key_value_metadata(void) {
+    /* Write file with KV metadata */
+    carquet_error_t err = CARQUET_ERROR_INIT;
+    carquet_schema_t *schema = carquet_schema_create(&err);
+    TEST_ASSERT_NOT_NULL(schema);
+
+    carquet_schema_add_column(schema, "id",
+        CARQUET_PHYSICAL_INT32, NULL, CARQUET_REPETITION_REQUIRED, 0, 0);
+
+    carquet_writer_options_t opts;
+    carquet_writer_options_init(&opts);
+
+    carquet_writer_t *writer = carquet_writer_create(TEST_FILE, schema, &opts, &err);
+    TEST_ASSERT_NOT_NULL(writer);
+
+    carquet_writer_set_key_value(writer, "geo",
+        "{\"primary_column\":\"geometry\"}");
+    carquet_writer_set_key_value(writer, "version", "1.0");
+
+    int32_t id = 1;
+    carquet_writer_write_batch(writer, 0, &id, 1, NULL, NULL);
+    carquet_writer_close(writer);
+    carquet_schema_free(schema);
+
+    /* Read back via tiler wrapper */
+    arpt_parquet *pq = arpt_parquet_open(TEST_FILE);
+    TEST_ASSERT_NOT_NULL(pq);
+
+    TEST_ASSERT_EQUAL_INT32(2, arpt_parquet_num_key_values(pq));
+
+    const char *geo = arpt_parquet_key_value(pq, "geo");
+    TEST_ASSERT_NOT_NULL(geo);
+    TEST_ASSERT_TRUE(strstr(geo, "geometry") != NULL);
+
+    const char *ver = arpt_parquet_key_value(pq, "version");
+    TEST_ASSERT_NOT_NULL(ver);
+    TEST_ASSERT_EQUAL_STRING("1.0", ver);
+
+    TEST_ASSERT_NULL(arpt_parquet_key_value(pq, "missing"));
+
+    arpt_parquet_close(pq);
+    remove(TEST_FILE);
+}
+
+static void test_parquet_num_key_values_null(void) {
+    TEST_ASSERT_EQUAL_INT32(0, arpt_parquet_num_key_values(NULL));
+}
+
+static void test_parquet_find_column_path_null(void) {
+    TEST_ASSERT_EQUAL_INT32(-1, arpt_parquet_find_column_path(NULL, "foo"));
+}
+
+static void test_parquet_find_column_path_flat(void) {
+    TEST_ASSERT_TRUE(write_test_file());
+
+    arpt_parquet *pq = arpt_parquet_open(TEST_FILE);
+    TEST_ASSERT_NOT_NULL(pq);
+
+    /* Flat column names should work as dot-paths */
+    TEST_ASSERT_EQUAL_INT32(0, arpt_parquet_find_column_path(pq, "id"));
+    TEST_ASSERT_EQUAL_INT32(1, arpt_parquet_find_column_path(pq, "value"));
+    TEST_ASSERT_EQUAL_INT32(-1, arpt_parquet_find_column_path(pq, "missing"));
+
+    arpt_parquet_close(pq);
+    remove(TEST_FILE);
+}
+
 int main(void) {
     UNITY_BEGIN();
     /* Null safety */
@@ -194,9 +263,14 @@ int main(void) {
     RUN_TEST(test_parquet_cursor_null);
     RUN_TEST(test_parquet_cursor_next_null);
     RUN_TEST(test_parquet_cursor_free_null);
+    RUN_TEST(test_parquet_num_key_values_null);
+    RUN_TEST(test_parquet_find_column_path_null);
     /* Roundtrip */
     RUN_TEST(test_parquet_roundtrip_metadata);
     RUN_TEST(test_parquet_roundtrip_data);
     RUN_TEST(test_parquet_column_projection);
+    /* KV metadata */
+    RUN_TEST(test_parquet_key_value_metadata);
+    RUN_TEST(test_parquet_find_column_path_flat);
     return UNITY_END();
 }

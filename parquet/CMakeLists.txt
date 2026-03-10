@@ -2,8 +2,8 @@
 #
 # Vendored from https://github.com/Vitruves/carquet (v0.1.3)
 # Only the reader is used by the tiler; writer is kept for tests.
-# Compression: Snappy and LZ4 are built-in; Brotli uses our project dep;
-# ZSTD and GZIP are stubbed out (return unsupported).
+# Compression: Snappy and LZ4 are built-in; Brotli and ZSTD use project deps;
+# GZIP is stubbed out (returns unsupported).
 
 include(CheckCSourceCompiles)
 
@@ -111,6 +111,9 @@ endif()
 
 # Brotli decompression (already fetched in root CMakeLists)
 target_link_libraries(carquet PRIVATE brotlidec)
+
+# Zstd compression (already fetched in root CMakeLists)
+target_link_libraries(carquet PRIVATE libzstd_static)
 
 # Suppress warnings in vendored code
 target_compile_options(carquet PRIVATE -Wno-unused-parameter -Wno-sign-conversion)
