@@ -2,6 +2,7 @@
 #include "archive.h"
 #include "clip.h"
 #include "hilbert.h"
+#include "overture.h"
 #include "simplify.h"
 #include "sort.h"
 #include "tile_build.h"
@@ -339,12 +340,91 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
 
         free_synth_features(feats, n_feats);
     }
-    /* TODO: non-synthetic path using OvertureMaps reader:
-     *   arpt_overture_reader *reader = arpt_overture_open(path);
-     *   while (arpt_overture_next(reader, &feat)) {
-     *       for (z = min..max) { simplify copy; clip; push to sorter; }
-     *   }
-     */
+    /* OvertureMaps GeoParquet input path */
+    for (int fi = 0; fi < config->n_inputs; fi++) {
+        const arpt_pipeline_input *inp = &config->inputs[fi];
+        fprintf(stderr, "Reading %s (layer %u)...\n", inp->path, inp->layer);
+
+        arpt_overture *ov = arpt_overture_open(inp->path);
+        if (!ov) {
+            fprintf(stderr, "Warning: cannot open %s, skipping\n", inp->path);
+            continue;
+        }
+
+        uint64_t feat_count = 0;
+        arpt_overture_feature feat;
+        while (arpt_overture_next(ov, &feat)) {
+            arpt_geom *g = &feat.geometry;
+
+            /* Skip features outside the target bbox */
+            if (feat.has_bbox) {
+                if (feat.bbox[2] < config->bbox[0] ||
+                    feat.bbox[0] > config->bbox[2] ||
+                    feat.bbox[3] < config->bbox[1] ||
+                    feat.bbox[1] > config->bbox[3]) {
+                    arpt_geom_free(g);
+                    continue;
+                }
+            }
+
+            /* Build properties: class from subtype or type */
+            const char *cls = feat.subtype ? feat.subtype : feat.type;
+            const char *pkeys[1] = { "class" };
+            const char *pvals[1] = { cls ? cls : "unknown" };
+            uint32_t n_props = 1;
+
+            /* Single pass: clip to all zoom levels */
+            for (int z = config->min_zoom; z <= config->max_zoom; z++) {
+                arpt_geom work = *g;
+                double *sx = NULL, *sy = NULL;
+
+                if (work.type >= 2 && work.n_coords > 2) {
+                    sx = malloc(work.n_coords * sizeof(double));
+                    sy = malloc(work.n_coords * sizeof(double));
+                    if (sx && sy) {
+                        memcpy(sx, work.x, work.n_coords * sizeof(double));
+                        memcpy(sy, work.y, work.n_coords * sizeof(double));
+                        work.x = sx;
+                        work.y = sy;
+                        work.n_coords = arpt_simplify(work.x, work.y,
+                                                      work.n_coords,
+                                                      zoom_tolerance(z));
+                    } else {
+                        free(sx); free(sy);
+                        sx = sy = NULL;
+                    }
+                }
+
+                clip_ctx ctx = {
+                    .sorter = sorter,
+                    .layer = inp->layer,
+                    .rank = rank,
+                    .prop_keys = pkeys,
+                    .prop_vals = pvals,
+                    .n_props = n_props,
+                    .zoom = z,
+                };
+                arpt_assign_tiles(&work, z, clip_cb, &ctx);
+
+                free(sx);
+                free(sy);
+            }
+
+            arpt_geom_free(g);
+            rank++;
+            if (rank > 0xFFF) rank = 0xFFF;
+            feat_count++;
+
+            if (feat_count % 100000 == 0) {
+                fprintf(stderr, "  ... %llu features\n",
+                        (unsigned long long)feat_count);
+            }
+        }
+
+        arpt_overture_close(ov);
+        fprintf(stderr, "  %llu features from %s\n",
+                (unsigned long long)feat_count, inp->path);
+    }
 
     /* Finalize sort */
     if (!arpt_sorter_finish(sorter)) {

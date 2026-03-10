@@ -3,6 +3,7 @@
 #include "gen/world.h"
 #include "tile_path.h"
 #include "tile.h"
+#include "tile_build.h"
 #include "tileset_builder.h"
 #include "style_builder.h"
 #include "model_builder.h"
@@ -726,6 +727,25 @@ static bool build_models(uint8_t **out, size_t *out_size) {
 #undef MAX_MODEL_V
 #undef MAX_MODEL_I
 
+/* Build a minimal tile containing just a flat terrain mesh.
+   Used for archive tiles that have no features. Caller frees. */
+static void *build_empty_tile(int level, int x, int y, size_t *out_size) {
+    double n = (double)(1 << level);
+    double west  = (double)x / n * 360.0 - 180.0;
+    double east  = (double)(x + 1) / n * 360.0 - 180.0;
+    double n_lat = atan(sinh(M_PI * (1.0 - 2.0 * (double)y / n))) * 180.0 / M_PI;
+    double s_lat = atan(sinh(M_PI * (1.0 - 2.0 * (double)(y + 1) / n))) * 180.0 / M_PI;
+
+    arpt_bounds bounds = { west, s_lat, east, n_lat };
+    arpt_tile_builder *tb = arpt_tile_builder_create(bounds);
+    if (!tb) return NULL;
+
+    /* No features → the tile builder will inject a flat terrain mesh */
+    void *data = arpt_tile_builder_finish(tb, out_size);
+    arpt_tile_builder_free(tb);
+    return data;
+}
+
 /* Request dispatch */
 
 static void dispatch_request(struct net_conn *conn, struct server_ctx *ctx,
@@ -749,7 +769,16 @@ static void dispatch_request(struct net_conn *conn, struct server_ctx *ctx,
                 write_response(conn, 200, "application/x-arpt", "br",
                                tile, tile_size);
             } else {
-                write_error(conn, 404);
+                /* Generate a minimal flat-terrain tile for archive misses */
+                size_t empty_size = 0;
+                void *empty = build_empty_tile(level, x, y, &empty_size);
+                if (empty) {
+                    write_response(conn, 200, "application/x-arpt", "br",
+                                   empty, empty_size);
+                    free(empty);
+                } else {
+                    write_error(conn, 500);
+                }
             }
             return;
         }

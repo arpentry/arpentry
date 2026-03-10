@@ -7,22 +7,30 @@
 #include <string.h>
 
 #define DEFAULT_MEM_BUDGET (64 * 1024 * 1024)
+#define MAX_INPUTS 64
 
 static void usage(void) {
     fprintf(stderr,
         "Usage: arpentry_tiler [options]\n"
         "\n"
-        "  --output <path>      Output .arpa archive path (required)\n"
-        "  --synthetic          Use synthetic test data\n"
-        "  --bbox <w,s,e,n>     Geographic bounds in degrees (default: world)\n"
-        "  --min-zoom <z>       Minimum zoom level (default: 0)\n"
-        "  --max-zoom <z>       Maximum zoom level (default: 4)\n"
-        "  --tmp <dir>          Temp directory for sort runs (default: /tmp)\n"
-        "  --mem <bytes>        Memory budget for external sort (default: 64 MB)\n"
+        "  --output <path>        Output .arpa archive path (required)\n"
+        "  --input <layer>:<path> Add a GeoParquet input file mapped to layer\n"
+        "  --synthetic            Use synthetic test data\n"
+        "  --bbox <w,s,e,n>       Geographic bounds in degrees (default: world)\n"
+        "  --min-zoom <z>         Minimum zoom level (default: 0)\n"
+        "  --max-zoom <z>         Maximum zoom level (default: 4)\n"
+        "  --tmp <dir>            Temp directory for sort runs (default: /tmp)\n"
+        "  --mem <bytes>          Memory budget for external sort (default: 64 MB)\n"
+        "\n"
+        "Layer indices (matching style.json):\n"
+        "  1=surface  2=highway  3=building  4=tree  5=poi\n"
     );
 }
 
 int main(int argc, char **argv) {
+    arpt_pipeline_input inputs[MAX_INPUTS];
+    int n_inputs = 0;
+
     arpt_pipeline_config config = {
         .output     = NULL,
         .tmp_dir    = "/tmp",
@@ -31,11 +39,29 @@ int main(int argc, char **argv) {
         .min_zoom   = 0,
         .max_zoom   = 4,
         .synthetic  = false,
+        .inputs     = inputs,
+        .n_inputs   = 0,
     };
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
             config.output = argv[++i];
+        } else if (strcmp(argv[i], "--input") == 0 && i + 1 < argc) {
+            i++;
+            if (n_inputs >= MAX_INPUTS) {
+                fprintf(stderr, "Error: too many inputs (max %d)\n", MAX_INPUTS);
+                return 1;
+            }
+            /* Parse "layer:path" */
+            const char *arg = argv[i];
+            const char *colon = strchr(arg, ':');
+            if (!colon) {
+                fprintf(stderr, "Error: --input requires <layer>:<path> format\n");
+                return 1;
+            }
+            inputs[n_inputs].layer = (uint32_t)atoi(arg);
+            inputs[n_inputs].path = colon + 1;
+            n_inputs++;
         } else if (strcmp(argv[i], "--synthetic") == 0) {
             config.synthetic = true;
         } else if (strcmp(argv[i], "--bbox") == 0 && i + 1 < argc) {
@@ -59,8 +85,16 @@ int main(int argc, char **argv) {
         }
     }
 
+    config.n_inputs = n_inputs;
+
     if (!config.output) {
         fprintf(stderr, "Error: --output is required\n");
+        usage();
+        return 1;
+    }
+
+    if (!config.synthetic && config.n_inputs == 0) {
+        fprintf(stderr, "Error: need --synthetic or at least one --input\n");
         usage();
         return 1;
     }

@@ -58,10 +58,10 @@ typedef struct {
     uint32_t n_props;
 } stored_feat;
 
-/* Layer name */
+/* Layer names matching style.json */
 static const char *layer_names[] = {
-    "default", "layer1", "layer2", "layer3",
-    "layer4", "layer5", "layer6", "layer7",
+    "terrain", "surface", "highway", "building",
+    "tree", "poi", "layer6", "layer7",
     "layer8", "layer9", "layer10", "layer11",
     "layer12", "layer13", "layer14", "layer15"
 };
@@ -208,6 +208,49 @@ static void build_geom(flatcc_builder_t *fb, const stored_feat *sf) {
     }
 }
 
+/* Emit a flat terrain mesh covering the tile extent as layer 0.
+   4 vertices at tile corners, 2 triangles, normals pointing up. */
+static void emit_flat_terrain(flatcc_builder_t *fb) {
+    arpentry_tiles_Tile_layers_push_start(fb);
+    arpentry_tiles_Layer_name_create_str(fb, "terrain");
+
+    arpentry_tiles_Layer_features_start(fb);
+    arpentry_tiles_Layer_features_push_start(fb);
+    arpentry_tiles_Feature_id_add(fb, 0);
+
+    /* Flat quad: SW, SE, NE, NW at z=0 */
+    uint16_t vx[4] = { TILE_BUFFER, TILE_BUFFER + TILE_EXTENT - 1,
+                        TILE_BUFFER + TILE_EXTENT - 1, TILE_BUFFER };
+    uint16_t vy[4] = { TILE_BUFFER, TILE_BUFFER,
+                        TILE_BUFFER + TILE_EXTENT - 1, TILE_BUFFER + TILE_EXTENT - 1 };
+    int32_t  vz[4] = { 0, 0, 0, 0 };
+    uint32_t indices[6] = { 0, 1, 2, 0, 2, 3 };
+    /* Octahedral normal for (0,0,1) = (0,0) per vertex */
+    int8_t normals[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+
+    arpentry_tiles_MeshGeometry_start(fb);
+    arpentry_tiles_MeshGeometry_x_create(fb, vx, 4);
+    arpentry_tiles_MeshGeometry_y_create(fb, vy, 4);
+    arpentry_tiles_MeshGeometry_z_create(fb, vz, 4);
+    arpentry_tiles_MeshGeometry_indices_create(fb, indices, 6);
+    arpentry_tiles_MeshGeometry_normals_create(fb, normals, 8);
+
+    arpentry_tiles_MeshGeometry_parts_start(fb);
+    arpentry_tiles_Part_t part = {0};
+    part.first_index = 0;
+    part.index_count = 6;
+    /* color.a = 0 → client-styled */
+    arpentry_tiles_MeshGeometry_parts_push(fb, &part);
+    arpentry_tiles_MeshGeometry_parts_end(fb);
+
+    arpentry_tiles_MeshGeometry_ref_t mesh_ref = arpentry_tiles_MeshGeometry_end(fb);
+    arpentry_tiles_Feature_geometry_MeshGeometry_add(fb, mesh_ref);
+
+    arpentry_tiles_Layer_features_push_end(fb);
+    arpentry_tiles_Layer_features_end(fb);
+    arpentry_tiles_Tile_layers_push_end(fb);
+}
+
 void *arpt_tile_builder_finish(arpt_tile_builder *b, size_t *out_size) {
     if (!b) { if (out_size) *out_size = 0; return NULL; }
 
@@ -245,6 +288,16 @@ void *arpt_tile_builder_finish(arpt_tile_builder *b, size_t *out_size) {
     }
 
     arpentry_tiles_Tile_layers_start(&fb);
+
+    /* Emit a flat terrain mesh as layer 0 if no features claim it */
+    bool has_layer0 = false;
+    for (uint32_t i = 0; i < b->n_feats; i++) {
+        if (b->feats[i].layer == 0) { has_layer0 = true; break; }
+    }
+    if (!has_layer0) {
+        emit_flat_terrain(&fb);
+    }
+
     for (uint32_t layer = 0; layer <= max_layer; layer++) {
         /* Check if any features in this layer */
         bool has_feats = false;
