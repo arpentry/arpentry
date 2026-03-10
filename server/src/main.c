@@ -1,7 +1,9 @@
 #include "http.h"
 #include "net.h"
 #include "xmalloc.h"
+#include "archive.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,7 +19,12 @@ static void on_listening(void *udata) {
 
 static void on_ready(void *udata) {
     struct server_ctx *ctx = udata;
-    printf("Serving tiles from %s\n", ctx->tile_dir);
+    if (ctx->archive) {
+        printf("Serving tiles from archive %s (%" PRIu64 " tiles)\n",
+               ctx->tile_dir, arpt_archive_reader_tile_count(ctx->archive));
+    } else {
+        printf("Serving generated tiles from %s\n", ctx->tile_dir);
+    }
 }
 
 static void on_opened(struct net_conn *conn, void *udata) {
@@ -55,9 +62,21 @@ int main(int argc, char *argv[]) {
     int nthreads = argc >= 5 ? atoi(argv[4]) : 8;
     if (nthreads < 1) nthreads = 1;
 
+    /* If tile_dir is an .arpa file, open it as an archive */
+    arpt_archive_reader *archive = NULL;
+    size_t td_len = strlen(tile_dir);
+    if (td_len >= 5 && strcmp(tile_dir + td_len - 5, ".arpa") == 0) {
+        archive = arpt_archive_reader_open(tile_dir);
+        if (!archive) {
+            fprintf(stderr, "Failed to open archive: %s\n", tile_dir);
+            return 1;
+        }
+    }
+
     struct server_ctx ctx = {
         .tile_dir = tile_dir,
         .style_file = style_file,
+        .archive = archive,
     };
 
     xmalloc_init(nthreads);

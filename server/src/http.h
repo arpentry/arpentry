@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 struct net_conn;
+struct arpt_archive_reader;
 
 /* Maximum size of an HTTP request we'll buffer before rejecting. */
 #define HTTP_MAX_REQUEST 8192
@@ -22,6 +23,7 @@ int http_parse_request(const char *data, size_t len, char *method,
 struct server_ctx {
     const char *tile_dir;
     const char *style_file;
+    struct arpt_archive_reader *archive;  /* NULL when serving generated tiles */
 };
 
 typedef struct http_conn http_conn;

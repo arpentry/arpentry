@@ -7,6 +7,7 @@
 #include "style_builder.h"
 #include "model_builder.h"
 #include "json.h"
+#include "archive.h"
 
 #include <math.h>
 
@@ -738,6 +739,21 @@ static void dispatch_request(struct net_conn *conn, struct server_ctx *ctx,
     /* Tile request: /{level}/{x}/{y}.arpt */
     int level, x, y;
     if (arpt_parse_tile_path(uri, &level, &x, &y)) {
+        /* Serve from .arpa archive if available */
+        if (ctx->archive) {
+            size_t tile_size = 0;
+            const void *tile = arpt_archive_reader_get_tile(
+                ctx->archive, (uint8_t)level, (uint32_t)x, (uint32_t)y,
+                &tile_size);
+            if (tile) {
+                write_response(conn, 200, "application/x-arpt", "br",
+                               tile, tile_size);
+            } else {
+                write_error(conn, 404);
+            }
+            return;
+        }
+        /* Fall back to procedural generation */
         uint8_t *tile_data = NULL;
         size_t tile_size = 0;
         if (arpt_generate_terrain(level, x, y, &tile_data, &tile_size)) {
