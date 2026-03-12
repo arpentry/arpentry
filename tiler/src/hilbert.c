@@ -32,9 +32,6 @@ void arpt_hilbert_d2xy(int order, uint64_t d, uint32_t *x, uint32_t *y) {
     *x = 0;
     *y = 0;
     for (uint32_t s = 1; s < (1u << order); s <<= 1) {
-        rx = (d / ((uint64_t)s * s)) & 1;
-        ry = (d / ((uint64_t)s * s / 2)) & 1;
-        /* Undo: ry = (d/2) & 1 needs the actual two-bit extraction */
         rx = 1 & (uint32_t)(d / 2);
         ry = 1 & ((uint32_t)d ^ rx);
         rot(s, x, y, rx, ry);

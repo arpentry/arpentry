@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Web Mercator latitude limit: atan(sinh(π)) ≈ 85.0511° */
+#define MAX_MERC_LAT 85.0511
+
 /* Tile bounds in WGS84 degrees for tile (z, x, y). */
 static arpt_bounds tile_bounds(int z, int tx, int ty) {
     double n = (double)(1 << z);
@@ -21,6 +24,12 @@ static void clip_points(const arpt_geom *geom, int z,
     for (uint32_t i = 0; i < geom->n_coords; i++) {
         double px = geom->x[i];
         double py = geom->y[i];
+
+        /* Clamp to valid Web Mercator range */
+        if (px < -180.0) px = -180.0;
+        if (px > 180.0)  px = 180.0;
+        if (py < -MAX_MERC_LAT) py = -MAX_MERC_LAT;
+        if (py > MAX_MERC_LAT)  py = MAX_MERC_LAT;
 
         /* Determine which tile this point falls into */
         double n = (double)(1 << z);
@@ -117,6 +126,36 @@ static void da_free(darray *a) {
     a->cap = 0;
 }
 
+/* Clip line segments to left+right edges of a column strip using
+ * Liang-Barsky. Only the x-bounds of strip are used. */
+static void clip_lines_to_strip(const arpt_geom *geom, uint32_t n_lines,
+                                const arpt_bounds *strip,
+                                darray *out_x, darray *out_y) {
+    /* Use a strip that is unbounded in y for the column pass */
+    arpt_bounds col = {strip->min_x, -90.0, strip->max_x, 90.0};
+    for (uint32_t li = 0; li < n_lines; li++) {
+        uint32_t start = 0, end = geom->n_coords;
+        if (geom->offsets && geom->n_offsets > 1) {
+            start = geom->offsets[li];
+            end = geom->offsets[li + 1];
+        }
+        for (uint32_t i = start; i + 1 < end; i++) {
+            double cx0, cy0, cx1, cy1;
+            if (liang_barsky(geom->x[i], geom->y[i],
+                             geom->x[i + 1], geom->y[i + 1],
+                             &col, &cx0, &cy0, &cx1, &cy1)) {
+                if (out_x->len == 0 || out_x->data[out_x->len - 1] != cx0 ||
+                    out_y->data[out_y->len - 1] != cy0) {
+                    da_push(out_x, cx0);
+                    da_push(out_y, cy0);
+                }
+                da_push(out_x, cx1);
+                da_push(out_y, cy1);
+            }
+        }
+    }
+}
+
 static void clip_lines(const arpt_geom *geom, int z,
                        arpt_tile_cb cb, void *ctx) {
     int n_tiles = 1 << z;
@@ -130,6 +169,12 @@ static void clip_lines(const arpt_geom *geom, int z,
         if (geom->y[i] < gmin_y) gmin_y = geom->y[i];
         if (geom->y[i] > gmax_y) gmax_y = geom->y[i];
     }
+
+    /* Clamp to valid Web Mercator range */
+    if (gmin_x < -180.0) gmin_x = -180.0;
+    if (gmax_x > 180.0)  gmax_x = 180.0;
+    if (gmin_y < -MAX_MERC_LAT) gmin_y = -MAX_MERC_LAT;
+    if (gmax_y > MAX_MERC_LAT)  gmax_y = MAX_MERC_LAT;
 
     /* Convert geom bbox to tile range */
     double nd = (double)n_tiles;
@@ -154,34 +199,47 @@ static void clip_lines(const arpt_geom *geom, int z,
         n_lines = geom->n_offsets > 0 ? geom->n_offsets - 1 : 0;
     }
 
+    /* Strip-based clipping: clip to column strip (left+right) once,
+     * then for each row, clip the strip result to top+bottom. */
     for (int tx = tx_min; tx <= tx_max; tx++) {
+        arpt_bounds strip = tile_bounds(z, tx, ty_min);
+        arpt_bounds last_row = tile_bounds(z, tx, ty_max);
+        strip.min_y = last_row.min_y;
+
+        /* Clip all segments to this column strip */
+        darray sx, sy;
+        da_init(&sx);
+        da_init(&sy);
+        clip_lines_to_strip(geom, n_lines, &strip, &sx, &sy);
+
+        if (sx.len < 2) {
+            da_free(&sx);
+            da_free(&sy);
+            continue;
+        }
+
+        /* For each row, clip the strip-clipped segments to the row bounds */
         for (int ty = ty_min; ty <= ty_max; ty++) {
             arpt_bounds tb = tile_bounds(z, tx, ty);
+            /* Clip only top+bottom: use full x range so only y clips */
+            arpt_bounds row = {-180.0, tb.min_y, 180.0, tb.max_y};
 
             darray cx, cy;
             da_init(&cx);
             da_init(&cy);
 
-            for (uint32_t li = 0; li < n_lines; li++) {
-                uint32_t start = 0, end = geom->n_coords;
-                if (geom->offsets && geom->n_offsets > 1) {
-                    start = geom->offsets[li];
-                    end = geom->offsets[li + 1];
-                }
-
-                for (uint32_t i = start; i + 1 < end; i++) {
-                    double cx0, cy0, cx1, cy1;
-                    if (liang_barsky(geom->x[i], geom->y[i],
-                                     geom->x[i + 1], geom->y[i + 1],
-                                     &tb, &cx0, &cy0, &cx1, &cy1)) {
-                        if (cx.len == 0 || cx.data[cx.len - 1] != cx0 ||
-                            cy.data[cy.len - 1] != cy0) {
-                            da_push(&cx, cx0);
-                            da_push(&cy, cy0);
-                        }
-                        da_push(&cx, cx1);
-                        da_push(&cy, cy1);
+            for (uint32_t i = 0; i + 1 < sx.len; i++) {
+                double cx0, cy0, cx1, cy1;
+                if (liang_barsky(sx.data[i], sy.data[i],
+                                 sx.data[i + 1], sy.data[i + 1],
+                                 &row, &cx0, &cy0, &cx1, &cy1)) {
+                    if (cx.len == 0 || cx.data[cx.len - 1] != cx0 ||
+                        cy.data[cy.len - 1] != cy0) {
+                        da_push(&cx, cx0);
+                        da_push(&cy, cy0);
                     }
+                    da_push(&cx, cx1);
+                    da_push(&cy, cy1);
                 }
             }
 
@@ -194,7 +252,6 @@ static void clip_lines(const arpt_geom *geom, int z,
 
                 cb(z, tx, ty, &clipped, ctx);
 
-                /* Don't free cx/cy data, just the struct's ownership */
                 free(cx.data);
                 free(cy.data);
             } else {
@@ -202,6 +259,9 @@ static void clip_lines(const arpt_geom *geom, int z,
                 da_free(&cy);
             }
         }
+
+        da_free(&sx);
+        da_free(&sy);
     }
 }
 
@@ -265,6 +325,55 @@ static bool clip_polygon_edge(const double *in_x, const double *in_y, uint32_t i
     return true;
 }
 
+/* Per-ring strip data: coordinates clipped to a column strip. */
+typedef struct {
+    double *x, *y;
+    uint32_t len;
+} ring_strip;
+
+/* Clip a single ring to left+right edges of a column strip bounds.
+ * Returns the clipped ring in *out (caller must free x/y). */
+static void clip_ring_to_strip(const double *rx, const double *ry,
+                                uint32_t ring_n, const arpt_bounds *strip,
+                                ring_strip *out) {
+    darray a_x, a_y, b_x, b_y;
+    da_init(&a_x); da_init(&a_y);
+    da_init(&b_x); da_init(&b_y);
+
+    clip_polygon_edge(rx, ry, ring_n, &a_x, &a_y, EDGE_LEFT, strip);
+    clip_polygon_edge(a_x.data, a_y.data, a_x.len, &b_x, &b_y, EDGE_RIGHT, strip);
+    da_free(&a_x); da_free(&a_y);
+
+    out->x = b_x.data;
+    out->y = b_y.data;
+    out->len = b_x.len;
+}
+
+/* Clip a strip-clipped ring to bottom+top edges of a row tile bounds. */
+static void clip_strip_ring_to_row(const ring_strip *strip_ring,
+                                    const arpt_bounds *tb,
+                                    darray *out_x, darray *out_y) {
+    if (strip_ring->len < 3) return;
+
+    darray a_x, a_y, b_x, b_y;
+    da_init(&a_x); da_init(&a_y);
+    da_init(&b_x); da_init(&b_y);
+
+    clip_polygon_edge(strip_ring->x, strip_ring->y, strip_ring->len,
+                      &a_x, &a_y, EDGE_BOTTOM, tb);
+    clip_polygon_edge(a_x.data, a_y.data, a_x.len,
+                      &b_x, &b_y, EDGE_TOP, tb);
+    da_free(&a_x); da_free(&a_y);
+
+    if (b_x.len >= 3) {
+        for (uint32_t i = 0; i < b_x.len; i++) {
+            da_push(out_x, b_x.data[i]);
+            da_push(out_y, b_y.data[i]);
+        }
+    }
+    da_free(&b_x); da_free(&b_y);
+}
+
 static void clip_polygons(const arpt_geom *geom, int z,
                           arpt_tile_cb cb, void *ctx) {
     int n_tiles = 1 << z;
@@ -278,6 +387,12 @@ static void clip_polygons(const arpt_geom *geom, int z,
         if (geom->y[i] < gmin_y) gmin_y = geom->y[i];
         if (geom->y[i] > gmax_y) gmax_y = geom->y[i];
     }
+
+    /* Clamp to valid Web Mercator range */
+    if (gmin_x < -180.0) gmin_x = -180.0;
+    if (gmax_x > 180.0)  gmax_x = 180.0;
+    if (gmin_y < -MAX_MERC_LAT) gmin_y = -MAX_MERC_LAT;
+    if (gmax_y > MAX_MERC_LAT)  gmax_y = MAX_MERC_LAT;
 
     double nd = (double)n_tiles;
     int tx_min = (int)floor((gmin_x + 180.0) / 360.0 * nd);
@@ -296,58 +411,66 @@ static void clip_polygons(const arpt_geom *geom, int z,
     /* Determine rings: offsets give ring boundaries */
     uint32_t n_rings = geom->n_offsets > 0 ? geom->n_offsets - 1 : 1;
 
+    /* Strip-based clipping: clip each ring to the column strip (left+right)
+     * once, then for each row within the strip, clip only bottom+top.
+     * This reduces work from O(cols * rows * vertices * 4_edges) to
+     * O(cols * vertices * 2 + cols * rows * strip_vertices * 2). */
+    ring_strip *strips = malloc(n_rings * sizeof(ring_strip));
+    if (!strips) return;
+
     for (int tx = tx_min; tx <= tx_max; tx++) {
+        /* Build strip bounds: full latitude range, single column width */
+        arpt_bounds strip = tile_bounds(z, tx, ty_min);
+        arpt_bounds last_row = tile_bounds(z, tx, ty_max);
+        strip.min_y = last_row.min_y;  /* extend to bottom of tile range */
+
+        /* Clip each ring to the column strip (left+right only) */
+        bool any_strip_nonempty = false;
+        for (uint32_t ri = 0; ri < n_rings; ri++) {
+            uint32_t start = 0, end = geom->n_coords;
+            if (geom->offsets && geom->n_offsets > 1) {
+                start = geom->offsets[ri];
+                end = geom->offsets[ri + 1];
+            }
+            uint32_t ring_n = end - start;
+            if (ring_n < 3) {
+                strips[ri] = (ring_strip){NULL, NULL, 0};
+                continue;
+            }
+            clip_ring_to_strip(geom->x + start, geom->y + start,
+                               ring_n, &strip, &strips[ri]);
+            if (strips[ri].len >= 3) any_strip_nonempty = true;
+        }
+
+        if (!any_strip_nonempty) {
+            for (uint32_t ri = 0; ri < n_rings; ri++) {
+                free(strips[ri].x);
+                free(strips[ri].y);
+            }
+            continue;
+        }
+
+        /* For each row in this column, clip strip rings to the row */
         for (int ty = ty_min; ty <= ty_max; ty++) {
             arpt_bounds tb = tile_bounds(z, tx, ty);
 
-            darray out_x, out_y;
+            darray out_x, out_y, off;
             da_init(&out_x);
             da_init(&out_y);
-            darray off;
             da_init(&off);
 
             for (uint32_t ri = 0; ri < n_rings; ri++) {
-                uint32_t start = 0, end = geom->n_coords;
-                if (geom->offsets && geom->n_offsets > 1) {
-                    start = geom->offsets[ri];
-                    end = geom->offsets[ri + 1];
+                if (strips[ri].len < 3) continue;
+
+                uint32_t before = out_x.len;
+                clip_strip_ring_to_row(&strips[ri], &tb, &out_x, &out_y);
+
+                if (out_x.len - before >= 3) {
+                    da_push(&off, (double)before);
                 }
-                uint32_t ring_n = end - start;
-                if (ring_n < 3) continue;
-
-                const double *rx = geom->x + start;
-                const double *ry = geom->y + start;
-
-                /* Four-edge clip: left, right, bottom, top */
-                darray a_x, a_y, b_x, b_y;
-                da_init(&a_x); da_init(&a_y);
-                da_init(&b_x); da_init(&b_y);
-
-                clip_polygon_edge(rx, ry, ring_n, &a_x, &a_y, EDGE_LEFT, &tb);
-                clip_polygon_edge(a_x.data, a_y.data, a_x.len, &b_x, &b_y, EDGE_RIGHT, &tb);
-                da_free(&a_x); da_free(&a_y);
-                da_init(&a_x); da_init(&a_y);
-                clip_polygon_edge(b_x.data, b_y.data, b_x.len, &a_x, &a_y, EDGE_BOTTOM, &tb);
-                da_free(&b_x); da_free(&b_y);
-                da_init(&b_x); da_init(&b_y);
-                clip_polygon_edge(a_x.data, a_y.data, a_x.len, &b_x, &b_y, EDGE_TOP, &tb);
-                da_free(&a_x); da_free(&a_y);
-
-                if (b_x.len >= 3) {
-                    /* Record ring offset */
-                    /* Use a union-compatible cast: store as double */
-                    da_push(&off, (double)out_x.len);
-                    for (uint32_t i = 0; i < b_x.len; i++) {
-                        da_push(&out_x, b_x.data[i]);
-                        da_push(&out_y, b_y.data[i]);
-                    }
-                }
-                da_free(&b_x);
-                da_free(&b_y);
             }
 
             if (out_x.len >= 3) {
-                /* Build offset array */
                 uint32_t n_clipped_rings = off.len;
                 uint32_t *offsets = malloc((n_clipped_rings + 1) * sizeof(*offsets));
                 if (offsets) {
@@ -365,7 +488,6 @@ static void clip_polygons(const arpt_geom *geom, int z,
                     clipped.n_offsets = n_clipped_rings + 1;
 
                     cb(z, tx, ty, &clipped, ctx);
-
                     free(offsets);
                 }
                 free(out_x.data);
@@ -376,7 +498,15 @@ static void clip_polygons(const arpt_geom *geom, int z,
             }
             da_free(&off);
         }
+
+        /* Free strip data for this column */
+        for (uint32_t ri = 0; ri < n_rings; ri++) {
+            free(strips[ri].x);
+            free(strips[ri].y);
+        }
     }
+
+    free(strips);
 }
 
 void arpt_assign_tiles(const arpt_geom *geom, int zoom,

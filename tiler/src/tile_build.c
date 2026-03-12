@@ -11,37 +11,83 @@
 #define TILE_EXTENT  32768
 #define TILE_BUFFER  16384
 
-/* String dictionary for key/value deduplication */
+/* String dictionary with open-addressing hash table for O(1) intern. */
+
+/* Hash table slot: maps hash → entry index. Empty slots use UINT32_MAX. */
+#define DICT_EMPTY UINT32_MAX
+
 typedef struct {
-    char  **entries;
-    uint32_t count;
-    uint32_t cap;
+    char    **entries;
+    uint32_t  count;
+    uint32_t  entry_cap;
+    uint32_t *ht;           /* hash table: slot → entry index */
+    uint32_t  ht_cap;       /* always a power of 2 */
 } str_dict;
 
 static void str_dict_init(str_dict *d) {
     d->entries = NULL;
     d->count = 0;
-    d->cap = 0;
+    d->entry_cap = 0;
+    d->ht = NULL;
+    d->ht_cap = 0;
 }
 
 static void str_dict_free(str_dict *d) {
     for (uint32_t i = 0; i < d->count; i++) free(d->entries[i]);
     free(d->entries);
+    free(d->ht);
+}
+
+static uint32_t str_hash(const char *s) {
+    uint32_t h = 5381;
+    for (; *s; s++)
+        h = ((h << 5) + h) ^ (uint32_t)(unsigned char)*s;
+    return h;
+}
+
+/* Rebuild the hash table after a capacity change. */
+static void str_dict_rehash(str_dict *d) {
+    for (uint32_t i = 0; i < d->ht_cap; i++)
+        d->ht[i] = DICT_EMPTY;
+    for (uint32_t i = 0; i < d->count; i++) {
+        uint32_t h = str_hash(d->entries[i]) & (d->ht_cap - 1);
+        while (d->ht[h] != DICT_EMPTY)
+            h = (h + 1) & (d->ht_cap - 1);
+        d->ht[h] = i;
+    }
 }
 
 /* Returns index; adds if not present */
 static uint32_t str_dict_intern(str_dict *d, const char *s) {
-    for (uint32_t i = 0; i < d->count; i++) {
-        if (strcmp(d->entries[i], s) == 0) return i;
+    /* Grow hash table if needed (keep load < 75%) */
+    if (d->ht_cap == 0 || d->count * 4 >= d->ht_cap * 3) {
+        uint32_t nc = d->ht_cap ? d->ht_cap * 2 : 16;
+        uint32_t *p = realloc(d->ht, nc * sizeof(uint32_t));
+        if (!p) return 0;
+        d->ht = p;
+        d->ht_cap = nc;
+        str_dict_rehash(d);
     }
-    if (d->count == d->cap) {
-        uint32_t nc = d->cap ? d->cap * 2 : 16;
+
+    /* Probe for existing entry */
+    uint32_t h = str_hash(s) & (d->ht_cap - 1);
+    while (d->ht[h] != DICT_EMPTY) {
+        if (strcmp(d->entries[d->ht[h]], s) == 0)
+            return d->ht[h];
+        h = (h + 1) & (d->ht_cap - 1);
+    }
+
+    /* Not found — insert */
+    if (d->count == d->entry_cap) {
+        uint32_t nc = d->entry_cap ? d->entry_cap * 2 : 16;
         char **p = realloc(d->entries, nc * sizeof(char *));
         if (!p) return 0;
         d->entries = p;
-        d->cap = nc;
+        d->entry_cap = nc;
     }
     d->entries[d->count] = strdup(s);
+    if (!d->entries[d->count]) return 0;
+    d->ht[h] = d->count;
     return d->count++;
 }
 
@@ -208,9 +254,58 @@ static void build_geom(flatcc_builder_t *fb, const stored_feat *sf) {
     }
 }
 
-/* Emit a flat terrain mesh covering the tile extent as layer 0.
-   4 vertices at tile corners, 2 triangles, normals pointing up. */
+/* Grid subdivisions for the flat terrain mesh.  Must be high enough
+   that the vertex shader can deform the quad into a curved globe
+   surface.  64×64 = 4225 vertices, 2×64×64 = 8192 triangles. */
+#define TERRAIN_GRID 64
+
+/* Emit a subdivided flat terrain mesh covering the tile extent as
+   layer 0.  The grid gives the vertex shader enough vertices to curve
+   the tile onto the globe. */
 static void emit_flat_terrain(flatcc_builder_t *fb) {
+    const uint32_t gn = TERRAIN_GRID;
+    const uint32_t n_verts = (gn + 1) * (gn + 1);
+    const uint32_t n_tris = gn * gn * 2;
+    const uint32_t n_idx = n_tris * 3;
+
+    uint16_t *vx = malloc(n_verts * sizeof(*vx));
+    uint16_t *vy = malloc(n_verts * sizeof(*vy));
+    int32_t  *vz = calloc(n_verts, sizeof(*vz));
+    uint32_t *indices = malloc(n_idx * sizeof(*indices));
+    int8_t   *normals = calloc(n_verts * 2, sizeof(*normals));
+    if (!vx || !vy || !vz || !indices || !normals) {
+        free(vx); free(vy); free(vz); free(indices); free(normals);
+        return;
+    }
+
+    /* Generate grid vertices */
+    for (uint32_t row = 0; row <= gn; row++) {
+        for (uint32_t col = 0; col <= gn; col++) {
+            uint32_t vi = row * (gn + 1) + col;
+            vx[vi] = (uint16_t)(TILE_BUFFER +
+                      (uint32_t)((uint64_t)col * (TILE_EXTENT - 1) / gn));
+            vy[vi] = (uint16_t)(TILE_BUFFER +
+                      (uint32_t)((uint64_t)row * (TILE_EXTENT - 1) / gn));
+        }
+    }
+
+    /* Generate triangle indices (two triangles per grid cell) */
+    uint32_t ii = 0;
+    for (uint32_t row = 0; row < gn; row++) {
+        for (uint32_t col = 0; col < gn; col++) {
+            uint32_t tl = row * (gn + 1) + col;
+            uint32_t tr = tl + 1;
+            uint32_t bl = tl + (gn + 1);
+            uint32_t br = bl + 1;
+            indices[ii++] = tl;
+            indices[ii++] = tr;
+            indices[ii++] = br;
+            indices[ii++] = tl;
+            indices[ii++] = br;
+            indices[ii++] = bl;
+        }
+    }
+
     arpentry_tiles_Tile_layers_push_start(fb);
     arpentry_tiles_Layer_name_create_str(fb, "terrain");
 
@@ -218,27 +313,17 @@ static void emit_flat_terrain(flatcc_builder_t *fb) {
     arpentry_tiles_Layer_features_push_start(fb);
     arpentry_tiles_Feature_id_add(fb, 0);
 
-    /* Flat quad: SW, SE, NE, NW at z=0 */
-    uint16_t vx[4] = { TILE_BUFFER, TILE_BUFFER + TILE_EXTENT - 1,
-                        TILE_BUFFER + TILE_EXTENT - 1, TILE_BUFFER };
-    uint16_t vy[4] = { TILE_BUFFER, TILE_BUFFER,
-                        TILE_BUFFER + TILE_EXTENT - 1, TILE_BUFFER + TILE_EXTENT - 1 };
-    int32_t  vz[4] = { 0, 0, 0, 0 };
-    uint32_t indices[6] = { 0, 1, 2, 0, 2, 3 };
-    /* Octahedral normal for (0,0,1) = (0,0) per vertex */
-    int8_t normals[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-
     arpentry_tiles_MeshGeometry_start(fb);
-    arpentry_tiles_MeshGeometry_x_create(fb, vx, 4);
-    arpentry_tiles_MeshGeometry_y_create(fb, vy, 4);
-    arpentry_tiles_MeshGeometry_z_create(fb, vz, 4);
-    arpentry_tiles_MeshGeometry_indices_create(fb, indices, 6);
-    arpentry_tiles_MeshGeometry_normals_create(fb, normals, 8);
+    arpentry_tiles_MeshGeometry_x_create(fb, vx, n_verts);
+    arpentry_tiles_MeshGeometry_y_create(fb, vy, n_verts);
+    arpentry_tiles_MeshGeometry_z_create(fb, vz, n_verts);
+    arpentry_tiles_MeshGeometry_indices_create(fb, indices, n_idx);
+    arpentry_tiles_MeshGeometry_normals_create(fb, normals, n_verts * 2);
 
     arpentry_tiles_MeshGeometry_parts_start(fb);
     arpentry_tiles_Part_t part = {0};
     part.first_index = 0;
-    part.index_count = 6;
+    part.index_count = n_idx;
     /* color.a = 0 → client-styled */
     arpentry_tiles_MeshGeometry_parts_push(fb, &part);
     arpentry_tiles_MeshGeometry_parts_end(fb);
@@ -249,6 +334,12 @@ static void emit_flat_terrain(flatcc_builder_t *fb) {
     arpentry_tiles_Layer_features_push_end(fb);
     arpentry_tiles_Layer_features_end(fb);
     arpentry_tiles_Tile_layers_push_end(fb);
+
+    free(vx);
+    free(vy);
+    free(vz);
+    free(indices);
+    free(normals);
 }
 
 void *arpt_tile_builder_finish(arpt_tile_builder *b, size_t *out_size) {

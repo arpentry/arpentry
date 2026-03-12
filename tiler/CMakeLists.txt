@@ -8,6 +8,7 @@ endif()
 # ── Library ──────────────────────────────────────────────────────────
 
 add_library(arpentry_tiler STATIC
+    src/arena.c
     src/hilbert.c
     src/wkb.c
     src/simplify.c
@@ -92,3 +93,17 @@ target_compile_definitions(test_overture_integration PRIVATE
     FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/overture")
 target_link_libraries(test_overture_integration PRIVATE arpentry_tiler carquet unity)
 add_test(NAME test_overture_integration COMMAND test_overture_integration)
+
+add_executable(test_arena tests/test_arena.c)
+target_link_libraries(test_arena PRIVATE arpentry_tiler unity)
+add_test(NAME test_arena COMMAND test_arena)
+
+add_executable(test_pipeline_trace tests/test_pipeline_trace.c)
+target_link_libraries(test_pipeline_trace PRIVATE arpentry_tiler arpentry_common unity)
+add_test(NAME test_pipeline_trace COMMAND test_pipeline_trace)
+
+add_executable(test_naturalearth tests/test_naturalearth.c)
+target_compile_definitions(test_naturalearth PRIVATE
+    FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/naturalearth")
+target_link_libraries(test_naturalearth PRIVATE arpentry_tiler arpentry_common unity)
+add_test(NAME test_naturalearth COMMAND test_naturalearth)

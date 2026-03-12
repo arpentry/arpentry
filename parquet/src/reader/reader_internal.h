@@ -132,8 +132,12 @@ struct carquet_column_reader {
     int32_t dictionary_count;
     uint32_t* dictionary_offsets;  /* Offset cache for O(1) BYTE_ARRAY lookup */
 
-    /* Retained page data for BYTE_ARRAY value pointers */
-    uint8_t* page_data_for_values;
+    /* Retained page/work buffers for BYTE_ARRAY value pointers.
+     * When a batch spans multiple pages, we must keep all decompressed
+     * buffers alive until the column reader is reset or freed. */
+    uint8_t** retained_buffers;
+    int32_t   retained_count;
+    int32_t   retained_capacity;
 
     /* Current page state for partial reads */
     bool page_loaded;           /* Is a page currently loaded? */
@@ -164,6 +168,11 @@ carquet_schema_t* build_schema(
     carquet_arena_t* arena,
     const parquet_file_metadata_t* metadata,
     carquet_error_t* error);
+
+/**
+ * Free all retained BYTE_ARRAY page buffers on a column reader.
+ */
+void carquet_column_reader_flush_retained(carquet_column_reader_t* reader);
 
 /**
  * Open file with memory mapping.

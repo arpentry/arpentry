@@ -1,4 +1,5 @@
 #include "pipeline.h"
+#include "arena.h"
 #include "archive.h"
 #include "clip.h"
 #include "hilbert.h"
@@ -273,6 +274,42 @@ static double zoom_tolerance(int zoom) {
     return 360.0 / (double)(1 << (zoom + 8));
 }
 
+/* Maximum number of tiles a feature may span per axis at a zoom level.
+ * Features exceeding this at high zoom are too large to be useful at
+ * that detail level. They will still appear at lower zoom levels. */
+#define MAX_TILE_SPAN 256
+
+/* Check whether a line/polygon feature is too small to be visible at
+ * the given zoom level (sub-pixel).  Returns true if the feature
+ * should be skipped.  tile_pixels is the number of pixels per tile
+ * side (typically 256). */
+static bool feature_subpixel(const double bbox[4], int z, int tile_pixels) {
+    double n = (double)(1 << z);
+    double lon_span = bbox[2] - bbox[0];
+    double lat_span = bbox[3] - bbox[1];
+    double tile_lon = 360.0 / n;
+    double tile_lat = 180.0 / n;  /* rough approximation */
+    double px_x = lon_span / tile_lon * (double)tile_pixels;
+    double px_y = lat_span / tile_lat * (double)tile_pixels;
+    return px_x < 1.0 && px_y < 1.0;
+}
+
+/* Estimate the tile span of a geometry at the given zoom level. */
+static int64_t estimate_tile_span(const arpt_geom *geom, int z) {
+    double gmin_x = geom->x[0], gmax_x = geom->x[0];
+    double gmin_y = geom->y[0], gmax_y = geom->y[0];
+    for (uint32_t i = 1; i < geom->n_coords; i++) {
+        if (geom->x[i] < gmin_x) gmin_x = geom->x[i];
+        if (geom->x[i] > gmax_x) gmax_x = geom->x[i];
+        if (geom->y[i] < gmin_y) gmin_y = geom->y[i];
+        if (geom->y[i] > gmax_y) gmax_y = geom->y[i];
+    }
+    double nd = (double)(1 << z);
+    int64_t tx_span = (int64_t)ceil((gmax_x - gmin_x) / 360.0 * nd) + 1;
+    int64_t ty_span = (int64_t)ceil((gmax_y - gmin_y) / 180.0 * nd) + 1;
+    return tx_span * ty_span;
+}
+
 /* ---- Pipeline ----
  *
  * Single-pass design: read features once, clip each feature to every
@@ -286,37 +323,55 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     arpt_sorter *sorter = arpt_sorter_create(config->tmp_dir, config->mem_budget);
     if (!sorter) return false;
 
+    /* Arena for temporary per-feature allocations (simplify copies, etc.) */
+    arpt_arena *arena = arpt_arena_create(256 * 1024);
+    if (!arena) { arpt_sorter_free(sorter); return false; }
+
     uint32_t rank = 0;
 
     if (config->synthetic) {
         int n_feats = 0;
         synth_feature *feats = generate_synthetic(config->bbox, &n_feats);
         if (!feats && n_feats == 0) {
+            arpt_arena_free(arena);
             arpt_sorter_free(sorter);
             return false;
         }
 
         /* Single pass: for each feature, clip to all zoom levels */
         for (int i = 0; i < n_feats; i++) {
+            /* Compute feature bbox for sub-pixel filtering */
+            double fbbox[4];
+            fbbox[0] = fbbox[2] = feats[i].geom.x[0];
+            fbbox[1] = fbbox[3] = feats[i].geom.y[0];
+            for (uint32_t ci = 1; ci < feats[i].geom.n_coords; ci++) {
+                if (feats[i].geom.x[ci] < fbbox[0]) fbbox[0] = feats[i].geom.x[ci];
+                if (feats[i].geom.x[ci] > fbbox[2]) fbbox[2] = feats[i].geom.x[ci];
+                if (feats[i].geom.y[ci] < fbbox[1]) fbbox[1] = feats[i].geom.y[ci];
+                if (feats[i].geom.y[ci] > fbbox[3]) fbbox[3] = feats[i].geom.y[ci];
+            }
+
             for (int z = config->min_zoom; z <= config->max_zoom; z++) {
+                /* Skip sub-pixel features at this zoom */
+                if (feats[i].geom.type >= 2 && feats[i].geom.n_coords > 1 &&
+                    feature_subpixel(fbbox, z, 256)) {
+                    continue;
+                }
+
                 /* Make a working copy for simplification at this zoom */
                 arpt_geom g = feats[i].geom;
-                double *sx = NULL, *sy = NULL;
 
                 if (g.type >= 2 && g.n_coords > 2) {
-                    /* Copy coords for in-place simplification */
-                    sx = malloc(g.n_coords * sizeof(double));
-                    sy = malloc(g.n_coords * sizeof(double));
+                    size_t csz = g.n_coords * sizeof(double);
+                    double *sx = arpt_arena_alloc(arena, csz);
+                    double *sy = arpt_arena_alloc(arena, csz);
                     if (sx && sy) {
-                        memcpy(sx, g.x, g.n_coords * sizeof(double));
-                        memcpy(sy, g.y, g.n_coords * sizeof(double));
+                        memcpy(sx, g.x, csz);
+                        memcpy(sy, g.y, csz);
                         g.x = sx;
                         g.y = sy;
                         g.n_coords = arpt_simplify(g.x, g.y, g.n_coords,
                                                    zoom_tolerance(z));
-                    } else {
-                        free(sx); free(sy);
-                        sx = sy = NULL;
                     }
                 }
 
@@ -330,9 +385,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                     .zoom = z,
                 };
                 arpt_assign_tiles(&g, z, clip_cb, &ctx);
-
-                free(sx);
-                free(sy);
+                arpt_arena_reset(arena);
             }
             rank++;
             if (rank > 0xFFF) rank = 0xFFF; /* clamp to 12-bit field */
@@ -373,26 +426,53 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
             const char *pvals[1] = { cls ? cls : "unknown" };
             uint32_t n_props = 1;
 
-            /* Single pass: clip to all zoom levels */
+            /* Compute feature bbox for sub-pixel filtering */
+            double feat_bbox[4];
+            if (feat.has_bbox) {
+                memcpy(feat_bbox, feat.bbox, sizeof(feat_bbox));
+            } else {
+                feat_bbox[0] = feat_bbox[2] = g->x[0];
+                feat_bbox[1] = feat_bbox[3] = g->y[0];
+                for (uint32_t ci = 1; ci < g->n_coords; ci++) {
+                    if (g->x[ci] < feat_bbox[0]) feat_bbox[0] = g->x[ci];
+                    if (g->x[ci] > feat_bbox[2]) feat_bbox[2] = g->x[ci];
+                    if (g->y[ci] < feat_bbox[1]) feat_bbox[1] = g->y[ci];
+                    if (g->y[ci] > feat_bbox[3]) feat_bbox[3] = g->y[ci];
+                }
+            }
+
+            /* Single pass: clip to all zoom levels.
+             * Skip zoom levels where the feature spans too many tiles —
+             * it will still appear at lower zoom levels. */
             for (int z = config->min_zoom; z <= config->max_zoom; z++) {
+                /* Skip sub-pixel features at this zoom */
+                if (g->type >= 2 && g->n_coords > 1 &&
+                    feature_subpixel(feat_bbox, z, 256)) {
+                    continue;
+                }
+
                 arpt_geom work = *g;
-                double *sx = NULL, *sy = NULL;
 
                 if (work.type >= 2 && work.n_coords > 2) {
-                    sx = malloc(work.n_coords * sizeof(double));
-                    sy = malloc(work.n_coords * sizeof(double));
+                    size_t csz = work.n_coords * sizeof(double);
+                    double *sx = arpt_arena_alloc(arena, csz);
+                    double *sy = arpt_arena_alloc(arena, csz);
                     if (sx && sy) {
-                        memcpy(sx, work.x, work.n_coords * sizeof(double));
-                        memcpy(sy, work.y, work.n_coords * sizeof(double));
+                        memcpy(sx, work.x, csz);
+                        memcpy(sy, work.y, csz);
                         work.x = sx;
                         work.y = sy;
                         work.n_coords = arpt_simplify(work.x, work.y,
                                                       work.n_coords,
                                                       zoom_tolerance(z));
-                    } else {
-                        free(sx); free(sy);
-                        sx = sy = NULL;
                     }
+                }
+
+                /* Skip features that span too many tiles at this zoom */
+                if (work.type >= 2 && work.n_coords > 1 &&
+                    estimate_tile_span(&work, z) > (int64_t)MAX_TILE_SPAN * MAX_TILE_SPAN) {
+                    arpt_arena_reset(arena);
+                    continue;
                 }
 
                 clip_ctx ctx = {
@@ -405,9 +485,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                     .zoom = z,
                 };
                 arpt_assign_tiles(&work, z, clip_cb, &ctx);
-
-                free(sx);
-                free(sy);
+                arpt_arena_reset(arena);
             }
 
             arpt_geom_free(g);
@@ -428,6 +506,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
 
     /* Finalize sort */
     if (!arpt_sorter_finish(sorter)) {
+        arpt_arena_free(arena);
         arpt_sorter_free(sorter);
         return false;
     }
@@ -435,6 +514,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     /* Create archive */
     arpt_archive_writer *writer = arpt_archive_writer_create(config->output);
     if (!writer) {
+        arpt_arena_free(arena);
         arpt_sorter_free(sorter);
         return false;
     }
@@ -521,6 +601,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     bool ok = arpt_archive_writer_finish(writer);
     arpt_archive_writer_free(writer);
     arpt_sorter_free(sorter);
+    arpt_arena_free(arena);
 
     if (ok) {
         fprintf(stderr, "Archive written: %s\n", config->output);

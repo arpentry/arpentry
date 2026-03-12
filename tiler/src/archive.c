@@ -28,7 +28,7 @@ typedef struct {
     uint64_t dir_offset;
     uint64_t meta_offset;
     uint64_t meta_size;
-    uint8_t  reserved[16];
+    uint8_t  reserved[40];
 } arpa_header;
 
 /* ── Directory entry (40 bytes) ────────────────────────────────── */
@@ -193,6 +193,17 @@ bool arpt_archive_writer_finish(arpt_archive_writer *w) {
     /* Sort directory */
     arpa_dir_entry *dir = load_and_sort_dir(w);
     /* dir is NULL if tile_count == 0, which is fine */
+
+    /* Pad to 8-byte alignment before directory for safe struct access */
+    uint64_t pos = (uint64_t)ftell(w->fp);
+    uint64_t pad_bytes = (8 - (pos & 7)) & 7;
+    if (pad_bytes > 0) {
+        uint8_t zeros[8] = {0};
+        if (fwrite(zeros, 1, (size_t)pad_bytes, w->fp) != (size_t)pad_bytes) {
+            free(dir);
+            return false;
+        }
+    }
 
     /* Append sorted directory to archive */
     uint64_t dir_offset = (uint64_t)ftell(w->fp);

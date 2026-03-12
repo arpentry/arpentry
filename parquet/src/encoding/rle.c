@@ -466,9 +466,14 @@ int64_t carquet_rle_decode_levels(
         if ((header & 1) == 0) {
             /* RLE run: fill output with repeated value */
             int64_t run_length = (int64_t)(header >> 1);
-            if (run_length == 0) continue;
 
             if (pos + (size_t)value_bytes > input_size) break;
+
+            if (run_length == 0) {
+                /* Empty run: skip value bytes and continue */
+                pos += (size_t)value_bytes;
+                continue;
+            }
 
             /* Read the repeated value */
             uint32_t rle_value = 0;

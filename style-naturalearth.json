@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "name": "Natural Earth",
+  "background": [23, 56, 115, 255],
+  "layers": [
+    {
+      "source_layer": "terrain",
+      "type": "terrain",
+      "paint": []
+    },
+    {
+      "source_layer": "surface",
+      "type": "texture",
+      "paint": [
+        { "class": "land",       "color": [107, 158, 71, 255] },
+        { "class": "coastline",  "color": [26, 77, 20, 255],  "width": 80 },
+        { "class": "boundary",   "color": [89, 84, 77, 255],  "width": 60 }
+      ]
+    },
+    {
+      "source_layer": "poi",
+      "type": "label",
+      "min_level": 2,
+      "text_size": 22,
+      "text_color": [26, 26, 26, 255],
+      "text_halo_color": [255, 255, 255, 255],
+      "text_halo_width": 0.4,
+      "icon_size": 24,
+      "icon_color": [26, 26, 26, 255],
+      "icon_halo_color": [255, 255, 255, 255],
+      "icon_halo_width": 0.6,
+      "paint": []
+    }
+  ]
+}

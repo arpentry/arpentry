@@ -22,6 +22,11 @@ struct arpt_overture {
 
     int64_t row_in_batch;   /* current row within current batch */
     int64_t batch_rows;     /* rows in current batch */
+
+    /* Owned null-terminated copies of string columns (freed each iteration) */
+    char *owned_id;
+    char *owned_type;
+    char *owned_subtype;
 };
 
 arpt_overture *arpt_overture_open(const char *path)
@@ -133,9 +138,9 @@ static int64_t count_nulls_before(const uint8_t *nulls, int64_t pos)
     return count;
 }
 
-/* Read a BYTE_ARRAY string at row index as a C string pointer.
- * The pointer is valid until the next batch advance. */
-static const char *read_string(arpt_overture *ov, int32_t proj_col, int64_t row)
+/* Read a BYTE_ARRAY string at row index as a null-terminated C string.
+ * Returns a malloc'd copy that the caller must free. */
+static char *read_string(arpt_overture *ov, int32_t proj_col, int64_t row)
 {
     if (proj_col < 0) return NULL;
     const arpt_parquet_bytes *arr =
@@ -156,68 +161,105 @@ static const char *read_string(arpt_overture *ov, int32_t proj_col, int64_t row)
     const arpt_parquet_bytes *ba = &arr[data_idx];
     if (!ba->data || ba->length <= 0) return NULL;
 
-    return (const char *)ba->data;
+    /* Parquet BYTE_ARRAY values are NOT null-terminated; make a copy */
+    return strndup((const char *)ba->data, (size_t)ba->length);
+}
+
+/* Check if row is null in a column's null bitmap. Returns true if null. */
+static bool is_null(arpt_overture *ov, int32_t proj_col, int64_t row)
+{
+    if (proj_col < 0) return true;
+    const uint8_t *nulls = arpt_parquet_cursor_nulls(ov->cursor, proj_col);
+    if (!nulls) return false;  /* no nulls bitmap = all non-null */
+    return (nulls[row / 8] & (1u << (row % 8))) != 0;
+}
+
+/* Compute the data array index for a non-null row.
+ * In carquet's batch reader, set bits in the null bitmap mark NULL values
+ * and the data array is packed (only non-null values). */
+static int64_t sparse_index(arpt_overture *ov, int32_t proj_col, int64_t row)
+{
+    const uint8_t *nulls = arpt_parquet_cursor_nulls(ov->cursor, proj_col);
+    if (!nulls) return row;  /* no nulls → dense array */
+    return row - count_nulls_before(nulls, row);
 }
 
 bool arpt_overture_next(arpt_overture *ov, arpt_overture_feature *out)
 {
     if (!ov || !out) return false;
 
-    memset(out, 0, sizeof(*out));
+    for (;;) {
+        /* Free previous iteration's owned strings */
+        free(ov->owned_id);      ov->owned_id = NULL;
+        free(ov->owned_type);    ov->owned_type = NULL;
+        free(ov->owned_subtype); ov->owned_subtype = NULL;
 
-    /* Advance to next row, fetching new batch if needed */
-    while (ov->row_in_batch >= ov->batch_rows) {
-        if (!arpt_parquet_cursor_next(ov->cursor))
-            return false;
-        ov->batch_rows = arpt_parquet_cursor_num_rows(ov->cursor);
-        ov->row_in_batch = 0;
-    }
+        memset(out, 0, sizeof(*out));
 
-    int64_t row = ov->row_in_batch;
-
-    /* Parse WKB geometry */
-    const arpt_parquet_bytes *geom_arr =
-        (const arpt_parquet_bytes *)arpt_parquet_cursor_data(ov->cursor, ov->col_geometry);
-    if (!geom_arr) return false;
-
-    const arpt_parquet_bytes *wkb = &geom_arr[row];
-    if (!wkb->data || wkb->length <= 0) {
-        ov->row_in_batch++;
-        return false;
-    }
-
-    if (!arpt_wkb_parse(wkb->data, (size_t)wkb->length, &out->geometry)) {
-        ov->row_in_batch++;
-        return false;
-    }
-
-    /* String columns */
-    out->id = read_string(ov, ov->col_id, row);
-    out->type = read_string(ov, ov->col_type, row);
-    out->subtype = read_string(ov, ov->col_subtype, row);
-
-    /* Bbox columns — Overture uses FLOAT (32-bit) for bbox fields */
-    if (ov->col_bbox_xmin >= 0) {
-        const float *xmin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_xmin);
-        const float *ymin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_ymin);
-        const float *xmax = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_xmax);
-        const float *ymax = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_ymax);
-        if (xmin && ymin && xmax && ymax) {
-            out->bbox[0] = (double)xmin[row];
-            out->bbox[1] = (double)ymin[row];
-            out->bbox[2] = (double)xmax[row];
-            out->bbox[3] = (double)ymax[row];
-            out->has_bbox = true;
+        /* Advance to next row, fetching new batch if needed */
+        while (ov->row_in_batch >= ov->batch_rows) {
+            if (!arpt_parquet_cursor_next(ov->cursor))
+                return false;
+            ov->batch_rows = arpt_parquet_cursor_num_rows(ov->cursor);
+            ov->row_in_batch = 0;
         }
-    }
 
-    ov->row_in_batch++;
-    return true;
+        int64_t row = ov->row_in_batch;
+        ov->row_in_batch++;
+
+        /* Skip rows with null geometry */
+        if (is_null(ov, ov->col_geometry, row))
+            continue;
+
+        /* Get geometry data using sparse index */
+        const arpt_parquet_bytes *geom_arr =
+            (const arpt_parquet_bytes *)arpt_parquet_cursor_data(
+                ov->cursor, ov->col_geometry);
+        if (!geom_arr) continue;
+
+        int64_t gi = sparse_index(ov, ov->col_geometry, row);
+        const arpt_parquet_bytes *wkb = &geom_arr[gi];
+        if (!wkb->data || wkb->length <= 0)
+            continue;
+
+        if (!arpt_wkb_parse(wkb->data, (size_t)wkb->length, &out->geometry))
+            continue;
+
+        /* String columns — read_string returns owned null-terminated copies */
+        ov->owned_id = read_string(ov, ov->col_id, row);
+        ov->owned_type = read_string(ov, ov->col_type, row);
+        ov->owned_subtype = read_string(ov, ov->col_subtype, row);
+        out->id = ov->owned_id;
+        out->type = ov->owned_type;
+        out->subtype = ov->owned_subtype;
+
+        /* Bbox columns — Overture uses FLOAT (32-bit) for bbox fields.
+         * Bbox columns are inside a struct and always non-null when present,
+         * so we can use the row index directly. */
+        if (ov->col_bbox_xmin >= 0) {
+            const float *xmin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_xmin);
+            const float *ymin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_ymin);
+            const float *xmax = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_xmax);
+            const float *ymax = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_ymax);
+            if (xmin && ymin && xmax && ymax) {
+                out->bbox[0] = (double)xmin[row];
+                out->bbox[1] = (double)ymin[row];
+                out->bbox[2] = (double)xmax[row];
+                out->bbox[3] = (double)ymax[row];
+                out->has_bbox = true;
+            }
+        }
+
+        return true;
+    }
 }
 
 void arpt_overture_close(arpt_overture *ov)
 {
     if (!ov) return;
+    free(ov->owned_id);
+    free(ov->owned_type);
+    free(ov->owned_subtype);
     arpt_parquet_cursor_free(ov->cursor);
     arpt_parquet_close(ov->pq);
     free(ov);

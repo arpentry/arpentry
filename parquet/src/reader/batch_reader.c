@@ -245,6 +245,16 @@ carquet_status_t carquet_batch_reader_next(
     carquet_row_batch_t** batch) {
 
     /* batch_reader and batch are nonnull per API contract */
+
+    /* Flush retained BYTE_ARRAY page buffers from previous batches.
+     * flush_retained is safe for partially-read pages — it preserves
+     * the last buffer when the column reader is mid-page. */
+    for (int32_t i = 0; i < batch_reader->num_projected; i++) {
+        if (batch_reader->col_readers[i]) {
+            carquet_column_reader_flush_retained(batch_reader->col_readers[i]);
+        }
+    }
+
     carquet_error_t err = CARQUET_ERROR_INIT;
     int32_t num_row_groups = carquet_reader_num_row_groups(batch_reader->reader);
 
