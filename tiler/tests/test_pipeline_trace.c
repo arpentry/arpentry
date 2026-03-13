@@ -19,14 +19,13 @@ void tearDown(void) {}
 /* ---- Tile bounds (duplicated from clip.c for verification) ---- */
 
 static arpt_bounds tile_bounds(int z, int tx, int ty) {
-    double n = (double)(1 << z);
-    double w = (double)tx / n * 360.0 - 180.0;
-    double e = (double)(tx + 1) / n * 360.0 - 180.0;
-    double n_lat =
-        atan(sinh(M_PI * (1.0 - 2.0 * (double)ty / n))) * 180.0 / M_PI;
-    double s_lat =
-        atan(sinh(M_PI * (1.0 - 2.0 * (double)(ty + 1) / n))) * 180.0 / M_PI;
-    return (arpt_bounds){w, s_lat, e, n_lat};
+    int n_cols = 1 << (z + 1);
+    int n_rows = 1 << z;
+    double lon_span = 360.0 / (double)n_cols;
+    double lat_span = 180.0 / (double)n_rows;
+    double w = -180.0 + (double)tx * lon_span;
+    double s = -90.0 + (double)ty * lat_span;
+    return (arpt_bounds){w, s, w + lon_span, s + lat_span};
 }
 
 /* ---- Dequantization (FORMAT.md spec) ---- */
@@ -164,10 +163,11 @@ static void test_point_clip_z0(void) {
     collector_init(&c);
     arpt_assign_tiles(&g, 0, collect_cb, &c);
 
-    /* At z=0, everything is in tile (0,0,0) */
+    /* At z=0 equirectangular: n_cols=2, n_rows=1.
+     * Bern (7.45, 46.95) → tx=1, ty=0 */
     TEST_ASSERT_EQUAL_INT(1, c.count);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].z);
-    TEST_ASSERT_EQUAL_INT(0, c.results[0].x);
+    TEST_ASSERT_EQUAL_INT(1, c.results[0].x);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].y);
 
     /* Clipped coords should be unchanged */
@@ -178,8 +178,9 @@ static void test_point_clip_z0(void) {
 }
 
 static void test_point_quantize_z0(void) {
-    /* Build a tile at z=0 with a point at Bern and verify quantization */
-    arpt_bounds b = tile_bounds(0, 0, 0);
+    /* Build a tile at z=0 with a point at Bern and verify quantization.
+     * Equirectangular z=0: tile (1,0) covers [0,180] lon × [-90,90] lat */
+    arpt_bounds b = tile_bounds(0, 1, 0);
     arpt_geom g = {0};
     g.type = 1;
     double x = 7.45, y = 46.95;
@@ -231,9 +232,9 @@ static void test_point_quantize_z0(void) {
     double lon = dequant_x(&b, qx);
     double lat = dequant_y(&b, qy);
 
-    /* At z=0, tile spans 360 deg lon and ~170 deg lat.
-     * uint16 gives 32768 steps → ~0.011 deg precision for lon,
-     * ~0.005 deg for lat. Allow 0.02 deg tolerance. */
+    /* At z=0, tile spans 180 deg lon and 180 deg lat.
+     * uint16 gives 32768 steps → ~0.0055 deg precision.
+     * Allow 0.02 deg tolerance. */
     TEST_ASSERT_DOUBLE_WITHIN(0.02, 7.45, lon);
     TEST_ASSERT_DOUBLE_WITHIN(0.02, 46.95, lat);
 
@@ -265,16 +266,16 @@ static void test_point_clip_z5(void) {
     TEST_ASSERT_TRUE(y >= tb.min_y);
     TEST_ASSERT_TRUE(y <= tb.max_y);
 
-    /* Expected: tx=16, ty=11 (calculated from Web Mercator projection) */
-    TEST_ASSERT_EQUAL_INT(16, c.results[0].x);
-    TEST_ASSERT_EQUAL_INT(11, c.results[0].y);
+    /* Expected: tx=33, ty=24 (equirectangular: n_cols=64, n_rows=32) */
+    TEST_ASSERT_EQUAL_INT(33, c.results[0].x);
+    TEST_ASSERT_EQUAL_INT(24, c.results[0].y);
 
     collector_free(&c);
 }
 
 static void test_point_quantize_z5(void) {
     /* Higher zoom = better quantization precision */
-    int z = 5, tx = 16, ty = 11;
+    int z = 5, tx = 33, ty = 24;
     arpt_bounds b = tile_bounds(z, tx, ty);
     arpt_geom g = {0};
     g.type = 1;
@@ -324,8 +325,9 @@ static void test_point_quantize_z5(void) {
     TEST_ASSERT_TRUE(qy >= TILE_BUFFER);
     TEST_ASSERT_TRUE(qy <= TILE_BUFFER + TILE_EXTENT - 1);
 
-    /* Dequantize and verify — at z=5 tile spans ~11 deg lon, ~8 deg lat
-     * → precision ~0.0003 deg lon, ~0.00025 deg lat */
+    /* Dequantize and verify — at z=5 equirectangular tile spans
+     * 360/64=5.625 deg lon, 180/32=5.625 deg lat
+     * → precision ~0.00017 deg */
     double lon = dequant_x(&b, qx);
     double lat = dequant_y(&b, qy);
     TEST_ASSERT_DOUBLE_WITHIN(0.001, 7.45, lon);
@@ -353,10 +355,10 @@ static void test_line_clip_z0(void) {
     collector_init(&c);
     arpt_assign_tiles(&g, 0, collect_cb, &c);
 
-    /* At z=0, everything in tile (0,0,0) */
+    /* At z=0 equirectangular, everything in tile (0,1,0) */
     TEST_ASSERT_EQUAL_INT(1, c.count);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].z);
-    TEST_ASSERT_EQUAL_INT(0, c.results[0].x);
+    TEST_ASSERT_EQUAL_INT(1, c.results[0].x);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].y);
 
     /* Line should have 2 vertices, unchanged */
@@ -505,10 +507,10 @@ static void test_polygon_clip_z0(void) {
     collector_init(&c);
     arpt_assign_tiles(&g, 0, collect_cb, &c);
 
-    /* At z=0, one tile */
+    /* At z=0 equirectangular, one tile (1,0) */
     TEST_ASSERT_EQUAL_INT(1, c.count);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].z);
-    TEST_ASSERT_EQUAL_INT(0, c.results[0].x);
+    TEST_ASSERT_EQUAL_INT(1, c.results[0].x);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].y);
 
     /* Polygon should be unchanged (fully within tile) */
@@ -731,8 +733,8 @@ static void test_line_visible_at_all_zooms(void) {
         if (z >= 4) {
             snprintf(msg, sizeof(msg),
                      "Line should span multiple tiles at z=%d", z);
-            /* At z=4, tiles are ~22.5 deg wide. Line spans ~2.4 deg.
-             * Might still be in one tile. At z=6, tiles are ~5.6 deg. */
+            /* At z=4 equirectangular, tiles are 360/32=11.25 deg wide.
+             * Line spans ~2.4 deg, might still be in one tile. */
         }
 
         collector_free(&c);
@@ -829,7 +831,7 @@ static void test_quantize_precision_improves(void) {
 static void test_tile_has_terrain_layer(void) {
     /* When building a tile with a non-terrain feature (layer > 0),
      * the builder should auto-add a flat terrain mesh as layer 0. */
-    arpt_bounds b = tile_bounds(0, 0, 0);
+    arpt_bounds b = tile_bounds(0, 1, 0);
     arpt_geom g = {0};
     g.type = 1;
     double x = 7.45, y = 46.95;

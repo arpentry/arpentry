@@ -201,7 +201,35 @@ find_layer(const void *flatbuf, size_t size, const char *name,
                          NULL, values);
 }
 
-/* Decode all PolygonGeometry features from a named layer. */
+/* Count total rings across all PolygonGeometry features in a layer. */
+static size_t count_polygon_rings(arpentry_tiles_Feature_vec_t features,
+                                  size_t n_feat) {
+    size_t total = 0;
+    for (size_t i = 0; i < n_feat; i++) {
+        arpentry_tiles_Feature_table_t feat =
+            arpentry_tiles_Feature_vec_at(features, i);
+        if (!feat) continue;
+        if (arpentry_tiles_Feature_geometry_type(feat) !=
+            arpentry_tiles_Geometry_PolygonGeometry)
+            continue;
+        arpentry_tiles_PolygonGeometry_table_t poly =
+            (arpentry_tiles_PolygonGeometry_table_t)
+                arpentry_tiles_Feature_geometry(feat);
+        if (!poly) continue;
+        flatbuffers_uint32_vec_t ring_off =
+            arpentry_tiles_PolygonGeometry_ring_offsets(poly);
+        if (ring_off && flatbuffers_uint32_vec_len(ring_off) >= 2)
+            total += flatbuffers_uint32_vec_len(ring_off) - 1;
+        else
+            total += 1; /* single ring (no offsets) */
+    }
+    return total;
+}
+
+/* Decode all PolygonGeometry features from a named layer.
+ * Each ring in the geometry becomes a separate surface polygon.
+ * The tiler packs MultiPolygon parts as separate rings in ring_offsets
+ * without polygon_offsets, so we emit every ring. */
 static bool decode_polygon_layer(const void *flatbuf, size_t size,
                                  const char *layer_name,
                                  uint32_t height_key_override,
@@ -229,7 +257,10 @@ static bool decode_polygon_layer(const void *flatbuf, size_t size,
     size_t n_feat = arpentry_tiles_Feature_vec_len(features);
     if (n_feat == 0) return true;
 
-    out->polygons = malloc(n_feat * sizeof(arpt_surface_polygon));
+    size_t max_polys = count_polygon_rings(features, n_feat);
+    if (max_polys == 0) return true;
+
+    out->polygons = malloc(max_polys * sizeof(arpt_surface_polygon));
     if (!out->polygons) return false;
 
     size_t count = 0;
@@ -254,15 +285,36 @@ static bool decode_polygon_layer(const void *flatbuf, size_t size,
         size_t vc = flatbuffers_uint16_vec_len(xv);
         if (flatbuffers_uint16_vec_len(yv) != vc || vc == 0) continue;
 
-        out->polygons[count].x = xv;
-        out->polygons[count].y = yv;
-        out->polygons[count].z = arpentry_tiles_PolygonGeometry_z(poly);
-        out->polygons[count].vertex_count = vc;
-        out->polygons[count].cls = resolve_class(feat, class_key_idx, values,
-                                                    class_names, class_count);
-        out->polygons[count].height_m =
-            resolve_int_property(feat, height_key_idx, values);
-        count++;
+        flatbuffers_int32_vec_t zv = arpentry_tiles_PolygonGeometry_z(poly);
+        uint8_t cls = resolve_class(feat, class_key_idx, values,
+                                    class_names, class_count);
+        int32_t height = resolve_int_property(feat, height_key_idx, values);
+
+        flatbuffers_uint32_vec_t ring_off =
+            arpentry_tiles_PolygonGeometry_ring_offsets(poly);
+        size_t n_rings = 1;
+        if (ring_off && flatbuffers_uint32_vec_len(ring_off) >= 2)
+            n_rings = flatbuffers_uint32_vec_len(ring_off) - 1;
+
+        for (size_t ri = 0; ri < n_rings; ri++) {
+            size_t ring_start = 0;
+            size_t ring_end = vc;
+            if (ring_off && flatbuffers_uint32_vec_len(ring_off) >= 2) {
+                ring_start = ring_off[ri];
+                ring_end = ring_off[ri + 1];
+                if (ring_end > vc) ring_end = vc;
+            }
+            size_t ring_vc = ring_end - ring_start;
+            if (ring_vc < 3) continue;
+
+            out->polygons[count].x = xv + ring_start;
+            out->polygons[count].y = yv + ring_start;
+            out->polygons[count].z = zv ? zv + ring_start : NULL;
+            out->polygons[count].vertex_count = ring_vc;
+            out->polygons[count].cls = cls;
+            out->polygons[count].height_m = height;
+            count++;
+        }
     }
 
     out->count = count;

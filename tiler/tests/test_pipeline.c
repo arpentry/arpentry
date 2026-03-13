@@ -79,9 +79,9 @@ static void test_pipeline_synthetic_tile_readable(void) {
     arpt_archive_reader *r = arpt_archive_reader_open(TEST_PATH);
     TEST_ASSERT_NOT_NULL(r);
 
-    /* z=0 tile (0,0) should exist and have non-zero size */
+    /* z=0 tile (1,0) should exist (equirectangular: bbox 6-7° is in eastern hemisphere) */
     size_t tile_size;
-    const void *tile = arpt_archive_reader_get_tile(r, 0, 0, 0, &tile_size);
+    const void *tile = arpt_archive_reader_get_tile(r, 0, 1, 0, &tile_size);
     TEST_ASSERT_NOT_NULL(tile);
     TEST_ASSERT_TRUE(tile_size > 0);
 

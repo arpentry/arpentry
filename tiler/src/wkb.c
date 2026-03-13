@@ -190,11 +190,11 @@ static bool parse_polygon(wkb_reader *r, bool has_z, arpt_geom *out)
 
     out->type = WKB_POLYGON;
     out->n_coords = total;
-    out->n_offsets = num_rings;
+    out->n_offsets = num_rings + 1; /* N+1 sentinel style */
     out->x = malloc(total * sizeof(double));
     out->y = malloc(total * sizeof(double));
     out->z = has_z ? malloc(total * sizeof(double)) : NULL;
-    out->offsets = malloc(num_rings * sizeof(uint32_t));
+    out->offsets = malloc((num_rings + 1) * sizeof(uint32_t));
     if (!out->x || !out->y || (has_z && !out->z) || !out->offsets)
         return false;
 
@@ -210,6 +210,7 @@ static bool parse_polygon(wkb_reader *r, bool has_z, arpt_geom *out)
             return false;
         coord_idx += ring_n;
     }
+    out->offsets[num_rings] = total; /* sentinel */
 
     return true;
 }
@@ -273,11 +274,11 @@ static bool parse_multi_linestring(wkb_reader *r, arpt_geom *out)
 
     out->type = WKB_MULTILINESTRING;
     out->n_coords = total;
-    out->n_offsets = num_geoms;
+    out->n_offsets = num_geoms + 1; /* N+1 sentinel style */
     out->x = malloc(total * sizeof(double));
     out->y = malloc(total * sizeof(double));
     out->z = any_z ? calloc(total, sizeof(double)) : NULL;
-    out->offsets = malloc(num_geoms * sizeof(uint32_t));
+    out->offsets = malloc((num_geoms + 1) * sizeof(uint32_t));
     if (!out->x || !out->y || (any_z && !out->z) || !out->offsets)
         return false;
 
@@ -297,6 +298,7 @@ static bool parse_multi_linestring(wkb_reader *r, arpt_geom *out)
             return false;
         coord_idx += n;
     }
+    out->offsets[num_geoms] = total; /* sentinel */
 
     return true;
 }
@@ -333,12 +335,12 @@ static bool parse_multi_polygon(wkb_reader *r, arpt_geom *out)
 
     out->type = WKB_MULTIPOLYGON;
     out->n_coords = total_coords;
-    out->n_offsets = total_rings;
+    out->n_offsets = total_rings + 1; /* N+1 sentinel style */
     out->n_parts = num_geoms;
     out->x = malloc(total_coords * sizeof(double));
     out->y = malloc(total_coords * sizeof(double));
     out->z = any_z ? calloc(total_coords, sizeof(double)) : NULL;
-    out->offsets = malloc(total_rings * sizeof(uint32_t));
+    out->offsets = malloc((total_rings + 1) * sizeof(uint32_t));
     out->parts = malloc(num_geoms * sizeof(uint32_t));
     if (!out->x || !out->y || (any_z && !out->z) || !out->offsets || !out->parts)
         return false;
@@ -365,6 +367,7 @@ static bool parse_multi_polygon(wkb_reader *r, arpt_geom *out)
             coord_idx += ring_n;
         }
     }
+    out->offsets[total_rings] = total_coords; /* sentinel */
 
     return true;
 }

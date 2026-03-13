@@ -87,7 +87,9 @@ static void test_assign_tiles_empty_geom(void) {
 /* ---- Point clipping ---- */
 
 static void test_point_z0(void) {
-    /* A point at (6.6, 46.5) at z=0 should fall in tile (0,0,0) */
+    /* A point at (6.6, 46.5) at z=0 should fall in tile (0,1,0).
+       Equirectangular grid z=0: 2 cols × 1 row.
+       tx = floor((6.6+180)/360 * 2) = 1 (eastern hemisphere) */
     arpt_geom g = {0};
     g.type = 1;
     double x = 6.6, y = 46.5;
@@ -101,13 +103,16 @@ static void test_point_z0(void) {
 
     TEST_ASSERT_EQUAL_INT(1, c.count);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].z);
-    TEST_ASSERT_EQUAL_INT(0, c.results[0].x);
+    TEST_ASSERT_EQUAL_INT(1, c.results[0].x);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].y);
     collector_free(&c);
 }
 
 static void test_point_z1(void) {
-    /* (6.6, 46.5) at z=1 */
+    /* (6.6, 46.5) at z=1.
+       Equirectangular grid z=1: 4 cols × 2 rows.
+       tx = floor((6.6+180)/360 * 4) = 2
+       ty = floor((46.5+90)/180 * 2) = 1 */
     arpt_geom g = {0};
     g.type = 1;
     double x = 6.6, y = 46.5;
@@ -121,9 +126,8 @@ static void test_point_z1(void) {
 
     TEST_ASSERT_EQUAL_INT(1, c.count);
     TEST_ASSERT_EQUAL_INT(1, c.results[0].z);
-    /* x=1 (eastern half), y=0 (northern half for lat ~46.5) */
-    TEST_ASSERT_EQUAL_INT(1, c.results[0].x);
-    TEST_ASSERT_EQUAL_INT(0, c.results[0].y);
+    TEST_ASSERT_EQUAL_INT(2, c.results[0].x);
+    TEST_ASSERT_EQUAL_INT(1, c.results[0].y);
     collector_free(&c);
 }
 

@@ -194,8 +194,9 @@ static void test_wkb_polygon_2d(void) {
     TEST_ASSERT_TRUE(arpt_wkb_parse(buf, p, &g));
     TEST_ASSERT_EQUAL_UINT32(3, g.type);
     TEST_ASSERT_EQUAL_UINT32(4, g.n_coords);
-    TEST_ASSERT_EQUAL_UINT32(1, g.n_offsets);
+    TEST_ASSERT_EQUAL_UINT32(2, g.n_offsets); /* N+1 sentinel style */
     TEST_ASSERT_EQUAL_UINT32(0, g.offsets[0]);
+    TEST_ASSERT_EQUAL_UINT32(4, g.offsets[1]); /* sentinel */
     arpt_geom_free(&g);
 }
 
@@ -226,9 +227,10 @@ static void test_wkb_polygon_with_hole(void) {
     TEST_ASSERT_TRUE(arpt_wkb_parse(buf, p, &g));
     TEST_ASSERT_EQUAL_UINT32(3, g.type);
     TEST_ASSERT_EQUAL_UINT32(8, g.n_coords);
-    TEST_ASSERT_EQUAL_UINT32(2, g.n_offsets);
+    TEST_ASSERT_EQUAL_UINT32(3, g.n_offsets); /* N+1 sentinel style */
     TEST_ASSERT_EQUAL_UINT32(0, g.offsets[0]);
     TEST_ASSERT_EQUAL_UINT32(4, g.offsets[1]);
+    TEST_ASSERT_EQUAL_UINT32(8, g.offsets[2]); /* sentinel */
     arpt_geom_free(&g);
 }
 
@@ -286,9 +288,10 @@ static void test_wkb_multilinestring(void) {
     TEST_ASSERT_TRUE(arpt_wkb_parse(buf, p, &g));
     TEST_ASSERT_EQUAL_UINT32(5, g.type);
     TEST_ASSERT_EQUAL_UINT32(4, g.n_coords);
-    TEST_ASSERT_EQUAL_UINT32(2, g.n_offsets);
+    TEST_ASSERT_EQUAL_UINT32(3, g.n_offsets); /* N+1 sentinel style */
     TEST_ASSERT_EQUAL_UINT32(0, g.offsets[0]);
     TEST_ASSERT_EQUAL_UINT32(2, g.offsets[1]);
+    TEST_ASSERT_EQUAL_UINT32(4, g.offsets[2]); /* sentinel */
     TEST_ASSERT_DOUBLE_WITHIN(1e-10, 3.0, g.x[3]);
     arpt_geom_free(&g);
 }
@@ -326,10 +329,13 @@ static void test_wkb_multipolygon(void) {
     TEST_ASSERT_TRUE(arpt_wkb_parse(buf, p, &g));
     TEST_ASSERT_EQUAL_UINT32(6, g.type);
     TEST_ASSERT_EQUAL_UINT32(8, g.n_coords);
-    TEST_ASSERT_EQUAL_UINT32(2, g.n_offsets);  /* 2 rings total */
+    TEST_ASSERT_EQUAL_UINT32(3, g.n_offsets);  /* N+1 sentinel style: 2 rings + sentinel */
     TEST_ASSERT_EQUAL_UINT32(2, g.n_parts);    /* 2 polygons */
     TEST_ASSERT_EQUAL_UINT32(0, g.parts[0]);
     TEST_ASSERT_EQUAL_UINT32(1, g.parts[1]);
+    TEST_ASSERT_EQUAL_UINT32(0, g.offsets[0]);
+    TEST_ASSERT_EQUAL_UINT32(4, g.offsets[1]);
+    TEST_ASSERT_EQUAL_UINT32(8, g.offsets[2]); /* sentinel */
     TEST_ASSERT_DOUBLE_WITHIN(1e-10, 5.0, g.x[4]);
     arpt_geom_free(&g);
 }

@@ -29,6 +29,115 @@ static void count_polygon_geom(const arpt_surface_data *data,
     }
 }
 
+/* --- Ear-clipping triangulation for concave polygons --- */
+
+static int64_t earclip_cross(int32_t ax, int32_t ay, int32_t bx, int32_t by,
+                              int32_t cx, int32_t cy) {
+    return (int64_t)(bx - ax) * (cy - ay) - (int64_t)(by - ay) * (cx - ax);
+}
+
+static bool earclip_pt_in_tri(int32_t px, int32_t py,
+                               int32_t ax, int32_t ay,
+                               int32_t bx, int32_t by,
+                               int32_t cx, int32_t cy) {
+    int64_t d1 = earclip_cross(ax, ay, bx, by, px, py);
+    int64_t d2 = earclip_cross(bx, by, cx, cy, px, py);
+    int64_t d3 = earclip_cross(cx, cy, ax, ay, px, py);
+    /* Strict containment: exclude boundary (on-edge) points */
+    return (d1 > 0 && d2 > 0 && d3 > 0) || (d1 < 0 && d2 < 0 && d3 < 0);
+}
+
+/* Triangulate a simple polygon (n vertices, implicitly closed) using
+   ear-clipping.  Writes triangle indices at out_indices as offsets from base.
+   Returns number of indices written. */
+static size_t earclip_triangulate(const uint16_t *x, const uint16_t *y,
+                                   size_t n, uint32_t base,
+                                   uint32_t *out_indices) {
+    if (n < 3) return 0;
+    if (n == 3) {
+        out_indices[0] = base;
+        out_indices[1] = base + 1;
+        out_indices[2] = base + 2;
+        return 3;
+    }
+
+    /* Determine winding from signed area (positive = CCW) */
+    int64_t area2 = 0;
+    for (size_t i = 0; i < n; i++) {
+        size_t j = (i + 1) % n;
+        area2 += (int64_t)x[i] * y[j] - (int64_t)x[j] * y[i];
+    }
+    bool ccw = area2 > 0;
+
+    /* Doubly-linked list of active vertex indices */
+    uint32_t *prv = malloc(n * sizeof(uint32_t));
+    uint32_t *nxt = malloc(n * sizeof(uint32_t));
+    if (!prv || !nxt) { free(prv); free(nxt); return 0; }
+
+    for (size_t i = 0; i < n; i++) {
+        prv[i] = (uint32_t)((i + n - 1) % n);
+        nxt[i] = (uint32_t)((i + 1) % n);
+    }
+
+    size_t remaining = n;
+    size_t idx = 0;
+    uint32_t ear = 0;
+    size_t attempts = 0;
+
+    while (remaining > 3 && attempts < remaining * remaining) {
+        uint32_t p = prv[ear], c = ear, nx = nxt[ear];
+
+        int64_t cross = earclip_cross((int32_t)x[p], (int32_t)y[p],
+                                       (int32_t)x[c], (int32_t)y[c],
+                                       (int32_t)x[nx], (int32_t)y[nx]);
+        /* Treat collinear (cross==0) as convex to ensure progress */
+        bool convex = ccw ? (cross >= 0) : (cross <= 0);
+
+        if (convex) {
+            /* Check no other vertex lies inside this triangle */
+            bool blocked = false;
+            uint32_t test = nxt[nx];
+            while (test != p) {
+                if (earclip_pt_in_tri((int32_t)x[test], (int32_t)y[test],
+                                       (int32_t)x[p], (int32_t)y[p],
+                                       (int32_t)x[c], (int32_t)y[c],
+                                       (int32_t)x[nx], (int32_t)y[nx])) {
+                    blocked = true;
+                    break;
+                }
+                test = nxt[test];
+            }
+
+            if (!blocked) {
+                out_indices[idx++] = base + p;
+                out_indices[idx++] = base + c;
+                out_indices[idx++] = base + nx;
+                nxt[p] = nx;
+                prv[nx] = p;
+                remaining--;
+                attempts = 0;
+                ear = nx;
+                continue;
+            }
+        }
+
+        ear = nxt[ear];
+        attempts++;
+    }
+
+    /* Last triangle */
+    if (remaining == 3) {
+        uint32_t a = ear, b = nxt[a], c = nxt[b];
+        out_indices[idx++] = base + a;
+        out_indices[idx++] = base + b;
+        out_indices[idx++] = base + c;
+    }
+
+    free(prv);
+    free(nxt);
+    return idx;
+}
+
 static void emit_polygons(const arpt_surface_data *data,
                            const arpt_style *style,
                            arpt_poly_vertex *verts, uint32_t *idxs,
@@ -46,11 +155,10 @@ static void emit_polygons(const arpt_surface_data *data,
                                              c[0], c[1], c[2], c[3]};
             (*vi)++;
         }
-        for (size_t v = 1; v + 1 < p->vertex_count; v++) {
-            idxs[(*ii)++] = base;
-            idxs[(*ii)++] = base + (uint32_t)v;
-            idxs[(*ii)++] = base + (uint32_t)v + 1;
-        }
+
+        size_t written = earclip_triangulate(p->x, p->y, p->vertex_count,
+                                              base, idxs + *ii);
+        *ii += written;
     }
 }
 

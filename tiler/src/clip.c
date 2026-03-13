@@ -3,45 +3,44 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Web Mercator latitude limit: atan(sinh(π)) ≈ 85.0511° */
-#define MAX_MERC_LAT 85.0511
-
-/* Tile bounds in WGS84 degrees for tile (z, x, y). */
+/* Equirectangular tile bounds in WGS84 degrees for tile (z, x, y).
+   Grid: 2^(z+1) columns × 2^z rows, y=0 at south. */
 static arpt_bounds tile_bounds(int z, int tx, int ty) {
-    double n = (double)(1 << z);
-    double w = (double)tx / n * 360.0 - 180.0;
-    double e = (double)(tx + 1) / n * 360.0 - 180.0;
-    /* TMS-style: y=0 is top (north) */
-    double n_lat = atan(sinh(M_PI * (1.0 - 2.0 * (double)ty / n))) * 180.0 / M_PI;
-    double s_lat = atan(sinh(M_PI * (1.0 - 2.0 * (double)(ty + 1) / n))) * 180.0 / M_PI;
-    return (arpt_bounds){w, s_lat, e, n_lat};
+    int n_cols = 1 << (z + 1);
+    int n_rows = 1 << z;
+    double lon_span = 360.0 / (double)n_cols;
+    double lat_span = 180.0 / (double)n_rows;
+    double w = -180.0 + (double)tx * lon_span;
+    double s = -90.0 + (double)ty * lat_span;
+    return (arpt_bounds){w, s, w + lon_span, s + lat_span};
 }
 
 /* ---------- Point clipping ---------- */
 
 static void clip_points(const arpt_geom *geom, int z,
                         arpt_tile_cb cb, void *ctx) {
+    int n_cols = 1 << (z + 1);
+    int n_rows = 1 << z;
+
     for (uint32_t i = 0; i < geom->n_coords; i++) {
         double px = geom->x[i];
         double py = geom->y[i];
 
-        /* Clamp to valid Web Mercator range */
+        /* Clamp to valid range */
         if (px < -180.0) px = -180.0;
         if (px > 180.0)  px = 180.0;
-        if (py < -MAX_MERC_LAT) py = -MAX_MERC_LAT;
-        if (py > MAX_MERC_LAT)  py = MAX_MERC_LAT;
+        if (py < -90.0)  py = -90.0;
+        if (py > 90.0)   py = 90.0;
 
-        /* Determine which tile this point falls into */
-        double n = (double)(1 << z);
-        int tx = (int)floor((px + 180.0) / 360.0 * n);
-        double lat_rad = py * M_PI / 180.0;
-        int ty = (int)floor((1.0 - log(tan(lat_rad) + 1.0 / cos(lat_rad)) / M_PI) / 2.0 * n);
+        /* Determine which tile this point falls into (equirectangular) */
+        int tx = (int)floor((px + 180.0) / 360.0 * (double)n_cols);
+        int ty = (int)floor((py + 90.0) / 180.0 * (double)n_rows);
 
         /* Clamp to valid range */
         if (tx < 0) tx = 0;
-        if (tx >= (int)n) tx = (int)n - 1;
+        if (tx >= n_cols) tx = n_cols - 1;
         if (ty < 0) ty = 0;
-        if (ty >= (int)n) ty = (int)n - 1;
+        if (ty >= n_rows) ty = n_rows - 1;
 
         arpt_geom clipped = {0};
         clipped.type = 1; /* Point */
@@ -158,7 +157,8 @@ static void clip_lines_to_strip(const arpt_geom *geom, uint32_t n_lines,
 
 static void clip_lines(const arpt_geom *geom, int z,
                        arpt_tile_cb cb, void *ctx) {
-    int n_tiles = 1 << z;
+    int n_cols = 1 << (z + 1);
+    int n_rows = 1 << z;
 
     /* Compute the bounding box of the geometry to limit tile iteration */
     double gmin_x = geom->x[0], gmax_x = geom->x[0];
@@ -170,28 +170,22 @@ static void clip_lines(const arpt_geom *geom, int z,
         if (geom->y[i] > gmax_y) gmax_y = geom->y[i];
     }
 
-    /* Clamp to valid Web Mercator range */
+    /* Clamp to valid range */
     if (gmin_x < -180.0) gmin_x = -180.0;
     if (gmax_x > 180.0)  gmax_x = 180.0;
-    if (gmin_y < -MAX_MERC_LAT) gmin_y = -MAX_MERC_LAT;
-    if (gmax_y > MAX_MERC_LAT)  gmax_y = MAX_MERC_LAT;
+    if (gmin_y < -90.0)  gmin_y = -90.0;
+    if (gmax_y > 90.0)   gmax_y = 90.0;
 
-    /* Convert geom bbox to tile range */
-    double nd = (double)n_tiles;
-    int tx_min = (int)floor((gmin_x + 180.0) / 360.0 * nd);
-    int tx_max = (int)floor((gmax_x + 180.0) / 360.0 * nd);
-
-    /* y is inverted in web mercator tile grid */
-    double lat_rad;
-    lat_rad = gmax_y * M_PI / 180.0;
-    int ty_min = (int)floor((1.0 - log(tan(lat_rad) + 1.0 / cos(lat_rad)) / M_PI) / 2.0 * nd);
-    lat_rad = gmin_y * M_PI / 180.0;
-    int ty_max = (int)floor((1.0 - log(tan(lat_rad) + 1.0 / cos(lat_rad)) / M_PI) / 2.0 * nd);
+    /* Convert geom bbox to tile range (equirectangular) */
+    int tx_min = (int)floor((gmin_x + 180.0) / 360.0 * (double)n_cols);
+    int tx_max = (int)floor((gmax_x + 180.0) / 360.0 * (double)n_cols);
+    int ty_min = (int)floor((gmin_y + 90.0) / 180.0 * (double)n_rows);
+    int ty_max = (int)floor((gmax_y + 90.0) / 180.0 * (double)n_rows);
 
     if (tx_min < 0) tx_min = 0;
-    if (tx_max >= n_tiles) tx_max = n_tiles - 1;
+    if (tx_max >= n_cols) tx_max = n_cols - 1;
     if (ty_min < 0) ty_min = 0;
-    if (ty_max >= n_tiles) ty_max = n_tiles - 1;
+    if (ty_max >= n_rows) ty_max = n_rows - 1;
 
     /* Determine number of linestrings */
     uint32_t n_lines = 1;
@@ -376,7 +370,8 @@ static void clip_strip_ring_to_row(const ring_strip *strip_ring,
 
 static void clip_polygons(const arpt_geom *geom, int z,
                           arpt_tile_cb cb, void *ctx) {
-    int n_tiles = 1 << z;
+    int n_cols = 1 << (z + 1);
+    int n_rows = 1 << z;
 
     /* Bounding box of geometry */
     double gmin_x = geom->x[0], gmax_x = geom->x[0];
@@ -388,25 +383,21 @@ static void clip_polygons(const arpt_geom *geom, int z,
         if (geom->y[i] > gmax_y) gmax_y = geom->y[i];
     }
 
-    /* Clamp to valid Web Mercator range */
+    /* Clamp to valid range */
     if (gmin_x < -180.0) gmin_x = -180.0;
     if (gmax_x > 180.0)  gmax_x = 180.0;
-    if (gmin_y < -MAX_MERC_LAT) gmin_y = -MAX_MERC_LAT;
-    if (gmax_y > MAX_MERC_LAT)  gmax_y = MAX_MERC_LAT;
+    if (gmin_y < -90.0)  gmin_y = -90.0;
+    if (gmax_y > 90.0)   gmax_y = 90.0;
 
-    double nd = (double)n_tiles;
-    int tx_min = (int)floor((gmin_x + 180.0) / 360.0 * nd);
-    int tx_max = (int)floor((gmax_x + 180.0) / 360.0 * nd);
-    double lat_rad;
-    lat_rad = gmax_y * M_PI / 180.0;
-    int ty_min = (int)floor((1.0 - log(tan(lat_rad) + 1.0 / cos(lat_rad)) / M_PI) / 2.0 * nd);
-    lat_rad = gmin_y * M_PI / 180.0;
-    int ty_max = (int)floor((1.0 - log(tan(lat_rad) + 1.0 / cos(lat_rad)) / M_PI) / 2.0 * nd);
+    int tx_min = (int)floor((gmin_x + 180.0) / 360.0 * (double)n_cols);
+    int tx_max = (int)floor((gmax_x + 180.0) / 360.0 * (double)n_cols);
+    int ty_min = (int)floor((gmin_y + 90.0) / 180.0 * (double)n_rows);
+    int ty_max = (int)floor((gmax_y + 90.0) / 180.0 * (double)n_rows);
 
     if (tx_min < 0) tx_min = 0;
-    if (tx_max >= n_tiles) tx_max = n_tiles - 1;
+    if (tx_max >= n_cols) tx_max = n_cols - 1;
     if (ty_min < 0) ty_min = 0;
-    if (ty_max >= n_tiles) ty_max = n_tiles - 1;
+    if (ty_max >= n_rows) ty_max = n_rows - 1;
 
     /* Determine rings: offsets give ring boundaries */
     uint32_t n_rings = geom->n_offsets > 0 ? geom->n_offsets - 1 : 1;

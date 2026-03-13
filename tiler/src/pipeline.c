@@ -260,13 +260,15 @@ static void clip_cb(int z, int x, int y,
 
 /* ---- Compute tile bounds ---- */
 
+/* Equirectangular tile bounds: 2^(z+1) columns × 2^z rows, y=0 at south. */
 static arpt_bounds compute_tile_bounds(int z, int tx, int ty) {
-    double n = (double)(1 << z);
-    double w = (double)tx / n * 360.0 - 180.0;
-    double e = (double)(tx + 1) / n * 360.0 - 180.0;
-    double n_lat = atan(sinh(M_PI * (1.0 - 2.0 * (double)ty / n))) * 180.0 / M_PI;
-    double s_lat = atan(sinh(M_PI * (1.0 - 2.0 * (double)(ty + 1) / n))) * 180.0 / M_PI;
-    return (arpt_bounds){w, s_lat, e, n_lat};
+    int n_cols = 1 << (z + 1);
+    int n_rows = 1 << z;
+    double lon_span = 360.0 / (double)n_cols;
+    double lat_span = 180.0 / (double)n_rows;
+    double w = -180.0 + (double)tx * lon_span;
+    double s = -90.0 + (double)ty * lat_span;
+    return (arpt_bounds){w, s, w + lon_span, s + lat_span};
 }
 
 /* Simplification tolerance: roughly 1 pixel at the given zoom */
@@ -284,11 +286,12 @@ static double zoom_tolerance(int zoom) {
  * should be skipped.  tile_pixels is the number of pixels per tile
  * side (typically 256). */
 static bool feature_subpixel(const double bbox[4], int z, int tile_pixels) {
-    double n = (double)(1 << z);
+    double n_cols = (double)(1 << (z + 1));
+    double n_rows = (double)(1 << z);
     double lon_span = bbox[2] - bbox[0];
     double lat_span = bbox[3] - bbox[1];
-    double tile_lon = 360.0 / n;
-    double tile_lat = 180.0 / n;  /* rough approximation */
+    double tile_lon = 360.0 / n_cols;
+    double tile_lat = 180.0 / n_rows;
     double px_x = lon_span / tile_lon * (double)tile_pixels;
     double px_y = lat_span / tile_lat * (double)tile_pixels;
     return px_x < 1.0 && px_y < 1.0;
@@ -304,9 +307,10 @@ static int64_t estimate_tile_span(const arpt_geom *geom, int z) {
         if (geom->y[i] < gmin_y) gmin_y = geom->y[i];
         if (geom->y[i] > gmax_y) gmax_y = geom->y[i];
     }
-    double nd = (double)(1 << z);
-    int64_t tx_span = (int64_t)ceil((gmax_x - gmin_x) / 360.0 * nd) + 1;
-    int64_t ty_span = (int64_t)ceil((gmax_y - gmin_y) / 180.0 * nd) + 1;
+    double n_cols = (double)(1 << (z + 1));
+    double n_rows = (double)(1 << z);
+    int64_t tx_span = (int64_t)ceil((gmax_x - gmin_x) / 360.0 * n_cols) + 1;
+    int64_t ty_span = (int64_t)ceil((gmax_y - gmin_y) / 180.0 * n_rows) + 1;
     return tx_span * ty_span;
 }
 

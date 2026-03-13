@@ -95,19 +95,15 @@ fn decode_octahedral(enc: vec2<f32>) -> vec3<f32> {
     let sun = normalize(globals.sun_dir);
     let NdotL = dot(n, sun);
 
-    // Hemisphere ambient: cool blue in shadow, warm fill on lit side
     let shadow_color = vec3<f32>(0.20, 0.22, 0.28);
     let fill_color   = vec3<f32>(0.28, 0.26, 0.22);
     let hemi_t = NdotL * 0.5 + 0.5;
     let ambient = mix(shadow_color, fill_color, hemi_t);
 
-    // Direct sunlight: clamped Lambertian at moderate intensity
     let sun_color = vec3<f32>(0.65, 0.63, 0.58);
     let direct = sun_color * max(NdotL, 0.0);
 
     let lit = albedo * (ambient + direct);
-
-    // Apply sRGB gamma when surface format is non-sRGB (e.g. WebGPU in browser)
     let out = select(lit, pow(lit, vec3<f32>(1.0 / 2.2)), globals.apply_gamma > 0.5);
     return vec4<f32>(out, 1.0);
 }
