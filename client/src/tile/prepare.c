@@ -403,14 +403,14 @@ static void emit_building_extrusion(const arpt_surface_data *buildings,
             (*vi)++;
 
             indices[(*ii)++] = base;
+            indices[(*ii)++] = base + 2;
             indices[(*ii)++] = base + 1;
-            indices[(*ii)++] = base + 2;
             indices[(*ii)++] = base;
-            indices[(*ii)++] = base + 2;
             indices[(*ii)++] = base + 3;
+            indices[(*ii)++] = base + 2;
         }
 
-        /* Roof: triangle fan (CW winding) */
+        /* Roof: triangle fan (CCW winding) */
         uint32_t roof_base = (uint32_t)*vi;
         for (size_t v = 0; v < n; v++) {
             xy[*vi * 2] = b->x[v];
@@ -422,8 +422,8 @@ static void emit_building_extrusion(const arpt_surface_data *buildings,
         }
         for (size_t v = 1; v + 1 < n; v++) {
             indices[(*ii)++] = roof_base;
-            indices[(*ii)++] = roof_base + (uint32_t)(v + 1);
             indices[(*ii)++] = roof_base + (uint32_t)v;
+            indices[(*ii)++] = roof_base + (uint32_t)(v + 1);
         }
     }
 }

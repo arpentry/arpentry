@@ -218,12 +218,12 @@ void build_indices(uint32_t *indices) {
             uint32_t br = bl + 1;
 
             indices[ii++] = tl;
-            indices[ii++] = bl;
             indices[ii++] = tr;
-
-            indices[ii++] = tr;
-            indices[ii++] = bl;
             indices[ii++] = br;
+
+            indices[ii++] = tl;
+            indices[ii++] = br;
+            indices[ii++] = bl;
         }
     }
 }
