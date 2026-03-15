@@ -5,7 +5,14 @@
 
 #include <stdint.h>
 
-/* Simplify a polyline in-place. Returns the new vertex count. */
+/* Simplify an open polyline in-place. Returns the new vertex count. */
 uint32_t arpt_simplify(double *x, double *y, uint32_t count, double tolerance);
+
+/* Simplify a closed polygon ring in-place. Handles the closing
+ * duplicate vertex (first == last) correctly by splitting the ring
+ * at a pivot and running DP on each arc. Returns the new vertex
+ * count (including the closing vertex). */
+uint32_t arpt_simplify_ring(double *x, double *y, uint32_t count,
+                             double tolerance);
 
 #endif

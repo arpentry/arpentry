@@ -1,5 +1,4 @@
 #include "pipeline.h"
-#include "arena.h"
 #include "archive.h"
 #include "clip.h"
 #include "hilbert.h"
@@ -240,7 +239,46 @@ typedef struct {
     const char  *const *prop_vals;
     uint32_t     n_props;
     int          zoom;  /* current zoom being clipped to */
+    double       tolerance; /* simplification tolerance for this zoom */
 } clip_ctx;
+
+/* Simplify clipped geometry before serialization.
+ * Operates on a mutable copy — caller must free sx, sy, so. */
+static void simplify_clipped(arpt_geom *g, double *sx, double *sy,
+                              uint32_t *so, double tolerance) {
+    if (tolerance <= 0.0) return;
+    if (g->n_coords <= 2) return;
+
+    if ((g->type == 3 || g->type == 6) && g->offsets && g->n_offsets > 1) {
+        /* Ring-aware simplification */
+        uint32_t n_rings = g->n_offsets - 1;
+        uint32_t out = 0;
+        for (uint32_t ri = 0; ri < n_rings; ri++) {
+            uint32_t start = so[ri];
+            uint32_t end = so[ri + 1];
+            uint32_t ring_n = end - start;
+            uint32_t new_n = ring_n;
+            if (ring_n > 2) {
+                new_n = arpt_simplify_ring(sx + start, sy + start,
+                                           ring_n, tolerance);
+            }
+            if (new_n >= 4) {
+                if (out != start) {
+                    memmove(sx + out, sx + start, new_n * sizeof(double));
+                    memmove(sy + out, sy + start, new_n * sizeof(double));
+                }
+                so[ri] = out;
+                out += new_n;
+            } else {
+                so[ri] = out; /* degenerate, skip */
+            }
+        }
+        so[n_rings] = out;
+        g->n_coords = out;
+    } else {
+        g->n_coords = arpt_simplify(sx, sy, g->n_coords, tolerance);
+    }
+}
 
 static void clip_cb(int z, int x, int y,
                     const arpt_geom *clipped, void *ctx) {
@@ -248,14 +286,46 @@ static void clip_cb(int z, int x, int y,
     uint64_t tile_id = arpt_hilbert_tile_id(z, x, y);
     uint64_t key = make_sort_key(tile_id, c->layer, c->rank);
 
+    /* Simplify after clipping: make a mutable copy of the clipped
+     * coordinates (which point into clip.c's internal buffers). */
+    arpt_geom g = *clipped;
+    double *sx = NULL, *sy = NULL;
+    uint32_t *so = NULL;
+
+    if (c->tolerance > 0.0 && g.type >= 2 && g.n_coords > 2) {
+        size_t csz = g.n_coords * sizeof(double);
+        sx = malloc(csz);
+        sy = malloc(csz);
+        if (sx && sy) {
+            memcpy(sx, g.x, csz);
+            memcpy(sy, g.y, csz);
+            g.x = sx;
+            g.y = sy;
+
+            if (g.offsets && g.n_offsets > 0) {
+                size_t osz = g.n_offsets * sizeof(uint32_t);
+                so = malloc(osz);
+                if (so) {
+                    memcpy(so, g.offsets, osz);
+                    g.offsets = so;
+                }
+            }
+
+            simplify_clipped(&g, sx, sy, so, c->tolerance);
+        }
+    }
+
     size_t data_size;
-    uint8_t *data = serialize_feature(clipped,
-                                      c->prop_keys, c->prop_vals,
+    uint8_t *data = serialize_feature(&g, c->prop_keys, c->prop_vals,
                                       c->n_props, &data_size);
     if (data) {
         arpt_sorter_add(c->sorter, key, data, data_size);
         free(data);
     }
+
+    free(sx);
+    free(sy);
+    free(so);
 }
 
 /* ---- Compute tile bounds ---- */
@@ -271,9 +341,12 @@ static arpt_bounds compute_tile_bounds(int z, int tx, int ty) {
     return (arpt_bounds){w, s, w + lon_span, s + lat_span};
 }
 
-/* Simplification tolerance: roughly 1 pixel at the given zoom */
+/* Simplification tolerance in degrees.
+ * Equirectangular grid: 2^(z+1) columns, each tile 256 px wide.
+ * One pixel = 360 / 2^(z+9) degrees.  Use half a pixel as
+ * tolerance so coastlines stay visually smooth. */
 static double zoom_tolerance(int zoom) {
-    return 360.0 / (double)(1 << (zoom + 8));
+    return 360.0 / (double)(1 << (zoom + 10));
 }
 
 /* Maximum number of tiles a feature may span per axis at a zoom level.
@@ -327,9 +400,6 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     arpt_sorter *sorter = arpt_sorter_create(config->tmp_dir, config->mem_budget);
     if (!sorter) return false;
 
-    /* Arena for temporary per-feature allocations (simplify copies, etc.) */
-    arpt_arena *arena = arpt_arena_create(256 * 1024);
-    if (!arena) { arpt_sorter_free(sorter); return false; }
 
     uint32_t rank = 0;
 
@@ -337,7 +407,6 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
         int n_feats = 0;
         synth_feature *feats = generate_synthetic(config->bbox, &n_feats);
         if (!feats && n_feats == 0) {
-            arpt_arena_free(arena);
             arpt_sorter_free(sorter);
             return false;
         }
@@ -362,23 +431,6 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                     continue;
                 }
 
-                /* Make a working copy for simplification at this zoom */
-                arpt_geom g = feats[i].geom;
-
-                if (g.type >= 2 && g.n_coords > 2) {
-                    size_t csz = g.n_coords * sizeof(double);
-                    double *sx = arpt_arena_alloc(arena, csz);
-                    double *sy = arpt_arena_alloc(arena, csz);
-                    if (sx && sy) {
-                        memcpy(sx, g.x, csz);
-                        memcpy(sy, g.y, csz);
-                        g.x = sx;
-                        g.y = sy;
-                        g.n_coords = arpt_simplify(g.x, g.y, g.n_coords,
-                                                   zoom_tolerance(z));
-                    }
-                }
-
                 clip_ctx ctx = {
                     .sorter = sorter,
                     .layer = feats[i].layer,
@@ -387,9 +439,9 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                     .prop_vals = NULL,
                     .n_props = 0,
                     .zoom = z,
+                    .tolerance = zoom_tolerance(z),
                 };
-                arpt_assign_tiles(&g, z, clip_cb, &ctx);
-                arpt_arena_reset(arena);
+                arpt_assign_tiles(&feats[i].geom, z, clip_cb, &ctx);
             }
             rank++;
             if (rank > 0xFFF) rank = 0xFFF; /* clamp to 12-bit field */
@@ -455,27 +507,9 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                     continue;
                 }
 
-                arpt_geom work = *g;
-
-                if (work.type >= 2 && work.n_coords > 2) {
-                    size_t csz = work.n_coords * sizeof(double);
-                    double *sx = arpt_arena_alloc(arena, csz);
-                    double *sy = arpt_arena_alloc(arena, csz);
-                    if (sx && sy) {
-                        memcpy(sx, work.x, csz);
-                        memcpy(sy, work.y, csz);
-                        work.x = sx;
-                        work.y = sy;
-                        work.n_coords = arpt_simplify(work.x, work.y,
-                                                      work.n_coords,
-                                                      zoom_tolerance(z));
-                    }
-                }
-
                 /* Skip features that span too many tiles at this zoom */
-                if (work.type >= 2 && work.n_coords > 1 &&
-                    estimate_tile_span(&work, z) > (int64_t)MAX_TILE_SPAN * MAX_TILE_SPAN) {
-                    arpt_arena_reset(arena);
+                if (g->type >= 2 && g->n_coords > 1 &&
+                    estimate_tile_span(g, z) > (int64_t)MAX_TILE_SPAN * MAX_TILE_SPAN) {
                     continue;
                 }
 
@@ -487,9 +521,9 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                     .prop_vals = pvals,
                     .n_props = n_props,
                     .zoom = z,
+                    .tolerance = zoom_tolerance(z),
                 };
-                arpt_assign_tiles(&work, z, clip_cb, &ctx);
-                arpt_arena_reset(arena);
+                arpt_assign_tiles(g, z, clip_cb, &ctx);
             }
 
             arpt_geom_free(g);
@@ -510,7 +544,6 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
 
     /* Finalize sort */
     if (!arpt_sorter_finish(sorter)) {
-        arpt_arena_free(arena);
         arpt_sorter_free(sorter);
         return false;
     }
@@ -518,7 +551,6 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     /* Create archive */
     arpt_archive_writer *writer = arpt_archive_writer_create(config->output);
     if (!writer) {
-        arpt_arena_free(arena);
         arpt_sorter_free(sorter);
         return false;
     }
@@ -605,7 +637,6 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     bool ok = arpt_archive_writer_finish(writer);
     arpt_archive_writer_free(writer);
     arpt_sorter_free(sorter);
-    arpt_arena_free(arena);
 
     if (ok) {
         fprintf(stderr, "Archive written: %s\n", config->output);

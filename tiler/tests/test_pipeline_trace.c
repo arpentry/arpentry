@@ -388,20 +388,23 @@ static void test_line_clip_z4(void) {
     /* Should span multiple tiles at z=4 */
     TEST_ASSERT_TRUE(c.count >= 2);
 
-    /* Every clipped segment must lie within its tile bounds */
+    /* Every clipped segment must lie within the tile bounds extended
+     * by the clip buffer (8/256 of tile extent per side). */
     for (int i = 0; i < c.count; i++) {
         arpt_bounds tb = tile_bounds(c.results[i].z, c.results[i].x,
                                      c.results[i].y);
+        double buf_x = (tb.max_x - tb.min_x) * (8.0 / 256.0);
+        double buf_y = (tb.max_y - tb.min_y) * (8.0 / 256.0);
         for (uint32_t j = 0; j < c.results[i].geom.n_coords; j++) {
             double cx = c.results[i].geom.x[j];
             double cy = c.results[i].geom.y[j];
-            TEST_ASSERT_TRUE_MESSAGE(cx >= tb.min_x - 1e-9,
+            TEST_ASSERT_TRUE_MESSAGE(cx >= tb.min_x - buf_x - 1e-9,
                                      "clipped x below tile min_x");
-            TEST_ASSERT_TRUE_MESSAGE(cx <= tb.max_x + 1e-9,
+            TEST_ASSERT_TRUE_MESSAGE(cx <= tb.max_x + buf_x + 1e-9,
                                      "clipped x above tile max_x");
-            TEST_ASSERT_TRUE_MESSAGE(cy >= tb.min_y - 1e-9,
+            TEST_ASSERT_TRUE_MESSAGE(cy >= tb.min_y - buf_y - 1e-9,
                                      "clipped y below tile min_y");
-            TEST_ASSERT_TRUE_MESSAGE(cy <= tb.max_y + 1e-9,
+            TEST_ASSERT_TRUE_MESSAGE(cy <= tb.max_y + buf_y + 1e-9,
                                      "clipped y above tile max_y");
         }
     }

@@ -439,6 +439,163 @@ static void test_z0_terrain_mesh(void) {
     free(decoded);
 }
 
+/* ── D. Clip diagnostics ─────────────────────────────────────────────── */
+
+#include "clip.h"
+
+typedef struct {
+    int z, x, y;
+    double *cx, *cy;
+    uint32_t *coffsets;
+    uint32_t n_coords, n_offsets;
+} diag_result;
+
+typedef struct {
+    diag_result *results;
+    int count, cap;
+} diag_collector;
+
+static void diag_cb(int z, int x, int y,
+                    const arpt_geom *clipped, void *ctx) {
+    diag_collector *dc = (diag_collector *)ctx;
+    if (dc->count == dc->cap) {
+        int nc = dc->cap ? dc->cap * 2 : 64;
+        dc->results = realloc(dc->results, (size_t)nc * sizeof(diag_result));
+        dc->cap = nc;
+    }
+    diag_result *r = &dc->results[dc->count++];
+    r->z = z; r->x = x; r->y = y;
+    r->n_coords = clipped->n_coords;
+    r->cx = malloc(clipped->n_coords * sizeof(double));
+    r->cy = malloc(clipped->n_coords * sizeof(double));
+    memcpy(r->cx, clipped->x, clipped->n_coords * sizeof(double));
+    memcpy(r->cy, clipped->y, clipped->n_coords * sizeof(double));
+    if (clipped->offsets && clipped->n_offsets > 0) {
+        r->n_offsets = clipped->n_offsets;
+        r->coffsets = malloc(clipped->n_offsets * sizeof(uint32_t));
+        memcpy(r->coffsets, clipped->offsets,
+               clipped->n_offsets * sizeof(uint32_t));
+    } else {
+        r->n_offsets = 0;
+        r->coffsets = NULL;
+    }
+}
+
+/* Compute signed area of a closed ring */
+static double diag_ring_area(const double *x, const double *y,
+                              uint32_t start, uint32_t end) {
+    double area = 0.0;
+    for (uint32_t i = start; i < end - 1; i++) {
+        area += x[i] * y[i + 1] - x[i + 1] * y[i];
+    }
+    return area * 0.5;
+}
+
+/* Test: clip the NE land polygons to Gulf of Mexico tiles and check
+ * that the Gulf is NOT filled with land. */
+static void test_gulf_clip_diagnostic(void) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/land.parquet", FIXTURE_DIR);
+
+    arpt_overture *ov = arpt_overture_open(path);
+    TEST_ASSERT_NOT_NULL(ov);
+
+    /* Read all land features */
+    arpt_overture_feature feat;
+    diag_collector dc = {NULL, 0, 0};
+
+    while (arpt_overture_next(ov, &feat)) {
+        arpt_geom *g = &feat.geometry;
+
+        /* Only clip features that overlap the Gulf area
+         * Gulf bbox: lon [-100, -80], lat [18, 31] */
+        double gmin_x = g->x[0], gmax_x = g->x[0];
+        double gmin_y = g->y[0], gmax_y = g->y[0];
+        for (uint32_t i = 1; i < g->n_coords; i++) {
+            if (g->x[i] < gmin_x) gmin_x = g->x[i];
+            if (g->x[i] > gmax_x) gmax_x = g->x[i];
+            if (g->y[i] < gmin_y) gmin_y = g->y[i];
+            if (g->y[i] > gmax_y) gmax_y = g->y[i];
+        }
+
+        /* Skip features that don't overlap the Gulf area */
+        if (gmax_x < -100.0 || gmin_x > -80.0 ||
+            gmax_y < 18.0 || gmin_y > 31.0) {
+            arpt_geom_free(g);
+            continue;
+        }
+
+        fprintf(stderr, "  Clipping feature type=%u n_coords=%u "
+                "n_offsets=%u n_parts=%u bbox=[%.1f,%.1f,%.1f,%.1f]\n",
+                g->type, g->n_coords, g->n_offsets, g->n_parts,
+                gmin_x, gmin_y, gmax_x, gmax_y);
+
+        /* Clip at zoom 3 and 4 */
+        arpt_assign_tiles(g, 3, diag_cb, &dc);
+        arpt_assign_tiles(g, 4, diag_cb, &dc);
+        arpt_geom_free(g);
+    }
+    arpt_overture_close(ov);
+
+    fprintf(stderr, "  Total clipped results: %d\n", dc.count);
+
+    /* At z=3, the Gulf center (~lon -90, lat 25) falls in:
+     * col = floor((-90 + 180) / 22.5) = floor(90/22.5) = 4
+     * row = floor((25 + 90) / 22.5) = floor(115/22.5) = 5
+     * So tile (3, 4, 5) covers lon [-90, -67.5], lat [22.5, 45] */
+    for (int i = 0; i < dc.count; i++) {
+        diag_result *r = &dc.results[i];
+        /* Print results for tiles in the Gulf area */
+        if (((r->z == 3 && r->x >= 3 && r->x <= 5 &&
+              r->y >= 4 && r->y <= 5) ||
+             (r->z == 4 && r->x >= 6 && r->x <= 10 &&
+              r->y >= 9 && r->y <= 11))) {
+            fprintf(stderr, "  Tile (%d,%d,%d): %u coords, %u offsets\n",
+                    r->z, r->x, r->y, r->n_coords, r->n_offsets);
+
+            /* Print ring areas */
+            if (r->n_offsets >= 2) {
+                for (uint32_t ri = 0; ri + 1 < r->n_offsets; ri++) {
+                    uint32_t start = r->coffsets[ri];
+                    uint32_t end = r->coffsets[ri + 1];
+                    double area = diag_ring_area(r->cx, r->cy, start, end);
+                    fprintf(stderr, "    ring %u: [%u..%u] %u verts, "
+                            "area=%.4f\n",
+                            ri, start, end, end - start, area);
+                    /* Print vertices — all for small rings, first/last for big */
+                    uint32_t nv = end - start;
+                    if (nv <= 30) {
+                        for (uint32_t j = start; j < end; j++) {
+                            fprintf(stderr, "      [%u] (%.4f, %.4f)\n",
+                                    j, r->cx[j], r->cy[j]);
+                        }
+                    } else {
+                        for (uint32_t j = start; j < start + 5; j++) {
+                            fprintf(stderr, "      [%u] (%.4f, %.4f)\n",
+                                    j, r->cx[j], r->cy[j]);
+                        }
+                        fprintf(stderr, "      ... (%u more) ...\n", nv - 10);
+                        for (uint32_t j = end - 5; j < end; j++) {
+                            fprintf(stderr, "      [%u] (%.4f, %.4f)\n",
+                                    j, r->cx[j], r->cy[j]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* Cleanup */
+    for (int i = 0; i < dc.count; i++) {
+        free(dc.results[i].cx);
+        free(dc.results[i].cy);
+        free(dc.results[i].coffsets);
+    }
+    free(dc.results);
+
+    TEST_PASS();
+}
+
 /* ── Cleanup ─────────────────────────────────────────────────────────── */
 
 static void test_cleanup(void) {
@@ -475,6 +632,8 @@ int main(void) {
     RUN_TEST(test_z0_covers_all_quadrants);
     RUN_TEST(test_z0_terrain_mesh);
 
+    /* D. Clip diagnostics */
+    RUN_TEST(test_gulf_clip_diagnostic);
     /* Cleanup */
     RUN_TEST(test_cleanup);
 
