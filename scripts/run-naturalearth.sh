@@ -53,22 +53,27 @@ fi
 
 # ── Tile ──────────────────────────────────────────────────────────────────────
 
-echo ""
-echo "Tiling to $ARCHIVE..."
-echo "  bbox=$BBOX  zoom=$MIN_ZOOM-$MAX_ZOOM"
+if [ ! -f "$ARCHIVE" ]; then
+    echo ""
+    echo "Tiling to $ARCHIVE..."
+    echo "  bbox=$BBOX  zoom=$MIN_ZOOM-$MAX_ZOOM"
 
-"$TILER" \
-    --output "$ARCHIVE" \
-    --bbox "$BBOX" \
-    --min-zoom "$MIN_ZOOM" \
-    --max-zoom "$MAX_ZOOM" \
-    --mem $((64 * 1024 * 1024)) \
-    --input "1:$DATA_DIR/land.parquet" \
-    --input "1:$DATA_DIR/coastline.parquet" \
-    --input "1:$DATA_DIR/boundary.parquet" \
-    --input "5:$DATA_DIR/places.parquet"
+    "$TILER" \
+        --output "$ARCHIVE" \
+        --bbox "$BBOX" \
+        --min-zoom "$MIN_ZOOM" \
+        --max-zoom "$MAX_ZOOM" \
+        --mem $((64 * 1024 * 1024)) \
+        --input "1:$DATA_DIR/land.parquet" \
+        --input "1:$DATA_DIR/coastline.parquet" \
+        --input "1:$DATA_DIR/boundary.parquet" \
+        --input "5:$DATA_DIR/places.parquet"
 
-echo "Archive: $(du -h "$ARCHIVE" | cut -f1)"
+    echo "Archive: $(du -h "$ARCHIVE" | cut -f1)"
+else
+    echo ""
+    echo "Using existing archive: $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"
+fi
 
 # ── Kill any previous instances ──────────────────────────────────────────────
 
