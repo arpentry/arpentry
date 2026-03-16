@@ -12,7 +12,7 @@
 
 /* Equirectangular tile bounds in WGS84 degrees for tile (z, x, y).
    Grid: 2^(z+1) columns × 2^z rows, y=0 at south. */
-static arpt_bounds tile_bounds(int z, int tx, int ty) {
+arpt_bounds arpt_tile_bounds(int z, int tx, int ty) {
     int n_cols = 1 << (z + 1);
     int n_rows = 1 << z;
     double lon_span = 360.0 / (double)n_cols;
@@ -24,7 +24,7 @@ static arpt_bounds tile_bounds(int z, int tx, int ty) {
 
 /* Tile bounds extended by a clip buffer on each side. */
 static arpt_bounds tile_bounds_buffered(int z, int tx, int ty) {
-    arpt_bounds b = tile_bounds(z, tx, ty);
+    arpt_bounds b = arpt_tile_bounds(z, tx, ty);
     double buf_x = (b.max_x - b.min_x) * ((double)CLIP_BUFFER_PX / TILE_PIXELS);
     double buf_y = (b.max_y - b.min_y) * ((double)CLIP_BUFFER_PX / TILE_PIXELS);
     b.min_x -= buf_x;

@@ -1,6 +1,7 @@
 #include "pipeline.h"
 #include "archive.h"
 #include "clip.h"
+#include "feature_io.h"
 #include "hilbert.h"
 #include "overture.h"
 #include "simplify.h"
@@ -20,123 +21,6 @@ static uint64_t make_sort_key(uint64_t tile_id, uint32_t layer, uint32_t rank) {
 
 static uint64_t sort_key_tile_id(uint64_t key) {
     return key >> 16;
-}
-
-/* ---- Compact serialized feature for the sort buffer ----
- *
- * To minimize sort data volume, coordinates are stored as quantized
- * uint16 relative to the tile (computed at clip time). Properties are
- * stored as length-prefixed strings.
- *
- * Format: [geom_type:1][n_coords:4][n_offsets:4][n_props:4]
- *         [tile_w:8][tile_s:8][tile_e:8][tile_n:8]
- *         [x:8*n][y:8*n]
- *         [offsets:4*noff]
- *         [prop_key_len:2 + key_bytes + prop_val_len:2 + val_bytes] * n_props
- *
- * We keep double coords in the sort record so the tile_builder can
- * quantize them relative to the actual tile bounds it receives. The
- * coordinates here are the *clipped* coordinates in WGS84 degrees.
- */
-
-static uint8_t *serialize_feature(const arpt_geom *geom,
-                                  const char *const *pkeys,
-                                  const char *const *pvals,
-                                  uint32_t n_props, size_t *out_size) {
-    /* Compute size */
-    size_t sz = 1 + 4 + 4 + 4;  /* type + n_coords + n_offsets + n_props */
-    sz += geom->n_coords * sizeof(double) * 2;
-    uint32_t noff = geom->offsets ? geom->n_offsets : 0;
-    if (noff > 0) sz += noff * sizeof(uint32_t);
-    for (uint32_t i = 0; i < n_props; i++) {
-        sz += 2 + strlen(pkeys[i]) + 2 + strlen(pvals[i]);
-    }
-
-    uint8_t *buf = malloc(sz);
-    if (!buf) return NULL;
-
-    size_t pos = 0;
-    buf[pos++] = (uint8_t)geom->type;
-    memcpy(buf + pos, &geom->n_coords, 4); pos += 4;
-    memcpy(buf + pos, &noff, 4); pos += 4;
-    memcpy(buf + pos, &n_props, 4); pos += 4;
-
-    memcpy(buf + pos, geom->x, geom->n_coords * sizeof(double));
-    pos += geom->n_coords * sizeof(double);
-    memcpy(buf + pos, geom->y, geom->n_coords * sizeof(double));
-    pos += geom->n_coords * sizeof(double);
-
-    if (noff > 0) {
-        memcpy(buf + pos, geom->offsets, noff * sizeof(uint32_t));
-        pos += noff * sizeof(uint32_t);
-    }
-
-    for (uint32_t i = 0; i < n_props; i++) {
-        uint16_t klen = (uint16_t)strlen(pkeys[i]);
-        uint16_t vlen = (uint16_t)strlen(pvals[i]);
-        memcpy(buf + pos, &klen, 2); pos += 2;
-        memcpy(buf + pos, pkeys[i], klen); pos += klen;
-        memcpy(buf + pos, &vlen, 2); pos += 2;
-        memcpy(buf + pos, pvals[i], vlen); pos += vlen;
-    }
-
-    *out_size = pos;
-    return buf;
-}
-
-static bool deserialize_feature(const uint8_t *data, size_t size,
-                                arpt_geom *geom, arpt_feature *feat,
-                                char ***keys_out, char ***vals_out) {
-    if (size < 13) return false;
-    size_t pos = 0;
-
-    geom->type = data[pos++];
-    memcpy(&geom->n_coords, data + pos, 4); pos += 4;
-    uint32_t noff;
-    memcpy(&noff, data + pos, 4); pos += 4;
-    uint32_t n_props;
-    memcpy(&n_props, data + pos, 4); pos += 4;
-
-    geom->x = malloc(geom->n_coords * sizeof(double));
-    geom->y = malloc(geom->n_coords * sizeof(double));
-    if (!geom->x || !geom->y) return false;
-
-    memcpy(geom->x, data + pos, geom->n_coords * sizeof(double));
-    pos += geom->n_coords * sizeof(double);
-    memcpy(geom->y, data + pos, geom->n_coords * sizeof(double));
-    pos += geom->n_coords * sizeof(double);
-
-    if (noff > 0) {
-        geom->offsets = malloc(noff * sizeof(uint32_t));
-        if (!geom->offsets) return false;
-        memcpy(geom->offsets, data + pos, noff * sizeof(uint32_t));
-        pos += noff * sizeof(uint32_t);
-        geom->n_offsets = noff;
-    }
-
-    char **keys = NULL, **vals = NULL;
-    if (n_props > 0) {
-        keys = malloc(n_props * sizeof(char *));
-        vals = malloc(n_props * sizeof(char *));
-        if (!keys || !vals) { free(keys); free(vals); return false; }
-        for (uint32_t i = 0; i < n_props; i++) {
-            uint16_t klen, vlen;
-            memcpy(&klen, data + pos, 2); pos += 2;
-            keys[i] = malloc(klen + 1);
-            memcpy(keys[i], data + pos, klen); keys[i][klen] = '\0'; pos += klen;
-            memcpy(&vlen, data + pos, 2); pos += 2;
-            vals[i] = malloc(vlen + 1);
-            memcpy(vals[i], data + pos, vlen); vals[i][vlen] = '\0'; pos += vlen;
-        }
-    }
-
-    feat->geom = geom;
-    feat->prop_keys = (const char *const *)keys;
-    feat->prop_vals = (const char *const *)vals;
-    feat->n_props = n_props;
-    *keys_out = keys;
-    *vals_out = vals;
-    return true;
 }
 
 /* ---- Synthetic data generator ---- */
@@ -248,8 +132,8 @@ static void clip_cb(int z, int x, int y,
     uint64_t key = make_sort_key(tile_id, c->layer, c->rank);
 
     size_t data_size;
-    uint8_t *data = serialize_feature(clipped, c->prop_keys, c->prop_vals,
-                                      c->n_props, &data_size);
+    uint8_t *data = arpt_feature_serialize(clipped, c->prop_keys, c->prop_vals,
+                                           c->n_props, &data_size);
     if (data) {
         arpt_sorter_add(c->sorter, key, data, data_size);
         free(data);
@@ -295,19 +179,6 @@ static bool simplify_geom(arpt_geom *g, double tolerance) {
     return true;
 }
 
-/* ---- Compute tile bounds ---- */
-
-/* Equirectangular tile bounds: 2^(z+1) columns × 2^z rows, y=0 at south. */
-static arpt_bounds compute_tile_bounds(int z, int tx, int ty) {
-    int n_cols = 1 << (z + 1);
-    int n_rows = 1 << z;
-    double lon_span = 360.0 / (double)n_cols;
-    double lat_span = 180.0 / (double)n_rows;
-    double w = -180.0 + (double)tx * lon_span;
-    double s = -90.0 + (double)ty * lat_span;
-    return (arpt_bounds){w, s, w + lon_span, s + lat_span};
-}
-
 /* Simplification tolerance in degrees.
  * Equirectangular grid: 2^(z+1) columns, each tile 256 px wide.
  * One pixel = 360 / 2^(z+9) degrees.  Use half a pixel as
@@ -337,21 +208,87 @@ static bool feature_subpixel(const double bbox[4], int z, int tile_pixels) {
     return px_x < 1.0 && px_y < 1.0;
 }
 
-/* Estimate the tile span of a geometry at the given zoom level. */
-static int64_t estimate_tile_span(const arpt_geom *geom, int z) {
-    double gmin_x = geom->x[0], gmax_x = geom->x[0];
-    double gmin_y = geom->y[0], gmax_y = geom->y[0];
-    for (uint32_t i = 1; i < geom->n_coords; i++) {
-        if (geom->x[i] < gmin_x) gmin_x = geom->x[i];
-        if (geom->x[i] > gmax_x) gmax_x = geom->x[i];
-        if (geom->y[i] < gmin_y) gmin_y = geom->y[i];
-        if (geom->y[i] > gmax_y) gmax_y = geom->y[i];
-    }
+/* Estimate the tile span of a geometry from its bbox at the given zoom. */
+static int64_t estimate_tile_span(const double bbox[4], int z) {
     double n_cols = (double)(1 << (z + 1));
     double n_rows = (double)(1 << z);
-    int64_t tx_span = (int64_t)ceil((gmax_x - gmin_x) / 360.0 * n_cols) + 1;
-    int64_t ty_span = (int64_t)ceil((gmax_y - gmin_y) / 180.0 * n_rows) + 1;
+    int64_t tx_span = (int64_t)ceil((bbox[2] - bbox[0]) / 360.0 * n_cols) + 1;
+    int64_t ty_span = (int64_t)ceil((bbox[3] - bbox[1]) / 180.0 * n_rows) + 1;
     return tx_span * ty_span;
+}
+
+/* ---- Shared zoom-level processing loop ----
+ *
+ * For each zoom level: subpixel filter → tile-span filter →
+ * copy-simplify-clip → free temporary copy.
+ * Both synthetic and Overture paths call this after preparing
+ * their feature data. */
+static void process_feature_zooms(
+    const arpt_geom *geom, const double bbox[4],
+    int min_zoom, int max_zoom,
+    uint32_t layer, uint32_t rank,
+    const char *const *prop_keys, const char *const *prop_vals,
+    uint32_t n_props, arpt_sorter *sorter) {
+
+    for (int z = min_zoom; z <= max_zoom; z++) {
+        /* Skip sub-pixel features at this zoom */
+        if (geom->type >= 2 && geom->n_coords > 1 &&
+            feature_subpixel(bbox, z, 256)) {
+            continue;
+        }
+
+        /* Skip features that span too many tiles at this zoom */
+        if (geom->type >= 2 && geom->n_coords > 1 &&
+            estimate_tile_span(bbox, z) > (int64_t)MAX_TILE_SPAN * MAX_TILE_SPAN) {
+            continue;
+        }
+
+        /* Simplify before clipping: make a mutable copy,
+         * simplify at this zoom's tolerance, then clip.
+         * This prevents DP from removing tile-boundary vertices
+         * that the clipper adds, which would create diagonal
+         * artifacts across tile interiors. */
+        arpt_geom sg = *geom;
+        double *sx = NULL, *sy = NULL;
+        uint32_t *so = NULL;
+        double tol = zoom_tolerance(z);
+        bool need_copy = tol > 0.0 && sg.type >= 2 && sg.n_coords > 2;
+        if (need_copy) {
+            size_t csz = sg.n_coords * sizeof(double);
+            sx = malloc(csz);
+            sy = malloc(csz);
+            if (sx && sy) {
+                memcpy(sx, sg.x, csz);
+                memcpy(sy, sg.y, csz);
+                sg.x = sx;
+                sg.y = sy;
+                if (sg.offsets && sg.n_offsets > 0) {
+                    size_t osz = sg.n_offsets * sizeof(uint32_t);
+                    so = malloc(osz);
+                    if (so) {
+                        memcpy(so, sg.offsets, osz);
+                        sg.offsets = so;
+                    }
+                }
+                if (!simplify_geom(&sg, tol)) {
+                    free(sx); free(sy); free(so);
+                    continue;
+                }
+            }
+        }
+
+        clip_ctx ctx = {
+            .sorter = sorter,
+            .layer = layer,
+            .rank = rank,
+            .prop_keys = prop_keys,
+            .prop_vals = prop_vals,
+            .n_props = n_props,
+            .zoom = z,
+        };
+        arpt_assign_tiles(&sg, z, clip_cb, &ctx);
+        free(sx); free(sy); free(so);
+    }
 }
 
 /* ---- Pipeline ----
@@ -364,9 +301,31 @@ static int64_t estimate_tile_span(const arpt_geom *geom, int z) {
 bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     if (!config || !config->output) return false;
 
-    arpt_sorter *sorter = arpt_sorter_create(config->tmp_dir, config->mem_budget);
-    if (!sorter) return false;
+    /* Validate config */
+    int min_zoom = config->min_zoom;
+    int max_zoom = config->max_zoom;
+    if (min_zoom < 0) min_zoom = 0;
+    if (min_zoom > 15) min_zoom = 15;
+    if (max_zoom < min_zoom) max_zoom = min_zoom;
+    if (max_zoom > 15) max_zoom = 15;
 
+    if (config->bbox[0] >= config->bbox[2] ||
+        config->bbox[1] >= config->bbox[3]) {
+        fprintf(stderr, "Invalid bbox: west >= east or south >= north\n");
+        return false;
+    }
+
+    if (config->n_inputs > 0 && !config->inputs) {
+        fprintf(stderr, "n_inputs > 0 but inputs is NULL\n");
+        return false;
+    }
+
+    const char *tmp_dir = config->tmp_dir ? config->tmp_dir : "/tmp";
+    size_t mem_budget = config->mem_budget > 0
+        ? config->mem_budget : (size_t)256 * 1024 * 1024;
+
+    arpt_sorter *sorter = arpt_sorter_create(tmp_dir, mem_budget);
+    if (!sorter) return false;
 
     uint32_t rank = 0;
 
@@ -378,75 +337,21 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
             return false;
         }
 
-        /* Single pass: for each feature, clip to all zoom levels */
         for (int i = 0; i < n_feats; i++) {
-            /* Compute feature bbox for sub-pixel filtering */
             double fbbox[4];
-            fbbox[0] = fbbox[2] = feats[i].geom.x[0];
-            fbbox[1] = fbbox[3] = feats[i].geom.y[0];
-            for (uint32_t ci = 1; ci < feats[i].geom.n_coords; ci++) {
-                if (feats[i].geom.x[ci] < fbbox[0]) fbbox[0] = feats[i].geom.x[ci];
-                if (feats[i].geom.x[ci] > fbbox[2]) fbbox[2] = feats[i].geom.x[ci];
-                if (feats[i].geom.y[ci] < fbbox[1]) fbbox[1] = feats[i].geom.y[ci];
-                if (feats[i].geom.y[ci] > fbbox[3]) fbbox[3] = feats[i].geom.y[ci];
-            }
+            arpt_geom_bbox(&feats[i].geom, fbbox);
 
-            for (int z = config->min_zoom; z <= config->max_zoom; z++) {
-                /* Skip sub-pixel features at this zoom */
-                if (feats[i].geom.type >= 2 && feats[i].geom.n_coords > 1 &&
-                    feature_subpixel(fbbox, z, 256)) {
-                    continue;
-                }
-
-                /* Simplify before clipping: make a mutable copy,
-                 * simplify at this zoom's tolerance, then clip. */
-                arpt_geom sg = feats[i].geom;
-                double *sx = NULL, *sy = NULL;
-                uint32_t *so = NULL;
-                double tol = zoom_tolerance(z);
-                bool need_copy = tol > 0.0 && sg.type >= 2 && sg.n_coords > 2;
-                if (need_copy) {
-                    size_t csz = sg.n_coords * sizeof(double);
-                    sx = malloc(csz);
-                    sy = malloc(csz);
-                    if (sx && sy) {
-                        memcpy(sx, sg.x, csz);
-                        memcpy(sy, sg.y, csz);
-                        sg.x = sx;
-                        sg.y = sy;
-                        if (sg.offsets && sg.n_offsets > 0) {
-                            size_t osz = sg.n_offsets * sizeof(uint32_t);
-                            so = malloc(osz);
-                            if (so) {
-                                memcpy(so, sg.offsets, osz);
-                                sg.offsets = so;
-                            }
-                        }
-                        if (!simplify_geom(&sg, tol)) {
-                            free(sx); free(sy); free(so);
-                            continue;
-                        }
-                    }
-                }
-
-                clip_ctx ctx = {
-                    .sorter = sorter,
-                    .layer = feats[i].layer,
-                    .rank = rank,
-                    .prop_keys = NULL,
-                    .prop_vals = NULL,
-                    .n_props = 0,
-                    .zoom = z,
-                };
-                arpt_assign_tiles(&sg, z, clip_cb, &ctx);
-                free(sx); free(sy); free(so);
-            }
+            process_feature_zooms(&feats[i].geom, fbbox,
+                                  min_zoom, max_zoom,
+                                  feats[i].layer, rank,
+                                  NULL, NULL, 0, sorter);
             rank++;
-            if (rank > 0xFFF) rank = 0xFFF; /* clamp to 12-bit field */
+            if (rank > 0xFFF) rank = 0xFFF;
         }
 
         free_synth_features(feats, n_feats);
     }
+
     /* OvertureMaps GeoParquet input path */
     for (int fi = 0; fi < config->n_inputs; fi++) {
         const arpt_pipeline_input *inp = &config->inputs[fi];
@@ -485,78 +390,13 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
             if (feat.has_bbox) {
                 memcpy(feat_bbox, feat.bbox, sizeof(feat_bbox));
             } else {
-                feat_bbox[0] = feat_bbox[2] = g->x[0];
-                feat_bbox[1] = feat_bbox[3] = g->y[0];
-                for (uint32_t ci = 1; ci < g->n_coords; ci++) {
-                    if (g->x[ci] < feat_bbox[0]) feat_bbox[0] = g->x[ci];
-                    if (g->x[ci] > feat_bbox[2]) feat_bbox[2] = g->x[ci];
-                    if (g->y[ci] < feat_bbox[1]) feat_bbox[1] = g->y[ci];
-                    if (g->y[ci] > feat_bbox[3]) feat_bbox[3] = g->y[ci];
-                }
+                arpt_geom_bbox(g, feat_bbox);
             }
 
-            /* Single pass: simplify then clip to all zoom levels.
-             * Skip zoom levels where the feature spans too many tiles —
-             * it will still appear at lower zoom levels. */
-            for (int z = config->min_zoom; z <= config->max_zoom; z++) {
-                /* Skip sub-pixel features at this zoom */
-                if (g->type >= 2 && g->n_coords > 1 &&
-                    feature_subpixel(feat_bbox, z, 256)) {
-                    continue;
-                }
-
-                /* Skip features that span too many tiles at this zoom */
-                if (g->type >= 2 && g->n_coords > 1 &&
-                    estimate_tile_span(g, z) > (int64_t)MAX_TILE_SPAN * MAX_TILE_SPAN) {
-                    continue;
-                }
-
-                /* Simplify before clipping: make a mutable copy,
-                 * simplify at this zoom's tolerance, then clip.
-                 * This prevents DP from removing tile-boundary vertices
-                 * that the clipper adds, which would create diagonal
-                 * artifacts across tile interiors. */
-                arpt_geom sg = *g;
-                double *sx = NULL, *sy = NULL;
-                uint32_t *so = NULL;
-                double tol = zoom_tolerance(z);
-                bool need_copy = tol > 0.0 && sg.type >= 2 && sg.n_coords > 2;
-                if (need_copy) {
-                    size_t csz = sg.n_coords * sizeof(double);
-                    sx = malloc(csz);
-                    sy = malloc(csz);
-                    if (sx && sy) {
-                        memcpy(sx, sg.x, csz);
-                        memcpy(sy, sg.y, csz);
-                        sg.x = sx;
-                        sg.y = sy;
-                        if (sg.offsets && sg.n_offsets > 0) {
-                            size_t osz = sg.n_offsets * sizeof(uint32_t);
-                            so = malloc(osz);
-                            if (so) {
-                                memcpy(so, sg.offsets, osz);
-                                sg.offsets = so;
-                            }
-                        }
-                        if (!simplify_geom(&sg, tol)) {
-                            free(sx); free(sy); free(so);
-                            continue;
-                        }
-                    }
-                }
-
-                clip_ctx ctx = {
-                    .sorter = sorter,
-                    .layer = inp->layer,
-                    .rank = rank,
-                    .prop_keys = pkeys,
-                    .prop_vals = pvals,
-                    .n_props = n_props,
-                    .zoom = z,
-                };
-                arpt_assign_tiles(&sg, z, clip_cb, &ctx);
-                free(sx); free(sy); free(so);
-            }
+            process_feature_zooms(g, feat_bbox,
+                                  min_zoom, max_zoom,
+                                  inp->layer, rank,
+                                  pkeys, pvals, n_props, sorter);
 
             arpt_geom_free(g);
             rank++;
@@ -588,8 +428,8 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     }
 
     arpt_archive_writer_set_zoom(writer,
-                                 (uint8_t)config->min_zoom,
-                                 (uint8_t)config->max_zoom);
+                                 (uint8_t)min_zoom,
+                                 (uint8_t)max_zoom);
     arpt_archive_writer_set_bounds(writer,
                                    config->bbox[0], config->bbox[1],
                                    config->bbox[2], config->bbox[3]);
@@ -623,7 +463,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
 
             cur_tile_id = tid;
             arpt_hilbert_tile_id_decode(tid, &cur_z, &cur_x, &cur_y);
-            arpt_bounds tb = compute_tile_bounds(cur_z, cur_x, cur_y);
+            arpt_bounds tb = arpt_tile_bounds(cur_z, cur_x, cur_y);
             builder = arpt_tile_builder_create(tb);
         }
 
@@ -632,7 +472,8 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
             arpt_feature feat = {0};
             char **keys = NULL, **vals = NULL;
 
-            if (deserialize_feature(data, data_size, &geom, &feat, &keys, &vals)) {
+            if (arpt_feature_deserialize(data, data_size, &geom, &feat,
+                                         &keys, &vals)) {
                 feat.layer = (uint32_t)((key >> 12) & 0xF);
                 arpt_tile_builder_add_feature(builder, &feat);
             }

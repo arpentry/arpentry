@@ -23,6 +23,10 @@ typedef struct {
 /* Parse a WKB blob into an arpt_geom. Returns false on error. */
 bool arpt_wkb_parse(const uint8_t *data, size_t size, arpt_geom *out);
 
+/* Compute the bounding box of a geometry: bbox[0]=min_x, bbox[1]=min_y,
+   bbox[2]=max_x, bbox[3]=max_y. Geometry must have n_coords > 0. */
+void arpt_geom_bbox(const arpt_geom *g, double bbox[4]);
+
 /* Free memory owned by an arpt_geom. */
 void arpt_geom_free(arpt_geom *g);
 

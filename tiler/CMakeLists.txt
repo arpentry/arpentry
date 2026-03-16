@@ -16,6 +16,7 @@ add_library(arpentry_tiler STATIC
     src/sort.c
     src/tile_build.c
     src/archive.c
+    src/feature_io.c
     src/pipeline.c
     src/parquet.c
     src/geoparquet.c

@@ -16,17 +16,8 @@ void tearDown(void) {}
 #define TILE_EXTENT 32768
 #define TILE_BUFFER 16384
 
-/* ---- Tile bounds (duplicated from clip.c for verification) ---- */
-
-static arpt_bounds tile_bounds(int z, int tx, int ty) {
-    int n_cols = 1 << (z + 1);
-    int n_rows = 1 << z;
-    double lon_span = 360.0 / (double)n_cols;
-    double lat_span = 180.0 / (double)n_rows;
-    double w = -180.0 + (double)tx * lon_span;
-    double s = -90.0 + (double)ty * lat_span;
-    return (arpt_bounds){w, s, w + lon_span, s + lat_span};
-}
+/* ---- Tile bounds (now public in clip.h) ---- */
+#define tile_bounds arpt_tile_bounds
 
 /* ---- Dequantization (FORMAT.md spec) ---- */
 
