@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Tile Natural Earth 110m fixtures, serve them, and view the globe.
+# Tile Natural Earth 10m data, serve it, and view the globe.
 #
-# Uses the committed test fixtures (no download needed).
+# Run scripts/download-naturalearth.py first to fetch the data:
+#   python3 scripts/download-naturalearth.py
 #
 # Usage:
 #   ./scripts/run-naturalearth.sh [--screenshot /tmp/globe.png]
@@ -10,7 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$SCRIPT_DIR/.."
 BUILD_DIR="$ROOT_DIR/build"
-FIXTURE_DIR="$ROOT_DIR/tiler/tests/fixtures/naturalearth"
+DATA_DIR="$ROOT_DIR/data/naturalearth"
 ARCHIVE="/tmp/naturalearth.arpa"
 
 SERVER="$BUILD_DIR/server/arpentry_server"
@@ -43,6 +44,13 @@ fi
 echo "Building..."
 cmake --build "$BUILD_DIR"
 
+# ── Check data ────────────────────────────────────────────────────────────────
+
+if [ ! -d "$DATA_DIR" ]; then
+    echo "Data not found. Downloading Natural Earth 10m..."
+    python3 "$SCRIPT_DIR/download-naturalearth.py"
+fi
+
 # ── Tile ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -55,10 +63,10 @@ echo "  bbox=$BBOX  zoom=$MIN_ZOOM-$MAX_ZOOM"
     --min-zoom "$MIN_ZOOM" \
     --max-zoom "$MAX_ZOOM" \
     --mem $((64 * 1024 * 1024)) \
-    --input "1:$FIXTURE_DIR/land.parquet" \
-    --input "1:$FIXTURE_DIR/coastline.parquet" \
-    --input "1:$FIXTURE_DIR/boundary.parquet" \
-    --input "5:$FIXTURE_DIR/places.parquet"
+    --input "1:$DATA_DIR/land.parquet" \
+    --input "1:$DATA_DIR/coastline.parquet" \
+    --input "1:$DATA_DIR/boundary.parquet" \
+    --input "5:$DATA_DIR/places.parquet"
 
 echo "Archive: $(du -h "$ARCHIVE" | cut -f1)"
 
