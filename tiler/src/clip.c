@@ -34,6 +34,70 @@ static arpt_bounds tile_bounds_buffered(int z, int tx, int ty) {
     return b;
 }
 
+/* ---------- Dynamic arrays ---------- */
+
+typedef struct {
+    double *data;
+    uint32_t len;
+    uint32_t cap;
+} darray;
+
+static void da_init(darray *a) {
+    a->data = NULL;
+    a->len = 0;
+    a->cap = 0;
+}
+
+static bool da_push(darray *a, double v) {
+    if (a->len == a->cap) {
+        uint32_t nc = a->cap ? a->cap * 2 : 16;
+        double *p = realloc(a->data, nc * sizeof(double));
+        if (!p) return false;
+        a->data = p;
+        a->cap = nc;
+    }
+    a->data[a->len++] = v;
+    return true;
+}
+
+static void da_free(darray *a) {
+    free(a->data);
+    a->data = NULL;
+    a->len = 0;
+    a->cap = 0;
+}
+
+typedef struct {
+    uint32_t *data;
+    uint32_t len;
+    uint32_t cap;
+} u32array;
+
+static void u32a_init(u32array *a) {
+    a->data = NULL;
+    a->len = 0;
+    a->cap = 0;
+}
+
+static bool u32a_push(u32array *a, uint32_t v) {
+    if (a->len == a->cap) {
+        uint32_t nc = a->cap ? a->cap * 2 : 16;
+        uint32_t *p = realloc(a->data, nc * sizeof(uint32_t));
+        if (!p) return false;
+        a->data = p;
+        a->cap = nc;
+    }
+    a->data[a->len++] = v;
+    return true;
+}
+
+static void u32a_free(u32array *a) {
+    free(a->data);
+    a->data = NULL;
+    a->len = 0;
+    a->cap = 0;
+}
+
 /* ---------- Point clipping ---------- */
 
 static void clip_points(const arpt_geom *geom, int z,
@@ -79,446 +143,127 @@ static void clip_points(const arpt_geom *geom, int z,
     }
 }
 
-/* ---------- Liang-Barsky line clipping ---------- */
-
-static bool liang_barsky(double x0, double y0, double x1, double y1,
-                         const arpt_bounds *b,
-                         double *cx0, double *cy0, double *cx1, double *cy1) {
-    double dx = x1 - x0;
-    double dy = y1 - y0;
-    double p[4] = {-dx, dx, -dy, dy};
-    double q[4] = {x0 - b->min_x, b->max_x - x0, y0 - b->min_y, b->max_y - y0};
-    double t0 = 0.0, t1 = 1.0;
-
-    for (int i = 0; i < 4; i++) {
-        if (p[i] == 0.0) {
-            if (q[i] < 0.0) return false;
-        } else {
-            double r = q[i] / p[i];
-            if (p[i] < 0.0) {
-                if (r > t1) return false;
-                if (r > t0) t0 = r;
-            } else {
-                if (r < t0) return false;
-                if (r < t1) t1 = r;
-            }
-        }
-    }
-
-    *cx0 = x0 + t0 * dx;
-    *cy0 = y0 + t0 * dy;
-    *cx1 = x0 + t1 * dx;
-    *cy1 = y0 + t1 * dy;
-    return true;
-}
-
-/* Dynamic double array for building clipped coordinates. */
-typedef struct {
-    double *data;
-    uint32_t len;
-    uint32_t cap;
-} darray;
-
-static void da_init(darray *a) {
-    a->data = NULL;
-    a->len = 0;
-    a->cap = 0;
-}
-
-static bool da_push(darray *a, double v) {
-    if (a->len == a->cap) {
-        uint32_t nc = a->cap ? a->cap * 2 : 16;
-        double *p = realloc(a->data, nc * sizeof(double));
-        if (!p) return false;
-        a->data = p;
-        a->cap = nc;
-    }
-    a->data[a->len++] = v;
-    return true;
-}
-
-static void da_free(darray *a) {
-    free(a->data);
-    a->data = NULL;
-    a->len = 0;
-    a->cap = 0;
-}
-
-/* Dynamic uint32 array for tracking segment/ring offsets. */
-typedef struct {
-    uint32_t *data;
-    uint32_t len;
-    uint32_t cap;
-} u32array;
-
-static void u32a_init(u32array *a) {
-    a->data = NULL;
-    a->len = 0;
-    a->cap = 0;
-}
-
-static bool u32a_push(u32array *a, uint32_t v) {
-    if (a->len == a->cap) {
-        uint32_t nc = a->cap ? a->cap * 2 : 16;
-        uint32_t *p = realloc(a->data, nc * sizeof(uint32_t));
-        if (!p) return false;
-        a->data = p;
-        a->cap = nc;
-    }
-    a->data[a->len++] = v;
-    return true;
-}
-
-static void u32a_free(u32array *a) {
-    free(a->data);
-    a->data = NULL;
-    a->len = 0;
-    a->cap = 0;
-}
-
-/* ---------- Line clipping ---------- */
-
-/* Clip line segments to left+right edges of a column strip using
- * Liang-Barsky.  Tracks segment boundaries in out_seg so callers
- * can distinguish disconnected groups. */
-static void clip_lines_to_strip(const arpt_geom *geom, uint32_t n_lines,
-                                const arpt_bounds *strip,
-                                darray *out_x, darray *out_y,
-                                u32array *out_seg) {
-    /* Use a strip that is unbounded in y for the column pass */
-    arpt_bounds col = {strip->min_x, -90.0, strip->max_x, 90.0};
-    for (uint32_t li = 0; li < n_lines; li++) {
-        uint32_t start = 0, end = geom->n_coords;
-        if (geom->offsets && geom->n_offsets > 1) {
-            start = geom->offsets[li];
-            end = geom->offsets[li + 1];
-        }
-        for (uint32_t i = start; i + 1 < end; i++) {
-            double cx0, cy0, cx1, cy1;
-            if (liang_barsky(geom->x[i], geom->y[i],
-                             geom->x[i + 1], geom->y[i + 1],
-                             &col, &cx0, &cy0, &cx1, &cy1)) {
-                bool connected = (out_x->len > 0 &&
-                                  out_x->data[out_x->len - 1] == cx0 &&
-                                  out_y->data[out_y->len - 1] == cy0);
-                if (!connected) {
-                    u32a_push(out_seg, out_x->len);
-                    da_push(out_x, cx0);
-                    da_push(out_y, cy0);
-                }
-                da_push(out_x, cx1);
-                da_push(out_y, cy1);
-            }
-        }
-    }
-}
-
-static void clip_lines(const arpt_geom *geom, int z,
-                       arpt_tile_cb cb, void *ctx) {
-    int n_cols = 1 << (z + 1);
-    int n_rows = 1 << z;
-
-    /* Compute the bounding box of the geometry to limit tile iteration */
-    double gmin_x = geom->x[0], gmax_x = geom->x[0];
-    double gmin_y = geom->y[0], gmax_y = geom->y[0];
-    for (uint32_t i = 1; i < geom->n_coords; i++) {
-        if (geom->x[i] < gmin_x) gmin_x = geom->x[i];
-        if (geom->x[i] > gmax_x) gmax_x = geom->x[i];
-        if (geom->y[i] < gmin_y) gmin_y = geom->y[i];
-        if (geom->y[i] > gmax_y) gmax_y = geom->y[i];
-    }
-
-    /* Clamp to valid range */
-    if (gmin_x < -180.0) gmin_x = -180.0;
-    if (gmax_x > 180.0)  gmax_x = 180.0;
-    if (gmin_y < -90.0)  gmin_y = -90.0;
-    if (gmax_y > 90.0)   gmax_y = 90.0;
-
-    /* Convert geom bbox to tile range (equirectangular) */
-    int tx_min = (int)floor((gmin_x + 180.0) / 360.0 * (double)n_cols);
-    int tx_max = (int)floor((gmax_x + 180.0) / 360.0 * (double)n_cols);
-    int ty_min = (int)floor((gmin_y + 90.0) / 180.0 * (double)n_rows);
-    int ty_max = (int)floor((gmax_y + 90.0) / 180.0 * (double)n_rows);
-
-    if (tx_min < 0) tx_min = 0;
-    if (tx_max >= n_cols) tx_max = n_cols - 1;
-    if (ty_min < 0) ty_min = 0;
-    if (ty_max >= n_rows) ty_max = n_rows - 1;
-
-    /* Determine number of linestrings */
-    uint32_t n_lines = 1;
-    if (geom->type == 5) { /* MultiLineString */
-        n_lines = geom->n_offsets > 0 ? geom->n_offsets - 1 : 0;
-    }
-
-    /* Strip-based clipping: clip to column strip (left+right) once,
-     * then for each row, clip the strip result to top+bottom. */
-    for (int tx = tx_min; tx <= tx_max; tx++) {
-        /* Buffered column strip — extends left/right by clip buffer */
-        arpt_bounds strip = tile_bounds_buffered(z, tx, 0);
-
-        /* Clip all segments to this column strip */
-        darray sx, sy;
-        u32array sseg;
-        da_init(&sx);
-        da_init(&sy);
-        u32a_init(&sseg);
-        clip_lines_to_strip(geom, n_lines, &strip, &sx, &sy, &sseg);
-
-        if (sx.len < 2) {
-            da_free(&sx);
-            da_free(&sy);
-            u32a_free(&sseg);
-            continue;
-        }
-
-        /* For each row, clip the strip-clipped segments to the row bounds.
-         * Iterate within each segment group to avoid phantom segments
-         * between disconnected parts. */
-        for (int ty = ty_min; ty <= ty_max; ty++) {
-            arpt_bounds tb = tile_bounds_buffered(z, tx, ty);
-            /* Clip only top+bottom: use full x range so only y clips */
-            arpt_bounds row = {-180.0, tb.min_y, 180.0, tb.max_y};
-
-            darray cx, cy;
-            u32array cseg;
-            da_init(&cx);
-            da_init(&cy);
-            u32a_init(&cseg);
-
-            for (uint32_t si = 0; si < sseg.len; si++) {
-                uint32_t seg_start = sseg.data[si];
-                uint32_t seg_end = (si + 1 < sseg.len)
-                    ? sseg.data[si + 1] : sx.len;
-
-                for (uint32_t i = seg_start; i + 1 < seg_end; i++) {
-                    double cx0, cy0, cx1, cy1;
-                    if (liang_barsky(sx.data[i], sy.data[i],
-                                     sx.data[i + 1], sy.data[i + 1],
-                                     &row, &cx0, &cy0, &cx1, &cy1)) {
-                        bool connected = (cx.len > 0 &&
-                                          cx.data[cx.len - 1] == cx0 &&
-                                          cy.data[cy.len - 1] == cy0);
-                        if (!connected) {
-                            u32a_push(&cseg, cx.len);
-                            da_push(&cx, cx0);
-                            da_push(&cy, cy0);
-                        }
-                        da_push(&cx, cx1);
-                        da_push(&cy, cy1);
-                    }
-                }
-            }
-
-            /* Emit each connected segment group as a separate callback
-             * to avoid phantom lines between disconnected parts. */
-            for (uint32_t si = 0; si < cseg.len; si++) {
-                uint32_t start = cseg.data[si];
-                uint32_t end = (si + 1 < cseg.len)
-                    ? cseg.data[si + 1] : cx.len;
-                uint32_t n = end - start;
-                if (n >= 2) {
-                    arpt_geom clipped = {0};
-                    clipped.type = 2; /* LineString */
-                    clipped.x = cx.data + start;
-                    clipped.y = cy.data + start;
-                    clipped.n_coords = n;
-                    cb(z, tx, ty, &clipped, ctx);
-                }
-            }
-
-            da_free(&cx);
-            da_free(&cy);
-            u32a_free(&cseg);
-        }
-
-        da_free(&sx);
-        da_free(&sy);
-        u32a_free(&sseg);
-    }
-}
-
-/* ---------- Sutherland-Hodgman slab clipping ----------
+/* ---------- Unified slab clipper (geojson-vt approach) ----------
  *
- * Clip a polygon ring against two parallel axis-aligned lines (a "slab")
- * in a single pass, following the geojson-vt approach.  For rectangle
- * clipping, two slab passes are used: x then y.
+ * Clips a coordinate sequence against two parallel axis-aligned lines
+ * (a "slab") [k1, k2] along a given axis (0=x, 1=y).
  *
- * This produces a single output ring with implicit boundary edges along
- * the clip lines.  Re-entrant polygons that exit and re-enter the slab
- * produce overlapping boundary edges, which the ear-clipping triangulator
- * handles correctly.
- */
+ * For lines (is_polygon=false): breaks into separate segments on exit,
+ *   recording each segment start in seg_starts.
+ * For polygons (is_polygon=true): keeps one continuous ring, closes it
+ *   at the end if needed.
+ *
+ * Rectangle clipping = two passes: x-slab then y-slab. */
 
-/* Clip an open ring (n unique vertices, no closing dup) against the slab
- * [k1, k2] along the given axis (0=x, 1=y).
- * Appends vertices to out_x/out_y.  Returns the number of vertices added. */
-static uint32_t clip_ring_slab(const double *rx, const double *ry, uint32_t n,
-                                double k1, double k2, int axis,
-                                darray *out_x, darray *out_y) {
-    uint32_t start = out_x->len;
+/* Push a vertex, suppressing consecutive duplicates. */
+static void da_push_dedup(darray *out_x, darray *out_y, double px, double py) {
+    if (out_x->len > 0 &&
+        out_x->data[out_x->len - 1] == px &&
+        out_y->data[out_y->len - 1] == py)
+        return;
+    da_push(out_x, px);
+    da_push(out_y, py);
+}
 
-    for (uint32_t i = 0; i < n; i++) {
-        uint32_t j = (i + 1) % n;
-        double a = axis ? ry[i] : rx[i];
-        double b = axis ? ry[j] : rx[j];
+static void slab_intersect(darray *out_x, darray *out_y,
+                           double ax, double ay, double bx, double by,
+                           double k, int axis) {
+    if (axis) {
+        double t = (k - ay) / (by - ay);
+        da_push_dedup(out_x, out_y, ax + (bx - ax) * t, k);
+    } else {
+        double t = (k - ax) / (bx - ax);
+        da_push_dedup(out_x, out_y, k, ay + (by - ay) * t);
+    }
+}
+
+/* Clip n vertices against slab [k1, k2] on the given axis.
+ * Processes n-1 edges: (0,1), (1,2), ..., (n-2, n-1).
+ * seg_starts is optional (may be NULL for polygon mode). */
+static void clip_slab(const double *rx, const double *ry, uint32_t n,
+                      double k1, double k2, int axis, bool is_polygon,
+                      darray *out_x, darray *out_y,
+                      u32array *seg_starts) {
+    if (n < 2) return;
+
+    uint32_t slice_start = out_x->len;
+
+    for (uint32_t i = 0; i + 1 < n; i++) {
+        double ax = rx[i],     ay = ry[i];
+        double bx = rx[i + 1], by = ry[i + 1];
+        double a = axis ? ay : ax;
+        double b = axis ? by : bx;
+        bool exited = false;
 
         if (a < k1) {
-            /* Current point is left of / below k1 */
             if (b > k1) {
-                /* Segment enters the slab from the left/bottom */
-                double t = (k1 - a) / (b - a);
-                if (axis) {
-                    da_push(out_x, rx[i] + t * (rx[j] - rx[i]));
-                    da_push(out_y, k1);
-                } else {
-                    da_push(out_x, k1);
-                    da_push(out_y, ry[i] + t * (ry[j] - ry[i]));
-                }
-                if (b > k2) {
-                    /* Passes all the way through — exits on the right/top */
-                    double t2 = (k2 - a) / (b - a);
-                    if (axis) {
-                        da_push(out_x, rx[i] + t2 * (rx[j] - rx[i]));
-                        da_push(out_y, k2);
-                    } else {
-                        da_push(out_x, k2);
-                        da_push(out_y, ry[i] + t2 * (ry[j] - ry[i]));
-                    }
-                }
+                slab_intersect(out_x, out_y, ax, ay, bx, by, k1, axis);
             }
         } else if (a > k2) {
-            /* Current point is right of / above k2 */
             if (b < k2) {
-                /* Segment enters the slab from the right/top */
-                double t = (k2 - a) / (b - a);
-                if (axis) {
-                    da_push(out_x, rx[i] + t * (rx[j] - rx[i]));
-                    da_push(out_y, k2);
-                } else {
-                    da_push(out_x, k2);
-                    da_push(out_y, ry[i] + t * (ry[j] - ry[i]));
-                }
-                if (b < k1) {
-                    /* Passes all the way through — exits on the left/bottom */
-                    double t2 = (k1 - a) / (b - a);
-                    if (axis) {
-                        da_push(out_x, rx[i] + t2 * (rx[j] - rx[i]));
-                        da_push(out_y, k1);
-                    } else {
-                        da_push(out_x, k1);
-                        da_push(out_y, ry[i] + t2 * (ry[j] - ry[i]));
-                    }
-                }
+                slab_intersect(out_x, out_y, ax, ay, bx, by, k2, axis);
             }
         } else {
-            /* Current point is inside the slab */
-            da_push(out_x, rx[i]);
-            da_push(out_y, ry[i]);
+            da_push_dedup(out_x, out_y, ax, ay);
         }
 
-        /* Check exits from inside the slab */
         if (b < k1 && a >= k1) {
-            /* Exits on the left/bottom */
-            double t = (k1 - a) / (b - a);
-            if (axis) {
-                da_push(out_x, rx[i] + t * (rx[j] - rx[i]));
-                da_push(out_y, k1);
-            } else {
-                da_push(out_x, k1);
-                da_push(out_y, ry[i] + t * (ry[j] - ry[i]));
-            }
+            slab_intersect(out_x, out_y, ax, ay, bx, by, k1, axis);
+            exited = true;
         }
         if (b > k2 && a <= k2) {
-            /* Exits on the right/top */
-            double t = (k2 - a) / (b - a);
-            if (axis) {
-                da_push(out_x, rx[i] + t * (rx[j] - rx[i]));
-                da_push(out_y, k2);
+            slab_intersect(out_x, out_y, ax, ay, bx, by, k2, axis);
+            exited = true;
+        }
+
+        if (!is_polygon && exited) {
+            uint32_t len = out_x->len - slice_start;
+            if (len >= 2 && seg_starts) {
+                u32a_push(seg_starts, slice_start);
             } else {
-                da_push(out_x, k2);
-                da_push(out_y, ry[i] + t * (ry[j] - ry[i]));
+                out_x->len = slice_start;
+                out_y->len = slice_start;
             }
+            slice_start = out_x->len;
         }
     }
 
-    /* Close the ring if endpoints don't match */
-    uint32_t count = out_x->len - start;
-    if (count >= 3) {
-        uint32_t last = out_x->len - 1;
-        if (out_x->data[start] != out_x->data[last] ||
-            out_y->data[start] != out_y->data[last]) {
-            da_push(out_x, out_x->data[start]);
-            da_push(out_y, out_y->data[start]);
-            count++;
+    /* Add the last point if inside */
+    {
+        double a = axis ? ry[n - 1] : rx[n - 1];
+        if (a >= k1 && a <= k2) {
+            da_push_dedup(out_x, out_y, rx[n - 1], ry[n - 1]);
         }
     }
 
-    return count;
-}
-
-/* Strip a closing duplicate vertex (first == last) from a ring.
- * Returns the number of unique vertices (ring_n or ring_n - 1). */
-static uint32_t strip_closing(const double *rx, const double *ry,
-                               uint32_t ring_n) {
-    if (ring_n >= 2 &&
-        rx[0] == rx[ring_n - 1] && ry[0] == ry[ring_n - 1]) {
-        return ring_n - 1;
-    }
-    return ring_n;
-}
-
-/* Clip a single closed ring against a rectangle using two-pass
- * Sutherland-Hodgman slab clipping (x then y).
- *
- * Input: n unique vertices (open ring, no closing dup).
- * Output: zero or more closed rings (first == last) appended to out_x/out_y.
- *         ring_starts receives the start index of each output ring. */
-static void clip_ring_rect(const double *rx, const double *ry, uint32_t n,
-                            const arpt_bounds *b,
-                            darray *out_x, darray *out_y,
-                            u32array *ring_starts) {
-    if (n < 3) return;
-
-    /* Pass 1: clip against x-slab [min_x, max_x] */
-    darray mid_x, mid_y;
-    da_init(&mid_x);
-    da_init(&mid_y);
-    uint32_t mid_n = clip_ring_slab(rx, ry, n,
-                                     b->min_x, b->max_x, 0,
-                                     &mid_x, &mid_y);
-
-    if (mid_n < 4) { /* need at least 3 unique + closing */
-        da_free(&mid_x);
-        da_free(&mid_y);
-        return;
-    }
-
-    /* Strip closing vertex for pass 2 input */
-    uint32_t open_n = strip_closing(mid_x.data, mid_y.data, mid_n);
-    if (open_n < 3) {
-        da_free(&mid_x);
-        da_free(&mid_y);
-        return;
-    }
-
-    /* Pass 2: clip against y-slab [min_y, max_y] */
-    uint32_t ring_start = out_x->len;
-    uint32_t out_n = clip_ring_slab(mid_x.data, mid_y.data, open_n,
-                                     b->min_y, b->max_y, 1,
-                                     out_x, out_y);
-
-    da_free(&mid_x);
-    da_free(&mid_y);
-
-    if (out_n >= 4) { /* at least 3 unique + closing */
-        u32a_push(ring_starts, ring_start);
+    if (is_polygon) {
+        /* Close the ring if endpoints don't match */
+        uint32_t len = out_x->len - slice_start;
+        if (len >= 3) {
+            uint32_t last = out_x->len - 1;
+            if (out_x->data[slice_start] != out_x->data[last] ||
+                out_y->data[slice_start] != out_y->data[last]) {
+                da_push(out_x, out_x->data[slice_start]);
+                da_push(out_y, out_y->data[slice_start]);
+            }
+        } else {
+            /* Degenerate — revert */
+            out_x->len = slice_start;
+            out_y->len = slice_start;
+        }
     } else {
-        /* Degenerate — revert */
-        out_x->len = ring_start;
-        out_y->len = ring_start;
+        /* Push final line segment */
+        uint32_t len = out_x->len - slice_start;
+        if (len >= 2 && seg_starts) {
+            u32a_push(seg_starts, slice_start);
+        } else {
+            out_x->len = slice_start;
+            out_y->len = slice_start;
+        }
     }
 }
+
+/* ---------- Helpers ---------- */
 
 /* Compute bounding box of a coordinate range and convert to tile range. */
 static void coords_to_tile_range(const double *x, const double *y,
@@ -551,6 +296,459 @@ static void coords_to_tile_range(const double *x, const double *y,
     if (*ty_max >= n_rows) *ty_max = n_rows - 1;
 }
 
+/* Get the start index of segment si and the end (= start of next). */
+static void seg_range(const u32array *segs, uint32_t si, uint32_t total,
+                      uint32_t *start, uint32_t *end) {
+    *start = segs->data[si];
+    *end = (si + 1 < segs->len) ? segs->data[si + 1] : total;
+}
+
+/* ---------- Line clipping ---------- */
+
+static void clip_lines(const arpt_geom *geom, int z,
+                       arpt_tile_cb cb, void *ctx) {
+    int n_cols = 1 << (z + 1);
+    int n_rows = 1 << z;
+
+    int tx_min, tx_max, ty_min, ty_max;
+    coords_to_tile_range(geom->x, geom->y, 0, geom->n_coords,
+                         n_cols, n_rows, &tx_min, &tx_max, &ty_min, &ty_max);
+
+    uint32_t n_lines = 1;
+    if (geom->type == 5 && geom->n_offsets > 1)
+        n_lines = geom->n_offsets - 1;
+
+    for (int tx = tx_min; tx <= tx_max; tx++) {
+        for (int ty = ty_min; ty <= ty_max; ty++) {
+            arpt_bounds tb = tile_bounds_buffered(z, tx, ty);
+
+            darray out_x, out_y;
+            u32array segs;
+            da_init(&out_x);
+            da_init(&out_y);
+            u32a_init(&segs);
+
+            for (uint32_t li = 0; li < n_lines; li++) {
+                uint32_t start = 0, end = geom->n_coords;
+                if (geom->offsets && geom->n_offsets > 1) {
+                    start = geom->offsets[li];
+                    end = geom->offsets[li + 1];
+                }
+                uint32_t ln = end - start;
+                if (ln < 2) continue;
+
+                /* Pass 1: clip against x-slab */
+                darray mx, my;
+                u32array msegs;
+                da_init(&mx);
+                da_init(&my);
+                u32a_init(&msegs);
+                clip_slab(geom->x + start, geom->y + start, ln,
+                          tb.min_x, tb.max_x, 0, false,
+                          &mx, &my, &msegs);
+
+                /* Pass 2: clip each x-clipped segment against y-slab */
+                for (uint32_t si = 0; si < msegs.len; si++) {
+                    uint32_t ss, se;
+                    seg_range(&msegs, si, mx.len, &ss, &se);
+                    uint32_t sn = se - ss;
+                    if (sn >= 2) {
+                        clip_slab(mx.data + ss, my.data + ss, sn,
+                                  tb.min_y, tb.max_y, 1, false,
+                                  &out_x, &out_y, &segs);
+                    }
+                }
+
+                da_free(&mx);
+                da_free(&my);
+                u32a_free(&msegs);
+            }
+
+            /* Emit each segment */
+            for (uint32_t si = 0; si < segs.len; si++) {
+                uint32_t ss, se;
+                seg_range(&segs, si, out_x.len, &ss, &se);
+                uint32_t sn = se - ss;
+                if (sn >= 2) {
+                    arpt_geom clipped = {0};
+                    clipped.type = 2; /* LineString */
+                    clipped.x = out_x.data + ss;
+                    clipped.y = out_y.data + ss;
+                    clipped.n_coords = sn;
+                    cb(z, tx, ty, &clipped, ctx);
+                }
+            }
+
+            da_free(&out_x);
+            da_free(&out_y);
+            u32a_free(&segs);
+        }
+    }
+}
+
+/* ---------- Polygon clipping ---------- */
+
+/* --- Boundary walk helpers for polygon ring splitting --- */
+
+/* Tolerance for boundary membership tests.  slab_intersect places one
+ * coordinate exactly on k, so this only needs to handle FP rounding
+ * on the OTHER coordinate (computed via interpolation). */
+#define BNDRY_EPS 1e-10
+
+/* Check if a point is on the clip rect boundary. */
+static bool on_boundary(double px, double py, const arpt_bounds *b) {
+    return (fabs(px - b->min_x) < BNDRY_EPS ||
+            fabs(px - b->max_x) < BNDRY_EPS ||
+            fabs(py - b->min_y) < BNDRY_EPS ||
+            fabs(py - b->max_y) < BNDRY_EPS);
+}
+
+/* CCW perimeter parameter 0..4 for a point on the clip rect boundary.
+ * 0-1 = bottom (min_y, left→right), 1-2 = right (max_x, bottom→top),
+ * 2-3 = top (max_y, right→left), 3-4 = left (min_x, top→bottom). */
+static double perim_param(double px, double py, const arpt_bounds *b) {
+    double w = b->max_x - b->min_x;
+    double h = b->max_y - b->min_y;
+    if (w < 1e-20 || h < 1e-20) return 0.0;
+
+    /* Bottom edge */
+    if (fabs(py - b->min_y) < BNDRY_EPS)
+        return (px - b->min_x) / w;
+    /* Right edge */
+    if (fabs(px - b->max_x) < BNDRY_EPS)
+        return 1.0 + (py - b->min_y) / h;
+    /* Top edge */
+    if (fabs(py - b->max_y) < BNDRY_EPS)
+        return 2.0 + (b->max_x - px) / w;
+    /* Left edge */
+    if (fabs(px - b->min_x) < BNDRY_EPS)
+        return 3.0 + (b->max_y - py) / h;
+    return 0.0; /* shouldn't happen */
+}
+
+/* Emit boundary walk vertices (corners) from perimeter position t_from
+ * to t_to.  If ccw is true, walks CCW (increasing t); if false, walks
+ * CW (decreasing t).  Does NOT emit the start or end points. */
+static void walk_boundary(double t_from, double t_to, bool ccw,
+                           const arpt_bounds *b,
+                           darray *ox, darray *oy) {
+    double corner_x[4], corner_y[4];
+    corner_x[0] = b->min_x; corner_y[0] = b->min_y; /* BL at t=0 */
+    corner_x[1] = b->max_x; corner_y[1] = b->min_y; /* BR at t=1 */
+    corner_x[2] = b->max_x; corner_y[2] = b->max_y; /* TR at t=2 */
+    corner_x[3] = b->min_x; corner_y[3] = b->max_y; /* TL at t=3 */
+
+    if (ccw) {
+        /* Walk CCW (increasing t) from t_from to t_to, emitting corners. */
+        double to = t_to;
+        if (to <= t_from) to += 4.0;
+        /* Start from the first corner AFTER t_from */
+        int start_c = (int)floor(t_from) + 1;
+        for (int i = 0; i < 4; i++) {
+            int c = (start_c + i) % 4;
+            double ct = (double)(start_c + i);
+            if (ct >= to) break;
+            da_push_dedup(ox, oy, corner_x[c], corner_y[c]);
+        }
+    } else {
+        /* Walk CW (decreasing t) from t_from to t_to, emitting corners. */
+        double to = t_to;
+        if (to >= t_from) to -= 4.0;
+        /* Start from the first corner BEFORE t_from */
+        int start_c = (int)ceil(t_from) - 1;
+        for (int i = 0; i < 4; i++) {
+            int c = ((start_c - i) % 4 + 4) % 4;
+            double ct = (double)(start_c - i);
+            if (ct <= to) break;
+            da_push_dedup(ox, oy, corner_x[c], corner_y[c]);
+        }
+    }
+}
+
+/* A boundary crossing: entry or exit point on the clip rectangle. */
+typedef struct {
+    double x, y;
+    double perim;     /* CCW perimeter parameter 0..4 */
+    uint32_t idx;     /* vertex index in the SH ring */
+    bool is_entry;    /* true = entry, false = exit */
+} bcross;
+
+static int bcross_cmp(const void *a, const void *b) {
+    double pa = ((const bcross *)a)->perim;
+    double pb = ((const bcross *)b)->perim;
+    return (pa > pb) - (pa < pb);
+}
+
+/* Emit a single ring to the output arrays if it has valid area. */
+static void emit_ring(const double *rx, const double *ry, uint32_t n,
+                       darray *out_x, darray *out_y,
+                       u32array *ring_starts) {
+    if (n < 4) return;
+    /* Reject zero-area (collinear) rings */
+    double area2 = 0.0;
+    for (uint32_t i = 0; i + 1 < n; i++) {
+        area2 += rx[i] * ry[i + 1] - rx[i + 1] * ry[i];
+    }
+    if (area2 < 0) area2 = -area2;
+    if (area2 <= 1e-20) return;
+
+    uint32_t ring_start = out_x->len;
+    for (uint32_t i = 0; i < n; i++) {
+        da_push(out_x, rx[i]);
+        da_push(out_y, ry[i]);
+    }
+    u32a_push(ring_starts, ring_start);
+}
+
+/* Split a clipped ring at boundary crossings and produce multiple
+ * non-self-intersecting rings with proper boundary walks.
+ *
+ * The SH/slab clip produces a single ring that may self-overlap
+ * along the clip boundary when the polygon exits and re-enters
+ * the same boundary edge at multiple points.  This function detects
+ * the entry/exit crossings, pairs them in CCW order, and assembles
+ * separate rings with correct boundary-walk segments. */
+static void split_ring(const double *rx, const double *ry, uint32_t n,
+                        const arpt_bounds *b,
+                        darray *out_x, darray *out_y,
+                        u32array *ring_starts) {
+    if (n < 4) return;
+
+    /* Step 1: classify vertices and find crossings */
+    bool *is_bnd = calloc(n, sizeof(bool));
+    if (!is_bnd) return;
+    for (uint32_t i = 0; i < n; i++)
+        is_bnd[i] = on_boundary(rx[i], ry[i], b);
+
+    /* Step 2: find entry/exit transitions.
+     * Interior → boundary = EXIT (the boundary vertex)
+     * Boundary → interior = ENTRY (the boundary vertex) */
+    bcross *crosses = NULL;
+    uint32_t n_crosses = 0, cross_cap = 0;
+
+    uint32_t n_unique = n - 1; /* exclude closing vertex */
+    for (uint32_t i = 0; i < n_unique; i++) {
+        uint32_t next = (i + 1) % n_unique;
+        if (!is_bnd[i] && is_bnd[next]) {
+            /* EXIT at next */
+            if (n_crosses == cross_cap) {
+                cross_cap = cross_cap ? cross_cap * 2 : 8;
+                crosses = realloc(crosses, cross_cap * sizeof(bcross));
+            }
+            crosses[n_crosses++] = (bcross){
+                rx[next], ry[next],
+                perim_param(rx[next], ry[next], b),
+                next, false
+            };
+        }
+        if (is_bnd[i] && !is_bnd[next]) {
+            /* ENTRY at i */
+            if (n_crosses == cross_cap) {
+                cross_cap = cross_cap ? cross_cap * 2 : 8;
+                crosses = realloc(crosses, cross_cap * sizeof(bcross));
+            }
+            crosses[n_crosses++] = (bcross){
+                rx[i], ry[i],
+                perim_param(rx[i], ry[i], b),
+                i, true
+            };
+        }
+    }
+
+    /* If no crossings (all interior or all boundary), emit as single ring */
+    if (n_crosses == 0 || n_crosses < 2) {
+        emit_ring(rx, ry, n, out_x, out_y, ring_starts);
+        free(is_bnd);
+        free(crosses);
+        return;
+    }
+
+    /* Step 3: sort crossings by CCW perimeter parameter */
+    qsort(crosses, n_crosses, sizeof(bcross), bcross_cmp);
+
+    /* Verify equal counts of entries and exits. */
+    uint32_t n_exits = 0, n_entries = 0;
+    for (uint32_t i = 0; i < n_crosses; i++) {
+        if (crosses[i].is_entry) n_entries++;
+        else n_exits++;
+    }
+    if (n_exits != n_entries || n_exits == 0) {
+        emit_ring(rx, ry, n, out_x, out_y, ring_starts);
+        free(is_bnd);
+        free(crosses);
+        return;
+    }
+
+    /* Detect ring winding: positive area = CCW, negative = CW.
+     * For CW rings (holes), we pair exits with the PREVIOUS entry
+     * in the sorted list instead of the next. */
+    double ring_area = 0.0;
+    for (uint32_t i = 0; i + 1 < n; i++) {
+        ring_area += rx[i] * ry[i + 1] - rx[i + 1] * ry[i];
+    }
+    bool is_ccw = (ring_area > 0.0);
+
+    /* Step 4: pair each exit with the adjacent entry.
+     * CCW rings: exit → next entry in CCW order.
+     * CW rings: exit → previous entry in CCW order (= next in CW). */
+    uint32_t *exit_to_entry = malloc(n_crosses * sizeof(uint32_t));
+    uint32_t *entry_to_exit = malloc(n_crosses * sizeof(uint32_t));
+    if (!exit_to_entry || !entry_to_exit) {
+        emit_ring(rx, ry, n, out_x, out_y, ring_starts);
+        free(is_bnd); free(crosses);
+        free(exit_to_entry); free(entry_to_exit);
+        return;
+    }
+    for (uint32_t i = 0; i < n_crosses; i++) {
+        exit_to_entry[i] = UINT32_MAX;
+        entry_to_exit[i] = UINT32_MAX;
+    }
+    for (uint32_t i = 0; i < n_crosses; i++) {
+        if (crosses[i].is_entry) continue; /* skip entries */
+        /* Find adjacent entry in the appropriate direction. */
+        int step = is_ccw ? 1 : -1;
+        for (uint32_t j = 1; j <= n_crosses; j++) {
+            uint32_t ci = (uint32_t)((int)i + step * (int)j +
+                          (int)n_crosses * 2) % n_crosses;
+            if (crosses[ci].is_entry) {
+                exit_to_entry[i] = ci;
+                entry_to_exit[ci] = i;
+                break;
+            }
+        }
+    }
+
+    /* Step 5: assemble rings.
+     * For each unvisited entry, trace: entry → interior → exit → boundary
+     * walk → next entry → ... until we return to the starting entry. */
+    bool *visited_entry = calloc(n_crosses, sizeof(bool));
+    darray ring_x, ring_y;
+    da_init(&ring_x);
+    da_init(&ring_y);
+
+    for (uint32_t ci = 0; ci < n_crosses; ci++) {
+        if (!crosses[ci].is_entry || visited_entry[ci]) continue;
+
+        ring_x.len = 0;
+        ring_y.len = 0;
+
+        uint32_t start_ci = ci;
+        uint32_t cur_entry_ci = ci;
+
+        uint32_t max_iters = n_crosses + 1;
+        uint32_t iter = 0;
+        do {
+            if (iter++ > max_iters) break;
+            visited_entry[cur_entry_ci] = true;
+
+            /* Trace interior arc from this entry to the next exit.
+             * The entry vertex index is crosses[cur_entry_ci].idx.
+             * Walk the ring from there until we hit an exit crossing. */
+            uint32_t vi = crosses[cur_entry_ci].idx;
+            /* Emit the entry vertex */
+            da_push(&ring_x, rx[vi]);
+            da_push(&ring_y, ry[vi]);
+
+            /* Walk forward in the ring, emitting interior vertices,
+             * until we reach an exit crossing. */
+            bool found_exit = false;
+            for (uint32_t step = 0; step < n_unique; step++) {
+                vi = (vi + 1) % n_unique;
+                da_push(&ring_x, rx[vi]);
+                da_push(&ring_y, ry[vi]);
+
+                /* Check if this vertex is an exit crossing */
+                uint32_t exit_ci = UINT32_MAX;
+                for (uint32_t k = 0; k < n_crosses; k++) {
+                    if (!crosses[k].is_entry && crosses[k].idx == vi) {
+                        exit_ci = k;
+                        break;
+                    }
+                }
+                if (exit_ci != UINT32_MAX) {
+                    /* Walk boundary from this exit to the paired entry.
+                     * CCW rings walk CCW; CW rings (holes) walk CW. */
+                    uint32_t next_entry_ci = exit_to_entry[exit_ci];
+                    if (next_entry_ci == UINT32_MAX) break;
+                    walk_boundary(crosses[exit_ci].perim,
+                                  crosses[next_entry_ci].perim,
+                                  is_ccw, b, &ring_x, &ring_y);
+                    cur_entry_ci = next_entry_ci;
+                    found_exit = true;
+                    break;
+                }
+            }
+            if (!found_exit) break; /* safety: couldn't find exit */
+        } while (cur_entry_ci != start_ci);
+
+        /* Close the ring */
+        if (ring_x.len >= 3) {
+            da_push(&ring_x, ring_x.data[0]);
+            da_push(&ring_y, ring_y.data[0]);
+            emit_ring(ring_x.data, ring_y.data, ring_x.len,
+                      out_x, out_y, ring_starts);
+        }
+    }
+
+    da_free(&ring_x);
+    da_free(&ring_y);
+    free(visited_entry);
+    free(exit_to_entry);
+    free(entry_to_exit);
+    free(is_bnd);
+    free(crosses);
+}
+
+/* Clip a single closed ring against a rectangle.
+ * Input: n vertices of a closed ring (first == last).
+ * Output: one or more closed rings appended to out_x/out_y;
+ *         ring_starts receives the start index of each ring produced.
+ *
+ * Uses two-pass slab clipping (Sutherland-Hodgman) to get the correct
+ * vertices, then splits the result at boundary crossings to eliminate
+ * self-intersections from re-entrant polygons. */
+static void clip_ring_rect(const double *rx, const double *ry, uint32_t n,
+                            const arpt_bounds *b,
+                            darray *out_x, darray *out_y,
+                            u32array *ring_starts) {
+    if (n < 4) return; /* need at least 3 unique + closing */
+
+    /* Pass 1: clip against x-slab */
+    darray mx, my;
+    da_init(&mx);
+    da_init(&my);
+    clip_slab(rx, ry, n, b->min_x, b->max_x, 0, true, &mx, &my, NULL);
+
+    if (mx.len < 4) {
+        da_free(&mx);
+        da_free(&my);
+        return;
+    }
+
+    /* Pass 2: clip against y-slab */
+    darray sx, sy;
+    da_init(&sx);
+    da_init(&sy);
+    clip_slab(mx.data, my.data, mx.len, b->min_y, b->max_y, 1, true,
+              &sx, &sy, NULL);
+
+    da_free(&mx);
+    da_free(&my);
+
+    if (sx.len < 4) {
+        da_free(&sx);
+        da_free(&sy);
+        return;
+    }
+
+    /* Split the SH result at boundary crossings to produce
+     * non-self-intersecting output rings. */
+    split_ring(sx.data, sy.data, sx.len, b, out_x, out_y, ring_starts);
+
+    da_free(&sx);
+    da_free(&sy);
+}
+
 /* Clip a set of rings (one polygon part) to tiles at the given zoom.
  * first_ring is the index into geom->offsets; n_rings is the count. */
 static void clip_polygon_part(const arpt_geom *geom,
@@ -575,9 +773,6 @@ static void clip_polygon_part(const arpt_geom *geom,
     coords_to_tile_range(geom->x, geom->y, coord_start, coord_count,
                          n_cols, n_rows, &tx_min, &tx_max, &ty_min, &ty_max);
 
-    /* Clip each ring directly to each tile's full rectangle bounds
-     * using Weiler-Atherton.  This correctly handles re-entrant polygons
-     * that exit and re-enter the clip boundary multiple times. */
     for (int tx = tx_min; tx <= tx_max; tx++) {
         for (int ty = ty_min; ty <= ty_max; ty++) {
             arpt_bounds tb = tile_bounds_buffered(z, tx, ty);
@@ -598,14 +793,10 @@ static void clip_polygon_part(const arpt_geom *geom,
                     rend = geom->n_coords;
                 }
                 uint32_t ring_n = rend - rstart;
-                if (ring_n < 3) continue;
-
-                /* Strip closing duplicate if present */
-                uint32_t open_n = strip_closing(geom->x + rstart,
-                                                geom->y + rstart, ring_n);
+                if (ring_n < 4) continue;
 
                 clip_ring_rect(geom->x + rstart, geom->y + rstart,
-                               open_n, &tb, &out_x, &out_y, &ring_starts);
+                               ring_n, &tb, &out_x, &out_y, &ring_starts);
             }
 
             if (ring_starts.len > 0 && out_x.len >= 4) {

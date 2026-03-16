@@ -238,47 +238,8 @@ typedef struct {
     const char  *const *prop_keys;
     const char  *const *prop_vals;
     uint32_t     n_props;
-    int          zoom;  /* current zoom being clipped to */
-    double       tolerance; /* simplification tolerance for this zoom */
+    int          zoom;
 } clip_ctx;
-
-/* Simplify clipped geometry before serialization.
- * Operates on a mutable copy — caller must free sx, sy, so. */
-static void simplify_clipped(arpt_geom *g, double *sx, double *sy,
-                              uint32_t *so, double tolerance) {
-    if (tolerance <= 0.0) return;
-    if (g->n_coords <= 2) return;
-
-    if ((g->type == 3 || g->type == 6) && g->offsets && g->n_offsets > 1) {
-        /* Ring-aware simplification */
-        uint32_t n_rings = g->n_offsets - 1;
-        uint32_t out = 0;
-        for (uint32_t ri = 0; ri < n_rings; ri++) {
-            uint32_t start = so[ri];
-            uint32_t end = so[ri + 1];
-            uint32_t ring_n = end - start;
-            uint32_t new_n = ring_n;
-            if (ring_n > 2) {
-                new_n = arpt_simplify_ring(sx + start, sy + start,
-                                           ring_n, tolerance);
-            }
-            if (new_n >= 4) {
-                if (out != start) {
-                    memmove(sx + out, sx + start, new_n * sizeof(double));
-                    memmove(sy + out, sy + start, new_n * sizeof(double));
-                }
-                so[ri] = out;
-                out += new_n;
-            } else {
-                so[ri] = out; /* degenerate, skip */
-            }
-        }
-        so[n_rings] = out;
-        g->n_coords = out;
-    } else {
-        g->n_coords = arpt_simplify(sx, sy, g->n_coords, tolerance);
-    }
-}
 
 static void clip_cb(int z, int x, int y,
                     const arpt_geom *clipped, void *ctx) {
@@ -286,46 +247,52 @@ static void clip_cb(int z, int x, int y,
     uint64_t tile_id = arpt_hilbert_tile_id(z, x, y);
     uint64_t key = make_sort_key(tile_id, c->layer, c->rank);
 
-    /* Simplify after clipping: make a mutable copy of the clipped
-     * coordinates (which point into clip.c's internal buffers). */
-    arpt_geom g = *clipped;
-    double *sx = NULL, *sy = NULL;
-    uint32_t *so = NULL;
-
-    if (c->tolerance > 0.0 && g.type >= 2 && g.n_coords > 2) {
-        size_t csz = g.n_coords * sizeof(double);
-        sx = malloc(csz);
-        sy = malloc(csz);
-        if (sx && sy) {
-            memcpy(sx, g.x, csz);
-            memcpy(sy, g.y, csz);
-            g.x = sx;
-            g.y = sy;
-
-            if (g.offsets && g.n_offsets > 0) {
-                size_t osz = g.n_offsets * sizeof(uint32_t);
-                so = malloc(osz);
-                if (so) {
-                    memcpy(so, g.offsets, osz);
-                    g.offsets = so;
-                }
-            }
-
-            simplify_clipped(&g, sx, sy, so, c->tolerance);
-        }
-    }
-
     size_t data_size;
-    uint8_t *data = serialize_feature(&g, c->prop_keys, c->prop_vals,
+    uint8_t *data = serialize_feature(clipped, c->prop_keys, c->prop_vals,
                                       c->n_props, &data_size);
     if (data) {
         arpt_sorter_add(c->sorter, key, data, data_size);
         free(data);
     }
+}
 
-    free(sx);
-    free(sy);
-    free(so);
+/* Simplify geometry in-place before clipping.  Returns false if the
+ * geometry degenerates (all rings become too small). */
+static bool simplify_geom(arpt_geom *g, double tolerance) {
+    if (tolerance <= 0.0) return true;
+    if (g->n_coords <= 2) return true;
+
+    if ((g->type == 3 || g->type == 6) && g->offsets && g->n_offsets > 1) {
+        uint32_t n_rings = g->n_offsets - 1;
+        uint32_t out = 0;
+        for (uint32_t ri = 0; ri < n_rings; ri++) {
+            uint32_t start = g->offsets[ri];
+            uint32_t end = g->offsets[ri + 1];
+            uint32_t ring_n = end - start;
+            uint32_t new_n = ring_n;
+            if (ring_n > 2) {
+                new_n = arpt_simplify_ring(g->x + start, g->y + start,
+                                           ring_n, tolerance);
+            }
+            if (new_n >= 4) {
+                if (out != start) {
+                    memmove(g->x + out, g->x + start, new_n * sizeof(double));
+                    memmove(g->y + out, g->y + start, new_n * sizeof(double));
+                }
+                g->offsets[ri] = out;
+                out += new_n;
+            } else {
+                g->offsets[ri] = out;
+            }
+        }
+        g->offsets[n_rings] = out;
+        g->n_coords = out;
+        return out >= 4;
+    } else if (g->type == 2 || g->type == 5) {
+        g->n_coords = arpt_simplify(g->x, g->y, g->n_coords, tolerance);
+        return g->n_coords >= 2;
+    }
+    return true;
 }
 
 /* ---- Compute tile bounds ---- */
@@ -431,6 +398,37 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                     continue;
                 }
 
+                /* Simplify before clipping: make a mutable copy,
+                 * simplify at this zoom's tolerance, then clip. */
+                arpt_geom sg = feats[i].geom;
+                double *sx = NULL, *sy = NULL;
+                uint32_t *so = NULL;
+                double tol = zoom_tolerance(z);
+                bool need_copy = tol > 0.0 && sg.type >= 2 && sg.n_coords > 2;
+                if (need_copy) {
+                    size_t csz = sg.n_coords * sizeof(double);
+                    sx = malloc(csz);
+                    sy = malloc(csz);
+                    if (sx && sy) {
+                        memcpy(sx, sg.x, csz);
+                        memcpy(sy, sg.y, csz);
+                        sg.x = sx;
+                        sg.y = sy;
+                        if (sg.offsets && sg.n_offsets > 0) {
+                            size_t osz = sg.n_offsets * sizeof(uint32_t);
+                            so = malloc(osz);
+                            if (so) {
+                                memcpy(so, sg.offsets, osz);
+                                sg.offsets = so;
+                            }
+                        }
+                        if (!simplify_geom(&sg, tol)) {
+                            free(sx); free(sy); free(so);
+                            continue;
+                        }
+                    }
+                }
+
                 clip_ctx ctx = {
                     .sorter = sorter,
                     .layer = feats[i].layer,
@@ -439,9 +437,9 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                     .prop_vals = NULL,
                     .n_props = 0,
                     .zoom = z,
-                    .tolerance = zoom_tolerance(z),
                 };
-                arpt_assign_tiles(&feats[i].geom, z, clip_cb, &ctx);
+                arpt_assign_tiles(&sg, z, clip_cb, &ctx);
+                free(sx); free(sy); free(so);
             }
             rank++;
             if (rank > 0xFFF) rank = 0xFFF; /* clamp to 12-bit field */
@@ -497,7 +495,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                 }
             }
 
-            /* Single pass: clip to all zoom levels.
+            /* Single pass: simplify then clip to all zoom levels.
              * Skip zoom levels where the feature spans too many tiles —
              * it will still appear at lower zoom levels. */
             for (int z = config->min_zoom; z <= config->max_zoom; z++) {
@@ -513,6 +511,40 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                     continue;
                 }
 
+                /* Simplify before clipping: make a mutable copy,
+                 * simplify at this zoom's tolerance, then clip.
+                 * This prevents DP from removing tile-boundary vertices
+                 * that the clipper adds, which would create diagonal
+                 * artifacts across tile interiors. */
+                arpt_geom sg = *g;
+                double *sx = NULL, *sy = NULL;
+                uint32_t *so = NULL;
+                double tol = zoom_tolerance(z);
+                bool need_copy = tol > 0.0 && sg.type >= 2 && sg.n_coords > 2;
+                if (need_copy) {
+                    size_t csz = sg.n_coords * sizeof(double);
+                    sx = malloc(csz);
+                    sy = malloc(csz);
+                    if (sx && sy) {
+                        memcpy(sx, sg.x, csz);
+                        memcpy(sy, sg.y, csz);
+                        sg.x = sx;
+                        sg.y = sy;
+                        if (sg.offsets && sg.n_offsets > 0) {
+                            size_t osz = sg.n_offsets * sizeof(uint32_t);
+                            so = malloc(osz);
+                            if (so) {
+                                memcpy(so, sg.offsets, osz);
+                                sg.offsets = so;
+                            }
+                        }
+                        if (!simplify_geom(&sg, tol)) {
+                            free(sx); free(sy); free(so);
+                            continue;
+                        }
+                    }
+                }
+
                 clip_ctx ctx = {
                     .sorter = sorter,
                     .layer = inp->layer,
@@ -521,9 +553,9 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                     .prop_vals = pvals,
                     .n_props = n_props,
                     .zoom = z,
-                    .tolerance = zoom_tolerance(z),
                 };
-                arpt_assign_tiles(g, z, clip_cb, &ctx);
+                arpt_assign_tiles(&sg, z, clip_cb, &ctx);
+                free(sx); free(sy); free(so);
             }
 
             arpt_geom_free(g);

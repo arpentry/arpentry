@@ -596,6 +596,166 @@ static void test_gulf_clip_diagnostic(void) {
     TEST_PASS();
 }
 
+/* Test: clip European land polygons at z=4 and check for artifacts.
+ * The camera view at lon=15, lat=52 shows tiles 4/15-19/11-14.
+ * A blue wedge artifact appears at z=4 but not z=3. */
+static void test_europe_clip_diagnostic_z4(void) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/land.parquet", FIXTURE_DIR);
+
+    arpt_overture *ov = arpt_overture_open(path);
+    TEST_ASSERT_NOT_NULL(ov);
+
+    arpt_overture_feature feat;
+    diag_collector dc = {NULL, 0, 0};
+
+    while (arpt_overture_next(ov, &feat)) {
+        arpt_geom *g = &feat.geometry;
+
+        /* Only clip features that overlap Europe: lon [-15, 50], lat [30, 75] */
+        double gmin_x = g->x[0], gmax_x = g->x[0];
+        double gmin_y = g->y[0], gmax_y = g->y[0];
+        for (uint32_t i = 1; i < g->n_coords; i++) {
+            if (g->x[i] < gmin_x) gmin_x = g->x[i];
+            if (g->x[i] > gmax_x) gmax_x = g->x[i];
+            if (g->y[i] < gmin_y) gmin_y = g->y[i];
+            if (g->y[i] > gmax_y) gmax_y = g->y[i];
+        }
+
+        if (gmax_x < -15.0 || gmin_x > 50.0 ||
+            gmax_y < 30.0 || gmin_y > 75.0) {
+            arpt_geom_free(g);
+            continue;
+        }
+
+        fprintf(stderr, "  EUR feature type=%u n_coords=%u "
+                "n_offsets=%u n_parts=%u bbox=[%.1f,%.1f,%.1f,%.1f]\n",
+                g->type, g->n_coords, g->n_offsets, g->n_parts,
+                gmin_x, gmin_y, gmax_x, gmax_y);
+
+        arpt_assign_tiles(g, 4, diag_cb, &dc);
+        arpt_geom_free(g);
+    }
+    arpt_overture_close(ov);
+
+    fprintf(stderr, "  EUR z=4 total clipped results: %d\n", dc.count);
+
+    /* Check tiles visible in the artifact screenshot:
+     * Tiles 4/15-19/11-14 (lon [-11.25, 45], lat [33.75, 78.75]) */
+    int issue_count = 0;
+    for (int i = 0; i < dc.count; i++) {
+        diag_result *r = &dc.results[i];
+        if (r->z != 4 || r->x < 15 || r->x > 19 || r->y < 11 || r->y > 14)
+            continue;
+
+        /* Check every ring for validity */
+        if (r->n_offsets >= 2) {
+            for (uint32_t ri = 0; ri + 1 < r->n_offsets; ri++) {
+                uint32_t start = r->coffsets[ri];
+                uint32_t end = r->coffsets[ri + 1];
+                uint32_t nv = end - start;
+
+                /* Check ring closure */
+                if (nv >= 4) {
+                    if (r->cx[start] != r->cx[end - 1] ||
+                        r->cy[start] != r->cy[end - 1]) {
+                        fprintf(stderr, "  *** UNCLOSED ring: tile(%d,%d,%d) "
+                                "ring %u: first(%.6f,%.6f) last(%.6f,%.6f)\n",
+                                r->z, r->x, r->y, ri,
+                                r->cx[start], r->cy[start],
+                                r->cx[end-1], r->cy[end-1]);
+                        issue_count++;
+                    }
+
+                    /* Check for consecutive duplicate vertices */
+                    for (uint32_t j = start; j + 1 < end - 1; j++) {
+                        if (r->cx[j] == r->cx[j+1] &&
+                            r->cy[j] == r->cy[j+1]) {
+                            fprintf(stderr, "  *** DUPLICATE: tile(%d,%d,%d) "
+                                    "ring %u vert %u: (%.6f,%.6f)\n",
+                                    r->z, r->x, r->y, ri, j,
+                                    r->cx[j], r->cy[j]);
+                            issue_count++;
+                        }
+                    }
+
+                    /* Check for self-overlap: look for pairs of
+                     * boundary edges on the same line with overlapping
+                     * parameter ranges (the original bug). */
+                    for (uint32_t j = start; j + 1 < end; j++) {
+                        for (uint32_t k = j + 2; k + 1 < end; k++) {
+                            /* Check if edges j and k are both vertical
+                             * at the same x (left/right boundary overlap) */
+                            if (r->cx[j] == r->cx[j+1] &&
+                                r->cx[k] == r->cx[k+1] &&
+                                r->cx[j] == r->cx[k]) {
+                                double j_lo = r->cy[j] < r->cy[j+1] ?
+                                    r->cy[j] : r->cy[j+1];
+                                double j_hi = r->cy[j] > r->cy[j+1] ?
+                                    r->cy[j] : r->cy[j+1];
+                                double k_lo = r->cy[k] < r->cy[k+1] ?
+                                    r->cy[k] : r->cy[k+1];
+                                double k_hi = r->cy[k] > r->cy[k+1] ?
+                                    r->cy[k] : r->cy[k+1];
+                                if (j_lo < k_hi && k_lo < j_hi) {
+                                    fprintf(stderr,
+                                        "  *** OVERLAP: tile(%d,%d,%d) "
+                                        "ring %u edges [%u] and [%u] "
+                                        "overlap at x=%.4f y=[%.4f,%.4f]\n",
+                                        r->z, r->x, r->y, ri, j, k,
+                                        r->cx[j], fmax(j_lo, k_lo),
+                                        fmin(j_hi, k_hi));
+                                    issue_count++;
+                                }
+                            }
+                            /* Check horizontal overlap (top/bottom) */
+                            if (r->cy[j] == r->cy[j+1] &&
+                                r->cy[k] == r->cy[k+1] &&
+                                r->cy[j] == r->cy[k]) {
+                                double j_lo = r->cx[j] < r->cx[j+1] ?
+                                    r->cx[j] : r->cx[j+1];
+                                double j_hi = r->cx[j] > r->cx[j+1] ?
+                                    r->cx[j] : r->cx[j+1];
+                                double k_lo = r->cx[k] < r->cx[k+1] ?
+                                    r->cx[k] : r->cx[k+1];
+                                double k_hi = r->cx[k] > r->cx[k+1] ?
+                                    r->cx[k] : r->cx[k+1];
+                                if (j_lo < k_hi && k_lo < j_hi) {
+                                    fprintf(stderr,
+                                        "  *** OVERLAP: tile(%d,%d,%d) "
+                                        "ring %u edges [%u] and [%u] "
+                                        "overlap at y=%.4f x=[%.4f,%.4f]\n",
+                                        r->z, r->x, r->y, ri, j, k,
+                                        r->cy[j], fmax(j_lo, k_lo),
+                                        fmin(j_hi, k_hi));
+                                    issue_count++;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (issue_count > 0) {
+        fprintf(stderr, "  EUR z=4 found %d potential issues\n", issue_count);
+    } else {
+        fprintf(stderr, "  EUR z=4 all rings look valid\n");
+    }
+
+    /* Cleanup */
+    for (int i = 0; i < dc.count; i++) {
+        free(dc.results[i].cx);
+        free(dc.results[i].cy);
+        free(dc.results[i].coffsets);
+    }
+    free(dc.results);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, issue_count,
+        "Found clip artifacts in European z=4 tiles");
+}
+
 /* ── Cleanup ─────────────────────────────────────────────────────────── */
 
 static void test_cleanup(void) {
@@ -634,6 +794,7 @@ int main(void) {
 
     /* D. Clip diagnostics */
     RUN_TEST(test_gulf_clip_diagnostic);
+    RUN_TEST(test_europe_clip_diagnostic_z4);
     /* Cleanup */
     RUN_TEST(test_cleanup);
 

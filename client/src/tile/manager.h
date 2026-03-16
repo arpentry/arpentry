@@ -83,4 +83,9 @@ double arpt_tile_manager_ground_elevation(const arpt_tile_manager *tm,
 void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
                             const arpt_camera *cam);
 
+/**
+ * Print debug info to stdout: zoom level, visible tiles with states.
+ */
+void arpt_tile_manager_debug_info(const arpt_tile_manager *tm);
+
 #endif /* ARPENTRY_TILE_MANAGER_H */

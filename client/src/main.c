@@ -382,6 +382,24 @@ static void render_frame(void) {
         printf("Refreshed style, tileset, and tiles\n");
     }
 
+    /* Debug info dump (D key) */
+    if (arpt_control_needs_debug(app.control)) {
+        double lon_deg = arpt_camera_lon(app.camera) * 180.0 / M_PI;
+        double lat_deg = arpt_camera_lat(app.camera) * 180.0 / M_PI;
+        double alt = arpt_camera_altitude(app.camera);
+        double bearing_deg = arpt_camera_bearing(app.camera) * 180.0 / M_PI;
+        double tilt_deg = arpt_camera_tilt(app.camera) * 180.0 / M_PI;
+        int vp_w = arpt_camera_vp_width(app.camera);
+        int vp_h = arpt_camera_vp_height(app.camera);
+        printf("[DEBUG] camera: lon=%.6f lat=%.6f alt=%.1fm bearing=%.1f "
+               "tilt=%.1f viewport=%dx%d ground_elev=%.1fm\n",
+               lon_deg, lat_deg, alt, bearing_deg, tilt_deg, vp_w, vp_h,
+               app.smoothed_ground_elev);
+        if (app.tile_manager)
+            arpt_tile_manager_debug_info(app.tile_manager);
+        printf("[DEBUG] ---\n");
+    }
+
     /* Decide whether a redraw is needed */
     bool redraw = app.needs_redraw
                || arpt_control_needs_redraw(app.control)

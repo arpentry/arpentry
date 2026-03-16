@@ -784,6 +784,577 @@ static void test_reentrant_same_edge(void) {
     collector_free(&c);
 }
 
+/* ---- Polygon with hole clipping ---- */
+
+/* Test a polygon with a hole entirely within one tile.
+ * The hole ring should be preserved in the clipped output. */
+static void test_polygon_with_hole_within_tile(void) {
+    arpt_geom g = {0};
+    g.type = 3; /* Polygon */
+    /* Exterior ring (CCW): 20° × 20° square centered at (10, 50) */
+    /* Hole ring (CW): 10° × 10° square inside */
+    double x[] = {
+        /* Exterior CCW */
+        0.0, 20.0, 20.0, 0.0, 0.0,
+        /* Hole CW */
+        5.0, 5.0, 15.0, 15.0, 5.0
+    };
+    double y[] = {
+        40.0, 40.0, 60.0, 60.0, 40.0,
+        45.0, 55.0, 55.0, 45.0, 45.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 10;
+    uint32_t offsets[] = {0, 5, 10};
+    g.offsets = offsets;
+    g.n_offsets = 3;
+
+    /* At z=2 (8 cols × 4 rows), tiles are 45° × 45°.
+     * The whole polygon fits in one tile. */
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 2, collect_cb, &c);
+
+    TEST_ASSERT_TRUE(c.count >= 1);
+
+    /* Find a tile that got clipped geometry */
+    bool found_two_rings = false;
+    for (int i = 0; i < c.count; i++) {
+        arpt_geom *cg = &c.results[i].geom;
+        if (cg->offsets && cg->n_offsets >= 3) {
+            found_two_rings = true;
+            uint32_t nr = cg->n_offsets - 1;
+            TEST_ASSERT_EQUAL_UINT32(2, nr);
+
+            /* Both rings should be closed */
+            for (uint32_t ri = 0; ri < nr; ri++) {
+                uint32_t rs = cg->offsets[ri];
+                uint32_t re = cg->offsets[ri + 1];
+                uint32_t rn = re - rs;
+                TEST_ASSERT_TRUE_MESSAGE(rn >= 4,
+                    "Ring too small after clipping");
+                TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->x[rs], cg->x[re - 1]);
+                TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->y[rs], cg->y[re - 1]);
+            }
+
+            /* Exterior ring should have larger absolute area than hole */
+            uint32_t ext_s = cg->offsets[0], ext_e = cg->offsets[1];
+            uint32_t hole_s = cg->offsets[1], hole_e = cg->offsets[2];
+            double ext_area = ring_signed_area(cg->x + ext_s, cg->y + ext_s,
+                                                ext_e - ext_s);
+            double hole_area = ring_signed_area(cg->x + hole_s, cg->y + hole_s,
+                                                 hole_e - hole_s);
+            double ext_abs = ext_area < 0 ? -ext_area : ext_area;
+            double hole_abs = hole_area < 0 ? -hole_area : hole_area;
+            TEST_ASSERT_TRUE_MESSAGE(ext_abs > hole_abs,
+                "Exterior ring should be larger than hole");
+
+            /* Exterior and hole should have opposite winding */
+            TEST_ASSERT_TRUE_MESSAGE(
+                (ext_area > 0 && hole_area < 0) ||
+                (ext_area < 0 && hole_area > 0),
+                "Exterior and hole should have opposite winding");
+        }
+    }
+    TEST_ASSERT_TRUE_MESSAGE(found_two_rings,
+        "Polygon with hole should produce a clipped geometry with 2 rings");
+
+    collector_free(&c);
+}
+
+/* Test a polygon with a hole that crosses a tile boundary.
+ * Both the exterior and hole should be properly clipped. */
+static void test_polygon_with_hole_crossing_tile(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* Exterior ring spans across the lon=0 tile boundary at z=2.
+     * At z=2: tile boundary at lon -45, 0, 45.
+     * Exterior: lon [-10, 10], lat [20, 40] — crosses lon=0.
+     * Hole: lon [-5, 5], lat [25, 35] — also crosses lon=0. */
+    double x[] = {
+        /* Exterior CCW */
+        -10.0, 10.0, 10.0, -10.0, -10.0,
+        /* Hole CW */
+        -5.0, -5.0, 5.0, 5.0, -5.0
+    };
+    double y[] = {
+        20.0, 20.0, 40.0, 40.0, 20.0,
+        25.0, 35.0, 35.0, 25.0, 25.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 10;
+    uint32_t offsets[] = {0, 5, 10};
+    g.offsets = offsets;
+    g.n_offsets = 3;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 2, collect_cb, &c);
+
+    /* Should produce results in at least 2 tiles (left and right of lon=0).
+     * Actually at z=2 the tile boundary is at lon=-45 and lon=0,
+     * so with buffer the polygon at [-10,10] might all fit in one tile.
+     * Use z=3 instead. */
+    collector_free(&c);
+
+    /* At z=3 (16 cols × 8 rows), tiles are 22.5° × 22.5°.
+     * Tile boundaries at lon ..., -22.5, 0, 22.5, ...
+     * The polygon [-10, 10] crosses lon=0. */
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    TEST_ASSERT_TRUE(c.count >= 1);
+
+    /* Every clipped polygon should have closed rings */
+    for (int i = 0; i < c.count; i++) {
+        arpt_geom *cg = &c.results[i].geom;
+        TEST_ASSERT_TRUE(cg->n_coords >= 4);
+
+        if (cg->offsets && cg->n_offsets > 1) {
+            uint32_t nr = cg->n_offsets - 1;
+            for (uint32_t ri = 0; ri < nr; ri++) {
+                uint32_t rs = cg->offsets[ri];
+                uint32_t re = cg->offsets[ri + 1];
+                uint32_t rn = re - rs;
+                TEST_ASSERT_TRUE_MESSAGE(rn >= 4,
+                    "Clipped ring too small");
+                TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->x[rs], cg->x[re - 1]);
+                TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->y[rs], cg->y[re - 1]);
+            }
+        }
+    }
+
+    collector_free(&c);
+}
+
+/* Test that a tile entirely within the hole of a polygon gets no coverage. */
+static void test_polygon_hole_empty_interior(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* Large exterior with large hole. At z=3 (22.5° tiles), the hole
+     * should span at least one full tile.
+     * Exterior: lon [-30, 30], lat [10, 60] (60° × 50°)
+     * Hole: lon [-15, 15], lat [20, 50] (30° × 30°)
+     * At z=3 tiles are 22.5° — the hole spans >1 tile. */
+    double x[] = {
+        /* Exterior CCW */
+        -30.0, 30.0, 30.0, -30.0, -30.0,
+        /* Hole CW */
+        -15.0, -15.0, 15.0, 15.0, -15.0
+    };
+    double y[] = {
+        10.0, 10.0, 60.0, 60.0, 10.0,
+        20.0, 50.0, 50.0, 20.0, 20.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 10;
+    uint32_t offsets[] = {0, 5, 10};
+    g.offsets = offsets;
+    g.n_offsets = 3;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    TEST_ASSERT_TRUE(c.count >= 1);
+
+    /* For tiles that got both rings, the net area (exterior - hole)
+     * should be less than the exterior alone. */
+    for (int i = 0; i < c.count; i++) {
+        arpt_geom *cg = &c.results[i].geom;
+        if (cg->offsets && cg->n_offsets >= 3) {
+            uint32_t ext_s = cg->offsets[0], ext_e = cg->offsets[1];
+            uint32_t hole_s = cg->offsets[1], hole_e = cg->offsets[2];
+            double ext_area = ring_signed_area(cg->x + ext_s, cg->y + ext_s,
+                                                ext_e - ext_s);
+            double hole_area = ring_signed_area(cg->x + hole_s, cg->y + hole_s,
+                                                 hole_e - hole_s);
+            /* Net area should be positive and less than exterior */
+            double net = ext_area + hole_area; /* hole_area is negative if CW */
+            double ext_abs = ext_area < 0 ? -ext_area : ext_area;
+            double net_abs = net < 0 ? -net : net;
+            TEST_ASSERT_TRUE_MESSAGE(net_abs < ext_abs,
+                "Net area with hole should be less than exterior alone");
+            TEST_ASSERT_TRUE_MESSAGE(net_abs > 0.1,
+                "Net area should be positive (hole shouldn't consume exterior)");
+        }
+    }
+
+    collector_free(&c);
+}
+
+/* Test a tile that only sees the hole (exterior clips to tile, hole also clips,
+ * but tile is mostly inside the hole — net area is small or exterior-only). */
+static void test_polygon_hole_only_frame(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* Exterior covers a large area, hole is nearly as big.
+     * The "frame" between exterior and hole is thin.
+     * At high zoom, some tiles only see the exterior frame. */
+    /* Exterior: lon [-5, 25], lat [40, 55] (30° × 15°)
+     * Hole: lon [-2, 22], lat [42, 53] (24° × 11°)
+     * Frame is 3° on left/right, 2° on top/bottom. */
+    double x[] = {
+        /* Exterior CCW */
+        -5.0, 25.0, 25.0, -5.0, -5.0,
+        /* Hole CW */
+        -2.0, -2.0, 22.0, 22.0, -2.0
+    };
+    double y[] = {
+        40.0, 40.0, 55.0, 55.0, 40.0,
+        42.0, 53.0, 53.0, 42.0, 42.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 10;
+    uint32_t offsets[] = {0, 5, 10};
+    g.offsets = offsets;
+    g.n_offsets = 3;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 4, collect_cb, &c);
+
+    /* At z=4, tiles are 22.5° × 11.25°. Some tiles will see the frame.
+     * Verify all clipped rings are valid. */
+    TEST_ASSERT_TRUE(c.count >= 1);
+    for (int i = 0; i < c.count; i++) {
+        arpt_geom *cg = &c.results[i].geom;
+        TEST_ASSERT_TRUE(cg->n_coords >= 4);
+
+        if (cg->offsets && cg->n_offsets > 1) {
+            uint32_t nr = cg->n_offsets - 1;
+            for (uint32_t ri = 0; ri < nr; ri++) {
+                uint32_t rs = cg->offsets[ri];
+                uint32_t re = cg->offsets[ri + 1];
+                TEST_ASSERT_TRUE(re - rs >= 4);
+                TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->x[rs], cg->x[re - 1]);
+                TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->y[rs], cg->y[re - 1]);
+            }
+        }
+    }
+
+    collector_free(&c);
+}
+
+/* ---- MultiPolygon with hole and island ---- */
+
+/* Classic GIS pattern: a lake with an island.
+ * Part 0: land mass with lake (exterior + hole)
+ * Part 1: island inside the lake (small polygon inside the hole) */
+static void test_multipolygon_hole_and_island_within_tile(void) {
+    arpt_geom g = {0};
+    g.type = 6; /* MultiPolygon */
+
+    /* Part 0: Land with lake
+     *   Exterior CCW: lon [0, 20], lat [0, 20]
+     *   Hole CW (lake): lon [5, 15], lat [5, 15]
+     * Part 1: Island
+     *   Exterior CCW: lon [8, 12], lat [8, 12] (inside the hole) */
+    double x[] = {
+        /* Part 0, Ring 0: Exterior CCW */
+        0.0, 20.0, 20.0, 0.0, 0.0,
+        /* Part 0, Ring 1: Hole CW (lake) */
+        5.0, 5.0, 15.0, 15.0, 5.0,
+        /* Part 1, Ring 0: Island CCW */
+        8.0, 12.0, 12.0, 8.0, 8.0
+    };
+    double y[] = {
+        0.0, 0.0, 20.0, 20.0, 0.0,
+        5.0, 15.0, 15.0, 5.0, 5.0,
+        8.0, 8.0, 12.0, 12.0, 8.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 15;
+    uint32_t offsets[] = {0, 5, 10, 15};
+    g.offsets = offsets;
+    g.n_offsets = 4;
+    /* Part 0 starts at ring 0, Part 1 starts at ring 2 */
+    uint32_t parts[] = {0, 2};
+    g.parts = parts;
+    g.n_parts = 2;
+
+    /* At z=2 (45° tiles), everything fits in one tile.
+     * Should get 2 callbacks: one for part 0 (exterior+hole), one for part 1 (island). */
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 2, collect_cb, &c);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, c.count,
+        "MultiPolygon with hole+island should produce 2 callbacks (one per part)");
+
+    /* One result should have 2 rings (exterior + hole), the other 1 ring (island) */
+    bool found_land = false, found_island = false;
+    for (int i = 0; i < c.count; i++) {
+        arpt_geom *cg = &c.results[i].geom;
+        if (cg->offsets && cg->n_offsets >= 3) {
+            /* This is the land with hole */
+            found_land = true;
+            uint32_t nr = cg->n_offsets - 1;
+            TEST_ASSERT_EQUAL_UINT32(2, nr);
+
+            /* Both rings should be closed */
+            for (uint32_t ri = 0; ri < nr; ri++) {
+                uint32_t rs = cg->offsets[ri];
+                uint32_t re = cg->offsets[ri + 1];
+                TEST_ASSERT_TRUE(re - rs >= 4);
+                TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->x[rs], cg->x[re - 1]);
+                TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->y[rs], cg->y[re - 1]);
+            }
+
+            /* Exterior and hole should have opposite winding */
+            uint32_t ext_s = cg->offsets[0], ext_e = cg->offsets[1];
+            uint32_t hole_s = cg->offsets[1], hole_e = cg->offsets[2];
+            double ext_a = ring_signed_area(cg->x + ext_s, cg->y + ext_s,
+                                             ext_e - ext_s);
+            double hole_a = ring_signed_area(cg->x + hole_s, cg->y + hole_s,
+                                              hole_e - hole_s);
+            TEST_ASSERT_TRUE_MESSAGE(
+                (ext_a > 0 && hole_a < 0) || (ext_a < 0 && hole_a > 0),
+                "Exterior and hole must have opposite winding");
+        } else {
+            /* This is the island */
+            found_island = true;
+            TEST_ASSERT_TRUE(cg->n_coords >= 4);
+            TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->x[0],
+                                       cg->x[cg->n_coords - 1]);
+            TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->y[0],
+                                       cg->y[cg->n_coords - 1]);
+
+            /* Island area should be ~16 sq.deg (4° × 4°) */
+            double area = ring_signed_area(cg->x, cg->y, cg->n_coords);
+            double abs_a = area < 0 ? -area : area;
+            TEST_ASSERT_DOUBLE_WITHIN(2.0, 16.0, abs_a);
+        }
+    }
+    TEST_ASSERT_TRUE_MESSAGE(found_land,
+        "Should find land polygon with hole");
+    TEST_ASSERT_TRUE_MESSAGE(found_island,
+        "Should find island polygon");
+
+    collector_free(&c);
+}
+
+/* MultiPolygon with hole and island crossing a tile boundary.
+ * The exterior, hole, and island all straddle the tile edge. */
+static void test_multipolygon_hole_and_island_crossing_tile(void) {
+    arpt_geom g = {0};
+    g.type = 6;
+
+    /* At z=3, tile boundaries at lon ..., -22.5, 0, 22.5, ...
+     * Place geometry crossing lon=0.
+     *
+     * Part 0: Land with lake
+     *   Exterior: lon [-15, 15], lat [20, 45] — crosses lon=0
+     *   Hole (lake): lon [-8, 8], lat [25, 40] — also crosses lon=0
+     * Part 1: Island inside lake
+     *   lon [-3, 3], lat [30, 35] — crosses lon=0 */
+    double x[] = {
+        /* Part 0, Exterior CCW */
+        -15.0, 15.0, 15.0, -15.0, -15.0,
+        /* Part 0, Hole CW */
+        -8.0, -8.0, 8.0, 8.0, -8.0,
+        /* Part 1, Island CCW */
+        -3.0, 3.0, 3.0, -3.0, -3.0
+    };
+    double y[] = {
+        20.0, 20.0, 45.0, 45.0, 20.0,
+        25.0, 40.0, 40.0, 25.0, 25.0,
+        30.0, 30.0, 35.0, 35.0, 30.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 15;
+    uint32_t offsets[] = {0, 5, 10, 15};
+    g.offsets = offsets;
+    g.n_offsets = 4;
+    uint32_t parts[] = {0, 2};
+    g.parts = parts;
+    g.n_parts = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    /* Should produce results in multiple tiles */
+    TEST_ASSERT_TRUE_MESSAGE(c.count >= 2,
+        "Geometry crossing tile boundary should produce multiple tiles");
+
+    /* Verify all clipped rings are valid */
+    for (int i = 0; i < c.count; i++) {
+        arpt_geom *cg = &c.results[i].geom;
+        TEST_ASSERT_TRUE(cg->n_coords >= 4);
+
+        if (cg->offsets && cg->n_offsets > 1) {
+            uint32_t nr = cg->n_offsets - 1;
+            for (uint32_t ri = 0; ri < nr; ri++) {
+                uint32_t rs = cg->offsets[ri];
+                uint32_t re = cg->offsets[ri + 1];
+                uint32_t rn = re - rs;
+                TEST_ASSERT_TRUE_MESSAGE(rn >= 4,
+                    "Clipped ring degenerate after tile boundary clip");
+                TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->x[rs], cg->x[re - 1]);
+                TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->y[rs], cg->y[re - 1]);
+            }
+        } else {
+            TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->x[0],
+                                       cg->x[cg->n_coords - 1]);
+            TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->y[0],
+                                       cg->y[cg->n_coords - 1]);
+        }
+    }
+
+    collector_free(&c);
+}
+
+/* MultiPolygon with hole + island at high zoom where each component
+ * ends up in different tiles. */
+static void test_multipolygon_hole_island_high_zoom(void) {
+    arpt_geom g = {0};
+    g.type = 6;
+
+    /* At z=7, tiles are ~2.8° × ~1.4°.
+     * Part 0: Large land mass lon [-5, 5], lat [44, 50] with
+     *   hole lon [-2, 2], lat [46, 48]
+     * Part 1: Small island lon [-0.5, 0.5], lat [46.8, 47.2] */
+    double x[] = {
+        /* Part 0, Exterior CCW */
+        -5.0, 5.0, 5.0, -5.0, -5.0,
+        /* Part 0, Hole CW */
+        -2.0, -2.0, 2.0, 2.0, -2.0,
+        /* Part 1, Island CCW */
+        -0.5, 0.5, 0.5, -0.5, -0.5
+    };
+    double y[] = {
+        44.0, 44.0, 50.0, 50.0, 44.0,
+        46.0, 48.0, 48.0, 46.0, 46.0,
+        46.8, 46.8, 47.2, 47.2, 46.8
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 15;
+    uint32_t offsets[] = {0, 5, 10, 15};
+    g.offsets = offsets;
+    g.n_offsets = 4;
+    uint32_t parts[] = {0, 2};
+    g.parts = parts;
+    g.n_parts = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 7, collect_cb, &c);
+
+    /* At this zoom there should be many tiles */
+    TEST_ASSERT_TRUE_MESSAGE(c.count >= 4,
+        "High zoom MultiPolygon should produce many tile results");
+
+    /* Validate all results */
+    for (int i = 0; i < c.count; i++) {
+        arpt_geom *cg = &c.results[i].geom;
+        TEST_ASSERT_TRUE(cg->n_coords >= 4);
+
+        if (cg->offsets && cg->n_offsets > 1) {
+            uint32_t nr = cg->n_offsets - 1;
+            for (uint32_t ri = 0; ri < nr; ri++) {
+                uint32_t rs = cg->offsets[ri];
+                uint32_t re = cg->offsets[ri + 1];
+                uint32_t rn = re - rs;
+                TEST_ASSERT_TRUE_MESSAGE(rn >= 4, "Degenerate ring at high zoom");
+                TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->x[rs], cg->x[re - 1]);
+                TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->y[rs], cg->y[re - 1]);
+            }
+
+            /* If we have 2 rings, check winding consistency */
+            if (nr == 2) {
+                uint32_t ext_s = cg->offsets[0], ext_e = cg->offsets[1];
+                uint32_t hole_s = cg->offsets[1], hole_e = cg->offsets[2];
+                double ext_a = ring_signed_area(cg->x + ext_s, cg->y + ext_s,
+                                                 ext_e - ext_s);
+                double hole_a = ring_signed_area(cg->x + hole_s, cg->y + hole_s,
+                                                  hole_e - hole_s);
+                TEST_ASSERT_TRUE_MESSAGE(
+                    (ext_a > 0 && hole_a < 0) || (ext_a < 0 && hole_a > 0),
+                    "Exterior and hole must have opposite winding at high zoom");
+            }
+        } else {
+            TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->x[0],
+                                       cg->x[cg->n_coords - 1]);
+            TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->y[0],
+                                       cg->y[cg->n_coords - 1]);
+        }
+    }
+
+    collector_free(&c);
+}
+
+/* Test that the area accounting is correct: for every tile, the total
+ * polygon area (exterior - holes + islands) should be consistent. */
+static void test_multipolygon_hole_island_area_accounting(void) {
+    arpt_geom g = {0};
+    g.type = 6;
+
+    /* Part 0: 20° × 20° land with 10° × 10° lake
+     * Part 1: 4° × 4° island
+     * Expected: land 400 - lake 100 + island 16 = 316 sq.deg total */
+    double x[] = {
+        /* Part 0, Exterior CCW */
+        0.0, 20.0, 20.0, 0.0, 0.0,
+        /* Part 0, Hole CW */
+        5.0, 5.0, 15.0, 15.0, 5.0,
+        /* Part 1, Island CCW */
+        8.0, 12.0, 12.0, 8.0, 8.0
+    };
+    double y[] = {
+        0.0, 0.0, 20.0, 20.0, 0.0,
+        5.0, 15.0, 15.0, 5.0, 5.0,
+        8.0, 8.0, 12.0, 12.0, 8.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 15;
+    uint32_t offsets[] = {0, 5, 10, 15};
+    g.offsets = offsets;
+    g.n_offsets = 4;
+    uint32_t parts[] = {0, 2};
+    g.parts = parts;
+    g.n_parts = 2;
+
+    /* At z=2 (45° tiles), everything fits in one tile.
+     * Sum all ring areas across all callbacks. */
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 2, collect_cb, &c);
+
+    double total_area = 0.0;
+    for (int i = 0; i < c.count; i++) {
+        arpt_geom *cg = &c.results[i].geom;
+        if (cg->offsets && cg->n_offsets > 1) {
+            uint32_t nr = cg->n_offsets - 1;
+            for (uint32_t ri = 0; ri < nr; ri++) {
+                uint32_t rs = cg->offsets[ri];
+                uint32_t re = cg->offsets[ri + 1];
+                total_area += ring_signed_area(cg->x + rs, cg->y + rs,
+                                                re - rs);
+            }
+        } else {
+            total_area += ring_signed_area(cg->x, cg->y, cg->n_coords);
+        }
+    }
+
+    /* Expected: 400 (ext) - 100 (hole) + 16 (island) = 316
+     * The sign depends on winding. Take absolute value of net. */
+    double abs_total = total_area < 0 ? -total_area : total_area;
+    fprintf(stderr, "  Area accounting: total=%.1f (expected ~316)\n", abs_total);
+    TEST_ASSERT_DOUBLE_WITHIN_MESSAGE(20.0, 316.0, abs_total,
+        "Total area should be exterior - hole + island");
+
+    collector_free(&c);
+}
+
 /* Test polygon that exits and re-enters the clip rect on the top edge,
  * simulating Scandinavian coastline patterns. */
 static void test_reentrant_top_edge(void) {
@@ -845,6 +1416,1097 @@ static void test_reentrant_top_edge(void) {
     collector_free(&c);
 }
 
+/* ---- Geometry completely encloses tile ---- */
+
+/* A polygon that is strictly larger than the tile on all four sides.
+ * The clipped output should be the tile's buffered rectangle. */
+static void test_polygon_encloses_tile_completely(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* At z=3: 16 cols × 8 rows, tiles are 22.5° × 22.5°.
+     * Tile (8, 4) = lon [0, 22.5], lat [0, 22.5].
+     * Buffer = 22.5 * 8/256 ≈ 0.703° per side.
+     * Buffered bounds ≈ [-0.703, -0.703, 23.203, 23.203].
+     *
+     * Polygon: lon [-10, 35], lat [-10, 35] — 45° × 45°,
+     * much larger than the tile on every side. */
+    double x[] = {-10.0, 35.0, 35.0, -10.0, -10.0};
+    double y[] = {-10.0, -10.0, 35.0, 35.0, -10.0};
+    g.x = x;
+    g.y = y;
+    g.n_coords = 5;
+    uint32_t offsets[] = {0, 5};
+    g.offsets = offsets;
+    g.n_offsets = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    /* Tile (3, 8, 4) should definitely be present */
+    tile_result *t = find_result(&c, 3, 8, 4);
+    TEST_ASSERT_NOT_NULL_MESSAGE(t,
+        "Tile fully enclosed by polygon should receive geometry");
+
+    /* The clipped polygon should be a closed ring */
+    TEST_ASSERT_TRUE(t->geom.n_coords >= 4);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-12, t->geom.x[0],
+                               t->geom.x[t->geom.n_coords - 1]);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-12, t->geom.y[0],
+                               t->geom.y[t->geom.n_coords - 1]);
+
+    /* The clipped area should approximate the buffered tile area.
+     * Tile is 22.5° × 22.5° = 506.25 sq.deg.
+     * Buffered tile is ~23.906° × 23.906° ≈ 571.5 sq.deg.
+     * Allow generous tolerance since the polygon vertices get clipped
+     * to the buffered bounds. */
+    double area = ring_signed_area(t->geom.x, t->geom.y, t->geom.n_coords);
+    double abs_area = area < 0 ? -area : area;
+    TEST_ASSERT_TRUE_MESSAGE(abs_area > 400.0,
+        "Enclosed tile clipped area too small");
+    TEST_ASSERT_TRUE_MESSAGE(abs_area < 700.0,
+        "Enclosed tile clipped area too large");
+
+    /* All vertices should be within or very near the buffered tile bounds */
+    double buf = 22.5 * 8.0 / 256.0;
+    double bmin_x = 0.0 - buf, bmax_x = 22.5 + buf;
+    double bmin_y = 0.0 - buf, bmax_y = 22.5 + buf;
+    for (uint32_t i = 0; i < t->geom.n_coords; i++) {
+        TEST_ASSERT_TRUE_MESSAGE(
+            t->geom.x[i] >= bmin_x - 0.01 && t->geom.x[i] <= bmax_x + 0.01,
+            "Clipped vertex x outside buffered tile bounds");
+        TEST_ASSERT_TRUE_MESSAGE(
+            t->geom.y[i] >= bmin_y - 0.01 && t->geom.y[i] <= bmax_y + 0.01,
+            "Clipped vertex y outside buffered tile bounds");
+    }
+
+    collector_free(&c);
+}
+
+/* Line that completely crosses through a tile from one side to the other. */
+static void test_line_encloses_tile_span(void) {
+    arpt_geom g = {0};
+    g.type = 2;
+    /* A horizontal line at lat=10 from lon=-20 to lon=50.
+     * At z=3, this crosses multiple tiles end to end.
+     * Tile (8, 4) = lon [0, 22.5], lat [0, 22.5] — the line passes through. */
+    double x[] = {-20.0, 50.0};
+    double y[] = {10.0, 10.0};
+    g.x = x;
+    g.y = y;
+    g.n_coords = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    /* Tile (3, 8, 4) should get a clipped segment */
+    tile_result *t = find_result(&c, 3, 8, 4);
+    TEST_ASSERT_NOT_NULL_MESSAGE(t,
+        "Line spanning through tile should produce a segment");
+    TEST_ASSERT_TRUE(t->geom.n_coords >= 2);
+
+    /* Both endpoints should be at the buffered tile x-bounds */
+    double buf = 22.5 * 8.0 / 256.0;
+    double bmin_x = 0.0 - buf, bmax_x = 22.5 + buf;
+    double min_x = t->geom.x[0];
+    double max_x = t->geom.x[0];
+    for (uint32_t i = 1; i < t->geom.n_coords; i++) {
+        if (t->geom.x[i] < min_x) min_x = t->geom.x[i];
+        if (t->geom.x[i] > max_x) max_x = t->geom.x[i];
+    }
+    TEST_ASSERT_DOUBLE_WITHIN_MESSAGE(0.1, bmin_x, min_x,
+        "Clipped line should start near buffered tile left edge");
+    TEST_ASSERT_DOUBLE_WITHIN_MESSAGE(0.1, bmax_x, max_x,
+        "Clipped line should end near buffered tile right edge");
+
+    collector_free(&c);
+}
+
+/* Polygon with hole: exterior encloses tile, hole is far away.
+ * Tile should get only the exterior ring (clipped to rectangle), no hole. */
+static void test_polygon_encloses_tile_hole_outside(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* Exterior: lon [-10, 35], lat [-10, 35] — encloses tile (3,8,4).
+     * Hole: lon [25, 30], lat [25, 30] — entirely outside tile (3,8,4)
+     * (tile is [0, 22.5] × [0, 22.5], buffered ~[-0.7, 23.2]). */
+    double x[] = {
+        /* Exterior CCW */
+        -10.0, 35.0, 35.0, -10.0, -10.0,
+        /* Hole CW — far corner, outside the tile */
+        25.0, 25.0, 30.0, 30.0, 25.0
+    };
+    double y[] = {
+        -10.0, -10.0, 35.0, 35.0, -10.0,
+        25.0, 30.0, 30.0, 25.0, 25.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 10;
+    uint32_t offsets[] = {0, 5, 10};
+    g.offsets = offsets;
+    g.n_offsets = 3;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    /* Tile (3, 8, 4) should get geometry — only 1 ring (exterior),
+     * because the hole is entirely outside this tile. */
+    tile_result *t = find_result(&c, 3, 8, 4);
+    TEST_ASSERT_NOT_NULL_MESSAGE(t,
+        "Tile enclosed by exterior should get geometry");
+    TEST_ASSERT_TRUE(t->geom.n_coords >= 4);
+
+    /* Should have only 1 ring (hole clipped away) */
+    uint32_t n_rings = 1;
+    if (t->geom.offsets && t->geom.n_offsets > 1)
+        n_rings = t->geom.n_offsets - 1;
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, n_rings,
+        "Tile far from hole should only get exterior ring");
+
+    collector_free(&c);
+}
+
+/* Polygon with hole: both exterior AND hole completely enclose the tile.
+ * The tile is entirely inside the hole → should get NO geometry. */
+static void test_polygon_encloses_tile_hole_also_encloses(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* Exterior: lon [-20, 50], lat [-20, 50]
+     * Hole: lon [-5, 30], lat [-5, 30]
+     * Both enclose tile (3, 8, 4) = [0, 22.5] × [0, 22.5].
+     * The tile is entirely within the hole, so no visible polygon. */
+    double x[] = {
+        /* Exterior CCW */
+        -20.0, 50.0, 50.0, -20.0, -20.0,
+        /* Hole CW — also encloses the tile */
+        -5.0, -5.0, 30.0, 30.0, -5.0
+    };
+    double y[] = {
+        -20.0, -20.0, 50.0, 50.0, -20.0,
+        -5.0, 30.0, 30.0, -5.0, -5.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 10;
+    uint32_t offsets[] = {0, 5, 10};
+    g.offsets = offsets;
+    g.n_offsets = 3;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    /* Tile (3, 8, 4) is entirely inside the hole.
+     * Current slab clipper clips rings independently, so it WILL produce
+     * both rings clipped to the tile rectangle. The net area should be
+     * near zero (exterior rect - hole rect ≈ 0). */
+    tile_result *t = find_result(&c, 3, 8, 4);
+    if (t) {
+        /* If we get geometry, verify the net area is near zero:
+         * exterior and hole both clip to the same rectangle. */
+        double total_area = 0.0;
+        if (t->geom.offsets && t->geom.n_offsets > 1) {
+            uint32_t nr = t->geom.n_offsets - 1;
+            for (uint32_t ri = 0; ri < nr; ri++) {
+                uint32_t rs = t->geom.offsets[ri];
+                uint32_t re = t->geom.offsets[ri + 1];
+                total_area += ring_signed_area(t->geom.x + rs, t->geom.y + rs,
+                                                re - rs);
+            }
+        } else {
+            total_area = ring_signed_area(t->geom.x, t->geom.y,
+                                           t->geom.n_coords);
+        }
+        double abs_net = total_area < 0 ? -total_area : total_area;
+        fprintf(stderr,
+            "  Hole-encloses-tile: net area=%.4f (should be ~0)\n", abs_net);
+        /* Net area should be near zero since exterior and hole
+         * both clip to the same buffered tile rectangle. */
+        TEST_ASSERT_TRUE_MESSAGE(abs_net < 1.0,
+            "Tile inside hole should have near-zero net area");
+    }
+    /* If t is NULL, that's also correct — no geometry for this tile. */
+
+    collector_free(&c);
+}
+
+/* Polygon encloses tile, hole partially overlaps the tile.
+ * Tile should get exterior rectangle + partial hole. */
+static void test_polygon_encloses_tile_hole_partial(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* Exterior: lon [-10, 35], lat [-10, 35] — fully encloses tile (3,8,4).
+     * Hole: lon [10, 30], lat [10, 30] — partially overlaps the tile.
+     * Tile (3, 8, 4) = [0, 22.5] × [0, 22.5], buffered ~[-0.7, 23.2].
+     * Hole enters the tile from the right side. */
+    double x[] = {
+        /* Exterior CCW */
+        -10.0, 35.0, 35.0, -10.0, -10.0,
+        /* Hole CW — overlaps right portion of tile */
+        10.0, 10.0, 30.0, 30.0, 10.0
+    };
+    double y[] = {
+        -10.0, -10.0, 35.0, 35.0, -10.0,
+        10.0, 30.0, 30.0, 10.0, 10.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 10;
+    uint32_t offsets[] = {0, 5, 10};
+    g.offsets = offsets;
+    g.n_offsets = 3;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    tile_result *t = find_result(&c, 3, 8, 4);
+    TEST_ASSERT_NOT_NULL_MESSAGE(t,
+        "Tile with partial hole overlap should get geometry");
+
+    /* Should have 2 rings: exterior (full tile rect) + hole (partial) */
+    uint32_t n_rings = 1;
+    if (t->geom.offsets && t->geom.n_offsets > 1)
+        n_rings = t->geom.n_offsets - 1;
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(2, n_rings,
+        "Tile should have exterior + partial hole ring");
+
+    /* Net area should be less than the full tile area but positive.
+     * Full tile area ≈ 571 sq.deg (buffered). Hole removes part of it. */
+    double total_area = 0.0;
+    uint32_t nr = t->geom.n_offsets - 1;
+    for (uint32_t ri = 0; ri < nr; ri++) {
+        uint32_t rs = t->geom.offsets[ri];
+        uint32_t re = t->geom.offsets[ri + 1];
+        total_area += ring_signed_area(t->geom.x + rs, t->geom.y + rs,
+                                        re - rs);
+    }
+    double abs_net = total_area < 0 ? -total_area : total_area;
+    fprintf(stderr,
+        "  Partial hole: net area=%.1f (should be between 100 and 600)\n",
+        abs_net);
+    TEST_ASSERT_TRUE_MESSAGE(abs_net > 50.0,
+        "Net area should be positive — hole only covers part of tile");
+    TEST_ASSERT_TRUE_MESSAGE(abs_net < 600.0,
+        "Net area should be less than full tile");
+
+    /* Both rings should be closed */
+    for (uint32_t ri = 0; ri < nr; ri++) {
+        uint32_t rs = t->geom.offsets[ri];
+        uint32_t re = t->geom.offsets[ri + 1];
+        TEST_ASSERT_TRUE(re - rs >= 4);
+        TEST_ASSERT_DOUBLE_WITHIN(1e-12, t->geom.x[rs], t->geom.x[re - 1]);
+        TEST_ASSERT_DOUBLE_WITHIN(1e-12, t->geom.y[rs], t->geom.y[re - 1]);
+    }
+
+    collector_free(&c);
+}
+
+/* MultiPolygon with hole+island where everything encloses the tile.
+ * Exterior encloses tile, hole encloses tile, island encloses tile.
+ * Net: exterior - hole + island ≈ same as island alone ≈ tile rect. */
+static void test_multipolygon_all_enclose_tile(void) {
+    arpt_geom g = {0};
+    g.type = 6;
+    /* Part 0: Huge exterior + huge hole (both enclose tile)
+     * Part 1: Huge island (also encloses tile)
+     * All three rings clip to the same tile rectangle.
+     * Net area = rect - rect + rect = rect. */
+    double x[] = {
+        /* Part 0, Exterior CCW */
+        -30.0, 60.0, 60.0, -30.0, -30.0,
+        /* Part 0, Hole CW */
+        -10.0, -10.0, 40.0, 40.0, -10.0,
+        /* Part 1, Island CCW */
+        -5.0, 30.0, 30.0, -5.0, -5.0
+    };
+    double y[] = {
+        -30.0, -30.0, 60.0, 60.0, -30.0,
+        -10.0, 40.0, 40.0, -10.0, -10.0,
+        -5.0, -5.0, 30.0, 30.0, -5.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 15;
+    uint32_t offsets[] = {0, 5, 10, 15};
+    g.offsets = offsets;
+    g.n_offsets = 4;
+    uint32_t parts[] = {0, 2};
+    g.parts = parts;
+    g.n_parts = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    /* Tile (3, 8, 4) should get 2 callbacks: part 0 (ext+hole) and part 1 (island).
+     * Part 0 net area ≈ 0 (ext and hole both clip to same rect).
+     * Part 1 area ≈ tile rect area. */
+    int count_for_tile = 0;
+    double grand_total = 0.0;
+    for (int i = 0; i < c.count; i++) {
+        if (c.results[i].z == 3 && c.results[i].x == 8 && c.results[i].y == 4) {
+            count_for_tile++;
+            arpt_geom *cg = &c.results[i].geom;
+            if (cg->offsets && cg->n_offsets > 1) {
+                uint32_t nr = cg->n_offsets - 1;
+                for (uint32_t ri = 0; ri < nr; ri++) {
+                    uint32_t rs = cg->offsets[ri];
+                    uint32_t re = cg->offsets[ri + 1];
+                    grand_total += ring_signed_area(
+                        cg->x + rs, cg->y + rs, re - rs);
+                }
+            } else {
+                grand_total += ring_signed_area(cg->x, cg->y, cg->n_coords);
+            }
+
+            /* All rings should be closed */
+            if (cg->offsets && cg->n_offsets > 1) {
+                uint32_t nr = cg->n_offsets - 1;
+                for (uint32_t ri = 0; ri < nr; ri++) {
+                    uint32_t rs = cg->offsets[ri];
+                    uint32_t re = cg->offsets[ri + 1];
+                    TEST_ASSERT_TRUE(re - rs >= 4);
+                    TEST_ASSERT_DOUBLE_WITHIN(1e-12,
+                        cg->x[rs], cg->x[re - 1]);
+                    TEST_ASSERT_DOUBLE_WITHIN(1e-12,
+                        cg->y[rs], cg->y[re - 1]);
+                }
+            }
+        }
+    }
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, count_for_tile,
+        "Should get 2 callbacks for tile (one per MultiPolygon part)");
+
+    /* Grand total ≈ one tile rect area (part 0 cancels out, part 1 adds it back).
+     * Tile rect area ≈ 23.9° × 23.9° ≈ 571 sq.deg. */
+    double abs_grand = grand_total < 0 ? -grand_total : grand_total;
+    fprintf(stderr,
+        "  All-enclose: grand total area=%.1f (expected ~571)\n", abs_grand);
+    TEST_ASSERT_TRUE_MESSAGE(abs_grand > 300.0,
+        "Grand total should approximate one tile rect");
+    TEST_ASSERT_TRUE_MESSAGE(abs_grand < 800.0,
+        "Grand total should not exceed tile rect significantly");
+
+    collector_free(&c);
+}
+
+/* ---- Ring closure stress tests ---- */
+
+/* Strict ring validation: checks every ring in every callback result.
+ * - first == last (exact equality)
+ * - at least 4 vertices (3 unique + closing)
+ * - no consecutive duplicate vertices (except first==last)
+ * - non-zero area */
+static void assert_all_rings_valid(tile_collector *c, const char *label) {
+    char msg[256];
+    for (int i = 0; i < c->count; i++) {
+        arpt_geom *cg = &c->results[i].geom;
+        int z = c->results[i].z, tx = c->results[i].x, ty = c->results[i].y;
+
+        if (cg->offsets && cg->n_offsets > 1) {
+            uint32_t nr = cg->n_offsets - 1;
+            for (uint32_t ri = 0; ri < nr; ri++) {
+                uint32_t rs = cg->offsets[ri];
+                uint32_t re = cg->offsets[ri + 1];
+                uint32_t rn = re - rs;
+
+                snprintf(msg, sizeof(msg),
+                    "%s: tile(%d,%d,%d) ring %u has %u verts (need >= 4)",
+                    label, z, tx, ty, ri, rn);
+                TEST_ASSERT_TRUE_MESSAGE(rn >= 4, msg);
+
+                /* first == last (exact) */
+                snprintf(msg, sizeof(msg),
+                    "%s: tile(%d,%d,%d) ring %u not closed: "
+                    "first(%.6f,%.6f) != last(%.6f,%.6f)",
+                    label, z, tx, ty, ri,
+                    cg->x[rs], cg->y[rs], cg->x[re-1], cg->y[re-1]);
+                TEST_ASSERT_EQUAL_DOUBLE_MESSAGE(cg->x[rs], cg->x[re-1], msg);
+                TEST_ASSERT_EQUAL_DOUBLE_MESSAGE(cg->y[rs], cg->y[re-1], msg);
+
+                /* No consecutive duplicates (except closing vertex) */
+                for (uint32_t j = rs; j + 1 < re - 1; j++) {
+                    if (cg->x[j] == cg->x[j+1] && cg->y[j] == cg->y[j+1]) {
+                        snprintf(msg, sizeof(msg),
+                            "%s: tile(%d,%d,%d) ring %u dup at [%u]"
+                            " (%.6f,%.6f)",
+                            label, z, tx, ty, ri, j,
+                            cg->x[j], cg->y[j]);
+                        TEST_FAIL_MESSAGE(msg);
+                    }
+                }
+
+                /* Non-zero area */
+                double area = ring_signed_area(cg->x + rs, cg->y + rs, rn);
+                double abs_area = area < 0 ? -area : area;
+                snprintf(msg, sizeof(msg),
+                    "%s: tile(%d,%d,%d) ring %u has zero area",
+                    label, z, tx, ty, ri);
+                TEST_ASSERT_TRUE_MESSAGE(abs_area > 1e-12, msg);
+            }
+        } else {
+            /* Single ring (no offsets) */
+            uint32_t rn = cg->n_coords;
+            snprintf(msg, sizeof(msg),
+                "%s: tile(%d,%d,%d) single ring has %u verts (need >= 4)",
+                label, z, tx, ty, rn);
+            TEST_ASSERT_TRUE_MESSAGE(rn >= 4, msg);
+
+            snprintf(msg, sizeof(msg),
+                "%s: tile(%d,%d,%d) single ring not closed: "
+                "first(%.6f,%.6f) != last(%.6f,%.6f)",
+                label, z, tx, ty,
+                cg->x[0], cg->y[0], cg->x[rn-1], cg->y[rn-1]);
+            TEST_ASSERT_EQUAL_DOUBLE_MESSAGE(cg->x[0], cg->x[rn-1], msg);
+            TEST_ASSERT_EQUAL_DOUBLE_MESSAGE(cg->y[0], cg->y[rn-1], msg);
+
+            for (uint32_t j = 0; j + 1 < rn - 1; j++) {
+                if (cg->x[j] == cg->x[j+1] && cg->y[j] == cg->y[j+1]) {
+                    snprintf(msg, sizeof(msg),
+                        "%s: tile(%d,%d,%d) single ring dup at [%u]"
+                        " (%.6f,%.6f)",
+                        label, z, tx, ty, j, cg->x[j], cg->y[j]);
+                    TEST_FAIL_MESSAGE(msg);
+                }
+            }
+
+            double area = ring_signed_area(cg->x, cg->y, rn);
+            double abs_area = area < 0 ? -area : area;
+            snprintf(msg, sizeof(msg),
+                "%s: tile(%d,%d,%d) single ring has zero area",
+                label, z, tx, ty);
+            TEST_ASSERT_TRUE_MESSAGE(abs_area > 1e-12, msg);
+        }
+    }
+}
+
+/* 1. Polygon with a vertex exactly on a tile boundary.
+ *    At z=3 (16 cols × 8 rows), tile boundaries at lon ..., 0, 22.5, 45, ...
+ *    Place a vertex exactly at lon=22.5 (tile right edge). */
+static void test_closure_vertex_on_tile_edge(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* Triangle with one vertex exactly on the tile boundary lon=22.5.
+     * Other two vertices inside tile (8, 4) = [0, 22.5] × [0, 22.5]. */
+    double x[] = {5.0, 22.5, 5.0, 5.0};
+    double y[] = {5.0, 11.25, 18.0, 5.0};
+    g.x = x;
+    g.y = y;
+    g.n_coords = 4;
+    uint32_t offsets[] = {0, 4};
+    g.offsets = offsets;
+    g.n_offsets = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    TEST_ASSERT_TRUE(c.count >= 1);
+    assert_all_rings_valid(&c, "vertex_on_edge");
+    collector_free(&c);
+}
+
+/* 2. Polygon with an edge running exactly along a tile boundary.
+ *    The right edge of the polygon coincides with the tile boundary. */
+static void test_closure_edge_along_tile_boundary(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* Rectangle with right edge at lon=22.5 (tile boundary at z=3).
+     * Tile (8, 4) = [0, 22.5]. */
+    double x[] = {5.0, 22.5, 22.5, 5.0, 5.0};
+    double y[] = {5.0, 5.0, 18.0, 18.0, 5.0};
+    g.x = x;
+    g.y = y;
+    g.n_coords = 5;
+    uint32_t offsets[] = {0, 5};
+    g.offsets = offsets;
+    g.n_offsets = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    TEST_ASSERT_TRUE(c.count >= 1);
+    assert_all_rings_valid(&c, "edge_along_boundary");
+    collector_free(&c);
+}
+
+/* 3. Polygon with edges along BOTH tile boundaries (top and right).
+ *    Vertex sits exactly at the tile corner. */
+static void test_closure_vertex_on_tile_corner(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* Triangle: one vertex at the top-right corner of tile (8, 4).
+     * Tile (8, 4) = [0, 22.5] × [0, 22.5].
+     * Corner is at (22.5, 22.5). */
+    double x[] = {5.0, 22.5, 5.0, 5.0};
+    double y[] = {5.0, 22.5, 18.0, 5.0};
+    g.x = x;
+    g.y = y;
+    g.n_coords = 4;
+    uint32_t offsets[] = {0, 4};
+    g.offsets = offsets;
+    g.n_offsets = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    TEST_ASSERT_TRUE(c.count >= 1);
+    assert_all_rings_valid(&c, "vertex_on_corner");
+    collector_free(&c);
+}
+
+/* 4. Diamond crossing all 4 tile edges.
+ *    The two-pass slab clipping must produce a proper octagon. */
+static void test_closure_diamond_crosses_all_edges(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* At z=3, tile (8, 4) = [0, 22.5] × [0, 22.5].
+     * Diamond centered at (11.25, 11.25) with radius 15°,
+     * extending beyond all 4 tile edges. */
+    double cx = 11.25, cy = 11.25, r = 15.0;
+    double x[] = {cx, cx + r, cx, cx - r, cx};
+    double y[] = {cy - r, cy, cy + r, cy, cy - r};
+    g.x = x;
+    g.y = y;
+    g.n_coords = 5;
+    uint32_t offsets[] = {0, 5};
+    g.offsets = offsets;
+    g.n_offsets = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    /* Should produce results in multiple tiles (diamond extends beyond all edges) */
+    TEST_ASSERT_TRUE(c.count >= 1);
+    assert_all_rings_valid(&c, "diamond_all_edges");
+
+    /* The center tile should have an octagonal ring (8 vertices + closing = 9) */
+    tile_result *center = find_result(&c, 3, 8, 4);
+    TEST_ASSERT_NOT_NULL(center);
+    /* Diamond clipped to rect should produce more vertices than the original 4 */
+    TEST_ASSERT_TRUE_MESSAGE(center->geom.n_coords >= 5,
+        "Diamond clipped to rect should gain vertices at intersections");
+
+    collector_free(&c);
+}
+
+/* 5. Thin sliver polygon just clipping a tile corner.
+ *    This tests near-degenerate ring closure. */
+static void test_closure_thin_sliver_at_corner(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* At z=3, tile (8, 4) = [0, 22.5] × [0, 22.5].
+     * Buffer ≈ 0.703°. Buffered bounds ≈ [-0.703, 23.203].
+     * Thin triangle barely clipping the top-right corner.
+     * Vertices: (20, 25), (25, 20), (25, 25) — only the bottom-left
+     * part of this triangle overlaps the buffered tile bounds. */
+    double x[] = {20.0, 25.0, 25.0, 20.0};
+    double y[] = {25.0, 20.0, 25.0, 25.0};
+    g.x = x;
+    g.y = y;
+    g.n_coords = 4;
+    uint32_t offsets[] = {0, 4};
+    g.offsets = offsets;
+    g.n_offsets = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    /* The triangle is small and near a corner — it might clip to a tiny
+     * sliver or be rejected as degenerate. Either outcome is acceptable
+     * but if it produces output, the rings must be valid. */
+    if (c.count > 0) {
+        assert_all_rings_valid(&c, "sliver_corner");
+    }
+    collector_free(&c);
+}
+
+/* 6. Long thin polygon at a diagonal angle crossing a tile boundary.
+ *    The clip produces a thin quadrilateral whose closure edge
+ *    goes between different clip edges. */
+static void test_closure_diagonal_crossing(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* A thin polygon at ~45° crossing the right edge of tile (8,4).
+     * Tile right edge at lon=22.5.
+     * The polygon goes from inside the tile to outside diagonally.
+     * The two long edges have slightly different slopes so the clip
+     * doesn't degenerate to a collinear set of points. */
+    double x[] = {15.0, 30.0, 31.0, 16.0, 15.0};
+    double y[] = {5.0, 20.0, 22.0, 7.0, 5.0};
+    g.x = x;
+    g.y = y;
+    g.n_coords = 5;
+    uint32_t offsets[] = {0, 5};
+    g.offsets = offsets;
+    g.n_offsets = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    TEST_ASSERT_TRUE(c.count >= 1);
+    assert_all_rings_valid(&c, "diagonal_crossing");
+    collector_free(&c);
+}
+
+/* 6b. Parallelogram with exactly parallel edges clips to a degenerate
+ *     collinear ring — the clipper should correctly discard it. */
+static void test_closure_degenerate_parallel_clip(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* Both long edges have slope 1, so clipping at a vertical line
+     * produces two intersection points at the same (x,y). After dedup,
+     * the result is collinear (zero area) and should be discarded. */
+    double x[] = {15.0, 30.0, 31.0, 16.0, 15.0};
+    double y[] = {5.0, 20.0, 21.0, 6.0, 5.0};
+    g.x = x;
+    g.y = y;
+    g.n_coords = 5;
+    uint32_t offsets[] = {0, 5};
+    g.offsets = offsets;
+    g.n_offsets = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    /* The tile (8, 4) clip should NOT produce a degenerate polygon.
+     * It should either produce a valid ring or nothing. */
+    for (int i = 0; i < c.count; i++) {
+        if (c.results[i].z == 3 && c.results[i].x == 8 && c.results[i].y == 4) {
+            arpt_geom *cg = &c.results[i].geom;
+            /* If it produced output, it must be a valid ring */
+            TEST_ASSERT_TRUE(cg->n_coords >= 4);
+            double area = ring_signed_area(cg->x, cg->y, cg->n_coords);
+            double abs_area = area < 0 ? -area : area;
+            TEST_ASSERT_TRUE_MESSAGE(abs_area > 1e-12,
+                "Degenerate collinear ring should have been discarded");
+        }
+    }
+    /* If no result for that tile, the degenerate ring was correctly discarded */
+
+    collector_free(&c);
+}
+
+/* 7. L-shaped concave polygon straddling a tile corner.
+ *    The polygon extends beyond both the top and right edges.
+ *    The x-slab closing edge will cross the y-slab boundary. */
+static void test_closure_l_shape_at_corner(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* At z=3, tile (8, 4) top-right corner is (22.5, 22.5).
+     * L-shape: a vertical bar extending above the tile, plus a horizontal
+     * bar extending to the right of the tile.
+     *
+     *        ┌──┐
+     *        │  │  ← extends above tile
+     *   ─────┘  │
+     *   │       │
+     *   │       │──────┐
+     *   │              │  ← extends right of tile
+     *   └──────────────┘
+     *
+     * Vertices (CCW): */
+    double x[] = {
+        10.0, 30.0, 30.0, 20.0, 20.0, 15.0, 15.0, 10.0, 10.0
+    };
+    double y[] = {
+        5.0, 5.0, 15.0, 15.0, 30.0, 30.0, 15.0, 15.0, 5.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 9;
+    uint32_t offsets[] = {0, 9};
+    g.offsets = offsets;
+    g.n_offsets = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    TEST_ASSERT_TRUE(c.count >= 1);
+    assert_all_rings_valid(&c, "l_shape_corner");
+
+    /* The tile containing the corner (8, 4) should have a valid L-shaped
+     * clipped polygon. */
+    tile_result *t = find_result(&c, 3, 8, 4);
+    TEST_ASSERT_NOT_NULL(t);
+    /* L-shape clipped to rect: both arms are clipped to tile bounds.
+     * Should produce a concave polygon with more vertices than the
+     * original 8 (due to clip intersections). */
+    TEST_ASSERT_TRUE(t->geom.n_coords >= 5);
+
+    collector_free(&c);
+}
+
+/* 8. T-shaped polygon: horizontal bar crosses the tile, vertical bar
+ *    goes above the tile. Tests the two-pass interaction when the
+ *    x-slab pass produces a closing edge that the y-slab must clip. */
+static void test_closure_t_shape_crossing(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* T-shape:
+     *          ┌──┐
+     *          │  │  ← vertical bar above tile
+     *     ┌────┘  └────┐
+     *     │             │  ← horizontal bar inside tile
+     *     └─────────────┘
+     *
+     * At z=3, tile (8, 4) = [0, 22.5] × [0, 22.5].
+     * Horizontal bar: lon [-5, 28], lat [5, 12] — crosses left & right.
+     * Vertical bar: lon [8, 15], lat [12, 30] — extends above. */
+    double x[] = {
+        -5.0, 28.0, 28.0, 15.0, 15.0, 8.0, 8.0, -5.0, -5.0
+    };
+    double y[] = {
+        5.0, 5.0, 12.0, 12.0, 30.0, 30.0, 12.0, 12.0, 5.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 9;
+    uint32_t offsets[] = {0, 9};
+    g.offsets = offsets;
+    g.n_offsets = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    TEST_ASSERT_TRUE(c.count >= 1);
+    assert_all_rings_valid(&c, "t_shape");
+    collector_free(&c);
+}
+
+/* 9. Polygon that exits and re-enters the SAME slab boundary at
+ *    very close positions. The closing edge between these nearby
+ *    points is where artifacts can appear. */
+static void test_closure_narrow_reentry(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* A polygon that pokes just barely outside the top of tile (8, 4).
+     * It exits at lon=10 going above, and re-enters at lon=13.
+     * The excursion is only ~1° above the tile boundary.
+     *
+     * At z=3, tile top is lat=22.5, buffered top ≈ 23.2.
+     * Exit and re-entry on the buffered top edge: */
+    double x[] = {
+        5.0, 10.0, 11.5, 13.0, 18.0, 18.0, 5.0, 5.0
+    };
+    double y[] = {
+        10.0, 10.0, 25.0, 10.0, 10.0, 20.0, 20.0, 10.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 8;
+    uint32_t offsets[] = {0, 8};
+    g.offsets = offsets;
+    g.n_offsets = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    TEST_ASSERT_TRUE(c.count >= 1);
+    assert_all_rings_valid(&c, "narrow_reentry");
+    collector_free(&c);
+}
+
+/* 10. Polygon that exits the tile through the right edge and re-enters
+ *     through the top edge. The two-pass clipping creates a synthetic
+ *     closing edge from x-slab pass that the y-slab must then clip. */
+static void test_closure_exit_right_enter_top(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* At z=3, tile (8, 4) = [0, 22.5] × [0, 22.5].
+     * Polygon goes:
+     *   inside → exits right edge → goes above-right → enters from top
+     *   → back inside
+     *
+     * The x-slab pass clips the portion that's outside the right edge,
+     * connecting the exit point to the re-entry with a closing edge
+     * along x=buffered_right. But the re-entry comes from ABOVE,
+     * so the closing edge goes up beyond the tile top, and the y-slab
+     * must clip it. */
+    double x[] = {
+        5.0, 5.0, 30.0, 30.0, 15.0, 15.0, 5.0
+    };
+    double y[] = {
+        5.0, 15.0, 15.0, 30.0, 30.0, 5.0, 5.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 7;
+    uint32_t offsets[] = {0, 7};
+    g.offsets = offsets;
+    g.n_offsets = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    TEST_ASSERT_TRUE(c.count >= 1);
+    assert_all_rings_valid(&c, "exit_right_enter_top");
+    collector_free(&c);
+}
+
+/* 11. Same as above but for all four corner transitions:
+ *     exit-right/enter-top, exit-top/enter-left,
+ *     exit-left/enter-bottom, exit-bottom/enter-right. */
+static void test_closure_all_corner_transitions(void) {
+    /* A polygon that wraps around the outside of the tile corner.
+     * It starts inside, exits bottom, goes around the bottom-right
+     * corner outside, and enters from the right. This tests the
+     * x-slab/y-slab interaction at every corner combination.
+     *
+     * Use a polygon that goes around the OUTSIDE of the tile in a
+     * clockwise direction (but CCW as a ring), visiting all four corners.
+     *
+     * At z=3, tile (8, 4) center is (11.25, 11.25).
+     * Polygon: a star-like shape with 4 arms extending beyond each edge. */
+    arpt_geom g = {0};
+    g.type = 3;
+    /* 4-pointed star centered on tile (8,4). Each arm extends ~5° beyond
+     * the tile boundary in one direction. */
+    double cx = 11.25, cy = 11.25;
+    double x[] = {
+        cx, cx + 5, cx + 18, cx + 5,  /* right arm */
+        cx, cx + 5, cx, cx - 5,       /* top arm */
+        cx - 18, cx - 5, cx, cx - 5,  /* left arm */
+        cx, cx + 5,                    /* bottom arm — close */
+        cx                             /* closing vertex */
+    };
+    double y[] = {
+        cy - 18, cy - 5, cy, cy + 5,  /* bottom arm & right arm */
+        cy + 18, cy + 5, cy, cy + 5,  /* top arm */
+        cy, cy - 5, cy - 18, cy - 5,  /* left arm & bottom */
+        cy - 18, cy - 5,              /* closing approach */
+        cy - 18                        /* closing vertex */
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 15;
+    uint32_t offsets[] = {0, 15};
+    g.offsets = offsets;
+    g.n_offsets = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    TEST_ASSERT_TRUE(c.count >= 1);
+    assert_all_rings_valid(&c, "corner_transitions");
+    collector_free(&c);
+}
+
+/* 12. Multiple zoom levels: same polygon clipped at z=2 through z=7.
+ *     At each zoom the tile grid changes, creating different clip
+ *     configurations. All must produce valid closed rings. */
+static void test_closure_across_zoom_levels(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* An irregular pentagon that will intersect tile boundaries differently
+     * at each zoom level. */
+    double x[] = {2.0, 18.0, 22.0, 12.0, -3.0, 2.0};
+    double y[] = {3.0, 1.0, 15.0, 24.0, 14.0, 3.0};
+    g.x = x;
+    g.y = y;
+    g.n_coords = 6;
+    uint32_t offsets[] = {0, 6};
+    g.offsets = offsets;
+    g.n_offsets = 2;
+
+    for (int z = 2; z <= 7; z++) {
+        tile_collector c;
+        collector_init(&c);
+        arpt_assign_tiles(&g, z, collect_cb, &c);
+
+        char label[64];
+        snprintf(label, sizeof(label), "zoom_%d", z);
+        TEST_ASSERT_TRUE(c.count >= 1);
+        assert_all_rings_valid(&c, label);
+        collector_free(&c);
+    }
+}
+
+/* 13. Polygon with hole: both rings cross the tile boundary.
+ *     Strict validation of closure for every ring at every tile. */
+static void test_closure_hole_crossing_boundary(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* At z=3, tile boundary at lon=22.5.
+     * Exterior: lon [10, 35], lat [5, 20] — crosses right edge.
+     * Hole: lon [15, 30], lat [8, 17] — also crosses right edge. */
+    double x[] = {
+        /* Exterior CCW */
+        10.0, 35.0, 35.0, 10.0, 10.0,
+        /* Hole CW */
+        15.0, 15.0, 30.0, 30.0, 15.0
+    };
+    double y[] = {
+        5.0, 5.0, 20.0, 20.0, 5.0,
+        8.0, 17.0, 17.0, 8.0, 8.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 10;
+    uint32_t offsets[] = {0, 5, 10};
+    g.offsets = offsets;
+    g.n_offsets = 3;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    TEST_ASSERT_TRUE(c.count >= 1);
+    assert_all_rings_valid(&c, "hole_crossing_boundary");
+    collector_free(&c);
+}
+
+/* 14. Polygon with hole where the hole ring crosses the boundary
+ *     but the exterior doesn't. The exterior clips to the tile rect;
+ *     the hole clips to a partial shape. */
+static void test_closure_hole_crosses_exterior_doesnt(void) {
+    arpt_geom g = {0};
+    g.type = 3;
+    /* Exterior is entirely within tile (8, 4) = [0, 22.5] × [0, 22.5].
+     * Hole extends beyond the right edge at lon=22.5. */
+    double x[] = {
+        /* Exterior CCW — within tile */
+        2.0, 21.0, 21.0, 2.0, 2.0,
+        /* Hole CW — extends beyond right edge */
+        10.0, 10.0, 28.0, 28.0, 10.0
+    };
+    double y[] = {
+        2.0, 2.0, 21.0, 21.0, 2.0,
+        8.0, 15.0, 15.0, 8.0, 8.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 10;
+    uint32_t offsets[] = {0, 5, 10};
+    g.offsets = offsets;
+    g.n_offsets = 3;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    TEST_ASSERT_TRUE(c.count >= 1);
+    assert_all_rings_valid(&c, "hole_crosses_ext_doesnt");
+    collector_free(&c);
+}
+
+/* 15. MultiPolygon with hole+island where all three rings cross
+ *     the same tile boundary. */
+static void test_closure_multipolygon_all_rings_cross(void) {
+    arpt_geom g = {0};
+    g.type = 6;
+    /* All rings cross the right edge of tile (8, 4) at lon=22.5.
+     * Part 0: Exterior [5, 30] × [2, 21], Hole [12, 28] × [6, 18]
+     * Part 1: Island [15, 25] × [9, 15] */
+    double x[] = {
+        /* Part 0, Exterior CCW */
+        5.0, 30.0, 30.0, 5.0, 5.0,
+        /* Part 0, Hole CW */
+        12.0, 12.0, 28.0, 28.0, 12.0,
+        /* Part 1, Island CCW */
+        15.0, 25.0, 25.0, 15.0, 15.0
+    };
+    double y[] = {
+        2.0, 2.0, 21.0, 21.0, 2.0,
+        6.0, 18.0, 18.0, 6.0, 6.0,
+        9.0, 9.0, 15.0, 15.0, 9.0
+    };
+    g.x = x;
+    g.y = y;
+    g.n_coords = 15;
+    uint32_t offsets[] = {0, 5, 10, 15};
+    g.offsets = offsets;
+    g.n_offsets = 4;
+    uint32_t parts[] = {0, 2};
+    g.parts = parts;
+    g.n_parts = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    TEST_ASSERT_TRUE(c.count >= 1);
+    assert_all_rings_valid(&c, "multipolygon_all_cross");
+    collector_free(&c);
+}
+
+/* ---- Regression: simplify-after-clip removes boundary corners ----
+ *
+ * This documents the root cause of the z=4 wedge artifact: Douglas-Peucker
+ * simplification applied AFTER clipping can remove tile-boundary corner
+ * vertices, creating diagonal lines across tile interiors.
+ *
+ * The fix is to simplify BEFORE clipping (in the pipeline), so this test
+ * just verifies that the clipper itself produces correct boundary vertices
+ * that a subsequent simplifier could remove. */
+static void test_regression_boundary_corner_preserved(void) {
+    /* A coastline-like polygon that, when clipped to a tile, produces
+     * a ring tracing along two tile edges and through a corner.
+     *
+     * At z=3, tile (8, 4) = [0, 22.5] × [0, 22.5], buffered ~[-0.7, 23.2].
+     * The polygon exits the top edge near x=20, goes around the top-right
+     * corner (outside the tile), and re-enters the right edge near y=18.
+     * The clipped ring should have the corner vertex near (23.2, 22.5). */
+    arpt_geom g = {0};
+    g.type = 3;
+    double x[] = {5.0, 20.0, 30.0, 30.0, 25.0, 5.0, 5.0};
+    double y[] = {5.0, 5.0, 5.0, 25.0, 25.0, 18.0, 5.0};
+    g.x = x;
+    g.y = y;
+    g.n_coords = 7;
+    uint32_t offsets[] = {0, 7};
+    g.offsets = offsets;
+    g.n_offsets = 2;
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&g, 3, collect_cb, &c);
+
+    /* The clipped output should cover the tile — look across all results
+     * for tile (3,8,4). With boundary walk, corner vertices are inserted
+     * explicitly. Check that at least one ring has a vertex near the
+     * top-right corner. */
+    double buf = 22.5 * 8.0 / 256.0;
+    double corner_x = 22.5 + buf;
+    double corner_y = 22.5 + buf;
+    bool found_corner = false;
+    bool found_tile = false;
+    for (int i = 0; i < c.count; i++) {
+        if (c.results[i].z != 3 || c.results[i].x != 8 ||
+            c.results[i].y != 4) continue;
+        found_tile = true;
+        arpt_geom *cg = &c.results[i].geom;
+        for (uint32_t j = 0; j < cg->n_coords; j++) {
+            if (cg->x[j] > 22.0 && cg->y[j] > 22.0) {
+                found_corner = true;
+                TEST_ASSERT_DOUBLE_WITHIN(1.0, corner_x, cg->x[j]);
+                TEST_ASSERT_DOUBLE_WITHIN(1.0, corner_y, cg->y[j]);
+            }
+        }
+    }
+    TEST_ASSERT_TRUE_MESSAGE(found_tile, "Tile (3,8,4) should exist");
+    TEST_ASSERT_TRUE_MESSAGE(found_corner,
+        "A ring in the tile should have a vertex near the tile corner");
+
+    assert_all_rings_valid(&c, "boundary_corner");
+    collector_free(&c);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_assign_tiles_null);
@@ -865,6 +2527,37 @@ int main(void) {
     RUN_TEST(test_concave_polygon_empty_interior_tile);
     RUN_TEST(test_multipolygon_parts);
     RUN_TEST(test_multipolygon_same_tile);
+    RUN_TEST(test_polygon_with_hole_within_tile);
+    RUN_TEST(test_polygon_with_hole_crossing_tile);
+    RUN_TEST(test_polygon_hole_empty_interior);
+    RUN_TEST(test_polygon_hole_only_frame);
+    RUN_TEST(test_multipolygon_hole_and_island_within_tile);
+    RUN_TEST(test_multipolygon_hole_and_island_crossing_tile);
+    RUN_TEST(test_multipolygon_hole_island_high_zoom);
+    RUN_TEST(test_multipolygon_hole_island_area_accounting);
+    RUN_TEST(test_polygon_encloses_tile_completely);
+    RUN_TEST(test_line_encloses_tile_span);
+    RUN_TEST(test_polygon_encloses_tile_hole_outside);
+    RUN_TEST(test_polygon_encloses_tile_hole_also_encloses);
+    RUN_TEST(test_polygon_encloses_tile_hole_partial);
+    RUN_TEST(test_multipolygon_all_enclose_tile);
+    RUN_TEST(test_closure_vertex_on_tile_edge);
+    RUN_TEST(test_closure_edge_along_tile_boundary);
+    RUN_TEST(test_closure_vertex_on_tile_corner);
+    RUN_TEST(test_closure_diamond_crosses_all_edges);
+    RUN_TEST(test_closure_thin_sliver_at_corner);
+    RUN_TEST(test_closure_diagonal_crossing);
+    RUN_TEST(test_closure_degenerate_parallel_clip);
+    RUN_TEST(test_closure_l_shape_at_corner);
+    RUN_TEST(test_closure_t_shape_crossing);
+    RUN_TEST(test_closure_narrow_reentry);
+    RUN_TEST(test_closure_exit_right_enter_top);
+    RUN_TEST(test_closure_all_corner_transitions);
+    RUN_TEST(test_closure_across_zoom_levels);
+    RUN_TEST(test_closure_hole_crossing_boundary);
+    RUN_TEST(test_closure_hole_crosses_exterior_doesnt);
+    RUN_TEST(test_closure_multipolygon_all_rings_cross);
+    RUN_TEST(test_regression_boundary_corner_preserved);
     RUN_TEST(test_reentrant_same_edge);
     RUN_TEST(test_reentrant_top_edge);
     return UNITY_END();

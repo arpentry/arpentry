@@ -69,6 +69,9 @@ struct arpt_control {
     /* Refresh flag: set by R key, cleared by query */
     bool needs_refresh;
 
+    /* Debug flag: set by D key, cleared by query */
+    bool needs_debug;
+
     /* Optional event filter (for UI click interception) */
     arpt_event_filter_fn event_filter;
     void *filter_ud;
@@ -286,6 +289,9 @@ static void on_key(GLFWwindow *window, int key, int scancode, int action,
     case GLFW_KEY_R:
         ctrl->needs_refresh = true;
         break;
+    case GLFW_KEY_D:
+        ctrl->needs_debug = true;
+        break;
     default:
         break;
     }
@@ -488,6 +494,13 @@ bool arpt_control_needs_refresh(arpt_control *ctrl) {
     if (!ctrl) return false;
     bool v = ctrl->needs_refresh;
     ctrl->needs_refresh = false;
+    return v;
+}
+
+bool arpt_control_needs_debug(arpt_control *ctrl) {
+    if (!ctrl) return false;
+    bool v = ctrl->needs_debug;
+    ctrl->needs_debug = false;
     return v;
 }
 

@@ -451,6 +451,36 @@ static void draw_entry(arpt_renderer *r, const arpt_camera *cam,
     arpt_renderer_draw_tile(r, (arpt_tile_gpu *)e->gpu);
 }
 
+void arpt_tile_manager_debug_info(const arpt_tile_manager *tm) {
+    if (!tm) return;
+
+    static const char *state_names[] = {"EMPTY", "LOADING", "READY", "FAILED"};
+
+    printf("[DEBUG] zoom_level=%d  visible_tiles=%d  active_fetches=%d  "
+           "cached=%zu\n",
+           tm->visible_level, tm->visible_count, tm->active_fetches,
+           hashmap_count(tm->cache));
+
+    for (int i = 0; i < tm->visible_count; i++) {
+        arpt_tile_key k = tm->visible[i];
+        tile_entry lookup = {.key = k};
+        const tile_entry *e = hashmap_get(tm->cache, &lookup);
+
+        const char *state = "MISSING";
+        double elev = 0.0;
+        if (e) {
+            state = (e->state <= TILE_FAILED) ? state_names[e->state] : "?";
+            elev = e->avg_elevation;
+        }
+
+        arpt_bounds b = arpt_tile_bounds(k.level, k.x, k.y);
+        printf("  tile %d/%d/%d  state=%-8s  bounds=[%.4f,%.4f,%.4f,%.4f]  "
+               "elev=%.1fm\n",
+               k.level, k.x, k.y, state, b.west, b.south, b.east, b.north,
+               elev);
+    }
+}
+
 void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
                             const arpt_camera *cam) {
     int ph_slot = 0;
