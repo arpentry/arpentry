@@ -58,6 +58,9 @@ struct arpt_tile_manager {
 
     /* Ground elevation at camera position (updated each frame) */
     double ground_elevation;
+
+    /* Set when a tile upload completes; cleared by needs_redraw query. */
+    bool needs_redraw;
 };
 
 /* Hashmap callbacks */
@@ -206,6 +209,7 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
     /* wgpuQueueWriteBuffer copies synchronously, safe to free after */
     updated.gpu = arpt_renderer_upload_tile(tm->renderer, &prims);
     updated.state = updated.gpu ? TILE_READY : TILE_FAILED;
+    if (updated.state == TILE_READY) tm->needs_redraw = true;
     tm_hashmap_set(tm, &updated);
     arpt_tile_prims_free(&prims);
     arpt_surface_data_free(&surface);
@@ -422,6 +426,13 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
 
 int arpt_tile_manager_active_fetches(const arpt_tile_manager *tm) {
     return tm ? tm->active_fetches : 0;
+}
+
+bool arpt_tile_manager_needs_redraw(arpt_tile_manager *tm) {
+    if (!tm) return false;
+    bool v = tm->needs_redraw;
+    tm->needs_redraw = false;
+    return v;
 }
 
 /* Ground elevation query */

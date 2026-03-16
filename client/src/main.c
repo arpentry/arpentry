@@ -404,7 +404,8 @@ static void render_frame(void) {
     bool redraw = app.needs_redraw
                || arpt_control_needs_redraw(app.control)
                || (app.tile_manager &&
-                   arpt_tile_manager_active_fetches(app.tile_manager) > 0);
+                   (arpt_tile_manager_active_fetches(app.tile_manager) > 0 ||
+                    arpt_tile_manager_needs_redraw(app.tile_manager)));
     app.needs_redraw = false;
 
     if (!redraw) return;

@@ -67,6 +67,9 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam);
 /** Returns the number of in-flight tile fetches. */
 int arpt_tile_manager_active_fetches(const arpt_tile_manager *tm);
 
+/** Returns true (once) after a tile upload completes. Clear-on-read. */
+bool arpt_tile_manager_needs_redraw(arpt_tile_manager *tm);
+
 /**
  * Query ground elevation (meters) at a geodetic position.
  * Finds the highest-level READY tile containing the position and returns

@@ -122,7 +122,8 @@ static void write_error(struct net_conn *conn, int status) {
 
 #define BROTLI_QUALITY 4
 
-static bool build_tileset(uint8_t **out, size_t *out_size) {
+static bool build_tileset(const arpt_archive_reader *archive,
+                          uint8_t **out, size_t *out_size) {
     flatcc_builder_t builder;
     flatcc_builder_init(&builder);
 
@@ -137,8 +138,16 @@ static bool build_tileset(uint8_t **out, size_t *out_size) {
     arpentry_tiles_ElevationRange_t elev = {.min = -500.0, .max = 4800.0};
     arpentry_tiles_Tileset_elevation_range_add(&builder, &elev);
 
+    /* Clamp max_level to the archive's zoom range so the client does not
+       request tiles that don't exist. */
+    int max_level = 19;
+    if (archive) {
+        int archive_max = (int)arpt_archive_reader_max_zoom(archive);
+        if (archive_max < max_level) max_level = archive_max;
+    }
+
     arpentry_tiles_Tileset_min_level_add(&builder, 0);
-    arpentry_tiles_Tileset_max_level_add(&builder, 19);
+    arpentry_tiles_Tileset_max_level_add(&builder, max_level);
     arpentry_tiles_Tileset_root_error_add(&builder, 200000.0);
 
     /* Layers in decode-priority order (Section 9) */
@@ -799,7 +808,7 @@ static void dispatch_request(struct net_conn *conn, struct server_ctx *ctx,
     if (strcmp(uri, "/tileset.arts") == 0) {
         uint8_t *arts_data = NULL;
         size_t arts_size = 0;
-        if (build_tileset(&arts_data, &arts_size)) {
+        if (build_tileset(ctx->archive, &arts_data, &arts_size)) {
             write_response(conn, 200, "application/x-arts", "br", arts_data,
                            arts_size);
             free(arts_data);

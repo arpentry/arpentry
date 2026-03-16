@@ -333,6 +333,16 @@ uint64_t arpt_archive_reader_tile_count(const arpt_archive_reader *r) {
     return r->hdr.tile_count;
 }
 
+uint8_t arpt_archive_reader_min_zoom(const arpt_archive_reader *r) {
+    if (!r) return 0;
+    return r->hdr.min_zoom;
+}
+
+uint8_t arpt_archive_reader_max_zoom(const arpt_archive_reader *r) {
+    if (!r) return 0;
+    return r->hdr.max_zoom;
+}
+
 void arpt_archive_reader_close(arpt_archive_reader *r) {
     if (!r) return;
     if (r->map) munmap(r->map, r->map_size);

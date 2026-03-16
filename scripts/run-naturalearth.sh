@@ -22,7 +22,7 @@ BBOX="-180,-85,180,85"
 
 # Zoom range
 MIN_ZOOM=0
-MAX_ZOOM=6
+MAX_ZOOM=8
 
 # Parse arguments
 SCREENSHOT=""

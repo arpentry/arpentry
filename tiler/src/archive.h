@@ -52,6 +52,8 @@ const void *arpt_archive_reader_get_tile(const arpt_archive_reader *r,
 
 /* Query header fields. */
 uint64_t arpt_archive_reader_tile_count(const arpt_archive_reader *r);
+uint8_t  arpt_archive_reader_min_zoom(const arpt_archive_reader *r);
+uint8_t  arpt_archive_reader_max_zoom(const arpt_archive_reader *r);
 
 /* Close the reader and unmap the file. */
 void arpt_archive_reader_close(arpt_archive_reader *r);
