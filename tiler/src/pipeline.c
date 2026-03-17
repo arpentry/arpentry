@@ -172,7 +172,34 @@ static bool simplify_geom(arpt_geom *g, double tolerance) {
         g->offsets[n_rings] = out;
         g->n_coords = out;
         return out >= 4;
-    } else if (g->type == 2 || g->type == 5) {
+    } else if (g->type == 5 && g->offsets && g->n_offsets > 1) {
+        /* MultiLineString: simplify each line part separately */
+        uint32_t n_lines = g->n_offsets - 1;
+        uint32_t out = 0;
+        for (uint32_t li = 0; li < n_lines; li++) {
+            uint32_t start = g->offsets[li];
+            uint32_t end = g->offsets[li + 1];
+            uint32_t line_n = end - start;
+            uint32_t new_n = line_n;
+            if (line_n > 2) {
+                new_n = arpt_simplify(g->x + start, g->y + start,
+                                      line_n, tolerance);
+            }
+            if (new_n >= 2) {
+                if (out != start) {
+                    memmove(g->x + out, g->x + start, new_n * sizeof(double));
+                    memmove(g->y + out, g->y + start, new_n * sizeof(double));
+                }
+                g->offsets[li] = out;
+                out += new_n;
+            } else {
+                g->offsets[li] = out;
+            }
+        }
+        g->offsets[n_lines] = out;
+        g->n_coords = out;
+        return out >= 2;
+    } else if (g->type == 2) {
         g->n_coords = arpt_simplify(g->x, g->y, g->n_coords, tolerance);
         return g->n_coords >= 2;
     }
@@ -379,11 +406,11 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                 }
             }
 
-            /* Build properties: class from subtype or type */
-            const char *cls = feat.subtype ? feat.subtype : feat.type;
-            const char *pkeys[1] = { "class" };
-            const char *pvals[1] = { cls ? cls : "unknown" };
-            uint32_t n_props = 1;
+            /* Build properties: class from type, name from subtype */
+            const char *cls = feat.subtype ? feat.type : (feat.type ? feat.type : "unknown");
+            const char *pkeys[2] = { "class", "name" };
+            const char *pvals[2] = { cls, feat.subtype };
+            uint32_t n_props = feat.subtype ? 2 : 1;
 
             /* Compute feature bbox for sub-pixel filtering */
             double feat_bbox[4];

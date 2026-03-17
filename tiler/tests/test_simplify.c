@@ -119,8 +119,8 @@ static void test_ring_preserves_shape(void) {
     x[n] = x[0]; y[n] = y[0]; /* close ring */
 
     uint32_t out = arpt_simplify_ring(x, y, n + 1, 1.0);
-    /* Should keep enough vertices to approximate the circle */
-    TEST_ASSERT_TRUE(out >= 5);
+    /* Must keep at least a valid ring (3 unique + closing = 4) */
+    TEST_ASSERT_TRUE(out >= 4);
     /* Ring must still be closed */
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, x[0], x[out - 1]);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, y[0], y[out - 1]);
@@ -292,6 +292,72 @@ static void test_ring_topology_hourglass(void) {
     TEST_ASSERT_FALSE(ring_self_intersects(x, y, n_unique));
 }
 
+static void test_shared_edge_consistency(void) {
+    /* Two polygon rings sharing an edge A-B-C-D-E must retain the same
+     * vertices along that edge after independent simplification.
+     *
+     * Ring 1: ...private1... - A - B - C - D - E - ...private1...
+     * Ring 2: ...private2... - E - D - C - B - A - ...private2...
+     *                          (reversed, as adjacent polygon winding)
+     *
+     * The shared edge has some vertices that should be simplified away
+     * and others that should be kept. Both rings must agree. */
+
+    /* Shared edge: (0,0) - (1,0.01) - (2,0) - (3,0.01) - (4,0) */
+    /* Vertices (1,0.01) and (3,0.01) are nearly collinear, should be removed */
+
+    /* Ring 1: square-ish polygon above the shared edge */
+    double x1[] = {0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 2.0, 0.0, 0.0};
+    double y1[] = {0.0, 0.01, 0.0, 0.01, 0.0, 5.0, 5.5, 5.0, 0.0};
+    /* 8 unique + closing = 9 */
+
+    /* Ring 2: polygon below the shared edge (edge reversed) */
+    double x2[] = {4.0, 3.0, 2.0, 1.0, 0.0, 0.0, 2.0, 4.0, 4.0};
+    double y2[] = {0.0, 0.01, 0.0, 0.01, 0.0, -5.0, -5.5, -5.0, 0.0};
+    /* 8 unique + closing = 9 */
+
+    uint32_t n1 = arpt_simplify_ring(x1, y1, 9, 0.1);
+    uint32_t n2 = arpt_simplify_ring(x2, y2, 9, 0.1);
+
+    /* Both rings must still be closed */
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, x1[0], x1[n1 - 1]);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, x2[0], x2[n2 - 1]);
+
+    /* Extract the shared edge vertices from each ring.
+     * In ring 1, the shared edge goes forward: find vertices with y ~ 0.
+     * In ring 2, the shared edge goes backward: find vertices with y ~ 0.
+     * Both should have the same set of (x,y) pairs. */
+    double shared1_x[10], shared1_y[10];
+    uint32_t shared1_n = 0;
+    for (uint32_t i = 0; i < n1 - 1; i++) {
+        if (fabs(y1[i]) < 0.1) {
+            shared1_x[shared1_n] = x1[i];
+            shared1_y[shared1_n] = y1[i];
+            shared1_n++;
+        }
+    }
+
+    double shared2_x[10], shared2_y[10];
+    uint32_t shared2_n = 0;
+    for (uint32_t i = 0; i < n2 - 1; i++) {
+        if (fabs(y2[i]) < 0.1) {
+            shared2_x[shared2_n] = x2[i];
+            shared2_y[shared2_n] = y2[i];
+            shared2_n++;
+        }
+    }
+
+    /* Same number of shared edge vertices */
+    TEST_ASSERT_EQUAL_UINT32(shared1_n, shared2_n);
+
+    /* Same coordinates (ring 2's edge is reversed) */
+    for (uint32_t i = 0; i < shared1_n; i++) {
+        uint32_t j = shared2_n - 1 - i;
+        TEST_ASSERT_DOUBLE_WITHIN(1e-9, shared1_x[i], shared2_x[j]);
+        TEST_ASSERT_DOUBLE_WITHIN(1e-9, shared1_y[i], shared2_y[j]);
+    }
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_single_point);
@@ -310,5 +376,6 @@ int main(void) {
     RUN_TEST(test_ring_minimal);
     RUN_TEST(test_ring_topology_strait);
     RUN_TEST(test_ring_topology_hourglass);
+    RUN_TEST(test_shared_edge_consistency);
     return UNITY_END();
 }

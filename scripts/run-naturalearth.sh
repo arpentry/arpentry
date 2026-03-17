@@ -66,7 +66,7 @@ if [ ! -f "$ARCHIVE" ]; then
         --mem $((64 * 1024 * 1024)) \
         --input "1:$DATA_DIR/land.parquet" \
         --input "1:$DATA_DIR/coastline.parquet" \
-        --input "1:$DATA_DIR/boundary.parquet" \
+        --input "2:$DATA_DIR/boundary.parquet" \
         --input "5:$DATA_DIR/places.parquet"
 
     echo "Archive: $(du -h "$ARCHIVE" | cut -f1)"

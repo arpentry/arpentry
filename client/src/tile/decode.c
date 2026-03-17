@@ -366,7 +366,28 @@ bool arpt_decode_highways(const void *flatbuf, size_t size,
     size_t n_feat = arpentry_tiles_Feature_vec_len(features);
     if (n_feat == 0) return true;
 
-    out->lines = malloc(n_feat * sizeof(arpt_highway_line));
+    /* First pass: count total lines (each part of a MultiLineString is one) */
+    size_t total_lines = 0;
+    for (size_t i = 0; i < n_feat; i++) {
+        arpentry_tiles_Feature_table_t feat =
+            arpentry_tiles_Feature_vec_at(features, i);
+        if (!feat) continue;
+        if (arpentry_tiles_Feature_geometry_type(feat) !=
+            arpentry_tiles_Geometry_LineGeometry)
+            continue;
+        arpentry_tiles_LineGeometry_table_t line =
+            (arpentry_tiles_LineGeometry_table_t)
+                arpentry_tiles_Feature_geometry(feat);
+        if (!line) continue;
+        flatbuffers_uint32_vec_t offsets =
+            arpentry_tiles_LineGeometry_line_offsets(line);
+        if (offsets && flatbuffers_uint32_vec_len(offsets) >= 2)
+            total_lines += flatbuffers_uint32_vec_len(offsets) - 1;
+        else
+            total_lines++;
+    }
+
+    out->lines = malloc(total_lines * sizeof(arpt_highway_line));
     if (!out->lines) return false;
 
     size_t count = 0;
@@ -391,12 +412,31 @@ bool arpt_decode_highways(const void *flatbuf, size_t size,
         size_t vc = flatbuffers_uint16_vec_len(xv);
         if (flatbuffers_uint16_vec_len(yv) != vc || vc < 2) continue;
 
-        out->lines[count].x = xv;
-        out->lines[count].y = yv;
-        out->lines[count].vertex_count = vc;
-        out->lines[count].cls = resolve_class(feat, class_key_idx, values,
-                                                  class_names, class_count);
-        count++;
+        uint8_t cls = resolve_class(feat, class_key_idx, values,
+                                    class_names, class_count);
+
+        flatbuffers_uint32_vec_t offsets =
+            arpentry_tiles_LineGeometry_line_offsets(line);
+        size_t n_parts = 1;
+        if (offsets && flatbuffers_uint32_vec_len(offsets) >= 2)
+            n_parts = flatbuffers_uint32_vec_len(offsets) - 1;
+
+        for (size_t p = 0; p < n_parts; p++) {
+            size_t start = 0, end = vc;
+            if (offsets && flatbuffers_uint32_vec_len(offsets) >= 2) {
+                start = offsets[p];
+                end = offsets[p + 1];
+                if (end > vc) end = vc;
+            }
+            size_t part_vc = end - start;
+            if (part_vc < 2) continue;
+
+            out->lines[count].x = xv + start;
+            out->lines[count].y = yv + start;
+            out->lines[count].vertex_count = part_vc;
+            out->lines[count].cls = cls;
+            count++;
+        }
     }
 
     out->count = count;

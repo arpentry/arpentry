@@ -13,7 +13,13 @@
       "type": "texture",
       "paint": [
         { "class": "land",       "color": [107, 158, 71, 255] },
-        { "class": "coastline",  "color": [26, 77, 20, 255],  "width": 80 },
+        { "class": "coastline",  "color": [26, 77, 20, 255],  "width": 80 }
+      ]
+    },
+    {
+      "source_layer": "highway",
+      "type": "texture",
+      "paint": [
         { "class": "boundary",   "color": [89, 84, 77, 255],  "width": 60 }
       ]
     },
