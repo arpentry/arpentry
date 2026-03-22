@@ -72,6 +72,11 @@ def download_and_read(url: str, shapefile: str) -> gpd.GeoDataFrame:
 
 
 def gdf_to_overture_parquet(gdf: gpd.GeoDataFrame, output: Path, type_value: str):
+    # Explode Multi* geometries into individual parts so each feature has
+    # a tight bounding box.  Without this, world-spanning MultiPolygons
+    # get dropped by the tiler's tile-span filter at higher zoom levels.
+    gdf = gdf.explode(index_parts=False).reset_index(drop=True)
+
     n = len(gdf)
 
     geometry_wkb = [g.wkb for g in gdf.geometry]
