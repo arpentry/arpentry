@@ -21,6 +21,7 @@ static void usage(void) {
         "  --max-zoom <z>         Maximum zoom level (default: 4)\n"
         "  --tmp <dir>            Temp directory for sort runs (default: /tmp)\n"
         "  --mem <bytes>          Memory budget for external sort (default: 64 MB)\n"
+        "  --dem <path>           GeoTIFF DEM for terrain elevation (optional)\n"
         "\n"
         "Layer indices (matching style.json):\n"
         "  1=surface  2=highway  3=building  4=tree  5=poi\n"
@@ -79,6 +80,8 @@ int main(int argc, char **argv) {
             config.tmp_dir = argv[++i];
         } else if (strcmp(argv[i], "--mem") == 0 && i + 1 < argc) {
             config.mem_budget = (size_t)atol(argv[++i]);
+        } else if (strcmp(argv[i], "--dem") == 0 && i + 1 < argc) {
+            config.dem_path = argv[++i];
         } else {
             usage();
             return 1;

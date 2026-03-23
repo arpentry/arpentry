@@ -13,6 +13,7 @@ ROOT_DIR="$SCRIPT_DIR/.."
 BUILD_DIR="$ROOT_DIR/build"
 DATA_DIR="$ROOT_DIR/data/naturalearth"
 ARCHIVE="/tmp/naturalearth.arpa"
+DEM="$DATA_DIR/etopo1.tif"
 
 SERVER="$BUILD_DIR/server/arpentry_server"
 CLIENT="$BUILD_DIR/client/arpentry_client"
@@ -58,12 +59,20 @@ if [ ! -f "$ARCHIVE" ]; then
     echo "Tiling to $ARCHIVE..."
     echo "  bbox=$BBOX  zoom=$MIN_ZOOM-$MAX_ZOOM"
 
+    DEM_FLAG=""
+    if [ -f "$DEM" ]; then
+        DEM_FLAG="--dem $DEM"
+    else
+        echo "  (no DEM found at $DEM, using flat terrain)"
+    fi
+
     "$TILER" \
         --output "$ARCHIVE" \
         --bbox "$BBOX" \
         --min-zoom "$MIN_ZOOM" \
         --max-zoom "$MAX_ZOOM" \
         --mem $((64 * 1024 * 1024)) \
+        $DEM_FLAG \
         --input "1:$DATA_DIR/land.parquet" \
         --input "1:$DATA_DIR/coastline.parquet" \
         --input "1:$DATA_DIR/lake.parquet" \

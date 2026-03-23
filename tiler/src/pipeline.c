@@ -1,6 +1,7 @@
 #include "pipeline.h"
 #include "archive.h"
 #include "clip.h"
+#include "dem.h"
 #include "feature_io.h"
 #include "hilbert.h"
 #include "overture.h"
@@ -351,8 +352,18 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     size_t mem_budget = config->mem_budget > 0
         ? config->mem_budget : (size_t)256 * 1024 * 1024;
 
+    /* Load DEM if provided */
+    arpt_dem *dem = NULL;
+    if (config->dem_path) {
+        dem = arpt_dem_open(config->dem_path);
+        if (!dem) {
+            fprintf(stderr, "Warning: cannot load DEM %s, using flat terrain\n",
+                    config->dem_path);
+        }
+    }
+
     arpt_sorter *sorter = arpt_sorter_create(tmp_dir, mem_budget);
-    if (!sorter) return false;
+    if (!sorter) { arpt_dem_free(dem); return false; }
 
     uint32_t rank = 0;
 
@@ -491,7 +502,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
             cur_tile_id = tid;
             arpt_hilbert_tile_id_decode(tid, &cur_z, &cur_x, &cur_y);
             arpt_bounds tb = arpt_tile_bounds(cur_z, cur_x, cur_y);
-            builder = arpt_tile_builder_create(tb);
+            builder = arpt_tile_builder_create(tb, dem);
         }
 
         if (builder && data && data_size > 0) {
@@ -537,6 +548,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     bool ok = arpt_archive_writer_finish(writer);
     arpt_archive_writer_free(writer);
     arpt_sorter_free(sorter);
+    arpt_dem_free(dem);
 
     if (ok) {
         fprintf(stderr, "Archive written: %s\n", config->output);

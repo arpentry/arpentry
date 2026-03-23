@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "clip.h"
+#include "dem.h"
 #include "wkb.h"
 
 typedef struct arpt_tile_builder arpt_tile_builder;
@@ -21,8 +22,10 @@ typedef struct {
     uint32_t     n_props;
 } arpt_feature;
 
-/* Create a tile builder for the given tile bounds. */
-arpt_tile_builder *arpt_tile_builder_create(arpt_bounds bounds);
+/* Create a tile builder for the given tile bounds.
+   dem may be NULL for flat terrain. */
+arpt_tile_builder *arpt_tile_builder_create(arpt_bounds bounds,
+                                            const arpt_dem *dem);
 
 /* Add a feature to the tile. */
 bool arpt_tile_builder_add_feature(arpt_tile_builder *b,

@@ -114,6 +114,7 @@ static const char *layer_names[] = {
 
 struct arpt_tile_builder {
     arpt_bounds bounds;
+    const arpt_dem *dem;
 
     str_dict keys;
     str_dict vals;
@@ -139,10 +140,12 @@ static uint16_t quantize_y(const arpt_bounds *b, double y) {
     return (uint16_t)q;
 }
 
-arpt_tile_builder *arpt_tile_builder_create(arpt_bounds bounds) {
+arpt_tile_builder *arpt_tile_builder_create(arpt_bounds bounds,
+                                            const arpt_dem *dem) {
     arpt_tile_builder *b = calloc(1, sizeof(*b));
     if (!b) return NULL;
     b->bounds = bounds;
+    b->dem = dem;
     str_dict_init(&b->keys);
     str_dict_init(&b->vals);
     return b;
@@ -254,15 +257,44 @@ static void build_geom(flatcc_builder_t *fb, const stored_feat *sf) {
     }
 }
 
-/* Grid subdivisions for the flat terrain mesh.  Must be high enough
+/* Grid subdivisions for the terrain mesh.  Must be high enough
    that the vertex shader can deform the quad into a curved globe
    surface.  64×64 = 4225 vertices, 2×64×64 = 8192 triangles. */
 #define TERRAIN_GRID 64
 
-/* Emit a subdivided flat terrain mesh covering the tile extent as
-   layer 0.  The grid gives the vertex shader enough vertices to curve
-   the tile onto the globe. */
-static void emit_flat_terrain(flatcc_builder_t *fb) {
+/* Encode a unit normal vector into octahedral int8×2.
+   Input: (nx, ny, nz) must be normalized. */
+static void encode_octahedral(double nx, double ny, double nz,
+                               int8_t *out_x, int8_t *out_y) {
+    /* Project onto octahedron */
+    double inv = 1.0 / (fabs(nx) + fabs(ny) + fabs(nz));
+    double ox = nx * inv;
+    double oy = ny * inv;
+
+    /* Reflect lower hemisphere */
+    if (nz < 0.0) {
+        double tmp_x = (1.0 - fabs(oy)) * (ox >= 0.0 ? 1.0 : -1.0);
+        double tmp_y = (1.0 - fabs(ox)) * (oy >= 0.0 ? 1.0 : -1.0);
+        ox = tmp_x;
+        oy = tmp_y;
+    }
+
+    /* Quantize to int8 [-127, 127] */
+    double sx = ox * 127.0;
+    double sy = oy * 127.0;
+    if (sx > 127.0) sx = 127.0;
+    if (sx < -127.0) sx = -127.0;
+    if (sy > 127.0) sy = 127.0;
+    if (sy < -127.0) sy = -127.0;
+    *out_x = (int8_t)(sx >= 0.0 ? sx + 0.5 : sx - 0.5);
+    *out_y = (int8_t)(sy >= 0.0 ? sy + 0.5 : sy - 0.5);
+}
+
+/* Emit a subdivided terrain mesh covering the tile extent as layer 0.
+   If a DEM is provided, vertices get real elevation and computed normals.
+   Otherwise the mesh is flat (z=0, normals pointing up). */
+static void emit_terrain(flatcc_builder_t *fb, const arpt_bounds *bounds,
+                          const arpt_dem *dem) {
     const uint32_t gn = TERRAIN_GRID;
     const uint32_t n_verts = (gn + 1) * (gn + 1);
     const uint32_t n_tris = gn * gn * 2;
@@ -272,13 +304,16 @@ static void emit_flat_terrain(flatcc_builder_t *fb) {
     uint16_t *vy = malloc(n_verts * sizeof(*vy));
     int32_t  *vz = calloc(n_verts, sizeof(*vz));
     uint32_t *indices = malloc(n_idx * sizeof(*indices));
-    int8_t   *normals = calloc(n_verts * 2, sizeof(*normals));
+    int8_t   *normals = malloc(n_verts * 2 * sizeof(*normals));
     if (!vx || !vy || !vz || !indices || !normals) {
         free(vx); free(vy); free(vz); free(indices); free(normals);
         return;
     }
 
-    /* Generate grid vertices */
+    double lon_span = bounds->max_x - bounds->min_x;
+    double lat_span = bounds->max_y - bounds->min_y;
+
+    /* Generate grid vertices with elevation */
     for (uint32_t row = 0; row <= gn; row++) {
         for (uint32_t col = 0; col <= gn; col++) {
             uint32_t vi = row * (gn + 1) + col;
@@ -286,6 +321,66 @@ static void emit_flat_terrain(flatcc_builder_t *fb) {
                       (uint32_t)((uint64_t)col * (TILE_EXTENT - 1) / gn));
             vy[vi] = (uint16_t)(TILE_BUFFER +
                       (uint32_t)((uint64_t)row * (TILE_EXTENT - 1) / gn));
+
+            if (dem) {
+                double lon = bounds->min_x + (double)col / gn * lon_span;
+                double lat = bounds->min_y + (double)row / gn * lat_span;
+                double elev = arpt_dem_sample(dem, lon, lat);
+                /* Clamp ocean (negative elevation) to 0 for terrain mesh */
+                if (elev < 0.0) elev = 0.0;
+                vz[vi] = (int32_t)(elev * 1000.0);
+            }
+        }
+    }
+
+    /* Compute normals from elevation gradient */
+    if (dem) {
+        /* Step size in meters (approximate at equator) */
+        double dx_deg = lon_span / gn;
+        double dy_deg = lat_span / gn;
+
+        for (uint32_t row = 0; row <= gn; row++) {
+            for (uint32_t col = 0; col <= gn; col++) {
+                uint32_t vi = row * (gn + 1) + col;
+
+                /* Sample neighbors for finite differences */
+                double lon = bounds->min_x + (double)col / gn * lon_span;
+                double lat = bounds->min_y + (double)row / gn * lat_span;
+
+                double z_xp = arpt_dem_sample(dem, lon + dx_deg, lat);
+                double z_xm = arpt_dem_sample(dem, lon - dx_deg, lat);
+                double z_yp = arpt_dem_sample(dem, lon, lat + dy_deg);
+                double z_ym = arpt_dem_sample(dem, lon, lat - dy_deg);
+
+                /* Clamp ocean */
+                if (z_xp < 0.0) z_xp = 0.0;
+                if (z_xm < 0.0) z_xm = 0.0;
+                if (z_yp < 0.0) z_yp = 0.0;
+                if (z_ym < 0.0) z_ym = 0.0;
+
+                /* Convert degree steps to meters */
+                double cos_lat = cos(lat * M_PI / 180.0);
+                double mx = dx_deg * 111320.0 * cos_lat * 2.0;
+                double my = dy_deg * 111320.0 * 2.0;
+
+                /* Central differences → surface normal */
+                double dzdx = (z_xp - z_xm) / mx;
+                double dzdy = (z_yp - z_ym) / my;
+
+                double len = sqrt(dzdx * dzdx + dzdy * dzdy + 1.0);
+                double nx = -dzdx / len;
+                double ny = -dzdy / len;
+                double nz =  1.0 / len;
+
+                encode_octahedral(nx, ny, nz,
+                                  &normals[vi * 2], &normals[vi * 2 + 1]);
+            }
+        }
+    } else {
+        /* Flat terrain: all normals point straight up → (0, 127) oct */
+        for (uint32_t vi = 0; vi < n_verts; vi++) {
+            normals[vi * 2]     = 0;
+            normals[vi * 2 + 1] = 127;
         }
     }
 
@@ -386,7 +481,7 @@ void *arpt_tile_builder_finish(arpt_tile_builder *b, size_t *out_size) {
         if (b->feats[i].layer == 0) { has_layer0 = true; break; }
     }
     if (!has_layer0) {
-        emit_flat_terrain(&fb);
+        emit_terrain(&fb, &b->bounds, b->dem);
     }
 
     for (uint32_t layer = 0; layer <= max_layer; layer++) {

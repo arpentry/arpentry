@@ -24,6 +24,8 @@ typedef struct {
 
     const arpt_pipeline_input *inputs;  /* Input GeoParquet files */
     int                        n_inputs;
+
+    const char *dem_path;     /* Path to GeoTIFF DEM (optional) */
 } arpt_pipeline_config;
 
 /* Run the full tiling pipeline. Returns false on error. */

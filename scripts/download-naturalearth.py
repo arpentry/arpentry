@@ -4,6 +4,9 @@
 Produces Overture-compatible parquet files for the naturalearth demo.
 Output: data/naturalearth/{land,coastline,lake,glacier,river,boundary,places}.parquet
 
+Also downloads ETOPO1 1-arc-minute global elevation GeoTIFF.
+Output: data/naturalearth/etopo1.tif
+
 Uses 10m (highest resolution) datasets. The tiler handles simplification
 at lower zoom levels automatically.
 """
@@ -142,6 +145,44 @@ def gdf_to_overture_parquet(gdf: gpd.GeoDataFrame, output: Path, type_value: str
     print(f"  Wrote {output} ({n} features)")
 
 
+ETOPO1_URL = (
+    "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO1/"
+    "data/ice_surface/grid_registered/georeferenced_tiff/"
+    "ETOPO1_Ice_g_geotiff.zip"
+)
+ETOPO1_TIF = "ETOPO1_Ice_g_geotiff.tif"
+
+
+def download_etopo1(output: Path):
+    if output.exists():
+        print(f"  {output} already exists, skipping download")
+        return
+    print(f"  Downloading {ETOPO1_URL} ...")
+    resp = urlopen(ETOPO1_URL)
+    data = resp.read()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        zpath = os.path.join(tmpdir, "etopo1.zip")
+        with open(zpath, "wb") as f:
+            f.write(data)
+        with zipfile.ZipFile(zpath) as zf:
+            zf.extractall(tmpdir)
+        tif_path = os.path.join(tmpdir, ETOPO1_TIF)
+        if not os.path.exists(tif_path):
+            # Try to find the .tif in subdirectories
+            for root, dirs, files in os.walk(tmpdir):
+                for fname in files:
+                    if fname.lower().endswith(".tif"):
+                        tif_path = os.path.join(root, fname)
+                        break
+        if os.path.exists(tif_path):
+            import shutil
+            shutil.copy2(tif_path, str(output))
+            size_mb = output.stat().st_size / (1024 * 1024)
+            print(f"  Wrote {output} ({size_mb:.1f} MB)")
+        else:
+            print(f"  Warning: could not find .tif in ETOPO1 archive")
+
+
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -150,6 +191,9 @@ def main():
         gdf = download_and_read(layer["url"], layer["shapefile"])
         output = OUTPUT_DIR / layer["output"]
         gdf_to_overture_parquet(gdf, output, layer["type_value"])
+
+    print("Downloading ETOPO1 elevation data...")
+    download_etopo1(OUTPUT_DIR / "etopo1.tif")
 
     print("Done.")
 
