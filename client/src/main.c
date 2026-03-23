@@ -8,6 +8,7 @@
 
 #include "camera.h"
 #include "control.h"
+#include "globe.h"
 #include "renderer.h"
 #include "tile/prepare.h"
 #include "style.h"
@@ -432,6 +433,15 @@ static void render_frame(void) {
     arpt_renderer_set_globals(app.renderer, projection, sun_dir);
     arpt_renderer_set_sky(app.renderer, projection, sun_dir,
                           (float)arpt_camera_altitude(app.camera));
+
+    /* Set camera ECEF for horizon culling of labels */
+    {
+        arpt_dvec3 cam_ecef = arpt_geodetic_to_ecef(
+            arpt_camera_lon(app.camera), arpt_camera_lat(app.camera),
+            arpt_camera_altitude(app.camera));
+        arpt_renderer_set_camera_ecef(app.renderer, cam_ecef.x, cam_ecef.y,
+                                       cam_ecef.z);
+    }
 
 #ifndef __EMSCRIPTEN__
     /* Screenshot capture: render to an offscreen texture instead of the

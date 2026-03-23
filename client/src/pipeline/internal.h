@@ -239,6 +239,9 @@ struct arpt_renderer {
     WGPUCommandEncoder encoder;
     WGPURenderPassEncoder pass;
 
+    /* Camera ECEF position for horizon culling (set each frame) */
+    double camera_ecef[3];
+
     /* POI label collision detection (reset each frame) */
     arpt_mat4 cached_projection;
     struct { float x0, y0, x1, y1; } placed_labels[512];

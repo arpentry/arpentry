@@ -284,6 +284,21 @@ void arpt__label_collect(arpt_renderer *r, arpt_tile_gpu *tile) {
         double alt = (double)tile->poi_labels[li].qz * 0.001;
 
         arpt_dvec3 ecef = arpt_geodetic_to_ecef(lon, lat, alt);
+
+        /* Horizon culling: skip labels on the far side of the globe.
+         * A point is visible when the ellipsoidal surface normal faces
+         * the camera: dot(N, C - P) >= 0.  The geodetic normal in ECEF
+         * is (cos(lat)*cos(lon), cos(lat)*sin(lon), sin(lat)). */
+        double cos_lat = cos(lat), sin_lat = sin(lat);
+        double cos_lon = cos(lon), sin_lon = sin(lon);
+        double nx = cos_lat * cos_lon;
+        double ny = cos_lat * sin_lon;
+        double nz = sin_lat;
+        double dx = r->camera_ecef[0] - ecef.x;
+        double dy = r->camera_ecef[1] - ecef.y;
+        double dz = r->camera_ecef[2] - ecef.z;
+        if (nx * dx + ny * dy + nz * dz < 0.0) continue;
+
         arpt_dvec3 center_ecef = arpt_geodetic_to_ecef(
             (double)tile->cached_center_lon,
             (double)tile->cached_center_lat, 0.0);
@@ -312,14 +327,22 @@ void arpt__label_collect(arpt_renderer *r, arpt_tile_gpu *tile) {
         float icon_h = (tile->icon_instance_count > 0) ? r->icon_size : 0.0f;
         float pad = 4.0f;
 
+        /* Skip labels whose bounding box is entirely outside the viewport
+         * so they don't waste slots in the pending buffer. */
+        float lx0 = sx - hw - pad;
+        float ly0 = sy - lh - icon_h - pad;
+        float lx1 = sx + hw + pad;
+        float ly1 = sy + pad;
+        if (lx1 < 0.0f || lx0 > vw || ly1 < 0.0f || ly0 > vh) continue;
+
         int idx = r->pending_label_count++;
         r->pending_labels[idx].tile = tile;
         r->pending_labels[idx].label_index = li;
         r->pending_labels[idx].depth = cz / cw;
-        r->pending_labels[idx].x0 = sx - hw - pad;
-        r->pending_labels[idx].y0 = sy - lh - icon_h - pad;
-        r->pending_labels[idx].x1 = sx + hw + pad;
-        r->pending_labels[idx].y1 = sy + pad;
+        r->pending_labels[idx].x0 = lx0;
+        r->pending_labels[idx].y0 = ly0;
+        r->pending_labels[idx].x1 = lx1;
+        r->pending_labels[idx].y1 = ly1;
     }
 }
 

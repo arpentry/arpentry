@@ -91,6 +91,10 @@ void arpt_renderer_set_overlay(arpt_renderer *r, arpt_overlay_fn fn,
 void arpt_renderer_set_globals(arpt_renderer *r, arpt_mat4 projection,
                                arpt_vec3 sun_dir);
 
+/** Set camera ECEF position for horizon culling of labels. */
+void arpt_renderer_set_camera_ecef(arpt_renderer *r, double x, double y,
+                                    double z);
+
 /** Set sky uniforms for this frame (camera altitude for atmosphere fade). */
 void arpt_renderer_set_sky(arpt_renderer *r, arpt_mat4 projection,
                             arpt_vec3 sun_dir, float altitude);

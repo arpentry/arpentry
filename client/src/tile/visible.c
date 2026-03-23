@@ -17,7 +17,7 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
        (limb under-sampling, antimeridian, polar convergence) and
        guarantees no visible tile is ever missed. */
     int64_t total_tiles = (int64_t)n_cols * n_rows;
-    if (total_tiles <= max_count) {
+    if (total_tiles <= 128) {
         int count = 0;
         for (int y = 0; y < n_rows; y++)
             for (int x = 0; x < n_cols; x++)

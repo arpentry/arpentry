@@ -605,6 +605,14 @@ void arpt_renderer_set_sky(arpt_renderer *r, arpt_mat4 projection,
     wgpuQueueWriteBuffer(r->queue, r->sky_uniform_buf, 0, &u, sizeof(u));
 }
 
+void arpt_renderer_set_camera_ecef(arpt_renderer *r, double x, double y,
+                                    double z) {
+    if (!r) return;
+    r->camera_ecef[0] = x;
+    r->camera_ecef[1] = y;
+    r->camera_ecef[2] = z;
+}
+
 void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view) {
     r->encoder = wgpuDeviceCreateCommandEncoder(r->device, NULL);
 
