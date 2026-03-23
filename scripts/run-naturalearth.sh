@@ -66,6 +66,9 @@ if [ ! -f "$ARCHIVE" ]; then
         --mem $((64 * 1024 * 1024)) \
         --input "1:$DATA_DIR/land.parquet" \
         --input "1:$DATA_DIR/coastline.parquet" \
+        --input "1:$DATA_DIR/lake.parquet" \
+        --input "1:$DATA_DIR/glacier.parquet" \
+        --input "2:$DATA_DIR/river.parquet" \
         --input "2:$DATA_DIR/boundary.parquet" \
         --input "5:$DATA_DIR/places.parquet"
 

@@ -2,7 +2,7 @@
 """Download Natural Earth 10m shapefiles and convert to GeoParquet.
 
 Produces Overture-compatible parquet files for the naturalearth demo.
-Output: data/naturalearth/{land,coastline,boundary,places}.parquet
+Output: data/naturalearth/{land,coastline,lake,glacier,river,boundary,places}.parquet
 
 Uses 10m (highest resolution) datasets. The tiler handles simplification
 at lower zoom levels automatically.
@@ -35,6 +35,24 @@ LAYERS = [
         "shapefile": "ne_10m_coastline.shp",
         "output": "coastline.parquet",
         "type_value": "coastline",
+    },
+    {
+        "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_lakes.zip",
+        "shapefile": "ne_10m_lakes.shp",
+        "output": "lake.parquet",
+        "type_value": "lake",
+    },
+    {
+        "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_glaciated_areas.zip",
+        "shapefile": "ne_10m_glaciated_areas.shp",
+        "output": "glacier.parquet",
+        "type_value": "glacier",
+    },
+    {
+        "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_rivers_lake_centerlines.zip",
+        "shapefile": "ne_10m_rivers_lake_centerlines.shp",
+        "output": "river.parquet",
+        "type_value": "river",
     },
     {
         "url": "https://naciscdn.org/naturalearth/10m/cultural/ne_10m_admin_0_boundary_lines_land.zip",

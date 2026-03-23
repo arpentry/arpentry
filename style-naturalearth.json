@@ -13,14 +13,17 @@
       "type": "texture",
       "paint": [
         { "class": "land",       "color": [107, 158, 71, 255] },
-        { "class": "coastline",  "color": [26, 77, 20, 255],  "width": 80 }
+        { "class": "coastline",  "color": [26, 77, 20, 255],  "width": 80 },
+        { "class": "lake",       "color": [57, 120, 168, 255] },
+        { "class": "glacier",    "color": [220, 235, 245, 255] }
       ]
     },
     {
       "source_layer": "highway",
       "type": "texture",
       "paint": [
-        { "class": "boundary",   "color": [89, 84, 77, 255],  "width": 60 }
+        { "class": "boundary",   "color": [89, 84, 77, 255],  "width": 60 },
+        { "class": "river",      "color": [57, 120, 168, 255],  "width": 40 }
       ]
     },
     {
