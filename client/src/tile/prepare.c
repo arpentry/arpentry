@@ -538,11 +538,12 @@ void arpt_prepare_labels(const arpt_poi_data *pois, const font_glyph *glyphs,
     /* Count total renderable glyphs */
     size_t total_glyphs = 0;
     for (size_t i = 0; i < pois->count; i++) {
-        const char *name = pois->points[i].name;
-        for (size_t c = 0; name[c]; c++) {
-            int ch = (unsigned char)name[c];
-            if (ch < FONT_FIRST_CHAR || ch > FONT_LAST_CHAR) continue;
-            int gi = ch - FONT_FIRST_CHAR;
+        const char *p = pois->points[i].name;
+        while (*p) {
+            uint32_t cp = font_utf8_decode(&p);
+            if (cp < (uint32_t)FONT_FIRST_CHAR || cp > (uint32_t)FONT_LAST_CHAR)
+                continue;
+            int gi = (int)(cp - FONT_FIRST_CHAR);
             if (glyphs[gi].width > 0) total_glyphs++;
         }
     }
@@ -566,16 +567,16 @@ void arpt_prepare_labels(const arpt_poi_data *pois, const font_glyph *glyphs,
     for (size_t i = 0; i < pois->count; i++) {
         const arpt_poi_point *p = &pois->points[i];
         const char *name = p->name;
-        size_t len = strlen(name);
 
         /* Compute total string width in pixels */
         float total_w = 0;
         float max_h = 0;
-        for (size_t c = 0; c < len; c++) {
-            int ch = (unsigned char)name[c];
-            if (ch < FONT_FIRST_CHAR || ch > FONT_LAST_CHAR)
-                ch = FONT_FIRST_CHAR;
-            const font_glyph *g = &glyphs[ch - FONT_FIRST_CHAR];
+        const char *sp = name;
+        while (*sp) {
+            uint32_t cp = font_utf8_decode(&sp);
+            if (cp < (uint32_t)FONT_FIRST_CHAR || cp > (uint32_t)FONT_LAST_CHAR)
+                cp = FONT_FIRST_CHAR;
+            const font_glyph *g = &glyphs[cp - FONT_FIRST_CHAR];
             total_w += g->advance;
             if (g->height > max_h) max_h = g->height;
         }
@@ -585,11 +586,12 @@ void arpt_prepare_labels(const arpt_poi_data *pois, const font_glyph *glyphs,
 
         /* Emit glyph instances */
         float cursor = 0;
-        for (size_t c = 0; c < len; c++) {
-            int ch = (unsigned char)name[c];
-            if (ch < FONT_FIRST_CHAR || ch > FONT_LAST_CHAR)
-                ch = FONT_FIRST_CHAR;
-            int gi = ch - FONT_FIRST_CHAR;
+        sp = name;
+        while (*sp) {
+            uint32_t cp = font_utf8_decode(&sp);
+            if (cp < (uint32_t)FONT_FIRST_CHAR || cp > (uint32_t)FONT_LAST_CHAR)
+                cp = FONT_FIRST_CHAR;
+            int gi = (int)(cp - FONT_FIRST_CHAR);
             const font_glyph *g = &glyphs[gi];
 
             if (g->width > 0) {
