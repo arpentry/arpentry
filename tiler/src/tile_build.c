@@ -333,9 +333,10 @@ static void emit_terrain(flatcc_builder_t *fb, const arpt_bounds *bounds,
         }
     }
 
-    /* Compute normals from elevation gradient */
-    if (dem) {
-        /* Step size in meters (approximate at equator) */
+    /* Compute normals in ECEF using ENU basis vectors.
+       The terrain shader transforms normals by tile.model which operates
+       in ECEF space, so normals must be in ECEF — not tile-local. */
+    {
         double dx_deg = lon_span / gn;
         double dy_deg = lat_span / gn;
 
@@ -343,44 +344,46 @@ static void emit_terrain(flatcc_builder_t *fb, const arpt_bounds *bounds,
             for (uint32_t col = 0; col <= gn; col++) {
                 uint32_t vi = row * (gn + 1) + col;
 
-                /* Sample neighbors for finite differences */
                 double lon = bounds->min_x + (double)col / gn * lon_span;
                 double lat = bounds->min_y + (double)row / gn * lat_span;
+                double lon_r = lon * M_PI / 180.0;
+                double lat_r = lat * M_PI / 180.0;
+                double sin_lon = sin(lon_r), cos_lon = cos(lon_r);
+                double sin_lat = sin(lat_r), cos_lat = cos(lat_r);
 
-                double z_xp = arpt_dem_sample(dem, lon + dx_deg, lat);
-                double z_xm = arpt_dem_sample(dem, lon - dx_deg, lat);
-                double z_yp = arpt_dem_sample(dem, lon, lat + dy_deg);
-                double z_ym = arpt_dem_sample(dem, lon, lat - dy_deg);
+                /* ENU basis vectors in ECEF */
+                double e_x = -sin_lon,           e_y = cos_lon,            e_z = 0.0;
+                double n_x = -sin_lat * cos_lon, n_y = -sin_lat * sin_lon, n_z = cos_lat;
+                double u_x =  cos_lat * cos_lon, u_y =  cos_lat * sin_lon, u_z = sin_lat;
 
-                /* Clamp ocean */
-                if (z_xp < 0.0) z_xp = 0.0;
-                if (z_xm < 0.0) z_xm = 0.0;
-                if (z_yp < 0.0) z_yp = 0.0;
-                if (z_ym < 0.0) z_ym = 0.0;
+                double dzdx = 0.0, dzdy = 0.0;
+                if (dem) {
+                    double z_xp = arpt_dem_sample(dem, lon + dx_deg, lat);
+                    double z_xm = arpt_dem_sample(dem, lon - dx_deg, lat);
+                    double z_yp = arpt_dem_sample(dem, lon, lat + dy_deg);
+                    double z_ym = arpt_dem_sample(dem, lon, lat - dy_deg);
 
-                /* Convert degree steps to meters */
-                double cos_lat = cos(lat * M_PI / 180.0);
-                double mx = dx_deg * 111320.0 * cos_lat * 2.0;
-                double my = dy_deg * 111320.0 * 2.0;
+                    if (z_xp < 0.0) z_xp = 0.0;
+                    if (z_xm < 0.0) z_xm = 0.0;
+                    if (z_yp < 0.0) z_yp = 0.0;
+                    if (z_ym < 0.0) z_ym = 0.0;
 
-                /* Central differences → surface normal */
-                double dzdx = (z_xp - z_xm) / mx;
-                double dzdy = (z_yp - z_ym) / my;
+                    double cell_w = dx_deg * 111320.0 * cos_lat * 2.0;
+                    double cell_h = dy_deg * 111320.0 * 2.0;
+                    if (cell_w > 0.0) dzdx = (z_xp - z_xm) / cell_w;
+                    if (cell_h > 0.0) dzdy = (z_yp - z_ym) / cell_h;
+                }
 
-                double len = sqrt(dzdx * dzdx + dzdy * dzdy + 1.0);
-                double nx = -dzdx / len;
-                double ny = -dzdy / len;
-                double nz =  1.0 / len;
+                /* ECEF normal: up - dzdx*east - dzdy*north */
+                double nx = u_x - dzdx * e_x - dzdy * n_x;
+                double ny = u_y - dzdx * e_y - dzdy * n_y;
+                double nz = u_z - dzdx * e_z - dzdy * n_z;
+                double len = sqrt(nx * nx + ny * ny + nz * nz);
+                nx /= len; ny /= len; nz /= len;
 
                 encode_octahedral(nx, ny, nz,
                                   &normals[vi * 2], &normals[vi * 2 + 1]);
             }
-        }
-    } else {
-        /* Flat terrain: all normals point straight up → (0, 127) oct */
-        for (uint32_t vi = 0; vi < n_verts; vi++) {
-            normals[vi * 2]     = 0;
-            normals[vi * 2 + 1] = 127;
         }
     }
 
