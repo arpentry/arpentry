@@ -356,6 +356,15 @@ static void render_frame(void) {
             style.text_halo_width, style.icon_size, style.icon_color,
             style.icon_halo_color, style.icon_halo_width);
 
+        /* Apply current pixel ratio so labels/icons are correctly sized */
+        {
+            int win_w2, win_h2;
+            glfwGetWindowSize(app.window, &win_w2, &win_h2);
+            float ratio = (win_w2 > 0) ? (float)fb_w / (float)win_w2 : 1.0f;
+            arpt_renderer_resize(app.renderer, (uint32_t)fb_w, (uint32_t)fb_h,
+                                 ratio);
+        }
+
         /* Upload models, matching style params by model name */
         for (int si = 0; si < style.tree_style_count; si++) {
             for (int mi = 0; mi < nmodels; mi++) {
@@ -948,6 +957,14 @@ static void init_viewer(void) {
     if (!app.renderer) {
         fprintf(stderr, "Fatal: failed to create renderer\n");
         return;
+    }
+
+    /* Set initial pixel ratio so labels/icons render at the correct size
+       before any resize event fires. */
+    {
+        float pixel_ratio = (win_w > 0) ? (float)fb_w / (float)win_w : 1.0f;
+        arpt_renderer_resize(app.renderer, (uint32_t)fb_w, (uint32_t)fb_h,
+                             pixel_ratio);
     }
 
     /* Upload tree models to GPU, matching style entries by model name.
