@@ -271,7 +271,7 @@ void arpt__label_collect(arpt_renderer *r, arpt_tile_gpu *tile) {
     float vh = (float)r->height;
 
     for (int li = 0; li < tile->poi_label_count; li++) {
-        if (r->pending_label_count >= 512) break;
+        if (r->pending_label_count >= ARPT_MAX_PENDING_LABELS) break;
 
         float lon_w = tile->cached_bounds[0];
         float lat_s = tile->cached_bounds[1];
@@ -360,7 +360,7 @@ void arpt__label_draw_all(arpt_renderer *r) {
           sizeof(r->pending_labels[0]), compare_pending_depth);
 
     /* Resolve collisions: closest labels win */
-    int visible_indices[512];
+    int visible_indices[ARPT_MAX_PLACED_LABELS];
     int n_visible = 0;
 
     for (int i = 0; i < r->pending_label_count; i++) {
@@ -381,7 +381,7 @@ void arpt__label_draw_all(arpt_renderer *r) {
         }
         if (collides) continue;
 
-        if (r->placed_label_count < 512) {
+        if (r->placed_label_count < ARPT_MAX_PLACED_LABELS) {
             r->placed_labels[r->placed_label_count].x0 = x0;
             r->placed_labels[r->placed_label_count].y0 = y0;
             r->placed_labels[r->placed_label_count].x1 = x1;
@@ -389,7 +389,8 @@ void arpt__label_draw_all(arpt_renderer *r) {
             r->placed_label_count++;
         }
 
-        if (n_visible < 512) visible_indices[n_visible++] = i;
+        if (n_visible < ARPT_MAX_PLACED_LABELS)
+            visible_indices[n_visible++] = i;
     }
 
     if (n_visible == 0) return;

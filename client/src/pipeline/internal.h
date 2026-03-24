@@ -122,6 +122,10 @@ struct arpt_tile_gpu {
     float cached_center_lat;
 };
 
+/* Maximum number of label candidates and placed labels per frame */
+#define ARPT_MAX_PENDING_LABELS 2048
+#define ARPT_MAX_PLACED_LABELS  2048
+
 /* Pending label candidate for depth-sorted collision resolution */
 
 typedef struct {
@@ -244,11 +248,11 @@ struct arpt_renderer {
 
     /* POI label collision detection (reset each frame) */
     arpt_mat4 cached_projection;
-    struct { float x0, y0, x1, y1; } placed_labels[512];
+    struct { float x0, y0, x1, y1; } placed_labels[ARPT_MAX_PLACED_LABELS];
     int placed_label_count;
 
     /* Deferred label candidates (collected per tile, sorted & drawn at end) */
-    arpt_pending_label pending_labels[512];
+    arpt_pending_label pending_labels[ARPT_MAX_PENDING_LABELS];
     int pending_label_count;
 
     /* Overlay callback (e.g. UI) invoked before pass ends */
