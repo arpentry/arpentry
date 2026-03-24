@@ -130,7 +130,7 @@ static void init_sdf_atlas(arpt_renderer *r, uint8_t *atlas_data,
         .atlas_size = (float)atlas_size,
         .viewport_width = (float)r->width,
         .viewport_height = (float)r->height,
-        .display_scale = display_scale,
+        .display_scale = display_scale * r->pixel_ratio,
         .halo_width = halo_width,
     };
     memcpy(pu.fill_color, fill_color, sizeof(pu.fill_color));
@@ -321,10 +321,11 @@ void arpt__label_collect(arpt_renderer *r, arpt_tile_gpu *tile) {
         float sx = (cx / cw * 0.5f + 0.5f) * vw;
         float sy = (1.0f - (cy / cw * 0.5f + 0.5f)) * vh;
 
-        float tds = r->text_display_scale;
+        float tds = r->text_display_scale * r->pixel_ratio;
         float hw = tile->poi_labels[li].label_w_px * 0.5f * tds;
         float lh = tile->poi_labels[li].label_h_px * tds;
-        float icon_h = (tile->icon_instance_count > 0) ? r->icon_size : 0.0f;
+        float icon_h = (tile->icon_instance_count > 0)
+            ? r->icon_size * r->pixel_ratio : 0.0f;
         float pad = 4.0f;
 
         /* Skip labels whose bounding box is entirely outside the viewport

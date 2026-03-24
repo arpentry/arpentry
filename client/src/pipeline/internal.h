@@ -142,6 +142,7 @@ struct arpt_renderer {
     WGPUQueue queue;
     WGPUTextureFormat surface_format;
     uint32_t width, height;
+    float pixel_ratio;
     float background[4];
     float building_color[4];
 

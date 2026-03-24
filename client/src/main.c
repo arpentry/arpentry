@@ -190,9 +190,9 @@ static void on_framebuffer_resize(GLFWwindow *w, int width, int height) {
     glfwGetWindowSize(app.window, &win_w, &win_h);
     arpt_camera_set_viewport(app.camera, win_w, win_h);
 
-    arpt_renderer_resize(app.renderer, (uint32_t)width, (uint32_t)height);
-
     float ratio = (win_w > 0) ? (float)width / (float)win_w : 1.0f;
+    arpt_renderer_resize(app.renderer, (uint32_t)width, (uint32_t)height,
+                         ratio);
     if (app.ui)
         arpt_ui_resize(app.ui, (uint32_t)width, (uint32_t)height, ratio);
 
@@ -272,7 +272,8 @@ static void sync_canvas_size(void) {
         s_phys_w = phys_w;
         s_phys_h = phys_h;
         app.needs_redraw = true;
-        arpt_renderer_resize(app.renderer, (uint32_t)phys_w, (uint32_t)phys_h);
+        arpt_renderer_resize(app.renderer, (uint32_t)phys_w, (uint32_t)phys_h,
+                             (float)dpr);
         if (app.ui)
             arpt_ui_resize(app.ui, (uint32_t)phys_w, (uint32_t)phys_h,
                            (float)dpr);

@@ -120,6 +120,7 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     r->surface_format = format;
     r->width = width;
     r->height = height;
+    r->pixel_ratio = 1.0f;
     memcpy(r->background, background, sizeof(r->background));
     memcpy(r->building_color, building_color, sizeof(r->building_color));
 
@@ -325,20 +326,24 @@ void arpt_renderer_free(arpt_renderer *r) {
     free(r);
 }
 
-void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height) {
+void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height,
+                           float pixel_ratio) {
     r->width = width;
     r->height = height;
+    r->pixel_ratio = pixel_ratio;
     create_msaa_texture(r);
     create_depth_texture(r);
 
-    /* Re-upload POI uniforms with new viewport dimensions */
+    /* Re-upload POI uniforms with new viewport dimensions.
+     * display_scale is multiplied by pixel_ratio so that text_size (logical
+     * pixels) maps correctly to the framebuffer-pixel viewport. */
     if (r->poi_uniform_buf) {
         poi_uniforms_t pu = {
             .glyph_scale = r->font_pixel_height,
             .atlas_size = (float)FONT_ATLAS_SIZE,
             .viewport_width = (float)width,
             .viewport_height = (float)height,
-            .display_scale = r->text_display_scale,
+            .display_scale = r->text_display_scale * pixel_ratio,
             .halo_width = r->text_halo_width,
         };
         memcpy(pu.fill_color, r->text_color, sizeof(pu.fill_color));
@@ -352,7 +357,7 @@ void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height) {
             .atlas_size = (float)ICON_ATLAS_SIZE,
             .viewport_width = (float)width,
             .viewport_height = (float)height,
-            .display_scale = r->icon_display_scale,
+            .display_scale = r->icon_display_scale * pixel_ratio,
             .halo_width = r->icon_halo_width,
         };
         memcpy(pu.fill_color, r->icon_color, sizeof(pu.fill_color));
@@ -393,7 +398,7 @@ void arpt_renderer_set_label_style(arpt_renderer *r,
             .atlas_size = (float)FONT_ATLAS_SIZE,
             .viewport_width = (float)r->width,
             .viewport_height = (float)r->height,
-            .display_scale = r->text_display_scale,
+            .display_scale = r->text_display_scale * r->pixel_ratio,
             .halo_width = r->text_halo_width,
         };
         memcpy(pu.fill_color, r->text_color, sizeof(pu.fill_color));
@@ -407,7 +412,7 @@ void arpt_renderer_set_label_style(arpt_renderer *r,
             .atlas_size = (float)ICON_ATLAS_SIZE,
             .viewport_width = (float)r->width,
             .viewport_height = (float)r->height,
-            .display_scale = r->icon_display_scale,
+            .display_scale = r->icon_display_scale * r->pixel_ratio,
             .halo_width = r->icon_halo_width,
         };
         memcpy(pu.fill_color, r->icon_color, sizeof(pu.fill_color));

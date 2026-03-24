@@ -23,8 +23,10 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
                                     const float building_color[4]);
 void arpt_renderer_free(arpt_renderer *r);
 
-/** Recreate depth texture after window resize. */
-void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height);
+/** Recreate depth texture after window resize.
+ *  pixel_ratio = framebuffer pixels / window pixels (e.g. 2.0 on Retina). */
+void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height,
+                           float pixel_ratio);
 
 /** Upload a tree model's geometry to GPU at the given index (call per model). */
 void arpt_renderer_upload_model(arpt_renderer *r, int model_index,
