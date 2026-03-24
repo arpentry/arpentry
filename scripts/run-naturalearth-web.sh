@@ -85,8 +85,14 @@ if [ ! -f "$ARCHIVE" ]; then
         --input "1:$DATA_DIR/coastline.parquet" \
         --input "1:$DATA_DIR/lake.parquet" \
         --input "1:$DATA_DIR/glacier.parquet" \
+        --input "1:$DATA_DIR/ice_shelf.parquet" \
+        --input "1:$DATA_DIR/reef.parquet" \
+        --input "1:$DATA_DIR/urban.parquet" \
         --input "2:$DATA_DIR/river.parquet" \
         --input "2:$DATA_DIR/boundary.parquet" \
+        --input "2:$DATA_DIR/admin1_boundary.parquet" \
+        --input "2:$DATA_DIR/road.parquet" \
+        --input "2:$DATA_DIR/geographic_lines.parquet" \
         --input "5:$DATA_DIR/places.parquet"
 
     echo "Archive: $(du -h "$ARCHIVE" | cut -f1)"

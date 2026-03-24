@@ -2,7 +2,8 @@
 """Download Natural Earth 10m shapefiles and convert to GeoParquet.
 
 Produces Overture-compatible parquet files for the naturalearth demo.
-Output: data/naturalearth/{land,coastline,lake,glacier,river,boundary,places}.parquet
+Output: data/naturalearth/{land,coastline,lake,glacier,river,boundary,ice_shelf,reef,
+       geographic_lines,admin1_boundary,urban,road,places}.parquet
 
 Also downloads ETOPO1 1-arc-minute global elevation GeoTIFF.
 Output: data/naturalearth/etopo1.tif
@@ -62,6 +63,42 @@ LAYERS = [
         "shapefile": "ne_10m_admin_0_boundary_lines_land.shp",
         "output": "boundary.parquet",
         "type_value": "boundary",
+    },
+    {
+        "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_antarctic_ice_shelves_polys.zip",
+        "shapefile": "ne_10m_antarctic_ice_shelves_polys.shp",
+        "output": "ice_shelf.parquet",
+        "type_value": "ice_shelf",
+    },
+    {
+        "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_reefs.zip",
+        "shapefile": "ne_10m_reefs.shp",
+        "output": "reef.parquet",
+        "type_value": "reef",
+    },
+    {
+        "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_geographic_lines.zip",
+        "shapefile": "ne_10m_geographic_lines.shp",
+        "output": "geographic_lines.parquet",
+        "type_value": "geographic_line",
+    },
+    {
+        "url": "https://naciscdn.org/naturalearth/10m/cultural/ne_10m_admin_1_states_provinces_lines.zip",
+        "shapefile": "ne_10m_admin_1_states_provinces_lines.shp",
+        "output": "admin1_boundary.parquet",
+        "type_value": "admin1_boundary",
+    },
+    {
+        "url": "https://naciscdn.org/naturalearth/10m/cultural/ne_10m_urban_areas.zip",
+        "shapefile": "ne_10m_urban_areas.shp",
+        "output": "urban.parquet",
+        "type_value": "urban",
+    },
+    {
+        "url": "https://naciscdn.org/naturalearth/10m/cultural/ne_10m_roads.zip",
+        "shapefile": "ne_10m_roads.shp",
+        "output": "road.parquet",
+        "type_value": "road",
     },
     {
         "url": "https://naciscdn.org/naturalearth/10m/cultural/ne_10m_populated_places_simple.zip",

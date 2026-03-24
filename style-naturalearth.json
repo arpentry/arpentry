@@ -15,15 +15,21 @@
         { "class": "land",       "color": [107, 158, 71, 255] },
         { "class": "coastline",  "color": [26, 77, 20, 255],  "width": 80 },
         { "class": "lake",       "color": [57, 120, 168, 255] },
-        { "class": "glacier",    "color": [220, 235, 245, 255] }
+        { "class": "glacier",    "color": [220, 235, 245, 255] },
+        { "class": "ice_shelf",  "color": [210, 228, 240, 255] },
+        { "class": "reef",       "color": [72, 165, 150, 255] },
+        { "class": "urban",      "color": [148, 140, 130, 255] }
       ]
     },
     {
       "source_layer": "highway",
       "type": "texture",
       "paint": [
-        { "class": "boundary",   "color": [89, 84, 77, 255],  "width": 60 },
-        { "class": "river",      "color": [57, 120, 168, 255],  "width": 40 }
+        { "class": "boundary",        "color": [89, 84, 77, 255],  "width": 60 },
+        { "class": "admin1_boundary", "color": [89, 84, 77, 128],  "width": 30 },
+        { "class": "river",           "color": [57, 120, 168, 255],  "width": 40 },
+        { "class": "road",            "color": [180, 140, 60, 255],  "width": 30 },
+        { "class": "geographic_line", "color": [160, 160, 160, 100], "width": 40 }
       ]
     },
     {
