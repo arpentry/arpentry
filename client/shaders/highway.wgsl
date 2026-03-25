@@ -33,7 +33,7 @@ struct VsOut {
     let seg_len = hw_len.y;
     let cx = clamp(local.x, 0.0, seg_len);
     let dist = length(vec2<f32>(local.x - cx, local.y));
-    let px = fwidth(local.y);
+    let px = length(vec2<f32>(dpdx(local.y), dpdy(local.y)));
     let alpha = color.a * (1.0 - smoothstep(hw - px, hw, dist));
     return vec4<f32>(color.rgb, alpha);
 }
