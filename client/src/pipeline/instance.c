@@ -9,12 +9,7 @@ WGPURenderPipeline arpt__instance_create_pipeline(WGPUDevice device,
                                                    WGPUBindGroupLayout global_bgl,
                                                    WGPUBindGroupLayout tile_bgl,
                                                    WGPUBindGroupLayout model_bgl) {
-    WGPUShaderModuleWGSLDescriptor wgsl_desc = {
-        .chain = {.sType = WGPUSType_ShaderModuleWGSLDescriptor},
-        .code = tree_wgsl,
-    };
-    WGPUShaderModuleDescriptor sm_desc = {.nextInChain = &wgsl_desc.chain};
-    WGPUShaderModule sm = wgpuDeviceCreateShaderModule(device, &sm_desc);
+    WGPUShaderModule sm = create_shader(device, tree_wgsl);
 
     WGPUBindGroupLayout bgls[] = {global_bgl, tile_bgl, model_bgl};
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
@@ -55,7 +50,7 @@ WGPURenderPipeline arpt__instance_create_pipeline(WGPUDevice device,
     WGPUFragmentState frag = {
         .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
     WGPUDepthStencilState ds = {
-        .format = WGPUTextureFormat_Depth24Plus,
+        .format = ARPT_DEPTH_FORMAT,
         .depthWriteEnabled = true,
         .depthCompare = WGPUCompareFunction_LessEqual,
         .stencilFront = {.compare = WGPUCompareFunction_Always},
@@ -75,7 +70,7 @@ WGPURenderPipeline arpt__instance_create_pipeline(WGPUDevice device,
                       .frontFace = WGPUFrontFace_CCW},
         .fragment = &frag,
         .depthStencil = &ds,
-        .multisample = {.count = 4, .mask = ~0u},
+        .multisample = {.count = ARPT_MSAA_SAMPLES, .mask = ~0u},
     };
     WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
 
@@ -200,9 +195,7 @@ void arpt__instance_draw(arpt_renderer *r, arpt_tile_gpu *tile) {
                                          0);
     }
     if (drew_trees) {
-        wgpuRenderPassEncoderSetPipeline(r->pass, r->pipeline);
-        wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0,
-                                          NULL);
+        restore_terrain_pipeline(r);
     }
 }
 

@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <webgpu/webgpu.h>
 
@@ -265,7 +266,35 @@ struct arpt_renderer {
     void *overlay_ud;
 };
 
-/* Shared helper */
+/* Shared helpers */
+
+static inline WGPUShaderModule create_shader(WGPUDevice device,
+                                              const char *wgsl_code) {
+    WGPUShaderModuleWGSLDescriptor wgsl_desc = {
+        .chain = {.sType = WGPUSType_ShaderModuleWGSLDescriptor},
+        .code = wgsl_code,
+    };
+    WGPUShaderModuleDescriptor desc = {.nextInChain = &wgsl_desc.chain};
+    return wgpuDeviceCreateShaderModule(device, &desc);
+}
+
+static inline void restore_terrain_pipeline(arpt_renderer *r) {
+    wgpuRenderPassEncoderSetPipeline(r->pass, r->pipeline);
+    wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0,
+                                      NULL);
+}
+
+static inline int8_t *pad_normals_2to4(const int8_t *normals, size_t count) {
+    int8_t *padded = calloc(count, 4);
+    if (!padded) return NULL;
+    if (normals) {
+        for (size_t i = 0; i < count; i++) {
+            padded[i * 4]     = normals[i * 2];
+            padded[i * 4 + 1] = normals[i * 2 + 1];
+        }
+    }
+    return padded;
+}
 
 static inline WGPUBuffer create_buffer(WGPUDevice device, WGPUQueue queue,
                                         WGPUBufferUsageFlags usage,
@@ -289,9 +318,9 @@ WGPURenderPipeline arpt__mesh_create_pipeline(WGPUDevice device,
                                                WGPUBindGroupLayout global_bgl,
                                                WGPUBindGroupLayout tile_bgl);
 void arpt__mesh_upload_terrain(arpt_renderer *r, arpt_tile_gpu *t,
-                               const arpt_mesh_prim *prim);
+                               const arpt_terrain_mesh *prim);
 void arpt__mesh_upload_skirts(arpt_renderer *r, arpt_tile_gpu *t,
-                               const arpt_mesh_prim *prim);
+                               const arpt_terrain_mesh *prim);
 void arpt__mesh_draw_terrain(arpt_renderer *r, arpt_tile_gpu *tile);
 void arpt__mesh_draw_skirts(arpt_renderer *r, arpt_tile_gpu *tile);
 void arpt__mesh_draw_extrusion(arpt_renderer *r, arpt_tile_gpu *tile);

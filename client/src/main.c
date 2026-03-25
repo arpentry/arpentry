@@ -427,9 +427,8 @@ static void render_frame(void) {
 
     /* Update ground elevation from loaded tiles */
     if (app.tile_manager) {
-        double target = arpt_tile_manager_ground_elevation(
-            app.tile_manager, arpt_camera_lon(app.camera),
-            arpt_camera_lat(app.camera));
+        double target = arpt_tile_manager_camera_ground_elevation(
+            app.tile_manager);
         double alpha = 1.0 - exp(-dt * 8.0);
         app.smoothed_ground_elev +=
             (target - app.smoothed_ground_elev) * alpha;

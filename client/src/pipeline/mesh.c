@@ -9,12 +9,7 @@ WGPURenderPipeline arpt__mesh_create_pipeline(WGPUDevice device,
                                                WGPUTextureFormat format,
                                                WGPUBindGroupLayout global_bgl,
                                                WGPUBindGroupLayout tile_bgl) {
-    WGPUShaderModuleWGSLDescriptor wgsl_desc = {
-        .chain = {.sType = WGPUSType_ShaderModuleWGSLDescriptor},
-        .code = terrain_wgsl,
-    };
-    WGPUShaderModuleDescriptor sm_desc = {.nextInChain = &wgsl_desc.chain};
-    WGPUShaderModule sm = wgpuDeviceCreateShaderModule(device, &sm_desc);
+    WGPUShaderModule sm = create_shader(device, terrain_wgsl);
 
     WGPUBindGroupLayout bgls[] = {global_bgl, tile_bgl};
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
@@ -47,7 +42,7 @@ WGPURenderPipeline arpt__mesh_create_pipeline(WGPUDevice device,
     WGPUFragmentState frag = {
         .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
     WGPUDepthStencilState ds = {
-        .format = WGPUTextureFormat_Depth24Plus,
+        .format = ARPT_DEPTH_FORMAT,
         .depthWriteEnabled = true,
         .depthCompare = WGPUCompareFunction_LessEqual,
         .stencilFront = {.compare = WGPUCompareFunction_Always},
@@ -67,7 +62,7 @@ WGPURenderPipeline arpt__mesh_create_pipeline(WGPUDevice device,
                       .frontFace = WGPUFrontFace_CCW},
         .fragment = &frag,
         .depthStencil = &ds,
-        .multisample = {.count = 4, .mask = ~0u},
+        .multisample = {.count = ARPT_MSAA_SAMPLES, .mask = ~0u},
     };
     WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
 
@@ -77,7 +72,7 @@ WGPURenderPipeline arpt__mesh_create_pipeline(WGPUDevice device,
 }
 
 void arpt__mesh_upload_terrain(arpt_renderer *r, arpt_tile_gpu *t,
-                               const arpt_mesh_prim *prim) {
+                               const arpt_terrain_mesh *prim) {
     t->index_count = (uint32_t)prim->index_count;
 
     /* Interleave x,y into uint16 pairs */
@@ -97,14 +92,8 @@ void arpt__mesh_upload_terrain(arpt_renderer *r, arpt_tile_gpu *t,
 
     /* Pad normals to 4-byte stride */
     {
-        int8_t *padded = calloc(vc, 4);
+        int8_t *padded = pad_normals_2to4(prim->normals, vc);
         if (!padded) return;
-        for (size_t i = 0; i < vc; i++) {
-            if (prim->normals) {
-                padded[i * 4] = prim->normals[i * 2];
-                padded[i * 4 + 1] = prim->normals[i * 2 + 1];
-            }
-        }
         t->buf_normals = create_buffer(r->device, r->queue,
                                        WGPUBufferUsage_Vertex, padded, vc * 4);
         free(padded);
@@ -146,7 +135,7 @@ static int edge_vert_cmp(const void *a, const void *b) {
 }
 
 void arpt__mesh_upload_skirts(arpt_renderer *r, arpt_tile_gpu *t,
-                               const arpt_mesh_prim *prim) {
+                               const arpt_terrain_mesh *prim) {
     if (prim->vertex_count == 0) return;
 
     uint16_t edge_min = (uint16_t)ARPT_BUFFER;

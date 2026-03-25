@@ -30,17 +30,6 @@ typedef struct arpt_model {
     char name[32];              /* model name for style matching */
 } arpt_model;
 
-/* Mesh primitive (terrain — zero-copy pointers into FlatBuffer) */
-
-typedef struct {
-    const uint16_t *x, *y;
-    const int32_t *z;
-    const int8_t *normals;
-    size_t vertex_count;
-    const uint32_t *indices;
-    size_t index_count;
-} arpt_mesh_prim;
-
 /* Pre-tessellated polygon+line vertices for offscreen texture rasterization */
 
 typedef struct {
@@ -129,7 +118,7 @@ typedef struct {
 /* Everything the renderer needs to upload one tile */
 
 typedef struct arpt_tile_prims {
-    arpt_mesh_prim terrain;
+    arpt_terrain_mesh terrain;
     arpt_texture_prim texture;
     arpt_extrusion_prim extrusion;
     arpt_instance_prim instances;
@@ -138,8 +127,6 @@ typedef struct arpt_tile_prims {
 } arpt_tile_prims;
 
 /* Prepare functions — convert decoded domain data to renderer primitives */
-
-void arpt_prepare_terrain(const arpt_terrain_mesh *mesh, arpt_mesh_prim *out);
 
 void arpt_prepare_texture(const arpt_surface_data *surface,
                           const arpt_highway_data *highways,

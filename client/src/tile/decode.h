@@ -5,6 +5,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Layer name constants (shared between tiler and client) */
+#define ARPT_LAYER_TERRAIN_NAME  "terrain"
+#define ARPT_LAYER_SURFACE_NAME  "surface"
+#define ARPT_LAYER_HIGHWAY_NAME  "highway"
+#define ARPT_LAYER_BUILDING_NAME "building"
+#define ARPT_LAYER_TREE_NAME     "tree"
+#define ARPT_LAYER_POI_NAME      "poi"
+
 /**
  * Zero-copy terrain mesh data extracted from a FlatBuffer tile.
  * All pointers point directly into the FlatBuffer — valid only while

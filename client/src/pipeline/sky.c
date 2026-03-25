@@ -5,12 +5,7 @@
 WGPURenderPipeline arpt__sky_create_pipeline(WGPUDevice device,
                                               WGPUTextureFormat format,
                                               WGPUBindGroupLayout sky_bgl) {
-    WGPUShaderModuleWGSLDescriptor wgsl_desc = {
-        .chain = {.sType = WGPUSType_ShaderModuleWGSLDescriptor},
-        .code = sky_wgsl,
-    };
-    WGPUShaderModuleDescriptor sm_desc = {.nextInChain = &wgsl_desc.chain};
-    WGPUShaderModule sm = wgpuDeviceCreateShaderModule(device, &sm_desc);
+    WGPUShaderModule sm = create_shader(device, sky_wgsl);
 
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
         device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 1,
@@ -23,7 +18,7 @@ WGPURenderPipeline arpt__sky_create_pipeline(WGPUDevice device,
 
     /* Depth: always pass, write 1.0 so terrain overwrites */
     WGPUDepthStencilState ds = {
-        .format = WGPUTextureFormat_Depth24Plus,
+        .format = ARPT_DEPTH_FORMAT,
         .depthWriteEnabled = true,
         .depthCompare = WGPUCompareFunction_Always,
         .stencilFront = {.compare = WGPUCompareFunction_Always},
@@ -42,7 +37,7 @@ WGPURenderPipeline arpt__sky_create_pipeline(WGPUDevice device,
                       .cullMode = WGPUCullMode_None},
         .fragment = &frag,
         .depthStencil = &ds,
-        .multisample = {.count = 4, .mask = ~0u},
+        .multisample = {.count = ARPT_MSAA_SAMPLES, .mask = ~0u},
     };
     WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
 
@@ -56,8 +51,5 @@ void arpt__sky_draw(arpt_renderer *r) {
     wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->sky_bind_group, 0, NULL);
     wgpuRenderPassEncoderDraw(r->pass, 3, 1, 0, 0);
 
-    /* Restore terrain pipeline + global bind group */
-    wgpuRenderPassEncoderSetPipeline(r->pass, r->pipeline);
-    wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0,
-                                      NULL);
+    restore_terrain_pipeline(r);
 }

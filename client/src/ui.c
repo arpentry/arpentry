@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "renderer.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -127,7 +128,7 @@ arpt_ui *arpt_ui_create(WGPUDevice device, WGPUQueue queue,
 
     /* Depth: always pass, no write (overlay on top of 3D scene) */
     WGPUDepthStencilState ds = {
-        .format = WGPUTextureFormat_Depth24Plus,
+        .format = ARPT_DEPTH_FORMAT,
         .depthWriteEnabled = false,
         .depthCompare = WGPUCompareFunction_Always,
         .stencilFront = {.compare = WGPUCompareFunction_Always},
@@ -146,7 +147,7 @@ arpt_ui *arpt_ui_create(WGPUDevice device, WGPUQueue queue,
                       .cullMode = WGPUCullMode_None},
         .fragment = &frag,
         .depthStencil = &ds,
-        .multisample = {.count = 4, .mask = ~0u},
+        .multisample = {.count = ARPT_MSAA_SAMPLES, .mask = ~0u},
     };
     ui->pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
 

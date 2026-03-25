@@ -56,7 +56,7 @@ static void create_msaa_texture(arpt_renderer *r) {
         .format = r->surface_format,
         .dimension = WGPUTextureDimension_2D,
         .mipLevelCount = 1,
-        .sampleCount = 4,
+        .sampleCount = ARPT_MSAA_SAMPLES,
     };
     r->msaa_texture = wgpuDeviceCreateTexture(r->device, &desc);
     r->msaa_view = wgpuTextureCreateView(r->msaa_texture, NULL);
@@ -71,10 +71,10 @@ static void create_depth_texture(arpt_renderer *r) {
     WGPUTextureDescriptor desc = {
         .usage = WGPUTextureUsage_RenderAttachment,
         .size = {r->width, r->height, 1},
-        .format = WGPUTextureFormat_Depth24Plus,
+        .format = ARPT_DEPTH_FORMAT,
         .dimension = WGPUTextureDimension_2D,
         .mipLevelCount = 1,
-        .sampleCount = 4,
+        .sampleCount = ARPT_MSAA_SAMPLES,
     };
     r->depth_texture = wgpuDeviceCreateTexture(r->device, &desc);
     r->depth_view = wgpuTextureCreateView(r->depth_texture, NULL);

@@ -170,10 +170,10 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
             /* Already decoded above */
             break;
         case ARPT_LAYER_TEXTURE:
-            if (strcmp(le->source_layer, "surface") == 0)
+            if (strcmp(le->source_layer, ARPT_LAYER_SURFACE_NAME) == 0)
                 arpt_decode_surface(flatbuf, size, tm->style.class_names,
                                     tm->style.class_count, &surface);
-            else if (strcmp(le->source_layer, "highway") == 0)
+            else if (strcmp(le->source_layer, ARPT_LAYER_HIGHWAY_NAME) == 0)
                 arpt_decode_highways(flatbuf, size, tm->style.class_names,
                                      tm->style.class_count, &highways);
             break;
@@ -211,7 +211,7 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
     /* Convert decoded domain data to renderer primitives */
     arpt_tile_prims prims = {0};
     prims.bounds = updated.bounds;
-    arpt_prepare_terrain(&mesh, &prims.terrain);
+    prims.terrain = mesh;
     arpt_prepare_texture(&surface, &highways, &tm->style, &prims.texture);
     arpt_prepare_extrusion(&buildings, updated.bounds, &prims.extrusion);
     arpt_prepare_instances(&trees, arpt_renderer_model_count(tm->renderer),
@@ -454,10 +454,7 @@ bool arpt_tile_manager_needs_redraw(arpt_tile_manager *tm) {
 
 /* Ground elevation query */
 
-double arpt_tile_manager_ground_elevation(const arpt_tile_manager *tm,
-                                          double lon_rad, double lat_rad) {
-    (void)lon_rad;
-    (void)lat_rad;
+double arpt_tile_manager_camera_ground_elevation(const arpt_tile_manager *tm) {
     return tm ? tm->ground_elevation : 0.0;
 }
 

@@ -52,6 +52,19 @@ typedef struct {
     int max_concurrent; /* max in-flight fetches */
 } arpt_tile_manager_config;
 
+/** Return a config with sensible defaults. Only base_url must be set. */
+static inline arpt_tile_manager_config arpt_tile_manager_config_defaults(
+    const char *base_url) {
+    return (arpt_tile_manager_config){
+        .base_url = base_url,
+        .root_error = 200000.0,
+        .min_level = 0,
+        .max_level = 19,
+        .max_tiles = 200,
+        .max_concurrent = 6,
+    };
+}
+
 typedef struct arpt_style arpt_style;
 
 arpt_tile_manager *arpt_tile_manager_create(arpt_tile_manager_config config,
@@ -71,12 +84,10 @@ int arpt_tile_manager_active_fetches(const arpt_tile_manager *tm);
 bool arpt_tile_manager_needs_redraw(arpt_tile_manager *tm);
 
 /**
- * Query ground elevation (meters) at a geodetic position.
- * Finds the highest-level READY tile containing the position and returns
- * its average terrain elevation. Returns 0.0 if no tile covers the point.
+ * Ground elevation (meters) at the camera position from the best loaded tile.
+ * Returns 0.0 if no tile is loaded yet.
  */
-double arpt_tile_manager_ground_elevation(const arpt_tile_manager *tm,
-                                          double lon_rad, double lat_rad);
+double arpt_tile_manager_camera_ground_elevation(const arpt_tile_manager *tm);
 
 /**
  * Draw visible tiles at the target zoom level.  READY tiles are drawn

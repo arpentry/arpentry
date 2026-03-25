@@ -20,12 +20,8 @@ void arpt__extrusion_upload(arpt_renderer *r, arpt_tile_gpu *t,
 
     /* Pad normals to 4-byte stride */
     {
-        int8_t *padded = calloc(nv, 4);
+        int8_t *padded = pad_normals_2to4(prim->normals, nv);
         if (!padded) return;
-        for (size_t i = 0; i < nv; i++) {
-            padded[i * 4] = prim->normals[i * 2];
-            padded[i * 4 + 1] = prim->normals[i * 2 + 1];
-        }
         t->bldg_buf_normals = create_buffer(
             r->device, r->queue, WGPUBufferUsage_Vertex, padded, nv * 4);
         free(padded);

@@ -12,6 +12,8 @@ typedef struct arpt_tile_gpu arpt_tile_gpu;
 typedef struct arpt_tile_prims arpt_tile_prims;
 typedef struct arpt_model arpt_model;
 
+#define ARPT_MSAA_SAMPLES     4
+#define ARPT_DEPTH_FORMAT     WGPUTextureFormat_Depth24Plus
 #define ARPT_MAX_PLACEHOLDERS 256
 
 /* Renderer lifecycle */

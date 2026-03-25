@@ -5,12 +5,7 @@
 WGPURenderPipeline arpt__placeholder_create_wireframe_pipeline(
     WGPUDevice device, WGPUTextureFormat format,
     WGPUBindGroupLayout global_bgl, WGPUBindGroupLayout tile_bgl) {
-    WGPUShaderModuleWGSLDescriptor wgsl_desc = {
-        .chain = {.sType = WGPUSType_ShaderModuleWGSLDescriptor},
-        .code = wireframe_wgsl,
-    };
-    WGPUShaderModuleDescriptor sm_desc = {.nextInChain = &wgsl_desc.chain};
-    WGPUShaderModule sm = wgpuDeviceCreateShaderModule(device, &sm_desc);
+    WGPUShaderModule sm = create_shader(device, wireframe_wgsl);
 
     WGPUBindGroupLayout bgls[] = {global_bgl, tile_bgl};
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
@@ -52,7 +47,7 @@ WGPURenderPipeline arpt__placeholder_create_wireframe_pipeline(
     WGPUFragmentState frag = {
         .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
     WGPUDepthStencilState ds = {
-        .format = WGPUTextureFormat_Depth24Plus,
+        .format = ARPT_DEPTH_FORMAT,
         .depthWriteEnabled = false,
         .depthCompare = WGPUCompareFunction_LessEqual,
         .depthBias = -2,
@@ -73,7 +68,7 @@ WGPURenderPipeline arpt__placeholder_create_wireframe_pipeline(
                       .cullMode = WGPUCullMode_None},
         .fragment = &frag,
         .depthStencil = &ds,
-        .multisample = {.count = 4, .mask = ~0u},
+        .multisample = {.count = ARPT_MSAA_SAMPLES, .mask = ~0u},
     };
     WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
 
@@ -96,8 +91,8 @@ void arpt__placeholder_init(arpt_renderer *r) {
     for (int row = 0; row < PH_VERTS; row++) {
         for (int col = 0; col < PH_VERTS; col++) {
             int vi = row * PH_VERTS + col;
-            xy_data[vi * 2] = (uint16_t)(16384 + col * 32767 / PH_GRID);
-            xy_data[vi * 2 + 1] = (uint16_t)(16384 + row * 32767 / PH_GRID);
+            xy_data[vi * 2] = (uint16_t)(ARPT_BUFFER + col * (ARPT_EXTENT - 1) / PH_GRID);
+            xy_data[vi * 2 + 1] = (uint16_t)(ARPT_BUFFER + row * (ARPT_EXTENT - 1) / PH_GRID);
             z_data[vi] = 0;
             norm_data[vi * 4] = 0;
             norm_data[vi * 4 + 1] = 0;
@@ -147,9 +142,9 @@ void arpt__placeholder_init(arpt_renderer *r) {
     /* Horizontal edges */
     for (int row = 0; row < PH_VERTS; row++) {
         for (int col = 0; col < PH_GRID; col++) {
-            uint16_t x0 = (uint16_t)(16384 + col * 32767 / PH_GRID);
-            uint16_t x1 = (uint16_t)(16384 + (col + 1) * 32767 / PH_GRID);
-            int y = 16384 + row * 32767 / PH_GRID;
+            uint16_t x0 = (uint16_t)(ARPT_BUFFER + col * (ARPT_EXTENT - 1) / PH_GRID);
+            uint16_t x1 = (uint16_t)(ARPT_BUFFER + (col + 1) * (ARPT_EXTENT - 1) / PH_GRID);
+            int y = ARPT_BUFFER + row * (ARPT_EXTENT - 1) / PH_GRID;
             uint16_t yl = (uint16_t)(y - PH_WIRE_HW);
             uint16_t yh = (uint16_t)(y + PH_WIRE_HW);
             uint32_t base = (uint32_t)wv;
@@ -165,9 +160,9 @@ void arpt__placeholder_init(arpt_renderer *r) {
     /* Vertical edges */
     for (int col = 0; col < PH_VERTS; col++) {
         for (int row = 0; row < PH_GRID; row++) {
-            int x = 16384 + col * 32767 / PH_GRID;
-            uint16_t y0 = (uint16_t)(16384 + row * 32767 / PH_GRID);
-            uint16_t y1 = (uint16_t)(16384 + (row + 1) * 32767 / PH_GRID);
+            int x = ARPT_BUFFER + col * (ARPT_EXTENT - 1) / PH_GRID;
+            uint16_t y0 = (uint16_t)(ARPT_BUFFER + row * (ARPT_EXTENT - 1) / PH_GRID);
+            uint16_t y1 = (uint16_t)(ARPT_BUFFER + (row + 1) * (ARPT_EXTENT - 1) / PH_GRID);
             uint16_t xl = (uint16_t)(x - PH_WIRE_HW);
             uint16_t xh = (uint16_t)(x + PH_WIRE_HW);
             uint32_t base = (uint32_t)wv;
@@ -278,8 +273,7 @@ void arpt__placeholder_draw(arpt_renderer *r, int slot, arpt_mat4 model,
                                         wgpuBufferGetSize(r->ph_wire_indices));
     wgpuRenderPassEncoderDrawIndexed(r->pass, r->ph_wire_index_count, 1, 0, 0,
                                      0);
-    wgpuRenderPassEncoderSetPipeline(r->pass, r->pipeline);
-    wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0, NULL);
+    restore_terrain_pipeline(r);
 }
 
 void arpt__placeholder_cleanup(arpt_renderer *r) {

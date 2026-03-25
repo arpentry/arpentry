@@ -10,12 +10,7 @@ WGPURenderPipeline arpt__label_create_pipeline(WGPUDevice device,
                                                 WGPUBindGroupLayout global_bgl,
                                                 WGPUBindGroupLayout tile_bgl,
                                                 WGPUBindGroupLayout poi_bgl) {
-    WGPUShaderModuleWGSLDescriptor wgsl_desc = {
-        .chain = {.sType = WGPUSType_ShaderModuleWGSLDescriptor},
-        .code = poi_wgsl,
-    };
-    WGPUShaderModuleDescriptor sm_desc = {.nextInChain = &wgsl_desc.chain};
-    WGPUShaderModule sm = wgpuDeviceCreateShaderModule(device, &sm_desc);
+    WGPUShaderModule sm = create_shader(device, poi_wgsl);
 
     WGPUBindGroupLayout bgls[] = {global_bgl, tile_bgl, poi_bgl};
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
@@ -58,7 +53,7 @@ WGPURenderPipeline arpt__label_create_pipeline(WGPUDevice device,
     WGPUFragmentState frag = {
         .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
     WGPUDepthStencilState ds = {
-        .format = WGPUTextureFormat_Depth24Plus,
+        .format = ARPT_DEPTH_FORMAT,
         .depthWriteEnabled = true,
         .depthCompare = WGPUCompareFunction_LessEqual,
         .stencilFront = {.compare = WGPUCompareFunction_Always},
@@ -77,7 +72,7 @@ WGPURenderPipeline arpt__label_create_pipeline(WGPUDevice device,
                       .cullMode = WGPUCullMode_None},
         .fragment = &frag,
         .depthStencil = &ds,
-        .multisample = {.count = 4, .mask = ~0u},
+        .multisample = {.count = ARPT_MSAA_SAMPLES, .mask = ~0u},
     };
     WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
 
@@ -204,7 +199,8 @@ static void upload_instances(arpt_renderer *r, WGPUBuffer *buf,
     poi_instance_t *instances = malloc(n * sizeof(poi_instance_t));
     if (!instances) return;
 
-    /* Both arpt_glyph_inst and arpt_icon_inst have the same layout */
+    _Static_assert(sizeof(arpt_glyph_inst) == sizeof(arpt_icon_inst),
+                    "glyph and icon instance structs must have identical layout");
     const arpt_glyph_inst *glyphs = src;
     for (size_t i = 0; i < n; i++) {
         instances[i].qx = glyphs[i].qx;
@@ -277,8 +273,8 @@ void arpt__label_collect(arpt_renderer *r, arpt_tile_gpu *tile) {
         float lat_s = tile->cached_bounds[1];
         float lon_e = tile->cached_bounds[2];
         float lat_n = tile->cached_bounds[3];
-        float u = ((float)tile->poi_labels[li].qx - 16384.0f) / 32768.0f;
-        float v = ((float)tile->poi_labels[li].qy - 16384.0f) / 32768.0f;
+        float u = ((float)tile->poi_labels[li].qx - (float)ARPT_BUFFER) / (float)ARPT_EXTENT;
+        float v = ((float)tile->poi_labels[li].qy - (float)ARPT_BUFFER) / (float)ARPT_EXTENT;
         double lon = lon_w + u * (lon_e - lon_w);
         double lat = lat_s + v * (lat_n - lat_s);
         double alt = (double)tile->poi_labels[li].qz * 0.001;
@@ -463,9 +459,7 @@ void arpt__label_draw_all(arpt_renderer *r) {
     }
 
     if (drew_any) {
-        wgpuRenderPassEncoderSetPipeline(r->pass, r->pipeline);
-        wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group,
-                                          0, NULL);
+        restore_terrain_pipeline(r);
     }
 }
 

@@ -4,18 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Terrain — trivial zero-copy assignment */
-
-void arpt_prepare_terrain(const arpt_terrain_mesh *mesh, arpt_mesh_prim *out) {
-    out->x = mesh->x;
-    out->y = mesh->y;
-    out->z = mesh->z;
-    out->normals = mesh->normals;
-    out->vertex_count = mesh->vertex_count;
-    out->indices = mesh->indices;
-    out->index_count = mesh->index_count;
-}
-
 /* Texture — tessellate surface polygons and highway SDF quads */
 
 static void count_polygon_geom(const arpt_surface_data *data,

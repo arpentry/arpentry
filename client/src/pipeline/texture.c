@@ -6,12 +6,7 @@
 #include <stdlib.h>
 
 WGPURenderPipeline arpt__texture_create_surface_pipeline(WGPUDevice device) {
-    WGPUShaderModuleWGSLDescriptor wgsl_desc = {
-        .chain = {.sType = WGPUSType_ShaderModuleWGSLDescriptor},
-        .code = surface_wgsl,
-    };
-    WGPUShaderModuleDescriptor sm_desc = {.nextInChain = &wgsl_desc.chain};
-    WGPUShaderModule sm = wgpuDeviceCreateShaderModule(device, &sm_desc);
+    WGPUShaderModule sm = create_shader(device, surface_wgsl);
 
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
         device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 0,
@@ -54,12 +49,7 @@ WGPURenderPipeline arpt__texture_create_surface_pipeline(WGPUDevice device) {
 }
 
 WGPURenderPipeline arpt__texture_create_highway_pipeline(WGPUDevice device) {
-    WGPUShaderModuleWGSLDescriptor wgsl_desc = {
-        .chain = {.sType = WGPUSType_ShaderModuleWGSLDescriptor},
-        .code = highway_wgsl,
-    };
-    WGPUShaderModuleDescriptor sm_desc = {.nextInChain = &wgsl_desc.chain};
-    WGPUShaderModule sm = wgpuDeviceCreateShaderModule(device, &sm_desc);
+    WGPUShaderModule sm = create_shader(device, highway_wgsl);
 
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
         device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 0,
