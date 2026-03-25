@@ -440,9 +440,12 @@ static void render_frame(void) {
     /* Update global uniforms */
     arpt_mat4 projection = arpt_camera_projection(app.camera);
     arpt_vec3 sun_dir = {0.3f, 0.8f, 0.5f};
-    arpt_renderer_set_globals(app.renderer, projection, sun_dir);
+    arpt_renderer_set_globals(app.renderer, projection, sun_dir,
+                              (float)arpt_camera_altitude(app.camera));
+    arpt_vec3 earth_center_view = arpt_camera_earth_center_view(app.camera);
     arpt_renderer_set_sky(app.renderer, projection, sun_dir,
-                          (float)arpt_camera_altitude(app.camera));
+                          (float)arpt_camera_altitude(app.camera),
+                          earth_center_view);
 
     /* Set camera ECEF for horizon culling of labels */
     {

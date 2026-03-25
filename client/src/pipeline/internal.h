@@ -21,12 +21,16 @@ typedef struct {
     float projection[16];
     float sun_dir[3];
     float apply_gamma;
+    float altitude;
+    float _pad[3];
 } global_uniforms_t;
 
 typedef struct {
     float inv_projection[16];
     float sun_dir[3];
     float altitude;
+    float earth_center[3];
+    float earth_radius;
 } sky_uniforms_t;
 
 typedef struct {

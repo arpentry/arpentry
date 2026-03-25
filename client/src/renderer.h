@@ -89,17 +89,18 @@ typedef void (*arpt_overlay_fn)(WGPURenderPassEncoder pass, void *userdata);
 void arpt_renderer_set_overlay(arpt_renderer *r, arpt_overlay_fn fn,
                                void *userdata);
 
-/** Set global uniforms for this frame (projection, sun direction). */
+/** Set global uniforms for this frame (projection, sun direction, altitude). */
 void arpt_renderer_set_globals(arpt_renderer *r, arpt_mat4 projection,
-                               arpt_vec3 sun_dir);
+                               arpt_vec3 sun_dir, float altitude);
 
 /** Set camera ECEF position for horizon culling of labels. */
 void arpt_renderer_set_camera_ecef(arpt_renderer *r, double x, double y,
                                     double z);
 
-/** Set sky uniforms for this frame (camera altitude for atmosphere fade). */
+/** Set sky uniforms for this frame (atmosphere rendering from space). */
 void arpt_renderer_set_sky(arpt_renderer *r, arpt_mat4 projection,
-                            arpt_vec3 sun_dir, float altitude);
+                            arpt_vec3 sun_dir, float altitude,
+                            arpt_vec3 earth_center_view);
 
 /** Begin a frame: create encoder, begin render pass. */
 void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view);

@@ -91,4 +91,7 @@ int arpt_camera_zoom_level(const arpt_camera *cam, double root_error,
 bool arpt_camera_screen_to_ray(const arpt_camera *cam, double sx, double sy,
                                arpt_dvec3 *origin, arpt_dvec3 *dir);
 
+/** Earth center (ECEF origin) in view space. For sky/atmosphere rendering. */
+arpt_vec3 arpt_camera_earth_center_view(const arpt_camera *cam);
+
 #endif /* ARPENTRY_CAMERA_H */

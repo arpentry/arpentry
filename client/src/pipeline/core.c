@@ -580,7 +580,7 @@ void arpt_renderer_draw_placeholder(arpt_renderer *r, int slot, arpt_mat4 model,
 /* Frame rendering */
 
 void arpt_renderer_set_globals(arpt_renderer *r, arpt_mat4 projection,
-                               arpt_vec3 sun_dir) {
+                               arpt_vec3 sun_dir, float altitude) {
     global_uniforms_t u = {0};
     memcpy(u.projection, projection.m, sizeof(u.projection));
     u.sun_dir[0] = sun_dir.x;
@@ -591,6 +591,7 @@ void arpt_renderer_set_globals(arpt_renderer *r, arpt_mat4 projection,
                      r->surface_format == WGPUTextureFormat_RGBA8UnormSrgb)
                         ? 0.0f
                         : 1.0f;
+    u.altitude = altitude;
 
     if (memcmp(&u, &r->prev_globals, sizeof(u)) == 0) return;
 
@@ -600,13 +601,18 @@ void arpt_renderer_set_globals(arpt_renderer *r, arpt_mat4 projection,
 }
 
 void arpt_renderer_set_sky(arpt_renderer *r, arpt_mat4 projection,
-                            arpt_vec3 sun_dir, float altitude) {
+                            arpt_vec3 sun_dir, float altitude,
+                            arpt_vec3 earth_center_view) {
     sky_uniforms_t u = {0};
     mat4_inverse(projection.m, u.inv_projection);
     u.sun_dir[0] = sun_dir.x;
     u.sun_dir[1] = sun_dir.y;
     u.sun_dir[2] = sun_dir.z;
     u.altitude = altitude;
+    u.earth_center[0] = earth_center_view.x;
+    u.earth_center[1] = earth_center_view.y;
+    u.earth_center[2] = earth_center_view.z;
+    u.earth_radius = 6378137.0f;
     wgpuQueueWriteBuffer(r->queue, r->sky_uniform_buf, 0, &u, sizeof(u));
 }
 

@@ -323,3 +323,19 @@ bool arpt_camera_screen_to_ray(const arpt_camera *cam, double sx, double sy,
 
     return true;
 }
+
+arpt_vec3 arpt_camera_earth_center_view(const arpt_camera *cam) {
+    arpt_dmat4 R_globe = arpt_globe_rotation(cam->lon_rad, cam->lat_rad);
+    arpt_dmat4 R_tilt = compute_tilt_matrix(cam->tilt_rad, cam->bearing_rad);
+    arpt_dmat4 R = arpt_dmat4_mul(R_tilt, R_globe);
+
+    /* Earth center is ECEF origin. Interest point on surface below camera. */
+    arpt_dvec3 interest_ecef = arpt_geodetic_to_ecef(
+        cam->lon_rad, cam->lat_rad, cam->ground_elevation);
+    /* In view space: earth_center = R * (0 - interest_ecef) + (0, 0, -altitude) */
+    arpt_dvec3 neg_interest = {-interest_ecef.x, -interest_ecef.y,
+                               -interest_ecef.z};
+    arpt_dvec3 ec = arpt_dmat4_rotate(R, neg_interest);
+    ec.z -= cam->altitude;
+    return (arpt_vec3){(float)ec.x, (float)ec.y, (float)ec.z};
+}

@@ -5,6 +5,10 @@ struct GlobalUniforms {
     projection: mat4x4<f32>,
     sun_dir: vec3<f32>,
     apply_gamma: f32,
+    altitude: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 };
 
 struct TileUniforms {
@@ -25,6 +29,7 @@ struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) normal_cam: vec3<f32>,
+    @location(2) view_pos: vec3<f32>,
 };
 
 fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {
@@ -79,6 +84,7 @@ fn decode_octahedral(enc: vec2<f32>) -> vec3<f32> {
     let obj_normal = decode_octahedral(enc);
     let model3 = mat3x3<f32>(tile.model[0].xyz, tile.model[1].xyz, tile.model[2].xyz);
     out.normal_cam = normalize(model3 * obj_normal);
+    out.view_pos = world_pos.xyz;
 
     return out;
 }
@@ -86,6 +92,7 @@ fn decode_octahedral(enc: vec2<f32>) -> vec3<f32> {
 @fragment fn fs(
     @location(0) uv: vec2<f32>,
     @location(1) normal_cam: vec3<f32>,
+    @location(2) view_pos: vec3<f32>,
 ) -> @location(0) vec4<f32> {
     let margin = 0.0625;
     let tex_uv = (uv + vec2<f32>(margin, margin)) / (1.0 + 2.0 * margin);
@@ -103,7 +110,38 @@ fn decode_octahedral(enc: vec2<f32>) -> vec3<f32> {
     let sun_color = vec3<f32>(0.65, 0.63, 0.58);
     let direct = sun_color * max(NdotL, 0.0);
 
-    let lit = albedo * (ambient + direct);
-    let out = select(lit, pow(lit, vec3<f32>(1.0 / 2.2)), globals.apply_gamma > 0.5);
+    var lit = albedo * (ambient + direct);
+
+    // Ocean sun glint: detect water by color heuristic
+    // Water is dark blue (background color ~0.09, 0.22, 0.45)
+    let lum = dot(albedo, vec3<f32>(0.299, 0.587, 0.114));
+    let is_water = step(albedo.r * 2.0, albedo.b) * step(albedo.g * 1.5, albedo.b) * step(lum, 0.3);
+
+    if (is_water > 0.5) {
+        // Blinn-Phong specular
+        let view_dir = normalize(-view_pos);
+        let half_vec = normalize(view_dir + sun);
+        let NdotH = max(dot(n, half_vec), 0.0);
+
+        // Broad glint (low shininess) + tight highlight (high shininess)
+        let spec_broad = pow(NdotH, 120.0) * 0.08;
+        let spec_tight = pow(NdotH, 1200.0) * 0.25;
+        let spec = (spec_broad + spec_tight) * max(NdotL, 0.0);
+
+        let glint_color = vec3<f32>(1.0, 0.97, 0.90);
+        lit += glint_color * spec;
+    }
+
+    // Aerial perspective: distance fog
+    let view_dist = length(view_pos);
+    let fog_ceiling = 100000.0;
+    let alt_factor = 1.0 - clamp(globals.altitude / fog_ceiling, 0.0, 1.0);
+    let density = 3e-6 * alt_factor * alt_factor;
+    let fog = 1.0 - exp(-density * view_dist);
+
+    let haze_color = vec3<f32>(0.55, 0.65, 0.80);
+    let fogged = mix(lit, haze_color, fog);
+
+    let out = select(fogged, pow(fogged, vec3<f32>(1.0 / 2.2)), globals.apply_gamma > 0.5);
     return vec4<f32>(out, 1.0);
 }
