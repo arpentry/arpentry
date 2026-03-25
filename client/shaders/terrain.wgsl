@@ -132,13 +132,22 @@ fn decode_octahedral(enc: vec2<f32>) -> vec3<f32> {
         lit += glint_color * spec;
     }
 
-    // Aerial perspective: distance fog
+    // Aerial perspective: distance fog that strengthens near the horizon.
+    // Horizontal rays travel through far more atmosphere than downward ones.
     let view_dist = length(view_pos);
-    let fog_ceiling = 100000.0;
+    let view_dir = normalize(view_pos);
+    // In view space, -Z is the camera forward direction.
+    // Use smoothstep instead of 1/x to avoid amplifying tile boundary precision errors.
+    let look_depth = max(-view_dir.z, 0.0);
+    let horizon_boost = smoothstep(0.3, 0.0, look_depth);
+    let grazing = 1.0 + horizon_boost * 12.0;
+
+    let fog_ceiling = 500000.0;
     let alt_factor = 1.0 - clamp(globals.altitude / fog_ceiling, 0.0, 1.0);
-    let density = 3e-6 * alt_factor * alt_factor;
+    let density = 2e-6 * alt_factor * alt_factor * grazing;
     let fog = 1.0 - exp(-density * view_dist);
 
+    // Haze color matches the sky horizon gradient
     let haze_color = vec3<f32>(0.55, 0.65, 0.80);
     let fogged = mix(lit, haze_color, fog);
 
