@@ -769,6 +769,8 @@ static bool fetch_style(const char *base_url, arpt_style *style) {
                 }
                 float w = arpentry_tiles_PaintEntry_width(entry);
                 if (w > 0) style->stroke_widths[cls] = w;
+                uint8_t ml = arpentry_tiles_PaintEntry_min_level(entry);
+                if (ml > 0) style->class_min_levels[cls] = ml;
             }
         }
     }

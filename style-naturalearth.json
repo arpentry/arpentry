@@ -14,28 +14,28 @@
       "paint": [
         { "class": "land",       "color": [107, 180, 71, 255] },
         { "class": "coastline",  "color": [26, 77, 20, 255] },
-        { "class": "lake",       "color": [23, 56, 115, 255] },
-        { "class": "glacier",    "color": [220, 235, 245, 255] },
-        { "class": "ice_shelf",  "color": [210, 228, 240, 255] },
-        { "class": "reef",       "color": [72, 165, 150, 255] },
-        { "class": "urban",      "color": [244, 240, 229, 255] }
+        { "class": "lake",       "color": [23, 56, 115, 255], "min_level": 2 },
+        { "class": "glacier",    "color": [220, 235, 245, 255], "min_level": 2 },
+        { "class": "ice_shelf",  "color": [210, 228, 240, 255], "min_level": 2 },
+        { "class": "reef",       "color": [72, 165, 150, 255], "min_level": 3 },
+        { "class": "urban",      "color": [244, 240, 229, 255], "min_level": 4 }
       ]
     },
     {
       "source_layer": "highway",
       "type": "texture",
       "paint": [
-        { "class": "boundary",        "color": [89, 84, 77, 255],  "width": 40 },
-        { "class": "admin1_boundary", "color": [89, 84, 77, 128],  "width": 20 },
-        { "class": "river",           "color": [23, 56, 115, 255],  "width": 40 },
-        { "class": "road",            "color": [180, 180, 180, 255],  "width": 40 },
+        { "class": "boundary",        "color": [89, 84, 77, 255],  "width": 40, "min_level": 1 },
+        { "class": "admin1_boundary", "color": [89, 84, 77, 128],  "width": 20, "min_level": 3 },
+        { "class": "river",           "color": [23, 56, 115, 255],  "width": 40, "min_level": 3 },
+        { "class": "road",            "color": [180, 180, 180, 255],  "width": 40, "min_level": 4 },
         { "class": "geographic_line", "color": [160, 160, 160, 100], "width": 20 }
       ]
     },
     {
       "source_layer": "poi",
       "type": "label",
-      "min_level": 2,
+      "min_level": 4,
       "text_size": 24,
       "text_color": [26, 26, 26, 255],
       "text_halo_color": [255, 255, 255, 255],

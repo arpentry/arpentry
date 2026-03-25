@@ -395,6 +395,11 @@ static bool build_style(const char *style_file, uint8_t **out,
                         arpentry_tiles_PaintEntry_width_add(
                             &builder, (float)json_double(jwidth));
 
+                    struct json jminlvl_p = json_object_get(jentry, "min_level");
+                    if (json_exists(jminlvl_p))
+                        arpentry_tiles_PaintEntry_min_level_add(
+                            &builder, (uint8_t)json_int(jminlvl_p));
+
                     struct json jmodel = json_object_get(jentry, "model");
                     if (json_exists(jmodel)) {
                         char model_buf[128];

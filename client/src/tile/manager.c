@@ -191,6 +191,23 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
         }
     }
 
+    /* Filter out features whose class min_level > tile level */
+    {
+        const uint8_t *ml = tm->style.class_min_levels;
+        size_t dst = 0;
+        for (size_t i = 0; i < surface.count; i++) {
+            if (key.level >= ml[surface.polygons[i].cls])
+                surface.polygons[dst++] = surface.polygons[i];
+        }
+        surface.count = dst;
+        dst = 0;
+        for (size_t i = 0; i < highways.count; i++) {
+            if (key.level >= ml[highways.lines[i].cls])
+                highways.lines[dst++] = highways.lines[i];
+        }
+        highways.count = dst;
+    }
+
     /* Convert decoded domain data to renderer primitives */
     arpt_tile_prims prims = {0};
     prims.bounds = updated.bounds;

@@ -38,6 +38,7 @@ typedef struct arpt_style {
     int class_count;                              /* number of registered classes */
     float colors[ARPT_MAX_CLASSES][4];            /* RGBA per class */
     float stroke_widths[ARPT_MAX_CLASSES];        /* half-width per class */
+    uint8_t class_min_levels[ARPT_MAX_CLASSES];   /* min zoom level per class */
     arpt_tree_style trees[ARPT_MAX_TREE_STYLES];  /* per-model tree params */
     int tree_style_count;                          /* populated from style */
     arpt_layer_entry layers[ARPT_MAX_STYLE_LAYERS];
