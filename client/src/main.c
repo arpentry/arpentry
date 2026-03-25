@@ -570,13 +570,13 @@ static bool ui_event_filter(int button, int action, double sx, double sy,
     return true;
 }
 
-/* Fetch and parse tileset.arts, filling config fields from the FlatBuffer.
+/* Fetch and parse index.arpi, filling config fields from the FlatBuffer.
    base_url, max_tiles, and max_concurrent must be set by the caller. */
 
 static bool fetch_tileset(const char *base_url,
                           arpt_tile_manager_config *config) {
     char url[512];
-    int n = snprintf(url, sizeof(url), "%s/tileset.arts", base_url);
+    int n = snprintf(url, sizeof(url), "%s/index.arpi", base_url);
     if (n < 0 || (size_t)n >= sizeof(url)) return false;
 
     uint8_t *buf = NULL;
@@ -595,7 +595,7 @@ static bool fetch_tileset(const char *base_url,
 #endif
 
     int rc = arpentry_tiles_Tileset_verify_as_root_with_identifier(
-        buf, buf_size, "arts");
+        buf, buf_size, "arpi");
     if (rc != 0) {
         fprintf(stderr, "tileset: verification failed (rc=%d)\n", rc);
         free(buf);
@@ -616,12 +616,12 @@ static bool fetch_tileset(const char *base_url,
     return true;
 }
 
-/* Fetch and parse style.arss, filling the arpt_style struct.
+/* Fetch and parse style.arps, filling the arpt_style struct.
    Returns true on success. */
 
 static bool fetch_style(const char *base_url, arpt_style *style) {
     char url[512];
-    int n = snprintf(url, sizeof(url), "%s/style.arss", base_url);
+    int n = snprintf(url, sizeof(url), "%s/style.arps", base_url);
     if (n < 0 || (size_t)n >= sizeof(url)) return false;
 
     uint8_t *buf = NULL;
@@ -640,7 +640,7 @@ static bool fetch_style(const char *base_url, arpt_style *style) {
 #endif
 
     int rc = arpentry_tiles_Style_verify_as_root_with_identifier(
-        buf, buf_size, "arss");
+        buf, buf_size, "arps");
     if (rc != 0) {
         fprintf(stderr, "style: verification failed (rc=%d)\n", rc);
         free(buf);
@@ -936,7 +936,7 @@ static void init_viewer(void) {
     arpt_style style = {0};
     arpt_style_defaults(&style);
     if (!fetch_style(base_url, &style))
-        fprintf(stderr, "Warning: style.arss fetch failed, using defaults\n");
+        fprintf(stderr, "Warning: style.arps fetch failed, using defaults\n");
 
     /* Fetch model library */
     arpt_model tree_models[ARPT_MAX_MODELS];
@@ -998,7 +998,7 @@ static void init_viewer(void) {
         .max_concurrent = 6,
     };
     if (!fetch_tileset(base_url, &tm_config))
-        fprintf(stderr, "Warning: tileset.arts fetch failed, using defaults\n");
+        fprintf(stderr, "Warning: index.arpi fetch failed, using defaults\n");
     app.tile_manager = arpt_tile_manager_create(tm_config, app.renderer, &style);
     if (!app.tile_manager) {
         fprintf(stderr, "Fatal: failed to create tile manager\n");

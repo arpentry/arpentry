@@ -809,14 +809,14 @@ static void dispatch_request(struct net_conn *conn, struct server_ctx *ctx,
         return;
     }
 
-    /* Tileset metadata */
-    if (strcmp(uri, "/tileset.arts") == 0) {
-        uint8_t *arts_data = NULL;
-        size_t arts_size = 0;
-        if (build_tileset(ctx->archive, &arts_data, &arts_size)) {
-            write_response(conn, 200, "application/x-arts", "br", arts_data,
-                           arts_size);
-            free(arts_data);
+    /* Index metadata */
+    if (strcmp(uri, "/index.arpi") == 0) {
+        uint8_t *arpi_data = NULL;
+        size_t arpi_size = 0;
+        if (build_tileset(ctx->archive, &arpi_data, &arpi_size)) {
+            write_response(conn, 200, "application/x-arpi", "br", arpi_data,
+                           arpi_size);
+            free(arpi_data);
         } else {
             write_error(conn, 500);
         }
@@ -824,13 +824,13 @@ static void dispatch_request(struct net_conn *conn, struct server_ctx *ctx,
     }
 
     /* Style */
-    if (strcmp(uri, "/style.arss") == 0) {
-        uint8_t *arss_data = NULL;
-        size_t arss_size = 0;
-        if (build_style(ctx->style_file, &arss_data, &arss_size)) {
-            write_response(conn, 200, "application/x-arss", "br", arss_data,
-                           arss_size);
-            free(arss_data);
+    if (strcmp(uri, "/style.arps") == 0) {
+        uint8_t *arps_data = NULL;
+        size_t arps_size = 0;
+        if (build_style(ctx->style_file, &arps_data, &arps_size)) {
+            write_response(conn, 200, "application/x-arps", "br", arps_data,
+                           arps_size);
+            free(arps_data);
         } else {
             write_error(conn, 500);
         }

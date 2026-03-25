@@ -61,9 +61,9 @@ lat_north = lat_south + (180 / 2^level)
 - REPLACE refinement only: parent hidden when children loaded
 - Deterministic error: `geometric_error(level) = root_error / 2^level`
 
-### Tileset Metadata
+### Index Metadata
 
-A binary `.arts` file (FlatBuffer with identifier `"arts"`, Brotli-compressed) describes the tileset. The schema is defined in Section 6.2.
+A binary `.arpi` file (FlatBuffer with identifier `"arpi"`, Brotli-compressed) describes the tileset. The schema is defined in Section 6.2.
 
 | Field | Type | Description |
 |---|---|---|
@@ -452,8 +452,8 @@ root_type Tile;
 
 ```flatbuffers
 namespace arpentry.tiles;
-file_identifier "arts";
-file_extension "arts";
+file_identifier "arpi";
+file_extension "arpi";
 
 enum GeometryType : uint8 {
   Point   = 0,
@@ -499,8 +499,8 @@ root_type Tileset;
 
 ```flatbuffers
 namespace arpentry.tiles;
-file_identifier "arss";
-file_extension "arss";
+file_identifier "arps";
+file_extension "arps";
 
 struct RGBA {
   r: uint8;
@@ -590,21 +590,21 @@ All file types are standard FlatBuffers with no custom header — the FlatBuffer
 - **Extension**: `.arpt`
 - **URL pattern**: `{base_url}/{level}/{x}/{y}.arpt`
 
-### Tileset (`.arts`)
+### Index (`.arpi`)
 
-- **File identification**: `Tileset_identifier_is(buffer)` verifies `"arts"` at offset 4–7.
+- **File identification**: `Tileset_identifier_is(buffer)` verifies `"arpi"` at offset 4–7.
 - **Versioning**: `Tileset.version` (uint16, default 1). Same versioning rules as tiles.
-- **MIME type**: `application/x-arts`
-- **Extension**: `.arts`
-- **URL**: `{base_url}/tileset.arts`
+- **MIME type**: `application/x-arpi`
+- **Extension**: `.arpi`
+- **URL**: `{base_url}/index.arpi`
 
-### Style (`.arss`)
+### Style (`.arps`)
 
-- **File identification**: `Style_identifier_is(buffer)` verifies `"arss"` at offset 4–7.
+- **File identification**: `Style_identifier_is(buffer)` verifies `"arps"` at offset 4–7.
 - **Versioning**: `Style.version` (uint16, default 1). Same versioning rules as tiles.
-- **MIME type**: `application/x-arss`
-- **Extension**: `.arss`
-- **URL**: `{base_url}/style.arss`
+- **MIME type**: `application/x-arps`
+- **Extension**: `.arps`
+- **URL**: `{base_url}/style.arps`
 
 ### Model Library (`.arpm`)
 
@@ -620,7 +620,7 @@ All file types are standard FlatBuffers with no custom header — the FlatBuffer
 
 External compression only — no internal compression within the FlatBuffer:
 
-- **Compression**: Brotli everywhere. All binary files (`.arpt` tiles, `.arts` tileset, `.arss` style) are Brotli-compressed on disk and over the wire; `Content-Encoding: br` enables transparent browser decompression. Brotli achieves 70–80% reduction on quantized integer data, and a single codec simplifies the toolchain.
+- **Compression**: Brotli everywhere. All binary files (`.arpt` tiles, `.arpi` index, `.arps` style) are Brotli-compressed on disk and over the wire; `Content-Encoding: br` enables transparent browser decompression. Brotli achieves 70–80% reduction on quantized integer data, and a single codec simplifies the toolchain.
 - **Rationale**: FlatBuffers zero-copy requires uncompressed buffers in memory. Quantized integers are highly compressible, so external compression is sufficient.
 
 ---
@@ -720,7 +720,7 @@ Points of interest for labels and icons.
 
 ## 10. Styling Contract
 
-Visual styling is defined by a **Style** file (`.arss`, Section 6.3) served alongside the tileset. The style maps tile layer names and feature class values to visual properties (color, line width).
+Visual styling is defined by a **Style** file (`.arps`, Section 6.3) served alongside the tileset. The style maps tile layer names and feature class values to visual properties (color, line width).
 
 ### Style Model
 
@@ -731,7 +731,7 @@ The style uses two concepts inspired by MapLibre:
 
 ### Client Application
 
-The client fetches `{base_url}/style.arss` at startup and applies it as follows:
+The client fetches `{base_url}/style.arps` at startup and applies it as follows:
 
 1. **Surface fills**: For each `PaintEntry` in the `"surface"` `LayerStyle`, match the feature's `class` property to the entry's `class` string. Use the entry's `color` as the fill color.
 2. **Highway lines**: For each `PaintEntry` in the `"highway"` `LayerStyle`, match the feature's `class` property. Use the entry's `color` and `width` (half-width in quantized units) for SDF line rendering.

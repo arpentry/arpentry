@@ -1,6 +1,6 @@
 namespace arpentry.tiles;
-file_identifier "arts";
-file_extension "arts";
+file_identifier "arpi";
+file_extension "arpi";
 
 enum GeometryType : uint8 {
   Point   = 0,

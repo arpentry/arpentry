@@ -1,6 +1,6 @@
 namespace arpentry.tiles;
-file_identifier "arss";
-file_extension "arss";
+file_identifier "arps";
+file_extension "arps";
 
 struct RGBA {
   r: uint8;

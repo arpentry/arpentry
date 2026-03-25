@@ -55,7 +55,7 @@ The `.arpa` format is a single-file tile archive. All multi-byte integers are li
 │   binary-searchable by Hilbert tile ID       │
 ├──────────────────────────────────────────────┤
 │ Metadata                                     │
-│   Brotli-compressed .arts blob               │
+│   Brotli-compressed .arpi blob               │
 └──────────────────────────────────────────────┘
 ```
 

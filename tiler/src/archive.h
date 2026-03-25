@@ -27,7 +27,7 @@ bool arpt_archive_writer_add_tile(arpt_archive_writer *w,
                                   uint8_t z, uint32_t x, uint32_t y,
                                   const void *data, size_t size);
 
-/* Set metadata blob (Brotli-compressed .arts). Caller retains ownership. */
+/* Set metadata blob (Brotli-compressed .arpi). Caller retains ownership. */
 void arpt_archive_writer_set_metadata(arpt_archive_writer *w,
                                       const void *data, size_t size);
 
