@@ -6,8 +6,8 @@
 #include <stdint.h>
 
 /* Terrain grid resolution */
-#define TERRAIN_GRID 128
-#define TERRAIN_VERTS (TERRAIN_GRID + 1) /* 65x65 = 4225 vertices */
+#define TERRAIN_GRID 256
+#define TERRAIN_VERTS (TERRAIN_GRID + 1) /* 257x257 = 66049 vertices */
 
 /* Compute terrain elevation in meters at a geodetic point.
  * Positive = land, negative = ocean.  Deterministic. */
