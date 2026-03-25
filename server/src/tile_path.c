@@ -11,7 +11,9 @@ bool arpt_parse_tile_path(const char *uri, int *level, int *x, int *y) {
     if (n != 4) return false;
     if (strcmp(ext, ".arpt") != 0) return false;
 
-    /* Level must be in [0, 21] */
+    /* Level must be in [0, 21].  This is the address-space limit (2^22 tiles
+       at max level).  The tileset metadata may advertise a lower max_level
+       based on available data. */
     if (l < 0 || l > 21) return false;
 
     /* x in [0, 2^(level+1) - 1], y in [0, 2^level - 1] */

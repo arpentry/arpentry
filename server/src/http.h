@@ -8,9 +8,6 @@
 struct net_conn;
 struct arpt_archive_reader;
 
-/* Maximum size of an HTTP request we'll buffer before rejecting. */
-#define HTTP_MAX_REQUEST 8192
-
 /* Pure request parsing (no I/O, testable) */
 
 /* Parse an HTTP request line from a byte buffer.
@@ -18,13 +15,15 @@ struct arpt_archive_reader;
 int http_parse_request(const char *data, size_t len, char *method,
                        size_t method_sz, char *uri, size_t uri_sz);
 
-/* Per-connection HTTP state */
+/* Server context (opaque — constructed via arpt_server_ctx_create). */
+typedef struct server_ctx server_ctx;
 
-struct server_ctx {
-    const char *tile_dir;
-    const char *style_file;
-    struct arpt_archive_reader *archive;  /* NULL when serving generated tiles */
-};
+server_ctx *arpt_server_ctx_create(const char *tile_dir,
+                                   const char *style_file,
+                                   struct arpt_archive_reader *archive);
+void arpt_server_ctx_free(server_ctx *ctx);
+
+/* Per-connection HTTP state */
 
 typedef struct http_conn http_conn;
 
@@ -38,6 +37,6 @@ void http_conn_free(http_conn *hc);
 /* Feed incoming bytes. Dispatches complete requests via net_conn_out_write().
  */
 void http_conn_feed(http_conn *hc, struct net_conn *conn,
-                    struct server_ctx *ctx, const void *data, size_t len);
+                    server_ctx *ctx, const void *data, size_t len);
 
 #endif /* ARPENTRY_HTTP_H */

@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Required by net.c (extern const int verb) */
+/* Required by vendored net.c (controls pogocache verbosity; unused here). */
 const int verb = 0;
 
 /* net_main callbacks */
@@ -18,13 +18,7 @@ static void on_listening(void *udata) {
 }
 
 static void on_ready(void *udata) {
-    struct server_ctx *ctx = udata;
-    if (ctx->archive) {
-        printf("Serving tiles from archive %s (%" PRIu64 " tiles)\n",
-               ctx->tile_dir, arpt_archive_reader_tile_count(ctx->archive));
-    } else {
-        printf("Serving generated tiles from %s\n", ctx->tile_dir);
-    }
+    (void)udata;
 }
 
 static void on_opened(struct net_conn *conn, void *udata) {
@@ -42,7 +36,7 @@ static void on_closed(struct net_conn *conn, void *udata) {
 
 static void on_data(struct net_conn *conn, const void *data, size_t nbytes,
                     void *udata) {
-    struct server_ctx *ctx = udata;
+    server_ctx *ctx = udata;
     http_conn *hc = net_conn_udata(conn);
     http_conn_feed(hc, conn, ctx, data, nbytes);
 }
@@ -73,11 +67,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    struct server_ctx ctx = {
-        .tile_dir = tile_dir,
-        .style_file = style_file,
-        .archive = archive,
-    };
+    server_ctx *ctx = arpt_server_ctx_create(tile_dir, style_file, archive);
+    if (!ctx) {
+        fprintf(stderr, "Failed to allocate server context\n");
+        return 1;
+    }
 
     xmalloc_init(nthreads);
 
@@ -92,7 +86,7 @@ int main(int argc, char *argv[]) {
         .keepalive = false,
         .nouring = true,
         .nowarmup = true,
-        .udata = &ctx,
+        .udata = ctx,
         .listening = on_listening,
         .ready = on_ready,
         .opened = on_opened,
@@ -100,6 +94,12 @@ int main(int argc, char *argv[]) {
         .data = on_data,
     };
 
+    if (archive) {
+        printf("Serving tiles from archive %s (%" PRIu64 " tiles)\n",
+               tile_dir, arpt_archive_reader_tile_count(archive));
+    } else {
+        printf("Serving generated tiles from %s\n", tile_dir);
+    }
     printf("Listening on %s:%s (%d thread%s)\n", opts.host, opts.port, nthreads,
            nthreads > 1 ? "s" : "");
 
@@ -107,5 +107,6 @@ int main(int argc, char *argv[]) {
     net_main(&opts);
 
     /* Unreachable, but tidy */
+    arpt_server_ctx_free(ctx);
     return 0;
 }
