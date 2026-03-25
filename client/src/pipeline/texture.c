@@ -200,7 +200,7 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
         .loadOp = WGPULoadOp_Clear,
         .storeOp = WGPUStoreOp_Store,
         .clearValue = {r->background[0], r->background[1],
-                       r->background[2], r->background[3]},
+                      r->background[2], r->background[3]},
 #ifdef __EMSCRIPTEN__
         .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
 #endif

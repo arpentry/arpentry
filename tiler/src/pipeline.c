@@ -24,6 +24,12 @@ static uint64_t sort_key_tile_id(uint64_t key) {
     return key >> 16;
 }
 
+static int compare_uint64(const uint64_t *a, const uint64_t *b) {
+    if (*a < *b) return -1;
+    if (*a > *b) return 1;
+    return 0;
+}
+
 /* ---- Synthetic data generator ---- */
 
 typedef struct {
@@ -472,6 +478,17 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                                    config->bbox[0], config->bbox[1],
                                    config->bbox[2], config->bbox[3]);
 
+    /* Track which tiles have features so we can fill empty ones later.
+       Use a dynamically-grown array of Hilbert tile IDs. */
+    size_t written_cap = 4096, written_count = 0;
+    uint64_t *written_ids = malloc(written_cap * sizeof(*written_ids));
+    if (!written_ids) {
+        arpt_archive_writer_free(writer);
+        arpt_sorter_free(sorter);
+        arpt_dem_free(dem);
+        return false;
+    }
+
     /* Stream sorted records → group by tile → build → write */
     uint64_t key;
     const void *data;
@@ -494,6 +511,17 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                                                  (uint8_t)cur_z, (uint32_t)cur_x,
                                                  (uint32_t)cur_y,
                                                  tile_data, tile_size);
+                    /* Record this tile ID */
+                    if (written_count == written_cap) {
+                        written_cap *= 2;
+                        uint64_t *tmp = realloc(written_ids,
+                                                written_cap * sizeof(*tmp));
+                        if (tmp) written_ids = tmp;
+                    }
+                    if (written_count < written_cap) {
+                        written_ids[written_count++] =
+                            arpt_hilbert_tile_id(cur_z, cur_x, cur_y);
+                    }
                 }
                 free(tile_data);
                 arpt_tile_builder_free(builder);
@@ -540,10 +568,85 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                                          (uint8_t)cur_z, (uint32_t)cur_x,
                                          (uint32_t)cur_y,
                                          tile_data, tile_size);
+            if (written_count == written_cap) {
+                written_cap *= 2;
+                uint64_t *tmp = realloc(written_ids,
+                                        written_cap * sizeof(*tmp));
+                if (tmp) written_ids = tmp;
+            }
+            if (written_count < written_cap) {
+                written_ids[written_count++] =
+                    arpt_hilbert_tile_id(cur_z, cur_x, cur_y);
+            }
         }
         free(tile_data);
         arpt_tile_builder_free(builder);
     }
+
+    /* Sort written IDs for binary search */
+    qsort(written_ids, written_count, sizeof(*written_ids),
+          (int (*)(const void *, const void *))compare_uint64);
+
+    /* Fill empty tiles for all grid cells within the bbox */
+    {
+        double bbox_w = config->bbox[0], bbox_s = config->bbox[1];
+        double bbox_e = config->bbox[2], bbox_n = config->bbox[3];
+        uint64_t empty_count = 0;
+
+        for (int z = min_zoom; z <= max_zoom; z++) {
+            int n_cols = 1 << (z + 1);
+            int n_rows = 1 << z;
+            double lon_span = 360.0 / (double)n_cols;
+            double lat_span = 180.0 / (double)n_rows;
+
+            int x_min = (int)floor((bbox_w + 180.0) / lon_span);
+            int x_max = (int)floor((bbox_e + 180.0) / lon_span);
+            int y_min = (int)floor((bbox_s + 90.0) / lat_span);
+            int y_max = (int)floor((bbox_n + 90.0) / lat_span);
+            if (x_min < 0) x_min = 0;
+            if (x_max >= n_cols) x_max = n_cols - 1;
+            if (y_min < 0) y_min = 0;
+            if (y_max >= n_rows) y_max = n_rows - 1;
+
+            for (int y = y_min; y <= y_max; y++) {
+                for (int x = x_min; x <= x_max; x++) {
+                    uint64_t tid = arpt_hilbert_tile_id(z, x, y);
+
+                    /* Binary search in written_ids */
+                    size_t lo = 0, hi = written_count;
+                    while (lo < hi) {
+                        size_t mid = lo + (hi - lo) / 2;
+                        if (written_ids[mid] < tid) lo = mid + 1;
+                        else hi = mid;
+                    }
+                    if (lo < written_count && written_ids[lo] == tid)
+                        continue; /* already has data */
+
+                    arpt_bounds tb = arpt_tile_bounds(z, x, y);
+                    arpt_tile_builder *eb = arpt_tile_builder_create(tb, dem);
+                    if (!eb) continue;
+                    size_t tile_size;
+                    void *tile_data =
+                        arpt_tile_builder_finish(eb, &tile_size);
+                    if (tile_data && tile_size > 0) {
+                        arpt_archive_writer_add_tile(
+                            writer, (uint8_t)z, (uint32_t)x, (uint32_t)y,
+                            tile_data, tile_size);
+                        empty_count++;
+                    }
+                    free(tile_data);
+                    arpt_tile_builder_free(eb);
+                }
+            }
+        }
+
+        if (empty_count > 0) {
+            fprintf(stderr, "Added %llu empty tiles\n",
+                    (unsigned long long)empty_count);
+        }
+    }
+
+    free(written_ids);
 
     bool ok = arpt_archive_writer_finish(writer);
     arpt_archive_writer_free(writer);
