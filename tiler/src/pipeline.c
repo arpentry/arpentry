@@ -1046,14 +1046,18 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
             pthread_create(&encoders[i], NULL, encoder_fn, &ectxs[i]);
         }
 
-        /* Continue writer with accumulated written_ids */
-        wctx.write_queue = empty_write_queue;
-        pthread_create(&writer_thread, NULL, writer_fn, &wctx);
-
-        /* Sort written_ids for binary search */
+        /* Sort written_ids for binary search BEFORE starting the writer
+           thread.  The writer appends new tile IDs as it processes empty
+           tiles, so we must capture the count now to avoid the binary
+           search reading unsorted entries appended concurrently. */
         qsort(wctx.written_ids, wctx.written_count,
               sizeof(*wctx.written_ids),
               (int (*)(const void *, const void *))compare_uint64);
+        const size_t feature_tile_count_bs = wctx.written_count;
+
+        /* Continue writer with accumulated written_ids */
+        wctx.write_queue = empty_write_queue;
+        pthread_create(&writer_thread, NULL, writer_fn, &wctx);
 
         uint64_t empty_count = 0;
         uint64_t reused_count = 0;
@@ -1097,14 +1101,16 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                 for (int x = x_min; x <= x_max; x++) {
                     uint64_t tid = arpt_hilbert_tile_id(z, x, y);
 
-                    /* Binary search in written_ids */
-                    size_t lo = 0, hi = wctx.written_count;
+                    /* Binary search in the sorted feature tile IDs.
+                       Use the captured count to avoid reading unsorted
+                       entries appended by the concurrent writer thread. */
+                    size_t lo = 0, hi = feature_tile_count_bs;
                     while (lo < hi) {
                         size_t mid = lo + (hi - lo) / 2;
                         if (wctx.written_ids[mid] < tid) lo = mid + 1;
                         else hi = mid;
                     }
-                    if (lo < wctx.written_count && wctx.written_ids[lo] == tid)
+                    if (lo < feature_tile_count_bs && wctx.written_ids[lo] == tid)
                         continue;
 
                     if (!dem && cached_data && cached_size > 0) {
