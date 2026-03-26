@@ -5,22 +5,31 @@
 
 static const char *TEST_PATH = "/tmp/test_arpa_archive.arpa";
 
+static arpt_archive_config test_config(void) {
+    return (arpt_archive_config){
+        .path = TEST_PATH,
+        .min_zoom = 0,
+        .max_zoom = 4,
+        .bounds = {-180.0, -85.0, 180.0, 85.0},
+    };
+}
+
 void setUp(void) {}
 void tearDown(void) {
     remove(TEST_PATH);
 }
 
 static void test_writer_create_free(void) {
-    arpt_archive_writer *w = arpt_archive_writer_create(TEST_PATH);
+    arpt_archive_config cfg = test_config();
+    arpt_archive_writer *w = arpt_archive_writer_create(&cfg);
     TEST_ASSERT_NOT_NULL(w);
     arpt_archive_writer_free(w);
 }
 
 static void test_empty_archive(void) {
-    arpt_archive_writer *w = arpt_archive_writer_create(TEST_PATH);
+    arpt_archive_config cfg = test_config();
+    arpt_archive_writer *w = arpt_archive_writer_create(&cfg);
     TEST_ASSERT_NOT_NULL(w);
-    arpt_archive_writer_set_zoom(w, 0, 4);
-    arpt_archive_writer_set_bounds(w, -180.0, -85.0, 180.0, 85.0);
     TEST_ASSERT_TRUE(arpt_archive_writer_finish(w));
     arpt_archive_writer_free(w);
 
@@ -31,7 +40,8 @@ static void test_empty_archive(void) {
 }
 
 static void test_single_tile(void) {
-    arpt_archive_writer *w = arpt_archive_writer_create(TEST_PATH);
+    arpt_archive_config cfg = test_config();
+    arpt_archive_writer *w = arpt_archive_writer_create(&cfg);
     TEST_ASSERT_NOT_NULL(w);
 
     const char *blob = "tile-data-z0x0y0";
@@ -54,10 +64,14 @@ static void test_single_tile(void) {
 }
 
 static void test_multiple_tiles(void) {
-    arpt_archive_writer *w = arpt_archive_writer_create(TEST_PATH);
+    arpt_archive_config cfg = {
+        .path = TEST_PATH,
+        .min_zoom = 0,
+        .max_zoom = 2,
+        .bounds = {-10.0, 40.0, 20.0, 55.0},
+    };
+    arpt_archive_writer *w = arpt_archive_writer_create(&cfg);
     TEST_ASSERT_NOT_NULL(w);
-    arpt_archive_writer_set_zoom(w, 0, 2);
-    arpt_archive_writer_set_bounds(w, -10.0, 40.0, 20.0, 55.0);
 
     /* Add tiles at various zoom levels */
     const char *blob0 = "tile-z0";
@@ -110,7 +124,8 @@ static void test_multiple_tiles(void) {
 }
 
 static void test_metadata(void) {
-    arpt_archive_writer *w = arpt_archive_writer_create(TEST_PATH);
+    arpt_archive_config cfg = test_config();
+    arpt_archive_writer *w = arpt_archive_writer_create(&cfg);
     TEST_ASSERT_NOT_NULL(w);
 
     const char *meta = "{\"name\":\"test\"}";

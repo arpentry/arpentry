@@ -11,16 +11,17 @@
 
 typedef struct arpt_archive_writer arpt_archive_writer;
 
-/* Create a writer for the given output path. */
-arpt_archive_writer *arpt_archive_writer_create(const char *path);
+/* Configuration for creating a new archive. */
+typedef struct {
+    const char *path;         /* Output file path */
+    uint8_t     min_zoom;
+    uint8_t     max_zoom;
+    double      bounds[4];    /* west, south, east, north */
+    double      root_error;   /* geometric error for LOD (0 = default) */
+} arpt_archive_config;
 
-/* Set header fields. */
-void arpt_archive_writer_set_zoom(arpt_archive_writer *w,
-                                  uint8_t min_zoom, uint8_t max_zoom);
-void arpt_archive_writer_set_bounds(arpt_archive_writer *w,
-                                    double west, double south,
-                                    double east, double north);
-void arpt_archive_writer_set_root_error(arpt_archive_writer *w, double err);
+/* Create a writer with the given configuration. */
+arpt_archive_writer *arpt_archive_writer_create(const arpt_archive_config *config);
 
 /* Append a compressed tile blob. Returns false on I/O error. */
 bool arpt_archive_writer_add_tile(arpt_archive_writer *w,

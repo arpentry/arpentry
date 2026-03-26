@@ -9,6 +9,7 @@ endif()
 
 add_library(arpentry_tiler STATIC
     src/arena.c
+    src/geom.c
     src/hilbert.c
     src/wkb.c
     src/simplify.c

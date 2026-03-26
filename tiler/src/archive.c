@@ -67,14 +67,19 @@ struct arpt_archive_writer {
     size_t   meta_size;
 };
 
-arpt_archive_writer *arpt_archive_writer_create(const char *path) {
-    if (!path) return NULL;
+arpt_archive_writer *arpt_archive_writer_create(const arpt_archive_config *config) {
+    if (!config || !config->path) return NULL;
     arpt_archive_writer *w = calloc(1, sizeof(*w));
     if (!w) return NULL;
-    w->path = strdup(path);
+    w->path = strdup(config->path);
     if (!w->path) { free(w); return NULL; }
 
-    w->fp = fopen(path, "wb");
+    w->min_zoom = config->min_zoom;
+    w->max_zoom = config->max_zoom;
+    memcpy(w->bounds, config->bounds, sizeof(w->bounds));
+    w->root_error = config->root_error;
+
+    w->fp = fopen(config->path, "wb");
     if (!w->fp) goto fail;
 
     /* Reserve header space */
@@ -83,7 +88,7 @@ arpt_archive_writer *arpt_archive_writer_create(const char *path) {
 
     /* Temp file for directory entries */
     char dir_tmpl[512];
-    snprintf(dir_tmpl, sizeof(dir_tmpl), "%s.dir_XXXXXX", path);
+    snprintf(dir_tmpl, sizeof(dir_tmpl), "%s.dir_XXXXXX", config->path);
     int dir_fd = mkstemp(dir_tmpl);
     if (dir_fd < 0) goto fail;
     w->dir_fp = fdopen(dir_fd, "w+b");
@@ -100,28 +105,6 @@ fail:
     free(w->path);
     free(w);
     return NULL;
-}
-
-void arpt_archive_writer_set_zoom(arpt_archive_writer *w,
-                                  uint8_t min_zoom, uint8_t max_zoom) {
-    if (!w) return;
-    w->min_zoom = min_zoom;
-    w->max_zoom = max_zoom;
-}
-
-void arpt_archive_writer_set_bounds(arpt_archive_writer *w,
-                                    double west, double south,
-                                    double east, double north) {
-    if (!w) return;
-    w->bounds[0] = west;
-    w->bounds[1] = south;
-    w->bounds[2] = east;
-    w->bounds[3] = north;
-}
-
-void arpt_archive_writer_set_root_error(arpt_archive_writer *w, double err) {
-    if (!w) return;
-    w->root_error = err;
 }
 
 bool arpt_archive_writer_add_tile(arpt_archive_writer *w,

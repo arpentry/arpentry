@@ -4,7 +4,6 @@
 #define ARPT_FEATURE_IO_H
 
 #include "tile_build.h"
-#include "wkb.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -19,10 +18,15 @@ uint8_t *arpt_feature_serialize(const arpt_geom *geom,
                                 uint32_t n_props, size_t *out_size);
 
 /* Deserialize a binary record back into geometry + feature.  Allocates
-   coordinate arrays and property strings; caller must free them.
+   coordinate arrays and property strings; caller must free them with
+   arpt_feature_deserialize_free().
    Returns false on truncated or corrupt data. */
 bool arpt_feature_deserialize(const uint8_t *data, size_t size,
                               arpt_geom *geom, arpt_feature *feat,
                               char ***keys_out, char ***vals_out);
+
+/* Free all memory allocated by arpt_feature_deserialize. */
+void arpt_feature_deserialize_free(arpt_geom *geom, arpt_feature *feat,
+                                   char **keys, char **vals);
 
 #endif

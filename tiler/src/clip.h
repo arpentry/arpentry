@@ -3,12 +3,7 @@
 #ifndef ARPT_CLIP_H
 #define ARPT_CLIP_H
 
-#include "wkb.h"
-
-/* Bounding box for clipping. */
-typedef struct {
-    double min_x, min_y, max_x, max_y;
-} arpt_bounds;
+#include "geom.h"
 
 /* Equirectangular tile bounds in WGS84 degrees for tile (z, x, y).
    Grid: 2^(z+1) columns × 2^z rows, y=0 at south. */

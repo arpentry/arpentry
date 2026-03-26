@@ -1,6 +1,7 @@
 /* arpentry_tiler CLI entry point. */
 
 #include "pipeline.h"
+#include "layers.h"
 
 #include <stdio.h>
 #include <stdlib.h>

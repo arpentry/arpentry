@@ -7,9 +7,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "clip.h"
 #include "dem.h"
-#include "wkb.h"
+#include "geom.h"
 
 typedef struct arpt_tile_builder arpt_tile_builder;
 

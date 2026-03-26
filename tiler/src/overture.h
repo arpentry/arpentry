@@ -3,7 +3,7 @@
 #ifndef ARPT_OVERTURE_H
 #define ARPT_OVERTURE_H
 
-#include "wkb.h"
+#include "geom.h"
 #include "parquet.h"
 #include <stdbool.h>
 #include <stddef.h>

@@ -2,6 +2,7 @@
 
 #include "overture.h"
 #include "geoparquet.h"
+#include "wkb.h"
 #include <carquet/carquet.h>
 #include <stdlib.h>
 #include <string.h>

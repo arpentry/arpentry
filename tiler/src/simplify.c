@@ -1,6 +1,5 @@
 #include "simplify.h"
 #include <math.h>
-#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -426,4 +425,123 @@ uint32_t arpt_simplify_ring(double *x, double *y, uint32_t count,
     free(stack);
     free(keep);
     return out;
+}
+
+/* ---- Geometry-level simplification ---- */
+
+/* Simplify a geometry, producing a new copy with reduced coordinates.
+ * Returns false if the geometry degenerates completely. */
+bool arpt_simplify_geom(const arpt_geom *in, double tolerance,
+                         arpt_geom *out) {
+    if (!in || !out) return false;
+    if (tolerance <= 0.0 || in->n_coords <= 2) {
+        /* No simplification needed — shallow copy with owned arrays */
+        *out = *in;
+        size_t csz = in->n_coords * sizeof(double);
+        out->x = malloc(csz);
+        out->y = malloc(csz);
+        if (!out->x || !out->y) {
+            free(out->x); free(out->y);
+            memset(out, 0, sizeof(*out));
+            return false;
+        }
+        memcpy(out->x, in->x, csz);
+        memcpy(out->y, in->y, csz);
+        out->z = NULL;
+        out->offsets = NULL;
+        out->parts = NULL;
+        if (in->offsets && in->n_offsets > 0) {
+            size_t osz = in->n_offsets * sizeof(uint32_t);
+            out->offsets = malloc(osz);
+            if (out->offsets) memcpy(out->offsets, in->offsets, osz);
+        }
+        if (in->parts && in->n_parts > 0) {
+            size_t psz = in->n_parts * sizeof(uint32_t);
+            out->parts = malloc(psz);
+            if (out->parts) memcpy(out->parts, in->parts, psz);
+        }
+        return true;
+    }
+
+    /* Make a mutable copy of coordinates and offsets */
+    *out = *in;
+    size_t csz = in->n_coords * sizeof(double);
+    out->x = malloc(csz);
+    out->y = malloc(csz);
+    if (!out->x || !out->y) {
+        free(out->x); free(out->y);
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
+    memcpy(out->x, in->x, csz);
+    memcpy(out->y, in->y, csz);
+    out->z = NULL;
+    out->parts = NULL;
+    out->offsets = NULL;
+
+    if (in->offsets && in->n_offsets > 0) {
+        size_t osz = in->n_offsets * sizeof(uint32_t);
+        out->offsets = malloc(osz);
+        if (out->offsets) memcpy(out->offsets, in->offsets, osz);
+    }
+
+    /* Simplify based on geometry type */
+    if ((out->type == 3 || out->type == 6) && out->offsets && out->n_offsets > 1) {
+        uint32_t n_rings = out->n_offsets - 1;
+        uint32_t compact = 0;
+        for (uint32_t ri = 0; ri < n_rings; ri++) {
+            uint32_t start = out->offsets[ri];
+            uint32_t end = out->offsets[ri + 1];
+            uint32_t ring_n = end - start;
+            uint32_t new_n = ring_n;
+            if (ring_n > 2) {
+                new_n = arpt_simplify_ring(out->x + start, out->y + start,
+                                           ring_n, tolerance);
+            }
+            if (new_n >= 4) {
+                if (compact != start) {
+                    memmove(out->x + compact, out->x + start, new_n * sizeof(double));
+                    memmove(out->y + compact, out->y + start, new_n * sizeof(double));
+                }
+                out->offsets[ri] = compact;
+                compact += new_n;
+            } else {
+                out->offsets[ri] = compact;
+            }
+        }
+        out->offsets[n_rings] = compact;
+        out->n_coords = compact;
+        if (compact < 4) { arpt_geom_free(out); memset(out, 0, sizeof(*out)); return false; }
+    } else if (out->type == 5 && out->offsets && out->n_offsets > 1) {
+        uint32_t n_lines = out->n_offsets - 1;
+        uint32_t compact = 0;
+        for (uint32_t li = 0; li < n_lines; li++) {
+            uint32_t start = out->offsets[li];
+            uint32_t end = out->offsets[li + 1];
+            uint32_t line_n = end - start;
+            uint32_t new_n = line_n;
+            if (line_n > 2) {
+                new_n = arpt_simplify(out->x + start, out->y + start,
+                                      line_n, tolerance);
+            }
+            if (new_n >= 2) {
+                if (compact != start) {
+                    memmove(out->x + compact, out->x + start, new_n * sizeof(double));
+                    memmove(out->y + compact, out->y + start, new_n * sizeof(double));
+                }
+                out->offsets[li] = compact;
+                compact += new_n;
+            } else {
+                out->offsets[li] = compact;
+            }
+        }
+        out->offsets[n_lines] = compact;
+        out->n_coords = compact;
+        if (compact < 2) { arpt_geom_free(out); memset(out, 0, sizeof(*out)); return false; }
+    } else if (out->type == 2) {
+        out->n_coords = arpt_simplify(out->x, out->y, out->n_coords, tolerance);
+        if (out->n_coords < 2) { arpt_geom_free(out); memset(out, 0, sizeof(*out)); return false; }
+    }
+
+    return true;
 }

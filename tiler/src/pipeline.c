@@ -8,7 +8,6 @@
 #include "simplify.h"
 #include "sort.h"
 #include "tile_build.h"
-#include "wkb.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -24,10 +23,8 @@ static uint64_t sort_key_tile_id(uint64_t key) {
     return key >> 16;
 }
 
-static int compare_uint64(const uint64_t *a, const uint64_t *b) {
-    if (*a < *b) return -1;
-    if (*a > *b) return 1;
-    return 0;
+static uint32_t sort_key_layer(uint64_t key) {
+    return (uint32_t)((key >> 12) & 0xF);
 }
 
 /* ---- Synthetic data generator ---- */
@@ -147,72 +144,6 @@ static void clip_cb(int z, int x, int y,
     }
 }
 
-/* Simplify geometry in-place before clipping.  Returns false if the
- * geometry degenerates (all rings become too small). */
-static bool simplify_geom(arpt_geom *g, double tolerance) {
-    if (tolerance <= 0.0) return true;
-    if (g->n_coords <= 2) return true;
-
-    if ((g->type == 3 || g->type == 6) && g->offsets && g->n_offsets > 1) {
-        uint32_t n_rings = g->n_offsets - 1;
-        uint32_t out = 0;
-        for (uint32_t ri = 0; ri < n_rings; ri++) {
-            uint32_t start = g->offsets[ri];
-            uint32_t end = g->offsets[ri + 1];
-            uint32_t ring_n = end - start;
-            uint32_t new_n = ring_n;
-            if (ring_n > 2) {
-                new_n = arpt_simplify_ring(g->x + start, g->y + start,
-                                           ring_n, tolerance);
-            }
-            if (new_n >= 4) {
-                if (out != start) {
-                    memmove(g->x + out, g->x + start, new_n * sizeof(double));
-                    memmove(g->y + out, g->y + start, new_n * sizeof(double));
-                }
-                g->offsets[ri] = out;
-                out += new_n;
-            } else {
-                g->offsets[ri] = out;
-            }
-        }
-        g->offsets[n_rings] = out;
-        g->n_coords = out;
-        return out >= 4;
-    } else if (g->type == 5 && g->offsets && g->n_offsets > 1) {
-        /* MultiLineString: simplify each line part separately */
-        uint32_t n_lines = g->n_offsets - 1;
-        uint32_t out = 0;
-        for (uint32_t li = 0; li < n_lines; li++) {
-            uint32_t start = g->offsets[li];
-            uint32_t end = g->offsets[li + 1];
-            uint32_t line_n = end - start;
-            uint32_t new_n = line_n;
-            if (line_n > 2) {
-                new_n = arpt_simplify(g->x + start, g->y + start,
-                                      line_n, tolerance);
-            }
-            if (new_n >= 2) {
-                if (out != start) {
-                    memmove(g->x + out, g->x + start, new_n * sizeof(double));
-                    memmove(g->y + out, g->y + start, new_n * sizeof(double));
-                }
-                g->offsets[li] = out;
-                out += new_n;
-            } else {
-                g->offsets[li] = out;
-            }
-        }
-        g->offsets[n_lines] = out;
-        g->n_coords = out;
-        return out >= 2;
-    } else if (g->type == 2) {
-        g->n_coords = arpt_simplify(g->x, g->y, g->n_coords, tolerance);
-        return g->n_coords >= 2;
-    }
-    return true;
-}
-
 /* Simplification tolerance in degrees.
  * Equirectangular grid: 2^(z+1) columns, each tile 256 px wide.
  * One pixel = 360 / 2^(z+9) degrees.  Use half a pixel as
@@ -277,39 +208,11 @@ static void process_feature_zooms(
             continue;
         }
 
-        /* Simplify before clipping: make a mutable copy,
-         * simplify at this zoom's tolerance, then clip.
-         * This prevents DP from removing tile-boundary vertices
-         * that the clipper adds, which would create diagonal
-         * artifacts across tile interiors. */
-        arpt_geom sg = *geom;
-        double *sx = NULL, *sy = NULL;
-        uint32_t *so = NULL;
+        /* Simplify before clipping to avoid tile-boundary artifacts. */
+        arpt_geom sg;
         double tol = zoom_tolerance(z);
-        bool need_copy = tol > 0.0 && sg.type >= 2 && sg.n_coords > 2;
-        if (need_copy) {
-            size_t csz = sg.n_coords * sizeof(double);
-            sx = malloc(csz);
-            sy = malloc(csz);
-            if (sx && sy) {
-                memcpy(sx, sg.x, csz);
-                memcpy(sy, sg.y, csz);
-                sg.x = sx;
-                sg.y = sy;
-                if (sg.offsets && sg.n_offsets > 0) {
-                    size_t osz = sg.n_offsets * sizeof(uint32_t);
-                    so = malloc(osz);
-                    if (so) {
-                        memcpy(so, sg.offsets, osz);
-                        sg.offsets = so;
-                    }
-                }
-                if (!simplify_geom(&sg, tol)) {
-                    free(sx); free(sy); free(so);
-                    continue;
-                }
-            }
-        }
+        if (!arpt_simplify_geom(geom, tol, &sg))
+            continue;
 
         clip_ctx ctx = {
             .sorter = sorter,
@@ -321,7 +224,107 @@ static void process_feature_zooms(
             .zoom = z,
         };
         arpt_assign_tiles(&sg, z, clip_cb, &ctx);
-        free(sx); free(sy); free(so);
+        arpt_geom_free(&sg);
+    }
+}
+
+/* ---- Tile flush / empty-fill helpers ---- */
+
+/* Finish building a tile, write it to the archive, and record its ID.
+   builder is freed; caller should set its pointer to NULL after this. */
+static void flush_tile(arpt_tile_builder *builder,
+                       arpt_archive_writer *writer,
+                       int z, int x, int y,
+                       uint64_t **written_ids, size_t *written_count,
+                       size_t *written_cap) {
+    if (!builder) return;
+    size_t tile_size;
+    void *tile_data = arpt_tile_builder_finish(builder, &tile_size);
+    if (tile_data && tile_size > 0) {
+        arpt_archive_writer_add_tile(writer,
+                                     (uint8_t)z, (uint32_t)x, (uint32_t)y,
+                                     tile_data, tile_size);
+        if (*written_count == *written_cap) {
+            *written_cap *= 2;
+            uint64_t *tmp = realloc(*written_ids,
+                                    *written_cap * sizeof(**written_ids));
+            if (tmp) *written_ids = tmp;
+        }
+        if (*written_count < *written_cap) {
+            (*written_ids)[(*written_count)++] =
+                arpt_hilbert_tile_id(z, x, y);
+        }
+    }
+    free(tile_data);
+    arpt_tile_builder_free(builder);
+}
+
+static int compare_uint64(const uint64_t *a, const uint64_t *b) {
+    if (*a < *b) return -1;
+    if (*a > *b) return 1;
+    return 0;
+}
+
+/* Write terrain-only tiles for every grid cell in the bbox that doesn't
+   already have feature data. */
+static void fill_empty_tiles(arpt_archive_writer *writer,
+                             const arpt_dem *dem, const double bbox[4],
+                             int min_zoom, int max_zoom,
+                             uint64_t *written_ids, size_t written_count) {
+    qsort(written_ids, written_count, sizeof(*written_ids),
+          (int (*)(const void *, const void *))compare_uint64);
+
+    uint64_t empty_count = 0;
+
+    for (int z = min_zoom; z <= max_zoom; z++) {
+        int n_cols = 1 << (z + 1);
+        int n_rows = 1 << z;
+        double lon_span = 360.0 / (double)n_cols;
+        double lat_span = 180.0 / (double)n_rows;
+
+        int x_min = (int)floor((bbox[0] + 180.0) / lon_span);
+        int x_max = (int)floor((bbox[2] + 180.0) / lon_span);
+        int y_min = (int)floor((bbox[1] + 90.0) / lat_span);
+        int y_max = (int)floor((bbox[3] + 90.0) / lat_span);
+        if (x_min < 0) x_min = 0;
+        if (x_max >= n_cols) x_max = n_cols - 1;
+        if (y_min < 0) y_min = 0;
+        if (y_max >= n_rows) y_max = n_rows - 1;
+
+        for (int y = y_min; y <= y_max; y++) {
+            for (int x = x_min; x <= x_max; x++) {
+                uint64_t tid = arpt_hilbert_tile_id(z, x, y);
+
+                /* Binary search in written_ids */
+                size_t lo = 0, hi = written_count;
+                while (lo < hi) {
+                    size_t mid = lo + (hi - lo) / 2;
+                    if (written_ids[mid] < tid) lo = mid + 1;
+                    else hi = mid;
+                }
+                if (lo < written_count && written_ids[lo] == tid)
+                    continue;
+
+                arpt_bounds tb = arpt_tile_bounds(z, x, y);
+                arpt_tile_builder *eb = arpt_tile_builder_create(tb, dem);
+                if (!eb) continue;
+                size_t tile_size;
+                void *tile_data = arpt_tile_builder_finish(eb, &tile_size);
+                if (tile_data && tile_size > 0) {
+                    arpt_archive_writer_add_tile(
+                        writer, (uint8_t)z, (uint32_t)x, (uint32_t)y,
+                        tile_data, tile_size);
+                    empty_count++;
+                }
+                free(tile_data);
+                arpt_tile_builder_free(eb);
+            }
+        }
+    }
+
+    if (empty_count > 0) {
+        fprintf(stderr, "Added %llu empty tiles\n",
+                (unsigned long long)empty_count);
     }
 }
 
@@ -465,21 +468,20 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     }
 
     /* Create archive */
-    arpt_archive_writer *writer = arpt_archive_writer_create(config->output);
+    arpt_archive_config arc = {
+        .path = config->output,
+        .min_zoom = (uint8_t)min_zoom,
+        .max_zoom = (uint8_t)max_zoom,
+        .bounds = { config->bbox[0], config->bbox[1],
+                    config->bbox[2], config->bbox[3] },
+    };
+    arpt_archive_writer *writer = arpt_archive_writer_create(&arc);
     if (!writer) {
         arpt_sorter_free(sorter);
         return false;
     }
 
-    arpt_archive_writer_set_zoom(writer,
-                                 (uint8_t)min_zoom,
-                                 (uint8_t)max_zoom);
-    arpt_archive_writer_set_bounds(writer,
-                                   config->bbox[0], config->bbox[1],
-                                   config->bbox[2], config->bbox[3]);
-
-    /* Track which tiles have features so we can fill empty ones later.
-       Use a dynamically-grown array of Hilbert tile IDs. */
+    /* Track which tiles have features so we can fill empty ones later. */
     size_t written_cap = 4096, written_count = 0;
     uint64_t *written_ids = malloc(written_cap * sizeof(*written_ids));
     if (!written_ids) {
@@ -490,42 +492,22 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     }
 
     /* Stream sorted records → group by tile → build → write */
-    uint64_t key;
-    const void *data;
-    size_t data_size;
-
     uint64_t cur_tile_id = UINT64_MAX;
     arpt_tile_builder *builder = NULL;
     int cur_z = 0, cur_x = 0, cur_y = 0;
+
+    uint64_t key;
+    const void *data;
+    size_t data_size;
 
     while (arpt_sorter_next(sorter, &key, &data, &data_size)) {
         uint64_t tid = sort_key_tile_id(key);
 
         if (tid != cur_tile_id) {
             /* Flush previous tile */
-            if (builder) {
-                size_t tile_size;
-                void *tile_data = arpt_tile_builder_finish(builder, &tile_size);
-                if (tile_data && tile_size > 0) {
-                    arpt_archive_writer_add_tile(writer,
-                                                 (uint8_t)cur_z, (uint32_t)cur_x,
-                                                 (uint32_t)cur_y,
-                                                 tile_data, tile_size);
-                    /* Record this tile ID */
-                    if (written_count == written_cap) {
-                        written_cap *= 2;
-                        uint64_t *tmp = realloc(written_ids,
-                                                written_cap * sizeof(*tmp));
-                        if (tmp) written_ids = tmp;
-                    }
-                    if (written_count < written_cap) {
-                        written_ids[written_count++] =
-                            arpt_hilbert_tile_id(cur_z, cur_x, cur_y);
-                    }
-                }
-                free(tile_data);
-                arpt_tile_builder_free(builder);
-            }
+            flush_tile(builder, writer, cur_z, cur_x, cur_y,
+                       &written_ids, &written_count, &written_cap);
+            builder = NULL;
 
             cur_tile_id = tid;
             arpt_hilbert_tile_id_decode(tid, &cur_z, &cur_x, &cur_y);
@@ -540,111 +522,22 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
 
             if (arpt_feature_deserialize(data, data_size, &geom, &feat,
                                          &keys, &vals)) {
-                feat.layer = (uint32_t)((key >> 12) & 0xF);
+                feat.layer = sort_key_layer(key);
                 arpt_tile_builder_add_feature(builder, &feat);
             }
 
-            free(geom.x);
-            free(geom.y);
-            free(geom.z);
-            free(geom.offsets);
-            if (keys) {
-                for (uint32_t i = 0; i < feat.n_props; i++) free(keys[i]);
-                free(keys);
-            }
-            if (vals) {
-                for (uint32_t i = 0; i < feat.n_props; i++) free(vals[i]);
-                free(vals);
-            }
+            arpt_feature_deserialize_free(&geom, &feat, keys, vals);
         }
     }
 
     /* Flush last tile */
-    if (builder) {
-        size_t tile_size;
-        void *tile_data = arpt_tile_builder_finish(builder, &tile_size);
-        if (tile_data && tile_size > 0) {
-            arpt_archive_writer_add_tile(writer,
-                                         (uint8_t)cur_z, (uint32_t)cur_x,
-                                         (uint32_t)cur_y,
-                                         tile_data, tile_size);
-            if (written_count == written_cap) {
-                written_cap *= 2;
-                uint64_t *tmp = realloc(written_ids,
-                                        written_cap * sizeof(*tmp));
-                if (tmp) written_ids = tmp;
-            }
-            if (written_count < written_cap) {
-                written_ids[written_count++] =
-                    arpt_hilbert_tile_id(cur_z, cur_x, cur_y);
-            }
-        }
-        free(tile_data);
-        arpt_tile_builder_free(builder);
-    }
-
-    /* Sort written IDs for binary search */
-    qsort(written_ids, written_count, sizeof(*written_ids),
-          (int (*)(const void *, const void *))compare_uint64);
+    flush_tile(builder, writer, cur_z, cur_x, cur_y,
+               &written_ids, &written_count, &written_cap);
 
     /* Fill empty tiles for all grid cells within the bbox */
-    {
-        double bbox_w = config->bbox[0], bbox_s = config->bbox[1];
-        double bbox_e = config->bbox[2], bbox_n = config->bbox[3];
-        uint64_t empty_count = 0;
-
-        for (int z = min_zoom; z <= max_zoom; z++) {
-            int n_cols = 1 << (z + 1);
-            int n_rows = 1 << z;
-            double lon_span = 360.0 / (double)n_cols;
-            double lat_span = 180.0 / (double)n_rows;
-
-            int x_min = (int)floor((bbox_w + 180.0) / lon_span);
-            int x_max = (int)floor((bbox_e + 180.0) / lon_span);
-            int y_min = (int)floor((bbox_s + 90.0) / lat_span);
-            int y_max = (int)floor((bbox_n + 90.0) / lat_span);
-            if (x_min < 0) x_min = 0;
-            if (x_max >= n_cols) x_max = n_cols - 1;
-            if (y_min < 0) y_min = 0;
-            if (y_max >= n_rows) y_max = n_rows - 1;
-
-            for (int y = y_min; y <= y_max; y++) {
-                for (int x = x_min; x <= x_max; x++) {
-                    uint64_t tid = arpt_hilbert_tile_id(z, x, y);
-
-                    /* Binary search in written_ids */
-                    size_t lo = 0, hi = written_count;
-                    while (lo < hi) {
-                        size_t mid = lo + (hi - lo) / 2;
-                        if (written_ids[mid] < tid) lo = mid + 1;
-                        else hi = mid;
-                    }
-                    if (lo < written_count && written_ids[lo] == tid)
-                        continue; /* already has data */
-
-                    arpt_bounds tb = arpt_tile_bounds(z, x, y);
-                    arpt_tile_builder *eb = arpt_tile_builder_create(tb, dem);
-                    if (!eb) continue;
-                    size_t tile_size;
-                    void *tile_data =
-                        arpt_tile_builder_finish(eb, &tile_size);
-                    if (tile_data && tile_size > 0) {
-                        arpt_archive_writer_add_tile(
-                            writer, (uint8_t)z, (uint32_t)x, (uint32_t)y,
-                            tile_data, tile_size);
-                        empty_count++;
-                    }
-                    free(tile_data);
-                    arpt_tile_builder_free(eb);
-                }
-            }
-        }
-
-        if (empty_count > 0) {
-            fprintf(stderr, "Added %llu empty tiles\n",
-                    (unsigned long long)empty_count);
-        }
-    }
+    fill_empty_tiles(writer, dem, config->bbox,
+                     min_zoom, max_zoom,
+                     written_ids, written_count);
 
     free(written_ids);
 

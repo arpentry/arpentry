@@ -1,4 +1,5 @@
 #include "tile_build.h"
+#include "layers.h"
 #include "tile_builder.h"
 
 #include <brotli/encode.h>
@@ -104,13 +105,6 @@ typedef struct {
     uint32_t n_props;
 } stored_feat;
 
-/* Layer names matching style.json */
-static const char *layer_names[] = {
-    "terrain", "surface", "highway", "building",
-    "tree", "poi", "layer6", "layer7",
-    "layer8", "layer9", "layer10", "layer11",
-    "layer12", "layer13", "layer14", "layer15"
-};
 
 struct arpt_tile_builder {
     arpt_bounds bounds;
@@ -496,7 +490,7 @@ void *arpt_tile_builder_finish(arpt_tile_builder *b, size_t *out_size) {
         if (!has_feats) continue;
 
         arpentry_tiles_Tile_layers_push_start(&fb);
-        const char *name = layer < 16 ? layer_names[layer] : "default";
+        const char *name = layer < ARPT_MAX_LAYERS ? arpt_layer_names[layer] : "default";
         arpentry_tiles_Layer_name_create_str(&fb, name);
 
         arpentry_tiles_Layer_features_start(&fb);

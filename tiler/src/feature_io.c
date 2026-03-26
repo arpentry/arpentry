@@ -141,3 +141,16 @@ prop_ok:;
     *vals_out = vals;
     return true;
 }
+
+void arpt_feature_deserialize_free(arpt_geom *geom, arpt_feature *feat,
+                                   char **keys, char **vals) {
+    if (geom) arpt_geom_free(geom);
+    if (keys) {
+        for (uint32_t i = 0; i < feat->n_props; i++) free(keys[i]);
+        free(keys);
+    }
+    if (vals) {
+        for (uint32_t i = 0; i < feat->n_props; i++) free(vals[i]);
+        free(vals);
+    }
+}
