@@ -251,10 +251,25 @@ static void build_geom(flatcc_builder_t *fb, const stored_feat *sf) {
     }
 }
 
-/* Grid subdivisions for the terrain mesh.  Must be high enough
-   that the vertex shader can deform the quad into a curved globe
-   surface.  64×64 = 4225 vertices, 2×64×64 = 8192 triangles. */
-#define TERRAIN_GRID 64
+/* Maximum terrain grid subdivisions.  The actual grid is chosen
+   adaptively based on tile angular span — see terrain_grid_size(). */
+#define TERRAIN_GRID_MAX 64
+#define TERRAIN_GRID_MIN 16
+
+/* Choose terrain grid subdivisions based on tile angular span.
+   Target: ~2.8° per cell (matching zoom-0 at 64 subdivisions) for
+   globe curvature, clamped to [TERRAIN_GRID_MIN, TERRAIN_GRID_MAX]
+   and rounded to a power of 2. */
+static uint32_t terrain_grid_size(const arpt_bounds *bounds) {
+    double lon_span = bounds->max_x - bounds->min_x;
+    /* 180° / 64 ≈ 2.8° per cell at zoom 0 */
+    uint32_t g = (uint32_t)(lon_span / 2.8);
+    /* Round up to next power of 2 */
+    if (g < TERRAIN_GRID_MIN) g = TERRAIN_GRID_MIN;
+    uint32_t p = TERRAIN_GRID_MIN;
+    while (p < g && p < TERRAIN_GRID_MAX) p *= 2;
+    return p;
+}
 
 /* Encode a unit normal vector into octahedral int8×2.
    Input: (nx, ny, nz) must be normalized. */
@@ -292,7 +307,7 @@ static void encode_octahedral(double nx, double ny, double nz,
    from central differences — avoids redundant DEM lookups. */
 static void emit_terrain(flatcc_builder_t *fb, const arpt_bounds *bounds,
                           const arpt_dem *dem) {
-    const uint32_t gn = TERRAIN_GRID;
+    const uint32_t gn = terrain_grid_size(bounds);
     const uint32_t n_verts = (gn + 1) * (gn + 1);
     const uint32_t n_tris = gn * gn * 2;
     const uint32_t n_idx = n_tris * 3;
@@ -349,6 +364,30 @@ static void emit_terrain(flatcc_builder_t *fb, const arpt_bounds *bounds,
         }
     }
 
+    /* Precompute sin/cos tables — lon varies by column, lat by row.
+       This reduces trig calls from (gn+1)^2 * 4 to (gn+1) * 4. */
+    double *sin_lon_tbl = malloc((gn + 1) * sizeof(double));
+    double *cos_lon_tbl = malloc((gn + 1) * sizeof(double));
+    double *sin_lat_tbl = malloc((gn + 1) * sizeof(double));
+    double *cos_lat_tbl = malloc((gn + 1) * sizeof(double));
+    if (!sin_lon_tbl || !cos_lon_tbl || !sin_lat_tbl || !cos_lat_tbl) {
+        free(sin_lon_tbl); free(cos_lon_tbl);
+        free(sin_lat_tbl); free(cos_lat_tbl);
+        free(elev_grid);
+        free(vx); free(vy); free(vz); free(indices); free(normals);
+        return;
+    }
+    for (uint32_t col = 0; col <= gn; col++) {
+        double lon_r = (bounds->min_x + (double)col / gn * lon_span) * M_PI / 180.0;
+        sin_lon_tbl[col] = sin(lon_r);
+        cos_lon_tbl[col] = cos(lon_r);
+    }
+    for (uint32_t row = 0; row <= gn; row++) {
+        double lat_r = (bounds->min_y + (double)row / gn * lat_span) * M_PI / 180.0;
+        sin_lat_tbl[row] = sin(lat_r);
+        cos_lat_tbl[row] = cos(lat_r);
+    }
+
     /* Compute normals in ECEF using ENU basis vectors.
        Derive slopes from the padded elevation grid using central
        differences instead of extra DEM lookups. */
@@ -356,12 +395,8 @@ static void emit_terrain(flatcc_builder_t *fb, const arpt_bounds *bounds,
         for (uint32_t col = 0; col <= gn; col++) {
             uint32_t vi = row * (gn + 1) + col;
 
-            double lon = bounds->min_x + (double)col / gn * lon_span;
-            double lat = bounds->min_y + (double)row / gn * lat_span;
-            double lon_r = lon * M_PI / 180.0;
-            double lat_r = lat * M_PI / 180.0;
-            double sin_lon = sin(lon_r), cos_lon = cos(lon_r);
-            double sin_lat = sin(lat_r), cos_lat = cos(lat_r);
+            double sin_lon = sin_lon_tbl[col], cos_lon = cos_lon_tbl[col];
+            double sin_lat = sin_lat_tbl[row], cos_lat = cos_lat_tbl[row];
 
             /* ENU basis vectors in ECEF */
             double e_x = -sin_lon,           e_y = cos_lon,            e_z = 0.0;
@@ -398,6 +433,10 @@ static void emit_terrain(flatcc_builder_t *fb, const arpt_bounds *bounds,
     }
 
     free(elev_grid);
+    free(sin_lon_tbl);
+    free(cos_lon_tbl);
+    free(sin_lat_tbl);
+    free(cos_lat_tbl);
 
     /* Generate triangle indices (two triangles per grid cell) */
     uint32_t ii = 0;

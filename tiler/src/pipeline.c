@@ -192,21 +192,54 @@ static void process_feature_zooms(
     const char *const *prop_keys, const char *const *prop_vals,
     uint32_t n_props, arpt_sorter *sorter) {
 
-    for (int z = min_zoom; z <= max_zoom; z++) {
-        if (geom->type >= 2 && geom->n_coords > 1 &&
-            feature_subpixel(bbox, z, 256)) {
-            continue;
-        }
+    bool is_complex = geom->type >= 2 && geom->n_coords > 1;
 
-        if (geom->type >= 2 && geom->n_coords > 1 &&
-            estimate_tile_span(bbox, z) > (int64_t)MAX_TILE_SPAN * MAX_TILE_SPAN) {
-            continue;
+    /* Points don't need simplification — process all zooms directly. */
+    if (!is_complex) {
+        clip_ctx ctx = {
+            .sorter = sorter,
+            .layer = layer,
+            .rank = rank,
+            .prop_keys = prop_keys,
+            .prop_vals = prop_vals,
+            .n_props = n_props,
+        };
+        for (int z = min_zoom; z <= max_zoom; z++) {
+            ctx.zoom = z;
+            arpt_assign_tiles(geom, z, clip_cb, &ctx);
         }
+        return;
+    }
+
+    /* Incremental simplification for lines/polygons:
+       Process from finest (max_zoom) to coarsest (min_zoom).
+       Each coarser zoom re-simplifies from the previous result rather
+       than from the original, since DP with larger tolerance removes a
+       superset of vertices. This dramatically reduces work at coarse zooms
+       where the input from the finer zoom is already heavily simplified. */
+
+    arpt_geom prev = {0};
+    bool have_prev = false;
+
+    for (int z = max_zoom; z >= min_zoom; z--) {
+        if (feature_subpixel(bbox, z, 256))
+            continue;
+        if (estimate_tile_span(bbox, z) > (int64_t)MAX_TILE_SPAN * MAX_TILE_SPAN)
+            continue;
 
         arpt_geom sg;
         double tol = zoom_tolerance(z);
-        if (!arpt_simplify_geom(geom, tol, &sg))
+        const arpt_geom *input = have_prev ? &prev : geom;
+
+        if (!arpt_simplify_geom(input, tol, &sg))
             continue;
+
+        /* If simplification didn't remove any vertices, the geometry
+           is identical to the previous zoom's result. The tile assignments
+           at this coarser zoom are different (fewer, larger tiles), so we
+           still need to clip. But we can skip the simplification cost for
+           subsequent coarser zooms since the input won't change. */
+        bool unchanged = (sg.n_coords == input->n_coords);
 
         clip_ctx ctx = {
             .sorter = sorter,
@@ -218,8 +251,21 @@ static void process_feature_zooms(
             .zoom = z,
         };
         arpt_assign_tiles(&sg, z, clip_cb, &ctx);
-        arpt_geom_free(&sg);
+
+        if (unchanged) {
+            /* Geometry didn't change — free the copy and keep previous */
+            arpt_geom_free(&sg);
+        } else {
+            /* Replace prev with this result for the next coarser zoom */
+            if (have_prev)
+                arpt_geom_free(&prev);
+            prev = sg;
+            have_prev = true;
+        }
     }
+
+    if (have_prev)
+        arpt_geom_free(&prev);
 }
 
 static int compare_uint64(const uint64_t *a, const uint64_t *b) {

@@ -110,37 +110,27 @@ static void clip_points(const arpt_geom *geom, int z,
         double px = geom->x[i];
         double py = geom->y[i];
 
-        /* Clamp to valid range */
         if (px < -180.0) px = -180.0;
         if (px > 180.0)  px = 180.0;
         if (py < -90.0)  py = -90.0;
         if (py > 90.0)   py = 90.0;
 
-        /* Determine which tile this point falls into (equirectangular) */
         int tx = (int)floor((px + 180.0) / 360.0 * (double)n_cols);
         int ty = (int)floor((py + 90.0) / 180.0 * (double)n_rows);
 
-        /* Clamp to valid range */
         if (tx < 0) tx = 0;
         if (tx >= n_cols) tx = n_cols - 1;
         if (ty < 0) ty = 0;
         if (ty >= n_rows) ty = n_rows - 1;
 
-        arpt_geom clipped = {0};
-        clipped.type = 1; /* Point */
-        clipped.x = malloc(sizeof(double));
-        clipped.y = malloc(sizeof(double));
-        if (!clipped.x || !clipped.y) {
-            free(clipped.x);
-            free(clipped.y);
-            continue;
-        }
-        clipped.x[0] = px;
-        clipped.y[0] = py;
-        clipped.n_coords = 1;
-
+        /* Stack-allocated single-point geometry — no malloc needed */
+        arpt_geom clipped = {
+            .type = 1,
+            .x = &px,
+            .y = &py,
+            .n_coords = 1,
+        };
         cb(z, tx, ty, &clipped, ctx);
-        arpt_geom_free(&clipped);
     }
 }
 
@@ -859,6 +849,25 @@ void arpt_assign_tiles(const arpt_geom *geom, int zoom,
     if (!geom || !cb) return;
     if (geom->n_coords == 0) return;
     if (zoom < 0) return;
+
+    /* Fast path: if a simple (non-Multi) geometry fits entirely within a
+       single tile, skip all clipping and pass geometry through directly.
+       This applies to the majority of features at high zoom.
+       Multi* types are excluded because the normal path decomposes them
+       into per-part callbacks. */
+    if ((geom->type == 2 || geom->type == 3) && geom->n_coords > 1) {
+        int n_cols = 1 << (zoom + 1);
+        int n_rows = 1 << zoom;
+
+        int tx_min, tx_max, ty_min, ty_max;
+        coords_to_tile_range(geom->x, geom->y, 0, geom->n_coords,
+                             n_cols, n_rows, &tx_min, &tx_max, &ty_min, &ty_max);
+
+        if (tx_min == tx_max && ty_min == ty_max) {
+            cb(zoom, tx_min, ty_min, geom, ctx);
+            return;
+        }
+    }
 
     switch (geom->type) {
     case 1: /* Point */
