@@ -8,11 +8,28 @@
 #include "simplify.h"
 #include "sort.h"
 #include "tile_build.h"
+#include "workqueue.h"
 
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#else
+#include <unistd.h>
+#endif
+
+/* ---- Timing helpers ---- */
+
+static double now_sec(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
 
 /* Sort key layout: tile_id(48) | layer(4) | rank(12) */
 static uint64_t make_sort_key(uint64_t tile_id, uint32_t layer, uint32_t rank) {
@@ -27,6 +44,19 @@ static uint32_t sort_key_layer(uint64_t key) {
     return (uint32_t)((key >> 12) & 0xF);
 }
 
+static int detect_cpu_count(void) {
+#ifdef __APPLE__
+    int count = 0;
+    size_t size = sizeof(count);
+    if (sysctlbyname("hw.logicalcpu", &count, &size, NULL, 0) == 0 && count > 0)
+        return count;
+    return 4;
+#else
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return (n > 0) ? (int)n : 4;
+#endif
+}
+
 /* ---- Synthetic data generator ---- */
 
 typedef struct {
@@ -34,22 +64,18 @@ typedef struct {
     uint32_t  layer;
 } synth_feature;
 
-/* Generate a grid of synthetic features within the bbox.
-   Returns features once; the pipeline clips to all zoom levels. */
 static synth_feature *generate_synthetic(const double bbox[4], int *out_count) {
     double w = bbox[0], s = bbox[1], e = bbox[2], n = bbox[3];
 
-    /* Generate a moderate grid of points + a few polygons */
     int nx = 16, ny = 16;
     double lon_step = (e - w) / nx;
     double lat_step = (n - s) / ny;
 
-    int cap = nx * ny + 4;  /* points + polygons */
+    int cap = nx * ny + 4;
     synth_feature *feats = malloc((size_t)cap * sizeof(synth_feature));
     if (!feats) { *out_count = 0; return NULL; }
     int count = 0;
 
-    /* Points */
     for (int ix = 0; ix < nx; ix++) {
         for (int iy = 0; iy < ny; iy++) {
             synth_feature *sf = &feats[count];
@@ -71,7 +97,6 @@ static synth_feature *generate_synthetic(const double bbox[4], int *out_count) {
         }
     }
 
-    /* A few rectangles spanning the bbox */
     for (int i = 0; i < 4 && count < cap; i++) {
         double pw = w + (e - w) * 0.2 * i;
         double pe = pw + (e - w) * 0.15;
@@ -82,7 +107,7 @@ static synth_feature *generate_synthetic(const double bbox[4], int *out_count) {
 
         synth_feature *sf = &feats[count];
         memset(sf, 0, sizeof(*sf));
-        sf->geom.type = 3; /* Polygon */
+        sf->geom.type = 3;
         sf->geom.n_coords = 5;
         sf->geom.x = malloc(5 * sizeof(double));
         sf->geom.y = malloc(5 * sizeof(double));
@@ -105,16 +130,6 @@ static synth_feature *generate_synthetic(const double bbox[4], int *out_count) {
 
     *out_count = count;
     return feats;
-}
-
-static void free_synth_features(synth_feature *feats, int count) {
-    for (int i = 0; i < count; i++) {
-        free(feats[i].geom.x);
-        free(feats[i].geom.y);
-        free(feats[i].geom.z);
-        free(feats[i].geom.offsets);
-    }
-    free(feats);
 }
 
 /* ---- Tile clipping callback context ---- */
@@ -144,23 +159,12 @@ static void clip_cb(int z, int x, int y,
     }
 }
 
-/* Simplification tolerance in degrees.
- * Equirectangular grid: 2^(z+1) columns, each tile 256 px wide.
- * One pixel = 360 / 2^(z+9) degrees.  Use half a pixel as
- * tolerance so coastlines stay visually smooth. */
 static double zoom_tolerance(int zoom) {
     return 360.0 / (double)(1 << (zoom + 10));
 }
 
-/* Maximum number of tiles a feature may span per axis at a zoom level.
- * Features exceeding this at high zoom are too large to be useful at
- * that detail level. They will still appear at lower zoom levels. */
 #define MAX_TILE_SPAN 256
 
-/* Check whether a line/polygon feature is too small to be visible at
- * the given zoom level (sub-pixel).  Returns true if the feature
- * should be skipped.  tile_pixels is the number of pixels per tile
- * side (typically 256). */
 static bool feature_subpixel(const double bbox[4], int z, int tile_pixels) {
     double n_cols = (double)(1 << (z + 1));
     double n_rows = (double)(1 << z);
@@ -173,7 +177,6 @@ static bool feature_subpixel(const double bbox[4], int z, int tile_pixels) {
     return px_x < 1.0 && px_y < 1.0;
 }
 
-/* Estimate the tile span of a geometry from its bbox at the given zoom. */
 static int64_t estimate_tile_span(const double bbox[4], int z) {
     double n_cols = (double)(1 << (z + 1));
     double n_rows = (double)(1 << z);
@@ -182,12 +185,6 @@ static int64_t estimate_tile_span(const double bbox[4], int z) {
     return tx_span * ty_span;
 }
 
-/* ---- Shared zoom-level processing loop ----
- *
- * For each zoom level: subpixel filter → tile-span filter →
- * copy-simplify-clip → free temporary copy.
- * Both synthetic and Overture paths call this after preparing
- * their feature data. */
 static void process_feature_zooms(
     const arpt_geom *geom, const double bbox[4],
     int min_zoom, int max_zoom,
@@ -196,19 +193,16 @@ static void process_feature_zooms(
     uint32_t n_props, arpt_sorter *sorter) {
 
     for (int z = min_zoom; z <= max_zoom; z++) {
-        /* Skip sub-pixel features at this zoom */
         if (geom->type >= 2 && geom->n_coords > 1 &&
             feature_subpixel(bbox, z, 256)) {
             continue;
         }
 
-        /* Skip features that span too many tiles at this zoom */
         if (geom->type >= 2 && geom->n_coords > 1 &&
             estimate_tile_span(bbox, z) > (int64_t)MAX_TILE_SPAN * MAX_TILE_SPAN) {
             continue;
         }
 
-        /* Simplify before clipping to avoid tile-boundary artifacts. */
         arpt_geom sg;
         double tol = zoom_tolerance(z);
         if (!arpt_simplify_geom(geom, tol, &sg))
@@ -228,117 +222,385 @@ static void process_feature_zooms(
     }
 }
 
-/* ---- Tile flush / empty-fill helpers ---- */
-
-/* Finish building a tile, write it to the archive, and record its ID.
-   builder is freed; caller should set its pointer to NULL after this. */
-static void flush_tile(arpt_tile_builder *builder,
-                       arpt_archive_writer *writer,
-                       int z, int x, int y,
-                       uint64_t **written_ids, size_t *written_count,
-                       size_t *written_cap) {
-    if (!builder) return;
-    size_t tile_size;
-    void *tile_data = arpt_tile_builder_finish(builder, &tile_size);
-    if (tile_data && tile_size > 0) {
-        arpt_archive_writer_add_tile(writer,
-                                     (uint8_t)z, (uint32_t)x, (uint32_t)y,
-                                     tile_data, tile_size);
-        if (*written_count == *written_cap) {
-            *written_cap *= 2;
-            uint64_t *tmp = realloc(*written_ids,
-                                    *written_cap * sizeof(**written_ids));
-            if (tmp) *written_ids = tmp;
-        }
-        if (*written_count < *written_cap) {
-            (*written_ids)[(*written_count)++] =
-                arpt_hilbert_tile_id(z, x, y);
-        }
-    }
-    free(tile_data);
-    arpt_tile_builder_free(builder);
-}
-
 static int compare_uint64(const uint64_t *a, const uint64_t *b) {
     if (*a < *b) return -1;
     if (*a > *b) return 1;
     return 0;
 }
 
-/* Write terrain-only tiles for every grid cell in the bbox that doesn't
-   already have feature data. */
-static void fill_empty_tiles(arpt_archive_writer *writer,
-                             const arpt_dem *dem, const double bbox[4],
-                             int min_zoom, int max_zoom,
-                             uint64_t *written_ids, size_t written_count) {
-    qsort(written_ids, written_count, sizeof(*written_ids),
-          (int (*)(const void *, const void *))compare_uint64);
+/* ---- Parallel pipeline data types ---- */
 
-    uint64_t empty_count = 0;
+/* A raw feature queued from a reader thread to worker threads. */
+typedef struct {
+    arpt_geom geometry;
+    double    bbox[4];
+    bool      has_bbox;
+    char     *type;       /* Owned copy, may be NULL */
+    char     *subtype;    /* Owned copy, may be NULL */
+    uint32_t  layer;
+    uint32_t  rank;
+} raw_feature;
 
-    for (int z = min_zoom; z <= max_zoom; z++) {
-        int n_cols = 1 << (z + 1);
-        int n_rows = 1 << z;
-        double lon_span = 360.0 / (double)n_cols;
-        double lat_span = 180.0 / (double)n_rows;
+/* Batch size for the work queue (number of features per batch).
+   Smaller batches improve worker load balance at the cost of slightly
+   more queue contention — 256 is a good balance. */
+#define FEATURE_BATCH_SIZE 256
 
-        int x_min = (int)floor((bbox[0] + 180.0) / lon_span);
-        int x_max = (int)floor((bbox[2] + 180.0) / lon_span);
-        int y_min = (int)floor((bbox[1] + 90.0) / lat_span);
-        int y_max = (int)floor((bbox[3] + 90.0) / lat_span);
-        if (x_min < 0) x_min = 0;
-        if (x_max >= n_cols) x_max = n_cols - 1;
-        if (y_min < 0) y_min = 0;
-        if (y_max >= n_rows) y_max = n_rows - 1;
+static void raw_feature_free(raw_feature *f) {
+    arpt_geom_free(&f->geometry);
+    free(f->type);
+    free(f->subtype);
+}
 
-        for (int y = y_min; y <= y_max; y++) {
-            for (int x = x_min; x <= x_max; x++) {
-                uint64_t tid = arpt_hilbert_tile_id(z, x, y);
+/* ---- Worker thread: process features → per-thread sorter ---- */
 
-                /* Binary search in written_ids */
-                size_t lo = 0, hi = written_count;
-                while (lo < hi) {
-                    size_t mid = lo + (hi - lo) / 2;
-                    if (written_ids[mid] < tid) lo = mid + 1;
-                    else hi = mid;
-                }
-                if (lo < written_count && written_ids[lo] == tid)
-                    continue;
+typedef struct {
+    arpt_workqueue *queue;
+    arpt_sorter    *sorter;
+    int             min_zoom;
+    int             max_zoom;
+    uint64_t        feat_count;   /* Features processed by this worker */
+    uint64_t        batch_count;  /* Batches processed by this worker */
+} worker_ctx;
 
-                arpt_bounds tb = arpt_tile_bounds(z, x, y);
-                arpt_tile_builder *eb = arpt_tile_builder_create(tb, dem);
-                if (!eb) continue;
-                size_t tile_size;
-                void *tile_data = arpt_tile_builder_finish(eb, &tile_size);
-                if (tile_data && tile_size > 0) {
-                    arpt_archive_writer_add_tile(
-                        writer, (uint8_t)z, (uint32_t)x, (uint32_t)y,
-                        tile_data, tile_size);
-                    empty_count++;
-                }
-                free(tile_data);
-                arpt_tile_builder_free(eb);
+static void *worker_fn(void *arg) {
+    worker_ctx *wc = (worker_ctx *)arg;
+    arpt_batch batch;
+
+    while (arpt_workqueue_pop(wc->queue, &batch)) {
+        raw_feature *feats = (raw_feature *)batch.items;
+        for (size_t i = 0; i < batch.count; i++) {
+            raw_feature *f = &feats[i];
+
+            double feat_bbox[4];
+            if (f->has_bbox) {
+                memcpy(feat_bbox, f->bbox, sizeof(feat_bbox));
+            } else {
+                arpt_geom_bbox(&f->geometry, feat_bbox);
             }
+
+            const char *cls = f->subtype ? f->type : (f->type ? f->type : "unknown");
+            const char *pkeys[2] = { "class", "name" };
+            const char *pvals[2] = { cls, f->subtype };
+            uint32_t n_props = f->subtype ? 2 : 1;
+
+            process_feature_zooms(&f->geometry, feat_bbox,
+                                  wc->min_zoom, wc->max_zoom,
+                                  f->layer, f->rank,
+                                  pkeys, pvals, n_props, wc->sorter);
+
+            raw_feature_free(f);
+        }
+        wc->feat_count += batch.count;
+        wc->batch_count++;
+        free(feats);
+    }
+
+    return NULL;
+}
+
+/* ---- Reader: read features from one input file into the work queue ---- */
+
+static void read_overture_input(const arpt_pipeline_input *inp,
+                                const double config_bbox[4],
+                                arpt_workqueue *queue,
+                                uint32_t *rank) {
+    double t0 = now_sec();
+    fprintf(stderr, "Reading %s (layer %u)...\n", inp->path, inp->layer);
+
+    arpt_overture *ov = arpt_overture_open(inp->path);
+    if (!ov) {
+        fprintf(stderr, "Warning: cannot open %s, skipping\n", inp->path);
+        return;
+    }
+
+    uint64_t feat_count = 0;
+    raw_feature *batch_buf = malloc(FEATURE_BATCH_SIZE * sizeof(raw_feature));
+    if (!batch_buf) { arpt_overture_close(ov); return; }
+    size_t batch_pos = 0;
+
+    arpt_overture_feature feat;
+    while (arpt_overture_next(ov, &feat)) {
+        arpt_geom *g = &feat.geometry;
+
+        /* Skip features outside the target bbox */
+        if (feat.has_bbox) {
+            if (feat.bbox[2] < config_bbox[0] ||
+                feat.bbox[0] > config_bbox[2] ||
+                feat.bbox[3] < config_bbox[1] ||
+                feat.bbox[1] > config_bbox[3]) {
+                arpt_geom_free(g);
+                continue;
+            }
+        }
+
+        /* Copy feature into batch buffer */
+        raw_feature *rf = &batch_buf[batch_pos];
+        rf->geometry = feat.geometry;      /* Move ownership */
+        memset(&feat.geometry, 0, sizeof(feat.geometry));
+        memcpy(rf->bbox, feat.bbox, sizeof(rf->bbox));
+        rf->has_bbox = feat.has_bbox;
+        rf->type = feat.type ? strdup(feat.type) : NULL;
+        rf->subtype = feat.subtype ? strdup(feat.subtype) : NULL;
+        rf->layer = inp->layer;
+        rf->rank = *rank;
+        batch_pos++;
+
+        (*rank)++;
+        if (*rank > 0xFFF) *rank = 0xFFF;
+        feat_count++;
+
+        if (batch_pos == FEATURE_BATCH_SIZE) {
+            arpt_batch b = { .items = batch_buf, .count = batch_pos };
+            if (!arpt_workqueue_push(queue, &b)) {
+                /* Queue closed — free remaining features */
+                for (size_t i = 0; i < batch_pos; i++)
+                    raw_feature_free(&batch_buf[i]);
+                free(batch_buf);
+                batch_buf = NULL;
+                break;
+            }
+            /* Push took ownership; allocate new buffer */
+            batch_buf = malloc(FEATURE_BATCH_SIZE * sizeof(raw_feature));
+            if (!batch_buf) break;
+            batch_pos = 0;
+        }
+
+        if (feat_count % 100000 == 0) {
+            fprintf(stderr, "  ... %llu features\n",
+                    (unsigned long long)feat_count);
         }
     }
 
-    if (empty_count > 0) {
-        fprintf(stderr, "Added %llu empty tiles\n",
-                (unsigned long long)empty_count);
+    /* Flush remaining features */
+    if (batch_buf && batch_pos > 0) {
+        arpt_batch b = { .items = batch_buf, .count = batch_pos };
+        if (!arpt_workqueue_push(queue, &b)) {
+            for (size_t i = 0; i < batch_pos; i++)
+                raw_feature_free(&batch_buf[i]);
+            free(batch_buf);
+        }
+    } else {
+        free(batch_buf);
     }
+
+    arpt_overture_close(ov);
+    double t1 = now_sec();
+    fprintf(stderr, "  %llu features from %s (%.3fs)\n",
+            (unsigned long long)feat_count, inp->path, t1 - t0);
+}
+
+/* ---- Finalize sort threads ---- */
+
+static void *finish_sorter_fn(void *arg) {
+    arpt_sorter *s = (arpt_sorter *)arg;
+    arpt_sorter_finish(s);
+    return NULL;
+}
+
+/* ---- Phase 3 parallel tile encoding types ---- */
+
+/* A tile ready to be encoded (pushed from grouper to encoder threads). */
+typedef struct {
+    arpt_tile_builder *builder;
+    uint64_t           sequence;
+    int                z;
+    uint32_t           x, y;
+} tile_job;
+
+/* An encoded tile ready to be written (pushed from encoder to writer). */
+typedef struct {
+    uint64_t  sequence;
+    uint8_t   z;
+    uint32_t  x, y;
+    void     *data;    /* Compressed tile blob (owned) */
+    size_t    size;
+} encoded_tile;
+
+/* Encoder thread context */
+typedef struct {
+    arpt_workqueue *tile_queue;    /* Input: tile_job batches */
+    arpt_workqueue *write_queue;   /* Output: encoded_tile batches */
+} encoder_ctx;
+
+static void *encoder_fn(void *arg) {
+    encoder_ctx *ec = (encoder_ctx *)arg;
+    arpt_batch batch;
+
+    while (arpt_workqueue_pop(ec->tile_queue, &batch)) {
+        tile_job *jobs = (tile_job *)batch.items;
+
+        /* Encode each tile and push results one at a time */
+        for (size_t i = 0; i < batch.count; i++) {
+            tile_job *j = &jobs[i];
+            size_t tile_size = 0;
+            void *tile_data = NULL;
+
+            if (j->builder) {
+                tile_data = arpt_tile_builder_finish(j->builder, &tile_size);
+                arpt_tile_builder_free(j->builder);
+            }
+
+            encoded_tile *et = malloc(sizeof(encoded_tile));
+            if (et) {
+                et->sequence = j->sequence;
+                et->z = (uint8_t)j->z;
+                et->x = j->x;
+                et->y = j->y;
+                et->data = tile_data;
+                et->size = tile_size;
+
+                arpt_batch out = { .items = et, .count = 1 };
+                if (!arpt_workqueue_push(ec->write_queue, &out)) {
+                    free(tile_data);
+                    free(et);
+                }
+            } else {
+                free(tile_data);
+            }
+        }
+        free(jobs);
+    }
+
+    return NULL;
+}
+
+/* Writer thread context — receives encoded tiles and writes in sequence order */
+typedef struct {
+    arpt_workqueue      *write_queue;
+    arpt_archive_writer *writer;
+    uint64_t            *written_ids;
+    size_t               written_count;
+    size_t               written_cap;
+    uint64_t             tile_count;
+} writer_ctx;
+
+/* Min-heap for reordering encoded tiles by sequence number */
+typedef struct {
+    encoded_tile **tiles;
+    size_t         size;
+    size_t         cap;
+} reorder_heap;
+
+static void reorder_sift_up(reorder_heap *h, size_t pos) {
+    while (pos > 0) {
+        size_t parent = (pos - 1) / 2;
+        if (h->tiles[pos]->sequence >= h->tiles[parent]->sequence) break;
+        encoded_tile *tmp = h->tiles[pos];
+        h->tiles[pos] = h->tiles[parent];
+        h->tiles[parent] = tmp;
+        pos = parent;
+    }
+}
+
+static void reorder_sift_down(reorder_heap *h, size_t pos) {
+    while (1) {
+        size_t smallest = pos;
+        size_t left = 2 * pos + 1;
+        size_t right = 2 * pos + 2;
+        if (left < h->size &&
+            h->tiles[left]->sequence < h->tiles[smallest]->sequence)
+            smallest = left;
+        if (right < h->size &&
+            h->tiles[right]->sequence < h->tiles[smallest]->sequence)
+            smallest = right;
+        if (smallest == pos) break;
+        encoded_tile *tmp = h->tiles[pos];
+        h->tiles[pos] = h->tiles[smallest];
+        h->tiles[smallest] = tmp;
+        pos = smallest;
+    }
+}
+
+static void reorder_push(reorder_heap *h, encoded_tile *et) {
+    if (h->size == h->cap) {
+        size_t nc = h->cap ? h->cap * 2 : 64;
+        encoded_tile **p = realloc(h->tiles, nc * sizeof(*p));
+        if (!p) return;
+        h->tiles = p;
+        h->cap = nc;
+    }
+    h->tiles[h->size] = et;
+    reorder_sift_up(h, h->size);
+    h->size++;
+}
+
+static encoded_tile *reorder_peek(reorder_heap *h) {
+    return h->size > 0 ? h->tiles[0] : NULL;
+}
+
+static encoded_tile *reorder_pop(reorder_heap *h) {
+    if (h->size == 0) return NULL;
+    encoded_tile *top = h->tiles[0];
+    h->size--;
+    if (h->size > 0) {
+        h->tiles[0] = h->tiles[h->size];
+        reorder_sift_down(h, 0);
+    }
+    return top;
+}
+
+static void write_tile_to_archive(writer_ctx *wc, encoded_tile *et) {
+    if (et->data && et->size > 0) {
+        arpt_archive_writer_add_tile(wc->writer, et->z, et->x, et->y,
+                                     et->data, et->size);
+        /* Track written tile IDs */
+        if (wc->written_count == wc->written_cap) {
+            wc->written_cap *= 2;
+            uint64_t *tmp = realloc(wc->written_ids,
+                                    wc->written_cap * sizeof(*wc->written_ids));
+            if (tmp) wc->written_ids = tmp;
+        }
+        if (wc->written_count < wc->written_cap) {
+            wc->written_ids[wc->written_count++] =
+                arpt_hilbert_tile_id((int)et->z, (int)et->x, (int)et->y);
+        }
+        wc->tile_count++;
+    }
+    free(et->data);
+    free(et);
+}
+
+static void *writer_fn(void *arg) {
+    writer_ctx *wc = (writer_ctx *)arg;
+    reorder_heap heap = {0};
+    uint64_t next_seq = 0;
+
+    arpt_batch batch;
+    while (arpt_workqueue_pop(wc->write_queue, &batch)) {
+        encoded_tile *et = (encoded_tile *)batch.items;
+        reorder_push(&heap, et);
+
+        /* Drain any tiles that are now in order */
+        while (reorder_peek(&heap) &&
+               reorder_peek(&heap)->sequence == next_seq) {
+            encoded_tile *ready = reorder_pop(&heap);
+            write_tile_to_archive(wc, ready);
+            next_seq++;
+        }
+    }
+
+    /* Drain remaining tiles in the heap */
+    while (heap.size > 0) {
+        encoded_tile *ready = reorder_pop(&heap);
+        write_tile_to_archive(wc, ready);
+    }
+
+    free(heap.tiles);
+    return NULL;
 }
 
 /* ---- Pipeline ----
  *
- * Single-pass design: read features once, clip each feature to every
- * zoom level, push all (tile_id, feature) pairs into the external
- * sorter. Then stream sorted output → tile builder → archive.
+ * Three-phase parallel pipeline:
+ *   Phase 1: Reader thread(s) → work queue → N worker threads (per-thread sorters)
+ *   Phase 2: Parallel sorter finalization → k-way merge across all sorters
+ *   Phase 3: Merged stream → group by tile → build → compress → write archive
  */
 
 bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     if (!config || !config->output) return false;
 
-    /* Validate config */
     int min_zoom = config->min_zoom;
     int max_zoom = config->max_zoom;
     if (min_zoom < 0) min_zoom = 0;
@@ -357,9 +619,15 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
         return false;
     }
 
+    int n_threads = config->n_threads > 0 ? config->n_threads : detect_cpu_count();
+    if (n_threads < 1) n_threads = 1;
+
     const char *tmp_dir = config->tmp_dir ? config->tmp_dir : "/tmp";
     size_t mem_budget = config->mem_budget > 0
         ? config->mem_budget : (size_t)256 * 1024 * 1024;
+
+    fprintf(stderr, "Pipeline: %d worker threads, %zu MB sort budget\n",
+            n_threads, mem_budget / (1024 * 1024));
 
     /* Load DEM if provided */
     arpt_dem *dem = NULL;
@@ -371,103 +639,156 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
         }
     }
 
-    arpt_sorter *sorter = arpt_sorter_create(tmp_dir, mem_budget);
-    if (!sorter) { arpt_dem_free(dem); return false; }
+    double t_start = now_sec();
 
+    /* ---- Phase 1: Read & Process ---- */
+
+    /* Create per-worker sorters with budget split across workers */
+    size_t per_worker_budget = mem_budget / (size_t)n_threads;
+    if (per_worker_budget < 64 * 1024) per_worker_budget = 64 * 1024;
+
+    arpt_sorter **sorters = calloc((size_t)n_threads, sizeof(arpt_sorter *));
+    worker_ctx *wctxs = calloc((size_t)n_threads, sizeof(worker_ctx));
+    pthread_t *workers = calloc((size_t)n_threads, sizeof(pthread_t));
+    if (!sorters || !wctxs || !workers) goto fail_alloc;
+
+    arpt_workqueue *queue = arpt_workqueue_create((size_t)(2 * n_threads));
+    if (!queue) goto fail_alloc;
+
+    bool *worker_started = calloc((size_t)n_threads, sizeof(bool));
+    if (!worker_started) goto fail_alloc;
+
+    for (int i = 0; i < n_threads; i++) {
+        sorters[i] = arpt_sorter_create(tmp_dir, per_worker_budget);
+        if (!sorters[i]) goto fail_phase1;
+    }
+
+    for (int i = 0; i < n_threads; i++) {
+        wctxs[i] = (worker_ctx){
+            .queue = queue,
+            .sorter = sorters[i],
+            .min_zoom = min_zoom,
+            .max_zoom = max_zoom,
+        };
+        if (pthread_create(&workers[i], NULL, worker_fn, &wctxs[i]) == 0) {
+            worker_started[i] = true;
+        }
+    }
+
+    /* Read synthetic data (single-threaded, pushed to worker queue) */
     uint32_t rank = 0;
-
     if (config->synthetic) {
         int n_feats = 0;
         synth_feature *feats = generate_synthetic(config->bbox, &n_feats);
-        if (!feats && n_feats == 0) {
-            arpt_sorter_free(sorter);
-            return false;
-        }
 
-        for (int i = 0; i < n_feats; i++) {
-            double fbbox[4];
-            arpt_geom_bbox(&feats[i].geom, fbbox);
+        if (feats) {
+            /* Convert synth features to raw_feature batches */
+            raw_feature *batch_buf = malloc(FEATURE_BATCH_SIZE * sizeof(raw_feature));
+            size_t batch_pos = 0;
 
-            process_feature_zooms(&feats[i].geom, fbbox,
-                                  min_zoom, max_zoom,
-                                  feats[i].layer, rank,
-                                  NULL, NULL, 0, sorter);
-            rank++;
-            if (rank > 0xFFF) rank = 0xFFF;
-        }
+            for (int i = 0; i < n_feats && batch_buf; i++) {
+                raw_feature *rf = &batch_buf[batch_pos];
+                memset(rf, 0, sizeof(*rf));
+                rf->geometry = feats[i].geom;
+                memset(&feats[i].geom, 0, sizeof(feats[i].geom));
+                arpt_geom_bbox(&rf->geometry, rf->bbox);
+                rf->has_bbox = true;
+                rf->layer = feats[i].layer;
+                rf->rank = rank;
+                batch_pos++;
 
-        free_synth_features(feats, n_feats);
-    }
+                rank++;
+                if (rank > 0xFFF) rank = 0xFFF;
 
-    /* OvertureMaps GeoParquet input path */
-    for (int fi = 0; fi < config->n_inputs; fi++) {
-        const arpt_pipeline_input *inp = &config->inputs[fi];
-        fprintf(stderr, "Reading %s (layer %u)...\n", inp->path, inp->layer);
-
-        arpt_overture *ov = arpt_overture_open(inp->path);
-        if (!ov) {
-            fprintf(stderr, "Warning: cannot open %s, skipping\n", inp->path);
-            continue;
-        }
-
-        uint64_t feat_count = 0;
-        arpt_overture_feature feat;
-        while (arpt_overture_next(ov, &feat)) {
-            arpt_geom *g = &feat.geometry;
-
-            /* Skip features outside the target bbox */
-            if (feat.has_bbox) {
-                if (feat.bbox[2] < config->bbox[0] ||
-                    feat.bbox[0] > config->bbox[2] ||
-                    feat.bbox[3] < config->bbox[1] ||
-                    feat.bbox[1] > config->bbox[3]) {
-                    arpt_geom_free(g);
-                    continue;
+                if (batch_pos == FEATURE_BATCH_SIZE) {
+                    arpt_batch b = { .items = batch_buf, .count = batch_pos };
+                    arpt_workqueue_push(queue, &b);
+                    batch_buf = malloc(FEATURE_BATCH_SIZE * sizeof(raw_feature));
+                    batch_pos = 0;
                 }
             }
 
-            /* Build properties: class from type, name from subtype */
-            const char *cls = feat.subtype ? feat.type : (feat.type ? feat.type : "unknown");
-            const char *pkeys[2] = { "class", "name" };
-            const char *pvals[2] = { cls, feat.subtype };
-            uint32_t n_props = feat.subtype ? 2 : 1;
-
-            /* Compute feature bbox for sub-pixel filtering */
-            double feat_bbox[4];
-            if (feat.has_bbox) {
-                memcpy(feat_bbox, feat.bbox, sizeof(feat_bbox));
+            if (batch_buf && batch_pos > 0) {
+                arpt_batch b = { .items = batch_buf, .count = batch_pos };
+                arpt_workqueue_push(queue, &b);
             } else {
-                arpt_geom_bbox(g, feat_bbox);
+                free(batch_buf);
             }
 
-            process_feature_zooms(g, feat_bbox,
-                                  min_zoom, max_zoom,
-                                  inp->layer, rank,
-                                  pkeys, pvals, n_props, sorter);
+            /* Free the synth_feature shells (geoms were moved) */
+            free(feats);
+        }
+    }
 
-            arpt_geom_free(g);
-            rank++;
-            if (rank > 0xFFF) rank = 0xFFF;
-            feat_count++;
+    /* Read GeoParquet inputs (reader on main thread, workers process) */
+    for (int fi = 0; fi < config->n_inputs; fi++) {
+        read_overture_input(&config->inputs[fi], config->bbox, queue, &rank);
+    }
 
-            if (feat_count % 100000 == 0) {
-                fprintf(stderr, "  ... %llu features\n",
-                        (unsigned long long)feat_count);
+    /* Close the queue — workers will drain remaining batches and exit */
+    arpt_workqueue_close(queue);
+
+    /* Join worker threads */
+    for (int i = 0; i < n_threads; i++) {
+        if (worker_started[i])
+            pthread_join(workers[i], NULL);
+    }
+
+    double t_phase1 = now_sec();
+    {
+        uint64_t total_feats = 0;
+        for (int i = 0; i < n_threads; i++)
+            total_feats += wctxs[i].feat_count;
+        fprintf(stderr, "Phase 1 (read+process): %.3fs, %llu features\n",
+                t_phase1 - t_start, (unsigned long long)total_feats);
+        if (n_threads > 1) {
+            for (int i = 0; i < n_threads; i++) {
+                fprintf(stderr, "  worker %d: %llu features, %llu batches\n",
+                        i, (unsigned long long)wctxs[i].feat_count,
+                        (unsigned long long)wctxs[i].batch_count);
             }
         }
-
-        arpt_overture_close(ov);
-        fprintf(stderr, "  %llu features from %s\n",
-                (unsigned long long)feat_count, inp->path);
     }
 
-    /* Finalize sort */
-    if (!arpt_sorter_finish(sorter)) {
-        arpt_sorter_free(sorter);
-        return false;
+    free(worker_started);
+    worker_started = NULL;
+
+    arpt_workqueue_free(queue);
+    queue = NULL;
+
+    /* ---- Phase 2: Parallel sort finalization ---- */
+
+    fprintf(stderr, "Phase 2 (sort): finalizing %d sorters...\n", n_threads);
+
+    if (n_threads == 1) {
+        if (!arpt_sorter_finish(sorters[0])) goto fail_sort;
+    } else {
+        pthread_t *finish_threads = calloc((size_t)n_threads, sizeof(pthread_t));
+        if (!finish_threads) goto fail_sort;
+
+        for (int i = 0; i < n_threads; i++) {
+            pthread_create(&finish_threads[i], NULL, finish_sorter_fn, sorters[i]);
+        }
+        for (int i = 0; i < n_threads; i++) {
+            pthread_join(finish_threads[i], NULL);
+        }
+        free(finish_threads);
     }
 
-    /* Create archive */
+    /* Create k-way merger across all per-thread sorters */
+    arpt_sort_merger *merger = arpt_sort_merger_create(sorters, n_threads);
+    if (!merger) goto fail_sort;
+
+    double t_phase2 = now_sec();
+    fprintf(stderr, "Phase 2 (sort): %.3fs\n", t_phase2 - t_phase1);
+
+    /* ---- Phase 3: Parallel Build & Write ----
+     *
+     * Grouper (main thread) reads from merger, groups records by tile_id,
+     * builds tile_builder with deserialized features, pushes to tile queue.
+     * N encoder threads pop builders, finish+compress, push to write queue.
+     * Writer thread receives encoded tiles and writes in sequence order. */
+
     arpt_archive_config arc = {
         .path = config->output,
         .min_zoom = (uint8_t)min_zoom,
@@ -477,36 +798,98 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     };
     arpt_archive_writer *writer = arpt_archive_writer_create(&arc);
     if (!writer) {
-        arpt_sorter_free(sorter);
-        return false;
+        arpt_sort_merger_free(merger);
+        goto fail_sort;
     }
 
-    /* Track which tiles have features so we can fill empty ones later. */
-    size_t written_cap = 4096, written_count = 0;
-    uint64_t *written_ids = malloc(written_cap * sizeof(*written_ids));
-    if (!written_ids) {
+    /* Create tile queue and write queue */
+    arpt_workqueue *tile_queue = arpt_workqueue_create((size_t)(2 * n_threads));
+    arpt_workqueue *write_queue = arpt_workqueue_create((size_t)(4 * n_threads));
+    if (!tile_queue || !write_queue) {
+        if (tile_queue) arpt_workqueue_free(tile_queue);
+        if (write_queue) arpt_workqueue_free(write_queue);
         arpt_archive_writer_free(writer);
-        arpt_sorter_free(sorter);
-        arpt_dem_free(dem);
-        return false;
+        arpt_sort_merger_free(merger);
+        goto fail_sort;
     }
 
-    /* Stream sorted records → group by tile → build → write */
+    /* Start encoder threads */
+    encoder_ctx *ectxs = calloc((size_t)n_threads, sizeof(encoder_ctx));
+    pthread_t *encoders = calloc((size_t)n_threads, sizeof(pthread_t));
+    if (!ectxs || !encoders) {
+        free(ectxs); free(encoders);
+        arpt_workqueue_free(tile_queue);
+        arpt_workqueue_free(write_queue);
+        arpt_archive_writer_free(writer);
+        arpt_sort_merger_free(merger);
+        goto fail_sort;
+    }
+
+    for (int i = 0; i < n_threads; i++) {
+        ectxs[i] = (encoder_ctx){
+            .tile_queue = tile_queue,
+            .write_queue = write_queue,
+        };
+        pthread_create(&encoders[i], NULL, encoder_fn, &ectxs[i]);
+    }
+
+    /* Start writer thread */
+    writer_ctx wctx = {
+        .write_queue = write_queue,
+        .writer = writer,
+        .written_ids = malloc(4096 * sizeof(uint64_t)),
+        .written_count = 0,
+        .written_cap = 4096,
+        .tile_count = 0,
+    };
+    pthread_t writer_thread;
+    if (!wctx.written_ids) {
+        arpt_workqueue_close(tile_queue);
+        arpt_workqueue_close(write_queue);
+        for (int i = 0; i < n_threads; i++) pthread_join(encoders[i], NULL);
+        free(ectxs); free(encoders);
+        arpt_workqueue_free(tile_queue);
+        arpt_workqueue_free(write_queue);
+        arpt_archive_writer_free(writer);
+        arpt_sort_merger_free(merger);
+        goto fail_sort;
+    }
+    pthread_create(&writer_thread, NULL, writer_fn, &wctx);
+
+    /* Grouper: read from merger, group by tile, push to tile queue */
     uint64_t cur_tile_id = UINT64_MAX;
     arpt_tile_builder *builder = NULL;
     int cur_z = 0, cur_x = 0, cur_y = 0;
+    uint64_t record_count = 0;
+    uint64_t sequence = 0;
 
     uint64_t key;
     const void *data;
     size_t data_size;
 
-    while (arpt_sorter_next(sorter, &key, &data, &data_size)) {
+    while (arpt_sort_merger_next(merger, &key, &data, &data_size)) {
+        record_count++;
         uint64_t tid = sort_key_tile_id(key);
 
         if (tid != cur_tile_id) {
-            /* Flush previous tile */
-            flush_tile(builder, writer, cur_z, cur_x, cur_y,
-                       &written_ids, &written_count, &written_cap);
+            /* Push previous tile to encoder queue */
+            if (builder) {
+                tile_job *job = malloc(sizeof(tile_job));
+                if (job) {
+                    job->builder = builder;
+                    job->sequence = sequence++;
+                    job->z = cur_z;
+                    job->x = (uint32_t)cur_x;
+                    job->y = (uint32_t)cur_y;
+                    arpt_batch b = { .items = job, .count = 1 };
+                    if (!arpt_workqueue_push(tile_queue, &b)) {
+                        arpt_tile_builder_free(builder);
+                        free(job);
+                    }
+                } else {
+                    arpt_tile_builder_free(builder);
+                }
+            }
             builder = NULL;
 
             cur_tile_id = tid;
@@ -530,20 +913,250 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
         }
     }
 
-    /* Flush last tile */
-    flush_tile(builder, writer, cur_z, cur_x, cur_y,
-               &written_ids, &written_count, &written_cap);
+    /* Push last tile */
+    if (builder) {
+        tile_job *job = malloc(sizeof(tile_job));
+        if (job) {
+            job->builder = builder;
+            job->sequence = sequence++;
+            job->z = cur_z;
+            job->x = (uint32_t)cur_x;
+            job->y = (uint32_t)cur_y;
+            arpt_batch b = { .items = job, .count = 1 };
+            if (!arpt_workqueue_push(tile_queue, &b)) {
+                arpt_tile_builder_free(builder);
+                free(job);
+            }
+        } else {
+            arpt_tile_builder_free(builder);
+        }
+    }
 
-    /* Fill empty tiles for all grid cells within the bbox */
-    fill_empty_tiles(writer, dem, config->bbox,
-                     min_zoom, max_zoom,
-                     written_ids, written_count);
+    arpt_sort_merger_free(merger);
+    merger = NULL;
 
-    free(written_ids);
+    double t_phase3_tiles = now_sec();
+    fprintf(stderr, "Phase 3a (build tiles): %.3fs, %llu records -> %llu tiles (queued)\n",
+            t_phase3_tiles - t_phase2,
+            (unsigned long long)record_count,
+            (unsigned long long)sequence);
+
+    /* ---- Phase 3b: Push empty tile jobs through the same pipeline ----
+     *
+     * Instead of building empty tiles sequentially, we push them as tile
+     * jobs through the encoder threads. The writer collects written_ids
+     * so we can detect which tiles already have features. We first need
+     * the feature tile encoding to complete so we know which tiles exist.
+     *
+     * Approach: drain feature tiles first (close+reopen would be complex),
+     * so instead we push all empty tile builders through the same queue.
+     * We must know which tiles have features — but feature tile jobs are
+     * still in-flight. So we track feature tile_ids from the grouper. */
+
+    /* We tracked which tile_ids we pushed as feature tiles.
+       Build a sorted set from the grouper's sequence of tile_ids. */
+    /* Actually, we already have cur_tile_id tracking. Let me use a
+       simpler approach: collect all feature tile_ids during grouping,
+       then push empty tiles for the rest. */
+
+    /* Re-collect feature tile IDs from the sort merger output.
+       We already iterated through them above. Track them in an array. */
+
+    /* Simpler: we already know which tiles have features from the
+       grouper loop. Let me build the set during grouping.
+       For now, use the written_ids from the writer once feature tiles
+       are drained. We need to synchronize: wait for feature tiles to
+       finish encoding/writing, then enumerate empty tiles.
+
+       Two-step: close tile queue, join encoders, read writer's
+       written_ids, then push empty tiles through a new queue. */
+
+    /* Step 1: drain feature tiles */
+    arpt_workqueue_close(tile_queue);
+    for (int i = 0; i < n_threads; i++)
+        pthread_join(encoders[i], NULL);
+    arpt_workqueue_close(write_queue);
+    pthread_join(writer_thread, NULL);
+
+    arpt_workqueue_free(tile_queue);
+    arpt_workqueue_free(write_queue);
+
+    uint64_t feature_tile_count = wctx.tile_count;
+    fprintf(stderr, "Phase 3a (encode+write): %.3fs, %llu tiles written\n",
+            now_sec() - t_phase2, (unsigned long long)feature_tile_count);
+
+    double t_phase3b_start = now_sec();
+
+    /* Step 2: push empty tile jobs through a new encoder/writer pipeline */
+    arpt_workqueue *empty_tile_queue = arpt_workqueue_create((size_t)(2 * n_threads));
+    arpt_workqueue *empty_write_queue = arpt_workqueue_create((size_t)(4 * n_threads));
+
+    if (empty_tile_queue && empty_write_queue) {
+        for (int i = 0; i < n_threads; i++) {
+            ectxs[i] = (encoder_ctx){
+                .tile_queue = empty_tile_queue,
+                .write_queue = empty_write_queue,
+            };
+            pthread_create(&encoders[i], NULL, encoder_fn, &ectxs[i]);
+        }
+
+        /* Continue writer with accumulated written_ids */
+        wctx.write_queue = empty_write_queue;
+        pthread_create(&writer_thread, NULL, writer_fn, &wctx);
+
+        /* Sort written_ids for binary search */
+        qsort(wctx.written_ids, wctx.written_count,
+              sizeof(*wctx.written_ids),
+              (int (*)(const void *, const void *))compare_uint64);
+
+        uint64_t empty_count = 0;
+        uint64_t reused_count = 0;
+        uint64_t empty_seq = 0;
+
+        /* Memoization: without DEM, cache one tile per zoom */
+        void  *cached_data = NULL;
+        size_t cached_size = 0;
+        int    cached_zoom = -1;
+
+        for (int z = min_zoom; z <= max_zoom; z++) {
+            int n_cols = 1 << (z + 1);
+            int n_rows = 1 << z;
+            double lon_span = 360.0 / (double)n_cols;
+            double lat_span = 180.0 / (double)n_rows;
+
+            int x_min = (int)floor((config->bbox[0] + 180.0) / lon_span);
+            int x_max = (int)floor((config->bbox[2] + 180.0) / lon_span);
+            int y_min = (int)floor((config->bbox[1] + 90.0) / lat_span);
+            int y_max = (int)floor((config->bbox[3] + 90.0) / lat_span);
+            if (x_min < 0) x_min = 0;
+            if (x_max >= n_cols) x_max = n_cols - 1;
+            if (y_min < 0) y_min = 0;
+            if (y_max >= n_rows) y_max = n_rows - 1;
+
+            /* Without DEM: build one cached tile per zoom */
+            if (!dem && cached_zoom != z) {
+                free(cached_data);
+                cached_data = NULL;
+                cached_size = 0;
+                cached_zoom = z;
+                arpt_bounds tb = arpt_tile_bounds(z, x_min, y_min);
+                arpt_tile_builder *eb = arpt_tile_builder_create(tb, NULL);
+                if (eb) {
+                    cached_data = arpt_tile_builder_finish(eb, &cached_size);
+                    arpt_tile_builder_free(eb);
+                }
+            }
+
+            for (int y = y_min; y <= y_max; y++) {
+                for (int x = x_min; x <= x_max; x++) {
+                    uint64_t tid = arpt_hilbert_tile_id(z, x, y);
+
+                    /* Binary search in written_ids */
+                    size_t lo = 0, hi = wctx.written_count;
+                    while (lo < hi) {
+                        size_t mid = lo + (hi - lo) / 2;
+                        if (wctx.written_ids[mid] < tid) lo = mid + 1;
+                        else hi = mid;
+                    }
+                    if (lo < wctx.written_count && wctx.written_ids[lo] == tid)
+                        continue;
+
+                    if (!dem && cached_data && cached_size > 0) {
+                        /* Reuse cached blob — push pre-encoded tile
+                           directly to write queue (skip encoder) */
+                        encoded_tile *et = malloc(sizeof(encoded_tile));
+                        if (et) {
+                            void *copy = malloc(cached_size);
+                            if (copy) {
+                                memcpy(copy, cached_data, cached_size);
+                                et->sequence = empty_seq++;
+                                et->z = (uint8_t)z;
+                                et->x = (uint32_t)x;
+                                et->y = (uint32_t)y;
+                                et->data = copy;
+                                et->size = cached_size;
+                                arpt_batch b = { .items = et, .count = 1 };
+                                if (arpt_workqueue_push(empty_write_queue, &b)) {
+                                    empty_count++;
+                                    reused_count++;
+                                } else {
+                                    free(copy);
+                                    free(et);
+                                }
+                            } else {
+                                free(et);
+                            }
+                        }
+                    } else {
+                        /* With DEM: push as tile_job for parallel encoding */
+                        arpt_bounds tb = arpt_tile_bounds(z, x, y);
+                        arpt_tile_builder *eb = arpt_tile_builder_create(tb, dem);
+                        if (!eb) continue;
+
+                        tile_job *job = malloc(sizeof(tile_job));
+                        if (job) {
+                            job->builder = eb;
+                            job->sequence = empty_seq++;
+                            job->z = z;
+                            job->x = (uint32_t)x;
+                            job->y = (uint32_t)y;
+                            arpt_batch b = { .items = job, .count = 1 };
+                            if (!arpt_workqueue_push(empty_tile_queue, &b)) {
+                                arpt_tile_builder_free(eb);
+                                free(job);
+                            } else {
+                                empty_count++;
+                            }
+                        } else {
+                            arpt_tile_builder_free(eb);
+                        }
+                    }
+                }
+            }
+        }
+
+        free(cached_data);
+
+        /* Drain empty tile pipeline */
+        arpt_workqueue_close(empty_tile_queue);
+        for (int i = 0; i < n_threads; i++)
+            pthread_join(encoders[i], NULL);
+        arpt_workqueue_close(empty_write_queue);
+        pthread_join(writer_thread, NULL);
+
+        arpt_workqueue_free(empty_tile_queue);
+        arpt_workqueue_free(empty_write_queue);
+
+        if (empty_count > 0) {
+            fprintf(stderr, "Added %llu empty tiles (%llu reused)\n",
+                    (unsigned long long)empty_count,
+                    (unsigned long long)reused_count);
+        }
+    } else {
+        if (empty_tile_queue) arpt_workqueue_free(empty_tile_queue);
+        if (empty_write_queue) arpt_workqueue_free(empty_write_queue);
+    }
+
+    free(ectxs);
+    free(encoders);
+
+    double t_phase3_fill = now_sec();
+    fprintf(stderr, "Phase 3b (fill empty): %.3fs\n", t_phase3_fill - t_phase3b_start);
+
+    free(wctx.written_ids);
 
     bool ok = arpt_archive_writer_finish(writer);
     arpt_archive_writer_free(writer);
-    arpt_sorter_free(sorter);
+
+    double t_end = now_sec();
+    fprintf(stderr, "Phase 3c (finalize): %.3fs\n", t_end - t_phase3_fill);
+    fprintf(stderr, "Total: %.3fs\n", t_end - t_start);
+
+    for (int i = 0; i < n_threads; i++)
+        arpt_sorter_free(sorters[i]);
+    free(sorters);
+    free(wctxs);
+    free(workers);
     arpt_dem_free(dem);
 
     if (ok) {
@@ -551,4 +1164,42 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     }
 
     return ok;
+
+    /* ---- Error paths ---- */
+
+fail_phase1:
+    arpt_workqueue_close(queue);
+    /* Join any started workers before cleanup */
+    if (worker_started) {
+        for (int i = 0; i < n_threads; i++) {
+            if (worker_started[i])
+                pthread_join(workers[i], NULL);
+        }
+        free(worker_started);
+    }
+    arpt_workqueue_free(queue);
+
+fail_sort:
+    for (int i = 0; i < n_threads; i++) {
+        if (sorters[i]) arpt_sorter_free(sorters[i]);
+    }
+    free(sorters);
+    free(wctxs);
+    free(workers);
+    arpt_dem_free(dem);
+    return false;
+
+fail_alloc:
+    if (sorters) {
+        for (int i = 0; i < n_threads; i++) {
+            if (sorters[i]) arpt_sorter_free(sorters[i]);
+        }
+    }
+    free(sorters);
+    free(wctxs);
+    free(workers);
+    free(worker_started);
+    if (queue) arpt_workqueue_free(queue);
+    arpt_dem_free(dem);
+    return false;
 }

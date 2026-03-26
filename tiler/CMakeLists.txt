@@ -7,6 +7,8 @@ endif()
 
 # ── Library ──────────────────────────────────────────────────────────
 
+find_package(Threads REQUIRED)
+
 add_library(arpentry_tiler STATIC
     src/arena.c
     src/geom.c
@@ -23,6 +25,7 @@ add_library(arpentry_tiler STATIC
     src/parquet.c
     src/geoparquet.c
     src/overture.c
+    src/workqueue.c
 )
 
 target_include_directories(arpentry_tiler PUBLIC
@@ -34,7 +37,7 @@ target_include_directories(arpentry_tiler PUBLIC
     ${FLATCC_GENERATED_DIR}
     ${flatcc_SOURCE_DIR}/include
 )
-target_link_libraries(arpentry_tiler PRIVATE arpentry_warnings carquet json_c flatccrt brotlienc brotlidec)
+target_link_libraries(arpentry_tiler PRIVATE arpentry_warnings carquet json_c flatccrt brotlienc brotlidec Threads::Threads)
 if(ARPENTRY_SANITIZERS)
     target_link_libraries(arpentry_tiler PUBLIC arpentry_sanitizers)
 endif()
@@ -110,3 +113,7 @@ target_compile_definitions(test_naturalearth PRIVATE
     FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/naturalearth")
 target_link_libraries(test_naturalearth PRIVATE arpentry_tiler arpentry_common unity)
 add_test(NAME test_naturalearth COMMAND test_naturalearth)
+
+add_executable(test_workqueue tests/test_workqueue.c)
+target_link_libraries(test_workqueue PRIVATE arpentry_tiler unity Threads::Threads)
+add_test(NAME test_workqueue COMMAND test_workqueue)

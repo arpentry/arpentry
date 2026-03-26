@@ -380,3 +380,139 @@ void arpt_sorter_free(arpt_sorter *s) {
     free(s->tmp_dir);
     free(s);
 }
+
+/* ---- Sort merger: k-way merge across multiple sorters ---- */
+
+typedef struct {
+    int         idx;        /* Index into sorters array */
+    uint64_t    key;        /* Current key from this sorter */
+    const void *data;       /* Current data pointer (valid until next _next) */
+    size_t      data_size;
+} merger_entry;
+
+struct arpt_sort_merger {
+    arpt_sorter **sorters;
+    int           n_sorters;
+
+    merger_entry *heap;
+    int           heap_size;
+
+    /* Copy buffer: we copy the winning record before advancing
+       the sorter, because advancing invalidates the data pointer. */
+    uint8_t *copy_buf;
+    size_t   copy_cap;
+};
+
+static void merger_heap_swap(merger_entry *a, merger_entry *b) {
+    merger_entry t = *a; *a = *b; *b = t;
+}
+
+static void merger_sift_down(arpt_sort_merger *m, int pos) {
+    while (1) {
+        int smallest = pos;
+        int left = 2 * pos + 1;
+        int right = 2 * pos + 2;
+        if (left < m->heap_size &&
+            m->heap[left].key < m->heap[smallest].key)
+            smallest = left;
+        if (right < m->heap_size &&
+            m->heap[right].key < m->heap[smallest].key)
+            smallest = right;
+        if (smallest == pos) break;
+        merger_heap_swap(&m->heap[pos], &m->heap[smallest]);
+        pos = smallest;
+    }
+}
+
+static void merger_sift_up(arpt_sort_merger *m, int pos) {
+    while (pos > 0) {
+        int parent = (pos - 1) / 2;
+        if (m->heap[pos].key >= m->heap[parent].key) break;
+        merger_heap_swap(&m->heap[pos], &m->heap[parent]);
+        pos = parent;
+    }
+}
+
+arpt_sort_merger *arpt_sort_merger_create(arpt_sorter **sorters, int n) {
+    if (!sorters || n <= 0) return NULL;
+
+    arpt_sort_merger *m = calloc(1, sizeof(*m));
+    if (!m) return NULL;
+
+    m->sorters = sorters;
+    m->n_sorters = n;
+    m->heap = malloc((size_t)n * sizeof(merger_entry));
+    if (!m->heap) { free(m); return NULL; }
+    m->heap_size = 0;
+
+    /* Prime each sorter: read the first record and insert into heap */
+    for (int i = 0; i < n; i++) {
+        uint64_t key;
+        const void *data;
+        size_t sz;
+        if (arpt_sorter_next(sorters[i], &key, &data, &sz)) {
+            merger_entry *e = &m->heap[m->heap_size];
+            e->idx = i;
+            e->key = key;
+            e->data = data;
+            e->data_size = sz;
+            merger_sift_up(m, m->heap_size);
+            m->heap_size++;
+        }
+    }
+
+    return m;
+}
+
+bool arpt_sort_merger_next(arpt_sort_merger *m, uint64_t *key,
+                           const void **data, size_t *size) {
+    if (!m || m->heap_size == 0) return false;
+
+    merger_entry *top = &m->heap[0];
+
+    /* Copy the winning record's data before advancing, because
+       arpt_sorter_next may overwrite the stash buffer. */
+    uint64_t out_key = top->key;
+    size_t out_size = top->data_size;
+
+    if (out_size > 0 && top->data) {
+        if (out_size > m->copy_cap) {
+            uint8_t *p = realloc(m->copy_buf, out_size);
+            if (!p) return false;
+            m->copy_buf = p;
+            m->copy_cap = out_size;
+        }
+        memcpy(m->copy_buf, top->data, out_size);
+    }
+
+    /* Advance the winning sorter (invalidates top->data) */
+    uint64_t next_key;
+    const void *next_data;
+    size_t next_size;
+    if (arpt_sorter_next(m->sorters[top->idx], &next_key,
+                         &next_data, &next_size)) {
+        top->key = next_key;
+        top->data = next_data;
+        top->data_size = next_size;
+        merger_sift_down(m, 0);
+    } else {
+        /* This sorter is exhausted. Remove from heap. */
+        m->heap_size--;
+        if (m->heap_size > 0) {
+            m->heap[0] = m->heap[m->heap_size];
+            merger_sift_down(m, 0);
+        }
+    }
+
+    if (key)  *key  = out_key;
+    if (data) *data = (out_size > 0) ? m->copy_buf : NULL;
+    if (size) *size = out_size;
+    return true;
+}
+
+void arpt_sort_merger_free(arpt_sort_merger *m) {
+    if (!m) return;
+    free(m->copy_buf);
+    free(m->heap);
+    free(m);
+}

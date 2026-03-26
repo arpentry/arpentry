@@ -23,6 +23,7 @@ static void usage(void) {
         "  --tmp <dir>            Temp directory for sort runs (default: /tmp)\n"
         "  --mem <bytes>          Memory budget for external sort (default: 64 MB)\n"
         "  --dem <path>           GeoTIFF DEM for terrain elevation (optional)\n"
+        "  --threads <n>          Worker threads (default: auto-detect CPU count)\n"
         "\n"
         "Layer indices (matching style.json):\n"
         "  1=surface  2=highway  3=building  4=tree  5=poi\n"
@@ -83,6 +84,8 @@ int main(int argc, char **argv) {
             config.mem_budget = (size_t)atol(argv[++i]);
         } else if (strcmp(argv[i], "--dem") == 0 && i + 1 < argc) {
             config.dem_path = argv[++i];
+        } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
+            config.n_threads = atoi(argv[++i]);
         } else {
             usage();
             return 1;

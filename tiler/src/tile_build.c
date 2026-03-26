@@ -286,7 +286,10 @@ static void encode_octahedral(double nx, double ny, double nz,
 
 /* Emit a subdivided terrain mesh covering the tile extent as layer 0.
    If a DEM is provided, vertices get real elevation and computed normals.
-   Otherwise the mesh is flat (z=0, normals pointing up). */
+   Otherwise the mesh is flat (z=0, normals pointing up).
+
+   Optimization: sample DEM into a padded grid once, then derive normals
+   from central differences — avoids redundant DEM lookups. */
 static void emit_terrain(flatcc_builder_t *fb, const arpt_bounds *bounds,
                           const arpt_dem *dem) {
     const uint32_t gn = TERRAIN_GRID;
@@ -306,8 +309,31 @@ static void emit_terrain(flatcc_builder_t *fb, const arpt_bounds *bounds,
 
     double lon_span = bounds->max_x - bounds->min_x;
     double lat_span = bounds->max_y - bounds->min_y;
+    double dx_deg = lon_span / gn;
+    double dy_deg = lat_span / gn;
 
-    /* Generate grid vertices with elevation */
+    /* Sample DEM into a padded (gn+3)×(gn+3) elevation grid.
+       Padding of 1 cell on each side provides neighbor values for
+       central-difference normals without extra DEM lookups.
+       Grid index (r,c) maps to vertex (r-1, c-1); padding at edges. */
+    const uint32_t pg = gn + 3;  /* padded grid side */
+    double *elev_grid = NULL;
+    if (dem) {
+        elev_grid = malloc(pg * pg * sizeof(double));
+        if (elev_grid) {
+            for (uint32_t r = 0; r < pg; r++) {
+                double lat = bounds->min_y + ((double)r - 1.0) / gn * lat_span;
+                for (uint32_t c = 0; c < pg; c++) {
+                    double lon = bounds->min_x + ((double)c - 1.0) / gn * lon_span;
+                    double e = arpt_dem_sample(dem, lon, lat);
+                    if (e < 0.0) e = 0.0;
+                    elev_grid[r * pg + c] = e;
+                }
+            }
+        }
+    }
+
+    /* Generate grid vertices with elevation from the grid */
     for (uint32_t row = 0; row <= gn; row++) {
         for (uint32_t col = 0; col <= gn; col++) {
             uint32_t vi = row * (gn + 1) + col;
@@ -316,70 +342,62 @@ static void emit_terrain(flatcc_builder_t *fb, const arpt_bounds *bounds,
             vy[vi] = (uint16_t)(TILE_BUFFER +
                       (uint32_t)((uint64_t)row * (TILE_EXTENT - 1) / gn));
 
-            if (dem) {
-                double lon = bounds->min_x + (double)col / gn * lon_span;
-                double lat = bounds->min_y + (double)row / gn * lat_span;
-                double elev = arpt_dem_sample(dem, lon, lat);
-                /* Clamp ocean (negative elevation) to 0 for terrain mesh */
-                if (elev < 0.0) elev = 0.0;
-                vz[vi] = (int32_t)(elev * 1000.0);
+            if (elev_grid) {
+                /* Vertex (row,col) is at padded grid index (row+1, col+1) */
+                vz[vi] = (int32_t)(elev_grid[(row + 1) * pg + (col + 1)] * 1000.0);
             }
         }
     }
 
     /* Compute normals in ECEF using ENU basis vectors.
-       The terrain shader transforms normals by tile.model which operates
-       in ECEF space, so normals must be in ECEF — not tile-local. */
-    {
-        double dx_deg = lon_span / gn;
-        double dy_deg = lat_span / gn;
+       Derive slopes from the padded elevation grid using central
+       differences instead of extra DEM lookups. */
+    for (uint32_t row = 0; row <= gn; row++) {
+        for (uint32_t col = 0; col <= gn; col++) {
+            uint32_t vi = row * (gn + 1) + col;
 
-        for (uint32_t row = 0; row <= gn; row++) {
-            for (uint32_t col = 0; col <= gn; col++) {
-                uint32_t vi = row * (gn + 1) + col;
+            double lon = bounds->min_x + (double)col / gn * lon_span;
+            double lat = bounds->min_y + (double)row / gn * lat_span;
+            double lon_r = lon * M_PI / 180.0;
+            double lat_r = lat * M_PI / 180.0;
+            double sin_lon = sin(lon_r), cos_lon = cos(lon_r);
+            double sin_lat = sin(lat_r), cos_lat = cos(lat_r);
 
-                double lon = bounds->min_x + (double)col / gn * lon_span;
-                double lat = bounds->min_y + (double)row / gn * lat_span;
-                double lon_r = lon * M_PI / 180.0;
-                double lat_r = lat * M_PI / 180.0;
-                double sin_lon = sin(lon_r), cos_lon = cos(lon_r);
-                double sin_lat = sin(lat_r), cos_lat = cos(lat_r);
+            /* ENU basis vectors in ECEF */
+            double e_x = -sin_lon,           e_y = cos_lon,            e_z = 0.0;
+            double n_x = -sin_lat * cos_lon, n_y = -sin_lat * sin_lon, n_z = cos_lat;
+            double u_x =  cos_lat * cos_lon, u_y =  cos_lat * sin_lon, u_z = sin_lat;
 
-                /* ENU basis vectors in ECEF */
-                double e_x = -sin_lon,           e_y = cos_lon,            e_z = 0.0;
-                double n_x = -sin_lat * cos_lon, n_y = -sin_lat * sin_lon, n_z = cos_lat;
-                double u_x =  cos_lat * cos_lon, u_y =  cos_lat * sin_lon, u_z = sin_lat;
+            double dzdx = 0.0, dzdy = 0.0;
+            if (elev_grid) {
+                /* Central differences from padded grid.
+                   Vertex (row,col) → padded (row+1, col+1).
+                   Neighbors: (row+1, col+2), (row+1, col), etc. */
+                uint32_t pr = row + 1, pc = col + 1;
+                double z_xp = elev_grid[pr * pg + (pc + 1)];
+                double z_xm = elev_grid[pr * pg + (pc - 1)];
+                double z_yp = elev_grid[(pr + 1) * pg + pc];
+                double z_ym = elev_grid[(pr - 1) * pg + pc];
 
-                double dzdx = 0.0, dzdy = 0.0;
-                if (dem) {
-                    double z_xp = arpt_dem_sample(dem, lon + dx_deg, lat);
-                    double z_xm = arpt_dem_sample(dem, lon - dx_deg, lat);
-                    double z_yp = arpt_dem_sample(dem, lon, lat + dy_deg);
-                    double z_ym = arpt_dem_sample(dem, lon, lat - dy_deg);
-
-                    if (z_xp < 0.0) z_xp = 0.0;
-                    if (z_xm < 0.0) z_xm = 0.0;
-                    if (z_yp < 0.0) z_yp = 0.0;
-                    if (z_ym < 0.0) z_ym = 0.0;
-
-                    double cell_w = dx_deg * 111320.0 * cos_lat * 2.0;
-                    double cell_h = dy_deg * 111320.0 * 2.0;
-                    if (cell_w > 0.0) dzdx = (z_xp - z_xm) / cell_w;
-                    if (cell_h > 0.0) dzdy = (z_yp - z_ym) / cell_h;
-                }
-
-                /* ECEF normal: up - dzdx*east - dzdy*north */
-                double nx = u_x - dzdx * e_x - dzdy * n_x;
-                double ny = u_y - dzdx * e_y - dzdy * n_y;
-                double nz = u_z - dzdx * e_z - dzdy * n_z;
-                double len = sqrt(nx * nx + ny * ny + nz * nz);
-                nx /= len; ny /= len; nz /= len;
-
-                encode_octahedral(nx, ny, nz,
-                                  &normals[vi * 2], &normals[vi * 2 + 1]);
+                double cell_w = dx_deg * 111320.0 * cos_lat * 2.0;
+                double cell_h = dy_deg * 111320.0 * 2.0;
+                if (cell_w > 0.0) dzdx = (z_xp - z_xm) / cell_w;
+                if (cell_h > 0.0) dzdy = (z_yp - z_ym) / cell_h;
             }
+
+            /* ECEF normal: up - dzdx*east - dzdy*north */
+            double nx = u_x - dzdx * e_x - dzdy * n_x;
+            double ny = u_y - dzdx * e_y - dzdy * n_y;
+            double nz = u_z - dzdx * e_z - dzdy * n_z;
+            double len = sqrt(nx * nx + ny * ny + nz * nz);
+            nx /= len; ny /= len; nz /= len;
+
+            encode_octahedral(nx, ny, nz,
+                              &normals[vi * 2], &normals[vi * 2 + 1]);
         }
     }
+
+    free(elev_grid);
 
     /* Generate triangle indices (two triangles per grid cell) */
     uint32_t ii = 0;
@@ -548,7 +566,7 @@ void *arpt_tile_builder_finish(arpt_tile_builder *b, size_t *out_size) {
     }
 
     size_t compressed_size = max_compressed;
-    if (!BrotliEncoderCompress(4, BROTLI_DEFAULT_WINDOW, BROTLI_DEFAULT_MODE,
+    if (!BrotliEncoderCompress(1, BROTLI_DEFAULT_WINDOW, BROTLI_DEFAULT_MODE,
                                fb_size, (const uint8_t *)fb_buf,
                                &compressed_size, compressed)) {
         free(fb_buf);
