@@ -32,6 +32,8 @@ typedef struct {
     float altitude;
     float earth_center[3];
     float earth_radius;
+    float earth_color[3];
+    float _pad0;
 } sky_uniforms_t;
 
 typedef struct {
@@ -180,24 +182,6 @@ struct arpt_renderer {
     WGPUTexture building_tex;
     WGPUTextureView building_view;
 
-    /* Placeholder flat quads for tiles still loading */
-    WGPUBuffer ph_buf_xy;
-    WGPUBuffer ph_buf_z;
-    WGPUBuffer ph_buf_normals;
-    WGPUBuffer ph_buf_indices;
-    uint32_t ph_index_count;
-    WGPUTexture ph_texture;
-    WGPUTextureView ph_texture_view;
-    WGPUBuffer ph_uniform_bufs[ARPT_MAX_PLACEHOLDERS];
-    WGPUBindGroup ph_bind_groups[ARPT_MAX_PLACEHOLDERS];
-
-    /* Wireframe SDF overlay for placeholders */
-    WGPURenderPipeline wireframe_pipeline;
-    WGPUBuffer ph_wire_buf_xy;
-    WGPUBuffer ph_wire_buf_z;
-    WGPUBuffer ph_wire_buf_dist;
-    WGPUBuffer ph_wire_indices;
-    uint32_t ph_wire_index_count;
 
     /* Tree instancing — per-model GPU resources */
     WGPURenderPipeline tree_pipeline;
@@ -366,15 +350,5 @@ WGPURenderPipeline arpt__sky_create_pipeline(WGPUDevice device,
                                               WGPUTextureFormat format,
                                               WGPUBindGroupLayout sky_bgl);
 void arpt__sky_draw(arpt_renderer *r);
-
-/* render_placeholder.c */
-WGPURenderPipeline arpt__placeholder_create_wireframe_pipeline(
-    WGPUDevice device, WGPUTextureFormat format,
-    WGPUBindGroupLayout global_bgl, WGPUBindGroupLayout tile_bgl);
-void arpt__placeholder_init(arpt_renderer *r);
-void arpt__placeholder_draw(arpt_renderer *r, int slot, arpt_mat4 model,
-                            const float bounds[4], float center_lon,
-                            float center_lat);
-void arpt__placeholder_cleanup(arpt_renderer *r);
 
 #endif /* ARPENTRY_PIPELINE_INTERNAL_H */

@@ -4,6 +4,8 @@ struct SkyUniforms {
     altitude: f32,
     earth_center: vec3<f32>,
     earth_radius: f32,
+    earth_color: vec3<f32>,
+    _pad0: f32,
 };
 
 @group(0) @binding(0) var<uniform> sky: SkyUniforms;
@@ -266,6 +268,10 @@ fn sky_gradient(ray: vec3<f32>, sun: vec3<f32>) -> vec3<f32> {
     let ray = normalize(view_pos.xyz / view_pos.w);
     let sun = normalize(sky.sun_dir);
 
+    // Check if ray hits the earth (used for earth color fill)
+    let earth_hit = ray_sphere(vec3<f32>(0.0), ray, sky.earth_center, sky.earth_radius);
+    let hits_earth = earth_hit.x < earth_hit.y && earth_hit.y > 0.0 && earth_hit.x > 0.0;
+
     // Blend between ground-level sky and space atmosphere
     // Transition zone: 50 km to 200 km
     let space_start = 50000.0;
@@ -283,7 +289,14 @@ fn sky_gradient(ray: vec3<f32>, sun: vec3<f32>) -> vec3<f32> {
     let star_mask = 1.0 - clamp(atmo_brightness * 10.0, 0.0, 1.0);
     let space_with_stars = space_sky + star_light * star_mask;
 
-    let col = mix(ground_sky, space_with_stars, blend);
+    var col = mix(ground_sky, space_with_stars, blend);
+
+    // For rays hitting the earth, use the style background color as base.
+    // This ensures untiled areas match the user's chosen background.
+    // Apply atmospheric scattering on top for visual continuity with the sky.
+    if (hits_earth) {
+        col = sky.earth_color * 0.6 + space_sky;
+    }
 
     return vec4<f32>(col, 1.0);
 }

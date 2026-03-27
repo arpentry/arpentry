@@ -162,10 +162,6 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     r->pipeline =
         arpt__mesh_create_pipeline(device, format, r->global_bgl, r->tile_bgl);
 
-    /* Wireframe placeholder pipeline */
-    r->wireframe_pipeline = arpt__placeholder_create_wireframe_pipeline(
-        device, format, r->global_bgl, r->tile_bgl);
-
     /* Model bind group layout */
     WGPUBindGroupLayoutEntry model_entry = {
         .binding = 0,
@@ -292,14 +288,11 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
 
     create_msaa_texture(r);
     create_depth_texture(r);
-    arpt__placeholder_init(r);
-
     return r;
 }
 
 void arpt_renderer_free(arpt_renderer *r) {
     if (!r) return;
-    arpt__placeholder_cleanup(r);
     arpt__label_cleanup(r);
     arpt__instance_cleanup(r);
     if (r->msaa_view) wgpuTextureViewRelease(r->msaa_view);
@@ -569,14 +562,6 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     free(tile);
 }
 
-/* Placeholder rendering */
-
-void arpt_renderer_draw_placeholder(arpt_renderer *r, int slot, arpt_mat4 model,
-                                    const float bounds[4], float center_lon,
-                                    float center_lat) {
-    arpt__placeholder_draw(r, slot, model, bounds, center_lon, center_lat);
-}
-
 /* Frame rendering */
 
 void arpt_renderer_set_globals(arpt_renderer *r, arpt_mat4 projection,
@@ -613,6 +598,9 @@ void arpt_renderer_set_sky(arpt_renderer *r, arpt_mat4 projection,
     u.earth_center[1] = earth_center_view.y;
     u.earth_center[2] = earth_center_view.z;
     u.earth_radius = 6378137.0f;
+    u.earth_color[0] = r->background[0];
+    u.earth_color[1] = r->background[1];
+    u.earth_color[2] = r->background[2];
     wgpuQueueWriteBuffer(r->queue, r->sky_uniform_buf, 0, &u, sizeof(u));
 }
 

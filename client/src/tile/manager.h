@@ -91,8 +91,8 @@ double arpt_tile_manager_camera_ground_elevation(const arpt_tile_manager *tm);
 
 /**
  * Draw visible tiles at the target zoom level.  READY tiles are drawn
- * normally; tiles still loading are shown as flat placeholder quads.
- * All tiles belong to the same zoom level — no ancestor mixing.
+ * normally; tiles still loading fall back to the nearest READY ancestor,
+ * providing smooth visual continuity while tiles load.
  */
 void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
                             const arpt_camera *cam);

@@ -14,7 +14,6 @@ typedef struct arpt_model arpt_model;
 
 #define ARPT_MSAA_SAMPLES     4
 #define ARPT_DEPTH_FORMAT     WGPUTextureFormat_Depth24Plus
-#define ARPT_MAX_PLACEHOLDERS 256
 
 /* Renderer lifecycle */
 
@@ -73,14 +72,6 @@ void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile, arpt_mat4 model,
                                 float center_lat);
 
 void arpt_tile_gpu_free(arpt_tile_gpu *tile);
-
-/* Placeholder rendering */
-
-/** Draw a flat placeholder quad for a tile that is still loading.
- *  slot indexes into a pre-allocated pool [0, ARPT_MAX_PLACEHOLDERS). */
-void arpt_renderer_draw_placeholder(arpt_renderer *r, int slot, arpt_mat4 model,
-                                    const float bounds[4], float center_lon,
-                                    float center_lat);
 
 /* Frame rendering */
 

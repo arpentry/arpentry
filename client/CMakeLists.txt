@@ -46,7 +46,6 @@ set(SHADER_SOURCES
     terrain.wgsl
     surface.wgsl
     highway.wgsl
-    wireframe.wgsl
     ui.wgsl
     tree.wgsl
     poi.wgsl
@@ -126,7 +125,6 @@ add_executable(arpentry_client
     src/pipeline/extrusion.c
     src/pipeline/instance.c
     src/pipeline/label.c
-    src/pipeline/placeholder.c
     src/pipeline/sky.c
     src/style.c
     src/tile/visible.c

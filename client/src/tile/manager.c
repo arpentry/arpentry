@@ -508,28 +508,51 @@ void arpt_tile_manager_debug_info(const arpt_tile_manager *tm) {
 
 void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
                             const arpt_camera *cam) {
-    int ph_slot = 0;
+    /* Phase 1: draw ancestor fallbacks for tiles that are not yet ready.
+       Track which ancestors we've already drawn to avoid duplicates. */
+    arpt_tile_key drawn_ancestors[MAX_VISIBLE_TILES];
+    int drawn_count = 0;
+
     for (int i = 0; i < tm->visible_count; i++) {
         tile_entry lookup = {.key = tm->visible[i]};
         const tile_entry *e = hashmap_get(tm->cache, &lookup);
+        if (e && e->state == TILE_READY && e->gpu) continue;
 
-        if (e && e->state == TILE_READY && e->gpu) {
-            draw_entry(r, cam, e);
-        } else if (ph_slot < ARPT_MAX_PLACEHOLDERS) {
-            /* Draw flat placeholder quad while tile loads */
-            arpt_bounds bounds = arpt_tile_bounds(
-                tm->visible[i].level, tm->visible[i].x, tm->visible[i].y);
-            double clon = (bounds.west + bounds.east) / 2.0 * M_PI / 180.0;
-            double clat = (bounds.south + bounds.north) / 2.0 * M_PI / 180.0;
-            arpt_mat4 model = arpt_camera_tile_model(cam, clon, clat, 0.0);
-            float bounds_rad[4] = {
-                (float)(bounds.west * M_PI / 180.0),
-                (float)(bounds.south * M_PI / 180.0),
-                (float)(bounds.east * M_PI / 180.0),
-                (float)(bounds.north * M_PI / 180.0),
-            };
-            arpt_renderer_draw_placeholder(r, ph_slot++, model, bounds_rad,
-                                           (float)clon, (float)clat);
+        /* Walk up the hierarchy to find the nearest READY ancestor */
+        int al = tm->visible[i].level;
+        int ax = tm->visible[i].x;
+        int ay = tm->visible[i].y;
+        while (arpt_tile_ancestor(al, ax, ay, &al, &ax, &ay)) {
+            tile_entry alookup = {.key = {al, ax, ay}};
+            const tile_entry *ancestor = hashmap_get(tm->cache, &alookup);
+            if (!ancestor || ancestor->state != TILE_READY || !ancestor->gpu)
+                continue;
+
+            /* Check if we already drew this ancestor */
+            bool already = false;
+            for (int d = 0; d < drawn_count; d++) {
+                if (drawn_ancestors[d].level == al &&
+                    drawn_ancestors[d].x == ax &&
+                    drawn_ancestors[d].y == ay) {
+                    already = true;
+                    break;
+                }
+            }
+            if (!already) {
+                draw_entry(r, cam, ancestor);
+                if (drawn_count < MAX_VISIBLE_TILES)
+                    drawn_ancestors[drawn_count++] =
+                        (arpt_tile_key){al, ax, ay};
+            }
+            break;
         }
+    }
+
+    /* Phase 2: draw READY tiles on top of ancestors */
+    for (int i = 0; i < tm->visible_count; i++) {
+        tile_entry lookup = {.key = tm->visible[i]};
+        const tile_entry *e = hashmap_get(tm->cache, &lookup);
+        if (e && e->state == TILE_READY && e->gpu)
+            draw_entry(r, cam, e);
     }
 }
