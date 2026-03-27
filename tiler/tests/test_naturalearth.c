@@ -526,8 +526,8 @@ static void test_gulf_clip_diagnostic(void) {
         }
 
         fprintf(stderr, "  Clipping feature type=%u n_coords=%u "
-                "n_offsets=%u n_parts=%u bbox=[%.1f,%.1f,%.1f,%.1f]\n",
-                g->type, g->n_coords, g->n_offsets, g->n_parts,
+                "n_offsets=%u bbox=[%.1f,%.1f,%.1f,%.1f]\n",
+                g->type, g->n_coords, g->n_offsets,
                 gmin_x, gmin_y, gmax_x, gmax_y);
 
         /* Clip at zoom 3 and 4 */
@@ -629,8 +629,8 @@ static void test_europe_clip_diagnostic_z4(void) {
         }
 
         fprintf(stderr, "  EUR feature type=%u n_coords=%u "
-                "n_offsets=%u n_parts=%u bbox=[%.1f,%.1f,%.1f,%.1f]\n",
-                g->type, g->n_coords, g->n_offsets, g->n_parts,
+                "n_offsets=%u bbox=[%.1f,%.1f,%.1f,%.1f]\n",
+                g->type, g->n_coords, g->n_offsets,
                 gmin_x, gmin_y, gmax_x, gmax_y);
 
         arpt_assign_tiles(g, 4, diag_cb, &dc);

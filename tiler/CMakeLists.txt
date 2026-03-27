@@ -10,7 +10,6 @@ endif()
 find_package(Threads REQUIRED)
 
 add_library(arpentry_tiler STATIC
-    src/arena.c
     src/geom.c
     src/hilbert.c
     src/wkb.c
@@ -100,9 +99,6 @@ target_compile_definitions(test_overture_integration PRIVATE
 target_link_libraries(test_overture_integration PRIVATE arpentry_tiler carquet unity)
 add_test(NAME test_overture_integration COMMAND test_overture_integration)
 
-add_executable(test_arena tests/test_arena.c)
-target_link_libraries(test_arena PRIVATE arpentry_tiler unity)
-add_test(NAME test_arena COMMAND test_arena)
 
 add_executable(test_pipeline_trace tests/test_pipeline_trace.c)
 target_link_libraries(test_pipeline_trace PRIVATE arpentry_tiler arpentry_common unity)

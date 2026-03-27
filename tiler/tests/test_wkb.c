@@ -255,7 +255,7 @@ static void test_wkb_multipoint(void) {
 
     arpt_geom g = {0};
     TEST_ASSERT_TRUE(arpt_wkb_parse(buf, p, &g));
-    TEST_ASSERT_EQUAL_UINT32(4, g.type);
+    TEST_ASSERT_EQUAL_UINT32(1, g.type);  /* flattened to Point */
     TEST_ASSERT_EQUAL_UINT32(2, g.n_coords);
     TEST_ASSERT_DOUBLE_WITHIN(1e-10, 3.0, g.x[1]);
     arpt_geom_free(&g);
@@ -286,7 +286,7 @@ static void test_wkb_multilinestring(void) {
 
     arpt_geom g = {0};
     TEST_ASSERT_TRUE(arpt_wkb_parse(buf, p, &g));
-    TEST_ASSERT_EQUAL_UINT32(5, g.type);
+    TEST_ASSERT_EQUAL_UINT32(2, g.type);  /* flattened to LineString */
     TEST_ASSERT_EQUAL_UINT32(4, g.n_coords);
     TEST_ASSERT_EQUAL_UINT32(3, g.n_offsets); /* N+1 sentinel style */
     TEST_ASSERT_EQUAL_UINT32(0, g.offsets[0]);
@@ -327,12 +327,9 @@ static void test_wkb_multipolygon(void) {
 
     arpt_geom g = {0};
     TEST_ASSERT_TRUE(arpt_wkb_parse(buf, p, &g));
-    TEST_ASSERT_EQUAL_UINT32(6, g.type);
+    TEST_ASSERT_EQUAL_UINT32(3, g.type);  /* flattened to Polygon */
     TEST_ASSERT_EQUAL_UINT32(8, g.n_coords);
     TEST_ASSERT_EQUAL_UINT32(3, g.n_offsets);  /* N+1 sentinel style: 2 rings + sentinel */
-    TEST_ASSERT_EQUAL_UINT32(2, g.n_parts);    /* 2 polygons */
-    TEST_ASSERT_EQUAL_UINT32(0, g.parts[0]);
-    TEST_ASSERT_EQUAL_UINT32(1, g.parts[1]);
     TEST_ASSERT_EQUAL_UINT32(0, g.offsets[0]);
     TEST_ASSERT_EQUAL_UINT32(4, g.offsets[1]);
     TEST_ASSERT_EQUAL_UINT32(8, g.offsets[2]); /* sentinel */

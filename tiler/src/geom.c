@@ -25,5 +25,4 @@ void arpt_geom_free(arpt_geom *g) {
     free(g->y);
     free(g->z);
     free(g->offsets);
-    free(g->parts);
 }

@@ -449,16 +449,10 @@ bool arpt_simplify_geom(const arpt_geom *in, double tolerance,
         memcpy(out->y, in->y, csz);
         out->z = NULL;
         out->offsets = NULL;
-        out->parts = NULL;
         if (in->offsets && in->n_offsets > 0) {
             size_t osz = in->n_offsets * sizeof(uint32_t);
             out->offsets = malloc(osz);
             if (out->offsets) memcpy(out->offsets, in->offsets, osz);
-        }
-        if (in->parts && in->n_parts > 0) {
-            size_t psz = in->n_parts * sizeof(uint32_t);
-            out->parts = malloc(psz);
-            if (out->parts) memcpy(out->parts, in->parts, psz);
         }
         return true;
     }
@@ -476,7 +470,6 @@ bool arpt_simplify_geom(const arpt_geom *in, double tolerance,
     memcpy(out->x, in->x, csz);
     memcpy(out->y, in->y, csz);
     out->z = NULL;
-    out->parts = NULL;
     out->offsets = NULL;
 
     if (in->offsets && in->n_offsets > 0) {
@@ -486,7 +479,7 @@ bool arpt_simplify_geom(const arpt_geom *in, double tolerance,
     }
 
     /* Simplify based on geometry type */
-    if ((out->type == 3 || out->type == 6) && out->offsets && out->n_offsets > 1) {
+    if (out->type == 3 && out->offsets && out->n_offsets > 1) {
         uint32_t n_rings = out->n_offsets - 1;
         uint32_t compact = 0;
         for (uint32_t ri = 0; ri < n_rings; ri++) {
@@ -512,7 +505,7 @@ bool arpt_simplify_geom(const arpt_geom *in, double tolerance,
         out->offsets[n_rings] = compact;
         out->n_coords = compact;
         if (compact < 4) { arpt_geom_free(out); memset(out, 0, sizeof(*out)); return false; }
-    } else if (out->type == 5 && out->offsets && out->n_offsets > 1) {
+    } else if (out->type == 2 && out->offsets && out->n_offsets > 1) {
         uint32_t n_lines = out->n_offsets - 1;
         uint32_t compact = 0;
         for (uint32_t li = 0; li < n_lines; li++) {

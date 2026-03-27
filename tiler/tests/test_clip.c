@@ -153,7 +153,7 @@ static void test_point_z1(void) {
 static void test_multipoint(void) {
     /* Two points at different locations */
     arpt_geom g = {0};
-    g.type = 4; /* MultiPoint */
+    g.type = 1; /* Point (flattened MultiPoint) */
     double x[] = {-90.0, 90.0};
     double y[] = {0.0, 0.0};
     g.x = x;
@@ -408,24 +408,25 @@ static void test_polygon_encloses_tile_high_zoom(void) {
 /* ---- MultiPolygon clipping ---- */
 
 static void test_multipolygon_parts(void) {
-    /* MultiPolygon with two separate polygon parts.
-     * Each part should be clipped independently. */
+    /* Flattened MultiPolygon: two rings from separate polygon parts.
+     * Both rings are exterior (CCW) — each clipped independently as
+     * rings of one Polygon (even-odd fill handles correctness). */
     arpt_geom g = {0};
-    g.type = 6; /* MultiPolygon */
+    g.type = 3; /* Polygon (flattened from MultiPolygon) */
 
-    /* Part 0: small square in western hemisphere
-     * Part 1: small square in eastern hemisphere
+    /* Ring 0: small square in western hemisphere
+     * Ring 1: small square in eastern hemisphere
      * At z=0 (2 cols × 1 row), they should end up in different tiles. */
     double x[] = {
-        /* Part 0: lon [-100, -95] */
+        /* Ring 0: lon [-100, -95] */
         -100.0, -95.0, -95.0, -100.0, -100.0,
-        /* Part 1: lon [95, 100] */
+        /* Ring 1: lon [95, 100] */
         95.0, 100.0, 100.0, 95.0, 95.0
     };
     double y[] = {
-        /* Part 0: lat [40, 45] */
+        /* Ring 0: lat [40, 45] */
         40.0, 40.0, 45.0, 45.0, 40.0,
-        /* Part 1: lat [40, 45] */
+        /* Ring 1: lat [40, 45] */
         40.0, 40.0, 45.0, 45.0, 40.0
     };
     g.x = x;
@@ -434,9 +435,6 @@ static void test_multipolygon_parts(void) {
     uint32_t offsets[] = {0, 5, 10};
     g.offsets = offsets;
     g.n_offsets = 3;
-    uint32_t parts[] = {0, 1};  /* ring 0 = part 0, ring 1 = part 1 */
-    g.parts = parts;
-    g.n_parts = 2;
 
     tile_collector c;
     collector_init(&c);
@@ -445,7 +443,7 @@ static void test_multipolygon_parts(void) {
     /* Should get exactly 2 results, one per tile */
     TEST_ASSERT_EQUAL_INT(2, c.count);
 
-    /* Part 0 in western tile (tx=0), part 1 in eastern tile (tx=1) */
+    /* Ring 0 in western tile (tx=0), ring 1 in eastern tile (tx=1) */
     tile_result *west = find_result(&c, 0, 0, 0);
     tile_result *east = find_result(&c, 0, 1, 0);
     TEST_ASSERT_NOT_NULL(west);
@@ -627,7 +625,7 @@ static void test_multipolygon_same_tile(void) {
     /* Two polygon parts that both fall in the same tile.
      * They should produce separate callbacks (not merged). */
     arpt_geom g = {0};
-    g.type = 6;
+    g.type = 3;
     double x[] = {
         /* Part 0 */
         5.0, 6.0, 6.0, 5.0, 5.0,
@@ -644,16 +642,14 @@ static void test_multipolygon_same_tile(void) {
     uint32_t offsets[] = {0, 5, 10};
     g.offsets = offsets;
     g.n_offsets = 3;
-    uint32_t parts[] = {0, 1};
-    g.parts = parts;
-    g.n_parts = 2;
+    /* parts removed: multi-types flattened at parse time */
 
     tile_collector c;
     collector_init(&c);
     arpt_assign_tiles(&g, 0, collect_cb, &c);
 
-    /* Both parts in the same tile → 2 separate callbacks */
-    TEST_ASSERT_EQUAL_INT(2, c.count);
+    /* Flattened polygon with 2 rings in the same tile → 1 callback */
+    TEST_ASSERT_EQUAL_INT(1, c.count);
     collector_free(&c);
 }
 
@@ -1048,7 +1044,7 @@ static void test_polygon_hole_only_frame(void) {
  * Part 1: island inside the lake (small polygon inside the hole) */
 static void test_multipolygon_hole_and_island_within_tile(void) {
     arpt_geom g = {0};
-    g.type = 6; /* MultiPolygon */
+    g.type = 3; /* Polygon (flattened MultiPolygon) */
 
     /* Part 0: Land with lake
      *   Exterior CCW: lon [0, 20], lat [0, 20]
@@ -1075,67 +1071,30 @@ static void test_multipolygon_hole_and_island_within_tile(void) {
     g.offsets = offsets;
     g.n_offsets = 4;
     /* Part 0 starts at ring 0, Part 1 starts at ring 2 */
-    uint32_t parts[] = {0, 2};
-    g.parts = parts;
-    g.n_parts = 2;
+    /* parts removed: multi-types flattened at parse time */
 
     /* At z=2 (45° tiles), everything fits in one tile.
-     * Should get 2 callbacks: one for part 0 (exterior+hole), one for part 1 (island). */
+     * Flattened polygon: all 3 rings in one callback. */
     tile_collector c;
     collector_init(&c);
     arpt_assign_tiles(&g, 2, collect_cb, &c);
 
-    TEST_ASSERT_EQUAL_INT_MESSAGE(2, c.count,
-        "MultiPolygon with hole+island should produce 2 callbacks (one per part)");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, c.count,
+        "Flattened polygon should produce 1 callback with all rings");
 
-    /* One result should have 2 rings (exterior + hole), the other 1 ring (island) */
-    bool found_land = false, found_island = false;
-    for (int i = 0; i < c.count; i++) {
-        arpt_geom *cg = &c.results[i].geom;
-        if (cg->offsets && cg->n_offsets >= 3) {
-            /* This is the land with hole */
-            found_land = true;
-            uint32_t nr = cg->n_offsets - 1;
-            TEST_ASSERT_EQUAL_UINT32(2, nr);
+    arpt_geom *cg = &c.results[0].geom;
+    TEST_ASSERT_NOT_NULL(cg->offsets);
+    uint32_t nr = cg->n_offsets - 1;
+    TEST_ASSERT_EQUAL_UINT32(3, nr);  /* exterior + hole + island */
 
-            /* Both rings should be closed */
-            for (uint32_t ri = 0; ri < nr; ri++) {
-                uint32_t rs = cg->offsets[ri];
-                uint32_t re = cg->offsets[ri + 1];
-                TEST_ASSERT_TRUE(re - rs >= 4);
-                TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->x[rs], cg->x[re - 1]);
-                TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->y[rs], cg->y[re - 1]);
-            }
-
-            /* Exterior and hole should have opposite winding */
-            uint32_t ext_s = cg->offsets[0], ext_e = cg->offsets[1];
-            uint32_t hole_s = cg->offsets[1], hole_e = cg->offsets[2];
-            double ext_a = ring_signed_area(cg->x + ext_s, cg->y + ext_s,
-                                             ext_e - ext_s);
-            double hole_a = ring_signed_area(cg->x + hole_s, cg->y + hole_s,
-                                              hole_e - hole_s);
-            TEST_ASSERT_TRUE_MESSAGE(
-                (ext_a > 0 && hole_a < 0) || (ext_a < 0 && hole_a > 0),
-                "Exterior and hole must have opposite winding");
-        } else {
-            /* This is the island */
-            found_island = true;
-            TEST_ASSERT_TRUE(cg->n_coords >= 4);
-            TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->x[0],
-                                       cg->x[cg->n_coords - 1]);
-            TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->y[0],
-                                       cg->y[cg->n_coords - 1]);
-
-            /* Island area should be ~16 sq.deg (4° × 4°) */
-            double area = ring_signed_area(cg->x, cg->y, cg->n_coords);
-            double abs_a = area < 0 ? -area : area;
-            TEST_ASSERT_DOUBLE_WITHIN(2.0, 16.0, abs_a);
-        }
+    /* All rings should be closed */
+    for (uint32_t ri = 0; ri < nr; ri++) {
+        uint32_t rs = cg->offsets[ri];
+        uint32_t re = cg->offsets[ri + 1];
+        TEST_ASSERT_TRUE(re - rs >= 4);
+        TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->x[rs], cg->x[re - 1]);
+        TEST_ASSERT_DOUBLE_WITHIN(1e-12, cg->y[rs], cg->y[re - 1]);
     }
-    TEST_ASSERT_TRUE_MESSAGE(found_land,
-        "Should find land polygon with hole");
-    TEST_ASSERT_TRUE_MESSAGE(found_island,
-        "Should find island polygon");
 
     collector_free(&c);
 }
@@ -1144,7 +1103,7 @@ static void test_multipolygon_hole_and_island_within_tile(void) {
  * The exterior, hole, and island all straddle the tile edge. */
 static void test_multipolygon_hole_and_island_crossing_tile(void) {
     arpt_geom g = {0};
-    g.type = 6;
+    g.type = 3;
 
     /* At z=3, tile boundaries at lon ..., -22.5, 0, 22.5, ...
      * Place geometry crossing lon=0.
@@ -1173,9 +1132,7 @@ static void test_multipolygon_hole_and_island_crossing_tile(void) {
     uint32_t offsets[] = {0, 5, 10, 15};
     g.offsets = offsets;
     g.n_offsets = 4;
-    uint32_t parts[] = {0, 2};
-    g.parts = parts;
-    g.n_parts = 2;
+    /* parts removed: multi-types flattened at parse time */
 
     tile_collector c;
     collector_init(&c);
@@ -1216,7 +1173,7 @@ static void test_multipolygon_hole_and_island_crossing_tile(void) {
  * ends up in different tiles. */
 static void test_multipolygon_hole_island_high_zoom(void) {
     arpt_geom g = {0};
-    g.type = 6;
+    g.type = 3;
 
     /* At z=7, tiles are ~2.8° × ~1.4°.
      * Part 0: Large land mass lon [-5, 5], lat [44, 50] with
@@ -1241,9 +1198,7 @@ static void test_multipolygon_hole_island_high_zoom(void) {
     uint32_t offsets[] = {0, 5, 10, 15};
     g.offsets = offsets;
     g.n_offsets = 4;
-    uint32_t parts[] = {0, 2};
-    g.parts = parts;
-    g.n_parts = 2;
+    /* parts removed: multi-types flattened at parse time */
 
     tile_collector c;
     collector_init(&c);
@@ -1296,7 +1251,7 @@ static void test_multipolygon_hole_island_high_zoom(void) {
  * polygon area (exterior - holes + islands) should be consistent. */
 static void test_multipolygon_hole_island_area_accounting(void) {
     arpt_geom g = {0};
-    g.type = 6;
+    g.type = 3;
 
     /* Part 0: 20° × 20° land with 10° × 10° lake
      * Part 1: 4° × 4° island
@@ -1320,9 +1275,7 @@ static void test_multipolygon_hole_island_area_accounting(void) {
     uint32_t offsets[] = {0, 5, 10, 15};
     g.offsets = offsets;
     g.n_offsets = 4;
-    uint32_t parts[] = {0, 2};
-    g.parts = parts;
-    g.n_parts = 2;
+    /* parts removed: multi-types flattened at parse time */
 
     /* At z=2 (45° tiles), everything fits in one tile.
      * Sum all ring areas across all callbacks. */
@@ -1711,7 +1664,7 @@ static void test_polygon_encloses_tile_hole_partial(void) {
  * Net: exterior - hole + island ≈ same as island alone ≈ tile rect. */
 static void test_multipolygon_all_enclose_tile(void) {
     arpt_geom g = {0};
-    g.type = 6;
+    g.type = 3;
     /* Part 0: Huge exterior + huge hole (both enclose tile)
      * Part 1: Huge island (also encloses tile)
      * All three rings clip to the same tile rectangle.
@@ -1735,9 +1688,7 @@ static void test_multipolygon_all_enclose_tile(void) {
     uint32_t offsets[] = {0, 5, 10, 15};
     g.offsets = offsets;
     g.n_offsets = 4;
-    uint32_t parts[] = {0, 2};
-    g.parts = parts;
-    g.n_parts = 2;
+    /* parts removed: multi-types flattened at parse time */
 
     tile_collector c;
     collector_init(&c);
@@ -1779,8 +1730,8 @@ static void test_multipolygon_all_enclose_tile(void) {
             }
         }
     }
-    TEST_ASSERT_EQUAL_INT_MESSAGE(2, count_for_tile,
-        "Should get 2 callbacks for tile (one per MultiPolygon part)");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, count_for_tile,
+        "Flattened polygon should produce 1 callback with all rings");
 
     /* Grand total ≈ one tile rect area (part 0 cancels out, part 1 adds it back).
      * Tile rect area ≈ 23.9° × 23.9° ≈ 571 sq.deg. */
@@ -2410,7 +2361,7 @@ static void test_closure_hole_crosses_exterior_doesnt(void) {
  *     the same tile boundary. */
 static void test_closure_multipolygon_all_rings_cross(void) {
     arpt_geom g = {0};
-    g.type = 6;
+    g.type = 3;
     /* All rings cross the right edge of tile (8, 4) at lon=22.5.
      * Part 0: Exterior [5, 30] × [2, 21], Hole [12, 28] × [6, 18]
      * Part 1: Island [15, 25] × [9, 15] */
@@ -2433,9 +2384,7 @@ static void test_closure_multipolygon_all_rings_cross(void) {
     uint32_t offsets[] = {0, 5, 10, 15};
     g.offsets = offsets;
     g.n_offsets = 4;
-    uint32_t parts[] = {0, 2};
-    g.parts = parts;
-    g.n_parts = 2;
+    /* parts removed: multi-types flattened at parse time */
 
     tile_collector c;
     collector_init(&c);

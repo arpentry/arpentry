@@ -1,4 +1,5 @@
 #include "clip.h"
+#include "simplify.h"
 #include <math.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -11,8 +12,6 @@
 #define CLIP_BUFFER_PX  8
 #define TILE_PIXELS     256
 
-/* Equirectangular tile bounds in WGS84 degrees for tile (z, x, y).
-   Grid: 2^(z+1) columns × 2^z rows, y=0 at south. */
 arpt_bounds arpt_tile_bounds(int z, int tx, int ty) {
     int n_cols = 1 << (z + 1);
     int n_rows = 1 << z;
@@ -306,7 +305,7 @@ static void clip_lines(const arpt_geom *geom, int z,
                          n_cols, n_rows, &tx_min, &tx_max, &ty_min, &ty_max);
 
     uint32_t n_lines = 1;
-    if (geom->type == 5 && geom->n_offsets > 1)
+    if (geom->n_offsets > 1)
         n_lines = geom->n_offsets - 1;
 
     for (int tx = tx_min; tx <= tx_max; tx++) {
@@ -824,24 +823,8 @@ static void clip_polygon_part(const arpt_geom *geom,
 
 static void clip_polygons(const arpt_geom *geom, int z,
                           arpt_tile_cb cb, void *ctx) {
-    if (geom->type == 6 && geom->parts && geom->n_parts > 0) {
-        /* MultiPolygon: clip each polygon part independently so that
-         * rings from different polygons are not mixed together. */
-        uint32_t total_rings = geom->n_offsets > 0 ? geom->n_offsets - 1 : 0;
-        for (uint32_t pi = 0; pi < geom->n_parts; pi++) {
-            uint32_t first_ring = geom->parts[pi];
-            uint32_t last_ring = (pi + 1 < geom->n_parts)
-                ? geom->parts[pi + 1] : total_rings;
-            uint32_t n_rings = last_ring - first_ring;
-            if (n_rings > 0) {
-                clip_polygon_part(geom, first_ring, n_rings, z, cb, ctx);
-            }
-        }
-    } else {
-        /* Single Polygon: all rings belong to one polygon */
-        uint32_t n_rings = geom->n_offsets > 0 ? geom->n_offsets - 1 : 1;
-        clip_polygon_part(geom, 0, n_rings, z, cb, ctx);
-    }
+    uint32_t n_rings = geom->n_offsets > 0 ? geom->n_offsets - 1 : 1;
+    clip_polygon_part(geom, 0, n_rings, z, cb, ctx);
 }
 
 void arpt_assign_tiles(const arpt_geom *geom, int zoom,
@@ -850,11 +833,9 @@ void arpt_assign_tiles(const arpt_geom *geom, int zoom,
     if (geom->n_coords == 0) return;
     if (zoom < 0) return;
 
-    /* Fast path: if a simple (non-Multi) geometry fits entirely within a
-       single tile, skip all clipping and pass geometry through directly.
-       This applies to the majority of features at high zoom.
-       Multi* types are excluded because the normal path decomposes them
-       into per-part callbacks. */
+    /* Fast path: if geometry fits entirely within a single tile, skip
+       all clipping and pass geometry through directly.  This applies
+       to the majority of features at high zoom. */
     if ((geom->type == 2 || geom->type == 3) && geom->n_coords > 1) {
         int n_cols = 1 << (zoom + 1);
         int n_rows = 1 << zoom;
@@ -870,19 +851,101 @@ void arpt_assign_tiles(const arpt_geom *geom, int zoom,
     }
 
     switch (geom->type) {
-    case 1: /* Point */
-    case 4: /* MultiPoint */
+    case 1: /* Point (incl. flattened MultiPoint) */
         clip_points(geom, zoom, cb, ctx);
         break;
-    case 2: /* LineString */
-    case 5: /* MultiLineString */
+    case 2: /* LineString (incl. flattened MultiLineString) */
         clip_lines(geom, zoom, cb, ctx);
         break;
-    case 3: /* Polygon */
-    case 6: /* MultiPolygon */
+    case 3: /* Polygon (incl. flattened MultiPolygon) */
         clip_polygons(geom, zoom, cb, ctx);
         break;
     default:
         break;
     }
+}
+
+/* ---- Feature processing across zoom levels ---- */
+
+/* Simplification tolerance for a given zoom: approximately one pixel
+   at the tile resolution. */
+static double zoom_tolerance(int zoom) {
+    return 360.0 / (double)(1 << (zoom + 10));
+}
+
+/* Maximum number of tiles a feature may span before being skipped. */
+#define MAX_TILE_SPAN 256
+
+/* Check if a feature's bounding box is smaller than one pixel at the
+   given zoom level and tile resolution. */
+static bool feature_subpixel(const double bbox[4], int z) {
+    double n_cols = (double)(1 << (z + 1));
+    double n_rows = (double)(1 << z);
+    double lon_span = bbox[2] - bbox[0];
+    double lat_span = bbox[3] - bbox[1];
+    double tile_lon = 360.0 / n_cols;
+    double tile_lat = 180.0 / n_rows;
+    double px_x = lon_span / tile_lon * (double)TILE_PIXELS;
+    double px_y = lat_span / tile_lat * (double)TILE_PIXELS;
+    return px_x < 1.0 && px_y < 1.0;
+}
+
+/* Estimate how many tiles a feature's bounding box spans at zoom z. */
+static int64_t estimate_tile_span(const double bbox[4], int z) {
+    double n_cols = (double)(1 << (z + 1));
+    double n_rows = (double)(1 << z);
+    int64_t tx_span = (int64_t)ceil((bbox[2] - bbox[0]) / 360.0 * n_cols) + 1;
+    int64_t ty_span = (int64_t)ceil((bbox[3] - bbox[1]) / 180.0 * n_rows) + 1;
+    return tx_span * ty_span;
+}
+
+void arpt_process_feature_zooms(const arpt_geom *geom, const double bbox[4],
+                                int min_zoom, int max_zoom,
+                                arpt_tile_cb cb, void *ctx) {
+    bool is_complex = geom->type >= 2 && geom->n_coords > 1;
+
+    /* Points don't need simplification — process all zooms directly. */
+    if (!is_complex) {
+        for (int z = min_zoom; z <= max_zoom; z++)
+            arpt_assign_tiles(geom, z, cb, ctx);
+        return;
+    }
+
+    /* Incremental simplification for lines/polygons:
+       Process from finest (max_zoom) to coarsest (min_zoom).
+       Each coarser zoom re-simplifies from the previous result rather
+       than from the original, since DP with larger tolerance removes a
+       superset of vertices. */
+    arpt_geom prev = {0};
+    bool have_prev = false;
+
+    for (int z = max_zoom; z >= min_zoom; z--) {
+        if (feature_subpixel(bbox, z))
+            continue;
+        if (estimate_tile_span(bbox, z) > (int64_t)MAX_TILE_SPAN * MAX_TILE_SPAN)
+            continue;
+
+        arpt_geom sg;
+        double tol = zoom_tolerance(z);
+        const arpt_geom *input = have_prev ? &prev : geom;
+
+        if (!arpt_simplify_geom(input, tol, &sg))
+            continue;
+
+        bool unchanged = (sg.n_coords == input->n_coords);
+
+        arpt_assign_tiles(&sg, z, cb, ctx);
+
+        if (unchanged) {
+            arpt_geom_free(&sg);
+        } else {
+            if (have_prev)
+                arpt_geom_free(&prev);
+            prev = sg;
+            have_prev = true;
+        }
+    }
+
+    if (have_prev)
+        arpt_geom_free(&prev);
 }

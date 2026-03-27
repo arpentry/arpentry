@@ -5,7 +5,6 @@
 #include "feature_io.h"
 #include "hilbert.h"
 #include "overture.h"
-#include "simplify.h"
 #include "sort.h"
 #include "tile_build.h"
 #include "workqueue.h"
@@ -31,17 +30,29 @@ static double now_sec(void) {
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
 
-/* Sort key layout: tile_id(48) | layer(4) | rank(12) */
+/* Sort key layout (64 bits): tile_id | layer | rank
+ *   tile_id:  48 bits  (6-bit zoom + 42-bit Hilbert distance)
+ *   layer:     4 bits  (0–15)
+ *   rank:     12 bits  (0–4095, feature draw order within a layer)
+ */
+#define SORT_KEY_RANK_BITS   12
+#define SORT_KEY_LAYER_BITS   4
+#define SORT_KEY_RANK_MASK   ((1u << SORT_KEY_RANK_BITS) - 1)    /* 0xFFF */
+#define SORT_KEY_LAYER_MASK  ((1u << SORT_KEY_LAYER_BITS) - 1)   /* 0xF */
+#define SORT_KEY_SUB_BITS    (SORT_KEY_RANK_BITS + SORT_KEY_LAYER_BITS)  /* 16 */
+
 static uint64_t make_sort_key(uint64_t tile_id, uint32_t layer, uint32_t rank) {
-    return (tile_id << 16) | ((uint64_t)(layer & 0xF) << 12) | (rank & 0xFFF);
+    return (tile_id << SORT_KEY_SUB_BITS)
+         | ((uint64_t)(layer & SORT_KEY_LAYER_MASK) << SORT_KEY_RANK_BITS)
+         | (rank & SORT_KEY_RANK_MASK);
 }
 
 static uint64_t sort_key_tile_id(uint64_t key) {
-    return key >> 16;
+    return key >> SORT_KEY_SUB_BITS;
 }
 
 static uint32_t sort_key_layer(uint64_t key) {
-    return (uint32_t)((key >> 12) & 0xF);
+    return (uint32_t)((key >> SORT_KEY_RANK_BITS) & SORT_KEY_LAYER_MASK);
 }
 
 static int detect_cpu_count(void) {
@@ -132,8 +143,7 @@ static synth_feature *generate_synthetic(const double bbox[4], int *out_count) {
     return feats;
 }
 
-/* ---- Tile clipping callback context ---- */
-
+/* Callback context: serialize each clipped geometry into the sorter. */
 typedef struct {
     arpt_sorter *sorter;
     uint32_t     layer;
@@ -141,7 +151,6 @@ typedef struct {
     const char  *const *prop_keys;
     const char  *const *prop_vals;
     uint32_t     n_props;
-    int          zoom;
 } clip_ctx;
 
 static void clip_cb(int z, int x, int y,
@@ -157,121 +166,6 @@ static void clip_cb(int z, int x, int y,
         arpt_sorter_add(c->sorter, key, data, data_size);
         free(data);
     }
-}
-
-static double zoom_tolerance(int zoom) {
-    return 360.0 / (double)(1 << (zoom + 10));
-}
-
-#define MAX_TILE_SPAN 256
-
-static bool feature_subpixel(const double bbox[4], int z, int tile_pixels) {
-    double n_cols = (double)(1 << (z + 1));
-    double n_rows = (double)(1 << z);
-    double lon_span = bbox[2] - bbox[0];
-    double lat_span = bbox[3] - bbox[1];
-    double tile_lon = 360.0 / n_cols;
-    double tile_lat = 180.0 / n_rows;
-    double px_x = lon_span / tile_lon * (double)tile_pixels;
-    double px_y = lat_span / tile_lat * (double)tile_pixels;
-    return px_x < 1.0 && px_y < 1.0;
-}
-
-static int64_t estimate_tile_span(const double bbox[4], int z) {
-    double n_cols = (double)(1 << (z + 1));
-    double n_rows = (double)(1 << z);
-    int64_t tx_span = (int64_t)ceil((bbox[2] - bbox[0]) / 360.0 * n_cols) + 1;
-    int64_t ty_span = (int64_t)ceil((bbox[3] - bbox[1]) / 180.0 * n_rows) + 1;
-    return tx_span * ty_span;
-}
-
-static void process_feature_zooms(
-    const arpt_geom *geom, const double bbox[4],
-    int min_zoom, int max_zoom,
-    uint32_t layer, uint32_t rank,
-    const char *const *prop_keys, const char *const *prop_vals,
-    uint32_t n_props, arpt_sorter *sorter) {
-
-    bool is_complex = geom->type >= 2 && geom->n_coords > 1;
-
-    /* Points don't need simplification — process all zooms directly. */
-    if (!is_complex) {
-        clip_ctx ctx = {
-            .sorter = sorter,
-            .layer = layer,
-            .rank = rank,
-            .prop_keys = prop_keys,
-            .prop_vals = prop_vals,
-            .n_props = n_props,
-        };
-        for (int z = min_zoom; z <= max_zoom; z++) {
-            ctx.zoom = z;
-            arpt_assign_tiles(geom, z, clip_cb, &ctx);
-        }
-        return;
-    }
-
-    /* Incremental simplification for lines/polygons:
-       Process from finest (max_zoom) to coarsest (min_zoom).
-       Each coarser zoom re-simplifies from the previous result rather
-       than from the original, since DP with larger tolerance removes a
-       superset of vertices. This dramatically reduces work at coarse zooms
-       where the input from the finer zoom is already heavily simplified. */
-
-    arpt_geom prev = {0};
-    bool have_prev = false;
-
-    for (int z = max_zoom; z >= min_zoom; z--) {
-        if (feature_subpixel(bbox, z, 256))
-            continue;
-        if (estimate_tile_span(bbox, z) > (int64_t)MAX_TILE_SPAN * MAX_TILE_SPAN)
-            continue;
-
-        arpt_geom sg;
-        double tol = zoom_tolerance(z);
-        const arpt_geom *input = have_prev ? &prev : geom;
-
-        if (!arpt_simplify_geom(input, tol, &sg))
-            continue;
-
-        /* If simplification didn't remove any vertices, the geometry
-           is identical to the previous zoom's result. The tile assignments
-           at this coarser zoom are different (fewer, larger tiles), so we
-           still need to clip. But we can skip the simplification cost for
-           subsequent coarser zooms since the input won't change. */
-        bool unchanged = (sg.n_coords == input->n_coords);
-
-        clip_ctx ctx = {
-            .sorter = sorter,
-            .layer = layer,
-            .rank = rank,
-            .prop_keys = prop_keys,
-            .prop_vals = prop_vals,
-            .n_props = n_props,
-            .zoom = z,
-        };
-        arpt_assign_tiles(&sg, z, clip_cb, &ctx);
-
-        if (unchanged) {
-            /* Geometry didn't change — free the copy and keep previous */
-            arpt_geom_free(&sg);
-        } else {
-            /* Replace prev with this result for the next coarser zoom */
-            if (have_prev)
-                arpt_geom_free(&prev);
-            prev = sg;
-            have_prev = true;
-        }
-    }
-
-    if (have_prev)
-        arpt_geom_free(&prev);
-}
-
-static int compare_uint64(const uint64_t *a, const uint64_t *b) {
-    if (*a < *b) return -1;
-    if (*a > *b) return 1;
-    return 0;
 }
 
 /* ---- Parallel pipeline data types ---- */
@@ -330,10 +224,17 @@ static void *worker_fn(void *arg) {
             const char *pvals[2] = { cls, f->subtype };
             uint32_t n_props = f->subtype ? 2 : 1;
 
-            process_feature_zooms(&f->geometry, feat_bbox,
-                                  wc->min_zoom, wc->max_zoom,
-                                  f->layer, f->rank,
-                                  pkeys, pvals, n_props, wc->sorter);
+            clip_ctx ctx = {
+                .sorter = wc->sorter,
+                .layer = f->layer,
+                .rank = f->rank,
+                .prop_keys = pkeys,
+                .prop_vals = pvals,
+                .n_props = n_props,
+            };
+            arpt_process_feature_zooms(&f->geometry, feat_bbox,
+                                       wc->min_zoom, wc->max_zoom,
+                                       clip_cb, &ctx);
 
             raw_feature_free(f);
         }
@@ -393,7 +294,7 @@ static void read_overture_input(const arpt_pipeline_input *inp,
         batch_pos++;
 
         (*rank)++;
-        if (*rank > 0xFFF) *rank = 0xFFF;
+        if (*rank > SORT_KEY_RANK_MASK) *rank = SORT_KEY_RANK_MASK;
         feat_count++;
 
         if (batch_pos == FEATURE_BATCH_SIZE) {
@@ -515,9 +416,6 @@ static void *encoder_fn(void *arg) {
 typedef struct {
     arpt_workqueue      *write_queue;
     arpt_archive_writer *writer;
-    uint64_t            *written_ids;
-    size_t               written_count;
-    size_t               written_cap;
     uint64_t             tile_count;
 } writer_ctx;
 
@@ -590,17 +488,6 @@ static void write_tile_to_archive(writer_ctx *wc, encoded_tile *et) {
     if (et->data && et->size > 0) {
         arpt_archive_writer_add_tile(wc->writer, et->z, et->x, et->y,
                                      et->data, et->size);
-        /* Track written tile IDs */
-        if (wc->written_count == wc->written_cap) {
-            wc->written_cap *= 2;
-            uint64_t *tmp = realloc(wc->written_ids,
-                                    wc->written_cap * sizeof(*wc->written_ids));
-            if (tmp) wc->written_ids = tmp;
-        }
-        if (wc->written_count < wc->written_cap) {
-            wc->written_ids[wc->written_count++] =
-                arpt_hilbert_tile_id((int)et->z, (int)et->x, (int)et->y);
-        }
         wc->tile_count++;
     }
     free(et->data);
@@ -744,7 +631,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                 batch_pos++;
 
                 rank++;
-                if (rank > 0xFFF) rank = 0xFFF;
+                if (rank > SORT_KEY_RANK_MASK) rank = SORT_KEY_RANK_MASK;
 
                 if (batch_pos == FEATURE_BATCH_SIZE) {
                     arpt_batch b = { .items = batch_buf, .count = batch_pos };
@@ -883,31 +770,24 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     writer_ctx wctx = {
         .write_queue = write_queue,
         .writer = writer,
-        .written_ids = malloc(4096 * sizeof(uint64_t)),
-        .written_count = 0,
-        .written_cap = 4096,
         .tile_count = 0,
     };
     pthread_t writer_thread;
-    if (!wctx.written_ids) {
-        arpt_workqueue_close(tile_queue);
-        arpt_workqueue_close(write_queue);
-        for (int i = 0; i < n_threads; i++) pthread_join(encoders[i], NULL);
-        free(ectxs); free(encoders);
-        arpt_workqueue_free(tile_queue);
-        arpt_workqueue_free(write_queue);
-        arpt_archive_writer_free(writer);
-        arpt_sort_merger_free(merger);
-        goto fail_sort;
-    }
     pthread_create(&writer_thread, NULL, writer_fn, &wctx);
 
-    /* Grouper: read from merger, group by tile, push to tile queue */
+    /* Grouper: read from merger, group by tile, push to tile queue.
+     * Also collect feature tile IDs (already sorted by the merger)
+     * for Phase 3b empty-tile detection. */
     uint64_t cur_tile_id = UINT64_MAX;
     arpt_tile_builder *builder = NULL;
     int cur_z = 0, cur_x = 0, cur_y = 0;
     uint64_t record_count = 0;
     uint64_t sequence = 0;
+
+    /* Feature tile ID set — built during grouping, already sorted. */
+    uint64_t *feature_tile_ids = NULL;
+    size_t feature_tile_count = 0;
+    size_t feature_tile_cap = 0;
 
     uint64_t key;
     const void *data;
@@ -942,6 +822,15 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
             arpt_hilbert_tile_id_decode(tid, &cur_z, &cur_x, &cur_y);
             arpt_bounds tb = arpt_tile_bounds(cur_z, cur_x, cur_y);
             builder = arpt_tile_builder_create(tb, dem);
+
+            /* Track feature tile ID (already in sorted order from merger) */
+            if (feature_tile_count == feature_tile_cap) {
+                size_t nc = feature_tile_cap ? feature_tile_cap * 2 : 4096;
+                uint64_t *tmp = realloc(feature_tile_ids, nc * sizeof(*tmp));
+                if (tmp) { feature_tile_ids = tmp; feature_tile_cap = nc; }
+            }
+            if (feature_tile_count < feature_tile_cap)
+                feature_tile_ids[feature_tile_count++] = tid;
         }
 
         if (builder && data && data_size > 0) {
@@ -987,37 +876,12 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
             (unsigned long long)record_count,
             (unsigned long long)sequence);
 
-    /* ---- Phase 3b: Push empty tile jobs through the same pipeline ----
+    /* ---- Phase 3b: Fill empty tiles (terrain-only) ----
      *
-     * Instead of building empty tiles sequentially, we push them as tile
-     * jobs through the encoder threads. The writer collects written_ids
-     * so we can detect which tiles already have features. We first need
-     * the feature tile encoding to complete so we know which tiles exist.
-     *
-     * Approach: drain feature tiles first (close+reopen would be complex),
-     * so instead we push all empty tile builders through the same queue.
-     * We must know which tiles have features — but feature tile jobs are
-     * still in-flight. So we track feature tile_ids from the grouper. */
+     * Drain the feature tile pipeline, then push empty tiles through
+     * a fresh encoder/writer pipeline.  The feature tile ID set was
+     * built during grouping (already sorted by the merger). */
 
-    /* We tracked which tile_ids we pushed as feature tiles.
-       Build a sorted set from the grouper's sequence of tile_ids. */
-    /* Actually, we already have cur_tile_id tracking. Let me use a
-       simpler approach: collect all feature tile_ids during grouping,
-       then push empty tiles for the rest. */
-
-    /* Re-collect feature tile IDs from the sort merger output.
-       We already iterated through them above. Track them in an array. */
-
-    /* Simpler: we already know which tiles have features from the
-       grouper loop. Let me build the set during grouping.
-       For now, use the written_ids from the writer once feature tiles
-       are drained. We need to synchronize: wait for feature tiles to
-       finish encoding/writing, then enumerate empty tiles.
-
-       Two-step: close tile queue, join encoders, read writer's
-       written_ids, then push empty tiles through a new queue. */
-
-    /* Step 1: drain feature tiles */
     arpt_workqueue_close(tile_queue);
     for (int i = 0; i < n_threads; i++)
         pthread_join(encoders[i], NULL);
@@ -1027,13 +891,12 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     arpt_workqueue_free(tile_queue);
     arpt_workqueue_free(write_queue);
 
-    uint64_t feature_tile_count = wctx.tile_count;
     fprintf(stderr, "Phase 3a (encode+write): %.3fs, %llu tiles written\n",
-            now_sec() - t_phase2, (unsigned long long)feature_tile_count);
+            now_sec() - t_phase2, (unsigned long long)wctx.tile_count);
 
     double t_phase3b_start = now_sec();
 
-    /* Step 2: push empty tile jobs through a new encoder/writer pipeline */
+    /* Push empty tiles through a new encoder/writer pipeline */
     arpt_workqueue *empty_tile_queue = arpt_workqueue_create((size_t)(2 * n_threads));
     arpt_workqueue *empty_write_queue = arpt_workqueue_create((size_t)(4 * n_threads));
 
@@ -1046,16 +909,6 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
             pthread_create(&encoders[i], NULL, encoder_fn, &ectxs[i]);
         }
 
-        /* Sort written_ids for binary search BEFORE starting the writer
-           thread.  The writer appends new tile IDs as it processes empty
-           tiles, so we must capture the count now to avoid the binary
-           search reading unsorted entries appended concurrently. */
-        qsort(wctx.written_ids, wctx.written_count,
-              sizeof(*wctx.written_ids),
-              (int (*)(const void *, const void *))compare_uint64);
-        const size_t feature_tile_count_bs = wctx.written_count;
-
-        /* Continue writer with accumulated written_ids */
         wctx.write_queue = empty_write_queue;
         pthread_create(&writer_thread, NULL, writer_fn, &wctx);
 
@@ -1063,7 +916,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
         uint64_t reused_count = 0;
         uint64_t empty_seq = 0;
 
-        /* Memoization: without DEM, cache one tile per zoom */
+        /* Without DEM: cache one empty tile per zoom */
         void  *cached_data = NULL;
         size_t cached_size = 0;
         int    cached_zoom = -1;
@@ -1083,7 +936,6 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
             if (y_min < 0) y_min = 0;
             if (y_max >= n_rows) y_max = n_rows - 1;
 
-            /* Without DEM: build one cached tile per zoom */
             if (!dem && cached_zoom != z) {
                 free(cached_data);
                 cached_data = NULL;
@@ -1101,21 +953,18 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                 for (int x = x_min; x <= x_max; x++) {
                     uint64_t tid = arpt_hilbert_tile_id(z, x, y);
 
-                    /* Binary search in the sorted feature tile IDs.
-                       Use the captured count to avoid reading unsorted
-                       entries appended by the concurrent writer thread. */
-                    size_t lo = 0, hi = feature_tile_count_bs;
+                    /* Binary search in the sorted feature tile ID set
+                       (built during grouping, already in order). */
+                    size_t lo = 0, hi = feature_tile_count;
                     while (lo < hi) {
                         size_t mid = lo + (hi - lo) / 2;
-                        if (wctx.written_ids[mid] < tid) lo = mid + 1;
+                        if (feature_tile_ids[mid] < tid) lo = mid + 1;
                         else hi = mid;
                     }
-                    if (lo < feature_tile_count_bs && wctx.written_ids[lo] == tid)
+                    if (lo < feature_tile_count && feature_tile_ids[lo] == tid)
                         continue;
 
                     if (!dem && cached_data && cached_size > 0) {
-                        /* Reuse cached blob — push pre-encoded tile
-                           directly to write queue (skip encoder) */
                         encoded_tile *et = malloc(sizeof(encoded_tile));
                         if (et) {
                             void *copy = malloc(cached_size);
@@ -1140,7 +989,6 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                             }
                         }
                     } else {
-                        /* With DEM: push as tile_job for parallel encoding */
                         arpt_bounds tb = arpt_tile_bounds(z, x, y);
                         arpt_tile_builder *eb = arpt_tile_builder_create(tb, dem);
                         if (!eb) continue;
@@ -1169,7 +1017,6 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
 
         free(cached_data);
 
-        /* Drain empty tile pipeline */
         arpt_workqueue_close(empty_tile_queue);
         for (int i = 0; i < n_threads; i++)
             pthread_join(encoders[i], NULL);
@@ -1191,11 +1038,10 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
 
     free(ectxs);
     free(encoders);
+    free(feature_tile_ids);
 
     double t_phase3_fill = now_sec();
     fprintf(stderr, "Phase 3b (fill empty): %.3fs\n", t_phase3_fill - t_phase3b_start);
-
-    free(wctx.written_ids);
 
     bool ok = arpt_archive_writer_finish(writer);
     arpt_archive_writer_free(writer);

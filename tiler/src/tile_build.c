@@ -1,4 +1,5 @@
 #include "tile_build.h"
+#include "dem.h"
 #include "layers.h"
 #include "tile_builder.h"
 
@@ -11,6 +12,10 @@
    Tile proper: [16384, 49151], extent = 32768, buffer = 16384 per side. */
 #define TILE_EXTENT  32768
 #define TILE_BUFFER  16384
+
+/* Brotli compression quality for tile output.
+   Level 1 = fastest; good enough for tile delivery since tiles are small. */
+#define BROTLI_QUALITY 1
 
 /* String dictionary with open-addressing hash table for O(1) intern. */
 
@@ -605,7 +610,7 @@ void *arpt_tile_builder_finish(arpt_tile_builder *b, size_t *out_size) {
     }
 
     size_t compressed_size = max_compressed;
-    if (!BrotliEncoderCompress(1, BROTLI_DEFAULT_WINDOW, BROTLI_DEFAULT_MODE,
+    if (!BrotliEncoderCompress(BROTLI_QUALITY, BROTLI_DEFAULT_WINDOW, BROTLI_DEFAULT_MODE,
                                fb_size, (const uint8_t *)fb_buf,
                                &compressed_size, compressed)) {
         free(fb_buf);

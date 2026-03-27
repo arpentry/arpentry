@@ -16,7 +16,7 @@ void tearDown(void) {}
 #define TILE_EXTENT 32768
 #define TILE_BUFFER 16384
 
-/* ---- Tile bounds (now public in clip.h) ---- */
+/* ---- Tile bounds (from clip.h) ---- */
 #define tile_bounds arpt_tile_bounds
 
 /* ---- Dequantization (FORMAT.md spec) ---- */

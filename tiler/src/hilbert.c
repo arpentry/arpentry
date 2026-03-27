@@ -65,3 +65,4 @@ void arpt_hilbert_tile_id_decode(uint64_t id, int *z, int *x, int *y) {
     if (x) *x = (int)tx;
     if (y) *y = (int)ty;
 }
+
