@@ -1,8 +1,11 @@
 #include "sort.h"
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* Record layout in buffer: [key:8][size:4][data:size] */
@@ -33,35 +36,31 @@ static bool membuf_append(membuf *b, const void *src, size_t n) {
 /* ---- Run file (one sorted spill) ---- */
 
 typedef struct {
-    FILE    *fp;
-    uint64_t key;
-    uint8_t *buf;
-    uint32_t buf_cap;
-    uint32_t data_size;
-    bool     exhausted;
+    uint8_t       *map;        /* mmap base pointer */
+    size_t         map_len;    /* mmap length */
+    size_t         cursor;     /* read position */
+    uint64_t       key;
+    const uint8_t *data;       /* pointer into map for current record */
+    uint32_t       data_size;
+    bool           exhausted;
 } run_file;
 
 static bool run_read_next(run_file *r) {
-    if (fread(&r->key, sizeof(uint64_t), 1, r->fp) != 1) {
+    if (r->cursor + REC_HDR > r->map_len) {
         r->exhausted = true;
         return false;
     }
+    memcpy(&r->key, r->map + r->cursor, sizeof(uint64_t));
     uint32_t sz;
-    if (fread(&sz, sizeof(uint32_t), 1, r->fp) != 1) {
+    memcpy(&sz, r->map + r->cursor + sizeof(uint64_t), sizeof(uint32_t));
+    r->cursor += REC_HDR;
+    if (sz > 0 && r->cursor + sz > r->map_len) {
         r->exhausted = true;
         return false;
     }
-    if (sz > r->buf_cap) {
-        uint8_t *p = realloc(r->buf, sz);
-        if (!p) { r->exhausted = true; return false; }
-        r->buf = p;
-        r->buf_cap = sz;
-    }
+    r->data = r->map + r->cursor;
     r->data_size = sz;
-    if (sz > 0 && fread(r->buf, 1, sz, r->fp) != sz) {
-        r->exhausted = true;
-        return false;
-    }
+    r->cursor += sz;
     return true;
 }
 
@@ -280,13 +279,23 @@ bool arpt_sorter_finish(arpt_sorter *s) {
         if (!flush_run(s)) return false;
     }
 
-    /* Open all run files */
+    /* Memory-map all run files with sequential access hint */
     s->runs = calloc((size_t)s->n_runs, sizeof(run_file));
     if (!s->runs) return false;
 
     for (int i = 0; i < s->n_runs; i++) {
-        s->runs[i].fp = fopen(s->run_paths[i], "rb");
-        if (!s->runs[i].fp) return false;
+        int fd = open(s->run_paths[i], O_RDONLY);
+        if (fd < 0) return false;
+        struct stat st;
+        if (fstat(fd, &st) < 0) { close(fd); return false; }
+        size_t len = (size_t)st.st_size;
+        if (len == 0) { close(fd); s->runs[i].exhausted = true; continue; }
+        void *map = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
+        close(fd);
+        if (map == MAP_FAILED) return false;
+        madvise(map, len, MADV_SEQUENTIAL);
+        s->runs[i].map = map;
+        s->runs[i].map_len = len;
         run_read_next(&s->runs[i]);
     }
 
@@ -331,7 +340,7 @@ bool arpt_sorter_next(arpt_sorter *s, uint64_t *key,
     }
     s->stash_size = r->data_size;
     if (r->data_size > 0) {
-        memcpy(s->stash_buf, r->buf, r->data_size);
+        memcpy(s->stash_buf, r->data, r->data_size);
     }
 
     /* Advance the run and re-heapify */
@@ -359,8 +368,8 @@ void arpt_sorter_free(arpt_sorter *s) {
 
     if (s->runs) {
         for (int i = 0; i < s->n_runs; i++) {
-            if (s->runs[i].fp) fclose(s->runs[i].fp);
-            free(s->runs[i].buf);
+            if (s->runs[i].map)
+                munmap(s->runs[i].map, s->runs[i].map_len);
         }
         free(s->runs);
     }
