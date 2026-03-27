@@ -8,6 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 /* Coordinate quantization: map geo coords within tile bounds to uint16.
    Tile proper: [16384, 49151], extent = 32768, buffer = 16384 per side. */
 #define TILE_EXTENT  32768
@@ -180,11 +184,62 @@ bool arpt_tile_builder_add_feature(arpt_tile_builder *b,
         return false;
     }
 
+#if defined(__ARM_NEON)
+    {
+        double inv_x = 1.0 / (b->bounds.max_x - b->bounds.min_x);
+        double inv_y = 1.0 / (b->bounds.max_y - b->bounds.min_y);
+        float64x2_t v_min_x  = vdupq_n_f64(b->bounds.min_x);
+        float64x2_t v_min_y  = vdupq_n_f64(b->bounds.min_y);
+        float64x2_t v_inv_x  = vdupq_n_f64(inv_x);
+        float64x2_t v_inv_y  = vdupq_n_f64(inv_y);
+        float64x2_t v_extent = vdupq_n_f64((double)TILE_EXTENT);
+        float64x2_t v_buffer = vdupq_n_f64((double)TILE_BUFFER);
+        float64x2_t v_zero   = vdupq_n_f64(0.0);
+        float64x2_t v_max16  = vdupq_n_f64(65535.0);
+
+        uint32_t i = 0;
+        uint32_t end2 = g->n_coords & ~1u;
+        for (; i < end2; i += 2) {
+            /* Quantize x */
+            float64x2_t vx = vld1q_f64(g->x + i);
+            float64x2_t tx = vmulq_f64(vmulq_f64(vsubq_f64(vx, v_min_x), v_inv_x), v_extent);
+            tx = vaddq_f64(tx, v_buffer);
+            tx = vmaxq_f64(tx, v_zero);
+            tx = vminq_f64(tx, v_max16);
+            sf->qx[i]     = (uint16_t)vgetq_lane_f64(tx, 0);
+            sf->qx[i + 1] = (uint16_t)vgetq_lane_f64(tx, 1);
+
+            /* Quantize y */
+            float64x2_t vy = vld1q_f64(g->y + i);
+            float64x2_t ty = vmulq_f64(vmulq_f64(vsubq_f64(vy, v_min_y), v_inv_y), v_extent);
+            ty = vaddq_f64(ty, v_buffer);
+            ty = vmaxq_f64(ty, v_zero);
+            ty = vminq_f64(ty, v_max16);
+            sf->qy[i]     = (uint16_t)vgetq_lane_f64(ty, 0);
+            sf->qy[i + 1] = (uint16_t)vgetq_lane_f64(ty, 1);
+
+            /* Z */
+            if (g->z) {
+                float64x2_t vz = vld1q_f64(g->z + i);
+                float64x2_t vz_mm = vmulq_f64(vz, vdupq_n_f64(1000.0));
+                sf->qz[i]     = (int32_t)vgetq_lane_f64(vz_mm, 0);
+                sf->qz[i + 1] = (int32_t)vgetq_lane_f64(vz_mm, 1);
+            }
+        }
+        /* Handle remaining element */
+        for (; i < g->n_coords; i++) {
+            sf->qx[i] = quantize_x(&b->bounds, g->x[i]);
+            sf->qy[i] = quantize_y(&b->bounds, g->y[i]);
+            if (g->z) sf->qz[i] = (int32_t)(g->z[i] * 1000.0);
+        }
+    }
+#else
     for (uint32_t i = 0; i < g->n_coords; i++) {
         sf->qx[i] = quantize_x(&b->bounds, g->x[i]);
         sf->qy[i] = quantize_y(&b->bounds, g->y[i]);
         if (g->z) sf->qz[i] = (int32_t)(g->z[i] * 1000.0);
     }
+#endif
 
     /* Copy offsets */
     if (g->offsets && g->n_offsets > 0) {

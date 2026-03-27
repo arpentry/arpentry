@@ -5,6 +5,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#elif defined(__SSE2__)
+#include <emmintrin.h>
+#endif
+
 /* Clip buffer in pixels.  Polygons and lines are clipped with this
  * much extra beyond the tile bounds, creating overlap between adjacent
  * tiles that prevents visible seams.  Standard in all vector tile
@@ -261,14 +267,77 @@ static void coords_to_tile_range(const double *x, const double *y,
                                   int n_cols, int n_rows,
                                   int *tx_min, int *tx_max,
                                   int *ty_min, int *ty_max) {
-    double gmin_x = x[start], gmax_x = x[start];
-    double gmin_y = y[start], gmax_y = y[start];
+    double gmin_x, gmax_x, gmin_y, gmax_y;
+
+#if defined(__ARM_NEON)
+    float64x2_t vmin_x = vdupq_n_f64(x[start]);
+    float64x2_t vmax_x = vdupq_n_f64(x[start]);
+    float64x2_t vmin_y = vdupq_n_f64(y[start]);
+    float64x2_t vmax_y = vdupq_n_f64(y[start]);
+
+    uint32_t i = start + 1;
+    uint32_t end2 = start + 1 + ((count - 1) & ~1u);
+    for (; i < end2; i += 2) {
+        float64x2_t vx = vld1q_f64(x + i);
+        float64x2_t vy = vld1q_f64(y + i);
+        vmin_x = vminq_f64(vmin_x, vx);
+        vmax_x = vmaxq_f64(vmax_x, vx);
+        vmin_y = vminq_f64(vmin_y, vy);
+        vmax_y = vmaxq_f64(vmax_y, vy);
+    }
+
+    gmin_x = vminvq_f64(vmin_x);
+    gmax_x = vmaxvq_f64(vmax_x);
+    gmin_y = vminvq_f64(vmin_y);
+    gmax_y = vmaxvq_f64(vmax_y);
+
+    for (; i < start + count; i++) {
+        if (x[i] < gmin_x) gmin_x = x[i];
+        if (x[i] > gmax_x) gmax_x = x[i];
+        if (y[i] < gmin_y) gmin_y = y[i];
+        if (y[i] > gmax_y) gmax_y = y[i];
+    }
+
+#elif defined(__SSE2__)
+    __m128d vmin_x = _mm_set1_pd(x[start]);
+    __m128d vmax_x = _mm_set1_pd(x[start]);
+    __m128d vmin_y = _mm_set1_pd(y[start]);
+    __m128d vmax_y = _mm_set1_pd(y[start]);
+
+    uint32_t i = start + 1;
+    uint32_t end2 = start + 1 + ((count - 1) & ~1u);
+    for (; i < end2; i += 2) {
+        __m128d vx = _mm_loadu_pd(x + i);
+        __m128d vy = _mm_loadu_pd(y + i);
+        vmin_x = _mm_min_pd(vmin_x, vx);
+        vmax_x = _mm_max_pd(vmax_x, vx);
+        vmin_y = _mm_min_pd(vmin_y, vy);
+        vmax_y = _mm_max_pd(vmax_y, vy);
+    }
+
+    double tmp[2];
+    _mm_storeu_pd(tmp, vmin_x); gmin_x = tmp[0] < tmp[1] ? tmp[0] : tmp[1];
+    _mm_storeu_pd(tmp, vmax_x); gmax_x = tmp[0] > tmp[1] ? tmp[0] : tmp[1];
+    _mm_storeu_pd(tmp, vmin_y); gmin_y = tmp[0] < tmp[1] ? tmp[0] : tmp[1];
+    _mm_storeu_pd(tmp, vmax_y); gmax_y = tmp[0] > tmp[1] ? tmp[0] : tmp[1];
+
+    for (; i < start + count; i++) {
+        if (x[i] < gmin_x) gmin_x = x[i];
+        if (x[i] > gmax_x) gmax_x = x[i];
+        if (y[i] < gmin_y) gmin_y = y[i];
+        if (y[i] > gmax_y) gmax_y = y[i];
+    }
+
+#else
+    gmin_x = gmax_x = x[start];
+    gmin_y = gmax_y = y[start];
     for (uint32_t i = start + 1; i < start + count; i++) {
         if (x[i] < gmin_x) gmin_x = x[i];
         if (x[i] > gmax_x) gmax_x = x[i];
         if (y[i] < gmin_y) gmin_y = y[i];
         if (y[i] > gmax_y) gmax_y = y[i];
     }
+#endif
 
     if (gmin_x < -180.0) gmin_x = -180.0;
     if (gmax_x > 180.0)  gmax_x = 180.0;

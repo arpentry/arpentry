@@ -3,6 +3,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 /* Perpendicular distance from point (px,py) to line (ax,ay)-(bx,by). */
 static double perp_dist(double px, double py,
                         double ax, double ay, double bx, double by) {
@@ -16,6 +20,95 @@ static double perp_dist(double px, double py,
     }
     double area2 = fabs(dy * px - dx * py + bx * ay - by * ax);
     return area2 / sqrt(len_sq);
+}
+
+/* Find the index and distance of the farthest point from line (sx,sy)-(ex,ey)
+ * in the range (start, end) exclusive of endpoints.
+ * Uses NEON to compute 2 perpendicular distances per iteration. */
+static void find_max_perp_dist(const double *x, const double *y,
+                                uint32_t start, uint32_t end,
+                                double sx, double sy, double ex, double ey,
+                                double *out_max_dist, uint32_t *out_max_idx) {
+    double dx = ex - sx;
+    double dy = ey - sy;
+    double len_sq = dx * dx + dy * dy;
+
+    /* Degenerate line — fall back to Euclidean distance */
+    if (len_sq == 0.0) {
+        double max_dist = 0.0;
+        uint32_t max_idx = start;
+        for (uint32_t i = start + 1; i < end; i++) {
+            double ddx = x[i] - sx;
+            double ddy = y[i] - sy;
+            double d = sqrt(ddx * ddx + ddy * ddy);
+            if (d > max_dist) { max_dist = d; max_idx = i; }
+        }
+        *out_max_dist = max_dist;
+        *out_max_idx = max_idx;
+        return;
+    }
+
+    double inv_len = 1.0 / sqrt(len_sq);
+    /* area2 = |dy*px - dx*py + bx*ay - by*ax|; dist = area2 / sqrt(len_sq)
+     * = |dy*px - dx*py + C| * inv_len  where C = bx*ay - by*ax */
+    double C = ex * sy - ey * sx;
+
+#if defined(__ARM_NEON)
+    float64x2_t v_dy = vdupq_n_f64(dy);
+    float64x2_t v_dx = vdupq_n_f64(dx);
+    float64x2_t v_C  = vdupq_n_f64(C);
+    float64x2_t v_inv = vdupq_n_f64(inv_len);
+    /* Track indices: lane 0 has first candidate, lane 1 has second */
+    uint32_t best_idx[2] = { start, start };
+    double   best_d[2]   = { 0.0, 0.0 };
+
+    uint32_t i = start + 1;
+    uint32_t end2 = start + 1 + (((end - start - 1)) & ~1u);
+    for (; i < end2; i += 2) {
+        float64x2_t vpx = vld1q_f64(x + i);
+        float64x2_t vpy = vld1q_f64(y + i);
+        /* area2 = dy*px - dx*py + C
+         * Use separate mul+add (not FMA) to match scalar FP rounding. */
+        float64x2_t area2 = vaddq_f64(v_C, vsubq_f64(vmulq_f64(v_dy, vpx),
+                                                       vmulq_f64(v_dx, vpy)));
+        /* dist = |area2| * inv_len */
+        float64x2_t dist = vmulq_f64(vabsq_f64(area2), v_inv);
+
+        /* Extract and compare (2 lanes) */
+        double d0 = vgetq_lane_f64(dist, 0);
+        double d1 = vgetq_lane_f64(dist, 1);
+        if (d0 > best_d[0]) { best_d[0] = d0; best_idx[0] = i; }
+        if (d1 > best_d[1]) { best_d[1] = d1; best_idx[1] = i + 1; }
+    }
+
+    /* Combine two lanes */
+    double max_dist;
+    uint32_t max_idx;
+    if (best_d[0] >= best_d[1]) {
+        max_dist = best_d[0]; max_idx = best_idx[0];
+    } else {
+        max_dist = best_d[1]; max_idx = best_idx[1];
+    }
+
+    /* Handle remaining element */
+    for (; i < end; i++) {
+        double area2 = dy * x[i] - dx * y[i] + C;
+        double d = fabs(area2) * inv_len;
+        if (d > max_dist) { max_dist = d; max_idx = i; }
+    }
+
+#else
+    double max_dist = 0.0;
+    uint32_t max_idx = start;
+    for (uint32_t i = start + 1; i < end; i++) {
+        double area2 = dy * x[i] - dx * y[i] + C;
+        double d = fabs(area2) * inv_len;
+        if (d > max_dist) { max_dist = d; max_idx = i; }
+    }
+#endif
+
+    *out_max_dist = max_dist;
+    *out_max_idx = max_idx;
 }
 
 /* Run Douglas-Peucker on a contiguous segment [start..end] within
@@ -32,16 +125,10 @@ static void dp_segment(const double *x, const double *y, bool *keep,
         uint32_t e = stack[--(*sp)];
         uint32_t s = stack[--(*sp)];
 
-        double max_dist = 0.0;
-        uint32_t max_idx = s;
-        for (uint32_t i = s + 1; i < e; i++) {
-            double d = perp_dist(x[i], y[i],
-                                 x[s], y[s], x[e], y[e]);
-            if (d > max_dist) {
-                max_dist = d;
-                max_idx = i;
-            }
-        }
+        double max_dist;
+        uint32_t max_idx;
+        find_max_perp_dist(x, y, s, e, x[s], y[s], x[e], y[e],
+                           &max_dist, &max_idx);
 
         if (max_dist > tolerance) {
             keep[max_idx] = true;
@@ -82,7 +169,9 @@ uint32_t arpt_simplify(double *x, double *y, uint32_t count, double tolerance) {
     keep[0] = true;
     keep[count - 1] = true;
 
-    /* Find natural anchors: interior vertices with high local curvature */
+    /* Find natural anchors: interior vertices with high local curvature.
+     * Each anchor depends on its two neighbors, so we compute perp_dist
+     * for each interior vertex. */
     for (uint32_t i = 1; i < count - 1; i++) {
         double d = perp_dist(x[i], y[i],
                              x[i - 1], y[i - 1],
@@ -273,17 +362,30 @@ static void tp_dp_arc(const double *x, const double *y, uint32_t n,
         /* Find farthest vertex from line sec_start → sec_end.
          * Initialize max_idx to the first interior vertex so that
          * if all interior vertices are collinear (distance 0), the
-         * split still makes progress. */
+         * split still makes progress.
+         *
+         * Note: this loop walks ring indices modulo n, so we cannot
+         * use the vectorized find_max_perp_dist (which needs contiguous
+         * arrays).  For wrapping segments, fall back to scalar. */
         double max_dist = 0.0;
         uint32_t max_idx = (sec_start + 1) % n;
-        for (uint32_t i = 1; i < sec_len - 1; i++) {
-            uint32_t vi = (sec_start + i) % n;
-            double d = perp_dist(x[vi], y[vi],
-                                  x[sec_start], y[sec_start],
-                                  x[sec_end], y[sec_end]);
-            if (d > max_dist) {
-                max_dist = d;
-                max_idx = vi;
+
+        if (sec_end > sec_start + 1) {
+            /* Non-wrapping case: contiguous indices — use vectorized path */
+            find_max_perp_dist(x, y, sec_start, sec_end,
+                               x[sec_start], y[sec_start],
+                               x[sec_end], y[sec_end],
+                               &max_dist, &max_idx);
+        } else {
+            for (uint32_t i = 1; i < sec_len - 1; i++) {
+                uint32_t vi = (sec_start + i) % n;
+                double d = perp_dist(x[vi], y[vi],
+                                      x[sec_start], y[sec_start],
+                                      x[sec_end], y[sec_end]);
+                if (d > max_dist) {
+                    max_dist = d;
+                    max_idx = vi;
+                }
             }
         }
 
