@@ -842,6 +842,7 @@ static bool point_in_polygon(double px, double py,
 }
 
 static void clip_polygon_part(const arpt_geom *geom,
+                               const arpt_geom *orig,
                                uint32_t first_ring, uint32_t n_rings,
                                int z, arpt_tile_cb cb, void *ctx) {
     int n_cols = 1 << (z + 1);
@@ -917,13 +918,13 @@ static void clip_polygon_part(const arpt_geom *geom,
                 da_free(&out_y);
 
                 /* Clipping produced no output, but the tile might be entirely
-                   inside the polygon (simplified boundary shortcuts miss the
-                   tile).  Test the tile center against all rings; if inside,
-                   emit a tile-filling rectangle so the polygon doesn't have
-                   gaps at low zoom. */
+                   inside the polygon (simplified boundary may bypass the
+                   tile).  Test the tile center against the original
+                   unsimplified rings so that DP shortcuts cannot create
+                   interior gaps. */
                 double cx = (tb.min_x + tb.max_x) * 0.5;
                 double cy = (tb.min_y + tb.max_y) * 0.5;
-                if (point_in_polygon(cx, cy, geom, first_ring, n_rings)) {
+                if (point_in_polygon(cx, cy, orig, first_ring, n_rings)) {
                     double fill_x[5] = {tb.min_x, tb.max_x, tb.max_x, tb.min_x, tb.min_x};
                     double fill_y[5] = {tb.min_y, tb.min_y, tb.max_y, tb.max_y, tb.min_y};
                     uint32_t fill_off[2] = {0, 5};
@@ -942,14 +943,14 @@ static void clip_polygon_part(const arpt_geom *geom,
     }
 }
 
-static void clip_polygons(const arpt_geom *geom, int z,
-                          arpt_tile_cb cb, void *ctx) {
+static void clip_polygons(const arpt_geom *geom, const arpt_geom *orig,
+                          int z, arpt_tile_cb cb, void *ctx) {
     uint32_t n_rings = geom->n_offsets > 0 ? geom->n_offsets - 1 : 1;
-    clip_polygon_part(geom, 0, n_rings, z, cb, ctx);
+    clip_polygon_part(geom, orig, 0, n_rings, z, cb, ctx);
 }
 
-void arpt_assign_tiles(const arpt_geom *geom, int zoom,
-                       arpt_tile_cb cb, void *ctx) {
+void arpt_assign_tiles(const arpt_geom *geom, const arpt_geom *orig,
+                       int zoom, arpt_tile_cb cb, void *ctx) {
     if (!geom || !cb) return;
     if (geom->n_coords == 0) return;
     if (zoom < 0) return;
@@ -979,7 +980,7 @@ void arpt_assign_tiles(const arpt_geom *geom, int zoom,
         clip_lines(geom, zoom, cb, ctx);
         break;
     case 3: /* Polygon (incl. flattened MultiPolygon) */
-        clip_polygons(geom, zoom, cb, ctx);
+        clip_polygons(geom, orig, zoom, cb, ctx);
         break;
     default:
         break;
@@ -1018,19 +1019,8 @@ static int point_min_zoom(void) {
     return 8;
 }
 
-/* Check if a feature's bounding box exceeds max_span tiles in either
-   dimension at zoom z.  Per-dimension check avoids penalizing thin
-   features (coastlines) the way an area-based limit would. */
-static bool feature_exceeds_span(const double bbox[4], int z, int max_span) {
-    double n_cols = (double)(1 << (z + 1));
-    double n_rows = (double)(1 << z);
-    int64_t tx = (int64_t)ceil((bbox[2] - bbox[0]) / 360.0 * n_cols) + 1;
-    int64_t ty = (int64_t)ceil((bbox[3] - bbox[1]) / 180.0 * n_rows) + 1;
-    return tx > max_span || ty > max_span;
-}
-
 void arpt_process_feature_zooms(const arpt_geom *geom, const double bbox[4],
-                                int min_zoom, int max_zoom, int max_span,
+                                int min_zoom, int max_zoom,
                                 arpt_tile_cb cb, void *ctx) {
     bool is_complex = geom->type >= 2 && geom->n_coords > 1;
 
@@ -1040,7 +1030,7 @@ void arpt_process_feature_zooms(const arpt_geom *geom, const double bbox[4],
         int pmin = point_min_zoom();
         if (pmin < min_zoom) pmin = min_zoom;
         for (int z = pmin; z <= max_zoom; z++)
-            arpt_assign_tiles(geom, z, cb, ctx);
+            arpt_assign_tiles(geom, geom, z, cb, ctx);
         return;
     }
 
@@ -1054,9 +1044,7 @@ void arpt_process_feature_zooms(const arpt_geom *geom, const double bbox[4],
 
     for (int z = max_zoom; z >= min_zoom; z--) {
         if (feature_subpixel(bbox, z))
-            continue;
-        if (feature_exceeds_span(bbox, z, max_span))
-            continue;
+            break;  /* monotonic: subpixel at z implies subpixel at z-1 */
 
         arpt_geom sg;
         double tol = zoom_tolerance(z);
@@ -1067,7 +1055,7 @@ void arpt_process_feature_zooms(const arpt_geom *geom, const double bbox[4],
 
         bool unchanged = (sg.n_coords == input->n_coords);
 
-        arpt_assign_tiles(&sg, z, cb, ctx);
+        arpt_assign_tiles(&sg, geom, z, cb, ctx);
 
         if (unchanged) {
             arpt_geom_free(&sg);

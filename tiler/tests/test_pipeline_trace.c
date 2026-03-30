@@ -152,7 +152,7 @@ static void test_point_clip_z0(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 0, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 0, collect_cb, &c);
 
     /* At z=0 equirectangular: n_cols=2, n_rows=1.
      * Bern (7.45, 46.95) → tx=1, ty=0 */
@@ -244,7 +244,7 @@ static void test_point_clip_z5(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 5, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 5, collect_cb, &c);
 
     TEST_ASSERT_EQUAL_INT(1, c.count);
     TEST_ASSERT_EQUAL_INT(5, c.results[0].z);
@@ -344,7 +344,7 @@ static void test_line_clip_z0(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 0, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 0, collect_cb, &c);
 
     /* At z=0 equirectangular, everything in tile (0,1,0) */
     TEST_ASSERT_EQUAL_INT(1, c.count);
@@ -374,7 +374,7 @@ static void test_line_clip_z4(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 4, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 4, collect_cb, &c);
 
     /* Should span multiple tiles at z=4 */
     TEST_ASSERT_TRUE(c.count >= 2);
@@ -415,7 +415,7 @@ static void test_line_quantize_roundtrip(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 4, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 4, collect_cb, &c);
     TEST_ASSERT_TRUE(c.count >= 1);
 
     /* Build and decode the first tile */
@@ -499,7 +499,7 @@ static void test_polygon_clip_z0(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 0, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 0, collect_cb, &c);
 
     /* At z=0 equirectangular, one tile (1,0) */
     TEST_ASSERT_EQUAL_INT(1, c.count);
@@ -528,7 +528,7 @@ static void test_polygon_clip_z4(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 4, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 4, collect_cb, &c);
 
     /* Should appear in multiple tiles at z=4 */
     TEST_ASSERT_TRUE(c.count >= 1);
@@ -569,7 +569,7 @@ static void test_polygon_quantize_roundtrip(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 4, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 4, collect_cb, &c);
     TEST_ASSERT_TRUE(c.count >= 1);
 
     tile_result *tr = &c.results[0];
@@ -688,7 +688,7 @@ static void test_point_visible_at_all_zooms(void) {
     for (int z = 0; z <= 10; z++) {
         tile_collector c;
         collector_init(&c);
-        arpt_assign_tiles(&g, z, collect_cb, &c);
+        arpt_assign_tiles(&g, &g, z, collect_cb, &c);
 
         TEST_ASSERT_EQUAL_INT_MESSAGE(1, c.count,
                                       "Point should be in exactly 1 tile");
@@ -717,7 +717,7 @@ static void test_line_visible_at_all_zooms(void) {
     for (int z = 0; z <= 8; z++) {
         tile_collector c;
         collector_init(&c);
-        arpt_assign_tiles(&g, z, collect_cb, &c);
+        arpt_assign_tiles(&g, &g, z, collect_cb, &c);
 
         char msg[64];
         snprintf(msg, sizeof(msg), "Line should appear at z=%d", z);
@@ -751,7 +751,7 @@ static void test_polygon_visible_at_all_zooms(void) {
     for (int z = 0; z <= 8; z++) {
         tile_collector c;
         collector_init(&c);
-        arpt_assign_tiles(&g, z, collect_cb, &c);
+        arpt_assign_tiles(&g, &g, z, collect_cb, &c);
 
         char msg[64];
         snprintf(msg, sizeof(msg), "Polygon should appear at z=%d", z);
@@ -780,7 +780,7 @@ static void test_quantize_precision_improves(void) {
 
         tile_collector c;
         collector_init(&c);
-        arpt_assign_tiles(&g, z, collect_cb, &c);
+        arpt_assign_tiles(&g, &g, z, collect_cb, &c);
         TEST_ASSERT_EQUAL_INT(1, c.count);
 
         arpt_bounds tb = tile_bounds(z, c.results[0].x, c.results[0].y);

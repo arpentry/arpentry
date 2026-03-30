@@ -1,5 +1,6 @@
 #include "unity.h"
 #include "clip.h"
+#include "simplify.h"
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -80,7 +81,7 @@ static tile_result *find_result(tile_collector *c, int z, int x, int y) {
 /* ---- Null safety ---- */
 
 static void test_assign_tiles_null(void) {
-    arpt_assign_tiles(NULL, 0, NULL, NULL);
+    arpt_assign_tiles(NULL, NULL, 0, NULL, NULL);
 }
 
 static void test_assign_tiles_null_cb(void) {
@@ -90,7 +91,7 @@ static void test_assign_tiles_null_cb(void) {
     g.x = &x;
     g.y = &y;
     g.n_coords = 1;
-    arpt_assign_tiles(&g, 0, NULL, NULL);
+    arpt_assign_tiles(&g, &g, 0, NULL, NULL);
 }
 
 static void test_assign_tiles_empty_geom(void) {
@@ -98,7 +99,7 @@ static void test_assign_tiles_empty_geom(void) {
     g.type = 1;
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 0, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 0, collect_cb, &c);
     TEST_ASSERT_EQUAL_INT(0, c.count);
     collector_free(&c);
 }
@@ -118,7 +119,7 @@ static void test_point_z0(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 0, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 0, collect_cb, &c);
 
     TEST_ASSERT_EQUAL_INT(1, c.count);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].z);
@@ -141,7 +142,7 @@ static void test_point_z1(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 1, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 1, collect_cb, &c);
 
     TEST_ASSERT_EQUAL_INT(1, c.count);
     TEST_ASSERT_EQUAL_INT(1, c.results[0].z);
@@ -162,7 +163,7 @@ static void test_multipoint(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 1, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 1, collect_cb, &c);
 
     TEST_ASSERT_EQUAL_INT(2, c.count);
     /* The two points should be in different tiles */
@@ -185,7 +186,7 @@ static void test_line_within_tile(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 2, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 2, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     collector_free(&c);
@@ -203,7 +204,7 @@ static void test_line_crossing_tiles(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 2, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 2, collect_cb, &c);
 
     /* Should produce clipped segments in multiple tiles */
     TEST_ASSERT_TRUE(c.count >= 1);
@@ -230,7 +231,7 @@ static void test_line_no_phantom_segments(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 2, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 2, collect_cb, &c);
 
     /* Just verify it doesn't crash and produces reasonable output */
     TEST_ASSERT_TRUE(c.count >= 1);
@@ -259,7 +260,7 @@ static void test_polygon_within_tile(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 4, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 4, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     /* The clipped polygon should have at least 4 vertices (3 unique + closing) */
@@ -285,7 +286,7 @@ static void test_polygon_rings_closed(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 2, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 2, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     for (int i = 0; i < c.count; i++) {
@@ -329,7 +330,7 @@ static void test_polygon_crossing_tiles(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 2, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 2, collect_cb, &c);
 
     /* Should produce clipped polygons in multiple tiles */
     TEST_ASSERT_TRUE(c.count >= 2);
@@ -357,7 +358,7 @@ static void test_polygon_encloses_tile(void) {
      * at least one interior tile. */
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     /* Should produce clipped polygons in multiple tiles */
     TEST_ASSERT_TRUE(c.count >= 2);
@@ -389,14 +390,14 @@ static void test_polygon_encloses_tile_high_zoom(void) {
      * than one tile, so we should get exactly 1 tile. */
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 5, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 5, collect_cb, &c);
     TEST_ASSERT_TRUE(c.count >= 1);
     collector_free(&c);
 
     /* z=7: tiles are ~2.8 deg × ~1.4 deg. The polygon spans
      * ~1-2 tiles per axis and fully encloses interior tiles. */
     collector_init(&c);
-    arpt_assign_tiles(&g, 7, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 7, collect_cb, &c);
     /* Should produce multiple tiles */
     TEST_ASSERT_TRUE(c.count >= 2);
     for (int i = 0; i < c.count; i++) {
@@ -438,7 +439,7 @@ static void test_multipolygon_parts(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 0, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 0, collect_cb, &c);
 
     /* Should get exactly 2 results, one per tile */
     TEST_ASSERT_EQUAL_INT(2, c.count);
@@ -534,7 +535,7 @@ static void test_concave_polygon_gulf(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 2, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 2, collect_cb, &c);
 
     /* Find the tile that contains the gulf area.
      * At z=2: 8 cols × 4 rows, each tile is 45° × 45°.
@@ -599,7 +600,7 @@ static void test_concave_polygon_empty_interior_tile(void) {
      * This tile is entirely within the concavity! */
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     /* Check that tile (3, 4, 3) does NOT receive a polygon.
      * The concavity center tile should be empty. */
@@ -646,7 +647,7 @@ static void test_multipolygon_same_tile(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 0, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 0, collect_cb, &c);
 
     /* Flattened polygon with 2 rings in the same tile → 1 callback */
     TEST_ASSERT_EQUAL_INT(1, c.count);
@@ -723,7 +724,7 @@ static void test_reentrant_same_edge(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 2, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 2, collect_cb, &c);
 
     /* The polygon has two horizontal bars crossing right edge of tile (2,2,2).
      * Each bar should produce clipped geometry. */
@@ -811,7 +812,7 @@ static void test_polygon_with_hole_within_tile(void) {
      * The whole polygon fits in one tile. */
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 2, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 2, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
 
@@ -888,7 +889,7 @@ static void test_polygon_with_hole_crossing_tile(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 2, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 2, collect_cb, &c);
 
     /* Should produce results in at least 2 tiles (left and right of lon=0).
      * Actually at z=2 the tile boundary is at lon=-45 and lon=0,
@@ -900,7 +901,7 @@ static void test_polygon_with_hole_crossing_tile(void) {
      * Tile boundaries at lon ..., -22.5, 0, 22.5, ...
      * The polygon [-10, 10] crosses lon=0. */
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
 
@@ -954,7 +955,7 @@ static void test_polygon_hole_empty_interior(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
 
@@ -1013,7 +1014,7 @@ static void test_polygon_hole_only_frame(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 4, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 4, collect_cb, &c);
 
     /* At z=4, tiles are 22.5° × 11.25°. Some tiles will see the frame.
      * Verify all clipped rings are valid. */
@@ -1077,7 +1078,7 @@ static void test_multipolygon_hole_and_island_within_tile(void) {
      * Flattened polygon: all 3 rings in one callback. */
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 2, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 2, collect_cb, &c);
 
     TEST_ASSERT_EQUAL_INT_MESSAGE(1, c.count,
         "Flattened polygon should produce 1 callback with all rings");
@@ -1136,7 +1137,7 @@ static void test_multipolygon_hole_and_island_crossing_tile(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     /* Should produce results in multiple tiles */
     TEST_ASSERT_TRUE_MESSAGE(c.count >= 2,
@@ -1202,7 +1203,7 @@ static void test_multipolygon_hole_island_high_zoom(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 7, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 7, collect_cb, &c);
 
     /* At this zoom there should be many tiles */
     TEST_ASSERT_TRUE_MESSAGE(c.count >= 4,
@@ -1281,7 +1282,7 @@ static void test_multipolygon_hole_island_area_accounting(void) {
      * Sum all ring areas across all callbacks. */
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 2, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 2, collect_cb, &c);
 
     double total_area = 0.0;
     for (int i = 0; i < c.count; i++) {
@@ -1342,7 +1343,7 @@ static void test_reentrant_top_edge(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 2, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 2, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
 
@@ -1395,7 +1396,7 @@ static void test_polygon_encloses_tile_completely(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     /* Tile (3, 8, 4) should definitely be present */
     tile_result *t = find_result(&c, 3, 8, 4);
@@ -1452,7 +1453,7 @@ static void test_line_encloses_tile_span(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     /* Tile (3, 8, 4) should get a clipped segment */
     tile_result *t = find_result(&c, 3, 8, 4);
@@ -1504,7 +1505,7 @@ static void test_polygon_encloses_tile_hole_outside(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     /* Tile (3, 8, 4) should get geometry — only 1 ring (exterior),
      * because the hole is entirely outside this tile. */
@@ -1551,7 +1552,7 @@ static void test_polygon_encloses_tile_hole_also_encloses(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     /* Tile (3, 8, 4) is entirely inside the hole.
      * Current slab clipper clips rings independently, so it WILL produce
@@ -1615,7 +1616,7 @@ static void test_polygon_encloses_tile_hole_partial(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     tile_result *t = find_result(&c, 3, 8, 4);
     TEST_ASSERT_NOT_NULL_MESSAGE(t,
@@ -1692,7 +1693,7 @@ static void test_multipolygon_all_enclose_tile(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     /* Tile (3, 8, 4) should get 2 callbacks: part 0 (ext+hole) and part 1 (island).
      * Part 0 net area ≈ 0 (ext and hole both clip to same rect).
@@ -1855,7 +1856,7 @@ static void test_closure_vertex_on_tile_edge(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     assert_all_rings_valid(&c, "vertex_on_edge");
@@ -1880,7 +1881,7 @@ static void test_closure_edge_along_tile_boundary(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     assert_all_rings_valid(&c, "edge_along_boundary");
@@ -1906,7 +1907,7 @@ static void test_closure_vertex_on_tile_corner(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     assert_all_rings_valid(&c, "vertex_on_corner");
@@ -1933,7 +1934,7 @@ static void test_closure_diamond_crosses_all_edges(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     /* Should produce results in multiple tiles (diamond extends beyond all edges) */
     TEST_ASSERT_TRUE(c.count >= 1);
@@ -1970,7 +1971,7 @@ static void test_closure_thin_sliver_at_corner(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     /* The triangle is small and near a corner — it might clip to a tiny
      * sliver or be rejected as degenerate. Either outcome is acceptable
@@ -2003,7 +2004,7 @@ static void test_closure_diagonal_crossing(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     assert_all_rings_valid(&c, "diagonal_crossing");
@@ -2029,7 +2030,7 @@ static void test_closure_degenerate_parallel_clip(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     /* The tile (8, 4) clip should NOT produce a degenerate polygon.
      * It should either produce a valid ring or nothing. */
@@ -2083,7 +2084,7 @@ static void test_closure_l_shape_at_corner(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     assert_all_rings_valid(&c, "l_shape_corner");
@@ -2131,7 +2132,7 @@ static void test_closure_t_shape_crossing(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     assert_all_rings_valid(&c, "t_shape");
@@ -2165,7 +2166,7 @@ static void test_closure_narrow_reentry(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     assert_all_rings_valid(&c, "narrow_reentry");
@@ -2203,7 +2204,7 @@ static void test_closure_exit_right_enter_top(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     assert_all_rings_valid(&c, "exit_right_enter_top");
@@ -2252,7 +2253,7 @@ static void test_closure_all_corner_transitions(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     assert_all_rings_valid(&c, "corner_transitions");
@@ -2279,7 +2280,7 @@ static void test_closure_across_zoom_levels(void) {
     for (int z = 2; z <= 7; z++) {
         tile_collector c;
         collector_init(&c);
-        arpt_assign_tiles(&g, z, collect_cb, &c);
+        arpt_assign_tiles(&g, &g, z, collect_cb, &c);
 
         char label[64];
         snprintf(label, sizeof(label), "zoom_%d", z);
@@ -2316,7 +2317,7 @@ static void test_closure_hole_crossing_boundary(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     assert_all_rings_valid(&c, "hole_crossing_boundary");
@@ -2350,7 +2351,7 @@ static void test_closure_hole_crosses_exterior_doesnt(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     assert_all_rings_valid(&c, "hole_crosses_ext_doesnt");
@@ -2388,7 +2389,7 @@ static void test_closure_multipolygon_all_rings_cross(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     assert_all_rings_valid(&c, "multipolygon_all_cross");
@@ -2425,7 +2426,7 @@ static void test_regression_boundary_corner_preserved(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
     /* The clipped output should cover the tile — look across all results
      * for tile (3,8,4). With boundary walk, corner vertices are inserted
@@ -2454,6 +2455,59 @@ static void test_regression_boundary_corner_preserved(void) {
         "A ring in the tile should have a vertex near the tile corner");
 
     assert_all_rings_valid(&c, "boundary_corner");
+    collector_free(&c);
+}
+
+/* When arpt_assign_tiles clips a simplified polygon, interior tiles
+ * (fully inside the polygon) produce no clip output and fall back to
+ * a point-in-polygon test.  If the simplified boundary shrank relative
+ * to the original (corners cut by DP), tile centers near the boundary
+ * may land outside the simplified ring but inside the original.
+ *
+ * The fix: the point-in-polygon fallback uses the original geometry.
+ * This test verifies that by passing a manually shrunk "simplified"
+ * polygon and a larger "original" — tiles inside the original but
+ * outside the simplified must still receive geometry. */
+static void test_simplified_polygon_interior_tiles(void) {
+    /* Original: large rectangle lon [-50, -10], lat [60, 80]. */
+    double orig_x[] = {-50.0, -10.0, -10.0, -50.0, -50.0};
+    double orig_y[] = { 60.0,  60.0,  80.0,  80.0,  60.0};
+    uint32_t orig_off[] = {0, 5};
+    arpt_geom original = {
+        .type = 3, .x = orig_x, .y = orig_y, .n_coords = 5,
+        .offsets = orig_off, .n_offsets = 2
+    };
+
+    /* "Simplified": triangle with same bbox but less interior area.
+     * The east boundary is now a diagonal from (-10,70) instead of a
+     * vertical edge, so the lower-right and upper-right are cut off. */
+    double simp_x[] = {-50.0, -10.0, -50.0, -50.0};
+    double simp_y[] = { 60.0,  70.0,  80.0,  60.0};
+    uint32_t simp_off[] = {0, 4};
+    arpt_geom simplified = {
+        .type = 3, .x = simp_x, .y = simp_y, .n_coords = 4,
+        .offsets = simp_off, .n_offsets = 2
+    };
+
+    /* At zoom 5 (64 cols × 32 rows, tile ≈ 5.625°).
+     * Tile (5, 29, 27): lon [-16.875, -11.25], lat [61.875, 67.5].
+     * Center ≈ (-14.06, 64.69).
+     * - Inside the original rectangle (east boundary at x=-10)
+     * - Outside the simplified triangle (diagonal goes from (-50,60)
+     *   to (-10,70); at lat 64.69 the boundary is at x≈-31)
+     * - The triangle boundary doesn't cross this tile → empty clip
+     *   → falls back to point-in-polygon. */
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&simplified, &original, 5, collect_cb, &c);
+
+    tile_result *t = find_result(&c, 5, 29, 27);
+    TEST_ASSERT_NOT_NULL_MESSAGE(t,
+        "Tile (5,29,27) inside original but outside simplified must get "
+        "geometry via point-in-polygon on the original — fails if the "
+        "fallback uses the simplified geometry");
+    TEST_ASSERT_TRUE(t->geom.n_coords >= 4);
+
     collector_free(&c);
 }
 
@@ -2510,5 +2564,6 @@ int main(void) {
     RUN_TEST(test_regression_boundary_corner_preserved);
     RUN_TEST(test_reentrant_same_edge);
     RUN_TEST(test_reentrant_top_edge);
+    RUN_TEST(test_simplified_polygon_interior_tiles);
     return UNITY_END();
 }

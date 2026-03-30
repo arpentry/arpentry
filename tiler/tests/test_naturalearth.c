@@ -531,8 +531,8 @@ static void test_gulf_clip_diagnostic(void) {
                 gmin_x, gmin_y, gmax_x, gmax_y);
 
         /* Clip at zoom 3 and 4 */
-        arpt_assign_tiles(g, 3, diag_cb, &dc);
-        arpt_assign_tiles(g, 4, diag_cb, &dc);
+        arpt_assign_tiles(g, g, 3, diag_cb, &dc);
+        arpt_assign_tiles(g, g, 4, diag_cb, &dc);
         arpt_geom_free(g);
     }
     arpt_overture_close(ov);
@@ -633,7 +633,7 @@ static void test_europe_clip_diagnostic_z4(void) {
                 g->type, g->n_coords, g->n_offsets,
                 gmin_x, gmin_y, gmax_x, gmax_y);
 
-        arpt_assign_tiles(g, 4, diag_cb, &dc);
+        arpt_assign_tiles(g, g, 4, diag_cb, &dc);
         arpt_geom_free(g);
     }
     arpt_overture_close(ov);
