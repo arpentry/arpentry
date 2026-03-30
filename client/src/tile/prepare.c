@@ -119,6 +119,21 @@ static size_t earclip_triangulate(const uint16_t *x, const uint16_t *y,
         out_indices[idx++] = base + a;
         out_indices[idx++] = base + b;
         out_indices[idx++] = base + c;
+    } else if (remaining > 3) {
+        /* Earclip exhausted attempts — force-emit remaining vertices as a
+           triangle fan from the current ear.  This produces slightly wrong
+           triangles for concave regions but avoids the much worse artifact
+           of silently dropping large polygon sections. */
+        uint32_t a = ear;
+        uint32_t b = nxt[a];
+        while (remaining > 2) {
+            uint32_t c = nxt[b];
+            out_indices[idx++] = base + a;
+            out_indices[idx++] = base + b;
+            out_indices[idx++] = base + c;
+            b = c;
+            remaining--;
+        }
     }
 
     free(prv);

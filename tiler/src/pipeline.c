@@ -219,8 +219,8 @@ static void *worker_fn(void *arg) {
                 arpt_geom_bbox(&f->geometry, feat_bbox);
             }
 
-            const char *cls = f->subtype ? f->type : (f->type ? f->type : "unknown");
-            const char *pkeys[2] = { "class", "name" };
+            const char *cls = f->type ? f->type : "unknown";
+            const char *pkeys[2] = { "class", "subclass" };
             const char *pvals[2] = { cls, f->subtype };
             uint32_t n_props = f->subtype ? 2 : 1;
 
@@ -417,6 +417,7 @@ typedef struct {
     arpt_workqueue      *write_queue;
     arpt_archive_writer *writer;
     uint64_t             tile_count;
+    bool                 write_failed;
 } writer_ctx;
 
 /* Min-heap for reordering encoded tiles by sequence number */
@@ -486,8 +487,10 @@ static encoded_tile *reorder_pop(reorder_heap *h) {
 
 static void write_tile_to_archive(writer_ctx *wc, encoded_tile *et) {
     if (et->data && et->size > 0) {
-        arpt_archive_writer_add_tile(wc->writer, et->z, et->x, et->y,
-                                     et->data, et->size);
+        if (!arpt_archive_writer_add_tile(wc->writer, et->z, et->x, et->y,
+                                          et->data, et->size)) {
+            wc->write_failed = true;
+        }
         wc->tile_count++;
     }
     free(et->data);
@@ -1043,6 +1046,10 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     double t_phase3_fill = now_sec();
     fprintf(stderr, "Phase 3b (fill empty): %.3fs\n", t_phase3_fill - t_phase3b_start);
 
+    if (wctx.write_failed) {
+        fprintf(stderr, "Warning: some tile writes failed during encoding\n");
+    }
+
     bool ok = arpt_archive_writer_finish(writer);
     arpt_archive_writer_free(writer);
 
@@ -1057,11 +1064,13 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     free(workers);
     arpt_dem_free(dem);
 
-    if (ok) {
+    if (ok && !wctx.write_failed) {
         fprintf(stderr, "Archive written: %s\n", config->output);
+    } else if (!ok) {
+        fprintf(stderr, "Error: archive finalization failed\n");
     }
 
-    return ok;
+    return ok && !wctx.write_failed;
 
     /* ---- Error paths ---- */
 

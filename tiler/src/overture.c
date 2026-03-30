@@ -20,6 +20,7 @@ struct arpt_overture {
     int32_t col_bbox_ymin;
     int32_t col_bbox_xmax;
     int32_t col_bbox_ymax;
+    bool    bbox_is_double; /* true if bbox columns are DOUBLE, false if FLOAT */
 
     int64_t row_in_batch;   /* current row within current batch */
     int64_t batch_rows;     /* rows in current batch */
@@ -55,11 +56,21 @@ arpt_overture *arpt_overture_open(const char *path)
         }
     }
 
-    /* Discover columns in file */
+    /* Discover columns in file.
+     * Overture schemas vary by theme: some have "type"+"subtype", others
+     * (e.g. base/land) have "subtype"+"class" with no "type" column.
+     * When "type" is absent, fall back to "subtype" as the type column and
+     * "class" as the subtype column so the downstream pipeline always gets
+     * the broad category in ->type and the detail in ->subtype. */
     int32_t file_col_geom = arpt_parquet_find_column(pq, geom_col_name);
     int32_t file_col_id = arpt_parquet_find_column(pq, "id");
     int32_t file_col_type = arpt_parquet_find_column(pq, "type");
     int32_t file_col_subtype = arpt_parquet_find_column(pq, "subtype");
+    if (file_col_type < 0 && file_col_subtype >= 0) {
+        /* No "type" column — promote "subtype" → type, "class" → subtype */
+        file_col_type = file_col_subtype;
+        file_col_subtype = arpt_parquet_find_column(pq, "class");
+    }
     int32_t file_col_bbox_xmin = arpt_parquet_find_column_path(pq, "bbox.xmin");
     int32_t file_col_bbox_ymin = arpt_parquet_find_column_path(pq, "bbox.ymin");
     int32_t file_col_bbox_xmax = arpt_parquet_find_column_path(pq, "bbox.xmax");
@@ -106,6 +117,8 @@ arpt_overture *arpt_overture_open(const char *path)
         ov->col_bbox_ymin = n_proj; proj_cols[n_proj++] = file_col_bbox_ymin;
         ov->col_bbox_xmax = n_proj; proj_cols[n_proj++] = file_col_bbox_xmax;
         ov->col_bbox_ymax = n_proj; proj_cols[n_proj++] = file_col_bbox_ymax;
+        ov->bbox_is_double =
+            arpt_parquet_column_type(pq, file_col_bbox_xmin) == ARPT_PARQUET_DOUBLE;
     } else {
         ov->col_bbox_xmin = ov->col_bbox_ymin = -1;
         ov->col_bbox_xmax = ov->col_bbox_ymax = -1;
@@ -234,19 +247,26 @@ bool arpt_overture_next(arpt_overture *ov, arpt_overture_feature *out)
         out->type = ov->owned_type;
         out->subtype = ov->owned_subtype;
 
-        /* Bbox columns — Overture uses FLOAT (32-bit) for bbox fields.
+        /* Bbox columns — Overture files may use FLOAT or DOUBLE for bbox.
          * Bbox columns are inside a struct and always non-null when present,
          * so we can use the row index directly. */
         if (ov->col_bbox_xmin >= 0) {
-            const float *xmin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_xmin);
-            const float *ymin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_ymin);
-            const float *xmax = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_xmax);
-            const float *ymax = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_ymax);
+            const void *xmin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_xmin);
+            const void *ymin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_ymin);
+            const void *xmax = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_xmax);
+            const void *ymax = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_ymax);
             if (xmin && ymin && xmax && ymax) {
-                out->bbox[0] = (double)xmin[row];
-                out->bbox[1] = (double)ymin[row];
-                out->bbox[2] = (double)xmax[row];
-                out->bbox[3] = (double)ymax[row];
+                if (ov->bbox_is_double) {
+                    out->bbox[0] = ((const double *)xmin)[row];
+                    out->bbox[1] = ((const double *)ymin)[row];
+                    out->bbox[2] = ((const double *)xmax)[row];
+                    out->bbox[3] = ((const double *)ymax)[row];
+                } else {
+                    out->bbox[0] = (double)((const float *)xmin)[row];
+                    out->bbox[1] = (double)((const float *)ymin)[row];
+                    out->bbox[2] = (double)((const float *)xmax)[row];
+                    out->bbox[3] = (double)((const float *)ymax)[row];
+                }
                 out->has_bbox = true;
             }
         }

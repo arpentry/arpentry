@@ -1,6 +1,7 @@
 #include "archive.h"
 #include "hilbert.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -113,7 +114,11 @@ bool arpt_archive_writer_add_tile(arpt_archive_writer *w,
     if (!w || !w->fp || !data || size == 0) return false;
 
     uint64_t offset = (uint64_t)ftell(w->fp);
-    if (fwrite(data, 1, size, w->fp) != size) return false;
+    if (fwrite(data, 1, size, w->fp) != size) {
+        fprintf(stderr, "archive: failed to write tile z%u/%u/%u (%zu bytes) at offset %llu: %s\n",
+                z, x, y, size, (unsigned long long)offset, strerror(errno));
+        return false;
+    }
 
     arpa_dir_entry e = {0};
     e.hilbert_id = arpt_hilbert_tile_id(z, (int)x, (int)y);
@@ -122,7 +127,11 @@ bool arpt_archive_writer_add_tile(arpt_archive_writer *w,
     e.z = z;
     e.x = x;
     e.y = y;
-    if (fwrite(&e, DIR_ENTRY_SIZE, 1, w->dir_fp) != 1) return false;
+    if (fwrite(&e, DIR_ENTRY_SIZE, 1, w->dir_fp) != 1) {
+        fprintf(stderr, "archive: failed to write dir entry for z%u/%u/%u: %s\n",
+                z, x, y, strerror(errno));
+        return false;
+    }
     w->tile_count++;
     return true;
 }
@@ -151,18 +160,41 @@ static int cmp_dir_entry(const void *a, const void *b) {
 }
 
 /* Read directory from temp file into a malloc'd array, sort, return it.
-   Caller frees the returned pointer. */
-static arpa_dir_entry *load_and_sort_dir(arpt_archive_writer *w) {
+   Caller frees the returned pointer. Returns NULL on error and sets *ok
+   to false. When tile_count == 0, returns NULL with *ok == true. */
+static arpa_dir_entry *load_and_sort_dir(arpt_archive_writer *w, bool *ok) {
+    *ok = true;
     if (w->tile_count == 0) return NULL;
 
     size_t n = (size_t)w->tile_count;
-    arpa_dir_entry *dir = malloc(n * DIR_ENTRY_SIZE);
-    if (!dir) return NULL;
+    size_t alloc_bytes = n * DIR_ENTRY_SIZE;
+    arpa_dir_entry *dir = malloc(alloc_bytes);
+    if (!dir) {
+        fprintf(stderr, "archive: failed to allocate directory (%llu entries, %.1f MB)\n",
+                (unsigned long long)n, (double)alloc_bytes / (1024.0 * 1024.0));
+        *ok = false;
+        return NULL;
+    }
 
-    fflush(w->dir_fp);
-    fseek(w->dir_fp, 0, SEEK_SET);
-    if (fread(dir, DIR_ENTRY_SIZE, n, w->dir_fp) != n) {
+    if (fflush(w->dir_fp) != 0) {
+        fprintf(stderr, "archive: fflush dir temp file failed: %s\n", strerror(errno));
         free(dir);
+        *ok = false;
+        return NULL;
+    }
+    if (fseek(w->dir_fp, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "archive: fseek dir temp file failed: %s\n", strerror(errno));
+        free(dir);
+        *ok = false;
+        return NULL;
+    }
+    size_t nread = fread(dir, DIR_ENTRY_SIZE, n, w->dir_fp);
+    if (nread != n) {
+        fprintf(stderr, "archive: fread dir temp file: read %llu of %llu entries: %s\n",
+                (unsigned long long)nread, (unsigned long long)n,
+                feof(w->dir_fp) ? "unexpected EOF" : strerror(errno));
+        free(dir);
+        *ok = false;
         return NULL;
     }
 
@@ -173,9 +205,16 @@ static arpa_dir_entry *load_and_sort_dir(arpt_archive_writer *w) {
 bool arpt_archive_writer_finish(arpt_archive_writer *w) {
     if (!w || !w->fp) return false;
 
+    fprintf(stderr, "archive: finishing, %llu tiles\n",
+            (unsigned long long)w->tile_count);
+
     /* Sort directory */
-    arpa_dir_entry *dir = load_and_sort_dir(w);
-    /* dir is NULL if tile_count == 0, which is fine */
+    bool dir_ok;
+    arpa_dir_entry *dir = load_and_sort_dir(w, &dir_ok);
+    if (!dir_ok) {
+        fprintf(stderr, "archive: load_and_sort_dir failed\n");
+        return false;
+    }
 
     /* Pad to 8-byte alignment before directory for safe struct access */
     uint64_t pos = (uint64_t)ftell(w->fp);
@@ -183,6 +222,8 @@ bool arpt_archive_writer_finish(arpt_archive_writer *w) {
     if (pad_bytes > 0) {
         uint8_t zeros[8] = {0};
         if (fwrite(zeros, 1, (size_t)pad_bytes, w->fp) != (size_t)pad_bytes) {
+            fprintf(stderr, "archive: failed to write alignment padding: %s\n",
+                    strerror(errno));
             free(dir);
             return false;
         }
@@ -190,8 +231,12 @@ bool arpt_archive_writer_finish(arpt_archive_writer *w) {
 
     /* Append sorted directory to archive */
     uint64_t dir_offset = (uint64_t)ftell(w->fp);
-    for (uint64_t i = 0; i < w->tile_count; i++) {
-        if (fwrite(&dir[i], DIR_ENTRY_SIZE, 1, w->fp) != 1) {
+    if (dir && w->tile_count > 0) {
+        size_t written = fwrite(dir, DIR_ENTRY_SIZE, (size_t)w->tile_count, w->fp);
+        if (written != (size_t)w->tile_count) {
+            fprintf(stderr, "archive: failed to write directory: wrote %llu of %llu entries: %s\n",
+                    (unsigned long long)written, (unsigned long long)w->tile_count,
+                    strerror(errno));
             free(dir);
             return false;
         }
@@ -201,8 +246,18 @@ bool arpt_archive_writer_finish(arpt_archive_writer *w) {
     /* Append metadata */
     uint64_t meta_offset = (uint64_t)ftell(w->fp);
     if (w->meta && w->meta_size > 0) {
-        if (fwrite(w->meta, 1, w->meta_size, w->fp) != w->meta_size)
+        if (fwrite(w->meta, 1, w->meta_size, w->fp) != w->meta_size) {
+            fprintf(stderr, "archive: failed to write metadata: %s\n",
+                    strerror(errno));
             return false;
+        }
+    }
+
+    /* Flush before seeking back to write the header */
+    if (fflush(w->fp) != 0) {
+        fprintf(stderr, "archive: fflush failed before header write: %s\n",
+                strerror(errno));
+        return false;
     }
 
     /* Write header at offset 0 */
@@ -218,8 +273,16 @@ bool arpt_archive_writer_finish(arpt_archive_writer *w) {
     hdr.meta_offset = meta_offset;
     hdr.meta_size = w->meta_size;
 
-    fseek(w->fp, 0, SEEK_SET);
-    if (fwrite(&hdr, HEADER_SIZE, 1, w->fp) != 1) return false;
+    if (fseek(w->fp, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "archive: fseek to header failed: %s\n",
+                strerror(errno));
+        return false;
+    }
+    if (fwrite(&hdr, HEADER_SIZE, 1, w->fp) != 1) {
+        fprintf(stderr, "archive: failed to write header: %s\n",
+                strerror(errno));
+        return false;
+    }
 
     fclose(w->fp);
     w->fp = NULL;
@@ -227,6 +290,10 @@ bool arpt_archive_writer_finish(arpt_archive_writer *w) {
     /* Clean up temp file */
     if (w->dir_fp) { fclose(w->dir_fp); w->dir_fp = NULL; }
     if (w->dir_path) { remove(w->dir_path); }
+
+    fprintf(stderr, "archive: finalized, dir at offset %llu (%.1f MB)\n",
+            (unsigned long long)dir_offset,
+            (double)(w->tile_count * DIR_ENTRY_SIZE) / (1024.0 * 1024.0));
 
     return true;
 }

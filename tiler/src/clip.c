@@ -810,6 +810,37 @@ static void clip_ring_rect(const double *rx, const double *ry, uint32_t n,
 
 /* Clip a set of rings (one polygon part) to tiles at the given zoom.
  * first_ring is the index into geom->offsets; n_rings is the count. */
+/* Ray-casting point-in-polygon test across all rings of a (possibly
+   flattened multi-) polygon.  Each ring boundary crossing toggles
+   inside/outside, so holes and multiple exterior rings are handled
+   naturally.  Returns true if the point is inside the filled area. */
+static bool point_in_polygon(double px, double py,
+                              const arpt_geom *geom,
+                              uint32_t first_ring, uint32_t n_rings) {
+    bool inside = false;
+    for (uint32_t ri = 0; ri < n_rings; ri++) {
+        uint32_t rstart, rend;
+        if (geom->offsets && geom->n_offsets > 1) {
+            rstart = geom->offsets[first_ring + ri];
+            rend   = geom->offsets[first_ring + ri + 1];
+        } else {
+            rstart = 0;
+            rend   = geom->n_coords;
+        }
+        uint32_t n = rend - rstart;
+        if (n < 4) continue;
+        const double *rx = geom->x + rstart;
+        const double *ry = geom->y + rstart;
+        for (uint32_t i = 0, j = n - 1; i < n; j = i++) {
+            if (((ry[i] > py) != (ry[j] > py)) &&
+                (px < (rx[j] - rx[i]) * (py - ry[i]) /
+                       (ry[j] - ry[i]) + rx[i]))
+                inside = !inside;
+        }
+    }
+    return inside;
+}
+
 static void clip_polygon_part(const arpt_geom *geom,
                                uint32_t first_ring, uint32_t n_rings,
                                int z, arpt_tile_cb cb, void *ctx) {
@@ -884,6 +915,27 @@ static void clip_polygon_part(const arpt_geom *geom,
             } else {
                 da_free(&out_x);
                 da_free(&out_y);
+
+                /* Clipping produced no output, but the tile might be entirely
+                   inside the polygon (simplified boundary shortcuts miss the
+                   tile).  Test the tile center against all rings; if inside,
+                   emit a tile-filling rectangle so the polygon doesn't have
+                   gaps at low zoom. */
+                double cx = (tb.min_x + tb.max_x) * 0.5;
+                double cy = (tb.min_y + tb.max_y) * 0.5;
+                if (point_in_polygon(cx, cy, geom, first_ring, n_rings)) {
+                    double fill_x[5] = {tb.min_x, tb.max_x, tb.max_x, tb.min_x, tb.min_x};
+                    double fill_y[5] = {tb.min_y, tb.min_y, tb.max_y, tb.max_y, tb.min_y};
+                    uint32_t fill_off[2] = {0, 5};
+                    arpt_geom fill = {0};
+                    fill.type = 3;
+                    fill.x = fill_x;
+                    fill.y = fill_y;
+                    fill.n_coords = 5;
+                    fill.offsets = fill_off;
+                    fill.n_offsets = 2;
+                    cb(z, tx, ty, &fill, ctx);
+                }
             }
             u32a_free(&ring_starts);
         }
@@ -959,6 +1011,16 @@ static bool feature_subpixel(const double bbox[4], int z) {
     return px_x < 1.0 && px_y < 1.0;
 }
 
+/* Minimum zoom at which point features are included.
+   A point has zero geographic extent so the subpixel check always passes.
+   Instead, include points only when a tile is small enough that individual
+   features are meaningful: when one pixel covers less than ~50 m on the
+   ground (~0.0005°).  This corresponds roughly to zoom 8. */
+static int point_min_zoom(void) {
+    /* 360° / 2^(z+1) / TILE_PIXELS < 0.0005°  →  z ≈ 8 */
+    return 8;
+}
+
 /* Estimate how many tiles a feature's bounding box spans at zoom z. */
 static int64_t estimate_tile_span(const double bbox[4], int z) {
     double n_cols = (double)(1 << (z + 1));
@@ -973,9 +1035,12 @@ void arpt_process_feature_zooms(const arpt_geom *geom, const double bbox[4],
                                 arpt_tile_cb cb, void *ctx) {
     bool is_complex = geom->type >= 2 && geom->n_coords > 1;
 
-    /* Points don't need simplification — process all zooms directly. */
+    /* Points don't need simplification — process directly.
+       Skip low zoom levels where individual points are invisible. */
     if (!is_complex) {
-        for (int z = min_zoom; z <= max_zoom; z++)
+        int pmin = point_min_zoom();
+        if (pmin < min_zoom) pmin = min_zoom;
+        for (int z = pmin; z <= max_zoom; z++)
             arpt_assign_tiles(geom, z, cb, ctx);
         return;
     }
