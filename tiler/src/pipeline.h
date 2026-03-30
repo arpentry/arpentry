@@ -28,6 +28,7 @@ typedef struct {
     const char *dem_path;     /* Path to GeoTIFF DEM (optional) */
 
     int         n_threads;    /* Worker threads (0 = auto-detect) */
+    int         max_span;     /* Max tiles a feature may span per dim (0 = default 64) */
 } arpt_pipeline_config;
 
 /* Run the full tiling pipeline. Returns false on error. */

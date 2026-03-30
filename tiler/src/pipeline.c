@@ -199,6 +199,7 @@ typedef struct {
     arpt_sorter    *sorter;
     int             min_zoom;
     int             max_zoom;
+    int             max_span;
     uint64_t        feat_count;   /* Features processed by this worker */
     uint64_t        batch_count;  /* Batches processed by this worker */
 } worker_ctx;
@@ -234,7 +235,7 @@ static void *worker_fn(void *arg) {
             };
             arpt_process_feature_zooms(&f->geometry, feat_bbox,
                                        wc->min_zoom, wc->max_zoom,
-                                       clip_cb, &ctx);
+                                       wc->max_span, clip_cb, &ctx);
 
             raw_feature_free(f);
         }
@@ -605,6 +606,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
             .sorter = sorters[i],
             .min_zoom = min_zoom,
             .max_zoom = max_zoom,
+            .max_span = config->max_span > 0 ? config->max_span : 64,
         };
         if (pthread_create(&workers[i], NULL, worker_fn, &wctxs[i]) == 0) {
             worker_started[i] = true;

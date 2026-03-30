@@ -994,9 +994,6 @@ static double zoom_tolerance(int zoom) {
     return 360.0 / (double)(1 << (zoom + 10));
 }
 
-/* Maximum number of tiles a feature may span before being skipped. */
-#define MAX_TILE_SPAN 256
-
 /* Check if a feature's bounding box is smaller than one pixel at the
    given zoom level and tile resolution. */
 static bool feature_subpixel(const double bbox[4], int z) {
@@ -1021,17 +1018,19 @@ static int point_min_zoom(void) {
     return 8;
 }
 
-/* Estimate how many tiles a feature's bounding box spans at zoom z. */
-static int64_t estimate_tile_span(const double bbox[4], int z) {
+/* Check if a feature's bounding box exceeds max_span tiles in either
+   dimension at zoom z.  Per-dimension check avoids penalizing thin
+   features (coastlines) the way an area-based limit would. */
+static bool feature_exceeds_span(const double bbox[4], int z, int max_span) {
     double n_cols = (double)(1 << (z + 1));
     double n_rows = (double)(1 << z);
-    int64_t tx_span = (int64_t)ceil((bbox[2] - bbox[0]) / 360.0 * n_cols) + 1;
-    int64_t ty_span = (int64_t)ceil((bbox[3] - bbox[1]) / 180.0 * n_rows) + 1;
-    return tx_span * ty_span;
+    int64_t tx = (int64_t)ceil((bbox[2] - bbox[0]) / 360.0 * n_cols) + 1;
+    int64_t ty = (int64_t)ceil((bbox[3] - bbox[1]) / 180.0 * n_rows) + 1;
+    return tx > max_span || ty > max_span;
 }
 
 void arpt_process_feature_zooms(const arpt_geom *geom, const double bbox[4],
-                                int min_zoom, int max_zoom,
+                                int min_zoom, int max_zoom, int max_span,
                                 arpt_tile_cb cb, void *ctx) {
     bool is_complex = geom->type >= 2 && geom->n_coords > 1;
 
@@ -1056,7 +1055,7 @@ void arpt_process_feature_zooms(const arpt_geom *geom, const double bbox[4],
     for (int z = max_zoom; z >= min_zoom; z--) {
         if (feature_subpixel(bbox, z))
             continue;
-        if (estimate_tile_span(bbox, z) > (int64_t)MAX_TILE_SPAN * MAX_TILE_SPAN)
+        if (feature_exceeds_span(bbox, z, max_span))
             continue;
 
         arpt_geom sg;
