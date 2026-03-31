@@ -7,6 +7,7 @@
 #include "pipeline.h"
 #include "tile.h"
 #include "tile_reader.h"
+#include "wkb.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -56,14 +57,19 @@ static void read_all_features(const char *filename,
     int count = 0;
     arpt_overture_feature feat;
     while (arpt_overture_next(ov, &feat)) {
-        TEST_ASSERT_TRUE_MESSAGE(feat.geometry.n_coords > 0,
+        arpt_geom geom = {0};
+        TEST_ASSERT_TRUE_MESSAGE(
+            arpt_wkb_parse(feat.wkb, feat.wkb_len, &geom),
+            "WKB parse failed");
+
+        TEST_ASSERT_TRUE_MESSAGE(geom.n_coords > 0,
             "Feature has zero coordinates");
 
-        uint32_t type_bit = 1u << feat.geometry.type;
+        uint32_t type_bit = 1u << geom.type;
         if (!(type_bit & allowed_types)) {
             char msg[128];
             snprintf(msg, sizeof(msg),
-                "Unexpected geometry type %u in %s", feat.geometry.type,
+                "Unexpected geometry type %u in %s", geom.type,
                 filename);
             TEST_FAIL_MESSAGE(msg);
         }
@@ -72,16 +78,16 @@ static void read_all_features(const char *filename,
          * antimeridian and at the poles (e.g., Russia wraps past 180,
          * Antarctica extends to ~-90.5 in some datasets). Use generous
          * ranges that still catch truly broken coordinates. */
-        for (uint32_t i = 0; i < feat.geometry.n_coords; i++) {
+        for (uint32_t i = 0; i < geom.n_coords; i++) {
             TEST_ASSERT_TRUE_MESSAGE(
-                feat.geometry.x[i] >= -360.0 && feat.geometry.x[i] <= 360.0,
+                geom.x[i] >= -360.0 && geom.x[i] <= 360.0,
                 "x coordinate out of lon range");
             TEST_ASSERT_TRUE_MESSAGE(
-                feat.geometry.y[i] >= -91.0 && feat.geometry.y[i] <= 91.0,
+                geom.y[i] >= -91.0 && geom.y[i] <= 91.0,
                 "y coordinate out of lat range");
         }
 
-        arpt_geom_free(&feat.geometry);
+        arpt_geom_free(&geom);
         count++;
     }
 
@@ -505,35 +511,36 @@ static void test_gulf_clip_diagnostic(void) {
     diag_collector dc = {NULL, 0, 0};
 
     while (arpt_overture_next(ov, &feat)) {
-        arpt_geom *g = &feat.geometry;
+        arpt_geom g = {0};
+        if (!arpt_wkb_parse(feat.wkb, feat.wkb_len, &g)) continue;
 
         /* Only clip features that overlap the Gulf area
          * Gulf bbox: lon [-100, -80], lat [18, 31] */
-        double gmin_x = g->x[0], gmax_x = g->x[0];
-        double gmin_y = g->y[0], gmax_y = g->y[0];
-        for (uint32_t i = 1; i < g->n_coords; i++) {
-            if (g->x[i] < gmin_x) gmin_x = g->x[i];
-            if (g->x[i] > gmax_x) gmax_x = g->x[i];
-            if (g->y[i] < gmin_y) gmin_y = g->y[i];
-            if (g->y[i] > gmax_y) gmax_y = g->y[i];
+        double gmin_x = g.x[0], gmax_x = g.x[0];
+        double gmin_y = g.y[0], gmax_y = g.y[0];
+        for (uint32_t i = 1; i < g.n_coords; i++) {
+            if (g.x[i] < gmin_x) gmin_x = g.x[i];
+            if (g.x[i] > gmax_x) gmax_x = g.x[i];
+            if (g.y[i] < gmin_y) gmin_y = g.y[i];
+            if (g.y[i] > gmax_y) gmax_y = g.y[i];
         }
 
         /* Skip features that don't overlap the Gulf area */
         if (gmax_x < -100.0 || gmin_x > -80.0 ||
             gmax_y < 18.0 || gmin_y > 31.0) {
-            arpt_geom_free(g);
+            arpt_geom_free(&g);
             continue;
         }
 
         fprintf(stderr, "  Clipping feature type=%u n_coords=%u "
                 "n_offsets=%u bbox=[%.1f,%.1f,%.1f,%.1f]\n",
-                g->type, g->n_coords, g->n_offsets,
+                g.type, g.n_coords, g.n_offsets,
                 gmin_x, gmin_y, gmax_x, gmax_y);
 
         /* Clip at zoom 3 and 4 */
-        arpt_assign_tiles(g, g, 3, diag_cb, &dc);
-        arpt_assign_tiles(g, g, 4, diag_cb, &dc);
-        arpt_geom_free(g);
+        arpt_assign_tiles(&g, &g, 3, diag_cb, &dc);
+        arpt_assign_tiles(&g, &g, 4, diag_cb, &dc);
+        arpt_geom_free(&g);
     }
     arpt_overture_close(ov);
 
@@ -610,31 +617,32 @@ static void test_europe_clip_diagnostic_z4(void) {
     diag_collector dc = {NULL, 0, 0};
 
     while (arpt_overture_next(ov, &feat)) {
-        arpt_geom *g = &feat.geometry;
+        arpt_geom g = {0};
+        if (!arpt_wkb_parse(feat.wkb, feat.wkb_len, &g)) continue;
 
         /* Only clip features that overlap Europe: lon [-15, 50], lat [30, 75] */
-        double gmin_x = g->x[0], gmax_x = g->x[0];
-        double gmin_y = g->y[0], gmax_y = g->y[0];
-        for (uint32_t i = 1; i < g->n_coords; i++) {
-            if (g->x[i] < gmin_x) gmin_x = g->x[i];
-            if (g->x[i] > gmax_x) gmax_x = g->x[i];
-            if (g->y[i] < gmin_y) gmin_y = g->y[i];
-            if (g->y[i] > gmax_y) gmax_y = g->y[i];
+        double gmin_x = g.x[0], gmax_x = g.x[0];
+        double gmin_y = g.y[0], gmax_y = g.y[0];
+        for (uint32_t i = 1; i < g.n_coords; i++) {
+            if (g.x[i] < gmin_x) gmin_x = g.x[i];
+            if (g.x[i] > gmax_x) gmax_x = g.x[i];
+            if (g.y[i] < gmin_y) gmin_y = g.y[i];
+            if (g.y[i] > gmax_y) gmax_y = g.y[i];
         }
 
         if (gmax_x < -15.0 || gmin_x > 50.0 ||
             gmax_y < 30.0 || gmin_y > 75.0) {
-            arpt_geom_free(g);
+            arpt_geom_free(&g);
             continue;
         }
 
         fprintf(stderr, "  EUR feature type=%u n_coords=%u "
                 "n_offsets=%u bbox=[%.1f,%.1f,%.1f,%.1f]\n",
-                g->type, g->n_coords, g->n_offsets,
+                g.type, g.n_coords, g.n_offsets,
                 gmin_x, gmin_y, gmax_x, gmax_y);
 
-        arpt_assign_tiles(g, g, 4, diag_cb, &dc);
-        arpt_geom_free(g);
+        arpt_assign_tiles(&g, &g, 4, diag_cb, &dc);
+        arpt_geom_free(&g);
     }
     arpt_overture_close(ov);
 

@@ -1,5 +1,6 @@
 #include "unity.h"
 #include "overture.h"
+#include "wkb.h"
 #include <carquet/carquet.h>
 #include <stdio.h>
 #include <string.h>
@@ -103,12 +104,17 @@ static void test_overture_roundtrip(void) {
     int count = 0;
     arpt_overture_feature feat;
     while (arpt_overture_next(ov, &feat)) {
-        TEST_ASSERT_EQUAL_UINT32(1, feat.geometry.type);  /* Point */
-        TEST_ASSERT_EQUAL_UINT32(1, feat.geometry.n_coords);
-        TEST_ASSERT_DOUBLE_WITHIN(0.01, (double)count * 10.0, feat.geometry.x[0]);
-        TEST_ASSERT_DOUBLE_WITHIN(0.01, (double)count * 20.0, feat.geometry.y[0]);
+        TEST_ASSERT_NOT_NULL(feat.wkb);
+        TEST_ASSERT_TRUE(feat.wkb_len > 0);
 
-        arpt_geom_free(&feat.geometry);
+        arpt_geom geom = {0};
+        TEST_ASSERT_TRUE(arpt_wkb_parse(feat.wkb, feat.wkb_len, &geom));
+        TEST_ASSERT_EQUAL_UINT32(1, geom.type);  /* Point */
+        TEST_ASSERT_EQUAL_UINT32(1, geom.n_coords);
+        TEST_ASSERT_DOUBLE_WITHIN(0.01, (double)count * 10.0, geom.x[0]);
+        TEST_ASSERT_DOUBLE_WITHIN(0.01, (double)count * 20.0, geom.y[0]);
+
+        arpt_geom_free(&geom);
         count++;
     }
     TEST_ASSERT_EQUAL_INT(N_ROWS, count);

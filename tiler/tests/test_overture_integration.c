@@ -7,6 +7,7 @@
 
 #include "unity.h"
 #include "overture.h"
+#include "wkb.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -49,30 +50,38 @@ static void read_all_features(const char *filename,
     int count = 0;
     arpt_overture_feature feat;
     while (arpt_overture_next(ov, &feat)) {
+        TEST_ASSERT_NOT_NULL_MESSAGE(feat.wkb, "Feature has null WKB");
+        TEST_ASSERT_TRUE_MESSAGE(feat.wkb_len > 0, "Feature has zero WKB length");
+
+        arpt_geom geom = {0};
+        TEST_ASSERT_TRUE_MESSAGE(
+            arpt_wkb_parse(feat.wkb, feat.wkb_len, &geom),
+            "WKB parse failed");
+
         /* Geometry must be present and have coordinates */
-        TEST_ASSERT_TRUE_MESSAGE(feat.geometry.n_coords > 0,
+        TEST_ASSERT_TRUE_MESSAGE(geom.n_coords > 0,
             "Feature has zero coordinates");
 
         /* Geometry type must be one of the allowed types */
-        uint32_t type_bit = 1u << feat.geometry.type;
+        uint32_t type_bit = 1u << geom.type;
         if (!(type_bit & allowed_types)) {
             char msg[128];
             snprintf(msg, sizeof(msg),
-                "Unexpected geometry type %u in %s", feat.geometry.type, filename);
+                "Unexpected geometry type %u in %s", geom.type, filename);
             TEST_FAIL_MESSAGE(msg);
         }
 
         /* Coordinates must be valid lon/lat */
-        for (uint32_t i = 0; i < feat.geometry.n_coords; i++) {
+        for (uint32_t i = 0; i < geom.n_coords; i++) {
             TEST_ASSERT_TRUE_MESSAGE(
-                feat.geometry.x[i] >= -180.0 && feat.geometry.x[i] <= 180.0,
+                geom.x[i] >= -180.0 && geom.x[i] <= 180.0,
                 "x coordinate out of lon range");
             TEST_ASSERT_TRUE_MESSAGE(
-                feat.geometry.y[i] >= -90.0 && feat.geometry.y[i] <= 90.0,
+                geom.y[i] >= -90.0 && geom.y[i] <= 90.0,
                 "y coordinate out of lat range");
         }
 
-        arpt_geom_free(&feat.geometry);
+        arpt_geom_free(&geom);
         count++;
     }
 

@@ -14,7 +14,8 @@ typedef struct arpt_overture arpt_overture;
 
 /* A single OvertureMaps feature. */
 typedef struct {
-    arpt_geom geometry;     /* Parsed WKB geometry */
+    const uint8_t *wkb;     /* Raw WKB bytes (valid until next call) */
+    size_t wkb_len;
     const char *id;         /* Feature ID (NULL if missing) */
     const char *type;       /* Feature type (NULL if missing) */
     const char *subtype;    /* Feature subtype (NULL if missing) */

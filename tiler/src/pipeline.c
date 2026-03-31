@@ -7,6 +7,7 @@
 #include "overture.h"
 #include "sort.h"
 #include "tile_build.h"
+#include "wkb.h"
 #include "workqueue.h"
 
 #include <math.h>
@@ -170,9 +171,13 @@ static void clip_cb(int z, int x, int y,
 
 /* ---- Parallel pipeline data types ---- */
 
-/* A raw feature queued from a reader thread to worker threads. */
+/* A raw feature queued from a reader thread to worker threads.
+ * Normal path: wkb + wkb_len hold raw bytes, worker parses.
+ * Synthetic path: wkb is NULL, geometry is pre-parsed. */
 typedef struct {
-    arpt_geom geometry;
+    uint8_t  *wkb;        /* Owned copy of raw WKB bytes (NULL if pre-parsed) */
+    size_t    wkb_len;
+    arpt_geom geometry;   /* Pre-parsed geometry (synthetic path only) */
     double    bbox[4];
     bool      has_bbox;
     char     *type;       /* Owned copy, may be NULL */
@@ -187,7 +192,8 @@ typedef struct {
 #define FEATURE_BATCH_SIZE 256
 
 static void raw_feature_free(raw_feature *f) {
-    arpt_geom_free(&f->geometry);
+    free(f->wkb);
+    if (!f->wkb) arpt_geom_free(&f->geometry);
     free(f->type);
     free(f->subtype);
 }
@@ -212,11 +218,24 @@ static void *worker_fn(void *arg) {
         for (size_t i = 0; i < batch.count; i++) {
             raw_feature *f = &feats[i];
 
+            /* Parse WKB in worker thread (deferred from reader).
+             * Synthetic features have wkb==NULL with pre-parsed geometry. */
+            arpt_geom geometry = {0};
+            if (f->wkb) {
+                if (!arpt_wkb_parse(f->wkb, f->wkb_len, &geometry)) {
+                    raw_feature_free(f);
+                    continue;
+                }
+            } else {
+                geometry = f->geometry;
+                memset(&f->geometry, 0, sizeof(f->geometry));
+            }
+
             double feat_bbox[4];
             if (f->has_bbox) {
                 memcpy(feat_bbox, f->bbox, sizeof(feat_bbox));
             } else {
-                arpt_geom_bbox(&f->geometry, feat_bbox);
+                arpt_geom_bbox(&geometry, feat_bbox);
             }
 
             const char *cls = f->type ? f->type : "unknown";
@@ -232,10 +251,11 @@ static void *worker_fn(void *arg) {
                 .prop_vals = pvals,
                 .n_props = n_props,
             };
-            arpt_process_feature_zooms(&f->geometry, feat_bbox,
+            arpt_process_feature_zooms(&geometry, feat_bbox,
                                        wc->min_zoom, wc->max_zoom,
                                        clip_cb, &ctx);
 
+            arpt_geom_free(&geometry);
             raw_feature_free(f);
         }
         wc->feat_count += batch.count;
@@ -268,23 +288,23 @@ static void read_overture_input(const arpt_pipeline_input *inp,
 
     arpt_overture_feature feat;
     while (arpt_overture_next(ov, &feat)) {
-        arpt_geom *g = &feat.geometry;
-
-        /* Skip features outside the target bbox */
+        /* Bbox filter first — bbox was read before WKB in the reader,
+         * so we can skip features without ever parsing their geometry. */
         if (feat.has_bbox) {
             if (feat.bbox[2] < config_bbox[0] ||
                 feat.bbox[0] > config_bbox[2] ||
                 feat.bbox[3] < config_bbox[1] ||
                 feat.bbox[1] > config_bbox[3]) {
-                arpt_geom_free(g);
                 continue;
             }
         }
 
-        /* Copy feature into batch buffer */
+        /* Copy raw WKB bytes — parsing is deferred to worker threads */
         raw_feature *rf = &batch_buf[batch_pos];
-        rf->geometry = feat.geometry;      /* Move ownership */
-        memset(&feat.geometry, 0, sizeof(feat.geometry));
+        rf->wkb = malloc(feat.wkb_len);
+        if (!rf->wkb) continue;
+        memcpy(rf->wkb, feat.wkb, feat.wkb_len);
+        rf->wkb_len = feat.wkb_len;
         memcpy(rf->bbox, feat.bbox, sizeof(rf->bbox));
         rf->has_bbox = feat.has_bbox;
         rf->type = feat.type ? strdup(feat.type) : NULL;

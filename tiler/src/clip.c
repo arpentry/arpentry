@@ -848,7 +848,9 @@ static void clip_polygon_part(const arpt_geom *geom,
     int n_cols = 1 << (z + 1);
     int n_rows = 1 << z;
 
-    /* Compute bounding box of this polygon part */
+    /* Compute coordinate range and tile range from the simplified
+     * geometry.  All tiles at a given zoom must clip the SAME geometry
+     * to avoid seams at tile boundaries. */
     uint32_t coord_start, coord_end;
     if (geom->offsets && geom->n_offsets > 1) {
         coord_start = geom->offsets[first_ring];
@@ -863,7 +865,6 @@ static void clip_polygon_part(const arpt_geom *geom,
     int tx_min, tx_max, ty_min, ty_max;
     coords_to_tile_range(geom->x, geom->y, coord_start, coord_count,
                          n_cols, n_rows, &tx_min, &tx_max, &ty_min, &ty_max);
-
     for (int tx = tx_min; tx <= tx_max; tx++) {
         for (int ty = ty_min; ty <= ty_max; ty++) {
             arpt_bounds tb = tile_bounds_buffered(z, tx, ty);
@@ -917,11 +918,11 @@ static void clip_polygon_part(const arpt_geom *geom,
                 da_free(&out_x);
                 da_free(&out_y);
 
-                /* Clipping produced no output, but the tile might be entirely
-                   inside the polygon (simplified boundary may bypass the
-                   tile).  Test the tile center against the original
-                   unsimplified rings so that DP shortcuts cannot create
-                   interior gaps. */
+                /* Clipping the simplified polygon produced no output.
+                   The tile may be fully interior (simplified boundary
+                   bypasses it due to DP shortcuts).  Test the tile
+                   center against the original unsimplified rings;
+                   if inside, emit a tile-filling rectangle. */
                 double cx = (tb.min_x + tb.max_x) * 0.5;
                 double cy = (tb.min_y + tb.max_y) * 0.5;
                 if (point_in_polygon(cx, cy, orig, first_ring, n_rings)) {

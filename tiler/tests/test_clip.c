@@ -2511,6 +2511,44 @@ static void test_simplified_polygon_interior_tiles(void) {
     collector_free(&c);
 }
 
+/* All tiles at a given zoom must clip the SAME geometry (simplified)
+ * to avoid seams at tile boundaries.  Verify that when a simplified
+ * polygon has a smaller bbox than the original, tiles outside the
+ * simplified bbox do NOT receive geometry clipped from the original
+ * (which would have different vertices, causing seams). */
+static void test_no_original_clip_at_boundary(void) {
+    double orig_x[] = {-50.0, -10.0, -10.0, -50.0, -50.0};
+    double orig_y[] = { 60.0,  60.0,  80.0,  80.0,  60.0};
+    uint32_t orig_off[] = {0, 5};
+    arpt_geom original = {
+        .type = 3, .x = orig_x, .y = orig_y, .n_coords = 5,
+        .offsets = orig_off, .n_offsets = 2
+    };
+
+    double simp_x[] = {-50.0, -20.0, -20.0, -50.0, -50.0};
+    double simp_y[] = { 60.0,  60.0,  80.0,  80.0,  60.0};
+    uint32_t simp_off[] = {0, 5};
+    arpt_geom simplified = {
+        .type = 3, .x = simp_x, .y = simp_y, .n_coords = 5,
+        .offsets = simp_off, .n_offsets = 2
+    };
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&simplified, &original, 5, collect_cb, &c);
+
+    /* Tile (5,30,28): lon [-11.25,-5.625], lat [67.5,73.125].
+     * Inside original bbox but outside simplified bbox.
+     * Must NOT receive geometry (would cause seams with neighbors
+     * that clipped the simplified version). */
+    tile_result *t = find_result(&c, 5, 30, 28);
+    TEST_ASSERT_NULL_MESSAGE(t,
+        "Tile outside simplified bbox must not receive original-clipped "
+        "geometry — mixing geometry versions causes tile boundary seams");
+
+    collector_free(&c);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_assign_tiles_null);
@@ -2565,5 +2603,6 @@ int main(void) {
     RUN_TEST(test_reentrant_same_edge);
     RUN_TEST(test_reentrant_top_edge);
     RUN_TEST(test_simplified_polygon_interior_tiles);
+    RUN_TEST(test_no_original_clip_at_boundary);
     return UNITY_END();
 }

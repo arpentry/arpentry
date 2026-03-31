@@ -141,13 +141,21 @@ arpt_overture *arpt_overture_open(const char *path)
 /* Count set bits in a null bitmap up to (but not including) position pos.
  * In carquet's batch reader, set bits mark NULL values and the data array
  * is packed (only non-null values). The sparse index of a non-null row is
- * its row number minus the number of nulls (set bits) before it. */
+ * its row number minus the number of nulls (set bits) before it.
+ *
+ * Uses popcount on full bytes for O(pos/8) instead of O(pos). */
 static int64_t count_nulls_before(const uint8_t *nulls, int64_t pos)
 {
     int64_t count = 0;
-    for (int64_t i = 0; i < pos; i++) {
-        if (nulls[i / 8] & (1u << (i % 8)))
-            count++;
+    int64_t full_bytes = pos / 8;
+    for (int64_t i = 0; i < full_bytes; i++) {
+        count += __builtin_popcount(nulls[i]);
+    }
+    /* Count remaining bits in the partial byte */
+    int rem = (int)(pos % 8);
+    if (rem > 0) {
+        uint8_t mask = (uint8_t)((1u << rem) - 1);
+        count += __builtin_popcount(nulls[full_bytes] & mask);
     }
     return count;
 }
@@ -221,35 +229,8 @@ bool arpt_overture_next(arpt_overture *ov, arpt_overture_feature *out)
         int64_t row = ov->row_in_batch;
         ov->row_in_batch++;
 
-        /* Skip rows with null geometry */
-        if (is_null(ov, ov->col_geometry, row))
-            continue;
-
-        /* Get geometry data using sparse index */
-        const arpt_parquet_bytes *geom_arr =
-            (const arpt_parquet_bytes *)arpt_parquet_cursor_data(
-                ov->cursor, ov->col_geometry);
-        if (!geom_arr) continue;
-
-        int64_t gi = sparse_index(ov, ov->col_geometry, row);
-        const arpt_parquet_bytes *wkb = &geom_arr[gi];
-        if (!wkb->data || wkb->length <= 0)
-            continue;
-
-        if (!arpt_wkb_parse(wkb->data, (size_t)wkb->length, &out->geometry))
-            continue;
-
-        /* String columns — read_string returns owned null-terminated copies */
-        ov->owned_id = read_string(ov, ov->col_id, row);
-        ov->owned_type = read_string(ov, ov->col_type, row);
-        ov->owned_subtype = read_string(ov, ov->col_subtype, row);
-        out->id = ov->owned_id;
-        out->type = ov->owned_type;
-        out->subtype = ov->owned_subtype;
-
-        /* Bbox columns — Overture files may use FLOAT or DOUBLE for bbox.
-         * Bbox columns are inside a struct and always non-null when present,
-         * so we can use the row index directly. */
+        /* Bbox columns first — cheap to read (direct array index) and
+         * allows the caller to filter spatially before WKB parsing. */
         if (ov->col_bbox_xmin >= 0) {
             const void *xmin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_xmin);
             const void *ymin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_ymin);
@@ -270,6 +251,32 @@ bool arpt_overture_next(arpt_overture *ov, arpt_overture_feature *out)
                 out->has_bbox = true;
             }
         }
+
+        /* Skip rows with null geometry */
+        if (is_null(ov, ov->col_geometry, row))
+            continue;
+
+        /* Get raw WKB bytes — defer parsing to worker threads */
+        const arpt_parquet_bytes *geom_arr =
+            (const arpt_parquet_bytes *)arpt_parquet_cursor_data(
+                ov->cursor, ov->col_geometry);
+        if (!geom_arr) continue;
+
+        int64_t gi = sparse_index(ov, ov->col_geometry, row);
+        const arpt_parquet_bytes *wkb = &geom_arr[gi];
+        if (!wkb->data || wkb->length <= 0)
+            continue;
+
+        out->wkb = wkb->data;
+        out->wkb_len = (size_t)wkb->length;
+
+        /* String columns — read_string returns owned null-terminated copies */
+        ov->owned_id = read_string(ov, ov->col_id, row);
+        ov->owned_type = read_string(ov, ov->col_type, row);
+        ov->owned_subtype = read_string(ov, ov->col_subtype, row);
+        out->id = ov->owned_id;
+        out->type = ov->owned_type;
+        out->subtype = ov->owned_subtype;
 
         return true;
     }
