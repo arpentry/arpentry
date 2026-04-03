@@ -148,6 +148,30 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
         return;
     }
 
+    /* Guard against tiles that would exceed WebGPU buffer limits.
+       Each vertex needs 4 bytes in the largest per-vertex buffer. */
+    #define ARPT_MAX_BUFFER_BYTES (200u * 1024u * 1024u)
+    {
+        size_t max_vert_buf = mesh.vertex_count * 4;
+        size_t max_idx_buf = mesh.index_count * sizeof(uint32_t);
+        size_t max_buf = max_vert_buf > max_idx_buf ? max_vert_buf : max_idx_buf;
+        if (max_buf > ARPT_MAX_BUFFER_BYTES) {
+            fprintf(stderr, "[TILE] %d/%d/%d SKIPPED: oversized "
+                    "(verts=%zu, indices=%zu, max_buf=%zu bytes)\n",
+                    key.level, key.x, key.y,
+                    mesh.vertex_count, mesh.index_count, max_buf);
+            updated.state = TILE_FAILED;
+            updated.retries = MAX_RETRIES;
+            tm_hashmap_set(tm, &updated);
+            free(flatbuf);
+            return;
+        }
+        fprintf(stderr, "[TILE] %d/%d/%d loaded: verts=%zu indices=%zu "
+                "(%zu bytes decompressed)\n",
+                key.level, key.x, key.y,
+                mesh.vertex_count, mesh.index_count, size);
+    }
+
     /* Compute average elevation (mm → m) for terrain awareness */
     if (mesh.vertex_count > 0 && mesh.z) {
         double sum = 0.0;

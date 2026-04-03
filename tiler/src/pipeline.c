@@ -404,7 +404,13 @@ static void *encoder_fn(void *arg) {
             void *tile_data = NULL;
 
             if (j->builder) {
+                uint32_t coords = arpt_tile_builder_total_coords(j->builder);
                 tile_data = arpt_tile_builder_finish(j->builder, &tile_size);
+                if (coords > 500000 || tile_size > 512 * 1024) {
+                    fprintf(stderr, "[TILER] tile %d/%u/%u: "
+                            "coords=%u, compressed=%zu bytes\n",
+                            j->z, j->x, j->y, coords, tile_size);
+                }
                 arpt_tile_builder_free(j->builder);
             }
 

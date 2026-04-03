@@ -24,6 +24,9 @@ bool arpt_tile_builder_add_feature(arpt_tile_builder *b,
 /* Finish building. Returns Brotli-compressed .arpt data. Caller frees. */
 void *arpt_tile_builder_finish(arpt_tile_builder *b, size_t *out_size);
 
+/* Total coordinate count accumulated across all features. */
+uint32_t arpt_tile_builder_total_coords(const arpt_tile_builder *b);
+
 /* Free the builder. */
 void arpt_tile_builder_free(arpt_tile_builder *b);
 

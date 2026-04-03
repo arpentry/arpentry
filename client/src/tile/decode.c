@@ -545,11 +545,11 @@ bool arpt_decode_trees(const void *flatbuf, size_t size,
         flatbuffers_uint16_vec_t xv = arpentry_tiles_PointGeometry_x(pt);
         flatbuffers_uint16_vec_t yv = arpentry_tiles_PointGeometry_y(pt);
         flatbuffers_int32_vec_t zv = arpentry_tiles_PointGeometry_z(pt);
-        if (!xv || !yv || !zv) continue;
+        if (!xv || !yv) continue;
 
         size_t vc = flatbuffers_uint16_vec_len(xv);
         if (flatbuffers_uint16_vec_len(yv) != vc) continue;
-        if (flatbuffers_int32_vec_len(zv) != vc) continue;
+        if (zv && flatbuffers_int32_vec_len(zv) != vc) continue;
 
         uint8_t mi = tree_model_from_class(feat, class_key_idx, values,
                                                  class_names, class_count);
@@ -558,7 +558,7 @@ bool arpt_decode_trees(const void *flatbuf, size_t size,
         for (size_t v = 0; v < vc; v++) {
             out->points[count].qx = xv[v];
             out->points[count].qy = yv[v];
-            out->points[count].z = zv[v];
+            out->points[count].z = zv ? zv[v] : 0;
             out->points[count].model_index = mi;
             out->points[count].id = id32;
             count++;
@@ -687,11 +687,11 @@ bool arpt_decode_pois(const void *flatbuf, size_t size,
         flatbuffers_uint16_vec_t xv = arpentry_tiles_PointGeometry_x(pt);
         flatbuffers_uint16_vec_t yv = arpentry_tiles_PointGeometry_y(pt);
         flatbuffers_int32_vec_t zv = arpentry_tiles_PointGeometry_z(pt);
-        if (!xv || !yv || !zv) continue;
+        if (!xv || !yv) continue;
 
         size_t vc = flatbuffers_uint16_vec_len(xv);
         if (flatbuffers_uint16_vec_len(yv) != vc) continue;
-        if (flatbuffers_int32_vec_len(zv) != vc) continue;
+        if (zv && flatbuffers_int32_vec_len(zv) != vc) continue;
 
         /* Resolve name and icon once per feature */
         char name[64];
@@ -702,7 +702,7 @@ bool arpt_decode_pois(const void *flatbuf, size_t size,
         for (size_t v = 0; v < vc; v++) {
             out->points[count].qx = xv[v];
             out->points[count].qy = yv[v];
-            out->points[count].z = zv[v];
+            out->points[count].z = zv ? zv[v] : 0;
             memcpy(out->points[count].name, name, sizeof(name));
             memcpy(out->points[count].icon, icon, sizeof(icon));
             count++;

@@ -191,6 +191,10 @@ static void dispatch_request(struct net_conn *conn, struct server_ctx *ctx,
                 ctx->archive, (uint8_t)level, (uint32_t)x, (uint32_t)y,
                 &tile_size);
             if (tile) {
+                if (tile_size > 512 * 1024) {
+                    fprintf(stderr, "[TILE] %d/%d/%d: compressed=%zu bytes\n",
+                            level, x, y, tile_size);
+                }
                 write_response(conn, 200, "application/x-arpt", "br",
                                tile, tile_size);
             } else {

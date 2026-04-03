@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <webgpu/webgpu.h>
@@ -284,6 +285,10 @@ static inline WGPUBuffer create_buffer(WGPUDevice device, WGPUQueue queue,
                                         WGPUBufferUsageFlags usage,
                                         const void *data, size_t size) {
     size_t aligned = (size + 3) & ~(size_t)3;
+    if (aligned > 200u * 1024u * 1024u) {
+        fprintf(stderr, "WARNING: create_buffer: %zu bytes exceeds safety limit\n",
+                aligned);
+    }
     WGPUBufferDescriptor desc = {
         .usage = usage | WGPUBufferUsage_CopyDst,
         .size = aligned,

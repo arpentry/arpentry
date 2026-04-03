@@ -125,6 +125,7 @@ struct arpt_tile_builder {
     stored_feat *feats;
     uint32_t n_feats;
     uint32_t feat_cap;
+    uint32_t total_coords;
 };
 
 static uint16_t quantize_x(const arpt_bounds *b, double x) {
@@ -267,17 +268,32 @@ bool arpt_tile_builder_add_feature(arpt_tile_builder *b,
     }
 
     b->n_feats++;
+    b->total_coords += g->n_coords;
     return true;
 }
 
-/* Build geometry for one feature into the flatcc builder */
+/* Check if any element of a z array is non-zero. */
+static bool has_nonzero_z(const int32_t *qz, uint32_t n) {
+    if (!qz) return false;
+    for (uint32_t i = 0; i < n; i++) {
+        if (qz[i] != 0) return true;
+    }
+    return false;
+}
+
+/* Build geometry for one feature into the flatcc builder.
+   Omits the z array when all values are zero to save ~33% of
+   per-coordinate storage for 2D features (land, coastlines, etc.). */
 static void build_geom(flatcc_builder_t *fb, const stored_feat *sf) {
+    bool emit_z = has_nonzero_z(sf->qz, sf->n_coords);
+
     switch (sf->geom_type) {
     case 1: case 4: { /* Point / MultiPoint */
         arpentry_tiles_PointGeometry_start(fb);
         arpentry_tiles_PointGeometry_x_create(fb, sf->qx, sf->n_coords);
         arpentry_tiles_PointGeometry_y_create(fb, sf->qy, sf->n_coords);
-        arpentry_tiles_PointGeometry_z_create(fb, sf->qz, sf->n_coords);
+        if (emit_z)
+            arpentry_tiles_PointGeometry_z_create(fb, sf->qz, sf->n_coords);
         arpentry_tiles_PointGeometry_ref_t ref = arpentry_tiles_PointGeometry_end(fb);
         arpentry_tiles_Feature_geometry_PointGeometry_add(fb, ref);
         break;
@@ -286,7 +302,8 @@ static void build_geom(flatcc_builder_t *fb, const stored_feat *sf) {
         arpentry_tiles_LineGeometry_start(fb);
         arpentry_tiles_LineGeometry_x_create(fb, sf->qx, sf->n_coords);
         arpentry_tiles_LineGeometry_y_create(fb, sf->qy, sf->n_coords);
-        arpentry_tiles_LineGeometry_z_create(fb, sf->qz, sf->n_coords);
+        if (emit_z)
+            arpentry_tiles_LineGeometry_z_create(fb, sf->qz, sf->n_coords);
         if (sf->offsets && sf->n_offsets > 0) {
             arpentry_tiles_LineGeometry_line_offsets_create(fb, sf->offsets, sf->n_offsets);
         }
@@ -298,7 +315,8 @@ static void build_geom(flatcc_builder_t *fb, const stored_feat *sf) {
         arpentry_tiles_PolygonGeometry_start(fb);
         arpentry_tiles_PolygonGeometry_x_create(fb, sf->qx, sf->n_coords);
         arpentry_tiles_PolygonGeometry_y_create(fb, sf->qy, sf->n_coords);
-        arpentry_tiles_PolygonGeometry_z_create(fb, sf->qz, sf->n_coords);
+        if (emit_z)
+            arpentry_tiles_PolygonGeometry_z_create(fb, sf->qz, sf->n_coords);
         if (sf->offsets && sf->n_offsets > 0) {
             arpentry_tiles_PolygonGeometry_ring_offsets_create(fb, sf->offsets, sf->n_offsets);
         }
@@ -677,6 +695,10 @@ void *arpt_tile_builder_finish(arpt_tile_builder *b, size_t *out_size) {
     free(fb_buf);
     if (out_size) *out_size = compressed_size;
     return compressed;
+}
+
+uint32_t arpt_tile_builder_total_coords(const arpt_tile_builder *b) {
+    return b ? b->total_coords : 0;
 }
 
 void arpt_tile_builder_free(arpt_tile_builder *b) {

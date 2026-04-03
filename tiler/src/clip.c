@@ -1020,6 +1020,20 @@ static int point_min_zoom(void) {
     return 8;
 }
 
+/* Minimum ring area (in geographic degrees²) at the given zoom.
+   Rings smaller than 1 pixel² are dropped after simplification. */
+static double zoom_min_area(int zoom) {
+    double pixel_lon = 360.0 / ((double)(1 << (zoom + 1)) * TILE_PIXELS);
+    double pixel_lat = 180.0 / ((double)(1 << zoom) * TILE_PIXELS);
+    return pixel_lon * pixel_lat;
+}
+
+/* Minimum line length (in geographic degrees) at the given zoom.
+   Lines shorter than 1 pixel are dropped after simplification. */
+static double zoom_min_length(int zoom) {
+    return 360.0 / ((double)(1 << (zoom + 1)) * TILE_PIXELS);
+}
+
 void arpt_process_feature_zooms(const arpt_geom *geom, const double bbox[4],
                                 int min_zoom, int max_zoom,
                                 arpt_tile_cb cb, void *ctx) {
@@ -1051,7 +1065,8 @@ void arpt_process_feature_zooms(const arpt_geom *geom, const double bbox[4],
         double tol = zoom_tolerance(z);
         const arpt_geom *input = have_prev ? &prev : geom;
 
-        if (!arpt_simplify_geom(input, tol, &sg))
+        if (!arpt_simplify_geom(input, tol, zoom_min_area(z),
+                                zoom_min_length(z), &sg))
             continue;
 
         bool unchanged = (sg.n_coords == input->n_coords);

@@ -72,6 +72,7 @@ foreach(_tgt flatccrt flatcc flatcc_cli)
             -Wno-error=c23-extensions
             -Wno-error=unused-but-set-variable
             -Wno-error=implicit-int-conversion
+            -Wno-error=unterminated-string-initialization
         )
     endif()
 endforeach()

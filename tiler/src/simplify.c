@@ -529,13 +529,42 @@ uint32_t arpt_simplify_ring(double *x, double *y, uint32_t count,
     return out;
 }
 
+/* ---- Geometry utilities ---- */
+
+double arpt_ring_area(const double *x, const double *y, uint32_t count) {
+    if (count < 4) return 0.0;
+    double area2 = 0.0;
+    uint32_t n = count - 1; /* exclude closing vertex */
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t j = (i + 1 < n) ? i + 1 : 0;
+        area2 += x[i] * y[j] - x[j] * y[i];
+    }
+    return fabs(area2) * 0.5;
+}
+
+double arpt_line_length(const double *x, const double *y, uint32_t count) {
+    if (count < 2) return 0.0;
+    double len = 0.0;
+    for (uint32_t i = 1; i < count; i++) {
+        double dx = x[i] - x[i - 1];
+        double dy = y[i] - y[i - 1];
+        len += sqrt(dx * dx + dy * dy);
+    }
+    return len;
+}
+
 /* ---- Geometry-level simplification ---- */
 
-/* Simplify a geometry, producing a new copy with reduced coordinates.
- * Returns false if the geometry degenerates completely. */
 bool arpt_simplify_geom(const arpt_geom *in, double tolerance,
+                         double min_area, double min_length,
                          arpt_geom *out) {
     if (!in || !out) return false;
+
+    /* Pre-filter: reject line features shorter than min_length */
+    if (in->type == 2 && min_length > 0.0 &&
+        arpt_line_length(in->x, in->y, in->n_coords) < min_length)
+        return false;
+
     if (tolerance <= 0.0 || in->n_coords <= 2) {
         /* No simplification needed — shallow copy with owned arrays */
         *out = *in;
@@ -593,7 +622,9 @@ bool arpt_simplify_geom(const arpt_geom *in, double tolerance,
                 new_n = arpt_simplify_ring(out->x + start, out->y + start,
                                            ring_n, tolerance);
             }
-            if (new_n >= 4) {
+            if (new_n >= 4 &&
+                (min_area <= 0.0 ||
+                 arpt_ring_area(out->x + start, out->y + start, new_n) >= min_area)) {
                 if (compact != start) {
                     memmove(out->x + compact, out->x + start, new_n * sizeof(double));
                     memmove(out->y + compact, out->y + start, new_n * sizeof(double));
@@ -619,7 +650,9 @@ bool arpt_simplify_geom(const arpt_geom *in, double tolerance,
                 new_n = arpt_simplify(out->x + start, out->y + start,
                                       line_n, tolerance);
             }
-            if (new_n >= 2) {
+            if (new_n >= 2 &&
+                (min_length <= 0.0 ||
+                 arpt_line_length(out->x + start, out->y + start, new_n) >= min_length)) {
                 if (compact != start) {
                     memmove(out->x + compact, out->x + start, new_n * sizeof(double));
                     memmove(out->y + compact, out->y + start, new_n * sizeof(double));
@@ -633,9 +666,22 @@ bool arpt_simplify_geom(const arpt_geom *in, double tolerance,
         out->offsets[n_lines] = compact;
         out->n_coords = compact;
         if (compact < 2) { arpt_geom_free(out); memset(out, 0, sizeof(*out)); return false; }
+    } else if (out->type == 3) {
+        /* Single-ring polygon without offsets */
+        out->n_coords = arpt_simplify_ring(out->x, out->y, out->n_coords,
+                                            tolerance);
+        if (out->n_coords < 4 ||
+            (min_area > 0.0 &&
+             arpt_ring_area(out->x, out->y, out->n_coords) < min_area)) {
+            arpt_geom_free(out); memset(out, 0, sizeof(*out)); return false;
+        }
     } else if (out->type == 2) {
         out->n_coords = arpt_simplify(out->x, out->y, out->n_coords, tolerance);
-        if (out->n_coords < 2) { arpt_geom_free(out); memset(out, 0, sizeof(*out)); return false; }
+        if (out->n_coords < 2 ||
+            (min_length > 0.0 &&
+             arpt_line_length(out->x, out->y, out->n_coords) < min_length)) {
+            arpt_geom_free(out); memset(out, 0, sizeof(*out)); return false;
+        }
     }
 
     return true;

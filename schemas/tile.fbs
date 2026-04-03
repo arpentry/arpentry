@@ -31,20 +31,20 @@ struct Part {
 table PointGeometry {
   x: [uint16] (required);
   y: [uint16] (required);
-  z: [int32] (required);
+  z: [int32];                  // optional, omitted when all elevations are zero
 }
 
 table LineGeometry {
   x: [uint16] (required);
   y: [uint16] (required);
-  z: [int32] (required);
+  z: [int32];                  // optional, omitted when all elevations are zero
   line_offsets: [uint32];      // N+1 vertex offsets partitioning into linestrings
 }
 
 table PolygonGeometry {
   x: [uint16] (required);
   y: [uint16] (required);
-  z: [int32] (required);
+  z: [int32];                  // optional, omitted when all elevations are zero
   ring_offsets: [uint32];      // N+1 vertex offsets partitioning into rings (exterior first, then holes)
   polygon_offsets: [uint32];  // MultiPolygon: ring offsets partitioning into polygons
 }
