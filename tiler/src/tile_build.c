@@ -1,5 +1,4 @@
 #include "tile_build.h"
-#include "dem.h"
 #include "layers.h"
 #include "tile_builder.h"
 
@@ -117,7 +116,6 @@ typedef struct {
 
 struct arpt_tile_builder {
     arpt_bounds bounds;
-    const arpt_dem *dem;
 
     str_dict keys;
     str_dict vals;
@@ -144,12 +142,75 @@ static uint16_t quantize_y(const arpt_bounds *b, double y) {
     return (uint16_t)q;
 }
 
-arpt_tile_builder *arpt_tile_builder_create(arpt_bounds bounds,
-                                            const arpt_dem *dem) {
+/* Remove consecutive duplicate vertices from quantized coordinate arrays.
+   For multi-ring/multi-line geometries, each part is deduped independently
+   and offsets are updated.  Returns the new total coordinate count.
+   min_verts is the minimum surviving vertex count per part (4 for polygon
+   rings, 2 for line segments); parts that degenerate below this are
+   removed. */
+static uint32_t dedup_quantized(uint16_t *qx, uint16_t *qy, int32_t *qz,
+                                uint32_t n_coords,
+                                uint32_t *offsets, uint32_t *n_offsets,
+                                uint32_t min_verts) {
+    if (n_coords <= 1) return n_coords;
+
+    /* No offsets: single part */
+    if (!offsets || !n_offsets || *n_offsets <= 1) {
+        uint32_t out = 1;
+        for (uint32_t i = 1; i < n_coords; i++) {
+            if (qx[i] != qx[out - 1] || qy[i] != qy[out - 1]) {
+                qx[out] = qx[i];
+                qy[out] = qy[i];
+                if (qz) qz[out] = qz[i];
+                out++;
+            }
+        }
+        return out;
+    }
+
+    /* Multi-part: dedup each part, compact, update offsets */
+    uint32_t n_parts = *n_offsets - 1;
+    uint32_t compact = 0;
+    uint32_t kept_parts = 0;
+
+    for (uint32_t p = 0; p < n_parts; p++) {
+        uint32_t start = offsets[p];
+        uint32_t end = offsets[p + 1];
+        uint32_t pn = end - start;
+        if (pn == 0) continue;
+
+        /* Dedup this part into the compact position */
+        qx[compact] = qx[start];
+        qy[compact] = qy[start];
+        if (qz) qz[compact] = qz[start];
+        uint32_t out = 1;
+        for (uint32_t i = 1; i < pn; i++) {
+            uint32_t si = start + i;
+            if (qx[si] != qx[compact + out - 1] ||
+                qy[si] != qy[compact + out - 1]) {
+                qx[compact + out] = qx[si];
+                qy[compact + out] = qy[si];
+                if (qz) qz[compact + out] = qz[si];
+                out++;
+            }
+        }
+
+        if (out >= min_verts) {
+            offsets[kept_parts] = compact;
+            kept_parts++;
+            compact += out;
+        }
+    }
+
+    offsets[kept_parts] = compact;
+    *n_offsets = kept_parts + 1;
+    return compact;
+}
+
+arpt_tile_builder *arpt_tile_builder_create(arpt_bounds bounds) {
     arpt_tile_builder *b = calloc(1, sizeof(*b));
     if (!b) return NULL;
     b->bounds = bounds;
-    b->dem = dem;
     str_dict_init(&b->keys);
     str_dict_init(&b->vals);
     return b;
@@ -251,6 +312,17 @@ bool arpt_tile_builder_add_feature(arpt_tile_builder *b,
         }
         memcpy(sf->offsets, g->offsets, g->n_offsets * sizeof(uint32_t));
         sf->n_offsets = g->n_offsets;
+    }
+
+    /* Remove consecutive duplicate vertices that collapsed during
+       quantization.  Polygon rings need >= 4 verts (3 unique + closing),
+       line strings need >= 2. */
+    uint32_t min_verts = (sf->geom_type == 3 || sf->geom_type == 6) ? 4 : 2;
+    sf->n_coords = dedup_quantized(sf->qx, sf->qy, sf->qz, sf->n_coords,
+                                   sf->offsets, &sf->n_offsets, min_verts);
+    if (sf->n_coords < min_verts && sf->geom_type >= 2) {
+        free(sf->qx); free(sf->qy); free(sf->qz); free(sf->offsets);
+        return false;
     }
 
     /* Intern properties */
@@ -377,14 +449,9 @@ static void encode_octahedral(double nx, double ny, double nz,
     *out_y = (int8_t)(sy >= 0.0 ? sy + 0.5 : sy - 0.5);
 }
 
-/* Emit a subdivided terrain mesh covering the tile extent as layer 0.
-   If a DEM is provided, vertices get real elevation and computed normals.
-   Otherwise the mesh is flat (z=0, normals pointing up).
-
-   Optimization: sample DEM into a padded grid once, then derive normals
-   from central differences — avoids redundant DEM lookups. */
-static void emit_terrain(flatcc_builder_t *fb, const arpt_bounds *bounds,
-                          const arpt_dem *dem) {
+/* Emit a flat subdivided terrain mesh covering the tile extent as layer 0.
+   Vertices are at z=0 with sphere-surface normals for globe rendering. */
+static void emit_terrain(flatcc_builder_t *fb, const arpt_bounds *bounds) {
     const uint32_t gn = terrain_grid_size(bounds);
     const uint32_t n_verts = (gn + 1) * (gn + 1);
     const uint32_t n_tris = gn * gn * 2;
@@ -402,31 +469,8 @@ static void emit_terrain(flatcc_builder_t *fb, const arpt_bounds *bounds,
 
     double lon_span = bounds->max_x - bounds->min_x;
     double lat_span = bounds->max_y - bounds->min_y;
-    double dx_deg = lon_span / gn;
-    double dy_deg = lat_span / gn;
 
-    /* Sample DEM into a padded (gn+3)×(gn+3) elevation grid.
-       Padding of 1 cell on each side provides neighbor values for
-       central-difference normals without extra DEM lookups.
-       Grid index (r,c) maps to vertex (r-1, c-1); padding at edges. */
-    const uint32_t pg = gn + 3;  /* padded grid side */
-    double *elev_grid = NULL;
-    if (dem) {
-        elev_grid = malloc(pg * pg * sizeof(double));
-        if (elev_grid) {
-            for (uint32_t r = 0; r < pg; r++) {
-                double lat = bounds->min_y + ((double)r - 1.0) / gn * lat_span;
-                for (uint32_t c = 0; c < pg; c++) {
-                    double lon = bounds->min_x + ((double)c - 1.0) / gn * lon_span;
-                    double e = arpt_dem_sample(dem, lon, lat);
-                    if (e < 0.0) e = 0.0;
-                    elev_grid[r * pg + c] = e;
-                }
-            }
-        }
-    }
-
-    /* Generate grid vertices with elevation from the grid */
+    /* Generate flat grid vertices */
     for (uint32_t row = 0; row <= gn; row++) {
         for (uint32_t col = 0; col <= gn; col++) {
             uint32_t vi = row * (gn + 1) + col;
@@ -434,87 +478,23 @@ static void emit_terrain(flatcc_builder_t *fb, const arpt_bounds *bounds,
                       (uint32_t)((uint64_t)col * (TILE_EXTENT - 1) / gn));
             vy[vi] = (uint16_t)(TILE_BUFFER +
                       (uint32_t)((uint64_t)row * (TILE_EXTENT - 1) / gn));
-
-            if (elev_grid) {
-                /* Vertex (row,col) is at padded grid index (row+1, col+1) */
-                vz[vi] = (int32_t)(elev_grid[(row + 1) * pg + (col + 1)] * 1000.0);
-            }
         }
     }
 
-    /* Precompute sin/cos tables — lon varies by column, lat by row.
-       This reduces trig calls from (gn+1)^2 * 4 to (gn+1) * 4. */
-    double *sin_lon_tbl = malloc((gn + 1) * sizeof(double));
-    double *cos_lon_tbl = malloc((gn + 1) * sizeof(double));
-    double *sin_lat_tbl = malloc((gn + 1) * sizeof(double));
-    double *cos_lat_tbl = malloc((gn + 1) * sizeof(double));
-    if (!sin_lon_tbl || !cos_lon_tbl || !sin_lat_tbl || !cos_lat_tbl) {
-        free(sin_lon_tbl); free(cos_lon_tbl);
-        free(sin_lat_tbl); free(cos_lat_tbl);
-        free(elev_grid);
-        free(vx); free(vy); free(vz); free(indices); free(normals);
-        return;
-    }
-    for (uint32_t col = 0; col <= gn; col++) {
-        double lon_r = (bounds->min_x + (double)col / gn * lon_span) * M_PI / 180.0;
-        sin_lon_tbl[col] = sin(lon_r);
-        cos_lon_tbl[col] = cos(lon_r);
-    }
+    /* Compute sphere-surface normals in ECEF (up vector at each vertex) */
     for (uint32_t row = 0; row <= gn; row++) {
         double lat_r = (bounds->min_y + (double)row / gn * lat_span) * M_PI / 180.0;
-        sin_lat_tbl[row] = sin(lat_r);
-        cos_lat_tbl[row] = cos(lat_r);
-    }
-
-    /* Compute normals in ECEF using ENU basis vectors.
-       Derive slopes from the padded elevation grid using central
-       differences instead of extra DEM lookups. */
-    for (uint32_t row = 0; row <= gn; row++) {
+        double sin_lat = sin(lat_r), cos_lat = cos(lat_r);
         for (uint32_t col = 0; col <= gn; col++) {
             uint32_t vi = row * (gn + 1) + col;
-
-            double sin_lon = sin_lon_tbl[col], cos_lon = cos_lon_tbl[col];
-            double sin_lat = sin_lat_tbl[row], cos_lat = cos_lat_tbl[row];
-
-            /* ENU basis vectors in ECEF */
-            double e_x = -sin_lon,           e_y = cos_lon,            e_z = 0.0;
-            double n_x = -sin_lat * cos_lon, n_y = -sin_lat * sin_lon, n_z = cos_lat;
-            double u_x =  cos_lat * cos_lon, u_y =  cos_lat * sin_lon, u_z = sin_lat;
-
-            double dzdx = 0.0, dzdy = 0.0;
-            if (elev_grid) {
-                /* Central differences from padded grid.
-                   Vertex (row,col) → padded (row+1, col+1).
-                   Neighbors: (row+1, col+2), (row+1, col), etc. */
-                uint32_t pr = row + 1, pc = col + 1;
-                double z_xp = elev_grid[pr * pg + (pc + 1)];
-                double z_xm = elev_grid[pr * pg + (pc - 1)];
-                double z_yp = elev_grid[(pr + 1) * pg + pc];
-                double z_ym = elev_grid[(pr - 1) * pg + pc];
-
-                double cell_w = dx_deg * 111320.0 * cos_lat * 2.0;
-                double cell_h = dy_deg * 111320.0 * 2.0;
-                if (cell_w > 0.0) dzdx = (z_xp - z_xm) / cell_w;
-                if (cell_h > 0.0) dzdy = (z_yp - z_ym) / cell_h;
-            }
-
-            /* ECEF normal: up - dzdx*east - dzdy*north */
-            double nx = u_x - dzdx * e_x - dzdy * n_x;
-            double ny = u_y - dzdx * e_y - dzdy * n_y;
-            double nz = u_z - dzdx * e_z - dzdy * n_z;
-            double len = sqrt(nx * nx + ny * ny + nz * nz);
-            nx /= len; ny /= len; nz /= len;
-
+            double lon_r = (bounds->min_x + (double)col / gn * lon_span) * M_PI / 180.0;
+            double nx = cos_lat * cos(lon_r);
+            double ny = cos_lat * sin(lon_r);
+            double nz = sin_lat;
             encode_octahedral(nx, ny, nz,
                               &normals[vi * 2], &normals[vi * 2 + 1]);
         }
     }
-
-    free(elev_grid);
-    free(sin_lon_tbl);
-    free(cos_lon_tbl);
-    free(sin_lat_tbl);
-    free(cos_lat_tbl);
 
     /* Generate triangle indices (two triangles per grid cell) */
     uint32_t ii = 0;
@@ -613,7 +593,7 @@ void *arpt_tile_builder_finish(arpt_tile_builder *b, size_t *out_size) {
         if (b->feats[i].layer == 0) { has_layer0 = true; break; }
     }
     if (!has_layer0) {
-        emit_terrain(&fb, &b->bounds, b->dem);
+        emit_terrain(&fb, &b->bounds);
     }
 
     for (uint32_t layer = 0; layer <= max_layer; layer++) {

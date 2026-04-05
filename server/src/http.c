@@ -150,7 +150,7 @@ static void *build_empty_tile(int level, int x, int y, size_t *out_size) {
     double s_lat = atan(sinh(M_PI * (1.0 - 2.0 * (double)(y + 1) / n))) * 180.0 / M_PI;
 
     arpt_bounds bounds = { west, s_lat, east, n_lat };
-    arpt_tile_builder *tb = arpt_tile_builder_create(bounds, NULL);
+    arpt_tile_builder *tb = arpt_tile_builder_create(bounds);
     if (!tb) return NULL;
 
     /* No features → the tile builder will inject a flat terrain mesh */

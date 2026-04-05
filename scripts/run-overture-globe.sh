@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download Overture Maps base-theme data, tile it as a globe, serve and view.
+# Download Overture Maps land_cover+bathymetry data, tile as a globe, serve and view.
 #
 # Prerequisites:
 #   pip install overturemaps
@@ -22,8 +22,8 @@ TILER="$BUILD_DIR/tiler/arpentry_tiler"
 BBOX="-180,-85,180,85"
 
 # Zoom range
-MIN_ZOOM=1
-MAX_ZOOM=12
+MIN_ZOOM=0
+MAX_ZOOM=4
 
 # Parse arguments
 SKIP_DOWNLOAD=false
@@ -66,7 +66,8 @@ download_type() {
     echo "  -> $(du -h "$output" | cut -f1)"
 }
 
-download_type land
+download_type land_cover
+download_type bathymetry
 
 # ── Tile ──────────────────────────────────────────────────────────────────────
 
@@ -81,7 +82,8 @@ if [ ! -f "$ARCHIVE" ]; then
         --min-zoom "$MIN_ZOOM" \
         --max-zoom "$MAX_ZOOM" \
         --mem $((256 * 1024 * 1024)) \
-        --input "1:$DATA_DIR/land.parquet"
+        --input "1:$DATA_DIR/land_cover.parquet" \
+        --input "2:$DATA_DIR/bathymetry.parquet"
 
     echo "Archive: $(du -h "$ARCHIVE" | cut -f1)"
 else

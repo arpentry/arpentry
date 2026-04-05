@@ -848,9 +848,7 @@ static void clip_polygon_part(const arpt_geom *geom,
     int n_cols = 1 << (z + 1);
     int n_rows = 1 << z;
 
-    /* Compute coordinate range and tile range from the simplified
-     * geometry.  All tiles at a given zoom must clip the SAME geometry
-     * to avoid seams at tile boundaries. */
+    /* Guard: simplified geometry must have enough coordinates to clip. */
     uint32_t coord_start, coord_end;
     if (geom->offsets && geom->n_offsets > 1) {
         coord_start = geom->offsets[first_ring];
@@ -862,8 +860,13 @@ static void clip_polygon_part(const arpt_geom *geom,
     uint32_t coord_count = coord_end - coord_start;
     if (coord_count < 3) return;
 
+    /* Tile range from the ORIGINAL geometry so that tiles covered by
+     * rings dropped during simplification are still visited.  The
+     * clipping loop below uses the simplified geometry; tiles where
+     * clipping produces no output fall through to the PIP test against
+     * the original, which correctly emits fill rectangles. */
     int tx_min, tx_max, ty_min, ty_max;
-    coords_to_tile_range(geom->x, geom->y, coord_start, coord_count,
+    coords_to_tile_range(orig->x, orig->y, 0, orig->n_coords,
                          n_cols, n_rows, &tx_min, &tx_max, &ty_min, &ty_max);
     for (int tx = tx_min; tx <= tx_max; tx++) {
         for (int ty = ty_min; ty <= ty_max; ty++) {
@@ -925,7 +928,9 @@ static void clip_polygon_part(const arpt_geom *geom,
                    if inside, emit a tile-filling rectangle. */
                 double cx = (tb.min_x + tb.max_x) * 0.5;
                 double cy = (tb.min_y + tb.max_y) * 0.5;
-                if (point_in_polygon(cx, cy, orig, first_ring, n_rings)) {
+                uint32_t orig_n_rings = orig->n_offsets > 0
+                    ? orig->n_offsets - 1 : 1;
+                if (point_in_polygon(cx, cy, orig, 0, orig_n_rings)) {
                     double fill_x[5] = {tb.min_x, tb.max_x, tb.max_x, tb.min_x, tb.min_x};
                     double fill_y[5] = {tb.min_y, tb.min_y, tb.max_y, tb.max_y, tb.min_y};
                     uint32_t fill_off[2] = {0, 5};
@@ -990,14 +995,15 @@ void arpt_assign_tiles(const arpt_geom *geom, const arpt_geom *orig,
 
 /* ---- Feature processing across zoom levels ---- */
 
-/* Simplification tolerance for a given zoom: approximately one pixel
-   at the tile resolution. */
+/* Simplification tolerance for a given zoom: 1 pixel at the tile
+   resolution.  pixel = 360 / (2^(z+1) * 256) = 360 / 2^(z+9). */
 static double zoom_tolerance(int zoom) {
-    return 360.0 / (double)(1 << (zoom + 10));
+    return 360.0 / (double)(1 << (zoom + 9));
 }
 
-/* Check if a feature's bounding box is smaller than one pixel at the
-   given zoom level and tile resolution. */
+/* Check if a feature's bounding box is smaller than one pixel² at the
+   given zoom level.  Uses bbox area (px_x * px_y) so that thin slivers
+   are caught — consistent with the area-based polygon ring filter. */
 static bool feature_subpixel(const double bbox[4], int z) {
     double n_cols = (double)(1 << (z + 1));
     double n_rows = (double)(1 << z);
@@ -1007,7 +1013,7 @@ static bool feature_subpixel(const double bbox[4], int z) {
     double tile_lat = 180.0 / n_rows;
     double px_x = lon_span / tile_lon * (double)TILE_PIXELS;
     double px_y = lat_span / tile_lat * (double)TILE_PIXELS;
-    return px_x < 1.0 && px_y < 1.0;
+    return px_x * px_y < 1.0;
 }
 
 /* Minimum zoom at which point features are included.
@@ -1049,40 +1055,20 @@ void arpt_process_feature_zooms(const arpt_geom *geom, const double bbox[4],
         return;
     }
 
-    /* Incremental simplification for lines/polygons:
-       Process from finest (max_zoom) to coarsest (min_zoom).
-       Each coarser zoom re-simplifies from the previous result rather
-       than from the original, since DP with larger tolerance removes a
-       superset of vertices. */
-    arpt_geom prev = {0};
-    bool have_prev = false;
-
+    /* Per-zoom simplification for lines/polygons:
+       Always simplify from the original geometry so that anchor points
+       are computed from stable neighbors, preserving shared-edge
+       consistency across zoom levels. */
     for (int z = max_zoom; z >= min_zoom; z--) {
         if (feature_subpixel(bbox, z))
             break;  /* monotonic: subpixel at z implies subpixel at z-1 */
 
         arpt_geom sg;
-        double tol = zoom_tolerance(z);
-        const arpt_geom *input = have_prev ? &prev : geom;
-
-        if (!arpt_simplify_geom(input, tol, zoom_min_area(z),
+        if (!arpt_simplify_geom(geom, zoom_tolerance(z), zoom_min_area(z),
                                 zoom_min_length(z), &sg))
             continue;
 
-        bool unchanged = (sg.n_coords == input->n_coords);
-
         arpt_assign_tiles(&sg, geom, z, cb, ctx);
-
-        if (unchanged) {
-            arpt_geom_free(&sg);
-        } else {
-            if (have_prev)
-                arpt_geom_free(&prev);
-            prev = sg;
-            have_prev = true;
-        }
+        arpt_geom_free(&sg);
     }
-
-    if (have_prev)
-        arpt_geom_free(&prev);
 }

@@ -10,12 +10,9 @@
 #include "geom.h"
 
 typedef struct arpt_tile_builder arpt_tile_builder;
-typedef struct arpt_dem arpt_dem;
 
-/* Create a tile builder for the given tile bounds.
-   dem may be NULL for flat terrain. */
-arpt_tile_builder *arpt_tile_builder_create(arpt_bounds bounds,
-                                            const arpt_dem *dem);
+/* Create a tile builder for the given tile bounds. */
+arpt_tile_builder *arpt_tile_builder_create(arpt_bounds bounds);
 
 /* Add a feature to the tile. */
 bool arpt_tile_builder_add_feature(arpt_tile_builder *b,

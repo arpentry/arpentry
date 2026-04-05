@@ -169,7 +169,6 @@ static arpt_archive_reader *get_archive(void) {
             .bbox = {-180.0, -85.0, 180.0, 85.0},
             .min_zoom = 0,
             .max_zoom = 4,
-            .synthetic = false,
             .inputs = inputs,
             .n_inputs = 4,
         };

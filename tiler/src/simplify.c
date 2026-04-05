@@ -560,10 +560,25 @@ bool arpt_simplify_geom(const arpt_geom *in, double tolerance,
                          arpt_geom *out) {
     if (!in || !out) return false;
 
-    /* Pre-filter: reject line features shorter than min_length */
+    /* Pre-filter: reject features too small to be visible, before
+       allocating a copy or running DP.  Uses the same metrics as the
+       post-filter (area for polygons, length for lines). */
     if (in->type == 2 && min_length > 0.0 &&
         arpt_line_length(in->x, in->y, in->n_coords) < min_length)
         return false;
+
+    if (in->type == 3 && min_area > 0.0) {
+        double total_area = 0.0;
+        if (in->offsets && in->n_offsets > 1) {
+            for (uint32_t ri = 0; ri < in->n_offsets - 1; ri++) {
+                uint32_t s = in->offsets[ri], e = in->offsets[ri + 1];
+                total_area += arpt_ring_area(in->x + s, in->y + s, e - s);
+            }
+        } else {
+            total_area = arpt_ring_area(in->x, in->y, in->n_coords);
+        }
+        if (total_area < min_area) return false;
+    }
 
     if (tolerance <= 0.0 || in->n_coords <= 2) {
         /* No simplification needed — shallow copy with owned arrays */
@@ -637,6 +652,16 @@ bool arpt_simplify_geom(const arpt_geom *in, double tolerance,
         }
         out->offsets[n_rings] = compact;
         out->n_coords = compact;
+        /* Compact offsets: remove phantom entries for dropped rings */
+        uint32_t kept = 0;
+        for (uint32_t ri = 0; ri < n_rings; ri++) {
+            if (out->offsets[ri] != out->offsets[ri + 1]) {
+                out->offsets[kept] = out->offsets[ri];
+                kept++;
+            }
+        }
+        out->offsets[kept] = compact;
+        out->n_offsets = kept + 1;
         if (compact < 4) { arpt_geom_free(out); memset(out, 0, sizeof(*out)); return false; }
     } else if (out->type == 2 && out->offsets && out->n_offsets > 1) {
         uint32_t n_lines = out->n_offsets - 1;
@@ -665,6 +690,16 @@ bool arpt_simplify_geom(const arpt_geom *in, double tolerance,
         }
         out->offsets[n_lines] = compact;
         out->n_coords = compact;
+        /* Compact offsets: remove phantom entries for dropped lines */
+        uint32_t kept = 0;
+        for (uint32_t li = 0; li < n_lines; li++) {
+            if (out->offsets[li] != out->offsets[li + 1]) {
+                out->offsets[kept] = out->offsets[li];
+                kept++;
+            }
+        }
+        out->offsets[kept] = compact;
+        out->n_offsets = kept + 1;
         if (compact < 2) { arpt_geom_free(out); memset(out, 0, sizeof(*out)); return false; }
     } else if (out->type == 3) {
         /* Single-ring polygon without offsets */

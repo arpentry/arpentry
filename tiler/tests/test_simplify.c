@@ -358,6 +358,48 @@ static void test_shared_edge_consistency(void) {
     }
 }
 
+/* Verify that arpt_simplify_geom compacts the offsets array when
+ * rings are dropped by the min_area filter, removing phantom entries
+ * and updating n_offsets. */
+static void test_simplify_geom_ring_compaction(void) {
+    /* Ring A: large 10° × 10° rectangle (area = 100 deg²) */
+    double ax[] = {0.0, 10.0, 10.0, 0.0, 0.0};
+    double ay[] = {0.0,  0.0, 10.0, 10.0, 0.0};
+
+    /* Ring B: tiny 0.001° × 0.001° rectangle (area ≈ 1e-6 deg²) */
+    double bx[] = {20.0, 20.001, 20.001, 20.0, 20.0};
+    double by[] = { 0.0,  0.0,    0.001,  0.001, 0.0};
+
+    /* Combined MultiPolygon-style geometry with both rings */
+    double x[10], y[10];
+    for (int i = 0; i < 5; i++) { x[i] = ax[i]; y[i] = ay[i]; }
+    for (int i = 0; i < 5; i++) { x[5 + i] = bx[i]; y[5 + i] = by[i]; }
+    uint32_t offsets[] = {0, 5, 10};
+
+    arpt_geom in = {
+        .type = 3, .x = x, .y = y, .n_coords = 10,
+        .offsets = offsets, .n_offsets = 3
+    };
+
+    arpt_geom out = {0};
+    /* min_area = 1.0 deg²: drops ring B (area ≈ 1e-6), keeps ring A */
+    bool ok = arpt_simplify_geom(&in, 0.0001, 1.0, 0.0, &out);
+    TEST_ASSERT_TRUE(ok);
+
+    /* Offsets must be compacted: 1 surviving ring + sentinel = 2 entries */
+    TEST_ASSERT_EQUAL_UINT32(2, out.n_offsets);
+
+    /* No phantom entries: consecutive offsets must differ */
+    TEST_ASSERT_TRUE(out.offsets[0] != out.offsets[1]);
+
+    /* Ring A coordinates preserved */
+    TEST_ASSERT_TRUE(out.n_coords >= 4);
+    TEST_ASSERT_EQUAL_UINT32(0, out.offsets[0]);
+    TEST_ASSERT_EQUAL_UINT32(out.n_coords, out.offsets[1]);
+
+    arpt_geom_free(&out);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_single_point);
@@ -377,5 +419,6 @@ int main(void) {
     RUN_TEST(test_ring_topology_strait);
     RUN_TEST(test_ring_topology_hourglass);
     RUN_TEST(test_shared_edge_consistency);
+    RUN_TEST(test_simplify_geom_ring_compaction);
     return UNITY_END();
 }

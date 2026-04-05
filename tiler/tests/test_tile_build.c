@@ -11,14 +11,14 @@ void tearDown(void) {}
 
 static void test_create_free(void) {
     arpt_bounds b = {6.0, 46.0, 7.0, 47.0};
-    arpt_tile_builder *tb = arpt_tile_builder_create(b, NULL);
+    arpt_tile_builder *tb = arpt_tile_builder_create(b);
     TEST_ASSERT_NOT_NULL(tb);
     arpt_tile_builder_free(tb);
 }
 
 static void test_single_point(void) {
     arpt_bounds b = {6.0, 46.0, 7.0, 47.0};
-    arpt_tile_builder *tb = arpt_tile_builder_create(b, NULL);
+    arpt_tile_builder *tb = arpt_tile_builder_create(b);
     TEST_ASSERT_NOT_NULL(tb);
 
     /* A point at the center of the tile */
@@ -84,7 +84,7 @@ static void test_single_point(void) {
 
 static void test_with_properties(void) {
     arpt_bounds b = {6.0, 46.0, 7.0, 47.0};
-    arpt_tile_builder *tb = arpt_tile_builder_create(b, NULL);
+    arpt_tile_builder *tb = arpt_tile_builder_create(b);
     TEST_ASSERT_NOT_NULL(tb);
 
     arpt_geom g = {0};
@@ -131,7 +131,7 @@ static void test_with_properties(void) {
 
 static void test_line_geometry(void) {
     arpt_bounds b = {6.0, 46.0, 7.0, 47.0};
-    arpt_tile_builder *tb = arpt_tile_builder_create(b, NULL);
+    arpt_tile_builder *tb = arpt_tile_builder_create(b);
     TEST_ASSERT_NOT_NULL(tb);
 
     arpt_geom g = {0};
@@ -170,7 +170,7 @@ static void test_line_geometry(void) {
 
 static void test_polygon_geometry(void) {
     arpt_bounds b = {6.0, 46.0, 7.0, 47.0};
-    arpt_tile_builder *tb = arpt_tile_builder_create(b, NULL);
+    arpt_tile_builder *tb = arpt_tile_builder_create(b);
     TEST_ASSERT_NOT_NULL(tb);
 
     arpt_geom g = {0};
@@ -212,7 +212,7 @@ static void test_polygon_geometry(void) {
 
 static void test_property_dedup(void) {
     arpt_bounds b = {6.0, 46.0, 7.0, 47.0};
-    arpt_tile_builder *tb = arpt_tile_builder_create(b, NULL);
+    arpt_tile_builder *tb = arpt_tile_builder_create(b);
     TEST_ASSERT_NOT_NULL(tb);
 
     /* Two features sharing the same property key "class" */
@@ -262,7 +262,7 @@ static void test_property_dedup(void) {
 
 static void test_multi_layer(void) {
     arpt_bounds b = {6.0, 46.0, 7.0, 47.0};
-    arpt_tile_builder *tb = arpt_tile_builder_create(b, NULL);
+    arpt_tile_builder *tb = arpt_tile_builder_create(b);
     TEST_ASSERT_NOT_NULL(tb);
 
     arpt_geom g1 = {0};

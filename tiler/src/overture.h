@@ -21,6 +21,9 @@ typedef struct {
     const char *subtype;    /* Feature subtype (NULL if missing) */
     double bbox[4];         /* [xmin, ymin, xmax, ymax] from bbox columns */
     bool has_bbox;
+    int32_t min_zoom;       /* cartography.min_zoom (-1 if missing) */
+    int32_t max_zoom;       /* cartography.max_zoom (-1 if missing) */
+    int32_t sort_key;       /* cartography.sort_key (0 if missing) */
 } arpt_overture_feature;
 
 /* Open an OvertureMaps GeoParquet file.

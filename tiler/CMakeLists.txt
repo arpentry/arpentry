@@ -17,7 +17,6 @@ add_library(arpentry_tiler STATIC
     src/clip.c
     src/sort.c
     src/tile_build.c
-    src/dem.c
     src/archive.c
     src/feature_io.c
     src/pipeline.c

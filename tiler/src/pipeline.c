@@ -1,7 +1,6 @@
 #include "pipeline.h"
 #include "archive.h"
 #include "clip.h"
-#include "dem.h"
 #include "feature_io.h"
 #include "hilbert.h"
 #include "overture.h"
@@ -69,81 +68,6 @@ static int detect_cpu_count(void) {
 #endif
 }
 
-/* ---- Synthetic data generator ---- */
-
-typedef struct {
-    arpt_geom geom;
-    uint32_t  layer;
-} synth_feature;
-
-static synth_feature *generate_synthetic(const double bbox[4], int *out_count) {
-    double w = bbox[0], s = bbox[1], e = bbox[2], n = bbox[3];
-
-    int nx = 16, ny = 16;
-    double lon_step = (e - w) / nx;
-    double lat_step = (n - s) / ny;
-
-    int cap = nx * ny + 4;
-    synth_feature *feats = malloc((size_t)cap * sizeof(synth_feature));
-    if (!feats) { *out_count = 0; return NULL; }
-    int count = 0;
-
-    for (int ix = 0; ix < nx; ix++) {
-        for (int iy = 0; iy < ny; iy++) {
-            synth_feature *sf = &feats[count];
-            memset(sf, 0, sizeof(*sf));
-            sf->geom.type = 1;
-            sf->geom.x = malloc(sizeof(double));
-            sf->geom.y = malloc(sizeof(double));
-            if (!sf->geom.x || !sf->geom.y) {
-                free(sf->geom.x); free(sf->geom.y);
-                continue;
-            }
-            sf->geom.x[0] = w + (ix + 0.5) * lon_step;
-            sf->geom.y[0] = s + (iy + 0.5) * lat_step;
-            if (sf->geom.y[0] > 85.0) sf->geom.y[0] = 85.0;
-            if (sf->geom.y[0] < -85.0) sf->geom.y[0] = -85.0;
-            sf->geom.n_coords = 1;
-            sf->layer = 0;
-            count++;
-        }
-    }
-
-    for (int i = 0; i < 4 && count < cap; i++) {
-        double pw = w + (e - w) * 0.2 * i;
-        double pe = pw + (e - w) * 0.15;
-        double ps = s + (n - s) * 0.2 * i;
-        double pn = ps + (n - s) * 0.15;
-        if (pn > 85.0) pn = 85.0;
-        if (ps < -85.0) ps = -85.0;
-
-        synth_feature *sf = &feats[count];
-        memset(sf, 0, sizeof(*sf));
-        sf->geom.type = 3;
-        sf->geom.n_coords = 5;
-        sf->geom.x = malloc(5 * sizeof(double));
-        sf->geom.y = malloc(5 * sizeof(double));
-        sf->geom.offsets = malloc(2 * sizeof(uint32_t));
-        if (!sf->geom.x || !sf->geom.y || !sf->geom.offsets) {
-            free(sf->geom.x); free(sf->geom.y); free(sf->geom.offsets);
-            continue;
-        }
-        sf->geom.x[0] = pw; sf->geom.y[0] = ps;
-        sf->geom.x[1] = pe; sf->geom.y[1] = ps;
-        sf->geom.x[2] = pe; sf->geom.y[2] = pn;
-        sf->geom.x[3] = pw; sf->geom.y[3] = pn;
-        sf->geom.x[4] = pw; sf->geom.y[4] = ps;
-        sf->geom.offsets[0] = 0;
-        sf->geom.offsets[1] = 5;
-        sf->geom.n_offsets = 2;
-        sf->layer = 1;
-        count++;
-    }
-
-    *out_count = count;
-    return feats;
-}
-
 /* Callback context: serialize each clipped geometry into the sorter. */
 typedef struct {
     arpt_sorter *sorter;
@@ -171,19 +95,18 @@ static void clip_cb(int z, int x, int y,
 
 /* ---- Parallel pipeline data types ---- */
 
-/* A raw feature queued from a reader thread to worker threads.
- * Normal path: wkb + wkb_len hold raw bytes, worker parses.
- * Synthetic path: wkb is NULL, geometry is pre-parsed. */
+/* A raw feature queued from a reader thread to worker threads. */
 typedef struct {
-    uint8_t  *wkb;        /* Owned copy of raw WKB bytes (NULL if pre-parsed) */
+    uint8_t  *wkb;        /* Owned copy of raw WKB bytes */
     size_t    wkb_len;
-    arpt_geom geometry;   /* Pre-parsed geometry (synthetic path only) */
     double    bbox[4];
     bool      has_bbox;
     char     *type;       /* Owned copy, may be NULL */
     char     *subtype;    /* Owned copy, may be NULL */
     uint32_t  layer;
     uint32_t  rank;
+    int32_t   min_zoom;   /* cartography.min_zoom (-1 = no limit) */
+    int32_t   max_zoom;   /* cartography.max_zoom (-1 = no limit) */
 } raw_feature;
 
 /* Batch size for the work queue (number of features per batch).
@@ -193,7 +116,6 @@ typedef struct {
 
 static void raw_feature_free(raw_feature *f) {
     free(f->wkb);
-    if (!f->wkb) arpt_geom_free(&f->geometry);
     free(f->type);
     free(f->subtype);
 }
@@ -218,17 +140,11 @@ static void *worker_fn(void *arg) {
         for (size_t i = 0; i < batch.count; i++) {
             raw_feature *f = &feats[i];
 
-            /* Parse WKB in worker thread (deferred from reader).
-             * Synthetic features have wkb==NULL with pre-parsed geometry. */
+            /* Parse WKB in worker thread (deferred from reader) */
             arpt_geom geometry = {0};
-            if (f->wkb) {
-                if (!arpt_wkb_parse(f->wkb, f->wkb_len, &geometry)) {
-                    raw_feature_free(f);
-                    continue;
-                }
-            } else {
-                geometry = f->geometry;
-                memset(&f->geometry, 0, sizeof(f->geometry));
+            if (!arpt_wkb_parse(f->wkb, f->wkb_len, &geometry)) {
+                raw_feature_free(f);
+                continue;
             }
 
             double feat_bbox[4];
@@ -238,10 +154,12 @@ static void *worker_fn(void *arg) {
                 arpt_geom_bbox(&geometry, feat_bbox);
             }
 
-            const char *cls = f->type ? f->type : "unknown";
-            const char *pkeys[2] = { "class", "subclass" };
-            const char *pvals[2] = { cls, f->subtype };
-            uint32_t n_props = f->subtype ? 2 : 1;
+            /* Use subtype as class (land_cover classification),
+               fall back to type if no subtype. */
+            const char *cls = f->subtype ? f->subtype
+                            : (f->type ? f->type : "unknown");
+            const char *pkeys[1] = { "class" };
+            const char *pvals[1] = { cls };
 
             clip_ctx ctx = {
                 .sorter = wc->sorter,
@@ -249,11 +167,22 @@ static void *worker_fn(void *arg) {
                 .rank = f->rank,
                 .prop_keys = pkeys,
                 .prop_vals = pvals,
-                .n_props = n_props,
+                .n_props = 1,
             };
-            arpt_process_feature_zooms(&geometry, feat_bbox,
-                                       wc->min_zoom, wc->max_zoom,
-                                       clip_cb, &ctx);
+
+            /* Constrain zoom range using cartography metadata */
+            int feat_min = wc->min_zoom;
+            int feat_max = wc->max_zoom;
+            if (f->min_zoom >= 0 && f->min_zoom > feat_min)
+                feat_min = f->min_zoom;
+            if (f->max_zoom >= 0 && f->max_zoom < feat_max)
+                feat_max = f->max_zoom;
+
+            if (feat_min <= feat_max) {
+                arpt_process_feature_zooms(&geometry, feat_bbox,
+                                           feat_min, feat_max,
+                                           clip_cb, &ctx);
+            }
 
             arpt_geom_free(&geometry);
             raw_feature_free(f);
@@ -270,6 +199,7 @@ static void *worker_fn(void *arg) {
 
 static void read_overture_input(const arpt_pipeline_input *inp,
                                 const double config_bbox[4],
+                                int min_zoom, int max_zoom,
                                 arpt_workqueue *queue,
                                 uint32_t *rank) {
     double t0 = now_sec();
@@ -282,21 +212,34 @@ static void read_overture_input(const arpt_pipeline_input *inp,
     }
 
     uint64_t feat_count = 0;
+    uint64_t skip_bbox = 0, skip_zoom = 0;
     raw_feature *batch_buf = malloc(FEATURE_BATCH_SIZE * sizeof(raw_feature));
     if (!batch_buf) { arpt_overture_close(ov); return; }
     size_t batch_pos = 0;
 
     arpt_overture_feature feat;
     while (arpt_overture_next(ov, &feat)) {
-        /* Bbox filter first — bbox was read before WKB in the reader,
-         * so we can skip features without ever parsing their geometry. */
+        /* Bbox filter — skip features outside the pipeline bounds */
         if (feat.has_bbox) {
             if (feat.bbox[2] < config_bbox[0] ||
                 feat.bbox[0] > config_bbox[2] ||
                 feat.bbox[3] < config_bbox[1] ||
                 feat.bbox[1] > config_bbox[3]) {
+                skip_bbox++;
                 continue;
             }
+        }
+
+        /* Zoom filter — skip features whose cartography zoom range
+         * doesn't overlap the pipeline zoom range.  Avoids copying
+         * WKB for features that will never be processed. */
+        if (feat.min_zoom >= 0 && feat.min_zoom > max_zoom) {
+            skip_zoom++;
+            continue;
+        }
+        if (feat.max_zoom >= 0 && feat.max_zoom < min_zoom) {
+            skip_zoom++;
+            continue;
         }
 
         /* Copy raw WKB bytes — parsing is deferred to worker threads */
@@ -310,11 +253,18 @@ static void read_overture_input(const arpt_pipeline_input *inp,
         rf->type = feat.type ? strdup(feat.type) : NULL;
         rf->subtype = feat.subtype ? strdup(feat.subtype) : NULL;
         rf->layer = inp->layer;
-        rf->rank = *rank;
-        batch_pos++;
+        rf->min_zoom = feat.min_zoom;
+        rf->max_zoom = feat.max_zoom;
 
-        (*rank)++;
-        if (*rank > SORT_KEY_RANK_MASK) *rank = SORT_KEY_RANK_MASK;
+        /* Use cartography.sort_key as rank when available */
+        if (feat.sort_key > 0) {
+            rf->rank = (uint32_t)feat.sort_key & SORT_KEY_RANK_MASK;
+        } else {
+            rf->rank = *rank;
+            (*rank)++;
+            if (*rank > SORT_KEY_RANK_MASK) *rank = SORT_KEY_RANK_MASK;
+        }
+        batch_pos++;
         feat_count++;
 
         if (batch_pos == FEATURE_BATCH_SIZE) {
@@ -353,8 +303,9 @@ static void read_overture_input(const arpt_pipeline_input *inp,
 
     arpt_overture_close(ov);
     double t1 = now_sec();
-    fprintf(stderr, "  %llu features from %s (%.3fs)\n",
-            (unsigned long long)feat_count, inp->path, t1 - t0);
+    fprintf(stderr, "  %llu features from %s (%.3fs, skipped: %llu bbox, %llu zoom)\n",
+            (unsigned long long)feat_count, inp->path, t1 - t0,
+            (unsigned long long)skip_bbox, (unsigned long long)skip_zoom);
 }
 
 /* ---- Finalize sort threads ---- */
@@ -591,16 +542,6 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     fprintf(stderr, "Pipeline: %d worker threads, %zu MB sort budget\n",
             n_threads, mem_budget / (1024 * 1024));
 
-    /* Load DEM if provided */
-    arpt_dem *dem = NULL;
-    if (config->dem_path) {
-        dem = arpt_dem_open(config->dem_path);
-        if (!dem) {
-            fprintf(stderr, "Warning: cannot load DEM %s, using flat terrain\n",
-                    config->dem_path);
-        }
-    }
-
     double t_start = now_sec();
 
     /* ---- Phase 1: Read & Process ---- */
@@ -637,54 +578,11 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
         }
     }
 
-    /* Read synthetic data (single-threaded, pushed to worker queue) */
-    uint32_t rank = 0;
-    if (config->synthetic) {
-        int n_feats = 0;
-        synth_feature *feats = generate_synthetic(config->bbox, &n_feats);
-
-        if (feats) {
-            /* Convert synth features to raw_feature batches */
-            raw_feature *batch_buf = malloc(FEATURE_BATCH_SIZE * sizeof(raw_feature));
-            size_t batch_pos = 0;
-
-            for (int i = 0; i < n_feats && batch_buf; i++) {
-                raw_feature *rf = &batch_buf[batch_pos];
-                memset(rf, 0, sizeof(*rf));
-                rf->geometry = feats[i].geom;
-                memset(&feats[i].geom, 0, sizeof(feats[i].geom));
-                arpt_geom_bbox(&rf->geometry, rf->bbox);
-                rf->has_bbox = true;
-                rf->layer = feats[i].layer;
-                rf->rank = rank;
-                batch_pos++;
-
-                rank++;
-                if (rank > SORT_KEY_RANK_MASK) rank = SORT_KEY_RANK_MASK;
-
-                if (batch_pos == FEATURE_BATCH_SIZE) {
-                    arpt_batch b = { .items = batch_buf, .count = batch_pos };
-                    arpt_workqueue_push(queue, &b);
-                    batch_buf = malloc(FEATURE_BATCH_SIZE * sizeof(raw_feature));
-                    batch_pos = 0;
-                }
-            }
-
-            if (batch_buf && batch_pos > 0) {
-                arpt_batch b = { .items = batch_buf, .count = batch_pos };
-                arpt_workqueue_push(queue, &b);
-            } else {
-                free(batch_buf);
-            }
-
-            /* Free the synth_feature shells (geoms were moved) */
-            free(feats);
-        }
-    }
-
     /* Read GeoParquet inputs (reader on main thread, workers process) */
+    uint32_t rank = 0;
     for (int fi = 0; fi < config->n_inputs; fi++) {
-        read_overture_input(&config->inputs[fi], config->bbox, queue, &rank);
+        read_overture_input(&config->inputs[fi], config->bbox,
+                           min_zoom, max_zoom, queue, &rank);
     }
 
     /* Close the queue — workers will drain remaining batches and exit */
@@ -850,7 +748,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
             cur_tile_id = tid;
             arpt_hilbert_tile_id_decode(tid, &cur_z, &cur_x, &cur_y);
             arpt_bounds tb = arpt_tile_bounds(cur_z, cur_x, cur_y);
-            builder = arpt_tile_builder_create(tb, dem);
+            builder = arpt_tile_builder_create(tb);
 
             /* Track feature tile ID (already in sorted order from merger) */
             if (feature_tile_count == feature_tile_cap) {
@@ -945,7 +843,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
         uint64_t reused_count = 0;
         uint64_t empty_seq = 0;
 
-        /* Without DEM: cache one empty tile per zoom */
+        /* Cache one empty tile per zoom (flat terrain, no features) */
         void  *cached_data = NULL;
         size_t cached_size = 0;
         int    cached_zoom = -1;
@@ -965,13 +863,13 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
             if (y_min < 0) y_min = 0;
             if (y_max >= n_rows) y_max = n_rows - 1;
 
-            if (!dem && cached_zoom != z) {
+            if (cached_zoom != z) {
                 free(cached_data);
                 cached_data = NULL;
                 cached_size = 0;
                 cached_zoom = z;
                 arpt_bounds tb = arpt_tile_bounds(z, x_min, y_min);
-                arpt_tile_builder *eb = arpt_tile_builder_create(tb, NULL);
+                arpt_tile_builder *eb = arpt_tile_builder_create(tb);
                 if (eb) {
                     cached_data = arpt_tile_builder_finish(eb, &cached_size);
                     arpt_tile_builder_free(eb);
@@ -982,8 +880,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                 for (int x = x_min; x <= x_max; x++) {
                     uint64_t tid = arpt_hilbert_tile_id(z, x, y);
 
-                    /* Binary search in the sorted feature tile ID set
-                       (built during grouping, already in order). */
+                    /* Binary search in the sorted feature tile ID set */
                     size_t lo = 0, hi = feature_tile_count;
                     while (lo < hi) {
                         size_t mid = lo + (hi - lo) / 2;
@@ -993,7 +890,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                     if (lo < feature_tile_count && feature_tile_ids[lo] == tid)
                         continue;
 
-                    if (!dem && cached_data && cached_size > 0) {
+                    if (cached_data && cached_size > 0) {
                         encoded_tile *et = malloc(sizeof(encoded_tile));
                         if (et) {
                             void *copy = malloc(cached_size);
@@ -1016,28 +913,6 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                             } else {
                                 free(et);
                             }
-                        }
-                    } else {
-                        arpt_bounds tb = arpt_tile_bounds(z, x, y);
-                        arpt_tile_builder *eb = arpt_tile_builder_create(tb, dem);
-                        if (!eb) continue;
-
-                        tile_job *job = malloc(sizeof(tile_job));
-                        if (job) {
-                            job->builder = eb;
-                            job->sequence = empty_seq++;
-                            job->z = z;
-                            job->x = (uint32_t)x;
-                            job->y = (uint32_t)y;
-                            arpt_batch b = { .items = job, .count = 1 };
-                            if (!arpt_workqueue_push(empty_tile_queue, &b)) {
-                                arpt_tile_builder_free(eb);
-                                free(job);
-                            } else {
-                                empty_count++;
-                            }
-                        } else {
-                            arpt_tile_builder_free(eb);
                         }
                     }
                 }
@@ -1088,7 +963,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     free(sorters);
     free(wctxs);
     free(workers);
-    arpt_dem_free(dem);
+
 
     if (ok && !wctx.write_failed) {
         fprintf(stderr, "Archive written: %s\n", config->output);
@@ -1119,7 +994,7 @@ fail_sort:
     free(sorters);
     free(wctxs);
     free(workers);
-    arpt_dem_free(dem);
+
     return false;
 
 fail_alloc:
@@ -1133,6 +1008,6 @@ fail_alloc:
     free(workers);
     free(worker_started);
     if (queue) arpt_workqueue_free(queue);
-    arpt_dem_free(dem);
+
     return false;
 }

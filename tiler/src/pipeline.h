@@ -20,12 +20,9 @@ typedef struct {
     double      bbox[4];      /* West, south, east, north (degrees) */
     int         min_zoom;
     int         max_zoom;
-    bool        synthetic;    /* Use synthetic test data */
 
     const arpt_pipeline_input *inputs;  /* Input GeoParquet files */
     int                        n_inputs;
-
-    const char *dem_path;     /* Path to GeoTIFF DEM (optional) */
 
     int         n_threads;    /* Worker threads (0 = auto-detect) */
 } arpt_pipeline_config;

@@ -69,6 +69,12 @@ bool arpt_decode_surface(const void *flatbuf, size_t size,
                          const char (*class_names)[32], int class_count,
                          arpt_surface_data *out);
 
+/* Generic variant: decode polygon features from any named layer. */
+bool arpt_decode_surface_layer(const void *flatbuf, size_t size,
+                               const char *layer_name,
+                               const char (*class_names)[32], int class_count,
+                               arpt_surface_data *out);
+
 void arpt_surface_data_free(arpt_surface_data *data);
 
 /* Highway decoding (LineGeometry) */

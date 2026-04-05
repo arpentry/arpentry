@@ -328,6 +328,14 @@ bool arpt_decode_surface(const void *flatbuf, size_t size,
                                 class_names, class_count, out);
 }
 
+bool arpt_decode_surface_layer(const void *flatbuf, size_t size,
+                               const char *layer_name,
+                               const char (*class_names)[32], int class_count,
+                               arpt_surface_data *out) {
+    return decode_polygon_layer(flatbuf, size, layer_name, UINT32_MAX,
+                                class_names, class_count, out);
+}
+
 bool arpt_decode_buildings(const void *flatbuf, size_t size,
                            const char (*class_names)[32], int class_count,
                            arpt_surface_data *out) {

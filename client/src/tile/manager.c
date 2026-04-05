@@ -193,14 +193,28 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
         case ARPT_LAYER_TERRAIN:
             /* Already decoded above */
             break;
-        case ARPT_LAYER_TEXTURE:
-            if (strcmp(le->source_layer, ARPT_LAYER_SURFACE_NAME) == 0)
-                arpt_decode_surface(flatbuf, size, tm->style.class_names,
-                                    tm->style.class_count, &surface);
-            else if (strcmp(le->source_layer, ARPT_LAYER_HIGHWAY_NAME) == 0)
-                arpt_decode_highways(flatbuf, size, tm->style.class_names,
-                                     tm->style.class_count, &highways);
+        case ARPT_LAYER_TEXTURE: {
+            /* Decode polygon features from whatever layer the style names */
+            arpt_surface_data extra = {0};
+            arpt_decode_surface_layer(flatbuf, size, le->source_layer,
+                                      tm->style.class_names,
+                                      tm->style.class_count, &extra);
+            /* Merge into the combined surface data */
+            if (extra.count > 0) {
+                size_t new_count = surface.count + extra.count;
+                arpt_surface_polygon *merged = realloc(
+                    surface.polygons,
+                    new_count * sizeof(arpt_surface_polygon));
+                if (merged) {
+                    memcpy(merged + surface.count, extra.polygons,
+                           extra.count * sizeof(arpt_surface_polygon));
+                    surface.polygons = merged;
+                    surface.count = new_count;
+                }
+            }
+            arpt_surface_data_free(&extra);
             break;
+        }
         case ARPT_LAYER_EXTRUSION:
             arpt_decode_buildings(flatbuf, size, tm->style.class_names,
                                   tm->style.class_count, &buildings);

@@ -22,6 +22,10 @@ struct arpt_overture {
     int32_t col_bbox_ymax;
     bool    bbox_is_double; /* true if bbox columns are DOUBLE, false if FLOAT */
 
+    int32_t col_cart_min_zoom;  /* cartography.min_zoom */
+    int32_t col_cart_max_zoom;  /* cartography.max_zoom */
+    int32_t col_cart_sort_key;  /* cartography.sort_key */
+
     int64_t row_in_batch;   /* current row within current batch */
     int64_t batch_rows;     /* rows in current batch */
 
@@ -83,8 +87,13 @@ arpt_overture *arpt_overture_open(const char *path)
         return NULL;
     }
 
+    /* Discover cartography columns */
+    int32_t file_col_cart_min_zoom = arpt_parquet_find_column_path(pq, "cartography.min_zoom");
+    int32_t file_col_cart_max_zoom = arpt_parquet_find_column_path(pq, "cartography.max_zoom");
+    int32_t file_col_cart_sort_key = arpt_parquet_find_column_path(pq, "cartography.sort_key");
+
     /* Build projection list */
-    int32_t proj_cols[8];
+    int32_t proj_cols[12];
     int32_t n_proj = 0;
 
     ov->col_geometry = n_proj;
@@ -122,6 +131,25 @@ arpt_overture *arpt_overture_open(const char *path)
     } else {
         ov->col_bbox_xmin = ov->col_bbox_ymin = -1;
         ov->col_bbox_xmax = ov->col_bbox_ymax = -1;
+    }
+
+    if (file_col_cart_min_zoom >= 0) {
+        ov->col_cart_min_zoom = n_proj;
+        proj_cols[n_proj++] = file_col_cart_min_zoom;
+    } else {
+        ov->col_cart_min_zoom = -1;
+    }
+    if (file_col_cart_max_zoom >= 0) {
+        ov->col_cart_max_zoom = n_proj;
+        proj_cols[n_proj++] = file_col_cart_max_zoom;
+    } else {
+        ov->col_cart_max_zoom = -1;
+    }
+    if (file_col_cart_sort_key >= 0) {
+        ov->col_cart_sort_key = n_proj;
+        proj_cols[n_proj++] = file_col_cart_sort_key;
+    } else {
+        ov->col_cart_sort_key = -1;
     }
 
     /* Create cursor with projection */
@@ -206,6 +234,19 @@ static int64_t sparse_index(arpt_overture *ov, int32_t proj_col, int64_t row)
     return row - count_nulls_before(nulls, row);
 }
 
+/* Read a nullable INT32 column at the given row.
+ * Returns default_val if the column is absent or the value is null. */
+static int32_t read_int32(arpt_overture *ov, int32_t proj_col, int64_t row,
+                           int32_t default_val) {
+    if (proj_col < 0) return default_val;
+    if (is_null(ov, proj_col, row)) return default_val;
+    const int32_t *arr =
+        (const int32_t *)arpt_parquet_cursor_data(ov->cursor, proj_col);
+    if (!arr) return default_val;
+    int64_t idx = sparse_index(ov, proj_col, row);
+    return arr[idx];
+}
+
 bool arpt_overture_next(arpt_overture *ov, arpt_overture_feature *out)
 {
     if (!ov || !out) return false;
@@ -277,6 +318,11 @@ bool arpt_overture_next(arpt_overture *ov, arpt_overture_feature *out)
         out->id = ov->owned_id;
         out->type = ov->owned_type;
         out->subtype = ov->owned_subtype;
+
+        /* Cartography fields */
+        out->min_zoom = read_int32(ov, ov->col_cart_min_zoom, row, -1);
+        out->max_zoom = read_int32(ov, ov->col_cart_max_zoom, row, -1);
+        out->sort_key = read_int32(ov, ov->col_cart_sort_key, row, 0);
 
         return true;
     }

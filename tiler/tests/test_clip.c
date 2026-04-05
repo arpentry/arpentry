@@ -2549,6 +2549,45 @@ static void test_no_original_clip_at_boundary(void) {
     collector_free(&c);
 }
 
+/* When the simplified polygon's bbox is smaller than the original's
+ * (e.g. rings dropped by min_area), tiles between the two extents
+ * must still receive geometry via the PIP fallback against the
+ * original.  This verifies the tile range uses the original's bbox. */
+static void test_original_bbox_fills_interior_tiles(void) {
+    /* Original: lon [-50, -10], lat [60, 80] */
+    double orig_x[] = {-50.0, -10.0, -10.0, -50.0, -50.0};
+    double orig_y[] = { 60.0,  60.0,  80.0,  80.0,  60.0};
+    uint32_t orig_off[] = {0, 5};
+    arpt_geom original = {
+        .type = 3, .x = orig_x, .y = orig_y, .n_coords = 5,
+        .offsets = orig_off, .n_offsets = 2
+    };
+
+    /* Simplified: east edge retracted to x=-20 */
+    double simp_x[] = {-50.0, -20.0, -20.0, -50.0, -50.0};
+    double simp_y[] = { 60.0,  60.0,  80.0,  80.0,  60.0};
+    uint32_t simp_off[] = {0, 5};
+    arpt_geom simplified = {
+        .type = 3, .x = simp_x, .y = simp_y, .n_coords = 5,
+        .offsets = simp_off, .n_offsets = 2
+    };
+
+    tile_collector c;
+    collector_init(&c);
+    arpt_assign_tiles(&simplified, &original, 5, collect_cb, &c);
+
+    /* Tile (5, 29, 28): lon [-16.875, -11.25], lat [67.5, 73.125].
+     * Center ≈ (-14.06, 70.31).  Outside simplified bbox (east=-20)
+     * but inside original (east=-10).  Must get a fill rectangle. */
+    tile_result *t = find_result(&c, 5, 29, 28);
+    TEST_ASSERT_NOT_NULL_MESSAGE(t,
+        "Tile inside original but outside simplified bbox must receive "
+        "geometry via PIP fallback using the original's extent");
+    TEST_ASSERT_TRUE(t->geom.n_coords >= 4);
+
+    collector_free(&c);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_assign_tiles_null);
@@ -2604,5 +2643,6 @@ int main(void) {
     RUN_TEST(test_reentrant_top_edge);
     RUN_TEST(test_simplified_polygon_interior_tiles);
     RUN_TEST(test_no_original_clip_at_boundary);
+    RUN_TEST(test_original_bbox_fills_interior_tiles);
     return UNITY_END();
 }

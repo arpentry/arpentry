@@ -107,7 +107,7 @@ static arpentry_tiles_Tile_table_t build_and_decode(const arpt_bounds *bounds,
                                                      uint32_t layer,
                                                      uint8_t **decoded_out,
                                                      void **compressed_out) {
-    arpt_tile_builder *tb = arpt_tile_builder_create(*bounds, NULL);
+    arpt_tile_builder *tb = arpt_tile_builder_create(*bounds);
     if (!tb) return NULL;
 
     arpt_feature feat = {0};
