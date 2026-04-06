@@ -17,7 +17,7 @@ static void usage(void) {
         "  --input <layer>:<path> Add a GeoParquet input file mapped to layer\n"
         "  --bbox <w,s,e,n>       Geographic bounds in degrees (default: world)\n"
         "  --min-zoom <z>         Minimum zoom level (default: 0)\n"
-        "  --max-zoom <z>         Maximum zoom level (default: 4)\n"
+        "  --max-zoom <z>         Maximum zoom level (default: 10)\n"
         "  --tmp <dir>            Temp directory for sort runs (default: /tmp)\n"
         "  --mem <bytes>          Memory budget for external sort (default: 64 MB)\n"
         "  --threads <n>          Worker threads (default: auto-detect CPU count)\n"
@@ -37,7 +37,7 @@ int main(int argc, char **argv) {
         .mem_budget = DEFAULT_MEM_BUDGET,
         .bbox       = {-180.0, -90.0, 180.0, 90.0},
         .min_zoom   = 0,
-        .max_zoom   = 4,
+        .max_zoom   = 10,
         .inputs     = inputs,
         .n_inputs   = 0,
     };

@@ -107,6 +107,7 @@ typedef struct {
     uint32_t  rank;
     int32_t   min_zoom;   /* cartography.min_zoom (-1 = no limit) */
     int32_t   max_zoom;   /* cartography.max_zoom (-1 = no limit) */
+    int32_t   depth;      /* depth in meters (-1 = not bathymetry) */
 } raw_feature;
 
 /* Batch size for the work queue (number of features per batch).
@@ -154,10 +155,17 @@ static void *worker_fn(void *arg) {
                 arpt_geom_bbox(&geometry, feat_bbox);
             }
 
-            /* Use subtype as class (land_cover classification),
-               fall back to type if no subtype. */
-            const char *cls = f->subtype ? f->subtype
-                            : (f->type ? f->type : "unknown");
+            /* Determine class: use depth for bathymetry, otherwise
+               subtype (land_cover classification) or type. */
+            char depth_cls[16];
+            const char *cls;
+            if (f->depth >= 0) {
+                snprintf(depth_cls, sizeof(depth_cls), "%d", f->depth);
+                cls = depth_cls;
+            } else {
+                cls = f->subtype ? f->subtype
+                    : (f->type ? f->type : "unknown");
+            }
             const char *pkeys[1] = { "class" };
             const char *pvals[1] = { cls };
 
@@ -213,6 +221,8 @@ static void read_overture_input(const arpt_pipeline_input *inp,
 
     uint64_t feat_count = 0;
     uint64_t skip_bbox = 0, skip_zoom = 0;
+    uint64_t depth_hist[32] = {0};  /* histogram by depth/1000 */
+    uint64_t depth_count = 0;
     raw_feature *batch_buf = malloc(FEATURE_BATCH_SIZE * sizeof(raw_feature));
     if (!batch_buf) { arpt_overture_close(ov); return; }
     size_t batch_pos = 0;
@@ -255,10 +265,20 @@ static void read_overture_input(const arpt_pipeline_input *inp,
         rf->layer = inp->layer;
         rf->min_zoom = feat.min_zoom;
         rf->max_zoom = feat.max_zoom;
+        rf->depth = feat.depth;
+        if (feat.depth >= 0) {
+            int bucket = feat.depth < 32000 ? feat.depth / 1000 : 31;
+            depth_hist[bucket]++;
+            depth_count++;
+        }
 
-        /* Use cartography.sort_key as rank when available */
+        /* Use cartography.sort_key as rank when available.
+           For bathymetry (depth >= 0), invert the rank so the deepest
+           contour (largest polygon) is drawn first and shallower contours
+           paint on top of it. */
         if (feat.sort_key > 0) {
-            rf->rank = (uint32_t)feat.sort_key & SORT_KEY_RANK_MASK;
+            uint32_t sk = (uint32_t)feat.sort_key & SORT_KEY_RANK_MASK;
+            rf->rank = (rf->depth >= 0) ? (SORT_KEY_RANK_MASK - sk) : sk;
         } else {
             rf->rank = *rank;
             (*rank)++;
@@ -306,6 +326,16 @@ static void read_overture_input(const arpt_pipeline_input *inp,
     fprintf(stderr, "  %llu features from %s (%.3fs, skipped: %llu bbox, %llu zoom)\n",
             (unsigned long long)feat_count, inp->path, t1 - t0,
             (unsigned long long)skip_bbox, (unsigned long long)skip_zoom);
+    if (depth_count > 0) {
+        fprintf(stderr, "  Depth histogram (%llu features with depth):\n",
+                (unsigned long long)depth_count);
+        for (int i = 0; i < 32; i++) {
+            if (depth_hist[i] > 0)
+                fprintf(stderr, "    depth %d-%d: %llu\n",
+                        i * 1000, (i + 1) * 1000 - 1,
+                        (unsigned long long)depth_hist[i]);
+        }
+    }
 }
 
 /* ---- Finalize sort threads ---- */

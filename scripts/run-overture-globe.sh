@@ -23,7 +23,7 @@ BBOX="-180,-85,180,85"
 
 # Zoom range
 MIN_ZOOM=0
-MAX_ZOOM=4
+MAX_ZOOM=10
 
 # Parse arguments
 SKIP_DOWNLOAD=false

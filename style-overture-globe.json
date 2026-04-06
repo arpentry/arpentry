@@ -1,13 +1,22 @@
 {
   "version": 1,
   "name": "Overture Globe",
-  "background": [23, 56, 115, 255],
+  "background": [8, 25, 60, 255],
   "layers": [
     {
       "source_layer": "bathymetry",
       "type": "texture",
       "paint": [
-        { "class": "unknown", "color": [15, 40, 90, 255] }
+        { "class": "0",    "color": [ 95, 155, 200, 255] },
+        { "class": "10",   "color": [ 82, 142, 190, 255] },
+        { "class": "50",   "color": [ 70, 128, 178, 255] },
+        { "class": "100",  "color": [ 58, 115, 165, 255] },
+        { "class": "500",  "color": [ 46, 100, 150, 255] },
+        { "class": "1000", "color": [ 36,  85, 135, 255] },
+        { "class": "1500", "color": [ 28,  70, 118, 255] },
+        { "class": "2000", "color": [ 20,  55, 100, 255] },
+        { "class": "2500", "color": [ 14,  42,  85, 255] },
+        { "class": "3000", "color": [ 10,  32,  70, 255] }
       ]
     },
     {

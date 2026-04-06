@@ -995,10 +995,10 @@ void arpt_assign_tiles(const arpt_geom *geom, const arpt_geom *orig,
 
 /* ---- Feature processing across zoom levels ---- */
 
-/* Simplification tolerance for a given zoom: 1 pixel at the tile
-   resolution.  pixel = 360 / (2^(z+1) * 256) = 360 / 2^(z+9). */
+/* Simplification tolerance for a given zoom:
+   pixel = 360 / (2^(z+1) * 1024) = 360 / 2^(z+11). */
 static double zoom_tolerance(int zoom) {
-    return 360.0 / (double)(1 << (zoom + 9));
+    return 360.0 / (double)((uint64_t)1 << (zoom + 11));
 }
 
 /* Check if a feature's bounding box is smaller than one pixel² at the

@@ -25,6 +25,7 @@ struct arpt_overture {
     int32_t col_cart_min_zoom;  /* cartography.min_zoom */
     int32_t col_cart_max_zoom;  /* cartography.max_zoom */
     int32_t col_cart_sort_key;  /* cartography.sort_key */
+    int32_t col_depth;          /* depth (meters) */
 
     int64_t row_in_batch;   /* current row within current batch */
     int64_t batch_rows;     /* rows in current batch */
@@ -92,8 +93,15 @@ arpt_overture *arpt_overture_open(const char *path)
     int32_t file_col_cart_max_zoom = arpt_parquet_find_column_path(pq, "cartography.max_zoom");
     int32_t file_col_cart_sort_key = arpt_parquet_find_column_path(pq, "cartography.sort_key");
 
+    /* Discover depth column (bathymetry) */
+    int32_t file_col_depth = arpt_parquet_find_column(pq, "depth");
+    if (file_col_depth >= 0)
+        fprintf(stderr, "  Found depth column (index %d)\n", file_col_depth);
+    else
+        fprintf(stderr, "  No depth column found\n");
+
     /* Build projection list */
-    int32_t proj_cols[12];
+    int32_t proj_cols[13];
     int32_t n_proj = 0;
 
     ov->col_geometry = n_proj;
@@ -150,6 +158,12 @@ arpt_overture *arpt_overture_open(const char *path)
         proj_cols[n_proj++] = file_col_cart_sort_key;
     } else {
         ov->col_cart_sort_key = -1;
+    }
+    if (file_col_depth >= 0) {
+        ov->col_depth = n_proj;
+        proj_cols[n_proj++] = file_col_depth;
+    } else {
+        ov->col_depth = -1;
     }
 
     /* Create cursor with projection */
@@ -323,6 +337,9 @@ bool arpt_overture_next(arpt_overture *ov, arpt_overture_feature *out)
         out->min_zoom = read_int32(ov, ov->col_cart_min_zoom, row, -1);
         out->max_zoom = read_int32(ov, ov->col_cart_max_zoom, row, -1);
         out->sort_key = read_int32(ov, ov->col_cart_sort_key, row, 0);
+
+        /* Depth (bathymetry) */
+        out->depth = read_int32(ov, ov->col_depth, row, -1);
 
         return true;
     }

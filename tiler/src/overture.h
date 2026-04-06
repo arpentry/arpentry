@@ -24,6 +24,7 @@ typedef struct {
     int32_t min_zoom;       /* cartography.min_zoom (-1 if missing) */
     int32_t max_zoom;       /* cartography.max_zoom (-1 if missing) */
     int32_t sort_key;       /* cartography.sort_key (0 if missing) */
+    int32_t depth;          /* depth in meters (-1 if missing) */
 } arpt_overture_feature;
 
 /* Open an OvertureMaps GeoParquet file.
