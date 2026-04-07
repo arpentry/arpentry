@@ -14,6 +14,7 @@
 #include "style.h"
 #include "tile/manager.h"
 #include "ui.h"
+#include "info.h"
 #ifndef __EMSCRIPTEN__
 #include "screenshot.h"
 #endif
@@ -141,6 +142,7 @@ typedef struct {
     arpt_renderer *renderer;
     arpt_tile_manager *tile_manager;
     arpt_ui *ui;
+    arpt_info *info;
     double last_time;
     double smoothed_ground_elev;
     bool needs_redraw;
@@ -195,6 +197,8 @@ static void on_framebuffer_resize(GLFWwindow *w, int width, int height) {
                          ratio);
     if (app.ui)
         arpt_ui_resize(app.ui, (uint32_t)width, (uint32_t)height, ratio);
+    if (app.info)
+        arpt_info_resize(app.info, (uint32_t)width, (uint32_t)height, ratio);
 
     WGPUSurfaceConfiguration cfg = {
         .device = app.device,
@@ -386,8 +390,8 @@ static void render_frame(void) {
             arpt_tile_manager_create(tm_config, app.renderer, &style);
 
         /* Restore UI overlay on the new renderer */
-        if (app.ui)
-            arpt_renderer_set_overlay(app.renderer, ui_overlay, app.ui);
+        if (app.ui || app.info)
+            arpt_renderer_set_overlay(app.renderer, ui_overlay, NULL);
 
         app.needs_redraw = true;
         printf("Refreshed style, tileset, and tiles\n");
@@ -514,6 +518,20 @@ static void render_frame(void) {
                           arpt_camera_ortho(app.camera));
     }
 
+    /* Update info overlay with current camera state */
+    if (app.info) {
+        double lon_deg = arpt_camera_lon(app.camera) * 180.0 / M_PI;
+        double lat_deg = arpt_camera_lat(app.camera) * 180.0 / M_PI;
+        double alt = arpt_camera_altitude(app.camera);
+        double bearing_deg = arpt_camera_bearing(app.camera) * 180.0 / M_PI;
+        double tilt_deg = arpt_camera_tilt(app.camera) * 180.0 / M_PI;
+        double zoom_val = 200000.0 * arpt_camera_vp_height(app.camera) /
+                          (2.0 * alt * tan(M_PI / 8.0) * 8.0);
+        double zoom = (zoom_val > 1.0) ? log2(zoom_val) : 0.0;
+        arpt_info_set_camera(app.info, lon_deg, lat_deg, alt,
+                             bearing_deg, tilt_deg, zoom);
+    }
+
     arpt_renderer_end_frame(app.renderer);
 
     wgpuTextureViewRelease(view);
@@ -526,8 +544,9 @@ static void render_frame(void) {
 /* UI overlay callback (invoked by renderer at end of frame) */
 
 static void ui_overlay(WGPURenderPassEncoder pass, void *ud) {
-    arpt_ui *ui = ud;
-    if (ui) arpt_ui_draw(ui, pass);
+    (void)ud;
+    if (app.ui) arpt_ui_draw(app.ui, pass);
+    if (app.info) arpt_info_draw(app.info, pass);
 }
 
 /* UI event filter */
@@ -1036,7 +1055,10 @@ static void init_viewer(void) {
         float pixel_ratio = (win_w > 0) ? (float)fb_w / (float)win_w : 1.0f;
         app.ui = arpt_ui_create(app.device, app.queue, app.surface_format,
                                 (uint32_t)fb_w, (uint32_t)fb_h, pixel_ratio);
-        arpt_renderer_set_overlay(app.renderer, ui_overlay, app.ui);
+        app.info = arpt_info_create(app.device, app.queue, app.surface_format,
+                                    (uint32_t)fb_w, (uint32_t)fb_h,
+                                    pixel_ratio);
+        arpt_renderer_set_overlay(app.renderer, ui_overlay, NULL);
     }
 
     /* Map control (mouse/keyboard/touch input) */
@@ -1188,6 +1210,7 @@ int main(int argc, char **argv) {
 #ifndef __EMSCRIPTEN__
     /* Cleanup */
     if (app.tile_manager) arpt_tile_manager_free(app.tile_manager);
+    if (app.info) arpt_info_free(app.info);
     if (app.ui) arpt_ui_free(app.ui);
     if (app.renderer) arpt_renderer_free(app.renderer);
     free(app.model_buf);

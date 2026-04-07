@@ -47,6 +47,7 @@ set(SHADER_SOURCES
     surface.wgsl
     highway.wgsl
     ui.wgsl
+    info.wgsl
     tree.wgsl
     poi.wgsl
     sky.wgsl
@@ -130,6 +131,7 @@ add_executable(arpentry_client
     src/tile/visible.c
     src/tile/manager.c
     src/ui.c
+    src/info.c
     src/font.c
     src/icon.c
     $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:src/screenshot.c>
