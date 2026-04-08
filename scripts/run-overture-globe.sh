@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download Overture Maps land_cover+bathymetry data, tile as a globe, serve and view.
+# Download Overture Maps land_cover+bathymetry+water data, tile as a globe, serve and view.
 #
 # Prerequisites:
 #   pip install overturemaps
@@ -68,6 +68,7 @@ download_type() {
 
 download_type land_cover
 download_type bathymetry
+download_type water
 
 # ── Tile ──────────────────────────────────────────────────────────────────────
 
@@ -83,7 +84,8 @@ if [ ! -f "$ARCHIVE" ]; then
         --max-zoom "$MAX_ZOOM" \
         --mem $((256 * 1024 * 1024)) \
         --input "1:$DATA_DIR/land_cover.parquet" \
-        --input "2:$DATA_DIR/bathymetry.parquet"
+        --input "2:$DATA_DIR/bathymetry.parquet" \
+        --input "3:$DATA_DIR/water.parquet"
 
     echo "Archive: $(du -h "$ARCHIVE" | cut -f1)"
 else

@@ -41,7 +41,7 @@ bool arpt_decode_terrain(const void *flatbuf, size_t size,
 
 /* Surface decoding */
 
-#define ARPT_MAX_CLASSES 32
+#define ARPT_MAX_CLASSES 64
 
 typedef struct {
     const uint16_t *x, *y; /* zero-copy into FlatBuffer */

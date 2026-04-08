@@ -23,7 +23,7 @@ static void usage(void) {
         "  --threads <n>          Worker threads (default: auto-detect CPU count)\n"
         "\n"
         "Layer indices (matching style.json):\n"
-        "  0=terrain (auto-generated)  1=land_cover  2=bathymetry\n"
+        "  0=terrain (auto-generated)  1=land_cover  2=bathymetry  3=water\n"
     );
 }
 

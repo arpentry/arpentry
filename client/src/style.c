@@ -37,7 +37,7 @@ void arpt_style_defaults(arpt_style *s) {
     s->colors[0][3] = 255 / 255.0f;
 
     /* Surface fills (matching server defaults) */
-    REG("water",        23,  56, 115, 255);
+    REG("water",       169, 226, 254, 255);
     REG("desert",      199, 173, 120, 255);
     REG("forest",       26,  77,  20, 255);
     REG("grassland",   107, 158,  71, 255);

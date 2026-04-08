@@ -8,6 +8,8 @@
       "type": "texture",
       "paint": [
         { "class": "0",    "color": [164, 224, 254, 255] },
+        { "class": "10",   "color": [163, 223, 254, 255] },
+        { "class": "50",   "color": [162, 223, 254, 255] },
         { "class": "100",  "color": [160, 222, 254, 255] },
         { "class": "500",  "color": [155, 220, 253, 255] },
         { "class": "1000", "color": [151, 218, 252, 255] },
@@ -31,6 +33,23 @@
         { "class": "mangrove", "color": [161, 227, 207, 255] },
         { "class": "urban",    "color": [180, 175, 165, 255] },
         { "class": "snow",     "color": [243, 245, 247, 255] }
+      ]
+    },
+    {
+      "source_layer": "water",
+      "type": "texture",
+      "paint": [
+        { "class": "lake",       "color": [169, 226, 254, 255] },
+        { "class": "river",      "color": [169, 226, 254, 255] },
+        { "class": "pond",       "color": [169, 226, 254, 255] },
+        { "class": "reservoir",  "color": [169, 226, 254, 255] },
+        { "class": "canal",      "color": [169, 226, 254, 255] },
+        { "class": "stream",     "color": [169, 226, 254, 255] },
+        { "class": "spring",     "color": [169, 226, 254, 255] },
+        { "class": "water",      "color": [169, 226, 254, 255] },
+        { "class": "physical",   "color": [169, 226, 254, 255] },
+        { "class": "human_made", "color": [169, 226, 254, 255] },
+        { "class": "wastewater", "color": [169, 226, 254, 255] }
       ]
     },
     {

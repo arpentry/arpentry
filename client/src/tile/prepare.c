@@ -149,6 +149,7 @@ static void emit_polygons(const arpt_surface_data *data,
     for (size_t i = 0; i < data->count; i++) {
         const arpt_surface_polygon *p = &data->polygons[i];
         if (p->vertex_count < 3) continue;
+        if (p->cls == 0) continue; /* skip unmatched class (background) */
 
         const float *c = style->colors[p->cls];
         uint32_t base = (uint32_t)*vi;
