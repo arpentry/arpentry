@@ -329,7 +329,7 @@ static void render_frame(void) {
 
         arpt_tile_manager_config tm_config = {
             .base_url = app.base_url,
-            .root_error = 200000.0,
+            .root_error = 400000.0,
             .min_level = 0,
             .max_level = 19,
             .max_tiles = 200,
@@ -525,7 +525,7 @@ static void render_frame(void) {
         double alt = arpt_camera_altitude(app.camera);
         double bearing_deg = arpt_camera_bearing(app.camera) * 180.0 / M_PI;
         double tilt_deg = arpt_camera_tilt(app.camera) * 180.0 / M_PI;
-        double zoom_val = 200000.0 * arpt_camera_vp_height(app.camera) /
+        double zoom_val = 400000.0 * arpt_camera_vp_height(app.camera) /
                           (2.0 * alt * tan(M_PI / 8.0) * 8.0);
         double zoom = (zoom_val > 1.0) ? log2(zoom_val) : 0.0;
         arpt_info_set_camera(app.info, lon_deg, lat_deg, alt,
@@ -1009,7 +1009,7 @@ static void init_viewer(void) {
     /* Tile manager: fetch tileset metadata, then create manager */
     arpt_tile_manager_config tm_config = {
         .base_url = base_url,
-        .root_error = 200000.0,
+        .root_error = 400000.0,
         .min_level = 0,
         .max_level = 19,
         .max_tiles = 200,

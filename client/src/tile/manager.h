@@ -57,7 +57,7 @@ static inline arpt_tile_manager_config arpt_tile_manager_config_defaults(
     const char *base_url) {
     return (arpt_tile_manager_config){
         .base_url = base_url,
-        .root_error = 200000.0,
+        .root_error = 400000.0,
         .min_level = 0,
         .max_level = 19,
         .max_tiles = 200,

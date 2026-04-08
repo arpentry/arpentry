@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "Default",
-  "background": [107, 158, 71, 255],
+  "background": [240, 234, 224, 255],
   "layers": [
     {
       "source_layer": "terrain",
@@ -12,13 +12,14 @@
       "source_layer": "surface",
       "type": "texture",
       "paint": [
-        { "class": "water",     "color": [23, 56, 115, 255] },
-        { "class": "desert",    "color": [199, 173, 120, 255] },
-        { "class": "forest",    "color": [26, 77, 20, 255] },
-        { "class": "grassland", "color": [107, 158, 71, 255] },
-        { "class": "cropland",  "color": [166, 184, 77, 255] },
-        { "class": "shrub",     "color": [128, 133, 82, 255] },
-        { "class": "ice",       "color": [224, 237, 250, 255] }
+        { "class": "land",      "color": [248, 244, 241, 255] },
+        { "class": "water",     "color": [169, 226, 254, 255] },
+        { "class": "desert",    "color": [239, 232, 205, 255] },
+        { "class": "forest",    "color": [162, 226, 164, 255] },
+        { "class": "grassland", "color": [196, 234, 169, 255] },
+        { "class": "cropland",  "color": [235, 237, 177, 255] },
+        { "class": "shrub",     "color": [216, 234, 174, 255] },
+        { "class": "ice",       "color": [243, 245, 247, 255] }
       ]
     },
     {

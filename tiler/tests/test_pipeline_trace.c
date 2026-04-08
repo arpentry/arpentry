@@ -154,11 +154,11 @@ static void test_point_clip_z0(void) {
     collector_init(&c);
     arpt_assign_tiles(&g, &g, 0, collect_cb, &c);
 
-    /* At z=0 equirectangular: n_cols=2, n_rows=1.
-     * Bern (7.45, 46.95) → tx=1, ty=0 */
+    /* At z=0 equirectangular: n_cols=1, n_rows=1.
+     * Bern (7.45, 46.95) → tx=0, ty=0 */
     TEST_ASSERT_EQUAL_INT(1, c.count);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].z);
-    TEST_ASSERT_EQUAL_INT(1, c.results[0].x);
+    TEST_ASSERT_EQUAL_INT(0, c.results[0].x);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].y);
 
     /* Clipped coords should be unchanged */
@@ -170,8 +170,8 @@ static void test_point_clip_z0(void) {
 
 static void test_point_quantize_z0(void) {
     /* Build a tile at z=0 with a point at Bern and verify quantization.
-     * Equirectangular z=0: tile (1,0) covers [0,180] lon × [-90,90] lat */
-    arpt_bounds b = tile_bounds(0, 1, 0);
+     * Equirectangular z=0: tile (0,0) covers [-180,180] lon × [-90,90] lat */
+    arpt_bounds b = tile_bounds(0, 0, 0);
     arpt_geom g = {0};
     g.type = 1;
     double x = 7.45, y = 46.95;
@@ -257,8 +257,8 @@ static void test_point_clip_z5(void) {
     TEST_ASSERT_TRUE(y >= tb.min_y);
     TEST_ASSERT_TRUE(y <= tb.max_y);
 
-    /* Expected: tx=33, ty=24 (equirectangular: n_cols=64, n_rows=32) */
-    TEST_ASSERT_EQUAL_INT(33, c.results[0].x);
+    /* Expected: tx=16, ty=24 (equirectangular: n_cols=32, n_rows=32) */
+    TEST_ASSERT_EQUAL_INT(16, c.results[0].x);
     TEST_ASSERT_EQUAL_INT(24, c.results[0].y);
 
     collector_free(&c);
@@ -266,7 +266,7 @@ static void test_point_clip_z5(void) {
 
 static void test_point_quantize_z5(void) {
     /* Higher zoom = better quantization precision */
-    int z = 5, tx = 33, ty = 24;
+    int z = 5, tx = 16, ty = 24;
     arpt_bounds b = tile_bounds(z, tx, ty);
     arpt_geom g = {0};
     g.type = 1;
@@ -346,10 +346,10 @@ static void test_line_clip_z0(void) {
     collector_init(&c);
     arpt_assign_tiles(&g, &g, 0, collect_cb, &c);
 
-    /* At z=0 equirectangular, everything in tile (0,1,0) */
+    /* At z=0 equirectangular, everything in tile (0,0,0) */
     TEST_ASSERT_EQUAL_INT(1, c.count);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].z);
-    TEST_ASSERT_EQUAL_INT(1, c.results[0].x);
+    TEST_ASSERT_EQUAL_INT(0, c.results[0].x);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].y);
 
     /* Line should have 2 vertices, unchanged */
@@ -501,10 +501,10 @@ static void test_polygon_clip_z0(void) {
     collector_init(&c);
     arpt_assign_tiles(&g, &g, 0, collect_cb, &c);
 
-    /* At z=0 equirectangular, one tile (1,0) */
+    /* At z=0 equirectangular, one tile (0,0) */
     TEST_ASSERT_EQUAL_INT(1, c.count);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].z);
-    TEST_ASSERT_EQUAL_INT(1, c.results[0].x);
+    TEST_ASSERT_EQUAL_INT(0, c.results[0].x);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].y);
 
     /* Polygon should be unchanged (fully within tile) */
@@ -825,7 +825,7 @@ static void test_quantize_precision_improves(void) {
 static void test_tile_has_terrain_layer(void) {
     /* When building a tile with a non-terrain feature (layer > 0),
      * the builder should auto-add a flat terrain mesh as layer 0. */
-    arpt_bounds b = tile_bounds(0, 1, 0);
+    arpt_bounds b = tile_bounds(0, 0, 0);
     arpt_geom g = {0};
     g.type = 1;
     double x = 7.45, y = 46.95;

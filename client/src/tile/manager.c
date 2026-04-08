@@ -399,8 +399,8 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
     /* Pre-fetch level-0 root tiles on the first frame so that
        draw always has a fallback level to render. */
     if (tm->frame == 1) {
-        arpt_tile_key roots[2] = {{0, 0, 0}, {0, 1, 0}};
-        for (int r = 0; r < 2; r++) {
+        arpt_tile_key roots[1] = {{0, 0, 0}};
+        for (int r = 0; r < 1; r++) {
             tile_entry lookup = {.key = roots[r]};
             if (!hashmap_get(tm->cache, &lookup)) {
                 start_fetch(tm, roots[r], 0);

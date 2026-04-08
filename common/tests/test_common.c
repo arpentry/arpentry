@@ -38,31 +38,31 @@ void test_quantize_clamps_high(void) {
 
 /* Tile bounds */
 
-void test_tile_bounds_root_west(void) {
-    /* Level 0, tile (0,0): western hemisphere */
+void test_tile_bounds_root(void) {
+    /* Level 0, tile (0,0): entire world */
     arpt_bounds b = arpt_tile_bounds(0, 0, 0);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, -180.0, b.west);
-    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 0.0, b.east);
-    TEST_ASSERT_DOUBLE_WITHIN(1e-9, -90.0, b.south);
-    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 90.0, b.north);
-}
-
-void test_tile_bounds_root_east(void) {
-    /* Level 0, tile (1,0): eastern hemisphere */
-    arpt_bounds b = arpt_tile_bounds(0, 1, 0);
-    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 0.0, b.west);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, 180.0, b.east);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, -90.0, b.south);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, 90.0, b.north);
 }
 
+void test_tile_bounds_level1(void) {
+    /* Level 1, tile (0,0): SW quadrant */
+    arpt_bounds b = arpt_tile_bounds(1, 0, 0);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, -180.0, b.west);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 0.0, b.east);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, -90.0, b.south);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 0.0, b.north);
+}
+
 void test_tile_bounds_level5(void) {
-    /* Level 5, tile (32, 16): should be in a known range */
-    arpt_bounds b = arpt_tile_bounds(5, 32, 16);
-    double lon_span = 360.0 / 64.0; /* 2^(5+1) = 64 */
+    /* Level 5, tile (16, 16): should be in a known range */
+    arpt_bounds b = arpt_tile_bounds(5, 16, 16);
+    double lon_span = 360.0 / 32.0; /* 2^5 = 32 */
     double lat_span = 180.0 / 32.0; /* 2^5 = 32 */
-    TEST_ASSERT_DOUBLE_WITHIN(1e-9, -180.0 + 32 * lon_span, b.west);
-    TEST_ASSERT_DOUBLE_WITHIN(1e-9, -180.0 + 33 * lon_span, b.east);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, -180.0 + 16 * lon_span, b.west);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, -180.0 + 17 * lon_span, b.east);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, -90.0 + 16 * lat_span, b.south);
     TEST_ASSERT_DOUBLE_WITHIN(1e-9, -90.0 + 17 * lat_span, b.north);
 }
@@ -139,8 +139,8 @@ int main(void) {
     RUN_TEST(test_quantize_clamps_low);
     RUN_TEST(test_quantize_clamps_high);
     /* Tile bounds */
-    RUN_TEST(test_tile_bounds_root_west);
-    RUN_TEST(test_tile_bounds_root_east);
+    RUN_TEST(test_tile_bounds_root);
+    RUN_TEST(test_tile_bounds_level1);
     RUN_TEST(test_tile_bounds_level5);
     /* Geodetic quantization */
     RUN_TEST(test_geodetic_quantize_lon_roundtrip);

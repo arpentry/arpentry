@@ -864,7 +864,7 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     int    cached_zoom = -1;
 
     for (int z = min_zoom; z <= max_zoom; z++) {
-        int n_cols = 1 << (z + 1);
+        int n_cols = 1 << z;
         int n_rows = 1 << z;
         double lon_span = 360.0 / (double)n_cols;
         double lat_span = 180.0 / (double)n_rows;

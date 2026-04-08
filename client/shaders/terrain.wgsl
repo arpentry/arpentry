@@ -96,26 +96,33 @@ fn decode_octahedral(enc: vec2<f32>) -> vec3<f32> {
 ) -> @location(0) vec4<f32> {
     let margin = 0.0625;
     let tex_uv = (uv + vec2<f32>(margin, margin)) / (1.0 + 2.0 * margin);
-    let albedo = textureSample(surface_tex, surface_samp, tex_uv).rgb;
+    let albedo_srgb = textureSample(surface_tex, surface_samp, tex_uv).rgb;
+
+    // Ocean sun glint: detect water by color heuristic (on sRGB values
+    // before linearisation so the thresholds stay intuitive)
+    let lum = dot(albedo_srgb, vec3<f32>(0.299, 0.587, 0.114));
+    let is_water = step(albedo_srgb.r * 2.0, albedo_srgb.b)
+                 * step(albedo_srgb.g * 1.5, albedo_srgb.b)
+                 * step(lum, 0.3);
+
+    // Linearise sRGB texture so lighting math is done in linear space
+    let albedo = pow(albedo_srgb, vec3<f32>(2.2));
 
     let n = normalize(normal_cam);
     let sun = normalize(globals.sun_dir);
     let NdotL = dot(n, sun);
 
-    let shadow_color = vec3<f32>(0.20, 0.22, 0.28);
-    let fill_color   = vec3<f32>(0.28, 0.26, 0.22);
+    // Lighting tuned so fill_color + sun_color = 1.0:
+    // fully sun-lit surfaces reproduce the exact style color.
+    let shadow_color = vec3<f32>(0.45, 0.46, 0.52);
+    let fill_color   = vec3<f32>(0.55, 0.54, 0.50);
     let hemi_t = NdotL * 0.5 + 0.5;
     let ambient = mix(shadow_color, fill_color, hemi_t);
 
-    let sun_color = vec3<f32>(0.65, 0.63, 0.58);
+    let sun_color = vec3<f32>(0.45, 0.46, 0.50);
     let direct = sun_color * max(NdotL, 0.0);
 
     var lit = albedo * (ambient + direct);
-
-    // Ocean sun glint: detect water by color heuristic
-    // Water is dark blue (background color ~0.09, 0.22, 0.45)
-    let lum = dot(albedo, vec3<f32>(0.299, 0.587, 0.114));
-    let is_water = step(albedo.r * 2.0, albedo.b) * step(albedo.g * 1.5, albedo.b) * step(lum, 0.3);
 
     if (is_water > 0.5) {
         // Blinn-Phong specular

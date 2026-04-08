@@ -60,7 +60,7 @@ void test_enumerate_at_origin(void) {
     }
 
     /* The tile containing our camera center (lon=0) should be in the list */
-    int n_cols = 1 << (level + 1);
+    int n_cols = 1 << level;
     int expected_x = n_cols / 2;
 
     bool found_center = false;

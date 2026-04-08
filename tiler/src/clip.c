@@ -19,7 +19,7 @@
 #define TILE_PIXELS     256
 
 arpt_bounds arpt_tile_bounds(int z, int tx, int ty) {
-    int n_cols = 1 << (z + 1);
+    int n_cols = 1 << z;
     int n_rows = 1 << z;
     double lon_span = 360.0 / (double)n_cols;
     double lat_span = 180.0 / (double)n_rows;
@@ -108,7 +108,7 @@ static void u32a_free(u32array *a) {
 
 static void clip_points(const arpt_geom *geom, int z,
                         arpt_tile_cb cb, void *ctx) {
-    int n_cols = 1 << (z + 1);
+    int n_cols = 1 << z;
     int n_rows = 1 << z;
 
     for (uint32_t i = 0; i < geom->n_coords; i++) {
@@ -366,7 +366,7 @@ static void seg_range(const u32array *segs, uint32_t si, uint32_t total,
 
 static void clip_lines(const arpt_geom *geom, int z,
                        arpt_tile_cb cb, void *ctx) {
-    int n_cols = 1 << (z + 1);
+    int n_cols = 1 << z;
     int n_rows = 1 << z;
 
     int tx_min, tx_max, ty_min, ty_max;
@@ -845,7 +845,7 @@ static void clip_polygon_part(const arpt_geom *geom,
                                const arpt_geom *orig,
                                uint32_t first_ring, uint32_t n_rings,
                                int z, arpt_tile_cb cb, void *ctx) {
-    int n_cols = 1 << (z + 1);
+    int n_cols = 1 << z;
     int n_rows = 1 << z;
 
     /* Guard: simplified geometry must have enough coordinates to clip. */
@@ -965,7 +965,7 @@ void arpt_assign_tiles(const arpt_geom *geom, const arpt_geom *orig,
        all clipping and pass geometry through directly.  This applies
        to the majority of features at high zoom. */
     if ((geom->type == 2 || geom->type == 3) && geom->n_coords > 1) {
-        int n_cols = 1 << (zoom + 1);
+        int n_cols = 1 << zoom;
         int n_rows = 1 << zoom;
 
         int tx_min, tx_max, ty_min, ty_max;
@@ -996,16 +996,16 @@ void arpt_assign_tiles(const arpt_geom *geom, const arpt_geom *orig,
 /* ---- Feature processing across zoom levels ---- */
 
 /* Simplification tolerance for a given zoom:
-   pixel = 360 / (2^(z+1) * 1024) = 360 / 2^(z+11). */
+   pixel = 360 / (2^z * 1024) = 360 / 2^(z+10). */
 static double zoom_tolerance(int zoom) {
-    return 360.0 / (double)((uint64_t)1 << (zoom + 11));
+    return 360.0 / (double)((uint64_t)1 << (zoom + 10));
 }
 
 /* Check if a feature's bounding box is smaller than one pixel² at the
    given zoom level.  Uses bbox area (px_x * px_y) so that thin slivers
    are caught — consistent with the area-based polygon ring filter. */
 static bool feature_subpixel(const double bbox[4], int z) {
-    double n_cols = (double)(1 << (z + 1));
+    double n_cols = (double)(1 << z);
     double n_rows = (double)(1 << z);
     double lon_span = bbox[2] - bbox[0];
     double lat_span = bbox[3] - bbox[1];
@@ -1022,14 +1022,14 @@ static bool feature_subpixel(const double bbox[4], int z) {
    features are meaningful: when one pixel covers less than ~50 m on the
    ground (~0.0005°).  This corresponds roughly to zoom 8. */
 static int point_min_zoom(void) {
-    /* 360° / 2^(z+1) / TILE_PIXELS < 0.0005°  →  z ≈ 8 */
-    return 8;
+    /* 360° / 2^z / TILE_PIXELS < 0.0005°  →  z ≈ 9 */
+    return 9;
 }
 
 /* Minimum ring area (in geographic degrees²) at the given zoom.
    Rings smaller than 1 pixel² are dropped after simplification. */
 static double zoom_min_area(int zoom) {
-    double pixel_lon = 360.0 / ((double)(1 << (zoom + 1)) * TILE_PIXELS);
+    double pixel_lon = 360.0 / ((double)(1 << zoom) * TILE_PIXELS);
     double pixel_lat = 180.0 / ((double)(1 << zoom) * TILE_PIXELS);
     return pixel_lon * pixel_lat;
 }
@@ -1037,7 +1037,7 @@ static double zoom_min_area(int zoom) {
 /* Minimum line length (in geographic degrees) at the given zoom.
    Lines shorter than 1 pixel are dropped after simplification. */
 static double zoom_min_length(int zoom) {
-    return 360.0 / ((double)(1 << (zoom + 1)) * TILE_PIXELS);
+    return 360.0 / ((double)(1 << zoom) * TILE_PIXELS);
 }
 
 void arpt_process_feature_zooms(const arpt_geom *geom, const double bbox[4],

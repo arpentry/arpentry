@@ -35,7 +35,7 @@ bool resp_build_tileset(const struct arpt_archive_reader *archive,
 
     arpentry_tiles_Tileset_min_level_add(&builder, 0);
     arpentry_tiles_Tileset_max_level_add(&builder, max_level);
-    arpentry_tiles_Tileset_root_error_add(&builder, 200000.0);
+    arpentry_tiles_Tileset_root_error_add(&builder, 400000.0);
 
     /* Layers in decode-priority order (Section 9) */
     arpentry_tiles_Tileset_layers_start(&builder);

@@ -164,21 +164,24 @@ fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {
     @location(0) normal_cam: vec3<f32>,
     @location(1) color: vec3<f32>,
 ) -> @location(0) vec4<f32> {
+    // Linearise sRGB color for correct lighting
+    let linear_color = pow(color, vec3<f32>(2.2));
+
     let n = normalize(normal_cam);
     let sun = normalize(globals.sun_dir);
     let NdotL = dot(n, sun);
 
-    // Hemisphere ambient
-    let shadow_color = vec3<f32>(0.20, 0.22, 0.28);
-    let fill_color   = vec3<f32>(0.28, 0.26, 0.22);
+    // Hemisphere ambient (fill + sun = 1.0 for energy conservation)
+    let shadow_color = vec3<f32>(0.45, 0.46, 0.52);
+    let fill_color   = vec3<f32>(0.55, 0.54, 0.50);
     let hemi_t = NdotL * 0.5 + 0.5;
     let ambient = mix(shadow_color, fill_color, hemi_t);
 
     // Direct sunlight
-    let sun_color = vec3<f32>(0.65, 0.63, 0.58);
+    let sun_color = vec3<f32>(0.45, 0.46, 0.50);
     let direct = sun_color * max(NdotL, 0.0);
 
-    let lit = color * (ambient + direct);
+    let lit = linear_color * (ambient + direct);
     let out = select(lit, pow(lit, vec3<f32>(1.0 / 2.2)), globals.apply_gamma > 0.5);
     return vec4<f32>(out, 1.0);
 }

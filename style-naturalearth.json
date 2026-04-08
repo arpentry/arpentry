@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "Natural Earth",
-  "background": [23, 56, 115, 255],
+  "background": [121, 205, 246, 255],
   "layers": [
     {
       "source_layer": "terrain",
@@ -12,12 +12,12 @@
       "source_layer": "surface",
       "type": "texture",
       "paint": [
-        { "class": "land",       "color": [107, 180, 71, 255] },
-        { "class": "coastline",  "color": [26, 77, 20, 255] },
-        { "class": "lake",       "color": [23, 56, 115, 255], "min_level": 2 },
-        { "class": "glacier",    "color": [220, 235, 245, 255], "min_level": 2 },
-        { "class": "ice_shelf",  "color": [210, 228, 240, 255], "min_level": 2 },
-        { "class": "reef",       "color": [72, 165, 150, 255], "min_level": 3 },
+        { "class": "land",       "color": [248, 244, 241, 255] },
+        { "class": "coastline",  "color": [162, 226, 164, 255] },
+        { "class": "lake",       "color": [169, 226, 254, 255], "min_level": 2 },
+        { "class": "glacier",    "color": [243, 245, 247, 255], "min_level": 2 },
+        { "class": "ice_shelf",  "color": [243, 245, 247, 255], "min_level": 2 },
+        { "class": "reef",       "color": [175, 233, 231, 255], "min_level": 3 },
         { "class": "urban",      "color": [244, 240, 229, 255], "min_level": 4 }
       ]
     },
@@ -27,7 +27,7 @@
       "paint": [
         { "class": "boundary",        "color": [89, 84, 77, 255],  "width": 40, "min_level": 1 },
         { "class": "admin1_boundary", "color": [89, 84, 77, 128],  "width": 20, "min_level": 3 },
-        { "class": "river",           "color": [23, 56, 115, 255],  "width": 40, "min_level": 3 },
+        { "class": "river",           "color": [169, 226, 254, 255],  "width": 40, "min_level": 3 },
         { "class": "road",            "color": [180, 180, 180, 255],  "width": 40, "min_level": 4 },
         { "class": "geographic_line", "color": [160, 160, 160, 100], "width": 20 }
       ]

@@ -14,30 +14,30 @@ void test_parse_level0(void) {
     TEST_ASSERT_EQUAL_INT(0, y);
 }
 
-void test_parse_level0_max_x(void) {
-    /* Level 0: x in [0, 1], y in [0, 0] */
+void test_parse_level1(void) {
+    /* Level 1: x in [0, 1], y in [0, 1] */
     int level, x, y;
-    TEST_ASSERT_TRUE(arpt_parse_tile_path("/0/1/0.arpt", &level, &x, &y));
-    TEST_ASSERT_EQUAL_INT(0, level);
+    TEST_ASSERT_TRUE(arpt_parse_tile_path("/1/1/0.arpt", &level, &x, &y));
+    TEST_ASSERT_EQUAL_INT(1, level);
     TEST_ASSERT_EQUAL_INT(1, x);
     TEST_ASSERT_EQUAL_INT(0, y);
 }
 
 void test_parse_mid_level(void) {
     int level, x, y;
-    TEST_ASSERT_TRUE(arpt_parse_tile_path("/5/32/16.arpt", &level, &x, &y));
+    TEST_ASSERT_TRUE(arpt_parse_tile_path("/5/16/16.arpt", &level, &x, &y));
     TEST_ASSERT_EQUAL_INT(5, level);
-    TEST_ASSERT_EQUAL_INT(32, x);
+    TEST_ASSERT_EQUAL_INT(16, x);
     TEST_ASSERT_EQUAL_INT(16, y);
 }
 
 void test_parse_max_level(void) {
-    /* Level 21: x in [0, 4194303], y in [0, 2097151] */
+    /* Level 21: x in [0, 2097151], y in [0, 2097151] */
     int level, x, y;
     TEST_ASSERT_TRUE(
-        arpt_parse_tile_path("/21/4194303/2097151.arpt", &level, &x, &y));
+        arpt_parse_tile_path("/21/2097151/2097151.arpt", &level, &x, &y));
     TEST_ASSERT_EQUAL_INT(21, level);
-    TEST_ASSERT_EQUAL_INT(4194303, x);
+    TEST_ASSERT_EQUAL_INT(2097151, x);
     TEST_ASSERT_EQUAL_INT(2097151, y);
 }
 
@@ -69,9 +69,9 @@ void test_reject_level_too_high(void) {
 }
 
 void test_reject_x_out_of_range(void) {
-    /* Level 0: max x = 1 */
+    /* Level 0: max x = 0 */
     int level, x, y;
-    TEST_ASSERT_FALSE(arpt_parse_tile_path("/0/2/0.arpt", &level, &x, &y));
+    TEST_ASSERT_FALSE(arpt_parse_tile_path("/0/1/0.arpt", &level, &x, &y));
 }
 
 void test_reject_y_out_of_range(void) {
@@ -99,7 +99,7 @@ int main(void) {
     UNITY_BEGIN();
     /* Valid paths */
     RUN_TEST(test_parse_level0);
-    RUN_TEST(test_parse_level0_max_x);
+    RUN_TEST(test_parse_level1);
     RUN_TEST(test_parse_mid_level);
     RUN_TEST(test_parse_max_level);
     /* Invalid paths */

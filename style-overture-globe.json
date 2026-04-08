@@ -1,38 +1,49 @@
 {
   "version": 1,
   "name": "Overture Globe",
-  "background": [8, 25, 60, 255],
+  "background": [121, 205, 246, 255],
   "layers": [
     {
       "source_layer": "bathymetry",
       "type": "texture",
       "paint": [
-        { "class": "0",    "color": [ 95, 155, 200, 255] },
-        { "class": "10",   "color": [ 82, 142, 190, 255] },
-        { "class": "50",   "color": [ 70, 128, 178, 255] },
-        { "class": "100",  "color": [ 58, 115, 165, 255] },
-        { "class": "500",  "color": [ 46, 100, 150, 255] },
-        { "class": "1000", "color": [ 36,  85, 135, 255] },
-        { "class": "1500", "color": [ 28,  70, 118, 255] },
-        { "class": "2000", "color": [ 20,  55, 100, 255] },
-        { "class": "2500", "color": [ 14,  42,  85, 255] },
-        { "class": "3000", "color": [ 10,  32,  70, 255] }
+        { "class": "0",    "color": [164, 224, 254, 255] },
+        { "class": "100",  "color": [160, 222, 254, 255] },
+        { "class": "500",  "color": [155, 220, 253, 255] },
+        { "class": "1000", "color": [151, 218, 252, 255] },
+        { "class": "1500", "color": [146, 216, 252, 255] },
+        { "class": "2000", "color": [137, 213, 250, 255] },
+        { "class": "2500", "color": [133, 211, 249, 255] },
+        { "class": "3000", "color": [129, 209, 248, 255] }
       ]
     },
     {
       "source_layer": "land_cover",
       "type": "texture",
       "paint": [
-        { "class": "forest",    "color": [ 26,  77,  20, 255] },
-        { "class": "shrub",     "color": [128, 133,  82, 255] },
-        { "class": "grass",     "color": [107, 158,  71, 255] },
-        { "class": "barren",    "color": [199, 173, 120, 255] },
-        { "class": "wetland",   "color": [ 80, 120, 100, 255] },
-        { "class": "moss",      "color": [ 90, 140,  80, 255] },
-        { "class": "crop",      "color": [160, 190,  80, 255] },
-        { "class": "mangrove",  "color": [ 40, 100,  60, 255] },
-        { "class": "urban",     "color": [180, 175, 165, 255] },
-        { "class": "snow",      "color": [224, 237, 250, 255] }
+        { "class": "forest",   "color": [162, 226, 164, 255] },
+        { "class": "shrub",    "color": [216, 234, 174, 255] },
+        { "class": "grass",    "color": [196, 234, 169, 255] },
+        { "class": "barren",   "color": [239, 232, 205, 255] },
+        { "class": "wetland",  "color": [175, 233, 231, 255] },
+        { "class": "moss",     "color": [149, 218, 170, 255] },
+        { "class": "crop",     "color": [235, 237, 177, 255] },
+        { "class": "mangrove", "color": [161, 227, 207, 255] },
+        { "class": "urban",    "color": [180, 175, 165, 255] },
+        { "class": "snow",     "color": [243, 245, 247, 255] }
+      ]
+    },
+    {
+      "source_layer": "land_use",
+      "type": "texture",
+      "paint": [
+        { "class": "park",       "color": [214, 236, 213, 255] },
+        { "class": "recreation", "color": [231, 244, 230, 255] },
+        { "class": "medical",    "color": [247, 237, 237, 255] },
+        { "class": "education",  "color": [245, 242, 230, 255] },
+        { "class": "military",   "color": [247, 247, 248, 255] },
+        { "class": "cemetery",   "color": [237, 240, 229, 255] },
+        { "class": "airport",    "color": [226, 232, 243, 255] }
       ]
     }
   ]

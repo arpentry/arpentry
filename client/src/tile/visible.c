@@ -9,7 +9,7 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
                                  arpt_tile_key *out, int max_count) {
     if (!cam || !out || max_count <= 0 || level < 0) return 0;
 
-    int n_cols = 1 << (level + 1);
+    int n_cols = 1 << level;
     int n_rows = 1 << level;
 
     /* At low zoom levels the total tile count is small enough to

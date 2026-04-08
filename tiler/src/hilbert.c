@@ -46,12 +46,12 @@ void arpt_hilbert_d2xy(int order, uint64_t d, uint32_t *x, uint32_t *y) {
  *   bits [47..42]  zoom   (6 bits, max 63)
  *   bits [41..0]   hilbert distance (42 bits, sufficient up to z=20)
  *
- * At zoom z, the grid is 2^(z+1) columns × 2^z rows.
- * Embed into a 2^(z+1) square for Hilbert indexing (order = z+1).
+ * At zoom z, the grid is 2^z columns × 2^z rows.
+ * Embed into a 2^z square for Hilbert indexing (order = z).
  */
 
 uint64_t arpt_hilbert_tile_id(int z, int x, int y) {
-    int order = z + 1;
+    int order = z;
     uint64_t h = arpt_hilbert_xy2d(order, (uint32_t)x, (uint32_t)y);
     return ((uint64_t)z << 42) | (h & 0x3FFFFFFFFFFull);
 }
@@ -60,7 +60,7 @@ void arpt_hilbert_tile_id_decode(uint64_t id, int *z, int *x, int *y) {
     int zz = (int)(id >> 42) & 0x3F;
     uint64_t h = id & 0x3FFFFFFFFFFull;
     uint32_t tx = 0, ty = 0;
-    arpt_hilbert_d2xy(zz + 1, h, &tx, &ty);
+    arpt_hilbert_d2xy(zz, h, &tx, &ty);
     if (z) *z = zz;
     if (x) *x = (int)tx;
     if (y) *y = (int)ty;

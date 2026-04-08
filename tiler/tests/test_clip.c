@@ -107,9 +107,9 @@ static void test_assign_tiles_empty_geom(void) {
 /* ---- Point clipping ---- */
 
 static void test_point_z0(void) {
-    /* A point at (6.6, 46.5) at z=0 should fall in tile (0,1,0).
-       Equirectangular grid z=0: 2 cols × 1 row.
-       tx = floor((6.6+180)/360 * 2) = 1 (eastern hemisphere) */
+    /* A point at (6.6, 46.5) at z=0 should fall in tile (0,0,0).
+       Equirectangular grid z=0: 1 col × 1 row.
+       tx = floor((6.6+180)/360 * 1) = 0 */
     arpt_geom g = {0};
     g.type = 1;
     double x = 6.6, y = 46.5;
@@ -123,15 +123,15 @@ static void test_point_z0(void) {
 
     TEST_ASSERT_EQUAL_INT(1, c.count);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].z);
-    TEST_ASSERT_EQUAL_INT(1, c.results[0].x);
+    TEST_ASSERT_EQUAL_INT(0, c.results[0].x);
     TEST_ASSERT_EQUAL_INT(0, c.results[0].y);
     collector_free(&c);
 }
 
 static void test_point_z1(void) {
     /* (6.6, 46.5) at z=1.
-       Equirectangular grid z=1: 4 cols × 2 rows.
-       tx = floor((6.6+180)/360 * 4) = 2
+       Equirectangular grid z=1: 2 cols × 2 rows.
+       tx = floor((6.6+180)/360 * 2) = 1
        ty = floor((46.5+90)/180 * 2) = 1 */
     arpt_geom g = {0};
     g.type = 1;
@@ -146,7 +146,7 @@ static void test_point_z1(void) {
 
     TEST_ASSERT_EQUAL_INT(1, c.count);
     TEST_ASSERT_EQUAL_INT(1, c.results[0].z);
-    TEST_ASSERT_EQUAL_INT(2, c.results[0].x);
+    TEST_ASSERT_EQUAL_INT(1, c.results[0].x);
     TEST_ASSERT_EQUAL_INT(1, c.results[0].y);
     collector_free(&c);
 }
@@ -417,7 +417,7 @@ static void test_multipolygon_parts(void) {
 
     /* Ring 0: small square in western hemisphere
      * Ring 1: small square in eastern hemisphere
-     * At z=0 (2 cols × 1 row), they should end up in different tiles. */
+     * At z=1 (2 cols × 2 rows), they should end up in different tiles. */
     double x[] = {
         /* Ring 0: lon [-100, -95] */
         -100.0, -95.0, -95.0, -100.0, -100.0,
@@ -439,14 +439,14 @@ static void test_multipolygon_parts(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, &g, 0, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 1, collect_cb, &c);
 
     /* Should get exactly 2 results, one per tile */
     TEST_ASSERT_EQUAL_INT(2, c.count);
 
     /* Ring 0 in western tile (tx=0), ring 1 in eastern tile (tx=1) */
-    tile_result *west = find_result(&c, 0, 0, 0);
-    tile_result *east = find_result(&c, 0, 1, 0);
+    tile_result *west = find_result(&c, 1, 0, 1);
+    tile_result *east = find_result(&c, 1, 1, 1);
     TEST_ASSERT_NOT_NULL(west);
     TEST_ASSERT_NOT_NULL(east);
 
@@ -515,33 +515,20 @@ static void test_concave_polygon_gulf(void) {
     g.offsets = offsets;
     g.n_offsets = 2;
 
-    /* Clip at zoom 3: tiles are 22.5° × 22.5°.
-     * The gulf gap spans (-95, 20) to (-85, 35), which is ~10° wide.
-     * At z=3 tile width is 22.5°, so the gap fits within one tile column.
-     *
-     * Tile grid at z3 (16 cols × 8 rows):
-     *   col 3: lon [-135, -112.5]
-     *   col 4: lon [-112.5, -90]   ← contains left arm of U
-     *   col 5: lon [-90, -67.5]    ← contains gulf gap AND right arm
-     *
-     * Actually at z3 the tiles are smaller. Let's use z2 (8 cols × 4 rows):
-     *   col 2: lon [-90, -45]   ← this tile contains the gap
-     *   row 2: lat [0, 45]      ← this row contains the shape
-     *
-     * At z=2, tile (2, 2, 2) covers lon [-90, -45], lat [0, 45].
-     * The polygon enters from left (-100 to -80), so it spans columns 1-2.
-     * The "gulf" is at lon [-95, -85], which falls in column 2 (and partly 1).
-     */
+    /* Clip at zoom 2: 4 cols × 4 rows, tiles are 90° × 45°.
+     * Tile (2, 1, 2) = col 1 (lon -90 to 0), row 2 (lat 0 to 45).
+     * Buffer ≈ 2.8°, so buffered tile covers ~[-92.8, 2.8] × [-2.8, 47.8].
+     * The polygon spans lon [-100, -80], so it clips to ~[-92.8, -80] in
+     * this tile, which includes the gulf concavity at [-92.8, -85]. */
 
     tile_collector c;
     collector_init(&c);
     arpt_assign_tiles(&g, &g, 2, collect_cb, &c);
 
     /* Find the tile that contains the gulf area.
-     * At z=2: 8 cols × 4 rows, each tile is 45° × 45°.
-     * Tile (2, 2, 2) = col 2 (lon -90 to -45), row 2 (lat 0 to 45).
-     * The entire polygon fits in this tile. */
-    tile_result *gulf_tile = find_result(&c, 2, 2, 2);
+     * At z=2: 4 cols × 4 rows, each tile is 90° × 45°.
+     * Tile (2, 1, 2) = col 1 (lon -90 to 0), row 2 (lat 0 to 45). */
+    tile_result *gulf_tile = find_result(&c, 2, 1, 2);
     TEST_ASSERT_NOT_NULL_MESSAGE(gulf_tile,
         "Expected polygon clipped to tile containing the gulf");
 
@@ -1378,10 +1365,10 @@ static void test_reentrant_top_edge(void) {
 static void test_polygon_encloses_tile_completely(void) {
     arpt_geom g = {0};
     g.type = 3;
-    /* At z=3: 16 cols × 8 rows, tiles are 22.5° × 22.5°.
-     * Tile (8, 4) = lon [0, 22.5], lat [0, 22.5].
+    /* At z=4: 16 cols × 16 rows, tiles are 22.5° × 11.25°.
+     * Tile (8, 8) = lon [0, 22.5], lat [0, 11.25].
      * Buffer = 22.5 * 8/256 ≈ 0.703° per side.
-     * Buffered bounds ≈ [-0.703, -0.703, 23.203, 23.203].
+     * Buffered bounds ≈ [-0.703, -0.703, 23.203, 11.953].
      *
      * Polygon: lon [-10, 35], lat [-10, 35] — 45° × 45°,
      * much larger than the tile on every side. */
@@ -1396,10 +1383,10 @@ static void test_polygon_encloses_tile_completely(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 4, collect_cb, &c);
 
-    /* Tile (3, 8, 4) should definitely be present */
-    tile_result *t = find_result(&c, 3, 8, 4);
+    /* Tile (4, 8, 8) should definitely be present */
+    tile_result *t = find_result(&c, 4, 8, 8);
     TEST_ASSERT_NOT_NULL_MESSAGE(t,
         "Tile fully enclosed by polygon should receive geometry");
 
@@ -1411,21 +1398,21 @@ static void test_polygon_encloses_tile_completely(void) {
                                t->geom.y[t->geom.n_coords - 1]);
 
     /* The clipped area should approximate the buffered tile area.
-     * Tile is 22.5° × 22.5° = 506.25 sq.deg.
-     * Buffered tile is ~23.906° × 23.906° ≈ 571.5 sq.deg.
+     * Tile is 22.5° × 11.25° = 253.125 sq.deg.
+     * Buffered tile is ~23.906° × 12.656° ≈ 302.5 sq.deg.
      * Allow generous tolerance since the polygon vertices get clipped
      * to the buffered bounds. */
     double area = ring_signed_area(t->geom.x, t->geom.y, t->geom.n_coords);
     double abs_area = area < 0 ? -area : area;
-    TEST_ASSERT_TRUE_MESSAGE(abs_area > 400.0,
+    TEST_ASSERT_TRUE_MESSAGE(abs_area > 200.0,
         "Enclosed tile clipped area too small");
-    TEST_ASSERT_TRUE_MESSAGE(abs_area < 700.0,
+    TEST_ASSERT_TRUE_MESSAGE(abs_area < 400.0,
         "Enclosed tile clipped area too large");
 
     /* All vertices should be within or very near the buffered tile bounds */
     double buf = 22.5 * 8.0 / 256.0;
     double bmin_x = 0.0 - buf, bmax_x = 22.5 + buf;
-    double bmin_y = 0.0 - buf, bmax_y = 22.5 + buf;
+    double bmin_y = 0.0 - buf, bmax_y = 11.25 + buf;
     for (uint32_t i = 0; i < t->geom.n_coords; i++) {
         TEST_ASSERT_TRUE_MESSAGE(
             t->geom.x[i] >= bmin_x - 0.01 && t->geom.x[i] <= bmax_x + 0.01,
@@ -1442,21 +1429,21 @@ static void test_polygon_encloses_tile_completely(void) {
 static void test_line_encloses_tile_span(void) {
     arpt_geom g = {0};
     g.type = 2;
-    /* A horizontal line at lat=10 from lon=-20 to lon=50.
-     * At z=3, this crosses multiple tiles end to end.
-     * Tile (8, 4) = lon [0, 22.5], lat [0, 22.5] — the line passes through. */
+    /* A horizontal line at lat=5 from lon=-20 to lon=50.
+     * At z=4, this crosses multiple tiles end to end.
+     * Tile (4, 8, 8) = lon [0, 22.5], lat [0, 11.25] — the line passes through. */
     double x[] = {-20.0, 50.0};
-    double y[] = {10.0, 10.0};
+    double y[] = {5.0, 5.0};
     g.x = x;
     g.y = y;
     g.n_coords = 2;
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 4, collect_cb, &c);
 
-    /* Tile (3, 8, 4) should get a clipped segment */
-    tile_result *t = find_result(&c, 3, 8, 4);
+    /* Tile (4, 8, 8) should get a clipped segment */
+    tile_result *t = find_result(&c, 4, 8, 8);
     TEST_ASSERT_NOT_NULL_MESSAGE(t,
         "Line spanning through tile should produce a segment");
     TEST_ASSERT_TRUE(t->geom.n_coords >= 2);
@@ -1483,9 +1470,9 @@ static void test_line_encloses_tile_span(void) {
 static void test_polygon_encloses_tile_hole_outside(void) {
     arpt_geom g = {0};
     g.type = 3;
-    /* Exterior: lon [-10, 35], lat [-10, 35] — encloses tile (3,8,4).
-     * Hole: lon [25, 30], lat [25, 30] — entirely outside tile (3,8,4)
-     * (tile is [0, 22.5] × [0, 22.5], buffered ~[-0.7, 23.2]). */
+    /* Exterior: lon [-10, 35], lat [-10, 35] — encloses tile (4,8,8).
+     * Hole: lon [25, 30], lat [25, 30] — entirely outside tile (4,8,8)
+     * (tile is [0, 22.5] × [0, 11.25], buffered ~[-0.7, 23.2] × [-0.7, 11.95]). */
     double x[] = {
         /* Exterior CCW */
         -10.0, 35.0, 35.0, -10.0, -10.0,
@@ -1505,11 +1492,11 @@ static void test_polygon_encloses_tile_hole_outside(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 4, collect_cb, &c);
 
-    /* Tile (3, 8, 4) should get geometry — only 1 ring (exterior),
+    /* Tile (4, 8, 8) should get geometry — only 1 ring (exterior),
      * because the hole is entirely outside this tile. */
-    tile_result *t = find_result(&c, 3, 8, 4);
+    tile_result *t = find_result(&c, 4, 8, 8);
     TEST_ASSERT_NOT_NULL_MESSAGE(t,
         "Tile enclosed by exterior should get geometry");
     TEST_ASSERT_TRUE(t->geom.n_coords >= 4);
@@ -1593,10 +1580,10 @@ static void test_polygon_encloses_tile_hole_also_encloses(void) {
 static void test_polygon_encloses_tile_hole_partial(void) {
     arpt_geom g = {0};
     g.type = 3;
-    /* Exterior: lon [-10, 35], lat [-10, 35] — fully encloses tile (3,8,4).
-     * Hole: lon [10, 30], lat [10, 30] — partially overlaps the tile.
-     * Tile (3, 8, 4) = [0, 22.5] × [0, 22.5], buffered ~[-0.7, 23.2].
-     * Hole enters the tile from the right side. */
+    /* Exterior: lon [-10, 35], lat [-10, 35] — fully encloses tile (4,8,8).
+     * Hole: lon [10, 30], lat [5, 30] — partially overlaps the tile.
+     * Tile (4, 8, 8) = [0, 22.5] × [0, 11.25], buffered ~[-0.7, 23.2] × [-0.7, 11.95].
+     * Hole overlaps the tile in the right portion. */
     double x[] = {
         /* Exterior CCW */
         -10.0, 35.0, 35.0, -10.0, -10.0,
@@ -1605,7 +1592,7 @@ static void test_polygon_encloses_tile_hole_partial(void) {
     };
     double y[] = {
         -10.0, -10.0, 35.0, 35.0, -10.0,
-        10.0, 30.0, 30.0, 10.0, 10.0
+        5.0, 30.0, 30.0, 5.0, 5.0
     };
     g.x = x;
     g.y = y;
@@ -1616,9 +1603,9 @@ static void test_polygon_encloses_tile_hole_partial(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 4, collect_cb, &c);
 
-    tile_result *t = find_result(&c, 3, 8, 4);
+    tile_result *t = find_result(&c, 4, 8, 8);
     TEST_ASSERT_NOT_NULL_MESSAGE(t,
         "Tile with partial hole overlap should get geometry");
 
@@ -1630,7 +1617,7 @@ static void test_polygon_encloses_tile_hole_partial(void) {
         "Tile should have exterior + partial hole ring");
 
     /* Net area should be less than the full tile area but positive.
-     * Full tile area ≈ 571 sq.deg (buffered). Hole removes part of it. */
+     * Full tile area ≈ 302 sq.deg (buffered). Hole removes part of it. */
     double total_area = 0.0;
     uint32_t nr = t->geom.n_offsets - 1;
     for (uint32_t ri = 0; ri < nr; ri++) {
@@ -1641,11 +1628,11 @@ static void test_polygon_encloses_tile_hole_partial(void) {
     }
     double abs_net = total_area < 0 ? -total_area : total_area;
     fprintf(stderr,
-        "  Partial hole: net area=%.1f (should be between 100 and 600)\n",
+        "  Partial hole: net area=%.1f (should be between 50 and 350)\n",
         abs_net);
-    TEST_ASSERT_TRUE_MESSAGE(abs_net > 50.0,
+    TEST_ASSERT_TRUE_MESSAGE(abs_net > 30.0,
         "Net area should be positive — hole only covers part of tile");
-    TEST_ASSERT_TRUE_MESSAGE(abs_net < 600.0,
+    TEST_ASSERT_TRUE_MESSAGE(abs_net < 350.0,
         "Net area should be less than full tile");
 
     /* Both rings should be closed */
@@ -1695,13 +1682,16 @@ static void test_multipolygon_all_enclose_tile(void) {
     collector_init(&c);
     arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
 
-    /* Tile (3, 8, 4) should get 2 callbacks: part 0 (ext+hole) and part 1 (island).
+    /* Tile (3, 4, 4) should get 1 callback with all rings.
+     * At z=3 (8 cols x 8 rows), tile (4,4) = lon [0, 45], lat [0, 22.5].
+     * All three rings enclose this tile:
+     *   Exterior [-30,60]x[-30,60], Hole [-10,40]x[-10,40], Island [-5,30]x[-5,30].
      * Part 0 net area ≈ 0 (ext and hole both clip to same rect).
      * Part 1 area ≈ tile rect area. */
     int count_for_tile = 0;
     double grand_total = 0.0;
     for (int i = 0; i < c.count; i++) {
-        if (c.results[i].z == 3 && c.results[i].x == 8 && c.results[i].y == 4) {
+        if (c.results[i].z == 3 && c.results[i].x == 4 && c.results[i].y == 4) {
             count_for_tile++;
             arpt_geom *cg = &c.results[i].geom;
             if (cg->offsets && cg->n_offsets > 1) {
@@ -1735,13 +1725,13 @@ static void test_multipolygon_all_enclose_tile(void) {
         "Flattened polygon should produce 1 callback with all rings");
 
     /* Grand total ≈ one tile rect area (part 0 cancels out, part 1 adds it back).
-     * Tile rect area ≈ 23.9° × 23.9° ≈ 571 sq.deg. */
+     * Tile rect at z=3: 45° × 22.5°. Buffered: ~47.8° × ~23.9° ≈ 1142 sq.deg. */
     double abs_grand = grand_total < 0 ? -grand_total : grand_total;
     fprintf(stderr,
-        "  All-enclose: grand total area=%.1f (expected ~571)\n", abs_grand);
-    TEST_ASSERT_TRUE_MESSAGE(abs_grand > 300.0,
+        "  All-enclose: grand total area=%.1f (expected ~1142)\n", abs_grand);
+    TEST_ASSERT_TRUE_MESSAGE(abs_grand > 600.0,
         "Grand total should approximate one tile rect");
-    TEST_ASSERT_TRUE_MESSAGE(abs_grand < 800.0,
+    TEST_ASSERT_TRUE_MESSAGE(abs_grand < 1600.0,
         "Grand total should not exceed tile rect significantly");
 
     collector_free(&c);
@@ -1919,10 +1909,10 @@ static void test_closure_vertex_on_tile_corner(void) {
 static void test_closure_diamond_crosses_all_edges(void) {
     arpt_geom g = {0};
     g.type = 3;
-    /* At z=3, tile (8, 4) = [0, 22.5] × [0, 22.5].
-     * Diamond centered at (11.25, 11.25) with radius 15°,
+    /* At z=4, tile (8, 8) = [0, 22.5] × [0, 11.25].
+     * Diamond centered at (11.25, 5.625) with radius 15°,
      * extending beyond all 4 tile edges. */
-    double cx = 11.25, cy = 11.25, r = 15.0;
+    double cx = 11.25, cy = 5.625, r = 15.0;
     double x[] = {cx, cx + r, cx, cx - r, cx};
     double y[] = {cy - r, cy, cy + r, cy, cy - r};
     g.x = x;
@@ -1934,14 +1924,14 @@ static void test_closure_diamond_crosses_all_edges(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 4, collect_cb, &c);
 
     /* Should produce results in multiple tiles (diamond extends beyond all edges) */
     TEST_ASSERT_TRUE(c.count >= 1);
     assert_all_rings_valid(&c, "diamond_all_edges");
 
     /* The center tile should have an octagonal ring (8 vertices + closing = 9) */
-    tile_result *center = find_result(&c, 3, 8, 4);
+    tile_result *center = find_result(&c, 4, 8, 8);
     TEST_ASSERT_NOT_NULL(center);
     /* Diamond clipped to rect should produce more vertices than the original 4 */
     TEST_ASSERT_TRUE_MESSAGE(center->geom.n_coords >= 5,
@@ -2056,7 +2046,8 @@ static void test_closure_degenerate_parallel_clip(void) {
 static void test_closure_l_shape_at_corner(void) {
     arpt_geom g = {0};
     g.type = 3;
-    /* At z=3, tile (8, 4) top-right corner is (22.5, 22.5).
+    /* At z=4, tile (8, 8) = [0, 22.5] × [0, 11.25].
+     * Top-right corner is (22.5, 11.25).
      * L-shape: a vertical bar extending above the tile, plus a horizontal
      * bar extending to the right of the tile.
      *
@@ -2084,14 +2075,14 @@ static void test_closure_l_shape_at_corner(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 4, collect_cb, &c);
 
     TEST_ASSERT_TRUE(c.count >= 1);
     assert_all_rings_valid(&c, "l_shape_corner");
 
-    /* The tile containing the corner (8, 4) should have a valid L-shaped
+    /* The tile containing the corner (8, 8) should have a valid L-shaped
      * clipped polygon. */
-    tile_result *t = find_result(&c, 3, 8, 4);
+    tile_result *t = find_result(&c, 4, 8, 8);
     TEST_ASSERT_NOT_NULL(t);
     /* L-shape clipped to rect: both arms are clipped to tile bounds.
      * Should produce a concave polygon with more vertices than the
@@ -2409,10 +2400,10 @@ static void test_regression_boundary_corner_preserved(void) {
     /* A coastline-like polygon that, when clipped to a tile, produces
      * a ring tracing along two tile edges and through a corner.
      *
-     * At z=3, tile (8, 4) = [0, 22.5] × [0, 22.5], buffered ~[-0.7, 23.2].
+     * At z=4, tile (8, 8) = [0, 22.5] × [0, 11.25], buffered ~[-0.7, 23.2] × [-0.35, 11.6].
      * The polygon exits the top edge near x=20, goes around the top-right
-     * corner (outside the tile), and re-enters the right edge near y=18.
-     * The clipped ring should have the corner vertex near (23.2, 22.5). */
+     * corner (outside the tile), and re-enters the right edge near y=5.
+     * The clipped ring should have the corner vertex near (23.2, 11.6). */
     arpt_geom g = {0};
     g.type = 3;
     double x[] = {5.0, 20.0, 30.0, 30.0, 25.0, 5.0, 5.0};
@@ -2426,31 +2417,32 @@ static void test_regression_boundary_corner_preserved(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&g, &g, 3, collect_cb, &c);
+    arpt_assign_tiles(&g, &g, 4, collect_cb, &c);
 
     /* The clipped output should cover the tile — look across all results
-     * for tile (3,8,4). With boundary walk, corner vertices are inserted
+     * for tile (4,8,8). With boundary walk, corner vertices are inserted
      * explicitly. Check that at least one ring has a vertex near the
      * top-right corner. */
-    double buf = 22.5 * 8.0 / 256.0;
-    double corner_x = 22.5 + buf;
-    double corner_y = 22.5 + buf;
+    double buf_x = 22.5 * 8.0 / 256.0;
+    double buf_y = 11.25 * 8.0 / 256.0;
+    double corner_x = 22.5 + buf_x;
+    double corner_y = 11.25 + buf_y;
     bool found_corner = false;
     bool found_tile = false;
     for (int i = 0; i < c.count; i++) {
-        if (c.results[i].z != 3 || c.results[i].x != 8 ||
-            c.results[i].y != 4) continue;
+        if (c.results[i].z != 4 || c.results[i].x != 8 ||
+            c.results[i].y != 8) continue;
         found_tile = true;
         arpt_geom *cg = &c.results[i].geom;
         for (uint32_t j = 0; j < cg->n_coords; j++) {
-            if (cg->x[j] > 22.0 && cg->y[j] > 22.0) {
+            if (cg->x[j] > 22.0 && cg->y[j] > 11.0) {
                 found_corner = true;
                 TEST_ASSERT_DOUBLE_WITHIN(1.0, corner_x, cg->x[j]);
                 TEST_ASSERT_DOUBLE_WITHIN(1.0, corner_y, cg->y[j]);
             }
         }
     }
-    TEST_ASSERT_TRUE_MESSAGE(found_tile, "Tile (3,8,4) should exist");
+    TEST_ASSERT_TRUE_MESSAGE(found_tile, "Tile (4,8,8) should exist");
     TEST_ASSERT_TRUE_MESSAGE(found_corner,
         "A ring in the tile should have a vertex near the tile corner");
 
@@ -2489,21 +2481,21 @@ static void test_simplified_polygon_interior_tiles(void) {
         .offsets = simp_off, .n_offsets = 2
     };
 
-    /* At zoom 5 (64 cols × 32 rows, tile ≈ 5.625°).
-     * Tile (5, 29, 27): lon [-16.875, -11.25], lat [61.875, 67.5].
-     * Center ≈ (-14.06, 64.69).
+    /* At zoom 6 (64 cols × 64 rows, tile ≈ 5.625° × 2.8125°).
+     * Tile (6, 29, 55): lon [-16.875, -11.25], lat [64.6875, 67.5].
+     * Center ≈ (-14.06, 66.09).
      * - Inside the original rectangle (east boundary at x=-10)
      * - Outside the simplified triangle (diagonal goes from (-50,60)
-     *   to (-10,70); at lat 64.69 the boundary is at x≈-31)
+     *   to (-10,70); at lat 66.09 the boundary is at x≈-25.6)
      * - The triangle boundary doesn't cross this tile → empty clip
      *   → falls back to point-in-polygon. */
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&simplified, &original, 5, collect_cb, &c);
+    arpt_assign_tiles(&simplified, &original, 6, collect_cb, &c);
 
-    tile_result *t = find_result(&c, 5, 29, 27);
+    tile_result *t = find_result(&c, 6, 29, 55);
     TEST_ASSERT_NOT_NULL_MESSAGE(t,
-        "Tile (5,29,27) inside original but outside simplified must get "
+        "Tile (6,29,55) inside original but outside simplified must get "
         "geometry via point-in-polygon on the original — fails if the "
         "fallback uses the simplified geometry");
     TEST_ASSERT_TRUE(t->geom.n_coords >= 4);
@@ -2574,12 +2566,12 @@ static void test_original_bbox_fills_interior_tiles(void) {
 
     tile_collector c;
     collector_init(&c);
-    arpt_assign_tiles(&simplified, &original, 5, collect_cb, &c);
+    arpt_assign_tiles(&simplified, &original, 6, collect_cb, &c);
 
-    /* Tile (5, 29, 28): lon [-16.875, -11.25], lat [67.5, 73.125].
-     * Center ≈ (-14.06, 70.31).  Outside simplified bbox (east=-20)
+    /* Tile (6, 29, 57): lon [-16.875, -11.25], lat [70.3125, 73.125].
+     * Center ≈ (-14.06, 71.72).  Outside simplified bbox (east=-20)
      * but inside original (east=-10).  Must get a fill rectangle. */
-    tile_result *t = find_result(&c, 5, 29, 28);
+    tile_result *t = find_result(&c, 6, 29, 57);
     TEST_ASSERT_NOT_NULL_MESSAGE(t,
         "Tile inside original but outside simplified bbox must receive "
         "geometry via PIP fallback using the original's extent");
