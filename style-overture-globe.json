@@ -20,6 +20,14 @@
       ]
     },
     {
+      "source_layer": "land",
+      "type": "texture",
+      "paint": [
+        { "class": "land",   "color": [247, 245, 240, 255] },
+        { "class": "island", "color": [247, 245, 240, 255] }
+      ]
+    },
+    {
       "source_layer": "land_cover",
       "type": "texture",
       "paint": [

@@ -66,6 +66,7 @@ download_type() {
     echo "  -> $(du -h "$output" | cut -f1)"
 }
 
+download_type land
 download_type land_cover
 download_type bathymetry
 download_type water
@@ -85,7 +86,8 @@ if [ ! -f "$ARCHIVE" ]; then
         --mem $((256 * 1024 * 1024)) \
         --input "1:$DATA_DIR/land_cover.parquet" \
         --input "2:$DATA_DIR/bathymetry.parquet" \
-        --input "3:$DATA_DIR/water.parquet"
+        --input "3:$DATA_DIR/water.parquet" \
+        --input "4:$DATA_DIR/land.parquet"
 
     echo "Archive: $(du -h "$ARCHIVE" | cut -f1)"
 else
