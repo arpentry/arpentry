@@ -263,6 +263,7 @@ static bool decode_polygon_layer(const void *flatbuf, size_t size,
     if (!out->polygons) return false;
 
     size_t count = 0;
+    uint16_t poly_id = 0;
     for (size_t i = 0; i < n_feat; i++) {
         arpentry_tiles_Feature_table_t feat =
             arpentry_tiles_Feature_vec_at(features, i);
@@ -295,6 +296,8 @@ static bool decode_polygon_layer(const void *flatbuf, size_t size,
         if (ring_off && flatbuffers_uint32_vec_len(ring_off) >= 2)
             n_rings = flatbuffers_uint32_vec_len(ring_off) - 1;
 
+        uint16_t this_poly_id = poly_id++;
+
         for (size_t ri = 0; ri < n_rings; ri++) {
             size_t ring_start = 0;
             size_t ring_end = vc;
@@ -311,6 +314,7 @@ static bool decode_polygon_layer(const void *flatbuf, size_t size,
             out->polygons[count].z = zv ? zv + ring_start : NULL;
             out->polygons[count].vertex_count = ring_vc;
             out->polygons[count].cls = cls;
+            out->polygons[count].poly_id = this_poly_id;
             out->polygons[count].height_m = height;
             count++;
         }

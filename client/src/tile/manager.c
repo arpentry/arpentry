@@ -112,9 +112,10 @@ typedef struct {
 } fetch_ctx;
 
 static int compare_surface_cls(const void *a, const void *b) {
-    uint8_t ca = ((const arpt_surface_polygon *)a)->cls;
-    uint8_t cb = ((const arpt_surface_polygon *)b)->cls;
-    return (int)ca - (int)cb;
+    const arpt_surface_polygon *pa = (const arpt_surface_polygon *)a;
+    const arpt_surface_polygon *pb = (const arpt_surface_polygon *)b;
+    if (pa->cls != pb->cls) return (int)pa->cls - (int)pb->cls;
+    return (int)pa->poly_id - (int)pb->poly_id;
 }
 
 static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,

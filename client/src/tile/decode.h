@@ -48,6 +48,8 @@ typedef struct {
     const int32_t *z;      /* elevation in millimeters (NULL for surface) */
     size_t vertex_count;
     uint8_t cls;      /* index into style class registry; 0 = unknown */
+    uint16_t poly_id; /* polygon ID: rings sharing a poly_id belong to
+                         the same polygon (exterior + holes) */
     int32_t height_m; /* building height in meters (0 for surface polygons) */
 } arpt_surface_polygon;
 

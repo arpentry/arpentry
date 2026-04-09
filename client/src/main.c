@@ -667,6 +667,13 @@ static bool fetch_style(const char *base_url, arpt_style *style) {
 
     arpentry_tiles_Style_table_t st = arpentry_tiles_Style_as_root(buf);
 
+    /* Reset class registrations so indices follow style-layer paint order.
+       Defaults pre-register classes at arbitrary indices; the server style
+       defines the authoritative draw order (lower index = drawn first). */
+    style->class_count = 1; /* keep "unknown" at 0 */
+    style->layer_count = 0;
+    style->tree_style_count = 0;
+
     /* Parse background → colors[0] (unknown/background) */
     const arpentry_tiles_RGBA_t *bg = arpentry_tiles_Style_background(st);
     if (bg) {

@@ -148,18 +148,22 @@ static void emit_polygons(const arpt_surface_data *data,
                            arpt_poly_group *groups, size_t *gi) {
     if (!data) return;
     uint8_t cur_cls = 0;
+    uint16_t cur_poly_id = 0;
     for (size_t i = 0; i < data->count; i++) {
         const arpt_surface_polygon *p = &data->polygons[i];
         if (p->vertex_count < 3) continue;
         if (p->cls == 0) continue; /* skip unmatched class (background) */
 
-        /* Start a new group when class changes. */
-        if (p->cls != cur_cls) {
+        /* Start a new group when class or polygon changes.  Each polygon
+           (exterior + holes) gets its own stencil pass so that overlapping
+           polygons of the same class don't cancel via even-odd invert. */
+        if (p->cls != cur_cls || p->poly_id != cur_poly_id) {
             if (cur_cls != 0 && groups) {
                 groups[*gi - 1].index_count =
                     (uint32_t)*ii - groups[*gi - 1].first_index;
             }
             cur_cls = p->cls;
+            cur_poly_id = p->poly_id;
             if (groups) {
                 groups[*gi] = (arpt_poly_group){(uint32_t)*ii, 0};
             }

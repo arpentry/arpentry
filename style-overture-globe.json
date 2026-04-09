@@ -39,7 +39,7 @@
         { "class": "moss",     "color": [149, 218, 170, 255] },
         { "class": "crop",     "color": [235, 237, 177, 255] },
         { "class": "mangrove", "color": [161, 227, 207, 255] },
-        { "class": "urban",    "color": [180, 175, 165, 255] },
+        { "class": "urban",    "color": [247, 245, 240, 255] },
         { "class": "snow",     "color": [243, 245, 247, 255] }
       ]
     },
