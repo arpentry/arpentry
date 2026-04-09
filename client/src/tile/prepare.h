@@ -44,10 +44,19 @@ typedef struct {
     float hw, seg_len;
 } arpt_line_vertex;
 
+/* A group of polygon triangles sharing the same class, rendered together
+   in a single stencil pass for correct even-odd fill (handles holes). */
+typedef struct {
+    uint32_t first_index;  /* offset into poly_indices */
+    uint32_t index_count;  /* number of indices in this group */
+} arpt_poly_group;
+
 typedef struct {
     arpt_poly_vertex *poly_verts;
     uint32_t *poly_indices;
     size_t poly_vert_count, poly_index_count;
+    arpt_poly_group *poly_groups;
+    size_t poly_group_count;
     arpt_line_vertex *line_verts;
     uint32_t *line_indices;
     size_t line_vert_count, line_index_count;

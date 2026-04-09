@@ -228,8 +228,7 @@ static size_t count_polygon_rings(arpentry_tiles_Feature_vec_t features,
 
 /* Decode all PolygonGeometry features from a named layer.
  * Each ring in the geometry becomes a separate surface polygon.
- * The tiler packs MultiPolygon parts as separate rings in ring_offsets
- * without polygon_offsets, so we emit every ring. */
+ * Holes are handled at render time via stencil-based even-odd fill. */
 static bool decode_polygon_layer(const void *flatbuf, size_t size,
                                  const char *layer_name,
                                  uint32_t height_key_override,

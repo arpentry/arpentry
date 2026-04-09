@@ -111,6 +111,12 @@ typedef struct {
     int retries;
 } fetch_ctx;
 
+static int compare_surface_cls(const void *a, const void *b) {
+    uint8_t ca = ((const arpt_surface_polygon *)a)->cls;
+    uint8_t cb = ((const arpt_surface_polygon *)b)->cls;
+    return (int)ca - (int)cb;
+}
+
 static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
                             void *userdata) {
     fetch_ctx *ctx = userdata;
@@ -244,6 +250,14 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
                 highways.lines[dst++] = highways.lines[i];
         }
         highways.count = dst;
+    }
+
+    /* Sort polygons by class index so that earlier paint entries in the
+       style (lower class index) draw first (bottom) and later entries
+       draw on top, following MapLibre-style layer ordering. */
+    if (surface.count > 1) {
+        qsort(surface.polygons, surface.count,
+              sizeof(arpt_surface_polygon), compare_surface_cls);
     }
 
     /* Convert decoded domain data to renderer primitives */

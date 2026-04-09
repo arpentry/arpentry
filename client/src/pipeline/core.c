@@ -253,6 +253,20 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     /* Surface offscreen pipelines + sampler */
     r->surface_pipeline = arpt__texture_create_surface_pipeline(device);
     r->highway_pipeline = arpt__texture_create_highway_pipeline(device);
+    r->stencil_fill_pipeline = arpt__texture_create_stencil_fill_pipeline(device);
+    r->stencil_color_pipeline = arpt__texture_create_stencil_color_pipeline(device);
+
+    /* Stencil texture for even-odd polygon fill */
+    WGPUTextureDescriptor stencil_desc = {
+        .usage = WGPUTextureUsage_RenderAttachment,
+        .size = {SURFACE_TEX_SIZE, SURFACE_TEX_SIZE, 1},
+        .format = WGPUTextureFormat_Depth24PlusStencil8,
+        .dimension = WGPUTextureDimension_2D,
+        .mipLevelCount = 1,
+        .sampleCount = 1,
+    };
+    r->stencil_texture = wgpuDeviceCreateTexture(device, &stencil_desc);
+    r->stencil_view = wgpuTextureCreateView(r->stencil_texture, NULL);
     WGPUSamplerDescriptor samp_desc = {
         .addressModeU = WGPUAddressMode_ClampToEdge,
         .addressModeV = WGPUAddressMode_ClampToEdge,
@@ -308,6 +322,10 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->pipeline) wgpuRenderPipelineRelease(r->pipeline);
     if (r->surface_pipeline) wgpuRenderPipelineRelease(r->surface_pipeline);
     if (r->highway_pipeline) wgpuRenderPipelineRelease(r->highway_pipeline);
+    if (r->stencil_fill_pipeline) wgpuRenderPipelineRelease(r->stencil_fill_pipeline);
+    if (r->stencil_color_pipeline) wgpuRenderPipelineRelease(r->stencil_color_pipeline);
+    if (r->stencil_view) wgpuTextureViewRelease(r->stencil_view);
+    if (r->stencil_texture) wgpuTextureRelease(r->stencil_texture);
     if (r->surface_sampler) wgpuSamplerRelease(r->surface_sampler);
     if (r->default_surface_view)
         wgpuTextureViewRelease(r->default_surface_view);

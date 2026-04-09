@@ -272,13 +272,9 @@ static void read_overture_input(const arpt_pipeline_input *inp,
             depth_count++;
         }
 
-        /* Use cartography.sort_key as rank when available.
-           For bathymetry (depth >= 0), invert the rank so the deepest
-           contour (largest polygon) is drawn first and shallower contours
-           paint on top of it. */
+        /* Use cartography.sort_key as rank when available. */
         if (feat.sort_key > 0) {
-            uint32_t sk = (uint32_t)feat.sort_key & SORT_KEY_RANK_MASK;
-            rf->rank = (rf->depth >= 0) ? (SORT_KEY_RANK_MASK - sk) : sk;
+            rf->rank = (uint32_t)feat.sort_key & SORT_KEY_RANK_MASK;
         } else {
             rf->rank = *rank;
             (*rank)++;

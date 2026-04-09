@@ -48,6 +48,111 @@ WGPURenderPipeline arpt__texture_create_surface_pipeline(WGPUDevice device) {
     return pipeline;
 }
 
+/* Stencil-fill pipeline: draws polygon triangles with color writes OFF,
+   toggling the stencil bit via INVERT.  Used for even-odd fill rule. */
+WGPURenderPipeline arpt__texture_create_stencil_fill_pipeline(WGPUDevice device) {
+    WGPUShaderModule sm = create_shader(device, surface_wgsl);
+    WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
+        device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 0});
+
+    WGPUVertexAttribute attrs[] = {
+        {.format = WGPUVertexFormat_Uint16x2, .offset = 0, .shaderLocation = 0},
+        {.format = WGPUVertexFormat_Float32x4, .offset = 4, .shaderLocation = 1},
+    };
+    WGPUVertexBufferLayout vbl = {
+        .arrayStride = 20, .stepMode = WGPUVertexStepMode_Vertex,
+        .attributeCount = 2, .attributes = attrs,
+    };
+    WGPUColorTargetState ct = {
+        .format = WGPUTextureFormat_RGBA8Unorm,
+        .writeMask = WGPUColorWriteMask_None, /* color OFF */
+    };
+    WGPUFragmentState frag = {
+        .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
+    WGPUStencilFaceState stencil_face = {
+        .compare = WGPUCompareFunction_Always,
+        .passOp = WGPUStencilOperation_Invert,
+        .failOp = WGPUStencilOperation_Keep,
+        .depthFailOp = WGPUStencilOperation_Keep,
+    };
+    WGPUDepthStencilState ds = {
+        .format = WGPUTextureFormat_Depth24PlusStencil8,
+        .depthWriteEnabled = false,
+        .depthCompare = WGPUCompareFunction_Always,
+        .stencilFront = stencil_face,
+        .stencilBack = stencil_face,
+        .stencilReadMask = 0xFF,
+        .stencilWriteMask = 0xFF,
+    };
+    WGPURenderPipelineDescriptor pip = {
+        .layout = pl,
+        .vertex = {.module = sm, .entryPoint = "vs",
+                   .bufferCount = 1, .buffers = &vbl},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
+                      .cullMode = WGPUCullMode_None},
+        .depthStencil = &ds,
+        .fragment = &frag,
+        .multisample = {.count = 1, .mask = ~0u},
+    };
+    WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
+    wgpuPipelineLayoutRelease(pl);
+    wgpuShaderModuleRelease(sm);
+    return pipeline;
+}
+
+/* Stencil-color pipeline: draws polygon triangles with color writes ON,
+   but only where stencil != 0 (even-odd filled area).  Resets stencil
+   to 0 on pass so the next group starts clean. */
+WGPURenderPipeline arpt__texture_create_stencil_color_pipeline(WGPUDevice device) {
+    WGPUShaderModule sm = create_shader(device, surface_wgsl);
+    WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
+        device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 0});
+
+    WGPUVertexAttribute attrs[] = {
+        {.format = WGPUVertexFormat_Uint16x2, .offset = 0, .shaderLocation = 0},
+        {.format = WGPUVertexFormat_Float32x4, .offset = 4, .shaderLocation = 1},
+    };
+    WGPUVertexBufferLayout vbl = {
+        .arrayStride = 20, .stepMode = WGPUVertexStepMode_Vertex,
+        .attributeCount = 2, .attributes = attrs,
+    };
+    WGPUColorTargetState ct = {
+        .format = WGPUTextureFormat_RGBA8Unorm,
+        .writeMask = WGPUColorWriteMask_All,
+    };
+    WGPUFragmentState frag = {
+        .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
+    WGPUStencilFaceState stencil_face = {
+        .compare = WGPUCompareFunction_NotEqual,
+        .passOp = WGPUStencilOperation_Zero,
+        .failOp = WGPUStencilOperation_Keep,
+        .depthFailOp = WGPUStencilOperation_Keep,
+    };
+    WGPUDepthStencilState ds = {
+        .format = WGPUTextureFormat_Depth24PlusStencil8,
+        .depthWriteEnabled = false,
+        .depthCompare = WGPUCompareFunction_Always,
+        .stencilFront = stencil_face,
+        .stencilBack = stencil_face,
+        .stencilReadMask = 0xFF,
+        .stencilWriteMask = 0xFF,
+    };
+    WGPURenderPipelineDescriptor pip = {
+        .layout = pl,
+        .vertex = {.module = sm, .entryPoint = "vs",
+                   .bufferCount = 1, .buffers = &vbl},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
+                      .cullMode = WGPUCullMode_None},
+        .depthStencil = &ds,
+        .fragment = &frag,
+        .multisample = {.count = 1, .mask = ~0u},
+    };
+    WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
+    wgpuPipelineLayoutRelease(pl);
+    wgpuShaderModuleRelease(sm);
+    return pipeline;
+}
+
 WGPURenderPipeline arpt__texture_create_highway_pipeline(WGPUDevice device) {
     WGPUShaderModule sm = create_shader(device, highway_wgsl);
 
@@ -90,6 +195,15 @@ WGPURenderPipeline arpt__texture_create_highway_pipeline(WGPUDevice device) {
     WGPUFragmentState frag = {
         .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
 
+    WGPUDepthStencilState ds = {
+        .format = WGPUTextureFormat_Depth24PlusStencil8,
+        .depthWriteEnabled = false,
+        .depthCompare = WGPUCompareFunction_Always,
+        .stencilFront = {.compare = WGPUCompareFunction_Always},
+        .stencilBack = {.compare = WGPUCompareFunction_Always},
+        .stencilReadMask = 0,
+        .stencilWriteMask = 0,
+    };
     WGPURenderPipelineDescriptor pip = {
         .layout = pl,
         .vertex = {.module = sm,
@@ -98,6 +212,7 @@ WGPURenderPipeline arpt__texture_create_highway_pipeline(WGPUDevice device) {
                    .buffers = &vbl},
         .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
                       .cullMode = WGPUCullMode_None},
+        .depthStencil = &ds,
         .fragment = &frag,
         .multisample = {.count = 1, .mask = ~0u},
     };
@@ -182,7 +297,7 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
         hw_draw_n = prim->line_index_count;
     }
 
-    /* Render pass */
+    /* Render pass with stencil attachment for even-odd polygon fill */
     WGPUTextureView view = wgpuTextureCreateView(tex, NULL);
     WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(r->device, NULL);
     WGPURenderPassColorAttachment color = {
@@ -195,22 +310,47 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
         .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
 #endif
     };
+    WGPURenderPassDepthStencilAttachment ds_attach = {
+        .view = r->stencil_view,
+        .depthLoadOp = WGPULoadOp_Clear,
+        .depthStoreOp = WGPUStoreOp_Discard,
+        .depthClearValue = 1.0f,
+        .stencilLoadOp = WGPULoadOp_Clear,
+        .stencilStoreOp = WGPUStoreOp_Discard,
+        .stencilClearValue = 0,
+    };
     WGPURenderPassDescriptor rp_desc = {
         .colorAttachmentCount = 1,
         .colorAttachments = &color,
+        .depthStencilAttachment = &ds_attach,
     };
     WGPURenderPassEncoder pass =
         wgpuCommandEncoderBeginRenderPass(enc, &rp_desc);
 
+    /* Draw polygons with stencil-based even-odd fill: for each class group,
+       first INVERT stencil for all triangles (exterior + hole rings),
+       then color only where stencil != 0 (inside exterior, outside holes). */
     if (poly_draw_n > 0) {
-        wgpuRenderPassEncoderSetPipeline(pass, r->surface_pipeline);
         wgpuRenderPassEncoderSetVertexBuffer(pass, 0, poly_vbuf, 0,
                                              poly_vb_size);
         wgpuRenderPassEncoderSetIndexBuffer(pass, poly_ibuf,
                                             WGPUIndexFormat_Uint32, 0,
                                             poly_draw_n * sizeof(uint32_t));
-        wgpuRenderPassEncoderDrawIndexed(pass, (uint32_t)poly_draw_n, 1, 0, 0,
-                                         0);
+        wgpuRenderPassEncoderSetStencilReference(pass, 0);
+
+        for (size_t g = 0; g < prim->poly_group_count; g++) {
+            uint32_t fi = prim->poly_groups[g].first_index;
+            uint32_t ic = prim->poly_groups[g].index_count;
+            if (ic == 0) continue;
+
+            /* Pass 1: build stencil mask (INVERT, no color) */
+            wgpuRenderPassEncoderSetPipeline(pass, r->stencil_fill_pipeline);
+            wgpuRenderPassEncoderDrawIndexed(pass, ic, 1, fi, 0, 0);
+
+            /* Pass 2: color where stencil != 0, reset stencil to 0 */
+            wgpuRenderPassEncoderSetPipeline(pass, r->stencil_color_pipeline);
+            wgpuRenderPassEncoderDrawIndexed(pass, ic, 1, fi, 0, 0);
+        }
     }
 
     if (hw_draw_n > 0) {

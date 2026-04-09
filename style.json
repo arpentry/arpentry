@@ -23,6 +23,42 @@
       ]
     },
     {
+      "source_layer": "land_cover",
+      "type": "texture",
+      "paint": [
+        { "class": "land",      "color": [248, 244, 241, 255] },
+        { "class": "desert",    "color": [239, 232, 205, 255] },
+        { "class": "forest",    "color": [162, 226, 164, 255] },
+        { "class": "grassland", "color": [196, 234, 169, 255] },
+        { "class": "cropland",  "color": [235, 237, 177, 255] },
+        { "class": "shrub",     "color": [216, 234, 174, 255] },
+        { "class": "ice",       "color": [243, 245, 247, 255] }
+      ]
+    },
+    {
+      "source_layer": "bathymetry",
+      "type": "texture",
+      "paint": [
+        { "class": "3000", "color": [255,   0, 255, 255] },
+        { "class": "2500", "color": [128,   0, 255, 255] },
+        { "class": "2000", "color": [  0,   0, 255, 255] },
+        { "class": "1500", "color": [  0, 255, 255, 255] },
+        { "class": "1000", "color": [  0, 255,   0, 255] },
+        { "class": "500",  "color": [255, 255,   0, 255] },
+        { "class": "100",  "color": [255, 200,   0, 255] },
+        { "class": "50",   "color": [255, 128,   0, 255] },
+        { "class": "10",   "color": [255,  64,   0, 255] },
+        { "class": "0",    "color": [255,   0,   0, 255] }
+      ]
+    },
+    {
+      "source_layer": "water",
+      "type": "texture",
+      "paint": [
+        { "class": "water", "color": [169, 226, 254, 255] }
+      ]
+    },
+    {
       "source_layer": "highway",
       "type": "texture",
       "paint": [

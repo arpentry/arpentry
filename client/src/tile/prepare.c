@@ -144,12 +144,27 @@ static size_t earclip_triangulate(const uint16_t *x, const uint16_t *y,
 static void emit_polygons(const arpt_surface_data *data,
                            const arpt_style *style,
                            arpt_poly_vertex *verts, uint32_t *idxs,
-                           size_t *vi, size_t *ii) {
+                           size_t *vi, size_t *ii,
+                           arpt_poly_group *groups, size_t *gi) {
     if (!data) return;
+    uint8_t cur_cls = 0;
     for (size_t i = 0; i < data->count; i++) {
         const arpt_surface_polygon *p = &data->polygons[i];
         if (p->vertex_count < 3) continue;
         if (p->cls == 0) continue; /* skip unmatched class (background) */
+
+        /* Start a new group when class changes. */
+        if (p->cls != cur_cls) {
+            if (cur_cls != 0 && groups) {
+                groups[*gi - 1].index_count =
+                    (uint32_t)*ii - groups[*gi - 1].first_index;
+            }
+            cur_cls = p->cls;
+            if (groups) {
+                groups[*gi] = (arpt_poly_group){(uint32_t)*ii, 0};
+            }
+            (*gi)++;
+        }
 
         const float *c = style->colors[p->cls];
         uint32_t base = (uint32_t)*vi;
@@ -163,6 +178,11 @@ static void emit_polygons(const arpt_surface_data *data,
         size_t written = earclip_triangulate(p->x, p->y, p->vertex_count,
                                               base, idxs + *ii);
         *ii += written;
+    }
+    /* Close the last group. */
+    if (cur_cls != 0 && groups && *gi > 0) {
+        groups[*gi - 1].index_count =
+            (uint32_t)*ii - groups[*gi - 1].first_index;
     }
 }
 
@@ -246,17 +266,24 @@ void arpt_prepare_texture(const arpt_surface_data *surface,
     if (poly_verts > 0 && poly_indices > 0) {
         out->poly_verts = malloc(poly_verts * sizeof(arpt_poly_vertex));
         out->poly_indices = malloc(poly_indices * sizeof(uint32_t));
+        /* Upper bound for groups: one per polygon (worst case). */
+        size_t max_groups = surface ? surface->count : 0;
+        out->poly_groups = max_groups > 0
+            ? malloc(max_groups * sizeof(arpt_poly_group)) : NULL;
         if (out->poly_verts && out->poly_indices) {
-            size_t vi = 0, ii = 0;
+            size_t vi = 0, ii = 0, gi = 0;
             emit_polygons(surface, style, out->poly_verts, out->poly_indices,
-                          &vi, &ii);
+                          &vi, &ii, out->poly_groups, &gi);
             out->poly_vert_count = vi;
             out->poly_index_count = ii;
+            out->poly_group_count = gi;
         } else {
             free(out->poly_verts);
             free(out->poly_indices);
+            free(out->poly_groups);
             out->poly_verts = NULL;
             out->poly_indices = NULL;
+            out->poly_groups = NULL;
         }
     }
 
@@ -658,6 +685,7 @@ void arpt_tile_prims_free(arpt_tile_prims *p) {
     /* texture */
     free(p->texture.poly_verts);
     free(p->texture.poly_indices);
+    free(p->texture.poly_groups);
     free(p->texture.line_verts);
     free(p->texture.line_indices);
 
