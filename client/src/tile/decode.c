@@ -324,13 +324,6 @@ static bool decode_polygon_layer(const void *flatbuf, size_t size,
     return true;
 }
 
-bool arpt_decode_surface(const void *flatbuf, size_t size,
-                         const char (*class_names)[32], int class_count,
-                         arpt_surface_data *out) {
-    return decode_polygon_layer(flatbuf, size, ARPT_LAYER_SURFACE_NAME, UINT32_MAX,
-                                class_names, class_count, out);
-}
-
 bool arpt_decode_surface_layer(const void *flatbuf, size_t size,
                                const char *layer_name,
                                const char (*class_names)[32], int class_count,
@@ -340,9 +333,10 @@ bool arpt_decode_surface_layer(const void *flatbuf, size_t size,
 }
 
 bool arpt_decode_buildings(const void *flatbuf, size_t size,
+                           const char *layer_name,
                            const char (*class_names)[32], int class_count,
                            arpt_surface_data *out) {
-    return decode_polygon_layer(flatbuf, size, ARPT_LAYER_BUILDING_NAME, UINT32_MAX,
+    return decode_polygon_layer(flatbuf, size, layer_name, UINT32_MAX,
                                 class_names, class_count, out);
 }
 
@@ -357,6 +351,7 @@ void arpt_surface_data_free(arpt_surface_data *data) {
 /* Highway decoding */
 
 bool arpt_decode_highways(const void *flatbuf, size_t size,
+                          const char *layer_name,
                           const char (*class_names)[32], int class_count,
                           arpt_highway_data *out) {
     out->lines = NULL;
@@ -366,7 +361,7 @@ bool arpt_decode_highways(const void *flatbuf, size_t size,
     uint32_t height_key_idx;
     arpentry_tiles_Value_vec_t values;
     arpentry_tiles_Layer_table_t layer =
-        find_layer(flatbuf, size, ARPT_LAYER_HIGHWAY_NAME, &class_key_idx, &height_key_idx,
+        find_layer(flatbuf, size, layer_name, &class_key_idx, &height_key_idx,
                    &values);
     if (!layer) return true;
 
@@ -499,6 +494,7 @@ static uint8_t tree_model_from_class(arpentry_tiles_Feature_table_t feat,
 }
 
 bool arpt_decode_trees(const void *flatbuf, size_t size,
+                       const char *layer_name,
                        const char *const *class_names, int class_count,
                        arpt_tree_data *out) {
     out->points = NULL;
@@ -508,7 +504,7 @@ bool arpt_decode_trees(const void *flatbuf, size_t size,
     uint32_t height_key_idx;
     arpentry_tiles_Value_vec_t values;
     arpentry_tiles_Layer_table_t layer =
-        find_layer(flatbuf, size, ARPT_LAYER_TREE_NAME, &class_key_idx, &height_key_idx,
+        find_layer(flatbuf, size, layer_name, &class_key_idx, &height_key_idx,
                    &values);
     if (!layer) return true;
 
@@ -624,6 +620,7 @@ static void resolve_string_property(arpentry_tiles_Feature_table_t feat,
 }
 
 bool arpt_decode_pois(const void *flatbuf, size_t size,
+                      const char *layer_name,
                       arpt_poi_data *out) {
     out->points = NULL;
     out->count = 0;
@@ -633,7 +630,7 @@ bool arpt_decode_pois(const void *flatbuf, size_t size,
     uint32_t name_key_idx;
     arpentry_tiles_Value_vec_t values;
     arpentry_tiles_Layer_table_t layer =
-        find_layer_ex(flatbuf, size, ARPT_LAYER_POI_NAME, &class_key_idx, &height_key_idx,
+        find_layer_ex(flatbuf, size, layer_name, &class_key_idx, &height_key_idx,
                       &name_key_idx, &values);
     if (!layer) return true;
 

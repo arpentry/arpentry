@@ -5,13 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Layer name constants (shared between tiler and client) */
+/* Default layer name for terrain (auto-generated mesh). */
 #define ARPT_LAYER_TERRAIN_NAME  "terrain"
-#define ARPT_LAYER_SURFACE_NAME  "surface"
-#define ARPT_LAYER_HIGHWAY_NAME  "highway"
-#define ARPT_LAYER_BUILDING_NAME "building"
-#define ARPT_LAYER_TREE_NAME     "tree"
-#define ARPT_LAYER_POI_NAME      "poi"
 
 /**
  * Zero-copy terrain mesh data extracted from a FlatBuffer tile.
@@ -59,19 +54,13 @@ typedef struct {
 } arpt_surface_data;
 
 /**
- * Extract surface polygons from a verified FlatBuffer tile.
+ * Extract surface polygons from a named layer in a verified FlatBuffer tile.
  *
- * Finds the "surface" layer, resolves the "class" property key,
- * and extracts PolygonGeometry features with their class.
+ * Resolves the "class" property key and extracts PolygonGeometry features.
  *
- * Returns true even if no surface layer is found (count=0).
+ * Returns true even if the layer is not found (count=0).
  * Returns false only on allocation failure.
  */
-bool arpt_decode_surface(const void *flatbuf, size_t size,
-                         const char (*class_names)[32], int class_count,
-                         arpt_surface_data *out);
-
-/* Generic variant: decode polygon features from any named layer. */
 bool arpt_decode_surface_layer(const void *flatbuf, size_t size,
                                const char *layer_name,
                                const char (*class_names)[32], int class_count,
@@ -93,10 +82,11 @@ typedef struct {
 } arpt_highway_data;
 
 /**
- * Extract highway lines from a verified FlatBuffer tile.
- * Finds the "highway" layer, extracts LineGeometry features.
+ * Extract highway lines from a named layer in a verified FlatBuffer tile.
+ * Extracts LineGeometry features with their class.
  */
 bool arpt_decode_highways(const void *flatbuf, size_t size,
+                          const char *layer_name,
                           const char (*class_names)[32], int class_count,
                           arpt_highway_data *out);
 
@@ -105,10 +95,11 @@ void arpt_highway_data_free(arpt_highway_data *data);
 /* Building decoding (PolygonGeometry, same struct as surface) */
 
 /**
- * Extract building footprints from a verified FlatBuffer tile.
- * Finds the "building" layer, extracts PolygonGeometry features.
+ * Extract building footprints from a named layer in a verified FlatBuffer tile.
+ * Extracts PolygonGeometry features with their class and height.
  */
 bool arpt_decode_buildings(const void *flatbuf, size_t size,
+                           const char *layer_name,
                            const char (*class_names)[32], int class_count,
                            arpt_surface_data *out);
 
@@ -133,6 +124,7 @@ typedef struct {
  * model_index is set to the matching index, or 0 if no match.
  */
 bool arpt_decode_trees(const void *flatbuf, size_t size,
+                       const char *layer_name,
                        const char *const *class_names, int class_count,
                        arpt_tree_data *out);
 
@@ -157,6 +149,7 @@ typedef struct {
  * Finds the "poi" layer, extracts PointGeometry features with "name" string.
  */
 bool arpt_decode_pois(const void *flatbuf, size_t size,
+                      const char *layer_name,
                       arpt_poi_data *out);
 
 void arpt_poi_data_free(arpt_poi_data *data);

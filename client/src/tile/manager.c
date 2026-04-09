@@ -223,15 +223,17 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
             break;
         }
         case ARPT_LAYER_EXTRUSION:
-            arpt_decode_buildings(flatbuf, size, tm->style.class_names,
+            arpt_decode_buildings(flatbuf, size, le->source_layer,
+                                  tm->style.class_names,
                                   tm->style.class_count, &buildings);
             break;
         case ARPT_LAYER_INSTANCE:
-            arpt_decode_trees(flatbuf, size, tm->tree_class_names,
+            arpt_decode_trees(flatbuf, size, le->source_layer,
+                              tm->tree_class_names,
                               tm->tree_class_count, &trees);
             break;
         case ARPT_LAYER_LABEL:
-            arpt_decode_pois(flatbuf, size, &pois);
+            arpt_decode_pois(flatbuf, size, le->source_layer, &pois);
             break;
         }
     }
