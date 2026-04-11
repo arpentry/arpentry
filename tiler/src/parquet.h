@@ -50,6 +50,10 @@ const char *arpt_parquet_column_name(const arpt_parquet *pq, int32_t col);
 /* Column type by index. */
 arpt_parquet_type arpt_parquet_column_type(const arpt_parquet *pq, int32_t col);
 
+/* True if column is inside a repeated group (LIST/MAP) and may have
+   multiple values per row.  Returns false for flat columns. */
+bool arpt_parquet_column_is_repeated(const arpt_parquet *pq, int32_t col);
+
 /* Find column index by name. Returns -1 if not found. */
 int32_t arpt_parquet_find_column(const arpt_parquet *pq, const char *name);
 

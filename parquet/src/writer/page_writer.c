@@ -307,32 +307,30 @@ carquet_status_t carquet_page_writer_add_values(
         writer->num_nulls += (num_values - num_non_null);
     }
 
-    /* Encode definition levels.
-     * If def_levels is NULL for an OPTIONAL column, generate all-present levels
-     * since Parquet requires definition levels for non-REQUIRED columns. */
+    /* Accumulate raw definition levels (RLE-encoded once in finalize).
+     * If def_levels is NULL for an OPTIONAL column, generate all-present
+     * levels since Parquet requires definition levels for non-REQUIRED
+     * columns. */
     if (writer->max_def_level > 0) {
         if (def_levels) {
-            encode_levels(def_levels, num_values, writer->max_def_level,
-                          &writer->def_levels_buffer);
+            carquet_buffer_append(&writer->def_levels_buffer,
+                                  (const uint8_t *)def_levels,
+                                  num_values * sizeof(int16_t));
         } else {
-            /* Auto-generate all-present definition levels */
-            int16_t* auto_def = malloc(num_values * sizeof(int16_t));
-            if (!auto_def) {
-                return CARQUET_ERROR_OUT_OF_MEMORY;
-            }
             for (int64_t i = 0; i < num_values; i++) {
-                auto_def[i] = writer->max_def_level;
+                int16_t present = writer->max_def_level;
+                carquet_buffer_append(&writer->def_levels_buffer,
+                                      (const uint8_t *)&present,
+                                      sizeof(present));
             }
-            encode_levels(auto_def, num_values, writer->max_def_level,
-                          &writer->def_levels_buffer);
-            free(auto_def);
         }
     }
 
-    /* Encode repetition levels */
+    /* Accumulate raw repetition levels (RLE-encoded once in finalize). */
     if (writer->max_rep_level > 0 && rep_levels) {
-        encode_levels(rep_levels, num_values, writer->max_rep_level,
-                      &writer->rep_levels_buffer);
+        carquet_buffer_append(&writer->rep_levels_buffer,
+                              (const uint8_t *)rep_levels,
+                              num_values * sizeof(int16_t));
     }
 
     /* Encode values using PLAIN encoding.
@@ -497,21 +495,38 @@ carquet_status_t carquet_page_writer_finalize(
 
     carquet_buffer_clear(&writer->page_buffer);
 
+    /* RLE-encode the accumulated raw level buffers into final form.
+     * The def/rep_levels_buffers hold raw int16_t values; we encode
+     * them into a single length-prefixed RLE stream per level type. */
+    carquet_buffer_t encoded_rep;
+    carquet_buffer_init(&encoded_rep);
+    if (writer->max_rep_level > 0 && writer->rep_levels_buffer.size > 0) {
+        int64_t n = (int64_t)(writer->rep_levels_buffer.size / sizeof(int16_t));
+        encode_levels((const int16_t *)writer->rep_levels_buffer.data, n,
+                      writer->max_rep_level, &encoded_rep);
+    }
+
+    carquet_buffer_t encoded_def;
+    carquet_buffer_init(&encoded_def);
+    if (writer->max_def_level > 0 && writer->def_levels_buffer.size > 0) {
+        int64_t n = (int64_t)(writer->def_levels_buffer.size / sizeof(int16_t));
+        encode_levels((const int16_t *)writer->def_levels_buffer.data, n,
+                      writer->max_def_level, &encoded_def);
+    }
+
     /* Build uncompressed page data: rep_levels + def_levels + values */
     carquet_buffer_t uncompressed;
     carquet_buffer_init(&uncompressed);
 
-    if (writer->rep_levels_buffer.size > 0) {
-        carquet_buffer_append(&uncompressed,
-                               writer->rep_levels_buffer.data,
-                               writer->rep_levels_buffer.size);
+    if (encoded_rep.size > 0) {
+        carquet_buffer_append(&uncompressed, encoded_rep.data, encoded_rep.size);
     }
+    carquet_buffer_destroy(&encoded_rep);
 
-    if (writer->def_levels_buffer.size > 0) {
-        carquet_buffer_append(&uncompressed,
-                               writer->def_levels_buffer.data,
-                               writer->def_levels_buffer.size);
+    if (encoded_def.size > 0) {
+        carquet_buffer_append(&uncompressed, encoded_def.data, encoded_def.size);
     }
+    carquet_buffer_destroy(&encoded_def);
 
     carquet_buffer_append(&uncompressed,
                            writer->values_buffer.data,

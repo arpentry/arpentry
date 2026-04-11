@@ -232,6 +232,26 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
                               tm->tree_class_names,
                               tm->tree_class_count, &trees);
             break;
+        case ARPT_LAYER_LINE: {
+            arpt_highway_data extra = {0};
+            arpt_decode_highways(flatbuf, size, le->source_layer,
+                                 tm->style.class_names,
+                                 tm->style.class_count, &extra);
+            if (extra.count > 0) {
+                size_t new_count = highways.count + extra.count;
+                arpt_highway_line *merged = realloc(
+                    highways.lines,
+                    new_count * sizeof(arpt_highway_line));
+                if (merged) {
+                    memcpy(merged + highways.count, extra.lines,
+                           extra.count * sizeof(arpt_highway_line));
+                    highways.lines = merged;
+                    highways.count = new_count;
+                }
+            }
+            arpt_highway_data_free(&extra);
+            break;
+        }
         case ARPT_LAYER_LABEL:
             arpt_decode_pois(flatbuf, size, le->source_layer, &pois);
             break;

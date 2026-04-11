@@ -21,7 +21,7 @@ table PaintEntry {
   min_level:    uint8 = 0;          // skip features of this class below this zoom level
 }
 
-enum LayerType : uint8 { Terrain = 0, Texture = 1, Extrusion = 2, Instance = 3, Label = 4 }
+enum LayerType : uint8 { Terrain = 0, Texture = 1, Extrusion = 2, Instance = 3, Label = 4, Line = 5 }
 
 table LayerStyle {
   source_layer:   string (required);  // tile layer name ("surface", "highway", ...)

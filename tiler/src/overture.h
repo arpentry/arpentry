@@ -19,6 +19,7 @@ typedef struct {
     const char *id;         /* Feature ID (NULL if missing) */
     const char *type;       /* Feature type (NULL if missing) */
     const char *subtype;    /* Feature subtype (NULL if missing) */
+    const char *cls;        /* Feature class (NULL if missing) */
     double bbox[4];         /* [xmin, ymin, xmax, ymax] from bbox columns */
     bool has_bbox;
     int32_t min_zoom;       /* cartography.min_zoom (-1 if missing) */

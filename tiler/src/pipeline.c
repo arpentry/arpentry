@@ -103,6 +103,7 @@ typedef struct {
     bool      has_bbox;
     char     *type;       /* Owned copy, may be NULL */
     char     *subtype;    /* Owned copy, may be NULL */
+    char     *cls;        /* Owned copy, may be NULL */
     uint32_t  layer;
     uint32_t  rank;
     int32_t   min_zoom;   /* cartography.min_zoom (-1 = no limit) */
@@ -119,6 +120,7 @@ static void raw_feature_free(raw_feature *f) {
     free(f->wkb);
     free(f->type);
     free(f->subtype);
+    free(f->cls);
 }
 
 /* ---- Worker thread: process features → per-thread sorter ---- */
@@ -156,15 +158,17 @@ static void *worker_fn(void *arg) {
             }
 
             /* Determine class: use depth for bathymetry, otherwise
-               subtype (land_cover classification) or type. */
+               the most specific classification available:
+               class → subtype → type. */
             char depth_cls[16];
             const char *cls;
             if (f->depth >= 0) {
                 snprintf(depth_cls, sizeof(depth_cls), "%d", f->depth);
                 cls = depth_cls;
             } else {
-                cls = f->subtype ? f->subtype
-                    : (f->type ? f->type : "unknown");
+                cls = f->cls ? f->cls
+                    : (f->subtype ? f->subtype
+                    : (f->type ? f->type : "unknown"));
             }
             const char *pkeys[1] = { "class" };
             const char *pvals[1] = { cls };
@@ -228,7 +232,17 @@ static void read_overture_input(const arpt_pipeline_input *inp,
     size_t batch_pos = 0;
 
     arpt_overture_feature feat;
+    bool first_feature = true;
     while (arpt_overture_next(ov, &feat)) {
+        if (first_feature) {
+            fprintf(stderr, "  First feature: type=%s subtype=%s class=%s "
+                    "wkb_len=%zu min_zoom=%d max_zoom=%d\n",
+                    feat.type ? feat.type : "(null)",
+                    feat.subtype ? feat.subtype : "(null)",
+                    feat.cls ? feat.cls : "(null)",
+                    feat.wkb_len, feat.min_zoom, feat.max_zoom);
+            first_feature = false;
+        }
         /* Bbox filter — skip features outside the pipeline bounds */
         if (feat.has_bbox) {
             if (feat.bbox[2] < config_bbox[0] ||
@@ -262,6 +276,7 @@ static void read_overture_input(const arpt_pipeline_input *inp,
         rf->has_bbox = feat.has_bbox;
         rf->type = feat.type ? strdup(feat.type) : NULL;
         rf->subtype = feat.subtype ? strdup(feat.subtype) : NULL;
+        rf->cls = feat.cls ? strdup(feat.cls) : NULL;
         rf->layer = inp->layer;
         rf->min_zoom = feat.min_zoom;
         rf->max_zoom = feat.max_zoom;

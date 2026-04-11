@@ -267,6 +267,12 @@ static void coords_to_tile_range(const double *x, const double *y,
                                   int n_cols, int n_rows,
                                   int *tx_min, int *tx_max,
                                   int *ty_min, int *ty_max) {
+    if (count == 0) {
+        *tx_min = *tx_max = 0;
+        *ty_min = *ty_max = 0;
+        return;
+    }
+
     double gmin_x, gmax_x, gmin_y, gmax_y;
 
 #if defined(__ARM_NEON)
@@ -1001,10 +1007,14 @@ static double zoom_tolerance(int zoom) {
     return 360.0 / (double)((uint64_t)1 << (zoom + 10));
 }
 
-/* Check if a feature's bounding box is smaller than one pixel² at the
-   given zoom level.  Uses bbox area (px_x * px_y) so that thin slivers
-   are caught — consistent with the area-based polygon ring filter. */
-static bool feature_subpixel(const double bbox[4], int z) {
+/* Check if a feature's bounding box is smaller than one pixel at the
+   given zoom level.
+   - For polygons (is_line=false): uses bbox area so that thin slivers
+     are caught, consistent with the area-based polygon ring filter.
+   - For lines (is_line=true): uses the longer bbox dimension, since a
+     line running east-west has a large lon_span but tiny lat_span and
+     would be incorrectly dropped by an area check. */
+static bool feature_subpixel(const double bbox[4], int z, bool is_line) {
     double n_cols = (double)(1 << z);
     double n_rows = (double)(1 << z);
     double lon_span = bbox[2] - bbox[0];
@@ -1013,6 +1023,10 @@ static bool feature_subpixel(const double bbox[4], int z) {
     double tile_lat = 180.0 / n_rows;
     double px_x = lon_span / tile_lon * (double)TILE_PIXELS;
     double px_y = lat_span / tile_lat * (double)TILE_PIXELS;
+    if (is_line) {
+        double px_max = px_x > px_y ? px_x : px_y;
+        return px_max < 1.0;
+    }
     return px_x * px_y < 1.0;
 }
 
@@ -1059,8 +1073,9 @@ void arpt_process_feature_zooms(const arpt_geom *geom, const double bbox[4],
        Always simplify from the original geometry so that anchor points
        are computed from stable neighbors, preserving shared-edge
        consistency across zoom levels. */
+    bool is_line = (geom->type == 2);
     for (int z = max_zoom; z >= min_zoom; z--) {
-        if (feature_subpixel(bbox, z))
+        if (feature_subpixel(bbox, z, is_line))
             break;  /* monotonic: subpixel at z implies subpixel at z-1 */
 
         arpt_geom sg;

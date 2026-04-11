@@ -199,43 +199,117 @@ static void emit_highway_sdf_quads(const arpt_highway_data *data,
         const arpt_highway_line *line = &data->lines[i];
         double hw = style->stroke_widths[line->cls];
         const float *c = style->colors[line->cls];
+        size_t vc = line->vertex_count;
+        if (vc < 2) continue;
+        size_t n_segs = vc - 1;
 
-        for (size_t s = 0; s + 1 < line->vertex_count; s++) {
-            double x1 = line->x[s], y1 = line->y[s];
-            double x2 = line->x[s + 1], y2 = line->y[s + 1];
-            double dx = x2 - x1, dy = y2 - y1;
+        /* Pre-compute per-segment direction and normal */
+        double *seg_nx = malloc(n_segs * sizeof(double));
+        double *seg_ny = malloc(n_segs * sizeof(double));
+        double *seg_ux = malloc(n_segs * sizeof(double));
+        double *seg_uy = malloc(n_segs * sizeof(double));
+        double *seg_len = malloc(n_segs * sizeof(double));
+        if (!seg_nx || !seg_ny || !seg_ux || !seg_uy || !seg_len) {
+            free(seg_nx); free(seg_ny); free(seg_ux); free(seg_uy);
+            free(seg_len);
+            continue;
+        }
+
+        bool any_valid = false;
+        for (size_t s = 0; s < n_segs; s++) {
+            double dx = line->x[s + 1] - line->x[s];
+            double dy = line->y[s + 1] - line->y[s];
             double len = sqrt(dx * dx + dy * dy);
-            if (len < 1.0) continue;
+            if (len < 0.001) len = 0.001;
+            seg_ux[s] = dx / len;
+            seg_uy[s] = dy / len;
+            seg_nx[s] = -seg_uy[s];
+            seg_ny[s] = seg_ux[s];
+            seg_len[s] = len;
+            if (len >= 1.0) any_valid = true;
+        }
 
-            double ux = dx / len, uy = dy / len;
-            double nx = -uy, ny = ux;
-
-            double ex1 = x1 - ux * hw, ey1 = y1 - uy * hw;
-            double ex2 = x2 + ux * hw, ey2 = y2 + uy * hw;
+        if (!any_valid) {
+            free(seg_nx); free(seg_ny); free(seg_ux); free(seg_uy);
+            free(seg_len);
+            continue;
+        }
 
 #define CLAMP16(v) ((uint16_t)((v) < 0 ? 0 : (v) > 65535 ? 65535 : (v)))
+
+        for (size_t s = 0; s < n_segs; s++) {
+            double len = seg_len[s];
+            if (len < 1.0) continue;
+
+            double x1 = line->x[s], y1 = line->y[s];
+            double x2 = line->x[s + 1], y2 = line->y[s + 1];
+
+            /* Offset vectors at start and end of this segment.
+             * At interior vertices, use a miter between adjacent
+             * segment normals so consecutive quads share edges. */
+            double m1x, m1y, m2x, m2y;
+
+            if (s > 0 && seg_len[s - 1] >= 1.0) {
+                /* Miter at start vertex */
+                double mx = seg_nx[s - 1] + seg_nx[s];
+                double my = seg_ny[s - 1] + seg_ny[s];
+                double d = mx * seg_nx[s] + my * seg_ny[s];
+                if (d < 0.25) d = 0.25;  /* miter limit: cap at 4x */
+                m1x = mx / d;
+                m1y = my / d;
+            } else {
+                m1x = seg_nx[s];
+                m1y = seg_ny[s];
+            }
+
+            if (s + 1 < n_segs && seg_len[s + 1] >= 1.0) {
+                /* Miter at end vertex */
+                double mx = seg_nx[s] + seg_nx[s + 1];
+                double my = seg_ny[s] + seg_ny[s + 1];
+                double d = mx * seg_nx[s] + my * seg_ny[s];
+                if (d < 0.25) d = 0.25;
+                m2x = mx / d;
+                m2y = my / d;
+            } else {
+                m2x = seg_nx[s];
+                m2y = seg_ny[s];
+            }
+
+            /* Extend endpoints along tangent for caps at polyline ends */
+            double ex1 = x1, ey1 = y1, ex2 = x2, ey2 = y2;
+            double cap1 = 0.0, cap2 = 0.0;
+            if (s == 0 || seg_len[s - 1] < 1.0) {
+                ex1 -= seg_ux[s] * hw;
+                ey1 -= seg_uy[s] * hw;
+                cap1 = hw;
+            }
+            if (s + 1 == n_segs || seg_len[s + 1] < 1.0) {
+                ex2 += seg_ux[s] * hw;
+                ey2 += seg_uy[s] * hw;
+                cap2 = hw;
+            }
+
             uint32_t base = (uint32_t)*vi;
             verts[*vi] = (arpt_line_vertex){
-                CLAMP16(ex1 - nx * hw), CLAMP16(ey1 - ny * hw),
+                CLAMP16(ex1 - m1x * hw), CLAMP16(ey1 - m1y * hw),
                 c[0], c[1], c[2], c[3],
-                (float)(-hw), (float)(-hw), (float)hw, (float)len};
+                (float)(-cap1), (float)(-hw), (float)hw, (float)len};
             (*vi)++;
             verts[*vi] = (arpt_line_vertex){
-                CLAMP16(ex1 + nx * hw), CLAMP16(ey1 + ny * hw),
+                CLAMP16(ex1 + m1x * hw), CLAMP16(ey1 + m1y * hw),
                 c[0], c[1], c[2], c[3],
-                (float)(-hw), (float)(hw), (float)hw, (float)len};
+                (float)(-cap1), (float)(hw), (float)hw, (float)len};
             (*vi)++;
             verts[*vi] = (arpt_line_vertex){
-                CLAMP16(ex2 + nx * hw), CLAMP16(ey2 + ny * hw),
+                CLAMP16(ex2 + m2x * hw), CLAMP16(ey2 + m2y * hw),
                 c[0], c[1], c[2], c[3],
-                (float)(len + hw), (float)(hw), (float)hw, (float)len};
+                (float)(len + cap2), (float)(hw), (float)hw, (float)len};
             (*vi)++;
             verts[*vi] = (arpt_line_vertex){
-                CLAMP16(ex2 - nx * hw), CLAMP16(ey2 - ny * hw),
+                CLAMP16(ex2 - m2x * hw), CLAMP16(ey2 - m2y * hw),
                 c[0], c[1], c[2], c[3],
-                (float)(len + hw), (float)(-hw), (float)hw, (float)len};
+                (float)(len + cap2), (float)(-hw), (float)hw, (float)len};
             (*vi)++;
-#undef CLAMP16
 
             idxs[(*ii)++] = base;
             idxs[(*ii)++] = base + 1;
@@ -244,6 +318,11 @@ static void emit_highway_sdf_quads(const arpt_highway_data *data,
             idxs[(*ii)++] = base + 2;
             idxs[(*ii)++] = base + 3;
         }
+
+#undef CLAMP16
+
+        free(seg_nx); free(seg_ny); free(seg_ux); free(seg_uy);
+        free(seg_len);
     }
 }
 

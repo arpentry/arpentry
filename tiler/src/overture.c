@@ -16,6 +16,7 @@ struct arpt_overture {
     int32_t col_id;         /* projected index for id column */
     int32_t col_type;       /* projected index for type column */
     int32_t col_subtype;    /* projected index for subtype column */
+    int32_t col_class;      /* projected index for class column */
     int32_t col_bbox_xmin;
     int32_t col_bbox_ymin;
     int32_t col_bbox_xmax;
@@ -34,7 +35,21 @@ struct arpt_overture {
     char *owned_id;
     char *owned_type;
     char *owned_subtype;
+    char *owned_cls;
 };
+
+/* Find a flat string leaf column by name.
+ * Rejects columns that are not BYTE_ARRAY or that live inside a repeated
+ * group (LIST/MAP), which would have multiple values per row and cannot
+ * be indexed by a simple row offset. */
+static int32_t find_string_column(const arpt_parquet *pq, const char *name)
+{
+    int32_t col = arpt_parquet_find_column(pq, name);
+    if (col < 0) return -1;
+    if (arpt_parquet_column_type(pq, col) != ARPT_PARQUET_BYTES) return -1;
+    if (arpt_parquet_column_is_repeated(pq, col)) return -1;
+    return col;
+}
 
 arpt_overture *arpt_overture_open(const char *path)
 {
@@ -62,19 +77,25 @@ arpt_overture *arpt_overture_open(const char *path)
     }
 
     /* Discover columns in file.
-     * Overture schemas vary by theme: some have "type"+"subtype", others
-     * (e.g. base/land) have "subtype"+"class" with no "type" column.
-     * When "type" is absent, fall back to "subtype" as the type column and
-     * "class" as the subtype column so the downstream pipeline always gets
-     * the broad category in ->type and the detail in ->subtype. */
+     * Overture schemas vary by theme:
+     *   - transportation has "type"+"subtype"+"class" (e.g. segment/road/motorway)
+     *   - base/land has "subtype"+"class" with no "type" column
+     * When "type" is absent, promote "subtype" → type, "class" → subtype
+     * so the downstream pipeline always gets the broad category in ->type
+     * and the detail in ->subtype.
+     * When all three exist, ->cls carries the finest classification. */
     int32_t file_col_geom = arpt_parquet_find_column(pq, geom_col_name);
-    int32_t file_col_id = arpt_parquet_find_column(pq, "id");
-    int32_t file_col_type = arpt_parquet_find_column(pq, "type");
-    int32_t file_col_subtype = arpt_parquet_find_column(pq, "subtype");
+    int32_t file_col_id = find_string_column(pq, "id");
+    int32_t file_col_type = find_string_column(pq, "type");
+    int32_t file_col_subtype = find_string_column(pq, "subtype");
+    int32_t file_col_class = -1;
     if (file_col_type < 0 && file_col_subtype >= 0) {
         /* No "type" column — promote "subtype" → type, "class" → subtype */
         file_col_type = file_col_subtype;
-        file_col_subtype = arpt_parquet_find_column(pq, "class");
+        file_col_subtype = find_string_column(pq, "class");
+    } else {
+        /* All three may exist (e.g. transportation/segment) */
+        file_col_class = find_string_column(pq, "class");
     }
     int32_t file_col_bbox_xmin = arpt_parquet_find_column_path(pq, "bbox.xmin");
     int32_t file_col_bbox_ymin = arpt_parquet_find_column_path(pq, "bbox.ymin");
@@ -95,13 +116,21 @@ arpt_overture *arpt_overture_open(const char *path)
 
     /* Discover depth column (bathymetry) */
     int32_t file_col_depth = arpt_parquet_find_column(pq, "depth");
-    if (file_col_depth >= 0)
-        fprintf(stderr, "  Found depth column (index %d)\n", file_col_depth);
-    else
-        fprintf(stderr, "  No depth column found\n");
+
+    /* Print discovered columns for diagnostics */
+    fprintf(stderr, "  Columns: geom=%d id=%d type=%d subtype=%d class=%d\n",
+            file_col_geom, file_col_id, file_col_type, file_col_subtype,
+            file_col_class);
+    fprintf(stderr, "  Columns: bbox=%d/%d/%d/%d cart=%d/%d/%d depth=%d\n",
+            file_col_bbox_xmin, file_col_bbox_ymin,
+            file_col_bbox_xmax, file_col_bbox_ymax,
+            file_col_cart_min_zoom, file_col_cart_max_zoom,
+            file_col_cart_sort_key, file_col_depth);
+    fprintf(stderr, "  Total leaf columns in file: %d\n",
+            arpt_parquet_num_columns(pq));
 
     /* Build projection list */
-    int32_t proj_cols[13];
+    int32_t proj_cols[14];
     int32_t n_proj = 0;
 
     ov->col_geometry = n_proj;
@@ -126,6 +155,13 @@ arpt_overture *arpt_overture_open(const char *path)
         proj_cols[n_proj++] = file_col_subtype;
     } else {
         ov->col_subtype = -1;
+    }
+
+    if (file_col_class >= 0) {
+        ov->col_class = n_proj;
+        proj_cols[n_proj++] = file_col_class;
+    } else {
+        ov->col_class = -1;
     }
 
     if (file_col_bbox_xmin >= 0 && file_col_bbox_ymin >= 0 &&
@@ -167,12 +203,16 @@ arpt_overture *arpt_overture_open(const char *path)
     }
 
     /* Create cursor with projection */
+    fprintf(stderr, "  Projecting %d columns, creating cursor...\n", n_proj);
     ov->cursor = arpt_parquet_cursor_create(pq, proj_cols, n_proj, 0);
     if (!ov->cursor) {
+        fprintf(stderr, "  ERROR: cursor creation failed\n");
         arpt_parquet_close(pq);
         free(ov);
         return NULL;
     }
+    fprintf(stderr, "  Cursor created, %lld total rows\n",
+            (long long)arpt_parquet_num_rows(pq));
 
     ov->row_in_batch = 0;
     ov->batch_rows = 0;
@@ -270,6 +310,7 @@ bool arpt_overture_next(arpt_overture *ov, arpt_overture_feature *out)
         free(ov->owned_id);      ov->owned_id = NULL;
         free(ov->owned_type);    ov->owned_type = NULL;
         free(ov->owned_subtype); ov->owned_subtype = NULL;
+        free(ov->owned_cls);     ov->owned_cls = NULL;
 
         memset(out, 0, sizeof(*out));
 
@@ -278,30 +319,35 @@ bool arpt_overture_next(arpt_overture *ov, arpt_overture_feature *out)
             if (!arpt_parquet_cursor_next(ov->cursor))
                 return false;
             ov->batch_rows = arpt_parquet_cursor_num_rows(ov->cursor);
+            if (ov->row_in_batch == 0 && ov->batch_rows > 0)
+                fprintf(stderr, "  First batch: %lld rows\n",
+                        (long long)ov->batch_rows);
             ov->row_in_batch = 0;
         }
 
         int64_t row = ov->row_in_batch;
         ov->row_in_batch++;
 
-        /* Bbox columns first — cheap to read (direct array index) and
-         * allows the caller to filter spatially before WKB parsing. */
-        if (ov->col_bbox_xmin >= 0) {
+        /* Bbox columns — check null bitmap and use sparse index because
+         * the bbox group may be OPTIONAL, making the data array packed. */
+        if (ov->col_bbox_xmin >= 0 &&
+            !is_null(ov, ov->col_bbox_xmin, row)) {
             const void *xmin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_xmin);
             const void *ymin = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_ymin);
             const void *xmax = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_xmax);
             const void *ymax = arpt_parquet_cursor_data(ov->cursor, ov->col_bbox_ymax);
             if (xmin && ymin && xmax && ymax) {
+                int64_t bi = sparse_index(ov, ov->col_bbox_xmin, row);
                 if (ov->bbox_is_double) {
-                    out->bbox[0] = ((const double *)xmin)[row];
-                    out->bbox[1] = ((const double *)ymin)[row];
-                    out->bbox[2] = ((const double *)xmax)[row];
-                    out->bbox[3] = ((const double *)ymax)[row];
+                    out->bbox[0] = ((const double *)xmin)[bi];
+                    out->bbox[1] = ((const double *)ymin)[bi];
+                    out->bbox[2] = ((const double *)xmax)[bi];
+                    out->bbox[3] = ((const double *)ymax)[bi];
                 } else {
-                    out->bbox[0] = (double)((const float *)xmin)[row];
-                    out->bbox[1] = (double)((const float *)ymin)[row];
-                    out->bbox[2] = (double)((const float *)xmax)[row];
-                    out->bbox[3] = (double)((const float *)ymax)[row];
+                    out->bbox[0] = (double)((const float *)xmin)[bi];
+                    out->bbox[1] = (double)((const float *)ymin)[bi];
+                    out->bbox[2] = (double)((const float *)xmax)[bi];
+                    out->bbox[3] = (double)((const float *)ymax)[bi];
                 }
                 out->has_bbox = true;
             }
@@ -329,9 +375,11 @@ bool arpt_overture_next(arpt_overture *ov, arpt_overture_feature *out)
         ov->owned_id = read_string(ov, ov->col_id, row);
         ov->owned_type = read_string(ov, ov->col_type, row);
         ov->owned_subtype = read_string(ov, ov->col_subtype, row);
+        ov->owned_cls = read_string(ov, ov->col_class, row);
         out->id = ov->owned_id;
         out->type = ov->owned_type;
         out->subtype = ov->owned_subtype;
+        out->cls = ov->owned_cls;
 
         /* Cartography fields */
         out->min_zoom = read_int32(ov, ov->col_cart_min_zoom, row, -1);
@@ -351,6 +399,7 @@ void arpt_overture_close(arpt_overture *ov)
     free(ov->owned_id);
     free(ov->owned_type);
     free(ov->owned_subtype);
+    free(ov->owned_cls);
     arpt_parquet_cursor_free(ov->cursor);
     arpt_parquet_close(ov->pq);
     free(ov);

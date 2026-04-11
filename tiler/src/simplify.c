@@ -561,12 +561,10 @@ bool arpt_simplify_geom(const arpt_geom *in, double tolerance,
     if (!in || !out) return false;
 
     /* Pre-filter: reject features too small to be visible, before
-       allocating a copy or running DP.  Uses the same metrics as the
-       post-filter (area for polygons, length for lines). */
-    if (in->type == 2 && min_length > 0.0 &&
-        arpt_line_length(in->x, in->y, in->n_coords) < min_length)
-        return false;
-
+       allocating a copy or running DP.  Lines skip this check — DP
+       preserves endpoints, so a line whose endpoints are far apart
+       survives even if its total path length is short.  Dropping
+       short lines here creates visible gaps in road networks. */
     if (in->type == 3 && min_area > 0.0) {
         double total_area = 0.0;
         if (in->offsets && in->n_offsets > 1) {
@@ -675,9 +673,7 @@ bool arpt_simplify_geom(const arpt_geom *in, double tolerance,
                 new_n = arpt_simplify(out->x + start, out->y + start,
                                       line_n, tolerance);
             }
-            if (new_n >= 2 &&
-                (min_length <= 0.0 ||
-                 arpt_line_length(out->x + start, out->y + start, new_n) >= min_length)) {
+            if (new_n >= 2) {
                 if (compact != start) {
                     memmove(out->x + compact, out->x + start, new_n * sizeof(double));
                     memmove(out->y + compact, out->y + start, new_n * sizeof(double));
@@ -712,9 +708,7 @@ bool arpt_simplify_geom(const arpt_geom *in, double tolerance,
         }
     } else if (out->type == 2) {
         out->n_coords = arpt_simplify(out->x, out->y, out->n_coords, tolerance);
-        if (out->n_coords < 2 ||
-            (min_length > 0.0 &&
-             arpt_line_length(out->x, out->y, out->n_coords) < min_length)) {
+        if (out->n_coords < 2) {
             arpt_geom_free(out); memset(out, 0, sizeof(*out)); return false;
         }
     }

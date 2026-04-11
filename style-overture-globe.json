@@ -72,6 +72,17 @@
         { "class": "cemetery",   "color": [237, 240, 229, 255] },
         { "class": "airport",    "color": [226, 232, 243, 255] }
       ]
+    },
+    {
+      "source_layer": "transportation",
+      "type": "line",
+      "paint": [
+        { "class": "motorway",  "color": [233, 144,  89, 255], "width": 80, "min_level": 4 },
+        { "class": "trunk",     "color": [240, 180, 120, 255], "width": 60, "min_level": 5 },
+        { "class": "primary",   "color": [252, 214, 164, 255], "width": 50, "min_level": 7 },
+        { "class": "secondary", "color": [248, 243, 171, 255], "width": 40, "min_level": 9 },
+        { "class": "tertiary",  "color": [255, 255, 255, 255], "width": 30, "min_level": 11 }
+      ]
     }
   ]
 }

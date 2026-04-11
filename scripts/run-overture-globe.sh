@@ -17,6 +17,7 @@ ARCHIVE="/tmp/overture-globe.arpa"
 SERVER="$BUILD_DIR/server/arpentry_server"
 CLIENT="$BUILD_DIR/client/arpentry_client"
 TILER="$BUILD_DIR/tiler/arpentry_tiler"
+MERGE="$BUILD_DIR/tiler/arpentry_merge"
 
 # World bbox
 BBOX="-180,-85,180,85"
@@ -25,6 +26,13 @@ BBOX="-180,-85,180,85"
 MIN_ZOOM=0
 MAX_ZOOM=10
 
+# Layers enabled by default (index:name pairs)
+LAYER_LAND=true
+LAYER_LAND_COVER=true
+LAYER_BATHYMETRY=true
+LAYER_WATER=true
+LAYER_TRANSPORTATION=true
+
 # Parse arguments
 SKIP_DOWNLOAD=false
 SCREENSHOT=""
@@ -32,6 +40,11 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --skip-download) SKIP_DOWNLOAD=true; shift ;;
         --screenshot)    SCREENSHOT="$2"; shift 2 ;;
+        --no-land)           LAYER_LAND=false; shift ;;
+        --no-land-cover)     LAYER_LAND_COVER=false; shift ;;
+        --no-bathymetry)     LAYER_BATHYMETRY=false; shift ;;
+        --no-water)          LAYER_WATER=false; shift ;;
+        --no-transportation) LAYER_TRANSPORTATION=false; shift ;;
         *) shift ;;
     esac
 done
@@ -66,10 +79,23 @@ download_type() {
     echo "  -> $(du -h "$output" | cut -f1)"
 }
 
-download_type land
-download_type land_cover
-download_type bathymetry
-download_type water
+$LAYER_LAND           && download_type land
+$LAYER_LAND_COVER     && download_type land_cover
+$LAYER_BATHYMETRY     && download_type bathymetry
+$LAYER_WATER          && download_type water
+$LAYER_TRANSPORTATION && download_type segment
+
+# ── Merge transportation segments ────────────────────────────────────────────
+
+if $LAYER_TRANSPORTATION && [ -f "$DATA_DIR/segment.parquet" ] && [ ! -f "$DATA_DIR/segment_merged.parquet" ]; then
+    echo ""
+    echo "Merging transportation segments..."
+    "$MERGE" \
+        --input "$DATA_DIR/segment.parquet" \
+        --output "$DATA_DIR/segment_merged.parquet" \
+        --bbox "$BBOX"
+    echo "  -> $(du -h "$DATA_DIR/segment_merged.parquet" | cut -f1)"
+fi
 
 # ── Tile ──────────────────────────────────────────────────────────────────────
 
@@ -78,16 +104,26 @@ if [ ! -f "$ARCHIVE" ]; then
     echo "Tiling to $ARCHIVE..."
     echo "  bbox=$BBOX  zoom=$MIN_ZOOM-$MAX_ZOOM"
 
+    # Use merged segments if available, otherwise raw
+    SEGMENT_FILE="$DATA_DIR/segment.parquet"
+    if [ -f "$DATA_DIR/segment_merged.parquet" ]; then
+        SEGMENT_FILE="$DATA_DIR/segment_merged.parquet"
+    fi
+
+    TILER_INPUTS=()
+    $LAYER_LAND_COVER     && TILER_INPUTS+=(--input "1:$DATA_DIR/land_cover.parquet")
+    $LAYER_BATHYMETRY     && TILER_INPUTS+=(--input "2:$DATA_DIR/bathymetry.parquet")
+    $LAYER_WATER          && TILER_INPUTS+=(--input "3:$DATA_DIR/water.parquet")
+    $LAYER_LAND           && TILER_INPUTS+=(--input "4:$DATA_DIR/land.parquet")
+    $LAYER_TRANSPORTATION && TILER_INPUTS+=(--input "5:$SEGMENT_FILE")
+
     "$TILER" \
         --output "$ARCHIVE" \
         --bbox "$BBOX" \
         --min-zoom "$MIN_ZOOM" \
         --max-zoom "$MAX_ZOOM" \
         --mem $((256 * 1024 * 1024)) \
-        --input "1:$DATA_DIR/land_cover.parquet" \
-        --input "2:$DATA_DIR/bathymetry.parquet" \
-        --input "3:$DATA_DIR/water.parquet" \
-        --input "4:$DATA_DIR/land.parquet"
+        "${TILER_INPUTS[@]}"
 
     echo "Archive: $(du -h "$ARCHIVE" | cut -f1)"
 else

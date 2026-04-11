@@ -650,6 +650,23 @@ int32_t carquet_schema_find_column(
     const carquet_schema_t* schema,
     const char* name);
 
+/**
+ * @brief Get the maximum repetition level for a leaf column.
+ *
+ * Columns inside repeated groups (LIST/MAP) have max_rep_level > 0
+ * and may produce multiple values per row.
+ *
+ * @param[in] schema Schema to query
+ * @param[in] col Leaf column index (0 to num_columns - 1)
+ * @return Maximum repetition level, or 0 if col is out of range
+ *
+ * @note Thread-safe: Yes (read-only)
+ */
+CARQUET_API CARQUET_PURE CARQUET_NONNULL(1)
+int16_t carquet_schema_column_max_rep_level(
+    const carquet_schema_t* schema,
+    int32_t col);
+
 /* ============================================================================
  * Schema Node Accessors
  * ============================================================================

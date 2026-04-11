@@ -108,6 +108,8 @@ bool resp_build_style(const char *style_file, uint8_t **out,
                     lt = arpentry_tiles_LayerType_Instance;
                 else if (strcmp(type_buf, "label") == 0)
                     lt = arpentry_tiles_LayerType_Label;
+                else if (strcmp(type_buf, "line") == 0)
+                    lt = arpentry_tiles_LayerType_Line;
                 arpentry_tiles_LayerStyle_type_add(&builder, lt);
             }
 

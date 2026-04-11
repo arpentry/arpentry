@@ -24,6 +24,8 @@ add_library(arpentry_tiler STATIC
     src/geoparquet.c
     src/overture.c
     src/workqueue.c
+    src/merge.c
+    src/rtree/rtree.c
 )
 
 target_include_directories(arpentry_tiler PUBLIC
@@ -45,6 +47,12 @@ endif()
 add_executable(arpentry_tiler_cli src/main.c)
 set_target_properties(arpentry_tiler_cli PROPERTIES OUTPUT_NAME arpentry_tiler)
 target_link_libraries(arpentry_tiler_cli PRIVATE arpentry_tiler arpentry_warnings)
+
+# ── Merge CLI executable ─────────────────────────────────────────────
+
+add_executable(arpentry_merge_cli src/merge_main.c)
+set_target_properties(arpentry_merge_cli PROPERTIES OUTPUT_NAME arpentry_merge)
+target_link_libraries(arpentry_merge_cli PRIVATE arpentry_tiler arpentry_warnings)
 
 # ── Tests ────────────────────────────────────────────────────────────
 
@@ -112,3 +120,9 @@ add_test(NAME test_naturalearth COMMAND test_naturalearth)
 add_executable(test_workqueue tests/test_workqueue.c)
 target_link_libraries(test_workqueue PRIVATE arpentry_tiler unity Threads::Threads)
 add_test(NAME test_workqueue COMMAND test_workqueue)
+
+add_executable(test_merge tests/test_merge.c)
+target_compile_definitions(test_merge PRIVATE
+    FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/overture")
+target_link_libraries(test_merge PRIVATE arpentry_tiler unity)
+add_test(NAME test_merge COMMAND test_merge)

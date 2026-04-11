@@ -11,7 +11,10 @@ static const char *const arpt_layer_names[ARPT_MAX_LAYERS] = {
     "land_cover",  /* 1 */
     "bathymetry",  /* 2 */
     "water",       /* 3 */
-    "land",    "layer5",  "layer6",  "layer7",
+    "land",        /* 4 */
+    "transportation", /* 5 */
+    "land_use",    /* 6 */
+    "layer7",
     "layer8",  "layer9",  "layer10", "layer11", "layer12",
     "layer13", "layer14", "layer15"
 };

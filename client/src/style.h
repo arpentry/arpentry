@@ -10,6 +10,7 @@ typedef enum {
     ARPT_LAYER_EXTRUSION = 2,
     ARPT_LAYER_INSTANCE  = 3,
     ARPT_LAYER_LABEL     = 4,
+    ARPT_LAYER_LINE      = 5,
 } arpt_layer_type;
 
 /* Per-layer entry parsed from the style. */

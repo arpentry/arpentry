@@ -294,6 +294,14 @@ int32_t carquet_schema_find_column(
     return -1;
 }
 
+int16_t carquet_schema_column_max_rep_level(
+    const carquet_schema_t* schema,
+    int32_t col) {
+    /* schema is nonnull per API contract */
+    if (col < 0 || col >= schema->num_leaves) return 0;
+    return schema->max_rep_levels[col];
+}
+
 int32_t carquet_schema_num_columns(const carquet_schema_t* schema) {
     /* schema is nonnull per API contract */
     return schema->num_leaves;

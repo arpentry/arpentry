@@ -252,12 +252,20 @@ bool arpt_sorter_add(arpt_sorter *s, uint64_t key,
         if (!flush_run(s)) return false;
     }
 
+    /* Save buffer position so we can roll back on partial failure.
+     * If an append fails mid-record, orphaned bytes would corrupt
+     * the sequential scan in build_index(). */
+    size_t saved_len = s->buf.len;
     uint32_t sz32 = (uint32_t)size;
-    if (!membuf_append(&s->buf, &key, sizeof(key))) return false;
-    if (!membuf_append(&s->buf, &sz32, sizeof(sz32))) return false;
-    if (size > 0 && !membuf_append(&s->buf, data, size)) return false;
+    if (!membuf_append(&s->buf, &key, sizeof(key))) goto fail;
+    if (!membuf_append(&s->buf, &sz32, sizeof(sz32))) goto fail;
+    if (size > 0 && !membuf_append(&s->buf, data, size)) goto fail;
     s->n_records++;
     return true;
+
+fail:
+    s->buf.len = saved_len;
+    return false;
 }
 
 bool arpt_sorter_finish(arpt_sorter *s) {

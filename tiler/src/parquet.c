@@ -21,7 +21,7 @@ arpt_parquet *arpt_parquet_open(const char *path) {
     carquet_error_t err = CARQUET_ERROR_INIT;
     carquet_reader_options_t opts;
     carquet_reader_options_init(&opts);
-    opts.use_mmap = true;
+    opts.use_mmap = false;
 
     pq->reader = carquet_reader_open(path, &opts, &err);
     if (!pq->reader) {
@@ -96,6 +96,14 @@ arpt_parquet_type arpt_parquet_column_type(const arpt_parquet *pq, int32_t col) 
         case CARQUET_PHYSICAL_FIXED_LEN_BYTE_ARRAY: return ARPT_PARQUET_BYTES;
         default: return ARPT_PARQUET_BYTES;
     }
+}
+
+bool arpt_parquet_column_is_repeated(const arpt_parquet *pq, int32_t col) {
+    if (!pq) return false;
+    const carquet_schema_t *schema = carquet_reader_schema(pq->reader);
+    if (col < 0 || col >= carquet_schema_num_columns(schema))
+        return false;
+    return carquet_schema_column_max_rep_level(schema, col) > 0;
 }
 
 int32_t arpt_parquet_find_column(const arpt_parquet *pq, const char *name) {
