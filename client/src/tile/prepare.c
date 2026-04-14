@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Texture — tessellate surface polygons and line SDF quads */
+/* Polygon and line tessellation for offscreen texture rasterization */
 
 static void count_polygon_geom(const arpt_surface_data *data,
                                 size_t *out_verts, size_t *out_indices) {
@@ -201,6 +201,14 @@ static void emit_line_sdf_quads(const arpt_line_data *data,
         const float *c = style->colors[line->cls];
         size_t vc = line->vertex_count;
         if (vc < 2) continue;
+        /* Drop closing vertex if the line forms a closed loop
+         * (first == last).  The renderer draws open polylines; a
+         * closing segment from the penultimate vertex back to the
+         * first creates a visible artifact. */
+        if (vc >= 3 &&
+            line->x[0] == line->x[vc - 1] &&
+            line->y[0] == line->y[vc - 1])
+            vc--;
         size_t n_segs = vc - 1;
 
         /* Pre-compute per-segment direction and normal */
@@ -326,66 +334,60 @@ static void emit_line_sdf_quads(const arpt_line_data *data,
     }
 }
 
-void arpt_prepare_texture(const arpt_surface_data *surface,
-                          const arpt_line_data *lines,
-                          const arpt_style *style, arpt_texture_prim *out) {
+void arpt_prepare_polygons(const arpt_surface_data *surface,
+                           const arpt_style *style, arpt_polygon_prim *out) {
     memset(out, 0, sizeof(*out));
 
-    /* Count polygon geometry */
-    size_t poly_verts = 0, poly_indices = 0;
-    count_polygon_geom(surface, &poly_verts, &poly_indices);
+    size_t nv = 0, ni = 0;
+    count_polygon_geom(surface, &nv, &ni);
+    if (nv == 0 || ni == 0) return;
 
-    /* Count line geometry */
-    size_t ln_verts = 0, ln_indices = 0;
-    if (lines) {
-        for (size_t i = 0; i < lines->count; i++) {
-            size_t segs = lines->lines[i].vertex_count - 1;
-            ln_verts += segs * 4;
-            ln_indices += segs * 6;
-        }
+    out->verts = malloc(nv * sizeof(arpt_poly_vertex));
+    out->indices = malloc(ni * sizeof(uint32_t));
+    /* Upper bound for groups: one per polygon (worst case). */
+    size_t max_groups = surface ? surface->count : 0;
+    out->groups = max_groups > 0
+        ? malloc(max_groups * sizeof(arpt_poly_group)) : NULL;
+    if (out->verts && out->indices) {
+        size_t vi = 0, ii = 0, gi = 0;
+        emit_polygons(surface, style, out->verts, out->indices,
+                      &vi, &ii, out->groups, &gi);
+        out->vert_count = vi;
+        out->index_count = ii;
+        out->group_count = gi;
+    } else {
+        free(out->verts);
+        free(out->indices);
+        free(out->groups);
+        memset(out, 0, sizeof(*out));
     }
+}
 
-    /* Tessellate polygons */
-    if (poly_verts > 0 && poly_indices > 0) {
-        out->poly_verts = malloc(poly_verts * sizeof(arpt_poly_vertex));
-        out->poly_indices = malloc(poly_indices * sizeof(uint32_t));
-        /* Upper bound for groups: one per polygon (worst case). */
-        size_t max_groups = surface ? surface->count : 0;
-        out->poly_groups = max_groups > 0
-            ? malloc(max_groups * sizeof(arpt_poly_group)) : NULL;
-        if (out->poly_verts && out->poly_indices) {
-            size_t vi = 0, ii = 0, gi = 0;
-            emit_polygons(surface, style, out->poly_verts, out->poly_indices,
-                          &vi, &ii, out->poly_groups, &gi);
-            out->poly_vert_count = vi;
-            out->poly_index_count = ii;
-            out->poly_group_count = gi;
-        } else {
-            free(out->poly_verts);
-            free(out->poly_indices);
-            free(out->poly_groups);
-            out->poly_verts = NULL;
-            out->poly_indices = NULL;
-            out->poly_groups = NULL;
-        }
+void arpt_prepare_lines(const arpt_line_data *line_data,
+                        const arpt_style *style, arpt_line_prim *out) {
+    memset(out, 0, sizeof(*out));
+    if (!line_data) return;
+
+    size_t nv = 0, ni = 0;
+    for (size_t i = 0; i < line_data->count; i++) {
+        size_t segs = line_data->lines[i].vertex_count - 1;
+        nv += segs * 4;
+        ni += segs * 6;
     }
+    if (nv == 0 || ni == 0) return;
 
-    /* Tessellate lines */
-    if (ln_verts > 0 && ln_indices > 0) {
-        out->line_verts = malloc(ln_verts * sizeof(arpt_line_vertex));
-        out->line_indices = malloc(ln_indices * sizeof(uint32_t));
-        if (out->line_verts && out->line_indices) {
-            size_t vi = 0, ii = 0;
-            emit_line_sdf_quads(lines, style, out->line_verts,
-                                out->line_indices, &vi, &ii);
-            out->line_vert_count = vi;
-            out->line_index_count = ii;
-        } else {
-            free(out->line_verts);
-            free(out->line_indices);
-            out->line_verts = NULL;
-            out->line_indices = NULL;
-        }
+    out->verts = malloc(nv * sizeof(arpt_line_vertex));
+    out->indices = malloc(ni * sizeof(uint32_t));
+    if (out->verts && out->indices) {
+        size_t vi = 0, ii = 0;
+        emit_line_sdf_quads(line_data, style, out->verts,
+                            out->indices, &vi, &ii);
+        out->vert_count = vi;
+        out->index_count = ii;
+    } else {
+        free(out->verts);
+        free(out->indices);
+        memset(out, 0, sizeof(*out));
     }
 }
 
@@ -765,12 +767,14 @@ void arpt_tile_prims_free(arpt_tile_prims *p) {
     if (!p) return;
     /* terrain: zero-copy, nothing to free */
 
-    /* texture */
-    free(p->texture.poly_verts);
-    free(p->texture.poly_indices);
-    free(p->texture.poly_groups);
-    free(p->texture.line_verts);
-    free(p->texture.line_indices);
+    /* polygons */
+    free(p->polygons.verts);
+    free(p->polygons.indices);
+    free(p->polygons.groups);
+
+    /* lines */
+    free(p->lines.verts);
+    free(p->lines.indices);
 
     /* extrusion */
     free(p->extrusion.xy);

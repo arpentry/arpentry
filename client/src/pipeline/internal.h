@@ -324,7 +324,8 @@ WGPURenderPipeline arpt__texture_create_line_pipeline(WGPUDevice device);
 WGPURenderPipeline arpt__texture_create_stencil_fill_pipeline(WGPUDevice device);
 WGPURenderPipeline arpt__texture_create_stencil_color_pipeline(WGPUDevice device);
 WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
-                                     const arpt_texture_prim *prim);
+                                     const arpt_polygon_prim *polys,
+                                     const arpt_line_prim *lines);
 
 /* render_extrusion.c */
 void arpt__extrusion_upload(arpt_renderer *r, arpt_tile_gpu *t,

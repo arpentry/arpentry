@@ -224,7 +224,8 @@ WGPURenderPipeline arpt__texture_create_line_pipeline(WGPUDevice device) {
 }
 
 WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
-                                     const arpt_texture_prim *prim) {
+                                     const arpt_polygon_prim *polys,
+                                     const arpt_line_prim *lines) {
     WGPUTextureDescriptor tex_desc = {
         .usage =
             WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding,
@@ -236,8 +237,8 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
     };
     WGPUTexture tex = wgpuDeviceCreateTexture(r->device, &tex_desc);
 
-    bool has_polys = prim->poly_vert_count > 0 && prim->poly_index_count > 0;
-    bool has_lines = prim->line_vert_count > 0 && prim->line_index_count > 0;
+    bool has_polys = polys && polys->vert_count > 0 && polys->index_count > 0;
+    bool has_lines = lines && lines->vert_count > 0 && lines->index_count > 0;
 
     if (!has_polys && !has_lines) {
         WGPUTextureView view = wgpuTextureCreateView(tex, NULL);
@@ -273,28 +274,28 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
     WGPUBuffer poly_vbuf = NULL, poly_ibuf = NULL;
     size_t poly_vb_size = 0, poly_draw_n = 0;
     if (has_polys) {
-        poly_vb_size = prim->poly_vert_count * sizeof(arpt_poly_vertex);
+        poly_vb_size = polys->vert_count * sizeof(arpt_poly_vertex);
         poly_vbuf = create_buffer(r->device, r->queue,
-                                  WGPUBufferUsage_Vertex, prim->poly_verts,
+                                  WGPUBufferUsage_Vertex, polys->verts,
                                   poly_vb_size);
         poly_ibuf = create_buffer(r->device, r->queue,
-                                  WGPUBufferUsage_Index, prim->poly_indices,
-                                  prim->poly_index_count * sizeof(uint32_t));
-        poly_draw_n = prim->poly_index_count;
+                                  WGPUBufferUsage_Index, polys->indices,
+                                  polys->index_count * sizeof(uint32_t));
+        poly_draw_n = polys->index_count;
     }
 
     /* Build line GPU buffers */
-    WGPUBuffer hw_vbuf = NULL, hw_ibuf = NULL;
-    size_t hw_vb_size = 0, hw_draw_n = 0;
+    WGPUBuffer line_vbuf = NULL, line_ibuf = NULL;
+    size_t line_vb_size = 0, line_draw_n = 0;
     if (has_lines) {
-        hw_vb_size = prim->line_vert_count * sizeof(arpt_line_vertex);
-        hw_vbuf = create_buffer(r->device, r->queue,
-                                WGPUBufferUsage_Vertex, prim->line_verts,
-                                hw_vb_size);
-        hw_ibuf = create_buffer(r->device, r->queue,
-                                WGPUBufferUsage_Index, prim->line_indices,
-                                prim->line_index_count * sizeof(uint32_t));
-        hw_draw_n = prim->line_index_count;
+        line_vb_size = lines->vert_count * sizeof(arpt_line_vertex);
+        line_vbuf = create_buffer(r->device, r->queue,
+                                  WGPUBufferUsage_Vertex, lines->verts,
+                                  line_vb_size);
+        line_ibuf = create_buffer(r->device, r->queue,
+                                  WGPUBufferUsage_Index, lines->indices,
+                                  lines->index_count * sizeof(uint32_t));
+        line_draw_n = lines->index_count;
     }
 
     /* Render pass with stencil attachment for even-odd polygon fill */
@@ -338,9 +339,9 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
                                             poly_draw_n * sizeof(uint32_t));
         wgpuRenderPassEncoderSetStencilReference(pass, 0);
 
-        for (size_t g = 0; g < prim->poly_group_count; g++) {
-            uint32_t fi = prim->poly_groups[g].first_index;
-            uint32_t ic = prim->poly_groups[g].index_count;
+        for (size_t g = 0; g < polys->group_count; g++) {
+            uint32_t fi = polys->groups[g].first_index;
+            uint32_t ic = polys->groups[g].index_count;
             if (ic == 0) continue;
 
             /* Pass 1: build stencil mask (INVERT, no color) */
@@ -353,14 +354,14 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
         }
     }
 
-    if (hw_draw_n > 0) {
+    if (line_draw_n > 0) {
         wgpuRenderPassEncoderSetPipeline(pass, r->line_pipeline);
-        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, hw_vbuf, 0,
-                                             hw_vb_size);
-        wgpuRenderPassEncoderSetIndexBuffer(pass, hw_ibuf,
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, line_vbuf, 0,
+                                             line_vb_size);
+        wgpuRenderPassEncoderSetIndexBuffer(pass, line_ibuf,
                                             WGPUIndexFormat_Uint32, 0,
-                                            hw_draw_n * sizeof(uint32_t));
-        wgpuRenderPassEncoderDrawIndexed(pass, (uint32_t)hw_draw_n, 1, 0, 0,
+                                            line_draw_n * sizeof(uint32_t));
+        wgpuRenderPassEncoderDrawIndexed(pass, (uint32_t)line_draw_n, 1, 0, 0,
                                          0);
     }
 
@@ -376,8 +377,8 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
 
     if (poly_vbuf) wgpuBufferRelease(poly_vbuf);
     if (poly_ibuf) wgpuBufferRelease(poly_ibuf);
-    if (hw_vbuf) wgpuBufferRelease(hw_vbuf);
-    if (hw_ibuf) wgpuBufferRelease(hw_ibuf);
+    if (line_vbuf) wgpuBufferRelease(line_vbuf);
+    if (line_ibuf) wgpuBufferRelease(line_ibuf);
 
     return tex;
 }

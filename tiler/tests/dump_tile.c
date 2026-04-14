@@ -86,8 +86,8 @@ int main(int argc, char **argv) {
         }
         printf("\n");
 
-        /* Print first 5 features' properties */
-        for (size_t fi = 0; fi < n_feats && fi < 5; fi++) {
+        /* Print first 50 features' properties */
+        for (size_t fi = 0; fi < n_feats && fi < 50; fi++) {
             arpentry_tiles_Feature_table_t feat = arpentry_tiles_Feature_vec_at(feats, fi);
             arpentry_tiles_Property_vec_t props = arpentry_tiles_Feature_properties(feat);
             size_t n_props = props ? arpentry_tiles_Property_vec_len(props) : 0;
@@ -105,18 +105,37 @@ int main(int argc, char **argv) {
                 printf(" %s=%s", k, v);
             }
 
-            /* Geometry type */
+            /* Geometry type + coordinates */
             if (arpentry_tiles_Feature_geometry_type(feat) == arpentry_tiles_Geometry_PolygonGeometry)
                 printf(" [polygon]");
             else if (arpentry_tiles_Feature_geometry_type(feat) == arpentry_tiles_Geometry_MeshGeometry)
                 printf(" [mesh]");
-            else if (arpentry_tiles_Feature_geometry_type(feat) == arpentry_tiles_Geometry_LineGeometry)
-                printf(" [line]");
-            else if (arpentry_tiles_Feature_geometry_type(feat) == arpentry_tiles_Geometry_PointGeometry)
+            else if (arpentry_tiles_Feature_geometry_type(feat) == arpentry_tiles_Geometry_LineGeometry) {
+                arpentry_tiles_LineGeometry_table_t lg =
+                    (arpentry_tiles_LineGeometry_table_t)arpentry_tiles_Feature_geometry(feat);
+                flatbuffers_uint16_vec_t lx = arpentry_tiles_LineGeometry_x(lg);
+                flatbuffers_uint16_vec_t ly = arpentry_tiles_LineGeometry_y(lg);
+                flatbuffers_uint32_vec_t lo = arpentry_tiles_LineGeometry_line_offsets(lg);
+                size_t lvc = lx ? flatbuffers_uint16_vec_len(lx) : 0;
+                size_t lon = lo ? flatbuffers_uint32_vec_len(lo) : 0;
+                printf(" [line vc=%zu offsets=%zu]", lvc, lon);
+                /* Print first and last coordinates */
+                if (lvc > 0) {
+                    printf("\n      first=(%u,%u) last=(%u,%u)",
+                           lx[0], ly[0], lx[lvc-1], ly[lvc-1]);
+                    if (lx[0] == lx[lvc-1] && ly[0] == ly[lvc-1]) {
+                        printf(" ** CLOSED **");
+                        /* Print all vertices for closed lines */
+                        printf("\n      all_coords:");
+                        for (size_t ci = 0; ci < lvc; ci++)
+                            printf(" (%u,%u)", lx[ci], ly[ci]);
+                    }
+                }
+            } else if (arpentry_tiles_Feature_geometry_type(feat) == arpentry_tiles_Geometry_PointGeometry)
                 printf(" [point]");
             printf("\n");
         }
-        if (n_feats > 5) printf("    ... +%zu more\n", n_feats - 5);
+        if (n_feats > 50) printf("    ... +%zu more\n", n_feats - 50);
     }
 
     free(dec);

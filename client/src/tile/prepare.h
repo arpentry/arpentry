@@ -30,12 +30,29 @@ typedef struct arpt_model {
     char name[32];              /* model name for style matching */
 } arpt_model;
 
-/* Pre-tessellated polygon+line vertices for offscreen texture rasterization */
+/* Pre-tessellated polygon vertices for offscreen texture rasterization */
 
 typedef struct {
     uint16_t x, y;
     float r, g, b, a;
 } arpt_poly_vertex;
+
+/* A group of polygon triangles sharing the same class, rendered together
+   in a single stencil pass for correct even-odd fill (handles holes). */
+typedef struct {
+    uint32_t first_index;  /* offset into indices */
+    uint32_t index_count;  /* number of indices in this group */
+} arpt_poly_group;
+
+typedef struct {
+    arpt_poly_vertex *verts;
+    uint32_t *indices;
+    size_t vert_count, index_count;
+    arpt_poly_group *groups;
+    size_t group_count;
+} arpt_polygon_prim;
+
+/* Pre-tessellated line SDF quads for offscreen texture rasterization */
 
 typedef struct {
     uint16_t x, y;
@@ -44,23 +61,11 @@ typedef struct {
     float hw, seg_len;
 } arpt_line_vertex;
 
-/* A group of polygon triangles sharing the same class, rendered together
-   in a single stencil pass for correct even-odd fill (handles holes). */
 typedef struct {
-    uint32_t first_index;  /* offset into poly_indices */
-    uint32_t index_count;  /* number of indices in this group */
-} arpt_poly_group;
-
-typedef struct {
-    arpt_poly_vertex *poly_verts;
-    uint32_t *poly_indices;
-    size_t poly_vert_count, poly_index_count;
-    arpt_poly_group *poly_groups;
-    size_t poly_group_count;
-    arpt_line_vertex *line_verts;
-    uint32_t *line_indices;
-    size_t line_vert_count, line_index_count;
-} arpt_texture_prim;
+    arpt_line_vertex *verts;
+    uint32_t *indices;
+    size_t vert_count, index_count;
+} arpt_line_prim;
 
 /* Extruded mesh (owns its buffers) */
 
@@ -128,7 +133,8 @@ typedef struct {
 
 typedef struct arpt_tile_prims {
     arpt_terrain_mesh terrain;
-    arpt_texture_prim texture;
+    arpt_polygon_prim polygons;
+    arpt_line_prim lines;
     arpt_extrusion_prim extrusion;
     arpt_instance_prim instances;
     arpt_label_prim labels;
@@ -137,9 +143,11 @@ typedef struct arpt_tile_prims {
 
 /* Prepare functions — convert decoded domain data to renderer primitives */
 
-void arpt_prepare_texture(const arpt_surface_data *surface,
-                          const arpt_line_data *lines,
-                          const arpt_style *style, arpt_texture_prim *out);
+void arpt_prepare_polygons(const arpt_surface_data *surface,
+                           const arpt_style *style, arpt_polygon_prim *out);
+
+void arpt_prepare_lines(const arpt_line_data *line_data,
+                        const arpt_style *style, arpt_line_prim *out);
 
 void arpt_prepare_extrusion(const arpt_surface_data *buildings,
                             arpt_bounds bounds, arpt_extrusion_prim *out);

@@ -486,12 +486,13 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
     arpt__label_upload(r, t, &prims->labels);
 
     /* Rasterize surface texture */
-    bool has_polys = prims->texture.poly_vert_count > 0 &&
-                     prims->texture.poly_index_count > 0;
-    bool has_lines = prims->texture.line_vert_count > 0 &&
-                     prims->texture.line_index_count > 0;
+    bool has_polys = prims->polygons.vert_count > 0 &&
+                     prims->polygons.index_count > 0;
+    bool has_lines = prims->lines.vert_count > 0 &&
+                     prims->lines.index_count > 0;
     if (has_polys || has_lines) {
-        t->surface_texture = arpt__texture_rasterize(r, &prims->texture);
+        t->surface_texture = arpt__texture_rasterize(r, &prims->polygons,
+                                                      &prims->lines);
         t->surface_view = wgpuTextureCreateView(t->surface_texture, NULL);
     }
 

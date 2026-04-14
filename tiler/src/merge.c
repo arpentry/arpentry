@@ -688,6 +688,9 @@ static void pass2_build_chains(seg_info *segs, uint32_t n_segs,
 
         chain c = {0};
 
+        /* Mark the seed segment so neither walk circles back to it. */
+        segs[i].chain_id = -2;
+
         /* Walk backward from start endpoint */
         uint32_t *back_segs = NULL;
         bool *back_rev = NULL;
@@ -892,139 +895,125 @@ static bool pass3_write(const char *output_path,
         return false;
     }
 
-    typedef struct {
-        double *xs, *ys;
-        uint32_t n_coords, capacity;
-        uint32_t segments_seen;
-    } chain_buf;
-
-    chain_buf *cbufs = NULL;
-    if (n_chains > 0) {
-        cbufs = calloc(n_chains, sizeof(*cbufs));
-        if (!cbufs) {
-            carquet_writer_abort(writer);
-            carquet_schema_free(schema);
-            return false;
-        }
-    }
-
     uint64_t rows_written = 0;
     uint32_t null_cls = 0, empty_cls = 0, good_cls = 0;
     fprintf(stderr, "merge: writing %u segments (%u chains)...\n",
             n_segs, n_chains);
 
+    /* Write standalone (non-chain) segments */
     for (uint32_t i = 0; i < n_segs; i++) {
         if ((i & 0xFFFFF) == 0 && i > 0)
             fprintf(stderr, "merge: writing %u/%u  %llu rows written\n",
                     i, n_segs, (unsigned long long)rows_written);
 
         seg_info *s = &segs[i];
+        if (s->chain_id >= 0) continue;
 
-        if (s->chain_id < 0) {
-            /* Standalone — override min_zoom from class */
-            if (s->wkb && s->wkb_len > 0) {
-                if (!s->cls) null_cls++;
-                else if (s->cls[0] == '\0') empty_cls++;
-                else good_cls++;
-                int32_t mz = class_min_zoom(s->cls);
-                write_row(writer, s->wkb, (int32_t)s->wkb_len,
-                          s->type, s->subtype, s->cls,
-                          s->bbox, s->has_bbox,
-                          mz, true,
-                          s->max_zoom, s->has_max_zoom,
-                          s->sort_key, s->has_sort_key);
-                rows_written++;
-            }
-        } else {
-            uint32_t cid = (uint32_t)s->chain_id;
-            chain_buf *cb = &cbufs[cid];
-
-            if (s->wkb && s->wkb_len > 0) {
-                arpt_geom geom = {0};
-                if (arpt_wkb_parse(s->wkb, (size_t)s->wkb_len, &geom)) {
-                    uint32_t needed = cb->n_coords + geom.n_coords;
-                    if (needed > cb->capacity) {
-                        uint32_t new_cap = cb->capacity ? cb->capacity : 64;
-                        while (new_cap < needed) new_cap *= 2;
-                        double *nx = realloc(cb->xs, new_cap * sizeof(double));
-                        double *ny = realloc(cb->ys, new_cap * sizeof(double));
-                        if (nx && ny) {
-                            cb->xs = nx; cb->ys = ny; cb->capacity = new_cap;
-                        } else {
-                            free(nx); free(ny);
-                            arpt_geom_free(&geom);
-                            continue;
-                        }
-                    }
-
-                    uint32_t start = 0;
-                    if (cb->n_coords > 0 && geom.n_coords > 0) {
-                        double fx = s->reversed
-                            ? geom.x[geom.n_coords - 1] : geom.x[0];
-                        double fy = s->reversed
-                            ? geom.y[geom.n_coords - 1] : geom.y[0];
-                        double ddx = fx - cb->xs[cb->n_coords - 1];
-                        double ddy = fy - cb->ys[cb->n_coords - 1];
-                        if (ddx * ddx + ddy * ddy < 1e-10) start = 1;
-                    }
-
-                    if (s->reversed) {
-                        for (uint32_t k = geom.n_coords - 1 - start; ; k--) {
-                            cb->xs[cb->n_coords] = geom.x[k];
-                            cb->ys[cb->n_coords] = geom.y[k];
-                            cb->n_coords++;
-                            if (k == 0) break;
-                        }
-                    } else {
-                        for (uint32_t k = start; k < geom.n_coords; k++) {
-                            cb->xs[cb->n_coords] = geom.x[k];
-                            cb->ys[cb->n_coords] = geom.y[k];
-                            cb->n_coords++;
-                        }
-                    }
-                    arpt_geom_free(&geom);
-                }
-            }
-
-            cb->segments_seen++;
-
-            if (cb->segments_seen == chains[cid].length) {
-                uint32_t first_si = chains[cid].seg_indices[0];
-                seg_info *first = &segs[first_si];
-
-                float mbbox[4] = {1e30f, 1e30f, -1e30f, -1e30f};
-                for (uint32_t ci = 0; ci < chains[cid].length; ci++) {
-                    seg_info *cs = &segs[chains[cid].seg_indices[ci]];
-                    if (cs->has_bbox) {
-                        if (cs->bbox[0] < mbbox[0]) mbbox[0] = cs->bbox[0];
-                        if (cs->bbox[1] < mbbox[1]) mbbox[1] = cs->bbox[1];
-                        if (cs->bbox[2] > mbbox[2]) mbbox[2] = cs->bbox[2];
-                        if (cs->bbox[3] > mbbox[3]) mbbox[3] = cs->bbox[3];
-                    }
-                }
-
-                int32_t merged_min_zoom = class_min_zoom(first->cls);
-
-                size_t wkb_len;
-                uint8_t *merged_wkb = build_wkb_linestring(
-                    cb->xs, cb->ys, cb->n_coords, &wkb_len);
-                if (merged_wkb) {
-                    write_row(writer, merged_wkb, (int32_t)wkb_len,
-                              first->type, first->subtype, first->cls,
-                              mbbox, true,
-                              merged_min_zoom, true,
-                              first->max_zoom, first->has_max_zoom,
-                              first->sort_key, first->has_sort_key);
-                    free(merged_wkb);
-                    rows_written++;
-                }
-                free(cb->xs); free(cb->ys);
-                cb->xs = NULL; cb->ys = NULL;
-            }
+        if (s->wkb && s->wkb_len > 0) {
+            if (!s->cls) null_cls++;
+            else if (s->cls[0] == '\0') empty_cls++;
+            else good_cls++;
+            int32_t mz = class_min_zoom(s->cls);
+            write_row(writer, s->wkb, (int32_t)s->wkb_len,
+                      s->type, s->subtype, s->cls,
+                      s->bbox, s->has_bbox,
+                      mz, true,
+                      s->max_zoom, s->has_max_zoom,
+                      s->sort_key, s->has_sort_key);
+            rows_written++;
         }
     }
 
-    free(cbufs);
+    /* Write merged chains — iterate segments in chain order so
+       coordinates are spatially contiguous (not file order). */
+    for (uint32_t cid = 0; cid < n_chains; cid++) {
+        chain *ch = &chains[cid];
+        double *xs = NULL, *ys = NULL;
+        uint32_t n_coords = 0, capacity = 0;
+
+        for (uint32_t ci = 0; ci < ch->length; ci++) {
+            uint32_t si = ch->seg_indices[ci];
+            seg_info *s = &segs[si];
+            if (!s->wkb || s->wkb_len == 0) continue;
+
+            arpt_geom geom = {0};
+            if (!arpt_wkb_parse(s->wkb, (size_t)s->wkb_len, &geom))
+                continue;
+
+            uint32_t needed = n_coords + geom.n_coords;
+            if (needed > capacity) {
+                uint32_t new_cap = capacity ? capacity : 64;
+                while (new_cap < needed) new_cap *= 2;
+                double *nx = realloc(xs, new_cap * sizeof(double));
+                if (!nx) { arpt_geom_free(&geom); continue; }
+                xs = nx;
+                double *ny = realloc(ys, new_cap * sizeof(double));
+                if (!ny) { arpt_geom_free(&geom); continue; }
+                ys = ny;
+                capacity = new_cap;
+            }
+
+            uint32_t start = 0;
+            if (n_coords > 0 && geom.n_coords > 0) {
+                double fx = s->reversed
+                    ? geom.x[geom.n_coords - 1] : geom.x[0];
+                double fy = s->reversed
+                    ? geom.y[geom.n_coords - 1] : geom.y[0];
+                double ddx = fx - xs[n_coords - 1];
+                double ddy = fy - ys[n_coords - 1];
+                if (ddx * ddx + ddy * ddy < 1e-10) start = 1;
+            }
+
+            if (s->reversed) {
+                for (uint32_t k = geom.n_coords - 1 - start; ; k--) {
+                    xs[n_coords] = geom.x[k];
+                    ys[n_coords] = geom.y[k];
+                    n_coords++;
+                    if (k == 0) break;
+                }
+            } else {
+                for (uint32_t k = start; k < geom.n_coords; k++) {
+                    xs[n_coords] = geom.x[k];
+                    ys[n_coords] = geom.y[k];
+                    n_coords++;
+                }
+            }
+            arpt_geom_free(&geom);
+        }
+
+        if (n_coords >= 2) {
+            uint32_t first_si = ch->seg_indices[0];
+            seg_info *first = &segs[first_si];
+
+            float mbbox[4] = {1e30f, 1e30f, -1e30f, -1e30f};
+            for (uint32_t ci = 0; ci < ch->length; ci++) {
+                seg_info *cs = &segs[ch->seg_indices[ci]];
+                if (cs->has_bbox) {
+                    if (cs->bbox[0] < mbbox[0]) mbbox[0] = cs->bbox[0];
+                    if (cs->bbox[1] < mbbox[1]) mbbox[1] = cs->bbox[1];
+                    if (cs->bbox[2] > mbbox[2]) mbbox[2] = cs->bbox[2];
+                    if (cs->bbox[3] > mbbox[3]) mbbox[3] = cs->bbox[3];
+                }
+            }
+
+            int32_t merged_min_zoom = class_min_zoom(first->cls);
+
+            size_t wkb_len;
+            uint8_t *merged_wkb = build_wkb_linestring(
+                xs, ys, n_coords, &wkb_len);
+            if (merged_wkb) {
+                write_row(writer, merged_wkb, (int32_t)wkb_len,
+                          first->type, first->subtype, first->cls,
+                          mbbox, true,
+                          merged_min_zoom, true,
+                          first->max_zoom, first->has_max_zoom,
+                          first->sort_key, first->has_sort_key);
+                free(merged_wkb);
+                rows_written++;
+            }
+        }
+        free(xs); free(ys);
+    }
 
     (void)carquet_writer_set_key_value(writer, "geo",
         "{\"version\":\"1.0.0\","

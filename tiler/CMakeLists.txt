@@ -126,3 +126,7 @@ target_compile_definitions(test_merge PRIVATE
     FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/overture")
 target_link_libraries(test_merge PRIVATE arpentry_tiler unity)
 add_test(NAME test_merge COMMAND test_merge)
+
+add_executable(dump_tile tests/dump_tile.c)
+target_link_libraries(dump_tile PRIVATE arpentry_tiler arpentry_common)
+# dump_tile is a diagnostic tool, not a test

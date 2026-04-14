@@ -287,7 +287,8 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
     arpt_tile_prims prims = {0};
     prims.bounds = updated.bounds;
     prims.terrain = mesh;
-    arpt_prepare_texture(&surface, &lines, &tm->style, &prims.texture);
+    arpt_prepare_polygons(&surface, &tm->style, &prims.polygons);
+    arpt_prepare_lines(&lines, &tm->style, &prims.lines);
     arpt_prepare_extrusion(&buildings, updated.bounds, &prims.extrusion);
     arpt_prepare_instances(&trees, arpt_renderer_model_count(tm->renderer),
                            &prims.instances);
