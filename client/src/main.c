@@ -779,7 +779,7 @@ static bool fetch_style(const char *base_url, arpt_style *style) {
                 style->tree_style_count++;
             }
 
-            /* Surface/highway/building color and stroke width */
+            /* Surface/line/building color and stroke width */
             if (cls_str) {
                 char name_buf[32] = {0};
                 strncpy(name_buf, cls_str, sizeof(name_buf) - 1);

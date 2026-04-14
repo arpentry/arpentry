@@ -68,29 +68,29 @@ bool arpt_decode_surface_layer(const void *flatbuf, size_t size,
 
 void arpt_surface_data_free(arpt_surface_data *data);
 
-/* Highway decoding (LineGeometry) */
+/* Line decoding (LineGeometry) */
 
 typedef struct {
     const uint16_t *x, *y; /* zero-copy into FlatBuffer */
     size_t vertex_count;
     uint8_t cls; /* index into style class registry; 0 = unknown */
-} arpt_highway_line;
+} arpt_line_feature;
 
 typedef struct {
-    arpt_highway_line *lines; /* malloc'd array */
+    arpt_line_feature *lines; /* malloc'd array */
     size_t count;
-} arpt_highway_data;
+} arpt_line_data;
 
 /**
- * Extract highway lines from a named layer in a verified FlatBuffer tile.
+ * Extract line features from a named layer in a verified FlatBuffer tile.
  * Extracts LineGeometry features with their class.
  */
-bool arpt_decode_highways(const void *flatbuf, size_t size,
-                          const char *layer_name,
-                          const char (*class_names)[32], int class_count,
-                          arpt_highway_data *out);
+bool arpt_decode_lines(const void *flatbuf, size_t size,
+                       const char *layer_name,
+                       const char (*class_names)[32], int class_count,
+                       arpt_line_data *out);
 
-void arpt_highway_data_free(arpt_highway_data *data);
+void arpt_line_data_free(arpt_line_data *data);
 
 /* Building decoding (PolygonGeometry, same struct as surface) */
 

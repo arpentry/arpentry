@@ -138,7 +138,7 @@ typedef struct arpt_tile_prims {
 /* Prepare functions — convert decoded domain data to renderer primitives */
 
 void arpt_prepare_texture(const arpt_surface_data *surface,
-                          const arpt_highway_data *highways,
+                          const arpt_line_data *lines,
                           const arpt_style *style, arpt_texture_prim *out);
 
 void arpt_prepare_extrusion(const arpt_surface_data *buildings,

@@ -45,7 +45,7 @@ file(MAKE_DIRECTORY ${SHADER_GEN_DIR})
 set(SHADER_SOURCES
     terrain.wgsl
     surface.wgsl
-    highway.wgsl
+    line.wgsl
     ui.wgsl
     info.wgsl
     tree.wgsl

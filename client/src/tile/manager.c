@@ -188,7 +188,7 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
     }
 
     arpt_surface_data surface = {0};
-    arpt_highway_data highways = {0};
+    arpt_line_data lines = {0};
     arpt_surface_data buildings = {0};
     arpt_tree_data trees = {0};
     arpt_poi_data pois = {0};
@@ -233,23 +233,23 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
                               tm->tree_class_count, &trees);
             break;
         case ARPT_LAYER_LINE: {
-            arpt_highway_data extra = {0};
-            arpt_decode_highways(flatbuf, size, le->source_layer,
-                                 tm->style.class_names,
-                                 tm->style.class_count, &extra);
+            arpt_line_data extra = {0};
+            arpt_decode_lines(flatbuf, size, le->source_layer,
+                              tm->style.class_names,
+                              tm->style.class_count, &extra);
             if (extra.count > 0) {
-                size_t new_count = highways.count + extra.count;
-                arpt_highway_line *merged = realloc(
-                    highways.lines,
-                    new_count * sizeof(arpt_highway_line));
+                size_t new_count = lines.count + extra.count;
+                arpt_line_feature *merged = realloc(
+                    lines.lines,
+                    new_count * sizeof(arpt_line_feature));
                 if (merged) {
-                    memcpy(merged + highways.count, extra.lines,
-                           extra.count * sizeof(arpt_highway_line));
-                    highways.lines = merged;
-                    highways.count = new_count;
+                    memcpy(merged + lines.count, extra.lines,
+                           extra.count * sizeof(arpt_line_feature));
+                    lines.lines = merged;
+                    lines.count = new_count;
                 }
             }
-            arpt_highway_data_free(&extra);
+            arpt_line_data_free(&extra);
             break;
         }
         case ARPT_LAYER_LABEL:
@@ -268,11 +268,11 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
         }
         surface.count = dst;
         dst = 0;
-        for (size_t i = 0; i < highways.count; i++) {
-            if (key.level >= ml[highways.lines[i].cls])
-                highways.lines[dst++] = highways.lines[i];
+        for (size_t i = 0; i < lines.count; i++) {
+            if (key.level >= ml[lines.lines[i].cls])
+                lines.lines[dst++] = lines.lines[i];
         }
-        highways.count = dst;
+        lines.count = dst;
     }
 
     /* Sort polygons by class index so that earlier paint entries in the
@@ -287,7 +287,7 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
     arpt_tile_prims prims = {0};
     prims.bounds = updated.bounds;
     prims.terrain = mesh;
-    arpt_prepare_texture(&surface, &highways, &tm->style, &prims.texture);
+    arpt_prepare_texture(&surface, &lines, &tm->style, &prims.texture);
     arpt_prepare_extrusion(&buildings, updated.bounds, &prims.extrusion);
     arpt_prepare_instances(&trees, arpt_renderer_model_count(tm->renderer),
                            &prims.instances);
@@ -305,7 +305,7 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
     tm_hashmap_set(tm, &updated);
     arpt_tile_prims_free(&prims);
     arpt_surface_data_free(&surface);
-    arpt_highway_data_free(&highways);
+    arpt_line_data_free(&lines);
     arpt_surface_data_free(&buildings);
     arpt_tree_data_free(&trees);
     arpt_poi_data_free(&pois);

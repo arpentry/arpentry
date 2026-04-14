@@ -176,7 +176,7 @@ struct arpt_renderer {
 
     /* Surface offscreen rasterization */
     WGPURenderPipeline surface_pipeline;
-    WGPURenderPipeline highway_pipeline;
+    WGPURenderPipeline line_pipeline;
     WGPURenderPipeline stencil_fill_pipeline;  /* stencil INVERT, color OFF */
     WGPURenderPipeline stencil_color_pipeline; /* stencil NotEqual(0), color ON */
     WGPUTexture stencil_texture;
@@ -320,7 +320,7 @@ void arpt__mesh_draw_extrusion(arpt_renderer *r, arpt_tile_gpu *tile);
 
 /* render_texture.c */
 WGPURenderPipeline arpt__texture_create_surface_pipeline(WGPUDevice device);
-WGPURenderPipeline arpt__texture_create_highway_pipeline(WGPUDevice device);
+WGPURenderPipeline arpt__texture_create_line_pipeline(WGPUDevice device);
 WGPURenderPipeline arpt__texture_create_stencil_fill_pipeline(WGPUDevice device);
 WGPURenderPipeline arpt__texture_create_stencil_color_pipeline(WGPUDevice device);
 WGPUTexture arpt__texture_rasterize(arpt_renderer *r,

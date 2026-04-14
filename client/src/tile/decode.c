@@ -348,12 +348,12 @@ void arpt_surface_data_free(arpt_surface_data *data) {
     }
 }
 
-/* Highway decoding */
+/* Line decoding */
 
-bool arpt_decode_highways(const void *flatbuf, size_t size,
-                          const char *layer_name,
-                          const char (*class_names)[32], int class_count,
-                          arpt_highway_data *out) {
+bool arpt_decode_lines(const void *flatbuf, size_t size,
+                       const char *layer_name,
+                       const char (*class_names)[32], int class_count,
+                       arpt_line_data *out) {
     out->lines = NULL;
     out->count = 0;
 
@@ -393,7 +393,7 @@ bool arpt_decode_highways(const void *flatbuf, size_t size,
             total_lines++;
     }
 
-    out->lines = malloc(total_lines * sizeof(arpt_highway_line));
+    out->lines = malloc(total_lines * sizeof(arpt_line_feature));
     if (!out->lines) return false;
 
     size_t count = 0;
@@ -449,7 +449,7 @@ bool arpt_decode_highways(const void *flatbuf, size_t size,
     return true;
 }
 
-void arpt_highway_data_free(arpt_highway_data *data) {
+void arpt_line_data_free(arpt_line_data *data) {
     if (data) {
         free(data->lines);
         data->lines = NULL;

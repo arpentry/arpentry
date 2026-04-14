@@ -50,7 +50,7 @@ void arpt_style_defaults(arpt_style *s) {
 
     #undef REG
 
-    /* Highway half-widths in quantized units */
+    /* Line half-widths in quantized units */
     int pri = arpt_style_class_index(s, "primary");
     int res = arpt_style_class_index(s, "residential");
     s->stroke_widths[pri] = 140.0f;

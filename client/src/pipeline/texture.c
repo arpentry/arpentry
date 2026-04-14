@@ -1,7 +1,7 @@
 #include "internal.h"
 
 #include "surface.wgsl.h"
-#include "highway.wgsl.h"
+#include "line.wgsl.h"
 
 #include <stdlib.h>
 
@@ -153,14 +153,14 @@ WGPURenderPipeline arpt__texture_create_stencil_color_pipeline(WGPUDevice device
     return pipeline;
 }
 
-WGPURenderPipeline arpt__texture_create_highway_pipeline(WGPUDevice device) {
-    WGPUShaderModule sm = create_shader(device, highway_wgsl);
+WGPURenderPipeline arpt__texture_create_line_pipeline(WGPUDevice device) {
+    WGPUShaderModule sm = create_shader(device, line_wgsl);
 
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
         device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 0,
                                                 .bindGroupLayouts = NULL});
 
-    WGPUVertexAttribute highway_attrs[] = {
+    WGPUVertexAttribute line_attrs[] = {
         {.format = WGPUVertexFormat_Uint16x2,
          .offset = 0,
          .shaderLocation = 0},
@@ -178,7 +178,7 @@ WGPURenderPipeline arpt__texture_create_highway_pipeline(WGPUDevice device) {
         .arrayStride = 36,
         .stepMode = WGPUVertexStepMode_Vertex,
         .attributeCount = 4,
-        .attributes = highway_attrs,
+        .attributes = line_attrs,
     };
 
     WGPUBlendState blend = {
@@ -237,9 +237,9 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
     WGPUTexture tex = wgpuDeviceCreateTexture(r->device, &tex_desc);
 
     bool has_polys = prim->poly_vert_count > 0 && prim->poly_index_count > 0;
-    bool has_highways = prim->line_vert_count > 0 && prim->line_index_count > 0;
+    bool has_lines = prim->line_vert_count > 0 && prim->line_index_count > 0;
 
-    if (!has_polys && !has_highways) {
+    if (!has_polys && !has_lines) {
         WGPUTextureView view = wgpuTextureCreateView(tex, NULL);
         WGPUCommandEncoder enc =
             wgpuDeviceCreateCommandEncoder(r->device, NULL);
@@ -283,10 +283,10 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
         poly_draw_n = prim->poly_index_count;
     }
 
-    /* Build highway GPU buffers */
+    /* Build line GPU buffers */
     WGPUBuffer hw_vbuf = NULL, hw_ibuf = NULL;
     size_t hw_vb_size = 0, hw_draw_n = 0;
-    if (has_highways) {
+    if (has_lines) {
         hw_vb_size = prim->line_vert_count * sizeof(arpt_line_vertex);
         hw_vbuf = create_buffer(r->device, r->queue,
                                 WGPUBufferUsage_Vertex, prim->line_verts,
@@ -354,7 +354,7 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
     }
 
     if (hw_draw_n > 0) {
-        wgpuRenderPassEncoderSetPipeline(pass, r->highway_pipeline);
+        wgpuRenderPassEncoderSetPipeline(pass, r->line_pipeline);
         wgpuRenderPassEncoderSetVertexBuffer(pass, 0, hw_vbuf, 0,
                                              hw_vb_size);
         wgpuRenderPassEncoderSetIndexBuffer(pass, hw_ibuf,

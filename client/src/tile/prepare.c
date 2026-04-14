@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Texture — tessellate surface polygons and highway SDF quads */
+/* Texture — tessellate surface polygons and line SDF quads */
 
 static void count_polygon_geom(const arpt_surface_data *data,
                                 size_t *out_verts, size_t *out_indices) {
@@ -190,13 +190,13 @@ static void emit_polygons(const arpt_surface_data *data,
     }
 }
 
-static void emit_highway_sdf_quads(const arpt_highway_data *data,
-                                    const arpt_style *style,
-                                    arpt_line_vertex *verts, uint32_t *idxs,
-                                    size_t *vi, size_t *ii) {
+static void emit_line_sdf_quads(const arpt_line_data *data,
+                                const arpt_style *style,
+                                arpt_line_vertex *verts, uint32_t *idxs,
+                                size_t *vi, size_t *ii) {
     if (!data) return;
     for (size_t i = 0; i < data->count; i++) {
-        const arpt_highway_line *line = &data->lines[i];
+        const arpt_line_feature *line = &data->lines[i];
         double hw = style->stroke_widths[line->cls];
         const float *c = style->colors[line->cls];
         size_t vc = line->vertex_count;
@@ -327,7 +327,7 @@ static void emit_highway_sdf_quads(const arpt_highway_data *data,
 }
 
 void arpt_prepare_texture(const arpt_surface_data *surface,
-                          const arpt_highway_data *highways,
+                          const arpt_line_data *lines,
                           const arpt_style *style, arpt_texture_prim *out) {
     memset(out, 0, sizeof(*out));
 
@@ -335,13 +335,13 @@ void arpt_prepare_texture(const arpt_surface_data *surface,
     size_t poly_verts = 0, poly_indices = 0;
     count_polygon_geom(surface, &poly_verts, &poly_indices);
 
-    /* Count highway geometry */
-    size_t hw_verts = 0, hw_indices = 0;
-    if (highways) {
-        for (size_t i = 0; i < highways->count; i++) {
-            size_t segs = highways->lines[i].vertex_count - 1;
-            hw_verts += segs * 4;
-            hw_indices += segs * 6;
+    /* Count line geometry */
+    size_t ln_verts = 0, ln_indices = 0;
+    if (lines) {
+        for (size_t i = 0; i < lines->count; i++) {
+            size_t segs = lines->lines[i].vertex_count - 1;
+            ln_verts += segs * 4;
+            ln_indices += segs * 6;
         }
     }
 
@@ -370,14 +370,14 @@ void arpt_prepare_texture(const arpt_surface_data *surface,
         }
     }
 
-    /* Tessellate highways */
-    if (hw_verts > 0 && hw_indices > 0) {
-        out->line_verts = malloc(hw_verts * sizeof(arpt_line_vertex));
-        out->line_indices = malloc(hw_indices * sizeof(uint32_t));
+    /* Tessellate lines */
+    if (ln_verts > 0 && ln_indices > 0) {
+        out->line_verts = malloc(ln_verts * sizeof(arpt_line_vertex));
+        out->line_indices = malloc(ln_indices * sizeof(uint32_t));
         if (out->line_verts && out->line_indices) {
             size_t vi = 0, ii = 0;
-            emit_highway_sdf_quads(highways, style, out->line_verts,
-                                   out->line_indices, &vi, &ii);
+            emit_line_sdf_quads(lines, style, out->line_verts,
+                                out->line_indices, &vi, &ii);
             out->line_vert_count = vi;
             out->line_index_count = ii;
         } else {
