@@ -46,6 +46,7 @@ set(SHADER_SOURCES
     terrain.wgsl
     surface.wgsl
     line.wgsl
+    mipmap.wgsl
     ui.wgsl
     info.wgsl
     tree.wgsl

@@ -111,6 +111,35 @@ typedef struct {
     int retries;
 } fetch_ctx;
 
+/* Self-contained prepared tile: the product of the worker-side decode +
+   preparation pipeline, ready for GPU upload on the main thread. All arrays
+   are owned by this struct so the worker can release the flatbuf before
+   handing the result over. */
+typedef struct {
+    double avg_elevation;
+    /* Terrain arrays (copied out of flatbuf so they outlive it). */
+    uint16_t *terrain_x;
+    uint16_t *terrain_y;
+    int32_t *terrain_z;
+    int8_t *terrain_normals;
+    uint32_t *terrain_indices;
+    size_t terrain_vertex_count;
+    size_t terrain_index_count;
+    /* Render primitives. prims.terrain aliases the arrays above. */
+    arpt_tile_prims prims;
+} prepared_tile;
+
+static void prepared_tile_free(prepared_tile *p) {
+    if (!p) return;
+    arpt_tile_prims_free(&p->prims);
+    free(p->terrain_x);
+    free(p->terrain_y);
+    free(p->terrain_z);
+    free(p->terrain_normals);
+    free(p->terrain_indices);
+    free(p);
+}
+
 static int compare_surface_cls(const void *a, const void *b) {
     const arpt_surface_polygon *pa = (const arpt_surface_polygon *)a;
     const arpt_surface_polygon *pb = (const arpt_surface_polygon *)b;
@@ -118,73 +147,57 @@ static int compare_surface_cls(const void *a, const void *b) {
     return (int)pa->poly_id - (int)pb->poly_id;
 }
 
-static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
-                            void *userdata) {
+/* Guard against tiles that would exceed WebGPU buffer limits.
+   Each vertex needs 4 bytes in the largest per-vertex buffer. */
+#define ARPT_MAX_BUFFER_BYTES (200u * 1024u * 1024u)
+
+/* Runs on a fetch worker thread: decode, prepare, and copy terrain into
+   self-contained buffers. Returns a heap prepared_tile (NULL on failure).
+   Consumes `flatbuf` (always freed before returning).
+
+   Thread safety: reads only immutable fields of tm (style, tree class
+   names) and of tm->renderer (font/icon glyph tables), all populated at
+   init. No writes to shared state — all mutation happens later on the
+   main thread in tile_finish_main. */
+static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
+                                  void *userdata) {
     fetch_ctx *ctx = userdata;
     arpt_tile_manager *tm = ctx->tm;
     arpt_tile_key key = ctx->key;
-    int retries = ctx->retries;
-    free(ctx);
-
-    tm->active_fetches--;
-
-    /* Look up the entry; it may have been evicted while loading */
-    tile_entry lookup = {.key = key};
-    const tile_entry *existing = hashmap_get(tm->cache, &lookup);
-    if (!existing || existing->state != TILE_LOADING) {
-        free(flatbuf);
-        return;
-    }
-
-    tile_entry updated = *existing;
-
-    if (!success) {
-        updated.state = TILE_FAILED;
-        updated.retries = retries + 1;
-        updated.retry_after = tm->frame + (1u << updated.retries);
-        tm_hashmap_set(tm, &updated);
-        return;
-    }
 
     arpt_terrain_mesh mesh = {0};
     if (!arpt_decode_terrain(flatbuf, size, &mesh)) {
-        updated.state = TILE_FAILED;
-        updated.retries = MAX_RETRIES; /* decode error is permanent */
-        tm_hashmap_set(tm, &updated);
         free(flatbuf);
-        return;
+        return NULL;
     }
 
-    /* Guard against tiles that would exceed WebGPU buffer limits.
-       Each vertex needs 4 bytes in the largest per-vertex buffer. */
-    #define ARPT_MAX_BUFFER_BYTES (200u * 1024u * 1024u)
-    {
-        size_t max_vert_buf = mesh.vertex_count * 4;
-        size_t max_idx_buf = mesh.index_count * sizeof(uint32_t);
-        size_t max_buf = max_vert_buf > max_idx_buf ? max_vert_buf : max_idx_buf;
-        if (max_buf > ARPT_MAX_BUFFER_BYTES) {
-            fprintf(stderr, "[TILE] %d/%d/%d SKIPPED: oversized "
-                    "(verts=%zu, indices=%zu, max_buf=%zu bytes)\n",
-                    key.level, key.x, key.y,
-                    mesh.vertex_count, mesh.index_count, max_buf);
-            updated.state = TILE_FAILED;
-            updated.retries = MAX_RETRIES;
-            tm_hashmap_set(tm, &updated);
-            free(flatbuf);
-            return;
-        }
-        fprintf(stderr, "[TILE] %d/%d/%d loaded: verts=%zu indices=%zu "
-                "(%zu bytes decompressed)\n",
+    size_t max_vert_buf = mesh.vertex_count * 4;
+    size_t max_idx_buf = mesh.index_count * sizeof(uint32_t);
+    size_t max_buf = max_vert_buf > max_idx_buf ? max_vert_buf : max_idx_buf;
+    if (max_buf > ARPT_MAX_BUFFER_BYTES) {
+        fprintf(stderr, "[TILE] %d/%d/%d SKIPPED: oversized "
+                "(verts=%zu, indices=%zu, max_buf=%zu bytes)\n",
                 key.level, key.x, key.y,
-                mesh.vertex_count, mesh.index_count, size);
+                mesh.vertex_count, mesh.index_count, max_buf);
+        free(flatbuf);
+        return NULL;
+    }
+    fprintf(stderr, "[TILE] %d/%d/%d loaded: verts=%zu indices=%zu "
+            "(%zu bytes decompressed)\n",
+            key.level, key.x, key.y,
+            mesh.vertex_count, mesh.index_count, size);
+
+    prepared_tile *p = calloc(1, sizeof(*p));
+    if (!p) {
+        free(flatbuf);
+        return NULL;
     }
 
-    /* Compute average elevation (mm → m) for terrain awareness */
     if (mesh.vertex_count > 0 && mesh.z) {
         double sum = 0.0;
         for (size_t v = 0; v < mesh.vertex_count; v++)
             sum += mesh.z[v];
-        updated.avg_elevation = (sum / (double)mesh.vertex_count) * 0.001;
+        p->avg_elevation = (sum / (double)mesh.vertex_count) * 0.001;
     }
 
     arpt_surface_data surface = {0};
@@ -201,12 +214,10 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
             /* Already decoded above */
             break;
         case ARPT_LAYER_TEXTURE: {
-            /* Decode polygon features from whatever layer the style names */
             arpt_surface_data extra = {0};
             arpt_decode_surface_layer(flatbuf, size, le->source_layer,
                                       tm->style.class_names,
                                       tm->style.class_count, &extra);
-            /* Merge into the combined surface data */
             if (extra.count > 0) {
                 size_t new_count = surface.count + extra.count;
                 arpt_surface_polygon *merged = realloc(
@@ -283,46 +294,122 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
               sizeof(arpt_surface_polygon), compare_surface_cls);
     }
 
-    /* ── Zero-copy window ────────────────────────────────────────────────
-     * The decoded structs (mesh, surface, lines, buildings) and prims.terrain
-     * hold pointers that alias into `flatbuf`.  prepare_polygons/prepare_lines
-     * copy those coordinates into self-contained renderer primitives; terrain
-     * is uploaded straight from the aliased pointers by upload_tile.  Both
-     * the prepare calls and upload_tile must complete before `flatbuf` is
-     * freed at the bottom of this function.  wgpuQueueWriteBuffer copies
-     * synchronously, so the upload currently satisfies the ordering; if the
-     * upload ever becomes asynchronous, terrain must first be copied into
-     * prims (like surface/lines) before closing this window.
-     * ──────────────────────────────────────────────────────────────────── */
-    arpt_tile_prims prims = {0};
-    prims.bounds = updated.bounds;
-    prims.terrain = mesh;
-    arpt_prepare_polygons(&surface, &tm->style, &prims.polygons);
-    arpt_prepare_lines(&lines, &tm->style, &prims.lines);
-    arpt_prepare_extrusion(&buildings, updated.bounds, &prims.extrusion);
+    arpt_bounds bounds = arpt_tile_bounds(key.level, key.x, key.y);
+
+    /* Copy terrain arrays out of the flatbuf so the prepared tile is fully
+       self-contained and the flatbuf can be freed here on the worker. */
+    p->terrain_vertex_count = mesh.vertex_count;
+    p->terrain_index_count = mesh.index_count;
+    if (mesh.vertex_count > 0) {
+        p->terrain_x = malloc(mesh.vertex_count * sizeof(uint16_t));
+        p->terrain_y = malloc(mesh.vertex_count * sizeof(uint16_t));
+        p->terrain_z = malloc(mesh.vertex_count * sizeof(int32_t));
+        if (!p->terrain_x || !p->terrain_y || !p->terrain_z) goto oom;
+        memcpy(p->terrain_x, mesh.x, mesh.vertex_count * sizeof(uint16_t));
+        memcpy(p->terrain_y, mesh.y, mesh.vertex_count * sizeof(uint16_t));
+        memcpy(p->terrain_z, mesh.z, mesh.vertex_count * sizeof(int32_t));
+        if (mesh.normals) {
+            p->terrain_normals = malloc(mesh.vertex_count * 2);
+            if (!p->terrain_normals) goto oom;
+            memcpy(p->terrain_normals, mesh.normals, mesh.vertex_count * 2);
+        }
+    }
+    if (mesh.index_count > 0) {
+        p->terrain_indices = malloc(mesh.index_count * sizeof(uint32_t));
+        if (!p->terrain_indices) goto oom;
+        memcpy(p->terrain_indices, mesh.indices,
+               mesh.index_count * sizeof(uint32_t));
+    }
+
+    p->prims.bounds = bounds;
+    p->prims.terrain.x = p->terrain_x;
+    p->prims.terrain.y = p->terrain_y;
+    p->prims.terrain.z = p->terrain_z;
+    p->prims.terrain.normals = p->terrain_normals;
+    p->prims.terrain.indices = p->terrain_indices;
+    p->prims.terrain.vertex_count = p->terrain_vertex_count;
+    p->prims.terrain.index_count = p->terrain_index_count;
+
+    arpt_prepare_polygons(&surface, &tm->style, &p->prims.polygons);
+    arpt_prepare_lines(&lines, &tm->style, &p->prims.lines);
+    arpt_prepare_extrusion(&buildings, bounds, &p->prims.extrusion);
     arpt_prepare_instances(&trees, arpt_renderer_model_count(tm->renderer),
-                           &prims.instances);
+                           &p->prims.instances);
     arpt_prepare_labels(&pois, arpt_renderer_font_glyphs(tm->renderer),
                         arpt_renderer_font_height(tm->renderer),
                         arpt_renderer_icon_glyphs(tm->renderer),
                         arpt_renderer_icon_count(tm->renderer),
                         arpt_renderer_icon_height(tm->renderer),
-                        &prims.labels);
+                        &p->prims.labels);
 
-    updated.gpu = arpt_renderer_upload_tile(tm->renderer, &prims);
-    updated.state = updated.gpu ? TILE_READY : TILE_FAILED;
-    if (updated.state == TILE_READY) tm->needs_redraw = true;
-    tm_hashmap_set(tm, &updated);
-
-    /* Zero-copy window closes: safe to release everything that borrowed
-     * from flatbuf, then flatbuf itself. */
-    arpt_tile_prims_free(&prims);
     arpt_surface_data_free(&surface);
     arpt_line_data_free(&lines);
     arpt_surface_data_free(&buildings);
     arpt_tree_data_free(&trees);
     arpt_poi_data_free(&pois);
     free(flatbuf);
+
+    return p;
+
+oom:
+    arpt_surface_data_free(&surface);
+    arpt_line_data_free(&lines);
+    arpt_surface_data_free(&buildings);
+    arpt_tree_data_free(&trees);
+    arpt_poi_data_free(&pois);
+    free(flatbuf);
+    prepared_tile_free(p);
+    return NULL;
+}
+
+/* Runs on the main thread via arpt_fetch_drain: only the GPU upload and
+   cache-state update remain here, so even a burst of completed fetches
+   keeps the frame cheap.
+
+   `success` is set by the fetch layer: true ⇒ HTTP + verify + prepare all
+   succeeded and payload is a prepared_tile*; false ⇒ either HTTP failed
+   (retry) or prepare returned NULL (permanent decode failure). */
+static void tile_finish_main(bool success, void *payload, void *userdata) {
+    fetch_ctx *ctx = userdata;
+    arpt_tile_manager *tm = ctx->tm;
+    arpt_tile_key key = ctx->key;
+    int retries = ctx->retries;
+    free(ctx);
+
+    prepared_tile *p = payload;
+    tm->active_fetches--;
+
+    tile_entry lookup = {.key = key};
+    const tile_entry *existing = hashmap_get(tm->cache, &lookup);
+    if (!existing || existing->state != TILE_LOADING) {
+        prepared_tile_free(p);
+        return;
+    }
+
+    tile_entry updated = *existing;
+
+    if (!success) {
+        updated.state = TILE_FAILED;
+        if (p) {
+            /* HTTP succeeded but decode/prepare failed — permanent. */
+            updated.retries = MAX_RETRIES;
+        } else {
+            /* HTTP failure — retry with backoff. */
+            updated.retries = retries + 1;
+            updated.retry_after = tm->frame + (1u << updated.retries);
+        }
+        tm_hashmap_set(tm, &updated);
+        prepared_tile_free(p);
+        return;
+    }
+
+    updated.avg_elevation = p->avg_elevation;
+    updated.gpu = arpt_renderer_upload_tile(tm->renderer, &p->prims);
+    updated.state = updated.gpu ? TILE_READY : TILE_FAILED;
+    if (updated.state == TILE_READY) tm->needs_redraw = true;
+    tm_hashmap_set(tm, &updated);
+
+    prepared_tile_free(p);
 }
 
 /* LRU eviction */
@@ -431,7 +518,7 @@ static void start_fetch(arpt_tile_manager *tm, arpt_tile_key key,
 
     tm->active_fetches++;
     if (!arpt_fetch_tile(tm->config.base_url, key.level, key.x, key.y,
-                         on_tile_fetched, ctx)) {
+                         tile_prepare_worker, tile_finish_main, ctx)) {
         tm->active_fetches--;
         tile_entry failed = new_entry;
         failed.state = TILE_FAILED;
@@ -442,8 +529,16 @@ static void start_fetch(arpt_tile_manager *tm, arpt_tile_key key,
     }
 }
 
+/* Per-frame cap on tile uploads.  Each completed fetch triggers flatbuffer
+   decode, polygon triangulation, buffer uploads, and surface-texture
+   rasterization + mipmap generation — several ms of CPU + GPU work.  Doing
+   that for every tile in one frame causes visible hitching while panning,
+   so we process a few per frame and let the rest catch up over subsequent
+   frames. */
+#define ARPT_TILE_UPLOAD_BUDGET_PER_FRAME 2
+
 void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
-    arpt_fetch_drain();
+    arpt_fetch_drain(ARPT_TILE_UPLOAD_BUDGET_PER_FRAME);
     tm->frame++;
 
     /* Pre-fetch level-0 root tiles on the first frame so that

@@ -14,7 +14,8 @@
 #include "tile_verifier.h"
 
 typedef struct {
-    arpt_tile_fetch_cb cb;
+    arpt_tile_prepare_fn prepare;
+    arpt_tile_finish_fn finish;
     void *userdata;
 } fetch_request;
 
@@ -27,16 +28,20 @@ static void on_fetch_success(emscripten_fetch_t *fetch) {
     if (rc == 0) {
         /* Copy so caller owns the buffer (browser frees fetch->data) */
         uint8_t *copy = malloc((size_t)fetch->numBytes);
-        if (copy) {
-            memcpy(copy, fetch->data, (size_t)fetch->numBytes);
-            req->cb(true, copy, (size_t)fetch->numBytes, req->userdata);
+        if (!copy) {
+            req->finish(false, NULL, req->userdata);
+        } else if (req->prepare) {
+            /* No worker thread in Emscripten — prepare runs inline. */
+            void *payload = req->prepare(copy, (size_t)fetch->numBytes,
+                                          req->userdata);
+            req->finish(payload != NULL, payload, req->userdata);
         } else {
-            req->cb(false, NULL, 0, req->userdata);
+            req->finish(true, copy, req->userdata);
         }
     } else {
         fprintf(stderr, "tile_fetch: FlatBuffer verification failed (rc=%d)\n",
                 rc);
-        req->cb(false, NULL, 0, req->userdata);
+        req->finish(false, NULL, req->userdata);
     }
 
     emscripten_fetch_close(fetch);
@@ -46,7 +51,7 @@ static void on_fetch_success(emscripten_fetch_t *fetch) {
 static void on_fetch_error(emscripten_fetch_t *fetch) {
     fetch_request *req = (fetch_request *)fetch->userData;
     fprintf(stderr, "tile_fetch: HTTP %d for %s\n", fetch->status, fetch->url);
-    req->cb(false, NULL, 0, req->userdata);
+    req->finish(false, NULL, req->userdata);
     emscripten_fetch_close(fetch);
     free(req);
 }
@@ -56,15 +61,17 @@ bool arpt_fetch_init(int max_concurrent) {
     return true;
 }
 
-int arpt_fetch_drain(void) {
+int arpt_fetch_drain(int max) {
+    (void)max;
     return 0;
 }
 
 void arpt_fetch_shutdown(void) {}
 
 bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
-                     arpt_tile_fetch_cb cb, void *userdata) {
-    if (!base_url || !cb) return false;
+                     arpt_tile_prepare_fn prepare,
+                     arpt_tile_finish_fn finish, void *userdata) {
+    if (!base_url || !finish) return false;
 
     char url[512];
     int n =
@@ -73,7 +80,8 @@ bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
 
     fetch_request *req = malloc(sizeof(*req));
     if (!req) return false;
-    req->cb = cb;
+    req->prepare = prepare;
+    req->finish = finish;
     req->userdata = userdata;
 
     emscripten_fetch_attr_t attr;
@@ -111,7 +119,8 @@ bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
 typedef struct fetch_job {
     struct fetch_job *next;
     char url[768];
-    arpt_tile_fetch_cb cb;
+    arpt_tile_prepare_fn prepare;
+    arpt_tile_finish_fn finish;
     void *userdata;
 } fetch_job;
 
@@ -120,9 +129,9 @@ typedef struct fetch_job {
 typedef struct fetch_result {
     struct fetch_result *next;
     bool success;
-    uint8_t *flatbuf; /* malloc'd, owned by result until callback */
-    size_t size;
-    arpt_tile_fetch_cb cb;
+    void *payload; /* prepare() return value, or raw flatbuf if no prepare;
+                      ownership transfers to the finish callback */
+    arpt_tile_finish_fn finish;
     void *userdata;
 } fetch_result;
 
@@ -205,17 +214,16 @@ static void *worker_func(void *arg) {
 
         if (!job) continue;
 
-        /* Do blocking HTTP + decode off the main thread */
+        /* HTTP + verify + prepare, all off the main thread. */
         fetch_result *result = malloc(sizeof(*result));
         if (!result) {
             free(job);
             continue;
         }
 
-        result->cb = job->cb;
+        result->finish = job->finish;
         result->userdata = job->userdata;
-        result->flatbuf = NULL;
-        result->size = 0;
+        result->payload = NULL;
         result->success = false;
 
         arpt_http_response resp;
@@ -236,16 +244,27 @@ static void *worker_func(void *arg) {
 
         int rc = arpentry_tiles_Tile_verify_as_root_with_identifier(
             resp.body, resp.body_size, "arpt");
-        if (rc == 0) {
-            result->success = true;
-            result->flatbuf = resp.body;
-            result->size = resp.body_size;
-            resp.body = NULL; /* transfer ownership */
-        } else {
+        if (rc != 0) {
             fprintf(stderr, "tile_fetch: verification failed (rc=%d)\n", rc);
+            free(resp.body);
+            enqueue_result(result);
+            free(job);
+            continue;
         }
 
-        free(resp.body);
+        /* Hand the verified flatbuf to the worker-side prepare hook (which
+           owns it from here) or pass it straight through if there is none.
+           `success` is true only if we end up with a non-NULL payload. */
+        if (job->prepare) {
+            result->payload = job->prepare(resp.body, resp.body_size,
+                                           job->userdata);
+            result->success = result->payload != NULL;
+        } else {
+            result->payload = resp.body;
+            result->success = true;
+        }
+        resp.body = NULL; /* ownership transferred to prepare or to result */
+
         enqueue_result(result);
         free(job);
     }
@@ -287,8 +306,9 @@ bool arpt_fetch_init(int max_concurrent) {
 }
 
 bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
-                     arpt_tile_fetch_cb cb, void *userdata) {
-    if (!base_url || !cb) return false;
+                     arpt_tile_prepare_fn prepare,
+                     arpt_tile_finish_fn finish, void *userdata) {
+    if (!base_url || !finish) return false;
 
     fetch_job *job = malloc(sizeof(*job));
     if (!job) return false;
@@ -299,19 +319,35 @@ bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
         free(job);
         return false;
     }
-    job->cb = cb;
+    job->prepare = prepare;
+    job->finish = finish;
     job->userdata = userdata;
 
     enqueue_job(job);
     return true;
 }
 
-int arpt_fetch_drain(void) {
-    /* Swap out the entire result list under the lock, then process outside */
+int arpt_fetch_drain(int max) {
+    /* Detach up to `max` results under the lock (0 = all), then invoke the
+       callbacks outside the lock. Remaining results stay on the queue so the
+       next drain picks them up. */
     pthread_mutex_lock(&g_pool.result_mutex);
     fetch_result *list = g_pool.result_head;
-    g_pool.result_head = NULL;
-    g_pool.result_tail = NULL;
+
+    if (max > 0 && list) {
+        fetch_result *tail = list;
+        int taken = 1;
+        while (tail->next && taken < max) {
+            tail = tail->next;
+            taken++;
+        }
+        g_pool.result_head = tail->next;
+        if (!g_pool.result_head) g_pool.result_tail = NULL;
+        tail->next = NULL;
+    } else {
+        g_pool.result_head = NULL;
+        g_pool.result_tail = NULL;
+    }
     pthread_mutex_unlock(&g_pool.result_mutex);
 
     int count = 0;
@@ -319,8 +355,8 @@ int arpt_fetch_drain(void) {
         fetch_result *r = list;
         list = r->next;
 
-        r->cb(r->success, r->flatbuf, r->size, r->userdata);
-        /* Caller now owns flatbuf (must free it in the callback) */
+        r->finish(r->success, r->payload, r->userdata);
+        /* finish() owns payload and is responsible for freeing it. */
         free(r);
         count++;
     }
@@ -350,11 +386,13 @@ void arpt_fetch_shutdown(void) {
         job = next;
     }
 
-    /* Free any remaining results */
+    /* Free any remaining results. We deliberately do not free result->payload
+       here — its structure is opaque to this layer and only the finish
+       callback knows how to free it. On shutdown we leak the payload rather
+       than risk calling finish after the owning subsystem is gone. */
     fetch_result *result = g_pool.result_head;
     while (result) {
         fetch_result *next = result->next;
-        free(result->flatbuf);
         free(result);
         result = next;
     }

@@ -82,11 +82,20 @@ static bool g_fetch_success;
 static size_t g_fetch_size;
 static volatile bool g_fetch_called;
 
-static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
-                            void *userdata) {
+/* Worker-side hook: stash the size (only available here) and pass flatbuf
+   through so the main-thread finish can validate it. Unity's assertion
+   macros use longjmp and aren't safe from worker threads, so the heavy
+   checks run in finish. */
+static void *on_tile_prepared(uint8_t *flatbuf, size_t size, void *userdata) {
     (void)userdata;
-    g_fetch_success = success;
     g_fetch_size = size;
+    return flatbuf;
+}
+
+static void on_tile_fetched(bool success, void *payload, void *userdata) {
+    (void)userdata;
+    uint8_t *flatbuf = payload;
+    g_fetch_success = success;
     g_fetch_called = true;
 
     if (success && flatbuf) {
@@ -99,7 +108,7 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
         TEST_ASSERT_NOT_NULL(layers);
         TEST_ASSERT_TRUE(arpentry_tiles_Layer_vec_len(layers) > 0);
 
-        printf("  Fetched tile: %zu bytes, %zu layers\n", size,
+        printf("  Fetched tile: %zu bytes, %zu layers\n", g_fetch_size,
                arpentry_tiles_Layer_vec_len(layers));
     }
 
@@ -111,11 +120,11 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
 static bool drain_until_called(void) {
     int elapsed = 0;
     while (!g_fetch_called && elapsed < DRAIN_TIMEOUT_US) {
-        arpt_fetch_drain();
+        arpt_fetch_drain(0);
         usleep(DRAIN_POLL_US);
         elapsed += DRAIN_POLL_US;
     }
-    arpt_fetch_drain(); /* one final drain */
+    arpt_fetch_drain(0); /* one final drain */
     return g_fetch_called;
 }
 
@@ -129,7 +138,7 @@ void test_fetch_tile_success(void) {
     char base_url[64];
     snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d", TEST_PORT);
 
-    bool initiated = arpt_fetch_tile(base_url, 0, 0, 0, on_tile_fetched, NULL);
+    bool initiated = arpt_fetch_tile(base_url, 0, 0, 0, on_tile_prepared, on_tile_fetched, NULL);
     TEST_ASSERT_TRUE(initiated);
     TEST_ASSERT_TRUE(drain_until_called());
     TEST_ASSERT_TRUE(g_fetch_success);
@@ -143,7 +152,7 @@ void test_fetch_tile_different_coords(void) {
     snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d", TEST_PORT);
 
     bool initiated =
-        arpt_fetch_tile(base_url, 5, 32, 16, on_tile_fetched, NULL);
+        arpt_fetch_tile(base_url, 5, 32, 16, on_tile_prepared, on_tile_fetched, NULL);
     TEST_ASSERT_TRUE(initiated);
     TEST_ASSERT_TRUE(drain_until_called());
     TEST_ASSERT_TRUE(g_fetch_success);
@@ -153,7 +162,8 @@ void test_fetch_tile_bad_url(void) {
     g_fetch_called = false;
 
     bool initiated =
-        arpt_fetch_tile("http://127.0.0.1:1", 0, 0, 0, on_tile_fetched, NULL);
+        arpt_fetch_tile("http://127.0.0.1:1", 0, 0, 0, on_tile_prepared,
+                        on_tile_fetched, NULL);
     /* Should initiate but callback reports failure (connection refused) */
     TEST_ASSERT_TRUE(initiated);
     TEST_ASSERT_TRUE(drain_until_called());
@@ -161,7 +171,8 @@ void test_fetch_tile_bad_url(void) {
 }
 
 void test_fetch_tile_null_url(void) {
-    bool initiated = arpt_fetch_tile(NULL, 0, 0, 0, on_tile_fetched, NULL);
+    bool initiated = arpt_fetch_tile(NULL, 0, 0, 0, on_tile_prepared,
+                                      on_tile_fetched, NULL);
     TEST_ASSERT_FALSE(initiated);
 }
 

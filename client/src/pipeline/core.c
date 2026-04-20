@@ -256,6 +256,28 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     r->stencil_fill_pipeline = arpt__texture_create_stencil_fill_pipeline(device);
     r->stencil_color_pipeline = arpt__texture_create_stencil_color_pipeline(device);
 
+    /* Mipmap downsample: bind group layout (texture + sampler) + pipeline */
+    {
+        WGPUBindGroupLayoutEntry mm_entries[] = {
+            {
+                .binding = 0,
+                .visibility = WGPUShaderStage_Fragment,
+                .texture = {.sampleType = WGPUTextureSampleType_Float,
+                            .viewDimension = WGPUTextureViewDimension_2D},
+            },
+            {
+                .binding = 1,
+                .visibility = WGPUShaderStage_Fragment,
+                .sampler = {.type = WGPUSamplerBindingType_Filtering},
+            },
+        };
+        r->mipmap_bgl = wgpuDeviceCreateBindGroupLayout(
+            device, &(WGPUBindGroupLayoutDescriptor){.entryCount = 2,
+                                                     .entries = mm_entries});
+        r->mipmap_pipeline =
+            arpt__texture_create_mipmap_pipeline(device, r->mipmap_bgl);
+    }
+
     /* Stencil texture for even-odd polygon fill */
     WGPUTextureDescriptor stencil_desc = {
         .usage = WGPUTextureUsage_RenderAttachment,
@@ -267,12 +289,15 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     };
     r->stencil_texture = wgpuDeviceCreateTexture(device, &stencil_desc);
     r->stencil_view = wgpuTextureCreateView(r->stencil_texture, NULL);
+    /* Trilinear + anisotropic filtering: essential for minifying the per-tile
+       rasterized texture when viewed at small screen footprints (globe zoom). */
     WGPUSamplerDescriptor samp_desc = {
         .addressModeU = WGPUAddressMode_ClampToEdge,
         .addressModeV = WGPUAddressMode_ClampToEdge,
         .magFilter = WGPUFilterMode_Linear,
         .minFilter = WGPUFilterMode_Linear,
-        .maxAnisotropy = 1,
+        .mipmapFilter = WGPUMipmapFilterMode_Linear,
+        .maxAnisotropy = 8,
         .lodMaxClamp = 32.0f,
     };
     r->surface_sampler = wgpuDeviceCreateSampler(device, &samp_desc);
@@ -324,6 +349,8 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->line_pipeline) wgpuRenderPipelineRelease(r->line_pipeline);
     if (r->stencil_fill_pipeline) wgpuRenderPipelineRelease(r->stencil_fill_pipeline);
     if (r->stencil_color_pipeline) wgpuRenderPipelineRelease(r->stencil_color_pipeline);
+    if (r->mipmap_pipeline) wgpuRenderPipelineRelease(r->mipmap_pipeline);
+    if (r->mipmap_bgl) wgpuBindGroupLayoutRelease(r->mipmap_bgl);
     if (r->stencil_view) wgpuTextureViewRelease(r->stencil_view);
     if (r->stencil_texture) wgpuTextureRelease(r->stencil_texture);
     if (r->surface_sampler) wgpuSamplerRelease(r->surface_sampler);

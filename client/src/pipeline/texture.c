@@ -2,6 +2,7 @@
 
 #include "surface.wgsl.h"
 #include "line.wgsl.h"
+#include "mipmap.wgsl.h"
 
 #include <stdlib.h>
 
@@ -223,6 +224,96 @@ WGPURenderPipeline arpt__texture_create_line_pipeline(WGPUDevice device) {
     return pipeline;
 }
 
+WGPURenderPipeline arpt__texture_create_mipmap_pipeline(WGPUDevice device,
+                                                         WGPUBindGroupLayout bgl) {
+    WGPUShaderModule sm = create_shader(device, mipmap_wgsl);
+
+    WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
+        device, &(WGPUPipelineLayoutDescriptor){
+            .bindGroupLayoutCount = 1, .bindGroupLayouts = &bgl});
+
+    WGPUColorTargetState ct = {.format = WGPUTextureFormat_RGBA8Unorm,
+                               .writeMask = WGPUColorWriteMask_All};
+    WGPUFragmentState frag = {
+        .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
+
+    WGPURenderPipelineDescriptor pip = {
+        .layout = pl,
+        .vertex = {.module = sm, .entryPoint = "vs", .bufferCount = 0},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
+                      .cullMode = WGPUCullMode_None},
+        .fragment = &frag,
+        .multisample = {.count = 1, .mask = ~0u},
+    };
+    WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
+    wgpuPipelineLayoutRelease(pl);
+    wgpuShaderModuleRelease(sm);
+    return pipeline;
+}
+
+/* Generate mip chain by rendering each level from the previous one with a
+   fullscreen triangle that bilinearly samples the source mip. */
+static void generate_mipmaps(arpt_renderer *r, WGPUCommandEncoder enc,
+                             WGPUTexture tex) {
+    for (uint32_t level = 1; level < SURFACE_MIP_COUNT; level++) {
+        WGPUTextureViewDescriptor src_desc = {
+            .format = WGPUTextureFormat_RGBA8Unorm,
+            .dimension = WGPUTextureViewDimension_2D,
+            .baseMipLevel = level - 1,
+            .mipLevelCount = 1,
+            .baseArrayLayer = 0,
+            .arrayLayerCount = 1,
+            .aspect = WGPUTextureAspect_All,
+        };
+        WGPUTextureView src_view = wgpuTextureCreateView(tex, &src_desc);
+
+        WGPUTextureViewDescriptor dst_desc = {
+            .format = WGPUTextureFormat_RGBA8Unorm,
+            .dimension = WGPUTextureViewDimension_2D,
+            .baseMipLevel = level,
+            .mipLevelCount = 1,
+            .baseArrayLayer = 0,
+            .arrayLayerCount = 1,
+            .aspect = WGPUTextureAspect_All,
+        };
+        WGPUTextureView dst_view = wgpuTextureCreateView(tex, &dst_desc);
+
+        WGPUBindGroupEntry entries[] = {
+            {.binding = 0, .textureView = src_view},
+            {.binding = 1, .sampler = r->surface_sampler},
+        };
+        WGPUBindGroup bg = wgpuDeviceCreateBindGroup(
+            r->device, &(WGPUBindGroupDescriptor){.layout = r->mipmap_bgl,
+                                                  .entryCount = 2,
+                                                  .entries = entries});
+
+        WGPURenderPassColorAttachment color = {
+            .view = dst_view,
+            .loadOp = WGPULoadOp_Clear,
+            .storeOp = WGPUStoreOp_Store,
+            .clearValue = {0.0, 0.0, 0.0, 0.0},
+#ifdef __EMSCRIPTEN__
+            .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
+#endif
+        };
+        WGPURenderPassDescriptor rp = {
+            .colorAttachmentCount = 1,
+            .colorAttachments = &color,
+        };
+        WGPURenderPassEncoder pass =
+            wgpuCommandEncoderBeginRenderPass(enc, &rp);
+        wgpuRenderPassEncoderSetPipeline(pass, r->mipmap_pipeline);
+        wgpuRenderPassEncoderSetBindGroup(pass, 0, bg, 0, NULL);
+        wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+        wgpuRenderPassEncoderEnd(pass);
+        wgpuRenderPassEncoderRelease(pass);
+
+        wgpuBindGroupRelease(bg);
+        wgpuTextureViewRelease(src_view);
+        wgpuTextureViewRelease(dst_view);
+    }
+}
+
 WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
                                      const arpt_polygon_prim *polys,
                                      const arpt_line_prim *lines) {
@@ -232,7 +323,7 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
         .size = {SURFACE_TEX_SIZE, SURFACE_TEX_SIZE, 1},
         .format = WGPUTextureFormat_RGBA8Unorm,
         .dimension = WGPUTextureDimension_2D,
-        .mipLevelCount = 1,
+        .mipLevelCount = SURFACE_MIP_COUNT,
         .sampleCount = 1,
     };
     WGPUTexture tex = wgpuDeviceCreateTexture(r->device, &tex_desc);
@@ -240,8 +331,19 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
     bool has_polys = polys && polys->vert_count > 0 && polys->index_count > 0;
     bool has_lines = lines && lines->vert_count > 0 && lines->index_count > 0;
 
+    /* Render attachment must target a single mip level. */
+    WGPUTextureViewDescriptor mip0_desc = {
+        .format = WGPUTextureFormat_RGBA8Unorm,
+        .dimension = WGPUTextureViewDimension_2D,
+        .baseMipLevel = 0,
+        .mipLevelCount = 1,
+        .baseArrayLayer = 0,
+        .arrayLayerCount = 1,
+        .aspect = WGPUTextureAspect_All,
+    };
+
     if (!has_polys && !has_lines) {
-        WGPUTextureView view = wgpuTextureCreateView(tex, NULL);
+        WGPUTextureView view = wgpuTextureCreateView(tex, &mip0_desc);
         WGPUCommandEncoder enc =
             wgpuDeviceCreateCommandEncoder(r->device, NULL);
         WGPURenderPassColorAttachment color = {
@@ -262,6 +364,7 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
             wgpuCommandEncoderBeginRenderPass(enc, &rp);
         wgpuRenderPassEncoderEnd(pass);
         wgpuRenderPassEncoderRelease(pass);
+        generate_mipmaps(r, enc, tex);
         WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, NULL);
         wgpuQueueSubmit(r->queue, 1, &cmd);
         wgpuCommandBufferRelease(cmd);
@@ -299,7 +402,7 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
     }
 
     /* Render pass with stencil attachment for even-odd polygon fill */
-    WGPUTextureView view = wgpuTextureCreateView(tex, NULL);
+    WGPUTextureView view = wgpuTextureCreateView(tex, &mip0_desc);
     WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(r->device, NULL);
     WGPURenderPassColorAttachment color = {
         .view = view,
@@ -367,6 +470,8 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
 
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
+
+    generate_mipmaps(r, enc, tex);
 
     WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, NULL);
     wgpuQueueSubmit(r->queue, 1, &cmd);

@@ -15,7 +15,10 @@
 
 /* Constants */
 
-#define SURFACE_TEX_SIZE 2048
+/* Surface rasterization target size. Power of two so the mip chain reaches
+   1×1 exactly. Keep SURFACE_MIP_COUNT = log2(SURFACE_TEX_SIZE) + 1. */
+#define SURFACE_TEX_SIZE  1024
+#define SURFACE_MIP_COUNT 11
 
 /* Uniform layouts */
 
@@ -179,6 +182,8 @@ struct arpt_renderer {
     WGPURenderPipeline line_pipeline;
     WGPURenderPipeline stencil_fill_pipeline;  /* stencil INVERT, color OFF */
     WGPURenderPipeline stencil_color_pipeline; /* stencil NotEqual(0), color ON */
+    WGPURenderPipeline mipmap_pipeline;        /* downsample prev mip -> next */
+    WGPUBindGroupLayout mipmap_bgl;
     WGPUTexture stencil_texture;
     WGPUTextureView stencil_view;
     WGPUSampler surface_sampler;
@@ -323,6 +328,8 @@ WGPURenderPipeline arpt__texture_create_surface_pipeline(WGPUDevice device);
 WGPURenderPipeline arpt__texture_create_line_pipeline(WGPUDevice device);
 WGPURenderPipeline arpt__texture_create_stencil_fill_pipeline(WGPUDevice device);
 WGPURenderPipeline arpt__texture_create_stencil_color_pipeline(WGPUDevice device);
+WGPURenderPipeline arpt__texture_create_mipmap_pipeline(WGPUDevice device,
+                                                         WGPUBindGroupLayout bgl);
 WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
                                      const arpt_polygon_prim *polys,
                                      const arpt_line_prim *lines);
