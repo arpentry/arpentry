@@ -59,8 +59,8 @@
       ]
     },
     {
-      "source_layer": "highway",
-      "type": "texture",
+      "source_layer": "transportation",
+      "type": "line",
       "paint": [
         { "class": "primary",     "color": [89, 84, 77, 255],   "width": 140 },
         { "class": "residential", "color": [115, 110, 102, 255], "width": 90 }

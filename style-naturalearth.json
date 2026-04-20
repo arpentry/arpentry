@@ -22,8 +22,8 @@
       ]
     },
     {
-      "source_layer": "highway",
-      "type": "texture",
+      "source_layer": "transportation",
+      "type": "line",
       "paint": [
         { "class": "boundary",        "color": [89, 84, 77, 255],  "width": 40, "min_level": 1 },
         { "class": "admin1_boundary", "color": [89, 84, 77, 128],  "width": 20, "min_level": 3 },

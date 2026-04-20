@@ -60,9 +60,9 @@ bool resp_build_tileset(const struct arpt_archive_reader *archive,
     arpentry_tiles_LayerInfo_max_level_add(&builder, 19);
     arpentry_tiles_Tileset_layers_push_end(&builder);
 
-    /* highway: Line, 8-19 */
+    /* transportation: Line, 8-19 */
     arpentry_tiles_Tileset_layers_push_start(&builder);
-    arpentry_tiles_LayerInfo_name_create_str(&builder, "highway");
+    arpentry_tiles_LayerInfo_name_create_str(&builder, "transportation");
     arpentry_tiles_GeometryType_enum_t line_types[] = {
         arpentry_tiles_GeometryType_Line};
     arpentry_tiles_LayerInfo_geometry_types_create(&builder, line_types, 1);

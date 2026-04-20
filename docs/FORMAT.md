@@ -116,7 +116,7 @@ Geometry is a union of four topology-specific tables:
 | Table | Use Cases |
 |---|---|
 | PointGeometry | Trees, POIs |
-| LineGeometry | Highways |
+| LineGeometry | Transportation, rivers |
 | PolygonGeometry | Surface zones, building footprints |
 | MeshGeometry | Terrain |
 
@@ -519,7 +519,7 @@ table PaintEntry {
 }
 
 table LayerStyle {
-  source_layer: string (required);  // tile layer name ("surface", "highway", ...)
+  source_layer: string (required);  // tile layer name ("surface", "transportation", ...)
   paint:        [PaintEntry];       // class -> visual properties
 }
 
@@ -635,7 +635,7 @@ Layers in the `layers` vector MUST be ordered by decode priority (first decoded,
 
 1. terrain
 2. surface
-3. highway
+3. transportation
 4. tree
 5. building
 6. poi
@@ -662,17 +662,17 @@ Physical ground cover. Polygon fills styled by class.
 |---|---|---|
 | class | string | `grass`, `forest`, `water`, `rock`, `sand`, `ice` |
 
-### highway
+### transportation
 
-Roads and paths.
+Roads, rail, and other linear transport features.
 
 - **Geometry**: Line
-- **Zoom range**: 8-16
+- **Zoom range**: 4-16 (per class; gated via `min_level` in the style)
 - **Properties**:
 
 | Key | Type | Values |
 |---|---|---|
-| class | string | `motorway`, `primary`, `secondary`, `local` |
+| class | string | `motorway`, `trunk`, `primary`, `secondary`, `tertiary`, `residential`, … |
 | name | string | Street name |
 
 ### tree
@@ -734,7 +734,7 @@ The style uses two concepts inspired by MapLibre:
 The client fetches `{base_url}/style.arps` at startup and applies it as follows:
 
 1. **Surface fills**: For each `PaintEntry` in the `"surface"` `LayerStyle`, match the feature's `class` property to the entry's `class` string. Use the entry's `color` as the fill color.
-2. **Highway lines**: For each `PaintEntry` in the `"highway"` `LayerStyle`, match the feature's `class` property. Use the entry's `color` and `width` (half-width in quantized units) for SDF line rendering.
+2. **Transportation lines**: For each `PaintEntry` in the `"transportation"` `LayerStyle`, match the feature's `class` property. Use the entry's `color` and `width` (half-width in quantized units) for SDF line rendering.
 3. **Building fills**: For each `PaintEntry` in the `"building"` `LayerStyle`, match the feature's `class` property. Use the entry's `color` as the footprint fill color.
 4. **Model instancing**: When a `PaintEntry` has a `model` field, the client renders matching PointGeometry features as instanced 3D models from the `ModelLibrary` (Section 6.4). Per-instance yaw and scale are derived from `min_scale`/`max_scale` and a deterministic hash of point position.
 5. **Background**: `Style.background` provides the fallback color for unmatched surface classes.

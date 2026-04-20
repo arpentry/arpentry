@@ -24,7 +24,7 @@ table PaintEntry {
 enum LayerType : uint8 { Terrain = 0, Texture = 1, Extrusion = 2, Instance = 3, Label = 4, Line = 5 }
 
 table LayerStyle {
-  source_layer:   string (required);  // tile layer name ("surface", "highway", ...)
+  source_layer:   string (required);  // tile layer name ("surface", "transportation", ...)
   type:           LayerType = Texture; // how to render this layer
   min_level:      uint8 = 0;          // skip decoding below this zoom level
   paint:          [PaintEntry];       // class -> visual properties

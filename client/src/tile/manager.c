@@ -283,7 +283,17 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
               sizeof(arpt_surface_polygon), compare_surface_cls);
     }
 
-    /* Convert decoded domain data to renderer primitives */
+    /* ── Zero-copy window ────────────────────────────────────────────────
+     * The decoded structs (mesh, surface, lines, buildings) and prims.terrain
+     * hold pointers that alias into `flatbuf`.  prepare_polygons/prepare_lines
+     * copy those coordinates into self-contained renderer primitives; terrain
+     * is uploaded straight from the aliased pointers by upload_tile.  Both
+     * the prepare calls and upload_tile must complete before `flatbuf` is
+     * freed at the bottom of this function.  wgpuQueueWriteBuffer copies
+     * synchronously, so the upload currently satisfies the ordering; if the
+     * upload ever becomes asynchronous, terrain must first be copied into
+     * prims (like surface/lines) before closing this window.
+     * ──────────────────────────────────────────────────────────────────── */
     arpt_tile_prims prims = {0};
     prims.bounds = updated.bounds;
     prims.terrain = mesh;
@@ -299,11 +309,13 @@ static void on_tile_fetched(bool success, uint8_t *flatbuf, size_t size,
                         arpt_renderer_icon_height(tm->renderer),
                         &prims.labels);
 
-    /* wgpuQueueWriteBuffer copies synchronously, safe to free after */
     updated.gpu = arpt_renderer_upload_tile(tm->renderer, &prims);
     updated.state = updated.gpu ? TILE_READY : TILE_FAILED;
     if (updated.state == TILE_READY) tm->needs_redraw = true;
     tm_hashmap_set(tm, &updated);
+
+    /* Zero-copy window closes: safe to release everything that borrowed
+     * from flatbuf, then flatbuf itself. */
     arpt_tile_prims_free(&prims);
     arpt_surface_data_free(&surface);
     arpt_line_data_free(&lines);

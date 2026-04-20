@@ -164,13 +164,13 @@ static void *build_tile_flatbuffer(const uint16_t *vx, const uint16_t *vy,
         arpentry_tiles_Layer_features_end(&builder);
         arpentry_tiles_Tile_layers_push_end(&builder);
 
-        /* Layer 2: highway (only when tile overlaps the town) */
+        /* Layer 2: transportation (only when tile overlaps the town) */
         if (has_town) {
             const town_road *roads = town_get_roads();
             int road_count = town_road_count();
 
             arpentry_tiles_Tile_layers_push_start(&builder);
-            arpentry_tiles_Layer_name_create_str(&builder, "highway");
+            arpentry_tiles_Layer_name_create_str(&builder, "transportation");
 
             arpentry_tiles_Layer_features_start(&builder);
             for (int ri = 0; ri < road_count; ri++) {

@@ -1,5 +1,6 @@
 /* arpentry_tiler CLI entry point. */
 
+#include "layers.h"
 #include "pipeline.h"
 
 #include <stdio.h>
@@ -22,9 +23,45 @@ static void usage(void) {
         "  --mem <bytes>          Memory budget for external sort (default: 64 MB)\n"
         "  --threads <n>          Worker threads (default: auto-detect CPU count)\n"
         "\n"
-        "Layer indices (matching style.json):\n"
-        "  0=terrain (auto-generated)  1=land_cover  2=bathymetry  3=water  4=land\n"
-    );
+        "Layer indices (<layer>:<path>):\n");
+    for (int i = 0; i < ARPT_NAMED_LAYERS; i++) {
+        fprintf(stderr, "  %d=%s%s\n", i, arpt_layer_names[i],
+                i == ARPT_LAYER_TERRAIN ? " (auto-generated, not a valid input)" : "");
+    }
+}
+
+/* Parse "<layer>:<path>" strictly: digits, ':', path.  Returns false on any
+ * malformed spec or out-of-range layer index, with a clear error written to
+ * stderr.  On success, fills *layer_out and *path_out. */
+static bool parse_input_spec(const char *arg, uint32_t *layer_out,
+                             const char **path_out) {
+    char *endptr = NULL;
+    long n = strtol(arg, &endptr, 10);
+    if (endptr == arg || *endptr != ':') {
+        fprintf(stderr, "Error: --input %s: expected <layer>:<path>\n", arg);
+        return false;
+    }
+    if (n < 0 || n >= ARPT_NAMED_LAYERS) {
+        fprintf(stderr,
+                "Error: --input %s: layer index %ld out of range [0, %d)\n",
+                arg, n, ARPT_NAMED_LAYERS);
+        return false;
+    }
+    if (n == ARPT_LAYER_TERRAIN) {
+        fprintf(stderr,
+                "Error: --input %s: layer %d (\"%s\") is auto-generated, "
+                "cannot be used as input\n",
+                arg, ARPT_LAYER_TERRAIN, arpt_layer_names[ARPT_LAYER_TERRAIN]);
+        return false;
+    }
+    const char *path = endptr + 1;
+    if (*path == '\0') {
+        fprintf(stderr, "Error: --input %s: path is empty\n", arg);
+        return false;
+    }
+    *layer_out = (uint32_t)n;
+    *path_out = path;
+    return true;
 }
 
 int main(int argc, char **argv) {
@@ -51,15 +88,22 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "Error: too many inputs (max %d)\n", MAX_INPUTS);
                 return 1;
             }
-            /* Parse "layer:path" */
-            const char *arg = argv[i];
-            const char *colon = strchr(arg, ':');
-            if (!colon) {
-                fprintf(stderr, "Error: --input requires <layer>:<path> format\n");
+            uint32_t layer;
+            const char *path;
+            if (!parse_input_spec(argv[i], &layer, &path)) {
                 return 1;
             }
-            inputs[n_inputs].layer = (uint32_t)atoi(arg);
-            inputs[n_inputs].path = colon + 1;
+            for (int j = 0; j < n_inputs; j++) {
+                if (inputs[j].layer == layer) {
+                    fprintf(stderr,
+                            "Warning: layer %u (%s) already assigned to %s; "
+                            "new input %s will be appended\n",
+                            layer, arpt_layer_names[layer], inputs[j].path, path);
+                    break;
+                }
+            }
+            inputs[n_inputs].layer = layer;
+            inputs[n_inputs].path = path;
             n_inputs++;
         } else if (strcmp(argv[i], "--bbox") == 0 && i + 1 < argc) {
             if (sscanf(argv[++i], "%lf,%lf,%lf,%lf",

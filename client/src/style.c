@@ -1,4 +1,5 @@
 #include "style.h"
+#include <stdio.h>
 #include <string.h>
 
 int arpt_style_class_index(arpt_style *s, const char *name) {
@@ -6,7 +7,21 @@ int arpt_style_class_index(arpt_style *s, const char *name) {
     for (int i = 0; i < s->class_count; i++) {
         if (strcmp(s->class_names[i], name) == 0) return i;
     }
-    if (s->class_count >= ARPT_MAX_CLASSES) return 0;
+    if (s->class_count >= ARPT_MAX_CLASSES) {
+        /* Table full — new classes alias to slot 0 and render with the
+         * "unknown" color.  Warn once so the user can raise the cap rather
+         * than chase the resulting miscoloring. */
+        static bool warned = false;
+        if (!warned) {
+            fprintf(stderr,
+                    "[style] WARNING: class registry full at %d entries; "
+                    "class \"%s\" and later new classes will alias to "
+                    "\"unknown\". Raise ARPT_MAX_CLASSES.\n",
+                    ARPT_MAX_CLASSES, name);
+            warned = true;
+        }
+        return 0;
+    }
     int idx = s->class_count;
     strncpy(s->class_names[idx], name, 31);
     s->class_names[idx][31] = '\0';

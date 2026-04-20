@@ -9,9 +9,13 @@
 #define ARPT_LAYER_TERRAIN_NAME  "terrain"
 
 /**
- * Zero-copy terrain mesh data extracted from a FlatBuffer tile.
- * All pointers point directly into the FlatBuffer — valid only while
- * the buffer is alive.
+ * Zero-copy terrain mesh extracted from a FlatBuffer tile.
+ *
+ * LIFETIME: the x/y/z/indices/normals pointers alias into the FlatBuffer
+ * passed to arpt_decode_terrain. They are only valid until that buffer is
+ * freed. The typical consumption pattern is:
+ *     decode → prepare (copies into renderer primitives) → free flatbuf.
+ * Never read these pointers after the backing buffer has been freed.
  */
 typedef struct {
     const uint16_t *x;     /* horizontal positions */
@@ -36,10 +40,13 @@ bool arpt_decode_terrain(const void *flatbuf, size_t size,
 
 /* Surface decoding */
 
-#define ARPT_MAX_CLASSES 64
+/* Class-index registry capacity.  The decoded `cls` fields are uint8_t,
+ * so 256 is the hard upper bound; reserving the full range keeps the
+ * registry from filling up as styles grow. */
+#define ARPT_MAX_CLASSES 256
 
 typedef struct {
-    const uint16_t *x, *y; /* zero-copy into FlatBuffer */
+    const uint16_t *x, *y; /* zero-copy into FlatBuffer (see arpt_surface_data) */
     const int32_t *z;      /* elevation in millimeters (NULL for surface) */
     size_t vertex_count;
     uint8_t cls;      /* index into style class registry; 0 = unknown */
@@ -48,6 +55,15 @@ typedef struct {
     int32_t height_m; /* building height in meters (0 for surface polygons) */
 } arpt_surface_polygon;
 
+/**
+ * Polygon features decoded from one tile layer.
+ *
+ * LIFETIME: `polygons` is a malloc'd array owned by this struct, but the
+ * `x`/`y`/`z` pointers inside each entry alias into the FlatBuffer passed
+ * to the decode call. The FlatBuffer must remain alive until arpt_prepare_*
+ * has consumed these pointers. arpt_surface_data_free only releases the
+ * `polygons` array — it does not own the FlatBuffer.
+ */
 typedef struct {
     arpt_surface_polygon *polygons; /* malloc'd array */
     size_t count;
@@ -71,11 +87,21 @@ void arpt_surface_data_free(arpt_surface_data *data);
 /* Line decoding (LineGeometry) */
 
 typedef struct {
-    const uint16_t *x, *y; /* zero-copy into FlatBuffer */
+    const uint16_t *x, *y; /* zero-copy into FlatBuffer (see arpt_line_data) */
     size_t vertex_count;
     uint8_t cls; /* index into style class registry; 0 = unknown */
 } arpt_line_feature;
 
+/**
+ * Line features decoded from one tile layer.
+ *
+ * LIFETIME: `lines` is a malloc'd array owned by this struct, but each
+ * entry's `x`/`y` pointers alias into the FlatBuffer passed to
+ * arpt_decode_lines. The FlatBuffer must remain alive until arpt_prepare_lines
+ * has copied the coordinates into the renderer primitives. See the
+ * "zero-copy window" block in tile/manager.c for the exact ordering.
+ * arpt_line_data_free only releases the `lines` array.
+ */
 typedef struct {
     arpt_line_feature *lines; /* malloc'd array */
     size_t count;
