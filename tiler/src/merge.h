@@ -6,12 +6,12 @@
  * file with merged linestrings.  This prevents gaps at low zoom levels
  * where short individual segments would be filtered out.
  *
- * Only major road classes visible at low zoom levels are included
- * in the output (motorway, trunk, primary and their _link
- * variants).  Other classes are omitted since they are only
- * visible beyond the typical max zoom level.  The tiler should
- * receive both the merged output and the original segment.parquet
- * if higher-detail classes are needed at higher zoom levels. */
+ * Named road classes (motorway, trunk, primary, secondary, tertiary
+ * and their _link variants) are included in the output, each tagged
+ * with a min_zoom appropriate for its importance.  Other classes
+ * (residential, service, etc.) are omitted — the tiler should receive
+ * the original segment.parquet alongside the merged output if those
+ * higher-detail classes are needed at higher zoom levels. */
 
 #ifndef ARPT_MERGE_H
 #define ARPT_MERGE_H

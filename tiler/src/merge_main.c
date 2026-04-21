@@ -14,9 +14,9 @@ static void usage(void) {
         "  --output <path>        Output merged.parquet (required)\n"
         "  --bbox <w,s,e,n>       Geographic bounds in degrees (default: world)\n"
         "\n"
-        "Merges connected major-road segments (motorway, trunk, primary)\n"
-        "into longer linestrings to prevent gaps at low zoom levels.\n"
-        "Only these classes are included in the output.\n"
+        "Merges connected named-road segments (motorway, trunk, primary,\n"
+        "secondary, tertiary) into longer linestrings to prevent gaps at\n"
+        "low zoom levels.  Only these classes are included in the output.\n"
     );
 }
 

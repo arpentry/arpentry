@@ -24,7 +24,7 @@ BBOX="-180,-85,180,85"
 
 # Zoom range
 MIN_ZOOM=0
-MAX_ZOOM=10
+MAX_ZOOM=12
 
 # Layers enabled by default (index:name pairs)
 LAYER_LAND=true

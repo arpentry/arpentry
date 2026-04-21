@@ -1,7 +1,8 @@
 /* Merge connected transportation segments into longer linestrings.
  *
- * Only major road classes (motorway, trunk, primary and their _link
- * variants) are included.  Segments are merged by spatial proximity
+ * Named road classes (motorway, trunk, primary, secondary, tertiary
+ * and their _link variants) are included, each assigned a min_zoom
+ * appropriate for its importance.  Segments are merged by spatial proximity
  * of their endpoints — any two segments whose endpoints are within
  * ~10 m are considered connected, regardless of connector IDs or
  * class boundaries.  This produces long continuous linestrings that
@@ -27,7 +28,11 @@
 /* ── Merge eligibility ────────────────────────────────────────────────── */
 
 static const char *const MERGE_CLASSES[] = {
-    "motorway",
+    "motorway",  "motorway_link",
+    "trunk",     "trunk_link",
+    "primary",   "primary_link",
+    "secondary", "secondary_link",
+    "tertiary",  "tertiary_link",
     NULL
 };
 
@@ -42,9 +47,11 @@ static bool is_mergeable_class(const uint8_t *data, size_t len) {
 
 static int32_t class_min_zoom(const char *cls) {
     if (!cls) return 0;
-    if (strcmp(cls, "motorway") == 0 || strcmp(cls, "motorway_link") == 0) return 4;
-    if (strcmp(cls, "trunk") == 0    || strcmp(cls, "trunk_link") == 0)    return 5;
-    if (strcmp(cls, "primary") == 0  || strcmp(cls, "primary_link") == 0)  return 7;
+    if (strcmp(cls, "motorway") == 0  || strcmp(cls, "motorway_link") == 0)  return 4;
+    if (strcmp(cls, "trunk") == 0     || strcmp(cls, "trunk_link") == 0)     return 5;
+    if (strcmp(cls, "primary") == 0   || strcmp(cls, "primary_link") == 0)   return 7;
+    if (strcmp(cls, "secondary") == 0 || strcmp(cls, "secondary_link") == 0) return 9;
+    if (strcmp(cls, "tertiary") == 0  || strcmp(cls, "tertiary_link") == 0)  return 11;
     return 0;
 }
 
