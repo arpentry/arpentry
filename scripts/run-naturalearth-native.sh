@@ -61,6 +61,8 @@ if [ ! -f "$ARCHIVE" ]; then
     # Layer assignment matches tiler/src/layers.h:
     #   1 land_cover   | 3 water | 4 land
     #   5 transportation | 6 land_use
+    # Line features (coastline, river, boundaries, roads) go to
+    # transportation since water/land are texture-only in the style.
     # Terrain (layer 0) is auto-synthesized by the tiler.
     "$TILER" \
         --output "$ARCHIVE" \
@@ -69,13 +71,13 @@ if [ ! -f "$ARCHIVE" ]; then
         --max-zoom "$MAX_ZOOM" \
         --mem $((64 * 1024 * 1024)) \
         --input "4:$DATA_DIR/land.parquet" \
-        --input "3:$DATA_DIR/coastline.parquet" \
         --input "3:$DATA_DIR/lake.parquet" \
-        --input "3:$DATA_DIR/river.parquet" \
         --input "1:$DATA_DIR/glacier.parquet" \
         --input "1:$DATA_DIR/ice_shelf.parquet" \
         --input "1:$DATA_DIR/reef.parquet" \
         --input "6:$DATA_DIR/urban.parquet" \
+        --input "5:$DATA_DIR/coastline.parquet" \
+        --input "5:$DATA_DIR/river.parquet" \
         --input "5:$DATA_DIR/boundary.parquet" \
         --input "5:$DATA_DIR/admin1_boundary.parquet" \
         --input "5:$DATA_DIR/road.parquet" \

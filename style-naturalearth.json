@@ -9,42 +9,46 @@
       "paint": []
     },
     {
-      "source_layer": "surface",
+      "source_layer": "land",
       "type": "texture",
       "paint": [
-        { "class": "land",       "color": [248, 244, 241, 255] },
-        { "class": "coastline",  "color": [162, 226, 164, 255] },
-        { "class": "lake",       "color": [169, 226, 254, 255], "min_level": 2 },
-        { "class": "glacier",    "color": [243, 245, 247, 255], "min_level": 2 },
-        { "class": "ice_shelf",  "color": [243, 245, 247, 255], "min_level": 2 },
-        { "class": "reef",       "color": [175, 233, 231, 255], "min_level": 3 },
-        { "class": "urban",      "color": [244, 240, 229, 255], "min_level": 4 }
+        { "class": "land", "color": [248, 244, 241, 255] }
+      ]
+    },
+    {
+      "source_layer": "water",
+      "type": "texture",
+      "paint": [
+        { "class": "lake", "color": [169, 226, 254, 255], "min_level": 2 }
+      ]
+    },
+    {
+      "source_layer": "land_cover",
+      "type": "texture",
+      "paint": [
+        { "class": "glacier",   "color": [243, 245, 247, 255], "min_level": 2 },
+        { "class": "ice_shelf", "color": [243, 245, 247, 255], "min_level": 2 },
+        { "class": "reef",      "color": [175, 233, 231, 255], "min_level": 3 }
+      ]
+    },
+    {
+      "source_layer": "land_use",
+      "type": "texture",
+      "paint": [
+        { "class": "urban", "color": [244, 240, 229, 255], "min_level": 4 }
       ]
     },
     {
       "source_layer": "transportation",
       "type": "line",
       "paint": [
-        { "class": "boundary",        "color": [89, 84, 77, 255],  "width": 40, "min_level": 1 },
-        { "class": "admin1_boundary", "color": [89, 84, 77, 128],  "width": 20, "min_level": 3 },
-        { "class": "river",           "color": [169, 226, 254, 255],  "width": 40, "min_level": 3 },
-        { "class": "road",            "color": [180, 180, 180, 255],  "width": 40, "min_level": 4 },
+        { "class": "coastline",       "color": [162, 226, 164, 255], "width": 20 },
+        { "class": "boundary",        "color": [89, 84, 77, 255],    "width": 40, "min_level": 1 },
+        { "class": "admin1_boundary", "color": [89, 84, 77, 128],    "width": 20, "min_level": 3 },
+        { "class": "river",           "color": [169, 226, 254, 255], "width": 40, "min_level": 3 },
+        { "class": "road",            "color": [180, 180, 180, 255], "width": 40, "min_level": 4 },
         { "class": "geographic_line", "color": [160, 160, 160, 100], "width": 20 }
       ]
-    },
-    {
-      "source_layer": "poi",
-      "type": "label",
-      "min_level": 4,
-      "text_size": 24,
-      "text_color": [26, 26, 26, 255],
-      "text_halo_color": [255, 255, 255, 255],
-      "text_halo_width": 0.4,
-      "icon_size": 26,
-      "icon_color": [26, 26, 26, 255],
-      "icon_halo_color": [255, 255, 255, 255],
-      "icon_halo_width": 0.6,
-      "paint": []
     }
   ]
 }

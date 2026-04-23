@@ -265,6 +265,11 @@ static char *read_string(arpt_overture *ov, int32_t proj_col, int64_t row)
     const arpt_parquet_bytes *ba = &arr[data_idx];
     if (!ba->data || ba->length <= 0) return NULL;
 
+    /* Treat pandas' stringified null ("nan") as NULL.  Some input parquet
+       files — notably Natural Earth exports via pandas — serialise missing
+       string values as the literal text "nan" instead of a real SQL null. */
+    if (ba->length == 3 && memcmp(ba->data, "nan", 3) == 0) return NULL;
+
     /* Parquet BYTE_ARRAY values are NOT null-terminated; make a copy */
     return strndup((const char *)ba->data, (size_t)ba->length);
 }

@@ -157,19 +157,30 @@ static void *worker_fn(void *arg) {
                 arpt_geom_bbox(&geometry, feat_bbox);
             }
 
-            /* Determine class: use depth for bathymetry, otherwise
-               the most specific classification available:
-               class → subtype → type. */
+            /* Determine class: use depth for bathymetry, otherwise the
+               most specific classification available: class → subtype →
+               type.  `subtype` is skipped when it looks like an instance
+               name (contains space or uppercase letter) rather than a
+               style-visible category — Natural Earth uses the subtype
+               column for names like "Lake Kariba" or "Tropic of Capricorn",
+               which must not leak into the tile's feature class. */
             char depth_cls[16];
-            const char *cls;
+            const char *cls = NULL;
             if (f->depth >= 0) {
                 snprintf(depth_cls, sizeof(depth_cls), "%d", f->depth);
                 cls = depth_cls;
-            } else {
-                cls = f->cls ? f->cls
-                    : (f->subtype ? f->subtype
-                    : (f->type ? f->type : "unknown"));
+            } else if (f->cls) {
+                cls = f->cls;
+            } else if (f->subtype) {
+                cls = f->subtype;
+                for (const char *p = f->subtype; *p; p++) {
+                    if (*p == ' ' || (*p >= 'A' && *p <= 'Z')) {
+                        cls = NULL;
+                        break;
+                    }
+                }
             }
+            if (!cls) cls = f->type ? f->type : "unknown";
             const char *pkeys[1] = { "class" };
             const char *pvals[1] = { cls };
 
