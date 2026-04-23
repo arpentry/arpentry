@@ -13,8 +13,7 @@
 
 /* Clip buffer in pixels.  Polygons and lines are clipped with this
  * much extra beyond the tile bounds, creating overlap between adjacent
- * tiles that prevents visible seams.  Standard in all vector tile
- * systems (tippecanoe, planetiler, geojson-vt). */
+ * tiles that prevents visible seams. */
 #define CLIP_BUFFER_PX  8
 #define TILE_PIXELS     256
 

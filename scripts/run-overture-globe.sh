@@ -32,6 +32,7 @@ LAYER_LAND_COVER=true
 LAYER_BATHYMETRY=true
 LAYER_WATER=true
 LAYER_TRANSPORTATION=true
+LAYER_BUILDING=true
 
 # Parse arguments
 SKIP_DOWNLOAD=false
@@ -45,6 +46,7 @@ while [ $# -gt 0 ]; do
         --no-bathymetry)     LAYER_BATHYMETRY=false; shift ;;
         --no-water)          LAYER_WATER=false; shift ;;
         --no-transportation) LAYER_TRANSPORTATION=false; shift ;;
+        --no-building)       LAYER_BUILDING=false; shift ;;
         *) shift ;;
     esac
 done
@@ -84,6 +86,7 @@ $LAYER_LAND_COVER     && download_type land_cover
 $LAYER_BATHYMETRY     && download_type bathymetry
 $LAYER_WATER          && download_type water
 $LAYER_TRANSPORTATION && download_type segment
+$LAYER_BUILDING       && download_type building
 
 # ── Merge transportation segments ────────────────────────────────────────────
 
@@ -116,6 +119,7 @@ if [ ! -f "$ARCHIVE" ]; then
     $LAYER_WATER          && TILER_INPUTS+=(--input "3:$DATA_DIR/water.parquet")
     $LAYER_LAND           && TILER_INPUTS+=(--input "4:$DATA_DIR/land.parquet")
     $LAYER_TRANSPORTATION && TILER_INPUTS+=(--input "5:$SEGMENT_FILE")
+    $LAYER_BUILDING       && TILER_INPUTS+=(--input "6:$DATA_DIR/building.parquet")
 
     "$TILER" \
         --output "$ARCHIVE" \

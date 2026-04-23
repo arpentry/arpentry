@@ -83,6 +83,14 @@
         { "class": "secondary", "color": [255, 255, 255, 255], "width": 25, "min_level": 9 },
         { "class": "tertiary",  "color": [255, 255, 255, 255], "width": 20, "min_level": 11 }
       ]
+    },
+    {
+      "source_layer": "building",
+      "type": "extrusion",
+      "min_level": 13,
+      "paint": [
+        { "class": "building", "color": [209, 196, 179, 255] }
+      ]
     }
   ]
 }
