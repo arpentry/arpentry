@@ -66,6 +66,18 @@ struct arpt_archive_writer {
 
     uint8_t *meta;
     size_t   meta_size;
+
+    /* Last-blob dedup: the writer receives tiles in Hilbert order, so
+       runs of identical tiles (water, flat terrain, sky) arrive back-to-back.
+       When a new blob matches the previously written one, reuse its offset
+       and skip the blob write — the archive format allows multiple dir
+       entries to reference the same (offset, size). */
+    uint8_t *last_bytes;    /* Owned copy of the last distinct blob written */
+    size_t   last_size;
+    size_t   last_cap;      /* Allocated capacity (>= last_size) */
+    uint64_t last_offset;
+    uint64_t dedup_count;   /* Tiles whose blob was deduplicated */
+    uint64_t dedup_bytes;   /* Blob bytes saved by dedup */
 };
 
 arpt_archive_writer *arpt_archive_writer_create(const arpt_archive_config *config) {
@@ -113,11 +125,42 @@ bool arpt_archive_writer_add_tile(arpt_archive_writer *w,
                                   const void *data, size_t size) {
     if (!w || !w->fp || !data || size == 0) return false;
 
-    uint64_t offset = (uint64_t)ftell(w->fp);
-    if (fwrite(data, 1, size, w->fp) != size) {
-        fprintf(stderr, "archive: failed to write tile z%u/%u/%u (%zu bytes) at offset %llu: %s\n",
-                z, x, y, size, (unsigned long long)offset, strerror(errno));
-        return false;
+    uint64_t offset;
+    bool deduped = (w->last_bytes != NULL &&
+                    size == w->last_size &&
+                    memcmp(data, w->last_bytes, size) == 0);
+
+    if (deduped) {
+        offset = w->last_offset;
+        w->dedup_count++;
+        w->dedup_bytes += size;
+    } else {
+        offset = (uint64_t)ftell(w->fp);
+        if (fwrite(data, 1, size, w->fp) != size) {
+            fprintf(stderr, "archive: failed to write tile z%u/%u/%u "
+                    "(%zu bytes) at offset %llu: %s\n",
+                    z, x, y, size, (unsigned long long)offset, strerror(errno));
+            return false;
+        }
+        /* Cache this blob as the reference for the next add. */
+        if (size > w->last_cap) {
+            uint8_t *p = realloc(w->last_bytes, size);
+            if (p) {
+                w->last_bytes = p;
+                w->last_cap = size;
+            } else {
+                /* Allocation failure disables dedup but doesn't fail the
+                   write — fall back to writing every blob. */
+                free(w->last_bytes);
+                w->last_bytes = NULL;
+                w->last_cap = 0;
+            }
+        }
+        if (w->last_bytes) {
+            memcpy(w->last_bytes, data, size);
+            w->last_size = size;
+            w->last_offset = offset;
+        }
     }
 
     arpa_dir_entry e = {0};
@@ -294,6 +337,13 @@ bool arpt_archive_writer_finish(arpt_archive_writer *w) {
     fprintf(stderr, "archive: finalized, dir at offset %llu (%.1f MB)\n",
             (unsigned long long)dir_offset,
             (double)(w->tile_count * DIR_ENTRY_SIZE) / (1024.0 * 1024.0));
+    if (w->dedup_count > 0) {
+        fprintf(stderr, "archive: deduped %llu tiles (%.1f MB blob saved, %.1f%% of %llu)\n",
+                (unsigned long long)w->dedup_count,
+                (double)w->dedup_bytes / (1024.0 * 1024.0),
+                100.0 * (double)w->dedup_count / (double)w->tile_count,
+                (unsigned long long)w->tile_count);
+    }
 
     return true;
 }
@@ -303,6 +353,7 @@ void arpt_archive_writer_free(arpt_archive_writer *w) {
     if (w->fp) fclose(w->fp);
     if (w->dir_fp) fclose(w->dir_fp);
     if (w->dir_path) { remove(w->dir_path); free(w->dir_path); }
+    free(w->last_bytes);
     free(w->meta);
     free(w->path);
     free(w);

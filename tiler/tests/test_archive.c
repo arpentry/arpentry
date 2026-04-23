@@ -2,6 +2,7 @@
 #include "archive.h"
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static const char *TEST_PATH = "/tmp/test_arpa_archive.arpa";
 
@@ -152,6 +153,93 @@ static void test_null_safety(void) {
     TEST_ASSERT_EQUAL_UINT64(0, arpt_archive_reader_tile_count(NULL));
 }
 
+/* Writing many identical blobs in a row must dedup: only the first blob
+   is stored on disk, all other dir entries reference its offset.  Every
+   tile must still read back with the correct bytes. */
+static void test_dedup_identical_blobs(void) {
+    arpt_archive_config cfg = {
+        .path = TEST_PATH,
+        .min_zoom = 0,
+        .max_zoom = 3,
+        .bounds = {-180.0, -85.0, 180.0, 85.0},
+    };
+    arpt_archive_writer *w = arpt_archive_writer_create(&cfg);
+    TEST_ASSERT_NOT_NULL(w);
+
+    char blob[256];
+    for (size_t i = 0; i < sizeof(blob); i++) blob[i] = (char)(i * 7 + 3);
+
+    const uint32_t N = 64;
+    for (uint32_t i = 0; i < N; i++) {
+        uint32_t tx = i & 7;
+        uint32_t ty = i >> 3;
+        TEST_ASSERT_TRUE(arpt_archive_writer_add_tile(w, 3, tx, ty,
+                                                       blob, sizeof(blob)));
+    }
+    TEST_ASSERT_TRUE(arpt_archive_writer_finish(w));
+    arpt_archive_writer_free(w);
+
+    /* File size must be far smaller than N * sizeof(blob) — only one blob
+       region was written, plus header + directory + padding. */
+    struct stat st;
+    TEST_ASSERT_EQUAL_INT(0, stat(TEST_PATH, &st));
+    TEST_ASSERT_TRUE((size_t)st.st_size < sizeof(blob) * 2 + N * 40 + 256);
+
+    /* Every tile still reads back correctly. */
+    arpt_archive_reader *r = arpt_archive_reader_open(TEST_PATH);
+    TEST_ASSERT_NOT_NULL(r);
+    TEST_ASSERT_EQUAL_UINT64(N, arpt_archive_reader_tile_count(r));
+    for (uint32_t i = 0; i < N; i++) {
+        uint32_t tx = i & 7;
+        uint32_t ty = i >> 3;
+        size_t size;
+        const void *data = arpt_archive_reader_get_tile(r, 3, tx, ty, &size);
+        TEST_ASSERT_NOT_NULL(data);
+        TEST_ASSERT_EQUAL_size_t(sizeof(blob), size);
+        TEST_ASSERT_EQUAL_MEMORY(blob, data, sizeof(blob));
+    }
+    arpt_archive_reader_close(r);
+}
+
+/* Interleaving two distinct blobs must produce two stored blob regions —
+   dedup only fires against the immediately preceding distinct blob. */
+static void test_dedup_only_consecutive(void) {
+    arpt_archive_config cfg = {
+        .path = TEST_PATH,
+        .min_zoom = 0,
+        .max_zoom = 3,
+        .bounds = {-180.0, -85.0, 180.0, 85.0},
+    };
+    arpt_archive_writer *w = arpt_archive_writer_create(&cfg);
+    TEST_ASSERT_NOT_NULL(w);
+
+    char a[128], b[128];
+    memset(a, 0xAA, sizeof(a));
+    memset(b, 0xBB, sizeof(b));
+
+    TEST_ASSERT_TRUE(arpt_archive_writer_add_tile(w, 3, 0, 0, a, sizeof(a)));
+    TEST_ASSERT_TRUE(arpt_archive_writer_add_tile(w, 3, 1, 0, b, sizeof(b)));
+    TEST_ASSERT_TRUE(arpt_archive_writer_add_tile(w, 3, 2, 0, a, sizeof(a)));
+    TEST_ASSERT_TRUE(arpt_archive_writer_add_tile(w, 3, 3, 0, b, sizeof(b)));
+
+    TEST_ASSERT_TRUE(arpt_archive_writer_finish(w));
+    arpt_archive_writer_free(w);
+
+    arpt_archive_reader *r = arpt_archive_reader_open(TEST_PATH);
+    TEST_ASSERT_NOT_NULL(r);
+    size_t sz;
+    const void *d;
+    d = arpt_archive_reader_get_tile(r, 3, 0, 0, &sz);
+    TEST_ASSERT_NOT_NULL(d); TEST_ASSERT_EQUAL_MEMORY(a, d, sizeof(a));
+    d = arpt_archive_reader_get_tile(r, 3, 1, 0, &sz);
+    TEST_ASSERT_NOT_NULL(d); TEST_ASSERT_EQUAL_MEMORY(b, d, sizeof(b));
+    d = arpt_archive_reader_get_tile(r, 3, 2, 0, &sz);
+    TEST_ASSERT_NOT_NULL(d); TEST_ASSERT_EQUAL_MEMORY(a, d, sizeof(a));
+    d = arpt_archive_reader_get_tile(r, 3, 3, 0, &sz);
+    TEST_ASSERT_NOT_NULL(d); TEST_ASSERT_EQUAL_MEMORY(b, d, sizeof(b));
+    arpt_archive_reader_close(r);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_writer_create_free);
@@ -161,5 +249,7 @@ int main(void) {
     RUN_TEST(test_metadata);
     RUN_TEST(test_reader_nonexistent);
     RUN_TEST(test_null_safety);
+    RUN_TEST(test_dedup_identical_blobs);
+    RUN_TEST(test_dedup_only_consecutive);
     return UNITY_END();
 }
