@@ -357,38 +357,67 @@ static void *finish_sorter_fn(void *arg) {
     return NULL;
 }
 
-/* ---- Phase 3 parallel tile encoding types ---- */
+/* ---- Phase 3 parallel tile encoding types ----
+ *
+ * The grouper (main thread) only slices the sorted stream by tile_id and
+ * copies each record's raw bytes into a tile_job.  The heavy work —
+ * feature deserialization, tile_builder assembly, and compression —
+ * happens on the encoder threads in parallel. */
 
-/* A tile ready to be encoded (pushed from grouper to encoder threads). */
+/* One serialized feature record belonging to a tile. */
 typedef struct {
-    arpt_tile_builder *builder;
-    uint64_t           sequence;
-    int                z;
-    uint32_t           x, y;
+    uint64_t  key;         /* Sort key, used to recover the layer index */
+    uint8_t  *data;        /* Owned copy of the serialized feature */
+    size_t    data_size;
+} tile_record;
+
+/* A tile's worth of raw records, queued from grouper to encoder threads. */
+typedef struct {
+    uint64_t      sequence;
+    int           z;
+    uint32_t      x, y;
+    tile_record  *records;     /* Owned */
+    size_t        n_records;
+    size_t        cap_records;
 } tile_job;
 
-/* Push a tile builder to the encoder queue.  Takes ownership of builder
-   (frees it on failure).  Returns the next sequence number. */
-static uint64_t push_tile_job(arpt_workqueue *queue,
-                              arpt_tile_builder *builder,
-                              uint64_t sequence,
-                              int z, uint32_t x, uint32_t y) {
-    tile_job *job = malloc(sizeof(tile_job));
-    if (job) {
-        job->builder = builder;
-        job->sequence = sequence;
-        job->z = z;
-        job->x = x;
-        job->y = y;
-        arpt_batch b = { .items = job, .count = 1 };
-        if (!arpt_workqueue_push(queue, &b)) {
-            arpt_tile_builder_free(builder);
-            free(job);
-        }
-    } else {
-        arpt_tile_builder_free(builder);
+static void tile_job_free(tile_job *job) {
+    if (!job) return;
+    for (size_t i = 0; i < job->n_records; i++)
+        free(job->records[i].data);
+    free(job->records);
+    free(job);
+}
+
+/* Append a raw record to the current tile_job.  Takes ownership of a copy
+   of `data` (data pointer owned by merger may be invalidated on next read).
+   Returns false on allocation failure. */
+static bool tile_job_append(tile_job *job, uint64_t key,
+                            const void *data, size_t data_size) {
+    if (job->n_records == job->cap_records) {
+        size_t nc = job->cap_records ? job->cap_records * 2 : 16;
+        tile_record *p = realloc(job->records, nc * sizeof(*p));
+        if (!p) return false;
+        job->records = p;
+        job->cap_records = nc;
     }
-    return sequence + 1;
+    uint8_t *copy = malloc(data_size);
+    if (!copy) return false;
+    memcpy(copy, data, data_size);
+    job->records[job->n_records++] = (tile_record){
+        .key = key, .data = copy, .data_size = data_size,
+    };
+    return true;
+}
+
+/* Push a completed tile_job to the encoder queue.  Takes ownership of job
+   (frees it on failure).  Returns the next sequence number. */
+static uint64_t push_tile_job(arpt_workqueue *queue, tile_job *job) {
+    uint64_t next = job->sequence + 1;
+    arpt_batch b = { .items = job, .count = 1 };
+    if (!arpt_workqueue_push(queue, &b))
+        tile_job_free(job);
+    return next;
 }
 
 /* An encoded tile ready to be written (pushed from encoder to writer). */
@@ -411,44 +440,58 @@ static void *encoder_fn(void *arg) {
     arpt_batch batch;
 
     while (arpt_workqueue_pop(ec->tile_queue, &batch)) {
-        tile_job *jobs = (tile_job *)batch.items;
+        /* Each batch currently carries a single tile_job pointer. */
+        tile_job *j = (tile_job *)batch.items;
+        size_t tile_size = 0;
+        void *tile_data = NULL;
 
-        /* Encode each tile and push results one at a time */
-        for (size_t i = 0; i < batch.count; i++) {
-            tile_job *j = &jobs[i];
-            size_t tile_size = 0;
-            void *tile_data = NULL;
+        arpt_bounds tb = arpt_tile_bounds(j->z, (int)j->x, (int)j->y);
+        arpt_tile_builder *builder = arpt_tile_builder_create(tb);
 
-            if (j->builder) {
-                uint32_t coords = arpt_tile_builder_total_coords(j->builder);
-                tile_data = arpt_tile_builder_finish(j->builder, &tile_size);
-                if (coords > 500000 || tile_size > 512 * 1024) {
-                    fprintf(stderr, "[TILER] tile %d/%u/%u: "
-                            "coords=%u, compressed=%zu bytes\n",
-                            j->z, j->x, j->y, coords, tile_size);
+        if (builder) {
+            /* Deserialize each record and add it to the builder. */
+            for (size_t r = 0; r < j->n_records; r++) {
+                tile_record *rec = &j->records[r];
+                arpt_geom geom = {0};
+                arpt_feature feat = {0};
+                char **keys = NULL, **vals = NULL;
+                if (arpt_feature_deserialize(rec->data, rec->data_size,
+                                             &geom, &feat, &keys, &vals)) {
+                    feat.layer = sort_key_layer(rec->key);
+                    arpt_tile_builder_add_feature(builder, &feat);
                 }
-                arpt_tile_builder_free(j->builder);
+                arpt_feature_deserialize_free(&geom, &feat, keys, vals);
             }
 
-            encoded_tile *et = malloc(sizeof(encoded_tile));
-            if (et) {
-                et->sequence = j->sequence;
-                et->z = (uint8_t)j->z;
-                et->x = j->x;
-                et->y = j->y;
-                et->data = tile_data;
-                et->size = tile_size;
-
-                arpt_batch out = { .items = et, .count = 1 };
-                if (!arpt_workqueue_push(ec->write_queue, &out)) {
-                    free(tile_data);
-                    free(et);
-                }
-            } else {
-                free(tile_data);
+            uint32_t coords = arpt_tile_builder_total_coords(builder);
+            tile_data = arpt_tile_builder_finish(builder, &tile_size);
+            if (coords > 500000 || tile_size > 512 * 1024) {
+                fprintf(stderr, "[TILER] tile %d/%u/%u: "
+                        "coords=%u, compressed=%zu bytes\n",
+                        j->z, j->x, j->y, coords, tile_size);
             }
+            arpt_tile_builder_free(builder);
         }
-        free(jobs);
+
+        encoded_tile *et = malloc(sizeof(encoded_tile));
+        if (et) {
+            et->sequence = j->sequence;
+            et->z = (uint8_t)j->z;
+            et->x = j->x;
+            et->y = j->y;
+            et->data = tile_data;
+            et->size = tile_size;
+
+            arpt_batch out = { .items = et, .count = 1 };
+            if (!arpt_workqueue_push(ec->write_queue, &out)) {
+                free(tile_data);
+                free(et);
+            }
+        } else {
+            free(tile_data);
+        }
+
+        tile_job_free(j);
     }
 
     return NULL;
@@ -769,11 +812,14 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
     pthread_t writer_thread;
     pthread_create(&writer_thread, NULL, writer_fn, &wctx);
 
-    /* Grouper: read from merger, group by tile, push to tile queue.
+    /* Grouper: read from merger, slice by tile_id, push batches of raw
+     * records to the encoder queue.  Deserialization and tile assembly
+     * run on the encoder threads in parallel — keeping the grouper
+     * thin avoids a single-core bottleneck at this stage.
      * Also collect feature tile IDs (already sorted by the merger)
      * for Phase 3b empty-tile detection. */
     uint64_t cur_tile_id = UINT64_MAX;
-    arpt_tile_builder *builder = NULL;
+    tile_job *cur_job = NULL;
     int cur_z = 0, cur_x = 0, cur_y = 0;
     uint64_t record_count = 0;
     uint64_t sequence = 0;
@@ -792,17 +838,22 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
         uint64_t tid = sort_key_tile_id(key);
 
         if (tid != cur_tile_id) {
-            /* Push previous tile to encoder queue */
-            if (builder) {
-                sequence = push_tile_job(tile_queue, builder, sequence,
-                                         cur_z, (uint32_t)cur_x, (uint32_t)cur_y);
+            /* Push previous tile's records to the encoder queue. */
+            if (cur_job) {
+                sequence = push_tile_job(tile_queue, cur_job);
+                cur_job = NULL;
             }
-            builder = NULL;
 
             cur_tile_id = tid;
             arpt_hilbert_tile_id_decode(tid, &cur_z, &cur_x, &cur_y);
-            arpt_bounds tb = arpt_tile_bounds(cur_z, cur_x, cur_y);
-            builder = arpt_tile_builder_create(tb);
+
+            cur_job = calloc(1, sizeof(*cur_job));
+            if (cur_job) {
+                cur_job->sequence = sequence;
+                cur_job->z = cur_z;
+                cur_job->x = (uint32_t)cur_x;
+                cur_job->y = (uint32_t)cur_y;
+            }
 
             /* Track feature tile ID (already in sorted order from merger) */
             if (feature_tile_count == feature_tile_cap) {
@@ -814,25 +865,15 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config) {
                 feature_tile_ids[feature_tile_count++] = tid;
         }
 
-        if (builder && data && data_size > 0) {
-            arpt_geom geom = {0};
-            arpt_feature feat = {0};
-            char **keys = NULL, **vals = NULL;
-
-            if (arpt_feature_deserialize(data, data_size, &geom, &feat,
-                                         &keys, &vals)) {
-                feat.layer = sort_key_layer(key);
-                arpt_tile_builder_add_feature(builder, &feat);
-            }
-
-            arpt_feature_deserialize_free(&geom, &feat, keys, vals);
+        if (cur_job && data && data_size > 0) {
+            tile_job_append(cur_job, key, data, data_size);
         }
     }
 
     /* Push last tile */
-    if (builder) {
-        sequence = push_tile_job(tile_queue, builder, sequence,
-                                 cur_z, (uint32_t)cur_x, (uint32_t)cur_y);
+    if (cur_job) {
+        sequence = push_tile_job(tile_queue, cur_job);
+        cur_job = NULL;
     }
 
     arpt_sort_merger_free(merger);
