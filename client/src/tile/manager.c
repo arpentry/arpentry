@@ -342,6 +342,29 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
                         arpt_renderer_icon_height(tm->renderer),
                         &p->prims.labels);
 
+    /* The terrain guard above only covers the mesh. A pathological tile (e.g. a
+       low-zoom tile holding the whole world's line network) can tessellate into
+       line/polygon vertex or index buffers far beyond WebGPU limits; skip it
+       rather than let the GPU upload fail and render nothing. */
+    {
+        size_t worst = p->prims.lines.vert_count * sizeof(arpt_line_vertex);
+        size_t cand[] = {
+            p->prims.lines.index_count * sizeof(uint32_t),
+            p->prims.polygons.vert_count * sizeof(arpt_poly_vertex),
+            p->prims.polygons.index_count * sizeof(uint32_t),
+        };
+        for (size_t i = 0; i < sizeof(cand) / sizeof(cand[0]); i++)
+            if (cand[i] > worst) worst = cand[i];
+        if (worst > ARPT_MAX_BUFFER_BYTES) {
+            fprintf(stderr, "[TILE] %d/%d/%d SKIPPED: oversized vector buffers "
+                    "(lines %zu verts/%zu idx, polys %zu verts/%zu idx)\n",
+                    key.level, key.x, key.y,
+                    p->prims.lines.vert_count, p->prims.lines.index_count,
+                    p->prims.polygons.vert_count, p->prims.polygons.index_count);
+            goto oom;
+        }
+    }
+
     arpt_surface_data_free(&surface);
     arpt_line_data_free(&lines);
     arpt_surface_data_free(&buildings);

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Tile Natural Earth 10m data, serve it, and view the globe.
 #
+# Uses the Rust tiler and server (tiler-rs/, built with Cargo); the client is
+# the C build (CMake).
+#
 # Run scripts/download-naturalearth.py first to fetch the data:
 #   python3 scripts/download-naturalearth.py
 #
@@ -12,18 +15,26 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$SCRIPT_DIR/.."
 BUILD_DIR="$ROOT_DIR/build"
 DATA_DIR="$ROOT_DIR/data/naturalearth"
-ARCHIVE="/tmp/naturalearth.arpa"
 
-SERVER="$BUILD_DIR/server/arpentry_server"
+# Tiler and server are the Rust reimplementation (tiler-rs), built with Cargo
+# below; only the client comes from the C build.
+TILER="$ROOT_DIR/tiler-rs/target/release/arpentry_tiler"
+SERVER="$ROOT_DIR/tiler-rs/target/release/arpentry_server"
 CLIENT="$BUILD_DIR/client/arpentry_client"
-TILER="$BUILD_DIR/tiler/arpentry_tiler"
 
 # World bbox
 BBOX="-180,-85,180,85"
 
-# Zoom range
+# Zoom range.
+# NOTE: the Rust tiler is currently single-threaded and clipping the global
+# Natural Earth land polygon at every zoom is the hot spot, so high MAX_ZOOM
+# over the whole world is slow. Lower it for quick tests; raise for detail.
 MIN_ZOOM=0
 MAX_ZOOM=8
+
+# Archive path encodes the zoom so bumping MAX_ZOOM doesn't reuse a stale
+# lower-zoom archive via the skip-if-exists check below.
+ARCHIVE="/tmp/naturalearth-z${MAX_ZOOM}.arpa"
 
 # Parse arguments
 SCREENSHOT=""
@@ -41,8 +52,12 @@ if [ ! -f "$BUILD_DIR/CMakeCache.txt" ]; then
     cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
 fi
 
-echo "Building..."
-cmake --build "$BUILD_DIR"
+echo "Building client (C)..."
+# Only the client comes from the C build; the tiler and server are Rust.
+cmake --build "$BUILD_DIR" --target arpentry_client
+
+echo "Building Rust tiler + server..."
+( cd "$ROOT_DIR/tiler-rs" && cargo build --release )
 
 # ── Check data ────────────────────────────────────────────────────────────────
 
@@ -63,7 +78,8 @@ if [ ! -f "$ARCHIVE" ]; then
     #   5 transportation | 6 land_use
     # Line features (coastline, river, boundaries, roads) go to
     # transportation since water/land are texture-only in the style.
-    # Terrain (layer 0) is auto-synthesized by the tiler.
+    # The tiler prepends a flat terrain mesh (layer 0) to every tile so the
+    # client renders it; per-class min-zoom keeps low-zoom tiles light.
     "$TILER" \
         --output "$ARCHIVE" \
         --bbox "$BBOX" \

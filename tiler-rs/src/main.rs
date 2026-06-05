@@ -1,0 +1,126 @@
+//! Arpentry tiler CLI (TILER.md §4).
+//!
+//! Hand-rolled argument parsing (no clap) to keep the dependency set minimal.
+
+use std::path::PathBuf;
+
+use arpentry_tiler::layers;
+use arpentry_tiler::pipeline::{self, Config};
+use arpentry_tiler::project::Bounds;
+
+const USAGE: &str = "\
+arpentry_tiler — generate a .arpa tile archive from GeoParquet inputs
+
+USAGE:
+  arpentry_tiler --output <path> --input <N:path> [--input <N:path> ...] [options]
+
+OPTIONS:
+  --output <path>      Output .arpa archive path (required)
+  --input <N:path>     GeoParquet input keyed by layer index N (repeatable)
+  --bbox <w,s,e,n>     Geographic bounds in degrees (default: world)
+  --min-zoom <z>       Minimum zoom level (default: 0)
+  --max-zoom <z>       Maximum zoom level (default: 4)
+  --tmp <dir>          Temp directory for external sort (default: system temp)
+  --mem <bytes>        Memory budget for external sort (default: 64 MiB)
+  --threads <n>        Accepted for compatibility; currently single-threaded
+  -h, --help           Show this help
+
+Layer indices: 0=terrain 1=land_cover 2=bathymetry 3=water 4=land
+               5=transportation 6=land_use";
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        println!("{USAGE}");
+        return;
+    }
+    let cfg = match parse(args) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("error: {e}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
+
+    match pipeline::run(&cfg) {
+        Ok(stats) => {
+            eprintln!(
+                "done: {} features read, {} records, {} tiles -> {}",
+                stats.features_read,
+                stats.records,
+                stats.tiles_written,
+                cfg.output.display()
+            );
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn parse(args: Vec<String>) -> Result<Config, String> {
+    let mut output: Option<PathBuf> = None;
+    let mut inputs: Vec<(u8, PathBuf)> = Vec::new();
+    let mut bbox = Bounds::WORLD;
+    let mut min_zoom: u8 = 0;
+    let mut max_zoom: u8 = 4;
+    let mut tmp_dir = std::env::temp_dir();
+    let mut mem_budget: usize = 64 * 1024 * 1024;
+
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--output" => output = Some(PathBuf::from(value(&mut it, "--output")?)),
+            "--input" => inputs.push(parse_input(&value(&mut it, "--input")?)?),
+            "--bbox" => bbox = parse_bbox(&value(&mut it, "--bbox")?)?,
+            "--min-zoom" => min_zoom = parse_num(&value(&mut it, "--min-zoom")?, "--min-zoom")?,
+            "--max-zoom" => max_zoom = parse_num(&value(&mut it, "--max-zoom")?, "--max-zoom")?,
+            "--tmp" => tmp_dir = PathBuf::from(value(&mut it, "--tmp")?),
+            "--mem" => mem_budget = parse_num(&value(&mut it, "--mem")?, "--mem")?,
+            "--threads" => {
+                value(&mut it, "--threads")?; // accepted, ignored
+            }
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+
+    let output = output.ok_or("--output is required")?;
+    if inputs.is_empty() {
+        return Err("at least one --input is required".to_string());
+    }
+    if min_zoom > max_zoom {
+        return Err(format!("--min-zoom ({min_zoom}) exceeds --max-zoom ({max_zoom})"));
+    }
+    Ok(Config { output, inputs, bbox, min_zoom, max_zoom, tmp_dir, mem_budget })
+}
+
+fn value(it: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
+    it.next().ok_or_else(|| format!("{flag} requires a value"))
+}
+
+fn parse_num<T: std::str::FromStr>(s: &str, flag: &str) -> Result<T, String> {
+    s.parse().map_err(|_| format!("invalid value for {flag}: {s}"))
+}
+
+/// Parses an `N:path` input. Splits at the first `:` so paths may contain more.
+fn parse_input(s: &str) -> Result<(u8, PathBuf), String> {
+    let (n, path) = s.split_once(':').ok_or_else(|| format!("--input must be N:path, got {s}"))?;
+    let layer: u8 = n.parse().map_err(|_| format!("invalid layer index in --input: {n}"))?;
+    if layer as usize >= layers::COUNT {
+        return Err(format!("layer index {layer} out of range (0..{})", layers::COUNT));
+    }
+    Ok((layer, PathBuf::from(path)))
+}
+
+fn parse_bbox(s: &str) -> Result<Bounds, String> {
+    let parts: Vec<f64> = s
+        .split(',')
+        .map(|p| p.trim().parse::<f64>())
+        .collect::<Result<_, _>>()
+        .map_err(|_| format!("invalid --bbox (want w,s,e,n): {s}"))?;
+    if parts.len() != 4 {
+        return Err(format!("--bbox needs 4 comma-separated values, got {}", parts.len()));
+    }
+    Ok(Bounds { west: parts[0], south: parts[1], east: parts[2], north: parts[3] })
+}

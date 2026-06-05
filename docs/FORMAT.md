@@ -37,18 +37,21 @@ This document defines **Arpentry Tiles** (`.arpt`), a binary tile format for sty
 
 ### Geographic Quadtree on WGS84
 
-- 2 root tiles at level 0: west hemisphere (-180..0 lon) and east hemisphere (0..180 lon), each spanning -90..+90 lat
+- 1 root tile at level 0 covering the whole world: -180..180 lon, -90..+90 lat
 - Each tile subdivides into 4 children (standard quadtree)
+- The grid at level `level` is `2^level` columns × `2^level` rows
 - Tile addressing: `{level}/{x}/{y}.arpt`
-  - x: 0 to 2^(level+1) - 1 (columns)
+  - x: 0 to 2^level - 1 (columns, west to east)
   - y: 0 to 2^level - 1 (rows, south to north)
-- Max 22 levels supported (sub-millimeter precision)
+- Max 22 levels supported (levels 0–21; the 42-bit Hilbert key holds 2·level bits)
+
+Tiles span twice as many degrees of longitude as latitude (the root tile is 360° × 180°), so a tile is 2:1 in degrees. The quantization extent (Section 3.1) is the same on both axes, so the longitude precision in metres is roughly twice the latitude precision.
 
 ### Tile Bounds
 
 ```
-lon_west  = -180 + x * (360 / 2^(level+1))
-lon_east  = lon_west + (360 / 2^(level+1))
+lon_west  = -180 + x * (360 / 2^level)
+lon_east  = lon_west + (360 / 2^level)
 lat_south = -90 + y * (180 / 2^level)
 lat_north = lat_south + (180 / 2^level)
 ```
@@ -315,14 +318,16 @@ lat = lat_south + ((qy - 16384) / 32768) * (lat_north - lat_south)
 alt = z * 0.001
 ```
 
-| Zoom | Tile width | X/Y precision |
+Tile width is the longitude span at the equator (`360° / 2^zoom`); precision is that width over the 32768 extent. Latitude precision is about twice as fine.
+
+| Zoom | Tile width | X precision |
 |------|-----------|---------------|
-| 0 | ~20,000 km | 611 m |
-| 5 | ~626 km | 19 m |
-| 10 | ~19.6 km | 598 mm |
-| 13 | ~2.44 km | 74 mm |
-| 15 | ~611 m | 19 mm |
-| 16 | ~305 m | 9 mm |
+| 0 | ~40,000 km | 1.2 km |
+| 5 | ~1,250 km | 38 m |
+| 10 | ~39 km | 1.2 m |
+| 13 | ~4.9 km | 149 mm |
+| 15 | ~1.2 km | 37 mm |
+| 16 | ~611 m | 19 mm |
 
 Client reconstructs world coordinates: quantized → geodetic → ECEF (or local tangent plane for rendering). All large-value math in double precision, cast to float32 for GPU only after subtracting camera position.
 

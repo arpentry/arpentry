@@ -10,7 +10,7 @@ Features → Simplify → Clip to tiles → Sort by tile ID → Group → Build 
 
 ## 1. Pipeline
 
-The pipeline reads features, assigns each to one or more tiles via stripe clipping, sorts all records by a Hilbert-ordered key, groups records by tile, assembles FlatBuffer tiles, and writes the final `.arpa` archive.
+The pipeline reads features, clips each to the tiles it covers, sorts all records by a Hilbert-ordered key, groups records by tile, assembles FlatBuffer tiles, and writes the final `.arpa` archive.
 
 ### Sort key
 
@@ -30,10 +30,10 @@ The tile ID encodes zoom level and spatial position using a Hilbert curve:
 
 ```
 bits [47..42]  zoom     (6 bits, max 63)
-bits [41..0]   hilbert  (42 bits, sufficient up to z=20)
+bits [41..0]   hilbert  (42 bits; the curve uses 2·z bits, so z ≤ 21)
 ```
 
-At zoom z, the tile grid is 2^(z+1) columns × 2^z rows. The grid is embedded into a 2^(z+1) square for Hilbert indexing. Tiles are grouped by zoom, then ordered spatially within each zoom for cache-friendly access.
+At zoom z, the tile grid is 2^z columns × 2^z rows (one root tile at z0). The Hilbert curve is indexed over this 2^z square (order = z). Tiles are grouped by zoom, then ordered spatially within each zoom for cache-friendly access.
 
 ---
 
@@ -179,19 +179,26 @@ bool arpt_pipeline_run(const arpt_pipeline_config *config);
 arpentry_tiler [options]
 
   --output <path>      Output .arpa archive path (required)
-  --synthetic          Use synthetic test data
+  --input <N:path>     GeoParquet input keyed by layer index N (repeatable)
   --bbox <w,s,e,n>     Geographic bounds in degrees (default: world)
   --min-zoom <z>       Minimum zoom level (default: 0)
   --max-zoom <z>       Maximum zoom level (default: 4)
-  --tmp <dir>          Temp directory for sort runs (default: /tmp)
+  --tmp <dir>          Temp directory for sort runs (default: system temp)
   --mem <bytes>        Memory budget for external sort (default: 64 MB)
+  --threads <n>        Worker threads (default: detected CPU count)
 ```
+
+Inputs are GeoParquet files keyed by layer index (see Section 9 / `layers`):
+`0` terrain, `1` land_cover, `2` bathymetry, `3` water, `4` land,
+`5` transportation, `6` land_use. Layer 0 (terrain) is generated, not an input.
 
 Example:
 
 ```bash
-./build/tiler/arpentry_tiler --synthetic --output /tmp/test.arpa \
-  --bbox 6.0,46.0,7.0,47.0 --min-zoom 0 --max-zoom 14
+./build/tiler/arpentry_tiler --output /tmp/test.arpa \
+  --bbox 6.0,46.0,7.0,47.0 --min-zoom 0 --max-zoom 14 \
+  --input 4:data/naturalearth/land.parquet \
+  --input 3:data/naturalearth/lake.parquet
 ```
 
 ---

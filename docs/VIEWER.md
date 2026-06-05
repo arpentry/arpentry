@@ -32,7 +32,7 @@ GPU vertex shader (float32, per vertex):
   5. projection * camera_pos
 ```
 
-Precision: the tile-relative ECEF subtraction on GPU uses the same float32 trig for both vertex and tile center, so systematic errors cancel. The pipeline preserves full uint16 quantization precision (9 mm at level 16) at all zoom levels.
+Precision: the tile-relative ECEF subtraction on GPU uses the same float32 trig for both vertex and tile center, so systematic errors cancel. The pipeline preserves full uint16 quantization precision (~19 mm longitude at level 16, finer in latitude) at all zoom levels.
 
 ### Redraw Policy
 
