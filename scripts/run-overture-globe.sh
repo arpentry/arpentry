@@ -14,10 +14,11 @@ BUILD_DIR="$ROOT_DIR/build"
 DATA_DIR="$ROOT_DIR/data/overture-globe"
 ARCHIVE="/tmp/overture-globe.arpa"
 
-SERVER="$BUILD_DIR/server/arpentry_server"
+# Tiler and server are the Rust reimplementation (tiler-rs), built with Cargo
+# below; only the client comes from the C build.
+TILER="$ROOT_DIR/tiler-rs/target/release/arpentry_tiler"
+SERVER="$ROOT_DIR/tiler-rs/target/release/arpentry_server"
 CLIENT="$BUILD_DIR/client/arpentry_client"
-TILER="$BUILD_DIR/tiler/arpentry_tiler"
-MERGE="$BUILD_DIR/tiler/arpentry_merge"
 
 # World bbox
 BBOX="-180,-85,180,85"
@@ -58,8 +59,11 @@ if [ ! -f "$BUILD_DIR/CMakeCache.txt" ]; then
     cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
 fi
 
-echo "Building..."
-cmake --build "$BUILD_DIR"
+echo "Building client (C)..."
+cmake --build "$BUILD_DIR" --target arpentry_client
+
+echo "Building Rust tiler + server..."
+( cd "$ROOT_DIR/tiler-rs" && cargo build --release )
 
 # ── Download Overture base-theme data ────────────────────────────────────────
 
@@ -88,18 +92,6 @@ $LAYER_WATER          && download_type water
 $LAYER_TRANSPORTATION && download_type segment
 $LAYER_BUILDING       && download_type building
 
-# ── Merge transportation segments ────────────────────────────────────────────
-
-if $LAYER_TRANSPORTATION && [ -f "$DATA_DIR/segment.parquet" ] && [ ! -f "$DATA_DIR/segment_merged.parquet" ]; then
-    echo ""
-    echo "Merging transportation segments..."
-    "$MERGE" \
-        --input "$DATA_DIR/segment.parquet" \
-        --output "$DATA_DIR/segment_merged.parquet" \
-        --bbox "$BBOX"
-    echo "  -> $(du -h "$DATA_DIR/segment_merged.parquet" | cut -f1)"
-fi
-
 # ── Tile ──────────────────────────────────────────────────────────────────────
 
 if [ ! -f "$ARCHIVE" ]; then
@@ -107,11 +99,7 @@ if [ ! -f "$ARCHIVE" ]; then
     echo "Tiling to $ARCHIVE..."
     echo "  bbox=$BBOX  zoom=$MIN_ZOOM-$MAX_ZOOM"
 
-    # Use merged segments if available, otherwise raw
     SEGMENT_FILE="$DATA_DIR/segment.parquet"
-    if [ -f "$DATA_DIR/segment_merged.parquet" ]; then
-        SEGMENT_FILE="$DATA_DIR/segment_merged.parquet"
-    fi
 
     TILER_INPUTS=()
     $LAYER_LAND_COVER     && TILER_INPUTS+=(--input "1:$DATA_DIR/land_cover.parquet")

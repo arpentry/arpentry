@@ -38,7 +38,7 @@ To run a single test executable directly (faster iteration):
 ./build/common/test_common
 ```
 
-Tests use the Unity framework: `setUp`/`tearDown`, `UNITY_BEGIN`/`RUN_TEST`/`UNITY_END` pattern. Test sources live in `common/tests/`, `client/tests/`, and `server/tests/`.
+Tests use the Unity framework: `setUp`/`tearDown`, `UNITY_BEGIN`/`RUN_TEST`/`UNITY_END` pattern. Test sources live in `common/tests/` and `client/tests/`. (The tiler and tile server are now the Rust reimplementation in `tiler-rs/`; build and test them with `cargo build --release` / `cargo test` in that directory.)
 
 ## Defensive C Coding
 
@@ -70,7 +70,9 @@ These are gotchas not documented elsewhere:
 You can visually verify rendering by capturing a screenshot and reading the PNG with the Read tool:
 
 ```bash
-./build/server/arpentry_server tiles style.json &
+# Server is the Rust reimplementation; build it with `cargo build --release` in tiler-rs/.
+# A non-archive path (here "tiles") makes it synthesise tiles procedurally.
+./tiler-rs/target/release/arpentry_server tiles style.json 8090 &
 SERVER_PID=$!
 # angles in degrees, altitude in meters
 ./build/client/arpentry_client --lon 6.6 --lat 46.5 --alt 50000 --bearing 0 --tilt 0 --screenshot /tmp/test.png

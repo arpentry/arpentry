@@ -39,19 +39,6 @@ FetchContent_Declare(brotli
 )
 FetchContent_MakeAvailable(brotli)
 
-# Zstd (static)
-FetchContent_Declare(zstd
-    GIT_REPOSITORY https://github.com/facebook/zstd.git
-    GIT_TAG        v1.5.6
-    GIT_SHALLOW    TRUE
-    SOURCE_SUBDIR  build/cmake
-)
-set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
-set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(zstd)
-
 # FlatCC — FlatBuffers compiler + runtime for C
 FetchContent_Declare(flatcc
     GIT_REPOSITORY https://github.com/dvidelabs/flatcc.git
@@ -90,19 +77,6 @@ endif()
 add_library(unity STATIC ${unity_SOURCE_DIR}/src/unity.c)
 target_include_directories(unity PUBLIC ${unity_SOURCE_DIR}/src)
 target_compile_definitions(unity PUBLIC UNITY_INCLUDE_DOUBLE)
-
-# json.c — lightweight JSON parser (no upstream CMake — built manually)
-FetchContent_Declare(json_c
-    GIT_REPOSITORY https://github.com/tidwall/json.c.git
-    GIT_TAG        v1.1.8
-    GIT_SHALLOW    TRUE
-)
-FetchContent_GetProperties(json_c)
-if(NOT json_c_POPULATED)
-    FetchContent_Populate(json_c)
-endif()
-add_library(json_c STATIC ${json_c_SOURCE_DIR}/json.c)
-target_include_directories(json_c PUBLIC ${json_c_SOURCE_DIR})
 
 # ── FlatBuffers schema compilation ───────────────────────────────────────
 
@@ -159,6 +133,3 @@ add_custom_target(flatcc_generate DEPENDS
 
 add_subdirectory(common)
 add_subdirectory(client)
-add_subdirectory(server)
-add_subdirectory(parquet)
-add_subdirectory(tiler)

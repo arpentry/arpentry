@@ -14,9 +14,11 @@ BUILD_DIR="$ROOT_DIR/build"
 DATA_DIR="$ROOT_DIR/data/overture-ch"
 ARCHIVE="$DATA_DIR/switzerland.arpa"
 
-SERVER="$BUILD_DIR/server/arpentry_server"
+# Tiler and server are the Rust reimplementation (tiler-rs), built with Cargo
+# below; only the client comes from the C build.
+TILER="$ROOT_DIR/tiler-rs/target/release/arpentry_tiler"
+SERVER="$ROOT_DIR/tiler-rs/target/release/arpentry_server"
 CLIENT="$BUILD_DIR/client/arpentry_client"
-TILER="$BUILD_DIR/tiler/arpentry_tiler"
 
 # Switzerland bbox (approx)
 BBOX="5.9,45.8,10.5,47.9"
@@ -43,8 +45,11 @@ if [ ! -f "$BUILD_DIR/CMakeCache.txt" ]; then
     cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
 fi
 
-echo "Building..."
-cmake --build "$BUILD_DIR"
+echo "Building client (C)..."
+cmake --build "$BUILD_DIR" --target arpentry_client
+
+echo "Building Rust tiler + server..."
+( cd "$ROOT_DIR/tiler-rs" && cargo build --release )
 
 # ── Download Overture data ────────────────────────────────────────────────────
 

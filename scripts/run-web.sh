@@ -3,20 +3,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$SCRIPT_DIR/.."
-BUILD_DIR="$ROOT_DIR/build"
 WEB_BUILD_DIR="$ROOT_DIR/build-web"
 WEB_DIR="$WEB_BUILD_DIR/client"
 TILE_DIR="$ROOT_DIR/tiles"
 HTTP_PORT=8080
 
-SERVER="$BUILD_DIR/server/arpentry_server"
-
-# ── Check native build is configured ─────────────────────────────────────────
-
-if [ ! -f "$BUILD_DIR/CMakeCache.txt" ]; then
-    echo "Configuring native build..."
-    cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Debug
-fi
+# Server is the Rust reimplementation (tiler-rs), built with Cargo below; the
+# client is the WebAssembly build (Emscripten/CMake). The server synthesises
+# tiles procedurally when pointed at a non-archive path (here, the tile
+# directory).
+SERVER="$ROOT_DIR/tiler-rs/target/release/arpentry_server"
 
 # ── Check web build is configured ────────────────────────────────────────────
 
@@ -27,7 +23,10 @@ fi
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
-cmake --build "$BUILD_DIR"
+echo "Building Rust server..."
+( cd "$ROOT_DIR/tiler-rs" && cargo build --release )
+
+echo "Building WebAssembly client..."
 cmake --build "$WEB_BUILD_DIR"
 
 # ── Kill any previous instances ──────────────────────────────────────────────
