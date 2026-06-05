@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tile Natural Earth 10m data, serve it, and view the globe.
 #
-# Uses the Rust tiler and server (tiler-rs/, built with Cargo); the client is
+# Uses the Rust tiler and server (server/, built with Cargo); the client is
 # the C build (CMake).
 #
 # Run scripts/download-naturalearth.py first to fetch the data:
@@ -16,10 +16,10 @@ ROOT_DIR="$SCRIPT_DIR/.."
 BUILD_DIR="$ROOT_DIR/build"
 DATA_DIR="$ROOT_DIR/data/naturalearth"
 
-# Tiler and server are the Rust reimplementation (tiler-rs), built with Cargo
+# Tiler and server are the Rust reimplementation (server), built with Cargo
 # below; only the client comes from the C build.
-TILER="$ROOT_DIR/tiler-rs/target/release/arpentry_tiler"
-SERVER="$ROOT_DIR/tiler-rs/target/release/arpentry_server"
+TILER="$ROOT_DIR/server/target/release/arpentry_tiler"
+SERVER="$ROOT_DIR/server/target/release/arpentry_server"
 CLIENT="$BUILD_DIR/client/arpentry_client"
 
 # World bbox
@@ -57,7 +57,7 @@ echo "Building client (C)..."
 cmake --build "$BUILD_DIR" --target arpentry_client
 
 echo "Building Rust tiler + server..."
-( cd "$ROOT_DIR/tiler-rs" && cargo build --release )
+( cd "$ROOT_DIR/server" && cargo build --release )
 
 # ── Check data ────────────────────────────────────────────────────────────────
 

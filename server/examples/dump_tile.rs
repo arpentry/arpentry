@@ -1,8 +1,8 @@
 //! Dump the layer/feature structure of one tile in an `.arpa` archive.
 //! Usage: cargo run --example dump_tile -- <archive.arpa> <z> <x> <y>
 
-use arpentry_tiler::archive::Archive;
-use arpentry_tiler::fb::tile::arpentry::tiles as fbt;
+use arpentry_server::archive::Archive;
+use arpentry_server::fb::tile::arpentry::tiles as fbt;
 
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();

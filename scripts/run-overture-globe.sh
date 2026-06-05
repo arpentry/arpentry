@@ -14,10 +14,10 @@ BUILD_DIR="$ROOT_DIR/build"
 DATA_DIR="$ROOT_DIR/data/overture-globe"
 ARCHIVE="/tmp/overture-globe.arpa"
 
-# Tiler and server are the Rust reimplementation (tiler-rs), built with Cargo
+# Tiler and server are the Rust reimplementation (server), built with Cargo
 # below; only the client comes from the C build.
-TILER="$ROOT_DIR/tiler-rs/target/release/arpentry_tiler"
-SERVER="$ROOT_DIR/tiler-rs/target/release/arpentry_server"
+TILER="$ROOT_DIR/server/target/release/arpentry_tiler"
+SERVER="$ROOT_DIR/server/target/release/arpentry_server"
 CLIENT="$BUILD_DIR/client/arpentry_client"
 
 # World bbox
@@ -63,7 +63,7 @@ echo "Building client (C)..."
 cmake --build "$BUILD_DIR" --target arpentry_client
 
 echo "Building Rust tiler + server..."
-( cd "$ROOT_DIR/tiler-rs" && cargo build --release )
+( cd "$ROOT_DIR/server" && cargo build --release )
 
 # ── Download Overture base-theme data ────────────────────────────────────────
 

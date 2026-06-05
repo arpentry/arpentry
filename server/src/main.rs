@@ -4,9 +4,9 @@
 
 use std::path::PathBuf;
 
-use arpentry_tiler::layers;
-use arpentry_tiler::pipeline::{self, Config};
-use arpentry_tiler::project::Bounds;
+use arpentry_server::layers;
+use arpentry_server::pipeline::{self, Config};
+use arpentry_server::project::Bounds;
 
 const USAGE: &str = "\
 arpentry_tiler — generate a .arpa tile archive from GeoParquet inputs

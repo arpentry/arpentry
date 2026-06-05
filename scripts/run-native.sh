@@ -6,10 +6,10 @@ ROOT_DIR="$SCRIPT_DIR/.."
 BUILD_DIR="$ROOT_DIR/build"
 TILE_DIR="$ROOT_DIR/tiles"
 
-# Server is the Rust reimplementation (tiler-rs), built with Cargo below; only
+# Server is the Rust reimplementation (server), built with Cargo below; only
 # the client comes from the C build (CMake). The server synthesises tiles
 # procedurally when pointed at a non-archive path (here, the tile directory).
-SERVER="$ROOT_DIR/tiler-rs/target/release/arpentry_server"
+SERVER="$ROOT_DIR/server/target/release/arpentry_server"
 CLIENT="$BUILD_DIR/client/arpentry_client"
 
 # ── Check native build is configured ─────────────────────────────────────────
@@ -25,7 +25,7 @@ echo "Building client (C)..."
 cmake --build "$BUILD_DIR" --target arpentry_client
 
 echo "Building Rust server..."
-( cd "$ROOT_DIR/tiler-rs" && cargo build --release )
+( cd "$ROOT_DIR/server" && cargo build --release )
 
 # ── Kill any previous instances ──────────────────────────────────────────────
 

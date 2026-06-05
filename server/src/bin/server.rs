@@ -21,11 +21,11 @@
 use std::process::exit;
 use std::sync::Arc;
 
-use arpentry_tiler::archive::Archive;
-use arpentry_tiler::geom::GeometryType;
-use arpentry_tiler::project::Bounds;
-use arpentry_tiler::tileset::{self, LayerInfo, TilesetInfo};
-use arpentry_tiler::{gen, models, style, terrain, tile_build};
+use arpentry_server::archive::Archive;
+use arpentry_server::geom::GeometryType;
+use arpentry_server::project::Bounds;
+use arpentry_server::tileset::{self, LayerInfo, TilesetInfo};
+use arpentry_server::{gen, models, style, terrain, tile_build};
 
 use tiny_http::{Header, Method, Request, Response, Server};
 
@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn archive_misses_fall_back_to_a_flat_terrain_tile() {
         // An empty in-memory archive: every tile request misses and falls back.
-        use arpentry_tiler::archive::{ArchiveMeta, ArchiveWriter};
+        use arpentry_server::archive::{ArchiveMeta, ArchiveWriter};
         let meta = ArchiveMeta {
             min_zoom: 0,
             max_zoom: 6,
@@ -360,7 +360,7 @@ mod tests {
         let raw = decompress(&body);
         // Fallback still carries a renderable terrain mesh as layer 0.
         assert_eq!(&raw[4..8], b"arpt");
-        let tile = arpentry_tiler::fb::tile::arpentry::tiles::root_as_tile(&raw).unwrap();
+        let tile = arpentry_server::fb::tile::arpentry::tiles::root_as_tile(&raw).unwrap();
         assert_eq!(tile.layers().unwrap().get(0).name(), "terrain");
     }
 

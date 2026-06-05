@@ -1,8 +1,8 @@
 //! Decode the `.arps` that the server would build from a JSON style file.
 //! Usage: cargo run --example dump_style -- <style.json>
 
-use arpentry_tiler::fb::style::arpentry::tiles as fbs;
-use arpentry_tiler::style;
+use arpentry_server::fb::style::arpentry::tiles as fbs;
+use arpentry_server::style;
 
 fn main() {
     let path = std::env::args().nth(1).expect("style.json path");

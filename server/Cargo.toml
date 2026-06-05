@@ -1,8 +1,8 @@
 [package]
-name = "arpentry-tiler"
+name = "arpentry-server"
 version = "0.1.0"
 edition = "2021"
-description = "Generates .arpa tile archives from GeoParquet (Overture / Natural Earth) sources"
+description = "Tile server and .arpa archive generator for GeoParquet (Overture / Natural Earth) sources"
 license = "MIT"
 
 [[bin]]
@@ -14,7 +14,7 @@ name = "arpentry_server"
 path = "src/bin/server.rs"
 
 [lib]
-name = "arpentry_tiler"
+name = "arpentry_server"
 path = "src/lib.rs"
 
 [dependencies]

@@ -8,11 +8,11 @@ WEB_DIR="$WEB_BUILD_DIR/client"
 TILE_DIR="$ROOT_DIR/tiles"
 HTTP_PORT=8080
 
-# Server is the Rust reimplementation (tiler-rs), built with Cargo below; the
+# Server is the Rust reimplementation (server), built with Cargo below; the
 # client is the WebAssembly build (Emscripten/CMake). The server synthesises
 # tiles procedurally when pointed at a non-archive path (here, the tile
 # directory).
-SERVER="$ROOT_DIR/tiler-rs/target/release/arpentry_server"
+SERVER="$ROOT_DIR/server/target/release/arpentry_server"
 
 # ── Check web build is configured ────────────────────────────────────────────
 
@@ -24,7 +24,7 @@ fi
 # ── Build ─────────────────────────────────────────────────────────────────────
 
 echo "Building Rust server..."
-( cd "$ROOT_DIR/tiler-rs" && cargo build --release )
+( cd "$ROOT_DIR/server" && cargo build --release )
 
 echo "Building WebAssembly client..."
 cmake --build "$WEB_BUILD_DIR"

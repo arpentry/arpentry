@@ -1,9 +1,10 @@
-# arpentry-tiler (Rust)
+# arpentry-server (Rust)
 
-A from-scratch Rust implementation of the Arpentry tiler (`docs/TILER.md`). It
-generates `.arpa` tile archives from GeoParquet sources (Overture Maps, Natural
-Earth). The C implementation under `../tiler/` is the reference for behaviour and
-test fixtures but is not a dependency.
+A from-scratch Rust implementation of the Arpentry tiler and tile server
+(`docs/TILER.md`). The `arpentry_tiler` binary generates `.arpa` tile archives
+from GeoParquet sources (Overture Maps, Natural Earth); the `arpentry_server`
+binary serves tiles over HTTP. The original C implementation is the reference
+for behaviour and test fixtures but is not a dependency.
 
 ## Architecture
 
@@ -97,7 +98,7 @@ Dependencies are added to `Cargo.toml` per milestone.
 ## Build & test
 
 ```bash
-cd tiler-rs
+cd server
 cargo test                 # unit tests (offline)
 cargo test -- --ignored    # also run checks against ../data sample files
 ```
