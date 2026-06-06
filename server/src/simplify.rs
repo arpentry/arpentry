@@ -114,6 +114,52 @@ pub fn simplify_geometry(geom: &Geometry, tolerance: f64) -> Option<Geometry> {
     }
 }
 
+/// Absolute area of a polygonal geometry (shoelace over exterior rings, summed
+/// across multipolygon parts), in squared input units. Holes are ignored — the
+/// measure is the visible footprint, used only to discard sub-pixel features.
+/// Non-areal geometries return 0.
+pub fn area(geom: &Geometry) -> f64 {
+    match geom {
+        Geometry::Polygon(p) => ring_area(p.exterior()),
+        Geometry::MultiPolygon(mp) => mp.0.iter().map(|p| ring_area(p.exterior())).sum(),
+        _ => 0.0,
+    }
+}
+
+/// Total length of a linear geometry, in input units. Non-linear geometries
+/// return 0.
+pub fn length(geom: &Geometry) -> f64 {
+    match geom {
+        Geometry::LineString(ls) => line_length(ls),
+        Geometry::MultiLineString(mls) => mls.0.iter().map(line_length).sum(),
+        _ => 0.0,
+    }
+}
+
+/// Shoelace area of a (closed) ring, absolute value.
+fn ring_area(ring: &LineString) -> f64 {
+    let pts = &ring.0;
+    if pts.len() < 3 {
+        return 0.0;
+    }
+    let mut sum = 0.0;
+    for w in pts.windows(2) {
+        sum += w[0].x * w[1].y - w[1].x * w[0].y;
+    }
+    (sum * 0.5).abs()
+}
+
+fn line_length(ls: &LineString) -> f64 {
+    ls.0
+        .windows(2)
+        .map(|w| {
+            let dx = w[1].x - w[0].x;
+            let dy = w[1].y - w[0].y;
+            (dx * dx + dy * dy).sqrt()
+        })
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +211,22 @@ mod tests {
         // A near-zero-area sliver simplifies away.
         let ring = LineString(vec![c(0.0, 0.0), c(1.0, 0.0), c(2.0, 0.0), c(0.0, 0.0)]);
         assert!(simplify_ring(&ring, 0.5).is_none());
+    }
+
+    #[test]
+    fn area_of_unit_square() {
+        let sq = Polygon::new(
+            LineString(vec![c(0.0, 0.0), c(2.0, 0.0), c(2.0, 3.0), c(0.0, 3.0), c(0.0, 0.0)]),
+            vec![],
+        );
+        assert!((area(&Geometry::Polygon(sq)) - 6.0).abs() < 1e-9);
+        // Non-areal geometries report zero area.
+        assert_eq!(area(&Geometry::LineString(LineString(vec![c(0.0, 0.0), c(1.0, 0.0)]))), 0.0);
+    }
+
+    #[test]
+    fn length_of_polyline() {
+        let ls = LineString(vec![c(0.0, 0.0), c(3.0, 0.0), c(3.0, 4.0)]);
+        assert!((length(&Geometry::LineString(ls)) - 7.0).abs() < 1e-9);
     }
 }

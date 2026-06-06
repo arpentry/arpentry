@@ -45,9 +45,10 @@ fn main() {
     match pipeline::run(&cfg) {
         Ok(stats) => {
             eprintln!(
-                "done: {} features read, {} records, {} tiles -> {}",
+                "done: {} features read, {} records ({} sub-pixel dropped), {} tiles -> {}",
                 stats.features_read,
                 stats.records,
+                stats.dropped_subpixel,
                 stats.tiles_written,
                 cfg.output.display()
             );

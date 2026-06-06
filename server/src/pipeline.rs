@@ -69,6 +69,9 @@ pub struct Stats {
     pub features_read: u64,
     pub records: u64,
     pub tiles_written: u64,
+    /// Per-zoom emissions skipped because the simplified feature was smaller
+    /// than one screen pixel at that zoom (sub-visible).
+    pub dropped_subpixel: u64,
 }
 
 type Error = Box<dyn std::error::Error>;
@@ -98,6 +101,13 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
                 let Some(simplified) = simplify::simplify_geometry(&f.geometry, tolerance(z)) else {
                     continue;
                 };
+                // Drop features that would be smaller than one screen pixel at
+                // this zoom: sub-visible, but otherwise the long tail of tiny
+                // polygons (lakes, land-cover patches) bloats low-zoom tiles.
+                if is_subpixel(&simplified, z) {
+                    stats.dropped_subpixel += 1;
+                    continue;
+                }
                 let mut add_err: Option<std::io::Error> = None;
                 clip::assign_tiles(&simplified, z, |x, y, clipped| {
                     if add_err.is_some() {
@@ -228,6 +238,20 @@ fn flush_tile(
 fn tolerance(z: u8) -> f64 {
     let tile_w = 360.0 / (1u64 << z as u32) as f64; // 2^z columns
     tile_w / 512.0
+}
+
+/// True when a simplified geometry is smaller than one screen pixel at `z` —
+/// sub-visible, so it's dropped rather than emitted. Polygons are judged by
+/// area (< 1 px²), lines by length (< 1 px); points are always kept. The pixel
+/// size is `tolerance(z)`, matching the simplification scale, so anything kept
+/// is at least a pixel in some dimension.
+fn is_subpixel(geom: &Geometry, z: u8) -> bool {
+    let px = tolerance(z); // degrees per screen pixel at this zoom
+    match geom {
+        Geometry::Polygon(_) | Geometry::MultiPolygon(_) => simplify::area(geom) < px * px,
+        Geometry::LineString(_) | Geometry::MultiLineString(_) => simplify::length(geom) < px,
+        _ => false,
+    }
 }
 
 fn bbox_intersects(bb: (f64, f64, f64, f64), b: &Bounds) -> bool {
