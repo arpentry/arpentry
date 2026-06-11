@@ -48,9 +48,28 @@ pub fn clip_geometry(geom: &Geometry, rect: &Bounds) -> Option<Geometry> {
 /// Assigns a geometry to tiles at `zoom`, clipping it to each tile's buffered
 /// bounds and invoking `emit(x, y, clipped)` for every non-empty result.
 pub fn assign_tiles(geom: &Geometry, zoom: u8, mut emit: impl FnMut(u32, u32, Geometry)) {
-    let Some((min_x, min_y, max_x, max_y)) = bbox(geom) else {
+    let Some(bb) = bbox(geom) else {
         return;
     };
+    // Clip the geometry directly against each candidate tile. (A two-pass
+    // row-band/column "stripe" clip is tempting for speed, but Sutherland–
+    // Hodgman introduces connecting edges along the band boundary that then
+    // leak into and fill columns the geometry never actually reaches.)
+    let (x0, x1, y0, y1) = candidate_range(bb, zoom);
+    for ty in y0..=y1 {
+        for tx in x0..=x1 {
+            let tile_rect = Bounds::of_tile(zoom, tx, ty).expanded(BUFFER_FRAC);
+            if let Some(clipped) = clip_geometry(geom, &tile_rect) {
+                emit(tx, ty, clipped);
+            }
+        }
+    }
+}
+
+/// Inclusive tile range `(x0, x1, y0, y1)` at `zoom` whose buffered bounds can
+/// intersect the `(min_x, min_y, max_x, max_y)` bbox, clamped to the grid.
+pub fn candidate_range(bb: (f64, f64, f64, f64), zoom: u8) -> (u32, u32, u32, u32) {
+    let (min_x, min_y, max_x, max_y) = bb;
     // Grid is 2^z × 2^z (one root tile at z0), matching the C client/server.
     let cols = 1u64 << zoom as u32;
     let rows = 1u64 << zoom as u32;
@@ -59,24 +78,11 @@ pub fn assign_tiles(geom: &Geometry, zoom: u8, mut emit: impl FnMut(u32, u32, Ge
     let margin_x = tile_w * BUFFER_FRAC;
     let margin_y = tile_h * BUFFER_FRAC;
 
-    // Candidate tile range covering the buffer-expanded bounding box.
     let x0 = tile_index((min_x - margin_x) + 180.0, tile_w, cols);
     let x1 = tile_index((max_x + margin_x) + 180.0, tile_w, cols);
     let y0 = tile_index((min_y - margin_y) + 90.0, tile_h, rows);
     let y1 = tile_index((max_y + margin_y) + 90.0, tile_h, rows);
-
-    // Clip the geometry directly against each candidate tile. (A two-pass
-    // row-band/column "stripe" clip is tempting for speed, but Sutherland–
-    // Hodgman introduces connecting edges along the band boundary that then
-    // leak into and fill columns the geometry never actually reaches.)
-    for ty in y0..=y1 {
-        for tx in x0..=x1 {
-            let tile_rect = Bounds::of_tile(zoom, tx as u32, ty as u32).expanded(BUFFER_FRAC);
-            if let Some(clipped) = clip_geometry(geom, &tile_rect) {
-                emit(tx as u32, ty as u32, clipped);
-            }
-        }
-    }
+    (x0 as u32, x1 as u32, y0 as u32, y1 as u32)
 }
 
 /// Maps a shifted coordinate (origin-relative degrees) to a clamped tile index.

@@ -1,16 +1,38 @@
 # Arpentry Tiler
 
-The tiler generates `.arpa` tile archives from geographic data. Tile generation is framed as a sort problem: features are clipped to tiles, sorted by a space-filling curve key, grouped, encoded, and written to a single archive file.
+The tiler (Rust, in `server/`) generates `.arpa` tile archives from GeoParquet data. Tile generation is framed as a sort problem: features are clipped to tiles, sorted by a space-filling curve key, grouped, encoded, and written to a single archive file.
 
 ```
-Features → Simplify → Clip to tiles → Sort by tile ID → Group → Build FlatBuffer → Write archive
+Features → Quadtree walk (simplify + clip per tile) → Sort by tile ID → Group → Build FlatBuffer → Write archive
 ```
 
 ---
 
 ## 1. Pipeline
 
-The pipeline reads features, clips each to the tiles it covers, sorts all records by a Hilbert-ordered key, groups records by tile, assembles FlatBuffer tiles, and writes the final `.arpa` archive.
+The pipeline runs two phases separated by an external merge sort, both parallel
+(`std::thread` + channels, no async runtime):
+
+**Phase 1 — process.** Each input's Parquet row groups become work items
+(pruned against the tiling bbox using the `bbox` column's row-group
+statistics, so out-of-bounds row groups are never read). Worker threads stream
+features from their row groups — only the geometry column and requested
+attribute roots are decoded — and fan each feature into per-tile sort records
+via a quadtree walk: the feature is clipped to its first emitted zoom's
+tile(s), then recursively clipped into child tiles down to `max_zoom`. Each
+node emits one record, re-simplified for that zoom from the carried geometry
+(held at `tolerance(max_zoom)` detail). Work is proportional to the records
+emitted, not `covered tiles × vertices`. Features wholly smaller than one
+screen pixel at a zoom are skipped at that zoom. Every worker feeds its own
+external sorter.
+
+**Phase 2 — emit.** The per-worker sorters merge k-way into one
+Hilbert-ordered stream. A dispatcher thread groups consecutive records by tile
+id into jobs; a worker pool decodes each job, builds the terrain mesh (DEM or
+flat), assembles the FlatBuffer, and Brotli-compresses it; the writer thread
+restores stream order with a small sequence-keyed heap and appends tiles to
+the archive. Workers own their DEM readers — the Hilbert order keeps their
+tile caches hot.
 
 ### Sort key
 
@@ -99,77 +121,64 @@ The reader mmap's the file, reads the header, and serves tile lookups via binary
 
 ## 3. Modules
 
-### hilbert
+All in the `server/` crate (`src/`).
 
-Hilbert curve mapping for tile ordering. Converts between (x, y) coordinates and Hilbert curve distance on a 2^order square grid.
+### geoparquet
 
-```c
-uint64_t arpt_hilbert_xy2d(int order, uint32_t x, uint32_t y);
-void     arpt_hilbert_d2xy(int order, uint64_t d, uint32_t *x, uint32_t *y);
-uint64_t arpt_hilbert_tile_id(int z, int x, int y);
-void     arpt_hilbert_tile_id_decode(uint64_t id, int *z, int *x, int *y);
-```
+Streaming GeoParquet reader. Opens footers only; `features(row_groups, attrs)`
+yields features batch by batch with projection pushdown (geometry + requested
+attribute roots), and `row_groups_intersecting(bounds)` prunes row groups via
+the `bbox` struct column's statistics. Dotted attribute paths
+(`cartography.min_zoom`) descend into nested structs; absent columns are
+skipped, so one column list serves Overture and Natural Earth.
 
 ### wkb
 
-WKB (Well-Known Binary) geometry parser. Handles types 1–6 (Point, LineString, Polygon, Multi\*), little/big endian, 2D and ISO Z variants. Output is a unified `arpt_geom` struct with SoA coordinate arrays and offset arrays for rings and polygons.
-
-```c
-bool arpt_wkb_parse(const uint8_t *data, size_t size, arpt_geom *out);
-void arpt_geom_free(arpt_geom *g);
-```
+Hand-rolled WKB parser/writer (types 1–7, little/big endian, ISO-Z/EWKB; Z/M
+discarded) producing `geo-types` geometries.
 
 ### simplify
 
-Douglas-Peucker line simplification. Removes vertices that deviate less than a tolerance from the line between retained endpoints. Operates in-place.
-
-```c
-uint32_t arpt_simplify(double *x, double *y, uint32_t count, double tolerance);
-```
+Douglas–Peucker simplification over `geo-types` (iterative, stack-safe), plus
+`area`/`length` measures used for sub-pixel dropping.
 
 ### clip
 
-Geometry clipping for tile assignment:
-- **Points**: bounding box containment
-- **Lines**: Liang-Barsky segment clipping
-- **Polygons**: Sutherland-Hodgman four-edge clipping
-
-`arpt_assign_tiles()` is the high-level entry: given a geometry and zoom level, it calls back with each (tile, clipped geometry) pair.
-
-```c
-void arpt_assign_tiles(const arpt_geom *geom, int zoom, arpt_tile_cb cb, void *ctx);
-```
+Rectangle clipping for tile assignment: points by containment, lines by
+Liang–Barsky, polygons by Sutherland–Hodgman. `assign_tiles` clips a geometry
+to every tile it covers at one zoom; `candidate_range` exposes the buffered
+candidate-tile range the pipeline's quadtree walk starts from.
 
 ### sort
 
-External merge sort with configurable memory budget. Records are (uint64 key, variable-length data). When the memory budget is exceeded, sorted runs are flushed to temporary files. After `finish()`, a k-way min-heap merge yields a globally sorted stream.
+`ExternalSorter`: external merge sort with a memory budget — records
+accumulate in memory, spill as sorted runs, and `into_sorted()` k-way merges
+them. `sort::merge(sorters)` joins many independently filled sorters (one per
+phase-1 worker) into a single globally sorted stream.
 
-```c
-arpt_sorter *arpt_sorter_create(const char *tmp_dir, size_t mem_budget);
-bool         arpt_sorter_add(arpt_sorter *s, uint64_t key, const void *data, size_t size);
-bool         arpt_sorter_finish(arpt_sorter *s);
-bool         arpt_sorter_next(arpt_sorter *s, uint64_t *key, const void **data, size_t *size);
-void         arpt_sorter_free(arpt_sorter *s);
-```
+### record
+
+Wire codec for sort-record payloads (id, WKB geometry, properties).
+`RecordEncoder` serializes a feature's id + properties once and stamps out
+per-tile records, since a feature can fan out to thousands of tiles.
 
 ### tile_build
 
-FlatBuffer tile assembly. Takes features grouped by layer, builds property dictionaries with deduplication, quantizes coordinates to uint16 within tile bounds, and produces Brotli-compressed `.arpt` output.
+FlatBuffer tile assembly: property dictionaries with deduplication, uint16
+quantization within tile bounds, the geometry union, and Brotli compression
+(`DEFAULT_QUALITY` 7 — measured ~30× faster than quality 11 with equal size).
 
-```c
-arpt_tile_builder *arpt_tile_builder_create(arpt_bounds bounds);
-bool               arpt_tile_builder_add_feature(arpt_tile_builder *b, const arpt_feature *feat);
-void              *arpt_tile_builder_finish(arpt_tile_builder *b, size_t *out_size);
-void               arpt_tile_builder_free(arpt_tile_builder *b);
-```
+### terrain / dem / pmtiles
+
+Terrain meshes for every tile: `flat_mesh` when no DEM is configured,
+`elevated_mesh` sampling a Terrarium PMTiles DEM (Mapterhorn) with per-vertex
+elevation and cross-tile-continuous normals.
 
 ### pipeline
 
-Top-level orchestration. Reads features, runs them through simplify → clip → sort → group → tile_build → archive for each zoom level.
-
-```c
-bool arpt_pipeline_run(const arpt_pipeline_config *config);
-```
+Top-level orchestration (`pipeline::run(&Config)`): the two parallel phases
+described in §1, per-stage timing/counter stats, and atomic archive output
+(temp file + rename).
 
 ---
 
@@ -184,33 +193,38 @@ arpentry_tiler [options]
   --min-zoom <z>       Minimum zoom level (default: 0)
   --max-zoom <z>       Maximum zoom level (default: 4)
   --tmp <dir>          Temp directory for sort runs (default: system temp)
-  --mem <bytes>        Memory budget for external sort (default: 64 MB)
+  --mem <bytes>        Memory budget for external sort (default: 64 MiB)
+  --terrain <path>     Terrarium DEM PMTiles for per-tile elevation
   --threads <n>        Worker threads (default: detected CPU count)
+  --brotli <q>         Brotli quality 0-11 for tile blobs (default: 7)
 ```
 
-Inputs are GeoParquet files keyed by layer index (see Section 9 / `layers`):
+Inputs are GeoParquet files keyed by layer index (see `layers`):
 `0` terrain, `1` land_cover, `2` bathymetry, `3` water, `4` land,
 `5` transportation, `6` land_use. Layer 0 (terrain) is generated, not an input.
 
 Example:
 
 ```bash
-./build/tiler/arpentry_tiler --output /tmp/test.arpa \
+./server/target/release/arpentry_tiler --output /tmp/test.arpa \
   --bbox 6.0,46.0,7.0,47.0 --min-zoom 0 --max-zoom 14 \
   --input 4:data/naturalearth/land.parquet \
   --input 3:data/naturalearth/lake.parquet
 ```
 
+The run ends with a per-stage timing report (read / simplify / clip / sort and
+merge / decode / terrain / encode / write) plus row-group pruning and
+throughput counters — use it to spot the bottleneck before tuning anything.
+
 ---
 
 ## 5. Building and Testing
 
-The tiler is native-only (not built for Emscripten).
+The tiler is native-only and lives in the `server/` crate.
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
-ctest --test-dir build -R "test_hilbert|test_archive|test_wkb|test_simplify|test_clip|test_sort|test_tile_build|test_pipeline" --output-on-failure
+cd server
+cargo build --release
+cargo test
+cargo test -- --ignored   # real-data + end-to-end tests (need ../data)
 ```
-
-Tests use the Unity framework. Each module has a corresponding test file in `tiler/tests/`.

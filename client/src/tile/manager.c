@@ -428,8 +428,16 @@ static void tile_finish_main(bool success, void *payload, void *userdata) {
 
     updated.avg_elevation = p->avg_elevation;
     updated.gpu = arpt_renderer_upload_tile(tm->renderer, &p->prims);
-    updated.state = updated.gpu ? TILE_READY : TILE_FAILED;
-    if (updated.state == TILE_READY) tm->needs_redraw = true;
+    if (updated.gpu) {
+        updated.state = TILE_READY;
+        tm->needs_redraw = true;
+    } else {
+        /* GPU upload failed (likely memory pressure) — back off before
+           retrying rather than refetching every frame. */
+        updated.state = TILE_FAILED;
+        updated.retries = retries + 1;
+        updated.retry_after = tm->frame + (1u << updated.retries);
+    }
     tm_hashmap_set(tm, &updated);
 
     prepared_tile_free(p);
@@ -437,13 +445,27 @@ static void tile_finish_main(bool success, void *payload, void *userdata) {
 
 /* LRU eviction */
 
+/* True when key is in the current frame's visible tile list. */
+static bool tile_visible_now(const arpt_tile_manager *tm, arpt_tile_key key) {
+    for (int i = 0; i < tm->visible_count; i++) {
+        if (tm->visible[i].level == key.level && tm->visible[i].x == key.x &&
+            tm->visible[i].y == key.y)
+            return true;
+    }
+    return false;
+}
+
 static void evict_oldest(arpt_tile_manager *tm) {
     size_t count = hashmap_count(tm->cache);
     if ((int)count <= tm->config.max_tiles) return;
 
     size_t to_evict = count - (size_t)tm->config.max_tiles;
     for (size_t e = 0; e < to_evict; e++) {
-        /* Find the least recently used READY or FAILED entry */
+        /* Find the least recently used READY or FAILED entry.  Visible tiles
+           are never evicted: they would be refetched on the very next frame,
+           and once the visible set exceeds max_tiles that turns into an
+           endless reload loop of whichever tiles iterate first.  The cache
+           may exceed max_tiles while the visible set itself is larger. */
         uint64_t oldest_frame = UINT64_MAX;
         arpt_tile_key oldest_key = {0};
         bool found = false;
@@ -454,6 +476,8 @@ static void evict_oldest(arpt_tile_manager *tm) {
             tile_entry *entry = item;
             if (entry->state == TILE_LOADING)
                 continue; /* don't evict in-flight */
+            if (tile_visible_now(tm, entry->key))
+                continue;
             if (entry->last_used < oldest_frame) {
                 oldest_frame = entry->last_used;
                 oldest_key = entry->key;

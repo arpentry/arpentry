@@ -40,19 +40,40 @@ impl std::error::Error for RecordError {}
 
 /// Encodes a feature into a sort-record payload.
 pub fn encode(feature: &EncoderFeature) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.extend_from_slice(&feature.id.to_le_bytes());
+    RecordEncoder::new(feature.id, &feature.properties).encode(&feature.geometry)
+}
 
-    let geom = wkb::to_wkb(&feature.geometry);
-    buf.extend_from_slice(&(geom.len() as u32).to_le_bytes());
-    buf.extend_from_slice(&geom);
+/// Encodes the sort records of one source feature. A feature fans out to one
+/// record per (zoom, tile) it covers — thousands for large geometries — so the
+/// id and property block are serialized once here and only the geometry is
+/// encoded per record.
+pub struct RecordEncoder {
+    id_bytes: [u8; 8],
+    /// Serialized property count + entries, shared verbatim by every record.
+    props: Vec<u8>,
+}
 
-    buf.extend_from_slice(&(feature.properties.len() as u32).to_le_bytes());
-    for (key, value) in &feature.properties {
-        write_bytes(&mut buf, key.as_bytes());
-        write_value(&mut buf, value);
+impl RecordEncoder {
+    pub fn new(id: u64, properties: &[(String, Value)]) -> Self {
+        let mut props = Vec::new();
+        props.extend_from_slice(&(properties.len() as u32).to_le_bytes());
+        for (key, value) in properties {
+            write_bytes(&mut props, key.as_bytes());
+            write_value(&mut props, value);
+        }
+        RecordEncoder { id_bytes: id.to_le_bytes(), props }
     }
-    buf
+
+    /// Encodes one record payload for a clipped geometry.
+    pub fn encode(&self, geometry: &Geometry) -> Vec<u8> {
+        let geom = wkb::to_wkb(geometry);
+        let mut buf = Vec::with_capacity(8 + 4 + geom.len() + self.props.len());
+        buf.extend_from_slice(&self.id_bytes);
+        buf.extend_from_slice(&(geom.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&geom);
+        buf.extend_from_slice(&self.props);
+        buf
+    }
 }
 
 /// Decodes a sort-record payload back into a feature.

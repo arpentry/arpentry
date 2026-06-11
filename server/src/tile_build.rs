@@ -39,12 +39,28 @@ pub struct EncoderLayer {
     pub features: Vec<EncoderFeature>,
 }
 
+/// Default Brotli quality for tile compression. Measured on a Natural Earth
+/// world z0–6 archive: quality 11 (the encoder's own default) took 42 s where
+/// 7 took 1.4 s, and its output was even slightly larger; qualities 5–9 land
+/// within 0.3% of each other in size. 7 is the speed/size sweet spot.
+pub const DEFAULT_QUALITY: i32 = 7;
+
 /// Builds a Brotli-compressed `.arpt` tile from features grouped by layer.
 ///
 /// `terrain`, when present, is encoded as the first layer ("terrain") with a
 /// single `MeshGeometry` feature — the client requires it to render the tile.
 pub fn build_tile(bounds: &Bounds, terrain: Option<&TerrainMesh>, layers: &[EncoderLayer]) -> Vec<u8> {
-    compress(&encode(bounds, terrain, layers))
+    build_tile_q(bounds, terrain, layers, DEFAULT_QUALITY)
+}
+
+/// [`build_tile`] with an explicit Brotli quality (0–11).
+pub fn build_tile_q(
+    bounds: &Bounds,
+    terrain: Option<&TerrainMesh>,
+    layers: &[EncoderLayer],
+    quality: i32,
+) -> Vec<u8> {
+    compress(&encode(bounds, terrain, layers), quality)
 }
 
 /// Builds the uncompressed `.arpt` FlatBuffer (identifier `"arpt"`).
@@ -407,8 +423,9 @@ fn unzip(it: impl Iterator<Item = (u16, u16)>) -> (Vec<u16>, Vec<u16>) {
     (xs, ys)
 }
 
-fn compress(data: &[u8]) -> Vec<u8> {
-    let params = brotli::enc::BrotliEncoderParams::default();
+fn compress(data: &[u8], quality: i32) -> Vec<u8> {
+    let mut params = brotli::enc::BrotliEncoderParams::default();
+    params.quality = quality.clamp(0, 11);
     let mut out = Vec::new();
     let mut input = data;
     brotli::BrotliCompress(&mut input, &mut out, &params).expect("brotli compress in-memory");

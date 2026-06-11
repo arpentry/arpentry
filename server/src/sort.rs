@@ -25,6 +25,13 @@ static RUN_SEQ: AtomicU64 = AtomicU64::new(0);
 /// Sanity cap on a record payload length read back from a spilled run file.
 const MAX_RECORD_LEN: u64 = 64 * 1024 * 1024;
 
+/// Maximum sources (run files + resident buffers) merged in one k-way pass.
+/// Every open run costs a file descriptor, and a parallel phase 1 can spill
+/// hundreds of runs; batches beyond this are pre-merged into single larger
+/// runs, keeping the count well under conservative OS limits (macOS defaults
+/// to 256 descriptors per process).
+const MAX_MERGE_SOURCES: usize = 64;
+
 /// Approximate per-record bookkeeping cost charged against the memory budget,
 /// on top of the payload bytes (key + `Vec` header, roughly).
 const RECORD_OVERHEAD: usize = 32;
@@ -33,7 +40,8 @@ const RECORD_OVERHEAD: usize = 32;
 pub type Record = (u64, Vec<u8>);
 
 /// Boxed sorted source of records (an in-memory drain or a run-file reader).
-type Source = Box<dyn Iterator<Item = io::Result<Record>>>;
+/// `Send` so the consuming [`Sorted`] stream can move to another thread.
+type Source = Box<dyn Iterator<Item = io::Result<Record>> + Send>;
 
 /// Accumulates `(key, data)` records and sorts them by key, spilling to disk
 /// when the in-memory budget is exceeded.
@@ -77,16 +85,10 @@ impl ExternalSorter {
         self.buf.sort_unstable_by_key(|&(k, _)| k);
 
         fs::create_dir_all(&self.tmp_dir)?;
-        let seq = RUN_SEQ.fetch_add(1, AtomicOrd::Relaxed);
-        let path = self
-            .tmp_dir
-            .join(format!("arpt-sort-{}-{}.run", std::process::id(), seq));
-
+        let path = new_run_path(&self.tmp_dir);
         let mut w = BufWriter::new(File::create(&path)?);
         for (key, data) in &self.buf {
-            w.write_all(&key.to_le_bytes())?;
-            w.write_all(&(data.len() as u64).to_le_bytes())?;
-            w.write_all(data)?;
+            write_record(&mut w, *key, data)?;
         }
         w.flush()?;
 
@@ -99,23 +101,91 @@ impl ExternalSorter {
     /// Finishes sorting and returns a globally key-ordered iterator.
     ///
     /// The returned [`Sorted`] owns the run files and deletes them when dropped.
-    pub fn into_sorted(mut self) -> io::Result<Sorted> {
-        // Drain the resident buffer as one more sorted source (no extra spill).
-        let mut buf = std::mem::take(&mut self.buf);
-        buf.sort_unstable_by_key(|&(k, _)| k);
-        self.buf_bytes = 0;
-
-        let runs = std::mem::take(&mut self.runs);
-        let mut sources: Vec<Source> = Vec::with_capacity(runs.len() + 1);
-        for path in &runs {
-            sources.push(open_run(path)?);
-        }
-        if !buf.is_empty() {
-            sources.push(Box::new(buf.into_iter().map(Ok)));
-        }
-
-        Sorted::new(sources, runs)
+    pub fn into_sorted(self) -> io::Result<Sorted> {
+        merge(vec![self])
     }
+}
+
+/// Merges several independently filled sorters into one globally key-ordered
+/// stream — the join point after parallel workers each fed their own sorter.
+/// Every spilled run and resident buffer becomes one source of a k-way merge;
+/// when there are more than [`MAX_MERGE_SOURCES`], batches of runs are first
+/// pre-merged into single larger runs so the final pass never holds more than
+/// that many files open at once.
+pub fn merge(sorters: Vec<ExternalSorter>) -> io::Result<Sorted> {
+    let tmp_dir =
+        sorters.first().map(|s| s.tmp_dir.clone()).unwrap_or_else(std::env::temp_dir);
+    let mut runs: Vec<PathBuf> = Vec::new();
+    let mut buffers: Vec<Vec<Record>> = Vec::new();
+    for mut sorter in sorters {
+        // Drain the resident buffer as one more sorted source (no extra spill).
+        let mut buf = std::mem::take(&mut sorter.buf);
+        buf.sort_unstable_by_key(|&(k, _)| k);
+        sorter.buf_bytes = 0;
+        if !buf.is_empty() {
+            buffers.push(buf);
+        }
+        runs.extend(std::mem::take(&mut sorter.runs));
+    }
+
+    // Cap the fan-in (file descriptors) of the final merge.
+    while runs.len() + buffers.len() > MAX_MERGE_SOURCES && runs.len() >= 2 {
+        let n = runs.len().min(MAX_MERGE_SOURCES);
+        let batch: Vec<PathBuf> = runs.drain(..n).collect();
+        runs.push(merge_runs_to_file(&tmp_dir, batch)?);
+    }
+
+    let mut sources: Vec<Source> = Vec::with_capacity(runs.len() + buffers.len());
+    for path in &runs {
+        sources.push(open_run(path)?);
+    }
+    for buf in buffers {
+        sources.push(Box::new(buf.into_iter().map(Ok)));
+    }
+    Sorted::new(sources, runs)
+}
+
+/// K-way merges a batch of run files into one new run file, deleting the
+/// originals. Holds `batch.len() + 1` descriptors while it runs.
+fn merge_runs_to_file(tmp_dir: &Path, batch: Vec<PathBuf>) -> io::Result<PathBuf> {
+    let mut sources: Vec<Source> = Vec::with_capacity(batch.len());
+    for path in &batch {
+        sources.push(open_run(path)?);
+    }
+    // `Sorted` owns the batch files and removes them once fully drained.
+    let merged = Sorted::new(sources, batch)?;
+
+    fs::create_dir_all(tmp_dir)?;
+    let path = new_run_path(tmp_dir);
+    let mut w = BufWriter::new(File::create(&path)?);
+    let write_all = |w: &mut BufWriter<File>| -> io::Result<()> {
+        for rec in merged {
+            let (key, data) = rec?;
+            write_record(w, key, &data)?;
+        }
+        w.flush()
+    };
+    match write_all(&mut w) {
+        Ok(()) => Ok(path),
+        Err(e) => {
+            drop(w);
+            let _ = fs::remove_file(&path);
+            Err(e)
+        }
+    }
+}
+
+/// Allocates a unique run-file path in `tmp_dir`.
+fn new_run_path(tmp_dir: &Path) -> PathBuf {
+    let seq = RUN_SEQ.fetch_add(1, AtomicOrd::Relaxed);
+    tmp_dir.join(format!("arpt-sort-{}-{}.run", std::process::id(), seq))
+}
+
+/// Writes one `(key, data)` record in the on-disk run format.
+fn write_record(w: &mut impl Write, key: u64, data: &[u8]) -> io::Result<()> {
+    w.write_all(&key.to_le_bytes())?;
+    w.write_all(&(data.len() as u64).to_le_bytes())?;
+    w.write_all(data)
 }
 
 impl Drop for ExternalSorter {
@@ -341,6 +411,64 @@ mod tests {
         let s = ExternalSorter::new(&dir, 1024);
         assert!(collect(s.into_sorted().unwrap()).is_empty());
         assert_eq!(count_runs(&dir), 0);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn merge_of_several_sorters_is_globally_sorted() {
+        let dir = test_dir("merge");
+        // Three sorters with overlapping key ranges; tiny budgets force spills
+        // in some and leave others fully resident.
+        let mut a = ExternalSorter::new(&dir, 1);
+        let mut b = ExternalSorter::new(&dir, 1 << 20);
+        let mut c = ExternalSorter::new(&dir, 24);
+        for &k in &[10u64, 4, 7] {
+            a.add(k, format!("a{k}").as_bytes()).unwrap();
+        }
+        for &k in &[3u64, 11, 7] {
+            b.add(k, format!("b{k}").as_bytes()).unwrap();
+        }
+        for &k in &[1u64, 12] {
+            c.add(k, format!("c{k}").as_bytes()).unwrap();
+        }
+        let out = collect(merge(vec![a, b, c]).unwrap());
+        let keys: Vec<u64> = out.iter().map(|(k, _)| *k).collect();
+        assert_eq!(keys, vec![1, 3, 4, 7, 7, 10, 11, 12]);
+        // Payloads still travel with their keys across the merge.
+        for (k, data) in &out {
+            assert_eq!(&data[1..], k.to_string().as_bytes());
+        }
+        assert_eq!(count_runs(&dir), 0, "all sorters' runs cleaned up");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn merge_caps_fan_in_with_hundreds_of_runs() {
+        let dir = test_dir("fanin");
+        // Three sorters spilling every record → 120 runs, well over
+        // MAX_MERGE_SOURCES, forcing at least one pre-merge pass.
+        let mut sorters = Vec::new();
+        let mut expected: Vec<u64> = Vec::new();
+        for s in 0..3u64 {
+            let mut sorter = ExternalSorter::new(&dir, 1);
+            for i in 0..40u64 {
+                let k = (i * 7 + s * 3) % 100;
+                sorter.add(k, format!("{s}-{i}-{k}").as_bytes()).unwrap();
+                expected.push(k);
+            }
+            sorters.push(sorter);
+        }
+        assert!(count_runs(&dir) > MAX_MERGE_SOURCES, "need enough runs to force pre-merge");
+
+        let out = collect(merge(sorters).unwrap());
+        expected.sort_unstable();
+        let keys: Vec<u64> = out.iter().map(|(k, _)| *k).collect();
+        assert_eq!(keys, expected, "pre-merged stream must stay globally sorted");
+        // Every payload survives the rewrite, attached to its key.
+        for (k, data) in &out {
+            assert!(data.ends_with(format!("-{k}").as_bytes()));
+        }
+        assert_eq!(count_runs(&dir), 0, "intermediate and original runs cleaned up");
         fs::remove_dir_all(&dir).ok();
     }
 

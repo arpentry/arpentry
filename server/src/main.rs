@@ -24,7 +24,8 @@ OPTIONS:
   --mem <bytes>        Memory budget for external sort (default: 64 MiB)
   --terrain <path>     Terrarium DEM PMTiles (e.g. Mapterhorn planet.pmtiles);
                        gives each tile real elevation instead of a flat mesh
-  --threads <n>        Accepted for compatibility; currently single-threaded
+  --threads <n>        Worker threads (default: CPU count)
+  --brotli <q>         Brotli quality 0-11 for tile blobs (default: 7)
   -h, --help           Show this help
 
 Layer indices: 0=terrain 1=land_cover 2=bathymetry 3=water 4=land
@@ -54,12 +55,59 @@ fn main() {
                 stats.tiles_written,
                 cfg.output.display()
             );
+            report_timings(&stats);
         }
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
+}
+
+/// Prints the per-stage timing breakdown gathered by the pipeline.
+fn report_timings(stats: &pipeline::Stats) {
+    let t = &stats.timings;
+    let total = t.phase1 + t.phase2;
+    eprintln!(
+        "inputs: {}/{} row groups after bbox pruning, {} worker thread{}",
+        stats.row_groups_read,
+        stats.row_groups_total,
+        stats.threads,
+        if stats.threads == 1 { "" } else { "s" },
+    );
+    eprintln!(
+        "phase 1 {:>8}  cpu: read {}, simplify {}, clip {}, sort {}",
+        secs(t.phase1),
+        secs(t.read),
+        secs(t.simplify),
+        secs(t.clip),
+        secs(t.sort),
+    );
+    eprintln!(
+        "phase 2 {:>8}  merge {}, decode {}, terrain {}, encode {}, write {}",
+        secs(t.phase2),
+        secs(t.merge),
+        secs(t.decode),
+        secs(t.terrain),
+        secs(t.encode),
+        secs(t.write),
+    );
+    let total_s = total.as_secs_f64().max(f64::MIN_POSITIVE);
+    eprintln!(
+        "total   {:>8}  {:.0} features/s, {:.0} tiles/s, sort payload {}",
+        secs(total),
+        stats.features_read as f64 / total_s,
+        stats.tiles_written as f64 / total_s,
+        mib(stats.record_bytes),
+    );
+}
+
+fn secs(d: std::time::Duration) -> String {
+    format!("{:.1}s", d.as_secs_f64())
+}
+
+fn mib(bytes: u64) -> String {
+    format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
 }
 
 fn parse(args: Vec<String>) -> Result<Config, String> {
@@ -71,6 +119,8 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
     let mut tmp_dir = std::env::temp_dir();
     let mut mem_budget: usize = 64 * 1024 * 1024;
     let mut terrain: Option<PathBuf> = None;
+    let mut threads: usize = 0;
+    let mut brotli_quality: i32 = arpentry_server::tile_build::DEFAULT_QUALITY;
 
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
@@ -83,9 +133,8 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
             "--tmp" => tmp_dir = PathBuf::from(value(&mut it, "--tmp")?),
             "--mem" => mem_budget = parse_num(&value(&mut it, "--mem")?, "--mem")?,
             "--terrain" => terrain = Some(PathBuf::from(value(&mut it, "--terrain")?)),
-            "--threads" => {
-                value(&mut it, "--threads")?; // accepted, ignored
-            }
+            "--threads" => threads = parse_num(&value(&mut it, "--threads")?, "--threads")?,
+            "--brotli" => brotli_quality = parse_num(&value(&mut it, "--brotli")?, "--brotli")?,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -97,7 +146,18 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
     if min_zoom > max_zoom {
         return Err(format!("--min-zoom ({min_zoom}) exceeds --max-zoom ({max_zoom})"));
     }
-    Ok(Config { output, inputs, bbox, min_zoom, max_zoom, tmp_dir, mem_budget, terrain })
+    Ok(Config {
+        output,
+        inputs,
+        bbox,
+        min_zoom,
+        max_zoom,
+        tmp_dir,
+        mem_budget,
+        terrain,
+        threads,
+        brotli_quality,
+    })
 }
 
 fn value(it: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
