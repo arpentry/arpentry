@@ -28,6 +28,7 @@ static void on_fetch_success(emscripten_fetch_t *fetch) {
     if (rc == 0) {
         /* Copy so caller owns the buffer (browser frees fetch->data) */
         uint8_t *copy = malloc((size_t)fetch->numBytes);
+        if (copy) memcpy(copy, fetch->data, (size_t)fetch->numBytes);
         if (!copy) {
             req->finish(false, NULL, req->userdata);
         } else if (req->prepare) {
@@ -285,7 +286,13 @@ bool arpt_fetch_init(int max_concurrent) {
 
     g_pool.thread_count = max_concurrent;
     g_pool.threads = calloc((size_t)max_concurrent, sizeof(pthread_t));
-    if (!g_pool.threads) return false;
+    if (!g_pool.threads) {
+        pthread_mutex_destroy(&g_pool.job_mutex);
+        pthread_cond_destroy(&g_pool.job_cond);
+        pthread_mutex_destroy(&g_pool.result_mutex);
+        memset(&g_pool, 0, sizeof(g_pool));
+        return false;
+    }
 
     for (int i = 0; i < max_concurrent; i++) {
         if (pthread_create(&g_pool.threads[i], NULL, worker_func, NULL) != 0) {
@@ -296,7 +303,10 @@ bool arpt_fetch_init(int max_concurrent) {
                 pthread_join(g_pool.threads[j], NULL);
             }
             free(g_pool.threads);
-            g_pool.threads = NULL;
+            pthread_mutex_destroy(&g_pool.job_mutex);
+            pthread_cond_destroy(&g_pool.job_cond);
+            pthread_mutex_destroy(&g_pool.result_mutex);
+            memset(&g_pool, 0, sizeof(g_pool));
             return false;
         }
     }
@@ -308,7 +318,7 @@ bool arpt_fetch_init(int max_concurrent) {
 bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
                      arpt_tile_prepare_fn prepare,
                      arpt_tile_finish_fn finish, void *userdata) {
-    if (!base_url || !finish) return false;
+    if (!g_pool.initialized || !base_url || !finish) return false;
 
     fetch_job *job = malloc(sizeof(*job));
     if (!job) return false;
@@ -331,6 +341,7 @@ int arpt_fetch_drain(int max) {
     /* Detach up to `max` results under the lock (0 = all), then invoke the
        callbacks outside the lock. Remaining results stay on the queue so the
        next drain picks them up. */
+    if (!g_pool.initialized) return 0;
     pthread_mutex_lock(&g_pool.result_mutex);
     fetch_result *list = g_pool.result_head;
 

@@ -269,7 +269,9 @@ static inline WGPUShaderModule create_shader(WGPUDevice device,
         .code = wgsl_code,
     };
     WGPUShaderModuleDescriptor desc = {.nextInChain = &wgsl_desc.chain};
-    return wgpuDeviceCreateShaderModule(device, &desc);
+    WGPUShaderModule sm = wgpuDeviceCreateShaderModule(device, &desc);
+    if (!sm) fprintf(stderr, "create_shader: shader module creation failed\n");
+    return sm;
 }
 
 static inline void restore_terrain_pipeline(arpt_renderer *r) {

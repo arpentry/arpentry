@@ -10,6 +10,7 @@ WGPURenderPipeline arpt__instance_create_pipeline(WGPUDevice device,
                                                    WGPUBindGroupLayout tile_bgl,
                                                    WGPUBindGroupLayout model_bgl) {
     WGPUShaderModule sm = create_shader(device, tree_wgsl);
+    if (!sm) return NULL;
 
     WGPUBindGroupLayout bgls[] = {global_bgl, tile_bgl, model_bgl};
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(

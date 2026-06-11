@@ -10,6 +10,7 @@ use std::f64::consts::PI;
 
 use super::noise::{fbm3, simplex3};
 use crate::project::{self, Bounds};
+use crate::terrain::encode_octahedral;
 
 /// Terrain grid resolution (cells per side).
 pub const TERRAIN_GRID: usize = 256;
@@ -123,32 +124,6 @@ pub fn terrain_moisture(lon_deg: f64, lat_deg: f64) -> f64 {
     (m + 1.0) * 0.5
 }
 
-/// Octahedral encoding: unit normal → int8×2.
-fn encode_octahedral(nx: f64, ny: f64, nz: f64) -> (i8, i8) {
-    let sum = nx.abs() + ny.abs() + nz.abs();
-    if sum < 1e-15 {
-        return (0, 127);
-    }
-    let mut u = nx / sum;
-    let mut v = ny / sum;
-
-    // Reflect lower hemisphere.
-    if nz < 0.0 {
-        let old_u = u;
-        u = (1.0 - v.abs()) * if old_u >= 0.0 { 1.0 } else { -1.0 };
-        v = (1.0 - old_u.abs()) * if v >= 0.0 { 1.0 } else { -1.0 };
-    }
-
-    // Quantize to int8 [-127, 127] (round half away from zero).
-    let cu = u * 127.0;
-    let cv = v * 127.0;
-    let q = |c: f64| -> i8 {
-        let r = if c >= 0.0 { c + 0.5 } else { c - 0.5 };
-        r as i8
-    };
-    (q(cu), q(cv))
-}
-
 /// The terrain vertex/index buffers for one tile.
 pub struct TerrainMesh {
     pub vx: Vec<u16>,
@@ -227,9 +202,11 @@ pub fn build_mesh(bounds: &Bounds) -> TerrainMesh {
             let mut ny = uy - dz_dx * ey - dz_dy * ny_e;
             let mut nz = uz - dz_dx * ez - dz_dy * nz_e;
             let len = (nx * nx + ny * ny + nz * nz).sqrt();
-            nx /= len;
-            ny /= len;
-            nz /= len;
+            if len > 0.0 {
+                nx /= len;
+                ny /= len;
+                nz /= len;
+            }
 
             let (ox, oy) = encode_octahedral(nx, ny, nz);
             normals[idx * 2] = ox;

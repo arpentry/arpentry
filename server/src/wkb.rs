@@ -12,6 +12,11 @@ use geo_types::{
     Point, Polygon,
 };
 
+/// Cap on pre-allocation from counts read out of the blob: a corrupt count
+/// can't trigger a huge up-front allocation (vectors still grow as needed,
+/// and reading stops at end-of-buffer anyway).
+const MAX_PREALLOC: usize = 65_536;
+
 /// Why a WKB blob could not be parsed.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WkbError {
@@ -172,7 +177,7 @@ fn parse_geometry(cur: &mut Cursor) -> Result<Geometry, WkbError> {
         })?))),
         7 => {
             let n = cur.u32(le)?;
-            let mut geoms = Vec::with_capacity(n as usize);
+            let mut geoms = Vec::with_capacity((n as usize).min(MAX_PREALLOC));
             for _ in 0..n {
                 geoms.push(parse_geometry(cur)?);
             }
@@ -196,7 +201,7 @@ fn read_coord(cur: &mut Cursor, le: bool, hz: bool, hm: bool) -> Result<Coord, W
 
 fn read_linestring(cur: &mut Cursor, le: bool, hz: bool, hm: bool) -> Result<LineString, WkbError> {
     let n = cur.u32(le)?;
-    let mut coords = Vec::with_capacity(n as usize);
+    let mut coords = Vec::with_capacity((n as usize).min(MAX_PREALLOC));
     for _ in 0..n {
         coords.push(read_coord(cur, le, hz, hm)?);
     }
@@ -205,7 +210,7 @@ fn read_linestring(cur: &mut Cursor, le: bool, hz: bool, hm: bool) -> Result<Lin
 
 fn read_polygon(cur: &mut Cursor, le: bool, hz: bool, hm: bool) -> Result<Polygon, WkbError> {
     let nrings = cur.u32(le)?;
-    let mut rings = Vec::with_capacity(nrings as usize);
+    let mut rings = Vec::with_capacity((nrings as usize).min(MAX_PREALLOC));
     for _ in 0..nrings {
         rings.push(read_linestring(cur, le, hz, hm)?);
     }
@@ -225,7 +230,7 @@ fn read_members<T>(
     project: impl Fn(Geometry) -> Option<T>,
 ) -> Result<Vec<T>, WkbError> {
     let n = cur.u32(le)?;
-    let mut out = Vec::with_capacity(n as usize);
+    let mut out = Vec::with_capacity((n as usize).min(MAX_PREALLOC));
     for _ in 0..n {
         let g = parse_geometry(cur)?;
         out.push(project(g).ok_or(WkbError::MemberMismatch)?);

@@ -6,6 +6,7 @@
 //! within-layer rank (from `cartography.sort_key`). Works for both Overture
 //! (`class`/`subclass`) and Natural Earth (`type`/`subtype`).
 
+use crate::layers::{self, LayerIndex};
 use crate::tileid;
 use crate::value::Value;
 
@@ -20,8 +21,15 @@ pub struct Profiled {
 }
 
 /// Derives tile properties and zoom range from source attributes, falling back
-/// to `[default_min, default_max]` when the source has no zoom hints.
-pub fn profile(props: &[(String, Value)], default_min: u8, default_max: u8) -> Profiled {
+/// to `[default_min, default_max]` when the source has no zoom hints. `layer`
+/// disambiguates classes that exist in several themes (e.g. `residential` is
+/// both a road class and a land-use class).
+pub fn profile(
+    layer: LayerIndex,
+    props: &[(String, Value)],
+    default_min: u8,
+    default_max: u8,
+) -> Profiled {
     let class = find_str(props, "class")
         .or_else(|| find_str(props, "type"))
         .or_else(|| find_str(props, "subtype"));
@@ -33,6 +41,7 @@ pub fn profile(props: &[(String, Value)], default_min: u8, default_max: u8) -> P
     let min_zoom = find_int(props, "cartography.min_zoom")
         .and_then(u8_from)
         .or_else(|| class.as_deref().and_then(natural_earth_min_zoom))
+        .or_else(|| class.as_deref().and_then(|c| overture_min_zoom(layer, c)))
         .unwrap_or(default_min);
     let max_zoom = find_int(props, "cartography.max_zoom").and_then(u8_from).unwrap_or(default_max);
     let rank = find_int(props, "cartography.sort_key")
@@ -72,6 +81,73 @@ fn natural_earth_min_zoom(class: &str) -> Option<u8> {
     })
 }
 
+/// Per-class minimum zoom for Overture features whose theme carries no
+/// `cartography` hints.
+///
+/// Overture's `transportation`, `water`, and `land_use` themes have no
+/// `cartography.min_zoom` column (only `land_cover` and `base` do). Without this
+/// table their classes fall through to the global `default_min` (0), so every
+/// footpath, stream, swimming pool, and meadow is emitted at every zoom — a
+/// single z7 tile over Switzerland ends up with ~180k road segments and ~49k
+/// water features, ballooning to ~15 MB. These minimums mirror common web-map
+/// styles (a feature first appears near the zoom it would first be drawn),
+/// keeping fine detail out of low-zoom tiles. Keyed by layer because class
+/// names collide across themes (`residential` is a z12 road class and a z10
+/// land-use class). Returns `None` for unknown classes (use the default);
+/// known overlaps with [`natural_earth_min_zoom`] are matched there first, so
+/// this only fires for Overture-specific classes.
+fn overture_min_zoom(layer: LayerIndex, class: &str) -> Option<u8> {
+    Some(match (layer, class) {
+        // --- transportation (Overture road/rail classes) ---
+        (layers::TRANSPORTATION, "motorway") => 4,
+        (layers::TRANSPORTATION, "trunk") => 5,
+        (layers::TRANSPORTATION, "primary") => 7,
+        (layers::TRANSPORTATION, "secondary") => 9,
+        (layers::TRANSPORTATION, "tertiary") => 11,
+        (layers::TRANSPORTATION, "residential" | "unclassified" | "living_street") => 12,
+        (layers::TRANSPORTATION, "pedestrian" | "service" | "track") => 13,
+        (
+            layers::TRANSPORTATION,
+            "footway" | "path" | "steps" | "cycleway" | "bridleway" | "sidewalk"
+            | "crosswalk" | "unknown",
+        ) => 14,
+        // Rail (Overture `subtype=rail`, class is the gauge).
+        (
+            layers::TRANSPORTATION,
+            "standard_gauge" | "narrow_gauge" | "broad_gauge" | "monorail" | "subway"
+            | "light_rail" | "tram" | "funicular",
+        ) => 8,
+
+        // --- water ---
+        (layers::WATER, "ocean" | "sea") => 0,
+        (layers::WATER, "lake") => 4,
+        (layers::WATER, "reservoir") => 6,
+        (layers::WATER, "wetland") => 7,
+        (layers::WATER, "river" | "water") => 8,
+        (layers::WATER, "canal") => 10,
+        (layers::WATER, "stream") => 12,
+        (layers::WATER, "ditch" | "drain" | "pond" | "basin" | "dock" | "moat") => 13,
+        (layers::WATER, "swimming_pool" | "fountain" | "spring" | "waterfall" | "fish_pass") => 14,
+
+        // --- land_use ---
+        (layers::LAND_USE, "military") => 8,
+        (
+            layers::LAND_USE,
+            "forest" | "farmland" | "residential" | "commercial" | "industrial"
+            | "retail" | "park" | "recreation_ground",
+        ) => 10,
+        (
+            layers::LAND_USE,
+            "meadow" | "grass" | "orchard" | "vineyard" | "cemetery" | "downhill"
+            | "nordic" | "farmyard",
+        ) => 11,
+        (layers::LAND_USE, "pitch" | "garden" | "allotments" | "greenhouse_horticulture") => 13,
+        (layers::LAND_USE, "playground") => 14,
+
+        _ => return None,
+    })
+}
+
 fn find_str(props: &[(String, Value)], key: &str) -> Option<String> {
     props.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
         Value::String(s) => Some(s.clone()),
@@ -103,7 +179,7 @@ mod tests {
             ("cartography.max_zoom".to_string(), Value::Int(14)),
             ("cartography.sort_key".to_string(), Value::Int(40)),
         ];
-        let p = profile(&props, 0, 16);
+        let p = profile(layers::WATER, &props, 0, 16);
         assert_eq!(p.min_zoom, 6);
         assert_eq!(p.max_zoom, 14);
         assert_eq!(p.rank, 40);
@@ -114,7 +190,7 @@ mod tests {
     #[test]
     fn natural_earth_falls_back_to_type_and_defaults() {
         let props = vec![("type".to_string(), Value::String("land".into()))];
-        let p = profile(&props, 0, 8);
+        let p = profile(layers::LAND, &props, 0, 8);
         assert_eq!(p.min_zoom, 0);
         assert_eq!(p.max_zoom, 8);
         assert_eq!(p.rank, 0);
@@ -124,12 +200,14 @@ mod tests {
     #[test]
     fn natural_earth_class_drives_min_zoom() {
         // Roads (the bulk of the data) drop out below z4; land stays at z0.
-        let road = profile(&[("type".to_string(), Value::String("road".into()))], 0, 8);
+        let road =
+            profile(layers::TRANSPORTATION, &[("type".to_string(), Value::String("road".into()))], 0, 8);
         assert_eq!(road.min_zoom, 4);
-        let land = profile(&[("type".to_string(), Value::String("land".into()))], 0, 8);
+        let land = profile(layers::LAND, &[("type".to_string(), Value::String("land".into()))], 0, 8);
         assert_eq!(land.min_zoom, 0);
         // Unknown classes fall back to the global default.
-        let unknown = profile(&[("type".to_string(), Value::String("mystery".into()))], 0, 8);
+        let unknown =
+            profile(layers::LAND, &[("type".to_string(), Value::String("mystery".into()))], 0, 8);
         assert_eq!(unknown.min_zoom, 0);
     }
 
@@ -140,12 +218,61 @@ mod tests {
             ("class".to_string(), Value::String("road".into())),
             ("cartography.min_zoom".to_string(), Value::Int(7)),
         ];
-        assert_eq!(profile(&props, 0, 14).min_zoom, 7);
+        assert_eq!(profile(layers::TRANSPORTATION, &props, 0, 14).min_zoom, 7);
+    }
+
+    #[test]
+    fn overture_classes_without_cartography_get_per_class_min_zoom() {
+        // Overture transportation/water/land_use carry no cartography hints, so
+        // without the per-class table these would default to 0 and flood every
+        // zoom. The fine-detail classes are pushed to high zooms.
+        let footway = profile(
+            layers::TRANSPORTATION,
+            &[("class".to_string(), Value::String("footway".into()))],
+            0,
+            14,
+        );
+        assert_eq!(footway.min_zoom, 14);
+        let stream =
+            profile(layers::WATER, &[("class".to_string(), Value::String("stream".into()))], 0, 14);
+        assert_eq!(stream.min_zoom, 12);
+        let motorway = profile(
+            layers::TRANSPORTATION,
+            &[("class".to_string(), Value::String("motorway".into()))],
+            0,
+            14,
+        );
+        assert_eq!(motorway.min_zoom, 4);
+        // Unknown classes still fall back to the default.
+        let mystery =
+            profile(layers::WATER, &[("class".to_string(), Value::String("xyzzy".into()))], 0, 14);
+        assert_eq!(mystery.min_zoom, 0);
+    }
+
+    #[test]
+    fn colliding_class_names_resolve_by_layer() {
+        // `residential` is both a road class (z12) and a land-use class (z10);
+        // the layer decides which table applies.
+        let props = vec![("class".to_string(), Value::String("residential".into()))];
+        assert_eq!(profile(layers::TRANSPORTATION, &props, 0, 14).min_zoom, 12);
+        assert_eq!(profile(layers::LAND_USE, &props, 0, 14).min_zoom, 10);
+        // A class outside its own layer's table falls back to the default.
+        assert_eq!(profile(layers::WATER, &props, 0, 14).min_zoom, 0);
+    }
+
+    #[test]
+    fn cartography_hint_overrides_overture_table() {
+        // land_cover (and base) carry cartography; that wins over the table.
+        let props = vec![
+            ("class".to_string(), Value::String("footway".into())),
+            ("cartography.min_zoom".to_string(), Value::Int(2)),
+        ];
+        assert_eq!(profile(layers::TRANSPORTATION, &props, 0, 14).min_zoom, 2);
     }
 
     #[test]
     fn rank_is_clamped_to_field_width() {
         let props = vec![("cartography.sort_key".to_string(), Value::Int(999_999))];
-        assert_eq!(profile(&props, 0, 16).rank, tileid::MAX_RANK);
+        assert_eq!(profile(layers::WATER, &props, 0, 16).rank, tileid::MAX_RANK);
     }
 }

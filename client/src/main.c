@@ -26,6 +26,7 @@
 #include "model_verifier.h"
 
 #ifndef __EMSCRIPTEN__
+#include <unistd.h>
 #include "http.h"
 #include "tile.h"
 #endif
@@ -338,7 +339,7 @@ static void render_frame(void) {
         fetch_tileset(app.base_url, &tm_config);
 
         /* Fetch model library */
-        arpt_model refresh_models[ARPT_MAX_MODELS];
+        arpt_model refresh_models[ARPT_MAX_MODELS] = {0};
         if (app.model_buf) { free(app.model_buf); app.model_buf = NULL; }
         int nmodels = fetch_models(app.base_url, refresh_models,
                                    ARPT_MAX_MODELS, &app.model_buf);
@@ -817,18 +818,18 @@ static int fetch_models(const char *base_url, arpt_model *models,
                         int max_models, uint8_t **model_buf_out) {
     char url[512];
     int n = snprintf(url, sizeof(url), "%s/models.arpm", base_url);
-    if (n < 0 || (size_t)n >= sizeof(url)) return false;
+    if (n < 0 || (size_t)n >= sizeof(url)) return 0;
 
     uint8_t *buf = NULL;
     size_t buf_size = 0;
 
 #ifdef __EMSCRIPTEN__
-    if (!em_sync_get(url, &buf, &buf_size)) return false;
+    if (!em_sync_get(url, &buf, &buf_size)) return 0;
 #else
     arpt_http_response resp = {0};
     if (!arpt_http_get(url, &resp) || resp.status != 200) {
         free(resp.body);
-        return false;
+        return 0;
     }
     buf = resp.body;
     buf_size = resp.body_size;
@@ -839,7 +840,7 @@ static int fetch_models(const char *base_url, arpt_model *models,
     if (rc != 0) {
         fprintf(stderr, "models: verification failed (rc=%d)\n", rc);
         free(buf);
-        return false;
+        return 0;
     }
 
     arpentry_tiles_ModelLibrary_table_t lib =
@@ -960,11 +961,23 @@ static void init_viewer(void) {
     const char *base_url = app.base_url;
     arpt_style style = {0};
     arpt_style_defaults(&style);
-    if (!fetch_style(base_url, &style))
+    bool style_ok = fetch_style(base_url, &style);
+#ifndef __EMSCRIPTEN__
+    /* The run scripts launch server and client together, so the server may
+       not be listening yet. Retry briefly (up to 5 s) rather than locking in
+       the fallback style for the whole session. Once the style fetch
+       succeeds the server is reachable, so the model and tileset fetches
+       below won't race. */
+    for (int i = 0; i < 20 && !style_ok; i++) {
+        usleep(250 * 1000);
+        style_ok = fetch_style(base_url, &style);
+    }
+#endif
+    if (!style_ok)
         fprintf(stderr, "Warning: style.arps fetch failed, using defaults\n");
 
     /* Fetch model library */
-    arpt_model tree_models[ARPT_MAX_MODELS];
+    arpt_model tree_models[ARPT_MAX_MODELS] = {0};
     if (app.model_buf) { free(app.model_buf); app.model_buf = NULL; }
     int nmodels = fetch_models(base_url, tree_models, ARPT_MAX_MODELS,
                                &app.model_buf);
@@ -1039,7 +1052,8 @@ static void init_viewer(void) {
     /* Diagnostic: verify camera position */
     {
         printf("Window: %dx%d, Framebuffer: %dx%d, Scale: %.1fx\n", win_w,
-               win_h, fb_w, fb_h, (double)fb_w / win_w);
+               win_h, fb_w, fb_h,
+               win_w > 0 ? (double)fb_w / win_w : 0.0);
         /* Cast ray from screen center — should hit near the interest point */
         double hit_lon, hit_lat;
         if (arpt_camera_screen_to_geodetic(app.camera, win_w / 2.0, win_h / 2.0,
@@ -1209,10 +1223,18 @@ int main(int argc, char **argv) {
     }
 
     app.surface = glfwGetWGPUSurface(app.instance, app.window);
+    if (!app.surface) {
+        fprintf(stderr, "Failed to create WebGPU surface\n");
+        wgpuInstanceRelease(app.instance);
+        glfwDestroyWindow(app.window);
+        glfwTerminate();
+        return EXIT_FAILURE;
+    }
 
-    WGPURequestAdapterOptions opts = {0};
-    opts.compatibleSurface = app.surface;
-    wgpuInstanceRequestAdapter(app.instance, &opts, on_adapter_done, NULL);
+    WGPURequestAdapterOptions adapter_opts = {0};
+    adapter_opts.compatibleSurface = app.surface;
+    wgpuInstanceRequestAdapter(app.instance, &adapter_opts, on_adapter_done,
+                               NULL);
 
 #ifndef __EMSCRIPTEN__
     /* Cleanup */

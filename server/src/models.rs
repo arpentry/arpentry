@@ -93,11 +93,13 @@ impl Mesh {
         }
     }
 
-    /// A UV-sphere approximation centred at height `cz`.
+    /// A UV-sphere approximation centred at height `cz`. Coordinates clamp to
+    /// the u16 model space rather than wrapping if `radius` overshoots it.
     fn sphere(&mut self, radius: f64, cz: u16, part: u16) {
+        let clamp_u16 = |v: i32| v.clamp(0, u16::MAX as i32) as u16;
         let base = self.vcount();
         // Top pole.
-        self.push_vertex(CX as u16, CY as u16, (cz as i32 + radius as i32) as u16, part);
+        self.push_vertex(CX as u16, CY as u16, clamp_u16(cz as i32 + radius as i32), part);
         // Latitude rings.
         for lat in 1..SPHERE_LAT {
             let phi = std::f64::consts::PI * lat as f64 / SPHERE_LAT as f64;
@@ -105,15 +107,15 @@ impl Mesh {
             let cp = phi.cos();
             for lon in 0..SPHERE_LON {
                 let theta = 2.0 * std::f64::consts::PI * lon as f64 / SPHERE_LON as f64;
-                let x = (CX + radius * sp * theta.cos()) as i32 as u16;
-                let y = (CY + radius * sp * theta.sin()) as i32 as u16;
-                let z = (cz as i32 + (radius * cp) as i32) as u16;
+                let x = clamp_u16((CX + radius * sp * theta.cos()) as i32);
+                let y = clamp_u16((CY + radius * sp * theta.sin()) as i32);
+                let z = clamp_u16(cz as i32 + (radius * cp) as i32);
                 self.push_vertex(x, y, z, part);
             }
         }
         // Bottom pole.
         let bot_pole = self.vcount();
-        self.push_vertex(CX as u16, CY as u16, (cz as i32 - radius as i32) as u16, part);
+        self.push_vertex(CX as u16, CY as u16, clamp_u16(cz as i32 - radius as i32), part);
 
         let top_pole = base;
         // Top cap triangles.

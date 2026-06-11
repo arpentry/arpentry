@@ -6,10 +6,12 @@
 //! ellipsoid). The mesh is identical for every tile (the quantized tile-proper
 //! span is always the same), so the pipeline builds it once and reuses it.
 //!
-//! Real DEM-driven elevation is a later step; this is the empty/flat parity
-//! mesh that makes the client render a tile at all.
+//! [`flat_mesh`] is the empty/flat parity mesh; [`elevated_mesh`] samples a DEM
+//! (e.g. Mapterhorn terrain) to produce real per-vertex elevation and normals.
 
-use crate::project::{BUFFER, EXTENT};
+use std::f64::consts::PI;
+
+use crate::project::{self, Bounds, BUFFER, EXTENT};
 
 /// A triangulated mesh in tile-local quantized coordinates.
 pub struct TerrainMesh {
@@ -67,6 +69,132 @@ pub fn flat_mesh(grid: u32) -> TerrainMesh {
     TerrainMesh { x, y, z: vec![0; vcount], indices, normals }
 }
 
+/// Builds a `grid`×`grid`-cell mesh for the tile with per-vertex elevation
+/// sampled from `sample(lon, lat) -> metres` and finite-difference normals.
+///
+/// The horizontal vertex grid is identical to [`flat_mesh`] (tile-proper edges
+/// at quantized 16384/49152, so adjacent tiles share edge positions). Elevation
+/// comes from the sampler; normals are computed from centred differences over a
+/// one-vertex halo sampled just outside the tile, which keeps slopes continuous
+/// across tile borders. Returns the mesh and its `(min, max)` elevation in
+/// metres for the tileset's elevation range.
+pub fn elevated_mesh<F>(grid: u32, bounds: &Bounds, mut sample: F) -> (TerrainMesh, f64, f64)
+where
+    F: FnMut(f64, f64) -> f64,
+{
+    let grid = grid.max(1);
+    let n = grid + 1; // vertices per side
+    let cell_lon = bounds.width() / grid as f64;
+    let cell_lat = bounds.height() / grid as f64;
+
+    // Approximate cell size in metres for the finite-difference slope.
+    let mid_lat = (bounds.south + bounds.north) * 0.5;
+    let cell_w_m = cell_lon * 111_319.5 * (mid_lat * PI / 180.0).cos();
+    let cell_h_m = cell_lat * 111_319.5;
+
+    // Padded elevation grid: one halo row/column on each side (rows/cols -1..=n).
+    let pad_w = (n + 2) as usize;
+    let mut elev = vec![0.0f64; pad_w * pad_w];
+    for prow in 0..pad_w {
+        let lat = bounds.south + (prow as f64 - 1.0) * cell_lat;
+        for pcol in 0..pad_w {
+            let lon = bounds.west + (pcol as f64 - 1.0) * cell_lon;
+            elev[prow * pad_w + pcol] = sample(lon, lat);
+        }
+    }
+
+    let vcount = (n * n) as usize;
+    let mut x = Vec::with_capacity(vcount);
+    let mut y = Vec::with_capacity(vcount);
+    let mut z = Vec::with_capacity(vcount);
+    let mut normals = vec![0i8; vcount * 2];
+    let (mut emin, mut emax) = (f64::INFINITY, f64::NEG_INFINITY);
+
+    for row in 0..n {
+        let lat = bounds.south + row as f64 * cell_lat;
+        let lat_r = lat * (PI / 180.0);
+        let (sin_lat, cos_lat) = (lat_r.sin(), lat_r.cos());
+        for col in 0..n {
+            let lon = bounds.west + col as f64 * cell_lon;
+            let pi = (row + 1) as usize * pad_w + (col + 1) as usize;
+            let e = elev[pi];
+            emin = emin.min(e);
+            emax = emax.max(e);
+
+            x.push(project::quantize_x(lon, bounds));
+            y.push(project::quantize_y(lat, bounds));
+            z.push(project::quantize_z(e));
+
+            // Centred finite differences using the padded neighbours.
+            let dz_dx = (elev[pi + 1] - elev[pi - 1]) / (2.0 * cell_w_m);
+            let dz_dy = (elev[pi + pad_w] - elev[pi - pad_w]) / (2.0 * cell_h_m);
+
+            // ENU basis → ECEF surface normal (up tilted against the slope).
+            let lon_r = lon * (PI / 180.0);
+            let (sin_lon, cos_lon) = (lon_r.sin(), lon_r.cos());
+            let (ex, ey, ez) = (-sin_lon, cos_lon, 0.0);
+            let (nx_e, ny_e, nz_e) = (-sin_lat * cos_lon, -sin_lat * sin_lon, cos_lat);
+            let (ux, uy, uz) = (cos_lat * cos_lon, cos_lat * sin_lon, sin_lat);
+            let mut nx = ux - dz_dx * ex - dz_dy * nx_e;
+            let mut ny = uy - dz_dx * ey - dz_dy * ny_e;
+            let mut nz = uz - dz_dx * ez - dz_dy * nz_e;
+            let len = (nx * nx + ny * ny + nz * nz).sqrt();
+            if len > 0.0 {
+                nx /= len;
+                ny /= len;
+                nz /= len;
+            }
+            let idx = (row * n + col) as usize;
+            let (ox, oy) = encode_octahedral(nx, ny, nz);
+            normals[idx * 2] = ox;
+            normals[idx * 2 + 1] = oy;
+        }
+    }
+
+    let mut indices = Vec::with_capacity((grid * grid * 6) as usize);
+    for row in 0..grid {
+        for col in 0..grid {
+            let tl = row * n + col;
+            let tr = tl + 1;
+            let bl = (row + 1) * n + col;
+            let br = bl + 1;
+            indices.extend_from_slice(&[tl, tr, br, tl, br, bl]);
+        }
+    }
+
+    if !emin.is_finite() {
+        emin = 0.0;
+        emax = 0.0;
+    }
+    (TerrainMesh { x, y, z, indices, normals }, emin, emax)
+}
+
+/// Octahedral encoding of a unit normal to int8×2 (matches the client's
+/// `decode_octahedral` in `terrain.wgsl` and the procedural generator).
+pub(crate) fn encode_octahedral(nx: f64, ny: f64, nz: f64) -> (i8, i8) {
+    let sum = nx.abs() + ny.abs() + nz.abs();
+    if sum < 1e-15 {
+        return (0, 127);
+    }
+    let mut u = nx / sum;
+    let mut v = ny / sum;
+
+    // Reflect the lower hemisphere.
+    if nz < 0.0 {
+        let old_u = u;
+        u = (1.0 - v.abs()) * if old_u >= 0.0 { 1.0 } else { -1.0 };
+        v = (1.0 - old_u.abs()) * if v >= 0.0 { 1.0 } else { -1.0 };
+    }
+
+    // Quantize to int8 [-127, 127] (round half away from zero).
+    let q = |c: f64| -> i8 {
+        let c = c * 127.0;
+        let r = if c >= 0.0 { c + 0.5 } else { c - 0.5 };
+        r.clamp(-127.0, 127.0) as i8
+    };
+    (q(u), q(v))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +223,55 @@ mod tests {
         let m = flat_mesh(1);
         assert_eq!(m.x.len(), 4);
         assert_eq!(m.indices.len(), 6);
+    }
+
+    #[test]
+    fn elevated_mesh_carries_sampled_elevation() {
+        let b = Bounds::of_tile(8, 130, 90);
+        // A constant 1000 m surface: every vertex z == 1000 m, normals point up.
+        let (m, emin, emax) = elevated_mesh(16, &b, |_, _| 1000.0);
+        let n = 17usize;
+        assert_eq!(m.x.len(), n * n);
+        assert_eq!(m.z.len(), n * n);
+        assert_eq!(m.normals.len(), n * n * 2);
+        assert!(m.z.iter().all(|&z| z == project::quantize_z(1000.0)));
+        assert_eq!((emin, emax), (1000.0, 1000.0));
+        // Shares flat_mesh's horizontal grid: tile-proper edges at 16384/49152.
+        assert_eq!(*m.x.iter().min().unwrap(), 16384);
+        assert_eq!(*m.x.iter().max().unwrap(), 49152);
+        // A constant-elevation surface's normal is the geodetic "up" (ECEF
+        // radial) at each vertex. Decode the centre vertex and check it points
+        // up at the tile centre's lon/lat.
+        let centre = (n / 2) * n + n / 2;
+        let (nx, ny, nz) = decode_octahedral(m.normals[centre * 2], m.normals[centre * 2 + 1]);
+        let lon = ((b.west + b.east) * 0.5).to_radians();
+        let lat = ((b.south + b.north) * 0.5).to_radians();
+        let up = (lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+        let dot = nx * up.0 + ny * up.1 + nz * up.2;
+        assert!(dot > 0.999, "normal should point up, dot={dot}");
+    }
+
+    /// Inverse of [`encode_octahedral`] for tests.
+    fn decode_octahedral(ox: i8, oy: i8) -> (f64, f64, f64) {
+        let u = ox as f64 / 127.0;
+        let v = oy as f64 / 127.0;
+        let mut nx = u;
+        let mut ny = v;
+        let nz = 1.0 - u.abs() - v.abs();
+        if nz < 0.0 {
+            let old = nx;
+            nx = (1.0 - ny.abs()) * if old >= 0.0 { 1.0 } else { -1.0 };
+            ny = (1.0 - old.abs()) * if ny >= 0.0 { 1.0 } else { -1.0 };
+        }
+        let len = (nx * nx + ny * ny + nz * nz).sqrt();
+        (nx / len, ny / len, nz / len)
+    }
+
+    #[test]
+    fn elevated_mesh_normal_tilts_with_slope() {
+        let b = Bounds::of_tile(10, 500, 500);
+        // A west→east ramp produces normals tilted off vertical (not (0,0)).
+        let (m, _, _) = elevated_mesh(8, &b, |lon, _| (lon - b.west) * 100_000.0);
+        assert!(m.normals.iter().any(|&c| c != 0));
     }
 }

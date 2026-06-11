@@ -220,7 +220,13 @@ int main(void) {
 
     g_server_running = 1;
     pthread_t tid;
-    pthread_create(&tid, NULL, server_thread, NULL);
+    if (pthread_create(&tid, NULL, server_thread, NULL) != 0) {
+        fprintf(stderr, "Failed to create server thread\n");
+        g_server_running = 0;
+        close(g_listenfd);
+        free(g_demo_tile);
+        return 1;
+    }
 
     /* Initialize the fetch thread pool */
     if (!arpt_fetch_init(2)) {

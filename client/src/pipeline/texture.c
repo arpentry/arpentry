@@ -8,6 +8,7 @@
 
 WGPURenderPipeline arpt__texture_create_surface_pipeline(WGPUDevice device) {
     WGPUShaderModule sm = create_shader(device, surface_wgsl);
+    if (!sm) return NULL;
 
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
         device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 0,
@@ -53,6 +54,7 @@ WGPURenderPipeline arpt__texture_create_surface_pipeline(WGPUDevice device) {
    toggling the stencil bit via INVERT.  Used for even-odd fill rule. */
 WGPURenderPipeline arpt__texture_create_stencil_fill_pipeline(WGPUDevice device) {
     WGPUShaderModule sm = create_shader(device, surface_wgsl);
+    if (!sm) return NULL;
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
         device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 0});
 
@@ -106,6 +108,7 @@ WGPURenderPipeline arpt__texture_create_stencil_fill_pipeline(WGPUDevice device)
    to 0 on pass so the next group starts clean. */
 WGPURenderPipeline arpt__texture_create_stencil_color_pipeline(WGPUDevice device) {
     WGPUShaderModule sm = create_shader(device, surface_wgsl);
+    if (!sm) return NULL;
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
         device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 0});
 
@@ -156,6 +159,7 @@ WGPURenderPipeline arpt__texture_create_stencil_color_pipeline(WGPUDevice device
 
 WGPURenderPipeline arpt__texture_create_line_pipeline(WGPUDevice device) {
     WGPUShaderModule sm = create_shader(device, line_wgsl);
+    if (!sm) return NULL;
 
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
         device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 0,
@@ -227,6 +231,7 @@ WGPURenderPipeline arpt__texture_create_line_pipeline(WGPUDevice device) {
 WGPURenderPipeline arpt__texture_create_mipmap_pipeline(WGPUDevice device,
                                                          WGPUBindGroupLayout bgl) {
     WGPUShaderModule sm = create_shader(device, mipmap_wgsl);
+    if (!sm) return NULL;
 
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
         device, &(WGPUPipelineLayoutDescriptor){

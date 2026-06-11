@@ -10,6 +10,7 @@ WGPURenderPipeline arpt__mesh_create_pipeline(WGPUDevice device,
                                                WGPUBindGroupLayout global_bgl,
                                                WGPUBindGroupLayout tile_bgl) {
     WGPUShaderModule sm = create_shader(device, terrain_wgsl);
+    if (!sm) return NULL;
 
     WGPUBindGroupLayout bgls[] = {global_bgl, tile_bgl};
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
@@ -73,8 +74,6 @@ WGPURenderPipeline arpt__mesh_create_pipeline(WGPUDevice device,
 
 void arpt__mesh_upload_terrain(arpt_renderer *r, arpt_tile_gpu *t,
                                const arpt_terrain_mesh *prim) {
-    t->index_count = (uint32_t)prim->index_count;
-
     /* Interleave x,y into uint16 pairs */
     size_t vc = prim->vertex_count;
     uint16_t *xy = malloc(vc * 4);
@@ -102,9 +101,15 @@ void arpt__mesh_upload_terrain(arpt_renderer *r, arpt_tile_gpu *t,
     t->buf_indices =
         create_buffer(r->device, r->queue, WGPUBufferUsage_Index, prim->indices,
                       prim->index_count * sizeof(uint32_t));
+
+    /* Mark drawable only once every buffer exists, so a partial upload
+       (allocation failure above) is skipped by the draw path. */
+    if (t->buf_xy && t->buf_z && t->buf_normals && t->buf_indices)
+        t->index_count = (uint32_t)prim->index_count;
 }
 
 void arpt__mesh_draw_terrain(arpt_renderer *r, arpt_tile_gpu *tile) {
+    if (tile->index_count == 0) return;
     wgpuRenderPassEncoderSetBindGroup(r->pass, 1, tile->bind_group, 0, NULL);
     wgpuRenderPassEncoderSetVertexBuffer(r->pass, 0, tile->buf_xy, 0,
                                          wgpuBufferGetSize(tile->buf_xy));
@@ -261,7 +266,9 @@ void arpt__mesh_upload_skirts(arpt_renderer *r, arpt_tile_gpu *t,
     t->skirt_buf_indices = create_buffer(r->device, r->queue,
                                           WGPUBufferUsage_Index, s_indices,
                                           total_skirt_indices * sizeof(uint32_t));
-    t->skirt_index_count = (uint32_t)total_skirt_indices;
+    if (t->skirt_buf_xy && t->skirt_buf_z && t->skirt_buf_normals &&
+        t->skirt_buf_indices)
+        t->skirt_index_count = (uint32_t)total_skirt_indices;
 
     free(s_xy); free(s_z); free(s_normals); free(s_indices);
 }

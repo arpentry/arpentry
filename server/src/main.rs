@@ -22,6 +22,8 @@ OPTIONS:
   --max-zoom <z>       Maximum zoom level (default: 4)
   --tmp <dir>          Temp directory for external sort (default: system temp)
   --mem <bytes>        Memory budget for external sort (default: 64 MiB)
+  --terrain <path>     Terrarium DEM PMTiles (e.g. Mapterhorn planet.pmtiles);
+                       gives each tile real elevation instead of a flat mesh
   --threads <n>        Accepted for compatibility; currently single-threaded
   -h, --help           Show this help
 
@@ -68,6 +70,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
     let mut max_zoom: u8 = 4;
     let mut tmp_dir = std::env::temp_dir();
     let mut mem_budget: usize = 64 * 1024 * 1024;
+    let mut terrain: Option<PathBuf> = None;
 
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
@@ -79,6 +82,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
             "--max-zoom" => max_zoom = parse_num(&value(&mut it, "--max-zoom")?, "--max-zoom")?,
             "--tmp" => tmp_dir = PathBuf::from(value(&mut it, "--tmp")?),
             "--mem" => mem_budget = parse_num(&value(&mut it, "--mem")?, "--mem")?,
+            "--terrain" => terrain = Some(PathBuf::from(value(&mut it, "--terrain")?)),
             "--threads" => {
                 value(&mut it, "--threads")?; // accepted, ignored
             }
@@ -93,7 +97,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
     if min_zoom > max_zoom {
         return Err(format!("--min-zoom ({min_zoom}) exceeds --max-zoom ({max_zoom})"));
     }
-    Ok(Config { output, inputs, bbox, min_zoom, max_zoom, tmp_dir, mem_budget })
+    Ok(Config { output, inputs, bbox, min_zoom, max_zoom, tmp_dir, mem_budget, terrain })
 }
 
 fn value(it: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
@@ -110,6 +114,11 @@ fn parse_input(s: &str) -> Result<(u8, PathBuf), String> {
     let layer: u8 = n.parse().map_err(|_| format!("invalid layer index in --input: {n}"))?;
     if layer as usize >= layers::COUNT {
         return Err(format!("layer index {layer} out of range (0..{})", layers::COUNT));
+    }
+    if layer as usize == layers::TERRAIN as usize {
+        return Err(format!(
+            "layer {layer} (terrain) is synthesised by the tiler and cannot be a vector input"
+        ));
     }
     Ok((layer, PathBuf::from(path)))
 }

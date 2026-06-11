@@ -139,17 +139,17 @@ All four topologies share the same coordinate layout, z encoding, and offset-bas
 
 #### Coordinate Layout
 
-All topologies store coordinates as separate `x`, `y`, and `z` arrays (structure-of-arrays layout). All three are required. Vertex count is `x.length`.
+All topologies store coordinates as separate `x`, `y`, and `z` arrays (structure-of-arrays layout). `x` and `y` are required; vertex count is `x.length`. On Point, Line, and Polygon geometry `z` is optional and omitted when all elevations are zero; on Mesh geometry it is required.
 
 - **x**: `[uint16]` — horizontal position, quantized to extent 32768
 - **y**: `[uint16]` — vertical position, quantized to extent 32768
-- **z**: `[int32]` — elevation in millimeters above WGS84 ellipsoid
+- **z**: `[int32]` — elevation in millimeters above WGS84 ellipsoid (absent ⇒ all zero)
 
 The tile proper spans raw values [16384, 49151]. Values in [0, 16383] represent buffer geometry beyond the west/south edge; values in [49152, 65535] represent buffer beyond the east/north edge. The buffer extends 50% of tile width on each side. Mesh vertices (terrain, landmarks) should stay within the tile range [16384, 49151].
 
 #### Elevation (z)
 
-Every vertex has an elevation: int32 millimeters above WGS84 ellipsoid. No dequantization needed — values are direct: `altitude_m = z_value * 0.001`. int32 gives 1mm precision with a ±2,147 km range, covering any location on Earth without per-geometry range parameters. The tile producer resolves terrain-relative source data to ellipsoid heights at build time.
+Every vertex has an elevation: int32 millimeters above WGS84 ellipsoid (a missing `z` array means every elevation is zero). No dequantization needed — values are direct: `altitude_m = z_value * 0.001`. int32 gives 1mm precision with a ±2,147 km range, covering any location on Earth without per-geometry range parameters. The tile producer resolves terrain-relative source data to ellipsoid heights at build time.
 
 Building extrusion parameters (`height`, `min_height`) are stored as feature properties, not as geometry fields.
 
@@ -308,7 +308,7 @@ Reserved keys that are unused in a tile MAY be omitted; present keys keep their 
 - **Reference**: WGS84 (EPSG:4326)
 - **Tile bounds**: longitude/latitude degrees
 - **All geometry x/y**: quantized uint16; extent 32768 with buffer 16384 per side. Tile proper spans raw values [16384, 49151]; values outside are buffer geometry.
-- **All geometry z**: int32 millimeters above WGS84 ellipsoid (required, direct value)
+- **All geometry z**: int32 millimeters above WGS84 ellipsoid (direct value; array omitted when all elevations are zero)
 
 One dequantization formula for all topologies:
 
@@ -371,20 +371,20 @@ struct Part {
 table PointGeometry {
   x: [uint16] (required);
   y: [uint16] (required);
-  z: [int32] (required);
+  z: [int32];                  // optional, omitted when all elevations are zero
 }
 
 table LineGeometry {
   x: [uint16] (required);
   y: [uint16] (required);
-  z: [int32] (required);
+  z: [int32];                  // optional, omitted when all elevations are zero
   line_offsets: [uint32];      // N+1 vertex offsets partitioning into linestrings
 }
 
 table PolygonGeometry {
   x: [uint16] (required);
   y: [uint16] (required);
-  z: [int32] (required);
+  z: [int32];                  // optional, omitted when all elevations are zero
   ring_offsets: [uint32];      // N+1 vertex offsets partitioning into rings (exterior first, then holes)
   polygon_offsets: [uint32];  // MultiPolygon: ring offsets partitioning into polygons
 }

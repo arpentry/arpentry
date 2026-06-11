@@ -59,7 +59,8 @@ static void create_msaa_texture(arpt_renderer *r) {
         .sampleCount = ARPT_MSAA_SAMPLES,
     };
     r->msaa_texture = wgpuDeviceCreateTexture(r->device, &desc);
-    r->msaa_view = wgpuTextureCreateView(r->msaa_texture, NULL);
+    r->msaa_view =
+        r->msaa_texture ? wgpuTextureCreateView(r->msaa_texture, NULL) : NULL;
 }
 
 /* Depth texture (re)creation */
@@ -77,7 +78,8 @@ static void create_depth_texture(arpt_renderer *r) {
         .sampleCount = ARPT_MSAA_SAMPLES,
     };
     r->depth_texture = wgpuDeviceCreateTexture(r->device, &desc);
-    r->depth_view = wgpuTextureCreateView(r->depth_texture, NULL);
+    r->depth_view =
+        r->depth_texture ? wgpuTextureCreateView(r->depth_texture, NULL) : NULL;
 }
 
 /* 1x1 solid-color texture helper */
@@ -94,6 +96,10 @@ static void create_1x1_texture(WGPUDevice device, WGPUQueue queue,
         .sampleCount = 1,
     };
     *tex = wgpuDeviceCreateTexture(device, &dt);
+    if (!*tex) {
+        *view = NULL;
+        return;
+    }
     *view = wgpuTextureCreateView(*tex, NULL);
     uint8_t pixel[4] = {(uint8_t)(color[0] * 255.0f + 0.5f),
                         (uint8_t)(color[1] * 255.0f + 0.5f),
@@ -345,6 +351,7 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->sky_pipeline) wgpuRenderPipelineRelease(r->sky_pipeline);
     if (r->sky_bgl) wgpuBindGroupLayoutRelease(r->sky_bgl);
     if (r->pipeline) wgpuRenderPipelineRelease(r->pipeline);
+    if (r->tree_pipeline) wgpuRenderPipelineRelease(r->tree_pipeline);
     if (r->surface_pipeline) wgpuRenderPipelineRelease(r->surface_pipeline);
     if (r->line_pipeline) wgpuRenderPipelineRelease(r->line_pipeline);
     if (r->stencil_fill_pipeline) wgpuRenderPipelineRelease(r->stencil_fill_pipeline);
@@ -520,7 +527,8 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
     if (has_polys || has_lines) {
         t->surface_texture = arpt__texture_rasterize(r, &prims->polygons,
                                                       &prims->lines);
-        t->surface_view = wgpuTextureCreateView(t->surface_texture, NULL);
+        if (t->surface_texture)
+            t->surface_view = wgpuTextureCreateView(t->surface_texture, NULL);
     }
 
     WGPUTextureView lu_view =
@@ -529,6 +537,10 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
     /* Per-tile uniform buffer + bind group */
     t->uniform_buf = create_buffer(r->device, r->queue, WGPUBufferUsage_Uniform,
                                    NULL, sizeof(tile_uniforms_t));
+    if (!t->uniform_buf) {
+        arpt_tile_gpu_free(t);
+        return NULL;
+    }
     WGPUBindGroupEntry entries[] = {
         {.binding = 0,
          .buffer = t->uniform_buf,
@@ -575,8 +587,9 @@ void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile, arpt_mat4 model,
     tile->cached_center_lon = center_lon;
     tile->cached_center_lat = center_lat;
 
-    wgpuQueueWriteBuffer(tile->renderer->queue, tile->uniform_buf, 0, &u,
-                         sizeof(u));
+    if (tile->uniform_buf)
+        wgpuQueueWriteBuffer(tile->renderer->queue, tile->uniform_buf, 0, &u,
+                             sizeof(u));
 }
 
 void arpt_tile_gpu_free(arpt_tile_gpu *tile) {

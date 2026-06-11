@@ -132,7 +132,17 @@ static int32_t resolve_int_property(arpentry_tiles_Feature_table_t feat,
             if (vi < arpentry_tiles_Value_vec_len(values)) {
                 arpentry_tiles_Value_table_t val =
                     arpentry_tiles_Value_vec_at(values, vi);
-                return (int32_t)arpentry_tiles_Value_int_value(val);
+                if (!val) break;
+                /* Numeric values may be encoded as Int or Double
+                 * (e.g. Overture heights are float64). */
+                switch (arpentry_tiles_Value_type(val)) {
+                case arpentry_tiles_PropertyValueType_Int:
+                    return (int32_t)arpentry_tiles_Value_int_value(val);
+                case arpentry_tiles_PropertyValueType_Double:
+                    return (int32_t)arpentry_tiles_Value_double_value(val);
+                default:
+                    return 0;
+                }
             }
             break;
         }

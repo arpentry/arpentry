@@ -45,10 +45,12 @@ void arpt_style_defaults(arpt_style *s) {
         s->colors[_i][3] = (a) / 255.0f; \
     } while (0)
 
-    /* Background / unknown */
-    s->colors[0][0] = 107 / 255.0f;
-    s->colors[0][1] = 158 / 255.0f;
-    s->colors[0][2] =  71 / 255.0f;
+    /* Background / unknown: deliberately magenta so a missing style.arps
+       (or an unmapped class) is unmistakable instead of passing for a
+       plausibly rendered scene. A fetched style overwrites this. */
+    s->colors[0][0] = 255 / 255.0f;
+    s->colors[0][1] =   0 / 255.0f;
+    s->colors[0][2] = 255 / 255.0f;
     s->colors[0][3] = 255 / 255.0f;
 
     /* Surface fills (matching server defaults) */

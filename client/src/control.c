@@ -512,5 +512,18 @@ void arpt_control_set_event_filter(arpt_control *ctrl, arpt_event_filter_fn fn,
 }
 
 void arpt_control_free(arpt_control *ctrl) {
+    if (!ctrl) return;
+    /* Unregister callbacks so a late event can't reach the freed control. */
+    glfwSetWindowUserPointer(ctrl->window, NULL);
+    glfwSetMouseButtonCallback(ctrl->window, NULL);
+    glfwSetCursorPosCallback(ctrl->window, NULL);
+    glfwSetScrollCallback(ctrl->window, NULL);
+    glfwSetKeyCallback(ctrl->window, NULL);
+#ifdef __EMSCRIPTEN__
+    emscripten_set_touchstart_callback("canvas", NULL, EM_TRUE, NULL);
+    emscripten_set_touchmove_callback("canvas", NULL, EM_TRUE, NULL);
+    emscripten_set_touchend_callback("canvas", NULL, EM_TRUE, NULL);
+    emscripten_set_touchcancel_callback("canvas", NULL, EM_TRUE, NULL);
+#endif
     free(ctrl);
 }

@@ -36,6 +36,12 @@ parquet = "53"
 # the `.arps` style source file.
 tiny_http = "0.12"
 serde_json = "1"
+# Terrain elevation: Mapterhorn ships Terrarium-encoded DEM tiles (WebP) bundled
+# in PMTiles v3 archives. The PMTiles reader is hand-rolled (src/pmtiles.rs);
+# `flate2` inflates its gzip-compressed directories and `image` decodes the WebP
+# terrarium tiles. Only the two formats we need are enabled to keep the build lean.
+flate2 = "1"
+image = { version = "0.25", default-features = false, features = ["webp", "png"] }
 #   Milestone 5 pipeline: crossbeam-channel, rayon, clap, anyhow, thiserror, tracing, indicatif
 
 [profile.release]

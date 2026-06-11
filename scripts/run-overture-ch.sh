@@ -3,6 +3,7 @@
 #
 # Prerequisites:
 #   pip install overturemaps
+#   pmtiles CLI (for terrain elevation): https://github.com/protomaps/go-pmtiles
 #
 # Usage:
 #   ./scripts/run-overture-ch.sh [options]
@@ -17,8 +18,16 @@
 #   --min-zoom <z>         Override the minimum zoom (default 0)
 #   --max-zoom <z>         Override the maximum zoom (default 14)
 #   --port <n>             Server port (default 8090)
+#   --no-terrain           Don't add Mapterhorn elevation (flat terrain mesh)
+#   --terrain-file <path>  Use an existing terrain PMTiles instead of extracting
 #
 # Downloads are idempotent: a layer is fetched only when its .parquet is missing.
+#
+# Terrain: elevation comes from Mapterhorn (https://mapterhorn.com), a global
+# Terrarium DEM in PMTiles. Rather than download the ~30 GB planet file, the
+# bbox + zooms this run needs are extracted from it over HTTP with the `pmtiles`
+# CLI into data/overture-ch/terrain.pmtiles (idempotent, like the layer
+# downloads). The tiler then samples it for per-vertex elevation.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -27,6 +36,12 @@ BUILD_DIR="$ROOT_DIR/build"
 DATA_DIR="$ROOT_DIR/data/overture-ch"
 ARCHIVE="$DATA_DIR/switzerland.arpa"
 STYLE="$ROOT_DIR/style-overture-ch.json"
+
+# Mapterhorn terrain (Terrarium DEM PMTiles). planet.pmtiles covers z0-12; we
+# extract just the run's bbox + zooms into TERRAIN_PMTILES over HTTP range reads.
+MAPTERHORN_URL="https://download.mapterhorn.com/planet.pmtiles"
+MAPTERHORN_MAX_ZOOM=12
+TERRAIN_PMTILES="$DATA_DIR/terrain.pmtiles"
 
 # Tiler and server are the Rust reimplementation (server), built with Cargo
 # below; only the client comes from the C build.
@@ -50,6 +65,8 @@ SKIP_BUILD=false
 SKIP_TILE=false
 SERVE_ONLY=false
 SCREENSHOT=""
+USE_TERRAIN=true
+TERRAIN_FILE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --skip-download) SKIP_DOWNLOAD=true; shift ;;
@@ -61,6 +78,8 @@ while [ $# -gt 0 ]; do
         --min-zoom)      MIN_ZOOM="$2"; shift 2 ;;
         --max-zoom)      MAX_ZOOM="$2"; shift 2 ;;
         --port)          PORT="$2"; shift 2 ;;
+        --no-terrain)    USE_TERRAIN=false; shift ;;
+        --terrain-file)  TERRAIN_FILE="$2"; shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -139,6 +158,37 @@ else
         exit 1
     fi
 
+    # Extract the Mapterhorn terrain for this bbox + zoom range (idempotent).
+    # Sets TERRAIN_ARG to (--terrain <file>) when elevation is available.
+    TERRAIN_ARG=()
+    if [ "$USE_TERRAIN" = true ]; then
+        terrain_src="$TERRAIN_FILE"
+        if [ -z "$terrain_src" ]; then
+            terrain_src="$TERRAIN_PMTILES"
+            if [ ! -f "$terrain_src" ]; then
+                if [ "$SKIP_DOWNLOAD" = true ]; then
+                    echo "WARNING: terrain missing and --skip-download set; tiling flat"
+                    terrain_src=""
+                elif ! command -v pmtiles >/dev/null 2>&1; then
+                    echo "WARNING: pmtiles CLI not found; tiling flat (install" \
+                         "https://github.com/protomaps/go-pmtiles or use --no-terrain)"
+                    terrain_src=""
+                else
+                    # Mapterhorn tops out at z12; don't ask for more.
+                    tzoom=$MAX_ZOOM
+                    [ "$tzoom" -gt "$MAPTERHORN_MAX_ZOOM" ] && tzoom=$MAPTERHORN_MAX_ZOOM
+                    echo "Extracting Mapterhorn terrain (bbox=$BBOX zoom=$MIN_ZOOM-$tzoom)..."
+                    pmtiles extract "$MAPTERHORN_URL" "$terrain_src" \
+                        --bbox="$BBOX" --minzoom="$MIN_ZOOM" --maxzoom="$tzoom"
+                    echo "  -> $(du -h "$terrain_src" | cut -f1)"
+                fi
+            else
+                echo "Reusing terrain: $terrain_src ($(du -h "$terrain_src" | cut -f1))"
+            fi
+        fi
+        [ -n "$terrain_src" ] && TERRAIN_ARG=(--terrain "$terrain_src")
+    fi
+
     echo ""
     echo "Tiling to $ARCHIVE..."
     echo "  bbox=$BBOX  zoom=$MIN_ZOOM-$MAX_ZOOM"
@@ -148,6 +198,7 @@ else
         --min-zoom "$MIN_ZOOM" \
         --max-zoom "$MAX_ZOOM" \
         --mem $((256 * 1024 * 1024)) \
+        ${TERRAIN_ARG[@]+"${TERRAIN_ARG[@]}"} \
         "${TILER_INPUTS[@]}"
     echo "Archive: $(du -h "$ARCHIVE" | cut -f1)"
 fi

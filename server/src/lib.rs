@@ -19,6 +19,7 @@
 
 pub mod archive;
 pub mod clip;
+pub mod dem;
 pub mod fb;
 pub mod gen;
 pub mod geom;
@@ -27,6 +28,7 @@ pub mod hilbert;
 pub mod layers;
 pub mod models;
 pub mod pipeline;
+pub mod pmtiles;
 pub mod profile;
 pub mod project;
 pub mod record;

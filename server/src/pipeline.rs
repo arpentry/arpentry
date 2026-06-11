@@ -17,6 +17,7 @@ use geo_types::Geometry;
 
 use crate::archive::{ArchiveMeta, ArchiveWriter};
 use crate::clip;
+use crate::dem::Dem;
 use crate::geom::GeometryType;
 use crate::geoparquet::GeoParquet;
 use crate::hilbert;
@@ -61,6 +62,10 @@ pub struct Config {
     pub max_zoom: u8,
     pub tmp_dir: PathBuf,
     pub mem_budget: usize,
+    /// Optional Terrarium PMTiles DEM (e.g. Mapterhorn `planet.pmtiles`). When
+    /// set, each tile's terrain mesh carries real elevation sampled from it;
+    /// otherwise every tile gets the shared flat mesh.
+    pub terrain: Option<PathBuf>,
 }
 
 /// Summary counts from a run.
@@ -93,7 +98,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             if !bbox_intersects(bb, &cfg.bbox) {
                 continue;
             }
-            let prof = profile::profile(&f.properties, cfg.min_zoom, cfg.max_zoom);
+            let prof = profile::profile(*layer, &f.properties, cfg.min_zoom, cfg.max_zoom);
             let zmin = prof.min_zoom.max(cfg.min_zoom);
             let zmax = prof.max_zoom.min(cfg.max_zoom);
 
@@ -148,10 +153,18 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // appears once the archive is complete (an interrupted run can't leave a
     // valid-looking but truncated file behind).
     let tmp_output = temp_output_path(&cfg.output);
+    let mut tmp_cleanup = TempCleanup { path: tmp_output.clone(), armed: true };
     let mut writer = ArchiveWriter::new(File::create(&tmp_output)?, meta)?;
     let mut layer_stats = LayerStats::new();
-    // One flat terrain mesh, reused for every tile (identical in quantized space).
-    let terrain = terrain::flat_mesh(TERRAIN_GRID);
+    // One flat terrain mesh, reused for every tile when no DEM is configured
+    // (identical in quantized space). With a DEM, each tile gets its own mesh.
+    let flat = terrain::flat_mesh(TERRAIN_GRID);
+    let mut dem = match &cfg.terrain {
+        Some(path) => Some(Dem::open(path)?),
+        None => None,
+    };
+    // Min/max sampled elevation in metres, for the tileset's elevation range.
+    let mut elevation = (f64::INFINITY, f64::NEG_INFINITY);
 
     let mut current: Option<u64> = None;
     let mut buckets: Vec<Vec<EncoderFeature>> = (0..layers::COUNT).map(|_| Vec::new()).collect();
@@ -160,7 +173,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         let tile_id = tileid::key_tile_id(key);
         if current != Some(tile_id) {
             if let Some(prev) = current {
-                flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &terrain)?;
+                flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut dem, &mut elevation)?;
             }
             current = Some(tile_id);
         }
@@ -170,13 +183,14 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         }
     }
     if let Some(prev) = current {
-        flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &terrain)?;
+        flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut dem, &mut elevation)?;
     }
 
+    let elevation_range = if elevation.0.is_finite() { elevation } else { (0.0, 0.0) };
     let info = TilesetInfo {
         name: None,
         bounds: cfg.bbox,
-        elevation_range: (0.0, 0.0),
+        elevation_range,
         min_level: cfg.min_zoom,
         max_level: cfg.max_zoom,
         root_error: DEFAULT_ROOT_ERROR,
@@ -186,6 +200,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     file.sync_all()?;
     drop(file);
     std::fs::rename(&tmp_output, &cfg.output)?;
+    tmp_cleanup.armed = false;
     Ok(stats)
 }
 
@@ -196,14 +211,32 @@ fn temp_output_path(output: &std::path::Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Removes the temp output on drop unless disarmed after the final rename, so
+/// an error anywhere in phase 2 doesn't leave a stale `.tmp` file behind.
+struct TempCleanup {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl Drop for TempCleanup {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// Encodes one tile's grouped features and appends it to the archive.
+#[allow(clippy::too_many_arguments)]
 fn flush_tile(
     writer: &mut ArchiveWriter<File>,
     tile_id: u64,
     buckets: &mut [Vec<EncoderFeature>],
     layer_stats: &mut LayerStats,
     stats: &mut Stats,
-    terrain: &TerrainMesh,
+    flat: &TerrainMesh,
+    dem: &mut Option<Dem>,
+    elevation: &mut (f64, f64),
 ) -> Result<(), Error> {
     let (z, x, y) = hilbert::tile_id_decode(tile_id);
     let bounds = Bounds::of_tile(z, x, y);
@@ -224,8 +257,19 @@ fn flush_tile(
     }
 
     // Every tile carries a terrain mesh — the client requires it to render.
+    // With a DEM, build a per-tile elevated mesh (and track the elevation
+    // range); otherwise reuse the shared flat mesh.
     layer_stats.observe(layers::TERRAIN as usize, z, GeometryType::Mesh);
-    let blob = tile_build::build_tile(&bounds, Some(terrain), &enc_layers);
+    let blob = match dem {
+        Some(d) => {
+            let (mesh, emin, emax) =
+                terrain::elevated_mesh(TERRAIN_GRID, &bounds, |lon, lat| d.elevation(lon, lat, z));
+            elevation.0 = elevation.0.min(emin);
+            elevation.1 = elevation.1.max(emax);
+            tile_build::build_tile(&bounds, Some(&mesh), &enc_layers)
+        }
+        None => tile_build::build_tile(&bounds, Some(flat), &enc_layers),
+    };
     writer.add_tile(z, x, y, &blob)?;
     stats.tiles_written += 1;
     Ok(())
@@ -434,6 +478,56 @@ mod tests {
         }
     }
 
+    /// Breaks down specific tiles in $ARPA by layer: feature count and total
+    /// vertices, to find what bloats a tile. Env: ARPA, TILES="z/x/y,z/x/y".
+    /// Run: `ARPA=data/overture-ch/switzerland.arpa TILES=7/66/97,7/65/98 \
+    ///   cargo test -- --ignored dump_tile_sizes --nocapture`
+    #[test]
+    #[ignore = "needs $ARPA"]
+    fn dump_tile_sizes() {
+        let path = std::env::var("ARPA").unwrap();
+        let tiles = std::env::var("TILES").unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let archive = crate::archive::Archive::open(&bytes).unwrap();
+        for spec in tiles.split(',') {
+            let parts: Vec<&str> = spec.split('/').collect();
+            let z: u8 = parts[0].parse().unwrap();
+            let x: u32 = parts[1].parse().unwrap();
+            let y: u32 = parts[2].parse().unwrap();
+            let id = crate::hilbert::tile_id(z, x, y);
+            let Some(blob) = archive.get_by_id(id) else {
+                eprintln!("{z}/{x}/{y}: NOT PRESENT");
+                continue;
+            };
+            let raw = brotli_decompress(blob);
+            let tile = fbt::root_as_tile(&raw).unwrap();
+            eprintln!("== {z}/{x}/{y}: compressed={} decompressed={} ==", blob.len(), raw.len());
+            let layers = tile.layers().unwrap();
+            for li in 0..layers.len() {
+                let l = layers.get(li);
+                let Some(feats) = l.features() else { continue };
+                let mut verts = 0usize;
+                let mut max_verts = 0usize;
+                for fi in 0..feats.len() {
+                    let f = feats.get(fi);
+                    let v = if let Some(g) = f.geometry_as_polygon_geometry() {
+                        g.x().len()
+                    } else if let Some(g) = f.geometry_as_line_geometry() {
+                        g.x().len()
+                    } else if let Some(g) = f.geometry_as_point_geometry() {
+                        g.x().len()
+                    } else if let Some(g) = f.geometry_as_mesh_geometry() {
+                        g.x().len()
+                    } else { 0 };
+                    verts += v;
+                    max_verts = max_verts.max(v);
+                }
+                eprintln!("  layer '{}': {} features, {} verts total, {} max/feat",
+                    l.name(), feats.len(), verts, max_verts);
+            }
+        }
+    }
+
     /// Full read→sort→encode→archive chain over the repo's Natural Earth data,
     /// reopening the `.arpa` and decoding its metadata and a tile.
     #[test]
@@ -451,6 +545,7 @@ mod tests {
             max_zoom: 6,
             tmp_dir: std::env::temp_dir(),
             mem_budget: 64 * 1024 * 1024,
+            terrain: None,
         };
         let stats = run(&cfg).expect("pipeline run");
         assert!(stats.tiles_written > 0, "expected some tiles");

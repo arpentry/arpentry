@@ -22,6 +22,9 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrd};
 /// Process-wide counter giving each spilled run a unique file name.
 static RUN_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Sanity cap on a record payload length read back from a spilled run file.
+const MAX_RECORD_LEN: u64 = 64 * 1024 * 1024;
+
 /// Approximate per-record bookkeeping cost charged against the memory budget,
 /// on top of the payload bytes (key + `Vec` header, roughly).
 const RECORD_OVERHEAD: usize = 32;
@@ -146,8 +149,13 @@ fn read_record(reader: &mut impl Read) -> io::Result<Option<Record>> {
     }
     let mut len_bytes = [0u8; 8];
     reader.read_exact(&mut len_bytes)?;
-    let len = u64::from_le_bytes(len_bytes) as usize;
-    let mut data = vec![0u8; len];
+    let len = u64::from_le_bytes(len_bytes);
+    // A corrupt or truncated run file yields a clean error here instead of a
+    // giant allocation (no real record payload approaches this size).
+    if len > MAX_RECORD_LEN {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "record length exceeds sanity cap"));
+    }
+    let mut data = vec![0u8; len as usize];
     reader.read_exact(&mut data)?;
     Ok(Some((u64::from_le_bytes(key_bytes), data)))
 }

@@ -6,6 +6,7 @@ WGPURenderPipeline arpt__sky_create_pipeline(WGPUDevice device,
                                               WGPUTextureFormat format,
                                               WGPUBindGroupLayout sky_bgl) {
     WGPUShaderModule sm = create_shader(device, sky_wgsl);
+    if (!sm) return NULL;
 
     WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
         device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 1,

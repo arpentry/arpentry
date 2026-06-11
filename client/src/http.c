@@ -164,7 +164,7 @@ bool arpt_http_get(const char *url, arpt_http_response *resp) {
         return false;
     }
 
-    char req[512];
+    char req[1024]; /* fits max-length path (511) + host (255) + template */
     int n = snprintf(req, sizeof(req),
                      "GET %s HTTP/1.1\r\n"
                      "Host: %s\r\n"
@@ -212,7 +212,10 @@ bool arpt_http_get(const char *url, arpt_http_response *resp) {
     const uint8_t *body_start = boundary + 4;
     size_t body_len = total - hdr_len - 4;
 
-    if (hdr_len < 12 || buf[8] != ' ') {
+    if (hdr_len < 12 || buf[8] != ' ' ||
+        buf[9] < '0' || buf[9] > '9' ||
+        buf[10] < '0' || buf[10] > '9' ||
+        buf[11] < '0' || buf[11] > '9') {
         free(buf);
         return false;
     }

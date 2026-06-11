@@ -42,6 +42,19 @@ mkdir -p "$TILE_DIR"
 SERVER_PID=$!
 echo "arpentry_server started (pid $SERVER_PID)"
 
+# Wait until the server accepts connections. The client fetches style.arps,
+# models.arpm, and index.arpi exactly once at startup; if it launches before
+# the server listens, those fetches fail and it silently falls back to the
+# built-in defaults (green background, no models).
+for _ in $(seq 1 100); do
+    if nc -z 127.0.0.1 8090 >/dev/null 2>&1; then break; fi
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        echo "Error: arpentry_server exited before accepting connections" >&2
+        exit 1
+    fi
+    sleep 0.1
+done
+
 # ── Start client (foreground) ─────────────────────────────────────────────────
 
 "$CLIENT"

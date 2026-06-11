@@ -31,5 +31,9 @@ void arpt__extrusion_upload(arpt_renderer *r, arpt_tile_gpu *t,
                                         WGPUBufferUsage_Index, prim->indices,
                                         ni * sizeof(uint32_t));
 
-    t->bldg_index_count = (uint32_t)ni;
+    /* Mark drawable only once every buffer exists, so a partial upload
+       (allocation failure above) is skipped by the draw path. */
+    if (t->bldg_buf_xy && t->bldg_buf_z && t->bldg_buf_normals &&
+        t->bldg_buf_indices)
+        t->bldg_index_count = (uint32_t)ni;
 }

@@ -44,6 +44,17 @@ mkdir -p "$TILE_DIR"
 SERVER_PID=$!
 echo "arpentry_server started (pid $SERVER_PID)"
 
+# Wait until the tile server accepts connections so the web client's one-shot
+# style/model/tileset fetches don't fail if the page loads immediately.
+for _ in $(seq 1 100); do
+    if nc -z 127.0.0.1 8090 >/dev/null 2>&1; then break; fi
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        echo "Error: arpentry_server exited before accepting connections" >&2
+        exit 1
+    fi
+    sleep 0.1
+done
+
 # ── Start HTTP server for WebAssembly client (foreground) ────────────────────
 
 echo "Serving WebAssembly client at http://localhost:$HTTP_PORT"

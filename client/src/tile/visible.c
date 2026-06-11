@@ -20,8 +20,10 @@ int arpt_enumerate_visible_tiles(const arpt_camera *cam, int level,
     if (total_tiles <= 128) {
         int count = 0;
         for (int y = 0; y < n_rows; y++)
-            for (int x = 0; x < n_cols; x++)
+            for (int x = 0; x < n_cols; x++) {
+                if (count >= max_count) return count;
                 out[count++] = (arpt_tile_key){level, x, y};
+            }
         return count;
     }
 

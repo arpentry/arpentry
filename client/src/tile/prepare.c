@@ -8,6 +8,8 @@
 
 static void count_polygon_geom(const arpt_surface_data *data,
                                 size_t *out_verts, size_t *out_indices) {
+    *out_verts = 0;
+    *out_indices = 0;
     if (!data) return;
     for (size_t i = 0; i < data->count; i++) {
         size_t vc = data->polygons[i].vertex_count;
@@ -419,7 +421,7 @@ static void encode_octahedral(double nx, double ny, double nz, int8_t *ox,
 
 static bool building_in_tile_proper(const arpt_surface_polygon *b) {
     size_t n = b->vertex_count - 1;
-    uint32_t sx = 0, sy = 0;
+    uint64_t sx = 0, sy = 0;
     for (size_t v = 0; v < n; v++) {
         sx += b->x[v];
         sy += b->y[v];

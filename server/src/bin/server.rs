@@ -43,7 +43,7 @@ enum Source {
 /// Immutable server state shared across worker threads.
 struct State {
     source: Source,
-    style_path: std::path::PathBuf,
+    style_arps: Vec<u8>,
     index_arpi: Vec<u8>,
     models_arpm: Vec<u8>,
 }
@@ -56,8 +56,21 @@ fn main() {
     }
     let tile_dir = &args[0];
     let style_file = std::path::PathBuf::from(&args[1]);
-    let port: u16 = args.get(2).map(|p| p.parse().unwrap_or(8090)).unwrap_or(8090);
-    let nthreads: usize = args.get(3).and_then(|t| t.parse().ok()).unwrap_or(8).max(1);
+    let port: u16 = match args.get(2) {
+        Some(p) => p.parse().unwrap_or_else(|_| {
+            eprintln!("Invalid port: {p}");
+            exit(1);
+        }),
+        None => 8090,
+    };
+    let nthreads: usize = match args.get(3) {
+        Some(t) => t.parse::<usize>().unwrap_or_else(|_| {
+            eprintln!("Invalid thread count: {t}");
+            exit(1);
+        }),
+        None => 8,
+    }
+    .max(1);
 
     // Open an archive if the path looks like one; otherwise generate procedurally.
     let source = if tile_dir.ends_with(".arpa") {
@@ -94,7 +107,17 @@ fn main() {
     let index_arpi = tileset::build(&generated_tileset(archive_max_zoom));
     let models_arpm = models::build();
 
-    let state = Arc::new(State { source, style_path: style_file, index_arpi, models_arpm });
+    // Build the style once at startup: a bad style file fails fast here instead
+    // of returning a 500 on every request. Restart the server after style edits.
+    let style_arps = match style::build_from_file(&style_file) {
+        Ok(blob) => blob,
+        Err(e) => {
+            eprintln!("Failed to build style from {}: {e}", style_file.display());
+            exit(1);
+        }
+    };
+
+    let state = Arc::new(State { source, style_arps, index_arpi, models_arpm });
 
     let addr = format!("0.0.0.0:{port}");
     let server = match Server::http(&addr) {
@@ -112,7 +135,14 @@ fn main() {
         let state = Arc::clone(&state);
         workers.push(std::thread::spawn(move || {
             for request in server.incoming_requests() {
-                handle(request, &state);
+                // Isolate handler panics: an unwinding worker would die silently
+                // and, once all workers were gone, the server would exit.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    handle(request, &state);
+                }));
+                if outcome.is_err() {
+                    eprintln!("[server] request handler panicked; worker continuing");
+                }
             }
         }));
     }
@@ -152,13 +182,7 @@ fn route(method: &Method, path: &str, state: &State) -> Routed {
     }
     match path {
         "/index.arpi" => Routed::Blob { content_type: "application/x-arpi", body: state.index_arpi.clone() },
-        "/style.arps" => match style::build_from_file(&state.style_path) {
-            Ok(blob) => Routed::Blob { content_type: "application/x-arps", body: blob },
-            Err(e) => {
-                eprintln!("{e}");
-                Routed::Status(500)
-            }
-        },
+        "/style.arps" => Routed::Blob { content_type: "application/x-arps", body: state.style_arps.clone() },
         "/models.arpm" => Routed::Blob { content_type: "application/x-arpm", body: state.models_arpm.clone() },
         _ => Routed::Status(404),
     }
@@ -246,7 +270,9 @@ fn header(name: &str, value: &str) -> Header {
     Header::from_bytes(name.as_bytes(), value.as_bytes()).expect("valid header")
 }
 
-/// Responds with a Brotli-compressed blob and permissive CORS, like the C server.
+/// Responds with a blob and permissive CORS, like the C server. The body must
+/// already be Brotli-compressed: the `Content-Encoding: br` header is set
+/// unconditionally, so an uncompressed body would be silently undecodable.
 ///
 /// The chunked threshold is raised past any tile size so every response carries a
 /// `Content-Length` and is never sent with `Transfer-Encoding: chunked`. tiny_http
@@ -287,7 +313,7 @@ mod tests {
     fn procedural_state() -> State {
         State {
             source: Source::Procedural,
-            style_path: std::path::PathBuf::from("../style.json"),
+            style_arps: style::build_from_file(std::path::Path::new("../style.json")).unwrap(),
             index_arpi: tileset::build(&generated_tileset(None)),
             models_arpm: models::build(),
         }
@@ -351,7 +377,7 @@ mod tests {
         let archive = Archive::open(leaked).unwrap();
         let s = State {
             source: Source::Archive(archive),
-            style_path: std::path::PathBuf::from("../style.json"),
+            style_arps: style::build_from_file(std::path::Path::new("../style.json")).unwrap(),
             index_arpi: tileset::build(&generated_tileset(Some(6))),
             models_arpm: models::build(),
         };
@@ -377,7 +403,7 @@ mod tests {
         let first = archive.entries().next().expect("archive has tiles");
         let s = State {
             source: Source::Archive(archive),
-            style_path: std::path::PathBuf::from("../style.json"),
+            style_arps: style::build_from_file(std::path::Path::new("../style.json")).unwrap(),
             index_arpi: tileset::build(&generated_tileset(Some(max_zoom))),
             models_arpm: models::build(),
         };
