@@ -30,6 +30,11 @@ pub struct EncoderFeature {
     pub id: u64,
     pub geometry: Geometry,
     pub properties: Vec<(String, Value)>,
+    /// Base elevation in metres above the ellipsoid, written as a constant
+    /// per-vertex `z` array (FORMAT.md §3.4). Set for features the client
+    /// places vertically itself (building extrusions, POI labels); `None`
+    /// omits `z`, which decodes as elevation zero.
+    pub elevation: Option<f64>,
 }
 
 /// A named layer of features (decode-priority order is the caller's concern).
@@ -257,7 +262,9 @@ fn build_feature<'a>(
     f: &EncoderFeature,
     dict: &Dictionaries,
 ) -> Option<flatbuffers::WIPOffset<fbt::Feature<'a>>> {
-    let (geom_type, geom) = build_geometry(fbb, bounds, &f.geometry)?;
+    // Elevation is stored as int32 millimetres above the ellipsoid.
+    let elevation_mm = f.elevation.map(|m| (m * 1000.0) as i32);
+    let (geom_type, geom) = build_geometry(fbb, bounds, &f.geometry, elevation_mm)?;
 
     let props: Vec<fbt::Property> = f
         .properties
@@ -282,28 +289,31 @@ fn build_feature<'a>(
 }
 
 /// Builds the geometry union member for a feature, returning its type tag and
-/// union offset. Quantizes to tile-local uint16; `z` is omitted (vector
-/// features carry no source elevation — FORMAT.md §3.4).
+/// union offset. Quantizes to tile-local uint16. `elevation_mm`, when present,
+/// becomes a constant per-vertex `z` array on points and polygons (building
+/// bases and label anchors); `None` omits `z` (FORMAT.md §3.4). Lines never
+/// carry `z` — the client drapes them on the terrain.
 fn build_geometry<'a>(
     fbb: &mut flatbuffers::FlatBufferBuilder<'a>,
     bounds: &Bounds,
     geom: &Geometry,
+    elevation_mm: Option<i32>,
 ) -> Option<(fbt::Geometry, flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset>)> {
     let q = |c: &Coord| (project::quantize_x(c.x, bounds), project::quantize_y(c.y, bounds));
 
     match geom {
         Geometry::Point(p) => {
             let (x, y) = q(&p.0);
-            point_geometry(fbb, vec![x], vec![y])
+            point_geometry(fbb, vec![x], vec![y], elevation_mm)
         }
         Geometry::MultiPoint(mp) => {
             let (xs, ys) = unzip(mp.0.iter().map(|p| q(&p.0)));
-            point_geometry(fbb, xs, ys)
+            point_geometry(fbb, xs, ys, elevation_mm)
         }
         Geometry::LineString(ls) => line_geometry(fbb, &[ls.clone()], q),
         Geometry::MultiLineString(mls) => line_geometry(fbb, &mls.0, q),
-        Geometry::Polygon(p) => polygon_geometry(fbb, std::slice::from_ref(p), q),
-        Geometry::MultiPolygon(mp) => polygon_geometry(fbb, &mp.0, q),
+        Geometry::Polygon(p) => polygon_geometry(fbb, std::slice::from_ref(p), q, elevation_mm),
+        Geometry::MultiPolygon(mp) => polygon_geometry(fbb, &mp.0, q, elevation_mm),
         _ => None,
     }
 }
@@ -312,13 +322,15 @@ fn point_geometry<'a>(
     fbb: &mut flatbuffers::FlatBufferBuilder<'a>,
     xs: Vec<u16>,
     ys: Vec<u16>,
+    elevation_mm: Option<i32>,
 ) -> Option<(fbt::Geometry, flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset>)> {
     if xs.is_empty() {
         return None;
     }
     let x = fbb.create_vector(&xs);
     let y = fbb.create_vector(&ys);
-    let g = fbt::PointGeometry::create(fbb, &fbt::PointGeometryArgs { x: Some(x), y: Some(y), z: None });
+    let z = elevation_mm.map(|e| fbb.create_vector(&vec![e; xs.len()]));
+    let g = fbt::PointGeometry::create(fbb, &fbt::PointGeometryArgs { x: Some(x), y: Some(y), z });
     Some((fbt::Geometry::PointGeometry, g.as_union_value()))
 }
 
@@ -356,6 +368,7 @@ fn polygon_geometry<'a>(
     fbb: &mut flatbuffers::FlatBufferBuilder<'a>,
     polygons: &[Polygon],
     q: impl Fn(&Coord) -> (u16, u16),
+    elevation_mm: Option<i32>,
 ) -> Option<(fbt::Geometry, flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset>)> {
     let mut xs = Vec::new();
     let mut ys = Vec::new();
@@ -395,6 +408,7 @@ fn polygon_geometry<'a>(
 
     let x = fbb.create_vector(&xs);
     let y = fbb.create_vector(&ys);
+    let z = elevation_mm.map(|e| fbb.create_vector(&vec![e; xs.len()]));
     // Single ring (no holes) omits ring_offsets; only multipolygons add
     // polygon_offsets (FORMAT.md §3.4).
     let multi = polygons.len() > 1;
@@ -405,7 +419,7 @@ fn polygon_geometry<'a>(
         &fbt::PolygonGeometryArgs {
             x: Some(x),
             y: Some(y),
-            z: None,
+            z,
             ring_offsets: ring_off,
             polygon_offsets: poly_off,
         },
@@ -461,6 +475,7 @@ mod tests {
                 id: 1,
                 geometry: Geometry::Point(Point::new(b.west + b.width() / 2.0, b.south + b.height() / 2.0)),
                 properties: vec![("class".to_string(), Value::String("lake".into()))],
+                elevation: None,
             }],
         }];
         let raw = encode(&b, None, &layers);
@@ -488,6 +503,7 @@ mod tests {
                 id: 42,
                 geometry: Geometry::Polygon(poly),
                 properties: vec![("class".to_string(), Value::String("forest".into()))],
+                elevation: None,
             }],
         }];
 
@@ -538,6 +554,7 @@ mod tests {
                     ("class".to_string(), Value::String("cafe".into())),
                     ("name".to_string(), Value::String("X".into())),
                 ],
+                elevation: None,
             }],
         }];
         let raw = encode(&b, None, &layers);
@@ -556,8 +573,8 @@ mod tests {
         let layers = vec![EncoderLayer {
             name: "tree".to_string(),
             features: vec![
-                EncoderFeature { id: 1, geometry: pt(0.3), properties: vec![("class".into(), Value::String("oak".into()))] },
-                EncoderFeature { id: 2, geometry: pt(0.6), properties: vec![("class".into(), Value::String("oak".into()))] },
+                EncoderFeature { id: 1, geometry: pt(0.3), properties: vec![("class".into(), Value::String("oak".into()))], elevation: None },
+                EncoderFeature { id: 2, geometry: pt(0.6), properties: vec![("class".into(), Value::String("oak".into()))], elevation: None },
             ],
         }];
         let raw = encode(&b, None, &layers);
@@ -565,6 +582,37 @@ mod tests {
         // "oak" stored once despite two features referencing it.
         assert_eq!(tile.values().unwrap().len(), 1);
         assert_eq!(tile.keys().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn elevation_writes_constant_z_array() {
+        let b = bounds();
+        let square = Polygon::new(
+            LineString(vec![
+                c(b.west + 0.1 * b.width(), b.south + 0.1 * b.height()),
+                c(b.west + 0.2 * b.width(), b.south + 0.1 * b.height()),
+                c(b.west + 0.2 * b.width(), b.south + 0.2 * b.height()),
+                c(b.west + 0.1 * b.width(), b.south + 0.1 * b.height()),
+            ]),
+            vec![],
+        );
+        let layers = vec![EncoderLayer {
+            name: "building".into(),
+            features: vec![EncoderFeature {
+                id: 1,
+                geometry: Geometry::Polygon(square),
+                properties: vec![("height".to_string(), Value::Double(12.0))],
+                elevation: Some(456.789),
+            }],
+        }];
+        let raw = encode(&b, None, &layers);
+        let tile = fbt::root_as_tile(&raw).unwrap();
+        let pg = tile.layers().unwrap().get(0).features().unwrap().get(0)
+            .geometry_as_polygon_geometry().unwrap();
+        let z = pg.z().expect("z present when elevation is set");
+        assert_eq!(z.len(), pg.x().len());
+        // Metres → int32 millimetres, constant across vertices.
+        assert!(z.iter().all(|v| v == 456_789));
     }
 
     #[test]
@@ -584,7 +632,7 @@ mod tests {
         let mp = Geometry::MultiPolygon(MultiPolygon(vec![sq(0.1, 0.1), sq(0.5, 0.5)]));
         let layers = vec![EncoderLayer {
             name: "land".into(),
-            features: vec![EncoderFeature { id: 1, geometry: mp, properties: vec![] }],
+            features: vec![EncoderFeature { id: 1, geometry: mp, properties: vec![], elevation: None }],
         }];
         let raw = encode(&b, None, &layers);
         let tile = fbt::root_as_tile(&raw).unwrap();

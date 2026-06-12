@@ -192,147 +192,215 @@ static void emit_polygons(const arpt_surface_data *data,
     }
 }
 
-static void emit_line_sdf_quads(const arpt_line_data *data,
-                                const arpt_style *style,
-                                arpt_line_vertex *verts, uint32_t *idxs,
-                                size_t *vi, size_t *ii) {
-    if (!data) return;
-    for (size_t i = 0; i < data->count; i++) {
-        const arpt_line_feature *line = &data->lines[i];
-        double hw = style->stroke_widths[line->cls];
-        const float *c = style->colors[line->cls];
-        size_t vc = line->vertex_count;
-        if (vc < 2) continue;
-        /* Drop closing vertex if the line forms a closed loop
-         * (first == last).  The renderer draws open polylines; a
-         * closing segment from the penultimate vertex back to the
-         * first creates a visible artifact. */
-        if (vc >= 3 &&
-            line->x[0] == line->x[vc - 1] &&
-            line->y[0] == line->y[vc - 1])
-            vc--;
-        size_t n_segs = vc - 1;
+/* The surface texture covers the tile plus a 6.25% margin per side at 1024
+   texels, so one texel spans 32768 * 1.125 / 1024 = 36 quantized units.
+   Lines thinner than a texel rasterize as broken, mostly transparent
+   stipple; clamp them to one texel and scale alpha by the lost coverage
+   instead so they stay crisp and continuous. */
+#define LINE_MIN_HALF_WIDTH 36.0
 
-        /* Pre-compute per-segment direction and normal */
-        double *seg_nx = malloc(n_segs * sizeof(double));
-        double *seg_ny = malloc(n_segs * sizeof(double));
-        double *seg_ux = malloc(n_segs * sizeof(double));
-        double *seg_uy = malloc(n_segs * sizeof(double));
-        double *seg_len = malloc(n_segs * sizeof(double));
-        if (!seg_nx || !seg_ny || !seg_ux || !seg_uy || !seg_len) {
-            free(seg_nx); free(seg_ny); free(seg_ux); free(seg_uy);
-            free(seg_len);
-            continue;
-        }
+/* Stroke widths in the style are authored for this zoom level; above it
+   roads widen each level (like every slippy-map style), below it they
+   narrow, down to a floor so low-zoom strokes keep a readable weight. */
+#define LINE_WIDTH_REF_LEVEL 12
+#define LINE_WIDTH_GROWTH 1.35
+#define LINE_WIDTH_SCALE_MIN 0.55
+#define LINE_WIDTH_SCALE_MAX 2.0
 
-        bool any_valid = false;
-        for (size_t s = 0; s < n_segs; s++) {
-            double dx = line->x[s + 1] - line->x[s];
-            double dy = line->y[s + 1] - line->y[s];
-            double len = sqrt(dx * dx + dy * dy);
-            if (len < 0.001) len = 0.001;
-            seg_ux[s] = dx / len;
-            seg_uy[s] = dy / len;
-            seg_nx[s] = -seg_uy[s];
-            seg_ny[s] = seg_ux[s];
-            seg_len[s] = len;
-            if (len >= 1.0) any_valid = true;
-        }
+static double line_zoom_scale(int level) {
+    double s = pow(LINE_WIDTH_GROWTH, level - LINE_WIDTH_REF_LEVEL);
+    if (s < LINE_WIDTH_SCALE_MIN) s = LINE_WIDTH_SCALE_MIN;
+    if (s > LINE_WIDTH_SCALE_MAX) s = LINE_WIDTH_SCALE_MAX;
+    return s;
+}
 
-        if (!any_valid) {
-            free(seg_nx); free(seg_ny); free(seg_ux); free(seg_uy);
-            free(seg_len);
-            continue;
-        }
+/* Emit SDF quads for one polyline at the given half-width and color. */
+static void emit_polyline(const arpt_line_feature *line, double hw,
+                          const float color[4],
+                          arpt_line_vertex *verts, uint32_t *idxs,
+                          size_t *vi, size_t *ii) {
+    const float *c = color;
+    size_t vc = line->vertex_count;
+    if (vc < 2) return;
+    /* Drop closing vertex if the line forms a closed loop
+     * (first == last).  The renderer draws open polylines; a
+     * closing segment from the penultimate vertex back to the
+     * first creates a visible artifact. */
+    if (vc >= 3 &&
+        line->x[0] == line->x[vc - 1] &&
+        line->y[0] == line->y[vc - 1])
+        vc--;
+    size_t n_segs = vc - 1;
+
+    /* Pre-compute per-segment direction and normal */
+    double *seg_nx = malloc(n_segs * sizeof(double));
+    double *seg_ny = malloc(n_segs * sizeof(double));
+    double *seg_ux = malloc(n_segs * sizeof(double));
+    double *seg_uy = malloc(n_segs * sizeof(double));
+    double *seg_len = malloc(n_segs * sizeof(double));
+    if (!seg_nx || !seg_ny || !seg_ux || !seg_uy || !seg_len) {
+        free(seg_nx); free(seg_ny); free(seg_ux); free(seg_uy);
+        free(seg_len);
+        return;
+    }
+
+    bool any_valid = false;
+    for (size_t s = 0; s < n_segs; s++) {
+        double dx = line->x[s + 1] - line->x[s];
+        double dy = line->y[s + 1] - line->y[s];
+        double len = sqrt(dx * dx + dy * dy);
+        if (len < 0.001) len = 0.001;
+        seg_ux[s] = dx / len;
+        seg_uy[s] = dy / len;
+        seg_nx[s] = -seg_uy[s];
+        seg_ny[s] = seg_ux[s];
+        seg_len[s] = len;
+        if (len >= 1.0) any_valid = true;
+    }
+
+    if (!any_valid) {
+        free(seg_nx); free(seg_ny); free(seg_ux); free(seg_uy);
+        free(seg_len);
+        return;
+    }
 
 #define CLAMP16(v) ((uint16_t)((v) < 0 ? 0 : (v) > 65535 ? 65535 : (v)))
 
-        for (size_t s = 0; s < n_segs; s++) {
-            double len = seg_len[s];
-            if (len < 1.0) continue;
+    for (size_t s = 0; s < n_segs; s++) {
+        double len = seg_len[s];
+        if (len < 1.0) continue;
 
-            double x1 = line->x[s], y1 = line->y[s];
-            double x2 = line->x[s + 1], y2 = line->y[s + 1];
+        double x1 = line->x[s], y1 = line->y[s];
+        double x2 = line->x[s + 1], y2 = line->y[s + 1];
 
-            /* Offset vectors at start and end of this segment.
-             * At interior vertices, use a miter between adjacent
-             * segment normals so consecutive quads share edges. */
-            double m1x, m1y, m2x, m2y;
+        /* Offset vectors at start and end of this segment.
+         * At interior vertices, use a miter between adjacent
+         * segment normals so consecutive quads share edges. */
+        double m1x, m1y, m2x, m2y;
 
-            if (s > 0 && seg_len[s - 1] >= 1.0) {
-                /* Miter at start vertex */
-                double mx = seg_nx[s - 1] + seg_nx[s];
-                double my = seg_ny[s - 1] + seg_ny[s];
-                double d = mx * seg_nx[s] + my * seg_ny[s];
-                if (d < 0.25) d = 0.25;  /* miter limit: cap at 4x */
-                m1x = mx / d;
-                m1y = my / d;
-            } else {
-                m1x = seg_nx[s];
-                m1y = seg_ny[s];
-            }
-
-            if (s + 1 < n_segs && seg_len[s + 1] >= 1.0) {
-                /* Miter at end vertex */
-                double mx = seg_nx[s] + seg_nx[s + 1];
-                double my = seg_ny[s] + seg_ny[s + 1];
-                double d = mx * seg_nx[s] + my * seg_ny[s];
-                if (d < 0.25) d = 0.25;
-                m2x = mx / d;
-                m2y = my / d;
-            } else {
-                m2x = seg_nx[s];
-                m2y = seg_ny[s];
-            }
-
-            /* Extend endpoints along tangent for caps at polyline ends */
-            double ex1 = x1, ey1 = y1, ex2 = x2, ey2 = y2;
-            double cap1 = 0.0, cap2 = 0.0;
-            if (s == 0 || seg_len[s - 1] < 1.0) {
-                ex1 -= seg_ux[s] * hw;
-                ey1 -= seg_uy[s] * hw;
-                cap1 = hw;
-            }
-            if (s + 1 == n_segs || seg_len[s + 1] < 1.0) {
-                ex2 += seg_ux[s] * hw;
-                ey2 += seg_uy[s] * hw;
-                cap2 = hw;
-            }
-
-            uint32_t base = (uint32_t)*vi;
-            verts[*vi] = (arpt_line_vertex){
-                CLAMP16(ex1 - m1x * hw), CLAMP16(ey1 - m1y * hw),
-                c[0], c[1], c[2], c[3],
-                (float)(-cap1), (float)(-hw), (float)hw, (float)len};
-            (*vi)++;
-            verts[*vi] = (arpt_line_vertex){
-                CLAMP16(ex1 + m1x * hw), CLAMP16(ey1 + m1y * hw),
-                c[0], c[1], c[2], c[3],
-                (float)(-cap1), (float)(hw), (float)hw, (float)len};
-            (*vi)++;
-            verts[*vi] = (arpt_line_vertex){
-                CLAMP16(ex2 + m2x * hw), CLAMP16(ey2 + m2y * hw),
-                c[0], c[1], c[2], c[3],
-                (float)(len + cap2), (float)(hw), (float)hw, (float)len};
-            (*vi)++;
-            verts[*vi] = (arpt_line_vertex){
-                CLAMP16(ex2 - m2x * hw), CLAMP16(ey2 - m2y * hw),
-                c[0], c[1], c[2], c[3],
-                (float)(len + cap2), (float)(-hw), (float)hw, (float)len};
-            (*vi)++;
-
-            idxs[(*ii)++] = base;
-            idxs[(*ii)++] = base + 1;
-            idxs[(*ii)++] = base + 2;
-            idxs[(*ii)++] = base;
-            idxs[(*ii)++] = base + 2;
-            idxs[(*ii)++] = base + 3;
+        if (s > 0 && seg_len[s - 1] >= 1.0) {
+            /* Miter at start vertex */
+            double mx = seg_nx[s - 1] + seg_nx[s];
+            double my = seg_ny[s - 1] + seg_ny[s];
+            double d = mx * seg_nx[s] + my * seg_ny[s];
+            if (d < 0.25) d = 0.25;  /* miter limit: cap at 4x */
+            m1x = mx / d;
+            m1y = my / d;
+        } else {
+            m1x = seg_nx[s];
+            m1y = seg_ny[s];
         }
+
+        if (s + 1 < n_segs && seg_len[s + 1] >= 1.0) {
+            /* Miter at end vertex */
+            double mx = seg_nx[s] + seg_nx[s + 1];
+            double my = seg_ny[s] + seg_ny[s + 1];
+            double d = mx * seg_nx[s] + my * seg_ny[s];
+            if (d < 0.25) d = 0.25;
+            m2x = mx / d;
+            m2y = my / d;
+        } else {
+            m2x = seg_nx[s];
+            m2y = seg_ny[s];
+        }
+
+        /* Extend endpoints along tangent for caps at polyline ends */
+        double ex1 = x1, ey1 = y1, ex2 = x2, ey2 = y2;
+        double cap1 = 0.0, cap2 = 0.0;
+        if (s == 0 || seg_len[s - 1] < 1.0) {
+            ex1 -= seg_ux[s] * hw;
+            ey1 -= seg_uy[s] * hw;
+            cap1 = hw;
+        }
+        if (s + 1 == n_segs || seg_len[s + 1] < 1.0) {
+            ex2 += seg_ux[s] * hw;
+            ey2 += seg_uy[s] * hw;
+            cap2 = hw;
+        }
+
+        uint32_t base = (uint32_t)*vi;
+        verts[*vi] = (arpt_line_vertex){
+            CLAMP16(ex1 - m1x * hw), CLAMP16(ey1 - m1y * hw),
+            c[0], c[1], c[2], c[3],
+            (float)(-cap1), (float)(-hw), (float)hw, (float)len};
+        (*vi)++;
+        verts[*vi] = (arpt_line_vertex){
+            CLAMP16(ex1 + m1x * hw), CLAMP16(ey1 + m1y * hw),
+            c[0], c[1], c[2], c[3],
+            (float)(-cap1), (float)(hw), (float)hw, (float)len};
+        (*vi)++;
+        verts[*vi] = (arpt_line_vertex){
+            CLAMP16(ex2 + m2x * hw), CLAMP16(ey2 + m2y * hw),
+            c[0], c[1], c[2], c[3],
+            (float)(len + cap2), (float)(hw), (float)hw, (float)len};
+        (*vi)++;
+        verts[*vi] = (arpt_line_vertex){
+            CLAMP16(ex2 - m2x * hw), CLAMP16(ey2 - m2y * hw),
+            c[0], c[1], c[2], c[3],
+            (float)(len + cap2), (float)(-hw), (float)hw, (float)len};
+        (*vi)++;
+
+        idxs[(*ii)++] = base;
+        idxs[(*ii)++] = base + 1;
+        idxs[(*ii)++] = base + 2;
+        idxs[(*ii)++] = base;
+        idxs[(*ii)++] = base + 2;
+        idxs[(*ii)++] = base + 3;
+    }
 
 #undef CLAMP16
 
-        free(seg_nx); free(seg_ny); free(seg_ux); free(seg_uy);
-        free(seg_len);
+    free(seg_nx); free(seg_ny); free(seg_ux); free(seg_uy);
+    free(seg_len);
+}
+
+/* Resolve the rasterized half-width and alpha factor for one stroke:
+   apply the zoom scale, then the one-texel floor with alpha compensation. */
+static double resolve_half_width(double hw, double zoom_scale,
+                                 double *alpha_scale) {
+    hw *= zoom_scale;
+    *alpha_scale = 1.0;
+    if (hw < LINE_MIN_HALF_WIDTH) {
+        *alpha_scale = hw / LINE_MIN_HALF_WIDTH;
+        hw = LINE_MIN_HALF_WIDTH;
+    }
+    return hw;
+}
+
+/* Emit all line features twice: first every casing (the darker outline a
+   road sits in), then every fill, so fills cover the casings of crossing
+   roads and the network reads as connected.  Features arrive sorted by
+   class, so within each pass later style entries draw on top. */
+static void emit_line_sdf_quads(const arpt_line_data *data,
+                                const arpt_style *style, int level,
+                                arpt_line_vertex *verts, uint32_t *idxs,
+                                size_t *vi, size_t *ii) {
+    if (!data) return;
+    double zs = line_zoom_scale(level);
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t i = 0; i < data->count; i++) {
+            const arpt_line_feature *line = &data->lines[i];
+            if (style->stroke_widths[line->cls] <= 0.0f) continue;
+            double alpha = 1.0;
+            double hw = resolve_half_width(style->stroke_widths[line->cls],
+                                           zs, &alpha);
+            float color[4];
+            if (pass == 0) {
+                /* A casing thinner than the texel floor would just repaint
+                   the same texels under the fill; skip it. */
+                if (style->casing_widths[line->cls] <= 0.0f) continue;
+                if (alpha < 1.0) continue;
+                double cw = style->stroke_widths[line->cls] +
+                            style->casing_widths[line->cls];
+                hw = resolve_half_width(cw, zs, &alpha);
+                memcpy(color, style->casing_colors[line->cls],
+                       sizeof(color));
+            } else {
+                memcpy(color, style->colors[line->cls], sizeof(color));
+            }
+            color[3] *= (float)alpha;
+            emit_polyline(line, hw, color, verts, idxs, vi, ii);
+        }
     }
 }
 
@@ -366,15 +434,20 @@ void arpt_prepare_polygons(const arpt_surface_data *surface,
 }
 
 void arpt_prepare_lines(const arpt_line_data *line_data,
-                        const arpt_style *style, arpt_line_prim *out) {
+                        const arpt_style *style, int level,
+                        arpt_line_prim *out) {
     memset(out, 0, sizeof(*out));
     if (!line_data) return;
 
+    /* Upper bound: every feature emits a fill, and cased classes a casing. */
     size_t nv = 0, ni = 0;
     for (size_t i = 0; i < line_data->count; i++) {
-        size_t segs = line_data->lines[i].vertex_count - 1;
-        nv += segs * 4;
-        ni += segs * 6;
+        const arpt_line_feature *line = &line_data->lines[i];
+        if (line->vertex_count < 2) continue;
+        size_t segs = line->vertex_count - 1;
+        size_t strokes = style->casing_widths[line->cls] > 0.0f ? 2 : 1;
+        nv += segs * 4 * strokes;
+        ni += segs * 6 * strokes;
     }
     if (nv == 0 || ni == 0) return;
 
@@ -382,7 +455,7 @@ void arpt_prepare_lines(const arpt_line_data *line_data,
     out->indices = malloc(ni * sizeof(uint32_t));
     if (out->verts && out->indices) {
         size_t vi = 0, ii = 0;
-        emit_line_sdf_quads(line_data, style, out->verts,
+        emit_line_sdf_quads(line_data, style, level, out->verts,
                             out->indices, &vi, &ii);
         out->vert_count = vi;
         out->index_count = ii;

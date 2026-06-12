@@ -20,7 +20,7 @@
         { "class": "moss",     "color": [149, 218, 170, 255] },
         { "class": "crop",     "color": [235, 237, 177, 255] },
         { "class": "mangrove", "color": [161, 227, 207, 255] },
-        { "class": "urban",    "color": [247, 245, 240, 255] },
+        { "class": "urban",    "color": [233, 229, 221, 255] },
         { "class": "snow",     "color": [243, 245, 247, 255] }
       ]
     },
@@ -58,12 +58,65 @@
       "source_layer": "transportation",
       "type": "line",
       "paint": [
-        { "class": "motorway",  "color": [255, 255, 255, 255], "width": 50, "min_level": 4 },
-        { "class": "trunk",     "color": [255, 255, 255, 255], "width": 40, "min_level": 5 },
-        { "class": "primary",   "color": [255, 255, 255, 255], "width": 30, "min_level": 7 },
-        { "class": "secondary", "color": [255, 255, 255, 255], "width": 25, "min_level": 9 },
-        { "class": "tertiary",  "color": [255, 255, 255, 255], "width": 20, "min_level": 11 }
+        { "class": "track",          "color": [177, 164, 144, 255], "width": 12, "min_level": 13 },
+        { "class": "standard_gauge", "color": [158, 155, 162, 255], "width": 12, "min_level": 12 },
+        { "class": "pedestrian",     "color": [228, 223, 214, 255], "width": 18, "min_level": 13 },
+        { "class": "service",        "color": [255, 255, 255, 255], "width": 18, "min_level": 13 },
+        { "class": "unknown",        "color": [255, 255, 255, 255], "width": 22, "min_level": 13 },
+        { "class": "living_street",  "color": [255, 255, 255, 255], "width": 30, "min_level": 13,
+          "casing_color": [196, 189, 179, 255], "casing_width": 16 },
+        { "class": "residential",    "color": [255, 255, 255, 255], "width": 30, "min_level": 12,
+          "casing_color": [196, 189, 179, 255], "casing_width": 16 },
+        { "class": "unclassified",   "color": [255, 255, 255, 255], "width": 30, "min_level": 12,
+          "casing_color": [196, 189, 179, 255], "casing_width": 16 },
+        { "class": "tertiary",       "color": [255, 255, 255, 255], "width": 36, "min_level": 11,
+          "casing_color": [188, 181, 170, 255], "casing_width": 18 },
+        { "class": "secondary",      "color": [255, 255, 255, 255], "width": 44, "min_level": 9,
+          "casing_color": [180, 173, 161, 255], "casing_width": 20 },
+        { "class": "primary",        "color": [255, 255, 255, 255], "width": 56, "min_level": 7,
+          "casing_color": [172, 164, 151, 255], "casing_width": 22 },
+        { "class": "trunk",          "color": [253, 213, 123, 255], "width": 62, "min_level": 5,
+          "casing_color": [225, 166, 82, 255],  "casing_width": 24 },
+        { "class": "motorway",       "color": [250, 196, 95, 255],  "width": 70, "min_level": 4,
+          "casing_color": [219, 151, 53, 255],  "casing_width": 26 }
       ]
+    },
+    {
+      "source_layer": "boundary",
+      "type": "line",
+      "paint": [
+        { "class": "county",  "color": [150, 140, 160, 255], "width": 18, "min_level": 9 },
+        { "class": "region",  "color": [122, 110, 135, 255], "width": 30, "min_level": 5 },
+        { "class": "country", "color": [104, 90, 122, 255],  "width": 60, "min_level": 1,
+          "casing_color": [255, 255, 255, 150], "casing_width": 20 }
+      ]
+    },
+    {
+      "source_layer": "building",
+      "type": "extrusion",
+      "min_level": 13,
+      "paint": [
+        { "class": "building",       "color": [226, 220, 211, 255] },
+        { "class": "residential",    "color": [232, 224, 213, 255] },
+        { "class": "outbuilding",    "color": [223, 219, 211, 255] },
+        { "class": "agricultural",   "color": [227, 223, 205, 255] },
+        { "class": "commercial",     "color": [221, 214, 227, 255] },
+        { "class": "industrial",     "color": [213, 218, 225, 255] },
+        { "class": "education",      "color": [237, 225, 209, 255] },
+        { "class": "religious",      "color": [234, 221, 221, 255] },
+        { "class": "service",        "color": [219, 219, 219, 255] },
+        { "class": "civic",          "color": [231, 219, 201, 255] },
+        { "class": "transportation", "color": [214, 221, 229, 255] },
+        { "class": "entertainment",  "color": [235, 219, 229, 255] },
+        { "class": "medical",        "color": [242, 225, 225, 255] },
+        { "class": "military",       "color": [215, 219, 207, 255] }
+      ]
+    },
+    {
+      "source_layer": "poi",
+      "type": "label",
+      "min_level": 13,
+      "paint": []
     }
   ]
 }

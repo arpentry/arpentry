@@ -521,6 +521,8 @@ table PaintEntry {
   model:        string;             // model name in ModelLibrary (e.g. "broadleaf_01")
   min_scale:    float32 = 1.0;     // instance scale range lower bound
   max_scale:    float32 = 1.0;     // instance scale range upper bound
+  casing_color: RGBA;               // line casing (outline) color, drawn under the fill
+  casing_width: float32 = 0;        // extra casing half-width in quantized units (0 = no casing)
 }
 
 table LayerStyle {
@@ -739,7 +741,7 @@ The style uses two concepts inspired by MapLibre:
 The client fetches `{base_url}/style.arps` at startup and applies it as follows:
 
 1. **Surface fills**: For each `PaintEntry` in the `"surface"` `LayerStyle`, match the feature's `class` property to the entry's `class` string. Use the entry's `color` as the fill color.
-2. **Transportation lines**: For each `PaintEntry` in the `"transportation"` `LayerStyle`, match the feature's `class` property. Use the entry's `color` and `width` (half-width in quantized units) for SDF line rendering.
+2. **Transportation lines**: For each `PaintEntry` in the `"transportation"` `LayerStyle`, match the feature's `class` property. Use the entry's `color` and `width` (half-width in quantized units) for SDF line rendering. When `casing_width` is non-zero the client first draws every line at `width + casing_width` in `casing_color`, then draws all fills on top, so crossing roads merge into a connected, outlined network. Widths are authored for zoom level 12; the client scales them by 1.35 per level above it (clamped to 0.55x-2x) and rasterizes any stroke thinner than one texel at one texel with proportionally reduced alpha.
 3. **Building fills**: For each `PaintEntry` in the `"building"` `LayerStyle`, match the feature's `class` property. Use the entry's `color` as the footprint fill color.
 4. **Model instancing**: When a `PaintEntry` has a `model` field, the client renders matching PointGeometry features as instanced 3D models from the `ModelLibrary` (Section 6.4). Per-instance yaw and scale are derived from `min_scale`/`max_scale` and a deterministic hash of point position.
 5. **Background**: `Style.background` provides the fallback color for unmatched surface classes.

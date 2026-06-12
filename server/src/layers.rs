@@ -18,9 +18,12 @@ pub const WATER: LayerIndex = 3;
 pub const LAND: LayerIndex = 4;
 pub const TRANSPORTATION: LayerIndex = 5;
 pub const LAND_USE: LayerIndex = 6;
+pub const BUILDING: LayerIndex = 7;
+pub const POI: LayerIndex = 8;
+pub const BOUNDARY: LayerIndex = 9;
 
 /// Number of defined layers.
-pub const COUNT: usize = 7;
+pub const COUNT: usize = 10;
 
 /// Stable layer names, indexed by [`LayerIndex`].
 pub const NAMES: [&str; COUNT] = [
@@ -31,6 +34,9 @@ pub const NAMES: [&str; COUNT] = [
     "land",
     "transportation",
     "land_use",
+    "building",
+    "poi",
+    "boundary",
 ];
 
 /// Returns the name for a layer index, if defined.

@@ -147,7 +147,8 @@ void arpt_prepare_polygons(const arpt_surface_data *surface,
                            const arpt_style *style, arpt_polygon_prim *out);
 
 void arpt_prepare_lines(const arpt_line_data *line_data,
-                        const arpt_style *style, arpt_line_prim *out);
+                        const arpt_style *style, int level,
+                        arpt_line_prim *out);
 
 void arpt_prepare_extrusion(const arpt_surface_data *buildings,
                             arpt_bounds bounds, arpt_extrusion_prim *out);

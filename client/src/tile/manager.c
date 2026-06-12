@@ -147,6 +147,12 @@ static int compare_surface_cls(const void *a, const void *b) {
     return (int)pa->poly_id - (int)pb->poly_id;
 }
 
+static int compare_line_cls(const void *a, const void *b) {
+    const arpt_line_feature *la = (const arpt_line_feature *)a;
+    const arpt_line_feature *lb = (const arpt_line_feature *)b;
+    return (int)la->cls - (int)lb->cls;
+}
+
 /* Guard against tiles that would exceed WebGPU buffer limits.
    Each vertex needs 4 bytes in the largest per-vertex buffer. */
 #define ARPT_MAX_BUFFER_BYTES (200u * 1024u * 1024u)
@@ -294,6 +300,13 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
               sizeof(arpt_surface_polygon), compare_surface_cls);
     }
 
+    /* Same ordering for lines: list minor road classes before major ones
+       in the style so the important roads draw on top. */
+    if (lines.count > 1) {
+        qsort(lines.lines, lines.count,
+              sizeof(arpt_line_feature), compare_line_cls);
+    }
+
     arpt_bounds bounds = arpt_tile_bounds(key.level, key.x, key.y);
 
     /* Copy terrain arrays out of the flatbuf so the prepared tile is fully
@@ -330,8 +343,14 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
     p->prims.terrain.vertex_count = p->terrain_vertex_count;
     p->prims.terrain.index_count = p->terrain_index_count;
 
+    /* The tiler writes POIs most-confident first; keep only the head of the
+       list so dense city tiles don't wallpaper the view with shop labels. */
+    #define ARPT_MAX_POIS_PER_TILE 24
+    if (pois.count > ARPT_MAX_POIS_PER_TILE)
+        pois.count = ARPT_MAX_POIS_PER_TILE;
+
     arpt_prepare_polygons(&surface, &tm->style, &p->prims.polygons);
-    arpt_prepare_lines(&lines, &tm->style, &p->prims.lines);
+    arpt_prepare_lines(&lines, &tm->style, key.level, &p->prims.lines);
     arpt_prepare_extrusion(&buildings, bounds, &p->prims.extrusion);
     arpt_prepare_instances(&trees, arpt_renderer_model_count(tm->renderer),
                            &p->prims.instances);

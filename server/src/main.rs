@@ -29,7 +29,7 @@ OPTIONS:
   -h, --help           Show this help
 
 Layer indices: 0=terrain 1=land_cover 2=bathymetry 3=water 4=land
-               5=transportation 6=land_use";
+               5=transportation 6=land_use 7=building 8=poi 9=boundary";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

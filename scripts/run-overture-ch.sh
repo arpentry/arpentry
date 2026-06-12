@@ -133,12 +133,14 @@ else
     download_type land_use
     download_type water
     download_type segment
+    download_type building
+    download_type place
+    download_type division_boundary
 
     # Add an input only when its parquet exists, so partial data still tiles.
     # Indices match the tiler's layer scheme (and style-overture-ch.json's
-    # source_layer names): 1=land_cover 3=water 5=transportation 6=land_use.
-    # Overture's building/place themes have no layer slot yet, so they're not
-    # tiled (they'd otherwise land in an unrelated layer and mis-render).
+    # source_layer names): 1=land_cover 3=water 5=transportation 6=land_use
+    # 7=building 8=poi 9=boundary.
     TILER_INPUTS=()
     add_input() {
         local idx="$1" file="$2"
@@ -148,10 +150,13 @@ else
             echo "Skipping layer $idx (missing $(basename "$file"))"
         fi
     }
-    add_input 1 "$DATA_DIR/land_cover.parquet"   # land_cover
-    add_input 6 "$DATA_DIR/land_use.parquet"     # land_use
-    add_input 3 "$DATA_DIR/water.parquet"        # water
-    add_input 5 "$DATA_DIR/segment.parquet"      # transportation
+    add_input 1 "$DATA_DIR/land_cover.parquet"        # land_cover
+    add_input 6 "$DATA_DIR/land_use.parquet"          # land_use
+    add_input 3 "$DATA_DIR/water.parquet"             # water
+    add_input 5 "$DATA_DIR/segment.parquet"           # transportation
+    add_input 7 "$DATA_DIR/building.parquet"          # building (extrusions)
+    add_input 8 "$DATA_DIR/place.parquet"             # poi (labels)
+    add_input 9 "$DATA_DIR/division_boundary.parquet" # boundary (country/canton)
 
     if [ ${#TILER_INPUTS[@]} -eq 0 ]; then
         echo "ERROR: no input parquet files found under $DATA_DIR" >&2

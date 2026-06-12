@@ -201,7 +201,11 @@ arpentry_tiler [options]
 
 Inputs are GeoParquet files keyed by layer index (see `layers`):
 `0` terrain, `1` land_cover, `2` bathymetry, `3` water, `4` land,
-`5` transportation, `6` land_use. Layer 0 (terrain) is generated, not an input.
+`5` transportation, `6` land_use, `7` building, `8` poi, `9` boundary.
+Layer 0 (terrain) is generated, not an input. Building footprints and POI
+points get a per-feature base elevation sampled from the DEM (when one is
+configured), written as a constant `z` array, so extrusions and labels sit on
+the terrain.
 
 Example:
 

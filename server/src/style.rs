@@ -153,8 +153,11 @@ fn encode_paint<'a>(
     let random_yaw = entry.get("random_yaw").and_then(Json::as_bool).unwrap_or(d.random_yaw);
     let random_scale = entry.get("random_scale").and_then(Json::as_bool).unwrap_or(d.random_scale);
     let min_level = entry.get("min_level").and_then(Json::as_u64).map_or(d.min_level, |v| v as u8);
+    let casing_width =
+        entry.get("casing_width").and_then(Json::as_f64).map_or(d.casing_width, |v| v as f32);
 
     let color = entry.get("color").map(parse_rgba);
+    let casing_color = entry.get("casing_color").map(parse_rgba);
 
     fbs::PaintEntry::create(
         fbb,
@@ -168,6 +171,8 @@ fn encode_paint<'a>(
             random_yaw,
             random_scale,
             min_level,
+            casing_color: casing_color.as_ref(),
+            casing_width,
         },
     )
 }
@@ -202,7 +207,8 @@ mod tests {
                 "layers": [
                     { "source_layer": "terrain", "type": "terrain", "paint": [] },
                     { "source_layer": "transportation", "type": "line",
-                      "paint": [ { "class": "primary", "color": [89, 84, 77, 255], "width": 140 } ] }
+                      "paint": [ { "class": "primary", "color": [89, 84, 77, 255], "width": 140,
+                                   "casing_color": [200, 200, 200, 255], "casing_width": 24 } ] }
                 ]
             }"#,
         )
@@ -221,6 +227,8 @@ mod tests {
         let paint = road.paint().unwrap();
         assert_eq!(paint.get(0).class(), "primary");
         assert_eq!(paint.get(0).width(), 140.0);
+        assert_eq!(paint.get(0).casing_width(), 24.0);
+        assert_eq!(paint.get(0).casing_color().map(|c| c.r()), Some(200));
         // build() round-trips through compression.
         assert_eq!(decompress(&compress(&raw)), raw);
     }

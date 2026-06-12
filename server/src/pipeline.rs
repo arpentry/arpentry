@@ -49,6 +49,18 @@ const ATTRS: &[&str] = &[
     "cartography.sort_key",
 ];
 
+/// Attribute columns per layer. Buildings and POIs need columns the shared
+/// list doesn't cover (heights, names, categories); keeping them per-layer
+/// also avoids decoding heavy root structs (Overture `names`) for the layers
+/// that don't use them.
+fn attrs_for(layer: u8) -> &'static [&'static str] {
+    match layer {
+        layers::BUILDING => &["id", "subtype", "class", "height", "num_floors"],
+        layers::POI => &["id", "names.primary", "basic_category", "confidence"],
+        _ => ATTRS,
+    }
+}
+
 /// Default geometric error at level 0, in metres.
 const DEFAULT_ROOT_ERROR: f64 = 512_000.0;
 
@@ -489,6 +501,9 @@ fn encode_tile(
         t_decode += t.elapsed();
         buckets[*layer].push(decoded);
     }
+    let t_stamp = Instant::now();
+    stamp_elevations(&mut buckets, dem, z);
+    let mut t_terrain = t_stamp.elapsed();
 
     // Vector layers in decode-priority (index) order.
     let mut observed = Vec::new();
@@ -511,15 +526,15 @@ fn encode_tile(
 
     // Every tile carries a terrain mesh — the client requires it to render.
     observed.push((layers::TERRAIN as usize, GeometryType::Mesh));
-    let (blob, elevation, t_terrain, t_encode) = match dem {
+    let (blob, elevation, t_mesh, t_encode) = match dem {
         Some(d) => {
             let t = Instant::now();
             let (mesh, emin, emax) =
                 terrain::elevated_mesh(TERRAIN_GRID, &bounds, |lon, lat| d.elevation(lon, lat, z));
-            let t_terrain = t.elapsed();
+            let t_mesh = t.elapsed();
             let t = Instant::now();
             let blob = tile_build::build_tile_q(&bounds, Some(&mesh), &enc_layers, quality);
-            (blob, Some((emin, emax)), t_terrain, t.elapsed())
+            (blob, Some((emin, emax)), t_mesh, t.elapsed())
         }
         None => {
             let t = Instant::now();
@@ -527,6 +542,7 @@ fn encode_tile(
             (blob, None, Duration::ZERO, t.elapsed())
         }
     };
+    t_terrain += t_mesh;
     Ok(TileResult {
         seq: job.seq,
         z,
@@ -539,6 +555,25 @@ fn encode_tile(
         terrain: t_terrain,
         encode: t_encode,
     })
+}
+
+/// Stamps DEM base elevations onto the features the client positions
+/// vertically itself: building footprints (extrusion bases) and POI points
+/// (label anchors). Each feature gets the elevation at its bbox centre,
+/// encoded as a constant per-vertex `z` array. Draped layers (everything
+/// else) and DEM-less runs are untouched — their `z` stays absent (zero).
+fn stamp_elevations(buckets: &mut [Vec<EncoderFeature>], dem: &mut Option<Dem>, z: u8) {
+    let Some(d) = dem else {
+        return;
+    };
+    for idx in [layers::BUILDING as usize, layers::POI as usize] {
+        for f in &mut buckets[idx] {
+            if let Some((min_x, min_y, max_x, max_y)) = clip::bbox(&f.geometry) {
+                let (lon, lat) = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0);
+                f.elevation = Some(d.elevation(lon, lat, z));
+            }
+        }
+    }
 }
 
 /// Phase-1 worker: drains row-group work items from the queue, streams their
@@ -563,7 +598,7 @@ fn phase1_worker(
         // Read time is metered around each pull so it never includes the
         // simplify/clip/sort work between pulls.
         let t_open = Instant::now();
-        let mut features = gp.features(vec![item.row_group], ATTRS)?;
+        let mut features = gp.features(vec![item.row_group], attrs_for(*layer))?;
         stats.timings.read += t_open.elapsed();
         loop {
             let t_read = Instant::now();
@@ -586,8 +621,8 @@ fn phase1_worker(
 /// (child clip rects nest strictly inside the parent's, so the result equals
 /// clipping the original), making the per-feature cost proportional to the
 /// records emitted instead of `covered tiles × vertices`. Detail is carried at
-/// `tolerance(zmax)`; coarser zooms re-simplify their (small) per-tile pieces
-/// on emission.
+/// `tolerance_for(layer, zmax)`; coarser zooms re-simplify their (small)
+/// per-tile pieces on emission.
 fn process_feature(
     layer: u8,
     f: &crate::geoparquet::Feature,
@@ -619,7 +654,7 @@ fn process_feature(
 
     // Carry detail only down to what the finest emitted zoom keeps.
     let t_simplify = Instant::now();
-    let base = simplify::simplify_geometry(&f.geometry, tolerance(zmax));
+    let base = simplify::simplify_geometry(&f.geometry, tolerance_for(layer, zmax));
     stats.timings.simplify += t_simplify.elapsed();
     let Some(base) = base else {
         return Ok(());
@@ -677,13 +712,13 @@ fn descend(
         return Ok(());
     }
 
-    // Emit this zoom's record: the carried geometry is at tolerance(zmax)
-    // detail, so coarser zooms re-simplify their per-tile piece.
+    // Emit this zoom's record: the carried geometry is at the layer's
+    // tolerance for zmax, so coarser zooms re-simplify their per-tile piece.
     let emit_geom = if z == walk.zmax {
         Some(geom.clone())
     } else {
         let t_simplify = Instant::now();
-        let simplified = simplify::simplify_geometry(&geom, tolerance(z));
+        let simplified = simplify::simplify_geometry(&geom, tolerance_for(walk.layer, z));
         stats.timings.simplify += t_simplify.elapsed();
         simplified
     };
@@ -804,6 +839,7 @@ fn flush_tile(
 ) -> Result<(), Error> {
     let (z, x, y) = hilbert::tile_id_decode(tile_id);
     let bounds = Bounds::of_tile(z, x, y);
+    stamp_elevations(buckets, dem, z);
 
     // Vector layers in decode-priority (index) order.
     let mut enc_layers = Vec::new();
@@ -858,6 +894,18 @@ fn flush_tile(
 fn tolerance(z: u8) -> f64 {
     let tile_w = 360.0 / (1u64 << z as u32) as f64; // 2^z columns
     tile_w / 512.0
+}
+
+/// Simplification tolerance for a layer at a zoom. Most layers simplify to the
+/// display pixel (`tolerance`); building footprints are never simplified
+/// (zero tolerance is a pass-through in `simplify_geometry`). They are
+/// extruded and inspected up close, where Douglas–Peucker visibly mangles
+/// right-angled walls; tile quantization is the only rounding they get.
+fn tolerance_for(layer: u8, z: u8) -> f64 {
+    match layer {
+        layers::BUILDING => 0.0,
+        _ => tolerance(z),
+    }
 }
 
 fn bbox_intersects(bb: (f64, f64, f64, f64), b: &Bounds) -> bool {

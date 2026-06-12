@@ -92,7 +92,7 @@ pub fn decode(data: &[u8]) -> Result<EncoderFeature, RecordError> {
         let value = cur.value()?;
         properties.push((key, value));
     }
-    Ok(EncoderFeature { id, geometry, properties })
+    Ok(EncoderFeature { id, geometry, properties, elevation: None })
 }
 
 fn write_bytes(buf: &mut Vec<u8>, bytes: &[u8]) {
@@ -186,6 +186,7 @@ mod tests {
                 ("height".to_string(), Value::Double(12.5)),
                 ("bridge".to_string(), Value::Bool(true)),
             ],
+            elevation: None,
         };
         let decoded = decode(&encode(&f)).unwrap();
         assert_eq!(decoded.id, f.id);
@@ -199,6 +200,7 @@ mod tests {
             id: 0,
             geometry: Geometry::Point(Point::new(7.0, 8.0)),
             properties: vec![],
+            elevation: None,
         };
         let decoded = decode(&encode(&f)).unwrap();
         assert_eq!(decoded.geometry, f.geometry);
@@ -211,6 +213,7 @@ mod tests {
             id: 1,
             geometry: Geometry::Point(Point::new(1.0, 1.0)),
             properties: vec![],
+            elevation: None,
         };
         let bytes = encode(&f);
         assert!(matches!(decode(&bytes[..bytes.len() - 3]), Err(RecordError::Truncated)));

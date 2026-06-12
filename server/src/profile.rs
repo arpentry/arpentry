@@ -20,6 +20,21 @@ pub struct Profiled {
     pub rank: u16,
 }
 
+/// Default extrusion height in metres for buildings with no height data.
+/// Overture CH has measured heights for ~38% of buildings and floor counts for
+/// a few percent more; without a fallback the remaining majority would not
+/// extrude at all and towns would render as scattered tall buildings.
+const DEFAULT_BUILDING_HEIGHT: f64 = 5.0;
+
+/// Assumed storey height in metres when only a floor count is available.
+const FLOOR_HEIGHT: f64 = 3.0;
+
+/// First zoom at which buildings are emitted (FORMAT.md §9: building 13–16).
+const BUILDING_MIN_ZOOM: u8 = 13;
+
+/// First zoom at which POI labels are emitted.
+const POI_MIN_ZOOM: u8 = 13;
+
 /// Derives tile properties and zoom range from source attributes, falling back
 /// to `[default_min, default_max]` when the source has no zoom hints. `layer`
 /// disambiguates classes that exist in several themes (e.g. `residential` is
@@ -30,6 +45,12 @@ pub fn profile(
     default_min: u8,
     default_max: u8,
 ) -> Profiled {
+    match layer {
+        layers::BUILDING => return profile_building(props, default_max),
+        layers::POI => return profile_poi(props, default_max),
+        layers::BOUNDARY => return profile_boundary(props, default_max),
+        _ => {}
+    }
     let class = find_str(props, "class")
         .or_else(|| find_str(props, "type"))
         .or_else(|| find_str(props, "subtype"));
@@ -57,6 +78,78 @@ pub fn profile(
     }
 
     Profiled { properties, min_zoom, max_zoom, rank }
+}
+
+/// Profiles an Overture building: the broad `subtype` (residential,
+/// commercial, …) becomes the styling class with the finer `class` (house,
+/// garage, …) as subclass, and every building gets an extrusion `height` —
+/// measured when available, else floors × [`FLOOR_HEIGHT`], else
+/// [`DEFAULT_BUILDING_HEIGHT`].
+fn profile_building(props: &[(String, Value)], default_max: u8) -> Profiled {
+    let class = find_str(props, "subtype").unwrap_or_else(|| "building".to_string());
+    let height = find_f64(props, "height")
+        .or_else(|| find_int(props, "num_floors").map(|n| n as f64 * FLOOR_HEIGHT))
+        .filter(|h| *h > 0.0)
+        .unwrap_or(DEFAULT_BUILDING_HEIGHT);
+
+    let mut properties = vec![
+        ("class".to_string(), Value::String(class)),
+        ("height".to_string(), Value::Double(height)),
+    ];
+    if let Some(s) = find_str(props, "class") {
+        properties.push(("subclass".to_string(), Value::String(s)));
+    }
+    Profiled { properties, min_zoom: BUILDING_MIN_ZOOM, max_zoom: default_max, rank: 0 }
+}
+
+/// Places below this Overture `confidence` are dropped — they are mostly
+/// stale or misplaced POIs, and Switzerland alone has 683k places.
+const POI_MIN_CONFIDENCE: f64 = 0.5;
+
+/// Profiles an Overture place into a POI label: `names.primary` becomes the
+/// `name`, `basic_category` the class, and `confidence` the within-layer rank
+/// (most-confident first, so they win label collision). Nameless and
+/// low-confidence places render nothing useful and are dropped.
+fn profile_poi(props: &[(String, Value)], default_max: u8) -> Profiled {
+    let Some(name) = find_str(props, "names.primary") else {
+        return drop_feature();
+    };
+    let confidence = find_f64(props, "confidence").unwrap_or(0.5);
+    if confidence < POI_MIN_CONFIDENCE {
+        return drop_feature();
+    }
+    let mut properties = vec![("name".to_string(), Value::String(name))];
+    if let Some(c) = find_str(props, "basic_category") {
+        properties.push(("class".to_string(), Value::String(c)));
+    }
+    let rank = ((1.0 - confidence.clamp(0.0, 1.0)) * 100.0) as u16;
+    Profiled { properties, min_zoom: POI_MIN_ZOOM, max_zoom: default_max, rank }
+}
+
+/// Profiles an Overture division boundary: the admin level (`subtype` —
+/// country, region, county, …) becomes the styling class, with the
+/// land/maritime `class` as subclass. Lower levels appear at lower zooms.
+fn profile_boundary(props: &[(String, Value)], default_max: u8) -> Profiled {
+    let Some(subtype) = find_str(props, "subtype") else {
+        return drop_feature();
+    };
+    let min_zoom = match subtype.as_str() {
+        "country" | "dependency" => 1,
+        "macroregion" | "region" => 5,
+        "macrocounty" | "county" => 9,
+        _ => 11, // localadmin, locality, borough, neighborhood, …
+    };
+    let mut properties = vec![("class".to_string(), Value::String(subtype))];
+    if let Some(s) = find_str(props, "class") {
+        properties.push(("subclass".to_string(), Value::String(s)));
+    }
+    Profiled { properties, min_zoom, max_zoom: default_max, rank: 0 }
+}
+
+/// A profile whose zoom range is empty, so the pipeline never emits the
+/// feature (`min_zoom > max_zoom` — see `process_feature`).
+fn drop_feature() -> Profiled {
+    Profiled { properties: Vec::new(), min_zoom: u8::MAX, max_zoom: 0, rank: 0 }
 }
 
 /// Per-class minimum zoom for Natural Earth features.
@@ -158,6 +251,14 @@ fn find_str(props: &[(String, Value)], key: &str) -> Option<String> {
 fn find_int(props: &[(String, Value)], key: &str) -> Option<i64> {
     props.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
         Value::Int(i) => Some(*i),
+        _ => None,
+    })
+}
+
+fn find_f64(props: &[(String, Value)], key: &str) -> Option<f64> {
+    props.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
+        Value::Double(d) => Some(*d),
+        Value::Int(i) => Some(*i as f64),
         _ => None,
     })
 }
@@ -274,5 +375,70 @@ mod tests {
     fn rank_is_clamped_to_field_width() {
         let props = vec![("cartography.sort_key".to_string(), Value::Int(999_999))];
         assert_eq!(profile(layers::WATER, &props, 0, 16).rank, tileid::MAX_RANK);
+    }
+
+    #[test]
+    fn building_maps_subtype_to_class_with_measured_height() {
+        let props = vec![
+            ("subtype".to_string(), Value::String("residential".into())),
+            ("class".to_string(), Value::String("house".into())),
+            ("height".to_string(), Value::Double(12.5)),
+        ];
+        let p = profile(layers::BUILDING, &props, 0, 14);
+        assert_eq!(p.min_zoom, BUILDING_MIN_ZOOM);
+        assert!(p.properties.contains(&("class".into(), Value::String("residential".into()))));
+        assert!(p.properties.contains(&("subclass".into(), Value::String("house".into()))));
+        assert!(p.properties.contains(&("height".into(), Value::Double(12.5))));
+    }
+
+    #[test]
+    fn building_height_falls_back_to_floors_then_default() {
+        // Floors × storey height when no measured height.
+        let floors = vec![("num_floors".to_string(), Value::Int(4))];
+        let p = profile(layers::BUILDING, &floors, 0, 14);
+        assert!(p.properties.contains(&("height".into(), Value::Double(12.0))));
+        // Bare footprint still extrudes at the default height, classed generically.
+        let p = profile(layers::BUILDING, &[], 0, 14);
+        assert!(p.properties.contains(&("class".into(), Value::String("building".into()))));
+        assert!(p.properties.contains(&("height".into(), Value::Double(DEFAULT_BUILDING_HEIGHT))));
+    }
+
+    #[test]
+    fn poi_takes_name_and_ranks_by_confidence() {
+        let props = vec![
+            ("names.primary".to_string(), Value::String("Café Fédéral".into())),
+            ("basic_category".to_string(), Value::String("restaurant".into())),
+            ("confidence".to_string(), Value::Double(0.9)),
+        ];
+        let p = profile(layers::POI, &props, 0, 14);
+        assert_eq!(p.min_zoom, POI_MIN_ZOOM);
+        assert!(p.properties.contains(&("name".into(), Value::String("Café Fédéral".into()))));
+        assert!(p.properties.contains(&("class".into(), Value::String("restaurant".into()))));
+        assert_eq!(p.rank, 9); // (1 - 0.9) × 100, near the front of the layer
+    }
+
+    #[test]
+    fn nameless_poi_is_dropped() {
+        let props = vec![("basic_category".to_string(), Value::String("restaurant".into()))];
+        let p = profile(layers::POI, &props, 0, 14);
+        assert!(p.min_zoom > p.max_zoom, "empty zoom range drops the feature");
+    }
+
+    #[test]
+    fn boundary_admin_level_drives_min_zoom() {
+        let boundary = |subtype: &str| {
+            let props = vec![
+                ("subtype".to_string(), Value::String(subtype.into())),
+                ("class".to_string(), Value::String("land".into())),
+            ];
+            profile(layers::BOUNDARY, &props, 0, 14)
+        };
+        assert_eq!(boundary("country").min_zoom, 1);
+        assert_eq!(boundary("region").min_zoom, 5);
+        assert_eq!(boundary("county").min_zoom, 9);
+        // The admin level is the styling class; land/maritime is the subclass.
+        let p = boundary("region");
+        assert!(p.properties.contains(&("class".into(), Value::String("region".into()))));
+        assert!(p.properties.contains(&("subclass".into(), Value::String("land".into()))));
     }
 }

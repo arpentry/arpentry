@@ -340,6 +340,8 @@ impl<'a> PaintEntry<'a> {
   pub const VT_RANDOM_YAW: flatbuffers::VOffsetT = 16;
   pub const VT_RANDOM_SCALE: flatbuffers::VOffsetT = 18;
   pub const VT_MIN_LEVEL: flatbuffers::VOffsetT = 20;
+  pub const VT_CASING_COLOR: flatbuffers::VOffsetT = 22;
+  pub const VT_CASING_WIDTH: flatbuffers::VOffsetT = 24;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -351,6 +353,8 @@ impl<'a> PaintEntry<'a> {
     args: &'args PaintEntryArgs<'args>
   ) -> flatbuffers::WIPOffset<PaintEntry<'bldr>> {
     let mut builder = PaintEntryBuilder::new(_fbb);
+    builder.add_casing_width(args.casing_width);
+    if let Some(x) = args.casing_color { builder.add_casing_color(x); }
     builder.add_max_scale(args.max_scale);
     builder.add_min_scale(args.min_scale);
     if let Some(x) = args.model { builder.add_model(x); }
@@ -427,6 +431,20 @@ impl<'a> PaintEntry<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<u8>(PaintEntry::VT_MIN_LEVEL, Some(0)).unwrap()}
   }
+  #[inline]
+  pub fn casing_color(&self) -> Option<&'a RGBA> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<RGBA>(PaintEntry::VT_CASING_COLOR, None)}
+  }
+  #[inline]
+  pub fn casing_width(&self) -> f32 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<f32>(PaintEntry::VT_CASING_WIDTH, Some(0.0)).unwrap()}
+  }
 }
 
 impl flatbuffers::Verifiable for PaintEntry<'_> {
@@ -445,6 +463,8 @@ impl flatbuffers::Verifiable for PaintEntry<'_> {
      .visit_field::<bool>("random_yaw", Self::VT_RANDOM_YAW, false)?
      .visit_field::<bool>("random_scale", Self::VT_RANDOM_SCALE, false)?
      .visit_field::<u8>("min_level", Self::VT_MIN_LEVEL, false)?
+     .visit_field::<RGBA>("casing_color", Self::VT_CASING_COLOR, false)?
+     .visit_field::<f32>("casing_width", Self::VT_CASING_WIDTH, false)?
      .finish();
     Ok(())
   }
@@ -459,6 +479,8 @@ pub struct PaintEntryArgs<'a> {
     pub random_yaw: bool,
     pub random_scale: bool,
     pub min_level: u8,
+    pub casing_color: Option<&'a RGBA>,
+    pub casing_width: f32,
 }
 impl<'a> Default for PaintEntryArgs<'a> {
   #[inline]
@@ -473,6 +495,8 @@ impl<'a> Default for PaintEntryArgs<'a> {
       random_yaw: true,
       random_scale: true,
       min_level: 0,
+      casing_color: None,
+      casing_width: 0.0,
     }
   }
 }
@@ -519,6 +543,14 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> PaintEntryBuilder<'a, 'b, A> {
     self.fbb_.push_slot::<u8>(PaintEntry::VT_MIN_LEVEL, min_level, 0);
   }
   #[inline]
+  pub fn add_casing_color(&mut self, casing_color: &RGBA) {
+    self.fbb_.push_slot_always::<&RGBA>(PaintEntry::VT_CASING_COLOR, casing_color);
+  }
+  #[inline]
+  pub fn add_casing_width(&mut self, casing_width: f32) {
+    self.fbb_.push_slot::<f32>(PaintEntry::VT_CASING_WIDTH, casing_width, 0.0);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> PaintEntryBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     PaintEntryBuilder {
@@ -546,6 +578,8 @@ impl core::fmt::Debug for PaintEntry<'_> {
       ds.field("random_yaw", &self.random_yaw());
       ds.field("random_scale", &self.random_scale());
       ds.field("min_level", &self.min_level());
+      ds.field("casing_color", &self.casing_color());
+      ds.field("casing_width", &self.casing_width());
       ds.finish()
   }
 }
