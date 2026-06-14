@@ -211,6 +211,7 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
     arpt_surface_data buildings = {0};
     arpt_tree_data trees = {0};
     arpt_poi_data pois = {0};
+    arpt_line_label_data line_labels = {0};
 
     for (int li = 0; li < tm->style.layer_count; li++) {
         const arpt_layer_entry *le = &tm->style.layers[li];
@@ -272,6 +273,24 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
         case ARPT_LAYER_LABEL:
             arpt_decode_pois(flatbuf, size, le->source_layer, &pois);
             break;
+        case ARPT_LAYER_LINE_LABEL: {
+            arpt_line_label_data extra = {0};
+            arpt_decode_line_labels(flatbuf, size, le->source_layer, &extra);
+            if (extra.count > 0) {
+                size_t new_count = line_labels.count + extra.count;
+                arpt_line_label_feature *merged = realloc(
+                    line_labels.features,
+                    new_count * sizeof(arpt_line_label_feature));
+                if (merged) {
+                    memcpy(merged + line_labels.count, extra.features,
+                           extra.count * sizeof(arpt_line_label_feature));
+                    line_labels.features = merged;
+                    line_labels.count = new_count;
+                }
+            }
+            arpt_line_label_data_free(&extra);
+            break;
+        }
         }
     }
 
@@ -360,6 +379,9 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
                         arpt_renderer_icon_count(tm->renderer),
                         arpt_renderer_icon_height(tm->renderer),
                         &p->prims.labels);
+    arpt_prepare_line_labels(&line_labels, &mesh,
+                             arpt_renderer_font_glyphs(tm->renderer),
+                             &p->prims.line_labels);
 
     /* The terrain guard above only covers the mesh. A pathological tile (e.g. a
        low-zoom tile holding the whole world's line network) can tessellate into
@@ -389,6 +411,7 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
     arpt_surface_data_free(&buildings);
     arpt_tree_data_free(&trees);
     arpt_poi_data_free(&pois);
+    arpt_line_label_data_free(&line_labels);
     free(flatbuf);
 
     return p;
@@ -399,6 +422,7 @@ oom:
     arpt_surface_data_free(&buildings);
     arpt_tree_data_free(&trees);
     arpt_poi_data_free(&pois);
+    arpt_line_label_data_free(&line_labels);
     free(flatbuf);
     prepared_tile_free(p);
     return NULL;

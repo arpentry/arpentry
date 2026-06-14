@@ -93,6 +93,86 @@ static void *build_points_only_tile(size_t *out_size) {
     return buf;
 }
 
+/* Build a tile with a "transportation" layer holding two LineGeometry
+   features: the first carries a "name" property, the second does not.
+   Tile.keys = ["class", "name"]; Tile.values = ["primary", "Grand-Rue"]. */
+static void *build_line_label_tile(size_t *out_size) {
+    flatcc_builder_t b;
+    flatcc_builder_init(&b);
+
+    arpentry_tiles_Tile_start_as_root(&b);
+    arpentry_tiles_Tile_version_add(&b, 1);
+
+    arpentry_tiles_Tile_layers_start(&b);
+    arpentry_tiles_Tile_layers_push_start(&b);
+    arpentry_tiles_Layer_name_create_str(&b, "transportation");
+
+    arpentry_tiles_Layer_features_start(&b);
+
+    /* Feature 0: a named three-point polyline. */
+    {
+        arpentry_tiles_Layer_features_push_start(&b);
+        arpentry_tiles_Feature_id_add(&b, 1);
+        uint16_t xs[] = {20000, 30000, 40000};
+        uint16_t ys[] = {25000, 25000, 25000};
+        arpentry_tiles_LineGeometry_start(&b);
+        arpentry_tiles_LineGeometry_x_create(&b, xs, 3);
+        arpentry_tiles_LineGeometry_y_create(&b, ys, 3);
+        arpentry_tiles_Feature_geometry_LineGeometry_add(
+            &b, arpentry_tiles_LineGeometry_end(&b));
+        /* properties: name(key 1) -> "Grand-Rue"(value 1) */
+        arpentry_tiles_Feature_properties_start(&b);
+        arpentry_tiles_Feature_properties_push_create(&b, 1, 1);
+        arpentry_tiles_Feature_properties_end(&b);
+        arpentry_tiles_Layer_features_push_end(&b);
+    }
+
+    /* Feature 1: an unnamed polyline (only a class property). */
+    {
+        arpentry_tiles_Layer_features_push_start(&b);
+        arpentry_tiles_Feature_id_add(&b, 2);
+        uint16_t xs[] = {20000, 40000};
+        uint16_t ys[] = {30000, 30000};
+        arpentry_tiles_LineGeometry_start(&b);
+        arpentry_tiles_LineGeometry_x_create(&b, xs, 2);
+        arpentry_tiles_LineGeometry_y_create(&b, ys, 2);
+        arpentry_tiles_Feature_geometry_LineGeometry_add(
+            &b, arpentry_tiles_LineGeometry_end(&b));
+        arpentry_tiles_Feature_properties_start(&b);
+        arpentry_tiles_Feature_properties_push_create(&b, 0, 0);
+        arpentry_tiles_Feature_properties_end(&b);
+        arpentry_tiles_Layer_features_push_end(&b);
+    }
+
+    arpentry_tiles_Layer_features_end(&b);
+    arpentry_tiles_Tile_layers_push_end(&b);
+    arpentry_tiles_Tile_layers_end(&b);
+
+    /* Key dictionary: class(0), name(1). */
+    arpentry_tiles_Tile_keys_start(&b);
+    arpentry_tiles_Tile_keys_push_create_str(&b, "class");
+    arpentry_tiles_Tile_keys_push_create_str(&b, "name");
+    arpentry_tiles_Tile_keys_end(&b);
+
+    /* Value dictionary: "primary"(0), "Grand-Rue"(1). */
+    arpentry_tiles_Tile_values_start(&b);
+    arpentry_tiles_Tile_values_push_start(&b);
+    arpentry_tiles_Value_type_add(&b, arpentry_tiles_PropertyValueType_String);
+    arpentry_tiles_Value_string_value_create_str(&b, "primary");
+    arpentry_tiles_Tile_values_push_end(&b);
+    arpentry_tiles_Tile_values_push_start(&b);
+    arpentry_tiles_Value_type_add(&b, arpentry_tiles_PropertyValueType_String);
+    arpentry_tiles_Value_string_value_create_str(&b, "Grand-Rue");
+    arpentry_tiles_Tile_values_push_end(&b);
+    arpentry_tiles_Tile_values_end(&b);
+
+    arpentry_tiles_Tile_end_as_root(&b);
+
+    void *buf = flatcc_builder_finalize_buffer(&b, out_size);
+    flatcc_builder_clear(&b);
+    return buf;
+}
+
 /* Tests */
 
 void test_basic_extraction(void) {
@@ -157,6 +237,39 @@ void test_null_input(void) {
     TEST_ASSERT_FALSE(arpt_decode_terrain(NULL, 100, &mesh));
 }
 
+void test_line_labels_named_only(void) {
+    size_t size;
+    void *buf = build_line_label_tile(&size);
+    TEST_ASSERT_NOT_NULL(buf);
+
+    arpt_line_label_data data = {0};
+    TEST_ASSERT_TRUE(
+        arpt_decode_line_labels(buf, size, "transportation", &data));
+
+    /* Only the named feature is kept; the nameless one is skipped. */
+    TEST_ASSERT_EQUAL(1, data.count);
+    TEST_ASSERT_EQUAL_STRING("Grand-Rue", data.features[0].name);
+    TEST_ASSERT_EQUAL(3, data.features[0].vertex_count);
+    TEST_ASSERT_EQUAL_UINT16(20000, data.features[0].x[0]);
+    TEST_ASSERT_EQUAL_UINT16(40000, data.features[0].x[2]);
+
+    arpt_line_label_data_free(&data);
+    TEST_ASSERT_NULL(data.features);
+    TEST_ASSERT_EQUAL(0, data.count);
+    free(buf);
+}
+
+void test_line_labels_missing_layer(void) {
+    size_t size;
+    void *buf = build_line_label_tile(&size);
+    arpt_line_label_data data = {0};
+    /* Absent layer is not an error: returns true with an empty result. */
+    TEST_ASSERT_TRUE(arpt_decode_line_labels(buf, size, "nope", &data));
+    TEST_ASSERT_EQUAL(0, data.count);
+    arpt_line_label_data_free(&data);
+    free(buf);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_basic_extraction);
@@ -164,5 +277,7 @@ int main(void) {
     RUN_TEST(test_normals_absent);
     RUN_TEST(test_no_terrain_layer);
     RUN_TEST(test_null_input);
+    RUN_TEST(test_line_labels_named_only);
+    RUN_TEST(test_line_labels_missing_layer);
     return UNITY_END();
 }

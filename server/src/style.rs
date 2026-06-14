@@ -54,6 +54,7 @@ fn layer_type(s: &str) -> fbs::LayerType {
         "instance" => fbs::LayerType::Instance,
         "label" => fbs::LayerType::Label,
         "line" => fbs::LayerType::Line,
+        "line_label" => fbs::LayerType::LineLabel,
         _ => fbs::LayerType::Texture,
     }
 }

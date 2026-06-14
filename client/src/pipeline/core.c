@@ -195,6 +195,12 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     r->icon_halo_color[0] = 1.0f; r->icon_halo_color[1] = 1.0f;
     r->icon_halo_color[2] = 1.0f; r->icon_halo_color[3] = 1.0f;
     r->icon_halo_width = 0.5f;
+    r->line_text_size = 15.0f;
+    r->line_text_color[0] = 0.27f; r->line_text_color[1] = 0.26f;
+    r->line_text_color[2] = 0.24f; r->line_text_color[3] = 1.0f;
+    r->line_text_halo_color[0] = 1.0f; r->line_text_halo_color[1] = 1.0f;
+    r->line_text_halo_color[2] = 1.0f; r->line_text_halo_color[3] = 1.0f;
+    r->line_text_halo_width = 1.2f;
 
     /* POI text label pipeline + font atlas */
     {
@@ -225,6 +231,9 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
             device, format, r->global_bgl, r->tile_bgl, r->poi_bgl);
 
         arpt__label_init_font(r);
+
+        /* Line-following labels share the font atlas created above */
+        arpt__line_label_init(r);
     }
 
     /* Sky / atmosphere pipeline */
@@ -338,6 +347,7 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
 
 void arpt_renderer_free(arpt_renderer *r) {
     if (!r) return;
+    arpt__line_label_cleanup(r);
     arpt__label_cleanup(r);
     arpt__instance_cleanup(r);
     if (r->msaa_view) wgpuTextureViewRelease(r->msaa_view);
@@ -389,7 +399,8 @@ void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height,
             .viewport_width = (float)width,
             .viewport_height = (float)height,
             .display_scale = r->text_display_scale * pixel_ratio,
-            .halo_width = r->text_halo_width,
+            .halo_width = r->text_halo_width * pixel_ratio,
+            .px_range = r->font_px_range,
         };
         memcpy(pu.fill_color, r->text_color, sizeof(pu.fill_color));
         memcpy(pu.halo_color, r->text_halo_color, sizeof(pu.halo_color));
@@ -403,13 +414,15 @@ void arpt_renderer_resize(arpt_renderer *r, uint32_t width, uint32_t height,
             .viewport_width = (float)width,
             .viewport_height = (float)height,
             .display_scale = r->icon_display_scale * pixel_ratio,
-            .halo_width = r->icon_halo_width,
+            .halo_width = r->icon_halo_width * pixel_ratio,
+            .px_range = r->icon_px_range,
         };
         memcpy(pu.fill_color, r->icon_color, sizeof(pu.fill_color));
         memcpy(pu.halo_color, r->icon_halo_color, sizeof(pu.halo_color));
         wgpuQueueWriteBuffer(r->queue, r->icon_uniform_buf, 0, &pu,
                              sizeof(poi_uniforms_t));
     }
+    arpt__line_label_update_uniforms(r);
 }
 
 /* Label style setter */
@@ -444,7 +457,8 @@ void arpt_renderer_set_label_style(arpt_renderer *r,
             .viewport_width = (float)r->width,
             .viewport_height = (float)r->height,
             .display_scale = r->text_display_scale * r->pixel_ratio,
-            .halo_width = r->text_halo_width,
+            .halo_width = r->text_halo_width * r->pixel_ratio,
+            .px_range = r->font_px_range,
         };
         memcpy(pu.fill_color, r->text_color, sizeof(pu.fill_color));
         memcpy(pu.halo_color, r->text_halo_color, sizeof(pu.halo_color));
@@ -458,13 +472,27 @@ void arpt_renderer_set_label_style(arpt_renderer *r,
             .viewport_width = (float)r->width,
             .viewport_height = (float)r->height,
             .display_scale = r->icon_display_scale * r->pixel_ratio,
-            .halo_width = r->icon_halo_width,
+            .halo_width = r->icon_halo_width * r->pixel_ratio,
+            .px_range = r->icon_px_range,
         };
         memcpy(pu.fill_color, r->icon_color, sizeof(pu.fill_color));
         memcpy(pu.halo_color, r->icon_halo_color, sizeof(pu.halo_color));
         wgpuQueueWriteBuffer(r->queue, r->icon_uniform_buf, 0, &pu,
                              sizeof(poi_uniforms_t));
     }
+}
+
+void arpt_renderer_set_line_label_style(arpt_renderer *r, float text_size,
+                                        const float text_color[4],
+                                        const float halo_color[4],
+                                        float halo_width) {
+    if (!r) return;
+    r->line_text_size = text_size;
+    memcpy(r->line_text_color, text_color, sizeof(r->line_text_color));
+    memcpy(r->line_text_halo_color, halo_color,
+           sizeof(r->line_text_halo_color));
+    r->line_text_halo_width = halo_width;
+    arpt__line_label_update_uniforms(r);
 }
 
 /* Model upload (delegates to render_instance.c) */
@@ -518,6 +546,9 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
 
     /* Upload POI label glyphs */
     arpt__label_upload(r, t, &prims->labels);
+
+    /* Copy line-following street labels (kept CPU-side) */
+    arpt__line_label_upload(r, t, &prims->line_labels);
 
     /* Rasterize surface texture */
     bool has_polys = prims->polygons.vert_count > 0 &&
@@ -613,6 +644,13 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     if (tile->poi_instance_buf) wgpuBufferRelease(tile->poi_instance_buf);
     if (tile->icon_instance_buf) wgpuBufferRelease(tile->icon_instance_buf);
     free(tile->poi_labels);
+    if (tile->line_labels) {
+        for (int i = 0; i < tile->line_label_count; i++) {
+            free(tile->line_labels[i].x);
+            free(tile->line_labels[i].y);
+        }
+        free(tile->line_labels);
+    }
     if (tile->uniform_buf) wgpuBufferRelease(tile->uniform_buf);
     if (tile->bind_group) wgpuBindGroupRelease(tile->bind_group);
     if (tile->bldg_bind_group) wgpuBindGroupRelease(tile->bldg_bind_group);
@@ -699,6 +737,8 @@ void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view) {
     r->pass = wgpuCommandEncoderBeginRenderPass(r->encoder, &rp);
     r->placed_label_count = 0;
     r->pending_label_count = 0;
+    r->line_glyph_scratch_count = 0;
+    r->line_glyph_out_count = 0;
 
     /* Draw sky first (writes depth=1.0 everywhere, terrain overwrites) */
     arpt__sky_draw(r);
@@ -712,6 +752,7 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
     arpt__mesh_draw_extrusion(r, tile);
     arpt__instance_draw(r, tile);
     arpt__label_collect(r, tile);
+    arpt__line_label_collect(r, tile);
 }
 
 void arpt_renderer_set_overlay(arpt_renderer *r, arpt_overlay_fn fn,

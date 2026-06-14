@@ -360,6 +360,9 @@ static void render_frame(void) {
             style.text_size, style.text_color, style.text_halo_color,
             style.text_halo_width, style.icon_size, style.icon_color,
             style.icon_halo_color, style.icon_halo_width);
+        arpt_renderer_set_line_label_style(app.renderer,
+            style.line_text_size, style.line_text_color,
+            style.line_text_halo_color, style.line_text_halo_width);
 
         /* Apply current pixel ratio so labels/icons are correctly sized */
         {
@@ -451,11 +454,15 @@ static void render_frame(void) {
                           (float)arpt_camera_altitude(app.camera),
                           earth_center_view);
 
-    /* Set camera ECEF for horizon culling of labels */
+    /* Set camera ECEF for horizon culling of labels. The camera orbit is
+       anchored at the ground elevation, so the eye's ellipsoid height is
+       altitude + ground elevation — using altitude alone puts the culling
+       eye below high terrain and wrongly culls every label above it. */
     {
         arpt_dvec3 cam_ecef = arpt_geodetic_to_ecef(
             arpt_camera_lon(app.camera), arpt_camera_lat(app.camera),
-            arpt_camera_altitude(app.camera));
+            arpt_camera_altitude(app.camera) +
+                arpt_camera_ground_elevation(app.camera));
         arpt_renderer_set_camera_ecef(app.renderer, cam_ecef.x, cam_ecef.y,
                                        cam_ecef.z);
     }
@@ -750,6 +757,31 @@ static bool fetch_style(const char *base_url, arpt_style *style) {
             if (ihw > 0) style->icon_halo_width = ihw;
         }
 
+        /* Parse line-following label style (street names) */
+        if (arpentry_tiles_LayerStyle_type(layer) ==
+            arpentry_tiles_LayerType_LineLabel) {
+            float ts = arpentry_tiles_LayerStyle_text_size(layer);
+            if (ts > 0) style->line_text_size = ts;
+            const arpentry_tiles_RGBA_t *tc =
+                arpentry_tiles_LayerStyle_text_color(layer);
+            if (tc) {
+                style->line_text_color[0] = tc->r / 255.0f;
+                style->line_text_color[1] = tc->g / 255.0f;
+                style->line_text_color[2] = tc->b / 255.0f;
+                style->line_text_color[3] = tc->a / 255.0f;
+            }
+            const arpentry_tiles_RGBA_t *thc =
+                arpentry_tiles_LayerStyle_text_halo_color(layer);
+            if (thc) {
+                style->line_text_halo_color[0] = thc->r / 255.0f;
+                style->line_text_halo_color[1] = thc->g / 255.0f;
+                style->line_text_halo_color[2] = thc->b / 255.0f;
+                style->line_text_halo_color[3] = thc->a / 255.0f;
+            }
+            float thw = arpentry_tiles_LayerStyle_text_halo_width(layer);
+            if (thw > 0) style->line_text_halo_width = thw;
+        }
+
         arpentry_tiles_PaintEntry_vec_t paint =
             arpentry_tiles_LayerStyle_paint(layer);
         size_t paint_count = paint ? arpentry_tiles_PaintEntry_vec_len(paint) : 0;
@@ -1006,6 +1038,9 @@ static void init_viewer(void) {
             style.text_size, style.text_color, style.text_halo_color,
             style.text_halo_width, style.icon_size, style.icon_color,
             style.icon_halo_color, style.icon_halo_width);
+        arpt_renderer_set_line_label_style(app.renderer,
+            style.line_text_size, style.line_text_color,
+            style.line_text_halo_color, style.line_text_halo_width);
     }
     if (!app.renderer) {
         fprintf(stderr, "Fatal: failed to create renderer\n");

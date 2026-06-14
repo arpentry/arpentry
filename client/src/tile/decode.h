@@ -118,6 +118,38 @@ bool arpt_decode_lines(const void *flatbuf, size_t size,
 
 void arpt_line_data_free(arpt_line_data *data);
 
+/* Line label decoding (LineGeometry with name property) */
+
+typedef struct {
+    const uint16_t *x, *y; /* zero-copy into FlatBuffer (see arpt_line_label_data) */
+    size_t vertex_count;
+    char name[64]; /* copied from value dictionary */
+} arpt_line_label_feature;
+
+/**
+ * Named line features decoded from one tile layer (street labels).
+ *
+ * LIFETIME: `features` is a malloc'd array owned by this struct, but each
+ * entry's `x`/`y` pointers alias into the FlatBuffer passed to
+ * arpt_decode_line_labels. The FlatBuffer must remain alive until
+ * arpt_prepare_line_labels has copied the coordinates.
+ */
+typedef struct {
+    arpt_line_label_feature *features; /* malloc'd array */
+    size_t count;
+} arpt_line_label_data;
+
+/**
+ * Extract named line features from a layer in a verified FlatBuffer tile.
+ * Extracts LineGeometry features that carry a non-empty "name" string;
+ * nameless lines are skipped. Each part of a multi-line becomes one entry.
+ */
+bool arpt_decode_line_labels(const void *flatbuf, size_t size,
+                             const char *layer_name,
+                             arpt_line_label_data *out);
+
+void arpt_line_label_data_free(arpt_line_label_data *data);
+
 /* Building decoding (PolygonGeometry, same struct as surface) */
 
 /**

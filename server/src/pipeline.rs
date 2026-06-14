@@ -57,6 +57,18 @@ fn attrs_for(layer: u8) -> &'static [&'static str] {
     match layer {
         layers::BUILDING => &["id", "subtype", "class", "height", "num_floors"],
         layers::POI => &["id", "names.primary", "basic_category", "confidence"],
+        // Road names feed the client's line-following street labels.
+        layers::TRANSPORTATION => &[
+            "id",
+            "type",
+            "subtype",
+            "class",
+            "subclass",
+            "names.primary",
+            "cartography.min_zoom",
+            "cartography.max_zoom",
+            "cartography.sort_key",
+        ],
         _ => ATTRS,
     }
 }

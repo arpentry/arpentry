@@ -738,3 +738,117 @@ void arpt_poi_data_free(arpt_poi_data *data) {
         data->count = 0;
     }
 }
+
+/* Line label decoding */
+
+bool arpt_decode_line_labels(const void *flatbuf, size_t size,
+                             const char *layer_name,
+                             arpt_line_label_data *out) {
+    out->features = NULL;
+    out->count = 0;
+
+    uint32_t class_key_idx;
+    uint32_t height_key_idx;
+    uint32_t name_key_idx;
+    arpentry_tiles_Value_vec_t values;
+    arpentry_tiles_Layer_table_t layer =
+        find_layer_ex(flatbuf, size, layer_name, &class_key_idx,
+                      &height_key_idx, &name_key_idx, &values);
+    if (!layer || name_key_idx == UINT32_MAX) return true;
+
+    arpentry_tiles_Feature_vec_t features =
+        arpentry_tiles_Layer_features(layer);
+    if (!features) return true;
+
+    size_t n_feat = arpentry_tiles_Feature_vec_len(features);
+    if (n_feat == 0) return true;
+
+    /* First pass: count parts of named lines */
+    size_t total = 0;
+    for (size_t i = 0; i < n_feat; i++) {
+        arpentry_tiles_Feature_table_t feat =
+            arpentry_tiles_Feature_vec_at(features, i);
+        if (!feat) continue;
+        if (arpentry_tiles_Feature_geometry_type(feat) !=
+            arpentry_tiles_Geometry_LineGeometry)
+            continue;
+        arpentry_tiles_LineGeometry_table_t line =
+            (arpentry_tiles_LineGeometry_table_t)
+                arpentry_tiles_Feature_geometry(feat);
+        if (!line) continue;
+        flatbuffers_uint32_vec_t offsets =
+            arpentry_tiles_LineGeometry_line_offsets(line);
+        if (offsets && flatbuffers_uint32_vec_len(offsets) >= 2)
+            total += flatbuffers_uint32_vec_len(offsets) - 1;
+        else
+            total++;
+    }
+    if (total == 0) return true;
+
+    out->features = malloc(total * sizeof(arpt_line_label_feature));
+    if (!out->features) return false;
+
+    size_t count = 0;
+    for (size_t i = 0; i < n_feat; i++) {
+        arpentry_tiles_Feature_table_t feat =
+            arpentry_tiles_Feature_vec_at(features, i);
+        if (!feat) continue;
+
+        if (arpentry_tiles_Feature_geometry_type(feat) !=
+            arpentry_tiles_Geometry_LineGeometry)
+            continue;
+
+        arpentry_tiles_LineGeometry_table_t line =
+            (arpentry_tiles_LineGeometry_table_t)
+                arpentry_tiles_Feature_geometry(feat);
+        if (!line) continue;
+
+        char name[64];
+        resolve_string_property(feat, name_key_idx, values, name,
+                                sizeof(name));
+        if (name[0] == '\0') continue;
+
+        flatbuffers_uint16_vec_t xv = arpentry_tiles_LineGeometry_x(line);
+        flatbuffers_uint16_vec_t yv = arpentry_tiles_LineGeometry_y(line);
+        if (!xv || !yv) continue;
+
+        size_t vc = flatbuffers_uint16_vec_len(xv);
+        if (flatbuffers_uint16_vec_len(yv) != vc || vc < 2) continue;
+
+        flatbuffers_uint32_vec_t offsets =
+            arpentry_tiles_LineGeometry_line_offsets(line);
+        size_t n_parts = 1;
+        if (offsets && flatbuffers_uint32_vec_len(offsets) >= 2)
+            n_parts = flatbuffers_uint32_vec_len(offsets) - 1;
+
+        for (size_t p = 0; p < n_parts && count < total; p++) {
+            size_t start = 0, end = vc;
+            if (offsets && flatbuffers_uint32_vec_len(offsets) >= 2) {
+                start = offsets[p];
+                end = offsets[p + 1];
+                if (end > vc) end = vc;
+                if (start > end) continue;
+            }
+            size_t part_vc = end - start;
+            if (part_vc < 2) continue;
+
+            arpt_line_label_feature *f = &out->features[count];
+            f->x = xv + start;
+            f->y = yv + start;
+            f->vertex_count = part_vc;
+            memcpy(f->name, name, sizeof(name));
+            count++;
+        }
+    }
+
+    out->count = count;
+    return true;
+}
+
+void arpt_line_label_data_free(arpt_line_label_data *data) {
+    if (data) {
+        free(data->features);
+        data->features = NULL;
+        data->count = 0;
+    }
+}

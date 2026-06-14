@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-/* SDF font atlas parameters */
+/* MSDF font atlas parameters */
 #define FONT_ATLAS_SIZE  1024  /* atlas texture dimensions (1024x1024) */
 #define FONT_FIRST_CHAR    32  /* space (U+0020) */
 #define FONT_LAST_CHAR   591  /* U+024F — end of Latin Extended-B */
@@ -48,10 +48,14 @@ static inline uint32_t font_utf8_decode(const char **p) {
     return cp;
 }
 
-/* Generate SDF font atlas into caller-provided RGBA buffer.
+/* Load the baked MTSDF font atlas (RGB = multi-channel field for sharp
+ * fills, A = true SDF for halos) into a caller-provided RGBA buffer.
  * Buffer must be FONT_ATLAS_SIZE * FONT_ATLAS_SIZE * 4 bytes.
- * Also fills glyph metrics array (FONT_CHAR_COUNT entries).
- * Returns the font pixel height used for rendering. */
-float font_generate_atlas(uint8_t *rgba_out, font_glyph *glyphs_out);
+ * Also fills glyph metrics array (FONT_CHAR_COUNT entries) and stores
+ * the distance field range in atlas pixels in *px_range_out.
+ * Returns the font pixel height the atlas was baked at.
+ * Regenerate the atlas with scripts/generate-font-atlas.py. */
+float font_load_atlas(uint8_t *rgba_out, font_glyph *glyphs_out,
+                      float *px_range_out);
 
 #endif /* ARPENTRY_FONT_H */

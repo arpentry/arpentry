@@ -6,6 +6,10 @@
 /* SDF icon atlas parameters */
 #define ICON_ATLAS_SIZE   512  /* atlas texture dimensions (512x512) */
 
+/* Distance field range in atlas pixels: the SDF value spans the full
+ * [0,255] range over 255/SDF_PIXEL_DIST pixels (see icon.c). */
+#define ICON_SDF_PX_RANGE (255.0f / 8.0f)
+
 /* Per-icon metrics (UV coordinates in atlas) */
 typedef struct {
     float u0, v0; /* top-left UV in atlas */

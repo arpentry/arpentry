@@ -23,9 +23,9 @@ struct PoiUniforms {
     viewport_width: f32,
     viewport_height: f32,
     display_scale: f32,
-    halo_width: f32,
+    halo_width: f32,    // halo width in framebuffer pixels
+    px_range: f32,      // distance field range in atlas pixels
     _pad0: f32,
-    _pad1: f32,
     fill_color: vec4<f32>,
     halo_color: vec4<f32>,
 };
@@ -133,29 +133,43 @@ fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {
     return out;
 }
 
+// Median of the three MSDF channels: the multi-channel field that keeps
+// corners sharp where a single-channel SDF would round them off.
+fn median3(v: vec3<f32>) -> f32 {
+    return max(min(v.x, v.y), min(max(v.x, v.y), v.z));
+}
+
 @fragment fn fs(
     @location(0) uv: vec2<f32>,
 ) -> @location(0) vec4<f32> {
-    let sdf = textureSample(font_tex, font_samp, uv).r;
+    // MTSDF atlas: rgb = multi-channel field (fill), a = true SDF (halo —
+    // offset edges break in a multi-channel field, so halos use the
+    // single-channel one).
+    let s = textureSample(font_tex, font_samp, uv);
 
-    // SDF rendering: 0.5 (=128/255) is the edge
-    let edge = 0.5;
-    // Clamp width: fwidth() can return very large values at quad edges
-    // where screen-space derivatives are undefined, causing the smoothstep
-    // to widen enough that SDF=0 (padding region) produces visible alpha.
-    let width = min(fwidth(sdf) * 0.7, 0.1);
+    // Scale from field units [0,1] to framebuffer pixels at the current
+    // glyph magnification.
+    let unit_range = vec2<f32>(poi.px_range) / vec2<f32>(poi.atlas_size);
+    let screen_size = vec2<f32>(1.0) / fwidth(uv);
+    let spr = max(0.5 * dot(unit_range, screen_size), 1.0);
 
-    // Halo edge: smaller edge = wider halo around the glyph
-    let halo_edge = edge - poi.halo_width * 0.1;
-    let alpha = smoothstep(halo_edge - width, halo_edge + width, sdf);
+    let d_fill = spr * (median3(s.rgb) - 0.5);
+
+    // Limit the halo so it cannot reach the quad border, where the
+    // distance field saturates and the offset would paint a box.
+    let halo_px = clamp(poi.halo_width, 0.0, max(spr * 0.5 - 1.0, 0.0));
+    let d_halo = spr * (s.a - 0.5) + halo_px;
+
+    let fill_alpha = clamp(d_fill + 0.5, 0.0, 1.0);
+    let halo_alpha = clamp(d_halo + 0.5, 0.0, 1.0);
+    let alpha = max(fill_alpha, halo_alpha);
 
     if (alpha < 0.01) {
         discard;
     }
 
     // Blend from halo color to fill color at the glyph edge
-    let text_alpha = smoothstep(edge - width, edge + width, sdf);
-    let color = mix(poi.halo_color.rgb, poi.fill_color.rgb, text_alpha);
+    let color = mix(poi.halo_color.rgb, poi.fill_color.rgb, fill_alpha);
     let out = select(color, pow(color, vec3<f32>(1.0 / 2.2)), globals.apply_gamma > 0.5);
     // Premultiplied alpha output — prevents white seams where adjacent
     // glyph quads overlap (halo blending on top of fill).

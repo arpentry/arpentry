@@ -4,8 +4,8 @@ struct InfoUniforms {
     atlas_size: f32,
     glyph_scale: f32,
     display_scale: f32,
+    px_range: f32,      // distance field range in atlas pixels
     _pad0: f32,
-    _pad1: f32,
 };
 
 @group(0) @binding(0) var<uniform> info: InfoUniforms;
@@ -51,20 +51,36 @@ struct VsOut {
     return out;
 }
 
+// Median of the three MSDF channels: the multi-channel field that keeps
+// corners sharp where a single-channel SDF would round them off.
+fn median3(v: vec3<f32>) -> f32 {
+    return max(min(v.x, v.y), min(max(v.x, v.y), v.z));
+}
+
 @fragment fn fs(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    let sdf = textureSample(atlas_tex, atlas_samp, uv).r;
+    // MTSDF atlas: rgb = multi-channel field (fill), a = true SDF (halo)
+    let s = textureSample(atlas_tex, atlas_samp, uv);
 
-    let edge = 0.5;
-    let width = min(fwidth(sdf) * 0.7, 0.1);
+    // Scale from field units [0,1] to framebuffer pixels at the current
+    // glyph magnification.
+    let unit_range = vec2<f32>(info.px_range) / vec2<f32>(info.atlas_size);
+    let screen_size = vec2<f32>(1.0) / fwidth(uv);
+    let spr = max(0.5 * dot(unit_range, screen_size), 1.0);
 
-    // Halo for readability over the map
-    let halo_edge = edge - 0.06;
-    let alpha = smoothstep(halo_edge - width, halo_edge + width, sdf);
+    let d_fill = spr * (median3(s.rgb) - 0.5);
+
+    // Halo for readability over the map: 1.5 logical px, limited so it
+    // cannot reach the quad border where the distance field saturates.
+    let halo_px = clamp(1.5 * info.scale, 0.0, max(spr * 0.5 - 1.0, 0.0));
+    let d_halo = spr * (s.a - 0.5) + halo_px;
+
+    let fill_alpha = clamp(d_fill + 0.5, 0.0, 1.0);
+    let halo_alpha = clamp(d_halo + 0.5, 0.0, 1.0);
+    let alpha = max(fill_alpha, halo_alpha);
 
     if (alpha < 0.01) { discard; }
 
     // White text with dark halo
-    let fill_alpha = smoothstep(edge - width, edge + width, sdf);
     let color = mix(vec3<f32>(0.08, 0.10, 0.14), vec3<f32>(0.95, 0.96, 0.98), fill_alpha);
 
     return vec4<f32>(color * alpha, alpha);

@@ -23,7 +23,7 @@ table PaintEntry {
   casing_width: float32 = 0;        // extra casing half-width in quantized units (0 = no casing)
 }
 
-enum LayerType : uint8 { Terrain = 0, Texture = 1, Extrusion = 2, Instance = 3, Label = 4, Line = 5 }
+enum LayerType : uint8 { Terrain = 0, Texture = 1, Extrusion = 2, Instance = 3, Label = 4, Line = 5, LineLabel = 6 }
 
 table LayerStyle {
   source_layer:   string (required);  // tile layer name ("surface", "transportation", ...)

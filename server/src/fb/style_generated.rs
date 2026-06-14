@@ -29,16 +29,17 @@ pub mod tiles {
 #[deprecated(since = "2.0.0", note = "Use associated constants instead. This will no longer be generated in 2021.")]
 pub const ENUM_MIN_LAYER_TYPE: u8 = 0;
 #[deprecated(since = "2.0.0", note = "Use associated constants instead. This will no longer be generated in 2021.")]
-pub const ENUM_MAX_LAYER_TYPE: u8 = 5;
+pub const ENUM_MAX_LAYER_TYPE: u8 = 6;
 #[deprecated(since = "2.0.0", note = "Use associated constants instead. This will no longer be generated in 2021.")]
 #[allow(non_camel_case_types)]
-pub const ENUM_VALUES_LAYER_TYPE: [LayerType; 6] = [
+pub const ENUM_VALUES_LAYER_TYPE: [LayerType; 7] = [
   LayerType::Terrain,
   LayerType::Texture,
   LayerType::Extrusion,
   LayerType::Instance,
   LayerType::Label,
   LayerType::Line,
+  LayerType::LineLabel,
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -52,9 +53,10 @@ impl LayerType {
   pub const Instance: Self = Self(3);
   pub const Label: Self = Self(4);
   pub const Line: Self = Self(5);
+  pub const LineLabel: Self = Self(6);
 
   pub const ENUM_MIN: u8 = 0;
-  pub const ENUM_MAX: u8 = 5;
+  pub const ENUM_MAX: u8 = 6;
   pub const ENUM_VALUES: &'static [Self] = &[
     Self::Terrain,
     Self::Texture,
@@ -62,6 +64,7 @@ impl LayerType {
     Self::Instance,
     Self::Label,
     Self::Line,
+    Self::LineLabel,
   ];
   /// Returns the variant's name or "" if unknown.
   pub fn variant_name(self) -> Option<&'static str> {
@@ -72,6 +75,7 @@ impl LayerType {
       Self::Instance => Some("Instance"),
       Self::Label => Some("Label"),
       Self::Line => Some("Line"),
+      Self::LineLabel => Some("LineLabel"),
       _ => None,
     }
   }

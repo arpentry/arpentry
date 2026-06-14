@@ -1,5 +1,6 @@
 #include "icon.h"
 #include "icon_map.h"
+#define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 #include <math.h>
 #include <stdlib.h>
@@ -78,7 +79,9 @@ float icon_generate_atlas(uint8_t *rgba_out, icon_glyph *glyphs_out,
             break;
         }
 
-        /* Copy SDF data into RGBA atlas */
+        /* Copy SDF data into all four RGBA channels: the label shader
+         * reads the fill field as median(rgb) and the halo field from
+         * alpha, so a single-channel SDF must fill every channel. */
         for (int y = 0; y < gh; y++) {
             for (int x = 0; x < gw; x++) {
                 int ai = ((cursor_y + y) * atlas_w + (cursor_x + x)) * 4;
@@ -86,7 +89,7 @@ float icon_generate_atlas(uint8_t *rgba_out, icon_glyph *glyphs_out,
                 rgba_out[ai + 0] = val;
                 rgba_out[ai + 1] = val;
                 rgba_out[ai + 2] = val;
-                rgba_out[ai + 3] = 255;
+                rgba_out[ai + 3] = val;
             }
         }
 

@@ -76,6 +76,12 @@ pub fn profile(
     if let Some(s) = subclass {
         properties.push(("subclass".to_string(), Value::String(s)));
     }
+    // Road names drive the client's line-following street labels.
+    if layer == layers::TRANSPORTATION {
+        if let Some(n) = find_str(props, "names.primary") {
+            properties.push(("name".to_string(), Value::String(n)));
+        }
+    }
 
     Profiled { properties, min_zoom, max_zoom, rank }
 }
@@ -401,6 +407,19 @@ mod tests {
         let p = profile(layers::BUILDING, &[], 0, 14);
         assert!(p.properties.contains(&("class".into(), Value::String("building".into()))));
         assert!(p.properties.contains(&("height".into(), Value::Double(DEFAULT_BUILDING_HEIGHT))));
+    }
+
+    #[test]
+    fn transportation_takes_road_name() {
+        let props = vec![
+            ("class".to_string(), Value::String("residential".into())),
+            ("names.primary".to_string(), Value::String("Rue du Lac".into())),
+        ];
+        let p = profile(layers::TRANSPORTATION, &props, 0, 14);
+        assert!(p.properties.contains(&("name".into(), Value::String("Rue du Lac".into()))));
+        // Other layers ignore names.primary.
+        let p = profile(layers::WATER, &props, 0, 14);
+        assert!(!p.properties.iter().any(|(k, _)| k == "name"));
     }
 
     #[test]

@@ -85,8 +85,8 @@ WGPURenderPipeline arpt__label_create_pipeline(WGPUDevice device,
 /* Helper: create an SDF atlas texture + sampler + bind group */
 static void init_sdf_atlas(arpt_renderer *r, uint8_t *atlas_data,
                             size_t atlas_size, float pixel_height,
-                            float display_scale, float halo_width,
-                            const float fill_color[4],
+                            float px_range, float display_scale,
+                            float halo_width, const float fill_color[4],
                             const float halo_color[4],
                             WGPUTexture *tex, WGPUTextureView *view,
                             WGPUSampler *samp, WGPUBuffer *ubuf,
@@ -127,7 +127,8 @@ static void init_sdf_atlas(arpt_renderer *r, uint8_t *atlas_data,
         .viewport_width = (float)r->width,
         .viewport_height = (float)r->height,
         .display_scale = display_scale * r->pixel_ratio,
-        .halo_width = halo_width,
+        .halo_width = halo_width * r->pixel_ratio,
+        .px_range = px_range,
     };
     memcpy(pu.fill_color, fill_color, sizeof(pu.fill_color));
     memcpy(pu.halo_color, halo_color, sizeof(pu.halo_color));
@@ -152,15 +153,16 @@ void arpt__label_init_font(arpt_renderer *r) {
     uint8_t *font_data = malloc(font_bytes);
     if (!font_data) return;
 
-    r->font_pixel_height = font_generate_atlas(font_data, r->glyphs);
+    r->font_pixel_height = font_load_atlas(font_data, r->glyphs,
+                                           &r->font_px_range);
 
     /* Compute display scales from style */
     r->text_display_scale = (r->font_pixel_height > 0)
         ? r->text_size / r->font_pixel_height : 1.0f;
 
     init_sdf_atlas(r, font_data, FONT_ATLAS_SIZE, r->font_pixel_height,
-                   r->text_display_scale, r->text_halo_width,
-                   r->text_color, r->text_halo_color,
+                   r->font_px_range, r->text_display_scale,
+                   r->text_halo_width, r->text_color, r->text_halo_color,
                    &r->font_texture, &r->font_view, &r->font_sampler,
                    &r->poi_uniform_buf, &r->poi_bind_group);
     free(font_data);
@@ -172,12 +174,13 @@ void arpt__label_init_font(arpt_renderer *r) {
 
     r->icon_pixel_height = icon_generate_atlas(icon_data, r->icon_glyphs,
                                                 &r->icon_glyph_count);
+    r->icon_px_range = ICON_SDF_PX_RANGE;
     r->icon_display_scale = (r->icon_pixel_height > 0)
         ? r->icon_size / r->icon_pixel_height : 1.0f;
 
     init_sdf_atlas(r, icon_data, ICON_ATLAS_SIZE, r->icon_pixel_height,
-                   r->icon_display_scale, r->icon_halo_width,
-                   r->icon_color, r->icon_halo_color,
+                   r->icon_px_range, r->icon_display_scale,
+                   r->icon_halo_width, r->icon_color, r->icon_halo_color,
                    &r->icon_texture, &r->icon_view, &r->icon_sampler,
                    &r->icon_uniform_buf, &r->icon_bind_group);
     free(icon_data);
@@ -341,6 +344,9 @@ void arpt__label_collect(arpt_renderer *r, arpt_tile_gpu *tile) {
         r->pending_labels[idx].y0 = ly0;
         r->pending_labels[idx].x1 = lx1;
         r->pending_labels[idx].y1 = ly1;
+        r->pending_labels[idx].kind = 0;
+        r->pending_labels[idx].glyph_first = 0;
+        r->pending_labels[idx].glyph_count = 0;
     }
 }
 
@@ -357,7 +363,8 @@ void arpt__label_draw_all(arpt_renderer *r) {
     qsort(r->pending_labels, (size_t)r->pending_label_count,
           sizeof(r->pending_labels[0]), compare_pending_depth);
 
-    /* Resolve collisions: closest labels win */
+    /* Resolve collisions: closest labels win. Point and line labels share
+       one arena, so street names never overlap POI labels. */
     int visible_indices[ARPT_MAX_PLACED_LABELS];
     int n_visible = 0;
 
@@ -387,11 +394,23 @@ void arpt__label_draw_all(arpt_renderer *r) {
             r->placed_label_count++;
         }
 
+        if (r->pending_labels[i].kind == 1) {
+            /* Line label: move its pre-laid-out glyphs to the draw list. */
+            uint32_t first = r->pending_labels[i].glyph_first;
+            uint32_t count = r->pending_labels[i].glyph_count;
+            if (r->line_glyph_out &&
+                r->line_glyph_out_count + (int)count <= ARPT_MAX_LINE_GLYPHS) {
+                memcpy(r->line_glyph_out + r->line_glyph_out_count,
+                       r->line_glyph_scratch + first,
+                       count * sizeof(arpt_line_glyph_inst));
+                r->line_glyph_out_count += (int)count;
+            }
+            continue;
+        }
+
         if (n_visible < ARPT_MAX_PLACED_LABELS)
             visible_indices[n_visible++] = i;
     }
-
-    if (n_visible == 0) return;
 
     bool drew_any = false;
 
@@ -457,6 +476,12 @@ void arpt__label_draw_all(arpt_renderer *r) {
                 tile->poi_labels[li].first_instance);
             drew_any = true;
         }
+    }
+
+    /* Line-following labels (street names) draw last, on top */
+    if (r->line_glyph_out_count > 0) {
+        arpt__line_label_draw(r);
+        drew_any = true;
     }
 
     if (drew_any) {

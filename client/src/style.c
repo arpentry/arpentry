@@ -87,6 +87,14 @@ void arpt_style_defaults(arpt_style *s) {
     s->icon_halo_color[2] = 1.0f; s->icon_halo_color[3] = 1.0f;
     s->icon_halo_width = 0.5f;
 
+    /* Line-following label style (street names) */
+    s->line_text_size = 15.0f;
+    s->line_text_color[0] = 0.27f; s->line_text_color[1] = 0.26f;
+    s->line_text_color[2] = 0.24f; s->line_text_color[3] = 1.0f;
+    s->line_text_halo_color[0] = 1.0f; s->line_text_halo_color[1] = 1.0f;
+    s->line_text_halo_color[2] = 1.0f; s->line_text_halo_color[3] = 1.0f;
+    s->line_text_halo_width = 1.2f;
+
     /* tree_style_count = 0; populated dynamically from style fetch */
 }
 

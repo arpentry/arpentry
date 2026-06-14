@@ -493,7 +493,9 @@ static void encode_octahedral(double nx, double ny, double nz, int8_t *ox,
 }
 
 static bool building_in_tile_proper(const arpt_surface_polygon *b) {
-    size_t n = b->vertex_count - 1;
+    /* Rings are stored open (no repeated closing vertex; FORMAT.md §3.4),
+       so every stored vertex is a distinct corner. */
+    size_t n = b->vertex_count;
     uint64_t sx = 0, sy = 0;
     for (size_t v = 0; v < n; v++) {
         sx += b->x[v];
@@ -511,9 +513,9 @@ static void count_building_extrusion(const arpt_surface_data *buildings,
     if (!buildings) return;
     for (size_t i = 0; i < buildings->count; i++) {
         const arpt_surface_polygon *b = &buildings->polygons[i];
-        if (b->height_m <= 0 || b->vertex_count < 4) continue;
+        if (b->height_m <= 0 || b->vertex_count < 3) continue;
         if (!building_in_tile_proper(b)) continue;
-        size_t n = b->vertex_count - 1;
+        size_t n = b->vertex_count;
         *extra_verts += n * 4 + n;
         *extra_indices += n * 6 + (n - 2) * 3;
     }
@@ -532,10 +534,10 @@ static void emit_building_extrusion(const arpt_surface_data *buildings,
 
     for (size_t bi = 0; bi < buildings->count; bi++) {
         const arpt_surface_polygon *b = &buildings->polygons[bi];
-        if (b->height_m <= 0 || b->vertex_count < 4) continue;
+        if (b->height_m <= 0 || b->vertex_count < 3) continue;
         if (!building_in_tile_proper(b)) continue;
 
-        size_t n = b->vertex_count - 1;
+        size_t n = b->vertex_count;
         int32_t base_z = (b->z && b->vertex_count > 0) ? b->z[0] : 0;
         int32_t height_mm = base_z + (int32_t)((int64_t)b->height_m * 1000);
 
@@ -836,6 +838,99 @@ void arpt_prepare_labels(const arpt_poi_data *pois, const font_glyph *glyphs,
     out->icon_count = icon_idx;
 }
 
+/* Line labels — copy named polylines and pre-measure their text */
+
+/* Keep at most this many street-label candidates per tile; the tiler
+   orders features most-important first, so the head of the list wins. */
+#define ARPT_MAX_LINE_LABELS_PER_TILE 64
+
+/* Total advance of `name` in pixels at the atlas font size; 0 when no
+   glyph is renderable. */
+static float measure_text_width(const char *name, const font_glyph *glyphs) {
+    float total_w = 0;
+    bool any = false;
+    while (*name) {
+        uint32_t cp = font_utf8_decode(&name);
+        if (cp < (uint32_t)FONT_FIRST_CHAR || cp > (uint32_t)FONT_LAST_CHAR)
+            cp = FONT_FIRST_CHAR;
+        const font_glyph *g = &glyphs[cp - FONT_FIRST_CHAR];
+        total_w += g->advance;
+        if (g->width > 0) any = true;
+    }
+    return any ? total_w : 0.0f;
+}
+
+/* Terrain elevation (mm) at quantized tile position (qx, qy): the z of the
+   nearest mesh vertex. Streets follow the terrain surface, so anchoring
+   their labels at the local elevation keeps them on the road in hilly
+   tiles instead of floating at the ellipsoid. */
+static int32_t terrain_elevation_at(const arpt_terrain_mesh *terrain,
+                                    uint16_t qx, uint16_t qy) {
+    if (!terrain || terrain->vertex_count == 0 || !terrain->z) return 0;
+    size_t best = 0;
+    int64_t best_d2 = INT64_MAX;
+    for (size_t i = 0; i < terrain->vertex_count; i++) {
+        int64_t dx = (int64_t)terrain->x[i] - qx;
+        int64_t dy = (int64_t)terrain->y[i] - qy;
+        int64_t d2 = dx * dx + dy * dy;
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            best = i;
+        }
+    }
+    return terrain->z[best];
+}
+
+void arpt_prepare_line_labels(const arpt_line_label_data *data,
+                              const arpt_terrain_mesh *terrain,
+                              const font_glyph *glyphs,
+                              arpt_line_label_prim *out) {
+    memset(out, 0, sizeof(*out));
+    if (!data || data->count == 0 || !glyphs) return;
+
+    size_t max = data->count;
+    if (max > ARPT_MAX_LINE_LABELS_PER_TILE)
+        max = ARPT_MAX_LINE_LABELS_PER_TILE;
+
+    out->labels = calloc(max, sizeof(arpt_line_label));
+    if (!out->labels) return;
+
+    int count = 0;
+    for (size_t i = 0; i < data->count && count < (int)max; i++) {
+        const arpt_line_label_feature *f = &data->features[i];
+        if (f->vertex_count < 2 ||
+            f->vertex_count > ARPT_MAX_LINE_LABEL_POINTS)
+            continue;
+
+        float text_w = measure_text_width(f->name, glyphs);
+        if (text_w <= 0.0f) continue;
+
+        arpt_line_label *ll = &out->labels[count];
+        ll->x = malloc(f->vertex_count * sizeof(uint16_t));
+        ll->y = malloc(f->vertex_count * sizeof(uint16_t));
+        if (!ll->x || !ll->y) {
+            free(ll->x);
+            free(ll->y);
+            ll->x = ll->y = NULL;
+            break;
+        }
+        memcpy(ll->x, f->x, f->vertex_count * sizeof(uint16_t));
+        memcpy(ll->y, f->y, f->vertex_count * sizeof(uint16_t));
+        ll->vertex_count = (uint32_t)f->vertex_count;
+        size_t mid = f->vertex_count / 2;
+        ll->qz = terrain_elevation_at(terrain, f->x[mid], f->y[mid]);
+        memcpy(ll->name, f->name, sizeof(ll->name));
+        ll->text_w_px = text_w;
+        count++;
+    }
+
+    out->count = count;
+    if (count == 0) {
+        free(out->labels);
+        out->labels = NULL;
+    }
+}
+
 /* Cleanup */
 
 void arpt_tile_prims_free(arpt_tile_prims *p) {
@@ -868,4 +963,13 @@ void arpt_tile_prims_free(arpt_tile_prims *p) {
     free(p->labels.glyphs);
     free(p->labels.labels);
     free(p->labels.icons);
+
+    /* line labels */
+    if (p->line_labels.labels) {
+        for (int i = 0; i < p->line_labels.count; i++) {
+            free(p->line_labels.labels[i].x);
+            free(p->line_labels.labels[i].y);
+        }
+        free(p->line_labels.labels);
+    }
 }

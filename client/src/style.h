@@ -5,12 +5,13 @@
 
 /* Layer rendering type, matching LayerType enum in style.fbs. */
 typedef enum {
-    ARPT_LAYER_TERRAIN   = 0,
-    ARPT_LAYER_TEXTURE   = 1,
-    ARPT_LAYER_EXTRUSION = 2,
-    ARPT_LAYER_INSTANCE  = 3,
-    ARPT_LAYER_LABEL     = 4,
-    ARPT_LAYER_LINE      = 5,
+    ARPT_LAYER_TERRAIN    = 0,
+    ARPT_LAYER_TEXTURE    = 1,
+    ARPT_LAYER_EXTRUSION  = 2,
+    ARPT_LAYER_INSTANCE   = 3,
+    ARPT_LAYER_LABEL      = 4,
+    ARPT_LAYER_LINE       = 5,
+    ARPT_LAYER_LINE_LABEL = 6,
 } arpt_layer_type;
 
 /* Per-layer entry parsed from the style. */
@@ -56,6 +57,12 @@ typedef struct arpt_style {
     float icon_color[4];        /* default dark gray */
     float icon_halo_color[4];   /* default white */
     float icon_halo_width;      /* default 0.5 */
+
+    /* Line-following label style (street names) */
+    float line_text_size;            /* default 15 */
+    float line_text_color[4];        /* default dark gray */
+    float line_text_halo_color[4];   /* default white */
+    float line_text_halo_width;      /* default 1.2 */
 } arpt_style;
 
 /** Find tree style index by class name. Returns -1 if not found. */

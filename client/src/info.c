@@ -32,7 +32,8 @@ typedef struct {
     float atlas_size;
     float glyph_scale;
     float display_scale;
-    float _pad0, _pad1;
+    float px_range;     /* distance field range in atlas pixels */
+    float _pad0;
 } info_uniforms_t;
 
 /* Internal struct */
@@ -52,6 +53,7 @@ struct arpt_info {
     WGPUSampler font_sampler;
     font_glyph glyphs[FONT_CHAR_COUNT];
     float font_pixel_height;
+    float font_px_range;
     float display_scale;
 
     uint32_t fb_width, fb_height;
@@ -116,7 +118,8 @@ arpt_info *arpt_info_create(WGPUDevice device, WGPUQueue queue,
     uint8_t *atlas_data = malloc(atlas_bytes);
     if (!atlas_data) { free(info); return NULL; }
 
-    info->font_pixel_height = font_generate_atlas(atlas_data, info->glyphs);
+    info->font_pixel_height = font_load_atlas(atlas_data, info->glyphs,
+                                              &info->font_px_range);
     info->display_scale = (info->font_pixel_height > 0.0f)
         ? INFO_FONT_SIZE / info->font_pixel_height : 1.0f;
 
@@ -349,6 +352,7 @@ void arpt_info_draw(arpt_info *info, WGPURenderPassEncoder pass) {
         .atlas_size = (float)FONT_ATLAS_SIZE,
         .glyph_scale = info->font_pixel_height,
         .display_scale = info->display_scale * info->pixel_ratio,
+        .px_range = info->font_px_range,
     };
     wgpuQueueWriteBuffer(info->queue, info->uniform_buf, 0, &u, sizeof(u));
 

@@ -129,6 +129,26 @@ typedef struct {
     size_t icon_count;
 } arpt_label_prim;
 
+/* Line-following labels (street names): the polyline is kept CPU-side and
+   glyphs are placed along its screen projection every frame. */
+
+/* Per-frame placement projects every vertex, so bound the work (and the
+   renderer's stack scratch) per label. */
+#define ARPT_MAX_LINE_LABEL_POINTS 256
+
+typedef struct {
+    uint16_t *x, *y;       /* owned copy of the polyline, tile coords */
+    uint32_t vertex_count;
+    int32_t qz;            /* terrain elevation near the line midpoint, mm */
+    char name[64];
+    float text_w_px;       /* total advance at the atlas font size */
+} arpt_line_label;
+
+typedef struct {
+    arpt_line_label *labels; /* malloc'd array */
+    int count;
+} arpt_line_label_prim;
+
 /* Everything the renderer needs to upload one tile */
 
 typedef struct arpt_tile_prims {
@@ -138,6 +158,7 @@ typedef struct arpt_tile_prims {
     arpt_extrusion_prim extrusion;
     arpt_instance_prim instances;
     arpt_label_prim labels;
+    arpt_line_label_prim line_labels;
     arpt_bounds bounds;
 } arpt_tile_prims;
 
@@ -160,6 +181,11 @@ void arpt_prepare_labels(const arpt_poi_data *pois, const font_glyph *glyphs,
                          float font_height, const icon_glyph *icons,
                          int num_icons, float icon_height,
                          arpt_label_prim *out);
+
+void arpt_prepare_line_labels(const arpt_line_label_data *data,
+                              const arpt_terrain_mesh *terrain,
+                              const font_glyph *glyphs,
+                              arpt_line_label_prim *out);
 
 void arpt_tile_prims_free(arpt_tile_prims *p);
 

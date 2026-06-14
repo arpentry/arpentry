@@ -19,6 +19,20 @@ const BROTLI_QUALITY: i32 = 4;
 /// Metres → degrees at the equator (for building footprint half-extents).
 const M_TO_DEG: f64 = 1.0 / 111_319.5;
 
+/// Town roads and buildings are a single global list emitted into every tile
+/// overlapping the town, positioned by quantization. A feature far outside a
+/// given tile clamps to the tile edge: it rasterizes nothing, yet its name
+/// still projects into the view as a street label detached from any road. Emit
+/// a feature only when its footprint reaches the tile's clip rect (the tile
+/// bounds plus the rasterized surface margin), so every label sits on a road
+/// that is actually drawn. Trees and POIs already filter to the tile this way.
+const FEATURE_CLIP_MARGIN: f64 = 0.0625;
+
+/// Whether a lon/lat bounding box intersects the tile clip rect.
+fn bbox_hits_tile(clip: &Bounds, wlon: f64, slat: f64, elon: f64, nlat: f64) -> bool {
+    elon >= clip.west && wlon <= clip.east && nlat >= clip.south && slat <= clip.north
+}
+
 /// Generates a Brotli-compressed `.arpt` tile for `(z, x, y)` from procedural noise.
 pub fn generate_terrain(z: u8, x: u32, y: u32) -> Vec<u8> {
     let bounds = Bounds::of_tile(z, x, y);
@@ -57,6 +71,11 @@ fn build_tile(bounds: &Bounds) -> Vec<u8> {
     }
     for p in poi::POIS {
         value_offsets.push(string_value(&mut fbb, p.icon));
+    }
+    // Street name strings follow the POI strings.
+    let street_val_base = value_offsets.len() as u32;
+    for s in town::STREET_NAMES {
+        value_offsets.push(string_value(&mut fbb, s));
     }
     let values_vec = fbb.create_vector(&value_offsets);
 
@@ -139,18 +158,31 @@ fn build_tile(bounds: &Bounds) -> Vec<u8> {
     // Layer 2: transportation (roads) — only when the tile overlaps the town.
     if has_town {
         let roads = &town::town().roads;
+        let clip = bounds.expanded(FEATURE_CLIP_MARGIN);
         let mut feats = Vec::with_capacity(roads.len());
         for (i, r) in roads.iter().enumerate() {
-            let rx = [project::quantize_x(r.lon1, bounds), project::quantize_x(r.lon2, bounds)];
-            let ry = [project::quantize_y(r.lat1, bounds), project::quantize_y(r.lat2, bounds)];
+            // Skip roads that don't reach this tile (avoids clamped phantom
+            // geometry and the detached labels it produces).
+            let wlon = r.pts.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+            let elon = r.pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+            let slat = r.pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+            let nlat = r.pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+            if !bbox_hits_tile(&clip, wlon, slat, elon, nlat) {
+                continue;
+            }
+            let rx: Vec<u16> = r.pts.iter().map(|p| project::quantize_x(p.0, bounds)).collect();
+            let ry: Vec<u16> = r.pts.iter().map(|p| project::quantize_y(p.1, bounds)).collect();
             let x = fbb.create_vector(&rx);
             let y = fbb.create_vector(&ry);
-            let zv = fbb.create_vector(&[0i32, 0]);
+            let zv = fbb.create_vector(&vec![0i32; r.pts.len()]);
             let geom = fbt::LineGeometry::create(
                 &mut fbb,
                 &fbt::LineGeometryArgs { x: Some(x), y: Some(y), z: Some(zv), line_offsets: None },
             );
-            let props = fbb.create_vector(&[fbt::Property::new(0, r.cls)]);
+            let props = fbb.create_vector(&[
+                fbt::Property::new(0, r.cls),
+                fbt::Property::new(poi::POI_KEY_NAME, street_val_base + r.name_idx),
+            ]);
             feats.push(fbt::Feature::create(
                 &mut fbb,
                 &fbt::FeatureArgs {
@@ -169,10 +201,16 @@ fn build_tile(bounds: &Bounds) -> Vec<u8> {
     // Layer 3: building footprints — only when the tile overlaps the town.
     if has_town {
         let bldgs = &town::town().buildings;
+        let clip = bounds.expanded(FEATURE_CLIP_MARGIN);
         let mut feats = Vec::with_capacity(bldgs.len());
         for (i, b) in bldgs.iter().enumerate() {
             let hw = b.w_m * M_TO_DEG * 0.5;
             let hh = b.h_m * M_TO_DEG * 0.5;
+            // Skip buildings that don't reach this tile (same clamped-phantom
+            // problem as roads above).
+            if !bbox_hits_tile(&clip, b.lon - hw, b.lat - hh, b.lon + hw, b.lat + hh) {
+                continue;
+            }
             // CCW ring (SW SE NE NW close), matching the surface convention.
             let lons = [b.lon - hw, b.lon + hw, b.lon + hw, b.lon - hw, b.lon - hw];
             let lats = [b.lat - hh, b.lat - hh, b.lat + hh, b.lat + hh, b.lat - hh];
@@ -374,5 +412,55 @@ mod tests {
         assert!(names.contains(&"surface"));
         assert!(names.contains(&"transportation"));
         assert!(names.contains(&"building"));
+    }
+
+    #[test]
+    fn high_zoom_tile_omits_distant_roads() {
+        // The whole town fits in one z14 tile, but at z16 it spans several. A
+        // single z16 tile must carry only the roads that actually reach it —
+        // not the entire town list (which would clamp to the tile edge and
+        // emit a street label detached from any drawn road).
+        let total_roads = town::town().roads.len();
+        let blob = generate_terrain(16, 32768, 32768); // small patch by (0, 0)
+        let raw = decompress(&blob);
+        let tile = fbt::root_as_tile(&raw).expect("tile root");
+        let layers = tile.layers().unwrap();
+        let count = (0..layers.len())
+            .map(|i| layers.get(i))
+            .find(|l| l.name() == "transportation")
+            .and_then(|l| l.features())
+            .map_or(0, |f| f.len());
+        assert!(count > 0, "an interior town tile should still carry roads");
+        assert!(
+            count < total_roads,
+            "tile emitted {count} of {total_roads} roads; distant-road filter not applied"
+        );
+    }
+
+    #[test]
+    fn town_roads_carry_street_names() {
+        let blob = generate_terrain(14, 8192, 8192);
+        let raw = decompress(&blob);
+        let tile = fbt::root_as_tile(&raw).expect("tile root");
+        let layers = tile.layers().unwrap();
+        let roads = (0..layers.len())
+            .map(|i| layers.get(i))
+            .find(|l| l.name() == "transportation")
+            .expect("transportation layer");
+        let keys = tile.keys().unwrap();
+        let values = tile.values().unwrap();
+        let feats = roads.features().unwrap();
+        assert!(!feats.is_empty());
+        for fi in 0..feats.len() {
+            let feat = feats.get(fi);
+            let name = feat
+                .properties()
+                .unwrap()
+                .iter()
+                .find(|p| keys.get(p.key() as usize) == "name")
+                .map(|p| values.get(p.value() as usize).string_value().unwrap())
+                .expect("road has a name property");
+            assert!(town::STREET_NAMES.contains(&name));
+        }
     }
 }

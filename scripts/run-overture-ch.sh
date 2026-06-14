@@ -12,6 +12,7 @@
 #   --skip-download        Don't fetch missing layers (use whatever is present)
 #   --skip-build           Don't rebuild the client / Rust binaries
 #   --skip-tile            Reuse the existing archive (implies --skip-download)
+#   --force-tile           Re-tile even when the archive already exists
 #   --serve-only           Start the server and wait; don't launch the client
 #   --screenshot <path>    Capture a PNG instead of opening the interactive viewer
 #   --bbox <w,s,e,n>       Override the geographic bounds
@@ -22,6 +23,8 @@
 #   --terrain-file <path>  Use an existing terrain PMTiles instead of extracting
 #
 # Downloads are idempotent: a layer is fetched only when its .parquet is missing.
+# Tiling is idempotent too: the archive is regenerated only when it's missing
+# (pass --force-tile to rebuild it).
 #
 # Terrain: elevation comes from Mapterhorn (https://mapterhorn.com), a global
 # Terrarium DEM in PMTiles. Rather than download the ~30 GB planet file, the
@@ -63,6 +66,7 @@ PORT=8090
 SKIP_DOWNLOAD=false
 SKIP_BUILD=false
 SKIP_TILE=false
+FORCE_TILE=false
 SERVE_ONLY=false
 SCREENSHOT=""
 USE_TERRAIN=true
@@ -72,6 +76,7 @@ while [ $# -gt 0 ]; do
         --skip-download) SKIP_DOWNLOAD=true; shift ;;
         --skip-build)    SKIP_BUILD=true; shift ;;
         --skip-tile)     SKIP_TILE=true; SKIP_DOWNLOAD=true; shift ;;
+        --force-tile)    FORCE_TILE=true; shift ;;
         --serve-only)    SERVE_ONLY=true; shift ;;
         --screenshot)    SCREENSHOT="$2"; shift 2 ;;
         --bbox)          BBOX="$2"; shift 2 ;;
@@ -105,6 +110,9 @@ if [ "$SKIP_TILE" = true ]; then
         exit 1
     fi
     echo "Reusing existing archive: $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"
+elif [ -f "$ARCHIVE" ] && [ "$FORCE_TILE" = false ]; then
+    echo "Reusing existing archive: $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"
+    echo "  (pass --force-tile to regenerate it)"
 else
     mkdir -p "$DATA_DIR"
 

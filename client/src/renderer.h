@@ -45,6 +45,12 @@ void arpt_renderer_set_label_style(arpt_renderer *r,
                                     const float icon_halo_color[4],
                                     float icon_halo_width);
 
+/** Set line-following label style (street names along roads). */
+void arpt_renderer_set_line_label_style(arpt_renderer *r, float text_size,
+                                        const float text_color[4],
+                                        const float halo_color[4],
+                                        float halo_width);
+
 /** Font glyph metrics for tile_prepare label layout. */
 const font_glyph *arpt_renderer_font_glyphs(const arpt_renderer *r);
 

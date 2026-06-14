@@ -7,6 +7,7 @@
 //! biome classifier. Both are deterministic functions of `(lon, lat)`.
 
 use std::f64::consts::PI;
+use std::sync::OnceLock;
 
 use super::noise::{fbm3, simplex3};
 use crate::project::{self, Bounds};
@@ -70,9 +71,9 @@ fn ridged_fbm3(x: f64, y: f64, z: f64, octaves: i32, lacunarity: f64, persistenc
     signal / amp_sum
 }
 
-/// Terrain elevation in metres at a geodetic point. Positive = land, negative =
-/// ocean. Deterministic.
-pub fn terrain_elevation(lon_deg: f64, lat_deg: f64) -> f64 {
+/// Raw two-layer elevation field, before town flattening. Positive = land,
+/// negative = ocean. Deterministic.
+fn terrain_elevation_raw(lon_deg: f64, lat_deg: f64) -> f64 {
     let (sx, sy, sz) = lonlat_to_sphere(lon_deg, lat_deg);
 
     // Layer 1 — continental shape.
@@ -107,6 +108,48 @@ pub fn terrain_elevation(lon_deg: f64, lat_deg: f64) -> f64 {
 
     // sqrt envelope rises quickly from the coast.
     t.sqrt() * ridge * TERRAIN_LAND_HEIGHT
+}
+
+// ── Town flattening ──────────────────────────────────────────────────────
+// The single procedural town (`town.rs`, centred at lon/lat 0) otherwise sits
+// on natural terrain that slopes ~100 m across a single z16 tile. A flat 2-D
+// street network draped over that slope warps in screen space — the road edges
+// scallop. Flatten the ground under the town toward its centre height, with a
+// smooth radial falloff so the surrounding mountains are untouched. The flat
+// core comfortably covers the road grid (`town.rs` GRID_SPAN_M / 2 ≈ 746 m).
+const TOWN_FLAT_CENTER_LON: f64 = 0.0;
+const TOWN_FLAT_CENTER_LAT: f64 = 0.0;
+const TOWN_FLAT_INNER_M: f64 = 850.0; // fully flat within this radius
+const TOWN_FLAT_OUTER_M: f64 = 1500.0; // fully natural beyond this radius
+
+/// Centre elevation the town is flattened toward (computed once).
+fn town_base_elevation() -> f64 {
+    static BASE: OnceLock<f64> = OnceLock::new();
+    *BASE.get_or_init(|| terrain_elevation_raw(TOWN_FLAT_CENTER_LON, TOWN_FLAT_CENTER_LAT))
+}
+
+/// Flattening weight in `[0, 1]`: 1 inside the flat core, 0 outside the town,
+/// smoothstep across the transition ring.
+fn town_flatten_weight(lon_deg: f64, lat_deg: f64) -> f64 {
+    let cos_lat = (TOWN_FLAT_CENTER_LAT * PI / 180.0).cos();
+    let dx = (lon_deg - TOWN_FLAT_CENTER_LON) * cos_lat * 111_319.5;
+    let dy = (lat_deg - TOWN_FLAT_CENTER_LAT) * 111_319.5;
+    let d = (dx * dx + dy * dy).sqrt();
+    let t = ((TOWN_FLAT_OUTER_M - d) / (TOWN_FLAT_OUTER_M - TOWN_FLAT_INNER_M)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t) // smoothstep
+}
+
+/// Terrain elevation in metres at a geodetic point, with the town flattened so
+/// its streets sit on near-level ground. Positive = land, negative = ocean.
+/// Deterministic. This is the height every generator (mesh, buildings, trees,
+/// POIs) samples, so they all settle onto the same flattened ground.
+pub fn terrain_elevation(lon_deg: f64, lat_deg: f64) -> f64 {
+    let e = terrain_elevation_raw(lon_deg, lat_deg);
+    let w = town_flatten_weight(lon_deg, lat_deg);
+    if w <= 0.0 {
+        return e;
+    }
+    e * (1.0 - w) + town_base_elevation() * w
 }
 
 /// Moisture in `[0, 1]` at a geodetic point. Deterministic, decorrelated from

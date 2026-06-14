@@ -54,13 +54,32 @@ pub const TOWN_VAL_H15: u32 = 14;
 /// Town key index into the tile-scope key dictionary.
 pub const TOWN_KEY_HEIGHT: u32 = 1;
 
-/// A road segment (two endpoints in degrees).
+/// Street names cycled across grid rows and columns (rows take the first
+/// half, columns the second), exercising the client's line-following labels.
+pub const STREET_NAMES: &[&str] = &[
+    "Grand-Rue",
+    "Rue de la Gare",
+    "Avenue des Alpes",
+    "Chemin des Vignes",
+    "Rue du Lac",
+    "Route des Moulins",
+    "Rue des Tilleuls",
+    "Avenue de la Poste",
+    "Rue du Marché",
+    "Chemin des Écoliers",
+    "Rue de la Fontaine",
+    "Route de Montreux",
+    "Rue des Remparts",
+    "Avenue du Théâtre",
+    "Rue du Château",
+    "Chemin du Verger",
+];
+
+/// One named road: a polyline through the grid-edge bend (degrees).
 pub struct TownRoad {
-    pub lon1: f64,
-    pub lat1: f64,
-    pub lon2: f64,
-    pub lat2: f64,
+    pub pts: Vec<(f64, f64)>, // (lon, lat)
     pub cls: u32,
+    pub name_idx: u32, // index into STREET_NAMES
 }
 
 /// A building footprint (centre in degrees, dimensions in metres).
@@ -120,21 +139,17 @@ fn gen_nodes(rng: &mut Rng) -> [[(f64, f64); GRID_N]; GRID_N] {
     nodes
 }
 
-fn push_road(roads: &mut Vec<TownRoad>, x1: f64, y1: f64, x2: f64, y2: f64, cls: u32) {
-    if roads.len() >= MAX_ROADS {
-        return;
-    }
-    roads.push(TownRoad {
-        lon1: x1 * DEG_PER_M,
-        lat1: y1 * DEG_PER_M,
-        lon2: x2 * DEG_PER_M,
-        lat2: y2 * DEG_PER_M,
-        cls,
-    });
-}
-
-/// Connects two nodes with a bend at the midpoint.
-fn add_edge(roads: &mut Vec<TownRoad>, rng: &mut Rng, ax: f64, ay: f64, bx: f64, by: f64, cls: u32) {
+/// Connects two nodes with a bend at the midpoint: one 3-point polyline.
+fn add_edge(
+    roads: &mut Vec<TownRoad>,
+    rng: &mut Rng,
+    ax: f64,
+    ay: f64,
+    bx: f64,
+    by: f64,
+    cls: u32,
+    name_idx: u32,
+) {
     let mut mx = (ax + bx) * 0.5;
     let mut my = (ay + by) * 0.5;
     let dx = bx - ax;
@@ -145,8 +160,15 @@ fn add_edge(roads: &mut Vec<TownRoad>, rng: &mut Rng, ax: f64, ay: f64, bx: f64,
         mx += (-dy / len) * off;
         my += (dx / len) * off;
     }
-    push_road(roads, ax, ay, mx, my, cls);
-    push_road(roads, mx, my, bx, by, cls);
+    if roads.len() >= MAX_ROADS {
+        return;
+    }
+    let to_deg = |x: f64, y: f64| (x * DEG_PER_M, y * DEG_PER_M);
+    roads.push(TownRoad {
+        pts: vec![to_deg(ax, ay), to_deg(mx, my), to_deg(bx, by)],
+        cls,
+        name_idx,
+    });
 }
 
 fn gen_roads(rng: &mut Rng, nodes: &[[(f64, f64); GRID_N]; GRID_N]) -> Vec<TownRoad> {
@@ -159,7 +181,8 @@ fn gen_roads(rng: &mut Rng, nodes: &[[(f64, f64); GRID_N]; GRID_N]) -> Vec<TownR
                 continue;
             }
             let cls = if pri { TOWN_VAL_PRIMARY } else { TOWN_VAL_RESIDENTIAL };
-            add_edge(&mut roads, rng, nodes[r][c].0, nodes[r][c].1, nodes[r][c + 1].0, nodes[r][c + 1].1, cls);
+            let name_idx = (r % STREET_NAMES.len()) as u32;
+            add_edge(&mut roads, rng, nodes[r][c].0, nodes[r][c].1, nodes[r][c + 1].0, nodes[r][c + 1].1, cls, name_idx);
         }
     }
     // Vertical edges: connect (r, c) to (r+1, c).
@@ -170,7 +193,8 @@ fn gen_roads(rng: &mut Rng, nodes: &[[(f64, f64); GRID_N]; GRID_N]) -> Vec<TownR
                 continue;
             }
             let cls = if pri { TOWN_VAL_PRIMARY } else { TOWN_VAL_RESIDENTIAL };
-            add_edge(&mut roads, rng, nodes[r][c].0, nodes[r][c].1, nodes[r + 1][c].0, nodes[r + 1][c].1, cls);
+            let name_idx = ((GRID_N + c) % STREET_NAMES.len()) as u32;
+            add_edge(&mut roads, rng, nodes[r][c].0, nodes[r][c].1, nodes[r + 1][c].0, nodes[r + 1][c].1, cls, name_idx);
         }
     }
     roads
@@ -207,10 +231,23 @@ fn overlaps_any(bldgs: &[TownBuilding], cx: f64, cy: f64, w: f64, h: f64) -> boo
 }
 
 fn place_along_road(bldgs: &mut Vec<TownBuilding>, rng: &mut Rng, road: &TownRoad) {
-    let ax = road.lon1 / DEG_PER_M;
-    let ay = road.lat1 / DEG_PER_M;
-    let bx = road.lon2 / DEG_PER_M;
-    let by = road.lat2 / DEG_PER_M;
+    // One placement pass per polyline segment, in point order — preserving
+    // the PRNG draw sequence of the earlier two-segments-per-edge layout.
+    for seg in road.pts.windows(2) {
+        place_along_segment(bldgs, rng, seg[0], seg[1]);
+    }
+}
+
+fn place_along_segment(
+    bldgs: &mut Vec<TownBuilding>,
+    rng: &mut Rng,
+    a: (f64, f64),
+    b: (f64, f64),
+) {
+    let ax = a.0 / DEG_PER_M;
+    let ay = a.1 / DEG_PER_M;
+    let bx = b.0 / DEG_PER_M;
+    let by = b.1 / DEG_PER_M;
     let dx = bx - ax;
     let dy = by - ay;
     let len = (dx * dx + dy * dy).sqrt();

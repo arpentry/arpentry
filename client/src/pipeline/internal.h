@@ -68,8 +68,9 @@ typedef struct {
     float viewport_width;
     float viewport_height;
     float display_scale;
-    float halo_width;
-    float _poi_pad0, _poi_pad1;
+    float halo_width;   /* halo width in framebuffer pixels */
+    float px_range;     /* distance field range in atlas pixels */
+    float _poi_pad0;
     float fill_color[4];
     float halo_color[4];
 } poi_uniforms_t;
@@ -126,6 +127,11 @@ struct arpt_tile_gpu {
     } *poi_labels;
     int poi_label_count;
 
+    /* Line-following street labels: polylines kept CPU-side, glyphs are
+       placed along the screen projection every frame (line_label.c) */
+    arpt_line_label *line_labels;
+    int line_label_count;
+
     /* Cached tile uniforms for CPU-side POI projection */
     float cached_model[16];
     float cached_bounds[4];
@@ -144,7 +150,23 @@ typedef struct {
     int label_index;
     float depth;
     float x0, y0, x1, y1;
+    uint8_t kind;         /* 0 = point label (POI), 1 = line label */
+    uint32_t glyph_first; /* line labels: range into line_glyph_scratch */
+    uint32_t glyph_count;
 } arpt_pending_label;
+
+/* Per-frame line-label glyph instance, in framebuffer pixels (40 bytes,
+   matches the line_label.wgsl vertex buffer layout) */
+
+typedef struct {
+    float x, y;         /* glyph quad center */
+    float cos_a, sin_a; /* rotation along the projected line */
+    float w, h;         /* quad size */
+    float u0, v0, u1, v1;
+} arpt_line_glyph_inst;
+
+/* Maximum line-label glyph instances per frame */
+#define ARPT_MAX_LINE_GLYPHS 8192
 
 /* Renderer state */
 
@@ -217,6 +239,7 @@ struct arpt_renderer {
     WGPUBindGroup poi_bind_group;
     font_glyph glyphs[FONT_CHAR_COUNT];
     float font_pixel_height;
+    float font_px_range;        /* distance field range in atlas pixels */
 
     /* Icon atlas rendering (reuses poi_pipeline, separate bind group) */
     WGPUTexture icon_texture;
@@ -227,6 +250,7 @@ struct arpt_renderer {
     icon_glyph icon_glyphs[64]; /* max icons (actual count in icon_glyph_count) */
     int icon_glyph_count;
     float icon_pixel_height;
+    float icon_px_range;        /* distance field range in atlas pixels */
 
     /* Label style parameters (from style.json) */
     float text_size;
@@ -239,6 +263,21 @@ struct arpt_renderer {
     float icon_halo_width;
     float text_display_scale;   /* text_size / font_pixel_height */
     float icon_display_scale;   /* icon_size / icon_pixel_height */
+
+    /* Line-following label rendering (street names; shares the font atlas) */
+    WGPURenderPipeline line_label_pipeline;
+    WGPUBuffer line_label_ubuf;
+    WGPUBindGroup line_label_bind_group;
+    WGPUBuffer line_label_vbuf;     /* per-frame instances, grown on demand */
+    uint32_t line_label_vbuf_cap;   /* capacity in instances */
+    arpt_line_glyph_inst *line_glyph_scratch; /* per-frame candidates */
+    int line_glyph_scratch_count;
+    arpt_line_glyph_inst *line_glyph_out;     /* per-frame placed glyphs */
+    int line_glyph_out_count;
+    float line_text_size;
+    float line_text_color[4];
+    float line_text_halo_color[4];
+    float line_text_halo_width;
 
     WGPUCommandEncoder encoder;
     WGPURenderPassEncoder pass;
@@ -365,6 +404,15 @@ void arpt__label_upload(arpt_renderer *r, arpt_tile_gpu *t,
 void arpt__label_collect(arpt_renderer *r, arpt_tile_gpu *tile);
 void arpt__label_draw_all(arpt_renderer *r);
 void arpt__label_cleanup(arpt_renderer *r);
+
+/* line_label.c */
+void arpt__line_label_init(arpt_renderer *r);
+void arpt__line_label_update_uniforms(arpt_renderer *r);
+void arpt__line_label_upload(arpt_renderer *r, arpt_tile_gpu *t,
+                             const arpt_line_label_prim *prim);
+void arpt__line_label_collect(arpt_renderer *r, arpt_tile_gpu *tile);
+void arpt__line_label_draw(arpt_renderer *r);
+void arpt__line_label_cleanup(arpt_renderer *r);
 
 /* render_sky.c */
 WGPURenderPipeline arpt__sky_create_pipeline(WGPUDevice device,

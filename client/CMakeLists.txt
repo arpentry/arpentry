@@ -51,6 +51,7 @@ set(SHADER_SOURCES
     info.wgsl
     tree.wgsl
     poi.wgsl
+    line_label.wgsl
     sky.wgsl
 )
 
@@ -81,18 +82,19 @@ set(ASSET_DIR     ${CMAKE_CURRENT_SOURCE_DIR}/assets)
 set(ASSET_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/assets)
 file(MAKE_DIRECTORY ${ASSET_GEN_DIR})
 
-set(FONT_INPUT  ${ASSET_DIR}/Inter-SemiBold.ttf)
-set(FONT_OUTPUT ${ASSET_GEN_DIR}/Inter-SemiBold.ttf.h)
+# MSDF atlas baked from Inter-SemiBold.ttf by scripts/generate-font-atlas.py
+set(FONT_INPUT  ${ASSET_DIR}/inter-msdf.png)
+set(FONT_OUTPUT ${ASSET_GEN_DIR}/inter-msdf.png.h)
 add_custom_command(
     OUTPUT  ${FONT_OUTPUT}
     COMMAND ${CMAKE_COMMAND}
         -DINPUT=${FONT_INPUT}
-        -DINPUT_NAME=Inter-SemiBold.ttf
+        -DINPUT_NAME=inter-msdf.png
         -DOUTPUT=${FONT_OUTPUT}
-        -DVAR_NAME=inter_semibold_ttf
+        -DVAR_NAME=inter_msdf_png
         -P ${CMAKE_SOURCE_DIR}/cmake/embed_binary.cmake
     DEPENDS ${FONT_INPUT} ${CMAKE_SOURCE_DIR}/cmake/embed_binary.cmake
-    COMMENT "Embedding font Inter-SemiBold.ttf"
+    COMMENT "Embedding font atlas inter-msdf.png"
 )
 
 set(ICON_INPUT  ${ASSET_DIR}/maki-icons.ttf)
@@ -127,6 +129,7 @@ add_executable(arpentry_client
     src/pipeline/extrusion.c
     src/pipeline/instance.c
     src/pipeline/label.c
+    src/pipeline/line_label.c
     src/pipeline/sky.c
     src/style.c
     src/tile/visible.c

@@ -62,8 +62,8 @@
       "source_layer": "transportation",
       "type": "line",
       "paint": [
-        { "class": "primary",     "color": [89, 84, 77, 255],   "width": 140 },
-        { "class": "residential", "color": [115, 110, 102, 255], "width": 90 }
+        { "class": "primary",     "color": [89, 84, 77, 255],   "width": 140, "casing_width": 55, "casing_color": [60, 56, 50, 255] },
+        { "class": "residential", "color": [115, 110, 102, 255], "width": 120, "casing_width": 40, "casing_color": [82, 78, 71, 255] }
       ]
     },
     {
@@ -85,17 +85,27 @@
       ]
     },
     {
+      "source_layer": "transportation",
+      "type": "line_label",
+      "min_level": 13,
+      "text_size": 15,
+      "text_color": [70, 66, 60, 255],
+      "text_halo_color": [255, 255, 255, 255],
+      "text_halo_width": 1.2,
+      "paint": []
+    },
+    {
       "source_layer": "poi",
       "type": "label",
       "min_level": 13,
       "text_size": 22,
       "text_color": [26, 26, 26, 255],
       "text_halo_color": [255, 255, 255, 255],
-      "text_halo_width": 0.4,
+      "text_halo_width": 1.5,
       "icon_size": 24,
       "icon_color": [26, 26, 26, 255],
       "icon_halo_color": [255, 255, 255, 255],
-      "icon_halo_width": 0.6,
+      "icon_halo_width": 1.0,
       "paint": []
     }
   ]
