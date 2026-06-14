@@ -603,7 +603,10 @@ static void emit_building_extrusion(const arpt_surface_data *buildings,
             indices[(*ii)++] = base + 2;
         }
 
-        /* Roof: triangle fan (CCW winding) */
+        /* Roof: ear-clip the footprint.  A triangle fan only caps convex
+           footprints; concave ones (L-shaped, U-shaped, …) fan across the
+           notch and the roof no longer follows the walls.  Ear-clipping
+           preserves the footprint winding, matching the wall orientation. */
         uint32_t roof_base = (uint32_t)*vi;
         for (size_t v = 0; v < n; v++) {
             xy[*vi * 2] = b->x[v];
@@ -613,11 +616,7 @@ static void emit_building_extrusion(const arpt_surface_data *buildings,
             norms[*vi * 2 + 1] = roof_oy;
             (*vi)++;
         }
-        for (size_t v = 1; v + 1 < n; v++) {
-            indices[(*ii)++] = roof_base;
-            indices[(*ii)++] = roof_base + (uint32_t)v;
-            indices[(*ii)++] = roof_base + (uint32_t)(v + 1);
-        }
+        *ii += earclip_triangulate(b->x, b->y, n, roof_base, &indices[*ii]);
     }
 }
 
