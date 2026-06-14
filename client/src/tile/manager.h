@@ -90,6 +90,16 @@ bool arpt_tile_manager_needs_redraw(arpt_tile_manager *tm);
 double arpt_tile_manager_camera_ground_elevation(const arpt_tile_manager *tm);
 
 /**
+ * Terrain height (meters) at an arbitrary geodetic point, sampled from the
+ * highest-level READY tile that covers it.  Returns false (leaving *out_h
+ * untouched) when no loaded tile covers the point.  Used to keep the camera
+ * eye above terrain it flies over when tilted.
+ */
+bool arpt_tile_manager_sample_ground(const arpt_tile_manager *tm,
+                                     double lon_rad, double lat_rad,
+                                     double *out_h);
+
+/**
  * Draw visible tiles at the target zoom level.  READY tiles are drawn
  * normally; tiles still loading fall back to the nearest READY ancestor,
  * providing smooth visual continuity while tiles load.

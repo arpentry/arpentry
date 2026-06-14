@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <float.h>
 #include <string.h>
 #include <webgpu/webgpu.h>
 #include <GLFW/glfw3.h>
@@ -66,6 +67,8 @@ EM_JS(int, em_sync_get, (const char *url_ptr, void *out_buf_ptr,
 #define INITIAL_ALTITUDE 500000.0
 #define WINDOW_W 800
 #define WINDOW_H 600
+/* Minimum clearance (meters) kept between the eye and terrain below it. */
+#define EYE_TERRAIN_MARGIN 10.0
 
 /* CLI options (native only) */
 
@@ -448,6 +451,19 @@ static void render_frame(void) {
             (target - app.smoothed_ground_elev) * alpha;
         arpt_camera_set_ground_elevation(app.camera,
                                          app.smoothed_ground_elev);
+
+        /* Keep the eye out of terrain it flies over when tilted: the interest
+           point's ground elevation (above) only tracks the point the camera
+           looks at, so a peak behind it can still swallow the eye.  Sample the
+           terrain directly under the eye and lift the camera clear.  Recomputed
+           from the zoom altitude each frame, so it settles back when clear. */
+        double eye_lon, eye_lat, eye_h, terrain;
+        arpt_camera_eye_position(app.camera, &eye_lon, &eye_lat, &eye_h);
+        double min_eye = -DBL_MAX;
+        if (arpt_tile_manager_sample_ground(app.tile_manager, eye_lon, eye_lat,
+                                            &terrain))
+            min_eye = terrain + EYE_TERRAIN_MARGIN;
+        arpt_camera_apply_terrain_floor(app.camera, min_eye);
     }
 
     /* Update global uniforms */

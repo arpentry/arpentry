@@ -18,6 +18,11 @@
 
 struct arpt_camera {
     double lon_rad, lat_rad, altitude;
+    /* The altitude the user zoomed to, before any terrain-clearance lift.
+       arpt_camera_apply_terrain_floor() raises `altitude` above this to keep
+       the eye out of terrain, then resets back to it each frame so panning
+       away from a peak lets the camera settle (no upward ratchet). */
+    double zoom_altitude;
     double tilt_rad, bearing_rad;
     double ground_elevation;
     bool ortho;
@@ -41,6 +46,7 @@ arpt_camera *arpt_camera_create(void) {
     arpt_camera *cam = calloc(1, sizeof(*cam));
     if (!cam) return NULL;
     cam->altitude = 10000000.0; /* 10,000 km default */
+    cam->zoom_altitude = cam->altitude;
     cam->vp_width = 800;
     cam->vp_height = 600;
     return cam;
@@ -58,6 +64,7 @@ void arpt_camera_set_position(arpt_camera *cam, double lon_rad, double lat_rad,
     cam->lat_rad = lat_rad;
     clamp_position(cam);
     cam->altitude = fmax(CAM_MIN_ALT, fmin(CAM_MAX_ALT, altitude));
+    cam->zoom_altitude = cam->altitude;
 }
 
 void arpt_camera_set_tilt(arpt_camera *cam, double tilt_rad) {
@@ -129,6 +136,37 @@ static arpt_dmat4 compute_tilt_matrix(double tilt, double bearing) {
                              (arpt_dvec3){0, -st, ct}, (arpt_dvec3){0, 0, 0});
 
     return arpt_dmat4_mul(Rt, Rb);
+}
+
+/* Combined globe + tilt rotation (ECEF → camera space). */
+static arpt_dmat4 compute_view_rotation(const arpt_camera *cam) {
+    arpt_dmat4 R_globe = arpt_globe_rotation(cam->lon_rad, cam->lat_rad);
+    arpt_dmat4 R_tilt = compute_tilt_matrix(cam->tilt_rad, cam->bearing_rad);
+    return arpt_dmat4_mul(R_tilt, R_globe);
+}
+
+/* Inverse of a pure-rotation 4×4 is its transpose. */
+static arpt_dmat4 transpose_rotation(arpt_dmat4 R) {
+    arpt_dmat4 R_inv;
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            R_inv.m[c * 4 + r] = R.m[r * 4 + c];
+    R_inv.m[3] = R_inv.m[7] = R_inv.m[11] = 0.0;
+    R_inv.m[12] = R_inv.m[13] = R_inv.m[14] = 0.0;
+    R_inv.m[15] = 1.0;
+    return R_inv;
+}
+
+/* Eye (camera) position in ECEF for a given orbit altitude above the interest
+   point.  The interest point sits at the camera's (lon, lat) and the current
+   ground elevation; the eye is `altitude` up the tilted view axis from it. */
+static arpt_dvec3 eye_ecef_at(const arpt_camera *cam, double altitude) {
+    arpt_dmat4 R_inv = transpose_rotation(compute_view_rotation(cam));
+    arpt_dvec3 interest_ecef = arpt_geodetic_to_ecef(
+        cam->lon_rad, cam->lat_rad, cam->ground_elevation);
+    arpt_dvec3 cam_offset =
+        arpt_dmat4_rotate(R_inv, (arpt_dvec3){0, 0, altitude});
+    return arpt_dvec3_add(interest_ecef, cam_offset);
 }
 
 /* Computed matrices */
@@ -245,9 +283,11 @@ void arpt_camera_zoom_at(arpt_camera *cam, double sx, double sy,
     double anchor_lon, anchor_lat;
     bool has_anchor = screen_to_geodetic(cam, sx, sy, &anchor_lon, &anchor_lat);
 
-    /* Apply zoom */
-    cam->altitude =
-        fmax(CAM_MIN_ALT, fmin(CAM_MAX_ALT, cam->altitude * factor));
+    /* Apply zoom to the user's zoom altitude (not the terrain-lifted altitude,
+       which would let the zoom basis drift upward near peaks). */
+    cam->zoom_altitude =
+        fmax(CAM_MIN_ALT, fmin(CAM_MAX_ALT, cam->zoom_altitude * factor));
+    cam->altitude = cam->zoom_altitude;
 
     if (!has_anchor) return;
 
@@ -259,6 +299,34 @@ void arpt_camera_zoom_at(arpt_camera *cam, double sx, double sy,
         cam->lon_rad += anchor_lon - cursor_lon;
         cam->lat_rad += anchor_lat - cursor_lat;
         clamp_position(cam);
+    }
+}
+
+void arpt_camera_eye_position(const arpt_camera *cam, double *out_lon,
+                              double *out_lat, double *out_height) {
+    /* Report the eye at the user's zoom altitude — the lowest the eye sits,
+       before any terrain lift — so the terrain sampled there is the worst case
+       for clearance. */
+    arpt_dvec3 eye = eye_ecef_at(cam, cam->zoom_altitude);
+    arpt_ecef_to_geodetic(eye, out_lon, out_lat, out_height);
+}
+
+void arpt_camera_apply_terrain_floor(arpt_camera *cam, double min_eye_height) {
+    /* Recompute the lift from the user's zoom altitude every frame so it never
+       ratchets: pan away from a peak and the camera settles back down.  Raise
+       the orbit altitude until the eye clears min_eye_height.  The eye's
+       vertical gain per metre of altitude is ~cos(tilt), so step by
+       deficit/cos(tilt) and iterate a few times for the ellipsoid curvature. */
+    cam->altitude = cam->zoom_altitude;
+    for (int i = 0; i < 4; i++) {
+        double lon, lat, h;
+        arpt_dvec3 eye = eye_ecef_at(cam, cam->altitude);
+        arpt_ecef_to_geodetic(eye, &lon, &lat, &h);
+        if (h >= min_eye_height) break;
+        double ct = cos(cam->tilt_rad);
+        if (ct < 0.1) ct = 0.1; /* near-horizontal: avoid a huge over-step */
+        double lifted = cam->altitude + (min_eye_height - h) / ct;
+        cam->altitude = fmin(CAM_MAX_ALT, lifted);
     }
 }
 
@@ -305,33 +373,12 @@ bool arpt_camera_screen_to_ray(const arpt_camera *cam, double sx, double sy,
         -1.0,
     });
 
-    /* Transform ray from camera space to ECEF:
-       camera_pos is at interest_ecef + R * (0, 0, altitude) in ECEF,
-       but since camera is at origin in camera space, we need the inverse
-       of the globe+tilt rotation. */
-    arpt_dmat4 R_globe = arpt_globe_rotation(cam->lon_rad, cam->lat_rad);
-    arpt_dmat4 R_tilt = compute_tilt_matrix(cam->tilt_rad, cam->bearing_rad);
-    arpt_dmat4 R = arpt_dmat4_mul(R_tilt, R_globe);
-
-    /* Inverse of rotation = transpose */
-    arpt_dmat4 R_inv;
-    for (int r = 0; r < 3; r++)
-        for (int c = 0; c < 3; c++)
-            R_inv.m[c * 4 + r] = R.m[r * 4 + c];
-    R_inv.m[3] = R_inv.m[7] = R_inv.m[11] = 0.0;
-    R_inv.m[12] = R_inv.m[13] = R_inv.m[14] = 0.0;
-    R_inv.m[15] = 1.0;
-
-    /* Camera position in ECEF:
-       In camera space, the interest point is at (0, 0, -altitude).
-       Camera is at origin. So the camera in "rotated ECEF" space is at
-       the position where interest_ecef would be plus the offset.
-       cam_ecef = interest_ecef + R_inv * (0, 0, altitude) */
-    arpt_dvec3 interest_ecef = arpt_geodetic_to_ecef(
-        cam->lon_rad, cam->lat_rad, cam->ground_elevation);
-    arpt_dvec3 cam_offset =
-        arpt_dmat4_rotate(R_inv, (arpt_dvec3){0, 0, cam->altitude});
-    *origin = arpt_dvec3_add(interest_ecef, cam_offset);
+    /* Transform ray from camera space to ECEF.  The camera sits at the origin
+       in camera space, so rotating by the inverse (transpose) of the
+       globe+tilt rotation maps the camera-space direction back into ECEF, and
+       the eye position is the orbit eye at the current altitude. */
+    arpt_dmat4 R_inv = transpose_rotation(compute_view_rotation(cam));
+    *origin = eye_ecef_at(cam, cam->altitude);
     *dir = arpt_dmat4_rotate(R_inv, cam_dir);
 
     return true;

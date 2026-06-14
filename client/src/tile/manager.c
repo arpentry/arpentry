@@ -716,6 +716,37 @@ static bool sample_terrain_height(const tile_entry *e, double lon_rad,
     return false;
 }
 
+/* Terrain height at a geodetic point, taken from the highest-level READY tile
+   that contains it.  Falls back to that tile's average elevation when the
+   point lies outside the mesh triangles.  Returns false when no READY tile
+   covers the point, so callers keep their prior value rather than snapping to
+   zero.  Scans the full cache (not just the visible set) because the queried
+   point — e.g. the ground under a tilted eye — may sit just outside the
+   frustum. */
+static bool query_ground_at(const arpt_tile_manager *tm, double lon_rad,
+                            double lat_rad, double *out_h) {
+    double lon_deg = lon_rad * 180.0 / M_PI;
+    double lat_deg = lat_rad * 180.0 / M_PI;
+    int best_level = -1;
+    const tile_entry *best_e = NULL;
+
+    size_t iter = 0;
+    void *item;
+    while (hashmap_iter(tm->cache, &iter, &item)) {
+        const tile_entry *e = item;
+        if (e->state != TILE_READY) continue;
+        if (e->key.level <= best_level) continue;
+        if (lon_deg < e->bounds.west || lon_deg > e->bounds.east) continue;
+        if (lat_deg < e->bounds.south || lat_deg > e->bounds.north) continue;
+        best_level = e->key.level;
+        best_e = e;
+    }
+    if (!best_e) return false;
+    if (!sample_terrain_height(best_e, lon_rad, lat_rad, out_h))
+        *out_h = best_e->avg_elevation;
+    return true;
+}
+
 void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
     arpt_fetch_drain(ARPT_TILE_UPLOAD_BUDGET_PER_FRAME);
     tm->frame++;
@@ -783,37 +814,13 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
 
     evict_oldest(tm);
 
-    /* Update ground elevation from the highest-level READY tile under the
-       camera.  We search the visible list (already computed) instead of
-       scanning the full cache — O(visible) rather than O(cache). */
-    double cam_lon_deg = arpt_camera_lon(cam) * 180.0 / M_PI;
-    double cam_lat_deg = arpt_camera_lat(cam) * 180.0 / M_PI;
-    int best_level = -1;
-    const tile_entry *best_e = NULL;
-    for (int i = 0; i < tm->visible_count; i++) {
-        if (tm->visible[i].level <= best_level) continue;
-        tile_entry lookup = {.key = tm->visible[i]};
-        const tile_entry *e = hashmap_get(tm->cache, &lookup);
-        if (!e || e->state != TILE_READY) continue;
-        if (cam_lon_deg < e->bounds.west || cam_lon_deg > e->bounds.east)
-            continue;
-        if (cam_lat_deg < e->bounds.south || cam_lat_deg > e->bounds.north)
-            continue;
-        best_level = e->key.level;
-        best_e = e;
-    }
-    if (best_e) {
-        /* Sample the real terrain height under the camera so interaction (pan,
-           zoom anchor) and the camera's own height track the surface at
-           street-level overzoom, where the tile average is too coarse.  Fall
-           back to the average if the point isn't inside the mesh. */
-        double h;
-        if (sample_terrain_height(best_e, arpt_camera_lon(cam),
-                                  arpt_camera_lat(cam), &h))
-            tm->ground_elevation = h;
-        else
-            tm->ground_elevation = best_e->avg_elevation;
-    }
+    /* Sample the real terrain height under the camera's interest point so
+       interaction (pan, zoom anchor) and the camera's own height track the
+       surface at street-level overzoom, where the tile average is too coarse.
+       Keep the previous value when no READY tile covers the point. */
+    double h;
+    if (query_ground_at(tm, arpt_camera_lon(cam), arpt_camera_lat(cam), &h))
+        tm->ground_elevation = h;
 
     /* Overzoom: when the view resolves finer than the tileset's deepest level,
        visible tiles are clamped to max_level and their baked surface fill
@@ -851,6 +858,13 @@ bool arpt_tile_manager_needs_redraw(arpt_tile_manager *tm) {
 
 double arpt_tile_manager_camera_ground_elevation(const arpt_tile_manager *tm) {
     return tm ? tm->ground_elevation : 0.0;
+}
+
+bool arpt_tile_manager_sample_ground(const arpt_tile_manager *tm,
+                                     double lon_rad, double lat_rad,
+                                     double *out_h) {
+    if (!tm) return false;
+    return query_ground_at(tm, lon_rad, lat_rad, out_h);
 }
 
 /* Draw helpers */

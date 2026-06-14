@@ -52,6 +52,21 @@ void arpt_camera_tilt_bearing(arpt_camera *cam, double d_tilt,
                               double d_bearing);
 
 /**
+ * Geodetic position (radians, meters) of the eye at the user's zoom altitude,
+ * before any terrain-clearance lift. Sample terrain here to feed
+ * arpt_camera_apply_terrain_floor().
+ */
+void arpt_camera_eye_position(const arpt_camera *cam, double *out_lon,
+                              double *out_lat, double *out_height);
+
+/**
+ * Keep the eye above terrain when tilted: raise the orbit altitude until the
+ * eye's ellipsoid height clears min_eye_height. Recomputed from the user's
+ * zoom altitude each call, so it never ratchets upward — call once per frame.
+ */
+void arpt_camera_apply_terrain_floor(arpt_camera *cam, double min_eye_height);
+
+/**
  * Cast ray from screen point and return the geodetic coordinates on the globe.
  * Returns false if the ray misses the ellipsoid.
  */
