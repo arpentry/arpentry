@@ -437,7 +437,13 @@ static void render_frame(void) {
     if (app.tile_manager) {
         double target = arpt_tile_manager_camera_ground_elevation(
             app.tile_manager);
-        double alpha = 1.0 - exp(-dt * 8.0);
+        /* Smooth elevation changes to avoid camera-height pops when tiles load.
+           The response rate scales up as altitude drops: at street-level
+           overzoom even a fraction-of-a-second lag makes the ground bob while
+           panning, so it snaps nearly instantly there. */
+        double alt = arpt_camera_altitude(app.camera);
+        double rate = 8.0 * fmax(1.0, 200.0 / fmax(alt, 1.0));
+        double alpha = 1.0 - exp(-dt * rate);
         app.smoothed_ground_elev +=
             (target - app.smoothed_ground_elev) * alpha;
         arpt_camera_set_ground_elevation(app.camera,

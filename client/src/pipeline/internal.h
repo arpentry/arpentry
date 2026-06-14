@@ -16,9 +16,13 @@
 /* Constants */
 
 /* Surface rasterization target size. Power of two so the mip chain reaches
-   1×1 exactly. Keep SURFACE_MIP_COUNT = log2(SURFACE_TEX_SIZE) + 1. */
+   1×1 exactly. Keep SURFACE_MIP_COUNT = log2(SURFACE_TEX_SIZE) + 1. This is
+   the native (non-overzoomed) size; overzoomed tiles re-rasterize larger,
+   up to SURFACE_TEX_MAX, to keep fills crisp past the tileset's max level. */
 #define SURFACE_TEX_SIZE  1024
 #define SURFACE_MIP_COUNT 11
+#define SURFACE_TEX_MAX   4096
+#define SURFACE_MAX_MIP_COUNT 13 /* log2(4096) + 1 */
 
 /* Uniform layouts */
 
@@ -88,6 +92,14 @@ struct arpt_tile_gpu {
     WGPUTextureView surface_view;
     uint32_t index_count;
     arpt_renderer *renderer;
+
+    /* Retained fill primitives (polygons + lines), owned by this tile, so the
+       surface texture can be re-rasterized at a higher resolution when the
+       tile is overzoomed.  Moved out of the prepared tile at upload time.
+       surface_size is the current rasterized edge length (0 = no fill). */
+    arpt_polygon_prim surf_polys;
+    arpt_line_prim surf_lines;
+    uint32_t surface_size;
 
     /* Terrain skirts (edge stitching, same pipeline) */
     WGPUBuffer skirt_buf_xy;
@@ -373,7 +385,8 @@ WGPURenderPipeline arpt__texture_create_mipmap_pipeline(WGPUDevice device,
                                                          WGPUBindGroupLayout bgl);
 WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
                                      const arpt_polygon_prim *polys,
-                                     const arpt_line_prim *lines);
+                                     const arpt_line_prim *lines,
+                                     uint32_t tex_size);
 
 /* render_extrusion.c */
 void arpt__extrusion_upload(arpt_renderer *r, arpt_tile_gpu *t,

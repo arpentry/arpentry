@@ -4,7 +4,13 @@
 #include <stdlib.h>
 
 #define CAM_FOV (M_PI / 4.0) /* 45 degrees */
-#define CAM_MIN_ALT 500.0
+/* Minimum camera altitude (metres above the interest point's ground).  Low
+   enough to overzoom to ~level 22 at street level: the resolved zoom level is
+   floor(log2(root_error * vp_height / (2 * altitude * tan(fov/2) * 8))), so for
+   a typical root_error (~5e5) and viewport this floor resolves to L22–23.  The
+   baked surface fill texture caps at 4096² (+2 levels past max_level), so fills
+   and roads blur past ~L16 while terrain, buildings, and labels stay crisp. */
+#define CAM_MIN_ALT 5.0
 #define CAM_MAX_ALT 30000000.0 /* 30,000 km */
 #define CAM_MAX_TILT (60.0 * M_PI / 180.0)
 #define MAX_LAT_RAD (89.0 * M_PI / 180.0)
@@ -264,15 +270,22 @@ void arpt_camera_tilt_bearing(arpt_camera *cam, double d_tilt,
 
 /* Tile management helpers */
 
-int arpt_camera_zoom_level(const arpt_camera *cam, double root_error,
-                           int min_level, int max_level) {
+int arpt_camera_zoom_level_desired(const arpt_camera *cam, double root_error,
+                                   int min_level) {
     /* L = floor(log2(root_error * vp_height / (2 * altitude * tan(fov/2) * 8)))
-     */
+       Clamped only at the bottom; the caller decides what to do when the
+       view resolves finer than the tileset's deepest level (overzoom). */
     double val = root_error * cam->vp_height /
                  (2.0 * cam->altitude * tan(CAM_FOV * 0.5) * 8.0);
     if (val <= 1.0) return min_level;
     int L = (int)floor(log2(val));
     if (L < min_level) return min_level;
+    return L;
+}
+
+int arpt_camera_zoom_level(const arpt_camera *cam, double root_error,
+                           int min_level, int max_level) {
+    int L = arpt_camera_zoom_level_desired(cam, root_error, min_level);
     if (L > max_level) return max_level;
     return L;
 }

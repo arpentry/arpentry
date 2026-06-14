@@ -5,6 +5,7 @@
 #include "font.h"
 #include "icon.h"
 #include "math3d.h"
+#include <stdbool.h>
 #include <webgpu/webgpu.h>
 
 typedef struct arpt_renderer arpt_renderer;
@@ -68,9 +69,19 @@ float arpt_renderer_icon_height(const arpt_renderer *r);
 
 /* Tile GPU resources */
 
-/** Upload pre-prepared tile primitives to GPU buffers. */
+/** Upload pre-prepared tile primitives to GPU buffers. Takes ownership of the
+ *  fill (polygon + line) primitives, clearing them in `prims`; the rest stay
+ *  owned by the caller. */
 arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
-                                         const arpt_tile_prims *prims);
+                                         arpt_tile_prims *prims);
+
+/** Adapt a tile's surface (fill) texture resolution to the given overzoom
+ *  amount (0 = native, 1 = one level past max, ...). Re-rasterizes from the
+ *  retained fill primitives only when the resulting resolution changes;
+ *  no-op (returns false) for tiles without a fill texture. Returns true if
+ *  the texture was re-rasterized. */
+bool arpt_renderer_tile_set_overzoom(arpt_renderer *r, arpt_tile_gpu *t,
+                                     int overzoom);
 
 /** Update per-tile uniforms (model matrix, bounds, center). */
 void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile, arpt_mat4 model,

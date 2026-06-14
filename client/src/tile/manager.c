@@ -35,6 +35,15 @@ typedef struct {
     double avg_elevation;
     int retries;
     uint64_t retry_after;
+
+    /* Retained terrain heightfield (moved out of the prepared tile, owned by
+       this entry) so the camera's ground height can be sampled at its exact
+       lon/lat.  At street-level overzoom the tile-average elevation diverges
+       too far from the real surface for interaction to track it. */
+    uint16_t *terr_x, *terr_y;
+    int32_t *terr_z;
+    uint32_t *terr_indices;
+    size_t terr_vert_count, terr_index_count;
 } tile_entry;
 
 struct arpt_tile_manager {
@@ -84,22 +93,43 @@ static int tile_compare(const void *a, const void *b, void *udata) {
     return ea->key.y - eb->key.y;
 }
 
+static void tile_entry_free_terrain(tile_entry *e) {
+    free(e->terr_x);
+    free(e->terr_y);
+    free(e->terr_z);
+    free(e->terr_indices);
+    e->terr_x = NULL;
+    e->terr_y = NULL;
+    e->terr_z = NULL;
+    e->terr_indices = NULL;
+}
+
 static void tile_entry_free(void *item) {
     tile_entry *e = item;
     if (e->gpu) arpt_tile_gpu_free(e->gpu);
+    tile_entry_free_terrain(e);
 }
 
 static void tm_hashmap_set(arpt_tile_manager *tm, const tile_entry *entry) {
     const tile_entry *replaced = hashmap_set(tm->cache, entry);
-    if (replaced && replaced->gpu && replaced->gpu != entry->gpu) {
+    if (!replaced) return;
+    /* Free the replaced entry's resources only when the new entry doesn't carry
+       the same pointers (an LRU touch re-sets a copy with the same handles). */
+    if (replaced->gpu && replaced->gpu != entry->gpu)
         arpt_tile_gpu_free(replaced->gpu);
+    if (replaced->terr_x && replaced->terr_x != entry->terr_x) {
+        tile_entry tmp = *replaced;
+        tile_entry_free_terrain(&tmp);
     }
 }
 
 static void tm_hashmap_delete(arpt_tile_manager *tm, const tile_entry *entry) {
     const tile_entry *removed = hashmap_delete(tm->cache, entry);
-    if (removed && removed->gpu) {
-        arpt_tile_gpu_free(removed->gpu);
+    if (!removed) return;
+    if (removed->gpu) arpt_tile_gpu_free(removed->gpu);
+    if (removed->terr_x) {
+        tile_entry tmp = *removed;
+        tile_entry_free_terrain(&tmp);
     }
 }
 
@@ -474,6 +504,19 @@ static void tile_finish_main(bool success, void *payload, void *userdata) {
     if (updated.gpu) {
         updated.state = TILE_READY;
         tm->needs_redraw = true;
+        /* Move the terrain heightfield into the cache entry (zero-copy); the
+           GPU upload above already consumed it.  NULL the source so
+           prepared_tile_free leaves these for the entry to own. */
+        updated.terr_x = p->terrain_x;
+        updated.terr_y = p->terrain_y;
+        updated.terr_z = p->terrain_z;
+        updated.terr_indices = p->terrain_indices;
+        updated.terr_vert_count = p->terrain_vertex_count;
+        updated.terr_index_count = p->terrain_index_count;
+        p->terrain_x = NULL;
+        p->terrain_y = NULL;
+        p->terrain_z = NULL;
+        p->terrain_indices = NULL;
     } else {
         /* GPU upload failed (likely memory pressure) — back off before
            retrying rather than refetching every frame. */
@@ -627,6 +670,52 @@ static void start_fetch(arpt_tile_manager *tm, arpt_tile_key key,
    frames. */
 #define ARPT_TILE_UPLOAD_BUDGET_PER_FRAME 2
 
+/* Interpolate the terrain height (metres) at geographic (lon_rad, lat_rad)
+   from a tile's retained heightfield.  Returns false if the point isn't inside
+   any triangle (e.g. the camera is over the tile's buffer zone, not its
+   proper area).  O(triangles), called once per frame for the tile under the
+   camera. */
+static bool sample_terrain_height(const tile_entry *e, double lon_rad,
+                                  double lat_rad, double *out_h) {
+    if (!e->terr_x || !e->terr_y || !e->terr_z || e->terr_index_count < 3)
+        return false;
+
+    double lon = lon_rad * 180.0 / M_PI;
+    double lat = lat_rad * 180.0 / M_PI;
+    double lon_span = e->bounds.east - e->bounds.west;
+    double lat_span = e->bounds.north - e->bounds.south;
+    if (lon_span <= 0.0 || lat_span <= 0.0) return false;
+
+    /* Geographic → tile quantised coords (inverse of the shader dequant:
+       u = (qx - 16384) / 32768, lon = west + u * span). */
+    double u = (lon - e->bounds.west) / lon_span;
+    double v = (lat - e->bounds.south) / lat_span;
+    double px = 16384.0 + u * 32768.0;
+    double py = 16384.0 + v * 32768.0;
+
+    const uint16_t *X = e->terr_x, *Y = e->terr_y;
+    const int32_t *Z = e->terr_z;
+    const uint32_t *idx = e->terr_indices;
+    for (size_t t = 0; t + 2 < e->terr_index_count; t += 3) {
+        uint32_t ia = idx[t], ib = idx[t + 1], ic = idx[t + 2];
+        double ax = X[ia], ay = Y[ia];
+        double bx = X[ib], by = Y[ib];
+        double cx = X[ic], cy = Y[ic];
+        /* Barycentric coordinates of (px, py) in triangle a,b,c. */
+        double d = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+        if (fabs(d) < 1e-9) continue; /* degenerate */
+        double w0 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / d;
+        double w1 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / d;
+        double w2 = 1.0 - w0 - w1;
+        const double eps = -1e-6;
+        if (w0 < eps || w1 < eps || w2 < eps) continue; /* outside */
+        double z_mm = w0 * Z[ia] + w1 * Z[ib] + w2 * Z[ic];
+        *out_h = z_mm * 0.001;
+        return true;
+    }
+    return false;
+}
+
 void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
     arpt_fetch_drain(ARPT_TILE_UPLOAD_BUDGET_PER_FRAME);
     tm->frame++;
@@ -700,6 +789,7 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
     double cam_lon_deg = arpt_camera_lon(cam) * 180.0 / M_PI;
     double cam_lat_deg = arpt_camera_lat(cam) * 180.0 / M_PI;
     int best_level = -1;
+    const tile_entry *best_e = NULL;
     for (int i = 0; i < tm->visible_count; i++) {
         if (tm->visible[i].level <= best_level) continue;
         tile_entry lookup = {.key = tm->visible[i]};
@@ -710,7 +800,39 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
         if (cam_lat_deg < e->bounds.south || cam_lat_deg > e->bounds.north)
             continue;
         best_level = e->key.level;
-        tm->ground_elevation = e->avg_elevation;
+        best_e = e;
+    }
+    if (best_e) {
+        /* Sample the real terrain height under the camera so interaction (pan,
+           zoom anchor) and the camera's own height track the surface at
+           street-level overzoom, where the tile average is too coarse.  Fall
+           back to the average if the point isn't inside the mesh. */
+        double h;
+        if (sample_terrain_height(best_e, arpt_camera_lon(cam),
+                                  arpt_camera_lat(cam), &h))
+            tm->ground_elevation = h;
+        else
+            tm->ground_elevation = best_e->avg_elevation;
+    }
+
+    /* Overzoom: when the view resolves finer than the tileset's deepest level,
+       visible tiles are clamped to max_level and their baked surface fill
+       texture is magnified, going pixelated.  Re-rasterize that texture at a
+       higher resolution proportional to the overzoom amount so fills stay
+       crisp.  Re-rasterizing is GPU work, so cap it per frame (as with tile
+       uploads); the rest catch up over subsequent frames. */
+    int desired = arpt_camera_zoom_level_desired(cam, tm->config.root_error,
+                                                  tm->config.min_level);
+    int reraster_budget = ARPT_TILE_UPLOAD_BUDGET_PER_FRAME;
+    for (int i = 0; i < tm->visible_count && reraster_budget > 0; i++) {
+        tile_entry lookup = {.key = tm->visible[i]};
+        const tile_entry *e = hashmap_get(tm->cache, &lookup);
+        if (!e || e->state != TILE_READY || !e->gpu) continue;
+        if (arpt_renderer_tile_set_overzoom(tm->renderer, e->gpu,
+                                            desired - e->key.level)) {
+            reraster_budget--;
+            tm->needs_redraw = true;
+        }
     }
 }
 

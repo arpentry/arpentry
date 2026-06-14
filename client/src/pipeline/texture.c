@@ -256,11 +256,21 @@ WGPURenderPipeline arpt__texture_create_mipmap_pipeline(WGPUDevice device,
     return pipeline;
 }
 
+/* Number of mip levels for a power-of-two square texture (down to 1×1). */
+static uint32_t mip_count_for(uint32_t size) {
+    uint32_t n = 1;
+    while (size > 1) {
+        size >>= 1;
+        n++;
+    }
+    return n;
+}
+
 /* Generate mip chain by rendering each level from the previous one with a
    fullscreen triangle that bilinearly samples the source mip. */
 static void generate_mipmaps(arpt_renderer *r, WGPUCommandEncoder enc,
-                             WGPUTexture tex) {
-    for (uint32_t level = 1; level < SURFACE_MIP_COUNT; level++) {
+                             WGPUTexture tex, uint32_t mip_count) {
+    for (uint32_t level = 1; level < mip_count; level++) {
         WGPUTextureViewDescriptor src_desc = {
             .format = WGPUTextureFormat_RGBA8Unorm,
             .dimension = WGPUTextureViewDimension_2D,
@@ -321,17 +331,40 @@ static void generate_mipmaps(arpt_renderer *r, WGPUCommandEncoder enc,
 
 WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
                                      const arpt_polygon_prim *polys,
-                                     const arpt_line_prim *lines) {
+                                     const arpt_line_prim *lines,
+                                     uint32_t tex_size) {
+    if (tex_size < SURFACE_TEX_SIZE) tex_size = SURFACE_TEX_SIZE;
+    if (tex_size > SURFACE_TEX_MAX) tex_size = SURFACE_TEX_MAX;
+    uint32_t mip_count = mip_count_for(tex_size);
+
     WGPUTextureDescriptor tex_desc = {
         .usage =
             WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding,
-        .size = {SURFACE_TEX_SIZE, SURFACE_TEX_SIZE, 1},
+        .size = {tex_size, tex_size, 1},
         .format = WGPUTextureFormat_RGBA8Unorm,
         .dimension = WGPUTextureDimension_2D,
-        .mipLevelCount = SURFACE_MIP_COUNT,
+        .mipLevelCount = mip_count,
         .sampleCount = 1,
     };
     WGPUTexture tex = wgpuDeviceCreateTexture(r->device, &tex_desc);
+
+    /* The stencil/depth attachment must match the color target's size.  The
+       shared r->stencil_texture is sized for the native resolution; allocate
+       a transient one when rasterizing an overzoomed (larger) tile. */
+    WGPUTexture tmp_stencil = NULL;
+    WGPUTextureView stencil_view = r->stencil_view;
+    if (tex_size != SURFACE_TEX_SIZE) {
+        WGPUTextureDescriptor sd = {
+            .usage = WGPUTextureUsage_RenderAttachment,
+            .size = {tex_size, tex_size, 1},
+            .format = WGPUTextureFormat_Depth24PlusStencil8,
+            .dimension = WGPUTextureDimension_2D,
+            .mipLevelCount = 1,
+            .sampleCount = 1,
+        };
+        tmp_stencil = wgpuDeviceCreateTexture(r->device, &sd);
+        stencil_view = wgpuTextureCreateView(tmp_stencil, NULL);
+    }
 
     bool has_polys = polys && polys->vert_count > 0 && polys->index_count > 0;
     bool has_lines = lines && lines->vert_count > 0 && lines->index_count > 0;
@@ -369,12 +402,16 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
             wgpuCommandEncoderBeginRenderPass(enc, &rp);
         wgpuRenderPassEncoderEnd(pass);
         wgpuRenderPassEncoderRelease(pass);
-        generate_mipmaps(r, enc, tex);
+        generate_mipmaps(r, enc, tex, mip_count);
         WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, NULL);
         wgpuQueueSubmit(r->queue, 1, &cmd);
         wgpuCommandBufferRelease(cmd);
         wgpuCommandEncoderRelease(enc);
         wgpuTextureViewRelease(view);
+        if (tmp_stencil) {
+            wgpuTextureViewRelease(stencil_view);
+            wgpuTextureRelease(tmp_stencil);
+        }
         return tex;
     }
 
@@ -420,7 +457,7 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
 #endif
     };
     WGPURenderPassDepthStencilAttachment ds_attach = {
-        .view = r->stencil_view,
+        .view = stencil_view,
         .depthLoadOp = WGPULoadOp_Clear,
         .depthStoreOp = WGPUStoreOp_Discard,
         .depthClearValue = 1.0f,
@@ -476,7 +513,7 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
 
-    generate_mipmaps(r, enc, tex);
+    generate_mipmaps(r, enc, tex, mip_count);
 
     WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, NULL);
     wgpuQueueSubmit(r->queue, 1, &cmd);
@@ -484,6 +521,10 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
     wgpuCommandBufferRelease(cmd);
     wgpuCommandEncoderRelease(enc);
     wgpuTextureViewRelease(view);
+    if (tmp_stencil) {
+        wgpuTextureViewRelease(stencil_view);
+        wgpuTextureRelease(tmp_stencil);
+    }
 
     if (poly_vbuf) wgpuBufferRelease(poly_vbuf);
     if (poly_ibuf) wgpuBufferRelease(poly_ibuf);

@@ -529,10 +529,18 @@ float arpt_renderer_icon_height(const arpt_renderer *r) {
 /* Tile upload */
 
 arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
-                                         const arpt_tile_prims *prims) {
+                                         arpt_tile_prims *prims) {
     arpt_tile_gpu *t = calloc(1, sizeof(*t));
     if (!t) return NULL;
     t->renderer = r;
+
+    /* Take ownership of the fill (polygon + line) primitives so the surface
+       texture can be re-rasterized at a higher resolution when overzoomed.
+       Cleared in `prims` so the caller's prims_free leaves them alone. */
+    t->surf_polys = prims->polygons;
+    t->surf_lines = prims->lines;
+    memset(&prims->polygons, 0, sizeof(prims->polygons));
+    memset(&prims->lines, 0, sizeof(prims->lines));
 
     /* Upload terrain mesh + edge skirts */
     arpt__mesh_upload_terrain(r, t, &prims->terrain);
@@ -550,16 +558,19 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
     /* Copy line-following street labels (kept CPU-side) */
     arpt__line_label_upload(r, t, &prims->line_labels);
 
-    /* Rasterize surface texture */
-    bool has_polys = prims->polygons.vert_count > 0 &&
-                     prims->polygons.index_count > 0;
-    bool has_lines = prims->lines.vert_count > 0 &&
-                     prims->lines.index_count > 0;
+    /* Rasterize surface texture from the retained fill primitives */
+    bool has_polys = t->surf_polys.vert_count > 0 &&
+                     t->surf_polys.index_count > 0;
+    bool has_lines = t->surf_lines.vert_count > 0 &&
+                     t->surf_lines.index_count > 0;
     if (has_polys || has_lines) {
-        t->surface_texture = arpt__texture_rasterize(r, &prims->polygons,
-                                                      &prims->lines);
-        if (t->surface_texture)
+        t->surface_texture = arpt__texture_rasterize(r, &t->surf_polys,
+                                                      &t->surf_lines,
+                                                      SURFACE_TEX_SIZE);
+        if (t->surface_texture) {
             t->surface_view = wgpuTextureCreateView(t->surface_texture, NULL);
+            t->surface_size = SURFACE_TEX_SIZE;
+        }
     }
 
     WGPUTextureView lu_view =
@@ -602,6 +613,50 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
     }
 
     return t;
+}
+
+bool arpt_renderer_tile_set_overzoom(arpt_renderer *r, arpt_tile_gpu *t,
+                                     int overzoom) {
+    if (!r || !t || t->surface_size == 0) return false; /* no fill to refine */
+    if (overzoom < 0) overzoom = 0;
+
+    /* Each overzoom level doubles the fill resolution, capped at the max. */
+    uint32_t size = SURFACE_TEX_SIZE;
+    for (int i = 0; i < overzoom && size < SURFACE_TEX_MAX; i++) size <<= 1;
+    if (size > SURFACE_TEX_MAX) size = SURFACE_TEX_MAX;
+    if (size == t->surface_size) return false;
+
+    WGPUTexture new_tex = arpt__texture_rasterize(r, &t->surf_polys,
+                                                  &t->surf_lines, size);
+    if (!new_tex) return false;
+    WGPUTextureView new_view = wgpuTextureCreateView(new_tex, NULL);
+    if (!new_view) {
+        wgpuTextureRelease(new_tex);
+        return false;
+    }
+
+    if (t->surface_view) wgpuTextureViewRelease(t->surface_view);
+    if (t->surface_texture) wgpuTextureRelease(t->surface_texture);
+    t->surface_texture = new_tex;
+    t->surface_view = new_view;
+    t->surface_size = size;
+
+    /* Rebuild the main bind group to sample the new surface view. The building
+       bind group uses the building texture, so it is unaffected. */
+    if (t->bind_group) wgpuBindGroupRelease(t->bind_group);
+    WGPUBindGroupEntry entries[] = {
+        {.binding = 0,
+         .buffer = t->uniform_buf,
+         .offset = 0,
+         .size = sizeof(tile_uniforms_t)},
+        {.binding = 1, .textureView = t->surface_view},
+        {.binding = 2, .sampler = r->surface_sampler},
+    };
+    t->bind_group = wgpuDeviceCreateBindGroup(
+        r->device, &(WGPUBindGroupDescriptor){.layout = r->tile_bgl,
+                                              .entryCount = 3,
+                                              .entries = entries});
+    return true;
 }
 
 void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile, arpt_mat4 model,
@@ -656,6 +711,11 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     if (tile->bldg_bind_group) wgpuBindGroupRelease(tile->bldg_bind_group);
     if (tile->surface_view) wgpuTextureViewRelease(tile->surface_view);
     if (tile->surface_texture) wgpuTextureRelease(tile->surface_texture);
+    free(tile->surf_polys.verts);
+    free(tile->surf_polys.indices);
+    free(tile->surf_polys.groups);
+    free(tile->surf_lines.verts);
+    free(tile->surf_lines.indices);
     free(tile);
 }
 

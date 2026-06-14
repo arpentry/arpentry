@@ -84,6 +84,15 @@ int arpt_camera_zoom_level(const arpt_camera *cam, double root_error,
                            int min_level, int max_level);
 
 /**
+ * Same as arpt_camera_zoom_level but without the upper clamp: returns the
+ * level the view actually resolves to, even past the tileset's deepest level.
+ * The difference (desired - tile.level) is the overzoom amount, used to size
+ * the surface (fill) texture so it stays crisp when zoomed in past max_level.
+ */
+int arpt_camera_zoom_level_desired(const arpt_camera *cam, double root_error,
+                                   int min_level);
+
+/**
  * Cast a ray from screen coordinates (sx, sy) in pixels through the camera.
  * Outputs origin and direction in ECEF (after inverse globe + tilt rotation).
  * Returns false if the screen point is outside the viewport.
