@@ -21,6 +21,8 @@
 #   --port <n>             Server port (default 8090)
 #   --no-terrain           Don't add Mapterhorn elevation (flat terrain mesh)
 #   --terrain-file <path>  Use an existing terrain PMTiles instead of extracting
+#   --hires-terrain        Use Mapterhorn's high-res Switzerland DEM (z13-18)
+#                          instead of planet.pmtiles (z0-12), for sharper terrain
 #
 # Downloads are idempotent: a layer is fetched only when its .parquet is missing.
 # Tiling is idempotent too: the archive is regenerated only when it's missing
@@ -42,7 +44,13 @@ STYLE="$ROOT_DIR/style-overture-ch.json"
 
 # Mapterhorn terrain (Terrarium DEM PMTiles). planet.pmtiles covers z0-12; we
 # extract just the run's bbox + zooms into TERRAIN_PMTILES over HTTP range reads.
+# --hires-terrain swaps in the Switzerland regional pyramid (6-33-22.pmtiles,
+# z13-18) for sharper meshes when zoomed in; it has no tiles below z13, so the
+# extraction zoom floor is raised to match (the tiler clamps sampling to the
+# archive's min zoom, so low-zoom output tiles still get elevation).
 MAPTERHORN_URL="https://download.mapterhorn.com/planet.pmtiles"
+MAPTERHORN_HIRES_URL="https://download.mapterhorn.com/6-33-22.pmtiles"
+MAPTERHORN_MIN_ZOOM=0
 MAPTERHORN_MAX_ZOOM=12
 TERRAIN_PMTILES="$DATA_DIR/terrain.pmtiles"
 
@@ -71,6 +79,7 @@ SERVE_ONLY=false
 SCREENSHOT=""
 USE_TERRAIN=true
 TERRAIN_FILE=""
+HIRES_TERRAIN=false
 while [ $# -gt 0 ]; do
     case "$1" in
         --skip-download) SKIP_DOWNLOAD=true; shift ;;
@@ -85,9 +94,25 @@ while [ $# -gt 0 ]; do
         --port)          PORT="$2"; shift 2 ;;
         --no-terrain)    USE_TERRAIN=false; shift ;;
         --terrain-file)  TERRAIN_FILE="$2"; shift 2 ;;
+        --hires-terrain) HIRES_TERRAIN=true; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
+
+# High-res terrain: swap in the Switzerland regional pyramid and its z13-18
+# range, and cache it under a distinct name so it never collides with a
+# planet-extracted terrain.pmtiles.
+if [ "$HIRES_TERRAIN" = true ]; then
+    if [ "$MAX_ZOOM" -lt 13 ]; then
+        echo "ERROR: --hires-terrain needs --max-zoom >= 13 (the regional DEM" \
+             "starts at z13); got $MAX_ZOOM" >&2
+        exit 1
+    fi
+    MAPTERHORN_URL="$MAPTERHORN_HIRES_URL"
+    MAPTERHORN_MIN_ZOOM=13
+    MAPTERHORN_MAX_ZOOM=18
+    TERRAIN_PMTILES="$DATA_DIR/terrain-hires.pmtiles"
+fi
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
@@ -187,12 +212,15 @@ else
                          "https://github.com/protomaps/go-pmtiles or use --no-terrain)"
                     terrain_src=""
                 else
-                    # Mapterhorn tops out at z12; don't ask for more.
-                    tzoom=$MAX_ZOOM
-                    [ "$tzoom" -gt "$MAPTERHORN_MAX_ZOOM" ] && tzoom=$MAPTERHORN_MAX_ZOOM
-                    echo "Extracting Mapterhorn terrain (bbox=$BBOX zoom=$MIN_ZOOM-$tzoom)..."
+                    # Clamp the requested zoom range to what this archive holds
+                    # (planet z0-12, or the hires regional pyramid z13-18).
+                    tminz=$MIN_ZOOM
+                    [ "$tminz" -lt "$MAPTERHORN_MIN_ZOOM" ] && tminz=$MAPTERHORN_MIN_ZOOM
+                    tmaxz=$MAX_ZOOM
+                    [ "$tmaxz" -gt "$MAPTERHORN_MAX_ZOOM" ] && tmaxz=$MAPTERHORN_MAX_ZOOM
+                    echo "Extracting Mapterhorn terrain (bbox=$BBOX zoom=$tminz-$tmaxz)..."
                     pmtiles extract "$MAPTERHORN_URL" "$terrain_src" \
-                        --bbox="$BBOX" --minzoom="$MIN_ZOOM" --maxzoom="$tzoom"
+                        --bbox="$BBOX" --minzoom="$tminz" --maxzoom="$tmaxz"
                     echo "  -> $(du -h "$terrain_src" | cut -f1)"
                 fi
             else
