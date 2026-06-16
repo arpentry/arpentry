@@ -53,6 +53,10 @@ typedef struct {
     uint16_t poly_id; /* polygon ID: rings sharing a poly_id belong to
                          the same polygon (exterior + holes) */
     int32_t height_m; /* building height in meters (0 for surface polygons) */
+    int32_t relief_m; /* terrain relief under the footprint in meters (highest
+                         minus lowest); the extrusion sinks the foundation this
+                         far so sloped ground hides the wall base. 0 when flat
+                         or absent. */
 } arpt_surface_polygon;
 
 /**

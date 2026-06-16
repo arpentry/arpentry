@@ -211,6 +211,22 @@ find_layer(const void *flatbuf, size_t size, const char *name,
                          NULL, values);
 }
 
+/* Resolve a property key index by name, or UINT32_MAX if the tile lacks it.
+ * Used for tiler-computed keys outside the class/height/name set. */
+static uint32_t resolve_key_index(const void *flatbuf, const char *key_name) {
+    if (!flatbuf) return UINT32_MAX;
+    arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root(flatbuf);
+    if (!tile) return UINT32_MAX;
+    flatbuffers_string_vec_t keys = arpentry_tiles_Tile_keys(tile);
+    if (!keys) return UINT32_MAX;
+    size_t nkeys = flatbuffers_string_vec_len(keys);
+    for (size_t i = 0; i < nkeys; i++) {
+        flatbuffers_string_t k = flatbuffers_string_vec_at(keys, i);
+        if (k && strcmp(k, key_name) == 0) return (uint32_t)i;
+    }
+    return UINT32_MAX;
+}
+
 /* Count total rings across all PolygonGeometry features in a layer. */
 static size_t count_polygon_rings(arpentry_tiles_Feature_vec_t features,
                                   size_t n_feat) {
@@ -259,6 +275,10 @@ static bool decode_polygon_layer(const void *flatbuf, size_t size,
     if (height_key_override != UINT32_MAX)
         height_key_idx = height_key_override;
 
+    /* Terrain relief under the footprint (tiler-computed; buildings only,
+       absent elsewhere). Drives the extrusion's foundation depth. */
+    uint32_t relief_key_idx = resolve_key_index(flatbuf, "ground_relief");
+
     arpentry_tiles_Feature_vec_t features =
         arpentry_tiles_Layer_features(layer);
     if (!features) return true;
@@ -299,6 +319,7 @@ static bool decode_polygon_layer(const void *flatbuf, size_t size,
         uint8_t cls = resolve_class(feat, class_key_idx, values,
                                     class_names, class_count);
         int32_t height = resolve_int_property(feat, height_key_idx, values);
+        int32_t relief = resolve_int_property(feat, relief_key_idx, values);
 
         flatbuffers_uint32_vec_t ring_off =
             arpentry_tiles_PolygonGeometry_ring_offsets(poly);
@@ -326,6 +347,7 @@ static bool decode_polygon_layer(const void *flatbuf, size_t size,
             out->polygons[count].cls = cls;
             out->polygons[count].poly_id = this_poly_id;
             out->polygons[count].height_m = height;
+            out->polygons[count].relief_m = relief;
             count++;
         }
     }

@@ -28,6 +28,7 @@ use crate::hilbert;
 use crate::layers;
 use crate::profile;
 use crate::project::Bounds;
+use crate::value::Value;
 use crate::record;
 use crate::simplify;
 use crate::sort::{self, ExternalSorter};
@@ -569,21 +570,51 @@ fn encode_tile(
     })
 }
 
+/// Tiler-computed property carrying a building's ground relief (highest minus
+/// lowest terrain under its footprint, whole metres). The client sinks the
+/// foundation this far plus a small margin so sloped ground never reveals a
+/// gap. Absent (treated as zero) on flat footprints. Matches the key the client
+/// resolves in `tile/decode.c`.
+const GROUND_RELIEF_KEY: &str = "ground_relief";
+
 /// Stamps DEM base elevations onto the features the client positions
 /// vertically itself: building footprints (extrusion bases) and POI points
-/// (label anchors). Each feature gets the elevation at its bbox centre,
-/// encoded as a constant per-vertex `z` array. Draped layers (everything
-/// else) and DEM-less runs are untouched — their `z` stays absent (zero).
+/// (label anchors). The elevation is encoded as a constant per-vertex `z`
+/// array. Draped layers (everything else) and DEM-less runs are untouched —
+/// their `z` stays absent (zero).
+///
+/// Buildings anchor at the *highest* ground under the footprint, so uphill
+/// terrain never swallows the walls, and carry a `ground_relief` property
+/// (highest minus lowest) so the client extends the foundation past the lowest
+/// ground (see `emit_building_extrusion`). Sampling every footprint vertex
+/// captures that spread; the bbox centre alone cannot. POIs are points, so a
+/// single centre sample is their anchor.
 fn stamp_elevations(buckets: &mut [Vec<EncoderFeature>], dem: &mut Option<Dem>, z: u8) {
     let Some(d) = dem else {
         return;
     };
-    for idx in [layers::BUILDING as usize, layers::POI as usize] {
-        for f in &mut buckets[idx] {
-            if let Some((min_x, min_y, max_x, max_y)) = clip::bbox(&f.geometry) {
-                let (lon, lat) = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0);
-                f.elevation = Some(d.elevation(lon, lat, z));
-            }
+
+    for f in &mut buckets[layers::BUILDING as usize] {
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        clip::for_each_coord(&f.geometry, &mut |c| {
+            let e = d.elevation(c.x, c.y, z);
+            lo = lo.min(e);
+            hi = hi.max(e);
+        });
+        if !hi.is_finite() {
+            continue;
+        }
+        f.elevation = Some(hi);
+        let relief = (hi - lo).round();
+        if relief >= 1.0 {
+            f.properties.push((GROUND_RELIEF_KEY.to_string(), Value::Int(relief as i64)));
+        }
+    }
+
+    for f in &mut buckets[layers::POI as usize] {
+        if let Some((min_x, min_y, max_x, max_y)) = clip::bbox(&f.geometry) {
+            let (lon, lat) = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0);
+            f.elevation = Some(d.elevation(lon, lat, z));
         }
     }
 }

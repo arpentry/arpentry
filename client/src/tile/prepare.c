@@ -470,6 +470,14 @@ void arpt_prepare_lines(const arpt_line_data *line_data,
 
 #define DEG_TO_RAD (M_PI / 180.0)
 
+/* Extra depth, below the footprint's lowest ground, that walls sink to.  The
+   base elevation anchors at the highest ground under the footprint and the
+   tiler reports the relief (highest minus lowest), so dropping the wall foot by
+   relief + this margin guarantees it passes below the real surface everywhere;
+   the buried excess is hidden by the opaque terrain.  The margin alone covers
+   sub-metre relief rounding and DEM-vs-mesh jitter on flat ground. */
+#define FOUNDATION_MARGIN 2000 /* 2 meters in millimeters */
+
 static void encode_octahedral(double nx, double ny, double nz, int8_t *ox,
                                int8_t *oy) {
     double ax = fabs(nx), ay = fabs(ny), az = fabs(nz);
@@ -538,8 +546,14 @@ static void emit_building_extrusion(const arpt_surface_data *buildings,
         if (!building_in_tile_proper(b)) continue;
 
         size_t n = b->vertex_count;
+        /* Base anchors at the highest ground under the footprint (tiler), so
+           the roof clears uphill terrain.  The wall foot drops past the lowest
+           ground (base - relief) plus a margin, so the downhill side never
+           floats; the buried part is occluded by the terrain. */
         int32_t base_z = (b->z && b->vertex_count > 0) ? b->z[0] : 0;
         int32_t height_mm = base_z + (int32_t)((int64_t)b->height_m * 1000);
+        int32_t foot_z =
+            base_z - (int32_t)((int64_t)b->relief_m * 1000) - FOUNDATION_MARGIN;
 
         /* Wall quads */
         for (size_t e = 0; e < n; e++) {
@@ -576,7 +590,7 @@ static void emit_building_extrusion(const arpt_surface_data *buildings,
             uint32_t base = (uint32_t)*vi;
 
             xy[*vi * 2] = ax; xy[*vi * 2 + 1] = ay;
-            z[*vi] = base_z;
+            z[*vi] = foot_z;
             norms[*vi * 2] = wall_ox; norms[*vi * 2 + 1] = wall_oy;
             (*vi)++;
 
@@ -591,7 +605,7 @@ static void emit_building_extrusion(const arpt_surface_data *buildings,
             (*vi)++;
 
             xy[*vi * 2] = bx; xy[*vi * 2 + 1] = by;
-            z[*vi] = base_z;
+            z[*vi] = foot_z;
             norms[*vi * 2] = wall_ox; norms[*vi * 2 + 1] = wall_oy;
             (*vi)++;
 

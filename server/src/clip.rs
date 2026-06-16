@@ -113,7 +113,7 @@ pub fn bbox(geom: &Geometry) -> Option<(f64, f64, f64, f64)> {
     any.then_some((min_x, min_y, max_x, max_y))
 }
 
-fn for_each_coord(geom: &Geometry, f: &mut impl FnMut(Coord)) {
+pub(crate) fn for_each_coord(geom: &Geometry, f: &mut impl FnMut(Coord)) {
     match geom {
         Geometry::Point(p) => f(p.0),
         Geometry::MultiPoint(mp) => mp.0.iter().for_each(|p| f(p.0)),
