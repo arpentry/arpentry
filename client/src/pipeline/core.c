@@ -265,9 +265,12 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
                                                .entries = &sky_bg_e});
     }
 
+    /* Draped road pipeline (main pass; shares terrain bind group layouts) */
+    r->road_pipeline =
+        arpt__road_create_pipeline(device, format, r->global_bgl, r->tile_bgl);
+
     /* Surface offscreen pipelines + sampler */
     r->surface_pipeline = arpt__texture_create_surface_pipeline(device);
-    r->line_pipeline = arpt__texture_create_line_pipeline(device);
     r->stencil_fill_pipeline = arpt__texture_create_stencil_fill_pipeline(device);
     r->stencil_color_pipeline = arpt__texture_create_stencil_color_pipeline(device);
 
@@ -362,8 +365,8 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->sky_bgl) wgpuBindGroupLayoutRelease(r->sky_bgl);
     if (r->pipeline) wgpuRenderPipelineRelease(r->pipeline);
     if (r->tree_pipeline) wgpuRenderPipelineRelease(r->tree_pipeline);
+    if (r->road_pipeline) wgpuRenderPipelineRelease(r->road_pipeline);
     if (r->surface_pipeline) wgpuRenderPipelineRelease(r->surface_pipeline);
-    if (r->line_pipeline) wgpuRenderPipelineRelease(r->line_pipeline);
     if (r->stencil_fill_pipeline) wgpuRenderPipelineRelease(r->stencil_fill_pipeline);
     if (r->stencil_color_pipeline) wgpuRenderPipelineRelease(r->stencil_color_pipeline);
     if (r->mipmap_pipeline) wgpuRenderPipelineRelease(r->mipmap_pipeline);
@@ -534,17 +537,18 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
     if (!t) return NULL;
     t->renderer = r;
 
-    /* Take ownership of the fill (polygon + line) primitives so the surface
-       texture can be re-rasterized at a higher resolution when overzoomed.
-       Cleared in `prims` so the caller's prims_free leaves them alone. */
+    /* Take ownership of the polygon fill primitives so the surface texture can
+       be re-rasterized at a higher resolution when overzoomed.  Cleared in
+       `prims` so the caller's prims_free leaves them alone. */
     t->surf_polys = prims->polygons;
-    t->surf_lines = prims->lines;
     memset(&prims->polygons, 0, sizeof(prims->polygons));
-    memset(&prims->lines, 0, sizeof(prims->lines));
 
     /* Upload terrain mesh + edge skirts */
     arpt__mesh_upload_terrain(r, t, &prims->terrain);
     arpt__mesh_upload_skirts(r, t, &prims->terrain);
+
+    /* Upload draped road geometry (drawn in the main pass, not baked) */
+    arpt__road_upload(r, t, &prims->lines);
 
     /* Upload building mesh */
     arpt__building_upload(r, t, &prims->buildings);
@@ -558,14 +562,11 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
     /* Copy line-following street labels (kept CPU-side) */
     arpt__line_label_upload(r, t, &prims->line_labels);
 
-    /* Rasterize surface texture from the retained fill primitives */
+    /* Rasterize surface texture from the retained polygon fill primitives */
     bool has_polys = t->surf_polys.vert_count > 0 &&
                      t->surf_polys.index_count > 0;
-    bool has_lines = t->surf_lines.vert_count > 0 &&
-                     t->surf_lines.index_count > 0;
-    if (has_polys || has_lines) {
+    if (has_polys) {
         t->surface_texture = arpt__texture_rasterize(r, &t->surf_polys,
-                                                      &t->surf_lines,
                                                       SURFACE_TEX_SIZE);
         if (t->surface_texture) {
             t->surface_view = wgpuTextureCreateView(t->surface_texture, NULL);
@@ -626,8 +627,7 @@ bool arpt_renderer_tile_set_overzoom(arpt_renderer *r, arpt_tile_gpu *t,
     if (size > SURFACE_TEX_MAX) size = SURFACE_TEX_MAX;
     if (size == t->surface_size) return false;
 
-    WGPUTexture new_tex = arpt__texture_rasterize(r, &t->surf_polys,
-                                                  &t->surf_lines, size);
+    WGPUTexture new_tex = arpt__texture_rasterize(r, &t->surf_polys, size);
     if (!new_tex) return false;
     WGPUTextureView new_view = wgpuTextureCreateView(new_tex, NULL);
     if (!new_view) {
@@ -692,6 +692,8 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     if (tile->bldg_buf_z) wgpuBufferRelease(tile->bldg_buf_z);
     if (tile->bldg_buf_normals) wgpuBufferRelease(tile->bldg_buf_normals);
     if (tile->bldg_buf_indices) wgpuBufferRelease(tile->bldg_buf_indices);
+    if (tile->road_buf_vert) wgpuBufferRelease(tile->road_buf_vert);
+    if (tile->road_buf_index) wgpuBufferRelease(tile->road_buf_index);
     for (int mi = 0; mi < ARPT_MAX_MODELS; mi++) {
         if (tile->tree_instance_bufs[mi])
             wgpuBufferRelease(tile->tree_instance_bufs[mi]);
@@ -714,8 +716,6 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     free(tile->surf_polys.verts);
     free(tile->surf_polys.indices);
     free(tile->surf_polys.groups);
-    free(tile->surf_lines.verts);
-    free(tile->surf_lines.indices);
     free(tile);
 }
 
@@ -809,6 +809,7 @@ void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view) {
 void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
     arpt__mesh_draw_terrain(r, tile);
     arpt__mesh_draw_skirts(r, tile);
+    arpt__road_draw(r, tile);
     arpt__mesh_draw_buildings(r, tile);
     arpt__instance_draw(r, tile);
     arpt__label_collect(r, tile);

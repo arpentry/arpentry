@@ -1,7 +1,6 @@
 #include "internal.h"
 
 #include "surface.wgsl.h"
-#include "line.wgsl.h"
 #include "mipmap.wgsl.h"
 
 #include <stdlib.h>
@@ -157,77 +156,6 @@ WGPURenderPipeline arpt__texture_create_stencil_color_pipeline(WGPUDevice device
     return pipeline;
 }
 
-WGPURenderPipeline arpt__texture_create_line_pipeline(WGPUDevice device) {
-    WGPUShaderModule sm = create_shader(device, line_wgsl);
-    if (!sm) return NULL;
-
-    WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
-        device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 0,
-                                                .bindGroupLayouts = NULL});
-
-    WGPUVertexAttribute line_attrs[] = {
-        {.format = WGPUVertexFormat_Uint16x2,
-         .offset = 0,
-         .shaderLocation = 0},
-        {.format = WGPUVertexFormat_Float32x4,
-         .offset = 4,
-         .shaderLocation = 1},
-        {.format = WGPUVertexFormat_Float32x2,
-         .offset = 20,
-         .shaderLocation = 2},
-        {.format = WGPUVertexFormat_Float32x2,
-         .offset = 28,
-         .shaderLocation = 3},
-    };
-    WGPUVertexBufferLayout vbl = {
-        .arrayStride = 36,
-        .stepMode = WGPUVertexStepMode_Vertex,
-        .attributeCount = 4,
-        .attributes = line_attrs,
-    };
-
-    WGPUBlendState blend = {
-        .color = {.srcFactor = WGPUBlendFactor_SrcAlpha,
-                  .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha,
-                  .operation = WGPUBlendOperation_Add},
-        .alpha = {.srcFactor = WGPUBlendFactor_One,
-                  .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha,
-                  .operation = WGPUBlendOperation_Add},
-    };
-    WGPUColorTargetState ct = {.format = WGPUTextureFormat_RGBA8Unorm,
-                               .blend = &blend,
-                               .writeMask = WGPUColorWriteMask_All};
-    WGPUFragmentState frag = {
-        .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
-
-    WGPUDepthStencilState ds = {
-        .format = WGPUTextureFormat_Depth24PlusStencil8,
-        .depthWriteEnabled = false,
-        .depthCompare = WGPUCompareFunction_Always,
-        .stencilFront = {.compare = WGPUCompareFunction_Always},
-        .stencilBack = {.compare = WGPUCompareFunction_Always},
-        .stencilReadMask = 0,
-        .stencilWriteMask = 0,
-    };
-    WGPURenderPipelineDescriptor pip = {
-        .layout = pl,
-        .vertex = {.module = sm,
-                   .entryPoint = "vs",
-                   .bufferCount = 1,
-                   .buffers = &vbl},
-        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
-                      .cullMode = WGPUCullMode_None},
-        .depthStencil = &ds,
-        .fragment = &frag,
-        .multisample = {.count = 1, .mask = ~0u},
-    };
-    WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
-
-    wgpuPipelineLayoutRelease(pl);
-    wgpuShaderModuleRelease(sm);
-    return pipeline;
-}
-
 WGPURenderPipeline arpt__texture_create_mipmap_pipeline(WGPUDevice device,
                                                          WGPUBindGroupLayout bgl) {
     WGPUShaderModule sm = create_shader(device, mipmap_wgsl);
@@ -331,7 +259,6 @@ static void generate_mipmaps(arpt_renderer *r, WGPUCommandEncoder enc,
 
 WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
                                      const arpt_polygon_prim *polys,
-                                     const arpt_line_prim *lines,
                                      uint32_t tex_size) {
     if (tex_size < SURFACE_TEX_SIZE) tex_size = SURFACE_TEX_SIZE;
     if (tex_size > SURFACE_TEX_MAX) tex_size = SURFACE_TEX_MAX;
@@ -367,7 +294,6 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
     }
 
     bool has_polys = polys && polys->vert_count > 0 && polys->index_count > 0;
-    bool has_lines = lines && lines->vert_count > 0 && lines->index_count > 0;
 
     /* Render attachment must target a single mip level. */
     WGPUTextureViewDescriptor mip0_desc = {
@@ -380,7 +306,7 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
         .aspect = WGPUTextureAspect_All,
     };
 
-    if (!has_polys && !has_lines) {
+    if (!has_polys) {
         WGPUTextureView view = wgpuTextureCreateView(tex, &mip0_desc);
         WGPUCommandEncoder enc =
             wgpuDeviceCreateCommandEncoder(r->device, NULL);
@@ -427,20 +353,6 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
                                   WGPUBufferUsage_Index, polys->indices,
                                   polys->index_count * sizeof(uint32_t));
         poly_draw_n = polys->index_count;
-    }
-
-    /* Build line GPU buffers */
-    WGPUBuffer line_vbuf = NULL, line_ibuf = NULL;
-    size_t line_vb_size = 0, line_draw_n = 0;
-    if (has_lines) {
-        line_vb_size = lines->vert_count * sizeof(arpt_line_vertex);
-        line_vbuf = create_buffer(r->device, r->queue,
-                                  WGPUBufferUsage_Vertex, lines->verts,
-                                  line_vb_size);
-        line_ibuf = create_buffer(r->device, r->queue,
-                                  WGPUBufferUsage_Index, lines->indices,
-                                  lines->index_count * sizeof(uint32_t));
-        line_draw_n = lines->index_count;
     }
 
     /* Render pass with stencil attachment for even-odd polygon fill */
@@ -499,17 +411,6 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
         }
     }
 
-    if (line_draw_n > 0) {
-        wgpuRenderPassEncoderSetPipeline(pass, r->line_pipeline);
-        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, line_vbuf, 0,
-                                             line_vb_size);
-        wgpuRenderPassEncoderSetIndexBuffer(pass, line_ibuf,
-                                            WGPUIndexFormat_Uint32, 0,
-                                            line_draw_n * sizeof(uint32_t));
-        wgpuRenderPassEncoderDrawIndexed(pass, (uint32_t)line_draw_n, 1, 0, 0,
-                                         0);
-    }
-
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
 
@@ -528,8 +429,6 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
 
     if (poly_vbuf) wgpuBufferRelease(poly_vbuf);
     if (poly_ibuf) wgpuBufferRelease(poly_ibuf);
-    if (line_vbuf) wgpuBufferRelease(line_vbuf);
-    if (line_ibuf) wgpuBufferRelease(line_ibuf);
 
     return tex;
 }

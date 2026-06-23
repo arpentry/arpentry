@@ -93,13 +93,17 @@ struct arpt_tile_gpu {
     uint32_t index_count;
     arpt_renderer *renderer;
 
-    /* Retained fill primitives (polygons + lines), owned by this tile, so the
-       surface texture can be re-rasterized at a higher resolution when the
-       tile is overzoomed.  Moved out of the prepared tile at upload time.
+    /* Retained polygon fill primitives, owned by this tile, so the surface
+       texture can be re-rasterized at a higher resolution when the tile is
+       overzoomed.  Moved out of the prepared tile at upload time.
        surface_size is the current rasterized edge length (0 = no fill). */
     arpt_polygon_prim surf_polys;
-    arpt_line_prim surf_lines;
     uint32_t surface_size;
+
+    /* Draped road geometry (SDF stroke quads drawn in the main pass) */
+    WGPUBuffer road_buf_vert;
+    WGPUBuffer road_buf_index;
+    uint32_t road_index_count;
 
     /* Terrain skirts (edge stitching, same pipeline) */
     WGPUBuffer skirt_buf_xy;
@@ -211,9 +215,11 @@ struct arpt_renderer {
     WGPUBuffer sky_uniform_buf;
     WGPUBindGroup sky_bind_group;
 
+    /* Draped road geometry (main pass, SDF stroke quads) */
+    WGPURenderPipeline road_pipeline;
+
     /* Surface offscreen rasterization */
     WGPURenderPipeline surface_pipeline;
-    WGPURenderPipeline line_pipeline;
     WGPURenderPipeline stencil_fill_pipeline;  /* stencil INVERT, color OFF */
     WGPURenderPipeline stencil_color_pipeline; /* stencil NotEqual(0), color ON */
     WGPURenderPipeline mipmap_pipeline;        /* downsample prev mip -> next */
@@ -378,15 +384,22 @@ void arpt__mesh_draw_buildings(arpt_renderer *r, arpt_tile_gpu *tile);
 
 /* render_texture.c */
 WGPURenderPipeline arpt__texture_create_surface_pipeline(WGPUDevice device);
-WGPURenderPipeline arpt__texture_create_line_pipeline(WGPUDevice device);
 WGPURenderPipeline arpt__texture_create_stencil_fill_pipeline(WGPUDevice device);
 WGPURenderPipeline arpt__texture_create_stencil_color_pipeline(WGPUDevice device);
 WGPURenderPipeline arpt__texture_create_mipmap_pipeline(WGPUDevice device,
                                                          WGPUBindGroupLayout bgl);
 WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
                                      const arpt_polygon_prim *polys,
-                                     const arpt_line_prim *lines,
                                      uint32_t tex_size);
+
+/* road.c */
+WGPURenderPipeline arpt__road_create_pipeline(WGPUDevice device,
+                                              WGPUTextureFormat format,
+                                              WGPUBindGroupLayout global_bgl,
+                                              WGPUBindGroupLayout tile_bgl);
+void arpt__road_upload(arpt_renderer *r, arpt_tile_gpu *t,
+                       const arpt_line_prim *prim);
+void arpt__road_draw(arpt_renderer *r, arpt_tile_gpu *tile);
 
 /* building.c */
 void arpt__building_upload(arpt_renderer *r, arpt_tile_gpu *t,

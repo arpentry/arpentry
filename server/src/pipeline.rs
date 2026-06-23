@@ -931,13 +931,16 @@ fn flush_tile(
     Ok(())
 }
 
-/// Simplification tolerance for a zoom, in degrees: roughly one screen pixel
-/// when the tile is shown at ~512 px. Quantization preserves detail down to
-/// ~1/32768 of a tile — far finer than the screen — so keeping that would bloat
-/// low-zoom tiles (the whole world's coastline in a single z0 tile).
+/// Simplification tolerance for a zoom, in degrees. Low/mid zooms simplify to
+/// roughly one screen pixel at ~512 px, which keeps the whole world's coastline
+/// from bloating a single z0 tile. The deepest zooms, though, are overzoomed and
+/// inspected up close in the 3D viewer (street level), where a 512 px budget
+/// visibly flattens road curves; there we keep ~8× finer detail, still well
+/// within the format's ~1/32768-of-a-tile quantization precision.
 fn tolerance(z: u8) -> f64 {
     let tile_w = 360.0 / (1u64 << z as u32) as f64; // 2^z columns
-    tile_w / 512.0
+    let div = if z >= 13 { 4096.0 } else { 512.0 };
+    tile_w / div
 }
 
 /// Simplification tolerance for a layer at a zoom. Most layers simplify to the

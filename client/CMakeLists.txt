@@ -45,7 +45,7 @@ file(MAKE_DIRECTORY ${SHADER_GEN_DIR})
 set(SHADER_SOURCES
     terrain.wgsl
     surface.wgsl
-    line.wgsl
+    road.wgsl
     mipmap.wgsl
     ui.wgsl
     info.wgsl
@@ -126,6 +126,7 @@ add_executable(arpentry_client
     src/pipeline/core.c
     src/pipeline/mesh.c
     src/pipeline/texture.c
+    src/pipeline/road.c
     src/pipeline/building.c
     src/pipeline/instance.c
     src/pipeline/label.c

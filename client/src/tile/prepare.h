@@ -52,10 +52,13 @@ typedef struct {
     size_t group_count;
 } arpt_polygon_prim;
 
-/* Pre-tessellated line SDF quads for offscreen texture rasterization */
+/* Pre-tessellated line SDF quads, draped on the terrain surface and drawn as
+   3D geometry (not rasterized to the surface texture).  qz is the terrain
+   elevation (mm) sampled at the vertex so the road follows the ground. */
 
 typedef struct {
     uint16_t x, y;
+    int32_t qz;
     float r, g, b, a;
     float local_u, local_v;
     float hw, seg_len;
@@ -169,6 +172,7 @@ void arpt_prepare_polygons(const arpt_surface_data *surface,
 
 void arpt_prepare_lines(const arpt_line_data *line_data,
                         const arpt_style *style, int level,
+                        const arpt_terrain_mesh *terrain,
                         arpt_line_prim *out);
 
 /* Buildings arrive as server-baked 3D meshes (MeshGeometry): walls + roof,
