@@ -292,7 +292,7 @@ void arpt__mesh_draw_skirts(arpt_renderer *r, arpt_tile_gpu *tile) {
                                      0);
 }
 
-void arpt__mesh_draw_extrusion(arpt_renderer *r, arpt_tile_gpu *tile) {
+void arpt__mesh_draw_buildings(arpt_renderer *r, arpt_tile_gpu *tile) {
     if (tile->bldg_index_count == 0) return;
     wgpuRenderPassEncoderSetBindGroup(r->pass, 1, tile->bldg_bind_group, 0,
                                       NULL);

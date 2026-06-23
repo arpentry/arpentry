@@ -546,8 +546,8 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
     arpt__mesh_upload_terrain(r, t, &prims->terrain);
     arpt__mesh_upload_skirts(r, t, &prims->terrain);
 
-    /* Upload building extrusion */
-    arpt__extrusion_upload(r, t, &prims->extrusion);
+    /* Upload building mesh */
+    arpt__building_upload(r, t, &prims->buildings);
 
     /* Upload tree instances */
     arpt__instance_upload(r, t, &prims->instances);
@@ -809,7 +809,7 @@ void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view) {
 void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
     arpt__mesh_draw_terrain(r, tile);
     arpt__mesh_draw_skirts(r, tile);
-    arpt__mesh_draw_extrusion(r, tile);
+    arpt__mesh_draw_buildings(r, tile);
     arpt__instance_draw(r, tile);
     arpt__label_collect(r, tile);
     arpt__line_label_collect(r, tile);

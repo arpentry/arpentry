@@ -108,7 +108,7 @@ struct arpt_tile_gpu {
     WGPUBuffer skirt_buf_indices;
     uint32_t skirt_index_count;
 
-    /* Building extrusion (separate draw call, same pipeline) */
+    /* Building mesh (separate draw call, same pipeline) */
     WGPUBuffer bldg_buf_xy;
     WGPUBuffer bldg_buf_z;
     WGPUBuffer bldg_buf_normals;
@@ -374,7 +374,7 @@ void arpt__mesh_upload_skirts(arpt_renderer *r, arpt_tile_gpu *t,
                                const arpt_terrain_mesh *prim);
 void arpt__mesh_draw_terrain(arpt_renderer *r, arpt_tile_gpu *tile);
 void arpt__mesh_draw_skirts(arpt_renderer *r, arpt_tile_gpu *tile);
-void arpt__mesh_draw_extrusion(arpt_renderer *r, arpt_tile_gpu *tile);
+void arpt__mesh_draw_buildings(arpt_renderer *r, arpt_tile_gpu *tile);
 
 /* render_texture.c */
 WGPURenderPipeline arpt__texture_create_surface_pipeline(WGPUDevice device);
@@ -388,9 +388,9 @@ WGPUTexture arpt__texture_rasterize(arpt_renderer *r,
                                      const arpt_line_prim *lines,
                                      uint32_t tex_size);
 
-/* render_extrusion.c */
-void arpt__extrusion_upload(arpt_renderer *r, arpt_tile_gpu *t,
-                            const arpt_extrusion_prim *prim);
+/* building.c */
+void arpt__building_upload(arpt_renderer *r, arpt_tile_gpu *t,
+                           const arpt_building_prim *prim);
 
 /* render_instance.c */
 WGPURenderPipeline arpt__instance_create_pipeline(WGPUDevice device,

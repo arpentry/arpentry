@@ -697,9 +697,9 @@ Individual trees.
 
 ### building
 
-Extruded building footprints. The client computes extrusion from `min_height` (base) to `height` (top).
+3D building meshes. The server bakes walls (from `min_height` base to `height` top) plus a roof into `MeshGeometry`; the client just renders the mesh.
 
-- **Geometry**: Polygon
+- **Geometry**: Mesh
 - **Zoom range**: 13-16
 - **Properties**:
 
@@ -752,9 +752,9 @@ The client fetches `{base_url}/style.arps` at startup and applies it as follows:
 The tile format provides data for styling. For PointGeometry, LineGeometry, and PolygonGeometry, the client determines all visual appearance based on:
 
 1. **Layer name** — which `LayerStyle` rules apply
-2. **Geometry type** — which union member is present determines the rendering method (fill, line, extrusion, mesh)
+2. **Geometry type** — which union member is present determines the rendering method (fill, line, mesh)
 3. **Feature class/subclass** — primary style discriminator, matched against `PaintEntry.class`
-4. **Numeric properties** — data-driven styling (height → extrusion, width → line thickness)
+4. **Numeric properties** — data-driven styling (height → building mesh height, width → line thickness)
 5. **Feature ID** — interaction (hover, click, selection)
 
 For MeshGeometry, each Part carries an inline material (color, roughness, metalness). When `color.a > 0`, the client uses it directly for PBR-lite shading. When `color.a == 0`, the client styles the part based on feature properties, as with other topologies. When no `parts` array is present, the entire mesh is one client-styled draw call.

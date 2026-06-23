@@ -20,10 +20,10 @@ pub struct Profiled {
     pub rank: u16,
 }
 
-/// Default extrusion height in metres for buildings with no height data.
+/// Default building height in metres for buildings with no height data.
 /// Overture CH has measured heights for ~38% of buildings and floor counts for
-/// a few percent more; without a fallback the remaining majority would not
-/// extrude at all and towns would render as scattered tall buildings.
+/// a few percent more; without a fallback the remaining majority would have no
+/// height and towns would render as scattered tall buildings.
 const DEFAULT_BUILDING_HEIGHT: f64 = 5.0;
 
 /// Assumed storey height in metres when only a floor count is available.
@@ -88,9 +88,8 @@ pub fn profile(
 
 /// Profiles an Overture building: the broad `subtype` (residential,
 /// commercial, …) becomes the styling class with the finer `class` (house,
-/// garage, …) as subclass, and every building gets an extrusion `height` —
-/// measured when available, else floors × [`FLOOR_HEIGHT`], else
-/// [`DEFAULT_BUILDING_HEIGHT`].
+/// garage, …) as subclass, and every building gets a `height` — measured when
+/// available, else floors × [`FLOOR_HEIGHT`], else [`DEFAULT_BUILDING_HEIGHT`].
 fn profile_building(props: &[(String, Value)], default_max: u8) -> Profiled {
     let class = find_str(props, "subtype").unwrap_or_else(|| "building".to_string());
     let height = find_f64(props, "height")
@@ -104,6 +103,15 @@ fn profile_building(props: &[(String, Value)], default_max: u8) -> Profiled {
     ];
     if let Some(s) = find_str(props, "class") {
         properties.push(("subclass".to_string(), Value::String(s)));
+    }
+    // Roof attributes drive server-side 3D meshes at high zoom (see
+    // `building_mesh`). Sparse in Overture (most buildings are flat), so only
+    // emitted when present.
+    if let Some(shape) = find_str(props, "roof_shape") {
+        properties.push(("roof_shape".to_string(), Value::String(shape)));
+    }
+    if let Some(rh) = find_f64(props, "roof_height").filter(|h| *h > 0.0) {
+        properties.push(("roof_height".to_string(), Value::Double(rh)));
     }
     Profiled { properties, min_zoom: BUILDING_MIN_ZOOM, max_zoom: default_max, rank: 0 }
 }

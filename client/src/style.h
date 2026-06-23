@@ -7,7 +7,7 @@
 typedef enum {
     ARPT_LAYER_TERRAIN    = 0,
     ARPT_LAYER_TEXTURE    = 1,
-    ARPT_LAYER_EXTRUSION  = 2,
+    ARPT_LAYER_BUILDING   = 2,
     ARPT_LAYER_INSTANCE   = 3,
     ARPT_LAYER_LABEL      = 4,
     ARPT_LAYER_LINE       = 5,

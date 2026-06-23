@@ -1,4 +1,5 @@
 #include "decode.h"
+#include "prepare.h"
 #include "tile_reader.h"
 #include <stdlib.h>
 #include <string.h>
@@ -115,50 +116,12 @@ static uint8_t resolve_class(arpentry_tiles_Feature_table_t feat,
     return 0;
 }
 
-/* Resolve an integer property of a feature via the tile-scope dictionary. */
-static int32_t resolve_int_property(arpentry_tiles_Feature_table_t feat,
-                                    uint32_t key_idx,
-                                    arpentry_tiles_Value_vec_t values) {
-    if (key_idx == UINT32_MAX || !values) return 0;
-    arpentry_tiles_Property_vec_t props =
-        arpentry_tiles_Feature_properties(feat);
-    if (!props) return 0;
-    size_t np = arpentry_tiles_Property_vec_len(props);
-    for (size_t p = 0; p < np; p++) {
-        arpentry_tiles_Property_struct_t pr =
-            arpentry_tiles_Property_vec_at(props, p);
-        if (pr && pr->key == key_idx) {
-            size_t vi = pr->value;
-            if (vi < arpentry_tiles_Value_vec_len(values)) {
-                arpentry_tiles_Value_table_t val =
-                    arpentry_tiles_Value_vec_at(values, vi);
-                if (!val) break;
-                /* Numeric values may be encoded as Int or Double
-                 * (e.g. Overture heights are float64). */
-                switch (arpentry_tiles_Value_type(val)) {
-                case arpentry_tiles_PropertyValueType_Int:
-                    return (int32_t)arpentry_tiles_Value_int_value(val);
-                case arpentry_tiles_PropertyValueType_Double:
-                    return (int32_t)arpentry_tiles_Value_double_value(val);
-                default:
-                    return 0;
-                }
-            }
-            break;
-        }
-    }
-    return 0;
-}
-
-/* Find a layer by name and resolve "class", "height", and optionally "name"
- * key indices. */
+/* Find a layer by name and resolve "class" and optionally "name" key indices. */
 static arpentry_tiles_Layer_table_t
 find_layer_ex(const void *flatbuf, size_t size, const char *name,
-              uint32_t *class_key_idx, uint32_t *height_key_idx,
-              uint32_t *name_key_idx,
+              uint32_t *class_key_idx, uint32_t *name_key_idx,
               arpentry_tiles_Value_vec_t *values) {
     *class_key_idx = UINT32_MAX;
-    *height_key_idx = UINT32_MAX;
     if (name_key_idx) *name_key_idx = UINT32_MAX;
     *values = NULL;
 
@@ -192,8 +155,6 @@ find_layer_ex(const void *flatbuf, size_t size, const char *name,
             flatbuffers_string_t k = flatbuffers_string_vec_at(keys, i);
             if (k && strcmp(k, "class") == 0)
                 *class_key_idx = (uint32_t)i;
-            else if (k && strcmp(k, "height") == 0)
-                *height_key_idx = (uint32_t)i;
             else if (k && name_key_idx && strcmp(k, "name") == 0)
                 *name_key_idx = (uint32_t)i;
         }
@@ -205,26 +166,8 @@ find_layer_ex(const void *flatbuf, size_t size, const char *name,
 /* Convenience wrapper that doesn't resolve "name" key. */
 static arpentry_tiles_Layer_table_t
 find_layer(const void *flatbuf, size_t size, const char *name,
-           uint32_t *class_key_idx, uint32_t *height_key_idx,
-           arpentry_tiles_Value_vec_t *values) {
-    return find_layer_ex(flatbuf, size, name, class_key_idx, height_key_idx,
-                         NULL, values);
-}
-
-/* Resolve a property key index by name, or UINT32_MAX if the tile lacks it.
- * Used for tiler-computed keys outside the class/height/name set. */
-static uint32_t resolve_key_index(const void *flatbuf, const char *key_name) {
-    if (!flatbuf) return UINT32_MAX;
-    arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root(flatbuf);
-    if (!tile) return UINT32_MAX;
-    flatbuffers_string_vec_t keys = arpentry_tiles_Tile_keys(tile);
-    if (!keys) return UINT32_MAX;
-    size_t nkeys = flatbuffers_string_vec_len(keys);
-    for (size_t i = 0; i < nkeys; i++) {
-        flatbuffers_string_t k = flatbuffers_string_vec_at(keys, i);
-        if (k && strcmp(k, key_name) == 0) return (uint32_t)i;
-    }
-    return UINT32_MAX;
+           uint32_t *class_key_idx, arpentry_tiles_Value_vec_t *values) {
+    return find_layer_ex(flatbuf, size, name, class_key_idx, NULL, values);
 }
 
 /* Count total rings across all PolygonGeometry features in a layer. */
@@ -257,7 +200,6 @@ static size_t count_polygon_rings(arpentry_tiles_Feature_vec_t features,
  * Holes are handled at render time via stencil-based even-odd fill. */
 static bool decode_polygon_layer(const void *flatbuf, size_t size,
                                  const char *layer_name,
-                                 uint32_t height_key_override,
                                  const char (*class_names)[32],
                                  int class_count,
                                  arpt_surface_data *out) {
@@ -265,19 +207,10 @@ static bool decode_polygon_layer(const void *flatbuf, size_t size,
     out->count = 0;
 
     uint32_t class_key_idx;
-    uint32_t height_key_idx;
     arpentry_tiles_Value_vec_t values;
-    arpentry_tiles_Layer_table_t layer = find_layer(
-        flatbuf, size, layer_name, &class_key_idx, &height_key_idx, &values);
+    arpentry_tiles_Layer_table_t layer =
+        find_layer(flatbuf, size, layer_name, &class_key_idx, &values);
     if (!layer) return true;
-
-    /* Allow caller to suppress height resolution */
-    if (height_key_override != UINT32_MAX)
-        height_key_idx = height_key_override;
-
-    /* Terrain relief under the footprint (tiler-computed; buildings only,
-       absent elsewhere). Drives the extrusion's foundation depth. */
-    uint32_t relief_key_idx = resolve_key_index(flatbuf, "ground_relief");
 
     arpentry_tiles_Feature_vec_t features =
         arpentry_tiles_Layer_features(layer);
@@ -318,8 +251,6 @@ static bool decode_polygon_layer(const void *flatbuf, size_t size,
         flatbuffers_int32_vec_t zv = arpentry_tiles_PolygonGeometry_z(poly);
         uint8_t cls = resolve_class(feat, class_key_idx, values,
                                     class_names, class_count);
-        int32_t height = resolve_int_property(feat, height_key_idx, values);
-        int32_t relief = resolve_int_property(feat, relief_key_idx, values);
 
         flatbuffers_uint32_vec_t ring_off =
             arpentry_tiles_PolygonGeometry_ring_offsets(poly);
@@ -346,8 +277,6 @@ static bool decode_polygon_layer(const void *flatbuf, size_t size,
             out->polygons[count].vertex_count = ring_vc;
             out->polygons[count].cls = cls;
             out->polygons[count].poly_id = this_poly_id;
-            out->polygons[count].height_m = height;
-            out->polygons[count].relief_m = relief;
             count++;
         }
     }
@@ -360,16 +289,8 @@ bool arpt_decode_surface_layer(const void *flatbuf, size_t size,
                                const char *layer_name,
                                const char (*class_names)[32], int class_count,
                                arpt_surface_data *out) {
-    return decode_polygon_layer(flatbuf, size, layer_name, UINT32_MAX,
-                                class_names, class_count, out);
-}
-
-bool arpt_decode_buildings(const void *flatbuf, size_t size,
-                           const char *layer_name,
-                           const char (*class_names)[32], int class_count,
-                           arpt_surface_data *out) {
-    return decode_polygon_layer(flatbuf, size, layer_name, UINT32_MAX,
-                                class_names, class_count, out);
+    return decode_polygon_layer(flatbuf, size, layer_name, class_names,
+                                class_count, out);
 }
 
 void arpt_surface_data_free(arpt_surface_data *data) {
@@ -378,6 +299,132 @@ void arpt_surface_data_free(arpt_surface_data *data) {
         data->polygons = NULL;
         data->count = 0;
     }
+}
+
+/* Locate a layer table by name (no property-dictionary resolution). */
+static arpentry_tiles_Layer_table_t
+find_layer_by_name(const void *flatbuf, size_t size, const char *name) {
+    if (!flatbuf || size < 8) return NULL;
+    arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root(flatbuf);
+    if (!tile) return NULL;
+    arpentry_tiles_Layer_vec_t layers = arpentry_tiles_Tile_layers(tile);
+    if (!layers) return NULL;
+    size_t n = arpentry_tiles_Layer_vec_len(layers);
+    for (size_t i = 0; i < n; i++) {
+        arpentry_tiles_Layer_table_t layer =
+            arpentry_tiles_Layer_vec_at(layers, i);
+        flatbuffers_string_t lname = arpentry_tiles_Layer_name(layer);
+        if (lname && strcmp(lname, name) == 0) return layer;
+    }
+    return NULL;
+}
+
+bool arpt_decode_building_mesh(const void *flatbuf, size_t size,
+                               const char *layer_name,
+                               arpt_building_prim *out) {
+    memset(out, 0, sizeof(*out));
+
+    arpentry_tiles_Layer_table_t layer =
+        find_layer_by_name(flatbuf, size, layer_name);
+    if (!layer) return false;
+
+    arpentry_tiles_Feature_vec_t features =
+        arpentry_tiles_Layer_features(layer);
+    if (!features) return false;
+    size_t n_feat = arpentry_tiles_Feature_vec_len(features);
+    if (n_feat == 0) return false;
+
+    /* Buildings ship as server-baked MeshGeometry; bail out (no mesh) when the
+       layer's features are any other geometry type. */
+    {
+        arpentry_tiles_Feature_table_t f0 =
+            arpentry_tiles_Feature_vec_at(features, 0);
+        if (!f0 || arpentry_tiles_Feature_geometry_type(f0) !=
+                       arpentry_tiles_Geometry_MeshGeometry)
+            return false;
+    }
+
+    /* First pass: total vertices and indices across all mesh features. */
+    size_t total_v = 0, total_i = 0;
+    for (size_t i = 0; i < n_feat; i++) {
+        arpentry_tiles_Feature_table_t feat =
+            arpentry_tiles_Feature_vec_at(features, i);
+        if (!feat || arpentry_tiles_Feature_geometry_type(feat) !=
+                         arpentry_tiles_Geometry_MeshGeometry)
+            continue;
+        arpentry_tiles_MeshGeometry_table_t mesh =
+            (arpentry_tiles_MeshGeometry_table_t)
+                arpentry_tiles_Feature_geometry(feat);
+        if (!mesh) continue;
+        flatbuffers_uint16_vec_t xv = arpentry_tiles_MeshGeometry_x(mesh);
+        flatbuffers_uint32_vec_t iv = arpentry_tiles_MeshGeometry_indices(mesh);
+        if (!xv || !iv) continue;
+        total_v += flatbuffers_uint16_vec_len(xv);
+        total_i += flatbuffers_uint32_vec_len(iv);
+    }
+    if (total_v == 0 || total_i == 0) return false;
+
+    out->xy = malloc(total_v * 2 * sizeof(uint16_t));
+    out->z = malloc(total_v * sizeof(int32_t));
+    out->normals = calloc(total_v, 2);
+    out->indices = malloc(total_i * sizeof(uint32_t));
+    if (!out->xy || !out->z || !out->normals || !out->indices) {
+        free(out->xy);
+        free(out->z);
+        free(out->normals);
+        free(out->indices);
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
+
+    /* Second pass: concatenate the meshes, offsetting indices per feature. */
+    size_t vi = 0, ii = 0;
+    for (size_t i = 0; i < n_feat; i++) {
+        arpentry_tiles_Feature_table_t feat =
+            arpentry_tiles_Feature_vec_at(features, i);
+        if (!feat || arpentry_tiles_Feature_geometry_type(feat) !=
+                         arpentry_tiles_Geometry_MeshGeometry)
+            continue;
+        arpentry_tiles_MeshGeometry_table_t mesh =
+            (arpentry_tiles_MeshGeometry_table_t)
+                arpentry_tiles_Feature_geometry(feat);
+        if (!mesh) continue;
+
+        flatbuffers_uint16_vec_t xv = arpentry_tiles_MeshGeometry_x(mesh);
+        flatbuffers_uint16_vec_t yv = arpentry_tiles_MeshGeometry_y(mesh);
+        flatbuffers_int32_vec_t zv = arpentry_tiles_MeshGeometry_z(mesh);
+        flatbuffers_uint32_vec_t iv = arpentry_tiles_MeshGeometry_indices(mesh);
+        if (!xv || !yv || !zv || !iv) continue;
+
+        size_t vc = flatbuffers_uint16_vec_len(xv);
+        if (flatbuffers_uint16_vec_len(yv) != vc ||
+            flatbuffers_int32_vec_len(zv) != vc)
+            continue;
+        size_t ic = flatbuffers_uint32_vec_len(iv);
+
+        flatbuffers_int8_vec_t nv = arpentry_tiles_MeshGeometry_normals(mesh);
+        bool have_n = nv && flatbuffers_int8_vec_len(nv) == 2 * vc;
+
+        uint32_t base = (uint32_t)vi;
+        for (size_t v = 0; v < vc; v++) {
+            out->xy[(vi + v) * 2] = xv[v];
+            out->xy[(vi + v) * 2 + 1] = yv[v];
+            out->z[vi + v] = zv[v];
+            if (have_n) {
+                out->normals[(vi + v) * 2] = nv[2 * v];
+                out->normals[(vi + v) * 2 + 1] = nv[2 * v + 1];
+            }
+        }
+        for (size_t k = 0; k < ic; k++)
+            out->indices[ii + k] = base + iv[k];
+
+        vi += vc;
+        ii += ic;
+    }
+
+    out->vertex_count = vi;
+    out->index_count = ii;
+    return true;
 }
 
 /* Line decoding */
@@ -390,11 +437,9 @@ bool arpt_decode_lines(const void *flatbuf, size_t size,
     out->count = 0;
 
     uint32_t class_key_idx;
-    uint32_t height_key_idx;
     arpentry_tiles_Value_vec_t values;
     arpentry_tiles_Layer_table_t layer =
-        find_layer(flatbuf, size, layer_name, &class_key_idx, &height_key_idx,
-                   &values);
+        find_layer(flatbuf, size, layer_name, &class_key_idx, &values);
     if (!layer) return true;
 
     arpentry_tiles_Feature_vec_t features =
@@ -533,11 +578,9 @@ bool arpt_decode_trees(const void *flatbuf, size_t size,
     out->count = 0;
 
     uint32_t class_key_idx;
-    uint32_t height_key_idx;
     arpentry_tiles_Value_vec_t values;
     arpentry_tiles_Layer_table_t layer =
-        find_layer(flatbuf, size, layer_name, &class_key_idx, &height_key_idx,
-                   &values);
+        find_layer(flatbuf, size, layer_name, &class_key_idx, &values);
     if (!layer) return true;
 
     arpentry_tiles_Feature_vec_t features =
@@ -658,11 +701,10 @@ bool arpt_decode_pois(const void *flatbuf, size_t size,
     out->count = 0;
 
     uint32_t class_key_idx;
-    uint32_t height_key_idx;
     uint32_t name_key_idx;
     arpentry_tiles_Value_vec_t values;
     arpentry_tiles_Layer_table_t layer =
-        find_layer_ex(flatbuf, size, layer_name, &class_key_idx, &height_key_idx,
+        find_layer_ex(flatbuf, size, layer_name, &class_key_idx,
                       &name_key_idx, &values);
     if (!layer) return true;
 
@@ -770,12 +812,11 @@ bool arpt_decode_line_labels(const void *flatbuf, size_t size,
     out->count = 0;
 
     uint32_t class_key_idx;
-    uint32_t height_key_idx;
     uint32_t name_key_idx;
     arpentry_tiles_Value_vec_t values;
     arpentry_tiles_Layer_table_t layer =
         find_layer_ex(flatbuf, size, layer_name, &class_key_idx,
-                      &height_key_idx, &name_key_idx, &values);
+                      &name_key_idx, &values);
     if (!layer || name_key_idx == UINT32_MAX) return true;
 
     arpentry_tiles_Feature_vec_t features =

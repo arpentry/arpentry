@@ -2,8 +2,8 @@
 
 #include <stdlib.h>
 
-void arpt__extrusion_upload(arpt_renderer *r, arpt_tile_gpu *t,
-                            const arpt_extrusion_prim *prim) {
+void arpt__building_upload(arpt_renderer *r, arpt_tile_gpu *t,
+                           const arpt_building_prim *prim) {
     if (!prim || prim->vertex_count == 0 || prim->index_count == 0 ||
         !prim->normals)
         return;

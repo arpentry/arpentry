@@ -56,7 +56,9 @@ const ATTRS: &[&str] = &[
 /// that don't use them.
 fn attrs_for(layer: u8) -> &'static [&'static str] {
     match layer {
-        layers::BUILDING => &["id", "subtype", "class", "height", "num_floors"],
+        layers::BUILDING => {
+            &["id", "subtype", "class", "height", "num_floors", "roof_shape", "roof_height"]
+        }
         layers::POI => &["id", "names.primary", "basic_category", "confidence"],
         // Road names feed the client's line-following street labels.
         layers::TRANSPORTATION => &[
@@ -571,24 +573,23 @@ fn encode_tile(
 }
 
 /// Tiler-computed property carrying a building's ground relief (highest minus
-/// lowest terrain under its footprint, whole metres). The client sinks the
-/// foundation this far plus a small margin so sloped ground never reveals a
-/// gap. Absent (treated as zero) on flat footprints. Matches the key the client
-/// resolves in `tile/decode.c`.
+/// lowest terrain under its footprint, whole metres). The building mesher sinks
+/// the foundation this far plus a small margin so sloped ground never reveals a
+/// gap. Absent (treated as zero) on flat footprints.
 const GROUND_RELIEF_KEY: &str = "ground_relief";
 
-/// Stamps DEM base elevations onto the features the client positions
-/// vertically itself: building footprints (extrusion bases) and POI points
-/// (label anchors). The elevation is encoded as a constant per-vertex `z`
-/// array. Draped layers (everything else) and DEM-less runs are untouched —
-/// their `z` stays absent (zero).
+/// Stamps DEM base elevations onto the features that need vertical placement:
+/// building footprints (mesh anchor) and POI points (label anchors). The
+/// elevation is encoded as a constant per-vertex `z` array. Draped layers
+/// (everything else) and DEM-less runs are untouched — their `z` stays absent
+/// (zero).
 ///
 /// Buildings anchor at the *highest* ground under the footprint, so uphill
 /// terrain never swallows the walls, and carry a `ground_relief` property
-/// (highest minus lowest) so the client extends the foundation past the lowest
-/// ground (see `emit_building_extrusion`). Sampling every footprint vertex
-/// captures that spread; the bbox centre alone cannot. POIs are points, so a
-/// single centre sample is their anchor.
+/// (highest minus lowest) so the mesher extends the foundation past the lowest
+/// ground (see `building_mesh`). Sampling every footprint vertex captures that
+/// spread; the bbox centre alone cannot. POIs are points, so a single centre
+/// sample is their anchor.
 fn stamp_elevations(buckets: &mut [Vec<EncoderFeature>], dem: &mut Option<Dem>, z: u8) {
     let Some(d) = dem else {
         return;

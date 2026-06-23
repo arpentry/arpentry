@@ -52,11 +52,6 @@ typedef struct {
     uint8_t cls;      /* index into style class registry; 0 = unknown */
     uint16_t poly_id; /* polygon ID: rings sharing a poly_id belong to
                          the same polygon (exterior + holes) */
-    int32_t height_m; /* building height in meters (0 for surface polygons) */
-    int32_t relief_m; /* terrain relief under the footprint in meters (highest
-                         minus lowest); the extrusion sinks the foundation this
-                         far so sloped ground hides the wall base. 0 when flat
-                         or absent. */
 } arpt_surface_polygon;
 
 /**
@@ -154,16 +149,7 @@ bool arpt_decode_line_labels(const void *flatbuf, size_t size,
 
 void arpt_line_label_data_free(arpt_line_label_data *data);
 
-/* Building decoding (PolygonGeometry, same struct as surface) */
-
-/**
- * Extract building footprints from a named layer in a verified FlatBuffer tile.
- * Extracts PolygonGeometry features with their class and height.
- */
-bool arpt_decode_buildings(const void *flatbuf, size_t size,
-                           const char *layer_name,
-                           const char (*class_names)[32], int class_count,
-                           arpt_surface_data *out);
+/* Building meshes are decoded via arpt_decode_building_mesh in prepare.h. */
 
 /* Tree decoding (PointGeometry) */
 

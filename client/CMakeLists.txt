@@ -126,7 +126,7 @@ add_executable(arpentry_client
     src/pipeline/core.c
     src/pipeline/mesh.c
     src/pipeline/texture.c
-    src/pipeline/extrusion.c
+    src/pipeline/building.c
     src/pipeline/instance.c
     src/pipeline/label.c
     src/pipeline/line_label.c

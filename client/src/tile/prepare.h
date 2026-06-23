@@ -67,7 +67,7 @@ typedef struct {
     size_t vert_count, index_count;
 } arpt_line_prim;
 
-/* Extruded mesh (owns its buffers) */
+/* Building mesh — server-baked walls + roof (owns its buffers) */
 
 typedef struct {
     uint16_t *xy;
@@ -75,7 +75,7 @@ typedef struct {
     int8_t *normals;
     uint32_t *indices;
     size_t vertex_count, index_count;
-} arpt_extrusion_prim;
+} arpt_building_prim;
 
 /* Instanced model batch */
 
@@ -155,7 +155,7 @@ typedef struct arpt_tile_prims {
     arpt_terrain_mesh terrain;
     arpt_polygon_prim polygons;
     arpt_line_prim lines;
-    arpt_extrusion_prim extrusion;
+    arpt_building_prim buildings;
     arpt_instance_prim instances;
     arpt_label_prim labels;
     arpt_line_label_prim line_labels;
@@ -171,8 +171,15 @@ void arpt_prepare_lines(const arpt_line_data *line_data,
                         const arpt_style *style, int level,
                         arpt_line_prim *out);
 
-void arpt_prepare_extrusion(const arpt_surface_data *buildings,
-                            arpt_bounds bounds, arpt_extrusion_prim *out);
+/* Buildings arrive as server-baked 3D meshes (MeshGeometry): walls + roof,
+   anchored to the terrain, with roof shapes derived from source attributes.
+   Decode every MeshGeometry feature of the named layer straight into the
+   building primitive (xy/z/normals/indices). Returns true and fills `out` when
+   the layer holds meshes; returns false (with `out` zeroed) when the layer is
+   absent or empty. */
+bool arpt_decode_building_mesh(const void *flatbuf, size_t size,
+                               const char *layer_name,
+                               arpt_building_prim *out);
 
 void arpt_prepare_instances(const arpt_tree_data *trees, int model_count,
                             arpt_instance_prim *out);

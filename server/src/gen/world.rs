@@ -8,8 +8,10 @@
 //! same client decodes both.
 
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
+use geo_types::{Coord, Geometry, LineString, Polygon};
 
 use super::{poi, surface, terrain, town, tree};
+use crate::building_mesh::{self, RoofParams};
 use crate::fb::tile::arpentry::tiles as fbt;
 use crate::project::{self, Bounds};
 
@@ -31,6 +33,18 @@ const FEATURE_CLIP_MARGIN: f64 = 0.0625;
 /// Whether a lon/lat bounding box intersects the tile clip rect.
 fn bbox_hits_tile(clip: &Bounds, wlon: f64, slat: f64, elon: f64, nlat: f64) -> bool {
     elon >= clip.west && wlon <= clip.east && nlat >= clip.south && slat <= clip.north
+}
+
+/// Building height in metres for a town height-class value index (the value
+/// dictionary stores 5/8/10/12/15 m at [`town::TOWN_VAL_H5`]..`H15`).
+fn town_height_m(height_val: u32) -> f64 {
+    match height_val {
+        town::TOWN_VAL_H8 => 8.0,
+        town::TOWN_VAL_H10 => 10.0,
+        town::TOWN_VAL_H12 => 12.0,
+        town::TOWN_VAL_H15 => 15.0,
+        _ => 5.0,
+    }
 }
 
 /// Generates a Brotli-compressed `.arpt` tile for `(z, x, y)` from procedural noise.
@@ -198,7 +212,8 @@ fn build_tile(bounds: &Bounds) -> Vec<u8> {
         layers.push(fbt::Layer::create(&mut fbb, &fbt::LayerArgs { name: Some(name), features: Some(features) }));
     }
 
-    // Layer 3: building footprints — only when the tile overlaps the town.
+    // Layer 3: buildings — server-baked 3D meshes (walls + flat roof), only when
+    // the tile overlaps the town.
     if has_town {
         let bldgs = &town::town().buildings;
         let clip = bounds.expanded(FEATURE_CLIP_MARGIN);
@@ -212,23 +227,41 @@ fn build_tile(bounds: &Bounds) -> Vec<u8> {
                 continue;
             }
             // CCW ring (SW SE NE NW close), matching the surface convention.
-            let lons = [b.lon - hw, b.lon + hw, b.lon + hw, b.lon - hw, b.lon - hw];
-            let lats = [b.lat - hh, b.lat - hh, b.lat + hh, b.lat + hh, b.lat - hh];
-            let bx: Vec<u16> = lons.iter().map(|&l| project::quantize_x(l, bounds)).collect();
-            let by: Vec<u16> = lats.iter().map(|&l| project::quantize_y(l, bounds)).collect();
-            let base_z = project::quantize_z(terrain::terrain_elevation(b.lon, b.lat));
-            let x = fbb.create_vector(&bx);
-            let y = fbb.create_vector(&by);
-            let zv = fbb.create_vector(&vec![base_z; 5]);
-            let ring = fbb.create_vector(&[0u32, 5]);
-            let geom = fbt::PolygonGeometry::create(
+            let footprint = Geometry::Polygon(Polygon::new(
+                LineString(vec![
+                    Coord { x: b.lon - hw, y: b.lat - hh },
+                    Coord { x: b.lon + hw, y: b.lat - hh },
+                    Coord { x: b.lon + hw, y: b.lat + hh },
+                    Coord { x: b.lon - hw, y: b.lat + hh },
+                    Coord { x: b.lon - hw, y: b.lat - hh },
+                ]),
+                vec![],
+            ));
+            let base = terrain::terrain_elevation(b.lon, b.lat);
+            let Some(mesh) = building_mesh::build(
+                &footprint,
+                bounds,
+                base,
+                0.0,
+                town_height_m(b.height_val),
+                &RoofParams::default(),
+            ) else {
+                continue; // centroid belongs to a neighbouring tile
+            };
+            let x = fbb.create_vector(&mesh.x);
+            let y = fbb.create_vector(&mesh.y);
+            let z = fbb.create_vector(&mesh.z);
+            let indices = fbb.create_vector(&mesh.indices);
+            let normals = fbb.create_vector(&mesh.normals);
+            let geom = fbt::MeshGeometry::create(
                 &mut fbb,
-                &fbt::PolygonGeometryArgs {
+                &fbt::MeshGeometryArgs {
                     x: Some(x),
                     y: Some(y),
-                    z: Some(zv),
-                    ring_offsets: Some(ring),
-                    polygon_offsets: None,
+                    z: Some(z),
+                    indices: Some(indices),
+                    normals: Some(normals),
+                    ..Default::default()
                 },
             );
             let props = fbb.create_vector(&[
@@ -239,7 +272,7 @@ fn build_tile(bounds: &Bounds) -> Vec<u8> {
                 &mut fbb,
                 &fbt::FeatureArgs {
                     id: (200_000 + i) as u64,
-                    geometry_type: fbt::Geometry::PolygonGeometry,
+                    geometry_type: fbt::Geometry::MeshGeometry,
                     geometry: Some(geom.as_union_value()),
                     properties: Some(props),
                 },

@@ -93,7 +93,7 @@
     },
     {
       "source_layer": "building",
-      "type": "extrusion",
+      "type": "building",
       "min_level": 13,
       "paint": [
         { "class": "building",       "color": [226, 220, 211, 255] },

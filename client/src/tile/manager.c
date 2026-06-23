@@ -238,7 +238,6 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
 
     arpt_surface_data surface = {0};
     arpt_line_data lines = {0};
-    arpt_surface_data buildings = {0};
     arpt_tree_data trees = {0};
     arpt_poi_data pois = {0};
     arpt_line_label_data line_labels = {0};
@@ -270,10 +269,11 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
             arpt_surface_data_free(&extra);
             break;
         }
-        case ARPT_LAYER_EXTRUSION:
-            arpt_decode_buildings(flatbuf, size, le->source_layer,
-                                  tm->style.class_names,
-                                  tm->style.class_count, &buildings);
+        case ARPT_LAYER_BUILDING:
+            /* Buildings are server-baked 3D meshes, decoded straight into the
+               building primitive. */
+            arpt_decode_building_mesh(flatbuf, size, le->source_layer,
+                                      &p->prims.buildings);
             break;
         case ARPT_LAYER_INSTANCE:
             arpt_decode_trees(flatbuf, size, le->source_layer,
@@ -400,7 +400,6 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
 
     arpt_prepare_polygons(&surface, &tm->style, &p->prims.polygons);
     arpt_prepare_lines(&lines, &tm->style, key.level, &p->prims.lines);
-    arpt_prepare_extrusion(&buildings, bounds, &p->prims.extrusion);
     arpt_prepare_instances(&trees, arpt_renderer_model_count(tm->renderer),
                            &p->prims.instances);
     arpt_prepare_labels(&pois, arpt_renderer_font_glyphs(tm->renderer),
@@ -438,7 +437,6 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
 
     arpt_surface_data_free(&surface);
     arpt_line_data_free(&lines);
-    arpt_surface_data_free(&buildings);
     arpt_tree_data_free(&trees);
     arpt_poi_data_free(&pois);
     arpt_line_label_data_free(&line_labels);
@@ -449,7 +447,6 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
 oom:
     arpt_surface_data_free(&surface);
     arpt_line_data_free(&lines);
-    arpt_surface_data_free(&buildings);
     arpt_tree_data_free(&trees);
     arpt_poi_data_free(&pois);
     arpt_line_label_data_free(&line_labels);

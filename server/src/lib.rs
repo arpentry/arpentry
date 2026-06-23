@@ -18,6 +18,7 @@
 #![allow(dead_code)]
 
 pub mod archive;
+pub mod building_mesh;
 pub mod clip;
 pub mod dem;
 pub mod fb;

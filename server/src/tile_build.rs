@@ -13,7 +13,9 @@ use std::collections::HashMap;
 
 use geo_types::{Coord, Geometry, LineString, Polygon};
 
+use crate::building_mesh::{self, RoofParams, RoofShape};
 use crate::fb::tile::arpentry::tiles as fbt;
+use crate::layers;
 use crate::project::{self, Bounds};
 use crate::terrain::TerrainMesh;
 use crate::value::Value;
@@ -30,10 +32,10 @@ pub struct EncoderFeature {
     pub id: u64,
     pub geometry: Geometry,
     pub properties: Vec<(String, Value)>,
-    /// Base elevation in metres above the ellipsoid, written as a constant
-    /// per-vertex `z` array (FORMAT.md §3.4). Set for features the client
-    /// places vertically itself (building extrusions, POI labels); `None`
-    /// omits `z`, which decodes as elevation zero.
+    /// Base elevation in metres above the ellipsoid. Anchors building meshes
+    /// (the wall top/foot are measured from here) and POI label points, where it
+    /// becomes a constant per-vertex `z` array (FORMAT.md §3.4). `None` omits
+    /// `z`, which decodes as elevation zero.
     pub elevation: Option<f64>,
 }
 
@@ -85,9 +87,18 @@ pub fn encode(bounds: &Bounds, terrain: Option<&TerrainMesh>, layers: &[EncoderL
         layer_offsets.push(build_terrain_layer(&mut fbb, mesh));
     }
     for layer in layers {
+        // Buildings always ship as server-built 3D meshes (walls + roof); the
+        // client has no footprint extruder. They first appear at zoom 13 (see
+        // profile::BUILDING_MIN_ZOOM).
+        let mesh_buildings = layer.name == layers::NAMES[layers::BUILDING as usize];
         let mut feat_offsets = Vec::with_capacity(layer.features.len());
         for f in &layer.features {
-            if let Some(fo) = build_feature(&mut fbb, bounds, f, &dict) {
+            let fo = if mesh_buildings {
+                build_building_mesh_feature(&mut fbb, bounds, f, &dict)
+            } else {
+                build_feature(&mut fbb, bounds, f, &dict)
+            };
+            if let Some(fo) = fo {
                 feat_offsets.push(fo);
             }
         }
@@ -221,11 +232,12 @@ fn build_value<'a>(
     }
 }
 
-/// Builds the "terrain" layer: one feature with a `MeshGeometry` (no properties).
-fn build_terrain_layer<'a>(
+/// Builds a `MeshGeometry` union member (single client-styled part, no
+/// material). Shared by the terrain layer and high-zoom building meshes.
+fn mesh_geometry<'a>(
     fbb: &mut flatbuffers::FlatBufferBuilder<'a>,
     mesh: &TerrainMesh,
-) -> flatbuffers::WIPOffset<fbt::Layer<'a>> {
+) -> (fbt::Geometry, flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset>) {
     let x = fbb.create_vector(&mesh.x);
     let y = fbb.create_vector(&mesh.y);
     let z = fbb.create_vector(&mesh.z);
@@ -242,12 +254,21 @@ fn build_terrain_layer<'a>(
             ..Default::default()
         },
     );
+    (fbt::Geometry::MeshGeometry, geom.as_union_value())
+}
+
+/// Builds the "terrain" layer: one feature with a `MeshGeometry` (no properties).
+fn build_terrain_layer<'a>(
+    fbb: &mut flatbuffers::FlatBufferBuilder<'a>,
+    mesh: &TerrainMesh,
+) -> flatbuffers::WIPOffset<fbt::Layer<'a>> {
+    let (geom_type, geom) = mesh_geometry(fbb, mesh);
     let feat = fbt::Feature::create(
         fbb,
         &fbt::FeatureArgs {
             id: 0,
-            geometry_type: fbt::Geometry::MeshGeometry,
-            geometry: Some(geom.as_union_value()),
+            geometry_type: geom_type,
+            geometry: Some(geom),
             properties: None,
         },
     );
@@ -265,18 +286,7 @@ fn build_feature<'a>(
     // Elevation is stored as int32 millimetres above the ellipsoid.
     let elevation_mm = f.elevation.map(|m| (m * 1000.0) as i32);
     let (geom_type, geom) = build_geometry(fbb, bounds, &f.geometry, elevation_mm)?;
-
-    let props: Vec<fbt::Property> = f
-        .properties
-        .iter()
-        .filter_map(|(k, v)| {
-            let ki = *dict.key_index.get(k)?;
-            let vi = *dict.value_index.get(&vkey(v))?;
-            Some(fbt::Property::new(ki, vi))
-        })
-        .collect();
-    let props_vec = fbb.create_vector(&props);
-
+    let props_vec = encode_props(fbb, f, dict);
     Some(fbt::Feature::create(
         fbb,
         &fbt::FeatureArgs {
@@ -286,6 +296,73 @@ fn build_feature<'a>(
             properties: Some(props_vec),
         },
     ))
+}
+
+/// Dictionary-encodes a feature's properties to a `Property` vector.
+fn encode_props<'a>(
+    fbb: &mut flatbuffers::FlatBufferBuilder<'a>,
+    f: &EncoderFeature,
+    dict: &Dictionaries,
+) -> flatbuffers::WIPOffset<flatbuffers::Vector<'a, fbt::Property>> {
+    let props: Vec<fbt::Property> = f
+        .properties
+        .iter()
+        .filter_map(|(k, v)| {
+            let ki = *dict.key_index.get(k)?;
+            let vi = *dict.value_index.get(&vkey(v))?;
+            Some(fbt::Property::new(ki, vi))
+        })
+        .collect();
+    fbb.create_vector(&props)
+}
+
+/// Builds a high-zoom building feature as a server-tessellated `MeshGeometry`
+/// (walls + roof). Returns `None` when there is nothing to mesh (degenerate
+/// footprint, or one whose centroid belongs to a neighbouring tile) — the
+/// building is simply omitted rather than falling back to a polygon, so the
+/// tile never mixes the two forms.
+fn build_building_mesh_feature<'a>(
+    fbb: &mut flatbuffers::FlatBufferBuilder<'a>,
+    bounds: &Bounds,
+    f: &EncoderFeature,
+    dict: &Dictionaries,
+) -> Option<flatbuffers::WIPOffset<fbt::Feature<'a>>> {
+    let height_m = prop_f64(f, "height").unwrap_or(0.0);
+    let relief_m = prop_f64(f, "ground_relief").unwrap_or(0.0);
+    let base_elev_m = f.elevation.unwrap_or(0.0);
+    let roof = RoofParams {
+        shape: prop_str(f, "roof_shape").map_or(RoofShape::Flat, |s| RoofShape::parse(&s)),
+        roof_height_m: prop_f64(f, "roof_height"),
+    };
+    let mesh = building_mesh::build(&f.geometry, bounds, base_elev_m, relief_m, height_m, &roof)?;
+    let (geom_type, geom) = mesh_geometry(fbb, &mesh);
+    let props_vec = encode_props(fbb, f, dict);
+    Some(fbt::Feature::create(
+        fbb,
+        &fbt::FeatureArgs {
+            id: f.id,
+            geometry_type: geom_type,
+            geometry: Some(geom),
+            properties: Some(props_vec),
+        },
+    ))
+}
+
+/// Reads a numeric property (Int or Double) from a feature, if present.
+fn prop_f64(f: &EncoderFeature, key: &str) -> Option<f64> {
+    f.properties.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
+        Value::Double(d) => Some(*d),
+        Value::Int(i) => Some(*i as f64),
+        _ => None,
+    })
+}
+
+/// Reads a string property from a feature, if present.
+fn prop_str(f: &EncoderFeature, key: &str) -> Option<String> {
+    f.properties.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
+        Value::String(s) => Some(s.clone()),
+        _ => None,
+    })
 }
 
 /// Builds the geometry union member for a feature, returning its type tag and
@@ -596,8 +673,10 @@ mod tests {
             ]),
             vec![],
         );
+        // A non-building polygon layer: buildings now ship as MeshGeometry, but
+        // the elevation→constant-z path still applies to other polygon features.
         let layers = vec![EncoderLayer {
-            name: "building".into(),
+            name: "land_use".into(),
             features: vec![EncoderFeature {
                 id: 1,
                 geometry: Geometry::Polygon(square),

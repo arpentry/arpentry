@@ -35,7 +35,7 @@ pub const ENUM_MAX_LAYER_TYPE: u8 = 6;
 pub const ENUM_VALUES_LAYER_TYPE: [LayerType; 7] = [
   LayerType::Terrain,
   LayerType::Texture,
-  LayerType::Extrusion,
+  LayerType::Building,
   LayerType::Instance,
   LayerType::Label,
   LayerType::Line,
@@ -49,7 +49,7 @@ pub struct LayerType(pub u8);
 impl LayerType {
   pub const Terrain: Self = Self(0);
   pub const Texture: Self = Self(1);
-  pub const Extrusion: Self = Self(2);
+  pub const Building: Self = Self(2);
   pub const Instance: Self = Self(3);
   pub const Label: Self = Self(4);
   pub const Line: Self = Self(5);
@@ -60,7 +60,7 @@ impl LayerType {
   pub const ENUM_VALUES: &'static [Self] = &[
     Self::Terrain,
     Self::Texture,
-    Self::Extrusion,
+    Self::Building,
     Self::Instance,
     Self::Label,
     Self::Line,
@@ -71,7 +71,7 @@ impl LayerType {
     match self {
       Self::Terrain => Some("Terrain"),
       Self::Texture => Some("Texture"),
-      Self::Extrusion => Some("Extrusion"),
+      Self::Building => Some("Building"),
       Self::Instance => Some("Instance"),
       Self::Label => Some("Label"),
       Self::Line => Some("Line"),

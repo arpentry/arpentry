@@ -50,7 +50,7 @@ fn parse_rgba(arr: &Json) -> fbs::RGBA {
 fn layer_type(s: &str) -> fbs::LayerType {
     match s {
         "terrain" => fbs::LayerType::Terrain,
-        "extrusion" => fbs::LayerType::Extrusion,
+        "building" => fbs::LayerType::Building,
         "instance" => fbs::LayerType::Instance,
         "label" => fbs::LayerType::Label,
         "line" => fbs::LayerType::Line,

@@ -187,7 +187,7 @@ else
     add_input 6 "$DATA_DIR/land_use.parquet"          # land_use
     add_input 3 "$DATA_DIR/water.parquet"             # water
     add_input 5 "$DATA_DIR/segment.parquet"           # transportation
-    add_input 7 "$DATA_DIR/building.parquet"          # building (extrusions)
+    add_input 7 "$DATA_DIR/building.parquet"          # building (3D meshes)
     add_input 8 "$DATA_DIR/place.parquet"             # poi (labels)
     add_input 9 "$DATA_DIR/division_boundary.parquet" # boundary (country/canton)
 
