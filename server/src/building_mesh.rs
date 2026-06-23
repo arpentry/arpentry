@@ -10,6 +10,12 @@
 //! lowest ground (relief) plus a margin, so sloped terrain never reveals a gap.
 //! Coordinates are tile-local quantized uint16 (x/y) and int32 millimetres (z),
 //! matching `MeshGeometry`.
+//!
+//! Footprints with interior rings (courtyards, like EPFL's Rolex Learning
+//! Centre) get walls around every ring and a roof cap triangulated with the
+//! holes cut out, so the void reads through. The exterior is forced CCW and
+//! holes CW so wall faces and the cap point the right way under back-face
+//! culling.
 
 use geo_types::{Coord, Geometry, Polygon};
 
@@ -226,12 +232,58 @@ fn add_polygon(
     height_mm: i32,
     roof: &RoofParams,
 ) {
-    let ring = open_ring(poly.exterior().0.as_slice(), bounds);
-    if ring.len() < 3 || !centroid_in_proper(&ring) {
+    let mut outer = open_ring(poly.exterior().0.as_slice(), bounds);
+    if outer.len() < 3 || !centroid_in_proper(&outer) {
         return;
     }
-    add_walls(acc, frame, bounds, &ring, foot_z, height_mm);
-    add_roof(acc, frame, &ring, height_mm, roof);
+    // Force the exterior CCW so wall faces and the roof cap point outward/up;
+    // courtyard rings are forced CW so their walls face into the courtyard and
+    // earcut cuts them out of the cap. Quantized winding matches geographic
+    // winding (qy grows northward), so this is consistent with the lon/lat
+    // normals computed in `add_walls`.
+    ensure_winding(&mut outer, Winding::Ccw);
+    let mut holes: Vec<Vec<Vtx>> = Vec::new();
+    for interior in poly.interiors() {
+        let mut hole = open_ring(interior.0.as_slice(), bounds);
+        if hole.len() < 3 {
+            continue;
+        }
+        ensure_winding(&mut hole, Winding::Cw);
+        holes.push(hole);
+    }
+
+    add_walls(acc, frame, bounds, &outer, foot_z, height_mm);
+    for hole in &holes {
+        add_walls(acc, frame, bounds, hole, foot_z, height_mm);
+    }
+    add_roof(acc, frame, &outer, &holes, height_mm, roof);
+}
+
+/// Ring orientation in tile space (`qy` grows northward, so this also matches
+/// geographic winding).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Winding {
+    Ccw,
+    Cw,
+}
+
+/// Twice the signed area of a ring in quantized space; positive is CCW.
+fn signed_area2(ring: &[Vtx]) -> i64 {
+    let n = ring.len();
+    let mut a = 0i64;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        a += ring[i].qx as i64 * ring[j].qy as i64 - ring[j].qx as i64 * ring[i].qy as i64;
+    }
+    a
+}
+
+/// Reverses the ring in place if it does not already have the wanted winding.
+fn ensure_winding(ring: &mut [Vtx], want: Winding) {
+    let have = if signed_area2(ring) >= 0 { Winding::Ccw } else { Winding::Cw };
+    if have != want {
+        ring.reverse();
+    }
 }
 
 /// Drops the repeated closing vertex and quantizes each ring coordinate.
@@ -279,21 +331,24 @@ fn add_walls(acc: &mut Accum, frame: &Frame, bounds: &Bounds, ring: &[Vtx], foot
     }
 }
 
-fn add_roof(acc: &mut Accum, frame: &Frame, ring: &[Vtx], eave_z: i32, roof: &RoofParams) {
-    let rise_mm = roof_rise_mm(frame, ring, roof);
+fn add_roof(acc: &mut Accum, frame: &Frame, outer: &[Vtx], holes: &[Vec<Vtx>], eave_z: i32, roof: &RoofParams) {
+    let rise_mm = roof_rise_mm(frame, outer, roof);
+    // Pyramidal (centroid apex) and gabled (ridge over a quad) have no sensible
+    // analogue when the footprint has courtyards; those fall back to a flat cap,
+    // which is the only shape that triangulates holes. Flat and skillion both
+    // tessellate the cap directly and so carry holes through.
     match roof.shape {
-        RoofShape::Flat => add_flat_roof(acc, frame, ring, eave_z),
-        RoofShape::Pyramidal => add_pyramidal_roof(acc, frame, ring, eave_z, rise_mm),
-        RoofShape::Skillion => add_skillion_roof(acc, frame, ring, eave_z, rise_mm),
-        RoofShape::Gabled => {
-            // A clean gable needs a rectangle-ish footprint; fall back to flat
-            // for complex outlines rather than emit self-intersecting facets.
-            if ring.len() == 4 {
-                add_gabled_roof(acc, frame, ring, eave_z, rise_mm);
-            } else {
-                add_flat_roof(acc, frame, ring, eave_z);
-            }
+        RoofShape::Flat => add_flat_roof(acc, frame, outer, holes, eave_z),
+        RoofShape::Skillion => add_skillion_roof(acc, frame, outer, holes, eave_z, rise_mm),
+        RoofShape::Pyramidal if holes.is_empty() => {
+            add_pyramidal_roof(acc, frame, outer, eave_z, rise_mm)
         }
+        RoofShape::Gabled if holes.is_empty() && outer.len() == 4 => {
+            add_gabled_roof(acc, frame, outer, eave_z, rise_mm)
+        }
+        // Complex outline or holes present: a flat cap rather than self-
+        // intersecting facets.
+        _ => add_flat_roof(acc, frame, outer, holes, eave_z),
     }
 }
 
@@ -321,10 +376,11 @@ fn footprint_extent_m(frame: &Frame, ring: &[Vtx]) -> (f64, f64) {
     ((max_e - min_e).max(0.0), (max_n - min_n).max(0.0))
 }
 
-fn add_flat_roof(acc: &mut Accum, frame: &Frame, ring: &[Vtx], z: i32) {
+fn add_flat_roof(acc: &mut Accum, frame: &Frame, outer: &[Vtx], holes: &[Vec<Vtx>], z: i32) {
     let up = encode_octahedral(frame.up[0], frame.up[1], frame.up[2]);
-    let base: Vec<u32> = ring.iter().map(|v| acc.push(v.qx, v.qy, z, up)).collect();
-    for [a, b, c] in earclip(ring) {
+    let (verts, hole_starts) = combine_rings(outer, holes);
+    let base: Vec<u32> = verts.iter().map(|v| acc.push(v.qx, v.qy, z, up)).collect();
+    for [a, b, c] in triangulate_cap(&verts, &hole_starts) {
         acc.tri(base[a], base[b], base[c]);
     }
 }
@@ -359,25 +415,60 @@ fn add_pyramidal_roof(acc: &mut Accum, frame: &Frame, ring: &[Vtx], eave_z: i32,
     }
 }
 
-fn add_skillion_roof(acc: &mut Accum, frame: &Frame, ring: &[Vtx], eave_z: i32, rise_mm: i32) {
+fn add_skillion_roof(acc: &mut Accum, frame: &Frame, outer: &[Vtx], holes: &[Vec<Vtx>], eave_z: i32, rise_mm: i32) {
+    let (verts, hole_starts) = combine_rings(outer, holes);
     // Single tilted plane: ramp z linearly from the south edge (low) to the
     // north edge (high) of the footprint's lat span.
     let (mut min_lat, mut max_lat) = (f64::INFINITY, f64::NEG_INFINITY);
-    for v in ring {
+    for v in &verts {
         min_lat = min_lat.min(v.lat);
         max_lat = max_lat.max(v.lat);
     }
     let span = (max_lat - min_lat).max(1e-12);
     let zof = |v: &Vtx| eave_z + ((v.lat - min_lat) / span * rise_mm as f64) as i32;
-    // Triangulate the cap in footprint order; each facet gets the plane normal.
-    for [a, b, c] in earclip(ring) {
+    // Triangulate the cap (cutting any courtyards); each facet gets the plane
+    // normal.
+    for [a, b, c] in triangulate_cap(&verts, &hole_starts) {
         facet(
             acc,
             frame,
-            (ring[a], zof(&ring[a])),
-            (ring[b], zof(&ring[b])),
-            (ring[c], zof(&ring[c])),
+            (verts[a], zof(&verts[a])),
+            (verts[b], zof(&verts[b])),
+            (verts[c], zof(&verts[c])),
         );
+    }
+}
+
+/// Flattens an outer ring plus its holes into one vertex list and the start
+/// index of each hole (the form earcut expects).
+fn combine_rings(outer: &[Vtx], holes: &[Vec<Vtx>]) -> (Vec<Vtx>, Vec<usize>) {
+    let mut verts = outer.to_vec();
+    let mut starts = Vec::with_capacity(holes.len());
+    for hole in holes {
+        starts.push(verts.len());
+        verts.extend_from_slice(hole);
+    }
+    (verts, starts)
+}
+
+/// Triangulates a roof cap, returning index triples into `verts`. Without holes
+/// this is the in-house [`earclip`] (so existing buildings are untouched); with
+/// holes it bridges and ear-clips via earcut. The outer ring is forced CCW by
+/// the caller, so both produce CCW (upward-front-facing) triangles.
+fn triangulate_cap(verts: &[Vtx], hole_starts: &[usize]) -> Vec<[usize; 3]> {
+    if hole_starts.is_empty() {
+        return earclip(verts);
+    }
+    let mut coords: Vec<f64> = Vec::with_capacity(verts.len() * 2);
+    for v in verts {
+        coords.push(v.qx as f64);
+        coords.push(v.qy as f64);
+    }
+    match earcutr::earcut(&coords, hole_starts, 2) {
+        Ok(idx) => idx.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect(),
+        // Degenerate footprint (e.g. self-touching): cap the outer ring only
+        // rather than emit nothing.
+        Err(_) => earclip(&verts[..hole_starts[0]]),
     }
 }
 
@@ -637,5 +728,68 @@ mod tests {
         ];
         let g = Geometry::Polygon(Polygon::new(LineString(ring), vec![]));
         assert!(build(&g, &b, 0.0, 0.0, 10.0, &RoofParams::default()).is_none());
+    }
+
+    /// A square footprint with a concentric square courtyard (hole), both
+    /// centred in the tile proper. `outer`/`inner` are the side lengths in
+    /// degrees. The exterior is CCW and the hole CW, matching OGC convention.
+    fn square_with_hole(bounds: &Bounds, outer: f64, inner: f64) -> Geometry {
+        let cx = (bounds.west + bounds.east) * 0.5;
+        let cy = (bounds.south + bounds.north) * 0.5;
+        let ring = |side: f64, ccw: bool| {
+            let h = side * 0.5;
+            let mut r = vec![
+                Coord { x: cx - h, y: cy - h },
+                Coord { x: cx + h, y: cy - h },
+                Coord { x: cx + h, y: cy + h },
+                Coord { x: cx - h, y: cy + h },
+                Coord { x: cx - h, y: cy - h },
+            ];
+            if !ccw {
+                r.reverse();
+            }
+            LineString(r)
+        };
+        Geometry::Polygon(Polygon::new(ring(outer, true), vec![ring(inner, false)]))
+    }
+
+    #[test]
+    fn courtyard_adds_inner_walls_and_perforates_roof() {
+        let b = Bounds::of_tile(16, 34000, 22000);
+        let holed = square_with_hole(&b, b.width() * 0.3, b.width() * 0.15);
+        let m = build(&holed, &b, 0.0, 0.0, 10.0, &RoofParams::default()).unwrap();
+
+        // Outer wall loop: 4 quads × 4 verts = 16. Inner (courtyard) wall loop:
+        // another 16. Flat roof over the 8-vertex annulus pushes those 8 verts.
+        assert_eq!(m.x.len(), 40, "outer + inner walls + annulus cap");
+        // Walls: 8 quads × 6 = 48 indices. The square-with-square-hole annulus
+        // ear-cuts to 8 triangles = 24 indices (a covered roof would be 6, an
+        // ignored hole would drop the inner walls entirely).
+        assert_eq!(m.indices.len(), 72);
+        assert!(m.indices.iter().all(|&i| (i as usize) < m.x.len()));
+
+        // The footprint centre sits inside the courtyard, so no up-facing cap
+        // triangle may contain it: the roof is perforated, not solid.
+        let top_z = 10_000;
+        let centre = ((BUFFER + EXTENT / 2.0) as i64, (BUFFER + EXTENT / 2.0) as i64);
+        let in_tri = |a: usize, b: usize, c: usize| -> bool {
+            let p = |i: usize| (m.x[i] as i64, m.y[i] as i64);
+            let (ax, ay) = p(a);
+            let (bx, by) = p(b);
+            let (cx, cy) = p(c);
+            let s = |(px, py): (i64, i64), (qx, qy): (i64, i64)| {
+                (qx - px) * (centre.1 - py) - (qy - py) * (centre.0 - px)
+            };
+            let d1 = s((ax, ay), (bx, by));
+            let d2 = s((bx, by), (cx, cy));
+            let d3 = s((cx, cy), (ax, ay));
+            (d1 >= 0 && d2 >= 0 && d3 >= 0) || (d1 <= 0 && d2 <= 0 && d3 <= 0)
+        };
+        for t in m.indices.chunks_exact(3) {
+            let (i, j, k) = (t[0] as usize, t[1] as usize, t[2] as usize);
+            if m.z[i] == top_z && m.z[j] == top_z && m.z[k] == top_z {
+                assert!(!in_tri(i, j, k), "roof cap covers the courtyard centre");
+            }
+        }
     }
 }

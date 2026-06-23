@@ -27,6 +27,11 @@ brotli = "7"
 # Milestone 3: geometry types for simplify/clip. Algorithms are hand-rolled
 # (Douglas–Peucker, Liang–Barsky, Sutherland–Hodgman), so only the types crate.
 geo-types = "0.7"
+# Building roofs: polygon-with-holes triangulation (courtyards like the Rolex
+# Learning Center). A correct hole-bridging tessellator is hard to hand-roll, so
+# we use this faithful Rust port of mapbox/earcut. The no-hole path still uses
+# the in-house `earclip` (see building_mesh.rs).
+earcutr = "0.4"
 # Milestone 4: GeoParquet input. Geometry is a WKB binary column decoded by the
 # hand-rolled `wkb` module, so no geoarrow dependency is needed.
 arrow = "53"
