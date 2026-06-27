@@ -281,6 +281,16 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
                               tm->tree_class_count, &trees);
             break;
         case ARPT_LAYER_LINE: {
+            /* Bridges and tunnels ride this line layer as server-baked box
+               prisms (MeshGeometry) alongside the road lines; decode them once
+               into per-kind primitives (split by `level`) so each colours
+               differently. The line decoder below skips the meshes. */
+            if (p->prims.bridges.vertex_count == 0)
+                arpt_decode_bridge_mesh(flatbuf, size, le->source_layer,
+                                        &p->prims.bridges);
+            if (p->prims.tunnels.vertex_count == 0)
+                arpt_decode_tunnel_mesh(flatbuf, size, le->source_layer,
+                                        &p->prims.tunnels);
             arpt_line_data extra = {0};
             arpt_decode_lines(flatbuf, size, le->source_layer,
                               tm->style.class_names,
@@ -399,7 +409,7 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
         pois.count = ARPT_MAX_POIS_PER_TILE;
 
     arpt_prepare_polygons(&surface, &tm->style, &p->prims.polygons);
-    arpt_prepare_lines(&lines, &tm->style, key.level, &mesh, &p->prims.lines);
+    arpt_prepare_lines(&lines, &tm->style, key.level, &p->prims.lines);
     arpt_prepare_instances(&trees, arpt_renderer_model_count(tm->renderer),
                            &p->prims.instances);
     arpt_prepare_labels(&pois, arpt_renderer_font_glyphs(tm->renderer),

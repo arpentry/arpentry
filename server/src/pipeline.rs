@@ -26,13 +26,16 @@ use crate::geom::GeometryType;
 use crate::geoparquet::GeoParquet;
 use crate::hilbert;
 use crate::layers;
+use crate::levels;
 use crate::profile;
 use crate::project::Bounds;
 use crate::value::Value;
 use crate::record;
 use crate::simplify;
 use crate::sort::{self, ExternalSorter};
-use crate::terrain::{self, TerrainMesh};
+use crate::structure_mesh;
+use crate::structures;
+use crate::terrain::{self, TerrainMesh, TERRAIN_GRID};
 use crate::tile_build::{self, EncoderFeature, EncoderLayer};
 use crate::tileid;
 use crate::tileset::{self, LayerInfo, TilesetInfo};
@@ -60,7 +63,9 @@ fn attrs_for(layer: u8) -> &'static [&'static str] {
             &["id", "subtype", "class", "height", "num_floors", "roof_shape", "roof_height"]
         }
         layers::POI => &["id", "names.primary", "basic_category", "confidence"],
-        // Road names feed the client's line-following street labels.
+        // Road names feed the client's line-following street labels;
+        // `level_rules` carries the bridge/tunnel level (FORMAT.md reserved
+        // `level`) so the client lifts bridges and sinks tunnels.
         layers::TRANSPORTATION => &[
             "id",
             "type",
@@ -68,6 +73,7 @@ fn attrs_for(layer: u8) -> &'static [&'static str] {
             "class",
             "subclass",
             "names.primary",
+            "level_rules",
             "cartography.min_zoom",
             "cartography.max_zoom",
             "cartography.sort_key",
@@ -79,9 +85,10 @@ fn attrs_for(layer: u8) -> &'static [&'static str] {
 /// Default geometric error at level 0, in metres.
 const DEFAULT_ROOT_ERROR: f64 = 512_000.0;
 
-/// Terrain mesh resolution (cells per side). Flat grid for now (FORMAT.md §9);
-/// the client requires a terrain mesh to render a tile at all.
-const TERRAIN_GRID: u32 = 16;
+/// Shortest bridge/tunnel run that is lifted/sunk as a structure. Below this a
+/// run (a footbridge span, a few-metre covered stretch) drapes as an ordinary
+/// road — baking a deck on it only leaves a tiny segment floating over the hill.
+const DECK_MIN_RUN_M: f64 = 40.0;
 
 /// Pipeline configuration.
 pub struct Config {
@@ -518,6 +525,7 @@ fn encode_tile(
     }
     let t_stamp = Instant::now();
     stamp_elevations(&mut buckets, dem, z);
+    stamp_roads(&mut buckets, dem, z, &bounds);
     let mut t_terrain = t_stamp.elapsed();
 
     // Vector layers in decode-priority (index) order.
@@ -620,6 +628,36 @@ fn stamp_elevations(buckets: &mut [Vec<EncoderFeature>], dem: &mut Option<Dem>, 
     }
 }
 
+/// Builds the consistent 3D model of the road network onto transportation
+/// features, all elevated from the same rendered terrain surface
+/// ([`terrain::surface_height`]) so the network is coherent and hugs the drawn
+/// ground. A non-ground `level` (bridge or tunnel) becomes a solid box-prism mesh
+/// ([`structure_mesh`]) riding the road's reconstructed gentle profile; a ground
+/// road gets per-vertex elevation baked onto its line ([`structures::bake_road_elevation`]),
+/// which the client strokes directly. Without a DEM nothing is elevated (roads
+/// stay flat at z = 0) and the carried run is just discarded.
+fn stamp_roads(buckets: &mut [Vec<EncoderFeature>], dem: &mut Option<Dem>, z: u8, bounds: &Bounds) {
+    for f in &mut buckets[layers::TRANSPORTATION as usize] {
+        let level = prop_level(f);
+        match dem {
+            Some(d) if level != 0 => structure_mesh::stamp(f, d, z, bounds, level),
+            Some(d) => {
+                structures::discard_run(f);
+                structures::bake_road_elevation(f, d, z, bounds);
+            }
+            None => structures::discard_run(f),
+        }
+    }
+}
+
+/// Reads a transportation feature's bridge/tunnel `level` property (0 absent).
+fn prop_level(f: &EncoderFeature) -> i64 {
+    f.properties.iter().find(|(k, _)| k == "level").map_or(0, |(_, v)| match v {
+        Value::Int(i) => *i,
+        _ => 0,
+    })
+}
+
 /// Phase-1 worker: drains row-group work items from the queue, streams their
 /// features, and fans each into per-tile sort records in a worker-owned
 /// sorter. Returns the sorter (merged k-way with the others afterwards) and
@@ -657,9 +695,10 @@ fn phase1_worker(
     Ok((sorter, stats))
 }
 
-/// Phase-1 per-feature work: profile the feature, then walk the tile quadtree
-/// from its first emitted zoom down to `zmax`, appending one sort record per
-/// (zoom, tile) it covers.
+/// Phase-1 per-feature work: split a multi-level transportation segment into
+/// constant-level pieces (see `crate::levels`), then hand each piece — or the
+/// whole geometry for everything else — to [`emit_geometry`], which profiles it
+/// and walks the tile quadtree.
 ///
 /// The walk clips each node's geometry from its parent's already-clipped piece
 /// (child clip rects nest strictly inside the parent's, so the result equals
@@ -681,16 +720,81 @@ fn process_feature(
     if !bbox_intersects(bb, &cfg.bbox) {
         return Ok(());
     }
-    let prof = profile::profile(layer, &f.properties, cfg.min_zoom, cfg.max_zoom);
+
+    // A transportation segment carries Overture `level_rules`: a linearly-
+    // referenced z-order that can change mid-segment — a road that runs at
+    // grade, climbs onto a bridge, dives into a tunnel, then surfaces, all under
+    // one geometry. Split it into maximal constant-level runs so each piece is
+    // profiled, lifted (bridge) or sunk (tunnel) on its own; collapsing the
+    // whole segment to one level lofts grade and tunnel sections onto a single
+    // phantom deck spanning unrelated endpoints (see `crate::levels`). Each
+    // piece carries its own uniform `level_rules` for `profile` to read.
+    if layer == layers::TRANSPORTATION && !f.level_runs.is_empty() {
+        // A bridge run's deck follows the road's gentle elevation profile, which
+        // is a function of the *whole* segment and its level structure (the
+        // at-grade stretches anchor it — see `structures`). Carry both on each
+        // bridge piece so every tile fragment rebuilds the same profile.
+        let carry = structures::encode_segment(&f.geometry, &f.level_runs);
+        for (geom, level) in levels::split_levels(&f.geometry, &f.level_runs) {
+            let mut props = f.properties.clone();
+            // A run shorter than the structural minimum (a footbridge span, a
+            // few-metre tunnel) drapes as an ordinary road: lifting it onto a
+            // deck or sinking it just leaves a tiny segment floating or buried.
+            let structural = level != 0 && line_length_m(&geom) >= DECK_MIN_RUN_M;
+            if structural {
+                props.push(("level_rules".to_string(), Value::Int(level)));
+            }
+            // A structural tunnel's box is largely buried in the hill it pierces;
+            // push it a few metres past each portal so the open mouths protrude
+            // and read as portals. Done here on the unclipped piece, the
+            // extension lands at the real portals, not tile-boundary cuts.
+            let geom = if structural && level < 0 {
+                structures::extend_portals(&geom)
+            } else {
+                geom
+            };
+            // Every (long enough) structure carries the deck profile: bridges
+            // ride it a clearance above (their deck), tunnels sink a box to it.
+            // Ground runs drape and need no profile.
+            let deck = match (structural, &carry) {
+                (true, Some(c)) => c.as_slice(),
+                _ => &[],
+            };
+            emit_geometry(layer, &geom, &props, deck, cfg, sorter, stats)?;
+        }
+        return Ok(());
+    }
+    emit_geometry(layer, &f.geometry, &f.properties, &[], cfg, sorter, stats)
+}
+
+/// Profiles one (sub-)geometry, then walks the tile quadtree from its first
+/// emitted zoom down to `zmax`, appending one sort record per (zoom, tile) it
+/// covers. Bridges record their abutments here so the deck baker can anchor the
+/// span (see `process_feature` for the per-segment split that feeds this).
+fn emit_geometry(
+    layer: u8,
+    geometry: &Geometry,
+    props: &[(String, Value)],
+    deck: &[(String, Value)],
+    cfg: &Config,
+    sorter: &mut ExternalSorter,
+    stats: &mut Stats,
+) -> Result<(), Error> {
+    let mut prof = profile::profile(layer, props, cfg.min_zoom, cfg.max_zoom);
     let zmin = prof.min_zoom.max(cfg.min_zoom);
     let zmax = prof.max_zoom.min(cfg.max_zoom);
     if zmin > zmax {
         return Ok(());
     }
 
+    // Bridge runs carry the deck profile (segment centerline + level structure)
+    // for the phase-2 baker, replicated to every tile via the `RecordEncoder`.
+    // It rides past `profile`, which keeps only its own styling keys.
+    prof.properties.extend_from_slice(deck);
+
     // Skip the zooms where the whole feature is smaller than one screen pixel
     // (sub-visible): emission starts at the first zoom it is visible at.
-    let zemit = first_visible_zoom(&f.geometry, zmin, zmax);
+    let zemit = first_visible_zoom(geometry, zmin, zmax);
     stats.dropped_subpixel += (zemit.min(zmax + 1) - zmin) as u64;
     let Some(zemit) = (zemit <= zmax).then_some(zemit) else {
         return Ok(());
@@ -698,7 +802,7 @@ fn process_feature(
 
     // Carry detail only down to what the finest emitted zoom keeps.
     let t_simplify = Instant::now();
-    let base = simplify::simplify_geometry(&f.geometry, tolerance_for(layer, zmax));
+    let base = simplify::simplify_geometry(geometry, tolerance_for(layer, zmax));
     stats.timings.simplify += t_simplify.elapsed();
     let Some(base) = base else {
         return Ok(());
@@ -884,6 +988,7 @@ fn flush_tile(
     let (z, x, y) = hilbert::tile_id_decode(tile_id);
     let bounds = Bounds::of_tile(z, x, y);
     stamp_elevations(buckets, dem, z);
+    stamp_roads(buckets, dem, z, &bounds);
 
     // Vector layers in decode-priority (index) order.
     let mut enc_layers = Vec::new();
@@ -959,6 +1064,27 @@ fn bbox_intersects(bb: (f64, f64, f64, f64), b: &Bounds) -> bool {
     bb.0 <= b.east && bb.2 >= b.west && bb.1 <= b.north && bb.3 >= b.south
 }
 
+/// Approximate metric length of a (multi)linestring in metres (equirectangular,
+/// longitude scaled by the mean latitude). Zero for non-line geometry.
+fn line_length_m(g: &Geometry) -> f64 {
+    const DEG_M: f64 = 111_320.0;
+    let line_len = |ls: &geo_types::LineString| -> f64 {
+        ls.0.windows(2)
+            .map(|w| {
+                let cos_lat = ((w[0].y + w[1].y) * 0.5).to_radians().cos();
+                let dx = (w[1].x - w[0].x) * cos_lat * DEG_M;
+                let dy = (w[1].y - w[0].y) * DEG_M;
+                (dx * dx + dy * dy).sqrt()
+            })
+            .sum()
+    };
+    match g {
+        Geometry::LineString(ls) => line_len(ls),
+        Geometry::MultiLineString(mls) => mls.0.iter().map(line_len).sum(),
+        _ => 0.0,
+    }
+}
+
 fn geom_type(g: &Geometry) -> GeometryType {
     match g {
         Geometry::Point(_) | Geometry::MultiPoint(_) => GeometryType::Point,
@@ -1028,6 +1154,51 @@ mod tests {
         let mut input = data;
         brotli::BrotliDecompress(&mut input, &mut out).unwrap();
         out
+    }
+
+    /// Scans `$ARPA` for transportation `MeshGeometry` features (baked tunnel
+    /// boxes), reporting their tile and approximate lon/lat so a screenshot can
+    /// be aimed at one. Run: `ARPA=/tmp/tunnels.arpa cargo test -- --ignored dump_tunnels --nocapture`
+    #[test]
+    #[ignore = "needs $ARPA"]
+    fn dump_tunnels() {
+        let path = std::env::var("ARPA").unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let archive = crate::archive::Archive::open(&bytes).unwrap();
+        let mut total = 0usize;
+        let mut shown = 0usize;
+        for entry in archive.entries() {
+            let raw = brotli_decompress(archive.get_by_id(entry.hilbert_id).unwrap());
+            let tile = fbt::root_as_tile(&raw).unwrap();
+            let Some(layers) = tile.layers() else { continue };
+            for li in 0..layers.len() {
+                let l = layers.get(li);
+                if l.name() != "transportation" {
+                    continue;
+                }
+                let Some(feats) = l.features() else { continue };
+                for fi in 0..feats.len() {
+                    let f = feats.get(fi);
+                    let Some(m) = f.geometry_as_mesh_geometry() else { continue };
+                    total += 1;
+                    if shown < 12 {
+                        let b = crate::project::Bounds::of_tile(entry.z, entry.x, entry.y);
+                        // First vertex → approx lon/lat (dequantize).
+                        let qx = m.x().get(0) as f64;
+                        let qy = m.y().get(0) as f64;
+                        let lon = b.west + (qx - 16384.0) / 32768.0 * b.width();
+                        let lat = b.south + (qy - 16384.0) / 32768.0 * b.height();
+                        eprintln!(
+                            "tunnel @ tile {}/{}/{}  verts={} tris={}  lon={:.5} lat={:.5}",
+                            entry.z, entry.x, entry.y, m.x().len(), m.indices().len() / 3, lon, lat
+                        );
+                        shown += 1;
+                    }
+                }
+            }
+        }
+        eprintln!("== {total} tunnel mesh features in {path} ==");
+        assert!(total > 0, "no tunnel meshes found");
     }
 
     /// Dumps polygon structure of one layer in one tile from `$ARPA`, for
@@ -1133,6 +1304,60 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Scans $ARPA for transportation lines carrying a baked deck `z` array
+    /// (bridges), reporting how many tiles/features have one and the elevation
+    /// span of the first few — confirms the bridge-deck pipeline end to end.
+    /// Run: `ARPA=/tmp/claude/bridges.arpa cargo test -- --ignored dump_bridge_decks --nocapture`
+    #[test]
+    #[ignore = "needs $ARPA"]
+    fn dump_bridge_decks() {
+        let path = std::env::var("ARPA").unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let archive = crate::archive::Archive::open(&bytes).unwrap();
+        let mut tiles_with_deck = 0usize;
+        let mut deck_feats = 0usize;
+        let mut shown = 0usize;
+        for entry in archive.entries() {
+            let raw = brotli_decompress(archive.get_by_id(entry.hilbert_id).unwrap());
+            let tile = fbt::root_as_tile(&raw).unwrap();
+            let Some(layers) = tile.layers() else { continue };
+            let mut tile_has = false;
+            for li in 0..layers.len() {
+                let l = layers.get(li);
+                if l.name() != "transportation" {
+                    continue;
+                }
+                let Some(feats) = l.features() else { continue };
+                for fi in 0..feats.len() {
+                    let Some(g) = feats.get(fi).geometry_as_line_geometry() else { continue };
+                    let Some(z) = g.z() else { continue };
+                    if z.len() == 0 {
+                        continue;
+                    }
+                    tile_has = true;
+                    deck_feats += 1;
+                    if shown < 8 {
+                        let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+                        for k in 0..z.len() {
+                            lo = lo.min(z.get(k));
+                            hi = hi.max(z.get(k));
+                        }
+                        eprintln!(
+                            "tile {}/{}/{} deck: {} verts, z {}..{} mm (rise {} mm)",
+                            entry.z, entry.x, entry.y, z.len(), lo, hi, hi - lo
+                        );
+                        shown += 1;
+                    }
+                }
+            }
+            if tile_has {
+                tiles_with_deck += 1;
+            }
+        }
+        eprintln!("== {deck_feats} bridge-deck features across {tiles_with_deck} tiles ==");
+        assert!(deck_feats > 0, "no baked bridge decks found in {path}");
     }
 
     /// Breaks down specific tiles in $ARPA by layer: feature count and total

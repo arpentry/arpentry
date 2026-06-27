@@ -319,14 +319,61 @@ find_layer_by_name(const void *flatbuf, size_t size, const char *name) {
     return NULL;
 }
 
-bool arpt_decode_building_mesh(const void *flatbuf, size_t size,
-                               const char *layer_name,
-                               arpt_building_prim *out) {
-    memset(out, 0, sizeof(*out));
+/* Resolve the dictionary index of a property key by name, or UINT32_MAX. */
+static uint32_t find_key_index(const void *flatbuf, const char *key) {
+    arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root(flatbuf);
+    if (!tile) return UINT32_MAX;
+    flatbuffers_string_vec_t keys = arpentry_tiles_Tile_keys(tile);
+    if (!keys) return UINT32_MAX;
+    size_t nkeys = flatbuffers_string_vec_len(keys);
+    for (size_t i = 0; i < nkeys; i++) {
+        flatbuffers_string_t k = flatbuffers_string_vec_at(keys, i);
+        if (k && strcmp(k, key) == 0) return (uint32_t)i;
+    }
+    return UINT32_MAX;
+}
 
-    arpentry_tiles_Layer_table_t layer =
-        find_layer_by_name(flatbuf, size, layer_name);
-    if (!layer) return false;
+/* Read an integer-valued property of a feature, or `dflt` when absent. */
+static int64_t resolve_int(arpentry_tiles_Feature_table_t feat, uint32_t key_idx,
+                           arpentry_tiles_Value_vec_t values, int64_t dflt) {
+    if (key_idx == UINT32_MAX || !values) return dflt;
+    arpentry_tiles_Property_vec_t props =
+        arpentry_tiles_Feature_properties(feat);
+    if (!props) return dflt;
+    size_t np = arpentry_tiles_Property_vec_len(props);
+    for (size_t p = 0; p < np; p++) {
+        arpentry_tiles_Property_struct_t pr =
+            arpentry_tiles_Property_vec_at(props, p);
+        if (pr && pr->key == key_idx) {
+            size_t vi = pr->value;
+            if (vi < arpentry_tiles_Value_vec_len(values)) {
+                arpentry_tiles_Value_table_t val =
+                    arpentry_tiles_Value_vec_at(values, vi);
+                return arpentry_tiles_Value_int_value(val);
+            }
+            break;
+        }
+    }
+    return dflt;
+}
+
+/* Keep a feature given a level filter: 0 keeps all (buildings); +1 keeps only
+   bridges (level > 0); -1 keeps only tunnels (level < 0). */
+static bool keep_by_level(arpentry_tiles_Feature_table_t feat, int sign,
+                          uint32_t level_key, arpentry_tiles_Value_vec_t values) {
+    if (sign == 0) return true;
+    int64_t lv = resolve_int(feat, level_key, values, 0);
+    return sign > 0 ? lv > 0 : lv < 0;
+}
+
+/* Concatenate the MeshGeometry features of a layer into one mesh primitive
+   (xy/z/normals/indices), offsetting indices per feature. `level_sign` filters
+   by the reserved `level` property — 0 takes all (buildings), +1 only bridges,
+   -1 only tunnels. Returns false (with `out` zeroed) when no matching mesh. */
+static bool collect_layer_meshes(const void *flatbuf,
+                                 arpentry_tiles_Layer_table_t layer,
+                                 int level_sign, arpt_building_prim *out) {
+    memset(out, 0, sizeof(*out));
 
     arpentry_tiles_Feature_vec_t features =
         arpentry_tiles_Layer_features(layer);
@@ -334,17 +381,16 @@ bool arpt_decode_building_mesh(const void *flatbuf, size_t size,
     size_t n_feat = arpentry_tiles_Feature_vec_len(features);
     if (n_feat == 0) return false;
 
-    /* Buildings ship as server-baked MeshGeometry; bail out (no mesh) when the
-       layer's features are any other geometry type. */
-    {
-        arpentry_tiles_Feature_table_t f0 =
-            arpentry_tiles_Feature_vec_at(features, 0);
-        if (!f0 || arpentry_tiles_Feature_geometry_type(f0) !=
-                       arpentry_tiles_Geometry_MeshGeometry)
-            return false;
+    /* Resolve the `level` key + value table once for the filtered passes. */
+    uint32_t level_key = UINT32_MAX;
+    arpentry_tiles_Value_vec_t values = NULL;
+    if (level_sign != 0) {
+        level_key = find_key_index(flatbuf, "level");
+        arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root(flatbuf);
+        values = tile ? arpentry_tiles_Tile_values(tile) : NULL;
     }
 
-    /* First pass: total vertices and indices across all mesh features. */
+    /* First pass: total vertices and indices across all matching mesh features. */
     size_t total_v = 0, total_i = 0;
     for (size_t i = 0; i < n_feat; i++) {
         arpentry_tiles_Feature_table_t feat =
@@ -352,6 +398,7 @@ bool arpt_decode_building_mesh(const void *flatbuf, size_t size,
         if (!feat || arpentry_tiles_Feature_geometry_type(feat) !=
                          arpentry_tiles_Geometry_MeshGeometry)
             continue;
+        if (!keep_by_level(feat, level_sign, level_key, values)) continue;
         arpentry_tiles_MeshGeometry_table_t mesh =
             (arpentry_tiles_MeshGeometry_table_t)
                 arpentry_tiles_Feature_geometry(feat);
@@ -385,6 +432,7 @@ bool arpt_decode_building_mesh(const void *flatbuf, size_t size,
         if (!feat || arpentry_tiles_Feature_geometry_type(feat) !=
                          arpentry_tiles_Geometry_MeshGeometry)
             continue;
+        if (!keep_by_level(feat, level_sign, level_key, values)) continue;
         arpentry_tiles_MeshGeometry_table_t mesh =
             (arpentry_tiles_MeshGeometry_table_t)
                 arpentry_tiles_Feature_geometry(feat);
@@ -425,6 +473,54 @@ bool arpt_decode_building_mesh(const void *flatbuf, size_t size,
     out->vertex_count = vi;
     out->index_count = ii;
     return true;
+}
+
+bool arpt_decode_building_mesh(const void *flatbuf, size_t size,
+                               const char *layer_name,
+                               arpt_building_prim *out) {
+    memset(out, 0, sizeof(*out));
+
+    arpentry_tiles_Layer_table_t layer =
+        find_layer_by_name(flatbuf, size, layer_name);
+    if (!layer) return false;
+
+    /* Buildings ship as server-baked MeshGeometry; bail out (no mesh) when the
+       layer's first feature is any other geometry type, so non-mesh layers are
+       skipped without scanning them. */
+    arpentry_tiles_Feature_vec_t features =
+        arpentry_tiles_Layer_features(layer);
+    if (!features || arpentry_tiles_Feature_vec_len(features) == 0) return false;
+    arpentry_tiles_Feature_table_t f0 =
+        arpentry_tiles_Feature_vec_at(features, 0);
+    if (!f0 || arpentry_tiles_Feature_geometry_type(f0) !=
+                   arpentry_tiles_Geometry_MeshGeometry)
+        return false;
+
+    return collect_layer_meshes(flatbuf, layer, 0, out);
+}
+
+/* Road-structure box prisms ride in the transportation layer alongside the (more
+   numerous) road lines, so — unlike buildings — the first feature is not a mesh.
+   Scan the whole layer, collecting only the matching MeshGeometry features:
+   bridges (`level_sign` +1) and tunnels (-1) are split so each colours its own. */
+static bool decode_structure_mesh(const void *flatbuf, size_t size,
+                                  const char *layer_name, int level_sign,
+                                  arpt_building_prim *out) {
+    memset(out, 0, sizeof(*out));
+    arpentry_tiles_Layer_table_t layer =
+        find_layer_by_name(flatbuf, size, layer_name);
+    if (!layer) return false;
+    return collect_layer_meshes(flatbuf, layer, level_sign, out);
+}
+
+bool arpt_decode_bridge_mesh(const void *flatbuf, size_t size,
+                             const char *layer_name, arpt_building_prim *out) {
+    return decode_structure_mesh(flatbuf, size, layer_name, +1, out);
+}
+
+bool arpt_decode_tunnel_mesh(const void *flatbuf, size_t size,
+                             const char *layer_name, arpt_building_prim *out) {
+    return decode_structure_mesh(flatbuf, size, layer_name, -1, out);
 }
 
 /* Line decoding */
@@ -495,6 +591,12 @@ bool arpt_decode_lines(const void *flatbuf, size_t size,
         size_t vc = flatbuffers_uint16_vec_len(xv);
         if (flatbuffers_uint16_vec_len(yv) != vc || vc < 2) continue;
 
+        /* Per-vertex road elevation the tiler baked from the terrain surface;
+           absent (flat) on the DEM-less path. Honoured only when it covers every
+           vertex. */
+        flatbuffers_int32_vec_t zv = arpentry_tiles_LineGeometry_z(line);
+        if (zv && flatbuffers_int32_vec_len(zv) != vc) zv = NULL;
+
         uint8_t cls = resolve_class(feat, class_key_idx, values,
                                     class_names, class_count);
 
@@ -516,6 +618,7 @@ bool arpt_decode_lines(const void *flatbuf, size_t size,
 
             out->lines[count].x = xv + start;
             out->lines[count].y = yv + start;
+            out->lines[count].z = zv ? zv + start : NULL;
             out->lines[count].vertex_count = part_vc;
             out->lines[count].cls = cls;
             count++;

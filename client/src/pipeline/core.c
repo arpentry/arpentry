@@ -164,9 +164,12 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
         device, &(WGPUBindGroupLayoutDescriptor){.entryCount = 3,
                                                  .entries = tile_entries});
 
-    /* Terrain + building pipeline */
-    r->pipeline =
-        arpt__mesh_create_pipeline(device, format, r->global_bgl, r->tile_bgl);
+    /* Terrain + building pipeline (opaque), plus a semi-transparent twin used
+       only for the terrain mesh so buried tunnels read through the ground. */
+    r->pipeline = arpt__mesh_create_pipeline(device, format, r->global_bgl,
+                                             r->tile_bgl, false);
+    r->terrain_xray_pipeline = arpt__mesh_create_pipeline(
+        device, format, r->global_bgl, r->tile_bgl, true);
 
     /* Model bind group layout */
     WGPUBindGroupLayoutEntry model_entry = {
@@ -269,6 +272,11 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     r->road_pipeline =
         arpt__road_create_pipeline(device, format, r->global_bgl, r->tile_bgl);
 
+    /* Tunnel box-prism pipeline (depth-override; shares terrain layouts) */
+    r->structure_pipeline =
+        arpt__mesh_create_structure_pipeline(device, format, r->global_bgl,
+                                          r->tile_bgl);
+
     /* Surface offscreen pipelines + sampler */
     r->surface_pipeline = arpt__texture_create_surface_pipeline(device);
     r->stencil_fill_pipeline = arpt__texture_create_stencil_fill_pipeline(device);
@@ -328,6 +336,18 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     create_1x1_texture(device, queue, building_color, &r->building_tex,
                        &r->building_view);
 
+    /* 1x1 road-structure material textures: bridges read as a steel blue-grey
+       deck, tunnels as a rust/orange bore, so the two structure kinds are
+       distinct from each other and from the beige buildings and green terrain. */
+    {
+        const float bridge_color[4] = {0.40f, 0.52f, 0.66f, 1.0f};
+        const float tunnel_color[4] = {0.78f, 0.42f, 0.24f, 1.0f};
+        create_1x1_texture(device, queue, bridge_color, &r->bridge_tex,
+                           &r->bridge_view);
+        create_1x1_texture(device, queue, tunnel_color, &r->tunnel_tex,
+                           &r->tunnel_view);
+    }
+
     /* Global uniform buffer + bind group */
     r->global_uniform_buf =
         create_buffer(device, queue, WGPUBufferUsage_Uniform, NULL,
@@ -364,8 +384,10 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->sky_pipeline) wgpuRenderPipelineRelease(r->sky_pipeline);
     if (r->sky_bgl) wgpuBindGroupLayoutRelease(r->sky_bgl);
     if (r->pipeline) wgpuRenderPipelineRelease(r->pipeline);
+    if (r->terrain_xray_pipeline) wgpuRenderPipelineRelease(r->terrain_xray_pipeline);
     if (r->tree_pipeline) wgpuRenderPipelineRelease(r->tree_pipeline);
     if (r->road_pipeline) wgpuRenderPipelineRelease(r->road_pipeline);
+    if (r->structure_pipeline) wgpuRenderPipelineRelease(r->structure_pipeline);
     if (r->surface_pipeline) wgpuRenderPipelineRelease(r->surface_pipeline);
     if (r->stencil_fill_pipeline) wgpuRenderPipelineRelease(r->stencil_fill_pipeline);
     if (r->stencil_color_pipeline) wgpuRenderPipelineRelease(r->stencil_color_pipeline);
@@ -379,6 +401,10 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->default_surface_tex) wgpuTextureRelease(r->default_surface_tex);
     if (r->building_view) wgpuTextureViewRelease(r->building_view);
     if (r->building_tex) wgpuTextureRelease(r->building_tex);
+    if (r->bridge_view) wgpuTextureViewRelease(r->bridge_view);
+    if (r->bridge_tex) wgpuTextureRelease(r->bridge_tex);
+    if (r->tunnel_view) wgpuTextureViewRelease(r->tunnel_view);
+    if (r->tunnel_tex) wgpuTextureRelease(r->tunnel_tex);
     if (r->global_bgl) wgpuBindGroupLayoutRelease(r->global_bgl);
     if (r->tile_bgl) wgpuBindGroupLayoutRelease(r->tile_bgl);
     free(r);
@@ -553,6 +579,10 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
     /* Upload building mesh */
     arpt__building_upload(r, t, &prims->buildings);
 
+    /* Upload road-structure box prisms (bridge decks + tunnel bores) */
+    arpt__mesh_upload_structure(r, &t->bridge, &prims->bridges);
+    arpt__mesh_upload_structure(r, &t->tunnel, &prims->tunnels);
+
     /* Upload tree instances */
     arpt__instance_upload(r, t, &prims->instances);
 
@@ -611,6 +641,31 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
             r->device, &(WGPUBindGroupDescriptor){.layout = r->tile_bgl,
                                                   .entryCount = 3,
                                                   .entries = bldg_entries});
+    }
+
+    /* Structure bind groups: same uniforms, per-kind colour texture so bridges
+       and tunnels render in distinct colours. */
+    struct {
+        arpt_mesh_draw *draw;
+        WGPUTextureView view;
+    } structures[] = {
+        {&t->bridge, r->bridge_view},
+        {&t->tunnel, r->tunnel_view},
+    };
+    for (size_t s = 0; s < 2; s++) {
+        if (structures[s].draw->index_count == 0) continue;
+        WGPUBindGroupEntry entries[] = {
+            {.binding = 0,
+             .buffer = t->uniform_buf,
+             .offset = 0,
+             .size = sizeof(tile_uniforms_t)},
+            {.binding = 1, .textureView = structures[s].view},
+            {.binding = 2, .sampler = r->surface_sampler},
+        };
+        structures[s].draw->bind_group = wgpuDeviceCreateBindGroup(
+            r->device, &(WGPUBindGroupDescriptor){.layout = r->tile_bgl,
+                                                  .entryCount = 3,
+                                                  .entries = entries});
     }
 
     return t;
@@ -692,6 +747,14 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     if (tile->bldg_buf_z) wgpuBufferRelease(tile->bldg_buf_z);
     if (tile->bldg_buf_normals) wgpuBufferRelease(tile->bldg_buf_normals);
     if (tile->bldg_buf_indices) wgpuBufferRelease(tile->bldg_buf_indices);
+    if (tile->bridge.buf_xy) wgpuBufferRelease(tile->bridge.buf_xy);
+    if (tile->bridge.buf_z) wgpuBufferRelease(tile->bridge.buf_z);
+    if (tile->bridge.buf_normals) wgpuBufferRelease(tile->bridge.buf_normals);
+    if (tile->bridge.buf_indices) wgpuBufferRelease(tile->bridge.buf_indices);
+    if (tile->tunnel.buf_xy) wgpuBufferRelease(tile->tunnel.buf_xy);
+    if (tile->tunnel.buf_z) wgpuBufferRelease(tile->tunnel.buf_z);
+    if (tile->tunnel.buf_normals) wgpuBufferRelease(tile->tunnel.buf_normals);
+    if (tile->tunnel.buf_indices) wgpuBufferRelease(tile->tunnel.buf_indices);
     if (tile->road_buf_vert) wgpuBufferRelease(tile->road_buf_vert);
     if (tile->road_buf_index) wgpuBufferRelease(tile->road_buf_index);
     for (int mi = 0; mi < ARPT_MAX_MODELS; mi++) {
@@ -711,6 +774,8 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     if (tile->uniform_buf) wgpuBufferRelease(tile->uniform_buf);
     if (tile->bind_group) wgpuBindGroupRelease(tile->bind_group);
     if (tile->bldg_bind_group) wgpuBindGroupRelease(tile->bldg_bind_group);
+    if (tile->bridge.bind_group) wgpuBindGroupRelease(tile->bridge.bind_group);
+    if (tile->tunnel.bind_group) wgpuBindGroupRelease(tile->tunnel.bind_group);
     if (tile->surface_view) wgpuTextureViewRelease(tile->surface_view);
     if (tile->surface_texture) wgpuTextureRelease(tile->surface_texture);
     free(tile->surf_polys.verts);
@@ -807,10 +872,22 @@ void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view) {
 }
 
 void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
+    /* Tunnel first, opaque, so the semi-transparent terrain drawn next blends
+       over the buried bore — an x-ray debug view of tunnels under the ground.
+       Where the bore is exposed (a portal, a lakeside gallery) the terrain is
+       farther and fails the depth test, so it stays solid. */
+    arpt__mesh_draw_structure(r, &tile->tunnel);
+
+    /* Terrain + edge skirts on the transparent pipeline. */
+    wgpuRenderPassEncoderSetPipeline(r->pass, r->terrain_xray_pipeline);
     arpt__mesh_draw_terrain(r, tile);
     arpt__mesh_draw_skirts(r, tile);
+    /* Back to the opaque pipeline for everything sitting on the surface. */
+    restore_terrain_pipeline(r);
+
     arpt__road_draw(r, tile);
     arpt__mesh_draw_buildings(r, tile);
+    arpt__mesh_draw_structure(r, &tile->bridge);
     arpt__instance_draw(r, tile);
     arpt__label_collect(r, tile);
     arpt__line_label_collect(r, tile);

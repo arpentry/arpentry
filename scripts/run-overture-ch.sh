@@ -9,6 +9,12 @@
 #   ./scripts/run-overture-ch.sh [options]
 #
 # Options:
+#   --zone <w,s,e,n>       Preview mode: re-tile just this small bbox into a
+#                          separate preview.arpa (leaving switzerland.arpa alone)
+#                          and open it. Always re-tiles, reuses the already-
+#                          downloaded parquets and local terrain (no network),
+#                          and centres the camera on the zone. The fast loop for
+#                          verifying a change: edit code, rerun with --zone.
 #   --skip-download        Don't fetch missing layers (use whatever is present)
 #   --skip-build           Don't rebuild the client / Rust binaries
 #   --skip-tile            Reuse the existing archive (implies --skip-download)
@@ -18,6 +24,9 @@
 #   --bbox <w,s,e,n>       Override the geographic bounds
 #   --min-zoom <z>         Override the minimum zoom (default 0)
 #   --max-zoom <z>         Override the maximum zoom (default 14)
+#   --lon/--lat <deg>      Camera position (default: zone/Switzerland centre)
+#   --alt <m>              Camera altitude (default: zone preview 3000, else 200000)
+#   --bearing/--tilt <deg> Camera bearing / tilt (default 0)
 #   --port <n>             Server port (default 8090)
 #   --no-terrain           Don't add Mapterhorn elevation (flat terrain mesh)
 #   --terrain-file <path>  Use an existing terrain PMTiles instead of extracting
@@ -26,7 +35,8 @@
 #
 # Downloads are idempotent: a layer is fetched only when its .parquet is missing.
 # Tiling is idempotent too: the archive is regenerated only when it's missing
-# (pass --force-tile to rebuild it).
+# (pass --force-tile to rebuild it). Preview (--zone) is the exception: it always
+# re-tiles its small bbox so a code change shows up immediately.
 #
 # Terrain: elevation comes from Mapterhorn (https://mapterhorn.com), a global
 # Terrarium DEM in PMTiles. Rather than download the ~30 GB planet file, the
@@ -70,7 +80,15 @@ MAX_ZOOM=14
 # Server port
 PORT=8090
 
+# Camera (empty = pick a default after parsing: the zone/Switzerland centre).
+LON=""
+LAT=""
+ALT=""
+BEARING=0
+TILT=0
+
 # Parse arguments
+ZONE=""
 SKIP_DOWNLOAD=false
 SKIP_BUILD=false
 SKIP_TILE=false
@@ -82,6 +100,7 @@ TERRAIN_FILE=""
 HIRES_TERRAIN=false
 while [ $# -gt 0 ]; do
     case "$1" in
+        --zone)          ZONE="$2"; shift 2 ;;
         --skip-download) SKIP_DOWNLOAD=true; shift ;;
         --skip-build)    SKIP_BUILD=true; shift ;;
         --skip-tile)     SKIP_TILE=true; SKIP_DOWNLOAD=true; shift ;;
@@ -91,6 +110,11 @@ while [ $# -gt 0 ]; do
         --bbox)          BBOX="$2"; shift 2 ;;
         --min-zoom)      MIN_ZOOM="$2"; shift 2 ;;
         --max-zoom)      MAX_ZOOM="$2"; shift 2 ;;
+        --lon)           LON="$2"; shift 2 ;;
+        --lat)           LAT="$2"; shift 2 ;;
+        --alt)           ALT="$2"; shift 2 ;;
+        --bearing)       BEARING="$2"; shift 2 ;;
+        --tilt)          TILT="$2"; shift 2 ;;
         --port)          PORT="$2"; shift 2 ;;
         --no-terrain)    USE_TERRAIN=false; shift ;;
         --terrain-file)  TERRAIN_FILE="$2"; shift 2 ;;
@@ -98,6 +122,26 @@ while [ $# -gt 0 ]; do
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
+
+# ── Preview zone ─────────────────────────────────────────────────────────────
+# --zone makes a fast verification loop: tile just the given bbox into its own
+# preview archive (never touching switzerland.arpa), always fresh, reusing the
+# parquets and terrain already on disk so nothing hits the network.
+if [ -n "$ZONE" ]; then
+    BBOX="$ZONE"
+    ARCHIVE="$DATA_DIR/preview.arpa"
+    FORCE_TILE=true
+    SKIP_DOWNLOAD=true
+    # Prefer the local high-res DEM for a crisp preview, then the planet extract,
+    # else flat — but never extract over HTTP (that is the slow part we skip).
+    if [ "$USE_TERRAIN" = true ] && [ -z "$TERRAIN_FILE" ]; then
+        if [ -f "$DATA_DIR/terrain-hires.pmtiles" ]; then
+            TERRAIN_FILE="$DATA_DIR/terrain-hires.pmtiles"
+        elif [ -f "$DATA_DIR/terrain.pmtiles" ]; then
+            TERRAIN_FILE="$DATA_DIR/terrain.pmtiles"
+        fi
+    fi
+fi
 
 # High-res terrain: swap in the Switzerland regional pyramid and its z13-18
 # range, and cache it under a distinct name so it never collides with a
@@ -201,6 +245,9 @@ else
     TERRAIN_ARG=()
     if [ "$USE_TERRAIN" = true ]; then
         terrain_src="$TERRAIN_FILE"
+        if [ -n "$terrain_src" ]; then
+            echo "Using terrain: $terrain_src ($(du -h "$terrain_src" | cut -f1))"
+        fi
         if [ -z "$terrain_src" ]; then
             terrain_src="$TERRAIN_PMTILES"
             if [ ! -f "$terrain_src" ]; then
@@ -269,19 +316,30 @@ fi
 
 # ── Start client ─────────────────────────────────────────────────────────────
 
-# Center on Switzerland: Bern area
-LON=7.45
-LAT=46.95
-ALT=200000
+# Camera: explicit --lon/--lat/--alt win; otherwise centre on the preview zone
+# (close in) or on Switzerland (Bern area, far out) for a full run.
+if [ -z "$LON" ] || [ -z "$LAT" ]; then
+    if [ -n "$ZONE" ]; then
+        LON="${LON:-$(echo "$BBOX" | awk -F, '{print ($1+$3)/2}')}"
+        LAT="${LAT:-$(echo "$BBOX" | awk -F, '{print ($2+$4)/2}')}"
+    else
+        LON="${LON:-7.45}"
+        LAT="${LAT:-46.95}"
+    fi
+fi
+if [ -z "$ALT" ]; then
+    [ -n "$ZONE" ] && ALT=3000 || ALT=200000
+fi
 
 if [ -n "$SCREENSHOT" ]; then
     echo "Capturing screenshot to $SCREENSHOT..."
     "$CLIENT" --url "http://localhost:$PORT" \
               --lon "$LON" --lat "$LAT" --alt "$ALT" \
-              --bearing 0 --tilt 0 --screenshot "$SCREENSHOT"
+              --bearing "$BEARING" --tilt "$TILT" --screenshot "$SCREENSHOT"
     echo "Done: $SCREENSHOT"
 else
-    echo "Opening viewer centered on Switzerland..."
+    echo "Opening viewer at lon=$LON lat=$LAT alt=$ALT..."
     "$CLIENT" --url "http://localhost:$PORT" \
-              --lon "$LON" --lat "$LAT" --alt "$ALT"
+              --lon "$LON" --lat "$LAT" --alt "$ALT" \
+              --bearing "$BEARING" --tilt "$TILT"
 fi

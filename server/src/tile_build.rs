@@ -37,6 +37,19 @@ pub struct EncoderFeature {
     /// becomes a constant per-vertex `z` array (FORMAT.md §3.4). `None` omits
     /// `z`, which decodes as elevation zero.
     pub elevation: Option<f64>,
+    /// Per-vertex elevations in int32 millimetres, in line-vertex order, for road
+    /// lines whose height the tiler reconstructs from the terrain surface (see
+    /// `structures`/`terrain::surface_height`). When `Some`, it becomes the
+    /// `LineGeometry.z` array and the client strokes the road at these heights
+    /// instead of sampling terrain itself. `None` leaves the line flat (z = 0),
+    /// the DEM-less default.
+    pub z: Option<Vec<i32>>,
+    /// Server-baked 3D mesh that, when present, *replaces* `geometry` at encode
+    /// time and is emitted as a `MeshGeometry` (FORMAT.md §3.4). Used for the
+    /// bridge decks and tunnel boxes baked in `structure_mesh`; `geometry` is
+    /// kept (its line carries `class`/`level`) but only the mesh is encoded.
+    /// `None` (the default) encodes `geometry` as its vector topology.
+    pub mesh: Option<TerrainMesh>,
 }
 
 /// A named layer of features (decode-priority order is the caller's concern).
@@ -283,9 +296,25 @@ fn build_feature<'a>(
     f: &EncoderFeature,
     dict: &Dictionaries,
 ) -> Option<flatbuffers::WIPOffset<fbt::Feature<'a>>> {
+    // A server-baked mesh (bridge deck or tunnel box) replaces the vector
+    // geometry: encode it as a MeshGeometry, keeping the feature's properties
+    // (class/level).
+    if let Some(mesh) = &f.mesh {
+        let (geom_type, geom) = mesh_geometry(fbb, mesh);
+        let props_vec = encode_props(fbb, f, dict);
+        return Some(fbt::Feature::create(
+            fbb,
+            &fbt::FeatureArgs {
+                id: f.id,
+                geometry_type: geom_type,
+                geometry: Some(geom),
+                properties: Some(props_vec),
+            },
+        ));
+    }
     // Elevation is stored as int32 millimetres above the ellipsoid.
     let elevation_mm = f.elevation.map(|m| (m * 1000.0) as i32);
-    let (geom_type, geom) = build_geometry(fbb, bounds, &f.geometry, elevation_mm)?;
+    let (geom_type, geom) = build_geometry(fbb, bounds, &f.geometry, elevation_mm, f.z.as_deref())?;
     let props_vec = encode_props(fbb, f, dict);
     Some(fbt::Feature::create(
         fbb,
@@ -358,7 +387,7 @@ fn prop_f64(f: &EncoderFeature, key: &str) -> Option<f64> {
 }
 
 /// Reads a string property from a feature, if present.
-fn prop_str(f: &EncoderFeature, key: &str) -> Option<String> {
+pub fn prop_str(f: &EncoderFeature, key: &str) -> Option<String> {
     f.properties.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
         Value::String(s) => Some(s.clone()),
         _ => None,
@@ -368,13 +397,16 @@ fn prop_str(f: &EncoderFeature, key: &str) -> Option<String> {
 /// Builds the geometry union member for a feature, returning its type tag and
 /// union offset. Quantizes to tile-local uint16. `elevation_mm`, when present,
 /// becomes a constant per-vertex `z` array on points and polygons (building
-/// bases and label anchors); `None` omits `z` (FORMAT.md §3.4). Lines never
-/// carry `z` — the client drapes them on the terrain.
+/// bases and label anchors); `None` omits `z` (FORMAT.md §3.4). `line_z`, when
+/// present, is a per-vertex `z` array (line-vertex order) for a road line whose
+/// height the tiler reconstructs from the terrain surface; otherwise lines carry
+/// no `z` and render flat.
 fn build_geometry<'a>(
     fbb: &mut flatbuffers::FlatBufferBuilder<'a>,
     bounds: &Bounds,
     geom: &Geometry,
     elevation_mm: Option<i32>,
+    line_z: Option<&[i32]>,
 ) -> Option<(fbt::Geometry, flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset>)> {
     let q = |c: &Coord| (project::quantize_x(c.x, bounds), project::quantize_y(c.y, bounds));
 
@@ -387,8 +419,8 @@ fn build_geometry<'a>(
             let (xs, ys) = unzip(mp.0.iter().map(|p| q(&p.0)));
             point_geometry(fbb, xs, ys, elevation_mm)
         }
-        Geometry::LineString(ls) => line_geometry(fbb, &[ls.clone()], q),
-        Geometry::MultiLineString(mls) => line_geometry(fbb, &mls.0, q),
+        Geometry::LineString(ls) => line_geometry(fbb, &[ls.clone()], q, line_z),
+        Geometry::MultiLineString(mls) => line_geometry(fbb, &mls.0, q, line_z),
         Geometry::Polygon(p) => polygon_geometry(fbb, std::slice::from_ref(p), q, elevation_mm),
         Geometry::MultiPolygon(mp) => polygon_geometry(fbb, &mp.0, q, elevation_mm),
         _ => None,
@@ -415,6 +447,7 @@ fn line_geometry<'a>(
     fbb: &mut flatbuffers::FlatBufferBuilder<'a>,
     lines: &[LineString],
     q: impl Fn(&Coord) -> (u16, u16),
+    line_z: Option<&[i32]>,
 ) -> Option<(fbt::Geometry, flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset>)> {
     let mut xs = Vec::new();
     let mut ys = Vec::new();
@@ -432,11 +465,15 @@ fn line_geometry<'a>(
     }
     let x = fbb.create_vector(&xs);
     let y = fbb.create_vector(&ys);
+    // Per-vertex road heights, when the caller baked them and the count matches
+    // the flattened vertices; a mismatch means the geometry was re-clipped after
+    // stamping, so drop `z` rather than emit garbage.
+    let z = line_z.filter(|zs| zs.len() == xs.len()).map(|zs| fbb.create_vector(zs));
     // Single linestring omits line_offsets.
     let line_offsets = (lines.len() > 1).then(|| fbb.create_vector(&offsets));
     let g = fbt::LineGeometry::create(
         fbb,
-        &fbt::LineGeometryArgs { x: Some(x), y: Some(y), z: None, line_offsets },
+        &fbt::LineGeometryArgs { x: Some(x), y: Some(y), z, line_offsets },
     );
     Some((fbt::Geometry::LineGeometry, g.as_union_value()))
 }
@@ -552,7 +589,7 @@ mod tests {
                 id: 1,
                 geometry: Geometry::Point(Point::new(b.west + b.width() / 2.0, b.south + b.height() / 2.0)),
                 properties: vec![("class".to_string(), Value::String("lake".into()))],
-                elevation: None,
+                elevation: None, z: None, mesh: None,
             }],
         }];
         let raw = encode(&b, None, &layers);
@@ -580,7 +617,7 @@ mod tests {
                 id: 42,
                 geometry: Geometry::Polygon(poly),
                 properties: vec![("class".to_string(), Value::String("forest".into()))],
-                elevation: None,
+                elevation: None, z: None, mesh: None,
             }],
         }];
 
@@ -631,7 +668,7 @@ mod tests {
                     ("class".to_string(), Value::String("cafe".into())),
                     ("name".to_string(), Value::String("X".into())),
                 ],
-                elevation: None,
+                elevation: None, z: None, mesh: None,
             }],
         }];
         let raw = encode(&b, None, &layers);
@@ -650,8 +687,8 @@ mod tests {
         let layers = vec![EncoderLayer {
             name: "tree".to_string(),
             features: vec![
-                EncoderFeature { id: 1, geometry: pt(0.3), properties: vec![("class".into(), Value::String("oak".into()))], elevation: None },
-                EncoderFeature { id: 2, geometry: pt(0.6), properties: vec![("class".into(), Value::String("oak".into()))], elevation: None },
+                EncoderFeature { id: 1, geometry: pt(0.3), properties: vec![("class".into(), Value::String("oak".into()))], elevation: None, z: None, mesh: None },
+                EncoderFeature { id: 2, geometry: pt(0.6), properties: vec![("class".into(), Value::String("oak".into()))], elevation: None, z: None, mesh: None },
             ],
         }];
         let raw = encode(&b, None, &layers);
@@ -681,7 +718,7 @@ mod tests {
                 id: 1,
                 geometry: Geometry::Polygon(square),
                 properties: vec![("height".to_string(), Value::Double(12.0))],
-                elevation: Some(456.789),
+                elevation: Some(456.789), z: None, mesh: None,
             }],
         }];
         let raw = encode(&b, None, &layers);
@@ -711,7 +748,7 @@ mod tests {
         let mp = Geometry::MultiPolygon(MultiPolygon(vec![sq(0.1, 0.1), sq(0.5, 0.5)]));
         let layers = vec![EncoderLayer {
             name: "land".into(),
-            features: vec![EncoderFeature { id: 1, geometry: mp, properties: vec![], elevation: None }],
+            features: vec![EncoderFeature { id: 1, geometry: mp, properties: vec![], elevation: None, z: None, mesh: None }],
         }];
         let raw = encode(&b, None, &layers);
         let tile = fbt::root_as_tile(&raw).unwrap();

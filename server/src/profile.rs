@@ -76,10 +76,16 @@ pub fn profile(
     if let Some(s) = subclass {
         properties.push(("subclass".to_string(), Value::String(s)));
     }
-    // Road names drive the client's line-following street labels.
+    // Road names drive the client's line-following street labels; the
+    // bridge/tunnel level (from Overture `level_rules`) drives the client's
+    // lifted-deck / sunk-tunnel draping. Ground (0) is the implicit default and
+    // omitted, so only structures carry the property.
     if layer == layers::TRANSPORTATION {
         if let Some(n) = find_str(props, "names.primary") {
             properties.push(("name".to_string(), Value::String(n)));
+        }
+        if let Some(lv) = find_int(props, "level_rules").filter(|&l| l != 0) {
+            properties.push(("level".to_string(), Value::Int(lv)));
         }
     }
 
@@ -428,6 +434,36 @@ mod tests {
         // Other layers ignore names.primary.
         let p = profile(layers::WATER, &props, 0, 14);
         assert!(!p.properties.iter().any(|(k, _)| k == "name"));
+    }
+
+    #[test]
+    fn transportation_carries_bridge_tunnel_level() {
+        // A bridge (positive level_rules) and a tunnel (negative) become the
+        // reserved `level` property; a ground road (no level_rules) omits it.
+        let bridge = profile(
+            layers::TRANSPORTATION,
+            &[
+                ("class".to_string(), Value::String("motorway".into())),
+                ("level_rules".to_string(), Value::Int(1)),
+            ],
+            0,
+            14,
+        );
+        assert!(bridge.properties.contains(&("level".into(), Value::Int(1))));
+        let tunnel = profile(
+            layers::TRANSPORTATION,
+            &[("level_rules".to_string(), Value::Int(-1))],
+            0,
+            14,
+        );
+        assert!(tunnel.properties.contains(&("level".into(), Value::Int(-1))));
+        let ground = profile(
+            layers::TRANSPORTATION,
+            &[("class".to_string(), Value::String("residential".into()))],
+            0,
+            14,
+        );
+        assert!(!ground.properties.iter().any(|(k, _)| k == "level"));
     }
 
     #[test]

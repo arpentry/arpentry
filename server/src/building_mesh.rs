@@ -36,7 +36,7 @@ const MIN_ROOF_RISE_M: f64 = 1.0;
 
 /// Metres per degree, for the local-tangent normal computation. Latitude is
 /// near-constant; longitude is scaled by the tile-centre latitude.
-const M_PER_DEG_LAT: f64 = 110_540.0;
+pub(crate) const M_PER_DEG_LAT: f64 = 110_540.0;
 const M_PER_DEG_LON_EQUATOR: f64 = 111_320.0;
 
 /// Roof geometry kind, parsed from Overture's `roof_shape`.
@@ -79,18 +79,19 @@ impl Default for RoofParams {
 }
 
 /// A unit ENU→ECEF basis at a point, plus the local metres-per-degree scale,
-/// used to turn footprint geometry into ECEF surface normals.
-struct Frame {
-    clon: f64,
-    clat: f64,
-    east: [f64; 3],
-    north: [f64; 3],
-    up: [f64; 3],
-    m_per_deg_lon: f64,
+/// used to turn footprint geometry into ECEF surface normals. Shared with
+/// `structure_mesh`, which extrudes its box prisms in the same ENU frame.
+pub(crate) struct Frame {
+    pub(crate) clon: f64,
+    pub(crate) clat: f64,
+    pub(crate) east: [f64; 3],
+    pub(crate) north: [f64; 3],
+    pub(crate) up: [f64; 3],
+    pub(crate) m_per_deg_lon: f64,
 }
 
 impl Frame {
-    fn at_center(bounds: &Bounds) -> Frame {
+    pub(crate) fn at_center(bounds: &Bounds) -> Frame {
         let clon = (bounds.west + bounds.east) * 0.5;
         let clat = (bounds.south + bounds.north) * 0.5;
         let (slon, coslon) = clon.to_radians().sin_cos();
@@ -106,7 +107,7 @@ impl Frame {
     }
 
     /// ENU-metre offset of a (lon, lat, z_mm) point from the tile centre.
-    fn local_m(&self, lon: f64, lat: f64, z_mm: i32) -> [f64; 3] {
+    pub(crate) fn local_m(&self, lon: f64, lat: f64, z_mm: i32) -> [f64; 3] {
         [
             (lon - self.clon) * self.m_per_deg_lon,
             (lat - self.clat) * M_PER_DEG_LAT,
@@ -115,7 +116,7 @@ impl Frame {
     }
 
     /// Encodes an ENU-metre direction as an octahedral ECEF normal.
-    fn encode_enu(&self, e: f64, n: f64, u: f64) -> (i8, i8) {
+    pub(crate) fn encode_enu(&self, e: f64, n: f64, u: f64) -> (i8, i8) {
         let nx = e * self.east[0] + n * self.north[0] + u * self.up[0];
         let ny = e * self.east[1] + n * self.north[1] + u * self.up[1];
         let nz = e * self.east[2] + n * self.north[2] + u * self.up[2];

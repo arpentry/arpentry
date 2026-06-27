@@ -87,8 +87,12 @@ void arpt_surface_data_free(arpt_surface_data *data);
 
 typedef struct {
     const uint16_t *x, *y; /* zero-copy into FlatBuffer (see arpt_line_data) */
+    const int32_t *z;      /* per-vertex road elevation (mm) the tiler baked from
+                              the terrain surface, or NULL when the road is flat
+                              (DEM-less). The client strokes the road at these
+                              heights instead of sampling terrain. */
     size_t vertex_count;
-    uint8_t cls; /* index into style class registry; 0 = unknown */
+    uint8_t cls;  /* index into style class registry; 0 = unknown */
 } arpt_line_feature;
 
 /**

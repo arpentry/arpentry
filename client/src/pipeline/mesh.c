@@ -8,7 +8,8 @@
 WGPURenderPipeline arpt__mesh_create_pipeline(WGPUDevice device,
                                                WGPUTextureFormat format,
                                                WGPUBindGroupLayout global_bgl,
-                                               WGPUBindGroupLayout tile_bgl) {
+                                               WGPUBindGroupLayout tile_bgl,
+                                               bool blend) {
     WGPUShaderModule sm = create_shader(device, terrain_wgsl);
     if (!sm) return NULL;
 
@@ -38,7 +39,19 @@ WGPURenderPipeline arpt__mesh_create_pipeline(WGPUDevice device,
          .attributes = &attr_n},
     };
 
+    /* The x-ray pipeline blends so the terrain's sub-1.0 alpha shows the buried
+       tunnel (drawn before terrain) through the ground; depth write stays on so
+       the surface still sorts buildings and roads. */
+    WGPUBlendState bs = {
+        .color = {.operation = WGPUBlendOperation_Add,
+                  .srcFactor = WGPUBlendFactor_SrcAlpha,
+                  .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha},
+        .alpha = {.operation = WGPUBlendOperation_Add,
+                  .srcFactor = WGPUBlendFactor_One,
+                  .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha},
+    };
     WGPUColorTargetState ct = {.format = format,
+                               .blend = blend ? &bs : NULL,
                                .writeMask = WGPUColorWriteMask_All};
     WGPUFragmentState frag = {
         .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
@@ -310,4 +323,116 @@ void arpt__mesh_draw_buildings(arpt_renderer *r, arpt_tile_gpu *tile) {
         wgpuBufferGetSize(tile->bldg_buf_indices));
     wgpuRenderPassEncoderDrawIndexed(r->pass, tile->bldg_index_count, 1, 0,
                                      0, 0);
+}
+
+/* Structure pipeline (bridge decks + tunnel bores): the terrain shader + vertex
+   layout, drawn as ordinary opaque 3D geometry (depth-test LessEqual + depth
+   write). A bridge deck stands above the terrain (a viaduct); a tunnel box is
+   occluded by the terrain it passes under, so the bore reads as genuinely
+   underground, surfacing only at the portals. Culling is off so the solid
+   rectangular tube reads correctly from inside or out regardless of winding. */
+WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
+                                                     WGPUTextureFormat format,
+                                                     WGPUBindGroupLayout global_bgl,
+                                                     WGPUBindGroupLayout tile_bgl) {
+    WGPUShaderModule sm = create_shader(device, terrain_wgsl);
+    if (!sm) return NULL;
+
+    WGPUBindGroupLayout bgls[] = {global_bgl, tile_bgl};
+    WGPUPipelineLayout pl = wgpuDeviceCreatePipelineLayout(
+        device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 2,
+                                                .bindGroupLayouts = bgls});
+
+    WGPUVertexAttribute attr_xy = {
+        .format = WGPUVertexFormat_Uint16x2, .offset = 0, .shaderLocation = 0};
+    WGPUVertexAttribute attr_z = {
+        .format = WGPUVertexFormat_Sint32, .offset = 0, .shaderLocation = 1};
+    WGPUVertexAttribute attr_n = {
+        .format = WGPUVertexFormat_Sint8x2, .offset = 0, .shaderLocation = 2};
+    WGPUVertexBufferLayout vbls[] = {
+        {.arrayStride = 4, .stepMode = WGPUVertexStepMode_Vertex,
+         .attributeCount = 1, .attributes = &attr_xy},
+        {.arrayStride = 4, .stepMode = WGPUVertexStepMode_Vertex,
+         .attributeCount = 1, .attributes = &attr_z},
+        {.arrayStride = 4, .stepMode = WGPUVertexStepMode_Vertex,
+         .attributeCount = 1, .attributes = &attr_n},
+    };
+
+    WGPUColorTargetState ct = {.format = format,
+                               .writeMask = WGPUColorWriteMask_All};
+    WGPUFragmentState frag = {
+        .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
+    WGPUDepthStencilState ds = {
+        .format = ARPT_DEPTH_FORMAT,
+        .depthWriteEnabled = true,
+        .depthCompare = WGPUCompareFunction_LessEqual,
+        .stencilFront = {.compare = WGPUCompareFunction_Always},
+        .stencilBack = {.compare = WGPUCompareFunction_Always},
+        .stencilReadMask = 0,
+        .stencilWriteMask = 0,
+    };
+
+    WGPURenderPipelineDescriptor pip = {
+        .layout = pl,
+        .vertex = {.module = sm, .entryPoint = "vs", .bufferCount = 3,
+                   .buffers = vbls},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
+                      .cullMode = WGPUCullMode_None,
+                      .frontFace = WGPUFrontFace_CCW},
+        .fragment = &frag,
+        .depthStencil = &ds,
+        .multisample = {.count = ARPT_MSAA_SAMPLES, .mask = ~0u},
+    };
+    WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &pip);
+
+    wgpuPipelineLayoutRelease(pl);
+    wgpuShaderModuleRelease(sm);
+    return pipeline;
+}
+
+void arpt__mesh_upload_structure(arpt_renderer *r, arpt_mesh_draw *d,
+                                 const arpt_building_prim *prim) {
+    if (!prim || prim->vertex_count == 0 || prim->index_count == 0 ||
+        !prim->normals)
+        return;
+
+    size_t nv = prim->vertex_count;
+    size_t ni = prim->index_count;
+
+    d->buf_xy = create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex,
+                              prim->xy, nv * 4);
+    d->buf_z = create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex,
+                             prim->z, nv * sizeof(int32_t));
+    {
+        int8_t *padded = pad_normals_2to4(prim->normals, nv);
+        if (!padded) return;
+        d->buf_normals = create_buffer(
+            r->device, r->queue, WGPUBufferUsage_Vertex, padded, nv * 4);
+        free(padded);
+    }
+    d->buf_indices = create_buffer(r->device, r->queue,
+                                   WGPUBufferUsage_Index, prim->indices,
+                                   ni * sizeof(uint32_t));
+
+    if (d->buf_xy && d->buf_z && d->buf_normals && d->buf_indices)
+        d->index_count = (uint32_t)ni;
+}
+
+void arpt__mesh_draw_structure(arpt_renderer *r, arpt_mesh_draw *d) {
+    if (d->index_count == 0) return;
+    wgpuRenderPassEncoderSetPipeline(r->pass, r->structure_pipeline);
+    wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0, NULL);
+    wgpuRenderPassEncoderSetBindGroup(r->pass, 1, d->bind_group, 0, NULL);
+    wgpuRenderPassEncoderSetVertexBuffer(r->pass, 0, d->buf_xy, 0,
+                                         wgpuBufferGetSize(d->buf_xy));
+    wgpuRenderPassEncoderSetVertexBuffer(r->pass, 1, d->buf_z, 0,
+                                         wgpuBufferGetSize(d->buf_z));
+    wgpuRenderPassEncoderSetVertexBuffer(r->pass, 2, d->buf_normals, 0,
+                                         wgpuBufferGetSize(d->buf_normals));
+    wgpuRenderPassEncoderSetIndexBuffer(
+        r->pass, d->buf_indices, WGPUIndexFormat_Uint32, 0,
+        wgpuBufferGetSize(d->buf_indices));
+    wgpuRenderPassEncoderDrawIndexed(r->pass, d->index_count, 1, 0, 0, 0);
+    /* Restore terrain pipeline for subsequent tile draws. */
+    restore_terrain_pipeline(r);
 }

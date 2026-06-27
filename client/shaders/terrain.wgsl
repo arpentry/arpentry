@@ -1,6 +1,10 @@
 const WGS84_A: f32 = 6378137.0;
 const WGS84_E2: f32 = 0.00669437999014;
 
+// Terrain opacity for the x-ray debug pipeline (1.0 = opaque). Lower it to see
+// buried tunnel boxes through the ground more clearly.
+const TERRAIN_ALPHA: f32 = 0.6;
+
 struct GlobalUniforms {
     projection: mat4x4<f32>,
     sun_dir: vec3<f32>,
@@ -140,5 +144,9 @@ fn decode_octahedral(enc: vec2<f32>) -> vec3<f32> {
     }
 
     let out = select(lit, pow(lit, vec3<f32>(1.0 / 2.2)), globals.apply_gamma > 0.5);
-    return vec4<f32>(out, 1.0);
+    // Alpha only takes effect on a pipeline with blending enabled — only the
+    // terrain x-ray pipeline does, so the terrain mesh renders slightly
+    // transparent (to debug tunnels buried under it) while structures and
+    // buildings, sharing this shader on opaque pipelines, stay solid.
+    return vec4<f32>(out, TERRAIN_ALPHA);
 }

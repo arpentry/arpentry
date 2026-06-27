@@ -307,39 +307,30 @@ void arpt_info_set_camera(arpt_info *info, double lon_deg, double lat_deg,
                           double tilt_deg, double zoom_level) {
     info->glyph_count = 0;
 
-    (void)altitude;
-    (void)bearing_deg;
-    (void)tilt_deg;
+    /* One line per field. Labels mirror the client's CLI flags (--lon/--lat/
+       --alt/--bearing/--tilt) so a screenshot of this overlay fully specifies a
+       camera that --screenshot can reproduce. */
+    char lines[6][64];
+    snprintf(lines[0], sizeof(lines[0]), "Zoom: %.2f", zoom_level);
+    snprintf(lines[1], sizeof(lines[1]), "Longitude: %.4f", lon_deg);
+    snprintf(lines[2], sizeof(lines[2]), "Latitude: %.4f", lat_deg);
+    snprintf(lines[3], sizeof(lines[3]), "Altitude: %.0f m", altitude);
+    snprintf(lines[4], sizeof(lines[4]), "Bearing: %.1f", bearing_deg);
+    snprintf(lines[5], sizeof(lines[5]), "Tilt: %.1f", tilt_deg);
+    const int nlines = 6;
 
-    char line1[64];
-    snprintf(line1, sizeof(line1), "Zoom: %.2f", zoom_level);
-
-    char line2[64];
-    snprintf(line2, sizeof(line2), "Longitude: %.4f", lon_deg);
-
-    char line3[64];
-    snprintf(line3, sizeof(line3), "Latitude: %.4f", lat_deg);
-
-    /* Compute anchor positions in framebuffer pixels.
-       Vertically centered with the UI controls (CY = 48 logical px from bottom). */
+    /* Compute anchor positions in framebuffer pixels. The block grows upward
+       from a baseline level with the UI controls (48 logical px from the bottom),
+       so adding fields never collides with them. */
     float margin = INFO_MARGIN * info->pixel_ratio;
     float line_h = INFO_FONT_SIZE * INFO_LINE_SPACING * info->pixel_ratio;
     float fb_h = (float)info->fb_height;
-    float center_y = fb_h - 48.0f * info->pixel_ratio;
+    float baseline_y = fb_h - 48.0f * info->pixel_ratio + line_h; /* bottom line */
 
-    float anchor_x = margin;
-    float anchor_y1 = center_y - line_h;  /* top line */
-    float anchor_y2 = center_y;           /* middle line */
-    float anchor_y3 = center_y + line_h;  /* bottom line */
-
-    uint32_t n1 = layout_line(info, line1, anchor_x, anchor_y1);
-    info->glyph_count += n1;
-
-    uint32_t n2 = layout_line(info, line2, anchor_x, anchor_y2);
-    info->glyph_count += n2;
-
-    uint32_t n3 = layout_line(info, line3, anchor_x, anchor_y3);
-    info->glyph_count += n3;
+    for (int i = 0; i < nlines; i++) {
+        float y = baseline_y - (float)(nlines - 1 - i) * line_h;
+        info->glyph_count += layout_line(info, lines[i], margin, y);
+    }
 }
 
 void arpt_info_draw(arpt_info *info, WGPURenderPassEncoder pass) {

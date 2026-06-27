@@ -56,6 +56,9 @@ pub struct Feature {
     pub geometry: geo_types::Geometry,
     /// Requested attributes that were present and non-null, in request order.
     pub properties: Vec<(String, Value)>,
+    /// Overture transportation `level_rules` parsed into constant-level runs
+    /// (empty for everything else); the pipeline splits the segment on these.
+    pub level_runs: Vec<crate::levels::LevelRun>,
 }
 
 /// Errors from opening or decoding a GeoParquet file.
@@ -287,12 +290,22 @@ impl Iterator for Features {
                 Err(e) => return Some(Err(e.into())),
             };
             let mut properties = Vec::new();
+            let mut level_runs = Vec::new();
             for (name, arr) in &cur.resolved {
+                // Overture's bridge/tunnel signal is `level_rules`, a
+                // linearly-referenced `list<struct<value, between>>` rather than
+                // a scalar: parse it into level runs carried on the feature so
+                // the pipeline can split the segment where its level changes
+                // (see `crate::levels`), and skip the scalar property path.
+                if name == "level_rules" {
+                    level_runs = crate::levels::parse(arr.as_ref(), row);
+                    continue;
+                }
                 if let Some(v) = array_value(arr.as_ref(), row) {
                     properties.push((name.clone(), v));
                 }
             }
-            return Some(Ok(Feature { geometry, properties }));
+            return Some(Ok(Feature { geometry, properties, level_runs }));
         }
     }
 }

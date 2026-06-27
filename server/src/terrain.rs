@@ -13,7 +13,14 @@ use std::f64::consts::PI;
 
 use crate::project::{self, Bounds, BUFFER, EXTENT};
 
+/// Terrain mesh resolution: cells per tile side. The rendered ground is this
+/// coarse, so road and structure geometry must take its elevation from this same
+/// grid surface ([`surface_height`]) — not the raw DEM — or it floats off the
+/// drawn ground.
+pub const TERRAIN_GRID: u32 = 16;
+
 /// A triangulated mesh in tile-local quantized coordinates.
+#[derive(Debug, Clone)]
 pub struct TerrainMesh {
     /// Vertex X (quantized uint16).
     pub x: Vec<u16>,
@@ -169,6 +176,47 @@ where
     (TerrainMesh { x, y, z, indices, normals }, emin, emax)
 }
 
+/// Height in metres of the rendered terrain surface at `(lon, lat)`, matching the
+/// triangulated [`elevated_mesh`] exactly: the per-tile [`TERRAIN_GRID`] grid is
+/// a regular lattice of `sample(lon, lat)` elevations, split into two triangles
+/// per cell along the (row,col)–(row+1,col+1) diagonal. Road and structure
+/// geometry elevate from this so they sit on the drawn ground.
+///
+/// The lattice is global — every tile's grid lines coincide (a tile spans exactly
+/// `TERRAIN_GRID` cells), so a world point sampled from any tile's `bounds` yields
+/// the same height. `bounds` only anchors the lattice; points in the buffer or a
+/// neighbour tile fall on extended cell indices and stay consistent.
+pub fn surface_height(
+    bounds: &Bounds,
+    lon: f64,
+    lat: f64,
+    sample: &mut dyn FnMut(f64, f64) -> f64,
+) -> f64 {
+    let grid = TERRAIN_GRID as f64;
+    let cell_lon = bounds.width() / grid;
+    let cell_lat = bounds.height() / grid;
+    // Cell indices, possibly negative or >= grid for buffer / neighbour points.
+    let gx = (lon - bounds.west) / cell_lon;
+    let gy = (lat - bounds.south) / cell_lat;
+    let (col, row) = (gx.floor(), gy.floor());
+    let (fx, fy) = (gx - col, gy - row);
+    // Corner coordinates on the global lattice.
+    let lon0 = bounds.west + col * cell_lon;
+    let lat0 = bounds.south + row * cell_lat;
+    let (lon1, lat1) = (lon0 + cell_lon, lat0 + cell_lat);
+    let e00 = sample(lon0, lat0); // (row,   col)
+    let e10 = sample(lon1, lat0); // (row,   col+1)
+    let e01 = sample(lon0, lat1); // (row+1, col)
+    let e11 = sample(lon1, lat1); // (row+1, col+1)
+    // Planar interpolation over the triangle (fx,fy) lands in; both halves agree
+    // on the shared diagonal, so the surface is continuous.
+    if fx >= fy {
+        e00 + (e10 - e00) * fx + (e11 - e10) * fy
+    } else {
+        e00 + (e11 - e01) * fx + (e01 - e00) * fy
+    }
+}
+
 /// Octahedral encoding of a unit normal to int8×2 (matches the client's
 /// `decode_octahedral` in `terrain.wgsl` and the procedural generator).
 pub(crate) fn encode_octahedral(nx: f64, ny: f64, nz: f64) -> (i8, i8) {
@@ -273,5 +321,41 @@ mod tests {
         // A west→east ramp produces normals tilted off vertical (not (0,0)).
         let (m, _, _) = elevated_mesh(8, &b, |lon, _| (lon - b.west) * 100_000.0);
         assert!(m.normals.iter().any(|&c| c != 0));
+    }
+
+    #[test]
+    fn surface_height_matches_the_mesh_vertices_and_ramp() {
+        let b = Bounds::of_tile(14, 8500, 5800);
+        // A planar west→east + south→north ramp. surface_height linearly
+        // interpolates the lattice, so on a planar field it is exact everywhere.
+        let field = |lon: f64, lat: f64| (lon - b.west) * 1.0e5 + (lat - b.south) * 3.0e5;
+        let cell_lon = b.width() / TERRAIN_GRID as f64;
+        let cell_lat = b.height() / TERRAIN_GRID as f64;
+        // At a grid vertex it equals the sample.
+        let (vlon, vlat) = (b.west + 5.0 * cell_lon, b.south + 7.0 * cell_lat);
+        let h = surface_height(&b, vlon, vlat, &mut |lo, la| field(lo, la));
+        assert!((h - field(vlon, vlat)).abs() < 1e-6);
+        // Mid-cell, both above and below the diagonal, still exact on a plane.
+        for (fx, fy) in [(0.7, 0.2), (0.2, 0.7)] {
+            let lon = b.west + (3.0 + fx) * cell_lon;
+            let lat = b.south + (3.0 + fy) * cell_lat;
+            let got = surface_height(&b, lon, lat, &mut |lo, la| field(lo, la));
+            assert!((got - field(lon, lat)).abs() < 1e-6, "fx={fx} fy={fy} got {got}");
+        }
+    }
+
+    #[test]
+    fn surface_height_is_continuous_across_tiles() {
+        // A point sampled from two adjacent tiles' frames yields the same height,
+        // because the lattice is global (a tile spans exactly TERRAIN_GRID cells).
+        let west = Bounds::of_tile(14, 8500, 5800);
+        let east = Bounds::of_tile(14, 8501, 5800);
+        let lon = east.west + 0.3 * (east.width() / TERRAIN_GRID as f64);
+        let lat = east.south + 0.4 * (east.height() / TERRAIN_GRID as f64);
+        // A non-planar field so interpolation is frame-sensitive unless aligned.
+        let field = |lo: f64, la: f64| (lo * 12.0).sin() * 100.0 + (la * 9.0).cos() * 60.0;
+        let from_east = surface_height(&east, lon, lat, &mut |a, b| field(a, b));
+        let from_west = surface_height(&west, lon, lat, &mut |a, b| field(a, b));
+        assert!((from_east - from_west).abs() < 1e-6, "east {from_east} west {from_west}");
     }
 }

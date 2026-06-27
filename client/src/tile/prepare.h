@@ -159,6 +159,8 @@ typedef struct arpt_tile_prims {
     arpt_polygon_prim polygons;
     arpt_line_prim lines;
     arpt_building_prim buildings;
+    arpt_building_prim bridges; /* server-baked bridge deck prisms (same form) */
+    arpt_building_prim tunnels; /* server-baked tunnel bore prisms (same form) */
     arpt_instance_prim instances;
     arpt_label_prim labels;
     arpt_line_label_prim line_labels;
@@ -172,7 +174,6 @@ void arpt_prepare_polygons(const arpt_surface_data *surface,
 
 void arpt_prepare_lines(const arpt_line_data *line_data,
                         const arpt_style *style, int level,
-                        const arpt_terrain_mesh *terrain,
                         arpt_line_prim *out);
 
 /* Buildings arrive as server-baked 3D meshes (MeshGeometry): walls + roof,
@@ -184,6 +185,18 @@ void arpt_prepare_lines(const arpt_line_data *line_data,
 bool arpt_decode_building_mesh(const void *flatbuf, size_t size,
                                const char *layer_name,
                                arpt_building_prim *out);
+
+/* Road structures arrive as server-baked box prisms (MeshGeometry) carried inside
+   the transportation layer next to the road lines. These split them by the
+   reserved `level` property so bridges and tunnels colour differently: each scans
+   the named layer and concatenates only its bridge (level > 0) or tunnel
+   (level < 0) meshes into the primitive (same form as buildings). Returns true
+   and fills `out` when the layer holds matching meshes; false (with `out` zeroed)
+   otherwise. */
+bool arpt_decode_bridge_mesh(const void *flatbuf, size_t size,
+                             const char *layer_name, arpt_building_prim *out);
+bool arpt_decode_tunnel_mesh(const void *flatbuf, size_t size,
+                             const char *layer_name, arpt_building_prim *out);
 
 void arpt_prepare_instances(const arpt_tree_data *trees, int model_count,
                             arpt_instance_prim *out);

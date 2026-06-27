@@ -79,6 +79,18 @@ typedef struct {
     float halo_color[4];
 } poi_uniforms_t;
 
+/* One server-baked mesh ready to draw: vertex/index buffers plus the bind group
+   carrying its material colour. Used for the road structures (bridge, tunnel),
+   which share a pipeline but differ in colour. */
+typedef struct {
+    WGPUBuffer buf_xy;
+    WGPUBuffer buf_z;
+    WGPUBuffer buf_normals;
+    WGPUBuffer buf_indices;
+    WGPUBindGroup bind_group;
+    uint32_t index_count;
+} arpt_mesh_draw;
+
 /* Tile GPU state */
 
 struct arpt_tile_gpu {
@@ -119,6 +131,12 @@ struct arpt_tile_gpu {
     WGPUBuffer bldg_buf_indices;
     WGPUBindGroup bldg_bind_group;
     uint32_t bldg_index_count;
+
+    /* Road-structure box prisms, split so they colour differently (separate draw
+       calls, shared structure pipeline): bridge decks above ground, tunnel bores
+       below it. */
+    arpt_mesh_draw bridge;
+    arpt_mesh_draw tunnel;
 
     /* Tree instances split by model index */
     WGPUBuffer tree_instance_bufs[ARPT_MAX_MODELS];
@@ -196,6 +214,7 @@ struct arpt_renderer {
     float building_color[4];
 
     WGPURenderPipeline pipeline;
+    WGPURenderPipeline terrain_xray_pipeline; /* terrain only, semi-transparent */
     WGPUBindGroupLayout global_bgl;
     WGPUBindGroupLayout tile_bgl;
 
@@ -231,6 +250,14 @@ struct arpt_renderer {
     WGPUTextureView default_surface_view;
     WGPUTexture building_tex;
     WGPUTextureView building_view;
+
+    /* Road-structure box prisms: one opaque depth-tested pipeline, two material
+       colour textures so bridges and tunnels read differently. */
+    WGPURenderPipeline structure_pipeline;
+    WGPUTexture bridge_tex;
+    WGPUTextureView bridge_view;
+    WGPUTexture tunnel_tex;
+    WGPUTextureView tunnel_view;
 
 
     /* Tree instancing — per-model GPU resources */
@@ -373,7 +400,8 @@ static inline WGPUBuffer create_buffer(WGPUDevice device, WGPUQueue queue,
 WGPURenderPipeline arpt__mesh_create_pipeline(WGPUDevice device,
                                                WGPUTextureFormat format,
                                                WGPUBindGroupLayout global_bgl,
-                                               WGPUBindGroupLayout tile_bgl);
+                                               WGPUBindGroupLayout tile_bgl,
+                                               bool blend);
 void arpt__mesh_upload_terrain(arpt_renderer *r, arpt_tile_gpu *t,
                                const arpt_terrain_mesh *prim);
 void arpt__mesh_upload_skirts(arpt_renderer *r, arpt_tile_gpu *t,
@@ -381,6 +409,19 @@ void arpt__mesh_upload_skirts(arpt_renderer *r, arpt_tile_gpu *t,
 void arpt__mesh_draw_terrain(arpt_renderer *r, arpt_tile_gpu *tile);
 void arpt__mesh_draw_skirts(arpt_renderer *r, arpt_tile_gpu *tile);
 void arpt__mesh_draw_buildings(arpt_renderer *r, arpt_tile_gpu *tile);
+
+/* Road-structure box prisms (bridge decks + tunnel bores): drawn as opaque,
+   depth-tested 3D geometry — a deck stands above the terrain, a bore is occluded
+   by it. Reuses the terrain shader + vertex layout. Upload/draw operate on one
+   `arpt_mesh_draw` (bridge or tunnel); the caller supplies the bind group's
+   colour. */
+WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
+                                                     WGPUTextureFormat format,
+                                                     WGPUBindGroupLayout global_bgl,
+                                                     WGPUBindGroupLayout tile_bgl);
+void arpt__mesh_upload_structure(arpt_renderer *r, arpt_mesh_draw *d,
+                                 const arpt_building_prim *prim);
+void arpt__mesh_draw_structure(arpt_renderer *r, arpt_mesh_draw *d);
 
 /* render_texture.c */
 WGPURenderPipeline arpt__texture_create_surface_pipeline(WGPUDevice device);
