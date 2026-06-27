@@ -745,14 +745,9 @@ fn process_feature(
                 props.push(("level_rules".to_string(), Value::Int(level)));
             }
             // A structural tunnel's box is largely buried in the hill it pierces;
-            // push it a few metres past each portal so the open mouths protrude
-            // and read as portals. Done here on the unclipped piece, the
-            // extension lands at the real portals, not tile-boundary cuts.
-            let geom = if structural && level < 0 {
-                structures::extend_portals(&geom)
-            } else {
-                geom
-            };
+            // its mouths are opened past the hillside when the mesh is swept, where
+            // the DEM is in hand (see `structure_mesh::open_portals`), so each
+            // portal pokes out exactly as far as its own slope needs.
             // Every (long enough) structure carries the deck profile: bridges
             // ride it a clearance above (their deck), tunnels sink a box to it.
             // Ground runs drape and need no profile.

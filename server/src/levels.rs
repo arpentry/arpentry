@@ -12,8 +12,9 @@
 //! sinks a tunnel as a whole), so a mixed segment must be cut into maximal
 //! constant-level pieces before tiling. [`split_levels`] does that, returning
 //! each piece with its level; the ground gaps between rules come back as level-0
-//! pieces. The cut points are fractions of the segment's planar (degree) length,
-//! matching how Overture computes the `between` positions.
+//! pieces. The cut points are fractions of the segment's geodesic (metric)
+//! length, matching how Overture computes the `between` positions (its splitter
+//! resolves them against `ST_LengthSpheroid`).
 
 use geo_types::{Coord, Geometry, LineString};
 
@@ -77,8 +78,8 @@ fn parse_inner(array: &dyn Array, row: usize) -> Option<Vec<LevelRun>> {
 
 /// Splits a segment into maximal runs of constant level, returning each piece
 /// with its level (0 for the ground spans between and around the rules). The
-/// cuts fall at the rule edges, measured as fractions of the linestring's planar
-/// length. Non-linestring geometry and degenerate input fall back to a single
+/// cuts fall at the rule edges, measured as fractions of the linestring's
+/// geodesic length. Non-linestring geometry and degenerate input fall back to a single
 /// piece at the [`dominant`] level — there is nothing to linearly reference.
 pub fn split_levels(geom: &Geometry, runs: &[LevelRun]) -> Vec<(Geometry, i64)> {
     let Geometry::LineString(line) = geom else {
@@ -162,13 +163,22 @@ pub fn level_at(runs: &[LevelRun], t: f64) -> i64 {
         .map_or(0, |r| r.level)
 }
 
-/// Cumulative planar (degree) length at each vertex; `cum[0] == 0`.
+/// Cumulative geodesic length at each vertex, approximated locally by scaling
+/// longitude by `cos(mean latitude)`; `cum[0] == 0`. Overture measures the
+/// `between` fractions along the segment's spheroid length — its splitter uses
+/// `ST_LengthSpheroid` — so the fractions must ride metric arc length, not raw
+/// degrees: at 46° latitude a longitude degree is only ~0.69 of a latitude
+/// degree, and ignoring that shifts every cut toward the east-west legs. Only
+/// relative length matters here (cuts are fractions of the total), so the metres
+/// constant cancels and just the longitude scaling is applied.
 fn cumulative(pts: &[Coord]) -> Vec<f64> {
+    let mean_lat = pts.iter().map(|c| c.y).sum::<f64>() / pts.len() as f64;
+    let cos_lat = mean_lat.to_radians().cos();
     let mut cum = Vec::with_capacity(pts.len());
     let mut acc = 0.0;
     cum.push(0.0);
     for w in pts.windows(2) {
-        let dx = w[1].x - w[0].x;
+        let dx = (w[1].x - w[0].x) * cos_lat;
         let dy = w[1].y - w[0].y;
         acc += (dx * dx + dy * dy).sqrt();
         cum.push(acc);
@@ -293,6 +303,35 @@ mod tests {
         let pieces = split_levels(&line, &[run(0.5, 1.0, 1)]);
         let bridge = pieces.iter().find(|(_, l)| *l == 1).unwrap();
         assert_eq!(xs(&bridge.0), vec![5.0, 8.0, 10.0]);
+    }
+
+    #[test]
+    fn cuts_follow_geodesic_not_planar_length() {
+        // An L-bend at 60°N, where a longitude degree is ~half a latitude degree.
+        // Leg AB runs east-west (lon 0→2), leg BC north-south (lat 60→61): planar
+        // leg lengths are 2 and 1, but geodesically AB shrinks by ~cos 60° to ~1,
+        // so the two legs are nearly equal on the ground. A rule over the second
+        // half must therefore cut at the corner B, not mid-AB. Measuring fractions
+        // in raw degrees (the old bug) would cut at planar x=1.5, lopping off part
+        // of the east-west leg — exactly the kind of shift that made the Chillon
+        // tunnel too short and its bridge start too early.
+        let line = Geometry::LineString(LineString(vec![
+            Coord { x: 0.0, y: 60.0 },
+            Coord { x: 2.0, y: 60.0 },
+            Coord { x: 2.0, y: 61.0 },
+        ]));
+        let pieces = split_levels(&line, &[run(0.5, 1.0, 1)]);
+        let bridge = pieces.iter().find(|(_, l)| *l == 1).expect("a bridge piece");
+        let first = match &bridge.0 {
+            Geometry::LineString(ls) => ls.0[0],
+            _ => panic!("expected linestring"),
+        };
+        // Geodesic cut lands at the corner (x≈2); the planar cut would be x=1.5.
+        assert!(
+            (first.x - 2.0).abs() < 0.05,
+            "bridge starts at x={}, expected the corner ~2.0 (planar bug cuts at 1.5)",
+            first.x
+        );
     }
 
     #[test]

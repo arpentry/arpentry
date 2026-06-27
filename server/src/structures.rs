@@ -78,12 +78,36 @@ const DECK_LEVELS_KEY: &str = "deck_levels";
 pub struct RoadProfile {
     /// Densified segment nodes in (lon, lat).
     nodes: Vec<Coord>,
+    /// `nodes` low-pass-smoothed (endpoint-preserving), the line the deck box is
+    /// swept along so it follows the road without tracing every digitising wiggle.
+    /// Smoothing the carried whole segment (not a per-tile fragment) keeps the
+    /// fragments aligned at their seams.
+    smooth: Vec<Coord>,
+    /// Cumulative metric arc length at each node (`arc[0] == 0`), the linear
+    /// reference [`deck_line`](RoadProfile::deck_line) fits a straight ramp in.
+    arc: Vec<f64>,
     /// Road-surface height in metres above the ellipsoid at each node.
     road_m: Vec<f64>,
     /// `cos(mean latitude)`, scaling longitude into the local metric space used
     /// for projection.
     cos_lat: f64,
 }
+
+/// One swept deck cross-section: the (smoothed) centerline position, the deck-top
+/// height, and the unit left-perpendicular (ENU metres) the section spans.
+pub struct DeckNode {
+    pub lon: f64,
+    pub lat: f64,
+    pub height_m: f64,
+    pub left_e: f64,
+    pub left_n: f64,
+}
+
+/// Binomial (1-2-1) smoothing passes applied to the centerline before sweeping.
+/// Each pass widens the kernel; four damps the short digitising wiggle of a road
+/// line (a footway's zigzag, a viaduct's vertex noise) while keeping its real
+/// curve, so the swept box is a regular prism.
+const SMOOTH_PASSES: usize = 4;
 
 impl RoadProfile {
     /// Builds the surface profile from a feature's recorded segment and level
@@ -108,11 +132,124 @@ impl RoadProfile {
         project_onto(&self.nodes, &self.road_m, self.cos_lat, lon, lat)
     }
 
+    /// Deck cross-sections for a structure's (clipped, densified, in-order)
+    /// centerline `pts`: each vertex placed on the *smoothed* global road line
+    /// with a straight-ramp deck height and a smoothed cross-section direction, so
+    /// the swept box is a regular prism that follows the road instead of tracing
+    /// every wiggle and dive.
+    ///
+    /// All three smoothings are anchored to the *whole-segment* line carried on
+    /// every fragment, so tile fragments of one structure stay identical at their
+    /// seams: the centerline is low-pass-smoothed once ([`smooth`](Self::smooth)),
+    /// the height is one straight line fit in *global* arc, and the section
+    /// direction is read from the global smoothed line. The straight height is
+    /// what stops the box folding — the per-vertex profile is faithful but busy at
+    /// a structure's edges (it dives to terrain at an abutment, and a tunnel's
+    /// extended portal stub follows the descending approach), and the road a
+    /// structure actually holds is its gentle grade. The arc-order walk also stops
+    /// a curving viaduct from snapping a vertex onto a far arc that nears it in
+    /// plan.
+    pub fn deck_nodes(&self, pts: &[Coord]) -> Vec<DeckNode> {
+        let probe = self.walk(pts);
+        let s: Vec<f64> = probe.iter().map(|&(i, t)| lerp(self.arc[i], self.arc[i + 1], t)).collect();
+        let raw: Vec<f64> = probe.iter().map(|&(i, t)| lerp(self.road_m[i], self.road_m[i + 1], t)).collect();
+        let h = fit_ramp(&s, &raw);
+        probe
+            .iter()
+            .zip(h)
+            .map(|(&(i, t), height_m)| {
+                let lon = lerp(self.smooth[i].x, self.smooth[i + 1].x, t);
+                let lat = lerp(self.smooth[i].y, self.smooth[i + 1].y, t);
+                let (left_e, left_n) = self.section_left(i);
+                DeckNode { lon, lat, height_m, left_e, left_n }
+            })
+            .collect()
+    }
+
+    /// Deck-top heights only, as one straight ramp — the height half of
+    /// [`deck_nodes`](Self::deck_nodes), kept for direct testing.
+    pub fn deck_line(&self, pts: &[Coord]) -> Vec<f64> {
+        let probe = self.walk(pts);
+        let s: Vec<f64> = probe.iter().map(|&(i, t)| lerp(self.arc[i], self.arc[i + 1], t)).collect();
+        let raw: Vec<f64> = probe.iter().map(|&(i, t)| lerp(self.road_m[i], self.road_m[i + 1], t)).collect();
+        fit_ramp(&s, &raw)
+    }
+
+    /// Projects an in-order on-segment polyline onto the profile, returning the
+    /// `(edge, t)` of each vertex. The walk is monotonic from a robust interior
+    /// seed, so a vertex is confined to the arc its neighbours sit on — a curving
+    /// segment that nears itself in plan can't snap a vertex onto a far arc. A
+    /// clipped fragment may run either way; the direction is read from two
+    /// interior points (the ends are where a self-approach lurks).
+    fn walk(&self, pts: &[Coord]) -> Vec<(usize, f64)> {
+        let edges = self.nodes.len().saturating_sub(1);
+        if edges < 2 || pts.len() < 3 {
+            return pts.iter().map(|p| self.project(0, edges.max(1), *p)).collect();
+        }
+        let ia = self.project(0, edges, pts[pts.len() / 3]).0;
+        let ib = self.project(0, edges, pts[2 * pts.len() / 3]).0;
+        let dir: isize = if ib >= ia { 1 } else { -1 };
+        // The cursor may range ~6 edges per step: enough slack for one deck step
+        // (about one profile edge) while still walling off a far arc.
+        const WIN: isize = 6;
+        let step = |cur: isize, towards: isize, p: Coord| -> (usize, f64) {
+            let (lo, hi) = if towards >= 0 {
+                (cur.max(0), (cur + WIN + 1).min(edges as isize))
+            } else {
+                ((cur - WIN).max(0), (cur + 1).min(edges as isize))
+            };
+            self.project(lo as usize, hi as usize, p)
+        };
+        let mid = pts.len() / 2;
+        let mut out = vec![(0usize, 0.0); pts.len()];
+        out[mid] = self.project(0, edges, pts[mid]);
+        let mut cur = out[mid].0 as isize;
+        for k in mid + 1..pts.len() {
+            out[k] = step(cur, dir, pts[k]);
+            cur = out[k].0 as isize;
+        }
+        cur = out[mid].0 as isize;
+        for k in (0..mid).rev() {
+            out[k] = step(cur, -dir, pts[k]);
+            cur = out[k].0 as isize;
+        }
+        out
+    }
+
+    /// Unit left-perpendicular (ENU, scaled-degree space) of the smoothed line at
+    /// edge `i`, read over a short window so the cross-section direction varies
+    /// gently and the box edges stay clean.
+    fn section_left(&self, i: usize) -> (f64, f64) {
+        let m = self.smooth.len();
+        let lo = i.saturating_sub(2);
+        let hi = (i + 3).min(m - 1);
+        let de = (self.smooth[hi].x - self.smooth[lo].x) * self.cos_lat;
+        let dn = self.smooth[hi].y - self.smooth[lo].y;
+        let len = (de * de + dn * dn).sqrt().max(1e-12);
+        (-dn / len, de / len)
+    }
+
+    /// Nearest edge to `p` over `[lo, hi)` and the clamped parameter along it.
+    fn project(&self, lo: usize, hi: usize, p: Coord) -> (usize, f64) {
+        nearest_edge(&self.nodes, self.cos_lat, lo, hi, p)
+    }
+
     /// A flat profile holding `height_m` over the given centerline — a DEM-free
     /// constructor for tests and degenerate inputs.
     pub fn flat(nodes: &[Coord], height_m: f64) -> RoadProfile {
+        let cos_lat = run_cos_lat(nodes);
+        let mut arc = Vec::with_capacity(nodes.len());
+        let mut acc = 0.0;
+        for (i, c) in nodes.iter().enumerate() {
+            if i > 0 {
+                acc += metric_len(nodes[i - 1], *c, cos_lat);
+            }
+            arc.push(acc);
+        }
         RoadProfile {
-            cos_lat: run_cos_lat(nodes),
+            cos_lat,
+            arc,
+            smooth: smooth_path(nodes),
             nodes: nodes.to_vec(),
             road_m: vec![height_m; nodes.len()],
         }
@@ -140,36 +277,99 @@ fn build_profile(
         return None;
     }
     let cos_lat = run_cos_lat(seg);
-    let (nodes, arc, _total) = densify_run(seg, cos_lat);
+    let (nodes, arc, total) = densify_run(seg, cos_lat);
     let n = nodes.len();
     if n < 2 {
         return None;
     }
-    // Level fractions use the *planar* (degree) arc length, matching how Overture
-    // computes the `between` positions.
-    let mut planar = vec![0.0; n];
-    for i in 1..n {
-        let dx = nodes[i].x - nodes[i - 1].x;
-        let dy = nodes[i].y - nodes[i - 1].y;
-        planar[i] = planar[i - 1] + (dx * dx + dy * dy).sqrt();
-    }
-    let planar_total = planar[n - 1].max(f64::MIN_POSITIVE);
+    // Overture measures the level `between` fractions along the segment's geodesic
+    // (spheroid) length, so anchor them against the metric arc length `densify_run`
+    // already accumulated — not raw degree length, which at this latitude
+    // overweights the east-west legs and slides every portal along the road.
+    let arc_total = total.max(f64::MIN_POSITIVE);
     let terrain: Vec<f64> = nodes.iter().map(|c| elev(*c)).collect();
     let at_grade: Vec<bool> =
-        (0..n).map(|i| level_at(runs, planar[i] / planar_total) == 0).collect();
+        (0..n).map(|i| level_at(runs, arc[i] / arc_total) == 0).collect();
     let road_m = road_profile(&arc, &terrain, &at_grade);
-    Some(RoadProfile { nodes, road_m, cos_lat })
+    let smooth = smooth_path(&nodes);
+    Some(RoadProfile { nodes, smooth, arc, road_m, cos_lat })
+}
+
+/// Linear interpolation between `a` and `b` at `t`.
+fn lerp(a: f64, b: f64, t: f64) -> f64 {
+    a + (b - a) * t
+}
+
+/// Endpoint-preserving binomial (1-2-1) smoothing of a centerline, [`SMOOTH_PASSES`]
+/// times, damping short digitising wiggle while keeping the road's real curve.
+fn smooth_path(nodes: &[Coord]) -> Vec<Coord> {
+    let mut cur = nodes.to_vec();
+    let n = cur.len();
+    if n < 3 {
+        return cur;
+    }
+    for _ in 0..SMOOTH_PASSES {
+        let prev = cur.clone();
+        for i in 1..n - 1 {
+            cur[i] = Coord {
+                x: 0.25 * prev[i - 1].x + 0.5 * prev[i].x + 0.25 * prev[i + 1].x,
+                y: 0.25 * prev[i - 1].y + 0.5 * prev[i].y + 0.25 * prev[i + 1].y,
+            };
+        }
+    }
+    cur
+}
+
+/// Fits one straight ramp to arc-referenced heights and returns the fitted value
+/// at each arc. The central span is least-squares-fit (the ends are trimmed:
+/// a structure's busy landings — abutment touchdown, portal stub — must not tilt
+/// the line). For a single chord the fit recovers it exactly, so tile fragments
+/// of one run share the line.
+fn fit_ramp(s: &[f64], h: &[f64]) -> Vec<f64> {
+    let n = s.len();
+    if n < 4 {
+        return h.to_vec();
+    }
+    let cut = (n / 6).max(1);
+    let (lo, hi) = (cut, n - cut);
+    let m = (hi - lo) as f64;
+    let (mut sx, mut sy, mut sxx, mut sxy) = (0.0, 0.0, 0.0, 0.0);
+    for k in lo..hi {
+        sx += s[k];
+        sy += h[k];
+        sxx += s[k] * s[k];
+        sxy += s[k] * h[k];
+    }
+    let denom = m * sxx - sx * sx;
+    if denom.abs() < f64::EPSILON {
+        // Degenerate arc spread (a near-point piece): hold the mean height.
+        return vec![sy / m; n];
+    }
+    let b = (m * sxy - sx * sy) / denom;
+    let a = (sy - b * sx) / m;
+    s.iter().map(|&si| a + b * si).collect()
 }
 
 /// Value at `(lon, lat)` from a per-node series, found by projecting the point
 /// onto the nearest segment edge of `nodes` and interpolating. Clipped fragment
 /// vertices all lie on the segment, so the nearest on-segment value is exact.
 fn project_onto(nodes: &[Coord], vals: &[f64], cos_lat: f64, lon: f64, lat: f64) -> f64 {
-    let px = lon * cos_lat;
-    let py = lat;
+    let (i, t) = nearest_edge(nodes, cos_lat, 0, nodes.len().saturating_sub(1), Coord { x: lon, y: lat });
+    vals[i] + (vals[i + 1] - vals[i]) * t
+}
+
+/// Nearest edge to `p` over the edge index range `[lo, hi)` (edge `i` spans
+/// `nodes[i]..nodes[i+1]`), returning the edge index and the clamped parameter
+/// `t` of the foot of the perpendicular. Longitudes are scaled by `cos_lat` into
+/// the local metric space. A bounded range lets the arc-order walk confine the
+/// search to one arc; `lo = 0, hi = edges` makes it a full scan.
+fn nearest_edge(nodes: &[Coord], cos_lat: f64, lo: usize, hi: usize, p: Coord) -> (usize, f64) {
+    let px = p.x * cos_lat;
+    let py = p.y;
     let mut best_d2 = f64::INFINITY;
-    let mut best = vals[0];
-    for i in 0..nodes.len() - 1 {
+    let mut best_i = lo.min(nodes.len().saturating_sub(2));
+    let mut best_t = 0.0;
+    for i in lo..hi {
         let (a, b) = (nodes[i], nodes[i + 1]);
         let ax = a.x * cos_lat;
         let dx = b.x * cos_lat - ax;
@@ -185,10 +385,11 @@ fn project_onto(nodes: &[Coord], vals: &[f64], cos_lat: f64, lon: f64, lat: f64)
         let d2 = (px - cx) * (px - cx) + (py - cy) * (py - cy);
         if d2 < best_d2 {
             best_d2 = d2;
-            best = vals[i] + (vals[i + 1] - vals[i]) * t;
+            best_i = i;
+            best_t = t;
         }
     }
-    best
+    (best_i, best_t)
 }
 
 /// The road elevation at each node: terrain at the anchors (at-grade nodes and
@@ -258,50 +459,6 @@ fn densify_run(run: &[Coord], cos_lat: f64) -> (Vec<Coord>, Vec<f64>, f64) {
         }
     }
     (nodes, arc, total)
-}
-
-
-/// How far a tunnel is pushed past each of its portals, in metres, so the swept
-/// box protrudes from the hillside and the open mouths read as portals instead
-/// of being swallowed where the terrain meets the road. A few metres is enough
-/// to clear the terrain mesh at the portal without visibly overrunning the
-/// at-grade approach.
-const PORTAL_BUFFER_M: f64 = 8.0;
-
-/// Extends a tunnel piece's centerline [`PORTAL_BUFFER_M`] past each end along
-/// its end tangent, so the box swept along it poke out at the portals. Runs on
-/// the *unclipped* piece (the ends are the real portals — a transition to an
-/// at-grade or bridge neighbour, or the segment's own end), so the extension
-/// never lands on a tile-boundary cut. A no-op for non-line or degenerate
-/// geometry.
-///
-/// The endpoints are moved outward (not duplicated), so the box overlaps the
-/// adjoining approach for a few metres — exactly the overrun that makes the
-/// mouth visible. Heights still come from the recorded segment: a point past the
-/// segment end projects to the end and holds its height, so the protruding stub
-/// keeps the portal's grade.
-pub fn extend_portals(geom: &Geometry) -> Geometry {
-    let Geometry::LineString(ls) = geom else {
-        return geom.clone();
-    };
-    if ls.0.len() < 2 {
-        return geom.clone();
-    }
-    let mut pts = ls.0.clone();
-    let cos_lat = run_cos_lat(&pts);
-    let n = pts.len();
-    pts[0] = push_out(pts[1], pts[0], cos_lat);
-    pts[n - 1] = push_out(pts[n - 2], pts[n - 1], cos_lat);
-    Geometry::LineString(LineString(pts))
-}
-
-/// Pushes `end` [`PORTAL_BUFFER_M`] further along the `inner` → `end` direction.
-fn push_out(inner: Coord, end: Coord, cos_lat: f64) -> Coord {
-    let de = (end.x - inner.x) * cos_lat * DEG_M;
-    let dn = (end.y - inner.y) * DEG_M;
-    let len = (de * de + dn * dn).sqrt().max(f64::MIN_POSITIVE);
-    let s = PORTAL_BUFFER_M / len;
-    Coord { x: end.x + (end.x - inner.x) * s, y: end.y + (end.y - inner.y) * s }
 }
 
 /// Records a bridge's whole-segment centerline (`deck_run`, hex WKB) and level
@@ -560,6 +717,36 @@ mod tests {
     }
 
     #[test]
+    fn deck_line_is_one_straight_ramp_over_a_folded_profile() {
+        // A road profile that climbs steadily but hooks down over its last few
+        // nodes (an abutment touchdown / portal stub — the shape that folds the
+        // box). `deck_line` must return a single straight ramp: collinear heights
+        // that ignore the end hook, so the swept box is a simple prism.
+        let nodes = line(24, 0.02);
+        let cos_lat = run_cos_lat(&nodes);
+        let mut arc = vec![0.0];
+        for i in 1..nodes.len() {
+            arc.push(arc[i - 1] + metric_len(nodes[i - 1], nodes[i], cos_lat));
+        }
+        let n = nodes.len();
+        let mut road_m: Vec<f64> = (0..n).map(|i| 100.0 + 12.0 * i as f64 / (n - 1) as f64).collect();
+        // Dive the last three nodes back below the climb (the fold).
+        road_m[n - 1] = 105.0;
+        road_m[n - 2] = 108.0;
+        road_m[n - 3] = 110.0;
+        let p = RoadProfile { smooth: nodes.clone(), nodes: nodes.clone(), arc, road_m, cos_lat };
+
+        let deck = p.deck_line(&nodes);
+        // Collinear: the second difference vanishes everywhere (a straight ramp).
+        for w in deck.windows(3) {
+            let second = (w[2] - w[1]) - (w[1] - w[0]);
+            assert!(second.abs() < 1e-6, "deck not straight: {deck:?}");
+        }
+        // The ramp follows the climb, not the end hook.
+        assert!(deck[n - 1] > deck[0], "deck should ramp up, got {deck:?}");
+    }
+
+    #[test]
     fn enters_a_hillside_by_occlusion_not_a_plunge() {
         // ground | bridge over a ravine | tunnel into a hill. The deck holds the
         // gentle road grade across the bridge — standing high over the ravine —
@@ -606,42 +793,6 @@ mod tests {
         let p = profile_from(&seg, &[run(0.3, 0.7, 1)], |_| 100.0);
         assert!((p.height_at(seg[0].x, seg[0].y) - 100.0).abs() < 0.5);
         assert!((p.height_at(seg[128].x, 46.0) - 100.0).abs() < 0.5);
-    }
-
-    #[test]
-    fn extend_portals_pushes_both_ends_out() {
-        // A west→east tunnel piece at lat 46: each end must move outward by
-        // ~PORTAL_BUFFER_M, lengthening the line without moving interior nodes.
-        let seg = line(4, 0.01);
-        let before = match &Geometry::LineString(LineString(seg.clone())) {
-            Geometry::LineString(ls) => ls.0.clone(),
-            _ => unreachable!(),
-        };
-        let Geometry::LineString(after) = extend_portals(&Geometry::LineString(LineString(seg)))
-        else {
-            panic!("expected a linestring");
-        };
-        let cos_lat = 46.0_f64.to_radians().cos();
-        // Start moved west (smaller x), end moved east (larger x).
-        assert!(after.0[0].x < before[0].x, "start not pushed out");
-        assert!(after.0[3].x > before[3].x, "end not pushed out");
-        // Each by ~PORTAL_BUFFER_M metres.
-        let d_start = (before[0].x - after.0[0].x) * cos_lat * DEG_M;
-        let d_end = (after.0[3].x - before[3].x) * cos_lat * DEG_M;
-        assert!((d_start - PORTAL_BUFFER_M).abs() < 0.1, "start moved {d_start} m");
-        assert!((d_end - PORTAL_BUFFER_M).abs() < 0.1, "end moved {d_end} m");
-        // Interior nodes untouched.
-        assert_eq!(after.0[1], before[1]);
-        assert_eq!(after.0[2], before[2]);
-    }
-
-    #[test]
-    fn extend_portals_ignores_degenerate() {
-        let pt = Geometry::Point(geo_types::Point::new(6.0, 46.0));
-        assert!(matches!(extend_portals(&pt), Geometry::Point(_)));
-        let one = Geometry::LineString(LineString(vec![Coord { x: 6.0, y: 46.0 }]));
-        let Geometry::LineString(out) = extend_portals(&one) else { panic!() };
-        assert_eq!(out.0.len(), 1);
     }
 
     #[test]

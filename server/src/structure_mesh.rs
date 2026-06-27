@@ -30,10 +30,11 @@
 use geo_types::{Coord, Geometry, LineString};
 
 use crate::building_mesh::{Frame, M_PER_DEG_LAT};
+use crate::clip;
 use crate::dem::Dem;
 use crate::project::{self, Bounds};
 use crate::structures::{self, RoadProfile};
-use crate::terrain::TerrainMesh;
+use crate::terrain::{self, TerrainMesh};
 use crate::tile_build::{prop_str, EncoderFeature};
 
 /// Vertical clearance of a tunnel bore in metres — floor to flat ceiling.
@@ -48,6 +49,18 @@ const SEGMENT_M: f64 = 8.0;
 
 /// Cap on densified centerline vertices per line — a runaway guard.
 const MAX_VERTS: usize = 4096;
+
+/// How far past the point its bore mouth clears the terrain a tunnel is pushed,
+/// so the opening pokes from the hillside and reads as a portal instead of
+/// ending flush with the slope.
+const PORTAL_MARGIN_M: f64 = 16.0;
+
+/// Step of the outward search that finds where a tunnel's bore ceiling rises
+/// above the terrain, and the distance it reaches before giving up. The reach
+/// caps the push so an end cut mid-bore at a tile edge (never exposed) can't run
+/// away; a real portal clears the slope well within it.
+const PORTAL_STEP_M: f64 = 2.0;
+const PORTAL_REACH_M: f64 = 80.0;
 
 /// Whether the box is lifted onto a bridge deck or sunk as a tunnel bore.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -64,9 +77,23 @@ enum Kind {
 pub fn stamp(f: &mut EncoderFeature, dem: &mut Dem, z: u8, bounds: &Bounds, level: i64) {
     let kind = if level > 0 { Kind::Bridge } else { Kind::Tunnel };
     if let Some(profile) = RoadProfile::from_feature(f, dem, z, bounds) {
-        if let Some(mesh) = build(&f.geometry, &profile, bounds, prop_str(f, "class").as_deref(), kind)
-        {
-            f.mesh = Some(mesh);
+        let class = prop_str(f, "class");
+        // The rendered terrain surface a tunnel mouth must clear — the same
+        // surface the road profile is anchored to, so the portal opens exactly
+        // where the bore would surface.
+        let mut terrain =
+            |c: Coord| terrain::surface_height(bounds, c.x, c.y, &mut |lon, lat| dem.elevation(lon, lat, z));
+        // Clip to the tile *proper*, not the format's half-tile buffer. A draped
+        // line wants the buffer so its stroke covers the seam, but a structure box
+        // is an opaque 3D solid: built in the buffer it is replicated across every
+        // neighbouring tile, and the independently-fit copies overlap into a
+        // staircase. Clipped to the proper tile each box draws once and abuts its
+        // neighbour at the shared edge (the cross-section there is identical — same
+        // global smoothed line, fit, and width — so the seam is seamless).
+        if let Some(geom) = clip::clip_geometry(&f.geometry, bounds) {
+            if let Some(mesh) = build(&geom, &profile, bounds, class.as_deref(), kind, &mut terrain) {
+                f.mesh = Some(mesh);
+            }
         }
     }
     structures::discard_run(f);
@@ -80,6 +107,7 @@ fn build(
     bounds: &Bounds,
     class: Option<&str>,
     kind: Kind,
+    terrain: &mut dyn FnMut(Coord) -> f64,
 ) -> Option<TerrainMesh> {
     let frame = Frame::at_center(bounds);
     let half_w = half_width_m(class);
@@ -91,14 +119,17 @@ fn build(
         Kind::Bridge => -((DECK_THICKNESS_M * 1000.0) as i32),
         Kind::Tunnel => (TUNNEL_HEIGHT_M * 1000.0) as i32,
     };
+    // A tunnel's ends are opened past the hillside (terrain-aware) so the mouths
+    // read as portals; a bridge deck ends flush at its abutments.
+    let open = kind == Kind::Tunnel;
     let mut acc = Accum::default();
     match geom {
         Geometry::LineString(ls) => {
-            add_line(&mut acc, &frame, bounds, profile, ls, half_w, rise_mm)
+            add_line(&mut acc, &frame, bounds, profile, ls, half_w, rise_mm, open, terrain)
         }
         Geometry::MultiLineString(mls) => {
             for ls in &mls.0 {
-                add_line(&mut acc, &frame, bounds, profile, ls, half_w, rise_mm);
+                add_line(&mut acc, &frame, bounds, profile, ls, half_w, rise_mm, open, terrain);
             }
         }
         _ => return None,
@@ -109,9 +140,9 @@ fn build(
 /// Half-width of the box in metres by road class — bigger roads, bigger structures.
 fn half_width_m(class: Option<&str>) -> f64 {
     match class {
-        Some("motorway") | Some("trunk") => 9.0,
-        Some("primary") | Some("secondary") => 7.0,
-        _ => 5.0,
+        Some("motorway") | Some("trunk") => 7.5,
+        Some("primary") | Some("secondary") => 6.0,
+        _ => 4.0,
     }
 }
 
@@ -160,7 +191,10 @@ struct Node {
     left_n: f64,
 }
 
-/// Sweeps a box prism along one clipped centerline.
+/// Sweeps a box prism along one clipped centerline. When `open`, the ends are
+/// pushed past the hillside so a tunnel's mouths read as portals (see
+/// [`open_portals`]).
+#[allow(clippy::too_many_arguments)]
 fn add_line(
     acc: &mut Accum,
     frame: &Frame,
@@ -169,33 +203,35 @@ fn add_line(
     line: &LineString,
     half_w: f64,
     rise_mm: i32,
+    open: bool,
+    terrain: &mut dyn FnMut(Coord) -> f64,
 ) {
-    let pts = densify(&line.0, frame);
+    let base = if open { open_portals(&line.0, bounds, profile, terrain) } else { line.0.clone() };
+    let pts = densify(&base, frame);
     if pts.len() < 2 {
         return;
     }
-    let n = pts.len();
-    let nodes: Vec<Node> = (0..n)
-        .map(|i| {
-            // Tangent from the neighbours (forward/backward at the ends), in ENU
-            // metres; the left perpendicular spans the cross-section.
-            let a = pts[i.saturating_sub(1)];
-            let b = pts[(i + 1).min(n - 1)];
-            let de = (b.x - a.x) * frame.m_per_deg_lon;
-            let dn = (b.y - a.y) * M_PER_DEG_LAT;
-            let len = (de * de + dn * dn).sqrt().max(1e-9);
-            // The road face sits on the road surface (the single model); the box
-            // extends `rise_mm` to the far face (a bridge slab below, a bore above).
-            let road_m = profile.height_at(pts[i].x, pts[i].y);
-            Node {
-                lon: pts[i].x,
-                lat: pts[i].y,
-                top_mm: project::quantize_z(road_m),
-                left_e: -dn / len,
-                left_n: de / len,
-            }
+    // Each cross-section placed on the smoothed road line with a straight-ramp
+    // deck height and a smoothed section direction, so the box is a regular prism
+    // that follows the road instead of tracing every wiggle and dive (see
+    // [`RoadProfile::deck_nodes`]). The road face sits on this surface (the single
+    // model); the box extends `rise_mm` to the far face (a bridge slab below, a
+    // bore above).
+    let nodes: Vec<Node> = profile
+        .deck_nodes(&pts)
+        .into_iter()
+        .map(|d| Node {
+            lon: d.lon,
+            lat: d.lat,
+            top_mm: project::quantize_z(d.height_m),
+            left_e: d.left_e,
+            left_n: d.left_n,
         })
         .collect();
+    let n = nodes.len();
+    if n < 2 {
+        return;
+    }
 
     // Per-face octahedral normals (constant across the prism in ENU).
     let n_up = frame.encode_enu(0.0, 0.0, 1.0);
@@ -253,6 +289,79 @@ fn quad(
     acc.tri(v0, v2, v3);
 }
 
+/// Opens a tunnel's portals: moves each end outward along its tangent until the
+/// bore ceiling rises above the rendered terrain — the mouth is clear — then a
+/// fixed margin further so it pokes from the hillside. A fixed push (the old
+/// scheme) cannot do this: the two ends sit on different slopes and need
+/// different reach, so one constant either buries the steep mouth or overruns the
+/// gentle one. The heights past the segment end hold the portal's grade
+/// ([`RoadProfile::height_at`] clamps to the nearest on-segment point), so the
+/// protruding stub keeps climbing the road's profile, not the terrain's.
+///
+/// An end lying on the tile boundary is a clip cut, not a real portal — extending
+/// it would grow a phantom mouth at every tile seam the bore crosses — so it is
+/// left in place to abut the neighbour tile's piece.
+fn open_portals(
+    pts: &[Coord],
+    bounds: &Bounds,
+    profile: &RoadProfile,
+    terrain: &mut dyn FnMut(Coord) -> f64,
+) -> Vec<Coord> {
+    if pts.len() < 2 {
+        return pts.to_vec();
+    }
+    let mean_lat = pts.iter().map(|c| c.y).sum::<f64>() / pts.len() as f64;
+    let cos_lat = mean_lat.to_radians().cos();
+    let mut out = pts.to_vec();
+    let n = out.len();
+    if !on_tile_edge(pts[0], bounds) {
+        out[0] = portal_point(pts[1], pts[0], cos_lat, profile, terrain);
+    }
+    if !on_tile_edge(pts[n - 1], bounds) {
+        out[n - 1] = portal_point(pts[n - 2], pts[n - 1], cos_lat, profile, terrain);
+    }
+    out
+}
+
+/// Whether `c` sits on the proper tile boundary (a clip cut), within a small
+/// fraction of the tile size.
+fn on_tile_edge(c: Coord, bounds: &Bounds) -> bool {
+    let ex = bounds.width() * 1e-4;
+    let ey = bounds.height() * 1e-4;
+    (c.x - bounds.west).abs() < ex
+        || (c.x - bounds.east).abs() < ex
+        || (c.y - bounds.south).abs() < ey
+        || (c.y - bounds.north).abs() < ey
+}
+
+/// The opened position of one tunnel end: stepping along the `inner` → `end`
+/// direction, the first point whose bore ceiling (road surface + bore height)
+/// clears the terrain, plus [`PORTAL_MARGIN_M`]; capped at [`PORTAL_REACH_M`].
+/// An end already clear (terrain below the ceiling) just gets the margin — the
+/// same small poke the fixed scheme gave every portal.
+fn portal_point(
+    inner: Coord,
+    end: Coord,
+    cos_lat: f64,
+    profile: &RoadProfile,
+    terrain: &mut dyn FnMut(Coord) -> f64,
+) -> Coord {
+    let de = (end.x - inner.x) * cos_lat * M_PER_DEG_LAT;
+    let dn = (end.y - inner.y) * M_PER_DEG_LAT;
+    let len = (de * de + dn * dn).sqrt().max(f64::MIN_POSITIVE);
+    // Outward direction in lon/lat per metre stepped.
+    let (ux, uy) = ((end.x - inner.x) / len, (end.y - inner.y) / len);
+    let steps = (PORTAL_REACH_M / PORTAL_STEP_M) as usize;
+    let exposed = (0..=steps).find_map(|k| {
+        let d = k as f64 * PORTAL_STEP_M;
+        let p = Coord { x: end.x + ux * d, y: end.y + uy * d };
+        let ceiling = profile.height_at(p.x, p.y) + TUNNEL_HEIGHT_M;
+        (terrain(p) <= ceiling).then_some(d)
+    });
+    let reach = (exposed.unwrap_or(PORTAL_REACH_M) + PORTAL_MARGIN_M).min(PORTAL_REACH_M);
+    Coord { x: end.x + ux * reach, y: end.y + uy * reach }
+}
+
 /// Densifies a centerline to ~[`SEGMENT_M`] spacing in (lon, lat), so the swept
 /// box follows the road's curve and grade.
 fn densify(pts: &[Coord], frame: &Frame) -> Vec<Coord> {
@@ -297,7 +406,7 @@ mod tests {
         let line = centre_line(&b);
         let profile = RoadProfile::flat(&line.0, 100.0);
         let mesh =
-            build(&Geometry::LineString(line), &profile, &b, Some("motorway"), Kind::Tunnel).unwrap();
+            build(&Geometry::LineString(line), &profile, &b, Some("motorway"), Kind::Tunnel, &mut |_: Coord| f64::NEG_INFINITY).unwrap();
 
         let floor = project::quantize_z(100.0); // road surface = bore floor
         let ceiling = floor + (TUNNEL_HEIGHT_M * 1000.0) as i32;
@@ -318,7 +427,7 @@ mod tests {
         let line = centre_line(&b);
         let profile = RoadProfile::flat(&line.0, 100.0);
         let mesh =
-            build(&Geometry::LineString(line), &profile, &b, Some("motorway"), Kind::Bridge).unwrap();
+            build(&Geometry::LineString(line), &profile, &b, Some("motorway"), Kind::Bridge, &mut |_: Coord| f64::NEG_INFINITY).unwrap();
 
         // The deck top *is* the road surface (the single model); the slab hangs
         // below, so the deck never floats above the road.
@@ -341,10 +450,10 @@ mod tests {
         let profile = RoadProfile::flat(&line.0, 100.0);
         let surface = project::quantize_z(100.0);
         let bridge =
-            build(&Geometry::LineString(line.clone()), &profile, &b, Some("motorway"), Kind::Bridge)
+            build(&Geometry::LineString(line.clone()), &profile, &b, Some("motorway"), Kind::Bridge, &mut |_: Coord| f64::NEG_INFINITY)
                 .unwrap();
         let tunnel =
-            build(&Geometry::LineString(line), &profile, &b, Some("motorway"), Kind::Tunnel).unwrap();
+            build(&Geometry::LineString(line), &profile, &b, Some("motorway"), Kind::Tunnel, &mut |_: Coord| f64::NEG_INFINITY).unwrap();
         let deck_top = *bridge.z.iter().max().expect("non-empty");
         let tunnel_floor = *tunnel.z.iter().min().expect("non-empty");
         assert_eq!(deck_top, surface);
@@ -360,7 +469,7 @@ mod tests {
         let line = centre_line(&b);
         let profile = RoadProfile::flat(&line.0, 0.0);
         let mesh =
-            build(&Geometry::LineString(line), &profile, &b, Some("motorway"), Kind::Tunnel).unwrap();
+            build(&Geometry::LineString(line), &profile, &b, Some("motorway"), Kind::Tunnel, &mut |_: Coord| f64::NEG_INFINITY).unwrap();
         // The east→west road runs along x, so the cross-section spreads in y: the
         // box must occupy a band of qy, not a single line.
         let (lo, hi) = mesh.y.iter().fold((u16::MAX, u16::MIN), |(lo, hi), &y| (lo.min(y), hi.max(y)));
@@ -368,11 +477,38 @@ mod tests {
     }
 
     #[test]
+    fn portal_opens_past_a_buried_mouth() {
+        // Flat road at height 0, so the bore ceiling sits at TUNNEL_HEIGHT_M
+        // everywhere. The hillside buries the mouth for the first 10 m past the
+        // end, then falls away. The portal must be pushed past the buried stretch
+        // plus the margin — a steeper slope would push it further, which a fixed
+        // distance could not follow.
+        let inner = Coord { x: 6.0, y: 46.0 };
+        let end = Coord { x: 6.001, y: 46.0 };
+        let profile = RoadProfile::flat(&[inner, end], 0.0);
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let east_m = |c: Coord| (c.x - end.x) * cos_lat * M_PER_DEG_LAT;
+        let mut buried_10m = |c: Coord| if east_m(c) < 10.0 { 100.0 } else { -100.0 };
+        let pushed = east_m(portal_point(inner, end, cos_lat, &profile, &mut buried_10m));
+        assert!(
+            (pushed - (10.0 + PORTAL_MARGIN_M)).abs() < PORTAL_STEP_M + 0.5,
+            "portal pushed {pushed} m, expected ~{}",
+            10.0 + PORTAL_MARGIN_M
+        );
+
+        // An already-clear mouth gets only the margin — the small poke the fixed
+        // scheme gave every end.
+        let mut clear = |_: Coord| -100.0;
+        let poke = east_m(portal_point(inner, end, cos_lat, &profile, &mut clear));
+        assert!((poke - PORTAL_MARGIN_M).abs() < 0.5, "clear mouth poked {poke} m");
+    }
+
+    #[test]
     fn non_line_geometry_yields_nothing() {
         let b = Bounds::of_tile(14, 8500, 5800);
         let profile = RoadProfile::flat(&centre_line(&b).0, 0.0);
         let pt = Geometry::Point(geo_types::Point::new(b.west, b.south));
-        assert!(build(&pt, &profile, &b, None, Kind::Tunnel).is_none());
+        assert!(build(&pt, &profile, &b, None, Kind::Tunnel, &mut |_: Coord| f64::NEG_INFINITY).is_none());
     }
 
     #[test]
