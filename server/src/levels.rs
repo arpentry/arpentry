@@ -24,6 +24,16 @@ use arrow::array::{Array, Float64Array, Int32Array, ListArray, StructArray};
 /// to a shared vertex rather than spawning a degenerate piece.
 const EPS: f64 = 1e-9;
 
+/// A level-0 sliver shorter than this (metres), sandwiched between two structure
+/// runs, is treated as a rule-edge mismatch rather than real at-grade road, and
+/// dropped so the structures abut. Genuine at-grade stretches between structures
+/// are far longer.
+const SNAP_RUN_M: f64 = 10.0;
+
+/// Metres per degree of arc, converting [`cumulative`]'s scaled-degree lengths to
+/// metres for the [`SNAP_RUN_M`] sliver test.
+const DEG_M: f64 = 111_320.0;
+
 /// One rule from `level_rules`: a constant level over the fractional span
 /// `[start, end]` (0..1) of a segment. Ground rules (level 0) are dropped at
 /// parse time — ground is the implicit default between and around the runs.
@@ -115,6 +125,29 @@ pub fn split_levels(geom: &Geometry, runs: &[LevelRun]) -> Vec<(Geometry, i64)> 
         match intervals.last_mut() {
             Some(last) if last.2 == level && (b0 - last.1).abs() <= EPS => last.1 = b1,
             _ => intervals.push((b0, b1, level)),
+        }
+    }
+
+    // Overture's rule edges don't always meet: a tunnel ending at 0.2588 and a
+    // bridge starting at 0.2591 leave a ~2 m phantom at-grade sliver that would
+    // drape as a round-capped stub poking between the two solids. A real at-grade
+    // stretch between structures is far longer; a sub-[`SNAP_RUN_M`] level-0
+    // sliver flanked by two structures is a rule-edge mismatch, so drop it and let
+    // the structures abut at its midpoint.
+    let mut i = 1;
+    while i + 1 < intervals.len() {
+        let (s0, s1, level) = intervals[i];
+        let sliver = level == 0
+            && (s1 - s0) * total * DEG_M < SNAP_RUN_M
+            && intervals[i - 1].2 != 0
+            && intervals[i + 1].2 != 0;
+        if sliver {
+            let mid = 0.5 * (s0 + s1);
+            intervals[i - 1].1 = mid;
+            intervals[i + 1].0 = mid;
+            intervals.remove(i);
+        } else {
+            i += 1;
         }
     }
 
@@ -282,6 +315,37 @@ mod tests {
         let levels: Vec<i64> = pieces.iter().map(|(_, l)| *l).collect();
         assert_eq!(levels, vec![0, 1, 0]);
         assert_eq!(xs(&pieces[1].0), vec![2.0, 7.0]);
+    }
+
+    #[test]
+    fn phantom_sliver_between_structures_is_dropped() {
+        // ~111 m line; a tunnel and a bridge whose rule edges don't meet, leaving
+        // a ~5 m at-grade sliver between them (an Overture rule-edge mismatch). The
+        // sliver is dropped so the structures abut — no draped stub poking out.
+        let line = Geometry::LineString(LineString(vec![
+            Coord { x: 0.0, y: 0.0 },
+            Coord { x: 0.001, y: 0.0 },
+        ]));
+        let pieces = split_levels(&line, &[run(0.0, 0.45, -5), run(0.50, 1.0, 1)]);
+        let levels: Vec<i64> = pieces.iter().map(|(_, l)| *l).collect();
+        assert_eq!(levels, vec![-5, 1], "the phantom at-grade sliver must be dropped");
+        // They meet at the sliver midpoint — no gap.
+        let tun_end = *xs(&pieces[0].0).last().unwrap();
+        let br_start = xs(&pieces[1].0)[0];
+        assert!((tun_end - br_start).abs() < 1e-9, "structures must abut");
+    }
+
+    #[test]
+    fn real_at_grade_stretch_between_structures_survives() {
+        // A genuine ~445 m at-grade stretch (far longer than a rule-edge sliver)
+        // between two structures stays as its own ground piece.
+        let line = Geometry::LineString(LineString(vec![
+            Coord { x: 0.0, y: 0.0 },
+            Coord { x: 0.01, y: 0.0 }, // ~1.1 km
+        ]));
+        let pieces = split_levels(&line, &[run(0.0, 0.3, -5), run(0.7, 1.0, 1)]);
+        let levels: Vec<i64> = pieces.iter().map(|(_, l)| *l).collect();
+        assert_eq!(levels, vec![-5, 0, 1], "a long at-grade stretch must remain");
     }
 
     #[test]

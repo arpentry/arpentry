@@ -640,6 +640,8 @@ fn stamp_roads(buckets: &mut [Vec<EncoderFeature>], dem: &mut Option<Dem>, z: u8
     for f in &mut buckets[layers::TRANSPORTATION as usize] {
         let level = prop_level(f);
         match dem {
+            // A bridge (level > 0) is a thin open deck; a tunnel (level < 0) a
+            // roofed bore capped at its portals (see `structure_mesh`).
             Some(d) if level != 0 => structure_mesh::stamp(f, d, z, bounds, level),
             Some(d) => {
                 structures::discard_run(f);
@@ -744,13 +746,10 @@ fn process_feature(
             if structural {
                 props.push(("level_rules".to_string(), Value::Int(level)));
             }
-            // A structural tunnel's box is largely buried in the hill it pierces;
-            // its mouths are opened past the hillside when the mesh is swept, where
-            // the DEM is in hand (see `structure_mesh::open_portals`), so each
-            // portal pokes out exactly as far as its own slope needs.
-            // Every (long enough) structure carries the deck profile: bridges
-            // ride it a clearance above (their deck), tunnels sink a box to it.
-            // Ground runs drape and need no profile.
+            // Every (long enough) structure carries the deck profile so the mesh
+            // baker can rebuild the road's gentle grade: bridges ride a deck on it,
+            // tunnels sink a bore box around it (see `structure_mesh`). Ground runs
+            // drape and need no profile.
             let deck = match (structural, &carry) {
                 (true, Some(c)) => c.as_slice(),
                 _ => &[],
