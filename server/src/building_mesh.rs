@@ -191,15 +191,15 @@ pub fn build(
     }
     let frame = Frame::at_center(bounds);
     let base_z = project::quantize_z(base_elev_m);
-    let height_mm = base_z + (height_m * 1000.0) as i32;
+    let top_z = base_z + (height_m * 1000.0) as i32;
     let foot_z = base_z - (relief_m * 1000.0) as i32 - FOUNDATION_MARGIN_MM;
 
     let mut acc = Accum::default();
     match geom {
-        Geometry::Polygon(p) => add_polygon(&mut acc, &frame, bounds, p, foot_z, height_mm, roof),
+        Geometry::Polygon(p) => add_polygon(&mut acc, &frame, bounds, p, foot_z, base_z, top_z, roof),
         Geometry::MultiPolygon(mp) => {
             for p in &mp.0 {
-                add_polygon(&mut acc, &frame, bounds, p, foot_z, height_mm, roof);
+                add_polygon(&mut acc, &frame, bounds, p, foot_z, base_z, top_z, roof);
             }
         }
         _ => return None,
@@ -230,7 +230,8 @@ fn add_polygon(
     bounds: &Bounds,
     poly: &Polygon,
     foot_z: i32,
-    height_mm: i32,
+    base_z: i32,
+    top_z: i32,
     roof: &RoofParams,
 ) {
     let mut outer = open_ring(poly.exterior().0.as_slice(), bounds);
@@ -253,11 +254,20 @@ fn add_polygon(
         holes.push(hole);
     }
 
-    add_walls(acc, frame, bounds, &outer, foot_z, height_mm);
+    // Walls rise to the eave, and a pitched roof's rise sits *under* `top_z` so
+    // the apex lands at the feature's height (the source `height`) instead of
+    // stacking above it and overshooting. The rise can't exceed the building's
+    // own height, so the eave stays at or above the ground anchor; a flat cap has
+    // zero rise, so its eave is the top and the walls are unchanged.
+    let (shape, rise_mm) = resolve_roof(frame, &outer, &holes, roof);
+    let rise_mm = rise_mm.clamp(0, top_z - base_z);
+    let eave_z = top_z - rise_mm;
+
+    add_walls(acc, frame, bounds, &outer, foot_z, eave_z);
     for hole in &holes {
-        add_walls(acc, frame, bounds, hole, foot_z, height_mm);
+        add_walls(acc, frame, bounds, hole, foot_z, eave_z);
     }
-    add_roof(acc, frame, &outer, &holes, height_mm, roof);
+    add_roof(acc, frame, &outer, &holes, eave_z, shape, rise_mm);
 }
 
 /// Ring orientation in tile space (`qy` grows northward, so this also matches
@@ -332,24 +342,36 @@ fn add_walls(acc: &mut Accum, frame: &Frame, bounds: &Bounds, ring: &[Vtx], foot
     }
 }
 
-fn add_roof(acc: &mut Accum, frame: &Frame, outer: &[Vtx], holes: &[Vec<Vtx>], eave_z: i32, roof: &RoofParams) {
-    let rise_mm = roof_rise_mm(frame, outer, roof);
-    // Pyramidal (centroid apex) and gabled (ridge over a quad) have no sensible
-    // analogue when the footprint has courtyards; those fall back to a flat cap,
-    // which is the only shape that triangulates holes. Flat and skillion both
-    // tessellate the cap directly and so carry holes through.
-    match roof.shape {
+/// Resolves the roof actually built for a footprint after fallbacks: the
+/// effective shape and its rise in millimetres. Pyramidal (centroid apex) and
+/// gabled (ridge over a quad) have no sensible analogue when the footprint has
+/// courtyards — and gabled only over a 4-vertex quad — so those degrade to a flat
+/// cap, the only shape that triangulates holes. A flat cap has zero rise, so the
+/// walls below it are not shortened. This is the single source of truth the wall
+/// extrusion and [`add_roof`] both read, so the eave and the apex agree.
+fn resolve_roof(frame: &Frame, outer: &[Vtx], holes: &[Vec<Vtx>], roof: &RoofParams) -> (RoofShape, i32) {
+    let shape = match roof.shape {
+        RoofShape::Skillion => RoofShape::Skillion,
+        RoofShape::Pyramidal if holes.is_empty() => RoofShape::Pyramidal,
+        RoofShape::Gabled if holes.is_empty() && outer.len() == 4 => RoofShape::Gabled,
+        // Flat, or a complex/holed outline that can only be a flat cap.
+        _ => RoofShape::Flat,
+    };
+    let rise_mm = if shape == RoofShape::Flat { 0 } else { roof_rise_mm(frame, outer, roof) };
+    (shape, rise_mm)
+}
+
+/// Caps the walls with the roof: an eave-level flat cap, or a pitched roof rising
+/// `rise_mm` from the eave to the apex. `shape`/`rise_mm` come pre-resolved by
+/// [`resolve_roof`], so the arms here are exhaustive (pyramidal implies no holes,
+/// gabled a quad) and the apex matches the eave the walls were extruded to. Flat
+/// and skillion tessellate the cap directly and so carry holes through.
+fn add_roof(acc: &mut Accum, frame: &Frame, outer: &[Vtx], holes: &[Vec<Vtx>], eave_z: i32, shape: RoofShape, rise_mm: i32) {
+    match shape {
         RoofShape::Flat => add_flat_roof(acc, frame, outer, holes, eave_z),
         RoofShape::Skillion => add_skillion_roof(acc, frame, outer, holes, eave_z, rise_mm),
-        RoofShape::Pyramidal if holes.is_empty() => {
-            add_pyramidal_roof(acc, frame, outer, eave_z, rise_mm)
-        }
-        RoofShape::Gabled if holes.is_empty() && outer.len() == 4 => {
-            add_gabled_roof(acc, frame, outer, eave_z, rise_mm)
-        }
-        // Complex outline or holes present: a flat cap rather than self-
-        // intersecting facets.
-        _ => add_flat_roof(acc, frame, outer, holes, eave_z),
+        RoofShape::Pyramidal => add_pyramidal_roof(acc, frame, outer, eave_z, rise_mm),
+        RoofShape::Gabled => add_gabled_roof(acc, frame, outer, eave_z, rise_mm),
     }
 }
 
@@ -693,13 +715,18 @@ mod tests {
     }
 
     #[test]
-    fn gabled_roof_raises_a_ridge() {
+    fn gabled_roof_raises_a_ridge_within_the_building_height() {
         let b = Bounds::of_tile(16, 34000, 22000);
         let g = square(&b, b.width() * 0.2);
         let roof = RoofParams { shape: RoofShape::Gabled, roof_height_m: Some(4.0) };
         let m = build(&g, &b, 0.0, 0.0, 10.0, &roof).unwrap();
-        let ridge = 10_000 + 4_000;
-        assert!(m.z.iter().any(|&z| z == ridge), "ridge vertices should sit above the eaves");
+        // The apex reaches the building height (10 m); the eaves sit a roof-rise
+        // below it, so the roof fits *under* `height` instead of overshooting it.
+        let ridge = 10_000;
+        let eave = 10_000 - 4_000;
+        assert!(m.z.iter().any(|&z| z == ridge), "ridge sits at the building height");
+        assert!(m.z.iter().any(|&z| z == eave), "eaves sit a roof-rise below the apex");
+        assert!(m.z.iter().all(|&z| z <= ridge), "nothing pokes above the building height");
     }
 
     #[test]

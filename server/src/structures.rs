@@ -88,6 +88,22 @@ pub struct RoadProfile {
     arc: Vec<f64>,
     /// Road-surface height in metres above the ellipsoid at each node.
     road_m: Vec<f64>,
+    /// Deck-top height in metres at each node: [`road_m`](Self::road_m) with each
+    /// structure run replaced by a single straight ramp fit over that run (the
+    /// at-grade nodes keep the draped road height). This is the height the swept
+    /// deck/bore box rides. Fitting one ramp per *global* run — rather than per
+    /// clipped tile fragment — is what keeps the deck a clean gentle grade: a
+    /// short tile-edge sliver no longer fits its own (often steep) line, and
+    /// neighbouring fragments share the exact same ramp, so the deck has no seam
+    /// steps. See [`deck_nodes`](Self::deck_nodes).
+    deck_m: Vec<f64>,
+    /// Terrain (ground) surface height in metres at each node, sampled from the
+    /// DEM — the same samples the at-grade anchors are built from. Paired with
+    /// `road_m`, the signed gap `road_m − terrain_m` says where the road runs
+    /// above ground (a visible deck) or below it (a buried bore); a tunnel's
+    /// portal is exactly that gap's zero crossing. See
+    /// [`structure_mesh::sweep_bore`](crate::structure_mesh).
+    terrain_m: Vec<f64>,
     /// `cos(mean latitude)`, scaling longitude into the local metric space used
     /// for projection.
     cos_lat: f64,
@@ -118,7 +134,8 @@ impl RoadProfile {
     pub fn from_feature(f: &EncoderFeature, dem: &mut Dem, z: u8, bounds: &Bounds) -> Option<RoadProfile> {
         let seg = decode_run(prop_str(f, DECK_RUN_KEY).as_deref()?)?;
         let runs = prop_str(f, DECK_LEVELS_KEY).as_deref().map(decode_levels).unwrap_or_default();
-        build_profile(&seg, &runs, &mut |c| {
+        let max_grade = grade_limit(prop_str(f, "class").as_deref());
+        build_profile(&seg, &runs, max_grade, &mut |c| {
             terrain::surface_height(bounds, c.x, c.y, &mut |lon, lat| dem.elevation(lon, lat, z))
         })
     }
@@ -132,32 +149,36 @@ impl RoadProfile {
         project_onto(&self.nodes, &self.road_m, self.cos_lat, lon, lat)
     }
 
+    /// Ground (terrain) surface height in metres at `(lon, lat)`, projected onto
+    /// the segment exactly as [`height_at`](Self::height_at) projects the road,
+    /// so the two share a reference and `height_at − surface_at` is a clean
+    /// signed gap. A tunnel bore is the span where this gap is negative (road
+    /// under ground); its portal is the zero crossing where the road emerges.
+    pub fn surface_at(&self, lon: f64, lat: f64) -> f64 {
+        project_onto(&self.nodes, &self.terrain_m, self.cos_lat, lon, lat)
+    }
+
     /// Deck cross-sections for a structure's (clipped, densified, in-order)
-    /// centerline `pts`: each vertex placed on the *smoothed* global road line
-    /// with a straight-ramp deck height and a smoothed cross-section direction, so
-    /// the swept box is a regular prism that follows the road instead of tracing
-    /// every wiggle and dive.
+    /// centerline `pts`: each vertex placed on the *smoothed* global road line at
+    /// the [`deck_m`](Self::deck_m) deck height, with a smoothed cross-section
+    /// direction, so the swept box is a regular prism that follows the road
+    /// instead of tracing every wiggle and dive.
     ///
-    /// All three smoothings are anchored to the *whole-segment* line carried on
-    /// every fragment, so tile fragments of one structure stay identical at their
-    /// seams: the centerline is low-pass-smoothed once ([`smooth`](Self::smooth)),
-    /// the height is one straight line fit in *global* arc, and the section
-    /// direction is read from the global smoothed line. The straight height is
-    /// what stops the box folding — the per-vertex profile is faithful but busy at
-    /// a structure's edges (it dives to terrain at an abutment, and a tunnel's
-    /// extended portal stub follows the descending approach), and the road a
-    /// structure actually holds is its gentle grade. The arc-order walk also stops
-    /// a curving viaduct from snapping a vertex onto a far arc that nears it in
-    /// plan.
+    /// Both the position and the height come from the *whole-segment* series
+    /// carried on every fragment, so tile fragments of one structure stay
+    /// identical at their seams: the centerline is low-pass-smoothed once
+    /// ([`smooth`](Self::smooth)), and the height is read from the global
+    /// per-run ramp ([`deck_m`](Self::deck_m)) at the vertex's projected arc. The
+    /// ramp is fit once over each *global* run — not per clipped fragment — so a
+    /// short tile-edge sliver can no longer fit its own steep line and adjacent
+    /// fragments never disagree at the seam. The arc-order walk confines each
+    /// vertex to the arc its neighbours sit on, so a curving viaduct can't snap a
+    /// vertex onto a far arc that nears it in plan.
     pub fn deck_nodes(&self, pts: &[Coord]) -> Vec<DeckNode> {
-        let probe = self.walk(pts);
-        let s: Vec<f64> = probe.iter().map(|&(i, t)| lerp(self.arc[i], self.arc[i + 1], t)).collect();
-        let raw: Vec<f64> = probe.iter().map(|&(i, t)| lerp(self.road_m[i], self.road_m[i + 1], t)).collect();
-        let h = fit_ramp(&s, &raw);
-        probe
+        self.walk(pts)
             .iter()
-            .zip(h)
-            .map(|(&(i, t), height_m)| {
+            .map(|&(i, t)| {
+                let height_m = lerp(self.deck_m[i], self.deck_m[i + 1], t);
                 let lon = lerp(self.smooth[i].x, self.smooth[i + 1].x, t);
                 let lat = lerp(self.smooth[i].y, self.smooth[i + 1].y, t);
                 let (left_e, left_n) = self.section_left(i);
@@ -166,13 +187,10 @@ impl RoadProfile {
             .collect()
     }
 
-    /// Deck-top heights only, as one straight ramp — the height half of
-    /// [`deck_nodes`](Self::deck_nodes), kept for direct testing.
+    /// Deck-top heights only — the height half of [`deck_nodes`](Self::deck_nodes),
+    /// kept for direct testing. Reads the global per-run ramp at each vertex.
     pub fn deck_line(&self, pts: &[Coord]) -> Vec<f64> {
-        let probe = self.walk(pts);
-        let s: Vec<f64> = probe.iter().map(|&(i, t)| lerp(self.arc[i], self.arc[i + 1], t)).collect();
-        let raw: Vec<f64> = probe.iter().map(|&(i, t)| lerp(self.road_m[i], self.road_m[i + 1], t)).collect();
-        fit_ramp(&s, &raw)
+        self.walk(pts).iter().map(|&(i, t)| lerp(self.deck_m[i], self.deck_m[i + 1], t)).collect()
     }
 
     /// Projects an in-order on-segment polyline onto the profile, returning the
@@ -252,7 +270,32 @@ impl RoadProfile {
             smooth: smooth_path(nodes),
             nodes: nodes.to_vec(),
             road_m: vec![height_m; nodes.len()],
+            // A flat profile is a single height, so the deck ramp is that height too.
+            deck_m: vec![height_m; nodes.len()],
+            // A flat profile has no terrain relief; the ground sits on the road,
+            // so the gap is zero everywhere (no buried span, no bore).
+            terrain_m: vec![height_m; nodes.len()],
         }
+    }
+
+    /// Test constructor: a profile over `nodes` with explicit per-node road and
+    /// terrain heights, so a bore's buried span and portal crossings can be set
+    /// up deterministically without a DEM.
+    #[cfg(test)]
+    pub fn from_heights(nodes: &[Coord], road_m: Vec<f64>, terrain_m: Vec<f64>) -> RoadProfile {
+        let cos_lat = run_cos_lat(nodes);
+        let mut arc = Vec::with_capacity(nodes.len());
+        let mut acc = 0.0;
+        for (i, c) in nodes.iter().enumerate() {
+            if i > 0 {
+                acc += metric_len(nodes[i - 1], *c, cos_lat);
+            }
+            arc.push(acc);
+        }
+        // Tests supply the road heights they want the deck to ride directly, so
+        // the deck ramp is the road profile as given (no run-splitting here).
+        let deck_m = road_m.clone();
+        RoadProfile { cos_lat, arc, smooth: smooth_path(nodes), nodes: nodes.to_vec(), road_m, deck_m, terrain_m }
     }
 }
 
@@ -271,6 +314,7 @@ impl RoadProfile {
 fn build_profile(
     seg: &[Coord],
     runs: &[LevelRun],
+    max_grade: Option<f64>,
     elev: &mut dyn FnMut(Coord) -> f64,
 ) -> Option<RoadProfile> {
     if seg.len() < 2 {
@@ -290,9 +334,13 @@ fn build_profile(
     let terrain: Vec<f64> = nodes.iter().map(|c| elev(*c)).collect();
     let at_grade: Vec<bool> =
         (0..n).map(|i| level_at(runs, arc[i] / arc_total) == 0).collect();
-    let road_m = road_profile(&arc, &terrain, &at_grade);
+    let mut road_m = road_profile(&arc, &terrain, &at_grade);
+    if let Some(g) = max_grade {
+        limit_road_grade(&arc, &mut road_m, &terrain, &at_grade, g);
+    }
+    let deck_m = deck_ramp(&arc, &road_m, &at_grade);
     let smooth = smooth_path(&nodes);
-    Some(RoadProfile { nodes, smooth, arc, road_m, cos_lat })
+    Some(RoadProfile { nodes, smooth, arc, road_m, deck_m, terrain_m: terrain, cos_lat })
 }
 
 /// Linear interpolation between `a` and `b` at `t`.
@@ -438,6 +486,127 @@ fn road_profile(arc: &[f64], terrain: &[f64], anchor: &[bool]) -> Vec<f64> {
         .collect()
 }
 
+/// Maximum grade (rise/run) a high-class road is allowed to hold: a motorway or
+/// trunk is engineered well under this, so where the draped terrain is steeper the
+/// model is tracing a cliff the real road never climbs. See [`grade_limit`].
+const MOTORWAY_MAX_GRADE: f64 = 0.06;
+
+/// The road-grade ceiling for a class, or `None` to leave the road on the terrain.
+/// Only the engineered high classes are capped; a residential street or track
+/// genuinely follows whatever slope it is built on.
+fn grade_limit(class: Option<&str>) -> Option<f64> {
+    match class {
+        Some("motorway") | Some("trunk") => Some(MOTORWAY_MAX_GRADE),
+        _ => None,
+    }
+}
+
+/// Relaxation passes for [`limit_road_grade`]. A handful alternating forward and
+/// backward spreads a steep pitch's deviation evenly — a cut on the way up, a fill
+/// on the way down — instead of letting one anchored direction drift to one side.
+const GRADE_PASSES: usize = 8;
+
+/// How far, in metres, the engineered road may sit above (fill) or below (cut) the
+/// draped terrain. The grade ceiling alone, held across a long mountain climb,
+/// drifts the road tens of metres from the ground — a phantom viaduct or a road
+/// buried deep under a hill that should be a tunnel. Bounding the deviation keeps
+/// the road hugging the ground: it flattens the bumps and dives it *can* within
+/// this budget, and where the terrain climbs faster it follows the slope (steeper,
+/// but visible and on the ground) rather than flying off it. Sized so the residual
+/// cut is shallow enough for the client's road depth-bias to surface
+/// (`client/shaders/road.wgsl` `ROAD_DEPTH_MARGIN_M`).
+const MAX_ROAD_DEVIATION_M: f64 = 8.0;
+
+/// Holds the at-grade road to an engineered grade (`max_grade`) while keeping it
+/// within [`MAX_ROAD_DEVIATION_M`] of the terrain. It flattens the steep flanks the
+/// draped ground throws up — the dive into a bridge abutment, a rolling bump — onto
+/// gentle cuttings and embankments, but never drifts far from the ground: where the
+/// terrain climbs faster than the grade allows over a long stretch, the road follows
+/// the slope (steeper, but hugging the ground and visible) instead of flying off it
+/// into a phantom viaduct or burying itself under a hill.
+///
+/// Structure nodes are *pinned* (a bridge deck / tunnel bore already rides the
+/// gentle reconstructed ramp) and so anchor the limiter — the steep approach beside
+/// a structure is pulled to the structure's grade, the embankment that reaches the
+/// abutment. The road relaxes by repeatedly clamping each at-grade node both to
+/// within the grade of its neighbours and to within the deviation budget of the
+/// terrain; already-gentle stretches are left on the ground. The deviation clamp is
+/// applied last, so the bound on cut/fill depth always holds (the grade is then
+/// best-effort — the ground-hugging budget wins a conflict).
+fn limit_road_grade(arc: &[f64], road_m: &mut [f64], terrain: &[f64], at_grade: &[bool], max_grade: f64) {
+    let n = road_m.len();
+    if n < 2 {
+        return;
+    }
+    let to_terrain = |road_m: &mut [f64], i: usize| {
+        road_m[i] = road_m[i].clamp(terrain[i] - MAX_ROAD_DEVIATION_M, terrain[i] + MAX_ROAD_DEVIATION_M);
+    };
+    let to_grade = |road_m: &mut [f64], i: usize, nb: usize| {
+        let cap = max_grade * (arc[i] - arc[nb]).abs();
+        road_m[i] = road_m[i].clamp(road_m[nb] - cap, road_m[nb] + cap);
+    };
+    for pass in 0..=GRADE_PASSES {
+        // The last pass is always forward; each node is grade-clamped then pulled
+        // back inside the deviation budget, so that bound holds on exit.
+        if pass % 2 == 0 || pass == GRADE_PASSES {
+            for i in 1..n {
+                if at_grade[i] {
+                    to_grade(road_m, i, i - 1);
+                    to_terrain(road_m, i);
+                }
+            }
+        } else {
+            for i in (0..n - 1).rev() {
+                if at_grade[i] {
+                    to_grade(road_m, i, i + 1);
+                    to_terrain(road_m, i);
+                }
+            }
+        }
+    }
+}
+
+/// The deck-top height at each node: [`road_profile`]'s heights with every
+/// structure run (a maximal span of non-at-grade nodes) replaced by a single
+/// straight ramp fit over that run and its bounding anchors. The at-grade nodes
+/// keep their draped road height, so the deck meets the ground exactly at an
+/// abutment.
+///
+/// Fitting one ramp per *whole-segment* run — rather than per clipped tile
+/// fragment, as a naive deck baker does — is what keeps the deck a clean gentle
+/// grade. road_profile already interpolates a run linearly between its anchors,
+/// so for clean input this recovers that line; the explicit per-run fit also
+/// absorbs any local kink the anchors leave at a run's edge. Every tile fragment
+/// of the run then reads the same ramp, so short slivers can't fit their own
+/// steep line and neighbouring fragments share a seam with no step.
+fn deck_ramp(arc: &[f64], road_m: &[f64], at_grade: &[bool]) -> Vec<f64> {
+    let n = road_m.len();
+    let mut deck = road_m.to_vec();
+    let mut i = 0;
+    while i < n {
+        if at_grade[i] {
+            i += 1;
+            continue;
+        }
+        // Maximal structure run [start, end); include the bounding anchors so the
+        // ramp is fit to (and lands on) the road's true elevation at each end.
+        let start = i;
+        while i < n && !at_grade[i] {
+            i += 1;
+        }
+        let lo = start.saturating_sub(1);
+        let hi = i.min(n - 1);
+        let fitted = fit_ramp(&arc[lo..=hi], &road_m[lo..=hi]);
+        for (k, &v) in (lo..=hi).zip(fitted.iter()) {
+            // Overwrite only the structure nodes; at-grade anchors stay draped.
+            if !at_grade[k] {
+                deck[k] = v;
+            }
+        }
+    }
+    deck
+}
+
 /// Densifies a segment to ~[`DECK_SEGMENT_M`] spacing, returning the nodes, their
 /// cumulative metric arc length, and the total length.
 fn densify_run(run: &[Coord], cos_lat: f64) -> (Vec<Coord>, Vec<f64>, f64) {
@@ -496,15 +665,25 @@ pub fn discard_run(f: &mut EncoderFeature) {
 /// (matches the client's former draping density).
 const ROAD_SEGMENT_Q: f64 = 768.0;
 
-/// Bakes a ground road's per-vertex elevation onto the feature from the terrain
-/// surface: densifies the (clipped) centerline so it follows the relief, samples
-/// [`terrain::surface_height`] at every vertex, and writes the heights into
-/// `f.z`. Unlike a structure, a ground road just sits on the terrain, so no
-/// whole-segment profile is needed — the surface is sampled locally and is
-/// consistent across tiles. A no-op for non-line geometry.
+/// Bakes a ground road's per-vertex elevation onto the feature, densifying the
+/// (clipped) centerline so it follows the relief and writing the heights into
+/// `f.z`. A no-op for non-line geometry.
+///
+/// A road with no carried profile just sits on the terrain
+/// ([`terrain::surface_height`], sampled locally and consistent across tiles). But
+/// a high-class road or a structure approach that carries the deck profile (see
+/// `pipeline::process_feature`) rides that profile's road height instead, so a
+/// motorway holds its engineered grade ([`limit_road_grade`]) — climbing the
+/// hillside on cuttings and embankments and reaching a bridge abutment gently —
+/// rather than diving down every flank the terrain throws up. Where the grade is
+/// already gentle the profile equals the terrain, so the road still drapes. The
+/// carried profile is consumed and stripped here.
 pub fn bake_road_elevation(f: &mut EncoderFeature, dem: &mut Dem, z: u8, bounds: &Bounds) {
-    let mut height = |lon: f64, lat: f64| {
-        terrain::surface_height(bounds, lon, lat, &mut |a, b| dem.elevation(a, b, z))
+    let profile = RoadProfile::from_feature(f, dem, z, bounds);
+    discard_run(f);
+    let mut height = |lon: f64, lat: f64| match &profile {
+        Some(p) => p.height_at(lon, lat),
+        None => terrain::surface_height(bounds, lon, lat, &mut |a, b| dem.elevation(a, b, z)),
     };
     if let Some((geom, zs)) = densify_with_surface(&f.geometry, bounds, &mut height) {
         f.geometry = geom;
@@ -669,7 +848,19 @@ mod tests {
     /// sampler, bypassing the DEM, for deterministic geometry tests.
     fn profile_from(seg: &[Coord], runs: &[LevelRun], terrain: impl Fn(Coord) -> f64) -> RoadProfile {
         let mut elev = |c: Coord| terrain(c);
-        build_profile(seg, runs, &mut elev).expect("non-degenerate test segment")
+        build_profile(seg, runs, None, &mut elev).expect("non-degenerate test segment")
+    }
+
+    /// Like [`profile_from`] but with a road-grade ceiling, for the engineered-grade
+    /// (motorway/trunk) path.
+    fn profile_from_limited(
+        seg: &[Coord],
+        runs: &[LevelRun],
+        max_grade: f64,
+        terrain: impl Fn(Coord) -> f64,
+    ) -> RoadProfile {
+        let mut elev = |c: Coord| terrain(c);
+        build_profile(seg, runs, Some(max_grade), &mut elev).expect("non-degenerate test segment")
     }
 
     #[test]
@@ -734,7 +925,11 @@ mod tests {
         road_m[n - 1] = 105.0;
         road_m[n - 2] = 108.0;
         road_m[n - 3] = 110.0;
-        let p = RoadProfile { smooth: nodes.clone(), nodes: nodes.clone(), arc, road_m, cos_lat };
+        let terrain_m = vec![0.0; n]; // unused by deck_line
+        // One structure run over the whole line: the per-run ramp must straighten
+        // the end hook into a single line.
+        let deck_m = deck_ramp(&arc, &road_m, &vec![false; n]);
+        let p = RoadProfile { smooth: nodes.clone(), nodes: nodes.clone(), arc, road_m, deck_m, terrain_m, cos_lat };
 
         let deck = p.deck_line(&nodes);
         // Collinear: the second difference vanishes everywhere (a straight ramp).
@@ -771,6 +966,64 @@ mod tests {
         let into = p.height_at(portal + 0.5 * (x1 - portal), 46.0)
             - terrain(Coord { x: portal + 0.5 * (x1 - portal), y: 46.0 });
         assert!(into < 0.0, "deck rides {into} m above the hill instead of under it");
+    }
+
+    #[test]
+    fn engineered_grade_flattens_a_transient_bump() {
+        // A flat road crossed by a 6 m terrain bump over 60 m. The road cuts
+        // straight through it (within the deviation budget), holding a gentle grade
+        // instead of tracing the bump's steep flanks.
+        let n = 31;
+        let arc: Vec<f64> = (0..n).map(|i| i as f64 * 10.0).collect(); // 10 m spacing
+        let at_grade = vec![true; n];
+        let terrain: Vec<f64> = (0..n)
+            .map(|i| 100.0 + 6.0 * (1.0 - ((i as f64 - 15.0).abs() / 3.0)).max(0.0))
+            .collect();
+        let mut road = terrain.clone();
+        limit_road_grade(&arc, &mut road, &terrain, &at_grade, 0.06);
+        for i in 1..n {
+            let g = ((road[i] - road[i - 1]) / (arc[i] - arc[i - 1])).abs();
+            assert!(g <= 0.06 + 1e-9, "grade {g} too steep at node {i}");
+        }
+        // …and it stayed within the ground-hugging budget.
+        for i in 0..n {
+            assert!((road[i] - terrain[i]).abs() <= MAX_ROAD_DEVIATION_M + 1e-9);
+        }
+    }
+
+    #[test]
+    fn road_hugs_the_ground_on_a_long_steep_climb() {
+        // Terrain climbing a sustained 15 % — far above the grade ceiling. The road
+        // can't flatten that without flying off the ground, so the deviation budget
+        // wins: it follows the slope, never drifting more than MAX_ROAD_DEVIATION_M
+        // from the terrain (no phantom viaduct, no road buried deep under a hill).
+        let n = 60;
+        let arc: Vec<f64> = (0..n).map(|i| i as f64 * 10.0).collect();
+        let at_grade = vec![true; n];
+        let terrain: Vec<f64> = (0..n).map(|i| 100.0 + 0.15 * arc[i]).collect();
+        let mut road = terrain.clone();
+        limit_road_grade(&arc, &mut road, &terrain, &at_grade, 0.06);
+        for i in 0..n {
+            assert!(
+                (road[i] - terrain[i]).abs() <= MAX_ROAD_DEVIATION_M + 1e-9,
+                "road drifted {} m from terrain at node {i}",
+                (road[i] - terrain[i]).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn a_gentle_road_is_left_on_the_terrain() {
+        // A motorway on terrain that never exceeds the ceiling stays draped: the
+        // limiter only intervenes where the ground is too steep.
+        let seg = line(120, 0.05);
+        let cos_lat = 46.0_f64.to_radians().cos();
+        // A uniform 3 % grade — under the 6 % ceiling, so the road stays draped.
+        let terrain = move |c: Coord| 100.0 + 0.03 * (c.x - 6.0) * cos_lat * DEG_M;
+        let p = profile_from_limited(&seg, &[], 0.06, terrain);
+        let mid = seg[60].x;
+        assert!((p.height_at(mid, 46.0) - terrain(Coord { x: mid, y: 46.0 })).abs() < 0.5,
+            "a gentle road should stay on the ground");
     }
 
     #[test]

@@ -643,13 +643,22 @@ fn stamp_roads(buckets: &mut [Vec<EncoderFeature>], dem: &mut Option<Dem>, z: u8
             // A bridge (level > 0) is a thin open deck; a tunnel (level < 0) a
             // roofed bore capped at its portals (see `structure_mesh`).
             Some(d) if level != 0 => structure_mesh::stamp(f, d, z, bounds, level),
-            Some(d) => {
-                structures::discard_run(f);
-                structures::bake_road_elevation(f, d, z, bounds);
-            }
+            // A ground road bakes its elevation; an at-grade approach that carries
+            // the deck profile rides it onto an embankment (see `bake_road_elevation`,
+            // which consumes and strips the carry either way).
+            Some(d) => structures::bake_road_elevation(f, d, z, bounds),
             None => structures::discard_run(f),
         }
     }
+}
+
+/// Whether a source transportation feature is a class whose road grade is
+/// engineered-limited (motorway/trunk), so its whole-segment profile is worth
+/// carrying even without a bridge/tunnel — mirrors `structures::grade_limit`.
+fn road_grade_limited(f: &crate::geoparquet::Feature) -> bool {
+    f.properties.iter().any(|(k, v)| {
+        k == "class" && matches!(v, Value::String(s) if s == "motorway" || s == "trunk")
+    })
 }
 
 /// Reads a transportation feature's bridge/tunnel `level` property (0 absent).
@@ -731,6 +740,15 @@ fn process_feature(
     // whole segment to one level lofts grade and tunnel sections onto a single
     // phantom deck spanning unrelated endpoints (see `crate::levels`). Each
     // piece carries its own uniform `level_rules` for `profile` to read.
+    // A high-class road (motorway/trunk) without any level structure still carries
+    // its whole-segment profile, so the baker can grade-limit it onto an engineered
+    // grade rather than draping it down the hillside (see
+    // `structures::bake_road_elevation` / `limit_road_grade`).
+    if layer == layers::TRANSPORTATION && f.level_runs.is_empty() && road_grade_limited(f) {
+        let carry = structures::encode_segment(&f.geometry, &[]);
+        let deck = carry.as_ref().map_or(&[][..], |c| c.as_slice());
+        return emit_geometry(layer, &f.geometry, &f.properties, deck, cfg, sorter, stats);
+    }
     if layer == layers::TRANSPORTATION && !f.level_runs.is_empty() {
         // A bridge run's deck follows the road's gentle elevation profile, which
         // is a function of the *whole* segment and its level structure (the
@@ -746,14 +764,12 @@ fn process_feature(
             if structural {
                 props.push(("level_rules".to_string(), Value::Int(level)));
             }
-            // Every (long enough) structure carries the deck profile so the mesh
-            // baker can rebuild the road's gentle grade: bridges ride a deck on it,
-            // tunnels sink a bore box around it (see `structure_mesh`). Ground runs
-            // drape and need no profile.
-            let deck = match (structural, &carry) {
-                (true, Some(c)) => c.as_slice(),
-                _ => &[],
-            };
+            // Every piece of a levelled segment carries the deck profile, so the
+            // baker can rebuild the road's gentle grade: a structure rides a deck or
+            // bore on it (see `structure_mesh`), and an at-grade *approach* rides it
+            // onto the embankment that reaches the abutment (see
+            // `structures::bake_road_elevation`) instead of draping down the flank.
+            let deck = carry.as_ref().map_or(&[][..], |c| c.as_slice());
             emit_geometry(layer, &geom, &props, deck, cfg, sorter, stats)?;
         }
         return Ok(());
