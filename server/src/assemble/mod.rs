@@ -89,11 +89,13 @@ pub fn run(path: &Path, bbox: &Bounds) -> Result<SceneGraph, ReadError> {
         });
     }
     let mut scene = SceneGraph::new(corridors::build(raw));
-    // Second pass: find where the corridors' bridge spans cross the rest of
-    // the network (the input is streamed again; only geometry near a span is
-    // actually tested).
-    scene.crossings =
+    // Second pass: find where the corridors' structure spans cross the rest
+    // of the network (the input is streamed again; only geometry near a span
+    // is actually tested).
+    let (crossings, underpasses) =
         crossings::detect(path, (bbox.west, bbox.south, bbox.east, bbox.north), &scene)?;
+    scene.crossings = crossings;
+    scene.underpasses = underpasses;
     Ok(scene)
 }
 

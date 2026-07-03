@@ -1,13 +1,15 @@
-//! Geometric crossing detection (docs/GENERATION.md D4, scenario S4).
+//! Geometric crossing detection (docs/GENERATION.md D4, scenarios S4/S6).
 //!
 //! No link in the data connects an overpass to the road it crosses; the
-//! crossing must be found geometrically. The bridge spans of every corridor
-//! are indexed in a uniform grid, and a second pass over the transportation
-//! input tests every feature's edges against the nearby span edges. A plan
-//! intersection where the span's level ordinal exceeds the feature's is a
-//! [`Crossing`] — the constraint the solver turns into clearance.
+//! crossing must be found geometrically. The structure spans of every
+//! corridor are indexed in a uniform grid, and a second pass over the
+//! transportation input tests every feature's edges against the nearby span
+//! edges. A plan intersection on a *bridge* span whose level exceeds the
+//! feature's is a [`Crossing`] (the deck must clear it); one on a *tunnel*
+//! span whose level is below the feature's is an [`Underpass`] (the bore
+//! must fit under it).
 //!
-//! Two intersections are *not* crossings:
+//! Two intersections are neither:
 //! - **Junctions**: features that share a connector meet, they don't pass
 //!   over each other (a ramp joining a viaduct touches it in plan).
 //! - **Self-crossings**: a corridor looping over itself (rare ramp loops) is
@@ -20,27 +22,32 @@ use geo_types::{Coord, Geometry};
 
 use crate::geoparquet::{GeoParquet, ReadError};
 use crate::levels::LevelRun;
-use crate::scene::{run_cos_lat, CrossedKind, Crossing, SceneGraph, SpanKind};
+use crate::scene::{run_cos_lat, CrossedKind, Crossing, SceneGraph, SpanKind, Underpass};
 use crate::value::Value;
 
 use super::grid::GridIndex;
 
-/// One indexed bridge-span edge.
+/// One indexed structure-span edge.
 struct SpanEdge {
     corridor: u32,
     /// Corridor node index; the edge spans `nodes[i]..nodes[i+1]`.
     node: usize,
     level: i64,
+    kind: SpanKind,
 }
 
-/// Detects crossings between the corridors' bridge spans and every
-/// transportation feature, streaming the input a second time.
-pub fn detect(path: &Path, bbox: (f64, f64, f64, f64), scene: &SceneGraph) -> Result<Vec<Crossing>, ReadError> {
-    // Index every bridge-span edge of every corridor.
+/// Detects crossings (bridge spans over features) and underpasses (tunnel
+/// spans under features), streaming the input a second time.
+pub fn detect(
+    path: &Path,
+    bbox: (f64, f64, f64, f64),
+    scene: &SceneGraph,
+) -> Result<(Vec<Crossing>, Vec<Underpass>), ReadError> {
+    // Index every structure-span edge of every corridor.
     let mut edges: Vec<SpanEdge> = Vec::new();
     let mut grid = GridIndex::new();
     for c in &scene.corridors {
-        for span in c.spans.iter().filter(|s| s.kind == SpanKind::Bridge) {
+        for span in c.spans.iter().filter(|s| s.kind != SpanKind::Grade) {
             for i in 0..c.nodes.len() - 1 {
                 // Edge overlaps the span's arc interval.
                 if c.arc[i + 1] <= span.arc0 || c.arc[i] >= span.arc1 {
@@ -49,17 +56,18 @@ pub fn detect(path: &Path, bbox: (f64, f64, f64, f64), scene: &SceneGraph) -> Re
                 let (a, b) = (c.nodes[i], c.nodes[i + 1]);
                 let bb = (a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y));
                 grid.insert(bb, edges.len() as u32);
-                edges.push(SpanEdge { corridor: c.id, node: i, level: span.level });
+                edges.push(SpanEdge { corridor: c.id, node: i, level: span.level, kind: span.kind });
             }
         }
     }
     if grid.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
 
     let gp = GeoParquet::open(path)?;
     let row_groups = gp.row_groups_intersecting(bbox);
     let mut crossings: Vec<Crossing> = Vec::new();
+    let mut underpasses: Vec<Underpass> = Vec::new();
     let mut seen: HashSet<(u32, u64, i64, i64)> = HashSet::new();
     let mut candidates: Vec<u32> = Vec::new();
     for feature in gp.features(row_groups, super::ATTRS)? {
@@ -71,8 +79,8 @@ pub fn detect(path: &Path, bbox: (f64, f64, f64, f64), scene: &SceneGraph) -> Re
             continue;
         }
         let source = prop_str(&f.properties, "id").map(crate::scene::source_hash);
-        let lower_corridor = source.and_then(|h| scene.lookup(h)).map(|(c, _)| c.id);
-        let lower_kind = match prop_str(&f.properties, "subtype") {
+        let other_corridor = source.and_then(|h| scene.lookup(h)).map(|(c, _)| c.id);
+        let other_kind = match prop_str(&f.properties, "subtype") {
             Some(s) if s == "rail" => CrossedKind::Rail,
             _ => CrossedKind::Road,
         };
@@ -87,7 +95,7 @@ pub fn detect(path: &Path, bbox: (f64, f64, f64, f64), scene: &SceneGraph) -> Re
             for &ei in candidates.iter() {
                 let e = &edges[ei as usize];
                 let upper = &scene.corridors[e.corridor as usize];
-                if lower_corridor == Some(upper.id) {
+                if other_corridor == Some(upper.id) {
                     continue; // its own corridor: adjacency, not a crossing
                 }
                 let (a, b) = (upper.nodes[e.node], upper.nodes[e.node + 1]);
@@ -104,28 +112,46 @@ pub fn detect(path: &Path, bbox: (f64, f64, f64, f64), scene: &SceneGraph) -> Re
                 } else {
                     0.0
                 };
-                let lower_level = level_at(&f.level_runs, frac);
-                if lower_level >= e.level {
-                    continue; // not below this span (the reverse pair reports it)
+                let feature_level = level_at(&f.level_runs, frac);
+                // A bridge span passes over lower-level features; a tunnel
+                // span passes under higher-level ones. Anything else is the
+                // reverse pair's report or a same-level braid — skipped.
+                let relevant = match e.kind {
+                    SpanKind::Bridge => feature_level < e.level,
+                    SpanKind::Tunnel => feature_level > e.level,
+                    SpanKind::Grade => false,
+                };
+                if !relevant {
+                    continue;
                 }
                 let point = Coord { x: a.x + (b.x - a.x) * t_span, y: a.y + (b.y - a.y) * t_span };
-                let upper_arc =
+                let span_arc =
                     upper.arc[e.node] + t_span * (upper.arc[e.node + 1] - upper.arc[e.node]);
-                // One crossing per (span, feature, level pair): a shared vertex
+                // One record per (span, feature, level pair): a shared vertex
                 // of two adjacent edges would otherwise report twice.
-                let key = (upper.id, source.unwrap_or(0), e.level, lower_level);
+                let key = (upper.id, source.unwrap_or(0), e.level, feature_level);
                 if !seen.insert(key) {
                     continue;
                 }
-                crossings.push(Crossing {
-                    upper: upper.id,
-                    upper_arc,
-                    point,
-                    lower: lower_corridor,
-                    lower_kind,
-                    upper_level: e.level,
-                    lower_level,
-                });
+                match e.kind {
+                    SpanKind::Bridge => crossings.push(Crossing {
+                        upper: upper.id,
+                        upper_arc: span_arc,
+                        point,
+                        lower: other_corridor,
+                        lower_kind: other_kind,
+                        upper_level: e.level,
+                        lower_level: feature_level,
+                    }),
+                    _ => underpasses.push(Underpass {
+                        corridor: upper.id,
+                        arc: span_arc,
+                        point,
+                        over: other_corridor,
+                        over_level: feature_level,
+                        under_level: e.level,
+                    }),
+                }
             }
         }
     }
@@ -134,7 +160,10 @@ pub fn detect(path: &Path, bbox: (f64, f64, f64, f64), scene: &SceneGraph) -> Re
         (a.upper, a.upper_arc.to_bits(), a.lower_level)
             .cmp(&(b.upper, b.upper_arc.to_bits(), b.lower_level))
     });
-    Ok(crossings)
+    underpasses.sort_by(|a, b| {
+        (a.corridor, a.arc.to_bits(), a.over_level).cmp(&(b.corridor, b.arc.to_bits(), b.over_level))
+    });
+    Ok((crossings, underpasses))
 }
 
 /// Proper intersection of segments `ab` and `cd` in cos-lat-scaled space,

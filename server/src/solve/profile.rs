@@ -260,6 +260,39 @@ impl Profile {
         &self.at_grade
     }
 
+    /// Per-node cumulative arc, metres.
+    pub fn arc(&self) -> &[f64] {
+        &self.arc
+    }
+
+    /// The centerline point at arc position `a`, interpolated in its edge.
+    pub fn point_at_arc(&self, a: f64) -> Coord {
+        let (i, t) = self.edge_at_arc(a);
+        Coord {
+            x: self.nodes[i].x + (self.nodes[i + 1].x - self.nodes[i].x) * t,
+            y: self.nodes[i].y + (self.nodes[i + 1].y - self.nodes[i].y) * t,
+        }
+    }
+
+    /// The solved road height at arc position `a`.
+    pub fn road_at_arc(&self, a: f64) -> f64 {
+        let (i, t) = self.edge_at_arc(a);
+        self.road_m[i] + (self.road_m[i + 1] - self.road_m[i]) * t
+    }
+
+    /// The edge index and parameter containing arc position `a`.
+    fn edge_at_arc(&self, a: f64) -> (usize, f64) {
+        let n = self.nodes.len();
+        let a = a.clamp(0.0, *self.arc.last().unwrap_or(&0.0));
+        let i = match self.arc.binary_search_by(|v| v.partial_cmp(&a).expect("finite arc")) {
+            Ok(i) => i.min(n - 2),
+            Err(i) => i.saturating_sub(1).min(n - 2),
+        };
+        let span = self.arc[i + 1] - self.arc[i];
+        let t = if span > 0.0 { (a - self.arc[i]) / span } else { 0.0 };
+        (i, t)
+    }
+
     /// The corridor arc position (metres) nearest to `(lon, lat)`.
     pub fn arc_of(&self, lon: f64, lat: f64) -> f64 {
         let (i, t) = nearest_edge(
@@ -325,8 +358,83 @@ impl Profile {
         }
     }
 
+    /// The mirror of [`raise_tent`](Self::raise_tent): sinks the road surface
+    /// to at most `floor_m` across the whole structure span containing
+    /// `arc0`, with shoulders *rising* back at `grade` beyond the span edges
+    /// — the descent ramps of an underpass (scenario S6). Lower-only (`min`),
+    /// so it composes with other constraints and never lifts anything.
+    pub fn sink_tent(&mut self, arc0: f64, floor_m: f64, grade: f64) {
+        let n = self.road_m.len();
+        if n == 0 {
+            return;
+        }
+        let k = match self.arc.binary_search_by(|a| a.partial_cmp(&arc0).expect("finite arc")) {
+            Ok(i) => i,
+            Err(i) => i.min(n - 1),
+        };
+        let (mut lo_arc, mut hi_arc) = (arc0, arc0);
+        if !self.at_grade[k] {
+            let mut lo = k;
+            while lo > 0 && !self.at_grade[lo - 1] {
+                lo -= 1;
+            }
+            let mut hi = k;
+            while hi + 1 < n && !self.at_grade[hi + 1] {
+                hi += 1;
+            }
+            lo_arc = self.arc[lo];
+            hi_arc = self.arc[hi];
+        }
+        for i in 0..n {
+            let d = if self.arc[i] < lo_arc {
+                lo_arc - self.arc[i]
+            } else if self.arc[i] > hi_arc {
+                self.arc[i] - hi_arc
+            } else {
+                0.0
+            };
+            let want = floor_m + grade * d;
+            if want < self.road_m[i] {
+                self.road_m[i] = want;
+            }
+        }
+    }
+
+    /// The sinking counterpart of [`raise_span_to`](Self::raise_span_to):
+    /// lowers the whole structure span containing `arc0` so its deck is at
+    /// most `max_deck_m` there.
+    pub fn lower_span_to(&mut self, arc0: f64, max_deck_m: f64) {
+        let n = self.road_m.len();
+        if n == 0 {
+            return;
+        }
+        let k = match self.arc.binary_search_by(|a| a.partial_cmp(&arc0).expect("finite arc")) {
+            Ok(i) => i,
+            Err(i) => i.min(n - 1),
+        };
+        if self.at_grade[k] {
+            return;
+        }
+        let excess = self.deck_m[k] - max_deck_m;
+        if excess <= 0.0 {
+            return;
+        }
+        let mut lo = k;
+        while lo > 0 && !self.at_grade[lo - 1] {
+            lo -= 1;
+        }
+        let mut hi = k;
+        while hi + 1 < n && !self.at_grade[hi + 1] {
+            hi += 1;
+        }
+        for i in lo..=hi {
+            self.deck_m[i] -= excess;
+            self.road_m[i] -= excess;
+        }
+    }
+
     /// Refits the per-span deck ramps after the road surface changed
-    /// ([`raise_tent`](Self::raise_tent)).
+    /// ([`raise_tent`](Self::raise_tent) / [`sink_tent`](Self::sink_tent)).
     pub fn rebuild_deck(&mut self) {
         self.deck_m = deck_ramp(&self.arc, &self.road_m, &self.at_grade);
     }

@@ -17,9 +17,10 @@ pub mod sampler;
 
 use crate::priors::{
     EARTHWORK_BATTER, EARTHWORK_MIN_FEATHER_M, EARTHWORK_SHOULDER_M, MIN_EARTHWORK_M,
+    PORTAL_CUT_LEN_M,
 };
 use crate::scene::SceneGraph;
-use crate::solve::SolvedModel;
+use crate::solve::{portals, SolvedModel};
 
 use modifiers::{Earthworks, EarthworkEdge};
 
@@ -59,7 +60,8 @@ impl GroundModel {
 
 /// Derives the engineered ground from the solved model: one earthwork run per
 /// at-grade stretch where the solved road departs the natural terrain by more
-/// than [`MIN_EARTHWORK_M`].
+/// than [`MIN_EARTHWORK_M`], and a daylighting cut in front of every solved
+/// tunnel portal (S5 — the mouth face must not hide below grade).
 pub fn derive(scene: &SceneGraph, solved: &SolvedModel) -> GroundModel {
     let mut edges: Vec<EarthworkEdge> = Vec::new();
     for c in &scene.corridors {
@@ -95,8 +97,31 @@ pub fn derive(scene: &SceneGraph, solved: &SolvedModel) -> GroundModel {
                     half_width_m: half_width,
                     feather_m: (EARTHWORK_BATTER * lift).max(EARTHWORK_MIN_FEATHER_M),
                     cos_lat: crate::scene::run_cos_lat(&[nodes[k], nodes[k + 1]]),
+                    carve: false,
                 });
             }
+        }
+
+        // Portal daylighting: carve the ground down to the bore floor in a
+        // short cut outward from each solved portal, so the mouth's lower
+        // metres stand clear instead of hiding below grade. Cut-only — where
+        // the ground has already fallen away there is nothing to remove.
+        for portal in portals::portals(p, &c.spans) {
+            let a = p.point_at_arc(portal.arc);
+            let b = p.point_at_arc(portal.arc + portal.outward * PORTAL_CUT_LEN_M);
+            if a == b {
+                continue; // portal at the corridor end: no outward run
+            }
+            edges.push(EarthworkEdge {
+                a,
+                b,
+                target_a: portal.floor_m,
+                target_b: portal.floor_m,
+                half_width_m: c.class.half_width_m() + EARTHWORK_SHOULDER_M,
+                feather_m: EARTHWORK_MIN_FEATHER_M,
+                cos_lat: crate::scene::run_cos_lat(&[a, b]),
+                carve: true,
+            });
         }
     }
     GroundModel { earthworks: Earthworks::new(edges) }

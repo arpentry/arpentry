@@ -15,6 +15,7 @@
 //! levels (no popping).
 
 pub mod crossings;
+pub mod portals;
 pub mod profile;
 
 use std::path::Path;

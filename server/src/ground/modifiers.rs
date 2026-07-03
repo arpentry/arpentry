@@ -32,6 +32,10 @@ pub struct EarthworkEdge {
     pub feather_m: f64,
     /// `cos(mean latitude)` of the source corridor, for the metric projection.
     pub cos_lat: f64,
+    /// Cut-only: the edge may lower the ground to its target but never raise
+    /// it — a portal daylighting cut must not build a berm where the natural
+    /// ground already sits below the bore floor.
+    pub carve: bool,
 }
 
 /// The indexed set of earthwork edges with point queries.
@@ -90,6 +94,9 @@ impl Earthworks {
                 continue;
             };
             let target = e.target_a + (e.target_b - e.target_a) * t;
+            if e.carve && target >= raw {
+                continue; // nothing to cut here
+            }
             let better = match &best {
                 None => true,
                 Some((bw, bd, bi, _)) => {
@@ -142,7 +149,21 @@ mod tests {
             half_width_m: 8.0,
             feather_m: 10.0,
             cos_lat,
+            carve: false,
         }
+    }
+
+    #[test]
+    fn a_carve_edge_cuts_but_never_fills() {
+        let mut scratch = Vec::new();
+        let mut e = edge(105.0);
+        e.carve = true;
+        let ew = Earthworks::new(vec![e]);
+        let mid_x = 6.0 + 80.0 / (DEG_M * 46.0_f64.to_radians().cos());
+        // Ground above the target: cut down to it.
+        assert!((ew.height(mid_x, 46.0, 110.0, &mut scratch) - 105.0).abs() < 1e-9);
+        // Ground already below the target: untouched (no berm).
+        assert_eq!(ew.height(mid_x, 46.0, 100.0, &mut scratch), 100.0);
     }
 
     #[test]

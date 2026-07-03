@@ -110,6 +110,25 @@ pub struct Crossing {
     pub lower_level: i64,
 }
 
+/// The mirror of a [`Crossing`]: a corridor's tunnel span passing *under*
+/// another feature. On flat ground the terrain says nothing about how deep
+/// the tunnel runs — the feature above sets the constraint: the bore must fit
+/// below it (scenario S6, the urban underpass).
+#[derive(Debug, Clone, Copy)]
+pub struct Underpass {
+    /// The corridor whose tunnel span passes under.
+    pub corridor: CorridorId,
+    /// Corridor arc of the intersection, metres.
+    pub arc: f64,
+    /// The plan intersection point.
+    pub point: Coord,
+    /// The feature passing over, when it is in the scene graph; `None` for a
+    /// plain at-grade road/rail (its height is the ground).
+    pub over: Option<CorridorId>,
+    pub over_level: i64,
+    pub under_level: i64,
+}
+
 /// One constant-kind piece of a source segment, ready to tile: the geometry cut
 /// at span boundaries, and the span it belongs to.
 #[derive(Debug)]
@@ -193,6 +212,7 @@ impl Corridor {
 pub struct SceneGraph {
     pub corridors: Vec<Corridor>,
     pub crossings: Vec<Crossing>,
+    pub underpasses: Vec<Underpass>,
     /// Source feature id hash → (corridor, segment index within it).
     by_source: HashMap<u64, (CorridorId, u32)>,
 }
@@ -205,7 +225,7 @@ impl SceneGraph {
                 by_source.insert(seg.source, (c.id, i as u32));
             }
         }
-        SceneGraph { corridors, crossings: Vec::new(), by_source }
+        SceneGraph { corridors, crossings: Vec::new(), underpasses: Vec::new(), by_source }
     }
 
     /// Looks a source feature up by its id hash, returning its corridor and

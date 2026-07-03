@@ -20,13 +20,70 @@
 //! the earthwork demand the ground stage reads (`crate::ground::derive`): the
 //! embankments that carry the road up to the deck (D3).
 
-use crate::priors::{self, RAMP_GRADE};
+use crate::priors::{self, RAMP_GRADE, TUNNEL_COVER_M, TUNNEL_HEIGHT_M};
 use crate::scene::{Crossing, SceneGraph};
 
 use super::profile::Profile;
 
-/// Applies every crossing's clearance to the solved profiles, in place.
+/// Applies every vertical-order constraint to the solved profiles, in place:
+/// first the underpasses (tunnel spans sink under the features above them,
+/// S6), then the crossings (bridge spans lift over the features below them,
+/// S4). Sinks run first so a bridge crossing a sunk feature reads its final
+/// height.
 pub fn apply(scene: &SceneGraph, profiles: &mut [Option<Profile>]) {
+    apply_underpasses(scene, profiles);
+    apply_crossings(scene, profiles);
+}
+
+/// Sinks every tunnel span below the features passing over it: the bore roof
+/// (road + tunnel height) plus cover must fit under the crossing feature. On
+/// flat ground this is the *only* signal that says how deep an underpass runs
+/// — the terrain says nothing (docs/GENERATION.md S6).
+fn apply_underpasses(scene: &SceneGraph, profiles: &mut [Option<Profile>]) {
+    let mut touched: Vec<u32> = Vec::new();
+    for u in &scene.underpasses {
+        // The surface the crossing feature rides on: its solved road, or the
+        // reference terrain for a plain at-grade feature.
+        let Some(profile) = profiles[u.corridor as usize].as_ref() else { continue };
+        let over_m = u
+            .over
+            .filter(|&id| id != u.corridor)
+            .and_then(|id| profiles.get(id as usize).and_then(|p| p.as_ref()))
+            .map(|op| op.height_at(u.point.x, u.point.y))
+            .unwrap_or_else(|| profile.surface_at(u.point.x, u.point.y));
+        let floor = over_m - TUNNEL_HEIGHT_M - TUNNEL_COVER_M;
+        let grade = scene.corridors[u.corridor as usize].class.grade_limit().unwrap_or(RAMP_GRADE);
+        let Some(up) = profiles[u.corridor as usize].as_mut() else { continue };
+        let arc0 = up.arc_of(u.point.x, u.point.y);
+        up.sink_tent(arc0, floor, grade);
+        touched.push(u.corridor);
+    }
+    touched.sort_unstable();
+    touched.dedup();
+    for id in &touched {
+        if let Some(p) = profiles[*id as usize].as_mut() {
+            p.rebuild_deck();
+        }
+    }
+    // Terminal clamp, mirroring the crossings pass.
+    for u in &scene.underpasses {
+        let Some(profile) = profiles[u.corridor as usize].as_ref() else { continue };
+        let over_m = u
+            .over
+            .filter(|&id| id != u.corridor)
+            .and_then(|id| profiles.get(id as usize).and_then(|p| p.as_ref()))
+            .map(|op| op.height_at(u.point.x, u.point.y))
+            .unwrap_or_else(|| profile.surface_at(u.point.x, u.point.y));
+        let floor = over_m - TUNNEL_HEIGHT_M - TUNNEL_COVER_M;
+        if let Some(up) = profiles[u.corridor as usize].as_mut() {
+            let arc0 = up.arc_of(u.point.x, u.point.y);
+            up.lower_span_to(arc0, floor);
+        }
+    }
+}
+
+/// Lifts every bridge span over the features it crosses (invariant 3).
+fn apply_crossings(scene: &SceneGraph, profiles: &mut [Option<Profile>]) {
     // Ascending-tier order; within a tier the detector's deterministic order.
     let mut order: Vec<&Crossing> = scene.crossings.iter().collect();
     order.sort_by_key(|c| c.upper_level);
@@ -160,6 +217,67 @@ mod tests {
 
     fn p_cos() -> f64 {
         46.0_f64.to_radians().cos()
+    }
+
+    #[test]
+    fn flat_ground_underpass_sinks_below_the_crossing_road() {
+        // S6: a tunnel span on flat ground under an at-grade road. The
+        // terrain says nothing — the crossing feature forces the sink: the
+        // bore roof plus cover must fit under the ground the road rides on,
+        // and the sunk road makes the gap negative so a bore exists at all.
+        let cos_lat = p_cos();
+        let len_m = 1000.0;
+        let deg = len_m / (crate::scene::DEG_M * cos_lat);
+        let n = 41;
+        let nodes: Vec<Coord> =
+            (0..n).map(|i| Coord { x: 6.0 + deg * i as f64 / (n - 1) as f64, y: 46.0 }).collect();
+        let arc: Vec<f64> = (0..n).map(|i| len_m * i as f64 / (n - 1) as f64).collect();
+        let spans = vec![
+            Span { arc0: 0.0, arc1: 420.0, level: 0, kind: SpanKind::Grade },
+            Span { arc0: 420.0, arc1: 580.0, level: -1, kind: SpanKind::Tunnel },
+            Span { arc0: 580.0, arc1: 1000.0, level: 0, kind: SpanKind::Grade },
+        ];
+        let mut scene = SceneGraph::new(vec![Corridor {
+            id: 0,
+            nodes: nodes.clone(),
+            arc,
+            cos_lat,
+            class: RoadClass::Secondary,
+            spans: spans.clone(),
+            segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
+            connectors: vec![],
+        }]);
+        let mid = Coord { x: 6.0 + deg * 0.5, y: 46.0 };
+        scene.underpasses = vec![crate::scene::Underpass {
+            corridor: 0,
+            arc: 500.0,
+            point: mid,
+            over: None,
+            over_level: 0,
+            under_level: -1,
+        }];
+
+        let mut profiles =
+            vec![super::super::profile::solve(&nodes, &spans, None, &mut |_| 372.0)];
+        apply(&scene, &mut profiles);
+        let p = profiles[0].as_ref().unwrap();
+        let ceiling = 372.0 - priors::TUNNEL_HEIGHT_M - priors::TUNNEL_COVER_M;
+        assert!(
+            p.deck_height_at(mid.x, mid.y) <= ceiling + 1e-6,
+            "road {} must sink below {ceiling}",
+            p.deck_height_at(mid.x, mid.y)
+        );
+        // The sunk span is genuinely buried now: a bore can exist (S6→S5).
+        assert!(
+            p.height_at(mid.x, mid.y) - p.surface_at(mid.x, mid.y) < 0.0,
+            "the underpass gap must be negative"
+        );
+        // The descent ramps cut below grade on the approaches, and the far
+        // ends stay anchored at the ground.
+        let approach = Coord { x: mid.x - 150.0 / (crate::scene::DEG_M * cos_lat), y: 46.0 };
+        let h = p.height_at(approach.x, approach.y);
+        assert!(h < 371.5, "approach should descend into the cut, got {h}");
+        assert!((p.height_at(6.0, 46.0) - 372.0).abs() < 0.5);
     }
 
     #[test]

@@ -90,6 +90,16 @@ pub const DECK_THICKNESS_M: f64 = 1.5;
 /// Vertical clearance of a tunnel bore in metres — road floor to its flat roof.
 pub const TUNNEL_HEIGHT_M: f64 = 6.0;
 
+/// Ground cover an underpass keeps between its bore roof and the surface the
+/// crossed feature rides on (scenario S6): enough that the crossing feature
+/// has a roadbed, not so much that a shallow urban underpass digs a cavern.
+pub const TUNNEL_COVER_M: f64 = 0.5;
+
+/// How far in front of a portal mouth the ground is carved down to the bore
+/// floor, so the mouth face is daylighted instead of its lower part hiding
+/// below grade.
+pub const PORTAL_CUT_LEN_M: f64 = 12.0;
+
 /// How far, in metres, an engineered road may sit above (fill) or below (cut)
 /// the draped terrain. The grade ceiling alone, held across a long mountain
 /// climb, drifts the road tens of metres from the ground — a phantom viaduct or
