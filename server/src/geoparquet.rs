@@ -57,8 +57,12 @@ pub struct Feature {
     /// Requested attributes that were present and non-null, in request order.
     pub properties: Vec<(String, Value)>,
     /// Overture transportation `level_rules` parsed into constant-level runs
-    /// (empty for everything else); the pipeline splits the segment on these.
+    /// (empty for everything else); the assemble stage resolves these into
+    /// corridor spans.
     pub level_runs: Vec<crate::levels::LevelRun>,
+    /// Overture transportation `connectors` (empty for everything else); the
+    /// assemble stage joins segments into corridors on these.
+    pub connectors: Vec<crate::assemble::columns::Connector>,
 }
 
 /// Errors from opening or decoding a GeoParquet file.
@@ -291,21 +295,28 @@ impl Iterator for Features {
             };
             let mut properties = Vec::new();
             let mut level_runs = Vec::new();
+            let mut connectors = Vec::new();
             for (name, arr) in &cur.resolved {
                 // Overture's bridge/tunnel signal is `level_rules`, a
                 // linearly-referenced `list<struct<value, between>>` rather than
                 // a scalar: parse it into level runs carried on the feature so
-                // the pipeline can split the segment where its level changes
+                // the assemble stage can resolve the segment's structure spans
                 // (see `crate::levels`), and skip the scalar property path.
                 if name == "level_rules" {
                     level_runs = crate::levels::parse(arr.as_ref(), row);
+                    continue;
+                }
+                // `connectors` is likewise nested: the graph topology the
+                // assemble stage joins corridors on.
+                if name == "connectors" {
+                    connectors = crate::assemble::columns::parse_connectors(arr.as_ref(), row);
                     continue;
                 }
                 if let Some(v) = array_value(arr.as_ref(), row) {
                     properties.push((name.clone(), v));
                 }
             }
-            return Some(Ok(Feature { geometry, properties, level_runs }));
+            return Some(Ok(Feature { geometry, properties, level_runs, connectors }));
         }
     }
 }

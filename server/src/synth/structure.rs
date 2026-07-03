@@ -1,76 +1,52 @@
-//! Server-side 3D geometry for road structures — bridges and tunnels — swept as
-//! box prisms along the road's reconstructed surface profile (`crate::structures`).
+//! Structure generator — bridge decks and tunnel bores, swept as box prisms
+//! along a corridor's solved profile (`crate::solve::profile`).
 //!
-//! Overture marks a bridge or tunnel as a non-ground span of a road segment, and
-//! `crate::pipeline` has already split a multi-level segment into constant-level
-//! pieces, so each feature here is uniformly a bridge or a tunnel. They are
-//! different solids — a bridge is open, a tunnel has a roof — that meet at the
-//! road surface:
+//! The assemble stage resolved every structure into a constant-kind span, so
+//! each feature here is uniformly a bridge or a tunnel. They are different
+//! solids — a bridge is open, a tunnel has a roof — that meet at the road
+//! surface:
 //!
-//! - **Bridge** ([`sweep_deck`]): a thin open slab whose top *is* the road surface
-//!   (the single model), a [`DECK_THICKNESS_M`] underside below. No roof.
-//! - **Tunnel** ([`sweep_bore`]): a roofed bore — roof a [`TUNNEL_HEIGHT_M`] ramp
-//!   above the road, floor on the *same plane as a deck's underside*
-//!   (`road − [`DECK_THICKNESS_M`]`) so the bore's bottom aligns with an adjoining
-//!   deck: a tunnel is just that deck plus a roof, not a box hanging below it. Each
-//!   real portal mouth is **capped** with a portal face, so where a tunnel meets a
-//!   bridge the bore ends solidly and the deck meets that face at the road surface
-//!   — the two *touch* (at different heights: the tunnel taller for its roof)
-//!   instead of the bore's open mouth reading as a gap above the thin deck.
+//! - **Bridge** ([`sweep_deck`]): a thin open slab whose top *is* the road
+//!   surface (the single model), a [`DECK_THICKNESS_M`] underside below. No
+//!   roof.
+//! - **Tunnel** ([`sweep_bore`]): a roofed bore — roof a [`TUNNEL_HEIGHT_M`]
+//!   ramp above the road, floor on the *same plane as a deck's underside*
+//!   (`road − DECK_THICKNESS_M`) so the bore's bottom aligns with an adjoining
+//!   deck. Each real portal mouth is **capped** with a portal face, so where a
+//!   tunnel meets a bridge the bore ends solidly and the deck meets that face
+//!   at the road surface.
 //!
 //! The portal is placed where the road *actually emerges from the ground*, not
-//! where Overture's `level_rules` annotation happens to end. Overture marks a run
-//! as a tunnel (decoupled from terrain) but its start/end fractions are not
-//! registered to the DEM, so a cap pinned there lands wherever the annotation
-//! falls — often buried in the hillside. Instead the bore is the span where the
-//! signed gap `g = road − terrain` is negative (road under ground), and the cap
-//! sits on its zero crossing: by construction the mouth is always exactly at the
-//! surface, never buried, never floating. Both heights ride the road profile
-//! ([`RoadProfile`]), which already carries the terrain samples (`surface_at`), so
-//! no extra DEM work is needed and tile fragments stay consistent. A tunnel tagged
-//! over flat ground (the gap never goes negative) has no bore at all — it would
-//! otherwise be a box sitting on the grass.
+//! where the annotation happens to end (S5): the bore is the span where the
+//! signed gap `g = road − terrain` is negative (road under ground), and the
+//! cap sits on its zero crossing — by construction the mouth is always exactly
+//! at the surface, never buried, never floating. A tunnel tagged over flat
+//! ground (the gap never goes negative) has no bore at all; the caller drapes
+//! it instead (the degradation ladder).
 //!
-//! Heights are a function of the *global* road profile carried to every fragment,
-//! so independent tile fragments line up at the seams. The box is clipped to the
-//! tile *proper*, not the format's half-tile buffer: an opaque solid built in the
-//! buffer is replicated across neighbours and the independently-clipped copies
-//! overlap into a staircase; clipped to the proper tile each draws once and abuts
-//! its neighbour at the shared edge. The `level` sign is kept on the mesh only so
-//! the client colours bridges blue-grey and tunnels rust.
+//! Heights are a function of the solved global profile, so independent tile
+//! fragments line up at the seams (invariant 5). The box is clipped to the
+//! tile *proper*, not the format's half-tile buffer: an opaque solid built in
+//! the buffer is replicated across neighbours and the independently-clipped
+//! copies overlap into a staircase; clipped to the proper tile each draws once
+//! and abuts its neighbour at the shared edge.
 //!
-//! Coordinates are tile-local quantized uint16 (x/y) and int32 millimetres (z),
-//! matching `MeshGeometry`, with octahedral ECEF normals in the shared ENU
-//! [`Frame`].
+//! Coordinates are tile-local quantized uint16 (x/y) and int32 millimetres
+//! (z), matching `MeshGeometry`, with octahedral ECEF normals in the shared
+//! ENU [`Frame`].
 
 use geo_types::{Coord, Geometry, LineString};
 
 use crate::building_mesh::{Frame, M_PER_DEG_LAT};
 use crate::clip;
-use crate::dem::Dem;
+use crate::priors::{
+    RoadClass, DECK_THICKNESS_M, PORTAL_CLEARANCE_M, PORTAL_MARCH_M, PORTAL_MAX_M, TUNNEL_HEIGHT_M,
+};
 use crate::project::{self, Bounds};
-use crate::structures::{self, RoadProfile};
+use crate::scene::SpanKind;
+use crate::solve::Profile;
 use crate::terrain::TerrainMesh;
 use crate::tile_build::{prop_str, EncoderFeature};
-
-/// Thickness of a bridge deck slab in metres — deck surface to its underside.
-const DECK_THICKNESS_M: f64 = 1.5;
-
-/// Vertical clearance of a tunnel bore in metres — road floor to its flat roof.
-const TUNNEL_HEIGHT_M: f64 = 6.0;
-
-/// Step length when marching a buried portal end outward to find the road/terrain
-/// crossing where the bore emerges.
-const PORTAL_MARCH_M: f64 = 3.0;
-
-/// Furthest a portal is marched outward before giving up and capping there. A
-/// runaway guard for a road whose approach stays buried (e.g. a coarse DEM that
-/// never dips below the road grade); real portals emerge well within this.
-const PORTAL_MAX_M: f64 = 200.0;
-
-/// Emergence clearance: the cap is placed this far *past* the crossing so the
-/// mouth sits just clear of the terrain rather than flush with it.
-const PORTAL_CLEARANCE_M: f64 = 1.0;
 
 /// Target spacing in metres for densifying the centerline, so the box follows
 /// the road's curve and grade smoothly.
@@ -80,38 +56,33 @@ const SEGMENT_M: f64 = 8.0;
 const MAX_VERTS: usize = 4096;
 
 /// Builds the structure box for a transportation feature and stores it in
-/// `f.mesh`, stripping the carried segment properties. `level` selects the kind: a
-/// bridge (`level > 0`) is a thin open deck on the road surface; a tunnel
-/// (`level < 0`) is a roofed bore, capped at its real portal mouths so the deck of
-/// an adjoining bridge meets the portal face. A no-op (leaving the line to drape)
-/// when the feature carries no usable road profile or is not a line.
-pub fn stamp(f: &mut EncoderFeature, dem: &mut Dem, z: u8, bounds: &Bounds, level: i64) {
-    let profile = RoadProfile::from_feature(f, dem, z, bounds);
-    structures::discard_run(f);
-    let Some(profile) = profile else {
-        return;
-    };
+/// `f.mesh`. Returns whether a solid was emitted — `false` (a tunnel over flat
+/// ground, degenerate geometry) tells the caller to drape the road instead.
+pub fn stamp(f: &mut EncoderFeature, profile: &Profile, kind: SpanKind, bounds: &Bounds) -> bool {
     let frame = Frame::at_center(bounds);
-    let half_w = half_width_m(prop_str(f, "class").as_deref());
+    let half_w = RoadClass::parse(prop_str(f, "class").as_deref()).half_width_m();
 
     let mut acc = Accum::default();
     for line in lines(&f.geometry) {
         for piece in proper_pieces(&line.0, bounds) {
-            if level < 0 {
-                sweep_bore(&mut acc, &frame, bounds, &profile, &piece, half_w);
-            } else {
-                sweep_deck(&mut acc, &frame, bounds, &profile, &piece, half_w);
+            match kind {
+                SpanKind::Tunnel => sweep_bore(&mut acc, &frame, bounds, profile, &piece, half_w),
+                _ => sweep_deck(&mut acc, &frame, bounds, profile, &piece, half_w),
             }
         }
     }
-    if let Some(mesh) = acc.into_mesh() {
-        f.mesh = Some(mesh);
+    match acc.into_mesh() {
+        Some(mesh) => {
+            f.mesh = Some(mesh);
+            true
+        }
+        None => false,
     }
 }
 
 /// Whether `c` sits on the tile-proper boundary — i.e. a clip cut where the box
-/// continues into the neighbouring tile, *not* a real run end. A portal mouth is
-/// an interior run end, so a bore is capped only where `!on_tile_edge`.
+/// continues into the neighbouring tile, *not* a real run end. A portal mouth
+/// is an interior run end, so a bore is capped only where `!on_tile_edge`.
 fn on_tile_edge(c: Coord, bounds: &Bounds) -> bool {
     let ex = bounds.width() * 1e-4;
     let ey = bounds.height() * 1e-4;
@@ -130,25 +101,16 @@ fn lines(g: &Geometry) -> Vec<&LineString> {
     }
 }
 
-/// Clips a span to the tile *proper*, returning the (in-order) pieces. An opaque
-/// solid must not extend into the format's buffer or neighbouring tiles would each
-/// rebuild and overlap it; clipped to the proper tile each draws once and abuts
-/// its neighbour at the shared edge.
+/// Clips a span to the tile *proper*, returning the (in-order) pieces. An
+/// opaque solid must not extend into the format's buffer or neighbouring tiles
+/// would each rebuild and overlap it; clipped to the proper tile each draws
+/// once and abuts its neighbour at the shared edge.
 fn proper_pieces(span: &[Coord], bounds: &Bounds) -> Vec<Vec<Coord>> {
     let g = Geometry::LineString(LineString(span.to_vec()));
     match clip::clip_geometry(&g, bounds) {
         Some(Geometry::LineString(ls)) => vec![ls.0],
         Some(Geometry::MultiLineString(mls)) => mls.0.into_iter().map(|l| l.0).collect(),
         _ => Vec::new(),
-    }
-}
-
-/// Half-width of the box in metres by road class — bigger roads, bigger structures.
-fn half_width_m(class: Option<&str>) -> f64 {
-    match class {
-        Some("motorway") | Some("trunk") => 7.5,
-        Some("primary") | Some("secondary") => 6.0,
-        _ => 4.0,
     }
 }
 
@@ -181,33 +143,46 @@ impl Accum {
         if self.indices.is_empty() {
             return None;
         }
-        Some(TerrainMesh { x: self.x, y: self.y, z: self.z, indices: self.indices, normals: self.normals })
+        Some(TerrainMesh {
+            x: self.x,
+            y: self.y,
+            z: self.z,
+            indices: self.indices,
+            normals: self.normals,
+        })
     }
 }
 
-/// One swept cross-section: the (smoothed) centerline position, the box top and
-/// bottom heights, and the unit left-perpendicular (ENU metres) it spans.
+/// One swept cross-section: the (smoothed) centerline position, the box top
+/// and bottom heights, and the unit left-perpendicular (ENU metres) it spans.
 struct Section {
     lon: f64,
     lat: f64,
     top_mm: i32,
     bot_mm: i32,
-    /// Signed gap `road − terrain` in metres at this section: negative where the
-    /// road runs under the ground (the buried bore), positive where it stands
-    /// proud. The portal cap sits on the zero crossing. Only meaningful for a
-    /// bore (a deck does not consult it).
+    /// Signed gap `road − terrain` in metres at this section: negative where
+    /// the road runs under the ground (the buried bore), positive where it
+    /// stands proud. The portal cap sits on the zero crossing. Only meaningful
+    /// for a bore (a deck does not consult it).
     gap_m: f64,
     /// Left-perpendicular unit direction in ENU metres (east, north).
     left_e: f64,
     left_n: f64,
 }
 
-/// Sweeps a bridge deck along one (proper-clipped) span: a thin open slab on the
-/// road surface — top *is* the road, a [`DECK_THICKNESS_M`] underside below. No
-/// roof: a bridge is open, unlike a tunnel. Where the road sinks to/under grade
-/// the slab passes under the terrain and is occluded, so the deck meets the ground
-/// without a step.
-fn sweep_deck(acc: &mut Accum, frame: &Frame, bounds: &Bounds, profile: &RoadProfile, span: &[Coord], half_w: f64) {
+/// Sweeps a bridge deck along one (proper-clipped) span: a thin open slab on
+/// the road surface — top *is* the road, a [`DECK_THICKNESS_M`] underside
+/// below. No roof: a bridge is open, unlike a tunnel. Where the road sinks
+/// to/under grade the slab passes under the terrain and is occluded, so the
+/// deck meets the ground without a step.
+fn sweep_deck(
+    acc: &mut Accum,
+    frame: &Frame,
+    bounds: &Bounds,
+    profile: &Profile,
+    span: &[Coord],
+    half_w: f64,
+) {
     let pts = densify(span, frame);
     if pts.len() < 2 {
         return;
@@ -230,12 +205,17 @@ fn sweep_deck(acc: &mut Accum, frame: &Frame, bounds: &Bounds, profile: &RoadPro
 
 /// Sweeps a tunnel bore along one (proper-clipped) span: a roof a clean
 /// [`TUNNEL_HEIGHT_M`] ramp above the road, and a floor on the same plane as a
-/// bridge deck's underside (`road − [`DECK_THICKNESS_M`]`) so the bore's bottom
-/// aligns with an adjoining deck — the tunnel is just that deck plus a roof, not a
-/// box hanging below it. Each *real* portal mouth (a run end inside the tile, not
-/// a tile-boundary clip) is capped with a portal face, so the bore ends solidly
-/// and the deck meets that face at the road surface — the two touch.
-fn sweep_bore(acc: &mut Accum, frame: &Frame, bounds: &Bounds, profile: &RoadProfile, span: &[Coord], half_w: f64) {
+/// bridge deck's underside so the bore's bottom aligns with an adjoining deck.
+/// Each *real* portal mouth (a run end inside the tile, not a tile-boundary
+/// clip) is capped with a portal face.
+fn sweep_bore(
+    acc: &mut Accum,
+    frame: &Frame,
+    bounds: &Bounds,
+    profile: &Profile,
+    span: &[Coord],
+    half_w: f64,
+) {
     let pts = densify(span, frame);
     if pts.len() < 2 {
         return;
@@ -249,20 +229,20 @@ fn sweep_bore(acc: &mut Accum, frame: &Frame, bounds: &Bounds, profile: &RoadPro
         return;
     }
 
-    // Resolve each end to the road/terrain crossing. Trimming an above-ground end
-    // back to the crossing applies everywhere — even at a tile edge, an end that
-    // has already emerged means the portal lies inside this tile. Marching a
-    // *still-buried* end outward to where it surfaces is only for an interior
-    // (real) portal; a buried tile-edge end stays open, the bore continuing in the
-    // neighbour. The returned flag says whether the end ends up capped.
+    // Resolve each end to the road/terrain crossing. Trimming an above-ground
+    // end back to the crossing applies everywhere — even at a tile edge, an
+    // end that has already emerged means the portal lies inside this tile.
+    // Marching a *still-buried* end outward to where it surfaces is only for
+    // an interior (real) portal; a buried tile-edge end stays open, the bore
+    // continuing in the neighbour.
     let start_interior = !on_tile_edge(pts[0], bounds);
     let end_interior = !on_tile_edge(pts[pts.len() - 1], bounds);
     let cap_high = resolve_portal(&mut sections, frame, profile, End::High, end_interior);
     let cap_low = resolve_portal(&mut sections, frame, profile, End::Low, start_interior);
 
     // No buried span means the road never runs under the ground here: a tunnel
-    // tagged over flat (or shallow) terrain. Drawing a bore would float a box on
-    // the surface, so emit nothing and let the road drape.
+    // tagged over flat (or shallow) terrain. Drawing a bore would float a box
+    // on the surface, so emit nothing and let the caller drape the road.
     if sections.len() < 2 || sections.iter().all(|s| s.gap_m >= 0.0) {
         return;
     }
@@ -288,7 +268,14 @@ enum End {
 /// A bore cross-section at `(lon, lat)` whose road surface is `road_m`: roof a
 /// [`TUNNEL_HEIGHT_M`] above the road, floor a [`DECK_THICKNESS_M`] below (the
 /// deck-aligned bottom), and the signed terrain gap sampled from the profile.
-fn bore_section(lon: f64, lat: f64, road_m: f64, left_e: f64, left_n: f64, profile: &RoadProfile) -> Section {
+fn bore_section(
+    lon: f64,
+    lat: f64,
+    road_m: f64,
+    left_e: f64,
+    left_n: f64,
+    profile: &Profile,
+) -> Section {
     Section {
         lon,
         lat,
@@ -300,15 +287,20 @@ fn bore_section(lon: f64, lat: f64, road_m: f64, left_e: f64, left_n: f64, profi
     }
 }
 
-/// Resolves one end of the bore onto the road/terrain crossing, returning whether
-/// the end is capped. If it already stands above ground (`gap ≥ 0`) the
-/// above-ground sections are trimmed and a cap is interpolated onto the crossing
-/// (always, even at a tile edge — the portal is inside this tile). If it is still
-/// buried (`gap < 0`): an `interior` end is marched outward to where the road
-/// emerges and capped there; a tile-edge end stays open (the bore continues in
-/// the neighbour). Leaves the list untouched when no buried section exists at all
-/// — the caller then drops the whole bore.
-fn resolve_portal(sections: &mut Vec<Section>, frame: &Frame, profile: &RoadProfile, end: End, interior: bool) -> bool {
+/// Resolves one end of the bore onto the road/terrain crossing, returning
+/// whether the end is capped. If it already stands above ground (`gap ≥ 0`)
+/// the above-ground sections are trimmed and a cap is interpolated onto the
+/// crossing (always, even at a tile edge — the portal is inside this tile). If
+/// it is still buried (`gap < 0`): an `interior` end is marched outward to
+/// where the road emerges and capped there; a tile-edge end stays open (the
+/// bore continues in the neighbour).
+fn resolve_portal(
+    sections: &mut Vec<Section>,
+    frame: &Frame,
+    profile: &Profile,
+    end: End,
+    interior: bool,
+) -> bool {
     let last = sections.len() - 1;
     let edge = match end {
         End::Low => 0,
@@ -335,12 +327,15 @@ fn resolve_portal(sections: &mut Vec<Section>, frame: &Frame, profile: &RoadProf
 }
 
 /// Trims an above-ground end down to the buried span: drops the sections that
-/// stand proud of the terrain and interpolates a cap onto the `gap = 0` crossing.
-/// A no-op when no buried section exists (the caller drops the bore).
+/// stand proud of the terrain and interpolates a cap onto the `gap = 0`
+/// crossing. A no-op when no buried section exists (the caller drops the
+/// bore).
 fn trim_to_crossing(sections: &mut Vec<Section>, end: End) {
     match end {
         End::Low => {
-            if let Some(i) = (0..sections.len()).find(|&i| sections[i].gap_m < 0.0).filter(|&i| i > 0) {
+            if let Some(i) =
+                (0..sections.len()).find(|&i| sections[i].gap_m < 0.0).filter(|&i| i > 0)
+            {
                 let cap = crossing_section(&sections[i], &sections[i - 1]);
                 sections.drain(0..i);
                 sections.insert(0, cap);
@@ -348,7 +343,11 @@ fn trim_to_crossing(sections: &mut Vec<Section>, end: End) {
         }
         End::High => {
             let last = sections.len() - 1;
-            if let Some(i) = (0..sections.len()).rev().find(|&i| sections[i].gap_m < 0.0).filter(|&i| i < last) {
+            if let Some(i) = (0..sections.len())
+                .rev()
+                .find(|&i| sections[i].gap_m < 0.0)
+                .filter(|&i| i < last)
+            {
                 let cap = crossing_section(&sections[i], &sections[i + 1]);
                 sections.truncate(i + 1);
                 sections.push(cap);
@@ -357,12 +356,17 @@ fn trim_to_crossing(sections: &mut Vec<Section>, end: End) {
     }
 }
 
-/// Marches outward from a buried boundary section `edge` along the `inner → edge`
-/// tangent, sampling the profile, and returns a cap section at the first point
-/// where the road reaches the terrain (the bore emerges), nudged out by
-/// [`PORTAL_CLEARANCE_M`] so the mouth sits just clear. Falls back to a cap at
-/// [`PORTAL_MAX_M`] if the approach stays buried that far.
-fn march_to_crossing(edge: &Section, inner: &Section, frame: &Frame, profile: &RoadProfile) -> Option<Section> {
+/// Marches outward from a buried boundary section `edge` along the
+/// `inner → edge` tangent, sampling the profile, and returns a cap section at
+/// the first point where the road reaches the terrain (the bore emerges),
+/// nudged out by [`PORTAL_CLEARANCE_M`] so the mouth sits just clear. Falls
+/// back to a cap at [`PORTAL_MAX_M`] if the approach stays buried that far.
+fn march_to_crossing(
+    edge: &Section,
+    inner: &Section,
+    frame: &Frame,
+    profile: &Profile,
+) -> Option<Section> {
     let de = (edge.lon - inner.lon) * frame.m_per_deg_lon;
     let dn = (edge.lat - inner.lat) * M_PER_DEG_LAT;
     let len = (de * de + dn * dn).sqrt();
@@ -380,8 +384,8 @@ fn march_to_crossing(edge: &Section, inner: &Section, frame: &Frame, profile: &R
     while dist <= PORTAL_MAX_M {
         let s = at(dist);
         if s.gap_m >= 0.0 {
-            // Crossing between prev (buried) and here (emerged): interpolate, then
-            // step out by the emergence clearance.
+            // Crossing between prev (buried) and here (emerged): interpolate,
+            // then step out by the emergence clearance.
             let t = prev.1 / (prev.1 - s.gap_m);
             let cross = prev.0 + (dist - prev.0) * t;
             return Some(at(cross + PORTAL_CLEARANCE_M));
@@ -392,8 +396,8 @@ fn march_to_crossing(edge: &Section, inner: &Section, frame: &Frame, profile: &R
     Some(at(PORTAL_MAX_M)) // never emerged within reach: best-effort cap
 }
 
-/// Interpolates a cap section onto the `gap = 0` crossing between a buried section
-/// `a` and an above-ground section `b`.
+/// Interpolates a cap section onto the `gap = 0` crossing between a buried
+/// section `a` and an above-ground section `b`.
 fn crossing_section(a: &Section, b: &Section) -> Section {
     let t = a.gap_m / (a.gap_m - b.gap_m); // a.gap < 0 ≤ b.gap, so t ∈ [0, 1)
     Section {
@@ -419,10 +423,18 @@ fn corner(s: &Section, side: f64, frame: &Frame, bounds: &Bounds, half_w: f64) -
     (project::quantize_x(s.lon + dlon, bounds), project::quantize_y(s.lat + dlat, bounds))
 }
 
-/// Closes a bore's end cross-section `end` with a portal face, its outward normal
-/// pointing away from the interior section `inner`.
-fn cap_end(acc: &mut Accum, frame: &Frame, bounds: &Bounds, end: &Section, inner: &Section, half_w: f64) {
-    let (el, er) = (corner(end, 1.0, frame, bounds, half_w), corner(end, -1.0, frame, bounds, half_w));
+/// Closes a bore's end cross-section `end` with a portal face, its outward
+/// normal pointing away from the interior section `inner`.
+fn cap_end(
+    acc: &mut Accum,
+    frame: &Frame,
+    bounds: &Bounds,
+    end: &Section,
+    inner: &Section,
+    half_w: f64,
+) {
+    let (el, er) =
+        (corner(end, 1.0, frame, bounds, half_w), corner(end, -1.0, frame, bounds, half_w));
     let de = (end.lon - inner.lon) * frame.m_per_deg_lon;
     let dn = (end.lat - inner.lat) * M_PER_DEG_LAT;
     let len = (de * de + dn * dn).sqrt().max(1e-9);
@@ -430,9 +442,9 @@ fn cap_end(acc: &mut Accum, frame: &Frame, bounds: &Bounds, end: &Section, inner
     quad(acc, (el, end.bot_mm), (er, end.bot_mm), (er, end.top_mm), (el, end.top_mm), nrm);
 }
 
-/// Sweeps a box prism through the cross-sections: a top face (up), a bottom face
-/// (down), and the two side walls. Cull mode is off on the client, so winding
-/// only feeds lighting via the per-face normal.
+/// Sweeps a box prism through the cross-sections: a top face (up), a bottom
+/// face (down), and the two side walls. Cull mode is off on the client, so
+/// winding only feeds lighting via the per-face normal.
 fn sweep_prism(acc: &mut Accum, frame: &Frame, bounds: &Bounds, sections: &[Section], half_w: f64) {
     let n = sections.len();
     if n < 2 {
@@ -443,8 +455,10 @@ fn sweep_prism(acc: &mut Accum, frame: &Frame, bounds: &Bounds, sections: &[Sect
 
     for i in 0..n - 1 {
         let (a, b) = (&sections[i], &sections[i + 1]);
-        let (al, ar) = (corner(a, 1.0, frame, bounds, half_w), corner(a, -1.0, frame, bounds, half_w));
-        let (bl, br) = (corner(b, 1.0, frame, bounds, half_w), corner(b, -1.0, frame, bounds, half_w));
+        let (al, ar) =
+            (corner(a, 1.0, frame, bounds, half_w), corner(a, -1.0, frame, bounds, half_w));
+        let (bl, br) =
+            (corner(b, 1.0, frame, bounds, half_w), corner(b, -1.0, frame, bounds, half_w));
         let (top_a, top_b) = (a.top_mm, b.top_mm);
         let (bot_a, bot_b) = (a.bot_mm, b.bot_mm);
         let n_left = frame.encode_enu(a.left_e, a.left_n, 0.0);
@@ -457,8 +471,8 @@ fn sweep_prism(acc: &mut Accum, frame: &Frame, bounds: &Bounds, sections: &[Sect
     }
 }
 
-/// Emits a quad (two triangles) from four corners, each `((qx, qy), z_mm)`, all
-/// carrying the same face normal.
+/// Emits a quad (two triangles) from four corners, each `((qx, qy), z_mm)`,
+/// all carrying the same face normal.
 fn quad(
     acc: &mut Accum,
     p0: ((u16, u16), i32),
@@ -475,8 +489,8 @@ fn quad(
     acc.tri(v0, v2, v3);
 }
 
-/// Densifies a centerline to ~[`SEGMENT_M`] spacing in (lon, lat), so the swept
-/// box follows the road's curve and grade.
+/// Densifies a centerline to ~[`SEGMENT_M`] spacing in (lon, lat), so the
+/// swept box follows the road's curve and grade.
 fn densify(pts: &[Coord], frame: &Frame) -> Vec<Coord> {
     let mut out = Vec::new();
     if pts.is_empty() {
@@ -527,11 +541,12 @@ mod tests {
     /// ground that dips below the road. The road runs under the hill over
     /// `u ∈ (≈0.417, ≈0.583)` and emerges (crosses the terrain) at the flanks,
     /// so a bore's portals land on those crossings.
-    fn hill_profile(b: &Bounds) -> RoadProfile {
+    fn hill_profile(b: &Bounds) -> Profile {
         let cy = (b.south + b.north) * 0.5;
         let n = 201;
-        let nodes: Vec<Coord> =
-            (0..n).map(|i| Coord { x: b.west + b.width() * i as f64 / (n - 1) as f64, y: cy }).collect();
+        let nodes: Vec<Coord> = (0..n)
+            .map(|i| Coord { x: b.west + b.width() * i as f64 / (n - 1) as f64, y: cy })
+            .collect();
         let road_m = vec![100.0; n];
         let terrain_m: Vec<f64> = (0..n)
             .map(|i| {
@@ -545,13 +560,13 @@ mod tests {
                 }
             })
             .collect();
-        RoadProfile::from_heights(&nodes, road_m, terrain_m)
+        Profile::from_heights(&nodes, road_m, terrain_m)
     }
 
     /// Sweeps a bridge deck over a whole line.
-    fn deck(line: &LineString, profile: &RoadProfile, b: &Bounds, class: Option<&str>) -> Option<TerrainMesh> {
+    fn deck(line: &LineString, profile: &Profile, b: &Bounds) -> Option<TerrainMesh> {
         let frame = Frame::at_center(b);
-        let half_w = half_width_m(class);
+        let half_w = RoadClass::Motorway.half_width_m();
         let mut acc = Accum::default();
         for piece in proper_pieces(&line.0, b) {
             sweep_deck(&mut acc, &frame, b, profile, &piece, half_w);
@@ -559,10 +574,10 @@ mod tests {
         acc.into_mesh()
     }
 
-    /// Sweeps a tunnel bore over a whole line with an injected terrain sampler.
-    fn bore(line: &LineString, profile: &RoadProfile, b: &Bounds, class: Option<&str>) -> Option<TerrainMesh> {
+    /// Sweeps a tunnel bore over a whole line.
+    fn bore(line: &LineString, profile: &Profile, b: &Bounds) -> Option<TerrainMesh> {
         let frame = Frame::at_center(b);
-        let half_w = half_width_m(class);
+        let half_w = RoadClass::Motorway.half_width_m();
         let mut acc = Accum::default();
         for piece in proper_pieces(&line.0, b) {
             sweep_bore(&mut acc, &frame, b, profile, &piece, half_w);
@@ -575,11 +590,14 @@ mod tests {
         // Top is the road surface, a slab hangs below, and there is no roof.
         let b = Bounds::of_tile(14, 8500, 5800);
         let line = centre_line(&b);
-        let profile = RoadProfile::flat(&line.0, 100.0);
-        let mesh = deck(&line, &profile, &b, Some("motorway")).expect("deck");
+        let profile = Profile::flat(&line.0, 100.0);
+        let mesh = deck(&line, &profile, &b).expect("deck");
 
         let surface = project::quantize_z(100.0);
-        assert!(mesh.z.iter().any(|&z| z == surface), "expected a deck-top vertex on the road surface");
+        assert!(
+            mesh.z.iter().any(|&z| z == surface),
+            "expected a deck-top vertex on the road surface"
+        );
         assert!(mesh.z.iter().all(|&z| z <= surface), "a bridge has no roof above the road");
         let underside = project::quantize_z(100.0 - DECK_THICKNESS_M);
         assert!(mesh.z.iter().any(|&z| z == underside), "expected a deck underside vertex");
@@ -587,24 +605,31 @@ mod tests {
         assert!(mesh.indices.iter().all(|&i| (i as usize) < mesh.x.len()));
         assert_eq!(mesh.normals.len(), mesh.x.len() * 2);
         // The east→west road runs along x, so the cross-section spreads in y.
-        let (lo, hi) = mesh.y.iter().fold((u16::MAX, u16::MIN), |(lo, hi), &y| (lo.min(y), hi.max(y)));
+        let (lo, hi) =
+            mesh.y.iter().fold((u16::MAX, u16::MIN), |(lo, hi), &y| (lo.min(y), hi.max(y)));
         assert!(hi > lo, "deck has no width across the road");
     }
 
     #[test]
     fn tunnel_bore_has_a_roof_above_the_road_and_a_deck_aligned_floor() {
-        // Road at 100 m under a hill: a roof a bore height above the road, and a
-        // floor on the deck-underside plane (road − DECK_THICKNESS) so the bottom
-        // aligns with a bridge deck rather than hanging below it.
+        // Road at 100 m under a hill: a roof a bore height above the road, and
+        // a floor on the deck-underside plane (road − DECK_THICKNESS) so the
+        // bottom aligns with a bridge deck rather than hanging below it.
         let b = Bounds::of_tile(14, 8500, 5800);
         let line = sub_line(&b, 0.45, 0.55); // within the buried plateau
         let profile = hill_profile(&b);
-        let mesh = bore(&line, &profile, &b, Some("motorway")).expect("bore");
+        let mesh = bore(&line, &profile, &b).expect("bore");
 
         let roof = project::quantize_z(100.0 + TUNNEL_HEIGHT_M);
         let floor = project::quantize_z(100.0 - DECK_THICKNESS_M);
-        assert!(mesh.z.iter().any(|&z| z == roof), "expected a roof vertex a bore height above the road");
-        assert!(mesh.z.iter().any(|&z| z == floor), "expected a floor vertex on the deck-underside plane");
+        assert!(
+            mesh.z.iter().any(|&z| z == roof),
+            "expected a roof vertex a bore height above the road"
+        );
+        assert!(
+            mesh.z.iter().any(|&z| z == floor),
+            "expected a floor vertex on the deck-underside plane"
+        );
         assert!(mesh.z.iter().all(|&z| z <= roof), "nothing above the roof");
         assert!(mesh.z.iter().all(|&z| z >= floor), "nothing below the floor");
     }
@@ -612,35 +637,53 @@ mod tests {
     #[test]
     fn bore_is_dropped_over_flat_terrain() {
         // A tunnel tagged where the ground sits on the road (no hill): the road
-        // never runs underground, so there is no bore to draw — a box on the grass
-        // is worse than nothing.
+        // never runs underground, so there is no bore to draw — a box on the
+        // grass is worse than nothing.
         let b = Bounds::of_tile(14, 8500, 5800);
         let line = centre_line(&b);
-        let profile = RoadProfile::flat(&line.0, 100.0);
-        assert!(bore(&line, &profile, &b, Some("motorway")).is_none(), "no bore over flat ground");
+        let profile = Profile::flat(&line.0, 100.0);
+        assert!(bore(&line, &profile, &b).is_none(), "no bore over flat ground");
+    }
+
+    #[test]
+    fn stamp_reports_a_dropped_bore_so_the_caller_can_drape() {
+        let b = Bounds::of_tile(14, 8500, 5800);
+        let line = centre_line(&b);
+        let profile = Profile::flat(&line.0, 100.0);
+        let mut f = EncoderFeature {
+            id: 1,
+            geometry: Geometry::LineString(line),
+            properties: vec![],
+            elevation: None,
+            z: None,
+            mesh: None,
+            synth: crate::synth::Synth::None,
+        };
+        assert!(!stamp(&mut f, &profile, SpanKind::Tunnel, &b));
+        assert!(f.mesh.is_none());
     }
 
     #[test]
     fn bore_caps_its_interior_portals() {
-        // Both ends are interior run ends (real portals), so both are capped. The
-        // prism is 4 quads/segment (24 indices); two caps add 12, so the index
-        // total is 12 beyond a whole number of segments.
+        // Both ends are interior run ends (real portals), so both are capped.
+        // The prism is 4 quads/segment (24 indices); two caps add 12, so the
+        // index total is 12 beyond a whole number of segments.
         let b = Bounds::of_tile(14, 8500, 5800);
         let line = sub_line(&b, 0.45, 0.55);
         let profile = hill_profile(&b);
-        let mesh = bore(&line, &profile, &b, Some("motorway")).expect("bore");
+        let mesh = bore(&line, &profile, &b).expect("bore");
         assert_eq!(mesh.indices.len() % 24, 12, "expected two portal caps (+12 indices)");
     }
 
     #[test]
     fn bore_marches_a_buried_end_out_to_the_crossing() {
-        // Both ends of the line sit inside the buried plateau, so each is marched
-        // outward to where the road emerges from the hill — the bore pokes well
-        // past the centerline ends (the road runs east–west, so this shows in lon).
+        // Both ends of the line sit inside the buried plateau, so each is
+        // marched outward to where the road emerges from the hill — the bore
+        // pokes well past the centerline ends.
         let b = Bounds::of_tile(14, 8500, 5800);
         let line = sub_line(&b, 0.45, 0.55);
         let profile = hill_profile(&b);
-        let mesh = bore(&line, &profile, &b, Some("motorway")).expect("bore");
+        let mesh = bore(&line, &profile, &b).expect("bore");
 
         let lons: Vec<f64> = mesh.x.iter().map(|&q| project::dequantize_x(q, &b)).collect();
         let mesh_w = lons.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -652,13 +695,14 @@ mod tests {
 
     #[test]
     fn bore_trims_an_end_that_already_stands_above_ground() {
-        // The east end of the line runs out onto the flank, where the road already
-        // stands above the (dipped) ground. That stretch is not a tunnel, so the
-        // bore is trimmed back to the emergence crossing well short of the line end.
+        // The east end of the line runs out onto the flank, where the road
+        // already stands above the (dipped) ground. That stretch is not a
+        // tunnel, so the bore is trimmed back to the emergence crossing well
+        // short of the line end.
         let b = Bounds::of_tile(14, 8500, 5800);
         let line = sub_line(&b, 0.50, 0.70); // centre (buried) out to the flank (above)
         let profile = hill_profile(&b);
-        let mesh = bore(&line, &profile, &b, Some("motorway")).expect("bore");
+        let mesh = bore(&line, &profile, &b).expect("bore");
 
         let lons: Vec<f64> = mesh.x.iter().map(|&q| project::dequantize_x(q, &b)).collect();
         let mesh_e = lons.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -671,16 +715,17 @@ mod tests {
 
     #[test]
     fn bore_leaves_tile_edge_cuts_open() {
-        // A bore running off the west edge while still buried: that end is a clip
-        // (open, the bore continues in the neighbour); only the interior east end
-        // is resolved and capped — one cap, so the index total is 6 beyond a whole
-        // number of segments.
+        // A bore running off the west edge while still buried: that end is a
+        // clip (open, the bore continues in the neighbour); only the interior
+        // east end is resolved and capped — one cap, so the index total is 6
+        // beyond a whole number of segments.
         let b = Bounds::of_tile(14, 8500, 5800);
         let cy = (b.south + b.north) * 0.5;
         // Buried (terrain above the road) west of u≈0.55, emerging to the east.
         let n = 201;
-        let nodes: Vec<Coord> =
-            (0..n).map(|i| Coord { x: b.west + b.width() * i as f64 / (n - 1) as f64, y: cy }).collect();
+        let nodes: Vec<Coord> = (0..n)
+            .map(|i| Coord { x: b.west + b.width() * i as f64 / (n - 1) as f64, y: cy })
+            .collect();
         let road_m = vec![100.0; n];
         let terrain_m: Vec<f64> = (0..n)
             .map(|i| {
@@ -688,34 +733,29 @@ mod tests {
                 if u < 0.55 { 130.0 } else { 130.0 - (u - 0.55) / 0.10 * 60.0 } // crosses 100 at u=0.60
             })
             .collect();
-        let profile = RoadProfile::from_heights(&nodes, road_m, terrain_m);
-        // West end off-tile (clipped, buried → open); east end interior (buried,
-        // marched to the crossing → capped).
+        let profile = Profile::from_heights(&nodes, road_m, terrain_m);
+        // West end off-tile (clipped, buried → open); east end interior
+        // (buried, marched to the crossing → capped).
         let line = LineString(vec![
             Coord { x: b.west - 0.2 * b.width(), y: cy },
             Coord { x: b.west + 0.52 * b.width(), y: cy },
         ]);
-        let mesh = bore(&line, &profile, &b, Some("motorway")).expect("bore");
+        let mesh = bore(&line, &profile, &b).expect("bore");
         assert_eq!(mesh.indices.len() % 24, 6, "a tile-edge end stays open, only one cap");
     }
 
     #[test]
     fn bore_floor_is_independent_of_the_terrain() {
-        // The floor rides the road profile (road − DECK_THICKNESS), not the terrain,
-        // so a tunnel and a bridge share a bottom whatever the ground does beneath.
+        // The floor rides the road profile (road − DECK_THICKNESS), not the
+        // terrain, so a tunnel and a bridge share a bottom whatever the ground
+        // does beneath.
         let b = Bounds::of_tile(14, 8500, 5800);
         let deck_line = centre_line(&b);
-        let deck = deck(&deck_line, &RoadProfile::flat(&deck_line.0, 100.0), &b, Some("motorway")).expect("deck");
-        let bore = bore(&sub_line(&b, 0.45, 0.55), &hill_profile(&b), &b, Some("motorway")).expect("bore");
+        let deck = deck(&deck_line, &Profile::flat(&deck_line.0, 100.0), &b).expect("deck");
+        let bore = bore(&sub_line(&b, 0.45, 0.55), &hill_profile(&b), &b).expect("bore");
         let deck_floor = *deck.z.iter().min().expect("non-empty");
         let bore_floor = *bore.z.iter().min().expect("non-empty");
         assert_eq!(deck_floor, project::quantize_z(100.0 - DECK_THICKNESS_M));
         assert_eq!(bore_floor, deck_floor, "bore bottom must align with the deck bottom");
-    }
-
-    #[test]
-    fn half_width_scales_with_class() {
-        assert!(half_width_m(Some("motorway")) > half_width_m(Some("residential")));
-        assert_eq!(half_width_m(None), half_width_m(Some("residential")));
     }
 }

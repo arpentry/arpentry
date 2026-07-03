@@ -80,7 +80,7 @@ impl Default for RoofParams {
 
 /// A unit ENU→ECEF basis at a point, plus the local metres-per-degree scale,
 /// used to turn footprint geometry into ECEF surface normals. Shared with
-/// `structure_mesh`, which extrudes its box prisms in the same ENU frame.
+/// `synth::structure`, which extrudes its box prisms in the same ENU frame.
 pub(crate) struct Frame {
     pub(crate) clon: f64,
     pub(crate) clat: f64,

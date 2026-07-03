@@ -46,10 +46,13 @@ pub struct EncoderFeature {
     pub z: Option<Vec<i32>>,
     /// Server-baked 3D mesh that, when present, *replaces* `geometry` at encode
     /// time and is emitted as a `MeshGeometry` (FORMAT.md §3.4). Used for the
-    /// bridge decks and tunnel boxes baked in `structure_mesh`; `geometry` is
+    /// bridge decks and tunnel boxes baked in `synth::structure`; `geometry` is
     /// kept (its line carries `class`/`level`) but only the mesh is encoded.
     /// `None` (the default) encodes `geometry` as its vector topology.
     pub mesh: Option<TerrainMesh>,
+    /// How the emit worker synthesizes this feature's 3D geometry — decided in
+    /// phase 1 from the scene graph and carried on the sort record.
+    pub synth: crate::synth::Synth,
 }
 
 /// A named layer of features (decode-priority order is the caller's concern).
@@ -589,7 +592,7 @@ mod tests {
                 id: 1,
                 geometry: Geometry::Point(Point::new(b.west + b.width() / 2.0, b.south + b.height() / 2.0)),
                 properties: vec![("class".to_string(), Value::String("lake".into()))],
-                elevation: None, z: None, mesh: None,
+                elevation: None, z: None, mesh: None, synth: crate::synth::Synth::None,
             }],
         }];
         let raw = encode(&b, None, &layers);
@@ -617,7 +620,7 @@ mod tests {
                 id: 42,
                 geometry: Geometry::Polygon(poly),
                 properties: vec![("class".to_string(), Value::String("forest".into()))],
-                elevation: None, z: None, mesh: None,
+                elevation: None, z: None, mesh: None, synth: crate::synth::Synth::None,
             }],
         }];
 
@@ -668,7 +671,7 @@ mod tests {
                     ("class".to_string(), Value::String("cafe".into())),
                     ("name".to_string(), Value::String("X".into())),
                 ],
-                elevation: None, z: None, mesh: None,
+                elevation: None, z: None, mesh: None, synth: crate::synth::Synth::None,
             }],
         }];
         let raw = encode(&b, None, &layers);
@@ -687,8 +690,8 @@ mod tests {
         let layers = vec![EncoderLayer {
             name: "tree".to_string(),
             features: vec![
-                EncoderFeature { id: 1, geometry: pt(0.3), properties: vec![("class".into(), Value::String("oak".into()))], elevation: None, z: None, mesh: None },
-                EncoderFeature { id: 2, geometry: pt(0.6), properties: vec![("class".into(), Value::String("oak".into()))], elevation: None, z: None, mesh: None },
+                EncoderFeature { id: 1, geometry: pt(0.3), properties: vec![("class".into(), Value::String("oak".into()))], elevation: None, z: None, mesh: None, synth: crate::synth::Synth::None },
+                EncoderFeature { id: 2, geometry: pt(0.6), properties: vec![("class".into(), Value::String("oak".into()))], elevation: None, z: None, mesh: None, synth: crate::synth::Synth::None },
             ],
         }];
         let raw = encode(&b, None, &layers);
@@ -718,7 +721,7 @@ mod tests {
                 id: 1,
                 geometry: Geometry::Polygon(square),
                 properties: vec![("height".to_string(), Value::Double(12.0))],
-                elevation: Some(456.789), z: None, mesh: None,
+                elevation: Some(456.789), z: None, mesh: None, synth: crate::synth::Synth::None,
             }],
         }];
         let raw = encode(&b, None, &layers);
@@ -748,7 +751,7 @@ mod tests {
         let mp = Geometry::MultiPolygon(MultiPolygon(vec![sq(0.1, 0.1), sq(0.5, 0.5)]));
         let layers = vec![EncoderLayer {
             name: "land".into(),
-            features: vec![EncoderFeature { id: 1, geometry: mp, properties: vec![], elevation: None, z: None, mesh: None }],
+            features: vec![EncoderFeature { id: 1, geometry: mp, properties: vec![], elevation: None, z: None, mesh: None, synth: crate::synth::Synth::None }],
         }];
         let raw = encode(&b, None, &layers);
         let tile = fbt::root_as_tile(&raw).unwrap();

@@ -1,9 +1,18 @@
-//! Top-level pipeline (TILER.md §pipeline).
+//! Top-level pipeline — stage 5 of docs/GENERATION.md §6, hosting stages 1–4.
 //!
-//! Runs the sort-based tiling: read features → profile → per zoom simplify +
-//! clip to tiles → serialize sort records keyed by Hilbert tile id → external
-//! merge sort → group by tile → build `.arpt` → write `.arpa` archive (+ `.arpi`
-//! metadata).
+//! [`run`] first builds the global world model — assemble the scene graph
+//! (stage 1), solve the vertical model (stage 2), derive the engineered
+//! ground (stage 3) — then runs the sort-based tiling: read features →
+//! profile → per zoom simplify + clip to tiles → serialize sort records keyed
+//! by Hilbert tile id → external merge sort → group by tile → synthesize
+//! geometry from the solved model (stage 4) → build `.arpt` → write `.arpa`
+//! archive (+ `.arpi` metadata).
+//!
+//! Every height an emit worker writes is a function of the shared solved
+//! model (`Arc<SolvedModel>`, `Arc<GroundModel>`) and the global terrain
+//! lattice — never of the tile window — so adjacent tiles and successive
+//! zooms agree by construction (invariant 5) and tiling carries no modeling
+//! responsibility.
 //!
 //! Parallel and dependency-free (`std::thread` + channels). Phase 1 fans
 //! row-group work items out to workers that feed per-worker external sorters;
@@ -14,31 +23,34 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use geo_types::Geometry;
+use geo_types::{Geometry, LineString};
 
 use crate::archive::{ArchiveMeta, ArchiveWriter};
+use crate::assemble;
 use crate::clip;
 use crate::dem::Dem;
+use crate::dump;
 use crate::geom::GeometryType;
 use crate::geoparquet::GeoParquet;
+use crate::ground::{self, sampler::GroundSampler, GroundModel};
 use crate::hilbert;
 use crate::layers;
-use crate::levels;
 use crate::profile;
 use crate::project::Bounds;
-use crate::value::Value;
 use crate::record;
+use crate::scene::{source_hash, SceneGraph, SpanKind};
 use crate::simplify;
+use crate::solve::{self, SolvedModel};
 use crate::sort::{self, ExternalSorter};
-use crate::structure_mesh;
-use crate::structures;
+use crate::synth::{self, Synth};
 use crate::terrain::{self, TerrainMesh, TERRAIN_GRID};
 use crate::tile_build::{self, EncoderFeature, EncoderLayer};
 use crate::tileid;
 use crate::tileset::{self, LayerInfo, TilesetInfo};
+use crate::value::Value;
 
 /// Attribute columns pulled from inputs — a superset across Overture and
 /// Natural Earth. Absent columns are skipped, so one list serves both.
@@ -85,11 +97,6 @@ fn attrs_for(layer: u8) -> &'static [&'static str] {
 /// Default geometric error at level 0, in metres.
 const DEFAULT_ROOT_ERROR: f64 = 512_000.0;
 
-/// Shortest bridge/tunnel run that is lifted/sunk as a structure. Below this a
-/// run (a footbridge span, a few-metre covered stretch) drapes as an ordinary
-/// road — baking a deck on it only leaves a tiny segment floating over the hill.
-const DECK_MIN_RUN_M: f64 = 40.0;
-
 /// Pipeline configuration.
 pub struct Config {
     pub output: PathBuf,
@@ -108,6 +115,9 @@ pub struct Config {
     pub threads: usize,
     /// Brotli quality (0–11) for tile blobs.
     pub brotli_quality: i32,
+    /// Directory for stage-artifact GeoJSON dumps (scene graph, solved
+    /// profiles), for inspection in QGIS/kepler; `None` skips them.
+    pub dump: Option<PathBuf>,
 }
 
 /// Summary counts from a run.
@@ -125,6 +135,14 @@ pub struct Stats {
     /// is what bbox statistics pruning skipped.
     pub row_groups_read: u64,
     pub row_groups_total: u64,
+    /// Corridors assembled from the transportation input (stage 1), how many
+    /// of them carry a solved elevation profile (stage 2), the crossings
+    /// detected between them and the network, and the earthwork edges the
+    /// engineered ground carries (stage 3).
+    pub corridors: u64,
+    pub profiles: u64,
+    pub crossings: u64,
+    pub earthworks: u64,
     /// Phase-1 worker threads used.
     pub threads: usize,
     pub timings: Timings,
@@ -136,6 +154,8 @@ pub struct Stats {
 /// wall-clock.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Timings {
+    /// World-model stages before tiling: assemble + solve (stages 1–2).
+    pub model: Duration,
     /// Parquet open + Arrow decode + WKB parse → in-memory features.
     pub read: Duration,
     /// Per-zoom Douglas–Peucker simplification.
@@ -177,6 +197,37 @@ struct WorkItem {
 pub fn run(cfg: &Config) -> Result<Stats, Error> {
     let mut stats = Stats::default();
 
+    let threads = match cfg.threads {
+        0 => std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+        n => n,
+    };
+    stats.threads = threads;
+
+    // --- Stages 1–3: the global world model, built once before tiling ---
+    // Assemble the scene graph from the transportation input, solve the
+    // vertical model against the DEM at the reference zoom (the run's max —
+    // the lattice the client sees close up), and derive the engineered ground
+    // (still the raw DEM in this milestone). Everything after reads these
+    // through Arcs; no height ever depends on a tile window.
+    let t_model = Instant::now();
+    let transportation =
+        cfg.inputs.iter().find(|(l, _)| *l == layers::TRANSPORTATION).map(|(_, p)| p.clone());
+    let scene = match &transportation {
+        Some(path) => assemble::run(path, &cfg.bbox)
+            .map_err(|e| format!("{}: {e}", path.display()))?,
+        None => SceneGraph::default(),
+    };
+    let solved = Arc::new(solve::run(&scene, cfg.terrain.as_deref(), cfg.max_zoom, threads)?);
+    let ground = Arc::new(ground::derive(&scene, &solved));
+    stats.corridors = scene.corridors.len() as u64;
+    stats.profiles = solved.solved_count() as u64;
+    stats.crossings = scene.crossings.len() as u64;
+    stats.earthworks = ground.earthwork_count() as u64;
+    stats.timings.model = t_model.elapsed();
+    if let Some(dir) = &cfg.dump {
+        dump::write(dir, &scene, &solved, &ground)?;
+    }
+
     // --- Phase 1: read → profile → simplify → clip → sort records ---
     // Open every input (footer only) and queue its bbox-intersecting row
     // groups as work items.
@@ -195,11 +246,6 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         inputs.push((*layer, gp));
     }
 
-    let threads = match cfg.threads {
-        0 => std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
-        n => n,
-    };
-    stats.threads = threads;
     // Phase 1 parallelism is bounded by its work items (row groups); the emit
     // pool below is not.
     let phase1_threads = threads.min(queue.len().max(1));
@@ -210,14 +256,15 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     let queue = Mutex::new(queue);
     let mut sorters: Vec<ExternalSorter> = Vec::with_capacity(phase1_threads);
     if phase1_threads == 1 {
-        let (sorter, partial) = phase1_worker(&inputs, &queue, cfg, worker_budget)?;
+        let (sorter, partial) = phase1_worker(&inputs, &queue, cfg, worker_budget, &scene)?;
         merge_phase1(&mut stats, &partial);
         sorters.push(sorter);
     } else {
         std::thread::scope(|scope| -> Result<(), Error> {
             let mut handles = Vec::with_capacity(phase1_threads);
             for _ in 0..phase1_threads {
-                handles.push(scope.spawn(|| phase1_worker(&inputs, &queue, cfg, worker_budget)));
+                handles
+                    .push(scope.spawn(|| phase1_worker(&inputs, &queue, cfg, worker_budget, &scene)));
             }
             for handle in handles {
                 let (sorter, partial) =
@@ -256,10 +303,11 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         // configured (identical in quantized space). With a DEM, each tile
         // gets its own mesh.
         let flat = terrain::flat_mesh(TERRAIN_GRID);
-        let mut dem = match &cfg.terrain {
+        let dem = match &cfg.terrain {
             Some(path) => Some(Dem::open(path)?),
             None => None,
         };
+        let mut sampler = GroundSampler::new(dem, Arc::clone(&ground));
         let mut sorted = sorted;
         let mut current: Option<u64> = None;
         let mut buckets: Vec<Vec<EncoderFeature>> =
@@ -275,7 +323,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             let tile_id = tileid::key_tile_id(key);
             if current != Some(tile_id) {
                 if let Some(prev) = current {
-                    flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut dem, &mut elevation, cfg.brotli_quality)?;
+                    flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut sampler, &solved, &mut elevation, cfg.brotli_quality)?;
                 }
                 current = Some(tile_id);
             }
@@ -288,7 +336,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             }
         }
         if let Some(prev) = current {
-            flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut dem, &mut elevation, cfg.brotli_quality)?;
+            flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut sampler, &solved, &mut elevation, cfg.brotli_quality)?;
         }
     } else {
         emit_parallel(
@@ -299,6 +347,8 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             &mut layer_stats,
             &mut stats,
             &mut elevation,
+            &solved,
+            &ground,
         )?;
     }
 
@@ -372,6 +422,7 @@ impl PartialOrd for PendingTile {
 /// and this thread writes the results back in stream order (a small seq-keyed
 /// heap reorders out-of-order completions). Workers own their DEM readers;
 /// the Hilbert-ordered stream keeps their tile caches hot.
+#[allow(clippy::too_many_arguments)]
 fn emit_parallel(
     cfg: &Config,
     sorted: sort::Sorted,
@@ -380,9 +431,10 @@ fn emit_parallel(
     layer_stats: &mut LayerStats,
     stats: &mut Stats,
     elevation: &mut (f64, f64),
+    solved: &Arc<SolvedModel>,
+    ground: &Arc<GroundModel>,
 ) -> Result<(), Error> {
     use std::sync::mpsc;
-    use std::sync::Arc;
 
     let (job_tx, job_rx) = mpsc::sync_channel::<TileJob>(threads * 2);
     let job_rx = Arc::new(Mutex::new(job_rx));
@@ -439,16 +491,21 @@ fn emit_parallel(
         });
 
         // Workers: decode records, build the terrain mesh, encode + compress.
+        // Each owns its DEM reader (decoded-tile cache); the solved model and
+        // engineered ground are shared, immutable.
         let mut workers = Vec::with_capacity(threads);
         for _ in 0..threads {
             let job_rx = Arc::clone(&job_rx);
             let result_tx = result_tx.clone();
+            let solved = Arc::clone(solved);
+            let ground = Arc::clone(ground);
             workers.push(scope.spawn(move || -> Result<(), Error> {
                 let flat = terrain::flat_mesh(TERRAIN_GRID);
-                let mut dem = match &cfg.terrain {
+                let dem = match &cfg.terrain {
                     Some(path) => Some(Dem::open(path)?),
                     None => None,
                 };
+                let mut sampler = GroundSampler::new(dem, ground);
                 loop {
                     // Blocking recv under the lock serializes idle waits only;
                     // a queued job is handed off immediately.
@@ -456,7 +513,7 @@ fn emit_parallel(
                     let Ok(job) = job else {
                         break;
                     };
-                    let result = encode_tile(job, &flat, &mut dem, cfg.brotli_quality);
+                    let result = encode_tile(job, &flat, &mut sampler, &solved, cfg.brotli_quality);
                     if result_tx.send(result).is_err() {
                         break;
                     }
@@ -504,12 +561,14 @@ fn emit_parallel(
 }
 
 /// Encodes one tile on an emit worker: decode its records into per-layer
-/// features, build the terrain mesh (DEM or flat), and produce the compressed
-/// blob plus the stats the writer folds in.
+/// features, synthesize geometry from the solved model (stage 4), build the
+/// terrain mesh (engineered ground or flat), and produce the compressed blob
+/// plus the stats the writer folds in.
 fn encode_tile(
     job: TileJob,
     flat: &TerrainMesh,
-    dem: &mut Option<Dem>,
+    sampler: &mut GroundSampler,
+    solved: &SolvedModel,
     quality: i32,
 ) -> Result<TileResult, Error> {
     let (z, x, y) = hilbert::tile_id_decode(job.tile_id);
@@ -524,8 +583,8 @@ fn encode_tile(
         buckets[*layer].push(decoded);
     }
     let t_stamp = Instant::now();
-    stamp_elevations(&mut buckets, dem, z);
-    stamp_roads(&mut buckets, dem, z, &bounds);
+    stamp_elevations(&mut buckets, sampler, z);
+    stamp_synth(&mut buckets, sampler, solved, z, &bounds);
     let mut t_terrain = t_stamp.elapsed();
 
     // Vector layers in decode-priority (index) order.
@@ -549,21 +608,18 @@ fn encode_tile(
 
     // Every tile carries a terrain mesh — the client requires it to render.
     observed.push((layers::TERRAIN as usize, GeometryType::Mesh));
-    let (blob, elevation, t_mesh, t_encode) = match dem {
-        Some(d) => {
-            let t = Instant::now();
-            let (mesh, emin, emax) =
-                terrain::elevated_mesh(TERRAIN_GRID, &bounds, |lon, lat| d.elevation(lon, lat, z));
-            let t_mesh = t.elapsed();
-            let t = Instant::now();
-            let blob = tile_build::build_tile_q(&bounds, Some(&mesh), &enc_layers, quality);
-            (blob, Some((emin, emax)), t_mesh, t.elapsed())
-        }
-        None => {
-            let t = Instant::now();
-            let blob = tile_build::build_tile_q(&bounds, Some(flat), &enc_layers, quality);
-            (blob, None, Duration::ZERO, t.elapsed())
-        }
+    let (blob, elevation, t_mesh, t_encode) = if sampler.has_elevation() {
+        let t = Instant::now();
+        let (mesh, emin, emax) =
+            terrain::elevated_mesh(TERRAIN_GRID, &bounds, |lon, lat| sampler.ground(lon, lat, z));
+        let t_mesh = t.elapsed();
+        let t = Instant::now();
+        let blob = tile_build::build_tile_q(&bounds, Some(&mesh), &enc_layers, quality);
+        (blob, Some((emin, emax)), t_mesh, t.elapsed())
+    } else {
+        let t = Instant::now();
+        let blob = tile_build::build_tile_q(&bounds, Some(flat), &enc_layers, quality);
+        (blob, None, Duration::ZERO, t.elapsed())
     };
     t_terrain += t_mesh;
     Ok(TileResult {
@@ -598,15 +654,15 @@ const GROUND_RELIEF_KEY: &str = "ground_relief";
 /// ground (see `building_mesh`). Sampling every footprint vertex captures that
 /// spread; the bbox centre alone cannot. POIs are points, so a single centre
 /// sample is their anchor.
-fn stamp_elevations(buckets: &mut [Vec<EncoderFeature>], dem: &mut Option<Dem>, z: u8) {
-    let Some(d) = dem else {
+fn stamp_elevations(buckets: &mut [Vec<EncoderFeature>], sampler: &mut GroundSampler, z: u8) {
+    if !sampler.has_elevation() {
         return;
-    };
+    }
 
     for f in &mut buckets[layers::BUILDING as usize] {
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
         clip::for_each_coord(&f.geometry, &mut |c| {
-            let e = d.elevation(c.x, c.y, z);
+            let e = sampler.ground(c.x, c.y, z);
             lo = lo.min(e);
             hi = hi.max(e);
         });
@@ -623,50 +679,25 @@ fn stamp_elevations(buckets: &mut [Vec<EncoderFeature>], dem: &mut Option<Dem>, 
     for f in &mut buckets[layers::POI as usize] {
         if let Some((min_x, min_y, max_x, max_y)) = clip::bbox(&f.geometry) {
             let (lon, lat) = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0);
-            f.elevation = Some(d.elevation(lon, lat, z));
+            f.elevation = Some(sampler.ground(lon, lat, z));
         }
     }
 }
 
-/// Builds the consistent 3D model of the road network onto transportation
-/// features, all elevated from the same rendered terrain surface
-/// ([`terrain::surface_height`]) so the network is coherent and hugs the drawn
-/// ground. A non-ground `level` (bridge or tunnel) becomes a solid box-prism mesh
-/// ([`structure_mesh`]) riding the road's reconstructed gentle profile; a ground
-/// road gets per-vertex elevation baked onto its line ([`structures::bake_road_elevation`]),
-/// which the client strokes directly. Without a DEM nothing is elevated (roads
-/// stay flat at z = 0) and the carried run is just discarded.
-fn stamp_roads(buckets: &mut [Vec<EncoderFeature>], dem: &mut Option<Dem>, z: u8, bounds: &Bounds) {
+/// Stage 4 for the tile: runs each transportation feature's generator against
+/// the solved model — bridge decks and tunnel bores swept on their corridor's
+/// profile, roads draped on the rendered ground (plus their corridor's solved
+/// cut/fill where one exists). See [`synth::emit`].
+fn stamp_synth(
+    buckets: &mut [Vec<EncoderFeature>],
+    sampler: &mut GroundSampler,
+    solved: &SolvedModel,
+    z: u8,
+    bounds: &Bounds,
+) {
     for f in &mut buckets[layers::TRANSPORTATION as usize] {
-        let level = prop_level(f);
-        match dem {
-            // A bridge (level > 0) is a thin open deck; a tunnel (level < 0) a
-            // roofed bore capped at its portals (see `structure_mesh`).
-            Some(d) if level != 0 => structure_mesh::stamp(f, d, z, bounds, level),
-            // A ground road bakes its elevation; an at-grade approach that carries
-            // the deck profile rides it onto an embankment (see `bake_road_elevation`,
-            // which consumes and strips the carry either way).
-            Some(d) => structures::bake_road_elevation(f, d, z, bounds),
-            None => structures::discard_run(f),
-        }
+        synth::emit(f, sampler, solved, z, bounds);
     }
-}
-
-/// Whether a source transportation feature is a class whose road grade is
-/// engineered-limited (motorway/trunk), so its whole-segment profile is worth
-/// carrying even without a bridge/tunnel — mirrors `structures::grade_limit`.
-fn road_grade_limited(f: &crate::geoparquet::Feature) -> bool {
-    f.properties.iter().any(|(k, v)| {
-        k == "class" && matches!(v, Value::String(s) if s == "motorway" || s == "trunk")
-    })
-}
-
-/// Reads a transportation feature's bridge/tunnel `level` property (0 absent).
-fn prop_level(f: &EncoderFeature) -> i64 {
-    f.properties.iter().find(|(k, _)| k == "level").map_or(0, |(_, v)| match v {
-        Value::Int(i) => *i,
-        _ => 0,
-    })
 }
 
 /// Phase-1 worker: drains row-group work items from the queue, streams their
@@ -678,6 +709,7 @@ fn phase1_worker(
     queue: &Mutex<VecDeque<WorkItem>>,
     cfg: &Config,
     mem_budget: usize,
+    scene: &SceneGraph,
 ) -> Result<(ExternalSorter, Stats), Error> {
     let mut sorter = ExternalSorter::new(&cfg.tmp_dir, mem_budget);
     let mut stats = Stats::default();
@@ -700,16 +732,24 @@ fn phase1_worker(
             let Some(feature) = next else {
                 break;
             };
-            process_feature(*layer, &feature?, cfg, &mut sorter, &mut stats)?;
+            process_feature(*layer, &feature?, cfg, &mut sorter, &mut stats, scene)?;
         }
     }
     Ok((sorter, stats))
 }
 
-/// Phase-1 per-feature work: split a multi-level transportation segment into
-/// constant-level pieces (see `crate::levels`), then hand each piece — or the
-/// whole geometry for everything else — to [`emit_geometry`], which profiles it
-/// and walks the tile quadtree.
+/// Phase-1 per-feature work: resolve the feature against the scene graph, then
+/// hand each constant-kind piece — or the whole geometry — to
+/// [`emit_geometry`], which profiles it and walks the tile quadtree.
+///
+/// A transportation segment the assemble stage claimed is re-emitted as its
+/// corridor pieces, cut at the corridor's solved span boundaries
+/// ([`crate::scene::Corridor::pieces`]) and tagged with the [`Synth`] generator
+/// the emit worker will run — a structure sweep for bridge/tunnel spans, a
+/// profile-lifted drape for the at-grade rest. Heights themselves are *not*
+/// carried: the emit worker reads them from the shared solved model, which is
+/// what makes every fragment agree (invariant 5). Unclaimed segments (minor
+/// roads with no structure) and every other layer emit as before.
 ///
 /// The walk clips each node's geometry from its parent's already-clipped piece
 /// (child clip rects nest strictly inside the parent's, so the result equals
@@ -723,6 +763,7 @@ fn process_feature(
     cfg: &Config,
     sorter: &mut ExternalSorter,
     stats: &mut Stats,
+    scene: &SceneGraph,
 ) -> Result<(), Error> {
     stats.features_read += 1;
     let Some(bb) = clip::bbox(&f.geometry) else {
@@ -732,75 +773,62 @@ fn process_feature(
         return Ok(());
     }
 
-    // A transportation segment carries Overture `level_rules`: a linearly-
-    // referenced z-order that can change mid-segment — a road that runs at
-    // grade, climbs onto a bridge, dives into a tunnel, then surfaces, all under
-    // one geometry. Split it into maximal constant-level runs so each piece is
-    // profiled, lifted (bridge) or sunk (tunnel) on its own; collapsing the
-    // whole segment to one level lofts grade and tunnel sections onto a single
-    // phantom deck spanning unrelated endpoints (see `crate::levels`). Each
-    // piece carries its own uniform `level_rules` for `profile` to read.
-    // A high-class road (motorway/trunk) without any level structure still carries
-    // its whole-segment profile, so the baker can grade-limit it onto an engineered
-    // grade rather than draping it down the hillside (see
-    // `structures::bake_road_elevation` / `limit_road_grade`).
-    if layer == layers::TRANSPORTATION && f.level_runs.is_empty() && road_grade_limited(f) {
-        let carry = structures::encode_segment(&f.geometry, &[]);
-        let deck = carry.as_ref().map_or(&[][..], |c| c.as_slice());
-        return emit_geometry(layer, &f.geometry, &f.properties, deck, cfg, sorter, stats);
-    }
-    if layer == layers::TRANSPORTATION && !f.level_runs.is_empty() {
-        // A bridge run's deck follows the road's gentle elevation profile, which
-        // is a function of the *whole* segment and its level structure (the
-        // at-grade stretches anchor it — see `structures`). Carry both on each
-        // bridge piece so every tile fragment rebuilds the same profile.
-        let carry = structures::encode_segment(&f.geometry, &f.level_runs);
-        for (geom, level) in levels::split_levels(&f.geometry, &f.level_runs) {
-            let mut props = f.properties.clone();
-            // A run shorter than the structural minimum (a footbridge span, a
-            // few-metre tunnel) drapes as an ordinary road: lifting it onto a
-            // deck or sinking it just leaves a tiny segment floating or buried.
-            let structural = level != 0 && line_length_m(&geom) >= DECK_MIN_RUN_M;
-            if structural {
-                props.push(("level_rules".to_string(), Value::Int(level)));
+    if layer == layers::TRANSPORTATION {
+        let claimed = prop_id(&f.properties).and_then(|id| scene.lookup(source_hash(&id)));
+        if let Some((corridor, seg)) = claimed {
+            for piece in corridor.pieces(seg) {
+                let geom = Geometry::LineString(LineString(piece.line));
+                let mut props = seg.properties.clone();
+                let synth = match piece.kind {
+                    SpanKind::Grade => Synth::Road {
+                        corridor: corridor.needs_profile().then_some(corridor.id),
+                    },
+                    kind => {
+                        // The level ordinal survives as a property only so the
+                        // attribute profiler emits the reserved `level` the
+                        // client colours structures by.
+                        props.push(("level_rules".to_string(), Value::Int(piece.level)));
+                        Synth::Structure { corridor: corridor.id, kind }
+                    }
+                };
+                emit_geometry(layer, &geom, &props, synth, cfg, sorter, stats)?;
             }
-            // Every piece of a levelled segment carries the deck profile, so the
-            // baker can rebuild the road's gentle grade: a structure rides a deck or
-            // bore on it (see `structure_mesh`), and an at-grade *approach* rides it
-            // onto the embankment that reaches the abutment (see
-            // `structures::bake_road_elevation`) instead of draping down the flank.
-            let deck = carry.as_ref().map_or(&[][..], |c| c.as_slice());
-            emit_geometry(layer, &geom, &props, deck, cfg, sorter, stats)?;
+            return Ok(());
         }
-        return Ok(());
+        // Unclaimed: a plain road that drapes on the rendered ground.
+        let synth = Synth::Road { corridor: None };
+        return emit_geometry(layer, &f.geometry, &f.properties, synth, cfg, sorter, stats);
     }
-    emit_geometry(layer, &f.geometry, &f.properties, &[], cfg, sorter, stats)
+    emit_geometry(layer, &f.geometry, &f.properties, Synth::None, cfg, sorter, stats)
+}
+
+/// The source feature's `id` property, when it is a string.
+fn prop_id(props: &[(String, Value)]) -> Option<&str> {
+    props.iter().find(|(k, _)| k == "id").and_then(|(_, v)| match v {
+        Value::String(s) => Some(s.as_str()),
+        _ => None,
+    })
 }
 
 /// Profiles one (sub-)geometry, then walks the tile quadtree from its first
 /// emitted zoom down to `zmax`, appending one sort record per (zoom, tile) it
-/// covers. Bridges record their abutments here so the deck baker can anchor the
-/// span (see `process_feature` for the per-segment split that feeds this).
+/// covers. The `synth` tag rides on every record so the emit worker knows
+/// which generator to run.
 fn emit_geometry(
     layer: u8,
     geometry: &Geometry,
     props: &[(String, Value)],
-    deck: &[(String, Value)],
+    synth: Synth,
     cfg: &Config,
     sorter: &mut ExternalSorter,
     stats: &mut Stats,
 ) -> Result<(), Error> {
-    let mut prof = profile::profile(layer, props, cfg.min_zoom, cfg.max_zoom);
+    let prof = profile::profile(layer, props, cfg.min_zoom, cfg.max_zoom);
     let zmin = prof.min_zoom.max(cfg.min_zoom);
     let zmax = prof.max_zoom.min(cfg.max_zoom);
     if zmin > zmax {
         return Ok(());
     }
-
-    // Bridge runs carry the deck profile (segment centerline + level structure)
-    // for the phase-2 baker, replicated to every tile via the `RecordEncoder`.
-    // It rides past `profile`, which keeps only its own styling keys.
-    prof.properties.extend_from_slice(deck);
 
     // Skip the zooms where the whole feature is smaller than one screen pixel
     // (sub-visible): emission starts at the first zoom it is visible at.
@@ -826,7 +854,7 @@ fn emit_geometry(
         rank: prof.rank,
         zmax,
         bbox: &cfg.bbox,
-        encoder: record::RecordEncoder::new(0, &prof.properties),
+        encoder: record::RecordEncoder::new(0, &prof.properties, synth),
     };
     let (x0, x1, y0, y1) = clip::candidate_range(base_bb, zemit);
     for y in y0..=y1 {
@@ -991,14 +1019,15 @@ fn flush_tile(
     layer_stats: &mut LayerStats,
     stats: &mut Stats,
     flat: &TerrainMesh,
-    dem: &mut Option<Dem>,
+    sampler: &mut GroundSampler,
+    solved: &SolvedModel,
     elevation: &mut (f64, f64),
     quality: i32,
 ) -> Result<(), Error> {
     let (z, x, y) = hilbert::tile_id_decode(tile_id);
     let bounds = Bounds::of_tile(z, x, y);
-    stamp_elevations(buckets, dem, z);
-    stamp_roads(buckets, dem, z, &bounds);
+    stamp_elevations(buckets, sampler, z);
+    stamp_synth(buckets, sampler, solved, z, &bounds);
 
     // Vector layers in decode-priority (index) order.
     let mut enc_layers = Vec::new();
@@ -1016,28 +1045,25 @@ fn flush_tile(
     }
 
     // Every tile carries a terrain mesh — the client requires it to render.
-    // With a DEM, build a per-tile elevated mesh (and track the elevation
-    // range); otherwise reuse the shared flat mesh.
+    // With a DEM, build a per-tile mesh of the engineered ground (and track
+    // the elevation range); otherwise reuse the shared flat mesh.
     layer_stats.observe(layers::TERRAIN as usize, z, GeometryType::Mesh);
-    let blob = match dem {
-        Some(d) => {
-            let t_terrain = Instant::now();
-            let (mesh, emin, emax) =
-                terrain::elevated_mesh(TERRAIN_GRID, &bounds, |lon, lat| d.elevation(lon, lat, z));
-            stats.timings.terrain += t_terrain.elapsed();
-            elevation.0 = elevation.0.min(emin);
-            elevation.1 = elevation.1.max(emax);
-            let t_encode = Instant::now();
-            let blob = tile_build::build_tile_q(&bounds, Some(&mesh), &enc_layers, quality);
-            stats.timings.encode += t_encode.elapsed();
-            blob
-        }
-        None => {
-            let t_encode = Instant::now();
-            let blob = tile_build::build_tile_q(&bounds, Some(flat), &enc_layers, quality);
-            stats.timings.encode += t_encode.elapsed();
-            blob
-        }
+    let blob = if sampler.has_elevation() {
+        let t_terrain = Instant::now();
+        let (mesh, emin, emax) =
+            terrain::elevated_mesh(TERRAIN_GRID, &bounds, |lon, lat| sampler.ground(lon, lat, z));
+        stats.timings.terrain += t_terrain.elapsed();
+        elevation.0 = elevation.0.min(emin);
+        elevation.1 = elevation.1.max(emax);
+        let t_encode = Instant::now();
+        let blob = tile_build::build_tile_q(&bounds, Some(&mesh), &enc_layers, quality);
+        stats.timings.encode += t_encode.elapsed();
+        blob
+    } else {
+        let t_encode = Instant::now();
+        let blob = tile_build::build_tile_q(&bounds, Some(flat), &enc_layers, quality);
+        stats.timings.encode += t_encode.elapsed();
+        blob
     };
     let t_write = Instant::now();
     writer.add_tile(z, x, y, &blob)?;
@@ -1072,27 +1098,6 @@ fn tolerance_for(layer: u8, z: u8) -> f64 {
 
 fn bbox_intersects(bb: (f64, f64, f64, f64), b: &Bounds) -> bool {
     bb.0 <= b.east && bb.2 >= b.west && bb.1 <= b.north && bb.3 >= b.south
-}
-
-/// Approximate metric length of a (multi)linestring in metres (equirectangular,
-/// longitude scaled by the mean latitude). Zero for non-line geometry.
-fn line_length_m(g: &Geometry) -> f64 {
-    const DEG_M: f64 = 111_320.0;
-    let line_len = |ls: &geo_types::LineString| -> f64 {
-        ls.0.windows(2)
-            .map(|w| {
-                let cos_lat = ((w[0].y + w[1].y) * 0.5).to_radians().cos();
-                let dx = (w[1].x - w[0].x) * cos_lat * DEG_M;
-                let dy = (w[1].y - w[0].y) * DEG_M;
-                (dx * dx + dy * dy).sqrt()
-            })
-            .sum()
-    };
-    match g {
-        Geometry::LineString(ls) => line_len(ls),
-        Geometry::MultiLineString(mls) => mls.0.iter().map(line_len).sum(),
-        _ => 0.0,
-    }
 }
 
 fn geom_type(g: &Geometry) -> GeometryType {
@@ -1440,6 +1445,7 @@ mod tests {
             terrain: None,
             threads: 0,
             brotli_quality: tile_build::DEFAULT_QUALITY,
+            dump: None,
         };
         let stats = run(&cfg).expect("pipeline run");
         assert!(stats.tiles_written > 0, "expected some tiles");

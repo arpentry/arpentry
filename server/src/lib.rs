@@ -18,27 +18,32 @@
 #![allow(dead_code)]
 
 pub mod archive;
+pub mod assemble;
 pub mod building_mesh;
 pub mod clip;
 pub mod dem;
+pub mod dump;
 pub mod fb;
 pub mod gen;
 pub mod geom;
 pub mod geoparquet;
+pub mod ground;
 pub mod hilbert;
 pub mod layers;
 pub mod levels;
 pub mod models;
 pub mod pipeline;
 pub mod pmtiles;
+pub mod priors;
 pub mod profile;
 pub mod project;
 pub mod record;
+pub mod scene;
 pub mod simplify;
+pub mod solve;
 pub mod sort;
-pub mod structure_mesh;
-pub mod structures;
 pub mod style;
+pub mod synth;
 pub mod terrain;
 pub mod tile_build;
 pub mod tileid;

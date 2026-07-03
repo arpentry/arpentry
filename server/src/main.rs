@@ -26,6 +26,8 @@ OPTIONS:
                        gives each tile real elevation instead of a flat mesh
   --threads <n>        Worker threads (default: CPU count)
   --brotli <q>         Brotli quality 0-11 for tile blobs (default: 7)
+  --dump <dir>         Write stage-artifact GeoJSON dumps (scene graph,
+                       solved profiles) for inspection in QGIS/kepler
   -h, --help           Show this help
 
 Layer indices: 0=terrain 1=land_cover 2=bathymetry 3=water 4=land
@@ -76,6 +78,14 @@ fn report_timings(stats: &pipeline::Stats) {
         if stats.threads == 1 { "" } else { "s" },
     );
     eprintln!(
+        "model   {:>8}  {} corridors, {} profiles, {} crossings, {} earthwork edges",
+        secs(t.model),
+        stats.corridors,
+        stats.profiles,
+        stats.crossings,
+        stats.earthworks,
+    );
+    eprintln!(
         "phase 1 {:>8}  cpu: read {}, simplify {}, clip {}, sort {}",
         secs(t.phase1),
         secs(t.read),
@@ -121,6 +131,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
     let mut terrain: Option<PathBuf> = None;
     let mut threads: usize = 0;
     let mut brotli_quality: i32 = arpentry_server::tile_build::DEFAULT_QUALITY;
+    let mut dump: Option<PathBuf> = None;
 
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
@@ -135,6 +146,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
             "--terrain" => terrain = Some(PathBuf::from(value(&mut it, "--terrain")?)),
             "--threads" => threads = parse_num(&value(&mut it, "--threads")?, "--threads")?,
             "--brotli" => brotli_quality = parse_num(&value(&mut it, "--brotli")?, "--brotli")?,
+            "--dump" => dump = Some(PathBuf::from(value(&mut it, "--dump")?)),
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -157,6 +169,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
         terrain,
         threads,
         brotli_quality,
+        dump,
     })
 }
 
