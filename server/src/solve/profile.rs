@@ -90,14 +90,17 @@ pub struct Profile {
 }
 
 /// One swept deck cross-section: the (smoothed) centerline position, the
-/// deck-top height, and the unit left-perpendicular (ENU metres) the section
-/// spans.
+/// deck-top height, the unit left-perpendicular (ENU metres) the section
+/// spans, and the *global* corridor arc it sits at — the reference pier
+/// placement snaps to, so tile fragments of one viaduct plant identical
+/// piers.
 pub struct DeckNode {
     pub lon: f64,
     pub lat: f64,
     pub height_m: f64,
     pub left_e: f64,
     pub left_n: f64,
+    pub arc_m: f64,
 }
 
 /// Solves the surface profile of one corridor: densify, sample the reference
@@ -170,7 +173,8 @@ impl Profile {
                 let lon = lerp(self.smooth[i].x, self.smooth[i + 1].x, t);
                 let lat = lerp(self.smooth[i].y, self.smooth[i + 1].y, t);
                 let (left_e, left_n) = self.section_left(i);
-                DeckNode { lon, lat, height_m, left_e, left_n }
+                let arc_m = lerp(self.arc[i], self.arc[i + 1], t);
+                DeckNode { lon, lat, height_m, left_e, left_n, arc_m }
             })
             .collect()
     }

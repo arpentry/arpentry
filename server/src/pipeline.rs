@@ -212,8 +212,9 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     let t_model = Instant::now();
     let transportation =
         cfg.inputs.iter().find(|(l, _)| *l == layers::TRANSPORTATION).map(|(_, p)| p.clone());
+    let water = cfg.inputs.iter().find(|(l, _)| *l == layers::WATER).map(|(_, p)| p.clone());
     let scene = match &transportation {
-        Some(path) => assemble::run(path, &cfg.bbox)
+        Some(path) => assemble::run(path, water.as_deref(), &cfg.bbox)
             .map_err(|e| format!("{}: {e}", path.display()))?,
         None => SceneGraph::default(),
     };

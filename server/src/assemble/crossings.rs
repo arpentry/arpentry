@@ -36,14 +36,14 @@ struct SpanEdge {
     kind: SpanKind,
 }
 
-/// Detects crossings (bridge spans over features) and underpasses (tunnel
-/// spans under features), streaming the input a second time.
-pub fn detect(
-    path: &Path,
-    bbox: (f64, f64, f64, f64),
-    scene: &SceneGraph,
-) -> Result<(Vec<Crossing>, Vec<Underpass>), ReadError> {
-    // Index every structure-span edge of every corridor.
+/// The corridors' structure-span edges in a grid, shared by the road and
+/// water passes.
+struct SpanIndex {
+    edges: Vec<SpanEdge>,
+    grid: GridIndex,
+}
+
+fn index_spans(scene: &SceneGraph) -> SpanIndex {
     let mut edges: Vec<SpanEdge> = Vec::new();
     let mut grid = GridIndex::new();
     for c in &scene.corridors {
@@ -60,6 +60,17 @@ pub fn detect(
             }
         }
     }
+    SpanIndex { edges, grid }
+}
+
+/// Detects crossings (bridge spans over features) and underpasses (tunnel
+/// spans under features), streaming the input a second time.
+pub fn detect(
+    path: &Path,
+    bbox: (f64, f64, f64, f64),
+    scene: &SceneGraph,
+) -> Result<(Vec<Crossing>, Vec<Underpass>), ReadError> {
+    let SpanIndex { edges, grid } = index_spans(scene);
     if grid.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
@@ -164,6 +175,85 @@ pub fn detect(
         (a.corridor, a.arc.to_bits(), a.over_level).cmp(&(b.corridor, b.arc.to_bits(), b.over_level))
     });
     Ok((crossings, underpasses))
+}
+
+/// Detects bridge spans crossing water features (rivers, canals, lakes) in
+/// the water input: the freeboard constraint of scenario S3. The water
+/// surface itself needs no solving — the DEM images water bodies at their
+/// level, so the terrain under the crossing *is* the water height.
+pub fn detect_water(
+    path: &Path,
+    bbox: (f64, f64, f64, f64),
+    scene: &SceneGraph,
+) -> Result<Vec<Crossing>, ReadError> {
+    let SpanIndex { edges, grid } = index_spans(scene);
+    if grid.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let gp = GeoParquet::open(path)?;
+    let row_groups = gp.row_groups_intersecting(bbox);
+    let mut crossings: Vec<Crossing> = Vec::new();
+    let mut seen: HashSet<(u32, u64, i64)> = HashSet::new();
+    let mut candidates: Vec<u32> = Vec::new();
+    for feature in gp.features(row_groups, &["id", "subtype", "class"])? {
+        let f = feature?;
+        let source =
+            prop_str(&f.properties, "id").map(crate::scene::source_hash).unwrap_or_default();
+        for part in water_lines(&f.geometry) {
+            for w in part.windows(2) {
+                let (c0, c1) = (w[0], w[1]);
+                let bb = (c0.x.min(c1.x), c0.y.min(c1.y), c0.x.max(c1.x), c0.y.max(c1.y));
+                grid.query(bb, &mut candidates);
+                for &ei in candidates.iter() {
+                    let e = &edges[ei as usize];
+                    if e.kind != SpanKind::Bridge {
+                        continue; // a bore under a river needs no freeboard
+                    }
+                    let upper = &scene.corridors[e.corridor as usize];
+                    let (a, b) = (upper.nodes[e.node], upper.nodes[e.node + 1]);
+                    let Some((t_span, _)) = seg_intersect(a, b, c0, c1, upper.cos_lat) else {
+                        continue;
+                    };
+                    if !seen.insert((upper.id, source, e.level)) {
+                        continue; // one constraint per (span, water body)
+                    }
+                    let point =
+                        Coord { x: a.x + (b.x - a.x) * t_span, y: a.y + (b.y - a.y) * t_span };
+                    crossings.push(Crossing {
+                        upper: upper.id,
+                        upper_arc: upper.arc[e.node]
+                            + t_span * (upper.arc[e.node + 1] - upper.arc[e.node]),
+                        point,
+                        lower: None,
+                        lower_kind: CrossedKind::Water,
+                        upper_level: e.level,
+                        lower_level: 0,
+                    });
+                }
+            }
+        }
+    }
+    crossings.sort_by(|a, b| (a.upper, a.upper_arc.to_bits()).cmp(&(b.upper, b.upper_arc.to_bits())));
+    Ok(crossings)
+}
+
+/// The polylines of a water feature: line geometry as-is, polygon rings
+/// (banks and shorelines) as closed lines.
+fn water_lines(g: &Geometry) -> Vec<Vec<Coord>> {
+    fn rings(p: &geo_types::Polygon) -> Vec<Vec<Coord>> {
+        std::iter::once(p.exterior())
+            .chain(p.interiors().iter())
+            .map(|r| r.0.clone())
+            .collect()
+    }
+    match g {
+        Geometry::LineString(ls) => vec![ls.0.clone()],
+        Geometry::MultiLineString(mls) => mls.0.iter().map(|l| l.0.clone()).collect(),
+        Geometry::Polygon(p) => rings(p),
+        Geometry::MultiPolygon(mp) => mp.0.iter().flat_map(rings).collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Proper intersection of segments `ab` and `cd` in cos-lat-scaled space,

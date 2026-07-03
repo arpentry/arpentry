@@ -48,8 +48,9 @@ const ATTRS: &[&str] = &[
     "cartography.sort_key",
 ];
 
-/// Reads the transportation input and assembles the scene graph.
-pub fn run(path: &Path, bbox: &Bounds) -> Result<SceneGraph, ReadError> {
+/// Reads the transportation input (and the water input, when present) and
+/// assembles the scene graph.
+pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGraph, ReadError> {
     let gp = GeoParquet::open(path)?;
     let row_groups =
         gp.row_groups_intersecting((bbox.west, bbox.south, bbox.east, bbox.north));
@@ -91,11 +92,16 @@ pub fn run(path: &Path, bbox: &Bounds) -> Result<SceneGraph, ReadError> {
     let mut scene = SceneGraph::new(corridors::build(raw));
     // Second pass: find where the corridors' structure spans cross the rest
     // of the network (the input is streamed again; only geometry near a span
-    // is actually tested).
-    let (crossings, underpasses) =
-        crossings::detect(path, (bbox.west, bbox.south, bbox.east, bbox.north), &scene)?;
+    // is actually tested). Water gets its own pass: a bridge over a river
+    // owes freeboard, not road clearance (S3).
+    let bb = (bbox.west, bbox.south, bbox.east, bbox.north);
+    let (crossings, underpasses) = crossings::detect(path, bb, &scene)?;
     scene.crossings = crossings;
     scene.underpasses = underpasses;
+    if let Some(water_path) = water {
+        let mut water_crossings = crossings::detect_water(water_path, bb, &scene)?;
+        scene.crossings.append(&mut water_crossings);
+    }
     Ok(scene)
 }
 

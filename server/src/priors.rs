@@ -54,14 +54,44 @@ impl RoadClass {
 }
 
 /// Vertical clearance a bridge deck's *underside* must keep over a crossed
-/// feature (scenario S4, invariant 3). About 5 m over a road, more over rail
-/// (catenary). The data never states built clearances; these are the
-/// engineering minimums.
+/// feature (scenarios S3/S4, invariant 3). About 5 m over a road, more over
+/// rail (catenary), freeboard over water. The data never states built
+/// clearances; these are the engineering minimums.
 pub fn clearance_m(lower: crate::scene::CrossedKind) -> f64 {
     match lower {
         crate::scene::CrossedKind::Road => 5.0,
         crate::scene::CrossedKind::Rail => 7.0,
+        crate::scene::CrossedKind::Water => 4.0,
     }
+}
+
+/// Spacing between viaduct piers along the deck, in metres of corridor arc.
+/// Piers sit at global multiples of this, so tile fragments of one viaduct
+/// place identical piers.
+pub const PIER_SPACING_M: f64 = 45.0;
+
+/// Smallest deck-underside-to-ground gap that earns a pier; below it the
+/// deck is close enough to the ground to read as supported.
+pub const PIER_MIN_CLEAR_M: f64 = 6.0;
+
+/// How far a pier (or abutment block) is sunk below the sampled ground, so
+/// lattice differences between zooms never leave a floating foot.
+pub const PIER_EMBED_M: f64 = 4.0;
+
+/// Largest deck-underside-to-ground gap treated as a deck end *landing* — an
+/// abutment block is built under it. A higher end (a deck meeting a tunnel
+/// portal on a hillside) is a junction, not a landing.
+pub const ABUTMENT_MAX_GAP_M: f64 = 3.0;
+
+/// First zoom that carries structure detail (piers, abutment blocks). Coarser
+/// zooms render the bare deck — the degradation ladder's middle rung (D5);
+/// positions never change, only detail sheds.
+pub const STRUCTURE_DETAIL_MIN_ZOOM: u8 = 13;
+
+/// Half-width of a pier column for a road class: a fraction of the deck
+/// half-width, clamped to plausible column sizes.
+pub fn pier_half_width_m(class: RoadClass) -> f64 {
+    (class.half_width_m() * 0.35).clamp(1.2, 2.5)
 }
 
 /// Approach-ramp grade for a road class with no engineered ceiling: how fast

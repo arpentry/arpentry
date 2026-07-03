@@ -87,6 +87,10 @@ pub struct Corridor {
 pub enum CrossedKind {
     Road,
     Rail,
+    /// A river or lake: the clearance is freeboard over the water surface
+    /// (which the DEM carries — water bodies image at their level), not over
+    /// a roadbed (scenario S3).
+    Water,
 }
 
 /// One geometric crossing: a corridor's bridge span passing over another
