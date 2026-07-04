@@ -43,14 +43,32 @@ impl RoadClass {
     }
 
     /// Half-width in metres of a swept structure box — bigger roads, bigger
-    /// structures.
-    pub fn half_width_m(self) -> f64 {
+    /// structures. Overture maps each carriageway of a dual carriageway (and
+    /// each ramp) as its own segment, so these are *per-carriageway* widths,
+    /// not whole-road widths: dual motorway centerlines run only ~8–15 m
+    /// apart, and a whole-motorway width on each would overlap the decks. The
+    /// values follow the mapped `width` medians in the Swiss extract
+    /// (motorway 9 m, trunk 8 m, primary 7 m, secondary 6 m, minor 5–6 m).
+    /// A `link` (ramp) is a single lane plus shoulders whatever its class
+    /// (mapped medians 4.5–5.5 m).
+    pub fn half_width_m(self, link: bool) -> f64 {
+        if link {
+            return 2.75;
+        }
         match self {
-            RoadClass::Motorway | RoadClass::Trunk => 7.5,
-            RoadClass::Primary | RoadClass::Secondary => 6.0,
-            RoadClass::Minor => 4.0,
+            RoadClass::Motorway => 4.5,
+            RoadClass::Trunk => 4.0,
+            RoadClass::Primary => 3.5,
+            RoadClass::Secondary => 3.0,
+            RoadClass::Minor => 2.75,
         }
     }
+}
+
+/// Whether an Overture `subclass` marks a ramp — narrower than its class's
+/// mainline carriageway, whatever that class.
+pub fn is_link(subclass: Option<&str>) -> bool {
+    subclass == Some("link")
 }
 
 /// Vertical clearance a bridge deck's *underside* must keep over a crossed
@@ -88,10 +106,10 @@ pub const ABUTMENT_MAX_GAP_M: f64 = 3.0;
 /// positions never change, only detail sheds.
 pub const STRUCTURE_DETAIL_MIN_ZOOM: u8 = 13;
 
-/// Half-width of a pier column for a road class: a fraction of the deck
-/// half-width, clamped to plausible column sizes.
-pub fn pier_half_width_m(class: RoadClass) -> f64 {
-    (class.half_width_m() * 0.35).clamp(1.2, 2.5)
+/// Half-width of a pier column: a fraction of the deck half-width, clamped to
+/// plausible column sizes.
+pub fn pier_half_width_m(deck_half_width_m: f64) -> f64 {
+    (deck_half_width_m * 0.35).clamp(1.2, 2.5)
 }
 
 /// Approach-ramp grade for a road class with no engineered ceiling: how fast
@@ -117,8 +135,10 @@ pub const EARTHWORK_SHOULDER_M: f64 = 1.0;
 /// Thickness of a bridge deck slab in metres — deck surface to its underside.
 pub const DECK_THICKNESS_M: f64 = 1.5;
 
-/// Vertical clearance of a tunnel bore in metres — road floor to its flat roof.
-pub const TUNNEL_HEIGHT_M: f64 = 6.0;
+/// Vertical clearance of a tunnel bore in metres — road floor to its flat
+/// roof. Road tunnels are built to a ~4.5 m vehicle clearance plus equipment
+/// headroom.
+pub const TUNNEL_HEIGHT_M: f64 = 5.0;
 
 /// Ground cover an underpass keeps between its bore roof and the surface the
 /// crossed feature rides on (scenario S6): enough that the crossing feature
@@ -212,7 +232,25 @@ mod tests {
 
     #[test]
     fn half_width_scales_with_class() {
-        assert!(RoadClass::Motorway.half_width_m() > RoadClass::Minor.half_width_m());
-        assert_eq!(RoadClass::parse(None).half_width_m(), RoadClass::Minor.half_width_m());
+        assert!(RoadClass::Motorway.half_width_m(false) > RoadClass::Minor.half_width_m(false));
+        assert_eq!(
+            RoadClass::parse(None).half_width_m(false),
+            RoadClass::Minor.half_width_m(false)
+        );
+    }
+
+    #[test]
+    fn links_are_narrow_whatever_the_class() {
+        assert!(RoadClass::Motorway.half_width_m(true) < RoadClass::Motorway.half_width_m(false));
+        assert!(is_link(Some("link")));
+        assert!(!is_link(Some("sidewalk")));
+        assert!(!is_link(None));
+    }
+
+    #[test]
+    fn dual_carriageway_decks_do_not_overlap() {
+        // Overture dual-carriageway centerlines run ~8-15 m apart (measured on
+        // the Swiss extract, p10 = 8.2 m); two swept motorway boxes must fit.
+        assert!(2.0 * RoadClass::Motorway.half_width_m(false) <= 9.0);
     }
 }

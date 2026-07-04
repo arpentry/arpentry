@@ -20,7 +20,7 @@ use std::path::Path;
 use geo_types::Geometry;
 
 use crate::geoparquet::{GeoParquet, ReadError};
-use crate::priors::RoadClass;
+use crate::priors::{self, RoadClass};
 use crate::project::Bounds;
 use crate::scene::{source_hash, SceneGraph};
 use crate::value::Value;
@@ -80,6 +80,7 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
             source,
             line: line.0.clone(),
             class,
+            link: priors::is_link(prop_string(&f.properties, "subclass").as_deref()),
             class_key,
             subtype_key: prop_string(&f.properties, "subtype").unwrap_or_default(),
             level_runs: f.level_runs,

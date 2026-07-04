@@ -70,7 +70,7 @@ pub fn derive(scene: &SceneGraph, solved: &SolvedModel) -> GroundModel {
         let road = p.road_m();
         let terrain = p.terrain_m();
         let at_grade = p.at_grade();
-        let half_width = c.class.half_width_m() + EARTHWORK_SHOULDER_M;
+        let half_width = c.class.half_width_m(c.link) + EARTHWORK_SHOULDER_M;
 
         let needs = |i: usize| at_grade[i] && (road[i] - terrain[i]).abs() > MIN_EARTHWORK_M;
         let mut i = 0;
@@ -117,7 +117,7 @@ pub fn derive(scene: &SceneGraph, solved: &SolvedModel) -> GroundModel {
                 b,
                 target_a: portal.floor_m,
                 target_b: portal.floor_m,
-                half_width_m: c.class.half_width_m() + EARTHWORK_SHOULDER_M,
+                half_width_m: c.class.half_width_m(c.link) + EARTHWORK_SHOULDER_M,
                 feather_m: EARTHWORK_MIN_FEATHER_M,
                 cos_lat: crate::scene::run_cos_lat(&[a, b]),
                 carve: true,
@@ -156,6 +156,7 @@ mod tests {
             arc,
             cos_lat,
             class: RoadClass::Secondary,
+            link: false,
             spans: spans.clone(),
             segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],

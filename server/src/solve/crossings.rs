@@ -134,8 +134,11 @@ fn flat_interval(
         }
     }
     let apex = crossed
-        .map(|id| scene.corridors[id as usize].class.half_width_m())
-        .unwrap_or_else(|| priors::RoadClass::Minor.half_width_m())
+        .map(|id| {
+            let x = &scene.corridors[id as usize];
+            x.class.half_width_m(x.link)
+        })
+        .unwrap_or_else(|| priors::RoadClass::Minor.half_width_m(false))
         + priors::EARTHWORK_SHOULDER_M;
     (arc0 - apex, arc0 + apex)
 }
@@ -244,6 +247,7 @@ mod tests {
             arc,
             cos_lat,
             class: RoadClass::Secondary,
+            link: false,
             spans: spans.clone(),
             segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],
@@ -318,6 +322,7 @@ mod tests {
             arc,
             cos_lat,
             class: RoadClass::Secondary,
+            link: false,
             spans: spans.clone(),
             segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],
@@ -347,9 +352,10 @@ mod tests {
             p.height_at(mid.x, mid.y) - p.surface_at(mid.x, mid.y) < 0.0,
             "the underpass gap must be negative"
         );
-        // The descent ramps cut below grade on the approaches, and the far
-        // ends stay anchored at the ground.
-        let approach = Coord { x: mid.x - 150.0 / (crate::scene::DEG_M * cos_lat), y: 46.0 };
+        // The descent ramps cut below grade on the approaches (sampled just
+        // outside the tunnel span, inside the ramp), and the far ends stay
+        // anchored at the ground.
+        let approach = Coord { x: mid.x - 100.0 / (crate::scene::DEG_M * cos_lat), y: 46.0 };
         let h = p.height_at(approach.x, approach.y);
         assert!(h < 371.5, "approach should descend into the cut, got {h}");
         assert!((p.height_at(6.0, 46.0) - 372.0).abs() < 0.5);
@@ -380,6 +386,7 @@ mod tests {
             arc,
             cos_lat,
             class: RoadClass::Minor,
+            link: false,
             spans: spans.clone(),
             segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],
@@ -451,6 +458,7 @@ mod tests {
                 arc,
                 cos_lat,
                 class: RoadClass::Secondary,
+                link: false,
                 spans: spans.clone(),
                 segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
                 connectors: vec![],
@@ -461,6 +469,7 @@ mod tests {
                 arc: over_arc,
                 cos_lat,
                 class: RoadClass::Secondary,
+                link: false,
                 spans: vec![],
                 segments: vec![SegmentRef { source: 2, node0: 0, node1: n - 1, properties: vec![] }],
                 connectors: vec![],
@@ -516,6 +525,7 @@ mod tests {
             arc,
             cos_lat,
             class: RoadClass::Secondary,
+            link: false,
             spans: vec![],
             segments: vec![SegmentRef { source: 2, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],
@@ -574,6 +584,7 @@ mod tests {
             arc,
             cos_lat,
             class: RoadClass::Secondary,
+            link: false,
             spans,
             segments: vec![SegmentRef { source: 2, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],

@@ -71,7 +71,8 @@ pub fn stamp(
 ) -> bool {
     let frame = Frame::at_center(bounds);
     let class = RoadClass::parse(prop_str(f, "class").as_deref());
-    let half_w = class.half_width_m();
+    let link = crate::priors::is_link(prop_str(f, "subclass").as_deref());
+    let half_w = class.half_width_m(link);
 
     let mut acc = Accum::default();
     for line in lines(&f.geometry) {
@@ -81,7 +82,7 @@ pub fn stamp(
                 _ => {
                     sweep_deck(&mut acc, &frame, bounds, profile, &piece, half_w);
                     if detail {
-                        support_deck(&mut acc, &frame, bounds, profile, &piece, half_w, class);
+                        support_deck(&mut acc, &frame, bounds, profile, &piece, half_w);
                     }
                 }
             }
@@ -294,14 +295,13 @@ fn support_deck(
     profile: &Profile,
     span: &[Coord],
     half_w: f64,
-    class: RoadClass,
 ) {
     let pts = densify(span, frame);
     if pts.len() < 2 {
         return;
     }
     let nodes = profile.deck_nodes(&pts);
-    let pier_hw = pier_half_width_m(class);
+    let pier_hw = pier_half_width_m(half_w);
 
     // Each global multiple plants at most one pier: the arc-order walk can
     // jitter a section backward slightly, making adjacent windows overlap.
@@ -733,12 +733,12 @@ mod tests {
         detail: bool,
     ) -> Option<TerrainMesh> {
         let frame = Frame::at_center(b);
-        let half_w = RoadClass::Motorway.half_width_m();
+        let half_w = RoadClass::Motorway.half_width_m(false);
         let mut acc = Accum::default();
         for piece in proper_pieces(&line.0, b) {
             sweep_deck(&mut acc, &frame, b, profile, &piece, half_w);
             if detail {
-                support_deck(&mut acc, &frame, b, profile, &piece, half_w, RoadClass::Motorway);
+                support_deck(&mut acc, &frame, b, profile, &piece, half_w);
             }
         }
         acc.into_mesh()
@@ -752,7 +752,7 @@ mod tests {
     /// Sweeps a tunnel bore over a whole line.
     fn bore(line: &LineString, profile: &Profile, b: &Bounds) -> Option<TerrainMesh> {
         let frame = Frame::at_center(b);
-        let half_w = RoadClass::Motorway.half_width_m();
+        let half_w = RoadClass::Motorway.half_width_m(false);
         let mut acc = Accum::default();
         for piece in proper_pieces(&line.0, b) {
             sweep_bore(&mut acc, &frame, b, profile, &piece, half_w);

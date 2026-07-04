@@ -30,6 +30,8 @@ pub struct RawSegment {
     pub source: u64,
     pub line: Vec<Coord>,
     pub class: RoadClass,
+    /// Whether the subclass marks a ramp (`link`) — narrower structures.
+    pub link: bool,
     /// Raw class string — splice compatibility compares the exact class, not
     /// the coarser [`RoadClass`] buckets.
     pub class_key: String,
@@ -253,6 +255,7 @@ fn build_corridor(id: u32, segments: &[RawSegment], chain: &[ChainLink]) -> Opti
     Some(Corridor {
         id,
         class: chain.first().map(|&(si, _)| segments[si].class).unwrap_or(RoadClass::Minor),
+        link: chain.iter().all(|&(si, _)| segments[si].link),
         nodes,
         arc,
         cos_lat,
@@ -387,6 +390,7 @@ mod tests {
             source: source_hash(source),
             line,
             class: RoadClass::Motorway,
+            link: false,
             class_key: "motorway".into(),
             subtype_key: "road".into(),
             level_runs: runs,

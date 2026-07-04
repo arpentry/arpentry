@@ -72,6 +72,9 @@ pub struct Corridor {
     /// `cos(mean latitude)`, scaling longitude into the local metric space.
     pub cos_lat: f64,
     pub class: RoadClass,
+    /// Whether every member segment is a `link` (ramp) — the swept structures
+    /// and earthworks are a single lane wide, whatever the class.
+    pub link: bool,
     /// Constant-kind spans partitioning `[0, total]`, in arc order.
     pub spans: Vec<Span>,
     /// Source segments in corridor order.
@@ -285,7 +288,7 @@ mod tests {
             (0..n).map(|i| Coord { x: 6.0 + deg * i as f64 / (n - 1) as f64, y: 46.0 }).collect();
         let arc: Vec<f64> = (0..n).map(|i| len_m * i as f64 / (n - 1) as f64).collect();
         let segments = vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }];
-        Corridor { id: 0, nodes, arc, cos_lat, class: RoadClass::Minor, spans, segments, connectors: vec![] }
+        Corridor { id: 0, nodes, arc, cos_lat, class: RoadClass::Minor, link: false, spans, segments, connectors: vec![] }
     }
 
     fn span(arc0: f64, arc1: f64, level: i64) -> Span {
