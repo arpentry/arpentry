@@ -130,6 +130,35 @@ pub const TUNNEL_COVER_M: f64 = 0.5;
 /// below grade.
 pub const PORTAL_CUT_LEN_M: f64 = 12.0;
 
+/// Deepest an underpass constraint may press the road below its solved
+/// profile. A real depressed underpass runs ~7–12 m below grade (bore, cover,
+/// slab — sometimes stacked); a demand far beyond that means the level tags
+/// and the solved geometry contradict each other (e.g. a mapper-annotated
+/// mountain tunnel whose profile stands high over the crossing road), and
+/// honouring it would drag the profile — and the earthworks that chase it —
+/// hundreds of metres down. Such demands are dropped: the profile is trusted
+/// over the tag.
+pub const MAX_UNDERPASS_SINK_M: f64 = 15.0;
+
+/// Highest a clearance constraint may lift the road above its solved
+/// profile — the raising twin of [`MAX_UNDERPASS_SINK_M`]. A real overpass
+/// clears its crossed road by ~6.5–10 m (clearance plus slab, some grade),
+/// ~13 m when it stacks over an already-lifted deck; a demand far beyond
+/// that means the crossing geometry and the solved profile contradict each
+/// other (e.g. a path mapped across a viaduct's plan line high on a flank),
+/// and honouring it once flattened kilometres of viaduct at the highest
+/// demand — a deck 200 m over Montreux. Such demands are dropped: the
+/// profile is trusted over the inferred constraint.
+pub const MAX_CLEARANCE_LIFT_M: f64 = 15.0;
+
+/// Longest annotated structure span treated as one rigid box whose constraint
+/// holds end to end: a short bridge is lifted as one deck (S4), a short
+/// tunnel runs depressed as one cut-and-cover bore (S6, the urban underpass).
+/// A longer span is a viaduct or driven tunnel; only the crossing feature's
+/// own width lifts or dips, and the road returns to its own grade at the ramp
+/// grade — one crossing must not drag kilometres of structure to its height.
+pub const STRUCTURE_BOX_MAX_M: f64 = 300.0;
+
 /// How far, in metres, an engineered road may sit above (fill) or below (cut)
 /// the draped terrain. The grade ceiling alone, held across a long mountain
 /// climb, drifts the road tens of metres from the ground — a phantom viaduct or
