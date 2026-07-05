@@ -11,6 +11,11 @@ struct GlobalUniforms {
 struct TileUniforms {
     model: mat4x4<f32>,
     bounds: vec4<f32>,
+    // Bounds relative to the center and the center's sin/cos — used by the
+    // terrain/road shaders' precise positioning; declared here so the shared
+    // tile uniform buffer layout matches.
+    rel_bounds: vec4<f32>,
+    sincos: vec4<f32>,
     center_lon: f32,
     center_lat: f32,
     _pad0: f32,

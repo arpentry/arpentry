@@ -1,5 +1,6 @@
 #include "internal.h"
 
+#include <math.h>
 #include <stdlib.h>
 
 /* 4x4 matrix inverse (column-major, general case) */
@@ -272,10 +273,16 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     r->road_pipeline =
         arpt__road_create_pipeline(device, format, r->global_bgl, r->tile_bgl);
 
-    /* Tunnel box-prism pipeline (depth-override; shares terrain layouts) */
+    /* Structure box-prism pipelines (share terrain layouts): tunnels draw at
+       true depth so the ground occludes them; bridge decks carry a small
+       camera-facing depth margin (vs_bridge) so a deck coplanar with its
+       roadbed shows its own smooth edge, not a jagged intersection contour. */
     r->structure_pipeline =
-        arpt__mesh_create_structure_pipeline(device, format, r->global_bgl,
-                                          r->tile_bgl);
+        arpt__mesh_create_structure_pipeline(device, "vs", format,
+                                          r->global_bgl, r->tile_bgl);
+    r->bridge_pipeline =
+        arpt__mesh_create_structure_pipeline(device, "vs_bridge", format,
+                                          r->global_bgl, r->tile_bgl);
 
     /* Surface offscreen pipelines + sampler */
     r->surface_pipeline = arpt__texture_create_surface_pipeline(device);
@@ -388,6 +395,7 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->tree_pipeline) wgpuRenderPipelineRelease(r->tree_pipeline);
     if (r->road_pipeline) wgpuRenderPipelineRelease(r->road_pipeline);
     if (r->structure_pipeline) wgpuRenderPipelineRelease(r->structure_pipeline);
+    if (r->bridge_pipeline) wgpuRenderPipelineRelease(r->bridge_pipeline);
     if (r->surface_pipeline) wgpuRenderPipelineRelease(r->surface_pipeline);
     if (r->stencil_fill_pipeline) wgpuRenderPipelineRelease(r->stencil_fill_pipeline);
     if (r->stencil_color_pipeline) wgpuRenderPipelineRelease(r->stencil_color_pipeline);
@@ -715,18 +723,30 @@ bool arpt_renderer_tile_set_overzoom(arpt_renderer *r, arpt_tile_gpu *t,
 }
 
 void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile, arpt_mat4 model,
-                                const float bounds[4], float center_lon,
-                                float center_lat) {
+                                const double bounds_rad[4], double center_lon,
+                                double center_lat) {
     tile_uniforms_t u = {0};
     memcpy(u.model, model.m, sizeof(u.model));
-    memcpy(u.bounds, bounds, sizeof(u.bounds));
-    u.center_lon = center_lon;
-    u.center_lat = center_lat;
+    for (int i = 0; i < 4; i++) u.bounds[i] = (float)bounds_rad[i];
+    /* The relative bounds and the center's sin/cos are derived in double:
+       the shader rebuilds each vertex position from these small, exact
+       deltas, never from absolute f32 ECEF — whose ~0.5 m rounding scallops
+       every straight edge (a bridge deck most visibly). */
+    u.rel_bounds[0] = (float)(bounds_rad[0] - center_lon);
+    u.rel_bounds[1] = (float)(bounds_rad[1] - center_lat);
+    u.rel_bounds[2] = (float)(bounds_rad[2] - center_lon);
+    u.rel_bounds[3] = (float)(bounds_rad[3] - center_lat);
+    u.sincos[0] = (float)sin(center_lon);
+    u.sincos[1] = (float)cos(center_lon);
+    u.sincos[2] = (float)sin(center_lat);
+    u.sincos[3] = (float)cos(center_lat);
+    u.center_lon = (float)center_lon;
+    u.center_lat = (float)center_lat;
     /* Cache for CPU-side POI projection */
     memcpy(tile->cached_model, model.m, sizeof(tile->cached_model));
-    memcpy(tile->cached_bounds, bounds, sizeof(tile->cached_bounds));
-    tile->cached_center_lon = center_lon;
-    tile->cached_center_lat = center_lat;
+    memcpy(tile->cached_bounds, u.bounds, sizeof(tile->cached_bounds));
+    tile->cached_center_lon = u.center_lon;
+    tile->cached_center_lat = u.center_lat;
 
     if (tile->uniform_buf)
         wgpuQueueWriteBuffer(tile->renderer->queue, tile->uniform_buf, 0, &u,
@@ -876,7 +896,7 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
        over the buried bore — an x-ray debug view of tunnels under the ground.
        Where the bore is exposed (a portal, a lakeside gallery) the terrain is
        farther and fails the depth test, so it stays solid. */
-    arpt__mesh_draw_structure(r, &tile->tunnel);
+    arpt__mesh_draw_structure(r, &tile->tunnel, r->structure_pipeline);
 
     /* Terrain + edge skirts on the transparent pipeline. */
     wgpuRenderPassEncoderSetPipeline(r->pass, r->terrain_xray_pipeline);
@@ -887,7 +907,7 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
 
     arpt__road_draw(r, tile);
     arpt__mesh_draw_buildings(r, tile);
-    arpt__mesh_draw_structure(r, &tile->bridge);
+    arpt__mesh_draw_structure(r, &tile->bridge, r->bridge_pipeline);
     arpt__instance_draw(r, tile);
     arpt__label_collect(r, tile);
     arpt__line_label_collect(r, tile);

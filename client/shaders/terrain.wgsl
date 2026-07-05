@@ -18,6 +18,11 @@ struct GlobalUniforms {
 struct TileUniforms {
     model: mat4x4<f32>,
     bounds: vec4<f32>,
+    // Bounds relative to the center (radians): west−λc, south−φc, east−λc,
+    // north−φc. Small, so f32 carries them to sub-mm.
+    rel_bounds: vec4<f32>,
+    // sin λc, cos λc, sin φc, cos φc — computed in double on the CPU.
+    sincos: vec4<f32>,
     center_lon: f32,
     center_lat: f32,
     _pad0: f32,
@@ -36,16 +41,42 @@ struct VsOut {
     @location(2) view_pos: vec3<f32>,
 };
 
-fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {
-    let sin_lat = sin(lat);
-    let cos_lat = cos(lat);
-    let sin_lon = sin(lon);
-    let cos_lon = cos(lon);
-    let N = WGS84_A / sqrt(1.0 - WGS84_E2 * sin_lat * sin_lat);
+// ECEF offset of the vertex at tile-relative (dλ, dφ) radians and altitude
+// `alt` from the tile center's ECEF at altitude 0 — computed *without ever
+// forming an absolute ECEF coordinate*. Absolute ECEF is ~6.4e6 m, where an
+// f32 ulp is ~0.5 m; subtracting two such values scallops every straight
+// edge onto a half-metre lattice. Here every term is either a small
+// quantity or a large quantity scaled by a small one, so the result is
+// accurate to well under a millimetre across a tile. The trigonometric
+// identities are exact, so the formulation stays valid (merely reverting to
+// f32-level accuracy) even for globe-scale tiles.
+fn local_ecef_delta(dlam: f32, dphi: f32, alt: f32) -> vec3<f32> {
+    let slc = tile.sincos.x; // sin λc
+    let clc = tile.sincos.y; // cos λc
+    let spc = tile.sincos.z; // sin φc
+    let cpc = tile.sincos.w; // cos φc
+    let sdl = sin(dlam);
+    let hdl = sin(dlam * 0.5);
+    let cdl_m1 = -2.0 * hdl * hdl; // cos(dλ) − 1, computed without cancellation
+    let sdp = sin(dphi);
+    let hdp = sin(dphi * 0.5);
+    let cdp_m1 = -2.0 * hdp * hdp; // cos(dφ) − 1
+    let dsp = cpc * sdp + spc * cdp_m1; // sin φ − sin φc
+    let sp = spc + dsp;                 // sin φ
+    let cp = cpc + (cpc * cdp_m1 - spc * sdp); // cos φ
+    let wc = sqrt(1.0 - WGS84_E2 * spc * spc);
+    let w = sqrt(1.0 - WGS84_E2 * sp * sp);
+    let n = WGS84_A / w; // prime-vertical radius N(φ)
+    // N(φ) − N(φc), expanded so no ~6.4e6 m values are subtracted.
+    let dn = WGS84_A * WGS84_E2 * dsp * (sp + spc) / (w * wc * (w + wc));
+    let a_full = (n + alt) * cp;                            // (N+h)·cos φ
+    let ncd = dn + n * cdp_m1;                              // N·cos dφ − Nc
+    let da = cpc * ncd - n * spc * sdp + alt * cp;          // (N+h)cosφ − Nc·cosφc
+    let t1 = da + a_full * cdl_m1;                          // A·cos dλ − Ac
     return vec3<f32>(
-        (N + alt) * cos_lat * cos_lon,
-        (N + alt) * cos_lat * sin_lon,
-        (N * (1.0 - WGS84_E2) + alt) * sin_lat,
+        t1 * clc - a_full * sdl * slc,
+        t1 * slc + a_full * sdl * clc,
+        (1.0 - WGS84_E2) * (spc * ncd + n * cpc * sdp) + alt * sp,
     );
 }
 
@@ -59,27 +90,29 @@ fn decode_octahedral(enc: vec2<f32>) -> vec3<f32> {
     return normalize(n);
 }
 
-@vertex fn vs(
-    @location(0) qxy: vec2<u32>,
-    @location(1) qz: i32,
-    @location(2) oct_norm: vec2<i32>,
-) -> VsOut {
-    let lon_west = tile.bounds.x;
-    let lat_south = tile.bounds.y;
-    let lon_east = tile.bounds.z;
-    let lat_north = tile.bounds.w;
+// Depth margin for bridge decks. An approach deck rides the engineered
+// roadbed the ground stage carves at the same height, so deck and terrain
+// are near-coplanar for long stretches; the depth test then draws their
+// jagged, lattice-scale intersection contour as the apparent deck edge.
+// Biasing the deck a few metres toward the camera (exactly the road paint's
+// trick, see road.wgsl) makes the deck win those ties, so the visible edge
+// is its own smooth geometry. Small enough that ground genuinely above the
+// deck (a real hill, a buried run) still occludes it.
+const BRIDGE_DEPTH_MARGIN_M: f32 = 3.0;
 
+fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32) -> VsOut {
     let u = (f32(qxy.x) - 16384.0) / 32768.0;
     let v = (f32(qxy.y) - 16384.0) / 32768.0;
-    let lon = lon_west + u * (lon_east - lon_west);
-    let lat = lat_south + v * (lat_north - lat_south);
+    let dlam = tile.rel_bounds.x + u * (tile.rel_bounds.z - tile.rel_bounds.x);
+    let dphi = tile.rel_bounds.y + v * (tile.rel_bounds.w - tile.rel_bounds.y);
     let alt = f32(qz) * 0.001;
 
-    let ecef = geodetic_to_ecef(lon, lat, alt);
-    let center_ecef = geodetic_to_ecef(tile.center_lon, tile.center_lat, 0.0);
-    let local_ecef = ecef - center_ecef;
+    let local_ecef = local_ecef_delta(dlam, dphi, alt);
 
-    let world_pos = tile.model * vec4<f32>(local_ecef, 1.0);
+    var world_pos = tile.model * vec4<f32>(local_ecef, 1.0);
+    // The tile model is view-aligned (eye at origin, looking down -z), so a
+    // +z shift moves the vertex toward the camera by exactly the margin.
+    world_pos.z += depth_margin;
 
     var out: VsOut;
     out.pos = globals.projection * world_pos;
@@ -91,6 +124,22 @@ fn decode_octahedral(enc: vec2<f32>) -> vec3<f32> {
     out.view_pos = world_pos.xyz;
 
     return out;
+}
+
+@vertex fn vs(
+    @location(0) qxy: vec2<u32>,
+    @location(1) qz: i32,
+    @location(2) oct_norm: vec2<i32>,
+) -> VsOut {
+    return vs_common(qxy, qz, oct_norm, 0.0);
+}
+
+@vertex fn vs_bridge(
+    @location(0) qxy: vec2<u32>,
+    @location(1) qz: i32,
+    @location(2) oct_norm: vec2<i32>,
+) -> VsOut {
+    return vs_common(qxy, qz, oct_norm, BRIDGE_DEPTH_MARGIN_M);
 }
 
 @fragment fn fs(

@@ -332,6 +332,7 @@ void arpt__mesh_draw_buildings(arpt_renderer *r, arpt_tile_gpu *tile) {
    underground, surfacing only at the portals. Culling is off so the solid
    rectangular tube reads correctly from inside or out regardless of winding. */
 WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
+                                                     const char *vs_entry,
                                                      WGPUTextureFormat format,
                                                      WGPUBindGroupLayout global_bgl,
                                                      WGPUBindGroupLayout tile_bgl) {
@@ -374,7 +375,7 @@ WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
 
     WGPURenderPipelineDescriptor pip = {
         .layout = pl,
-        .vertex = {.module = sm, .entryPoint = "vs", .bufferCount = 3,
+        .vertex = {.module = sm, .entryPoint = vs_entry, .bufferCount = 3,
                    .buffers = vbls},
         .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
                       .cullMode = WGPUCullMode_None,
@@ -418,9 +419,10 @@ void arpt__mesh_upload_structure(arpt_renderer *r, arpt_mesh_draw *d,
         d->index_count = (uint32_t)ni;
 }
 
-void arpt__mesh_draw_structure(arpt_renderer *r, arpt_mesh_draw *d) {
+void arpt__mesh_draw_structure(arpt_renderer *r, arpt_mesh_draw *d,
+                               WGPURenderPipeline pipeline) {
     if (d->index_count == 0) return;
-    wgpuRenderPassEncoderSetPipeline(r->pass, r->structure_pipeline);
+    wgpuRenderPassEncoderSetPipeline(r->pass, pipeline);
     wgpuRenderPassEncoderSetBindGroup(r->pass, 0, r->global_bind_group, 0, NULL);
     wgpuRenderPassEncoderSetBindGroup(r->pass, 1, d->bind_group, 0, NULL);
     wgpuRenderPassEncoderSetVertexBuffer(r->pass, 0, d->buf_xy, 0,

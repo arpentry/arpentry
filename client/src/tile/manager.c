@@ -880,15 +880,14 @@ static void draw_entry(arpt_renderer *r, const arpt_camera *cam,
                        const tile_entry *e) {
     arpt_mat4 model =
         arpt_camera_tile_model(cam, e->center_lon_rad, e->center_lat_rad, 0.0);
-    float bounds_rad[4] = {
-        (float)(e->bounds.west * M_PI / 180.0),
-        (float)(e->bounds.south * M_PI / 180.0),
-        (float)(e->bounds.east * M_PI / 180.0),
-        (float)(e->bounds.north * M_PI / 180.0),
+    double bounds_rad[4] = {
+        e->bounds.west * M_PI / 180.0,
+        e->bounds.south * M_PI / 180.0,
+        e->bounds.east * M_PI / 180.0,
+        e->bounds.north * M_PI / 180.0,
     };
     arpt_tile_gpu_set_uniforms((arpt_tile_gpu *)e->gpu, model, bounds_rad,
-                               (float)e->center_lon_rad,
-                               (float)e->center_lat_rad);
+                               e->center_lon_rad, e->center_lat_rad);
     arpt_renderer_draw_tile(r, (arpt_tile_gpu *)e->gpu);
 }
 

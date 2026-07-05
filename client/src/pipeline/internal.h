@@ -47,6 +47,13 @@ typedef struct {
 typedef struct {
     float model[16];
     float bounds[4];
+    /* Tile bounds relative to the center, radians: (west−λc, south−φc,
+       east−λc, north−φc). Small quantities, so f32 holds them to sub-mm —
+       unlike the absolute `bounds`, whose f32 rounding is ~0.4 m. */
+    float rel_bounds[4];
+    /* sin λc, cos λc, sin φc, cos φc — computed in double on the CPU, so the
+       shader can rebuild positions from well-conditioned deltas. */
+    float sincos[4];
     float center_lon;
     float center_lat;
     float _pad0;
@@ -254,6 +261,10 @@ struct arpt_renderer {
     /* Road-structure box prisms: one opaque depth-tested pipeline, two material
        colour textures so bridges and tunnels read differently. */
     WGPURenderPipeline structure_pipeline;
+    /* Bridge decks: same shader with a small camera-facing depth margin so a
+       deck coplanar with its engineered roadbed wins the depth tie and shows
+       its own smooth edge instead of a jagged intersection contour. */
+    WGPURenderPipeline bridge_pipeline;
     WGPUTexture bridge_tex;
     WGPUTextureView bridge_view;
     WGPUTexture tunnel_tex;
@@ -416,12 +427,14 @@ void arpt__mesh_draw_buildings(arpt_renderer *r, arpt_tile_gpu *tile);
    `arpt_mesh_draw` (bridge or tunnel); the caller supplies the bind group's
    colour. */
 WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
+                                                     const char *vs_entry,
                                                      WGPUTextureFormat format,
                                                      WGPUBindGroupLayout global_bgl,
                                                      WGPUBindGroupLayout tile_bgl);
 void arpt__mesh_upload_structure(arpt_renderer *r, arpt_mesh_draw *d,
                                  const arpt_building_prim *prim);
-void arpt__mesh_draw_structure(arpt_renderer *r, arpt_mesh_draw *d);
+void arpt__mesh_draw_structure(arpt_renderer *r, arpt_mesh_draw *d,
+                               WGPURenderPipeline pipeline);
 
 /* render_texture.c */
 WGPURenderPipeline arpt__texture_create_surface_pipeline(WGPUDevice device);

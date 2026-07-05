@@ -83,10 +83,14 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
 bool arpt_renderer_tile_set_overzoom(arpt_renderer *r, arpt_tile_gpu *t,
                                      int overzoom);
 
-/** Update per-tile uniforms (model matrix, bounds, center). */
+/** Update per-tile uniforms (model matrix, bounds, center). The center is
+ *  taken in double radians: the renderer derives the small relative bounds
+ *  and the center's sin/cos in full precision, so the vertex shader can
+ *  position vertices from well-conditioned deltas instead of absolute f32
+ *  ECEF (whose ~0.5 m rounding scallops every straight edge). */
 void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile, arpt_mat4 model,
-                                const float bounds[4], float center_lon,
-                                float center_lat);
+                                const double bounds_rad[4], double center_lon,
+                                double center_lat);
 
 void arpt_tile_gpu_free(arpt_tile_gpu *tile);
 

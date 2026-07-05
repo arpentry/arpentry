@@ -29,6 +29,11 @@ struct GlobalUniforms {
 struct TileUniforms {
     model: mat4x4<f32>,
     bounds: vec4<f32>,
+    // Bounds relative to the center (radians): west−λc, south−φc, east−λc,
+    // north−φc. Small, so f32 carries them to sub-mm.
+    rel_bounds: vec4<f32>,
+    // sin λc, cos λc, sin φc, cos φc — computed in double on the CPU.
+    sincos: vec4<f32>,
     center_lon: f32,
     center_lat: f32,
     _pad0: f32,
@@ -45,16 +50,35 @@ struct VsOut {
     @location(2) hw_len: vec2<f32>,
 };
 
-fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {
-    let sin_lat = sin(lat);
-    let cos_lat = cos(lat);
-    let sin_lon = sin(lon);
-    let cos_lon = cos(lon);
-    let N = WGS84_A / sqrt(1.0 - WGS84_E2 * sin_lat * sin_lat);
+// ECEF offset from the tile center without forming absolute ECEF values —
+// see terrain.wgsl's local_ecef_delta for the full derivation. Absolute f32
+// ECEF rounds at ~0.5 m and scallops straight road edges.
+fn local_ecef_delta(dlam: f32, dphi: f32, alt: f32) -> vec3<f32> {
+    let slc = tile.sincos.x;
+    let clc = tile.sincos.y;
+    let spc = tile.sincos.z;
+    let cpc = tile.sincos.w;
+    let sdl = sin(dlam);
+    let hdl = sin(dlam * 0.5);
+    let cdl_m1 = -2.0 * hdl * hdl;
+    let sdp = sin(dphi);
+    let hdp = sin(dphi * 0.5);
+    let cdp_m1 = -2.0 * hdp * hdp;
+    let dsp = cpc * sdp + spc * cdp_m1;
+    let sp = spc + dsp;
+    let cp = cpc + (cpc * cdp_m1 - spc * sdp);
+    let wc = sqrt(1.0 - WGS84_E2 * spc * spc);
+    let w = sqrt(1.0 - WGS84_E2 * sp * sp);
+    let n = WGS84_A / w;
+    let dn = WGS84_A * WGS84_E2 * dsp * (sp + spc) / (w * wc * (w + wc));
+    let a_full = (n + alt) * cp;
+    let ncd = dn + n * cdp_m1;
+    let da = cpc * ncd - n * spc * sdp + alt * cp;
+    let t1 = da + a_full * cdl_m1;
     return vec3<f32>(
-        (N + alt) * cos_lat * cos_lon,
-        (N + alt) * cos_lat * sin_lon,
-        (N * (1.0 - WGS84_E2) + alt) * sin_lat,
+        t1 * clc - a_full * sdl * slc,
+        t1 * slc + a_full * sdl * clc,
+        (1.0 - WGS84_E2) * (spc * ncd + n * cpc * sdp) + alt * sp,
     );
 }
 
@@ -65,20 +89,13 @@ fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {
     @location(3) local: vec2<f32>,
     @location(4) hw_len: vec2<f32>,
 ) -> VsOut {
-    let lon_west = tile.bounds.x;
-    let lat_south = tile.bounds.y;
-    let lon_east = tile.bounds.z;
-    let lat_north = tile.bounds.w;
-
     let u = (f32(qxy.x) - 16384.0) / 32768.0;
     let v = (f32(qxy.y) - 16384.0) / 32768.0;
-    let lon = lon_west + u * (lon_east - lon_west);
-    let lat = lat_south + v * (lat_north - lat_south);
+    let dlam = tile.rel_bounds.x + u * (tile.rel_bounds.z - tile.rel_bounds.x);
+    let dphi = tile.rel_bounds.y + v * (tile.rel_bounds.w - tile.rel_bounds.y);
     let alt = f32(qz) * 0.001;
 
-    let ecef = geodetic_to_ecef(lon, lat, alt);
-    let center_ecef = geodetic_to_ecef(tile.center_lon, tile.center_lat, 0.0);
-    var world_pos = tile.model * vec4<f32>(ecef - center_ecef, 1.0);
+    var world_pos = tile.model * vec4<f32>(local_ecef_delta(dlam, dphi, alt), 1.0);
 
     // Bias the stroke toward the camera by a fixed world margin so it wins the
     // LessEqual depth test against terrain up to ROAD_DEPTH_MARGIN_M in front of it
