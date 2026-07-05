@@ -93,18 +93,77 @@ fn splice_links(segments: &[RawSegment]) -> HashMap<(usize, u8), (usize, u8)> {
     }
     let mut links = HashMap::new();
     for ends in at_connector.values() {
-        let [(i, ie), (j, je)] = ends[..] else { continue };
-        if i == j {
-            continue; // a loop segment touching itself
+        // Group the ends by (class, subtype): an exact pair within a group is
+        // a road continuing through the connector — including through a
+        // junction where ramps of another class also attach. Splicing the
+        // through pair keeps one corridor (one solved profile) across every
+        // interchange; breaking there once landed a corridor end mid-bridge,
+        // where the end-of-corridor chord dived a deck 5 m under its own
+        // continuation. Three or more same-class ends (a genuine fork) still
+        // never splice; the solver's junction constraints handle those.
+        let mut groups: HashMap<(&str, &str, bool), Vec<(usize, End)>> = HashMap::new();
+        for &(i, e) in ends {
+            // The link flag joins the key: an Overture ramp shares the
+            // mainline's class (`motorway`), so without it every interchange
+            // connector has 3–4 same-class ends and nothing ever splices.
+            let key = (
+                segments[i].class_key.as_str(),
+                segments[i].subtype_key.as_str(),
+                segments[i].link,
+            );
+            groups.entry(key).or_default().push((i, e));
         }
-        let (a, b) = (&segments[i], &segments[j]);
-        if a.class_key != b.class_key || a.subtype_key != b.subtype_key {
-            continue;
+        for group in groups.values() {
+            let [(i, ie), (j, je)] = group[..] else { continue };
+            if i == j {
+                continue; // a loop segment touching itself
+            }
+            // The pair must continue roughly straight through the connector.
+            // Where a dual carriageway's two directions meet end-to-end (an
+            // interchange terminus) the tangents oppose — splicing there
+            // folds the corridor into a hairpin that runs beside itself for
+            // kilometres, and fragment projection then lands on the wrong
+            // pass (deck stubs metres off in height).
+            if !continues_through(&segments[i], ie, &segments[j], je) {
+                continue;
+            }
+            links.insert((i, ie as u8), (j, je as u8));
+            links.insert((j, je as u8), (i, ie as u8));
         }
-        links.insert((i, ie as u8), (j, je as u8));
-        links.insert((j, je as u8), (i, ie as u8));
     }
     links
+}
+
+/// Whether travel arriving along `a` (at its `ae` end) leaves along `b` (from
+/// its `be` end) without reversing: the turn angle at the shared connector
+/// stays under ~120°. A genuine continuation is near-straight; a dual
+/// carriageway folding back on itself is near-180° and must not splice.
+fn continues_through(a: &RawSegment, ae: End, b: &RawSegment, be: End) -> bool {
+    let dir = |seg: &RawSegment, end: End, outward: bool| -> Option<(f64, f64)> {
+        let line = &seg.line;
+        if line.len() < 2 {
+            return None;
+        }
+        let (at, next) = match end {
+            End::Start => (line[0], line[1]),
+            End::End => (line[line.len() - 1], line[line.len() - 2]),
+        };
+        let cos_lat = at.y.to_radians().cos();
+        // Vector pointing away from the connector into the segment; flip it
+        // for the arriving direction.
+        let (dx, dy) = ((next.x - at.x) * cos_lat, next.y - at.y);
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-12 {
+            return None;
+        }
+        let sign = if outward { 1.0 } else { -1.0 };
+        Some((sign * dx / len, sign * dy / len))
+    };
+    match (dir(a, ae, false), dir(b, be, true)) {
+        // cos 120° = −0.5: reject sharper turns than 120°.
+        (Some((ax, ay)), Some((bx, by))) => ax * bx + ay * by > -0.5,
+        _ => false,
+    }
 }
 
 /// One chain entry: a segment index and whether it runs forward (its start
