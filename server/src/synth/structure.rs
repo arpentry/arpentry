@@ -51,8 +51,11 @@ use crate::terrain::TerrainMesh;
 use crate::tile_build::{prop_str, EncoderFeature};
 
 /// Target spacing in metres for densifying the centerline, so the box follows
-/// the road's curve and grade smoothly.
-const SEGMENT_M: f64 = 8.0;
+/// the road's curve and grade smoothly. Half the profile node spacing: the
+/// deck rides a spline through the profile's smooth nodes, and sampling at
+/// twice their density keeps the swept chords' sagitta invisible on the
+/// curves a viaduct actually takes.
+const SEGMENT_M: f64 = 4.0;
 
 /// Cap on densified centerline vertices per line — a runaway guard.
 const MAX_VERTS: usize = 4096;
@@ -604,32 +607,64 @@ fn cap_end(
     quad(acc, (el, end.bot_mm), (er, end.bot_mm), (er, end.top_mm), (el, end.top_mm), nrm);
 }
 
-/// Sweeps a box prism through the cross-sections: a top face (up), a bottom
-/// face (down), and the two side walls. Cull mode is off on the client, so
-/// winding only feeds lighting via the per-face normal.
+/// Sweeps a box prism through the cross-sections: a top face, a bottom face,
+/// and the two side walls, each a single smooth-shaded strip. Vertices are
+/// shared between adjacent segments within a face and carry per-section
+/// normals — the sides follow the turning perpendicular, the top and bottom
+/// the deck's local tangent (grade included) — so a curving, ramping deck
+/// shades continuously instead of as flat panels. Across faces vertices are
+/// *not* shared: the deck's edges stay hard creases. Cull mode is off on the
+/// client, so winding only feeds lighting via the normals.
 fn sweep_prism(acc: &mut Accum, frame: &Frame, bounds: &Bounds, sections: &[Section], half_w: f64) {
     let n = sections.len();
     if n < 2 {
         return;
     }
-    let n_up = frame.encode_enu(0.0, 0.0, 1.0);
-    let n_down = frame.encode_enu(0.0, 0.0, -1.0);
-
+    // Vertex ids per section, per face: top left/right, bottom left/right,
+    // left wall bottom/top, right wall bottom/top.
+    let (mut tl, mut tr) = (Vec::with_capacity(n), Vec::with_capacity(n));
+    let (mut bl, mut br) = (Vec::with_capacity(n), Vec::with_capacity(n));
+    let (mut lb, mut lt) = (Vec::with_capacity(n), Vec::with_capacity(n));
+    let (mut rb, mut rt) = (Vec::with_capacity(n), Vec::with_capacity(n));
+    for i in 0..n {
+        let s = &sections[i];
+        let (p, q) = (&sections[i.saturating_sub(1)], &sections[(i + 1).min(n - 1)]);
+        // Local tangent (ENU metres, grade included) over the neighbours.
+        let fe = (q.lon - p.lon) * frame.m_per_deg_lon;
+        let fnn = (q.lat - p.lat) * M_PER_DEG_LAT;
+        let fu = (q.top_mm - p.top_mm) as f64 / 1000.0;
+        // Top normal = tangent × left, flipped upward when a clipped fragment
+        // runs opposite the corridor (its left then opposes the travel
+        // direction). encode_enu normalises.
+        let (mut te, mut tn, mut tu) =
+            (-fu * s.left_n, fu * s.left_e, fe * s.left_n - fnn * s.left_e);
+        if tu < 0.0 {
+            (te, tn, tu) = (-te, -tn, -tu);
+        }
+        let n_top = frame.encode_enu(te, tn, tu);
+        let n_bot = frame.encode_enu(-te, -tn, -tu);
+        let n_left = frame.encode_enu(s.left_e, s.left_n, 0.0);
+        let n_right = frame.encode_enu(-s.left_e, -s.left_n, 0.0);
+        let l = corner(s, 1.0, frame, bounds, half_w);
+        let r = corner(s, -1.0, frame, bounds, half_w);
+        tl.push(acc.push(l.0, l.1, s.top_mm, n_top));
+        tr.push(acc.push(r.0, r.1, s.top_mm, n_top));
+        bl.push(acc.push(l.0, l.1, s.bot_mm, n_bot));
+        br.push(acc.push(r.0, r.1, s.bot_mm, n_bot));
+        lb.push(acc.push(l.0, l.1, s.bot_mm, n_left));
+        lt.push(acc.push(l.0, l.1, s.top_mm, n_left));
+        rb.push(acc.push(r.0, r.1, s.bot_mm, n_right));
+        rt.push(acc.push(r.0, r.1, s.top_mm, n_right));
+    }
     for i in 0..n - 1 {
-        let (a, b) = (&sections[i], &sections[i + 1]);
-        let (al, ar) =
-            (corner(a, 1.0, frame, bounds, half_w), corner(a, -1.0, frame, bounds, half_w));
-        let (bl, br) =
-            (corner(b, 1.0, frame, bounds, half_w), corner(b, -1.0, frame, bounds, half_w));
-        let (top_a, top_b) = (a.top_mm, b.top_mm);
-        let (bot_a, bot_b) = (a.bot_mm, b.bot_mm);
-        let n_left = frame.encode_enu(a.left_e, a.left_n, 0.0);
-        let n_right = frame.encode_enu(-a.left_e, -a.left_n, 0.0);
-
-        quad(acc, (al, bot_a), (ar, bot_a), (br, bot_b), (bl, bot_b), n_down);
-        quad(acc, (al, top_a), (bl, top_b), (br, top_b), (ar, top_a), n_up);
-        quad(acc, (al, bot_a), (bl, bot_b), (bl, top_b), (al, top_a), n_left);
-        quad(acc, (ar, bot_a), (ar, top_a), (br, top_b), (br, bot_b), n_right);
+        acc.tri(tl[i], tr[i], tr[i + 1]);
+        acc.tri(tl[i], tr[i + 1], tl[i + 1]);
+        acc.tri(bl[i], br[i], br[i + 1]);
+        acc.tri(bl[i], br[i + 1], bl[i + 1]);
+        acc.tri(lb[i], lt[i], lt[i + 1]);
+        acc.tri(lb[i], lt[i + 1], lb[i + 1]);
+        acc.tri(rb[i], rt[i], rt[i + 1]);
+        acc.tri(rb[i], rt[i + 1], rb[i + 1]);
     }
 }
 

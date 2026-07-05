@@ -25,6 +25,7 @@ pub fn write(
     fs::write(dir.join("crossings.geojson"), crossings_geojson(scene).to_string())?;
     fs::write(dir.join("underpasses.geojson"), underpasses_geojson(scene).to_string())?;
     fs::write(dir.join("profiles.geojson"), profiles_geojson(scene, solved).to_string())?;
+    fs::write(dir.join("smooth.geojson"), smooth_geojson(scene, solved).to_string())?;
     fs::write(dir.join("earthworks.geojson"), earthworks_geojson(ground).to_string())?;
     Ok(())
 }
@@ -119,6 +120,25 @@ fn corridors_geojson(scene: &SceneGraph) -> Json {
                     "segments": c.segments.len(),
                     "spans": spans.join("; "),
                 },
+            })
+        })
+        .collect();
+    json!({ "type": "FeatureCollection", "features": features })
+}
+
+/// The solved sweep lines: one LineString per profiled corridor holding the
+/// *smoothed* centerline at full resolution, for measuring sweep smoothness.
+fn smooth_geojson(scene: &SceneGraph, solved: &SolvedModel) -> Json {
+    let features: Vec<Json> = scene
+        .corridors
+        .iter()
+        .filter_map(|c| solved.profile(c.id).map(|p| (c, p)))
+        .map(|(c, p)| {
+            let coords: Vec<Json> = p.smooth().iter().map(|n| json!([n.x, n.y])).collect();
+            json!({
+                "type": "Feature",
+                "geometry": { "type": "LineString", "coordinates": coords },
+                "properties": { "corridor": c.id, "class": format!("{:?}", c.class) },
             })
         })
         .collect();

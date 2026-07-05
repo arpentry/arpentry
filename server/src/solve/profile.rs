@@ -30,7 +30,7 @@
 use geo_types::Coord;
 
 use crate::priors::MAX_ROAD_DEVIATION_M;
-use crate::scene::{metric_len, run_cos_lat, Span, SpanKind};
+use crate::scene::{metric_len, run_cos_lat, Span, SpanKind, DEG_M};
 
 /// Target spacing in metres after densification, used both to sample the road
 /// profile along the corridor and to subdivide swept geometry so it renders as
@@ -41,11 +41,25 @@ pub const NODE_SPACING_M: f64 = 8.0;
 /// inputs; real corridors are bounded by `priors::MAX_CORRIDOR_M`.
 const MAX_NODES: usize = 65_536;
 
-/// Binomial (1-2-1) smoothing passes applied to the centerline before
-/// sweeping. Each pass widens the kernel; four damps the short digitising
-/// wiggle of a road line (a footway's zigzag, a viaduct's vertex noise) while
-/// keeping its real curve, so a swept box is a regular prism.
-const SMOOTH_PASSES: usize = 4;
+/// Half-window in metres of the local quadratic regression that smooths the
+/// centerline before sweeping. A digitised road line carries lateral vertex
+/// wiggle out to ~120 m wavelength — the scales that read as a snaking deck
+/// edge — so the window must span a full period of the worst of it to
+/// average it away. A real road curve holds near-constant curvature over
+/// this scale, and a quadratic fit reproduces a constant-curvature arc
+/// almost exactly (≤ ~0.2 m over ±100 m at a 400 m radius), so the road's
+/// true curve passes through while the wiggle goes.
+const SMOOTH_WINDOW_M: f64 = 100.0;
+
+/// Passes of the local quadratic regression. Each pass deepens the noise
+/// suppression; curves survive every pass (the fit reproduces them), so a
+/// few passes cost nothing but time.
+const SMOOTH_PASSES: usize = 2;
+
+/// Safety cap on how far smoothing may displace a centerline node from its
+/// input position, in metres. The quadratic fit only degrades on hairpins
+/// tighter than the window; the clamp bounds the corner-cutting there.
+const SMOOTH_MAX_DEV_M: f64 = 4.0;
 
 /// Relaxation passes for [`limit_road_grade`]. A handful alternating forward
 /// and backward spreads a steep pitch's deviation evenly — a cut on the way
@@ -117,8 +131,9 @@ pub fn solve(
     if nodes.len() < 2 {
         return None;
     }
-    let cos_lat = run_cos_lat(nodes);
-    let (nodes, arc) = densify(nodes, cos_lat);
+    let raw = nodes;
+    let cos_lat = run_cos_lat(raw);
+    let (nodes, arc, params) = densify(raw, cos_lat);
     let n = nodes.len();
     if n < 2 {
         return None;
@@ -130,7 +145,7 @@ pub fn solve(
         limit_road_grade(&arc, &mut road_m, &terrain, &at_grade, g);
     }
     let deck_m = deck_ramp(&arc, &road_m, &at_grade);
-    let smooth = smooth_path(&nodes);
+    let smooth = smooth_path(&spline_path(raw, &params, cos_lat));
     Some(Profile { nodes, smooth, arc, road_m, deck_m, terrain_m: terrain, at_grade, cos_lat })
 }
 
@@ -170,13 +185,55 @@ impl Profile {
             .iter()
             .map(|&(i, t)| {
                 let height_m = lerp(self.deck_m[i], self.deck_m[i + 1], t);
-                let lon = lerp(self.smooth[i].x, self.smooth[i + 1].x, t);
-                let lat = lerp(self.smooth[i].y, self.smooth[i + 1].y, t);
-                let (left_e, left_n) = self.section_left(i);
+                let c = self.smooth_point(i, t);
+                let (lon, lat) = (c.x, c.y);
+                // Interpolate the bounding nodes' perpendiculars so the
+                // cross-section direction turns continuously along a curve
+                // instead of stepping once per edge (which twists the ribbon).
+                let (le0, ln0) = self.node_left(i);
+                let (le1, ln1) = self.node_left(i + 1);
+                let (le, ln) = (lerp(le0, le1, t), lerp(ln0, ln1, t));
+                let len = (le * le + ln * ln).sqrt();
+                let (left_e, left_n) = if len > 1e-9 { (le / len, ln / len) } else { (le0, ln0) };
                 let arc_m = lerp(self.arc[i], self.arc[i + 1], t);
                 DeckNode { lon, lat, height_m, left_e, left_n, arc_m }
             })
             .collect()
+    }
+
+    /// The point of the smoothed sweep line nearest to `(lon, lat)`, or
+    /// `None` when the projection falls on the corridor's very ends (where
+    /// pulling a vertex would fold a line that continues past the corridor)
+    /// or farther than `max_m` away (a vertex that isn't really this
+    /// corridor's). Road paint snaps onto this so a corridor road's line
+    /// work follows the same smooth curve as its swept structures instead of
+    /// tracing raw digitising wiggle beside them.
+    pub fn smooth_at(&self, lon: f64, lat: f64, max_m: f64) -> Option<Coord> {
+        let edges = self.nodes.len().saturating_sub(1);
+        if edges == 0 {
+            return None;
+        }
+        let (i, t) = nearest_edge(&self.nodes, self.cos_lat, 0, edges, Coord { x: lon, y: lat });
+        if (i == 0 && t <= 0.0) || (i + 1 >= edges && t >= 1.0) {
+            return None;
+        }
+        let c = self.smooth_point(i, t);
+        let de = (c.x - lon) * self.cos_lat * DEG_M;
+        let dn = (c.y - lat) * DEG_M;
+        (de * de + dn * dn <= max_m * max_m).then_some(c)
+    }
+
+    /// The smoothed sweep line evaluated at edge `i`, parameter `t` — a
+    /// Catmull-Rom *through* the smooth nodes rather than their chord: the
+    /// noise is already regressed away, so interpolation is safe, and it
+    /// removes the node-spacing facets a chord-sampled curve keeps.
+    fn smooth_point(&self, i: usize, t: f64) -> Coord {
+        let m = self.smooth.len();
+        let p1 = self.smooth[i.min(m - 1)];
+        let p2 = self.smooth[(i + 1).min(m - 1)];
+        let p0 = if i == 0 { mirror(p1, p2) } else { self.smooth[i - 1] };
+        let p3 = if i + 2 >= m { mirror(p2, p1) } else { self.smooth[i + 2] };
+        catmull_rom(p0, p1, p2, p3, t, self.cos_lat)
     }
 
     /// Deck-top heights only — the height half of
@@ -226,13 +283,15 @@ impl Profile {
         out
     }
 
-    /// Unit left-perpendicular (ENU, scaled-degree space) of the smoothed line
-    /// at edge `i`, read over a short window so the cross-section direction
-    /// varies gently and box edges stay clean.
-    fn section_left(&self, i: usize) -> (f64, f64) {
+    /// Unit left-perpendicular (ENU metres) of the smoothed line at *node*
+    /// `i`, from the central-difference tangent. The spline-smoothed line is
+    /// already gentle, so the tight window tracks a curve faithfully;
+    /// [`deck_nodes`](Self::deck_nodes) interpolates between node
+    /// perpendiculars for a continuously turning cross-section.
+    fn node_left(&self, i: usize) -> (f64, f64) {
         let m = self.smooth.len();
-        let lo = i.saturating_sub(2);
-        let hi = (i + 3).min(m - 1);
+        let lo = i.saturating_sub(1);
+        let hi = (i + 1).min(m - 1);
         let de = (self.smooth[hi].x - self.smooth[lo].x) * self.cos_lat;
         let dn = self.smooth[hi].y - self.smooth[lo].y;
         let len = (de * de + dn * dn).sqrt().max(1e-12);
@@ -247,6 +306,11 @@ impl Profile {
     /// The densified nodes, for stage-artifact dumps and the ground stage.
     pub fn nodes(&self) -> &[Coord] {
         &self.nodes
+    }
+
+    /// The smoothed sweep line, for stage-artifact dumps.
+    pub fn smooth(&self) -> &[Coord] {
+        &self.smooth
     }
 
     /// Per-node solved road heights.
@@ -533,25 +597,87 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t
 }
 
-/// Endpoint-preserving binomial (1-2-1) smoothing of a centerline,
-/// [`SMOOTH_PASSES`] times, damping short digitising wiggle while keeping the
-/// road's real curve.
+/// Endpoint-preserving centerline smoothing: [`SMOOTH_PASSES`] passes of a
+/// local quadratic regression along arc length (Savitzky–Golay style), each
+/// node refit from its ±[`SMOOTH_WINDOW_M`] neighbourhood. A quadratic in arc
+/// reproduces a constant-curvature road arc exactly, so genuine curves pass
+/// through unchanged while uncorrelated vertex wiggle averages away — heavy
+/// smoothing with no straight-chord kinks (a plain low-pass clamped to a
+/// deviation tube goes piecewise-straight and kinks where it touches the
+/// tube). A [`SMOOTH_MAX_DEV_M`] clamp bounds the one place the fit degrades:
+/// hairpins tighter than the window.
 fn smooth_path(nodes: &[Coord]) -> Vec<Coord> {
-    let mut cur = nodes.to_vec();
-    let n = cur.len();
-    if n < 3 {
-        return cur;
+    let n = nodes.len();
+    if n < 5 {
+        return nodes.to_vec();
     }
+    let cos_lat = run_cos_lat(nodes);
+    let arc = cumulative(nodes);
+    let max_dev_x = SMOOTH_MAX_DEV_M / (DEG_M * cos_lat.max(1e-9));
+    let max_dev_y = SMOOTH_MAX_DEV_M / DEG_M;
+    let mut cur = nodes.to_vec();
     for _ in 0..SMOOTH_PASSES {
         let prev = cur.clone();
         for i in 1..n - 1 {
+            let (mut lo, mut hi) = (i, i);
+            while lo > 0 && arc[i] - arc[lo - 1] <= SMOOTH_WINDOW_M {
+                lo -= 1;
+            }
+            while hi + 1 < n && arc[hi + 1] - arc[i] <= SMOOTH_WINDOW_M {
+                hi += 1;
+            }
+            if hi - lo < 4 {
+                continue;
+            }
+            let (sx, sy) = match quad_fit(&prev, &arc, lo, hi, i) {
+                Some(p) => p,
+                None => continue,
+            };
+            // Clamp the displacement from the *input* node, in metric space.
+            let (dx, dy) = ((sx - nodes[i].x) / max_dev_x, (sy - nodes[i].y) / max_dev_y);
+            let d = (dx * dx + dy * dy).sqrt();
+            let k = if d > 1.0 { 1.0 / d } else { 1.0 };
             cur[i] = Coord {
-                x: 0.25 * prev[i - 1].x + 0.5 * prev[i].x + 0.25 * prev[i + 1].x,
-                y: 0.25 * prev[i - 1].y + 0.5 * prev[i].y + 0.25 * prev[i + 1].y,
+                x: nodes[i].x + (sx - nodes[i].x) * k,
+                y: nodes[i].y + (sy - nodes[i].y) * k,
             };
         }
     }
     cur
+}
+
+/// Least-squares quadratic in arc length over `pts[lo..=hi]`, evaluated at
+/// node `i` (each coordinate fit independently, centred on `arc[i]` for
+/// conditioning). `None` when the window's arc spread is degenerate.
+fn quad_fit(pts: &[Coord], arc: &[f64], lo: usize, hi: usize, i: usize) -> Option<(f64, f64)> {
+    let (mut s1, mut s2, mut s3, mut s4) = (0.0, 0.0, 0.0, 0.0);
+    let (mut vx0, mut vx1, mut vx2) = (0.0, 0.0, 0.0);
+    let (mut vy0, mut vy1, mut vy2) = (0.0, 0.0, 0.0);
+    let m = (hi - lo + 1) as f64;
+    for j in lo..=hi {
+        let s = arc[j] - arc[i];
+        let (x, y) = (pts[j].x - pts[i].x, pts[j].y - pts[i].y);
+        s1 += s;
+        s2 += s * s;
+        s3 += s * s * s;
+        s4 += s * s * s * s;
+        vx0 += x;
+        vx1 += x * s;
+        vx2 += x * s * s;
+        vy0 += y;
+        vy1 += y * s;
+        vy2 += y * s * s;
+    }
+    // Solve the 3×3 normal equations [m s1 s2; s1 s2 s3; s2 s3 s4] · c = v
+    // for each coordinate; the fitted value at s = 0 is c₀.
+    let det = m * (s2 * s4 - s3 * s3) - s1 * (s1 * s4 - s3 * s2) + s2 * (s1 * s3 - s2 * s2);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let c0 = |v0: f64, v1: f64, v2: f64| -> f64 {
+        (v0 * (s2 * s4 - s3 * s3) - s1 * (v1 * s4 - s3 * v2) + s2 * (v1 * s3 - s2 * v2)) / det
+    };
+    Some((pts[i].x + c0(vx0, vx1, vx2), pts[i].y + c0(vy0, vy1, vy2)))
 }
 
 /// Fits one straight ramp to arc-referenced heights and returns the fitted
@@ -777,13 +903,16 @@ fn deck_ramp(arc: &[f64], road_m: &[f64], at_grade: &[bool]) -> Vec<f64> {
     deck
 }
 
-/// Densifies a corridor to ~[`NODE_SPACING_M`] spacing, returning the nodes and
-/// their cumulative metric arc length.
-fn densify(run: &[Coord], cos_lat: f64) -> (Vec<Coord>, Vec<f64>) {
+/// Densifies a corridor to ~[`NODE_SPACING_M`] spacing, returning the nodes,
+/// their cumulative metric arc length, and each node's `(raw segment, t)`
+/// position on the input polyline — the parameter [`spline_path`] evaluates
+/// the smoothing spline at.
+fn densify(run: &[Coord], cos_lat: f64) -> (Vec<Coord>, Vec<f64>, Vec<(usize, f64)>) {
     let mut nodes = vec![run[0]];
     let mut arc = vec![0.0];
+    let mut params = vec![(0usize, 0.0)];
     let mut total = 0.0;
-    for w in run.windows(2) {
+    for (k, w) in run.windows(2).enumerate() {
         let (p0, p1) = (w[0], w[1]);
         let n = ((metric_len(p0, p1, cos_lat) / NODE_SPACING_M).ceil() as usize).clamp(1, MAX_NODES);
         for i in 1..=n {
@@ -792,12 +921,70 @@ fn densify(run: &[Coord], cos_lat: f64) -> (Vec<Coord>, Vec<f64>) {
             total += metric_len(*nodes.last().expect("seeded"), c, cos_lat);
             nodes.push(c);
             arc.push(total);
+            params.push((k, t));
         }
         if nodes.len() >= MAX_NODES {
             break;
         }
     }
-    (nodes, arc)
+    (nodes, arc, params)
+}
+
+/// The line a deck box is swept along: a centripetal Catmull-Rom spline
+/// through the raw corridor vertices, evaluated at each densified node's
+/// `(segment, t)` position. The raw polyline is a chain of chords — every
+/// vertex a visible corner when swept as a 8 m-wide box — while the spline is
+/// C¹ through the same vertices, so the swept edge curves instead of kinking.
+/// The centripetal parameterisation (α = ½) is the standard choice that never
+/// loops or overshoots on the wildly uneven vertex spacing of mapped roads.
+fn spline_path(raw: &[Coord], params: &[(usize, f64)], cos_lat: f64) -> Vec<Coord> {
+    let n = raw.len();
+    let point = |&(k, t): &(usize, f64)| -> Coord {
+        let p1 = raw[k.min(n - 1)];
+        let p2 = raw[(k + 1).min(n - 1)];
+        if n < 3 {
+            return Coord { x: lerp(p1.x, p2.x, t), y: lerp(p1.y, p2.y, t) };
+        }
+        // Mirrored ghost points continue the end tangents.
+        let p0 = if k == 0 { mirror(p1, p2) } else { raw[k - 1] };
+        let p3 = if k + 2 >= n { mirror(p2, p1) } else { raw[k + 2] };
+        catmull_rom(p0, p1, p2, p3, t, cos_lat)
+    };
+    params.iter().map(point).collect()
+}
+
+/// The ghost point beyond `a`, mirroring `b` through it.
+fn mirror(a: Coord, b: Coord) -> Coord {
+    Coord { x: 2.0 * a.x - b.x, y: 2.0 * a.y - b.y }
+}
+
+/// One centripetal Catmull-Rom evaluation (Barry–Goldman) on the segment
+/// `p1..p2` at parameter `t ∈ [0, 1]`, with knots spaced by the square root
+/// of the metric chord lengths (α = ½). Degenerate chords (duplicate
+/// vertices) fall back to the straight segment.
+fn catmull_rom(p0: Coord, p1: Coord, p2: Coord, p3: Coord, t: f64, cos_lat: f64) -> Coord {
+    let knot = |a: Coord, b: Coord| -> f64 {
+        let dx = (b.x - a.x) * cos_lat;
+        let dy = b.y - a.y;
+        (dx * dx + dy * dy).sqrt().sqrt()
+    };
+    let (d01, d12, d23) = (knot(p0, p1), knot(p1, p2), knot(p2, p3));
+    if d01 < 1e-12 || d12 < 1e-12 || d23 < 1e-12 {
+        return Coord { x: lerp(p1.x, p2.x, t), y: lerp(p1.y, p2.y, t) };
+    }
+    let (t0, t1) = (0.0, d01);
+    let (t2, t3) = (t1 + d12, t1 + d12 + d23);
+    let u = t1 + t * (t2 - t1);
+    let mix = |a: Coord, b: Coord, ta: f64, tb: f64| -> Coord {
+        let w = (tb - u) / (tb - ta);
+        Coord { x: a.x * w + b.x * (1.0 - w), y: a.y * w + b.y * (1.0 - w) }
+    };
+    let a1 = mix(p0, p1, t0, t1);
+    let a2 = mix(p1, p2, t1, t2);
+    let a3 = mix(p2, p3, t2, t3);
+    let b1 = mix(a1, a2, t0, t2);
+    let b2 = mix(a2, a3, t1, t3);
+    mix(b1, b2, t1, t2)
 }
 
 #[cfg(test)]
@@ -1105,3 +1292,4 @@ mod tests {
         );
     }
 }
+

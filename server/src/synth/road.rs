@@ -30,6 +30,17 @@ use crate::tile_build::EncoderFeature;
 /// units, so the baked centerline tracks the terrain mesh's `~tile/16` cells.
 const ROAD_SEGMENT_Q: f64 = 768.0;
 
+/// Denser target for a corridor road, whose vertices snap onto the smoothed
+/// sweep line: half the plain spacing keeps the snapped chords' sagitta
+/// invisible on the curves an engineered road takes.
+const CORRIDOR_SEGMENT_Q: f64 = 384.0;
+
+/// How far a corridor road's vertex may be pulled sideways onto the smoothed
+/// sweep line, in metres — the raw line's plausible digitising error. A
+/// vertex farther out is left alone (a corridor-end overhang), so snapping
+/// can never fold the line.
+const PAINT_SNAP_MAX_M: f64 = 6.0;
+
 /// Cap on densified vertices per linestring — a runaway guard.
 const MAX_VERTS: usize = 4096;
 
@@ -56,7 +67,16 @@ pub fn bake(
         }
         None => sampler.surface(bounds, lon, lat, z),
     };
-    if let Some((geom, zs)) = densify_with_surface(&f.geometry, bounds, &mut height) {
+    // A corridor road's paint follows the corridor's *smoothed* sweep line —
+    // the same curve its bridges and tunnels are swept along — instead of
+    // tracing the raw line's digitising wiggle beside them.
+    let mut snap = |c: Coord| -> Coord {
+        profile.and_then(|p| p.smooth_at(c.x, c.y, PAINT_SNAP_MAX_M)).unwrap_or(c)
+    };
+    let seg_q = if profile.is_some() { CORRIDOR_SEGMENT_Q } else { ROAD_SEGMENT_Q };
+    if let Some((geom, zs)) =
+        densify_with_surface(&f.geometry, bounds, seg_q, &mut snap, &mut height)
+    {
         f.geometry = geom;
         f.z = Some(zs);
     }
@@ -68,18 +88,20 @@ pub fn bake(
 fn densify_with_surface(
     g: &Geometry,
     bounds: &Bounds,
+    seg_q: f64,
+    snap: &mut dyn FnMut(Coord) -> Coord,
     height: &mut dyn FnMut(f64, f64) -> f64,
 ) -> Option<(Geometry, Vec<i32>)> {
     match g {
         Geometry::LineString(ls) => {
-            let (xy, zs) = densify_road_line(ls, bounds, height);
+            let (xy, zs) = densify_road_line(ls, bounds, seg_q, snap, height);
             (xy.len() >= 2).then_some((Geometry::LineString(LineString(xy)), zs))
         }
         Geometry::MultiLineString(mls) => {
             let mut parts = Vec::new();
             let mut zs = Vec::new();
             for ls in &mls.0 {
-                let (xy, z) = densify_road_line(ls, bounds, height);
+                let (xy, z) = densify_road_line(ls, bounds, seg_q, snap, height);
                 if xy.len() >= 2 {
                     parts.push(LineString(xy));
                     zs.extend(z);
@@ -91,11 +113,14 @@ fn densify_with_surface(
     }
 }
 
-/// Densifies one linestring to ~[`ROAD_SEGMENT_Q`] quantized spacing and
-/// samples the height at every (original and inserted) vertex.
+/// Densifies one linestring to ~`seg_q` quantized spacing, snaps each
+/// (original and inserted) vertex through `snap`, and samples the height at
+/// the snapped position.
 fn densify_road_line(
     line: &LineString,
     bounds: &Bounds,
+    seg_q: f64,
+    snap: &mut dyn FnMut(Coord) -> Coord,
     height: &mut dyn FnMut(f64, f64) -> f64,
 ) -> (Vec<Coord>, Vec<i32>) {
     let pts = &line.0;
@@ -105,6 +130,7 @@ fn densify_road_line(
         return (xy, zs);
     }
     let mut push = |c: Coord, xy: &mut Vec<Coord>, zs: &mut Vec<i32>| {
+        let c = snap(c);
         zs.push(project::quantize_z(height(c.x, c.y)));
         xy.push(c);
     };
@@ -112,7 +138,7 @@ fn densify_road_line(
     for w in pts.windows(2) {
         let (p0, p1) = (w[0], w[1]);
         let qlen = quant_len(p0, p1, bounds);
-        let n = ((qlen / ROAD_SEGMENT_Q).ceil() as usize).clamp(1, MAX_VERTS);
+        let n = ((qlen / seg_q).ceil() as usize).clamp(1, MAX_VERTS);
         for i in 1..=n {
             let t = i as f64 / n as f64;
             let c = Coord { x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t };

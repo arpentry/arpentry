@@ -66,7 +66,12 @@ pub fn derive(scene: &SceneGraph, solved: &SolvedModel) -> GroundModel {
     let mut edges: Vec<EarthworkEdge> = Vec::new();
     for c in &scene.corridors {
         let Some(p) = solved.profile(c.id) else { continue };
-        let nodes = p.nodes();
+        // Earthworks run along the *smoothed* sweep line — the same curve the
+        // decks are swept along and the paint snaps to — so the roadbed crest
+        // stays parallel to a deck edge instead of wiggling ±1–2 m beside it
+        // (at a grazing view the crest occludes the deck's lower edge, and a
+        // wiggling crest reads as a jagged deck).
+        let nodes = p.smooth();
         let road = p.road_m();
         let terrain = p.terrain_m();
         let at_grade = p.at_grade();
