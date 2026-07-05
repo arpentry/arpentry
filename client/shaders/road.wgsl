@@ -50,6 +50,15 @@ struct VsOut {
     @location(2) hw_len: vec2<f32>,
 };
 
+// sin for tile-relative angle deltas — see terrain.wgsl's sin_delta: the
+// fast-math native sin() quantizes small arguments coarsely enough to put a
+// metre-scale staircase on every edge once scaled by the earth radius.
+fn sin_delta(x: f32) -> f32 {
+    let x2 = x * x;
+    let taylor = x * (1.0 - x2 * (1.0 / 6.0) * (1.0 - x2 * 0.05));
+    return select(sin(x), taylor, abs(x) < 0.25);
+}
+
 // ECEF offset from the tile center without forming absolute ECEF values —
 // see terrain.wgsl's local_ecef_delta for the full derivation. Absolute f32
 // ECEF rounds at ~0.5 m and scallops straight road edges.
@@ -58,11 +67,11 @@ fn local_ecef_delta(dlam: f32, dphi: f32, alt: f32) -> vec3<f32> {
     let clc = tile.sincos.y;
     let spc = tile.sincos.z;
     let cpc = tile.sincos.w;
-    let sdl = sin(dlam);
-    let hdl = sin(dlam * 0.5);
+    let sdl = sin_delta(dlam);
+    let hdl = sin_delta(dlam * 0.5);
     let cdl_m1 = -2.0 * hdl * hdl;
-    let sdp = sin(dphi);
-    let hdp = sin(dphi * 0.5);
+    let sdp = sin_delta(dphi);
+    let hdp = sin_delta(dphi * 0.5);
     let cdp_m1 = -2.0 * hdp * hdp;
     let dsp = cpc * sdp + spc * cdp_m1;
     let sp = spc + dsp;

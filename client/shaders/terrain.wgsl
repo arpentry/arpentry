@@ -41,6 +41,19 @@ struct VsOut {
     @location(2) view_pos: vec3<f32>,
 };
 
+// sin for tile-relative angle deltas. The native sin() is compiled with fast
+// math and carries an *absolute* error orders of magnitude above the f32 ulp
+// of a small argument; at the ~1e-4 rad deltas a street-level tile feeds in,
+// that error scales by the ~6.4e6 m earth radius into a metre-scale, world-
+// anchored staircase on every edge. A 5th-order Taylor is exact to ~2 ulp for
+// |x| < 0.25 (every tile from about z5 in); the native path takes over on
+// globe-scale tiles, where its absolute error is far below a pixel.
+fn sin_delta(x: f32) -> f32 {
+    let x2 = x * x;
+    let taylor = x * (1.0 - x2 * (1.0 / 6.0) * (1.0 - x2 * 0.05));
+    return select(sin(x), taylor, abs(x) < 0.25);
+}
+
 // ECEF offset of the vertex at tile-relative (dλ, dφ) radians and altitude
 // `alt` from the tile center's ECEF at altitude 0 — computed *without ever
 // forming an absolute ECEF coordinate*. Absolute ECEF is ~6.4e6 m, where an
@@ -55,11 +68,11 @@ fn local_ecef_delta(dlam: f32, dphi: f32, alt: f32) -> vec3<f32> {
     let clc = tile.sincos.y; // cos λc
     let spc = tile.sincos.z; // sin φc
     let cpc = tile.sincos.w; // cos φc
-    let sdl = sin(dlam);
-    let hdl = sin(dlam * 0.5);
+    let sdl = sin_delta(dlam);
+    let hdl = sin_delta(dlam * 0.5);
     let cdl_m1 = -2.0 * hdl * hdl; // cos(dλ) − 1, computed without cancellation
-    let sdp = sin(dphi);
-    let hdp = sin(dphi * 0.5);
+    let sdp = sin_delta(dphi);
+    let hdp = sin_delta(dphi * 0.5);
     let cdp_m1 = -2.0 * hdp * hdp; // cos(dφ) − 1
     let dsp = cpc * sdp + spc * cdp_m1; // sin φ − sin φc
     let sp = spc + dsp;                 // sin φ

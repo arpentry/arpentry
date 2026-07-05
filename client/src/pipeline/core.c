@@ -892,6 +892,16 @@ void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view) {
 }
 
 void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
+    /* Diagnostic (env ARPT_ONLY_BRIDGE=1): draw nothing but the bridge prisms,
+       isolating their silhouette from road paint, terrain, and buildings. */
+    static int only_bridge = -1;
+    if (only_bridge < 0)
+        only_bridge = getenv("ARPT_ONLY_BRIDGE") ? 1 : 0;
+    if (only_bridge) {
+        arpt__mesh_draw_structure(r, &tile->bridge, r->bridge_pipeline);
+        return;
+    }
+
     /* Tunnel first, opaque, so the semi-transparent terrain drawn next blends
        over the buried bore — an x-ray debug view of tunnels under the ground.
        Where the bore is exposed (a portal, a lakeside gallery) the terrain is

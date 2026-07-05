@@ -187,6 +187,35 @@ static int compare_line_cls(const void *a, const void *b) {
    Each vertex needs 4 bytes in the largest per-vertex buffer. */
 #define ARPT_MAX_BUFFER_BYTES (200u * 1024u * 1024u)
 
+/* Diagnostic (env ARPT_DUMP_BRIDGE=<path>): append a decoded bridge prim —
+   the exact vertex/index arrays uploaded to the GPU — as text, so the
+   client-side geometry can be rasterized offline and compared against the
+   archive. One "tile" header line per prim, then "v qx qy zmm" and
+   "t i0 i1 i2" lines. */
+static void dump_bridge_prim(arpt_tile_key key, const arpt_building_prim *p) {
+    const char *path = getenv("ARPT_DUMP_BRIDGE");
+    if (!path || !p || p->vertex_count == 0) return;
+    /* One file per tile: decode runs on concurrent worker threads, so a
+       shared append-mode file would interleave records. */
+    char full[1024];
+    int n = snprintf(full, sizeof(full), "%s.%d.%d.%d", path, key.level,
+                     key.x, key.y);
+    if (n < 0 || (size_t)n >= sizeof(full)) return;
+    FILE *f = fopen(full, "w");
+    if (!f) return;
+    arpt_bounds b = arpt_tile_bounds(key.level, key.x, key.y);
+    fprintf(f, "tile %d %d %d %.17g %.17g %.17g %.17g %zu %zu\n",
+            key.level, key.x, key.y, b.west, b.south, b.east, b.north,
+            p->vertex_count, p->index_count);
+    for (size_t v = 0; v < p->vertex_count; v++)
+        fprintf(f, "v %u %u %d\n", (unsigned)p->xy[2 * v],
+                (unsigned)p->xy[2 * v + 1], p->z[v]);
+    for (size_t k = 0; k + 2 < p->index_count; k += 3)
+        fprintf(f, "t %u %u %u\n", p->indices[k], p->indices[k + 1],
+                p->indices[k + 2]);
+    fclose(f);
+}
+
 /* Runs on a fetch worker thread: decode, prepare, and copy terrain into
    self-contained buffers. Returns a heap prepared_tile (NULL on failure).
    Consumes `flatbuf` (always freed before returning).
@@ -285,9 +314,11 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
                prisms (MeshGeometry) alongside the road lines; decode them once
                into per-kind primitives (split by `level`) so each colours
                differently. The line decoder below skips the meshes. */
-            if (p->prims.bridges.vertex_count == 0)
+            if (p->prims.bridges.vertex_count == 0) {
                 arpt_decode_bridge_mesh(flatbuf, size, le->source_layer,
                                         &p->prims.bridges);
+                dump_bridge_prim(key, &p->prims.bridges);
+            }
             if (p->prims.tunnels.vertex_count == 0)
                 arpt_decode_tunnel_mesh(flatbuf, size, le->source_layer,
                                         &p->prims.tunnels);
@@ -878,6 +909,17 @@ bool arpt_tile_manager_sample_ground(const arpt_tile_manager *tm,
 
 static void draw_entry(arpt_renderer *r, const arpt_camera *cam,
                        const tile_entry *e) {
+    /* Diagnostic (env ARPT_ONLY_TILE="level/x/y"): draw only that tile. */
+    static int only_tile = -2; /* -2 unparsed, -1 off */
+    static int oz, ox, oy;
+    if (only_tile == -2) {
+        const char *s = getenv("ARPT_ONLY_TILE");
+        only_tile = (s && sscanf(s, "%d/%d/%d", &oz, &ox, &oy) == 3) ? 1 : -1;
+    }
+    if (only_tile == 1 &&
+        (e->key.level != oz || e->key.x != ox || e->key.y != oy))
+        return;
+
     arpt_mat4 model =
         arpt_camera_tile_model(cam, e->center_lon_rad, e->center_lat_rad, 0.0);
     double bounds_rad[4] = {

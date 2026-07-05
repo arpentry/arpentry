@@ -82,6 +82,7 @@ typedef struct {
     double tilt;    /* degrees */
     int width;
     int height;
+    bool ortho;
     char screenshot[512]; /* empty string = interactive mode */
 } cli_opts;
 
@@ -94,6 +95,7 @@ static cli_opts opts = {
     .tilt = 0.0,
     .width = WINDOW_W,
     .height = WINDOW_H,
+    .ortho = false,
     .screenshot = "",
 };
 
@@ -115,6 +117,8 @@ static void parse_args(int argc, char **argv) {
             opts.width = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--height") == 0 && i + 1 < argc) {
             opts.height = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--ortho") == 0) {
+            opts.ortho = true;
         } else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
             snprintf(opts.screenshot, sizeof(opts.screenshot), "%s",
                      argv[++i]);
@@ -122,7 +126,8 @@ static void parse_args(int argc, char **argv) {
             fprintf(stderr,
                     "Usage: %s [--url <base>] [--lon <deg>] [--lat <deg>] "
                     "[--alt <m>] [--bearing <deg>] [--tilt <deg>] "
-                    "[--width <px>] [--height <px>] [--screenshot <path>]\n",
+                    "[--width <px>] [--height <px>] [--ortho] "
+                    "[--screenshot <path>]\n",
                     argv[0]);
             exit(EXIT_FAILURE);
         }
@@ -1006,6 +1011,7 @@ static void init_viewer(void) {
         arpt_camera_set_position(app.camera, lon_rad, lat_rad, opts.alt);
         arpt_camera_set_bearing(app.camera, opts.bearing * M_PI / 180.0);
         arpt_camera_set_tilt(app.camera, opts.tilt * M_PI / 180.0);
+        arpt_camera_set_ortho(app.camera, opts.ortho);
     }
 #else
     arpt_camera_set_position(app.camera, 0.0, 0.0, INITIAL_ALTITUDE);
