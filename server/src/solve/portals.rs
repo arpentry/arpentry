@@ -25,50 +25,99 @@ pub struct Portal {
     pub floor_m: f64,
 }
 
-/// The portals of every tunnel span of a corridor: the gap zero-crossings
-/// bounding each span's buried run. A span whose road never dips below the
-/// terrain yields none (nothing emerges because nothing is buried — the
-/// degradation ladder drapes it). A buried run that reaches the corridor end
-/// without surfacing yields no portal on that side (the bore runs out of
-/// data, not out of the hill).
-pub fn portals(profile: &Profile, spans: &[Span]) -> Vec<Portal> {
+/// The buried run of one tunnel span: the arcs of the gap zero-crossings
+/// bounding it, searched outward past the annotation edges up to
+/// [`PORTAL_MAX_M`]. `None` when the span has no buried node (a tunnel tagged
+/// over flat ground — nothing is buried, so nothing emerges). A side whose
+/// run never surfaces within reach reports `None` for that crossing (the
+/// bore runs out of data, not out of the hill).
+pub fn span_bounds(profile: &Profile, span: &Span) -> Option<(Option<f64>, Option<f64>)> {
     let arc = profile.arc();
     let road = profile.road_m();
     let terrain = profile.terrain_m();
     let n = arc.len();
     let gap = |i: usize| road[i] - terrain[i];
 
+    // Seed on any buried node inside the annotated span, then expand the
+    // contiguous buried run outward — past the annotation edges (they are
+    // mapper cuts, not geometry) but no further than the search reach.
+    let lo_arc = span.arc0 - PORTAL_MAX_M;
+    let hi_arc = span.arc1 + PORTAL_MAX_M;
+    let seed = (0..n).find(|&i| arc[i] >= span.arc0 && arc[i] <= span.arc1 && gap(i) < 0.0)?;
+    let mut f = seed;
+    while f > 0 && gap(f - 1) < 0.0 && arc[f - 1] >= lo_arc {
+        f -= 1;
+    }
+    let mut l = seed;
+    while l + 1 < n && gap(l + 1) < 0.0 && arc[l + 1] <= hi_arc {
+        l += 1;
+    }
+    // Interpolate each bounding crossing, when the run does surface.
+    let low = (f > 0 && gap(f - 1) >= 0.0).then(|| {
+        let t = gap(f - 1) / (gap(f - 1) - gap(f));
+        arc[f - 1] + t * (arc[f] - arc[f - 1])
+    });
+    let high = (l + 1 < n && gap(l + 1) >= 0.0).then(|| {
+        let t = gap(l) / (gap(l) - gap(l + 1));
+        arc[l] + t * (arc[l + 1] - arc[l])
+    });
+    Some((low, high))
+}
+
+/// The portals of every tunnel span of a corridor: the gap zero-crossings
+/// bounding each span's buried run ([`span_bounds`]).
+pub fn portals(profile: &Profile, spans: &[Span]) -> Vec<Portal> {
     let mut out = Vec::new();
     for span in spans.iter().filter(|s| s.kind == SpanKind::Tunnel) {
-        // Seed on any buried node inside the annotated span, then expand the
-        // contiguous buried run outward — past the annotation edges (they are
-        // mapper cuts, not geometry) but no further than the search reach. A
-        // span with no buried node has nothing emerging (S10 degradation).
-        let lo_arc = span.arc0 - PORTAL_MAX_M;
-        let hi_arc = span.arc1 + PORTAL_MAX_M;
-        let Some(seed) =
-            (0..n).find(|&i| arc[i] >= span.arc0 && arc[i] <= span.arc1 && gap(i) < 0.0)
-        else {
+        let Some((low, high)) = span_bounds(profile, span) else {
             continue;
         };
-        let mut f = seed;
-        while f > 0 && gap(f - 1) < 0.0 && arc[f - 1] >= lo_arc {
-            f -= 1;
-        }
-        let mut l = seed;
-        while l + 1 < n && gap(l + 1) < 0.0 && arc[l + 1] <= hi_arc {
-            l += 1;
-        }
-        // Interpolate each bounding crossing, when the run does surface.
-        if f > 0 && gap(f - 1) >= 0.0 {
-            let t = gap(f - 1) / (gap(f - 1) - gap(f));
-            let a = arc[f - 1] + t * (arc[f] - arc[f - 1]);
+        if let Some(a) = low {
             out.push(Portal { arc: a, outward: -1.0, floor_m: profile.road_at_arc(a) - DECK_THICKNESS_M });
         }
-        if l + 1 < n && gap(l + 1) >= 0.0 {
-            let t = gap(l) / (gap(l) - gap(l + 1));
-            let a = arc[l] + t * (arc[l + 1] - arc[l]);
+        if let Some(a) = high {
             out.push(Portal { arc: a, outward: 1.0, floor_m: profile.road_at_arc(a) - DECK_THICKNESS_M });
+        }
+    }
+    out
+}
+
+/// Corridor spans reconciled with the solved geometry: each tunnel span is
+/// clamped to its buried run (the solved portal crossings), and the freed
+/// annotation slack — the stretch a mapper tagged "tunnel" where the road in
+/// fact still runs above ground — is re-covered by grade spans, so the
+/// approach up to a portal mouth is painted road instead of naked ground. A
+/// tunnel with no buried run at all becomes grade end to end (the same
+/// degradation the bore mesh applies, decided once here so paint and solids
+/// agree). Only shrinking is reconciled: a buried run reaching *past* the
+/// annotation is left to the bore sweep's own outward march, where the
+/// neighbouring span's paint simply passes under the ground it is buried by.
+pub fn reconcile_spans(profile: &Profile, spans: &[Span]) -> Vec<Span> {
+    /// Shortest grade stub worth emitting, in metres — below this the piece
+    /// quantizes away.
+    const MIN_STUB_M: f64 = 0.25;
+    let mut out = Vec::with_capacity(spans.len() + 4);
+    for s in spans {
+        if s.kind != SpanKind::Tunnel {
+            out.push(*s);
+            continue;
+        }
+        let Some((low, high)) = span_bounds(profile, s) else {
+            out.push(Span { level: 0, kind: SpanKind::Grade, ..*s });
+            continue;
+        };
+        let a0 = low.map_or(s.arc0, |a| a.max(s.arc0));
+        let a1 = high.map_or(s.arc1, |a| a.min(s.arc1));
+        if a1 - a0 < MIN_STUB_M {
+            out.push(Span { level: 0, kind: SpanKind::Grade, ..*s });
+            continue;
+        }
+        if a0 - s.arc0 > MIN_STUB_M {
+            out.push(Span { arc0: s.arc0, arc1: a0, level: 0, kind: SpanKind::Grade });
+        }
+        out.push(Span { arc0: a0, arc1: a1, ..*s });
+        if s.arc1 - a1 > MIN_STUB_M {
+            out.push(Span { arc0: a1, arc1: s.arc1, level: 0, kind: SpanKind::Grade });
         }
     }
     out
@@ -126,6 +175,39 @@ mod tests {
             (0..101).map(|i| Coord { x: 6.0 + deg * i as f64 / 100.0, y: 46.0 }).collect();
         let p = Profile::from_heights(&nodes, vec![100.0; 101], vec![95.0; 101]);
         assert!(portals(&p, &[span(300.0, 700.0)]).is_empty());
+    }
+
+    #[test]
+    fn reconciled_tunnel_shrinks_to_its_buried_run_with_grade_stubs() {
+        // Annotation [0.40, 0.62] but the road is buried only over
+        // [≈0.3875, ≈0.6125] of a 1 km corridor: the low side grows nothing
+        // (crossing outside the annotation is left to the bore's own march),
+        // the high side frees [crossing, 0.62] as a painted grade stub.
+        let (p, len) = hill();
+        let spans = vec![
+            Span { arc0: 0.0, arc1: 0.40 * len, level: 0, kind: SpanKind::Grade },
+            span(0.40 * len, 0.62 * len),
+            Span { arc0: 0.62 * len, arc1: len, level: 0, kind: SpanKind::Grade },
+        ];
+        let out = reconcile_spans(&p, &spans);
+        assert_eq!(out.len(), 4, "tunnel + freed high-side stub: {out:?}");
+        assert_eq!(out[1].kind, SpanKind::Tunnel);
+        assert!((out[1].arc0 - 0.40 * len).abs() < 1e-9, "low side stays annotated");
+        assert!((out[1].arc1 - 612.5).abs() < 10.0, "high side clamps to the crossing");
+        assert_eq!(out[2].kind, SpanKind::Grade);
+        assert!((out[2].arc1 - 0.62 * len).abs() < 1e-9, "stub re-covers the slack");
+    }
+
+    #[test]
+    fn reconciled_flat_ground_tunnel_becomes_grade() {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let deg = 1000.0 / (DEG_M * cos_lat);
+        let nodes: Vec<Coord> =
+            (0..101).map(|i| Coord { x: 6.0 + deg * i as f64 / 100.0, y: 46.0 }).collect();
+        let p = Profile::from_heights(&nodes, vec![100.0; 101], vec![95.0; 101]);
+        let out = reconcile_spans(&p, &[span(300.0, 700.0)]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, SpanKind::Grade, "nothing buried: paint it as road");
     }
 
     #[test]

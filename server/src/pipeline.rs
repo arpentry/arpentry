@@ -20,7 +20,7 @@
 //! pool and written back in stream order. `Config::threads == 1` runs both
 //! phases serially on the calling thread.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -41,7 +41,7 @@ use crate::layers;
 use crate::profile;
 use crate::project::Bounds;
 use crate::record;
-use crate::scene::{source_hash, SceneGraph, SpanKind};
+use crate::scene::{source_hash, SceneGraph, Span, SpanKind};
 use crate::simplify;
 use crate::solve::{self, SolvedModel};
 use crate::sort::{self, ExternalSorter};
@@ -257,15 +257,17 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     let queue = Mutex::new(queue);
     let mut sorters: Vec<ExternalSorter> = Vec::with_capacity(phase1_threads);
     if phase1_threads == 1 {
-        let (sorter, partial) = phase1_worker(&inputs, &queue, cfg, worker_budget, &scene)?;
+        let (sorter, partial) =
+            phase1_worker(&inputs, &queue, cfg, worker_budget, &scene, &solved)?;
         merge_phase1(&mut stats, &partial);
         sorters.push(sorter);
     } else {
         std::thread::scope(|scope| -> Result<(), Error> {
             let mut handles = Vec::with_capacity(phase1_threads);
             for _ in 0..phase1_threads {
-                handles
-                    .push(scope.spawn(|| phase1_worker(&inputs, &queue, cfg, worker_budget, &scene)));
+                handles.push(scope.spawn(|| {
+                    phase1_worker(&inputs, &queue, cfg, worker_budget, &scene, &solved)
+                }));
             }
             for handle in handles {
                 let (sorter, partial) =
@@ -711,9 +713,13 @@ fn phase1_worker(
     cfg: &Config,
     mem_budget: usize,
     scene: &SceneGraph,
+    solved: &SolvedModel,
 ) -> Result<(ExternalSorter, Stats), Error> {
     let mut sorter = ExternalSorter::new(&cfg.tmp_dir, mem_budget);
     let mut stats = Stats::default();
+    // Solved-reconciled span lists, built lazily per corridor — a corridor's
+    // many segments all cut against the same list.
+    let mut spans_cache: HashMap<u32, Vec<Span>> = HashMap::new();
     loop {
         let item = queue.lock().expect("phase-1 queue poisoned").pop_front();
         let Some(item) = item else {
@@ -733,7 +739,16 @@ fn phase1_worker(
             let Some(feature) = next else {
                 break;
             };
-            process_feature(*layer, &feature?, cfg, &mut sorter, &mut stats, scene)?;
+            process_feature(
+                *layer,
+                &feature?,
+                cfg,
+                &mut sorter,
+                &mut stats,
+                scene,
+                solved,
+                &mut spans_cache,
+            )?;
         }
     }
     Ok((sorter, stats))
@@ -758,6 +773,7 @@ fn phase1_worker(
 /// records emitted instead of `covered tiles × vertices`. Detail is carried at
 /// `tolerance_for(layer, zmax)`; coarser zooms re-simplify their (small)
 /// per-tile pieces on emission.
+#[allow(clippy::too_many_arguments)]
 fn process_feature(
     layer: u8,
     f: &crate::geoparquet::Feature,
@@ -765,6 +781,8 @@ fn process_feature(
     sorter: &mut ExternalSorter,
     stats: &mut Stats,
     scene: &SceneGraph,
+    solved: &SolvedModel,
+    spans_cache: &mut HashMap<u32, Vec<Span>>,
 ) -> Result<(), Error> {
     stats.features_read += 1;
     let Some(bb) = clip::bbox(&f.geometry) else {
@@ -777,7 +795,17 @@ fn process_feature(
     if layer == layers::TRANSPORTATION {
         let claimed = prop_id(&f.properties).and_then(|id| scene.lookup(source_hash(&id)));
         if let Some((corridor, seg)) = claimed {
-            for piece in corridor.pieces(seg) {
+            // Cut against the solved-reconciled spans: tunnels clamped to
+            // their portal crossings so the above-ground approach a mapper
+            // tagged "tunnel" is painted road right up to the portal mouth
+            // (`solve::portals::reconcile_spans`).
+            let spans = spans_cache.entry(corridor.id).or_insert_with(|| {
+                match solved.profile(corridor.id) {
+                    Some(p) => solve::portals::reconcile_spans(p, &corridor.spans),
+                    None => corridor.spans.clone(),
+                }
+            });
+            for piece in corridor.pieces_in(seg, spans) {
                 let geom = Geometry::LineString(LineString(piece.line));
                 let mut props = seg.properties.clone();
                 let synth = match piece.kind {

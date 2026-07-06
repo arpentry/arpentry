@@ -165,9 +165,17 @@ impl Corridor {
     /// preserved and cut points interpolated, so abutting pieces share their
     /// boundary vertex exactly.
     pub fn pieces(&self, seg: &SegmentRef) -> Vec<Piece> {
+        self.pieces_in(seg, &self.spans)
+    }
+
+    /// [`Corridor::pieces`] against a caller-supplied span list — the solved
+    /// stage reconciles the annotated spans with the geometry (tunnel spans
+    /// clamped to their portal crossings, `solve::portals::reconcile_spans`)
+    /// and cuts against the reconciled list.
+    pub fn pieces_in(&self, seg: &SegmentRef, spans: &[Span]) -> Vec<Piece> {
         let (a0, a1) = (self.arc[seg.node0], self.arc[seg.node1]);
         let mut out = Vec::new();
-        for (i, span) in self.spans.iter().enumerate() {
+        for (i, span) in spans.iter().enumerate() {
             let lo = span.arc0.max(a0);
             let hi = span.arc1.min(a1);
             if hi - lo <= f64::EPSILON {
