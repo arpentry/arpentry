@@ -343,12 +343,15 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     create_1x1_texture(device, queue, building_color, &r->building_tex,
                        &r->building_view);
 
-    /* 1x1 road-structure material textures: bridges read as a steel blue-grey
-       deck, tunnels as a rust/orange bore, so the two structure kinds are
-       distinct from each other and from the beige buildings and green terrain. */
+    /* 1x1 road-structure material textures.  The road network reads as one
+       continuous asphalt surface (the paint strokes), so structures take
+       quiet supporting tones: decks, piers and abutments a light concrete
+       that peeks out as a fascia beside and beneath the asphalt (the Apple
+       Maps look), tunnel bores a dark gray so a portal mouth reads as a
+       hole into the hillside rather than a solid block. */
     {
-        const float bridge_color[4] = {0.40f, 0.52f, 0.66f, 1.0f};
-        const float tunnel_color[4] = {0.78f, 0.42f, 0.24f, 1.0f};
+        const float bridge_color[4] = {0.85f, 0.84f, 0.81f, 1.0f};
+        const float tunnel_color[4] = {0.52f, 0.53f, 0.57f, 1.0f};
         create_1x1_texture(device, queue, bridge_color, &r->bridge_tex,
                            &r->bridge_view);
         create_1x1_texture(device, queue, tunnel_color, &r->tunnel_tex,
@@ -915,9 +918,15 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
     /* Back to the opaque pipeline for everything sitting on the surface. */
     restore_terrain_pipeline(r);
 
+    /* Bridge decks before road paint: strokes are alpha-blended and do not
+       write depth, so anything opaque drawn later would overwrite them. The
+       deck writes depth (a small camera-facing margin, vs_bridge); the paint
+       drawn next carries a larger margin, so the stroke re-emitted over a
+       span lands on the deck top and wins — the road surface continues
+       across the bridge. */
+    arpt__mesh_draw_structure(r, &tile->bridge, r->bridge_pipeline);
     arpt__road_draw(r, tile);
     arpt__mesh_draw_buildings(r, tile);
-    arpt__mesh_draw_structure(r, &tile->bridge, r->bridge_pipeline);
     arpt__instance_draw(r, tile);
     arpt__label_collect(r, tile);
     arpt__line_label_collect(r, tile);
