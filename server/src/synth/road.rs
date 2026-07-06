@@ -24,6 +24,7 @@ use geo_types::{Coord, Geometry, LineString, MultiLineString};
 use crate::ground::sampler::GroundSampler;
 use crate::project::{self, Bounds};
 use crate::solve::{self, Profile};
+use crate::terrain::TERRAIN_GRID;
 use crate::tile_build::EncoderFeature;
 
 /// Target sub-segment length when densifying a ground road, in quantized tile
@@ -119,9 +120,19 @@ fn densify_with_surface(
     }
 }
 
-/// Densifies one linestring to ~`seg_q` quantized spacing, snaps each
-/// (original and inserted) vertex through `snap`, and samples the height at
-/// the snapped position.
+/// Densifies one linestring to ~`seg_q` quantized spacing — plus a vertex at
+/// every rendered-terrain lattice crossing — snaps each (original and
+/// inserted) vertex through `snap`, and samples the height at the snapped
+/// position.
+///
+/// The lattice crossings are what keep a draped road *on* the drawn ground:
+/// the terrain mesh is planar inside each lattice triangle, so a chord whose
+/// endpoints both lie on the surface stays on it only while it remains in one
+/// triangle. A chord crossing a cell edge or diagonal under a convex break (a
+/// ridge) sags below the drawn ground mid-segment, and at grazing view angles
+/// even a small dip puts the stroke beyond the depth bias' reach — the road
+/// visibly sinks into the hillside. With a vertex on every crossing, every
+/// chord lies inside one triangle and the drape is chord-exact.
 fn densify_road_line(
     line: &LineString,
     bounds: &Bounds,
@@ -141,17 +152,62 @@ fn densify_road_line(
         xy.push(c);
     };
     push(pts[0], &mut xy, &mut zs);
+    let mut ts = Vec::new();
     for w in pts.windows(2) {
         let (p0, p1) = (w[0], w[1]);
         let qlen = quant_len(p0, p1, bounds);
         let n = ((qlen / seg_q).ceil() as usize).clamp(1, MAX_VERTS);
-        for i in 1..=n {
-            let t = i as f64 / n as f64;
+        ts.clear();
+        ts.extend((1..n).map(|i| i as f64 / n as f64));
+        lattice_crossings(p0, p1, bounds, &mut ts);
+        ts.sort_by(f64::total_cmp);
+        ts.push(1.0);
+        let mut prev = 0.0;
+        for &t in &ts {
+            if t - prev < 1e-9 {
+                continue;
+            }
+            prev = t;
             let c = Coord { x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t };
             push(c, &mut xy, &mut zs);
+            if xy.len() >= MAX_VERTS {
+                return (xy, zs);
+            }
         }
     }
     (xy, zs)
+}
+
+/// Appends the parametric positions in (0, 1) where the segment `p0 → p1`
+/// crosses a line of the tile's rendered-terrain lattice: a vertical cell
+/// edge, a horizontal cell edge, or the cells' shared SW–NE diagonal (the
+/// split [`crate::terrain::surface_height`] and the drawn mesh both use).
+fn lattice_crossings(p0: Coord, p1: Coord, bounds: &Bounds, out: &mut Vec<f64>) {
+    let grid = TERRAIN_GRID as f64;
+    let (cw, ch) = (bounds.width() / grid, bounds.height() / grid);
+    let g0x = (p0.x - bounds.west) / cw;
+    let g1x = (p1.x - bounds.west) / cw;
+    let g0y = (p0.y - bounds.south) / ch;
+    let g1y = (p1.y - bounds.south) / ch;
+    axis_crossings(g0x, g1x, out);
+    axis_crossings(g0y, g1y, out);
+    axis_crossings(g0x - g0y, g1x - g1y, out);
+}
+
+/// Appends the ts in (0, 1) where the linear value `g(t) = g0 + (g1 − g0) t`
+/// crosses an integer. Endpoints already on an integer produce no crossing —
+/// they are samples themselves.
+fn axis_crossings(g0: f64, g1: f64, out: &mut Vec<f64>) {
+    let d = g1 - g0;
+    if d.abs() < 1e-12 {
+        return;
+    }
+    let (lo, hi) = if d > 0.0 { (g0, g1) } else { (g1, g0) };
+    let mut k = lo.floor() + 1.0;
+    while k < hi {
+        out.push((k - g0) / d);
+        k += 1.0;
+    }
 }
 
 /// Distance between two lon/lat points in quantized tile units.
@@ -159,4 +215,45 @@ fn quant_len(a: Coord, b: Coord, bounds: &Bounds) -> f64 {
     let dx = project::quantize_x(b.x, bounds) as f64 - project::quantize_x(a.x, bounds) as f64;
     let dy = project::quantize_y(b.y, bounds) as f64 - project::quantize_y(a.y, bounds) as f64;
     (dx * dx + dy * dy).sqrt()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drape_samples_land_on_every_lattice_crossing() {
+        // A west→east line off the lattice rows: densification must place a
+        // vertex exactly on every cell edge and diagonal it crosses, so no
+        // chord spans a triangle break and the drape stays on the drawn
+        // ground (the mesh is planar only inside each triangle).
+        let b = Bounds::of_tile(14, 8500, 5800);
+        let cy = b.south + 0.53 * b.height();
+        let (x0, x1) = (b.west + 0.30 * b.width(), b.west + 0.70 * b.width());
+        let line = LineString(vec![Coord { x: x0, y: cy }, Coord { x: x1, y: cy }]);
+        let (xy, zs) =
+            densify_road_line(&line, &b, ROAD_SEGMENT_Q, &mut |c| c, &mut |_, _| 0.0);
+        assert_eq!(xy.len(), zs.len());
+
+        let cw = b.width() / TERRAIN_GRID as f64;
+        for k in 0..=TERRAIN_GRID {
+            let edge = b.west + k as f64 * cw;
+            if edge > x0 + 1e-12 && edge < x1 - 1e-12 {
+                assert!(
+                    xy.iter().any(|c| (c.x - edge).abs() < 1e-9 * b.width()),
+                    "expected a sample on vertical cell edge {k}"
+                );
+            }
+        }
+        // Diagonal crossings: gx − gy passes 6 integers over this span.
+        let ch = b.height() / TERRAIN_GRID as f64;
+        let on_diagonal = xy
+            .iter()
+            .filter(|c| {
+                let g = (c.x - b.west) / cw - (c.y - b.south) / ch;
+                (g - g.round()).abs() < 1e-7
+            })
+            .count();
+        assert!(on_diagonal >= 6, "expected samples on cell diagonals, got {on_diagonal}");
+    }
 }
