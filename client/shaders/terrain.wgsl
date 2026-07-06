@@ -113,6 +113,12 @@ fn decode_octahedral(enc: vec2<f32>) -> vec3<f32> {
 // deck (a real hill, a buried run) still occludes it.
 const BRIDGE_DEPTH_MARGIN_M: f32 = 3.0;
 
+// The deck margin as a fraction of the viewing distance — a quarter of the
+// road paint's fraction (road.wgsl), so the paint re-emitted over a deck
+// always carries the larger margin and wins their coplanar tie at any range,
+// while neither X-rays through terrain up close.
+const BRIDGE_DEPTH_MARGIN_FRAC: f32 = 0.0075;
+
 fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32) -> VsOut {
     let u = (f32(qxy.x) - 16384.0) / 32768.0;
     let v = (f32(qxy.y) - 16384.0) / 32768.0;
@@ -134,7 +140,7 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32) ->
     var p = globals.projection * world_pos;
     if (depth_margin != 0.0) {
         var shifted = world_pos;
-        shifted.z += depth_margin;
+        shifted.z += min(depth_margin, length(world_pos.xyz) * BRIDGE_DEPTH_MARGIN_FRAC);
         let ps = globals.projection * shifted;
         p = vec4<f32>(p.xy, ps.z / ps.w * p.w, p.w);
     }

@@ -16,6 +16,13 @@ const WGS84_E2: f32 = 0.00669437999014;
 // that a genuine hill (deeper than this in front) still occludes a road behind it.
 const ROAD_DEPTH_MARGIN_M: f32 = 12.0;
 
+// The margin as a fraction of the viewing distance, capping the absolute
+// margin up close: a fixed 12 m is nothing against a 5 km map view but a
+// fifth of a 65 m street-level view — strokes would X-ray through cutting
+// walls and rises that genuinely stand in front of them. 3% of the distance
+// keeps the full margin beyond 400 m and shrinks it smoothly below.
+const ROAD_DEPTH_MARGIN_FRAC: f32 = 0.03;
+
 struct GlobalUniforms {
     projection: mat4x4<f32>,
     sun_dir: vec3<f32>,
@@ -120,7 +127,7 @@ fn local_ecef_delta(dlam: f32, dphi: f32, alt: f32) -> vec3<f32> {
     // street-level altitudes a 12 m shift visibly slides the paint off its deck
     // and parallaxes as the camera moves.
     var shifted = world_pos;
-    shifted.z += ROAD_DEPTH_MARGIN_M;
+    shifted.z += min(ROAD_DEPTH_MARGIN_M, length(world_pos.xyz) * ROAD_DEPTH_MARGIN_FRAC);
 
     var out: VsOut;
     let p = globals.projection * world_pos;
