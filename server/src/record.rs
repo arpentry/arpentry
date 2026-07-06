@@ -110,7 +110,7 @@ const NO_CORRIDOR: u32 = u32::MAX;
 fn encode_synth(synth: Synth) -> [u8; 9] {
     let (tag, a, b): (u8, u32, u32) = match synth {
         Synth::None => (0, 0, 0),
-        Synth::Road { corridor } => (1, corridor.unwrap_or(NO_CORRIDOR), 0),
+        Synth::Road { corridor, deck } => (1, corridor.unwrap_or(NO_CORRIDOR), deck as u32),
         Synth::Structure { corridor, kind } => {
             (2, corridor, matches!(kind, crate::scene::SpanKind::Tunnel) as u32)
         }
@@ -201,6 +201,7 @@ impl<'a> Reader<'a> {
             0 => Ok(Synth::None),
             1 => Ok(Synth::Road {
                 corridor: (a != NO_CORRIDOR).then_some(a as CorridorId),
+                deck: b == 1,
             }),
             2 => Ok(Synth::Structure {
                 corridor: a as CorridorId,
@@ -260,8 +261,8 @@ mod tests {
         use crate::scene::SpanKind;
         for synth in [
             Synth::None,
-            Synth::Road { corridor: None },
-            Synth::Road { corridor: Some(7) },
+            Synth::Road { corridor: None, deck: false },
+            Synth::Road { corridor: Some(7), deck: true },
             Synth::Structure { corridor: 3, kind: SpanKind::Bridge },
             Synth::Structure { corridor: 9, kind: SpanKind::Tunnel },
         ] {

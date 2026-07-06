@@ -46,10 +46,15 @@ const MAX_VERTS: usize = 4096;
 
 /// Bakes a road's per-vertex elevation onto the feature, densifying the
 /// (clipped) centerline so it follows the relief and writing the heights into
-/// `f.z`. A no-op for non-line geometry.
+/// `f.z`. A no-op for non-line geometry. `deck` marks paint re-emitted over a
+/// bridge span: it always rides the solved profile directly — the same
+/// heights the deck sweep uses — so the stroke lies on the deck top at every
+/// zoom instead of following the per-zoom drape correction (which would step
+/// off the deck wherever the coarse lattice disagrees with the reference).
 pub fn bake(
     f: &mut EncoderFeature,
     profile: Option<&Profile>,
+    deck: bool,
     sampler: &mut GroundSampler,
     z: u8,
     z_ref: u8,
@@ -58,8 +63,9 @@ pub fn bake(
     let mut height = |lon: f64, lat: f64| match profile {
         // At the reference zoom the correction cancels exactly (the emitting
         // lattice IS the reference lattice): the road renders at its solved
-        // height, meeting decks and portals with no step.
-        Some(p) if z == z_ref => p.height_at(lon, lat),
+        // height, meeting decks and portals with no step. Deck paint rides
+        // the solved profile at every zoom for the same reason.
+        Some(p) if deck || z == z_ref => p.height_at(lon, lat),
         Some(p) => {
             let surface = sampler.surface(bounds, lon, lat, z);
             let ref_bounds = solve::tile_containing(z_ref, lon, lat);

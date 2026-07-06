@@ -783,8 +783,19 @@ fn process_feature(
                 let synth = match piece.kind {
                     SpanKind::Grade => Synth::Road {
                         corridor: corridor.needs_profile().then_some(corridor.id),
+                        deck: false,
                     },
                     kind => {
+                        // A bridge span emits twice: the deck solid, and the
+                        // road paint re-emitted over it (`deck`), riding the
+                        // same solved profile so the stroke lies on the deck
+                        // top and the road surface continues across the span.
+                        // A tunnel stays unpainted — its bore is underground.
+                        if kind == SpanKind::Bridge {
+                            let paint =
+                                Synth::Road { corridor: Some(corridor.id), deck: true };
+                            emit_geometry(layer, &geom, &props, paint, cfg, sorter, stats)?;
+                        }
                         // The level ordinal survives as a property only so the
                         // attribute profiler emits the reserved `level` the
                         // client colours structures by.
@@ -797,7 +808,7 @@ fn process_feature(
             return Ok(());
         }
         // Unclaimed: a plain road that drapes on the rendered ground.
-        let synth = Synth::Road { corridor: None };
+        let synth = Synth::Road { corridor: None, deck: false };
         return emit_geometry(layer, &f.geometry, &f.properties, synth, cfg, sorter, stats);
     }
     emit_geometry(layer, &f.geometry, &f.properties, Synth::None, cfg, sorter, stats)

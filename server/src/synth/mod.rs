@@ -30,7 +30,11 @@ pub enum Synth {
     None,
     /// A road draped on the rendered ground; with a corridor, lifted by the
     /// corridor's solved cut/fill so engineered classes hold their grade.
-    Road { corridor: Option<CorridorId> },
+    /// `deck` marks the paint stroke re-emitted over a bridge span: it rides
+    /// the solved profile directly at every zoom, exactly on the deck top the
+    /// structure sweep builds from the same profile, so the road surface
+    /// continues across the bridge instead of stopping at the abutment.
+    Road { corridor: Option<CorridorId>, deck: bool },
     /// A bridge deck or tunnel bore swept along the corridor's solved profile.
     Structure { corridor: CorridorId, kind: SpanKind },
 }
@@ -49,9 +53,9 @@ pub fn emit(
     }
     match f.synth {
         Synth::None => {}
-        Synth::Road { corridor } => {
+        Synth::Road { corridor, deck } => {
             let profile = corridor.and_then(|c| solved.profile(c));
-            road::bake(f, profile, sampler, z, solved.z_ref, bounds);
+            road::bake(f, profile, deck, sampler, z, solved.z_ref, bounds);
         }
         Synth::Structure { corridor, kind } => {
             // Detail (piers, abutment blocks) only at close-up zooms; coarser
@@ -62,7 +66,7 @@ pub fn emit(
                 Some(p) if structure::stamp(f, p, kind, bounds, detail) => {}
                 // Degradation ladder: no solved profile, or no solid to draw
                 // (a tunnel tagged over flat ground) → a plain draped road.
-                other => road::bake(f, other, sampler, z, solved.z_ref, bounds),
+                other => road::bake(f, other, false, sampler, z, solved.z_ref, bounds),
             }
         }
     }
