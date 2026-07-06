@@ -92,16 +92,20 @@ pub const PIER_SPACING_M: f64 = 45.0;
 /// deck is close enough to the ground to read as supported.
 pub const PIER_MIN_CLEAR_M: f64 = 6.0;
 
-/// How far a pier (or abutment block) is sunk below the sampled ground, so
+/// How far a pier (or abutment seat) is sunk below the sampled ground, so
 /// lattice differences between zooms never leave a floating foot.
 pub const PIER_EMBED_M: f64 = 4.0;
 
 /// Largest deck-underside-to-ground gap treated as a deck end *landing* — an
-/// abutment block is built under it. A higher end (a deck meeting a tunnel
+/// abutment seat is built under it. A higher end (a deck meeting a tunnel
 /// portal on a hillside) is a junction, not a landing.
 pub const ABUTMENT_MAX_GAP_M: f64 = 3.0;
 
-/// First zoom that carries structure detail (piers, abutment blocks). Coarser
+/// How far an abutment seat runs back under the deck from its end face, in
+/// metres along the road.
+pub const ABUTMENT_DEPTH_M: f64 = 4.0;
+
+/// First zoom that carries structure detail (piers, abutment seats). Coarser
 /// zooms render the bare deck — the degradation ladder's middle rung (D5);
 /// positions never change, only detail sheds.
 pub const STRUCTURE_DETAIL_MIN_ZOOM: u8 = 13;

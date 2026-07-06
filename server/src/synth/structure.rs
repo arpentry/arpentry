@@ -40,9 +40,9 @@ use geo_types::{Coord, Geometry, LineString};
 use crate::building_mesh::{Frame, M_PER_DEG_LAT};
 use crate::clip;
 use crate::priors::{
-    pier_half_width_m, RoadClass, ABUTMENT_MAX_GAP_M, DECK_THICKNESS_M, PIER_EMBED_M,
-    PIER_MIN_CLEAR_M, PIER_SPACING_M, PORTAL_CLEARANCE_M, PORTAL_MARCH_M, PORTAL_MAX_M,
-    TUNNEL_HEIGHT_M,
+    pier_half_width_m, RoadClass, ABUTMENT_DEPTH_M, ABUTMENT_MAX_GAP_M, DECK_THICKNESS_M,
+    PIER_EMBED_M, PIER_MIN_CLEAR_M, PIER_SPACING_M, PORTAL_CLEARANCE_M, PORTAL_MARCH_M,
+    PORTAL_MAX_M, TUNNEL_HEIGHT_M,
 };
 use crate::project::{self, Bounds};
 use crate::scene::SpanKind;
@@ -62,7 +62,7 @@ const MAX_VERTS: usize = 4096;
 
 /// Builds the structure box for a transportation feature and stores it in
 /// `f.mesh`. `detail` adds the supporting geometry — piers and abutment
-/// blocks — the coarse zooms shed (the degradation ladder's rungs, D5).
+/// seats — the coarse zooms shed (the degradation ladder's rungs, D5).
 /// Returns whether a solid was emitted — `false` (a tunnel over flat ground,
 /// degenerate geometry) tells the caller to drape the road instead.
 pub fn stamp(
@@ -194,7 +194,9 @@ struct Section {
 /// the road surface — top *is* the road, a [`DECK_THICKNESS_M`] underside
 /// below. No roof: a bridge is open, unlike a tunnel. Where the road sinks
 /// to/under grade the slab passes under the terrain and is occluded, so the
-/// deck meets the ground without a step.
+/// deck meets the ground without a step. Each *real* run end (an interior
+/// end, not a tile-boundary clip) is capped so the slab ends with a solid
+/// face instead of an open cross-section.
 fn sweep_deck(
     acc: &mut Accum,
     frame: &Frame,
@@ -221,6 +223,15 @@ fn sweep_deck(
         })
         .collect();
     sweep_prism(acc, frame, bounds, &sections, half_w);
+    let n = sections.len();
+    if n >= 2 {
+        if !on_tile_edge(pts[0], bounds) {
+            cap_end(acc, frame, bounds, &sections[0], &sections[1], half_w);
+        }
+        if !on_tile_edge(pts[pts.len() - 1], bounds) {
+            cap_end(acc, frame, bounds, &sections[n - 1], &sections[n - 2], half_w);
+        }
+    }
 }
 
 /// Sweeps a tunnel bore along one (proper-clipped) span: a roof a clean
@@ -287,10 +298,12 @@ fn sweep_bore(
 ///   of a viaduct compute identical piers; each pier is emitted only by the
 ///   tile that owns its centre (half-open bounds), so seams neither drop nor
 ///   double them.
-/// - **Abutment blocks** fill under an interior deck end that lands near the
-///   ground, so the slab meets the terrain as a solid face instead of a thin
-///   floating edge. A high interior end (a deck meeting a tunnel portal on a
-///   hillside) is a junction, not a landing — left alone.
+/// - **Abutment seats** ([`abutment_seat`]) fill under an interior deck end
+///   that lands near the ground: the deck's end cross-section extruded back
+///   under the slab and sunk into the ground, flush with the capped end face,
+///   so the slab lands on a solid seat instead of a thin floating edge. A
+///   high interior end (a deck meeting a tunnel portal on a hillside) is a
+///   junction, not a landing — left alone.
 fn support_deck(
     acc: &mut Accum,
     frame: &Frame,
@@ -348,9 +361,9 @@ fn support_deck(
         }
     }
 
-    // Abutment blocks at interior low-landing ends.
+    // Abutment seats at interior low-landing ends.
     let last = nodes.len() - 1;
-    for (end_pt, i) in [(pts[0], 0), (pts[pts.len() - 1], last)] {
+    for (end_pt, i, j) in [(pts[0], 0, 1), (pts[pts.len() - 1], last, last - 1)] {
         if on_tile_edge(end_pt, bounds) {
             continue;
         }
@@ -360,19 +373,63 @@ fn support_deck(
         if deck_bot - ground > ABUTMENT_MAX_GAP_M {
             continue;
         }
-        box_column(
-            acc,
-            frame,
-            bounds,
-            n.lon,
-            n.lat,
-            (n.left_e, n.left_n),
-            half_w,
-            2.0,
-            project::quantize_z(n.height_m),
-            project::quantize_z(ground - PIER_EMBED_M),
-        );
+        // Inward unit (ENU metres) from the end toward the deck interior.
+        let de = (nodes[j].lon - n.lon) * frame.m_per_deg_lon;
+        let dn = (nodes[j].lat - n.lat) * M_PER_DEG_LAT;
+        let len = (de * de + dn * dn).sqrt();
+        if len < 1e-9 {
+            continue;
+        }
+        // Top exactly on the deck underside: the seat's outward wall meets
+        // the end cap edge-to-edge in one plane (coplanar overlap would
+        // z-fight), and its sides continue the deck walls downward.
+        let top_mm = project::quantize_z(deck_bot);
+        let bot_mm = project::quantize_z(ground - PIER_EMBED_M);
+        let sec = |dist: f64| Section {
+            lon: n.lon + de / len * dist / frame.m_per_deg_lon,
+            lat: n.lat + dn / len * dist / M_PER_DEG_LAT,
+            top_mm,
+            bot_mm,
+            gap_m: 0.0,
+            left_e: n.left_e,
+            left_n: n.left_n,
+        };
+        abutment_seat(acc, frame, bounds, &sec(0.0), &sec(ABUTMENT_DEPTH_M), half_w);
     }
+}
+
+/// A solid abutment seat under a deck's end: the end cross-section `outer`
+/// extruded to `inner` (a [`ABUTMENT_DEPTH_M`] back under the deck), walls
+/// only — the top hides under the slab and the bottom is buried. `outer`
+/// shares its corners with the deck's end cap, so the outward wall lies flush
+/// in the capped end plane.
+fn abutment_seat(
+    acc: &mut Accum,
+    frame: &Frame,
+    bounds: &Bounds,
+    outer: &Section,
+    inner: &Section,
+    half_w: f64,
+) {
+    if outer.top_mm <= outer.bot_mm {
+        return;
+    }
+    let (ol, or_) =
+        (corner(outer, 1.0, frame, bounds, half_w), corner(outer, -1.0, frame, bounds, half_w));
+    let (il, ir) =
+        (corner(inner, 1.0, frame, bounds, half_w), corner(inner, -1.0, frame, bounds, half_w));
+    let de = (outer.lon - inner.lon) * frame.m_per_deg_lon;
+    let dn = (outer.lat - inner.lat) * M_PER_DEG_LAT;
+    let len = (de * de + dn * dn).sqrt().max(1e-9);
+    let n_out = frame.encode_enu(de / len, dn / len, 0.0);
+    let n_in = frame.encode_enu(-de / len, -dn / len, 0.0);
+    let n_left = frame.encode_enu(outer.left_e, outer.left_n, 0.0);
+    let n_right = frame.encode_enu(-outer.left_e, -outer.left_n, 0.0);
+    let (top, bot) = (outer.top_mm, outer.bot_mm);
+    quad(acc, (ol, bot), (or_, bot), (or_, top), (ol, top), n_out);
+    quad(acc, (ir, bot), (il, bot), (il, top), (ir, top), n_in);
+    quad(acc, (il, bot), (ol, bot), (ol, top), (il, top), n_left);
+    quad(acc, (or_, bot), (ir, bot), (ir, top), (or_, top), n_right);
 }
 
 /// Whether this tile owns the point, half-open so a point on a shared edge
@@ -909,16 +966,16 @@ mod tests {
     }
 
     #[test]
-    fn a_grade_landing_gets_an_abutment_block_not_piers() {
+    fn a_grade_landing_gets_an_abutment_seat_not_piers() {
         // A deck flush with the ground at both interior ends: no piers (no
-        // clearance), but each end lands on a solid block sunk into the
+        // clearance), but each end lands on a solid seat sunk into the
         // ground.
         let b = Bounds::of_tile(14, 8500, 5800);
         let line = centre_line(&b);
         let profile = Profile::flat(&line.0, 100.0);
         let full = deck_with(&line, &profile, &b, true).expect("deck");
         let embed = project::quantize_z(100.0 - PIER_EMBED_M);
-        assert_eq!(*full.z.iter().min().unwrap(), embed, "abutment blocks sink into the ground");
+        assert_eq!(*full.z.iter().min().unwrap(), embed, "abutment seats sink into the ground");
     }
 
     #[test]
