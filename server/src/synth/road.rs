@@ -6,18 +6,27 @@
 //! renders at
 //!
 //! ```text
-//! surface(z) + road_m − surface(z_ref)
+//! surface(z) + max(road_m − surface(z_ref), 0)
 //! ```
 //!
 //! — its solved height, expressed relative to the engineered rendered ground
-//! at the reference zoom. At `z_ref` (the zoom the solver anchored to, seen
-//! close up) this is exactly `road_m`: the road meets its structures with no
-//! step (invariant 2), and wherever the terrain lattice captured the
-//! corridor's earthwork the correction is ~zero, so it lies on the drawn
-//! embankment rather than floating twice its height above it. At coarser
-//! zooms the per-zoom surface is the datum, so the road still hugs that
-//! zoom's rendered terrain (invariant 4) with the same zoom-independent
-//! engineered offset.
+//! at the reference zoom. Wherever the terrain lattice captured the
+//! corridor's earthwork the correction is ~zero, so at `z_ref` the road is
+//! exactly `road_m`: it meets its structures with no step (invariant 2) and
+//! lies on the drawn embankment rather than floating twice its height above
+//! it. At coarser zooms the per-zoom surface is the datum, so the road still
+//! hugs that zoom's rendered terrain (invariant 4) with the same
+//! zoom-independent engineered offset.
+//!
+//! The `max(…, 0)` clamps the correction to fills: the lattice is far coarser
+//! than a cutting's footprint (a z14 cell spans ~150 m against a ~18 m
+//! earthwork reach), so on bumpy relief a grade-limited cut often fails to
+//! pull any lattice vertex down and the drawn ground keeps standing metres
+//! above the solved grade. Paint baked *below* the drawn ground is beyond the
+//! viewer's depth bias at close range — the road visibly breaks against every
+//! such bump. Clamped, the paint rides the drawn ground through the missed
+//! cutting (and exactly on it wherever the earthwork did capture the mesh),
+//! staying visible at any viewing distance.
 
 use geo_types::{Coord, Geometry, LineString, MultiLineString};
 
@@ -62,15 +71,21 @@ pub fn bake(
     bounds: &Bounds,
 ) {
     let mut height = |lon: f64, lat: f64| match profile {
-        // At the reference zoom the correction cancels exactly (the emitting
-        // lattice IS the reference lattice): the road renders at its solved
-        // height, meeting decks and portals with no step. Deck paint rides
-        // the solved profile at every zoom for the same reason.
-        Some(p) if deck || z == z_ref => p.height_at(lon, lat),
+        // Deck paint rides the solved profile at every zoom, exactly on the
+        // deck top the structure sweep builds from the same profile.
+        Some(p) if deck => p.height_at(lon, lat),
+        // At the reference zoom the datum and the reference surface are the
+        // same sample, so this is max(road_m, surface): the solved height,
+        // never below the drawn ground (see the module doc on the clamp).
+        Some(p) if z == z_ref => {
+            let surface = sampler.surface(bounds, lon, lat, z);
+            p.height_at(lon, lat).max(surface)
+        }
         Some(p) => {
             let surface = sampler.surface(bounds, lon, lat, z);
             let ref_bounds = solve::tile_containing(z_ref, lon, lat);
-            surface + p.height_at(lon, lat) - sampler.surface(&ref_bounds, lon, lat, z_ref)
+            let lift = p.height_at(lon, lat) - sampler.surface(&ref_bounds, lon, lat, z_ref);
+            surface + lift.max(0.0)
         }
         None => sampler.surface(bounds, lon, lat, z),
     };
