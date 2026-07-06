@@ -92,7 +92,12 @@ typedef struct {
                               (DEM-less). The client strokes the road at these
                               heights instead of sampling terrain. */
     size_t vertex_count;
-    uint8_t cls;  /* index into style class registry; 0 = unknown */
+    uint8_t cls;   /* index into style class registry; 0 = unknown */
+    float width_m; /* physical carriageway width in metres the tiler baked from
+                      its engineering priors (the same numbers that size the
+                      bridge decks), or 0 when absent (non-drivable classes).
+                      Close zooms stroke the road at this true width so it
+                      meets the structures edge-to-edge. */
 } arpt_line_feature;
 
 /**

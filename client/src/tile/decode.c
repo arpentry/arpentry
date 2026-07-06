@@ -357,6 +357,31 @@ static int64_t resolve_int(arpentry_tiles_Feature_table_t feat, uint32_t key_idx
     return dflt;
 }
 
+/* Read a double-valued property of a feature, or `dflt` when absent. */
+static double resolve_double(arpentry_tiles_Feature_table_t feat,
+                             uint32_t key_idx,
+                             arpentry_tiles_Value_vec_t values, double dflt) {
+    if (key_idx == UINT32_MAX || !values) return dflt;
+    arpentry_tiles_Property_vec_t props =
+        arpentry_tiles_Feature_properties(feat);
+    if (!props) return dflt;
+    size_t np = arpentry_tiles_Property_vec_len(props);
+    for (size_t p = 0; p < np; p++) {
+        arpentry_tiles_Property_struct_t pr =
+            arpentry_tiles_Property_vec_at(props, p);
+        if (pr && pr->key == key_idx) {
+            size_t vi = pr->value;
+            if (vi < arpentry_tiles_Value_vec_len(values)) {
+                arpentry_tiles_Value_table_t val =
+                    arpentry_tiles_Value_vec_at(values, vi);
+                return arpentry_tiles_Value_double_value(val);
+            }
+            break;
+        }
+    }
+    return dflt;
+}
+
 /* Keep a feature given a level filter: 0 keeps all (buildings); +1 keeps only
    bridges (level > 0); -1 keeps only tunnels (level < 0). */
 static bool keep_by_level(arpentry_tiles_Feature_table_t feat, int sign,
@@ -538,6 +563,9 @@ bool arpt_decode_lines(const void *flatbuf, size_t size,
         find_layer(flatbuf, size, layer_name, &class_key_idx, &values);
     if (!layer) return true;
 
+    /* Physical carriageway width the tiler bakes on drivable roads. */
+    uint32_t width_key = find_key_index(flatbuf, "width_m");
+
     arpentry_tiles_Feature_vec_t features =
         arpentry_tiles_Layer_features(layer);
     if (!features) return true;
@@ -599,6 +627,7 @@ bool arpt_decode_lines(const void *flatbuf, size_t size,
 
         uint8_t cls = resolve_class(feat, class_key_idx, values,
                                     class_names, class_count);
+        float width_m = (float)resolve_double(feat, width_key, values, 0.0);
 
         flatbuffers_uint32_vec_t offsets =
             arpentry_tiles_LineGeometry_line_offsets(line);
@@ -621,6 +650,7 @@ bool arpt_decode_lines(const void *flatbuf, size_t size,
             out->lines[count].z = zv ? zv + start : NULL;
             out->lines[count].vertex_count = part_vc;
             out->lines[count].cls = cls;
+            out->lines[count].width_m = width_m;
             count++;
         }
     }

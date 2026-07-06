@@ -71,6 +71,29 @@ pub fn is_link(subclass: Option<&str>) -> bool {
     subclass == Some("link")
 }
 
+/// Physical painted width in metres of a drivable road, keyed by its Overture
+/// class/subclass — twice the [`RoadClass::half_width_m`] the structure sweep
+/// uses, so the paint stroke and the deck it rides are sized from the same
+/// prior and meet edge-to-edge. `None` for non-drivable classes (paths, rail,
+/// tracks), which keep their cartographic stroke widths.
+pub fn paint_width_m(class: Option<&str>, subclass: Option<&str>) -> Option<f64> {
+    let c = class?;
+    let drivable = matches!(
+        c,
+        "motorway"
+            | "trunk"
+            | "primary"
+            | "secondary"
+            | "tertiary"
+            | "unclassified"
+            | "residential"
+            | "living_street"
+            | "service"
+            | "unknown"
+    );
+    drivable.then(|| 2.0 * RoadClass::parse(Some(c)).half_width_m(is_link(subclass)))
+}
+
 /// Vertical clearance a bridge deck's *underside* must keep over a crossed
 /// feature (scenarios S3/S4, invariant 3). About 5 m over a road, more over
 /// rail (catenary), freeboard over water. The data never states built

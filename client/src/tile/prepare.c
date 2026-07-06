@@ -200,6 +200,18 @@ static void emit_polygons(const arpt_surface_data *data,
 #define LINE_WIDTH_SCALE_MIN 0.55
 #define LINE_WIDTH_SCALE_MAX 2.0
 
+/* Tiles from this level up stroke drivable roads at the physical `width_m`
+   the tiler baked from its engineering priors — the same numbers that size
+   the bridge decks — so paint and structures meet edge-to-edge. Coarser
+   tiles keep the cartographic style widths. Matches the tiler's
+   STRUCTURE_DETAIL_MIN_ZOOM so widths turn physical alongside the piers. */
+#define LINE_PHYSICAL_WIDTH_MIN_LEVEL 13
+
+/* Metres per degree matching the tiler's ENU frame (server building_mesh),
+   so a stroked width in metres agrees with the swept structure boxes. */
+#define LINE_M_PER_DEG_LAT 110540.0
+#define LINE_M_PER_DEG_LON_EQ 111320.0
+
 /* Split centerline segments longer than this (tile quantized units) before
    draping, so a road crossing relief follows the terrain instead of cutting
    a flat chord through a hill.  Short segments (the common case) are kept. */
@@ -241,7 +253,8 @@ static bool clip_segment(double x0, double y0, double x1, double y1,
 
 static void emit_subpolyline(const uint16_t *px, const uint16_t *py,
                              const int32_t *pz, size_t vc,
-                             double hw, const float color[4],
+                             double hw, double ax, double ay,
+                             const float color[4],
                              arpt_line_vertex *verts, uint32_t *idxs,
                              size_t *vi, size_t *ii);
 
@@ -258,7 +271,7 @@ static void emit_subpolyline(const uint16_t *px, const uint16_t *py,
    (identical for adjacent tiles) makes neighbouring tiles' roads meet on exactly
    the same world line; the overlap margin hides the seam. */
 static void emit_polyline(const arpt_line_feature *line, double hw,
-                          const float color[4],
+                          double ax, double ay, const float color[4],
                           arpt_line_vertex *verts, uint32_t *idxs,
                           size_t *vi, size_t *ii) {
     size_t vc = line->vertex_count;
@@ -289,7 +302,7 @@ static void emit_polyline(const arpt_line_feature *line, double hw,
 #define FLUSH_RUN()                                                            \
     do {                                                                        \
         if (sn >= 2)                                                            \
-            emit_subpolyline(sx, sy, sz, sn, hw, color, verts,                 \
+            emit_subpolyline(sx, sy, sz, sn, hw, ax, ay, color, verts,         \
                              idxs, vi, ii);                                     \
         sn = 0;                                                                  \
     } while (0)
@@ -329,17 +342,28 @@ static void emit_polyline(const arpt_line_feature *line, double hw,
    and color.  Each vertex carries the road elevation the tiler reconstructed from
    the terrain surface (`pz`, the same source the bridge/tunnel solids ride), so
    the stroke follows the consistent 3D road model.  The polyline is already
-   densely sampled by the tiler, so the vertices are used as-is. */
+   densely sampled by the tiler, so the vertices are used as-is.
+
+   All stroke math runs in tile-local METRES: positions are scaled by the
+   per-axis metres-per-unit (`ax`, `ay` — plate-carrée tiles are anisotropic,
+   a lon unit shrinking with cos(lat)) before directions, normals, miters and
+   offsets are computed, and scaled back on emission.  The half-width `hw` is
+   in metres, so a stroke holds the same ground width whatever its bearing —
+   and matches the swept structure boxes, which are sized in metres too. */
 static void emit_subpolyline(const uint16_t *px, const uint16_t *py,
                              const int32_t *pz, size_t vc,
-                             double hw, const float color[4],
+                             double hw, double ax, double ay,
+                             const float color[4],
                              arpt_line_vertex *verts, uint32_t *idxs,
                              size_t *vi, size_t *ii) {
     const float *c = color;
     if (vc < 2) return;
     size_t n_segs = vc - 1;
+    /* Degenerate-segment floor, in metres: one y-unit, matching the old
+       one-quantized-unit threshold. */
+    double min_seg = ay;
 
-    /* Pre-compute per-segment direction and normal */
+    /* Pre-compute per-segment direction and normal (metres) */
     double *seg_nx = malloc(n_segs * sizeof(double));
     double *seg_ny = malloc(n_segs * sizeof(double));
     double *seg_ux = malloc(n_segs * sizeof(double));
@@ -353,16 +377,16 @@ static void emit_subpolyline(const uint16_t *px, const uint16_t *py,
 
     bool any_valid = false;
     for (size_t s = 0; s < n_segs; s++) {
-        double dx = (double)px[s + 1] - px[s];
-        double dy = (double)py[s + 1] - py[s];
+        double dx = ((double)px[s + 1] - px[s]) * ax;
+        double dy = ((double)py[s + 1] - py[s]) * ay;
         double len = sqrt(dx * dx + dy * dy);
-        if (len < 0.001) len = 0.001;
+        if (len < 1e-6) len = 1e-6;
         seg_ux[s] = dx / len;
         seg_uy[s] = dy / len;
         seg_nx[s] = -seg_uy[s];
         seg_ny[s] = seg_ux[s];
         seg_len[s] = len;
-        if (len >= 1.0) any_valid = true;
+        if (len >= min_seg) any_valid = true;
     }
 
     if (!any_valid) {
@@ -372,12 +396,14 @@ static void emit_subpolyline(const uint16_t *px, const uint16_t *py,
     }
 
 #define CLAMP16(v) ((uint16_t)((v) < 0 ? 0 : (v) > 65535 ? 65535 : (v)))
-    /* Emit one road vertex.  The elevation `vz` is the baked centerline height at
-       this segment end, shared by both edge corners so the cross-section stays
-       horizontal and the ribbon hugs the road, not the cross-slope. */
-#define EMIT_V(px, py, vz, lu, lv)                                             \
+    /* Emit one road vertex from tile-local metre coordinates.  The elevation
+       `vz` is the baked centerline height at this segment end, shared by both
+       edge corners so the cross-section stays horizontal and the ribbon hugs
+       the road, not the cross-slope. */
+#define EMIT_V(mx, my, vz, lu, lv)                                            \
     do {                                                                        \
-        verts[*vi] = (arpt_line_vertex){CLAMP16(px), CLAMP16(py), (vz),        \
+        verts[*vi] = (arpt_line_vertex){CLAMP16(lround((mx) / ax)),            \
+                                        CLAMP16(lround((my) / ay)), (vz),      \
                                         c[0], c[1], c[2], c[3],                \
                                         (float)(lu), (float)(lv),              \
                                         (float)hw, (float)len};                \
@@ -386,17 +412,17 @@ static void emit_subpolyline(const uint16_t *px, const uint16_t *py,
 
     for (size_t s = 0; s < n_segs; s++) {
         double len = seg_len[s];
-        if (len < 1.0) continue;
+        if (len < min_seg) continue;
 
-        double x1 = px[s], y1 = py[s];
-        double x2 = px[s + 1], y2 = py[s + 1];
+        double x1 = px[s] * ax, y1 = py[s] * ay;
+        double x2 = px[s + 1] * ax, y2 = py[s + 1] * ay;
 
         /* Offset vectors at start and end of this segment.
          * At interior vertices, use a miter between adjacent
          * segment normals so consecutive quads share edges. */
         double m1x, m1y, m2x, m2y;
 
-        if (s > 0 && seg_len[s - 1] >= 1.0) {
+        if (s > 0 && seg_len[s - 1] >= min_seg) {
             /* Miter at start vertex */
             double mx = seg_nx[s - 1] + seg_nx[s];
             double my = seg_ny[s - 1] + seg_ny[s];
@@ -409,7 +435,7 @@ static void emit_subpolyline(const uint16_t *px, const uint16_t *py,
             m1y = seg_ny[s];
         }
 
-        if (s + 1 < n_segs && seg_len[s + 1] >= 1.0) {
+        if (s + 1 < n_segs && seg_len[s + 1] >= min_seg) {
             /* Miter at end vertex */
             double mx = seg_nx[s] + seg_nx[s + 1];
             double my = seg_ny[s] + seg_ny[s + 1];
@@ -425,12 +451,12 @@ static void emit_subpolyline(const uint16_t *px, const uint16_t *py,
         /* Extend endpoints along tangent for caps at polyline ends */
         double ex1 = x1, ey1 = y1, ex2 = x2, ey2 = y2;
         double cap1 = 0.0, cap2 = 0.0;
-        if (s == 0 || seg_len[s - 1] < 1.0) {
+        if (s == 0 || seg_len[s - 1] < min_seg) {
             ex1 -= seg_ux[s] * hw;
             ey1 -= seg_uy[s] * hw;
             cap1 = hw;
         }
-        if (s + 1 == n_segs || seg_len[s + 1] < 1.0) {
+        if (s + 1 == n_segs || seg_len[s + 1] < min_seg) {
             ex2 += seg_ux[s] * hw;
             ey2 += seg_uy[s] * hw;
             cap2 = hw;
@@ -462,17 +488,24 @@ static void emit_subpolyline(const uint16_t *px, const uint16_t *py,
     free(seg_len);
 }
 
-/* Resolve the rendered half-width for one stroke: just the zoom scale.  Road
-   widths are now true geographic widths drawn as geometry, so there is no
-   one-texel floor (that existed only for the fixed-resolution texture). */
-static double resolve_half_width(double hw, double zoom_scale) {
-    return hw * zoom_scale;
+/* Resolve the rendered half-width for one stroke, in METRES.  A drivable road
+   on a close-zoom tile takes its physical `width_m` (the tiler's engineering
+   prior, the same number that sizes its bridge decks) so paint and structures
+   meet edge-to-edge; everything else takes the cartographic style width,
+   zoom-scaled and converted from quantized units at the y-axis metre scale. */
+static double resolve_half_width_m(const arpt_line_feature *line,
+                                   const arpt_style *style, int level,
+                                   double zoom_scale, double ay) {
+    if (line->width_m > 0.0f && level >= LINE_PHYSICAL_WIDTH_MIN_LEVEL)
+        return line->width_m * 0.5;
+    return style->stroke_widths[line->cls] * zoom_scale * ay;
 }
 
 /* Emit every line feature as a single filled stroke (no casing outline).
    Features arrive sorted by class, so later style entries draw on top. */
 static void emit_line_sdf_quads(const arpt_line_data *data,
                                 const arpt_style *style, int level,
+                                double ax, double ay,
                                 arpt_line_vertex *verts, uint32_t *idxs,
                                 size_t *vi, size_t *ii) {
     if (!data) return;
@@ -480,10 +513,10 @@ static void emit_line_sdf_quads(const arpt_line_data *data,
     for (size_t i = 0; i < data->count; i++) {
         const arpt_line_feature *line = &data->lines[i];
         if (style->stroke_widths[line->cls] <= 0.0f) continue;
-        double hw = resolve_half_width(style->stroke_widths[line->cls], zs);
+        double hw = resolve_half_width_m(line, style, level, zs, ay);
         float color[4];
         memcpy(color, style->colors[line->cls], sizeof(color));
-        emit_polyline(line, hw, color, verts, idxs, vi, ii);
+        emit_polyline(line, hw, ax, ay, color, verts, idxs, vi, ii);
     }
 }
 
@@ -518,9 +551,19 @@ void arpt_prepare_polygons(const arpt_surface_data *surface,
 
 void arpt_prepare_lines(const arpt_line_data *line_data,
                         const arpt_style *style, int level,
-                        arpt_line_prim *out) {
+                        arpt_bounds bounds, arpt_line_prim *out) {
     memset(out, 0, sizeof(*out));
     if (!line_data) return;
+
+    /* Metres per quantized unit along each tile axis: plate-carrée tiles are
+       anisotropic (a lon unit shrinks with cos(lat)), so the stroke emitter
+       works in metres and converts back per axis. */
+    double lat_c = 0.5 * (bounds.south + bounds.north);
+    double ay = (bounds.north - bounds.south) * LINE_M_PER_DEG_LAT
+                / (double)ARPT_EXTENT;
+    double ax = (bounds.east - bounds.west) * LINE_M_PER_DEG_LON_EQ
+                * cos(lat_c * M_PI / 180.0) / (double)ARPT_EXTENT;
+    if (ax <= 0.0 || ay <= 0.0) return;
 
     /* Upper bound: every feature emits one filled stroke, one quad per segment.
        The tiler already densified the centerline, so the vertices are used as-is. */
@@ -538,7 +581,7 @@ void arpt_prepare_lines(const arpt_line_data *line_data,
     out->indices = malloc(ni * sizeof(uint32_t));
     if (out->verts && out->indices) {
         size_t vi = 0, ii = 0;
-        emit_line_sdf_quads(line_data, style, level, out->verts,
+        emit_line_sdf_quads(line_data, style, level, ax, ay, out->verts,
                             out->indices, &vi, &ii);
         out->vert_count = vi;
         out->index_count = ii;

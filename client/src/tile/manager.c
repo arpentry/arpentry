@@ -440,7 +440,7 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
         pois.count = ARPT_MAX_POIS_PER_TILE;
 
     arpt_prepare_polygons(&surface, &tm->style, &p->prims.polygons);
-    arpt_prepare_lines(&lines, &tm->style, key.level, &p->prims.lines);
+    arpt_prepare_lines(&lines, &tm->style, key.level, bounds, &p->prims.lines);
     arpt_prepare_instances(&trees, arpt_renderer_model_count(tm->renderer),
                            &p->prims.instances);
     arpt_prepare_labels(&pois, arpt_renderer_font_glyphs(tm->renderer),

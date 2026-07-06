@@ -87,6 +87,15 @@ pub fn profile(
         if let Some(lv) = find_int(props, "level_rules").filter(|&l| l != 0) {
             properties.push(("level".to_string(), Value::Int(lv)));
         }
+        // Physical carriageway width from the engineering priors — the same
+        // numbers the structure sweep uses — so the client can stroke roads
+        // at true width at close zooms and meet the decks edge-to-edge.
+        if let Some(w) = crate::priors::paint_width_m(
+            find_str(props, "class").as_deref(),
+            find_str(props, "subclass").as_deref(),
+        ) {
+            properties.push(("width_m".to_string(), Value::Double(w)));
+        }
     }
 
     Profiled { properties, min_zoom, max_zoom, rank }
@@ -464,6 +473,36 @@ mod tests {
             14,
         );
         assert!(!ground.properties.iter().any(|(k, _)| k == "level"));
+    }
+
+    #[test]
+    fn drivable_roads_carry_their_physical_width() {
+        // Drivable classes take twice the structure half-width prior; a ramp
+        // narrows to one lane; non-drivable classes keep cartographic widths.
+        let road = profile(
+            layers::TRANSPORTATION,
+            &[("class".to_string(), Value::String("motorway".into()))],
+            0,
+            14,
+        );
+        assert!(road.properties.contains(&("width_m".into(), Value::Double(9.0))));
+        let ramp = profile(
+            layers::TRANSPORTATION,
+            &[
+                ("class".to_string(), Value::String("motorway".into())),
+                ("subclass".to_string(), Value::String("link".into())),
+            ],
+            0,
+            14,
+        );
+        assert!(ramp.properties.contains(&("width_m".into(), Value::Double(5.5))));
+        let path = profile(
+            layers::TRANSPORTATION,
+            &[("class".to_string(), Value::String("pedestrian".into()))],
+            0,
+            14,
+        );
+        assert!(!path.properties.iter().any(|(k, _)| k == "width_m"));
     }
 
     #[test]

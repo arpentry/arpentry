@@ -174,7 +174,7 @@ void arpt_prepare_polygons(const arpt_surface_data *surface,
 
 void arpt_prepare_lines(const arpt_line_data *line_data,
                         const arpt_style *style, int level,
-                        arpt_line_prim *out);
+                        arpt_bounds bounds, arpt_line_prim *out);
 
 /* Buildings arrive as server-baked 3D meshes (MeshGeometry): walls + roof,
    anchored to the terrain, with roof shapes derived from source attributes.
