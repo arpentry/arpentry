@@ -122,13 +122,23 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32) ->
 
     let local_ecef = local_ecef_delta(dlam, dphi, alt);
 
-    var world_pos = tile.model * vec4<f32>(local_ecef, 1.0);
-    // The tile model is view-aligned (eye at origin, looking down -z), so a
-    // +z shift moves the vertex toward the camera by exactly the margin.
-    world_pos.z += depth_margin;
-
+    let world_pos = tile.model * vec4<f32>(local_ecef, 1.0);
+    // Depth-only camera bias: the depth test compares against the vertex
+    // moved `depth_margin` toward the camera (the tile model is view-aligned,
+    // so +z is exactly that), but the projected screen position keeps the
+    // TRUE vertex — shifting the position itself changes the projection and
+    // makes biased geometry visibly parallax off its neighbours up close.
+    // Splice the shifted point's depth (ps.z/ps.w, rescaled onto the true
+    // clip w) into the true clip position.
     var out: VsOut;
-    out.pos = globals.projection * world_pos;
+    var p = globals.projection * world_pos;
+    if (depth_margin != 0.0) {
+        var shifted = world_pos;
+        shifted.z += depth_margin;
+        let ps = globals.projection * shifted;
+        p = vec4<f32>(p.xy, ps.z / ps.w * p.w, p.w);
+    }
+    out.pos = p;
     out.uv = vec2<f32>(u, v);
     let enc = vec2<f32>(f32(oct_norm.x) / 127.0, f32(oct_norm.y) / 127.0);
     let obj_normal = decode_octahedral(enc);

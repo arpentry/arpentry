@@ -104,7 +104,7 @@ fn local_ecef_delta(dlam: f32, dphi: f32, alt: f32) -> vec3<f32> {
     let dphi = tile.rel_bounds.y + v * (tile.rel_bounds.w - tile.rel_bounds.y);
     let alt = f32(qz) * 0.001;
 
-    var world_pos = tile.model * vec4<f32>(local_ecef_delta(dlam, dphi, alt), 1.0);
+    let world_pos = tile.model * vec4<f32>(local_ecef_delta(dlam, dphi, alt), 1.0);
 
     // Bias the stroke toward the camera by a fixed world margin so it wins the
     // LessEqual depth test against terrain up to ROAD_DEPTH_MARGIN_M in front of it
@@ -114,12 +114,18 @@ fn local_ecef_delta(dlam: f32, dphi: f32, alt: f32) -> vec3<f32> {
     // vertex +margin along z reduces its depth by exactly the margin everywhere on
     // screen.  (Scaling toward the origin instead would shorten the margin for
     // off-centre roads, where the view ray is far from the depth axis, so a cutting
-    // near the screen edge would stay buried.)  The shift is tiny next to the view
-    // distance, so the road neither visibly floats nor z-fights.
-    world_pos.z += ROAD_DEPTH_MARGIN_M;
+    // near the screen edge would stay buried.)  The bias is DEPTH-ONLY: the depth
+    // test uses the shifted point, but the projected screen position keeps the
+    // true vertex — moving the position itself changes the projection, and at
+    // street-level altitudes a 12 m shift visibly slides the paint off its deck
+    // and parallaxes as the camera moves.
+    var shifted = world_pos;
+    shifted.z += ROAD_DEPTH_MARGIN_M;
 
     var out: VsOut;
-    out.pos = globals.projection * world_pos;
+    let p = globals.projection * world_pos;
+    let ps = globals.projection * shifted;
+    out.pos = vec4<f32>(p.xy, ps.z / ps.w * p.w, p.w);
     out.color = color;
     out.local = local;
     out.hw_len = hw_len;
