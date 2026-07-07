@@ -29,7 +29,7 @@
 
 use geo_types::Coord;
 
-use crate::priors::MAX_ROAD_DEVIATION_M;
+use crate::priors::{MAX_ROAD_DEVIATION_M, PORTAL_MAX_M};
 use crate::scene::{metric_len, run_cos_lat, Span, SpanKind, DEG_M};
 
 /// Target spacing in metres after densification, used both to sample the road
@@ -66,6 +66,38 @@ const SMOOTH_MAX_DEV_M: f64 = 4.0;
 /// up, a fill on the way down — instead of letting one anchored direction
 /// drift to one side.
 const GRADE_PASSES: usize = 8;
+
+/// Passes of [`absorb_infeasible_anchors`] + re-solve. Each pass may extend a
+/// structure run by up to [`PORTAL_MAX_M`] past its current edge, so a long
+/// infeasible flank (a gorge wall the road pierces obliquely) is absorbed in
+/// a few steps; the cap bounds the creep on pathological terrain.
+const ABSORB_PASSES: usize = 8;
+
+/// A solved at-grade pitch steeper than this multiple of the class grade
+/// ceiling, adjacent to a structure, marks the stretch as infeasible — the
+/// deviation budget lost to the terrain there, so the road cannot in fact be
+/// at grade. Above 1 so that the limiter's small relaxation residue (and a
+/// genuinely firm pitch a real road would hold) is left alone; the disease
+/// this hunts is a 3–10× violation at a cliff.
+const ABSORB_GRADE_FACTOR: f64 = 1.5;
+
+/// How far outward of a structure edge [`seek_rim_anchors`] may migrate the
+/// bounding anchor to the local terrain extremum — the gorge rim a deck
+/// launches from, the flank base a bore emerges at. The disease this cures is
+/// the anchor point-sampling a DEM roll-off (the smoothed shoulder between a
+/// plateau and the wall below), a one-to-few-lattice-cell artifact, so the
+/// reach is a few profile nodes — far under the annotation-trust radius.
+const ANCHOR_SEEK_M: f64 = 32.0;
+
+/// Terrain excursion inside the span (relative to its bounding anchor) that
+/// classifies the structure side as flying (a deck to launch high) or buried
+/// (a bore to emerge low) for the anchor seek. Below it the ground is
+/// effectively flat and the anchor is left where the annotation put it.
+const SEEK_GAP_M: f64 = 2.0;
+
+/// Least anchor improvement worth migrating for — under this the roll-off is
+/// cosmetically flat and moving the abutment buys nothing.
+const SEEK_MIN_GAIN_M: f64 = 0.5;
 
 /// A corridor's solved surface profile: a densified centerline with a per-node
 /// road-surface height. Evaluated at an arbitrary point by projecting it onto
@@ -139,10 +171,43 @@ pub fn solve(
         return None;
     }
     let terrain: Vec<f64> = nodes.iter().map(|c| elev(*c)).collect();
-    let at_grade: Vec<bool> = arc.iter().map(|&a| kind_at(spans, a) == SpanKind::Grade).collect();
-    let mut road_m = road_profile(&arc, &terrain, &at_grade);
+    let mut at_grade: Vec<bool> =
+        arc.iter().map(|&a| kind_at(spans, a) == SpanKind::Grade).collect();
+    let mut road_m;
     if let Some(g) = max_grade {
-        limit_road_grade(&arc, &mut road_m, &terrain, &at_grade, g);
+        // Robust structure anchors: snap each structure-bounding anchor to
+        // the local terrain extremum (a bridge launches from the rim crest, a
+        // bore emerges at the flank base) before any chord is fit — an anchor
+        // point-sampled on a rim roll-off otherwise launches the deck metres
+        // below the rim and digs the approach into a cut to reach it.
+        // Engineered classes only: an unengineered road drapes the terrain
+        // whatever it does, and moving its anchors just reshapes its (already
+        // steep, genuine) pitches.
+        seek_rim_anchors(&arc, &terrain, &mut at_grade);
+        let solve_once = |road_m: &mut Vec<f64>, at_grade: &[bool]| {
+            *road_m = road_profile(&arc, &terrain, at_grade);
+            limit_road_grade(&arc, road_m, &terrain, at_grade, g);
+            rechord_structures(&arc, road_m, at_grade);
+        };
+        road_m = Vec::new();
+        solve_once(&mut road_m, &at_grade);
+        // Solved structure ends (S5's trust model, applied to the profile):
+        // where the solved road still pitches far beyond the grade ceiling
+        // right beside a structure, the annotation ended before the road
+        // actually reached the ground — a bridge landing into a gorge wall, a
+        // tunnel emerging under a climbing flank. The deviation budget lost to
+        // the terrain there, so no at-grade road can exist: absorb the stretch
+        // into the structure run and re-solve, until the profile is feasible.
+        // The spans are grown to match at reconcile time
+        // (`portals::grow_spans`), so sweeps and paint follow.
+        for _ in 0..ABSORB_PASSES {
+            if !absorb_infeasible_anchors(&arc, &mut at_grade, &road_m, g) {
+                break;
+            }
+            solve_once(&mut road_m, &at_grade);
+        }
+    } else {
+        road_m = road_profile(&arc, &terrain, &at_grade);
     }
     let deck_m = deck_ramp(&arc, &road_m, &at_grade);
     let smooth = smooth_path(&spline_path(raw, &params, cos_lat));
@@ -316,6 +381,11 @@ impl Profile {
     /// Per-node solved road heights.
     pub fn road_m(&self) -> &[f64] {
         &self.road_m
+    }
+
+    /// Per-node deck-ramp heights, for stage-artifact dumps.
+    pub fn deck_m(&self) -> &[f64] {
+        &self.deck_m
     }
 
     /// Per-node reference terrain heights.
@@ -563,6 +633,9 @@ impl Profile {
     pub fn from_heights(nodes: &[Coord], road_m: Vec<f64>, terrain_m: Vec<f64>) -> Profile {
         // Tests supply the road heights they want a deck to ride directly, so
         // the deck ramp is the road profile as given (no span-splitting here).
+        // Every node is flagged at grade: burial is expressed through the
+        // heights (the road/terrain gap), and an all-absorbed flag set would
+        // make `portals::grow_spans` swallow whole corridors.
         let deck_m = road_m.clone();
         let n = nodes.len();
         Profile {
@@ -573,7 +646,7 @@ impl Profile {
             road_m,
             deck_m,
             terrain_m,
-            at_grade: vec![false; n],
+            at_grade: vec![true; n],
         }
     }
 }
@@ -869,6 +942,191 @@ fn limit_road_grade(
     }
 }
 
+/// Re-pins every two-sided structure chord to the *limited* road heights at
+/// its bounding anchors. [`limit_road_grade`] may carry an approach onto an
+/// embankment (or into a cut) right up to a structure edge — where terrain
+/// falls faster than the grade ceiling, the road arrives metres away from
+/// the raw terrain sample the chord was fit from, and the boundary step
+/// would crack the road surface at the abutment. Refitting the chord through
+/// where the road actually arrives restores continuity; the deck then
+/// launches from the embankment top, which is where a real abutment sits. A
+/// one-sided run (a corridor starting or ending mid-structure) keeps its
+/// solved heights — there is no arrival to meet.
+fn rechord_structures(arc: &[f64], road_m: &mut [f64], at_grade: &[bool]) {
+    let n = road_m.len();
+    let mut i = 0;
+    while i < n {
+        if at_grade[i] {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < n && !at_grade[i] {
+            i += 1;
+        }
+        let end = i - 1;
+        if start == 0 || end + 1 >= n {
+            continue; // one-sided: no bounding anchor to meet on that side
+        }
+        let (sa, ha) = (arc[start - 1], road_m[start - 1]);
+        let (sb, hb) = (arc[end + 1], road_m[end + 1]);
+        if sb <= sa {
+            continue;
+        }
+        for k in start..=end {
+            road_m[k] = ha + (hb - ha) * (arc[k] - sa) / (sb - sa);
+        }
+    }
+}
+
+/// Snaps each structure-bounding anchor to the local terrain extremum within
+/// [`ANCHOR_SEEK_M`] of it, by flipping the intervening at-grade nodes into
+/// the structure run. The annotation edge lands where the mapper split the
+/// segment, and the DEM there is a roll-off blend of rim and wall (or flank
+/// and floor) — the least trustworthy sample in sight. The physical anchor
+/// is the rim crest a deck launches from (the span's terrain falls away
+/// below: seek the *maximum*) or the flank base a bore emerges at (it rises
+/// above: seek the *minimum*). Runs once, before any chord is fit; a side
+/// whose span terrain stays within [`SEEK_GAP_M`] of the anchor is left
+/// alone (flat ground — nothing to launch over), as is an anchor already
+/// within [`SEEK_MIN_GAIN_M`] of the extremum. Returns whether any anchor
+/// moved.
+fn seek_rim_anchors(arc: &[f64], terrain: &[f64], at_grade: &mut [bool]) -> bool {
+    let n = at_grade.len();
+    if n < 3 {
+        return false;
+    }
+    // Structure runs as inclusive node ranges, gathered up front (flipping
+    // must not create new edges within this single pass).
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < n {
+        if at_grade[i] {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < n && !at_grade[i] {
+            i += 1;
+        }
+        runs.push((start, i - 1));
+    }
+    let mut changed = false;
+    // One side of one run: `anchor` is the bounding at-grade node, `inside`
+    // a node a couple of steps into the run (where the flying/buried gap has
+    // developed), `dir` +1 walking outward toward higher indices.
+    let mut seek = |anchor: usize, inside: usize, dir: isize, at_grade: &mut [bool]| {
+        let sign = terrain[inside] - terrain[anchor];
+        if sign.abs() < SEEK_GAP_M {
+            return; // effectively flat: the annotation edge is fine
+        }
+        // Terrain falls into the span → a deck: the anchor belongs on the
+        // highest ground in reach (the rim). Rises → a bore: on the lowest.
+        let better = |a: f64, b: f64| if sign < 0.0 { a > b } else { a < b };
+        let mut best = anchor;
+        let mut k = anchor as isize + dir;
+        while k >= 0
+            && (k as usize) < n
+            && at_grade[k as usize]
+            && (arc[k as usize] - arc[anchor]).abs() <= ANCHOR_SEEK_M
+        {
+            if better(terrain[k as usize], terrain[best]) {
+                best = k as usize;
+            }
+            k += dir;
+        }
+        if best != anchor && (terrain[best] - terrain[anchor]).abs() >= SEEK_MIN_GAIN_M {
+            // Flip everything between the old anchor (inclusive) and the new
+            // one (exclusive): the roll-off joins the structure.
+            let (lo, hi) = if best < anchor { (best + 1, anchor) } else { (anchor, best - 1) };
+            at_grade[lo..=hi].fill(false);
+            changed = true;
+        }
+    };
+    for &(start, end) in &runs {
+        if start > 0 && at_grade[start - 1] {
+            seek(start - 1, (start + 2).min(end), -1, at_grade);
+        }
+        if end + 1 < n && at_grade[end + 1] {
+            seek(end + 1, end.saturating_sub(2).max(start), 1, at_grade);
+        }
+    }
+    changed
+}
+
+/// Flips at-grade nodes into the neighbouring structure run where the solved
+/// road still pitches beyond [`ABSORB_GRADE_FACTOR`] × the class grade ceiling
+/// — the leftover of [`limit_road_grade`]'s deviation clamp beating its grade
+/// clamp, which only happens where the terrain near a structure end is too
+/// steep for any at-grade road (the annotation ended before the road reached
+/// the ground). The search reaches [`PORTAL_MAX_M`] past each run edge — the
+/// same annotation-trust radius the portal solver uses — and everything from
+/// the edge through the farthest violation flips, so the structure continues
+/// through the whole infeasible stretch. Returns whether anything flipped.
+fn absorb_infeasible_anchors(
+    arc: &[f64],
+    at_grade: &mut [bool],
+    road_m: &[f64],
+    max_grade: f64,
+) -> bool {
+    let n = at_grade.len();
+    if n < 2 {
+        return false;
+    }
+    let tol = max_grade * ABSORB_GRADE_FACTOR;
+    // Pitch of the edge into node `i`, against the tolerance.
+    let steep = |i: usize| -> bool {
+        let run = arc[i] - arc[i - 1];
+        run > 0.0 && (road_m[i] - road_m[i - 1]).abs() / run > tol
+    };
+    // Structure runs as inclusive node ranges, gathered up front: the flips
+    // below must not be re-scanned as new run edges within one pass.
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < n {
+        if at_grade[i] {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < n && !at_grade[i] {
+            i += 1;
+        }
+        runs.push((start, i - 1));
+    }
+    let mut changed = false;
+    for &(start, end) in &runs {
+        // Outward past the run's high edge: the farthest steep pitch within
+        // reach marks the infeasible stretch.
+        let mut worst = None;
+        let mut k = end + 1;
+        while k < n && at_grade[k] && arc[k] - arc[end] <= PORTAL_MAX_M {
+            if steep(k) {
+                worst = Some(k);
+            }
+            k += 1;
+        }
+        if let Some(hi) = worst {
+            at_grade[end + 1..=hi].fill(false);
+            changed = true;
+        }
+        // And past the low edge, mirrored.
+        let mut worst = None;
+        let mut k = start;
+        while k > 0 && at_grade[k - 1] && arc[start] - arc[k - 1] <= PORTAL_MAX_M {
+            if steep(k) {
+                worst = Some(k - 1);
+            }
+            k -= 1;
+        }
+        if let Some(lo) = worst {
+            at_grade[lo..start].fill(false);
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// The deck-top height at each node: [`road_profile`]'s heights with every
 /// structure span (a maximal run of non-at-grade nodes) replaced by a single
 /// straight ramp fit over that span and its bounding anchors. The at-grade
@@ -1153,6 +1411,95 @@ mod tests {
         for i in 0..n {
             assert!((road[i] - terrain[i]).abs() <= MAX_ROAD_DEVIATION_M + 1e-9);
         }
+    }
+
+    #[test]
+    fn a_deck_anchored_on_a_rim_roll_off_launches_from_the_rim() {
+        // A gorge bridge whose annotation starts a few metres down the rim
+        // roll-off: the anchor point-samples the wall (90 m) instead of the
+        // rim (100 m). Without the anchor seek the deck launches 10 m low and
+        // the approach digs a −6 % cut below the plateau to reach it; with it
+        // the anchor snaps to the rim crest and the approach stays on the
+        // ground.
+        let (seg, len) = line(512, 0.06);
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let len_m = 0.06 * cos_lat * DEG_M;
+        let x_at = move |c: Coord| (c.x - 6.0) * cos_lat * DEG_M / len_m; // 0..1
+        let terrain = move |c: Coord| {
+            let x = x_at(c);
+            if x < 0.4 || x > 0.6 {
+                100.0 // the plateaus
+            } else if x < 0.42 {
+                100.0 - 40.0 * (x - 0.4) / 0.02 // west wall
+            } else if x > 0.58 {
+                100.0 - 40.0 * (0.6 - x) / 0.02 // east wall
+            } else {
+                60.0 // gorge floor
+            }
+        };
+        // Annotated span edges ~23 m down each roll-off (terrain ≈ 90 m).
+        let p = profile_from_limited(&seg, &[span(0.405 * len, 0.595 * len, 1)], 0.06, terrain);
+        let (arc, road, terr, at_grade) = (p.arc(), p.road_m(), p.terrain_m(), p.at_grade());
+        // The approach stays on the plateau — no cut diving toward a low
+        // launch point.
+        let i = arc.iter().position(|&a| a >= 0.39 * len).unwrap();
+        assert!(at_grade[i], "the plateau approach stays at grade");
+        assert!(
+            (road[i] - terr[i]).abs() < 0.5,
+            "approach must sit on the plateau, road {} terr {}",
+            road[i],
+            terr[i]
+        );
+        // The deck launches from rim height, not from the roll-off sample.
+        let launch = p.height_at(6.0 + 0.06 * 0.405, 46.0);
+        assert!(launch > 98.0, "deck must launch from the ~100 m rim, got {launch}");
+        // And the roll-off itself is structure now.
+        let j = arc.iter().position(|&a| a >= 0.41 * len).unwrap();
+        assert!(!at_grade[j], "the roll-off joins the structure");
+    }
+
+    #[test]
+    fn a_structure_ending_at_a_cliff_is_extended_not_pitched() {
+        // A bridge annotation ends where the terrain climbs a ~40 % gorge
+        // wall (the mapped span stops before the road actually reaches the
+        // ground). The deviation budget cannot carry an at-grade road up the
+        // wall, so the old solve left an impossible pitch there; the fix
+        // absorbs the stretch into the structure and re-chords. The road must
+        // hold a plausible grade everywhere it is at grade, and the wall
+        // nodes must no longer be anchors.
+        let (seg, len) = line(512, 0.06);
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let len_m = 0.06 * cos_lat * DEG_M;
+        let x_at = move |c: Coord| (c.x - 6.0) * cos_lat * DEG_M / len_m; // 0..1
+        let terrain = move |c: Coord| {
+            let x = x_at(c);
+            if x < 0.5 {
+                100.0 // approach and gorge rim
+            } else if x < 0.51 {
+                100.0 + 3000.0 * (x - 0.5) // the wall: +30 m over ~46 m
+            } else {
+                130.0 // the plateau above
+            }
+        };
+        // Bridge annotated up to the foot of the wall.
+        let p = profile_from_limited(&seg, &[span(0.3 * len, 0.5 * len, 1)], 0.06, terrain);
+        let (arc, road, at_grade) = (p.arc(), p.road_m(), p.at_grade());
+        for i in 1..arc.len() {
+            if !(at_grade[i] && at_grade[i - 1]) || arc[i] <= arc[i - 1] {
+                continue;
+            }
+            let g = (road[i] - road[i - 1]).abs() / (arc[i] - arc[i - 1]);
+            assert!(g <= 0.09 + 1e-6, "at-grade pitch {g} survives at arc {}", arc[i]);
+        }
+        // The wall itself is structure now, not anchored road.
+        let mid_wall = 0.505 * len;
+        let i = arc.iter().position(|&a| a >= mid_wall).unwrap();
+        assert!(!at_grade[i], "the wall must be absorbed into the structure");
+        // And the plateau beyond is still ordinary at-grade road on the ground.
+        let plateau = 0.7 * len;
+        let j = arc.iter().position(|&a| a >= plateau).unwrap();
+        assert!(at_grade[j], "absorption must stop once the ground is feasible");
+        assert!((road[j] - 130.0).abs() < 1.0, "plateau road sits on the ground");
     }
 
     #[test]

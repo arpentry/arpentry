@@ -82,8 +82,67 @@ pub fn portals(profile: &Profile, spans: &[Span]) -> Vec<Portal> {
     out
 }
 
-/// Corridor spans reconciled with the solved geometry: each tunnel span is
-/// clamped to its buried run (the solved portal crossings), and the freed
+/// Structure spans grown over the profile's absorbed stretches: where the
+/// solve flipped at-grade nodes into a structure run (an infeasible anchor —
+/// the annotation ended before the road reached the ground, see
+/// `profile::solve`), the adjacent structure span is extended to cover them
+/// and the grade span shrunk to match, so the deck/bore sweep and the paint
+/// follow the solved geometry instead of the annotation. The span list stays
+/// a partition of the corridor: each boundary moves, none overlap.
+pub fn grow_spans(profile: &Profile, spans: &[Span]) -> Vec<Span> {
+    let arc = profile.arc();
+    let at_grade = profile.at_grade();
+    if spans.len() < 2 || at_grade.is_empty() {
+        return spans.to_vec();
+    }
+    let mut out = spans.to_vec();
+    for i in 0..out.len() {
+        if out[i].kind == SpanKind::Grade {
+            continue;
+        }
+        // Backward over the preceding grade span's absorbed tail.
+        if i > 0 && out[i - 1].kind == SpanKind::Grade {
+            let mut a0 = out[i].arc0;
+            for k in (0..arc.len()).rev() {
+                if arc[k] >= out[i].arc0 {
+                    continue;
+                }
+                if arc[k] <= out[i - 1].arc0 || at_grade[k] {
+                    break;
+                }
+                a0 = arc[k];
+            }
+            if a0 < out[i].arc0 {
+                out[i].arc0 = a0;
+                out[i - 1].arc1 = a0;
+            }
+        }
+        // Forward over the following grade span's absorbed head.
+        if i + 1 < out.len() && out[i + 1].kind == SpanKind::Grade {
+            let mut a1 = out[i].arc1;
+            for k in 0..arc.len() {
+                if arc[k] <= out[i].arc1 {
+                    continue;
+                }
+                if arc[k] >= out[i + 1].arc1 || at_grade[k] {
+                    break;
+                }
+                a1 = arc[k];
+            }
+            if a1 > out[i].arc1 {
+                out[i].arc1 = a1;
+                out[i + 1].arc0 = a1;
+            }
+        }
+    }
+    // A grade span fully absorbed from one side collapses to nothing: drop it.
+    out.retain(|s| s.arc1 - s.arc0 > f64::EPSILON);
+    out
+}
+
+/// Corridor spans reconciled with the solved geometry: structure spans grown
+/// over the profile's absorbed stretches ([`grow_spans`]), then each tunnel
+/// span clamped to its buried run (the solved portal crossings), and the freed
 /// annotation slack — the stretch a mapper tagged "tunnel" where the road in
 /// fact still runs above ground — is re-covered by grade spans, so the
 /// approach up to a portal mouth is painted road instead of naked ground. A
@@ -96,8 +155,9 @@ pub fn reconcile_spans(profile: &Profile, spans: &[Span]) -> Vec<Span> {
     /// Shortest grade stub worth emitting, in metres — below this the piece
     /// quantizes away.
     const MIN_STUB_M: f64 = 0.25;
+    let spans = grow_spans(profile, spans);
     let mut out = Vec::with_capacity(spans.len() + 4);
-    for s in spans {
+    for s in &spans {
         if s.kind != SpanKind::Tunnel {
             out.push(*s);
             continue;
@@ -208,6 +268,48 @@ mod tests {
         let out = reconcile_spans(&p, &[span(300.0, 700.0)]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind, SpanKind::Grade, "nothing buried: paint it as road");
+    }
+
+    #[test]
+    fn grown_spans_cover_the_absorbed_stretch() {
+        // A grade-limited solve that absorbs a cliff into a bridge span (see
+        // profile::tests::a_structure_ending_at_a_cliff_is_extended_not_pitched):
+        // grow_spans must extend the bridge over the absorbed nodes and shrink
+        // the following grade span to keep the partition.
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let len = 4000.0;
+        let deg = len / (DEG_M * cos_lat);
+        let n = 512;
+        let nodes: Vec<Coord> =
+            (0..n).map(|i| Coord { x: 6.0 + deg * i as f64 / (n - 1) as f64, y: 46.0 }).collect();
+        let mut elev = |c: Coord| {
+            let x = (c.x - 6.0) / deg; // 0..1
+            if x < 0.5 {
+                100.0
+            } else if x < 0.51 {
+                100.0 + 3000.0 * (x - 0.5) // the wall: +30 m over ~40 m
+            } else {
+                130.0
+            }
+        };
+        let spans = vec![
+            Span { arc0: 0.0, arc1: 0.3 * len, level: 0, kind: SpanKind::Grade },
+            Span { arc0: 0.3 * len, arc1: 0.5 * len, level: 1, kind: SpanKind::Bridge },
+            Span { arc0: 0.5 * len, arc1: len, level: 0, kind: SpanKind::Grade },
+        ];
+        let p = crate::solve::profile::solve(&nodes, &spans, Some(0.06), &mut elev)
+            .expect("non-degenerate corridor");
+        let out = grow_spans(&p, &spans);
+        assert_eq!(out.len(), 3, "the partition keeps its three spans: {out:?}");
+        assert_eq!(out[1].kind, SpanKind::Bridge);
+        assert!(
+            out[1].arc1 > 0.5 * len + 10.0,
+            "bridge must grow over the absorbed wall, got arc1 {}",
+            out[1].arc1
+        );
+        assert!((out[2].arc0 - out[1].arc1).abs() < 1e-9, "grade span shrinks to match");
+        assert!((out[2].arc1 - len).abs() < 1e-9, "the far boundary is untouched");
+        assert!((out[1].arc0 - 0.3 * len).abs() < 1e-9, "the feasible low side is untouched");
     }
 
     #[test]

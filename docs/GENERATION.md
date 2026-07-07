@@ -166,7 +166,7 @@ different part of the problem. They are the test scenarios for any design.
 | S7 | **Bridge directly into tunnel** (portal at the abutment) | Both at once; the deck must meet the portal face exactly | Structure-to-structure continuity |
 | S8 | **Dual carriageway on one structure** | One shared grade line, one (or two abutting) decks | Entity resolution across parallel segments |
 | S9 | **At-grade mountain road** (hairpins, 10 %+ slopes) | The terrain itself; no structure | Knowing when to do nothing; grade limits must not "fix" a road that genuinely climbs |
-| S10 | **Annotation noise**: spans that overlap, leave slivers, or extend past the physical structure | none | Robustness; graceful degradation |
+| S10 | **Annotation noise**: spans that overlap, leave slivers, extend past the physical structure, or end before the road reaches the ground (a bridge landing into a gorge wall) | none | Robustness; graceful degradation; solved structure ends |
 | S11 | **Building on a steep slope** | Footprint meets the ground on every side: downhill foundation or cut platform | Building-ground reconciliation (D3), per-LOD terrain agreement |
 | S12 | **Dense old town with courtyards** at several zooms | Footprint interior rings; roof forms from sparse tags | Roof synthesis, courtyard meshing, LOD aggregation (D5) |
 | S13 | **Building beside a road cut or embankment** | The *engineered* ground, not the natural terrain | Cross-class ground agreement (D4) |

@@ -165,6 +165,10 @@ fn profiles_geojson(scene: &SceneGraph, solved: &SolvedModel) -> Json {
                 idx.iter().map(|&i| json!([nodes[i].x, nodes[i].y, road[i]])).collect();
             let road_j: Vec<Json> = idx.iter().map(|&i| json!(road[i])).collect();
             let terrain_j: Vec<Json> = idx.iter().map(|&i| json!(terrain[i])).collect();
+            let deck = p.deck_m();
+            let deck_j: Vec<Json> = idx.iter().map(|&i| json!(deck[i])).collect();
+            let at_grade = p.at_grade();
+            let grade_j: Vec<Json> = idx.iter().map(|&i| json!(at_grade[i])).collect();
             json!({
                 "type": "Feature",
                 "geometry": { "type": "LineString", "coordinates": coords },
@@ -173,6 +177,8 @@ fn profiles_geojson(scene: &SceneGraph, solved: &SolvedModel) -> Json {
                     "class": format!("{:?}", c.class),
                     "road_m": road_j,
                     "terrain_m": terrain_j,
+                    "deck_m": deck_j,
+                    "at_grade": grade_j,
                 },
             })
         })
