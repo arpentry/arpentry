@@ -31,7 +31,12 @@ typedef struct {
     float sun_dir[3];
     float apply_gamma;
     float altitude;
-    float _pad[3];
+    /* Framebuffer viewport in pixels — the road shader converts NDC offsets to
+       pixels to floor a stroke's screen-space width (so a flat ribbon stays
+       visible at grazing angles). Other shaders ignore these slots. */
+    float viewport_w;
+    float viewport_h;
+    float _pad;
 } global_uniforms_t;
 
 typedef struct {
@@ -258,12 +263,12 @@ struct arpt_renderer {
     WGPUTexture building_tex;
     WGPUTextureView building_view;
 
-    /* Road-structure box prisms: one opaque depth-tested pipeline, two material
-       colour textures so bridges and tunnels read differently. */
-    WGPURenderPipeline structure_pipeline;
-    /* Bridge decks: same shader with a small camera-facing depth margin so a
-       deck coplanar with its engineered roadbed wins the depth tie and shows
-       its own smooth edge instead of a jagged intersection contour. */
+    /* Road-structure box prisms (bridge decks and tunnel bores): one opaque
+       depth-tested pipeline whose up-facing top face is painted road asphalt
+       (fs_deck) so the surface continues across every structure, with a small
+       camera-facing depth margin (vs_bridge) so a top coplanar with its
+       engineered roadbed wins the depth tie and shows its own smooth edge
+       instead of a jagged intersection contour. */
     WGPURenderPipeline bridge_pipeline;
     WGPUTexture bridge_tex;
     WGPUTextureView bridge_view;
@@ -428,6 +433,7 @@ void arpt__mesh_draw_buildings(arpt_renderer *r, arpt_tile_gpu *tile);
    colour. */
 WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
                                                      const char *vs_entry,
+                                                     const char *fs_entry,
                                                      WGPUTextureFormat format,
                                                      WGPUBindGroupLayout global_bgl,
                                                      WGPUBindGroupLayout tile_bgl);

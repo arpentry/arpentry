@@ -57,10 +57,13 @@ const MAX_VERTS: usize = 4096;
 /// Bakes a road's per-vertex elevation onto the feature, densifying the
 /// (clipped) centerline so it follows the relief and writing the heights into
 /// `f.z`. A no-op for non-line geometry. `deck` marks paint re-emitted over a
-/// bridge span: it always rides the solved profile directly — the same
+/// bridge span: it always rides the solved deck ramp directly — the same
 /// heights the deck sweep uses — so the stroke lies on the deck top at every
 /// zoom instead of following the per-zoom drape correction (which would step
-/// off the deck wherever the coarse lattice disagrees with the reference).
+/// off the deck wherever the coarse lattice disagrees with the reference). A
+/// tunnel's paint bakes with `deck = false` and so takes the drape branch
+/// below — it rides the drawn ground (`max(road, surface)`), draping the
+/// hillside where the bore runs buried instead of sinking under the terrain.
 pub fn bake(
     f: &mut EncoderFeature,
     profile: Option<&Profile>,
@@ -71,9 +74,12 @@ pub fn bake(
     bounds: &Bounds,
 ) {
     let mut height = |lon: f64, lat: f64| match profile {
-        // Deck paint rides the solved profile at every zoom, exactly on the
-        // deck top the structure sweep builds from the same profile.
-        Some(p) if deck => p.height_at(lon, lat),
+        // Deck paint rides the *deck ramp* at every zoom — the same `deck_m`
+        // heights the structure sweep builds its slab top from — not the road
+        // profile, which the ramp fit (and the clearance clamps) diverge from
+        // mid-span; paint baked at road height sinks inside the slab wherever
+        // the fitted ramp rises above it.
+        Some(p) if deck => p.deck_height_at(lon, lat),
         // At the reference zoom the datum and the reference surface are the
         // same sample, so this is max(road_m, surface): the solved height,
         // never below the drawn ground (see the module doc on the clamp).
@@ -135,10 +141,9 @@ fn densify_with_surface(
     }
 }
 
-/// Densifies one linestring to ~`seg_q` quantized spacing — plus a vertex at
-/// every rendered-terrain lattice crossing — snaps each (original and
-/// inserted) vertex through `snap`, and samples the height at the snapped
-/// position.
+/// Densifies one linestring to ~`seg_q` quantized spacing, snaps it onto the
+/// smoothed sweep line, inserts a vertex at every rendered-terrain lattice
+/// crossing of the *snapped* chords, and samples the height at each vertex.
 ///
 /// The lattice crossings are what keep a draped road *on* the drawn ground:
 /// the terrain mesh is planar inside each lattice triangle, so a chord whose
@@ -148,6 +153,14 @@ fn densify_with_surface(
 /// even a small dip puts the stroke beyond the depth bias' reach — the road
 /// visibly sinks into the hillside. With a vertex on every crossing, every
 /// chord lies inside one triangle and the drape is chord-exact.
+///
+/// Two passes, and the order matters: snapping the paint onto the corridor's
+/// smoothed sweep line moves a vertex up to `PAINT_SNAP_MAX_M` sideways, so a
+/// crossing found on the *raw* chord no longer lands on its lattice line once
+/// snapped — the emitted chord then spans a triangle break and the drape sags.
+/// So pass 1 snaps the densified anchors first, and pass 2 finds the crossings
+/// on the snapped chords that are actually emitted and leaves them unsnapped.
+/// The anchors carry the sweep-line shape; the crossings hold the drape.
 fn densify_road_line(
     line: &LineString,
     bounds: &Bounds,
@@ -156,24 +169,43 @@ fn densify_road_line(
     height: &mut dyn FnMut(f64, f64) -> f64,
 ) -> (Vec<Coord>, Vec<i32>) {
     let pts = &line.0;
-    let mut xy = Vec::new();
-    let mut zs = Vec::new();
     if pts.is_empty() {
-        return (xy, zs);
+        return (Vec::new(), Vec::new());
     }
-    let mut push = |c: Coord, xy: &mut Vec<Coord>, zs: &mut Vec<i32>| {
-        let c = snap(c);
-        zs.push(project::quantize_z(height(c.x, c.y)));
-        xy.push(c);
-    };
-    push(pts[0], &mut xy, &mut zs);
-    let mut ts = Vec::new();
-    for w in pts.windows(2) {
+
+    // Pass 1: densify the raw line to the comb spacing and snap every vertex
+    // (original + inserted) onto the smoothed sweep line. These anchors are the
+    // curve the paint should ride; they are not re-snapped afterward.
+    let mut anchors = Vec::new();
+    anchors.push(snap(pts[0]));
+    'outer: for w in pts.windows(2) {
         let (p0, p1) = (w[0], w[1]);
         let qlen = quant_len(p0, p1, bounds);
         let n = ((qlen / seg_q).ceil() as usize).clamp(1, MAX_VERTS);
+        for i in 1..=n {
+            let t = i as f64 / n as f64;
+            let c = Coord { x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t };
+            anchors.push(snap(c));
+            if anchors.len() >= MAX_VERTS {
+                break 'outer;
+            }
+        }
+    }
+
+    // Pass 2: walk the snapped anchor chords, inserting a vertex at every
+    // lattice crossing of the emitted chord (so it lands exactly on the lattice
+    // line and stays there), and sample the height at each final vertex.
+    let mut xy = Vec::new();
+    let mut zs = Vec::new();
+    let mut push = |c: Coord, xy: &mut Vec<Coord>, zs: &mut Vec<i32>| {
+        zs.push(project::quantize_z(height(c.x, c.y)));
+        xy.push(c);
+    };
+    push(anchors[0], &mut xy, &mut zs);
+    let mut ts = Vec::new();
+    for w in anchors.windows(2) {
+        let (p0, p1) = (w[0], w[1]);
         ts.clear();
-        ts.extend((1..n).map(|i| i as f64 / n as f64));
         lattice_crossings(p0, p1, bounds, &mut ts);
         ts.sort_by(f64::total_cmp);
         ts.push(1.0);
@@ -270,5 +302,46 @@ mod tests {
             })
             .count();
         assert!(on_diagonal >= 6, "expected samples on cell diagonals, got {on_diagonal}");
+    }
+
+    #[test]
+    fn snapping_does_not_break_chord_exactness() {
+        // A corridor road's paint is snapped sideways onto the smoothed sweep
+        // line before its height is sampled. Crossings must be found on the
+        // *snapped* chords, so no emitted segment spans a lattice cell edge or
+        // diagonal — otherwise the drape sags into a triangle break. Model the
+        // snap as a lattice-scale sideways nudge and assert every emitted chord
+        // stays inside one triangle (no lattice line strictly interior to it).
+        let b = Bounds::of_tile(14, 8500, 5800);
+        let cy = b.south + 0.53 * b.height();
+        let (x0, x1) = (b.west + 0.30 * b.width(), b.west + 0.70 * b.width());
+        let line = LineString(vec![Coord { x: x0, y: cy }, Coord { x: x1, y: cy }]);
+        // A constant north nudge of ~0.3 cell: enough to shift a raw-chord
+        // diagonal crossing well off its line if snapping ran after insertion.
+        let dy = 0.02 * b.height();
+        let mut snap = |c: Coord| Coord { x: c.x, y: c.y + dy };
+        let (xy, _) =
+            densify_road_line(&line, &b, ROAD_SEGMENT_Q, &mut snap, &mut |_, _| 0.0);
+
+        let cw = b.width() / TERRAIN_GRID as f64;
+        let ch = b.height() / TERRAIN_GRID as f64;
+        for w in xy.windows(2) {
+            let g = |c: Coord| ((c.x - b.west) / cw, (c.y - b.south) / ch);
+            let (ax, ay) = g(w[0]);
+            let (bx, by) = g(w[1]);
+            for (u0, u1) in [(ax, bx), (ay, by), (ax - ay, bx - by)] {
+                let (lo, hi) = (u0.min(u1), u0.max(u1));
+                let mut k = lo.floor() + 1.0;
+                while k < hi {
+                    assert!(
+                        k <= lo + 1e-6 || k >= hi - 1e-6,
+                        "chord {:?}->{:?} spans lattice line {k} without a vertex",
+                        w[0],
+                        w[1]
+                    );
+                    k += 1.0;
+                }
+            }
+        }
     }
 }

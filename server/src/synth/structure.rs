@@ -75,7 +75,9 @@ pub fn stamp(
     let frame = Frame::at_center(bounds);
     let class = RoadClass::parse(prop_str(f, "class").as_deref());
     let link = crate::priors::is_link(prop_str(f, "subclass").as_deref());
-    let half_w = class.half_width_m(link);
+    // The structure is a shoulder wider than the painted carriageway, so the
+    // deck-top asphalt frames the road ribbon (`priors::STRUCTURE_SHOULDER_M`).
+    let half_w = class.half_width_m(link) + crate::priors::STRUCTURE_SHOULDER_M;
 
     let mut acc = Accum::default();
     for line in lines(&f.geometry) {
@@ -578,28 +580,35 @@ fn trim_to_crossing(sections: &mut Vec<Section>, end: End) {
     }
 }
 
-/// Marches outward from a buried boundary section `edge` along the
-/// `inner → edge` tangent, sampling the profile, and returns a cap section at
-/// the first point where the road reaches the terrain (the bore emerges),
-/// nudged out by [`PORTAL_CLEARANCE_M`] so the mouth sits just clear. Falls
-/// back to a cap at [`PORTAL_MAX_M`] if the approach stays buried that far.
+/// Marches outward from a buried boundary section `edge` along the *corridor*
+/// (not the straight `inner → edge` tangent), sampling the profile, and returns
+/// a cap section at the first point where the road reaches the terrain (the
+/// bore emerges), nudged out by [`PORTAL_CLEARANCE_M`] so the mouth sits just
+/// clear. Falls back to a cap at [`PORTAL_MAX_M`] if the approach stays buried
+/// that far.
+///
+/// Following the corridor arc rather than a straight extrapolation matters on a
+/// curving tunnel: a straight tangent walks off the corridor within tens of
+/// metres, so the road height and gap it samples — and the portal it places —
+/// land beside the road instead of on it. Marching the arc keeps plan position,
+/// height, and gap all on the corridor.
 fn march_to_crossing(
     edge: &Section,
     inner: &Section,
-    frame: &Frame,
+    _frame: &Frame,
     profile: &Profile,
 ) -> Option<Section> {
-    let de = (edge.lon - inner.lon) * frame.m_per_deg_lon;
-    let dn = (edge.lat - inner.lat) * M_PER_DEG_LAT;
-    let len = (de * de + dn * dn).sqrt();
-    if len < 1e-9 {
+    let a_edge = profile.arc_of(edge.lon, edge.lat);
+    let a_inner = profile.arc_of(inner.lon, inner.lat);
+    let d = a_edge - a_inner;
+    if d.abs() < 1e-9 {
         return None;
     }
-    let (ue, un) = (de / len, dn / len); // outward unit, ENU metres
+    let outward = d.signum(); // +1 toward increasing arc, −1 toward decreasing
     let at = |dist: f64| -> Section {
-        let lon = edge.lon + ue * dist / frame.m_per_deg_lon;
-        let lat = edge.lat + un * dist / M_PER_DEG_LAT;
-        bore_section(lon, lat, profile.height_at(lon, lat), edge.left_e, edge.left_n, profile)
+        let a = a_edge + outward * dist;
+        let p = profile.point_at_arc(a);
+        bore_section(p.x, p.y, profile.road_at_arc(a), edge.left_e, edge.left_n, profile)
     };
     let mut prev = (0.0, edge.gap_m.min(-f64::MIN_POSITIVE)); // (dist, gap), buried
     let mut dist = PORTAL_MARCH_M;

@@ -162,6 +162,14 @@ pub const EARTHWORK_SHOULDER_M: f64 = 1.0;
 /// Thickness of a bridge deck slab in metres — deck surface to its underside.
 pub const DECK_THICKNESS_M: f64 = 1.5;
 
+/// Extra half-width in metres a structure (bridge deck, tunnel bore) carries
+/// beyond the painted carriageway — the edge beam / shoulder / barrier a real
+/// deck adds outside the traffic lanes. Applied to the whole structure sweep
+/// (deck and bore alike, so a bridge↔tunnel junction has no width step), while
+/// the paint keeps the carriageway width — so the deck-top asphalt frames the
+/// road ribbon as a visible shoulder instead of ending flush with it.
+pub const STRUCTURE_SHOULDER_M: f64 = 1.0;
+
 /// Vertical clearance of a tunnel bore in metres — road floor to its flat
 /// roof. Road tunnels are built to a ~4.5 m vehicle clearance plus equipment
 /// headroom.

@@ -25,6 +25,51 @@ pub struct Portal {
     pub floor_m: f64,
 }
 
+/// The first node (in arc order) of the *dominant* buried run overlapping the
+/// annotated span: among the maximal contiguous stretches where `road` runs
+/// below `terrain` and that touch `[arc0, arc1]`, the one with the greatest
+/// integrated burial (Σ −gap over the whole run). Returns that run's first
+/// node that falls inside the annotation, so [`span_bounds`]' outward
+/// expansion walks the winning run in both directions.
+///
+/// This is the guard against a shallow terrain graze (real relief noise, or a
+/// brief emergence on the approach) sitting between the portal and the true
+/// bore: scored by depth×length it cannot outweigh the run it belongs to, so
+/// the tunnel is solved under the hill instead of collapsing onto the graze.
+fn dominant_buried_seed(arc: &[f64], road: &[f64], terrain: &[f64], span: &Span) -> Option<usize> {
+    let n = arc.len();
+    let gap = |i: usize| road[i] - terrain[i];
+    let in_span = |i: usize| arc[i] >= span.arc0 && arc[i] <= span.arc1;
+    let mut best: Option<usize> = None;
+    let mut best_score = 0.0_f64;
+    let mut i = 0;
+    while i < n {
+        if gap(i) >= 0.0 {
+            i += 1;
+            continue;
+        }
+        // A maximal buried run [start, i); score its full extent but seed on
+        // its first in-annotation node so the caller's expansion stays anchored
+        // inside the mapper's span.
+        let mut score = 0.0;
+        let mut seed = None;
+        while i < n && gap(i) < 0.0 {
+            score += -gap(i);
+            if seed.is_none() && in_span(i) {
+                seed = Some(i);
+            }
+            i += 1;
+        }
+        if let Some(seed) = seed {
+            if best.is_none() || score > best_score {
+                best = Some(seed);
+                best_score = score;
+            }
+        }
+    }
+    best
+}
+
 /// The buried run of one tunnel span: the arcs of the gap zero-crossings
 /// bounding it, searched outward past the annotation edges up to
 /// [`PORTAL_MAX_M`]. `None` when the span has no buried node (a tunnel tagged
@@ -38,12 +83,17 @@ pub fn span_bounds(profile: &Profile, span: &Span) -> Option<(Option<f64>, Optio
     let n = arc.len();
     let gap = |i: usize| road[i] - terrain[i];
 
-    // Seed on any buried node inside the annotated span, then expand the
-    // contiguous buried run outward — past the annotation edges (they are
-    // mapper cuts, not geometry) but no further than the search reach.
+    // Seed on the *dominant* buried run overlapping the annotation — not the
+    // first buried node — then expand that run outward past the annotation
+    // edges (mapper cuts, not geometry) but no further than the search reach.
+    // Seeding on the first node let a shallow DEM-noise graze on the approach
+    // capture the whole solve: the graze became the "tunnel" and the real,
+    // deep run past it was re-covered as at-grade road painted over the massif
+    // (docs/GENERATION.md S5, S10). The deepest run outscores a brief graze by
+    // orders of magnitude, so the bore lands under the hill it belongs to.
     let lo_arc = span.arc0 - PORTAL_MAX_M;
     let hi_arc = span.arc1 + PORTAL_MAX_M;
-    let seed = (0..n).find(|&i| arc[i] >= span.arc0 && arc[i] <= span.arc1 && gap(i) < 0.0)?;
+    let seed = dominant_buried_seed(arc, road, terrain, span)?;
     let mut f = seed;
     while f > 0 && gap(f - 1) < 0.0 && arc[f - 1] >= lo_arc {
         f -= 1;
@@ -225,6 +275,41 @@ mod tests {
         assert_eq!(ps[0].outward, -1.0);
         assert_eq!(ps[1].outward, 1.0);
         assert!((ps[0].floor_m - 98.5).abs() < 0.1, "floor = road − slab");
+    }
+
+    #[test]
+    fn a_shallow_graze_does_not_capture_the_solve_from_the_real_run() {
+        // Annotation covers a shallow DEM-noise graze (road 0.5 m under terrain
+        // over ~20 m) on the approach, then the real 60 m-deep bore. span_bounds
+        // must lock onto the deep run — not the graze that appears first in arc
+        // order — so the portals land at the hill, the bore is built, and the
+        // deep stretch is not painted as at-grade road over the massif.
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let len = 1000.0;
+        let deg = len / (DEG_M * cos_lat);
+        let n = 201;
+        let nodes: Vec<Coord> =
+            (0..n).map(|i| Coord { x: 6.0 + deg * i as f64 / (n - 1) as f64, y: 46.0 }).collect();
+        let road = vec![100.0; n];
+        let terrain: Vec<f64> = (0..n)
+            .map(|i| {
+                let u = i as f64 / (n - 1) as f64;
+                if (0.30..0.32).contains(&u) {
+                    100.5 // shallow graze: 0.5 m of burial
+                } else if (0.40..0.60).contains(&u) {
+                    160.0 // the real bore: 60 m of burial
+                } else {
+                    90.0
+                }
+            })
+            .collect();
+        let p = Profile::from_heights(&nodes, road, terrain);
+        let (low, high) =
+            span_bounds(&p, &span(0.25 * len, 0.70 * len)).expect("a buried run exists");
+        let lo = low.expect("west portal on the deep run");
+        let hi = high.expect("east portal on the deep run");
+        assert!((380.0..405.0).contains(&lo), "west portal at the hill, got {lo}");
+        assert!((595.0..620.0).contains(&hi), "east portal at the hill, got {hi}");
     }
 
     #[test]

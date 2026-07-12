@@ -494,20 +494,25 @@ fn emit_parallel(
         });
 
         // Workers: decode records, build the terrain mesh, encode + compress.
-        // Each owns its DEM reader (decoded-tile cache); the solved model and
-        // engineered ground are shared, immutable.
+        // Each holds its own DEM handle forked from one primary, so the
+        // decoded-tile cache is shared; the solved model and engineered
+        // ground are shared, immutable.
+        let primary_dem = match &cfg.terrain {
+            Some(path) => Some(Dem::open(path)?),
+            None => None,
+        };
         let mut workers = Vec::with_capacity(threads);
         for _ in 0..threads {
             let job_rx = Arc::clone(&job_rx);
             let result_tx = result_tx.clone();
             let solved = Arc::clone(solved);
             let ground = Arc::clone(ground);
+            let dem = match &primary_dem {
+                Some(d) => Some(d.fork()?),
+                None => None,
+            };
             workers.push(scope.spawn(move || -> Result<(), Error> {
                 let flat = terrain::flat_mesh(TERRAIN_GRID);
-                let dem = match &cfg.terrain {
-                    Some(path) => Some(Dem::open(path)?),
-                    None => None,
-                };
                 let mut sampler = GroundSampler::new(dem, ground);
                 loop {
                     // Blocking recv under the lock serializes idle waits only;
@@ -614,7 +619,7 @@ fn encode_tile(
     let (blob, elevation, t_mesh, t_encode) = if sampler.has_elevation() {
         let t = Instant::now();
         let (mesh, emin, emax) =
-            terrain::elevated_mesh(TERRAIN_GRID, &bounds, |lon, lat| sampler.ground(lon, lat, z));
+            terrain::elevated_mesh(TERRAIN_GRID, &bounds, |lon, lat| sampler.corner(lon, lat, z));
         let t_mesh = t.elapsed();
         let t = Instant::now();
         let blob = tile_build::build_tile_q(&bounds, Some(&mesh), &enc_layers, quality);
@@ -814,16 +819,19 @@ fn process_feature(
                         deck: false,
                     },
                     kind => {
-                        // A bridge span emits twice: the deck solid, and the
-                        // road paint re-emitted over it (`deck`), riding the
-                        // same solved profile so the stroke lies on the deck
-                        // top and the road surface continues across the span.
-                        // A tunnel stays unpainted — its bore is underground.
-                        if kind == SpanKind::Bridge {
-                            let paint =
-                                Synth::Road { corridor: Some(corridor.id), deck: true };
-                            emit_geometry(layer, &geom, &props, paint, cfg, sorter, stats)?;
-                        }
+                        // A structure span emits twice: the solid (deck or
+                        // bore), and the road paint re-emitted over it so the
+                        // painted carriageway continues across the span instead
+                        // of terminating at the abutment or portal. A bridge's
+                        // ribbon rides the deck top (`deck`); a tunnel's drapes
+                        // on the ground (`deck = false`), so it follows the
+                        // hillside the bore runs under and stays visible over
+                        // the buried span (riding the road surface there would
+                        // bury the paint under the terrain with the road) while
+                        // still meeting the at-grade approaches at the portal.
+                        let deck = kind == SpanKind::Bridge;
+                        let stroke = Synth::Road { corridor: Some(corridor.id), deck };
+                        emit_geometry(layer, &geom, &props, stroke, cfg, sorter, stats)?;
                         // The level ordinal survives as a property only so the
                         // attribute profiler emits the reserved `level` the
                         // client colours structures by.
@@ -1091,7 +1099,7 @@ fn flush_tile(
     let blob = if sampler.has_elevation() {
         let t_terrain = Instant::now();
         let (mesh, emin, emax) =
-            terrain::elevated_mesh(TERRAIN_GRID, &bounds, |lon, lat| sampler.ground(lon, lat, z));
+            terrain::elevated_mesh(TERRAIN_GRID, &bounds, |lon, lat| sampler.corner(lon, lat, z));
         stats.timings.terrain += t_terrain.elapsed();
         elevation.0 = elevation.0.min(emin);
         elevation.1 = elevation.1.max(emax);

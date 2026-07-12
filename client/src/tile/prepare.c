@@ -308,17 +308,21 @@ static void emit_polyline(const arpt_line_feature *line, double hw,
     } while (0)
 
     for (size_t s = 0; s + 1 < vc; s++) {
-        double ax = line->x[s], ay = line->y[s];
+        /* Named x0/y0 (not ax/ay): the metre-scale params `ax`/`ay` are what
+           FLUSH_RUN passes to emit_subpolyline, and this loop calls FLUSH_RUN.
+           Shadowing them with vertex coords here would feed the emitter garbage
+           scales and collapse every clipped run to zero width. */
+        double x0 = line->x[s], y0 = line->y[s];
         double bx = line->x[s + 1], by = line->y[s + 1];
         double za = lz ? (double)lz[s] : 0.0;
         double zb = lz ? (double)lz[s + 1] : 0.0;
         double t0, t1;
-        if (!clip_segment(ax, ay, bx, by, xmin, ymin, xmax, ymax, &t0, &t1)) {
+        if (!clip_segment(x0, y0, bx, by, xmin, ymin, xmax, ymax, &t0, &t1)) {
             FLUSH_RUN();
             continue;
         }
-        double cax = ax + (bx - ax) * t0, cay = ay + (by - ay) * t0;
-        double cbx = ax + (bx - ax) * t1, cby = ay + (by - ay) * t1;
+        double cax = x0 + (bx - x0) * t0, cay = y0 + (by - y0) * t0;
+        double cbx = x0 + (bx - x0) * t1, cby = y0 + (by - y0) * t1;
         if (sn == 0) {
             sx[sn] = (uint16_t)lround(cax); sy[sn] = (uint16_t)lround(cay);
             sz[sn] = (int32_t)lround(za + (zb - za) * t0); sn++;
@@ -400,13 +404,17 @@ static void emit_subpolyline(const uint16_t *px, const uint16_t *py,
        `vz` is the baked centerline height at this segment end, shared by both
        edge corners so the cross-section stays horizontal and the ribbon hugs
        the road, not the cross-slope. */
-#define EMIT_V(mx, my, vz, lu, lv)                                            \
+    /* `cmx, cmy` are the centerline (metre) coords this vertex is offset from;
+       the shader projects both to floor the stroke's screen-space width. */
+#define EMIT_V(mx, my, cmx, cmy, vz, lu, lv)                                   \
     do {                                                                        \
         verts[*vi] = (arpt_line_vertex){CLAMP16(lround((mx) / ax)),            \
                                         CLAMP16(lround((my) / ay)), (vz),      \
                                         c[0], c[1], c[2], c[3],                \
                                         (float)(lu), (float)(lv),              \
-                                        (float)hw, (float)len};                \
+                                        (float)hw, (float)len,                 \
+                                        CLAMP16(lround((cmx) / ax)),           \
+                                        CLAMP16(lround((cmy) / ay))};          \
         (*vi)++;                                                                \
     } while (0)
 
@@ -468,10 +476,10 @@ static void emit_subpolyline(const uint16_t *px, const uint16_t *py,
         int32_t z2 = pz[s + 1];
 
         uint32_t base = (uint32_t)*vi;
-        EMIT_V(ex1 - m1x * hw, ey1 - m1y * hw, z1, -cap1, -hw);
-        EMIT_V(ex1 + m1x * hw, ey1 + m1y * hw, z1, -cap1, hw);
-        EMIT_V(ex2 + m2x * hw, ey2 + m2y * hw, z2, len + cap2, hw);
-        EMIT_V(ex2 - m2x * hw, ey2 - m2y * hw, z2, len + cap2, -hw);
+        EMIT_V(ex1 - m1x * hw, ey1 - m1y * hw, ex1, ey1, z1, -cap1, -hw);
+        EMIT_V(ex1 + m1x * hw, ey1 + m1y * hw, ex1, ey1, z1, -cap1, hw);
+        EMIT_V(ex2 + m2x * hw, ey2 + m2y * hw, ex2, ey2, z2, len + cap2, hw);
+        EMIT_V(ex2 - m2x * hw, ey2 - m2y * hw, ex2, ey2, z2, len + cap2, -hw);
 
         idxs[(*ii)++] = base;
         idxs[(*ii)++] = base + 1;

@@ -39,6 +39,12 @@ struct VsOut {
     @location(0) uv: vec2<f32>,
     @location(1) normal_cam: vec3<f32>,
     @location(2) view_pos: vec3<f32>,
+    // Alignment of the vertex normal with the tile-centre vertical (ECEF up):
+    // ~1 on an up-facing face (a bridge deck top), ~0 on a side wall. Lets the
+    // deck fragment paint the road surface onto the top face itself, so the
+    // road stays visible at grazing angles where the flat paint ribbon drawn
+    // over the deck foreshortens to sub-pixel and drops out.
+    @location(3) topness: f32,
 };
 
 // sin for tile-relative angle deltas. The native sin() is compiled with fast
@@ -152,6 +158,15 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32) ->
     out.normal_cam = normalize(model3 * obj_normal);
     out.view_pos = world_pos.xyz;
 
+    // ECEF up at the tile centre (normals are encoded in ECEF); its dot with
+    // the object normal is ~1 on an up-facing face. sincos = (sinλc, cosλc,
+    // sinφc, cosφc).
+    let up_ecef = vec3<f32>(
+        tile.sincos.w * tile.sincos.y,
+        tile.sincos.w * tile.sincos.x,
+        tile.sincos.z);
+    out.topness = dot(obj_normal, up_ecef);
+
     return out;
 }
 
@@ -175,6 +190,7 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32) ->
     @location(0) uv: vec2<f32>,
     @location(1) normal_cam: vec3<f32>,
     @location(2) view_pos: vec3<f32>,
+    @location(3) topness: f32,
 ) -> @location(0) vec4<f32> {
     let margin = 0.0625;
     let tex_uv = (uv + vec2<f32>(margin, margin)) / (1.0 + 2.0 * margin);
@@ -226,5 +242,46 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32) ->
     // terrain x-ray pipeline does, so the terrain mesh renders slightly
     // transparent (to debug tunnels buried under it) while structures and
     // buildings, sharing this shader on opaque pipelines, stay solid.
+    return vec4<f32>(out, TERRAIN_ALPHA);
+}
+
+// The road-surface grey a structure top is painted — the exact motorway
+// stroke colour (style RGB 148,151,157 → /255) the paint ribbon emits, so the
+// deck/bore top reads as continuous road where the flat ribbon drops out at
+// grazing angles or is occluded by the structure itself. It is written *unlit*,
+// exactly as the ribbon writes it (road.wgsl `fs` returns the style colour
+// directly, /255, no gamma), so the two meet with no seam — lighting the top
+// instead would darken it and leave a bright ribbon / dark deck step where the
+// ribbon fades out.
+const DECK_ASPHALT: vec3<f32> = vec3<f32>(0.5804, 0.5922, 0.6157);
+
+// Structure-top fragment (bridge decks and tunnel bores): the up-facing top
+// face *is* the road, so paint it the flat asphalt the ribbon uses; the side
+// walls, underside and portal faces keep the lit concrete texture. Mixed at the
+// *output* level (not albedo) so the top face matches the unlit ribbon exactly.
+// No water path — a structure is never water.
+@fragment fn fs_deck(
+    @location(0) uv: vec2<f32>,
+    @location(1) normal_cam: vec3<f32>,
+    @location(2) view_pos: vec3<f32>,
+    @location(3) topness: f32,
+) -> @location(0) vec4<f32> {
+    let margin = 0.0625;
+    let tex_uv = (uv + vec2<f32>(margin, margin)) / (1.0 + 2.0 * margin);
+    let concrete_srgb = textureSample(surface_tex, surface_samp, tex_uv).rgb;
+    let albedo = pow(concrete_srgb, vec3<f32>(2.2));
+
+    let n = normalize(normal_cam);
+    let sun = normalize(globals.sun_dir);
+    let NdotL = dot(n, sun);
+    let shadow_color = vec3<f32>(0.45, 0.46, 0.52);
+    let fill_color   = vec3<f32>(0.55, 0.54, 0.50);
+    let ambient = mix(shadow_color, fill_color, NdotL * 0.5 + 0.5);
+    let direct = vec3<f32>(0.45, 0.46, 0.50) * max(NdotL, 0.0);
+    let lit = albedo * (ambient + direct);
+    let concrete_out = select(lit, pow(lit, vec3<f32>(1.0 / 2.2)), globals.apply_gamma > 0.5);
+
+    // Top face → flat asphalt (as the ribbon writes it); sides → lit concrete.
+    let out = mix(concrete_out, DECK_ASPHALT, smoothstep(0.55, 0.80, topness));
     return vec4<f32>(out, TERRAIN_ALPHA);
 }

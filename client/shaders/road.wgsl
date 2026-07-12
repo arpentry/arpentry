@@ -28,10 +28,17 @@ struct GlobalUniforms {
     sun_dir: vec3<f32>,
     apply_gamma: f32,
     altitude: f32,
-    _pad0: f32,
-    _pad1: f32,
+    viewport_w: f32,
+    viewport_h: f32,
     _pad2: f32,
 };
+
+// Minimum on-screen half-width of a road stroke, in framebuffer pixels. A flat
+// ribbon lying on a surface foreshortens to nothing at a grazing view; below
+// this floor the edge vertices are pushed apart in screen space so the stroke
+// keeps a visible width on decks and terrain alike. Only shrinks strokes never
+// widens ones already broader than the floor, so head-on roads are unchanged.
+const MIN_HALF_WIDTH_PX: f32 = 2.0;
 
 struct TileUniforms {
     model: mat4x4<f32>,
@@ -98,20 +105,24 @@ fn local_ecef_delta(dlam: f32, dphi: f32, alt: f32) -> vec3<f32> {
     );
 }
 
+fn tile_to_world(qx: f32, qy: f32, alt: f32) -> vec4<f32> {
+    let u = (qx - 16384.0) / 32768.0;
+    let v = (qy - 16384.0) / 32768.0;
+    let dlam = tile.rel_bounds.x + u * (tile.rel_bounds.z - tile.rel_bounds.x);
+    let dphi = tile.rel_bounds.y + v * (tile.rel_bounds.w - tile.rel_bounds.y);
+    return tile.model * vec4<f32>(local_ecef_delta(dlam, dphi, alt), 1.0);
+}
+
 @vertex fn vs(
     @location(0) qxy: vec2<u32>,
     @location(1) qz: i32,
     @location(2) color: vec4<f32>,
     @location(3) local: vec2<f32>,
     @location(4) hw_len: vec2<f32>,
+    @location(5) cxy: vec2<u32>,
 ) -> VsOut {
-    let u = (f32(qxy.x) - 16384.0) / 32768.0;
-    let v = (f32(qxy.y) - 16384.0) / 32768.0;
-    let dlam = tile.rel_bounds.x + u * (tile.rel_bounds.z - tile.rel_bounds.x);
-    let dphi = tile.rel_bounds.y + v * (tile.rel_bounds.w - tile.rel_bounds.y);
     let alt = f32(qz) * 0.001;
-
-    let world_pos = tile.model * vec4<f32>(local_ecef_delta(dlam, dphi, alt), 1.0);
+    let world_pos = tile_to_world(f32(qxy.x), f32(qxy.y), alt);
 
     // Bias the stroke toward the camera by a fixed world margin so it wins the
     // LessEqual depth test against terrain up to ROAD_DEPTH_MARGIN_M in front of it
@@ -132,7 +143,31 @@ fn local_ecef_delta(dlam: f32, dphi: f32, alt: f32) -> vec3<f32> {
     var out: VsOut;
     let p = globals.projection * world_pos;
     let ps = globals.projection * shifted;
-    out.pos = vec4<f32>(p.xy, ps.z / ps.w * p.w, p.w);
+
+    // Screen-space width floor: project the centerline this vertex is offset
+    // from, measure the on-screen offset in pixels, and if it has foreshortened
+    // below MIN_HALF_WIDTH_PX push the vertex back out to the floor. The metric
+    // `local` SDF coords are unchanged, so the fragment's antialiased edge just
+    // rides the widened quad — a grazing ribbon stays a crisp, visible stroke
+    // instead of collapsing to a sub-pixel sliver. Keep the true position when
+    // p.w <= 0 (behind the eye) so the clip stays well-formed.
+    var screen_xy = p.xy;
+    if (p.w > 1e-4) {
+        let pc = globals.projection * tile_to_world(f32(cxy.x), f32(cxy.y), alt);
+        if (pc.w > 1e-4) {
+            let vp = vec2<f32>(globals.viewport_w, globals.viewport_h);
+            let c_ndc = pc.xy / pc.w;
+            let v_ndc = p.xy / p.w;
+            let off_px = (v_ndc - c_ndc) * 0.5 * vp;
+            let len_px = length(off_px);
+            if (len_px > 1e-4 && len_px < MIN_HALF_WIDTH_PX) {
+                let widened = c_ndc + (v_ndc - c_ndc) * (MIN_HALF_WIDTH_PX / len_px);
+                screen_xy = widened * p.w;
+            }
+        }
+    }
+
+    out.pos = vec4<f32>(screen_xy, ps.z / ps.w * p.w, p.w);
     out.color = color;
     out.local = local;
     out.hw_len = hw_len;
@@ -148,7 +183,17 @@ fn local_ecef_delta(dlam: f32, dphi: f32, alt: f32) -> vec3<f32> {
     let seg_len = hw_len.y;
     let cx = clamp(local.x, 0.0, seg_len);
     let dist = length(vec2<f32>(local.x - cx, local.y));
-    let px = length(vec2<f32>(dpdx(local.y), dpdy(local.y)));
-    let alpha = color.a * (1.0 - smoothstep(hw - px, hw, dist));
+    // Antialias from the distance field itself: fwidth(dist) is the per-pixel
+    // change of the SDF along BOTH screen axes, so it stays a true one-pixel
+    // band however the stroke foreshortens. The old `dpdx/dpdy(local.y)` term
+    // saw only the across-stroke coordinate; where a stroke turns to run down
+    // the view ray (a curving deck seen at a grazing tilt) that gradient spikes
+    // past `hw`, and `smoothstep(hw - px, hw, dist)` then dims the whole stroke
+    // — centerline included — so it faded out on exactly the far, angled spans.
+    let aa = max(fwidth(dist), 1e-4);
+    // Linear (analytic) coverage of the stroke edge rather than a cubic
+    // smoothstep: a stroke thinner than a pixel holds its real coverage instead
+    // of collapsing to zero, so paint and markings stay visible down the deck.
+    let alpha = color.a * clamp((hw - dist) / aa + 0.5, 0.0, 1.0);
     return vec4<f32>(color.rgb, alpha);
 }

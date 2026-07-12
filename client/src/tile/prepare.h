@@ -62,6 +62,8 @@ typedef struct {
     float r, g, b, a;
     float local_u, local_v;
     float hw, seg_len;
+    uint16_t cx, cy; /* centerline tile coords (this vertex is cx,cy + perp*hw),
+                        so the shader can floor the stroke's screen-space width */
 } arpt_line_vertex;
 
 typedef struct {

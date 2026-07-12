@@ -333,6 +333,7 @@ void arpt__mesh_draw_buildings(arpt_renderer *r, arpt_tile_gpu *tile) {
    rectangular tube reads correctly from inside or out regardless of winding. */
 WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
                                                      const char *vs_entry,
+                                                     const char *fs_entry,
                                                      WGPUTextureFormat format,
                                                      WGPUBindGroupLayout global_bgl,
                                                      WGPUBindGroupLayout tile_bgl) {
@@ -362,7 +363,7 @@ WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
     WGPUColorTargetState ct = {.format = format,
                                .writeMask = WGPUColorWriteMask_All};
     WGPUFragmentState frag = {
-        .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
+        .module = sm, .entryPoint = fs_entry, .targetCount = 1, .targets = &ct};
     WGPUDepthStencilState ds = {
         .format = ARPT_DEPTH_FORMAT,
         .depthWriteEnabled = true,

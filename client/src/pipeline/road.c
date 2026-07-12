@@ -21,18 +21,20 @@ WGPURenderPipeline arpt__road_create_pipeline(WGPUDevice device,
         device, &(WGPUPipelineLayoutDescriptor){.bindGroupLayoutCount = 2,
                                                 .bindGroupLayouts = bgls});
 
-    /* Matches arpt_line_vertex (40-byte stride): qxy, qz, color, local, hw_len. */
+    /* Matches arpt_line_vertex (44-byte stride): qxy, qz, color, local, hw_len,
+       centerline-xy. */
     WGPUVertexAttribute attrs[] = {
         {.format = WGPUVertexFormat_Uint16x2,  .offset = 0,  .shaderLocation = 0},
         {.format = WGPUVertexFormat_Sint32,    .offset = 4,  .shaderLocation = 1},
         {.format = WGPUVertexFormat_Float32x4, .offset = 8,  .shaderLocation = 2},
         {.format = WGPUVertexFormat_Float32x2, .offset = 24, .shaderLocation = 3},
         {.format = WGPUVertexFormat_Float32x2, .offset = 32, .shaderLocation = 4},
+        {.format = WGPUVertexFormat_Uint16x2,  .offset = 40, .shaderLocation = 5},
     };
     WGPUVertexBufferLayout vbl = {
-        .arrayStride = 40,
+        .arrayStride = 44,
         .stepMode = WGPUVertexStepMode_Vertex,
-        .attributeCount = 5,
+        .attributeCount = 6,
         .attributes = attrs,
     };
 

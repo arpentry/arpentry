@@ -86,11 +86,13 @@ pub fn run(
     let threads = threads.max(1).min(todo.len().max(1));
     let next = Mutex::new(0usize);
     let results: Mutex<&mut Vec<Option<Profile>>> = Mutex::new(&mut profiles);
+    // One primary DEM handle; workers fork it to share the decoded-tile cache.
+    let primary_dem = Dem::open(path)?;
     std::thread::scope(|scope| -> Result<(), Error> {
         let mut handles = Vec::with_capacity(threads);
         for _ in 0..threads {
             handles.push(scope.spawn(|| -> Result<(), Error> {
-                let mut dem = Dem::open(path)?;
+                let mut dem = primary_dem.fork()?;
                 loop {
                     let i = {
                         let mut n = next.lock().expect("solve queue poisoned");

@@ -110,6 +110,11 @@ fn report_timings(stats: &pipeline::Stats) {
         stats.tiles_written as f64 / total_s,
         mib(stats.record_bytes),
     );
+    eprintln!(
+        "dem     {:>8}  {} tile decodes",
+        "",
+        arpentry_server::dem::DECODES.load(std::sync::atomic::Ordering::Relaxed),
+    );
 }
 
 fn secs(d: std::time::Duration) -> String {

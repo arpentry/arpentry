@@ -8,6 +8,7 @@
 //! height that matches what the client draws at that zoom, which is what
 //! draped geometry must sit on (invariant 4).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::dem::Dem;
@@ -15,16 +16,28 @@ use crate::ground::GroundModel;
 use crate::project::Bounds;
 use crate::terrain;
 
+/// Corner-memo capacity. Entries are ~50 B, so this is a few MiB per worker —
+/// hundreds of tiles' worth of lattice corners before an (unlikely) reset.
+const CORNER_CAP: usize = 262_144;
+
 pub struct GroundSampler {
     dem: Option<Dem>,
     ground: Arc<GroundModel>,
     /// Reusable earthwork-query buffer (grid hits per sample).
     scratch: Vec<u32>,
+    /// Memoized engineered heights at rendered-lattice corners, keyed by the
+    /// corner's exact coordinate bits and the sampled zoom. The lattice is
+    /// global per zoom and a tile's width is a dyadic rational, so every
+    /// frame computes bit-identical corner coordinates — one memo entry
+    /// serves the terrain mesh and every draped road vertex that touches the
+    /// corner, collapsing the 4-corner fan-out of `surface` into ~one DEM
+    /// sample per distinct corner.
+    corners: HashMap<(u8, u64, u64), f64>,
 }
 
 impl GroundSampler {
     pub fn new(dem: Option<Dem>, ground: Arc<GroundModel>) -> GroundSampler {
-        GroundSampler { dem, ground, scratch: Vec::new() }
+        GroundSampler { dem, ground, scratch: Vec::new(), corners: HashMap::new() }
     }
 
     /// Whether the run has real elevation at all (a DEM was configured).
@@ -42,17 +55,27 @@ impl GroundSampler {
         self.ground.height(lon, lat, raw, &mut self.scratch)
     }
 
+    /// The engineered ground at a rendered-lattice corner, memoized (see
+    /// [`GroundSampler::corners`]). The terrain mesh and `surface` both read
+    /// corners through this, so each distinct corner costs one DEM sample per
+    /// worker however many queries land on it.
+    pub fn corner(&mut self, lon: f64, lat: f64, z: u8) -> f64 {
+        let key = (z, lon.to_bits(), lat.to_bits());
+        if let Some(&h) = self.corners.get(&key) {
+            return h;
+        }
+        let h = self.ground(lon, lat, z);
+        if self.corners.len() >= CORNER_CAP {
+            self.corners.clear();
+        }
+        self.corners.insert(key, h);
+        h
+    }
+
     /// The *rendered* ground at `(lon, lat)`: the engineered ground evaluated
     /// through the global zoom-`z` terrain lattice anchored at `bounds`, so it
     /// matches the triangulated mesh the client draws exactly.
     pub fn surface(&mut self, bounds: &Bounds, lon: f64, lat: f64, z: u8) -> f64 {
-        let (dem, model, scratch) = (&mut self.dem, &self.ground, &mut self.scratch);
-        terrain::surface_height(bounds, lon, lat, &mut |a, o| {
-            let raw = match dem {
-                Some(d) => d.elevation(a, o, z),
-                None => 0.0,
-            };
-            model.height(a, o, raw, scratch)
-        })
+        terrain::surface_height(bounds, lon, lat, &mut |a, o| self.corner(a, o, z))
     }
 }

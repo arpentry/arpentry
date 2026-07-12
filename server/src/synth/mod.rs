@@ -30,10 +30,14 @@ pub enum Synth {
     None,
     /// A road draped on the rendered ground; with a corridor, lifted by the
     /// corridor's solved cut/fill so engineered classes hold their grade.
-    /// `deck` marks the paint stroke re-emitted over a bridge span: it rides
-    /// the solved profile directly at every zoom, exactly on the deck top the
+    /// `deck` marks the paint stroke re-emitted over a *bridge* span: it rides
+    /// the solved deck ramp directly at every zoom, exactly on the deck top the
     /// structure sweep builds from the same profile, so the road surface
-    /// continues across the bridge instead of stopping at the abutment.
+    /// continues across the bridge instead of stopping at the abutment. A
+    /// tunnel's paint is emitted with `deck = false` and so drapes on the
+    /// ground: where the bore runs buried the ribbon rides the hillside above
+    /// it (riding the road surface would sink the paint under the terrain with
+    /// the road), and it meets the at-grade approaches at the portal.
     Road { corridor: Option<CorridorId>, deck: bool },
     /// A bridge deck or tunnel bore swept along the corridor's solved profile.
     Structure { corridor: CorridorId, kind: SpanKind },

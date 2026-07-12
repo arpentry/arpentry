@@ -10,11 +10,19 @@
 //!
 //! The arpentry tiler uses a WGS84 geographic tiling while Mapterhorn is Web
 //! Mercator, so sampling reprojects per point rather than reusing tile indices.
+//!
+//! Decoding a 512² lossless-WebP tile costs milliseconds — orders of magnitude
+//! more than sampling it — so the decoded tiles are held in one process-wide
+//! LRU cache shared by every [`Dem`] handle [`fork`](Dem::fork)ed from the
+//! same archive: parallel workers walk neighbouring output tiles and keep
+//! needing the same source tiles, and sharing turns *threads × tiles* decodes
+//! into *tiles*.
 
 use std::collections::{HashMap, VecDeque};
 use std::f64::consts::PI;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::pmtiles::Pmtiles;
 
@@ -22,8 +30,18 @@ use crate::pmtiles::Pmtiles;
 const MERCATOR_LAT_LIMIT: f64 = 85.051_128_779_806_59;
 /// Terrarium tiles are square; Mapterhorn uses 512 px.
 const TILE_PX: usize = 512;
-/// Decoded-tile cache capacity (each entry is `TILE_PX² f32` ≈ 1 MiB).
-const CACHE_CAP: usize = 32;
+/// Shared decoded-tile cache capacity (each entry is `TILE_PX² f32` ≈ 1 MiB).
+/// Sized so one output tile's working set — its own zoom's tiles plus the
+/// reference lattice's, straddling up to four source tiles each — stays
+/// resident across every worker while they walk neighbouring output tiles.
+const CACHE_CAP: usize = 256;
+/// Per-handle front cache of recently used slots, checked without taking the
+/// shared lock. Queries cluster heavily (a building footprint, a road run),
+/// so a handful of entries absorbs almost all lookups.
+const RECENT_CAP: usize = 8;
+
+/// Process-wide count of decode attempts (cache misses), for run stats.
+pub static DECODES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// A decoded Terrarium tile: row-major elevations in metres.
 struct ElevTile {
@@ -50,21 +68,79 @@ impl ElevTile {
     }
 }
 
-/// A DEM sampler over an opened Mapterhorn PMTiles archive, with a small
-/// decoded-tile cache (output tiles are visited in spatial order, so a handful
-/// of recently used DEM tiles serves most vertex queries).
-pub struct Dem {
-    archive: Pmtiles,
-    cache: HashMap<(u8, u32, u32), Option<ElevTile>>,
-    /// Insertion-order queue for cache eviction (front = oldest).
+/// One cache slot: decoded at most once however many handles race on it (the
+/// `OnceLock` serializes only the racers on this one tile), `None` for a
+/// missing or undecodable tile so repeated ocean misses stay cheap.
+type Slot = Arc<OnceLock<Option<ElevTile>>>;
+
+/// The shared decoded-tile cache: an LRU keyed by `(z, x, y)`. Slots are
+/// handed out under a brief lock; decoding happens outside it. An evicted
+/// slot stays alive for whoever still holds its `Arc`.
+struct DemCache {
+    inner: Mutex<DemCacheInner>,
+}
+
+#[derive(Default)]
+struct DemCacheInner {
+    map: HashMap<(u8, u32, u32), Slot>,
+    /// Recency queue (front = coldest).
     order: VecDeque<(u8, u32, u32)>,
+}
+
+impl DemCache {
+    fn slot(&self, key: (u8, u32, u32)) -> Slot {
+        let mut inner = self.inner.lock().expect("dem cache poisoned");
+        if let Some(slot) = inner.map.get(&key) {
+            let slot = Arc::clone(slot);
+            if let Some(pos) = inner.order.iter().position(|k| *k == key) {
+                inner.order.remove(pos);
+                inner.order.push_back(key);
+            }
+            return slot;
+        }
+        if inner.map.len() >= CACHE_CAP {
+            if let Some(old) = inner.order.pop_front() {
+                inner.map.remove(&old);
+            }
+        }
+        let slot: Slot = Arc::new(OnceLock::new());
+        inner.map.insert(key, Arc::clone(&slot));
+        inner.order.push_back(key);
+        slot
+    }
+}
+
+/// A DEM sampler over an opened Mapterhorn PMTiles archive. Each handle owns
+/// its file descriptor (PMTiles reads seek); the decoded tiles live in the
+/// cache shared across all handles forked from the first.
+pub struct Dem {
+    path: PathBuf,
+    archive: Pmtiles,
+    cache: Arc<DemCache>,
+    /// Lock-free MRU front cache of `(key, slot)` pairs (see [`RECENT_CAP`]).
+    recent: Vec<((u8, u32, u32), Slot)>,
 }
 
 impl Dem {
     /// Opens a Terrarium PMTiles archive (WebP or PNG tile data).
     pub fn open(path: &Path) -> io::Result<Dem> {
-        let archive = Pmtiles::open(path)?;
-        Ok(Dem { archive, cache: HashMap::new(), order: VecDeque::new() })
+        Ok(Dem {
+            path: path.to_path_buf(),
+            archive: Pmtiles::open(path)?,
+            cache: Arc::new(DemCache { inner: Mutex::new(DemCacheInner::default()) }),
+            recent: Vec::new(),
+        })
+    }
+
+    /// Another handle onto the same archive — its own file descriptor,
+    /// sharing this handle's decoded-tile cache. One handle per worker.
+    pub fn fork(&self) -> io::Result<Dem> {
+        Ok(Dem {
+            path: self.path.clone(),
+            archive: Pmtiles::open(&self.path)?,
+            cache: Arc::clone(&self.cache),
+            recent: Vec::new(),
+        })
     }
 
     /// Source zoom to sample for an output tile at zoom `out_zoom`: matched to
@@ -94,37 +170,31 @@ impl Dem {
         let px = (world_x - tx as f64) * TILE_PX as f64;
         let py = (world_y - ty as f64) * TILE_PX as f64;
 
-        match self.tile(z, tx, ty) {
+        let slot = self.slot((z, tx, ty));
+        let archive = &mut self.archive;
+        let tile = slot.get_or_init(|| {
+            DECODES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            archive.tile(z, tx, ty).ok().flatten().and_then(|bytes| decode_terrarium(&bytes))
+        });
+        match tile {
             Some(t) => t.sample(px, py),
             None => 0.0,
         }
     }
 
-    /// Returns the decoded tile for `(z, x, y)`, loading and caching it on first
-    /// use. The cache stores `None` for missing tiles too, so repeated misses in
-    /// an ocean tile don't re-hit the archive.
-    fn tile(&mut self, z: u8, x: u32, y: u32) -> Option<&ElevTile> {
-        let key = (z, x, y);
-        if !self.cache.contains_key(&key) {
-            let decoded = self
-                .archive
-                .tile(z, x, y)
-                .ok()
-                .flatten()
-                .and_then(|bytes| decode_terrarium(&bytes));
-            self.insert(key, decoded);
-        }
-        self.cache.get(&key).and_then(|o| o.as_ref())
-    }
-
-    fn insert(&mut self, key: (u8, u32, u32), value: Option<ElevTile>) {
-        if self.cache.len() >= CACHE_CAP {
-            if let Some(old) = self.order.pop_front() {
-                self.cache.remove(&old);
+    /// The cache slot for a source tile: the per-handle front cache first,
+    /// then the shared LRU.
+    fn slot(&mut self, key: (u8, u32, u32)) -> Slot {
+        if let Some(pos) = self.recent.iter().position(|(k, _)| *k == key) {
+            if pos != 0 {
+                self.recent[..=pos].rotate_right(1);
             }
+            return Arc::clone(&self.recent[0].1);
         }
-        self.cache.insert(key, value);
-        self.order.push_back(key);
+        let slot = self.cache.slot(key);
+        self.recent.insert(0, (key, Arc::clone(&slot)));
+        self.recent.truncate(RECENT_CAP);
+        slot
     }
 }
 
