@@ -435,7 +435,14 @@ static void emit_subpolyline(const uint16_t *px, const uint16_t *py,
             double mx = seg_nx[s - 1] + seg_nx[s];
             double my = seg_ny[s - 1] + seg_ny[s];
             double d = mx * seg_nx[s] + my * seg_ny[s];
-            if (d < 0.25) d = 0.25;  /* miter limit: cap at 4x */
+            /* Miter limit: cap at 2x. Both edge corners of a quad carry the
+               centerline's height (a horizontal cross-section), so a miter tip
+               offset far from the centerline hangs at the wrong elevation over a
+               steep flank and is eaten by the terrain despite the road's depth
+               margin. Capping the spike at 2x half-width keeps that burial within
+               the margin — a tighter cap than the visual 4x, but sharp turns are
+               rare on the tiler's densified centerlines. */
+            if (d < 0.5) d = 0.5;
             m1x = mx / d;
             m1y = my / d;
         } else {
@@ -448,7 +455,7 @@ static void emit_subpolyline(const uint16_t *px, const uint16_t *py,
             double mx = seg_nx[s] + seg_nx[s + 1];
             double my = seg_ny[s] + seg_ny[s + 1];
             double d = mx * seg_nx[s] + my * seg_ny[s];
-            if (d < 0.25) d = 0.25;
+            if (d < 0.5) d = 0.5;  /* miter limit: cap at 2x (see start miter) */
             m2x = mx / d;
             m2y = my / d;
         } else {
@@ -890,16 +897,19 @@ void arpt_tile_prims_free(arpt_tile_prims *p) {
     free(p->buildings.z);
     free(p->buildings.normals);
     free(p->buildings.indices);
+    free(p->buildings.color);
 
     /* road structures — bridges + tunnels (same form as buildings) */
     free(p->bridges.xy);
     free(p->bridges.z);
     free(p->bridges.normals);
     free(p->bridges.indices);
+    free(p->bridges.color);
     free(p->tunnels.xy);
     free(p->tunnels.z);
     free(p->tunnels.normals);
     free(p->tunnels.indices);
+    free(p->tunnels.color);
 
     /* instances */
     if (p->instances.batches) {

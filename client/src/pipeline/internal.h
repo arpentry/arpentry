@@ -98,6 +98,7 @@ typedef struct {
     WGPUBuffer buf_xy;
     WGPUBuffer buf_z;
     WGPUBuffer buf_normals;
+    WGPUBuffer buf_color; /* per-vertex unorm8x4 road-class deck colour */
     WGPUBuffer buf_indices;
     WGPUBindGroup bind_group;
     uint32_t index_count;
@@ -263,13 +264,17 @@ struct arpt_renderer {
     WGPUTexture building_tex;
     WGPUTextureView building_view;
 
-    /* Road-structure box prisms (bridge decks and tunnel bores): one opaque
-       depth-tested pipeline whose up-facing top face is painted road asphalt
-       (fs_deck) so the surface continues across every structure, with a small
-       camera-facing depth margin (vs_bridge) so a top coplanar with its
-       engineered roadbed wins the depth tie and shows its own smooth edge
-       instead of a jagged intersection contour. */
+    /* Road-structure box prisms, top face painted road asphalt (fs_deck) so the
+       surface continues across every structure. Two variants:
+       - bridge_pipeline: a small camera-facing depth margin (vs_deck_bridge) so
+         a deck top coplanar with its engineered roadbed wins the depth tie and
+         shows its own smooth edge instead of a jagged intersection contour.
+       - tunnel_pipeline: NO margin (vs), so a buried bore is cleanly occluded by
+         the ground it runs under. The coplanar-tie the margin solves is a deck
+         problem; biasing a bore toward the camera only ghosts it through the
+         hillside as asphalt stripes near portals in top-down views. */
     WGPURenderPipeline bridge_pipeline;
+    WGPURenderPipeline tunnel_pipeline;
     WGPUTexture bridge_tex;
     WGPUTextureView bridge_view;
     WGPUTexture tunnel_tex;

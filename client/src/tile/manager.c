@@ -316,11 +316,15 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
                differently. The line decoder below skips the meshes. */
             if (p->prims.bridges.vertex_count == 0) {
                 arpt_decode_bridge_mesh(flatbuf, size, le->source_layer,
+                                        tm->style.class_names,
+                                        tm->style.class_count, tm->style.colors,
                                         &p->prims.bridges);
                 dump_bridge_prim(key, &p->prims.bridges);
             }
             if (p->prims.tunnels.vertex_count == 0)
                 arpt_decode_tunnel_mesh(flatbuf, size, le->source_layer,
+                                        tm->style.class_names,
+                                        tm->style.class_count, tm->style.colors,
                                         &p->prims.tunnels);
             arpt_line_data extra = {0};
             arpt_decode_lines(flatbuf, size, le->source_layer,

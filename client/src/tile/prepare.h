@@ -79,6 +79,10 @@ typedef struct {
     int32_t *z;
     int8_t *normals;
     uint32_t *indices;
+    /* Per-vertex RGBA road-class colour (4 bytes/vertex), for structure decks
+       whose top face is painted the road's own asphalt grey. NULL for buildings
+       and for structures decoded without a style. */
+    uint8_t *color;
     size_t vertex_count, index_count;
 } arpt_building_prim;
 
@@ -192,13 +196,19 @@ bool arpt_decode_building_mesh(const void *flatbuf, size_t size,
    the transportation layer next to the road lines. These split them by the
    reserved `level` property so bridges and tunnels colour differently: each scans
    the named layer and concatenates only its bridge (level > 0) or tunnel
-   (level < 0) meshes into the primitive (same form as buildings). Returns true
-   and fills `out` when the layer holds matching meshes; false (with `out` zeroed)
+   (level < 0) meshes into the primitive (same form as buildings). `class_names`/
+   `colors` (the style) paint each deck top the road-class asphalt its ribbon
+   uses; pass class_count 0 to skip the per-vertex colour. Returns true and fills
+   `out` when the layer holds matching meshes; false (with `out` zeroed)
    otherwise. */
 bool arpt_decode_bridge_mesh(const void *flatbuf, size_t size,
-                             const char *layer_name, arpt_building_prim *out);
+                             const char *layer_name,
+                             const char (*class_names)[32], int class_count,
+                             const float (*colors)[4], arpt_building_prim *out);
 bool arpt_decode_tunnel_mesh(const void *flatbuf, size_t size,
-                             const char *layer_name, arpt_building_prim *out);
+                             const char *layer_name,
+                             const char (*class_names)[32], int class_count,
+                             const float (*colors)[4], arpt_building_prim *out);
 
 void arpt_prepare_instances(const arpt_tree_data *trees, int model_count,
                             arpt_instance_prim *out);

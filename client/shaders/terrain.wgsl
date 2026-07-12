@@ -45,6 +45,11 @@ struct VsOut {
     // road stays visible at grazing angles where the flat paint ribbon drawn
     // over the deck foreshortens to sub-pixel and drops out.
     @location(3) topness: f32,
+    // Per-vertex road-class asphalt colour for the structure top (fs_deck). The
+    // client resolves it from the same style entry the ribbon uses, so a
+    // secondary/residential deck reads its own grey, not a hardcoded motorway
+    // one. Unused by the terrain/building fragment (fs).
+    @location(4) deck_color: vec4<f32>,
 };
 
 // sin for tile-relative angle deltas. The native sin() is compiled with fast
@@ -125,7 +130,8 @@ const BRIDGE_DEPTH_MARGIN_M: f32 = 3.0;
 // while neither X-rays through terrain up close.
 const BRIDGE_DEPTH_MARGIN_FRAC: f32 = 0.0075;
 
-fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32) -> VsOut {
+fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
+             deck_color: vec4<f32>) -> VsOut {
     let u = (f32(qxy.x) - 16384.0) / 32768.0;
     let v = (f32(qxy.y) - 16384.0) / 32768.0;
     let dlam = tile.rel_bounds.x + u * (tile.rel_bounds.z - tile.rel_bounds.x);
@@ -166,24 +172,40 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32) ->
         tile.sincos.w * tile.sincos.x,
         tile.sincos.z);
     out.topness = dot(obj_normal, up_ecef);
+    out.deck_color = deck_color;
 
     return out;
 }
 
+// Terrain + buildings: no depth margin, no deck colour (fs ignores it).
 @vertex fn vs(
     @location(0) qxy: vec2<u32>,
     @location(1) qz: i32,
     @location(2) oct_norm: vec2<i32>,
 ) -> VsOut {
-    return vs_common(qxy, qz, oct_norm, 0.0);
+    return vs_common(qxy, qz, oct_norm, 0.0, vec4<f32>(0.0));
 }
 
-@vertex fn vs_bridge(
+// Tunnel bores: carry the road-class colour, but NO depth margin — a buried
+// bore must stay occluded by the ground, not biased toward the camera.
+@vertex fn vs_deck(
     @location(0) qxy: vec2<u32>,
     @location(1) qz: i32,
     @location(2) oct_norm: vec2<i32>,
+    @location(3) deck_color: vec4<f32>,
 ) -> VsOut {
-    return vs_common(qxy, qz, oct_norm, BRIDGE_DEPTH_MARGIN_M);
+    return vs_common(qxy, qz, oct_norm, 0.0, deck_color);
+}
+
+// Bridge decks: road-class colour plus the small camera-facing margin that wins
+// the deck's coplanar depth tie with its engineered roadbed.
+@vertex fn vs_deck_bridge(
+    @location(0) qxy: vec2<u32>,
+    @location(1) qz: i32,
+    @location(2) oct_norm: vec2<i32>,
+    @location(3) deck_color: vec4<f32>,
+) -> VsOut {
+    return vs_common(qxy, qz, oct_norm, BRIDGE_DEPTH_MARGIN_M, deck_color);
 }
 
 @fragment fn fs(
@@ -191,6 +213,10 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32) ->
     @location(1) normal_cam: vec3<f32>,
     @location(2) view_pos: vec3<f32>,
     @location(3) topness: f32,
+    // Unused here (terrain/buildings), but declared so this fragment's input
+    // interface matches VsOut — wgpu requires the vertex-output and
+    // fragment-input location sets to agree.
+    @location(4) deck_color: vec4<f32>,
 ) -> @location(0) vec4<f32> {
     let margin = 0.0625;
     let tex_uv = (uv + vec2<f32>(margin, margin)) / (1.0 + 2.0 * margin);
@@ -245,26 +271,25 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32) ->
     return vec4<f32>(out, TERRAIN_ALPHA);
 }
 
-// The road-surface grey a structure top is painted — the exact motorway
-// stroke colour (style RGB 148,151,157 → /255) the paint ribbon emits, so the
-// deck/bore top reads as continuous road where the flat ribbon drops out at
-// grazing angles or is occluded by the structure itself. It is written *unlit*,
-// exactly as the ribbon writes it (road.wgsl `fs` returns the style colour
-// directly, /255, no gamma), so the two meet with no seam — lighting the top
-// instead would darken it and leave a bright ribbon / dark deck step where the
-// ribbon fades out.
+// Fallback road-surface grey (the motorway stroke colour, style RGB
+// 148,151,157 → /255) for a structure top whose class the client could not
+// resolve. The common path uses the per-vertex `deck_color` instead, so a deck
+// matches whatever grey its own class's ribbon emits.
 const DECK_ASPHALT: vec3<f32> = vec3<f32>(0.5804, 0.5922, 0.6157);
 
 // Structure-top fragment (bridge decks and tunnel bores): the up-facing top
-// face *is* the road, so paint it the flat asphalt the ribbon uses; the side
-// walls, underside and portal faces keep the lit concrete texture. Mixed at the
-// *output* level (not albedo) so the top face matches the unlit ribbon exactly.
-// No water path — a structure is never water.
+// face *is* the road, so paint it the flat asphalt the ribbon uses — the
+// per-vertex `deck_color` the client resolved from the road's own style entry,
+// so the top matches its ribbon's class colour (not always motorway grey). The
+// side walls, underside and portal faces keep the lit concrete texture. Mixed at
+// the *output* level (not albedo) so the top face matches the unlit ribbon
+// exactly. No water path — a structure is never water.
 @fragment fn fs_deck(
     @location(0) uv: vec2<f32>,
     @location(1) normal_cam: vec3<f32>,
     @location(2) view_pos: vec3<f32>,
     @location(3) topness: f32,
+    @location(4) deck_color: vec4<f32>,
 ) -> @location(0) vec4<f32> {
     let margin = 0.0625;
     let tex_uv = (uv + vec2<f32>(margin, margin)) / (1.0 + 2.0 * margin);
@@ -281,7 +306,9 @@ const DECK_ASPHALT: vec3<f32> = vec3<f32>(0.5804, 0.5922, 0.6157);
     let lit = albedo * (ambient + direct);
     let concrete_out = select(lit, pow(lit, vec3<f32>(1.0 / 2.2)), globals.apply_gamma > 0.5);
 
-    // Top face → flat asphalt (as the ribbon writes it); sides → lit concrete.
-    let out = mix(concrete_out, DECK_ASPHALT, smoothstep(0.55, 0.80, topness));
+    // Top face → flat asphalt in the road's own class colour (or the motorway
+    // fallback when the client shipped none); sides → lit concrete.
+    let asphalt = select(DECK_ASPHALT, deck_color.rgb, deck_color.a > 0.0);
+    let out = mix(concrete_out, asphalt, smoothstep(0.55, 0.80, topness));
     return vec4<f32>(out, TERRAIN_ALPHA);
 }

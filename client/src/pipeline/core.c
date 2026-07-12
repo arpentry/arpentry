@@ -273,13 +273,20 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     r->road_pipeline =
         arpt__road_create_pipeline(device, format, r->global_bgl, r->tile_bgl);
 
-    /* Structure box-prism pipeline (shares terrain layouts), used for both
-       bridge decks and tunnel bores: the up-facing top face is painted road
-       asphalt (fs_deck) so the surface continues across every structure, and a
-       small camera-facing depth margin (vs_bridge) lets a top coplanar with its
-       roadbed show its own smooth edge, not a jagged intersection contour. */
+    /* Structure box-prism pipelines (share terrain layouts), for bridge decks
+       and tunnel bores: the up-facing top face is painted the road's own asphalt
+       colour (fs_deck, per-vertex) so the surface continues across every
+       structure. A bridge deck's small camera-facing depth margin
+       (vs_deck_bridge) lets a top coplanar with its roadbed show its own smooth
+       edge, not a jagged intersection contour. */
     r->bridge_pipeline =
-        arpt__mesh_create_structure_pipeline(device, "vs_bridge", "fs_deck", format,
+        arpt__mesh_create_structure_pipeline(device, "vs_deck_bridge", "fs_deck",
+                                          format, r->global_bgl, r->tile_bgl);
+    /* Tunnel bores: same asphalt top, but no depth margin (vs_deck, not
+       vs_deck_bridge) so a buried bore stays occluded by the ground instead of
+       ghosting through it. */
+    r->tunnel_pipeline =
+        arpt__mesh_create_structure_pipeline(device, "vs_deck", "fs_deck", format,
                                           r->global_bgl, r->tile_bgl);
 
     /* Surface offscreen pipelines + sampler */
@@ -396,6 +403,7 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->tree_pipeline) wgpuRenderPipelineRelease(r->tree_pipeline);
     if (r->road_pipeline) wgpuRenderPipelineRelease(r->road_pipeline);
     if (r->bridge_pipeline) wgpuRenderPipelineRelease(r->bridge_pipeline);
+    if (r->tunnel_pipeline) wgpuRenderPipelineRelease(r->tunnel_pipeline);
     if (r->surface_pipeline) wgpuRenderPipelineRelease(r->surface_pipeline);
     if (r->stencil_fill_pipeline) wgpuRenderPipelineRelease(r->stencil_fill_pipeline);
     if (r->stencil_color_pipeline) wgpuRenderPipelineRelease(r->stencil_color_pipeline);
@@ -770,10 +778,12 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     if (tile->bridge.buf_xy) wgpuBufferRelease(tile->bridge.buf_xy);
     if (tile->bridge.buf_z) wgpuBufferRelease(tile->bridge.buf_z);
     if (tile->bridge.buf_normals) wgpuBufferRelease(tile->bridge.buf_normals);
+    if (tile->bridge.buf_color) wgpuBufferRelease(tile->bridge.buf_color);
     if (tile->bridge.buf_indices) wgpuBufferRelease(tile->bridge.buf_indices);
     if (tile->tunnel.buf_xy) wgpuBufferRelease(tile->tunnel.buf_xy);
     if (tile->tunnel.buf_z) wgpuBufferRelease(tile->tunnel.buf_z);
     if (tile->tunnel.buf_normals) wgpuBufferRelease(tile->tunnel.buf_normals);
+    if (tile->tunnel.buf_color) wgpuBufferRelease(tile->tunnel.buf_color);
     if (tile->tunnel.buf_indices) wgpuBufferRelease(tile->tunnel.buf_indices);
     if (tile->road_buf_vert) wgpuBufferRelease(tile->road_buf_vert);
     if (tile->road_buf_index) wgpuBufferRelease(tile->road_buf_index);
@@ -921,15 +931,18 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
     restore_terrain_pipeline(r);
 
     /* Structures under a continuous asphalt surface. Tunnel bores and bridge
-       decks are both drawn with the deck pipeline (top face → road asphalt,
+       decks are both drawn with the deck fragment (top face → road asphalt,
        side walls / portal faces → concrete) *after* the terrain, so a buried
        bore is hidden by the ground it runs under and an exposed one (a portal
        mouth, a lakeside gallery) reads as the same continuous road as the
-       decks. Both write depth with a small camera-facing margin (vs_bridge);
-       the road paint drawn next carries a larger margin, so a stroke
-       re-emitted over a structure lands on its top and wins — the road surface
-       continues across bridge and bore alike. */
-    arpt__mesh_draw_structure(r, &tile->tunnel, r->bridge_pipeline);
+       decks. A bridge deck rides its engineered roadbed and needs the small
+       camera-facing margin (vs_deck_bridge) to win their coplanar depth tie; a
+       bore is meant to be occluded by the ground, so it takes the no-margin
+       pipeline
+       — the margin would only ghost it through the hillside near portals. The
+       road paint drawn next carries a larger margin, so a stroke re-emitted over
+       a structure lands on its top and wins. */
+    arpt__mesh_draw_structure(r, &tile->tunnel, r->tunnel_pipeline);
     arpt__mesh_draw_structure(r, &tile->bridge, r->bridge_pipeline);
     arpt__road_draw(r, tile);
     arpt__mesh_draw_buildings(r, tile);

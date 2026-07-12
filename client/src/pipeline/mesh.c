@@ -351,6 +351,10 @@ WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
         .format = WGPUVertexFormat_Sint32, .offset = 0, .shaderLocation = 1};
     WGPUVertexAttribute attr_n = {
         .format = WGPUVertexFormat_Sint8x2, .offset = 0, .shaderLocation = 2};
+    /* Per-vertex road-class deck colour (unorm8x4 → vec4<f32> 0..1), read by the
+       structure vertex entries (vs_deck / vs_deck_bridge) for the asphalt top. */
+    WGPUVertexAttribute attr_color = {
+        .format = WGPUVertexFormat_Unorm8x4, .offset = 0, .shaderLocation = 3};
     WGPUVertexBufferLayout vbls[] = {
         {.arrayStride = 4, .stepMode = WGPUVertexStepMode_Vertex,
          .attributeCount = 1, .attributes = &attr_xy},
@@ -358,6 +362,8 @@ WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
          .attributeCount = 1, .attributes = &attr_z},
         {.arrayStride = 4, .stepMode = WGPUVertexStepMode_Vertex,
          .attributeCount = 1, .attributes = &attr_n},
+        {.arrayStride = 4, .stepMode = WGPUVertexStepMode_Vertex,
+         .attributeCount = 1, .attributes = &attr_color},
     };
 
     WGPUColorTargetState ct = {.format = format,
@@ -376,7 +382,7 @@ WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
 
     WGPURenderPipelineDescriptor pip = {
         .layout = pl,
-        .vertex = {.module = sm, .entryPoint = vs_entry, .bufferCount = 3,
+        .vertex = {.module = sm, .entryPoint = vs_entry, .bufferCount = 4,
                    .buffers = vbls},
         .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
                       .cullMode = WGPUCullMode_None,
@@ -412,11 +418,25 @@ void arpt__mesh_upload_structure(arpt_renderer *r, arpt_mesh_draw *d,
             r->device, r->queue, WGPUBufferUsage_Vertex, padded, nv * 4);
         free(padded);
     }
+    /* Per-vertex deck colour. The structure pipeline always binds vertex buffer
+       3, so fall back to a neutral fill (alpha 0 → shader's motorway default)
+       when the decoder shipped no colour, keeping the layout valid. */
+    if (prim->color) {
+        d->buf_color = create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex,
+                                     prim->color, nv * 4);
+    } else {
+        uint8_t *fill = calloc(nv, 4);
+        if (fill) {
+            d->buf_color = create_buffer(r->device, r->queue,
+                                         WGPUBufferUsage_Vertex, fill, nv * 4);
+            free(fill);
+        }
+    }
     d->buf_indices = create_buffer(r->device, r->queue,
                                    WGPUBufferUsage_Index, prim->indices,
                                    ni * sizeof(uint32_t));
 
-    if (d->buf_xy && d->buf_z && d->buf_normals && d->buf_indices)
+    if (d->buf_xy && d->buf_z && d->buf_normals && d->buf_color && d->buf_indices)
         d->index_count = (uint32_t)ni;
 }
 
@@ -432,6 +452,8 @@ void arpt__mesh_draw_structure(arpt_renderer *r, arpt_mesh_draw *d,
                                          wgpuBufferGetSize(d->buf_z));
     wgpuRenderPassEncoderSetVertexBuffer(r->pass, 2, d->buf_normals, 0,
                                          wgpuBufferGetSize(d->buf_normals));
+    wgpuRenderPassEncoderSetVertexBuffer(r->pass, 3, d->buf_color, 0,
+                                         wgpuBufferGetSize(d->buf_color));
     wgpuRenderPassEncoderSetIndexBuffer(
         r->pass, d->buf_indices, WGPUIndexFormat_Uint32, 0,
         wgpuBufferGetSize(d->buf_indices));

@@ -397,7 +397,10 @@ static bool keep_by_level(arpentry_tiles_Feature_table_t feat, int sign,
    -1 only tunnels. Returns false (with `out` zeroed) when no matching mesh. */
 static bool collect_layer_meshes(const void *flatbuf,
                                  arpentry_tiles_Layer_table_t layer,
-                                 int level_sign, arpt_building_prim *out) {
+                                 int level_sign,
+                                 const char (*class_names)[32], int class_count,
+                                 const float (*colors)[4],
+                                 arpt_building_prim *out) {
     memset(out, 0, sizeof(*out));
 
     arpentry_tiles_Feature_vec_t features =
@@ -413,6 +416,19 @@ static bool collect_layer_meshes(const void *flatbuf,
         level_key = find_key_index(flatbuf, "level");
         arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root(flatbuf);
         values = tile ? arpentry_tiles_Tile_values(tile) : NULL;
+    }
+
+    /* Per-vertex deck colour: resolve each structure's road class against the
+       style so its top face is painted the same grey its ribbon uses (not always
+       motorway grey). Skipped when the caller passes no style (buildings). */
+    uint32_t class_key = UINT32_MAX;
+    bool want_color = colors != NULL && class_names != NULL && class_count > 0;
+    if (want_color) {
+        class_key = find_key_index(flatbuf, "class");
+        if (!values) {
+            arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root(flatbuf);
+            values = tile ? arpentry_tiles_Tile_values(tile) : NULL;
+        }
     }
 
     /* First pass: total vertices and indices across all matching mesh features. */
@@ -440,11 +456,14 @@ static bool collect_layer_meshes(const void *flatbuf,
     out->z = malloc(total_v * sizeof(int32_t));
     out->normals = calloc(total_v, 2);
     out->indices = malloc(total_i * sizeof(uint32_t));
-    if (!out->xy || !out->z || !out->normals || !out->indices) {
+    out->color = want_color ? malloc(total_v * 4) : NULL;
+    if (!out->xy || !out->z || !out->normals || !out->indices ||
+        (want_color && !out->color)) {
         free(out->xy);
         free(out->z);
         free(out->normals);
         free(out->indices);
+        free(out->color);
         memset(out, 0, sizeof(*out));
         return false;
     }
@@ -478,6 +497,21 @@ static bool collect_layer_meshes(const void *flatbuf,
         flatbuffers_int8_vec_t nv = arpentry_tiles_MeshGeometry_normals(mesh);
         bool have_n = nv && flatbuffers_int8_vec_len(nv) == 2 * vc;
 
+        /* Resolve this feature's deck colour once; alpha 0 (an unresolved class)
+           tells the shader to fall back to its motorway-grey default. */
+        uint8_t cr = 0, cg = 0, cb = 0, ca = 0;
+        if (out->color) {
+            uint8_t cls =
+                resolve_class(feat, class_key, values, class_names, class_count);
+            if (cls != 0) {
+                const float *c = colors[cls];
+                cr = (uint8_t)(c[0] <= 0.0f ? 0 : c[0] >= 1.0f ? 255 : c[0] * 255.0f + 0.5f);
+                cg = (uint8_t)(c[1] <= 0.0f ? 0 : c[1] >= 1.0f ? 255 : c[1] * 255.0f + 0.5f);
+                cb = (uint8_t)(c[2] <= 0.0f ? 0 : c[2] >= 1.0f ? 255 : c[2] * 255.0f + 0.5f);
+                ca = 255;
+            }
+        }
+
         uint32_t base = (uint32_t)vi;
         for (size_t v = 0; v < vc; v++) {
             out->xy[(vi + v) * 2] = xv[v];
@@ -486,6 +520,12 @@ static bool collect_layer_meshes(const void *flatbuf,
             if (have_n) {
                 out->normals[(vi + v) * 2] = nv[2 * v];
                 out->normals[(vi + v) * 2 + 1] = nv[2 * v + 1];
+            }
+            if (out->color) {
+                out->color[(vi + v) * 4] = cr;
+                out->color[(vi + v) * 4 + 1] = cg;
+                out->color[(vi + v) * 4 + 2] = cb;
+                out->color[(vi + v) * 4 + 3] = ca;
             }
         }
         for (size_t k = 0; k < ic; k++)
@@ -521,31 +561,43 @@ bool arpt_decode_building_mesh(const void *flatbuf, size_t size,
                    arpentry_tiles_Geometry_MeshGeometry)
         return false;
 
-    return collect_layer_meshes(flatbuf, layer, 0, out);
+    /* Buildings carry their own baked colours and use a different draw path, so
+       no per-vertex road-class colour is resolved here. */
+    return collect_layer_meshes(flatbuf, layer, 0, NULL, 0, NULL, out);
 }
 
 /* Road-structure box prisms ride in the transportation layer alongside the (more
    numerous) road lines, so — unlike buildings — the first feature is not a mesh.
    Scan the whole layer, collecting only the matching MeshGeometry features:
-   bridges (`level_sign` +1) and tunnels (-1) are split so each colours its own. */
+   bridges (`level_sign` +1) and tunnels (-1) are split so each colours its own.
+   The style (`class_names`/`colors`) paints each deck top its road's own grey. */
 static bool decode_structure_mesh(const void *flatbuf, size_t size,
                                   const char *layer_name, int level_sign,
+                                  const char (*class_names)[32], int class_count,
+                                  const float (*colors)[4],
                                   arpt_building_prim *out) {
     memset(out, 0, sizeof(*out));
     arpentry_tiles_Layer_table_t layer =
         find_layer_by_name(flatbuf, size, layer_name);
     if (!layer) return false;
-    return collect_layer_meshes(flatbuf, layer, level_sign, out);
+    return collect_layer_meshes(flatbuf, layer, level_sign, class_names,
+                                class_count, colors, out);
 }
 
 bool arpt_decode_bridge_mesh(const void *flatbuf, size_t size,
-                             const char *layer_name, arpt_building_prim *out) {
-    return decode_structure_mesh(flatbuf, size, layer_name, +1, out);
+                             const char *layer_name,
+                             const char (*class_names)[32], int class_count,
+                             const float (*colors)[4], arpt_building_prim *out) {
+    return decode_structure_mesh(flatbuf, size, layer_name, +1, class_names,
+                                 class_count, colors, out);
 }
 
 bool arpt_decode_tunnel_mesh(const void *flatbuf, size_t size,
-                             const char *layer_name, arpt_building_prim *out) {
-    return decode_structure_mesh(flatbuf, size, layer_name, -1, out);
+                             const char *layer_name,
+                             const char (*class_names)[32], int class_count,
+                             const float (*colors)[4], arpt_building_prim *out) {
+    return decode_structure_mesh(flatbuf, size, layer_name, -1, class_names,
+                                 class_count, colors, out);
 }
 
 /* Line decoding */
