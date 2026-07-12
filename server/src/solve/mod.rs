@@ -15,6 +15,7 @@
 //! levels (no popping).
 
 pub mod crossings;
+pub mod junctions;
 pub mod portals;
 pub mod profile;
 
@@ -122,6 +123,11 @@ pub fn run(
     // (invariant 3). Runs after every base profile exists, so a lower
     // corridor's height is its solved one.
     crossings::apply(scene, &mut profiles);
+
+    // Junction continuity (invariant 2): weld each leg to the road it meets.
+    // Runs after crossings so a welded leg reads the lifted deck it joins, and
+    // its raise-only lift cannot undo a clearance already earned.
+    junctions::apply(scene, &mut profiles);
 
     Ok(SolvedModel { profiles, z_ref })
 }

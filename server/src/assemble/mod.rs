@@ -90,7 +90,9 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
             properties: f.properties,
         });
     }
-    let mut scene = SceneGraph::new(corridors::build(raw));
+    let (corridors, junctions) = corridors::build(raw);
+    let mut scene = SceneGraph::new(corridors);
+    scene.junctions = junctions;
     // Second pass: find where the corridors' structure spans cross the rest
     // of the network (the input is streamed again; only geometry near a span
     // is actually tested). Water gets its own pass: a bridge over a river

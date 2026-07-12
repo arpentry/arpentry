@@ -136,6 +136,28 @@ pub struct Underpass {
     pub under_level: i64,
 }
 
+/// A point where corridors meet — two or more sharing a connector, at least
+/// one of them ending there. Unlike a [`Crossing`] (features passing over one
+/// another) the members physically connect, so their road surfaces must agree
+/// in height (docs/GENERATION.md invariant 2). At grade this holds for free
+/// (every member anchors to the same ground); the solver welds the members
+/// only where one arrives elevated — a ramp meeting a flyover.
+#[derive(Debug, Clone)]
+pub struct Junction {
+    /// The shared connector's plan position.
+    pub point: Coord,
+    pub members: Vec<JunctionMember>,
+}
+
+/// One corridor at a [`Junction`]: which corridor, and the arc along it where
+/// the connector sits (`0` or `total` when the corridor ends there — a leg to
+/// be welded; interior otherwise — the through road that sets the height).
+#[derive(Debug, Clone, Copy)]
+pub struct JunctionMember {
+    pub corridor: CorridorId,
+    pub arc: f64,
+}
+
 /// One constant-kind piece of a source segment, ready to tile: the geometry cut
 /// at span boundaries, and the span it belongs to.
 #[derive(Debug)]
@@ -228,6 +250,8 @@ pub struct SceneGraph {
     pub corridors: Vec<Corridor>,
     pub crossings: Vec<Crossing>,
     pub underpasses: Vec<Underpass>,
+    /// Where corridors meet and their heights must agree (invariant 2).
+    pub junctions: Vec<Junction>,
     /// Source feature id hash → (corridor, segment index within it).
     by_source: HashMap<u64, (CorridorId, u32)>,
 }
@@ -240,7 +264,13 @@ impl SceneGraph {
                 by_source.insert(seg.source, (c.id, i as u32));
             }
         }
-        SceneGraph { corridors, crossings: Vec::new(), underpasses: Vec::new(), by_source }
+        SceneGraph {
+            corridors,
+            crossings: Vec::new(),
+            underpasses: Vec::new(),
+            junctions: Vec::new(),
+            by_source,
+        }
     }
 
     /// Looks a source feature up by its id hash, returning its corridor and

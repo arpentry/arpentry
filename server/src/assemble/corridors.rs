@@ -19,7 +19,10 @@ use geo_types::Coord;
 
 use crate::levels::LevelRun;
 use crate::priors::{RoadClass, MAX_CORRIDOR_M, MIN_STRUCTURE_M, SNAP_RUN_M};
-use crate::scene::{metric_len, run_cos_lat, Corridor, SegmentRef, Span, SpanKind};
+use crate::scene::{
+    metric_len, run_cos_lat, Corridor, CorridorId, Junction, JunctionMember, SegmentRef, Span,
+    SpanKind,
+};
 use crate::value::Value;
 
 /// Smallest arc difference treated as a distinct span edge, metres.
@@ -63,17 +66,48 @@ impl End {
     }
 }
 
-/// Joins the participating segments into corridors.
-pub fn build(segments: Vec<RawSegment>) -> Vec<Corridor> {
+/// Joins the participating segments into corridors and finds the junctions
+/// where they meet (invariant 2).
+pub fn build(segments: Vec<RawSegment>) -> (Vec<Corridor>, Vec<Junction>) {
     let links = splice_links(&segments);
     let chains = walk_chains(&segments, &links);
     let mut corridors = Vec::with_capacity(chains.len());
+    // Every corridor's connector ports (connector id → the corridor and the arc
+    // it sits at), bucketed by connector so shared ones become junctions.
+    let mut by_connector: HashMap<u64, Vec<(CorridorId, f64, Coord)>> = HashMap::new();
     for chain in chains {
-        if let Some(c) = build_corridor(corridors.len() as u32, &segments, &chain) {
+        if let Some((c, ports)) = build_corridor(corridors.len() as u32, &segments, &chain) {
+            for (conn, arc, point) in ports {
+                by_connector.entry(conn).or_default().push((c.id, arc, point));
+            }
             corridors.push(c);
         }
     }
-    corridors
+    (corridors, junctions(by_connector))
+}
+
+/// Turns the connector→ports map into junctions: a connector touched by two or
+/// more distinct corridors is a place they meet. Deterministic — the map is
+/// drained into a connector-sorted list so the junction order (and thus the
+/// weld order) never depends on hashing.
+fn junctions(by_connector: HashMap<u64, Vec<(CorridorId, f64, Coord)>>) -> Vec<Junction> {
+    let mut conns: Vec<(u64, Vec<(CorridorId, f64, Coord)>)> = by_connector.into_iter().collect();
+    conns.sort_by_key(|(id, _)| *id);
+    let mut out = Vec::new();
+    for (_conn, mut ports) in conns {
+        // One member per corridor (an interior splice touches a connector from
+        // both sides at the same arc); keep the lowest corridor id's port.
+        ports.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).expect("finite arc")));
+        ports.dedup_by_key(|p| p.0);
+        if ports.len() < 2 {
+            continue; // a plain through-splice or a dangling end: no junction
+        }
+        let point = ports[0].2;
+        let members =
+            ports.iter().map(|&(corridor, arc, _)| JunctionMember { corridor, arc }).collect();
+        out.push(Junction { point, members });
+    }
+    out
 }
 
 /// For each (segment, end), the (segment, end) it splices to, if any. Two ends
@@ -242,7 +276,11 @@ fn polyline_len(line: &[Coord]) -> f64 {
 /// Builds one corridor from a chain: concatenates the oriented centerlines
 /// (deduplicating shared junction vertices), remaps each segment's level runs
 /// into corridor arc space, and resolves the runs into spans.
-fn build_corridor(id: u32, segments: &[RawSegment], chain: &[ChainLink]) -> Option<Corridor> {
+fn build_corridor(
+    id: u32,
+    segments: &[RawSegment],
+    chain: &[ChainLink],
+) -> Option<(Corridor, Vec<(u64, f64, Coord)>)> {
     // Concatenate oriented nodes, remembering each segment's node range.
     let mut nodes: Vec<Coord> = Vec::new();
     let mut ranges: Vec<(usize, usize, bool)> = Vec::with_capacity(chain.len());
@@ -311,17 +349,36 @@ fn build_corridor(id: u32, segments: &[RawSegment], chain: &[ChainLink]) -> Opti
     connectors.sort_unstable();
     connectors.dedup();
 
-    Some(Corridor {
-        id,
-        class: chain.first().map(|&(si, _)| segments[si].class).unwrap_or(RoadClass::Minor),
-        link: chain.iter().all(|&(si, _)| segments[si].link),
-        nodes,
-        arc,
-        cos_lat,
-        spans,
-        segments: seg_refs,
-        connectors,
-    })
+    // The corridor's connector ports: each member segment's end connectors at
+    // the corridor arc (and coordinate) they sit at. A reversed segment's start
+    // connector lands at its high node and vice versa. Shared with other
+    // corridors, these ports are the junctions.
+    let mut ports: Vec<(u64, f64, Coord)> = Vec::new();
+    for (&(si, forward), &(node0, node1, _)) in chain.iter().zip(&ranges) {
+        let seg = &segments[si];
+        let (sc_node, ec_node) = if forward { (node0, node1) } else { (node1, node0) };
+        if let Some(c) = seg.start_connector {
+            ports.push((c, arc[sc_node], nodes[sc_node]));
+        }
+        if let Some(c) = seg.end_connector {
+            ports.push((c, arc[ec_node], nodes[ec_node]));
+        }
+    }
+
+    Some((
+        Corridor {
+            id,
+            class: chain.first().map(|&(si, _)| segments[si].class).unwrap_or(RoadClass::Minor),
+            link: chain.iter().all(|&(si, _)| segments[si].link),
+            nodes,
+            arc,
+            cos_lat,
+            spans,
+            segments: seg_refs,
+            connectors,
+        },
+        ports,
+    ))
 }
 
 /// Resolves arc-referenced level runs into a clean partition of `[0, total]`:
@@ -469,7 +526,7 @@ mod tests {
         // a: 0..1000 m, b: 1000..2000 m, sharing connector 7 (a.end = b.start).
         let a = seg("a", 0.0, 1000.0, vec![run(0.5, 1.0, 1)], Some(1), Some(7));
         let b = seg("b", 1000.0, 1000.0, vec![run(0.0, 0.5, 1)], Some(7), Some(2));
-        let cs = build(vec![a, b]);
+        let (cs, _junctions) = build(vec![a, b]);
         assert_eq!(cs.len(), 1);
         let c = &cs[0];
         assert_eq!(c.segments.len(), 2);
@@ -488,7 +545,7 @@ mod tests {
         let a = seg("a", 0.0, 1000.0, vec![run(0.5, 1.0, 1)], Some(1), Some(7));
         let mut b = seg("b", 1000.0, 1000.0, vec![run(0.5, 1.0, 1)], Some(2), Some(7));
         b.line.reverse(); // digitized east→west; its start is at 2000 m
-        let cs = build(vec![a, b]);
+        let (cs, _junctions) = build(vec![a, b]);
         assert_eq!(cs.len(), 1);
         let bridges: Vec<&Span> =
             cs[0].spans.iter().filter(|s| s.kind == SpanKind::Bridge).collect();
@@ -502,8 +559,11 @@ mod tests {
         let a = seg("a", 0.0, 1000.0, vec![run(0.0, 1.0, 1)], Some(1), Some(7));
         let b = seg("b", 1000.0, 1000.0, vec![run(0.0, 1.0, 1)], Some(7), Some(2));
         let c = seg("c", 1000.0, 500.0, vec![run(0.0, 1.0, 1)], Some(7), Some(3));
-        let cs = build(vec![a, b, c]);
+        let (cs, junctions) = build(vec![a, b, c]);
         assert_eq!(cs.len(), 3, "a degree-3 connector must not splice");
+        // The fork is a junction: all three corridors meet at connector 7.
+        assert_eq!(junctions.len(), 1, "the shared fork connector is one junction");
+        assert_eq!(junctions[0].members.len(), 3, "all three legs are members");
     }
 
     #[test]
@@ -511,7 +571,7 @@ mod tests {
         let a = seg("a", 0.0, 1000.0, vec![run(0.0, 1.0, 1)], Some(1), Some(7));
         let mut b = seg("b", 1000.0, 1000.0, vec![run(0.0, 1.0, 1)], Some(7), Some(2));
         b.class_key = "primary".into();
-        let cs = build(vec![a, b]);
+        let (cs, _junctions) = build(vec![a, b]);
         assert_eq!(cs.len(), 2, "a class change is a new corridor");
     }
 
@@ -519,7 +579,7 @@ mod tests {
     fn short_structure_spans_demote_to_grade() {
         // A 20 m "bridge" (a footbridge annotation) stays at grade.
         let a = seg("a", 0.0, 1000.0, vec![run(0.49, 0.51, 1)], None, None);
-        let cs = build(vec![a]);
+        let (cs, _junctions) = build(vec![a]);
         assert_eq!(cs[0].spans.len(), 1);
         assert_eq!(cs[0].spans[0].kind, SpanKind::Grade);
     }
@@ -529,7 +589,7 @@ mod tests {
         // Tunnel to 0.449, bridge from 0.451: the 2 m grade sliver is annotation
         // noise; the structures must abut.
         let a = seg("a", 0.0, 1000.0, vec![run(0.0, 0.449, -5), run(0.451, 1.0, 1)], None, None);
-        let cs = build(vec![a]);
+        let (cs, _junctions) = build(vec![a]);
         let kinds: Vec<SpanKind> = cs[0].spans.iter().map(|s| s.kind).collect();
         assert_eq!(kinds, vec![SpanKind::Tunnel, SpanKind::Bridge]);
         assert!((cs[0].spans[0].arc1 - cs[0].spans[1].arc0).abs() < 1e-9, "structures must abut");
@@ -546,7 +606,7 @@ mod tests {
             l.reverse();
             l
         };
-        let cs = build(vec![a, b]);
+        let (cs, _junctions) = build(vec![a, b]);
         assert_eq!(cs.iter().map(|c| c.segments.len()).sum::<usize>(), 2);
     }
 
@@ -564,7 +624,7 @@ mod tests {
                 Some(101 + i as u64),
             ));
         }
-        let cs = build(segs);
+        let (cs, _junctions) = build(segs);
         assert!(cs.len() >= 2, "a 40 km chain must be cut at the corridor cap");
         assert!(cs.iter().all(|c| c.total() <= MAX_CORRIDOR_M + 2000.0));
     }

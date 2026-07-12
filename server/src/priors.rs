@@ -247,6 +247,15 @@ pub const PORTAL_MAX_M: f64 = 200.0;
 /// the mouth sits just clear of the terrain rather than flush with it.
 pub const PORTAL_CLEARANCE_M: f64 = 1.0;
 
+/// Highest a junction weld may lift a corridor's leg to meet the road it joins
+/// (invariant 2): a ramp diverging from an elevated flyover is pulled up to the
+/// deck it leaves. A demand beyond this means the shared connector links roads
+/// that do not in fact meet at one height (a mapping error, or a leg that
+/// climbs to its own structure elsewhere); the weld is dropped and the leg
+/// keeps its solved profile — the same "trust the profile over the inferred
+/// constraint" the clearance caps use.
+pub const MAX_JUNCTION_WELD_M: f64 = 12.0;
+
 /// Longest chain of segments joined into one corridor, in metres. Corridors
 /// longer than this are split; junction-continuity constraints (solve stage)
 /// carry coherence across the cut. Bounds the profile arrays and keeps a
