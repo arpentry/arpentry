@@ -29,7 +29,7 @@
 
 use geo_types::Coord;
 
-use crate::priors::{MAX_ROAD_DEVIATION_M, PORTAL_MAX_M};
+use crate::priors::{MAX_ROAD_DEVIATION_M, MIN_EARTHWORK_M, PORTAL_MAX_M};
 use crate::scene::{metric_len, run_cos_lat, Span, SpanKind, DEG_M};
 
 /// Target spacing in metres after densification, used both to sample the road
@@ -66,6 +66,18 @@ const SMOOTH_MAX_DEV_M: f64 = 4.0;
 /// up, a fill on the way down — instead of letting one anchored direction
 /// drift to one side.
 const GRADE_PASSES: usize = 8;
+
+/// Passes of [`smooth_vgrades`] vertical-curve smoothing. A handful of
+/// arc-weighted Laplacian passes rounds the sharp grade breaks an engineered
+/// profile carries — the abutment corner where an embankment approach meets a
+/// deck ramp, the kinks the grade limiter leaves on a cut or fill — into gentle
+/// sag/crest curves. A straight ramp is harmonic and passes through untouched;
+/// only the corners move, and they round out within ~√passes nodes.
+const VGRADE_PASSES: usize = 6;
+
+/// Relaxation weight per [`smooth_vgrades`] pass: each engineered node moves
+/// this fraction of the way to the arc-chord of its neighbours.
+const VGRADE_LAMBDA: f64 = 0.5;
 
 /// Passes of [`absorb_infeasible_anchors`] + re-solve. Each pass may extend a
 /// structure run by up to [`PORTAL_MAX_M`] past its current edge, so a long
@@ -208,6 +220,14 @@ pub fn solve(
         }
     } else {
         road_m = road_profile(&arc, &terrain, &at_grade);
+    }
+    // Round the engineered profile's grade breaks (abutments, cut/fill kinks)
+    // into gentle vertical curves. Engineered classes only: an unengineered
+    // road is draped and has no such corners; smoothing it would float it off
+    // the terrain. Runs before the deck ramp so decks stay straight, and before
+    // portals/ground read the profile so their gap zero-crossings stay exact.
+    if max_grade.is_some() {
+        smooth_vgrades(&arc, &mut road_m, &terrain, &at_grade);
     }
     let deck_m = deck_ramp(&arc, &road_m, &at_grade);
     let smooth = smooth_path(&spline_path(raw, &params, cos_lat));
@@ -1127,6 +1147,55 @@ fn absorb_infeasible_anchors(
     changed
 }
 
+/// Rounds the sharp vertical grade breaks of an *engineered* road profile into
+/// gentle parabolic curves — the abutment corner where an embankment approach
+/// meets a deck ramp, and the kinks [`limit_road_grade`] leaves on a cut or
+/// fill. Each pass pulls every engineered node toward the arc-chord of its
+/// neighbours (a discrete second-derivative penalty — the vertical curvature a
+/// real road holds for comfort and sight distance); a straight ramp is harmonic
+/// and passes through unchanged, so only the corners round out.
+///
+/// Only nodes already lifted onto a fill or sunk into a cut are reshaped
+/// (`|road − terrain| ≥ MIN_EARTHWORK_M`): a genuinely draped at-grade node
+/// stays pinned to the ground, so the road never floats off the rendered
+/// terrain (invariant 4). Those pinned nodes, the structure nodes (their deck
+/// ramp is refit straight afterward), and the corridor ends are the smoothing's
+/// fixed boundaries. Each moved node is held within [`MAX_ROAD_DEVIATION_M`] of
+/// the terrain so the rounding can never drift the road far from the ground.
+fn smooth_vgrades(arc: &[f64], road_m: &mut [f64], terrain: &[f64], at_grade: &[bool]) {
+    let n = road_m.len();
+    if n < 3 {
+        return;
+    }
+    // Reshapeable only where the road is engineered off the ground (a fill or
+    // cut) and at grade — decks stay straight, draped nodes stay on the terrain.
+    let movable = |road_m: &[f64], i: usize| {
+        at_grade[i] && (road_m[i] - terrain[i]).abs() >= MIN_EARTHWORK_M
+    };
+    for _ in 0..VGRADE_PASSES {
+        // Jacobi: every node reads the previous pass, so the relaxation is
+        // order-independent and a corridor's fragments cannot diverge.
+        let prev = road_m.to_vec();
+        for i in 1..n - 1 {
+            if !movable(&prev, i) {
+                continue;
+            }
+            let (a0, a1, a2) = (arc[i - 1], arc[i], arc[i + 1]);
+            let span = a2 - a0;
+            if span <= 0.0 {
+                continue;
+            }
+            // The point on the chord prev[i-1]→prev[i+1] at this node's arc, so
+            // uneven node spacing doesn't bias the curve.
+            let t = (a1 - a0) / span;
+            let chord = prev[i - 1] + (prev[i + 1] - prev[i - 1]) * t;
+            let moved = prev[i] + VGRADE_LAMBDA * (chord - prev[i]);
+            road_m[i] =
+                moved.clamp(terrain[i] - MAX_ROAD_DEVIATION_M, terrain[i] + MAX_ROAD_DEVIATION_M);
+        }
+    }
+}
+
 /// The deck-top height at each node: [`road_profile`]'s heights with every
 /// structure span (a maximal run of non-at-grade nodes) replaced by a single
 /// straight ramp fit over that span and its bounding anchors. The at-grade
@@ -1284,6 +1353,40 @@ mod tests {
     ) -> Profile {
         let mut elev = |c: Coord| terrain(c);
         solve(seg, spans, Some(max_grade), &mut elev).expect("non-degenerate test corridor")
+    }
+
+    #[test]
+    fn vgrades_round_an_engineered_corner_but_pin_draped_nodes() {
+        // A road draped at 100 m on both ends, lifted into a sharp tent (an
+        // embankment) over the middle with a corner apex. Smoothing must round
+        // the apex (drop its vertical curvature) while leaving the draped flanks
+        // exactly on the terrain — the road must not float off the ground.
+        let n = 21;
+        let arc: Vec<f64> = (0..n).map(|i| i as f64 * 8.0).collect();
+        let terrain = vec![100.0; n];
+        let mut road: Vec<f64> = (0..n)
+            .map(|i| {
+                if i <= 4 || i >= 16 {
+                    100.0
+                } else if i <= 10 {
+                    100.0 + (i - 4) as f64 * 2.0
+                } else {
+                    100.0 + (16 - i) as f64 * 2.0
+                }
+            })
+            .collect();
+        let at_grade = vec![true; n];
+        let curv = |r: &[f64], i: usize| (r[i - 1] - 2.0 * r[i] + r[i + 1]).abs();
+        let before = curv(&road, 10);
+        smooth_vgrades(&arc, &mut road, &terrain, &at_grade);
+        assert!(curv(&road, 10) < before, "apex curvature {} must drop below {before}", curv(&road, 10));
+        // Draped flank nodes stay pinned to the terrain (no float).
+        assert!((road[0] - 100.0).abs() < 1e-9);
+        assert!((road[2] - 100.0).abs() < 1e-9);
+        assert!((road[18] - 100.0).abs() < 1e-9);
+        // The rounded apex stays below the original corner (a crest curve pulls
+        // in) but well within the deviation budget.
+        assert!(road[10] <= 112.0 + 1e-9 && road[10] > 100.0);
     }
 
     #[test]
