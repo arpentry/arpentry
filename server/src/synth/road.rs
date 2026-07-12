@@ -57,13 +57,15 @@ const MAX_VERTS: usize = 4096;
 /// Bakes a road's per-vertex elevation onto the feature, densifying the
 /// (clipped) centerline so it follows the relief and writing the heights into
 /// `f.z`. A no-op for non-line geometry. `deck` marks paint re-emitted over a
-/// bridge span: it always rides the solved deck ramp directly — the same
-/// heights the deck sweep uses — so the stroke lies on the deck top at every
-/// zoom instead of following the per-zoom drape correction (which would step
-/// off the deck wherever the coarse lattice disagrees with the reference). A
-/// tunnel's paint bakes with `deck = false` and so takes the drape branch
-/// below — it rides the drawn ground (`max(road, surface)`), draping the
-/// hillside where the bore runs buried instead of sinking under the terrain.
+/// *structure* span — a bridge deck or a tunnel bore: it always rides the
+/// solved deck ramp directly ([`Profile::deck_height_at`], the same heights
+/// the deck and bore sweeps build their solids from), so the stroke lies on
+/// the deck top of a bridge and on the bore's road surface of a tunnel at
+/// every zoom, instead of following the per-zoom drape correction (which would
+/// step off the structure wherever the coarse lattice disagrees with the
+/// reference). Where a bore runs buried the ramp dips under the hill, so the
+/// ribbon sinks with the mesh and the terrain occludes it rather than draping
+/// the hillside above the buried span.
 pub fn bake(
     f: &mut EncoderFeature,
     profile: Option<&Profile>,
@@ -74,10 +76,11 @@ pub fn bake(
     bounds: &Bounds,
 ) {
     let mut height = |lon: f64, lat: f64| match profile {
-        // Deck paint rides the *deck ramp* at every zoom — the same `deck_m`
-        // heights the structure sweep builds its slab top from — not the road
+        // Structure paint rides the *deck ramp* at every zoom — the same
+        // `deck_m` heights the deck/bore sweep builds its solid from (a
+        // bridge's deck top, a tunnel bore's road surface) — not the road
         // profile, which the ramp fit (and the clearance clamps) diverge from
-        // mid-span; paint baked at road height sinks inside the slab wherever
+        // mid-span; paint baked at road height sinks inside the solid wherever
         // the fitted ramp rises above it.
         Some(p) if deck => p.deck_height_at(lon, lat),
         // At the reference zoom the datum and the reference surface are the

@@ -822,15 +822,18 @@ fn process_feature(
                         // A structure span emits twice: the solid (deck or
                         // bore), and the road paint re-emitted over it so the
                         // painted carriageway continues across the span instead
-                        // of terminating at the abutment or portal. A bridge's
-                        // ribbon rides the deck top (`deck`); a tunnel's drapes
-                        // on the ground (`deck = false`), so it follows the
-                        // hillside the bore runs under and stays visible over
-                        // the buried span (riding the road surface there would
-                        // bury the paint under the terrain with the road) while
-                        // still meeting the at-grade approaches at the portal.
-                        let deck = kind == SpanKind::Bridge;
-                        let stroke = Synth::Road { corridor: Some(corridor.id), deck };
+                        // of terminating at the abutment or portal. A bridge
+                        // deck and a tunnel bore both carry the road surface on
+                        // the same solved ramp (`Profile::deck_m` — the bore
+                        // sweep rides it too), so the paint rides that ramp
+                        // (`deck = true`) for either kind: it lies on the deck
+                        // top of a bridge and on the bore's road surface of a
+                        // tunnel. Where a bore runs buried the ramp dips under
+                        // the hill, so the ribbon sinks with the mesh and the
+                        // terrain occludes it — following the tunnel instead of
+                        // draping over the ground it passes beneath — then
+                        // re-emerges at the portal.
+                        let stroke = Synth::Road { corridor: Some(corridor.id), deck: true };
                         emit_geometry(layer, &geom, &props, stroke, cfg, sorter, stats)?;
                         // The level ordinal survives as a property only so the
                         // attribute profiler emits the reserved `level` the
