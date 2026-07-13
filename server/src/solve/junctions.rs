@@ -135,6 +135,7 @@ mod tests {
             let mut s = SceneGraph::new(vec![main, ramp]);
             s.junctions = vec![Junction {
                 point,
+                connector: 0,
                 members: vec![
                     JunctionMember { corridor: 0, arc: mid_arc },
                     JunctionMember { corridor: 1, arc: 0.0 },
@@ -176,6 +177,7 @@ mod tests {
             let mut s = SceneGraph::new(vec![corridor(0, 6.0, len, n), corridor(1, 6.02, len, n)]);
             s.junctions = vec![Junction {
                 point: s.corridors[0].nodes[n / 2],
+                connector: 0,
                 members: vec![
                     JunctionMember { corridor: 0, arc: len / 2.0 },
                     JunctionMember { corridor: 1, arc: 0.0 },
@@ -203,6 +205,7 @@ mod tests {
             let mut s = SceneGraph::new(vec![corridor(0, 6.0, len, n), corridor(1, 6.02, len, n)]);
             s.junctions = vec![Junction {
                 point: s.corridors[0].nodes[n / 2],
+                connector: 0,
                 members: vec![
                     JunctionMember { corridor: 0, arc: len / 2.0 },
                     JunctionMember { corridor: 1, arc: 0.0 },

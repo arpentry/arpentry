@@ -14,6 +14,7 @@ pub mod columns;
 pub mod corridors;
 pub mod crossings;
 pub mod grid;
+pub mod road_junctions;
 pub mod water;
 
 use std::path::Path;
@@ -99,6 +100,11 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
     // is actually tested). Water gets its own pass: a bridge over a river
     // owes freeboard, not road clearance (S3).
     let bb = (bbox.west, bbox.south, bbox.east, bbox.north);
+    // At-grade road junctions over every drivable road, minus the connectors
+    // the corridor junctions already own, so each junction is plated once.
+    let corridor_connectors: std::collections::HashSet<u64> =
+        scene.junctions.iter().map(|j| j.connector).collect();
+    scene.road_junctions = road_junctions::build(path, bb, &corridor_connectors)?;
     let (crossings, underpasses) = crossings::detect(path, bb, &scene)?;
     scene.crossings = crossings;
     scene.underpasses = underpasses;

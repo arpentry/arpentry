@@ -18,6 +18,7 @@
 use geo_types::{Coord, Geometry, Point};
 
 use crate::building_mesh::{Frame, M_PER_DEG_LAT};
+use crate::ground::sampler::GroundSampler;
 use crate::priors::RoadClass;
 use crate::project::{self, Bounds};
 use crate::scene::SceneGraph;
@@ -39,11 +40,12 @@ struct Leg {
     half_w: f64,
 }
 
-/// A baked junction plate: its centre, surface level (int32 mm, the welded
-/// height), the styling class, and its legs.
+/// A baked junction plate: its centre, the styling class, its legs, and its
+/// surface level — a fixed int32-mm height (a corridor junction, at its welded
+/// level) or `None` for an at-grade road junction, which drapes on the ground.
 pub struct BakedJunction {
     point: Coord,
-    level_mm: i32,
+    level_mm: Option<i32>,
     class: String,
     legs: Vec<Leg>,
 }
@@ -98,9 +100,22 @@ pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> JunctionModel {
         };
         junctions.push(BakedJunction {
             point: j.point,
-            level_mm: (level_m * 1000.0).round() as i32,
+            level_mm: Some((level_m * 1000.0).round() as i32),
             class: class_name(class.unwrap_or(RoadClass::Minor)).to_string(),
             legs,
+        });
+    }
+    // At-grade road junctions: legs already carry heading and half-width; the
+    // plate drapes on the ground (no fixed level).
+    for rj in &scene.road_junctions {
+        if rj.legs.len() < 3 {
+            continue;
+        }
+        junctions.push(BakedJunction {
+            point: rj.point,
+            level_mm: None,
+            class: "residential".to_string(),
+            legs: rj.legs.iter().map(|&(e, n, half_w)| Leg { e, n, half_w }).collect(),
         });
     }
     JunctionModel { junctions }
@@ -108,11 +123,23 @@ pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> JunctionModel {
 
 /// The plate feature for `baked`, or `None` when this tile does not own the
 /// junction centre (so exactly one tile emits it) or the plate is degenerate.
-pub fn plate(baked: &BakedJunction, bounds: &Bounds) -> Option<EncoderFeature> {
+/// An at-grade junction drapes on the engineered ground through `sampler`; a
+/// corridor junction sits at its fixed welded level.
+pub fn plate(
+    baked: &BakedJunction,
+    bounds: &Bounds,
+    sampler: &mut GroundSampler,
+    z: u8,
+) -> Option<EncoderFeature> {
     if !owns(bounds, baked.point) {
         return None;
     }
-    let mesh = plate_mesh(baked, bounds)?;
+    let mesh = match baked.level_mm {
+        Some(mm) => plate_mesh(baked, bounds, |_| mm),
+        None => plate_mesh(baked, bounds, |c| {
+            (sampler.surface(bounds, c.x, c.y, z) * 1000.0).round() as i32
+        }),
+    }?;
     Some(EncoderFeature {
         id: baked.point.x.to_bits() ^ baked.point.y.to_bits().rotate_left(32),
         geometry: Geometry::Point(Point(baked.point)),
@@ -124,8 +151,13 @@ pub fn plate(baked: &BakedJunction, bounds: &Bounds) -> Option<EncoderFeature> {
     })
 }
 
-/// Fans the leg mouth corners into a flat plate mesh at the junction level.
-fn plate_mesh(j: &BakedJunction, bounds: &Bounds) -> Option<TerrainMesh> {
+/// Fans the leg mouth corners into a plate mesh, taking each vertex's height in
+/// int32 mm from `elev` (a fixed level, or a drape onto the ground).
+fn plate_mesh(
+    j: &BakedJunction,
+    bounds: &Bounds,
+    mut elev: impl FnMut(Coord) -> i32,
+) -> Option<TerrainMesh> {
     let frame = Frame::at_center(bounds);
     let up = frame.encode_enu(0.0, 0.0, 1.0);
     let m_lon = frame.m_per_deg_lon;
@@ -162,7 +194,7 @@ fn plate_mesh(j: &BakedJunction, bounds: &Bounds) -> Option<TerrainMesh> {
     let mut push = |c: Coord| {
         x.push(project::quantize_x(c.x, bounds));
         y.push(project::quantize_y(c.y, bounds));
-        z.push(j.level_mm);
+        z.push(elev(c));
         normals.push(up.0);
         normals.push(up.1);
     };
@@ -241,14 +273,26 @@ mod tests {
             Leg { e: 0.0, n: 1.0, half_w: 4.0 },
             Leg { e: 0.0, n: -1.0, half_w: 4.0 },
         ];
-        BakedJunction { point: Coord { x: 6.0, y: 46.0 }, level_mm: 372_000, class: "secondary".into(), legs }
+        BakedJunction {
+            point: Coord { x: 6.0, y: 46.0 },
+            level_mm: Some(372_000),
+            class: "secondary".into(),
+            legs,
+        }
+    }
+
+    /// The flat plate mesh of a baked junction, bypassing the ground sampler
+    /// (a corridor junction sits at its fixed level).
+    fn flat_mesh(j: &BakedJunction, bounds: &Bounds) -> Option<TerrainMesh> {
+        plate_mesh(j, bounds, |_| j.level_mm.expect("a fixed level in this test"))
     }
 
     #[test]
     fn plate_meshes_a_fan_over_the_owning_tile() {
         let bounds = Bounds { west: 5.9, south: 45.9, east: 6.1, north: 46.1 };
-        let f = plate(&baked_cross(), &bounds).expect("the owning tile plates the junction");
-        let mesh = f.mesh.expect("a plate mesh");
+        let baked = baked_cross();
+        assert!(owns(&bounds, baked.point), "the tile owns the junction centre");
+        let mesh = flat_mesh(&baked, &bounds).expect("a plate mesh");
         // Eight mouth corners plus the centre, fanned into eight triangles.
         assert_eq!(mesh.x.len(), 9, "centre + 8 corners");
         assert_eq!(mesh.indices.len(), 8 * 3, "one triangle per boundary edge");
@@ -258,9 +302,9 @@ mod tests {
 
     #[test]
     fn a_tile_that_does_not_own_the_centre_emits_nothing() {
-        // Bounds to the east of the junction: not owned, no plate (its owner
-        // emits it, so it is not doubled).
+        // Bounds to the east of the junction: not owned, so its owner emits it
+        // and this tile does not double it.
         let bounds = Bounds { west: 6.5, south: 45.9, east: 6.7, north: 46.1 };
-        assert!(plate(&baked_cross(), &bounds).is_none());
+        assert!(!owns(&bounds, baked_cross().point));
     }
 }

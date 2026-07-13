@@ -146,7 +146,25 @@ pub struct Underpass {
 pub struct Junction {
     /// The shared connector's plan position.
     pub point: Coord,
+    /// The connector id the members share — dedups against the at-grade
+    /// road-junction pass, which sees the same connectors.
+    pub connector: u64,
     pub members: Vec<JunctionMember>,
+}
+
+/// An at-grade road junction: a connector where three or more drivable road
+/// ends meet, most of which are ordinary streets the solver never modelled
+/// (they carry no structure and hold no engineered grade, so they are not
+/// corridors). The synth stage plates it — a paved area draped on the ground —
+/// exactly as it plates a corridor junction, only at the terrain rather than a
+/// solved height.
+#[derive(Debug, Clone)]
+pub struct RoadJunction {
+    /// The connector's plan position.
+    pub point: Coord,
+    /// Each leg's unit ENU heading `(east, north)` away from the junction and
+    /// its road half-width in metres.
+    pub legs: Vec<(f64, f64, f64)>,
 }
 
 /// One corridor at a [`Junction`]: which corridor, and the arc along it where
@@ -269,6 +287,8 @@ pub struct SceneGraph {
     pub underpasses: Vec<Underpass>,
     /// Where corridors meet and their heights must agree (invariant 2).
     pub junctions: Vec<Junction>,
+    /// At-grade road junctions the synth stage plates (draped on the ground).
+    pub road_junctions: Vec<RoadJunction>,
     /// Still water bodies whose surface the ground stage flattens (invariant 4).
     pub water: Vec<WaterBody>,
     /// Source feature id hash → (corridor, segment index within it).
@@ -288,6 +308,7 @@ impl SceneGraph {
             crossings: Vec::new(),
             underpasses: Vec::new(),
             junctions: Vec::new(),
+            road_junctions: Vec::new(),
             water: Vec::new(),
             by_source,
         }

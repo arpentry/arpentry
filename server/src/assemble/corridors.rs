@@ -94,7 +94,7 @@ fn junctions(by_connector: HashMap<u64, Vec<(CorridorId, f64, Coord)>>) -> Vec<J
     let mut conns: Vec<(u64, Vec<(CorridorId, f64, Coord)>)> = by_connector.into_iter().collect();
     conns.sort_by_key(|(id, _)| *id);
     let mut out = Vec::new();
-    for (_conn, mut ports) in conns {
+    for (conn, mut ports) in conns {
         // One member per corridor (an interior splice touches a connector from
         // both sides at the same arc); keep the lowest corridor id's port.
         ports.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).expect("finite arc")));
@@ -105,7 +105,7 @@ fn junctions(by_connector: HashMap<u64, Vec<(CorridorId, f64, Coord)>>) -> Vec<J
         let point = ports[0].2;
         let members =
             ports.iter().map(|&(corridor, arc, _)| JunctionMember { corridor, arc }).collect();
-        out.push(Junction { point, members });
+        out.push(Junction { point, connector: conn, members });
     }
     out
 }

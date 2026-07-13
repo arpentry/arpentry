@@ -1,0 +1,105 @@
+//! At-grade road junctions from all drivable roads (Plan C, scenario S4).
+//!
+//! The corridor junctions ([`corridors::junctions`]) cover only the graded and
+//! structure network the solver models. The intersections that dominate a town
+//! are ordinary streets, which never become corridors — so this pass reads the
+//! transportation input once more for *every* drivable road and finds the
+//! connectors where three or more of their ends meet. Connectors already
+//! handled as corridor junctions are excluded, so a junction is plated once.
+//!
+//! Overture splits roads at their connectors, so a junction shows up as several
+//! segment *ends* sharing a connector; each end contributes a leg (its heading
+//! away from the connector and its class half-width). The synth stage drapes
+//! the plate on the engineered ground.
+
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::path::Path;
+
+use geo_types::{Coord, Geometry};
+
+use crate::geoparquet::{GeoParquet, ReadError};
+use crate::priors::{self, is_link, RoadClass};
+use crate::scene::RoadJunction;
+use crate::value::Value;
+
+/// A connector within this fraction of an end is that end's connector (matching
+/// the corridor assembler's `END_AT_EPS`).
+const END_AT_EPS: f64 = 1e-3;
+
+/// Reads the at-grade road junctions intersecting `bbox`: connectors where
+/// three or more drivable road ends meet, skipping any in `exclude` (the
+/// corridor-junction connectors).
+pub fn build(
+    path: &Path,
+    bbox: (f64, f64, f64, f64),
+    exclude: &HashSet<u64>,
+) -> Result<Vec<RoadJunction>, ReadError> {
+    let gp = GeoParquet::open(path)?;
+    let row_groups = gp.row_groups_intersecting(bbox);
+    // connector id → each end there: (point, heading east, heading north, half-width).
+    let mut ends: HashMap<u64, Vec<(Coord, f64, f64, f64)>> = HashMap::new();
+    for feature in gp.features(row_groups, &["class", "subclass", "connectors"])? {
+        let f = feature?;
+        let class = prop_str(&f.properties, "class");
+        let subclass = prop_str(&f.properties, "subclass");
+        // Drivable only (the paint-width set); a path or rail owes no plate.
+        if priors::paint_width_m(class.as_deref(), subclass.as_deref()).is_none() {
+            continue;
+        }
+        let half_w = RoadClass::parse(class.as_deref()).half_width_m(is_link(subclass.as_deref()));
+        let Geometry::LineString(ref line) = f.geometry else {
+            continue;
+        };
+        let pts = &line.0;
+        if pts.len() < 2 {
+            continue;
+        }
+        let mut add = |conn: Option<u64>, at: Coord, toward: Coord| {
+            if let Some(c) = conn {
+                if !exclude.contains(&c) {
+                    let (e, n) = heading(at, toward);
+                    ends.entry(c).or_default().push((at, e, n, half_w));
+                }
+            }
+        };
+        let start = f.connectors.iter().find(|c| c.at <= END_AT_EPS).map(|c| c.id);
+        let end = f.connectors.iter().find(|c| c.at >= 1.0 - END_AT_EPS).map(|c| c.id);
+        add(start, pts[0], pts[1]);
+        add(end, pts[pts.len() - 1], pts[pts.len() - 2]);
+    }
+
+    // Deterministic order: drain the map connector-sorted, so the junction order
+    // (and thus the owning tile's emit) never depends on hashing.
+    let mut conns: Vec<(u64, Vec<(Coord, f64, f64, f64)>)> = ends.into_iter().collect();
+    conns.sort_by_key(|(id, _)| *id);
+    let mut out = Vec::new();
+    for (_conn, legs) in conns {
+        if legs.len() < 3 {
+            continue; // a through-node or a dead end, not an intersection
+        }
+        let point = legs[0].0;
+        let legs = legs.into_iter().map(|(_, e, n, w)| (e, n, w)).collect();
+        out.push(RoadJunction { point, legs });
+    }
+    Ok(out)
+}
+
+/// Unit ENU heading from `at` toward `toward` (the direction into the road).
+fn heading(at: Coord, toward: Coord) -> (f64, f64) {
+    let cos_lat = at.y.to_radians().cos();
+    let (de, dn) = ((toward.x - at.x) * cos_lat, toward.y - at.y);
+    let len = (de * de + dn * dn).sqrt();
+    if len < 1e-12 {
+        (1.0, 0.0)
+    } else {
+        (de / len, dn / len)
+    }
+}
+
+fn prop_str(props: &[(String, Value)], key: &str) -> Option<String> {
+    props.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
+        Value::String(s) => Some(s.clone()),
+        _ => None,
+    })
+}

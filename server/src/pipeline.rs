@@ -606,7 +606,7 @@ fn encode_tile(
     let t_stamp = Instant::now();
     stamp_elevations(&mut buckets, sampler, z);
     stamp_synth(&mut buckets, sampler, solved, z, &bounds);
-    add_junction_plates(&mut buckets, junctions, &bounds, z);
+    add_junction_plates(&mut buckets, junctions, sampler, &bounds, z);
     let mut t_terrain = t_stamp.elapsed();
 
     // Vector layers in decode-priority (index) order.
@@ -713,6 +713,7 @@ fn stamp_elevations(buckets: &mut [Vec<EncoderFeature>], sampler: &mut GroundSam
 fn add_junction_plates(
     buckets: &mut [Vec<EncoderFeature>],
     junctions: &JunctionModel,
+    sampler: &mut GroundSampler,
     bounds: &Bounds,
     z: u8,
 ) {
@@ -720,7 +721,7 @@ fn add_junction_plates(
         return;
     }
     for baked in junctions.iter() {
-        if let Some(f) = synth::junction::plate(baked, bounds) {
+        if let Some(f) = synth::junction::plate(baked, bounds, sampler, z) {
             buckets[layers::TRANSPORTATION as usize].push(f);
         }
     }
@@ -1115,7 +1116,7 @@ fn flush_tile(
     let bounds = Bounds::of_tile(z, x, y);
     stamp_elevations(buckets, sampler, z);
     stamp_synth(buckets, sampler, solved, z, &bounds);
-    add_junction_plates(buckets, junctions, &bounds, z);
+    add_junction_plates(buckets, junctions, sampler, &bounds, z);
 
     // Vector layers in decode-priority (index) order.
     let mut enc_layers = Vec::new();
