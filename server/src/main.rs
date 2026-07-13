@@ -78,12 +78,13 @@ fn report_timings(stats: &pipeline::Stats) {
         if stats.threads == 1 { "" } else { "s" },
     );
     eprintln!(
-        "model   {:>8}  {} corridors, {} profiles, {} crossings, {} earthwork edges",
+        "model   {:>8}  {} corridors, {} profiles, {} crossings, {} earthwork edges, {} water bodies",
         secs(t.model),
         stats.corridors,
         stats.profiles,
         stats.crossings,
         stats.earthworks,
+        stats.water,
     );
     eprintln!(
         "phase 1 {:>8}  cpu: read {}, simplify {}, clip {}, sort {}",

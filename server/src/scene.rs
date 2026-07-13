@@ -158,6 +158,23 @@ pub struct JunctionMember {
     pub arc: f64,
 }
 
+/// A still water body (a lake, reservoir, pond) whose surface the ground stage
+/// flattens to one level (docs/GENERATION.md invariant 4). The data gives no
+/// surface elevation; the DEM images the shoreline at the waterline, so the
+/// level is read from the ring and burned flat across the interior — the client
+/// then drapes water on a flat surface instead of following terrain noise.
+/// Flowing water (rivers, canals) is not held here: it wants a monotone
+/// descent, deferred.
+#[derive(Debug, Clone)]
+pub struct WaterBody {
+    /// The exterior shoreline ring, a closed lon/lat loop.
+    pub exterior: Vec<Coord>,
+    /// Interior rings (islands) excluded from the surface.
+    pub holes: Vec<Vec<Coord>>,
+    /// Bounding box `(west, south, east, north)` for indexing.
+    pub bbox: (f64, f64, f64, f64),
+}
+
 /// One constant-kind piece of a source segment, ready to tile: the geometry cut
 /// at span boundaries, and the span it belongs to.
 #[derive(Debug)]
@@ -252,6 +269,8 @@ pub struct SceneGraph {
     pub underpasses: Vec<Underpass>,
     /// Where corridors meet and their heights must agree (invariant 2).
     pub junctions: Vec<Junction>,
+    /// Still water bodies whose surface the ground stage flattens (invariant 4).
+    pub water: Vec<WaterBody>,
     /// Source feature id hash → (corridor, segment index within it).
     by_source: HashMap<u64, (CorridorId, u32)>,
 }
@@ -269,6 +288,7 @@ impl SceneGraph {
             crossings: Vec::new(),
             underpasses: Vec::new(),
             junctions: Vec::new(),
+            water: Vec::new(),
             by_source,
         }
     }

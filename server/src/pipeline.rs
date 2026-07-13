@@ -143,6 +143,7 @@ pub struct Stats {
     pub profiles: u64,
     pub crossings: u64,
     pub earthworks: u64,
+    pub water: u64,
     /// Phase-1 worker threads used.
     pub threads: usize,
     pub timings: Timings,
@@ -219,11 +220,12 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         None => SceneGraph::default(),
     };
     let solved = Arc::new(solve::run(&scene, cfg.terrain.as_deref(), cfg.max_zoom, threads)?);
-    let ground = Arc::new(ground::derive(&scene, &solved));
+    let ground = Arc::new(ground::derive(&scene, &solved, cfg.terrain.as_deref(), threads));
     stats.corridors = scene.corridors.len() as u64;
     stats.profiles = solved.solved_count() as u64;
     stats.crossings = scene.crossings.len() as u64;
     stats.earthworks = ground.earthwork_count() as u64;
+    stats.water = ground.water_count() as u64;
     stats.timings.model = t_model.elapsed();
     if let Some(dir) = &cfg.dump {
         dump::write(dir, &scene, &solved, &ground)?;

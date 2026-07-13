@@ -14,6 +14,7 @@ pub mod columns;
 pub mod corridors;
 pub mod crossings;
 pub mod grid;
+pub mod water;
 
 use std::path::Path;
 
@@ -104,6 +105,10 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
     if let Some(water_path) = water {
         let mut water_crossings = crossings::detect_water(water_path, bb, &scene)?;
         scene.crossings.append(&mut water_crossings);
+        // Still water bodies for the ground stage to flatten (invariant 4) —
+        // read whatever the network does, since a lake is flattened even where
+        // no bridge crosses it.
+        scene.water = water::read(water_path, bb)?;
     }
     Ok(scene)
 }

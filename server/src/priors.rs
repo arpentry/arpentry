@@ -247,6 +247,20 @@ pub const PORTAL_MAX_M: f64 = 200.0;
 /// the mouth sits just clear of the terrain rather than flush with it.
 pub const PORTAL_CLEARANCE_M: f64 = 1.0;
 
+/// Smallest still water body worth flattening, as its bounding box's larger
+/// dimension in metres. A pond below this is finer than the DEM resolves and
+/// costs a shoreline sampling pass for no visible gain; it stays draped. Sized
+/// like [`MIN_STRUCTURE_M`] — the scale below which a feature is not worth
+/// synthesising.
+pub const MIN_WATER_BODY_M: f64 = 40.0;
+
+/// Percentile of the shoreline-sampled DEM taken as a still water body's
+/// surface level (scenario S14, invariant 4). The exterior ring traces the
+/// waterline, so its ground images the water level; a low percentile leans
+/// toward the water rather than a ring vertex that climbed the bank, so the
+/// flattened surface settles in its basin instead of spilling over the shore.
+pub const WATER_LEVEL_PCTL: f64 = 0.3;
+
 /// Highest a junction weld may lift a corridor's leg to meet the road it joins
 /// (invariant 2): a ramp diverging from an elevated flyover is pulled up to the
 /// deck it leaves. A demand beyond this means the shared connector links roads

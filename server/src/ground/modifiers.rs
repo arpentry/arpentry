@@ -115,6 +115,83 @@ impl Earthworks {
     }
 }
 
+/// One still water body flattened to a level: its rings (for the interior
+/// test) and the surface height the ground is burned to inside them.
+#[derive(Debug, Clone)]
+pub struct WaterFill {
+    pub exterior: Vec<Coord>,
+    pub holes: Vec<Vec<Coord>>,
+    pub bbox: (f64, f64, f64, f64),
+    pub level: f64,
+}
+
+/// The indexed set of water fills with point queries.
+pub struct Waters {
+    fills: Vec<WaterFill>,
+    grid: GridIndex,
+}
+
+impl Waters {
+    pub fn new(fills: Vec<WaterFill>) -> Waters {
+        let mut grid = GridIndex::new();
+        for (i, f) in fills.iter().enumerate() {
+            grid.insert(f.bbox, i as u32);
+        }
+        Waters { fills, grid }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.fills.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.fills.len()
+    }
+
+    /// The water surface level at `(lon, lat)` when the point lies inside a
+    /// still water body (its exterior ring, minus island holes). Deterministic:
+    /// the lowest-index containing body wins, so any two tiles agree.
+    pub fn level_at(&self, lon: f64, lat: f64, scratch: &mut Vec<u32>) -> Option<f64> {
+        self.grid.query((lon, lat, lon, lat), scratch);
+        for &i in scratch.iter() {
+            let f = &self.fills[i as usize];
+            if lon < f.bbox.0 || lon > f.bbox.2 || lat < f.bbox.1 || lat > f.bbox.3 {
+                continue;
+            }
+            if point_in_ring(&f.exterior, lon, lat)
+                && !f.holes.iter().any(|h| point_in_ring(h, lon, lat))
+            {
+                return Some(f.level);
+            }
+        }
+        None
+    }
+}
+
+/// Even-odd ray-casting point-in-ring test for a closed lon/lat loop. A
+/// horizontal edge contributes no crossing (the `(yi > y) != (yj > y)` guard),
+/// so the divisor is never zero.
+fn point_in_ring(ring: &[Coord], x: f64, y: f64) -> bool {
+    let n = ring.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = (ring[i].x, ring[i].y);
+        let (xj, yj) = (ring[j].x, ring[j].y);
+        if (yi > y) != (yj > y) {
+            let x_cross = xi + (y - yi) / (yj - yi) * (xj - xi);
+            if x < x_cross {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
 /// Lateral distance in metres from `(lon, lat)` to the edge, and the clamped
 /// parameter along it.
 fn lateral_distance(e: &EarthworkEdge, lon: f64, lat: f64) -> (f64, f64) {
@@ -189,6 +266,35 @@ mod tests {
         // Beyond the reach: untouched.
         let h = e.height(mid_x, 46.0 + 30.0 / DEG_M, 100.0, &mut scratch);
         assert_eq!(h, 100.0);
+    }
+
+    #[test]
+    fn water_flattens_its_interior_but_not_outside_or_in_a_hole() {
+        let mut scratch = Vec::new();
+        // A unit square lake at ~lat 46 with a small square island (hole).
+        let square = |x0: f64, y0: f64, s: f64| {
+            vec![
+                Coord { x: x0, y: y0 },
+                Coord { x: x0 + s, y: y0 },
+                Coord { x: x0 + s, y: y0 + s },
+                Coord { x: x0, y: y0 + s },
+                Coord { x: x0, y: y0 },
+            ]
+        };
+        let exterior = square(6.0, 46.0, 0.010);
+        let hole = square(6.004, 46.004, 0.002);
+        let waters = Waters::new(vec![WaterFill {
+            exterior,
+            holes: vec![hole],
+            bbox: (6.0, 46.0, 6.010, 46.010),
+            level: 372.0,
+        }]);
+        // Interior open water: flattened to the level.
+        assert_eq!(waters.level_at(6.002, 46.002, &mut scratch), Some(372.0));
+        // Inside the island hole: not water.
+        assert_eq!(waters.level_at(6.005, 46.005, &mut scratch), None);
+        // Outside the lake: not water.
+        assert_eq!(waters.level_at(6.02, 46.02, &mut scratch), None);
     }
 
     #[test]
