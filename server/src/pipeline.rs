@@ -45,6 +45,7 @@ use crate::scene::{source_hash, SceneGraph, Span, SpanKind};
 use crate::simplify;
 use crate::solve::{self, SolvedModel};
 use crate::sort::{self, ExternalSorter};
+use crate::synth::junction::JunctionModel;
 use crate::synth::{self, Synth};
 use crate::terrain::{self, TerrainMesh, TERRAIN_GRID};
 use crate::tile_build::{self, EncoderFeature, EncoderLayer};
@@ -144,6 +145,7 @@ pub struct Stats {
     pub crossings: u64,
     pub earthworks: u64,
     pub water: u64,
+    pub junction_plates: u64,
     /// Phase-1 worker threads used.
     pub threads: usize,
     pub timings: Timings,
@@ -221,11 +223,15 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     };
     let solved = Arc::new(solve::run(&scene, cfg.terrain.as_deref(), cfg.max_zoom, threads)?);
     let ground = Arc::new(ground::derive(&scene, &solved, cfg.terrain.as_deref(), threads));
+    // Junction plates: a paved area meshed across each corridor junction, baked
+    // once from the solved model and emitted by the tile that owns its centre.
+    let junctions = Arc::new(synth::junction::bake(&scene, &solved));
     stats.corridors = scene.corridors.len() as u64;
     stats.profiles = solved.solved_count() as u64;
     stats.crossings = scene.crossings.len() as u64;
     stats.earthworks = ground.earthwork_count() as u64;
     stats.water = ground.water_count() as u64;
+    stats.junction_plates = junctions.len() as u64;
     stats.timings.model = t_model.elapsed();
     if let Some(dir) = &cfg.dump {
         dump::write(dir, &scene, &solved, &ground)?;
@@ -328,7 +334,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             let tile_id = tileid::key_tile_id(key);
             if current != Some(tile_id) {
                 if let Some(prev) = current {
-                    flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut sampler, &solved, &mut elevation, cfg.brotli_quality)?;
+                    flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut sampler, &solved, &junctions, &mut elevation, cfg.brotli_quality)?;
                 }
                 current = Some(tile_id);
             }
@@ -341,7 +347,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             }
         }
         if let Some(prev) = current {
-            flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut sampler, &solved, &mut elevation, cfg.brotli_quality)?;
+            flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut sampler, &solved, &junctions, &mut elevation, cfg.brotli_quality)?;
         }
     } else {
         emit_parallel(
@@ -354,6 +360,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             &mut elevation,
             &solved,
             &ground,
+            &junctions,
         )?;
     }
 
@@ -438,6 +445,7 @@ fn emit_parallel(
     elevation: &mut (f64, f64),
     solved: &Arc<SolvedModel>,
     ground: &Arc<GroundModel>,
+    junctions: &Arc<JunctionModel>,
 ) -> Result<(), Error> {
     use std::sync::mpsc;
 
@@ -509,6 +517,7 @@ fn emit_parallel(
             let result_tx = result_tx.clone();
             let solved = Arc::clone(solved);
             let ground = Arc::clone(ground);
+            let junctions = Arc::clone(junctions);
             let dem = match &primary_dem {
                 Some(d) => Some(d.fork()?),
                 None => None,
@@ -523,7 +532,8 @@ fn emit_parallel(
                     let Ok(job) = job else {
                         break;
                     };
-                    let result = encode_tile(job, &flat, &mut sampler, &solved, cfg.brotli_quality);
+                    let result =
+                        encode_tile(job, &flat, &mut sampler, &solved, &junctions, cfg.brotli_quality);
                     if result_tx.send(result).is_err() {
                         break;
                     }
@@ -579,6 +589,7 @@ fn encode_tile(
     flat: &TerrainMesh,
     sampler: &mut GroundSampler,
     solved: &SolvedModel,
+    junctions: &JunctionModel,
     quality: i32,
 ) -> Result<TileResult, Error> {
     let (z, x, y) = hilbert::tile_id_decode(job.tile_id);
@@ -595,6 +606,7 @@ fn encode_tile(
     let t_stamp = Instant::now();
     stamp_elevations(&mut buckets, sampler, z);
     stamp_synth(&mut buckets, sampler, solved, z, &bounds);
+    add_junction_plates(&mut buckets, junctions, &bounds, z);
     let mut t_terrain = t_stamp.elapsed();
 
     // Vector layers in decode-priority (index) order.
@@ -690,6 +702,26 @@ fn stamp_elevations(buckets: &mut [Vec<EncoderFeature>], sampler: &mut GroundSam
         if let Some((min_x, min_y, max_x, max_y)) = clip::bbox(&f.geometry) {
             let (lon, lat) = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0);
             f.elevation = Some(sampler.ground(lon, lat, z));
+        }
+    }
+}
+
+/// Adds the junction plates this tile owns to its transportation bucket — a
+/// paved mesh across each corridor intersection. A detail feature: coarse zooms
+/// render the overlapping strokes as before (the plate positions never change,
+/// only their presence). See [`synth::junction`].
+fn add_junction_plates(
+    buckets: &mut [Vec<EncoderFeature>],
+    junctions: &JunctionModel,
+    bounds: &Bounds,
+    z: u8,
+) {
+    if z < crate::priors::STRUCTURE_DETAIL_MIN_ZOOM || junctions.is_empty() {
+        return;
+    }
+    for baked in junctions.iter() {
+        if let Some(f) = synth::junction::plate(baked, bounds) {
+            buckets[layers::TRANSPORTATION as usize].push(f);
         }
     }
 }
@@ -1065,6 +1097,7 @@ impl Drop for TempCleanup {
 
 /// Encodes one tile's grouped features and appends it to the archive.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn flush_tile(
     writer: &mut ArchiveWriter<File>,
     tile_id: u64,
@@ -1074,6 +1107,7 @@ fn flush_tile(
     flat: &TerrainMesh,
     sampler: &mut GroundSampler,
     solved: &SolvedModel,
+    junctions: &JunctionModel,
     elevation: &mut (f64, f64),
     quality: i32,
 ) -> Result<(), Error> {
@@ -1081,6 +1115,7 @@ fn flush_tile(
     let bounds = Bounds::of_tile(z, x, y);
     stamp_elevations(buckets, sampler, z);
     stamp_synth(buckets, sampler, solved, z, &bounds);
+    add_junction_plates(buckets, junctions, &bounds, z);
 
     // Vector layers in decode-priority (index) order.
     let mut enc_layers = Vec::new();

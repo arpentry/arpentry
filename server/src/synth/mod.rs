@@ -11,6 +11,7 @@
 //! annotation over flat ground), falls back to a plain draped road — something
 //! plain, never something wrong.
 
+pub mod junction;
 pub mod road;
 pub mod structure;
 
