@@ -114,7 +114,7 @@ pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> JunctionModel {
         junctions.push(BakedJunction {
             point: rj.point,
             level_mm: None,
-            class: "residential".to_string(),
+            class: if rj.class.is_empty() { "residential".to_string() } else { rj.class.clone() },
             legs: rj.legs.iter().map(|&(e, n, half_w)| Leg { e, n, half_w }).collect(),
         });
     }

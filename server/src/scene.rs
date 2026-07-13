@@ -162,6 +162,9 @@ pub struct Junction {
 pub struct RoadJunction {
     /// The connector's plan position.
     pub point: Coord,
+    /// The Overture class of the widest leg — the plate is styled (and coloured)
+    /// like that road, so it matches the streets meeting there.
+    pub class: String,
     /// Each leg's unit ENU heading `(east, north)` away from the junction and
     /// its road half-width in metres.
     pub legs: Vec<(f64, f64, f64)>,

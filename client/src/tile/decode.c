@@ -382,13 +382,17 @@ static double resolve_double(arpentry_tiles_Feature_table_t feat,
     return dflt;
 }
 
-/* Keep a feature given a level filter: 0 keeps all (buildings); +1 keeps only
-   bridges (level > 0); -1 keeps only tunnels (level < 0). */
+/* Keep a feature given a level filter: 0 keeps all (buildings); +1 keeps decks
+   at or above grade (level >= 0 — bridge spans plus the at-grade junction plates
+   that ride the same deck path); -1 keeps only tunnels (level < 0). At-grade
+   plates carry no level (0), so they join the bridge prim and render as a
+   road-surface deck: drawn over the terrain (the bridge margin wins the coplanar
+   tie) and under the road paint (which carries a larger margin). */
 static bool keep_by_level(arpentry_tiles_Feature_table_t feat, int sign,
                           uint32_t level_key, arpentry_tiles_Value_vec_t values) {
     if (sign == 0) return true;
     int64_t lv = resolve_int(feat, level_key, values, 0);
-    return sign > 0 ? lv > 0 : lv < 0;
+    return sign > 0 ? lv >= 0 : lv < 0;
 }
 
 /* Concatenate the MeshGeometry features of a layer into one mesh primitive

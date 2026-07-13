@@ -37,8 +37,9 @@ pub fn build(
 ) -> Result<Vec<RoadJunction>, ReadError> {
     let gp = GeoParquet::open(path)?;
     let row_groups = gp.row_groups_intersecting(bbox);
-    // connector id → each end there: (point, heading east, heading north, half-width).
-    let mut ends: HashMap<u64, Vec<(Coord, f64, f64, f64)>> = HashMap::new();
+    // connector id → each end there: (point, heading east, heading north,
+    // half-width, class).
+    let mut ends: HashMap<u64, Vec<(Coord, f64, f64, f64, String)>> = HashMap::new();
     for feature in gp.features(row_groups, &["class", "subclass", "connectors"])? {
         let f = feature?;
         let class = prop_str(&f.properties, "class");
@@ -48,6 +49,7 @@ pub fn build(
             continue;
         }
         let half_w = RoadClass::parse(class.as_deref()).half_width_m(is_link(subclass.as_deref()));
+        let class_str = class.unwrap_or_default();
         let Geometry::LineString(ref line) = f.geometry else {
             continue;
         };
@@ -59,7 +61,7 @@ pub fn build(
             if let Some(c) = conn {
                 if !exclude.contains(&c) {
                     let (e, n) = heading(at, toward);
-                    ends.entry(c).or_default().push((at, e, n, half_w));
+                    ends.entry(c).or_default().push((at, e, n, half_w, class_str.clone()));
                 }
             }
         };
@@ -71,7 +73,7 @@ pub fn build(
 
     // Deterministic order: drain the map connector-sorted, so the junction order
     // (and thus the owning tile's emit) never depends on hashing.
-    let mut conns: Vec<(u64, Vec<(Coord, f64, f64, f64)>)> = ends.into_iter().collect();
+    let mut conns: Vec<(u64, Vec<(Coord, f64, f64, f64, String)>)> = ends.into_iter().collect();
     conns.sort_by_key(|(id, _)| *id);
     let mut out = Vec::new();
     for (_conn, legs) in conns {
@@ -79,8 +81,14 @@ pub fn build(
             continue; // a through-node or a dead end, not an intersection
         }
         let point = legs[0].0;
-        let legs = legs.into_iter().map(|(_, e, n, w)| (e, n, w)).collect();
-        out.push(RoadJunction { point, legs });
+        // The widest leg's class styles the plate (the dominant road there).
+        let class = legs
+            .iter()
+            .max_by(|a, b| a.3.partial_cmp(&b.3).expect("finite width"))
+            .map(|l| l.4.clone())
+            .unwrap_or_default();
+        let legs = legs.into_iter().map(|(_, e, n, w, _)| (e, n, w)).collect();
+        out.push(RoadJunction { point, class, legs });
     }
     Ok(out)
 }
