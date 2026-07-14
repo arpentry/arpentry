@@ -217,6 +217,31 @@ pub fn has_edge_lines(class: &str) -> bool {
     matches!(class, "motorway" | "trunk")
 }
 
+/// Whether a carriageway paints dashed dividers between its same-direction
+/// lanes: the engineered one-way carriageways. Motorways and trunks count as
+/// one-way even untagged — each carriageway is one by construction — so a
+/// data gap (2 % of motorways) does not cost them their lane lines.
+pub fn has_lane_lines(class: &str, oneway: bool) -> bool {
+    matches!(class, "motorway" | "trunk")
+        || (oneway && matches!(class, "primary" | "secondary"))
+}
+
+/// Nominal lane width for splitting a carriageway into same-direction lanes.
+/// The count is inferred *back* from the carriageway width (docs/ROADS.md
+/// H2) — no source states it: `round(width / lane_width)`, floored at one.
+pub fn lane_width_m(class: &str) -> f64 {
+    match class {
+        "motorway" | "trunk" => 3.75,
+        "primary" | "secondary" => 3.25,
+        _ => 3.0,
+    }
+}
+
+/// The inferred same-direction lane count of a one-way carriageway.
+pub fn lane_count(class: &str, width_m: f64) -> u32 {
+    ((width_m / lane_width_m(class)).round() as u32).max(1)
+}
+
 /// Half-width of a pier column: a fraction of the deck half-width, clamped to
 /// plausible column sizes.
 pub fn pier_half_width_m(deck_half_width_m: f64) -> f64 {

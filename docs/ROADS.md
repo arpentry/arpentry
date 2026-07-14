@@ -340,10 +340,17 @@ the scenario table (§4).
     plate disk is dropped. Markings sort at `MAX_RANK` so they decode
     after the strokes they paint over; `JunctionModel` gained a grid
     index (`near`) so per-segment plate trims scale to full extracts.
+  - *Increment 3 — lane dividers (done 2026-07-15).* The H2 inference
+    made real: `lane_count = round(width / lane_width(class))`, and a
+    one-way carriageway paints dashed dividers at its n−1 interior lane
+    boundaries (`priors::has_lane_lines` — motorway/trunk count as
+    one-way even untagged, each carriageway is one by construction; plus
+    tagged one-way primary/secondary). A 9 m motorway carriageway reads
+    as two lanes split by a dashed line inside its solid edges.
   - *Remaining:* symbols (arrows, chevrons — the MSDF atlas, P4);
     distance fade — sub-texel lines shimmer at grazing angles; stop
-    lines and zebra crosswalks from `crosswalk` segments; dashed lane
-    lines between same-direction lanes (needs inferred lane counts).
+    lines and zebra crosswalks from `crosswalk` segments; dividers on
+    wide two-way roads (2×2 boulevards).
 - **P4 — Symbols.** The MSDF atlas: gore chevrons from diverge geometry;
   crossing glyphs where `cycle_crossing` meets a carriageway. Turn arrows
   are deferred — the schema carries no turn data (P0); they wait on an

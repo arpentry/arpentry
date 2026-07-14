@@ -40,6 +40,11 @@ const MIN_LINE_M: f64 = 8.0;
 const CENTRE_DASH_M: f64 = 4.0;
 const CENTRE_GAP_M: f64 = 6.0;
 
+/// The lane divider's dash pattern in metres — longer stride than the centre
+/// guide line, as on a real carriageway.
+const LANE_DASH_M: f64 = 5.0;
+const LANE_GAP_M: f64 = 9.0;
+
 /// One painted line to emit: its geometry and painted width. The caller
 /// attaches the `marking` class and the synth tag of the road it lies on.
 pub struct Marking {
@@ -58,12 +63,14 @@ impl Marking {
 }
 
 /// The painted lines for one road line: a dashed centre line between opposing
-/// flows and solid edge lines on the motorway network, per the ladder
-/// (`priors::has_centre_line` / `has_edge_lines`). `line` must be pre-clip
-/// geometry — a whole segment or a corridor span piece — so the dash phase
-/// anchors to a global arclength origin. `disks` are the junction-plate trim
-/// disks near the line: solid lines stop at them, and any dash whose midpoint
-/// falls inside one is dropped.
+/// flows, dashed dividers between the same-direction lanes of a one-way
+/// carriageway (their count inferred from the width — ROADS.md H2), and
+/// solid edge lines on the motorway network, per the ladder
+/// (`priors::has_centre_line` / `has_lane_lines` / `has_edge_lines`). `line`
+/// must be pre-clip geometry — a whole segment or a corridor span piece — so
+/// the dash phase anchors to a global arclength origin. `disks` are the
+/// junction-plate trim disks near the line: solid lines stop at them, and
+/// any dash whose midpoint falls inside one is dropped.
 pub fn for_line(
     line: &LineString,
     class: &str,
@@ -72,22 +79,43 @@ pub fn for_line(
     disks: &[(Coord, f64)],
 ) -> Vec<Marking> {
     let centre = priors::has_centre_line(class, oneway);
+    let lanes = if priors::has_lane_lines(class, oneway) {
+        priors::lane_count(class, width_m)
+    } else {
+        1
+    };
     let edges = priors::has_edge_lines(class);
-    if (!centre && !edges) || line.0.len() < 2 {
+    if (!centre && !edges && lanes < 2) || line.0.len() < 2 {
         return Vec::new();
     }
     let mut out = Vec::new();
+    let mut push_dashes = |dashes: Vec<LineString>, width: f64| {
+        let kept: Vec<LineString> =
+            dashes.into_iter().filter(|d| !midpoint_in_disk(d, disks)).collect();
+        if !kept.is_empty() {
+            out.push(Marking {
+                geometry: Geometry::MultiLineString(MultiLineString(kept)),
+                width_m: width,
+            });
+        }
+    };
 
     if centre {
-        let dashes: Vec<LineString> = cut_dashes(line, CENTRE_DASH_M, CENTRE_GAP_M)
-            .into_iter()
-            .filter(|d| !midpoint_in_disk(d, disks))
-            .collect();
-        if !dashes.is_empty() {
-            out.push(Marking {
-                geometry: Geometry::MultiLineString(MultiLineString(dashes)),
-                width_m: priors::CENTRE_LINE_WIDTH_M,
-            });
+        push_dashes(cut_dashes(line, CENTRE_DASH_M, CENTRE_GAP_M), priors::CENTRE_LINE_WIDTH_M);
+    }
+    // Dashed dividers at the n−1 interior lane boundaries of the carriageway.
+    if lanes >= 2 {
+        let frame = frame_at(line.0[0]);
+        for k in 1..lanes {
+            let off = -width_m * 0.5 + k as f64 * (width_m / lanes as f64);
+            let boundary = if off.abs() < 1e-3 {
+                Some(line.clone())
+            } else {
+                offset_line(line, off, &frame)
+            };
+            if let Some(b) = boundary {
+                push_dashes(cut_dashes(&b, LANE_DASH_M, LANE_GAP_M), priors::CENTRE_LINE_WIDTH_M);
+            }
         }
     }
     if edges {
@@ -301,15 +329,34 @@ mod tests {
         assert_eq!(centre.len(), 1);
         assert!(matches!(&centre[0].geometry, Geometry::MultiLineString(m) if m.0.len() == 10));
         assert_eq!(centre[0].width_m, priors::CENTRE_LINE_WIDTH_M);
-        // A one-way carriageway paints no centre line.
-        assert!(for_line(&line, "secondary", true, 6.0, &[]).is_empty());
-        // The motorway paints two solid edge lines and no centre.
+        // A one-way secondary of one lane's width paints nothing.
+        assert!(for_line(&line, "secondary", true, 3.5, &[]).is_empty());
+        // A two-lane motorway carriageway paints one dashed lane divider
+        // (down its middle) plus two solid edge lines — no centre line.
         let mw = for_line(&line, "motorway", true, 9.0, &[]);
-        assert_eq!(mw.len(), 2);
-        for edge in &mw {
-            assert_eq!(edge.width_m, priors::EDGE_LINE_WIDTH_M);
-            assert!(matches!(&edge.geometry, Geometry::MultiLineString(m) if m.0.len() == 1));
-        }
+        assert_eq!(mw.len(), 3);
+        let dashed = mw
+            .iter()
+            .filter(|m| matches!(&m.geometry, Geometry::MultiLineString(g) if g.0.len() > 1))
+            .count();
+        assert_eq!(dashed, 1, "one dashed divider");
+        let solid = mw.iter().filter(|m| m.width_m == priors::EDGE_LINE_WIDTH_M).count();
+        assert_eq!(solid, 2, "two solid edge lines");
+        // A wide (three-lane) carriageway paints two dividers.
+        let wide = for_line(&line, "motorway", true, 12.0, &[]);
+        assert_eq!(wide.len(), 4, "two dividers + two edges");
+    }
+
+    #[test]
+    fn lane_count_infers_back_from_the_width() {
+        assert_eq!(priors::lane_count("motorway", 9.0), 2);
+        assert_eq!(priors::lane_count("motorway", 12.5), 3);
+        assert_eq!(priors::lane_count("primary", 7.0), 2);
+        assert_eq!(priors::lane_count("primary", 3.5), 1);
+        // Untagged motorways still divide: one-way by construction.
+        assert!(priors::has_lane_lines("motorway", false));
+        assert!(!priors::has_lane_lines("primary", false));
+        assert!(priors::has_lane_lines("primary", true));
     }
 
     #[test]
