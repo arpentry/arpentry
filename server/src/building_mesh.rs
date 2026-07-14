@@ -37,7 +37,7 @@ const MIN_ROOF_RISE_M: f64 = 1.0;
 /// Metres per degree, for the local-tangent normal computation. Latitude is
 /// near-constant; longitude is scaled by the tile-centre latitude.
 pub(crate) const M_PER_DEG_LAT: f64 = 110_540.0;
-const M_PER_DEG_LON_EQUATOR: f64 = 111_320.0;
+pub(crate) const M_PER_DEG_LON_EQUATOR: f64 = 111_320.0;
 
 /// Roof geometry kind, parsed from Overture's `roof_shape`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

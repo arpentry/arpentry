@@ -19,7 +19,7 @@ use std::path::Path;
 use geo_types::{Coord, Geometry};
 
 use crate::geoparquet::{GeoParquet, ReadError};
-use crate::priors::{self, is_link, RoadClass};
+use crate::priors;
 use crate::scene::RoadJunction;
 use crate::value::Value;
 
@@ -40,15 +40,21 @@ pub fn build(
     // connector id → each end there: (point, heading east, heading north,
     // half-width, class).
     let mut ends: HashMap<u64, Vec<(Coord, f64, f64, f64, String)>> = HashMap::new();
-    for feature in gp.features(row_groups, &["class", "subclass", "connectors"])? {
+    for feature in gp.features(row_groups, &["class", "subclass", "connectors", "width_rules"])? {
         let f = feature?;
         let class = prop_str(&f.properties, "class");
         let subclass = prop_str(&f.properties, "subclass");
         // Drivable only (the paint-width set); a path or rail owes no plate.
-        if priors::paint_width_m(class.as_deref(), subclass.as_deref()).is_none() {
+        // The leg spans the road's surface band edge — the P1-derived painted
+        // width (mapped where plausible, class prior otherwise) plus the
+        // structure shoulder — so a trimmed band meets the mouth flush.
+        let measured = prop_f64(&f.properties, "width_rules");
+        let Some(paint_w) =
+            priors::carriageway_width_m(class.as_deref(), subclass.as_deref(), measured)
+        else {
             continue;
-        }
-        let half_w = RoadClass::parse(class.as_deref()).half_width_m(is_link(subclass.as_deref()));
+        };
+        let half_w = paint_w * 0.5 + priors::STRUCTURE_SHOULDER_M;
         let class_str = class.unwrap_or_default();
         let Geometry::LineString(ref line) = f.geometry else {
             continue;
@@ -108,6 +114,13 @@ fn heading(at: Coord, toward: Coord) -> (f64, f64) {
 fn prop_str(props: &[(String, Value)], key: &str) -> Option<String> {
     props.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
         Value::String(s) => Some(s.clone()),
+        _ => None,
+    })
+}
+
+fn prop_f64(props: &[(String, Value)], key: &str) -> Option<f64> {
+    props.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
+        Value::Double(d) => Some(*d),
         _ => None,
     })
 }

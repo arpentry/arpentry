@@ -14,6 +14,7 @@
 pub mod junction;
 pub mod road;
 pub mod structure;
+pub mod surface;
 
 use crate::ground::sampler::GroundSampler;
 use crate::project::Bounds;

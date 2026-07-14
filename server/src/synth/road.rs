@@ -75,7 +75,39 @@ pub fn bake(
     z_ref: u8,
     bounds: &Bounds,
 ) {
-    let mut height = |lon: f64, lat: f64| match profile {
+    let mut height =
+        |lon: f64, lat: f64| surface_height(profile, deck, sampler, z, z_ref, bounds, lon, lat);
+    // A corridor road's paint follows the corridor's *smoothed* sweep line —
+    // the same curve its bridges and tunnels are swept along — instead of
+    // tracing the raw line's digitising wiggle beside them.
+    let mut snap = |c: Coord| -> Coord {
+        profile.and_then(|p| p.smooth_at(c.x, c.y, PAINT_SNAP_MAX_M)).unwrap_or(c)
+    };
+    let seg_q = if profile.is_some() { CORRIDOR_SEGMENT_Q } else { ROAD_SEGMENT_Q };
+    if let Some((geom, zs)) =
+        densify_with_surface(&f.geometry, bounds, seg_q, &mut snap, &mut height)
+    {
+        f.geometry = geom;
+        f.z = Some(zs);
+    }
+}
+
+/// The road-surface height at a point — the one function every road
+/// representation reads (GENERATION.md invariant 2, ROADS.md invariant 5):
+/// the paint stroke bakes its vertices on it and the surface band
+/// (`synth::surface`) drapes its edges on the same answer, so paint and
+/// asphalt can never drift apart.
+pub(crate) fn surface_height(
+    profile: Option<&Profile>,
+    deck: bool,
+    sampler: &mut GroundSampler,
+    z: u8,
+    z_ref: u8,
+    bounds: &Bounds,
+    lon: f64,
+    lat: f64,
+) -> f64 {
+    match profile {
         // Structure paint rides the *deck ramp* at every zoom — the same
         // `deck_m` heights the deck/bore sweep builds its solid from (a
         // bridge's deck top, a tunnel bore's road surface) — not the road
@@ -97,19 +129,6 @@ pub fn bake(
             surface + lift.max(0.0)
         }
         None => sampler.surface(bounds, lon, lat, z),
-    };
-    // A corridor road's paint follows the corridor's *smoothed* sweep line —
-    // the same curve its bridges and tunnels are swept along — instead of
-    // tracing the raw line's digitising wiggle beside them.
-    let mut snap = |c: Coord| -> Coord {
-        profile.and_then(|p| p.smooth_at(c.x, c.y, PAINT_SNAP_MAX_M)).unwrap_or(c)
-    };
-    let seg_q = if profile.is_some() { CORRIDOR_SEGMENT_Q } else { ROAD_SEGMENT_Q };
-    if let Some((geom, zs)) =
-        densify_with_surface(&f.geometry, bounds, seg_q, &mut snap, &mut height)
-    {
-        f.geometry = geom;
-        f.z = Some(zs);
     }
 }
 

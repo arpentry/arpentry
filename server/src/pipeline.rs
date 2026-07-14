@@ -78,7 +78,11 @@ fn attrs_for(layer: u8) -> &'static [&'static str] {
         layers::POI => &["id", "names.primary", "basic_category", "confidence"],
         // Road names feed the client's line-following street labels;
         // `level_rules` carries the bridge/tunnel level (FORMAT.md reserved
-        // `level`) so the client lifts bridges and sinks tunnels.
+        // `level`) so the client lifts bridges and sinks tunnels. The
+        // horizontal attributes (docs/ROADS.md P1) reduce to scalars at
+        // decode: `width_rules` refines the painted width, `road_surface`
+        // and the `access_restrictions` one-way verdict ride along for
+        // styling and the marking phases.
         layers::TRANSPORTATION => &[
             "id",
             "type",
@@ -87,6 +91,9 @@ fn attrs_for(layer: u8) -> &'static [&'static str] {
             "subclass",
             "names.primary",
             "level_rules",
+            "width_rules",
+            "road_surface",
+            "access_restrictions",
             "cartography.min_zoom",
             "cartography.max_zoom",
             "cartography.sort_key",
@@ -605,7 +612,7 @@ fn encode_tile(
     }
     let t_stamp = Instant::now();
     stamp_elevations(&mut buckets, sampler, z);
-    stamp_synth(&mut buckets, sampler, solved, z, &bounds);
+    stamp_synth(&mut buckets, sampler, solved, junctions, z, &bounds);
     add_junction_plates(&mut buckets, junctions, sampler, &bounds, z);
     let mut t_terrain = t_stamp.elapsed();
 
@@ -730,17 +737,41 @@ fn add_junction_plates(
 /// Stage 4 for the tile: runs each transportation feature's generator against
 /// the solved model — bridge decks and tunnel bores swept on their corridor's
 /// profile, roads draped on the rendered ground (plus their corridor's solved
-/// cut/fill where one exists). See [`synth::emit`].
+/// cut/fill where one exists). At detail zooms each at-grade drivable road
+/// also gains its surface band, built from the freshly baked centerline and
+/// trimmed back at the junction plates near this tile (see
+/// [`synth::surface`]). See [`synth::emit`].
 fn stamp_synth(
     buckets: &mut [Vec<EncoderFeature>],
     sampler: &mut GroundSampler,
     solved: &SolvedModel,
+    junctions: &JunctionModel,
     z: u8,
     bounds: &Bounds,
 ) {
+    // Plates near the tile's buffered extent, for band trimming — only at
+    // zooms that draw the plates, so a trim can never open an unplated hole.
+    let near: Vec<&synth::junction::BakedJunction> =
+        if z >= crate::priors::STRUCTURE_DETAIL_MIN_ZOOM {
+            let b = bounds.expanded(0.55);
+            junctions
+                .iter()
+                .filter(|j| {
+                    let p = j.point();
+                    p.x >= b.west && p.x <= b.east && p.y >= b.south && p.y <= b.north
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+    let mut bands = Vec::new();
     for f in &mut buckets[layers::TRANSPORTATION as usize] {
         synth::emit(f, sampler, solved, z, bounds);
+        if let Some(band) = synth::surface::ribbon(f, sampler, solved, z, bounds, &near) {
+            bands.push(band);
+        }
     }
+    buckets[layers::TRANSPORTATION as usize].extend(bands);
 }
 
 /// Phase-1 worker: drains row-group work items from the queue, streams their
@@ -1115,7 +1146,7 @@ fn flush_tile(
     let (z, x, y) = hilbert::tile_id_decode(tile_id);
     let bounds = Bounds::of_tile(z, x, y);
     stamp_elevations(buckets, sampler, z);
-    stamp_synth(buckets, sampler, solved, z, &bounds);
+    stamp_synth(buckets, sampler, solved, junctions, z, &bounds);
     add_junction_plates(buckets, junctions, sampler, &bounds, z);
 
     // Vector layers in decode-priority (index) order.
@@ -1303,6 +1334,68 @@ mod tests {
         }
         eprintln!("== {total} tunnel mesh features in {path} ==");
         assert!(total > 0, "no tunnel meshes found");
+    }
+
+    /// Tallies painted road widths per class across `$ARPA`'s transportation
+    /// lines at zoom `$Z` (default 16) — verifies the P1 width derivation end
+    /// to end: mapped `width_rules` values must appear alongside the class
+    /// priors. Run: `ARPA=/tmp/t.arpa cargo test -- --ignored dump_widths --nocapture`
+    #[test]
+    #[ignore = "needs $ARPA"]
+    fn dump_widths() {
+        let path = std::env::var("ARPA").unwrap();
+        let z_want: u8 = std::env::var("Z").ok().and_then(|s| s.parse().ok()).unwrap_or(16);
+        let bytes = std::fs::read(&path).unwrap();
+        let archive = crate::archive::Archive::open(&bytes).unwrap();
+        // (class, width string) → feature count; string keys keep widths sortable.
+        let mut tally: std::collections::BTreeMap<(String, String), u64> = Default::default();
+        let (mut surfaces, mut oneways) = (0u64, 0u64);
+        for entry in archive.entries() {
+            if entry.z != z_want {
+                continue;
+            }
+            let raw = brotli_decompress(archive.get_by_id(entry.hilbert_id).unwrap());
+            let tile = fbt::root_as_tile(&raw).unwrap();
+            let (Some(layers), Some(keys), Some(values)) =
+                (tile.layers(), tile.keys(), tile.values())
+            else {
+                continue;
+            };
+            for li in 0..layers.len() {
+                let l = layers.get(li);
+                if l.name() != "transportation" {
+                    continue;
+                }
+                let Some(feats) = l.features() else { continue };
+                for fi in 0..feats.len() {
+                    let f = feats.get(fi);
+                    if f.geometry_as_line_geometry().is_none() {
+                        continue;
+                    }
+                    let Some(props) = f.properties() else { continue };
+                    let (mut class, mut width) = (None, None);
+                    for pi in 0..props.len() {
+                        let p = props.get(pi);
+                        let v = values.get(p.value() as usize);
+                        match keys.get(p.key() as usize) {
+                            "class" => class = v.string_value().map(str::to_string),
+                            "width_m" => width = Some(format!("{:5.1}", v.double_value())),
+                            "surface" => surfaces += 1,
+                            "oneway" => oneways += 1,
+                            _ => {}
+                        }
+                    }
+                    if let (Some(c), Some(w)) = (class, width) {
+                        *tally.entry((c, w)).or_default() += 1;
+                    }
+                }
+            }
+        }
+        for ((c, w), n) in &tally {
+            eprintln!("{c:>14} {w} m  x{n}");
+        }
+        eprintln!("== z{z_want}: {surfaces} surfaces, {oneways} oneways ==");
+        assert!(!tally.is_empty(), "no painted widths at z{z_want}");
     }
 
     /// Dumps polygon structure of one layer in one tile from `$ARPA`, for
