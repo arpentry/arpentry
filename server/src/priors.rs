@@ -71,6 +71,12 @@ pub fn is_link(subclass: Option<&str>) -> bool {
     subclass == Some("link")
 }
 
+/// Painted width in metres of the small service ways — driveways, parking
+/// aisles, alleys: a single car's track plus margins, well under the minor
+/// street their `service` class would otherwise inherit (Swiss-extract
+/// mapped medians run ~3 m).
+pub const SERVICE_WAY_WIDTH_M: f64 = 3.0;
+
 /// Physical painted width in metres of a drivable road, keyed by its Overture
 /// class/subclass — twice the [`RoadClass::half_width_m`] the structure sweep
 /// uses, so the paint stroke and the deck it rides are sized from the same
@@ -91,7 +97,46 @@ pub fn paint_width_m(class: Option<&str>, subclass: Option<&str>) -> Option<f64>
             | "service"
             | "unknown"
     );
-    drivable.then(|| 2.0 * RoadClass::parse(Some(c)).half_width_m(is_link(subclass)))
+    if !drivable {
+        return None;
+    }
+    // The small service ways are narrower than any street class.
+    if matches!(subclass, Some("driveway" | "parking_aisle" | "alley")) {
+        return Some(SERVICE_WAY_WIDTH_M);
+    }
+    Some(2.0 * RoadClass::parse(Some(c)).half_width_m(is_link(subclass)))
+}
+
+/// How far a mapped `width` may stray from the class prior, as factors of it,
+/// before it is distrusted. Mapped widths are rare (0.6–10 % per class on the
+/// Swiss extract) but where present they are usually right — the medians
+/// match the priors. Beyond these bounds the measurement contradicts the
+/// class (a whole right-of-way width on a footpath-sized lane, a typo'd
+/// unit), and the prior is kept — the same trust-the-prior resolution the
+/// clearance caps above use.
+pub const MEASURED_WIDTH_FACTOR_MIN: f64 = 0.35;
+pub const MEASURED_WIDTH_FACTOR_MAX: f64 = 3.0;
+
+/// Painted carriageway width in metres (docs/ROADS.md H2): the mapped
+/// Overture `width_rules` value when plausible against the class prior, else
+/// the prior itself ([`paint_width_m`]). `None` for non-drivable classes even
+/// when a width is mapped — their stroke stays cartographic until they grow
+/// surfaces of their own (docs/ROADS.md P5).
+pub fn carriageway_width_m(
+    class: Option<&str>,
+    subclass: Option<&str>,
+    measured_m: Option<f64>,
+) -> Option<f64> {
+    let prior = paint_width_m(class, subclass)?;
+    match measured_m {
+        Some(w)
+            if w >= prior * MEASURED_WIDTH_FACTOR_MIN
+                && w <= prior * MEASURED_WIDTH_FACTOR_MAX =>
+        {
+            Some(w)
+        }
+        _ => Some(prior),
+    }
 }
 
 /// Vertical clearance a bridge deck's *underside* must keep over a crossed
@@ -132,6 +177,17 @@ pub const ABUTMENT_DEPTH_M: f64 = 4.0;
 /// zooms render the bare deck — the degradation ladder's middle rung (D5);
 /// positions never change, only detail sheds.
 pub const STRUCTURE_DETAIL_MIN_ZOOM: u8 = 13;
+
+/// First zoom that carries the road-surface band under the paint
+/// (docs/ROADS.md P2). Matches [`STRUCTURE_DETAIL_MIN_ZOOM`] so the at-grade
+/// asphalt appears together with the decks and junction plates it runs into.
+pub const ROAD_SURFACE_MIN_ZOOM: u8 = 13;
+
+/// How far the road-surface band sits below the road-surface height, in
+/// metres: deep enough that junction plates and deck tops win their overlaps
+/// without z-fighting, shallow enough that the client's deck depth margin
+/// still lifts the band over the terrain it drapes on.
+pub const SURFACE_SINK_M: f64 = 0.05;
 
 /// Half-width of a pier column: a fraction of the deck half-width, clamped to
 /// plausible column sizes.
@@ -303,6 +359,37 @@ mod tests {
         assert!(is_link(Some("link")));
         assert!(!is_link(Some("sidewalk")));
         assert!(!is_link(None));
+    }
+
+    #[test]
+    fn small_service_ways_are_narrow() {
+        assert_eq!(paint_width_m(Some("service"), Some("driveway")), Some(SERVICE_WAY_WIDTH_M));
+        assert_eq!(
+            paint_width_m(Some("service"), Some("parking_aisle")),
+            Some(SERVICE_WAY_WIDTH_M)
+        );
+        // A plain service road keeps the minor-street width.
+        assert_eq!(paint_width_m(Some("service"), None), Some(5.5));
+    }
+
+    #[test]
+    fn measured_width_wins_when_plausible() {
+        // A mapped 6.2 m residential street beats the 5.5 m prior.
+        assert_eq!(carriageway_width_m(Some("residential"), None, Some(6.2)), Some(6.2));
+        // A narrow mapped lane is still plausible (0.35 × 5.5 = 1.9 m).
+        assert_eq!(carriageway_width_m(Some("residential"), None, Some(2.0)), Some(2.0));
+        // No measurement → the prior.
+        assert_eq!(carriageway_width_m(Some("residential"), None, None), Some(5.5));
+    }
+
+    #[test]
+    fn implausible_width_falls_back_to_the_prior() {
+        // A 30 m "residential street" is a right-of-way width, not a lane.
+        assert_eq!(carriageway_width_m(Some("residential"), None, Some(30.0)), Some(5.5));
+        // A 1 m one contradicts drivability.
+        assert_eq!(carriageway_width_m(Some("residential"), None, Some(1.0)), Some(5.5));
+        // Non-drivable classes stay cartographic even with a mapped width.
+        assert_eq!(carriageway_width_m(Some("footway"), None, Some(1.5)), None);
     }
 
     #[test]

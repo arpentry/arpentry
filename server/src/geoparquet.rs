@@ -312,6 +312,29 @@ impl Iterator for Features {
                     connectors = crate::assemble::columns::parse_connectors(arr.as_ref(), row);
                     continue;
                 }
+                // The horizontal road attributes share `level_rules`' nested
+                // shape but their consumers need scalars: each is reduced to
+                // its dominant value here (see `crate::rules`), riding the
+                // property vec like any flat column. `access_restrictions`
+                // reduces to the derived one-way verdict.
+                if name == "width_rules" {
+                    if let Some(w) = crate::rules::dominant_width_m(arr.as_ref(), row) {
+                        properties.push((name.clone(), Value::Double(w)));
+                    }
+                    continue;
+                }
+                if name == "road_surface" {
+                    if let Some(s) = crate::rules::dominant_surface(arr.as_ref(), row) {
+                        properties.push((name.clone(), Value::String(s)));
+                    }
+                    continue;
+                }
+                if name == "access_restrictions" {
+                    if crate::rules::is_oneway(arr.as_ref(), row) {
+                        properties.push(("oneway".to_string(), Value::Bool(true)));
+                    }
+                    continue;
+                }
                 if let Some(v) = array_value(arr.as_ref(), row) {
                     properties.push((name.clone(), v));
                 }

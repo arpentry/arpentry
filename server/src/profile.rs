@@ -87,14 +87,25 @@ pub fn profile(
         if let Some(lv) = find_int(props, "level_rules").filter(|&l| l != 0) {
             properties.push(("level".to_string(), Value::Int(lv)));
         }
-        // Physical carriageway width from the engineering priors — the same
-        // numbers the structure sweep uses — so the client can stroke roads
-        // at true width at close zooms and meet the decks edge-to-edge.
-        if let Some(w) = crate::priors::paint_width_m(
+        // Physical carriageway width — the mapped `width_rules` value when
+        // plausible, else the engineering prior the structure sweep uses — so
+        // the client can stroke roads at true width at close zooms and meet
+        // the decks edge-to-edge (docs/ROADS.md P1).
+        if let Some(w) = crate::priors::carriageway_width_m(
             find_str(props, "class").as_deref(),
             find_str(props, "subclass").as_deref(),
+            find_f64(props, "width_rules"),
         ) {
             properties.push(("width_m".to_string(), Value::Double(w)));
+        }
+        // The mapped surface material and one-way verdict ride along for
+        // styling and the marking phases (docs/ROADS.md P3); sparse, so only
+        // emitted when present.
+        if let Some(s) = find_str(props, "road_surface") {
+            properties.push(("surface".to_string(), Value::String(s)));
+        }
+        if find_bool(props, "oneway") {
+            properties.push(("oneway".to_string(), Value::Bool(true)));
         }
     }
 
@@ -290,6 +301,13 @@ fn find_f64(props: &[(String, Value)], key: &str) -> Option<f64> {
         Value::Int(i) => Some(*i as f64),
         _ => None,
     })
+}
+
+fn find_bool(props: &[(String, Value)], key: &str) -> bool {
+    props
+        .iter()
+        .find(|(k, _)| k == key)
+        .is_some_and(|(_, v)| matches!(v, Value::Bool(true)))
 }
 
 fn u8_from(i: i64) -> Option<u8> {
@@ -503,6 +521,30 @@ mod tests {
             14,
         );
         assert!(!path.properties.iter().any(|(k, _)| k == "width_m"));
+    }
+
+    #[test]
+    fn measured_width_overrides_the_prior() {
+        // A plausible mapped width refines the stroke; the surface material
+        // and one-way verdict ride along as properties.
+        let props = vec![
+            ("class".to_string(), Value::String("residential".into())),
+            ("width_rules".to_string(), Value::Double(6.2)),
+            ("road_surface".to_string(), Value::String("paved".into())),
+            ("oneway".to_string(), Value::Bool(true)),
+        ];
+        let p = profile(layers::TRANSPORTATION, &props, 0, 14);
+        assert!(p.properties.contains(&("width_m".into(), Value::Double(6.2))));
+        assert!(p.properties.contains(&("surface".into(), Value::String("paved".into()))));
+        assert!(p.properties.contains(&("oneway".into(), Value::Bool(true))));
+        // An implausible width keeps the prior; absent extras are omitted.
+        let props = vec![
+            ("class".to_string(), Value::String("residential".into())),
+            ("width_rules".to_string(), Value::Double(40.0)),
+        ];
+        let p = profile(layers::TRANSPORTATION, &props, 0, 14);
+        assert!(p.properties.contains(&("width_m".into(), Value::Double(5.5))));
+        assert!(!p.properties.iter().any(|(k, _)| k == "surface" || k == "oneway"));
     }
 
     #[test]

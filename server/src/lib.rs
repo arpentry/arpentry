@@ -38,6 +38,7 @@ pub mod priors;
 pub mod profile;
 pub mod project;
 pub mod record;
+pub mod rules;
 pub mod scene;
 pub mod simplify;
 pub mod solve;
