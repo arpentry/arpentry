@@ -5,7 +5,10 @@ roads, bridges, tunnels, buildings) from 2D map data and an elevation model,
 at the quality of Apple Maps or Mapbox. It names the entities, the data, the
 gap between the two, the situations a correct model must handle, the
 invariants that define correctness, and the approach they imply: build one
-world model on the server, then tile it.
+world model on the server, then tile it. It owns the *vertical* model —
+heights, structures, the engineered ground; its horizontal companion,
+`docs/ROADS.md`, states the road-surface problem (widths, junction areas,
+markings) on top of it.
 
 ## 1. What is being modeled
 
@@ -60,7 +63,10 @@ buildings must sit on the *rendered* terrain, which differs per LOD.
 
 - *Roads*: 2D centerlines with class attributes and linearly referenced level
   annotations: fractional spans tagged with a small integer level (positive =
-  elevated, negative = below ground, 0 = grade). Six caveats:
+  elevated, negative = below ground, 0 = grade). Lane counts, carriageway
+  widths, and surface materials ride the same linear referencing; they bear
+  on the road's *horizontal* extent and are treated in `docs/ROADS.md` §2.
+  Six caveats:
   - **Levels are ordinals, not heights.** `level = 1` means "above whatever
     is level 0 here"; `level = -5` does not mean 5 units deep. Crossing
     bridges at +1 and +2 encode an *ordering* that must be resolved into
@@ -146,9 +152,13 @@ interactions made explicit.
 
 **D5. Multi-scale coherence.** At z8 a viaduct is a stroked line and a city a
 texture; at z13 slabs and extruded blocks; at z16 piers, railings, portal
-faces, roof forms. Every feature must simplify gracefully across zooms while
-its *position* stays fixed (a deck must not change height between LODs), and
-while its reconciliation with the per-zoom terrain mesh still holds.
+faces, roof forms — and the road itself changes representation, from an
+SDF-stroked centerline at coarse zooms to a meshed surface with painted
+markings at detail zooms (`docs/ROADS.md`). Every feature must simplify
+gracefully across zooms while its *position* stays fixed (a deck must not
+change height between LODs; a road must not move or change width when the
+stroke hands off to the surface), and while its reconciliation with the
+per-zoom terrain mesh still holds.
 
 ## 4. The canonical situations
 
@@ -184,8 +194,8 @@ acceptance criteria for any implementation.
 2. **Road-surface continuity.** Along every path through the network the road
    surface is C0-continuous and grade-plausible: no steps at abutments,
    portals, segment joins, tile seams, or LOD switches. Equivalently, there
-   is one road-surface function, and everything that renders (draped roads,
-   bridge decks, tunnel floors) reads from it.
+   is one road-surface function, and everything that renders (stroked roads,
+   meshed road surfaces, bridge decks, tunnel floors) reads from it.
 3. **Vertical order with plausible clearance.** Wherever two features cross,
    the higher is strictly above the lower with a class-appropriate gap. Level
    ordinals give an ordering, never heights.
@@ -234,10 +244,12 @@ five-stage pipeline in which tiling is the *last* and dumbest step:
 
 4. **Synthesize geometry.** Parameterized generators per feature class, all
    reading solved heights and the engineered ground, adding no new inference:
-   road ribbons on the profile; bridge decks with piers and abutments; tunnel
-   bores with portal faces at the true emergence; buildings with foundations,
-   roof forms, and courtyards; each with LOD variants that keep position
-   fixed while shedding detail (D5).
+   roads on the profile (stroked centerlines at coarse zooms, meshed
+   surfaces with painted markings at detail zooms — `docs/ROADS.md`); bridge
+   decks with piers and abutments; tunnel bores with portal faces at the
+   true emergence; buildings with foundations, roof forms, and courtyards;
+   each with LOD variants that keep position fixed while shedding detail
+   (D5).
 
 5. **Tile.** Cut the finished model into tiles per zoom: clip, quantize,
    encode. Because every height is a function of the global model, adjacent
