@@ -273,7 +273,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     let mut sorters: Vec<ExternalSorter> = Vec::with_capacity(phase1_threads);
     if phase1_threads == 1 {
         let (sorter, partial) =
-            phase1_worker(&inputs, &queue, cfg, worker_budget, &scene, &solved)?;
+            phase1_worker(&inputs, &queue, cfg, worker_budget, &scene, &solved, &junctions)?;
         merge_phase1(&mut stats, &partial);
         sorters.push(sorter);
     } else {
@@ -281,7 +281,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             let mut handles = Vec::with_capacity(phase1_threads);
             for _ in 0..phase1_threads {
                 handles.push(scope.spawn(|| {
-                    phase1_worker(&inputs, &queue, cfg, worker_budget, &scene, &solved)
+                    phase1_worker(&inputs, &queue, cfg, worker_budget, &scene, &solved, &junctions)
                 }));
             }
             for handle in handles {
@@ -727,7 +727,7 @@ fn add_junction_plates(
     if z < crate::priors::STRUCTURE_DETAIL_MIN_ZOOM || junctions.is_empty() {
         return;
     }
-    for baked in junctions.iter() {
+    for baked in junctions.near((bounds.west, bounds.south, bounds.east, bounds.north)) {
         if let Some(f) = synth::junction::plate(baked, bounds, sampler, z) {
             buckets[layers::TRANSPORTATION as usize].push(f);
         }
@@ -754,29 +754,18 @@ fn stamp_synth(
     let near: Vec<&synth::junction::BakedJunction> =
         if z >= crate::priors::STRUCTURE_DETAIL_MIN_ZOOM {
             let b = bounds.expanded(0.55);
-            junctions
-                .iter()
-                .filter(|j| {
-                    let p = j.point();
-                    p.x >= b.west && p.x <= b.east && p.y >= b.south && p.y <= b.north
-                })
-                .collect()
+            junctions.near((b.west, b.south, b.east, b.north))
         } else {
             Vec::new()
         };
-    let mut extras = Vec::new();
+    let mut bands = Vec::new();
     for f in &mut buckets[layers::TRANSPORTATION as usize] {
-        // Markings read the raw centerline (an offset of the densified line
-        // wobbles) and bake themselves; appended after every stroke, they
-        // paint over the carriageway in draw order.
-        let marks = synth::markings::lines(f, sampler, solved, z, bounds, &near);
         synth::emit(f, sampler, solved, z, bounds);
         if let Some(band) = synth::surface::ribbon(f, sampler, solved, z, bounds, &near) {
-            extras.push(band);
+            bands.push(band);
         }
-        extras.extend(marks);
     }
-    buckets[layers::TRANSPORTATION as usize].extend(extras);
+    buckets[layers::TRANSPORTATION as usize].extend(bands);
 }
 
 /// Phase-1 worker: drains row-group work items from the queue, streams their
@@ -790,6 +779,7 @@ fn phase1_worker(
     mem_budget: usize,
     scene: &SceneGraph,
     solved: &SolvedModel,
+    junctions: &JunctionModel,
 ) -> Result<(ExternalSorter, Stats), Error> {
     let mut sorter = ExternalSorter::new(&cfg.tmp_dir, mem_budget);
     let mut stats = Stats::default();
@@ -823,6 +813,7 @@ fn phase1_worker(
                 &mut stats,
                 scene,
                 solved,
+                junctions,
                 &mut spans_cache,
             )?;
         }
@@ -858,6 +849,7 @@ fn process_feature(
     stats: &mut Stats,
     scene: &SceneGraph,
     solved: &SolvedModel,
+    junctions: &JunctionModel,
     spans_cache: &mut HashMap<u32, Vec<Span>>,
 ) -> Result<(), Error> {
     stats.features_read += 1;
@@ -869,6 +861,10 @@ fn process_feature(
     }
 
     if layer == layers::TRANSPORTATION {
+        // The painted markings, generated here in phase 1 from pre-clip
+        // geometry so the dash phase is global (synth::markings): every tile
+        // then clips identical copies of every dash (invariant 5).
+        let marks = marking_context(f, junctions, bb);
         let claimed = prop_id(&f.properties).and_then(|id| scene.lookup(source_hash(&id)));
         if let Some((corridor, seg)) = claimed {
             // Cut against the solved-reconciled spans: tunnels clamped to
@@ -882,13 +878,18 @@ fn process_feature(
                 }
             });
             for piece in corridor.pieces_in(seg, spans) {
-                let geom = Geometry::LineString(LineString(piece.line));
+                let line = LineString(piece.line);
                 let mut props = seg.properties.clone();
-                let synth = match piece.kind {
-                    SpanKind::Grade => Synth::Road {
-                        corridor: corridor.needs_profile().then_some(corridor.id),
-                        deck: false,
-                    },
+                // The marking synth: at-grade markings drape like the paint;
+                // structure markings ride the deck ramp with it.
+                let (synth, mark_synth) = match piece.kind {
+                    SpanKind::Grade => {
+                        let s = Synth::Road {
+                            corridor: corridor.needs_profile().then_some(corridor.id),
+                            deck: false,
+                        };
+                        (s, s)
+                    }
                     kind => {
                         // A structure span emits twice: the solid (deck or
                         // bore), and the road paint re-emitted over it so the
@@ -905,23 +906,83 @@ fn process_feature(
                         // draping over the ground it passes beneath — then
                         // re-emerges at the portal.
                         let stroke = Synth::Road { corridor: Some(corridor.id), deck: true };
-                        emit_geometry(layer, &geom, &props, stroke, cfg, sorter, stats)?;
+                        emit_geometry(
+                            layer,
+                            &Geometry::LineString(line.clone()),
+                            &props,
+                            stroke,
+                            cfg,
+                            sorter,
+                            stats,
+                        )?;
                         // The level ordinal survives as a property only so the
                         // attribute profiler emits the reserved `level` the
                         // client colours structures by.
                         props.push(("level_rules".to_string(), Value::Int(piece.level)));
-                        Synth::Structure { corridor: corridor.id, kind }
+                        (Synth::Structure { corridor: corridor.id, kind }, stroke)
                     }
                 };
-                emit_geometry(layer, &geom, &props, synth, cfg, sorter, stats)?;
+                if let Some((class, oneway, width, disks)) = &marks {
+                    for m in synth::markings::for_line(&line, class, *oneway, *width, disks) {
+                        emit_geometry(layer, &m.geometry, &m.properties(), mark_synth, cfg, sorter, stats)?;
+                    }
+                }
+                emit_geometry(layer, &Geometry::LineString(line), &props, synth, cfg, sorter, stats)?;
             }
             return Ok(());
         }
         // Unclaimed: a plain road that drapes on the rendered ground.
         let synth = Synth::Road { corridor: None, deck: false };
+        if let Some((class, oneway, width, disks)) = &marks {
+            if let Geometry::LineString(line) = &f.geometry {
+                for m in synth::markings::for_line(line, class, *oneway, *width, disks) {
+                    emit_geometry(layer, &m.geometry, &m.properties(), synth, cfg, sorter, stats)?;
+                }
+            }
+        }
         return emit_geometry(layer, &f.geometry, &f.properties, synth, cfg, sorter, stats);
     }
     emit_geometry(layer, &f.geometry, &f.properties, Synth::None, cfg, sorter, stats)
+}
+
+/// The marking inputs for a transportation feature — its class, one-way
+/// verdict, derived width, and the junction trim disks near it — or `None`
+/// when the class's ladder paints nothing (the common case, so the plate
+/// query is skipped entirely).
+fn marking_context(
+    f: &crate::geoparquet::Feature,
+    junctions: &JunctionModel,
+    bb: (f64, f64, f64, f64),
+) -> Option<(String, bool, f64, Vec<(geo_types::Coord, f64)>)> {
+    let find_str = |key: &str| {
+        f.properties.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        })
+    };
+    let class = find_str("class")?;
+    let oneway = f
+        .properties
+        .iter()
+        .any(|(k, v)| k == "oneway" && matches!(v, Value::Bool(true)));
+    if !crate::priors::has_centre_line(&class, oneway) && !crate::priors::has_edge_lines(&class) {
+        return None;
+    }
+    let measured = f.properties.iter().find_map(|(k, v)| match (k.as_str(), v) {
+        ("width_rules", Value::Double(w)) => Some(*w),
+        _ => None,
+    });
+    let width =
+        crate::priors::carriageway_width_m(Some(&class), find_str("subclass").as_deref(), measured)?;
+    let half = width * 0.5 + crate::priors::STRUCTURE_SHOULDER_M;
+    // Pad by more than any plausible plate reach (~200 m in degrees).
+    const MARGIN: f64 = 0.002;
+    let disks = junctions
+        .near((bb.0 - MARGIN, bb.1 - MARGIN, bb.2 + MARGIN, bb.3 + MARGIN))
+        .into_iter()
+        .map(|p| (p.point(), p.trim_radius_m(half)))
+        .collect();
+    Some((class, oneway, width, disks))
 }
 
 /// The source feature's `id` property, when it is a string.

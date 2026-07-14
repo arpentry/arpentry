@@ -65,9 +65,14 @@ pub fn profile(
         .or_else(|| class.as_deref().and_then(|c| overture_min_zoom(layer, c)))
         .unwrap_or(default_min);
     let max_zoom = find_int(props, "cartography.max_zoom").and_then(u8_from).unwrap_or(default_max);
-    let rank = find_int(props, "cartography.sort_key")
+    let mut rank = find_int(props, "cartography.sort_key")
         .map(|i| i.clamp(0, tileid::MAX_RANK as i64) as u16)
         .unwrap_or(0);
+    // Markings sort after every road stroke in their layer, so within a tile
+    // they decode — and draw — over the carriageway they are painted on.
+    if layer == layers::TRANSPORTATION && class.as_deref() == Some("marking") {
+        rank = tileid::MAX_RANK;
+    }
 
     let mut properties = Vec::new();
     if let Some(c) = class {
@@ -90,8 +95,11 @@ pub fn profile(
         // Physical carriageway width — the mapped `width_rules` value when
         // plausible, else the engineering prior the structure sweep uses — so
         // the client can stroke roads at true width at close zooms and meet
-        // the decks edge-to-edge (docs/ROADS.md P1).
-        if let Some(w) = crate::priors::carriageway_width_m(
+        // the decks edge-to-edge (docs/ROADS.md P1). A synthesized feature
+        // (a marking line) states its painted width directly.
+        if let Some(w) = find_f64(props, "width_m") {
+            properties.push(("width_m".to_string(), Value::Double(w)));
+        } else if let Some(w) = crate::priors::carriageway_width_m(
             find_str(props, "class").as_deref(),
             find_str(props, "subclass").as_deref(),
             find_f64(props, "width_rules"),
@@ -244,6 +252,9 @@ fn overture_min_zoom(layer: LayerIndex, class: &str) -> Option<u8> {
             "footway" | "path" | "steps" | "cycleway" | "bridleway" | "sidewalk"
             | "crosswalk" | "unknown",
         ) => 14,
+        // Synthesized painted markings (docs/ROADS.md P3): sub-pixel until
+        // the camera is close.
+        (layers::TRANSPORTATION, "marking") => crate::priors::MARKING_MIN_ZOOM,
         // Rail (Overture `subtype=rail`, class is the gauge).
         (
             layers::TRANSPORTATION,

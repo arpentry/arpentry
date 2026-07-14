@@ -330,9 +330,20 @@ the scenario table (§4).
     primary/secondary/tertiary and edge lines on motorway/trunk, offset
     from the *raw* centerline (an offset of the densified line wobbles),
     trimmed at the junction plates, stubs under `MIN_LINE_M` dropped.
-  - *Remaining:* dashed lane lines and symbols (the global-phase `s`
-    machinery of H4); distance fade — sub-texel lines shimmer at grazing
-    angles; stop lines and zebra crosswalks from `crosswalk` segments.
+  - *Increment 2 — dashed centre lines, global phase (done 2026-07-14).*
+    Marking generation moved to phase 1, cutting dashes from *pre-clip*
+    geometry — the whole segment, or a corridor piece at its global span
+    boundaries — so the phase anchors to a global arclength origin and
+    every tile clips identical copies (H4/invariant 4 without any `s`
+    coordinate). The centre line is now the dashed Leitlinie
+    (`CENTRE_DASH_M`/`CENTRE_GAP_M`); a dash whose midpoint falls in a
+    plate disk is dropped. Markings sort at `MAX_RANK` so they decode
+    after the strokes they paint over; `JunctionModel` gained a grid
+    index (`near`) so per-segment plate trims scale to full extracts.
+  - *Remaining:* symbols (arrows, chevrons — the MSDF atlas, P4);
+    distance fade — sub-texel lines shimmer at grazing angles; stop
+    lines and zebra crosswalks from `crosswalk` segments; dashed lane
+    lines between same-direction lanes (needs inferred lane counts).
 - **P4 — Symbols.** The MSDF atlas: gore chevrons from diverge geometry;
   crossing glyphs where `cycle_crossing` meets a carriageway. Turn arrows
   are deferred — the schema carries no turn data (P0); they wait on an

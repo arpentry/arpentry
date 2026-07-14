@@ -85,12 +85,33 @@ impl BakedJunction {
 }
 
 /// Every junction plate, baked from the solved model — shared by the emit
-/// workers through an `Arc`.
+/// workers through an `Arc`. A coarse geographic grid answers "which plates
+/// are near this box" without a linear scan, which both the per-tile plate
+/// emission and the per-segment marking trims (phase 1, millions of
+/// segments) depend on.
 pub struct JunctionModel {
     junctions: Vec<BakedJunction>,
+    grid: std::collections::HashMap<(i32, i32), Vec<u32>>,
+}
+
+/// Grid cell size in degrees (~1 km): plates per cell stay in the tens even
+/// in towns, and a tile or segment query touches a handful of cells.
+const GRID_DEG: f64 = 0.01;
+
+fn grid_cell(x: f64, y: f64) -> (i32, i32) {
+    ((x / GRID_DEG).floor() as i32, (y / GRID_DEG).floor() as i32)
 }
 
 impl JunctionModel {
+    fn build(junctions: Vec<BakedJunction>) -> JunctionModel {
+        let mut grid: std::collections::HashMap<(i32, i32), Vec<u32>> =
+            std::collections::HashMap::new();
+        for (i, j) in junctions.iter().enumerate() {
+            grid.entry(grid_cell(j.point.x, j.point.y)).or_default().push(i as u32);
+        }
+        JunctionModel { junctions, grid }
+    }
+
     pub fn len(&self) -> usize {
         self.junctions.len()
     }
@@ -101,6 +122,28 @@ impl JunctionModel {
 
     pub fn iter(&self) -> impl Iterator<Item = &BakedJunction> {
         self.junctions.iter()
+    }
+
+    /// The plates whose centres fall in the `(west, south, east, north)` box.
+    /// The caller pads the box by whatever reach (trim radius, plate size)
+    /// matters to it.
+    pub fn near(&self, b: (f64, f64, f64, f64)) -> Vec<&BakedJunction> {
+        let (x0, y0) = grid_cell(b.0, b.1);
+        let (x1, y1) = grid_cell(b.2, b.3);
+        let mut out = Vec::new();
+        for cx in x0..=x1 {
+            for cy in y0..=y1 {
+                if let Some(cell) = self.grid.get(&(cx, cy)) {
+                    for &i in cell {
+                        let p = self.junctions[i as usize].point;
+                        if p.x >= b.0 && p.x <= b.2 && p.y >= b.1 && p.y <= b.3 {
+                            out.push(&self.junctions[i as usize]);
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 }
 
@@ -154,7 +197,7 @@ pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> JunctionModel {
             legs: rj.legs.iter().map(|&(e, n, half_w)| Leg { e, n, half_w }).collect(),
         });
     }
-    JunctionModel { junctions }
+    JunctionModel::build(junctions)
 }
 
 /// The plate feature for `baked`, or `None` when this tile does not own the
