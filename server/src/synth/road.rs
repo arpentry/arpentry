@@ -128,6 +128,17 @@ pub(crate) fn surface_height(
             let lift = p.height_at(lon, lat) - sampler.surface(&ref_bounds, lon, lat, z_ref);
             surface + lift.max(0.0)
         }
+        // An unclaimed street rides its bed at the reference zoom: the ground
+        // stage benches the terrain under every drivable road (flat across,
+        // natural grade along — D3), but the rendered lattice is far coarser
+        // than a street's footprint, so the drape takes the exact bed height
+        // instead of the tilted in-cell interpolation. Coarser zooms keep the
+        // per-zoom surface — the bench pulls their corners toward the bed
+        // wherever the lattice can see it.
+        None if z == z_ref => match sampler.bed_target(lon, lat) {
+            Some(bed) => bed,
+            None => sampler.surface(bounds, lon, lat, z),
+        },
         None => sampler.surface(bounds, lon, lat, z),
     }
 }

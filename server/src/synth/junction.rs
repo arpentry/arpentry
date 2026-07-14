@@ -202,13 +202,16 @@ pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> JunctionModel {
 
 /// The plate feature for `baked`, or `None` when this tile does not own the
 /// junction centre (so exactly one tile emits it) or the plate is degenerate.
-/// An at-grade junction drapes on the engineered ground through `sampler`; a
-/// corridor junction sits at its fixed welded level.
+/// An at-grade junction drapes on the engineered ground through `sampler` —
+/// riding the exact street bed at the reference zoom, like the bands that
+/// land on its mouths (`synth::road::surface_height`); a corridor junction
+/// sits at its fixed welded level.
 pub fn plate(
     baked: &BakedJunction,
     bounds: &Bounds,
     sampler: &mut GroundSampler,
     z: u8,
+    z_ref: u8,
 ) -> Option<EncoderFeature> {
     if !owns(bounds, baked.point) {
         return None;
@@ -216,7 +219,9 @@ pub fn plate(
     let mesh = match baked.level_mm {
         Some(mm) => plate_mesh(baked, bounds, |_| mm),
         None => plate_mesh(baked, bounds, |c| {
-            (sampler.surface(bounds, c.x, c.y, z) * 1000.0).round() as i32
+            let h = if z == z_ref { sampler.bed_target(c.x, c.y) } else { None };
+            let h = h.unwrap_or_else(|| sampler.surface(bounds, c.x, c.y, z));
+            (h * 1000.0).round() as i32
         }),
     }?;
     Some(EncoderFeature {

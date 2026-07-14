@@ -20,27 +20,33 @@ use geo_types::{Coord, Geometry};
 
 use crate::geoparquet::{GeoParquet, ReadError};
 use crate::priors;
-use crate::scene::RoadJunction;
+use crate::scene::{BedLine, RoadJunction};
 use crate::value::Value;
 
 /// A connector within this fraction of an end is that end's connector (matching
 /// the corridor assembler's `END_AT_EPS`).
 const END_AT_EPS: f64 = 1e-3;
 
-/// Reads the at-grade road junctions intersecting `bbox`: connectors where
+/// Reads the at-grade road junctions intersecting `bbox` — connectors where
 /// three or more drivable road ends meet, skipping any in `exclude` (the
-/// corridor-junction connectors).
+/// corridor-junction connectors) — and, from the same pass, the street
+/// [`BedLine`]s: every drivable road the corridors did *not* claim
+/// (`claimed`), whose bed the ground stage benches flat across (D3).
 pub fn build(
     path: &Path,
     bbox: (f64, f64, f64, f64),
     exclude: &HashSet<u64>,
-) -> Result<Vec<RoadJunction>, ReadError> {
+    claimed: &dyn Fn(u64) -> bool,
+) -> Result<(Vec<RoadJunction>, Vec<BedLine>), ReadError> {
     let gp = GeoParquet::open(path)?;
     let row_groups = gp.row_groups_intersecting(bbox);
     // connector id → each end there: (point, heading east, heading north,
     // half-width, class).
     let mut ends: HashMap<u64, Vec<(Coord, f64, f64, f64, String)>> = HashMap::new();
-    for feature in gp.features(row_groups, &["class", "subclass", "connectors", "width_rules"])? {
+    let mut beds: Vec<BedLine> = Vec::new();
+    for feature in
+        gp.features(row_groups, &["id", "class", "subclass", "connectors", "width_rules"])?
+    {
         let f = feature?;
         let class = prop_str(&f.properties, "class");
         let subclass = prop_str(&f.properties, "subclass");
@@ -62,6 +68,13 @@ pub fn build(
         let pts = &line.0;
         if pts.len() < 2 {
             continue;
+        }
+        // An unclaimed street's bed: corridors carry their own solved
+        // earthworks, so only the streets the solver never sees bench here.
+        let unclaimed = prop_str(&f.properties, "id")
+            .is_none_or(|id| !claimed(crate::scene::source_hash(&id)));
+        if unclaimed {
+            beds.push(BedLine { pts: pts.clone(), half_width_m: half_w });
         }
         let mut add = |conn: Option<u64>, at: Coord, toward: Coord| {
             if let Some(c) = conn {
@@ -96,7 +109,7 @@ pub fn build(
         let legs = legs.into_iter().map(|(_, e, n, w, _)| (e, n, w)).collect();
         out.push(RoadJunction { point, class, legs });
     }
-    Ok(out)
+    Ok((out, beds))
 }
 
 /// Unit ENU heading from `at` toward `toward` (the direction into the road).

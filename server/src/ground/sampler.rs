@@ -78,4 +78,13 @@ impl GroundSampler {
     pub fn surface(&mut self, bounds: &Bounds, lon: f64, lat: f64, z: u8) -> f64 {
         terrain::surface_height(bounds, lon, lat, &mut |a, o| self.corner(a, o, z))
     }
+
+    /// The exact engineered roadbed height under `(lon, lat)` when the point
+    /// lies fully inside a road earthwork's held width — a corridor's roadbed
+    /// or a street bench — else `None`. The drape rides this at the reference
+    /// zoom, where the rendered lattice is too coarse to hold a street-wide
+    /// bench (see `synth::road::surface_height`).
+    pub fn bed_target(&mut self, lon: f64, lat: f64) -> Option<f64> {
+        self.ground.earthworks().target_at(lon, lat, &mut self.scratch)
+    }
 }

@@ -105,9 +105,14 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
     let bb = (bbox.west, bbox.south, bbox.east, bbox.north);
     // At-grade road junctions over every drivable road, minus the connectors
     // the corridor junctions already own, so each junction is plated once.
+    // The same pass collects the unclaimed streets' bed lines for the ground
+    // stage to bench (D3).
     let corridor_connectors: std::collections::HashSet<u64> =
         scene.junctions.iter().map(|j| j.connector).collect();
-    scene.road_junctions = road_junctions::build(path, bb, &corridor_connectors)?;
+    let (road_junctions, beds) =
+        road_junctions::build(path, bb, &corridor_connectors, &|h| scene.lookup(h).is_some())?;
+    scene.road_junctions = road_junctions;
+    scene.beds = beds;
     let (crossings, underpasses) = crossings::detect(path, bb, &scene)?;
     scene.crossings = crossings;
     scene.underpasses = underpasses;

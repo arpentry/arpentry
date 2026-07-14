@@ -211,8 +211,108 @@ pub fn derive(
             });
         }
     }
+    edges.extend(derive_beds(scene, solved, terrain_path, threads));
     let waters = derive_waters(scene, solved, terrain_path, threads);
     GroundModel { earthworks: Earthworks::new(edges), waters }
+}
+
+/// The bed earthworks for the unclaimed street network (D3): each street's
+/// bed holds the *natural* ground height sampled at its own centerline —
+/// flat across the carriageway, following the terrain's grade along — so the
+/// two independent datasets (terrain raster, road network) agree wherever a
+/// road lies. Parallelized like the water pass: sampling scattered
+/// centerlines is DEM-decode bound.
+fn derive_beds(
+    scene: &SceneGraph,
+    solved: &SolvedModel,
+    terrain_path: Option<&Path>,
+    threads: usize,
+) -> Vec<EarthworkEdge> {
+    let beds = &scene.beds;
+    if beds.is_empty() {
+        return Vec::new();
+    }
+    let Some(path) = terrain_path else {
+        return Vec::new();
+    };
+    let Ok(primary) = Dem::open(path) else {
+        return Vec::new(); // no DEM: nothing to bench against
+    };
+    let z_ref = solved.z_ref;
+    let n = beds.len();
+    let threads = threads.max(1).min(n);
+    let next = Mutex::new(0usize);
+    let out: Mutex<Vec<Option<Vec<EarthworkEdge>>>> = Mutex::new((0..n).map(|_| None).collect());
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                let Ok(mut dem) = primary.fork() else { return };
+                loop {
+                    let i = {
+                        let mut cur = next.lock().expect("bed queue poisoned");
+                        if *cur >= n {
+                            break;
+                        }
+                        let i = *cur;
+                        *cur += 1;
+                        i
+                    };
+                    let b = &beds[i];
+                    let edges = bed_edges(&b.pts, b.half_width_m, &mut |c| {
+                        reference_surface(&mut dem, z_ref, c.x, c.y)
+                    });
+                    out.lock().expect("bed edges poisoned")[i] = Some(edges);
+                }
+            });
+        }
+    });
+    // Flatten in bed order, so the edge indices — and the modifier
+    // tie-breaking they feed — are deterministic run to run (invariant 5).
+    out.into_inner().expect("bed edges poisoned").into_iter().flatten().flatten().collect()
+}
+
+/// One street's bed edges: the centerline subdivided to
+/// [`crate::priors::BED_SPACING_M`], each node's target sampled from the
+/// natural ground at the node itself. The sampler is injected so the shape is
+/// testable without a DEM.
+fn bed_edges(
+    pts: &[Coord],
+    half_width_m: f64,
+    sample: &mut impl FnMut(Coord) -> f64,
+) -> Vec<EarthworkEdge> {
+    if pts.len() < 2 {
+        return Vec::new();
+    }
+    let cos_lat = crate::scene::run_cos_lat(pts);
+    // Subdivide long edges so the targets track the terrain along the road.
+    let mut nodes: Vec<Coord> = vec![pts[0]];
+    for w in pts.windows(2) {
+        let len_m = crate::scene::metric_len(w[0], w[1], cos_lat);
+        let n = (len_m / crate::priors::BED_SPACING_M).ceil().max(1.0) as usize;
+        for k in 1..=n {
+            let t = k as f64 / n as f64;
+            nodes.push(Coord {
+                x: w[0].x + (w[1].x - w[0].x) * t,
+                y: w[0].y + (w[1].y - w[0].y) * t,
+            });
+        }
+    }
+    let targets: Vec<f64> = nodes.iter().map(|&c| sample(c)).collect();
+    nodes
+        .windows(2)
+        .zip(targets.windows(2))
+        .filter(|(w, _)| w[0] != w[1])
+        .map(|(w, h)| EarthworkEdge {
+            a: w[0],
+            b: w[1],
+            target_a: h[0],
+            target_b: h[1],
+            half_width_m,
+            feather_m: EARTHWORK_MIN_FEATHER_M,
+            cos_lat,
+            carve: false,
+        })
+        .collect()
 }
 
 /// Reads a flat surface level for every still water body from the DEM along its
@@ -421,6 +521,42 @@ mod tests {
         // Under the bridge span itself the natural ground is untouched — the
         // deck stands on air, not on a berm.
         assert_eq!(ground.height(mid.x, mid.y, 372.0, &mut scratch), 372.0);
+    }
+
+    /// A street across a side-slope: its bed holds the centerline's natural
+    /// height flat across the carriageway (D3 for the unclaimed network) —
+    /// the terrain and road datasets reconciled where they disagree.
+    #[test]
+    fn a_street_bed_is_flat_across_a_side_slope() {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        // A 100 m west-east street on ground rising 1 m per metre northward.
+        let pts = vec![
+            Coord { x: 6.0, y: 46.0 },
+            Coord { x: 6.0 + 100.0 / (DEG_M * cos_lat), y: 46.0 },
+        ];
+        let slope = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M;
+        let edges = bed_edges(&pts, 4.75, &mut |c| slope(c));
+        // 100 m at 30 m spacing → four edges, targets at the centerline height.
+        assert_eq!(edges.len(), 4);
+        assert!(edges.iter().all(|e| (e.target_a - 400.0).abs() < 1e-9));
+
+        let ew = Earthworks::new(edges);
+        let mut scratch = Vec::new();
+        let mid_x = 6.0 + 50.0 / (DEG_M * cos_lat);
+        // 3 m uphill of the centerline the natural ground is 3 m higher, but
+        // the bed holds the centerline height: flat across.
+        let uphill = 46.0 + 3.0 / DEG_M;
+        let h = ew.height(mid_x, uphill, slope(Coord { x: mid_x, y: uphill }), &mut scratch);
+        assert!((h - 400.0).abs() < 1e-9, "bed must hold flat across, got {h}");
+        // The drape reads the same answer through target_at…
+        assert_eq!(ew.target_at(mid_x, uphill, &mut scratch), Some(400.0));
+        // …but only inside the held width; the feather is not the bed.
+        let past = 46.0 + 6.0 / DEG_M;
+        assert_eq!(ew.target_at(mid_x, past, &mut scratch), None);
+        // Far off the street the slope is untouched.
+        let far = 46.0 + 30.0 / DEG_M;
+        let raw = slope(Coord { x: mid_x, y: far });
+        assert_eq!(ew.height(mid_x, far, raw, &mut scratch), raw);
     }
 
     #[test]

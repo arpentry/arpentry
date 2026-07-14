@@ -113,6 +113,37 @@ impl Earthworks {
             None => raw,
         }
     }
+
+    /// The exact roadbed height at `(lon, lat)` when the point lies fully
+    /// inside a non-carve modifier's held half-width (blend weight 1), else
+    /// `None` — including in the feather, where the ground blends back to
+    /// natural. The road drape rides this at the reference zoom, so the road
+    /// stack is flat across its bed even where the rendered lattice is far
+    /// too coarse to capture the bench (see `synth::road::surface_height`).
+    /// Carve notches (deck daylighting, portal cuts) are not beds.
+    pub fn target_at(&self, lon: f64, lat: f64, scratch: &mut Vec<u32>) -> Option<f64> {
+        self.grid.query((lon, lat, lon, lat), scratch);
+        let mut best: Option<(f64, u32, f64)> = None; // (dist, idx, target)
+        for &i in scratch.iter() {
+            let e = &self.edges[i as usize];
+            if e.carve {
+                continue;
+            }
+            let (d, t) = lateral_distance(e, lon, lat);
+            if d > e.half_width_m {
+                continue;
+            }
+            let target = e.target_a + (e.target_b - e.target_a) * t;
+            let better = match &best {
+                None => true,
+                Some((bd, bi, _)) => d < *bd - 1e-9 || ((d - *bd).abs() <= 1e-9 && i < *bi),
+            };
+            if better {
+                best = Some((d, i, target));
+            }
+        }
+        best.map(|(_, _, t)| t)
+    }
 }
 
 /// One still water body flattened to a level: its rings (for the interior

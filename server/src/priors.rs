@@ -189,6 +189,11 @@ pub const ROAD_SURFACE_MIN_ZOOM: u8 = 13;
 /// still lifts the band over the terrain it drapes on.
 pub const SURFACE_SINK_M: f64 = 0.05;
 
+/// Longest bed earthwork edge for an unclaimed street, in metres: edges
+/// longer than this are subdivided so the bed's targets track the terrain
+/// along the road at this resolution.
+pub const BED_SPACING_M: f64 = 30.0;
+
 /// First zoom that paints longitudinal road markings (docs/ROADS.md P3).
 /// Deeper than the surface band's zoom: a 12 cm line is sub-pixel until the
 /// camera is close.

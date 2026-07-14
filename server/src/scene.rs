@@ -294,8 +294,19 @@ pub struct SceneGraph {
     pub road_junctions: Vec<RoadJunction>,
     /// Still water bodies whose surface the ground stage flattens (invariant 4).
     pub water: Vec<WaterBody>,
+    /// Unclaimed drivable roads whose bed the ground stage benches — flat
+    /// across the carriageway, natural grade along (D3). Corridors carry
+    /// their own solved earthworks; these are the streets the solver never
+    /// sees.
+    pub beds: Vec<BedLine>,
     /// Source feature id hash → (corridor, segment index within it).
     by_source: HashMap<u64, (CorridorId, u32)>,
+}
+
+/// One street's bed: its centerline and the half-width held flat.
+pub struct BedLine {
+    pub pts: Vec<Coord>,
+    pub half_width_m: f64,
 }
 
 impl SceneGraph {
@@ -313,6 +324,7 @@ impl SceneGraph {
             junctions: Vec::new(),
             road_junctions: Vec::new(),
             water: Vec::new(),
+            beds: Vec::new(),
             by_source,
         }
     }

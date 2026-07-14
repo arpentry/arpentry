@@ -316,6 +316,17 @@ the scenario table (§4).
     plate's disk (`BakedJunction::trim_radius_m`, endpoint and pass-through
     cases alike), tucked `BAND_TUCK_M` under the mouth so no ground sliver
     can open.
+  - *Increment 3 — street beds (done 2026-07-15).* The terrain raster and
+    the road network are independent datasets; the engineered ground
+    reconciles them (GENERATION.md D3, invariant 1). Every unclaimed
+    drivable road benches the ground under its carriageway: earthwork
+    edges whose targets are the *natural* ground sampled at the
+    centerline — flat across, natural grade along. The rendered lattice
+    is far coarser than a street, so at the reference zoom the drape
+    (paint, band, markings, street plates) rides the exact bed
+    (`Earthworks::target_at`) instead of the tilted in-cell
+    interpolation; coarser zooms keep the per-zoom surface, whose corners
+    the bench pulls toward the bed wherever the lattice can see it.
   - *Remaining:* absorb the plates and bands into one unioned surface per
     junction (today they abut mouth-to-mouth); `road_flags` ingestion.
 - **P3 — Longitudinal paint.** The marking baker and the client decal
