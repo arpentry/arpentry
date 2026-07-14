@@ -118,8 +118,9 @@ pub fn ribbon(
 /// footprint), returning the pieces that remain — the whole line when no disk
 /// touches it. Handles both a line *ending* at a junction and one passing
 /// through it (a through leg). Pieces shorter than [`MIN_PIECE_M`] are
-/// dropped; the plate covers them.
-fn trim_line(line: &LineString, disks: &[(Coord, f64)]) -> Vec<LineString> {
+/// dropped; the plate covers them. Shared with the marking generator, whose
+/// painted lines stop at the same plates.
+pub(crate) fn trim_line(line: &LineString, disks: &[(Coord, f64)]) -> Vec<LineString> {
     let pts = &line.0;
     if pts.len() < 2 {
         return Vec::new();

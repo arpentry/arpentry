@@ -322,6 +322,17 @@ the scenario table (§4).
   pipeline: centre/lane/edge lines as procedural-dash strips, stop lines,
   zebra crosswalks (procedural stripes registered to R7's carriageway
   span).
+  - *Increment 1 — the solid lines (done 2026-07-14).* Markings bake as
+    ordinary narrow line features of class `marking`
+    (`server/src/synth/markings.rs`), drawn by the existing stroke
+    pipeline at physical width over the road paint — no client change,
+    one style entry. The ladder paints a centre line on two-way
+    primary/secondary/tertiary and edge lines on motorway/trunk, offset
+    from the *raw* centerline (an offset of the densified line wobbles),
+    trimmed at the junction plates, stubs under `MIN_LINE_M` dropped.
+  - *Remaining:* dashed lane lines and symbols (the global-phase `s`
+    machinery of H4); distance fade — sub-texel lines shimmer at grazing
+    angles; stop lines and zebra crosswalks from `crosswalk` segments.
 - **P4 — Symbols.** The MSDF atlas: gore chevrons from diverge geometry;
   crossing glyphs where `cycle_crossing` meets a carriageway. Turn arrows
   are deferred — the schema carries no turn data (P0); they wait on an

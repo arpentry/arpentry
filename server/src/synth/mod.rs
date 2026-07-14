@@ -12,6 +12,7 @@
 //! plain, never something wrong.
 
 pub mod junction;
+pub mod markings;
 pub mod road;
 pub mod structure;
 pub mod surface;

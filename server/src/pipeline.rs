@@ -764,14 +764,19 @@ fn stamp_synth(
         } else {
             Vec::new()
         };
-    let mut bands = Vec::new();
+    let mut extras = Vec::new();
     for f in &mut buckets[layers::TRANSPORTATION as usize] {
+        // Markings read the raw centerline (an offset of the densified line
+        // wobbles) and bake themselves; appended after every stroke, they
+        // paint over the carriageway in draw order.
+        let marks = synth::markings::lines(f, sampler, solved, z, bounds, &near);
         synth::emit(f, sampler, solved, z, bounds);
         if let Some(band) = synth::surface::ribbon(f, sampler, solved, z, bounds, &near) {
-            bands.push(band);
+            extras.push(band);
         }
+        extras.extend(marks);
     }
-    buckets[layers::TRANSPORTATION as usize].extend(bands);
+    buckets[layers::TRANSPORTATION as usize].extend(extras);
 }
 
 /// Phase-1 worker: drains row-group work items from the queue, streams their

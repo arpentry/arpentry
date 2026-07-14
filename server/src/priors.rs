@@ -189,6 +189,34 @@ pub const ROAD_SURFACE_MIN_ZOOM: u8 = 13;
 /// still lifts the band over the terrain it drapes on.
 pub const SURFACE_SINK_M: f64 = 0.05;
 
+/// First zoom that paints longitudinal road markings (docs/ROADS.md P3).
+/// Deeper than the surface band's zoom: a 12 cm line is sub-pixel until the
+/// camera is close.
+pub const MARKING_MIN_ZOOM: u8 = 15;
+
+/// Painted line widths in metres (Swiss norms run 0.10–0.15 m) and how far
+/// the edge line's centre sits in from the carriageway edge.
+pub const CENTRE_LINE_WIDTH_M: f64 = 0.12;
+pub const EDGE_LINE_WIDTH_M: f64 = 0.15;
+pub const EDGE_LINE_INSET_M: f64 = 0.30;
+
+/// The marking ladder (docs/ROADS.md §6.5): which longitudinal lines a class
+/// paints. The data never says (marking style is almost never mapped), so
+/// the ladder is a prior: engineered classes paint a centre line between
+/// opposing flows and edge lines at the carriageway edge; a quiet street
+/// paints nothing. A one-way carriageway (each half of a dual carriageway,
+/// every ramp) has no opposing flow and therefore no centre line.
+pub fn has_centre_line(class: &str, oneway: bool) -> bool {
+    !oneway && matches!(class, "primary" | "secondary" | "tertiary")
+}
+
+pub fn has_edge_lines(class: &str) -> bool {
+    // Edge lines only on the motorway network: on lower classes they crowd
+    // the centre line into clutter at street widths, and in-town carriageway
+    // edges are curbs, not painted lines.
+    matches!(class, "motorway" | "trunk")
+}
+
 /// Half-width of a pier column: a fraction of the deck half-width, clamped to
 /// plausible column sizes.
 pub fn pier_half_width_m(deck_half_width_m: f64) -> f64 {
