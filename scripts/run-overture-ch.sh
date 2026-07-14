@@ -109,7 +109,7 @@ while [ $# -gt 0 ]; do
         --screenshot)    SCREENSHOT="$2"; shift 2 ;;
         --bbox)          BBOX="$2"; shift 2 ;;
         --min-zoom)      MIN_ZOOM="$2"; shift 2 ;;
-        --max-zoom)      MAX_ZOOM="$2"; shift 2 ;;
+        --max-zoom)      MAX_ZOOM="$2"; MAX_ZOOM_SET=true; shift 2 ;;
         --lon)           LON="$2"; shift 2 ;;
         --lat)           LAT="$2"; shift 2 ;;
         --alt)           ALT="$2"; shift 2 ;;
@@ -132,6 +132,12 @@ if [ -n "$ZONE" ]; then
     ARCHIVE="$DATA_DIR/preview.arpa"
     FORCE_TILE=true
     SKIP_DOWNLOAD=true
+    # A preview exists to inspect detail: default to the detail zooms, where
+    # the surface bands (z13+) and the painted markings (z15+, see
+    # priors::MARKING_MIN_ZOOM) live. A small bbox keeps z16 cheap.
+    if [ "${MAX_ZOOM_SET:-false}" != true ]; then
+        MAX_ZOOM=16
+    fi
     # Prefer the local high-res DEM for a crisp preview, then the planet extract,
     # else flat — but never extract over HTTP (that is the slow part we skip).
     if [ "$USE_TERRAIN" = true ] && [ -z "$TERRAIN_FILE" ]; then
