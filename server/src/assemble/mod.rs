@@ -34,8 +34,9 @@ const END_AT_EPS: f64 = 1e-3;
 
 /// Attribute columns the assemble stage reads. The scalar ones become the
 /// styling properties re-emitted with every piece of the segment (matching
-/// what the tiling phase reads for transportation); `level_rules` and
-/// `connectors` are consumed here.
+/// what the tiling phase reads for transportation); `level_rules`,
+/// `road_flags` (the `is_bridge`/`is_tunnel` fallback where no level rule is
+/// mapped — see `crate::levels`), and `connectors` are consumed here.
 const ATTRS: &[&str] = &[
     "id",
     "type",
@@ -44,6 +45,7 @@ const ATTRS: &[&str] = &[
     "subclass",
     "names.primary",
     "level_rules",
+    "road_flags",
     "connectors",
     "width_rules",
     "road_surface",

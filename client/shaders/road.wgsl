@@ -40,6 +40,13 @@ struct GlobalUniforms {
 // widens ones already broader than the floor, so head-on roads are unchanged.
 const MIN_HALF_WIDTH_PX: f32 = 2.0;
 
+// Strokes physically narrower than this half-width (metres) are painted
+// detail — centre/edge/lane markings, 6–8 cm — not roads. The width floor
+// must not apply to them: floored, a distant 12 cm dash renders as a solid
+// road-wide bar and flickers against the band and terrain. They fade out by
+// their true screen coverage instead, like ink thinning with distance.
+const DETAIL_HALF_WIDTH_M: f32 = 0.2;
+
 struct TileUniforms {
     model: mat4x4<f32>,
     bounds: vec4<f32>,
@@ -152,6 +159,7 @@ fn tile_to_world(qx: f32, qy: f32, alt: f32) -> vec4<f32> {
     // instead of collapsing to a sub-pixel sliver. Keep the true position when
     // p.w <= 0 (behind the eye) so the clip stays well-formed.
     var screen_xy = p.xy;
+    var fade = 1.0;
     if (p.w > 1e-4) {
         let pc = globals.projection * tile_to_world(f32(cxy.x), f32(cxy.y), alt);
         if (pc.w > 1e-4) {
@@ -160,7 +168,12 @@ fn tile_to_world(qx: f32, qy: f32, alt: f32) -> vec4<f32> {
             let v_ndc = p.xy / p.w;
             let off_px = (v_ndc - c_ndc) * 0.5 * vp;
             let len_px = length(off_px);
-            if (len_px > 1e-4 && len_px < MIN_HALF_WIDTH_PX) {
+            if (hw_len.x < DETAIL_HALF_WIDTH_M) {
+                // Painted detail: never floored. Fade by true screen coverage
+                // so a distant dash thins away instead of blobbing to the
+                // floor width and fighting the surfaces beneath it.
+                fade = clamp(len_px / MIN_HALF_WIDTH_PX, 0.0, 1.0);
+            } else if (len_px > 1e-4 && len_px < MIN_HALF_WIDTH_PX) {
                 let widened = c_ndc + (v_ndc - c_ndc) * (MIN_HALF_WIDTH_PX / len_px);
                 screen_xy = widened * p.w;
             }
@@ -168,7 +181,7 @@ fn tile_to_world(qx: f32, qy: f32, alt: f32) -> vec4<f32> {
     }
 
     out.pos = vec4<f32>(screen_xy, ps.z / ps.w * p.w, p.w);
-    out.color = color;
+    out.color = vec4<f32>(color.rgb, color.a * fade);
     out.local = local;
     out.hw_len = hw_len;
     return out;

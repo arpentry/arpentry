@@ -74,7 +74,11 @@ pub fn build(
         let unclaimed = prop_str(&f.properties, "id")
             .is_none_or(|id| !claimed(crate::scene::source_hash(&id)));
         if unclaimed {
-            beds.push(BedLine { pts: pts.clone(), half_width_m: half_w });
+            beds.push(BedLine {
+                pts: pts.clone(),
+                half_width_m: half_w,
+                class: priors::RoadClass::parse(Some(class_str.as_str())),
+            });
         }
         let mut add = |conn: Option<u64>, at: Coord, toward: Coord| {
             if let Some(c) = conn {

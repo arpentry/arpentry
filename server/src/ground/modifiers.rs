@@ -9,14 +9,33 @@
 //! the half-width takes the target, within the feather blends smoothly back to
 //! the natural ground, and beyond it is untouched.
 //!
-//! Where several earthworks overlap (a junction), the *nearest* centerline
-//! wins — a pure function of the query point and the fixed edge set, so any
-//! two tiles (and any two zooms) derive identical ground (invariant 5).
+//! Where several earthworks overlap (a junction, hairpin legs, a street beside
+//! a graded corridor) their targets *blend*: each edge's share is 1 across its
+//! core (the asphalt band) and decays smoothly to zero at the end of its
+//! feather, and the ground takes the share-weighted mean. A winner-take-all
+//! rule here would put a cliff on the winner boundary — and since that
+//! boundary weaves between the sparse vertices of the draped road surface,
+//! the terrain would step through the asphalt mid-chord. The blend keeps the
+//! field continuous, so every consumer (terrain corner, band vertex, paint,
+//! plate) interpolates the same surface. It is a share-weighted sum over a
+//! deterministically ordered edge set — a pure function of the query point,
+//! so any two tiles (and any two zooms) derive identical ground (invariant 5).
 
 use geo_types::Coord;
 
 use crate::assemble::grid::GridIndex;
 use crate::scene::DEG_M;
+
+/// Largest arc gap, in metres, between one chain's consecutive covering
+/// edges that still counts as the same approach. Just above the bed edge
+/// spacing (`BED_SPACING_M` = 30): consecutive covering edges of one
+/// approach sit at most one edge length apart, while even a tight mountain
+/// hairpin's other leg arrives via the turn, farther than this. Splitting a
+/// long-edged straight run is harmless — a point is only covered by edges
+/// within its lateral reach, so split clusters carry near-identical targets
+/// — but *merging* a hairpin resurrects the winner-take-all cliff between
+/// its legs.
+const CLUSTER_GAP_M: f64 = 35.0;
 
 /// One earthwork centerline edge: endpoints with target heights, the
 /// road-height half-width, and the slope reach beyond it.
@@ -26,16 +45,58 @@ pub struct EarthworkEdge {
     pub b: Coord,
     pub target_a: f64,
     pub target_b: f64,
-    /// Held at target within this lateral distance (road + shoulder), metres.
+    /// Held at target within this lateral distance (road + shoulder + the
+    /// rendering margin), metres.
     pub half_width_m: f64,
     /// Smoothstep blend back to natural ground over this further distance.
     pub feather_m: f64,
+    /// The asphalt-band half-width, within which this edge's *share* against
+    /// overlapping earthworks stays 1 — its own road must ride its own
+    /// height. From here the share decays to zero at the feather's end, so
+    /// two benches meeting side by side (hairpin legs, a street beside a
+    /// corridor) ramp into each other across their margins instead of
+    /// stepping on a winner boundary. At most `half_width_m`.
+    pub core_half_m: f64,
+    /// The earthwork run this edge belongs to (one id per corridor or bed).
+    /// Blending happens *across* runs; within one arc-contiguous stretch of a
+    /// run the nearest edge is exact, so consecutive edges of a straight road
+    /// never smear each other's targets along the profile.
+    pub chain: u32,
+    /// Arc position of `a` along the chain, metres — separates a hairpin's
+    /// two legs (far apart along the road, near in space) into distinct
+    /// blending clusters.
+    pub arc0: f64,
     /// `cos(mean latitude)` of the source corridor, for the metric projection.
     pub cos_lat: f64,
     /// Cut-only: the edge may lower the ground to its target but never raise
     /// it — a portal daylighting cut must not build a berm where the natural
     /// ground already sits below the bore floor.
     pub carve: bool,
+}
+
+impl EarthworkEdge {
+    /// The edge's blend weights at lateral distance `d`: the outer envelope
+    /// `w` (1 across the held width, smoothstep to 0 over the feather) and
+    /// the share `q·w` used against overlapping earthworks (`q` is 1 across
+    /// the core and decays quadratically to 0 at the feather's end, so the
+    /// share is strictly positive wherever the envelope is). `None` beyond
+    /// the edge's reach.
+    fn weights(&self, d: f64) -> Option<(f64, f64)> {
+        let reach = self.half_width_m + self.feather_m;
+        if d >= reach {
+            return None;
+        }
+        let w = if d <= self.half_width_m {
+            1.0
+        } else {
+            let u = (d - self.half_width_m) / self.feather_m;
+            1.0 - u * u * (3.0 - 2.0 * u) // smoothstep down
+        };
+        let span = (reach - self.core_half_m).max(f64::MIN_POSITIVE);
+        let u = ((d - self.core_half_m) / span).clamp(0.0, 1.0);
+        let q = (1.0 - u) * (1.0 - u);
+        Some((w, q * w))
+    }
 }
 
 /// The indexed set of earthwork edges with point queries.
@@ -74,27 +135,93 @@ impl Earthworks {
         &self.edges
     }
 
+    /// The blended fill contribution at `(lon, lat)`: the share-weighted mean
+    /// target over the covering *approaches* and the strongest outer
+    /// envelope, or `None` where no fill reaches.
+    ///
+    /// An approach is an arc-contiguous cluster of one chain's covering
+    /// edges, represented by its nearest edge: consecutive edges of a
+    /// straight road collapse to the single exact answer (no smearing of the
+    /// profile along the run), while a hairpin's two legs — the same chain
+    /// arriving from arc positions more than [`CLUSTER_GAP_M`] apart — and
+    /// any other road's bench blend smoothly. Hits are sorted before
+    /// clustering and accumulation, so the float sum — and therefore the
+    /// ground — is identical whatever tile asked (invariant 5).
+    fn fill_blend(&self, lon: f64, lat: f64, scratch: &[u32]) -> Option<(f64, f64)> {
+        // (chain, arc0, d, idx, w, share, target) per covering fill edge.
+        let mut hits: Vec<(u32, f64, f64, u32, f64, f64, f64)> = Vec::new();
+        for &i in scratch {
+            let e = &self.edges[i as usize];
+            if e.carve {
+                continue;
+            }
+            let (d, t) = lateral_distance(e, lon, lat);
+            let Some((w, share)) = e.weights(d) else { continue };
+            let target = e.target_a + (e.target_b - e.target_a) * t;
+            hits.push((e.chain, e.arc0, d, i, w, share, target));
+        }
+        if hits.is_empty() {
+            return None;
+        }
+        hits.sort_unstable_by(|a, b| {
+            a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.3.cmp(&b.3))
+        });
+        let (mut num, mut den, mut outer) = (0.0, 0.0, 0.0f64);
+        // Best edge of the current cluster: (d, idx, w, share, target).
+        let mut best: Option<(f64, u32, f64, f64, f64)> = None;
+        let mut prev: Option<(u32, f64)> = None; // (chain, arc0) of the last hit
+        let mut flush = |b: &Option<(f64, u32, f64, f64, f64)>,
+                         num: &mut f64,
+                         den: &mut f64,
+                         outer: &mut f64| {
+            if let Some((_, _, w, share, target)) = b {
+                *num += share * target;
+                *den += share;
+                *outer = outer.max(*w);
+            }
+        };
+        for (chain, arc0, d, idx, w, share, target) in hits {
+            let same = matches!(prev, Some((pc, pa)) if pc == chain && arc0 - pa <= CLUSTER_GAP_M);
+            if !same {
+                flush(&best, &mut num, &mut den, &mut outer);
+                best = None;
+            }
+            let better = match &best {
+                None => true,
+                Some((bd, bi, _, _, _)) => d < *bd - 1e-9 || ((d - *bd).abs() <= 1e-9 && idx < *bi),
+            };
+            if better {
+                best = Some((d, idx, w, share, target));
+            }
+            prev = Some((chain, arc0));
+        }
+        flush(&best, &mut num, &mut den, &mut outer);
+        (den > 0.0).then(|| (num / den, outer))
+    }
+
     /// The engineered height at `(lon, lat)` given the natural ground `raw`:
-    /// the nearest covering earthwork's target, feather-blended into `raw`.
+    /// the blended fill target, feathered into `raw` by the strongest
+    /// envelope, then cut by any covering carve notch.
     pub fn height(&self, lon: f64, lat: f64, raw: f64, scratch: &mut Vec<u32>) -> f64 {
         self.grid.query((lon, lat, lon, lat), scratch);
-        // The winning contribution: strongest blend weight, then nearest,
-        // then lowest edge index — a total order, so the answer is identical
-        // whatever tile asked.
+        scratch.sort_unstable();
+        let mut h = match self.fill_blend(lon, lat, scratch) {
+            Some((target, outer)) => raw + (target - raw) * outer,
+            None => raw,
+        };
+        // Carves stay winner-take-all (strongest weight, then nearest, then
+        // lowest index — a total order): a notch is a hole, not a surface to
+        // average. Cut-only, applied to the filled ground.
         let mut best: Option<(f64, f64, u32, f64)> = None; // (weight, dist, idx, target)
         for &i in scratch.iter() {
             let e = &self.edges[i as usize];
-            let (d, t) = lateral_distance(e, lon, lat);
-            let w = if d <= e.half_width_m {
-                1.0
-            } else if d <= e.half_width_m + e.feather_m {
-                let u = (d - e.half_width_m) / e.feather_m;
-                1.0 - u * u * (3.0 - 2.0 * u) // smoothstep down
-            } else {
+            if !e.carve {
                 continue;
-            };
+            }
+            let (d, t) = lateral_distance(e, lon, lat);
+            let Some((w, _)) = e.weights(d) else { continue };
             let target = e.target_a + (e.target_b - e.target_a) * t;
-            if e.carve && target >= raw {
+            if target >= h {
                 continue; // nothing to cut here
             }
             let better = match &best {
@@ -108,41 +235,28 @@ impl Earthworks {
                 best = Some((w, d, i, target));
             }
         }
-        match best {
-            Some((w, _, _, target)) => raw + (target - raw) * w,
-            None => raw,
+        if let Some((w, _, _, target)) = best {
+            h += (target - h) * w;
         }
+        h
     }
 
     /// The exact roadbed height at `(lon, lat)` when the point lies fully
-    /// inside a non-carve modifier's held half-width (blend weight 1), else
+    /// inside a non-carve modifier's held half-width (envelope 1), else
     /// `None` — including in the feather, where the ground blends back to
-    /// natural. The road drape rides this at the reference zoom, so the road
-    /// stack is flat across its bed even where the rendered lattice is far
-    /// too coarse to capture the bench (see `synth::road::surface_height`).
-    /// Carve notches (deck daylighting, portal cuts) are not beds.
+    /// natural. The same [`Earthworks::fill_blend`] the terrain reads, so the
+    /// road stack and the drawn ground can never disagree where they overlap.
+    /// The road drape rides this at the reference zoom, where the rendered
+    /// lattice is far too coarse to capture a street-wide bench (see
+    /// `synth::road::surface_height`). Carve notches (deck daylighting,
+    /// portal cuts) are not beds.
     pub fn target_at(&self, lon: f64, lat: f64, scratch: &mut Vec<u32>) -> Option<f64> {
         self.grid.query((lon, lat, lon, lat), scratch);
-        let mut best: Option<(f64, u32, f64)> = None; // (dist, idx, target)
-        for &i in scratch.iter() {
-            let e = &self.edges[i as usize];
-            if e.carve {
-                continue;
-            }
-            let (d, t) = lateral_distance(e, lon, lat);
-            if d > e.half_width_m {
-                continue;
-            }
-            let target = e.target_a + (e.target_b - e.target_a) * t;
-            let better = match &best {
-                None => true,
-                Some((bd, bi, _)) => d < *bd - 1e-9 || ((d - *bd).abs() <= 1e-9 && i < *bi),
-            };
-            if better {
-                best = Some((d, i, target));
-            }
+        scratch.sort_unstable();
+        match self.fill_blend(lon, lat, scratch) {
+            Some((target, outer)) if outer >= 1.0 => Some(target),
+            _ => None,
         }
-        best.map(|(_, _, t)| t)
     }
 }
 
@@ -256,6 +370,9 @@ mod tests {
             target_b: target,
             half_width_m: 8.0,
             feather_m: 10.0,
+            core_half_m: 5.0,
+            chain: 0,
+            arc0: 0.0,
             cos_lat,
             carve: false,
         }
@@ -329,24 +446,61 @@ mod tests {
     }
 
     #[test]
-    fn nearest_earthwork_wins_where_two_overlap() {
+    fn overlapping_earthworks_blend_continuously() {
+        // Two parallel street benches at different heights, close enough that
+        // their margins and feathers overlap — hairpin legs on a slope. The
+        // ground must hold each road's own height across its core, ramp
+        // continuously between them (a winner-take-all step here weaves
+        // between the sparse band vertices and pokes through the asphalt),
+        // and stay consistent with what the road drape reads (`target_at`).
         let mut scratch = Vec::new();
         let cos_lat = 46.0_f64.to_radians().cos();
+        // Street-like edges: band (core) 4.75 m, held 7.75 m, feather 4 m,
+        // centerlines 18 m apart — reaches (11.75 m) overlap mid-gap.
         let mut lower = edge(103.0);
-        // A second, parallel earthwork 12 m north with a different target.
-        let mut upper = edge(110.0);
-        upper.a.y += 12.0 / DEG_M;
-        upper.b.y += 12.0 / DEG_M;
-        lower.feather_m = 20.0;
-        upper.feather_m = 20.0;
+        lower.core_half_m = 4.75;
+        lower.half_width_m = 7.75;
+        lower.feather_m = 4.0;
+        let mut upper = lower;
+        upper.target_a = 110.0;
+        upper.target_b = 110.0;
+        upper.a.y += 18.0 / DEG_M;
+        upper.b.y += 18.0 / DEG_M;
+        upper.chain = 1; // a distinct road (or the far leg of a hairpin)
         let e = Earthworks::new(vec![lower, upper]);
         let mid_x = 6.0 + 80.0 / (DEG_M * cos_lat);
-        // 2 m north of the lower centerline: both cover it at full weight,
-        // the nearer (lower) wins.
-        let h = e.height(mid_x, 46.0 + 2.0 / DEG_M, 100.0, &mut scratch);
-        assert!((h - 103.0).abs() < 1e-9, "nearest centerline must win, got {h}");
-        // 2 m south of the upper centerline: the upper wins.
-        let h = e.height(mid_x, 46.0 + 10.0 / DEG_M, 100.0, &mut scratch);
-        assert!((h - 110.0).abs() < 1e-9, "nearest centerline must win, got {h}");
+        let h_at = |off_m: f64, scratch: &mut Vec<u32>| {
+            e.height(mid_x, 46.0 + off_m / DEG_M, 100.0, scratch)
+        };
+        // On each centerline the other bench is out of reach: own height, exact.
+        assert!((h_at(0.0, &mut scratch) - 103.0).abs() < 1e-9);
+        assert!((h_at(18.0, &mut scratch) - 110.0).abs() < 1e-9);
+        // Across each road's core the bed stays its own (the asphalt is flat).
+        assert!((h_at(4.5, &mut scratch) - 103.0).abs() < 0.35, "lower core must hold its bed");
+        assert!((h_at(13.5, &mut scratch) - 110.0).abs() < 0.35, "upper core must hold its bed");
+        // Mid-gap the ground sits strictly between the two beds.
+        let mid = h_at(9.0, &mut scratch);
+        assert!(mid > 103.5 && mid < 109.5, "the gap must ramp, got {mid}");
+        // Continuity: no cliff anywhere on a transect across both benches (a
+        // winner-take-all boundary would jump the full 7 m in one sample;
+        // steep-but-continuous ramps between 18 m-apart benches are fine).
+        let mut prev = h_at(-14.0, &mut scratch);
+        let mut off = -13.75;
+        while off <= 32.0 {
+            let h = h_at(off, &mut scratch);
+            assert!(
+                (h - prev).abs() < 2.0,
+                "step of {:.2} m at {off} m — the blend must be continuous",
+                (h - prev).abs()
+            );
+            prev = h;
+            off += 0.25;
+        }
+        // The road drape reads the same field: inside the held width,
+        // target_at equals the drawn ground exactly.
+        let probe = 46.0 + 6.5 / DEG_M; // inside lower's held width, upper's feather
+        let t = e.target_at(mid_x, probe, &mut scratch).expect("inside a held width");
+        let h = e.height(mid_x, probe, 100.0, &mut scratch);
+        assert!((t - h).abs() < 1e-9, "drape {t} and ground {h} must agree");
     }
 }

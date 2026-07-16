@@ -12,9 +12,10 @@
 //! that ends at the junction — that solved below it is lifted to meet it with a
 //! [`Profile::raise_crest`] ramp, decaying back to its own grade inland. The
 //! weld is raise-only, so stacked constraints compose and it never pushes a
-//! road down through a clearance it already earned; a demand beyond
-//! [`MAX_JUNCTION_WELD_M`] is dropped as a data contradiction (the connector
-//! links roads that do not in fact meet at one height).
+//! road down through a clearance it already earned; a demand beyond what the
+//! leg can climb at its ramp grade over its own length (or beyond the
+//! [`MAX_JUNCTION_WELD_M`] ceiling) is dropped as a data contradiction (the
+//! connector links roads that do not in fact meet at one height).
 //!
 //! It reconciles genuine disagreements at a shared connector; it does not by
 //! itself undo a cap-split that dips a through-structure (there both halves dip
@@ -73,12 +74,20 @@ fn weld(scene: &SceneGraph, j: &Junction, profiles: &mut [Option<Profile>]) {
             continue; // a through road holds its own profile
         }
         let deficit = target - h;
-        if deficit <= WELD_TOL_M || deficit > MAX_JUNCTION_WELD_M {
-            continue; // already aligned, or an implausible demand: trust the profile
+        if deficit <= WELD_TOL_M {
+            continue; // already aligned
         }
         let m = &j.members[mi];
-        let grade =
-            scene.corridors[m.corridor as usize].class.grade_limit().unwrap_or(RAMP_GRADE);
+        let c = &scene.corridors[m.corridor as usize];
+        // A link (ramp) is engineered to the steeper approach grade whatever
+        // its class; a mainline leg keeps its own ceiling.
+        let grade = if c.link { RAMP_GRADE } else { c.class.grade_limit().unwrap_or(RAMP_GRADE) };
+        // Plausibility: the leg must be able to climb the deficit within its
+        // own run at that grade (a 300 m ramp meets a 16 m-high viaduct; a
+        // 50 m stub cannot), under the absolute interchange-height ceiling.
+        if deficit > (grade * c.total()).min(MAX_JUNCTION_WELD_M) {
+            continue; // an implausible demand: trust the profile
+        }
         let Some(p) = profiles[m.corridor as usize].as_mut() else { continue };
         // A point crest at the leg's end: lift it to the target and ramp back
         // to its own grade inland (lo == hi == the end arc).
@@ -163,6 +172,72 @@ mod tests {
             (ramp.road_at_arc(len) - 373.0).abs() < 0.5,
             "the far end must stay at grade, got {}",
             ramp.road_at_arc(len)
+        );
+    }
+
+    #[test]
+    fn a_long_ramp_welds_up_to_a_tall_viaduct() {
+        // The Montreux defect: a 300 m connector solved 16 m under the viaduct
+        // it merges onto — beyond the old flat 12 m cap, but well within what
+        // a ramp climbs at RAMP_GRADE over 300 m. The weld must fire.
+        let len = 300.0;
+        let n = 101;
+        let main = corridor(0, 6.0, 800.0, n);
+        let mut ramp = corridor(1, 6.02, len, n);
+        ramp.link = true;
+        let point = main.nodes[n / 2];
+        let scene = {
+            let mut s = SceneGraph::new(vec![main, ramp]);
+            s.junctions = vec![Junction {
+                point,
+                connector: 0,
+                members: vec![
+                    JunctionMember { corridor: 0, arc: 400.0 },
+                    JunctionMember { corridor: 1, arc: 0.0 },
+                ],
+            }];
+            s
+        };
+        let m = scene.corridors[0].nodes.clone();
+        let r = scene.corridors[1].nodes.clone();
+        let mut profiles = vec![Some(Profile::flat(&m, 493.0)), Some(Profile::flat(&r, 477.0))];
+        apply(&scene, &mut profiles);
+        assert!(
+            (profiles[1].as_ref().unwrap().road_at_arc(0.0) - 493.0).abs() < 0.5,
+            "a 16 m demand within the ramp's climbing capacity must weld, got {}",
+            profiles[1].as_ref().unwrap().road_at_arc(0.0)
+        );
+    }
+
+    #[test]
+    fn a_stub_that_cannot_climb_the_deficit_is_dropped() {
+        // A 60 m link stub 16 m under the through road: even at RAMP_GRADE it
+        // could only climb ~5 m over its whole run — the connector links roads
+        // that do not meet at one height, so the weld is dropped.
+        let n = 31;
+        let main = corridor(0, 6.0, 800.0, n);
+        let mut stub = corridor(1, 6.02, 60.0, n);
+        stub.link = true;
+        let point = main.nodes[n / 2];
+        let scene = {
+            let mut s = SceneGraph::new(vec![main, stub]);
+            s.junctions = vec![Junction {
+                point,
+                connector: 0,
+                members: vec![
+                    JunctionMember { corridor: 0, arc: 400.0 },
+                    JunctionMember { corridor: 1, arc: 0.0 },
+                ],
+            }];
+            s
+        };
+        let m = scene.corridors[0].nodes.clone();
+        let r = scene.corridors[1].nodes.clone();
+        let mut profiles = vec![Some(Profile::flat(&m, 493.0)), Some(Profile::flat(&r, 477.0))];
+        apply(&scene, &mut profiles);
+        assert!(
+            (profiles[1].as_ref().unwrap().road_at_arc(0.0) - 477.0).abs() < 1e-6,
+            "a demand beyond the stub's climbing capacity must be dropped"
         );
     }
 

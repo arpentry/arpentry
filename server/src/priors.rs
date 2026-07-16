@@ -42,6 +42,22 @@ impl RoadClass {
         }
     }
 
+    /// Longitudinal grade cap for a street *bed* (the bench the ground stage
+    /// cuts for an unclaimed road, D3) — how fast the bench may climb along
+    /// the street. Unlike [`RoadClass::grade_limit`] this is not a solver
+    /// ceiling: the bed smoothing it feeds is clamped to stay within
+    /// [`BED_MAX_DEVIATION_M`] of the natural ground, so a street that
+    /// genuinely climbs still climbs (S9) — the cap only irons the sample
+    /// noise and terraces a raw DEM drape throws up between bed nodes.
+    pub fn bed_grade(self) -> f64 {
+        match self {
+            RoadClass::Motorway | RoadClass::Trunk => 0.06,
+            RoadClass::Primary => 0.08,
+            RoadClass::Secondary => 0.10,
+            RoadClass::Minor => 0.15,
+        }
+    }
+
     /// Half-width in metres of a swept structure box — bigger roads, bigger
     /// structures. Overture maps each carriageway of a dual carriageway (and
     /// each ramp) as its own segment, so these are *per-carriageway* widths,
@@ -194,6 +210,34 @@ pub const SURFACE_SINK_M: f64 = 0.05;
 /// along the road at this resolution.
 pub const BED_SPACING_M: f64 = 30.0;
 
+/// How far a smoothed bed target may leave the natural ground at its own
+/// centerline node, in metres. The budget that keeps [`RoadClass::bed_grade`]
+/// honest: within it the bench irons DEM noise flat, beyond it the terrain is
+/// trusted and the bench follows the slope (S9).
+pub const BED_MAX_DEVIATION_M: f64 = 2.5;
+
+/// Widest DEM notch, in metres of road arc, that a mapped at-grade road is
+/// assumed to span on engineered fill (a culvert, an embankment, a small
+/// retaining structure) rather than dive through. Gullies, stream cuts, and
+/// shadow artifacts under real roads image as narrow V's in a surface DEM;
+/// the road existed first — ground continuity across it was engineered.
+/// Wider valleys are genuine descents and keep the terrain.
+pub const NOTCH_SPAN_M: f64 = 60.0;
+
+/// Deepest per-notch fill the closing may build, in metres. A notch deeper
+/// than this under an at-grade road is a data contradiction (a gorge owed a
+/// mapped bridge, or a DEM blunder): the terrain is trusted and the road
+/// keeps its raw profile there — the same trust cap the clearance solver
+/// applies ([`MAX_CLEARANCE_LIFT_M`]).
+pub const NOTCH_FILL_MAX_M: f64 = 15.0;
+
+/// Largest reconciliation applied where street beds share an endpoint
+/// connector (or meet a solved corridor), in metres. Within it the meeting
+/// beds are welded to one height so no step crosses the junction; a larger
+/// disagreement is a data contradiction and the beds are left apart rather
+/// than dragged.
+pub const BED_WELD_MAX_M: f64 = 3.0;
+
 /// First zoom that paints longitudinal road markings (docs/ROADS.md P3).
 /// Deeper than the surface band's zoom: a 12 cm line is sub-pixel until the
 /// camera is close.
@@ -273,6 +317,17 @@ pub const EARTHWORK_MIN_FEATHER_M: f64 = 2.0;
 /// road height (the shoulder) before the slope starts.
 pub const EARTHWORK_SHOULDER_M: f64 = 1.0;
 
+/// Flat margin beyond the shoulder that a road earthwork keeps at road
+/// height before the batter starts — a rendering allowance, not engineering:
+/// the detail-zoom lattice ([`crate::terrain::TERRAIN_GRID_DETAIL`]) samples
+/// the ground at ~3–5 m spacing, so a corner just outside the bench would
+/// otherwise interpolate natural hillside up across the band edge and poke
+/// through the asphalt on a steep flank. About one detail cell keeps every
+/// corner whose triangle touches the band on (or within the batter's reach
+/// of) the bed. Carve notches (portal cuts, deck daylighting) stay at the
+/// engineering width — a wider notch would eat the abutment it daylights.
+pub const EARTHWORK_MARGIN_M: f64 = 3.0;
+
 /// Thickness of a bridge deck slab in metres — deck surface to its underside.
 pub const DECK_THICKNESS_M: f64 = 1.5;
 
@@ -337,10 +392,23 @@ pub const STRUCTURE_BOX_MAX_M: f64 = 300.0;
 /// (`client/shaders/road.wgsl` `ROAD_DEPTH_MARGIN_M`).
 pub const MAX_ROAD_DEVIATION_M: f64 = 8.0;
 
-/// Shortest bridge/tunnel span that is lifted/sunk as a structure. Below this a
-/// span (a footbridge, a few-metre covered stretch) stays at grade — baking a
-/// deck on it only leaves a tiny box floating over the hill.
+/// Shortest bridge/tunnel span that is *unconditionally* a structure. A
+/// shorter span faces a terrain test in the solve stage
+/// (`solve::reconcile_short_spans`): it stays a structure only where the
+/// ground genuinely falls away (rises) under it by more than
+/// [`SHORT_STRUCTURE_DIP_M`] — a 25 m bridge over a deep stream gully keeps
+/// its deck instead of demoting to grade and diving through the cut, while a
+/// footbridge annotation on near-flat ground still drapes (baking a deck on
+/// it only leaves a tiny box floating over the hill).
 pub const MIN_STRUCTURE_M: f64 = 40.0;
+
+/// Smallest mid-span departure of the terrain from the span's end-to-end
+/// chord (metres) that makes a sub-[`MIN_STRUCTURE_M`] span a real structure:
+/// below it, at-grade draping (and the notch closing) carries the road just
+/// as well, and the tiny deck would read as a floating box. Sized like
+/// [`ABUTMENT_MAX_GAP_M`] — the gap under a deck end that still reads as
+/// "landed".
+pub const SHORT_STRUCTURE_DIP_M: f64 = 3.0;
 
 /// A grade sliver shorter than this (metres), sandwiched between two structure
 /// spans, is treated as an annotation-edge mismatch rather than real at-grade
@@ -377,12 +445,15 @@ pub const WATER_LEVEL_PCTL: f64 = 0.3;
 
 /// Highest a junction weld may lift a corridor's leg to meet the road it joins
 /// (invariant 2): a ramp diverging from an elevated flyover is pulled up to the
-/// deck it leaves. A demand beyond this means the shared connector links roads
-/// that do not in fact meet at one height (a mapping error, or a leg that
-/// climbs to its own structure elsewhere); the weld is dropped and the leg
-/// keeps its solved profile — the same "trust the profile over the inferred
-/// constraint" the clearance caps use.
-pub const MAX_JUNCTION_WELD_M: f64 = 12.0;
+/// deck it leaves. The operative plausibility test is the leg's own climbing
+/// capacity (its length times its ramp grade — a leg cannot meet a deck it
+/// cannot climb to); this constant is the absolute ceiling above it, sized to
+/// the tallest single-level interchange ramp. A demand beyond either means the
+/// shared connector links roads that do not in fact meet at one height (a
+/// mapping error, or a leg that climbs to its own structure elsewhere); the
+/// weld is dropped and the leg keeps its solved profile — the same "trust the
+/// profile over the inferred constraint" the clearance caps use.
+pub const MAX_JUNCTION_WELD_M: f64 = 25.0;
 
 /// Longest chain of segments joined into one corridor, in metres. Corridors
 /// longer than this are split; junction-continuity constraints (solve stage)

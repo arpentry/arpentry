@@ -33,7 +33,7 @@ use geo_types::{Coord, Geometry, LineString, MultiLineString};
 use crate::ground::sampler::GroundSampler;
 use crate::project::{self, Bounds};
 use crate::solve::{self, Profile};
-use crate::terrain::TERRAIN_GRID;
+use crate::terrain;
 use crate::tile_build::EncoderFeature;
 
 /// Target sub-segment length when densifying a ground road, in quantized tile
@@ -84,8 +84,9 @@ pub fn bake(
         profile.and_then(|p| p.smooth_at(c.x, c.y, PAINT_SNAP_MAX_M)).unwrap_or(c)
     };
     let seg_q = if profile.is_some() { CORRIDOR_SEGMENT_Q } else { ROAD_SEGMENT_Q };
+    let grid = terrain::grid_for(z, z_ref);
     if let Some((geom, zs)) =
-        densify_with_surface(&f.geometry, bounds, seg_q, &mut snap, &mut height)
+        densify_with_surface(&f.geometry, bounds, grid, seg_q, &mut snap, &mut height)
     {
         f.geometry = geom;
         f.z = Some(zs);
@@ -149,20 +150,21 @@ pub(crate) fn surface_height(
 fn densify_with_surface(
     g: &Geometry,
     bounds: &Bounds,
+    grid: u32,
     seg_q: f64,
     snap: &mut dyn FnMut(Coord) -> Coord,
     height: &mut dyn FnMut(f64, f64) -> f64,
 ) -> Option<(Geometry, Vec<i32>)> {
     match g {
         Geometry::LineString(ls) => {
-            let (xy, zs) = densify_road_line(ls, bounds, seg_q, snap, height);
+            let (xy, zs) = densify_road_line(ls, bounds, grid, seg_q, snap, height);
             (xy.len() >= 2).then_some((Geometry::LineString(LineString(xy)), zs))
         }
         Geometry::MultiLineString(mls) => {
             let mut parts = Vec::new();
             let mut zs = Vec::new();
             for ls in &mls.0 {
-                let (xy, z) = densify_road_line(ls, bounds, seg_q, snap, height);
+                let (xy, z) = densify_road_line(ls, bounds, grid, seg_q, snap, height);
                 if xy.len() >= 2 {
                     parts.push(LineString(xy));
                     zs.extend(z);
@@ -197,6 +199,7 @@ fn densify_with_surface(
 fn densify_road_line(
     line: &LineString,
     bounds: &Bounds,
+    grid: u32,
     seg_q: f64,
     snap: &mut dyn FnMut(Coord) -> Coord,
     height: &mut dyn FnMut(f64, f64) -> f64,
@@ -239,7 +242,7 @@ fn densify_road_line(
     for w in anchors.windows(2) {
         let (p0, p1) = (w[0], w[1]);
         ts.clear();
-        lattice_crossings(p0, p1, bounds, &mut ts);
+        lattice_crossings(p0, p1, bounds, grid, &mut ts);
         ts.sort_by(f64::total_cmp);
         ts.push(1.0);
         let mut prev = 0.0;
@@ -262,8 +265,8 @@ fn densify_road_line(
 /// crosses a line of the tile's rendered-terrain lattice: a vertical cell
 /// edge, a horizontal cell edge, or the cells' shared SW–NE diagonal (the
 /// split [`crate::terrain::surface_height`] and the drawn mesh both use).
-fn lattice_crossings(p0: Coord, p1: Coord, bounds: &Bounds, out: &mut Vec<f64>) {
-    let grid = TERRAIN_GRID as f64;
+fn lattice_crossings(p0: Coord, p1: Coord, bounds: &Bounds, grid: u32, out: &mut Vec<f64>) {
+    let grid = grid.max(1) as f64;
     let (cw, ch) = (bounds.width() / grid, bounds.height() / grid);
     let g0x = (p0.x - bounds.west) / cw;
     let g1x = (p1.x - bounds.west) / cw;
@@ -300,9 +303,11 @@ fn quant_len(a: Coord, b: Coord, bounds: &Bounds) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terrain::{TERRAIN_GRID, TERRAIN_GRID_DETAIL};
 
-    #[test]
-    fn drape_samples_land_on_every_lattice_crossing() {
+    /// Densifies the test line at `grid` and asserts a vertex lands on every
+    /// vertical cell edge and on the diagonals the span crosses.
+    fn assert_crossings_at(grid: u32) {
         // A west→east line off the lattice rows: densification must place a
         // vertex exactly on every cell edge and diagonal it crosses, so no
         // chord spans a triangle break and the drape stays on the drawn
@@ -312,21 +317,21 @@ mod tests {
         let (x0, x1) = (b.west + 0.30 * b.width(), b.west + 0.70 * b.width());
         let line = LineString(vec![Coord { x: x0, y: cy }, Coord { x: x1, y: cy }]);
         let (xy, zs) =
-            densify_road_line(&line, &b, ROAD_SEGMENT_Q, &mut |c| c, &mut |_, _| 0.0);
+            densify_road_line(&line, &b, grid, ROAD_SEGMENT_Q, &mut |c| c, &mut |_, _| 0.0);
         assert_eq!(xy.len(), zs.len());
 
-        let cw = b.width() / TERRAIN_GRID as f64;
-        for k in 0..=TERRAIN_GRID {
+        let cw = b.width() / grid as f64;
+        for k in 0..=grid {
             let edge = b.west + k as f64 * cw;
             if edge > x0 + 1e-12 && edge < x1 - 1e-12 {
                 assert!(
                     xy.iter().any(|c| (c.x - edge).abs() < 1e-9 * b.width()),
-                    "expected a sample on vertical cell edge {k}"
+                    "expected a sample on vertical cell edge {k} of grid {grid}"
                 );
             }
         }
-        // Diagonal crossings: gx − gy passes 6 integers over this span.
-        let ch = b.height() / TERRAIN_GRID as f64;
+        // Diagonal crossings: gx − gy passes ~0.4·grid integers over this span.
+        let ch = b.height() / grid as f64;
         let on_diagonal = xy
             .iter()
             .filter(|c| {
@@ -334,7 +339,21 @@ mod tests {
                 (g - g.round()).abs() < 1e-7
             })
             .count();
-        assert!(on_diagonal >= 6, "expected samples on cell diagonals, got {on_diagonal}");
+        let expected = (grid as usize * 4) / 10;
+        assert!(
+            on_diagonal >= expected,
+            "expected ≥{expected} samples on grid-{grid} cell diagonals, got {on_diagonal}"
+        );
+    }
+
+    #[test]
+    fn drape_samples_land_on_every_lattice_crossing() {
+        assert_crossings_at(TERRAIN_GRID);
+    }
+
+    #[test]
+    fn drape_samples_land_on_every_detail_lattice_crossing() {
+        assert_crossings_at(TERRAIN_GRID_DETAIL);
     }
 
     #[test]
@@ -353,8 +372,14 @@ mod tests {
         // diagonal crossing well off its line if snapping ran after insertion.
         let dy = 0.02 * b.height();
         let mut snap = |c: Coord| Coord { x: c.x, y: c.y + dy };
-        let (xy, _) =
-            densify_road_line(&line, &b, ROAD_SEGMENT_Q, &mut snap, &mut |_, _| 0.0);
+        let (xy, _) = densify_road_line(
+            &line,
+            &b,
+            TERRAIN_GRID,
+            ROAD_SEGMENT_Q,
+            &mut snap,
+            &mut |_, _| 0.0,
+        );
 
         let cw = b.width() / TERRAIN_GRID as f64;
         let ch = b.height() / TERRAIN_GRID as f64;

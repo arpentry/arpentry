@@ -303,10 +303,12 @@ pub struct SceneGraph {
     by_source: HashMap<u64, (CorridorId, u32)>,
 }
 
-/// One street's bed: its centerline and the half-width held flat.
+/// One street's bed: its centerline, the half-width held flat, and the road
+/// class keying the bench's grade cap ([`RoadClass::bed_grade`]).
 pub struct BedLine {
     pub pts: Vec<Coord>,
     pub half_width_m: f64,
+    pub class: RoadClass,
 }
 
 impl SceneGraph {

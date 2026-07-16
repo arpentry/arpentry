@@ -295,6 +295,7 @@ impl Iterator for Features {
             };
             let mut properties = Vec::new();
             let mut level_runs = Vec::new();
+            let mut flag_runs = Vec::new();
             let mut connectors = Vec::new();
             for (name, arr) in &cur.resolved {
                 // Overture's bridge/tunnel signal is `level_rules`, a
@@ -304,6 +305,13 @@ impl Iterator for Features {
                 // (see `crate::levels`), and skip the scalar property path.
                 if name == "level_rules" {
                     level_runs = crate::levels::parse(arr.as_ref(), row);
+                    continue;
+                }
+                // `road_flags` carries the same structure signal as flags
+                // (`is_bridge`/`is_tunnel`); a substantial share of structures
+                // have only the flag, no `level_rules` (see `crate::levels`).
+                if name == "road_flags" {
+                    flag_runs = crate::levels::parse_flags(arr.as_ref(), row);
                     continue;
                 }
                 // `connectors` is likewise nested: the graph topology the
@@ -338,6 +346,12 @@ impl Iterator for Features {
                 if let Some(v) = array_value(arr.as_ref(), row) {
                     properties.push((name.clone(), v));
                 }
+            }
+            // Where `level_rules` said nothing, the flags stand in: a
+            // flagged-only bridge still earns its structure span. Where both
+            // exist the rules win — they carry real ordinals (stacked decks).
+            if level_runs.is_empty() {
+                level_runs = flag_runs;
             }
             return Some(Ok(Feature { geometry, properties, level_runs, connectors }));
         }

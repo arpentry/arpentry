@@ -24,6 +24,7 @@ pub fn write(
     fs::write(dir.join("corridors.geojson"), corridors_geojson(scene).to_string())?;
     fs::write(dir.join("crossings.geojson"), crossings_geojson(scene).to_string())?;
     fs::write(dir.join("underpasses.geojson"), underpasses_geojson(scene).to_string())?;
+    fs::write(dir.join("junctions.geojson"), junctions_geojson(scene, solved).to_string())?;
     fs::write(dir.join("profiles.geojson"), profiles_geojson(scene, solved).to_string())?;
     fs::write(dir.join("smooth.geojson"), smooth_geojson(scene, solved).to_string())?;
     fs::write(dir.join("earthworks.geojson"), earthworks_geojson(ground).to_string())?;
@@ -45,6 +46,35 @@ fn underpasses_geojson(scene: &SceneGraph) -> Json {
                     "over": u.over,
                     "over_level": u.over_level,
                 },
+            })
+        })
+        .collect();
+    json!({ "type": "FeatureCollection", "features": features })
+}
+
+/// The corridor junctions: one Point each, with every member's corridor, arc,
+/// and *welded* road height — the residual disagreement between members is the
+/// continuity defect the junction weld left behind.
+fn junctions_geojson(scene: &SceneGraph, solved: &SolvedModel) -> Json {
+    let features: Vec<Json> = scene
+        .junctions
+        .iter()
+        .map(|j| {
+            let members: Vec<Json> = j
+                .members
+                .iter()
+                .map(|m| {
+                    let road = solved
+                        .profile(m.corridor)
+                        .map(|p| json!(p.road_at_arc(m.arc)))
+                        .unwrap_or(Json::Null);
+                    json!({ "corridor": m.corridor, "arc": m.arc, "road_m": road })
+                })
+                .collect();
+            json!({
+                "type": "Feature",
+                "geometry": { "type": "Point", "coordinates": [j.point.x, j.point.y] },
+                "properties": { "connector": j.connector, "members": members },
             })
         })
         .collect();

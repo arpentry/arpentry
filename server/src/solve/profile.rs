@@ -29,7 +29,9 @@
 
 use geo_types::Coord;
 
-use crate::priors::{MAX_ROAD_DEVIATION_M, MIN_EARTHWORK_M, PORTAL_MAX_M};
+use crate::priors::{
+    MAX_ROAD_DEVIATION_M, MIN_EARTHWORK_M, NOTCH_FILL_MAX_M, NOTCH_SPAN_M, PORTAL_MAX_M,
+};
 use crate::scene::{metric_len, run_cos_lat, Span, SpanKind, DEG_M};
 
 /// Target spacing in metres after densification, used both to sample the road
@@ -183,6 +185,12 @@ pub fn solve(
         return None;
     }
     let terrain: Vec<f64> = nodes.iter().map(|c| elev(*c)).collect();
+    // The road's anchor surface: the terrain with its narrow notches filled
+    // ([`close_notches`]) — a mapped at-grade road spans a gully on
+    // engineered fill instead of diving through the DEM's image of it. The
+    // raw `terrain` keeps every structural read (rim seeking, daylighting,
+    // pier footing, the earthworks' cut/fill depths).
+    let road_ref = close_notches(&arc, &terrain);
     let mut at_grade: Vec<bool> =
         arc.iter().map(|&a| kind_at(spans, a) == SpanKind::Grade).collect();
     let mut road_m;
@@ -197,8 +205,8 @@ pub fn solve(
         // steep, genuine) pitches.
         seek_rim_anchors(&arc, &terrain, &mut at_grade);
         let solve_once = |road_m: &mut Vec<f64>, at_grade: &[bool]| {
-            *road_m = road_profile(&arc, &terrain, at_grade);
-            limit_road_grade(&arc, road_m, &terrain, at_grade, g);
+            *road_m = road_profile(&arc, &road_ref, at_grade);
+            limit_road_grade(&arc, road_m, &road_ref, at_grade, g);
             rechord_structures(&arc, road_m, at_grade);
         };
         road_m = Vec::new();
@@ -219,7 +227,7 @@ pub fn solve(
             solve_once(&mut road_m, &at_grade);
         }
     } else {
-        road_m = road_profile(&arc, &terrain, &at_grade);
+        road_m = road_profile(&arc, &road_ref, &at_grade);
     }
     // Round the engineered profile's grade breaks (abutments, cut/fill kinks)
     // into gentle vertical curves. Engineered classes only: an unengineered
@@ -227,7 +235,7 @@ pub fn solve(
     // the terrain. Runs before the deck ramp so decks stay straight, and before
     // portals/ground read the profile so their gap zero-crossings stay exact.
     if max_grade.is_some() {
-        smooth_vgrades(&arc, &mut road_m, &terrain, &at_grade);
+        smooth_vgrades(&arc, &mut road_m, &road_ref, &at_grade);
     }
     let deck_m = deck_ramp(&arc, &road_m, &at_grade);
     let smooth = smooth_path(&spline_path(raw, &params, cos_lat));
@@ -845,6 +853,86 @@ fn nearest_edge(nodes: &[Coord], cos_lat: f64, lo: usize, hi: usize, p: Coord) -
     (best_i, best_t)
 }
 
+/// The terrain profile with its narrow notches filled — the anchor surface a
+/// mapped at-grade road actually rides. A surface DEM images the gully, the
+/// stream cut, or the tree-shadow artifact *under* a road as a sharp V; the
+/// road existed first, so ground continuity across it was engineered (fill
+/// and a culvert, a retaining wall) and the road must not dive in and out.
+/// Morphological closing along the arc: a running max then a running min
+/// over ±[`NOTCH_SPAN_M`]/2, which fills every valley narrower than the span
+/// to its rims and passes bumps, ramps, and wide valleys through untouched
+/// (`closed ≥ h` everywhere, equality outside the notches). A notch whose
+/// fill would exceed [`NOTCH_FILL_MAX_M`] is a genuine descent — or a gorge
+/// owed a mapped bridge — so that run keeps the raw terrain; the reversion
+/// is per contiguous run and the closing already meets the terrain at the
+/// run's edges, so no step appears.
+pub fn close_notches(arc: &[f64], h: &[f64]) -> Vec<f64> {
+    let n = h.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let r = NOTCH_SPAN_M * 0.5;
+    // Pad each end with one edge-replicated virtual node at ±r: the erosion
+    // window at a profile end is otherwise half-open and cannot recover the
+    // dilation there, so an ascending start would read as half a "notch" and
+    // lift by slope·r. With the pad, closing is identity on monotone ground
+    // right up to the ends; a genuine dip touching an end stays unfilled
+    // (conservative — its rim is off the profile, so no fill is provable).
+    let mut pa = Vec::with_capacity(n + 2);
+    let mut ph = Vec::with_capacity(n + 2);
+    pa.push(arc[0] - r);
+    ph.push(h[0]);
+    pa.extend_from_slice(arc);
+    ph.extend_from_slice(h);
+    pa.push(arc[n - 1] + r);
+    ph.push(h[n - 1]);
+    let dilated = window_fold(&pa, &ph, r, f64::max);
+    let closed_padded = window_fold(&pa, &dilated, r, f64::min);
+    let mut closed: Vec<f64> = closed_padded[1..=n].to_vec();
+    let mut i = 0;
+    while i < n {
+        if closed[i] - h[i] <= 1e-6 {
+            closed[i] = h[i];
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut deepest = 0.0f64;
+        while i < n && closed[i] - h[i] > 1e-6 {
+            deepest = deepest.max(closed[i] - h[i]);
+            i += 1;
+        }
+        if deepest > NOTCH_FILL_MAX_M {
+            for k in start..i {
+                closed[k] = h[k];
+            }
+        }
+    }
+    closed
+}
+
+/// `fold` of `h` over the arc window ±`r` around each node. The window is
+/// tiny (a handful of nodes), so the inner scan is cheap.
+fn window_fold(arc: &[f64], h: &[f64], r: f64, fold: fn(f64, f64) -> f64) -> Vec<f64> {
+    let n = h.len();
+    let mut out = Vec::with_capacity(n);
+    let (mut lo, mut hi) = (0usize, 0usize);
+    for i in 0..n {
+        while arc[lo] < arc[i] - r {
+            lo += 1;
+        }
+        while hi < n && arc[hi] <= arc[i] + r {
+            hi += 1;
+        }
+        let mut v = h[lo];
+        for &x in &h[lo + 1..hi] {
+            v = fold(v, x);
+        }
+        out.push(v);
+    }
+    out
+}
+
 /// The road elevation at each node: terrain at the anchors (at-grade nodes and
 /// structure boundaries), and a straight interpolation between the bounding
 /// anchors across each structure. The corridor endpoints are always anchors,
@@ -1387,6 +1475,63 @@ mod tests {
         // The rounded apex stays below the original corner (a crest curve pulls
         // in) but well within the deviation budget.
         assert!(road[10] <= 112.0 + 1e-9 && road[10] > 100.0);
+    }
+
+    #[test]
+    fn close_notches_fills_narrow_and_keeps_deep() {
+        // 11 nodes, 30 m apart; a single-node 25 m-deep dip at arc 150.
+        let arc: Vec<f64> = (0..11).map(|i| i as f64 * 30.0).collect();
+        let mut h = vec![500.0; 11];
+        h[5] = 475.0;
+        let closed = close_notches(&arc, &h);
+        assert_eq!(closed[5], 475.0, "a 25 m notch is past the fill cap");
+        // A shallow 8 m dip: filled to the rim.
+        h[5] = 492.0;
+        let closed = close_notches(&arc, &h);
+        assert_eq!(closed[5], 500.0, "an 8 m notch must fill");
+        // A ramp passes through untouched (closing is identity on monotone).
+        let ramp: Vec<f64> = arc.iter().map(|a| 400.0 + a * 0.2).collect();
+        let closed = close_notches(&arc, &ramp);
+        for (c, r) in closed.iter().zip(&ramp) {
+            assert!((c - r).abs() < 1e-9, "a ramp must close to itself");
+        }
+        // A bump is never cut (closing only fills).
+        let mut bump = vec![500.0; 11];
+        bump[5] = 512.0;
+        let closed = close_notches(&arc, &bump);
+        assert_eq!(closed[5], 512.0, "closing must not shave bumps");
+    }
+
+    #[test]
+    fn an_unengineered_road_spans_a_narrow_notch() {
+        // A draped (no grade ceiling) road across a 40 m-wide, 10 m-deep DEM
+        // notch — the image of a gully the real road crosses on fill and a
+        // culvert. The solved road must carry across at rim height, not dive
+        // through the V; the wide terrain elsewhere is followed as before.
+        let (seg, len) = line(128, 0.01);
+        let mid = seg[64].x;
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let terrain = move |c: Coord| {
+            let dm = (c.x - mid).abs() * cos_lat * DEG_M;
+            if dm < 20.0 { 500.0 - 10.0 * (1.0 - dm / 20.0) } else { 500.0 }
+        };
+        let nodes: Vec<Coord> = seg.clone();
+        let p = solve(&nodes, &[span(0.0, len, 0)], None, &mut |c| terrain(c))
+            .expect("a profile");
+        let road = p.height_at(mid, 46.0);
+        assert!(
+            (road - 500.0).abs() < 0.75,
+            "the road must span the notch at rim height, got {road}"
+        );
+        // A gorge deeper than the fill cap keeps the terrain: genuine descent.
+        let gorge = move |c: Coord| {
+            let dm = (c.x - mid).abs() * cos_lat * DEG_M;
+            if dm < 25.0 { 500.0 - 25.0 * (1.0 - dm / 25.0) } else { 500.0 }
+        };
+        let p = solve(&nodes, &[span(0.0, len, 0)], None, &mut |c| gorge(c))
+            .expect("a profile");
+        let road = p.height_at(mid, 46.0);
+        assert!(road < 490.0, "a gorge past the fill cap keeps the terrain, got {road}");
     }
 
     #[test]

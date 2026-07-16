@@ -15,6 +15,7 @@
 pub mod modifiers;
 pub mod sampler;
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -22,10 +23,11 @@ use geo_types::Coord;
 
 use crate::dem::Dem;
 use crate::priors::{
-    DECK_THICKNESS_M, EARTHWORK_BATTER, EARTHWORK_MIN_FEATHER_M, EARTHWORK_SHOULDER_M,
-    MAX_CLEARANCE_LIFT_M, MIN_EARTHWORK_M, PORTAL_CLEARANCE_M, PORTAL_CUT_LEN_M, WATER_LEVEL_PCTL,
+    BED_MAX_DEVIATION_M, BED_WELD_MAX_M, DECK_THICKNESS_M, EARTHWORK_BATTER,
+    EARTHWORK_MARGIN_M, EARTHWORK_MIN_FEATHER_M, EARTHWORK_SHOULDER_M, MAX_CLEARANCE_LIFT_M,
+    MIN_EARTHWORK_M, PORTAL_CLEARANCE_M, PORTAL_CUT_LEN_M, WATER_LEVEL_PCTL,
 };
-use crate::scene::{SceneGraph, SpanKind};
+use crate::scene::{SceneGraph, SpanKind, DEG_M};
 use crate::solve::{portals, reference_surface, SolvedModel};
 
 use modifiers::{EarthworkEdge, Earthworks, WaterFill, Waters};
@@ -105,7 +107,12 @@ pub fn derive(
         let road = p.road_m();
         let terrain = p.terrain_m();
         let at_grade = p.at_grade();
+        let arcs = p.arc();
+        // Carves keep the engineering width; the road bench adds the flat
+        // rendering margin so the detail lattice cannot interpolate natural
+        // ground up across the band edge (see EARTHWORK_MARGIN_M).
         let half_width = c.class.half_width_m(c.link) + EARTHWORK_SHOULDER_M;
+        let bench_half_width = half_width + EARTHWORK_MARGIN_M;
 
         let needs = |i: usize| at_grade[i] && (road[i] - terrain[i]).abs() > MIN_EARTHWORK_M;
         let mut i = 0;
@@ -129,8 +136,11 @@ pub fn derive(
                     b: nodes[k + 1],
                     target_a: road[k],
                     target_b: road[k + 1],
-                    half_width_m: half_width,
+                    half_width_m: bench_half_width,
                     feather_m: (EARTHWORK_BATTER * lift).max(EARTHWORK_MIN_FEATHER_M),
+                    core_half_m: half_width,
+                    chain: c.id,
+                    arc0: arcs[k],
                     cos_lat: crate::scene::run_cos_lat(&[nodes[k], nodes[k + 1]]),
                     carve: false,
                 });
@@ -147,7 +157,6 @@ pub fn derive(
         // the occlusion to work. A bump deeper than [`MAX_CLEARANCE_LIFT_M`]
         // is a data contradiction (a "bridge" through a real hill): the
         // terrain is trusted and the deck stays buried.
-        let arcs = p.arc();
         for span in c.spans.iter().filter(|s| s.kind == SpanKind::Bridge) {
             let s0 = arcs.partition_point(|&a| a < span.arc0);
             let s1 = arcs.partition_point(|&a| a <= span.arc1);
@@ -182,6 +191,9 @@ pub fn derive(
                         target_b: road[k + 1] - DECK_THICKNESS_M - PORTAL_CLEARANCE_M,
                         half_width_m: half_width,
                         feather_m: (EARTHWORK_BATTER * depth).max(EARTHWORK_MIN_FEATHER_M),
+                        core_half_m: half_width,
+                        chain: c.id,
+                        arc0: arcs[k],
                         cos_lat: crate::scene::run_cos_lat(&[nodes[k], nodes[k + 1]]),
                         carve: true,
                     });
@@ -206,6 +218,9 @@ pub fn derive(
                 target_b: portal.floor_m,
                 half_width_m: c.class.half_width_m(c.link) + EARTHWORK_SHOULDER_M,
                 feather_m: EARTHWORK_MIN_FEATHER_M,
+                core_half_m: c.class.half_width_m(c.link) + EARTHWORK_SHOULDER_M,
+                chain: c.id,
+                arc0: portal.arc,
                 cos_lat: crate::scene::run_cos_lat(&[a, b]),
                 carve: true,
             });
@@ -216,12 +231,36 @@ pub fn derive(
     GroundModel { earthworks: Earthworks::new(edges), waters }
 }
 
+/// Relaxation passes for [`smooth_bed_targets`] — the same alternating
+/// forward/backward sweep count `limit_road_grade` uses.
+const BED_GRADE_PASSES: usize = 8;
+
+/// One street's bed before welding: the densified centerline, its cumulative
+/// arc, the smoothed per-node targets, and the per-node feather reach.
+struct BedProfile {
+    nodes: Vec<Coord>,
+    arc: Vec<f64>,
+    targets: Vec<f64>,
+    feathers: Vec<f64>,
+    /// Held flat at target: the band half-width plus the rendering margin.
+    half_width_m: f64,
+    /// The band half-width — this street's own share stays 1 across it when
+    /// benches overlap (`EarthworkEdge::core_half_m`).
+    core_half_m: f64,
+    /// The earthwork chain id (`EarthworkEdge::chain`), unique across
+    /// corridors and beds; assigned by `derive_beds`.
+    chain: u32,
+    max_grade: f64,
+    cos_lat: f64,
+}
+
 /// The bed earthworks for the unclaimed street network (D3): each street's
-/// bed holds the *natural* ground height sampled at its own centerline —
-/// flat across the carriageway, following the terrain's grade along — so the
-/// two independent datasets (terrain raster, road network) agree wherever a
-/// road lies. Parallelized like the water pass: sampling scattered
-/// centerlines is DEM-decode bound.
+/// bed holds the natural ground height of its own centerline — flat across
+/// the carriageway, grade-limited along it — so the two independent datasets
+/// (terrain raster, road network) agree wherever a road lies. Profiles are
+/// built in parallel (sampling scattered centerlines is DEM-decode bound),
+/// then welded serially where beds share an endpoint connector, so no step
+/// crosses a street junction.
 fn derive_beds(
     scene: &SceneGraph,
     solved: &SolvedModel,
@@ -239,10 +278,11 @@ fn derive_beds(
         return Vec::new(); // no DEM: nothing to bench against
     };
     let z_ref = solved.z_ref;
+    let chain_base = scene.corridors.len() as u32;
     let n = beds.len();
     let threads = threads.max(1).min(n);
     let next = Mutex::new(0usize);
-    let out: Mutex<Vec<Option<Vec<EarthworkEdge>>>> = Mutex::new((0..n).map(|_| None).collect());
+    let out: Mutex<Vec<Option<BedProfile>>> = Mutex::new((0..n).map(|_| None).collect());
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {
@@ -258,58 +298,274 @@ fn derive_beds(
                         i
                     };
                     let b = &beds[i];
-                    let edges = bed_edges(&b.pts, b.half_width_m, &mut |c| {
-                        reference_surface(&mut dem, z_ref, c.x, c.y)
+                    // The bed holds flat to the band edge plus the rendering
+                    // margin, so the detail lattice cannot pull natural
+                    // hillside across the street's edge (EARTHWORK_MARGIN_M).
+                    let profile = bed_profile(
+                        &b.pts,
+                        b.half_width_m,
+                        EARTHWORK_MARGIN_M,
+                        b.class.bed_grade(),
+                        &mut |c| reference_surface(&mut dem, z_ref, c.x, c.y),
+                    )
+                    // Chain ids continue past the corridors', so a bed and a
+                    // corridor can never collapse into one blending cluster.
+                    .map(|mut p| {
+                        p.chain = chain_base + i as u32;
+                        p
                     });
-                    out.lock().expect("bed edges poisoned")[i] = Some(edges);
+                    out.lock().expect("bed profiles poisoned")[i] = profile;
                 }
             });
         }
     });
+    let mut profiles: Vec<BedProfile> =
+        out.into_inner().expect("bed profiles poisoned").into_iter().flatten().collect();
+    weld_bed_endpoints(&mut profiles, &corridor_node_heights(scene, solved));
     // Flatten in bed order, so the edge indices — and the modifier
     // tie-breaking they feed — are deterministic run to run (invariant 5).
-    out.into_inner().expect("bed edges poisoned").into_iter().flatten().flatten().collect()
+    profiles.iter().flat_map(bed_profile_edges).collect()
 }
 
-/// One street's bed edges: the centerline subdivided to
-/// [`crate::priors::BED_SPACING_M`], each node's target sampled from the
-/// natural ground at the node itself. The sampler is injected so the shape is
-/// testable without a DEM.
-fn bed_edges(
+/// One street's bed profile: the centerline subdivided to
+/// [`crate::priors::BED_SPACING_M`], each node's target the natural ground at
+/// the node itself, grade-limited along the street, with the feather reach
+/// scaled to the cut/fill depth at the bench edge. The bench holds flat to
+/// the band half-width plus `margin_m`. The sampler is injected so the shape
+/// is testable without a DEM.
+fn bed_profile(
     pts: &[Coord],
-    half_width_m: f64,
+    band_half_m: f64,
+    margin_m: f64,
+    max_grade: f64,
     sample: &mut impl FnMut(Coord) -> f64,
-) -> Vec<EarthworkEdge> {
+) -> Option<BedProfile> {
     if pts.len() < 2 {
-        return Vec::new();
+        return None;
     }
+    let half_width_m = band_half_m + margin_m;
     let cos_lat = crate::scene::run_cos_lat(pts);
     // Subdivide long edges so the targets track the terrain along the road.
     let mut nodes: Vec<Coord> = vec![pts[0]];
+    let mut arc: Vec<f64> = vec![0.0];
     for w in pts.windows(2) {
         let len_m = crate::scene::metric_len(w[0], w[1], cos_lat);
         let n = (len_m / crate::priors::BED_SPACING_M).ceil().max(1.0) as usize;
         for k in 1..=n {
             let t = k as f64 / n as f64;
-            nodes.push(Coord {
+            let c = Coord {
                 x: w[0].x + (w[1].x - w[0].x) * t,
                 y: w[0].y + (w[1].y - w[0].y) * t,
-            });
+            };
+            arc.push(arc.last().expect("non-empty arc") + crate::scene::metric_len(
+                *nodes.last().expect("non-empty nodes"),
+                c,
+                cos_lat,
+            ));
+            nodes.push(c);
         }
     }
-    let targets: Vec<f64> = nodes.iter().map(|&c| sample(c)).collect();
-    nodes
+    let natural: Vec<f64> = nodes.iter().map(|&c| sample(c)).collect();
+    // The bed's reference is the notch-closed profile, not the raw DEM: a
+    // street annotated across a gully was engineered over it (fill and a
+    // culvert), so the bed — and the deviation budget that anchors the
+    // grade smoothing — carries across at rim height instead of diving in.
+    let reference = crate::solve::profile::close_notches(&arc, &natural);
+    let mut targets = reference.clone();
+    smooth_bed_targets(&arc, &mut targets, &reference, max_grade);
+    // The feather reach comes from the cut/fill depth at the *bench edge*: on
+    // a cross-slope the deepest face is at ±half-width, not the centerline.
+    // The batter then daylights the face at a plausible slope instead of the
+    // fixed-minimum cliff a deep bench would otherwise end in.
+    let feathers: Vec<f64> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
+            let (ux, uy) = bed_heading(&nodes, i, cos_lat);
+            let (px, py) = (-uy, ux); // lateral unit, metric
+            let mut side = |s: f64| {
+                sample(Coord {
+                    x: c.x + s * px * half_width_m / (DEG_M * cos_lat),
+                    y: c.y + s * py * half_width_m / DEG_M,
+                })
+            };
+            let t = targets[i];
+            let depth = (t - side(1.0))
+                .abs()
+                .max((t - side(-1.0)).abs())
+                .max((t - natural[i]).abs());
+            (EARTHWORK_BATTER * depth).max(EARTHWORK_MIN_FEATHER_M)
+        })
+        .collect();
+    Some(BedProfile {
+        nodes,
+        arc,
+        targets,
+        feathers,
+        half_width_m,
+        core_half_m: band_half_m,
+        chain: 0,
+        max_grade,
+        cos_lat,
+    })
+}
+
+/// Unit heading of the bed at node `i` in the metric (east, north) frame:
+/// the direction of the segment the node starts (the last node borrows the
+/// segment it ends).
+fn bed_heading(nodes: &[Coord], i: usize, cos_lat: f64) -> (f64, f64) {
+    let (a, b) = if i + 1 < nodes.len() { (nodes[i], nodes[i + 1]) } else { (nodes[i - 1], nodes[i]) };
+    let dx = (b.x - a.x) * cos_lat;
+    let dy = b.y - a.y;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-15 {
+        (1.0, 0.0)
+    } else {
+        (dx / len, dy / len)
+    }
+}
+
+/// Holds the bed to its class's grade while keeping it within
+/// [`BED_MAX_DEVIATION_M`] of the natural centerline ground —
+/// `limit_road_grade`'s relaxation with no pinned nodes. The deviation clamp
+/// runs last, so the ground-hugging budget always holds and the grade is
+/// best-effort where the street genuinely climbs faster (S9).
+fn smooth_bed_targets(arc: &[f64], targets: &mut [f64], natural: &[f64], max_grade: f64) {
+    let n = targets.len();
+    if n < 2 {
+        return;
+    }
+    let to_natural = |t: &mut [f64], i: usize| {
+        t[i] = t[i].clamp(natural[i] - BED_MAX_DEVIATION_M, natural[i] + BED_MAX_DEVIATION_M);
+    };
+    let to_grade = |t: &mut [f64], i: usize, nb: usize| {
+        let cap = max_grade * (arc[i] - arc[nb]).abs();
+        t[i] = t[i].clamp(t[nb] - cap, t[nb] + cap);
+    };
+    for pass in 0..=BED_GRADE_PASSES {
+        // The last pass is always forward; each node is grade-clamped then
+        // pulled back inside the deviation budget, so that bound holds on exit.
+        if pass % 2 == 0 || pass == BED_GRADE_PASSES {
+            for i in 1..n {
+                to_grade(targets, i, i - 1);
+                to_natural(targets, i);
+            }
+        } else {
+            for i in (0..n - 1).rev() {
+                to_grade(targets, i, i + 1);
+                to_natural(targets, i);
+            }
+        }
+    }
+}
+
+/// A bed endpoint's exact-coordinate key. Overture splits roads at connectors
+/// and every segment repeats the connector's coordinate verbatim, so meeting
+/// endpoints share the same bits — no tolerance needed.
+fn coord_key(c: Coord) -> (u64, u64) {
+    (c.x.to_bits(), c.y.to_bits())
+}
+
+/// The solved road height at every corridor node that bounds a segment (the
+/// connector coordinates a street bed can share), for welding street beds to
+/// the engineered network they end on.
+fn corridor_node_heights(
+    scene: &SceneGraph,
+    solved: &SolvedModel,
+) -> HashMap<(u64, u64), f64> {
+    let mut heights = HashMap::new();
+    for c in &scene.corridors {
+        let Some(p) = solved.profile(c.id) else { continue };
+        for seg in &c.segments {
+            for &i in &[seg.node0, seg.node1] {
+                let node = c.nodes[i as usize];
+                heights.entry(coord_key(node)).or_insert_with(|| p.height_at(node.x, node.y));
+            }
+        }
+    }
+    heights
+}
+
+/// Junction continuity for beds (the street mirror of the corridor weld):
+/// where independently smoothed beds share an endpoint they are pulled to one
+/// height — the solved corridor's road height when the connector belongs to
+/// the engineered network, else the mean of the meeting targets. A member
+/// whose required shift exceeds [`BED_WELD_MAX_M`] keeps its own height (the
+/// disagreement is a data contradiction, not a weldable seam). The correction
+/// decays into the bed's interior at its own grade cap, so the weld adds no
+/// kink of its own.
+fn weld_bed_endpoints(beds: &mut [BedProfile], corridor_heights: &HashMap<(u64, u64), f64>) {
+    // endpoint key → the (bed, side) pairs meeting there, in bed order.
+    let mut groups: HashMap<(u64, u64), Vec<(usize, usize)>> = HashMap::new();
+    for (i, b) in beds.iter().enumerate() {
+        if b.nodes.len() < 2 {
+            continue;
+        }
+        groups.entry(coord_key(b.nodes[0])).or_default().push((i, 0));
+        groups.entry(coord_key(*b.nodes.last().expect("non-empty bed"))).or_default().push((i, 1));
+    }
+    let mut shifts: Vec<(usize, usize, f64)> = Vec::new();
+    for (key, members) in &groups {
+        let corridor = corridor_heights.get(key);
+        if members.len() < 2 && corridor.is_none() {
+            continue; // a dead end: nothing to reconcile
+        }
+        let endpoint = |&(i, side): &(usize, usize)| -> f64 {
+            let b = &beds[i];
+            if side == 0 { b.targets[0] } else { *b.targets.last().expect("non-empty targets") }
+        };
+        // The engineered network's height wins where present; otherwise the
+        // meeting beds agree on their mean.
+        let weld = match corridor {
+            Some(&h) => h,
+            None => members.iter().map(endpoint).sum::<f64>() / members.len() as f64,
+        };
+        for m in members {
+            let delta = weld - endpoint(m);
+            if delta.abs() <= BED_WELD_MAX_M {
+                shifts.push((m.0, m.1, delta));
+            }
+        }
+    }
+    // Apply after collecting: every delta is computed against pre-weld
+    // targets, so the outcome is independent of group iteration order.
+    for (i, side, delta) in shifts {
+        let b = &mut beds[i];
+        let total = *b.arc.last().expect("non-empty arc");
+        if total <= 0.0 {
+            continue;
+        }
+        // Decay over the run the grade cap needs to absorb the shift, clamped
+        // to the bed itself so the far endpoint stays exact.
+        let len = (delta.abs() / b.max_grade).clamp(f64::MIN_POSITIVE, total);
+        for k in 0..b.targets.len() {
+            let d = if side == 0 { b.arc[k] } else { total - b.arc[k] };
+            let w = (1.0 - d / len).max(0.0);
+            b.targets[k] += delta * w;
+        }
+    }
+}
+
+/// A bed profile flattened to its earthwork edges. Feather is the max of the
+/// edge's two node reaches, matching the per-edge lift `derive` uses.
+fn bed_profile_edges(b: &BedProfile) -> Vec<EarthworkEdge> {
+    b.nodes
         .windows(2)
-        .zip(targets.windows(2))
-        .filter(|(w, _)| w[0] != w[1])
-        .map(|(w, h)| EarthworkEdge {
+        .zip(b.targets.windows(2))
+        .zip(b.feathers.windows(2))
+        .zip(b.arc.windows(2))
+        .filter(|(((w, _), _), _)| w[0] != w[1])
+        .map(|(((w, h), f), s)| EarthworkEdge {
             a: w[0],
             b: w[1],
             target_a: h[0],
             target_b: h[1],
-            half_width_m,
-            feather_m: EARTHWORK_MIN_FEATHER_M,
-            cos_lat,
+            half_width_m: b.half_width_m,
+            feather_m: f[0].max(f[1]),
+            core_half_m: b.core_half_m,
+            chain: b.chain,
+            arc0: s[0],
+            cos_lat: b.cos_lat,
             carve: false,
         })
         .collect()
@@ -535,7 +791,9 @@ mod tests {
             Coord { x: 6.0 + 100.0 / (DEG_M * cos_lat), y: 46.0 },
         ];
         let slope = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M;
-        let edges = bed_edges(&pts, 4.75, &mut |c| slope(c));
+        let profile = bed_profile(&pts, 4.75, 0.0, RoadClass::Minor.bed_grade(), &mut |c| slope(c))
+            .expect("a bed profile from a two-point street");
+        let edges = bed_profile_edges(&profile);
         // 100 m at 30 m spacing → four edges, targets at the centerline height.
         assert_eq!(edges.len(), 4);
         assert!(edges.iter().all(|e| (e.target_a - 400.0).abs() < 1e-9));
@@ -557,6 +815,182 @@ mod tests {
         let far = 46.0 + 30.0 / DEG_M;
         let raw = slope(Coord { x: mid_x, y: far });
         assert_eq!(ew.height(mid_x, far, raw, &mut scratch), raw);
+    }
+
+    /// A street along rough steep ground: the bed irons the DEM's terraces to
+    /// its class grade while never leaving the deviation budget — a bench that
+    /// climbs plausibly instead of staircasing (S9 both ways).
+    #[test]
+    fn a_steep_rough_street_bed_is_grade_limited() {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let len_m = 600.0;
+        let deg = len_m / (DEG_M * cos_lat);
+        let pts =
+            vec![Coord { x: 6.0, y: 46.0 }, Coord { x: 6.0 + deg, y: 46.0 }];
+        // A 10 % mean climb with ±2 m terrace noise every ~60 m — steeper than
+        // the minor grade cap in the noisy stretches.
+        let rough = |c: Coord| {
+            let x = (c.x - 6.0) / deg * len_m;
+            400.0 + 0.10 * x + 2.0 * (x / 60.0 * std::f64::consts::PI).sin()
+        };
+        let p = bed_profile(&pts, 4.75, 0.0, RoadClass::Minor.bed_grade(), &mut |c| rough(c))
+            .expect("a bed profile");
+        let max_grade = RoadClass::Minor.bed_grade();
+        for i in 1..p.targets.len() {
+            let run = p.arc[i] - p.arc[i - 1];
+            let pitch = (p.targets[i] - p.targets[i - 1]).abs() / run;
+            assert!(pitch <= max_grade + 1e-9, "bed pitch {pitch} exceeds the grade cap");
+        }
+        // Deviation is budgeted against the notch-closed reference (the bed
+        // may ride over the DEM's dips), and the bed never digs below the
+        // natural ground by more than the budget.
+        let natural: Vec<f64> = p.nodes.iter().map(|&c| rough(c)).collect();
+        let reference = crate::solve::profile::close_notches(&p.arc, &natural);
+        for i in 0..p.targets.len() {
+            let dev = (p.targets[i] - reference[i]).abs();
+            assert!(dev <= BED_MAX_DEVIATION_M + 1e-9, "bed leaves the reference by {dev} m");
+            assert!(
+                p.targets[i] >= natural[i] - BED_MAX_DEVIATION_M - 1e-9,
+                "the bed must never dive below the ground budget"
+            );
+        }
+        // The bench still climbs the hill: the ends stay ~60 m apart.
+        let climb = p.targets.last().unwrap() - p.targets[0];
+        assert!(climb > 50.0, "the bed must climb with its street, got {climb}");
+    }
+
+    /// A street across a narrow gully — the DEM images the stream cut, the
+    /// road crosses it on fill and a culvert: the bed holds rim height across
+    /// instead of diving in and out (the "road falls into holes" disease).
+    #[test]
+    fn a_street_spans_a_narrow_gully() {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let len_m = 300.0;
+        let deg = len_m / (DEG_M * cos_lat);
+        let pts = vec![Coord { x: 6.0, y: 46.0 }, Coord { x: 6.0 + deg, y: 46.0 }];
+        // Flat ground at 500 m with a 60 m-wide, 8 m-deep V-notch mid-street
+        // (wide enough that the ~27 m bed nodes sample well inside it).
+        let gully = |c: Coord| {
+            let x = (c.x - 6.0) / deg * len_m;
+            500.0 - (1.0 - ((x - 150.0) / 30.0).abs()).max(0.0) * 8.0
+        };
+        let p = bed_profile(&pts, 4.75, 0.0, RoadClass::Minor.bed_grade(), &mut |c| gully(c))
+            .expect("a bed profile");
+        // The DEM genuinely dips at the sampled nodes…
+        let dips = p.nodes.iter().any(|&c| gully(c) < 496.0);
+        assert!(dips, "the fixture must sample inside the gully");
+        // …but the bed carries across at rim height.
+        for (i, &t) in p.targets.iter().enumerate() {
+            assert!(
+                (t - 500.0).abs() < 0.75,
+                "the bed must span the gully at rim height, got {t} at arc {}",
+                p.arc[i]
+            );
+        }
+        // A gorge deeper than the fill cap is a genuine descent: the bed
+        // keeps the terrain (no 40 m embankment wall from thin air).
+        let gorge = |c: Coord| {
+            let x = (c.x - 6.0) / deg * len_m;
+            500.0 - (1.0 - ((x - 150.0) / 40.0).abs()).max(0.0) * 40.0
+        };
+        let p = bed_profile(&pts, 4.75, 0.0, RoadClass::Minor.bed_grade(), &mut |c| gorge(c))
+            .expect("a bed profile");
+        let deepest = p
+            .targets
+            .iter()
+            .zip(&p.nodes)
+            .map(|(&t, &c)| t - gorge(c))
+            .fold(f64::NEG_INFINITY, f64::max);
+        let mid = p.arc.iter().position(|&a| (a - 150.0).abs() < 16.0).expect("a mid node");
+        assert!(
+            p.targets[mid] < 495.0,
+            "a gorge past the fill cap keeps the terrain, got {} (max lift {deepest})",
+            p.targets[mid]
+        );
+    }
+
+    /// A deep cut's feather scales with the bench-edge depth (the batter), and
+    /// floors at the fixed minimum on flat ground.
+    #[test]
+    fn bed_feather_scales_with_cut_depth() {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let pts = vec![
+            Coord { x: 6.0, y: 46.0 },
+            Coord { x: 6.0 + 100.0 / (DEG_M * cos_lat), y: 46.0 },
+        ];
+        // A 2 m/m side-slope: at ±4.75 m the ground is 9.5 m off the bed.
+        let steep = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M * 2.0;
+        let p = bed_profile(&pts, 4.75, 0.0, RoadClass::Minor.bed_grade(), &mut |c| steep(c))
+            .expect("a bed profile");
+        let expected = EARTHWORK_BATTER * 2.0 * 4.75;
+        for &f in &p.feathers {
+            assert!((f - expected).abs() < 1e-6, "feather {f} must be the batter {expected}");
+        }
+        // Flat ground: the fixed minimum.
+        let p = bed_profile(&pts, 4.75, 0.0, RoadClass::Minor.bed_grade(), &mut |_| 400.0)
+            .expect("a bed profile");
+        assert!(p.feathers.iter().all(|&f| f == EARTHWORK_MIN_FEATHER_M));
+    }
+
+    /// Two beds sharing an endpoint connector on disagreeing terrain weld to
+    /// one height there: no step crosses the junction.
+    #[test]
+    fn beds_meeting_at_a_node_agree() {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let deg = 200.0 / (DEG_M * cos_lat);
+        let shared = Coord { x: 6.0, y: 46.0 };
+        // One street arrives from the west on ground at 400 m, the other
+        // leaves east on ground 2 m higher — the DEM disagrees with itself
+        // across the connector at bed-node resolution.
+        let west = vec![Coord { x: 6.0 - deg, y: 46.0 }, shared];
+        let east = vec![shared, Coord { x: 6.0 + deg, y: 46.0 }];
+        let grade = RoadClass::Minor.bed_grade();
+        let mut profiles = vec![
+            bed_profile(&west, 4.75, 0.0, grade, &mut |_| 400.0).expect("west bed"),
+            bed_profile(&east, 4.75, 0.0, grade, &mut |_| 402.0).expect("east bed"),
+        ];
+        weld_bed_endpoints(&mut profiles, &HashMap::new());
+        let w_end = *profiles[0].targets.last().unwrap();
+        let e_start = profiles[1].targets[0];
+        assert!((w_end - e_start).abs() < 1e-9, "welded endpoints must agree");
+        assert!((w_end - 401.0).abs() < 1e-9, "the weld is the meeting mean, got {w_end}");
+        // The far ends keep their own ground; the correction decays inside.
+        assert!((profiles[0].targets[0] - 400.0).abs() < 1e-9);
+        assert!((profiles[1].targets.last().unwrap() - 402.0).abs() < 1e-9);
+        // No step through the engineered ground across the junction.
+        let ew = Earthworks::new(
+            profiles.iter().flat_map(bed_profile_edges).collect::<Vec<_>>(),
+        );
+        let mut scratch = Vec::new();
+        let just_west = Coord { x: 6.0 - 0.5 / (DEG_M * cos_lat), y: 46.0 };
+        let just_east = Coord { x: 6.0 + 0.5 / (DEG_M * cos_lat), y: 46.0 };
+        let hw = ew.height(just_west.x, just_west.y, 400.0, &mut scratch);
+        let he = ew.height(just_east.x, just_east.y, 402.0, &mut scratch);
+        assert!((hw - he).abs() < 0.2, "junction step {:.3} m must be welded shut", (hw - he).abs());
+    }
+
+    /// A bed ending on a solved corridor welds to the corridor's road height
+    /// (within the trust cap), so the street meets the highway it joins.
+    #[test]
+    fn a_bed_welds_to_its_corridor() {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let deg = 200.0 / (DEG_M * cos_lat);
+        let shared = Coord { x: 6.0, y: 46.0 };
+        let street = vec![shared, Coord { x: 6.0 + deg, y: 46.0 }];
+        let grade = RoadClass::Minor.bed_grade();
+        let mut profiles =
+            vec![bed_profile(&street, 4.75, 0.0, grade, &mut |_| 400.0).expect("a bed")];
+        // The corridor's solved road arrives 1.5 m above the street's ground.
+        let mut heights = HashMap::new();
+        heights.insert(coord_key(shared), 401.5);
+        weld_bed_endpoints(&mut profiles, &heights);
+        assert!((profiles[0].targets[0] - 401.5).abs() < 1e-9, "the corridor height wins");
+        // Beyond the trust cap the street keeps its own ground.
+        let mut profiles =
+            vec![bed_profile(&street, 4.75, 0.0, grade, &mut |_| 400.0).expect("a bed")];
+        heights.insert(coord_key(shared), 410.0);
+        weld_bed_endpoints(&mut profiles, &heights);
+        assert!((profiles[0].targets[0] - 400.0).abs() < 1e-9, "a 10 m step is not weldable");
     }
 
     #[test]
@@ -599,6 +1033,9 @@ mod tests {
             target_b: 375.0,
             half_width_m: 8.0,
             feather_m: 4.0,
+            core_half_m: 8.0,
+            chain: 0,
+            arc0: 0.0,
             cos_lat,
             carve: false,
         }]);
@@ -611,3 +1048,4 @@ mod tests {
         assert_eq!(g.height(6.02, 46.02, 360.0, &mut scratch), 360.0);
     }
 }
+

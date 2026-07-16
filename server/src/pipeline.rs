@@ -223,12 +223,16 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     let transportation =
         cfg.inputs.iter().find(|(l, _)| *l == layers::TRANSPORTATION).map(|(_, p)| p.clone());
     let water = cfg.inputs.iter().find(|(l, _)| *l == layers::WATER).map(|(_, p)| p.clone());
-    let scene = match &transportation {
+    let mut scene = match &transportation {
         Some(path) => assemble::run(path, water.as_deref(), &cfg.bbox)
             .map_err(|e| format!("{}: {e}", path.display()))?,
         None => SceneGraph::default(),
     };
-    let solved = Arc::new(solve::run(&scene, cfg.terrain.as_deref(), cfg.max_zoom, threads)?);
+    // Solve mutates the scene once: the terrain fate of short structure spans
+    // (`solve::reconcile_short_spans`) is settled before anything downstream
+    // reads the corridor spans.
+    let solved =
+        Arc::new(solve::run(&mut scene, cfg.terrain.as_deref(), cfg.max_zoom, threads)?);
     let ground = Arc::new(ground::derive(&scene, &solved, cfg.terrain.as_deref(), threads));
     // Junction plates: a paved area meshed across each corridor junction, baked
     // once from the solved model and emitted by the tile that owns its centre.
@@ -325,7 +329,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             Some(path) => Some(Dem::open(path)?),
             None => None,
         };
-        let mut sampler = GroundSampler::new(dem, Arc::clone(&ground));
+        let mut sampler = GroundSampler::new(dem, Arc::clone(&ground), solved.z_ref);
         let mut sorted = sorted;
         let mut current: Option<u64> = None;
         let mut buckets: Vec<Vec<EncoderFeature>> =
@@ -531,7 +535,7 @@ fn emit_parallel(
             };
             workers.push(scope.spawn(move || -> Result<(), Error> {
                 let flat = terrain::flat_mesh(TERRAIN_GRID);
-                let mut sampler = GroundSampler::new(dem, ground);
+                let mut sampler = GroundSampler::new(dem, ground, solved.z_ref);
                 loop {
                     // Blocking recv under the lock serializes idle waits only;
                     // a queued job is handed off immediately.
@@ -639,8 +643,9 @@ fn encode_tile(
     observed.push((layers::TERRAIN as usize, GeometryType::Mesh));
     let (blob, elevation, t_mesh, t_encode) = if sampler.has_elevation() {
         let t = Instant::now();
+        let grid = terrain::grid_for(z, solved.z_ref);
         let (mesh, emin, emax) =
-            terrain::elevated_mesh(TERRAIN_GRID, &bounds, |lon, lat| sampler.corner(lon, lat, z));
+            terrain::elevated_mesh(grid, &bounds, |lon, lat| sampler.corner(lon, lat, z));
         let t_mesh = t.elapsed();
         let t = Instant::now();
         let blob = tile_build::build_tile_q(&bounds, Some(&mesh), &enc_layers, quality);
@@ -1237,8 +1242,9 @@ fn flush_tile(
     layer_stats.observe(layers::TERRAIN as usize, z, GeometryType::Mesh);
     let blob = if sampler.has_elevation() {
         let t_terrain = Instant::now();
+        let grid = terrain::grid_for(z, solved.z_ref);
         let (mesh, emin, emax) =
-            terrain::elevated_mesh(TERRAIN_GRID, &bounds, |lon, lat| sampler.corner(lon, lat, z));
+            terrain::elevated_mesh(grid, &bounds, |lon, lat| sampler.corner(lon, lat, z));
         stats.timings.terrain += t_terrain.elapsed();
         elevation.0 = elevation.0.min(emin);
         elevation.1 = elevation.1.max(emax);

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use geo_types::Coord;
 
 use crate::levels::LevelRun;
-use crate::priors::{RoadClass, MAX_CORRIDOR_M, MIN_STRUCTURE_M, SNAP_RUN_M};
+use crate::priors::{RoadClass, MAX_CORRIDOR_M, SNAP_RUN_M};
 use crate::scene::{
     metric_len, run_cos_lat, Corridor, CorridorId, Junction, JunctionMember, SegmentRef, Span,
     SpanKind,
@@ -383,10 +383,13 @@ fn build_corridor(
 
 /// Resolves arc-referenced level runs into a clean partition of `[0, total]`:
 /// maximal constant-level spans, with consecutive same-level runs merged into
-/// one span per physical structure, sub-[`SNAP_RUN_M`] grade slivers between
-/// structures dropped (annotation-edge mismatches, S10), and structure spans
-/// shorter than [`MIN_STRUCTURE_M`] demoted to grade (a footbridge lifted onto
-/// a deck is worse than a draped one).
+/// one span per physical structure and sub-[`SNAP_RUN_M`] grade slivers
+/// between structures dropped (annotation-edge mismatches, S10). Structure
+/// spans shorter than [`crate::priors::MIN_STRUCTURE_M`] survive here:
+/// whether a short span
+/// is a real deck (a bridge over a deep gully) or annotation noise (a
+/// footbridge better left draped) is a *terrain* question, resolved by the
+/// solve stage against the DEM (`solve::reconcile_short_spans`).
 fn resolve_spans(runs: &[(f64, f64, i64)], total: f64) -> Vec<Span> {
     // Breakpoints: the corridor ends plus every run edge.
     let mut breaks = vec![0.0, total];
@@ -425,12 +428,6 @@ fn resolve_spans(runs: &[(f64, f64, i64)], total: f64) -> Vec<Span> {
             && iv[i - 1].2 != 0
             && iv[i + 1].2 != 0
     });
-    // 2. Demote structure spans too short to be real structures to grade.
-    for iv in intervals.iter_mut() {
-        if iv.2 != 0 && iv.1 - iv.0 < MIN_STRUCTURE_M {
-            iv.2 = 0;
-        }
-    }
     coalesce(&mut intervals);
 
     intervals
@@ -576,12 +573,14 @@ mod tests {
     }
 
     #[test]
-    fn short_structure_spans_demote_to_grade() {
-        // A 20 m "bridge" (a footbridge annotation) stays at grade.
+    fn short_structure_spans_survive_assemble() {
+        // A 20 m bridge survives assemble: whether it is a real deck over a
+        // gully or a footbridge annotation better left draped is a terrain
+        // question, answered by the solve stage against the DEM.
         let a = seg("a", 0.0, 1000.0, vec![run(0.49, 0.51, 1)], None, None);
         let (cs, _junctions) = build(vec![a]);
-        assert_eq!(cs[0].spans.len(), 1);
-        assert_eq!(cs[0].spans[0].kind, SpanKind::Grade);
+        let kinds: Vec<SpanKind> = cs[0].spans.iter().map(|s| s.kind).collect();
+        assert_eq!(kinds, vec![SpanKind::Grade, SpanKind::Bridge, SpanKind::Grade]);
     }
 
     #[test]

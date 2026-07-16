@@ -23,6 +23,9 @@ const CORNER_CAP: usize = 262_144;
 pub struct GroundSampler {
     dem: Option<Dem>,
     ground: Arc<GroundModel>,
+    /// The run's reference zoom, keying the per-zoom lattice resolution
+    /// ([`terrain::grid_for`]) `surface` reads through.
+    z_ref: u8,
     /// Reusable earthwork-query buffer (grid hits per sample).
     scratch: Vec<u32>,
     /// Memoized engineered heights at rendered-lattice corners, keyed by the
@@ -36,8 +39,8 @@ pub struct GroundSampler {
 }
 
 impl GroundSampler {
-    pub fn new(dem: Option<Dem>, ground: Arc<GroundModel>) -> GroundSampler {
-        GroundSampler { dem, ground, scratch: Vec::new(), corners: HashMap::new() }
+    pub fn new(dem: Option<Dem>, ground: Arc<GroundModel>, z_ref: u8) -> GroundSampler {
+        GroundSampler { dem, ground, z_ref, scratch: Vec::new(), corners: HashMap::new() }
     }
 
     /// Whether the run has real elevation at all (a DEM was configured).
@@ -76,7 +79,8 @@ impl GroundSampler {
     /// through the global zoom-`z` terrain lattice anchored at `bounds`, so it
     /// matches the triangulated mesh the client draws exactly.
     pub fn surface(&mut self, bounds: &Bounds, lon: f64, lat: f64, z: u8) -> f64 {
-        terrain::surface_height(bounds, lon, lat, &mut |a, o| self.corner(a, o, z))
+        let grid = terrain::grid_for(z, self.z_ref);
+        terrain::surface_height(bounds, grid, lon, lat, &mut |a, o| self.corner(a, o, z))
     }
 
     /// The exact engineered roadbed height under `(lon, lat)` when the point
