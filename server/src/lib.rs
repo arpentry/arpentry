@@ -46,6 +46,7 @@ pub mod sort;
 pub mod style;
 pub mod synth;
 pub mod terrain;
+pub mod terrain_cdt;
 pub mod tile_build;
 pub mod tileid;
 pub mod tileset;

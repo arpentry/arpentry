@@ -382,7 +382,7 @@ mod tests {
             Span { arc0: 0.3 * len, arc1: 0.5 * len, level: 1, kind: SpanKind::Bridge },
             Span { arc0: 0.5 * len, arc1: len, level: 0, kind: SpanKind::Grade },
         ];
-        let p = crate::solve::profile::solve(&nodes, &spans, Some(0.06), &mut elev)
+        let p = crate::solve::profile::solve(&nodes, &spans, crate::solve::profile::Mode::Engineered { grade: 0.06 }, &mut elev)
             .expect("non-degenerate corridor");
         let out = grow_spans(&p, &spans);
         assert_eq!(out.len(), 3, "the partition keeps its three spans: {out:?}");

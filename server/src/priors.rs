@@ -58,6 +58,34 @@ impl RoadClass {
         }
     }
 
+    /// How far this class's solved profile may leave its conditioned terrain
+    /// reference, in metres — the ground-hugging budget
+    /// ([`MAX_ROAD_DEVIATION_M`] is the engineered ceiling; a street's bench
+    /// irons noise within [`BED_MAX_DEVIATION_M`] and otherwise trusts the
+    /// slope, S9). Between them the connecting classes get an intermediate
+    /// budget: a primary road is engineered harder than a lane but not
+    /// motorway-hard.
+    pub fn deviation_m(self) -> f64 {
+        match self {
+            RoadClass::Motorway | RoadClass::Trunk => MAX_ROAD_DEVIATION_M,
+            RoadClass::Primary | RoadClass::Secondary => 4.0,
+            RoadClass::Minor => BED_MAX_DEVIATION_M,
+        }
+    }
+
+    /// Profile node spacing along the corridor, metres. Engineered classes
+    /// sample densely (grade relaxation and rim anchoring want resolution);
+    /// the long tail of minor streets — most of the network by length —
+    /// samples sparsely, bounding the solve's time and memory. Both are finer
+    /// than the old street-bed spacing (`BED_SPACING_M`).
+    pub fn node_spacing_m(self) -> f64 {
+        match self {
+            RoadClass::Motorway | RoadClass::Trunk => NODE_SPACING_M,
+            RoadClass::Primary | RoadClass::Secondary => 12.0,
+            RoadClass::Minor => 24.0,
+        }
+    }
+
     /// Half-width in metres of a swept structure box — bigger roads, bigger
     /// structures. Overture maps each carriageway of a dual carriageway (and
     /// each ramp) as its own segment, so these are *per-carriageway* widths,
@@ -216,6 +244,12 @@ pub const BED_SPACING_M: f64 = 30.0;
 /// trusted and the bench follows the slope (S9).
 pub const BED_MAX_DEVIATION_M: f64 = 2.5;
 
+/// Target spacing in metres after corridor densification for the engineered
+/// classes ([`RoadClass::node_spacing_m`]), used both to sample the road
+/// profile along the corridor and to subdivide swept geometry so it renders
+/// as a smooth curve.
+pub const NODE_SPACING_M: f64 = 8.0;
+
 /// Widest DEM notch, in metres of road arc, that a mapped at-grade road is
 /// assumed to span on engineered fill (a culvert, an embankment, a small
 /// retaining structure) rather than dive through. Gullies, stream cuts, and
@@ -230,6 +264,22 @@ pub const NOTCH_SPAN_M: f64 = 60.0;
 /// keeps its raw profile there — the same trust cap the clearance solver
 /// applies ([`MAX_CLEARANCE_LIFT_M`]).
 pub const NOTCH_FILL_MAX_M: f64 = 15.0;
+
+/// Widest convex terrain bump, in metres of road arc, shaved from a road's
+/// anchor surface as noise rather than climbed. A surface DEM images canopy
+/// shadows, parked vehicles, and upsampling ripple as narrow crests *on* the
+/// carriageway; a real road was graded through them. Wider rises are genuine
+/// relief and keep the terrain. The opening dual of [`NOTCH_SPAN_M`], sized
+/// under it: filling across an engineered culvert is cheaper to assume than
+/// cutting through an unmapped crest.
+pub const BUMP_SPAN_M: f64 = 50.0;
+
+/// Deepest per-bump shave the opening may take, in metres. A crest that
+/// would need a deeper cut is a genuine hill (S9): the terrain is trusted
+/// and the road keeps its raw profile there — the mirror of
+/// [`NOTCH_FILL_MAX_M`], far tighter because false crests (noise) are
+/// shallow while false notches (gorges) can be deep.
+pub const BUMP_SHAVE_MAX_M: f64 = 4.0;
 
 /// Largest reconciliation applied where street beds share an endpoint
 /// connector (or meet a solved corridor), in metres. Within it the meeting

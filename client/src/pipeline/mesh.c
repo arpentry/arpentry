@@ -156,8 +156,11 @@ void arpt__mesh_upload_skirts(arpt_renderer *r, arpt_tile_gpu *t,
                                const arpt_terrain_mesh *prim) {
     if (prim->vertex_count == 0) return;
 
+    /* The tile proper spans quantized [BUFFER, BUFFER + EXTENT] inclusive:
+       the server puts east/north edge vertices at exactly 49152 (see
+       server/src/terrain.rs), not 49151. */
     uint16_t edge_min = (uint16_t)ARPT_BUFFER;
-    uint16_t edge_max = (uint16_t)(ARPT_BUFFER + ARPT_EXTENT - 1);
+    uint16_t edge_max = (uint16_t)(ARPT_BUFFER + ARPT_EXTENT);
 
     /* Collect edge vertices for all 4 edges */
     size_t vc = prim->vertex_count;

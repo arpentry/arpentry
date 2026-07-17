@@ -1,10 +1,10 @@
 //! Stage 1 — assemble the global scene model (docs/GENERATION.md §6).
 //!
 //! Reads the transportation input once, keeps the segments whose vertical
-//! geometry needs solving (structure annotations, or a class that holds an
-//! engineered grade), and joins them into [`Corridor`]s with corridor-wide
-//! structure [`Span`]s. Everything else tiles as plain draped geometry and
-//! never enters the scene graph.
+//! geometry needs solving (every drivable road, plus anything carrying
+//! structure annotations), and joins them into [`Corridor`]s with
+//! corridor-wide structure [`Span`]s. Everything else tiles as plain draped
+//! geometry and never enters the scene graph.
 //!
 //! The output is the [`SceneGraph`]: a plain, inspectable artifact the solve
 //! stage fits profiles over, and the tiling phase resolves features against
@@ -14,7 +14,6 @@ pub mod columns;
 pub mod corridors;
 pub mod crossings;
 pub mod grid;
-pub mod road_junctions;
 pub mod water;
 
 use std::path::Path;
@@ -65,9 +64,16 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
     for feature in gp.features(row_groups, ATTRS)? {
         let f = feature?;
         let class_key = prop_string(&f.properties, "class").unwrap_or_default();
+        let subclass = prop_string(&f.properties, "subclass");
         let class = RoadClass::parse(Some(class_key.as_str()));
-        if f.level_runs.is_empty() && class.grade_limit().is_none() {
-            continue; // nothing to solve: plain draped road
+        // Every drivable road enters the scene graph (it gets a solved
+        // profile and a ground imprint, docs/GROUND.md §1); a non-drivable
+        // feature only when it carries structure annotations or an
+        // engineered grade. The rest tiles as plain draped geometry.
+        let drivable =
+            priors::paint_width_m(Some(class_key.as_str()), subclass.as_deref()).is_some();
+        if f.level_runs.is_empty() && class.grade_limit().is_none() && !drivable {
+            continue; // nothing to solve: plain draped feature
         }
         // Only a linestring can be linearly referenced and chained.
         let Geometry::LineString(ref line) = f.geometry else {
@@ -87,7 +93,8 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
             source,
             line: line.0.clone(),
             class,
-            link: priors::is_link(prop_string(&f.properties, "subclass").as_deref()),
+            link: priors::is_link(subclass.as_deref()),
+            drivable,
             class_key,
             subtype_key: prop_string(&f.properties, "subtype").unwrap_or_default(),
             level_runs: f.level_runs,
@@ -105,16 +112,6 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
     // is actually tested). Water gets its own pass: a bridge over a river
     // owes freeboard, not road clearance (S3).
     let bb = (bbox.west, bbox.south, bbox.east, bbox.north);
-    // At-grade road junctions over every drivable road, minus the connectors
-    // the corridor junctions already own, so each junction is plated once.
-    // The same pass collects the unclaimed streets' bed lines for the ground
-    // stage to bench (D3).
-    let corridor_connectors: std::collections::HashSet<u64> =
-        scene.junctions.iter().map(|j| j.connector).collect();
-    let (road_junctions, beds) =
-        road_junctions::build(path, bb, &corridor_connectors, &|h| scene.lookup(h).is_some())?;
-    scene.road_junctions = road_junctions;
-    scene.beds = beds;
     let (crossings, underpasses) = crossings::detect(path, bb, &scene)?;
     scene.crossings = crossings;
     scene.underpasses = underpasses;

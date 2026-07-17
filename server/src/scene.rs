@@ -72,9 +72,19 @@ pub struct Corridor {
     /// `cos(mean latitude)`, scaling longitude into the local metric space.
     pub cos_lat: f64,
     pub class: RoadClass,
+    /// Raw Overture class string of the member segments (splice compatibility
+    /// keeps it constant along the chain) — finer than [`RoadClass`]'s
+    /// buckets, for styling consumers (junction plates) that must match the
+    /// street colours.
+    pub class_key: String,
     /// Whether every member segment is a `link` (ramp) — the swept structures
     /// and earthworks are a single lane wide, whatever the class.
     pub link: bool,
+    /// Whether the class is drivable ([`crate::priors::paint_width_m`]):
+    /// every drivable corridor gets a solved profile and a ground imprint
+    /// (docs/GROUND.md §1); a non-drivable one only when it carries
+    /// structures.
+    pub drivable: bool,
     /// Constant-kind spans partitioning `[0, total]`, in arc order.
     pub spans: Vec<Span>,
     /// Source segments in corridor order.
@@ -139,35 +149,17 @@ pub struct Underpass {
 /// A point where corridors meet — two or more sharing a connector, at least
 /// one of them ending there. Unlike a [`Crossing`] (features passing over one
 /// another) the members physically connect, so their road surfaces must agree
-/// in height (docs/GENERATION.md invariant 2). At grade this holds for free
-/// (every member anchors to the same ground); the solver welds the members
-/// only where one arrives elevated — a ramp meeting a flyover.
+/// in height (docs/GENERATION.md invariant 2). The solver welds the members:
+/// the structural weld lifts a leg to the elevated road it merges onto (a
+/// ramp meeting a flyover), the street weld then pulls meeting street ends
+/// to one height (docs/GROUND.md §1).
 #[derive(Debug, Clone)]
 pub struct Junction {
     /// The shared connector's plan position.
     pub point: Coord,
-    /// The connector id the members share — dedups against the at-grade
-    /// road-junction pass, which sees the same connectors.
+    /// The connector id the members share.
     pub connector: u64,
     pub members: Vec<JunctionMember>,
-}
-
-/// An at-grade road junction: a connector where three or more drivable road
-/// ends meet, most of which are ordinary streets the solver never modelled
-/// (they carry no structure and hold no engineered grade, so they are not
-/// corridors). The synth stage plates it — a paved area draped on the ground —
-/// exactly as it plates a corridor junction, only at the terrain rather than a
-/// solved height.
-#[derive(Debug, Clone)]
-pub struct RoadJunction {
-    /// The connector's plan position.
-    pub point: Coord,
-    /// The Overture class of the widest leg — the plate is styled (and coloured)
-    /// like that road, so it matches the streets meeting there.
-    pub class: String,
-    /// Each leg's unit ENU heading `(east, north)` away from the junction and
-    /// its road half-width in metres.
-    pub legs: Vec<(f64, f64, f64)>,
 }
 
 /// One corridor at a [`Junction`]: which corridor, and the arc along it where
@@ -213,11 +205,14 @@ impl Corridor {
         *self.arc.last().unwrap_or(&0.0)
     }
 
-    /// Whether the solver needs an elevation profile for this corridor: it
-    /// carries a structure, or its class holds an engineered grade. Everything
-    /// else just drapes on the ground.
+    /// Whether the solver needs an elevation profile for this corridor: it is
+    /// drivable (every drivable road holds a solved profile, docs/GROUND.md
+    /// §1), or it carries a structure (a rail viaduct, a footbridge). Only
+    /// non-drivable at-grade features just drape on the ground.
     pub fn needs_profile(&self) -> bool {
-        self.class.grade_limit().is_some() || self.spans.iter().any(|s| s.kind != SpanKind::Grade)
+        self.drivable
+            || self.class.grade_limit().is_some()
+            || self.spans.iter().any(|s| s.kind != SpanKind::Grade)
     }
 
     /// Cuts one source segment into constant-kind pieces at the span
@@ -288,27 +283,14 @@ pub struct SceneGraph {
     pub corridors: Vec<Corridor>,
     pub crossings: Vec<Crossing>,
     pub underpasses: Vec<Underpass>,
-    /// Where corridors meet and their heights must agree (invariant 2).
+    /// Where corridors meet and their heights must agree (invariant 2). With
+    /// every drivable road a corridor, this covers the street intersections
+    /// too — the synth stage plates any junction with three or more legs.
     pub junctions: Vec<Junction>,
-    /// At-grade road junctions the synth stage plates (draped on the ground).
-    pub road_junctions: Vec<RoadJunction>,
     /// Still water bodies whose surface the ground stage flattens (invariant 4).
     pub water: Vec<WaterBody>,
-    /// Unclaimed drivable roads whose bed the ground stage benches — flat
-    /// across the carriageway, natural grade along (D3). Corridors carry
-    /// their own solved earthworks; these are the streets the solver never
-    /// sees.
-    pub beds: Vec<BedLine>,
     /// Source feature id hash → (corridor, segment index within it).
     by_source: HashMap<u64, (CorridorId, u32)>,
-}
-
-/// One street's bed: its centerline, the half-width held flat, and the road
-/// class keying the bench's grade cap ([`RoadClass::bed_grade`]).
-pub struct BedLine {
-    pub pts: Vec<Coord>,
-    pub half_width_m: f64,
-    pub class: RoadClass,
 }
 
 impl SceneGraph {
@@ -324,9 +306,7 @@ impl SceneGraph {
             crossings: Vec::new(),
             underpasses: Vec::new(),
             junctions: Vec::new(),
-            road_junctions: Vec::new(),
             water: Vec::new(),
-            beds: Vec::new(),
             by_source,
         }
     }
@@ -384,7 +364,7 @@ mod tests {
             (0..n).map(|i| Coord { x: 6.0 + deg * i as f64 / (n - 1) as f64, y: 46.0 }).collect();
         let arc: Vec<f64> = (0..n).map(|i| len_m * i as f64 / (n - 1) as f64).collect();
         let segments = vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }];
-        Corridor { id: 0, nodes, arc, cos_lat, class: RoadClass::Minor, link: false, spans, segments, connectors: vec![] }
+        Corridor { id: 0, nodes, arc, cos_lat, class: RoadClass::Minor, class_key: String::new(), link: false, drivable: true, spans, segments, connectors: vec![] }
     }
 
     fn span(arc0: f64, arc1: f64, level: i64) -> Span {
@@ -434,11 +414,16 @@ mod tests {
     }
 
     #[test]
-    fn needs_profile_only_for_structures_or_engineered_classes() {
-        assert!(!corridor(vec![span(0.0, 1000.0, 0)], 3, 1000.0).needs_profile());
-        assert!(corridor(vec![span(0.0, 1000.0, 1)], 3, 1000.0).needs_profile());
+    fn needs_profile_for_drivable_or_structure_corridors() {
+        // Drivable at-grade: profiled (every drivable road holds a profile).
+        assert!(corridor(vec![span(0.0, 1000.0, 0)], 3, 1000.0).needs_profile());
+        // Non-drivable at-grade (a footpath, rail): just drapes.
         let mut c = corridor(vec![span(0.0, 1000.0, 0)], 3, 1000.0);
-        c.class = RoadClass::Motorway;
+        c.drivable = false;
+        assert!(!c.needs_profile());
+        // Non-drivable but carrying a structure: profiled for the deck.
+        let mut c = corridor(vec![span(0.0, 1000.0, 1)], 3, 1000.0);
+        c.drivable = false;
         assert!(c.needs_profile());
     }
 

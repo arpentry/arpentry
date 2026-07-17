@@ -30,14 +30,12 @@
 use geo_types::Coord;
 
 use crate::priors::{
-    MAX_ROAD_DEVIATION_M, MIN_EARTHWORK_M, NOTCH_FILL_MAX_M, NOTCH_SPAN_M, PORTAL_MAX_M,
+    BUMP_SHAVE_MAX_M, BUMP_SPAN_M, MAX_ROAD_DEVIATION_M, MIN_EARTHWORK_M, NOTCH_FILL_MAX_M,
+    NOTCH_SPAN_M, PORTAL_MAX_M,
 };
 use crate::scene::{metric_len, run_cos_lat, Span, SpanKind, DEG_M};
 
-/// Target spacing in metres after densification, used both to sample the road
-/// profile along the corridor and to subdivide swept geometry so it renders as
-/// a smooth curve.
-pub const NODE_SPACING_M: f64 = 8.0;
+pub use crate::priors::NODE_SPACING_M;
 
 /// Cap on densified vertices per corridor — a runaway guard for pathological
 /// inputs; real corridors are bounded by `priors::MAX_CORRIDOR_M`.
@@ -163,15 +161,55 @@ pub struct DeckNode {
     pub arc_m: f64,
 }
 
+/// How a corridor's class shapes its solve (docs/GROUND.md §1). One vertical
+/// model, three parameterisations: an engineered class gets the full
+/// treatment; a drivable street holds a plausible bed grade within a tight
+/// deviation budget; a non-drivable corridor that still carries structures
+/// (rail, a footpath with a bridge) drapes its at-grade spans as they are.
+#[derive(Clone, Copy, Debug)]
+pub enum Mode {
+    /// Rim anchoring, the class grade ceiling, infeasible-anchor absorption.
+    Engineered { grade: f64 },
+    /// A bed grade held within `deviation_m` of the conditioned reference,
+    /// with symmetric vertical smoothing; anchors stay where mapped (S9).
+    Street { grade: f64, deviation_m: f64, spacing_m: f64 },
+    /// At-grade spans drape as they are; structures chord between anchors.
+    Draped,
+}
+
+impl Mode {
+    /// The mode a corridor's class and drivability imply.
+    pub fn for_class(class: crate::priors::RoadClass, drivable: bool) -> Mode {
+        match class.grade_limit() {
+            Some(grade) => Mode::Engineered { grade },
+            None if drivable => Mode::Street {
+                grade: class.bed_grade(),
+                deviation_m: class.deviation_m(),
+                spacing_m: class.node_spacing_m(),
+            },
+            None => Mode::Draped,
+        }
+    }
+
+    /// Profile node spacing, metres — the street classes sample sparsely to
+    /// bound the network-wide solve.
+    fn spacing_m(self) -> f64 {
+        match self {
+            Mode::Street { spacing_m, .. } => spacing_m,
+            _ => NODE_SPACING_M,
+        }
+    }
+}
+
 /// Solves the surface profile of one corridor: densify, sample the reference
 /// terrain through `elev`, anchor the road at the at-grade spans, interpolate
-/// the gentle profile across the structures, and hold engineered classes to
-/// their grade ceiling. `None` for a degenerate corridor. The terrain sampler
-/// is injected so tests can bypass the DEM.
+/// the gentle profile across the structures, and hold the road to its mode's
+/// grade and deviation budget. `None` for a degenerate corridor. The terrain
+/// sampler is injected so tests can bypass the DEM.
 pub fn solve(
     nodes: &[Coord],
     spans: &[Span],
-    max_grade: Option<f64>,
+    mode: Mode,
     elev: &mut dyn FnMut(Coord) -> f64,
 ) -> Option<Profile> {
     if nodes.len() < 2 {
@@ -179,63 +217,85 @@ pub fn solve(
     }
     let raw = nodes;
     let cos_lat = run_cos_lat(raw);
-    let (nodes, arc, params) = densify(raw, cos_lat);
+    let (nodes, arc, params) = densify(raw, cos_lat, mode.spacing_m());
     let n = nodes.len();
     if n < 2 {
         return None;
     }
     let terrain: Vec<f64> = nodes.iter().map(|c| elev(*c)).collect();
-    // The road's anchor surface: the terrain with its narrow notches filled
-    // ([`close_notches`]) — a mapped at-grade road spans a gully on
-    // engineered fill instead of diving through the DEM's image of it. The
+    // The road's anchor surface: the terrain conditioned symmetrically
+    // ([`condition_reference`]) — narrow notches filled (a mapped at-grade
+    // road spans a gully on engineered fill instead of diving through the
+    // DEM's image of it) and narrow bumps shaved (it was graded through
+    // canopy shadows and upsampling ripple instead of climbing them). The
     // raw `terrain` keeps every structural read (rim seeking, daylighting,
     // pier footing, the earthworks' cut/fill depths).
-    let road_ref = close_notches(&arc, &terrain);
+    let road_ref = condition_reference(&arc, &terrain);
     let mut at_grade: Vec<bool> =
         arc.iter().map(|&a| kind_at(spans, a) == SpanKind::Grade).collect();
     let mut road_m;
-    if let Some(g) = max_grade {
-        // Robust structure anchors: snap each structure-bounding anchor to
-        // the local terrain extremum (a bridge launches from the rim crest, a
-        // bore emerges at the flank base) before any chord is fit — an anchor
-        // point-sampled on a rim roll-off otherwise launches the deck metres
-        // below the rim and digs the approach into a cut to reach it.
-        // Engineered classes only: an unengineered road drapes the terrain
-        // whatever it does, and moving its anchors just reshapes its (already
-        // steep, genuine) pitches.
-        seek_rim_anchors(&arc, &terrain, &mut at_grade);
-        let solve_once = |road_m: &mut Vec<f64>, at_grade: &[bool]| {
-            *road_m = road_profile(&arc, &road_ref, at_grade);
-            limit_road_grade(&arc, road_m, &road_ref, at_grade, g);
-            rechord_structures(&arc, road_m, at_grade);
-        };
-        road_m = Vec::new();
-        solve_once(&mut road_m, &at_grade);
-        // Solved structure ends (S5's trust model, applied to the profile):
-        // where the solved road still pitches far beyond the grade ceiling
-        // right beside a structure, the annotation ended before the road
-        // actually reached the ground — a bridge landing into a gorge wall, a
-        // tunnel emerging under a climbing flank. The deviation budget lost to
-        // the terrain there, so no at-grade road can exist: absorb the stretch
-        // into the structure run and re-solve, until the profile is feasible.
-        // The spans are grown to match at reconcile time
-        // (`portals::grow_spans`), so sweeps and paint follow.
-        for _ in 0..ABSORB_PASSES {
-            if !absorb_infeasible_anchors(&arc, &mut at_grade, &road_m, g) {
-                break;
-            }
+    match mode {
+        Mode::Engineered { grade: g } => {
+            // Robust structure anchors: snap each structure-bounding anchor to
+            // the local terrain extremum (a bridge launches from the rim crest,
+            // a bore emerges at the flank base) before any chord is fit — an
+            // anchor point-sampled on a rim roll-off otherwise launches the
+            // deck metres below the rim and digs the approach into a cut to
+            // reach it. Engineered classes only: an unengineered road drapes
+            // the terrain whatever it does, and moving its anchors just
+            // reshapes its (already steep, genuine) pitches.
+            seek_rim_anchors(&arc, &terrain, &mut at_grade);
+            let solve_once = |road_m: &mut Vec<f64>, at_grade: &[bool]| {
+                *road_m = road_profile(&arc, &road_ref, at_grade);
+                limit_road_grade(&arc, road_m, &road_ref, at_grade, g, MAX_ROAD_DEVIATION_M);
+                rechord_structures(&arc, road_m, at_grade);
+            };
+            road_m = Vec::new();
             solve_once(&mut road_m, &at_grade);
+            // Solved structure ends (S5's trust model, applied to the profile):
+            // where the solved road still pitches far beyond the grade ceiling
+            // right beside a structure, the annotation ended before the road
+            // actually reached the ground — a bridge landing into a gorge
+            // wall, a tunnel emerging under a climbing flank. The deviation
+            // budget lost to the terrain there, so no at-grade road can exist:
+            // absorb the stretch into the structure run and re-solve, until
+            // the profile is feasible. The spans are grown to match at
+            // reconcile time (`portals::grow_spans`), so sweeps and paint
+            // follow.
+            for _ in 0..ABSORB_PASSES {
+                if !absorb_infeasible_anchors(&arc, &mut at_grade, &road_m, g) {
+                    break;
+                }
+                solve_once(&mut road_m, &at_grade);
+            }
         }
-    } else {
-        road_m = road_profile(&arc, &road_ref, &at_grade);
+        // A street holds its bed grade within the class deviation budget —
+        // the relaxation that irons DEM noise flat while a genuinely climbing
+        // street still climbs (S9). Its mapped anchors stay put (no rim
+        // seeking, no absorption: an unengineered annotation is trusted), and
+        // any structure chord is re-pinned to where the relaxed road arrives.
+        Mode::Street { grade, deviation_m, .. } => {
+            road_m = road_profile(&arc, &road_ref, &at_grade);
+            limit_road_grade(&arc, &mut road_m, &road_ref, &at_grade, grade, deviation_m);
+            rechord_structures(&arc, &mut road_m, &at_grade);
+        }
+        Mode::Draped => {
+            road_m = road_profile(&arc, &road_ref, &at_grade);
+        }
     }
-    // Round the engineered profile's grade breaks (abutments, cut/fill kinks)
-    // into gentle vertical curves. Engineered classes only: an unengineered
-    // road is draped and has no such corners; smoothing it would float it off
-    // the terrain. Runs before the deck ramp so decks stay straight, and before
-    // portals/ground read the profile so their gap zero-crossings stay exact.
-    if max_grade.is_some() {
-        smooth_vgrades(&arc, &mut road_m, &road_ref, &at_grade);
+    // Round the profile's grade breaks (abutments, cut/fill kinks) into
+    // gentle vertical curves. Engineered classes move only nodes already
+    // lifted off the ground (draped nodes stay pinned); streets smooth every
+    // at-grade node within their deviation budget — the symmetric low-pass
+    // that removes residual wobble without floating the street. Runs before
+    // the deck ramp so decks stay straight, and before portals/ground read
+    // the profile so their gap zero-crossings stay exact.
+    match mode {
+        Mode::Engineered { .. } => smooth_vgrades(&arc, &mut road_m, &road_ref, &at_grade),
+        Mode::Street { deviation_m, .. } => {
+            smooth_vgrades_street(&arc, &mut road_m, &road_ref, &at_grade, deviation_m)
+        }
+        Mode::Draped => {}
     }
     let deck_m = deck_ramp(&arc, &road_m, &at_grade);
     let smooth = smooth_path(&spline_path(raw, &params, cos_lat));
@@ -515,6 +575,26 @@ impl Profile {
             if lift > 0.0 {
                 self.road_m[i] += lift;
             }
+        }
+    }
+
+    /// Shifts the road by `delta` (up or down) at one end — arc 0 when
+    /// `start`, the far end otherwise — decaying linearly over the run the
+    /// grade needs to absorb the shift, clamped to the corridor itself so
+    /// the far endpoint stays exact. The street weld's correction
+    /// (docs/GROUND.md §1): meeting street ends are pulled to one height and
+    /// the reconciliation eases into each street at its own plausible grade,
+    /// adding no kink of its own.
+    pub fn weld_end(&mut self, start: bool, delta: f64, grade: f64) {
+        let total = *self.arc.last().unwrap_or(&0.0);
+        if self.road_m.is_empty() || total <= 0.0 || delta == 0.0 {
+            return;
+        }
+        let len = (delta.abs() / grade.max(1e-9)).clamp(f64::MIN_POSITIVE, total);
+        for i in 0..self.road_m.len() {
+            let d = if start { self.arc[i] } else { total - self.arc[i] };
+            let w = (1.0 - d / len).max(0.0);
+            self.road_m[i] += delta * w;
         }
     }
 
@@ -867,11 +947,47 @@ fn nearest_edge(nodes: &[Coord], cos_lat: f64, lo: usize, hi: usize, p: Coord) -
 /// is per contiguous run and the closing already meets the terrain at the
 /// run's edges, so no step appears.
 pub fn close_notches(arc: &[f64], h: &[f64]) -> Vec<f64> {
+    close_bounded(arc, h, NOTCH_SPAN_M, NOTCH_FILL_MAX_M)
+}
+
+/// The terrain profile with its narrow convex bumps shaved — the opening
+/// dual of [`close_notches`]. A surface DEM images canopy shadows, parked
+/// vehicles, and upsampling ripple as sharp crests *on* the carriageway; the
+/// road was graded through them, so the anchor surface must not climb them.
+/// Opening is closing under negation (`open(h) = −close(−h)`), so it reuses
+/// the same bounded machinery: every bump narrower than [`BUMP_SPAN_M`] is
+/// shaved to its shoulders, everything else passes through untouched
+/// (`opened ≤ h`, equality outside the bumps), and a run whose shave would
+/// exceed [`BUMP_SHAVE_MAX_M`] is a genuine crest (S9) and keeps the raw
+/// terrain.
+pub fn open_bumps(arc: &[f64], h: &[f64]) -> Vec<f64> {
+    let neg: Vec<f64> = h.iter().map(|&v| -v).collect();
+    let mut opened = close_bounded(arc, &neg, BUMP_SPAN_M, BUMP_SHAVE_MAX_M);
+    for v in &mut opened {
+        *v = -*v;
+    }
+    opened
+}
+
+/// The conditioned anchor surface every road profile rides: the terrain with
+/// its narrow notches filled ([`close_notches`]) and then its narrow bumps
+/// shaved ([`open_bumps`]). Symmetric by construction — DEM noise enters the
+/// profile in neither direction, genuine relief passes through in both.
+/// Closing runs first so a notch-and-bump pair (one signal ringing both
+/// ways) resolves toward the engineered fill rather than the artifact.
+pub fn condition_reference(arc: &[f64], h: &[f64]) -> Vec<f64> {
+    open_bumps(arc, &close_notches(arc, h))
+}
+
+/// Bounded morphological closing along the arc: running max then running min
+/// over ±`span`/2, with per-run reversion wherever the fill exceeds `cap`
+/// (the trust boundary — see the callers for what a too-deep run means).
+fn close_bounded(arc: &[f64], h: &[f64], span: f64, cap: f64) -> Vec<f64> {
     let n = h.len();
     if n == 0 {
         return Vec::new();
     }
-    let r = NOTCH_SPAN_M * 0.5;
+    let r = span * 0.5;
     // Pad each end with one edge-replicated virtual node at ±r: the erosion
     // window at a profile end is otherwise half-open and cannot recover the
     // dilation there, so an ascending start would read as half a "notch" and
@@ -902,7 +1018,7 @@ pub fn close_notches(arc: &[f64], h: &[f64]) -> Vec<f64> {
             deepest = deepest.max(closed[i] - h[i]);
             i += 1;
         }
-        if deepest > NOTCH_FILL_MAX_M {
+        if deepest > cap {
             for k in start..i {
                 closed[k] = h[k];
             }
@@ -995,8 +1111,8 @@ fn road_profile(arc: &[f64], terrain: &[f64], anchor: &[bool]) -> Vec<f64> {
         .collect()
 }
 
-/// Holds the at-grade road to an engineered grade (`max_grade`) while keeping
-/// it within [`MAX_ROAD_DEVIATION_M`] of the terrain. It flattens the steep
+/// Holds the at-grade road to its grade cap (`max_grade`) while keeping it
+/// within `deviation_m` of the terrain reference. It flattens the steep
 /// flanks the draped ground throws up — the dive into a bridge abutment, a
 /// rolling bump — onto gentle cuttings and embankments, but never drifts far
 /// from the ground: where the terrain climbs faster than the grade allows over
@@ -1016,14 +1132,14 @@ fn limit_road_grade(
     terrain: &[f64],
     at_grade: &[bool],
     max_grade: f64,
+    deviation_m: f64,
 ) {
     let n = road_m.len();
     if n < 2 {
         return;
     }
     let to_terrain = |road_m: &mut [f64], i: usize| {
-        road_m[i] =
-            road_m[i].clamp(terrain[i] - MAX_ROAD_DEVIATION_M, terrain[i] + MAX_ROAD_DEVIATION_M);
+        road_m[i] = road_m[i].clamp(terrain[i] - deviation_m, terrain[i] + deviation_m);
     };
     let to_grade = |road_m: &mut [f64], i: usize, nb: usize| {
         let cap = max_grade * (arc[i] - arc[nb]).abs();
@@ -1284,6 +1400,44 @@ fn smooth_vgrades(arc: &[f64], road_m: &mut [f64], terrain: &[f64], at_grade: &[
     }
 }
 
+/// The street variant of [`smooth_vgrades`]: every at-grade node moves (a
+/// street has no engineered fills to distinguish — the whole bed is
+/// reshaped), each pass clamped to `deviation_m` of the conditioned
+/// reference so the smoothing irons node-scale wobble without floating the
+/// street off a slope it genuinely climbs (S9). Structure nodes and the ends
+/// stay pinned, like the engineered variant.
+fn smooth_vgrades_street(
+    arc: &[f64],
+    road_m: &mut [f64],
+    terrain: &[f64],
+    at_grade: &[bool],
+    deviation_m: f64,
+) {
+    let n = road_m.len();
+    if n < 3 {
+        return;
+    }
+    for _ in 0..VGRADE_PASSES {
+        // Jacobi, like the engineered variant: order-independent, so a
+        // corridor's fragments cannot diverge (invariant 5).
+        let prev = road_m.to_vec();
+        for i in 1..n - 1 {
+            if !at_grade[i] {
+                continue;
+            }
+            let (a0, a1, a2) = (arc[i - 1], arc[i], arc[i + 1]);
+            let span = a2 - a0;
+            if span <= 0.0 {
+                continue;
+            }
+            let t = (a1 - a0) / span;
+            let chord = prev[i - 1] + (prev[i + 1] - prev[i - 1]) * t;
+            let moved = prev[i] + VGRADE_LAMBDA * (chord - prev[i]);
+            road_m[i] = moved.clamp(terrain[i] - deviation_m, terrain[i] + deviation_m);
+        }
+    }
+}
+
 /// The deck-top height at each node: [`road_profile`]'s heights with every
 /// structure span (a maximal run of non-at-grade nodes) replaced by a single
 /// straight ramp fit over that span and its bounding anchors. The at-grade
@@ -1318,18 +1472,18 @@ fn deck_ramp(arc: &[f64], road_m: &[f64], at_grade: &[bool]) -> Vec<f64> {
     deck
 }
 
-/// Densifies a corridor to ~[`NODE_SPACING_M`] spacing, returning the nodes,
-/// their cumulative metric arc length, and each node's `(raw segment, t)`
-/// position on the input polyline — the parameter [`spline_path`] evaluates
-/// the smoothing spline at.
-fn densify(run: &[Coord], cos_lat: f64) -> (Vec<Coord>, Vec<f64>, Vec<(usize, f64)>) {
+/// Densifies a corridor to ~`spacing_m` spacing ([`Mode::spacing_m`]),
+/// returning the nodes, their cumulative metric arc length, and each node's
+/// `(raw segment, t)` position on the input polyline — the parameter
+/// [`spline_path`] evaluates the smoothing spline at.
+fn densify(run: &[Coord], cos_lat: f64, spacing_m: f64) -> (Vec<Coord>, Vec<f64>, Vec<(usize, f64)>) {
     let mut nodes = vec![run[0]];
     let mut arc = vec![0.0];
     let mut params = vec![(0usize, 0.0)];
     let mut total = 0.0;
     for (k, w) in run.windows(2).enumerate() {
         let (p0, p1) = (w[0], w[1]);
-        let n = ((metric_len(p0, p1, cos_lat) / NODE_SPACING_M).ceil() as usize).clamp(1, MAX_NODES);
+        let n = ((metric_len(p0, p1, cos_lat) / spacing_m).ceil() as usize).clamp(1, MAX_NODES);
         for i in 1..=n {
             let t = i as f64 / n as f64;
             let c = Coord { x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t };
@@ -1430,7 +1584,7 @@ mod tests {
     /// Solves a profile with an injected terrain sampler, bypassing the DEM.
     fn profile_from(seg: &[Coord], spans: &[Span], terrain: impl Fn(Coord) -> f64) -> Profile {
         let mut elev = |c: Coord| terrain(c);
-        solve(seg, spans, None, &mut elev).expect("non-degenerate test corridor")
+        solve(seg, spans, Mode::Draped, &mut elev).expect("non-degenerate test corridor")
     }
 
     fn profile_from_limited(
@@ -1440,7 +1594,7 @@ mod tests {
         terrain: impl Fn(Coord) -> f64,
     ) -> Profile {
         let mut elev = |c: Coord| terrain(c);
-        solve(seg, spans, Some(max_grade), &mut elev).expect("non-degenerate test corridor")
+        solve(seg, spans, Mode::Engineered { grade: max_grade }, &mut elev).expect("non-degenerate test corridor")
     }
 
     #[test]
@@ -1503,6 +1657,62 @@ mod tests {
     }
 
     #[test]
+    fn open_bumps_shaves_narrow_and_keeps_tall() {
+        // 11 nodes, 25 m apart (BUMP_SPAN_M = 50, so a single-node crest is
+        // narrower than the span); a 3 m noise crest at arc 125.
+        let arc: Vec<f64> = (0..11).map(|i| i as f64 * 25.0).collect();
+        let mut h = vec![500.0; 11];
+        h[5] = 503.0;
+        let opened = open_bumps(&arc, &h);
+        assert_eq!(opened[5], 500.0, "a 3 m noise crest must shave");
+        // A crest past the shave cap is a genuine hill (S9): kept.
+        h[5] = 506.0;
+        let opened = open_bumps(&arc, &h);
+        assert_eq!(opened[5], 506.0, "a 6 m crest is past the shave cap");
+        // A ramp passes through untouched (opening is identity on monotone).
+        let ramp: Vec<f64> = arc.iter().map(|a| 400.0 + a * 0.2).collect();
+        let opened = open_bumps(&arc, &ramp);
+        for (o, r) in opened.iter().zip(&ramp) {
+            assert!((o - r).abs() < 1e-9, "a ramp must open to itself");
+        }
+        // A notch is never filled (opening only shaves).
+        let mut notch = vec![500.0; 11];
+        notch[5] = 497.0;
+        let opened = open_bumps(&arc, &notch);
+        assert_eq!(opened[5], 497.0, "opening must not fill notches");
+        // A flat-topped hill wider than BUMP_SPAN_M is genuine relief: kept
+        // exactly (a sharp apex would be rounded by up to slope·span/2 — the
+        // crest vertical curve — but a plateau fits the structuring element).
+        let arc17: Vec<f64> = (0..17).map(|i| i as f64 * 25.0).collect();
+        let hill: Vec<f64> = arc17
+            .iter()
+            .map(|a| 500.0 + 3.0 * (1.0 - (((a - 200.0).abs() - 50.0).max(0.0) / 100.0)).min(1.0))
+            .collect();
+        let opened = open_bumps(&arc17, &hill);
+        for (o, r) in opened.iter().zip(&hill) {
+            assert!((o - r).abs() < 1e-9, "a wide flat-topped hill must pass through");
+        }
+    }
+
+    #[test]
+    fn condition_reference_is_symmetric() {
+        // A notch and a bump side by side: closing fills the notch, opening
+        // shaves the bump, and neither operator disturbs the other's fix.
+        let arc: Vec<f64> = (0..17).map(|i| i as f64 * 25.0).collect();
+        let mut h = vec![500.0; 17];
+        h[4] = 494.0; // 6 m notch — fillable
+        h[12] = 503.0; // 3 m bump — shavable
+        let cond = condition_reference(&arc, &h);
+        assert_eq!(cond[4], 500.0, "the notch must fill");
+        assert_eq!(cond[12], 500.0, "the bump must shave");
+        for (i, (c, r)) in cond.iter().zip(&h).enumerate() {
+            if i != 4 && i != 12 {
+                assert!((c - r).abs() < 1e-9, "flat ground must pass through at {i}");
+            }
+        }
+    }
+
+    #[test]
     fn an_unengineered_road_spans_a_narrow_notch() {
         // A draped (no grade ceiling) road across a 40 m-wide, 10 m-deep DEM
         // notch — the image of a gully the real road crosses on fill and a
@@ -1516,7 +1726,7 @@ mod tests {
             if dm < 20.0 { 500.0 - 10.0 * (1.0 - dm / 20.0) } else { 500.0 }
         };
         let nodes: Vec<Coord> = seg.clone();
-        let p = solve(&nodes, &[span(0.0, len, 0)], None, &mut |c| terrain(c))
+        let p = solve(&nodes, &[span(0.0, len, 0)], Mode::Draped, &mut |c| terrain(c))
             .expect("a profile");
         let road = p.height_at(mid, 46.0);
         assert!(
@@ -1528,7 +1738,7 @@ mod tests {
             let dm = (c.x - mid).abs() * cos_lat * DEG_M;
             if dm < 25.0 { 500.0 - 25.0 * (1.0 - dm / 25.0) } else { 500.0 }
         };
-        let p = solve(&nodes, &[span(0.0, len, 0)], None, &mut |c| gorge(c))
+        let p = solve(&nodes, &[span(0.0, len, 0)], Mode::Draped, &mut |c| gorge(c))
             .expect("a profile");
         let road = p.height_at(mid, 46.0);
         assert!(road < 490.0, "a gorge past the fill cap keeps the terrain, got {road}");
@@ -1651,7 +1861,7 @@ mod tests {
             .map(|i| 100.0 + 6.0 * (1.0 - ((i as f64 - 15.0).abs() / 3.0)).max(0.0))
             .collect();
         let mut road = terrain.clone();
-        limit_road_grade(&arc, &mut road, &terrain, &at_grade, 0.06);
+        limit_road_grade(&arc, &mut road, &terrain, &at_grade, 0.06, MAX_ROAD_DEVIATION_M);
         for i in 1..n {
             let g = ((road[i] - road[i - 1]) / (arc[i] - arc[i - 1])).abs();
             assert!(g <= 0.06 + 1e-9, "grade {g} too steep at node {i}");
@@ -1760,7 +1970,7 @@ mod tests {
         let at_grade = vec![true; n];
         let terrain: Vec<f64> = (0..n).map(|i| 100.0 + 0.15 * arc[i]).collect();
         let mut road = terrain.clone();
-        limit_road_grade(&arc, &mut road, &terrain, &at_grade, 0.06);
+        limit_road_grade(&arc, &mut road, &terrain, &at_grade, 0.06, MAX_ROAD_DEVIATION_M);
         for i in 0..n {
             assert!(
                 (road[i] - terrain[i]).abs() <= MAX_ROAD_DEVIATION_M + 1e-9,

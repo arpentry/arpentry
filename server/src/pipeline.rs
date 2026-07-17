@@ -126,6 +126,10 @@ pub struct Config {
     /// Directory for stage-artifact GeoJSON dumps (scene graph, solved
     /// profiles), for inspection in QGIS/kepler; `None` skips them.
     pub dump: Option<PathBuf>,
+    /// Whether detail-zoom terrain meshes are constrained by the bench
+    /// contact lines (docs/GROUND.md §3). On by default; `--no-breaklines`
+    /// is the escape hatch back to the plain lattice.
+    pub breaklines: bool,
 }
 
 /// Summary counts from a run.
@@ -216,9 +220,10 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // --- Stages 1–3: the global world model, built once before tiling ---
     // Assemble the scene graph from the transportation input, solve the
     // vertical model against the DEM at the reference zoom (the run's max —
-    // the lattice the client sees close up), and derive the engineered ground
-    // (still the raw DEM in this milestone). Everything after reads these
-    // through Arcs; no height ever depends on a tile window.
+    // the lattice the client sees close up), and derive the engineered
+    // ground (the DEM plus the earthworks and bench contact lines the solved
+    // model implies). Everything after reads these through Arcs; no height
+    // ever depends on a tile window.
     let t_model = Instant::now();
     let transportation =
         cfg.inputs.iter().find(|(l, _)| *l == layers::TRANSPORTATION).map(|(_, p)| p.clone());
@@ -330,6 +335,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             None => None,
         };
         let mut sampler = GroundSampler::new(dem, Arc::clone(&ground), solved.z_ref);
+        sampler.set_breaklines(cfg.breaklines);
         let mut sorted = sorted;
         let mut current: Option<u64> = None;
         let mut buckets: Vec<Vec<EncoderFeature>> =
@@ -536,6 +542,7 @@ fn emit_parallel(
             workers.push(scope.spawn(move || -> Result<(), Error> {
                 let flat = terrain::flat_mesh(TERRAIN_GRID);
                 let mut sampler = GroundSampler::new(dem, ground, solved.z_ref);
+                sampler.set_breaklines(cfg.breaklines);
                 loop {
                     // Blocking recv under the lock serializes idle waits only;
                     // a queued job is handed off immediately.
@@ -643,9 +650,7 @@ fn encode_tile(
     observed.push((layers::TERRAIN as usize, GeometryType::Mesh));
     let (blob, elevation, t_mesh, t_encode) = if sampler.has_elevation() {
         let t = Instant::now();
-        let grid = terrain::grid_for(z, solved.z_ref);
-        let (mesh, emin, emax) =
-            terrain::elevated_mesh(grid, &bounds, |lon, lat| sampler.corner(lon, lat, z));
+        let (mesh, emin, emax) = sampler.terrain_mesh(&bounds, z);
         let t_mesh = t.elapsed();
         let t = Instant::now();
         let blob = tile_build::build_tile_q(&bounds, Some(&mesh), &enc_layers, quality);
@@ -1242,9 +1247,7 @@ fn flush_tile(
     layer_stats.observe(layers::TERRAIN as usize, z, GeometryType::Mesh);
     let blob = if sampler.has_elevation() {
         let t_terrain = Instant::now();
-        let grid = terrain::grid_for(z, solved.z_ref);
-        let (mesh, emin, emax) =
-            terrain::elevated_mesh(grid, &bounds, |lon, lat| sampler.corner(lon, lat, z));
+        let (mesh, emin, emax) = sampler.terrain_mesh(&bounds, z);
         stats.timings.terrain += t_terrain.elapsed();
         elevation.0 = elevation.0.min(emin);
         elevation.1 = elevation.1.max(emax);
@@ -1701,6 +1704,7 @@ mod tests {
             threads: 0,
             brotli_quality: tile_build::DEFAULT_QUALITY,
             dump: None,
+            breaklines: true,
         };
         let stats = run(&cfg).expect("pipeline run");
         assert!(stats.tiles_written > 0, "expected some tiles");

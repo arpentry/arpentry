@@ -1,10 +1,12 @@
 //! Stage 2 — solve the vertical model (docs/GENERATION.md §6).
 //!
-//! One pass over the assembled scene graph turns topology into geometry: every
-//! corridor that needs a vertical model (a structure span, or an engineered
-//! grade) gets a [`Profile`] — road-surface heights everywhere along it,
-//! anchored to the reference terrain at its at-grade spans and interpolated at
-//! a gentle grade across its structures.
+//! One pass over the assembled scene graph turns topology into geometry:
+//! every corridor that needs a vertical model — every drivable road, plus
+//! anything carrying a structure span — gets a [`Profile`] (docs/GROUND.md
+//! §1): road-surface heights everywhere along it, anchored to the reference
+//! terrain at its at-grade spans and interpolated at a gentle grade across
+//! its structures. The [`Mode`] the corridor's class implies parameterises
+//! the solve; there is no second vertical model.
 //!
 //! The reference terrain is the *rendered* ground at the reference zoom (the
 //! run's maximum): the same global [`terrain::surface_height`] lattice the
@@ -30,7 +32,7 @@ use crate::project::Bounds;
 use crate::scene::{CorridorId, SceneGraph, Span, SpanKind};
 use crate::terrain;
 
-pub use profile::Profile;
+pub use profile::{Mode, Profile};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -127,7 +129,8 @@ pub fn run(
                         i
                     };
                     let c = &scene.corridors[todo[i]];
-                    let solved = profile::solve(&c.nodes, &c.spans, c.class.grade_limit(), &mut |p| {
+                    let mode = Mode::for_class(c.class, c.drivable);
+                    let solved = profile::solve(&c.nodes, &c.spans, mode, &mut |p| {
                         reference_surface(&mut dem, z_ref, p.x, p.y)
                     });
                     results.lock().expect("solve results poisoned")[todo[i]] = solved;
@@ -297,7 +300,9 @@ mod tests {
             arc: arc.clone(),
             cos_lat,
             class: RoadClass::Minor,
+            class_key: String::new(),
             link: false,
+            drivable: true,
             spans,
             segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],

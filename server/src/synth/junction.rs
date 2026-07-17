@@ -147,16 +147,20 @@ impl JunctionModel {
     }
 }
 
-/// Bakes a plate for every corridor junction with three or more legs, at the
-/// height its profiled members share (the Plan-B weld made them agree). A
-/// junction with no profiled member has no known height and is skipped (its
-/// at-grade plate belongs to the later ground-draped increment).
+/// Bakes a plate for every junction with three or more legs. A junction with
+/// an *engineered* member sits at a fixed level — the height the welds made
+/// its profiled members share (an interchange is flat at its merge). A
+/// street junction drapes per vertex on the engineered ground instead: its
+/// members' benches already agree there (the street weld), and a fixed disc
+/// would cut into the slope the intersection genuinely sits on. A junction
+/// with no profiled member has no known height and is skipped.
 pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> JunctionModel {
     let mut junctions = Vec::new();
     for j in &scene.junctions {
         let mut legs = Vec::new();
         let mut level: Option<f64> = None;
-        let mut class: Option<RoadClass> = None;
+        let mut engineered = false;
+        let mut class: Option<&str> = None;
         for m in &j.members {
             let c = &scene.corridors[m.corridor as usize];
             // Legs span the surface band's edge (paint half-width plus the
@@ -168,9 +172,11 @@ pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> JunctionModel {
             if let Some(p) = solved.profile(m.corridor) {
                 let h = p.road_at_arc(m.arc);
                 level = Some(level.map_or(h, |l| l.max(h)));
-                // The highest-standing member sets the styling class.
+                engineered |= c.class.grade_limit().is_some();
+                // The highest-standing member sets the styling class — the
+                // raw Overture class, so the plate matches its street colour.
                 if class.is_none() || h >= level.unwrap() - 1e-9 {
-                    class = Some(c.class);
+                    class = Some(c.class_key.as_str());
                 }
             }
         }
@@ -179,22 +185,12 @@ pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> JunctionModel {
         };
         junctions.push(BakedJunction {
             point: j.point,
-            level_mm: Some((level_m * 1000.0).round() as i32),
-            class: class_name(class.unwrap_or(RoadClass::Minor)).to_string(),
+            level_mm: engineered.then(|| (level_m * 1000.0).round() as i32),
+            class: match class {
+                Some(c) if !c.is_empty() => c.to_string(),
+                _ => "residential".to_string(),
+            },
             legs,
-        });
-    }
-    // At-grade road junctions: legs already carry heading and half-width; the
-    // plate drapes on the ground (no fixed level).
-    for rj in &scene.road_junctions {
-        if rj.legs.len() < 3 {
-            continue;
-        }
-        junctions.push(BakedJunction {
-            point: rj.point,
-            level_mm: None,
-            class: if rj.class.is_empty() { "residential".to_string() } else { rj.class.clone() },
-            legs: rj.legs.iter().map(|&(e, n, half_w)| Leg { e, n, half_w }).collect(),
         });
     }
     JunctionModel::build(junctions)

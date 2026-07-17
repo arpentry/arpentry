@@ -35,6 +35,9 @@ pub struct RawSegment {
     pub class: RoadClass,
     /// Whether the subclass marks a ramp (`link`) — narrower structures.
     pub link: bool,
+    /// Whether the class is drivable ([`crate::priors::paint_width_m`]) —
+    /// drivable segments always corridor and get a solved profile.
+    pub drivable: bool,
     /// Raw class string — splice compatibility compares the exact class, not
     /// the coarser [`RoadClass`] buckets.
     pub class_key: String,
@@ -369,7 +372,12 @@ fn build_corridor(
         Corridor {
             id,
             class: chain.first().map(|&(si, _)| segments[si].class).unwrap_or(RoadClass::Minor),
+            class_key: chain
+                .first()
+                .map(|&(si, _)| segments[si].class_key.clone())
+                .unwrap_or_default(),
             link: chain.iter().all(|&(si, _)| segments[si].link),
+            drivable: chain.iter().any(|&(si, _)| segments[si].drivable),
             nodes,
             arc,
             cos_lat,
@@ -504,6 +512,7 @@ mod tests {
             line,
             class: RoadClass::Motorway,
             link: false,
+            drivable: true,
             class_key: "motorway".into(),
             subtype_key: "road".into(),
             level_runs: runs,

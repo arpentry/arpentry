@@ -139,6 +139,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
     let mut threads: usize = 0;
     let mut brotli_quality: i32 = arpentry_server::tile_build::DEFAULT_QUALITY;
     let mut dump: Option<PathBuf> = None;
+    let mut breaklines = true;
 
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
@@ -154,6 +155,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
             "--threads" => threads = parse_num(&value(&mut it, "--threads")?, "--threads")?,
             "--brotli" => brotli_quality = parse_num(&value(&mut it, "--brotli")?, "--brotli")?,
             "--dump" => dump = Some(PathBuf::from(value(&mut it, "--dump")?)),
+            "--no-breaklines" => breaklines = false,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -177,6 +179,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
         threads,
         brotli_quality,
         dump,
+        breaklines,
     })
 }
 

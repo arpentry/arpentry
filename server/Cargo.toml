@@ -47,6 +47,7 @@ serde_json = "1"
 # terrarium tiles. Only the two formats we need are enabled to keep the build lean.
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["webp", "png"] }
+spade = "2.15.1"
 #   Milestone 5 pipeline: crossbeam-channel, rayon, clap, anyhow, thiserror, tracing, indicatif
 
 [profile.release]

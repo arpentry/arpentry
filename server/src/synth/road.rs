@@ -1,32 +1,23 @@
 //! Draped-road generator: bakes per-vertex elevation onto a road centerline.
 //!
-//! A road with no corridor profile sits on the rendered ground
-//! ([`GroundSampler::surface`], the same lattice the terrain mesh
-//! triangulates, consistent across tiles). A road *with* a solved profile
-//! renders at
+//! Two regimes, split at the reference zoom (docs/GROUND.md §4):
 //!
-//! ```text
-//! surface(z) + max(road_m − surface(z_ref), 0)
-//! ```
+//! - **At `z_ref`** the road reads the engineered ground exactly: inside a
+//!   bench the exact roadbed target ([`GroundSampler::bed_target`] — the
+//!   profile the earthworks were built from, which the breakline-constrained
+//!   terrain mesh holds flat under the road), and on unbenched stretches the
+//!   rendered surface itself ([`GroundSampler::surface`], within the
+//!   earthwork threshold of the profile by construction). A cut renders as a
+//!   cut: the terrain carves with the road, so no clamp over missed cuttings
+//!   is needed.
+//! - **At coarser zooms** the per-zoom surface is the datum and the road
+//!   carries its zoom-independent engineered offset,
+//!   `surface(z) + max(road_m − surface(z_ref), 0)`, clamped to fills: the
+//!   coarse lattice cannot carry a bench, so the road hugs the terrain that
+//!   *is* drawn (invariant 4) and never sinks below it.
 //!
-//! — its solved height, expressed relative to the engineered rendered ground
-//! at the reference zoom. Wherever the terrain lattice captured the
-//! corridor's earthwork the correction is ~zero, so at `z_ref` the road is
-//! exactly `road_m`: it meets its structures with no step (invariant 2) and
-//! lies on the drawn embankment rather than floating twice its height above
-//! it. At coarser zooms the per-zoom surface is the datum, so the road still
-//! hugs that zoom's rendered terrain (invariant 4) with the same
-//! zoom-independent engineered offset.
-//!
-//! The `max(…, 0)` clamps the correction to fills: the lattice is far coarser
-//! than a cutting's footprint (a z14 cell spans ~150 m against a ~18 m
-//! earthwork reach), so on bumpy relief a grade-limited cut often fails to
-//! pull any lattice vertex down and the drawn ground keeps standing metres
-//! above the solved grade. Paint baked *below* the drawn ground is beyond the
-//! viewer's depth bias at close range — the road visibly breaks against every
-//! such bump. Clamped, the paint rides the drawn ground through the missed
-//! cutting (and exactly on it wherever the earthwork did capture the mesh),
-//! staying visible at any viewing distance.
+//! A road with no profile (a path, rail) sits on the rendered ground at
+//! every zoom.
 
 use geo_types::{Coord, Geometry, LineString, MultiLineString};
 
@@ -116,30 +107,25 @@ pub(crate) fn surface_height(
         // mid-span; paint baked at road height sinks inside the solid wherever
         // the fitted ramp rises above it.
         Some(p) if deck => p.deck_height_at(lon, lat),
-        // At the reference zoom the datum and the reference surface are the
-        // same sample, so this is max(road_m, surface): the solved height,
-        // never below the drawn ground (see the module doc on the clamp).
-        Some(p) if z == z_ref => {
-            let surface = sampler.surface(bounds, lon, lat, z);
-            p.height_at(lon, lat).max(surface)
-        }
+        // At the reference zoom every road rides the engineered ground
+        // exactly: the roadbed target inside a bench (the profile the
+        // earthworks were built from — the breakline-constrained terrain
+        // holds it flat under the road), the rendered surface on unbenched
+        // stretches (see the module doc). No clamp: a cut renders as a cut
+        // because the terrain carves with the road.
+        _ if z == z_ref => match sampler.bed_target(lon, lat) {
+            Some(bed) => bed,
+            None => sampler.surface(bounds, lon, lat, z),
+        },
+        // Coarser zooms: the per-zoom surface plus the zoom-independent
+        // engineered offset, clamped to fills (the coarse-LOD rule — this
+        // lattice cannot carry a bench, so the road hugs the drawn ground).
         Some(p) => {
             let surface = sampler.surface(bounds, lon, lat, z);
             let ref_bounds = solve::tile_containing(z_ref, lon, lat);
             let lift = p.height_at(lon, lat) - sampler.surface(&ref_bounds, lon, lat, z_ref);
             surface + lift.max(0.0)
         }
-        // An unclaimed street rides its bed at the reference zoom: the ground
-        // stage benches the terrain under every drivable road (flat across,
-        // natural grade along — D3), but the rendered lattice is far coarser
-        // than a street's footprint, so the drape takes the exact bed height
-        // instead of the tilted in-cell interpolation. Coarser zooms keep the
-        // per-zoom surface — the bench pulls their corners toward the bed
-        // wherever the lattice can see it.
-        None if z == z_ref => match sampler.bed_target(lon, lat) {
-            Some(bed) => bed,
-            None => sampler.surface(bounds, lon, lat, z),
-        },
         None => sampler.surface(bounds, lon, lat, z),
     }
 }

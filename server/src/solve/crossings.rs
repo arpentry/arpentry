@@ -325,13 +325,15 @@ mod tests {
             arc,
             cos_lat,
             class: RoadClass::Secondary,
+            class_key: "secondary".into(),
             link: false,
+            drivable: true,
             spans: spans.clone(),
             segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],
         };
         let profile =
-            super::super::profile::solve(&nodes, &spans, None, &mut |_| 372.0).expect("profile");
+            super::super::profile::solve(&nodes, &spans, crate::solve::Mode::Draped, &mut |_| 372.0).expect("profile");
         let mid = Coord { x: 6.0 + deg * 0.5, y: 46.0 };
         let mut scene = SceneGraph::new(vec![corridor]);
         scene.crossings = vec![Crossing {
@@ -400,7 +402,9 @@ mod tests {
             arc,
             cos_lat,
             class: RoadClass::Secondary,
+            class_key: "secondary".into(),
             link: false,
+            drivable: true,
             spans: spans.clone(),
             segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],
@@ -416,7 +420,7 @@ mod tests {
         }];
 
         let mut profiles =
-            vec![super::super::profile::solve(&nodes, &spans, None, &mut |_| 372.0)];
+            vec![super::super::profile::solve(&nodes, &spans, crate::solve::Mode::Draped, &mut |_| 372.0)];
         apply(&scene, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
         let ceiling = 372.0 - priors::TUNNEL_HEIGHT_M - priors::TUNNEL_COVER_M;
@@ -464,7 +468,9 @@ mod tests {
             arc,
             cos_lat,
             class: RoadClass::Minor,
+            class_key: String::new(),
             link: false,
+            drivable: true,
             spans: spans.clone(),
             segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],
@@ -483,7 +489,7 @@ mod tests {
             under_level: -1,
         }];
 
-        let mut profiles = vec![super::super::profile::solve(&nodes, &spans, None, &mut elev)];
+        let mut profiles = vec![super::super::profile::solve(&nodes, &spans, crate::solve::Mode::Draped, &mut elev)];
         apply(&scene, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
         let floor = 445.0 - priors::TUNNEL_HEIGHT_M - priors::TUNNEL_COVER_M;
@@ -536,7 +542,9 @@ mod tests {
                 arc,
                 cos_lat,
                 class: RoadClass::Secondary,
+                class_key: String::new(),
                 link: false,
+                drivable: true,
                 spans: spans.clone(),
                 segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
                 connectors: vec![],
@@ -547,7 +555,9 @@ mod tests {
                 arc: over_arc,
                 cos_lat,
                 class: RoadClass::Secondary,
+                class_key: String::new(),
                 link: false,
+                drivable: true,
                 spans: vec![],
                 segments: vec![SegmentRef { source: 2, node0: 0, node1: n - 1, properties: vec![] }],
                 connectors: vec![],
@@ -565,8 +575,8 @@ mod tests {
         // The tunnel corridor solves at 372 m; the "crossing" road at 100 m —
         // a 265 m sink demand, far past any plausible underpass.
         let mut profiles = vec![
-            super::super::profile::solve(&nodes, &spans, None, &mut |_| 372.0),
-            super::super::profile::solve(&over_nodes, &[], None, &mut |_| 100.0),
+            super::super::profile::solve(&nodes, &spans, crate::solve::Mode::Draped, &mut |_| 372.0),
+            super::super::profile::solve(&over_nodes, &[], crate::solve::Mode::Draped, &mut |_| 100.0),
         ];
         apply(&scene, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
@@ -596,14 +606,16 @@ mod tests {
         let arc: Vec<f64> =
             (0..n).map(|i| 0.008 * crate::scene::DEG_M * i as f64 / (n - 1) as f64).collect();
         let profile =
-            super::super::profile::solve(&nodes, &[], None, &mut |_| 500.0).expect("profile");
+            super::super::profile::solve(&nodes, &[], crate::solve::Mode::Draped, &mut |_| 500.0).expect("profile");
         scene.corridors.push(Corridor {
             id: 1,
             nodes,
             arc,
             cos_lat,
             class: RoadClass::Secondary,
+            class_key: String::new(),
             link: false,
+            drivable: true,
             spans: vec![],
             segments: vec![SegmentRef { source: 2, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],
@@ -655,14 +667,16 @@ mod tests {
             Span { arc0: 0.6 * total, arc1: total, level: 0, kind: SpanKind::Grade },
         ];
         let profile =
-            super::super::profile::solve(&nodes, &spans, None, &mut |_| 372.0).expect("profile");
+            super::super::profile::solve(&nodes, &spans, crate::solve::Mode::Draped, &mut |_| 372.0).expect("profile");
         scene.corridors.push(Corridor {
             id: 1,
             nodes,
             arc,
             cos_lat,
             class: RoadClass::Secondary,
+            class_key: String::new(),
             link: false,
+            drivable: true,
             spans,
             segments: vec![SegmentRef { source: 2, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],
@@ -700,7 +714,9 @@ mod tests {
             arc: vec![0.0, 100.0],
             cos_lat,
             class: RoadClass::Secondary,
+            class_key: String::new(),
             link: false,
+            drivable: true,
             spans: vec![],
             segments: vec![SegmentRef { source: id as u64, node0: 0, node1: 1, properties: vec![] }],
             connectors: vec![],

@@ -230,17 +230,32 @@ five-stage pipeline in which tiling is the *last* and dumbest step:
    terrain anchors at-grade road spans; grade ceilings per class; clearance
    inequalities at crossings and over water; continuity at junctions;
    deviation budgets against the ground; flat lakes and monotone rivers; a
-   base elevation per building. Output: an elevation profile for every road
-   edge, a level for every water body, and a founding plan for every
+   base elevation per building. *Every drivable road* gets a solved profile —
+   engineered classes hold their grade ceiling, minor streets hold a
+   per-class bed grade within a tight deviation budget; there is no second,
+   weaker vertical model for the unclaimed network. The terrain reference a
+   profile anchors to is *conditioned symmetrically*: narrow notches are
+   filled and narrow convex bumps are shaved, both bounded in span and depth,
+   so DEM noise never enters a profile while genuine relief always does.
+   Junction welds hold C0 continuity across the whole network, not only
+   where corridors meet. Output: an elevation profile for every drivable
+   road, a level for every water body, and a founding plan for every
    building, all independent of zoom and tile.
 
 3. **Derive the engineered ground.** Apply the earthworks the solved model
    implies to the natural DEM: embankment and cutting footprints along roads,
    portal holes, underpass troughs with retaining-wall breaklines, building
-   platforms, water beds. Output: the single ground function of invariant 1.
-   The per-zoom terrain meshes are decimated from it, under the constraint
-   that decimation preserves the contact lines (road edges, building bases,
-   shorelines) each zoom needs.
+   platforms, water beds. The imprint rule is uniform: wherever a profiled
+   road departs the natural ground beyond the earthwork threshold, the
+   ground is pulled to the profile — flat across the bench, feathered at the
+   batter, blended by share where benches overlap. Output: the single ground
+   function of invariant 1. The per-zoom terrain meshes are decimated from
+   it, under the constraint that decimation preserves the contact lines
+   (road edges, building bases, shorelines) each zoom needs: at detail zooms
+   the mesh is a constrained triangulation whose constraints are the bench
+   contact lines, so the drawn ground holds the bench exactly under every
+   road; coarser rungs keep the regular lattice, and roads carry a per-zoom
+   datum lift instead (`docs/GROUND.md`).
 
 4. **Synthesize geometry.** Parameterized generators per feature class, all
    reading solved heights and the engineered ground, adding no new inference:
