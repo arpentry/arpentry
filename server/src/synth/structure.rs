@@ -144,16 +144,21 @@ struct Accum {
     z: Vec<i32>,
     indices: Vec<u32>,
     normals: Vec<i8>,
+    edge_across: Vec<i8>,
 }
 
 impl Accum {
-    fn push(&mut self, qx: u16, qy: u16, z: i32, n: (i8, i8)) -> u32 {
+    /// `across` is the signed across-carriageway coordinate (snorm ±127 at the
+    /// paved edge, 0 at the centre / on a non-drivable face) driving the deck
+    /// fragment's analytic edge AA. Only a bridge deck's top edges carry ±127.
+    fn push(&mut self, qx: u16, qy: u16, z: i32, n: (i8, i8), across: i8) -> u32 {
         let i = self.x.len() as u32;
         self.x.push(qx);
         self.y.push(qy);
         self.z.push(z);
         self.normals.push(n.0);
         self.normals.push(n.1);
+        self.edge_across.push(across);
         i
     }
 
@@ -171,7 +176,7 @@ impl Accum {
             z: self.z,
             indices: self.indices,
             normals: self.normals,
-            edge_across: Vec::new(),
+            edge_across: self.edge_across,
         })
     }
 }
@@ -225,7 +230,7 @@ fn sweep_deck(
             left_n: d.left_n,
         })
         .collect();
-    sweep_prism(acc, frame, bounds, &sections, half_w);
+    sweep_prism(acc, frame, bounds, &sections, half_w, true);
     let n = sections.len();
     if n >= 2 {
         if !on_tile_edge(pts[0], bounds) {
@@ -281,7 +286,7 @@ fn sweep_bore(
         return;
     }
 
-    sweep_prism(acc, frame, bounds, &sections, half_w);
+    sweep_prism(acc, frame, bounds, &sections, half_w, false);
 
     let n = sections.len();
     if cap_low {
@@ -682,11 +687,22 @@ fn cap_end(
 /// shades continuously instead of as flat panels. Across faces vertices are
 /// *not* shared: the deck's edges stay hard creases. Cull mode is off on the
 /// client, so winding only feeds lighting via the normals.
-fn sweep_prism(acc: &mut Accum, frame: &Frame, bounds: &Bounds, sections: &[Section], half_w: f64) {
+fn sweep_prism(
+    acc: &mut Accum,
+    frame: &Frame,
+    bounds: &Bounds,
+    sections: &[Section],
+    half_w: f64,
+    top_is_road: bool,
+) {
     let n = sections.len();
     if n < 2 {
         return;
     }
+    // A bridge deck's top face IS the carriageway, so its two edge strips carry
+    // the ±1 across-coord for analytic edge AA (0 at the interpolated centre).
+    // A tunnel's box top is its roof, not a drivable surface, so it stays 0.
+    let (a_left, a_right) = if top_is_road { (127i8, -127i8) } else { (0, 0) };
     // Vertex ids per section, per face: top left/right, bottom left/right,
     // left wall bottom/top, right wall bottom/top.
     let (mut tl, mut tr) = (Vec::with_capacity(n), Vec::with_capacity(n));
@@ -714,14 +730,14 @@ fn sweep_prism(acc: &mut Accum, frame: &Frame, bounds: &Bounds, sections: &[Sect
         let n_right = frame.encode_enu(-s.left_e, -s.left_n, 0.0);
         let l = corner(s, 1.0, frame, bounds, half_w);
         let r = corner(s, -1.0, frame, bounds, half_w);
-        tl.push(acc.push(l.0, l.1, s.top_mm, n_top));
-        tr.push(acc.push(r.0, r.1, s.top_mm, n_top));
-        bl.push(acc.push(l.0, l.1, s.bot_mm, n_bot));
-        br.push(acc.push(r.0, r.1, s.bot_mm, n_bot));
-        lb.push(acc.push(l.0, l.1, s.bot_mm, n_left));
-        lt.push(acc.push(l.0, l.1, s.top_mm, n_left));
-        rb.push(acc.push(r.0, r.1, s.bot_mm, n_right));
-        rt.push(acc.push(r.0, r.1, s.top_mm, n_right));
+        tl.push(acc.push(l.0, l.1, s.top_mm, n_top, a_left));
+        tr.push(acc.push(r.0, r.1, s.top_mm, n_top, a_right));
+        bl.push(acc.push(l.0, l.1, s.bot_mm, n_bot, 0));
+        br.push(acc.push(r.0, r.1, s.bot_mm, n_bot, 0));
+        lb.push(acc.push(l.0, l.1, s.bot_mm, n_left, 0));
+        lt.push(acc.push(l.0, l.1, s.top_mm, n_left, 0));
+        rb.push(acc.push(r.0, r.1, s.bot_mm, n_right, 0));
+        rt.push(acc.push(r.0, r.1, s.top_mm, n_right, 0));
     }
     for i in 0..n - 1 {
         acc.tri(tl[i], tr[i], tr[i + 1]);
@@ -745,10 +761,11 @@ fn quad(
     p3: ((u16, u16), i32),
     nrm: (i8, i8),
 ) {
-    let v0 = acc.push((p0.0).0, (p0.0).1, p0.1, nrm);
-    let v1 = acc.push((p1.0).0, (p1.0).1, p1.1, nrm);
-    let v2 = acc.push((p2.0).0, (p2.0).1, p2.1, nrm);
-    let v3 = acc.push((p3.0).0, (p3.0).1, p3.1, nrm);
+    // Caps, piers and abutment seats are all non-drivable faces → across 0.
+    let v0 = acc.push((p0.0).0, (p0.0).1, p0.1, nrm, 0);
+    let v1 = acc.push((p1.0).0, (p1.0).1, p1.1, nrm, 0);
+    let v2 = acc.push((p2.0).0, (p2.0).1, p2.1, nrm, 0);
+    let v3 = acc.push((p3.0).0, (p3.0).1, p3.1, nrm, 0);
     acc.tri(v0, v1, v2);
     acc.tri(v0, v2, v3);
 }
