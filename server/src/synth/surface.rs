@@ -60,6 +60,15 @@ pub fn ribbon(
     let Synth::Road { corridor, deck: false } = f.synth else {
         return None;
     };
+    // Markings are also `Road { deck: false }` and carry their own thin
+    // `width_m`, but they are painted lines, not carriageways — never give one
+    // a band. (Also what lets `stamp_synth` drop a carriageway's fill stroke
+    // "where a band exists" without mistaking a marking for a road.)
+    if f.properties.iter().any(|(k, v)| {
+        k.as_str() == "class" && matches!(v, Value::String(s) if s.as_str() == "marking")
+    }) {
+        return None;
+    }
     let width_m = f.properties.iter().find_map(|(k, v)| match (k.as_str(), v) {
         ("width_m", Value::Double(w)) => Some(*w),
         _ => None,

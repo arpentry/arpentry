@@ -745,12 +745,26 @@ fn add_junction_plates(
     }
 }
 
+/// Whether a transportation feature is a painted marking (class `marking`)
+/// rather than a carriageway. Markings are tagged `Synth::Road` like the paint
+/// they ride, so this class check is what separates them from a road when the
+/// fill stroke is dropped — markings keep their SDF stroke at every zoom.
+fn is_marking(f: &EncoderFeature) -> bool {
+    f.properties
+        .iter()
+        .any(|(k, v)| k.as_str() == "class" && matches!(v, Value::String(s) if s.as_str() == "marking"))
+}
+
 /// Stage 4 for the tile: runs each transportation feature's generator against
 /// the solved model — bridge decks and tunnel bores swept on their corridor's
 /// profile, roads draped on the rendered ground (plus their corridor's solved
-/// cut/fill where one exists). At detail zooms each at-grade drivable road
-/// also gains its surface band, built from the freshly baked centerline and
-/// trimmed back at the junction plates near this tile (see
+/// cut/fill where one exists). At the surface zoom the carriageway fill turns
+/// to mesh: each at-grade drivable road gains its surface band (built from the
+/// freshly baked centerline, trimmed back at the junction plates near this
+/// tile) and every road's SDF fill stroke is dropped — the at-grade band, or
+/// the structure's own deck/bore mesh, is the carriageway now, so the paint
+/// isn't laid down twice. Markings keep their stroke (they ride the mesh), and
+/// below the surface zoom no band is built and roads stay pure draped SDF (see
 /// [`synth::surface`]). See [`synth::emit`].
 fn stamp_synth(
     buckets: &mut [Vec<EncoderFeature>],
@@ -769,13 +783,36 @@ fn stamp_synth(
         } else {
             Vec::new()
         };
+    let surface_zoom = z >= crate::priors::ROAD_SURFACE_MIN_ZOOM;
     let mut bands = Vec::new();
-    for f in &mut buckets[layers::TRANSPORTATION as usize] {
+    buckets[layers::TRANSPORTATION as usize].retain_mut(|f| {
         synth::emit(f, sampler, solved, z, bounds);
-        if let Some(band) = synth::surface::ribbon(f, sampler, solved, z, bounds, &near) {
-            bands.push(band);
+        // A structure's carriageway stroke (`deck: true`) is the SDF fill
+        // re-painted over a bridge deck or tunnel bore. At the surface zoom the
+        // structure's mesh top is that fill and its markings ride it as their
+        // own features, so drop the stroke — the same double-paint we drop for
+        // at-grade bands. Markings are `deck: true` too; the class check keeps
+        // them. Below the surface zoom the stroke stays as the deck's SDF fill.
+        if surface_zoom
+            && matches!(f.synth, Synth::Road { deck: true, .. })
+            && !is_marking(f)
+        {
+            return false;
         }
-    }
+        match synth::surface::ribbon(f, sampler, solved, z, bounds, &near) {
+            // The band is now this road's fill surface, so drop the SDF fill
+            // stroke it was derived from — the carriageway is no longer painted
+            // twice. Everything that returns None keeps its stroke: markings,
+            // non-drivable roads (no `width_m`), DEM-less runs (no elevation),
+            // and every feature below the surface zoom — where roads stay pure
+            // draped SDF.
+            Some(band) => {
+                bands.push(band);
+                false
+            }
+            None => true,
+        }
+    });
     buckets[layers::TRANSPORTATION as usize].extend(bands);
 }
 
