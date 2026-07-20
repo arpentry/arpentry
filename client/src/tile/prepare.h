@@ -83,6 +83,10 @@ typedef struct {
        whose top face is painted the road's own asphalt grey. NULL for buildings
        and for structures decoded without a style. */
     uint8_t *color;
+    /* Per-vertex signed across-carriageway coord (int8 snorm, ±127 = paved edge,
+       0 = centre), driving analytic edge AA on drivable surface meshes. NULL when
+       the mesh carries none (terrain, buildings, plates) — falls back to MSAA. */
+    int8_t *edge_across;
     size_t vertex_count, index_count;
 } arpt_building_prim;
 

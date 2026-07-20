@@ -392,14 +392,21 @@ static inline void restore_terrain_pipeline(arpt_renderer *r) {
                                       NULL);
 }
 
-static inline int8_t *pad_normals_2to4(const int8_t *normals, size_t count) {
+/* Widen int8×2 normals to a 4-byte stride (wgpu needs the buffer 4-aligned) and,
+   for drivable surface meshes, pack the signed across-carriageway coord into the
+   otherwise-unused third byte (read by the deck shader as Snorm8x2.x for analytic
+   edge AA). `edge_across` may be NULL — terrain/buildings/plates leave byte 2 at
+   0, which the shader treats as "centre" (no AA). Byte 3 stays reserved. */
+static inline int8_t *pad_normals_2to4(const int8_t *normals,
+                                       const int8_t *edge_across, size_t count) {
     int8_t *padded = calloc(count, 4);
     if (!padded) return NULL;
-    if (normals) {
-        for (size_t i = 0; i < count; i++) {
+    for (size_t i = 0; i < count; i++) {
+        if (normals) {
             padded[i * 4]     = normals[i * 2];
             padded[i * 4 + 1] = normals[i * 2 + 1];
         }
+        if (edge_across) padded[i * 4 + 2] = edge_across[i];
     }
     return padded;
 }

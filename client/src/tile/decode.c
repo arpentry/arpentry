@@ -471,13 +471,17 @@ static bool collect_layer_meshes(const void *flatbuf,
     out->normals = calloc(total_v, 2);
     out->indices = malloc(total_i * sizeof(uint32_t));
     out->color = want_color ? malloc(total_v * 4) : NULL;
+    /* Zeroed by default: a mesh without across-coords reads 0 everywhere, which
+       the shader treats as "centre" (fully opaque, no analytic AA → MSAA). */
+    out->edge_across = calloc(total_v, 1);
     if (!out->xy || !out->z || !out->normals || !out->indices ||
-        (want_color && !out->color)) {
+        !out->edge_across || (want_color && !out->color)) {
         free(out->xy);
         free(out->z);
         free(out->normals);
         free(out->indices);
         free(out->color);
+        free(out->edge_across);
         memset(out, 0, sizeof(*out));
         return false;
     }
@@ -511,6 +515,9 @@ static bool collect_layer_meshes(const void *flatbuf,
         flatbuffers_int8_vec_t nv = arpentry_tiles_MeshGeometry_normals(mesh);
         bool have_n = nv && flatbuffers_int8_vec_len(nv) == 2 * vc;
 
+        flatbuffers_int8_vec_t av = arpentry_tiles_MeshGeometry_edge_across(mesh);
+        bool have_a = av && flatbuffers_int8_vec_len(av) == vc;
+
         /* Resolve this feature's deck colour once; alpha 0 (an unresolved class)
            tells the shader to fall back to its motorway-grey default. */
         uint8_t cr = 0, cg = 0, cb = 0, ca = 0;
@@ -535,6 +542,7 @@ static bool collect_layer_meshes(const void *flatbuf,
                 out->normals[(vi + v) * 2] = nv[2 * v];
                 out->normals[(vi + v) * 2 + 1] = nv[2 * v + 1];
             }
+            if (have_a) out->edge_across[vi + v] = av[v];
             if (out->color) {
                 out->color[(vi + v) * 4] = cr;
                 out->color[(vi + v) * 4 + 1] = cg;

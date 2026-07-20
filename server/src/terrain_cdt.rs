@@ -202,7 +202,7 @@ pub fn constrained_mesh(
     if indices.is_empty() || !emin.is_finite() {
         return None;
     }
-    Some((TerrainMesh { x, y, z, indices, normals }, emin, emax))
+    Some((TerrainMesh { x, y, z, indices, normals, edge_across: Vec::new() }, emin, emax))
 }
 
 /// Liang–Barsky clip of the segment `a → b` to the tile-proper rect. A

@@ -167,7 +167,7 @@ impl Accum {
         if self.indices.is_empty() {
             return None;
         }
-        Some(TerrainMesh { x: self.x, y: self.y, z: self.z, indices: self.indices, normals: self.normals })
+        Some(TerrainMesh { x: self.x, y: self.y, z: self.z, indices: self.indices, normals: self.normals, edge_across: Vec::new() })
     }
 }
 

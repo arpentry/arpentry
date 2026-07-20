@@ -1221,6 +1221,7 @@ impl<'a> MeshGeometry<'a> {
   pub const VT_EDGE_SOUTH: flatbuffers::VOffsetT = 18;
   pub const VT_EDGE_EAST: flatbuffers::VOffsetT = 20;
   pub const VT_EDGE_NORTH: flatbuffers::VOffsetT = 22;
+  pub const VT_EDGE_ACROSS: flatbuffers::VOffsetT = 24;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -1232,6 +1233,7 @@ impl<'a> MeshGeometry<'a> {
     args: &'args MeshGeometryArgs<'args>
   ) -> flatbuffers::WIPOffset<MeshGeometry<'bldr>> {
     let mut builder = MeshGeometryBuilder::new(_fbb);
+    if let Some(x) = args.edge_across { builder.add_edge_across(x); }
     if let Some(x) = args.edge_north { builder.add_edge_north(x); }
     if let Some(x) = args.edge_east { builder.add_edge_east(x); }
     if let Some(x) = args.edge_south { builder.add_edge_south(x); }
@@ -1316,6 +1318,13 @@ impl<'a> MeshGeometry<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, u32>>>(MeshGeometry::VT_EDGE_NORTH, None)}
   }
+  #[inline]
+  pub fn edge_across(&self) -> Option<flatbuffers::Vector<'a, i8>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, i8>>>(MeshGeometry::VT_EDGE_ACROSS, None)}
+  }
 }
 
 impl flatbuffers::Verifiable for MeshGeometry<'_> {
@@ -1335,6 +1344,7 @@ impl flatbuffers::Verifiable for MeshGeometry<'_> {
      .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, u32>>>("edge_south", Self::VT_EDGE_SOUTH, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, u32>>>("edge_east", Self::VT_EDGE_EAST, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, u32>>>("edge_north", Self::VT_EDGE_NORTH, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, i8>>>("edge_across", Self::VT_EDGE_ACROSS, false)?
      .finish();
     Ok(())
   }
@@ -1350,6 +1360,7 @@ pub struct MeshGeometryArgs<'a> {
     pub edge_south: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u32>>>,
     pub edge_east: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u32>>>,
     pub edge_north: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u32>>>,
+    pub edge_across: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, i8>>>,
 }
 impl<'a> Default for MeshGeometryArgs<'a> {
   #[inline]
@@ -1365,6 +1376,7 @@ impl<'a> Default for MeshGeometryArgs<'a> {
       edge_south: None,
       edge_east: None,
       edge_north: None,
+      edge_across: None,
     }
   }
 }
@@ -1415,6 +1427,10 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> MeshGeometryBuilder<'a, 'b, A> 
     self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(MeshGeometry::VT_EDGE_NORTH, edge_north);
   }
   #[inline]
+  pub fn add_edge_across(&mut self, edge_across: flatbuffers::WIPOffset<flatbuffers::Vector<'b , i8>>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(MeshGeometry::VT_EDGE_ACROSS, edge_across);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> MeshGeometryBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     MeshGeometryBuilder {
@@ -1446,6 +1462,7 @@ impl core::fmt::Debug for MeshGeometry<'_> {
       ds.field("edge_south", &self.edge_south());
       ds.field("edge_east", &self.edge_east());
       ds.field("edge_north", &self.edge_north());
+      ds.field("edge_across", &self.edge_across());
       ds.finish()
   }
 }

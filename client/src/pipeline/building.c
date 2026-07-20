@@ -20,7 +20,7 @@ void arpt__building_upload(arpt_renderer *r, arpt_tile_gpu *t,
 
     /* Pad normals to 4-byte stride */
     {
-        int8_t *padded = pad_normals_2to4(prim->normals, nv);
+        int8_t *padded = pad_normals_2to4(prim->normals, NULL, nv);
         if (!padded) return;
         t->bldg_buf_normals = create_buffer(
             r->device, r->queue, WGPUBufferUsage_Vertex, padded, nv * 4);

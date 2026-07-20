@@ -92,6 +92,7 @@ pub fn ribbon(
         z: Vec::new(),
         indices: Vec::new(),
         normals: Vec::new(),
+        edge_across: Vec::new(),
     };
     let mut anchor: Option<Coord> = None;
     for line in lines {
@@ -293,6 +294,10 @@ fn band(
             mesh.z.push(elev_mm(c.x, c.y));
             mesh.normals.push(up.0);
             mesh.normals.push(up.1);
+            // Both offset vertices are on the paved edge (the centre, at 0, is
+            // the interpolated midpoint of the pair): +1 left, -1 right. The
+            // client fragment antialiases the band edge from `1 - |across|`.
+            mesh.edge_across.push(if side > 0.0 { 127 } else { -127 });
         }
         sections += 1;
     }
@@ -315,6 +320,7 @@ mod tests {
             z: Vec::new(),
             indices: Vec::new(),
             normals: Vec::new(),
+            edge_across: Vec::new(),
         }
     }
 

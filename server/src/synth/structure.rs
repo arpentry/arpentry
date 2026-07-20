@@ -171,6 +171,7 @@ impl Accum {
             z: self.z,
             indices: self.indices,
             normals: self.normals,
+            edge_across: Vec::new(),
         })
     }
 }

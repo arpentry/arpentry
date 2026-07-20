@@ -259,6 +259,11 @@ fn mesh_geometry<'a>(
     let z = fbb.create_vector(&mesh.z);
     let indices = fbb.create_vector(&mesh.indices);
     let normals = fbb.create_vector(&mesh.normals);
+    // Only drivable surface meshes carry across-coords; leave the field absent
+    // (not an empty vector) for terrain/buildings/plates so old readers and the
+    // MSAA fallback are unaffected.
+    let edge_across =
+        (!mesh.edge_across.is_empty()).then(|| fbb.create_vector(&mesh.edge_across));
     let geom = fbt::MeshGeometry::create(
         fbb,
         &fbt::MeshGeometryArgs {
@@ -267,6 +272,7 @@ fn mesh_geometry<'a>(
             z: Some(z),
             indices: Some(indices),
             normals: Some(normals),
+            edge_across,
             ..Default::default()
         },
     );

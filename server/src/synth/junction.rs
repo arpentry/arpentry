@@ -316,7 +316,7 @@ fn plate_mesh(
         let b = 1 + (i + 1) % m;
         indices.extend_from_slice(&[0, a, b]);
     }
-    Some(TerrainMesh { x, y, z, indices, normals })
+    Some(TerrainMesh { x, y, z, indices, normals, edge_across: Vec::new() })
 }
 
 /// Appends the interior points of the corner fillet from `a`'s left corner to

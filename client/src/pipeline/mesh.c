@@ -102,9 +102,9 @@ void arpt__mesh_upload_terrain(arpt_renderer *r, arpt_tile_gpu *t,
     t->buf_z = create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex,
                              prim->z, vc * sizeof(int32_t));
 
-    /* Pad normals to 4-byte stride */
+    /* Pad normals to 4-byte stride (terrain carries no across-coords → NULL) */
     {
-        int8_t *padded = pad_normals_2to4(prim->normals, vc);
+        int8_t *padded = pad_normals_2to4(prim->normals, NULL, vc);
         if (!padded) return;
         t->buf_normals = create_buffer(r->device, r->queue,
                                        WGPUBufferUsage_Vertex, padded, vc * 4);
@@ -353,8 +353,14 @@ WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
         .format = WGPUVertexFormat_Uint16x2, .offset = 0, .shaderLocation = 0};
     WGPUVertexAttribute attr_z = {
         .format = WGPUVertexFormat_Sint32, .offset = 0, .shaderLocation = 1};
-    WGPUVertexAttribute attr_n = {
-        .format = WGPUVertexFormat_Sint8x2, .offset = 0, .shaderLocation = 2};
+    /* Two attributes share the 4-byte normals buffer: the int8×2 octahedral
+       normal at byte 0, and the signed across-carriageway coord (snorm8) the
+       server packs into byte 2 for analytic edge AA (Snorm8x2 → .x is the
+       coord, .y the reserved byte 3). */
+    WGPUVertexAttribute attr_norm[2] = {
+        {.format = WGPUVertexFormat_Sint8x2, .offset = 0, .shaderLocation = 2},
+        {.format = WGPUVertexFormat_Snorm8x2, .offset = 2, .shaderLocation = 5},
+    };
     /* Per-vertex road-class deck colour (unorm8x4 → vec4<f32> 0..1), read by the
        structure vertex entries (vs_deck / vs_deck_bridge) for the asphalt top. */
     WGPUVertexAttribute attr_color = {
@@ -365,12 +371,25 @@ WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
         {.arrayStride = 4, .stepMode = WGPUVertexStepMode_Vertex,
          .attributeCount = 1, .attributes = &attr_z},
         {.arrayStride = 4, .stepMode = WGPUVertexStepMode_Vertex,
-         .attributeCount = 1, .attributes = &attr_n},
+         .attributeCount = 2, .attributes = attr_norm},
         {.arrayStride = 4, .stepMode = WGPUVertexStepMode_Vertex,
          .attributeCount = 1, .attributes = &attr_color},
     };
 
+    /* Alpha blending so the deck fragment's analytic edge coverage (fs_deck
+       returns <1 only along a drivable surface's silhouette) fades that ~1px
+       band into the ground; every other pixel returns alpha 1 and stays
+       opaque. */
+    WGPUBlendState blend = {
+        .color = {.operation = WGPUBlendOperation_Add,
+                  .srcFactor = WGPUBlendFactor_SrcAlpha,
+                  .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha},
+        .alpha = {.operation = WGPUBlendOperation_Add,
+                  .srcFactor = WGPUBlendFactor_One,
+                  .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha},
+    };
     WGPUColorTargetState ct = {.format = format,
+                               .blend = &blend,
                                .writeMask = WGPUColorWriteMask_All};
     WGPUFragmentState frag = {
         .module = sm, .entryPoint = fs_entry, .targetCount = 1, .targets = &ct};
@@ -416,7 +435,7 @@ void arpt__mesh_upload_structure(arpt_renderer *r, arpt_mesh_draw *d,
     d->buf_z = create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex,
                              prim->z, nv * sizeof(int32_t));
     {
-        int8_t *padded = pad_normals_2to4(prim->normals, nv);
+        int8_t *padded = pad_normals_2to4(prim->normals, prim->edge_across, nv);
         if (!padded) return;
         d->buf_normals = create_buffer(
             r->device, r->queue, WGPUBufferUsage_Vertex, padded, nv * 4);

@@ -50,6 +50,11 @@ struct VsOut {
     // secondary/residential deck reads its own grey, not a hardcoded motorway
     // one. Unused by the terrain/building fragment (fs).
     @location(4) deck_color: vec4<f32>,
+    // Signed across-carriageway coordinate: ±1 at the paved edge, 0 at the
+    // centre (the interpolated midpoint of a band's edge pair). fs_deck fades
+    // the outer ~1px of a drivable surface from `1 - |across|` for a crisp
+    // analytic edge. 0 on every non-drivable face → no AA (MSAA).
+    @location(5) across: f32,
 };
 
 // sin for tile-relative angle deltas. The native sin() is compiled with fast
@@ -131,7 +136,7 @@ const BRIDGE_DEPTH_MARGIN_M: f32 = 3.0;
 const BRIDGE_DEPTH_MARGIN_FRAC: f32 = 0.0075;
 
 fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
-             deck_color: vec4<f32>) -> VsOut {
+             deck_color: vec4<f32>, across: f32) -> VsOut {
     let u = (f32(qxy.x) - 16384.0) / 32768.0;
     let v = (f32(qxy.y) - 16384.0) / 32768.0;
     let dlam = tile.rel_bounds.x + u * (tile.rel_bounds.z - tile.rel_bounds.x);
@@ -173,6 +178,7 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
         tile.sincos.z);
     out.topness = dot(obj_normal, up_ecef);
     out.deck_color = deck_color;
+    out.across = across;
 
     return out;
 }
@@ -183,7 +189,7 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
     @location(1) qz: i32,
     @location(2) oct_norm: vec2<i32>,
 ) -> VsOut {
-    return vs_common(qxy, qz, oct_norm, 0.0, vec4<f32>(0.0));
+    return vs_common(qxy, qz, oct_norm, 0.0, vec4<f32>(0.0), 0.0);
 }
 
 // Tunnel bores: carry the road-class colour, but NO depth margin — a buried
@@ -193,8 +199,9 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
     @location(1) qz: i32,
     @location(2) oct_norm: vec2<i32>,
     @location(3) deck_color: vec4<f32>,
+    @location(5) across_in: vec2<f32>,
 ) -> VsOut {
-    return vs_common(qxy, qz, oct_norm, 0.0, deck_color);
+    return vs_common(qxy, qz, oct_norm, 0.0, deck_color, across_in.x);
 }
 
 // Bridge decks: road-class colour plus the small camera-facing margin that wins
@@ -204,8 +211,9 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
     @location(1) qz: i32,
     @location(2) oct_norm: vec2<i32>,
     @location(3) deck_color: vec4<f32>,
+    @location(5) across_in: vec2<f32>,
 ) -> VsOut {
-    return vs_common(qxy, qz, oct_norm, BRIDGE_DEPTH_MARGIN_M, deck_color);
+    return vs_common(qxy, qz, oct_norm, BRIDGE_DEPTH_MARGIN_M, deck_color, across_in.x);
 }
 
 @fragment fn fs(
@@ -217,6 +225,7 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
     // interface matches VsOut — wgpu requires the vertex-output and
     // fragment-input location sets to agree.
     @location(4) deck_color: vec4<f32>,
+    @location(5) across: f32,
 ) -> @location(0) vec4<f32> {
     let margin = 0.0625;
     let tex_uv = (uv + vec2<f32>(margin, margin)) / (1.0 + 2.0 * margin);
@@ -290,6 +299,7 @@ const DECK_ASPHALT: vec3<f32> = vec3<f32>(0.5804, 0.5922, 0.6157);
     @location(2) view_pos: vec3<f32>,
     @location(3) topness: f32,
     @location(4) deck_color: vec4<f32>,
+    @location(5) across: f32,
 ) -> @location(0) vec4<f32> {
     let margin = 0.0625;
     let tex_uv = (uv + vec2<f32>(margin, margin)) / (1.0 + 2.0 * margin);
@@ -309,6 +319,17 @@ const DECK_ASPHALT: vec3<f32> = vec3<f32>(0.5804, 0.5922, 0.6157);
     // Top face → flat asphalt in the road's own class colour (or the motorway
     // fallback when the client shipped none); sides → lit concrete.
     let asphalt = select(DECK_ASPHALT, deck_color.rgb, deck_color.a > 0.0);
-    let out = mix(concrete_out, asphalt, smoothstep(0.55, 0.80, topness));
-    return vec4<f32>(out, TERRAIN_ALPHA);
+    let top = smoothstep(0.55, 0.80, topness);
+    let out = mix(concrete_out, asphalt, top);
+    // Analytic edge antialiasing on the drivable top face: `across` is ±1 at the
+    // paved silhouette and 0 at the centre, so `1 - |across|` is the normalized
+    // distance in from the edge. `fwidth(across)` is that coordinate's per-pixel
+    // change, so `edge / fwidth` fades the outer ~1px into the ground — a crisp
+    // 1px edge at any tilt, where a flat MSAA silhouette frays at grazing angle.
+    // `across` is 0 on every mesh (and face) without across-coords → edge = 1 →
+    // cov = 1, so decks/tunnels/plates and all side faces stay fully opaque.
+    let edge = 1.0 - abs(across);
+    let edge_cov = clamp(edge / max(fwidth(across), 1e-5) + 0.5, 0.0, 1.0);
+    let cov = mix(1.0, edge_cov, top);
+    return vec4<f32>(out, cov);
 }

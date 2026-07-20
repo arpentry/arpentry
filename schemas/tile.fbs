@@ -60,6 +60,9 @@ table MeshGeometry {
   edge_south: [uint32];
   edge_east: [uint32];
   edge_north: [uint32];
+  // Appended (keep last: new FlatBuffers fields go at the end so existing
+  // vtable slots are never renumbered).
+  edge_across: [int8];           // signed across-carriageway coord, snorm -127..127 = -1..1 (+/-1 at the paved edge, 0 at the centre); drives analytic edge AA on drivable surface meshes. Absent (0) = no AA (MSAA).
 }
 
 union Geometry { PointGeometry, LineGeometry, PolygonGeometry, MeshGeometry }

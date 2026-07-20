@@ -53,6 +53,11 @@ pub struct TerrainMesh {
     pub indices: Vec<u32>,
     /// Octahedral int8×2 per-vertex normals (all "up" for a flat mesh).
     pub normals: Vec<i8>,
+    /// Signed across-carriageway coordinate per vertex, snorm `-127..127` = ±1
+    /// (±1 at the paved edge, 0 at the centre), for analytic edge antialiasing
+    /// of drivable surface meshes. Empty when the mesh carries none (terrain,
+    /// buildings, plates) — the client then falls back to MSAA for that mesh.
+    pub edge_across: Vec<i8>,
 }
 
 /// Builds a flat `grid`×`grid`-cell mesh spanning the tile proper.
@@ -94,7 +99,7 @@ pub fn flat_mesh(grid: u32) -> TerrainMesh {
     // Octahedral encoding of the +Z unit normal is (0, 0).
     let normals = vec![0i8; vcount * 2];
 
-    TerrainMesh { x, y, z: vec![0; vcount], indices, normals }
+    TerrainMesh { x, y, z: vec![0; vcount], indices, normals, edge_across: Vec::new() }
 }
 
 /// Builds a `grid`×`grid`-cell mesh for the tile with per-vertex elevation
@@ -194,7 +199,7 @@ where
         emin = 0.0;
         emax = 0.0;
     }
-    (TerrainMesh { x, y, z, indices, normals }, emin, emax)
+    (TerrainMesh { x, y, z, indices, normals, edge_across: Vec::new() }, emin, emax)
 }
 
 /// Height in metres of the rendered terrain surface at `(lon, lat)`, matching the
