@@ -167,6 +167,7 @@ typedef struct arpt_tile_prims {
     arpt_building_prim buildings;
     arpt_building_prim bridges; /* server-baked bridge deck prisms (same form) */
     arpt_building_prim tunnels; /* server-baked tunnel bore prisms (same form) */
+    arpt_building_prim plates;  /* at-grade junction plates (level 0), decal-drawn */
     arpt_instance_prim instances;
     arpt_label_prim labels;
     arpt_line_label_prim line_labels;
@@ -194,13 +195,14 @@ bool arpt_decode_building_mesh(const void *flatbuf, size_t size,
 
 /* Road structures arrive as server-baked box prisms (MeshGeometry) carried inside
    the transportation layer next to the road lines. These split them by the
-   reserved `level` property so bridges and tunnels colour differently: each scans
-   the named layer and concatenates only its bridge (level > 0) or tunnel
-   (level < 0) meshes into the primitive (same form as buildings). `class_names`/
-   `colors` (the style) paint each deck top the road-class asphalt its ribbon
-   uses; pass class_count 0 to skip the per-vertex colour. Returns true and fills
-   `out` when the layer holds matching meshes; false (with `out` zeroed)
-   otherwise. */
+   reserved `level` property into three disjoint bands so each renders in its own
+   pass: elevated bridge decks (level > 0), tunnel bores (level < 0), and at-grade
+   junction plates (level == 0, via arpt_decode_plate_mesh). Each scans the named
+   layer and concatenates only its band's meshes into the primitive (same form as
+   buildings). `class_names`/`colors` (the style) paint each deck top the
+   road-class asphalt its ribbon uses; pass class_count 0 to skip the per-vertex
+   colour. Returns true and fills `out` when the layer holds matching meshes;
+   false (with `out` zeroed) otherwise. */
 bool arpt_decode_bridge_mesh(const void *flatbuf, size_t size,
                              const char *layer_name,
                              const char (*class_names)[32], int class_count,
@@ -209,6 +211,14 @@ bool arpt_decode_tunnel_mesh(const void *flatbuf, size_t size,
                              const char *layer_name,
                              const char (*class_names)[32], int class_count,
                              const float (*colors)[4], arpt_building_prim *out);
+/* At-grade junction plates (level == 0). Split from the elevated bridge decks
+   because they are coplanar with the terrain and road strokes: rendered as
+   depth-test-only decals (no depth write) so overlapping plates don't z-fight
+   each other into a herringbone moiré. Same mesh form as the others. */
+bool arpt_decode_plate_mesh(const void *flatbuf, size_t size,
+                            const char *layer_name,
+                            const char (*class_names)[32], int class_count,
+                            const float (*colors)[4], arpt_building_prim *out);
 
 void arpt_prepare_instances(const arpt_tree_data *trees, int model_count,
                             arpt_instance_prim *out);

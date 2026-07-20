@@ -503,16 +503,29 @@ static void emit_subpolyline(const uint16_t *px, const uint16_t *py,
     free(seg_len);
 }
 
+/* Painted markings are baked at their true painted width (12–15 cm), which
+   differs by kind — a 15 cm edge line vs a 12 cm centre/lane line — so they
+   render at visibly different widths. Draw every marking at one uniform width
+   so the painted network reads as a single pen (the shader's marking floor
+   still keeps it crisp when the width falls sub-pixel). A marking is any stroke
+   whose baked physical width is below this cutoff — drivable roads are ≥ 3 m. */
+#define MARKING_WIDTH_CUTOFF_M 0.5
+#define MARKING_HALF_WIDTH_M 0.06 /* 12 cm painted line, all markings alike */
+
 /* Resolve the rendered half-width for one stroke, in METRES.  A drivable road
    on a close-zoom tile takes its physical `width_m` (the tiler's engineering
    prior, the same number that sizes its bridge decks) so paint and structures
-   meet edge-to-edge; everything else takes the cartographic style width,
-   zoom-scaled and converted from quantized units at the y-axis metre scale. */
+   meet edge-to-edge; painted markings take the uniform marking width; everything
+   else takes the cartographic style width, zoom-scaled and converted from
+   quantized units at the y-axis metre scale. */
 static double resolve_half_width_m(const arpt_line_feature *line,
                                    const arpt_style *style, int level,
                                    double zoom_scale, double ay) {
-    if (line->width_m > 0.0f && level >= LINE_PHYSICAL_WIDTH_MIN_LEVEL)
+    if (line->width_m > 0.0f && level >= LINE_PHYSICAL_WIDTH_MIN_LEVEL) {
+        if (line->width_m < MARKING_WIDTH_CUTOFF_M)
+            return MARKING_HALF_WIDTH_M;
         return line->width_m * 0.5;
+    }
     return style->stroke_widths[line->cls] * zoom_scale * ay;
 }
 
@@ -910,6 +923,11 @@ void arpt_tile_prims_free(arpt_tile_prims *p) {
     free(p->tunnels.normals);
     free(p->tunnels.indices);
     free(p->tunnels.color);
+    free(p->plates.xy);
+    free(p->plates.z);
+    free(p->plates.normals);
+    free(p->plates.indices);
+    free(p->plates.color);
 
     /* instances */
     if (p->instances.batches) {

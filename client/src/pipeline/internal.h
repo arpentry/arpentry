@@ -150,6 +150,7 @@ struct arpt_tile_gpu {
        below it. */
     arpt_mesh_draw bridge;
     arpt_mesh_draw tunnel;
+    arpt_mesh_draw plate; /* at-grade junction plates, drawn as no-depth-write decals */
 
     /* Tree instances split by model index */
     WGPUBuffer tree_instance_bufs[ARPT_MAX_MODELS];
@@ -272,9 +273,15 @@ struct arpt_renderer {
        - tunnel_pipeline: NO margin (vs), so a buried bore is cleanly occluded by
          the ground it runs under. The coplanar-tie the margin solves is a deck
          problem; biasing a bore toward the camera only ghosts it through the
-         hillside as asphalt stripes near portals in top-down views. */
+         hillside as asphalt stripes near portals in top-down views.
+       - plate_pipeline: at-grade junction plates (level 0). Same margin as the
+         bridge deck (vs_deck_bridge) so they win over terrain, but NO depth
+         write — many plates overlap coplanar at a junction, and depth-writing
+         them made their equal-depth pixels z-fight into a herringbone moiré.
+         No write means they composite in painter's order, cleanly. */
     WGPURenderPipeline bridge_pipeline;
     WGPURenderPipeline tunnel_pipeline;
+    WGPURenderPipeline plate_pipeline;
     WGPUTexture bridge_tex;
     WGPUTextureView bridge_view;
     WGPUTexture tunnel_tex;
@@ -441,7 +448,8 @@ WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
                                                      const char *fs_entry,
                                                      WGPUTextureFormat format,
                                                      WGPUBindGroupLayout global_bgl,
-                                                     WGPUBindGroupLayout tile_bgl);
+                                                     WGPUBindGroupLayout tile_bgl,
+                                                     bool depth_write);
 void arpt__mesh_upload_structure(arpt_renderer *r, arpt_mesh_draw *d,
                                  const arpt_building_prim *prim);
 void arpt__mesh_draw_structure(arpt_renderer *r, arpt_mesh_draw *d,

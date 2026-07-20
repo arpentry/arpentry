@@ -339,7 +339,8 @@ WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
                                                      const char *fs_entry,
                                                      WGPUTextureFormat format,
                                                      WGPUBindGroupLayout global_bgl,
-                                                     WGPUBindGroupLayout tile_bgl) {
+                                                     WGPUBindGroupLayout tile_bgl,
+                                                     bool depth_write) {
     WGPUShaderModule sm = create_shader(device, terrain_wgsl);
     if (!sm) return NULL;
 
@@ -375,7 +376,7 @@ WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
         .module = sm, .entryPoint = fs_entry, .targetCount = 1, .targets = &ct};
     WGPUDepthStencilState ds = {
         .format = ARPT_DEPTH_FORMAT,
-        .depthWriteEnabled = true,
+        .depthWriteEnabled = depth_write,
         .depthCompare = WGPUCompareFunction_LessEqual,
         .stencilFront = {.compare = WGPUCompareFunction_Always},
         .stencilBack = {.compare = WGPUCompareFunction_Always},

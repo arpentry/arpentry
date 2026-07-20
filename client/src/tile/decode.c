@@ -382,23 +382,33 @@ static double resolve_double(arpentry_tiles_Feature_table_t feat,
     return dflt;
 }
 
-/* Keep a feature given a level filter: 0 keeps all (buildings); +1 keeps decks
-   at or above grade (level >= 0 — bridge spans plus the at-grade junction plates
-   that ride the same deck path); -1 keeps only tunnels (level < 0). At-grade
-   plates carry no level (0), so they join the bridge prim and render as a
-   road-surface deck: drawn over the terrain (the bridge margin wins the coplanar
-   tie) and under the road paint (which carries a larger margin). */
-static bool keep_by_level(arpentry_tiles_Feature_table_t feat, int sign,
+/* Level filter for the structure passes (see collect_layer_meshes). The bands
+   are disjoint so a mesh lands in exactly one primitive: tunnels below grade,
+   elevated bridge decks above it, and at-grade junction plates exactly at grade
+   (level 0). The plates are split out because, being coplanar with the terrain
+   and road strokes, they render as no-depth-write decals rather than depth-
+   writing geometry (see plate_pipeline) to avoid a herringbone z-fight. */
+#define ARPT_LEVEL_ALL 0     /* buildings: take every mesh */
+#define ARPT_LEVEL_TUNNEL -1 /* level < 0: bores, occluded by terrain */
+#define ARPT_LEVEL_BRIDGE 1  /* level > 0: elevated decks, depth-written */
+#define ARPT_LEVEL_PLATE 2   /* level == 0: at-grade junction plates (decals) */
+
+static bool keep_by_level(arpentry_tiles_Feature_table_t feat, int mode,
                           uint32_t level_key, arpentry_tiles_Value_vec_t values) {
-    if (sign == 0) return true;
+    if (mode == ARPT_LEVEL_ALL) return true;
     int64_t lv = resolve_int(feat, level_key, values, 0);
-    return sign > 0 ? lv >= 0 : lv < 0;
+    switch (mode) {
+    case ARPT_LEVEL_TUNNEL: return lv < 0;
+    case ARPT_LEVEL_BRIDGE: return lv > 0;
+    case ARPT_LEVEL_PLATE:  return lv == 0;
+    default:                return true;
+    }
 }
 
 /* Concatenate the MeshGeometry features of a layer into one mesh primitive
    (xy/z/normals/indices), offsetting indices per feature. `level_sign` filters
-   by the reserved `level` property — 0 takes all (buildings), +1 only bridges,
-   -1 only tunnels. Returns false (with `out` zeroed) when no matching mesh. */
+   by the reserved `level` property — see the ARPT_LEVEL_* bands above. Returns
+   false (with `out` zeroed) when no matching mesh. */
 static bool collect_layer_meshes(const void *flatbuf,
                                  arpentry_tiles_Layer_table_t layer,
                                  int level_sign,
@@ -592,16 +602,24 @@ bool arpt_decode_bridge_mesh(const void *flatbuf, size_t size,
                              const char *layer_name,
                              const char (*class_names)[32], int class_count,
                              const float (*colors)[4], arpt_building_prim *out) {
-    return decode_structure_mesh(flatbuf, size, layer_name, +1, class_names,
-                                 class_count, colors, out);
+    return decode_structure_mesh(flatbuf, size, layer_name, ARPT_LEVEL_BRIDGE,
+                                 class_names, class_count, colors, out);
+}
+
+bool arpt_decode_plate_mesh(const void *flatbuf, size_t size,
+                            const char *layer_name,
+                            const char (*class_names)[32], int class_count,
+                            const float (*colors)[4], arpt_building_prim *out) {
+    return decode_structure_mesh(flatbuf, size, layer_name, ARPT_LEVEL_PLATE,
+                                 class_names, class_count, colors, out);
 }
 
 bool arpt_decode_tunnel_mesh(const void *flatbuf, size_t size,
                              const char *layer_name,
                              const char (*class_names)[32], int class_count,
                              const float (*colors)[4], arpt_building_prim *out) {
-    return decode_structure_mesh(flatbuf, size, layer_name, -1, class_names,
-                                 class_count, colors, out);
+    return decode_structure_mesh(flatbuf, size, layer_name, ARPT_LEVEL_TUNNEL,
+                                 class_names, class_count, colors, out);
 }
 
 /* Line decoding */

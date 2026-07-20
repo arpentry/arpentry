@@ -41,11 +41,18 @@ struct GlobalUniforms {
 const MIN_HALF_WIDTH_PX: f32 = 2.0;
 
 // Strokes physically narrower than this half-width (metres) are painted
-// detail — centre/edge/lane markings, 6–8 cm — not roads. The width floor
-// must not apply to them: floored, a distant 12 cm dash renders as a solid
-// road-wide bar and flickers against the band and terrain. They fade out by
-// their true screen coverage instead, like ink thinning with distance.
+// detail — centre/edge/lane markings, 6–8 cm — not roads. They get their own
+// (thinner) screen-space floor below rather than the road floor.
 const DETAIL_HALF_WIDTH_M: f32 = 0.2;
+
+// Minimum on-screen half-width of a painted marking, in framebuffer pixels.
+// A 12 cm marking is sub-pixel at the zooms markings first appear, so left at
+// its true width it renders as a ragged, flickering sliver through MSAA. Held
+// to this floor it stays a crisp thin line (thinner than the MIN_HALF_WIDTH_PX
+// road floor so a dash doesn't read as a road-wide bar). Beyond the floor a
+// marking that is genuinely sub-pixel fades by its true coverage so distant
+// dashes thin away like ink rather than holding a hard bar.
+const MARK_MIN_HALF_WIDTH_PX: f32 = 1.0;
 
 struct TileUniforms {
     model: mat4x4<f32>,
@@ -169,10 +176,17 @@ fn tile_to_world(qx: f32, qy: f32, alt: f32) -> vec4<f32> {
             let off_px = (v_ndc - c_ndc) * 0.5 * vp;
             let len_px = length(off_px);
             if (hw_len.x < DETAIL_HALF_WIDTH_M) {
-                // Painted detail: never floored. Fade by true screen coverage
-                // so a distant dash thins away instead of blobbing to the
-                // floor width and fighting the surfaces beneath it.
-                fade = clamp(len_px / MIN_HALF_WIDTH_PX, 0.0, 1.0);
+                // Painted detail: hold a crisp thin on-screen width so a
+                // sub-pixel dash renders as a clean line instead of a ragged
+                // sliver. Widen the quad to the marking floor (the SDF fills it
+                // because the edge verts keep their metric hw, so `dist` still
+                // reaches hw at the widened edge). Fade only for marks far below
+                // the floor so very distant dashes thin away like ink.
+                if (len_px > 1e-4 && len_px < MARK_MIN_HALF_WIDTH_PX) {
+                    let widened = c_ndc + (v_ndc - c_ndc) * (MARK_MIN_HALF_WIDTH_PX / len_px);
+                    screen_xy = widened * p.w;
+                    fade = clamp(len_px / MARK_MIN_HALF_WIDTH_PX + 0.5, 0.5, 1.0);
+                }
             } else if (len_px > 1e-4 && len_px < MIN_HALF_WIDTH_PX) {
                 let widened = c_ndc + (v_ndc - c_ndc) * (MIN_HALF_WIDTH_PX / len_px);
                 screen_xy = widened * p.w;

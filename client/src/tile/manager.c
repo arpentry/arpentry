@@ -310,10 +310,11 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
                               tm->tree_class_count, &trees);
             break;
         case ARPT_LAYER_LINE: {
-            /* Bridges and tunnels ride this line layer as server-baked box
-               prisms (MeshGeometry) alongside the road lines; decode them once
-               into per-kind primitives (split by `level`) so each colours
-               differently. The line decoder below skips the meshes. */
+            /* Bridges, tunnels, and at-grade junction plates ride this line
+               layer as server-baked box/plate prisms (MeshGeometry) alongside
+               the road lines; decode them once into per-kind primitives (split
+               by `level`) so each colours differently and the coplanar plates
+               render as decals. The line decoder below skips the meshes. */
             if (p->prims.bridges.vertex_count == 0) {
                 arpt_decode_bridge_mesh(flatbuf, size, le->source_layer,
                                         tm->style.class_names,
@@ -326,6 +327,11 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
                                         tm->style.class_names,
                                         tm->style.class_count, tm->style.colors,
                                         &p->prims.tunnels);
+            if (p->prims.plates.vertex_count == 0)
+                arpt_decode_plate_mesh(flatbuf, size, le->source_layer,
+                                       tm->style.class_names,
+                                       tm->style.class_count, tm->style.colors,
+                                       &p->prims.plates);
             arpt_line_data extra = {0};
             arpt_decode_lines(flatbuf, size, le->source_layer,
                               tm->style.class_names,
