@@ -16,10 +16,13 @@
 //! identical heights (invariant 5), and heights do not change between zoom
 //! levels (no popping).
 
+pub mod consistency;
 pub mod crossings;
+pub mod graph;
 pub mod junctions;
 pub mod portals;
 pub mod profile;
+pub mod relax;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -144,15 +147,19 @@ pub fn run(
         Ok(())
     })?;
 
-    // Clearance at crossings: turn the level ordering into geometry
-    // (invariant 3). Runs after every base profile exists, so a lower
-    // corridor's height is its solved one.
-    crossings::apply(scene, &mut profiles);
-
-    // Junction continuity (invariant 2): weld each leg to the road it meets.
-    // Runs after crossings so a welded leg reads the lifted deck it joins, and
-    // its raise-only lift cannot undo a clearance already earned.
-    junctions::apply(scene, &mut profiles);
+    // Global vertical consistency (docs/CONSISTENCY.md): fuse the per-corridor
+    // profiles into one constraint graph whose junction connectors are *shared*
+    // height variables, and relax it. Continuity (invariant 2) then holds by
+    // construction — two corridors at a connector read one number, so no step is
+    // representable — and clearance (invariant 3) is enforced as a raise-only
+    // projection in the same loop. This replaces the one-shot capped weld
+    // (`junctions::apply`) and greedy clearance raise (`crossings::apply`),
+    // whose caps left the steps the graph now removes.
+    {
+        let mut g = graph::build(scene, &profiles);
+        relax::solve(&mut g);
+        relax::reconstruct(&g, &mut profiles);
+    }
 
     Ok(SolvedModel { profiles, z_ref })
 }

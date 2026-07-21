@@ -677,6 +677,18 @@ impl Profile {
         self.deck_m = deck_ramp(&self.arc, &self.road_m, &self.at_grade);
     }
 
+    /// Overwrites the solved road heights with the global relaxation's output
+    /// ([`crate::solve::relax`]) and refits the deck ramps. `road` must have one
+    /// entry per node; a length mismatch leaves the profile unchanged (the
+    /// corridor keeps its warm-start solve).
+    pub fn set_road_m(&mut self, road: &[f64]) {
+        if road.len() != self.road_m.len() {
+            return;
+        }
+        self.road_m.copy_from_slice(road);
+        self.rebuild_deck();
+    }
+
     /// The raising counterpart of [`lower_deck_to`](Self::lower_deck_to): the
     /// terminal clamp that *guarantees* the deck reaches at least
     /// `min_deck_m` at `arc0` after the ramp refit smoothed the crest away.

@@ -88,6 +88,13 @@ fn report_timings(stats: &pipeline::Stats) {
         stats.junction_plates,
     );
     eprintln!(
+        "consistency       junction step max {:.2} m (p99 {:.2} m, {} over 0.5 m), clearance shortfall max {:.2} m",
+        stats.max_junction_step_m,
+        stats.p99_junction_step_m,
+        stats.junction_steps_over,
+        stats.max_clearance_violation_m,
+    );
+    eprintln!(
         "phase 1 {:>8}  cpu: read {}, simplify {}, clip {}, sort {}",
         secs(t.phase1),
         secs(t.read),

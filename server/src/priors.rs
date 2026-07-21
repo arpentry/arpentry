@@ -209,9 +209,14 @@ pub const PIER_MIN_CLEAR_M: f64 = 6.0;
 pub const PIER_EMBED_M: f64 = 4.0;
 
 /// Largest deck-underside-to-ground gap treated as a deck end *landing* — an
-/// abutment seat is built under it. A higher end (a deck meeting a tunnel
-/// portal on a hillside) is a junction, not a landing.
-pub const ABUTMENT_MAX_GAP_M: f64 = 3.0;
+/// abutment seat is built under it. Set equal to [`PIER_MIN_CLEAR_M`] so the
+/// two support regimes *partition* the clearance range with no hole: a low
+/// landing (gap up to the pier threshold) earns an abutment seat, a high one
+/// earns piers, and no interior deck end is ever left unsupported in between.
+/// A still-higher end (a deck meeting a tunnel portal on a hillside) is a
+/// junction, not a landing — piers, not a seat, and the seat's own inversion
+/// guard skips it where the ground rises above the deck underside.
+pub const ABUTMENT_MAX_GAP_M: f64 = PIER_MIN_CLEAR_M;
 
 /// How far an abutment seat runs back under the deck from its end face, in
 /// metres along the road.

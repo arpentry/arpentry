@@ -155,7 +155,7 @@ fn flat_interval(
 /// which is logged and dropped, so a bad datum costs one clearance rather than
 /// hanging the solve (invariant 6). Kahn's algorithm with longest-path
 /// layering; corridors in no crossing keep rank 0.
-fn corridor_ranks(scene: &SceneGraph) -> Vec<u32> {
+pub(crate) fn corridor_ranks(scene: &SceneGraph) -> Vec<u32> {
     let n = scene.corridors.len();
     // Edges lower → upper, with the level gap as the constraint's strength.
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];

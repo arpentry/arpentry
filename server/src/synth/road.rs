@@ -107,12 +107,26 @@ pub(crate) fn surface_height(
         // mid-span; paint baked at road height sinks inside the solid wherever
         // the fitted ramp rises above it.
         Some(p) if deck => p.deck_height_at(lon, lat),
-        // At the reference zoom every road rides the engineered ground
-        // exactly: the roadbed target inside a bench (the profile the
-        // earthworks were built from — the breakline-constrained terrain
-        // holds it flat under the road), the rendered surface on unbenched
-        // stretches (see the module doc). No clamp: a cut renders as a cut
-        // because the terrain carves with the road.
+        // At the reference zoom a corridor road rides the engineered ground —
+        // the roadbed target inside a bench (the profile the earthworks were
+        // built from, held flat by the breakline-constrained terrain), the
+        // rendered surface on unbenched stretches — but **never sinks below its
+        // own solved profile**. Where overlapping benches blended across stacked
+        // interchange corridors (a viaduct approach crossing a lower road), the
+        // averaged ground falls short of the fill; without this clamp the road
+        // would drape onto that average and step *below its own bridge deck*.
+        // Clamping up to `road_m` makes the surface meet the deck at one height
+        // (ROADS.md invariant 5) while a lower crossing road keeps the (higher)
+        // ground and is not buried. A cut still renders as a cut: there the
+        // carved ground equals `road_m`, so the clamp is a no-op.
+        Some(p) if z == z_ref => {
+            let ground = match sampler.bed_target(lon, lat) {
+                Some(bed) => bed,
+                None => sampler.surface(bounds, lon, lat, z),
+            };
+            ground.max(p.height_at(lon, lat))
+        }
+        // An unclaimed road (no profile) rides the engineered ground as before.
         _ if z == z_ref => match sampler.bed_target(lon, lat) {
             Some(bed) => bed,
             None => sampler.surface(bounds, lon, lat, z),

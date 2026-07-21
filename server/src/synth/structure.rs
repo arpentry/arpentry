@@ -49,6 +49,7 @@ use crate::scene::SpanKind;
 use crate::solve::Profile;
 use crate::terrain::TerrainMesh;
 use crate::tile_build::{prop_str, EncoderFeature};
+use crate::value::Value;
 
 /// Target spacing in metres for densifying the centerline, so the box follows
 /// the road's curve and grade smoothly. Half the profile node spacing: the
@@ -75,9 +76,23 @@ pub fn stamp(
     let frame = Frame::at_center(bounds);
     let class = RoadClass::parse(prop_str(f, "class").as_deref());
     let link = crate::priors::is_link(prop_str(f, "subclass").as_deref());
-    // The structure is a shoulder wider than the painted carriageway, so the
-    // deck-top asphalt frames the road ribbon (`priors::STRUCTURE_SHOULDER_M`).
-    let half_w = class.half_width_m(link) + crate::priors::STRUCTURE_SHOULDER_M;
+    // One cross-section function (docs/ROADS.md invariant 1): the deck spans the
+    // same carriageway width the surface band and paint stroke use — the mapped
+    // `width_m` the attribute profiler resolved (measured `width_rules` when
+    // plausible, else the class prior; `synth::surface` reads the identical
+    // property) — plus the structure shoulder, so the deck-top asphalt frames
+    // the road ribbon and meets the approach band edge-to-edge with no width
+    // step at the abutment. Falls back to the class half-width when a corridor
+    // carries no `width_m` (a non-P1 path).
+    let half_carriageway = f
+        .properties
+        .iter()
+        .find_map(|(k, v)| match (k.as_str(), v) {
+            ("width_m", Value::Double(w)) => Some(*w * 0.5),
+            _ => None,
+        })
+        .unwrap_or_else(|| class.half_width_m(link));
+    let half_w = half_carriageway + crate::priors::STRUCTURE_SHOULDER_M;
 
     let mut acc = Accum::default();
     for line in lines(&f.geometry) {
@@ -897,6 +912,44 @@ mod tests {
             sweep_bore(&mut acc, &frame, b, profile, &piece, half_w);
         }
         acc.into_mesh()
+    }
+
+    #[test]
+    fn deck_width_follows_the_carriageway_width_property() {
+        // The deck spans the mapped `width_m` (the property `synth::surface`
+        // bands with), not the bare class prior, so deck and approach band meet
+        // edge-to-edge with no width step at the abutment (ROADS.md invariant 1).
+        let b = Bounds::of_tile(14, 8500, 5800);
+        let line = centre_line(&b);
+        let profile = Profile::flat(&line.0, 100.0);
+        let y_spread = |width_m: Option<f64>| -> f64 {
+            let mut props = vec![("class".to_string(), Value::String("residential".into()))];
+            if let Some(w) = width_m {
+                props.push(("width_m".to_string(), Value::Double(w)));
+            }
+            let mut f = EncoderFeature {
+                id: 1,
+                geometry: Geometry::LineString(line.clone()),
+                properties: props,
+                elevation: None,
+                z: None,
+                mesh: None,
+                synth: crate::synth::Synth::None,
+            };
+            assert!(stamp(&mut f, &profile, SpanKind::Bridge, &b, false));
+            let mesh = f.mesh.expect("deck mesh");
+            // The west→east line spreads its cross-section in y.
+            let (lo, hi) =
+                mesh.y.iter().fold((u16::MAX, u16::MIN), |(lo, hi), &y| (lo.min(y), hi.max(y)));
+            (hi - lo) as f64
+        };
+        let prior = y_spread(None); // residential class prior (~5.5 m carriageway)
+        let wide = y_spread(Some(20.0)); // a mapped 20 m carriageway
+        assert!(
+            wide > prior * 1.5,
+            "a 20 m mapped width must widen the deck well past the class prior \
+             (prior spread {prior}, wide {wide})"
+        );
     }
 
     #[test]

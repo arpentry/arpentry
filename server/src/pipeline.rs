@@ -157,6 +157,15 @@ pub struct Stats {
     pub earthworks: u64,
     pub water: u64,
     pub junction_plates: u64,
+    /// Vertical consistency of the solved model (docs/CONSISTENCY.md P0): the
+    /// worst junction step (member road-height disagreement), its 99th
+    /// percentile, how many junctions disagree by more than half a metre, and
+    /// the worst clearance shortfall at a crossing. The number the
+    /// constraint-graph solver drives to zero.
+    pub max_junction_step_m: f64,
+    pub p99_junction_step_m: f64,
+    pub junction_steps_over: u64,
+    pub max_clearance_violation_m: f64,
     /// Phase-1 worker threads used.
     pub threads: usize,
     pub timings: Timings,
@@ -248,9 +257,56 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     stats.earthworks = ground.earthwork_count() as u64;
     stats.water = ground.water_count() as u64;
     stats.junction_plates = junctions.len() as u64;
+    let consistency = solve::consistency::measure(&scene, &solved);
+    stats.max_junction_step_m = consistency.max_junction_step_m;
+    stats.p99_junction_step_m = consistency.p99_junction_step_m;
+    stats.junction_steps_over = consistency.junction_steps_over;
+    stats.max_clearance_violation_m = consistency.max_clearance_violation_m;
     stats.timings.model = t_model.elapsed();
     if let Some(dir) = &cfg.dump {
         dump::write(dir, &scene, &solved, &ground)?;
+    }
+
+    // Diagnostic probe (ARPT_PROBE="lon,lat"): at that point, for every corridor
+    // whose centerline passes near it, print the deck-top height, the road
+    // profile height, the raw terrain, and — the key number — the *rendered
+    // road-surface* height (`synth::road::surface_height` at z_ref, what the
+    // approach asphalt band actually drapes on). A gap between the deck height
+    // and the rendered road surface is the visible bridge-end step, localised to
+    // the earthwork/render layer rather than the solve.
+    if let Ok(spec) = std::env::var("ARPT_PROBE") {
+        if let Some((lon, lat)) = spec.split_once(',').and_then(|(a, b)| {
+            Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?))
+        }) {
+            let dem = cfg.terrain.as_deref().and_then(|p| Dem::open(p).ok());
+            let mut sampler = GroundSampler::new(dem, Arc::clone(&ground), solved.z_ref);
+            sampler.set_breaklines(cfg.breaklines);
+            let zref_bounds = solve::tile_containing(solved.z_ref, lon, lat);
+            let cos = lat.to_radians().cos();
+            eprintln!("PROBE {lon},{lat} (z_ref={})", solved.z_ref);
+            for c in &scene.corridors {
+                let Some(p) = solved.profile(c.id) else { continue };
+                let a = p.arc_of(lon, lat);
+                let pt = p.point_at_arc(a);
+                let d = ((pt.x - lon) * cos).hypot(pt.y - lat) * crate::scene::DEG_M;
+                if d > 8.0 {
+                    continue;
+                }
+                let road = p.height_at(lon, lat);
+                let deck = p.deck_height_at(lon, lat);
+                let terr = p.surface_at(lon, lat);
+                let band =
+                    synth::road::surface_height(Some(p), false, &mut sampler, solved.z_ref, solved.z_ref, &zref_bounds, lon, lat);
+                let ground_h = {
+                    let mut sc = Vec::new();
+                    ground.height(lon, lat, terr, &mut sc)
+                };
+                eprintln!(
+                    "  corr {:>5} {:>4}m  road={:.1} deck={:.1} terr={:.1} rendered_road_surface={:.1} engineered_ground={:.1}  DECK-SURFACE_STEP={:.1}",
+                    c.id, d as i64, road, deck, terr, band, ground_h, deck - band
+                );
+            }
+        }
     }
 
     // --- Phase 1: read → profile → simplify → clip → sort records ---

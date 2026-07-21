@@ -60,21 +60,35 @@ fn junctions_geojson(scene: &SceneGraph, solved: &SolvedModel) -> Json {
         .junctions
         .iter()
         .map(|j| {
+            // The per-member road heights and their spread — the residual
+            // disagreement is the continuity defect (docs/CONSISTENCY.md P0).
+            let mut heights: Vec<f64> = Vec::new();
             let members: Vec<Json> = j
                 .members
                 .iter()
                 .map(|m| {
-                    let road = solved
-                        .profile(m.corridor)
-                        .map(|p| json!(p.road_at_arc(m.arc)))
-                        .unwrap_or(Json::Null);
+                    let road = match solved.profile(m.corridor) {
+                        Some(p) => {
+                            let h = p.road_at_arc(m.arc);
+                            heights.push(h);
+                            json!(h)
+                        }
+                        None => Json::Null,
+                    };
                     json!({ "corridor": m.corridor, "arc": m.arc, "road_m": road })
                 })
                 .collect();
+            let step_m = if heights.len() >= 2 {
+                let lo = heights.iter().cloned().fold(f64::INFINITY, f64::min);
+                let hi = heights.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                json!(hi - lo)
+            } else {
+                Json::Null
+            };
             json!({
                 "type": "Feature",
                 "geometry": { "type": "Point", "coordinates": [j.point.x, j.point.y] },
-                "properties": { "connector": j.connector, "members": members },
+                "properties": { "connector": j.connector, "step_m": step_m, "members": members },
             })
         })
         .collect();

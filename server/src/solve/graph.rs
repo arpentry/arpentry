@@ -1,0 +1,477 @@
+//! The global vertical constraint graph (docs/CONSISTENCY.md §2, Phase B).
+//!
+//! The per-corridor profiles give geometry (densified nodes, arc, conditioned
+//! terrain, at-grade flags, a warm-start height); this module fuses them into
+//! **one** variable graph in which a junction connector is a **single shared
+//! height variable** across every corridor that meets there. Continuity
+//! (invariant 2) then stops being a constraint to enforce and becomes a
+//! property of the degree-of-freedom layout: two roads meeting at a connector
+//! read the same number because there is only one.
+//!
+//! The graph is the input to the projection solver ([`super::relax`]): its
+//! `vars` are the unknowns, its per-corridor node lists carry the edges (grade
+//! + smoothness) and the structure spans (rigidity), and its connected
+//! components solve independently (deterministic order for invariant 5).
+
+use crate::scene::{CorridorId, SceneGraph};
+
+use super::profile::{condition_reference, Profile};
+
+/// Index into [`SolveGraph::vars`].
+pub type VarId = usize;
+
+/// How much a node yields to corrections — the inverse mass in the projection.
+/// An at-grade node is pinned near the ground, so it is *heavy* (resists
+/// moving); a structure node floats on its deck ramp, so it is *light*. A
+/// correction therefore flows into the yielding side: an approach bends to
+/// meet a deck, the deck holds its line (docs/CONSISTENCY.md §4.1).
+const AT_GRADE_INV_MASS: f64 = 1.0;
+const STRUCTURE_INV_MASS: f64 = 8.0;
+
+/// One height variable: its soft terrain target, the raw terrain, whether it is
+/// pinned to the ground, and its inverse mass. The mutable height lives in
+/// [`SolveGraph::h`] so the solver can Jacobi-snapshot it.
+#[derive(Debug, Clone, Copy)]
+pub struct VarNode {
+    /// Conditioned terrain target the soft spring pulls a ground-pinned node
+    /// toward.
+    pub target_m: f64,
+    /// Raw terrain height at the variable.
+    pub terrain_m: f64,
+    /// Whether *every* incident node sits at grade — the variable is then pinned
+    /// to the ground (a terrain spring, heavy mass). A connector shared with a
+    /// structure end (an abutment, a portal) is **not** pinned: its height is
+    /// set by the deck/bore it meets, not the ground, so the terrain spring must
+    /// not drag a flyover down to the grass.
+    pub terrain_pinned: bool,
+    /// Inverse mass: [`AT_GRADE_INV_MASS`] (pinned) or [`STRUCTURE_INV_MASS`].
+    pub inv_mass: f64,
+}
+
+/// One corridor's nodes, mapped into the shared variable space. The solver
+/// walks these: consecutive `vars` are edges (grade + smoothness), and maximal
+/// runs of `!at_grade` are structure spans bounded by at-grade anchors.
+#[derive(Debug, Clone)]
+pub struct CorridorNodes {
+    pub id: CorridorId,
+    /// Global variable of each local node (`vars[k]` is node `k`'s variable).
+    pub vars: Vec<VarId>,
+    /// Cumulative arc metres at each node (from the profile).
+    pub arc: Vec<f64>,
+    /// At-grade flag per node (from the profile).
+    pub at_grade: Vec<bool>,
+    /// The grade ceiling this corridor's edges are held to.
+    pub grade: f64,
+}
+
+/// One crossing as the solver sees it: the upper corridor's deck must clear the
+/// lower surface by [`extra_m`](Self::extra_m). Sorted into rank order at build
+/// time so a lower structure is finalised before the deck above it reads it.
+#[derive(Debug, Clone, Copy)]
+pub struct GraphCrossing {
+    /// Index into [`SolveGraph::corridors`] of the upper (passing-over) corridor.
+    pub upper_ci: usize,
+    /// The upper corridor's arc where the crossing sits.
+    pub upper_arc: f64,
+    /// The lower feature's height variable, when it is a profiled corridor;
+    /// `None` for an at-grade feature (its height is the terrain).
+    pub lower_var: Option<VarId>,
+    /// The lower feature's terrain height (used when `lower_var` is `None`).
+    pub lower_terrain_m: f64,
+    /// Clearance under the deck plus the deck slab — added to the lower surface
+    /// to get the required deck top.
+    pub extra_m: f64,
+}
+
+/// The fused constraint graph.
+pub struct SolveGraph {
+    pub vars: Vec<VarNode>,
+    /// Current heights, initialised to the warm-start (mean of incident
+    /// corridors' solved road heights). Jacobi-snapshotted by the solver.
+    pub h: Vec<f64>,
+    /// One entry per corridor that carries a profile.
+    pub corridors: Vec<CorridorNodes>,
+    /// Clearance constraints (invariant 3), in ascending rank order.
+    pub crossings: Vec<GraphCrossing>,
+    /// Connected-component id per variable (`0..n_components`).
+    pub component: Vec<usize>,
+    pub n_components: usize,
+}
+
+/// A union–find over `n` slots (path-compression + union-by-size).
+struct UnionFind {
+    parent: Vec<usize>,
+    size: Vec<usize>,
+}
+
+impl UnionFind {
+    fn new(n: usize) -> UnionFind {
+        UnionFind { parent: (0..n).collect(), size: vec![1; n] }
+    }
+
+    fn find(&mut self, mut x: usize) -> usize {
+        while self.parent[x] != x {
+            self.parent[x] = self.parent[self.parent[x]];
+            x = self.parent[x];
+        }
+        x
+    }
+
+    fn union(&mut self, a: usize, b: usize) {
+        let (mut ra, mut rb) = (self.find(a), self.find(b));
+        if ra == rb {
+            return;
+        }
+        if self.size[ra] < self.size[rb] {
+            std::mem::swap(&mut ra, &mut rb);
+        }
+        self.parent[rb] = ra;
+        self.size[ra] += self.size[rb];
+    }
+}
+
+/// Builds the constraint graph from the scene and the per-corridor initial
+/// profiles (indexed by [`CorridorId`]; `None` where a corridor has no
+/// profile). Junction members sharing a connector are unified into one
+/// variable; consecutive nodes and structure spans become the solver's edges
+/// and rigidity groups.
+pub fn build(scene: &SceneGraph, profiles: &[Option<Profile>]) -> SolveGraph {
+    // Global slot = a flat index over every node of every profiled corridor.
+    // `slot_base[corridor_id]` is where that corridor's nodes start; `None`
+    // (unprofiled) corridors get no slots.
+    let mut slot_base: Vec<Option<usize>> = vec![None; profiles.len()];
+    let mut corridor_order: Vec<usize> = Vec::new(); // corridor ids, in graph order
+    let mut total_slots = 0usize;
+    for (id, p) in profiles.iter().enumerate() {
+        if let Some(p) = p {
+            let n = p.nodes().len();
+            if n >= 2 {
+                slot_base[id] = Some(total_slots);
+                total_slots += n;
+                corridor_order.push(id);
+            }
+        }
+    }
+
+    // DOF sharing: union each junction's members' nearest nodes into one slot.
+    let mut uf = UnionFind::new(total_slots);
+    for j in &scene.junctions {
+        let mut anchor: Option<usize> = None;
+        for m in &j.members {
+            let cid = m.corridor as usize;
+            let (Some(base), Some(p)) = (slot_base.get(cid).copied().flatten(), profiles.get(cid).and_then(|p| p.as_ref()))
+            else {
+                continue;
+            };
+            let k = nearest_node(p.arc(), m.arc);
+            let slot = base + k;
+            match anchor {
+                None => anchor = Some(slot),
+                Some(a) => uf.union(a, slot),
+            }
+        }
+    }
+
+    // Compact union-find roots into dense VarIds.
+    let mut root_var: Vec<Option<VarId>> = vec![None; total_slots];
+    let mut vars: Vec<VarNode> = Vec::new();
+    // Accumulators over the slots mapping to each var (for averaging).
+    let mut acc_target: Vec<f64> = Vec::new();
+    let mut acc_terrain: Vec<f64> = Vec::new();
+    let mut acc_init: Vec<f64> = Vec::new();
+    let mut acc_count: Vec<u32> = Vec::new();
+    let mut acc_all_at_grade: Vec<bool> = Vec::new();
+
+    // Per-corridor node→var maps and metadata, plus warm-start heights.
+    let mut corridors: Vec<CorridorNodes> = Vec::with_capacity(corridor_order.len());
+    for &cid in &corridor_order {
+        let p = profiles[cid].as_ref().expect("profiled");
+        let base = slot_base[cid].expect("based");
+        let arc = p.arc().to_vec();
+        let at_grade = p.at_grade().to_vec();
+        let terrain = p.terrain_m();
+        let target = condition_reference(&arc, terrain);
+        let road = p.road_m();
+        let n = arc.len();
+        let mut node_vars = Vec::with_capacity(n);
+        for k in 0..n {
+            let root = uf.find(base + k);
+            let var = match root_var[root] {
+                Some(v) => v,
+                None => {
+                    let v = vars.len();
+                    root_var[root] = Some(v);
+                    vars.push(VarNode {
+                        target_m: 0.0,
+                        terrain_m: 0.0,
+                        terrain_pinned: false,
+                        inv_mass: AT_GRADE_INV_MASS,
+                    });
+                    acc_target.push(0.0);
+                    acc_terrain.push(0.0);
+                    acc_init.push(0.0);
+                    acc_count.push(0);
+                    acc_all_at_grade.push(true);
+                    v
+                }
+            };
+            acc_target[var] += target[k];
+            acc_terrain[var] += terrain[k];
+            acc_init[var] += road[k];
+            acc_count[var] += 1;
+            acc_all_at_grade[var] &= at_grade[k];
+            node_vars.push(var);
+        }
+        let c = &scene.corridors[cid];
+        let grade = corridor_grade(c);
+        corridors.push(CorridorNodes { id: cid as CorridorId, vars: node_vars, arc, at_grade, grade });
+    }
+
+    // Finalise per-var data (means; at_grade OR; mass from at_grade).
+    let mut h = vec![0.0; vars.len()];
+    for v in 0..vars.len() {
+        let cnt = acc_count[v].max(1) as f64;
+        let terrain_pinned = acc_all_at_grade[v];
+        vars[v] = VarNode {
+            target_m: acc_target[v] / cnt,
+            terrain_m: acc_terrain[v] / cnt,
+            terrain_pinned,
+            inv_mass: if terrain_pinned { AT_GRADE_INV_MASS } else { STRUCTURE_INV_MASS },
+        };
+        h[v] = acc_init[v] / cnt;
+    }
+
+    // Connected components over the variables: union consecutive nodes of each
+    // corridor (shared connectors already merged into single vars link
+    // corridors together).
+    let mut cuf = UnionFind::new(vars.len());
+    for c in &corridors {
+        for w in c.vars.windows(2) {
+            cuf.union(w[0], w[1]);
+        }
+    }
+    let mut comp_id: Vec<Option<usize>> = vec![None; vars.len()];
+    let mut n_components = 0usize;
+    let mut component = vec![0usize; vars.len()];
+    for v in 0..vars.len() {
+        let r = cuf.find(v);
+        let id = match comp_id[r] {
+            Some(id) => id,
+            None => {
+                let id = n_components;
+                n_components += 1;
+                comp_id[r] = Some(id);
+                id
+            }
+        };
+        component[v] = id;
+    }
+
+    // Corridor id → graph corridor index, for resolving crossings.
+    let mut ci_of: Vec<Option<usize>> = vec![None; profiles.len()];
+    for (ci, c) in corridors.iter().enumerate() {
+        ci_of[c.id as usize] = Some(ci);
+    }
+    let crossings = build_crossings(scene, profiles, &corridors, &ci_of);
+
+    SolveGraph { vars, h, corridors, crossings, component, n_components }
+}
+
+/// Resolves the scene's crossings into solver form: the upper corridor's arc,
+/// the lower feature's height source (a variable or the terrain), and the
+/// required clearance-plus-slab. Sorted into ascending rank order so a stacked
+/// interchange resolves bottom-up.
+fn build_crossings(
+    scene: &SceneGraph,
+    profiles: &[Option<Profile>],
+    corridors: &[CorridorNodes],
+    ci_of: &[Option<usize>],
+) -> Vec<GraphCrossing> {
+    let ranks = super::crossings::corridor_ranks(scene);
+    let mut out: Vec<(u32, GraphCrossing)> = Vec::new();
+    for c in &scene.crossings {
+        let Some(upper_ci) = ci_of.get(c.upper as usize).copied().flatten() else {
+            continue;
+        };
+        let Some(up) = profiles.get(c.upper as usize).and_then(|p| p.as_ref()) else {
+            continue;
+        };
+        // The lower surface: a profiled corridor's nearest node (tracked live),
+        // else the terrain the upper profile reads at the crossing point.
+        let (lower_var, lower_terrain_m) = match c.lower.and_then(|id| {
+            let lci = ci_of.get(id as usize).copied().flatten()?;
+            let lp = profiles.get(id as usize).and_then(|p| p.as_ref())?;
+            let k = nearest_node(&corridors[lci].arc, lp.arc_of(c.point.x, c.point.y));
+            Some(corridors[lci].vars[k])
+        }) {
+            Some(v) => (Some(v), 0.0),
+            None => (None, up.surface_at(c.point.x, c.point.y)),
+        };
+        let extra_m = crate::priors::clearance_m(c.lower_kind) + crate::priors::DECK_THICKNESS_M;
+        out.push((
+            ranks.get(c.upper as usize).copied().unwrap_or(0),
+            GraphCrossing {
+                upper_ci,
+                upper_arc: up.arc_of(c.point.x, c.point.y),
+                lower_var,
+                lower_terrain_m,
+                extra_m,
+            },
+        ));
+    }
+    out.sort_by_key(|(rank, _)| *rank);
+    out.into_iter().map(|(_, gc)| gc).collect()
+}
+
+/// The grade ceiling a corridor's edges are held to: a ramp climbs at the ramp
+/// grade whatever its class; an engineered class holds its ceiling; a street
+/// holds its (looser) bed grade.
+fn corridor_grade(c: &crate::scene::Corridor) -> f64 {
+    if c.link {
+        crate::priors::RAMP_GRADE
+    } else {
+        c.class.grade_limit().unwrap_or_else(|| c.class.bed_grade())
+    }
+}
+
+/// The local node index whose arc is nearest `a` (binary search on the sorted
+/// arc array, then the closer of the two bracketing nodes).
+fn nearest_node(arc: &[f64], a: f64) -> usize {
+    match arc.binary_search_by(|v| v.partial_cmp(&a).expect("finite arc")) {
+        Ok(i) => i,
+        Err(i) => {
+            if i == 0 {
+                0
+            } else if i >= arc.len() {
+                arc.len() - 1
+            } else if (a - arc[i - 1]).abs() <= (arc[i] - a).abs() {
+                i - 1
+            } else {
+                i
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::priors::RoadClass;
+    use crate::scene::{Corridor, Junction, JunctionMember, SegmentRef, DEG_M};
+    use geo_types::Coord;
+
+    fn cos_lat() -> f64 {
+        46.0_f64.to_radians().cos()
+    }
+
+    fn corridor(id: u32, x0: f64, len_m: f64, n: usize, class: RoadClass) -> Corridor {
+        let deg = len_m / (DEG_M * cos_lat());
+        let nodes: Vec<Coord> =
+            (0..n).map(|i| Coord { x: x0 + deg * i as f64 / (n - 1) as f64, y: 46.0 }).collect();
+        let arc: Vec<f64> = (0..n).map(|i| len_m * i as f64 / (n - 1) as f64).collect();
+        Corridor {
+            id,
+            nodes,
+            arc,
+            cos_lat: cos_lat(),
+            class,
+            class_key: String::new(),
+            link: false,
+            drivable: true,
+            spans: vec![],
+            segments: vec![SegmentRef { source: id as u64, node0: 0, node1: n - 1, properties: vec![] }],
+            connectors: vec![],
+        }
+    }
+
+    /// Two corridors meeting end-to-start at a connector share ONE variable
+    /// there — the whole point of the graph.
+    #[test]
+    fn a_connector_becomes_one_shared_variable() {
+        let len = 200.0;
+        let n = 11;
+        let a = corridor(0, 6.0, len, n, RoadClass::Minor);
+        let deg = len / (DEG_M * cos_lat());
+        let b = corridor(1, 6.0 + deg, len, n, RoadClass::Minor);
+        let point = *a.nodes.last().unwrap();
+        let scene = {
+            let mut s = SceneGraph::new(vec![a, b]);
+            s.junctions = vec![Junction {
+                point,
+                connector: 0,
+                members: vec![
+                    JunctionMember { corridor: 0, arc: len },
+                    JunctionMember { corridor: 1, arc: 0.0 },
+                ],
+            }];
+            s
+        };
+        let an = scene.corridors[0].nodes.clone();
+        let bn = scene.corridors[1].nodes.clone();
+        let profiles =
+            vec![Some(Profile::flat(&an, 400.0)), Some(Profile::flat(&bn, 402.0))];
+        let g = build(&scene, &profiles);
+
+        // Corridor 0's last node and corridor 1's first node are the SAME var.
+        let a_end = *g.corridors[0].vars.last().unwrap();
+        let b_start = g.corridors[1].vars[0];
+        assert_eq!(a_end, b_start, "the connector must be one shared variable");
+        // One component (the two corridors are joined through it).
+        assert_eq!(g.n_components, 1);
+        // The shared var's warm start is the mean of the two disagreeing ends.
+        assert!((g.h[a_end] - 401.0).abs() < 1e-9, "warm start is the meeting mean");
+    }
+
+    /// A three-way fork unifies all three legs' ends into one variable.
+    #[test]
+    fn a_three_way_fork_shares_one_variable() {
+        let len = 100.0;
+        let n = 6;
+        let deg = len / (DEG_M * cos_lat());
+        let a = corridor(0, 6.0, len, n, RoadClass::Minor);
+        let b = corridor(1, 6.0 + deg, len, n, RoadClass::Minor);
+        let c = corridor(2, 6.0 + deg, len, n, RoadClass::Minor);
+        let point = *a.nodes.last().unwrap();
+        let scene = {
+            let mut s = SceneGraph::new(vec![a, b, c]);
+            s.junctions = vec![Junction {
+                point,
+                connector: 0,
+                members: vec![
+                    JunctionMember { corridor: 0, arc: len },
+                    JunctionMember { corridor: 1, arc: 0.0 },
+                    JunctionMember { corridor: 2, arc: 0.0 },
+                ],
+            }];
+            s
+        };
+        let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
+        let profiles: Vec<Option<Profile>> =
+            ns.iter().map(|n| Some(Profile::flat(n, 300.0))).collect();
+        let g = build(&scene, &profiles);
+        let va = *g.corridors[0].vars.last().unwrap();
+        let vb = g.corridors[1].vars[0];
+        let vc = g.corridors[2].vars[0];
+        assert_eq!(va, vb);
+        assert_eq!(vb, vc);
+        assert_eq!(g.n_components, 1);
+    }
+
+    /// Disconnected corridors land in separate components; the node→var map
+    /// covers every node exactly once.
+    #[test]
+    fn disjoint_corridors_are_separate_components() {
+        let a = corridor(0, 6.0, 100.0, 6, RoadClass::Minor);
+        let b = corridor(1, 8.0, 100.0, 6, RoadClass::Minor);
+        let scene = SceneGraph::new(vec![a, b]);
+        let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
+        let profiles: Vec<Option<Profile>> =
+            ns.iter().map(|n| Some(Profile::flat(n, 100.0))).collect();
+        let g = build(&scene, &profiles);
+        assert_eq!(g.n_components, 2, "no shared connector → two components");
+        assert_eq!(g.corridors.len(), 2);
+        for c in &g.corridors {
+            assert_eq!(c.vars.len(), c.arc.len());
+        }
+    }
+}
