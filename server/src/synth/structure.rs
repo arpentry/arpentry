@@ -42,7 +42,7 @@ use crate::clip;
 use crate::priors::{
     pier_half_width_m, RoadClass, ABUTMENT_DEPTH_M, ABUTMENT_MAX_GAP_M, DECK_THICKNESS_M,
     PIER_EMBED_M, PIER_MIN_CLEAR_M, PIER_SPACING_M, PORTAL_CLEARANCE_M, PORTAL_MARCH_M,
-    PORTAL_MAX_M, TUNNEL_HEIGHT_M,
+    PORTAL_MAX_M, TUNNEL_COVER_M, TUNNEL_HEIGHT_M,
 };
 use crate::project::{self, Bounds};
 use crate::scene::SpanKind;
@@ -498,6 +498,23 @@ enum End {
 /// A bore cross-section at `(lon, lat)` whose road surface is `road_m`: roof a
 /// [`TUNNEL_HEIGHT_M`] above the road, floor a [`DECK_THICKNESS_M`] below (the
 /// deck-aligned bottom), and the signed terrain gap sampled from the profile.
+///
+/// The roof is *clamped* to stay [`TUNNEL_COVER_M`] under the natural ground:
+/// a bore box carries a full [`TUNNEL_HEIGHT_M`] of headroom only where the
+/// hill actually covers it, and is pressed under the surface where the cover
+/// is thin. Without this a shallow-cover tunnel — a covered urban road where
+/// the terrain barely rises above the carriageway — floats its 5 m roof above
+/// the ground the whole length instead of hiding under it (only the daylighted
+/// mouths, where a hillside rises fast past the roof, still stand at full
+/// height). The floor is the lower bound so an emerged section (trimmed by the
+/// caller) never inverts.
+///
+/// The cover is read from the *natural* terrain [`Profile::surface_at`] — the
+/// pre-earthwork ground — so a portal keeps its full-height mouth: the ground
+/// there sits at road level (`gap ≈ 0`, roof clamped just under it), and the
+/// daylighting cut carves the *engineered* ground below that to reveal the
+/// face. `gap_m` stays the centreline `road − terrain`, the zero crossing the
+/// [`crate::solve::portals`] solver also places, so the mesh and the cut agree.
 fn bore_section(
     lon: f64,
     lat: f64,
@@ -506,12 +523,15 @@ fn bore_section(
     left_n: f64,
     profile: &Profile,
 ) -> Section {
+    let terrain = profile.surface_at(lon, lat);
+    let floor = road_m - DECK_THICKNESS_M;
+    let roof = (road_m + TUNNEL_HEIGHT_M).min(terrain - TUNNEL_COVER_M).max(floor);
     Section {
         lon,
         lat,
-        top_mm: project::quantize_z(road_m + TUNNEL_HEIGHT_M),
-        bot_mm: project::quantize_z(road_m - DECK_THICKNESS_M),
-        gap_m: road_m - profile.surface_at(lon, lat),
+        top_mm: project::quantize_z(roof),
+        bot_mm: project::quantize_z(floor),
+        gap_m: road_m - terrain,
         left_e,
         left_n,
     }
@@ -1084,6 +1104,37 @@ mod tests {
         ]);
         let mesh = bore(&line, &profile, &b).expect("bore");
         assert_eq!(mesh.indices.len() % 24, 6, "a tile-edge end stays open, only one cap");
+    }
+
+    #[test]
+    fn bore_roof_is_clamped_under_a_shallow_cover() {
+        // A covered urban road where the ground barely rises above the
+        // carriageway (a 2 m cover, not a hill): the bore roof must not float
+        // a full TUNNEL_HEIGHT_M above the road — it stays under the surface so
+        // the terrain occludes it, instead of a 5 m box hanging over the town.
+        let b = Bounds::of_tile(14, 8500, 5800);
+        let cy = (b.south + b.north) * 0.5;
+        let n = 201;
+        let nodes: Vec<Coord> = (0..n)
+            .map(|i| Coord { x: b.west + b.width() * i as f64 / (n - 1) as f64, y: cy })
+            .collect();
+        // Road at 100; ground 2 m over it across the middle (buried, gap −2),
+        // dropping below the road at the flanks so the bore has portals.
+        let terrain_m: Vec<f64> = (0..n)
+            .map(|i| {
+                let d = (i as f64 / (n - 1) as f64 - 0.5).abs();
+                if d < 0.25 { 102.0 } else { 90.0 }
+            })
+            .collect();
+        let profile = Profile::from_heights(&nodes, vec![100.0; n], terrain_m);
+        let mesh = bore(&sub_line(&b, 0.40, 0.60), &profile, &b).expect("bore");
+        // Nothing may rise above the 2 m cover (minus the kept clearance); the
+        // full-height roof at 105 would poke 3 m into the open.
+        let cover_top = project::quantize_z(102.0 - TUNNEL_COVER_M);
+        assert!(
+            mesh.z.iter().all(|&z| z <= cover_top),
+            "the roof must stay under the shallow cover, not float at road + TUNNEL_HEIGHT_M"
+        );
     }
 
     #[test]
