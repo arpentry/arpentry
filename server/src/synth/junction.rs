@@ -298,16 +298,22 @@ fn plate_mesh(
     let mut y = Vec::with_capacity(ring_m.len() + 1);
     let mut z = Vec::with_capacity(ring_m.len() + 1);
     let mut normals = Vec::with_capacity((ring_m.len() + 1) * 2);
-    let mut push = |c: Coord| {
+    // Analytic edge AA: the fan centre is the paved interior (across 0), every
+    // ring vertex is the paved boundary (127). `1 - |across|` then falls from 1
+    // at the centre to 0 at the perimeter, so the deck fragment fades the
+    // plate's outer ~1px just like a band or deck edge.
+    let mut edge_across = Vec::with_capacity(ring_m.len() + 1);
+    let mut push = |c: Coord, across: i8| {
         x.push(project::quantize_x(c.x, bounds));
         y.push(project::quantize_y(c.y, bounds));
         z.push(elev(c));
         normals.push(up.0);
         normals.push(up.1);
+        edge_across.push(across);
     };
-    push(j.point);
+    push(j.point, 0);
     for &(me, mn) in &ring_m {
-        push(Coord { x: j.point.x + me / m_lon, y: j.point.y + mn / M_PER_DEG_LAT });
+        push(Coord { x: j.point.x + me / m_lon, y: j.point.y + mn / M_PER_DEG_LAT }, 127);
     }
     let m = ring_m.len() as u32;
     let mut indices = Vec::with_capacity(ring_m.len() * 3);
@@ -316,7 +322,7 @@ fn plate_mesh(
         let b = 1 + (i + 1) % m;
         indices.extend_from_slice(&[0, a, b]);
     }
-    Some(TerrainMesh { x, y, z, indices, normals, edge_across: Vec::new() })
+    Some(TerrainMesh { x, y, z, indices, normals, edge_across })
 }
 
 /// Appends the interior points of the corner fillet from `a`'s left corner to
