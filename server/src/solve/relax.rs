@@ -18,6 +18,14 @@
 //!   onto the straight chord through its two at-grade anchors (the deck ramp,
 //!   reusing the anchors' *current* heights so the deck rides whatever the
 //!   network settles to).
+//! - **Deviation box** (hard, at-grade only) — each at-grade node clamped back
+//!   inside its class ground-hugging budget of the conditioned terrain
+//!   (docs/CONSISTENCY.md §2.1, the *boxed* deviation). Applied *after* grade,
+//!   so on ground steeper than the class grade the box wins and the road breaks
+//!   grade rather than dive metres below the hillside — a street trusts the
+//!   slope (S9), an engineered road cuts only within its budget. Without it the
+//!   hard grade held a Minor bed grade rigidly and dug corridors 40+ m into the
+//!   Montreux slope.
 //!
 //! The terrain-adherence spring is a mass term, so the coupled system is a
 //! screened Laplacian: a disturbance decays exponentially and the sweeps
@@ -76,6 +84,7 @@ pub fn solve(g: &mut SolveGraph) -> usize {
                 break;
             }
         }
+        deviation_pass(g);
         clearance_pass(g);
         rigidity_pass(g);
         let resid = g.h.iter().zip(&prev).map(|(&a, &b)| (a - b).abs()).fold(0.0, f64::max);
@@ -93,6 +102,7 @@ pub fn solve(g: &mut SolveGraph) -> usize {
             break;
         }
     }
+    deviation_pass(g);
     clearance_pass(g);
     rigidity_pass(g);
     used
@@ -171,6 +181,26 @@ fn clearance_pass(g: &mut SolveGraph) {
 fn rigidity_pass(g: &mut SolveGraph) {
     for c in &g.corridors {
         project_spans(&mut g.h, c);
+    }
+}
+
+/// Clamps every at-grade node back inside its class ground-hugging budget of
+/// the conditioned terrain (the boxed deviation, docs/CONSISTENCY.md §2.1).
+/// At-grade nodes only — a structure node floats on its deck ramp, bounded by
+/// rigidity, not by the ground. Runs *after* grade so the box wins: where the
+/// terrain is steeper than the class grade, the road holds within the budget
+/// and breaks grade rather than trench the hillside. A shared connector reads
+/// one variable and one conditioned target, so both corridors clamp it into the
+/// same box — continuity (H0) is untouched.
+fn deviation_pass(g: &mut SolveGraph) {
+    for c in &g.corridors {
+        for (k, &v) in c.vars.iter().enumerate() {
+            if !c.at_grade[k] || !g.vars[v].terrain_pinned {
+                continue;
+            }
+            let target = g.vars[v].target_m;
+            g.h[v] = g.h[v].clamp(target - c.deviation, target + c.deviation);
+        }
     }
 }
 
@@ -420,25 +450,36 @@ mod tests {
         assert!((b_far - 406.0).abs() < 1.0, "B far end near its terrain, got {b_far}");
     }
 
-    /// A corridor whose terrain steps like a cliff cannot be followed at grade;
-    /// the solved road holds the class ceiling instead (grade projection).
+    /// A corridor whose terrain steps like a cliff hugs the ground through the
+    /// step rather than ramping it at grade: the deviation box wins over the
+    /// grade ceiling (the established S9 contract, `road_hugs_the_ground_on_a_
+    /// long_steep_climb`). Ramping the step at 15 % would carry the road up to
+    /// ~15 m off the ground on the flat approaches — the embankment/trench the
+    /// dropped deviation box used to produce.
     #[test]
-    fn grade_is_held_over_a_cliff() {
-        // Minor road (ceiling 0.15): terrain flat 100, then a 30 m step over one
-        // 20 m node gap (grade 1.5) — far past the ceiling.
+    fn a_cliff_step_is_hugged_not_ramped() {
+        use crate::priors::BED_MAX_DEVIATION_M;
+        // Minor road: terrain flat 100, then a 30 m step over one 20 m node gap.
         let n = 21;
         let a = corridor(0, 6.0, 400.0, n, RoadClass::Minor);
         let arc: Vec<f64> = a.arc.clone();
         let terrain: Vec<f64> = arc.iter().map(|&s| if s < 200.0 { 100.0 } else { 130.0 }).collect();
-        let road = terrain.clone();
         let scene = SceneGraph::new(vec![a]);
         let an = scene.corridors[0].nodes.clone();
-        let mut profiles = vec![Some(Profile::from_heights(&an, road, terrain))];
+        let mut profiles =
+            vec![Some(Profile::from_heights(&an, terrain.clone(), terrain.clone()))];
         let mut g = super::super::graph::build(&scene, &profiles);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
-        let grade = max_grade(profiles[0].as_ref().unwrap());
-        assert!(grade <= 0.15 + 1e-3, "grade must be held to the ceiling, got {grade}");
+        let p = profiles[0].as_ref().unwrap();
+        let solved = p.road_m();
+        for (k, &t) in terrain.iter().enumerate() {
+            assert!(
+                (solved[k] - t).abs() <= BED_MAX_DEVIATION_M + 1e-6,
+                "node {k} left the ground box at the cliff: road {} terrain {t}",
+                solved[k]
+            );
+        }
     }
 
     /// A gentle corridor on plausible terrain is left on the ground.
@@ -492,6 +533,7 @@ mod tests {
                 arc,
                 at_grade,
                 grade: 0.06,
+                deviation: 1e9, // not under test here — leave the ground box open
             }],
             // Clearance 5 (road) + 1.5 slab = 6.5 over the feature at 100 m.
             crossings: vec![GraphCrossing {
@@ -554,6 +596,7 @@ mod tests {
                 arc,
                 at_grade,
                 grade: 0.06, // 6 %: the 12 m rise over 300 m (4 %) is well within
+                deviation: 1e9, // not under test here — leave the ground box open
             }],
             crossings: vec![],
             component: vec![0; n],
@@ -580,6 +623,40 @@ mod tests {
             g.h[5],
             g.h[4]
         );
+    }
+
+    /// A Minor street down a slope far steeper than its 15 % bed grade hugs the
+    /// ground within its deviation budget and *breaks grade* — it does not hold
+    /// the bed grade rigidly and dig a trench (the Montreux-hillside regression:
+    /// a hard bed grade with no deviation box cut the corridor 40+ m below the
+    /// terrain). The road trusts the slope (S9).
+    #[test]
+    fn a_steep_street_hugs_the_ground_and_breaks_grade() {
+        use crate::priors::BED_MAX_DEVIATION_M;
+        // 400 m of ~40 % slope (160 m drop) — a Minor bed grade is only 15 %.
+        let n = 21;
+        let a = corridor(0, 6.0, 400.0, n, RoadClass::Minor);
+        let arc: Vec<f64> = a.arc.clone();
+        let terrain: Vec<f64> = arc.iter().map(|&s| 500.0 - 0.40 * s).collect();
+        let scene = SceneGraph::new(vec![a]);
+        let an = scene.corridors[0].nodes.clone();
+        let mut profiles = vec![Some(Profile::from_heights(&an, terrain.clone(), terrain.clone()))];
+        let mut g = super::super::graph::build(&scene, &profiles);
+        solve(&mut g);
+        reconstruct(&g, &mut profiles);
+        let p = profiles[0].as_ref().unwrap();
+        let road = p.road_m();
+        // Every node stays inside the ground-hugging box — no deep cut anywhere.
+        for (k, &t) in terrain.iter().enumerate() {
+            assert!(
+                (road[k] - t).abs() <= BED_MAX_DEVIATION_M + 1e-6,
+                "node {k} left the ground box: road {} terrain {t} (dev {})",
+                road[k],
+                (road[k] - t).abs()
+            );
+        }
+        // And it genuinely breaks the bed grade to do so (the slope demands it).
+        assert!(max_grade(p) > 0.15 + 1e-3, "a 40 % street must exceed the 15 % bed grade");
     }
 
     /// The solve is deterministic: two runs give identical heights.

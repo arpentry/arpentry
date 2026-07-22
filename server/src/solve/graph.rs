@@ -13,7 +13,9 @@
 //! + smoothness) and the structure spans (rigidity), and its connected
 //! components solve independently (deterministic order for invariant 5).
 
-use crate::scene::{CorridorId, SceneGraph};
+use geo_types::Coord;
+
+use crate::scene::{CorridorId, SceneGraph, Span, SpanKind, DEG_M};
 
 use super::profile::{condition_reference, Profile};
 
@@ -62,6 +64,15 @@ pub struct CorridorNodes {
     pub at_grade: Vec<bool>,
     /// The grade ceiling this corridor's edges are held to.
     pub grade: f64,
+    /// How far an at-grade node may leave its conditioned terrain reference,
+    /// metres — the ground-hugging box ([`crate::priors::RoadClass::deviation_m`]).
+    /// The hard bound the relax clamps at-grade nodes back inside: an engineered
+    /// road cuts within its budget, a street trusts the slope within a couple
+    /// metres and *breaks grade* rather than dive metres below the ground. The
+    /// relax's [`grade`](Self::grade) alone has no such cap — held hard, a street's
+    /// bed grade (never a solver ceiling) dug a corridor tens of metres into a
+    /// steep hillside. This box, applied after grade, is what stops it.
+    pub deviation: f64,
 }
 
 /// One crossing as the solver sees it: the upper corridor's deck must clear the
@@ -172,6 +183,16 @@ pub fn build(scene: &SceneGraph, profiles: &[Option<Profile>]) -> SolveGraph {
         }
     }
 
+    // S8 entity resolution: a non-drivable structure (a footbridge) running
+    // parallel and laterally close to a drivable bridge is the same physical
+    // structure the source split into two independently `bridge`-tagged ways.
+    // Bind its deck nodes to the road deck's nodes — one shared height
+    // variable, exactly as a junction shares a connector — so the two decks
+    // ride one grade line instead of overlapping at two heights (S8).
+    for (a, b) in parallel_structure_unions(scene, profiles, &slot_base) {
+        uf.union(a, b);
+    }
+
     // Compact union-find roots into dense VarIds.
     let mut root_var: Vec<Option<VarId>> = vec![None; total_slots];
     let mut vars: Vec<VarNode> = Vec::new();
@@ -224,7 +245,15 @@ pub fn build(scene: &SceneGraph, profiles: &[Option<Profile>]) -> SolveGraph {
         }
         let c = &scene.corridors[cid];
         let grade = corridor_grade(c);
-        corridors.push(CorridorNodes { id: cid as CorridorId, vars: node_vars, arc, at_grade, grade });
+        let deviation = c.class.deviation_m();
+        corridors.push(CorridorNodes {
+            id: cid as CorridorId,
+            vars: node_vars,
+            arc,
+            at_grade,
+            grade,
+            deviation,
+        });
     }
 
     // Finalise per-var data (means; at_grade OR; mass from at_grade).
@@ -321,6 +350,121 @@ fn build_crossings(
     }
     out.sort_by_key(|(rank, _)| *rank);
     out.into_iter().map(|(_, gc)| gc).collect()
+}
+
+/// One corridor's bridge deck as the co-elevation pass sees it: its global
+/// node slots and plan positions, in arc order (a bridge span is a contiguous
+/// node run, so consecutive entries are deck segments).
+struct Deck {
+    cos_lat: f64,
+    /// `(global slot, plan position)` for each node inside a bridge span.
+    nodes: Vec<(usize, Coord)>,
+}
+
+/// Node-slot pairs to unify so parallel structures share a grade line (S8):
+/// each non-drivable bridge node bound to the nearest node of the drivable
+/// bridge deck it runs alongside. Slots are global (into the union-find),
+/// `slot_base[corridor] + local_node`. A non-drivable deck is bound to the
+/// drivable deck that covers the most of it within
+/// [`crate::priors::PARALLEL_STRUCTURE_LATERAL_M`]; a footbridge with no
+/// drivable neighbour (a genuine standalone span) is left untouched.
+fn parallel_structure_unions(
+    scene: &SceneGraph,
+    profiles: &[Option<Profile>],
+    slot_base: &[Option<usize>],
+) -> Vec<(usize, usize)> {
+    let mut drivable: Vec<Deck> = Vec::new();
+    let mut footways: Vec<Deck> = Vec::new();
+    for (cid, p) in profiles.iter().enumerate() {
+        let (Some(p), Some(base)) = (p.as_ref(), slot_base.get(cid).copied().flatten()) else {
+            continue;
+        };
+        let c = &scene.corridors[cid];
+        if !c.spans.iter().any(|s| s.kind == SpanKind::Bridge) {
+            continue;
+        }
+        let arc = p.arc();
+        let pts = p.nodes();
+        let nodes: Vec<(usize, Coord)> = (0..pts.len())
+            .filter(|&k| in_bridge_span(&c.spans, arc[k]))
+            .map(|k| (base + k, pts[k]))
+            .collect();
+        if nodes.len() < 2 {
+            continue;
+        }
+        let deck = Deck { cos_lat: c.cos_lat, nodes };
+        if c.drivable {
+            drivable.push(deck);
+        } else {
+            footways.push(deck);
+        }
+    }
+
+    let mut out = Vec::new();
+    for f in &footways {
+        // The best drivable partner: the one covering the most of the footway
+        // deck within the lateral gap, ties broken by the smaller mean offset.
+        let mut best: Option<(usize, f64, Vec<(usize, usize)>)> = None;
+        for d in &drivable {
+            let mut pairs = Vec::new();
+            let mut sum = 0.0;
+            for &(fslot, fp) in &f.nodes {
+                if let Some((dslot, dist)) = nearest_deck_node(d, fp, f.cos_lat) {
+                    if dist <= crate::priors::PARALLEL_STRUCTURE_LATERAL_M {
+                        pairs.push((fslot, dslot));
+                        sum += dist;
+                    }
+                }
+            }
+            // Parallel, not crossing: most of the footway deck must lie within
+            // the gap (a perpendicular footbridge shares only a node or two).
+            if pairs.len() >= 2 && pairs.len() * 2 >= f.nodes.len() {
+                let (cover, mean) = (pairs.len(), sum / pairs.len() as f64);
+                let better = best
+                    .as_ref()
+                    .is_none_or(|(bc, bm, _)| cover > *bc || (cover == *bc && mean < *bm));
+                if better {
+                    best = Some((cover, mean, pairs));
+                }
+            }
+        }
+        if let Some((_, _, pairs)) = best {
+            out.extend(pairs);
+        }
+    }
+    out
+}
+
+/// Whether arc `a` falls inside one of the corridor's bridge spans. The bounds
+/// carry a centimetre tolerance: the profile's arc is re-accumulated from node
+/// geometry, so a deck's end node lands a float-epsilon past the span's nominal
+/// `arc1` and must still count as on the deck (grade slivers are ≥
+/// [`crate::priors::SNAP_RUN_M`], far beyond this).
+fn in_bridge_span(spans: &[Span], a: f64) -> bool {
+    const EPS: f64 = 1e-2;
+    spans.iter().any(|s| s.kind == SpanKind::Bridge && a >= s.arc0 - EPS && a <= s.arc1 + EPS)
+}
+
+/// The deck node nearest plan point `p` (perpendicular distance to the deck
+/// polyline, in metres), and its global slot — the closer endpoint of the
+/// nearest segment. `cos_lat` scales longitude into the local metric space.
+fn nearest_deck_node(d: &Deck, p: Coord, cos_lat: f64) -> Option<(usize, f64)> {
+    let mut best: Option<(usize, f64)> = None;
+    for w in d.nodes.windows(2) {
+        let (s0, a) = w[0];
+        let (s1, b) = w[1];
+        let (abx, aby) = ((b.x - a.x) * cos_lat * DEG_M, (b.y - a.y) * DEG_M);
+        let (apx, apy) = ((p.x - a.x) * cos_lat * DEG_M, (p.y - a.y) * DEG_M);
+        let ab2 = abx * abx + aby * aby;
+        let t = if ab2 > 0.0 { ((apx * abx + apy * aby) / ab2).clamp(0.0, 1.0) } else { 0.0 };
+        let (dx, dy) = (apx - abx * t, apy - aby * t);
+        let dist = (dx * dx + dy * dy).sqrt();
+        let slot = if t < 0.5 { s0 } else { s1 };
+        if best.is_none_or(|(_, bd)| dist < bd) {
+            best = Some((slot, dist));
+        }
+    }
+    best
 }
 
 /// The grade ceiling a corridor's edges are held to: a ramp climbs at the ramp
@@ -455,6 +599,66 @@ mod tests {
         assert_eq!(va, vb);
         assert_eq!(vb, vc);
         assert_eq!(g.n_components, 1);
+    }
+
+    /// An east-west corridor `off_m` metres north of lat 46, spanning `len_m`
+    /// from lon 6, entirely one bridge span.
+    fn bridge_corridor(id: u32, off_m: f64, len_m: f64, n: usize, drivable: bool) -> Corridor {
+        let deg_x = len_m / (DEG_M * cos_lat());
+        let y = 46.0 + off_m / DEG_M;
+        let nodes: Vec<Coord> =
+            (0..n).map(|i| Coord { x: 6.0 + deg_x * i as f64 / (n - 1) as f64, y }).collect();
+        let arc: Vec<f64> = (0..n).map(|i| len_m * i as f64 / (n - 1) as f64).collect();
+        Corridor {
+            id,
+            nodes,
+            arc,
+            cos_lat: cos_lat(),
+            class: RoadClass::Minor,
+            class_key: String::new(),
+            link: false,
+            drivable,
+            spans: vec![Span { arc0: 0.0, arc1: len_m, level: 1, kind: SpanKind::Bridge }],
+            segments: vec![SegmentRef { source: id as u64, node0: 0, node1: n - 1, properties: vec![] }],
+            connectors: vec![],
+        }
+    }
+
+    /// A footbridge running parallel and close to a road bridge is bound to it:
+    /// their deck nodes share height variables, so the two decks ride one grade
+    /// line (S8) instead of overlapping at two heights.
+    #[test]
+    fn parallel_footbridge_shares_the_road_deck_grade_line() {
+        let road = bridge_corridor(0, 0.0, 200.0, 9, true);
+        let foot = bridge_corridor(1, 8.0, 200.0, 9, false); // 8 m north, parallel
+        let scene = SceneGraph::new(vec![road, foot]);
+        let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
+        let profiles: Vec<Option<Profile>> =
+            ns.iter().map(|n| Some(Profile::flat(n, 400.0))).collect();
+        let g = build(&scene, &profiles);
+        // Every footway node maps to the same variable as a road node — the two
+        // corridors are fused into one structure component.
+        assert_eq!(g.n_components, 1, "parallel decks must fuse into one component");
+        let road_vars: std::collections::HashSet<VarId> =
+            g.corridors[0].vars.iter().copied().collect();
+        assert!(
+            g.corridors[1].vars.iter().all(|v| road_vars.contains(v)),
+            "each footbridge node must share the road deck's variable"
+        );
+    }
+
+    /// A footbridge too far to be the same structure keeps its own profile:
+    /// separate variables, separate component.
+    #[test]
+    fn a_distant_footbridge_is_not_bound() {
+        let road = bridge_corridor(0, 0.0, 200.0, 9, true);
+        let foot = bridge_corridor(1, 30.0, 200.0, 9, false); // 30 m away
+        let scene = SceneGraph::new(vec![road, foot]);
+        let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
+        let profiles: Vec<Option<Profile>> =
+            ns.iter().map(|n| Some(Profile::flat(n, 400.0))).collect();
+        let g = build(&scene, &profiles);
+        assert_eq!(g.n_components, 2, "a distant footbridge stays its own structure");
     }
 
     /// Disconnected corridors land in separate components; the node→var map

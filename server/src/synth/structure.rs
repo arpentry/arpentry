@@ -82,17 +82,29 @@ pub fn stamp(
     // plausible, else the class prior; `synth::surface` reads the identical
     // property) — plus the structure shoulder, so the deck-top asphalt frames
     // the road ribbon and meets the approach band edge-to-edge with no width
-    // step at the abutment. Falls back to the class half-width when a corridor
-    // carries no `width_m` (a non-P1 path).
-    let half_carriageway = f
-        .properties
-        .iter()
-        .find_map(|(k, v)| match (k.as_str(), v) {
-            ("width_m", Value::Double(w)) => Some(*w * 0.5),
-            _ => None,
-        })
-        .unwrap_or_else(|| class.half_width_m(link));
-    let half_w = half_carriageway + crate::priors::STRUCTURE_SHOULDER_M;
+    // step at the abutment. Falls back to the class half-width when a drivable
+    // corridor carries no `width_m` (a non-P1 street). A non-drivable structure
+    // — a footbridge, cycleway or pedestrian bridge — is pedestrian-scale
+    // instead: a narrow slab with no vehicle shoulder, not the car-lane deck
+    // its `Minor` class half-width would otherwise bake.
+    let drivable = crate::priors::paint_width_m(
+        prop_str(f, "class").as_deref(),
+        prop_str(f, "subclass").as_deref(),
+    )
+    .is_some();
+    let half_w = if drivable {
+        let half_carriageway = f
+            .properties
+            .iter()
+            .find_map(|(k, v)| match (k.as_str(), v) {
+                ("width_m", Value::Double(w)) => Some(*w * 0.5),
+                _ => None,
+            })
+            .unwrap_or_else(|| class.half_width_m(link));
+        half_carriageway + crate::priors::STRUCTURE_SHOULDER_M
+    } else {
+        crate::priors::PATH_STRUCTURE_HALF_WIDTH_M
+    };
 
     let mut acc = Accum::default();
     for line in lines(&f.geometry) {

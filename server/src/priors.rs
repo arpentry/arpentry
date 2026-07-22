@@ -386,6 +386,23 @@ pub const EARTHWORK_MARGIN_M: f64 = 3.0;
 /// Thickness of a bridge deck slab in metres — deck surface to its underside.
 pub const DECK_THICKNESS_M: f64 = 1.5;
 
+/// Deck half-width in metres of a non-drivable structure — a footbridge,
+/// cycleway or pedestrian bridge. Pedestrian-scale: a narrow slab with no
+/// vehicle shoulder, unlike the carriageway-plus-[`STRUCTURE_SHOULDER_M`] a
+/// drivable deck carries. Without it a `footway` falls into the `Minor`
+/// car-lane [`RoadClass::half_width_m`] and bakes a ~7.5 m deck for a footpath.
+pub const PATH_STRUCTURE_HALF_WIDTH_M: f64 = 1.25;
+
+/// Widest lateral gap, in metres, between a non-drivable structure (a
+/// footbridge, cycleway) and a parallel drivable bridge for the two to resolve
+/// as one physical structure (scenario S8, entity resolution across parallel
+/// segments). Overture maps a road bridge and its separated footpath as two
+/// independently `bridge`-tagged ways; within this gap they are bound to one
+/// shared grade line so their decks ride at one height instead of overlapping
+/// at two. A wider gap is a genuinely separate structure and keeps its own
+/// solved profile — the same trust-the-data resolution the clearance caps use.
+pub const PARALLEL_STRUCTURE_LATERAL_M: f64 = 12.0;
+
 /// Extra half-width in metres a structure (bridge deck, tunnel bore) carries
 /// beyond the painted carriageway — the edge beam / shoulder / barrier a real
 /// deck adds outside the traffic lanes. Applied to the whole structure sweep
