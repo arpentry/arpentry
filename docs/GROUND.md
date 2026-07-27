@@ -47,6 +47,17 @@ profiling the whole network). Engineered-only behaviors — rim anchoring,
 infeasible-anchor absorption into structures, deck ramps — stay gated on
 the class having a true engineering grade.
 
+**Solved structure ends.** An at-grade stretch beside a mapped structure
+that the profile cannot honour is absorbed into that structure and the span
+grown to match (S10 — the annotation ends where a mapper split the way, not
+where the road reaches the ground). Two symptoms mark it: a pitch still far
+beyond the class grade ceiling after the limiter, and a road standing more
+than `ABSORB_STANDOFF_M` clear of the natural ground, on the side the
+structure leaves it, in an unbroken run out from the span edge. The second
+is what tells a viaduct mapped as one short span over the road it crosses
+from a genuine embankment — and an embankment is what the ground stage
+would otherwise build, walling off whatever passes beneath.
+
 **Vertical-curve smoothing.** Engineered profiles round grade breaks only
 on nodes lifted off the terrain (draped nodes stay pinned). Street profiles
 smooth all nodes, clamped each pass to the class deviation budget of the
@@ -65,22 +76,61 @@ result is independent of processing order (invariant 5).
 
 ## 2. The imprint
 
-Wherever a profiled road departs the natural ground by more than the
-earthwork threshold (`MIN_EARTHWORK_M`), the ground is pulled to the
-profile. One rule, cut and fill alike:
+**The ground under a road is the road.** Every at-grade stretch of every
+profiled road benches the ground to its solved height — not only the
+stretches that depart the natural ground. A bench is not merely how an
+embankment or a cutting gets expressed; it is how a carriageway *holds* its
+height against the earthworks around it, and how it stays flat across a
+cross-slope. A road the DEM already images correctly still needs one: given
+no bench of its own, the approach fill of the motorway crossing above it
+blended straight over it and buried the road under twelve metres of ground.
 
-- **Flat across the bench**: within the bench half-width (structure
-  half-width + shoulder + rendering margin), the ground *is* the profile.
-- **Feathered at the batter**: from bench edge to toe, the pull decays
-  smoothly over a feather proportional to the depth of cut or height of
-  fill (`EARTHWORK_BATTER`).
-- **Blended by share at overlaps**: where benches overlap — junction
-  approaches, hairpin legs, parallel carriageways — targets blend by
-  envelope share, clustered per approach, so overlapping earthworks ramp
-  into each other instead of stepping.
+The field resolves in two steps:
 
-Carves (portal cuts, under-deck daylighting) remain separate, winner-take-
-all, cut-only notches — a carve is a hole, not a target.
+- **Benches win.** Inside a bench half-width (carriageway + shoulder + a
+  narrow verge) the ground *is* that road's profile — the
+  nearest bench, deterministically tie-broken, never a mean of several.
+  Averaging inside asphalt is what let a neighbour's earthwork dome the
+  terrain up through a paved surface. Where two benches at very different
+  heights abut, the field steps: that is a retaining wall, which is what an
+  underpass beside an embankment physically has. The step falls on a crest
+  contact line (§3), so the mesh draws it as a face.
+- **Batters clamp.** Outside every bench the ground is the natural surface,
+  bounded by the straight batter faces that reach it: no lower than the
+  highest embankment face, no higher than the lowest cutting face
+  (1 in `EARTHWORK_BATTER`). The face is self-limiting — it stops exactly
+  where it meets the natural ground — so an earthwork reshapes what it must
+  and nothing more, instead of feathering a fixed-width corridor around
+  every road. An edge works one side only, chosen by where its road sits
+  against the ground there, so a road in a cutting cannot shave its
+  neighbour's embankment; where the two contend the embankment survives and
+  the cutting takes only what the fill has not claimed.
+
+  Each side's reach is *where that face is expected to daylight*, computed
+  from the cut or fill depth at the bench edge and the cross-slope the
+  natural ground carries outward — both read from the same bench-edge
+  sample. A face that would not close about as fast as it would on flat
+  ground is not built at all: the face is a plane and the hillside is not,
+  so where the ground runs away with it the earthwork goes on cutting the
+  whole way out — a footpath whose estimated reach came to 40 m carved sixty
+  metres off a gorge wall. There the reach collapses to its floor and the
+  bench is retained by a wall at its own edge, as a road cut into a steep
+  flank is. This is also why the bench is kept narrow: a wide flat bench is
+  a wide terrace cut into every hillside the road crosses, and a deeper face
+  where it ends.
+
+**Where a bench is not plausible at all.** Holding a band flat across a
+cross-slope costs a face at its edge of half-width × slope. Past
+`MAX_BENCH_FACE_M` no bench is emitted and the road is left on the natural
+ground, tilted as the hillside is. A terrace on the wall of a gorge is a
+fiction — a footpath's eight-metre band held flat there means a twenty-metre
+rock cut on one side and as much fill on the other — and it is a fiction the
+mesh cannot draw: the crest tears into sawtooth where the wall exceeds what a
+cell can hold. For a trail cut into a cliff, draped *is* the truth.
+
+Carves (portal cuts, under-deck daylighting) remain separate cut-only
+notches, bounding the benched ground from above — a carve is a hole, not a
+target.
 
 The ground model is a pure function of the global solved model: built once,
 queried pointwise, identical from every tile that asks (invariant 5).
@@ -89,19 +139,35 @@ founding all read this one field and nothing else (invariant 1).
 
 ## 3. The meshing rule
 
-**What constrains.** For every earthwork run the imprint implies two
-polylines per side: the *crest* line at the bench edge and the *toe* line
-at the feather's end. These are the contact lines of GENERATION.md stage 3.
-At detail zooms (z ≥ z_ref) the terrain mesh is a constrained
+**What constrains.** For every earthwork run the imprint implies one
+polyline per side: the *crest* line at the bench edge, where the ground
+stops being the road and becomes the batter face — or a wall down to
+whatever bench abuts it. These are the contact lines of GENERATION.md
+stage 3. At detail zooms (z ≥ z_ref) the terrain mesh is a constrained
 triangulation: the regular lattice persists as background points — every
 vertex the unconstrained mesh would have, it still has — and the contact
 lines enter as constraint edges. Between crest lines the triangulation
 cannot place a triangle that straddles the bench, so the drawn ground
-holds the bench exactly under every road.
+holds the bench exactly under every road, and a wall draws as a face
+rather than smearing across a cell.
+
+There is no toe line. The batter stops where it meets the natural ground,
+so the toe stands wherever the ground happens to rise into the face, which
+no offset of the centerline predicts; a constraint at the nominal reach
+would pin vertices in the wrong place and double the constraint count to
+do it.
 
 **The z rule.** Constraint vertices carry no height of their own; every
 mesh vertex, lattice or constraint, evaluates the one ground function at
 its position. Breaklines say where to sample, never what value to find.
+
+The crest line is therefore drawn a hand's breadth *inside* the bench edge,
+not on it. The edge is where the field steps, tile coordinates quantize to
+about a centimetre, and the triangulation rounds its own split vertices: a
+line drawn on the step samples the road at one vertex and the hillside at the
+next, and the mesh comes out as a row of teeth. Inside the edge every vertex
+of the line is unambiguously on the bench, and the step falls between the
+crest and the first lattice point beyond it.
 
 **The tile-border contract.** Contact lines are global polylines clipped
 per tile. A border crossing lands exactly on the quantized tile edge
@@ -120,6 +186,28 @@ bench, and creased at a batter regardless of how the triangulation fell.
 lattice: at those viewing distances a bench narrower than a cell is not
 worth vertices, and roads compensate with the datum lift (§4). The
 constrained mesh is a detail-zoom instrument.
+
+What they read is *scale-aware*: the ground function is asked at the cell
+spacing of the lattice asking, and an earthwork narrower than that spacing is
+left out of the answer. Sampling it is what does the damage — a corner that
+lands inside a 10 m bench takes the road's height while its neighbour a cell
+away takes the hillside, and the mesh spikes; whole slopes of terraced tracks
+came out as sawtooth noise one rung out from the reference. The road
+compensates with its datum lift (§4), so dropping the bench from the drawn
+ground does not float it. At the reference zoom the constrained mesh holds
+every bench exactly, so nothing is filtered there.
+
+Their *resolution*, too, grades down a rung at a time rather than
+collapsing to the base lattice in one step. What the eye reads is the
+metric cell size, and each rung covers four times the area of the one
+below: the detail grid straight to the base grid is a 64-fold drop in
+vertices, so one zoom out from the reference the ground went from ~3 m
+cells to ~50 m and the hillsides turned blocky — including in the
+distance of a tilted view, which draws coarser rungs whatever the camera
+altitude. Halving per rung roughly doubles the cell size instead, and the
+three graded rungs together add ~7 % to the reference rung's vertices,
+because a rung has a quarter of the tiles and a quarter of the vertices in
+each.
 
 **Degradation.** A tile whose constrained triangulation fails — degenerate
 constraint after quantization, offset self-intersection the pre-pass did

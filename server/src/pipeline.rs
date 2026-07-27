@@ -299,7 +299,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
                     synth::road::surface_height(Some(p), false, &mut sampler, solved.z_ref, solved.z_ref, &zref_bounds, lon, lat);
                 let ground_h = {
                     let mut sc = Vec::new();
-                    ground.height(lon, lat, terr, &mut sc)
+                    ground.height(lon, lat, terr, 0.0, &mut sc)
                 };
                 eprintln!(
                     "  corr {:>5} {:>4}m  road={:.1} deck={:.1} terr={:.1} rendered_road_surface={:.1} engineered_ground={:.1}  DECK-SURFACE_STEP={:.1}",
@@ -1824,5 +1824,443 @@ mod tests {
         let tile = fbt::root_as_tile(&raw).expect("tile");
         assert_eq!(tile.version(), 1);
         assert!(tile.layers().map(|l| l.len()).unwrap_or(0) > 0);
+    }
+
+    /// Dumps a raster of the engineered ground against the raw DEM over a
+    /// window, as CSV, so the ground field can be hillshaded and diffed
+    /// offline — the stage-3 counterpart of `--dump`'s vector artifacts.
+    /// Columns: `col,row,lon,lat,raw,ground,bed` (`bed` = the exact roadbed
+    /// target where the point lies inside a held bench width, else `nan`).
+    /// Run:
+    /// ```text
+    /// SEG=data/overture-ch/segment.parquet WATER=data/overture-ch/water.parquet \
+    /// TERRAIN=data/overture-ch/terrain-hires.pmtiles BBOX=6.885,46.446,6.908,46.462 \
+    /// WINDOW=6.8952,46.4539,600 STEP=1 ZREF=16 OUT=/tmp/claude/ground.csv \
+    /// cargo test --release -- --ignored dump_ground_grid --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs $SEG/$TERRAIN"]
+    fn dump_ground_grid() {
+        let seg = std::env::var("SEG").expect("SEG=<segment.parquet>");
+        let water = std::env::var("WATER").ok();
+        let terrain = std::env::var("TERRAIN").ok().map(PathBuf::from);
+        let bbox: Vec<f64> = std::env::var("BBOX")
+            .expect("BBOX=w,s,e,n")
+            .split(',')
+            .map(|s| s.trim().parse().unwrap())
+            .collect();
+        let bounds =
+            Bounds { west: bbox[0], south: bbox[1], east: bbox[2], north: bbox[3] };
+        let window: Vec<f64> = std::env::var("WINDOW")
+            .expect("WINDOW=lon,lat,size_m")
+            .split(',')
+            .map(|s| s.trim().parse().unwrap())
+            .collect();
+        let step_m: f64 = std::env::var("STEP").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
+        let z_ref: u8 = std::env::var("ZREF").ok().and_then(|s| s.parse().ok()).unwrap_or(16);
+        let out = std::env::var("OUT").unwrap_or_else(|_| "/tmp/ground.csv".into());
+
+        use std::path::Path as FsPath;
+        let mut scene =
+            assemble::run(FsPath::new(&seg), water.as_deref().map(FsPath::new), &bounds)
+                .expect("assemble");
+        let solved =
+            Arc::new(solve::run(&mut scene, terrain.as_deref(), z_ref, 0).expect("solve"));
+        let ground = Arc::new(ground::derive(&scene, &solved, terrain.as_deref(), 0));
+        eprintln!(
+            "model: {} corridors, {} profiles, {} earthwork edges, {} breakline segments",
+            scene.corridors.len(),
+            solved.solved_count(),
+            ground.earthwork_count(),
+            ground.breaklines().len(),
+        );
+
+        let (clon, clat, size) = (window[0], window[1], window[2]);
+        let cos = clat.to_radians().cos();
+        let n = (size / step_m).round() as i64;
+        let mut dem = terrain.as_deref().and_then(|p| Dem::open(p).ok());
+        let mut sampler = GroundSampler::new(
+            terrain.as_deref().and_then(|p| Dem::open(p).ok()),
+            Arc::clone(&ground),
+            z_ref,
+        );
+        let mut csv = String::from("col,row,lon,lat,raw,ground,bed\n");
+        for row in 0..=n {
+            let lat = clat + (row as f64 * step_m - size * 0.5) / crate::scene::DEG_M;
+            for col in 0..=n {
+                let lon =
+                    clon + (col as f64 * step_m - size * 0.5) / (crate::scene::DEG_M * cos);
+                let raw = match &mut dem {
+                    Some(d) => d.elevation(lon, lat, z_ref),
+                    None => 0.0,
+                };
+                let g = sampler.ground(lon, lat, z_ref);
+                let bed = sampler.bed_target(lon, lat);
+                csv.push_str(&format!(
+                    "{col},{row},{lon:.7},{lat:.7},{raw:.3},{g:.3},{}\n",
+                    match bed {
+                        Some(b) => format!("{b:.3}"),
+                        None => "nan".into(),
+                    }
+                ));
+            }
+        }
+        std::fs::write(&out, csv).expect("write csv");
+        eprintln!("wrote {out} ({}x{} samples at {step_m} m)", n + 1, n + 1);
+    }
+
+    /// Dumps one archive tile's terrain mesh as CSV — vertex position, height,
+    /// and decoded normal, plus the triangle list — so the drawn geometry and
+    /// the shading it carries can be plotted apart from each other.
+    /// Run: `ARPA=data/overture-ch/preview.arpa AT=6.928,46.437 Z=16 \
+    ///   OUT=/tmp/claude/mesh cargo test --release -- --ignored dump_terrain_mesh --nocapture`
+    #[test]
+    #[ignore = "needs $ARPA/$AT"]
+    fn dump_terrain_mesh() {
+        let path = std::env::var("ARPA").unwrap();
+        let at: Vec<f64> = std::env::var("AT")
+            .expect("AT=lon,lat")
+            .split(',')
+            .map(|s| s.trim().parse().unwrap())
+            .collect();
+        let z: u8 = std::env::var("Z").ok().and_then(|s| s.parse().ok()).unwrap_or(16);
+        let out = std::env::var("OUT").unwrap_or_else(|_| "/tmp/mesh".into());
+        let bytes = std::fs::read(&path).unwrap();
+        let archive = crate::archive::Archive::open(&bytes).unwrap();
+        let entry = archive
+            .entries()
+            .find(|e| {
+                if e.z != z {
+                    return false;
+                }
+                let b = Bounds::of_tile(e.z, e.x, e.y);
+                at[0] >= b.west && at[0] < b.east && at[1] >= b.south && at[1] < b.north
+            })
+            .expect("a tile covering AT");
+        let b = Bounds::of_tile(entry.z, entry.x, entry.y);
+        let raw = brotli_decompress(archive.get_by_id(entry.hilbert_id).unwrap());
+        let tile = fbt::root_as_tile(&raw).unwrap();
+        let layers = tile.layers().unwrap();
+        let mut wrote = false;
+        for li in 0..layers.len() {
+            let l = layers.get(li);
+            if l.name() != "terrain" {
+                continue;
+            }
+            let feats = l.features().unwrap();
+            let f = feats.get(0);
+            let g = f.geometry_as_mesh_geometry().expect("a terrain mesh");
+            let (x, y, zq) = (g.x(), g.y(), g.z());
+            let normals = g.normals();
+            let idx = g.indices();
+            eprintln!(
+                "tile {}/{}/{} bounds {:.5},{:.5}..{:.5},{:.5}: {} verts, {} tris",
+                entry.z,
+                entry.x,
+                entry.y,
+                b.west,
+                b.south,
+                b.east,
+                b.north,
+                x.len(),
+                idx.len() / 3,
+            );
+            let mut v = String::from("i,qx,qy,lon,lat,z_m,nx,ny\n");
+            for i in 0..x.len() {
+                let (qx, qy) = (x.get(i), y.get(i));
+                let (nx, ny) = match &normals {
+                    Some(n) if n.len() >= (i + 1) * 2 => (n.get(i * 2), n.get(i * 2 + 1)),
+                    _ => (0, 0),
+                };
+                v.push_str(&format!(
+                    "{i},{qx},{qy},{:.7},{:.7},{:.3},{nx},{ny}\n",
+                    crate::project::dequantize_x(qx, &b),
+                    crate::project::dequantize_y(qy, &b),
+                    zq.get(i) as f64 / 1000.0,
+                ));
+            }
+            std::fs::write(format!("{out}_verts.csv"), v).unwrap();
+            let mut t = String::from("a,b,c\n");
+            for tri in 0..idx.len() / 3 {
+                t.push_str(&format!(
+                    "{},{},{}\n",
+                    idx.get(tri * 3),
+                    idx.get(tri * 3 + 1),
+                    idx.get(tri * 3 + 2)
+                ));
+            }
+            std::fs::write(format!("{out}_tris.csv"), t).unwrap();
+            wrote = true;
+        }
+        assert!(wrote, "no terrain layer in that tile");
+        eprintln!("wrote {out}_verts.csv / {out}_tris.csv");
+    }
+
+    /// Audits how far the solved at-grade road stands off the natural ground,
+    /// and how much of that stands next to a mapped structure — the S10
+    /// question: is a 12 m "embankment" beside a bridge span really an
+    /// embankment, or a viaduct whose annotation stopped short?
+    /// Run: same env as `dump_ground_grid` (no WINDOW needed).
+    #[test]
+    #[ignore = "needs $SEG/$TERRAIN"]
+    fn audit_at_grade_standoff() {
+        use std::path::Path as FsPath;
+        let seg = std::env::var("SEG").expect("SEG=<segment.parquet>");
+        let water = std::env::var("WATER").ok();
+        let terrain = std::env::var("TERRAIN").ok().map(PathBuf::from);
+        let bbox: Vec<f64> = std::env::var("BBOX")
+            .expect("BBOX=w,s,e,n")
+            .split(',')
+            .map(|s| s.trim().parse().unwrap())
+            .collect();
+        let bounds = Bounds { west: bbox[0], south: bbox[1], east: bbox[2], north: bbox[3] };
+        let z_ref: u8 = std::env::var("ZREF").ok().and_then(|s| s.parse().ok()).unwrap_or(16);
+        let mut scene = assemble::run(FsPath::new(&seg), water.as_deref().map(FsPath::new), &bounds)
+            .expect("assemble");
+        let solved = solve::run(&mut scene, terrain.as_deref(), z_ref, 0).expect("solve");
+
+        // CORRIDOR=<id> ARCS=lo,hi dumps one profile node by node instead.
+        if let Ok(id) = std::env::var("CORRIDOR") {
+            let id: u32 = id.parse().unwrap();
+            let span: Vec<f64> = std::env::var("ARCS")
+                .unwrap_or_else(|_| "0,1e9".into())
+                .split(',')
+                .map(|s| s.trim().parse().unwrap())
+                .collect();
+            let c = scene.corridors.iter().find(|c| c.id == id).expect("corridor");
+            let p = solved.profile(id).expect("a profile");
+            eprintln!("corridor {id} {} spans={:?}", c.class_key, c.spans);
+            // The same corridor straight out of stage 2's per-corridor solve,
+            // before the fused relax — so a hump can be blamed on one or the
+            // other.
+            let pre = terrain.as_deref().and_then(|t| Dem::open(t).ok()).and_then(|d| {
+                let mut d = d;
+                solve::profile::solve(
+                    &c.nodes,
+                    &c.spans,
+                    solve::Mode::for_class(c.class, c.drivable),
+                    &mut |q| solve::reference_surface(&mut d, z_ref, q.x, q.y),
+                )
+            });
+            for (i, &a) in p.arc().iter().enumerate() {
+                if a < span[0] || a > span[1] {
+                    continue;
+                }
+                eprintln!(
+                    "  arc {a:>8.1}  road={:>8.2} pre_relax={:>8.2} terrain={:>8.2} \
+                     standoff={:>+6.2} {}",
+                    p.road_m()[i],
+                    pre.as_ref().map(|q| q.road_m()[i]).unwrap_or(f64::NAN),
+                    p.terrain_m()[i],
+                    p.road_m()[i] - p.terrain_m()[i],
+                    if p.at_grade()[i] { "grade" } else { "STRUCTURE" },
+                );
+            }
+            eprintln!("crossings on this corridor in range:");
+            for x in &scene.crossings {
+                let mine = if x.upper == id {
+                    Some((x.upper_arc, "upper"))
+                } else if x.lower == Some(id) {
+                    let p2 = solved.profile(id).unwrap();
+                    Some((p2.arc_of(x.point.x, x.point.y), "lower"))
+                } else {
+                    None
+                };
+                let Some((a, role)) = mine else { continue };
+                if a < span[0] || a > span[1] {
+                    continue;
+                }
+                let other = if role == "upper" { x.lower } else { Some(x.upper) };
+                let (oclass, oroad) = match other.and_then(|o| {
+                    scene.corridors.iter().find(|c| c.id == o).map(|c| (c, o))
+                }) {
+                    Some((c, o)) => (
+                        c.class_key.clone(),
+                        solved.profile(o).map(|q| q.height_at(x.point.x, x.point.y)),
+                    ),
+                    None => ("(terrain/water)".into(), None),
+                };
+                eprintln!(
+                    "  arc {a:>8.1} {role:<5} vs {:?} {oclass:<14} kind={:?} levels {}/{} other_road={:?}",
+                    other, x.lower_kind, x.upper_level, x.lower_level, oroad,
+                );
+            }
+            return;
+        }
+
+        let mut standoff: Vec<f64> = Vec::new();
+        let mut near_structure = 0usize;
+        let mut lone = 0usize;
+        let mut worst: Vec<(f64, u32, String, f64, bool)> = Vec::new();
+        for c in &scene.corridors {
+            let Some(p) = solved.profile(c.id) else { continue };
+            let (arc, road, terr, at_grade) =
+                (p.arc(), p.road_m(), p.terrain_m(), p.at_grade());
+            for i in 0..road.len() {
+                if !at_grade[i] {
+                    continue;
+                }
+                let up = road[i] - terr[i];
+                standoff.push(up);
+                if up < 4.0 {
+                    continue;
+                }
+                // Is a mapped structure span within 200 m along the corridor?
+                let near = c.spans.iter().any(|s| {
+                    s.kind != SpanKind::Grade
+                        && arc[i] >= s.arc0 - 200.0
+                        && arc[i] <= s.arc1 + 200.0
+                });
+                if near {
+                    near_structure += 1;
+                } else {
+                    lone += 1;
+                }
+                worst.push((up, c.id, c.class_key.clone(), arc[i], near));
+            }
+        }
+        standoff.sort_by(|a, b| a.total_cmp(b));
+        let pct = |q: f64| standoff[((standoff.len() as f64 * q) as usize).min(standoff.len() - 1)];
+        eprintln!(
+            "{} at-grade nodes: standoff p50 {:+.2} p90 {:+.2} p99 {:+.2} max {:+.2} min {:+.2}",
+            standoff.len(),
+            pct(0.5),
+            pct(0.9),
+            pct(0.99),
+            standoff[standoff.len() - 1],
+            standoff[0],
+        );
+        eprintln!(
+            "flying > 4 m at grade: {} nodes — {near_structure} within 200 m of a mapped \
+             structure, {lone} standing alone",
+            near_structure + lone
+        );
+        worst.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for (up, id, class, arc, near) in worst.iter().take(12) {
+            eprintln!(
+                "  +{up:.1} m  corr {id:<6} {class:<12} arc {arc:.0}  {}",
+                if *near { "beside a structure" } else { "ALONE" }
+            );
+        }
+    }
+
+    /// Explains the engineered ground at one point: every earthwork edge that
+    /// covers it (which corridor, what target, how strong a share) and every
+    /// corridor whose profile passes nearby (class, span kind, solved road
+    /// height against the terrain it was solved from). The "why is the ground
+    /// here 12 m above the DEM" probe.
+    /// Run: same env as `dump_ground_grid` plus `PROBE=lon,lat`.
+    #[test]
+    #[ignore = "needs $SEG/$TERRAIN/$PROBE"]
+    fn probe_ground_point() {
+        use std::path::Path as FsPath;
+        let seg = std::env::var("SEG").expect("SEG=<segment.parquet>");
+        let water = std::env::var("WATER").ok();
+        let terrain = std::env::var("TERRAIN").ok().map(PathBuf::from);
+        let bbox: Vec<f64> = std::env::var("BBOX")
+            .expect("BBOX=w,s,e,n")
+            .split(',')
+            .map(|s| s.trim().parse().unwrap())
+            .collect();
+        let bounds = Bounds { west: bbox[0], south: bbox[1], east: bbox[2], north: bbox[3] };
+        let probe: Vec<f64> = std::env::var("PROBE")
+            .expect("PROBE=lon,lat")
+            .split(',')
+            .map(|s| s.trim().parse().unwrap())
+            .collect();
+        let (lon, lat) = (probe[0], probe[1]);
+        let z_ref: u8 = std::env::var("ZREF").ok().and_then(|s| s.parse().ok()).unwrap_or(16);
+
+        let mut scene = assemble::run(FsPath::new(&seg), water.as_deref().map(FsPath::new), &bounds)
+            .expect("assemble");
+        let solved = Arc::new(solve::run(&mut scene, terrain.as_deref(), z_ref, 0).expect("solve"));
+        let ground = Arc::new(ground::derive(&scene, &solved, terrain.as_deref(), 0));
+        let mut dem = terrain.as_deref().and_then(|p| Dem::open(p).ok());
+        let raw = match &mut dem {
+            Some(d) => d.elevation(lon, lat, z_ref),
+            None => 0.0,
+        };
+        let mut sc = Vec::new();
+        let h = ground.height(lon, lat, raw, 0.0, &mut sc);
+        eprintln!("PROBE {lon},{lat}  raw={raw:.2} engineered={h:.2} (delta {:+.2} m)", h - raw);
+
+        // Covering earthwork edges, strongest share first.
+        let cos = lat.to_radians().cos();
+        let mut rows: Vec<(f64, String)> = Vec::new();
+        for e in ground.earthworks().edges() {
+            let ax = e.a.x * e.cos_lat;
+            let (dx, dy) = ((e.b.x - e.a.x) * e.cos_lat, e.b.y - e.a.y);
+            let len2 = dx * dx + dy * dy;
+            let t = if len2 > 0.0 {
+                (((lon * e.cos_lat - ax) * dx + (lat - e.a.y) * dy) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let (cx, cy) = (ax + dx * t, e.a.y + dy * t);
+            let d = ((lon * e.cos_lat - cx).powi(2) + (lat - cy).powi(2)).sqrt()
+                * crate::scene::DEG_M;
+            if d >= e.reach_m() {
+                continue;
+            }
+            let rise = (d - e.half_width_m).max(0.0) / crate::priors::EARTHWORK_BATTER;
+            let target = e.target_a + (e.target_b - e.target_a) * t;
+            let class = scene
+                .corridors
+                .iter()
+                .find(|c| c.id == e.chain)
+                .map(|c| c.class_key.clone())
+                .unwrap_or_default();
+            rows.push((
+                d,
+                format!(
+                    "  {:<14} chain={:<6} arc0={:<7.0} d={:>6.2} hw={:>5.2} \
+                     batter=[{:.1},{:.1}] target={:>8.2} {}{}",
+                    class,
+                    e.chain,
+                    e.arc0,
+                    d,
+                    e.half_width_m,
+                    e.batter_m[0],
+                    e.batter_m[1],
+                    target,
+                    if d <= e.half_width_m {
+                        "BENCH".to_string()
+                    } else {
+                        format!("face fill={:.2} cut={:.2}", target - rise, target + rise)
+                    },
+                    if e.carve { "  CARVE" } else { "" },
+                ),
+            ));
+        }
+        rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+        eprintln!("{} covering earthwork edges:", rows.len());
+        for (_, line) in rows.iter().take(30) {
+            eprintln!("{line}");
+        }
+
+        // Corridors whose centerline passes within 40 m.
+        eprintln!("nearby corridors (centerline within 40 m):");
+        for c in &scene.corridors {
+            let Some(p) = solved.profile(c.id) else { continue };
+            let a = p.arc_of(lon, lat);
+            let pt = p.point_at_arc(a);
+            let d = ((pt.x - lon) * cos).hypot(pt.y - lat) * crate::scene::DEG_M;
+            if d > 40.0 {
+                continue;
+            }
+            let span = c.spans.iter().find(|s| a >= s.arc0 && a <= s.arc1);
+            eprintln!(
+                "  corr {:<6} {:<14} d={:>6.2} arc={:>7.1} road={:>8.2} terrain={:>8.2} \
+                 deck={:>8.2} span={:?}",
+                c.id,
+                c.class_key,
+                d,
+                a,
+                p.height_at(lon, lat),
+                p.surface_at(lon, lat),
+                p.deck_height_at(lon, lat),
+                span.map(|s| (s.kind, s.level)),
+            );
+        }
     }
 }

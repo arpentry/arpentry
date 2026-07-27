@@ -1,16 +1,18 @@
 //! Bench contact lines — the breaklines the detail terrain mesh preserves
 //! (docs/GROUND.md §3).
 //!
-//! Every earthwork bench implies four contact polylines: per side, the
-//! *crest* at the bench edge (inside it the ground *is* the road) and the
-//! *toe* at the feather's end (beyond it the ground is natural). A regular
-//! lattice cannot hold a bench narrower than its cells; a triangulation
-//! constrained by these lines holds it exactly, whatever the cell size.
+//! Every earthwork bench implies one contact polyline per side: the *crest*
+//! at the bench edge, where the ground stops being the road and becomes the
+//! batter face (or a retaining wall down to whatever bench abuts it). A
+//! regular lattice cannot hold a bench narrower than its cells; a
+//! triangulation constrained by these lines holds it exactly, whatever the
+//! cell size — and holds the wall as a face rather than smearing it across a
+//! cell.
 //!
-//! Breaklines are derived from the earthwork edges themselves — the same
-//! data the ground function blends — so the lines and the field they sample
-//! can never disagree. Vertices carry position only; every mesh vertex
-//! evaluates the one ground function at mesh time (the z rule).
+//! Breaklines are derived from the earthwork edges themselves — the same data
+//! the ground function reads — so the lines and the field they sample can
+//! never disagree. Vertices carry position only; every mesh vertex evaluates
+//! the one ground function at mesh time (the z rule).
 
 use geo_types::Coord;
 
@@ -24,6 +26,18 @@ use super::modifiers::EarthworkEdge;
 /// clamp to it — the offset line may then cross its own other side, which
 /// the mesh builder's constraint pre-split resolves.
 const MITER_MAX: f64 = 2.0;
+
+/// How far *inside* the bench edge the crest line is drawn, in metres.
+///
+/// The bench edge is where the ground function steps, and a vertex placed
+/// exactly on a step reads whichever side it rounds to: tile coordinates
+/// quantize to about a centimetre, and the triangulation rounds its own split
+/// vertices too, so a line drawn on the edge samples the road one moment and
+/// the hillside the next and the mesh comes out as a row of teeth. Drawing the
+/// line a hand's breadth inside puts every vertex on it unambiguously on the
+/// bench, and the step then falls between the crest and the first lattice
+/// point outside it. Far larger than the quantum, far smaller than the verge.
+const CREST_INSET_M: f64 = 0.25;
 
 /// The bench contact lines of the whole model, as independent segments
 /// behind a spatial index, for per-tile queries.
@@ -98,11 +112,20 @@ impl Breaklines {
     }
 }
 
-/// Emits one bench run's four contact polylines as segments: crest and toe,
-/// left and right. Per-node offsets miter at the joints (clamped to
-/// [`MITER_MAX`]) so consecutive segments share their endpoint exactly —
-/// adjacent tiles clip the same global polyline and derive identical border
-/// vertices (invariant 5).
+/// Emits one bench run's contact polylines as segments: the *crest* line on
+/// each side, at the bench edge.
+///
+/// The crest is where the field genuinely breaks — flat bench inside, batter
+/// (or a retaining wall against a neighbouring bench) outside — so it is the
+/// line the triangulation must hold. The toe is not emitted: the batter is a
+/// straight face that stops where it meets the natural ground, so the toe
+/// stands wherever the ground happens to rise into the face, which no offset
+/// of the centerline predicts. A constraint drawn at the nominal reach would
+/// pin vertices in the wrong place and double the constraint count for it.
+///
+/// Per-node offsets miter at the joints (clamped to [`MITER_MAX`]) so
+/// consecutive segments share their endpoint exactly — adjacent tiles clip the
+/// same global polyline and derive identical border vertices (invariant 5).
 fn emit_run(run: &[EarthworkEdge], segments: &mut Vec<(Coord, Coord)>) {
     let n = run.len() + 1; // nodes
     let cos_lat = run[0].cos_lat;
@@ -143,20 +166,17 @@ fn emit_run(run: &[EarthworkEdge], segments: &mut Vec<(Coord, Coord)>) {
         offsets.push((-uy, ux)); // left perpendicular (may carry miter scale)
     }
     let node = |k: usize| if k == 0 { run[0].a } else { run[k - 1].b };
-    // The bench half-width and feather vary per edge; a node takes the max
-    // of its adjacent edges so the offset lines never pinch inside the bench.
-    let node_widths = |k: usize| -> (f64, f64) {
+    // The bench half-width varies per edge; a node takes the max of its
+    // adjacent edges so the crest line never pinches inside the bench.
+    let node_half_width = |k: usize| -> f64 {
         let mut hw: f64 = 0.0;
-        let mut toe: f64 = 0.0;
         if k > 0 {
             hw = hw.max(run[k - 1].half_width_m);
-            toe = toe.max(run[k - 1].half_width_m + run[k - 1].feather_m);
         }
         if k < run.len() {
             hw = hw.max(run[k].half_width_m);
-            toe = toe.max(run[k].half_width_m + run[k].feather_m);
         }
-        (hw, toe)
+        (hw - CREST_INSET_M).max(0.0)
     };
     let offset_point = |k: usize, side: f64, dist: f64| -> Coord {
         let c = node(k);
@@ -167,19 +187,26 @@ fn emit_run(run: &[EarthworkEdge], segments: &mut Vec<(Coord, Coord)>) {
         }
     };
     for side in [-1.0, 1.0] {
-        for line in 0..2 {
-            let mut prev: Option<Coord> = None;
-            for k in 0..n {
-                let (hw, toe) = node_widths(k);
-                let dist = if line == 0 { hw } else { toe };
-                let p = offset_point(k, side, dist);
-                if let Some(q) = prev {
-                    if q != p {
-                        segments.push((q, p));
-                    }
+        let mut prev: Option<Coord> = None;
+        for k in 0..n {
+            let p = offset_point(k, side, node_half_width(k));
+            if let Some(q) = prev {
+                // Drop a folded segment instead of emitting it. On the inside
+                // of a bend tighter than the offset — a hairpin, a switchback
+                // on a vineyard track — the offset polyline reverses and loops
+                // back over itself. Fed to the triangulation those loops become
+                // crossing constraints that get split against each other, and
+                // the mesh holds the resulting zigzag as real geometry: whole
+                // hillsides of tracks came out as rows of sawtooth teeth. The
+                // bench there is narrower than its own offset anyway, so the
+                // honest contact line is no line at all (docs/GROUND.md §3).
+                let (dx, dy) = ((p.x - q.x) * cos_lat, p.y - q.y);
+                let (ux, uy) = dir(&run[k - 1]);
+                if q != p && dx * ux + dy * uy > 0.0 {
+                    segments.push((q, p));
                 }
-                prev = Some(p);
             }
+            prev = Some(p);
         }
     }
 }
@@ -188,15 +215,14 @@ fn emit_run(run: &[EarthworkEdge], segments: &mut Vec<(Coord, Coord)>) {
 mod tests {
     use super::*;
 
-    fn edge(a: Coord, b: Coord, hw: f64, feather: f64, chain: u32) -> EarthworkEdge {
+    fn edge(a: Coord, b: Coord, hw: f64, batter: f64, chain: u32) -> EarthworkEdge {
         EarthworkEdge {
             a,
             b,
             target_a: 400.0,
             target_b: 400.0,
             half_width_m: hw,
-            feather_m: feather,
-            core_half_m: hw,
+            batter_m: [batter; 2],
             chain,
             arc0: 0.0,
             cos_lat: 46.0_f64.to_radians().cos(),
@@ -205,25 +231,25 @@ mod tests {
     }
 
     #[test]
-    fn a_straight_run_emits_four_parallel_lines() {
+    fn a_straight_run_emits_a_crest_line_per_side() {
         let cos_lat = 46.0_f64.to_radians().cos();
         let step = 30.0 / (DEG_M * cos_lat);
         let p = |i: f64| Coord { x: 6.0 + i * step, y: 46.0 };
         let edges = vec![edge(p(0.0), p(1.0), 5.0, 10.0, 0), edge(p(1.0), p(2.0), 5.0, 10.0, 0)];
         let b = Breaklines::derive(&edges);
-        // 4 lines × 2 segments each.
-        assert_eq!(b.len(), 8);
-        // Crest lines sit 5 m off the centerline, toes 15 m; an east-west run
+        // 2 crest lines × 2 segments each.
+        assert_eq!(b.len(), 4);
+        // Crest lines sit just inside the 5 m bench edge; an east-west run
         // offsets purely in latitude.
         let mut scratch = Vec::new();
         let mut out = Vec::new();
         b.query((5.9, 45.9, 6.1, 46.1), &mut scratch, &mut out);
-        assert_eq!(out.len(), 8);
+        assert_eq!(out.len(), 4);
         for (a, _) in &out {
             let off_m = ((a.y - 46.0) * DEG_M).abs();
             assert!(
-                (off_m - 5.0).abs() < 1e-6 || (off_m - 15.0).abs() < 1e-6,
-                "offset {off_m} must be the crest or the toe"
+                (off_m - (5.0 - CREST_INSET_M)).abs() < 1e-6,
+                "offset {off_m} must sit just inside the bench edge"
             );
         }
     }
@@ -241,8 +267,9 @@ mod tests {
             edge(p(3.0), p(4.0), 5.0, 10.0, 1),
         ];
         let b = Breaklines::derive(&edges);
-        // Two single-edge bench runs, 4 segments each; the carve emits none.
-        assert_eq!(b.len(), 8);
+        // Two single-edge bench runs, 2 crest segments each; the carve emits
+        // none.
+        assert_eq!(b.len(), 4);
     }
 
     #[test]
@@ -256,6 +283,6 @@ mod tests {
         b.query((7.0, 47.0, 7.1, 47.1), &mut scratch, &mut out);
         assert!(out.is_empty(), "a far bbox must match nothing");
         b.query((5.9, 45.9, 6.1, 46.1), &mut scratch, &mut out);
-        assert_eq!(out.len(), 4);
+        assert_eq!(out.len(), 2);
     }
 }

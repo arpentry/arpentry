@@ -93,6 +93,15 @@ const ABSORB_PASSES: usize = 8;
 /// this hunts is a 3–10× violation at a cliff.
 const ABSORB_GRADE_FACTOR: f64 = 1.5;
 
+/// How far a solved at-grade road may stand clear of the natural terrain,
+/// beside a mapped structure and in the same direction that structure leaves
+/// the ground, before it is read as part of that structure rather than as an
+/// embankment or a cutting. Well above the ordinary approach berm (the p99
+/// standoff across a dense network is ~2.5 m) and below the tallest
+/// embankments a road really is built on, so only annotation shortfall — a
+/// viaduct mapped as a single short span over the road it crosses — is caught.
+const ABSORB_STANDOFF_M: f64 = 5.0;
+
 /// How far outward of a structure edge [`seek_rim_anchors`] may migrate the
 /// bounding anchor to the local terrain extremum — the gorge rim a deck
 /// launches from, the flank base a bore emerges at. The disease this cures is
@@ -263,7 +272,7 @@ pub fn solve(
             // reconcile time (`portals::grow_spans`), so sweeps and paint
             // follow.
             for _ in 0..ABSORB_PASSES {
-                if !absorb_infeasible_anchors(&arc, &mut at_grade, &road_m, g) {
+                if !absorb_infeasible_anchors(&arc, &mut at_grade, &road_m, &terrain, g) {
                     break;
                 }
                 solve_once(&mut road_m, &at_grade);
@@ -504,6 +513,12 @@ impl Profile {
     pub fn road_at_arc(&self, a: f64) -> f64 {
         let (i, t) = self.edge_at_arc(a);
         self.road_m[i] + (self.road_m[i + 1] - self.road_m[i]) * t
+    }
+
+    /// The raw terrain height at arc position `a`.
+    pub fn surface_at_arc(&self, a: f64) -> f64 {
+        let (i, t) = self.edge_at_arc(a);
+        self.terrain_m[i] + (self.terrain_m[i + 1] - self.terrain_m[i]) * t
     }
 
     /// The deck-ramp height at arc position `a`.
@@ -1290,19 +1305,33 @@ fn seek_rim_anchors(arc: &[f64], terrain: &[f64], at_grade: &mut [bool]) -> bool
     changed
 }
 
-/// Flips at-grade nodes into the neighbouring structure run where the solved
-/// road still pitches beyond [`ABSORB_GRADE_FACTOR`] × the class grade ceiling
-/// — the leftover of [`limit_road_grade`]'s deviation clamp beating its grade
-/// clamp, which only happens where the terrain near a structure end is too
-/// steep for any at-grade road (the annotation ended before the road reached
-/// the ground). The search reaches [`PORTAL_MAX_M`] past each run edge — the
-/// same annotation-trust radius the portal solver uses — and everything from
-/// the edge through the farthest violation flips, so the structure continues
+/// Flips at-grade nodes into the neighbouring structure run where the road
+/// cannot in fact be at grade there. Two symptoms mark the stretch, and both
+/// say the same thing: the annotation ended before the physical structure did
+/// (S10).
+///
+/// - *Infeasible pitch*: the solved road still pitches beyond
+///   [`ABSORB_GRADE_FACTOR`] × the class grade ceiling — the leftover of
+///   [`limit_road_grade`]'s deviation clamp beating its grade clamp, which
+///   only happens where the terrain near a structure end is too steep for any
+///   at-grade road (a bridge landing into a gorge wall, a tunnel emerging
+///   under a climbing flank).
+/// - *Standing off the ground*: the road runs more than
+///   [`ABSORB_STANDOFF_M`] clear of the natural terrain, on the same side the
+///   structure is on, in an unbroken run out from the structure edge. A
+///   motorway 12 m above the valley floor beside a mapped bridge span is that
+///   bridge, not a 12 m embankment — and modelled as an embankment it built a
+///   wall of ground across whatever passes beneath it.
+///
+/// The search reaches [`PORTAL_MAX_M`] past each run edge — the same
+/// annotation-trust radius the portal solver uses — and everything from the
+/// edge through the farthest violation flips, so the structure continues
 /// through the whole infeasible stretch. Returns whether anything flipped.
 fn absorb_infeasible_anchors(
     arc: &[f64],
     at_grade: &mut [bool],
     road_m: &[f64],
+    terrain: &[f64],
     max_grade: f64,
 ) -> bool {
     let n = at_grade.len();
@@ -1332,13 +1361,27 @@ fn absorb_infeasible_anchors(
     }
     let mut changed = false;
     for &(start, end) in &runs {
+        // Which way this structure leaves the ground: a deck flies, a bore is
+        // buried. Only a standoff in the same direction continues it.
+        let flying = (start..=end).map(|k| road_m[k] - terrain[k]).sum::<f64>() >= 0.0;
+        let stands_off = |i: usize| -> bool {
+            let clear = if flying { road_m[i] - terrain[i] } else { terrain[i] - road_m[i] };
+            clear > ABSORB_STANDOFF_M
+        };
         // Outward past the run's high edge: the farthest steep pitch within
-        // reach marks the infeasible stretch.
+        // reach, or the end of an unbroken standoff run, marks the infeasible
+        // stretch. The standoff must be contiguous from the edge — one distant
+        // flyer must not swallow the at-grade road between.
         let mut worst = None;
+        let mut contiguous = true;
         let mut k = end + 1;
         while k < n && at_grade[k] && arc[k] - arc[end] <= PORTAL_MAX_M {
             if steep(k) {
                 worst = Some(k);
+            }
+            contiguous = contiguous && stands_off(k);
+            if contiguous {
+                worst = Some(worst.map_or(k, |w: usize| w.max(k)));
             }
             k += 1;
         }
@@ -1348,10 +1391,15 @@ fn absorb_infeasible_anchors(
         }
         // And past the low edge, mirrored.
         let mut worst = None;
+        let mut contiguous = true;
         let mut k = start;
         while k > 0 && at_grade[k - 1] && arc[start] - arc[k - 1] <= PORTAL_MAX_M {
             if steep(k) {
                 worst = Some(k - 1);
+            }
+            contiguous = contiguous && stands_off(k - 1);
+            if contiguous {
+                worst = Some(worst.map_or(k - 1, |w: usize| w.min(k - 1)));
             }
             k -= 1;
         }

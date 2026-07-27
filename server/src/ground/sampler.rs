@@ -71,7 +71,22 @@ impl GroundSampler {
             Some(d) => d.elevation(lon, lat, z),
             None => 0.0,
         };
-        self.ground.height(lon, lat, raw, &mut self.scratch)
+        let cell = self.cell_m(lat, z);
+        self.ground.height(lon, lat, raw, cell, &mut self.scratch)
+    }
+
+    /// The metric width of one lattice cell at zoom `z` and this latitude —
+    /// the resolution the ground is being asked at (see
+    /// [`crate::ground::GroundModel::height`]). At the reference zoom the
+    /// breakline-constrained mesh holds every bench exactly, so nothing is
+    /// filtered out there; coarser rungs drop what they cannot draw.
+    fn cell_m(&self, lat: f64, z: u8) -> f64 {
+        if z >= self.z_ref {
+            return 0.0;
+        }
+        let tile_deg = 360.0 / (1u64 << z) as f64;
+        tile_deg * crate::scene::DEG_M * lat.to_radians().cos()
+            / terrain::grid_for(z, self.z_ref) as f64
     }
 
     /// The engineered ground at a rendered-lattice corner, memoized (see
@@ -79,7 +94,17 @@ impl GroundSampler {
     /// corners through this, so each distinct corner costs one DEM sample per
     /// worker however many queries land on it.
     pub fn corner(&mut self, lon: f64, lat: f64, z: u8) -> f64 {
-        corner_memo(&mut self.dem, &self.ground, &mut self.corners, &mut self.scratch, lon, lat, z)
+        let cell = self.cell_m(lat, z);
+        corner_memo(
+            &mut self.dem,
+            &self.ground,
+            &mut self.corners,
+            &mut self.scratch,
+            lon,
+            lat,
+            z,
+            cell,
+        )
     }
 
     /// The *rendered* ground at `(lon, lat)`: the engineered ground evaluated
@@ -120,7 +145,9 @@ impl GroundSampler {
                     (&mut self.dem, &self.ground, &mut self.corners, &mut self.scratch);
                 if let Some(mesh) =
                     terrain_cdt::constrained_mesh(grid, bounds, &segments, &mut |lon, lat| {
-                        corner_memo(dem, ground, corners, scratch, lon, lat, z)
+                        // The constrained mesh holds every bench exactly, so it
+                        // asks for the ground unfiltered.
+                        corner_memo(dem, ground, corners, scratch, lon, lat, z, 0.0)
                     })
                 {
                     return mesh;
@@ -134,6 +161,7 @@ impl GroundSampler {
 /// [`GroundSampler::corner`] with the sampler's fields split apart, so a
 /// closure holding the field borrows can call it (the borrow checker cannot
 /// split `self` through a closure).
+#[allow(clippy::too_many_arguments)]
 fn corner_memo(
     dem: &mut Option<Dem>,
     ground: &GroundModel,
@@ -142,6 +170,7 @@ fn corner_memo(
     lon: f64,
     lat: f64,
     z: u8,
+    cell_m: f64,
 ) -> f64 {
     let key = (z, lon.to_bits(), lat.to_bits());
     if let Some(&h) = corners.get(&key) {
@@ -151,7 +180,7 @@ fn corner_memo(
         Some(d) => d.elevation(lon, lat, z),
         None => 0.0,
     };
-    let h = ground.height(lon, lat, raw, scratch);
+    let h = ground.height(lon, lat, raw, cell_m, scratch);
     if corners.len() >= CORNER_CAP {
         corners.clear();
     }

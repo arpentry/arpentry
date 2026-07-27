@@ -5,12 +5,12 @@
 //! is the natural DEM plus the earthworks the solved model implies, applied
 //! as local modifiers ([`modifiers::Earthworks`]).
 //!
-//! [`derive`] translates the solved model into earthworks: wherever a
-//! profiled corridor's at-grade road departs the natural ground — a
-//! grade-limited cut through a bump, the embankment ramp the clearance solver
-//! demanded for an overpass approach — the ground is reshaped to carry it
-//! (D3). Consumers are untouched: they already read through
-//! [`sampler::GroundSampler`].
+//! [`derive`] translates the solved model into earthworks: every at-grade
+//! stretch of every profiled road benches the ground to its solved height —
+//! a grade-limited cut through a bump, the embankment ramp the clearance
+//! solver demanded for an overpass approach, or simply the flat band under a
+//! road the DEM already carries (D3). Consumers are untouched: they already
+//! read through [`sampler::GroundSampler`].
 
 pub mod breaklines;
 pub mod modifiers;
@@ -24,13 +24,15 @@ use geo_types::Coord;
 use crate::dem::Dem;
 use crate::priors::{
     DECK_THICKNESS_M, EARTHWORK_BATTER,
-    EARTHWORK_MARGIN_M, EARTHWORK_MIN_FEATHER_M, EARTHWORK_SHOULDER_M, MAX_CLEARANCE_LIFT_M,
-    MIN_EARTHWORK_M, PORTAL_CLEARANCE_M, PORTAL_CUT_LEN_M, WATER_LEVEL_PCTL,
+    BATTER_DIVERGENCE_SLOP, EARTHWORK_MARGIN_M, EARTHWORK_MAX_BATTER_M, MAX_BENCH_FACE_M,
+    EARTHWORK_MIN_BATTER_M, EARTHWORK_SHOULDER_M,
+    MAX_CLEARANCE_LIFT_M,
+    PORTAL_CLEARANCE_M, PORTAL_CUT_LEN_M, WATER_LEVEL_PCTL,
 };
 use crate::scene::{SceneGraph, SpanKind, DEG_M};
 use crate::solve::{portals, reference_surface, SolvedModel};
 
-use modifiers::{EarthworkEdge, Earthworks, WaterFill, Waters};
+use modifiers::{EarthworkEdge, Earthworks, WaterFill, Waters, LEFT, RIGHT};
 
 /// Most shoreline vertices sampled when reading a water body's level — enough
 /// to be robust on a big lake, bounded so a many-thousand-vertex ring is cheap.
@@ -44,7 +46,7 @@ pub struct GroundModel {
     earthworks: Earthworks,
     waters: Waters,
     /// The bench contact lines the detail mesh preserves (docs/GROUND.md §3),
-    /// derived from the same earthwork edges the ground function blends.
+    /// derived from the same earthwork edges the ground function reads.
     breaklines: breaklines::Breaklines,
 }
 
@@ -80,10 +82,28 @@ impl GroundModel {
     /// raw DEM sample `raw` for that point. `scratch` is the caller's reusable
     /// query buffer (see [`sampler::GroundSampler`]).
     ///
+    /// `cell_m` is the sample spacing of whatever is asking — the lattice cell
+    /// of the terrain mesh being built, or 0 for an exact point query (a road
+    /// reading its own bed). An earthwork narrower than that spacing is left
+    /// out: it cannot be drawn at that resolution, and sampling it *does* the
+    /// damage, because a corner that happens to land inside a 10 m bench takes
+    /// the road's height while its neighbours a cell away take the hillside,
+    /// and the mesh spikes. Whole slopes of terraced vineyard tracks turned
+    /// into sawtooth noise one zoom out from the reference. The road
+    /// compensates with its per-zoom datum lift (docs/GROUND.md §4), so
+    /// dropping the bench from the *drawn ground* does not float it.
+    ///
     /// Water flattens the ground first; a road earthwork (a bridge abutment's
     /// approach berm at the shore) then overrides it where the two overlap, so
     /// the roadbed wins over the water it climbs away from.
-    pub fn height(&self, lon: f64, lat: f64, raw: f64, scratch: &mut Vec<u32>) -> f64 {
+    pub fn height(
+        &self,
+        lon: f64,
+        lat: f64,
+        raw: f64,
+        cell_m: f64,
+        scratch: &mut Vec<u32>,
+    ) -> f64 {
         let base = if self.waters.is_empty() {
             raw
         } else {
@@ -92,14 +112,14 @@ impl GroundModel {
         if self.earthworks.is_empty() {
             return base;
         }
-        self.earthworks.height(lon, lat, base, scratch)
+        self.earthworks.height(lon, lat, base, cell_m, scratch)
     }
 }
 
-/// Derives the engineered ground from the solved model: one earthwork run
-/// per at-grade stretch where the solved road departs the natural terrain —
-/// under the centerline or across the bench — by more than
-/// [`MIN_EARTHWORK_M`], and a daylighting cut in front of every solved
+/// Derives the engineered ground from the solved model: a bench under every
+/// at-grade stretch of every profiled road (holding the carriageway flat at
+/// its solved height, with a batter face reaching out as far as the cut or
+/// fill it makes needs), and a daylighting cut in front of every solved
 /// tunnel portal (S5 — the mouth face must not hide below grade).
 pub fn derive(
     scene: &SceneGraph,
@@ -167,13 +187,18 @@ fn derive_earthworks(
 }
 
 /// The earthwork edges one profiled corridor implies (docs/GROUND.md §2):
-/// the bench that pulls the ground to the road, the under-deck daylighting
-/// carves, and the portal cuts. `side` samples the natural ground at the
-/// bench edges — the cross-slope trigger: a road cut into a side-slope needs
-/// its bench even where the centerline sits exactly on grade, and the
-/// feather (the batter) scales with the deepest face, which sits at the
-/// bench edge there, not under the centerline. `None` (no DEM) falls back
-/// to the centerline trigger alone.
+/// the bench the ground holds under the carriageway, the under-deck
+/// daylighting carves, and the portal cuts.
+///
+/// Every at-grade stretch gets its bench, whether or not the road departs the
+/// natural ground: the bench is not only how an embankment or a cutting is
+/// expressed, it is how a road's own band *holds* its height against the
+/// earthworks around it. A road the DEM already images correctly used to get
+/// no bench at all, and a neighbouring motorway's approach fill would then
+/// bury it under 12 m of ground. `side` samples the natural ground at the
+/// bench edges so the batter's reach scales with the deepest face, which on a
+/// cross-slope sits at the bench edge rather than under the centerline;
+/// `None` (no DEM) falls back to the centerline depth alone.
 fn corridor_earthworks(
     c: &crate::scene::Corridor,
     p: &crate::solve::Profile,
@@ -192,66 +217,72 @@ fn corridor_earthworks(
         let at_grade = p.at_grade();
         let arcs = p.arc();
         let cos_lat = c.cos_lat;
-        // Carves keep the engineering width; the road bench adds the flat
-        // rendering margin so the detail lattice cannot interpolate natural
-        // ground up across the band edge (see EARTHWORK_MARGIN_M).
+        // Carves keep the engineering width; the road bench adds a narrow
+        // verge beyond the asphalt (see EARTHWORK_MARGIN_M).
         let half_width = c.class.half_width_m(c.link) + EARTHWORK_SHOULDER_M;
         let bench_half_width = half_width + EARTHWORK_MARGIN_M;
 
-        // The per-node road-to-ground gap that triggers (and scales) the
-        // bench: the centerline cut/fill depth, widened to the bench-edge
-        // face where a side sampler is available.
-        let mut gap: Vec<f64> =
-            road.iter().zip(terrain).map(|(&r, &t)| (r - t).abs()).collect();
+        // Per node and per side, how far the batter runs before it daylights.
+        // The bench-edge sample gives both the face depth there and the
+        // cross-slope the natural ground carries outward, which is what
+        // decides whether a face of [`EARTHWORK_BATTER`] ever meets it.
+        // Without a sampler (no DEM) the centerline depth stands in on both
+        // sides.
+        let centre_reach = |k: usize| batter_reach(road[k] - terrain[k], 0.0);
+        let mut batter: Vec<[f64; 2]> =
+            (0..nodes.len()).map(|k| [centre_reach(k), centre_reach(k)]).collect();
+        // Whether a bench is plausible at all here — see [`MAX_BENCH_FACE_M`].
+        let mut benched: Vec<bool> = vec![true; nodes.len()];
         if let Some(sample) = side {
             for k in 0..nodes.len() {
                 if !at_grade[k] {
                     continue;
                 }
                 let (ux, uy) = heading(nodes, k, cos_lat);
-                let (px, py) = (-uy, ux); // lateral unit, metric
-                let mut face = |s: f64| -> f64 {
+                let (px, py) = (-uy, ux); // lateral unit, metric (left)
+                let mut face = |s: f64| -> (f64, f64) {
                     let q = Coord {
                         x: nodes[k].x + s * px * bench_half_width / (DEG_M * cos_lat),
                         y: nodes[k].y + s * py * bench_half_width / DEG_M,
                     };
-                    (road[k] - sample(q)).abs()
+                    let edge_raw = sample(q);
+                    // The face the bench cuts or fills at its edge, and the
+                    // outward slope of the natural ground from the centerline
+                    // (positive uphill).
+                    let rise = road[k] - edge_raw;
+                    (rise, batter_reach(rise, (edge_raw - terrain[k]) / bench_half_width))
                 };
-                gap[k] = gap[k].max(face(1.0)).max(face(-1.0));
+                let (rise_l, reach_l) = face(1.0);
+                let (rise_r, reach_r) = face(-1.0);
+                batter[k] = [reach_l, reach_r];
+                benched[k] = rise_l.abs().max(rise_r.abs()) <= MAX_BENCH_FACE_M;
             }
         }
 
-        let needs = |i: usize| at_grade[i] && gap[i] > MIN_EARTHWORK_M;
-        let mut i = 0;
-        while i < nodes.len() {
-            if !needs(i) {
-                i += 1;
+        // Every at-grade edge carries a bench. Where the road already lies on
+        // the natural ground the bench is nearly a no-op — it flattens the
+        // carriageway across the cross-slope and reserves the band against
+        // neighbouring earthworks — and its batter reach collapses to the
+        // floor, so it costs the ground nothing beyond its own width.
+        for k in 0..nodes.len().saturating_sub(1) {
+            if !at_grade[k] || !at_grade[k + 1] || !benched[k] || !benched[k + 1] {
                 continue;
             }
-            // Maximal run of earthwork nodes, padded by one at-grade node on
-            // each side so the reshaping eases in at natural ground.
-            let start = i;
-            while i < nodes.len() && needs(i) {
-                i += 1;
-            }
-            let lo = if start > 0 && at_grade[start - 1] { start - 1 } else { start };
-            let hi = if i < nodes.len() && at_grade[i] { i } else { i - 1 };
-            for k in lo..hi {
-                let lift = gap[k].max(gap[k + 1]);
-                edges.push(EarthworkEdge {
-                    a: nodes[k],
-                    b: nodes[k + 1],
-                    target_a: road[k],
-                    target_b: road[k + 1],
-                    half_width_m: bench_half_width,
-                    feather_m: (EARTHWORK_BATTER * lift).max(EARTHWORK_MIN_FEATHER_M),
-                    core_half_m: half_width,
-                    chain: c.id,
-                    arc0: arcs[k],
-                    cos_lat: crate::scene::run_cos_lat(&[nodes[k], nodes[k + 1]]),
-                    carve: false,
-                });
-            }
+            edges.push(EarthworkEdge {
+                a: nodes[k],
+                b: nodes[k + 1],
+                target_a: road[k],
+                target_b: road[k + 1],
+                half_width_m: bench_half_width,
+                batter_m: [
+                    batter[k][LEFT].max(batter[k + 1][LEFT]),
+                    batter[k][RIGHT].max(batter[k + 1][RIGHT]),
+                ],
+                chain: c.id,
+                arc0: arcs[k],
+                cos_lat: crate::scene::run_cos_lat(&[nodes[k], nodes[k + 1]]),
+                carve: false,
+            });
         }
 
         // Deck daylighting (the S10 mirror of the portal cut): inside a
@@ -297,8 +328,7 @@ fn corridor_earthworks(
                         target_a: road[k] - DECK_THICKNESS_M - PORTAL_CLEARANCE_M,
                         target_b: road[k + 1] - DECK_THICKNESS_M - PORTAL_CLEARANCE_M,
                         half_width_m: half_width,
-                        feather_m: (EARTHWORK_BATTER * depth).max(EARTHWORK_MIN_FEATHER_M),
-                        core_half_m: half_width,
+                        batter_m: [(EARTHWORK_BATTER * depth).max(EARTHWORK_MIN_BATTER_M); 2],
                         chain: c.id,
                         arc0: arcs[k],
                         cos_lat: crate::scene::run_cos_lat(&[nodes[k], nodes[k + 1]]),
@@ -324,8 +354,7 @@ fn corridor_earthworks(
                 target_a: portal.floor_m,
                 target_b: portal.floor_m,
                 half_width_m: c.class.half_width_m(c.link) + EARTHWORK_SHOULDER_M,
-                feather_m: EARTHWORK_MIN_FEATHER_M,
-                core_half_m: c.class.half_width_m(c.link) + EARTHWORK_SHOULDER_M,
+                batter_m: [EARTHWORK_MIN_BATTER_M; 2],
                 chain: c.id,
                 arc0: portal.arc,
                 cos_lat: crate::scene::run_cos_lat(&[a, b]),
@@ -334,6 +363,49 @@ fn corridor_earthworks(
         }
     }
     edges
+}
+
+/// How far a batter face runs outward before it daylights, in metres, given
+/// the face's height at the bench edge (`rise`, positive where the road stands
+/// above the ground — a fill — negative in a cutting) and the outward slope
+/// the natural ground carries from there (`cross`, positive uphill).
+///
+/// The face leaves the bench at 1 in [`EARTHWORK_BATTER`] and the ground runs
+/// away at `cross`; they meet where the two close the gap. Where they never do
+/// — ground falling faster than a fill's batter, or climbing faster than a
+/// cutting's — the reach collapses to [`EARTHWORK_MIN_BATTER_M`]: the bench is
+/// retained by a wall at its edge, which is what a road cut into a steep flank
+/// has, rather than a terrace that runs out into the hillside and ends in a
+/// cliff. Clamped above by [`EARTHWORK_MAX_BATTER_M`] so a deep fill against
+/// near-flat ground still has a bounded footprint.
+///
+/// A face that does not close *quickly* must not be built at all. The face is
+/// a plane and the hillside is not: where the ground runs away at anything
+/// near the batter's own rate, the plane keeps departing from it, and since
+/// the ground is clamped to the face everywhere inside the reach, the
+/// earthwork goes on cutting (or filling) the whole way out — a footpath on a
+/// steep flank whose estimated reach came to 40 m carved sixty metres off the
+/// hillside. So the reach is honoured only while the face closes at least
+/// about as fast as it would on flat ground; [`BATTER_DIVERGENCE_SLOP`] allows
+/// for a gentle fall-away, and beyond it the answer is the wall, whose height
+/// is only the bench half-width times the cross-slope.
+fn batter_reach(rise: f64, cross: f64) -> f64 {
+    let slope = 1.0 / EARTHWORK_BATTER;
+    // A fill descends against ground that must rise to meet it; a cutting
+    // climbs against ground that must fall. One expression: the closing rate
+    // is the batter minus however fast the ground runs away with it.
+    let closing = slope - cross * if rise >= 0.0 { -1.0 } else { 1.0 };
+    if closing <= 1e-9 {
+        return EARTHWORK_MIN_BATTER_M;
+    }
+    let reach = rise.abs() / closing;
+    // Where the face would daylight on flat ground — the yardstick for
+    // "closes quickly". Past it the ground is running away with the face.
+    let flat = EARTHWORK_BATTER * rise.abs();
+    if reach > flat * BATTER_DIVERGENCE_SLOP {
+        return EARTHWORK_MIN_BATTER_M;
+    }
+    reach.clamp(EARTHWORK_MIN_BATTER_M, EARTHWORK_MAX_BATTER_M)
 }
 
 /// Unit heading of the sweep line at node `i` in the metric (east, north)
@@ -489,15 +561,15 @@ mod tests {
         let at = |x_m: f64| Coord { x: 6.0 + deg * x_m / len_m, y: 46.0 };
         // On the bump crest the ground is cut below the ~100 m deck.
         let crest = at(500.0);
-        let cut = ground.height(crest.x, crest.y, terrain(crest), &mut scratch);
+        let cut = ground.height(crest.x, crest.y, terrain(crest), 0.0, &mut scratch);
         assert!(cut < 99.0, "the bump must be carved below the deck, got {cut}");
         assert!(cut > 90.0, "the notch is a daylight cut, not a canyon, got {cut}");
         // The valley floor under the deck is untouched.
         let floor = at(350.0);
-        assert_eq!(ground.height(floor.x, floor.y, terrain(floor), &mut scratch), terrain(floor));
+        assert_eq!(ground.height(floor.x, floor.y, terrain(floor), 0.0, &mut scratch), terrain(floor));
         // The at-grade approach is untouched by the carve.
         let approach = at(100.0);
-        let h = ground.height(approach.x, approach.y, terrain(approach), &mut scratch);
+        let h = ground.height(approach.x, approach.y, terrain(approach), 0.0, &mut scratch);
         assert!((h - 100.0).abs() < 0.5, "approach ground stays natural, got {h}");
     }
 
@@ -558,17 +630,17 @@ mod tests {
         let mut scratch = Vec::new();
         let approach = Coord { x: mid.x - 80.0 / (DEG_M * cos_lat), y: 46.0 };
         let road_there = solved.profile(0).unwrap().height_at(approach.x, approach.y);
-        let h = ground.height(approach.x, approach.y, 372.0, &mut scratch);
+        let h = ground.height(approach.x, approach.y, 372.0, 0.0, &mut scratch);
         assert!(
             (h - road_there).abs() < 1e-6,
             "engineered ground {h} must meet the road {road_there}"
         );
         assert!(h > 372.5, "the approach is a real embankment, got {h}");
         let far = Coord { x: 6.0 + deg * 0.02, y: 46.0 };
-        assert_eq!(ground.height(far.x, far.y, 372.0, &mut scratch), 372.0);
+        assert_eq!(ground.height(far.x, far.y, 372.0, 0.0, &mut scratch), 372.0);
         // Under the bridge span itself the natural ground is untouched — the
         // deck stands on air, not on a berm.
-        assert_eq!(ground.height(mid.x, mid.y, 372.0, &mut scratch), 372.0);
+        assert_eq!(ground.height(mid.x, mid.y, 372.0, 0.0, &mut scratch), 372.0);
     }
 
     /// A drivable Minor street corridor over `pts` with its Street-mode
@@ -602,17 +674,18 @@ mod tests {
     }
 
     /// A street across a side-slope: its bench holds the solved profile flat
-    /// across the carriageway (D3) — the cross-slope side sampling triggers
-    /// the earthwork even though the centerline sits exactly on grade.
+    /// across the carriageway (D3) — the cross-slope side sampling finds the
+    /// earthwork even though the centerline sits exactly on grade. A flank too
+    /// steep for a terrace to be plausible gets no bench at all.
     #[test]
     fn a_street_bench_is_flat_across_a_side_slope() {
         let cos_lat = 46.0_f64.to_radians().cos();
-        // A 100 m west-east street on ground rising 1 m per metre northward.
+        // A 100 m west-east street on ground rising 0.5 m per metre northward.
         let pts = vec![
             Coord { x: 6.0, y: 46.0 },
             Coord { x: 6.0 + 100.0 / (DEG_M * cos_lat), y: 46.0 },
         ];
-        let slope = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M;
+        let slope = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M * 0.5;
         let (c, p) = street(&pts, &mut |c| slope(c));
         let mut side = |c: Coord| slope(c);
         let edges = corridor_earthworks(&c, &p, Some(&mut side));
@@ -622,20 +695,31 @@ mod tests {
         let ew = Earthworks::new(edges);
         let mut scratch = Vec::new();
         let mid_x = 6.0 + 50.0 / (DEG_M * cos_lat);
-        // 3 m uphill of the centerline the natural ground is 3 m higher, but
-        // the bench holds the centerline height: flat across.
+        // 3 m uphill of the centerline the natural ground is higher, but the
+        // bench holds the centerline height: flat across.
         let uphill = 46.0 + 3.0 / DEG_M;
-        let h = ew.height(mid_x, uphill, slope(Coord { x: mid_x, y: uphill }), &mut scratch);
+        let h = ew.height(mid_x, uphill, slope(Coord { x: mid_x, y: uphill }), 0.0, &mut scratch);
         assert!((h - 400.0).abs() < 1e-9, "bench must hold flat across, got {h}");
         // The drape reads the same answer through target_at…
         assert_eq!(ew.target_at(mid_x, uphill, &mut scratch), Some(400.0));
-        // …but only inside the held width; the feather is not the bench.
+        // …but only inside the held width; the batter is not the bench.
         let past = 46.0 + 10.0 / DEG_M;
         assert_eq!(ew.target_at(mid_x, past, &mut scratch), None);
         // Far off the street the slope is untouched.
         let far = 46.0 + 40.0 / DEG_M;
         let raw = slope(Coord { x: mid_x, y: far });
-        assert_eq!(ew.height(mid_x, far, raw, &mut scratch), raw);
+        assert_eq!(ew.height(mid_x, far, raw, 0.0, &mut scratch), raw);
+
+        // A flank of 2 m per metre would need a face taller than
+        // MAX_BENCH_FACE_M to hold the same band flat: no bench is emitted and
+        // the street is left on the hillside.
+        let cliff = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M * 2.0;
+        let (c, p) = street(&pts, &mut |c| cliff(c));
+        let mut side = |c: Coord| cliff(c);
+        assert!(
+            corridor_earthworks(&c, &p, Some(&mut side)).is_empty(),
+            "a terrace on a cliff is a fiction: no bench there"
+        );
     }
 
     /// A street along rough steep ground: the profile irons the DEM's
@@ -723,37 +807,72 @@ mod tests {
         );
     }
 
-    /// A deep cut's feather scales with the bench-edge depth (the batter),
-    /// and flat ground yields no earthwork at all.
+    /// The batter reaches only as far as it needs to daylight: on a gentle
+    /// flank it meets the natural ground at the predicted distance, on a flank
+    /// steeper than the batter it collapses to its floor — the bench is
+    /// retained by a wall at its edge instead of terracing out into the
+    /// hillside — and on flat ground the bench moves nothing at all.
     #[test]
-    fn bench_feather_scales_with_cut_depth() {
+    fn the_batter_reaches_only_as_far_as_it_daylights() {
         let cos_lat = 46.0_f64.to_radians().cos();
         let pts = vec![
             Coord { x: 6.0, y: 46.0 },
             Coord { x: 6.0 + 100.0 / (DEG_M * cos_lat), y: 46.0 },
         ];
-        // A 2 m/m side-slope: the deepest face sits at the bench edge.
-        let steep = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M * 2.0;
-        let (c, p) = street(&pts, &mut |c| steep(c));
-        let mut side = |c: Coord| steep(c);
-        let edges = corridor_earthworks(&c, &p, Some(&mut side));
-        assert!(!edges.is_empty());
         let bench_half =
             RoadClass::Minor.half_width_m(false) + EARTHWORK_SHOULDER_M + EARTHWORK_MARGIN_M;
-        let expected = EARTHWORK_BATTER * 2.0 * bench_half;
+
+        // A 0.15 m/m side-slope: gentle enough that both faces still close on
+        // the ground, at |face| / (1/batter − 0.15).
+        let gentle = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M * 0.15;
+        let (c, p) = street(&pts, &mut |c| gentle(c));
+        let mut side = |c: Coord| gentle(c);
+        let edges = corridor_earthworks(&c, &p, Some(&mut side));
+        assert!(!edges.is_empty());
+        let want = (0.15 * bench_half) / (1.0 / EARTHWORK_BATTER - 0.15);
         for e in &edges {
-            assert!(
-                (e.feather_m - expected).abs() < 1e-6,
-                "feather {} must be the batter {expected}",
-                e.feather_m
-            );
+            for reach in e.batter_m {
+                assert!(
+                    (reach - want).abs() < 1e-6,
+                    "batter reach {reach} must daylight at {want}"
+                );
+            }
         }
-        // Flat ground: no gap anywhere, no earthwork — a flat street on flat
-        // ground adds nothing to the ground model.
+
+        // A 0.3 m/m side-slope: the faces would still meet the ground
+        // eventually, but only by running far out across the flank — the
+        // ground is diverging, so they are abandoned for a wall.
+        let leaning = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M * 0.3;
+        let (c, p) = street(&pts, &mut |c| leaning(c));
+        let mut side = |c: Coord| leaning(c);
+        let edges = corridor_earthworks(&c, &p, Some(&mut side));
+        assert!(!edges.is_empty());
+        assert!(edges.iter().all(|e| e.batter_m == [EARTHWORK_MIN_BATTER_M; 2]));
+
+        let ew = Earthworks::new(edges);
+        let mut scratch = Vec::new();
+        let mid_x = 6.0 + 50.0 / (DEG_M * cos_lat);
+        // Just past the bench and its short bevel the hillside is untouched…
+        let out = 46.0 + (bench_half + EARTHWORK_MIN_BATTER_M + 0.5) / DEG_M;
+        let raw = leaning(Coord { x: mid_x, y: out });
+        assert_eq!(ew.height(mid_x, out, raw, 0.0, &mut scratch), raw);
+        // …while the bench itself still holds the road flat across.
+        let on_bench = 46.0 + (bench_half - 0.5) / DEG_M;
+        let raw = leaning(Coord { x: mid_x, y: on_bench });
+        assert!((ew.height(mid_x, on_bench, raw, 0.0, &mut scratch) - 400.0).abs() < 1e-9);
+
+        // Flat ground: the bench is still there (the band is flat and defends
+        // itself) but it moves nothing — its batter is the floor and its
+        // target is the ground.
         let (c, p) = street(&pts, &mut |_| 400.0);
         let mut side = |_: Coord| 400.0;
         let edges = corridor_earthworks(&c, &p, Some(&mut side));
-        assert!(edges.is_empty(), "flat ground must imply no earthworks");
+        assert!(!edges.is_empty(), "every at-grade road benches its own band");
+        assert!(edges.iter().all(|e| e.batter_m == [EARTHWORK_MIN_BATTER_M; 2]));
+        let ew = Earthworks::new(edges);
+        assert!((ew.height(mid_x, 46.0, 400.0, 0.0, &mut scratch) - 400.0).abs() < 1e-9);
+        let far = 46.0 + 40.0 / DEG_M;
+        assert_eq!(ew.height(mid_x, far, 400.0, 0.0, &mut scratch), 400.0);
     }
 
     #[test]
@@ -795,8 +914,7 @@ mod tests {
             target_a: 375.0,
             target_b: 375.0,
             half_width_m: 8.0,
-            feather_m: 4.0,
-            core_half_m: 8.0,
+            batter_m: [4.0; 2],
             chain: 0,
             arc0: 0.0,
             cos_lat,
@@ -804,11 +922,11 @@ mod tests {
         }]);
         let g = GroundModel { earthworks, waters, breaklines: breaklines::Breaklines::derive(&[]) };
         // Open water away from the berm: flattened to the level (over raw 360).
-        assert_eq!(g.height(6.002, 46.002, 360.0, &mut scratch), 372.0);
+        assert_eq!(g.height(6.002, 46.002, 360.0, 0.0, &mut scratch), 372.0);
         // On the berm centerline inside the lake: the road overrides the water.
-        assert!((g.height(6.005, 46.005, 360.0, &mut scratch) - 375.0).abs() < 1e-9);
+        assert!((g.height(6.005, 46.005, 360.0, 0.0, &mut scratch) - 375.0).abs() < 1e-9);
         // Outside the lake: the raw DEM passes through.
-        assert_eq!(g.height(6.02, 46.02, 360.0, &mut scratch), 360.0);
+        assert_eq!(g.height(6.02, 46.02, 360.0, 0.0, &mut scratch), 360.0);
     }
 }
 

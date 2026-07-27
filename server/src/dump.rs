@@ -133,7 +133,7 @@ fn earthworks_geojson(ground: &GroundModel) -> Json {
                 },
                 "properties": {
                     "half_width_m": e.half_width_m,
-                    "feather_m": e.feather_m,
+                    "batter_m": e.batter_m,
                 },
             })
         })

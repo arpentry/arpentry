@@ -15,6 +15,7 @@
 
 use geo_types::Coord;
 
+use crate::priors::CLEARANCE_TROUGH_M;
 use crate::scene::{CorridorId, SceneGraph, Span, SpanKind, DEG_M};
 
 use super::profile::{condition_reference, Profile};
@@ -326,7 +327,7 @@ fn build_crossings(
             continue;
         };
         // The lower surface: a profiled corridor's nearest node (tracked live),
-        // else the terrain the upper profile reads at the crossing point.
+        // else the trough the unprofiled feature runs in.
         let (lower_var, lower_terrain_m) = match c.lower.and_then(|id| {
             let lci = ci_of.get(id as usize).copied().flatten()?;
             let lp = profiles.get(id as usize).and_then(|p| p.as_ref())?;
@@ -334,7 +335,7 @@ fn build_crossings(
             Some(corridors[lci].vars[k])
         }) {
             Some(v) => (Some(v), 0.0),
-            None => (None, up.surface_at(c.point.x, c.point.y)),
+            None => (None, trough_terrain_m(up, up.arc_of(c.point.x, c.point.y))),
         };
         let extra_m = crate::priors::clearance_m(c.lower_kind) + crate::priors::DECK_THICKNESS_M;
         out.push((
@@ -350,6 +351,29 @@ fn build_crossings(
     }
     out.sort_by_key(|(rank, _)| *rank);
     out.into_iter().map(|(_, gc)| gc).collect()
+}
+
+/// The surface an *unprofiled* crossed feature is taken to lie on: the lowest
+/// raw terrain the upper profile reads within [`CLEARANCE_TROUGH_M`] of the
+/// crossing.
+///
+/// The fallback means "the crossed road is at grade, so it lies on the ground"
+/// — but *which* ground. Read exactly at the plan intersection it lands on
+/// whatever the upper corridor's own nodes sample there, and beside an
+/// abutment that is the trench wall, metres above the road running through the
+/// underpass. Demanding clearance over the wall lifted a flat motorway onto a
+/// 5 m hump over its own underpass. A road crossing beneath runs along the
+/// trough that was cut for it, so the trough floor is the honest read; on open
+/// ground the window is flat and the minimum is the ground itself.
+fn trough_terrain_m(p: &Profile, arc0: f64) -> f64 {
+    let (arc, terrain) = (p.arc(), p.terrain_m());
+    let lo = arc.partition_point(|&a| a < arc0 - CLEARANCE_TROUGH_M);
+    let hi = arc.partition_point(|&a| a <= arc0 + CLEARANCE_TROUGH_M);
+    terrain[lo..hi.max(lo + 1).min(terrain.len())]
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min)
+        .min(p.surface_at_arc(arc0))
 }
 
 /// One corridor's bridge deck as the co-elevation pass sees it: its global

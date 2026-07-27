@@ -195,6 +195,14 @@ pub fn clearance_m(lower: crate::scene::CrossedKind) -> f64 {
     }
 }
 
+/// How far either side of a crossing the clearance solver looks for the trough
+/// an *unprofiled* crossed feature runs in. A road passing under a bridge runs
+/// along the cut made for it, so the lowest ground within a short reach of the
+/// intersection is a better stand-in for its surface than the point sample,
+/// which beside an abutment reads the trench wall. Short enough that a
+/// genuinely open crossing still reads its own flat ground.
+pub const CLEARANCE_TROUGH_M: f64 = 20.0;
+
 /// Spacing between viaduct piers along the deck, in metres of corridor arc.
 /// Piers sit at global multiples of this, so tile fragments of one viaduct
 /// place identical piers.
@@ -362,26 +370,59 @@ pub const RAMP_GRADE: f64 = 0.08;
 /// modifier is emitted.
 pub const MIN_EARTHWORK_M: f64 = 0.3;
 
-/// How far an earthwork's slope reaches beyond the road shoulder per metre of
-/// cut/fill depth (a 1:2.5 embankment batter), and the floor on that reach so
-/// even shallow earthworks blend smoothly into the ground.
+/// How far an earthwork's batter face reaches beyond the bench per metre of
+/// cut or fill depth (a 1:2.5 slope), and the floor on that reach so even a
+/// road sitting on the natural ground eases into it over a short face. The
+/// face is straight and self-limiting: it stops where it meets the natural
+/// ground, so this is a bound on the reach, not the reach itself.
 pub const EARTHWORK_BATTER: f64 = 2.5;
-pub const EARTHWORK_MIN_FEATHER_M: f64 = 2.0;
+pub const EARTHWORK_MIN_BATTER_M: f64 = 2.0;
+
+/// The tallest face, in metres, that holding a bench flat across a cross-slope
+/// may cut or fill at the bench edge before the bench is abandoned and the
+/// road simply drapes.
+///
+/// A bench is a terrace, and a terrace on a near-vertical flank is a fiction:
+/// on the wall of a gorge, holding a footpath's eight-metre band flat means a
+/// twenty-metre rock cut on one side and the same in fill on the other, which
+/// is neither what is there nor something a mesh can draw without tearing into
+/// sawtooth along the crest. Above the cap the road is left on the natural
+/// ground, tilted as the hillside is — which for a trail cut into a cliff is
+/// also the truth.
+pub const MAX_BENCH_FACE_M: f64 = 3.0;
+
+/// How much further than its flat-ground daylight distance a batter face may
+/// reach before the ground counts as running away with it and the face is
+/// abandoned for a retaining wall. Above 1 so a gently falling flank still
+/// gets its batter; low enough that a face nearly parallel to the hillside —
+/// which would cut or fill the whole way out — never gets built.
+pub const BATTER_DIVERGENCE_SLOP: f64 = 2.5;
+
+/// Outer bound on that reach, in metres. A face against near-flat ground
+/// daylights on its own; this only stops a deep fill (or the near-parallel
+/// case, where the ground runs away at almost exactly the batter) from
+/// claiming an unbounded footprint.
+pub const EARTHWORK_MAX_BATTER_M: f64 = 40.0;
 
 /// Extra width beyond the structure half-width that an earthwork holds at
 /// road height (the shoulder) before the slope starts.
 pub const EARTHWORK_SHOULDER_M: f64 = 1.0;
 
 /// Flat margin beyond the shoulder that a road earthwork keeps at road
-/// height before the batter starts — a rendering allowance, not engineering:
-/// the detail-zoom lattice ([`crate::terrain::TERRAIN_GRID_DETAIL`]) samples
-/// the ground at ~3–5 m spacing, so a corner just outside the bench would
-/// otherwise interpolate natural hillside up across the band edge and poke
-/// through the asphalt on a steep flank. About one detail cell keeps every
-/// corner whose triangle touches the band on (or within the batter's reach
-/// of) the bed. Carve notches (portal cuts, deck daylighting) stay at the
-/// engineering width — a wider notch would eat the abutment it daylights.
-pub const EARTHWORK_MARGIN_M: f64 = 3.0;
+/// height before the batter starts — the verge between the asphalt edge and
+/// the top of the batter.
+///
+/// It used to be a rendering allowance of about one detail-lattice cell, so
+/// that a mesh corner just outside the bench could not interpolate natural
+/// hillside up across the band edge. The crest contact lines
+/// ([`crate::ground::breaklines`]) now hold the bench edge exactly at the
+/// detail zoom, so the allowance is no longer needed and the bench is kept
+/// narrow: a wide flat bench is a wide terrace cut into (or filled out from)
+/// every hillside the road crosses, which is both more ground disturbed than
+/// the road needs and a deeper face where it ends. Carve notches (portal
+/// cuts, deck daylighting) stay at the engineering width — a wider notch
+/// would eat the abutment it daylights.
+pub const EARTHWORK_MARGIN_M: f64 = 0.5;
 
 /// Thickness of a bridge deck slab in metres — deck surface to its underside.
 pub const DECK_THICKNESS_M: f64 = 1.5;

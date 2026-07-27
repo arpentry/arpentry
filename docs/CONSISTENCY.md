@@ -85,7 +85,13 @@ graph** (equivalently, a Gaussian factor graph / a spring network):
     forward difference.
   - *Clearance / vertical order*: at a detected crossing, `h_upper −
     h_lower ≥ c(kind)`. Linear inequality between two variables; the DAG rank
-    (`crossings::corridor_ranks`) orders stacked cases.
+    (`crossings::corridor_ranks`) orders stacked cases. Where the crossed
+    feature carries no profile of its own the constraint falls back to "it
+    lies on the ground" — and the ground it means is the *trough* it runs in:
+    the lowest terrain within `CLEARANCE_TROUGH_M` of the intersection, not
+    the point sample there. Read at the point, an underpass demanded
+    clearance over its own trench wall and lifted a flat motorway onto a 5 m
+    hump above the road it was already bridging.
   - *Structure rigidity*: a deck/bore span's interior nodes are an **affine
     function** of its two bounding anchors (the straight ramp). Either a hard
     equality that eliminates the interior DOFs, or a very stiff spring.

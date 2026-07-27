@@ -29,15 +29,30 @@ pub const TERRAIN_GRID: u32 = 16;
 pub const TERRAIN_GRID_DETAIL: u32 = 128;
 
 /// The rendered-lattice resolution for zoom `z` when the reference zoom is
-/// `z_ref`: the detail grid at (and past) the reference zoom, the base grid
-/// on every coarser rung. One function, so the mesh, its drape mirror
+/// `z_ref`: the detail grid at (and past) the reference zoom, then halved per
+/// rung down to the base grid. One function, so the mesh, its drape mirror
 /// ([`surface_height`]), and the road densifier can never disagree.
+///
+/// The ladder is graded rather than binary because a tile's *metric* cell size
+/// is what the eye reads, and a rung covers four times the area of the one
+/// below it: dropping straight from the detail grid to the base grid shrinks
+/// the vertex count 64-fold in one step, so the terrain one zoom out from the
+/// reference collapsed from ~3 m cells to ~50 m and the hillsides went blocky
+/// the moment the camera pulled back (or looked into the distance, where a
+/// tilted view draws coarser rungs). Halving per rung keeps the cell size
+/// roughly doubling instead, and costs almost nothing: a rung has a quarter of
+/// the tiles and a quarter of the vertices each, so the three graded rungs
+/// together add ~7 % to the reference rung's vertices.
 pub fn grid_for(z: u8, z_ref: u8) -> u32 {
     if z >= z_ref {
-        TERRAIN_GRID_DETAIL
-    } else {
-        TERRAIN_GRID
+        return TERRAIN_GRID_DETAIL;
     }
+    match z_ref - z {
+        1 => TERRAIN_GRID_DETAIL / 2,
+        2 => TERRAIN_GRID_DETAIL / 4,
+        _ => TERRAIN_GRID,
+    }
+    .max(TERRAIN_GRID)
 }
 
 /// A triangulated mesh in tile-local quantized coordinates.
@@ -396,8 +411,14 @@ mod tests {
 
     #[test]
     fn grid_for_switches_at_the_reference_zoom() {
-        assert_eq!(grid_for(14, 16), TERRAIN_GRID);
-        assert_eq!(grid_for(15, 16), TERRAIN_GRID);
+        // The ladder grades down a rung at a time instead of collapsing.
+        assert_eq!(grid_for(15, 16), TERRAIN_GRID_DETAIL / 2);
+        assert_eq!(grid_for(14, 16), TERRAIN_GRID_DETAIL / 4);
+        assert_eq!(grid_for(13, 16), TERRAIN_GRID);
+        assert_eq!(grid_for(4, 16), TERRAIN_GRID);
+        for z in 0..=16u8 {
+            assert_eq!(EXTENT as u32 % grid_for(z, 16), 0, "grid must divide the extent");
+        }
         assert_eq!(grid_for(16, 16), TERRAIN_GRID_DETAIL);
         assert_eq!(grid_for(16, 14), TERRAIN_GRID_DETAIL);
         // Both resolutions divide the quantized extent exactly.

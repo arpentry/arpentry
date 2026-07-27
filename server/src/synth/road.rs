@@ -111,14 +111,15 @@ pub(crate) fn surface_height(
         // the roadbed target inside a bench (the profile the earthworks were
         // built from, held flat by the breakline-constrained terrain), the
         // rendered surface on unbenched stretches — but **never sinks below its
-        // own solved profile**. Where overlapping benches blended across stacked
-        // interchange corridors (a viaduct approach crossing a lower road), the
-        // averaged ground falls short of the fill; without this clamp the road
-        // would drape onto that average and step *below its own bridge deck*.
+        // own solved profile**. Where benches overlap across stacked
+        // interchange corridors (a viaduct approach crossing a lower road) the
+        // nearest bench may belong to the *other* road, and its target falls
+        // short of this road's fill; without the clamp the road would drape
+        // onto its neighbour's bed and step *below its own bridge deck*.
         // Clamping up to `road_m` makes the surface meet the deck at one height
-        // (ROADS.md invariant 5) while a lower crossing road keeps the (higher)
-        // ground and is not buried. A cut still renders as a cut: there the
-        // carved ground equals `road_m`, so the clamp is a no-op.
+        // (ROADS.md invariant 5) while a lower crossing road keeps its own
+        // (higher) bench and is not buried. A cut still renders as a cut: there
+        // the benched ground equals `road_m`, so the clamp is a no-op.
         Some(p) if z == z_ref => {
             let ground = match sampler.bed_target(lon, lat) {
                 Some(bed) => bed,
