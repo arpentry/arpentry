@@ -203,41 +203,10 @@ pub fn clearance_m(lower: crate::scene::CrossedKind) -> f64 {
 /// genuinely open crossing still reads its own flat ground.
 pub const CLEARANCE_TROUGH_M: f64 = 20.0;
 
-/// Spacing between viaduct piers along the deck, in metres of corridor arc.
-/// Piers sit at global multiples of this, so tile fragments of one viaduct
-/// place identical piers.
-pub const PIER_SPACING_M: f64 = 45.0;
-
-/// Smallest deck-underside-to-ground gap that earns a pier; below it the
-/// deck is close enough to the ground to read as supported.
-pub const PIER_MIN_CLEAR_M: f64 = 6.0;
-
-/// How far a pier (or abutment seat) is sunk below the sampled ground, so
-/// lattice differences between zooms never leave a floating foot.
-pub const PIER_EMBED_M: f64 = 4.0;
-
-/// Largest deck-underside-to-ground gap treated as a deck end *landing* — an
-/// abutment seat is built under it. Set equal to [`PIER_MIN_CLEAR_M`] so the
-/// two support regimes *partition* the clearance range with no hole: a low
-/// landing (gap up to the pier threshold) earns an abutment seat, a high one
-/// earns piers, and no interior deck end is ever left unsupported in between.
-/// A still-higher end (a deck meeting a tunnel portal on a hillside) is a
-/// junction, not a landing — piers, not a seat, and the seat's own inversion
-/// guard skips it where the ground rises above the deck underside.
-pub const ABUTMENT_MAX_GAP_M: f64 = PIER_MIN_CLEAR_M;
-
-/// How far an abutment seat runs back under the deck from its end face, in
-/// metres along the road.
-pub const ABUTMENT_DEPTH_M: f64 = 4.0;
-
-/// First zoom that carries structure detail (piers, abutment seats). Coarser
-/// zooms render the bare deck — the degradation ladder's middle rung (D5);
-/// positions never change, only detail sheds.
-pub const STRUCTURE_DETAIL_MIN_ZOOM: u8 = 13;
-
 /// First zoom that carries the road-surface band under the paint
-/// (docs/ROADS.md P2). Matches [`STRUCTURE_DETAIL_MIN_ZOOM`] so the at-grade
-/// asphalt appears together with the decks and junction plates it runs into.
+/// (docs/ROADS.md P2), and with it the junction plates the band runs into —
+/// the close-up detail rung of the degradation ladder (D5). Coarser zooms
+/// render the bare draped strokes; positions never change, only detail sheds.
 pub const ROAD_SURFACE_MIN_ZOOM: u8 = 13;
 
 /// How far the road-surface band sits below the road-surface height, in
@@ -352,12 +321,6 @@ pub fn lane_width_m(class: &str) -> f64 {
 /// The inferred same-direction lane count of a one-way carriageway.
 pub fn lane_count(class: &str, width_m: f64) -> u32 {
     ((width_m / lane_width_m(class)).round() as u32).max(1)
-}
-
-/// Half-width of a pier column: a fraction of the deck half-width, clamped to
-/// plausible column sizes.
-pub fn pier_half_width_m(deck_half_width_m: f64) -> f64 {
-    (deck_half_width_m * 0.35).clamp(1.2, 2.5)
 }
 
 /// Approach-ramp grade for a road class with no engineered ceiling: how fast
@@ -518,9 +481,8 @@ pub const MIN_STRUCTURE_M: f64 = 40.0;
 /// Smallest mid-span departure of the terrain from the span's end-to-end
 /// chord (metres) that makes a sub-[`MIN_STRUCTURE_M`] span a real structure:
 /// below it, at-grade draping (and the notch closing) carries the road just
-/// as well, and the tiny deck would read as a floating box. Sized like
-/// [`ABUTMENT_MAX_GAP_M`] — the gap under a deck end that still reads as
-/// "landed".
+/// as well, and the tiny deck would read as a floating box. Sized at the gap
+/// under a deck end that still reads as "landed".
 pub const SHORT_STRUCTURE_DIP_M: f64 = 3.0;
 
 /// A grade sliver shorter than this (metres), sandwiched between two structure

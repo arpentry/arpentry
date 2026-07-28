@@ -204,6 +204,14 @@ acceptance criteria for any implementation.
    buildings meet the ground on every side, at-grade roads lie on the
    rendered terrain of every zoom, portal mouths sit exactly on the surface,
    lakes are flat and rivers descend.
+
+   *Current deviation:* the deck-support half is deliberately unmet. Piers
+   and abutment seats are not synthesized — their placement read from the
+   sampled ground rather than the solved one, so they landed beside or
+   through the terrain often enough to cost more than the bare deck does. A
+   viaduct is a slab with open air under it until support contact is solved
+   in the constraint graph (P3 in `docs/CONSISTENCY.md`) rather than sampled
+   after the fact.
 5. **Determinism across cuts.** Any two tiles, and any two zoom levels,
    derive identical heights for shared geometry. Equivalently, all heights
    are functions of the global model only, never of the tile window.
@@ -260,9 +268,10 @@ five-stage pipeline in which tiling is the *last* and dumbest step:
 4. **Synthesize geometry.** Parameterized generators per feature class, all
    reading solved heights and the engineered ground, adding no new inference:
    roads on the profile (stroked centerlines at coarse zooms, meshed
-   surfaces with painted markings at detail zooms — `docs/ROADS.md`); bridge
-   decks with piers and abutments; tunnel bores with portal faces at the
-   true emergence; buildings with foundations, roof forms, and courtyards;
+   surfaces with painted markings at detail zooms — `docs/ROADS.md`); bare
+   bridge decks (no supports yet — invariant 4); tunnel bores as
+   constant-section tubes with portal faces at the true emergence; buildings
+   with foundations, roof forms, and courtyards;
    each with LOD variants that keep position fixed while shedding detail
    (D5).
 

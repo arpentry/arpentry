@@ -358,7 +358,7 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
 
     /* 1x1 road-structure material textures.  The road network reads as one
        continuous asphalt surface (the paint strokes), so structures take
-       quiet supporting tones: decks, piers and abutments a light concrete
+       quiet supporting tones: a deck slab is a light concrete
        that peeks out as a fascia beside and beneath the asphalt (the Apple
        Maps look), tunnel bores a dark gray so a portal mouth reads as a
        hole into the hillside rather than a solid block. */

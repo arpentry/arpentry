@@ -66,12 +66,8 @@ pub fn emit(
             road::bake(f, profile, deck, sampler, z, solved.z_ref, bounds);
         }
         Synth::Structure { corridor, kind } => {
-            // Detail (piers, abutment blocks) only at close-up zooms; coarser
-            // zooms render the bare deck at the same position — the
-            // degradation ladder sheds detail, never moves geometry (D5).
-            let detail = z >= crate::priors::STRUCTURE_DETAIL_MIN_ZOOM;
             match solved.profile(corridor) {
-                Some(p) if structure::stamp(f, p, kind, bounds, detail) => {}
+                Some(p) if structure::stamp(f, p, kind, bounds) => {}
                 // Degradation ladder: no solved profile, or no solid to draw
                 // (a tunnel tagged over flat ground) → a plain draped road.
                 other => road::bake(f, other, false, sampler, z, solved.z_ref, bounds),

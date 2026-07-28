@@ -791,7 +791,7 @@ fn add_junction_plates(
     z: u8,
     z_ref: u8,
 ) {
-    if z < crate::priors::STRUCTURE_DETAIL_MIN_ZOOM || junctions.is_empty() {
+    if z < crate::priors::ROAD_SURFACE_MIN_ZOOM || junctions.is_empty() {
         return;
     }
     for baked in junctions.near((bounds.west, bounds.south, bounds.east, bounds.north)) {
@@ -833,7 +833,7 @@ fn stamp_synth(
     // Plates near the tile's buffered extent, for band trimming — only at
     // zooms that draw the plates, so a trim can never open an unplated hole.
     let near: Vec<&synth::junction::BakedJunction> =
-        if z >= crate::priors::STRUCTURE_DETAIL_MIN_ZOOM {
+        if z >= crate::priors::ROAD_SURFACE_MIN_ZOOM {
             let b = bounds.expanded(0.55);
             junctions.near((b.west, b.south, b.east, b.north))
         } else {

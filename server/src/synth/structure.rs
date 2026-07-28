@@ -40,9 +40,8 @@ use geo_types::{Coord, Geometry, LineString};
 use crate::building_mesh::{Frame, M_PER_DEG_LAT};
 use crate::clip;
 use crate::priors::{
-    pier_half_width_m, RoadClass, ABUTMENT_DEPTH_M, ABUTMENT_MAX_GAP_M, DECK_THICKNESS_M,
-    PIER_EMBED_M, PIER_MIN_CLEAR_M, PIER_SPACING_M, PORTAL_CLEARANCE_M, PORTAL_MARCH_M,
-    PORTAL_MAX_M, TUNNEL_COVER_M, TUNNEL_HEIGHT_M,
+    RoadClass, DECK_THICKNESS_M, PORTAL_CLEARANCE_M, PORTAL_MARCH_M, PORTAL_MAX_M,
+    TUNNEL_HEIGHT_M,
 };
 use crate::project::{self, Bounds};
 use crate::scene::SpanKind;
@@ -62,17 +61,11 @@ const SEGMENT_M: f64 = 4.0;
 const MAX_VERTS: usize = 4096;
 
 /// Builds the structure box for a transportation feature and stores it in
-/// `f.mesh`. `detail` adds the supporting geometry — piers and abutment
-/// seats — the coarse zooms shed (the degradation ladder's rungs, D5).
-/// Returns whether a solid was emitted — `false` (a tunnel over flat ground,
-/// degenerate geometry) tells the caller to drape the road instead.
-pub fn stamp(
-    f: &mut EncoderFeature,
-    profile: &Profile,
-    kind: SpanKind,
-    bounds: &Bounds,
-    detail: bool,
-) -> bool {
+/// `f.mesh`. A deck is the bare slab and a bore the bare tube — no supporting
+/// geometry under either. Returns whether a solid was emitted — `false` (a
+/// tunnel over flat ground, degenerate geometry) tells the caller to drape the
+/// road instead.
+pub fn stamp(f: &mut EncoderFeature, profile: &Profile, kind: SpanKind, bounds: &Bounds) -> bool {
     let frame = Frame::at_center(bounds);
     let class = RoadClass::parse(prop_str(f, "class").as_deref());
     let link = crate::priors::is_link(prop_str(f, "subclass").as_deref());
@@ -111,12 +104,7 @@ pub fn stamp(
         for piece in proper_pieces(&line.0, bounds) {
             match kind {
                 SpanKind::Tunnel => sweep_bore(&mut acc, &frame, bounds, profile, &piece, half_w),
-                _ => {
-                    sweep_deck(&mut acc, &frame, bounds, profile, &piece, half_w);
-                    if detail {
-                        support_deck(&mut acc, &frame, bounds, profile, &piece, half_w);
-                    }
-                }
+                _ => sweep_deck(&mut acc, &frame, bounds, profile, &piece, half_w),
             }
         }
     }
@@ -324,197 +312,6 @@ fn sweep_bore(
     }
 }
 
-/// Supporting geometry under a deck (invariant 4: nothing floats — piers
-/// reach the ground, decks end on abutments that touch it):
-///
-/// - **Piers** stand at global multiples of [`PIER_SPACING_M`] of *corridor*
-///   arc wherever the deck underside clears the ground by more than
-///   [`PIER_MIN_CLEAR_M`]. Snapping to global arc makes every tile fragment
-///   of a viaduct compute identical piers; each pier is emitted only by the
-///   tile that owns its centre (half-open bounds), so seams neither drop nor
-///   double them.
-/// - **Abutment seats** ([`abutment_seat`]) fill under an interior deck end
-///   that lands near the ground: the deck's end cross-section extruded back
-///   under the slab and sunk into the ground, flush with the capped end face,
-///   so the slab lands on a solid seat instead of a thin floating edge. A
-///   high interior end (a deck meeting a tunnel portal on a hillside) is a
-///   junction, not a landing — left alone.
-fn support_deck(
-    acc: &mut Accum,
-    frame: &Frame,
-    bounds: &Bounds,
-    profile: &Profile,
-    span: &[Coord],
-    half_w: f64,
-) {
-    let pts = densify(span, frame);
-    if pts.len() < 2 {
-        return;
-    }
-    let nodes = profile.deck_nodes(&pts);
-    let pier_hw = pier_half_width_m(half_w);
-
-    // Each global multiple plants at most one pier: the arc-order walk can
-    // jitter a section backward slightly, making adjacent windows overlap.
-    let mut planted: std::collections::HashSet<i64> = std::collections::HashSet::new();
-    for w in nodes.windows(2) {
-        let (a, b) = (&w[0], &w[1]);
-        let (lo, hi) = (a.arc_m.min(b.arc_m), a.arc_m.max(b.arc_m));
-        if hi - lo < 1e-9 {
-            continue;
-        }
-        // First global multiple strictly above lo, up to and including hi.
-        let mut m = (lo / PIER_SPACING_M).floor() * PIER_SPACING_M + PIER_SPACING_M;
-        while m <= hi {
-            if !planted.insert((m / PIER_SPACING_M).round() as i64) {
-                m += PIER_SPACING_M;
-                continue;
-            }
-            let t = (m - a.arc_m) / (b.arc_m - a.arc_m);
-            let lon = a.lon + (b.lon - a.lon) * t;
-            let lat = a.lat + (b.lat - a.lat) * t;
-            if owns(bounds, lon, lat) {
-                let deck_bot = a.height_m + (b.height_m - a.height_m) * t - DECK_THICKNESS_M;
-                let ground = profile.surface_at(lon, lat);
-                if deck_bot - ground > PIER_MIN_CLEAR_M {
-                    // Overlap half a metre into the slab so no seam shows.
-                    box_column(
-                        acc,
-                        frame,
-                        bounds,
-                        lon,
-                        lat,
-                        (a.left_e, a.left_n),
-                        pier_hw,
-                        pier_hw,
-                        project::quantize_z(deck_bot + 0.5),
-                        project::quantize_z(ground - PIER_EMBED_M),
-                    );
-                }
-            }
-            m += PIER_SPACING_M;
-        }
-    }
-
-    // Abutment seats at interior low-landing ends.
-    let last = nodes.len() - 1;
-    for (end_pt, i, j) in [(pts[0], 0, 1), (pts[pts.len() - 1], last, last - 1)] {
-        if on_tile_edge(end_pt, bounds) {
-            continue;
-        }
-        let n = &nodes[i];
-        let ground = profile.surface_at(n.lon, n.lat);
-        let deck_bot = n.height_m - DECK_THICKNESS_M;
-        if deck_bot - ground > ABUTMENT_MAX_GAP_M {
-            continue;
-        }
-        // Inward unit (ENU metres) from the end toward the deck interior.
-        let de = (nodes[j].lon - n.lon) * frame.m_per_deg_lon;
-        let dn = (nodes[j].lat - n.lat) * M_PER_DEG_LAT;
-        let len = (de * de + dn * dn).sqrt();
-        if len < 1e-9 {
-            continue;
-        }
-        // Top exactly on the deck underside: the seat's outward wall meets
-        // the end cap edge-to-edge in one plane (coplanar overlap would
-        // z-fight), and its sides continue the deck walls downward.
-        let top_mm = project::quantize_z(deck_bot);
-        let bot_mm = project::quantize_z(ground - PIER_EMBED_M);
-        let sec = |dist: f64| Section {
-            lon: n.lon + de / len * dist / frame.m_per_deg_lon,
-            lat: n.lat + dn / len * dist / M_PER_DEG_LAT,
-            top_mm,
-            bot_mm,
-            gap_m: 0.0,
-            left_e: n.left_e,
-            left_n: n.left_n,
-        };
-        abutment_seat(acc, frame, bounds, &sec(0.0), &sec(ABUTMENT_DEPTH_M), half_w);
-    }
-}
-
-/// A solid abutment seat under a deck's end: the end cross-section `outer`
-/// extruded to `inner` (a [`ABUTMENT_DEPTH_M`] back under the deck), walls
-/// only — the top hides under the slab and the bottom is buried. `outer`
-/// shares its corners with the deck's end cap, so the outward wall lies flush
-/// in the capped end plane.
-fn abutment_seat(
-    acc: &mut Accum,
-    frame: &Frame,
-    bounds: &Bounds,
-    outer: &Section,
-    inner: &Section,
-    half_w: f64,
-) {
-    if outer.top_mm <= outer.bot_mm {
-        return;
-    }
-    let (ol, or_) =
-        (corner(outer, 1.0, frame, bounds, half_w), corner(outer, -1.0, frame, bounds, half_w));
-    let (il, ir) =
-        (corner(inner, 1.0, frame, bounds, half_w), corner(inner, -1.0, frame, bounds, half_w));
-    let de = (outer.lon - inner.lon) * frame.m_per_deg_lon;
-    let dn = (outer.lat - inner.lat) * M_PER_DEG_LAT;
-    let len = (de * de + dn * dn).sqrt().max(1e-9);
-    let n_out = frame.encode_enu(de / len, dn / len, 0.0);
-    let n_in = frame.encode_enu(-de / len, -dn / len, 0.0);
-    let n_left = frame.encode_enu(outer.left_e, outer.left_n, 0.0);
-    let n_right = frame.encode_enu(-outer.left_e, -outer.left_n, 0.0);
-    let (top, bot) = (outer.top_mm, outer.bot_mm);
-    quad(acc, (ol, bot), (or_, bot), (or_, top), (ol, top), n_out);
-    quad(acc, (ir, bot), (il, bot), (il, top), (ir, top), n_in);
-    quad(acc, (il, bot), (ol, bot), (ol, top), (il, top), n_left);
-    quad(acc, (or_, bot), (ir, bot), (ir, top), (or_, top), n_right);
-}
-
-/// Whether this tile owns the point, half-open so a point on a shared edge
-/// belongs to exactly one tile.
-fn owns(bounds: &Bounds, lon: f64, lat: f64) -> bool {
-    lon >= bounds.west && lon < bounds.east && lat >= bounds.south && lat < bounds.north
-}
-
-/// A vertical box column at `(lon, lat)`: half-width `half_left` across the
-/// road (along the `left` unit) and `half_fwd` along it, from `bot_mm` up to
-/// `top_mm`. Four walls; the top hides under the deck and the bottom is
-/// buried.
-#[allow(clippy::too_many_arguments)]
-fn box_column(
-    acc: &mut Accum,
-    frame: &Frame,
-    bounds: &Bounds,
-    lon: f64,
-    lat: f64,
-    left: (f64, f64),
-    half_left: f64,
-    half_fwd: f64,
-    top_mm: i32,
-    bot_mm: i32,
-) {
-    if top_mm <= bot_mm {
-        return;
-    }
-    let (le, ln) = left;
-    // Forward is the left unit rotated -90°: (left_n, -left_e).
-    let (fe, fn_) = (ln, -le);
-    let q = |de: f64, dn: f64| -> (u16, u16) {
-        let plon = lon + de / frame.m_per_deg_lon;
-        let plat = lat + dn / M_PER_DEG_LAT;
-        (project::quantize_x(plon, bounds), project::quantize_y(plat, bounds))
-    };
-    let c0 = q(le * half_left + fe * half_fwd, ln * half_left + fn_ * half_fwd);
-    let c1 = q(-le * half_left + fe * half_fwd, -ln * half_left + fn_ * half_fwd);
-    let c2 = q(-le * half_left - fe * half_fwd, -ln * half_left - fn_ * half_fwd);
-    let c3 = q(le * half_left - fe * half_fwd, ln * half_left - fn_ * half_fwd);
-    let n_fwd = frame.encode_enu(fe, fn_, 0.0);
-    let n_back = frame.encode_enu(-fe, -fn_, 0.0);
-    let n_left = frame.encode_enu(le, ln, 0.0);
-    let n_right = frame.encode_enu(-le, -ln, 0.0);
-    quad(acc, (c0, bot_mm), (c1, bot_mm), (c1, top_mm), (c0, top_mm), n_fwd);
-    quad(acc, (c2, bot_mm), (c3, bot_mm), (c3, top_mm), (c2, top_mm), n_back);
-    quad(acc, (c3, bot_mm), (c0, bot_mm), (c0, top_mm), (c3, top_mm), n_left);
-    quad(acc, (c1, bot_mm), (c2, bot_mm), (c2, top_mm), (c1, top_mm), n_right);
-}
-
 /// Which end of the ordered section list a portal sits on.
 #[derive(Clone, Copy)]
 enum End {
@@ -526,22 +323,15 @@ enum End {
 /// [`TUNNEL_HEIGHT_M`] above the road, floor a [`DECK_THICKNESS_M`] below (the
 /// deck-aligned bottom), and the signed terrain gap sampled from the profile.
 ///
-/// The roof is *clamped* to stay [`TUNNEL_COVER_M`] under the natural ground:
-/// a bore box carries a full [`TUNNEL_HEIGHT_M`] of headroom only where the
-/// hill actually covers it, and is pressed under the surface where the cover
-/// is thin. Without this a shallow-cover tunnel — a covered urban road where
-/// the terrain barely rises above the carriageway — floats its 5 m roof above
-/// the ground the whole length instead of hiding under it (only the daylighted
-/// mouths, where a hillside rises fast past the roof, still stand at full
-/// height). The floor is the lower bound so an emerged section (trimmed by the
-/// caller) never inverts.
+/// The section is the *same* everywhere along the bore: a constant tube riding
+/// the profile, never squeezed by the cover overhead. Where the hill above is
+/// thinner than the headroom the roof simply pokes through the ground — the
+/// tube keeps its shape and the terrain is what gives, not the tunnel.
 ///
-/// The cover is read from the *natural* terrain [`Profile::surface_at`] — the
-/// pre-earthwork ground — so a portal keeps its full-height mouth: the ground
-/// there sits at road level (`gap ≈ 0`, roof clamped just under it), and the
-/// daylighting cut carves the *engineered* ground below that to reveal the
-/// face. `gap_m` stays the centreline `road − terrain`, the zero crossing the
-/// [`crate::solve::portals`] solver also places, so the mesh and the cut agree.
+/// `gap_m` is the centreline `road − terrain` read from the *natural* ground
+/// ([`Profile::surface_at`], pre-earthwork) — the zero crossing the
+/// [`crate::solve::portals`] solver also places, so the mesh and the
+/// daylighting cut agree on where the mouth is.
 fn bore_section(
     lon: f64,
     lat: f64,
@@ -551,13 +341,11 @@ fn bore_section(
     profile: &Profile,
 ) -> Section {
     let terrain = profile.surface_at(lon, lat);
-    let floor = road_m - DECK_THICKNESS_M;
-    let roof = (road_m + TUNNEL_HEIGHT_M).min(terrain - TUNNEL_COVER_M).max(floor);
     Section {
         lon,
         lat,
-        top_mm: project::quantize_z(roof),
-        bot_mm: project::quantize_z(floor),
+        top_mm: project::quantize_z(road_m + TUNNEL_HEIGHT_M),
+        bot_mm: project::quantize_z(road_m - DECK_THICKNESS_M),
         gap_m: road_m - terrain,
         left_e,
         left_n,
@@ -808,7 +596,7 @@ fn quad(
     p3: ((u16, u16), i32),
     nrm: (i8, i8),
 ) {
-    // Caps, piers and abutment seats are all non-drivable faces → across 0.
+    // A cap is a non-drivable face → across 0.
     let v0 = acc.push((p0.0).0, (p0.0).1, p0.1, nrm, 0);
     let v1 = acc.push((p1.0).0, (p1.0).1, p1.1, nrm, 0);
     let v2 = acc.push((p2.0).0, (p2.0).1, p2.1, nrm, 0);
@@ -891,28 +679,15 @@ mod tests {
         Profile::from_heights(&nodes, road_m, terrain_m)
     }
 
-    /// Sweeps a bridge deck over a whole line, optionally with its supports.
-    fn deck_with(
-        line: &LineString,
-        profile: &Profile,
-        b: &Bounds,
-        detail: bool,
-    ) -> Option<TerrainMesh> {
+    /// Sweeps a bridge deck over a whole line.
+    fn deck(line: &LineString, profile: &Profile, b: &Bounds) -> Option<TerrainMesh> {
         let frame = Frame::at_center(b);
         let half_w = RoadClass::Motorway.half_width_m(false);
         let mut acc = Accum::default();
         for piece in proper_pieces(&line.0, b) {
             sweep_deck(&mut acc, &frame, b, profile, &piece, half_w);
-            if detail {
-                support_deck(&mut acc, &frame, b, profile, &piece, half_w);
-            }
         }
         acc.into_mesh()
-    }
-
-    /// Sweeps a bare bridge deck over a whole line.
-    fn deck(line: &LineString, profile: &Profile, b: &Bounds) -> Option<TerrainMesh> {
-        deck_with(line, profile, b, false)
     }
 
     /// Sweeps a tunnel bore over a whole line.
@@ -948,7 +723,7 @@ mod tests {
                 mesh: None,
                 synth: crate::synth::Synth::None,
             };
-            assert!(stamp(&mut f, &profile, SpanKind::Bridge, &b, false));
+            assert!(stamp(&mut f, &profile, SpanKind::Bridge, &b));
             let mesh = f.mesh.expect("deck mesh");
             // The west→east line spreads its cross-section in y.
             let (lo, hi) =
@@ -1038,14 +813,14 @@ mod tests {
             mesh: None,
             synth: crate::synth::Synth::None,
         };
-        assert!(!stamp(&mut f, &profile, SpanKind::Tunnel, &b, true));
+        assert!(!stamp(&mut f, &profile, SpanKind::Tunnel, &b));
         assert!(f.mesh.is_none());
     }
 
     #[test]
-    fn piers_reach_from_a_high_deck_down_into_the_ground() {
-        // A deck 40 m over the valley floor: detail adds piers whose feet sink
-        // below the ground, at global 45 m arc multiples.
+    fn a_high_deck_carries_no_supports_under_it() {
+        // A deck 40 m over the valley floor: the slab is all there is — nothing
+        // reaches down to the ground (no piers, no abutment seats).
         let b = Bounds::of_tile(14, 8500, 5800);
         let line = centre_line(&b);
         let n = 101;
@@ -1057,37 +832,12 @@ mod tests {
             .collect();
         let profile = Profile::from_heights(&nodes, vec![100.0; n], vec![60.0; n]);
 
-        let bare = deck_with(&line, &profile, &b, false).expect("deck");
-        let full = deck_with(&line, &profile, &b, true).expect("deck+piers");
-        assert!(full.indices.len() > bare.indices.len(), "detail must add geometry");
-        let floor = project::quantize_z(60.0 - PIER_EMBED_M);
-        assert_eq!(*full.z.iter().min().unwrap(), floor, "pier feet sink below the ground");
+        let mesh = deck(&line, &profile, &b).expect("deck");
         assert_eq!(
-            *bare.z.iter().min().unwrap(),
+            *mesh.z.iter().min().unwrap(),
             project::quantize_z(100.0 - DECK_THICKNESS_M),
-            "the bare deck has no legs"
+            "nothing reaches below the deck underside"
         );
-        // Pier count matches the span length over the spacing.
-        let span_m = {
-            let cos = line.0[0].y.to_radians().cos();
-            (line.0[1].x - line.0[0].x) * cos * crate::scene::DEG_M
-        };
-        let expected = (span_m / PIER_SPACING_M).floor() as usize;
-        let pier_verts = full.z.iter().filter(|&&z| z == floor).count();
-        assert_eq!(pier_verts, expected * 8, "each pier has 8 foot vertices (4 walls × 2)");
-    }
-
-    #[test]
-    fn a_grade_landing_gets_an_abutment_seat_not_piers() {
-        // A deck flush with the ground at both interior ends: no piers (no
-        // clearance), but each end lands on a solid seat sunk into the
-        // ground.
-        let b = Bounds::of_tile(14, 8500, 5800);
-        let line = centre_line(&b);
-        let profile = Profile::flat(&line.0, 100.0);
-        let full = deck_with(&line, &profile, &b, true).expect("deck");
-        let embed = project::quantize_z(100.0 - PIER_EMBED_M);
-        assert_eq!(*full.z.iter().min().unwrap(), embed, "abutment seats sink into the ground");
     }
 
     #[test]
@@ -1172,11 +922,10 @@ mod tests {
     }
 
     #[test]
-    fn bore_roof_is_clamped_under_a_shallow_cover() {
+    fn bore_keeps_its_section_under_a_shallow_cover() {
         // A covered urban road where the ground barely rises above the
-        // carriageway (a 2 m cover, not a hill): the bore roof must not float
-        // a full TUNNEL_HEIGHT_M above the road — it stays under the surface so
-        // the terrain occludes it, instead of a 5 m box hanging over the town.
+        // carriageway (a 2 m cover, not a hill): the tube is the same tube it
+        // is under a mountain — full headroom, never squeezed by the cover.
         let b = Bounds::of_tile(14, 8500, 5800);
         let cy = (b.south + b.north) * 0.5;
         let n = 201;
@@ -1193,13 +942,10 @@ mod tests {
             .collect();
         let profile = Profile::from_heights(&nodes, vec![100.0; n], terrain_m);
         let mesh = bore(&sub_line(&b, 0.40, 0.60), &profile, &b).expect("bore");
-        // Nothing may rise above the 2 m cover (minus the kept clearance); the
-        // full-height roof at 105 would poke 3 m into the open.
-        let cover_top = project::quantize_z(102.0 - TUNNEL_COVER_M);
-        assert!(
-            mesh.z.iter().all(|&z| z <= cover_top),
-            "the roof must stay under the shallow cover, not float at road + TUNNEL_HEIGHT_M"
-        );
+        let roof = project::quantize_z(100.0 + TUNNEL_HEIGHT_M);
+        let floor = project::quantize_z(100.0 - DECK_THICKNESS_M);
+        assert!(mesh.z.iter().all(|&z| z == roof || z == floor), "the tube keeps one section");
+        assert!(mesh.z.iter().any(|&z| z == roof), "full headroom under a thin cover too");
     }
 
     #[test]

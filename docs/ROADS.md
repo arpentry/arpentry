@@ -141,10 +141,9 @@ here is the price of the silhouette.
 naturally expressed in corridor coordinates: `s` (arclength along) and `t`
 (signed offset across). Dashes are periodic in `s`; band boundaries are
 levels of `t`. The parameterization must survive tiling: a dash pattern that
-resets at a tile seam produces a visible stutter. As with piers placed at
-global multiples of `PIER_SPACING_M`, dash phase must be a function of
-*global* corridor arclength, never of the tile window (GENERATION.md
-invariant 5).
+resets at a tile seam produces a visible stutter. Dash phase must be a
+function of *global* corridor arclength, never of the tile window
+(GENERATION.md invariant 5).
 
 **H5. Two representations, one road.** At coarse zooms the road stays an
 SDF-stroked line; at detail zooms it becomes a surface with paint

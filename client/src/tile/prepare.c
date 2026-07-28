@@ -204,7 +204,7 @@ static void emit_polygons(const arpt_surface_data *data,
    the tiler baked from its engineering priors — the same numbers that size
    the bridge decks — so paint and structures meet edge-to-edge. Coarser
    tiles keep the cartographic style widths. Matches the tiler's
-   STRUCTURE_DETAIL_MIN_ZOOM so widths turn physical alongside the piers. */
+   ROAD_SURFACE_MIN_ZOOM so widths turn physical alongside the asphalt band. */
 #define LINE_PHYSICAL_WIDTH_MIN_LEVEL 13
 
 /* Metres per degree matching the tiler's ENU frame (server building_mesh),
