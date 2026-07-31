@@ -11,11 +11,15 @@
 //! annotation over flat ground), falls back to a plain draped road — something
 //! plain, never something wrong.
 
+pub mod area;
+pub mod height;
 pub mod junction;
 pub mod markings;
+pub mod pave_mesh;
+pub mod pavement;
+pub mod poly;
 pub mod road;
 pub mod structure;
-pub mod surface;
 
 use crate::ground::sampler::GroundSampler;
 use crate::project::Bounds;
@@ -51,6 +55,8 @@ pub enum Synth {
 /// runs (nothing is elevated in the flat parity world).
 pub fn emit(
     f: &mut EncoderFeature,
+    field: &height::HeightField,
+    junctions: &junction::JunctionModel,
     sampler: &mut GroundSampler,
     solved: &SolvedModel,
     z: u8,
@@ -63,14 +69,25 @@ pub fn emit(
         Synth::None => {}
         Synth::Road { corridor, deck } => {
             let profile = corridor.and_then(|c| solved.profile(c));
-            road::bake(f, profile, deck, sampler, z, solved.z_ref, bounds);
+            // The corridor's grade-separation layer: paint must ride the surface
+            // its own road belongs to, not blend with whatever passes beneath.
+            let layer = corridor.map_or(0, |c| junctions.layer_of(c));
+            // `width_m` is what marks a feature as belonging to the paved
+            // surface: a carriageway has one, and so does a marking painted on it
+            // (which must ride the same answer). A footway, cycleway or track has
+            // none — it is draped geometry beside the network, not part of it.
+            let paved = f.properties.iter().any(|(k, v)| {
+                k.as_str() == "width_m" && matches!(v, crate::value::Value::Double(w) if *w > 0.0)
+            });
+            let field = paved.then_some(field);
+            road::bake(f, profile, deck, layer, field, sampler, z, solved.z_ref, bounds);
         }
         Synth::Structure { corridor, kind } => {
             match solved.profile(corridor) {
                 Some(p) if structure::stamp(f, p, kind, bounds) => {}
                 // Degradation ladder: no solved profile, or no solid to draw
                 // (a tunnel tagged over flat ground) → a plain draped road.
-                other => road::bake(f, other, false, sampler, z, solved.z_ref, bounds),
+                other => road::bake(f, other, false, 0, Some(field), sampler, z, solved.z_ref, bounds),
             }
         }
     }

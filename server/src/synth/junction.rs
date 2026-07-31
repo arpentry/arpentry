@@ -1,97 +1,128 @@
 //! Junction plates — a filled road surface meshed across an intersection so
 //! the legs meet on one paved area instead of overlapping strokes
-//! (docs/GENERATION.md, scenario S4).
+//! (docs/GENERATION.md scenario S4, docs/ROADS.md R6/R10).
 //!
-//! Increment 1 plates the *corridor* junctions the solver already built
-//! ([`SceneGraph::junctions`], Plan B): interchanges and ramp merges among the
-//! graded/structure network, flat at the welded height every member shares
-//! there. Each junction's legs are trimmed back a little and their mouth
-//! corners fanned into a plate. The at-grade majority — every ordinary street
-//! intersection, which is not in the scene graph — is a later increment that
-//! drapes plates on the engineered ground.
+//! The unit here is the *intersection*, not the connector. Overture maps a
+//! place where roads meet as however many connectors its geometry needs: a
+//! plain crossroads is one, a staggered junction two, a roundabout a dozen
+//! ringed around an island. Plating each connector separately is what made a
+//! roundabout render as a ring of shards, so this module clusters connectors
+//! into intersections first ([`cluster`]) and bakes one [`Area`] per cluster.
+//! A roundabout needs no rule of its own: its ring arcs are short corridors,
+//! so the clustering swallows them and the areas of its exits meet as one
+//! paved band around the island.
+//!
+//! The area itself is a star-shaped region (`synth::area`), which is what lets
+//! one primitive serve the plate mesh, the point test, and the band and
+//! marking trims. A leg's width comes from its corridor's
+//! [`Corridor::width_m`] — the same cross-section the surface band reads, so a
+//! mouth and the band that lands on it agree by construction (ROADS.md
+//! invariant 1 and 5); a non-drivable member (a footway, a crossing) joins the
+//! intersection without contributing paved area.
 //!
 //! Plates are baked once from the solved model (heights are a pure function of
-//! it) and emitted by the single tile that owns the junction centre, so tiles
-//! agree at their seams (invariant 5). Coordinates are tile-local quantized
-//! uint16 / int32-mm with an up ENU normal, matching `MeshGeometry`.
+//! it) and emitted by the single tile that owns the intersection centre, so
+//! tiles agree at their seams (invariant 5). Coordinates are tile-local
+//! quantized uint16 / int32-mm with an up ENU normal, matching `MeshGeometry`.
 
-use geo_types::{Coord, Geometry, Point};
+use std::collections::HashMap;
 
-use crate::building_mesh::{Frame, M_PER_DEG_LAT};
-use crate::ground::sampler::GroundSampler;
-use crate::priors::RoadClass;
-use crate::project::{self, Bounds};
-use crate::scene::SceneGraph;
+use geo_types::Coord;
+
+use crate::assemble::grid::GridIndex;
+use crate::building_mesh::{M_PER_DEG_LAT, M_PER_DEG_LON_EQUATOR};
+use crate::priors;
+use crate::scene::{Corridor, CorridorId, SceneGraph, SpanKind};
 use crate::solve::SolvedModel;
-use crate::terrain::TerrainMesh;
-use crate::tile_build::EncoderFeature;
-use crate::value::Value;
+use crate::synth::area::{Area, Leg};
 
-/// How far past a leg's mouth, in half-widths, the plate reaches — the trim
-/// radius that sets the intersection's size. Larger than 1 so the plate laps
-/// over the incoming carriageways and reads as one paved area.
-const PLATE_REACH: f64 = 1.6;
+/// Nearer than this to a corridor end, in metres, and a junction sits *at* the
+/// end: the road does not carry on past it, so there is no leg that way.
+const END_EPS_M: f64 = 1.5;
 
-/// How far a trimmed surface band runs on under the plate past its trim
-/// radius, in metres — the overlap that guarantees no sliver of ground shows
-/// between a band end and the plate mouth, whatever densification and
-/// quantization do to either edge.
-const BAND_TUCK_M: f64 = 0.75;
+/// How much longer than the two intersections' own reaches a corridor between
+/// them may be and still count as one place, in metres. A stub this short is
+/// intersection geometry — a slip lane's nose, the offset of a staggered
+/// crossroads — not a block of street.
+const MERGE_SLACK_M: f64 = 6.0;
 
-/// Interior points inserted per corner fillet (the quadratic Bézier between
-/// two legs' mouth corners).
-const FILLET_STEPS: usize = 6;
+/// Widest an intersection cluster may grow, in metres. The merge rule is
+/// local and could otherwise walk a dense old town into one lake of asphalt;
+/// past this the next merge is refused and the junctions plate separately.
+const MAX_CLUSTER_M: f64 = 45.0;
 
-/// Farthest from the plate centre, in metres, a fillet's control point (the
-/// carriageway-edge intersection) may sit. Beyond it the two edges barely
-/// converge (a near-straight through pair) and a straight chord reads better
-/// than a kilometre-flat arc.
-const FILLET_MAX_M: f64 = 40.0;
-
-/// A leg at a junction: unit heading away from the centre (ENU east, north) and
-/// the road half-width there.
-struct Leg {
-    e: f64,
-    n: f64,
-    half_w: f64,
-}
-
-/// A baked junction plate: its centre, the styling class, its legs, and its
-/// surface level — a fixed int32-mm height (a corridor junction, at its welded
-/// level) or `None` for an at-grade road junction, which drapes on the ground.
+/// A baked intersection plate: its paved area, the styling class, and its
+/// surface level — a fixed int32-mm height (an engineered junction, at its
+/// welded level) or `None` for an at-grade one, which drapes on the ground.
 pub struct BakedJunction {
-    point: Coord,
-    level_mm: Option<i32>,
-    class: String,
-    legs: Vec<Leg>,
+    area: Area,
+    /// The height the intersection's members solved to share, metres — the mean
+    /// over its clustered junctions of [`SolvedModel::junction_height`]. `None`
+    /// when no member carried a profile, so nothing is known. This is what the
+    /// road height field pins the intersection to; unlike `level_mm` it exists
+    /// for a street intersection too, and is a height rather than a decision
+    /// about whether to drape.
+    height: Option<f64>,
 }
 
 impl BakedJunction {
-    /// The junction centre.
+    /// The intersection centre.
     pub fn point(&self) -> Coord {
-        self.point
+        self.area.centre()
     }
 
-    /// How far from the centre, in metres, an approaching surface band of
-    /// half-width `band_half_m` is trimmed: its own mouth distance, capped by
-    /// the widest leg's mouth (a mapped-wide carriageway must not trim past
-    /// the plate and leave a gap), less [`BAND_TUCK_M`] so the band always
-    /// ends *under* the plate.
-    pub fn trim_radius_m(&self, band_half_m: f64) -> f64 {
-        let max_mouth =
-            self.legs.iter().map(|l| l.half_w * PLATE_REACH).fold(0.0, f64::max);
-        ((band_half_m * PLATE_REACH).min(max_mouth) - BAND_TUCK_M).max(0.0)
+    /// The paved area, for the band and marking trims.
+    pub fn area(&self) -> &Area {
+        &self.area
+    }
+
+    /// The solved height of the intersection in metres, if it has one.
+    pub fn height(&self) -> Option<f64> {
+        self.height
     }
 }
 
-/// Every junction plate, baked from the solved model — shared by the emit
+/// Every intersection plate, baked from the solved model — shared by the emit
 /// workers through an `Arc`. A coarse geographic grid answers "which plates
 /// are near this box" without a linear scan, which both the per-tile plate
 /// emission and the per-segment marking trims (phase 1, millions of
 /// segments) depend on.
 pub struct JunctionModel {
     junctions: Vec<BakedJunction>,
-    grid: std::collections::HashMap<(i32, i32), Vec<u32>>,
+    grid: HashMap<(i32, i32), Vec<u32>>,
+    /// Every carriageway segment in the extract, with the width it paves — the
+    /// corridor half of the road height field's sources
+    /// ([`crate::synth::height`]). Baked here because it is the same walk over
+    /// the scene the intersections come from, and because a height field built
+    /// per tile would re-derive it for every zoom.
+    sources: Vec<SourceSeg>,
+    source_grid: GridIndex,
+    /// Grade-separation layer per corridor, indexed by [`CorridorId`].
+    layers: Vec<u32>,
+}
+
+/// One stretch of centerline between two nodes, and how far either side of it
+/// that corridor's asphalt reaches. Carries the corridor *id* rather than a
+/// borrowed profile so the model stays self-contained and shareable.
+#[derive(Debug, Clone, Copy)]
+pub struct SourceSeg {
+    pub a: Coord,
+    pub b: Coord,
+    pub cos_lat: f64,
+    pub half_m: f64,
+    pub level: i64,
+    /// Grade-separation layer: how many crossings this corridor passes *over*
+    /// (`solve::crossings::corridor_ranks`). Zero for anything that crosses
+    /// nothing, so ordinary streets all share a layer and still merge.
+    ///
+    /// Load-bearing for the union, because Overture's `level` ordinal does not
+    /// carry this: a flyover's bridge span is excluded from the union already,
+    /// but its *approaches* are ordinary at-grade spans at level 0, and so is the
+    /// road they pass over. Keyed on level alone they merged into one region, and
+    /// the mesh then ramped continuously between two roads that are metres apart
+    /// vertically.
+    pub layer: u32,
+    pub corridor: CorridorId,
 }
 
 /// Grid cell size in degrees (~1 km): plates per cell stay in the tens even
@@ -103,13 +134,52 @@ fn grid_cell(x: f64, y: f64) -> (i32, i32) {
 }
 
 impl JunctionModel {
-    fn build(junctions: Vec<BakedJunction>) -> JunctionModel {
-        let mut grid: std::collections::HashMap<(i32, i32), Vec<u32>> =
-            std::collections::HashMap::new();
+    fn build(
+        junctions: Vec<BakedJunction>,
+        sources: Vec<SourceSeg>,
+        layers: Vec<u32>,
+    ) -> JunctionModel {
+        let mut grid: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
         for (i, j) in junctions.iter().enumerate() {
-            grid.entry(grid_cell(j.point.x, j.point.y)).or_default().push(i as u32);
+            let p = j.point();
+            grid.entry(grid_cell(p.x, p.y)).or_default().push(i as u32);
         }
-        JunctionModel { junctions, grid }
+        let mut source_grid = GridIndex::new();
+        for (i, s) in sources.iter().enumerate() {
+            let pad = s.half_m / crate::scene::DEG_M;
+            source_grid.insert(
+                (
+                    s.a.x.min(s.b.x) - pad,
+                    s.a.y.min(s.b.y) - pad,
+                    s.a.x.max(s.b.x) + pad,
+                    s.a.y.max(s.b.y) + pad,
+                ),
+                i as u32,
+            );
+        }
+        JunctionModel { junctions, grid, sources, source_grid, layers }
+    }
+
+    /// The carriageway segments whose paved band reaches into the
+    /// `(west, south, east, north)` box, in a sorted, deduplicated order that is
+    /// a function of the model rather than of hashing.
+    pub fn sources_near(&self, b: (f64, f64, f64, f64), out: &mut Vec<u32>) {
+        self.source_grid.query(b, out);
+    }
+
+    /// One carriageway segment by index, as returned by [`Self::sources_near`].
+    pub fn source(&self, i: u32) -> &SourceSeg {
+        &self.sources[i as usize]
+    }
+
+    /// Number of carriageway segments the height field can draw on.
+    pub fn source_count(&self) -> usize {
+        self.sources.len()
+    }
+
+    /// A corridor's grade-separation layer; `0` for anything unranked.
+    pub fn layer_of(&self, corridor: CorridorId) -> u32 {
+        self.layers.get(corridor as usize).copied().unwrap_or(0)
     }
 
     pub fn len(&self) -> usize {
@@ -135,7 +205,7 @@ impl JunctionModel {
             for cy in y0..=y1 {
                 if let Some(cell) = self.grid.get(&(cx, cy)) {
                     for &i in cell {
-                        let p = self.junctions[i as usize].point;
+                        let p = self.junctions[i as usize].point();
                         if p.x >= b.0 && p.x <= b.2 && p.y >= b.1 && p.y <= b.3 {
                             out.push(&self.junctions[i as usize]);
                         }
@@ -147,247 +217,378 @@ impl JunctionModel {
     }
 }
 
-/// Bakes a plate for every junction with three or more legs. A junction with
-/// an *engineered* member sits at a fixed level — the height the welds made
-/// its profiled members share (an interchange is flat at its merge). A
-/// street junction drapes per vertex on the engineered ground instead: its
+/// Bakes a plate for every intersection with three or more paved legs. An
+/// *engineered* intersection sits at a fixed level — the height the welds made
+/// its profiled members share (an interchange is flat at its merge). A street
+/// intersection drapes per vertex on the engineered ground instead: its
 /// members' benches already agree there (the street weld), and a fixed disc
-/// would cut into the slope the intersection genuinely sits on. A junction
-/// with no profiled member has no known height and is skipped.
+/// would cut into the slope the intersection genuinely sits on. One with no
+/// profiled member has no known height and is skipped.
 pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> JunctionModel {
+    let ports = Ports::build(scene);
+    let clusters = cluster(scene, &ports);
     let mut junctions = Vec::new();
-    for j in &scene.junctions {
-        let mut legs = Vec::new();
-        let mut level: Option<f64> = None;
-        let mut engineered = false;
-        let mut class: Option<&str> = None;
-        for m in &j.members {
-            let c = &scene.corridors[m.corridor as usize];
-            // Legs span the surface band's edge (paint half-width plus the
-            // structure shoulder), so a trimmed band meets the mouth flush.
-            let half_w = c.class.half_width_m(c.link) + crate::priors::STRUCTURE_SHOULDER_M;
-            for (e, n) in leg_headings(&c.nodes, &c.arc, c.cos_lat, m.arc, c.total()) {
-                legs.push(Leg { e, n, half_w });
+    for c in &clusters {
+        if let Some(b) = bake_one(scene, solved, &ports, c) {
+            junctions.push(b);
+        }
+    }
+    let layers = crate::solve::crossings::corridor_ranks(scene);
+    JunctionModel::build(junctions, carriageway_sources(scene, &layers), layers)
+}
+
+/// Every carriageway segment of every corridor that paves anything, in corridor
+/// then node order. The height field's corridor sources; also the input the
+/// unioned surface buffers.
+fn carriageway_sources(scene: &SceneGraph, layers: &[u32]) -> Vec<SourceSeg> {
+    let mut out = Vec::new();
+    for c in &scene.corridors {
+        let Some(half_m) = corridor_half_width_m(c) else {
+            continue; // not a carriageway: paves nothing, so covers nothing
+        };
+        for ((lo, hi), level, kind) in level_runs(c) {
+            // Only at-grade asphalt is unioned. A bridge or a bore already
+            // carries its road surface as a swept solid (`synth::structure`), so
+            // paving its level here would draw the carriageway twice — once as a
+            // deck top and once as a region floating at the same height.
+            if kind != SpanKind::Grade {
+                continue;
             }
-            if let Some(p) = solved.profile(m.corridor) {
-                let h = p.road_at_arc(m.arc);
-                level = Some(level.map_or(h, |l| l.max(h)));
-                engineered |= c.class.grade_limit().is_some();
-                // The highest-standing member sets the styling class — the
-                // raw Overture class, so the plate matches its street colour.
-                if class.is_none() || h >= level.unwrap() - 1e-9 {
-                    class = Some(c.class_key.as_str());
+            for k in lo..hi {
+                out.push(SourceSeg {
+                    a: c.nodes[k],
+                    b: c.nodes[k + 1],
+                    cos_lat: c.cos_lat,
+                    half_m,
+                    level,
+                    layer: layers.get(c.id as usize).copied().unwrap_or(0),
+                    corridor: c.id,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The corridor's node index runs of constant level, as `((first, last), level)`.
+///
+/// A corridor's level lives on its spans, not on the corridor
+/// (`scene.rs:41-47`), so anything that partitions by level has to get it from
+/// them.
+///
+/// Each *segment* is assigned to the span containing its **midpoint**, and
+/// consecutive segments agreeing on level and kind are then grouped into runs.
+/// Midpoint assignment is what makes the partition exact: a span boundary falls
+/// at an arbitrary arc, rarely on a node, so the segment straddling it belongs to
+/// neither span under a node-range rule and to both under a widened one.
+///
+/// Both mistakes have been made here. Widening let the at-grade runs on either
+/// side of a bridge meet in the middle and pave the whole flyover; exact node
+/// ranges then dropped one segment of asphalt at *every* boundary, which at an
+/// interchange reads as a row of holes punched across the carriageway. Assigning
+/// by midpoint gives each segment exactly one owner, so neither can happen.
+fn level_runs(c: &Corridor) -> Vec<((usize, usize), i64, SpanKind)> {
+    let n = c.nodes.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    if c.spans.is_empty() {
+        return vec![((0, n - 1), 0, SpanKind::Grade)];
+    }
+    let mut out: Vec<((usize, usize), i64, SpanKind)> = Vec::new();
+    for k in 0..n - 1 {
+        let mid = 0.5 * (c.arc[k] + c.arc[k + 1]);
+        // The span covering the midpoint; a segment past the last span's end
+        // (float slop at the very tail) falls to that span rather than vanishing.
+        let Some(s) = c
+            .spans
+            .iter()
+            .find(|s| mid >= s.arc0 && mid < s.arc1)
+            .or_else(|| c.spans.last())
+        else {
+            continue;
+        };
+        match out.last_mut() {
+            Some(((_, hi), lv, kd)) if *lv == s.level && *kd == s.kind && *hi == k => *hi = k + 1,
+            _ => out.push(((k, k + 1), s.level, s.kind)),
+        }
+    }
+    out
+}
+
+/// Where every junction sits along every corridor: per corridor, its junctions
+/// in arc order. This is the adjacency the whole module runs on — which
+/// junctions a corridor joins, and how far apart they are along it.
+struct Ports {
+    by_corridor: HashMap<CorridorId, Vec<(f64, u32)>>,
+}
+
+impl Ports {
+    fn build(scene: &SceneGraph) -> Ports {
+        let mut by_corridor: HashMap<CorridorId, Vec<(f64, u32)>> = HashMap::new();
+        for (i, j) in scene.junctions.iter().enumerate() {
+            for m in &j.members {
+                by_corridor.entry(m.corridor).or_default().push((m.arc, i as u32));
+            }
+        }
+        for v in by_corridor.values_mut() {
+            v.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        }
+        Ports { by_corridor }
+    }
+
+    /// The junction next along `corridor` from arc `at`, in the direction
+    /// `forward` (increasing arc) or back, with the arc gap to it.
+    fn neighbour(&self, corridor: CorridorId, at: f64, forward: bool) -> Option<(u32, f64)> {
+        let ports = self.by_corridor.get(&corridor)?;
+        if forward {
+            ports
+                .iter()
+                .find(|&&(arc, _)| arc > at + END_EPS_M)
+                .map(|&(arc, j)| (j, arc - at))
+        } else {
+            ports
+                .iter()
+                .rev()
+                .find(|&&(arc, _)| arc < at - END_EPS_M)
+                .map(|&(arc, j)| (j, at - arc))
+        }
+    }
+
+    /// Every corridor edge between two junctions: `(j0, j1, arc gap)`.
+    fn edges(&self) -> Vec<(u32, u32, f64)> {
+        let mut out = Vec::new();
+        let mut corridors: Vec<&CorridorId> = self.by_corridor.keys().collect();
+        corridors.sort_unstable();
+        for c in corridors {
+            for w in self.by_corridor[c].windows(2) {
+                let gap = w[1].0 - w[0].0;
+                if gap > END_EPS_M {
+                    out.push((w[0].1, w[1].1, gap));
                 }
             }
         }
-        let (Some(level_m), true) = (level, legs.len() >= 3) else {
-            continue;
-        };
-        junctions.push(BakedJunction {
-            point: j.point,
-            level_mm: engineered.then(|| (level_m * 1000.0).round() as i32),
-            class: match class {
-                Some(c) if !c.is_empty() => c.to_string(),
-                _ => "residential".to_string(),
-            },
-            legs,
-        });
+        out
     }
-    JunctionModel::build(junctions)
 }
 
-/// The plate feature for `baked`, or `None` when this tile does not own the
-/// junction centre (so exactly one tile emits it) or the plate is degenerate.
-/// An at-grade junction drapes on the engineered ground through `sampler` —
-/// riding the exact street bed at the reference zoom, like the bands that
-/// land on its mouths (`synth::road::surface_height`); a corridor junction
-/// sits at its fixed welded level.
-pub fn plate(
-    baked: &BakedJunction,
-    bounds: &Bounds,
-    sampler: &mut GroundSampler,
-    z: u8,
-    z_ref: u8,
-) -> Option<EncoderFeature> {
-    if !owns(bounds, baked.point) {
+/// One intersection: the junctions that collapsed into it, and their centre.
+struct Cluster {
+    members: Vec<u32>,
+    centre: Coord,
+}
+
+/// Disjoint-set over junction indices, the one structure the clustering needs.
+struct Union {
+    parent: Vec<u32>,
+}
+
+impl Union {
+    fn new(n: usize) -> Union {
+        Union { parent: (0..n as u32).collect() }
+    }
+
+    fn find(&mut self, mut i: u32) -> u32 {
+        while self.parent[i as usize] != i {
+            self.parent[i as usize] = self.parent[self.parent[i as usize] as usize];
+            i = self.parent[i as usize];
+        }
+        i
+    }
+
+    fn union(&mut self, a: u32, b: u32) -> bool {
+        let (ra, rb) = (self.find(a), self.find(b));
+        if ra == rb {
+            return false;
+        }
+        self.parent[rb.max(ra) as usize] = ra.min(rb);
+        true
+    }
+}
+
+/// Groups the scene's junctions into intersections. One rule, strictly local:
+/// a corridor too short to be a block joins the intersections at its ends. That
+/// covers a staggered crossroads, the two connectors of a slip lane's nose, and
+/// the ring of connectors a roundabout is cut into — all the cases where
+/// per-connector plates used to pile shards on one another. Merges are tried
+/// shortest-first and refused once a cluster reaches [`MAX_CLUSTER_M`], so a
+/// dense old town cannot chain into one lake of asphalt. The result is
+/// deterministic: every candidate list is walked in a sorted order, never a
+/// hashed one.
+fn cluster(scene: &SceneGraph, ports: &Ports) -> Vec<Cluster> {
+    let n = scene.junctions.len();
+    let mut uf = Union::new(n);
+    let mut edges = ports.edges();
+    edges.sort_by(|a, b| a.2.total_cmp(&b.2).then(a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
+    let reach: Vec<f64> = (0..n).map(|i| junction_reach_m(scene, i)).collect();
+    let mut extent: Vec<(f64, f64, f64, f64)> = scene
+        .junctions
+        .iter()
+        .map(|j| (j.point.x, j.point.y, j.point.x, j.point.y))
+        .collect();
+    for (a, b, gap) in edges {
+        if gap > reach[a as usize] + reach[b as usize] + MERGE_SLACK_M {
+            continue;
+        }
+        let (ra, rb) = (uf.find(a), uf.find(b));
+        if ra == rb {
+            continue;
+        }
+        let merged = union_box(extent[ra as usize], extent[rb as usize]);
+        if box_extent_m(merged, scene.junctions[a as usize].point.y) > MAX_CLUSTER_M {
+            continue;
+        }
+        uf.union(a, b);
+        extent[uf.find(a) as usize] = merged;
+    }
+
+    // Collect, in junction order so the output never depends on hashing.
+    let mut by_root: HashMap<u32, Vec<u32>> = HashMap::new();
+    for j in 0..n as u32 {
+        by_root.entry(uf.find(j)).or_default().push(j);
+    }
+    let mut roots: Vec<u32> = by_root.keys().copied().collect();
+    roots.sort_unstable();
+    roots
+        .into_iter()
+        .map(|root| {
+            let members = by_root.remove(&root).expect("a root has members");
+            let centre = centroid(scene, &members);
+            Cluster { members, centre }
+        })
+        .collect()
+}
+
+/// How far one junction's own paved area reaches, in metres — its widest
+/// member's half-width. The merge rules compare corridor lengths against this:
+/// a stub shorter than the areas that would meet over it is not a street.
+fn junction_reach_m(scene: &SceneGraph, j: usize) -> f64 {
+    scene.junctions[j]
+        .members
+        .iter()
+        .filter_map(|m| corridor_half_width_m(&scene.corridors[m.corridor as usize]))
+        .fold(0.0, f64::max)
+}
+
+/// The half-width in metres of a corridor's paved band — its carriageway plus
+/// the structure shoulder, exactly what `synth::surface` offsets to. `None`
+/// for a non-drivable corridor: a footway or a crossing joins an intersection
+/// without paving any of it.
+pub(crate) fn corridor_half_width_m(c: &Corridor) -> Option<f64> {
+    c.drivable.then_some(())?;
+    Some(c.width_m? * 0.5 + priors::STRUCTURE_SHOULDER_M)
+}
+
+/// Bakes one cluster's plate, or `None` when it paves nothing: fewer than
+/// three paved legs, no member with a solved profile, or a degenerate area.
+fn bake_one(
+    scene: &SceneGraph,
+    solved: &SolvedModel,
+    ports: &Ports,
+    cluster: &Cluster,
+) -> Option<BakedJunction> {
+    let centre = cluster.centre;
+    let m_lon = M_PER_DEG_LON_EQUATOR * centre.y.to_radians().cos();
+
+    let mut legs: Vec<Leg> = Vec::new();
+    let mut paves = false;
+    let mut has_profiled_member = false;
+    let mut offset_max = 0.0f64;
+    let mut half_max = 0.0f64;
+    // The solved height, averaged over the cluster's junctions. A merged cluster
+    // has one per member junction and they may differ by centimetres across a
+    // roundabout; the mean is order-independent, so the pin is deterministic.
+    let mut pin_sum = 0.0f64;
+    let mut pin_count = 0u32;
+
+    for &j in &cluster.members {
+        if let Some(h) = solved.junction_height(j as usize) {
+            pin_sum += h;
+            pin_count += 1;
+        }
+        let jn = &scene.junctions[j as usize];
+        let off = ((jn.point.x - centre.x) * m_lon, (jn.point.y - centre.y) * M_PER_DEG_LAT);
+        offset_max = offset_max.max(off.0.hypot(off.1));
+        for m in &jn.members {
+            let c = &scene.corridors[m.corridor as usize];
+            has_profiled_member |= solved.profile(m.corridor).is_some();
+            let Some(half_w) = corridor_half_width_m(c) else {
+                continue; // a footway joins here but paves nothing
+            };
+            half_max = half_max.max(half_w);
+            paves = true;
+            for (e, n) in outward_headings(scene, ports, &cluster.members, m.corridor, m.arc) {
+                // Each leg is its own carriageway's half-width, no more. This
+                // used to be widened by the leg's offset from the cluster centre
+                // so the centre-anchored rectangle still *covered* the
+                // carriageway it stood for — necessary while the area was the
+                // paved plate, and pure harm now that it is only the
+                // intersection's extent: a merged crossroads got a visibly
+                // over-wide blob of invented asphalt. The union paves the real
+                // shape; this extent only has to say roughly where the
+                // intersection is, for the marking trim, the height-field pin and
+                // the curb-return mask.
+                legs.push(Leg { e, n, half_w });
+            }
+        }
+    }
+    if !has_profiled_member {
+        return None; // nothing is known about where this intersection sits
+    }
+    if !paves {
+        return None; // no member paves anything
+    }
+    if legs.len() < 3 {
         return None;
     }
-    let mesh = match baked.level_mm {
-        Some(mm) => plate_mesh(baked, bounds, |_| mm),
-        None => plate_mesh(baked, bounds, |c| {
-            let h = if z == z_ref { sampler.bed_target(c.x, c.y) } else { None };
-            let h = h.unwrap_or_else(|| sampler.surface(bounds, c.x, c.y, z));
-            (h * 1000.0).round() as i32
-        }),
-    }?;
-    Some(EncoderFeature {
-        id: baked.point.x.to_bits() ^ baked.point.y.to_bits().rotate_left(32),
-        geometry: Geometry::Point(Point(baked.point)),
-        properties: vec![("class".to_string(), Value::String(baked.class.clone()))],
-        elevation: None,
-        z: None,
-        mesh: Some(mesh),
-        synth: crate::synth::Synth::None,
+    // Legs run from the centre out to the widest carriageway's far edge: a
+    // narrow street is paved right across the road it meets, and no leg
+    // overshoots into asphalt its own band should be laying.
+    let area = Area::new(centre, legs, half_max + offset_max)?;
+
+    Some(BakedJunction {
+        area,
+        height: (pin_count > 0).then(|| pin_sum / pin_count as f64),
     })
 }
 
-/// A leg's mouth in metres relative to the plate centre: its unit heading,
-/// bearing, and the two mouth corners (right and left of the heading, looking
-/// out from the centre).
-struct Mouth {
-    ang: f64,
-    e: f64,
-    n: f64,
-    right: (f64, f64),
-    left: (f64, f64),
-}
-
-/// Fans the plate boundary into a mesh, taking each vertex's height in int32
-/// mm from `elev` (a fixed level, or a drape onto the ground). The boundary
-/// walks the legs counter-clockwise: each leg's straight mouth cross-edge
-/// (where its trimmed surface band lands flush), then the corner fillet
-/// curving to the next leg — so the intersection reads with rounded curb
-/// returns instead of a straight-chorded fan.
-fn plate_mesh(
-    j: &BakedJunction,
-    bounds: &Bounds,
-    mut elev: impl FnMut(Coord) -> i32,
-) -> Option<TerrainMesh> {
-    let frame = Frame::at_center(bounds);
-    let up = frame.encode_enu(0.0, 0.0, 1.0);
-    let m_lon = frame.m_per_deg_lon;
-
-    let mut mouths: Vec<Mouth> = j
-        .legs
-        .iter()
-        .filter_map(|leg| {
-            let len = (leg.e * leg.e + leg.n * leg.n).sqrt();
-            if len < 1e-9 || leg.half_w <= 0.0 {
-                return None;
-            }
-            let (e, n) = (leg.e / len, leg.n / len);
-            let reach = leg.half_w * PLATE_REACH;
-            let (pe, pn) = (-n, e); // left perpendicular
-            Some(Mouth {
-                ang: n.atan2(e),
-                e,
-                n,
-                right: (e * reach - pe * leg.half_w, n * reach - pn * leg.half_w),
-                left: (e * reach + pe * leg.half_w, n * reach + pn * leg.half_w),
-            })
-        })
-        .collect();
-    if mouths.len() < 3 {
-        return None;
-    }
-    mouths.sort_by(|a, b| a.ang.total_cmp(&b.ang));
-
-    // The boundary ring in metres: per leg its mouth corners, then the fillet
-    // toward the next leg counter-clockwise.
-    let mut ring_m: Vec<(f64, f64)> = Vec::with_capacity(mouths.len() * (2 + FILLET_STEPS));
-    for i in 0..mouths.len() {
-        let a = &mouths[i];
-        let b = &mouths[(i + 1) % mouths.len()];
-        ring_m.push(a.right);
-        ring_m.push(a.left);
-        fillet(a, b, &mut ring_m);
-    }
-
-    // Centre vertex 0, then the ring; each boundary edge fans a triangle.
-    let mut x = Vec::with_capacity(ring_m.len() + 1);
-    let mut y = Vec::with_capacity(ring_m.len() + 1);
-    let mut z = Vec::with_capacity(ring_m.len() + 1);
-    let mut normals = Vec::with_capacity((ring_m.len() + 1) * 2);
-    // Analytic edge AA: the fan centre is the paved interior (across 0), every
-    // ring vertex is the paved boundary (127). `1 - |across|` then falls from 1
-    // at the centre to 0 at the perimeter, so the deck fragment fades the
-    // plate's outer ~1px just like a band or deck edge.
-    let mut edge_across = Vec::with_capacity(ring_m.len() + 1);
-    let mut push = |c: Coord, across: i8| {
-        x.push(project::quantize_x(c.x, bounds));
-        y.push(project::quantize_y(c.y, bounds));
-        z.push(elev(c));
-        normals.push(up.0);
-        normals.push(up.1);
-        edge_across.push(across);
-    };
-    push(j.point, 0);
-    for &(me, mn) in &ring_m {
-        push(Coord { x: j.point.x + me / m_lon, y: j.point.y + mn / M_PER_DEG_LAT }, 127);
-    }
-    let m = ring_m.len() as u32;
-    let mut indices = Vec::with_capacity(ring_m.len() * 3);
-    for i in 0..m {
-        let a = 1 + i;
-        let b = 1 + (i + 1) % m;
-        indices.extend_from_slice(&[0, a, b]);
-    }
-    Some(TerrainMesh { x, y, z, indices, normals, edge_across })
-}
-
-/// Appends the interior points of the corner fillet from `a`'s left corner to
-/// `b`'s right corner (`b` counter-clockwise of `a`): a quadratic Bézier whose
-/// control point is the intersection of the two carriageway edges — the
-/// standard curb-return approximation. Appends nothing (a straight chord)
-/// when no plausible corner exists: a gap of a half-turn or more (the plate's
-/// flat side, or a reflex gap whose arc would cross the centre), near-parallel
-/// edges, or an intersection behind the corners or absurdly far out.
-fn fillet(a: &Mouth, b: &Mouth, out: &mut Vec<(f64, f64)>) {
-    let gap = (b.ang - a.ang).rem_euclid(std::f64::consts::TAU);
-    if gap >= std::f64::consts::PI - 1e-6 {
-        return;
-    }
-    // Edge lines run from each corner back toward the centre along the leg:
-    // a.left + t·(−a.heading) = b.right + s·(−b.heading).
-    let p = a.left;
-    let q = b.right;
-    let (d1e, d1n) = (-a.e, -a.n);
-    let (d2e, d2n) = (-b.e, -b.n);
-    let denom = d1e * d2n - d1n * d2e;
-    if denom.abs() < 1e-3 {
-        return;
-    }
-    let (re, rn) = (q.0 - p.0, q.1 - p.1);
-    let t = (re * d2n - rn * d2e) / denom;
-    let s = (re * d1n - rn * d1e) / denom;
-    if t <= 0.0 || s <= 0.0 {
-        return;
-    }
-    let c = (p.0 + t * d1e, p.1 + t * d1n);
-    if (c.0 * c.0 + c.1 * c.1).sqrt() > FILLET_MAX_M {
-        return;
-    }
-    for k in 1..FILLET_STEPS {
-        let u = k as f64 / FILLET_STEPS as f64;
-        let w0 = (1.0 - u) * (1.0 - u);
-        let w1 = 2.0 * u * (1.0 - u);
-        let w2 = u * u;
-        out.push((w0 * p.0 + w1 * c.0 + w2 * q.0, w0 * p.1 + w1 * c.1 + w2 * q.1));
-    }
-}
-
-/// The unit ENU heading(s) of a corridor leg at arc `at`: one pointing into the
-/// corridor from an end, both directions from an interior through-node.
-fn leg_headings(nodes: &[Coord], arc: &[f64], cos_lat: f64, at: f64, total: f64) -> Vec<(f64, f64)> {
-    if nodes.len() < 2 {
+/// The unit ENU headings a corridor leaves this intersection on, at arc `at`.
+/// A corridor running on past the junction leaves both ways, one ending there
+/// leaves one — and a direction whose next junction is in the same cluster
+/// leaves *nothing*: that is the intersection's own interior (a roundabout's
+/// arc, a slip lane's throat), already paved by the disc, and a leg along it
+/// would rake a rectangle across the middle.
+fn outward_headings(
+    scene: &SceneGraph,
+    ports: &Ports,
+    cluster: &[u32],
+    corridor: CorridorId,
+    at: f64,
+) -> Vec<(f64, f64)> {
+    let c = &scene.corridors[corridor as usize];
+    if c.nodes.len() < 2 {
         return Vec::new();
     }
-    let i = edge_at(arc, at);
-    let (a, b) = (nodes[i], nodes[i + 1]);
-    let (de, dn) = ((b.x - a.x) * cos_lat, b.y - a.y);
+    let i = edge_at(&c.arc, at);
+    let (a, b) = (c.nodes[i], c.nodes[i + 1]);
+    let (de, dn) = ((b.x - a.x) * c.cos_lat, b.y - a.y);
     let len = (de * de + dn * dn).sqrt();
     if len < 1e-12 {
         return Vec::new();
     }
     let (e, n) = (de / len, dn / len);
-    const END_EPS_M: f64 = 1.5;
-    if at <= END_EPS_M {
-        vec![(e, n)] // starts here: heading forward into the corridor
-    } else if at >= total - END_EPS_M {
-        vec![(-e, -n)] // ends here: heading back into the corridor
-    } else {
-        vec![(e, n), (-e, -n)] // a through node: the road leaves both ways
+    let total = c.total();
+    let mut out = Vec::new();
+    let interior = |nb: Option<(u32, f64)>| -> bool {
+        nb.is_some_and(|(n, _)| cluster.binary_search(&n).is_ok())
+    };
+    if at < total - END_EPS_M && !interior(ports.neighbour(corridor, at, true)) {
+        out.push((e, n));
     }
+    if at > END_EPS_M && !interior(ports.neighbour(corridor, at, false)) {
+        out.push((-e, -n));
+    }
+    out
 }
 
 /// The edge index whose arc span contains `at` (clamped to a valid edge).
@@ -398,126 +599,110 @@ fn edge_at(arc: &[f64], at: f64) -> usize {
     }
 }
 
-/// Whether the tile owns a world point: half-open bounds, so exactly one tile
-/// of a shared junction emits its plate.
-fn owns(b: &Bounds, c: Coord) -> bool {
-    c.x >= b.west && c.x < b.east && c.y >= b.south && c.y < b.north
+/// The mean position of a set of junctions.
+fn centroid(scene: &SceneGraph, members: &[u32]) -> Coord {
+    let n = members.len().max(1) as f64;
+    let (mut x, mut y) = (0.0, 0.0);
+    for &m in members {
+        x += scene.junctions[m as usize].point.x;
+        y += scene.junctions[m as usize].point.y;
+    }
+    Coord { x: x / n, y: y / n }
 }
 
-/// The Overture class string for a [`RoadClass`], for plate styling.
-fn class_name(c: RoadClass) -> &'static str {
-    match c {
-        RoadClass::Motorway => "motorway",
-        RoadClass::Trunk => "trunk",
-        RoadClass::Primary => "primary",
-        RoadClass::Secondary => "secondary",
-        RoadClass::Minor => "residential",
-    }
+fn union_box(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
+}
+
+/// The diagonal of a lon/lat box in metres.
+fn box_extent_m(b: (f64, f64, f64, f64), lat: f64) -> f64 {
+    let m_lon = M_PER_DEG_LON_EQUATOR * lat.to_radians().cos();
+    ((b.2 - b.0) * m_lon).hypot((b.3 - b.1) * M_PER_DEG_LAT)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::priors::RoadClass;
+    use crate::scene::{Span, SpanKind};
 
-    fn baked_cross() -> BakedJunction {
-        // A four-way crossing at (6, 46): legs east/west/north/south, 4 m wide.
-        let legs = vec![
-            Leg { e: 1.0, n: 0.0, half_w: 4.0 },
-            Leg { e: -1.0, n: 0.0, half_w: 4.0 },
-            Leg { e: 0.0, n: 1.0, half_w: 4.0 },
-            Leg { e: 0.0, n: -1.0, half_w: 4.0 },
-        ];
-        BakedJunction {
-            point: Coord { x: 6.0, y: 46.0 },
-            level_mm: Some(372_000),
-            class: "secondary".into(),
-            legs,
+    /// A straight corridor of `n` nodes, 10 m apart, at lat 46.
+    fn corridor(width_m: f64, n: usize) -> Corridor {
+        Corridor {
+            id: 0,
+            nodes: (0..n).map(|i| Coord { x: 6.0 + i as f64 * 1e-4, y: 46.0 }).collect(),
+            arc: (0..n).map(|i| i as f64 * 10.0).collect(),
+            cos_lat: 46f64.to_radians().cos(),
+            class: RoadClass::Minor,
+            class_key: "residential".to_string(),
+            link: false,
+            drivable: true,
+            width_m: Some(width_m),
+            spans: Vec::new(),
+            segments: Vec::new(),
+            connectors: Vec::new(),
         }
     }
 
-    /// The flat plate mesh of a baked junction, bypassing the ground sampler
-    /// (a corridor junction sits at its fixed level).
-    fn flat_mesh(j: &BakedJunction, bounds: &Bounds) -> Option<TerrainMesh> {
-        plate_mesh(j, bounds, |_| j.level_mm.expect("a fixed level in this test"))
+    #[test]
+    fn level_runs_cover_every_segment_once_per_level() {
+                let mut c = corridor(6.0, 11);
+        // No spans: one at-grade run over the whole corridor.
+        assert_eq!(level_runs(&c), vec![((0, 10), 0, SpanKind::Grade)]);
+        // Grade / bridge / grade: the bridge is its own level, and the runs
+        // overlap by a node so no segment falls between two runs.
+        c.spans = vec![
+            Span { arc0: 0.0, arc1: 40.0, level: 0, kind: SpanKind::Grade },
+            Span { arc0: 40.0, arc1: 60.0, level: 1, kind: SpanKind::Bridge },
+            Span { arc0: 60.0, arc1: 100.0, level: 0, kind: SpanKind::Grade },
+        ];
+        let runs = level_runs(&c);
+        assert_eq!(runs.len(), 3, "three runs: {runs:?}");
+        assert_eq!(runs[1].1, 1, "the middle run is the bridge level");
+        assert_eq!(runs[1].2, SpanKind::Bridge, "and it is a bridge, so the union skips it");
+        // Every segment is covered exactly once — no gap, no double-paving.
+        for k in 0..10 {
+            let owners = runs.iter().filter(|&&((lo, hi), _, _)| k >= lo && k + 1 <= hi).count();
+            assert_eq!(owners, 1, "segment {k} has {owners} owners: {runs:?}");
+        }
+
+        // The boundary case that matters: spans that end *between* nodes. A
+        // node-range rule drops the straddling segment (a hole in the asphalt at
+        // every bridge end); a widened one gives it to both (paving the flyover).
+        c.spans = vec![
+            Span { arc0: 0.0, arc1: 35.0, level: 0, kind: SpanKind::Grade },
+            Span { arc0: 35.0, arc1: 65.0, level: 1, kind: SpanKind::Bridge },
+            Span { arc0: 65.0, arc1: 100.0, level: 0, kind: SpanKind::Grade },
+        ];
+        let runs = level_runs(&c);
+        for k in 0..10 {
+            let owners = runs.iter().filter(|&&((lo, hi), _, _)| k >= lo && k + 1 <= hi).count();
+            assert_eq!(owners, 1, "off-node boundary: segment {k} has {owners} owners: {runs:?}");
+        }
+        // Segment 3 spans arc 30..40, straddling the 35 m boundary; its midpoint
+        // is 35, so it belongs to the bridge and to nothing else.
+        let owner = runs.iter().find(|&&((lo, hi), _, _)| 3 >= lo && 4 <= hi).expect("an owner");
+        assert_eq!(owner.2, SpanKind::Bridge, "the straddling segment went to the wrong span");
+        // A degenerate corridor yields nothing.
+        c.nodes.truncate(1);
+        assert!(level_runs(&c).is_empty());
     }
 
     #[test]
-    fn plate_meshes_a_filleted_fan_over_the_owning_tile() {
-        let bounds = Bounds { west: 5.9, south: 45.9, east: 6.1, north: 46.1 };
-        let baked = baked_cross();
-        assert!(owns(&bounds, baked.point), "the tile owns the junction centre");
-        let mesh = flat_mesh(&baked, &bounds).expect("a plate mesh");
-        // Eight mouth corners plus the four corners' fillet points, fanned
-        // from the centre: one triangle per boundary edge.
-        let ring = 4 * 2 + 4 * (FILLET_STEPS - 1);
-        assert_eq!(mesh.x.len(), ring + 1, "centre + mouth corners + fillets");
-        assert_eq!(mesh.indices.len(), ring * 3, "one triangle per boundary edge");
-        // Flat: every vertex at the level.
-        assert!(mesh.z.iter().all(|&z| z == 372_000));
-    }
+    fn only_carriageways_become_sources() {
+        // A drivable corridor contributes one source per segment; a footway
+        // contributes none, because it paves nothing.
+        let c = corridor(6.0, 11);
+        let scene = crate::scene::SceneGraph::new(vec![c]);
+        assert_eq!(carriageway_sources(&scene, &[0]).len(), 10, "one per segment");
+        let half = corridor_half_width_m(&scene.corridors[0]).expect("a carriageway");
+        assert!((half - (3.0 + priors::STRUCTURE_SHOULDER_M)).abs() < 1e-12);
 
-    #[test]
-    fn fillet_curves_inward_between_perpendicular_legs() {
-        // East and north legs of a 4 m road: the curb return must bow toward
-        // the centre relative to the straight corner chord.
-        let m = |e: f64, n: f64, hw: f64| {
-            let reach = hw * PLATE_REACH;
-            let (pe, pn) = (-n, e);
-            Mouth {
-                ang: n.atan2(e),
-                e,
-                n,
-                right: (e * reach - pe * hw, n * reach - pn * hw),
-                left: (e * reach + pe * hw, n * reach + pn * hw),
-            }
-        };
-        let (a, b) = (m(1.0, 0.0, 4.0), m(0.0, 1.0, 4.0));
-        let mut pts = Vec::new();
-        fillet(&a, &b, &mut pts);
-        assert_eq!(pts.len(), FILLET_STEPS - 1);
-        let dist = |p: (f64, f64)| (p.0 * p.0 + p.1 * p.1).sqrt();
-        let chord_mid = ((a.left.0 + b.right.0) * 0.5, (a.left.1 + b.right.1) * 0.5);
-        let arc_mid = pts[pts.len() / 2];
-        assert!(
-            dist(arc_mid) < dist(chord_mid) - 0.3,
-            "fillet mid {arc_mid:?} does not bow inward of the chord {chord_mid:?}"
-        );
-        // Every fillet point stays outside the centre (the fan stays valid).
-        assert!(pts.iter().all(|&p| dist(p) > 2.0));
-    }
-
-    #[test]
-    fn opposite_legs_get_a_straight_side() {
-        // A through pair (gap of a half-turn) must not fillet — the plate's
-        // flat side stays a straight chord.
-        let m = |e: f64, n: f64| Mouth {
-            ang: (n as f64).atan2(e),
-            e,
-            n,
-            right: (e * 6.4 - -n * 4.0, n * 6.4 - e * 4.0),
-            left: (e * 6.4 + -n * 4.0, n * 6.4 + e * 4.0),
-        };
-        let mut pts = Vec::new();
-        fillet(&m(1.0, 0.0), &m(-1.0, 0.0), &mut pts);
-        assert!(pts.is_empty(), "a half-turn gap must stay straight");
-    }
-
-    #[test]
-    fn trim_radius_tucks_under_the_mouth_and_is_capped() {
-        let j = baked_cross(); // legs 4 m: mouths at 6.4 m
-        // A matching band trims tucked just inside its own mouth.
-        let r = j.trim_radius_m(4.0);
-        assert!((r - (6.4 - BAND_TUCK_M)).abs() < 1e-9);
-        // A mapped-wide band cannot trim past the widest mouth (no gap).
-        let wide = j.trim_radius_m(12.0);
-        assert!((wide - (6.4 - BAND_TUCK_M)).abs() < 1e-9);
-    }
-
-    #[test]
-    fn a_tile_that_does_not_own_the_centre_emits_nothing() {
-        // Bounds to the east of the junction: not owned, so its owner emits it
-        // and this tile does not double it.
-        let bounds = Bounds { west: 6.5, south: 45.9, east: 6.7, north: 46.1 };
-        assert!(!owns(&bounds, baked_cross().point));
+        let mut path = corridor(6.0, 11);
+        path.drivable = false;
+        path.width_m = None;
+        let scene = crate::scene::SceneGraph::new(vec![path]);
+        assert!(carriageway_sources(&scene, &[0]).is_empty(), "a footway paves nothing");
+        assert!(corridor_half_width_m(&scene.corridors[0]).is_none());
     }
 }

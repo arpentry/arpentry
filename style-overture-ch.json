@@ -1,7 +1,12 @@
 {
   "version": 1,
   "name": "Overture Switzerland",
-  "background": [240, 234, 224, 255],
+  "background": [
+    240,
+    234,
+    224,
+    255
+  ],
   "layers": [
     {
       "source_layer": "terrain",
@@ -12,76 +17,498 @@
       "source_layer": "land_cover",
       "type": "texture",
       "paint": [
-        { "class": "forest",   "color": [162, 226, 164, 255] },
-        { "class": "shrub",    "color": [216, 234, 174, 255] },
-        { "class": "grass",    "color": [196, 234, 169, 255] },
-        { "class": "barren",   "color": [239, 232, 205, 255] },
-        { "class": "wetland",  "color": [175, 233, 231, 255] },
-        { "class": "moss",     "color": [149, 218, 170, 255] },
-        { "class": "crop",     "color": [235, 237, 177, 255] },
-        { "class": "mangrove", "color": [161, 227, 207, 255] },
-        { "class": "urban",    "color": [233, 229, 221, 255] },
-        { "class": "snow",     "color": [243, 245, 247, 255] }
+        {
+          "class": "forest",
+          "color": [
+            162,
+            226,
+            164,
+            255
+          ]
+        },
+        {
+          "class": "shrub",
+          "color": [
+            216,
+            234,
+            174,
+            255
+          ]
+        },
+        {
+          "class": "grass",
+          "color": [
+            196,
+            234,
+            169,
+            255
+          ]
+        },
+        {
+          "class": "barren",
+          "color": [
+            239,
+            232,
+            205,
+            255
+          ]
+        },
+        {
+          "class": "wetland",
+          "color": [
+            175,
+            233,
+            231,
+            255
+          ]
+        },
+        {
+          "class": "moss",
+          "color": [
+            149,
+            218,
+            170,
+            255
+          ]
+        },
+        {
+          "class": "crop",
+          "color": [
+            235,
+            237,
+            177,
+            255
+          ]
+        },
+        {
+          "class": "mangrove",
+          "color": [
+            161,
+            227,
+            207,
+            255
+          ]
+        },
+        {
+          "class": "urban",
+          "color": [
+            233,
+            229,
+            221,
+            255
+          ]
+        },
+        {
+          "class": "snow",
+          "color": [
+            243,
+            245,
+            247,
+            255
+          ]
+        }
       ]
     },
     {
       "source_layer": "land_use",
       "type": "texture",
       "paint": [
-        { "class": "park",       "color": [214, 236, 213, 255] },
-        { "class": "recreation", "color": [231, 244, 230, 255] },
-        { "class": "medical",    "color": [247, 237, 237, 255] },
-        { "class": "education",  "color": [245, 242, 230, 255] },
-        { "class": "military",   "color": [247, 247, 248, 255] },
-        { "class": "cemetery",   "color": [237, 240, 229, 255] },
-        { "class": "airport",    "color": [226, 232, 243, 255] }
+        {
+          "class": "park",
+          "color": [
+            214,
+            236,
+            213,
+            255
+          ]
+        },
+        {
+          "class": "recreation",
+          "color": [
+            231,
+            244,
+            230,
+            255
+          ]
+        },
+        {
+          "class": "medical",
+          "color": [
+            247,
+            237,
+            237,
+            255
+          ]
+        },
+        {
+          "class": "education",
+          "color": [
+            245,
+            242,
+            230,
+            255
+          ]
+        },
+        {
+          "class": "military",
+          "color": [
+            247,
+            247,
+            248,
+            255
+          ]
+        },
+        {
+          "class": "cemetery",
+          "color": [
+            237,
+            240,
+            229,
+            255
+          ]
+        },
+        {
+          "class": "airport",
+          "color": [
+            226,
+            232,
+            243,
+            255
+          ]
+        }
       ]
     },
     {
       "source_layer": "water",
       "type": "texture",
       "paint": [
-        { "class": "lake",       "color": [169, 226, 254, 255] },
-        { "class": "river",      "color": [169, 226, 254, 255] },
-        { "class": "pond",       "color": [169, 226, 254, 255] },
-        { "class": "reservoir",  "color": [169, 226, 254, 255] },
-        { "class": "canal",      "color": [169, 226, 254, 255] },
-        { "class": "stream",     "color": [169, 226, 254, 255] },
-        { "class": "spring",     "color": [169, 226, 254, 255] },
-        { "class": "water",      "color": [169, 226, 254, 255] },
-        { "class": "physical",   "color": [169, 226, 254, 255] },
-        { "class": "human_made", "color": [169, 226, 254, 255] },
-        { "class": "wastewater", "color": [169, 226, 254, 255] }
+        {
+          "class": "lake",
+          "color": [
+            169,
+            226,
+            254,
+            255
+          ]
+        },
+        {
+          "class": "river",
+          "color": [
+            169,
+            226,
+            254,
+            255
+          ]
+        },
+        {
+          "class": "pond",
+          "color": [
+            169,
+            226,
+            254,
+            255
+          ]
+        },
+        {
+          "class": "reservoir",
+          "color": [
+            169,
+            226,
+            254,
+            255
+          ]
+        },
+        {
+          "class": "canal",
+          "color": [
+            169,
+            226,
+            254,
+            255
+          ]
+        },
+        {
+          "class": "stream",
+          "color": [
+            169,
+            226,
+            254,
+            255
+          ]
+        },
+        {
+          "class": "spring",
+          "color": [
+            169,
+            226,
+            254,
+            255
+          ]
+        },
+        {
+          "class": "water",
+          "color": [
+            169,
+            226,
+            254,
+            255
+          ]
+        },
+        {
+          "class": "physical",
+          "color": [
+            169,
+            226,
+            254,
+            255
+          ]
+        },
+        {
+          "class": "human_made",
+          "color": [
+            169,
+            226,
+            254,
+            255
+          ]
+        },
+        {
+          "class": "wastewater",
+          "color": [
+            169,
+            226,
+            254,
+            255
+          ]
+        }
       ]
     },
     {
       "source_layer": "transportation",
       "type": "line",
       "paint": [
-        { "class": "track",          "color": [177, 164, 144, 255], "width": 9,  "min_level": 13 },
-        { "class": "standard_gauge", "color": [158, 155, 162, 255], "width": 9,  "min_level": 12 },
-        { "class": "pedestrian",     "color": [228, 223, 214, 255], "width": 13, "min_level": 13 },
-        { "class": "service",        "color": [176, 178, 181, 255], "width": 13, "min_level": 13 },
-        { "class": "unknown",        "color": [166, 168, 172, 255], "width": 16, "min_level": 13 },
-        { "class": "living_street",  "color": [166, 168, 172, 255], "width": 22, "min_level": 13 },
-        { "class": "residential",    "color": [166, 168, 172, 255], "width": 22, "min_level": 12 },
-        { "class": "unclassified",   "color": [166, 168, 172, 255], "width": 22, "min_level": 12 },
-        { "class": "tertiary",       "color": [162, 165, 169, 255], "width": 26, "min_level": 11 },
-        { "class": "secondary",      "color": [158, 161, 166, 255], "width": 32, "min_level": 9 },
-        { "class": "primary",        "color": [154, 157, 162, 255], "width": 40, "min_level": 7 },
-        { "class": "trunk",          "color": [148, 151, 157, 255], "width": 45, "min_level": 5 },
-        { "class": "motorway",       "color": [148, 151, 157, 255], "width": 50, "min_level": 4 },
-        { "class": "marking",        "color": [255, 255, 255, 230], "width": 1,  "min_level": 15 }
+        {
+          "class": "track",
+          "color": [
+            177,
+            164,
+            144,
+            255
+          ],
+          "width": 9,
+          "min_level": 13
+        },
+        {
+          "class": "standard_gauge",
+          "color": [
+            158,
+            155,
+            162,
+            255
+          ],
+          "width": 9,
+          "min_level": 12
+        },
+        {
+          "class": "pedestrian",
+          "color": [
+            228,
+            223,
+            214,
+            255
+          ],
+          "width": 13,
+          "min_level": 13
+        },
+        {
+          "class": "service",
+          "color": [
+            176,
+            178,
+            181,
+            255
+          ],
+          "width": 13,
+          "min_level": 13
+        },
+        {
+          "class": "unknown",
+          "color": [
+            166,
+            168,
+            172,
+            255
+          ],
+          "width": 16,
+          "min_level": 13
+        },
+        {
+          "class": "living_street",
+          "color": [
+            166,
+            168,
+            172,
+            255
+          ],
+          "width": 22,
+          "min_level": 13
+        },
+        {
+          "class": "residential",
+          "color": [
+            166,
+            168,
+            172,
+            255
+          ],
+          "width": 22,
+          "min_level": 12
+        },
+        {
+          "class": "unclassified",
+          "color": [
+            166,
+            168,
+            172,
+            255
+          ],
+          "width": 22,
+          "min_level": 12
+        },
+        {
+          "class": "tertiary",
+          "color": [
+            162,
+            165,
+            169,
+            255
+          ],
+          "width": 26,
+          "min_level": 11
+        },
+        {
+          "class": "secondary",
+          "color": [
+            158,
+            161,
+            166,
+            255
+          ],
+          "width": 32,
+          "min_level": 9
+        },
+        {
+          "class": "primary",
+          "color": [
+            154,
+            157,
+            162,
+            255
+          ],
+          "width": 40,
+          "min_level": 7
+        },
+        {
+          "class": "trunk",
+          "color": [
+            148,
+            151,
+            157,
+            255
+          ],
+          "width": 45,
+          "min_level": 5
+        },
+        {
+          "class": "motorway",
+          "color": [
+            148,
+            151,
+            157,
+            255
+          ],
+          "width": 50,
+          "min_level": 4
+        },
+        {
+          "class": "road_casing",
+          "color": [
+            122,
+            125,
+            130,
+            255
+          ],
+          "width": 0,
+          "min_level": 13
+        },
+        {
+          "class": "road_surface",
+          "color": [
+            151,
+            154,
+            159,
+            255
+          ],
+          "width": 0,
+          "min_level": 13
+        },
+        {
+          "class": "marking",
+          "color": [
+            255,
+            255,
+            255,
+            230
+          ],
+          "width": 1,
+          "min_level": 15
+        }
       ]
     },
     {
       "source_layer": "boundary",
       "type": "line",
       "paint": [
-        { "class": "county",  "color": [150, 140, 160, 255], "width": 18, "min_level": 9 },
-        { "class": "region",  "color": [122, 110, 135, 255], "width": 30, "min_level": 5 },
-        { "class": "country", "color": [104, 90, 122, 255],  "width": 60, "min_level": 1,
-          "casing_color": [255, 255, 255, 150], "casing_width": 20 }
+        {
+          "class": "county",
+          "color": [
+            150,
+            140,
+            160,
+            255
+          ],
+          "width": 18,
+          "min_level": 9
+        },
+        {
+          "class": "region",
+          "color": [
+            122,
+            110,
+            135,
+            255
+          ],
+          "width": 30,
+          "min_level": 5
+        },
+        {
+          "class": "country",
+          "color": [
+            104,
+            90,
+            122,
+            255
+          ],
+          "width": 60,
+          "min_level": 1,
+          "casing_color": [
+            255,
+            255,
+            255,
+            150
+          ],
+          "casing_width": 20
+        }
       ]
     },
     {
@@ -89,20 +516,132 @@
       "type": "building",
       "min_level": 13,
       "paint": [
-        { "class": "building",       "color": [226, 220, 211, 255] },
-        { "class": "residential",    "color": [232, 224, 213, 255] },
-        { "class": "outbuilding",    "color": [223, 219, 211, 255] },
-        { "class": "agricultural",   "color": [227, 223, 205, 255] },
-        { "class": "commercial",     "color": [221, 214, 227, 255] },
-        { "class": "industrial",     "color": [213, 218, 225, 255] },
-        { "class": "education",      "color": [237, 225, 209, 255] },
-        { "class": "religious",      "color": [234, 221, 221, 255] },
-        { "class": "service",        "color": [219, 219, 219, 255] },
-        { "class": "civic",          "color": [231, 219, 201, 255] },
-        { "class": "transportation", "color": [214, 221, 229, 255] },
-        { "class": "entertainment",  "color": [235, 219, 229, 255] },
-        { "class": "medical",        "color": [242, 225, 225, 255] },
-        { "class": "military",       "color": [215, 219, 207, 255] }
+        {
+          "class": "building",
+          "color": [
+            226,
+            220,
+            211,
+            255
+          ]
+        },
+        {
+          "class": "residential",
+          "color": [
+            232,
+            224,
+            213,
+            255
+          ]
+        },
+        {
+          "class": "outbuilding",
+          "color": [
+            223,
+            219,
+            211,
+            255
+          ]
+        },
+        {
+          "class": "agricultural",
+          "color": [
+            227,
+            223,
+            205,
+            255
+          ]
+        },
+        {
+          "class": "commercial",
+          "color": [
+            221,
+            214,
+            227,
+            255
+          ]
+        },
+        {
+          "class": "industrial",
+          "color": [
+            213,
+            218,
+            225,
+            255
+          ]
+        },
+        {
+          "class": "education",
+          "color": [
+            237,
+            225,
+            209,
+            255
+          ]
+        },
+        {
+          "class": "religious",
+          "color": [
+            234,
+            221,
+            221,
+            255
+          ]
+        },
+        {
+          "class": "service",
+          "color": [
+            219,
+            219,
+            219,
+            255
+          ]
+        },
+        {
+          "class": "civic",
+          "color": [
+            231,
+            219,
+            201,
+            255
+          ]
+        },
+        {
+          "class": "transportation",
+          "color": [
+            214,
+            221,
+            229,
+            255
+          ]
+        },
+        {
+          "class": "entertainment",
+          "color": [
+            235,
+            219,
+            229,
+            255
+          ]
+        },
+        {
+          "class": "medical",
+          "color": [
+            242,
+            225,
+            225,
+            255
+          ]
+        },
+        {
+          "class": "military",
+          "color": [
+            215,
+            219,
+            207,
+            255
+          ]
+        }
       ]
     },
     {

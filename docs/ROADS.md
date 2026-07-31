@@ -37,10 +37,16 @@ everything else:
 4. **Junctions are where strokes die.** At an intersection the surface is
    shared: legs join one polygon, corners fillet against *other* roads,
    longitudinal markings stop at a set-back stop line and resume beyond the
-   far side. The junction plates (`synth/junction.rs`) already concede this:
-   a filled area is meshed precisely because overlapping strokes cannot
-   express it. This document generalizes that concession to the whole
-   network at detail zooms.
+   far side. Junction plates conceded this first — a filled area meshed
+   precisely because overlapping strokes cannot express it — and P2 increment
+   5 generalized the concession to the whole network: at detail zooms the
+   drivable surface is *one unioned region*, so a junction is not a special
+   object at all, merely the place where several carriageways overlap. What
+   survives of the plate is the intersection's *extent*
+   (`synth/area.rs`), used to suppress markings, pin the height field, and
+   bound the curb-return closing. The *unit* of that extent is the
+   intersection, not the connector: the data cuts one place into as many
+   connectors as its geometry needs.
 
 ## 2. The data and what it does not say
 
@@ -176,9 +182,10 @@ either representation alone.
    needs a width: the cartographic stroke, the surface mesh, the structure
    sweep, the earthworks. (Today `half_width_m`/`paint_width_m` already
    share one prior; this widens that contract.)
-2. **A closed, simple silhouette.** The union of corridor surfaces and
-   junction plates has no gaps, no slivers, no overlapping fills: legs and
-   plates share their boundary exactly.
+2. **A closed, simple silhouette.** The paved surface has no gaps, no
+   slivers, no overlapping fills. Held *by construction* since P2 increment 5:
+   the surface is literally one unioned region per level, so there are no two
+   objects left to disagree about a boundary.
 3. **Markings are functions of the cross-section.** Every painted element
    derives from the band model and the junction topology — a lane line
    exists because two same-direction lanes adjoin, a stop line because an
@@ -202,11 +209,11 @@ either representation alone.
 The reference quality is reached with two techniques, each doing what it is
 good at:
 
-- **The surface is a mesh.** Baked in synth like decks and plates already
-  are: the corridor centerline buffered by the width function, unioned with
-  junction plates, corners filleted, tessellated, draped on the engineered
-  ground, emitted as `MeshGeometry`. The silhouette — fillets, tapers,
-  gores — is real geometry, crisp by construction.
+- **The surface is a mesh.** Baked in synth like the decks: every corridor
+  centerline buffered by the width function, the results unioned into one
+  region, its reflex corners closed into curb returns, triangulated, draped on
+  the shared road height field, emitted as `MeshGeometry`. The silhouette —
+  fillets, tapers, gores — is real geometry, crisp by construction.
 - **The paint is a decal layer.** Markings are thin geometry laid over the
   surface with road-relative coordinates: strips along band boundaries,
   transverse bars, symbol quads. Edges are antialiased in the shader by
@@ -241,8 +248,9 @@ downstream is geometry.
 2. **Solve** is untouched — the vertical model is orthogonal.
 3. **Ground** reads the width function where it now reads the class
    half-width, so earthwork footprints follow the true carriageway.
-4. **Synth** gains the surface baker (corridor polygons unioned with —
-   and eventually absorbing — the junction plates) and the marking baker
+4. **Synth** gains the surface baker (corridor polygons unioned into one
+   region per level per chunk, absorbing the junction plates entirely) and
+   the marking baker
    (band-boundary strips, stop lines, crosswalk boxes, symbol quads). Both
    read solved heights and the engineered ground; markings on structure
    decks read the same road-surface function, so a bridge carries its lane
@@ -307,14 +315,11 @@ the scenario table (§4).
     client changes. Small service ways (driveway/parking_aisle/alley)
     narrowed to `SERVICE_WAY_WIDTH_M`. Archive cost ~+60 % at detail
     zooms (`ROAD_SURFACE_MIN_ZOOM` is the knob).
-  - *Increment 2 — junction trim and fillets (done 2026-07-14).* Plate
-    corners curve as curb returns (quadratic Bézier at the carriageway-edge
-    intersection, straight-chord fallbacks for flat sides and reflex gaps);
-    plate legs span the band edge — the P1 width (mapped where plausible)
-    plus the shoulder — and surface bands are interval-trimmed at each
-    plate's disk (`BakedJunction::trim_radius_m`, endpoint and pass-through
-    cases alike), tucked `BAND_TUCK_M` under the mouth so no ground sliver
-    can open.
+  - *Increment 2 — junction trim (done 2026-07-14, superseded by
+    increment 4).* Plate legs span the band edge and surface bands are
+    interval-trimmed at each plate's disk, tucked under the mouth so no
+    ground sliver can open. Corners curved as quadratic-Bézier curb returns
+    with straight-chord fallbacks.
   - *Increment 3 — street beds (done 2026-07-15).* The terrain raster and
     the road network are independent datasets; the engineered ground
     reconciles them (GENERATION.md D3, invariant 1). Every unclaimed
@@ -326,8 +331,98 @@ the scenario table (§4).
     (`Earthworks::target_at`) instead of the tilted in-cell
     interpolation; coarser zooms keep the per-zoom surface, whose corners
     the bench pulls toward the bed wherever the lattice can see it.
-  - *Remaining:* absorb the plates and bands into one unioned surface per
-    junction (today they abut mouth-to-mouth); `road_flags` ingestion.
+  - *Increment 4 — intersection areas (done 2026-07-29).* The unit became
+    the **intersection**, not the connector, and the plate became a
+    **region** rather than a fan. `synth/area.rs` builds the paved area as
+    the union of one rectangle per leg, each anchored at the intersection
+    centre; because every rectangle contains that centre the union is
+    star-shaped about it, so the boundary is exactly the radial maximum
+    `r(θ)` — a closed form with no polygon boolean, no orientation
+    predicate, and no configuration needing a fallback (H3, and DESIGN.md's
+    define-errors-out-of-existence). The plate ring, the point test
+    (`contains`) and the band and marking trims (`clip_chord`, exact
+    Liang–Barsky per leg) are three readings of that one region, which is
+    what let the mouth-corner walk, the fillet special cases and the
+    circular trim disk all be deleted.
+    `synth/junction.rs` gained the clustering that precedes it: junctions
+    joined by a corridor too short to be a block merge into one
+    intersection, shortest-first and refused past `MAX_CLUSTER_M`, so a
+    staggered crossroads, a slip-lane nose and a roundabout's ring of
+    connectors each plate once instead of piling shards (R6/R10 — a
+    roundabout needs no rule of its own). Leg widths now come from the new
+    `Corridor::width_m`, the same cross-section the bands read, so a mouth
+    and the band landing on it cannot disagree (invariants 1 and 5); a
+    non-drivable member (a footway, a crossing) joins an intersection
+    without paving any of it, and the plate's styling class is its widest
+    drivable member's rather than its highest-standing one's.
+  - *Increment 5 — the unioned surface (done 2026-07-30).* The surface
+    stopped being a pile of overlapping objects and became **one region**.
+    Every carriageway is buffered to its own width and unioned
+    (`synth/poly.rs` over `i_overlay`, the only file that names the crate),
+    per `(level, grade-separation layer)` and per **chunk** — chunks being z13 tile rects,
+    so that every zoom drawing asphalt nests wholly inside one chunk and a
+    tile clip never spans a chunk edge (`synth/pavement.rs`). Curb-return
+    fillets come from a morphological closing at `CURB_RETURN_M`, restricted
+    to the intersection extents: applied globally it would bridge any gap
+    under twice that radius and fuse a divided carriageway into one slab.
+    `synth/pave_mesh.rs` clips the region to the tile proper, simplifies the
+    boundary to the zoom's budget capped at `PAVE_SIMPLIFY_M`, insets it by
+    `PAVE_RIM_M` and meshes the interior with the same constrained-Delaunay
+    contract as `terrain_cdt`, leaving a rim strip that carries both the
+    analytic edge antialiasing and the darker casing tone.
+
+    The interior is triangulated over the **terrain's own lattice**, not from
+    the boundary alone. A region meshed from its outline is spanned by
+    triangles as long as the road is wide, so the asphalt is a chord across
+    whatever the ground does between its two edges, while the terrain beside it
+    is sampled every cell: on a cross-slope the two surfaces cross and the
+    hillside surfaces through the carriageway in ragged bites — worst exactly
+    where the ground stage declined to bench (docs/GROUND.md §2) and the road
+    is laid on the natural slope. Sampling the height field at the same lattice
+    points the terrain mesh uses makes the two agree at those points by
+    construction and leaves only the boundary strip to interpolation. The
+    points are global per zoom, so neighbouring tiles derive identical ones,
+    and they go in row-major, so the triangulation stays a function of the
+    input alone.
+
+    The layer is what keeps a flyover off the road beneath it, and it is not
+    optional: Overture's `level` ordinal does not carry grade separation. A
+    flyover's bridge span is excluded from the union already, but its
+    *approaches* are ordinary at-grade spans at level 0 — and so is the road
+    they pass over. Keyed on level alone they merged into one region and the
+    mesh ramped continuously between two roads metres apart vertically. The
+    layer comes from `solve::crossings::corridor_ranks`, the existing crossing
+    DAG, so a corridor that crosses nothing stays at layer 0 and ordinary
+    streets still merge at their intersections. The height field partitions the
+    same way, or it would blend the two surfaces back together.
+
+    Heights come from a new **road height field** (`synth/height.rs`): one
+    continuous function per level, blending the corridors covering a point and
+    *overridden* near an intersection by the height the solver made its
+    members share — persisted for this out of the constraint graph, which
+    previously computed it and threw it away.
+
+    What this deleted is the measure of it: `SURFACE_SINK_M`, `TRIM_TUCK_M`,
+    `MIN_PIECE_M`, the leg-offset widening, all of `synth/surface.rs`, the
+    plate emission in `synth/junction.rs`, and the client's whole
+    no-depth-write `plate_pipeline` — every one of which existed only to
+    arbitrate overlaps between objects there is now only one of. At-grade
+    asphalt and elevated decks are one depth-writing pass again.
+    `synth/area.rs` survives, demoted from the paved plate to the
+    intersection's *extent*: marking suppression, the height field's pin, and
+    the closing mask.
+    Cost is ~1 s on a 61-tile preview (7.9 s before, 9.0 s after). Two things
+    make that possible and both are load-bearing: the boundary is simplified
+    per zoom (capped at `PAVE_SIMPLIFY_M`, since the generic line budget would
+    move a carriageway edge by a fifth of its width), and the height field is
+    built **only** for zooms that mesh asphalt — a tile's source query is
+    bounded by its own extent, so an ungated z0 tile collected every
+    carriageway segment in the extract to draw none of them, which alone cost
+    780 s of the run.
+  - *Remaining:* the surface is one uniform class (`road_surface`) with a
+    darker `road_casing` rim, per the decision that all roads share a colour
+    at detail zooms; class distinction now comes from width and paint. Still
+    open: `road_flags` ingestion.
 - **P3 — Longitudinal paint.** The marking baker and the client decal
   pipeline: centre/lane/edge lines as procedural-dash strips, stop lines,
   zebra crosswalks (procedural stripes registered to R7's carriageway

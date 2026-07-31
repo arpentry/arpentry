@@ -56,7 +56,7 @@ impl GroundModel {
         GroundModel {
             earthworks: Earthworks::new(Vec::new()),
             waters: Waters::new(Vec::new()),
-            breaklines: breaklines::Breaklines::derive(&[]),
+            breaklines: breaklines::Breaklines::derive(&Earthworks::new(Vec::new())),
         }
     }
 
@@ -129,8 +129,12 @@ pub fn derive(
 ) -> GroundModel {
     let edges = derive_earthworks(scene, solved, terrain_path, threads);
     let waters = derive_waters(scene, solved, terrain_path, threads);
-    let breaklines = breaklines::Breaklines::derive(&edges);
-    GroundModel { earthworks: Earthworks::new(edges), waters, breaklines }
+    // The crests are derived from the assembled field, not from the raw edge
+    // list: a crest must be drawn where its bench actually holds the ground,
+    // which only the resolved field knows (see [`breaklines::Breaklines`]).
+    let earthworks = Earthworks::new(edges);
+    let breaklines = breaklines::Breaklines::derive(&earthworks);
+    GroundModel { earthworks, waters, breaklines }
 }
 
 /// Every profiled corridor's earthworks, derived in parallel (the bench-edge
@@ -221,6 +225,25 @@ fn corridor_earthworks(
         // verge beyond the asphalt (see EARTHWORK_MARGIN_M).
         let half_width = c.class.half_width_m(c.link) + EARTHWORK_SHOULDER_M;
         let bench_half_width = half_width + EARTHWORK_MARGIN_M;
+        // The asphalt this bench carries, which it holds against any neighbour
+        // (see `EarthworkEdge::carriageway_m`): the half-width the pavement
+        // paints (`synth::junction::corridor_half_width_m`) *plus the verge*,
+        // bounded by the bench itself so the claim never exceeds what is held.
+        //
+        // The verge is the point. Where this bench loses to a neighbour the
+        // field steps, and against a road several metres higher that step is a
+        // near-vertical retaining wall. A wall's triangles occupy almost no
+        // plan area but span its whole height, so wherever one stands over the
+        // asphalt — even by a centimetre — the drawn ground reads metres above
+        // the road across that sliver, and at a grazing view the sliver
+        // projects to the wall's full height. Claiming the paint alone put the
+        // step exactly on the kerb and did just that. Claiming the verge too
+        // moves every wall a verge clear of the drawn surface.
+        let carriageway = c
+            .width_m
+            .map(|w| w * 0.5 + crate::priors::STRUCTURE_SHOULDER_M + EARTHWORK_MARGIN_M)
+            .unwrap_or(bench_half_width)
+            .min(bench_half_width);
 
         // Per node and per side, how far the batter runs before it daylights.
         // The bench-edge sample gives both the face depth there and the
@@ -274,6 +297,7 @@ fn corridor_earthworks(
                 target_a: road[k],
                 target_b: road[k + 1],
                 half_width_m: bench_half_width,
+                carriageway_m: carriageway,
                 batter_m: [
                     batter[k][LEFT].max(batter[k + 1][LEFT]),
                     batter[k][RIGHT].max(batter[k + 1][RIGHT]),
@@ -328,6 +352,7 @@ fn corridor_earthworks(
                         target_a: road[k] - DECK_THICKNESS_M - PORTAL_CLEARANCE_M,
                         target_b: road[k + 1] - DECK_THICKNESS_M - PORTAL_CLEARANCE_M,
                         half_width_m: half_width,
+                        carriageway_m: 0.0,
                         batter_m: [(EARTHWORK_BATTER * depth).max(EARTHWORK_MIN_BATTER_M); 2],
                         chain: c.id,
                         arc0: arcs[k],
@@ -354,6 +379,7 @@ fn corridor_earthworks(
                 target_a: portal.floor_m,
                 target_b: portal.floor_m,
                 half_width_m: c.class.half_width_m(c.link) + EARTHWORK_SHOULDER_M,
+                carriageway_m: 0.0,
                 batter_m: [EARTHWORK_MIN_BATTER_M; 2],
                 chain: c.id,
                 arc0: portal.arc,
@@ -544,6 +570,7 @@ mod tests {
             class_key: "motorway".into(),
             link: false,
             drivable: true,
+            width_m: Some(5.5),
             spans: spans.clone(),
             segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],
@@ -598,6 +625,7 @@ mod tests {
             class_key: "secondary".into(),
             link: false,
             drivable: true,
+            width_m: Some(5.5),
             spans: spans.clone(),
             segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],
@@ -664,6 +692,7 @@ mod tests {
             class_key: "residential".into(),
             link: false,
             drivable: true,
+            width_m: Some(5.5),
             spans: vec![],
             segments: vec![],
             connectors: vec![],
@@ -914,13 +943,18 @@ mod tests {
             target_a: 375.0,
             target_b: 375.0,
             half_width_m: 8.0,
+            carriageway_m: 6.0,
             batter_m: [4.0; 2],
             chain: 0,
             arc0: 0.0,
             cos_lat,
             carve: false,
         }]);
-        let g = GroundModel { earthworks, waters, breaklines: breaklines::Breaklines::derive(&[]) };
+        let g = GroundModel {
+            earthworks,
+            waters,
+            breaklines: breaklines::Breaklines::derive(&Earthworks::new(Vec::new())),
+        };
         // Open water away from the berm: flattened to the level (over raw 360).
         assert_eq!(g.height(6.002, 46.002, 360.0, 0.0, &mut scratch), 372.0);
         // On the berm centerline inside the lake: the road overrides the water.

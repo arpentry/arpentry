@@ -88,6 +88,16 @@ fn report_timings(stats: &pipeline::Stats) {
         stats.junction_plates,
     );
     eprintln!(
+        "crests            {} segments, {} nodes pulled in by a contending bench, {} dropped",
+        stats.crest_segments, stats.crests_pulled, stats.crests_dropped,
+    );
+    eprintln!(
+        "pavement {:>7}  {} chunks, {:.0} m2 paved",
+        secs(t.pavement),
+        stats.pave_chunks,
+        stats.pave_area_m2,
+    );
+    eprintln!(
         "consistency       junction step max {:.2} m (p99 {:.2} m, {} over 0.5 m), clearance shortfall max {:.2} m",
         stats.max_junction_step_m,
         stats.p99_junction_step_m,

@@ -378,6 +378,10 @@ fn build_corridor(
                 .unwrap_or_default(),
             link: chain.iter().all(|&(si, _)| segments[si].link),
             drivable: chain.iter().any(|&(si, _)| segments[si].drivable),
+            width_m: chain
+                .iter()
+                .filter_map(|&(si, _)| segment_width_m(&segments[si]))
+                .fold(None, |w: Option<f64>, s| Some(w.map_or(s, |w| w.max(s)))),
             nodes,
             arc,
             cos_lat,
@@ -387,6 +391,23 @@ fn build_corridor(
         },
         ports,
     ))
+}
+
+/// One segment's carriageway width in metres, from the same derivation the
+/// tiled `width_m` property uses: the mapped `width_rules` value where
+/// plausible, else the class prior. `None` for a non-drivable class.
+fn segment_width_m(seg: &RawSegment) -> Option<f64> {
+    let find_str = |key: &str| {
+        seg.properties.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
+            Value::String(s) => Some(s.as_str()),
+            _ => None,
+        })
+    };
+    let measured = seg.properties.iter().find_map(|(k, v)| match (k.as_str(), v) {
+        ("width_rules", Value::Double(w)) => Some(*w),
+        _ => None,
+    });
+    crate::priors::carriageway_width_m(Some(seg.class_key.as_str()), find_str("subclass"), measured)
 }
 
 /// Resolves arc-referenced level runs into a clean partition of `[0, total]`:

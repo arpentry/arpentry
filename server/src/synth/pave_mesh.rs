@@ -1,0 +1,1125 @@
+//! Meshing the unioned road surface — one tile's asphalt as an opaque interior
+//! plus an antialiased casing rim (docs/ROADS.md §6.1, P2).
+//!
+//! [`crate::synth::pavement`] produces the paved region as rings; this turns one
+//! tile's share of it into [`TerrainMesh`]es. Three things have to be true at
+//! once, and each shapes the design:
+//!
+//! 1. **Neighbouring tiles must not double-draw.** The region is clipped to the
+//!    tile *proper*, never into the format's buffer — the discipline
+//!    `synth::structure` already applies to opaque solids. Two tiles that each
+//!    meshed into the buffer would blend their rims twice over the overlap.
+//!
+//! 2. **The seam must be invisible.** Every vertex on a tile cut comes from a
+//!    *global* object clipped to that same line — the chunk's own ring, clipped
+//!    against a rect both neighbours compute identically — and its height comes
+//!    from the global height field. So both sides derive the same seam vertices,
+//!    the same quantized coordinates, and the same heights. Interior
+//!    connectivity may differ; only the seam profile has to match, exactly as
+//!    `terrain_cdt`'s module doc promises for the terrain.
+//!
+//! 3. **The antialiasing rim must not run along a tile cut.** `edge_across`
+//!    fades the outer pixel of a drivable surface into the ground
+//!    (`fs_deck` in `client/shaders/terrain.wgsl`). Along a real silhouette that
+//!    is what makes the edge crisp; along a tile cut it would draw a faded line
+//!    down every tile border. Cut edges are therefore detected — both endpoints
+//!    exactly on one side of the rect, which holds because the clip snaps them
+//!    there — and their rim quads are skipped, so the asphalt runs to the border
+//!    at full opacity and meets its neighbour invisibly.
+//!
+//! The interior is triangulated with the same constrained-Delaunay machinery and
+//! the same determinism contract as `terrain_cdt` (read its module doc): the
+//! triangulation runs in quantized tile-local `u16` coordinates held exactly in
+//! `f64`, points go in in a fixed order, crossings are resolved by
+//! `add_constraint_and_split`, split vertices are rounded and then *re-sampled at
+//! the rounded position* so a stored height is exact for its stored vertex, and
+//! faces are wound by signed area with the degenerate ones dropped.
+
+use geo_types::Coord;
+use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
+
+use crate::building_mesh::Frame;
+use crate::ground::sampler::GroundSampler;
+use crate::priors;
+use crate::project::{self, Bounds};
+use crate::synth::height::HeightField;
+use crate::synth::pavement::LevelShapes;
+use crate::terrain::TerrainMesh;
+
+/// A boundary ring clipped to the tile, with each edge flagged as a tile cut.
+/// `cut[i]` describes the edge from `pts[i]` to `pts[i + 1]`.
+struct TaggedRing {
+    pts: Vec<Coord>,
+    cut: Vec<bool>,
+    /// Whether this ring bounds paved area (outer) rather than a hole.
+    outer: bool,
+}
+
+/// The paved surface of one tile at one level: the opaque interior and the rim
+/// that antialiases and casings its silhouette.
+pub struct PavedMesh {
+    pub level: i64,
+    pub surface: TerrainMesh,
+    pub casing: Option<TerrainMesh>,
+    /// A point inside the region, for the feature's anchor geometry.
+    pub anchor: Coord,
+}
+
+/// Meshes every level of a chunk's region that reaches this tile.
+///
+/// `None` for a tile the region misses entirely. Degrades rather than fails: a
+/// ring whose inset would fold emits no rim and antialiases through MSAA instead
+/// (docs/GENERATION.md invariant 6).
+pub fn tile_meshes(
+    levels: &[LevelShapes],
+    field: &HeightField,
+    sampler: &mut GroundSampler,
+    z: u8,
+    z_ref: u8,
+    bounds: &Bounds,
+) -> Vec<PavedMesh> {
+    let mut out = Vec::new();
+    for ls in levels {
+        let rings = clip_to_tile(&ls.shapes, bounds);
+        if rings.is_empty() {
+            continue;
+        }
+        let anchor = rings
+            .iter()
+            .find(|r| r.outer)
+            .and_then(|r| r.pts.first().copied())
+            .unwrap_or(Coord { x: bounds.west, y: bounds.south });
+        // Simplify the boundary to the zoom's own detail budget before meshing.
+        // The union is built at sub-millimetre precision, which is right for the
+        // model and absurd for a tile: at z13 a tile spans kilometres, so tens of
+        // thousands of boundary vertices are invisible, cost a height-field
+        // evaluation each, and bloat the archive. This is the same Douglas-Peucker
+        // budget the tiler already applies to every line
+        // (`pipeline::tolerance`).
+        //
+        // Cut runs are left verbatim. Their vertices are the shared seam: the
+        // neighbouring tile derives the same ones by clipping the same ring
+        // against the same border, and heights vary non-linearly along it, so
+        // thinning one side and not the other would open a visible crack.
+        // Capped at `PAVE_SIMPLIFY_M`: the generic per-zoom budget is sized for
+        // cartographic lines, where only the path matters, and at z13 it would
+        // move a carriageway edge by a fifth of the road's own width.
+        let tol = crate::pipeline::tolerance(z).min(priors::PAVE_SIMPLIFY_M / crate::scene::DEG_M);
+        let rings: Vec<TaggedRing> = rings.iter().map(|r| simplify_ring(r, tol)).collect();
+        // …then densified back to the terrain's own resolution, so the
+        // silhouette samples the ground as often as the ground is drawn.
+        let grid = crate::terrain::grid_for(z, z_ref);
+        let rings: Vec<TaggedRing> =
+            rings.iter().map(|r| densify_ring(r, bounds, grid)).collect();
+
+        let mut scratch = Vec::new();
+        let mut height = |lon: f64, lat: f64| {
+            let h = field.at(sampler, ls.level, ls.layer, z, z_ref, bounds, lon, lat, &mut scratch);
+            project::quantize_z(h)
+        };
+        let probe = std::env::var_os("ARPT_PAVE_PROBE").is_some();
+        let t = std::time::Instant::now();
+        let verts: usize = rings.iter().map(|r| r.pts.len()).sum();
+        let meshed = mesh_rings(&rings, bounds, crate::terrain::grid_for(z, z_ref), &mut height);
+        if probe && t.elapsed().as_millis() > 100 {
+            eprintln!(
+                "[pave-mesh] z{} level {}: {} rings / {} ring-verts -> {} tris in {:?}",
+                z,
+                ls.level,
+                rings.len(),
+                verts,
+                meshed.as_ref().map_or(0, |(m, _)| m.indices.len() / 3),
+                t.elapsed()
+            );
+        }
+        if let Some((surface, casing)) = meshed {
+            out.push(PavedMesh { level: ls.level, surface, casing, anchor });
+        }
+    }
+    out
+}
+
+/// Clips a level's rings to the tile proper and flags the cut edges.
+///
+/// A Sutherland–Hodgman clip per ring ([`crate::clip::clip_ring`], the one the
+/// tiler already uses for polygons), not a boolean. The region of a built-up
+/// chunk is a *single connected shape* whose bounding box is the whole chunk, so
+/// no bounding-box reject can spare it: intersecting that shape with a detail
+/// tile's rect took minutes per tile. The ring clip is linear in the vertices it
+/// actually touches, and because [`crate::clip::intersect_x`] assigns the bound
+/// coordinate verbatim, a cut vertex lands on the tile edge *exactly* — so the
+/// seam needs no snapping pass and [`is_cut`] can compare with `==`.
+///
+/// Rings are clipped independently, as `clip.rs` does for a polygon's holes. A
+/// hole wholly outside the tile disappears; one straddling the border comes back
+/// hugging it, which the even-odd face test reads correctly either way.
+fn clip_to_tile(shapes: &[Vec<Vec<Coord>>], bounds: &Bounds) -> Vec<TaggedRing> {
+    let mut out = Vec::new();
+    for shape in shapes {
+        if !shape.first().is_some_and(|outer| ring_overlaps_tile(outer, bounds)) {
+            continue;
+        }
+        for (i, ring) in shape.iter().enumerate() {
+            let Some(clipped) = crate::clip::clip_ring(ring, bounds) else {
+                continue;
+            };
+            let mut pts = clipped.0;
+            // `clip_ring` re-closes; the rest of this module works on open rings.
+            if pts.len() > 1 && pts[0] == *pts.last().expect("non-empty") {
+                pts.pop();
+            }
+            if pts.len() < 3 {
+                continue;
+            }
+            let n = pts.len();
+            let cut = (0..n).map(|k| is_cut(pts[k], pts[(k + 1) % n], bounds)).collect();
+            out.push(TaggedRing { pts, cut, outer: i == 0 });
+        }
+    }
+    out
+}
+
+/// Thins a ring to `tol`, leaving every tile-cut run untouched.
+///
+/// Runs of equal cut flag are simplified independently with their endpoints
+/// pinned, so the `cut` flags stay aligned with the edges they describe and a
+/// seam run keeps all of its vertices.
+fn simplify_ring(r: &TaggedRing, tol: f64) -> TaggedRing {
+    let n = r.pts.len();
+    if n < 4 || tol <= 0.0 {
+        return TaggedRing { pts: r.pts.clone(), cut: r.cut.clone(), outer: r.outer };
+    }
+    // Start where the flag changes, so a run is never split across the seam of
+    // the vertex list; with a uniform flag any start will do.
+    let start = (0..n).find(|&i| r.cut[(i + n - 1) % n] != r.cut[i]).unwrap_or(0);
+    let mut pts: Vec<Coord> = Vec::with_capacity(n);
+    let mut cut: Vec<bool> = Vec::with_capacity(n);
+    let mut k = 0usize;
+    while k < n {
+        let flag = r.cut[(start + k) % n];
+        let mut len = 1usize;
+        while k + len < n && r.cut[(start + k + len) % n] == flag {
+            len += 1;
+        }
+        let run: Vec<Coord> = (0..=len).map(|t| r.pts[(start + k + t) % n]).collect();
+        let kept = if flag { run } else { crate::simplify::douglas_peucker(&run, tol) };
+        // The run's last vertex is the next run's first, so it is pushed there.
+        for c in &kept[..kept.len() - 1] {
+            pts.push(*c);
+            cut.push(flag);
+        }
+        k += len;
+    }
+    if pts.len() < 3 {
+        return TaggedRing { pts: r.pts.clone(), cut: r.cut.clone(), outer: r.outer };
+    }
+    TaggedRing { pts, cut, outer: r.outer }
+}
+
+/// Whether a ring's bounding box meets the tile at all.
+fn ring_overlaps_tile(ring: &[Coord], b: &Bounds) -> bool {
+    let mut bb = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for c in ring {
+        bb.0 = bb.0.min(c.x);
+        bb.1 = bb.1.min(c.y);
+        bb.2 = bb.2.max(c.x);
+        bb.3 = bb.3.max(c.y);
+    }
+    bb.2 >= b.west && bb.0 <= b.east && bb.3 >= b.south && bb.1 <= b.north
+}
+
+/// Whether an edge lies along the tile border: both endpoints exactly on the
+/// same side. Exact comparison is sound because [`snap`] put them there.
+fn is_cut(a: Coord, b: Coord, bounds: &Bounds) -> bool {
+    (a.x == bounds.west && b.x == bounds.west)
+        || (a.x == bounds.east && b.x == bounds.east)
+        || (a.y == bounds.south && b.y == bounds.south)
+        || (a.y == bounds.north && b.y == bounds.north)
+}
+
+/// Builds the interior and rim meshes for one level's rings.
+fn mesh_rings(
+    rings: &[TaggedRing],
+    bounds: &Bounds,
+    grid: u32,
+    height: &mut dyn FnMut(f64, f64) -> i32,
+) -> Option<(TerrainMesh, Option<TerrainMesh>)> {
+    let up = Frame::at_center(bounds).encode_enu(0.0, 0.0, 1.0);
+    let m_lon = crate::building_mesh::M_PER_DEG_LON_EQUATOR
+        * ((bounds.south + bounds.north) * 0.5).to_radians().cos();
+
+    // The inset boundary: what the interior is triangulated to, leaving the rim
+    // between it and the true silhouette.
+    let insets: Vec<Option<Vec<Coord>>> =
+        rings.iter().map(|r| inset_ring(r, m_lon)).collect();
+
+    let mut cdt: ConstrainedDelaunayTriangulation<Point2<f64>> =
+        ConstrainedDelaunayTriangulation::new();
+    // Constraint rings first, in ring then vertex order — a fixed insertion
+    // order, so the triangulation is a function of the input alone.
+    let mut constraint_rings: Vec<Vec<Coord>> = Vec::new();
+    for (r, inset) in rings.iter().zip(&insets) {
+        constraint_rings.push(inset.clone().unwrap_or_else(|| r.pts.clone()));
+    }
+    for ring in &constraint_rings {
+        let q: Vec<(u16, u16)> = ring
+            .iter()
+            .map(|c| (project::quantize_x(c.x, bounds), project::quantize_y(c.y, bounds)))
+            .collect();
+        let n = q.len();
+        for k in 0..n {
+            let (a, b) = (q[k], q[(k + 1) % n]);
+            if a == b {
+                continue;
+            }
+            let va = cdt.insert(Point2::new(a.0 as f64, a.1 as f64)).ok()?;
+            let vb = cdt.insert(Point2::new(b.0 as f64, b.1 as f64)).ok()?;
+            if va != vb {
+                cdt.add_constraint_and_split(va, vb, |p| p);
+            }
+        }
+    }
+    if cdt.num_vertices() < 3 {
+        return None;
+    }
+
+    // The rings are quantized once, for the interior tests below and for the
+    // face-centre test further down. Re-quantizing every ring vertex per query
+    // made this O(faces x vertices) with a projection per step, which on a
+    // detail tile is tens of millions of operations — the second half of why
+    // the first version of this took minutes per tile.
+    let qrings: Vec<Vec<(f64, f64)>> = constraint_rings
+        .iter()
+        .map(|r| {
+            r.iter()
+                .map(|c| {
+                    (
+                        project::quantize_x(c.x, bounds) as f64,
+                        project::quantize_y(c.y, bounds) as f64,
+                    )
+                })
+                .collect()
+        })
+        .collect();
+
+    // Interior sample points on the terrain's own lattice.
+    //
+    // Without them the region is triangulated from its *outline alone*, so a
+    // carriageway is spanned by triangles as long as the road is wide and the
+    // asphalt is a chord across whatever the ground does between its edges.
+    // The terrain beside it is sampled every cell, so on a cross-slope the two
+    // surfaces cross: the hillside surfaced through the asphalt in ragged
+    // bites, worst exactly where the ground stage declined to bench and the
+    // road is laid on the natural slope.
+    //
+    // The points are the *same* lattice the terrain mesh uses ([`grid`]), so
+    // where the road rides the ground the two meshes sample the one field at
+    // the one set of positions and agree there by construction, leaving only
+    // the boundary strip to interpolation. They are global per zoom, so
+    // neighbouring tiles derive identical ones, and they go in row-major, so
+    // the triangulation stays a function of the input alone.
+    let grid = grid.max(1);
+    let qstep = (project::EXTENT / grid as f64).max(1.0);
+    let n = grid + 1;
+    for row in 0..n {
+        let qy = project::BUFFER + row as f64 * qstep;
+        for col in 0..n {
+            let qx = project::BUFFER + col as f64 * qstep;
+            // Inside the tile proper (the region is clipped to it, so a point
+            // on the border sits on a cut edge) and inside the paved region.
+            if qx <= project::BUFFER
+                || qy <= project::BUFFER
+                || qx >= project::BUFFER + project::EXTENT
+                || qy >= project::BUFFER + project::EXTENT
+            {
+                continue;
+            }
+            if !inside_region((qx, qy), &qrings) {
+                continue;
+            }
+            let _ = cdt.insert(Point2::new(qx, qy));
+        }
+    }
+
+    // Vertices in handle order, heights re-sampled at the rounded position.
+    let vcount = cdt.num_vertices();
+    let mut x: Vec<u16> = Vec::with_capacity(vcount);
+    let mut y: Vec<u16> = Vec::with_capacity(vcount);
+    let mut zs: Vec<i32> = Vec::with_capacity(vcount);
+    let mut normals: Vec<i8> = Vec::with_capacity(vcount * 2);
+    for v in cdt.vertices() {
+        let p = v.position();
+        let qx = p.x.round().clamp(0.0, 65535.0) as u16;
+        let qy = p.y.round().clamp(0.0, 65535.0) as u16;
+        let lon = project::dequantize_x(qx, bounds);
+        let lat = project::dequantize_y(qy, bounds);
+        x.push(qx);
+        y.push(qy);
+        zs.push(height(lon, lat));
+        normals.push(up.0);
+        normals.push(up.1);
+    }
+
+    // Faces inside the region only: spade fills the convex hull, so the
+    // concavities between roads and the islands inside a ring must go.
+    let mut indices: Vec<u32> = Vec::new();
+    for face in cdt.inner_faces() {
+        let [a, b, c] = face.vertices().map(|v| v.fix().index());
+        let (ax, ay) = (x[a] as i64, y[a] as i64);
+        let (bx, by) = (x[b] as i64, y[b] as i64);
+        let (cx, cy) = (x[c] as i64, y[c] as i64);
+        let area2 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        if area2 == 0 {
+            continue;
+        }
+        let cen = (
+            (ax + bx + cx) as f64 / 3.0,
+            (ay + by + cy) as f64 / 3.0,
+        );
+        if !inside_region(cen, &qrings) {
+            continue;
+        }
+        if area2 > 0 {
+            indices.extend_from_slice(&[a as u32, b as u32, c as u32]);
+        } else {
+            indices.extend_from_slice(&[a as u32, c as u32, b as u32]);
+        }
+    }
+    if indices.is_empty() {
+        return None;
+    }
+    // The interior carries no across-coordinate: it is opaque everywhere, and
+    // the rim is what fades. An empty `edge_across` means "no analytic AA" to
+    // the decoder, which is exactly right for the interior.
+    let surface = TerrainMesh { x, y, z: zs, indices, normals, edge_across: Vec::new() };
+    let casing = build_rim(rings, &insets, bounds, up, height);
+    Some((surface, casing))
+}
+
+/// Splits every ring edge where it crosses a line of the terrain lattice, so no
+/// stretch of the silhouette spans more than one cell.
+///
+/// Interior lattice samples fix the middle of a carriageway but not its edge:
+/// the boundary is a polyline of its own, and between two of its vertices the
+/// asphalt edge is a straight chord in three dimensions while the ground under
+/// it follows the lattice. On a steep flank the hillside rises through that
+/// chord and eats scallops out of the road's edge — the residue left after the
+/// interior was fixed, and the reason the silhouette is treated separately
+/// rather than trusted to the boundary the union happened to produce.
+///
+/// The split points are the *global* lattice lines (tiles are aligned, so a
+/// tile-local computation gives globally consistent lines), which keeps the
+/// tile-border contract: neighbours clip the same ring against the same border
+/// and split it at the same lines, so the seam vertices still match exactly.
+/// Every piece of a split edge inherits its cut flag, so a densified border run
+/// is still a border run and still grows no rim. Splitting *after*
+/// simplification, not instead of it, keeps the boundary free of the union's
+/// sub-millimetre noise while still sampling the ground where the ground moves.
+fn densify_ring(r: &TaggedRing, bounds: &Bounds, grid: u32) -> TaggedRing {
+    let n = r.pts.len();
+    if grid <= 1 || n < 2 {
+        return TaggedRing { pts: r.pts.clone(), cut: r.cut.clone(), outer: r.outer };
+    }
+    let (step_lon, step_lat) = (bounds.width() / grid as f64, bounds.height() / grid as f64);
+    let mut pts = Vec::with_capacity(n * 2);
+    let mut cut = Vec::with_capacity(n * 2);
+    let mut ts: Vec<f64> = Vec::new();
+    for k in 0..n {
+        let (a, b) = (r.pts[k], r.pts[(k + 1) % n]);
+        pts.push(a);
+        cut.push(r.cut[k]);
+        // Where the edge crosses each family of lattice lines, as parameters
+        // along it. A line the edge only touches at an endpoint contributes
+        // nothing: the endpoint is already a vertex.
+        ts.clear();
+        for (a0, b0, origin, step) in
+            [(a.x, b.x, bounds.west, step_lon), (a.y, b.y, bounds.south, step_lat)]
+        {
+            let d = b0 - a0;
+            if d.abs() < 1e-12 {
+                continue;
+            }
+            let (lo, hi) = if d > 0.0 { (a0, b0) } else { (b0, a0) };
+            let first = ((lo - origin) / step).floor() as i64 + 1;
+            let last = ((hi - origin) / step).ceil() as i64 - 1;
+            for i in first..=last {
+                let t = (origin + i as f64 * step - a0) / d;
+                if t > 1e-9 && t < 1.0 - 1e-9 {
+                    ts.push(t);
+                }
+            }
+        }
+        if ts.is_empty() {
+            continue;
+        }
+        ts.sort_by(|p, q| p.partial_cmp(q).expect("finite parameters"));
+        let mut prev = 0.0;
+        for &t in ts.iter() {
+            if t - prev < 1e-9 {
+                continue; // a corner crossing both families at once
+            }
+            prev = t;
+            pts.push(Coord { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+            cut.push(r.cut[k]);
+        }
+    }
+    TaggedRing { pts, cut, outer: r.outer }
+}
+
+/// Offsets a ring toward the paved material by [`priors::PAVE_RIM_M`], leaving
+/// the rim between it and the true silhouette. `None` when the offset would fold
+/// — a ring narrower than twice the rim, or a spur whose offset crosses itself;
+/// the caller then meshes the ring itself and skips the rim.
+///
+/// Both ring kinds move the *same* way. Under the winding this module inherits
+/// from the boolean (outer counter-clockwise, holes clockwise) the paved material
+/// lies to the **left** of travel for both: walking an outer ring
+/// counter-clockwise, left points into the region; walking a hole clockwise, left
+/// points away from the hole and so also into the region. Shrinking the region
+/// therefore moves an outer boundary inward and a hole boundary *outward*,
+/// enlarging the hole — both by stepping left.
+///
+/// Giving holes the opposite sign, as this first did, shrinks them instead, so the
+/// interior spills a rim's width into every island and median and each hole's rim
+/// quads come out inverted.
+fn inset_ring(ring: &TaggedRing, m_lon: f64) -> Option<Vec<Coord>> {
+    let n = ring.pts.len();
+    if n < 3 {
+        return None;
+    }
+    let m_lat = crate::building_mesh::M_PER_DEG_LAT;
+    // The material is on the left for both ring kinds (see above), so there is no
+    // per-kind sign: the offset direction is the left normal either way.
+    let sign = 1.0f64;
+    let mut out = Vec::with_capacity(n);
+    for k in 0..n {
+        let prev = ring.pts[(k + n - 1) % n];
+        let cur = ring.pts[k];
+        let next = ring.pts[(k + 1) % n];
+        let e0 = unit(cur, prev, m_lon, m_lat).map(|(e, nn)| (-e, -nn));
+        let e1 = unit(cur, next, m_lon, m_lat);
+        let (Some((e0e, e0n)), Some((e1e, e1n))) = (e0, e1) else {
+            out.push(cur);
+            continue;
+        };
+        // A vertex between two tile cuts must not move at all, and one between a
+        // cut and a silhouette may only slide *along* the cut — otherwise the
+        // interior would pull away from the border and open a gap the neighbour
+        // does not have.
+        let in_cut = ring.cut[(k + n - 1) % n];
+        let out_cut = ring.cut[k];
+        if in_cut && out_cut {
+            out.push(cur);
+            continue;
+        }
+        // Inward normal of each edge, averaged, with the miter scale.
+        let (n0e, n0n) = (-e0n * sign, e0e * sign);
+        let (n1e, n1n) = (-e1n * sign, e1e * sign);
+        let (se, sn) = (n0e + n1e, n0n + n1n);
+        let len = (se * se + sn * sn).sqrt();
+        if len < 1e-9 {
+            out.push(cur);
+            continue;
+        }
+        let scale = (1.0 / (len * 0.5).min(1.0)).min(MITER_MAX);
+        let mut de = se / len * priors::PAVE_RIM_M * scale;
+        let mut dn = sn / len * priors::PAVE_RIM_M * scale;
+        if in_cut || out_cut {
+            // Project onto the cut edge's direction so the vertex stays on the
+            // border line.
+            let (ce, cn) = if in_cut { (e0e, e0n) } else { (e1e, e1n) };
+            let t = de * ce + dn * cn;
+            de = ce * t;
+            dn = cn * t;
+        }
+        out.push(Coord { x: cur.x + de / m_lon, y: cur.y + dn / m_lat });
+    }
+    // Reject a fold: the offset must keep the ring's orientation, and it must
+    // shrink the *region* — which for an outer ring means a smaller area and for a
+    // hole a larger one. Testing "area decreased" for both, as this first did,
+    // rejected every correctly-offset hole and so silently dropped their rims.
+    let a0 = signed_area(&ring.pts, m_lon);
+    let a1 = signed_area(&out, m_lon);
+    if a1 == 0.0 || a0.signum() != a1.signum() {
+        return None;
+    }
+    let shrank_region = if ring.outer { a1.abs() < a0.abs() } else { a1.abs() > a0.abs() };
+    if !shrank_region {
+        return None;
+    }
+    Some(out)
+}
+
+/// Cap on the miter scale, matching the band this replaces.
+const MITER_MAX: f64 = 1.5;
+
+/// The rim: one quad per non-cut boundary edge, `edge_across` 127 on the
+/// silhouette pair and 0 on the inset pair, so the client fades the outer pixel.
+/// `None` when no ring produced a usable inset.
+fn build_rim(
+    rings: &[TaggedRing],
+    insets: &[Option<Vec<Coord>>],
+    bounds: &Bounds,
+    up: (i8, i8),
+    height: &mut dyn FnMut(f64, f64) -> i32,
+) -> Option<TerrainMesh> {
+    let mut mesh = TerrainMesh {
+        x: Vec::new(),
+        y: Vec::new(),
+        z: Vec::new(),
+        indices: Vec::new(),
+        normals: Vec::new(),
+        edge_across: Vec::new(),
+    };
+    for (r, inset) in rings.iter().zip(insets) {
+        let Some(inset) = inset else { continue };
+        let n = r.pts.len();
+        for k in 0..n {
+            if r.cut[k] {
+                continue; // a tile border carries no fade
+            }
+            let k1 = (k + 1) % n;
+            let quad = [r.pts[k], r.pts[k1], inset[k1], inset[k]];
+
+            // Validate the quad *as it will be emitted*, in quantized space.
+            //
+            // At a sharp spike the mitered inset can overshoot past the edge it
+            // belongs to, folding the quad into a bowtie — and drawn in the
+            // casing's darker tone a bowtie reads as a small dark spur poking out
+            // of the asphalt. Checking the offset geometry in degrees is not
+            // enough: quantization to u16 can collapse a thin quad or flip its
+            // orientation on its own, so a quad that is well-formed in metres can
+            // still reach the renderer inverted. Testing the rounded coordinates
+            // catches both causes at once.
+            //
+            // Dropping a quad costs that one edge its antialiasing, which is
+            // invisible; drawing it costs a visible artifact.
+            let q: Vec<(i64, i64)> = quad
+                .iter()
+                .map(|c| {
+                    (
+                        project::quantize_x(c.x, bounds) as i64,
+                        project::quantize_y(c.y, bounds) as i64,
+                    )
+                })
+                .collect();
+            let tri = |a: usize, b: usize, c: usize| {
+                (q[b].0 - q[a].0) * (q[c].1 - q[a].1) - (q[c].0 - q[a].0) * (q[b].1 - q[a].1)
+            };
+            let (t0, t1) = (tri(0, 1, 2), tri(0, 2, 3));
+            if t0 == 0 || t1 == 0 || (t0 > 0) != (t1 > 0) {
+                continue;
+            }
+            let across = [127i8, 127, 0, 0];
+            let base = mesh.x.len() as u32;
+            for ((c, a), qc) in quad.iter().zip(across).zip(&q) {
+                mesh.x.push(qc.0 as u16);
+                mesh.y.push(qc.1 as u16);
+                mesh.z.push(height(c.x, c.y));
+                mesh.normals.push(up.0);
+                mesh.normals.push(up.1);
+                mesh.edge_across.push(a);
+            }
+            // Two triangles; winding is fixed up by the client's cull-none
+            // pipeline, but keep them consistent with the ring's own order.
+            mesh.indices.extend_from_slice(&[base, base + 1, base + 2]);
+            mesh.indices.extend_from_slice(&[base, base + 2, base + 3]);
+        }
+    }
+    (!mesh.indices.is_empty()).then_some(mesh)
+}
+
+
+/// Point-in-region test over pre-quantized rings, by **winding number**.
+///
+/// Not even-odd. Clipping a region that leaves the tile and comes back produces a
+/// single self-touching ring — Sutherland–Hodgman joins the pieces along the
+/// border rather than splitting them — and even-odd parity is ambiguous on a ring
+/// that touches itself, so faces were being accepted or rejected essentially at
+/// random near such a border. Winding is well defined there, and the clip
+/// preserves each ring's orientation (outer counter-clockwise, holes clockwise),
+/// so a hole still subtracts.
+fn inside_region(p: (f64, f64), qrings: &[Vec<(f64, f64)>]) -> bool {
+    let mut winding = 0i32;
+    for q in qrings {
+        let n = q.len();
+        if n < 3 {
+            continue;
+        }
+        for k in 0..n {
+            let (_, y0) = q[k];
+            let (_, y1) = q[(k + 1) % n];
+            if y0 <= p.1 {
+                if y1 > p.1 && cross(q[k], q[(k + 1) % n], p) > 0.0 {
+                    winding += 1; // upward crossing to the left of p
+                }
+            } else if y1 <= p.1 && cross(q[k], q[(k + 1) % n], p) < 0.0 {
+                winding -= 1; // downward crossing to the right of p
+            }
+        }
+    }
+    winding != 0
+}
+
+/// Cross product of `a → b` with `a → p`: positive when `p` is left of the edge.
+fn cross(a: (f64, f64), b: (f64, f64), p: (f64, f64)) -> f64 {
+    (b.0 - a.0) * (p.1 - a.1) - (p.0 - a.0) * (b.1 - a.1)
+}
+
+/// Unit ENU direction from `a` to `b`, or `None` for a degenerate step.
+fn unit(a: Coord, b: Coord, m_lon: f64, m_lat: f64) -> Option<(f64, f64)> {
+    let (de, dn) = ((b.x - a.x) * m_lon, (b.y - a.y) * m_lat);
+    let len = (de * de + dn * dn).sqrt();
+    (len > 1e-9).then(|| (de / len, dn / len))
+}
+
+/// Twice the signed area of a ring in metre-ish units — only its sign and
+/// relative magnitude are used.
+fn signed_area(ring: &[Coord], m_lon: f64) -> f64 {
+    let m_lat = crate::building_mesh::M_PER_DEG_LAT;
+    let mut acc = 0.0;
+    for k in 0..ring.len() {
+        let a = ring[k];
+        let b = ring[(k + 1) % ring.len()];
+        acc += (a.x * m_lon) * (b.y * m_lat) - (b.x * m_lon) * (a.y * m_lat);
+    }
+    acc * 0.5
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const Z: u8 = 15;
+
+    fn bounds() -> Bounds {
+        crate::solve::tile_containing(Z, 6.0, 46.0)
+    }
+
+    /// A rectangle ring, counter-clockwise, inset `frac` of the tile from each side.
+    fn box_ring(b: &Bounds, frac: f64) -> Vec<Coord> {
+        let (w, h) = (b.width(), b.height());
+        vec![
+            Coord { x: b.west + frac * w, y: b.south + frac * h },
+            Coord { x: b.east - frac * w, y: b.south + frac * h },
+            Coord { x: b.east - frac * w, y: b.north - frac * h },
+            Coord { x: b.west + frac * w, y: b.north - frac * h },
+        ]
+    }
+
+    fn tagged(pts: Vec<Coord>, b: &Bounds, outer: bool) -> TaggedRing {
+        let n = pts.len();
+        let cut = (0..n).map(|k| is_cut(pts[k], pts[(k + 1) % n], b)).collect();
+        TaggedRing { pts, cut, outer }
+    }
+
+    #[test]
+    fn an_interior_ring_meshes_watertight_and_inside_itself() {
+        let b = bounds();
+        let ring = tagged(box_ring(&b, 0.25), &b, true);
+        let (surface, casing) =
+            mesh_rings(&[ring], &b, 1, &mut |_, _| 1000).expect("a mesh");
+        assert!(!surface.indices.is_empty());
+        assert_eq!(surface.indices.len() % 3, 0);
+        assert!(casing.is_some(), "an interior ring gets a full rim");
+
+        // Watertight: no edge shared by more than two faces (the census
+        // `terrain_cdt` uses).
+        let mut uses: std::collections::HashMap<(u32, u32), u32> = Default::default();
+        for t in surface.indices.chunks_exact(3) {
+            for (a, c) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                let key = if a < c { (a, c) } else { (c, a) };
+                *uses.entry(key).or_default() += 1;
+            }
+        }
+        assert!(uses.values().all(|&u| u <= 2), "an edge is used more than twice");
+    }
+
+    /// The interior must sample the height field across the region, not chord
+    /// from edge to edge. A ring meshed from its outline alone spans a
+    /// carriageway with triangles as wide as the road, and on a cross-slope the
+    /// terrain — sampled every lattice cell — surfaces straight through the
+    /// asphalt. Meshed against the lattice, no drawn point of the surface may
+    /// fall far below the field it is meshing.
+    #[test]
+    fn the_interior_tracks_the_field_instead_of_chording_across_it() {
+        let b = bounds();
+        // A field with a ridge across the middle of the tile, 10 m high: a
+        // chord from one edge of the region to the other misses it entirely.
+        let ridge = |lon: f64, _lat: f64| {
+            let t = (lon - b.west) / b.width(); // 0..1 across the tile
+            (10_000.0 * (1.0 - (2.0 * t - 1.0).abs())).round() as i32
+        };
+        let ring = || tagged(box_ring(&b, 0.25), &b, true);
+        let (chorded, _) = mesh_rings(&[ring()], &b, 1, &mut |lon, lat| ridge(lon, lat))
+            .expect("a mesh");
+        let (sampled, _) =
+            mesh_rings(&[ring()], &b, crate::terrain::TERRAIN_GRID_DETAIL, &mut |lon, lat| {
+                ridge(lon, lat)
+            })
+            .expect("a mesh");
+        assert!(
+            sampled.x.len() > chorded.x.len() * 10,
+            "the lattice must add interior samples ({} vs {})",
+            sampled.x.len(),
+            chorded.x.len()
+        );
+
+        // The worst gap between the drawn surface and the field, measured at
+        // every vertex of the *other* mesh — where a chord is furthest from the
+        // ridge it spans.
+        let worst = |m: &TerrainMesh| {
+            let mut worst = 0i32;
+            for i in 0..m.x.len() {
+                let lon = project::dequantize_x(m.x[i], &b);
+                let lat = project::dequantize_y(m.y[i], &b);
+                worst = worst.max((ridge(lon, lat) - m.z[i]).abs());
+            }
+            worst
+        };
+        assert_eq!(worst(&sampled), 0, "every vertex must carry its own field value");
+        // The ridge crest is 10 m above the region's edges, so the chorded mesh
+        // is metres wrong in between while the sampled one holds it.
+        let crest = ridge((b.west + b.east) * 0.5, (b.south + b.north) * 0.5);
+        let sampled_crest = sampled
+            .z
+            .iter()
+            .copied()
+            .max()
+            .expect("a vertex");
+        let chorded_crest = chorded.z.iter().copied().max().expect("a vertex");
+        assert!(
+            (crest - sampled_crest).abs() < 100,
+            "the lattice-sampled surface must reach the crest ({sampled_crest} vs {crest})"
+        );
+        assert!(
+            crest - chorded_crest > 4_000,
+            "the outline-only surface must miss the crest by metres ({chorded_crest} vs {crest})"
+        );
+    }
+
+    /// The silhouette is split at every lattice line it crosses, so no stretch
+    /// of it spans more than one cell of the ground drawn under it — the
+    /// scallops a chorded edge lets the hillside eat out of a road. Border runs
+    /// keep their cut flag through the split, and the split points are the
+    /// global lattice, so a neighbour clipping the same ring derives the same
+    /// seam vertices.
+    #[test]
+    fn the_silhouette_is_split_at_every_cell_it_crosses() {
+        let b = bounds();
+        let grid = crate::terrain::TERRAIN_GRID_DETAIL;
+        let ring = tagged(box_ring(&b, 0.25), &b, true);
+        let dense = densify_ring(&ring, &b, grid);
+        assert_eq!(dense.pts.len(), dense.cut.len(), "a flag per edge");
+
+        // No edge of the densified ring spans more than one cell in either
+        // axis: every crossing became a vertex.
+        let (cw, ch) = (b.width() / grid as f64, b.height() / grid as f64);
+        let cell = |c: Coord| {
+            (((c.x - b.west) / cw).floor() as i64, ((c.y - b.south) / ch).floor() as i64)
+        };
+        for k in 0..dense.pts.len() {
+            let (p, q) = (dense.pts[k], dense.pts[(k + 1) % dense.pts.len()]);
+            let (pc, qc) = (cell(p), cell(q));
+            assert!(
+                (pc.0 - qc.0).abs() <= 1 && (pc.1 - qc.1).abs() <= 1,
+                "edge {k} jumps from cell {pc:?} to {qc:?}"
+            );
+        }
+        // The ring still bounds the same area — densifying adds vertices, never
+        // moves the boundary.
+        let m_lon = crate::building_mesh::M_PER_DEG_LON_EQUATOR
+            * ((b.south + b.north) * 0.5).to_radians().cos();
+        let (a0, a1) = (signed_area(&ring.pts, m_lon), signed_area(&dense.pts, m_lon));
+        assert!((a0 - a1).abs() / a0.abs() < 1e-9, "the boundary moved: {a0} vs {a1}");
+
+        // A ring clipped to the tile border: every piece of a cut run stays a
+        // cut, so the seam still grows no rim.
+        let border = tagged(
+            vec![
+                Coord { x: b.west, y: b.south + 0.25 * b.height() },
+                Coord { x: b.west, y: b.south + 0.75 * b.height() },
+                Coord { x: b.west + 0.5 * b.width(), y: b.south + 0.5 * b.height() },
+            ],
+            &b,
+            true,
+        );
+        let dense = densify_ring(&border, &b, grid);
+        for k in 0..dense.pts.len() {
+            let (p, q) = (dense.pts[k], dense.pts[(k + 1) % dense.pts.len()]);
+            assert_eq!(
+                dense.cut[k],
+                is_cut(p, q, &b),
+                "edge {k} lost its cut flag through the split"
+            );
+        }
+    }
+
+    #[test]
+    fn the_rim_carries_across_only_on_the_silhouette() {
+        let b = bounds();
+        let ring = tagged(box_ring(&b, 0.25), &b, true);
+        let (surface, casing) = mesh_rings(&[ring], &b, 1, &mut |_, _| 0).expect("a mesh");
+        // The interior declares no across-coordinate at all: it is opaque.
+        assert!(surface.edge_across.is_empty());
+        let rim = casing.expect("a rim");
+        assert_eq!(rim.edge_across.len(), rim.x.len());
+        let outer = rim.edge_across.iter().filter(|&&a| a == 127).count();
+        let inner = rim.edge_across.iter().filter(|&&a| a == 0).count();
+        assert_eq!(outer, inner, "every rim quad pairs a silhouette and an inset vertex");
+        assert!(rim.edge_across.iter().all(|&a| a == 127 || a == 0), "stray across value");
+    }
+
+    #[test]
+    fn a_tile_border_edge_carries_no_rim() {
+        // A ring flush against the tile's western edge: that edge is a cut, so it
+        // must produce no rim quad, and no rim vertex may sit on it.
+        let b = bounds();
+        let (w, h) = (b.width(), b.height());
+        let pts = vec![
+            Coord { x: b.west, y: b.south + 0.25 * h },
+            Coord { x: b.west + 0.5 * w, y: b.south + 0.25 * h },
+            Coord { x: b.west + 0.5 * w, y: b.north - 0.25 * h },
+            Coord { x: b.west, y: b.north - 0.25 * h },
+        ];
+        let ring = tagged(pts, &b, true);
+        assert_eq!(ring.cut, vec![false, false, false, true], "the west edge is the cut");
+        let (_, casing) = mesh_rings(&[ring], &b, 1, &mut |_, _| 0).expect("a mesh");
+        let rim = casing.expect("a rim on the three real edges");
+        // Three real edges, one quad each — the cut edge contributed none.
+        assert_eq!(rim.indices.len(), 3 * 6, "expected three rim quads");
+        assert_eq!(rim.x.len(), 3 * 4);
+
+        // The property that matters is that no rim runs *along* the border. A
+        // corner where a genuine silhouette meets the border does fade, and must:
+        // the asphalt really does end there. What would draw a line down the tile
+        // seam is a quad whose whole silhouette edge lies on it.
+        let qwest = project::quantize_x(b.west, &b);
+        for quad in rim.x.chunks_exact(4) {
+            let (o0, o1) = (quad[0], quad[1]); // the silhouette pair
+            assert!(
+                !(o0 == qwest && o1 == qwest),
+                "a rim quad runs along the tile border"
+            );
+        }
+        // And the inset never leaves the border: a vertex pinned to the cut line
+        // stays on it, so the interior still reaches the seam.
+        for quad in rim.x.chunks_exact(4) {
+            if quad[0] == qwest {
+                assert_eq!(quad[3], qwest, "the inset pulled away from the border");
+            }
+            if quad[1] == qwest {
+                assert_eq!(quad[2], qwest, "the inset pulled away from the border");
+            }
+        }
+    }
+
+    #[test]
+    fn a_hole_is_not_meshed_over() {
+        // A box with a concentric hole: no triangle centroid may fall in the hole.
+        let b = bounds();
+        let outer = tagged(box_ring(&b, 0.1), &b, true);
+        let mut inner_pts = box_ring(&b, 0.35);
+        inner_pts.reverse(); // holes wind the other way
+        let inner = tagged(inner_pts.clone(), &b, false);
+        let (surface, _) = mesh_rings(&[outer, inner], &b, 1, &mut |_, _| 0).expect("a mesh");
+
+        let hole: Vec<Coord> = inner_pts;
+        let hole_q: Vec<(f64, f64)> = hole
+            .iter()
+            .map(|c| {
+                (project::quantize_x(c.x, &b) as f64, project::quantize_y(c.y, &b) as f64)
+            })
+            .collect();
+        let mut in_hole = 0;
+        for t in surface.indices.chunks_exact(3) {
+            let cen = (
+                (surface.x[t[0] as usize] as f64
+                    + surface.x[t[1] as usize] as f64
+                    + surface.x[t[2] as usize] as f64)
+                    / 3.0,
+                (surface.y[t[0] as usize] as f64
+                    + surface.y[t[1] as usize] as f64
+                    + surface.y[t[2] as usize] as f64)
+                    / 3.0,
+            );
+            if point_in(&hole_q, cen) {
+                in_hole += 1;
+            }
+        }
+        assert_eq!(in_hole, 0, "{in_hole} triangles cover the island");
+    }
+
+    /// Standalone even-odd test for the assertions above.
+    fn point_in(ring: &[(f64, f64)], p: (f64, f64)) -> bool {
+        let mut inside = false;
+        for k in 0..ring.len() {
+            let (x0, y0) = ring[k];
+            let (x1, y1) = ring[(k + 1) % ring.len()];
+            if (y0 > p.1) != (y1 > p.1) {
+                let t = (p.1 - y0) / (y1 - y0);
+                if p.0 < x0 + t * (x1 - x0) {
+                    inside = !inside;
+                }
+            }
+        }
+        inside
+    }
+
+    #[test]
+    fn a_folded_rim_quad_is_dropped_rather_than_drawn() {
+        // A ring with a needle-thin spike. The mitered inset at the spike's tip
+        // overshoots past the edges it belongs to; those quads must be dropped,
+        // not emitted as bowties — drawn in the casing's darker tone a bowtie
+        // reads as a dark spur poking out of the asphalt.
+        let b = bounds();
+        let (w, h) = (b.width(), b.height());
+        let (cx, cy) = (b.west + 0.5 * w, b.south + 0.5 * h);
+        let pts = vec![
+            Coord { x: cx - 0.2 * w, y: cy - 0.05 * h },
+            Coord { x: cx + 0.2 * w, y: cy - 0.05 * h },
+            // The spike: out and back through a very sharp turn.
+            Coord { x: cx + 0.201 * w, y: cy + 0.30 * h },
+            Coord { x: cx + 0.199 * w, y: cy - 0.049 * h },
+            Coord { x: cx - 0.2 * w, y: cy + 0.05 * h },
+        ];
+        let ring = tagged(pts, &b, true);
+        let Some((_, casing)) = mesh_rings(&[ring], &b, 1, &mut |_, _| 0) else {
+            return; // degenerating entirely is also acceptable
+        };
+        let Some(rim) = casing else { return };
+        // Every surviving quad is a proper one: its inset pair is on the material
+        // side of its silhouette pair, so its two triangles wind the same way.
+        for q in rim.x.chunks_exact(4).zip(rim.y.chunks_exact(4)) {
+            let (xs, ys) = q;
+            let p = |i: usize| (xs[i] as f64, ys[i] as f64);
+            let cross = |a: (f64, f64), c: (f64, f64), d: (f64, f64)| {
+                (c.0 - a.0) * (d.1 - a.1) - (d.0 - a.0) * (c.1 - a.1)
+            };
+            let t0 = cross(p(0), p(1), p(2));
+            let t1 = cross(p(0), p(2), p(3));
+            assert!(
+                t0 == 0.0 || t1 == 0.0 || t0.signum() == t1.signum(),
+                "a rim quad is a bowtie: {t0} vs {t1}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sliver_ring_degrades_to_no_rim() {
+        // A ring narrower than twice the rim cannot be inset: the mesher must
+        // still produce a surface, just without the fade.
+        let b = bounds();
+        let m_lat = crate::building_mesh::M_PER_DEG_LAT;
+        let thin = 0.3 * priors::PAVE_RIM_M; // well under 2 x the rim
+        let pts = vec![
+            Coord { x: b.west + 0.2 * b.width(), y: b.south + 0.5 * b.height() },
+            Coord { x: b.east - 0.2 * b.width(), y: b.south + 0.5 * b.height() },
+            Coord { x: b.east - 0.2 * b.width(), y: b.south + 0.5 * b.height() + thin / m_lat },
+            Coord { x: b.west + 0.2 * b.width(), y: b.south + 0.5 * b.height() + thin / m_lat },
+        ];
+        let ring = tagged(pts, &b, true);
+        assert!(inset_ring(&ring, 77000.0).is_none(), "a sliver must not inset");
+        let meshed = mesh_rings(&[ring], &b, 1, &mut |_, _| 0);
+        if let Some((surface, casing)) = meshed {
+            assert!(casing.is_none(), "a sliver must not carry a rim");
+            assert!(surface.edge_across.is_empty());
+        }
+    }
+
+    #[test]
+    fn the_inset_shrinks_the_region_for_both_ring_kinds() {
+        // The bug this pins down: a hole must be offset *outward*, growing it, so
+        // the interior stops short of the island rather than spilling into it —
+        // and it must still get a rim, which an "area always decreases" guard
+        // silently denied it.
+        let b = bounds();
+        let m_lon = crate::building_mesh::M_PER_DEG_LON_EQUATOR
+            * ((b.south + b.north) * 0.5).to_radians().cos();
+
+        let outer = tagged(box_ring(&b, 0.1), &b, true);
+        let out_inset = inset_ring(&outer, m_lon).expect("an outer ring insets");
+        let (a0, a1) = (signed_area(&outer.pts, m_lon), signed_area(&out_inset, m_lon));
+        assert_eq!(a0.signum(), a1.signum(), "the inset flipped the outer winding");
+        assert!(a1.abs() < a0.abs(), "the outer ring did not shrink");
+
+        let mut hole_pts = box_ring(&b, 0.35);
+        hole_pts.reverse(); // a hole winds the other way
+        let hole = tagged(hole_pts, &b, false);
+        let hole_inset = inset_ring(&hole, m_lon).expect("a hole ring insets");
+        let (h0, h1) = (signed_area(&hole.pts, m_lon), signed_area(&hole_inset, m_lon));
+        assert_eq!(h0.signum(), h1.signum(), "the inset flipped the hole winding");
+        assert!(
+            h1.abs() > h0.abs(),
+            "the hole shrank ({:.3} -> {:.3}); it must grow so the interior keeps clear of it",
+            h0.abs(),
+            h1.abs()
+        );
+
+        // And a region with a hole produces rim quads for both boundaries.
+        let (_, casing) = mesh_rings(&[outer, hole], &b, 1, &mut |_, _| 0).expect("a mesh");
+        let rim = casing.expect("a rim");
+        let quads = rim.x.len() / 4;
+        assert!(quads >= 8, "expected rim on both rings' four sides, got {quads} quads");
+    }
+
+    #[test]
+    fn simplification_thins_the_interior_and_never_the_seam() {
+        let b = bounds();
+        let (w, h) = (b.width(), b.height());
+        // A ring flush against the west border, with a finely sampled wobble
+        // along its southern edge and extra vertices along the border itself.
+        let mut pts = vec![Coord { x: b.west, y: b.south + 0.2 * h }];
+        for i in 0..=200 {
+            let t = i as f64 / 200.0;
+            pts.push(Coord {
+                x: b.west + t * 0.6 * w,
+                // A wobble far below the zoom's tolerance: pure noise.
+                y: b.south + 0.2 * h + (t * 60.0).sin() * 1e-9,
+            });
+        }
+        pts.push(Coord { x: b.west + 0.6 * w, y: b.north - 0.2 * h });
+        // Intermediate vertices *on* the border: the seam the neighbour shares.
+        for i in (1..5).rev() {
+            pts.push(Coord { x: b.west, y: b.south + 0.2 * h + i as f64 * 0.1 * h });
+        }
+        let ring = tagged(pts, &b, true);
+        let seam_before = ring.cut.iter().filter(|&&c| c).count();
+        assert!(seam_before >= 4, "the fixture needs a multi-edge seam run");
+
+        let tol = crate::pipeline::tolerance(Z);
+        let simple = simplify_ring(&ring, tol);
+
+        // The noisy interior collapses...
+        assert!(
+            simple.pts.len() < ring.pts.len() / 4,
+            "interior barely thinned: {} -> {}",
+            ring.pts.len(),
+            simple.pts.len()
+        );
+        // ...and every seam edge survives, because the neighbour has them too.
+        assert_eq!(
+            simple.cut.iter().filter(|&&c| c).count(),
+            seam_before,
+            "a tile-border edge was simplified away"
+        );
+        // Every vertex that was on the border still is.
+        let on_border = |r: &TaggedRing| r.pts.iter().filter(|c| c.x == b.west).count();
+        assert_eq!(on_border(&simple), on_border(&ring), "a seam vertex moved off the border");
+        // The flags still describe the edges they are paired with.
+        assert_eq!(simple.pts.len(), simple.cut.len());
+        for k in 0..simple.pts.len() {
+            let (a, c) = (simple.pts[k], simple.pts[(k + 1) % simple.pts.len()]);
+            assert_eq!(simple.cut[k], is_cut(a, c, &b), "flag {k} no longer matches its edge");
+        }
+    }
+
+    #[test]
+    fn degenerate_rings_yield_no_mesh() {
+        let b = bounds();
+        assert!(mesh_rings(&[], &b, 1, &mut |_, _| 0).is_none(), "no rings");
+        let p = Coord { x: b.west + 0.5 * b.width(), y: b.south + 0.5 * b.height() };
+        let dot = tagged(vec![p, p, p], &b, true);
+        assert!(mesh_rings(&[dot], &b, 1, &mut |_, _| 0).is_none(), "a degenerate ring");
+    }
+}

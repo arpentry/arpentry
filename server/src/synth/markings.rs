@@ -24,7 +24,7 @@ use geo_types::{Coord, Geometry, LineString, MultiLineString};
 use crate::building_mesh::{Frame, M_PER_DEG_LAT, M_PER_DEG_LON_EQUATOR};
 use crate::priors;
 use crate::project::Bounds;
-use crate::synth::surface::trim_line;
+use crate::synth::area::Area;
 use crate::value::Value;
 
 /// Cap on the offset miter scale at a bend, matching the surface band's.
@@ -68,15 +68,15 @@ impl Marking {
 /// solid edge lines on the motorway network, per the ladder
 /// (`priors::has_centre_line` / `has_lane_lines` / `has_edge_lines`). `line`
 /// must be pre-clip geometry — a whole segment or a corridor span piece — so
-/// the dash phase anchors to a global arclength origin. `disks` are the
-/// junction-plate trim disks near the line: solid lines stop at them, and
-/// any dash whose midpoint falls inside one is dropped.
+/// the dash phase anchors to a global arclength origin. `areas` are the paved
+/// intersections near the line: solid lines stop at them, and any dash whose
+/// midpoint falls inside one is dropped.
 pub fn for_line(
     line: &LineString,
     class: &str,
     oneway: bool,
     width_m: f64,
-    disks: &[(Coord, f64)],
+    areas: &[&Area],
 ) -> Vec<Marking> {
     let centre = priors::has_centre_line(class, oneway);
     let lanes = if priors::has_lane_lines(class, oneway) {
@@ -91,7 +91,7 @@ pub fn for_line(
     let mut out = Vec::new();
     let mut push_dashes = |dashes: Vec<LineString>, width: f64| {
         let kept: Vec<LineString> =
-            dashes.into_iter().filter(|d| !midpoint_in_disk(d, disks)).collect();
+            dashes.into_iter().filter(|d| !midpoint_paved(d, areas)).collect();
         if !kept.is_empty() {
             out.push(Marking {
                 geometry: Geometry::MultiLineString(MultiLineString(kept)),
@@ -126,7 +126,7 @@ pub fn for_line(
                 let Some(edge) = offset_line(line, inset * side, &frame) else {
                     continue;
                 };
-                let pieces: Vec<LineString> = trim_line(&edge, disks)
+                let pieces: Vec<LineString> = trim_line(&edge, areas)
                     .into_iter()
                     .filter(|p| line_len_m(p, &frame) >= MIN_LINE_M)
                     .collect();
@@ -177,20 +177,16 @@ fn cut_dashes(line: &LineString, dash_m: f64, gap_m: f64) -> Vec<LineString> {
     out
 }
 
-/// Whether a dash's midpoint lies inside any trim disk.
-fn midpoint_in_disk(dash: &LineString, disks: &[(Coord, f64)]) -> bool {
+/// Whether a dash's midpoint falls on a paved intersection — no road marking
+/// is painted through one.
+fn midpoint_paved(dash: &LineString, areas: &[&Area]) -> bool {
     let pts = &dash.0;
     let arc = arc_lengths(pts);
     let mid = slice(pts, &arc, arc.last().copied().unwrap_or(0.0) * 0.5, f64::INFINITY);
     let Some(&m) = mid.first() else {
         return false;
     };
-    let cosk = m.y.to_radians().cos();
-    disks.iter().any(|&(c, r)| {
-        let de = (m.x - c.x) * M_PER_DEG_LON_EQUATOR * cosk;
-        let dn = (m.y - c.y) * M_PER_DEG_LAT;
-        de * de + dn * dn < r * r
-    })
+    areas.iter().any(|a| a.contains(m))
 }
 
 /// Cumulative arclength in metres at each vertex.
@@ -289,6 +285,112 @@ fn offset_line(line: &LineString, offset_m: f64, frame: &Frame) -> Option<LineSt
     (out.len() >= 2).then(|| LineString(out))
 }
 
+/// Cuts the parts of a painted line that fall inside any intersection area,
+/// returning the pieces that remain — the whole line when no area touches it.
+/// Handles a line *ending* at an intersection and one passing through it alike,
+/// and a line that leaves an area and re-enters it.
+///
+/// Longitudinal paint stops *at* the intersection, so the cut is exact: the
+/// half-metre tuck this carried when it also trimmed surface bands existed only
+/// to hide a band's end under a plate, and there are no plates now. Short
+/// survivors are the caller's business — the marking ladder already drops stubs
+/// under [`MIN_LINE_M`].
+fn trim_line(line: &LineString, areas: &[&Area]) -> Vec<LineString> {
+    let pts = &line.0;
+    if pts.len() < 2 {
+        return Vec::new();
+    }
+    // Cumulative arclength in metres (local equirectangular scale).
+    let cosk = pts[0].y.to_radians().cos();
+    let en = |from: Coord, to: Coord| {
+        ((to.x - from.x) * M_PER_DEG_LON_EQUATOR * cosk, (to.y - from.y) * M_PER_DEG_LAT)
+    };
+    let mut arc = Vec::with_capacity(pts.len());
+    arc.push(0.0);
+    for w in pts.windows(2) {
+        let (de, dn) = en(w[0], w[1]);
+        arc.push(arc.last().expect("non-empty") + (de * de + dn * dn).sqrt());
+    }
+    let total = *arc.last().expect("non-empty");
+    if total <= 0.0 {
+        return Vec::new();
+    }
+
+    // The arc intervals the areas cover: per segment, clip the chord against
+    // each area's leg rectangles.
+    let mut cut: Vec<(f64, f64)> = Vec::new();
+    let mut chord: Vec<(f64, f64)> = Vec::new();
+    for area in areas {
+        for (i, w) in pts.windows(2).enumerate() {
+            chord.clear();
+            area.clip_chord(w[0], w[1], &mut chord);
+            let len = arc[i + 1] - arc[i];
+            for &(t0, t1) in &chord {
+                if t1 > t0 {
+                    cut.push((arc[i] + t0 * len, arc[i] + t1 * len));
+                }
+            }
+        }
+    }
+    if cut.is_empty() {
+        return vec![line.clone()];
+    }
+    cut.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for iv in cut {
+        match merged.last_mut() {
+            Some(last) if iv.0 <= last.1 => last.1 = last.1.max(iv.1),
+            _ => merged.push(iv),
+        }
+    }
+    // Walk the complement, rebuilding each kept span's coordinates.
+    let mut keep: Vec<(f64, f64)> = Vec::new();
+    let mut s = 0.0;
+    for &(a, b) in &merged {
+        if a > s {
+            keep.push((s, a));
+        }
+        s = s.max(b);
+    }
+    if total > s {
+        keep.push((s, total));
+    }
+    keep.iter()
+        .map(|&(a, b)| LineString(slice_arc(pts, &arc, a, b)))
+        .filter(|l| l.0.len() >= 2)
+        .collect()
+}
+
+/// The coordinates of the sub-line covering arclength `[a, b]`, interpolating
+/// the cut endpoints and keeping the original vertices between them.
+fn slice_arc(pts: &[Coord], arc: &[f64], a: f64, b: f64) -> Vec<Coord> {
+    let at = |s: f64| -> Coord {
+        let i = match arc.binary_search_by(|v| v.total_cmp(&s)) {
+            Ok(i) => i,
+            Err(i) => i - 1, // arc[0] = 0 ≤ s, so i ≥ 1 here
+        };
+        if i >= pts.len() - 1 {
+            return pts[pts.len() - 1];
+        }
+        let len = arc[i + 1] - arc[i];
+        let t = if len > 0.0 { ((s - arc[i]) / len).clamp(0.0, 1.0) } else { 0.0 };
+        Coord {
+            x: pts[i].x + (pts[i + 1].x - pts[i].x) * t,
+            y: pts[i].y + (pts[i + 1].y - pts[i].y) * t,
+        }
+    };
+    let mut out = vec![at(a)];
+    for (i, &s) in arc.iter().enumerate() {
+        if s > a && s < b {
+            out.push(pts[i]);
+        }
+    }
+    out.push(at(b));
+    // A cut landing exactly on a vertex would duplicate it.
+    out.dedup_by(|p, q| (p.x - q.x).abs() < 1e-12 && (p.y - q.y).abs() < 1e-12);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,17 +462,97 @@ mod tests {
     }
 
     #[test]
-    fn dashes_inside_a_plate_disk_are_dropped() {
+    fn dashes_inside_an_intersection_are_dropped() {
         let line = straight(50.0);
         let cy: f64 = 46.0;
         let m_lon = M_PER_DEG_LON_EQUATOR * cy.to_radians().cos();
-        // A disk over the middle: the [20,24] dash (mid 22) falls inside.
-        let disk = (Coord { x: 7.0 + 22.0 / m_lon, y: cy }, 5.0);
-        let out = for_line(&line, "secondary", false, 6.0, &[disk]);
+        // A crossroads over the middle: the [20,24] dash (mid 22) is on it.
+        let centre = Coord { x: 7.0 + 22.0 / m_lon, y: cy };
+        let legs = vec![
+            crate::synth::area::Leg { e: 1.0, n: 0.0, half_w: 5.0 },
+            crate::synth::area::Leg { e: -1.0, n: 0.0, half_w: 5.0 },
+            crate::synth::area::Leg { e: 0.0, n: 1.0, half_w: 5.0 },
+            crate::synth::area::Leg { e: 0.0, n: -1.0, half_w: 5.0 },
+        ];
+        let area = Area::new(centre, legs, 5.0).expect("an intersection");
+        let out = for_line(&line, "secondary", false, 6.0, &[&area]);
         assert_eq!(out.len(), 1);
         let Geometry::MultiLineString(m) = &out[0].geometry else {
             panic!("a multiline of dashes");
         };
         assert_eq!(m.0.len(), 4, "the covered dash is dropped");
+    }
+
+    /// A square intersection of half-extent `half_m` centred on `c` — four
+    /// equal legs at the compass points, the shape the trim tests cut against.
+    fn square_area(c: Coord, half_m: f64) -> Area {
+        let legs = vec![
+            crate::synth::area::Leg { e: 1.0, n: 0.0, half_w: half_m },
+            crate::synth::area::Leg { e: -1.0, n: 0.0, half_w: half_m },
+            crate::synth::area::Leg { e: 0.0, n: 1.0, half_w: half_m },
+            crate::synth::area::Leg { e: 0.0, n: -1.0, half_w: half_m },
+        ];
+        Area::new(c, legs, half_m).expect("a square area")
+    }
+
+    #[test]
+    fn trim_splits_a_through_line_at_the_intersection() {
+        // A 200 m west→east line through a 10 m intersection at its middle:
+        // two pieces, each ending at the intersection edge (tucked under it).
+        let cy: f64 = 46.0;
+        let m_lon = M_PER_DEG_LON_EQUATOR * cy.to_radians().cos();
+        let c = Coord { x: 7.0, y: cy };
+        let line = LineString(vec![
+            Coord { x: c.x - 100.0 / m_lon, y: cy },
+            Coord { x: c.x + 100.0 / m_lon, y: cy },
+        ]);
+        let area = square_area(c, 10.0);
+        let pieces = trim_line(&line, &[&area]);
+        assert_eq!(pieces.len(), 2, "the intersection splits the line");
+        for p in &pieces {
+            for v in &p.0 {
+                let d = ((v.x - c.x) * m_lon).abs();
+                // Up to the boundary less the tuck, never past it.
+                assert!(d > 10.0 - 0.1, "piece vertex {d:.2} m inside the plate");
+            }
+        }
+        // An end-of-line junction shortens rather than splits.
+        let at_end = square_area(line.0[1], 10.0);
+        let end = trim_line(&line, &[&at_end]);
+        assert_eq!(end.len(), 1);
+        let last = end[0].0.last().expect("non-empty");
+        assert!(((last.x - line.0[1].x) * m_lon).abs() > 10.0 - 0.1);
+        // No intersections → the whole line; one swallowing it → nothing.
+        assert_eq!(trim_line(&line, &[]).len(), 1);
+        let huge = square_area(c, 150.0);
+        assert!(trim_line(&line, &[&huge]).is_empty());
+    }
+
+    #[test]
+    fn trim_survives_a_line_that_leaves_and_re_enters() {
+        // A line clipping the north arm of a cross, dipping out over the
+        // corner notch and back in — two cuts, one kept piece between them.
+        // The circular trim this replaced could only ever make one cut.
+        let cy: f64 = 46.0;
+        let m_lon = M_PER_DEG_LON_EQUATOR * cy.to_radians().cos();
+        let c = Coord { x: 7.0, y: cy };
+        let legs = vec![
+            crate::synth::area::Leg { e: 1.0, n: 0.0, half_w: 4.0 },
+            crate::synth::area::Leg { e: -1.0, n: 0.0, half_w: 4.0 },
+            crate::synth::area::Leg { e: 0.0, n: 1.0, half_w: 4.0 },
+        ];
+        // Reach 20 m: the three arms stick well out of the 8 m core, so a
+        // line across them at 12 m north is inside, outside, inside.
+        let area = Area::new(c, legs, 20.0).expect("a tee");
+        let at = |de: f64, dn: f64| Coord { x: c.x + de / m_lon, y: c.y + dn / M_PER_DEG_LAT };
+        let line = LineString(vec![at(-30.0, 12.0), at(30.0, 12.0)]);
+        let pieces = trim_line(&line, &[&area]);
+        assert_eq!(pieces.len(), 2, "west and east of the north arm survive");
+        for p in &pieces {
+            for v in &p.0 {
+                let de = (v.x - c.x) * m_lon;
+                assert!(de.abs() > 4.0 - 0.1, "vertex {de:.2} m inside the arm");
+            }
+        }
     }
 }

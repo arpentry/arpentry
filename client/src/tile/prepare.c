@@ -926,12 +926,6 @@ void arpt_tile_prims_free(arpt_tile_prims *p) {
     free(p->tunnels.indices);
     free(p->tunnels.color);
     free(p->tunnels.edge_across);
-    free(p->plates.xy);
-    free(p->plates.z);
-    free(p->plates.normals);
-    free(p->plates.indices);
-    free(p->plates.color);
-    free(p->plates.edge_across);
 
     /* instances */
     if (p->instances.batches) {

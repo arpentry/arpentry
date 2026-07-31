@@ -48,6 +48,14 @@ serde_json = "1"
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["webp", "png"] }
 spade = "2.15.1"
+# Road surface as an area (docs/ROADS.md §6.1): buffering a centerline to its
+# carriageway width, unioning the results into one region, and offsetting a
+# boundary (curb-return closing, antialiasing rim). One crate covers all three —
+# `stroke`, `overlay` and `outline` — over a deterministic fixed-point kernel
+# whose grid we pin explicitly. `geo`'s BooleanOps would bring its whole
+# algorithm tower for the union alone and still leave the offsetting to us.
+# Wrapped by `synth::poly`, the only file that names it.
+i_overlay = "7.0.3"
 #   Milestone 5 pipeline: crossbeam-channel, rayon, clap, anyhow, thiserror, tracing, indicatif
 
 [profile.release]

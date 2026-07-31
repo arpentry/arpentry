@@ -85,6 +85,15 @@ pub struct Corridor {
     /// (docs/GROUND.md §1); a non-drivable one only when it carries
     /// structures.
     pub drivable: bool,
+    /// Physical carriageway width in metres — the widest of its member
+    /// segments' [`crate::priors::carriageway_width_m`], the same derivation
+    /// (mapped `width_rules` where plausible, else the class prior) the tiled
+    /// `width_m` property and the surface band read. `None` for a
+    /// non-drivable corridor, which paves nothing. One cross-section per
+    /// corridor, read by every consumer (docs/ROADS.md invariant 1) — the
+    /// intersection areas size their legs from this, so a mouth and the band
+    /// that lands on it can never disagree.
+    pub width_m: Option<f64>,
     /// Constant-kind spans partitioning `[0, total]`, in arc order.
     pub spans: Vec<Span>,
     /// Source segments in corridor order.
@@ -364,7 +373,7 @@ mod tests {
             (0..n).map(|i| Coord { x: 6.0 + deg * i as f64 / (n - 1) as f64, y: 46.0 }).collect();
         let arc: Vec<f64> = (0..n).map(|i| len_m * i as f64 / (n - 1) as f64).collect();
         let segments = vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }];
-        Corridor { id: 0, nodes, arc, cos_lat, class: RoadClass::Minor, class_key: String::new(), link: false, drivable: true, spans, segments, connectors: vec![] }
+        Corridor { id: 0, nodes, arc, cos_lat, class: RoadClass::Minor, class_key: String::new(), link: false, drivable: true, width_m: Some(5.5), spans, segments, connectors: vec![] }
     }
 
     fn span(arc0: f64, arc1: f64, level: i64) -> Span {

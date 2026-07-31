@@ -157,6 +157,20 @@ pub struct Stats {
     pub earthworks: u64,
     pub water: u64,
     pub junction_plates: u64,
+    /// The bench contact lines the detail terrain holds (docs/GROUND.md §3),
+    /// and how crowded they are: crest nodes pulled in off their nominal offset
+    /// because a contending bench holds the ground there, and crest nodes
+    /// dropped because no bench of their own survived. High counts mean roads
+    /// packed closer than their benches are wide — switchbacks, dual
+    /// carriageways, interchange ramps.
+    pub crest_segments: u64,
+    pub crests_pulled: u64,
+    pub crests_dropped: u64,
+    /// Chunks carrying a unioned road surface, and its total area in m² — the
+    /// coarse check that the union actually unioned rather than passing the
+    /// per-road bands through.
+    pub pave_chunks: u64,
+    pub pave_area_m2: f64,
     /// Vertical consistency of the solved model (docs/CONSISTENCY.md P0): the
     /// worst junction step (member road-height disagreement), its 99th
     /// percentile, how many junctions disagree by more than half a metre, and
@@ -179,6 +193,8 @@ pub struct Stats {
 pub struct Timings {
     /// World-model stages before tiling: assemble + solve (stages 1–2).
     pub model: Duration,
+    /// Buffering and unioning the road surface into per-chunk regions.
+    pub pavement: Duration,
     /// Parquet open + Arrow decode + WKB parse → in-memory features.
     pub read: Duration,
     /// Per-zoom Douglas–Peucker simplification.
@@ -251,10 +267,21 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // Junction plates: a paved area meshed across each corridor junction, baked
     // once from the solved model and emitted by the tile that owns its centre.
     let junctions = Arc::new(synth::junction::bake(&scene, &solved));
+    // The unioned road surface: one paved region per level per z13 chunk, baked
+    // once from the same carriageway sources the intersections came from.
+    let t_pave = Instant::now();
+    let pavement = Arc::new(synth::pavement::bake(&junctions, threads));
+    stats.pave_chunks = pavement.chunk_count() as u64;
+    stats.pave_area_m2 = pavement.area_m2();
+    stats.timings.pavement = t_pave.elapsed();
     stats.corridors = scene.corridors.len() as u64;
     stats.profiles = solved.solved_count() as u64;
     stats.crossings = scene.crossings.len() as u64;
     stats.earthworks = ground.earthwork_count() as u64;
+    stats.crest_segments = ground.breaklines().len() as u64;
+    let (pulled, dropped) = ground.breaklines().crowding();
+    stats.crests_pulled = pulled as u64;
+    stats.crests_dropped = dropped as u64;
     stats.water = ground.water_count() as u64;
     stats.junction_plates = junctions.len() as u64;
     let consistency = solve::consistency::measure(&scene, &solved);
@@ -407,7 +434,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             let tile_id = tileid::key_tile_id(key);
             if current != Some(tile_id) {
                 if let Some(prev) = current {
-                    flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut sampler, &solved, &junctions, &mut elevation, cfg.brotli_quality)?;
+                    flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut sampler, &solved, &pavement, &junctions, &mut elevation, cfg.brotli_quality)?;
                 }
                 current = Some(tile_id);
             }
@@ -420,7 +447,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             }
         }
         if let Some(prev) = current {
-            flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut sampler, &solved, &junctions, &mut elevation, cfg.brotli_quality)?;
+            flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut sampler, &solved, &pavement, &junctions, &mut elevation, cfg.brotli_quality)?;
         }
     } else {
         emit_parallel(
@@ -433,6 +460,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             &mut elevation,
             &solved,
             &ground,
+            &pavement,
             &junctions,
         )?;
     }
@@ -518,6 +546,7 @@ fn emit_parallel(
     elevation: &mut (f64, f64),
     solved: &Arc<SolvedModel>,
     ground: &Arc<GroundModel>,
+    pavement: &Arc<synth::pavement::PavementModel>,
     junctions: &Arc<JunctionModel>,
 ) -> Result<(), Error> {
     use std::sync::mpsc;
@@ -590,6 +619,7 @@ fn emit_parallel(
             let result_tx = result_tx.clone();
             let solved = Arc::clone(solved);
             let ground = Arc::clone(ground);
+            let pavement = Arc::clone(pavement);
             let junctions = Arc::clone(junctions);
             let dem = match &primary_dem {
                 Some(d) => Some(d.fork()?),
@@ -607,7 +637,7 @@ fn emit_parallel(
                         break;
                     };
                     let result =
-                        encode_tile(job, &flat, &mut sampler, &solved, &junctions, cfg.brotli_quality);
+                        encode_tile(job, &flat, &mut sampler, &solved, &pavement, &junctions, cfg.brotli_quality);
                     if result_tx.send(result).is_err() {
                         break;
                     }
@@ -663,6 +693,7 @@ fn encode_tile(
     flat: &TerrainMesh,
     sampler: &mut GroundSampler,
     solved: &SolvedModel,
+    pavement: &synth::pavement::PavementModel,
     junctions: &JunctionModel,
     quality: i32,
 ) -> Result<TileResult, Error> {
@@ -679,8 +710,11 @@ fn encode_tile(
     }
     let t_stamp = Instant::now();
     stamp_elevations(&mut buckets, sampler, z);
-    stamp_synth(&mut buckets, sampler, solved, junctions, z, &bounds);
-    add_junction_plates(&mut buckets, junctions, sampler, &bounds, z, solved.z_ref);
+    // One height field per tile, shared by the paint, the bands and the plates —
+    // so all three land on the same asphalt (docs/ROADS.md invariant 5).
+    let field = synth::height::HeightField::for_tile(junctions, solved, z, &bounds);
+    stamp_synth(&mut buckets, &field, junctions, sampler, solved, z, &bounds);
+    add_road_surface(&mut buckets, pavement, &field, sampler, &bounds, z, solved.z_ref);
     let mut t_terrain = t_stamp.elapsed();
 
     // Vector layers in decode-priority (index) order.
@@ -779,27 +813,6 @@ fn stamp_elevations(buckets: &mut [Vec<EncoderFeature>], sampler: &mut GroundSam
     }
 }
 
-/// Adds the junction plates this tile owns to its transportation bucket — a
-/// paved mesh across each corridor intersection. A detail feature: coarse zooms
-/// render the overlapping strokes as before (the plate positions never change,
-/// only their presence). See [`synth::junction`].
-fn add_junction_plates(
-    buckets: &mut [Vec<EncoderFeature>],
-    junctions: &JunctionModel,
-    sampler: &mut GroundSampler,
-    bounds: &Bounds,
-    z: u8,
-    z_ref: u8,
-) {
-    if z < crate::priors::ROAD_SURFACE_MIN_ZOOM || junctions.is_empty() {
-        return;
-    }
-    for baked in junctions.near((bounds.west, bounds.south, bounds.east, bounds.north)) {
-        if let Some(f) = synth::junction::plate(baked, bounds, sampler, z, z_ref) {
-            buckets[layers::TRANSPORTATION as usize].push(f);
-        }
-    }
-}
 
 /// Whether a transportation feature is a painted marking (class `marking`)
 /// rather than a carriageway. Markings are tagged `Synth::Road` like the paint
@@ -813,63 +826,98 @@ fn is_marking(f: &EncoderFeature) -> bool {
 
 /// Stage 4 for the tile: runs each transportation feature's generator against
 /// the solved model — bridge decks and tunnel bores swept on their corridor's
-/// profile, roads draped on the rendered ground (plus their corridor's solved
-/// cut/fill where one exists). At the surface zoom the carriageway fill turns
-/// to mesh: each at-grade drivable road gains its surface band (built from the
-/// freshly baked centerline, trimmed back at the junction plates near this
-/// tile) and every road's SDF fill stroke is dropped — the at-grade band, or
-/// the structure's own deck/bore mesh, is the carriageway now, so the paint
-/// isn't laid down twice. Markings keep their stroke (they ride the mesh), and
-/// below the surface zoom no band is built and roads stay pure draped SDF (see
-/// [`synth::surface`]). See [`synth::emit`].
+/// profile, roads draped on the shared height field.
+///
+/// At the surface zoom the carriageway fill is the *unioned* mesh
+/// ([`add_road_surface`]), so a contributing road's SDF fill stroke is dropped —
+/// otherwise the carriageway is painted twice. What keeps its stroke: markings
+/// (they ride the mesh as their own features), non-drivable ways with no width to
+/// buffer, and every feature below the surface zoom, where roads stay pure draped
+/// SDF. See [`synth::emit`].
 fn stamp_synth(
     buckets: &mut [Vec<EncoderFeature>],
+    field: &synth::height::HeightField,
+    junctions: &JunctionModel,
     sampler: &mut GroundSampler,
     solved: &SolvedModel,
-    junctions: &JunctionModel,
     z: u8,
     bounds: &Bounds,
 ) {
-    // Plates near the tile's buffered extent, for band trimming — only at
-    // zooms that draw the plates, so a trim can never open an unplated hole.
-    let near: Vec<&synth::junction::BakedJunction> =
-        if z >= crate::priors::ROAD_SURFACE_MIN_ZOOM {
-            let b = bounds.expanded(0.55);
-            junctions.near((b.west, b.south, b.east, b.north))
-        } else {
-            Vec::new()
-        };
     let surface_zoom = z >= crate::priors::ROAD_SURFACE_MIN_ZOOM;
-    let mut bands = Vec::new();
     buckets[layers::TRANSPORTATION as usize].retain_mut(|f| {
-        synth::emit(f, sampler, solved, z, bounds);
-        // A structure's carriageway stroke (`deck: true`) is the SDF fill
-        // re-painted over a bridge deck or tunnel bore. At the surface zoom the
-        // structure's mesh top is that fill and its markings ride it as their
-        // own features, so drop the stroke — the same double-paint we drop for
-        // at-grade bands. Markings are `deck: true` too; the class check keeps
-        // them. Below the surface zoom the stroke stays as the deck's SDF fill.
-        if surface_zoom
-            && matches!(f.synth, Synth::Road { deck: true, .. })
-            && !is_marking(f)
-        {
-            return false;
-        }
-        match synth::surface::ribbon(f, sampler, solved, z, bounds, &near) {
-            // The band is now this road's fill surface, so drop the SDF fill
-            // stroke it was derived from — the carriageway is no longer painted
-            // twice. Everything that returns None keeps its stroke: markings,
-            // non-drivable roads (no `width_m`), DEM-less runs (no elevation),
-            // and every feature below the surface zoom — where roads stay pure
-            // draped SDF.
-            Some(band) => {
-                bands.push(band);
-                false
-            }
-            None => true,
-        }
+        synth::emit(f, field, junctions, sampler, solved, z, bounds);
+        // A carriageway the union paved has no business also painting its SDF
+        // fill: the mesh *is* the surface now. This covers the at-grade stroke and
+        // the `deck: true` stroke re-painted over a structure, whose own solid
+        // carries its top.
+        !(surface_zoom && paves_via_union(f))
     });
-    buckets[layers::TRANSPORTATION as usize].extend(bands);
+}
+
+/// Whether the unioned surface covers this feature, so its own fill stroke would
+/// be a second coat of the same paint.
+///
+/// The test is the same one the union's input used: a drivable carriageway is
+/// exactly a feature with a `width_m` to buffer. A marking has one too and must
+/// keep its stroke — that *is* its geometry — and a footway has none, so it keeps
+/// the cartographic stroke that is all it has ever had.
+fn paves_via_union(f: &EncoderFeature) -> bool {
+    if is_marking(f) {
+        return false;
+    }
+    if !matches!(f.synth, Synth::Road { corridor: Some(_), .. }) {
+        return false;
+    }
+    f.properties
+        .iter()
+        .any(|(k, v)| k.as_str() == "width_m" && matches!(v, Value::Double(w) if *w > 0.0))
+}
+
+/// Adds this tile's share of the unioned road surface: one opaque `road_surface`
+/// mesh per level plus the `road_casing` rim that antialiases and edges it.
+///
+/// Unlike the junction plates this replaced, there is no "which tile owns it"
+/// question — the region is clipped to the tile proper, so every tile emits
+/// exactly its own piece and the pieces meet at a shared, snapped seam.
+fn add_road_surface(
+    buckets: &mut [Vec<EncoderFeature>],
+    pavement: &synth::pavement::PavementModel,
+    field: &synth::height::HeightField,
+    sampler: &mut GroundSampler,
+    bounds: &Bounds,
+    z: u8,
+    z_ref: u8,
+) {
+    if z < crate::priors::ROAD_SURFACE_MIN_ZOOM || !sampler.has_elevation() {
+        return;
+    }
+    let Some(levels) = pavement.chunk_for(bounds) else {
+        return;
+    };
+    for paved in synth::pave_mesh::tile_meshes(levels, field, sampler, z, z_ref, bounds) {
+        let anchor = paved.anchor;
+        let id = anchor.x.to_bits() ^ anchor.y.to_bits().rotate_left(32);
+        // The casing rides after the surface so its blended rim composites over
+        // the opaque interior rather than under it.
+        let mut push = |class: &str, mesh: crate::terrain::TerrainMesh, bump: u64| {
+            buckets[layers::TRANSPORTATION as usize].push(EncoderFeature {
+                id: id ^ bump,
+                geometry: geo_types::Geometry::Point(geo_types::Point(anchor)),
+                properties: vec![
+                    ("class".to_string(), Value::String(class.to_string())),
+                    ("level".to_string(), Value::Int(paved.level)),
+                ],
+                elevation: None,
+                z: None,
+                mesh: Some(mesh),
+                synth: synth::Synth::None,
+            });
+        };
+        push("road_surface", paved.surface, 0);
+        if let Some(casing) = paved.casing {
+            push("road_casing", casing, 1);
+        }
+    }
 }
 
 /// Phase-1 worker: drains row-group work items from the queue, streams their
@@ -1026,8 +1074,8 @@ fn process_feature(
                         (Synth::Structure { corridor: corridor.id, kind }, stroke)
                     }
                 };
-                if let Some((class, oneway, width, disks)) = &marks {
-                    for m in synth::markings::for_line(&line, class, *oneway, *width, disks) {
+                if let Some((class, oneway, width, areas)) = &marks {
+                    for m in synth::markings::for_line(&line, class, *oneway, *width, areas) {
                         emit_geometry(layer, &m.geometry, &m.properties(), mark_synth, cfg, sorter, stats)?;
                     }
                 }
@@ -1037,9 +1085,9 @@ fn process_feature(
         }
         // Unclaimed: a plain road that drapes on the rendered ground.
         let synth = Synth::Road { corridor: None, deck: false };
-        if let Some((class, oneway, width, disks)) = &marks {
+        if let Some((class, oneway, width, areas)) = &marks {
             if let Geometry::LineString(line) = &f.geometry {
-                for m in synth::markings::for_line(line, class, *oneway, *width, disks) {
+                for m in synth::markings::for_line(line, class, *oneway, *width, areas) {
                     emit_geometry(layer, &m.geometry, &m.properties(), synth, cfg, sorter, stats)?;
                 }
             }
@@ -1050,14 +1098,14 @@ fn process_feature(
 }
 
 /// The marking inputs for a transportation feature — its class, one-way
-/// verdict, derived width, and the junction trim disks near it — or `None`
+/// verdict, derived width, and the paved intersections near it — or `None`
 /// when the class's ladder paints nothing (the common case, so the plate
 /// query is skipped entirely).
-fn marking_context(
+fn marking_context<'a>(
     f: &crate::geoparquet::Feature,
-    junctions: &JunctionModel,
+    junctions: &'a JunctionModel,
     bb: (f64, f64, f64, f64),
-) -> Option<(String, bool, f64, Vec<(geo_types::Coord, f64)>)> {
+) -> Option<(String, bool, f64, Vec<&'a crate::synth::area::Area>)> {
     let find_str = |key: &str| {
         f.properties.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
             Value::String(s) => Some(s.clone()),
@@ -1078,15 +1126,14 @@ fn marking_context(
     });
     let width =
         crate::priors::carriageway_width_m(Some(&class), find_str("subclass").as_deref(), measured)?;
-    let half = width * 0.5 + crate::priors::STRUCTURE_SHOULDER_M;
-    // Pad by more than any plausible plate reach (~200 m in degrees).
+    // Pad by more than any plausible intersection reach (~200 m in degrees).
     const MARGIN: f64 = 0.002;
-    let disks = junctions
+    let areas = junctions
         .near((bb.0 - MARGIN, bb.1 - MARGIN, bb.2 + MARGIN, bb.3 + MARGIN))
         .into_iter()
-        .map(|p| (p.point(), p.trim_radius_m(half)))
+        .map(|p| p.area())
         .collect();
-    Some((class, oneway, width, disks))
+    Some((class, oneway, width, areas))
 }
 
 /// The source feature's `id` property, when it is a string.
@@ -1309,6 +1356,7 @@ fn flush_tile(
     flat: &TerrainMesh,
     sampler: &mut GroundSampler,
     solved: &SolvedModel,
+    pavement: &synth::pavement::PavementModel,
     junctions: &JunctionModel,
     elevation: &mut (f64, f64),
     quality: i32,
@@ -1316,8 +1364,9 @@ fn flush_tile(
     let (z, x, y) = hilbert::tile_id_decode(tile_id);
     let bounds = Bounds::of_tile(z, x, y);
     stamp_elevations(buckets, sampler, z);
-    stamp_synth(buckets, sampler, solved, junctions, z, &bounds);
-    add_junction_plates(buckets, junctions, sampler, &bounds, z, solved.z_ref);
+    let field = synth::height::HeightField::for_tile(junctions, solved, z, &bounds);
+    stamp_synth(buckets, &field, junctions, sampler, solved, z, &bounds);
+    add_road_surface(buckets, pavement, &field, sampler, &bounds, z, solved.z_ref);
 
     // Vector layers in decode-priority (index) order.
     let mut enc_layers = Vec::new();
@@ -1367,7 +1416,7 @@ fn flush_tile(
 /// inspected up close in the 3D viewer (street level), where a 512 px budget
 /// visibly flattens road curves; there we keep ~8× finer detail, still well
 /// within the format's ~1/32768-of-a-tile quantization precision.
-fn tolerance(z: u8) -> f64 {
+pub(crate) fn tolerance(z: u8) -> f64 {
     let tile_w = 360.0 / (1u64 << z as u32) as f64; // 2^z columns
     let div = if z >= 13 { 4096.0 } else { 512.0 };
     tile_w / div

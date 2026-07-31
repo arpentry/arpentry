@@ -43,6 +43,11 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 /// by [`CorridorId`]. Immutable after the solve; shared by every emit worker.
 pub struct SolvedModel {
     profiles: Vec<Option<Profile>>,
+    /// The height every junction's members share, by index into
+    /// `SceneGraph::junctions`; `None` where no member carries a profile. Dense
+    /// because that index is already the currency of every junction consumer,
+    /// and because a hashed order is a determinism hazard.
+    junction_h: Vec<Option<f64>>,
     /// The zoom whose rendered terrain lattice anchored the solve.
     pub z_ref: u8,
 }
@@ -50,16 +55,34 @@ pub struct SolvedModel {
 impl SolvedModel {
     /// A model with no profiles — the DEM-less run, where nothing is elevated.
     pub fn empty(z_ref: u8) -> SolvedModel {
-        SolvedModel { profiles: Vec::new(), z_ref }
+        SolvedModel { profiles: Vec::new(), junction_h: Vec::new(), z_ref }
     }
 
     /// Wraps already-solved profiles — for tests and stage-isolated tooling.
+    /// Junction heights are unknown on this path; the surface then falls back to
+    /// the corridors' own profiles, which is what it does at an unprofiled
+    /// intersection anyway.
     pub fn from_profiles(profiles: Vec<Option<Profile>>, z_ref: u8) -> SolvedModel {
-        SolvedModel { profiles, z_ref }
+        SolvedModel { profiles, junction_h: Vec::new(), z_ref }
+    }
+
+    /// Attaches solved junction heights to a model assembled in stages — the
+    /// counterpart of [`SolvedModel::from_profiles`] for a caller that also ran
+    /// the fuse.
+    pub fn with_junction_heights(mut self, junction_h: Vec<Option<f64>>) -> SolvedModel {
+        self.junction_h = junction_h;
+        self
     }
 
     pub fn profile(&self, corridor: CorridorId) -> Option<&Profile> {
         self.profiles.get(corridor as usize)?.as_ref()
+    }
+
+    /// The solved height of a junction, by its index in `SceneGraph::junctions`.
+    /// `None` when the intersection has no profiled member, so nothing is known
+    /// about where its surface sits.
+    pub fn junction_height(&self, junction: usize) -> Option<f64> {
+        self.junction_h.get(junction).copied().flatten()
     }
 
     /// Number of corridors carrying a solved profile.
@@ -155,13 +178,17 @@ pub fn run(
     // projection in the same loop. This replaces the one-shot capped weld
     // (`junctions::apply`) and greedy clearance raise (`crossings::apply`),
     // whose caps left the steps the graph now removes.
-    {
+    // The junction heights are read out of the graph before it is dropped: they
+    // are what the surface mesh pins each intersection to, and nothing else can
+    // reproduce them exactly once the values have been scattered into `road_m`.
+    let junction_h = {
         let mut g = graph::build(scene, &profiles);
         relax::solve(&mut g);
         relax::reconstruct(&g, &mut profiles);
-    }
+        relax::junction_heights(&g)
+    };
 
-    Ok(SolvedModel { profiles, z_ref })
+    Ok(SolvedModel { profiles, junction_h, z_ref })
 }
 
 /// The terrain fate of the short structure spans assemble keeps
@@ -310,6 +337,7 @@ mod tests {
             class_key: String::new(),
             link: false,
             drivable: true,
+            width_m: Some(5.5),
             spans,
             segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],

@@ -364,6 +364,18 @@ pub fn reconstruct(g: &SolveGraph, profiles: &mut [Option<Profile>]) {
     }
 }
 
+/// The solved height of every junction, by junction index; `None` where no
+/// member carries a profile.
+///
+/// [`reconstruct`] scatters these same values into each corridor's `road_m` and
+/// the graph is then dropped, so without this the one height a junction's
+/// members agree on survives only as several equal numbers that a consumer has
+/// to re-derive. The surface mesh needs it as a *pin* — one height per
+/// intersection, read directly — so it is carried on the [`SolvedModel`].
+pub fn junction_heights(g: &SolveGraph) -> Vec<Option<f64>> {
+    g.junction_var.iter().map(|v| v.map(|v| g.h[v])).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +401,7 @@ mod tests {
             class_key: String::new(),
             link: false,
             drivable: true,
+            width_m: Some(5.5),
             spans: vec![],
             segments: vec![SegmentRef { source: id as u64, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],
@@ -545,6 +558,7 @@ mod tests {
             }],
             component: vec![0; n],
             n_components: 1,
+            junction_var: Vec::new(), // no scene junctions in this fixture
         };
         solve(&mut g);
         // The deck at the crossing (node 5) must clear: ≥ 100 + 6.5.
@@ -601,6 +615,7 @@ mod tests {
             crossings: vec![],
             component: vec![0; n],
             n_components: 1,
+            junction_var: Vec::new(), // no scene junctions in this fixture
         };
         solve(&mut g);
         // The structure interior lies on the chord from the approach anchor

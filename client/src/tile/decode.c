@@ -382,26 +382,30 @@ static double resolve_double(arpentry_tiles_Feature_table_t feat,
     return dflt;
 }
 
-/* Level filter for the structure passes (see collect_layer_meshes). The bands
-   are disjoint so a mesh lands in exactly one primitive: tunnels below grade,
-   elevated bridge decks above it, and at-grade junction plates exactly at grade
-   (level 0). The plates are split out because, being coplanar with the terrain
-   and road strokes, they render as no-depth-write decals rather than depth-
-   writing geometry (see plate_pipeline) to avoid a herringbone z-fight. */
-#define ARPT_LEVEL_ALL 0     /* buildings: take every mesh */
-#define ARPT_LEVEL_TUNNEL -1 /* level < 0: bores, occluded by terrain */
-#define ARPT_LEVEL_BRIDGE 1  /* level > 0: elevated decks, depth-written */
-#define ARPT_LEVEL_PLATE 2   /* level == 0: at-grade junction plates (decals) */
+/* Level filter for the structure passes (see collect_layer_meshes). Two disjoint
+   bands, so a mesh lands in exactly one primitive: bores below grade, and
+   everything at or above it — the at-grade road surface and the elevated decks —
+   in one depth-writing pass.
+
+   At-grade meshes used to need a third band of their own, drawn without depth
+   writes: many junction plates overlapped coplanar at a junction and
+   depth-writing them z-fought into a herringbone moire. The server now emits the
+   at-grade carriageway as ONE unioned region per tile per level with no
+   self-overlap, so the tie never arises and the decal pass is gone. The 3 m
+   camera-facing margin still lifts the surface over the coplanar terrain, and the
+   road strokes' larger margin keeps markings on top of it. */
+#define ARPT_LEVEL_ALL 0      /* buildings: take every mesh */
+#define ARPT_LEVEL_TUNNEL -1  /* level < 0: bores, occluded by terrain */
+#define ARPT_LEVEL_SURFACE 1  /* level >= 0: road surface + elevated decks */
 
 static bool keep_by_level(arpentry_tiles_Feature_table_t feat, int mode,
                           uint32_t level_key, arpentry_tiles_Value_vec_t values) {
     if (mode == ARPT_LEVEL_ALL) return true;
     int64_t lv = resolve_int(feat, level_key, values, 0);
     switch (mode) {
-    case ARPT_LEVEL_TUNNEL: return lv < 0;
-    case ARPT_LEVEL_BRIDGE: return lv > 0;
-    case ARPT_LEVEL_PLATE:  return lv == 0;
-    default:                return true;
+    case ARPT_LEVEL_TUNNEL:  return lv < 0;
+    case ARPT_LEVEL_SURFACE: return lv >= 0;
+    default:                 return true;
     }
 }
 
@@ -610,15 +614,7 @@ bool arpt_decode_bridge_mesh(const void *flatbuf, size_t size,
                              const char *layer_name,
                              const char (*class_names)[32], int class_count,
                              const float (*colors)[4], arpt_building_prim *out) {
-    return decode_structure_mesh(flatbuf, size, layer_name, ARPT_LEVEL_BRIDGE,
-                                 class_names, class_count, colors, out);
-}
-
-bool arpt_decode_plate_mesh(const void *flatbuf, size_t size,
-                            const char *layer_name,
-                            const char (*class_names)[32], int class_count,
-                            const float (*colors)[4], arpt_building_prim *out) {
-    return decode_structure_mesh(flatbuf, size, layer_name, ARPT_LEVEL_PLATE,
+    return decode_structure_mesh(flatbuf, size, layer_name, ARPT_LEVEL_SURFACE,
                                  class_names, class_count, colors, out);
 }
 

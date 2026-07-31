@@ -20,6 +20,14 @@
 //!    what a retaining wall between an underpass and a 12 m embankment is.
 //!    The step lands on a crest contact line ([`super::breaklines`]), so the
 //!    mesh draws it as a face rather than smearing it across a cell.
+//!
+//!    Nearest, but *a road's own carriageway first*: where two roads run closer
+//!    together than their benches are wide, the neighbour is the nearer bench
+//!    over part of the road's own asphalt, and the step would then fall
+//!    underneath the drawn surface — a wall across the kerb. A bench holds its
+//!    carriageway outright ([`EarthworkEdge::carriageway_m`]) and proximity
+//!    decides only in the verge beyond it, so the step always lands between two
+//!    carriageways rather than inside one.
 //! 2. *Batters clamp.* Outside every bench the ground is the natural height
 //!    bounded by the straight batter faces that reach it: no lower than the
 //!    highest fill face, no higher than the lowest cut face. Self-limiting —
@@ -53,6 +61,19 @@ pub struct EarthworkEdge {
     /// Held at target within this lateral distance (carriageway + shoulder +
     /// verge), metres — the bench.
     pub half_width_m: f64,
+    /// Half-width in metres of the *drawn asphalt* this bench carries — the
+    /// paved band, inside the bench's own verge.
+    ///
+    /// Benches otherwise resolve by proximity, which is right between two roads
+    /// and wrong inside one: where a road runs closer to a neighbour than its
+    /// own bench is wide — a street under a railway embankment, a switchback
+    /// above itself — the neighbour's bench is the nearer one over part of the
+    /// road's own carriageway, and the ground there steps up to it *underneath
+    /// the asphalt*. The drawn surface is then cut by a wall that belongs
+    /// outside it. So a bench holds its own carriageway outright, and proximity
+    /// decides only beyond it (docs/GROUND.md §2, "the ground under a road is
+    /// the road"). Zero for a carve, which paves nothing.
+    pub carriageway_m: f64,
     /// How far the batter face reaches beyond the bench on each side, metres,
     /// indexed `[left, right]` of the directed edge.
     ///
@@ -147,8 +168,12 @@ impl Earthworks {
     ///
     /// The bench winner is the smallest lateral distance, ties broken by edge
     /// index — a total order over a deterministically built edge set, so every
-    /// tile resolves the same winner (invariant 5). The faces are extrema, not
-    /// sums, so they too are order-independent.
+    /// tile resolves the same winner (invariant 5) — except that a bench
+    /// covering the point with its own *carriageway* outranks one that merely
+    /// reaches it with its verge, however near (see
+    /// [`EarthworkEdge::carriageway_m`]). Two ranks, each resolved by the same
+    /// total order, so the answer is still a function of the model alone. The
+    /// faces are extrema, not sums, so they too are order-independent.
     fn benches_and_faces(
         &self,
         lon: f64,
@@ -157,7 +182,9 @@ impl Earthworks {
         cell_m: f64,
         scratch: &[u32],
     ) -> (Option<f64>, f64, f64) {
-        let mut bench: Option<(f64, u32, f64)> = None; // (d, idx, target)
+        // (d, idx, target) for the paved rank and the verge rank.
+        let mut paved: Option<(f64, u32, f64)> = None;
+        let mut bench: Option<(f64, u32, f64)> = None;
         let (mut fill, mut cut) = (f64::NEG_INFINITY, f64::INFINITY);
         for &i in scratch {
             let e = &self.edges[i as usize];
@@ -170,14 +197,13 @@ impl Earthworks {
             }
             let target = e.target_a + (e.target_b - e.target_a) * t;
             if d <= e.half_width_m {
-                let better = match bench {
+                let rank = if d <= e.carriageway_m { &mut paved } else { &mut bench };
+                let better = match *rank {
                     None => true,
-                    Some((bd, bi, _)) => {
-                        d < bd - 1e-9 || ((d - bd).abs() <= 1e-9 && i < bi)
-                    }
+                    Some((bd, bi, _)) => d < bd - 1e-9 || ((d - bd).abs() <= 1e-9 && i < bi),
                 };
                 if better {
-                    bench = Some((d, i, target));
+                    *rank = Some((d, i, target));
                 }
                 continue;
             }
@@ -188,7 +214,7 @@ impl Earthworks {
                 cut = cut.min(target + rise);
             }
         }
-        (bench.map(|(_, _, target)| target), fill, cut)
+        (paved.or(bench).map(|(_, _, target)| target), fill, cut)
     }
 
     /// The engineered height at `(lon, lat)` given the natural ground `raw`:
@@ -363,6 +389,7 @@ mod tests {
             target_a: target,
             target_b: target,
             half_width_m: 8.0,
+            carriageway_m: 6.0,
             batter_m: [10.0; 2],
             chain: 0,
             arc0: 0.0,
@@ -478,6 +505,48 @@ mod tests {
     /// its whole bench (no averaging, so nothing domes up through the asphalt),
     /// the ground between them is the embankment's batter, and the road drape
     /// reads exactly the ground the terrain draws.
+    #[test]
+    /// A wide road with a narrow one seven metres off its axis, seven metres
+    /// higher — an interchange ramp beside a service track, a street under a
+    /// railway. Past the midpoint the narrow road's *verge* is the nearer
+    /// bench, so by proximity alone the ground steps up seven metres over the
+    /// outer metre of the wide road's own asphalt. Its carriageway must hold
+    /// its own height across its full width; the step belongs in the verge.
+    #[test]
+    fn a_carriageway_holds_its_own_ground_against_a_nearer_verge() {
+        let mut scratch = Vec::new();
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let mut street = edge(400.0);
+        street.half_width_m = 4.25;
+        street.carriageway_m = 3.75;
+        street.batter_m = [10.0; 2];
+        let mut track = street;
+        track.target_a = 407.0;
+        track.target_b = 407.0;
+        track.carriageway_m = 2.0; // a narrow way: its asphalt stops early
+        track.a.y += 7.0 / DEG_M;
+        track.b.y += 7.0 / DEG_M;
+        track.chain = 1;
+        let e = Earthworks::new(vec![street, track]);
+        let mid_x = 6.0 + 80.0 / (DEG_M * cos_lat);
+        let h_at = |off_m: f64, scratch: &mut Vec<u32>| {
+            e.height(mid_x, 46.0 + off_m / DEG_M, 400.0, 0.0, scratch)
+        };
+        // Across the whole street carriageway — including 3.7 m, which is
+        // nearer the track's bench (3.3 m) than its own axis.
+        for off in [-3.7, -1.0, 0.0, 1.0, 2.5, 3.7] {
+            let h = h_at(off, &mut scratch);
+            assert!((h - 400.0).abs() < 1e-9, "street must hold 400 at {off} m, got {h}");
+        }
+        // The track keeps its own carriageway, so the wall stands between them.
+        for off in [5.5, 7.0, 8.5] {
+            let h = h_at(off, &mut scratch);
+            assert!((h - 407.0).abs() < 1e-9, "the track must hold 407 at {off} m, got {h}");
+        }
+        // The drape reads the same answer, so road and ground cannot disagree.
+        assert_eq!(e.target_at(mid_x, 46.0 + 3.7 / DEG_M, &mut scratch), Some(400.0));
+    }
+
     #[test]
     fn each_bench_holds_its_own_road_against_its_neighbour() {
         let mut scratch = Vec::new();

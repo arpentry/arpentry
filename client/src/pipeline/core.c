@@ -288,14 +288,6 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     r->tunnel_pipeline =
         arpt__mesh_create_structure_pipeline(device, "vs_deck", "fs_deck", format,
                                           r->global_bgl, r->tile_bgl, true);
-    /* At-grade junction plates: the bridge-deck margin (so they win over the
-       coplanar terrain) but NO depth write — overlapping plates would otherwise
-       z-fight each other into a herringbone moiré. Without a depth write they
-       composite in painter's order, cleanly, and the road strokes drawn after
-       still land on top. */
-    r->plate_pipeline =
-        arpt__mesh_create_structure_pipeline(device, "vs_deck_bridge", "fs_deck",
-                                          format, r->global_bgl, r->tile_bgl, false);
 
     /* Surface offscreen pipelines + sampler */
     r->surface_pipeline = arpt__texture_create_surface_pipeline(device);
@@ -412,7 +404,6 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->road_pipeline) wgpuRenderPipelineRelease(r->road_pipeline);
     if (r->bridge_pipeline) wgpuRenderPipelineRelease(r->bridge_pipeline);
     if (r->tunnel_pipeline) wgpuRenderPipelineRelease(r->tunnel_pipeline);
-    if (r->plate_pipeline) wgpuRenderPipelineRelease(r->plate_pipeline);
     if (r->surface_pipeline) wgpuRenderPipelineRelease(r->surface_pipeline);
     if (r->stencil_fill_pipeline) wgpuRenderPipelineRelease(r->stencil_fill_pipeline);
     if (r->stencil_color_pipeline) wgpuRenderPipelineRelease(r->stencil_color_pipeline);
@@ -607,7 +598,6 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
     /* Upload road-structure box prisms (bridge decks + tunnel bores) */
     arpt__mesh_upload_structure(r, &t->bridge, &prims->bridges);
     arpt__mesh_upload_structure(r, &t->tunnel, &prims->tunnels);
-    arpt__mesh_upload_structure(r, &t->plate, &prims->plates);
 
     /* Upload tree instances */
     arpt__instance_upload(r, t, &prims->instances);
@@ -677,7 +667,6 @@ arpt_tile_gpu *arpt_renderer_upload_tile(arpt_renderer *r,
     } structures[] = {
         {&t->bridge, r->bridge_view},
         {&t->tunnel, r->tunnel_view},
-        {&t->plate, r->bridge_view}, /* plates are road-coloured like decks */
     };
     for (size_t s = 0; s < sizeof(structures) / sizeof(structures[0]); s++) {
         if (structures[s].draw->index_count == 0) continue;
@@ -796,11 +785,6 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     if (tile->tunnel.buf_normals) wgpuBufferRelease(tile->tunnel.buf_normals);
     if (tile->tunnel.buf_color) wgpuBufferRelease(tile->tunnel.buf_color);
     if (tile->tunnel.buf_indices) wgpuBufferRelease(tile->tunnel.buf_indices);
-    if (tile->plate.buf_xy) wgpuBufferRelease(tile->plate.buf_xy);
-    if (tile->plate.buf_z) wgpuBufferRelease(tile->plate.buf_z);
-    if (tile->plate.buf_normals) wgpuBufferRelease(tile->plate.buf_normals);
-    if (tile->plate.buf_color) wgpuBufferRelease(tile->plate.buf_color);
-    if (tile->plate.buf_indices) wgpuBufferRelease(tile->plate.buf_indices);
     if (tile->road_buf_vert) wgpuBufferRelease(tile->road_buf_vert);
     if (tile->road_buf_index) wgpuBufferRelease(tile->road_buf_index);
     for (int mi = 0; mi < ARPT_MAX_MODELS; mi++) {
@@ -822,7 +806,6 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile) {
     if (tile->bldg_bind_group) wgpuBindGroupRelease(tile->bldg_bind_group);
     if (tile->bridge.bind_group) wgpuBindGroupRelease(tile->bridge.bind_group);
     if (tile->tunnel.bind_group) wgpuBindGroupRelease(tile->tunnel.bind_group);
-    if (tile->plate.bind_group) wgpuBindGroupRelease(tile->plate.bind_group);
     if (tile->surface_view) wgpuTextureViewRelease(tile->surface_view);
     if (tile->surface_texture) wgpuTextureRelease(tile->surface_texture);
     free(tile->surf_polys.verts);
@@ -961,10 +944,6 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
        a structure lands on its top and wins. */
     arpt__mesh_draw_structure(r, &tile->tunnel, r->tunnel_pipeline);
     arpt__mesh_draw_structure(r, &tile->bridge, r->bridge_pipeline);
-    /* At-grade junction plates: no depth write (see plate_pipeline), so drawn
-       after the depth-writing structures and before the road strokes, which
-       carry the largest margin and land their paint and markings on top. */
-    arpt__mesh_draw_structure(r, &tile->plate, r->plate_pipeline);
     arpt__road_draw(r, tile);
     arpt__mesh_draw_buildings(r, tile);
     arpt__instance_draw(r, tile);

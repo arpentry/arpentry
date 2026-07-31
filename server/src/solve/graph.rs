@@ -108,6 +108,12 @@ pub struct SolveGraph {
     /// Connected-component id per variable (`0..n_components`).
     pub component: Vec<usize>,
     pub n_components: usize,
+    /// The variable each of `scene.junctions` shares, by junction index; `None`
+    /// where no member carries a profile, so the intersection has no solved
+    /// height at all. Reading `h` here is the junction's height — the number the
+    /// members hold in common by construction, rather than one recovered from
+    /// their profiles afterwards.
+    pub junction_var: Vec<Option<VarId>>,
 }
 
 /// A union–find over `n` slots (path-compression + union-by-size).
@@ -166,8 +172,13 @@ pub fn build(scene: &SceneGraph, profiles: &[Option<Profile>]) -> SolveGraph {
     }
 
     // DOF sharing: union each junction's members' nearest nodes into one slot.
+    // The anchor slot is kept per junction so the solved height at that shared
+    // variable can be read back out (`junction_var`) instead of being recovered
+    // afterwards from the members' scattered `road_m`, which is how everything
+    // downstream used to guess at it.
     let mut uf = UnionFind::new(total_slots);
-    for j in &scene.junctions {
+    let mut junction_slot: Vec<Option<usize>> = vec![None; scene.junctions.len()];
+    for (ji, j) in scene.junctions.iter().enumerate() {
         let mut anchor: Option<usize> = None;
         for m in &j.members {
             let cid = m.corridor as usize;
@@ -182,6 +193,7 @@ pub fn build(scene: &SceneGraph, profiles: &[Option<Profile>]) -> SolveGraph {
                 Some(a) => uf.union(a, slot),
             }
         }
+        junction_slot[ji] = anchor;
     }
 
     // S8 entity resolution: a non-drivable structure (a footbridge) running
@@ -304,7 +316,14 @@ pub fn build(scene: &SceneGraph, profiles: &[Option<Profile>]) -> SolveGraph {
     }
     let crossings = build_crossings(scene, profiles, &corridors, &ci_of);
 
-    SolveGraph { vars, h, corridors, crossings, component, n_components }
+    // Resolve each junction's anchor slot to the variable its members ended up
+    // sharing. Going through the same `root_var` the node maps went through is
+    // what makes the recorded variable *the* one the members share — a second
+    // `nearest_node` lookup could disagree with the first.
+    let junction_var: Vec<Option<VarId>> =
+        junction_slot.into_iter().map(|s| s.and_then(|slot| root_var[uf.find(slot)])).collect();
+
+    SolveGraph { vars, h, corridors, crossings, component, n_components, junction_var }
 }
 
 /// Resolves the scene's crossings into solver form: the upper corridor's arc,
@@ -546,6 +565,7 @@ mod tests {
             class_key: String::new(),
             link: false,
             drivable: true,
+            width_m: Some(5.5),
             spans: vec![],
             segments: vec![SegmentRef { source: id as u64, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],
@@ -625,6 +645,79 @@ mod tests {
         assert_eq!(g.n_components, 1);
     }
 
+    /// The height recorded for a junction is the one its members share, so it
+    /// agrees with every member's own profile exactly — not to a tolerance.
+    #[test]
+    fn a_junctions_height_is_the_shared_variable() {
+        let len = 100.0;
+        let n = 6;
+        let deg = len / (DEG_M * cos_lat());
+        let a = corridor(0, 6.0, len, n, RoadClass::Minor);
+        let b = corridor(1, 6.0 + deg, len, n, RoadClass::Minor);
+        let c = corridor(2, 6.0 + deg, len, n, RoadClass::Minor);
+        let point = *a.nodes.last().unwrap();
+        let members = vec![
+            JunctionMember { corridor: 0, arc: len },
+            JunctionMember { corridor: 1, arc: 0.0 },
+            JunctionMember { corridor: 2, arc: 0.0 },
+        ];
+        let scene = {
+            let mut s = SceneGraph::new(vec![a, b, c]);
+            s.junctions = vec![Junction { point, connector: 0, members: members.clone() }];
+            s
+        };
+        // Deliberately disagreeing legs: the weld has real work to do.
+        let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
+        let mut profiles: Vec<Option<Profile>> = ns
+            .iter()
+            .zip([300.0, 302.0, 304.0])
+            .map(|(nodes, h)| Some(Profile::flat(nodes, h)))
+            .collect();
+
+        let mut g = build(&scene, &profiles);
+        super::super::relax::solve(&mut g);
+        super::super::relax::reconstruct(&g, &mut profiles);
+        let heights = super::super::relax::junction_heights(&g);
+
+        assert_eq!(heights.len(), 1, "one height per junction");
+        let h = heights[0].expect("a profiled junction has a height");
+        for m in &members {
+            let p = profiles[m.corridor as usize].as_ref().expect("profiled");
+            let at = p.road_at_arc(m.arc);
+            assert!((at - h).abs() < 1e-9, "member {} reads {at}, junction says {h}", m.corridor);
+        }
+        // And it is the step `consistency::measure` reports — which is now zero.
+        let lo = members
+            .iter()
+            .map(|m| profiles[m.corridor as usize].as_ref().unwrap().road_at_arc(m.arc))
+            .fold(f64::INFINITY, f64::min);
+        let hi = members
+            .iter()
+            .map(|m| profiles[m.corridor as usize].as_ref().unwrap().road_at_arc(m.arc))
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(hi - lo < 1e-9, "the members still step by {}", hi - lo);
+    }
+
+    /// A junction none of whose members carries a profile has no solved height —
+    /// there is nothing to know, and `None` says so.
+    #[test]
+    fn an_unprofiled_junction_has_no_height() {
+        let len = 100.0;
+        let a = corridor(0, 6.0, len, 6, RoadClass::Minor);
+        let point = *a.nodes.last().unwrap();
+        let scene = {
+            let mut s = SceneGraph::new(vec![a]);
+            s.junctions = vec![Junction {
+                point,
+                connector: 0,
+                members: vec![JunctionMember { corridor: 0, arc: len }],
+            }];
+            s
+        };
+        let g = build(&scene, &vec![None]);
+        assert_eq!(super::super::relax::junction_heights(&g), vec![None]);
+    }
+
     /// An east-west corridor `off_m` metres north of lat 46, spanning `len_m`
     /// from lon 6, entirely one bridge span.
     fn bridge_corridor(id: u32, off_m: f64, len_m: f64, n: usize, drivable: bool) -> Corridor {
@@ -642,6 +735,7 @@ mod tests {
             class_key: String::new(),
             link: false,
             drivable,
+            width_m: Some(5.5),
             spans: vec![Span { arc0: 0.0, arc1: len_m, level: 1, kind: SpanKind::Bridge }],
             segments: vec![SegmentRef { source: id as u64, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],

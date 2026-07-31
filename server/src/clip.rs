@@ -232,7 +232,7 @@ fn clip_polygon(poly: &Polygon, r: &Bounds) -> Option<Polygon> {
 
 /// Clips one ring against all four rectangle edges, returning a closed ring
 /// (first == last) or `None` if fewer than 3 distinct vertices remain.
-fn clip_ring(ring: &[Coord], r: &Bounds) -> Option<LineString> {
+pub(crate) fn clip_ring(ring: &[Coord], r: &Bounds) -> Option<LineString> {
     // Work on the open ring (drop a repeated closing point).
     let mut poly: Vec<Coord> = ring.to_vec();
     if poly.len() > 1 && coords_eq(poly[0], *poly.last().unwrap()) {

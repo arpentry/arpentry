@@ -209,11 +209,46 @@ pub const CLEARANCE_TROUGH_M: f64 = 20.0;
 /// render the bare draped strokes; positions never change, only detail sheds.
 pub const ROAD_SURFACE_MIN_ZOOM: u8 = 13;
 
-/// How far the road-surface band sits below the road-surface height, in
-/// metres: deep enough that junction plates and deck tops win their overlaps
-/// without z-fighting, shallow enough that the client's deck depth margin
-/// still lifts the band over the terrain it drapes on.
-pub const SURFACE_SINK_M: f64 = 0.05;
+/// Zoom whose tile rects are the chunks the unioned road surface is baked in
+/// (docs/ROADS.md §6.1). Every zoom that draws asphalt is at or beyond
+/// [`ROAD_SURFACE_MIN_ZOOM`] and the tile grid nests, so every such tile lies
+/// wholly inside exactly one chunk: a tile clip never spans a chunk edge, and
+/// one region boundary serves every zoom.
+pub const PAVE_BAKE_Z: u8 = ROAD_SURFACE_MIN_ZOOM;
+
+/// How far outside its own rect a chunk's union reads input, in metres. A union
+/// boundary is local — only geometry within its own half-width plus the closing
+/// reach can move it — so this need only cover the widest carriageway plus
+/// [`CURB_RETURN_M`] twice over, not a whole tile.
+pub const PAVE_PAD_M: f64 = 32.0;
+
+/// Curb-return radius, in metres: the morphological closing that rounds the
+/// reflex corners where carriageways meet (docs/ROADS.md §6.5, H3). Applied only
+/// inside intersection extents — a closing this wide would otherwise bridge any
+/// gap under 6 m and fuse a divided carriageway into one slab.
+pub const CURB_RETURN_M: f64 = 3.0;
+
+/// Width of the antialiasing rim inset from the paved boundary, in metres. The
+/// strip that carries `edge_across` from the silhouette (127) to the interior
+/// (0), and with it the darker casing tone. Wide enough to hold the ~1 px fade
+/// at a grazing angle, narrow enough to read as a kerb line rather than a band.
+pub const PAVE_RIM_M: f64 = 0.35;
+
+/// Coarsest the paved boundary may be simplified, in metres — a cap *on top of*
+/// the tiler's per-zoom line tolerance.
+///
+/// A road's width is the subject here, not incidental detail: at z13 the generic
+/// budget is ~1.2 m, which on a 6 m carriageway is a fifth of its width, and the
+/// boundary visibly deforms into angular blobs. A cartographic line can absorb
+/// that because only its path matters; a surface cannot. A fifth of a metre is
+/// far below the narrowest carriageway yet still four orders coarser than the
+/// sub-millimetre precision the union is built at, so it keeps almost all of the
+/// vertex reduction.
+pub const PAVE_SIMPLIFY_M: f64 = 0.2;
+
+/// Longest paved-boundary edge before the surface mesher subdivides it, in
+/// metres, so a long straight kerb still gets vertices to drape on.
+pub const PAVE_SEG_M: f64 = 4.0;
 
 /// Longest bed earthwork edge for an unclaimed street, in metres: edges
 /// longer than this are subdivided so the bed's targets track the terrain

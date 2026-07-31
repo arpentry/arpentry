@@ -232,6 +232,7 @@ mod tests {
             class_key: String::new(),
             link: false,
             drivable: true,
+            width_m: Some(5.5),
             spans: vec![],
             segments: vec![SegmentRef { source: id as u64, node0: 0, node1: n - 1, properties: vec![] }],
             connectors: vec![],

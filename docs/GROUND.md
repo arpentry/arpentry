@@ -95,6 +95,17 @@ The field resolves in two steps:
   heights abut, the field steps: that is a retaining wall, which is what an
   underpass beside an embankment physically has. The step falls on a crest
   contact line (§3), so the mesh draws it as a face.
+
+  Nearest, but *a road's own carriageway first*. Proximity is the right
+  arbiter between two roads and the wrong one inside a road: where a wide
+  road runs closer to a narrower neighbour than its own half-width, the
+  neighbour's *verge* is the nearer bench over the wide road's outermost
+  asphalt, and the step would then land underneath a drawn surface — a
+  retaining wall across the kerb. A bench holds its own carriageway outright
+  and proximity decides only in the verge beyond it, so a step always falls
+  between two carriageways rather than inside one. This is the same sentence
+  as the heading, applied to the tie-break: the ground under a road is the
+  road.
 - **Batters clamp.** Outside every bench the ground is the natural surface,
   bounded by the straight batter faces that reach it: no lower than the
   highest embankment face, no higher than the lowest cutting face
@@ -169,6 +180,33 @@ next, and the mesh comes out as a row of teeth. Inside the edge every vertex
 of the line is unambiguously on the bench, and the step falls between the
 crest and the first lattice point beyond it.
 
+**A crest stops where its bench stops holding the ground.** The half-width is
+a *geometric* edge, and where two benches overlap it is not where the field
+steps. Benches win by proximity, so between two roads closer together than
+their half-widths the winner changes at a boundary somewhere between them, and
+each road's nominal crest lies past it, inside the other's reign. A crest node
+there samples the *neighbour's* height — the z rule cuts both ways: a
+breakline says where to sample, so a line in the wrong place finds the wrong
+answer — and the triangulation then ramps that height back across the road the
+crest was drawn to protect. A service way beside a street three metres higher
+went under the hill that way. So each crest node is pulled in to where the
+ground under it is its own bench again, and a bench crowded out to its own
+axis emits no crest at all: the neighbour holds the ground there and draws the
+crest the mesh needs. Uncontended crests keep the nominal offset, so the
+pull-in costs nothing where nothing contends; the run stats report how many
+nodes were pulled and how many dropped.
+
+A pulled crest is also *sampled* more finely. The line's nodes are the
+earthwork's own, a class node-spacing apart — tens of metres on a street —
+which is exact while the offset is constant, because the chord between two
+samples then lies on the line. Where a neighbour crowds the bench the offset
+differs at each end and the chord cuts inside both, under the carriageway's own
+asphalt; the mesh holds the bench only inside that chord and ramps the
+neighbour's wall over the strip outside it, which beside a railway seven metres
+up is a wall drawn across the kerb. Contended segments are therefore
+subdivided to about a lattice cell, so the crest tracks the boundary rather
+than chording across it.
+
 **The tile-border contract.** Contact lines are global polylines clipped
 per tile. A border crossing lands exactly on the quantized tile edge
 (16384 / 49152 on the crossed axis); the neighbor clips the same global
@@ -227,3 +265,12 @@ radius drop the inner contact line rather than emit a folded one.
   bench, so the road hugs the terrain that *is* drawn (invariant 4).
 - **On structures** the road rides the deck ramp at every zoom, the same
   heights the deck and bore solids are swept from (invariant 2).
+
+Reading the field is not enough on its own: the asphalt has to be *meshed*
+finely enough to hold what it read. Sampling the field only at the paved
+region's outline leaves triangles spanning the whole carriageway, and on an
+unbenched cross-slope the ground — sampled every cell — crosses them. The
+paved surface is therefore triangulated over the terrain's own lattice
+(docs/ROADS.md §6.1). An intersection pin carries the same raise-only clamp as
+every carriageway source: no drawn asphalt sits below the ground drawn under
+it, whichever source answered for it.

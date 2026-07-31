@@ -61,13 +61,33 @@ pub fn bake(
     f: &mut EncoderFeature,
     profile: Option<&Profile>,
     deck: bool,
+    layer: u32,
+    field: Option<&crate::synth::height::HeightField>,
     sampler: &mut GroundSampler,
     z: u8,
     z_ref: u8,
     bounds: &Bounds,
 ) {
-    let mut height =
-        |lon: f64, lat: f64| surface_height(profile, deck, sampler, z, z_ref, bounds, lon, lat);
+    // At-grade paint reads the shared height field, so it lands on exactly the
+    // asphalt beside it — including inside an intersection, where the field is
+    // pinned to the height the solver made the legs share. Structure paint keeps
+    // riding its own deck ramp: a deck is not part of the at-grade surface and
+    // has no business being blended with it.
+    let mut scratch: Vec<u32> = Vec::new();
+    let mut height = |lon: f64, lat: f64| {
+        match field {
+            // Only geometry that is *part of* the paved surface reads the field.
+            // A footway contributes no sources to it, so blending it in would
+            // hand back whatever road happens to cover the point — including that
+            // road's raise-only clamp to its own profile. A path crossing under an
+            // embankment or a bridge approach was lifted metres into the air by
+            // exactly that, which is why it showed worst beside bridges.
+            Some(f) if !deck && !f.is_empty() => {
+                f.at(sampler, AT_GRADE_LEVEL, layer, z, z_ref, bounds, lon, lat, &mut scratch)
+            }
+            _ => surface_height(profile, deck, sampler, z, z_ref, bounds, lon, lat),
+        }
+    };
     // A corridor road's paint follows the corridor's *smoothed* sweep line —
     // the same curve its bridges and tunnels are swept along — instead of
     // tracing the raw line's digitising wiggle beside them.
@@ -84,11 +104,20 @@ pub fn bake(
     }
 }
 
-/// The road-surface height at a point — the one function every road
-/// representation reads (GENERATION.md invariant 2, ROADS.md invariant 5):
-/// the paint stroke bakes its vertices on it and the surface band
-/// (`synth::surface`) drapes its edges on the same answer, so paint and
-/// asphalt can never drift apart.
+/// The `level` an at-grade road sits on. Grade spans carry level 0 by
+/// construction (`solve::mod.rs:194`), and only at-grade roads read the field —
+/// a structure rides its own deck ramp.
+pub(crate) const AT_GRADE_LEVEL: i64 = 0;
+
+/// The road-surface height at a point *for one corridor* — the per-corridor
+/// answer, and the value [`crate::synth::height::HeightField`] blends.
+///
+/// Still the single definition of "where does this corridor's surface sit": the
+/// field calls it rather than reproducing it, and structure paint calls it
+/// directly for the deck ramp. What changed is that at-grade consumers now go
+/// through the field, so several corridors meeting at one place get one answer
+/// instead of each drawing its own (GENERATION.md invariant 2, ROADS.md
+/// invariant 5).
 pub(crate) fn surface_height(
     profile: Option<&Profile>,
     deck: bool,
@@ -99,49 +128,81 @@ pub(crate) fn surface_height(
     lon: f64,
     lat: f64,
 ) -> f64 {
-    match profile {
-        // Structure paint rides the *deck ramp* at every zoom — the same
-        // `deck_m` heights the deck/bore sweep builds its solid from (a
-        // bridge's deck top, a tunnel bore's road surface) — not the road
-        // profile, which the ramp fit (and the clearance clamps) diverge from
-        // mid-span; paint baked at road height sinks inside the solid wherever
-        // the fitted ramp rises above it.
-        Some(p) if deck => p.deck_height_at(lon, lat),
-        // At the reference zoom a corridor road rides the engineered ground —
-        // the roadbed target inside a bench (the profile the earthworks were
+    // Structure paint rides the *deck ramp* at every zoom — the same `deck_m`
+    // heights the deck/bore sweep builds its solid from (a bridge's deck top, a
+    // tunnel bore's road surface) — not the road profile, which the ramp fit (and
+    // the clearance clamps) diverge from mid-span; paint baked at road height
+    // sinks inside the solid wherever the fitted ramp rises above it.
+    if let (Some(p), true) = (profile, deck) {
+        return p.deck_height_at(lon, lat);
+    }
+    let ground = ground_height(sampler, z, z_ref, bounds, lon, lat);
+    on_ground(ground, profile, sampler, z, z_ref, lon, lat)
+}
+
+/// The engineered ground under a point — the half of the surface answer that does
+/// **not** depend on which corridor is asking.
+///
+/// Split out because it is the expensive half: a `bed_target` query walks the
+/// earthwork index (hundreds of thousands of edges on a real extract) and the
+/// fallback evaluates the rendered terrain lattice. The height field blends
+/// several corridors at one point, and calling the whole of [`surface_height`]
+/// per corridor recomputed this identical value once per corridor. Now it is
+/// computed once per point and each corridor only applies its own clamp.
+pub(crate) fn ground_height(
+    sampler: &mut GroundSampler,
+    z: u8,
+    z_ref: u8,
+    bounds: &Bounds,
+    lon: f64,
+    lat: f64,
+) -> f64 {
+    if z == z_ref {
+        // The roadbed target inside a bench (the profile the earthworks were
         // built from, held flat by the breakline-constrained terrain), the
-        // rendered surface on unbenched stretches — but **never sinks below its
-        // own solved profile**. Where benches overlap across stacked
-        // interchange corridors (a viaduct approach crossing a lower road) the
-        // nearest bench may belong to the *other* road, and its target falls
-        // short of this road's fill; without the clamp the road would drape
-        // onto its neighbour's bed and step *below its own bridge deck*.
-        // Clamping up to `road_m` makes the surface meet the deck at one height
-        // (ROADS.md invariant 5) while a lower crossing road keeps its own
-        // (higher) bench and is not buried. A cut still renders as a cut: there
-        // the benched ground equals `road_m`, so the clamp is a no-op.
-        Some(p) if z == z_ref => {
-            let ground = match sampler.bed_target(lon, lat) {
-                Some(bed) => bed,
-                None => sampler.surface(bounds, lon, lat, z),
-            };
-            ground.max(p.height_at(lon, lat))
-        }
-        // An unclaimed road (no profile) rides the engineered ground as before.
-        _ if z == z_ref => match sampler.bed_target(lon, lat) {
+        // rendered surface on unbenched stretches.
+        match sampler.bed_target(lon, lat) {
             Some(bed) => bed,
             None => sampler.surface(bounds, lon, lat, z),
-        },
-        // Coarser zooms: the per-zoom surface plus the zoom-independent
-        // engineered offset, clamped to fills (the coarse-LOD rule — this
-        // lattice cannot carry a bench, so the road hugs the drawn ground).
+        }
+    } else {
+        sampler.surface(bounds, lon, lat, z)
+    }
+}
+
+/// One corridor's surface given the shared [`ground_height`] at the same point.
+///
+/// At the reference zoom a corridor road rides the engineered ground but **never
+/// sinks below its own solved profile**. Where benches overlap across stacked
+/// interchange corridors (a viaduct approach crossing a lower road) the nearest
+/// bench may belong to the *other* road, and its target falls short of this
+/// road's fill; without the clamp the road would drape onto its neighbour's bed
+/// and step *below its own bridge deck*. Clamping up to `road_m` makes the
+/// surface meet the deck at one height (ROADS.md invariant 5) while a lower
+/// crossing road keeps its own (higher) bench and is not buried. A cut still
+/// renders as a cut: there the benched ground equals `road_m`, so the clamp is a
+/// no-op.
+///
+/// At coarser zooms the lattice cannot carry a bench, so the road hugs the drawn
+/// ground plus the zoom-independent engineered offset, clamped to fills.
+pub(crate) fn on_ground(
+    ground: f64,
+    profile: Option<&Profile>,
+    sampler: &mut GroundSampler,
+    z: u8,
+    z_ref: u8,
+    lon: f64,
+    lat: f64,
+) -> f64 {
+    match profile {
+        Some(p) if z == z_ref => ground.max(p.height_at(lon, lat)),
         Some(p) => {
-            let surface = sampler.surface(bounds, lon, lat, z);
             let ref_bounds = solve::tile_containing(z_ref, lon, lat);
             let lift = p.height_at(lon, lat) - sampler.surface(&ref_bounds, lon, lat, z_ref);
-            surface + lift.max(0.0)
+            ground + lift.max(0.0)
         }
-        None => sampler.surface(bounds, lon, lat, z),
+        // An unclaimed road rides the engineered ground as before.
+        None => ground,
     }
 }
 
