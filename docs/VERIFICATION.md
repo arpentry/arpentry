@@ -87,7 +87,8 @@ scorecard get skimmed.
 
 | metric | inv | what it means |
 |---|---|---|
-| `contact.pavement_over_terrain` | 4 | Signed clearance of the carriageway surface over the terrain mesh. Negative is buried: the ground is drawn through the road. |
+| `contact.pavement_buried` | 4 | Carriageway surface below the terrain mesh: the ground is drawn through the road. |
+| `contact.pavement_floating` | 4 | The same distribution from the high end. Past a metre the road stands on an embankment that was never built. |
 | `contact.pavement_unbacked_pct` | 4 | Per-tile share of asphalt with no terrain triangle beneath it. |
 | `order.deck_above_carriageway` | 3 | Deck running surface minus the at-grade asphalt sharing its plan position. Negative past the touchdown band means the level ordinal inverted. |
 | `clearance.deck_over_ground` | 4 | Deck soffit minus the terrain beneath it. Past a deck thickness, the deck ploughs into the hillside. |
@@ -181,7 +182,39 @@ could not:
   ending in mid-air. Invariant 4's documented missing-pier deviation, visible
   rather than remembered.
 
-## 6. A worked example of how easy it is to be wrong
+## 6. What the scorecard has already settled
+
+Two changes were tried against the earthwork bench criterion and both were
+rejected — the first by a retile and a diff in about ninety seconds, the second
+by the unit tests before a retile was needed. Recorded here so nobody spends a
+day rediscovering them.
+
+**The finding that prompted it.** The contact check originally reported only
+burial. Adding the other tail showed floating is the larger half by far: 3.8 %
+of asphalt stands more than a metre clear of the drawn ground and reaches 15 m,
+against 1.5 % buried reaching 4.2 m. A one-sided instrument had hidden it.
+
+The cause is `MAX_BENCH_FACE_M`, which caps the face at the bench edge —
+`(road − terrain) + (terrain − edge)`, the road's own departure from the ground
+plus the hillside's fall across the band. Above the cap no bench is emitted,
+which does not put the road back on the ground: it leaves the road where the
+profile put it and the ground where the DEM had it, with air between.
+
+| attempt | result |
+|---|---|
+| Cap the **cross-slope term only**, so an embankment always benches | Six metrics regressed. Terrain faces 264:1 → **542:1**, worst burial −4.2 → **−7.6 m**, deck-into-hillside −6.9 → **−12.5 m**. Every tall fill benched, and a fill whose batter cannot daylight becomes a retaining wall. The worst float did not improve at all. |
+| Delete the prior and ask whether the **batter daylights** instead | Far too strict. A 1:2 cross-slope closes nowhere against a 1:2.5 batter, so an ordinary hillside street loses its bench. Rejected by `a_street_bench_is_flat_across_a_side_slope`. |
+
+**The conclusion is structural.** On steep or tall ground the earthwork must
+choose between a wall, a float, and no bench. All three are defects, and all
+three are visible *only because the ground is drawn under the asphalt at all*.
+This is the same wall-versus-accuracy trade the terrain-hole study hit from the
+opposite direction when it raised the cap 3 → 6 → 12. Tuning the criterion moves
+the defect; it does not remove it. Cutting the terrain back to the kerb
+(`data/plans/terrain-hole-plan.md`) dissolves the choice instead of balancing
+it, and these two results are independent evidence for that plan.
+
+## 7. A worked example of how easy it is to be wrong
 
 The seam check went through three shapes before it measured anything true, and
 the sequence is the argument for the "measure its anatomy" rule below.
@@ -218,7 +251,7 @@ Three readings, two of them wrong, and the true finding is in a different module
 from where the first number pointed. Nothing about the first reading was
 obviously suspect.
 
-## 7. The corpus
+## 8. The corpus
 
 `server/verify/scenarios.json` binds each situation from `GENERATION.md` §4 to a
 real place. Sites are **mined, not invented**: `--mine` finds the strongest
@@ -233,7 +266,7 @@ decoder that does not exist yet, rather than being given a plausible coordinate.
 
 Re-mine after retiling a different extract; the sites are extract-specific.
 
-## 8. Baselines
+## 9. Baselines
 
 `server/verify/baseline-montreux-z16.json` is the committed scorecard for
 `data/overture-ch/preview.arpa` at z16. It is not a statement that the scene is
@@ -247,7 +280,7 @@ like a check that passed.
 Regenerate with `--json`, and say in the commit message which numbers moved and
 why.
 
-## 9. Adding a check
+## 10. Adding a check
 
 A check is one file in `server/src/verify/checks/`, implementing `visit` and
 `finish`, plus a line in `checks::run`. The friction is deliberately low: a

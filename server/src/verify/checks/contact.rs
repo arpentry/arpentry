@@ -10,8 +10,14 @@
 //! samples the carriageway's interior and interrogates the ground's triangles,
 //! and neither half of that is optional.
 //!
-//! Sign convention: the sample is `road − ground`, so negative is buried and
-//! the metric's worst value is the depth of the deepest burial in metres.
+//! Sign convention: the sample is `road − ground`. Invariant 4 has two sides —
+//! "nothing floats and nothing is buried by accident" — and one sampling pass
+//! answers both, so both are reported. The first version of this module
+//! reported only burial, and that was a mistake worth recording: floating turned
+//! out to be an order of magnitude more common (3.9 % of asphalt more than a
+//! metre clear of the ground, against 1.5 % buried) and reached 15 m where
+//! burial reached 4 m. A one-sided instrument had made the larger half of the
+//! invariant invisible.
 
 use crate::verify::dist::Dist;
 use crate::verify::mesh::SurfaceMesh;
@@ -25,9 +31,17 @@ use super::{Check, Options};
 /// eye reads as a road sunk into a hillside.
 const BURIED_M: f64 = -0.05;
 
+/// A road standing this far clear of the drawn ground has no embankment under
+/// it. Generous on purpose: the ground is a decimated mesh and a road crossing
+/// a lattice cell diagonally can legitimately stand a little proud of the
+/// chord, so a metre is well past what interpolation explains and safely short
+/// of what a missing embankment costs.
+const FLOATING_M: f64 = 1.0;
+
 pub struct Contact {
     over: Dist,
-    over_worst: Worst,
+    buried_worst: Worst,
+    floating_worst: Worst,
     /// Per-tile percentage of carriageway with no drawn ground beneath it.
     unbacked: Dist,
     unbacked_worst: Worst,
@@ -37,7 +51,8 @@ impl Contact {
     pub fn new(opt: &Options) -> Contact {
         Contact {
             over: Dist::metres(),
-            over_worst: Worst::new(Sense::LowerIsWorse, opt.worst_k),
+            buried_worst: Worst::new(Sense::LowerIsWorse, opt.worst_k),
+            floating_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             unbacked: Dist::new(0.0, 100.0),
             unbacked_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
         }
@@ -60,15 +75,22 @@ impl Check for Contact {
                 };
                 let v = rz - gz;
                 self.over.push(v);
-                if v < BURIED_M {
+                let buried = v < BURIED_M;
+                let floating = v > FLOATING_M;
+                if buried || floating {
                     let (lon, lat) = tile.lonlat(px, py);
-                    self.over_worst.offer(Offender {
+                    let o = Offender {
                         lon,
                         lat,
                         zoom: tile.z,
                         value: v,
                         note: format!("road {rz:.2} m, drawn ground {gz:.2} m"),
-                    });
+                    };
+                    if buried {
+                        self.buried_worst.offer(o);
+                    } else {
+                        self.floating_worst.offer(o);
+                    }
                 }
             });
         }
@@ -93,19 +115,37 @@ impl Check for Contact {
             .over
             .is_empty()
             .then(|| "no at-grade road surface at this zoom (below ROAD_SURFACE_MIN_ZOOM, or the archive carries no DEM)".to_string());
+        // Both metrics read the same distribution from opposite ends: one
+        // sampling pass, two tails, no second walk over 16 M samples.
         vec![
             Metric {
-                id: "contact.pavement_over_terrain".into(),
+                id: "contact.pavement_buried".into(),
                 invariant: 4,
-                title: "At-grade asphalt above the drawn ground".into(),
+                title: "At-grade asphalt under the drawn ground".into(),
                 detail: "Signed clearance of the carriageway surface over the terrain mesh, \
-                         sampled across triangle interiors. Negative is buried: the ground is \
-                         drawn through the road."
+                         sampled across triangle interiors, read from the low end. Negative is \
+                         buried: the ground is drawn through the road."
                     .into(),
                 sense: Sense::LowerIsWorse,
                 threshold: BURIED_M,
+                dist: self.over.clone(),
+                worst: self.buried_worst.into_vec(),
+                skipped: skipped.clone(),
+            },
+            Metric {
+                id: "contact.pavement_floating".into(),
+                invariant: 4,
+                title: "At-grade asphalt clear of the drawn ground".into(),
+                detail: format!(
+                    "The same distribution read from the high end. Past {FLOATING_M:.1} m the \
+                     road stands on an embankment that was never built: a level-0 carriageway \
+                     hanging in the air, which is the other half of \"nothing floats and nothing \
+                     is buried\" and the half that turned out to be larger."
+                ),
+                sense: Sense::HigherIsWorse,
+                threshold: FLOATING_M,
                 dist: self.over,
-                worst: self.over_worst.into_vec(),
+                worst: self.floating_worst.into_vec(),
                 skipped: skipped.clone(),
             },
             Metric {
@@ -180,12 +220,23 @@ mod tests {
     }
 
     #[test]
-    fn a_road_clear_of_a_flat_ground_reports_no_violation() {
-        let m = run(&tented(102.0, 100.0, 100.0));
-        let over = &m[0];
-        assert!(!over.dist.is_empty());
-        assert_eq!(over.violations(), 0);
-        assert!((over.worst_value().unwrap() - 2.0).abs() < 1e-3);
+    fn a_road_just_clear_of_a_flat_ground_is_neither_buried_nor_floating() {
+        let m = run(&tented(100.5, 100.0, 100.0));
+        assert!(!m[0].dist.is_empty());
+        assert_eq!(m[0].violations(), 0, "not buried");
+        assert_eq!(m[1].violations(), 0, "and half a metre is not floating");
+    }
+
+    #[test]
+    fn a_road_standing_metres_clear_of_the_ground_is_caught_as_floating() {
+        // The half of invariant 4 the first version of this module missed: an
+        // embankment the earthworks never built, leaving the carriageway in
+        // the air. It is not buried, and a one-sided check calls that clean.
+        let m = run(&tented(109.0, 100.0, 100.0));
+        assert_eq!(m[0].violations(), 0, "nothing is buried");
+        assert!(m[1].violations() > 0, "but the road is 9 m up on nothing");
+        assert!((m[1].worst_value().unwrap() - 9.0).abs() < 1e-3);
+        assert!(!m[1].worst.is_empty(), "a violation must name a place");
     }
 
     #[test]
@@ -231,7 +282,7 @@ mod tests {
         };
         let m = run(&tile);
         assert_eq!(m[0].violations(), 0, "nothing is buried");
-        let unbacked = &m[1];
+        let unbacked = &m[2];
         let pct = unbacked.worst_value().unwrap();
         assert!((pct - 50.0).abs() < 8.0, "about half the road is unbacked, got {pct}");
     }

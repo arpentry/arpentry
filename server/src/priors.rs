@@ -387,6 +387,36 @@ pub const EARTHWORK_MIN_BATTER_M: f64 = 2.0;
 /// sawtooth along the crest. Above the cap the road is left on the natural
 /// ground, tilted as the hillside is — which for a trail cut into a cliff is
 /// also the truth.
+///
+/// **The face is two things added together, and this is deliberate.**
+/// `road − edge = (road − terrain) + (terrain − edge)`: the road's own
+/// departure from the ground, plus the hillside's fall across the band. The
+/// wording above describes only the second, so the cap reads like a conflation
+/// bug. It is not — it is a crude guard, and both ways of "fixing" it are
+/// worse. Measured on the Montreux extract, against
+/// `server/verify/baseline-montreux-z16.json`:
+///
+/// - **Cap the cross-slope term only.** Every tall fill then benches, and a
+///   fill whose batter cannot daylight becomes a retaining wall: the steepest
+///   terrain face went 264:1 → 542:1, the worst burial 4.2 m → 7.6 m, and the
+///   worst deck-into-hillside 6.9 m → 12.5 m. Six metrics regressed, and the
+///   worst float did not improve at all.
+/// - **Ask instead whether the batter daylights** (`ground::batter_reach`'s own
+///   test), deleting this prior. Too strict by far: a 1:2 cross-slope closes
+///   nowhere against a 1:2.5 batter, so an ordinary hillside street loses its
+///   bench. The unit tests reject it before a retile does.
+///
+/// So the cap stays, and what it costs is *known and instrumented* rather than
+/// invisible: refusing the bench does not put the road back on the ground, it
+/// leaves the road where the profile put it and the ground where the DEM had
+/// it, with air between. That is 3.8 % of all asphalt standing more than a
+/// metre clear of the drawn ground, reaching 15 m — `contact.pavement_floating`.
+///
+/// The dilemma is structural, not a tuning problem: on steep or tall ground the
+/// earthwork must choose between a wall, a float, and no bench, and all three
+/// are visible *only because the ground is drawn under the asphalt at all*.
+/// Cutting the terrain back to the kerb dissolves the choice rather than
+/// balancing it (`data/plans/terrain-hole-plan.md`, docs/VERIFICATION.md §6).
 pub const MAX_BENCH_FACE_M: f64 = 3.0;
 
 /// How much further than its flat-ground daylight distance a batter face may

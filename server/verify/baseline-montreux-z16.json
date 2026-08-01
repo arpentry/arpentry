@@ -2,7 +2,7 @@
   "archive": "../data/overture-ch/preview.arpa",
   "metrics": [
     {
-      "id": "contact.pavement_over_terrain",
+      "id": "contact.pavement_buried",
       "invariant": 4,
       "median": 0.006666666666667709,
       "offenders": [
@@ -68,10 +68,82 @@
       "skipped": null,
       "tail": -0.41999999999999815,
       "threshold": -0.05,
-      "title": "At-grade asphalt above the drawn ground",
+      "title": "At-grade asphalt under the drawn ground",
       "violation_pct": 1.4835888397772374,
       "violations": 236415,
       "worst": -4.22280216217041
+    },
+    {
+      "id": "contact.pavement_floating",
+      "invariant": 4,
+      "median": 0.006666666666667709,
+      "offenders": [
+        {
+          "lat": 46.425971891731024,
+          "lon": 6.925511229783297,
+          "note": "road 447.68 m, drawn ground 432.48 m",
+          "value": 15.208835681279538,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4259725343436,
+          "lon": 6.925510950386524,
+          "note": "road 447.68 m, drawn ground 432.48 m",
+          "value": 15.20282781124115,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4259725343436,
+          "lon": 6.925510950386524,
+          "note": "road 447.68 m, drawn ground 432.48 m",
+          "value": 15.20282781124115,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4259725343436,
+          "lon": 6.925510950386524,
+          "note": "road 447.68 m, drawn ground 432.48 m",
+          "value": 15.20282781124115,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4259725343436,
+          "lon": 6.925510950386524,
+          "note": "road 447.68 m, drawn ground 432.48 m",
+          "value": 15.20282781124115,
+          "zoom": 16
+        },
+        {
+          "lat": 46.42597124911845,
+          "lon": 6.925511509180069,
+          "note": "road 447.68 m, drawn ground 432.50 m",
+          "value": 15.183905879656493,
+          "zoom": 16
+        },
+        {
+          "lat": 46.42597060650587,
+          "lon": 6.925511788576841,
+          "note": "road 447.69 m, drawn ground 432.53 m",
+          "value": 15.158976078033447,
+          "zoom": 16
+        },
+        {
+          "lat": 46.42597060650587,
+          "lon": 6.925511788576841,
+          "note": "road 447.69 m, drawn ground 432.53 m",
+          "value": 15.158976078033447,
+          "zoom": 16
+        }
+      ],
+      "samples": 15935345,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 5.153333333333336,
+      "threshold": 1.0,
+      "title": "At-grade asphalt clear of the drawn ground",
+      "violation_pct": 3.8199800506358663,
+      "violations": 608727,
+      "worst": 15.208835681279538
     },
     {
       "id": "contact.pavement_unbacked_pct",
