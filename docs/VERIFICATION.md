@@ -89,7 +89,9 @@ scorecard get skimmed.
 | `clearance.deck_over_ground` | 4 | Deck soffit minus the terrain beneath it. Past a deck thickness, the deck ploughs into the hillside. |
 | `clearance.bore_cover` | 4 | Terrain minus the bore roof. Negative past a portal mouth means the tube is in open air. |
 | `seam.terrain_step` | 2 | Spread of the heights two adjacent tiles derive for the same border lattice point. |
-| `seam.pavement_step` | 2 | The same, for the at-grade road surface. |
+| `seam.terrain_split` | 2 | Spread between coincident vertices *inside* one tile: the ground cracked open. |
+| `seam.pavement_step` | 2 | Border disagreement, for the at-grade road surface. |
+| `order.at_grade_overlap` | 3 | Vertical separation where two level-0 paved regions share a plan position with nothing to order them. |
 | `slope.terrain_face` | 6 | Rise over plan run of every terrain triangle spanning ≥10 cm. Finds manufactured retaining walls. |
 | `slope.carriageway_face` | 6 | The same for interior asphalt, excluding the kerb rim. |
 | `lod.structure_drift` | 5 | Structure height at one zoom against the same structure one rung coarser. |
@@ -143,7 +145,44 @@ one-to-one match, and the skipped count is reported.
 verifier decodes only the terrain and transportation layers today. This is the
 largest gap.
 
-## 5. The corpus
+## 5. A worked example of how easy it is to be wrong
+
+The seam check went through three shapes before it measured anything true, and
+the sequence is the argument for the "measure its anatomy" rule below.
+
+**First reading: 3.82 m of carriageway seam step, 0.19 % of border points, while
+the terrain seam read 0.000 m.** A striking asymmetry — the same instrument, two
+meshes, one perfect. It looked like a tiling bug.
+
+**Hypothesis: the paved region is baked per z13 chunk, so adjacent z16 tiles in
+different chunks come from different bakes.** Falsified, cleanly. Cross-chunk
+borders: 593 shared points, worst 0.000 m. The chunk bake is exactly right.
+
+**Second reading: the instrument was conflating two defects.** It kept a single
+min and max per lattice point, so a *single tile* holding two coincident
+vertices 3.8 m apart scored as a disagreement with its neighbour. Of 42 stepping
+points only 16 were cross-tile, and the worst was not one of them. Separated,
+the seam step fell to **0.003 m** — the border contract holds for the asphalt
+exactly as it does for the ground. The original headline was entirely artifact.
+
+**Third reading: the remaining defect is not a crack either.** No single
+carriageway mesh disagrees with itself anywhere: 784,851 distinct plan
+positions, zero carrying two heights. The disagreement is *between* meshes —
+53 of 320 tiles carry more than one level-0 `road_surface`. That is by design:
+`synth::pavement` keys regions by `(level, layer)`, and its own doc note says
+regions on different grade-separation layers "overlap in plan but are metres
+apart vertically".
+
+**What is actually wrong:** `add_road_surface` encodes only `level`. The layer
+that separated the two regions is dropped, so the client receives several opaque
+at-grade surfaces at one ordinal, overlapping in plan by up to 8.83 m, with
+nothing to order them. 616 plan points overlap, 74 of them by more than a metre.
+
+Three readings, two of them wrong, and the true finding is in a different module
+from where the first number pointed. Nothing about the first reading was
+obviously suspect.
+
+## 6. The corpus
 
 `server/verify/scenarios.json` binds each situation from `GENERATION.md` §4 to a
 real place. Sites are **mined, not invented**: `--mine` finds the strongest
@@ -158,7 +197,7 @@ decoder that does not exist yet, rather than being given a plausible coordinate.
 
 Re-mine after retiling a different extract; the sites are extract-specific.
 
-## 6. Baselines
+## 7. Baselines
 
 `server/verify/baseline-montreux-z16.json` is the committed scorecard for
 `data/overture-ch/preview.arpa` at z16. It is not a statement that the scene is
@@ -172,7 +211,7 @@ like a check that passed.
 Regenerate with `--json`, and say in the commit message which numbers moved and
 why.
 
-## 7. Adding a check
+## 8. Adding a check
 
 A check is one file in `server/src/verify/checks/`, implementing `visit` and
 `finish`, plus a line in `checks::run`. The friction is deliberately low: a

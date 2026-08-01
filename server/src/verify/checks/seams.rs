@@ -13,6 +13,32 @@
 //! both onto the same global lattice coordinate with no arithmetic slack — so a
 //! reported step is a real disagreement, never a rounding artifact of the
 //! check itself.
+//!
+//! ## Two defects, not one
+//!
+//! The first version of this check kept a single min and max per lattice point
+//! and called the spread a seam step. That conflates two unrelated things, and
+//! on real data the conflation mattered: of 42 stepping points, only 16 were
+//! genuine cross-tile disagreements, and the worst — 3.8 m — was a *single
+//! tile* holding two coincident vertices 3.8 m apart. A surface that carries
+//! two different heights at one plan position has split open; that is a defect,
+//! but it is not a seam, and attributing it to one would send anyone who
+//! chased it to the wrong module.
+//!
+//! So the two are separated: `step` compares one tile's answer against its
+//! neighbour's, and the second metric reports a surface disagreeing with
+//! *itself* at one plan position.
+//!
+//! For the terrain that second case is a crack, and it reads zero. For the
+//! carriageway it is not a crack at all, which took a third pass to establish:
+//! the paved region is keyed by `(level, layer)` in `synth::pavement`, where
+//! `layer` is the grade-separation layer, and its own doc note says regions on
+//! different layers "overlap in plan but are metres apart vertically". So a
+//! tile legitimately carries several level-0 asphalt meshes. What is *not*
+//! legitimate is that `add_road_surface` encodes only `level`: the layer that
+//! separated them is dropped, and the client receives several opaque surfaces
+//! at one ordinal with nothing to order them by. Hence the metric name — this
+//! is an ordering gap, not a seam.
 
 use std::collections::HashMap;
 
@@ -30,32 +56,32 @@ const EXTENT: i64 = 32768;
 /// agree in the model agree here to the millimetre or not at all.
 const STEP_M: f64 = 0.005;
 
-/// What one lattice point on a tile border has been seen to be.
+/// What one tile says about one lattice point on its border.
 #[derive(Clone, Copy)]
-struct Shared {
+struct Claim {
+    tile: u64,
     lo: f32,
     hi: f32,
-    /// Which tile contributed first, so a vertex repeated inside one tile is
-    /// not mistaken for two tiles disagreeing.
-    tile: u64,
-    tiles: u32,
 }
 
+/// Every border lattice point, and what each tile touching it claimed.
+type Shared = HashMap<(i64, i64), Vec<Claim>>;
+
 pub struct Seams {
-    terrain: HashMap<(i64, i64), Shared>,
-    pavement: HashMap<(i64, i64), Shared>,
+    terrain: Shared,
+    pavement: Shared,
     worst_k: usize,
     zoom: u8,
 }
 
 impl Seams {
     pub fn new(opt: &Options) -> Seams {
-        Seams { terrain: HashMap::new(), pavement: HashMap::new(), worst_k: opt.worst_k, zoom: 0 }
+        Seams { terrain: Shared::new(), pavement: Shared::new(), worst_k: opt.worst_k, zoom: 0 }
     }
 }
 
 /// Folds every border vertex of `mesh` into `into`.
-fn collect(into: &mut HashMap<(i64, i64), Shared>, mesh: &SurfaceMesh, tile: &TileScene) {
+fn collect(into: &mut Shared, mesh: &SurfaceMesh, tile: &TileScene) {
     let id = (tile.x as u64) << 32 | tile.y as u64;
     for i in 0..mesh.vertex_count() {
         let (px, py, pz) = mesh.vertex(i);
@@ -63,8 +89,7 @@ fn collect(into: &mut HashMap<(i64, i64), Shared>, mesh: &SurfaceMesh, tile: &Ti
         // the original uint16 without slack.
         let qx = (px * EXTENT as f64).round() as i64;
         let qy = (py * EXTENT as f64).round() as i64;
-        let on_border = qx == 0 || qx == EXTENT || qy == 0 || qy == EXTENT;
-        if !on_border {
+        if !(qx == 0 || qx == EXTENT || qy == 0 || qy == EXTENT) {
             continue;
         }
         // Off-border axes outside the tile proper belong to a corner of some
@@ -74,64 +99,174 @@ fn collect(into: &mut HashMap<(i64, i64), Shared>, mesh: &SurfaceMesh, tile: &Ti
         }
         let key = (tile.x as i64 * EXTENT + qx, tile.y as i64 * EXTENT + qy);
         let z = pz as f32;
-        into.entry(key)
-            .and_modify(|s| {
-                s.lo = s.lo.min(z);
-                s.hi = s.hi.max(z);
-                if s.tile != id {
-                    s.tile = id;
-                    s.tiles += 1;
-                }
-            })
-            .or_insert(Shared { lo: z, hi: z, tile: id, tiles: 1 });
+        let claims = into.entry(key).or_default();
+        match claims.iter_mut().find(|c| c.tile == id) {
+            Some(c) => {
+                c.lo = c.lo.min(z);
+                c.hi = c.hi.max(z);
+            }
+            None => claims.push(Claim { tile: id, lo: z, hi: z }),
+        }
     }
 }
 
-/// Turns one collected map into its metric.
+/// Geodetic position of a global border lattice point.
+fn lonlat(gx: i64, gy: i64, zoom: u8) -> (f64, f64) {
+    let n = (1u64 << zoom) as f64;
+    (
+        -180.0 + (gx as f64 / EXTENT as f64) * (360.0 / n),
+        -90.0 + (gy as f64 / EXTENT as f64) * (180.0 / n),
+    )
+}
+
+/// What it means for one tile to hold two heights at a single plan point.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SelfDisagreement {
+    /// One surface, so two heights is a crack in it.
+    Crack,
+    /// Several surfaces by design (grade-separation layers), so two heights is
+    /// an ordering the format failed to carry.
+    UnorderedOverlap,
+}
+
+/// Turns one collected map into its two metrics.
 fn measure(
-    map: HashMap<(i64, i64), Shared>,
+    map: Shared,
     zoom: u8,
     worst_k: usize,
-    id: &str,
-    title: &str,
-    detail: &str,
-) -> Metric {
-    let mut dist = Dist::new(0.0, 32.0);
-    let mut worst = Worst::new(Sense::HigherIsWorse, worst_k);
+    what: &str,
+    subject: &str,
+    kind: SelfDisagreement,
+) -> Vec<Metric> {
+    let mut step = Dist::new(0.0, 32.0);
+    let mut step_worst = Worst::new(Sense::HigherIsWorse, worst_k);
+    let mut split = Dist::new(0.0, 32.0);
+    let mut split_worst = Worst::new(Sense::HigherIsWorse, worst_k);
     let mut shared = 0u64;
-    for ((gx, gy), s) in &map {
+    let mut unusable = 0u64;
+
+    for ((gx, gy), claims) in &map {
+        // A surface disagreeing with itself: measurable from one tile alone,
+        // so this does not require a neighbour.
+        for c in claims {
+            let s = (c.hi - c.lo) as f64;
+            split.push(s);
+            if s > STEP_M {
+                let (lon, lat) = lonlat(*gx, *gy, zoom);
+                split_worst.offer(Offender {
+                    lon,
+                    lat,
+                    zoom,
+                    value: s,
+                    note: format!(
+                        "one tile holds coincident vertices at {:.3} m and {:.3} m",
+                        c.lo, c.hi
+                    ),
+                });
+            }
+        }
+
         // A point only one tile ever saw proves nothing about agreement.
-        if s.tiles < 2 {
+        if claims.len() < 2 {
+            continue;
+        }
+        // A tile that has split open has no single answer at this point, so
+        // there is nothing to compare its neighbour against. Whatever extra
+        // height it carries is already reported as a crack; charging the
+        // difference to the seam as well would count one defect twice and send
+        // the reader to the wrong module.
+        if claims.iter().any(|c| (c.hi - c.lo) as f64 > STEP_M) {
+            unusable += 1;
             continue;
         }
         shared += 1;
-        let step = (s.hi - s.lo) as f64;
-        dist.push(step);
-        if step > STEP_M {
-            let n = (1u64 << zoom) as f64;
-            let lon = -180.0 + (*gx as f64 / EXTENT as f64) * (360.0 / n);
-            let lat = -90.0 + (*gy as f64 / EXTENT as f64) * (180.0 / n);
-            worst.offer(Offender {
+        // Compare like with like: each tile's lowest against the others', and
+        // each tile's highest against the others'.
+        let spread = |f: fn(&Claim) -> f32| {
+            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+            for c in claims {
+                lo = lo.min(f(c));
+                hi = hi.max(f(c));
+            }
+            (hi - lo) as f64
+        };
+        let s = spread(|c| c.lo).max(spread(|c| c.hi));
+        step.push(s);
+        if s > STEP_M {
+            let (lon, lat) = lonlat(*gx, *gy, zoom);
+            let heights: Vec<String> = claims.iter().map(|c| format!("{:.3}", c.lo)).collect();
+            step_worst.offer(Offender {
                 lon,
                 lat,
                 zoom,
-                value: step,
-                note: format!("neighbouring tiles read {:.3} m and {:.3} m", s.lo, s.hi),
+                value: s,
+                note: format!("{} neighbouring tiles read {}", claims.len(), heights.join(" / ")),
             });
         }
     }
-    Metric {
-        id: id.into(),
-        invariant: 2,
-        title: title.into(),
-        detail: detail.into(),
-        sense: Sense::HigherIsWorse,
-        threshold: STEP_M,
-        skipped: (shared == 0)
-            .then(|| "no border vertex was seen from both sides (single tile, or none at this zoom)".to_string()),
-        dist,
-        worst: worst.into_vec(),
+
+    let no_neighbour = (shared == 0)
+        .then(|| "no border vertex was seen from both sides (single tile, or none at this zoom)".to_string());
+    let nothing = split.is_empty().then(|| format!("no {subject} border vertices at this zoom"));
+    let mut step_detail = "Spread of the heights adjacent tiles derive for the same border \
+                           lattice point, compared low-against-low and high-against-high. \
+                           Anything non-zero is a staircase at the seam and proof that a height \
+                           depended on the tile window."
+        .to_string();
+    if unusable > 0 {
+        step_detail.push_str(&format!(
+            " {unusable} shared points were excluded because a tile had split open there and \
+             had no single answer to compare; they are counted under seam.{what}_split."
+        ));
     }
+    vec![
+        Metric {
+            id: format!("seam.{what}_step"),
+            invariant: 2,
+            title: format!("{subject} height disagreement across a tile border"),
+            detail: step_detail,
+            sense: Sense::HigherIsWorse,
+            threshold: STEP_M,
+            skipped: no_neighbour,
+            dist: step,
+            worst: step_worst.into_vec(),
+        },
+        match kind {
+            SelfDisagreement::Crack => Metric {
+                id: format!("seam.{what}_split"),
+                invariant: 2,
+                title: format!("{subject} disagreeing with itself at one point"),
+                detail: "Spread between coincident vertices inside a single tile. One surface \
+                         carrying two heights at one plan position has split open — a crack, not \
+                         a seam, and it needs no neighbour to detect."
+                    .into(),
+                sense: Sense::HigherIsWorse,
+                threshold: STEP_M,
+                skipped: nothing,
+                dist: split,
+                worst: split_worst.into_vec(),
+            },
+            SelfDisagreement::UnorderedOverlap => Metric {
+                id: "order.at_grade_overlap".into(),
+                invariant: 3,
+                title: "Overlapping at-grade asphalt with nothing to order it".into(),
+                detail: "Vertical separation where two level-0 paved regions share a plan \
+                         position. Several regions per level are by design — `synth::pavement` \
+                         keys them by (level, layer), and different grade-separation layers \
+                         overlap in plan while sitting metres apart. The defect is that \
+                         `add_road_surface` encodes only `level`, so the client receives \
+                         several opaque surfaces at one ordinal with no way to order them. \
+                         Scoped to border vertices, which is what this check collects; a \
+                         whole-mesh version would find more."
+                    .into(),
+                sense: Sense::HigherIsWorse,
+                threshold: STEP_M,
+                skipped: nothing,
+                dist: split,
+                worst: split_worst.into_vec(),
+            },
+        },
+    ]
 }
 
 impl Check for Seams {
@@ -146,28 +281,23 @@ impl Check for Seams {
     }
 
     fn finish(self: Box<Self>) -> Vec<Metric> {
-        vec![
-            measure(
-                self.terrain,
-                self.zoom,
-                self.worst_k,
-                "seam.terrain_step",
-                "Terrain height disagreement across a tile border",
-                "Spread of the heights two adjacent tiles derive for the same border lattice \
-                 point. Anything non-zero is a staircase at the seam and proof that a height \
-                 depended on the tile window.",
-            ),
-            measure(
-                self.pavement,
-                self.zoom,
-                self.worst_k,
-                "seam.pavement_step",
-                "Carriageway height disagreement across a tile border",
-                "The same, for the at-grade road surface. The paved region is clipped from one \
-                 global union, so the two sides share a snapped seam by construction; a step \
-                 here means that construction leaked.",
-            ),
-        ]
+        let mut out = measure(
+            self.terrain,
+            self.zoom,
+            self.worst_k,
+            "terrain",
+            "Terrain",
+            SelfDisagreement::Crack,
+        );
+        out.extend(measure(
+            self.pavement,
+            self.zoom,
+            self.worst_k,
+            "pavement",
+            "Carriageway",
+            SelfDisagreement::UnorderedOverlap,
+        ));
+        out
     }
 }
 
@@ -209,37 +339,44 @@ mod tests {
         s.finish()
     }
 
+    fn metric<'a>(m: &'a [Metric], id: &str) -> &'a Metric {
+        m.iter().find(|x| x.id == id).expect(id)
+    }
+
     #[test]
     fn neighbours_agreeing_on_the_border_report_a_zero_step() {
         // Tile 100's east edge is 250 m; tile 101's west edge is 250 m.
         let m = run(&[strip(100, 200.0, 250.0), strip(101, 250.0, 300.0)]);
-        assert!(!m[0].dist.is_empty(), "the shared border must have been joined");
-        assert_eq!(m[0].violations(), 0);
-        assert_eq!(m[0].worst_value(), Some(0.0));
+        let step = metric(&m, "seam.terrain_step");
+        assert!(!step.dist.is_empty(), "the shared border must have been joined");
+        assert_eq!(step.violations(), 0);
+        assert_eq!(step.worst_value(), Some(0.0));
     }
 
     #[test]
     fn a_disagreement_at_the_border_is_caught_and_placed() {
         let m = run(&[strip(100, 200.0, 250.0), strip(101, 253.5, 300.0)]);
-        assert!(m[0].violations() > 0);
-        assert!((m[0].worst_value().unwrap() - 3.5).abs() < 1e-3);
-        let o = &m[0].worst[0];
+        let step = metric(&m, "seam.terrain_step");
+        assert!(step.violations() > 0);
+        assert!((step.worst_value().unwrap() - 3.5).abs() < 1e-3);
+        let o = &step.worst[0];
         assert_eq!(o.zoom, 16);
-        // The joined point is the shared border: tile 100's east edge.
         let expect = Bounds::of_tile(16, 100, 23000).east;
         assert!((o.lon - expect).abs() < 1e-9, "offender at {} not {expect}", o.lon);
     }
 
     #[test]
-    fn one_tile_alone_proves_nothing_and_is_not_scored() {
+    fn one_tile_alone_proves_nothing_about_a_seam() {
         let m = run(&[strip(100, 200.0, 250.0)]);
-        assert!(m[0].skipped.is_some(), "a lone tile has no agreement to measure");
+        assert!(metric(&m, "seam.terrain_step").skipped.is_some());
     }
 
     #[test]
-    fn a_vertex_repeated_inside_one_tile_is_not_two_tiles_disagreeing() {
-        // Same tile, two coincident border vertices at different heights: a
-        // defect, but not this one, and it must not be attributed to a seam.
+    fn a_surface_splitting_inside_one_tile_is_not_reported_as_a_seam() {
+        // The regression the first version shipped: two coincident border
+        // vertices 9 m apart inside a single tile. That is a crack in the
+        // surface, and calling it a seam step sends the reader to the wrong
+        // module. It must be found — and found under the right name.
         let b = Bounds::of_tile(16, 100, 23000);
         let terrain = SurfaceMesh::from_parts(
             vec![0.0, 1.0, 1.0, 0.0, 0.0],
@@ -258,32 +395,104 @@ mod tests {
             roads: Vec::new(),
         };
         let m = run(&[t]);
-        assert!(m[0].skipped.is_some());
-        assert_eq!(m[0].violations(), 0);
+        assert!(metric(&m, "seam.terrain_step").skipped.is_some(), "no neighbour, so no seam");
+        let split = metric(&m, "seam.terrain_split");
+        assert!(split.violations() > 0, "but the crack must be found");
+        assert!((split.worst_value().unwrap() - 9.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_tiles_own_spread_is_not_charged_to_its_neighbour() {
+        // Tile 100 splits open at the shared north-east corner: vertex 4 is
+        // coincident with vertex 2 in plan but 3.5 m higher. Tile 101 agrees
+        // with the lower of the two. Comparing 100's high against 101's only
+        // value would invent a seam disagreement that is really 100's own
+        // crack, so the seam metric must see nothing here at all.
+        let b100 = Bounds::of_tile(16, 100, 23000);
+        let split_tile = TileScene {
+            z: 16,
+            x: 100,
+            y: 23000,
+            scale: Scale::of(&b100),
+            bounds: b100,
+            terrain: Some(
+                SurfaceMesh::from_parts(
+                    vec![0.0, 1.0, 1.0, 0.0, 1.0, 0.5],
+                    vec![0.0, 0.0, 1.0, 1.0, 1.0, 0.5],
+                    vec![200.0, 250.0, 250.0, 200.0, 253.5, 220.0],
+                    vec![0, 1, 2, 0, 2, 3, 4, 5, 2],
+                )
+                .unwrap(),
+            ),
+            roads: Vec::new(),
+        };
+        let m = run(&[split_tile, strip(101, 250.0, 300.0)]);
+        let step = metric(&m, "seam.terrain_step");
+        let split = metric(&m, "seam.terrain_split");
+        assert_eq!(step.violations(), 0, "worst step was {:?}", step.worst_value());
+        assert!(split.violations() > 0, "the crack is still reported, under its own name");
+        assert!((split.worst_value().unwrap() - 3.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn two_at_grade_regions_at_one_point_are_reported_as_an_ordering_gap() {
+        // Two level-0 `road_surface` meshes overlapping in plan, 8.8 m apart.
+        // Legitimate as geometry — they are different grade-separation layers —
+        // but the encoded feature carries only `level`, so nothing orders them.
+        // It must land under the ordering metric, not under a seam or a crack.
+        let b = Bounds::of_tile(16, 100, 23000);
+        let region = |h: f32| RoadMesh {
+            class: "road_surface".into(),
+            level: 0,
+            mesh: SurfaceMesh::from_parts(
+                vec![0.0, 1.0, 1.0, 0.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![h; 4],
+                vec![0, 1, 2, 0, 2, 3],
+            )
+            .unwrap(),
+        };
+        let t = TileScene {
+            z: 16,
+            x: 100,
+            y: 23000,
+            scale: Scale::of(&b),
+            bounds: b,
+            terrain: None,
+            roads: vec![region(480.0), region(488.8)],
+        };
+        let m = run(&[t]);
+        let overlap = metric(&m, "order.at_grade_overlap");
+        assert!(overlap.violations() > 0);
+        assert!((overlap.worst_value().unwrap() - 8.8).abs() < 1e-3);
+        assert_eq!(overlap.invariant, 3, "this is a vertical-ordering finding");
+        assert!(m.iter().all(|x| x.id != "seam.pavement_split"), "not a crack");
+        // And the seam metric must not double-count it: the tile has no single
+        // answer at those points, so there is nothing to compare a neighbour to.
+        assert_eq!(metric(&m, "seam.pavement_step").violations(), 0);
     }
 
     #[test]
     fn the_carriageway_seam_is_measured_separately_from_the_ground() {
         let mut a = strip(100, 200.0, 250.0);
         let mut b = strip(101, 250.0, 300.0);
-        let pave = |west: f32, east: f32| {
-            RoadMesh {
-                class: "road_surface".into(),
-                level: 0,
-                mesh: SurfaceMesh::from_parts(
-                    vec![0.0, 1.0, 1.0, 0.0],
-                    vec![0.4, 0.4, 0.6, 0.6],
-                    vec![west, east, east, west],
-                    vec![0, 1, 2, 0, 2, 3],
-                )
-                .unwrap(),
-            }
+        let pave = |west: f32, east: f32| RoadMesh {
+            class: "road_surface".into(),
+            level: 0,
+            mesh: SurfaceMesh::from_parts(
+                vec![0.0, 1.0, 1.0, 0.0],
+                vec![0.4, 0.4, 0.6, 0.6],
+                vec![west, east, east, west],
+                vec![0, 1, 2, 0, 2, 3],
+            )
+            .unwrap(),
         };
         a.roads.push(pave(201.0, 251.0));
         b.roads.push(pave(251.9, 301.0));
         let m = run(&[a, b]);
-        assert_eq!(m[0].violations(), 0, "the ground still agrees");
-        assert!(m[1].violations() > 0, "the asphalt does not");
-        assert!((m[1].worst_value().unwrap() - 0.9).abs() < 1e-3);
+        assert_eq!(metric(&m, "seam.terrain_step").violations(), 0, "the ground still agrees");
+        let pav = metric(&m, "seam.pavement_step");
+        assert!(pav.violations() > 0, "the asphalt does not");
+        assert!((pav.worst_value().unwrap() - 0.9).abs() < 1e-3);
     }
 }
