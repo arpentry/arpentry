@@ -1,0 +1,614 @@
+{
+  "archive": "../data/overture-ch/preview.arpa",
+  "metrics": [
+    {
+      "id": "contact.pavement_over_terrain",
+      "invariant": 4,
+      "median": 0.006666666666667709,
+      "offenders": [
+        {
+          "lat": 46.4494545198977,
+          "lon": 6.933445930480957,
+          "note": "road 912.78 m, drawn ground 917.00 m",
+          "value": -4.22280216217041,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4494545198977,
+          "lon": 6.933445930480957,
+          "note": "road 912.78 m, drawn ground 917.00 m",
+          "value": -4.22280216217041,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4494545198977,
+          "lon": 6.933445930480957,
+          "note": "road 912.78 m, drawn ground 917.00 m",
+          "value": -4.22280216217041,
+          "zoom": 16
+        },
+        {
+          "lat": 46.44945454085246,
+          "lon": 6.9334352016448975,
+          "note": "road 912.71 m, drawn ground 916.88 m",
+          "value": -4.168207764625549,
+          "zoom": 16
+        },
+        {
+          "lat": 46.449454561807215,
+          "lon": 6.933424472808838,
+          "note": "road 912.65 m, drawn ground 916.76 m",
+          "value": -4.1136133670806885,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43124542199075,
+          "lon": 6.925378516316414,
+          "note": "road 683.32 m, drawn ground 687.23 m",
+          "value": -3.9128204985518096,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43124542199075,
+          "lon": 6.925378516316414,
+          "note": "road 683.32 m, drawn ground 687.23 m",
+          "value": -3.9128204985518096,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43124584108591,
+          "lon": 6.925377510488033,
+          "note": "road 683.31 m, drawn ground 687.02 m",
+          "value": -3.7087188571185834,
+          "zoom": 16
+        }
+      ],
+      "samples": 15935345,
+      "sense": "lower_is_worse",
+      "skipped": null,
+      "tail": -0.41999999999999815,
+      "threshold": -0.05,
+      "title": "At-grade asphalt above the drawn ground",
+      "violation_pct": 1.4835888397772374,
+      "violations": 236415,
+      "worst": -4.22280216217041
+    },
+    {
+      "id": "contact.pavement_unbacked_pct",
+      "invariant": 4,
+      "median": 0.010416666666666666,
+      "offenders": [],
+      "samples": 320,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 0.010416666666666666,
+      "threshold": 1.0,
+      "title": "Asphalt with no drawn ground beneath",
+      "violation_pct": 0.0,
+      "violations": 0,
+      "worst": 0.0
+    },
+    {
+      "id": "order.deck_above_carriageway",
+      "invariant": 3,
+      "median": 7.526666666666671,
+      "offenders": [
+        {
+          "lat": 46.45965079078451,
+          "lon": 6.898550349287689,
+          "note": "path L1 surface 567.23 m under at-grade asphalt 569.71 m",
+          "value": -2.4873551693800664,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45965079078451,
+          "lon": 6.898550349287689,
+          "note": "path L1 surface 567.23 m under at-grade asphalt 569.71 m",
+          "value": -2.4873551693800664,
+          "zoom": 16
+        },
+        {
+          "lat": 46.459651216864586,
+          "lon": 6.898552626371384,
+          "note": "path L1 surface 567.22 m under at-grade asphalt 569.70 m",
+          "value": -2.482095477540838,
+          "zoom": 16
+        },
+        {
+          "lat": 46.459651216864586,
+          "lon": 6.898552626371384,
+          "note": "path L1 surface 567.22 m under at-grade asphalt 569.70 m",
+          "value": -2.482095477540838,
+          "zoom": 16
+        },
+        {
+          "lat": 46.459651216864586,
+          "lon": 6.898552626371384,
+          "note": "path L1 surface 567.22 m under at-grade asphalt 569.70 m",
+          "value": -2.482095477540838,
+          "zoom": 16
+        },
+        {
+          "lat": 46.459651216864586,
+          "lon": 6.898552626371384,
+          "note": "path L1 surface 567.22 m under at-grade asphalt 569.70 m",
+          "value": -2.482095477540838,
+          "zoom": 16
+        },
+        {
+          "lat": 46.459651216864586,
+          "lon": 6.898552626371384,
+          "note": "path L1 surface 567.22 m under at-grade asphalt 569.70 m",
+          "value": -2.482095477540838,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45965206902474,
+          "lon": 6.8985571805387735,
+          "note": "path L1 surface 567.20 m under at-grade asphalt 569.68 m",
+          "value": -2.471495598659544,
+          "zoom": 16
+        }
+      ],
+      "samples": 95854,
+      "sense": "lower_is_worse",
+      "skipped": null,
+      "tail": -2.2333333333333307,
+      "threshold": -0.5,
+      "title": "Elevated structure above the at-grade asphalt",
+      "violation_pct": 2.4140880923070505,
+      "violations": 2314,
+      "worst": -2.4873551693800664
+    },
+    {
+      "id": "clearance.deck_over_ground",
+      "invariant": 4,
+      "median": 14.52666666666667,
+      "offenders": [
+        {
+          "lat": 46.426051089540124,
+          "lon": 6.928768325597048,
+          "note": "unknown L1 soffit 558.48 m, drawn ground 565.36 m",
+          "value": -6.881629848480202,
+          "zoom": 16
+        },
+        {
+          "lat": 46.426051089540124,
+          "lon": 6.928768325597048,
+          "note": "unknown L1 soffit 558.48 m, drawn ground 565.36 m",
+          "value": -6.881629848480202,
+          "zoom": 16
+        },
+        {
+          "lat": 46.426051089540124,
+          "lon": 6.928768325597048,
+          "note": "unknown L1 soffit 558.48 m, drawn ground 565.36 m",
+          "value": -6.881629848480202,
+          "zoom": 16
+        },
+        {
+          "lat": 46.426051089540124,
+          "lon": 6.928768325597048,
+          "note": "unknown L1 soffit 558.48 m, drawn ground 565.36 m",
+          "value": -6.881629848480202,
+          "zoom": 16
+        },
+        {
+          "lat": 46.426051089540124,
+          "lon": 6.928768325597048,
+          "note": "unknown L1 soffit 558.48 m, drawn ground 565.36 m",
+          "value": -6.881629848480202,
+          "zoom": 16
+        },
+        {
+          "lat": 46.426051089540124,
+          "lon": 6.928768325597048,
+          "note": "unknown L1 soffit 558.48 m, drawn ground 565.36 m",
+          "value": -6.881629848480202,
+          "zoom": 16
+        },
+        {
+          "lat": 46.426051089540124,
+          "lon": 6.928768325597048,
+          "note": "unknown L1 soffit 558.48 m, drawn ground 565.36 m",
+          "value": -6.881629848480202,
+          "zoom": 16
+        },
+        {
+          "lat": 46.426049480214715,
+          "lon": 6.928772497922182,
+          "note": "unknown L1 soffit 558.60 m, drawn ground 565.37 m",
+          "value": -6.769966708289189,
+          "zoom": 16
+        }
+      ],
+      "samples": 900423,
+      "sense": "lower_is_worse",
+      "skipped": null,
+      "tail": -3.2066666666666634,
+      "threshold": -2.0,
+      "title": "Bridge soffit above the drawn ground",
+      "violation_pct": 0.6508052326517648,
+      "violations": 5860,
+      "worst": -6.881629848480202
+    },
+    {
+      "id": "clearance.bore_cover",
+      "invariant": 4,
+      "median": 599.8672254426137,
+      "offenders": [
+        {
+          "lat": 46.43363510258496,
+          "lon": 6.92081406712532,
+          "note": "motorway L-5 roof 528.16 m, drawn ground 517.13 m",
+          "value": -11.024980783462524,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43363510258496,
+          "lon": 6.92081406712532,
+          "note": "motorway L-5 roof 528.16 m, drawn ground 517.13 m",
+          "value": -11.024980783462524,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43363510258496,
+          "lon": 6.92081406712532,
+          "note": "motorway L-5 roof 528.16 m, drawn ground 517.13 m",
+          "value": -11.024980783462524,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43363510258496,
+          "lon": 6.92081406712532,
+          "note": "motorway L-5 roof 528.16 m, drawn ground 517.13 m",
+          "value": -11.024980783462524,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43363510258496,
+          "lon": 6.92081406712532,
+          "note": "motorway L-5 roof 528.16 m, drawn ground 517.13 m",
+          "value": -11.024980783462524,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43363510258496,
+          "lon": 6.92081406712532,
+          "note": "motorway L-5 roof 528.16 m, drawn ground 517.13 m",
+          "value": -11.024980783462524,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43363510258496,
+          "lon": 6.92081406712532,
+          "note": "motorway L-5 roof 528.16 m, drawn ground 517.13 m",
+          "value": -11.024980783462524,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43363510258496,
+          "lon": 6.92081406712532,
+          "note": "motorway L-5 roof 528.16 m, drawn ground 517.13 m",
+          "value": -11.024980783462524,
+          "zoom": 16
+        }
+      ],
+      "samples": 589698,
+      "sense": "lower_is_worse",
+      "skipped": null,
+      "tail": -8.433333333333334,
+      "threshold": -1.0,
+      "title": "Ground cover over the tunnel roof",
+      "violation_pct": 17.14267302924548,
+      "violations": 101090,
+      "worst": -11.024980783462524
+    },
+    {
+      "id": "seam.terrain_step",
+      "invariant": 2,
+      "median": 0.0033333333333333335,
+      "offenders": [],
+      "samples": 154450,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 0.0033333333333333335,
+      "threshold": 0.005,
+      "title": "Terrain height disagreement across a tile border",
+      "violation_pct": 0.0,
+      "violations": 0,
+      "worst": 0.0
+    },
+    {
+      "id": "seam.pavement_step",
+      "invariant": 2,
+      "median": 0.0033333333333333335,
+      "offenders": [
+        {
+          "lat": 46.439208984375,
+          "lon": 6.913361549377441,
+          "note": "neighbouring tiles read 481.002 m and 484.825 m",
+          "value": 3.822998046875,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40350341796875,
+          "lon": 6.933917999267578,
+          "note": "neighbouring tiles read 435.676 m and 437.259 m",
+          "value": 1.5830078125,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40350341796875,
+          "lon": 6.934003829956055,
+          "note": "neighbouring tiles read 435.985 m and 437.268 m",
+          "value": 1.28302001953125,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40350341796875,
+          "lon": 6.933960914611816,
+          "note": "neighbouring tiles read 436.247 m and 437.263 m",
+          "value": 1.016021728515625,
+          "zoom": 16
+        },
+        {
+          "lat": 46.432857513427734,
+          "lon": 6.9268798828125,
+          "note": "neighbouring tiles read 726.030 m and 726.724 m",
+          "value": 0.69403076171875,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43096923828125,
+          "lon": 6.914777755737305,
+          "note": "neighbouring tiles read 400.681 m and 401.223 m",
+          "value": 0.5419921875,
+          "zoom": 16
+        },
+        {
+          "lat": 46.439208984375,
+          "lon": 6.91340446472168,
+          "note": "neighbouring tiles read 484.305 m and 484.816 m",
+          "value": 0.510986328125,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43096923828125,
+          "lon": 6.913018226623535,
+          "note": "neighbouring tiles read 388.380 m and 388.846 m",
+          "value": 0.46600341796875,
+          "zoom": 16
+        }
+      ],
+      "samples": 20314,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 0.13,
+      "threshold": 0.005,
+      "title": "Carriageway height disagreement across a tile border",
+      "violation_pct": 0.19198582258540908,
+      "violations": 39,
+      "worst": 3.822998046875
+    },
+    {
+      "id": "slope.terrain_face",
+      "invariant": 6,
+      "median": 0.5133333333333334,
+      "offenders": [
+        {
+          "lat": 46.46942705847323,
+          "lon": 6.897959467023611,
+          "note": "terrain face at 264:1 spanning 3.40 m, tile 16/34023/49687",
+          "value": 264.38297770283646,
+          "zoom": 16
+        },
+        {
+          "lat": 46.46942018531263,
+          "lon": 6.897961031645536,
+          "note": "terrain face at 264:1 spanning 3.40 m, tile 16/34023/49686",
+          "value": 264.3696370128884,
+          "zoom": 16
+        },
+        {
+          "lat": 46.452413108199835,
+          "lon": 6.886412333697081,
+          "note": "terrain face at 207:1 spanning 2.67 m, tile 16/34021/49680",
+          "value": 207.35672962221247,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4524045586586,
+          "lon": 6.88640333712101,
+          "note": "terrain face at 207:1 spanning 2.67 m, tile 16/34021/49680",
+          "value": 207.35672962221247,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45729090087116,
+          "lon": 6.911396384239197,
+          "note": "terrain face at 161:1 spanning 1.49 m, tile 16/34026/49682",
+          "value": 160.59567617554228,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45728754810989,
+          "lon": 6.911401078104973,
+          "note": "terrain face at 161:1 spanning 1.49 m, tile 16/34026/49682",
+          "value": 160.59567617554228,
+          "zoom": 16
+        },
+        {
+          "lat": 46.446736296638846,
+          "lon": 6.911009307950735,
+          "note": "terrain face at 114:1 spanning 2.57 m, tile 16/34026/49678",
+          "value": 114.03345477206643,
+          "zoom": 16
+        },
+        {
+          "lat": 46.446746215224266,
+          "lon": 6.911000479012728,
+          "note": "terrain face at 114:1 spanning 2.57 m, tile 16/34026/49678",
+          "value": 114.03345477206643,
+          "zoom": 16
+        }
+      ],
+      "samples": 13295001,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 3.58,
+      "threshold": 2.0,
+      "title": "Drawn terrain face steepness",
+      "violation_pct": 0.5931327120622255,
+      "violations": 78857,
+      "worst": 264.38297770283646
+    },
+    {
+      "id": "slope.carriageway_face",
+      "invariant": 6,
+      "median": 0.1,
+      "offenders": [
+        {
+          "lat": 46.40090684406459,
+          "lon": 6.926379036158323,
+          "note": "interior asphalt at 723 % spanning 0.55 m",
+          "value": 7.233749163871139,
+          "zoom": 16
+        },
+        {
+          "lat": 46.44553818739951,
+          "lon": 6.902475748211145,
+          "note": "interior asphalt at 697 % spanning 1.97 m",
+          "value": 6.966142868469283,
+          "zoom": 16
+        },
+        {
+          "lat": 46.41767302528024,
+          "lon": 6.9282584823668,
+          "note": "interior asphalt at 683 % spanning 8.40 m",
+          "value": 6.831388508185974,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4431980997324,
+          "lon": 6.912819072604179,
+          "note": "interior asphalt at 682 % spanning 4.87 m",
+          "value": 6.817166819734882,
+          "zoom": 16
+        },
+        {
+          "lat": 46.41760865226388,
+          "lon": 6.928217746317387,
+          "note": "interior asphalt at 663 % spanning 11.46 m",
+          "value": 6.630121100714166,
+          "zoom": 16
+        },
+        {
+          "lat": 46.41758719459176,
+          "lon": 6.928213723003864,
+          "note": "interior asphalt at 661 % spanning 5.34 m",
+          "value": 6.611756802934598,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43513132818043,
+          "lon": 6.945490725338459,
+          "note": "interior asphalt at 653 % spanning 1.52 m",
+          "value": 6.5304546310316365,
+          "zoom": 16
+        },
+        {
+          "lat": 46.417522905394435,
+          "lon": 6.92817309871316,
+          "note": "interior asphalt at 650 % spanning 8.68 m",
+          "value": 6.503203945239887,
+          "zoom": 16
+        }
+      ],
+      "samples": 389852,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 1.8866666666666667,
+      "threshold": 0.3,
+      "title": "Interior carriageway face steepness",
+      "violation_pct": 12.389829986764209,
+      "violations": 48302,
+      "worst": 7.233749163871139
+    },
+    {
+      "id": "lod.structure_drift",
+      "invariant": 5,
+      "median": 0.0033333333333333335,
+      "offenders": [
+        {
+          "lat": 46.435025073587894,
+          "lon": 6.9114586897194386,
+          "note": "service L-1: z16 reads 398.234 m, z15 reads 397.863 m",
+          "value": 0.3714535374109573,
+          "zoom": 16
+        },
+        {
+          "lat": 46.435025073587894,
+          "lon": 6.9114586897194386,
+          "note": "service L-1: z16 reads 398.234 m, z15 reads 397.863 m",
+          "value": 0.3714535374109573,
+          "zoom": 16
+        },
+        {
+          "lat": 46.435025073587894,
+          "lon": 6.9114586897194386,
+          "note": "service L-1: z16 reads 398.234 m, z15 reads 397.863 m",
+          "value": 0.3714535374109573,
+          "zoom": 16
+        },
+        {
+          "lat": 46.435025073587894,
+          "lon": 6.9114586897194386,
+          "note": "service L-1: z16 reads 398.234 m, z15 reads 397.863 m",
+          "value": 0.3714535374109573,
+          "zoom": 16
+        },
+        {
+          "lat": 46.435025073587894,
+          "lon": 6.9114586897194386,
+          "note": "service L-1: z16 reads 398.234 m, z15 reads 397.863 m",
+          "value": 0.3714535374109573,
+          "zoom": 16
+        },
+        {
+          "lat": 46.435025073587894,
+          "lon": 6.9114586897194386,
+          "note": "service L-1: z16 reads 398.234 m, z15 reads 397.863 m",
+          "value": 0.3714535374109573,
+          "zoom": 16
+        },
+        {
+          "lat": 46.435025073587894,
+          "lon": 6.9114586897194386,
+          "note": "service L-1: z16 reads 398.234 m, z15 reads 397.863 m",
+          "value": 0.3714535374109573,
+          "zoom": 16
+        },
+        {
+          "lat": 46.435025073587894,
+          "lon": 6.9114586897194386,
+          "note": "service L-1: z16 reads 398.234 m, z15 reads 397.863 m",
+          "value": 0.3714535374109573,
+          "zoom": 16
+        }
+      ],
+      "samples": 45753,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 0.14333333333333334,
+      "threshold": 0.005,
+      "title": "Structure height drift between adjacent zooms",
+      "violation_pct": 0.966056870587721,
+      "violations": 442,
+      "worst": 0.3714535374109573
+    }
+  ],
+  "zooms": [
+    16
+  ]
+}

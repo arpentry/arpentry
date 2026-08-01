@@ -51,6 +51,7 @@ pub mod tile_build;
 pub mod tileid;
 pub mod tileset;
 pub mod value;
+pub mod verify;
 pub mod wkb;
 
 /// Re-export shim for `flatc`-generated code.

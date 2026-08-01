@@ -14,6 +14,7 @@ Read these docs before making changes to understand the design and conventions:
 | `docs/FORMAT.md` | Tile format specification: geometry model, coordinate space, properties, FlatBuffers schema |
 | `docs/VIEWER.md` | Viewer specification: coordinate pipeline, tile management, rendering |
 | `docs/CONTROL.md` | Map control specification: camera parameters, input bindings, pan/zoom/rotate, inertia, fly-to |
+| `docs/VERIFICATION.md` | Measuring an emitted archive against the invariants: the scorecard, its thresholds, the scenario corpus |
 
 Follow `docs/DESIGN.md` principles and `docs/STYLE.md` conventions in all code.
 
@@ -64,6 +65,35 @@ These are gotchas not documented elsewhere:
 - **FlatCC on newer Clang** needs `-Wno-error=c23-extensions`, `-Wno-error=unused-but-set-variable`, `-Wno-error=implicit-int-conversion` (already configured in root CMakeLists.txt)
 - **Generated FlatBuffers headers** go to `${CMAKE_BINARY_DIR}/generated/flatcc/`. The `flatcc_generate` custom target compiles schemas.
 - **glfw3webgpu v1.2.0**: the surface function is `glfwGetWGPUSurface()` (not `glfwCreateWindowWGPUSurface`)
+
+## Verifying Generated Geometry
+
+Before reaching for a screenshot, measure. `arpentry_verify` scores an emitted
+archive against the `docs/GENERATION.md` §5 invariants — asphalt buried by the
+drawn ground, level ordering inverted, tile-seam steps, manufactured retaining
+walls, structures drifting between zooms — in about 7 s over a city extract:
+
+```bash
+cd server && cargo build --release
+./target/release/arpentry_verify ../data/overture-ch/preview.arpa
+
+# Judge a change by the diff, not by an impression. Exits 1 on any regression.
+./target/release/arpentry_verify ../data/overture-ch/preview.arpa \
+    --baseline verify/baseline-montreux-z16.json
+
+# Scope to one place, or to one canonical situation from GENERATION.md §4.
+./target/release/arpentry_verify ../data/overture-ch/preview.arpa --at 6.9290,46.4200
+./target/release/arpentry_verify ../data/overture-ch/preview.arpa --scenario S5
+```
+
+Read `docs/VERIFICATION.md` before adding or interpreting a metric — in
+particular the section on where the thresholds come from, since every
+structure-versus-surface check has a legitimate contact band that a naive zero
+threshold reports as a defect.
+
+**Use a screenshot to discover a defect, then write the check before fixing
+it.** The render finds a class of defect once; the check keeps it dead. A defect
+that stays screenshot-only is one nobody can tell has come back.
 
 ## Verifying Rendering Output
 

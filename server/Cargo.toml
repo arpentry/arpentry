@@ -13,6 +13,13 @@ path = "src/main.rs"
 name = "arpentry_server"
 path = "src/bin/server.rs"
 
+# Measures an emitted archive against the GENERATION.md invariants. Separate
+# from the tiler so it can be pointed at any archive, including one built by an
+# older revision, which is what makes a baseline diff meaningful.
+[[bin]]
+name = "arpentry_verify"
+path = "src/bin/verify.rs"
+
 [lib]
 name = "arpentry_server"
 path = "src/lib.rs"

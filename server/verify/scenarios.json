@@ -1,0 +1,65 @@
+{
+  "comment": "Sites exercising docs/GENERATION.md §4, one per canonical situation. Mined from data/overture-ch/preview.arpa (Montreux extract, z16) with `arpentry_verify <archive> --mine`. Each is the strongest instance the data holds, not a guess: re-mine after retiling a different extract. Use with `arpentry_verify <archive> --scenario S5`.",
+
+  "sites": [
+    {
+      "id": "S1",
+      "lon": 6.91864013671875,
+      "lat": 46.435089111328125,
+      "zoom": 16,
+      "source": "mined: motorway deck standing 75 m above the drawn ground — the tallest viaduct in the extract, and worth confirming is real rather than phantom"
+    },
+    {
+      "id": "S2",
+      "lon": 6.88568115234375,
+      "lat": 46.462554931640625,
+      "zoom": 16,
+      "source": "mined: footway deck clearing the ground by only 2 m — S1's degenerate case, a deck that is nearly a chord"
+    },
+    {
+      "id": "S4",
+      "lon": 6.89666748046875,
+      "lat": 46.454315185546875,
+      "zoom": 16,
+      "source": "mined: 9 decks over at-grade road in one tile, all at level 1 — the densest crossing stack in the extract"
+    },
+    {
+      "id": "S5",
+      "lon": 6.97906494140625,
+      "lat": 46.454315185546875,
+      "zoom": 16,
+      "source": "mined: narrow_gauge bore under 599 m of hill — the deepest cover in the extract; a plausible Alpine rail tunnel, but the depth is worth confirming against the level ordinal it came from"
+    },
+    {
+      "id": "S6",
+      "lon": 6.91314697265625,
+      "lat": 46.435089111328125,
+      "zoom": 16,
+      "source": "mined: 6 bores under an at-grade road — the urban underpass case"
+    },
+    {
+      "id": "S7",
+      "lon": 6.91864013671875,
+      "lat": 46.435089111328125,
+      "zoom": 16,
+      "source": "mined: a deck and a bore in the same tile — bridge into tunnel, or close enough to inspect"
+    },
+    {
+      "id": "S9",
+      "lon": 6.908425893634558,
+      "lat": 46.43636869266629,
+      "zoom": 16,
+      "source": "mined: at-grade road at 28 % grade — the steepest carriageway still plausible as a real road, where the correct action is to do nothing"
+    }
+  ],
+
+  "unsited": [
+    { "id": "S3",  "why": "River bridge on flat ground. Needs the water layer decoded to find a deck over a river rather than over a ravine; the verifier reads only terrain and transportation today." },
+    { "id": "S8",  "why": "Dual carriageway on one structure. Needs parallel-structure identity, which the archive does not carry — two decks side by side are indistinguishable from one dual deck. Site by hand from the solved model (graph::parallel_structure_unions)." },
+    { "id": "S10", "why": "Annotation noise. Defined by its input, not its output: the site is a span that overlaps or leaves a sliver in the source, so it must come from the scene graph, not the archive." },
+    { "id": "S11", "why": "Building on a steep slope. Needs the building layer decoded." },
+    { "id": "S12", "why": "Dense old town with courtyards. Needs the building layer decoded." },
+    { "id": "S13", "why": "Building beside a road cut. Needs the building layer decoded." },
+    { "id": "S14", "why": "Lakefront. Needs the water layer decoded. Lake Geneva is in the extract, so this is the cheapest of the seven to add." }
+  ]
+}
