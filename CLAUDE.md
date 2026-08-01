@@ -86,6 +86,16 @@ cd server && cargo build --release
 ./target/release/arpentry_verify ../data/overture-ch/preview.arpa --scenario S5
 ```
 
+When a metric names a place, cut a section there rather than flying a camera to
+it. A 3/4 perspective view is close to the worst possible image for judging
+heights; in section a 3 m step is a 3 m step:
+
+```bash
+./target/release/arpentry_verify ../data/overture-ch/preview.arpa \
+    --at 6.928167,46.426206 --bearing 90 --length 120 --section /tmp/claude/cut.svg
+rsvg-convert -w 1100 /tmp/claude/cut.svg -o /tmp/claude/cut.png   # then Read the PNG
+```
+
 Read `docs/VERIFICATION.md` before adding or interpreting a metric — in
 particular the section on where the thresholds come from, since every
 structure-versus-surface check has a legitimate contact band that a naive zero

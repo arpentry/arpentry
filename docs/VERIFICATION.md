@@ -51,6 +51,10 @@ arpentry_verify preview.arpa --scenario S5
 
 # Re-site the corpus after retiling a different extract.
 arpentry_verify preview.arpa --mine > server/verify/scenarios.json
+
+# See what is actually there, in the one projection where heights are legible.
+arpentry_verify preview.arpa --at 6.928167,46.426206 \
+    --bearing 90 --length 120 --section /tmp/cut.svg
 ```
 
 A full z16 pass over the Montreux extract takes about 7 s and 16 M surface
@@ -145,7 +149,39 @@ one-to-one match, and the skipped count is reported.
 verifier decodes only the terrain and transportation layers today. This is the
 largest gap.
 
-## 5. A worked example of how easy it is to be wrong
+## 5. Sections: the diagnostic half
+
+The scorecard says *that* something is wrong and where. `--section` says *what
+it looks like*, in the one projection where a height model is legible.
+
+A 3/4 perspective screenshot is close to the worst possible image for judging
+heights, for a person or for a model: everything is foreshortened, the ground
+occludes the thing you are trying to see, and a 3 m step at an abutment is a few
+pixels of shading. In section it is a 3 m step.
+
+It draws the drawn ground, the at-grade asphalt (the first *two* regions, kept
+apart so an unordered overlap shows as two lines), and structure top and soffit,
+with breaks where a surface stops — a deck's span ending matters as much as its
+height. Feed it any offender coordinate the table printed; that is the intended
+loop.
+
+Three cuts from the first run, each answering in one image what a screenshot
+could not:
+
+- At the worst overlap (`6.928167,46.426206`): a level-0 asphalt block floating
+  ~9 m on near-vertical sides, with a second level-0 region correctly following
+  the ground beneath it. Three metrics — `slope.carriageway_face`,
+  `order.at_grade_overlap`, `contact.pavement_over_terrain` — turn out to be one
+  defect seen from three angles.
+- At the worst burial (`6.933446,46.449455`): the drawn ground spikes 6 m in a
+  sharp zigzag exactly where the asphalt ends. The road height is not wrong; a
+  manufactured wall sliver is standing over it. The terrain-hole study inferred
+  this from statistics; the section shows it.
+- At S1, the tallest viaduct: two deck segments flying ~35 m over a valley,
+  ending in mid-air. Invariant 4's documented missing-pier deviation, visible
+  rather than remembered.
+
+## 6. A worked example of how easy it is to be wrong
 
 The seam check went through three shapes before it measured anything true, and
 the sequence is the argument for the "measure its anatomy" rule below.
@@ -182,7 +218,7 @@ Three readings, two of them wrong, and the true finding is in a different module
 from where the first number pointed. Nothing about the first reading was
 obviously suspect.
 
-## 6. The corpus
+## 7. The corpus
 
 `server/verify/scenarios.json` binds each situation from `GENERATION.md` §4 to a
 real place. Sites are **mined, not invented**: `--mine` finds the strongest
@@ -197,7 +233,7 @@ decoder that does not exist yet, rather than being given a plausible coordinate.
 
 Re-mine after retiling a different extract; the sites are extract-specific.
 
-## 7. Baselines
+## 8. Baselines
 
 `server/verify/baseline-montreux-z16.json` is the committed scorecard for
 `data/overture-ch/preview.arpa` at z16. It is not a statement that the scene is
@@ -211,7 +247,7 @@ like a check that passed.
 Regenerate with `--json`, and say in the commit message which numbers moved and
 why.
 
-## 8. Adding a check
+## 9. Adding a check
 
 A check is one file in `server/src/verify/checks/`, implementing `visit` and
 `finish`, plus a line in `checks::run`. The friction is deliberately low: a

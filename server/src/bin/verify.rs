@@ -24,6 +24,7 @@ use std::process::ExitCode;
 
 use arpentry_server::verify::checks::{self, Options};
 use arpentry_server::verify::report::{self, Move};
+use arpentry_server::verify::section::{self, Cut};
 use arpentry_server::verify::{corpus, scene::ArchiveScan};
 
 const USAGE: &str = "\
@@ -40,6 +41,14 @@ arpentry_verify <archive.arpa> [options]
   --json <path>       Write this run's scorecard as JSON (\"-\" for stdout)
   --mine              Propose corpus sites from this archive and exit
   --list              List the canonical situations and exit
+
+  --section <path>    Cut a vertical section at --at and write it as SVG.
+                      A height model is legible in section and barely legible
+                      in perspective: a deck ploughing into a hillside or two
+                      at-grade regions metres apart are obvious here and a few
+                      pixels of shading in a screenshot.
+  --bearing <deg>     Section direction, clockwise from north (default 90)
+  --length <m>        Section length, centred on --at (default 200)
 ";
 
 struct Args {
@@ -51,6 +60,9 @@ struct Args {
     scenario: Option<String>,
     mine: bool,
     list: bool,
+    section: Option<String>,
+    bearing: f64,
+    length_m: f64,
 }
 
 fn main() -> ExitCode {
@@ -105,6 +117,8 @@ fn main() -> ExitCode {
 
     let mut opt = args.opt;
     if let Some(id) = &args.scenario {
+        // (resolved below, before the section is cut, so --scenario --section
+        // works without also passing --at)
         let path = args
             .corpus_path
             .clone()
@@ -117,6 +131,37 @@ fn main() -> ExitCode {
             }
             None => {
                 eprintln!("no site for {id} in {}; run --mine first", path.display());
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    if let Some(path) = &args.section {
+        let Some((lon, lat)) = opt.at else {
+            eprintln!("--section needs a place: pass --at lon,lat or --scenario Sn");
+            return ExitCode::from(2);
+        };
+        let cut = Cut {
+            lon,
+            lat,
+            bearing: args.bearing,
+            length_m: args.length_m,
+            zoom: opt.zooms.first().copied().unwrap_or(zoom),
+            ..Cut::default()
+        };
+        match section::render(&scan, &cut) {
+            Some(svg) => match std::fs::write(path, svg) {
+                Ok(()) => {
+                    eprintln!("section written to {path}");
+                    return ExitCode::SUCCESS;
+                }
+                Err(e) => {
+                    eprintln!("cannot write {path}: {e}");
+                    return ExitCode::from(2);
+                }
+            },
+            None => {
+                eprintln!("nothing to draw at {lon},{lat} z{} — outside the archive?", cut.zoom);
                 return ExitCode::from(2);
             }
         }
@@ -175,6 +220,9 @@ fn parse() -> Result<Args, String> {
         scenario: None,
         mine: false,
         list: false,
+        section: None,
+        bearing: 90.0,
+        length_m: 200.0,
     };
     let mut it = std::env::args().skip(1);
     let mut seen_archive = false;
@@ -210,6 +258,9 @@ fn parse() -> Result<Args, String> {
             "--max-tiles" => {
                 a.opt.max_tiles = value()?.parse().map_err(|e| format!("--max-tiles: {e}"))?
             }
+            "--section" => a.section = Some(value()?),
+            "--bearing" => a.bearing = value()?.parse().map_err(|e| format!("--bearing: {e}"))?,
+            "--length" => a.length_m = value()?.parse().map_err(|e| format!("--length: {e}"))?,
             "--baseline" => a.baseline = Some(PathBuf::from(value()?)),
             "--json" => a.json = Some(value()?),
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),

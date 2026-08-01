@@ -33,6 +33,7 @@ pub mod dist;
 pub mod mesh;
 pub mod report;
 pub mod scene;
+pub mod section;
 
 use dist::Dist;
 
