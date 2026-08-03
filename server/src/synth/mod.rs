@@ -18,6 +18,7 @@ pub mod markings;
 pub mod pave_mesh;
 pub mod pavement;
 pub mod poly;
+pub mod region;
 pub mod road;
 pub mod structure;
 

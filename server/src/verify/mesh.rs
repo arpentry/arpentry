@@ -70,6 +70,73 @@ pub struct Face {
     pub y: f64,
 }
 
+/// One interior vertex, how far it stands off the plane its neighbours define,
+/// and the furthest its neighbours stand off *theirs* in the opposite
+/// direction.
+///
+/// The pair is the point. A residual alone marks any break in the surface,
+/// which includes every legitimate one: the crest of a retaining wall is above
+/// the plane through the bench behind it and the wall below it, and it should
+/// be. Nor is one opposite-signed neighbour enough — a wall put on a lattice
+/// *always* produces exactly one such pair, its crest reading low and its first
+/// vertex down the face reading high, because a step breaks the surface twice
+/// in opposite directions. Counting that would report every wall ever drawn.
+///
+/// What no correct surface contains is a vertex flanked by opposite breaks on
+/// *both* sides: a peak with a pit before it and a pit after it. That is the
+/// mesh alternating about a surface rather than describing one, and it is what
+/// a sawtooth is made of and a wall never is.
+#[derive(Clone, Copy, Debug)]
+pub struct Spike {
+    pub index: usize,
+    /// Signed: positive above the neighbours' plane, negative below.
+    pub residual: f64,
+    /// The weaker of the two opposite-signed neighbour residuals flanking this
+    /// vertex on opposite sides in plan, or zero where no such pair exists —
+    /// which is the case everywhere the surface breaks one way only.
+    pub opposed: f64,
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Spike {
+    /// The amplitude of the alternation at this vertex: how far the peak and
+    /// the weaker of its two flanking pits stand off their own neighbourhoods.
+    /// Zero along any break the surface makes in one direction only, which is
+    /// every wall.
+    pub fn tearing(&self) -> f64 {
+        self.residual.abs().min(self.opposed.abs())
+    }
+}
+
+/// Solves a symmetric 3×3 system by Cramer's rule. `None` where the matrix is
+/// singular to working precision — a neighbourhood collinear in plan, which
+/// determines no plane and must be skipped rather than guessed at.
+fn solve3(a: [[f64; 3]; 3], b: [f64; 3]) -> Option<[f64; 3]> {
+    let det = |m: [[f64; 3]; 3]| {
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    };
+    let d = det(a);
+    // Scaled against the matrix's own magnitude: the entries are metres and
+    // metres squared, so a fixed epsilon would mean different things on a
+    // three-metre lattice and a fifty-metre one.
+    let norm = a.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
+    if d.abs() <= 1e-9 * norm.powi(3).max(1e-12) {
+        return None;
+    }
+    let mut out = [0.0; 3];
+    for k in 0..3 {
+        let mut m = a;
+        for r in 0..3 {
+            m[r][k] = b[r];
+        }
+        out[k] = det(m) / d;
+    }
+    Some(out)
+}
+
 /// Dequantizes a tile-local `uint16` to unit-tile space (FORMAT.md §10).
 pub fn dequantize(q: u16) -> f64 {
     (q as f64 - BUFFER) / EXTENT
@@ -225,6 +292,223 @@ impl SurfaceMesh {
             edges.push(e);
         }
         edges.iter().map(|e| e.iter().any(|k| count[k] == 1)).collect()
+    }
+
+    /// Visits every interior vertex's departure from the plane its own
+    /// neighbours define — how far the surface has to bend to reach it.
+    ///
+    /// The steepness checks measure *how steep* a face is; this measures
+    /// whether the faces around a point agree on which way the ground goes. A
+    /// wall, however tall, is agreement: its vertices lie on the plane of the
+    /// wall, and the residual is near zero along it. A sawtooth is
+    /// disagreement — every second vertex stands off the surface its
+    /// neighbours describe, which is what makes it read as a torn edge instead
+    /// of a face.
+    ///
+    /// Fitting a plane and not comparing against the neighbours' mean is what
+    /// makes the measure indifferent to slope: a hillside falling at 1:1 has a
+    /// vertex two metres below its uphill neighbour and two above its downhill
+    /// one, and any mean-based test would call the whole flank a defect.
+    ///
+    /// Vertices on the mesh silhouette are skipped: their neighbours lie to one
+    /// side, so the plane is extrapolated to reach them and the residual
+    /// measures the extrapolation rather than the surface. So are vertices
+    /// whose neighbours are collinear in plan, where the plane is not
+    /// determined at all.
+    pub fn vertex_residuals<F: FnMut(Spike)>(&self, scale: &Scale, mut f: F) {
+        let key = |i: usize| {
+            (
+                (self.x[i] as f64 * EXTENT).round() as i64,
+                (self.y[i] as f64 * EXTENT).round() as i64,
+            )
+        };
+        // Weld coincident vertices: the triangulation splits a constraint edge
+        // by emitting the same plan position twice, and unwelded each copy
+        // looks like a vertex with half a neighbourhood.
+        let mut id: HashMap<(i64, i64), usize> = HashMap::new();
+        let mut welded: Vec<usize> = Vec::with_capacity(self.vertex_count());
+        for i in 0..self.vertex_count() {
+            let next = id.len();
+            welded.push(*id.entry(key(i)).or_insert(next));
+        }
+        let n = id.len();
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut edge_uses: HashMap<(usize, usize), u32> = HashMap::new();
+        for t in 0..self.triangle_count() {
+            for i in 0..3 {
+                let (a, b) = (
+                    welded[self.idx[t * 3 + i] as usize],
+                    welded[self.idx[t * 3 + (i + 1) % 3] as usize],
+                );
+                if a == b {
+                    continue;
+                }
+                *edge_uses.entry(if a < b { (a, b) } else { (b, a) }).or_insert(0) += 1;
+                adj[a].push(b);
+                adj[b].push(a);
+            }
+        }
+        let mut boundary = vec![false; n];
+        for (&(a, b), &uses) in &edge_uses {
+            if uses == 1 {
+                boundary[a] = true;
+                boundary[b] = true;
+            }
+        }
+        // One representative source vertex per welded id, for its position.
+        let mut rep = vec![usize::MAX; n];
+        for i in 0..self.vertex_count() {
+            let w = welded[i];
+            if rep[w] == usize::MAX {
+                rep[w] = i;
+            }
+        }
+        for v in 0..n {
+            adj[v].sort_unstable();
+            adj[v].dedup();
+        }
+        // Residuals first, then the opposition pass: a vertex cannot be judged
+        // without knowing which way its neighbours break.
+        let mut residual = vec![f64::NAN; n];
+        for v in 0..n {
+            if boundary[v] || adj[v].len() < 3 {
+                continue;
+            }
+            let (vx, vy, vz) = self.vertex(rep[v]);
+            // Least squares for the plane dz = a·dx + b·dy + c through the
+            // neighbours, in metres about the vertex.
+            let (mut sxx, mut sxy, mut syy, mut sx, mut sy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+            let (mut sxz, mut syz, mut sz) = (0.0, 0.0, 0.0);
+            let m = adj[v].len() as f64;
+            for &u in &adj[v] {
+                let (ux, uy, uz) = self.vertex(rep[u]);
+                let (dx, dy) = ((ux - vx) * scale.mx, (uy - vy) * scale.my);
+                let dz = uz - vz;
+                sxx += dx * dx;
+                sxy += dx * dy;
+                syy += dy * dy;
+                sx += dx;
+                sy += dy;
+                sxz += dx * dz;
+                syz += dy * dz;
+                sz += dz;
+            }
+            let a = [[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, m]];
+            let rhs = [sxz, syz, sz];
+            let Some(sol) = solve3(a, rhs) else { continue };
+            // The plane's own value at the vertex is `c`; the vertex sits at
+            // dz = 0 by construction, so the residual is -c.
+            residual[v] = -sol[2];
+        }
+        for v in 0..n {
+            if residual[v].is_nan() {
+                continue;
+            }
+            let (vx, vy, _) = self.vertex(rep[v]);
+            let sign = residual[v].signum();
+            // Opposite-signed neighbours, strongest first, with their plan
+            // bearings from the vertex.
+            let mut against: Vec<(f64, f64, f64)> = adj[v]
+                .iter()
+                .filter_map(|&u| {
+                    let r = residual[u];
+                    if r.is_nan() || r.signum() == sign {
+                        return None;
+                    }
+                    let (ux, uy, _) = self.vertex(rep[u]);
+                    let (dx, dy) = ((ux - vx) * scale.mx, (uy - vy) * scale.my);
+                    let len = (dx * dx + dy * dy).sqrt();
+                    (len > 1e-9).then_some((r, dx / len, dy / len))
+                })
+                .collect();
+            against.sort_unstable_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
+            // The strongest such neighbour, then the strongest lying on the far
+            // side of the vertex from it — an oscillation, not a step.
+            let opposed = against
+                .first()
+                .and_then(|&(r0, ax, ay)| {
+                    against
+                        .iter()
+                        .find(|&&(_, bx, by)| ax * bx + ay * by < 0.0)
+                        .map(|&(r1, _, _)| if r0.abs() <= r1.abs() { r0 } else { r1 })
+                })
+                .unwrap_or(0.0);
+            f(Spike { index: rep[v], residual: residual[v], opposed, x: vx, y: vy });
+        }
+    }
+
+    /// The height range this surface spans within `radius_m` in plan of a
+    /// point, or `None` where it has nothing there.
+    ///
+    /// Point-in-triangle queries cannot see a *vertical* surface: an apron quad
+    /// stands on the kerb line, so its plan projection is a segment with zero
+    /// area and barycentric interpolation finds nothing however exactly the
+    /// point is on it. Asking what the surface spans *near* a point is the
+    /// question a wall can answer.
+    pub fn span_near(&self, px: f64, py: f64, scale: &Scale, radius_m: f64) -> Option<(f64, f64)> {
+        let mut range: Option<(f64, f64)> = None;
+        for &t in self.grid.candidates(px, py) {
+            let tri = self.triangle(t as usize);
+            // Distance to the triangle in plan, via its three edges — which is
+            // exact for a degenerate one, where the "triangle" is a segment.
+            let mut near = f64::INFINITY;
+            for i in 0..3 {
+                let (a, b) = (tri[i], tri[(i + 1) % 3]);
+                let (dx, dy) = ((b.0 - a.0) * scale.mx, (b.1 - a.1) * scale.my);
+                let (qx, qy) = ((px - a.0) * scale.mx, (py - a.1) * scale.my);
+                let len2 = dx * dx + dy * dy;
+                let u = if len2 > 0.0 { ((qx * dx + qy * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+                let (ex, ey) = (qx - dx * u, qy - dy * u);
+                near = near.min((ex * ex + ey * ey).sqrt());
+            }
+            if near > radius_m {
+                continue;
+            }
+            for c in tri {
+                range = Some(match range {
+                    Some((lo, hi)) => (lo.min(c.2), hi.max(c.2)),
+                    None => (c.2, c.2),
+                });
+            }
+        }
+        range
+    }
+
+    /// Every edge no other triangle shares, as `(a, b, opposite)` vertex
+    /// indices — the two ends of the silhouette edge and the third corner of
+    /// the one triangle holding it, which is what says which way is *out*.
+    ///
+    /// A road surface's boundary is its kerb. Once the terrain stops at that
+    /// kerb, the kerb is also where the drawn ground and the drawn asphalt part
+    /// company, so it is the only place left to measure how far apart they are.
+    pub fn boundary_edges(&self) -> Vec<(usize, usize, usize)> {
+        let key = |v: (f64, f64, f64)| {
+            ((v.0 * EXTENT).round() as i64, (v.1 * EXTENT).round() as i64)
+        };
+        let mut count: HashMap<EdgeKey, u32> = HashMap::new();
+        for t in 0..self.triangle_count() {
+            let tri = self.triangle(t);
+            for i in 0..3 {
+                let (a, b) = (key(tri[i]), key(tri[(i + 1) % 3]));
+                *count.entry(if a <= b { (a, b) } else { (b, a) }).or_insert(0) += 1;
+            }
+        }
+        let mut out = Vec::new();
+        for t in 0..self.triangle_count() {
+            let tri = self.triangle(t);
+            for i in 0..3 {
+                let (ka, kb) = (key(tri[i]), key(tri[(i + 1) % 3]));
+                let k = if ka <= kb { (ka, kb) } else { (kb, ka) };
+                if count[&k] == 1 {
+                    out.push((
+                        self.idx[t * 3 + i] as usize,
+                        self.idx[t * 3 + (i + 1) % 3] as usize,
+                        self.idx[t * 3 + (i + 2) % 3] as usize,
+                    ));
+                }
+            }
+        }
+        out
     }
 
     /// Visits every triangle's steepest edge as rise over plan run, with the

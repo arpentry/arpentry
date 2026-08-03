@@ -124,9 +124,15 @@ The field resolves in two steps:
   ground is not built at all: the face is a plane and the hillside is not,
   so where the ground runs away with it the earthwork goes on cutting the
   whole way out — a footpath whose estimated reach came to 40 m carved sixty
-  metres off a gorge wall. There the reach collapses to its floor and the
-  bench is retained by a wall at its own edge, as a road cut into a steep
-  flank is. This is also why the bench is kept narrow: a wide flat bench is
+  metres off a gorge wall. There the reach collapses to **zero** and the bench
+  is retained by a wall at its own edge, as a road cut into a steep flank is —
+  zero, not a short bevel, because a bevel on a diverging face is a trench: it
+  holds the ground down along a plane the hillside is climbing away from, and
+  where it ends the field steps back to the hillside out in open ground, where
+  no contact line runs and the mesh draws the step as a row of teeth
+  (`slope.terrain_tearing`). A converging face keeps its floor, where it costs
+  nothing: past the point such a face daylights the natural ground is already
+  inside it, so a longer reach returns the same answer. This is also why the bench is kept narrow: a wide flat bench is
   a wide terrace cut into every hillside the road crosses, and a deeper face
   where it ends.
 
@@ -167,6 +173,55 @@ so the toe stands wherever the ground happens to rise into the face, which
 no offset of the centerline predicts; a constraint at the nominal reach
 would pin vertices in the wrong place and double the constraint count to
 do it.
+
+**The hole.** At the detail rung the terrain mesh *stops at the kerb*. The
+level-0 paved rings enter the triangulation as constraints alongside the crest
+lines, and every face whose centroid falls inside them is dropped. The asphalt
+is opaque and watertight, so ground drawn beneath it is redundant — and being
+redundant is where every artifact of this family lived. Measured on Montreux at
+z16, at-grade asphalt below the drawn ground went from 253,651 samples to
+**zero**, not by a smaller margin but by construction: there is nothing left
+underneath to be below.
+
+Three rules make it safe rather than merely effective:
+
+- **Only rings that were actually meshed cut.** A level whose asphalt failed to
+  triangulate must not leave a hole with nothing over it (invariant 6). And
+  *every* at-grade region cuts, not the first one found: a tile can carry
+  several level-0 regions on different grade layers, and one left uncut is
+  asphalt the burial comes back through. Structures never cut — a deck flies
+  and the ground beneath it stays.
+- **The rim stays on the ground, and the wall is drawn.** A rim vertex takes the
+  *ground's* height there, not the road's. Where a bench holds, the two are the
+  same number and nothing more is needed. Where none does they differ by
+  whatever the model failed to build, and that difference is emitted as an
+  explicit vertical face — one quad per silhouette edge, from the kerb down to
+  the ground — as a `road_apron` feature beside the surface and its casing.
+  Fifteen metres of it is the retaining wall that is physically there; a few
+  centimetres is a kerb and is skipped (`APRON_MIN_M`).
+
+  Pulling the rim *up* to the road instead was tried first and is worse in two
+  ways. It hides the wall by smearing it across the first lattice cell, which
+  the steepness check duly reported (`slope.terrain_face` 89,898 → 116,589
+  violations, worst 419:1); and on a tile border it breaks invariant 2, because
+  two neighbours clip the same global region against different rects and one can
+  call a shared border vertex a ring vertex while the other does not. That
+  measured as a **6.7 m step** down the seam. Deferring to the global ground
+  function everywhere removes both: the face count came back to 88,756, below
+  where it started.
+
+  A cut edge carries no apron. A cut is a tile border, where the asphalt
+  continues into the neighbour and there is no kerb at all — walling it would
+  build a fence down every tile edge.
+
+What the hole does *not* do is make the road's height right. It removes the
+drawn ground that made a wrong height visible as burial, and the apron draws the
+difference instead of hiding it. Both are measured at the kerb
+(docs/VERIFICATION.md §4): `contact.kerb_lip` is how tall a wall the model
+implies — 12.6 % of the carriageway's edge, reaching 14.8 m — and
+`contact.kerb_unwalled` is how much of that wall is missing, which the apron
+takes to **0.8 %**. The lip is not a defect to drive to zero; it is the honest
+size of the earthwork the profile asked for. The unwalled share is.
 
 **The z rule.** Constraint vertices carry no height of their own; every
 mesh vertex, lattice or constraint, evaluates the one ground function at

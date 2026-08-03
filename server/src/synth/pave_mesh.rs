@@ -44,6 +44,7 @@ use crate::priors;
 use crate::project::{self, Bounds};
 use crate::synth::height::HeightField;
 use crate::synth::pavement::LevelShapes;
+use crate::synth::region::Region;
 use crate::terrain::TerrainMesh;
 
 /// A boundary ring clipped to the tile, with each edge flagged as a tile cut.
@@ -63,6 +64,15 @@ pub struct PavedMesh {
     pub casing: Option<TerrainMesh>,
     /// A point inside the region, for the feature's anchor geometry.
     pub anchor: Coord,
+    /// The wall between the kerb and the ground beside it, where the two are
+    /// not the same height. `None` where every edge sits on its own bench and
+    /// there is nothing to close.
+    pub apron: Option<TerrainMesh>,
+    /// The region this mesh actually covers — the true silhouette rings, with
+    /// the road-surface height at each ring vertex. The terrain mesher cuts its
+    /// hole from *this*, so a level whose asphalt failed to mesh cuts nothing
+    /// (docs/GENERATION.md invariant 6: plain, not wrong).
+    pub region: Region,
 }
 
 /// Meshes every level of a chunk's region that reaches this tile.
@@ -77,6 +87,7 @@ pub fn tile_meshes(
     z: u8,
     z_ref: u8,
     bounds: &Bounds,
+    hole: bool,
 ) -> Vec<PavedMesh> {
     let mut out = Vec::new();
     for ls in levels {
@@ -120,7 +131,28 @@ pub fn tile_meshes(
         let probe = std::env::var_os("ARPT_PAVE_PROBE").is_some();
         let t = std::time::Instant::now();
         let verts: usize = rings.iter().map(|r| r.pts.len()).sum();
-        let meshed = mesh_rings(&rings, bounds, crate::terrain::grid_for(z, z_ref), &mut height);
+        let meshed =
+            mesh_rings(&rings, bounds, crate::terrain::grid_for(z, z_ref), hole, &mut height);
+        // The apron is the wall the hole exposes, so it is built only where the
+        // hole is cut and only for the at-grade surface: a deck's silhouette is
+        // its own edge over open air, not a kerb against the ground.
+        let apron = if hole && ls.level == 0 {
+            // `height` holds the sampler; release it before the apron's own
+            // closure takes it, which needs both surfaces at once.
+            drop(height);
+            let mut both = |lon: f64, lat: f64| -> (i32, i32) {
+                let road =
+                    field.at(sampler, ls.level, ls.layer, z, z_ref, bounds, lon, lat, &mut scratch);
+                // The same query the constrained terrain mesh makes for its own
+                // vertices at this rung, so the apron's foot lands exactly on
+                // the ground the neighbouring triangle draws.
+                let ground = sampler.ground(lon, lat, z);
+                (project::quantize_z(road), project::quantize_z(ground))
+            };
+            build_apron(&rings, bounds, &mut both)
+        } else {
+            None
+        };
         if probe && t.elapsed().as_millis() > 100 {
             eprintln!(
                 "[pave-mesh] z{} level {}: {} rings / {} ring-verts -> {} tris in {:?}",
@@ -128,12 +160,12 @@ pub fn tile_meshes(
                 ls.level,
                 rings.len(),
                 verts,
-                meshed.as_ref().map_or(0, |(m, _)| m.indices.len() / 3),
+                meshed.as_ref().map_or(0, |(m, _, _)| m.indices.len() / 3),
                 t.elapsed()
             );
         }
-        if let Some((surface, casing)) = meshed {
-            out.push(PavedMesh { level: ls.level, surface, casing, anchor });
+        if let Some((surface, casing, region)) = meshed {
+            out.push(PavedMesh { level: ls.level, surface, casing, anchor, region, apron });
         }
     }
     out
@@ -242,8 +274,9 @@ fn mesh_rings(
     rings: &[TaggedRing],
     bounds: &Bounds,
     grid: u32,
+    hole: bool,
     height: &mut dyn FnMut(f64, f64) -> i32,
-) -> Option<(TerrainMesh, Option<TerrainMesh>)> {
+) -> Option<(TerrainMesh, Option<TerrainMesh>, Region)> {
     let up = Frame::at_center(bounds).encode_enu(0.0, 0.0, 1.0);
     let m_lon = crate::building_mesh::M_PER_DEG_LON_EQUATOR
         * ((bounds.south + bounds.north) * 0.5).to_radians().cos();
@@ -301,6 +334,10 @@ fn mesh_rings(
                 .collect()
         })
         .collect();
+    // One indexed region for both the interior-point pass and the face pass
+    // below: each is O(faces x ring vertices) unindexed, which on a detail tile
+    // is tens of millions of operations (see `synth::region`).
+    let qregion = Region::outline(qrings);
 
     // Interior sample points on the terrain's own lattice.
     //
@@ -334,7 +371,7 @@ fn mesh_rings(
             {
                 continue;
             }
-            if !inside_region((qx, qy), &qrings) {
+            if !qregion.contains((qx, qy)) {
                 continue;
             }
             let _ = cdt.insert(Point2::new(qx, qy));
@@ -376,7 +413,7 @@ fn mesh_rings(
             (ax + bx + cx) as f64 / 3.0,
             (ay + by + cy) as f64 / 3.0,
         );
-        if !inside_region(cen, &qrings) {
+        if !qregion.contains(cen) {
             continue;
         }
         if area2 > 0 {
@@ -392,8 +429,27 @@ fn mesh_rings(
     // the rim is what fades. An empty `edge_across` means "no analytic AA" to
     // the decoder, which is exactly right for the interior.
     let surface = TerrainMesh { x, y, z: zs, indices, normals, edge_across: Vec::new() };
-    let casing = build_rim(rings, &insets, bounds, up, height);
-    Some((surface, casing))
+    let casing = build_rim(rings, &insets, bounds, up, hole, height);
+    // The region the *terrain* is cut against is the true silhouette, not the
+    // inset the interior was triangulated to: the asphalt reaches the silhouette
+    // either way, via the rim where there is one and via the interior where the
+    // inset folded. Heights are taken at the rounded position, which is where
+    // both meshes put the vertex.
+    let mut sil: Vec<Vec<(f64, f64)>> = Vec::with_capacity(rings.len());
+    let mut sil_z: Vec<Vec<i32>> = Vec::with_capacity(rings.len());
+    for r in rings {
+        let mut pts = Vec::with_capacity(r.pts.len());
+        let mut zs = Vec::with_capacity(r.pts.len());
+        for c in &r.pts {
+            let qx = project::quantize_x(c.x, bounds);
+            let qy = project::quantize_y(c.y, bounds);
+            pts.push((qx as f64, qy as f64));
+            zs.push(height(project::dequantize_x(qx, bounds), project::dequantize_y(qy, bounds)));
+        }
+        sil.push(pts);
+        sil_z.push(zs);
+    }
+    Some((surface, casing, Region::with_heights(sil, sil_z)))
 }
 
 /// Splits every ring edge where it crosses a line of the terrain lattice, so no
@@ -550,6 +606,101 @@ fn inset_ring(ring: &TaggedRing, m_lon: f64) -> Option<Vec<Coord>> {
     Some(out)
 }
 
+/// Below this the kerb and the ground beside it are the same surface and the
+/// wall between them is not worth two triangles. A real kerb is about a
+/// quarter-metre; the boundary also carries quantization and the odd centimetre
+/// of interpolation, so this is set where "a kerb" stops and "a wall" starts.
+const APRON_MIN_M: f64 = 0.25;
+
+/// The wall between the drawn asphalt and the drawn ground, as one vertical
+/// quad per silhouette edge.
+///
+/// The terrain stops at the kerb and its rim vertex takes the *ground's* height
+/// there, not the road's. Where a bench holds, those are the same number and
+/// this emits nothing. Where none does — a hairpin stacked over itself, a road
+/// the earthwork declined to bench on a steep flank — they differ by whatever
+/// the model failed to build, and that difference used to be either a smear of
+/// terrain pulled up to road height across the first lattice cell or, once the
+/// ground was cut away, a gap you could see the hillside through.
+///
+/// Drawn instead as what it is: a vertical face between the kerb and the
+/// ground, with its own normals and its own class. Fifteen metres of it is a
+/// retaining wall, which is what is physically there; a few centimetres is a
+/// kerb and is skipped.
+///
+/// **Both ways.** The wall is drawn whichever surface is higher. A road on fill
+/// stands above the ground and the face runs down to it; a road in a cutting
+/// sits below and the face runs up to the ground it is cut into. Only the first
+/// case was handled at first, and the second is not hypothetical — once the
+/// carriageway rides its own profile rather than being clamped up to the
+/// terrain (`road::on_ground`), every cutting became an open gap between the
+/// asphalt and the terrain's rim, and the sky showed through it.
+///
+/// Cut edges carry no apron. A cut is a tile border, where the asphalt
+/// continues into the neighbour and there is no kerb at all — walling it would
+/// build a fence down every tile edge.
+fn build_apron(
+    rings: &[TaggedRing],
+    bounds: &Bounds,
+    at: &mut dyn FnMut(f64, f64) -> (i32, i32),
+) -> Option<TerrainMesh> {
+    let mut mesh = TerrainMesh {
+        x: Vec::new(),
+        y: Vec::new(),
+        z: Vec::new(),
+        indices: Vec::new(),
+        normals: Vec::new(),
+        edge_across: Vec::new(),
+    };
+    let min_mm = (APRON_MIN_M * 1000.0) as i32;
+    for r in rings {
+        let n = r.pts.len();
+        if n < 3 {
+            continue;
+        }
+        // Heights at the *rounded* position, which is where both the asphalt
+        // and the terrain put their vertices.
+        let mut sample = |c: &Coord| -> ((u16, u16), i32, i32) {
+            let qx = project::quantize_x(c.x, bounds);
+            let qy = project::quantize_y(c.y, bounds);
+            let (road, ground) =
+                at(project::dequantize_x(qx, bounds), project::dequantize_y(qy, bounds));
+            ((qx, qy), road, ground)
+        };
+        for k in 0..n {
+            if r.cut[k] {
+                continue;
+            }
+            let k1 = (k + 1) % n;
+            let (qa, road_a, gnd_a) = sample(&r.pts[k]);
+            let (qb, road_b, gnd_b) = sample(&r.pts[k1]);
+            if qa == qb {
+                continue;
+            }
+            // Only where the two surfaces actually part company. Either end
+            // parting is enough: a wall that tapers to nothing at one end is a
+            // wall, and skipping it would leave that end open.
+            if (road_a - gnd_a).abs().max((road_b - gnd_b).abs()) < min_mm {
+                continue;
+            }
+            let base = mesh.x.len() as u32;
+            for (q, z) in [(qa, road_a), (qb, road_b), (qb, gnd_b), (qa, gnd_a)] {
+                mesh.x.push(q.0);
+                mesh.y.push(q.1);
+                mesh.z.push(z);
+                // A vertical face has no meaningful octahedral "up"; the client
+                // draws this cull-none and lights it flat, and a wall reading as
+                // unlit is right for a wall.
+                mesh.normals.push(0);
+                mesh.normals.push(0);
+            }
+            mesh.indices.extend_from_slice(&[base, base + 1, base + 2]);
+            mesh.indices.extend_from_slice(&[base, base + 2, base + 3]);
+        }
+    }
+    (!mesh.indices.is_empty()).then_some(mesh)
+}
+
 /// Cap on the miter scale, matching the band this replaces.
 const MITER_MAX: f64 = 1.5;
 
@@ -561,6 +712,7 @@ fn build_rim(
     insets: &[Option<Vec<Coord>>],
     bounds: &Bounds,
     up: (i8, i8),
+    hole: bool,
     height: &mut dyn FnMut(f64, f64) -> i32,
 ) -> Option<TerrainMesh> {
     let mut mesh = TerrainMesh {
@@ -610,12 +762,30 @@ fn build_rim(
             if t0 == 0 || t1 == 0 || (t0 > 0) != (t1 > 0) {
                 continue;
             }
-            let across = [127i8, 127, 0, 0];
+            // The analytic fade exists because the asphalt overlapped coplanar
+            // ground with a depth bias: a floating edge with no geometric
+            // silhouette for MSAA to resolve. Where the ground is cut away
+            // there is nothing underneath to blend *into* but sky, and a
+            // half-alpha kerb against sky is a background halo along every road
+            // in the map. With the hole the asphalt boundary and the terrain
+            // boundary are the same edge at the same heights, drawn by two
+            // adjacent opaque meshes, which MSAA resolves per-sample for free.
+            // So the rim keeps its geometry and its darker tone and loses only
+            // the sub-pixel fade (docs/ROADS.md §6.1).
+            let across = if hole { [0i8; 4] } else { [127i8, 127, 0, 0] };
             let base = mesh.x.len() as u32;
-            for ((c, a), qc) in quad.iter().zip(across).zip(&q) {
+            for ((_, a), qc) in quad.iter().zip(across).zip(&q) {
                 mesh.x.push(qc.0 as u16);
                 mesh.y.push(qc.1 as u16);
-                mesh.z.push(height(c.x, c.y));
+                // Sampled at the *rounded* position, which is where the vertex
+                // is emitted and where the interior mesh samples its own. The
+                // two used to disagree by a sub-quantum amount, an invisible
+                // hairline between casing and surface — and once the terrain
+                // seams to these heights it would stop being invisible.
+                mesh.z.push(height(
+                    project::dequantize_x(qc.0 as u16, bounds),
+                    project::dequantize_y(qc.1 as u16, bounds),
+                ));
                 mesh.normals.push(up.0);
                 mesh.normals.push(up.1);
                 mesh.edge_across.push(a);
@@ -630,41 +800,6 @@ fn build_rim(
 }
 
 
-/// Point-in-region test over pre-quantized rings, by **winding number**.
-///
-/// Not even-odd. Clipping a region that leaves the tile and comes back produces a
-/// single self-touching ring — Sutherland–Hodgman joins the pieces along the
-/// border rather than splitting them — and even-odd parity is ambiguous on a ring
-/// that touches itself, so faces were being accepted or rejected essentially at
-/// random near such a border. Winding is well defined there, and the clip
-/// preserves each ring's orientation (outer counter-clockwise, holes clockwise),
-/// so a hole still subtracts.
-fn inside_region(p: (f64, f64), qrings: &[Vec<(f64, f64)>]) -> bool {
-    let mut winding = 0i32;
-    for q in qrings {
-        let n = q.len();
-        if n < 3 {
-            continue;
-        }
-        for k in 0..n {
-            let (_, y0) = q[k];
-            let (_, y1) = q[(k + 1) % n];
-            if y0 <= p.1 {
-                if y1 > p.1 && cross(q[k], q[(k + 1) % n], p) > 0.0 {
-                    winding += 1; // upward crossing to the left of p
-                }
-            } else if y1 <= p.1 && cross(q[k], q[(k + 1) % n], p) < 0.0 {
-                winding -= 1; // downward crossing to the right of p
-            }
-        }
-    }
-    winding != 0
-}
-
-/// Cross product of `a → b` with `a → p`: positive when `p` is left of the edge.
-fn cross(a: (f64, f64), b: (f64, f64), p: (f64, f64)) -> f64 {
-    (b.0 - a.0) * (p.1 - a.1) - (p.0 - a.0) * (b.1 - a.1)
-}
 
 /// Unit ENU direction from `a` to `b`, or `None` for a degenerate step.
 fn unit(a: Coord, b: Coord, m_lon: f64, m_lat: f64) -> Option<(f64, f64)> {
@@ -717,8 +852,8 @@ mod tests {
     fn an_interior_ring_meshes_watertight_and_inside_itself() {
         let b = bounds();
         let ring = tagged(box_ring(&b, 0.25), &b, true);
-        let (surface, casing) =
-            mesh_rings(&[ring], &b, 1, &mut |_, _| 1000).expect("a mesh");
+        let (surface, casing, _) =
+            mesh_rings(&[ring], &b, 1, false, &mut |_, _| 1000).expect("a mesh");
         assert!(!surface.indices.is_empty());
         assert_eq!(surface.indices.len() % 3, 0);
         assert!(casing.is_some(), "an interior ring gets a full rim");
@@ -751,10 +886,10 @@ mod tests {
             (10_000.0 * (1.0 - (2.0 * t - 1.0).abs())).round() as i32
         };
         let ring = || tagged(box_ring(&b, 0.25), &b, true);
-        let (chorded, _) = mesh_rings(&[ring()], &b, 1, &mut |lon, lat| ridge(lon, lat))
+        let (chorded, _, _) = mesh_rings(&[ring()], &b, 1, false, &mut |lon, lat| ridge(lon, lat))
             .expect("a mesh");
-        let (sampled, _) =
-            mesh_rings(&[ring()], &b, crate::terrain::TERRAIN_GRID_DETAIL, &mut |lon, lat| {
+        let (sampled, _, _) =
+            mesh_rings(&[ring()], &b, crate::terrain::TERRAIN_GRID_DETAIL, false, &mut |lon, lat| {
                 ridge(lon, lat)
             })
             .expect("a mesh");
@@ -859,7 +994,7 @@ mod tests {
     fn the_rim_carries_across_only_on_the_silhouette() {
         let b = bounds();
         let ring = tagged(box_ring(&b, 0.25), &b, true);
-        let (surface, casing) = mesh_rings(&[ring], &b, 1, &mut |_, _| 0).expect("a mesh");
+        let (surface, casing, _) = mesh_rings(&[ring], &b, 1, false, &mut |_, _| 0).expect("a mesh");
         // The interior declares no across-coordinate at all: it is opaque.
         assert!(surface.edge_across.is_empty());
         let rim = casing.expect("a rim");
@@ -884,7 +1019,7 @@ mod tests {
         ];
         let ring = tagged(pts, &b, true);
         assert_eq!(ring.cut, vec![false, false, false, true], "the west edge is the cut");
-        let (_, casing) = mesh_rings(&[ring], &b, 1, &mut |_, _| 0).expect("a mesh");
+        let (_, casing, _) = mesh_rings(&[ring], &b, 1, false, &mut |_, _| 0).expect("a mesh");
         let rim = casing.expect("a rim on the three real edges");
         // Three real edges, one quad each — the cut edge contributed none.
         assert_eq!(rim.indices.len(), 3 * 6, "expected three rim quads");
@@ -922,7 +1057,7 @@ mod tests {
         let mut inner_pts = box_ring(&b, 0.35);
         inner_pts.reverse(); // holes wind the other way
         let inner = tagged(inner_pts.clone(), &b, false);
-        let (surface, _) = mesh_rings(&[outer, inner], &b, 1, &mut |_, _| 0).expect("a mesh");
+        let (surface, _, _) = mesh_rings(&[outer, inner], &b, 1, false, &mut |_, _| 0).expect("a mesh");
 
         let hole: Vec<Coord> = inner_pts;
         let hole_q: Vec<(f64, f64)> = hole
@@ -984,7 +1119,7 @@ mod tests {
             Coord { x: cx - 0.2 * w, y: cy + 0.05 * h },
         ];
         let ring = tagged(pts, &b, true);
-        let Some((_, casing)) = mesh_rings(&[ring], &b, 1, &mut |_, _| 0) else {
+        let Some((_, casing, _)) = mesh_rings(&[ring], &b, 1, false, &mut |_, _| 0) else {
             return; // degenerating entirely is also acceptable
         };
         let Some(rim) = casing else { return };
@@ -1020,8 +1155,8 @@ mod tests {
         ];
         let ring = tagged(pts, &b, true);
         assert!(inset_ring(&ring, 77000.0).is_none(), "a sliver must not inset");
-        let meshed = mesh_rings(&[ring], &b, 1, &mut |_, _| 0);
-        if let Some((surface, casing)) = meshed {
+        let meshed = mesh_rings(&[ring], &b, 1, false, &mut |_, _| 0);
+        if let Some((surface, casing, _)) = meshed {
             assert!(casing.is_none(), "a sliver must not carry a rim");
             assert!(surface.edge_across.is_empty());
         }
@@ -1057,7 +1192,7 @@ mod tests {
         );
 
         // And a region with a hole produces rim quads for both boundaries.
-        let (_, casing) = mesh_rings(&[outer, hole], &b, 1, &mut |_, _| 0).expect("a mesh");
+        let (_, casing, _) = mesh_rings(&[outer, hole], &b, 1, false, &mut |_, _| 0).expect("a mesh");
         let rim = casing.expect("a rim");
         let quads = rim.x.len() / 4;
         assert!(quads >= 8, "expected rim on both rings' four sides, got {quads} quads");
@@ -1117,9 +1252,9 @@ mod tests {
     #[test]
     fn degenerate_rings_yield_no_mesh() {
         let b = bounds();
-        assert!(mesh_rings(&[], &b, 1, &mut |_, _| 0).is_none(), "no rings");
+        assert!(mesh_rings(&[], &b, 1, false, &mut |_, _| 0).is_none(), "no rings");
         let p = Coord { x: b.west + 0.5 * b.width(), y: b.south + 0.5 * b.height() };
         let dot = tagged(vec![p, p, p], &b, true);
-        assert!(mesh_rings(&[dot], &b, 1, &mut |_, _| 0).is_none(), "a degenerate ring");
+        assert!(mesh_rings(&[dot], &b, 1, false, &mut |_, _| 0).is_none(), "a degenerate ring");
     }
 }

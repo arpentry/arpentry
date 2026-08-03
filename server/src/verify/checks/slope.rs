@@ -27,8 +27,27 @@
 //!   terrain has no such designed edge, so its boundary still counts — and once
 //!   the ground is cut back to the kerb, the edge of that hole is exactly where
 //!   a new wall would appear.
+//!
+//! ## Steepness is not the whole of spectacle
+//!
+//! A steepness metric answers "how steep", and cannot answer "does the ground
+//! agree with itself" — the two come apart precisely where this invariant is
+//! hardest. A retaining wall beside a road is steep and *correct*: it is what
+//! is there, and drawn as a face it reads as one. The same wall drawn as a row
+//! of triangular teeth is the same steepness and a defect, and it was the
+//! defect a camera 25 m over a Territet switchback found while every metric in
+//! this scorecard sat still.
+//!
+//! So the second question is asked separately, per *vertex*: how far does the
+//! surface stand off the plane its own neighbours define
+//! ([`SurfaceMesh::vertex_residuals`])? Along a wall the answer is near zero —
+//! the wall's vertices lie on the wall. Along a sawtooth every second vertex
+//! stands off it by the tooth's height, in alternating directions. That is
+//! `slope.terrain_tearing`, and it is the only metric here that moves when a
+//! field steps somewhere no contact line runs.
 
 use crate::verify::dist::Dist;
+use crate::verify::mesh::SurfaceMesh;
 use crate::verify::scene::TileScene;
 use crate::verify::{Metric, Offender, Sense, Worst};
 
@@ -47,11 +66,25 @@ const GROUND_SLOPE: f64 = 2.0;
 /// ratio, so counting it only dilutes the metric.
 const VISIBLE_M: f64 = 0.10;
 
+/// How far a terrain vertex may stand off the plane of its neighbours before
+/// the surface counts as torn rather than shaped.
+///
+/// Set from the measured population, not from taste. Over the Montreux extract
+/// at z16 the residual is a spike at zero with a long tail: the median is
+/// centimetres — a lattice on a DEM is very nearly planar cell to cell — and
+/// real landform (a ridge crest, a stream notch, the top of a drawn wall)
+/// occupies the range up to a few tens of centimetres. Past
+/// [`TEARING_M`] the neighbours no longer describe a surface the vertex is on,
+/// which at the ~3 m detail cell means the mesh is alternating.
+const TEARING_M: f64 = 0.50;
+
 pub struct Slope {
     road: Dist,
     road_worst: Worst,
     ground: Dist,
     ground_worst: Worst,
+    tearing: Dist,
+    tearing_worst: Worst,
 }
 
 impl Slope {
@@ -63,7 +96,36 @@ impl Slope {
             road_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             ground: Dist::new(0.0, 64.0),
             ground_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            // Magnitude only: a tooth's pit is the same defect as its peak, and
+            // keeping the sign would let the two cancel in every summary.
+            tearing: Dist::new(0.0, 32.0),
+            tearing_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
         }
+    }
+
+    fn visit_terrain_tearing(&mut self, tile: &TileScene, terrain: &SurfaceMesh) {
+        terrain.vertex_residuals(&tile.scale, |s| {
+            let amp = s.tearing();
+            self.tearing.push(amp);
+            if amp > TEARING_M {
+                let (lon, lat) = tile.lonlat(s.x, s.y);
+                self.tearing_worst.offer(Offender {
+                    lon,
+                    lat,
+                    zoom: tile.z,
+                    value: amp,
+                    note: format!(
+                        "terrain alternates {:.2} m up / {:.2} m down between neighbouring \
+                         vertices, tile {}/{}/{}",
+                        s.residual.abs(),
+                        s.opposed.abs(),
+                        tile.z,
+                        tile.x,
+                        tile.y
+                    ),
+                });
+            }
+        });
     }
 }
 
@@ -92,6 +154,7 @@ impl Check for Slope {
                     });
                 }
             });
+            self.visit_terrain_tearing(tile, terrain);
         }
         for road in tile.roads.iter().filter(|r| r.is_pavement()) {
             let rim = road.mesh.boundary_faces();
@@ -156,6 +219,26 @@ impl Check for Slope {
                     .then(|| "no at-grade road surface at this zoom".to_string()),
                 dist: self.road,
                 worst: self.road_worst.into_vec(),
+            },
+            Metric {
+                id: "slope.terrain_tearing".into(),
+                invariant: 6,
+                title: "Drawn terrain standing off its own neighbours".into(),
+                detail: format!(
+                    "How far each interior terrain vertex sits from the plane its neighbours \
+                     define. Steepness cannot separate a wall from a wall drawn as teeth — both \
+                     are steep — but a wall's vertices lie along it and a sawtooth's alternate \
+                     across it. Past {TEARING_M:.2} m at a detail cell the ground is stepping \
+                     where nothing holds the step, which at a grazing view is a torn edge."
+                ),
+                sense: Sense::HigherIsWorse,
+                threshold: TEARING_M,
+                skipped: self
+                    .tearing
+                    .is_empty()
+                    .then(|| "no terrain mesh at this zoom".to_string()),
+                dist: self.tearing,
+                worst: self.tearing_worst.into_vec(),
             },
         ]
     }
@@ -297,6 +380,66 @@ mod tests {
         assert!(m[1].violations() > 0, "a 5 m drop over 1 m of asphalt must be flagged");
         assert!(m[1].worst_value().unwrap() > 4.0, "{:?}", m[1].worst_value());
         assert!(m[1].worst[0].note.contains("interior"));
+    }
+
+    /// A fully triangulated terrain lattice, `xs`/`ys` in metres from the tile
+    /// centre, with a height per column — the same shape as [`grid`] but as
+    /// ground rather than asphalt.
+    fn ground(xs: &[f64], ys: &[f64], z_per_col: &[f32]) -> SurfaceMesh {
+        grid(xs, ys, z_per_col).mesh
+    }
+
+    /// The tearing metric, which is the third one [`Slope`] reports.
+    fn tearing(t: &TileScene) -> Metric {
+        run(t).swap_remove(2)
+    }
+
+    #[test]
+    fn a_wall_is_a_face_and_not_a_tear() {
+        // A clean 6 m step across the middle of a 3 m lattice. Its crest reads
+        // below the plane of its neighbours and the vertex down the face reads
+        // above — one opposite-signed pair, which every drawn wall has and
+        // which must not be counted.
+        let xs = [0.0, 3.0, 6.0, 9.0, 12.0, 15.0, 18.0];
+        let ys = [0.0, 3.0, 6.0, 9.0, 12.0];
+        let m = tearing(&tile(
+            Some(ground(&xs, &ys, &[100.0, 100.0, 100.0, 106.0, 106.0, 106.0, 106.0])),
+            Vec::new(),
+        ));
+        assert!(!m.dist.is_empty(), "the lattice interior must have been measured");
+        assert_eq!(m.violations(), 0, "a wall must not read as tearing: {:?}", m.worst_value());
+    }
+
+    #[test]
+    fn a_sawtooth_is_caught() {
+        // The Territet defect in the small: the same flank, but with the
+        // ground alternating 1.5 m about it cell by cell.
+        let xs = [0.0, 3.0, 6.0, 9.0, 12.0, 15.0, 18.0];
+        let ys = [0.0, 3.0, 6.0, 9.0, 12.0];
+        let m = tearing(&tile(
+            Some(ground(&xs, &ys, &[100.0, 101.5, 100.0, 101.5, 100.0, 101.5, 100.0])),
+            Vec::new(),
+        ));
+        assert!(m.violations() > 0, "an alternating lattice must be flagged");
+        // Reported in metres, and less than the peak-to-trough 1.5 m: the
+        // teeth here run in ridges, so two of a vertex's six neighbours sit on
+        // its own tooth and the plane it is measured against tilts towards it.
+        // The metric is a departure from the surface, not a tooth height.
+        let w = m.worst_value().unwrap();
+        assert!((0.9..1.5).contains(&w), "amplitude in metres expected, got {w}");
+        assert!(m.worst[0].note.contains("alternates"));
+    }
+
+    #[test]
+    fn a_smooth_hillside_does_not_tear() {
+        let xs = [0.0, 3.0, 6.0, 9.0, 12.0, 15.0, 18.0];
+        let ys = [0.0, 3.0, 6.0, 9.0, 12.0];
+        let m = tearing(&tile(
+            Some(ground(&xs, &ys, &[100.0, 102.5, 105.0, 107.5, 110.0, 112.5, 115.0])),
+            Vec::new(),
+        ));
+        assert!(!m.dist.is_empty());
+        assert_eq!(m.violations(), 0, "a 1:1.2 flank is steep, not torn");
     }
 
     #[test]

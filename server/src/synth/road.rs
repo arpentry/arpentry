@@ -172,19 +172,30 @@ pub(crate) fn ground_height(
 
 /// One corridor's surface given the shared [`ground_height`] at the same point.
 ///
-/// At the reference zoom a corridor road rides the engineered ground but **never
-/// sinks below its own solved profile**. Where benches overlap across stacked
-/// interchange corridors (a viaduct approach crossing a lower road) the nearest
-/// bench may belong to the *other* road, and its target falls short of this
-/// road's fill; without the clamp the road would drape onto its neighbour's bed
-/// and step *below its own bridge deck*. Clamping up to `road_m` makes the
-/// surface meet the deck at one height (ROADS.md invariant 5) while a lower
-/// crossing road keeps its own (higher) bench and is not buried. A cut still
-/// renders as a cut: there the benched ground equals `road_m`, so the clamp is a
-/// no-op.
+/// At the reference zoom a corridor road **is its own solved profile**, and at
+/// coarser zooms it hugs the drawn ground plus the zoom-independent engineered
+/// offset, clamped to fills.
 ///
-/// At coarser zooms the lattice cannot carry a bench, so the road hugs the drawn
-/// ground plus the zoom-independent engineered offset, clamped to fills.
+/// **The clamp that used to stand here did two jobs, and the hole retired one.**
+/// It was `ground.max(road_m)`, which reads as one rule and is two:
+///
+/// - *Never below the road's own profile.* Load-bearing, and kept. Where benches
+///   overlap across stacked interchange corridors — a viaduct approach crossing
+///   a lower road — the nearest bench may belong to the *other* road and fall
+///   short of this one's fill; without this the road would drape onto its
+///   neighbour's bed and step below its own bridge deck (ROADS.md invariant 5).
+///   Taking the profile outright satisfies it exactly.
+/// - *Never below the drawn ground.* This is what stopped the terrain poking up
+///   through the asphalt, and since the detail terrain stops at the kerb
+///   (docs/GROUND.md §3) there is no drawn ground under the carriageway left to
+///   poke through. What the clamp still did was drag the surface up over every
+///   DEM bump inside the paved region, so a road crossing a rough unbenched
+///   flank came out folded — `slope.carriageway_face` at 40 % of samples over a
+///   30 % grade, reaching 331 %, which is the "bumpy and unrealistic" a solved
+///   profile exists to prevent. A road is exactly as smooth as its profile now.
+///
+/// So the clamp is dropped only where the hole is actually cut. Coarser rungs
+/// draw ground under the asphalt and keep it.
 pub(crate) fn on_ground(
     ground: f64,
     profile: Option<&Profile>,
@@ -195,7 +206,14 @@ pub(crate) fn on_ground(
     lat: f64,
 ) -> f64 {
     match profile {
-        Some(p) if z == z_ref => ground.max(p.height_at(lon, lat)),
+        Some(p) if z == z_ref => {
+            let road_m = p.height_at(lon, lat);
+            if sampler.cuts_hole(z) {
+                road_m
+            } else {
+                ground.max(road_m)
+            }
+        }
         Some(p) => {
             let ref_bounds = solve::tile_containing(z_ref, lon, lat);
             let lift = p.height_at(lon, lat) - sampler.surface(&ref_bounds, lon, lat, z_ref);

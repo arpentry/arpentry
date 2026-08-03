@@ -46,6 +46,7 @@ use crate::simplify;
 use crate::solve::{self, SolvedModel};
 use crate::sort::{self, ExternalSorter};
 use crate::synth::junction::JunctionModel;
+use crate::synth::region::Region;
 use crate::synth::{self, Synth};
 use crate::terrain::{self, TerrainMesh, TERRAIN_GRID};
 use crate::tile_build::{self, EncoderFeature, EncoderLayer};
@@ -130,6 +131,11 @@ pub struct Config {
     /// contact lines (docs/GROUND.md §3). On by default; `--no-breaklines`
     /// is the escape hatch back to the plain lattice.
     pub breaklines: bool,
+    /// Whether the detail-zoom terrain mesh stops at the kerb (docs/GROUND.md
+    /// §3, "the hole"). On by default; `--no-hole` puts the ground back under
+    /// the asphalt so an A/B re-tile is a flag rather than a patch. Implied off
+    /// by `--no-breaklines`: there is no constrained mesh to cut.
+    pub hole: bool,
 }
 
 /// Summary counts from a run.
@@ -308,6 +314,8 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             let dem = cfg.terrain.as_deref().and_then(|p| Dem::open(p).ok());
             let mut sampler = GroundSampler::new(dem, Arc::clone(&ground), solved.z_ref);
             sampler.set_breaklines(cfg.breaklines);
+        sampler.set_hole(cfg.hole);
+            sampler.set_hole(cfg.hole);
             let zref_bounds = solve::tile_containing(solved.z_ref, lon, lat);
             let cos = lat.to_radians().cos();
             eprintln!("PROBE {lon},{lat} (z_ref={})", solved.z_ref);
@@ -419,6 +427,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         };
         let mut sampler = GroundSampler::new(dem, Arc::clone(&ground), solved.z_ref);
         sampler.set_breaklines(cfg.breaklines);
+        sampler.set_hole(cfg.hole);
         let mut sorted = sorted;
         let mut current: Option<u64> = None;
         let mut buckets: Vec<Vec<EncoderFeature>> =
@@ -629,6 +638,9 @@ fn emit_parallel(
                 let flat = terrain::flat_mesh(TERRAIN_GRID);
                 let mut sampler = GroundSampler::new(dem, ground, solved.z_ref);
                 sampler.set_breaklines(cfg.breaklines);
+                sampler.set_hole(cfg.hole);
+        sampler.set_hole(cfg.hole);
+            sampler.set_hole(cfg.hole);
                 loop {
                     // Blocking recv under the lock serializes idle waits only;
                     // a queued job is handed off immediately.
@@ -714,7 +726,7 @@ fn encode_tile(
     // so all three land on the same asphalt (docs/ROADS.md invariant 5).
     let field = synth::height::HeightField::for_tile(junctions, solved, z, &bounds);
     stamp_synth(&mut buckets, &field, junctions, sampler, solved, z, &bounds);
-    add_road_surface(&mut buckets, pavement, &field, sampler, &bounds, z, solved.z_ref);
+    let hole = add_road_surface(&mut buckets, pavement, &field, sampler, &bounds, z, solved.z_ref);
     let mut t_terrain = t_stamp.elapsed();
 
     // Vector layers in decode-priority (index) order.
@@ -740,7 +752,7 @@ fn encode_tile(
     observed.push((layers::TERRAIN as usize, GeometryType::Mesh));
     let (blob, elevation, t_mesh, t_encode) = if sampler.has_elevation() {
         let t = Instant::now();
-        let (mesh, emin, emax) = sampler.terrain_mesh(&bounds, z);
+        let (mesh, emin, emax) = sampler.terrain_mesh(&bounds, z, &hole);
         let t_mesh = t.elapsed();
         let t = Instant::now();
         let blob = tile_build::build_tile_q(&bounds, Some(&mesh), &enc_layers, quality);
@@ -887,14 +899,17 @@ fn add_road_surface(
     bounds: &Bounds,
     z: u8,
     z_ref: u8,
-) {
+) -> Vec<Region> {
     if z < crate::priors::ROAD_SURFACE_MIN_ZOOM || !sampler.has_elevation() {
-        return;
+        return Vec::new();
     }
-    let Some(levels) = pavement.chunk_for(bounds) else {
-        return;
-    };
-    for paved in synth::pave_mesh::tile_meshes(levels, field, sampler, z, z_ref, bounds) {
+    let Some(levels) = pavement.chunk_for(bounds) else { return Vec::new() };
+    // The casing goes opaque on exactly the tiles whose ground is cut away, so
+    // the paver has to be asked the same question the terrain mesher will
+    // answer (see `build_rim`).
+    let hole = sampler.cuts_hole(z);
+    let mut cut: Vec<Region> = Vec::new();
+    for paved in synth::pave_mesh::tile_meshes(levels, field, sampler, z, z_ref, bounds, hole) {
         let anchor = paved.anchor;
         let id = anchor.x.to_bits() ^ anchor.y.to_bits().rotate_left(32);
         // The casing rides after the surface so its blended rim composites over
@@ -913,11 +928,35 @@ fn add_road_surface(
                 synth: synth::Synth::None,
             });
         };
+        // Only the at-grade surface cuts, and only one of them: a deck flies
+        // and the ground beneath it stays. The region handed on is the one
+        // whose asphalt was *actually meshed* — a level that failed to mesh
+        // must not leave a hole with nothing over it (invariant 6).
+        // Every at-grade region cuts, not just the first: a tile can carry
+        // several level-0 regions on different grade layers, and asphalt whose
+        // ground was left in place is asphalt the burial artifacts come back
+        // through. Structures (level != 0) never cut — a deck flies and the
+        // ground beneath it stays. The regions handed on are those whose
+        // asphalt was *actually meshed*, so a level that failed to mesh leaves
+        // no hole with nothing over it (invariant 6).
+        if paved.level == 0 && hole && !paved.region.is_empty() {
+            cut.push(paved.region);
+        }
         push("road_surface", paved.surface, 0);
         if let Some(casing) = paved.casing {
             push("road_casing", casing, 1);
         }
+        // The wall between the kerb and the ground beside it. A sibling
+        // feature rather than part of the terrain: the terrain mesh carries no
+        // materials, so giving it one would take the whole ground out of the
+        // client's own styling — and as a road-layer feature the apron is also
+        // invisible to the terrain steepness check, which must not read a
+        // deliberate wall as a manufactured cliff.
+        if let Some(apron) = paved.apron {
+            push("road_apron", apron, 2);
+        }
     }
+    cut
 }
 
 /// Phase-1 worker: drains row-group work items from the queue, streams their
@@ -1366,7 +1405,7 @@ fn flush_tile(
     stamp_elevations(buckets, sampler, z);
     let field = synth::height::HeightField::for_tile(junctions, solved, z, &bounds);
     stamp_synth(buckets, &field, junctions, sampler, solved, z, &bounds);
-    add_road_surface(buckets, pavement, &field, sampler, &bounds, z, solved.z_ref);
+    let hole = add_road_surface(buckets, pavement, &field, sampler, &bounds, z, solved.z_ref);
 
     // Vector layers in decode-priority (index) order.
     let mut enc_layers = Vec::new();
@@ -1389,7 +1428,7 @@ fn flush_tile(
     layer_stats.observe(layers::TERRAIN as usize, z, GeometryType::Mesh);
     let blob = if sampler.has_elevation() {
         let t_terrain = Instant::now();
-        let (mesh, emin, emax) = sampler.terrain_mesh(&bounds, z);
+        let (mesh, emin, emax) = sampler.terrain_mesh(&bounds, z, &hole);
         stats.timings.terrain += t_terrain.elapsed();
         elevation.0 = elevation.0.min(emin);
         elevation.1 = elevation.1.max(emax);
@@ -1847,6 +1886,7 @@ mod tests {
             brotli_quality: tile_build::DEFAULT_QUALITY,
             dump: None,
             breaklines: true,
+            hole: true,
         };
         let stats = run(&cfg).expect("pipeline run");
         assert!(stats.tiles_written > 0, "expected some tiles");

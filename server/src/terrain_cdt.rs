@@ -27,6 +27,7 @@ use geo_types::Coord;
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 
 use crate::project::{self, Bounds, BUFFER, EXTENT};
+use crate::synth::region::Region;
 use crate::terrain::{encode_octahedral, TerrainMesh};
 
 /// Metric step of the central differences the vertex normals are computed
@@ -46,6 +47,7 @@ pub fn constrained_mesh(
     grid: u32,
     bounds: &Bounds,
     segments: &[(Coord, Coord)],
+    regions: &[Region],
     sample: &mut dyn FnMut(f64, f64) -> f64,
 ) -> Option<(TerrainMesh, f64, f64)> {
     let grid = grid.max(1);
@@ -64,7 +66,7 @@ pub fn constrained_mesh(
             constraints.push((qa, qb));
         }
     }
-    if constraints.is_empty() {
+    if constraints.is_empty() && regions.is_empty() {
         return None; // nothing to constrain: the plain lattice is exact
     }
 
@@ -83,6 +85,30 @@ pub fn constrained_mesh(
         }
     };
     for &(qa, qb) in &constraints {
+        mark(qa, qb);
+    }
+    // The kerb is a constraint like any other: a cell it crosses must lose its
+    // fixed diagonal too, or the diagonal is added and then split anyway —
+    // correct, but noisier and slower.
+    let mut ring_edges: Vec<((u16, u16), (u16, u16))> = Vec::new();
+    for r in regions {
+        for ring in r.rings() {
+            let n = ring.len();
+            if n < 3 {
+                continue;
+            }
+            for k in 0..n {
+                let a = ring[k];
+                let b = ring[(k + 1) % n];
+                let qa = (a.0.round() as u16, a.1.round() as u16);
+                let qb = (b.0.round() as u16, b.1.round() as u16);
+                if qa != qb {
+                    ring_edges.push((qa, qb));
+                }
+            }
+        }
+    }
+    for &(qa, qb) in &ring_edges {
         mark(qa, qb);
     }
 
@@ -129,23 +155,92 @@ pub fn constrained_mesh(
         cdt.add_constraint_and_split(va, vb, |p| p);
     }
 
-    // Emit vertices in handle order (insertion order — deterministic).
+    // The kerb, after the breaklines and in ring-then-vertex order, so a crest
+    // line crossing a kerb resolves into a split vertex rather than failing.
+    for &(qa, qb) in &ring_edges {
+        let va = cdt.insert(Point2::new(qa.0 as f64, qa.1 as f64)).ok()?;
+        let vb = cdt.insert(Point2::new(qb.0 as f64, qb.1 as f64)).ok()?;
+        if va == vb {
+            continue;
+        }
+        cdt.add_constraint_and_split(va, vb, |p| p);
+    }
+
+    // Positions first, heights later. With a hole, every lattice vertex
+    // strictly inside the paved region is about to be discarded, and sampling
+    // one costs three DEM-backed field evaluations (the height and two central
+    // differences for the normal). The paved region is 5-8 % of a dense tile,
+    // so this ordering is where "removing terrain area offsets the added
+    // constraints" is actually earned.
+    //
     // Split vertices may carry fractional positions; they are rounded to the
-    // output u16 grid and sampled at the rounded position, so the stored z
-    // is exact for the stored vertex.
+    // output u16 grid and sampled at the rounded position, so the stored z is
+    // exact for the stored vertex.
     let vcount = cdt.num_vertices();
-    let mut x: Vec<u16> = Vec::with_capacity(vcount);
-    let mut y: Vec<u16> = Vec::with_capacity(vcount);
-    let mut z: Vec<i32> = Vec::with_capacity(vcount);
-    let mut normals: Vec<i8> = vec![0; vcount * 2];
+    let mut qpos: Vec<(u16, u16)> = Vec::with_capacity(vcount);
+    for v in cdt.vertices() {
+        let p = v.position();
+        qpos.push((
+            p.x.round().clamp(0.0, 65535.0) as u16,
+            p.y.round().clamp(0.0, 65535.0) as u16,
+        ));
+    }
+
+    // Faces, wound CCW (east-x, north-y is right-handed, so spade's CCW faces
+    // already match the client's front face; the area check is insurance
+    // against rounding collapsing a face). A face whose centroid lies inside
+    // the paved region is dropped: the asphalt is opaque and watertight, and
+    // ground drawn beneath it is where every burial artifact lives.
+    let mut faces: Vec<[u32; 3]> = Vec::with_capacity(cdt.num_inner_faces());
+    let mut used = vec![false; vcount];
+    for face in cdt.inner_faces() {
+        let [a, b, c] = face.vertices().map(|v| v.fix().index());
+        let (ax, ay) = (qpos[a].0 as i64, qpos[a].1 as i64);
+        let (bx, by) = (qpos[b].0 as i64, qpos[b].1 as i64);
+        let (cx, cy) = (qpos[c].0 as i64, qpos[c].1 as i64);
+        let area2 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        if area2 == 0 {
+            continue; // rounding collapsed the face: drop the sliver
+        }
+        if !regions.is_empty() {
+            // Inside *any* level-0 region. They are separate regions on
+            // different grade layers, overlapping in plan and metres apart
+            // vertically, so they cannot be merged into one winding test: a
+            // hole in one would cancel an outer ring of another and re-admit
+            // ground under drawn asphalt.
+            let cen = ((ax + bx + cx) as f64 / 3.0, (ay + by + cy) as f64 / 3.0);
+            if regions.iter().any(|r| r.contains(cen)) {
+                continue;
+            }
+        }
+        let tri = if area2 > 0 { [a, b, c] } else { [a, c, b] };
+        for &v in &tri {
+            used[v] = true;
+        }
+        faces.push([tri[0] as u32, tri[1] as u32, tri[2] as u32]);
+    }
+    if faces.is_empty() {
+        // A tile entirely inside the region should not happen, and must not
+        // produce an empty terrain if it does: fall back to the plain lattice.
+        return None;
+    }
+
+    // Compaction: only vertices a surviving face references are sampled.
+    let mut remap = vec![u32::MAX; vcount];
+    let kept = used.iter().filter(|&&u| u).count();
+    let mut x: Vec<u16> = Vec::with_capacity(kept);
+    let mut y: Vec<u16> = Vec::with_capacity(kept);
+    let mut z: Vec<i32> = Vec::with_capacity(kept);
+    let mut normals: Vec<i8> = vec![0; kept * 2];
     let (mut emin, mut emax) = (f64::INFINITY, f64::NEG_INFINITY);
     let mid_lat = (bounds.south + bounds.north) * 0.5;
     let dlat = NORMAL_STEP_M / 111_319.5;
     let dlon = NORMAL_STEP_M / (111_319.5 * (mid_lat * PI / 180.0).cos());
-    for v in cdt.vertices() {
-        let p = v.position();
-        let qx = p.x.round().clamp(0.0, 65535.0) as u16;
-        let qy = p.y.round().clamp(0.0, 65535.0) as u16;
+    for (v, &(qx, qy)) in qpos.iter().enumerate() {
+        if !used[v] {
+            continue;
+        }
+        remap[v] = x.len() as u32;
         let lon = project::dequantize_x(qx, bounds);
         let lat = project::dequantize_y(qy, bounds);
         let e = sample(lon, lat);
@@ -180,24 +275,13 @@ pub fn constrained_mesh(
         normals[idx * 2 + 1] = oy;
     }
 
-    // Triangles, wound CCW (east-x, north-y is right-handed, so spade's CCW
-    // faces already match the client's front face; the area check is
-    // insurance against rounding collapsing a face).
-    let mut indices: Vec<u32> = Vec::with_capacity(cdt.num_inner_faces() * 3);
-    for face in cdt.inner_faces() {
-        let [a, b, c] = face.vertices().map(|v| v.fix().index());
-        let (ax, ay) = (x[a] as i64, y[a] as i64);
-        let (bx, by) = (x[b] as i64, y[b] as i64);
-        let (cx, cy) = (x[c] as i64, y[c] as i64);
-        let area2 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
-        if area2 == 0 {
-            continue; // rounding collapsed the face: drop the sliver
-        }
-        if area2 > 0 {
-            indices.extend_from_slice(&[a as u32, b as u32, c as u32]);
-        } else {
-            indices.extend_from_slice(&[a as u32, c as u32, b as u32]);
-        }
+    let mut indices: Vec<u32> = Vec::with_capacity(faces.len() * 3);
+    for f in &faces {
+        indices.extend_from_slice(&[
+            remap[f[0] as usize],
+            remap[f[1] as usize],
+            remap[f[2] as usize],
+        ]);
     }
     if indices.is_empty() || !emin.is_finite() {
         return None;
@@ -266,7 +350,7 @@ mod tests {
     #[test]
     fn no_constraints_means_no_mesh() {
         let b = tile();
-        let got = constrained_mesh(16, &b, &[], &mut |_, _| 500.0);
+        let got = constrained_mesh(16, &b, &[], &[], &mut |_, _| 500.0);
         assert!(got.is_none());
     }
 
@@ -285,6 +369,7 @@ mod tests {
             grid,
             &b,
             &[(a, c)],
+            &[],
             &mut |_, _| 500.0,
         )
         .expect("a constrained mesh");
@@ -329,6 +414,7 @@ mod tests {
             grid,
             &b,
             &[(a, c)],
+            &[],
             &mut |lon, lat| field(lon, lat),
         )
         .expect("a constrained mesh");
@@ -368,6 +454,7 @@ mod tests {
             16,
             &b,
             &[cross1, cross2],
+            &[],
             &mut |_, _| 500.0,
         )
         .expect("a constrained mesh");
@@ -404,6 +491,7 @@ mod tests {
             grid,
             &b,
             &lines,
+            &[],
             &mut |lon, lat| bench(lon, lat),
         )
         .expect("a constrained mesh");

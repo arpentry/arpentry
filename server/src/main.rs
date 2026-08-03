@@ -28,6 +28,10 @@ OPTIONS:
   --brotli <q>         Brotli quality 0-11 for tile blobs (default: 7)
   --dump <dir>         Write stage-artifact GeoJSON dumps (scene graph,
                        solved profiles) for inspection in QGIS/kepler
+  --no-breaklines      Plain lattice terrain: no bench contact lines, and no
+                       hole (there is no constrained mesh to cut)
+  --no-hole            Draw ground under the asphalt again, so an A/B re-tile
+                       of the hole is a flag rather than a patch
   -h, --help           Show this help
 
 Layer indices: 0=terrain 1=land_cover 2=bathymetry 3=water 4=land
@@ -157,6 +161,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
     let mut brotli_quality: i32 = arpentry_server::tile_build::DEFAULT_QUALITY;
     let mut dump: Option<PathBuf> = None;
     let mut breaklines = true;
+    let mut hole = true;
 
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
@@ -173,6 +178,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
             "--brotli" => brotli_quality = parse_num(&value(&mut it, "--brotli")?, "--brotli")?,
             "--dump" => dump = Some(PathBuf::from(value(&mut it, "--dump")?)),
             "--no-breaklines" => breaklines = false,
+            "--no-hole" => hole = false,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -197,6 +203,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
         brotli_quality,
         dump,
         breaklines,
+        hole: hole && breaklines,
     })
 }
 

@@ -33,6 +33,22 @@ impl RoadMesh {
         self.level == 0 && self.class == "road_surface"
     }
 
+    /// The casing rim: the strip between the carriageway's inset interior and
+    /// its true silhouette. It is asphalt, so it answers for the road's height
+    /// at the very edge — which the interior mesh, ending an inset short of it,
+    /// cannot.
+    pub fn is_casing(&self) -> bool {
+        self.level == 0 && self.class == "road_casing"
+    }
+
+    /// The wall drawn between the kerb and the ground beside it
+    /// (docs/GROUND.md §3). Never pavement and never a deck: it is vertical by
+    /// construction, so a steepness check that counted it would read a
+    /// deliberate face as a defect.
+    pub fn is_apron(&self) -> bool {
+        self.class == "road_apron"
+    }
+
     /// A bridge deck: rides above the ground on purpose, and owes the feature
     /// it crosses a class-appropriate gap (invariant 3).
     pub fn is_deck(&self) -> bool {

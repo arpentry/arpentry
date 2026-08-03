@@ -369,11 +369,19 @@ pub const RAMP_GRADE: f64 = 0.08;
 pub const MIN_EARTHWORK_M: f64 = 0.3;
 
 /// How far an earthwork's batter face reaches beyond the bench per metre of
-/// cut or fill depth (a 1:2.5 slope), and the floor on that reach so even a
-/// road sitting on the natural ground eases into it over a short face. The
-/// face is straight and self-limiting: it stops where it meets the natural
-/// ground, so this is a bound on the reach, not the reach itself.
+/// cut or fill depth (a 1:2.5 slope). The face is straight and self-limiting:
+/// it stops where it meets the natural ground, so this is a bound on the
+/// reach, not the reach itself.
 pub const EARTHWORK_BATTER: f64 = 2.5;
+
+/// The shortest reach a *carve* notch's wall is given — a floor, because a
+/// notch cut with no depth to speak of still needs a wall to stand in.
+///
+/// Road benches have no such floor: see [`crate::ground::batter_reach`] for why
+/// one cannot exist there. A floor holds the ground down past the point the
+/// face daylights, and the field then steps back to the hillside at the floor's
+/// outer edge — out in open ground where no contact line runs, which the detail
+/// mesh draws as sawtooth.
 pub const EARTHWORK_MIN_BATTER_M: f64 = 2.0;
 
 /// The tallest face, in metres, that holding a bench flat across a cross-slope

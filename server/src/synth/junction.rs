@@ -198,16 +198,37 @@ impl JunctionModel {
     /// The caller pads the box by whatever reach (trim radius, plate size)
     /// matters to it.
     pub fn near(&self, b: (f64, f64, f64, f64)) -> Vec<&BakedJunction> {
-        let (x0, y0) = grid_cell(b.0, b.1);
-        let (x1, y1) = grid_cell(b.2, b.3);
+        // Tested against each plate's *area*, not its centre. A star-shaped
+        // intersection region reaches far past the padding a tile query carries
+        // — a big roundabout's legs run tens of metres — so a centre test drops
+        // plates that still cover the tile. That made the height field
+        // tile-dependent: two neighbours sharing a border point covered by such
+        // a plate disagreed about whether it was pinned at all, which is a
+        // 0.36 m step in the drawn asphalt across the seam (invariant 2).
+        //
+        // The grid cells scanned are widened to match, or the lookup would drop
+        // the very plates the area test exists to keep.
+        let mut reach = (0.0f64, 0.0f64);
+        for j in &self.junctions {
+            let r = j.area().reach_deg();
+            reach = (reach.0.max(r.0), reach.1.max(r.1));
+        }
+        let (x0, y0) = grid_cell(b.0 - reach.0, b.1 - reach.1);
+        let (x1, y1) = grid_cell(b.2 + reach.0, b.3 + reach.1);
         let mut out = Vec::new();
         for cx in x0..=x1 {
             for cy in y0..=y1 {
                 if let Some(cell) = self.grid.get(&(cx, cy)) {
                     for &i in cell {
-                        let p = self.junctions[i as usize].point();
-                        if p.x >= b.0 && p.x <= b.2 && p.y >= b.1 && p.y <= b.3 {
-                            out.push(&self.junctions[i as usize]);
+                        let j = &self.junctions[i as usize];
+                        let p = j.point();
+                        let r = j.area().reach_deg();
+                        if p.x + r.0 >= b.0
+                            && p.x - r.0 <= b.2
+                            && p.y + r.1 >= b.1
+                            && p.y - r.1 <= b.3
+                        {
+                            out.push(j);
                         }
                     }
                 }

@@ -452,6 +452,13 @@ static void render_frame(void) {
         double alt = arpt_camera_altitude(app.camera);
         double rate = 8.0 * fmax(1.0, 200.0 / fmax(alt, 1.0));
         double alpha = 1.0 - exp(-dt * rate);
+#ifndef __EMSCRIPTEN__
+        /* A capture has no frames to spare for the ease: it fires as soon as
+           the tiles land, and the lag would leave the eye hundreds of metres
+           below the hillside it was aimed at.  --screenshot promises to
+           reproduce the camera the overlay prints, so snap. */
+        if (opts.screenshot[0] != '\0') alpha = 1.0;
+#endif
         app.smoothed_ground_elev +=
             (target - app.smoothed_ground_elev) * alpha;
         arpt_camera_set_ground_elevation(app.camera,

@@ -210,6 +210,13 @@ impl<'a> HeightField<'a> {
         // earthwork-index walk plus a lattice evaluation), so the blend below
         // applies each corridor's own clamp to it rather than re-deriving it.
         let ground = road::ground_height(sampler, z, z_ref, bounds, lon, lat);
+        // Whether the drawn ground under this asphalt has been cut away. Where
+        // it has, nothing can poke up through the carriageway and the raise-only
+        // clamps below are not only unnecessary but harmful — see
+        // [`road::on_ground`]. Asked once, and asked the same way by the pin and
+        // by the corridor blend: letting the two disagree put a step wherever a
+        // plate met a road, and a 0.36 m one across a tile border.
+        let hole = sampler.cuts_hole(z);
 
         // The carriageway blend, over every corridor covering this point.
         let mut num = 0.0f64;
@@ -262,14 +269,16 @@ impl<'a> HeightField<'a> {
                 continue;
             }
             // The pin carries the same clamp every carriageway source carries
-            // ([`road::on_ground`]): asphalt never sinks below the ground drawn
-            // under it. A junction solved into a cutting the ground stage
-            // declined to dig — a bench too steep to be plausible, or a
-            // neighbour's bench holding the ground above it — otherwise pinned
-            // its plate metres inside the hillside while every road meeting it
-            // rode the surface, which is the one disagreement the field exists
-            // to prevent (ROADS.md invariant 5).
-            let height = p.height.max(ground);
+            // ([`road::on_ground`]), and drops it under the same condition. With
+            // ground drawn under the asphalt, a junction solved into a cutting
+            // the ground stage declined to dig — a bench too steep to be
+            // plausible, or a neighbour's bench holding the ground above it —
+            // pinned its plate metres inside the hillside while every road
+            // meeting it rode the surface, which is the one disagreement the
+            // field exists to prevent (ROADS.md invariant 5). With the ground
+            // cut away there is no hillside to be inside of, and clamping here
+            // while the corridors do not is itself a disagreement.
+            let height = if hole { p.height } else { p.height.max(ground) };
             let (de, dn) = p.area.offset_m(Coord { x: lon, y: lat });
             let d = (de * de + dn * dn).sqrt();
             if best.is_none_or(|(bd, _, _)| d < bd) {
@@ -606,9 +615,15 @@ mod tests {
     }
 
     /// A junction the solver put below the ground drawn under it — its members
-    /// were profiled into a cutting the ground stage declined to dig — must not
-    /// pin its plate inside the hillside. The pin carries the same raise-only
-    /// clamp every carriageway source carries.
+    /// were profiled into a cutting the ground stage declined to dig.
+    ///
+    /// With ground drawn under the asphalt it must not pin its plate inside the
+    /// hillside, so it carries the same raise-only clamp every carriageway
+    /// source carries. With the ground cut back to the kerb there is no hillside
+    /// to be inside of, the clamp is dropped (docs/GROUND.md §3), and the plate
+    /// reads exactly what the solver decided — which is also what every road
+    /// meeting it now reads, and *that agreement* is the property the field
+    /// exists to hold.
     #[test]
     fn a_pin_never_sinks_below_the_ground_drawn_under_it() {
         let centre = Coord { x: 6.0, y: LAT };
@@ -635,28 +650,32 @@ mod tests {
         let junctions = crate::synth::junction::bake(&scene, &solved);
         let ground = Arc::new(crate::ground::derive(&scene, &solved, None, 1));
         assert!(ground.earthwork_count() > 0, "the legs must bench the ground to 500");
-        let mut s = GroundSampler::new(None, ground, Z);
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
         let field = HeightField::for_tile(&junctions, &solved, Z, &bounds);
         let mut scratch = Vec::new();
+        let probe = |s: &mut GroundSampler, east_m: f64, scratch: &mut Vec<u32>| {
+            field.at(s, 0, 0, Z, Z, &bounds, centre.x + east_m / m_lon(), centre.y, scratch)
+        };
 
+        // Ground drawn underneath: the clamp holds the plate up to it.
+        let mut s = GroundSampler::new(None, ground.clone(), Z);
+        s.set_hole(false);
         for east_m in [0.0, 0.05, 1.0, 3.0] {
-            let h = field.at(
-                &mut s,
-                0,
-                0,
-                Z,
-                Z,
-                &bounds,
-                centre.x + east_m / m_lon(),
-                centre.y,
-                &mut scratch,
-            );
+            let h = probe(&mut s, east_m, &mut scratch);
             assert!(
                 h >= 500.0 - 1e-9,
                 "{east_m} m off the centre the plate reads {h}, under the 500 m ground"
             );
         }
+
+        // Ground cut away: the plate is the solved height, and nothing is
+        // buried by it because nothing is drawn under it.
+        let mut s = GroundSampler::new(None, ground, Z);
+        assert!(s.cuts_hole(Z), "the detail rung must cut a hole by default");
+        assert!(
+            (probe(&mut s, 0.0, &mut scratch) - 480.0).abs() < 1e-9,
+            "dead centre must read the solved height"
+        );
     }
 
     /// Walks a transect east along corridor `a`'s axis through a crossing road,

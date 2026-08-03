@@ -399,11 +399,31 @@ fn corridor_earthworks(
 /// The face leaves the bench at 1 in [`EARTHWORK_BATTER`] and the ground runs
 /// away at `cross`; they meet where the two close the gap. Where they never do
 /// — ground falling faster than a fill's batter, or climbing faster than a
-/// cutting's — the reach collapses to [`EARTHWORK_MIN_BATTER_M`]: the bench is
-/// retained by a wall at its edge, which is what a road cut into a steep flank
-/// has, rather than a terrace that runs out into the hillside and ends in a
-/// cliff. Clamped above by [`EARTHWORK_MAX_BATTER_M`] so a deep fill against
-/// near-flat ground still has a bounded footprint.
+/// cutting's — the reach collapses to **zero**: the bench is retained by a wall
+/// at its own edge, which is what a road cut into a steep flank has, rather
+/// than a terrace that runs out into the hillside and ends in a cliff. Clamped
+/// above by [`EARTHWORK_MAX_BATTER_M`] so a deep fill against near-flat ground
+/// still has a bounded footprint.
+///
+/// **Zero, where it used to be a floor.** The collapsed case used to keep a
+/// two-metre bevel, the same [`EARTHWORK_MIN_BATTER_M`] that eases a converging
+/// face in. On a diverging face that bevel is not an easing, it is a trench: the
+/// ground is clamped to a plane rising at 1 in 2.5 while the hillside beside it
+/// climbs at 1 in 1, so the clamp bites harder the further out it runs, and at
+/// two metres it stops and the field drops back to the hillside in one step.
+/// Beside a Territet switchback that step was 1.7 m, and it stands at a fixed
+/// offset from a centerline the lattice does not follow, out in open ground
+/// where no contact line runs — so the detail mesh sampled it in and out and
+/// drew the flank as a row of teeth (`slope.terrain_tearing`). Collapsing to
+/// zero puts the wall on the bench edge instead, which is the one place out
+/// there a crest line already holds ([`super::breaklines`]).
+///
+/// The floor stays on the *converging* branch, where it costs nothing: past the
+/// point a converging face daylights, the natural ground is already inside the
+/// face, so `min`/`max` returns it unchanged however much further the reach is
+/// allowed to run. Removing it there measured worse, not better — 0.20 % of
+/// terrain vertices tearing became 0.24 % — because it also deleted the easing
+/// under every ordinary road.
 ///
 /// A face that does not close *quickly* must not be built at all. The face is
 /// a plane and the hillside is not: where the ground runs away at anything
@@ -422,14 +442,14 @@ fn batter_reach(rise: f64, cross: f64) -> f64 {
     // is the batter minus however fast the ground runs away with it.
     let closing = slope - cross * if rise >= 0.0 { -1.0 } else { 1.0 };
     if closing <= 1e-9 {
-        return EARTHWORK_MIN_BATTER_M;
+        return 0.0;
     }
     let reach = rise.abs() / closing;
     // Where the face would daylight on flat ground — the yardstick for
     // "closes quickly". Past it the ground is running away with the face.
     let flat = EARTHWORK_BATTER * rise.abs();
     if reach > flat * BATTER_DIVERGENCE_SLOP {
-        return EARTHWORK_MIN_BATTER_M;
+        return 0.0;
     }
     reach.clamp(EARTHWORK_MIN_BATTER_M, EARTHWORK_MAX_BATTER_M)
 }
@@ -876,13 +896,15 @@ mod tests {
         let mut side = |c: Coord| leaning(c);
         let edges = corridor_earthworks(&c, &p, Some(&mut side));
         assert!(!edges.is_empty());
-        assert!(edges.iter().all(|e| e.batter_m == [EARTHWORK_MIN_BATTER_M; 2]));
+        assert!(edges.iter().all(|e| e.batter_m == [0.0; 2]));
 
         let ew = Earthworks::new(edges);
         let mut scratch = Vec::new();
         let mid_x = 6.0 + 50.0 / (DEG_M * cos_lat);
-        // Just past the bench and its short bevel the hillside is untouched…
-        let out = 46.0 + (bench_half + EARTHWORK_MIN_BATTER_M + 0.5) / DEG_M;
+        // The wall stands at the bench edge, so the hillside is untouched from
+        // there outward — no bevel holding it down and no step where the bevel
+        // would have ended.
+        let out = 46.0 + (bench_half + 0.01) / DEG_M;
         let raw = leaning(Coord { x: mid_x, y: out });
         assert_eq!(ew.height(mid_x, out, raw, 0.0, &mut scratch), raw);
         // …while the bench itself still holds the road flat across.

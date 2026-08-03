@@ -87,9 +87,11 @@ scorecard get skimmed.
 
 | metric | inv | what it means |
 |---|---|---|
-| `contact.pavement_buried` | 4 | Carriageway surface below the terrain mesh: the ground is drawn through the road. |
-| `contact.pavement_floating` | 4 | The same distribution from the high end. Past a metre the road stands on an embankment that was never built. |
-| `contact.pavement_unbacked_pct` | 4 | Per-tile share of asphalt with no terrain triangle beneath it. |
+| `contact.pavement_buried` | 4 | Carriageway surface below the terrain mesh: the ground is drawn through the road. Zero by construction since the hole; its denominator is now the handful of samples that still find ground beneath them, so read the *count*, not the percentage. |
+| `contact.pavement_floating` | 4 | The same distribution from the high end. Past a metre the road stands on an embankment that was never built. Also near-zero since the hole, and for the same reason — see `contact.kerb_lip`, which measures what moved. |
+| `contact.pavement_unbacked_pct` | 4 | Per-tile share of asphalt with no terrain triangle beneath it. **100 % is the intended state** since the hole landed: the terrain stops at the kerb, so there is nothing under the asphalt by design. |
+| `contact.kerb_lip` | 4 | Carriageway edge height minus the drawn ground a metre outside it. Where the two metrics above went blind, this is what still sees a road standing on an embankment nobody built. Not a defect on its own — it is how tall a wall the model implies. |
+| `contact.kerb_unwalled` | 4 | The part of that drop with no apron face spanning it. This is the gate: the lip is the wall's height, this is how much of the wall is missing. |
 | `order.deck_above_carriageway` | 3 | Deck running surface minus the at-grade asphalt sharing its plan position. Negative past the touchdown band means the level ordinal inverted. |
 | `clearance.deck_over_ground` | 4 | Deck soffit minus the terrain beneath it. Past a deck thickness, the deck ploughs into the hillside. |
 | `clearance.bore_cover` | 4 | Terrain minus the bore roof. Negative past a portal mouth means the tube is in open air. |
@@ -99,6 +101,7 @@ scorecard get skimmed.
 | `order.at_grade_overlap` | 3 | Vertical separation where two level-0 paved regions share a plan position with nothing to order them. |
 | `slope.terrain_face` | 6 | Rise over plan run of every terrain triangle spanning ≥10 cm. Finds manufactured retaining walls. |
 | `slope.carriageway_face` | 6 | The same for interior asphalt, excluding the kerb rim. |
+| `slope.terrain_tearing` | 6 | How far a terrain vertex stands off the plane of its neighbours, counted only where opposite breaks flank it on both sides. Separates a wall from a wall drawn as teeth, which no steepness can. |
 | `lod.structure_drift` | 5 | Structure height at one zoom against the same structure one rung coarser. |
 
 ### Where the thresholds come from
@@ -119,6 +122,22 @@ one of them badly wrong, which is why they are documented here:
 - The **carriageway's silhouette is its kerb**, vertical by design. Excluded;
   unfiltered it was 44 % of the steep faces counted and no change could ever
   have removed it.
+- An **apron is vertical by construction**, so no point-in-triangle query can
+  find it: its plan projection is a segment with no area. `contact.kerb_unwalled`
+  therefore asks what the apron spans *near* the kerb rather than *at* it
+  (`APRON_NEAR_M`), and allows `APRON_SLOP_M` at each end for quantization and
+  for a probe standing a metre out on sloping ground. Measuring it the obvious
+  way reported every apron as absent.
+- A **wall put on a lattice always breaks the surface twice**, once low at its
+  crest and once high at the first vertex down its face. Counting a vertex with
+  one opposite-signed neighbour would therefore report every wall ever drawn, so
+  `slope.terrain_tearing` counts only vertices flanked by opposite breaks on
+  *both* sides — an oscillation rather than a step. The filter is what makes the
+  metric usable: unfiltered it called 3.9 % of the Montreux extract's terrain
+  vertices torn, and with it 0.20 %, with the median falling from 3 cm to 3 mm.
+  The 0.50 m threshold is read off that distribution — real landform lives in
+  the centimetres, and at a ~3 m detail cell half a metre of alternation is the
+  mesh disagreeing with itself.
 
 ### What is deliberately not measured
 

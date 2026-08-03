@@ -14,6 +14,7 @@ use std::sync::Arc;
 use crate::dem::Dem;
 use crate::ground::GroundModel;
 use crate::project::Bounds;
+use crate::synth::region::Region;
 use crate::terrain::{self, TerrainMesh};
 use crate::terrain_cdt;
 
@@ -30,6 +31,10 @@ pub struct GroundSampler {
     /// Whether detail meshes are breakline-constrained (docs/GROUND.md §3);
     /// `--no-breaklines` turns it off.
     breaklines: bool,
+    /// Whether the detail mesh stops at the kerb (docs/GROUND.md §3, "the
+    /// hole"); `--no-hole` turns it off. Implied off without breaklines —
+    /// there is no constrained mesh to cut.
+    hole: bool,
     /// Reusable earthwork-query buffer (grid hits per sample).
     scratch: Vec<u32>,
     /// Memoized engineered heights at rendered-lattice corners, keyed by the
@@ -49,6 +54,7 @@ impl GroundSampler {
             ground,
             z_ref,
             breaklines: true,
+            hole: true,
             scratch: Vec::new(),
             corners: HashMap::new(),
         }
@@ -57,6 +63,19 @@ impl GroundSampler {
     /// Turns the breakline-constrained detail meshes off (`--no-breaklines`).
     pub fn set_breaklines(&mut self, on: bool) {
         self.breaklines = on;
+    }
+
+    /// Turns the hole under the asphalt off (`--no-hole`), so an A/B re-tile is
+    /// a flag rather than a patch.
+    pub fn set_hole(&mut self, on: bool) {
+        self.hole = on;
+    }
+
+    /// Whether this sampler would cut a hole at zoom `z` — the same gate
+    /// [`GroundSampler::terrain_mesh`] applies, exposed so the *paver* can make
+    /// its casing opaque on exactly the tiles whose ground is cut away.
+    pub fn cuts_hole(&self, z: u8) -> bool {
+        self.hole && self.breaklines && terrain::grid_for(z, self.z_ref) == terrain::TERRAIN_GRID_DETAIL
     }
 
     /// Whether the run has real elevation at all (a DEM was configured).
@@ -129,7 +148,12 @@ impl GroundSampler {
     /// tile — there the mesh is the breakline-constrained triangulation that
     /// holds the benches exactly (docs/GROUND.md §3), falling back to the
     /// lattice when the triangulation abstains (invariant 6).
-    pub fn terrain_mesh(&mut self, bounds: &Bounds, z: u8) -> (TerrainMesh, f64, f64) {
+    pub fn terrain_mesh(
+        &mut self,
+        bounds: &Bounds,
+        z: u8,
+        regions: &[Region],
+    ) -> (TerrainMesh, f64, f64) {
         let grid = terrain::grid_for(z, self.z_ref);
         if self.breaklines && grid == terrain::TERRAIN_GRID_DETAIL {
             // Pad the query by one cell so a line grazing the border still
@@ -140,11 +164,12 @@ impl GroundSampler {
             let mut ids = Vec::new();
             let mut segments = Vec::new();
             self.ground.breaklines().query(bbox, &mut ids, &mut segments);
-            if !segments.is_empty() {
+            let regions: &[Region] = if self.hole { regions } else { &[] };
+            if !segments.is_empty() || !regions.is_empty() {
                 let (dem, ground, corners, scratch) =
                     (&mut self.dem, &self.ground, &mut self.corners, &mut self.scratch);
                 if let Some(mesh) =
-                    terrain_cdt::constrained_mesh(grid, bounds, &segments, &mut |lon, lat| {
+                    terrain_cdt::constrained_mesh(grid, bounds, &segments, regions, &mut |lon, lat| {
                         // The constrained mesh holds every bench exactly, so it
                         // asks for the ground unfiltered.
                         corner_memo(dem, ground, corners, scratch, lon, lat, z, 0.0)

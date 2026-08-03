@@ -7,6 +7,7 @@
 #include "globe.h"
 #include "hashmap.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -713,6 +714,21 @@ static void start_fetch(arpt_tile_manager *tm, arpt_tile_key key,
    frames. */
 #define ARPT_TILE_UPLOAD_BUDGET_PER_FRAME 2
 
+/* Geographic → tile quantised coords (inverse of the shader dequant:
+   u = (qx - 16384) / 32768, lon = west + u * span).  False for a degenerate
+   tile. */
+static bool tile_quantized(const tile_entry *e, double lon_rad, double lat_rad,
+                           double *out_px, double *out_py) {
+    double lon = lon_rad * 180.0 / M_PI;
+    double lat = lat_rad * 180.0 / M_PI;
+    double lon_span = e->bounds.east - e->bounds.west;
+    double lat_span = e->bounds.north - e->bounds.south;
+    if (lon_span <= 0.0 || lat_span <= 0.0) return false;
+    *out_px = 16384.0 + ((lon - e->bounds.west) / lon_span) * 32768.0;
+    *out_py = 16384.0 + ((lat - e->bounds.south) / lat_span) * 32768.0;
+    return true;
+}
+
 /* Interpolate the terrain height (metres) at geographic (lon_rad, lat_rad)
    from a tile's retained heightfield.  Returns false if the point isn't inside
    any triangle (e.g. the camera is over the tile's buffer zone, not its
@@ -723,18 +739,8 @@ static bool sample_terrain_height(const tile_entry *e, double lon_rad,
     if (!e->terr_x || !e->terr_y || !e->terr_z || e->terr_index_count < 3)
         return false;
 
-    double lon = lon_rad * 180.0 / M_PI;
-    double lat = lat_rad * 180.0 / M_PI;
-    double lon_span = e->bounds.east - e->bounds.west;
-    double lat_span = e->bounds.north - e->bounds.south;
-    if (lon_span <= 0.0 || lat_span <= 0.0) return false;
-
-    /* Geographic → tile quantised coords (inverse of the shader dequant:
-       u = (qx - 16384) / 32768, lon = west + u * span). */
-    double u = (lon - e->bounds.west) / lon_span;
-    double v = (lat - e->bounds.south) / lat_span;
-    double px = 16384.0 + u * 32768.0;
-    double py = 16384.0 + v * 32768.0;
+    double px, py;
+    if (!tile_quantized(e, lon_rad, lat_rad, &px, &py)) return false;
 
     const uint16_t *X = e->terr_x, *Y = e->terr_y;
     const int32_t *Z = e->terr_z;
@@ -759,13 +765,43 @@ static bool sample_terrain_height(const tile_entry *e, double lon_rad,
     return false;
 }
 
+/* Height of the terrain vertex nearest a point, as the fallback when no
+   triangle covers it.  Returns false only for a tile with no retained mesh.
+
+   At detail zooms the terrain stops at the kerb, so a query anywhere over a
+   road covers no triangle at all — which is most queries at street level,
+   since that is exactly where a camera flies.  The tile average is useless
+   there: it is a whole tile's mean, tens of metres from the local surface in
+   hilly terrain, so the camera's ground reference jumped every time it
+   crossed a boulevard.  The nearest vertex is bounded, local, and on a hole
+   query it is a kerb vertex carrying the road's own height, which is the
+   right answer rather than merely a better one.  O(vertices), alongside the
+   O(triangles) scan it backs up. */
+static bool nearest_vertex_height(const tile_entry *e, double px, double py,
+                                  double *out_h) {
+    if (!e->terr_x || !e->terr_y || !e->terr_z || e->terr_vert_count == 0)
+        return false;
+    double best = DBL_MAX;
+    size_t best_i = 0;
+    for (size_t i = 0; i < e->terr_vert_count; i++) {
+        double dx = (double)e->terr_x[i] - px;
+        double dy = (double)e->terr_y[i] - py;
+        double d2 = dx * dx + dy * dy;
+        if (d2 < best) {
+            best = d2;
+            best_i = i;
+        }
+    }
+    *out_h = (double)e->terr_z[best_i] * 0.001;
+    return true;
+}
+
 /* Terrain height at a geodetic point, taken from the highest-level READY tile
-   that contains it.  Falls back to that tile's average elevation when the
-   point lies outside the mesh triangles.  Returns false when no READY tile
-   covers the point, so callers keep their prior value rather than snapping to
-   zero.  Scans the full cache (not just the visible set) because the queried
-   point — e.g. the ground under a tilted eye — may sit just outside the
-   frustum. */
+   that contains it.  Falls back to the nearest mesh vertex when the point
+   lies outside every triangle.  Returns false when no READY tile covers the
+   point, so callers keep their prior value rather than snapping to zero.
+   Scans the full cache (not just the visible set) because the queried point —
+   e.g. the ground under a tilted eye — may sit just outside the frustum. */
 static bool query_ground_at(const arpt_tile_manager *tm, double lon_rad,
                             double lat_rad, double *out_h) {
     double lon_deg = lon_rad * 180.0 / M_PI;
@@ -785,8 +821,12 @@ static bool query_ground_at(const arpt_tile_manager *tm, double lon_rad,
         best_e = e;
     }
     if (!best_e) return false;
-    if (!sample_terrain_height(best_e, lon_rad, lat_rad, out_h))
-        *out_h = best_e->avg_elevation;
+    if (!sample_terrain_height(best_e, lon_rad, lat_rad, out_h)) {
+        double px, py;
+        if (!tile_quantized(best_e, lon_rad, lat_rad, &px, &py) ||
+            !nearest_vertex_height(best_e, px, py, out_h))
+            *out_h = best_e->avg_elevation;
+    }
     return true;
 }
 

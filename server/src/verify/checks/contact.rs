@@ -38,10 +38,37 @@ const BURIED_M: f64 = -0.05;
 /// of what a missing embankment costs.
 const FLOATING_M: f64 = 1.0;
 
+/// A kerb standing this far above the ground beside it is not a kerb. Real
+/// ones run to about a quarter-metre and the boundary carries quantization and
+/// a metre of probe offset on a cross-slope, so half a metre is comfortably
+/// past what kerb-ness explains and far short of the metres a missing
+/// retaining wall costs.
+const LIP_M: f64 = 0.5;
+
+/// How far, in plan, an apron may stand from the kerb edge it closes and still
+/// count as standing on it. The apron sits on the silhouette the boundary edge
+/// was derived from, so this only absorbs quantization and the midpoint offset
+/// along a curving kerb.
+const APRON_NEAR_M: f64 = 1.5;
+
+/// How far an apron's span may fall short of the drop it is meant to close and
+/// still count as closing it: the kerb probe stands a metre out on ground that
+/// may be sloping, and both surfaces carry millimetre quantization.
+const APRON_SLOP_M: f64 = 0.5;
+
+/// How far outside the kerb, in metres, the ground is asked for. Far enough to
+/// clear the rounding on the shared boundary vertices, near enough that it is
+/// still the ground *at* the kerb and not the next thing along.
+const LIP_PROBE_M: f64 = 1.0;
+
 pub struct Contact {
     over: Dist,
     buried_worst: Worst,
     floating_worst: Worst,
+    lip: Dist,
+    lip_worst: Worst,
+    unwalled: Dist,
+    unwalled_worst: Worst,
     /// Per-tile percentage of carriageway with no drawn ground beneath it.
     unbacked: Dist,
     unbacked_worst: Worst,
@@ -55,6 +82,10 @@ impl Contact {
             floating_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             unbacked: Dist::new(0.0, 100.0),
             unbacked_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            lip: Dist::metres(),
+            lip_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            unwalled: Dist::metres(),
+            unwalled_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
         }
     }
 }
@@ -94,6 +125,108 @@ impl Check for Contact {
                 }
             });
         }
+        // The kerb lip. Once the terrain stops at the kerb there is no drawn
+        // ground under the asphalt to measure against, and `pavement_buried` /
+        // `pavement_floating` go to zero because their instrument went blind,
+        // not because the model got the heights right. The gap did not vanish;
+        // it moved to the boundary. So it is measured there: at every
+        // silhouette edge of the carriageway, the road's own height against the
+        // ground a metre outside it.
+        //
+        // A few centimetres is a kerb. Fifteen metres is a retaining wall the
+        // model implies and does not draw — a hole you can see the hillside
+        // through.
+        for road in tile.roads.iter().filter(|r| r.is_pavement()) {
+            for (a, b, opp) in road.mesh.boundary_edges() {
+                let (ax, ay, az) = road.mesh.vertex(a);
+                let (bx, by, bz) = road.mesh.vertex(b);
+                let (ox, oy, _) = road.mesh.vertex(opp);
+                let (mx, my) = ((ax + bx) * 0.5, (ay + by) * 0.5);
+                if !tile.owns(mx, my) {
+                    continue;
+                }
+                // Outward is away from the one triangle holding this edge.
+                let (dx, dy) = (mx - ox, my - oy);
+                let len = tile.scale.dist(0.0, 0.0, dx, dy);
+                if len <= 0.0 {
+                    continue;
+                }
+                let (px, py) = (
+                    mx + dx / len * LIP_PROBE_M,
+                    my + dy / len * LIP_PROBE_M,
+                );
+                let Some(gz) = terrain.height_at(px, py) else { continue };
+                let kerb_z = (az + bz) * 0.5;
+                let v = kerb_z - gz;
+                self.lip.push(v);
+                if v > LIP_M {
+                    let (lon, lat) = tile.lonlat(mx, my);
+                    self.lip_worst.offer(Offender {
+                        lon,
+                        lat,
+                        zoom: tile.z,
+                        value: v,
+                        note: format!("kerb {kerb_z:.2} m, ground {gz:.2} m a metre outside it"),
+                    });
+                }
+            }
+        }
+        // Watertightness, asked of the hole's own rim.
+        //
+        // The asphalt's interior mesh stops an inset short of its silhouette
+        // and the terrain's hole is cut *at* the silhouette, so the two
+        // boundaries are 35 cm apart and no query anchored on one finds the
+        // other. Anchoring on the terrain's rim instead makes it structural:
+        // every terrain boundary edge that is not the tile's own edge is a hole
+        // rim, the asphalt (interior or casing) answers for the road's height
+        // over it, and anything between the two heights that no apron spans is
+        // a gap you can see through.
+        for (a, b, _) in terrain.boundary_edges() {
+            let (ax, ay, az) = terrain.vertex(a);
+            let (bx, by, bz) = terrain.vertex(b);
+            let (mx, my) = ((ax + bx) * 0.5, (ay + by) * 0.5);
+            if !tile.owns(mx, my) {
+                continue;
+            }
+            // The tile's own edge is not a hole: the neighbour's terrain
+            // continues across it.
+            let on_edge = |v: f64| v.abs() < 1e-6 || (v - 1.0).abs() < 1e-6;
+            if on_edge(mx) || on_edge(my) {
+                continue;
+            }
+            let rim_z = (az + bz) * 0.5;
+            let Some(road_z) = tile
+                .roads
+                .iter()
+                .filter(|r| r.is_pavement() || r.is_casing())
+                .filter_map(|r| r.mesh.height_at(mx, my))
+                .next()
+            else {
+                continue; // no asphalt over it: not the hole's rim
+            };
+            let gap = (road_z - rim_z).abs();
+            let (lo_z, hi_z) = (road_z.min(rim_z), road_z.max(rim_z));
+            let walled = gap <= LIP_M
+                || tile
+                    .roads
+                    .iter()
+                    .filter(|r| r.is_apron())
+                    .filter_map(|r| r.mesh.span_near(mx, my, &tile.scale, APRON_NEAR_M))
+                    .any(|(lo, hi)| hi >= hi_z - APRON_SLOP_M && lo <= lo_z + APRON_SLOP_M);
+            self.unwalled.push(if walled { 0.0 } else { gap });
+            if !walled {
+                let (lon, lat) = tile.lonlat(mx, my);
+                self.unwalled_worst.offer(Offender {
+                    lon,
+                    lat,
+                    zoom: tile.z,
+                    value: gap,
+                    note: format!(
+                        "asphalt {road_z:.2} m, terrain rim {rim_z:.2} m, nothing between them"
+                    ),
+                });
+            }
+        }
         if n > 0 {
             let pct = 100.0 * missing as f64 / n as f64;
             self.unbacked.push(pct);
@@ -115,9 +248,48 @@ impl Check for Contact {
             .over
             .is_empty()
             .then(|| "no at-grade road surface at this zoom (below ROAD_SURFACE_MIN_ZOOM, or the archive carries no DEM)".to_string());
+        let lip_skipped = self
+            .lip
+            .is_empty()
+            .then(|| "no at-grade road surface at this zoom".to_string());
         // Both metrics read the same distribution from opposite ends: one
         // sampling pass, two tails, no second walk over 16 M samples.
         vec![
+            Metric {
+                id: "contact.kerb_unwalled".into(),
+                invariant: 4,
+                title: "Gap at the hole's rim with nothing spanning it".into(),
+                detail: format!(
+                    "Watertightness, walked along the terrain's own hole rim: at every terrain \
+                     boundary edge that is not the tile's edge, the asphalt's height over it \
+                     against the terrain's, where no apron spans the difference. Anchored on \
+                     the rim rather than on the asphalt because the two boundaries are an inset \
+                     apart, so a query anchored on one never finds the other — and asked at the \
+                     same point rather than a metre out, because a cutting's terrain rises \
+                     steeply but perfectly continuously and there is nothing to see through."
+                ),
+                sense: Sense::HigherIsWorse,
+                threshold: LIP_M,
+                skipped: self
+                    .unwalled
+                    .is_empty()
+                    .then(|| "no at-grade road surface at this zoom".to_string()),
+                dist: self.unwalled,
+                worst: self.unwalled_worst.into_vec(),
+            },
+            Metric {
+                id: "contact.kerb_lip".into(),
+                invariant: 4,
+                title: "Drop from the kerb to the ground beside it".into(),
+                detail: format!(
+                    "Carriageway edge height minus the drawn ground {LIP_PROBE_M:.0} m outside                      it. With the ground cut back to the kerb this is where the road and the                      terrain part company, and it is the only place left that can see a road                      standing on an embankment nobody built: `pavement_floating` reads zero                      there because nothing is drawn underneath, not because the heights agree.                      Past {LIP_M:.2} m the model implies a retaining wall it does not draw."
+                ),
+                sense: Sense::HigherIsWorse,
+                threshold: LIP_M,
+                skipped: lip_skipped,
+                dist: self.lip,
+                worst: self.lip_worst.into_vec(),
+            },
             Metric {
                 id: "contact.pavement_buried".into(),
                 invariant: 4,
@@ -178,6 +350,7 @@ pub fn clearance_over(upper: &SurfaceMesh, lower: &SurfaceMesh, px: f64, py: f64
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use crate::project::Bounds;
     use crate::verify::mesh::Scale;
     use crate::verify::scene::RoadMesh;
@@ -212,19 +385,27 @@ mod tests {
         }
     }
 
-    fn run(tile: &TileScene) -> Vec<Metric> {
+    /// Metrics by id, so a test names what it asserts on and adding a metric
+    /// does not silently repoint every index in the module.
+    fn run(tile: &TileScene) -> HashMap<String, Metric> {
         let opt = Options { spacing_m: 1.0, ..Default::default() };
         let mut c = Box::new(Contact::new(&opt));
         c.visit(tile, &opt);
-        c.finish()
+        c.finish().into_iter().map(|m| (m.id.clone(), m)).collect()
     }
+
+    /// The two ends of the one buried/floating distribution, and the unbacked
+    /// share — the ids the tests below assert on.
+    const BURIED: &str = "contact.pavement_buried";
+    const FLOATING: &str = "contact.pavement_floating";
+    const UNBACKED: &str = "contact.pavement_unbacked_pct";
 
     #[test]
     fn a_road_just_clear_of_a_flat_ground_is_neither_buried_nor_floating() {
         let m = run(&tented(100.5, 100.0, 100.0));
-        assert!(!m[0].dist.is_empty());
-        assert_eq!(m[0].violations(), 0, "not buried");
-        assert_eq!(m[1].violations(), 0, "and half a metre is not floating");
+        assert!(!m[BURIED].dist.is_empty());
+        assert_eq!(m[BURIED].violations(), 0, "not buried");
+        assert_eq!(m[FLOATING].violations(), 0, "and half a metre is not floating");
     }
 
     #[test]
@@ -233,10 +414,59 @@ mod tests {
         // embankment the earthworks never built, leaving the carriageway in
         // the air. It is not buried, and a one-sided check calls that clean.
         let m = run(&tented(109.0, 100.0, 100.0));
-        assert_eq!(m[0].violations(), 0, "nothing is buried");
-        assert!(m[1].violations() > 0, "but the road is 9 m up on nothing");
-        assert!((m[1].worst_value().unwrap() - 9.0).abs() < 1e-3);
-        assert!(!m[1].worst.is_empty(), "a violation must name a place");
+        assert_eq!(m[BURIED].violations(), 0, "nothing is buried");
+        assert!(m[FLOATING].violations() > 0, "but the road is 9 m up on nothing");
+        assert!((m[FLOATING].worst_value().unwrap() - 9.0).abs() < 1e-3);
+        assert!(!m[FLOATING].worst.is_empty(), "a violation must name a place");
+    }
+
+    #[test]
+    fn a_kerb_standing_on_nothing_is_caught_as_a_lip() {
+        // The shape the hole leaves: asphalt at 110 m over ground that stops at
+        // its edge and lies at 100 m outside it. Nothing is buried and nothing
+        // reads as floating — there is no ground under the road to float over —
+        // and the ten-metre wall is still there to be seen.
+        // The ground begins exactly at the kerb, as the hole leaves it.
+        let ground = SurfaceMesh::from_parts(
+            vec![0.5, 1.0, 1.0, 0.5],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![100.0, 100.0, 100.0, 100.0],
+            vec![0, 1, 2, 0, 2, 3],
+        )
+        .unwrap();
+        let road = SurfaceMesh::from_parts(
+            vec![0.0, 0.5, 0.5, 0.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![110.0, 110.0, 110.0, 110.0],
+            vec![0, 1, 2, 0, 2, 3],
+        )
+        .unwrap();
+        let b = crate::project::Bounds::of_tile(16, 34000, 23000);
+        let m = run(&TileScene {
+            z: 16,
+            x: 34000,
+            y: 23000,
+            scale: Scale::of(&b),
+            bounds: b,
+            terrain: Some(ground),
+            roads: vec![RoadMesh { class: "road_surface".into(), level: 0, mesh: road }],
+        });
+        // Almost none of the asphalt has ground beneath it, so the
+        // buried/floating pair sees almost nothing — only the samples that land
+        // exactly on the shared edge. That is the blindness this metric exists
+        // to cover, not a defect in it.
+        assert!(
+            m[FLOATING].dist.count() < 40,
+            "the pair should be nearly blind here: {}",
+            m[FLOATING].dist.count()
+        );
+        let lip = &m["contact.kerb_lip"];
+        assert!(lip.violations() > 0, "a 10 m drop at the kerb must be caught");
+        assert!(
+            (lip.worst_value().unwrap() - 10.0).abs() < 0.5,
+            "the wall's height, not a ratio: {:?}",
+            lip.worst_value()
+        );
     }
 
     #[test]
@@ -244,7 +474,7 @@ mod tests {
         // The regression this module exists to prevent: corners agree at 100 m,
         // the ground tents to 104 m in the middle, road is flat at 100 m.
         let m = run(&tented(100.0, 100.0, 104.0));
-        let over = &m[0];
+        let over = &m[BURIED];
         assert!(over.violations() > 0, "the tent must register as burial");
         assert!(over.worst_value().unwrap() < -1.0, "worst {:?}", over.worst_value());
         assert!(!over.worst.is_empty(), "a violation must name a place");
@@ -281,8 +511,8 @@ mod tests {
             roads: vec![RoadMesh { class: "road_surface".into(), level: 0, mesh: road }],
         };
         let m = run(&tile);
-        assert_eq!(m[0].violations(), 0, "nothing is buried");
-        let unbacked = &m[2];
+        assert_eq!(m[BURIED].violations(), 0, "nothing is buried");
+        let unbacked = &m[UNBACKED];
         let pct = unbacked.worst_value().unwrap();
         assert!((pct - 50.0).abs() < 8.0, "about half the road is unbacked, got {pct}");
     }
@@ -292,8 +522,8 @@ mod tests {
         let mut tile = tented(100.0, 100.0, 100.0);
         tile.terrain = None;
         let m = run(&tile);
-        assert!(m[0].skipped.is_some(), "no ground must read as skipped, not as passing");
-        assert_eq!(m[0].violations(), 0);
+        assert!(m[BURIED].skipped.is_some(), "no ground must read as skipped, not as passing");
+        assert_eq!(m[BURIED].violations(), 0);
     }
 
     #[test]
@@ -327,9 +557,10 @@ mod tests {
         let opt = Options { spacing_m: 5.0, ..Default::default() };
         let mut c = Box::new(Contact::new(&opt));
         c.visit(&tile, &opt);
-        let m = c.finish();
+        let m: HashMap<String, Metric> =
+            c.finish().into_iter().map(|x| (x.id.clone(), x)).collect();
         // Every accepted sample must lie in [0,1]²; with the road 1.8 tiles
         // wide, an unfiltered pass would take roughly 1.8× as many.
-        assert!(!m[0].dist.is_empty());
+        assert!(!m[BURIED].dist.is_empty());
     }
 }
