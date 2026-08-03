@@ -374,6 +374,18 @@ pub const MIN_EARTHWORK_M: f64 = 0.3;
 /// reach, not the reach itself.
 pub const EARTHWORK_BATTER: f64 = 2.5;
 
+/// Metres of run per metre of rise on a *wall* face — the shape the earthwork
+/// falls back to where an earth batter cannot close.
+///
+/// A 4:1 face. Steep enough to bridge a stacked pair's separation inside the few
+/// metres a switchback leaves between its arms, which an earth slope at 1 in
+/// [`EARTHWORK_BATTER`] cannot: thirteen metres of step needs thirty-two metres
+/// of batter and has seven. Not vertical, because it is still meshed as ground
+/// and a plan-degenerate face has no area to draw; `slope.terrain_face` counts
+/// anything past 2:1 as a manufactured wall, and this is meant to be counted —
+/// it *is* one, deliberately, where the alternative is no earthwork at all.
+pub const WALL_BATTER: f64 = 0.25;
+
 /// The shortest reach a *carve* notch's wall is given — a floor, because a
 /// notch cut with no depth to speak of still needs a wall to stand in.
 ///

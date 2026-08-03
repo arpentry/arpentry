@@ -63,13 +63,13 @@
           "zoom": 16
         }
       ],
-      "samples": 431110,
+      "samples": 431116,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.006666666666667709,
       "threshold": 0.5,
       "title": "Gap at the hole's rim with nothing spanning it",
-      "violation_pct": 0.005103105935840041,
+      "violation_pct": 0.005103034914037057,
       "violations": 22,
       "worst": 1.1581640823488897
     },
@@ -135,14 +135,14 @@
           "zoom": 16
         }
       ],
-      "samples": 398336,
+      "samples": 398337,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 6.393333333333338,
+      "tail": 6.433333333333337,
       "threshold": 0.5,
       "title": "Drop from the kerb to the ground beside it",
-      "violation_pct": 12.385523778920309,
-      "violations": 49336,
+      "violation_pct": 12.90590630546497,
+      "violations": 51409,
       "worst": 14.790527526127676
     },
     {
@@ -399,11 +399,11 @@
       "samples": 798328,
       "sense": "lower_is_worse",
       "skipped": null,
-      "tail": -2.6599999999999966,
+      "tail": -2.673333333333332,
       "threshold": -2.0,
       "title": "Bridge soffit above the drawn ground",
-      "violation_pct": 0.3394594702929122,
-      "violations": 2710,
+      "violation_pct": 0.29674519746269706,
+      "violations": 2369,
       "worst": -6.881629848480202
     },
     {
@@ -474,8 +474,8 @@
       "tail": -8.459999999999997,
       "threshold": -1.0,
       "title": "Ground cover over the tunnel roof",
-      "violation_pct": 16.107719296960553,
-      "violations": 87962,
+      "violation_pct": 16.03666821709401,
+      "violations": 87574,
       "worst": -11.024980783462524
     },
     {
@@ -630,13 +630,6 @@
       "median": 0.5133333333333334,
       "offenders": [
         {
-          "lat": 46.4295172970742,
-          "lon": 6.919627245515585,
-          "note": "terrain face at 308:1 spanning 4.89 m, tile 16/34027/49672",
-          "value": 308.3519915174859,
-          "zoom": 16
-        },
-        {
           "lat": 46.42196936532855,
           "lon": 6.933057010173798,
           "note": "terrain face at 207:1 spanning 2.66 m, tile 16/34030/49669",
@@ -684,17 +677,24 @@
           "note": "terrain face at 101:1 spanning 1.60 m, tile 16/34032/49666",
           "value": 100.78872790276571,
           "zoom": 16
+        },
+        {
+          "lat": 46.446011206135154,
+          "lon": 6.915940046310425,
+          "note": "terrain face at 94:1 spanning 3.73 m, tile 16/34027/49678",
+          "value": 93.9194321517243,
+          "zoom": 16
         }
       ],
-      "samples": 13971055,
+      "samples": 13969943,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 3.6333333333333337,
+      "tail": 3.566666666666667,
       "threshold": 2.0,
       "title": "Drawn terrain face steepness",
-      "violation_pct": 0.6352848800609546,
-      "violations": 88756,
-      "worst": 308.3519915174859
+      "violation_pct": 0.6273683435930985,
+      "violations": 87643,
+      "worst": 206.77683074237848
     },
     {
       "id": "slope.carriageway_face",
@@ -758,14 +758,14 @@
           "zoom": 16
         }
       ],
-      "samples": 376328,
+      "samples": 376329,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 1.5933333333333335,
       "threshold": 0.3,
       "title": "Interior carriageway face steepness",
-      "violation_pct": 2.1093301587976447,
-      "violations": 7938,
+      "violation_pct": 2.109856003656375,
+      "violations": 7940,
       "worst": 7.072114740687664
     },
     {
@@ -773,6 +773,20 @@
       "invariant": 6,
       "median": 0.0033333333333333335,
       "offenders": [
+        {
+          "lat": 46.43373727798462,
+          "lon": 6.9165802001953125,
+          "note": "terrain alternates 7.61 m up / 7.97 m down between neighbouring vertices, tile 16/34027/49674",
+          "value": 7.6148010253906255,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43375873565674,
+          "lon": 6.9165802001953125,
+          "note": "terrain alternates 7.22 m up / 7.97 m down between neighbouring vertices, tile 16/34027/49674",
+          "value": 7.2231699625651045,
+          "zoom": 16
+        },
         {
           "lat": 46.43362998962402,
           "lon": 6.92112922668457,
@@ -788,24 +802,10 @@
           "zoom": 16
         },
         {
-          "lat": 46.43378019332886,
-          "lon": 6.916666030883789,
-          "note": "terrain alternates 7.28 m up / 5.98 m down between neighbouring vertices, tile 16/34027/49674",
-          "value": 5.9821726481119795,
-          "zoom": 16
-        },
-        {
           "lat": 46.4352822303772,
           "lon": 6.980094909667969,
           "note": "terrain alternates 10.01 m up / 5.92 m down between neighbouring vertices, tile 16/34038/49674",
           "value": 5.92303466796875,
-          "zoom": 16
-        },
-        {
-          "lat": 46.44948720932007,
-          "lon": 6.933531761169434,
-          "note": "terrain alternates 6.07 m up / 5.40 m down between neighbouring vertices, tile 16/34030/49679",
-          "value": 5.39963061096784,
           "zoom": 16
         },
         {
@@ -833,12 +833,12 @@
       "samples": 10433816,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 0.6766666666666667,
+      "tail": 0.6033333333333334,
       "threshold": 0.5,
       "title": "Drawn terrain standing off its own neighbours",
-      "violation_pct": 0.17792148145989922,
-      "violations": 18564,
-      "worst": 6.458526611328124
+      "violation_pct": 0.1501080716777064,
+      "violations": 15662,
+      "worst": 7.6148010253906255
     },
     {
       "id": "lod.structure_drift",

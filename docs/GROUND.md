@@ -124,8 +124,14 @@ The field resolves in two steps:
   ground is not built at all: the face is a plane and the hillside is not,
   so where the ground runs away with it the earthwork goes on cutting the
   whole way out — a footpath whose estimated reach came to 40 m carved sixty
-  metres off a gorge wall. There the reach collapses to **zero** and the bench
-  is retained by a wall at its own edge, as a road cut into a steep flank is —
+  metres off a gorge wall. There the face is rebuilt at a **wall** slope
+  (1 in `WALL_BATTER`, a 4:1 face) and tried again against the same daylight
+  test: a road cut into a steep flank is retained by a wall, not by a batter,
+  and the alternative is not a gentler earthwork but *no* earthwork. The wall is
+  short by construction — it closes in well under a metre where a batter would
+  have run tens — and it is bounded by the same test, so where the ground does
+  carry the step it builds nothing. Only where neither face closes does the
+  reach collapse to **zero** and the bench stand retained at its own edge —
   zero, not a short bevel, because a bevel on a diverging face is a trench: it
   holds the ground down along a plane the hillside is climbing away from, and
   where it ends the field steps back to the hillside out in open ground, where

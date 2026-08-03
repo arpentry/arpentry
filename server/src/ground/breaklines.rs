@@ -437,6 +437,7 @@ mod tests {
             half_width_m: hw,
             carriageway_m: (hw - 1.0).max(0.0),
             batter_m: [batter; 2],
+            batter_run: [crate::priors::EARTHWORK_BATTER; 2],
             chain,
             arc0: 0.0,
             cos_lat: 46.0_f64.to_radians().cos(),

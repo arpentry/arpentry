@@ -42,7 +42,6 @@
 use geo_types::Coord;
 
 use crate::assemble::grid::GridIndex;
-use crate::priors::EARTHWORK_BATTER;
 use crate::scene::DEG_M;
 
 // **Reconstructing the step between stacked platforms: tried, and it tears.**
@@ -109,6 +108,18 @@ pub struct EarthworkEdge {
     /// its edge, which is what a mountain road has, instead of a long terrace
     /// ending in a cliff out in the hillside.
     pub batter_m: [f64; 2],
+    /// Metres of run per metre of rise on each side's face — the *shape* of the
+    /// face, where [`EarthworkEdge::batter_m`] is how far it goes.
+    ///
+    /// Ordinarily [`EARTHWORK_BATTER`], an earth slope. Where a flank climbs (or
+    /// falls) faster than an earth slope can close against, the face is rebuilt
+    /// at [`WALL_BATTER`] instead: a road cut into a steep hillside is retained
+    /// by a wall, not by a batter, and the alternative is not a gentler earthwork
+    /// but *no* earthwork — the reach collapses and the height field is left to
+    /// carry a step it does not have. Steep, self-limiting by the same daylight
+    /// test, and made of the same planes, so it can no more tear than the batter
+    /// can.
+    pub batter_run: [f64; 2],
     /// The earthwork run this edge belongs to (one id per corridor).
     pub chain: u32,
     /// Arc position of `a` along the chain, metres.
@@ -133,12 +144,12 @@ impl EarthworkEdge {
         self.half_width_m + self.batter_m[0].max(self.batter_m[1])
     }
 
-    /// How far the batter face has left the bench height at lateral distance
-    /// `d`: zero across the bench, then one metre per [`EARTHWORK_BATTER`]
-    /// metres outward. The face is `target - rise` on the fill side and
-    /// `target + rise` on the cut side.
-    fn face_rise(&self, d: f64) -> f64 {
-        (d - self.half_width_m).max(0.0) / EARTHWORK_BATTER
+    /// How far the face has left the bench height at lateral distance `d` on
+    /// `side`: zero across the bench, then one metre per
+    /// [`EarthworkEdge::batter_run`] metres outward. The face is `target - rise`
+    /// on the fill side and `target + rise` on the cut side.
+    fn face_rise(&self, d: f64, side: usize) -> f64 {
+        (d - self.half_width_m).max(0.0) / self.batter_run[side]
     }
 }
 
@@ -230,7 +241,7 @@ impl Earthworks {
                 }
                 continue;
             }
-            let rise = e.face_rise(d);
+            let rise = e.face_rise(d, side);
             if target > raw {
                 fill = fill.max(target - rise);
             } else {
@@ -279,7 +290,7 @@ impl Earthworks {
             if d >= e.reach_on(side) {
                 continue;
             }
-            let floor = e.target_a + (e.target_b - e.target_a) * t + e.face_rise(d);
+            let floor = e.target_a + (e.target_b - e.target_a) * t + e.face_rise(d, side);
             h = h.min(floor);
         }
         h
@@ -402,6 +413,7 @@ fn lateral_distance(e: &EarthworkEdge, lon: f64, lat: f64) -> (f64, f64, usize) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::priors::EARTHWORK_BATTER;
 
     fn edge(target: f64) -> EarthworkEdge {
         // An east-west edge ~160 m long at lat 46.
@@ -414,6 +426,7 @@ mod tests {
             half_width_m: 8.0,
             carriageway_m: 6.0,
             batter_m: [10.0; 2],
+            batter_run: [EARTHWORK_BATTER; 2],
             chain: 0,
             arc0: 0.0,
             cos_lat,
@@ -523,12 +536,6 @@ mod tests {
         assert_eq!(e.target_at(mid_x, 46.0, &mut scratch), Some(105.0));
     }
 
-    /// Two roads side by side at very different heights — an underpass beside
-    /// an approach embankment. Each carriageway keeps its *own* height across
-    /// its whole bench (no averaging, so nothing domes up through the asphalt),
-    /// the ground between them is the embankment's batter, and the road drape
-    /// reads exactly the ground the terrain draws.
-    #[test]
     /// A wide road with a narrow one seven metres off its axis, seven metres
     /// higher — an interchange ramp beside a service track, a street under a
     /// railway. Past the midpoint the narrow road's *verge* is the nearer
@@ -570,6 +577,11 @@ mod tests {
         assert_eq!(e.target_at(mid_x, 46.0 + 3.7 / DEG_M, &mut scratch), Some(400.0));
     }
 
+    /// Two roads side by side at very different heights — an underpass beside
+    /// an approach embankment. Each carriageway keeps its *own* height across
+    /// its whole bench (no averaging, so nothing domes up through the asphalt),
+    /// the ground between them is the embankment's batter, and the road drape
+    /// reads exactly the ground the terrain draws.
     #[test]
     fn each_bench_holds_its_own_road_against_its_neighbour() {
         let mut scratch = Vec::new();

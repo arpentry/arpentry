@@ -25,7 +25,7 @@ use crate::dem::Dem;
 use crate::priors::{
     DECK_THICKNESS_M, EARTHWORK_BATTER,
     BATTER_DIVERGENCE_SLOP, EARTHWORK_MARGIN_M, EARTHWORK_MAX_BATTER_M, MAX_BENCH_FACE_M,
-    EARTHWORK_MIN_BATTER_M, EARTHWORK_SHOULDER_M,
+    EARTHWORK_MIN_BATTER_M, EARTHWORK_SHOULDER_M, WALL_BATTER,
     MAX_CLEARANCE_LIFT_M,
     PORTAL_CLEARANCE_M, PORTAL_CUT_LEN_M, WATER_LEVEL_PCTL,
 };
@@ -252,7 +252,7 @@ fn corridor_earthworks(
         // Without a sampler (no DEM) the centerline depth stands in on both
         // sides.
         let centre_reach = |k: usize| batter_reach(road[k] - terrain[k], 0.0);
-        let mut batter: Vec<[f64; 2]> =
+        let mut batter: Vec<[(f64, f64); 2]> =
             (0..nodes.len()).map(|k| [centre_reach(k), centre_reach(k)]).collect();
         // Whether a bench is plausible at all here — see [`MAX_BENCH_FACE_M`].
         let mut benched: Vec<bool> = vec![true; nodes.len()];
@@ -263,7 +263,7 @@ fn corridor_earthworks(
                 }
                 let (ux, uy) = heading(nodes, k, cos_lat);
                 let (px, py) = (-uy, ux); // lateral unit, metric (left)
-                let mut face = |s: f64| -> (f64, f64) {
+                let mut face = |s: f64| -> (f64, (f64, f64)) {
                     let q = Coord {
                         x: nodes[k].x + s * px * bench_half_width / (DEG_M * cos_lat),
                         y: nodes[k].y + s * py * bench_half_width / DEG_M,
@@ -299,8 +299,15 @@ fn corridor_earthworks(
                 half_width_m: bench_half_width,
                 carriageway_m: carriageway,
                 batter_m: [
-                    batter[k][LEFT].max(batter[k + 1][LEFT]),
-                    batter[k][RIGHT].max(batter[k + 1][RIGHT]),
+                    batter[k][LEFT].0.max(batter[k + 1][LEFT].0),
+                    batter[k][RIGHT].0.max(batter[k + 1][RIGHT].0),
+                ],
+                // The steeper of the two nodes' faces: a run that changes along
+                // an edge is one face, and the edge must not draw it shallower
+                // than either end asked for.
+                batter_run: [
+                    batter[k][LEFT].1.min(batter[k + 1][LEFT].1),
+                    batter[k][RIGHT].1.min(batter[k + 1][RIGHT].1),
                 ],
                 chain: c.id,
                 arc0: arcs[k],
@@ -354,6 +361,7 @@ fn corridor_earthworks(
                         half_width_m: half_width,
                         carriageway_m: 0.0,
                         batter_m: [(EARTHWORK_BATTER * depth).max(EARTHWORK_MIN_BATTER_M); 2],
+                        batter_run: [EARTHWORK_BATTER; 2],
                         chain: c.id,
                         arc0: arcs[k],
                         cos_lat: crate::scene::run_cos_lat(&[nodes[k], nodes[k + 1]]),
@@ -381,6 +389,7 @@ fn corridor_earthworks(
                 half_width_m: c.class.half_width_m(c.link) + EARTHWORK_SHOULDER_M,
                 carriageway_m: 0.0,
                 batter_m: [EARTHWORK_MIN_BATTER_M; 2],
+                batter_run: [EARTHWORK_BATTER; 2],
                 chain: c.id,
                 arc0: portal.arc,
                 cos_lat: crate::scene::run_cos_lat(&[a, b]),
@@ -404,6 +413,23 @@ fn corridor_earthworks(
 /// than a terrace that runs out into the hillside and ends in a cliff. Clamped
 /// above by [`EARTHWORK_MAX_BATTER_M`] so a deep fill against near-flat ground
 /// still has a bounded footprint.
+///
+/// **A wall where a batter cannot close, and only then zero.** The face is
+/// tried twice: once as an earth slope at 1 in [`EARTHWORK_BATTER`], and where
+/// that cannot daylight, again as a wall at 1 in [`WALL_BATTER`]. Both are the
+/// same self-limiting geometry and the same daylight test, so the second is not
+/// a special case, it is the same rule asked of a steeper face. Only when
+/// neither closes does the reach collapse to zero.
+///
+/// This is what a road cut into a steep flank physically has. Leaving it at zero
+/// — which is what this did at first — means the earthwork builds *nothing*
+/// there, and the height field is left carrying a step it does not have: over
+/// the Montreux extract the DEM carries a median 84 % of the separation two
+/// crowded platforms' profiles carry, and under half in 29 % of them
+/// (`data/plans/probes/probe_stack.rs`). The wall is how the model supplies the
+/// difference without inventing a shape: it is bounded by the same daylight
+/// test as the batter, so where the ground *does* carry the step it builds
+/// nothing.
 ///
 /// **Zero, where it used to be a floor.** The collapsed case used to keep a
 /// two-metre bevel, the same [`EARTHWORK_MIN_BATTER_M`] that eases a converging
@@ -435,23 +461,36 @@ fn corridor_earthworks(
 /// about as fast as it would on flat ground; [`BATTER_DIVERGENCE_SLOP`] allows
 /// for a gentle fall-away, and beyond it the answer is the wall, whose height
 /// is only the bench half-width times the cross-slope.
-fn batter_reach(rise: f64, cross: f64) -> f64 {
-    let slope = 1.0 / EARTHWORK_BATTER;
-    // A fill descends against ground that must rise to meet it; a cutting
-    // climbs against ground that must fall. One expression: the closing rate
-    // is the batter minus however fast the ground runs away with it.
-    let closing = slope - cross * if rise >= 0.0 { -1.0 } else { 1.0 };
-    if closing <= 1e-9 {
-        return 0.0;
+fn batter_reach(rise: f64, cross: f64) -> (f64, f64) {
+    // How far a face of this shape runs before it meets the ground, or `None`
+    // where it never does.
+    let daylight = |run: f64, floor: f64| -> Option<f64> {
+        let slope = 1.0 / run;
+        // A fill descends against ground that must rise to meet it; a cutting
+        // climbs against ground that must fall. One expression: the closing
+        // rate is the face minus however fast the ground runs away with it.
+        let closing = slope - cross * if rise >= 0.0 { -1.0 } else { 1.0 };
+        if closing <= 1e-9 {
+            return None;
+        }
+        let reach = rise.abs() / closing;
+        // Where the face would daylight on flat ground — the yardstick for
+        // "closes quickly". Past it the ground is running away with the face.
+        if reach > run * rise.abs() * BATTER_DIVERGENCE_SLOP {
+            return None;
+        }
+        Some(reach.clamp(floor, EARTHWORK_MAX_BATTER_M))
+    };
+    // The earth slope keeps its floor, which costs nothing where it closes.
+    // The wall gets none: it is already short, and a floor on a steep face is
+    // how the batter's own floor became a trench.
+    if let Some(r) = daylight(EARTHWORK_BATTER, EARTHWORK_MIN_BATTER_M) {
+        return (r, EARTHWORK_BATTER);
     }
-    let reach = rise.abs() / closing;
-    // Where the face would daylight on flat ground — the yardstick for
-    // "closes quickly". Past it the ground is running away with the face.
-    let flat = EARTHWORK_BATTER * rise.abs();
-    if reach > flat * BATTER_DIVERGENCE_SLOP {
-        return 0.0;
+    if let Some(r) = daylight(WALL_BATTER, 0.0) {
+        return (r, WALL_BATTER);
     }
-    reach.clamp(EARTHWORK_MIN_BATTER_M, EARTHWORK_MAX_BATTER_M)
+    (0.0, EARTHWORK_BATTER)
 }
 
 /// Unit heading of the sweep line at node `i` in the metric (east, north)
@@ -888,23 +927,32 @@ mod tests {
             }
         }
 
-        // A 0.3 m/m side-slope: the faces would still meet the ground
-        // eventually, but only by running far out across the flank — the
-        // ground is diverging, so they are abandoned for a wall.
+        // A 0.3 m/m side-slope. The uphill face would still meet the ground
+        // eventually, but only by running far out across the flank — an earth
+        // batter is diverging there, so it is rebuilt as a wall: steep, short,
+        // and closing by the same daylight test rather than by a cap.
         let leaning = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M * 0.3;
         let (c, p) = street(&pts, &mut |c| leaning(c));
         let mut side = |c: Coord| leaning(c);
         let edges = corridor_earthworks(&c, &p, Some(&mut side));
         assert!(!edges.is_empty());
-        assert!(edges.iter().all(|e| e.batter_m == [0.0; 2]));
+        for e in &edges {
+            assert_eq!(e.batter_run[LEFT], WALL_BATTER, "the uphill face must be a wall");
+            assert!(
+                e.batter_m[LEFT] < 1.0,
+                "a wall closes inside a metre, got {}",
+                e.batter_m[LEFT]
+            );
+        }
 
         let ew = Earthworks::new(edges);
         let mut scratch = Vec::new();
         let mid_x = 6.0 + 50.0 / (DEG_M * cos_lat);
-        // The wall stands at the bench edge, so the hillside is untouched from
-        // there outward — no bevel holding it down and no step where the bevel
-        // would have ended.
-        let out = 46.0 + (bench_half + 0.01) / DEG_M;
+        // Past the wall the hillside is untouched — the face is self-limiting,
+        // so it reshapes what it must and stops, with no bevel holding the
+        // ground down beyond it and no step where such a bevel would have
+        // ended.
+        let out = 46.0 + (bench_half + 1.0) / DEG_M;
         let raw = leaning(Coord { x: mid_x, y: out });
         assert_eq!(ew.height(mid_x, out, raw, 0.0, &mut scratch), raw);
         // …while the bench itself still holds the road flat across.
@@ -967,6 +1015,7 @@ mod tests {
             half_width_m: 8.0,
             carriageway_m: 6.0,
             batter_m: [4.0; 2],
+            batter_run: [EARTHWORK_BATTER; 2],
             chain: 0,
             arc0: 0.0,
             cos_lat,
