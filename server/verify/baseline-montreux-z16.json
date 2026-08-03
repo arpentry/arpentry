@@ -31,14 +31,21 @@
           "lat": 46.455258023925126,
           "lon": 6.898197513073683,
           "note": "asphalt 503.06 m, terrain rim 502.05 m, nothing between them",
-          "value": 1.0067929388168295,
+          "value": 1.0059187542938162,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40396454837173,
+          "lon": 6.92879238165915,
+          "note": "asphalt 383.25 m, terrain rim 384.25 m, nothing between them",
+          "value": 0.9969149067408694,
           "zoom": 16
         },
         {
           "lat": 46.45525312051177,
           "lon": 6.898188628256321,
           "note": "asphalt 501.82 m, terrain rim 500.87 m, nothing between them",
-          "value": 0.9478024603011477,
+          "value": 0.9474318158171968,
           "zoom": 16
         },
         {
@@ -52,14 +59,7 @@
           "lat": 46.44135806243867,
           "lon": 6.909926645457745,
           "note": "asphalt 489.76 m, terrain rim 490.66 m, nothing between them",
-          "value": 0.9010261436561109,
-          "zoom": 16
-        },
-        {
-          "lat": 46.43564428668469,
-          "lon": 6.9459249917417765,
-          "note": "asphalt 1118.59 m, terrain rim 1117.69 m, nothing between them",
-          "value": 0.8913558022688903,
+          "value": 0.899732961283064,
           "zoom": 16
         }
       ],
@@ -69,8 +69,8 @@
       "tail": 0.006666666666667709,
       "threshold": 0.5,
       "title": "Gap at the hole's rim with nothing spanning it",
-      "violation_pct": 0.005103034914037057,
-      "violations": 22,
+      "violation_pct": 0.005334991046493287,
+      "violations": 23,
       "worst": 1.1581640823488897
     },
     {
@@ -138,11 +138,11 @@
       "samples": 398337,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 6.433333333333337,
+      "tail": 6.420000000000002,
       "threshold": 0.5,
       "title": "Drop from the kerb to the ground beside it",
-      "violation_pct": 12.90590630546497,
-      "violations": 51409,
+      "violation_pct": 12.888835332896518,
+      "violations": 51341,
       "worst": 14.790527526127676
     },
     {
@@ -153,8 +153,8 @@
         {
           "lat": 46.46336738951504,
           "lon": 6.90797483548522,
-          "note": "road 733.93 m, drawn ground 734.17 m",
-          "value": -0.23361333521404504,
+          "note": "road 733.97 m, drawn ground 734.17 m",
+          "value": -0.19760259302654504,
           "zoom": 16
         },
         {
@@ -168,12 +168,12 @@
       "samples": 18,
       "sense": "lower_is_worse",
       "skipped": null,
-      "tail": -0.23333333333333073,
+      "tail": -0.19333333333333158,
       "threshold": -0.05,
       "title": "At-grade asphalt under the drawn ground",
       "violation_pct": 11.11111111111111,
       "violations": 2,
-      "worst": -0.23361333521404504
+      "worst": -0.19760259302654504
     },
     {
       "id": "contact.pavement_floating",
@@ -515,30 +515,30 @@
       "offenders": [
         {
           "lat": 46.439208984375,
-          "lon": 6.9135332107543945,
-          "note": "2 neighbouring tiles read 485.154 / 484.792",
-          "value": 0.36199951171875,
-          "zoom": 16
-        },
-        {
-          "lat": 46.439208984375,
           "lon": 6.914691925048828,
-          "note": "2 neighbouring tiles read 518.468 / 518.763",
-          "value": 0.29498291015625,
+          "note": "2 neighbouring tiles read 518.490 / 518.763",
+          "value": 0.27294921875,
           "zoom": 16
         },
         {
           "lat": 46.439208984375,
-          "lon": 6.911172866821289,
-          "note": "2 neighbouring tiles read 443.588 / 443.546",
-          "value": 0.0419921875,
+          "lon": 6.9135332107543945,
+          "note": "2 neighbouring tiles read 485.154 / 484.906",
+          "value": 0.24798583984375,
           "zoom": 16
         },
         {
           "lat": 46.439208984375,
           "lon": 6.913189888000488,
-          "note": "2 neighbouring tiles read 478.027 / 478.002",
-          "value": 0.024993896484375,
+          "note": "2 neighbouring tiles read 478.027 / 478.010",
+          "value": 0.016998291015625,
+          "zoom": 16
+        },
+        {
+          "lat": 46.439208984375,
+          "lon": 6.911172866821289,
+          "note": "2 neighbouring tiles read 443.597 / 443.584",
+          "value": 0.01300048828125,
           "zoom": 16
         }
       ],
@@ -550,7 +550,7 @@
       "title": "Carriageway height disagreement across a tile border",
       "violation_pct": 0.018650627127337158,
       "violations": 4,
-      "worst": 0.36199951171875
+      "worst": 0.27294921875
     },
     {
       "id": "order.at_grade_overlap",
@@ -558,52 +558,52 @@
       "median": 0.0033333333333333335,
       "offenders": [
         {
+          "lat": 46.43354415893555,
+          "lon": 6.943359375,
+          "note": "one tile holds coincident vertices at 1131.740 m and 1134.311 m",
+          "value": 2.5709228515625,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43354415893555,
+          "lon": 6.943359375,
+          "note": "one tile holds coincident vertices at 1131.740 m and 1134.311 m",
+          "value": 2.5709228515625,
+          "zoom": 16
+        },
+        {
+          "lat": 46.433565616607666,
+          "lon": 6.943359375,
+          "note": "one tile holds coincident vertices at 1131.760 m and 1134.288 m",
+          "value": 2.528076171875,
+          "zoom": 16
+        },
+        {
+          "lat": 46.433565616607666,
+          "lon": 6.943359375,
+          "note": "one tile holds coincident vertices at 1131.760 m and 1134.288 m",
+          "value": 2.528076171875,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40350341796875,
+          "lon": 6.933917999267578,
+          "note": "one tile holds coincident vertices at 435.676 m and 437.259 m",
+          "value": 1.5830078125,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40350341796875,
+          "lon": 6.933917999267578,
+          "note": "one tile holds coincident vertices at 435.676 m and 437.259 m",
+          "value": 1.5830078125,
+          "zoom": 16
+        },
+        {
           "lat": 46.439208984375,
           "lon": 6.913361549377441,
-          "note": "one tile holds coincident vertices at 481.002 m and 484.825 m",
-          "value": 3.822998046875,
-          "zoom": 16
-        },
-        {
-          "lat": 46.43354415893555,
-          "lon": 6.943359375,
-          "note": "one tile holds coincident vertices at 1131.740 m and 1134.311 m",
-          "value": 2.5709228515625,
-          "zoom": 16
-        },
-        {
-          "lat": 46.43354415893555,
-          "lon": 6.943359375,
-          "note": "one tile holds coincident vertices at 1131.740 m and 1134.311 m",
-          "value": 2.5709228515625,
-          "zoom": 16
-        },
-        {
-          "lat": 46.433565616607666,
-          "lon": 6.943359375,
-          "note": "one tile holds coincident vertices at 1131.760 m and 1134.288 m",
-          "value": 2.528076171875,
-          "zoom": 16
-        },
-        {
-          "lat": 46.433565616607666,
-          "lon": 6.943359375,
-          "note": "one tile holds coincident vertices at 1131.760 m and 1134.288 m",
-          "value": 2.528076171875,
-          "zoom": 16
-        },
-        {
-          "lat": 46.40350341796875,
-          "lon": 6.933917999267578,
-          "note": "one tile holds coincident vertices at 435.676 m and 437.259 m",
-          "value": 1.5830078125,
-          "zoom": 16
-        },
-        {
-          "lat": 46.40350341796875,
-          "lon": 6.933917999267578,
-          "note": "one tile holds coincident vertices at 435.676 m and 437.259 m",
-          "value": 1.5830078125,
+          "note": "one tile holds coincident vertices at 481.002 m and 482.405 m",
+          "value": 1.40301513671875,
           "zoom": 16
         },
         {
@@ -617,12 +617,12 @@
       "samples": 61303,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 0.15000000000000002,
+      "tail": 0.14333333333333334,
       "threshold": 0.005,
       "title": "Overlapping at-grade asphalt with nothing to order it",
-      "violation_pct": 0.2446862306901783,
-      "violations": 150,
-      "worst": 3.822998046875
+      "violation_pct": 0.24305498915224377,
+      "violations": 149,
+      "worst": 2.5709228515625
     },
     {
       "id": "slope.terrain_face",
@@ -730,13 +730,6 @@
           "zoom": 16
         },
         {
-          "lat": 46.42200051806867,
-          "lon": 6.931218691170216,
-          "note": "interior asphalt at 552 % spanning 4.11 m",
-          "value": 5.522108656356845,
-          "zoom": 16
-        },
-        {
           "lat": 46.452771350741386,
           "lon": 6.9076258689165115,
           "note": "interior asphalt at 543 % spanning 2.18 m",
@@ -756,16 +749,23 @@
           "note": "interior asphalt at 534 % spanning 1.47 m",
           "value": 5.343988277432631,
           "zoom": 16
+        },
+        {
+          "lat": 46.43879354931414,
+          "lon": 6.913317013531923,
+          "note": "interior asphalt at 499 % spanning 2.10 m",
+          "value": 4.987434806882044,
+          "zoom": 16
         }
       ],
-      "samples": 376329,
+      "samples": 376423,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 1.5933333333333335,
+      "tail": 1.58,
       "threshold": 0.3,
       "title": "Interior carriageway face steepness",
-      "violation_pct": 2.109856003656375,
-      "violations": 7940,
+      "violation_pct": 2.1077351809002107,
+      "violations": 7934,
       "worst": 7.072114740687664
     },
     {

@@ -300,8 +300,6 @@ impl<'a> HeightField<'a> {
 
         let blended = if den > 0.0 {
             num / den
-        } else if pin_den > 0.0 {
-            return pin_num / pin_den; // inside an intersection, off every carriageway
         } else {
             // Outside every source — a curb-return fillet, or the residue of the
             // closing. The nearest source's answer, which agrees with the
@@ -314,11 +312,31 @@ impl<'a> HeightField<'a> {
             // height, including its raise-only clamp to its own profile: ground
             // hundreds of metres from an embanked road came back at the
             // embankment's height.
-            return match best {
-                Some((d, reach, h)) if d <= reach + crate::priors::CURB_RETURN_M => h,
-                _ => ground,
-            };
+            //
+            // Handed back *continuously*. Switching from the nearest source's
+            // height to the bare ground at a threshold is a step in the field
+            // wherever the two differ, and property 2 above is that no source
+            // may enter or leave the covering set with a step. It reached the
+            // archive as `seam.pavement_step`: two border vertices a hair apart
+            // straddling the threshold, one taking the road and one the ground,
+            // 0.36 m apart in a metric that had been exactly zero. So the
+            // hand-back ramps over the fillet's own width instead.
+            match best {
+                Some((d, reach, h)) => {
+                    let over = (d - reach).max(0.0);
+                    let w = (1.0 - over / crate::priors::CURB_RETURN_M).clamp(0.0, 1.0);
+                    w * h + (1.0 - w) * ground
+                }
+                None => ground,
+            }
         };
+        // The pin mixes over *that*, whether or not a carriageway covered the
+        // point. Returning the bare pinned height when none did — which is what
+        // this used to do — steps by `(1 - lambda) * (blend - pin)` at the
+        // moment the first carriageway enters the covering set, for the same
+        // reason the hand-back above had to be ramped. `best` already tracks
+        // pins as well as corridors, so the fallback under a plate is the
+        // plate's own height and not the bare ground.
         if pin_den > 0.0 {
             let pinned = pin_num / pin_den;
             lambda.clamp(0.0, 1.0) * pinned + (1.0 - lambda.clamp(0.0, 1.0)) * blended
