@@ -462,7 +462,7 @@ mod tests {
     // under test — the field's job is which sources contribute and how, not what
     // the ground is doing.
 
-    use crate::ground::sampler::GroundSampler;
+    use crate::ground::sampler::{GroundSampler, MeshOptions};
     use crate::ground::GroundModel;
     use crate::priors::RoadClass;
     use crate::scene::{Corridor, Junction, JunctionMember, SceneGraph};
@@ -472,7 +472,7 @@ mod tests {
     const LAT: f64 = 46.0;
 
     fn sampler() -> GroundSampler {
-        GroundSampler::new(None, Arc::new(GroundModel::empty()), Z)
+        GroundSampler::new(None, Arc::new(GroundModel::empty()), Z, MeshOptions::default())
     }
 
     fn m_lon() -> f64 {
@@ -676,8 +676,8 @@ mod tests {
         };
 
         // Ground drawn underneath: the clamp holds the plate up to it.
-        let mut s = GroundSampler::new(None, ground.clone(), Z);
-        s.set_hole(false);
+        let no_hole = MeshOptions { hole: false, ..MeshOptions::default() };
+        let mut s = GroundSampler::new(None, ground.clone(), Z, no_hole);
         for east_m in [0.0, 0.05, 1.0, 3.0] {
             let h = probe(&mut s, east_m, &mut scratch);
             assert!(
@@ -688,7 +688,7 @@ mod tests {
 
         // Ground cut away: the plate is the solved height, and nothing is
         // buried by it because nothing is drawn under it.
-        let mut s = GroundSampler::new(None, ground, Z);
+        let mut s = GroundSampler::new(None, ground, Z, MeshOptions::default());
         assert!(s.cuts_hole(Z), "the detail rung must cut a hole by default");
         assert!(
             (probe(&mut s, 0.0, &mut scratch) - 480.0).abs() < 1e-9,

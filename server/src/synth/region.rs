@@ -2,10 +2,14 @@
 //!
 //! The asphalt is meshed from a set of rings; the terrain is meshed *around*
 //! the same rings (docs/GROUND.md §3, "the hole"). So two callers need the same
-//! three answers about one ring set — is this point inside it, what are the
-//! rings as constraint edges, and what height does the road carry on the
-//! boundary — and they must agree exactly, because a disagreement between them
-//! is a crack along every kerb in the map.
+//! two answers about one ring set — is this point inside it, and what are the
+//! rings as constraint edges — and they must agree exactly, because a
+//! disagreement between them is a crack along every kerb in the map.
+//!
+//! The region carries no heights. The terrain's rim takes the *ground's* height
+//! there and the difference is drawn as an explicit apron wall
+//! (docs/GROUND.md §3), so nothing needs to ask the region what the road was
+//! doing at a ring vertex.
 //!
 //! **Why a row index.** The winding test itself is unchanged from the one
 //! `pave_mesh` has always used, but its cost is not. The paved mesh pays it per
@@ -40,33 +44,14 @@ const SPAN: f64 = project::EXTENT + 2.0 * project::BUFFER;
 type EdgeRef = (u32, u32);
 
 /// A tile's paved region at one level: rings in quantized tile-local
-/// coordinates, optionally with the road-surface height the asphalt emitted at
-/// each ring vertex.
+/// coordinates, indexed for point-in-region queries.
 pub struct Region {
     rings: Vec<Vec<(f64, f64)>>,
-    /// Quantized z per ring vertex, parallel to `rings`. Empty when the region
-    /// was built for containment alone.
-    heights: Vec<Vec<i32>>,
     rows: Vec<Vec<EdgeRef>>,
 }
 
 impl Region {
-    /// A region for containment queries only — no boundary heights.
-    pub fn outline(rings: Vec<Vec<(f64, f64)>>) -> Region {
-        Region::build(rings, Vec::new())
-    }
-
-    /// A region that also carries what the asphalt emitted at each ring vertex,
-    /// so the terrain can land its boundary on exactly those heights.
-    ///
-    /// `heights` must be parallel to `rings`; a mismatched entry is treated as
-    /// absent rather than panicking, so a caller that meshes one ring and not
-    /// another still gets a usable region.
-    pub fn with_heights(rings: Vec<Vec<(f64, f64)>>, heights: Vec<Vec<i32>>) -> Region {
-        Region::build(rings, heights)
-    }
-
-    fn build(rings: Vec<Vec<(f64, f64)>>, heights: Vec<Vec<i32>>) -> Region {
+    pub fn new(rings: Vec<Vec<(f64, f64)>>) -> Region {
         let mut rows: Vec<Vec<EdgeRef>> = vec![Vec::new(); ROWS];
         for (ri, ring) in rings.iter().enumerate() {
             let n = ring.len();
@@ -82,7 +67,7 @@ impl Region {
                 }
             }
         }
-        Region { rings, heights, rows }
+        Region { rings, rows }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -111,68 +96,7 @@ impl Region {
         }
         winding != 0
     }
-
-    /// The road-surface height on the region's boundary at `p`, or `None` where
-    /// `p` is not on the boundary (or the region carries no heights).
-    ///
-    /// Two cases, and the second is what makes the seam exact:
-    ///
-    /// - **On a ring vertex.** Quantized positions compare exactly, and the
-    ///   terrain's triangulation inserts the very points the paved mesh emitted,
-    ///   so this is the common case and it is a lookup.
-    /// - **On a ring edge**, where a crest breakline crossing the kerb made the
-    ///   triangulation split it. The height is the *linear interpolation* of the
-    ///   edge's endpoints — not a re-evaluation of the height field. That is not
-    ///   a convenience: along that edge the asphalt's own triangle is planar, so
-    ///   interpolating puts the terrain vertex exactly on the asphalt's edge and
-    ///   the crack is zero, whereas re-evaluating the (non-linear) field would
-    ///   pull it off that straight edge and open one.
-    pub fn height_on_boundary(&self, p: (f64, f64)) -> Option<i32> {
-        if self.heights.is_empty() {
-            return None;
-        }
-        // Deterministic: ring order then vertex order, first match wins. The
-        // row bucket preserves insertion order, which is that order.
-        for &(ri, k) in &self.rows[row_of(p.1)] {
-            let ring = &self.rings[ri as usize];
-            let Some(hs) = self.heights.get(ri as usize) else { continue };
-            if hs.len() != ring.len() {
-                continue;
-            }
-            let (i, j) = (k as usize, (k as usize + 1) % ring.len());
-            let (a, b) = (ring[i], ring[j]);
-            if p == a {
-                return Some(hs[i]);
-            }
-            if p == b {
-                return Some(hs[j]);
-            }
-            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-            let len2 = dx * dx + dy * dy;
-            if len2 <= 0.0 {
-                continue;
-            }
-            // Off the line by more than a quantization step is not on the edge.
-            // A split vertex lands on the segment but is stored rounded, so the
-            // tolerance is the rounding, not a fudge factor.
-            let d = cross(a, b, p);
-            if d * d > ON_EDGE_Q * ON_EDGE_Q * len2 {
-                continue;
-            }
-            let t = ((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2;
-            if !(0.0..=1.0).contains(&t) {
-                continue;
-            }
-            return Some((hs[i] as f64 + (hs[j] - hs[i]) as f64 * t).round() as i32);
-        }
-        None
-    }
 }
-
-/// How far off a ring edge, in quantized units, a vertex may sit and still count
-/// as on it. One unit is about 1.8 cm on a z16 tile — the rounding the
-/// triangulation applies to its own split vertices.
-const ON_EDGE_Q: f64 = 1.5;
 
 /// Which row bucket a quantized y falls in.
 fn row_of(y: f64) -> usize {
@@ -229,7 +153,7 @@ mod tests {
             rect(28000.0, 28000.0, 34000.0, 34000.0, false),
             rect(50000.0, 8000.0, 60000.0, 60000.0, true),
         ];
-        let region = Region::outline(rings.clone());
+        let region = Region::new(rings.clone());
         // A deterministic lattice of probes, including points on the rings.
         let mut checked = 0;
         for i in 0..97 {
@@ -262,7 +186,7 @@ mod tests {
             (40000.0, 8000.0),
             (10000.0, 8000.0),
         ];
-        let region = Region::outline(vec![ring.clone()]);
+        let region = Region::new(vec![ring.clone()]);
         for p in [(20000.0, 20000.0), (35000.0, 6500.0)] {
             assert!(region.contains(p), "{p:?} must read inside");
             assert_eq!(region.contains(p), brute(p, &[ring.clone()]));
@@ -276,50 +200,12 @@ mod tests {
             rect(20000.0, 20000.0, 46000.0, 46000.0, true),
             rect(28000.0, 28000.0, 34000.0, 34000.0, false),
         ];
-        let region = Region::outline(rings);
+        let region = Region::new(rings);
         assert!(region.contains((22000.0, 22000.0)), "inside the outer ring");
         assert!(!region.contains((31000.0, 31000.0)), "inside the hole");
     }
 
-    #[test]
-    fn a_ring_vertex_returns_its_own_height() {
-        let ring = rect(20000.0, 20000.0, 40000.0, 40000.0, true);
-        let heights = vec![1000, 2000, 3000, 4000];
-        let region = Region::with_heights(vec![ring.clone()], vec![heights.clone()]);
-        for (k, v) in ring.iter().enumerate() {
-            assert_eq!(region.height_on_boundary(*v), Some(heights[k]), "at vertex {k}");
-        }
-    }
 
-    #[test]
-    fn a_split_vertex_takes_the_edges_own_line() {
-        // The T-junction case: a vertex the triangulation created part-way along
-        // a ring edge must land on the asphalt's straight edge, which is the
-        // linear interpolation of the endpoints — not whatever the height field
-        // says there.
-        let ring = vec![(0.0, 10000.0), (10000.0, 10000.0), (10000.0, 20000.0), (0.0, 20000.0)];
-        let heights = vec![1000, 3000, 3000, 1000];
-        let region = Region::with_heights(vec![ring], vec![heights]);
-        assert_eq!(region.height_on_boundary((5000.0, 10000.0)), Some(2000));
-        assert_eq!(region.height_on_boundary((2500.0, 10000.0)), Some(1500));
-        // A point off the boundary is not on it, however close the ring passes.
-        assert_eq!(region.height_on_boundary((5000.0, 15000.0)), None);
-    }
 
-    #[test]
-    fn a_vertex_a_rounding_off_the_edge_still_counts() {
-        // Split vertices are stored rounded, so "on the edge" has to tolerate
-        // the rounding — but only the rounding.
-        let ring = vec![(0.0, 10000.0), (10000.0, 10000.0), (10000.0, 20000.0), (0.0, 20000.0)];
-        let heights = vec![1000, 3000, 3000, 1000];
-        let region = Region::with_heights(vec![ring], vec![heights]);
-        assert_eq!(region.height_on_boundary((5000.0, 10001.0)), Some(2000));
-        assert_eq!(region.height_on_boundary((5000.0, 10004.0)), None);
-    }
 
-    #[test]
-    fn a_region_without_heights_answers_no_boundary_height() {
-        let region = Region::outline(vec![rect(0.0, 0.0, 10000.0, 10000.0, true)]);
-        assert_eq!(region.height_on_boundary((0.0, 0.0)), None);
-    }
 }

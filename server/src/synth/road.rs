@@ -76,12 +76,10 @@ pub fn bake(
     let mut scratch: Vec<u32> = Vec::new();
     let mut height = |lon: f64, lat: f64| {
         match field {
-            // Only geometry that is *part of* the paved surface reads the field.
-            // A footway contributes no sources to it, so blending it in would
-            // hand back whatever road happens to cover the point — including that
-            // road's raise-only clamp to its own profile. A path crossing under an
-            // embankment or a bridge approach was lifted metres into the air by
-            // exactly that, which is why it showed worst beside bridges.
+            // Only geometry that is *part of* the paved surface reads the field,
+            // and `synth::emit` decides which that is — a `None` here is a
+            // footway, not an oversight. A deck is never blended: it is not part
+            // of the at-grade surface and rides its own ramp.
             Some(f) if !deck && !f.is_empty() => {
                 f.at(sampler, AT_GRADE_LEVEL, layer, z, z_ref, bounds, lon, lat, &mut scratch)
             }

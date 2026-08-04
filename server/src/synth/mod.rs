@@ -66,6 +66,17 @@ pub fn emit(
     if !sampler.has_elevation() {
         return;
     }
+    // `width_m` is what marks a feature as belonging to the paved surface: a
+    // carriageway has one, and so does a marking painted on it (which must ride
+    // the same answer). A footway, cycleway or track has none — it is draped
+    // geometry beside the network, not part of it, and blending it into the
+    // field would hand it whatever road happens to cover the point, including
+    // that road's raise-only clamp to its own profile. A path crossing under a
+    // bridge approach was lifted metres into the air by exactly that.
+    let paved = f.properties.iter().any(|(k, v)| {
+        k.as_str() == "width_m" && matches!(v, crate::value::Value::Double(w) if *w > 0.0)
+    });
+    let paved_field = paved.then_some(field);
     match f.synth {
         Synth::None => {}
         Synth::Road { corridor, deck } => {
@@ -73,22 +84,31 @@ pub fn emit(
             // The corridor's grade-separation layer: paint must ride the surface
             // its own road belongs to, not blend with whatever passes beneath.
             let layer = corridor.map_or(0, |c| junctions.layer_of(c));
-            // `width_m` is what marks a feature as belonging to the paved
-            // surface: a carriageway has one, and so does a marking painted on it
-            // (which must ride the same answer). A footway, cycleway or track has
-            // none — it is draped geometry beside the network, not part of it.
-            let paved = f.properties.iter().any(|(k, v)| {
-                k.as_str() == "width_m" && matches!(v, crate::value::Value::Double(w) if *w > 0.0)
-            });
-            let field = paved.then_some(field);
-            road::bake(f, profile, deck, layer, field, sampler, z, solved.z_ref, bounds);
+            road::bake(f, profile, deck, layer, paved_field, sampler, z, solved.z_ref, bounds);
         }
         Synth::Structure { corridor, kind } => {
             match solved.profile(corridor) {
                 Some(p) if structure::stamp(f, p, kind, bounds) => {}
                 // Degradation ladder: no solved profile, or no solid to draw
-                // (a tunnel tagged over flat ground) → a plain draped road.
-                other => road::bake(f, other, false, 0, Some(field), sampler, z, solved.z_ref, bounds),
+                // (a tunnel tagged over flat ground) → a plain draped road, on
+                // the same terms any other road gets. Its own layer, and the
+                // field only if it is part of the paved surface: a demoted
+                // structure is still the corridor it was, and reading the field
+                // on layer 0 would drape a flyover onto the street beneath it.
+                other => {
+                    let layer = junctions.layer_of(corridor);
+                    road::bake(
+                        f,
+                        other,
+                        false,
+                        layer,
+                        paved_field,
+                        sampler,
+                        z,
+                        solved.z_ref,
+                        bounds,
+                    )
+                }
             }
         }
     }

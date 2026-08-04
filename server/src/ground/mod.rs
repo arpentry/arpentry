@@ -426,10 +426,9 @@ fn corridor_earthworks(
 /// there, and the height field is left carrying a step it does not have: over
 /// the Montreux extract the DEM carries a median 84 % of the separation two
 /// crowded platforms' profiles carry, and under half in 29 % of them
-/// (`data/plans/probes/probe_stack.rs`). The wall is how the model supplies the
-/// difference without inventing a shape: it is bounded by the same daylight
-/// test as the batter, so where the ground *does* carry the step it builds
-/// nothing.
+/// (docs/GROUND.md §2). The wall is how the model supplies the difference
+/// without inventing a shape: it is bounded by the same daylight test as the
+/// batter, so where the ground *does* carry the step it builds nothing.
 ///
 /// **Zero, where it used to be a floor.** The collapsed case used to keep a
 /// two-metre bevel, the same [`EARTHWORK_MIN_BATTER_M`] that eases a converging

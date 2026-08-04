@@ -138,6 +138,13 @@ pub struct Config {
     pub hole: bool,
 }
 
+/// The run's detail-mesh options, in the shape every [`GroundSampler`] takes.
+/// One translation of the config, so the three samplers a run builds — the
+/// probe's, the serial path's, and each emit worker's — cannot disagree.
+fn mesh_options(cfg: &Config) -> ground::sampler::MeshOptions {
+    ground::sampler::MeshOptions { breaklines: cfg.breaklines, hole: cfg.hole }
+}
+
 /// Summary counts from a run.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Stats {
@@ -312,10 +319,8 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?))
         }) {
             let dem = cfg.terrain.as_deref().and_then(|p| Dem::open(p).ok());
-            let mut sampler = GroundSampler::new(dem, Arc::clone(&ground), solved.z_ref);
-            sampler.set_breaklines(cfg.breaklines);
-        sampler.set_hole(cfg.hole);
-            sampler.set_hole(cfg.hole);
+            let mut sampler =
+                GroundSampler::new(dem, Arc::clone(&ground), solved.z_ref, mesh_options(cfg));
             let zref_bounds = solve::tile_containing(solved.z_ref, lon, lat);
             let cos = lat.to_radians().cos();
             eprintln!("PROBE {lon},{lat} (z_ref={})", solved.z_ref);
@@ -425,9 +430,8 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             Some(path) => Some(Dem::open(path)?),
             None => None,
         };
-        let mut sampler = GroundSampler::new(dem, Arc::clone(&ground), solved.z_ref);
-        sampler.set_breaklines(cfg.breaklines);
-        sampler.set_hole(cfg.hole);
+        let mut sampler =
+            GroundSampler::new(dem, Arc::clone(&ground), solved.z_ref, mesh_options(cfg));
         let mut sorted = sorted;
         let mut current: Option<u64> = None;
         let mut buckets: Vec<Vec<EncoderFeature>> =
@@ -636,11 +640,8 @@ fn emit_parallel(
             };
             workers.push(scope.spawn(move || -> Result<(), Error> {
                 let flat = terrain::flat_mesh(TERRAIN_GRID);
-                let mut sampler = GroundSampler::new(dem, ground, solved.z_ref);
-                sampler.set_breaklines(cfg.breaklines);
-                sampler.set_hole(cfg.hole);
-        sampler.set_hole(cfg.hole);
-            sampler.set_hole(cfg.hole);
+                let mut sampler =
+                    GroundSampler::new(dem, ground, solved.z_ref, mesh_options(cfg));
                 loop {
                     // Blocking recv under the lock serializes idle waits only;
                     // a queued job is handed off immediately.
@@ -726,7 +727,11 @@ fn encode_tile(
     // so all three land on the same asphalt (docs/ROADS.md invariant 5).
     let field = synth::height::HeightField::for_tile(junctions, solved, z, &bounds);
     stamp_synth(&mut buckets, &field, junctions, sampler, solved, z, &bounds);
-    let hole = add_road_surface(&mut buckets, pavement, &field, sampler, &bounds, z, solved.z_ref);
+    // The at-grade paved regions this tile actually meshed — what the terrain
+    // mesh below cuts its hole from (docs/GROUND.md §3). Empty where no hole is
+    // cut, so the terrain mesher needs no second opinion on whether to cut.
+    let cut_regions =
+        add_road_surface(&mut buckets, pavement, &field, sampler, &bounds, z, solved.z_ref);
     let mut t_terrain = t_stamp.elapsed();
 
     // Vector layers in decode-priority (index) order.
@@ -752,7 +757,7 @@ fn encode_tile(
     observed.push((layers::TERRAIN as usize, GeometryType::Mesh));
     let (blob, elevation, t_mesh, t_encode) = if sampler.has_elevation() {
         let t = Instant::now();
-        let (mesh, emin, emax) = sampler.terrain_mesh(&bounds, z, &hole);
+        let (mesh, emin, emax) = sampler.terrain_mesh(&bounds, z, &cut_regions);
         let t_mesh = t.elapsed();
         let t = Instant::now();
         let blob = tile_build::build_tile_q(&bounds, Some(&mesh), &enc_layers, quality);
@@ -928,17 +933,12 @@ fn add_road_surface(
                 synth: synth::Synth::None,
             });
         };
-        // Only the at-grade surface cuts, and only one of them: a deck flies
-        // and the ground beneath it stays. The region handed on is the one
-        // whose asphalt was *actually meshed* — a level that failed to mesh
-        // must not leave a hole with nothing over it (invariant 6).
         // Every at-grade region cuts, not just the first: a tile can carry
-        // several level-0 regions on different grade layers, and asphalt whose
-        // ground was left in place is asphalt the burial artifacts come back
-        // through. Structures (level != 0) never cut — a deck flies and the
-        // ground beneath it stays. The regions handed on are those whose
-        // asphalt was *actually meshed*, so a level that failed to mesh leaves
-        // no hole with nothing over it (invariant 6).
+        // several level-0 regions on different grade layers, and one left uncut
+        // is asphalt the burial comes back through. Structures (level != 0)
+        // never cut — a deck flies and the ground beneath it stays. The regions
+        // handed on are those whose asphalt was *actually meshed*, so a level
+        // that failed to mesh leaves no hole with nothing over it (invariant 6).
         if paved.level == 0 && hole && !paved.region.is_empty() {
             cut.push(paved.region);
         }
@@ -1385,7 +1385,6 @@ impl Drop for TempCleanup {
 
 /// Encodes one tile's grouped features and appends it to the archive.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn flush_tile(
     writer: &mut ArchiveWriter<File>,
     tile_id: u64,
@@ -1405,7 +1404,8 @@ fn flush_tile(
     stamp_elevations(buckets, sampler, z);
     let field = synth::height::HeightField::for_tile(junctions, solved, z, &bounds);
     stamp_synth(buckets, &field, junctions, sampler, solved, z, &bounds);
-    let hole = add_road_surface(buckets, pavement, &field, sampler, &bounds, z, solved.z_ref);
+    let cut_regions =
+        add_road_surface(buckets, pavement, &field, sampler, &bounds, z, solved.z_ref);
 
     // Vector layers in decode-priority (index) order.
     let mut enc_layers = Vec::new();
@@ -1428,7 +1428,7 @@ fn flush_tile(
     layer_stats.observe(layers::TERRAIN as usize, z, GeometryType::Mesh);
     let blob = if sampler.has_elevation() {
         let t_terrain = Instant::now();
-        let (mesh, emin, emax) = sampler.terrain_mesh(&bounds, z, &hole);
+        let (mesh, emin, emax) = sampler.terrain_mesh(&bounds, z, &cut_regions);
         stats.timings.terrain += t_terrain.elapsed();
         elevation.0 = elevation.0.min(emin);
         elevation.1 = elevation.1.max(emax);
@@ -1972,6 +1972,7 @@ mod tests {
             terrain.as_deref().and_then(|p| Dem::open(p).ok()),
             Arc::clone(&ground),
             z_ref,
+            ground::sampler::MeshOptions::default(),
         );
         let mut csv = String::from("col,row,lon,lat,raw,ground,bed\n");
         for row in 0..=n {
@@ -2291,7 +2292,12 @@ mod tests {
             if d >= e.reach_m() {
                 continue;
             }
-            let rise = (d - e.half_width_m).max(0.0) / crate::priors::EARTHWORK_BATTER;
+            // The face this edge actually draws here, on the side the point is
+            // on: the model's own `batter_run`, not a fixed EARTHWORK_BATTER —
+            // a diverging face is rebuilt as a wall and a probe that assumes
+            // the earth slope explains a shape that is not there.
+            let side = if dx * (lat - e.a.y) - dy * (lon * e.cos_lat - ax) >= 0.0 { 0 } else { 1 };
+            let rise = (d - e.half_width_m).max(0.0) / e.batter_run[side];
             let target = e.target_a + (e.target_b - e.target_a) * t;
             let class = scene
                 .corridors
@@ -2302,18 +2308,22 @@ mod tests {
             rows.push((
                 d,
                 format!(
-                    "  {:<14} chain={:<6} arc0={:<7.0} d={:>6.2} hw={:>5.2} \
-                     batter=[{:.1},{:.1}] target={:>8.2} {}{}",
+                    "  {:<14} chain={:<6} arc0={:<7.0} d={:>6.2} hw={:>5.2} cw={:>5.2} \
+                     {} reach={:.1} run=1:{:.2} target={:>8.2} {}{}",
                     class,
                     e.chain,
                     e.arc0,
                     d,
                     e.half_width_m,
-                    e.batter_m[0],
-                    e.batter_m[1],
+                    e.carriageway_m,
+                    if side == 0 { "L" } else { "R" },
+                    e.batter_m[side],
+                    e.batter_run[side],
                     target,
-                    if d <= e.half_width_m {
-                        "BENCH".to_string()
+                    if d <= e.carriageway_m {
+                        "CARRIAGEWAY".to_string() // outranks any nearer verge
+                    } else if d <= e.half_width_m {
+                        "bench (verge)".to_string()
                     } else {
                         format!("face fill={:.2} cut={:.2}", target - rise, target + rise)
                     },

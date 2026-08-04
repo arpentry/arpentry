@@ -68,10 +68,10 @@ pub struct PavedMesh {
     /// not the same height. `None` where every edge sits on its own bench and
     /// there is nothing to close.
     pub apron: Option<TerrainMesh>,
-    /// The region this mesh actually covers — the true silhouette rings, with
-    /// the road-surface height at each ring vertex. The terrain mesher cuts its
-    /// hole from *this*, so a level whose asphalt failed to mesh cuts nothing
-    /// (docs/GENERATION.md invariant 6: plain, not wrong).
+    /// The region this mesh actually covers — the true silhouette rings in plan.
+    /// The terrain mesher cuts its hole from *this*, so a level whose asphalt
+    /// failed to mesh cuts nothing (docs/GENERATION.md invariant 6: plain, not
+    /// wrong).
     pub region: Region,
 }
 
@@ -337,7 +337,7 @@ fn mesh_rings(
     // One indexed region for both the interior-point pass and the face pass
     // below: each is O(faces x ring vertices) unindexed, which on a detail tile
     // is tens of millions of operations (see `synth::region`).
-    let qregion = Region::outline(qrings);
+    let qregion = Region::new(qrings);
 
     // Interior sample points on the terrain's own lattice.
     //
@@ -433,23 +433,24 @@ fn mesh_rings(
     // The region the *terrain* is cut against is the true silhouette, not the
     // inset the interior was triangulated to: the asphalt reaches the silhouette
     // either way, via the rim where there is one and via the interior where the
-    // inset folded. Heights are taken at the rounded position, which is where
-    // both meshes put the vertex.
-    let mut sil: Vec<Vec<(f64, f64)>> = Vec::with_capacity(rings.len());
-    let mut sil_z: Vec<Vec<i32>> = Vec::with_capacity(rings.len());
-    for r in rings {
-        let mut pts = Vec::with_capacity(r.pts.len());
-        let mut zs = Vec::with_capacity(r.pts.len());
-        for c in &r.pts {
-            let qx = project::quantize_x(c.x, bounds);
-            let qy = project::quantize_y(c.y, bounds);
-            pts.push((qx as f64, qy as f64));
-            zs.push(height(project::dequantize_x(qx, bounds), project::dequantize_y(qy, bounds)));
-        }
-        sil.push(pts);
-        sil_z.push(zs);
-    }
-    Some((surface, casing, Region::with_heights(sil, sil_z)))
+    // inset folded. Plan positions only — the terrain's rim vertices take the
+    // *ground's* height there, not the road's (docs/GROUND.md §3), and the
+    // difference between the two is what `build_apron` draws.
+    let sil: Vec<Vec<(f64, f64)>> = rings
+        .iter()
+        .map(|r| {
+            r.pts
+                .iter()
+                .map(|c| {
+                    (
+                        project::quantize_x(c.x, bounds) as f64,
+                        project::quantize_y(c.y, bounds) as f64,
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    Some((surface, casing, Region::new(sil)))
 }
 
 /// Splits every ring edge where it crosses a line of the terrain lattice, so no

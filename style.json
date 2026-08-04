@@ -321,6 +321,17 @@
           "min_level": 13
         },
         {
+          "class": "road_apron",
+          "color": [
+            168,
+            162,
+            152,
+            255
+          ],
+          "width": 0,
+          "min_level": 13
+        },
+        {
           "class": "road_surface",
           "color": [
             151,

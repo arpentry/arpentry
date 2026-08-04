@@ -87,10 +87,7 @@ scorecard get skimmed.
 
 | metric | inv | what it means |
 |---|---|---|
-| `contact.pavement_buried` | 4 | Carriageway surface below the terrain mesh: the ground is drawn through the road. Zero by construction since the hole; its denominator is now the handful of samples that still find ground beneath them, so read the *count*, not the percentage. |
-| `contact.pavement_floating` | 4 | The same distribution from the high end. Past a metre the road stands on an embankment that was never built. Also near-zero since the hole, and for the same reason — see `contact.kerb_lip`, which measures what moved. |
-| `contact.pavement_unbacked_pct` | 4 | Per-tile share of asphalt with no terrain triangle beneath it. **100 % is the intended state** since the hole landed: the terrain stops at the kerb, so there is nothing under the asphalt by design. |
-| `contact.kerb_lip` | 4 | Carriageway edge height minus the drawn ground a metre outside it. Where the two metrics above went blind, this is what still sees a road standing on an embankment nobody built. Not a defect on its own — it is how tall a wall the model implies. |
+| `contact.kerb_lip` | 4 | Carriageway edge height minus the drawn ground a metre outside it. Not a defect on its own — it is how tall a wall the model implies, and a road on a real embankment has a real drop at its edge. It is what still sees a road standing on an embankment nobody built. |
 | `contact.kerb_unwalled` | 4 | The part of that drop with no apron face spanning it. This is the gate: the lip is the wall's height, this is how much of the wall is missing. |
 | `order.deck_above_carriageway` | 3 | Deck running surface minus the at-grade asphalt sharing its plan position. Negative past the touchdown band means the level ordinal inverted. |
 | `clearance.deck_over_ground` | 4 | Deck soffit minus the terrain beneath it. Past a deck thickness, the deck ploughs into the hillside. |
@@ -230,8 +227,10 @@ three are visible *only because the ground is drawn under the asphalt at all*.
 This is the same wall-versus-accuracy trade the terrain-hole study hit from the
 opposite direction when it raised the cap 3 → 6 → 12. Tuning the criterion moves
 the defect; it does not remove it. Cutting the terrain back to the kerb
-(`data/plans/terrain-hole-plan.md`) dissolves the choice instead of balancing
-it, and these two results are independent evidence for that plan.
+(docs/GROUND.md §3, "the hole") dissolved the choice instead of balancing it,
+and these two results were independent evidence for doing so. What the cap still
+costs is now measured at the kerb — `contact.kerb_lip` and
+`contact.kerb_unwalled` — rather than under the asphalt.
 
 ## 7. A worked example of how easy it is to be wrong
 

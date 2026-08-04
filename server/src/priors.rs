@@ -246,10 +246,6 @@ pub const PAVE_RIM_M: f64 = 0.35;
 /// vertex reduction.
 pub const PAVE_SIMPLIFY_M: f64 = 0.2;
 
-/// Longest paved-boundary edge before the surface mesher subdivides it, in
-/// metres, so a long straight kerb still gets vertices to drape on.
-pub const PAVE_SEG_M: f64 = 4.0;
-
 /// Longest bed earthwork edge for an unclaimed street, in metres: edges
 /// longer than this are subdivided so the bed's targets track the terrain
 /// along the road at this resolution.
@@ -429,14 +425,16 @@ pub const EARTHWORK_MIN_BATTER_M: f64 = 2.0;
 /// So the cap stays, and what it costs is *known and instrumented* rather than
 /// invisible: refusing the bench does not put the road back on the ground, it
 /// leaves the road where the profile put it and the ground where the DEM had
-/// it, with air between. That is 3.8 % of all asphalt standing more than a
-/// metre clear of the drawn ground, reaching 15 m — `contact.pavement_floating`.
+/// it, with air between.
 ///
-/// The dilemma is structural, not a tuning problem: on steep or tall ground the
+/// The dilemma was structural, not a tuning problem: on steep or tall ground the
 /// earthwork must choose between a wall, a float, and no bench, and all three
-/// are visible *only because the ground is drawn under the asphalt at all*.
-/// Cutting the terrain back to the kerb dissolves the choice rather than
-/// balancing it (`data/plans/terrain-hole-plan.md`, docs/VERIFICATION.md §6).
+/// were visible *only because the ground was drawn under the asphalt at all*.
+/// Cutting the terrain back to the kerb (docs/GROUND.md §3, "the hole")
+/// dissolved the choice rather than balancing it. What the cap still costs is
+/// now measured at the boundary instead: the bench it declines to build is a
+/// wall the model implies and `contact.kerb_lip` reports the height of, and
+/// `contact.kerb_unwalled` is the share of that wall the apron fails to close.
 pub const MAX_BENCH_FACE_M: f64 = 3.0;
 
 /// How much further than its flat-ground daylight distance a batter face may

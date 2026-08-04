@@ -138,9 +138,24 @@ The field resolves in two steps:
   no contact line runs and the mesh draws the step as a row of teeth
   (`slope.terrain_tearing`). A converging face keeps its floor, where it costs
   nothing: past the point such a face daylights the natural ground is already
-  inside it, so a longer reach returns the same answer. This is also why the bench is kept narrow: a wide flat bench is
-  a wide terrace cut into every hillside the road crosses, and a deeper face
-  where it ends.
+  inside it, so a longer reach returns the same answer. This is also why the
+  bench is kept narrow: a wide flat bench is a wide terrace cut into every
+  hillside the road crosses, and a deeper face where it ends.
+
+**Everything outside a bench is a `min`/`max` of planes, and that is the
+constraint.** Where two benches stack — a switchback above itself, a street
+under a railway — the DEM between them carries a median 84 % of the separation
+the two solved profiles carry, and under half of it in 29 % of cases, so the
+alignments are the better vertical control and the ground between them ought to
+follow *them*. Interpolating between the two benches that bracket a point does
+not work and cannot be made to: which pair brackets a point is not continuous in
+the point, so two neighbouring lattice vertices pick different pairs and the
+field steps between them — `slope.terrain_tearing` caught exactly that, worst
+6.46 → 9.24 m, along with the kerb lip and two more tails. A formulation that
+can work has to be continuous by construction, and the shape is already here:
+let each bench's face reach *to the other bench's edge* rather than collapse
+where it cannot daylight, so the two faces meet each other. That stays a
+`min`/`max` of planes, and planes cannot tear.
 
 **Where a bench is not plausible at all.** Holding a band flat across a
 cross-slope costs a face at its edge of half-width × slope. Past

@@ -22,19 +22,38 @@ use crate::terrain_cdt;
 /// hundreds of tiles' worth of lattice corners before an (unlikely) reset.
 const CORNER_CAP: usize = 262_144;
 
+/// How the detail-zoom terrain mesh is built. Both are on in a normal run; the
+/// flags exist so an A/B re-tile is a command-line switch rather than a patch.
+///
+/// Carried as one value and set once, at construction. Half a dozen places have
+/// to agree on the answer — the terrain mesher that cuts the hole, the paver
+/// that makes its casing opaque, the road that drops its raise-only clamp — and
+/// a sampler that could be reconfigured after the fact is a sampler that can be
+/// configured inconsistently.
+#[derive(Debug, Clone, Copy)]
+pub struct MeshOptions {
+    /// Whether detail meshes are breakline-constrained (docs/GROUND.md §3);
+    /// `--no-breaklines` turns it off.
+    pub breaklines: bool,
+    /// Whether the detail mesh stops at the kerb (docs/GROUND.md §3, "the
+    /// hole"); `--no-hole` turns it off. Implied off without breaklines —
+    /// there is no constrained mesh to cut.
+    pub hole: bool,
+}
+
+impl Default for MeshOptions {
+    fn default() -> MeshOptions {
+        MeshOptions { breaklines: true, hole: true }
+    }
+}
+
 pub struct GroundSampler {
     dem: Option<Dem>,
     ground: Arc<GroundModel>,
     /// The run's reference zoom, keying the per-zoom lattice resolution
     /// ([`terrain::grid_for`]) `surface` reads through.
     z_ref: u8,
-    /// Whether detail meshes are breakline-constrained (docs/GROUND.md §3);
-    /// `--no-breaklines` turns it off.
-    breaklines: bool,
-    /// Whether the detail mesh stops at the kerb (docs/GROUND.md §3, "the
-    /// hole"); `--no-hole` turns it off. Implied off without breaklines —
-    /// there is no constrained mesh to cut.
-    hole: bool,
+    mesh: MeshOptions,
     /// Reusable earthwork-query buffer (grid hits per sample).
     scratch: Vec<u32>,
     /// Memoized engineered heights at rendered-lattice corners, keyed by the
@@ -48,34 +67,31 @@ pub struct GroundSampler {
 }
 
 impl GroundSampler {
-    pub fn new(dem: Option<Dem>, ground: Arc<GroundModel>, z_ref: u8) -> GroundSampler {
-        GroundSampler {
-            dem,
-            ground,
-            z_ref,
-            breaklines: true,
-            hole: true,
-            scratch: Vec::new(),
-            corners: HashMap::new(),
-        }
+    pub fn new(
+        dem: Option<Dem>,
+        ground: Arc<GroundModel>,
+        z_ref: u8,
+        mesh: MeshOptions,
+    ) -> GroundSampler {
+        GroundSampler { dem, ground, z_ref, mesh, scratch: Vec::new(), corners: HashMap::new() }
     }
 
-    /// Turns the breakline-constrained detail meshes off (`--no-breaklines`).
-    pub fn set_breaklines(&mut self, on: bool) {
-        self.breaklines = on;
+    /// Whether zoom `z` is the detail rung — the only one that gets a
+    /// breakline-constrained mesh, and so the only one that can cut a hole.
+    fn is_detail(&self, z: u8) -> bool {
+        terrain::grid_for(z, self.z_ref) == terrain::TERRAIN_GRID_DETAIL
     }
 
-    /// Turns the hole under the asphalt off (`--no-hole`), so an A/B re-tile is
-    /// a flag rather than a patch.
-    pub fn set_hole(&mut self, on: bool) {
-        self.hole = on;
-    }
-
-    /// Whether this sampler would cut a hole at zoom `z` — the same gate
-    /// [`GroundSampler::terrain_mesh`] applies, exposed so the *paver* can make
-    /// its casing opaque on exactly the tiles whose ground is cut away.
+    /// Whether the ground under the asphalt is cut away at zoom `z`.
+    ///
+    /// The single definition. [`GroundSampler::terrain_mesh`] cuts on it, the
+    /// paver makes its casing opaque and builds its apron on it
+    /// (`synth::pave_mesh`), and the road drops its raise-only clamp on it
+    /// (`synth::road::on_ground`). Letting any of those spell the condition out
+    /// for itself is how a plate ends up clamped while the roads meeting it are
+    /// not, which is the disagreement `synth::height` exists to prevent.
     pub fn cuts_hole(&self, z: u8) -> bool {
-        self.hole && self.breaklines && terrain::grid_for(z, self.z_ref) == terrain::TERRAIN_GRID_DETAIL
+        self.mesh.hole && self.mesh.breaklines && self.is_detail(z)
     }
 
     /// Whether the run has real elevation at all (a DEM was configured).
@@ -155,7 +171,7 @@ impl GroundSampler {
         regions: &[Region],
     ) -> (TerrainMesh, f64, f64) {
         let grid = terrain::grid_for(z, self.z_ref);
-        if self.breaklines && grid == terrain::TERRAIN_GRID_DETAIL {
+        if self.mesh.breaklines && self.is_detail(z) {
             // Pad the query by one cell so a line grazing the border still
             // constrains the edge cells it touches.
             let pad = bounds.width().max(bounds.height()) / grid as f64;
@@ -164,7 +180,7 @@ impl GroundSampler {
             let mut ids = Vec::new();
             let mut segments = Vec::new();
             self.ground.breaklines().query(bbox, &mut ids, &mut segments);
-            let regions: &[Region] = if self.hole { regions } else { &[] };
+            let regions: &[Region] = if self.cuts_hole(z) { regions } else { &[] };
             if !segments.is_empty() || !regions.is_empty() {
                 let (dem, ground, corners, scratch) =
                     (&mut self.dem, &self.ground, &mut self.corners, &mut self.scratch);

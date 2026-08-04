@@ -44,29 +44,6 @@ use geo_types::Coord;
 use crate::assemble::grid::GridIndex;
 use crate::scene::DEG_M;
 
-// **Reconstructing the step between stacked platforms: tried, and it tears.**
-//
-// `data/plans/probes/probe_stack.rs` measures that among crowded stacks the
-// median DEM carries only 84 % of the vertical separation the two solved
-// profiles carry, and under half in 29 % of them. The alignments are the better
-// vertical control there, so the ground between two stacked benches ought to
-// ramp between *their* targets rather than take the generalized surface.
-//
-// Implemented as "find the two nearest benches bracketing this point from
-// opposite sides and interpolate between their targets by distance", it made
-// four metrics worse at once: `slope.terrain_tearing` worst 6.46 → 9.24 m,
-// `contact.kerb_lip` 14.79 → 16.31 m, plus the terrain-face and deck-clearance
-// tails. The cause is structural, not a threshold: *which pair brackets a point*
-// is not continuous in the point, so two neighbouring lattice vertices can pick
-// different pairs and the field steps between them — which is precisely the
-// alternation `slope.terrain_tearing` exists to catch, and it caught it.
-//
-// A formulation that could work has to be continuous by construction, and the
-// existing machinery already is: let each bench's batter face reach *to the
-// other bench's edge* rather than collapse where it cannot daylight, so the two
-// faces meet each other. That is a `min`/`max` of planes like the clamps above,
-// so it cannot tear. Not attempted yet.
-
 /// Side indices into [`EarthworkEdge::batter_m`], left and right of the
 /// directed edge `a → b` in the metric frame.
 pub const LEFT: usize = 0;

@@ -471,6 +471,91 @@ mod tests {
         );
     }
 
+    /// A paved region cuts a hole: the mesh stops at the kerb.
+    ///
+    /// The one property that matters is *where* it stops. Every face must be
+    /// outside the region, the ring must be a constraint so the boundary follows
+    /// the kerb rather than the nearest lattice line, and the lattice outside it
+    /// must survive intact — a hole that also eats its surroundings is a gap you
+    /// can see through beside every road.
+    #[test]
+    fn a_paved_region_cuts_a_hole_at_its_own_boundary() {
+        let b = tile();
+        let grid = 16u32;
+        // A rectangle over the middle of the tile, counter-clockwise (outer).
+        let (x0, x1, y0, y1) = (24000.0, 40000.0, 26000.0, 38000.0);
+        let region = Region::new(vec![vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)]]);
+        let (m, _, _) = constrained_mesh(grid, &b, &[], &[region], &mut |_, _| 500.0)
+            .expect("a constrained mesh");
+
+        // No face centroid falls inside the region.
+        let inside = |p: (f64, f64)| p.0 > x0 && p.0 < x1 && p.1 > y0 && p.1 < y1;
+        for t in m.indices.chunks(3) {
+            let v: Vec<(f64, f64)> =
+                t.iter().map(|&i| (m.x[i as usize] as f64, m.y[i as usize] as f64)).collect();
+            let cen = (
+                (v[0].0 + v[1].0 + v[2].0) / 3.0,
+                (v[0].1 + v[1].1 + v[2].1) / 3.0,
+            );
+            assert!(!inside(cen), "a face survived inside the paved region at {cen:?}");
+        }
+        // The ring entered as a constraint, so its corners are mesh vertices and
+        // the hole's edge is the kerb, not a lattice line rounded to it.
+        for &(cx, cy) in &[(x0, y0), (x1, y0), (x1, y1), (x0, y1)] {
+            assert!(
+                m.x.iter().zip(&m.y).any(|(&x, &y)| x as f64 == cx && y as f64 == cy),
+                "ring corner ({cx},{cy}) is not a mesh vertex"
+            );
+        }
+        // Everything outside survives: every lattice vertex not inside the
+        // region is still there.
+        let step = EXTENT as u32 / grid;
+        for row in 0..=grid {
+            for col in 0..=grid {
+                let (qx, qy) =
+                    ((BUFFER as u32 + col * step) as u16, (BUFFER as u32 + row * step) as u16);
+                if inside((qx as f64, qy as f64)) {
+                    continue;
+                }
+                assert!(
+                    m.x.iter().zip(&m.y).any(|(&x, &y)| x == qx && y == qy),
+                    "lattice vertex ({qx},{qy}) outside the hole was dropped with it"
+                );
+            }
+        }
+    }
+
+    /// A hole in one region must not be re-cut by another. Two level-0 regions
+    /// overlapping in plan on different grade layers cannot be merged into one
+    /// winding test — one's hole would cancel the other's outer ring and re-admit
+    /// ground under drawn asphalt — so each is tested on its own.
+    #[test]
+    fn two_overlapping_regions_each_cut_on_their_own() {
+        let b = tile();
+        let rect = |x0: f64, x1: f64, y0: f64, y1: f64| {
+            vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        };
+        // A region with a hole in the middle, and a second region covering
+        // exactly that hole.
+        let holed = Region::new(vec![
+            rect(20000.0, 46000.0, 20000.0, 46000.0),
+            rect(30000.0, 36000.0, 30000.0, 36000.0).into_iter().rev().collect(),
+        ]);
+        let plug = Region::new(vec![rect(30000.0, 36000.0, 30000.0, 36000.0)]);
+        let (m, _, _) = constrained_mesh(16, &b, &[], &[holed, plug], &mut |_, _| 500.0)
+            .expect("a constrained mesh");
+        for t in m.indices.chunks(3) {
+            let v: Vec<(f64, f64)> =
+                t.iter().map(|&i| (m.x[i as usize] as f64, m.y[i as usize] as f64)).collect();
+            let cen = (
+                (v[0].0 + v[1].0 + v[2].0) / 3.0,
+                (v[0].1 + v[1].1 + v[2].1) / 3.0,
+            );
+            let in_outer = cen.0 > 20000.0 && cen.0 < 46000.0 && cen.1 > 20000.0 && cen.1 < 46000.0;
+            assert!(!in_outer, "the plug's asphalt left ground drawn under it at {cen:?}");
+        }
+    }
+
     /// The constrained mesh holds a bench exactly: with a flat-bench field
     /// between two crest lines, every vertex between the lines reads the
     /// bench height and no triangle bridges across the crest.
