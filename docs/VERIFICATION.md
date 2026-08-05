@@ -108,6 +108,38 @@ I2. Every metric also states its own population; the table below is the summary.
 | `slope.terrain_tearing` | I6 | How far a terrain vertex stands off the plane of its neighbours, counted only where opposite breaks flank it on both sides. Separates a wall from a wall drawn as teeth, which no steepness can. |
 | `lod.structure_drift` | I5 | Structure height at one zoom against the same structure one rung coarser. |
 
+### The model half
+
+Three invariants are not about the emitted scene at all. They are about *how it
+was computed*, and no amount of geometry can tell a scene where authority held
+from one where it was violated and the numbers happened to come out plausible.
+§8 of `GENERATION.md` says so directly: I7 and I8 "are established by
+construction and falsifiable by a single perturbation experiment, not sampled by
+a metric".
+
+Those checks run in process, against the model, and are written out with
+`arpentry_tiler --verify-model <path>`; `arpentry_verify --model <path>` merges
+them so one table and one baseline cover both halves.
+
+| metric | inv | what it means |
+|---|---|---|
+| `solve.determinism` | I5 | The same scene solved twice, compared bit for bit. Non-zero means a height depends on an iteration order or a thread interleaving, and every guarantee below rests on it not doing so. |
+| `authority.inversion_R` | I7 | Stratum R re-solved with every junior corridor deleted from the scene. Any senior height that moved is an authority violation. |
+| `authority.inversion_S` | I7 | The same for S. |
+| `ground.footprint` | I8 | Every layer of the ground stack against the one beneath it: where a layer moved the ground, its own declared footprint must cover the point. |
+
+The perturbation checks are the only ones that verify the *design* rather than
+the output, and they cannot be passed by luck. They are opt-in because they
+re-solve the scene: on the Montreux extract the model half costs about as long
+again as the tiling.
+
+They are also the easiest checks in the harness to make vacuous, so each states
+what it actually exercised. `ground.footprint` reports how many of its probes
+found a layer moving the ground *inside* its footprint — the population the
+predicate is about — because a run where no layer moved anything would score a
+perfect zero and prove nothing. `authority.inversion` skips, rather than passes,
+where the extract holds no junior stratum to delete.
+
 ### Where the thresholds come from
 
 Every structure-versus-surface check has a **legitimate contact band** that a

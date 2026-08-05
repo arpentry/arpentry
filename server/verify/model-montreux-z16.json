@@ -1,0 +1,68 @@
+{
+  "metrics": [
+    {
+      "id": "solve.determinism",
+      "invariant": "I5",
+      "median": 0.006666666666667709,
+      "offenders": [],
+      "population": "Every solved node of every corridor, compared across two solves of one scene. Bit equality: a height that is a function of the model and nothing else cannot move.",
+      "samples": 381374,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 0.006666666666667709,
+      "threshold": 0.0,
+      "title": "The same scene solved twice",
+      "violation_pct": 0.0,
+      "violations": 0,
+      "worst": 0.0
+    },
+    {
+      "id": "authority.inversion_R",
+      "invariant": "I7",
+      "median": 0.006666666666667709,
+      "offenders": [],
+      "population": "Every solved node of every corridor in stratum R or senior to it, compared against the same node in a run where every junior corridor was removed from the scene. Bit equality — a senior height is a function of its own stratum and its seniors, and of nothing else.",
+      "samples": 33697,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 0.006666666666667709,
+      "threshold": 0.0,
+      "title": "Stratum R re-solved with its juniors deleted",
+      "violation_pct": 0.0,
+      "violations": 0,
+      "worst": 0.0
+    },
+    {
+      "id": "authority.inversion_S",
+      "invariant": "I7",
+      "median": 0.006666666666667709,
+      "offenders": [],
+      "population": "Every solved node of every corridor in stratum S or senior to it, compared against the same node in a run where every junior corridor was removed from the scene. Bit equality — a senior height is a function of its own stratum and its seniors, and of nothing else.",
+      "samples": 378836,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 0.006666666666667709,
+      "threshold": 0.0,
+      "title": "Stratum S re-solved with its juniors deleted",
+      "violation_pct": 0.0,
+      "violations": 0,
+      "worst": 0.0
+    },
+    {
+      "id": "ground.footprint",
+      "invariant": "I8",
+      "median": 0.006666666666667709,
+      "offenders": [],
+      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 14997840 probes, 699964 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
+      "samples": 14997840,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 0.006666666666667709,
+      "threshold": 0.0,
+      "title": "Ground moved outside the imprinting stratum's footprint",
+      "violation_pct": 0.0,
+      "violations": 0,
+      "worst": 0.0
+    }
+  ]
+}

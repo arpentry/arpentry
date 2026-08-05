@@ -31,6 +31,7 @@ pub mod checks;
 pub mod corpus;
 pub mod dist;
 pub mod mesh;
+pub mod model;
 pub mod report;
 pub mod scene;
 pub mod section;

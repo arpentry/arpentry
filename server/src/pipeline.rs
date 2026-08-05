@@ -132,6 +132,10 @@ pub struct Config {
     /// Directory for stage-artifact GeoJSON dumps (scene graph, solved
     /// profiles), for inspection in QGIS/kepler; `None` skips them.
     pub dump: Option<PathBuf>,
+    /// Where to write the model-side scorecard (docs/GENERATION.md §8's
+    /// structural checks), or `None` to skip them. They re-solve the scene, so
+    /// they are opt-in rather than part of every run.
+    pub verify_model: Option<PathBuf>,
     /// Whether detail-zoom terrain meshes are constrained by the bench
     /// contact lines (docs/GROUND.md §3). On by default; `--no-breaklines`
     /// is the escape hatch back to the plain lattice.
@@ -318,6 +322,28 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     stats.timings.model = t_model.elapsed();
     if let Some(dir) = &cfg.dump {
         dump::write(dir, &scene, &solved, &ground)?;
+    }
+    // The structural half of the scorecard (§8): I7 and I8 are established by
+    // construction and falsified by a perturbation experiment, which needs the
+    // model and not the archive. Opt-in, because it re-solves the scene.
+    if let Some(path) = &cfg.verify_model {
+        let m = crate::verify::model::Model {
+            scene: &scene,
+            solved: &solved,
+            ground: &ground,
+            terrain: cfg.terrain.as_deref(),
+            threads,
+        };
+        let t_model_verify = Instant::now();
+        let metrics = crate::verify::model::run(&m);
+        let json = crate::verify::model::to_json(&metrics);
+        std::fs::write(path, serde_json::to_string_pretty(&json).unwrap_or_default())?;
+        eprintln!(
+            "model checks {:>5.1}s  {} metrics -> {}",
+            t_model_verify.elapsed().as_secs_f64(),
+            metrics.len(),
+            path.display()
+        );
     }
 
     // Diagnostic probe (ARPT_PROBE="lon,lat"): at that point, for every corridor
@@ -2032,6 +2058,7 @@ mod tests {
             threads: 0,
             brotli_quality: tile_build::DEFAULT_QUALITY,
             dump: None,
+            verify_model: None,
             breaklines: true,
             hole: true,
         };

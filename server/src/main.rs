@@ -28,6 +28,11 @@ OPTIONS:
   --brotli <q>         Brotli quality 0-11 for tile blobs (default: 7)
   --dump <dir>         Write stage-artifact GeoJSON dumps (scene graph,
                        solved profiles) for inspection in QGIS/kepler
+  --verify-model <p>   Write the model-side scorecard: the structural checks
+                       (I7 authority, I8 ground footprint, I5 determinism) that
+                       measure how the scene was computed rather than what was
+                       drawn. Re-solves the scene, so it is opt-in. Merge it
+                       into a scorecard with `arpentry_verify --model <p>`.
   --no-breaklines      Plain lattice terrain: no bench contact lines, and no
                        hole (there is no constrained mesh to cut)
   --no-hole            Draw ground under the asphalt again, so an A/B re-tile
@@ -162,6 +167,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
     let mut threads: usize = 0;
     let mut brotli_quality: i32 = arpentry_server::tile_build::DEFAULT_QUALITY;
     let mut dump: Option<PathBuf> = None;
+    let mut verify_model: Option<PathBuf> = None;
     let mut breaklines = true;
     let mut hole = true;
 
@@ -179,6 +185,9 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
             "--threads" => threads = parse_num(&value(&mut it, "--threads")?, "--threads")?,
             "--brotli" => brotli_quality = parse_num(&value(&mut it, "--brotli")?, "--brotli")?,
             "--dump" => dump = Some(PathBuf::from(value(&mut it, "--dump")?)),
+            "--verify-model" => {
+                verify_model = Some(PathBuf::from(value(&mut it, "--verify-model")?))
+            }
             "--no-breaklines" => breaklines = false,
             "--no-hole" => hole = false,
             other => return Err(format!("unknown argument: {other}")),
@@ -204,6 +213,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
         threads,
         brotli_quality,
         dump,
+        verify_model,
         breaklines,
         hole: hole && breaklines,
     })

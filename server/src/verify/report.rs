@@ -126,7 +126,7 @@ fn verdict(
     }
 }
 
-fn metric_json(m: &Metric) -> Json {
+pub fn metric_json(m: &Metric) -> Json {
     json!({
         "id": m.id,
         "invariant": m.invariant.as_str(),

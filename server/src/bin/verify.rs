@@ -37,6 +37,12 @@ arpentry_verify <archive.arpa> [options]
   --spacing <m>       Plan spacing of surface samples in metres (default: 1.0)
   --worst <k>         Offenders to keep per metric (default: 8)
   --max-tiles <n>     Cap on tiles visited per zoom (default: 4096)
+  --model <path>      Merge a model-side scorecard written by
+                      `arpentry_tiler --verify-model`. The structural checks
+                      (I7 authority, I8 ground footprint, I5 determinism)
+                      measure how the scene was computed, which no archive can
+                      answer; merged here so one table and one baseline cover
+                      both halves.
   --baseline <path>   Diff against a committed scorecard; exit 1 on regression
   --json <path>       Write this run's scorecard as JSON (\"-\" for stdout)
   --mine              Propose corpus sites from this archive and exit
@@ -55,6 +61,7 @@ struct Args {
     archive: PathBuf,
     opt: Options,
     baseline: Option<PathBuf>,
+    model: Option<PathBuf>,
     json: Option<String>,
     corpus_path: Option<PathBuf>,
     scenario: Option<String>,
@@ -170,6 +177,15 @@ fn main() -> ExitCode {
 
     let mut card = checks::run(&scan, &opt);
     card.archive = args.archive.display().to_string();
+    if let Some(path) = &args.model {
+        match read_model(path) {
+            Ok(mut metrics) => card.metrics.append(&mut metrics),
+            Err(e) => {
+                eprintln!("cannot read model scorecard {}: {e}", path.display());
+                return ExitCode::from(2);
+            }
+        }
+    }
 
     print!("{}", report::table(&card));
 
@@ -211,11 +227,65 @@ fn default_corpus(_archive: &std::path::Path) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("verify/scenarios.json")
 }
 
+/// Reads a model-side scorecard back into [`Metric`]s.
+///
+/// Only what a scorecard diff needs survives the round trip — the distribution
+/// itself does not, because a perturbation experiment's "distribution" is a
+/// count of features that moved and the diff joins on `worst` and
+/// `violation_pct`, both of which are carried explicitly.
+fn read_model(path: &std::path::Path) -> Result<Vec<arpentry_server::verify::Metric>, String> {
+    use arpentry_server::verify::{dist::Dist, Invariant, Metric, Sense};
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let list = json.get("metrics").and_then(|m| m.as_array()).ok_or("no `metrics` array")?;
+    let mut out = Vec::new();
+    for m in list {
+        let get = |k: &str| m.get(k);
+        let id = get("id").and_then(|v| v.as_str()).ok_or("a metric has no id")?.to_string();
+        let invariant = match get("invariant").and_then(|v| v.as_str()).unwrap_or("I1") {
+            "I2" => Invariant::I2,
+            "I3" => Invariant::I3,
+            "I4" => Invariant::I4,
+            "I5" => Invariant::I5,
+            "I6" => Invariant::I6,
+            "I7" => Invariant::I7,
+            "I8" => Invariant::I8,
+            _ => Invariant::I1,
+        };
+        let mut dist = Dist::metres();
+        // Re-materialize just enough of the distribution that `samples`,
+        // `violations` and `worst` print and diff as they did at write time.
+        let samples = get("samples").and_then(|v| v.as_u64()).unwrap_or(0);
+        let violations = get("violations").and_then(|v| v.as_u64()).unwrap_or(0);
+        let worst = get("worst").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        for _ in 0..violations.min(samples) {
+            dist.push(worst);
+        }
+        for _ in violations..samples {
+            dist.push(0.0);
+        }
+        out.push(Metric {
+            id,
+            invariant,
+            title: get("title").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            population: get("population").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            detail: String::new(),
+            sense: Sense::HigherIsWorse,
+            threshold: get("threshold").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            dist,
+            worst: Vec::new(),
+            skipped: get("skipped").and_then(|v| v.as_str()).map(str::to_string),
+        });
+    }
+    Ok(out)
+}
+
 fn parse() -> Result<Args, String> {
     let mut a = Args {
         archive: PathBuf::new(),
         opt: Options::default(),
         baseline: None,
+        model: None,
         json: None,
         corpus_path: None,
         scenario: None,
@@ -263,6 +333,7 @@ fn parse() -> Result<Args, String> {
             "--bearing" => a.bearing = value()?.parse().map_err(|e| format!("--bearing: {e}"))?,
             "--length" => a.length_m = value()?.parse().map_err(|e| format!("--length: {e}"))?,
             "--baseline" => a.baseline = Some(PathBuf::from(value()?)),
+            "--model" => a.model = Some(PathBuf::from(value()?)),
             "--json" => a.json = Some(value()?),
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),
             other => {
