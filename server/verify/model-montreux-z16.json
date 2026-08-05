@@ -53,8 +53,8 @@
       "invariant": "I8",
       "median": 0.006666666666667709,
       "offenders": [],
-      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 6939504 probes, 104455 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
-      "samples": 6939504,
+      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 600755 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
+      "samples": 10409256,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.006666666666667709,
@@ -67,7 +67,7 @@
     {
       "id": "structure.annotated_lost",
       "invariant": "I6",
-      "median": 14.08,
+      "median": 13.226666666666668,
       "offenders": [
         {
           "lat": 46.42450838850159,
@@ -200,14 +200,14 @@
         }
       ],
       "population": "Every derived run, scored by the metres of it no annotated span of the same kind covers.",
-      "samples": 795,
+      "samples": 801,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 1733.5466666666669,
       "threshold": 0.5,
       "title": "Structure the solve implies that nothing annotated",
-      "violation_pct": 61.63522012578616,
-      "violations": 490,
+      "violation_pct": 61.92259675405743,
+      "violations": 496,
       "worst": 1733.3488513134132
     },
     {
@@ -223,10 +223,10 @@
           "zoom": 16
         },
         {
-          "lat": 46.42381496152614,
-          "lon": 6.930331065013599,
-          "note": "Bridge end moved 2235 m from where it was annotated",
-          "value": 2235.1324433108784,
+          "lat": 46.42384047645641,
+          "lon": 6.930328595826799,
+          "note": "Bridge end moved 2233 m from where it was annotated",
+          "value": 2233.0402508044717,
           "zoom": 16
         },
         {
@@ -273,14 +273,14 @@
         }
       ],
       "population": "Every derived run that overlaps an annotated span of the same kind, against the span it overlaps most, scored by the larger of its two end movements.",
-      "samples": 394,
+      "samples": 396,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 2254.08,
       "threshold": 0.5,
       "title": "How far a structure's ends move when derived",
-      "violation_pct": 99.49238578680203,
-      "violations": 392,
+      "violation_pct": 99.4949494949495,
+      "violations": 394,
       "worst": 2254.218771755339
     }
   ]

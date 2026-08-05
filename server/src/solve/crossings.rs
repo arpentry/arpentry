@@ -67,8 +67,12 @@ struct Edge {
 /// over a motorway is exactly the case §4.2 has in mind.
 ///
 /// Deterministic: the index is built in corridor order, the results are sorted,
-/// and one record survives per `(upper, lower, level pair)` — a shared vertex
-/// of two adjacent edges would otherwise report twice.
+/// and one record survives per crossed *place* — a shared vertex of two
+/// adjacent edges reports the same intersection twice, at the same arc, and
+/// only that is a duplicate. Keying on the pair alone discarded 30 of the
+/// Montreux extract's 583 ordered crossings, because a ramp that weaves over
+/// its mainline crosses it more than once and every crossing but the first
+/// silently lost its clearance.
 pub fn derive(
     scene: &SceneGraph,
     profiles: &[Option<Profile>],
@@ -85,7 +89,11 @@ pub fn derive(
     }
 
     let mut out: Vec<Crossing> = Vec::new();
-    let mut seen: std::collections::HashSet<(u32, u32, i64, i64)> = std::collections::HashSet::new();
+    // Per (upper, lower, level pair), the upper arcs already claimed — so the
+    // duplicate a shared vertex produces collapses and a second crossing
+    // hundreds of metres along the same pair does not.
+    let mut seen: std::collections::HashMap<(u32, u32, i64, i64), Vec<f64>> =
+        std::collections::HashMap::new();
     let mut candidates: Vec<u32> = Vec::new();
     for c in &scene.corridors {
         for i in 0..c.nodes.len().saturating_sub(1) {
@@ -97,16 +105,18 @@ pub fn derive(
                     continue; // each pair once, and never a corridor with itself
                 }
                 let other = &scene.corridors[e.corridor as usize];
-                // Sharing a connector means the two *meet*; their heights are
-                // reconciled by the shared variable, not by a clearance.
-                if c.connectors.iter().any(|k| other.connectors.binary_search(k).is_ok()) {
-                    continue;
-                }
                 let (o_a, o_b) = (other.nodes[e.node], other.nodes[e.node + 1]);
                 let Some((t, u)) = seg_intersect(a, b, o_a, o_b, c.cos_lat) else {
                     continue;
                 };
                 let point = Coord { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+                // Do they *meet* here, or pass over one another? Meeting is
+                // reconciled by the shared variable, not by a clearance — but
+                // that is a fact about this *place*, and a corridor is a
+                // spliced chain hundreds of metres long.
+                if meets_here(c, other, point, (a, b), (o_a, o_b)) {
+                    continue;
+                }
                 let arc_c = c.arc[i] + t * (c.arc[i + 1] - c.arc[i]);
                 let arc_o = other.arc[e.node] + u * (other.arc[e.node + 1] - other.arc[e.node]);
                 let Some(x) = order(scene, profiles, c.id, arc_c, e.corridor, arc_o, point) else {
@@ -123,8 +133,10 @@ pub fn derive(
                 if !ours {
                     continue;
                 }
-                if seen.insert((x.upper, x.lower.unwrap_or(u32::MAX), x.upper_level, x.lower_level))
-                {
+                let key = (x.upper, x.lower.unwrap_or(u32::MAX), x.upper_level, x.lower_level);
+                let claimed = seen.entry(key).or_default();
+                if claimed.iter().all(|&a| (a - x.upper_arc).abs() >= DUPLICATE_M) {
+                    claimed.push(x.upper_arc);
                     out.push(x);
                 }
             }
@@ -135,6 +147,64 @@ pub fn derive(
             .cmp(&(b.upper, b.upper_arc.to_bits(), b.lower_level))
     });
     out
+}
+
+/// How close two intersections of one corridor pair must be, along the upper
+/// corridor, to be the same crossing reported twice.
+///
+/// A shared vertex belongs to two adjacent edges, so the walk finds the same
+/// intersection from both and computes the *same* arc for it: the duplicate is
+/// exact, and this only has to be wider than float noise. Anything further
+/// apart is a second place the two features cross, which owes its own
+/// clearance.
+const DUPLICATE_M: f64 = 5.0;
+
+/// How close a plan intersection must sit to a vertex of both alignments to be
+/// the connector they share rather than a place one passes over the other.
+///
+/// A connector is a *point* on both features, so where two corridors genuinely
+/// meet the intersection lands on a vertex each — to the metre, since the two
+/// vertices are the same coordinate in the data. A grade separation crosses
+/// between vertices, and a metre is far tighter than any node spacing.
+const MEET_M: f64 = 1.0;
+
+/// Whether the two alignments **meet** at `point` — sharing a connector, and
+/// sharing the vertex it sits on — rather than one passing over the other.
+///
+/// The identity half of this test used to stand alone: any two corridors whose
+/// connector *sets* intersected were held to meet, everywhere they crossed.
+/// That answers "do these two ever meet?" where the question is "do they meet
+/// here?", and a corridor is a spliced chain: a motorway and its ramp share a
+/// connector at the merge and cross again at the interchange 400 m away, a road
+/// tunnels under the street it joins a block later. Measured on the Montreux
+/// extract, the identity test rejected 50,232 plan intersections and 22 of them
+/// were not meetings at all — 21 of those ordered by their level hints, which
+/// is 21 grade separations that generated no clearance demand and therefore no
+/// structure.
+///
+/// The intersection lies on both edges, so a coincident vertex can only be one
+/// of the four edge endpoints: the locality test is O(1) and needs no index.
+fn meets_here(
+    c: &crate::scene::Corridor,
+    other: &crate::scene::Corridor,
+    point: Coord,
+    edge: (Coord, Coord),
+    other_edge: (Coord, Coord),
+) -> bool {
+    if !c.connectors.iter().any(|k| other.connectors.binary_search(k).is_ok()) {
+        return false;
+    }
+    at_vertex(point, edge, c.cos_lat) && at_vertex(point, other_edge, c.cos_lat)
+}
+
+/// Whether `point` sits on one of the edge's own endpoints.
+fn at_vertex(point: Coord, edge: (Coord, Coord), cos_lat: f64) -> bool {
+    let d = |v: Coord| {
+        let dx = (v.x - point.x) * cos_lat * crate::scene::DEG_M;
+        let dy = (v.y - point.y) * crate::scene::DEG_M;
+        (dx * dx + dy * dy).sqrt()
+    };
+    d(edge.0).min(d(edge.1)) < MEET_M
 }
 
 /// Which of the two passes over the other, and what the crosser owes.
@@ -319,9 +389,10 @@ mod tests {
         assert!(derive(&scene, &profiles, crate::priors::Stratum::S).is_empty());
     }
 
-    /// Features that share a connector *meet*. Their heights are reconciled by
-    /// the shared variable, and demanding clearance there would lift a ramp off
-    /// the road it joins.
+    /// Features that meet at a connector *meet*: their heights are reconciled
+    /// by the shared variable, and demanding clearance there would lift a ramp
+    /// off the road it joins. The two share the vertex, which is what a
+    /// connector is.
     #[test]
     fn a_shared_connector_is_a_junction_not_a_crossing() {
         let len = 200.0;
@@ -329,9 +400,90 @@ mod tests {
         let mut b = corridor(1, 6.0009, 46.0, false, len, grade(len));
         a.connectors = vec![77];
         b.connectors = vec![77];
+        // Put a vertex of each exactly at the plan intersection: that point is
+        // the connector, and this is the T-junction it models.
+        let meet = Coord { x: b.nodes[0].x, y: a.nodes[0].y };
+        a.nodes[2] = meet;
+        b.nodes[2] = meet;
         let profiles = vec![flat(&a, 412.0), flat(&b, 400.0)];
         let scene = SceneGraph::new(vec![a, b]);
         assert!(derive(&scene, &profiles, crate::priors::Stratum::S).is_empty());
+    }
+
+    /// The same two corridors, sharing that connector **somewhere else**. A
+    /// motorway and its ramp meet at the merge and cross again at the
+    /// interchange; a road tunnels under the street it joins a block later.
+    /// The pair is a junction there and a grade separation here, and reading
+    /// the connector *sets* instead of this place lost the clearance for both.
+    #[test]
+    fn corridors_that_meet_elsewhere_still_cross_here() {
+        let len = 200.0;
+        let mut a = corridor(
+            0,
+            6.0,
+            46.0009,
+            true,
+            len,
+            vec![Span { arc0: 0.0, arc1: len, level: 1, kind: SpanKind::Bridge }],
+        );
+        let mut b = corridor(1, 6.0009, 46.0, false, len, grade(len));
+        // They share connector 77 — at their far ends, not where they cross.
+        a.connectors = vec![77];
+        b.connectors = vec![77];
+        let profiles = vec![flat(&a, 400.0), flat(&b, 400.0)];
+        let scene = SceneGraph::new(vec![a, b]);
+        let out = derive(&scene, &profiles, crate::priors::Stratum::S);
+        assert_eq!(out.len(), 1, "the crossing is a crossing, got {out:?}");
+        assert_eq!(out[0].upper, 0, "the annotated bridge is above");
+    }
+
+    /// One pair, two places: a ramp weaving over its mainline crosses it twice
+    /// and owes clearance at both. Keying the record on the pair alone kept the
+    /// first and dropped the second, which is a deck with no demand under it.
+    #[test]
+    fn a_pair_that_crosses_twice_owes_two_clearances() {
+        let len = 400.0;
+        // A east-west bridge, and a north-south road that zigzags across it
+        // twice — two separate intersections, one corridor pair, one level
+        // pair.
+        let a = corridor(
+            0,
+            6.0,
+            46.0,
+            true,
+            len,
+            vec![Span { arc0: 0.0, arc1: len, level: 1, kind: SpanKind::Bridge }],
+        );
+        let deg_x = |m: f64| m / (DEG_M * cos_lat());
+        let deg_y = |m: f64| m / DEG_M;
+        let nodes: Vec<Coord> = vec![
+            Coord { x: 6.0 + deg_x(100.0), y: 46.0 - deg_y(50.0) },
+            Coord { x: 6.0 + deg_x(100.0), y: 46.0 + deg_y(50.0) },
+            Coord { x: 6.0 + deg_x(300.0), y: 46.0 + deg_y(50.0) },
+            Coord { x: 6.0 + deg_x(300.0), y: 46.0 - deg_y(50.0) },
+        ];
+        let mut b = corridor(1, 6.0, 46.0, false, len, grade(len));
+        b.arc = {
+            let mut arc = vec![0.0];
+            for w in nodes.windows(2) {
+                let dx = (w[1].x - w[0].x) * cos_lat() * DEG_M;
+                let dy = (w[1].y - w[0].y) * DEG_M;
+                arc.push(arc.last().unwrap() + (dx * dx + dy * dy).sqrt());
+            }
+            arc
+        };
+        b.spans = grade(*b.arc.last().unwrap());
+        b.nodes = nodes;
+        let profiles = vec![flat(&a, 400.0), flat(&b, 400.0)];
+        let scene = SceneGraph::new(vec![a, b]);
+        let out = derive(&scene, &profiles, crate::priors::Stratum::S);
+        assert_eq!(out.len(), 2, "both crossings owe clearance, got {out:?}");
+        assert!(
+            (out[0].upper_arc - out[1].upper_arc).abs() > 100.0,
+            "the two records must be the two places, got {:?} and {:?}",
+            out[0].upper_arc,
+            out[1].upper_arc
+        );
     }
 
     /// Derivation is a function of the model: same scene, same answer, in the
