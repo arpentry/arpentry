@@ -27,33 +27,41 @@ fn main() {
     let mut scene = assemble::run(std::path::Path::new(&a[0]), None, &bbox).expect("assemble");
     let solved = solve::run(&mut scene, Some(&terrain), 16, 0).expect("solve");
 
-    // Two populations: nodes the data calls at-grade, and nodes it calls a
-    // structure. If the threshold is real, they separate.
+    // Three populations, and the split by *kind* is the point. Bridges and
+    // tunnels sit on opposite sides of zero, so pooling them makes the
+    // "structure kept" column meaningless — a positive standoff can never keep
+    // a tunnel, and the first run of this tool duly reported that a 4 m
+    // standoff kept 49 % of annotated structure when it keeps 75 % of the
+    // bridges it is actually about.
     let mut at_grade: Vec<f64> = Vec::new();
-    let mut annotated: Vec<f64> = Vec::new();
+    let mut bridges: Vec<f64> = Vec::new();
+    let mut tunnels: Vec<f64> = Vec::new();
     for c in &scene.corridors {
         let Some(p) = solved.profile(c.id) else { continue };
         let (arc, road, terr) = (p.arc(), p.road_m(), p.terrain_m());
         for i in 0..arc.len() {
-            let inside = c
+            let span = c
                 .spans
                 .iter()
-                .any(|s| s.kind != SpanKind::Grade && arc[i] >= s.arc0 && arc[i] <= s.arc1);
+                .find(|s| s.kind != SpanKind::Grade && arc[i] >= s.arc0 && arc[i] <= s.arc1);
             let gap = road[i] - terr[i];
-            if inside {
-                annotated.push(gap);
-            } else {
-                at_grade.push(gap);
+            match span.map(|s| s.kind) {
+                Some(SpanKind::Bridge) => bridges.push(gap),
+                Some(SpanKind::Tunnel) => tunnels.push(gap),
+                _ => at_grade.push(gap),
             }
         }
     }
 
     report("at-grade in the data", &mut at_grade);
-    report("annotated structure", &mut annotated);
+    report("annotated BRIDGE", &mut bridges);
+    report("annotated TUNNEL", &mut tunnels);
+    let annotated = bridges.clone();
 
-    // What each candidate threshold would cost: how much at-grade road it calls
-    // a deck, and how much annotated structure it misses.
-    println!("\n{:>8}  {:>14}  {:>14}", "standoff", "at-grade→deck", "structure kept");
+    // What each candidate deck standoff costs: how much at-grade road it calls
+    // a deck, against how much annotated *bridge* it keeps. Tunnels are scored
+    // by `BORE_COVER_M` and are not in this trade.
+    println!("\n{:>8}  {:>14}  {:>14}", "standoff", "at-grade→deck", "bridge kept");
     for t in [2.5, 4.0, 6.0, 8.0, 10.0, 12.0, 15.0, 20.0] {
         let false_deck = at_grade.iter().filter(|&&g| g > t).count() as f64 / at_grade.len() as f64;
         let kept = annotated.iter().filter(|&&g| g > t).count() as f64 / annotated.len() as f64;
