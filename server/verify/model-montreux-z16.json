@@ -53,7 +53,7 @@
       "invariant": "I8",
       "median": 0.006666666666667709,
       "offenders": [],
-      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 600755 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
+      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 600746 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
       "samples": 10409256,
       "sense": "higher_is_worse",
       "skipped": null,
@@ -91,13 +91,6 @@
           "zoom": 16
         },
         {
-          "lat": 46.41278081022507,
-          "lon": 6.933021596515825,
-          "note": "Tunnel annotated over 340 m, 340 m of it not implied by the solve",
-          "value": 340.37194668636545,
-          "zoom": 16
-        },
-        {
           "lat": 46.3185620333631,
           "lon": 6.980192538790588,
           "note": "Bridge annotated over 346 m, 320 m of it not implied by the solve",
@@ -123,6 +116,13 @@
           "lon": 6.895108886527661,
           "note": "Bridge annotated over 355 m, 266 m of it not implied by the solve",
           "value": 266.07127517663355,
+          "zoom": 16
+        },
+        {
+          "lat": 46.54163764556227,
+          "lon": 6.659617199302805,
+          "note": "Tunnel annotated over 265 m, 265 m of it not implied by the solve",
+          "value": 265.31730675973574,
           "zoom": 16
         }
       ],
@@ -200,14 +200,14 @@
         }
       ],
       "population": "Every derived run, scored by the metres of it no annotated span of the same kind covers.",
-      "samples": 801,
+      "samples": 808,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 1733.5466666666669,
       "threshold": 0.5,
       "title": "Structure the solve implies that nothing annotated",
-      "violation_pct": 61.92259675405743,
-      "violations": 496,
+      "violation_pct": 60.51980198019802,
+      "violations": 489,
       "worst": 1733.3488513134132
     },
     {
@@ -216,24 +216,24 @@
       "median": 8.96,
       "offenders": [
         {
-          "lat": 46.42319777715281,
-          "lon": 6.930756802241815,
+          "lat": 46.42319744905899,
+          "lon": 6.930756815589464,
           "note": "Bridge end moved 2254 m from where it was annotated",
-          "value": 2254.218771755339,
+          "value": 2254.182233994201,
           "zoom": 16
         },
         {
-          "lat": 46.42384047645641,
-          "lon": 6.930328595826799,
+          "lat": 46.42384069056842,
+          "lon": 6.930328575106282,
           "note": "Bridge end moved 2233 m from where it was annotated",
-          "value": 2233.0402508044717,
+          "value": 2233.019472914697,
           "zoom": 16
         },
         {
-          "lat": 46.40363024641588,
-          "lon": 6.933974680439584,
+          "lat": 46.403630593520965,
+          "lon": 6.933974707575224,
           "note": "Bridge end moved 1998 m from where it was annotated",
-          "value": 1998.1689904374416,
+          "value": 1998.1954944203426,
           "zoom": 16
         },
         {
@@ -273,15 +273,15 @@
         }
       ],
       "population": "Every derived run that overlaps an annotated span of the same kind, against the span it overlaps most, scored by the larger of its two end movements.",
-      "samples": 396,
+      "samples": 411,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 2254.08,
       "threshold": 0.5,
       "title": "How far a structure's ends move when derived",
-      "violation_pct": 99.4949494949495,
-      "violations": 394,
-      "worst": 2254.218771755339
+      "violation_pct": 99.51338199513383,
+      "violations": 409,
+      "worst": 2254.182233994201
     }
   ]
 }

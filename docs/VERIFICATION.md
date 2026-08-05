@@ -312,6 +312,34 @@ first is the right instinct and a two-line reallocation is not enough machinery
 to keep §4.4's Strong constraint strong. Recorded so nobody spends a day
 rediscovering that the principled version of this is the easy part.
 
+**The third attempt landed, but only where the data says a road goes under**,
+and what it cost to get there is the part worth keeping. Three things were
+needed, and each was found by a measurement rather than by reasoning:
+
+| step | what it fixed | what said so |
+|---|---|---|
+| A bore yields to a clearance ceiling inside `project_spans` | The dip survives rigidity. A deck is a beam and its chord *is* the constraint; a bore is a hole, and an urban underpass (S6) runs below the chord of its own portals. | The fixture: 6.5 m demanded, 6.5 m delivered, the street above raised 0.26 m. |
+| The closing settle stays raise-only | I3 holds at the output whatever the lower side managed. | The rejected version's 293.61 m shortfall, which this reproduces exactly when the settle also splits. |
+| The dip fires only where the lower side is in a **bore** | Everything else. | See below. |
+
+Letting *any* peer yield downward — which is what §4.4 says, read plainly —
+turns every corridor already off its own datum into a **pump**. A rack railway
+solved hundreds of metres below its terrain manufactures a deficit at every
+crossing; the dip spreads along it; `grade_pass` drags the crossing's own
+reference down with it; the deficit reopens; and 96 sweeps later the railway is
+290 m under the ground and the clearance shortfall reads 289.76 m against
+58.94 m. Blocking the three variables the demand is read from does not stop it,
+because grade drags them; clamping each dipped node against its own terrain does
+stop it and cuts a sawtooth instead (`slope.rail_grade` 303 %).
+
+So the general rule stays unimplemented, and it now has a **named
+prerequisite**: `datum.float`. A two-sided correction cannot be safe while some
+corridors sit hundreds of metres off their own datum, because those are exactly
+the ones whose demands are nonsense. Held to the runs the data calls tunnels,
+the correction goes where §4.5's prior points and nowhere else: `bore_cover`
+violations 14.14 → 13.42 %, `kerb_lip` 13.49 → 13.45 %, 463 m of annotated
+tunnel recovered, and every extreme in the scorecard unmoved.
+
 **The conclusion is structural.** On steep or tall ground the earthwork must
 choose between a wall, a float, and no bench. All three are defects, and all
 three are visible *only because the ground is drawn under the asphalt at all*.

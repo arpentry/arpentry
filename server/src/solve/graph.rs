@@ -61,6 +61,17 @@ pub struct CorridorNodes {
     pub arc: Vec<f64>,
     /// At-grade flag per node (from the profile).
     pub at_grade: Vec<bool>,
+    /// Which of the non-at-grade nodes are in a **bore** rather than on a deck.
+    ///
+    /// The distinction is structural, not cosmetic. A deck is a beam: its
+    /// interior is straight between its abutments, which is what
+    /// [`super::relax`]'s rigidity projection enforces. A bore is a *hole*, and
+    /// an urban underpass (S6) is precisely a road that dips below the chord of
+    /// its own portals — the flat-ground tunnel "the terrain cannot express".
+    /// Chording it onto that line is what undid every attempt to make the road
+    /// under a crossing yield (docs/VERIFICATION.md §6): the dip was applied and
+    /// then projected straight back out, once a sweep.
+    pub bore: Vec<bool>,
     /// The grade ceiling this corridor's edges are held to.
     pub grade: f64,
     /// How far an at-grade node may leave its conditioned terrain reference,
@@ -351,11 +362,13 @@ pub fn build(
         let c = &scene.corridors[cid];
         let grade = corridor_grade(c);
         let deviation = c.kind.prior().deviation_m;
+        let bore = bore_nodes(&c.spans, &arc, &at_grade);
         corridors.push(CorridorNodes {
             id: cid as CorridorId,
             vars: node_vars,
             arc,
             at_grade,
+            bore,
             grade,
             deviation,
         });
@@ -481,6 +494,41 @@ fn build_crossings(
     }
     out.sort_by_key(|(rank, _)| *rank);
     out.into_iter().map(|(_, gc)| gc).collect()
+}
+
+/// Marks the nodes of every non-at-grade run the annotation calls a *tunnel*.
+///
+/// Asked once per run, at its midpoint, rather than per node: the profile
+/// widens a run past its annotated edges where no at-grade road could exist
+/// (`profile::absorb_infeasible_anchors`, `seek_rim_anchors`), so a node at the
+/// end of a run can sit outside the span that made it. The middle of a run is
+/// the one place its kind is not in question.
+///
+/// The kind is a hint about the *constraint* (§4.5) — it says a clearance
+/// exists here and which side is under — and this is the one place the solver
+/// needs it: whether the run it is projecting is a beam or a hole.
+fn bore_nodes(spans: &[crate::scene::Span], arc: &[f64], at_grade: &[bool]) -> Vec<bool> {
+    let mut bore = vec![false; at_grade.len()];
+    let mut k = 0;
+    while k < at_grade.len() {
+        if at_grade[k] {
+            k += 1;
+            continue;
+        }
+        let start = k;
+        while k < at_grade.len() && !at_grade[k] {
+            k += 1;
+        }
+        let mid = 0.5 * (arc[start] + arc[k - 1]);
+        let kind = spans
+            .iter()
+            .find(|s| mid >= s.arc0 && mid <= s.arc1)
+            .map_or(crate::scene::SpanKind::Grade, |s| s.kind);
+        if kind == crate::scene::SpanKind::Tunnel {
+            bore[start..k].fill(true);
+        }
+    }
+    bore
 }
 
 /// Processing rank of every corridor from the crossing DAG: a corridor is

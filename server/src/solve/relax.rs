@@ -14,10 +14,16 @@
 //! - **Grade** (hard) — every edge held to its class ceiling, the violation
 //!   split between the endpoints by inverse mass so the light (structure) side
 //!   yields and the heavy (ground-pinned) side holds.
+//! - **Clearance** (strong) — every crossing opened to its required separation,
+//!   from both sides in inverse-mass proportion where both are this stratum's
+//!   to move (§4.4), and raise-only in the closing settle so the invariant
+//!   rests on the side that can always climb.
 //! - **Structure rigidity** (hard) — each structure span's interior projected
 //!   onto the straight chord through its two at-grade anchors (the deck ramp,
 //!   reusing the anchors' *current* heights so the deck rides whatever the
-//!   network settles to).
+//!   network settles to). A **bore** yields to a clearance ceiling on the way:
+//!   a deck is a beam and its line is the constraint, a bore is a hole and an
+//!   underpass runs below the chord of its own portals (S6).
 //! - **Deviation box** (hard, at-grade only) — each at-grade node clamped back
 //!   inside its class ground-hugging budget of the conditioned terrain
 //!   (docs/GENERATION.md §4.4, the soft deviation budget). Applied *after* grade,
@@ -112,7 +118,7 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
         }
         deviation_pass(g);
         contact_pass(g);
-        clearance_pass(g, &sites, &mut Dropped::default());
+        clearance_pass(g, &sites, &mut Dropped::default(), true);
         undercut_pass(g, &sites);
         rigidity_pass(g);
         let resid = g.h.iter().zip(&prev).map(|(&a, &b)| (a - b).abs()).fold(0.0, f64::max);
@@ -133,8 +139,10 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
     deviation_pass(g);
     // The closing settle is where the drops are counted: the main loop applies
     // the same demands every sweep, so counting there would multiply each
-    // contradiction by the sweep count.
-    clearance_pass(g, &sites, &mut dropped);
+    // contradiction by the sweep count. It is also where the split ends: the
+    // upper side covers whatever separation the lower one could not, so I3
+    // holds at the output whatever the geometry allowed.
+    clearance_pass(g, &sites, &mut dropped, false);
     undercut_pass(g, &sites);
     rigidity_pass(g);
     // **Contacts last.** A shared connector with a senior stratum is an
@@ -270,15 +278,102 @@ fn grade_pass(g: &mut SolveGraph) -> f64 {
     worst
 }
 
-/// Raise-only clearance over every crossing, in rank order: lift each deck to
-/// clear its crossed feature (both span anchors, so the straight deck rises).
-fn clearance_pass(g: &mut SolveGraph, sites: &VarSites, dropped: &mut Dropped) {
-    for gc in &g.crossings {
+/// Clearance over every crossing, in rank order.
+///
+/// The separation is opened from **both** sides where both are this stratum's
+/// to move, in the proportion §4.4 states: *"a correction distributes by
+/// inverse mass, so approaches bend to meet decks and decks hold their line"*.
+/// At a flat-ground overpass the deck is light and the street beneath it is
+/// pinned to the ground, so the deck climbs; at an urban underpass (S6) the
+/// road in the bore is the light one, so it is the one that dips, and the
+/// street above stays where the ground put it. Both readings come out of one
+/// ratio, which is the point of stating authority as mass.
+///
+/// `share` is what makes this safe to iterate. In the main loop the deficit is
+/// split; in the **closing settle** it is not, and the upper side covers all of
+/// whatever separation is still missing. So the geometry decides how much of
+/// the correction the lower side can actually absorb — a bore can only sink as
+/// far as its approaches can be ramped down — while the invariant rests where
+/// it always did, on the side that can always climb. Splitting *without* that
+/// second half is what the rejected version did, and it turned a hard
+/// constraint into a hope: clearance shortfall 51.93 → 293.61 m
+/// (docs/VERIFICATION.md §6).
+fn clearance_pass(g: &mut SolveGraph, sites: &VarSites, dropped: &mut Dropped, share: bool) {
+    for i in 0..g.crossings.len() {
+        // By value: the passes below write `g.h`, and a crossing is four
+        // numbers.
+        let gc = g.crossings[i];
+        let gc = &gc;
         let lower_h = match gc.lower {
             Lower::Var(v) => g.h[v],
             Lower::Constant(h) => h,
         };
-        let need = lower_h + gc.extra_m;
+        // How much of the deficit the lower side is asked to absorb. A senior
+        // lower side has no variable at all (`Lower::Constant`), so it can
+        // never be asked — that is I7, and it costs nothing here to hold.
+        let lower_share = match (share, gc.lower) {
+            // Only where the lower side is in a **bore**. Mass alone would let
+            // any peer yield downward, and measured on the extract that turns
+            // every corridor already off its own datum into a pump: a rack
+            // railway hundreds of metres below its terrain manufactures a
+            // deficit, the dip spreads along it, `grade_pass` drags the
+            // reference down with it and the deficit reopens — clearance
+            // shortfall 58.94 → 289.76 m. Held to the run the data calls a
+            // tunnel, the correction goes where §4.5's prior points and
+            // nowhere else.
+            (true, Lower::Var(v)) if in_bore(g, sites, v) => {
+                let up = upper_inv_mass(g, gc);
+                let low = g.vars[v].inv_mass;
+                let s = up + low;
+                if s > 0.0 {
+                    low / s
+                } else {
+                    0.0
+                }
+            }
+            _ => 0.0,
+        };
+        // The dip, applied first, so the lift below reads the surface the
+        // lower side is being asked to reach rather than the one it is on.
+        // Both bounds are absolute (a floor and a ceiling), so a sweep that
+        // re-applies them changes nothing once they are met.
+        let mut need = lower_h + gc.extra_m;
+        if lower_share > 0.0 {
+            if let Lower::Var(v) = gc.lower {
+                let deficit = need - upper_height(g, gc);
+                if deficit > 0.0 && deficit <= MAX_CLEARANCE_LIFT_M {
+                    // The dip, bounded where the lift is bounded: no crossing
+                    // drives a road implausibly under its own ground
+                    // ([`MAX_CLEARANCE_LIFT_M`], mirrored). Bounding the
+                    // *demand* rather than each node it reaches is what keeps
+                    // the ramp smooth — clamping node by node against each
+                    // one's own terrain cut a sawtooth into every dipped road,
+                    // and `slope.rail_grade` read 303 %.
+                    let floor = (g.vars[v].target_m - MAX_CLEARANCE_LIFT_M).min(g.h[v]);
+                    let ceiling = (g.h[v] - deficit * lower_share).max(floor);
+                    let (lci, lk) = sites[v][0];
+                    // The demand is measured *against* the upper side, so the
+                    // dip must not reach it. The ramp walks outward through
+                    // junctions, and where the two corridors are connected —
+                    // an interchange, a ramp joining the road it dives under —
+                    // lowering the upper with the lower reopens the deficit
+                    // that caused the dip. Measured, that ran a rack railway
+                    // 290 m below its own terrain in 96 sweeps and turned a
+                    // 58.94 m clearance shortfall into 292.43 m.
+                    let blocked = upper_vars(g, gc);
+                    for (w, d) in
+                        ramp_targets(g, sites, lci as usize, lk as usize, ceiling, Sense::Down)
+                    {
+                        if blocked.contains(&w) {
+                            continue;
+                        }
+                        g.h[w] += d;
+                        g.slack[w].1 = g.slack[w].1.min(g.h[w]);
+                    }
+                    need = g.h[v] + gc.extra_m;
+                }
+            }
+        }
         let targets = clearance_targets(g, sites, gc, need, dropped);
         for (v, d) in targets {
             g.h[v] += d;
@@ -287,6 +382,58 @@ fn clearance_pass(g: &mut SolveGraph, sites: &VarSites, dropped: &mut Dropped) {
             g.slack[v].0 = g.slack[v].0.max(g.h[v]);
         }
     }
+}
+
+/// The upper corridor's surface at the crossing — the deck chord where the
+/// crossing sits inside one, the nearest node otherwise.
+fn upper_height(g: &SolveGraph, gc: &GraphCrossing) -> f64 {
+    let c = &g.corridors[gc.upper_ci];
+    match structure_span_at(c, gc.upper_arc) {
+        Some((lo, hi)) => {
+            let span = c.arc[hi] - c.arc[lo];
+            if span > 0.0 {
+                let t = (gc.upper_arc - c.arc[lo]) / span;
+                g.h[c.vars[lo]] + (g.h[c.vars[hi]] - g.h[c.vars[lo]]) * t
+            } else {
+                g.h[c.vars[lo]]
+            }
+        }
+        None => g.h[c.vars[nearest_local(c, gc.upper_arc)]],
+    }
+}
+
+/// Whether a variable sits inside a bore on any corridor carrying it.
+fn in_bore(g: &SolveGraph, sites: &VarSites, v: VarId) -> bool {
+    sites[v].iter().any(|&(ci, k)| g.corridors[ci as usize].bore[k as usize])
+}
+
+/// The variables the crossing reads the upper surface from — the ones a dip on
+/// the lower side must leave alone, or it lowers the very thing it is measured
+/// against.
+fn upper_vars(g: &SolveGraph, gc: &GraphCrossing) -> [VarId; 3] {
+    let c = &g.corridors[gc.upper_ci];
+    let k = nearest_local(c, gc.upper_arc);
+    match structure_span_at(c, gc.upper_arc) {
+        Some((lo, hi)) => [c.vars[k], c.vars[lo], c.vars[hi]],
+        None => [c.vars[k]; 3],
+    }
+}
+
+/// How readily the upper side yields at the crossing: the inverse mass of the
+/// surface *there*.
+///
+/// Read at the crossing node, never at a deck's anchors. The anchors are
+/// at-grade and therefore heavy, so averaging them said a mapped viaduct was as
+/// reluctant to move as the street beneath it, and split every annotated
+/// overpass 50/50 — which is the annotation ignored. A structure node is light
+/// because the data put a structure there (§4.5: the tag is a prior on the
+/// constraint), and that is exactly the evidence the split needs: a bridge tag
+/// on the upper side says the upper side is what departs the ground, a tunnel
+/// tag on the lower says the lower does, and where neither is tagged the two
+/// are equally pinned and share the correction.
+fn upper_inv_mass(g: &SolveGraph, gc: &GraphCrossing) -> f64 {
+    let c = &g.corridors[gc.upper_ci];
+    g.vars[c.vars[nearest_local(c, gc.upper_arc)]].inv_mass
 }
 
 /// Every place a variable appears, as `(corridor index, local node index)`.
@@ -311,7 +458,7 @@ fn var_sites(g: &SolveGraph) -> VarSites {
 /// anchors.
 fn rigidity_pass(g: &mut SolveGraph) {
     for c in &g.corridors {
-        project_spans(&mut g.h, c);
+        project_spans(&mut g.h, &g.slack, c);
     }
 }
 
@@ -590,7 +737,7 @@ fn nearest_local(c: &CorridorNodes, arc: f64) -> usize {
 /// [`super::profile::deck_ramp`] already does when it fits the deck; leaving the
 /// road on a stale warm start here is exactly what let the road dip beneath its
 /// own straight deck and step off the abutment.
-fn project_spans(h: &mut [f64], c: &CorridorNodes) {
+fn project_spans(h: &mut [f64], slack: &[(f64, f64)], c: &CorridorNodes) {
     let m = c.at_grade.len();
     let mut k = 0;
     while k < m {
@@ -618,9 +765,21 @@ fn project_spans(h: &mut [f64], c: &CorridorNodes) {
         let (h_lo, h_hi) = (h[c.vars[lo]], h[c.vars[hi]]);
         // Project every node strictly between the anchors onto the chord (the
         // anchors themselves — endpoint or at-grade — hold their height).
+        //
+        // A **bore** yields to a clearance ceiling on the way. A deck is a beam
+        // and its line is the constraint; a bore is a hole, and an urban
+        // underpass (S6) is exactly a road that runs below the chord of its own
+        // portals. Chording it back up is what undid every attempt to make the
+        // lower side of a crossing yield (docs/VERIFICATION.md §6) — but only
+        // *where a ceiling was established*: with no crossing over it a bore is
+        // the mountain tunnel it always was, straight between its portals, and
+        // this changes nothing about it.
+        let bore = c.bore[start];
         for j in (lo + 1)..hi {
             let t = (c.arc[j] - a_lo) / span;
-            h[c.vars[j]] = h_lo + (h_hi - h_lo) * t;
+            let chord = h_lo + (h_hi - h_lo) * t;
+            let v = c.vars[j];
+            h[v] = if bore { chord.min(slack[v].1) } else { chord };
         }
     }
 }
@@ -817,6 +976,7 @@ mod tests {
                 id: 0,
                 vars: (0..n).collect(),
                 arc,
+                bore: vec![false; n],
                 at_grade,
                 grade: 0.06,
                 deviation: 1e9, // not under test here — leave the ground box open
@@ -870,6 +1030,7 @@ mod tests {
                 id: 0,
                 vars: (0..n).collect(),
                 arc,
+                bore: vec![false; n],
                 at_grade: vec![true; n],
                 grade: 0.15,
                 deviation: 1e9, // the ground box is not what is under test
@@ -941,6 +1102,7 @@ mod tests {
                 id: 0,
                 vars: (0..n).collect(),
                 arc,
+                bore: vec![false; n],
                 at_grade,
                 grade: 0.06, // 6 %: the 12 m rise over 300 m (4 %) is well within
                 deviation: 1e9, // not under test here — leave the ground box open
@@ -1008,6 +1170,92 @@ mod tests {
         }
         // And it genuinely breaks the bed grade to do so (the slope demands it).
         assert!(max_grade(p) > 0.15 + 1e-3, "a 40 % street must exceed the 15 % bed grade");
+    }
+
+    /// **S6, the urban underpass.** Two streets crossing on flat ground, the
+    /// lower one annotated as a tunnel. The separation must open *downward*:
+    /// the road in the bore is the light side, so it takes most of the
+    /// correction and the street above stays near the ground the terrain put
+    /// it on. Raise-only, this built a hump over the underpass instead — which
+    /// is why 10 % of annotated tunnel nodes ended at or above the ground.
+    ///
+    /// The bore must also be free to *dip*. Chorded onto the straight line
+    /// through its portals it cannot be under them, and a flat-ground
+    /// underpass is nothing but that.
+    #[test]
+    fn a_flat_ground_underpass_dips_rather_than_humping_the_street_above() {
+        use super::super::graph::{CorridorNodes, GraphCrossing, SolveGraph, VarNode};
+        // Two 200 m corridors of 21 nodes, crossing at their midpoints on flat
+        // 100 m ground. Corridor 1 (vars 21..42) is in a bore over nodes 8-12.
+        let n = 21;
+        let arc: Vec<f64> = (0..n).map(|i| i as f64 * 10.0).collect();
+        let bore: Vec<bool> = (0..n).map(|i| (8..=12).contains(&i)).collect();
+        let at_grade_low: Vec<bool> = bore.iter().map(|b| !b).collect();
+        let mut vars: Vec<VarNode> = Vec::new();
+        for _ in 0..n {
+            vars.push(VarNode {
+                target_m: 100.0,
+                terrain_m: 100.0,
+                terrain_pinned: true,
+                inv_mass: 1.0,
+            });
+        }
+        for i in 0..n {
+            vars.push(VarNode {
+                target_m: 100.0,
+                terrain_m: 100.0,
+                terrain_pinned: at_grade_low[i],
+                inv_mass: if at_grade_low[i] { 1.0 } else { 8.0 },
+            });
+        }
+        let corridor = |base: usize, at_grade: Vec<bool>, bore: Vec<bool>| CorridorNodes {
+            id: (base / n) as u32,
+            vars: (base..base + n).collect(),
+            arc: arc.clone(),
+            at_grade,
+            bore,
+            grade: 0.06,
+            deviation: 1e9, // the ground box is not what is under test
+        };
+        let mut g = SolveGraph {
+            vars,
+            h: vec![100.0; 2 * n],
+            corridors: vec![
+                corridor(0, vec![true; n], vec![false; n]),
+                corridor(n, at_grade_low, bore),
+            ],
+            crossings: vec![GraphCrossing {
+                upper_ci: 0,
+                upper_arc: 100.0,
+                lower: Lower::Var(n + 10),
+                extra_m: 6.5,
+            }],
+            contacts: Vec::new(),
+            undercuts: Vec::new(),
+            slack: vec![(f64::NEG_INFINITY, f64::INFINITY); 2 * n],
+            component: vec![0; 2 * n],
+            n_components: 2,
+            junction_var: Vec::new(),
+        };
+        solve(&mut g);
+
+        let (up, low) = (g.h[10], g.h[n + 10]);
+        assert!(up - low >= 6.5 - 1e-3, "the crossing must clear: {up} over {low}");
+        // And the correction was spent on the side that yields (§4.4): the
+        // bore dips further than the street climbs.
+        assert!(
+            100.0 - low > up - 100.0,
+            "the bore must take most of it: street +{:.2} m, bore {:.2} m",
+            up - 100.0,
+            low - 100.0
+        );
+        // The street above is left near the ground, not humped over it.
+        assert!(up - 100.0 < 2.0, "the street above climbed {:.2} m", up - 100.0);
+        // The bore's approaches ramp down at the class grade, not in one step.
+        let worst = (1..n)
+            .map(|k| (g.h[n + k] - g.h[n + k - 1]).abs() / 10.0)
+            .fold(0.0f64, f64::max);
+        assert!(worst <= 0.06 + 1e-6, "the approach falls at {:.0} %", worst * 100.0);
     }
 
     /// The solve is deterministic: two runs give identical heights.
