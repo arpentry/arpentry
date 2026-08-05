@@ -261,7 +261,16 @@ mod tests {
 
     fn tile(roads: Vec<RoadMesh>, terrain: Option<SurfaceMesh>) -> TileScene {
         let b = Bounds::of_tile(16, 34000, 23000);
-        TileScene { z: 16, x: 34000, y: 23000, scale: Scale::of(&b), bounds: b, terrain, roads }
+        TileScene {
+            z: 16,
+            x: 34000,
+            y: 23000,
+            scale: Scale::of(&b),
+            bounds: b,
+            terrain,
+            roads,
+            lines: Vec::new(),
+        }
     }
 
     fn run(t: &TileScene) -> Vec<Metric> {

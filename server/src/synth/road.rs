@@ -61,7 +61,7 @@ pub fn bake(
     f: &mut EncoderFeature,
     profile: Option<&Profile>,
     deck: bool,
-    layer: u32,
+    corridor: Option<crate::scene::CorridorId>,
     field: Option<&crate::synth::height::HeightField>,
     sampler: &mut GroundSampler,
     z: u8,
@@ -80,7 +80,12 @@ pub fn bake(
             // and `synth::emit` decides which that is — a `None` here is a
             // footway, not an oversight. A deck is never blended: it is not part
             // of the at-grade surface and rides its own ramp.
+            // The sheet is resolved per vertex, not per feature: paint must ride
+            // the asphalt its own road belongs to, and a corridor that stacks
+            // over itself belongs to two (`synth::sheets`).
             Some(f) if !deck && !f.is_empty() => {
+                let layer =
+                    corridor.map_or(0, |c| f.layer_at(c, lon, lat, &mut scratch));
                 f.at(sampler, AT_GRADE_LEVEL, layer, z, z_ref, bounds, lon, lat, &mut scratch)
             }
             _ => surface_height(profile, deck, sampler, z, z_ref, bounds, lon, lat),

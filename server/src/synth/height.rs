@@ -77,13 +77,16 @@ struct Src<'a> {
     half_m: f64,
     level: i64,
     layer: u32,
+    corridor: crate::scene::CorridorId,
     profile: Option<&'a Profile>,
 }
 
-/// One intersection: its paved extent and the height its members share.
+/// One intersection: its paved extent, the sheet it stands on, and the height
+/// its members share.
 struct Pin<'a> {
     area: &'a Area,
     level: i64,
+    layer: u32,
     height: f64,
 }
 
@@ -159,6 +162,7 @@ impl<'a> HeightField<'a> {
                 half_m: s.half_m,
                 level: s.level,
                 layer: s.layer,
+                corridor: s.corridor,
                 profile: solved.profile(s.corridor),
             });
         }
@@ -174,8 +178,10 @@ impl<'a> HeightField<'a> {
             let bb = (c.x - reach.0, c.y - reach.1, c.x + reach.0, c.y + reach.1);
             pin_grid.insert(bb, pins.len() as u32);
             // Every plated intersection is at grade today; the level rides along
-            // so the partition is already in place when levels differ.
-            pins.push(Pin { area: j.area(), level: 0, height });
+            // so the partition is already in place when levels differ. The
+            // layer is the sheet the intersection stands on, so a junction up on
+            // a stacked arm pins that arm and not the road beneath it.
+            pins.push(Pin { area: j.area(), level: 0, layer: j.layer(), height });
         }
 
         HeightField { srcs, src_grid, pins, pin_grid }
@@ -186,6 +192,36 @@ impl<'a> HeightField<'a> {
     /// [`road::surface_height`] directly.
     pub fn is_empty(&self) -> bool {
         self.srcs.is_empty() && self.pins.is_empty()
+    }
+
+    /// The grade-separation layer a corridor's asphalt is on *at a place* — the
+    /// sheet its paint must ride.
+    ///
+    /// Position-dependent, because a sheet is (`synth::sheets`): a hairpin's
+    /// upper arm outranks its lower one and both are the same corridor, so one
+    /// answer for a whole way would put half its markings on the wrong sheet.
+    /// The nearest of that corridor's own carriageway stretches answers; `0`
+    /// where none is near, which is what an unstacked road reads anyway.
+    pub fn layer_at(
+        &self,
+        corridor: crate::scene::CorridorId,
+        lon: f64,
+        lat: f64,
+        scratch: &mut Vec<u32>,
+    ) -> u32 {
+        self.src_grid.query((lon, lat, lon, lat), scratch);
+        let mut best: Option<(f64, u32)> = None;
+        for &i in scratch.iter() {
+            let s = &self.srcs[i as usize];
+            if s.corridor != corridor {
+                continue;
+            }
+            let d = point_to_segment_m(lon, lat, s.a, s.b, s.cos_lat);
+            if best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, s.layer));
+            }
+        }
+        best.map_or(0, |(_, l)| l)
     }
 
     /// The road-surface height in metres at a plan position on `level`.
@@ -262,10 +298,10 @@ impl<'a> HeightField<'a> {
         self.pin_grid.query((lon, lat, lon, lat), scratch);
         for &i in scratch.iter() {
             let p = &self.pins[i as usize];
-            // An intersection is a place on the ground network, so it pins only
-            // the unranked layer — a flyover passing overhead must not be dragged
-            // to the height of the junction beneath it.
-            if p.level != level || layer != 0 {
+            // An intersection pins its *own* sheet — a flyover passing overhead
+            // must not be dragged to the height of the junction beneath it, and
+            // a junction up on a stacked arm must still pin that arm.
+            if p.level != level || p.layer != layer {
                 continue;
             }
             // The pin carries the same clamp every carriageway source carries
@@ -696,14 +732,14 @@ mod tests {
         );
     }
 
-    /// Walks a transect east along corridor `a`'s axis through a crossing road,
-    /// sampling every `step_m`, and returns the largest change between
-    /// consecutive samples.
-    fn worst_step_over_transect(step_m: f64) -> f64 {
+    /// Walks a transect east along corridor `a`'s axis through a road crossing
+    /// it at `cross_h`, sampling `layer` every `step_m`, and returns the largest
+    /// change between consecutive samples and the whole range covered.
+    fn transect(step_m: f64, cross_h: f64, layer: u32) -> (f64, f64) {
         let a = corridor(0, 6.0 - 150.0 / m_lon(), 300.0, 16, 8.0);
         let b = cross_corridor(1, 6.0, 200.0, 11, 6.0);
         let profiles =
-            vec![Some(Profile::flat(&a.nodes, 400.0)), Some(Profile::flat(&b.nodes, 415.0))];
+            vec![Some(Profile::flat(&a.nodes, 400.0)), Some(Profile::flat(&b.nodes, cross_h))];
         let scene = SceneGraph::new(vec![a, b]);
         let solved = SolvedModel::from_profiles(profiles, Z);
         let junctions = crate::synth::junction::bake(&scene, &solved);
@@ -714,40 +750,60 @@ mod tests {
 
         let n = (40.0 / step_m).round() as i32;
         let mut prev: Option<f64> = None;
-        let mut worst = 0.0f64;
+        let (mut worst, mut lo, mut hi) = (0.0f64, f64::INFINITY, f64::NEG_INFINITY);
         for i in 0..=n {
             let lon = 6.0 + (-20.0 + i as f64 * step_m) / m_lon();
-            let h = field.at(&mut s, 0, 0, Z, Z, &bounds, lon, LAT, &mut scratch);
+            let h = field.at(&mut s, 0, layer, Z, Z, &bounds, lon, LAT, &mut scratch);
             if let Some(p) = prev {
                 worst = worst.max((h - p).abs());
             }
             prev = Some(h);
+            lo = lo.min(h);
+            hi = hi.max(h);
         }
-        worst
+        (worst, hi - lo)
     }
 
     #[test]
     fn the_field_is_continuous_across_a_buffer_boundary() {
-        // Property 2, tested by refinement rather than by flatness. Crossing a
-        // road whose surface is 15 m above this one, the field *must* climb — a
-        // blend over a 4 m overlap has a real gradient of metres per metre, so
-        // asserting near-zero steps would only be testing that the two roads
-        // agree, which is not the property.
+        // Property 2, tested by refinement rather than by flatness. Two roads
+        // crossing a third of a metre apart share their asphalt — they are one
+        // sheet — so the field *must* climb across the overlap: a blend over a
+        // 4 m overlap has a real gradient, and asserting near-zero steps would
+        // only be testing that the two roads agree, which is not the property.
         //
         // What distinguishes continuous from discontinuous is how the largest
         // step behaves as the sampling shrinks: for a continuous field it shrinks
         // proportionally, and across a jump it does not shrink at all.
-        let coarse = worst_step_over_transect(0.01);
-        let fine = worst_step_over_transect(0.001);
-        assert!(coarse > 0.0, "the transect never crossed anything");
+        let (coarse, range) = transect(0.01, 400.3, 0);
+        let (fine, _) = transect(0.001, 400.3, 0);
+        assert!(range > 0.1, "the transect never crossed anything");
+        assert!(coarse > 0.0);
         assert!(
             fine < coarse * 0.2,
             "10x finer sampling only shrank the worst step from {coarse:.5} to {fine:.5}: \
              the field has a jump, not a gradient"
         );
-        // And the gradient itself is bounded: crossing the whole 15 m difference
-        // takes the width of the overlap, never one step.
+        // And the gradient itself is bounded: crossing the difference takes the
+        // width of the overlap, never one step.
         assert!(coarse < 0.1, "the field moves {coarse:.4} m in a single centimetre");
+    }
+
+    #[test]
+    fn a_road_crossing_far_above_is_a_different_sheet_and_does_not_pull() {
+        // The bump this retires. A road 15 m over this one does not share its
+        // asphalt, so it must not be blended into it: driving the lower road,
+        // the surface stays flat right through the crossing instead of ramping
+        // metres up and back down over the few metres their bands overlap
+        // (`synth::sheets`).
+        let (worst, range) = transect(0.05, 415.0, 0);
+        assert!(range < 1e-9, "the lower road moved {range:.4} m under the crossing");
+        assert!(worst < 1e-9);
+
+        // The upper road is not lost — it is on its own sheet, and reads its own
+        // height there.
+        let (_, upper_range) = transect(0.05, 415.0, 1);
+        assert!(upper_range > 0.0, "the upper sheet carries no surface at all");
     }
 
     #[test]

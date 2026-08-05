@@ -19,6 +19,7 @@ pub mod pave_mesh;
 pub mod pavement;
 pub mod poly;
 pub mod region;
+pub mod sheets;
 pub mod road;
 pub mod structure;
 
@@ -57,7 +58,6 @@ pub enum Synth {
 pub fn emit(
     f: &mut EncoderFeature,
     field: &height::HeightField,
-    junctions: &junction::JunctionModel,
     sampler: &mut GroundSampler,
     solved: &SolvedModel,
     z: u8,
@@ -81,10 +81,10 @@ pub fn emit(
         Synth::None => {}
         Synth::Road { corridor, deck } => {
             let profile = corridor.and_then(|c| solved.profile(c));
-            // The corridor's grade-separation layer: paint must ride the surface
-            // its own road belongs to, not blend with whatever passes beneath.
-            let layer = corridor.map_or(0, |c| junctions.layer_of(c));
-            road::bake(f, profile, deck, layer, paved_field, sampler, z, solved.z_ref, bounds);
+            // The corridor rides along so the paint can ask, per vertex, which
+            // grade-separation sheet its own road is on there — it must not
+            // blend with whatever passes beneath.
+            road::bake(f, profile, deck, corridor, paved_field, sampler, z, solved.z_ref, bounds);
         }
         Synth::Structure { corridor, kind } => {
             match solved.profile(corridor) {
@@ -96,12 +96,11 @@ pub fn emit(
                 // structure is still the corridor it was, and reading the field
                 // on layer 0 would drape a flyover onto the street beneath it.
                 other => {
-                    let layer = junctions.layer_of(corridor);
                     road::bake(
                         f,
                         other,
                         false,
-                        layer,
+                        Some(corridor),
                         paved_field,
                         sampler,
                         z,

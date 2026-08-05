@@ -61,6 +61,18 @@ impl RoadMesh {
     }
 }
 
+/// One drawn road centerline, at the heights the client strokes it at
+/// (`tile_build::EncoderFeature::z`). This is the only thing in the archive
+/// that carries the road's own *direction*, so it is the only thing a
+/// longitudinal grade can be measured along: the carriageway mesh knows where
+/// the asphalt is but not which way the traffic goes.
+pub struct RoadLine {
+    pub class: String,
+    pub level: i64,
+    /// One entry per part, each a run of `(x, y, height_m)` in unit plan space.
+    pub parts: Vec<Vec<(f64, f64, f64)>>,
+}
+
 /// One tile, decoded into the surfaces the checks compare.
 pub struct TileScene {
     pub z: u8,
@@ -73,6 +85,10 @@ pub struct TileScene {
     /// so rather than guessing.
     pub terrain: Option<SurfaceMesh>,
     pub roads: Vec<RoadMesh>,
+    /// Road centerlines carrying per-vertex heights. Empty below the zooms that
+    /// stamp elevations, in which case a grade check has nothing to read and
+    /// says so rather than reporting a flat scene as perfect.
+    pub lines: Vec<RoadLine>,
 }
 
 impl TileScene {
@@ -91,6 +107,44 @@ impl TileScene {
     pub fn owns(&self, px: f64, py: f64) -> bool {
         (0.0..=1.0).contains(&px) && (0.0..=1.0).contains(&py)
     }
+}
+
+/// A line feature's parts, in unit plan space with heights in metres. Empty
+/// unless the feature carries per-vertex `z`: without heights there is no
+/// profile to measure, and a line decoded as flat would read as a perfectly
+/// level road rather than as an absent measurement.
+fn line_parts(g: &fbt::LineGeometry<'_>) -> Vec<Vec<(f64, f64, f64)>> {
+    let (gx, gy) = (g.x(), g.y());
+    let Some(gz) = g.z() else { return Vec::new() };
+    let n = gx.len().min(gy.len()).min(gz.len());
+    if n < 2 {
+        return Vec::new();
+    }
+    // A single linestring omits `line_offsets` (tile_build::line_geometry), so
+    // the whole vertex run is one part.
+    let bounds: Vec<u32> = match g.line_offsets() {
+        Some(o) => (0..o.len()).map(|i| o.get(i)).collect(),
+        None => vec![0, n as u32],
+    };
+    let mut parts = Vec::new();
+    for w in bounds.windows(2) {
+        let (lo, hi) = (w[0] as usize, (w[1] as usize).min(n));
+        if hi <= lo + 1 {
+            continue; // a part with one vertex spans nothing
+        }
+        parts.push(
+            (lo..hi)
+                .map(|i| {
+                    (
+                        crate::verify::mesh::dequantize(gx.get(i)),
+                        crate::verify::mesh::dequantize(gy.get(i)),
+                        gz.get(i) as f64 * 0.001,
+                    )
+                })
+                .collect(),
+        );
+    }
+    parts
 }
 
 /// Decodes tiles from an archive, one zoom at a time.
@@ -145,6 +199,7 @@ impl<'a> ArchiveScan<'a> {
             bounds,
             terrain: None,
             roads: Vec::new(),
+            lines: Vec::new(),
         };
 
         for li in 0..layers_v.len() {
@@ -161,8 +216,6 @@ impl<'a> ArchiveScan<'a> {
             } else if name == layers::NAMES[layers::TRANSPORTATION as usize] {
                 for fi in 0..feats.len() {
                     let f = feats.get(fi);
-                    let Some(g) = f.geometry_as_mesh_geometry() else { continue };
-                    let Some(mesh) = SurfaceMesh::from_geometry(&g) else { continue };
                     let (mut class, mut level) = (String::new(), 0i64);
                     if let Some(props) = f.properties() {
                         for pi in 0..props.len() {
@@ -176,7 +229,16 @@ impl<'a> ArchiveScan<'a> {
                             }
                         }
                     }
-                    scene.roads.push(RoadMesh { class, level, mesh });
+                    if let Some(g) = f.geometry_as_mesh_geometry() {
+                        if let Some(mesh) = SurfaceMesh::from_geometry(&g) {
+                            scene.roads.push(RoadMesh { class, level, mesh });
+                        }
+                    } else if let Some(g) = f.geometry_as_line_geometry() {
+                        let parts = line_parts(&g);
+                        if !parts.is_empty() {
+                            scene.lines.push(RoadLine { class, level, parts });
+                        }
+                    }
                 }
             }
         }
@@ -213,6 +275,7 @@ mod tests {
             scale: Scale { mx: 1.0, my: 1.0 },
             terrain: None,
             roads: Vec::new(),
+            lines: Vec::new(),
         };
         assert!(s.owns(0.0, 0.0) && s.owns(1.0, 1.0) && s.owns(0.5, 0.5));
         assert!(!s.owns(-0.01, 0.5), "west buffer belongs to the neighbour");
@@ -230,6 +293,7 @@ mod tests {
             bounds: b,
             terrain: None,
             roads: Vec::new(),
+            lines: Vec::new(),
         };
         let (lon, lat) = s.lonlat(0.0, 0.0);
         assert!((lon - b.west).abs() < 1e-12 && (lat - b.south).abs() < 1e-12);

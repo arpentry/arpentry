@@ -35,6 +35,7 @@ use crate::priors;
 use crate::scene::{Corridor, CorridorId, SceneGraph, SpanKind};
 use crate::solve::SolvedModel;
 use crate::synth::area::{Area, Leg};
+use crate::synth::sheets;
 
 /// Nearer than this to a corridor end, in metres, and a junction sits *at* the
 /// end: the road does not carry on past it, so there is no leg that way.
@@ -63,6 +64,10 @@ pub struct BakedJunction {
     /// for a street intersection too, and is a height rather than a decision
     /// about whether to drape.
     height: Option<f64>,
+    /// The grade-separation layer the intersection stands on
+    /// ([`crate::synth::sheets`]) — the sheet its pin belongs to. Filled in
+    /// after the sources are layered, since that is what defines it.
+    layer: u32,
 }
 
 impl BakedJunction {
@@ -79,6 +84,11 @@ impl BakedJunction {
     /// The solved height of the intersection in metres, if it has one.
     pub fn height(&self) -> Option<f64> {
         self.height
+    }
+
+    /// The grade-separation layer this intersection's asphalt is on.
+    pub fn layer(&self) -> u32 {
+        self.layer
     }
 }
 
@@ -97,8 +107,6 @@ pub struct JunctionModel {
     /// per tile would re-derive it for every zoom.
     sources: Vec<SourceSeg>,
     source_grid: GridIndex,
-    /// Grade-separation layer per corridor, indexed by [`CorridorId`].
-    layers: Vec<u32>,
 }
 
 /// One stretch of centerline between two nodes, and how far either side of it
@@ -111,9 +119,9 @@ pub struct SourceSeg {
     pub cos_lat: f64,
     pub half_m: f64,
     pub level: i64,
-    /// Grade-separation layer: how many crossings this corridor passes *over*
-    /// (`solve::crossings::corridor_ranks`). Zero for anything that crosses
-    /// nothing, so ordinary streets all share a layer and still merge.
+    /// Grade-separation layer: which *sheet* of asphalt this stretch belongs to
+    /// ([`crate::synth::sheets`]). Zero for anything nothing else stacks over,
+    /// so ordinary streets all share a layer and still merge.
     ///
     /// Load-bearing for the union, because Overture's `level` ordinal does not
     /// carry this: a flyover's bridge span is excluded from the union already,
@@ -122,7 +130,24 @@ pub struct SourceSeg {
     /// the mesh then ramped continuously between two roads that are metres apart
     /// vertically.
     pub layer: u32,
+    /// The solved road-surface height at `a` and at `b`, metres — read at the
+    /// segment's own *arc*, never by plan lookup, so a corridor that doubles
+    /// back on itself gives each arm its own height instead of the nearer one's.
+    /// This is what [`crate::synth::sheets`] compares to decide which
+    /// overlapping asphalt is one surface.
+    ///
+    /// Both ends, not a midpoint: a stretch on a grade is not at one height, and
+    /// two stretches are only ever compared *where they meet*.
+    pub height_a: f64,
+    pub height_b: f64,
     pub corridor: CorridorId,
+}
+
+impl SourceSeg {
+    /// The road surface at parameter `t` along `a`→`b`, metres.
+    pub fn height_at(&self, t: f64) -> f64 {
+        self.height_a + (self.height_b - self.height_a) * t
+    }
 }
 
 /// Grid cell size in degrees (~1 km): plates per cell stay in the tens even
@@ -134,11 +159,7 @@ fn grid_cell(x: f64, y: f64) -> (i32, i32) {
 }
 
 impl JunctionModel {
-    fn build(
-        junctions: Vec<BakedJunction>,
-        sources: Vec<SourceSeg>,
-        layers: Vec<u32>,
-    ) -> JunctionModel {
+    fn build(junctions: Vec<BakedJunction>, sources: Vec<SourceSeg>) -> JunctionModel {
         let mut grid: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
         for (i, j) in junctions.iter().enumerate() {
             let p = j.point();
@@ -157,7 +178,7 @@ impl JunctionModel {
                 i as u32,
             );
         }
-        JunctionModel { junctions, grid, sources, source_grid, layers }
+        JunctionModel { junctions, grid, sources, source_grid }
     }
 
     /// The carriageway segments whose paved band reaches into the
@@ -177,9 +198,27 @@ impl JunctionModel {
         self.sources.len()
     }
 
-    /// A corridor's grade-separation layer; `0` for anything unranked.
-    pub fn layer_of(&self, corridor: CorridorId) -> u32 {
-        self.layers.get(corridor as usize).copied().unwrap_or(0)
+    /// The grade-separation layer of the carriageway nearest `at` whose surface
+    /// sits at `height_m` — the sheet a thing standing at that height belongs
+    /// to. Used to place an intersection's pin on its own sheet rather than on
+    /// whatever passes over or under it.
+    fn layer_at_height(&self, at: Coord, height_m: f64, scratch: &mut Vec<u32>) -> u32 {
+        self.source_grid.query((at.x, at.y, at.x, at.y), scratch);
+        let mut best: Option<(f64, u32)> = None;
+        for &i in scratch.iter() {
+            let s = &self.sources[i as usize];
+            // Read the stretch's surface *beside the pin*, not at its midpoint:
+            // on a grade those are different heights and only the near one is
+            // the asphalt this intersection stands on.
+            let (d, t) = sheets::point_to_segment(at, s.a, s.b, s.cos_lat);
+            if (s.height_at(t) - height_m).abs() > sheets::SHEET_SEPARATION_M {
+                continue; // a different sheet: not what this pin stands on
+            }
+            if best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, s.layer));
+            }
+        }
+        best.map_or(0, |(_, l)| l)
     }
 
     pub fn len(&self) -> usize {
@@ -254,19 +293,37 @@ pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> JunctionModel {
             junctions.push(b);
         }
     }
-    let layers = crate::solve::crossings::corridor_ranks(scene);
-    JunctionModel::build(junctions, carriageway_sources(scene, &layers), layers)
+    // The grade-separation layer is measured off the solved heights, per
+    // carriageway stretch (`synth::sheets`), not read off the mapped bridge
+    // spans per corridor. Sources are built first because the layering is a
+    // property of how they overlap, then stamped back onto them.
+    let mut sources = carriageway_sources(scene, solved);
+    let layers = sheets::assign(scene, &sources);
+    for (s, &l) in sources.iter_mut().zip(layers.iter()) {
+        s.layer = l;
+    }
+    let mut model = JunctionModel::build(junctions, sources);
+    // An intersection pins the sheet it stands on, which is the sheet of the
+    // asphalt at its own solved height. Resolved after the sources are stamped,
+    // because that is when there is a layering to read.
+    let mut scratch = Vec::new();
+    for i in 0..model.junctions.len() {
+        let (p, h) = (model.junctions[i].point(), model.junctions[i].height);
+        model.junctions[i].layer = h.map_or(0, |h| model.layer_at_height(p, h, &mut scratch));
+    }
+    model
 }
 
 /// Every carriageway segment of every corridor that paves anything, in corridor
 /// then node order. The height field's corridor sources; also the input the
-/// unioned surface buffers.
-fn carriageway_sources(scene: &SceneGraph, layers: &[u32]) -> Vec<SourceSeg> {
+/// unioned surface buffers. Layers are stamped afterwards by [`bake`].
+fn carriageway_sources(scene: &SceneGraph, solved: &SolvedModel) -> Vec<SourceSeg> {
     let mut out = Vec::new();
     for c in &scene.corridors {
         let Some(half_m) = corridor_half_width_m(c) else {
             continue; // not a carriageway: paves nothing, so covers nothing
         };
+        let profile = solved.profile(c.id);
         for ((lo, hi), level, kind) in level_runs(c) {
             // Only at-grade asphalt is unioned. A bridge or a bore already
             // carries its road surface as a swept solid (`synth::structure`), so
@@ -276,13 +333,20 @@ fn carriageway_sources(scene: &SceneGraph, layers: &[u32]) -> Vec<SourceSeg> {
                 continue;
             }
             for k in lo..hi {
+                // Read at the stretch's own *arc*. `Profile::height_at` projects
+                // onto the nearest corridor edge in plan, which at a hairpin is
+                // the other arm — and telling the two arms apart is precisely
+                // what this height is for.
+                let at = |arc: f64| profile.map_or(0.0, |p| p.road_at_arc(arc));
                 out.push(SourceSeg {
                     a: c.nodes[k],
                     b: c.nodes[k + 1],
                     cos_lat: c.cos_lat,
                     half_m,
                     level,
-                    layer: layers.get(c.id as usize).copied().unwrap_or(0),
+                    layer: 0,
+                    height_a: at(c.arc[k]),
+                    height_b: at(c.arc[k + 1]),
                     corridor: c.id,
                 });
             }
@@ -570,6 +634,7 @@ fn bake_one(
     Some(BakedJunction {
         area,
         height: (pin_count > 0).then(|| pin_sum / pin_count as f64),
+        layer: 0, // stamped by `bake` once the sources are layered
     })
 }
 
@@ -715,7 +780,8 @@ mod tests {
         // contributes none, because it paves nothing.
         let c = corridor(6.0, 11);
         let scene = crate::scene::SceneGraph::new(vec![c]);
-        assert_eq!(carriageway_sources(&scene, &[0]).len(), 10, "one per segment");
+        let solved = SolvedModel::empty(15);
+        assert_eq!(carriageway_sources(&scene, &solved).len(), 10, "one per segment");
         let half = corridor_half_width_m(&scene.corridors[0]).expect("a carriageway");
         assert!((half - (3.0 + priors::STRUCTURE_SHOULDER_M)).abs() < 1e-12);
 
@@ -723,7 +789,7 @@ mod tests {
         path.drivable = false;
         path.width_m = None;
         let scene = crate::scene::SceneGraph::new(vec![path]);
-        assert!(carriageway_sources(&scene, &[0]).is_empty(), "a footway paves nothing");
+        assert!(carriageway_sources(&scene, &solved).is_empty(), "a footway paves nothing");
         assert!(corridor_half_width_m(&scene.corridors[0]).is_none());
     }
 }

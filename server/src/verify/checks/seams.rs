@@ -327,6 +327,7 @@ mod tests {
             bounds: b,
             terrain: Some(terrain),
             roads: Vec::new(),
+            lines: Vec::new(),
         }
     }
 
@@ -393,6 +394,7 @@ mod tests {
             bounds: b,
             terrain: Some(terrain),
             roads: Vec::new(),
+            lines: Vec::new(),
         };
         let m = run(&[t]);
         assert!(metric(&m, "seam.terrain_step").skipped.is_some(), "no neighbour, so no seam");
@@ -425,6 +427,7 @@ mod tests {
                 .unwrap(),
             ),
             roads: Vec::new(),
+            lines: Vec::new(),
         };
         let m = run(&[split_tile, strip(101, 250.0, 300.0)]);
         let step = metric(&m, "seam.terrain_step");
@@ -460,6 +463,7 @@ mod tests {
             bounds: b,
             terrain: None,
             roads: vec![region(480.0), region(488.8)],
+            lines: Vec::new(),
         };
         let m = run(&[t]);
         let overlap = metric(&m, "order.at_grade_overlap");

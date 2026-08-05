@@ -98,6 +98,7 @@ scorecard get skimmed.
 | `order.at_grade_overlap` | 3 | Vertical separation where two level-0 paved regions share a plan position with nothing to order them. |
 | `slope.terrain_face` | 6 | Rise over plan run of every terrain triangle spanning ≥10 cm. Finds manufactured retaining walls. |
 | `slope.carriageway_face` | 6 | The same for interior asphalt, excluding the kerb rim. |
+| `slope.road_grade` | 6 | Rise over run between consecutive vertices of a drawn drivable centerline. Measured *along* the road, which the carriageway mesh cannot answer: a clearance lift dropped on one node is a spike the face metric reads as ordinary cross-fall. |
 | `slope.terrain_tearing` | 6 | How far a terrain vertex stands off the plane of its neighbours, counted only where opposite breaks flank it on both sides. Separates a wall from a wall drawn as teeth, which no steepness can. |
 | `lod.structure_drift` | 5 | Structure height at one zoom against the same structure one rung coarser. |
 
@@ -125,6 +126,15 @@ one of them badly wrong, which is why they are documented here:
   (`APRON_NEAR_M`), and allows `APRON_SLOP_M` at each end for quantization and
   for a probe standing a metre out on sloping ground. Measuring it the obvious
   way reported every apron as absent.
+- A **quantized plan run divides into noise.** Plan coordinates are a `uint16`
+  lattice, about 2 cm at z16, so a centerline step of a few centimetres carries
+  a real height over a rounded run and reports a ratio that is mostly the
+  rounding. `slope.road_grade` counts only steps of at least 0.50 m; below it
+  sit 4 % of all steps and the entire top of the unfiltered ratio distribution,
+  every one spanning under a centimetre of height. Non-drivable classes are
+  excluded for the same reason a kerb is: a footway may be a staircase and a
+  rack railway climbs at 20 %, so counting them measures the class table rather
+  than the defect.
 - A **wall put on a lattice always breaks the surface twice**, once low at its
   crest and once high at the first vertex down its face. Counting a vertex with
   one opposite-signed neighbour would therefore report every wall ever drawn, so
@@ -154,6 +164,18 @@ is what `order.deck_above_carriageway` measures.
 
 **Cross-zoom equality for at-grade roads.** Zoom-dependent by design; see
 `GROUND.md` §4.
+
+**Longitudinal grade of every drivable road at the detail zoom.** From z13 the
+union paves the carriageway as a mesh and `stamp_synth` drops the fill stroke
+that would otherwise draw it twice, so the only centerlines the detail tiles
+still carry are the markings, the deck strokes, and the non-drivable classes.
+`slope.road_grade` therefore measures a sample of the drivable network, not all
+of it — 62 k steps over the Montreux extract — and a road with no markings can
+carry a spike it never sees. The measurement is honest about *what* it covers
+because the alternative is worse: the carriageway mesh has no direction, so a
+grade read off it cannot separate a climb from a cross-fall. Full-population
+coverage lives at stage 2, where `examples/crossing_probe.rs` histograms the
+solved profiles' node-to-node grade directly.
 
 **Structure drift where the match is ambiguous.** Structures carry no identity
 across zooms beyond class and level ordinal. Where a coarse tile holds several

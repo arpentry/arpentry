@@ -33,6 +33,9 @@
 //! strict Jacobi for the soft stage, fixed corridor/node order for the hard
 //! stages, a fixed sweep budget.
 
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
+
 use crate::priors::MAX_CLEARANCE_LIFT_M;
 
 use super::graph::{CorridorNodes, GraphCrossing, SolveGraph, VarId, VarNode};
@@ -75,6 +78,10 @@ pub fn solve(g: &mut SolveGraph) -> usize {
     let mut num = vec![0.0f64; n];
     let mut den = vec![0.0f64; n];
     let mut prev = vec![0.0f64; n];
+    // Where each variable lives, for the clearance ramp to walk through
+    // junctions. The graph does not change during the solve, so this is built
+    // once.
+    let sites = var_sites(g);
     let mut used = MAX_SWEEPS;
     for sweep in 0..MAX_SWEEPS {
         prev.copy_from_slice(&g.h);
@@ -85,7 +92,7 @@ pub fn solve(g: &mut SolveGraph) -> usize {
             }
         }
         deviation_pass(g);
-        clearance_pass(g);
+        clearance_pass(g, &sites);
         rigidity_pass(g);
         let resid = g.h.iter().zip(&prev).map(|(&a, &b)| (a - b).abs()).fold(0.0, f64::max);
         if resid < TOL_M {
@@ -103,7 +110,7 @@ pub fn solve(g: &mut SolveGraph) -> usize {
         }
     }
     deviation_pass(g);
-    clearance_pass(g);
+    clearance_pass(g, &sites);
     rigidity_pass(g);
     used
 }
@@ -165,15 +172,33 @@ fn grade_pass(g: &mut SolveGraph) -> f64 {
 
 /// Raise-only clearance over every crossing, in rank order: lift each deck to
 /// clear its crossed feature (both span anchors, so the straight deck rises).
-fn clearance_pass(g: &mut SolveGraph) {
+fn clearance_pass(g: &mut SolveGraph, sites: &VarSites) {
     for gc in &g.crossings {
         let lower_h = gc.lower_var.map(|v| g.h[v]).unwrap_or(gc.lower_terrain_m);
         let need = lower_h + gc.extra_m;
-        let targets = clearance_targets(&g.corridors[gc.upper_ci], &g.h, gc, need);
+        let targets = clearance_targets(g, sites, gc, need);
         for (v, d) in targets {
             g.h[v] += d;
         }
     }
+}
+
+/// Every place a variable appears, as `(corridor index, local node index)`.
+///
+/// A junction connector is one variable on two or more corridors, and a
+/// clearance ramp has to follow the road through it: the approach to an
+/// overpass does not stop because the street it climbs was mapped as two ways.
+/// Built once per solve — the walk below queries it per crossing per sweep.
+type VarSites = Vec<Vec<(u32, u32)>>;
+
+fn var_sites(g: &SolveGraph) -> VarSites {
+    let mut sites: VarSites = vec![Vec::new(); g.vars.len()];
+    for (ci, c) in g.corridors.iter().enumerate() {
+        for (k, &v) in c.vars.iter().enumerate() {
+            sites[v].push((ci as u32, k as u32));
+        }
+    }
+    sites
 }
 
 /// Rigidity over every corridor: each structure span straight between its
@@ -233,10 +258,38 @@ fn enforce_grade(h: &mut [f64], vars: &[VarNode], c: &CorridorNodes, k: usize) -
 /// The clearance raise for one crossing: how much (and which variables) to lift
 /// so the upper corridor's deck clears `need` at the crossing arc. When the
 /// crossing sits in a structure span, both bounding anchors rise by the deficit
-/// (lifting the straight deck between them); otherwise the nearest node rises.
+/// (lifting the straight deck between them); otherwise the crossing node rises
+/// and its neighbours ride up a **ramp**.
+///
+/// The ramp is the whole of the at-grade case. Lifting the single nearest node
+/// by the deficit is what a clearance demand naively is, and it draws a spike:
+/// the pass runs after `grade_pass` and after `deviation_pass` and again in the
+/// closing settle, so nothing downstream spreads it or clamps it back. Measured
+/// at 6.9257,46.4261, a residential street crossing a railway with no mapped
+/// bridge span took its whole 5.95 m of clearance on one node and climbed it
+/// over 3.0 m of road — 198 %, drawn as a fan of tilted slabs, and 46 of the
+/// extract's 116 nodes past 50 % stood within 30 m of a crossing.
+///
+/// So the deficit decays at the class grade ceiling, the same shape
+/// [`crate::solve::Profile::raise_crest`] gives the unfused path — but along
+/// the *network* rather than along the one corridor, because a junction
+/// connector is a variable two corridors share. Ramping only the crossing's own
+/// corridor lifts that shared node and leaves the street on the other side of
+/// it where it was: measured, that put a 40 m step into a rack railway welded
+/// to a road junction beside the crossing, a worse spectacle than the spike it
+/// replaced. So the ramp walks outward through the junctions it reaches, each
+/// corridor decaying it at its own ceiling.
+///
 /// A deficit beyond [`MAX_CLEARANCE_LIFT_M`] is a data contradiction (a path
 /// mapped across a viaduct high on a flank) and dropped — plain, not spectacle.
-fn clearance_targets(c: &CorridorNodes, h: &[f64], gc: &GraphCrossing, need: f64) -> Vec<(VarId, f64)> {
+fn clearance_targets(
+    g: &SolveGraph,
+    sites: &VarSites,
+    gc: &GraphCrossing,
+    need: f64,
+) -> Vec<(VarId, f64)> {
+    let c = &g.corridors[gc.upper_ci];
+    let h = &g.h;
     match structure_span_at(c, gc.upper_arc) {
         Some((lo, hi)) => {
             let span = c.arc[hi] - c.arc[lo];
@@ -256,13 +309,97 @@ fn clearance_targets(c: &CorridorNodes, h: &[f64], gc: &GraphCrossing, need: f64
         None => {
             let k = nearest_local(c, gc.upper_arc);
             let deficit = need - h[c.vars[k]];
-            if deficit > 0.0 && deficit <= MAX_CLEARANCE_LIFT_M {
-                vec![(c.vars[k], deficit)]
-            } else {
-                Vec::new()
+            if deficit <= 0.0 || deficit > MAX_CLEARANCE_LIFT_M {
+                return Vec::new();
+            }
+            ramp_targets(g, sites, gc.upper_ci, k, need)
+        }
+    }
+}
+
+/// The approach ramp as a raise-only **floor**, spread outward from the
+/// crossing node through the road network.
+///
+/// A *floor* rather than an increment because the pass runs once per sweep and
+/// the soft pull undoes part of it each time: an added tent hands the crest its
+/// whole deficit back every round while the approaches keep only what survived,
+/// so the ramp steepens toward twice the class grade with the sweep count. A
+/// floor is idempotent — once met, re-applying it changes nothing.
+///
+/// The spread is a shortest-path in *height budget*: crossing an edge costs
+/// that corridor's grade ceiling times its length, and a node's floor is `need`
+/// less the cheapest budget reaching it. The walk carries on only through nodes
+/// the floor actually raises, so the ramp is exactly the run of road that needs
+/// supporting and it stops where the road is already high enough — tens of
+/// metres, not the network.
+///
+/// The extent is measured from `need`, never from the *current* deficit. Tying
+/// it to the deficit shrinks the ramp as the crest rises, so each sweep floors
+/// a shorter run than the last while the soft pull erodes the rest: the ramp
+/// eats itself from the outside in and the approach ends up steeper than the
+/// ceiling it was built to hold.
+fn ramp_targets(
+    g: &SolveGraph,
+    sites: &VarSites,
+    start_ci: usize,
+    start_k: usize,
+    need: f64,
+) -> Vec<(VarId, f64)> {
+    // Budget in millimetres so the frontier orders exactly and the walk is a
+    // function of the model, not of float comparison order (invariant 5).
+    let mm = |m: f64| (m * 1000.0).round().max(0.0) as u64;
+    let mut best: HashMap<(u32, u32), u64> = HashMap::new();
+    let mut heap: BinaryHeap<Reverse<(u64, u32, u32)>> = BinaryHeap::new();
+    heap.push(Reverse((0, start_ci as u32, start_k as u32)));
+    best.insert((start_ci as u32, start_k as u32), 0);
+
+    let mut lift: HashMap<VarId, f64> = HashMap::new();
+    while let Some(Reverse((cost, ci, k))) = heap.pop() {
+        if best.get(&(ci, k)).copied().unwrap_or(u64::MAX) < cost {
+            continue; // a cheaper route reached this node already
+        }
+        let c = &g.corridors[ci as usize];
+        let v = c.vars[k as usize];
+        let floor = need - cost as f64 * 0.001;
+        let raised = floor > g.h[v];
+        if raised {
+            // A variable reached twice keeps the larger lift: the cheapest
+            // route is the one that governs, and it is the one that arrived
+            // first, but a shared node is visited once per corridor it is on.
+            let e = lift.entry(v).or_insert(0.0);
+            *e = e.max(floor - g.h[v]);
+        } else if cost > 0 {
+            continue; // the road is already above the ramp here: it ends
+        }
+        // Onward: the two neighbours along this corridor, and every other
+        // corridor this variable belongs to (the junction the ramp runs
+        // through).
+        let mut step = |ci: u32, k2: i64, cost: u64, heap: &mut BinaryHeap<_>, best: &mut HashMap<_, _>| {
+            let c = &g.corridors[ci as usize];
+            if k2 < 0 || k2 as usize >= c.vars.len() {
+                return;
+            }
+            let k2 = k2 as u32;
+            if best.get(&(ci, k2)).copied().unwrap_or(u64::MAX) <= cost {
+                return;
+            }
+            best.insert((ci, k2), cost);
+            heap.push(Reverse((cost, ci, k2)));
+        };
+        for k2 in [k as i64 - 1, k as i64 + 1] {
+            if k2 < 0 || k2 as usize >= c.arc.len() {
+                continue;
+            }
+            let ds = (c.arc[k2 as usize] - c.arc[k as usize]).abs();
+            step(ci, k2, cost + mm(c.grade * ds), &mut heap, &mut best);
+        }
+        for &(oci, ok) in &sites[v] {
+            if oci != ci {
+                step(oci, ok as i64, cost, &mut heap, &mut best);
             }
         }
     }
+    lift.into_iter().collect()
 }
 
 /// The bounding at-grade anchors (local node indices) of the structure span
@@ -566,6 +703,62 @@ mod tests {
         // The deck stays straight over the span (rigidity): nodes 4,5,6 colinear.
         let mid = 0.5 * (g.h[4] + g.h[6]);
         assert!((g.h[5] - mid).abs() < 1e-6, "deck must be straight over the span");
+    }
+
+    /// A crossing on a corridor with **no structure span** — the mapped level
+    /// says bridge but the span table says at grade, which is most of the
+    /// unannotated network — still clears, and reaches its clearance on a ramp
+    /// rather than on one node. Taking the whole deficit at the crossing node
+    /// drew a spike: measured on Montreux, a residential street over a railway
+    /// climbed 5.95 m in 3.0 m of road and rendered as a fan of tilted slabs.
+    #[test]
+    fn an_at_grade_crossing_clears_on_a_ramp_not_a_spike() {
+        use super::super::graph::{CorridorNodes, SolveGraph, VarNode};
+        // 21 nodes, 10 m apart, flat ground at 100 m, all at grade.
+        let n = 21;
+        let arc: Vec<f64> = (0..n).map(|i| i as f64 * 10.0).collect();
+        let vars: Vec<VarNode> = (0..n)
+            .map(|_| VarNode {
+                target_m: 100.0,
+                terrain_m: 100.0,
+                terrain_pinned: true,
+                inv_mass: 1.0,
+            })
+            .collect();
+        let mut g = SolveGraph {
+            vars,
+            h: vec![100.0; n],
+            corridors: vec![CorridorNodes {
+                id: 0,
+                vars: (0..n).collect(),
+                arc,
+                at_grade: vec![true; n],
+                grade: 0.15,
+                deviation: 1e9, // the ground box is not what is under test
+            }],
+            // A railway at grade under node 10, wanting 6 m of clearance.
+            crossings: vec![GraphCrossing {
+                upper_ci: 0,
+                upper_arc: 100.0,
+                lower_var: None,
+                lower_terrain_m: 100.0,
+                extra_m: 6.0,
+            }],
+            component: vec![0; n],
+            n_components: 1,
+            junction_var: Vec::new(),
+        };
+        solve(&mut g);
+
+        assert!(g.h[10] >= 106.0 - 1e-3, "the crossing must still clear, got {}", g.h[10]);
+        // And the climb to it is a road's climb. Without the ramp the step from
+        // node 9 to node 10 was the whole 6 m over 10 m of road: 60 %.
+        let worst = (1..n)
+            .map(|k| (g.h[k] - g.h[k - 1]).abs() / 10.0)
+            .fold(0.0f64, f64::max);
+        assert!(worst <= 0.15 + 1e-6, "the approach climbs at {:.0} %", worst * 100.0);
+        // The lift is local: a corridor end 100 m away is untouched.
+        assert!((g.h[0] - 100.0).abs() < 1e-6, "end lifted to {}", g.h[0]);
     }
 
     /// A structure span that runs to the corridor's terminal node — a ramp whose

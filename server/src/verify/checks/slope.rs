@@ -66,6 +66,16 @@ const GROUND_SLOPE: f64 = 2.0;
 /// ratio, so counting it only dilutes the metric.
 const VISIBLE_M: f64 = 0.10;
 
+/// Shortest centerline step whose grade means anything, in metres.
+///
+/// Plan coordinates are a `uint16` lattice — about 2 cm at z16 — so a step of a
+/// few centimetres divides a real height by a quantized run and reports a
+/// ratio that is mostly rounding. Read off the population: over the Montreux
+/// extract the steps below this are 4 % of all of them and hold the entire
+/// top of the ratio distribution, every one spanning under a centimetre of
+/// height.
+const GRADE_RUN_M: f64 = 0.50;
+
 /// How far a terrain vertex may stand off the plane of its neighbours before
 /// the surface counts as torn rather than shaped.
 ///
@@ -85,6 +95,8 @@ pub struct Slope {
     ground_worst: Worst,
     tearing: Dist,
     tearing_worst: Worst,
+    grade: Dist,
+    grade_worst: Worst,
 }
 
 impl Slope {
@@ -100,6 +112,61 @@ impl Slope {
             // keeping the sign would let the two cancel in every summary.
             tearing: Dist::new(0.0, 32.0),
             tearing_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            grade: Dist::new(0.0, 8.0),
+            grade_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+        }
+    }
+
+    /// The longitudinal grade of every drivable centerline step in the tile.
+    ///
+    /// Along the road, not across it: `slope.carriageway_face` measures the
+    /// steepest edge of each asphalt triangle, which is dominated by cross-fall
+    /// and by the meshing, and cannot say whether the *road* climbs faster than
+    /// a road can. A clearance lift dumped on one node is invisible to it and
+    /// obvious here.
+    fn visit_grades(&mut self, tile: &TileScene) {
+        for line in &tile.lines {
+            // Drivable classes only, read from the same table the tiler paints
+            // by: a footway may be a staircase and a rack railway climbs at
+            // 20 %, and reporting either as a defect is noise.
+            let drivable = crate::priors::paint_width_m(Some(&line.class), None).is_some()
+                || line.class == "marking";
+            if !drivable {
+                continue;
+            }
+            for part in &line.parts {
+                for w in part.windows(2) {
+                    let ((ax, ay, az), (bx, by, bz)) = (w[0], w[1]);
+                    let (mx, my) = ((ax + bx) * 0.5, (ay + by) * 0.5);
+                    if !tile.owns(mx, my) {
+                        continue; // the buffer is a neighbour's to report
+                    }
+                    let run = tile.scale.dist(ax, ay, bx, by);
+                    if run < GRADE_RUN_M {
+                        continue;
+                    }
+                    let rise = (bz - az).abs();
+                    let grade = rise / run;
+                    self.grade.push(grade);
+                    if grade > ROAD_GRADE {
+                        let (lon, lat) = tile.lonlat(mx, my);
+                        self.grade_worst.offer(Offender {
+                            lon,
+                            lat,
+                            zoom: tile.z,
+                            value: grade,
+                            note: format!(
+                                "{} at level {} climbs {:.2} m over {:.2} m ({:.0} %)",
+                                line.class,
+                                line.level,
+                                bz - az,
+                                run,
+                                grade * 100.0
+                            ),
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -156,6 +223,7 @@ impl Check for Slope {
             });
             self.visit_terrain_tearing(tile, terrain);
         }
+        self.visit_grades(tile);
         for road in tile.roads.iter().filter(|r| r.is_pavement()) {
             let rim = road.mesh.boundary_faces();
             road.mesh.face_slopes(&tile.scale, |f| {
@@ -221,6 +289,29 @@ impl Check for Slope {
                 worst: self.road_worst.into_vec(),
             },
             Metric {
+                id: "slope.road_grade".into(),
+                invariant: 6,
+                title: "Longitudinal grade of the drawn road".into(),
+                detail: format!(
+                    "Rise over run between consecutive vertices of every drivable centerline, at \
+                     the heights the client strokes it at. Measured along the road, which the \
+                     carriageway mesh cannot answer: its steepest face is dominated by cross-fall \
+                     and by the meshing, so a clearance lift dropped on a single node — the whole \
+                     deficit at one vertex, with no approach to spread it — is invisible there \
+                     and unmistakable here. Steps shorter than {GRADE_RUN_M:.2} m are excluded \
+                     (a quantized plan run divides into noise), as are non-drivable classes: a \
+                     footway may be a staircase. Past {:.0} % no public road climbs.",
+                    ROAD_GRADE * 100.0
+                ),
+                sense: Sense::HigherIsWorse,
+                threshold: ROAD_GRADE,
+                skipped: self.grade.is_empty().then(|| {
+                    "no drivable centerline carries per-vertex heights at this zoom".to_string()
+                }),
+                dist: self.grade,
+                worst: self.grade_worst.into_vec(),
+            },
+            Metric {
                 id: "slope.terrain_tearing".into(),
                 invariant: 6,
                 title: "Drawn terrain standing off its own neighbours".into(),
@@ -253,7 +344,16 @@ mod tests {
 
     fn tile(terrain: Option<SurfaceMesh>, roads: Vec<RoadMesh>) -> TileScene {
         let b = Bounds::of_tile(16, 34000, 23000);
-        TileScene { z: 16, x: 34000, y: 23000, scale: Scale::of(&b), bounds: b, terrain, roads }
+        TileScene {
+            z: 16,
+            x: 34000,
+            y: 23000,
+            scale: Scale::of(&b),
+            bounds: b,
+            terrain,
+            roads,
+            lines: Vec::new(),
+        }
     }
 
     fn run(t: &TileScene) -> Vec<Metric> {
@@ -389,9 +489,68 @@ mod tests {
         grid(xs, ys, z_per_col).mesh
     }
 
-    /// The tearing metric, which is the third one [`Slope`] reports.
+    /// One metric by id, so adding another does not silently repoint a test.
+    fn metric(t: &TileScene, id: &str) -> Metric {
+        run(t).into_iter().find(|m| m.id == id).expect("the metric exists")
+    }
+
     fn tearing(t: &TileScene) -> Metric {
-        run(t).swap_remove(2)
+        metric(t, "slope.terrain_tearing")
+    }
+
+    /// A centerline of `(east_m, height_m)` samples, as the archive carries it.
+    fn centerline(class: &str, pts: &[(f64, f64)]) -> crate::verify::scene::RoadLine {
+        let b = Bounds::of_tile(16, 34000, 23000);
+        let mx = Scale::of(&b).mx;
+        crate::verify::scene::RoadLine {
+            class: class.into(),
+            level: 0,
+            parts: vec![pts.iter().map(|&(e, h)| (0.5 + e / mx, 0.5, h)).collect()],
+        }
+    }
+
+    #[test]
+    fn a_clearance_lift_on_one_node_is_a_grade_violation() {
+        // The Montreux defect in the small: a street climbing gently, with the
+        // whole clearance deficit for a railway crossing dropped on one node.
+        let mut t = tile(None, Vec::new());
+        t.lines = vec![centerline(
+            "residential",
+            &[(0.0, 400.0), (10.0, 400.5), (13.0, 406.5), (19.0, 400.5), (29.0, 401.0)],
+        )];
+        let m = metric(&t, "slope.road_grade");
+        assert_eq!(m.violations(), 2, "the spike's two flanks, and nothing else");
+        assert!((m.worst_value().unwrap() - 2.0).abs() < 0.05, "{:?}", m.worst_value());
+        assert!(m.worst[0].note.contains("residential"));
+
+        // The same street without the spike is unremarkable.
+        let mut ok = tile(None, Vec::new());
+        ok.lines = vec![centerline("residential", &[(0.0, 400.0), (10.0, 400.5), (29.0, 401.0)])];
+        assert_eq!(metric(&ok, "slope.road_grade").violations(), 0);
+    }
+
+    #[test]
+    fn a_staircase_is_not_a_road() {
+        // Footways and rack railways climb at grades no street could hold, and
+        // counting them would bury the defect this metric exists for.
+        let mut t = tile(None, Vec::new());
+        t.lines = vec![
+            centerline("steps", &[(0.0, 400.0), (4.0, 403.0)]),
+            centerline("standard_gauge", &[(0.0, 400.0), (4.0, 403.0)]),
+        ];
+        let m = metric(&t, "slope.road_grade");
+        assert!(m.dist.is_empty(), "neither class is drivable");
+        assert!(m.skipped.is_some(), "and the metric says so rather than reading as perfect");
+    }
+
+    #[test]
+    fn a_quantized_step_is_not_a_grade() {
+        // Two centimetres of plan run at the lattice, with a real height on it:
+        // the ratio is rounding, not a climb.
+        let mut t = tile(None, Vec::new());
+        t.lines = vec![centerline("residential", &[(0.0, 400.0), (0.02, 400.4), (20.0, 401.0)])];
+        let m = metric(&t, "slope.road_grade");
+        assert_eq!(m.violations(), 0, "worst was {:?}", m.worst_value());
     }
 
     #[test]

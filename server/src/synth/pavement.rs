@@ -662,28 +662,26 @@ mod tests {
 
     #[test]
     fn a_flyover_does_not_merge_with_the_road_it_passes_over() {
-        use crate::scene::{Crossing, CrossedKind};
         // The defect this pins: a flyover's *approaches* are ordinary at-grade
         // spans at level 0, exactly like the road it passes over, so keying the
         // union on level alone merged them into one region — and the mesh then
         // ramped continuously between two roads metres apart vertically.
-        // The crossing DAG knows the ordering; the partition has to use it.
+        //
+        // The ordering comes from the solved heights (`synth::sheets`), not from
+        // a mapped crossing: this pair carries no bridge annotation at all, and
+        // separates anyway.
         let over = corridor(0, 6.0 - 100.0 / m_lon(), LAT, 1.0, 0.0, 200.0, 11, 8.0);
         let under = corridor(1, 6.0, LAT - 100.0 / DEG_M, 0.0, 1.0, 200.0, 11, 8.0);
-        let mut scene = SceneGraph::new(vec![over, under]);
-        scene.crossings = vec![Crossing {
-            upper: 0,
-            upper_arc: 100.0,
-            point: Coord { x: 6.0, y: LAT },
-            lower: Some(1),
-            lower_kind: CrossedKind::Road,
-            upper_level: 1,
-            lower_level: 0,
-        }];
-        let solved = SolvedModel::from_profiles((0..2).map(|_| None).collect(), 15);
+        let scene = SceneGraph::new(vec![over, under]);
+        let nodes: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
+        let solved = SolvedModel::from_profiles(
+            vec![
+                Some(crate::solve::Profile::flat(&nodes[0], 410.0)),
+                Some(crate::solve::Profile::flat(&nodes[1], 400.0)),
+            ],
+            15,
+        );
         let junctions = crate::synth::junction::bake(&scene, &solved);
-        assert_eq!(junctions.layer_of(0), 1, "the upper corridor should outrank");
-        assert_eq!(junctions.layer_of(1), 0, "the lower corridor stays at ground");
 
         let model = bake(&junctions, 1);
         let levels =
@@ -691,7 +689,11 @@ mod tests {
         assert_eq!(levels.len(), 2, "the two roads must be separate regions");
         let layers: Vec<u32> = levels.iter().map(|l| l.layer).collect();
         assert!(layers.contains(&0) && layers.contains(&1), "layers {layers:?}");
-        // Each is a single unmerged ribbon: 200 m x 10 m (width + 2 x shoulder).
+
+        // Each road is one unmerged ribbon: the lift covers the upper road's
+        // whole run, approaches included, because a layer that changes along a
+        // road puts a drawn region boundary across its carriageway
+        // (`synth::sheets`). 200 m x 10 m each (width + 2 x shoulder).
         for ls in levels {
             assert_eq!(ls.shapes.len(), 1, "a layer should hold one ribbon");
         }

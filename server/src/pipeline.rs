@@ -726,7 +726,7 @@ fn encode_tile(
     // One height field per tile, shared by the paint, the bands and the plates —
     // so all three land on the same asphalt (docs/ROADS.md invariant 5).
     let field = synth::height::HeightField::for_tile(junctions, solved, z, &bounds);
-    stamp_synth(&mut buckets, &field, junctions, sampler, solved, z, &bounds);
+    stamp_synth(&mut buckets, &field, sampler, solved, z, &bounds);
     // The at-grade paved regions this tile actually meshed — what the terrain
     // mesh below cuts its hole from (docs/GROUND.md §3). Empty where no hole is
     // cut, so the terrain mesher needs no second opinion on whether to cut.
@@ -854,7 +854,6 @@ fn is_marking(f: &EncoderFeature) -> bool {
 fn stamp_synth(
     buckets: &mut [Vec<EncoderFeature>],
     field: &synth::height::HeightField,
-    junctions: &JunctionModel,
     sampler: &mut GroundSampler,
     solved: &SolvedModel,
     z: u8,
@@ -862,7 +861,7 @@ fn stamp_synth(
 ) {
     let surface_zoom = z >= crate::priors::ROAD_SURFACE_MIN_ZOOM;
     buckets[layers::TRANSPORTATION as usize].retain_mut(|f| {
-        synth::emit(f, field, junctions, sampler, solved, z, bounds);
+        synth::emit(f, field, sampler, solved, z, bounds);
         // A carriageway the union paved has no business also painting its SDF
         // fill: the mesh *is* the surface now. This covers the at-grade stroke and
         // the `deck: true` stroke re-painted over a structure, whose own solid
@@ -1403,7 +1402,7 @@ fn flush_tile(
     let bounds = Bounds::of_tile(z, x, y);
     stamp_elevations(buckets, sampler, z);
     let field = synth::height::HeightField::for_tile(junctions, solved, z, &bounds);
-    stamp_synth(buckets, &field, junctions, sampler, solved, z, &bounds);
+    stamp_synth(buckets, &field, sampler, solved, z, &bounds);
     let cut_regions =
         add_road_surface(buckets, pavement, &field, sampler, &bounds, z, solved.z_ref);
 
