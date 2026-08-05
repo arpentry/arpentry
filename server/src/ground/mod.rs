@@ -1,4 +1,4 @@
-//! Stage 3 — the engineered ground (docs/GENERATION.md §6, invariant 1).
+//! Stage 3 — the engineered ground (docs/GENERATION.md §5, invariant 1).
 //!
 //! One authoritative ground function that every later consumer reads: terrain
 //! meshing, road draping, building founding, structure contact. The function

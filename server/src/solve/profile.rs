@@ -1,6 +1,6 @@
 //! The solved vertical model of one corridor — the road's own (gentle)
-//! elevation profile through its bridges and tunnels (docs/GENERATION.md §6
-//! stage 2).
+//! elevation profile through its bridges and tunnels (docs/GENERATION.md §5
+//! stage 3).
 //!
 //! The terrain along a corridor is wild — the Viaduc de Chillon's centerline
 //! DEM drops into a ravine (a bridge spans it ~70 m up) and rears up to a

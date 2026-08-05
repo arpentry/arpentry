@@ -1,6 +1,6 @@
 //! Stage-artifact dumps (`--dump <dir>`): each pipeline stage's output as
 //! plain GeoJSON, inspectable in QGIS or kepler.gl without running the stages
-//! after it (docs/GENERATION.md §6, stage-boundary testability).
+//! after it (docs/GENERATION.md §5, stage-boundary testability).
 
 use std::fs;
 use std::io;
@@ -61,7 +61,7 @@ fn junctions_geojson(scene: &SceneGraph, solved: &SolvedModel) -> Json {
         .iter()
         .map(|j| {
             // The per-member road heights and their spread — the residual
-            // disagreement is the continuity defect (docs/CONSISTENCY.md P0).
+            // disagreement is the continuity defect (docs/GENERATION.md §8).
             let mut heights: Vec<f64> = Vec::new();
             let members: Vec<Json> = j
                 .members

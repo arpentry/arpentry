@@ -7,13 +7,14 @@ Owned by `server/src/verify/`. Run with `arpentry_verify`.
 
 ## 1. Why
 
-`GENERATION.md` §5 states six invariants and calls them "acceptance criteria for
-any implementation". §4 states fourteen canonical situations and calls them "the
-test scenarios for any design". Both were prose. The only instrument that
-existed was `solve::consistency`, which measures the *solved model* — stage 2 of
-five — and reports it consistent.
+`GENERATION.md` §7 states eight invariants and calls them "acceptance criteria
+for any implementation". §6 states nineteen canonical situations and calls them
+"the test scenarios for any design". Both were prose. The only instrument that
+existed was `solve::consistency`, which measures the *solved model* and reports
+it consistent.
 
-Every defect that has cost real time lives after stage 2, in stages 3–5:
+Every defect that has cost real time lives downstream of the solve, in the
+ground, synthesis and tiling steps:
 asphalt chording over the ground, a crest sampling a neighbour's bench, plates
 z-fighting, a deck stepping at its abutment. Each is a **relation between two
 emitted surfaces**. Nothing that reads `SolvedModel` can see one, so the only
@@ -293,7 +294,7 @@ obviously suspect.
 
 ## 8. The corpus
 
-`server/verify/scenarios.json` binds each situation from `GENERATION.md` §4 to a
+`server/verify/scenarios.json` binds each situation from `GENERATION.md` §6 to a
 real place. Sites are **mined, not invented**: `--mine` finds the strongest
 instance of each detectable situation in an archive — the highest viaduct, the
 deepest bore, the tile holding both a deck and a portal — as a superlative

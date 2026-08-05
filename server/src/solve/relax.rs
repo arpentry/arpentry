@@ -1,4 +1,4 @@
-//! The projection solver core (docs/CONSISTENCY.md §4.1, Phase C).
+//! The projection solver core (docs/GENERATION.md §4.4).
 //!
 //! A deterministic Jacobi projection loop over the [`SolveGraph`]. Continuity
 //! needs no projection — it is the shared variable. Each sweep applies:
@@ -20,7 +20,7 @@
 //!   network settles to).
 //! - **Deviation box** (hard, at-grade only) — each at-grade node clamped back
 //!   inside its class ground-hugging budget of the conditioned terrain
-//!   (docs/CONSISTENCY.md §2.1, the *boxed* deviation). Applied *after* grade,
+//!   (docs/GENERATION.md §4.4, the soft deviation budget). Applied *after* grade,
 //!   so on ground steeper than the class grade the box wins and the road breaks
 //!   grade rather than dive metres below the hillside — a street trusts the
 //!   slope (S9), an engineered road cuts only within its budget. Without it the
@@ -29,7 +29,7 @@
 //!
 //! The terrain-adherence spring is a mass term, so the coupled system is a
 //! screened Laplacian: a disturbance decays exponentially and the sweeps
-//! converge quickly (docs/CONSISTENCY.md §2.1). Determinism (invariant 5):
+//! converge quickly (docs/GENERATION.md §4.4). Determinism (invariant 5):
 //! strict Jacobi for the soft stage, fixed corridor/node order for the hard
 //! stages, a fixed sweep budget.
 
@@ -210,7 +210,7 @@ fn rigidity_pass(g: &mut SolveGraph) {
 }
 
 /// Clamps every at-grade node back inside its class ground-hugging budget of
-/// the conditioned terrain (the boxed deviation, docs/CONSISTENCY.md §2.1).
+/// the conditioned terrain (the boxed deviation, docs/GENERATION.md §4.4).
 /// At-grade nodes only — a structure node floats on its deck ramp, bounded by
 /// rigidity, not by the ground. Runs *after* grade so the box wins: where the
 /// terrain is steeper than the class grade, the road holds within the budget

@@ -1,4 +1,4 @@
-//! Stage 4 — synthesize geometry from the solved model (docs/GENERATION.md §6).
+//! Stage 4 — synthesize geometry from the solved model (docs/GENERATION.md §5).
 //!
 //! Parameterized generators per feature kind, all reading solved heights
 //! ([`SolvedModel`]) and the engineered ground ([`GroundSampler`]), adding no

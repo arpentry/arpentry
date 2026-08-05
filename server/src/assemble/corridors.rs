@@ -1,5 +1,5 @@
 //! Joining road segments into corridors and resolving level annotations into
-//! corridor-wide structure spans (docs/GENERATION.md §6 stage 1).
+//! corridor-wide structure spans (docs/GENERATION.md §5 stage 1).
 //!
 //! Overture splits a road wherever any attribute changes, so one physical
 //! viaduct — one grade line — arrives as many segments, each annotating its own

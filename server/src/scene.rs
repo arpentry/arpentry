@@ -1,5 +1,5 @@
 //! The assembled scene model — the entities the solver works on
-//! (docs/GENERATION.md §6 stage 1).
+//! (docs/GENERATION.md §5 stage 1).
 //!
 //! The map data's unit is the *segment* (an Overture feature split wherever any
 //! attribute changes); the physical world's unit is the *corridor* — a road

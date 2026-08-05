@@ -1,4 +1,4 @@
-//! Stage 1 — assemble the global scene model (docs/GENERATION.md §6).
+//! Stage 1 — assemble the global scene model (docs/GENERATION.md §5).
 //!
 //! Reads the transportation input once, keeps the segments whose vertical
 //! geometry needs solving (every drivable road, plus anything carrying

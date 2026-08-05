@@ -1,4 +1,4 @@
-//! The canonical situations (docs/GENERATION.md §4), bound to real places.
+//! The canonical situations (docs/GENERATION.md §6), bound to real places.
 //!
 //! §4 already says what the test set is: "A generator is adequate when it
 //! handles all of these; each stresses a different part of the problem. They
@@ -41,12 +41,14 @@ pub struct Site {
     pub source: String,
 }
 
-/// The fourteen situations, verbatim from docs/GENERATION.md §4.
+/// The first fourteen situations of docs/GENERATION.md §6, normalized to
+/// ASCII. S15–S19 (level crossing, street-running tram, rail over road, rack
+/// railway, aqueduct) are stated in the doc but not yet bound to places.
 pub fn catalogue() -> Vec<Scenario> {
     vec![
         Scenario { id: "S1", name: "Valley viaduct", stresses: "Profile reconstruction, piers, multi-segment structure entities", minable: true },
         Scenario { id: "S2", name: "Saddle bridge", stresses: "S1's degenerate case; deck approximately level", minable: true },
-        Scenario { id: "S3", name: "River bridge on flat ground", stresses: "Feature clearance over water; approach ramps rising from flat ground", minable: false },
+        Scenario { id: "S3", name: "River bridge on flat ground", stresses: "Feature clearance (water); approach ramps must rise from flat ground", minable: false },
         Scenario { id: "S4", name: "Overpass / interchange on flat ground", stresses: "Crossing detection, network constraints, embankments", minable: true },
         Scenario { id: "S5", name: "Mountain tunnel", stresses: "Annotation mistrust, portal placement, terrain holes", minable: true },
         Scenario { id: "S6", name: "Urban underpass / cut-and-cover", stresses: "The flat-ground tunnel case terrain alone cannot express", minable: true },
@@ -99,7 +101,7 @@ pub fn to_json(sites: &HashMap<String, Site>) -> Json {
         })
         .collect();
     json!({
-        "comment": "Sites exercising docs/GENERATION.md §4, one per canonical situation. \
+        "comment": "Sites exercising docs/GENERATION.md §6, one per canonical situation. \
                     Mined with `arpentry_verify <archive> --mine`; edit freely, but prefer a \
                     mined superlative over a guessed coordinate.",
         "sites": list,

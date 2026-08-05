@@ -1,4 +1,4 @@
-//! Stage 2 — solve the vertical model (docs/GENERATION.md §6).
+//! Stage 3 — solve the vertical model (docs/GENERATION.md §5).
 //!
 //! One pass over the assembled scene graph turns topology into geometry:
 //! every corridor that needs a vertical model — every drivable road, plus
@@ -170,7 +170,7 @@ pub fn run(
         Ok(())
     })?;
 
-    // Global vertical consistency (docs/CONSISTENCY.md): fuse the per-corridor
+    // Global vertical consistency (docs/GENERATION.md §4.4): fuse the per-corridor
     // profiles into one constraint graph whose junction connectors are *shared*
     // height variables, and relax it. Continuity (invariant 2) then holds by
     // construction — two corridors at a connector read one number, so no step is

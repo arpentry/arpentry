@@ -1,7 +1,7 @@
 //! Scene verification — the numbers every change has to beat.
 //!
 //! `solve::consistency` measures the solved model, and reports it consistent.
-//! That is stage 2 of five (docs/GENERATION.md §6), and it is not where the
+//! That is stage 3 of five (docs/GENERATION.md §5), and it is not where the
 //! remaining defects are: asphalt chording over the ground, a crest sampling a
 //! neighbour's bench, a plate z-fighting its neighbour, a deck stepping at its
 //! abutment. Each is a *relation between two emitted surfaces*, invisible to
@@ -10,7 +10,7 @@
 //!
 //! Looking at pictures is a fine way to *discover* a defect and a poor way to
 //! keep one dead. This module is the other half: every invariant in
-//! GENERATION.md §5 turned into a measurement over the shipped archive, so a
+//! GENERATION.md §7 turned into a measurement over the shipped archive, so a
 //! change is judged by a table diff rather than an impression, and so a defect
 //! found once by eye becomes a number that can never quietly come back.
 //!
@@ -106,7 +106,7 @@ impl Worst {
 pub struct Metric {
     /// Stable across runs; the key a baseline diff joins on.
     pub id: String,
-    /// Which GENERATION.md §5 invariant this measures.
+    /// Which GENERATION.md §7 invariant this measures.
     pub invariant: u8,
     pub title: String,
     /// One line: what a violation means and what it would look like on screen.

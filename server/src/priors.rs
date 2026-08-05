@@ -1,5 +1,5 @@
 //! Engineering priors — everything the map data does not say, as named,
-//! class-keyed parameters in one place (docs/GENERATION.md §6).
+//! class-keyed parameters in one place (docs/GENERATION.md §9).
 //!
 //! The vector data gives topology (what is above what, roughly where things
 //! start and end); the render needs geometry (heights everywhere). The missing

@@ -14,6 +14,9 @@ Read these docs before making changes to understand the design and conventions:
 | `docs/FORMAT.md` | Tile format specification: geometry model, coordinate space, properties, FlatBuffers schema |
 | `docs/VIEWER.md` | Viewer specification: coordinate pipeline, tile management, rendering |
 | `docs/CONTROL.md` | Map control specification: camera parameters, input bindings, pan/zoom/rotate, inertia, fly-to |
+| `docs/GENERATION.md` | **The vertical world model**: feature strata and authority, the constraint solve, the engineered ground, the invariants and their checks |
+| `docs/GROUND.md` | The ground imprint and its per-zoom meshes |
+| `docs/ROADS.md` | The horizontal road surface: widths, junction areas, markings |
 | `docs/VERIFICATION.md` | Measuring an emitted archive against the invariants: the scorecard, its thresholds, the scenario corpus |
 
 Follow `docs/DESIGN.md` principles and `docs/STYLE.md` conventions in all code.
@@ -69,7 +72,7 @@ These are gotchas not documented elsewhere:
 ## Verifying Generated Geometry
 
 Before reaching for a screenshot, measure. `arpentry_verify` scores an emitted
-archive against the `docs/GENERATION.md` §5 invariants — asphalt buried by the
+archive against the `docs/GENERATION.md` §7 invariants — asphalt buried by the
 drawn ground, level ordering inverted, tile-seam steps, manufactured retaining
 walls, structures drifting between zooms — in about 7 s over a city extract:
 
@@ -81,7 +84,7 @@ cd server && cargo build --release
 ./target/release/arpentry_verify ../data/overture-ch/preview.arpa \
     --baseline verify/baseline-montreux-z16.json
 
-# Scope to one place, or to one canonical situation from GENERATION.md §4.
+# Scope to one place, or to one canonical situation from GENERATION.md §6.
 ./target/release/arpentry_verify ../data/overture-ch/preview.arpa --at 6.9290,46.4200
 ./target/release/arpentry_verify ../data/overture-ch/preview.arpa --scenario S5
 ```

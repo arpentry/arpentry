@@ -1,5 +1,5 @@
 //! Earthwork modifiers — the local reshapings of the natural terrain that the
-//! solved model implies (docs/GENERATION.md §6 stage 3, D3).
+//! solved model implies (docs/GENERATION.md §5 stage 3, D3).
 //!
 //! Every at-grade stretch of a solved corridor benches the ground to its road
 //! height — a grade-limited cut through a bump, the embankment ramp climbing

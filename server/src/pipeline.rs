@@ -1,4 +1,4 @@
-//! Top-level pipeline — stage 5 of docs/GENERATION.md §6, hosting stages 1–4.
+//! Top-level pipeline — stage 5 of docs/GENERATION.md §5, hosting stages 1–4.
 //!
 //! [`run`] first builds the global world model — assemble the scene graph
 //! (stage 1), solve the vertical model (stage 2), derive the engineered
@@ -184,7 +184,7 @@ pub struct Stats {
     /// per-road bands through.
     pub pave_chunks: u64,
     pub pave_area_m2: f64,
-    /// Vertical consistency of the solved model (docs/CONSISTENCY.md P0): the
+    /// Vertical consistency of the solved model (docs/GENERATION.md §8): the
     /// worst junction step (member road-height disagreement), its 99th
     /// percentile, how many junctions disagree by more than half a metre, and
     /// the worst clearance shortfall at a crossing. The number the

@@ -1,5 +1,5 @@
 //! Vertical-consistency measurement — the number the solver must drive to zero
-//! (docs/CONSISTENCY.md P0 / GENERATION.md invariants 2 & 3).
+//! (docs/GENERATION.md §8, invariants 2 & 3).
 //!
 //! Two defects are read straight off the solved model:
 //!

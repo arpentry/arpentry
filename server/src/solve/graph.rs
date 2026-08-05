@@ -1,4 +1,4 @@
-//! The global vertical constraint graph (docs/CONSISTENCY.md §2, Phase B).
+//! The global vertical constraint graph (docs/GENERATION.md §4.4).
 //!
 //! The per-corridor profiles give geometry (densified nodes, arc, conditioned
 //! terrain, at-grade flags, a warm-start height); this module fuses them into
@@ -27,7 +27,7 @@ pub type VarId = usize;
 /// An at-grade node is pinned near the ground, so it is *heavy* (resists
 /// moving); a structure node floats on its deck ramp, so it is *light*. A
 /// correction therefore flows into the yielding side: an approach bends to
-/// meet a deck, the deck holds its line (docs/CONSISTENCY.md §4.1).
+/// meet a deck, the deck holds its line (docs/GENERATION.md §4.4).
 const AT_GRADE_INV_MASS: f64 = 1.0;
 const STRUCTURE_INV_MASS: f64 = 8.0;
 
