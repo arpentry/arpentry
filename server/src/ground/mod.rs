@@ -238,22 +238,49 @@ impl GroundStack {
 /// fill it makes needs), and a daylighting cut in front of every solved
 /// tunnel portal (S5 — the mouth face must not hide below grade).
 ///
-/// One layer for now. The strata do not yet solve in order (M5), so everything
-/// the model implies is imprinted together — which is what the fold over a
-/// single layer computes, exactly as the flat model did.
+/// **The ground accumulates** (§4.3). Each stratum imprints on the ground its
+/// senior published, in authority order:
+///
+/// ```text
+/// groundₙ₊₁ = groundₙ ⊕ stratum n's earthworks
+/// ```
+///
+/// so a road cutting is carved into a ground that already holds the rail
+/// embankment. The layer being built reads the stack beneath it — which is the
+/// difference between "every earthwork against the natural hillside" and "each
+/// earthwork against the world as it stands when it is built".
 pub fn derive(
     scene: &SceneGraph,
     solved: &SolvedModel,
     terrain_path: Option<&Path>,
     threads: usize,
 ) -> GroundStack {
-    let edges = derive_earthworks(scene, solved, terrain_path, threads);
+    // H first: water is gravity-defined and no earthwork changes it, so it is
+    // the ground everything else is cut into.
     let waters = derive_waters(scene, solved, terrain_path, threads);
-    GroundStack::new(vec![GroundLayer {
-        stratum: Stratum::S,
-        earthworks: Earthworks::new(edges),
-        waters,
-    }])
+    let mut layers: Vec<GroundLayer> = Vec::new();
+    if !waters.is_empty() {
+        layers.push(GroundLayer { stratum: Stratum::H, earthworks: Earthworks::new(Vec::new()), waters });
+    }
+    for stratum in [Stratum::R, Stratum::S, Stratum::D] {
+        let members: Vec<usize> = scene
+            .corridors
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.kind.stratum() == stratum && solved.profile(c.id).is_some())
+            .map(|(i, _)| i)
+            .collect();
+        if members.is_empty() {
+            continue;
+        }
+        let edges = derive_earthworks(scene, solved, &members, &layers, terrain_path, threads);
+        layers.push(GroundLayer {
+            stratum,
+            earthworks: Earthworks::new(edges),
+            waters: Waters::new(Vec::new()),
+        });
+    }
+    GroundStack::new(layers)
 }
 
 /// Every profiled corridor's earthworks, derived in parallel (the bench-edge
@@ -263,17 +290,19 @@ pub fn derive(
 fn derive_earthworks(
     scene: &SceneGraph,
     solved: &SolvedModel,
+    members: &[usize],
+    beneath: &[GroundLayer],
     terrain_path: Option<&Path>,
     threads: usize,
 ) -> Vec<EarthworkEdge> {
-    let n = scene.corridors.len();
+    let n = members.len();
     let dem = terrain_path.and_then(|p| Dem::open(p).ok());
     let Some(primary) = dem else {
         // No DEM: no side sampling — the centerline trigger alone (the flat
         // world solves no profiles anyway; this is the test path).
-        return scene
-            .corridors
+        return members
             .iter()
+            .map(|&i| &scene.corridors[i])
             .filter_map(|c| solved.profile(c.id).map(|p| corridor_earthworks(c, p, None)))
             .flatten()
             .collect();
@@ -296,10 +325,27 @@ fn derive_earthworks(
                         *cur += 1;
                         i
                     };
-                    let c = &scene.corridors[i];
+                    let c = &scene.corridors[members[i]];
                     let Some(p) = solved.profile(c.id) else { continue };
-                    let mut sample =
-                        |q: Coord| reference_surface(&mut dem, z_ref, q.x, q.y);
+                    // **The ground beneath this stratum, not the raw DEM.**
+                    // This sampler decides how far a batter reaches and whether
+                    // a bench is plausible at all, from the cut or fill at the
+                    // bench edge and the cross-slope there. Reading the natural
+                    // hillside made every earthwork answer as if it were the
+                    // only one — a road bench beside a rail embankment computed
+                    // its face against ground the embankment had already
+                    // replaced. I1 says no generator samples the raw DEM
+                    // outside terrain conditioning; this was the one place in
+                    // the shipped code that did.
+                    let mut scratch: Vec<u32> = Vec::new();
+                    let mut sample = |q: Coord| {
+                        let raw = reference_surface(&mut dem, z_ref, q.x, q.y);
+                        let mut h = raw;
+                        for layer in beneath {
+                            h = layer.apply(q.x, q.y, h, 0.0, &mut scratch);
+                        }
+                        h
+                    };
                     let edges = corridor_earthworks(c, p, Some(&mut sample));
                     out.lock().expect("earthwork results poisoned")[i] = edges;
                 }
@@ -746,6 +792,48 @@ mod tests {
         // which is what "a road cutting is carved into a ground that already
         // holds the rail embankment" means.
         assert_eq!(stack.height(lon, lat, 380.0, 0.0, &mut sc), 410.0);
+    }
+
+    /// The accumulation, at its narrowest: a junior layer's bench sees the
+    /// senior layer's ground, not the natural hillside.
+    ///
+    /// This is what `groundₙ₊₁ = groundₙ ⊕ stratum n's earthworks` buys. The
+    /// bench-edge sampler decides how far a batter reaches from the cut or fill
+    /// it makes there; against the raw DEM every earthwork answers as if it
+    /// were the only one in the world.
+    #[test]
+    fn a_junior_layer_reads_the_ground_its_senior_left() {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let bench = |target: f64, chain: u32| EarthworkEdge {
+            a: Coord { x: 6.0, y: 46.0 },
+            b: Coord { x: 6.002, y: 46.0 },
+            target_a: target,
+            target_b: target,
+            half_width_m: 8.0,
+            carriageway_m: 6.0,
+            batter_m: [4.0; 2],
+            batter_run: [EARTHWORK_BATTER; 2],
+            chain,
+            arc0: 0.0,
+            cos_lat,
+            carve: false,
+        };
+        // A senior embankment at 420 m over ground the DEM puts at 400 m.
+        let senior = GroundLayer::of_earthworks(Stratum::R, Earthworks::new(vec![bench(420.0, 0)]));
+        let mut sc = Vec::new();
+        let (lon, lat) = (6.001, 46.0);
+        // Beside the embankment, a point the batter still reaches: the ground
+        // there is no longer the DEM's 400 m.
+        let off = 46.0 + 10.0 / DEG_M;
+        let raw = 400.0;
+        let senior_ground = senior.apply_for_test(lon, off, raw, 0.0, &mut sc);
+        assert!(
+            senior_ground > raw,
+            "the senior embankment should have raised the ground beside it, got {senior_ground}"
+        );
+        // On the embankment itself the ground *is* the senior's target, which
+        // is what a junior road built across it has to bench against.
+        assert_eq!(senior.apply_for_test(lon, lat, raw, 0.0, &mut sc), 420.0);
     }
 
     /// I8's predicate: a layer moves the ground only inside its own declared

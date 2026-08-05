@@ -64,13 +64,13 @@
         }
       ],
       "population": "Every terrain-mesh boundary edge midpoint that is not on the tile's own edge and has at-grade asphalt or casing over it. A cut edge carries no apron by design and is excluded with the tile edge. The apron is vertical, so its span is asked within 1.5 m of the rim rather than at it, with 0.5 m of slack at each end.",
-      "samples": 397650,
+      "samples": 397653,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.006666666666667709,
       "threshold": 0.5,
       "title": "Gap at the hole's rim with nothing spanning it",
-      "violation_pct": 0.003017729158807997,
+      "violation_pct": 0.0030177063922565655,
       "violations": 12,
       "worst": 1.0921371225208532
     },
@@ -137,14 +137,14 @@
         }
       ],
       "population": "Every silhouette (boundary) edge midpoint of every level-0 road_surface mesh inside the tile proper, probed 1 m along the outward normal. Structures are excluded: a deck edge is not a kerb.",
-      "samples": 367498,
+      "samples": 367497,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 7.646666666666668,
       "threshold": 0.5,
       "title": "Drop from the kerb to the ground beside it",
-      "violation_pct": 13.515991923765572,
-      "violations": 49671,
+      "violation_pct": 13.485008040881967,
+      "violations": 49557,
       "worst": 14.790527526127676
     },
     {
@@ -286,11 +286,11 @@
       "samples": 819996,
       "sense": "lower_is_worse",
       "skipped": null,
-      "tail": -2.4999999999999964,
+      "tail": -2.5266666666666637,
       "threshold": -2.0,
       "title": "Bridge soffit above the drawn ground",
-      "violation_pct": 0.34487973112063963,
-      "violations": 2828,
+      "violation_pct": 0.35744076800374636,
+      "violations": 2931,
       "worst": -6.881629848480202
     },
     {
@@ -362,8 +362,8 @@
       "tail": -8.579999999999998,
       "threshold": -1.0,
       "title": "Ground cover over the tunnel roof",
-      "violation_pct": 16.313931977740374,
-      "violations": 86071,
+      "violation_pct": 16.29687334152148,
+      "violations": 85981,
       "worst": -11.024980783462524
     },
     {
@@ -372,7 +372,7 @@
       "median": 0.0033333333333333335,
       "offenders": [],
       "population": "Every global border lattice point of the Terrain mesh claimed by two or more tiles at this zoom. Points where one side had split open have no single answer to compare and are excluded — they are counted under seam.terrain_split.",
-      "samples": 150691,
+      "samples": 150692,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.0033333333333333335,
@@ -388,7 +388,7 @@
       "median": 0.0033333333333333335,
       "offenders": [],
       "population": "Every pair of coincident Terrain border vertices inside one tile. Needs no neighbour, so it covers border tiles the step metric cannot score.",
-      "samples": 315211,
+      "samples": 315213,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.0033333333333333335,
@@ -557,34 +557,6 @@
           "zoom": 16
         },
         {
-          "lat": 46.45635754801333,
-          "lon": 6.940170228481293,
-          "note": "terrain face at 185:1 spanning 1.72 m, tile 16/34031/49682",
-          "value": 185.41063627043002,
-          "zoom": 16
-        },
-        {
-          "lat": 46.4563580788672,
-          "lon": 6.940186880528927,
-          "note": "terrain face at 185:1 spanning 1.72 m, tile 16/34031/49682",
-          "value": 185.41063627043002,
-          "zoom": 16
-        },
-        {
-          "lat": 46.43327867612243,
-          "lon": 6.924792006611824,
-          "note": "terrain face at 156:1 spanning 1.44 m, tile 16/34028/49673",
-          "value": 155.84611784572704,
-          "zoom": 16
-        },
-        {
-          "lat": 46.44214862957597,
-          "lon": 6.899671051651239,
-          "note": "terrain face at 139:1 spanning 3.12 m, tile 16/34024/49677",
-          "value": 138.5034573062589,
-          "zoom": 16
-        },
-        {
           "lat": 46.446011289954185,
           "lon": 6.915938705205917,
           "note": "terrain face at 118:1 spanning 3.73 m, tile 16/34027/49678",
@@ -604,17 +576,45 @@
           "note": "terrain face at 107:1 spanning 3.28 m, tile 16/34031/49661",
           "value": 107.08181052638807,
           "zoom": 16
+        },
+        {
+          "lat": 46.41437150537968,
+          "lon": 6.945702061057091,
+          "note": "terrain face at 101:1 spanning 1.60 m, tile 16/34032/49666",
+          "value": 100.78872790276571,
+          "zoom": 16
+        },
+        {
+          "lat": 46.41435597091913,
+          "lon": 6.945710498839617,
+          "note": "terrain face at 101:1 spanning 1.60 m, tile 16/34032/49666",
+          "value": 100.78872790276571,
+          "zoom": 16
+        },
+        {
+          "lat": 46.446011206135154,
+          "lon": 6.915940046310425,
+          "note": "terrain face at 94:1 spanning 3.73 m, tile 16/34027/49678",
+          "value": 93.9194321517243,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45242786034942,
+          "lon": 6.886427979916334,
+          "note": "terrain face at 73:1 spanning 2.88 m, tile 16/34021/49680",
+          "value": 73.41583360041786,
+          "zoom": 16
         }
       ],
       "population": "Every terrain triangle in every measured tile whose rise is at least 0.10 m. Below that a steep ratio is quantization on a sliver, not a cliff.",
-      "samples": 12954661,
+      "samples": 12955667,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 3.5000000000000004,
+      "tail": 3.486666666666667,
       "threshold": 2.0,
       "title": "Drawn terrain face steepness",
-      "violation_pct": 0.6003553470059927,
-      "violations": 77774,
+      "violation_pct": 0.5970205933820312,
+      "violations": 77348,
       "worst": 206.77683074237848
     },
     {
@@ -680,13 +680,13 @@
         }
       ],
       "population": "Every level-0 road_surface triangle spanning at least 0.10 m of height, excluding the mesh silhouette. The kerb rim is vertical by design and was 44 % of the steep faces counted before it was excluded.",
-      "samples": 354709,
+      "samples": 354707,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 1.3266666666666667,
       "threshold": 0.3,
       "title": "Interior carriageway face steepness",
-      "violation_pct": 1.4905175791987235,
+      "violation_pct": 1.4905259834172992,
       "violations": 5287,
       "worst": 6.594879231578387
     },
@@ -826,14 +826,14 @@
         }
       ],
       "population": "Every interior terrain vertex flanked by opposite-signed breaks on both sides — an oscillation, not a step. Counting one-sided breaks would report every wall ever drawn: unfiltered it called 3.9 % of the extract torn, and with the filter 0.20 %.",
-      "samples": 9714580,
+      "samples": 9714288,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.5966666666666667,
       "threshold": 0.5,
       "title": "Drawn terrain standing off its own neighbours",
-      "violation_pct": 0.15001163200055997,
-      "violations": 14573,
+      "violation_pct": 0.14767937701661718,
+      "violations": 14346,
       "worst": 6.4853515625
     },
     {
