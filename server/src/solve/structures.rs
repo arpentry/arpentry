@@ -31,7 +31,9 @@
 //! that has to happen before the consumers move. Switching them first would
 //! have put thirteen thousand phantom bridges into the scene.
 
-use crate::priors::{Prior, DECK_THICKNESS_M, MIN_STRUCTURE_M, SHORT_STRUCTURE_DIP_M};
+use crate::priors::{
+    Prior, MIN_STRUCTURE_M, SHORT_STRUCTURE_DIP_M, TUNNEL_COVER_M, TUNNEL_HEIGHT_M,
+};
 use crate::scene::SpanKind;
 
 use super::profile::Profile;
@@ -45,35 +47,58 @@ pub struct StructureRun {
     pub kind: SpanKind,
 }
 
-/// How far the road must stand clear of the ground before a *deck* is the
+/// How far the road must stand **clear of** the ground before a deck is the
 /// honest answer rather than an embankment.
 ///
-/// **This value is wrong, and the check knows by how much.** It was reasoned
-/// from the geometry — a deck's soffit sits a [`DECK_THICKNESS_M`] below its
-/// running surface and a mouth needs [`PORTAL_CLEARANCE_M`] to read as open, so
-/// anything shallower cannot be drawn as a structure without burying the solid
-/// in its own fill — and that argument gives a *lower bound*, not a threshold.
+/// Calibrated, not reasoned. The first version of this took the deck's own
+/// geometry — a soffit a thickness below the surface, a mouth needing clearance
+/// to read as open — and got 2.5 m, which is a sound *lower* bound and a
+/// useless threshold: a street may leave its terrain by `deviation_m`, which is
+/// also 2.5 m, so every street at its budget read as a bridge.
 ///
-/// The upper bound is the one that matters and it is an engineering prior
-/// nobody has measured here: how much fill a road plausibly stands on. A street
-/// may leave its conditioned terrain by `deviation_m`, which is 2.5 m — exactly
-/// this number — so every street sitting at its budget reads as a bridge. On the
-/// Montreux extract that gives **13,754 derived structures against 495
-/// annotated ones**, median 59 m of "deck" that is really embankment
-/// (`structure.derived_new`).
+/// `examples/gap_histogram` measures the population instead. Over 411,477
+/// at-grade nodes on the Montreux extract the gap is tight — p50 0.0 m, p95
+/// 0.9 m, p99 2.5 m — and the tail beyond it is thin and smooth, with no knee
+/// to snap to. What the choice buys, per the same run:
 ///
-/// Calibrating it is the next step, and the discipline for it is the one that
-/// caught this: histogram the gap over the whole network first and look for the
-/// second mode, rather than reasoning a number out of the deck's own thickness.
-pub const DECK_STANDOFF_M: f64 = DECK_THICKNESS_M + crate::priors::PORTAL_CLEARANCE_M;
+/// | standoff | at-grade called a deck |
+/// |---------:|----------------------:|
+/// |    2.5 m |                 1.01 % |
+/// |    4.0 m |                 0.51 % |
+/// |    6.0 m |                 0.30 % |
+/// |    8.0 m |                 0.18 % |
+///
+/// 4 m is the smallest value clear of the at-grade population's own spread
+/// (p99 + 1.5 m), which is what the threshold has to mean: past here the road
+/// is not on fill any more.
+pub const DECK_STANDOFF_M: f64 = 4.0;
+
+/// How far the road must run **below** the ground before a bore is the honest
+/// answer rather than a cutting.
+///
+/// The first version used zero — a road below the ground is under it, which is
+/// true and not the question. 35 % of at-grade nodes sit between −2 m and 0
+/// against the *raw* terrain, because a benched road is cut into the hillside
+/// and `terrain_m` is the DEM before the bench. Every one of them read as a
+/// tunnel, and that — not the deck threshold — was where most of the 13,754
+/// phantom structures came from.
+///
+/// A bore needs room for the tube it is: the road, a [`TUNNEL_HEIGHT_M`] of
+/// bore above it, and [`TUNNEL_COVER_M`] of ground over that. Shallower than
+/// their sum there is nothing to drive through, and a cutting is what is there.
+/// Almost nothing at grade reaches it — the at-grade p05 is −0.5 m.
+pub const BORE_COVER_M: f64 = TUNNEL_HEIGHT_M + TUNNEL_COVER_M;
 
 /// Derives the structures a solved profile implies.
 ///
-/// The gap `road − terrain` is the whole signal. Positive beyond
-/// [`DECK_STANDOFF_M`] is a deck; negative at all is a bore, because a road
-/// below the ground is under it by definition and the zero crossing *is* the
-/// portal (S5 — the mouth sits where the road actually emerges, not where a
-/// mapper split the way).
+/// The gap `road − terrain` is the whole signal: past [`DECK_STANDOFF_M`] above
+/// the ground is a deck, past [`BORE_COVER_M`] below it is a bore, and the
+/// threshold crossing *is* the portal (S5 — the mouth sits where the road
+/// actually emerges, not where a mapper split the way).
+///
+/// Both thresholds are calibrated against the measured population rather than
+/// reasoned from the solid's own geometry; see their docs for what reasoning
+/// them cost.
 ///
 /// `hints` are not consulted. They are priors on the *constraint*, and the
 /// constraint has already been solved; consulting them again here would be the
@@ -87,7 +112,7 @@ pub fn derive(p: &Profile, prior: &Prior) -> Vec<StructureRun> {
         let gap = road[i] - terrain[i];
         if gap > DECK_STANDOFF_M {
             Some(SpanKind::Bridge)
-        } else if gap < 0.0 {
+        } else if gap < -BORE_COVER_M {
             Some(SpanKind::Tunnel)
         } else {
             None
@@ -141,7 +166,7 @@ fn edge_arc(
     kind: SpanKind,
     forward: bool,
 ) -> f64 {
-    let level = if kind == SpanKind::Bridge { DECK_STANDOFF_M } else { 0.0 };
+    let level = if kind == SpanKind::Bridge { DECK_STANDOFF_M } else { -BORE_COVER_M };
     let j = if forward {
         if i + 1 >= arc.len() {
             return arc[i];
@@ -244,11 +269,12 @@ mod tests {
         let runs = derive(&profile(n, 2000.0, road, terrain), prior());
         assert_eq!(runs.len(), 1, "one bore, got {runs:?}");
         assert_eq!(runs[0].kind, SpanKind::Tunnel);
-        // The portal is the zero crossing, not the node the hill starts at:
-        // the road meets the ground exactly at node 7 (arc 700), so that is
-        // where the mouth is, and node 8 — where the terrain first exceeds it
-        // — is already inside the hill.
-        assert!((runs[0].arc0 - 700.0).abs() < 1e-6, "arc0 {}", runs[0].arc0);
+        // The portal is where the ground first covers the tube, interpolated
+        // between nodes — not the node the hill starts at. The terrain climbs
+        // 40 m between node 7 (arc 700) and node 8, so the mouth sits an
+        // eighth of the way along it.
+        let want = 700.0 + 100.0 * (BORE_COVER_M / 40.0);
+        assert!((runs[0].arc0 - want).abs() < 1.0, "arc0 {} want {want}", runs[0].arc0);
     }
 
     /// An embankment is not a bridge. The road stands clear of the ground, but
@@ -274,11 +300,26 @@ mod tests {
     /// (S10: annotation noise, and its geometric equivalent).
     #[test]
     fn a_momentary_touch_does_not_split_a_run() {
+        // 5 m node spacing, so the two threshold crossings either side of the
+        // touch fall well inside `SNAP_RUN_M` and coalesce. A viaduct is not
+        // two viaducts because one pier's ground reading came up.
         let n = 41;
         let road = vec![100.0; n];
         let mut terrain = vec![60.0; n];
         terrain[20] = 99.0; // one node brushing the standoff
-        let runs = derive(&profile(n, 4000.0, road, terrain), prior());
+        let runs = derive(&profile(n, 200.0, road, terrain), prior());
         assert_eq!(runs.len(), 1, "one viaduct, got {runs:?}");
+    }
+
+    /// A benched road reads *below* the raw DEM — it was cut into the hillside
+    /// and `terrain_m` is the ground before the cut. 35 % of at-grade nodes sit
+    /// between −2 m and 0 for exactly this reason, and a bore threshold of zero
+    /// called every one of them a tunnel.
+    #[test]
+    fn a_cutting_is_not_a_bore() {
+        let n = 21;
+        let road = vec![100.0; n];
+        let terrain = vec![101.8; n]; // 1.8 m of cut — no room for a tube
+        assert!(derive(&profile(n, 2000.0, road, terrain), prior()).is_empty());
     }
 }

@@ -67,8 +67,29 @@
     {
       "id": "structure.annotated_lost",
       "invariant": "I6",
-      "median": 4.693333333333333,
+      "median": 14.08,
       "offenders": [
+        {
+          "lat": 46.42450838850159,
+          "lon": 7.0425723783406395,
+          "note": "Bridge annotated over 621 m, 592 m of it not implied by the solve",
+          "value": 591.7616213769492,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4241731902634,
+          "lon": 6.9275941841577895,
+          "note": "Tunnel annotated over 499 m, 499 m of it not implied by the solve",
+          "value": 498.7919017213537,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4347188861552,
+          "lon": 6.9145276821344686,
+          "note": "Tunnel annotated over 389 m, 389 m of it not implied by the solve",
+          "value": 389.4986303564792,
+          "zoom": 16
+        },
         {
           "lat": 46.41278081022507,
           "lon": 6.933021596515825,
@@ -77,17 +98,10 @@
           "zoom": 16
         },
         {
-          "lat": 46.42450838850159,
-          "lon": 7.0425723783406395,
-          "note": "Bridge annotated over 621 m, 338 m of it not implied by the solve",
-          "value": 337.9326603687261,
-          "zoom": 16
-        },
-        {
           "lat": 46.3185620333631,
           "lon": 6.980192538790588,
-          "note": "Bridge annotated over 346 m, 309 m of it not implied by the solve",
-          "value": 309.13719025985404,
+          "note": "Bridge annotated over 346 m, 320 m of it not implied by the solve",
+          "value": 320.2066827777933,
           "zoom": 16
         },
         {
@@ -98,31 +112,17 @@
           "zoom": 16
         },
         {
-          "lat": 46.4347188861552,
-          "lon": 6.9145276821344686,
-          "note": "Tunnel annotated over 389 m, 260 m of it not implied by the solve",
-          "value": 260.0511932808363,
+          "lat": 46.541608235203114,
+          "lon": 6.6596462276234885,
+          "note": "Tunnel annotated over 268 m, 268 m of it not implied by the solve",
+          "value": 268.15955579075006,
           "zoom": 16
         },
         {
-          "lat": 46.34079151467989,
-          "lon": 7.007328887244917,
-          "note": "Bridge annotated over 201 m, 201 m of it not implied by the solve",
-          "value": 201.40048646791342,
-          "zoom": 16
-        },
-        {
-          "lat": 46.340799677438135,
-          "lon": 7.007284077944607,
-          "note": "Bridge annotated over 199 m, 199 m of it not implied by the solve",
-          "value": 198.97688733511876,
-          "zoom": 16
-        },
-        {
-          "lat": 46.436310449521066,
-          "lon": 6.910855612512228,
-          "note": "Tunnel annotated over 188 m, 188 m of it not implied by the solve",
-          "value": 188.3111540162971,
+          "lat": 46.52695108133025,
+          "lon": 6.895108886527661,
+          "note": "Bridge annotated over 355 m, 266 m of it not implied by the solve",
+          "value": 266.07127517663355,
           "zoom": 16
         }
       ],
@@ -130,158 +130,158 @@
       "samples": 495,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 340.05333333333334,
+      "tail": 591.7866666666667,
       "threshold": 0.5,
       "title": "Annotated structure the solve does not imply",
-      "violation_pct": 70.70707070707071,
-      "violations": 350,
-      "worst": 340.37194668636545
+      "violation_pct": 92.52525252525253,
+      "violations": 458,
+      "worst": 591.7616213769492
     },
     {
       "id": "structure.derived_new",
       "invariant": "I6",
-      "median": 59.30666666666667,
+      "median": 3.8400000000000003,
       "offenders": [
         {
-          "lat": 46.33896016991791,
-          "lon": 7.0058494852719955,
-          "note": "Tunnel implied over 2107 m, 1838 m of it unannotated",
-          "value": 1838.354471256895,
+          "lat": 46.33937650673539,
+          "lon": 7.006170228346231,
+          "note": "Tunnel implied over 2002 m, 1733 m of it unannotated",
+          "value": 1733.3488513134132,
           "zoom": 16
         },
         {
-          "lat": 46.3219472952642,
-          "lon": 6.9919267494726975,
-          "note": "Bridge implied over 1721 m, 1463 m of it unannotated",
-          "value": 1462.926050856318,
+          "lat": 46.322828672123066,
+          "lon": 6.993248392996543,
+          "note": "Bridge implied over 1410 m, 1410 m of it unannotated",
+          "value": 1410.4306907713262,
           "zoom": 16
         },
         {
-          "lat": 46.43988877067366,
-          "lon": 6.971329910180294,
-          "note": "Tunnel implied over 1517 m, 1440 m of it unannotated",
-          "value": 1440.319790565901,
+          "lat": 46.43980527047694,
+          "lon": 6.97076365169693,
+          "note": "Tunnel implied over 1427 m, 1351 m of it unannotated",
+          "value": 1350.7542464886287,
           "zoom": 16
         },
         {
-          "lat": 46.46978451786226,
-          "lon": 6.830191335422727,
-          "note": "Bridge implied over 967 m, 967 m of it unannotated",
-          "value": 967.1345905443704,
+          "lat": 46.4313421972603,
+          "lon": 6.919559413434961,
+          "note": "Bridge implied over 760 m, 697 m of it unannotated",
+          "value": 697.2344074307957,
           "zoom": 16
         },
         {
-          "lat": 46.4317437555015,
-          "lon": 6.94398553051598,
-          "note": "Bridge implied over 727 m, 727 m of it unannotated",
-          "value": 727.4142472599833,
+          "lat": 46.34251393179094,
+          "lon": 7.00731878449756,
+          "note": "Tunnel implied over 659 m, 659 m of it unannotated",
+          "value": 658.5467665020113,
           "zoom": 16
         },
         {
-          "lat": 46.34222742254009,
-          "lon": 7.007187917151004,
-          "note": "Tunnel implied over 725 m, 725 m of it unannotated",
-          "value": 725.4584323111893,
+          "lat": 46.4337290373126,
+          "lon": 6.93381348412442,
+          "note": "Bridge implied over 654 m, 636 m of it unannotated",
+          "value": 635.7168665256008,
           "zoom": 16
         },
         {
-          "lat": 46.431335595448424,
-          "lon": 6.9195682618397125,
-          "note": "Bridge implied over 765 m, 703 m of it unannotated",
-          "value": 702.6459476079451,
+          "lat": 46.434402815970316,
+          "lon": 6.927562352839932,
+          "note": "Bridge implied over 621 m, 621 m of it unannotated",
+          "value": 620.5814414631864,
           "zoom": 16
         },
         {
-          "lat": 46.30240143001494,
-          "lon": 7.0662285906499225,
-          "note": "Tunnel implied over 657 m, 657 m of it unannotated",
-          "value": 657.1913564087107,
+          "lat": 46.46977137232701,
+          "lon": 6.83228009209383,
+          "note": "Bridge implied over 575 m, 575 m of it unannotated",
+          "value": 574.6366440850943,
           "zoom": 16
         }
       ],
       "population": "Every derived run, scored by the metres of it no annotated span of the same kind covers.",
-      "samples": 13754,
+      "samples": 795,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 514.9866666666667,
+      "tail": 1733.5466666666669,
       "threshold": 0.5,
       "title": "Structure the solve implies that nothing annotated",
-      "violation_pct": 98.46590082884978,
-      "violations": 13543,
-      "worst": 1838.354471256895
+      "violation_pct": 61.63522012578616,
+      "violations": 490,
+      "worst": 1733.3488513134132
     },
     {
       "id": "structure.edge_drift",
       "invariant": "I6",
-      "median": 6.4,
+      "median": 8.96,
       "offenders": [
         {
-          "lat": 46.42384404919192,
-          "lon": 6.930328250078201,
-          "note": "Bridge end moved 2233 m from where it was annotated",
-          "value": 2232.690590821996,
+          "lat": 46.42319777715281,
+          "lon": 6.930756802241815,
+          "note": "Bridge end moved 2254 m from where it was annotated",
+          "value": 2254.218771755339,
+          "zoom": 16
+        },
+        {
+          "lat": 46.42381496152614,
+          "lon": 6.930331065013599,
+          "note": "Bridge end moved 2235 m from where it was annotated",
+          "value": 2235.1324433108784,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40363024641588,
+          "lon": 6.933974680439584,
+          "note": "Bridge end moved 1998 m from where it was annotated",
+          "value": 1998.1689904374416,
           "zoom": 16
         },
         {
           "lat": 46.3454051,
           "lon": 7.0062058,
-          "note": "Tunnel end moved 1796 m from where it was annotated",
-          "value": 1796.313497345183,
+          "note": "Tunnel end moved 1691 m from where it was annotated",
+          "value": 1691.3078774017013,
           "zoom": 16
         },
         {
-          "lat": 46.32652312377632,
-          "lon": 7.000582481055356,
-          "note": "Bridge end moved 1463 m from where it was annotated",
-          "value": 1462.9260508563175,
-          "zoom": 16
-        },
-        {
-          "lat": 46.4415829,
-          "lon": 6.9771043,
+          "lat": 46.442317580229556,
+          "lon": 6.977438055379022,
           "note": "Tunnel end moved 1268 m from where it was annotated",
           "value": 1268.29829077855,
           "zoom": 16
         },
         {
-          "lat": 46.42945118001779,
-          "lon": 6.923689495777602,
-          "note": "Bridge end moved 680 m from where it was annotated",
-          "value": 680.453955082877,
+          "lat": 46.363794447147065,
+          "lon": 6.870354846398811,
+          "note": "Tunnel end moved 696 m from where it was annotated",
+          "value": 696.1724859252098,
           "zoom": 16
         },
         {
-          "lat": 46.43161142516182,
-          "lon": 6.9364543557890315,
-          "note": "Bridge end moved 597 m from where it was annotated",
-          "value": 597.0275010359633,
+          "lat": 46.42946434377428,
+          "lon": 6.923645126567926,
+          "note": "Bridge end moved 677 m from where it was annotated",
+          "value": 676.7476809255322,
           "zoom": 16
         },
         {
-          "lat": 46.42637783715294,
-          "lon": 7.043829149410392,
-          "note": "Bridge end moved 566 m from where it was annotated",
-          "value": 565.8711501882785,
-          "zoom": 16
-        },
-        {
-          "lat": 46.42425455753203,
-          "lon": 7.042067609074517,
-          "note": "Bridge end moved 363 m from where it was annotated",
-          "value": 363.38739476094526,
+          "lat": 46.43162163379153,
+          "lon": 6.936437807325707,
+          "note": "Bridge end moved 595 m from where it was annotated",
+          "value": 594.6479601283131,
           "zoom": 16
         }
       ],
       "population": "Every derived run that overlaps an annotated span of the same kind, against the span it overlaps most, scored by the larger of its two end movements.",
-      "samples": 435,
+      "samples": 394,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 2232.746666666667,
+      "tail": 2254.08,
       "threshold": 0.5,
       "title": "How far a structure's ends move when derived",
-      "violation_pct": 97.70114942528735,
-      "violations": 425,
-      "worst": 2232.690590821996
+      "violation_pct": 99.49238578680203,
+      "violations": 392,
+      "worst": 2254.218771755339
     }
   ]
 }
