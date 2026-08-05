@@ -22,6 +22,7 @@ pub mod graph;
 pub mod portals;
 pub mod profile;
 pub mod relax;
+pub mod structures;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -41,6 +42,12 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 /// The solved vertical model: one profile per corridor that needs one, indexed
 /// by [`CorridorId`]. Immutable after the solve; shared by every emit worker.
 pub struct SolvedModel {
+    /// The structures the solved heights imply, by [`CorridorId`] (§4.5).
+    ///
+    /// An *output*. A deck exists where the solved surface departs the ground,
+    /// not where a mapper wrote `bridge` — so "a crossing whose bridge was
+    /// deleted" is unrepresentable rather than merely rare.
+    pub structures: Vec<Vec<structures::StructureRun>>,
     /// The crossings this solve derived (§4.5). They live on the *output*
     /// because they are a consequence of the solved heights, not an input to
     /// them: stored on the scene they went stale the moment anything changed a
@@ -65,6 +72,7 @@ impl SolvedModel {
     /// A model with no profiles — the DEM-less run, where nothing is elevated.
     pub fn empty(z_ref: u8) -> SolvedModel {
         SolvedModel {
+            structures: Vec::new(),
             crossings: Vec::new(),
             relaxed: relax::Relaxed::default(),
             profiles: Vec::new(),
@@ -79,6 +87,7 @@ impl SolvedModel {
     /// intersection anyway.
     pub fn from_profiles(profiles: Vec<Option<Profile>>, z_ref: u8) -> SolvedModel {
         SolvedModel {
+            structures: Vec::new(),
             crossings: Vec::new(),
             relaxed: relax::Relaxed::default(),
             profiles,
@@ -231,7 +240,17 @@ pub fn run(
         crossings.extend(derived);
     }
 
-    Ok(SolvedModel { relaxed, crossings, profiles, junction_h, z_ref })
+    // The structures the result implies, derived once the heights are final.
+    let structures = scene
+        .corridors
+        .iter()
+        .map(|c| match profiles.get(c.id as usize).and_then(|p| p.as_ref()) {
+            Some(p) => structures::derive(p, c.kind.prior()),
+            None => Vec::new(),
+        })
+        .collect();
+
+    Ok(SolvedModel { structures, relaxed, crossings, profiles, junction_h, z_ref })
 }
 
 /// The terrain fate of the short structure spans assemble keeps

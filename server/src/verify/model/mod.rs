@@ -20,6 +20,7 @@
 
 pub mod authority;
 pub mod footprint;
+pub mod structures;
 
 use crate::ground::GroundStack;
 use crate::scene::SceneGraph;
@@ -42,6 +43,7 @@ pub fn run(m: &Model<'_>) -> Vec<Metric> {
     out.extend(authority::determinism(m));
     out.extend(authority::inversion(m));
     out.extend(footprint::check(m));
+    out.extend(structures::check(m));
     out
 }
 
