@@ -8,7 +8,7 @@ use std::path::Path;
 
 use serde_json::{json, Value as Json};
 
-use crate::ground::GroundModel;
+use crate::ground::GroundStack;
 use crate::scene::SceneGraph;
 use crate::solve::SolvedModel;
 
@@ -18,7 +18,7 @@ pub fn write(
     dir: &Path,
     scene: &SceneGraph,
     solved: &SolvedModel,
-    ground: &GroundModel,
+    ground: &GroundStack,
 ) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     fs::write(dir.join("corridors.geojson"), corridors_geojson(scene).to_string())?;
@@ -97,11 +97,11 @@ fn crossings_geojson(scene: &SceneGraph) -> Json {
 
 /// The engineered ground's earthworks: one short LineString per edge with its
 /// target height and reach.
-fn earthworks_geojson(ground: &GroundModel) -> Json {
+fn earthworks_geojson(ground: &GroundStack) -> Json {
     let features: Vec<Json> = ground
-        .earthworks()
-        .edges()
+        .layers()
         .iter()
+        .flat_map(|l| l.earthworks().edges())
         .map(|e| {
             json!({
                 "type": "Feature",

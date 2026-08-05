@@ -499,7 +499,7 @@ mod tests {
     // the ground is doing.
 
     use crate::ground::sampler::{GroundSampler, MeshOptions};
-    use crate::ground::GroundModel;
+    use crate::ground::GroundStack;
     use crate::priors::{Kind, RoadClass};
     use crate::scene::{Corridor, Junction, JunctionMember, SceneGraph};
     use std::sync::Arc;
@@ -508,7 +508,7 @@ mod tests {
     const LAT: f64 = 46.0;
 
     fn sampler() -> GroundSampler {
-        GroundSampler::new(None, Arc::new(GroundModel::empty()), Z, MeshOptions::default())
+        GroundSampler::new(None, Arc::new(GroundStack::empty()), Z, MeshOptions::default())
     }
 
     fn m_lon() -> f64 {

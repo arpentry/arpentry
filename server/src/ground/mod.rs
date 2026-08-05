@@ -29,6 +29,7 @@ use crate::priors::{
     MAX_CLEARANCE_LIFT_M,
     PORTAL_CLEARANCE_M, PORTAL_CUT_LEN_M, WATER_LEVEL_PCTL,
 };
+use crate::priors::Stratum;
 use crate::scene::{SceneGraph, SpanKind, DEG_M};
 use crate::solve::{portals, reference_surface, SolvedModel};
 
@@ -38,44 +39,152 @@ use modifiers::{EarthworkEdge, Earthworks, WaterFill, Waters, LEFT, RIGHT};
 /// to be robust on a big lake, bounded so a many-thousand-vertex ring is cheap.
 const SHORELINE_SAMPLES: usize = 128;
 
-/// The engineered ground: the single ground function of invariant 1. Queries
-/// apply the covering water surface and earthworks to the raw DEM sample in a
-/// fixed global order, so any two tiles (and any two zooms) derive identical
-/// ground for shared world points.
-pub struct GroundModel {
+/// One stratum's contribution to the ground: the earthworks it cut and filled,
+/// and the water it flattened.
+///
+/// A layer is what stratum *n* imprints, and nothing else. It never sees the
+/// layers above or below it — the fold in [`GroundStack::height`] composes
+/// them, in authority order, exactly once each.
+pub struct GroundLayer {
+    /// Which stratum imprinted this. Layers are held in ascending authority
+    /// order, so this is also the layer's position in the fold.
+    pub stratum: Stratum,
     earthworks: Earthworks,
     waters: Waters,
+}
+
+impl GroundLayer {
+    /// A layer that only reshapes the ground — no water. The shape every
+    /// stratum but H has.
+    pub fn of_earthworks(stratum: Stratum, earthworks: Earthworks) -> GroundLayer {
+        GroundLayer { stratum, earthworks, waters: Waters::new(Vec::new()) }
+    }
+
+    /// This layer applied to the ground beneath it: water flattens first, then
+    /// the earthworks bench and batter against the result. A road earthwork
+    /// (a bridge abutment's approach berm at the shore) overrides the water
+    /// where the two overlap, so the roadbed wins over what it climbs away
+    /// from.
+    #[cfg(test)]
+    pub(super) fn apply_for_test(
+        &self,
+        lon: f64,
+        lat: f64,
+        base: f64,
+        cell_m: f64,
+        scratch: &mut Vec<u32>,
+    ) -> f64 {
+        self.apply(lon, lat, base, cell_m, scratch)
+    }
+
+    fn apply(&self, lon: f64, lat: f64, base: f64, cell_m: f64, scratch: &mut Vec<u32>) -> f64 {
+        let base = if self.waters.is_empty() {
+            base
+        } else {
+            self.waters.level_at(lon, lat, scratch).unwrap_or(base)
+        };
+        if self.earthworks.is_empty() {
+            return base;
+        }
+        self.earthworks.height(lon, lat, base, cell_m, scratch)
+    }
+
+    /// Whether this layer's declared footprint covers `(lon, lat)` — the
+    /// predicate I8 is stated over: *"`groundₙ₊₁` differs from `groundₙ` only
+    /// inside stratum n's declared footprints"*.
+    ///
+    /// Declared, not observed: it asks the same grid and the same
+    /// [`EarthworkEdge::reach_m`] the height function asks, so a change outside
+    /// it means a reach that does not bound its own influence. That is exactly
+    /// what makes the check non-vacuous — `batter_reach` is separately clamped,
+    /// and either side could stop bounding the other silently.
+    pub fn covers(&self, lon: f64, lat: f64, scratch: &mut Vec<u32>) -> bool {
+        self.earthworks.covers(lon, lat, scratch)
+            || (!self.waters.is_empty() && self.waters.level_at(lon, lat, scratch).is_some())
+    }
+
+    /// The bench target here, if this layer holds one — the crest derivation's
+    /// question (docs/GROUND.md §3).
+    fn target_at(&self, lon: f64, lat: f64, scratch: &mut Vec<u32>) -> Option<f64> {
+        self.earthworks.target_at(lon, lat, scratch)
+    }
+
+    pub fn earthworks(&self) -> &Earthworks {
+        &self.earthworks
+    }
+}
+
+/// The engineered ground (I1): one function every consumer reads, built as the
+/// **accumulating stack** of §4.3.
+///
+/// ```text
+/// ground₀   = conditioned DEM
+/// groundₙ₊₁ = groundₙ ⊕ stratum n's earthworks
+/// ```
+///
+/// Each stratum imprints on the ground its senior published, so a road cutting
+/// is carved into a ground that already holds the rail embankment. There is
+/// never a moment when two stages hold different opinions about the ground,
+/// because there is only ever one ground and it only moves forward.
+///
+/// A flat vector rather than a chain of wrappers, for two reasons. I8 has to
+/// evaluate `groundₙ` and `groundₙ₊₁` at one point and attribute the difference
+/// to layer *n*, which is [`height_through`](Self::height_through) either side
+/// of an index; and "applied exactly once" becomes a construction invariant
+/// over distinct ascending strata rather than a property of a linked structure.
+pub struct GroundStack {
+    /// In ascending authority order: seniors first, so the fold runs H → R → S.
+    layers: Vec<GroundLayer>,
     /// The bench contact lines the detail mesh preserves (docs/GROUND.md §3),
-    /// derived from the same earthwork edges the ground function reads.
+    /// derived from the assembled field of every layer.
     breaklines: breaklines::Breaklines,
 }
 
-impl GroundModel {
-    /// A ground model with no modifiers: the raw DEM passes through.
-    pub fn empty() -> GroundModel {
-        GroundModel {
-            earthworks: Earthworks::new(Vec::new()),
-            waters: Waters::new(Vec::new()),
-            breaklines: breaklines::Breaklines::derive(&Earthworks::new(Vec::new())),
-        }
+impl GroundStack {
+    /// A ground with no layers: the conditioned DEM passes straight through.
+    pub fn empty() -> GroundStack {
+        GroundStack { layers: Vec::new(), breaklines: breaklines::Breaklines::derive(&[]) }
+    }
+
+    /// Builds the stack from its layers, which must be distinct and in
+    /// ascending authority order — the "exactly once" half of I8, asserted at
+    /// construction rather than measured.
+    pub fn new(layers: Vec<GroundLayer>) -> GroundStack {
+        debug_assert!(
+            layers.windows(2).all(|w| w[0].stratum < w[1].stratum),
+            "ground layers must be distinct and in ascending authority order"
+        );
+        let breaklines = breaklines::Breaklines::derive(&layers);
+        GroundStack { layers, breaklines }
     }
 
     pub fn breaklines(&self) -> &breaklines::Breaklines {
         &self.breaklines
     }
 
-    /// Number of earthwork edges, for run stats.
+    pub fn layers(&self) -> &[GroundLayer] {
+        &self.layers
+    }
+
+    /// The layer stratum *s* imprinted, if it imprinted one.
+    pub fn layer(&self, stratum: Stratum) -> Option<&GroundLayer> {
+        self.layers.iter().find(|l| l.stratum == stratum)
+    }
+
+    /// Number of earthwork edges across every layer, for run stats.
     pub fn earthwork_count(&self) -> usize {
-        self.earthworks.len()
+        self.layers.iter().map(|l| l.earthworks.len()).sum()
     }
 
-    /// Number of flattened water bodies, for run stats.
+    /// Number of flattened water bodies across every layer, for run stats.
     pub fn water_count(&self) -> usize {
-        self.waters.len()
+        self.layers.iter().map(|l| l.waters.len()).sum()
     }
 
-    pub fn earthworks(&self) -> &Earthworks {
-        &self.earthworks
+    /// The bench target the road rides here, or `None` outside every bench —
+    /// the most junior layer holding one, since that is what the fold leaves.
+    pub fn bed_target(&self, lon: f64, lat: f64, scratch: &mut Vec<u32>) -> Option<f64> {
+        self.layers.iter().rev().find_map(|l| l.target_at(lon, lat, scratch))
     }
 
     /// THE ground function: the engineered height at `(lon, lat)`, given the
@@ -92,10 +201,6 @@ impl GroundModel {
     /// into sawtooth noise one zoom out from the reference. The road
     /// compensates with its per-zoom datum lift (docs/GROUND.md §4), so
     /// dropping the bench from the *drawn ground* does not float it.
-    ///
-    /// Water flattens the ground first; a road earthwork (a bridge abutment's
-    /// approach berm at the shore) then overrides it where the two overlap, so
-    /// the roadbed wins over the water it climbs away from.
     pub fn height(
         &self,
         lon: f64,
@@ -104,15 +209,26 @@ impl GroundModel {
         cell_m: f64,
         scratch: &mut Vec<u32>,
     ) -> f64 {
-        let base = if self.waters.is_empty() {
-            raw
-        } else {
-            self.waters.level_at(lon, lat, scratch).unwrap_or(raw)
-        };
-        if self.earthworks.is_empty() {
-            return base;
+        self.height_through(self.layers.len(), lon, lat, raw, cell_m, scratch)
+    }
+
+    /// `groundₙ`: the ground as it stands after the first `n` layers — what
+    /// stratum *n* reads while it solves, and what I8 diffs against
+    /// `groundₙ₊₁` to attribute a change to one layer's footprint.
+    pub fn height_through(
+        &self,
+        n: usize,
+        lon: f64,
+        lat: f64,
+        raw: f64,
+        cell_m: f64,
+        scratch: &mut Vec<u32>,
+    ) -> f64 {
+        let mut h = raw;
+        for layer in self.layers.iter().take(n) {
+            h = layer.apply(lon, lat, h, cell_m, scratch);
         }
-        self.earthworks.height(lon, lat, base, cell_m, scratch)
+        h
     }
 }
 
@@ -121,20 +237,23 @@ impl GroundModel {
 /// its solved height, with a batter face reaching out as far as the cut or
 /// fill it makes needs), and a daylighting cut in front of every solved
 /// tunnel portal (S5 — the mouth face must not hide below grade).
+///
+/// One layer for now. The strata do not yet solve in order (M5), so everything
+/// the model implies is imprinted together — which is what the fold over a
+/// single layer computes, exactly as the flat model did.
 pub fn derive(
     scene: &SceneGraph,
     solved: &SolvedModel,
     terrain_path: Option<&Path>,
     threads: usize,
-) -> GroundModel {
+) -> GroundStack {
     let edges = derive_earthworks(scene, solved, terrain_path, threads);
     let waters = derive_waters(scene, solved, terrain_path, threads);
-    // The crests are derived from the assembled field, not from the raw edge
-    // list: a crest must be drawn where its bench actually holds the ground,
-    // which only the resolved field knows (see [`breaklines::Breaklines`]).
-    let earthworks = Earthworks::new(edges);
-    let breaklines = breaklines::Breaklines::derive(&earthworks);
-    GroundModel { earthworks, waters, breaklines }
+    GroundStack::new(vec![GroundLayer {
+        stratum: Stratum::S,
+        earthworks: Earthworks::new(edges),
+        waters,
+    }])
 }
 
 /// Every profiled corridor's earthworks, derived in parallel (the bench-edge
@@ -591,6 +710,83 @@ fn water_level(ring: &[Coord], mut sample: impl FnMut(Coord) -> f64) -> Option<f
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fold is the ground: `groundₙ₊₁ = groundₙ ⊕ layer n`, and
+    /// `height_through` is what stratum n reads while it solves.
+    #[test]
+    fn the_stack_folds_its_layers_in_authority_order() {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        // A senior bench at 400 m and a junior one at 410 m over the same spot.
+        let bench = |target: f64, chain: u32| EarthworkEdge {
+            a: Coord { x: 6.0, y: 46.0 },
+            b: Coord { x: 6.001, y: 46.0 },
+            target_a: target,
+            target_b: target,
+            half_width_m: 8.0,
+            carriageway_m: 6.0,
+            batter_m: [4.0; 2],
+            batter_run: [EARTHWORK_BATTER; 2],
+            chain,
+            arc0: 0.0,
+            cos_lat,
+            carve: false,
+        };
+        let stack = GroundStack::new(vec![
+            GroundLayer::of_earthworks(Stratum::R, Earthworks::new(vec![bench(400.0, 0)])),
+            GroundLayer::of_earthworks(Stratum::S, Earthworks::new(vec![bench(410.0, 1)])),
+        ]);
+        let mut sc = Vec::new();
+        let (lon, lat) = (6.0005, 46.0);
+        // ground₀ is the DEM; ground₁ holds the rail bench; ground₂ the road's,
+        // cut into a ground that already contains it.
+        assert_eq!(stack.height_through(0, lon, lat, 380.0, 0.0, &mut sc), 380.0);
+        assert_eq!(stack.height_through(1, lon, lat, 380.0, 0.0, &mut sc), 400.0);
+        assert_eq!(stack.height_through(2, lon, lat, 380.0, 0.0, &mut sc), 410.0);
+        // `height` is the whole fold — the junior layer has the last word,
+        // which is what "a road cutting is carved into a ground that already
+        // holds the rail embankment" means.
+        assert_eq!(stack.height(lon, lat, 380.0, 0.0, &mut sc), 410.0);
+    }
+
+    /// I8's predicate: a layer moves the ground only inside its own declared
+    /// footprint. Zero by construction *unless* a reach stops bounding its
+    /// influence, which is the thing worth measuring.
+    #[test]
+    fn a_layer_moves_the_ground_only_inside_its_declared_footprint() {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let layer = GroundLayer::of_earthworks(
+            Stratum::S,
+            Earthworks::new(vec![EarthworkEdge {
+                a: Coord { x: 6.0, y: 46.0 },
+                b: Coord { x: 6.001, y: 46.0 },
+                target_a: 400.0,
+                target_b: 400.0,
+                half_width_m: 8.0,
+                carriageway_m: 6.0,
+                batter_m: [4.0; 2],
+                batter_run: [EARTHWORK_BATTER; 2],
+                chain: 0,
+                arc0: 0.0,
+                cos_lat,
+                carve: false,
+            }]),
+        );
+        let stack = GroundStack::new(vec![layer]);
+        let mut sc = Vec::new();
+        // Walk out across the bench, its batter, and well past the reach.
+        for i in 0..400 {
+            let lat = 46.0 + (i as f64 * 0.25) / DEG_M;
+            let lon = 6.0005;
+            let raw = 390.0;
+            let moved = stack.height(lon, lat, raw, 0.0, &mut sc) != raw;
+            let covered = stack.layers()[0].covers(lon, lat, &mut sc);
+            assert!(
+                !moved || covered,
+                "the ground moved {:.2} m outside the declared footprint",
+                (i as f64 * 0.25)
+            );
+        }
+    }
     use crate::priors::{Kind, RoadClass};
     use crate::scene::{Corridor, Crossing, SegmentRef, Span, SpanKind, DEG_M};
     use geo_types::Coord;
@@ -1025,11 +1221,7 @@ mod tests {
             cos_lat,
             carve: false,
         }]);
-        let g = GroundModel {
-            earthworks,
-            waters,
-            breaklines: breaklines::Breaklines::derive(&Earthworks::new(Vec::new())),
-        };
+        let g = GroundStack::new(vec![GroundLayer { stratum: Stratum::S, earthworks, waters }]);
         // Open water away from the berm: flattened to the level (over raw 360).
         assert_eq!(g.height(6.002, 46.002, 360.0, 0.0, &mut scratch), 372.0);
         // On the berm centerline inside the lake: the road overrides the water.

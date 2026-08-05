@@ -9,7 +9,7 @@
 //! archive (+ `.arpi` metadata).
 //!
 //! Every height an emit worker writes is a function of the shared solved
-//! model (`Arc<SolvedModel>`, `Arc<GroundModel>`) and the global terrain
+//! model (`Arc<SolvedModel>`, `Arc<GroundStack>`) and the global terrain
 //! lattice — never of the tile window — so adjacent tiles and successive
 //! zooms agree by construction (invariant 5) and tiling carries no modeling
 //! responsibility.
@@ -35,7 +35,7 @@ use crate::dem::Dem;
 use crate::dump;
 use crate::geom::GeometryType;
 use crate::geoparquet::GeoParquet;
-use crate::ground::{self, sampler::GroundSampler, GroundModel};
+use crate::ground::{self, sampler::GroundSampler, GroundStack};
 use crate::hilbert;
 use crate::layers;
 use crate::profile;
@@ -563,7 +563,7 @@ fn emit_parallel(
     stats: &mut Stats,
     elevation: &mut (f64, f64),
     solved: &Arc<SolvedModel>,
-    ground: &Arc<GroundModel>,
+    ground: &Arc<GroundStack>,
     pavement: &Arc<synth::pavement::PavementModel>,
     junctions: &Arc<JunctionModel>,
 ) -> Result<(), Error> {
@@ -2416,7 +2416,7 @@ mod tests {
         // Covering earthwork edges, strongest share first.
         let cos = lat.to_radians().cos();
         let mut rows: Vec<(f64, String)> = Vec::new();
-        for e in ground.earthworks().edges() {
+        for e in ground.layers().iter().flat_map(|l| l.earthworks().edges()) {
             let ax = e.a.x * e.cos_lat;
             let (dx, dy) = ((e.b.x - e.a.x) * e.cos_lat, e.b.y - e.a.y);
             let len2 = dx * dx + dy * dy;

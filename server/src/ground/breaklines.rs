@@ -19,7 +19,8 @@ use geo_types::Coord;
 use crate::assemble::grid::GridIndex;
 use crate::scene::DEG_M;
 
-use super::modifiers::{EarthworkEdge, Earthworks};
+use super::modifiers::EarthworkEdge;
+use super::GroundLayer;
 
 /// Sharpest miter kept when offsetting at a polyline joint, as a scale
 /// factor on the lateral offset. Joints sharper than this (hairpin apexes)
@@ -129,8 +130,14 @@ impl Breaklines {
     /// The field is passed, not just the edge list, because a crest has to be
     /// drawn where its bench *actually* holds the ground, which the edge alone
     /// does not know (see [`crest_offset`]).
-    pub fn derive(earthworks: &Earthworks) -> Breaklines {
-        let edges = earthworks.edges();
+    /// Derived over the *whole stack*, not one layer: a crest must be drawn
+    /// where its bench still holds the ground against every layer above it, and
+    /// a junior bench overrides a senior one where they overlap. With one layer
+    /// this is the layer's own field.
+    pub fn derive(layers: &[GroundLayer]) -> Breaklines {
+        let edges: Vec<EarthworkEdge> =
+            layers.iter().flat_map(|l| l.earthworks().edges().iter().copied()).collect();
+        let edges = &edges[..];
         let mut segments: Vec<(Coord, Coord)> = Vec::new();
         let mut scratch = Vec::new();
         let mut tally = (0usize, 0usize); // (pulled in, dropped)
@@ -150,7 +157,7 @@ impl Breaklines {
             {
                 i += 1;
             }
-            emit_run(&edges[start..=i], earthworks, &mut scratch, &mut segments, &mut tally);
+            emit_run(&edges[start..=i], layers, &mut scratch, &mut segments, &mut tally);
             i += 1;
         }
         let mut grid = GridIndex::new();
@@ -187,7 +194,7 @@ impl Breaklines {
 /// ([`crest_offset`]), and a node whose bench holds nothing breaks the line.
 fn emit_run(
     run: &[EarthworkEdge],
-    earthworks: &Earthworks,
+    layers: &[GroundLayer],
     scratch: &mut Vec<u32>,
     segments: &mut Vec<(Coord, Coord)>,
     tally: &mut (usize, usize),
@@ -264,7 +271,7 @@ fn emit_run(
         // Where the crest sits at each of the run's own nodes.
         let mut held: Vec<Option<f64>> = Vec::with_capacity(n);
         for k in 0..n {
-            let h = crest_offset(earthworks, node_target(k), node_half_width(k), scratch, &mut |d| {
+            let h = crest_offset(layers, node_target(k), node_half_width(k), scratch, &mut |d| {
                 offset_point(k, side, d)
             });
             match h {
@@ -327,7 +334,7 @@ fn emit_run(
                     let nominal =
                         node_half_width(e) + (node_half_width(k) - node_half_width(e)) * t;
                     let target = run[e].target_a + (run[e].target_b - run[e].target_a) * t;
-                    match crest_offset(earthworks, target, nominal, scratch, &mut |d| at(d)) {
+                    match crest_offset(layers, target, nominal, scratch, &mut |d| at(d)) {
                         Some(hi) => {
                             let s = at(hi);
                             if let Some(l) = last {
@@ -380,7 +387,7 @@ fn emit_run(
 /// function resolves benches with, so every tile derives the identical line
 /// (invariant 5).
 fn crest_offset(
-    earthworks: &Earthworks,
+    layers: &[GroundLayer],
     target: f64,
     nominal: f64,
     scratch: &mut Vec<u32>,
@@ -388,7 +395,10 @@ fn crest_offset(
 ) -> Option<f64> {
     let mut holds = |d: f64, scratch: &mut Vec<u32>| -> bool {
         let p = point_at(d);
-        match earthworks.target_at(p.x, p.y, scratch) {
+        // The most junior bench covering the point is the one that holds the
+        // ground there — the fold applies layers in order, so a later bench
+        // overrides an earlier one.
+        match layers.iter().rev().find_map(|l| l.target_at(p.x, p.y, scratch)) {
             // No bench at all under the line: the batter starts here, which is
             // the contact the crest stands for. Nothing to pull in from.
             None => true,
@@ -427,6 +437,23 @@ fn crest_offset(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::modifiers::Earthworks;
+    use crate::priors::Stratum;
+
+    /// A one-layer stack over the given edges — what every test here means by
+    /// "the field".
+    fn stack(edges: Vec<EarthworkEdge>) -> Vec<GroundLayer> {
+        vec![GroundLayer::of_earthworks(Stratum::S, Earthworks::new(edges))]
+    }
+
+    /// The assembled field of a test stack, at a point.
+    fn field(layers: &[GroundLayer], lon: f64, lat: f64, scratch: &mut Vec<u32>) -> f64 {
+        let mut h = f64::NAN;
+        for l in layers {
+            h = l.apply_for_test(lon, lat, h, 0.0, scratch);
+        }
+        h
+    }
 
     fn edge(a: Coord, b: Coord, hw: f64, batter: f64, chain: u32) -> EarthworkEdge {
         EarthworkEdge {
@@ -451,7 +478,7 @@ mod tests {
         let step = 30.0 / (DEG_M * cos_lat);
         let p = |i: f64| Coord { x: 6.0 + i * step, y: 46.0 };
         let edges = vec![edge(p(0.0), p(1.0), 5.0, 10.0, 0), edge(p(1.0), p(2.0), 5.0, 10.0, 0)];
-        let b = Breaklines::derive(&Earthworks::new(edges));
+        let b = Breaklines::derive(&stack(edges));
         // 2 crest lines × 2 segments each.
         assert_eq!(b.len(), 4);
         // Crest lines sit just inside the 5 m bench edge; an east-west run
@@ -481,7 +508,7 @@ mod tests {
             carve,
             edge(p(3.0), p(4.0), 5.0, 10.0, 1),
         ];
-        let b = Breaklines::derive(&Earthworks::new(edges));
+        let b = Breaklines::derive(&stack(edges));
         // Two single-edge bench runs, 2 crest segments each; the carve emits
         // none.
         assert_eq!(b.len(), 4);
@@ -513,7 +540,7 @@ mod tests {
             e.target_b = target;
             e
         };
-        let ew = Earthworks::new(vec![run(lower, 400.0, 0), run(upper, 403.0, 1)]);
+        let ew = stack(vec![run(lower, 400.0, 0), run(upper, 403.0, 1)]);
         let b = Breaklines::derive(&ew);
         let mut scratch = Vec::new();
         let mut out = Vec::new();
@@ -523,7 +550,7 @@ mod tests {
             // Every crest vertex must find its own bench under it: the ground
             // there is either 400 or 403, never the ramp between them, and the
             // vertex must sit on the side of the midline it belongs to.
-            let h = ew.height(a.x, a.y, f64::NAN, 0.0, &mut scratch);
+            let h = field(&ew, a.x, a.y, &mut scratch);
             let own_lower = (a.y - lower).abs() < (a.y - upper).abs();
             assert!(
                 (h - if own_lower { 400.0 } else { 403.0 }).abs() < 1e-9,
@@ -536,7 +563,7 @@ mod tests {
         }
         // A run with no neighbour keeps the full nominal offset, so the pull-in
         // costs nothing where nothing contends.
-        let alone = Breaklines::derive(&Earthworks::new(vec![run(lower, 400.0, 0)]));
+        let alone = Breaklines::derive(&stack(vec![run(lower, 400.0, 0)]));
         alone.query((5.9, 45.9, 6.1, 46.1), &mut scratch, &mut out);
         for (a, _) in &out {
             let off_m = ((a.y - lower) * DEG_M).abs();
@@ -579,7 +606,7 @@ mod tests {
         );
         rail.target_a = 403.0;
         rail.target_b = 403.0;
-        let ew = Earthworks::new(vec![street, rail]);
+        let ew = stack(vec![street, rail]);
         let b = Breaklines::derive(&ew);
         let mut scratch = Vec::new();
         let mut out = Vec::new();
@@ -620,7 +647,7 @@ mod tests {
                 if !(0.0..4.25).contains(&off) {
                     continue;
                 }
-                let h = ew.height(c.x, c.y, f64::NAN, 0.0, &mut scratch);
+                let h = field(&ew, c.x, c.y, &mut scratch);
                 assert!(
                     (h - 400.0).abs() < 1e-9 || (h - 403.0).abs() < 1e-9,
                     "crest vertex at {off:.2} m found {h}, which is neither bench"
@@ -634,7 +661,7 @@ mod tests {
         let cos_lat = 46.0_f64.to_radians().cos();
         let step = 30.0 / (DEG_M * cos_lat);
         let p = |i: f64| Coord { x: 6.0 + i * step, y: 46.0 };
-        let b = Breaklines::derive(&Earthworks::new(vec![edge(p(0.0), p(1.0), 5.0, 10.0, 0)]));
+        let b = Breaklines::derive(&stack(vec![edge(p(0.0), p(1.0), 5.0, 10.0, 0)]));
         let mut scratch = Vec::new();
         let mut out = Vec::new();
         b.query((7.0, 47.0, 7.1, 47.1), &mut scratch, &mut out);

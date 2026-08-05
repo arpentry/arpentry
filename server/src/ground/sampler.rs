@@ -2,7 +2,7 @@
 //! ground heights through.
 //!
 //! Wraps the worker's own DEM reader (its decoded-tile cache is not shareable)
-//! around the shared, immutable [`GroundModel`]. Consumers ask either for the
+//! around the shared, immutable [`GroundStack`]. Consumers ask either for the
 //! raw engineered ground ([`GroundSampler::ground`]) or for the *rendered*
 //! ground ([`GroundSampler::surface`]) — the triangulated terrain-lattice
 //! height that matches what the client draws at that zoom, which is what
@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::dem::Dem;
-use crate::ground::GroundModel;
+use crate::ground::GroundStack;
 use crate::project::Bounds;
 use crate::synth::region::Region;
 use crate::terrain::{self, TerrainMesh};
@@ -49,7 +49,7 @@ impl Default for MeshOptions {
 
 pub struct GroundSampler {
     dem: Option<Dem>,
-    ground: Arc<GroundModel>,
+    ground: Arc<GroundStack>,
     /// The run's reference zoom, keying the per-zoom lattice resolution
     /// ([`terrain::grid_for`]) `surface` reads through.
     z_ref: u8,
@@ -69,7 +69,7 @@ pub struct GroundSampler {
 impl GroundSampler {
     pub fn new(
         dem: Option<Dem>,
-        ground: Arc<GroundModel>,
+        ground: Arc<GroundStack>,
         z_ref: u8,
         mesh: MeshOptions,
     ) -> GroundSampler {
@@ -112,7 +112,7 @@ impl GroundSampler {
 
     /// The metric width of one lattice cell at zoom `z` and this latitude —
     /// the resolution the ground is being asked at (see
-    /// [`crate::ground::GroundModel::height`]). At the reference zoom the
+    /// [`crate::ground::GroundStack::height`]). At the reference zoom the
     /// breakline-constrained mesh holds every bench exactly, so nothing is
     /// filtered out there; coarser rungs drop what they cannot draw.
     fn cell_m(&self, lat: f64, z: u8) -> f64 {
@@ -156,7 +156,7 @@ impl GroundSampler {
     /// zoom, where the rendered lattice is too coarse to hold a street-wide
     /// bench (see `synth::road::surface_height`).
     pub fn bed_target(&mut self, lon: f64, lat: f64) -> Option<f64> {
-        self.ground.earthworks().target_at(lon, lat, &mut self.scratch)
+        self.ground.bed_target(lon, lat, &mut self.scratch)
     }
 
     /// The tile's terrain mesh: the engineered ground on the regular lattice,
@@ -205,7 +205,7 @@ impl GroundSampler {
 #[allow(clippy::too_many_arguments)]
 fn corner_memo(
     dem: &mut Option<Dem>,
-    ground: &GroundModel,
+    ground: &GroundStack,
     corners: &mut HashMap<(u8, u64, u64), f64>,
     scratch: &mut Vec<u32>,
     lon: f64,

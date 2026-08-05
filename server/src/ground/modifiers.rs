@@ -233,7 +233,7 @@ impl Earthworks {
     /// batter faces that reach it, then cut by any covering carve notch.
     ///
     /// Earthworks whose bench is narrower than `cell_m` — the sample spacing of
-    /// the lattice asking — are skipped; see [`super::GroundModel::height`].
+    /// the lattice asking — are skipped; see [`super::GroundStack::height`].
     pub fn height(
         &self,
         lon: f64,
@@ -280,6 +280,27 @@ impl Earthworks {
     /// drawn ground can never disagree where they overlap. The road drape
     /// rides this at the reference zoom (see `synth::road::surface_height`).
     /// Carve notches (deck daylighting, portal cuts) are not beds.
+    /// Whether any edge's declared reach covers this point — the footprint I8
+    /// is stated over: *"`groundₙ₊₁` differs from `groundₙ` only inside stratum
+    /// n's declared footprints"*.
+    ///
+    /// It asks the same grid and the same [`EarthworkEdge::reach_on`] the
+    /// height function asks, so it is zero by construction *unless* a reach
+    /// stops bounding its own influence — which is exactly the thing worth
+    /// measuring, since `batter_reach`'s clamp is the only reason it holds.
+    /// Carves count: a portal cut moves the ground as surely as a bench does.
+    pub fn covers(&self, lon: f64, lat: f64, scratch: &mut Vec<u32>) -> bool {
+        if self.edges.is_empty() {
+            return false;
+        }
+        self.grid.query((lon, lat, lon, lat), scratch);
+        scratch.iter().any(|&i| {
+            let e = &self.edges[i as usize];
+            let (d, _, side) = lateral_distance(e, lon, lat);
+            d < e.reach_on(side)
+        })
+    }
+
     pub fn target_at(&self, lon: f64, lat: f64, scratch: &mut Vec<u32>) -> Option<f64> {
         self.grid.query((lon, lat, lon, lat), scratch);
         scratch.sort_unstable();
