@@ -7,105 +7,419 @@
 //! are engineering conventions, not measurements. Keeping them here makes them
 //! tunable, testable, and honest about being priors rather than data.
 
-/// A road's functional class, parsed once from the Overture `class` string.
-/// Keys every class-dependent prior below; unknown or missing classes take the
-/// `Minor` defaults.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The transport modality — the first half of the §9 prior key.
+///
+/// Modality alone gets two cases wrong in opposite directions: a tram lies on
+/// a street while a funicular has its own formation and a single gradient. So
+/// it is never a key on its own; it names the *class vocabulary* that follows
+/// it, and the pair is the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Modality {
+    Road,
+    Rail,
+    Water,
+}
+
+/// A road class, in Overture's own vocabulary. The drivable classes, then the
+/// draped ones — nearly half the network by segment count (§2.2), which is why
+/// they are named individually rather than falling into a default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RoadClass {
     Motorway,
     Trunk,
     Primary,
     Secondary,
-    Minor,
+    Tertiary,
+    Unclassified,
+    Residential,
+    LivingStreet,
+    Service,
+    /// Overture's `unknown` road class: mapped as a road, class not stated,
+    /// and drivable — distinct from [`RoadClass::Other`], which is a class
+    /// string this table does not name.
+    Unknown,
+    Track,
+    Footway,
+    Pedestrian,
+    Path,
+    Steps,
+    Cycleway,
+    Bridleway,
+    /// A class string this table does not name. Takes the most junior
+    /// plausible stratum and lays no asphalt (§4.6): a class we cannot read
+    /// must not be granted authority or a carriageway on the strength of a
+    /// default.
+    Other,
 }
 
-impl RoadClass {
-    pub fn parse(class: Option<&str>) -> RoadClass {
-        match class {
-            Some("motorway") => RoadClass::Motorway,
-            Some("trunk") => RoadClass::Trunk,
-            Some("primary") => RoadClass::Primary,
-            Some("secondary") => RoadClass::Secondary,
-            _ => RoadClass::Minor,
+/// A rail class: the gauge, or the system where the gauge is not the point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RailClass {
+    StandardGauge,
+    NarrowGauge,
+    BroadGauge,
+    Funicular,
+    Subway,
+    LightRail,
+    Monorail,
+    Tram,
+    /// Overture's `unknown` rail class — 5,194 segments on the Swiss extract,
+    /// which is why it is a variant with a stated authority rather than a
+    /// silent default.
+    Unknown,
+}
+
+/// A water class. Still bodies are flat; watercourses descend along flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WaterClass {
+    Still,
+    Watercourse,
+}
+
+/// The §9 prior key: `(modality, class)`, as one value.
+///
+/// Nested rather than a flat enum or a `(Modality, &str)` pair so the match is
+/// exhaustive. The flat five-bucket `RoadClass` this replaced ended in
+/// `_ => Minor`, which is how a mainline railway and a footpath came to share
+/// a residential street's grade, deviation and half-width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Kind {
+    Road(RoadClass),
+    Rail(RailClass),
+    Water(WaterClass),
+}
+
+/// The shape of a class's longitudinal constraint (§9).
+///
+/// A shape, not a number, because a funicular's constraint is *constant grade*
+/// and a ceiling cannot express it: a parameter that pretends otherwise is a
+/// lie the solver will act on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GradeShape {
+    /// `|dh/ds| <= g`. Every drivable road; what differs between a motorway
+    /// and a lane is the deviation budget, not the shape.
+    Bounded(f64),
+    /// One gradient end to end — a funicular.
+    Constant(f64),
+    /// A ceiling plus a vertical-curve radius: a surveyed railway.
+    CurvatureLimited { grade: f64, radius_m: f64 },
+    /// No profile at all: the feature samples the finished ground.
+    Draped,
+}
+
+impl GradeShape {
+    /// The grade this shape holds along the alignment, for the callers that
+    /// need a single number (the relaxation's per-edge ceiling). `None` for a
+    /// draped class, which holds no grade of its own.
+    pub fn grade(self) -> Option<f64> {
+        match self {
+            GradeShape::Bounded(g) | GradeShape::Constant(g) => Some(g),
+            GradeShape::CurvatureLimited { grade, .. } => Some(grade),
+            GradeShape::Draped => None,
+        }
+    }
+}
+
+/// Which stratum a class belongs to (§4.2) — its authority, made mechanical.
+///
+/// `Ord` ascending is authority order, so "solve in authority order" is a sort
+/// and "is this senior to that" is a comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Stratum {
+    /// Hydrology. Absolute authority; publishes the water datum and freeboard.
+    H,
+    /// Independent rail: a formation that exists whatever the streets do.
+    R,
+    /// The street network — the negotiating layer.
+    S,
+    /// Draped features. No authority, and no solve: they sample the finished
+    /// ground. Carrying a structure span is *not* a promotion (§4.2).
+    D,
+    /// Buildings, founded on the finished ground.
+    B,
+}
+
+/// Everything the data does not say about one `(modality, class)`, in one
+/// place (§9).
+#[derive(Debug, Clone, Copy)]
+pub struct Prior {
+    /// The shape of the longitudinal constraint.
+    pub grade_shape: GradeShape,
+    /// Whether the class holds a *surveyed* alignment. Gates the engineered-only
+    /// solve behaviours — rim anchoring, infeasible-anchor absorption into
+    /// structures (docs/GROUND.md §1) — which a street must not get: a street's
+    /// grade is a bed grade that irons DEM noise, never a standard it was built
+    /// to, so treating it as one digs corridors into hillsides.
+    pub engineered: bool,
+    /// How far the profile may leave its conditioned terrain reference, metres.
+    /// This is what lets a residential street follow the hill while a motorway
+    /// cuts through it — same grade shape, different budget.
+    pub deviation_m: f64,
+    /// Profile node spacing along the alignment, metres.
+    pub node_spacing_m: f64,
+    /// What a feature crossing *over* this must leave above it, metres.
+    pub clearance_over_m: f64,
+    /// What this must leave when it crosses over something, metres.
+    pub clearance_under_m: f64,
+    /// Shortest plausible real structure of this class, metres.
+    pub min_structure_m: f64,
+    /// Half the physical cross-section, metres. `None` for a class with no
+    /// width of its own — a footpath's stroke is cartographic.
+    pub half_width_m: Option<f64>,
+    /// Whether this class lays asphalt: a carriageway in the paved union, with
+    /// markings and junction plates. Distinct from having a width, because a
+    /// railway has a formation to bench and no asphalt to draw.
+    pub paves: bool,
+    /// Which stratum this class is solved in.
+    pub stratum: Stratum,
+}
+
+/// Half-width in metres of a ramp, whatever its class: a single lane plus
+/// shoulders (mapped medians 4.5–5.5 m full width).
+pub const LINK_HALF_WIDTH_M: f64 = 2.75;
+
+impl Prior {
+    /// Half-width in metres, honouring the ramp override. A `link` is one lane
+    /// wide whatever class it carries.
+    pub fn half_width_m(&self, link: bool) -> Option<f64> {
+        match self.half_width_m {
+            Some(_) if link => Some(LINK_HALF_WIDTH_M),
+            w => w,
         }
     }
 
-    /// Maximum grade (rise/run) the class is engineered to hold, or `None` to
-    /// leave the road on the terrain. Only the engineered high classes are
-    /// capped; a residential street or track genuinely follows whatever slope
-    /// it is built on (scenario S9: grade limits must not "fix" a road that
-    /// genuinely climbs).
-    pub fn grade_limit(self) -> Option<f64> {
-        match self {
-            RoadClass::Motorway | RoadClass::Trunk => Some(0.06),
-            _ => None,
+    /// The grade the relaxation holds this class's edges to.
+    pub fn grade(&self) -> Option<f64> {
+        self.grade_shape.grade()
+    }
+}
+
+impl Kind {
+    /// Parses the §9 key from Overture's `subtype`/`class`/`subclass`.
+    ///
+    /// An unrecognised class is *not* an error and *not* a silent default to a
+    /// street: it takes its modality's `Unknown`, whose stratum is the most
+    /// junior plausible one (§4.6). A misclassification that costs authority is
+    /// recoverable; one that grants it is not.
+    pub fn parse(subtype: Option<&str>, class: Option<&str>, _subclass: Option<&str>) -> Kind {
+        match subtype {
+            Some("rail") => Kind::Rail(match class {
+                Some("standard_gauge") => RailClass::StandardGauge,
+                Some("narrow_gauge") => RailClass::NarrowGauge,
+                Some("broad_gauge") => RailClass::BroadGauge,
+                Some("funicular") => RailClass::Funicular,
+                Some("subway") => RailClass::Subway,
+                Some("light_rail") => RailClass::LightRail,
+                Some("monorail") => RailClass::Monorail,
+                Some("tram") => RailClass::Tram,
+                _ => RailClass::Unknown,
+            }),
+            Some("water") => Kind::Water(match class {
+                Some("river" | "stream" | "canal" | "drain" | "ditch") => WaterClass::Watercourse,
+                _ => WaterClass::Still,
+            }),
+            _ => Kind::Road(match class {
+                Some("motorway") => RoadClass::Motorway,
+                Some("trunk") => RoadClass::Trunk,
+                Some("primary") => RoadClass::Primary,
+                Some("secondary") => RoadClass::Secondary,
+                Some("tertiary") => RoadClass::Tertiary,
+                Some("unclassified") => RoadClass::Unclassified,
+                Some("residential") => RoadClass::Residential,
+                Some("living_street") => RoadClass::LivingStreet,
+                Some("service") => RoadClass::Service,
+                Some("track") => RoadClass::Track,
+                Some("footway") => RoadClass::Footway,
+                Some("path") => RoadClass::Path,
+                Some("steps") => RoadClass::Steps,
+                Some("cycleway") => RoadClass::Cycleway,
+                Some("bridleway") => RoadClass::Bridleway,
+                Some("pedestrian") => RoadClass::Pedestrian,
+                Some("unknown") => RoadClass::Unknown,
+                _ => RoadClass::Other,
+            }),
         }
     }
 
-    /// Longitudinal grade cap for a street *bed* (the bench the ground stage
-    /// cuts for an unclaimed road, D3) — how fast the bench may climb along
-    /// the street. Unlike [`RoadClass::grade_limit`] this is not a solver
-    /// ceiling: the bed smoothing it feeds is clamped to stay within
-    /// [`BED_MAX_DEVIATION_M`] of the natural ground, so a street that
-    /// genuinely climbs still climbs (S9) — the cap only irons the sample
-    /// noise and terraces a raw DEM drape throws up between bed nodes.
-    pub fn bed_grade(self) -> f64 {
+    pub fn modality(self) -> Modality {
         match self {
-            RoadClass::Motorway | RoadClass::Trunk => 0.06,
-            RoadClass::Primary => 0.08,
-            RoadClass::Secondary => 0.10,
-            RoadClass::Minor => 0.15,
+            Kind::Road(_) => Modality::Road,
+            Kind::Rail(_) => Modality::Rail,
+            Kind::Water(_) => Modality::Water,
         }
     }
 
-    /// How far this class's solved profile may leave its conditioned terrain
-    /// reference, in metres — the ground-hugging budget
-    /// ([`MAX_ROAD_DEVIATION_M`] is the engineered ceiling; a street's bench
-    /// irons noise within [`BED_MAX_DEVIATION_M`] and otherwise trusts the
-    /// slope, S9). Between them the connecting classes get an intermediate
-    /// budget: a primary road is engineered harder than a lane but not
-    /// motorway-hard.
-    pub fn deviation_m(self) -> f64 {
-        match self {
-            RoadClass::Motorway | RoadClass::Trunk => MAX_ROAD_DEVIATION_M,
-            RoadClass::Primary | RoadClass::Secondary => 4.0,
-            RoadClass::Minor => BED_MAX_DEVIATION_M,
-        }
+    /// This kind's priors (§9).
+    pub fn prior(self) -> &'static Prior {
+        of(self)
     }
 
-    /// Profile node spacing along the corridor, metres. Engineered classes
-    /// sample densely (grade relaxation and rim anchoring want resolution);
-    /// the long tail of minor streets — most of the network by length —
-    /// samples sparsely, bounding the solve's time and memory.
-    pub fn node_spacing_m(self) -> f64 {
-        match self {
-            RoadClass::Motorway | RoadClass::Trunk => NODE_SPACING_M,
-            RoadClass::Primary | RoadClass::Secondary => 12.0,
-            RoadClass::Minor => 24.0,
-        }
+    pub fn stratum(self) -> Stratum {
+        of(self).stratum
     }
+}
 
-    /// Half-width in metres of a swept structure box — bigger roads, bigger
-    /// structures. Overture maps each carriageway of a dual carriageway (and
-    /// each ramp) as its own segment, so these are *per-carriageway* widths,
-    /// not whole-road widths: dual motorway centerlines run only ~8–15 m
-    /// apart, and a whole-motorway width on each would overlap the decks. The
-    /// values follow the mapped `width` medians in the Swiss extract
-    /// (motorway 9 m, trunk 8 m, primary 7 m, secondary 6 m, minor 5–6 m).
-    /// A `link` (ramp) is a single lane plus shoulders whatever its class
-    /// (mapped medians 4.5–5.5 m).
-    pub fn half_width_m(self, link: bool) -> f64 {
-        if link {
-            return 2.75;
-        }
-        match self {
-            RoadClass::Motorway => 4.5,
-            RoadClass::Trunk => 4.0,
-            RoadClass::Primary => 3.5,
-            RoadClass::Secondary => 3.0,
-            RoadClass::Minor => 2.75,
-        }
+/// The prior table (§9), keyed by `(modality, class)`.
+///
+/// Values are conventions, not measurements. The *shapes* are the design point;
+/// the numbers are calibrated separately.
+pub fn of(kind: Kind) -> &'static Prior {
+    use RailClass as Ra;
+    use RoadClass as Ro;
+    use WaterClass as Wa;
+
+    // Grades: the engineered classes hold a surveyed ceiling; the rest hold a
+    // bed grade, which only irons the terraces a raw DEM drape throws up
+    // between nodes. The deviation budget is what separates them in effect —
+    // a street breaks grade rather than dive metres below its hillside (S9).
+    const MOTORWAY: Prior = Prior {
+        grade_shape: GradeShape::Bounded(0.06),
+        engineered: true,
+        deviation_m: MAX_ROAD_DEVIATION_M,
+        node_spacing_m: NODE_SPACING_M,
+        clearance_over_m: ROAD_CLEARANCE_M,
+        clearance_under_m: ROAD_CLEARANCE_M,
+        min_structure_m: MIN_STRUCTURE_M,
+        half_width_m: Some(4.5),
+        paves: true,
+        stratum: Stratum::S,
+    };
+    const TRUNK: Prior = Prior { half_width_m: Some(4.0), ..MOTORWAY };
+    const PRIMARY: Prior = Prior {
+        grade_shape: GradeShape::Bounded(0.08),
+        engineered: false,
+        deviation_m: 4.0,
+        node_spacing_m: 12.0,
+        half_width_m: Some(3.5),
+        ..MOTORWAY
+    };
+    const SECONDARY: Prior = Prior {
+        grade_shape: GradeShape::Bounded(0.10),
+        half_width_m: Some(3.0),
+        ..PRIMARY
+    };
+    // The long tail of streets: sparse nodes (most of the network by length),
+    // a tight budget, and a bed grade that is never a solver ceiling.
+    const STREET: Prior = Prior {
+        grade_shape: GradeShape::Bounded(0.15),
+        engineered: false,
+        deviation_m: BED_MAX_DEVIATION_M,
+        node_spacing_m: 24.0,
+        half_width_m: Some(2.75),
+        ..PRIMARY
+    };
+    // Draped: no profile, no authority, no asphalt. This is 46.9 % of the road
+    // network (§2.2), so the discipline is load-bearing — any loophole that
+    // admits one of these into a solve is a loophole through which half the
+    // network can perturb the other half.
+    const DRAPED: Prior = Prior {
+        grade_shape: GradeShape::Draped,
+        engineered: false,
+        deviation_m: BED_MAX_DEVIATION_M,
+        node_spacing_m: 24.0,
+        clearance_over_m: ROAD_CLEARANCE_M,
+        clearance_under_m: ROAD_CLEARANCE_M,
+        min_structure_m: MIN_STRUCTURE_M,
+        // A footpath is about as wide as a lane and its earthworks are that
+        // wide too. What a draped class has no business holding is a
+        // *profile*, which `GradeShape::Draped` above says outright.
+        half_width_m: Some(2.75),
+        paves: false,
+        stratum: Stratum::D,
+    };
+    // Rail. The alignment priors this stratum needs — a surveyed grade, a
+    // vertical-curve bound, a funicular's single gradient — are not written
+    // yet, because nothing reads them: rail is not solved as rail. What the
+    // solver does today with a railway that carries a bridge annotation is
+    // treat it as a street with no asphalt, and that is what this entry says,
+    // exactly, so the type sweep moves no number. M6 replaces it when rail
+    // becomes stratum R; until then the `stratum` field below is the only part
+    // of it that is true, and nothing reads that either.
+    const RAIL_AS_STREET: Prior = Prior {
+        clearance_over_m: RAIL_CLEARANCE_M,
+        paves: false,
+        half_width_m: Some(2.75),
+        stratum: Stratum::R,
+        ..STREET
+    };
+    // Street-running rail lies *on* the carriageway: rail modality, no
+    // authority (S16). The right-of-way test, not the modality, decides.
+    const STREET_RAIL: Prior = Prior { stratum: Stratum::D, ..RAIL_AS_STREET };
+
+    match kind {
+        Kind::Road(Ro::Motorway) => &MOTORWAY,
+        Kind::Road(Ro::Trunk) => &TRUNK,
+        Kind::Road(Ro::Primary) => &PRIMARY,
+        Kind::Road(Ro::Secondary) => &SECONDARY,
+        Kind::Road(
+            Ro::Tertiary | Ro::Unclassified | Ro::Residential | Ro::LivingStreet | Ro::Service
+            | Ro::Unknown,
+        ) => &STREET,
+        Kind::Road(
+            Ro::Track | Ro::Footway | Ro::Pedestrian | Ro::Path | Ro::Steps | Ro::Cycleway
+            | Ro::Bridleway | Ro::Other,
+        ) => &DRAPED,
+        Kind::Rail(
+            Ra::StandardGauge | Ra::BroadGauge | Ra::Subway | Ra::NarrowGauge | Ra::Funicular,
+        ) => &RAIL_AS_STREET,
+        // Tram, light rail and monorail lie in or over a street, and an
+        // unclassified railway takes the junior default (§4.6, §10).
+        Kind::Rail(Ra::Tram | Ra::LightRail | Ra::Monorail | Ra::Unknown) => &STREET_RAIL,
+        Kind::Water(Wa::Still | Wa::Watercourse) => &WATER,
     }
+}
+
+/// Water's prior. It publishes clearance and a datum; it holds no alignment of
+/// its own, and it never excavates (§4.2).
+const WATER: Prior = Prior {
+    grade_shape: GradeShape::Draped,
+    engineered: false,
+    deviation_m: 0.0,
+    node_spacing_m: 24.0,
+    clearance_over_m: WATER_FREEBOARD_M,
+    clearance_under_m: WATER_FREEBOARD_M,
+    min_structure_m: MIN_STRUCTURE_M,
+    half_width_m: None,
+    paves: false,
+    stratum: Stratum::H,
+};
+
+/// Vertical clearance a bridge deck's *underside* must keep over a crossed
+/// road (scenario S4, I3). The data never states built clearances; these are
+/// the engineering minimums.
+pub const ROAD_CLEARANCE_M: f64 = 5.0;
+
+/// The same over a railway — more, for the catenary.
+pub const RAIL_CLEARANCE_M: f64 = 7.0;
+
+/// Freeboard a deck must keep over a water surface (S3).
+pub const WATER_FREEBOARD_M: f64 = 4.0;
+
+/// What the pipeline still treats as a drivable street, pending stratum R.
+///
+/// [`Prior::paves`] states the truth: no railway lays asphalt. This states what
+/// the *pipeline* is tuned around, and only two predicates read it — which
+/// features enter the scene, and which lay a carriageway. It is deleted in M6.
+///
+/// The deleted class-string allow-list never read `subtype`, so a railway
+/// carrying Overture's literal `unknown` class matched the string "unknown" and
+/// was admitted as a road: 141 segments on the Montreux extract, benched, paved
+/// and drawn as asphalt. Correcting that *before* rail has a stratum of its own
+/// breaks the rail viaduct beside it, in both directions and for one reason —
+/// a bridge span is chorded between its corridor's at-grade anchors, and any
+/// change to which rail segments are in the scene moves those anchors:
+///
+/// - Drop at-grade rail: the bridge segments still enter on their level
+///   annotation, so the corridor is bridge-only and has no anchor at all.
+/// - Admit *all* rail: splicing joins far more segments, and the span is
+///   chorded across a long descent to the lake.
+///
+/// Both put the deck 37 m under the terrain — measured at 6.9288,46.4260, where
+/// the probe reads `road=527.3 terr=564.1` and the section shows a deck buried
+/// in the hillside. The fix is not a better gate but rail solved as rail, with
+/// its own grade shape and its own stratum.
+pub fn paves_today(kind: Kind) -> bool {
+    kind.prior().paves || matches!(kind, Kind::Rail(RailClass::Unknown))
 }
 
 /// Whether an Overture `subclass` marks a ramp — narrower than its class's
@@ -120,34 +434,25 @@ pub fn is_link(subclass: Option<&str>) -> bool {
 /// mapped medians run ~3 m).
 pub const SERVICE_WAY_WIDTH_M: f64 = 3.0;
 
-/// Physical painted width in metres of a drivable road, keyed by its Overture
-/// class/subclass — twice the [`RoadClass::half_width_m`] the structure sweep
-/// uses, so the paint stroke and the deck it rides are sized from the same
-/// prior and meet edge-to-edge. `None` for non-drivable classes (paths, rail,
-/// tracks), which keep their cartographic stroke widths.
+/// Physical painted width in metres of a paved road — twice the prior's
+/// half-width, so the paint stroke and the deck it rides are sized from the
+/// same number and meet edge-to-edge. `None` for a class that lays no asphalt
+/// (paths, rail, tracks), which keeps its cartographic stroke.
 pub fn paint_width_m(class: Option<&str>, subclass: Option<&str>) -> Option<f64> {
-    let c = class?;
-    let drivable = matches!(
-        c,
-        "motorway"
-            | "trunk"
-            | "primary"
-            | "secondary"
-            | "tertiary"
-            | "unclassified"
-            | "residential"
-            | "living_street"
-            | "service"
-            | "unknown"
-    );
-    if !drivable {
+    paint_width_of(Kind::parse(None, class, subclass), subclass)
+}
+
+/// [`paint_width_m`] against an already-parsed kind.
+pub fn paint_width_of(kind: Kind, subclass: Option<&str>) -> Option<f64> {
+    let prior = of(kind);
+    if !prior.paves {
         return None;
     }
     // The small service ways are narrower than any street class.
     if matches!(subclass, Some("driveway" | "parking_aisle" | "alley")) {
         return Some(SERVICE_WAY_WIDTH_M);
     }
-    Some(2.0 * RoadClass::parse(Some(c)).half_width_m(is_link(subclass)))
+    Some(2.0 * prior.half_width_m(is_link(subclass))?)
 }
 
 /// How far a mapped `width` may stray from the class prior, as factors of it,
@@ -156,15 +461,15 @@ pub fn paint_width_m(class: Option<&str>, subclass: Option<&str>) -> Option<f64>
 /// match the priors. Beyond these bounds the measurement contradicts the
 /// class (a whole right-of-way width on a footpath-sized lane, a typo'd
 /// unit), and the prior is kept — the same trust-the-prior resolution the
-/// clearance caps above use.
+/// clearance caps use.
 pub const MEASURED_WIDTH_FACTOR_MIN: f64 = 0.35;
 pub const MEASURED_WIDTH_FACTOR_MAX: f64 = 3.0;
 
 /// Painted carriageway width in metres (docs/ROADS.md H2): the mapped
 /// Overture `width_rules` value when plausible against the class prior, else
-/// the prior itself ([`paint_width_m`]). `None` for non-drivable classes even
-/// when a width is mapped — their stroke stays cartographic until they grow
-/// surfaces of their own (docs/ROADS.md P5).
+/// the prior itself ([`paint_width_m`]). `None` for a class that lays no
+/// asphalt even when a width is mapped — its stroke stays cartographic until
+/// it grows a surface of its own (docs/ROADS.md P5).
 pub fn carriageway_width_m(
     class: Option<&str>,
     subclass: Option<&str>,
@@ -179,18 +484,6 @@ pub fn carriageway_width_m(
             Some(w)
         }
         _ => Some(prior),
-    }
-}
-
-/// Vertical clearance a bridge deck's *underside* must keep over a crossed
-/// feature (scenarios S3/S4, invariant 3). About 5 m over a road, more over
-/// rail (catenary), freeboard over water. The data never states built
-/// clearances; these are the engineering minimums.
-pub fn clearance_m(lower: crate::scene::CrossedKind) -> f64 {
-    match lower {
-        crate::scene::CrossedKind::Road => 5.0,
-        crate::scene::CrossedKind::Rail => 7.0,
-        crate::scene::CrossedKind::Water => 4.0,
     }
 }
 
@@ -582,26 +875,140 @@ pub const MAX_CORRIDOR_M: f64 = 30_000.0;
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_engineered_classes_are_grade_limited() {
-        assert!(RoadClass::parse(Some("motorway")).grade_limit().is_some());
-        assert!(RoadClass::parse(Some("trunk")).grade_limit().is_some());
-        assert!(RoadClass::parse(Some("residential")).grade_limit().is_none());
-        assert!(RoadClass::parse(None).grade_limit().is_none());
+    fn road(c: RoadClass) -> &'static Prior {
+        of(Kind::Road(c))
     }
 
     #[test]
-    fn half_width_scales_with_class() {
-        assert!(RoadClass::Motorway.half_width_m(false) > RoadClass::Minor.half_width_m(false));
-        assert_eq!(
-            RoadClass::parse(None).half_width_m(false),
-            RoadClass::Minor.half_width_m(false)
+    fn the_key_is_modality_and_class_not_class_alone() {
+        // The failure this table exists to prevent: a flat class enum ending in
+        // `_ => Minor` gave a mainline railway a residential street's priors.
+        let rail = Kind::parse(Some("rail"), Some("standard_gauge"), None);
+        let street = Kind::parse(Some("road"), Some("residential"), None);
+        assert_eq!(rail.modality(), Modality::Rail);
+        assert_eq!(street.modality(), Modality::Road);
+        assert_ne!(rail, street);
+        // Same class *string* under a different modality is a different key.
+        assert_ne!(
+            Kind::parse(Some("rail"), Some("unknown"), None),
+            Kind::parse(Some("road"), Some("unknown"), None)
         );
     }
 
     #[test]
+    fn an_unreadable_class_takes_the_junior_default() {
+        // §4.6: a misclassification that costs authority is recoverable, one
+        // that grants it is not. So an unnamed class must not inherit a
+        // street's carriageway or a formation's authority.
+        let other = Kind::parse(Some("road"), Some("busway"), None);
+        assert_eq!(other, Kind::Road(RoadClass::Other));
+        assert!(!other.prior().paves, "an unread class must not pave");
+        assert_eq!(other.stratum(), Stratum::D, "nor take authority");
+        // Overture's literal `unknown` is different: it is mapped as a road.
+        assert!(Kind::parse(Some("road"), Some("unknown"), None).prior().paves);
+    }
+
+    #[test]
+    fn authority_order_is_the_stratum_order() {
+        // `Ord` ascending is authority order, which is what makes "solve in
+        // authority order" a sort and "is this senior" a comparison.
+        assert!(Stratum::H < Stratum::R);
+        assert!(Stratum::R < Stratum::S);
+        assert!(Stratum::S < Stratum::D);
+        assert!(Stratum::D < Stratum::B);
+    }
+
+    #[test]
+    fn draped_classes_hold_no_grade_and_pave_nothing() {
+        // 46.9 % of the road network. Any loophole admitting one of these into
+        // a solve is a loophole through which half the network can perturb the
+        // other half (§4.2).
+        for c in [RoadClass::Footway, RoadClass::Path, RoadClass::Steps, RoadClass::Track,
+                  RoadClass::Cycleway, RoadClass::Bridleway, RoadClass::Pedestrian] {
+            let p = road(c);
+            assert_eq!(p.grade_shape, GradeShape::Draped, "{c:?} holds a grade");
+            assert!(p.grade().is_none(), "{c:?} reports a grade");
+            assert!(!p.paves, "{c:?} paves");
+            // `Other` shares this prior, so cover it here too.
+            assert!(!p.engineered, "{c:?} claims a survey");
+            assert_eq!(p.stratum, Stratum::D, "{c:?} has authority");
+        }
+    }
+
+    #[test]
+    fn only_surveyed_classes_are_engineered() {
+        // The gate on rim anchoring and infeasible-anchor absorption: a
+        // street's grade is a bed grade, never a standard it was built to.
+        assert!(road(RoadClass::Motorway).engineered);
+        assert!(road(RoadClass::Trunk).engineered);
+        assert!(!road(RoadClass::Primary).engineered);
+        assert!(!road(RoadClass::Residential).engineered);
+        assert!(!road(RoadClass::Footway).engineered);
+    }
+
+    #[test]
+    fn the_deviation_budget_is_what_lets_a_street_follow_the_hill() {
+        // §9: residential is `bounded(g)` like a motorway — what differs is how
+        // far it may leave the ground, not the shape of its constraint.
+        assert!(matches!(road(RoadClass::Motorway).grade_shape, GradeShape::Bounded(_)));
+        assert!(matches!(road(RoadClass::Residential).grade_shape, GradeShape::Bounded(_)));
+        assert!(road(RoadClass::Residential).deviation_m < road(RoadClass::Motorway).deviation_m);
+    }
+
+    #[test]
+    fn a_railway_is_crossed_higher_than_a_road() {
+        // The catenary. Read from the *crossed* feature's prior, which is the
+        // whole reason clearance moved onto the key.
+        assert!(
+            Kind::Rail(RailClass::StandardGauge).prior().clearance_over_m
+                > Kind::Road(RoadClass::Motorway).prior().clearance_over_m
+        );
+        assert_eq!(Kind::Water(WaterClass::Still).prior().clearance_over_m, WATER_FREEBOARD_M);
+    }
+
+    #[test]
+    fn street_running_rail_has_no_authority_but_a_railways_clearance() {
+        // S16: right-of-way, not modality, decides. A tram lies on the
+        // carriageway, so it is junior — and it still carries a catenary.
+        let tram = Kind::Rail(RailClass::Tram);
+        assert_eq!(tram.stratum(), Stratum::D);
+        assert_eq!(tram.prior().clearance_over_m, RAIL_CLEARANCE_M);
+        // An unclassified railway takes the same junior default (§10).
+        assert_eq!(Kind::Rail(RailClass::Unknown).stratum(), Stratum::D);
+        // A railway on its own formation does not.
+        assert_eq!(Kind::Rail(RailClass::StandardGauge).stratum(), Stratum::R);
+    }
+
+    #[test]
+    fn no_rail_class_paves() {
+        // A railway has a formation to bench and no asphalt to draw. This is
+        // the split that `drivable` could not express.
+        for c in [RailClass::StandardGauge, RailClass::NarrowGauge, RailClass::BroadGauge,
+                  RailClass::Funicular, RailClass::Subway, RailClass::LightRail,
+                  RailClass::Monorail, RailClass::Tram, RailClass::Unknown] {
+            assert!(!of(Kind::Rail(c)).paves, "{c:?} paves");
+        }
+    }
+
+    #[test]
+    fn half_width_scales_with_class() {
+        assert!(
+            road(RoadClass::Motorway).half_width_m(false)
+                > road(RoadClass::Residential).half_width_m(false)
+        );
+        // A draped class still has a physical width — a footpath is about as
+        // wide as a lane, and its earthworks are that wide. What it lacks is a
+        // profile.
+        assert!(road(RoadClass::Footway).half_width_m(false).is_some());
+        assert_eq!(road(RoadClass::Footway).grade(), None);
+    }
+
+    #[test]
     fn links_are_narrow_whatever_the_class() {
-        assert!(RoadClass::Motorway.half_width_m(true) < RoadClass::Motorway.half_width_m(false));
+        assert!(
+            road(RoadClass::Motorway).half_width_m(true)
+                < road(RoadClass::Motorway).half_width_m(false)
+        );
         assert!(is_link(Some("link")));
         assert!(!is_link(Some("sidewalk")));
         assert!(!is_link(None));
@@ -614,7 +1021,7 @@ mod tests {
             paint_width_m(Some("service"), Some("parking_aisle")),
             Some(SERVICE_WAY_WIDTH_M)
         );
-        // A plain service road keeps the minor-street width.
+        // A plain service road keeps the street width.
         assert_eq!(paint_width_m(Some("service"), None), Some(5.5));
     }
 
@@ -634,7 +1041,8 @@ mod tests {
         assert_eq!(carriageway_width_m(Some("residential"), None, Some(30.0)), Some(5.5));
         // A 1 m one contradicts drivability.
         assert_eq!(carriageway_width_m(Some("residential"), None, Some(1.0)), Some(5.5));
-        // Non-drivable classes stay cartographic even with a mapped width.
+        // A class that lays no asphalt stays cartographic even with a mapped
+        // width.
         assert_eq!(carriageway_width_m(Some("footway"), None, Some(1.5)), None);
     }
 
@@ -642,6 +1050,29 @@ mod tests {
     fn dual_carriageway_decks_do_not_overlap() {
         // Overture dual-carriageway centerlines run ~8-15 m apart (measured on
         // the Swiss extract, p10 = 8.2 m); two swept motorway boxes must fit.
-        assert!(2.0 * RoadClass::Motorway.half_width_m(false) <= 9.0);
+        assert!(2.0 * road(RoadClass::Motorway).half_width_m(false).unwrap() <= 9.0);
+    }
+
+    /// The whole point of M1 is that it moved no number. These are the values
+    /// the flat five-bucket enum produced, spelled out, so a later calibration
+    /// has to be deliberate.
+    #[test]
+    fn the_road_table_reproduces_the_buckets_it_replaced() {
+        for (c, grade, dev, spacing, half) in [
+            (RoadClass::Motorway, 0.06, 8.0, 8.0, 4.5),
+            (RoadClass::Trunk, 0.06, 8.0, 8.0, 4.0),
+            (RoadClass::Primary, 0.08, 4.0, 12.0, 3.5),
+            (RoadClass::Secondary, 0.10, 4.0, 12.0, 3.0),
+            (RoadClass::Residential, 0.15, 2.5, 24.0, 2.75),
+            (RoadClass::Service, 0.15, 2.5, 24.0, 2.75),
+            (RoadClass::Tertiary, 0.15, 2.5, 24.0, 2.75),
+        ] {
+            let p = road(c);
+            assert_eq!(p.grade(), Some(grade), "{c:?} grade");
+            assert_eq!(p.deviation_m, dev, "{c:?} deviation");
+            assert_eq!(p.node_spacing_m, spacing, "{c:?} spacing");
+            assert_eq!(p.half_width_m(false), Some(half), "{c:?} half-width");
+            assert!(p.paves, "{c:?} must pave");
+        }
     }
 }

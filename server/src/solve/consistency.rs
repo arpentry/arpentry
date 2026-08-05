@@ -13,7 +13,7 @@
 //! Purely a read-only diagnostic: it changes no geometry, only reports how
 //! consistent the model already is, so every later change has a number to beat.
 
-use crate::priors::{clearance_m, DECK_THICKNESS_M};
+use crate::priors::DECK_THICKNESS_M;
 use crate::scene::SceneGraph;
 
 use super::SolvedModel;
@@ -72,7 +72,7 @@ pub fn measure(scene: &SceneGraph, solved: &SolvedModel) -> Consistency {
             .and_then(|id| solved.profile(id))
             .map(|lp| lp.height_at(c.point.x, c.point.y))
             .unwrap_or_else(|| up.surface_at(c.point.x, c.point.y));
-        let required = lower_m + clearance_m(c.lower_kind) + DECK_THICKNESS_M;
+        let required = lower_m + c.lower_kind.prior().clearance_over_m + DECK_THICKNESS_M;
         let actual = up.deck_height_at(c.point.x, c.point.y);
         max_clearance_violation_m = max_clearance_violation_m.max(required - actual);
     }
@@ -100,7 +100,7 @@ fn percentile(xs: &mut [f64], q: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::scene::{Corridor, Junction, JunctionMember, SegmentRef};
-    use crate::priors::RoadClass;
+    use crate::priors::{Kind, RoadClass};
     use geo_types::Coord;
 
     fn cos_lat() -> f64 {
@@ -118,10 +118,9 @@ mod tests {
             nodes,
             arc,
             cos_lat: cos_lat(),
-            class: RoadClass::Motorway,
+            kind: Kind::Road(RoadClass::Motorway),
             class_key: String::new(),
             link: false,
-            drivable: true,
             width_m: Some(5.5),
             spans: vec![],
             segments: vec![SegmentRef { source: id as u64, node0: 0, node1: n - 1, properties: vec![] }],

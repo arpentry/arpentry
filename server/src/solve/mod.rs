@@ -153,7 +153,7 @@ pub fn run(
                         i
                     };
                     let c = &scene.corridors[todo[i]];
-                    let mode = Mode::for_class(c.class, c.drivable);
+                    let mode = Mode::for_kind(c.kind);
                     let solved = profile::solve(&c.nodes, &c.spans, mode, &mut |p| {
                         reference_surface(&mut dem, z_ref, p.x, p.y)
                     });
@@ -315,7 +315,7 @@ mod tests {
     /// on near-flat ground — the terrain test the assemble stage defers here.
     #[test]
     fn short_spans_resolve_against_the_terrain() {
-        use crate::priors::RoadClass;
+        use crate::priors::{Kind, RoadClass};
         use crate::scene::{Corridor, SegmentRef, DEG_M};
         let cos_lat = 46.0_f64.to_radians().cos();
         let len_m = 200.0;
@@ -329,10 +329,9 @@ mod tests {
             nodes: nodes.clone(),
             arc: arc.clone(),
             cos_lat,
-            class: RoadClass::Minor,
+            kind: Kind::Road(RoadClass::Residential),
             class_key: String::new(),
             link: false,
-            drivable: true,
             width_m: Some(5.5),
             spans,
             segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],

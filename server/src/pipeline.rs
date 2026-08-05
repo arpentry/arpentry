@@ -2127,7 +2127,7 @@ mod tests {
                 solve::profile::solve(
                     &c.nodes,
                     &c.spans,
-                    solve::Mode::for_class(c.class, c.drivable),
+                    solve::Mode::for_kind(c.kind),
                     &mut |q| solve::reference_surface(&mut d, z_ref, q.x, q.y),
                 )
             });

@@ -137,7 +137,7 @@ fn corridors_geojson(scene: &SceneGraph) -> Json {
                 "geometry": { "type": "LineString", "coordinates": coords },
                 "properties": {
                     "corridor": c.id,
-                    "class": format!("{:?}", c.class),
+                    "kind": format!("{:?}", c.kind),
                     "length_m": c.total().round(),
                     "segments": c.segments.len(),
                     "spans": spans.join("; "),
@@ -160,7 +160,7 @@ fn smooth_geojson(scene: &SceneGraph, solved: &SolvedModel) -> Json {
             json!({
                 "type": "Feature",
                 "geometry": { "type": "LineString", "coordinates": coords },
-                "properties": { "corridor": c.id, "class": format!("{:?}", c.class) },
+                "properties": { "corridor": c.id, "kind": format!("{:?}", c.kind) },
             })
         })
         .collect();
@@ -196,7 +196,7 @@ fn profiles_geojson(scene: &SceneGraph, solved: &SolvedModel) -> Json {
                 "geometry": { "type": "LineString", "coordinates": coords },
                 "properties": {
                     "corridor": c.id,
-                    "class": format!("{:?}", c.class),
+                    "kind": format!("{:?}", c.kind),
                     "road_m": road_j,
                     "terrain_m": terrain_j,
                     "deck_m": deck_j,

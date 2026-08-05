@@ -500,7 +500,7 @@ mod tests {
 
     use crate::ground::sampler::{GroundSampler, MeshOptions};
     use crate::ground::GroundModel;
-    use crate::priors::RoadClass;
+    use crate::priors::{Kind, RoadClass};
     use crate::scene::{Corridor, Junction, JunctionMember, SceneGraph};
     use std::sync::Arc;
 
@@ -526,10 +526,9 @@ mod tests {
             nodes,
             arc: (0..n).map(|i| i as f64 * step).collect(),
             cos_lat: LAT.to_radians().cos(),
-            class: RoadClass::Minor,
+            kind: Kind::Road(RoadClass::Residential),
             class_key: "residential".to_string(),
             link: false,
-            drivable: true,
             width_m: Some(width_m),
             spans: Vec::new(),
             segments: Vec::new(),
@@ -548,10 +547,9 @@ mod tests {
             nodes,
             arc: (0..n).map(|i| i as f64 * step).collect(),
             cos_lat: LAT.to_radians().cos(),
-            class: RoadClass::Minor,
+            kind: Kind::Road(RoadClass::Residential),
             class_key: "residential".to_string(),
             link: false,
-            drivable: true,
             width_m: Some(width_m),
             spans: Vec::new(),
             segments: Vec::new(),

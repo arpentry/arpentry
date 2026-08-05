@@ -380,7 +380,7 @@ const CUT_EPS_M: f64 = 1e-3;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::priors::RoadClass;
+    use crate::priors::{Kind, RoadClass};
     use crate::scene::{Corridor, SceneGraph};
     use crate::solve::SolvedModel;
 
@@ -414,10 +414,9 @@ mod tests {
             nodes,
             arc: (0..n).map(|i| i as f64 * step).collect(),
             cos_lat: LAT.to_radians().cos(),
-            class: RoadClass::Minor,
+            kind: Kind::Road(RoadClass::Residential),
             class_key: "residential".to_string(),
             link: false,
-            drivable: true,
             width_m: Some(width_m),
             spans: Vec::new(),
             segments: Vec::new(),
@@ -649,10 +648,9 @@ mod tests {
             nodes: c.nodes.clone(),
             arc: c.arc.clone(),
             cos_lat: c.cos_lat,
-            class: c.class,
+            kind: c.kind,
             class_key: c.class_key.clone(),
             link: c.link,
-            drivable: c.drivable,
             width_m: c.width_m,
             spans: c.spans.clone(),
             segments: Vec::new(),
@@ -702,7 +700,7 @@ mod tests {
     #[test]
     fn a_network_with_nothing_paved_bakes_nothing() {
         let mut path = corridor(0, 6.0, LAT, 1.0, 0.0, 200.0, 11, 6.0);
-        path.drivable = false;
+        path.kind = crate::priors::Kind::Road(crate::priors::RoadClass::Footway);
         path.width_m = None;
         let model = bake_scene(vec![path]);
         assert_eq!(model.chunk_count(), 0);

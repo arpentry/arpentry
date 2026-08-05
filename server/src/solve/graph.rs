@@ -15,7 +15,7 @@
 
 use geo_types::Coord;
 
-use crate::priors::CLEARANCE_TROUGH_M;
+use crate::priors::{CLEARANCE_TROUGH_M, RAMP_GRADE};
 use crate::scene::{CorridorId, SceneGraph, Span, SpanKind, DEG_M};
 
 use super::profile::{condition_reference, Profile};
@@ -66,7 +66,7 @@ pub struct CorridorNodes {
     /// The grade ceiling this corridor's edges are held to.
     pub grade: f64,
     /// How far an at-grade node may leave its conditioned terrain reference,
-    /// metres — the ground-hugging box ([`crate::priors::RoadClass::deviation_m`]).
+    /// metres — the ground-hugging box ([`crate::priors::Prior::deviation_m`]).
     /// The hard bound the relax clamps at-grade nodes back inside: an engineered
     /// road cuts within its budget, a street trusts the slope within a couple
     /// metres and *breaks grade* rather than dive metres below the ground. The
@@ -258,7 +258,7 @@ pub fn build(scene: &SceneGraph, profiles: &[Option<Profile>]) -> SolveGraph {
         }
         let c = &scene.corridors[cid];
         let grade = corridor_grade(c);
-        let deviation = c.class.deviation_m();
+        let deviation = c.kind.prior().deviation_m;
         corridors.push(CorridorNodes {
             id: cid as CorridorId,
             vars: node_vars,
@@ -356,7 +356,7 @@ fn build_crossings(
             Some(v) => (Some(v), 0.0),
             None => (None, trough_terrain_m(up, up.arc_of(c.point.x, c.point.y))),
         };
-        let extra_m = crate::priors::clearance_m(c.lower_kind) + crate::priors::DECK_THICKNESS_M;
+        let extra_m = c.lower_kind.prior().clearance_over_m + crate::priors::DECK_THICKNESS_M;
         out.push((
             ranks.get(c.upper as usize).copied().unwrap_or(0),
             GraphCrossing {
@@ -482,12 +482,21 @@ struct Deck {
 }
 
 /// Node-slot pairs to unify so parallel structures share a grade line (S8):
-/// each non-drivable bridge node bound to the nearest node of the drivable
-/// bridge deck it runs alongside. Slots are global (into the union-find),
-/// `slot_base[corridor] + local_node`. A non-drivable deck is bound to the
-/// drivable deck that covers the most of it within
-/// [`crate::priors::PARALLEL_STRUCTURE_LATERAL_M`]; a footbridge with no
-/// drivable neighbour (a genuine standalone span) is left untouched.
+/// each *draped* bridge node bound to the nearest node of the paved bridge deck
+/// it runs alongside. Slots are global (into the union-find),
+/// `slot_base[corridor] + local_node`. A draped deck is bound to the paved deck
+/// that covers the most of it within
+/// [`crate::priors::PARALLEL_STRUCTURE_LATERAL_M`]; a footbridge with no paved
+/// neighbour (a genuine standalone span) is left untouched.
+///
+/// **Only a draped feature may be bound.** Sharing a height variable is the
+/// strongest coupling the graph has, and it is symmetric: whatever is bound
+/// moves with its partner. That is right for a footbridge cantilevered off a
+/// road viaduct, and wrong for anything with authority of its own. Keyed on
+/// drivability it was neither — a railway is not drivable, so a rail viaduct
+/// running within 12 m of a road bridge was welded to the road's grade line and
+/// dragged 26 m down into the hillside, which is authority inversion (§4.1)
+/// wearing a geometry heuristic's clothes.
 fn parallel_structure_unions(
     scene: &SceneGraph,
     profiles: &[Option<Profile>],
@@ -513,9 +522,9 @@ fn parallel_structure_unions(
             continue;
         }
         let deck = Deck { cos_lat: c.cos_lat, nodes };
-        if c.drivable {
+        if crate::priors::paves_today(c.kind) {
             drivable.push(deck);
-        } else {
+        } else if c.kind.stratum() == crate::priors::Stratum::D {
             footways.push(deck);
         }
     }
@@ -592,9 +601,9 @@ fn nearest_deck_node(d: &Deck, p: Coord, cos_lat: f64) -> Option<(usize, f64)> {
 /// holds its (looser) bed grade.
 fn corridor_grade(c: &crate::scene::Corridor) -> f64 {
     if c.link {
-        crate::priors::RAMP_GRADE
+        RAMP_GRADE
     } else {
-        c.class.grade_limit().unwrap_or_else(|| c.class.bed_grade())
+        c.kind.prior().grade().unwrap_or(RAMP_GRADE)
     }
 }
 
@@ -620,7 +629,7 @@ fn nearest_node(arc: &[f64], a: f64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::priors::RoadClass;
+    use crate::priors::{Kind, RoadClass};
     use crate::scene::{Corridor, Junction, JunctionMember, SegmentRef, DEG_M};
     use geo_types::Coord;
 
@@ -638,10 +647,9 @@ mod tests {
             nodes,
             arc,
             cos_lat: cos_lat(),
-            class,
+            kind: Kind::Road(class),
             class_key: String::new(),
             link: false,
-            drivable: true,
             width_m: Some(5.5),
             spans: vec![],
             segments: vec![SegmentRef { source: id as u64, node0: 0, node1: n - 1, properties: vec![] }],
@@ -655,9 +663,9 @@ mod tests {
     fn a_connector_becomes_one_shared_variable() {
         let len = 200.0;
         let n = 11;
-        let a = corridor(0, 6.0, len, n, RoadClass::Minor);
+        let a = corridor(0, 6.0, len, n, RoadClass::Residential);
         let deg = len / (DEG_M * cos_lat());
-        let b = corridor(1, 6.0 + deg, len, n, RoadClass::Minor);
+        let b = corridor(1, 6.0 + deg, len, n, RoadClass::Residential);
         let point = *a.nodes.last().unwrap();
         let scene = {
             let mut s = SceneGraph::new(vec![a, b]);
@@ -693,9 +701,9 @@ mod tests {
         let len = 100.0;
         let n = 6;
         let deg = len / (DEG_M * cos_lat());
-        let a = corridor(0, 6.0, len, n, RoadClass::Minor);
-        let b = corridor(1, 6.0 + deg, len, n, RoadClass::Minor);
-        let c = corridor(2, 6.0 + deg, len, n, RoadClass::Minor);
+        let a = corridor(0, 6.0, len, n, RoadClass::Residential);
+        let b = corridor(1, 6.0 + deg, len, n, RoadClass::Residential);
+        let c = corridor(2, 6.0 + deg, len, n, RoadClass::Residential);
         let point = *a.nodes.last().unwrap();
         let scene = {
             let mut s = SceneGraph::new(vec![a, b, c]);
@@ -729,9 +737,9 @@ mod tests {
         let len = 100.0;
         let n = 6;
         let deg = len / (DEG_M * cos_lat());
-        let a = corridor(0, 6.0, len, n, RoadClass::Minor);
-        let b = corridor(1, 6.0 + deg, len, n, RoadClass::Minor);
-        let c = corridor(2, 6.0 + deg, len, n, RoadClass::Minor);
+        let a = corridor(0, 6.0, len, n, RoadClass::Residential);
+        let b = corridor(1, 6.0 + deg, len, n, RoadClass::Residential);
+        let c = corridor(2, 6.0 + deg, len, n, RoadClass::Residential);
         let point = *a.nodes.last().unwrap();
         let members = vec![
             JunctionMember { corridor: 0, arc: len },
@@ -780,7 +788,7 @@ mod tests {
     #[test]
     fn an_unprofiled_junction_has_no_height() {
         let len = 100.0;
-        let a = corridor(0, 6.0, len, 6, RoadClass::Minor);
+        let a = corridor(0, 6.0, len, 6, RoadClass::Residential);
         let point = *a.nodes.last().unwrap();
         let scene = {
             let mut s = SceneGraph::new(vec![a]);
@@ -797,7 +805,7 @@ mod tests {
 
     /// An east-west corridor `off_m` metres north of lat 46, spanning `len_m`
     /// from lon 6, entirely one bridge span.
-    fn bridge_corridor(id: u32, off_m: f64, len_m: f64, n: usize, drivable: bool) -> Corridor {
+    fn bridge_corridor(id: u32, off_m: f64, len_m: f64, n: usize, paves: bool) -> Corridor {
         let deg_x = len_m / (DEG_M * cos_lat());
         let y = 46.0 + off_m / DEG_M;
         let nodes: Vec<Coord> =
@@ -808,10 +816,13 @@ mod tests {
             nodes,
             arc,
             cos_lat: cos_lat(),
-            class: RoadClass::Minor,
+            kind: if paves {
+                Kind::Road(RoadClass::Residential)
+            } else {
+                Kind::Road(RoadClass::Footway)
+            },
             class_key: String::new(),
             link: false,
-            drivable,
             width_m: Some(5.5),
             spans: vec![Span { arc0: 0.0, arc1: len_m, level: 1, kind: SpanKind::Bridge }],
             segments: vec![SegmentRef { source: id as u64, node0: 0, node1: n - 1, properties: vec![] }],
@@ -860,8 +871,8 @@ mod tests {
     /// covers every node exactly once.
     #[test]
     fn disjoint_corridors_are_separate_components() {
-        let a = corridor(0, 6.0, 100.0, 6, RoadClass::Minor);
-        let b = corridor(1, 8.0, 100.0, 6, RoadClass::Minor);
+        let a = corridor(0, 6.0, 100.0, 6, RoadClass::Residential);
+        let b = corridor(1, 8.0, 100.0, 6, RoadClass::Residential);
         let scene = SceneGraph::new(vec![a, b]);
         let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
         let profiles: Vec<Option<Profile>> =
@@ -877,7 +888,7 @@ mod tests {
     /// A scene of `n` bare corridors carrying the given crossings, for testing
     /// the rank DAG in isolation: `(upper, lower, upper_level, lower_level)`.
     fn scene_with_crossings(n: u32, xs: &[(u32, Option<u32>, i64, i64)]) -> SceneGraph {
-        use crate::scene::{Crossing, CrossedKind};
+        use crate::scene::Crossing;
         let mut scene = SceneGraph::new(
             (0..n).map(|id| corridor(id, 6.0, 100.0, 2, RoadClass::Secondary)).collect(),
         );
@@ -888,7 +899,7 @@ mod tests {
                 upper_arc: 50.0,
                 point: Coord { x: 6.005, y: 46.0 },
                 lower,
-                lower_kind: CrossedKind::Road,
+                lower_kind: Kind::Road(RoadClass::Residential),
                 upper_level,
                 lower_level,
             })

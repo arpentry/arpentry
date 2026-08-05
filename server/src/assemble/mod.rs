@@ -21,7 +21,7 @@ use std::path::Path;
 use geo_types::Geometry;
 
 use crate::geoparquet::{GeoParquet, ReadError};
-use crate::priors::{self, RoadClass};
+use crate::priors::{self, Kind};
 use crate::project::Bounds;
 use crate::scene::{source_hash, SceneGraph};
 use crate::value::Value;
@@ -65,14 +65,24 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
         let f = feature?;
         let class_key = prop_string(&f.properties, "class").unwrap_or_default();
         let subclass = prop_string(&f.properties, "subclass");
-        let class = RoadClass::parse(Some(class_key.as_str()));
-        // Every drivable road enters the scene graph (it gets a solved
-        // profile and a ground imprint, docs/GROUND.md §1); a non-drivable
-        // feature only when it carries structure annotations or an
-        // engineered grade. The rest tiles as plain draped geometry.
-        let drivable =
-            priors::paint_width_m(Some(class_key.as_str()), subclass.as_deref()).is_some();
-        if f.level_runs.is_empty() && class.grade_limit().is_none() && !drivable {
+        let subtype_key = prop_string(&f.properties, "subtype").unwrap_or_default();
+        let kind = Kind::parse(
+            Some(subtype_key.as_str()),
+            Some(class_key.as_str()),
+            subclass.as_deref(),
+        );
+        // A feature enters the scene graph when it lays a carriageway, or
+        // holds a surveyed road alignment, or carries a structure annotation.
+        //
+        // Two things are wrong with that and the design names both: a level
+        // annotation is the promotion §4.2 forbids, and a railway belongs in
+        // the scene as stratum R whatever it is annotated with. Neither can be
+        // corrected here — see [`priors::paves_today`] for what happens to the
+        // rail viaduct if the population moves before rail is solved as rail.
+        // M2 replaces the gate with the stratum; M6 admits rail.
+        let prior = kind.prior();
+        let surveyed_road = prior.engineered && matches!(kind, Kind::Road(_));
+        if f.level_runs.is_empty() && !surveyed_road && !priors::paves_today(kind) {
             continue; // nothing to solve: plain draped feature
         }
         // Only a linestring can be linearly referenced and chained.
@@ -92,11 +102,10 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
         raw.push(RawSegment {
             source,
             line: line.0.clone(),
-            class,
+            kind,
             link: priors::is_link(subclass.as_deref()),
-            drivable,
             class_key,
-            subtype_key: prop_string(&f.properties, "subtype").unwrap_or_default(),
+            subtype_key,
             level_runs: f.level_runs,
             start_connector,
             end_connector,

@@ -187,16 +187,27 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// The mode a corridor's class and drivability imply.
-    pub fn for_class(class: crate::priors::RoadClass, drivable: bool) -> Mode {
-        match class.grade_limit() {
-            Some(grade) => Mode::Engineered { grade },
-            None if drivable => Mode::Street {
-                grade: class.bed_grade(),
-                deviation_m: class.deviation_m(),
-                spacing_m: class.node_spacing_m(),
+    /// The mode a corridor's [`Kind`](crate::priors::Kind) implies. Driven by
+    /// the §9 prior: a surveyed *road* alignment is engineered, a class that
+    /// paves holds a bed grade, and anything else drapes.
+    ///
+    /// The road qualifier is the pre-stratum shape: a surveyed railway is
+    /// engineered too, and M6 is where it stops draping.
+    pub fn for_kind(kind: crate::priors::Kind) -> Mode {
+        let prior = kind.prior();
+        let surveyed_road = prior.engineered && matches!(kind, crate::priors::Kind::Road(_));
+        match prior.grade() {
+            Some(grade) if surveyed_road => Mode::Engineered { grade },
+            // A railway holds a grade shape and should be solved to it — but
+            // not until it is solved as *rail*, in its own stratum (see
+            // [`crate::priors::paves_today`]). Until M6 it drapes, as it does
+            // today.
+            Some(grade) if crate::priors::paves_today(kind) => Mode::Street {
+                grade,
+                deviation_m: prior.deviation_m,
+                spacing_m: prior.node_spacing_m,
             },
-            None => Mode::Draped,
+            _ => Mode::Draped,
         }
     }
 

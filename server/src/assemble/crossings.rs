@@ -20,7 +20,8 @@ use geo_types::{Coord, Geometry};
 
 use crate::geoparquet::{GeoParquet, ReadError};
 use crate::levels::LevelRun;
-use crate::scene::{run_cos_lat, CrossedKind, Crossing, SceneGraph, SpanKind};
+use crate::priors::Kind;
+use crate::scene::{run_cos_lat, Crossing, SceneGraph, SpanKind};
 use crate::value::Value;
 
 use super::grid::GridIndex;
@@ -87,10 +88,14 @@ pub fn detect(
         }
         let source = prop_str(&f.properties, "id").map(crate::scene::source_hash);
         let other_corridor = source.and_then(|h| scene.lookup(h)).map(|(c, _)| c.id);
-        let other_kind = match prop_str(&f.properties, "subtype") {
-            Some(s) if s == "rail" => CrossedKind::Rail,
-            _ => CrossedKind::Road,
-        };
+        // The crossed feature's own §9 key: it is *its* `clearance_over_m`
+        // the deck above owes, so the prior is read from the thing being
+        // crossed, not from the thing crossing.
+        let other_kind = Kind::parse(
+            prop_str(&f.properties, "subtype").as_deref(),
+            prop_str(&f.properties, "class").as_deref(),
+            prop_str(&f.properties, "subclass").as_deref(),
+        );
         // Fraction positions along the feature, for reading its level at an
         // intersection. Computed lazily — most features never near a span.
         let mut cum: Option<(Vec<f64>, f64)> = None;
@@ -200,7 +205,7 @@ pub fn detect_water(
                             + t_span * (upper.arc[e.node + 1] - upper.arc[e.node]),
                         point,
                         lower: None,
-                        lower_kind: CrossedKind::Water,
+                        lower_kind: Kind::Water(crate::priors::WaterClass::Still),
                         upper_level: e.level,
                         lower_level: 0,
                     });

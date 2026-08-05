@@ -516,7 +516,7 @@ pub fn junction_heights(g: &SolveGraph) -> Vec<Option<f64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::priors::RoadClass;
+    use crate::priors::{Kind, RoadClass};
     use crate::scene::{Corridor, Junction, JunctionMember, SceneGraph, SegmentRef, DEG_M};
     use geo_types::Coord;
 
@@ -534,10 +534,9 @@ mod tests {
             nodes,
             arc,
             cos_lat: cos_lat(),
-            class,
+            kind: Kind::Road(class),
             class_key: String::new(),
             link: false,
-            drivable: true,
             width_m: Some(5.5),
             spans: vec![],
             segments: vec![SegmentRef { source: id as u64, node0: 0, node1: n - 1, properties: vec![] }],
@@ -566,9 +565,9 @@ mod tests {
     fn a_shared_connector_agrees_exactly() {
         let len = 300.0;
         let n = 16;
-        let a = corridor(0, 6.0, len, n, RoadClass::Minor);
+        let a = corridor(0, 6.0, len, n, RoadClass::Residential);
         let deg = len / (DEG_M * cos_lat());
-        let b = corridor(1, 6.0 + deg, len, n, RoadClass::Minor);
+        let b = corridor(1, 6.0 + deg, len, n, RoadClass::Residential);
         let point = *a.nodes.last().unwrap();
         let scene = {
             let mut s = SceneGraph::new(vec![a, b]);
@@ -611,7 +610,7 @@ mod tests {
         use crate::priors::BED_MAX_DEVIATION_M;
         // Minor road: terrain flat 100, then a 30 m step over one 20 m node gap.
         let n = 21;
-        let a = corridor(0, 6.0, 400.0, n, RoadClass::Minor);
+        let a = corridor(0, 6.0, 400.0, n, RoadClass::Residential);
         let arc: Vec<f64> = a.arc.clone();
         let terrain: Vec<f64> = arc.iter().map(|&s| if s < 200.0 { 100.0 } else { 130.0 }).collect();
         let scene = SceneGraph::new(vec![a]);
@@ -636,7 +635,7 @@ mod tests {
     #[test]
     fn a_gentle_corridor_stays_on_terrain() {
         let n = 21;
-        let a = corridor(0, 6.0, 400.0, n, RoadClass::Minor);
+        let a = corridor(0, 6.0, 400.0, n, RoadClass::Residential);
         let arc: Vec<f64> = a.arc.clone();
         // A 1 % slope — well under the 15 % minor ceiling.
         let terrain: Vec<f64> = arc.iter().map(|&s| 100.0 + 0.01 * s).collect();
@@ -843,7 +842,7 @@ mod tests {
         use crate::priors::BED_MAX_DEVIATION_M;
         // 400 m of ~40 % slope (160 m drop) — a Minor bed grade is only 15 %.
         let n = 21;
-        let a = corridor(0, 6.0, 400.0, n, RoadClass::Minor);
+        let a = corridor(0, 6.0, 400.0, n, RoadClass::Residential);
         let arc: Vec<f64> = a.arc.clone();
         let terrain: Vec<f64> = arc.iter().map(|&s| 500.0 - 0.40 * s).collect();
         let scene = SceneGraph::new(vec![a]);
@@ -872,9 +871,9 @@ mod tests {
     fn the_solve_is_deterministic() {
         let len = 300.0;
         let n = 16;
-        let a = corridor(0, 6.0, len, n, RoadClass::Minor);
+        let a = corridor(0, 6.0, len, n, RoadClass::Residential);
         let deg = len / (DEG_M * cos_lat());
-        let b = corridor(1, 6.0 + deg, len, n, RoadClass::Minor);
+        let b = corridor(1, 6.0 + deg, len, n, RoadClass::Residential);
         let point = *a.nodes.last().unwrap();
         let scene = {
             let mut s = SceneGraph::new(vec![a, b]);

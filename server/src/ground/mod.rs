@@ -223,7 +223,7 @@ fn corridor_earthworks(
         let cos_lat = c.cos_lat;
         // Carves keep the engineering width; the road bench adds a narrow
         // verge beyond the asphalt (see EARTHWORK_MARGIN_M).
-        let half_width = c.class.half_width_m(c.link) + EARTHWORK_SHOULDER_M;
+        let half_width = c.kind.prior().half_width_m(c.link).unwrap_or(0.0) + EARTHWORK_SHOULDER_M;
         let bench_half_width = half_width + EARTHWORK_MARGIN_M;
         // The asphalt this bench carries, which it holds against any neighbour
         // (see `EarthworkEdge::carriageway_m`): the half-width the pavement
@@ -386,7 +386,8 @@ fn corridor_earthworks(
                 b,
                 target_a: portal.floor_m,
                 target_b: portal.floor_m,
-                half_width_m: c.class.half_width_m(c.link) + EARTHWORK_SHOULDER_M,
+                half_width_m: c.kind.prior().half_width_m(c.link).unwrap_or(0.0)
+                    + EARTHWORK_SHOULDER_M,
                 carriageway_m: 0.0,
                 batter_m: [EARTHWORK_MIN_BATTER_M; 2],
                 batter_run: [EARTHWORK_BATTER; 2],
@@ -590,8 +591,8 @@ fn water_level(ring: &[Coord], mut sample: impl FnMut(Coord) -> f64) -> Option<f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::priors::RoadClass;
-    use crate::scene::{Corridor, CrossedKind, Crossing, SegmentRef, Span, SpanKind, DEG_M};
+    use crate::priors::{Kind, RoadClass};
+    use crate::scene::{Corridor, Crossing, SegmentRef, Span, SpanKind, DEG_M};
     use geo_types::Coord;
 
     /// A viaduct over a valley with one sharp DEM bump poking above the deck
@@ -624,10 +625,9 @@ mod tests {
             nodes: nodes.clone(),
             arc,
             cos_lat,
-            class: RoadClass::Motorway,
+            kind: Kind::Road(RoadClass::Motorway),
             class_key: "motorway".into(),
             link: false,
-            drivable: true,
             width_m: Some(5.5),
             spans: spans.clone(),
             segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
@@ -679,10 +679,9 @@ mod tests {
             nodes: nodes.clone(),
             arc,
             cos_lat,
-            class: RoadClass::Secondary,
+            kind: Kind::Road(RoadClass::Secondary),
             class_key: "secondary".into(),
             link: false,
-            drivable: true,
             width_m: Some(5.5),
             spans: spans.clone(),
             segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
@@ -694,7 +693,7 @@ mod tests {
             upper_arc: 500.0,
             point: mid,
             lower: None,
-            lower_kind: CrossedKind::Road,
+            lower_kind: Kind::Road(RoadClass::Residential),
             upper_level: 1,
             lower_level: 0,
         }];
@@ -702,7 +701,7 @@ mod tests {
         let mut profiles = vec![crate::solve::profile::solve(
             &nodes,
             &spans,
-            crate::solve::Mode::for_class(RoadClass::Secondary, true),
+            crate::solve::Mode::for_kind(Kind::Road(RoadClass::Secondary)),
             &mut |_| 372.0,
         )];
         // The clearance lift comes from the fused graph — the same path the
@@ -753,16 +752,15 @@ mod tests {
             nodes: pts.to_vec(),
             arc,
             cos_lat,
-            class: RoadClass::Minor,
+            kind: Kind::Road(RoadClass::Residential),
             class_key: "residential".into(),
             link: false,
-            drivable: true,
             width_m: Some(5.5),
             spans: vec![],
             segments: vec![],
             connectors: vec![],
         };
-        let mode = crate::solve::Mode::for_class(RoadClass::Minor, true);
+        let mode = crate::solve::Mode::for_kind(Kind::Road(RoadClass::Residential));
         let p = crate::solve::profile::solve(pts, &[], mode, sample).expect("a street profile");
         (c, p)
     }
@@ -833,7 +831,7 @@ mod tests {
         };
         let (_, p) = street(&pts, &mut |c| rough(c));
         let (arc, road) = (p.arc(), p.road_m());
-        let max_grade = RoadClass::Minor.bed_grade();
+        let max_grade = Kind::Road(RoadClass::Residential).prior().grade().unwrap();
         for i in 1..road.len() {
             let run = arc[i] - arc[i - 1];
             let pitch = (road[i] - road[i - 1]).abs() / run;
@@ -844,7 +842,7 @@ mod tests {
         // never digs below the natural ground by more than the budget.
         let natural = p.terrain_m();
         let reference = crate::solve::profile::condition_reference(arc, natural);
-        let budget = RoadClass::Minor.deviation_m();
+        let budget = Kind::Road(RoadClass::Residential).prior().deviation_m;
         for i in 0..road.len() {
             let dev = (road[i] - reference[i]).abs();
             assert!(dev <= budget + 1e-9, "street leaves the reference by {dev} m");
@@ -914,7 +912,7 @@ mod tests {
             Coord { x: 6.0 + 100.0 / (DEG_M * cos_lat), y: 46.0 },
         ];
         let bench_half =
-            RoadClass::Minor.half_width_m(false) + EARTHWORK_SHOULDER_M + EARTHWORK_MARGIN_M;
+            Kind::Road(RoadClass::Residential).prior().half_width_m(false).unwrap() + EARTHWORK_SHOULDER_M + EARTHWORK_MARGIN_M;
 
         // A 0.15 m/m side-slope: gentle enough that both faces still close on
         // the ground, at |face| / (1/batter − 0.15).

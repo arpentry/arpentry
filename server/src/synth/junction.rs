@@ -560,7 +560,7 @@ fn junction_reach_m(scene: &SceneGraph, j: usize) -> f64 {
 /// for a non-drivable corridor: a footway or a crossing joins an intersection
 /// without paving any of it.
 pub(crate) fn corridor_half_width_m(c: &Corridor) -> Option<f64> {
-    c.drivable.then_some(())?;
+    priors::paves_today(c.kind).then_some(())?;
     Some(c.width_m? * 0.5 + priors::STRUCTURE_SHOULDER_M)
 }
 
@@ -709,7 +709,7 @@ fn box_extent_m(b: (f64, f64, f64, f64), lat: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::priors::RoadClass;
+    use crate::priors::{Kind, RoadClass};
     use crate::scene::{Span, SpanKind};
 
     /// A straight corridor of `n` nodes, 10 m apart, at lat 46.
@@ -719,10 +719,9 @@ mod tests {
             nodes: (0..n).map(|i| Coord { x: 6.0 + i as f64 * 1e-4, y: 46.0 }).collect(),
             arc: (0..n).map(|i| i as f64 * 10.0).collect(),
             cos_lat: 46f64.to_radians().cos(),
-            class: RoadClass::Minor,
+            kind: Kind::Road(RoadClass::Residential),
             class_key: "residential".to_string(),
             link: false,
-            drivable: true,
             width_m: Some(width_m),
             spans: Vec::new(),
             segments: Vec::new(),
@@ -786,7 +785,7 @@ mod tests {
         assert!((half - (3.0 + priors::STRUCTURE_SHOULDER_M)).abs() < 1e-12);
 
         let mut path = corridor(6.0, 11);
-        path.drivable = false;
+        path.kind = crate::priors::Kind::Road(crate::priors::RoadClass::Footway);
         path.width_m = None;
         let scene = crate::scene::SceneGraph::new(vec![path]);
         assert!(carriageway_sources(&scene, &solved).is_empty(), "a footway paves nothing");

@@ -40,7 +40,7 @@ use geo_types::{Coord, Geometry, LineString};
 use crate::building_mesh::{Frame, M_PER_DEG_LAT};
 use crate::clip;
 use crate::priors::{
-    RoadClass, DECK_THICKNESS_M, PORTAL_CLEARANCE_M, PORTAL_MARCH_M, PORTAL_MAX_M,
+    Kind, DECK_THICKNESS_M, PORTAL_CLEARANCE_M, PORTAL_MARCH_M, PORTAL_MAX_M,
     TUNNEL_HEIGHT_M,
 };
 use crate::project::{self, Bounds};
@@ -67,7 +67,8 @@ const MAX_VERTS: usize = 4096;
 /// road instead.
 pub fn stamp(f: &mut EncoderFeature, profile: &Profile, kind: SpanKind, bounds: &Bounds) -> bool {
     let frame = Frame::at_center(bounds);
-    let class = RoadClass::parse(prop_str(f, "class").as_deref());
+    let feature_kind =
+        Kind::parse(None, prop_str(f, "class").as_deref(), prop_str(f, "subclass").as_deref());
     let link = crate::priors::is_link(prop_str(f, "subclass").as_deref());
     // One cross-section function (docs/ROADS.md invariant 1): the deck spans the
     // same carriageway width the surface band and paint stroke use — the mapped
@@ -76,27 +77,26 @@ pub fn stamp(f: &mut EncoderFeature, profile: &Profile, kind: SpanKind, bounds: 
     // property) — plus the structure shoulder, so the deck-top asphalt frames
     // the road ribbon and meets the approach band edge-to-edge with no width
     // step at the abutment. Falls back to the class half-width when a drivable
-    // corridor carries no `width_m` (a non-P1 street). A non-drivable structure
-    // — a footbridge, cycleway or pedestrian bridge — is pedestrian-scale
-    // instead: a narrow slab with no vehicle shoulder, not the car-lane deck
-    // its `Minor` class half-width would otherwise bake.
-    let drivable = crate::priors::paint_width_m(
-        prop_str(f, "class").as_deref(),
-        prop_str(f, "subclass").as_deref(),
-    )
-    .is_some();
-    let half_w = if drivable {
-        let half_carriageway = f
-            .properties
-            .iter()
-            .find_map(|(k, v)| match (k.as_str(), v) {
-                ("width_m", Value::Double(w)) => Some(*w * 0.5),
-                _ => None,
-            })
-            .unwrap_or_else(|| class.half_width_m(link));
-        half_carriageway + crate::priors::STRUCTURE_SHOULDER_M
-    } else {
-        crate::priors::PATH_STRUCTURE_HALF_WIDTH_M
+    // corridor carries no `width_m` (a non-P1 street). A structure carrying a
+    // class that lays no asphalt — a footbridge, cycleway or pedestrian bridge
+    // — is pedestrian-scale instead: a narrow slab with no vehicle shoulder,
+    // not the car-lane deck a street half-width would otherwise bake.
+    let half_w = match feature_kind.prior().paves.then(|| feature_kind.prior().half_width_m(link)).flatten()
+    {
+        Some(prior_half) => {
+            let half_carriageway = f
+                .properties
+                .iter()
+                .find_map(|(k, v)| match (k.as_str(), v) {
+                    ("width_m", Value::Double(w)) => Some(*w * 0.5),
+                    _ => None,
+                })
+                .unwrap_or(prior_half);
+            half_carriageway + crate::priors::STRUCTURE_SHOULDER_M
+        }
+        // No cross-section of its own: a footbridge, cycleway or pedestrian
+        // bridge is pedestrian-scale — a narrow slab with no vehicle shoulder.
+        None => crate::priors::PATH_STRUCTURE_HALF_WIDTH_M,
     };
 
     let mut acc = Accum::default();
@@ -633,6 +633,7 @@ fn densify(pts: &[Coord], frame: &Frame) -> Vec<Coord> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::priors::RoadClass;
 
     /// A straight west→east line across the tile centre.
     fn centre_line(b: &Bounds) -> LineString {
@@ -682,7 +683,7 @@ mod tests {
     /// Sweeps a bridge deck over a whole line.
     fn deck(line: &LineString, profile: &Profile, b: &Bounds) -> Option<TerrainMesh> {
         let frame = Frame::at_center(b);
-        let half_w = RoadClass::Motorway.half_width_m(false);
+        let half_w = Kind::Road(RoadClass::Motorway).prior().half_width_m(false).unwrap();
         let mut acc = Accum::default();
         for piece in proper_pieces(&line.0, b) {
             sweep_deck(&mut acc, &frame, b, profile, &piece, half_w);
@@ -693,7 +694,7 @@ mod tests {
     /// Sweeps a tunnel bore over a whole line.
     fn bore(line: &LineString, profile: &Profile, b: &Bounds) -> Option<TerrainMesh> {
         let frame = Frame::at_center(b);
-        let half_w = RoadClass::Motorway.half_width_m(false);
+        let half_w = Kind::Road(RoadClass::Motorway).prior().half_width_m(false).unwrap();
         let mut acc = Accum::default();
         for piece in proper_pieces(&line.0, b) {
             sweep_bore(&mut acc, &frame, b, profile, &piece, half_w);

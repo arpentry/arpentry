@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use geo_types::Coord;
 
 use crate::levels::LevelRun;
-use crate::priors::{RoadClass, MAX_CORRIDOR_M, SNAP_RUN_M};
+use crate::priors::{Kind, RoadClass, MAX_CORRIDOR_M, SNAP_RUN_M};
 use crate::scene::{
     metric_len, run_cos_lat, Corridor, CorridorId, Junction, JunctionMember, SegmentRef, Span,
     SpanKind,
@@ -32,14 +32,12 @@ const EPS_M: f64 = 1e-6;
 pub struct RawSegment {
     pub source: u64,
     pub line: Vec<Coord>,
-    pub class: RoadClass,
+    /// The §9 prior key, `(modality, class)`.
+    pub kind: Kind,
     /// Whether the subclass marks a ramp (`link`) — narrower structures.
     pub link: bool,
-    /// Whether the class is drivable ([`crate::priors::paint_width_m`]) —
-    /// drivable segments always corridor and get a solved profile.
-    pub drivable: bool,
-    /// Raw class string — splice compatibility compares the exact class, not
-    /// the coarser [`RoadClass`] buckets.
+    /// Raw class string — splice compatibility compares the exact class, and
+    /// the styling consumers want it finer than [`Kind`] buckets it.
     pub class_key: String,
     pub subtype_key: String,
     pub level_runs: Vec<LevelRun>,
@@ -371,13 +369,15 @@ fn build_corridor(
     Some((
         Corridor {
             id,
-            class: chain.first().map(|&(si, _)| segments[si].class).unwrap_or(RoadClass::Minor),
+            kind: chain
+                .first()
+                .map(|&(si, _)| segments[si].kind)
+                .unwrap_or(Kind::Road(RoadClass::Other)),
             class_key: chain
                 .first()
                 .map(|&(si, _)| segments[si].class_key.clone())
                 .unwrap_or_default(),
             link: chain.iter().all(|&(si, _)| segments[si].link),
-            drivable: chain.iter().any(|&(si, _)| segments[si].drivable),
             width_m: chain
                 .iter()
                 .filter_map(|&(si, _)| segment_width_m(&segments[si]))
@@ -531,9 +531,8 @@ mod tests {
         RawSegment {
             source: source_hash(source),
             line,
-            class: RoadClass::Motorway,
+            kind: Kind::Road(RoadClass::Motorway),
             link: false,
-            drivable: true,
             class_key: "motorway".into(),
             subtype_key: "road".into(),
             level_runs: runs,

@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use geo_types::Coord;
 
-use crate::priors::RoadClass;
+use crate::priors::Kind;
 use crate::value::Value;
 
 /// Index of a corridor in [`SceneGraph::corridors`].
@@ -71,25 +71,26 @@ pub struct Corridor {
     pub arc: Vec<f64>,
     /// `cos(mean latitude)`, scaling longitude into the local metric space.
     pub cos_lat: f64,
-    pub class: RoadClass,
+    /// The §9 prior key: `(modality, class)`. Every class-dependent number
+    /// this corridor uses comes from `kind.prior()`.
+    pub kind: Kind,
     /// Raw Overture class string of the member segments (splice compatibility
-    /// keeps it constant along the chain) — finer than [`RoadClass`]'s
-    /// buckets, for styling consumers (junction plates) that must match the
-    /// street colours.
+    /// keeps it constant along the chain).
+    ///
+    /// **Styling only.** Junction plates and the palette need the exact class
+    /// string to match the street colours, which [`Kind`] deliberately buckets
+    /// away. It must never decide geometry: every class-dependent *number*
+    /// comes from [`kind`](Self::kind)'s prior, and a second classification
+    /// path is how a railway came to be a minor street in the first place.
     pub class_key: String,
     /// Whether every member segment is a `link` (ramp) — the swept structures
     /// and earthworks are a single lane wide, whatever the class.
     pub link: bool,
-    /// Whether the class is drivable ([`crate::priors::paint_width_m`]):
-    /// every drivable corridor gets a solved profile and a ground imprint
-    /// (docs/GROUND.md §1); a non-drivable one only when it carries
-    /// structures.
-    pub drivable: bool,
     /// Physical carriageway width in metres — the widest of its member
     /// segments' [`crate::priors::carriageway_width_m`], the same derivation
     /// (mapped `width_rules` where plausible, else the class prior) the tiled
-    /// `width_m` property and the surface band read. `None` for a
-    /// non-drivable corridor, which paves nothing. One cross-section per
+    /// `width_m` property and the surface band read. `None` for a corridor
+    /// whose class lays no asphalt. One cross-section per
     /// corridor, read by every consumer (docs/ROADS.md invariant 1) — the
     /// intersection areas size their legs from this, so a mouth and the band
     /// that lands on it can never disagree.
@@ -102,17 +103,6 @@ pub struct Corridor {
     /// intersection with a feature sharing one of these is a *junction*
     /// (things meeting), never a crossing (things passing over each other).
     pub connectors: Vec<u64>,
-}
-
-/// What kind of feature a crossing passes over — keys the clearance prior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CrossedKind {
-    Road,
-    Rail,
-    /// A river or lake: the clearance is freeboard over the water surface
-    /// (which the DEM carries — water bodies image at their level), not over
-    /// a roadbed (scenario S3).
-    Water,
 }
 
 /// One geometric crossing: a corridor's bridge span passing over another
@@ -131,7 +121,10 @@ pub struct Crossing {
     /// for a plain road/rail with no vertical model of its own (its height is
     /// the ground).
     pub lower: Option<CorridorId>,
-    pub lower_kind: CrossedKind,
+    /// What is being crossed, as the §9 key: it is the *crossed* feature's
+    /// `clearance_over_m` that the deck above must respect, so this is the
+    /// prior key, not a coarse bucket.
+    pub lower_kind: Kind,
     pub upper_level: i64,
     pub lower_level: i64,
 }
@@ -195,13 +188,17 @@ impl Corridor {
         *self.arc.last().unwrap_or(&0.0)
     }
 
-    /// Whether the solver needs an elevation profile for this corridor: it is
-    /// drivable (every drivable road holds a solved profile, docs/GROUND.md
-    /// §1), or it carries a structure (a rail viaduct, a footbridge). Only
-    /// non-drivable at-grade features just drape on the ground.
+    /// Whether the solver needs an elevation profile for this corridor: it
+    /// lays a carriageway ([`crate::priors::paves_today`]), holds a surveyed
+    /// road alignment, or carries a structure span.
+    ///
+    /// That last clause is the promotion §4.2 forbids — carrying a span is not
+    /// authority. M2 replaces the whole predicate with the stratum, and fits a
+    /// draped feature's deck to the finished ground instead of solving it.
     pub fn needs_profile(&self) -> bool {
-        self.drivable
-            || self.class.grade_limit().is_some()
+        crate::priors::paves_today(self.kind)
+            || (self.kind.prior().engineered && matches!(self.kind, Kind::Road(_)))
+            || self.spans.iter().any(|s| s.kind != SpanKind::Grade)
             || self.spans.iter().any(|s| s.kind != SpanKind::Grade)
     }
 
@@ -273,7 +270,7 @@ pub struct SceneGraph {
     pub corridors: Vec<Corridor>,
     pub crossings: Vec<Crossing>,
     /// Where corridors meet and their heights must agree (invariant 2). With
-    /// every drivable road a corridor, this covers the street intersections
+    /// every paving road a corridor, this covers the street intersections
     /// too — the synth stage plates any junction with three or more legs.
     pub junctions: Vec<Junction>,
     /// Still water bodies whose surface the ground stage flattens (invariant 4).
@@ -342,6 +339,7 @@ pub fn source_hash(id: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::priors::RoadClass;
 
     /// A straight east-west corridor of `n` nodes spanning `len_m` metres with
     /// one segment covering it all.
@@ -352,7 +350,7 @@ mod tests {
             (0..n).map(|i| Coord { x: 6.0 + deg * i as f64 / (n - 1) as f64, y: 46.0 }).collect();
         let arc: Vec<f64> = (0..n).map(|i| len_m * i as f64 / (n - 1) as f64).collect();
         let segments = vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }];
-        Corridor { id: 0, nodes, arc, cos_lat, class: RoadClass::Minor, class_key: String::new(), link: false, drivable: true, width_m: Some(5.5), spans, segments, connectors: vec![] }
+        Corridor { id: 0, nodes, arc, cos_lat, kind: Kind::Road(RoadClass::Residential), class_key: String::new(), link: false, width_m: Some(5.5), spans, segments, connectors: vec![] }
     }
 
     fn span(arc0: f64, arc1: f64, level: i64) -> Span {
@@ -402,16 +400,18 @@ mod tests {
     }
 
     #[test]
-    fn needs_profile_for_drivable_or_structure_corridors() {
-        // Drivable at-grade: profiled (every drivable road holds a profile).
+    fn needs_profile_for_paving_or_structure_corridors() {
+        // A paving class at grade: profiled (every such road holds a profile).
         assert!(corridor(vec![span(0.0, 1000.0, 0)], 3, 1000.0).needs_profile());
-        // Non-drivable at-grade (a footpath, rail): just drapes.
+        // A draped class at grade (a footpath, rail): just drapes.
         let mut c = corridor(vec![span(0.0, 1000.0, 0)], 3, 1000.0);
-        c.drivable = false;
+        c.kind = Kind::Road(RoadClass::Footway);
         assert!(!c.needs_profile());
-        // Non-drivable but carrying a structure: profiled for the deck.
+        // Draped but carrying a structure: profiled for the deck. This is the
+        // promotion §4.2 forbids — carrying a span is not authority — and M2
+        // is where it goes.
         let mut c = corridor(vec![span(0.0, 1000.0, 1)], 3, 1000.0);
-        c.drivable = false;
+        c.kind = Kind::Road(RoadClass::Footway);
         assert!(c.needs_profile());
     }
 
