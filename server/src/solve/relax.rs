@@ -38,7 +38,7 @@ use std::collections::{BinaryHeap, HashMap};
 
 use crate::priors::MAX_CLEARANCE_LIFT_M;
 
-use super::graph::{CorridorNodes, GraphCrossing, SolveGraph, VarId, VarNode};
+use super::graph::{CorridorNodes, GraphCrossing, Lower, SolveGraph, VarId, VarNode};
 use super::profile::Profile;
 
 /// Soft-spring weight pulling a pinned variable toward its terrain target.
@@ -111,6 +111,7 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
             }
         }
         deviation_pass(g);
+        contact_pass(g);
         clearance_pass(g, &sites, &mut Dropped::default());
         rigidity_pass(g);
         let resid = g.h.iter().zip(&prev).map(|(&a, &b)| (a - b).abs()).fold(0.0, f64::max);
@@ -134,7 +135,27 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
     // contradiction by the sweep count.
     clearance_pass(g, &sites, &mut dropped);
     rigidity_pass(g);
+    // **Contacts last.** A shared connector with a senior stratum is an
+    // equality, and the passes above are inequalities and projections that will
+    // happily move the node that has to meet it — `rigidity_pass` chords a
+    // structure span through its anchors, and a contact sitting on an anchor
+    // gets chorded away with it. Applied after them all, the equality holds at
+    // the output, which is what I2 asks of a junction.
+    contact_pass(g);
     Relaxed { sweeps: used, demands_dropped: dropped.count, worst_dropped_m: dropped.worst_m }
+}
+
+/// Meets every senior height this stratum shares a connector with (§4.5).
+///
+/// A hard projection, applied *after* the deviation box so the box cannot break
+/// the equality: where a junior road joins a road already solved, it joins it,
+/// and the ground-hugging budget does not get a vote. One-sided by
+/// construction — the senior's height is an `f64`, so there is no way to write
+/// back to it even by accident.
+fn contact_pass(g: &mut SolveGraph) {
+    for c in &g.contacts {
+        g.h[c.var] = c.height_m;
+    }
 }
 
 /// Tally of demands the plausibility cap rejected in one pass.
@@ -210,7 +231,10 @@ fn grade_pass(g: &mut SolveGraph) -> f64 {
 /// clear its crossed feature (both span anchors, so the straight deck rises).
 fn clearance_pass(g: &mut SolveGraph, sites: &VarSites, dropped: &mut Dropped) {
     for gc in &g.crossings {
-        let lower_h = gc.lower_var.map(|v| g.h[v]).unwrap_or(gc.lower_terrain_m);
+        let lower_h = match gc.lower {
+            Lower::Var(v) => g.h[v],
+            Lower::Constant(h) => h,
+        };
         let need = lower_h + gc.extra_m;
         let targets = clearance_targets(g, sites, gc, need, dropped);
         for (v, d) in targets {
@@ -561,6 +585,7 @@ pub fn junction_heights(g: &SolveGraph) -> Vec<Option<f64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::priors::Stratum;
     use crate::priors::{Kind, RoadClass};
     use crate::scene::{Corridor, Junction, JunctionMember, SceneGraph, SegmentRef, DEG_M};
     use geo_types::Coord;
@@ -630,7 +655,7 @@ mod tests {
         let bn = scene.corridors[1].nodes.clone();
         let mut profiles =
             vec![Some(Profile::flat(&an, 400.0)), Some(Profile::flat(&bn, 406.0))];
-        let mut g = super::super::graph::build(&scene, &profiles, &[]);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
 
@@ -662,7 +687,7 @@ mod tests {
         let an = scene.corridors[0].nodes.clone();
         let mut profiles =
             vec![Some(Profile::from_heights(&an, terrain.clone(), terrain.clone()))];
-        let mut g = super::super::graph::build(&scene, &profiles, &[]);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
@@ -687,7 +712,7 @@ mod tests {
         let scene = SceneGraph::new(vec![a]);
         let an = scene.corridors[0].nodes.clone();
         let mut profiles = vec![Some(Profile::from_heights(&an, terrain.clone(), terrain.clone()))];
-        let mut g = super::super::graph::build(&scene, &profiles, &[]);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S);
         let sweeps = solve(&mut g);
         reconstruct(&g, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
@@ -733,10 +758,10 @@ mod tests {
             crossings: vec![GraphCrossing {
                 upper_ci: 0,
                 upper_arc: 250.0, // mid-span (node 5)
-                lower_var: None,
-                lower_terrain_m: 100.0,
+                lower: Lower::Constant(100.0),
                 extra_m: 6.5,
             }],
+            contacts: Vec::new(),
             component: vec![0; n],
             n_components: 1,
             junction_var: Vec::new(), // no scene junctions in this fixture
@@ -784,10 +809,10 @@ mod tests {
             crossings: vec![GraphCrossing {
                 upper_ci: 0,
                 upper_arc: 100.0,
-                lower_var: None,
-                lower_terrain_m: 100.0,
+                lower: Lower::Constant(100.0),
                 extra_m: 6.0,
             }],
+            contacts: Vec::new(),
             component: vec![0; n],
             n_components: 1,
             junction_var: Vec::new(),
@@ -850,6 +875,7 @@ mod tests {
                 deviation: 1e9, // not under test here — leave the ground box open
             }],
             crossings: vec![],
+            contacts: Vec::new(),
             component: vec![0; n],
             n_components: 1,
             junction_var: Vec::new(), // no scene junctions in this fixture
@@ -893,7 +919,7 @@ mod tests {
         let scene = SceneGraph::new(vec![a]);
         let an = scene.corridors[0].nodes.clone();
         let mut profiles = vec![Some(Profile::from_heights(&an, terrain.clone(), terrain.clone()))];
-        let mut g = super::super::graph::build(&scene, &profiles, &[]);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
@@ -937,7 +963,7 @@ mod tests {
         let run = || {
             let profiles =
                 vec![Some(Profile::flat(&an, 400.0)), Some(Profile::flat(&bn, 406.0))];
-            let mut g = super::super::graph::build(&scene, &profiles, &[]);
+            let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S);
             solve(&mut g);
             g.h
         };

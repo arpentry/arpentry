@@ -54,13 +54,26 @@ struct Edge {
     node: usize,
 }
 
-/// Derives every crossing in the scene from the solved profiles.
+/// Derives the crossings **one stratum owes**, from the solved profiles.
 ///
-/// Deterministic: the index is built in corridor order, the results are sorted
-/// on the same key the file pass used, and one record survives per
-/// `(upper, lower, level pair)` — a shared vertex of two adjacent edges would
-/// otherwise report twice.
-pub fn derive(scene: &SceneGraph, profiles: &[Option<Profile>]) -> Vec<Crossing> {
+/// A crossing is a constraint on the feature that must yield, and authority
+/// decides which that is (§4.1). So a record survives only when its *upper*
+/// side belongs to `stratum`: that is the side this solver can move, and the
+/// lower is either a peer (a shared unknown) or a senior (a published
+/// constant).
+///
+/// Where the lower side is **junior**, the crossing is dropped outright. A
+/// junior feature cannot constrain a senior one — that is I7, and a footbridge
+/// over a motorway is exactly the case §4.2 has in mind.
+///
+/// Deterministic: the index is built in corridor order, the results are sorted,
+/// and one record survives per `(upper, lower, level pair)` — a shared vertex
+/// of two adjacent edges would otherwise report twice.
+pub fn derive(
+    scene: &SceneGraph,
+    profiles: &[Option<Profile>],
+    stratum: crate::priors::Stratum,
+) -> Vec<Crossing> {
     let mut edges: Vec<Edge> = Vec::new();
     let mut grid = GridIndex::new();
     for c in &scene.corridors {
@@ -99,6 +112,13 @@ pub fn derive(scene: &SceneGraph, profiles: &[Option<Profile>]) -> Vec<Crossing>
                 let Some(x) = order(scene, profiles, c.id, arc_c, e.corridor, arc_o, point) else {
                     continue;
                 };
+                // Only the stratum that must yield takes the constraint, and
+                // only where the crossed side is not junior to it.
+                let upper_s = scene.corridors[x.upper as usize].kind.stratum();
+                let lower_s = x.lower.map_or(stratum, |l| scene.corridors[l as usize].kind.stratum());
+                if upper_s != stratum || lower_s > stratum {
+                    continue;
+                }
                 if seen.insert((x.upper, x.lower.unwrap_or(u32::MAX), x.upper_level, x.lower_level))
                 {
                     out.push(x);
@@ -263,7 +283,7 @@ mod tests {
         let b = corridor(1, 6.0009, 46.0, false, len, grade(len));
         let profiles = vec![flat(&a, 400.0), flat(&b, 400.0)];
         let scene = SceneGraph::new(vec![a, b]);
-        let out = derive(&scene, &profiles);
+        let out = derive(&scene, &profiles, crate::priors::Stratum::S);
         assert_eq!(out.len(), 1, "one crossing, got {out:?}");
         assert_eq!(out[0].upper, 0, "the annotated bridge is above");
         assert_eq!(out[0].lower, Some(1));
@@ -278,7 +298,7 @@ mod tests {
         let b = corridor(1, 6.0009, 46.0, false, len, grade(len));
         let profiles = vec![flat(&a, 412.0), flat(&b, 400.0)];
         let scene = SceneGraph::new(vec![a, b]);
-        let out = derive(&scene, &profiles);
+        let out = derive(&scene, &profiles, crate::priors::Stratum::S);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].upper, 0, "the higher alignment is above");
     }
@@ -292,7 +312,7 @@ mod tests {
         let b = corridor(1, 6.0009, 46.0, false, len, grade(len));
         let profiles = vec![flat(&a, 400.0), flat(&b, 400.5)];
         let scene = SceneGraph::new(vec![a, b]);
-        assert!(derive(&scene, &profiles).is_empty());
+        assert!(derive(&scene, &profiles, crate::priors::Stratum::S).is_empty());
     }
 
     /// Features that share a connector *meet*. Their heights are reconciled by
@@ -307,7 +327,7 @@ mod tests {
         b.connectors = vec![77];
         let profiles = vec![flat(&a, 412.0), flat(&b, 400.0)];
         let scene = SceneGraph::new(vec![a, b]);
-        assert!(derive(&scene, &profiles).is_empty());
+        assert!(derive(&scene, &profiles, crate::priors::Stratum::S).is_empty());
     }
 
     /// Derivation is a function of the model: same scene, same answer, in the
@@ -320,8 +340,8 @@ mod tests {
         let c = corridor(2, 6.0018, 46.0, false, len, grade(len));
         let profiles = vec![flat(&a, 412.0), flat(&b, 400.0), flat(&c, 400.0)];
         let scene = SceneGraph::new(vec![a, b, c]);
-        let first = derive(&scene, &profiles);
-        let again = derive(&scene, &profiles);
+        let first = derive(&scene, &profiles, crate::priors::Stratum::S);
+        let again = derive(&scene, &profiles, crate::priors::Stratum::S);
         let key = |xs: &[Crossing]| {
             xs.iter().map(|x| (x.upper, x.lower, x.upper_arc.to_bits())).collect::<Vec<_>>()
         };

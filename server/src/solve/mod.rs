@@ -29,7 +29,7 @@ use std::sync::Mutex;
 use geo_types::Coord;
 
 use crate::dem::Dem;
-use crate::priors::{MIN_STRUCTURE_M, SHORT_STRUCTURE_DIP_M};
+use crate::priors::{Stratum, MIN_STRUCTURE_M, SHORT_STRUCTURE_DIP_M};
 use crate::project::Bounds;
 use crate::scene::{CorridorId, SceneGraph, Span, SpanKind};
 use crate::terrain;
@@ -188,28 +188,50 @@ pub fn run(
         Ok(())
     })?;
 
-    // Global vertical consistency (docs/GENERATION.md §4.4): fuse the per-corridor
-    // profiles into one constraint graph whose junction connectors are *shared*
-    // height variables, and relax it. Continuity (I2) then holds by construction
-    // — two corridors at a connector read one number, so no step is
-    // representable — and clearance (I3) is enforced as a raise-only projection
-    // in the same loop.
-    // The junction heights are read out of the graph before it is dropped: they
-    // are what the surface mesh pins each intersection to, and nothing else can
-    // reproduce them exactly once the values have been scattered into `road_m`.
-    // Crossings are derived here, from the solved profiles, and handed
-    // straight to the graph — never stored on the scene (§4.5). Nothing can
-    // mutate the model between deriving them and consuming them, because there
-    // is nowhere for them to wait.
-    let derived = crossings::derive(scene, &profiles);
-    let (junction_h, relaxed) = {
-        let mut g = graph::build(scene, &profiles, &derived);
-        let relaxed = relax::solve(&mut g);
+    // **The partition** (§4.4): one solver, run over the strata in authority
+    // order. Each stratum fuses its own corridors into one graph — junction
+    // connectors are shared height variables, so continuity (I2) holds by
+    // construction — and reads every senior stratum as a *constant*: a
+    // published height with no variable of its own, which is the mechanical
+    // statement of authority and the whole of I7.
+    //
+    // Crossings are derived per stratum, from the solved profiles, and handed
+    // straight to the graph (§4.5). Nothing can mutate the model between
+    // deriving them and consuming them, because there is nowhere for them to
+    // wait.
+    let mut crossings: Vec<crate::scene::Crossing> = Vec::new();
+    let mut junction_h: Vec<Option<f64>> = vec![None; scene.junctions.len()];
+    let mut relaxed = relax::Relaxed::default();
+    // Every stratum with members, in authority order — including D. A draped
+    // feature has no business in the scene at all (§4.2), and after M2 none
+    // is, except the railway `paves_today` still admits as a street. Skipping
+    // D would leave those corridors with a per-corridor profile and no graph:
+    // no shared junction variable, no clearance, no relax. Measured, that put
+    // a 2.40 m step where two railways meet, one classed `unknown` and one
+    // `standard_gauge`. Solving D last — junior to everything, reading R and S
+    // as constants — is both correct and what M6 will inherit.
+    for stratum in [Stratum::H, Stratum::R, Stratum::S, Stratum::D, Stratum::B] {
+        if !scene.corridors.iter().any(|c| c.kind.stratum() == stratum) {
+            continue;
+        }
+        let derived = crossings::derive(scene, &profiles, stratum);
+        let mut g = graph::build(scene, &profiles, &derived, stratum);
+        let r = relax::solve(&mut g);
         relax::reconstruct(&g, &mut profiles);
-        (relax::junction_heights(&g), relaxed)
-    };
+        // Each stratum publishes the junction heights it owns; a junction
+        // belongs to exactly one, so the slots never contend.
+        for (ji, h) in relax::junction_heights(&g).into_iter().enumerate() {
+            if h.is_some() {
+                junction_h[ji] = h;
+            }
+        }
+        relaxed.sweeps = relaxed.sweeps.max(r.sweeps);
+        relaxed.demands_dropped += r.demands_dropped;
+        relaxed.worst_dropped_m = relaxed.worst_dropped_m.max(r.worst_dropped_m);
+        crossings.extend(derived);
+    }
 
-    Ok(SolvedModel { relaxed, crossings: derived, profiles, junction_h, z_ref })
+    Ok(SolvedModel { relaxed, crossings, profiles, junction_h, z_ref })
 }
 
 /// The terrain fate of the short structure spans assemble keeps
