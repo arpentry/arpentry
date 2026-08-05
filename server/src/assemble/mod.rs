@@ -20,7 +20,7 @@ use std::path::Path;
 use geo_types::Geometry;
 
 use crate::geoparquet::{GeoParquet, ReadError};
-use crate::priors::{self, Kind};
+use crate::priors::{self, Kind, Stratum};
 use crate::project::Bounds;
 use crate::scene::{source_hash, SceneGraph};
 use crate::value::Value;
@@ -79,14 +79,11 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
         // other half. Their structures are *fitted* to the finished ground
         // instead (`synth::draped`).
         //
-        // Rail is the one stratum this cannot yet express. It is senior (R)
-        // and belongs in the scene unconditionally, but admitting it before it
-        // is solved as rail leaves its viaducts chorded across a descent — see
-        // [`priors::paves_today`] for the measurement. So rail keeps today's
-        // annotation-driven admission until M6 gives it a real alignment.
-        if !priors::paves_today(kind)
-            && !(matches!(kind, Kind::Rail(_)) && !f.level_runs.is_empty())
-        {
+        // **The stratum decides, and now it means it.** Rail is senior and
+        // belongs in the scene unconditionally — not because it was tagged
+        // with a bridge, which is the promotion §4.2 forbids, but because a
+        // railway's alignment exists independently of the street network.
+        if !matches!(kind.stratum(), Stratum::H | Stratum::R | Stratum::S) {
             continue; // draped: it samples the finished ground, it never solves
         }
         // Only a linestring can be linearly referenced and chained.

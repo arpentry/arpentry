@@ -57,6 +57,12 @@ use super::{Check, Options};
 /// grade, so a carriageway face past it is not a road, it is a fold.
 const ROAD_GRADE: f64 = 0.30;
 
+/// A railway steeper than this is not an alignment a train could hold. Read
+/// against the classes actually present: mainline is built to 3 % and narrow
+/// gauge to 7 %, so one ceiling has to sit above the loosest of them and still
+/// catch a solve that has lost the alignment entirely.
+const RAIL_GRADE: f64 = 0.10;
+
 /// A 2:1 face. Natural ground reaches this on a cliff; engineered ground
 /// reaches it only where an earthwork manufactured a wall, which is what the
 /// batter limits exist to prevent.
@@ -97,6 +103,8 @@ pub struct Slope {
     tearing_worst: Worst,
     grade: Dist,
     grade_worst: Worst,
+    rail_grade: Dist,
+    rail_grade_worst: Worst,
 }
 
 impl Slope {
@@ -114,6 +122,8 @@ impl Slope {
             tearing_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             grade: Dist::new(0.0, 8.0),
             grade_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            rail_grade: Dist::new(0.0, 8.0),
+            rail_grade_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
         }
     }
 
@@ -124,14 +134,59 @@ impl Slope {
     /// and by the meshing, and cannot say whether the *road* climbs faster than
     /// a road can. A clearance lift dumped on one node is invisible to it and
     /// obvious here.
+    /// The same walk for a railway, scored against the rail ceiling. Split
+    /// rather than merged because a metric that mixes two ceilings reports the
+    /// class table rather than the defect.
+    fn visit_rail_grades(&mut self, tile: &TileScene, line: &crate::verify::scene::RoadLine) {
+        for part in &line.parts {
+            for w in part.windows(2) {
+                let ((ax, ay, az), (bx, by, bz)) = (w[0], w[1]);
+                let (mx, my) = ((ax + bx) * 0.5, (ay + by) * 0.5);
+                if !tile.owns(mx, my) {
+                    continue;
+                }
+                let run = tile.scale.dist(ax, ay, bx, by);
+                if run < GRADE_RUN_M {
+                    continue;
+                }
+                let g = (bz - az).abs() / run;
+                self.rail_grade.push(g);
+                if g > RAIL_GRADE {
+                    let (lon, lat) = tile.lonlat(mx, my);
+                    self.rail_grade_worst.offer(Offender {
+                        lon,
+                        lat,
+                        zoom: tile.z,
+                        value: g,
+                        note: format!(
+                            "{} climbs at {:.0} % over {run:.1} m",
+                            line.class,
+                            g * 100.0
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
     fn visit_grades(&mut self, tile: &TileScene) {
         for line in &tile.lines {
-            // Drivable classes only, read from the same table the tiler paints
-            // by: a footway may be a staircase and a rack railway climbs at
-            // 20 %, and reporting either as a defect is noise.
+            // Each modality is measured against *its own* ceiling — that is
+            // what I2 asks ("within the (modality, class) ceiling") and what a
+            // single drivable filter could not express: a mainline railway
+            // holds 3 % where a residential street holds 15 %, so one threshold
+            // would call every railway fine and every street a defect, or the
+            // reverse.
+            let rail = crate::priors::Kind::parse(Some("rail"), Some(&line.class), None);
+            let is_rail = matches!(rail, crate::priors::Kind::Rail(c)
+                if c != crate::priors::RailClass::Unknown);
             let drivable = crate::priors::paint_width_m(Some(&line.class), None).is_some()
                 || line.class == "marking";
-            if !drivable {
+            if !drivable && !is_rail {
+                continue;
+            }
+            if is_rail {
+                self.visit_rail_grades(tile, line);
                 continue;
             }
             for part in &line.parts {
@@ -334,6 +389,34 @@ impl Check for Slope {
                 }),
                 dist: self.grade,
                 worst: self.grade_worst.into_vec(),
+            },
+            Metric {
+                id: "slope.rail_grade".into(),
+                // The grade ceiling is I2's, not I6's: an alignment past its
+                // class ceiling is a continuity defect, not a degradation one.
+                invariant: Invariant::I2,
+                title: "Longitudinal grade of the drawn railway".into(),
+                population: format!(
+                    "Consecutive vertex pairs of every drawn rail centerline whose class names a \
+                     gauge or a system, plan run at least {GRADE_RUN_M:.2} m. `unknown` rail is \
+                     excluded: it is draped by design (§4.6), so it holds no ceiling to measure \
+                     against and counting it would score the class table rather than the solve."
+                ),
+                detail: format!(
+                    "Rise over run along a railway, against its own ceiling rather than a road's \
+                     — which is what I2 asks for and a single drivable filter could not express. \
+                     Mainline is built to 3 % and narrow gauge to 7 %; past {:.0} % the alignment \
+                     is not one a train could hold, and since every road reads stratum R as a \
+                     constant, an error here is upstream of everything.",
+                    RAIL_GRADE * 100.0
+                ),
+                sense: Sense::HigherIsWorse,
+                threshold: RAIL_GRADE,
+                skipped: self.rail_grade.is_empty().then(|| {
+                    "no rail centerline carries per-vertex heights at this zoom".to_string()
+                }),
+                dist: self.rail_grade,
+                worst: self.rail_grade_worst.into_vec(),
             },
             Metric {
                 id: "slope.terrain_tearing".into(),

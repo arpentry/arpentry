@@ -327,24 +327,42 @@ pub fn of(kind: Kind) -> &'static Prior {
         paves: false,
         stratum: Stratum::D,
     };
-    // Rail. The alignment priors this stratum needs — a surveyed grade, a
-    // vertical-curve bound, a funicular's single gradient — are not written
-    // yet, because nothing reads them: rail is not solved as rail. What the
-    // solver does today with a railway that carries a bridge annotation is
-    // treat it as a street with no asphalt, and that is what this entry says,
-    // exactly, so the type sweep moves no number. M6 replaces it when rail
-    // becomes stratum R; until then the `stratum` field below is the only part
-    // of it that is true, and nothing reads that either.
-    const RAIL_AS_STREET: Prior = Prior {
+    // **Independent rail.** A surveyed alignment on its own formation, and
+    // decisively the reason its cuttings and embankments exist: the terrain is
+    // a response to the railway, not the other way round (§4.2). Senior to
+    // every road, engineered like a motorway and tighter — and it lays no
+    // asphalt at all, which is the split `drivable` could never express.
+    const MAINLINE: Prior = Prior {
+        grade_shape: GradeShape::CurvatureLimited { grade: 0.03, radius_m: 2000.0 },
+        engineered: true,
+        deviation_m: MAX_ROAD_DEVIATION_M,
+        node_spacing_m: NODE_SPACING_M,
         clearance_over_m: RAIL_CLEARANCE_M,
+        clearance_under_m: ROAD_CLEARANCE_M,
+        min_structure_m: MIN_STRUCTURE_M,
+        half_width_m: Some(2.5),
         paves: false,
-        half_width_m: Some(2.75),
         stratum: Stratum::R,
-        ..STREET
     };
+    // Narrow gauge was built to reach places standard gauge could not, so it
+    // holds a steeper ceiling and turns tighter.
+    const NARROW: Prior = Prior {
+        grade_shape: GradeShape::CurvatureLimited { grade: 0.07, radius_m: 500.0 },
+        half_width_m: Some(1.75),
+        ..MAINLINE
+    };
+    // A funicular holds **one gradient end to end** — the reason `grade_shape`
+    // is a shape and not a number (§9). A ceiling cannot express it: a cable
+    // railway has no vertical curves to bound, it has a slope.
+    const FUNICULAR: Prior =
+        Prior { grade_shape: GradeShape::Constant(0.45), half_width_m: Some(1.75), ..MAINLINE };
     // Street-running rail lies *on* the carriageway: rail modality, no
-    // authority (S16). The right-of-way test, not the modality, decides.
-    const STREET_RAIL: Prior = Prior { stratum: Stratum::D, ..RAIL_AS_STREET };
+    // authority (S16). The right-of-way test, not the modality, decides — and
+    // an unclassified railway takes the same junior default (§4.6, §10),
+    // because a misclassification that costs authority is recoverable and one
+    // that grants it is not.
+    const STREET_RAIL: Prior =
+        Prior { clearance_over_m: RAIL_CLEARANCE_M, ..DRAPED };
 
     match kind {
         Kind::Road(Ro::Motorway) => &MOTORWAY,
@@ -359,9 +377,9 @@ pub fn of(kind: Kind) -> &'static Prior {
             Ro::Track | Ro::Footway | Ro::Pedestrian | Ro::Path | Ro::Steps | Ro::Cycleway
             | Ro::Bridleway | Ro::Other,
         ) => &DRAPED,
-        Kind::Rail(
-            Ra::StandardGauge | Ra::BroadGauge | Ra::Subway | Ra::NarrowGauge | Ra::Funicular,
-        ) => &RAIL_AS_STREET,
+        Kind::Rail(Ra::StandardGauge | Ra::BroadGauge | Ra::Subway) => &MAINLINE,
+        Kind::Rail(Ra::NarrowGauge) => &NARROW,
+        Kind::Rail(Ra::Funicular) => &FUNICULAR,
         // Tram, light rail and monorail lie in or over a street, and an
         // unclassified railway takes the junior default (§4.6, §10).
         Kind::Rail(Ra::Tram | Ra::LightRail | Ra::Monorail | Ra::Unknown) => &STREET_RAIL,
@@ -394,33 +412,6 @@ pub const RAIL_CLEARANCE_M: f64 = 7.0;
 
 /// Freeboard a deck must keep over a water surface (S3).
 pub const WATER_FREEBOARD_M: f64 = 4.0;
-
-/// What the pipeline still treats as a drivable street, pending stratum R.
-///
-/// [`Prior::paves`] states the truth: no railway lays asphalt. This states what
-/// the *pipeline* is tuned around, and only two predicates read it — which
-/// features enter the scene, and which lay a carriageway. It is deleted in M6.
-///
-/// The deleted class-string allow-list never read `subtype`, so a railway
-/// carrying Overture's literal `unknown` class matched the string "unknown" and
-/// was admitted as a road: 141 segments on the Montreux extract, benched, paved
-/// and drawn as asphalt. Correcting that *before* rail has a stratum of its own
-/// breaks the rail viaduct beside it, in both directions and for one reason —
-/// a bridge span is chorded between its corridor's at-grade anchors, and any
-/// change to which rail segments are in the scene moves those anchors:
-///
-/// - Drop at-grade rail: the bridge segments still enter on their level
-///   annotation, so the corridor is bridge-only and has no anchor at all.
-/// - Admit *all* rail: splicing joins far more segments, and the span is
-///   chorded across a long descent to the lake.
-///
-/// Both put the deck 37 m under the terrain — measured at 6.9288,46.4260, where
-/// the probe reads `road=527.3 terr=564.1` and the section shows a deck buried
-/// in the hillside. The fix is not a better gate but rail solved as rail, with
-/// its own grade shape and its own stratum.
-pub fn paves_today(kind: Kind) -> bool {
-    kind.prior().paves || matches!(kind, Kind::Rail(RailClass::Unknown))
-}
 
 /// Whether an Overture `subclass` marks a ramp — narrower than its class's
 /// mainline carriageway, whatever that class.

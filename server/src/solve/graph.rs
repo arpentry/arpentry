@@ -108,6 +108,26 @@ pub struct GraphCrossing {
     pub extra_m: f64,
 }
 
+/// A ceiling this stratum must pass **under**: a senior feature crosses above
+/// it, so the junior is the one that moves (§4.1).
+///
+/// The mirror of a [`GraphCrossing`], and the half the model has never had.
+/// Authority chooses the mover and stacking chooses the direction, so all four
+/// of §4.1's cases reduce to two mechanisms: *the junior climbs* when it is
+/// above, and *the junior dips* when it is below. Without this second one a
+/// railway on an embankment simply runs through the road it crosses — the road
+/// cannot rise (the rail is senior and immovable) and had no way to fall.
+#[derive(Debug, Clone, Copy)]
+pub struct Undercut {
+    /// Index into [`SolveGraph::corridors`] of the junior corridor passing under.
+    pub under_ci: usize,
+    /// Its arc where the crossing sits.
+    pub under_arc: f64,
+    /// The highest its surface may reach there — the senior's published height
+    /// less what it must leave beneath itself.
+    pub ceiling_m: f64,
+}
+
 /// A height this stratum must *meet*, not clear: a connector it shares with a
 /// senior stratum (§4.5's level crossing, and every ramp that joins a road
 /// already solved).
@@ -132,6 +152,18 @@ pub struct SolveGraph {
     pub crossings: Vec<GraphCrossing>,
     /// Equalities against senior strata (I3 at grade, §4.5).
     pub contacts: Vec<Contact>,
+    /// Ceilings under senior strata passing overhead (I3, §4.1).
+    pub undercuts: Vec<Undercut>,
+    /// Per variable, the clearance floor and ceiling the crossing passes have
+    /// established — the *slack* the deviation box must respect.
+    ///
+    /// §4.4's hierarchy puts the deviation budget in **Soft** ("yields first")
+    /// and clearance in **Strong** ("honoured, or absorbed by penalised
+    /// slack"). Held as a hard box it outranked clearance instead, and the two
+    /// fought once a sweep: the lift raised an approach, the box pulled it
+    /// back, and the road ended up climbing to its deck in one node — an
+    /// asphalt cliff at the abutment where a ramp should be.
+    pub slack: Vec<(f64, f64)>,
     /// Connected-component id per variable (`0..n_components`).
     pub component: Vec<usize>,
     pub n_components: usize,
@@ -374,6 +406,7 @@ pub fn build(
     for (ci, c) in corridors.iter().enumerate() {
         ci_of[c.id as usize] = Some(ci);
     }
+    let undercuts = build_undercuts(crossings, profiles, &ci_of);
     let crossings = build_crossings(crossings, profiles, &corridors, &ci_of);
     let contacts: Vec<Contact> = contact_slots
         .into_iter()
@@ -389,7 +422,19 @@ pub fn build(
     let junction_var: Vec<Option<VarId>> =
         junction_slot.into_iter().map(|s| s.and_then(|slot| root_var[uf.find(slot)])).collect();
 
-    SolveGraph { vars, h, corridors, crossings, contacts, component, n_components, junction_var }
+    let slack = vec![(f64::NEG_INFINITY, f64::INFINITY); vars.len()];
+    SolveGraph {
+        vars,
+        h,
+        corridors,
+        crossings,
+        contacts,
+        undercuts,
+        slack,
+        component,
+        n_components,
+        junction_var,
+    }
 }
 
 /// Resolves the scene's crossings into solver form: the upper corridor's arc,
@@ -512,6 +557,44 @@ fn corridor_ranks(scene_crossings: &[crate::scene::Crossing], n: usize) -> Vec<u
         }
     }
     rank
+}
+
+/// Resolves the crossings where **this stratum passes underneath** into
+/// ceilings. The upper side is senior — already solved, immovable — so the
+/// constraint is one-sided downward, exactly as the clearance case is one-sided
+/// upward.
+fn build_undercuts(
+    scene_crossings: &[crate::scene::Crossing],
+    profiles: &[Option<Profile>],
+    ci_of: &[Option<usize>],
+) -> Vec<Undercut> {
+    let mut out = Vec::new();
+    for c in scene_crossings {
+        // Only where the *lower* side is ours and the upper is not: if both are
+        // ours the raise-only clearance already couples them, and if the upper
+        // is ours it is the one that must move.
+        let Some(lower) = c.lower else { continue };
+        let Some(under_ci) = ci_of.get(lower as usize).copied().flatten() else { continue };
+        if ci_of.get(c.upper as usize).copied().flatten().is_some() {
+            continue;
+        }
+        let Some(up) = profiles.get(c.upper as usize).and_then(|p| p.as_ref()) else { continue };
+        let Some(lp) = profiles.get(lower as usize).and_then(|p| p.as_ref()) else { continue };
+        // What the senior leaves beneath itself: its own soffit, less the
+        // clearance the *junior* needs to pass through.
+        let ceiling_m = up.road_at_arc(c.upper_arc)
+            - crate::priors::DECK_THICKNESS_M
+            - c.lower_kind.prior().clearance_under_m;
+        out.push(Undercut {
+            under_ci,
+            under_arc: lp.arc_of(c.point.x, c.point.y),
+            ceiling_m,
+        });
+    }
+    out.sort_by(|a, b| {
+        (a.under_ci, a.under_arc.to_bits()).cmp(&(b.under_ci, b.under_arc.to_bits()))
+    });
+    out
 }
 
 /// The surface an *unprofiled* crossed feature is taken to lie on: the lowest

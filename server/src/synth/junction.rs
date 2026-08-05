@@ -560,7 +560,7 @@ fn junction_reach_m(scene: &SceneGraph, j: usize) -> f64 {
 /// for a non-drivable corridor: a footway or a crossing joins an intersection
 /// without paving any of it.
 pub(crate) fn corridor_half_width_m(c: &Corridor) -> Option<f64> {
-    priors::paves_today(c.kind).then_some(())?;
+    c.kind.prior().paves.then_some(())?;
     Some(c.width_m? * 0.5 + priors::STRUCTURE_SHOULDER_M)
 }
 

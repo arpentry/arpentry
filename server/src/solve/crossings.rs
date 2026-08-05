@@ -112,11 +112,15 @@ pub fn derive(
                 let Some(x) = order(scene, profiles, c.id, arc_c, e.corridor, arc_o, point) else {
                     continue;
                 };
-                // Only the stratum that must yield takes the constraint, and
-                // only where the crossed side is not junior to it.
+                // Authority chooses the mover (§4.1). This stratum takes the
+                // constraint when it is the one that can yield — whether it is
+                // the side above (it climbs) or the side below (it dips) — and
+                // never when the side it would have to move is senior.
                 let upper_s = scene.corridors[x.upper as usize].kind.stratum();
                 let lower_s = x.lower.map_or(stratum, |l| scene.corridors[l as usize].kind.stratum());
-                if upper_s != stratum || lower_s > stratum {
+                let ours = (upper_s == stratum && lower_s <= stratum)
+                    || (lower_s == stratum && upper_s < stratum);
+                if !ours {
                     continue;
                 }
                 if seen.insert((x.upper, x.lower.unwrap_or(u32::MAX), x.upper_level, x.lower_level))

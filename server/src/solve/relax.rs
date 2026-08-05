@@ -113,6 +113,7 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
         deviation_pass(g);
         contact_pass(g);
         clearance_pass(g, &sites, &mut Dropped::default());
+        undercut_pass(g, &sites);
         rigidity_pass(g);
         let resid = g.h.iter().zip(&prev).map(|(&a, &b)| (a - b).abs()).fold(0.0, f64::max);
         if resid < TOL_M {
@@ -134,6 +135,7 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
     // the same demands every sweep, so counting there would multiply each
     // contradiction by the sweep count.
     clearance_pass(g, &sites, &mut dropped);
+    undercut_pass(g, &sites);
     rigidity_pass(g);
     // **Contacts last.** A shared connector with a senior stratum is an
     // equality, and the passes above are inequalities and projections that will
@@ -143,6 +145,47 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
     // the output, which is what I2 asks of a junction.
     contact_pass(g);
     Relaxed { sweeps: used, demands_dropped: dropped.count, worst_dropped_m: dropped.worst_m }
+}
+
+/// Dips this stratum under every senior feature crossing above it (§4.1).
+///
+/// The exact mirror of [`clearance_pass`]: a lower-only *ceiling* spread
+/// outward by the same shortest-path-in-height-budget walk, so the road falls
+/// into a trough at the crossing and climbs back to its own profile at its
+/// class grade. A ceiling rather than a decrement for the same reason the lift
+/// is a floor — the pass runs once per sweep and the soft pull hands the dip
+/// back each round, so only an idempotent bound converges.
+///
+/// This is the half §4.1's four-case table needs and the model never had. A
+/// railway on an embankment could not be moved (senior) and the road under it
+/// had no way to fall, so the road simply stayed at grade while the drawn
+/// ground rose through it: measured on Montreux the moment rail became real,
+/// `slope.carriageway_face` 6.6 → 9.0, asphalt folding where the formation
+/// crossed it.
+fn undercut_pass(g: &mut SolveGraph, sites: &VarSites) {
+    for uc in &g.undercuts.clone() {
+        let c = &g.corridors[uc.under_ci];
+        let k = nearest_local(c, uc.under_arc);
+        let excess = g.h[c.vars[k]] - uc.ceiling_m;
+        // Beyond the plausible depth of a real underpass the level tags and
+        // the solved geometry contradict each other; trust the profile.
+        if excess <= 0.0 || excess > MAX_CLEARANCE_LIFT_M {
+            continue;
+        }
+        for (v, d) in ramp_targets(g, sites, uc.under_ci, k, uc.ceiling_m, Sense::Down) {
+            g.h[v] += d;
+            g.slack[v].1 = g.slack[v].1.min(g.h[v]);
+        }
+    }
+}
+
+/// Which way a ramp bounds the road it spreads over.
+#[derive(Clone, Copy, PartialEq)]
+enum Sense {
+    /// A floor: the road may not go below it (an approach to a deck).
+    Up,
+    /// A ceiling: the road may not go above it (a dip under a senior).
+    Down,
 }
 
 /// Meets every senior height this stratum shares a connector with (§4.5).
@@ -239,6 +282,9 @@ fn clearance_pass(g: &mut SolveGraph, sites: &VarSites, dropped: &mut Dropped) {
         let targets = clearance_targets(g, sites, gc, need, dropped);
         for (v, d) in targets {
             g.h[v] += d;
+            // Record what the lift established, so the deviation box yields to
+            // it next sweep instead of undoing it.
+            g.slack[v].0 = g.slack[v].0.max(g.h[v]);
         }
     }
 }
@@ -284,7 +330,16 @@ fn deviation_pass(g: &mut SolveGraph) {
                 continue;
             }
             let target = g.vars[v].target_m;
-            g.h[v] = g.h[v].clamp(target - c.deviation, target + c.deviation);
+            // The box yields to a clearance bound rather than fighting it
+            // (§4.4: the budget is Soft, clearance is Strong). Where a lift has
+            // established a floor the box opens upward to meet it, and where a
+            // dip has established a ceiling it opens downward — so an approach
+            // can climb to its deck over the run its grade needs, instead of
+            // being pulled back every sweep and arriving in one node.
+            let (floor, ceiling) = g.slack[v];
+            let lo = (target - c.deviation).min(ceiling);
+            let hi = (target + c.deviation).max(floor);
+            g.h[v] = g.h[v].clamp(lo, hi);
         }
     }
 }
@@ -381,7 +436,7 @@ fn clearance_targets(
             if deficit <= 0.0 {
                 return Vec::new();
             }
-            ramp_targets(g, sites, gc.upper_ci, k, need)
+            ramp_targets(g, sites, gc.upper_ci, k, need, Sense::Up)
         }
     }
 }
@@ -413,6 +468,7 @@ fn ramp_targets(
     start_ci: usize,
     start_k: usize,
     need: f64,
+    sense: Sense,
 ) -> Vec<(VarId, f64)> {
     // Budget in millimetres so the frontier orders exactly and the walk is a
     // function of the model, not of float comparison order (invariant 5).
@@ -429,14 +485,25 @@ fn ramp_targets(
         }
         let c = &g.corridors[ci as usize];
         let v = c.vars[k as usize];
-        let floor = need - cost as f64 * 0.001;
-        let raised = floor > g.h[v];
+        // A floor rises away from the crossing as the budget is spent; a
+        // ceiling falls away from it. One walk, one sign.
+        let bound = match sense {
+            Sense::Up => need - cost as f64 * 0.001,
+            Sense::Down => need + cost as f64 * 0.001,
+        };
+        let raised = match sense {
+            Sense::Up => bound > g.h[v],
+            Sense::Down => bound < g.h[v],
+        };
         if raised {
             // A variable reached twice keeps the larger lift: the cheapest
             // route is the one that governs, and it is the one that arrived
             // first, but a shared node is visited once per corridor it is on.
             let e = lift.entry(v).or_insert(0.0);
-            *e = e.max(floor - g.h[v]);
+            *e = match sense {
+                Sense::Up => e.max(bound - g.h[v]),
+                Sense::Down => e.min(bound - g.h[v]),
+            };
         } else if cost > 0 {
             continue; // the road is already above the ramp here: it ends
         }
@@ -762,6 +829,8 @@ mod tests {
                 extra_m: 6.5,
             }],
             contacts: Vec::new(),
+            undercuts: Vec::new(),
+            slack: vec![(f64::NEG_INFINITY, f64::INFINITY); n],
             component: vec![0; n],
             n_components: 1,
             junction_var: Vec::new(), // no scene junctions in this fixture
@@ -813,6 +882,8 @@ mod tests {
                 extra_m: 6.0,
             }],
             contacts: Vec::new(),
+            undercuts: Vec::new(),
+            slack: vec![(f64::NEG_INFINITY, f64::INFINITY); n],
             component: vec![0; n],
             n_components: 1,
             junction_var: Vec::new(),
@@ -876,6 +947,8 @@ mod tests {
             }],
             crossings: vec![],
             contacts: Vec::new(),
+            undercuts: Vec::new(),
+            slack: vec![(f64::NEG_INFINITY, f64::INFINITY); n],
             component: vec![0; n],
             n_components: 1,
             junction_var: Vec::new(), // no scene junctions in this fixture

@@ -184,29 +184,41 @@ pub enum Mode {
     Street { grade: f64, deviation_m: f64, spacing_m: f64 },
     /// At-grade spans drape as they are; structures chord between anchors.
     Draped,
+    /// One constant gradient from end to end — a funicular (§9).
+    ///
+    /// Not a ceiling. A cable railway has no vertical curves to bound; it has a
+    /// slope, and a parameter that pretends otherwise is a lie the solver acts
+    /// on: held as a *maximum* of 45 %, a funicular would simply drape the
+    /// mountain it was built to climb straight up.
+    Constant { grade: f64 },
 }
 
 impl Mode {
-    /// The mode a corridor's [`Kind`](crate::priors::Kind) implies. Driven by
-    /// the §9 prior: a surveyed *road* alignment is engineered, a class that
-    /// paves holds a bed grade, and anything else drapes.
+    /// The mode a corridor's [`Kind`](crate::priors::Kind) implies, from its
+    /// §9 `grade_shape` alone.
     ///
-    /// The road qualifier is the pre-stratum shape: a surveyed railway is
-    /// engineered too, and M6 is where it stops draping.
+    /// The shape *is* the mode: a constant gradient is not a very steep
+    /// ceiling, and a surveyed alignment is not a street with a tighter one.
     pub fn for_kind(kind: crate::priors::Kind) -> Mode {
+        use crate::priors::GradeShape;
         let prior = kind.prior();
-        let surveyed_road = prior.engineered && matches!(kind, crate::priors::Kind::Road(_));
-        match prior.grade() {
-            Some(grade) if surveyed_road => Mode::Engineered { grade },
-            // A railway holds a grade shape and should be solved to it — but
-            // not until it is solved as *rail*, in its own stratum (see
-            // [`crate::priors::paves_today`]). Until M6 it drapes, as it does
-            // today.
-            Some(grade) if crate::priors::paves_today(kind) => Mode::Street {
+        match prior.grade_shape {
+            // One gradient end to end. A ceiling cannot express it, so it gets
+            // its own mode rather than a very steep `Engineered`.
+            GradeShape::Constant(grade) => Mode::Constant { grade },
+            // A surveyed alignment — a motorway, a trunk road, a railway — gets
+            // rim anchoring, the class ceiling, and infeasible-anchor
+            // absorption into structures.
+            _ if prior.engineered => Mode::Engineered { grade: prior.grade().unwrap_or(0.06) },
+            // A bed grade held inside a tight deviation budget: the street
+            // trusts the hill it was laid on (S9).
+            GradeShape::Bounded(grade) => Mode::Street {
                 grade,
                 deviation_m: prior.deviation_m,
                 spacing_m: prior.node_spacing_m,
             },
+            // No profile at all. Unreachable from the scene — the gate admits
+            // only strata that solve — and kept as the degradation floor.
             _ => Mode::Draped,
         }
     }
@@ -216,6 +228,7 @@ impl Mode {
     fn spacing_m(self) -> f64 {
         match self {
             Mode::Street { spacing_m, .. } => spacing_m,
+            Mode::Constant { .. } => NODE_SPACING_M,
             _ => NODE_SPACING_M,
         }
     }
@@ -302,6 +315,28 @@ pub fn solve(
         Mode::Draped => {
             road_m = road_profile(&arc, &road_ref, &at_grade);
         }
+        // One straight line in height, from where the alignment starts to
+        // where it ends. Every intermediate node lies on it by construction,
+        // so the gradient is constant by construction rather than by a
+        // constraint that could fail — the same "make it unrepresentable"
+        // move the shared junction variable makes for continuity.
+        //
+        // The ends are the terrain the funicular's stations stand on: they are
+        // the only two heights the data supports, and everything between them
+        // is the cable.
+        Mode::Constant { grade: _ } => {
+            let draped = road_profile(&arc, &road_ref, &at_grade);
+            let total = *arc.last().unwrap_or(&0.0);
+            let (h0, h1) = (
+                draped.first().copied().unwrap_or(0.0),
+                draped.last().copied().unwrap_or(0.0),
+            );
+            road_m = if total > 0.0 {
+                arc.iter().map(|&a| h0 + (h1 - h0) * (a / total)).collect()
+            } else {
+                draped
+            };
+        }
     }
     // Round the profile's grade breaks (abutments, cut/fill kinks) into
     // gentle vertical curves. Engineered classes move only nodes already
@@ -316,6 +351,8 @@ pub fn solve(
             smooth_vgrades_street(&arc, &mut road_m, &road_ref, &at_grade, deviation_m)
         }
         Mode::Draped => {}
+        // A straight line has no grade breaks to round.
+        Mode::Constant { .. } => {}
     }
     let deck_m = deck_ramp(&arc, &road_m, &at_grade);
     let smooth = smooth_path(&spline_path(raw, &params, cos_lat));
