@@ -202,7 +202,7 @@ pub fn intersect_rect(shapes: &Shapes, rect: (f64, f64, f64, f64)) -> Shapes {
 /// road and the median beside it come out of this untouched.
 ///
 /// Degrades to `open` unchanged when the offsets fail — hard corners, never a
-/// broken region (docs/GENERATION.md invariant 6).
+/// broken region (docs/GENERATION.md I6).
 pub fn close_within(open: &Shapes, r_m: f64, masks: &Shapes) -> Shapes {
     if open.is_empty() || masks.is_empty() || !(r_m > 0.0) {
         return open.clone();

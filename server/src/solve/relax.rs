@@ -374,7 +374,7 @@ fn ramp_targets(
         // Onward: the two neighbours along this corridor, and every other
         // corridor this variable belongs to (the junction the ramp runs
         // through).
-        let mut step = |ci: u32, k2: i64, cost: u64, heap: &mut BinaryHeap<_>, best: &mut HashMap<_, _>| {
+        let step = |ci: u32, k2: i64, cost: u64, heap: &mut BinaryHeap<_>, best: &mut HashMap<_, _>| {
             let c = &g.corridors[ci as usize];
             if k2 < 0 || k2 as usize >= c.vars.len() {
                 return;

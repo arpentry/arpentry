@@ -76,8 +76,7 @@ impl RoadClass {
     /// Profile node spacing along the corridor, metres. Engineered classes
     /// sample densely (grade relaxation and rim anchoring want resolution);
     /// the long tail of minor streets — most of the network by length —
-    /// samples sparsely, bounding the solve's time and memory. Both are finer
-    /// than the old street-bed spacing (`BED_SPACING_M`).
+    /// samples sparsely, bounding the solve's time and memory.
     pub fn node_spacing_m(self) -> f64 {
         match self {
             RoadClass::Motorway | RoadClass::Trunk => NODE_SPACING_M,
@@ -246,11 +245,6 @@ pub const PAVE_RIM_M: f64 = 0.35;
 /// vertex reduction.
 pub const PAVE_SIMPLIFY_M: f64 = 0.2;
 
-/// Longest bed earthwork edge for an unclaimed street, in metres: edges
-/// longer than this are subdivided so the bed's targets track the terrain
-/// along the road at this resolution.
-pub const BED_SPACING_M: f64 = 30.0;
-
 /// How far a smoothed bed target may leave the natural ground at its own
 /// centerline node, in metres. The budget that keeps [`RoadClass::bed_grade`]
 /// honest: within it the bench irons DEM noise flat, beyond it the terrain is
@@ -293,13 +287,6 @@ pub const BUMP_SPAN_M: f64 = 50.0;
 /// [`NOTCH_FILL_MAX_M`], far tighter because false crests (noise) are
 /// shallow while false notches (gorges) can be deep.
 pub const BUMP_SHAVE_MAX_M: f64 = 4.0;
-
-/// Largest reconciliation applied where street beds share an endpoint
-/// connector (or meet a solved corridor), in metres. Within it the meeting
-/// beds are welded to one height so no step crosses the junction; a larger
-/// disagreement is a data contradiction and the beds are left apart rather
-/// than dragged.
-pub const BED_WELD_MAX_M: f64 = 3.0;
 
 /// First zoom that paints longitudinal road markings (docs/ROADS.md P3).
 /// Deeper than the surface band's zoom: a 12 cm line is sub-pixel until the
@@ -513,18 +500,8 @@ pub const TUNNEL_COVER_M: f64 = 0.5;
 /// below grade.
 pub const PORTAL_CUT_LEN_M: f64 = 12.0;
 
-/// Deepest an underpass constraint may press the road below its solved
-/// profile. A real depressed underpass runs ~7–12 m below grade (bore, cover,
-/// slab — sometimes stacked); a demand far beyond that means the level tags
-/// and the solved geometry contradict each other (e.g. a mapper-annotated
-/// mountain tunnel whose profile stands high over the crossing road), and
-/// honouring it would drag the profile — and the earthworks that chase it —
-/// hundreds of metres down. Such demands are dropped: the profile is trusted
-/// over the tag.
-pub const MAX_UNDERPASS_SINK_M: f64 = 15.0;
-
 /// Highest a clearance constraint may lift the road above its solved
-/// profile — the raising twin of [`MAX_UNDERPASS_SINK_M`]. A real overpass
+/// profile. A real overpass
 /// clears its crossed road by ~6.5–10 m (clearance plus slab, some grade),
 /// ~13 m when it stacks over an already-lifted deck; a demand far beyond
 /// that means the crossing geometry and the solved profile contradict each
@@ -533,14 +510,6 @@ pub const MAX_UNDERPASS_SINK_M: f64 = 15.0;
 /// demand — a deck 200 m over Montreux. Such demands are dropped: the
 /// profile is trusted over the inferred constraint.
 pub const MAX_CLEARANCE_LIFT_M: f64 = 15.0;
-
-/// Longest annotated structure span treated as one rigid box whose constraint
-/// holds end to end: a short bridge is lifted as one deck (S4), a short
-/// tunnel runs depressed as one cut-and-cover bore (S6, the urban underpass).
-/// A longer span is a viaduct or driven tunnel; only the crossing feature's
-/// own width lifts or dips, and the road returns to its own grade at the ramp
-/// grade — one crossing must not drag kilometres of structure to its height.
-pub const STRUCTURE_BOX_MAX_M: f64 = 300.0;
 
 /// How far, in metres, an engineered road may sit above (fill) or below (cut)
 /// the draped terrain. The grade ceiling alone, held across a long mountain
@@ -603,16 +572,6 @@ pub const WATER_LEVEL_PCTL: f64 = 0.3;
 
 /// Highest a junction weld may lift a corridor's leg to meet the road it joins
 /// (invariant 2): a ramp diverging from an elevated flyover is pulled up to the
-/// deck it leaves. The operative plausibility test is the leg's own climbing
-/// capacity (its length times its ramp grade — a leg cannot meet a deck it
-/// cannot climb to); this constant is the absolute ceiling above it, sized to
-/// the tallest single-level interchange ramp. A demand beyond either means the
-/// shared connector links roads that do not in fact meet at one height (a
-/// mapping error, or a leg that climbs to its own structure elsewhere); the
-/// weld is dropped and the leg keeps its solved profile — the same "trust the
-/// profile over the inferred constraint" the clearance caps use.
-pub const MAX_JUNCTION_WELD_M: f64 = 25.0;
-
 /// Longest chain of segments joined into one corridor, in metres. Corridors
 /// longer than this are split; junction-continuity constraints (solve stage)
 /// carry coherence across the cut. Bounds the profile arrays and keeps a

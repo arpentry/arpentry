@@ -23,33 +23,11 @@ pub fn write(
     fs::create_dir_all(dir)?;
     fs::write(dir.join("corridors.geojson"), corridors_geojson(scene).to_string())?;
     fs::write(dir.join("crossings.geojson"), crossings_geojson(scene).to_string())?;
-    fs::write(dir.join("underpasses.geojson"), underpasses_geojson(scene).to_string())?;
     fs::write(dir.join("junctions.geojson"), junctions_geojson(scene, solved).to_string())?;
     fs::write(dir.join("profiles.geojson"), profiles_geojson(scene, solved).to_string())?;
     fs::write(dir.join("smooth.geojson"), smooth_geojson(scene, solved).to_string())?;
     fs::write(dir.join("earthworks.geojson"), earthworks_geojson(ground).to_string())?;
     Ok(())
-}
-
-/// The detected underpasses: one Point each, with the level ordering.
-fn underpasses_geojson(scene: &SceneGraph) -> Json {
-    let features: Vec<Json> = scene
-        .underpasses
-        .iter()
-        .map(|u| {
-            json!({
-                "type": "Feature",
-                "geometry": { "type": "Point", "coordinates": [u.point.x, u.point.y] },
-                "properties": {
-                    "corridor": u.corridor,
-                    "under_level": u.under_level,
-                    "over": u.over,
-                    "over_level": u.over_level,
-                },
-            })
-        })
-        .collect();
-    json!({ "type": "FeatureCollection", "features": features })
 }
 
 /// The corridor junctions: one Point each, with every member's corridor, arc,

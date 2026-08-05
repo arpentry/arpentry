@@ -5,7 +5,7 @@
 //! arpentry_verify data/overture-ch/preview.arpa
 //!
 //! # Did what I just did make it better?
-//! arpentry_verify preview.arpa --baseline verify/baseline-montreux.json
+//! arpentry_verify preview.arpa --baseline verify/baseline-montreux-z16.json
 //!
 //! # What is happening at the place that looks wrong?
 //! arpentry_verify preview.arpa --at 6.9290,46.4200
@@ -77,9 +77,10 @@ fn main() -> ExitCode {
     if args.list {
         for s in corpus::catalogue() {
             println!(
-                "{:<4} {:<42} {}{}",
+                "{:<4} {:<42} {:<34} {}{}",
                 s.id,
                 s.name,
+                s.mechanism,
                 s.stresses,
                 if s.minable { "" } else { "  [site must be chosen by hand]" }
             );

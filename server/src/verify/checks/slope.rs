@@ -49,7 +49,7 @@
 use crate::verify::dist::Dist;
 use crate::verify::mesh::SurfaceMesh;
 use crate::verify::scene::TileScene;
-use crate::verify::{Metric, Offender, Sense, Worst};
+use crate::verify::{Invariant, Metric, Offender, Sense, Worst};
 
 use super::{Check, Options};
 
@@ -253,7 +253,12 @@ impl Check for Slope {
         vec![
             Metric {
                 id: "slope.terrain_face".into(),
-                invariant: 6,
+                invariant: Invariant::I6,
+                population: format!(
+                    "Every terrain triangle in every measured tile whose rise is at least \
+                     {VISIBLE_M:.2} m. Below that a steep ratio is quantization on a sliver, not \
+                     a cliff."
+                ),
                 title: "Drawn terrain face steepness".into(),
                 detail: format!(
                     "Rise over plan run of every terrain triangle spanning at least \
@@ -270,7 +275,12 @@ impl Check for Slope {
             },
             Metric {
                 id: "slope.carriageway_face".into(),
-                invariant: 6,
+                invariant: Invariant::I6,
+                population: format!(
+                    "Every level-0 road_surface triangle spanning at least {VISIBLE_M:.2} m of \
+                     height, excluding the mesh silhouette. The kerb rim is vertical by design \
+                     and was 44 % of the steep faces counted before it was excluded."
+                ),
                 title: "Interior carriageway face steepness".into(),
                 detail: format!(
                     "The same for the at-grade road surface, excluding the mesh silhouette — the \
@@ -290,7 +300,21 @@ impl Check for Slope {
             },
             Metric {
                 id: "slope.road_grade".into(),
-                invariant: 6,
+                // §8 binds the grade ceiling to I2 (surface continuity), not to
+                // I6: a road past its class grade is a continuity defect, not a
+                // degradation one. The code said 6 until the invariant became a
+                // type.
+                invariant: Invariant::I2,
+                population: format!(
+                    "Consecutive vertex pairs of every drivable centerline carrying per-vertex \
+                     heights, midpoint inside the tile proper, plan run at least \
+                     {GRADE_RUN_M:.2} m. Coverage limit: from z{} the union paves the \
+                     carriageway and stamp_synth drops the fill stroke, so at detail zooms this \
+                     samples the drivable network through the markings and deck strokes that \
+                     remain — not all of it. Non-drivable classes are excluded: a footway may be \
+                     a staircase and a rack railway climbs at 20 %.",
+                    crate::priors::ROAD_SURFACE_MIN_ZOOM
+                ),
                 title: "Longitudinal grade of the drawn road".into(),
                 detail: format!(
                     "Rise over run between consecutive vertices of every drivable centerline, at \
@@ -313,7 +337,13 @@ impl Check for Slope {
             },
             Metric {
                 id: "slope.terrain_tearing".into(),
-                invariant: 6,
+                invariant: Invariant::I6,
+                population: format!(
+                    "Every interior terrain vertex flanked by opposite-signed breaks on both \
+                     sides — an oscillation, not a step. Counting one-sided breaks would report \
+                     every wall ever drawn: unfiltered it called 3.9 % of the extract torn, and \
+                     with the filter 0.20 %."
+                ),
                 title: "Drawn terrain standing off its own neighbours".into(),
                 detail: format!(
                     "How far each interior terrain vertex sits from the plane its neighbours \

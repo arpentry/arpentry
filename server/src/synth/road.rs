@@ -119,7 +119,7 @@ pub(crate) const AT_GRADE_LEVEL: i64 = 0;
 /// field calls it rather than reproducing it, and structure paint calls it
 /// directly for the deck ramp. What changed is that at-grade consumers now go
 /// through the field, so several corridors meeting at one place get one answer
-/// instead of each drawing its own (GENERATION.md invariant 2, ROADS.md
+/// instead of each drawing its own (GENERATION.md I2, ROADS.md
 /// invariant 5).
 pub(crate) fn surface_height(
     profile: Option<&Profile>,

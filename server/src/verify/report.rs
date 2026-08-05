@@ -129,7 +129,8 @@ fn verdict(
 fn metric_json(m: &Metric) -> Json {
     json!({
         "id": m.id,
-        "invariant": m.invariant,
+        "invariant": m.invariant.as_str(),
+        "population": m.population,
         "title": m.title,
         "sense": match m.sense { Sense::LowerIsWorse => "lower_is_worse", _ => "higher_is_worse" },
         "threshold": m.threshold,
@@ -245,7 +246,8 @@ mod tests {
             zooms: vec![16],
             metrics: vec![Metric {
                 id: id.into(),
-                invariant: 4,
+                invariant: crate::verify::Invariant::I4,
+                population: String::new(),
                 title: "t".into(),
                 detail: "d".into(),
                 sense,

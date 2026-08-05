@@ -149,7 +149,7 @@ naturally expressed in corridor coordinates: `s` (arclength along) and `t`
 levels of `t`. The parameterization must survive tiling: a dash pattern that
 resets at a tile seam produces a visible stutter. Dash phase must be a
 function of *global* corridor arclength, never of the tile window
-(GENERATION.md invariant 5).
+(GENERATION.md I5).
 
 **H5. Two representations, one road.** At coarse zooms the road stays an
 SDF-stroked line; at detail zooms it becomes a surface with paint
@@ -254,7 +254,7 @@ downstream is geometry.
    (band-boundary strips, stop lines, crosswalk boxes, symbol quads). Both
    read solved heights and the engineered ground; markings on structure
    decks read the same road-surface function, so a bridge carries its lane
-   lines across (GENERATION.md invariant 2).
+   lines across (GENERATION.md I2).
 5. **Tile** is untouched.
 
 ### 6.4 Format and client

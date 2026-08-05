@@ -34,7 +34,7 @@ use std::collections::HashMap;
 
 use crate::verify::dist::Dist;
 use crate::verify::scene::{ArchiveScan, TileScene};
-use crate::verify::{Metric, Offender, Sense, Worst};
+use crate::verify::{Invariant, Metric, Offender, Sense, Worst};
 
 use super::Options;
 
@@ -151,8 +151,14 @@ pub fn measure(scan: &ArchiveScan<'_>, zooms: &[u8], opt: &Options) -> Vec<Metri
 fn metric(dist: Dist, worst: Worst, skipped: Option<&str>) -> Metric {
     Metric {
         id: "lod.structure_drift".into(),
-        invariant: 5,
+        invariant: Invariant::I5,
         title: "Structure height drift between adjacent zooms".into(),
+        population: "Structure (level != 0) surface samples at the finest measured zoom, against \
+                     the same class and level in the parent tile one rung coarser — and only \
+                     where the parent holds exactly one candidate. Structures carry no identity \
+                     across zooms, so an ambiguous parent would compare two different bridges; \
+                     those are skipped and counted in the detail line."
+            .into(),
         detail: "Absolute difference between a deck or bore surface at one zoom and the same \
                  structure one rung coarser. Scoped to structures on purpose: at-grade road \
                  height is zoom-dependent by design (the datum lift, docs/GROUND.md §4), but a \

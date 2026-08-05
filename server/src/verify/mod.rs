@@ -37,6 +37,57 @@ pub mod section;
 
 use dist::Dist;
 
+/// The invariants of docs/GENERATION.md §7, as a closed set.
+///
+/// A hand-typed integer let `slope.road_grade` claim invariant 6 while §8's
+/// binding table gives the grade ceiling to I2, and nothing in the code could
+/// notice the disagreement. Naming them makes the §8 table a type: a check
+/// declares which predicate it measures, and adding an invariant to the doc
+/// without a check — or a check with no invariant — stops compiling.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Invariant {
+    /// One ground function: every consumer reads the same engineered ground.
+    I1,
+    /// Surface continuity: zero step at shared geometry, grade within the
+    /// (modality, class) ceiling along every drawn centerline.
+    I2,
+    /// Vertical order with plausible clearance — equality where at grade.
+    I3,
+    /// Support and contact: nothing floats, nothing is buried by accident.
+    I4,
+    /// Determinism across cuts: tiles and zooms derive identical heights.
+    I5,
+    /// Graceful degradation: lost detail, never spectacle.
+    I6,
+    /// Datum monotonicity: a height depends only on its own stratum and its
+    /// seniors.
+    I7,
+    /// Ground monotonicity: a layer changes the ground only inside its own
+    /// declared footprints, exactly once.
+    I8,
+}
+
+impl Invariant {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Invariant::I1 => "I1",
+            Invariant::I2 => "I2",
+            Invariant::I3 => "I3",
+            Invariant::I4 => "I4",
+            Invariant::I5 => "I5",
+            Invariant::I6 => "I6",
+            Invariant::I7 => "I7",
+            Invariant::I8 => "I8",
+        }
+    }
+}
+
+impl std::fmt::Display for Invariant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Which direction is a defect. Determines what "worst" means and which side of
 /// the threshold counts as a violation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -104,11 +155,16 @@ impl Worst {
 
 /// One measured property of the emitted scene.
 pub struct Metric {
-    /// Stable across runs; the key a baseline diff joins on.
+    /// Stable across runs; the key a baseline diff joins on. This is the check
+    /// name docs/GENERATION.md §8 binds to an invariant.
     pub id: String,
-    /// Which GENERATION.md §7 invariant this measures.
-    pub invariant: u8,
+    /// Which §7 invariant this measures — §8's binding, made a type.
+    pub invariant: Invariant,
     pub title: String,
+    /// Exactly what is sampled, and what is *not*. §8: "Every check states its
+    /// population and its coverage limits explicitly. A metric that silently
+    /// samples a subset reads as 'covered everything' when it did not."
+    pub population: String,
     /// One line: what a violation means and what it would look like on screen.
     pub detail: String,
     pub sense: Sense,
@@ -189,8 +245,9 @@ mod tests {
         }
         Metric {
             id: "t".into(),
-            invariant: 4,
+            invariant: Invariant::I4,
             title: "t".into(),
+            population: "t".into(),
             detail: "t".into(),
             sense,
             threshold,

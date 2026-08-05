@@ -70,7 +70,7 @@ pub struct PavedMesh {
     pub apron: Option<TerrainMesh>,
     /// The region this mesh actually covers — the true silhouette rings in plan.
     /// The terrain mesher cuts its hole from *this*, so a level whose asphalt
-    /// failed to mesh cuts nothing (docs/GENERATION.md invariant 6: plain, not
+    /// failed to mesh cuts nothing (docs/GENERATION.md I6: plain, not
     /// wrong).
     pub region: Region,
 }
@@ -79,7 +79,7 @@ pub struct PavedMesh {
 ///
 /// `None` for a tile the region misses entirely. Degrades rather than fails: a
 /// ring whose inset would fold emits no rim and antialiases through MSAA instead
-/// (docs/GENERATION.md invariant 6).
+/// (docs/GENERATION.md I6).
 pub fn tile_meshes(
     levels: &[LevelShapes],
     field: &HeightField,

@@ -25,7 +25,7 @@
 //! tile fragment of the corridor reads the same [`Profile`] through
 //! `Arc<SolvedModel>`, so heights are a function of the global model only —
 //! never of the tile window — and seams line up by construction
-//! (docs/GENERATION.md invariant 5).
+//! (docs/GENERATION.md I5).
 
 use geo_types::Coord;
 
@@ -557,138 +557,8 @@ impl Profile {
         project_onto(&self.nodes, &self.deck_m, self.cos_lat, lon, lat)
     }
 
-    /// Raises the road surface to meet a clearance at arc position `arc0`: a
-    /// local *crest* — the road climbs by the deficit at the crossing and
-    /// returns to its own profile at `grade` (the approach ramps). The lift
-    /// is *relative*: it adds the deficit at `arc0` to the existing profile
-    /// rather than chasing an absolute peak, so on a descending corridor the
-    /// deck keeps its own grade instead of flattening at the demand — a
-    /// span-wide absolute peak once dragged a whole 2 km viaduct up to one
-    /// high crossing's height. The full deficit is held across
-    /// `[lo_arc, hi_arc]` (the crossing feature's width, or a short rigid
-    /// deck end to end). Raise-only, so stacked constraints compose
-    /// (docs/GENERATION.md invariant 3 — clearance is a one-sided
-    /// inequality): a later crest measures its deficit from the
-    /// already-lifted road and adds only the difference.
-    pub fn raise_crest(&mut self, arc0: f64, lo_arc: f64, hi_arc: f64, peak_m: f64, grade: f64) {
-        if self.road_m.is_empty() {
-            return;
-        }
-        let need = peak_m - self.road_at_arc(arc0);
-        if need <= 0.0 {
-            return;
-        }
-        for i in 0..self.road_m.len() {
-            let d = if self.arc[i] < lo_arc {
-                lo_arc - self.arc[i]
-            } else if self.arc[i] > hi_arc {
-                self.arc[i] - hi_arc
-            } else {
-                0.0
-            };
-            let lift = need - grade * d;
-            if lift > 0.0 {
-                self.road_m[i] += lift;
-            }
-        }
-    }
-
-    /// Shifts the road by `delta` (up or down) at one end — arc 0 when
-    /// `start`, the far end otherwise — decaying linearly over the run the
-    /// grade needs to absorb the shift, clamped to the corridor itself so
-    /// the far endpoint stays exact. The street weld's correction
-    /// (docs/GROUND.md §1): meeting street ends are pulled to one height and
-    /// the reconciliation eases into each street at its own plausible grade,
-    /// adding no kink of its own.
-    pub fn weld_end(&mut self, start: bool, delta: f64, grade: f64) {
-        let total = *self.arc.last().unwrap_or(&0.0);
-        if self.road_m.is_empty() || total <= 0.0 || delta == 0.0 {
-            return;
-        }
-        let len = (delta.abs() / grade.max(1e-9)).clamp(f64::MIN_POSITIVE, total);
-        for i in 0..self.road_m.len() {
-            let d = if start { self.arc[i] } else { total - self.arc[i] };
-            let w = (1.0 - d / len).max(0.0);
-            self.road_m[i] += delta * w;
-        }
-    }
-
-    /// The sinking mirror of [`raise_crest`](Self::raise_crest): a local
-    /// *trough* — the road dips just enough at the crossing and returns to
-    /// its own profile at `grade` (S6: a depression between retaining
-    /// walls). The depression is *relative*: it subtracts the deficit at
-    /// `arc0` from the existing profile rather than chasing an absolute
-    /// floor, so on a climbing corridor the recovery works against the
-    /// road's grade, not the sea level — a span-wide absolute floor once
-    /// dragged whole mountain tunnels down to one crossing's height. The
-    /// full deficit is held across `[lo_arc, hi_arc]` (the crossing
-    /// feature's width, or a short cut-and-cover span end to end).
-    /// Lower-only, so stacked constraints compose: a later trough measures
-    /// its deficit from the already-sunk road and digs only the difference.
-    pub fn sink_trough(&mut self, arc0: f64, lo_arc: f64, hi_arc: f64, floor_m: f64, grade: f64) {
-        if self.road_m.is_empty() {
-            return;
-        }
-        let need = self.road_at_arc(arc0) - floor_m;
-        if need <= 0.0 {
-            return;
-        }
-        for i in 0..self.road_m.len() {
-            let d = if self.arc[i] < lo_arc {
-                lo_arc - self.arc[i]
-            } else if self.arc[i] > hi_arc {
-                self.arc[i] - hi_arc
-            } else {
-                0.0
-            };
-            let relief = need - grade * d;
-            if relief > 0.0 {
-                self.road_m[i] -= relief;
-            }
-        }
-    }
-
-    /// The sinking counterpart of [`raise_deck_to`](Self::raise_deck_to): the
-    /// terminal clamp that *guarantees* the deck sits at most `max_deck_m` at
-    /// `arc0` after the ramp refit smoothed the trough away. Local like
-    /// [`sink_trough`](Self::sink_trough) — deck and road are pressed down
-    /// with the same relative trough, never the whole span.
-    pub fn lower_deck_to(
-        &mut self,
-        arc0: f64,
-        lo_arc: f64,
-        hi_arc: f64,
-        max_deck_m: f64,
-        grade: f64,
-    ) {
-        if self.deck_m.is_empty() {
-            return;
-        }
-        let excess = self.deck_at_arc(arc0) - max_deck_m;
-        if excess <= 0.0 {
-            return;
-        }
-        for i in 0..self.deck_m.len() {
-            let d = if self.arc[i] < lo_arc {
-                lo_arc - self.arc[i]
-            } else if self.arc[i] > hi_arc {
-                self.arc[i] - hi_arc
-            } else {
-                0.0
-            };
-            let relief = excess - grade * d;
-            if relief > 0.0 {
-                self.deck_m[i] -= relief;
-                if self.road_m[i] > self.deck_m[i] {
-                    self.road_m[i] = self.deck_m[i];
-                }
-            }
-        }
-    }
-
-    /// Refits the per-span deck ramps after the road surface changed
-    /// ([`raise_crest`](Self::raise_crest) / [`sink_trough`](Self::sink_trough)).
-    pub fn rebuild_deck(&mut self) {
+    /// Refits the per-span deck ramps after the road surface changed.
+    fn rebuild_deck(&mut self) {
         self.deck_m = deck_ramp(&self.arc, &self.road_m, &self.at_grade);
     }
 
@@ -702,44 +572,6 @@ impl Profile {
         }
         self.road_m.copy_from_slice(road);
         self.rebuild_deck();
-    }
-
-    /// The raising counterpart of [`lower_deck_to`](Self::lower_deck_to): the
-    /// terminal clamp that *guarantees* the deck reaches at least
-    /// `min_deck_m` at `arc0` after the ramp refit smoothed the crest away.
-    /// Local like [`raise_crest`](Self::raise_crest) — deck and road are
-    /// lifted with the same relative crest, never the whole span.
-    pub fn raise_deck_to(
-        &mut self,
-        arc0: f64,
-        lo_arc: f64,
-        hi_arc: f64,
-        min_deck_m: f64,
-        grade: f64,
-    ) {
-        if self.deck_m.is_empty() {
-            return;
-        }
-        let deficit = min_deck_m - self.deck_at_arc(arc0);
-        if deficit <= 0.0 {
-            return;
-        }
-        for i in 0..self.deck_m.len() {
-            let d = if self.arc[i] < lo_arc {
-                lo_arc - self.arc[i]
-            } else if self.arc[i] > hi_arc {
-                self.arc[i] - hi_arc
-            } else {
-                0.0
-            };
-            let lift = deficit - grade * d;
-            if lift > 0.0 {
-                self.deck_m[i] += lift;
-                if self.road_m[i] < self.deck_m[i] {
-                    self.road_m[i] = self.deck_m[i];
-                }
-            }
-        }
     }
 
     /// A flat profile holding `height_m` over the given centerline — a DEM-free
@@ -2075,86 +1907,6 @@ mod tests {
         let p = profile_from(&seg, &[span(0.3 * len, 0.7 * len, 1)], |_| 100.0);
         assert!((p.height_at(seg[0].x, seg[0].y) - 100.0).abs() < 0.5);
         assert!((p.height_at(seg[128].x, 46.0) - 100.0).abs() < 0.5);
-    }
-
-    #[test]
-    fn sink_trough_is_a_local_relative_depression() {
-        // A climbing road sunk at one point: the trough dips by the deficit
-        // at the crossing and rejoins the road's *own* grade — it must not
-        // chase the absolute floor along the corridor (a span-wide flat sink
-        // once dragged whole mountain tunnels down to one crossing's floor).
-        let (nodes, len) = line(201, 0.02);
-        let arc = cumulative(&nodes);
-        let road: Vec<f64> = arc.iter().map(|&a| 100.0 + 0.1 * a).collect();
-        let mut p = Profile::from_heights(&nodes, road.clone(), road.clone());
-        let arc0 = 0.5 * len;
-        let floor = (100.0 + 0.1 * arc0) - 6.0;
-        p.sink_trough(arc0, arc0 - 5.0, arc0 + 5.0, floor, 0.08);
-        assert!((p.road_at_arc(arc0) - floor).abs() < 0.1, "dips to the floor at the crossing");
-        let d = 50.0;
-        let expect = (100.0 + 0.1 * (arc0 - d)) - (6.0 - 0.08 * (d - 5.0));
-        assert!(
-            (p.road_at_arc(arc0 - d) - expect).abs() < 0.2,
-            "the shoulder recovers relative to the road, got {} want {expect}",
-            p.road_at_arc(arc0 - d)
-        );
-        assert!(
-            (p.road_at_arc(arc0 + 200.0) - (100.0 + 0.1 * (arc0 + 200.0))).abs() < 0.1,
-            "beyond the trough the road is untouched"
-        );
-    }
-
-    #[test]
-    fn crest_lift_raises_the_crossing_and_ramps_the_approaches() {
-        // A flat road with a bridge span in the middle: a clearance lift at
-        // the span centre must hold the whole (short, rigid) span at the peak
-        // and ramp the at-grade approaches down from the span edges,
-        // raise-only.
-        let (seg, len) = line(256, 0.06);
-        let mut p = profile_from(&seg, &[span(0.45 * len, 0.55 * len, 1)], |_| 100.0);
-        let mid = Coord { x: seg[128].x, y: 46.0 };
-        let arc0 = p.arc_of(mid.x, mid.y);
-        p.raise_crest(arc0, 0.45 * len, 0.55 * len, 106.5, 0.08);
-        p.rebuild_deck();
-        assert!(p.deck_height_at(mid.x, mid.y) > 106.0, "deck must lift at the crossing");
-        // The far ends stay on the ground (the shoulders have run out).
-        assert!((p.height_at(seg[0].x, 46.0) - 100.0).abs() < 0.5);
-        // The approach just outside the span (40 m before its edge) is raised
-        // (the embankment demand) but below the peak.
-        let approach = Coord { x: 6.0 + 0.06 * (0.45 - 40.0 / 4600.0), y: 46.0 };
-        let h = p.height_at(approach.x, approach.y);
-        assert!(h > 101.0 && h < 106.5, "approach should ramp, got {h}");
-        // Profile continuity at the abutment: the at-grade side of the span
-        // edge meets the lifted deck without a step.
-        let edge = Coord { x: 6.0 + 0.06 * 0.45, y: 46.0 };
-        let step = (p.height_at(edge.x, edge.y) - 106.5).abs();
-        assert!(step < 1.0, "abutment step {step} too large");
-        // The terminal clamp can lift the deck locally if the fit fell short.
-        p.raise_deck_to(arc0, 0.45 * len, 0.55 * len, 110.0, 0.08);
-        assert!(p.deck_height_at(mid.x, mid.y) >= 110.0 - 1e-9);
-    }
-
-    #[test]
-    fn crest_lift_is_local_and_relative_on_a_descending_road() {
-        // A descending viaduct lifted at one crossing near its high end: the
-        // crest dips back to the road's own grade — it must not flatten the
-        // whole span at the peak (a span-wide absolute top once dragged a
-        // 2 km viaduct up to one high crossing's height).
-        let (nodes, len) = line(201, 0.02);
-        let arc = cumulative(&nodes);
-        let road: Vec<f64> = arc.iter().map(|&a| 500.0 - 0.05 * a).collect();
-        let mut p = Profile::from_heights(&nodes, road.clone(), road.clone());
-        let arc0 = 0.2 * len;
-        let peak = (500.0 - 0.05 * arc0) + 6.5;
-        p.raise_crest(arc0, arc0 - 5.0, arc0 + 5.0, peak, 0.08);
-        assert!((p.road_at_arc(arc0) - peak).abs() < 0.1, "peaks at the crossing");
-        // Far down the span the road holds its own descending grade.
-        let far = 0.8 * len;
-        assert!(
-            (p.road_at_arc(far) - (500.0 - 0.05 * far)).abs() < 0.1,
-            "the far span must keep its grade, got {}",
-            p.road_at_arc(far)
-        );
     }
 }
 

@@ -705,7 +705,14 @@ mod tests {
             crate::solve::Mode::for_class(RoadClass::Secondary, true),
             &mut |_| 372.0,
         )];
-        crate::solve::crossings::apply(&scene, &mut profiles);
+        // The clearance lift comes from the fused graph — the same path the
+        // pipeline runs, so what this test asserts about the ground is what the
+        // shipped solve actually produces.
+        {
+            let mut g = crate::solve::graph::build(&scene, &profiles);
+            crate::solve::relax::solve(&mut g);
+            crate::solve::relax::reconstruct(&g, &mut profiles);
+        }
         let solved = crate::solve::SolvedModel::from_profiles(profiles, 14);
         let ground = derive(&scene, &solved, None, 1);
         assert!(ground.earthwork_count() > 0, "the lifted approaches must become earthworks");

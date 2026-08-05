@@ -118,7 +118,7 @@ pub enum CrossedKind {
 /// One geometric crossing: a corridor's bridge span passing over another
 /// feature. Level ordinals give the ordering (upper strictly above lower),
 /// never heights; the solver turns the ordering into a clearance
-/// (docs/GENERATION.md invariant 3, scenario S4).
+/// (docs/GENERATION.md I3, scenario S4).
 #[derive(Debug, Clone, Copy)]
 pub struct Crossing {
     /// The corridor whose structure passes over.
@@ -136,29 +136,10 @@ pub struct Crossing {
     pub lower_level: i64,
 }
 
-/// The mirror of a [`Crossing`]: a corridor's tunnel span passing *under*
-/// another feature. On flat ground the terrain says nothing about how deep
-/// the tunnel runs — the feature above sets the constraint: the bore must fit
-/// below it (scenario S6, the urban underpass).
-#[derive(Debug, Clone, Copy)]
-pub struct Underpass {
-    /// The corridor whose tunnel span passes under.
-    pub corridor: CorridorId,
-    /// Corridor arc of the intersection, metres.
-    pub arc: f64,
-    /// The plan intersection point.
-    pub point: Coord,
-    /// The feature passing over, when it is in the scene graph; `None` for a
-    /// plain at-grade road/rail (its height is the ground).
-    pub over: Option<CorridorId>,
-    pub over_level: i64,
-    pub under_level: i64,
-}
-
 /// A point where corridors meet — two or more sharing a connector, at least
 /// one of them ending there. Unlike a [`Crossing`] (features passing over one
 /// another) the members physically connect, so their road surfaces must agree
-/// in height (docs/GENERATION.md invariant 2). The solver welds the members:
+/// in height (docs/GENERATION.md I2). The solver welds the members:
 /// the structural weld lifts a leg to the elevated road it merges onto (a
 /// ramp meeting a flyover), the street weld then pulls meeting street ends
 /// to one height (docs/GROUND.md §1).
@@ -181,7 +162,7 @@ pub struct JunctionMember {
 }
 
 /// A still water body (a lake, reservoir, pond) whose surface the ground stage
-/// flattens to one level (docs/GENERATION.md invariant 4). The data gives no
+/// flattens to one level (docs/GENERATION.md I4). The data gives no
 /// surface elevation; the DEM images the shoreline at the waterline, so the
 /// level is read from the ring and burned flat across the interior — the client
 /// then drapes water on a flat surface instead of following terrain noise.
@@ -291,7 +272,6 @@ impl Corridor {
 pub struct SceneGraph {
     pub corridors: Vec<Corridor>,
     pub crossings: Vec<Crossing>,
-    pub underpasses: Vec<Underpass>,
     /// Where corridors meet and their heights must agree (invariant 2). With
     /// every drivable road a corridor, this covers the street intersections
     /// too — the synth stage plates any junction with three or more legs.
@@ -313,7 +293,6 @@ impl SceneGraph {
         SceneGraph {
             corridors,
             crossings: Vec::new(),
-            underpasses: Vec::new(),
             junctions: Vec::new(),
             water: Vec::new(),
             by_source,

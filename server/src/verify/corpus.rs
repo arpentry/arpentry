@@ -1,10 +1,9 @@
 //! The canonical situations (docs/GENERATION.md §6), bound to real places.
 //!
-//! §4 already says what the test set is: "A generator is adequate when it
-//! handles all of these; each stresses a different part of the problem. They
-//! are the test scenarios for any design." They have been prose since they were
-//! written, which means every iteration has been looking at whatever piece of
-//! Switzerland was on screen at the time. Impressions gathered that way do not
+//! §6 already says what the test set is: "A generator is adequate when it
+//! handles all of these. Each is a test scenario." They have been prose since
+//! they were written, which means every iteration has been looking at whatever
+//! piece of Switzerland was on screen at the time. Impressions gathered that way do not
 //! accumulate — fixing the mountain tunnel and breaking the river bridge is
 //! indistinguishable from progress, because nobody flies back to the river.
 //!
@@ -21,12 +20,15 @@ use serde_json::{json, Value as Json};
 
 use super::scene::ArchiveScan;
 
-/// A situation from §4, and where in the world it is exercised.
+/// A situation from §6, and where in the world it is exercised.
 pub struct Scenario {
     pub id: &'static str,
     pub name: &'static str,
-    /// What it stresses, in §4's own words.
+    /// What it stresses, in §6's own words.
     pub stresses: &'static str,
+    /// The part of the design that handles it — §6's mechanism column. A
+    /// situation with no mechanism is one the design has not answered.
+    pub mechanism: &'static str,
     /// Whether an archive scan can find an instance on its own.
     pub minable: bool,
 }
@@ -41,25 +43,31 @@ pub struct Site {
     pub source: String,
 }
 
-/// The first fourteen situations of docs/GENERATION.md §6, normalized to
-/// ASCII. S15–S19 (level crossing, street-running tram, rail over road, rack
-/// railway, aqueduct) are stated in the doc but not yet bound to places.
+/// Every situation of docs/GENERATION.md §6, normalized to ASCII. `minable`
+/// says whether an archive scan can site it on its own; the rest wait for a
+/// hand-placed coordinate or a decoder that does not exist yet, and are listed
+/// as unsited rather than given a plausible guess.
 pub fn catalogue() -> Vec<Scenario> {
     vec![
-        Scenario { id: "S1", name: "Valley viaduct", stresses: "Profile reconstruction, piers, multi-segment structure entities", minable: true },
-        Scenario { id: "S2", name: "Saddle bridge", stresses: "S1's degenerate case; deck approximately level", minable: true },
-        Scenario { id: "S3", name: "River bridge on flat ground", stresses: "Feature clearance (water); approach ramps must rise from flat ground", minable: false },
-        Scenario { id: "S4", name: "Overpass / interchange on flat ground", stresses: "Crossing detection, network constraints, embankments", minable: true },
-        Scenario { id: "S5", name: "Mountain tunnel", stresses: "Annotation mistrust, portal placement, terrain holes", minable: true },
-        Scenario { id: "S6", name: "Urban underpass / cut-and-cover", stresses: "The flat-ground tunnel case terrain alone cannot express", minable: true },
-        Scenario { id: "S7", name: "Bridge directly into tunnel", stresses: "Structure-to-structure continuity", minable: true },
-        Scenario { id: "S8", name: "Dual carriageway on one structure", stresses: "Entity resolution across parallel segments", minable: false },
-        Scenario { id: "S9", name: "At-grade mountain road", stresses: "Knowing when to do nothing; grade limits must not fix a road that genuinely climbs", minable: true },
-        Scenario { id: "S10", name: "Annotation noise", stresses: "Robustness; graceful degradation; solved structure ends", minable: false },
-        Scenario { id: "S11", name: "Building on a steep slope", stresses: "Building-ground reconciliation, per-LOD terrain agreement", minable: false },
-        Scenario { id: "S12", name: "Dense old town with courtyards", stresses: "Roof synthesis, courtyard meshing, LOD aggregation", minable: false },
-        Scenario { id: "S13", name: "Building beside a road cut or embankment", stresses: "Cross-class ground agreement", minable: false },
-        Scenario { id: "S14", name: "Lakefront", stresses: "Water surfaces, shoreline continuity", minable: false },
+        Scenario { id: "S1", name: "Valley viaduct", stresses: "Profile reconstruction, piers, multi-segment structure entities", mechanism: "Structure entity (\u{a7}4.4)", minable: true },
+        Scenario { id: "S2", name: "Saddle bridge", stresses: "S1's degenerate case; deck approximately level", mechanism: "Structure entity (\u{a7}4.4)", minable: true },
+        Scenario { id: "S3", name: "River bridge on flat ground", stresses: "Feature clearance (water); approach ramps must rise from flat ground", mechanism: "H datum (\u{a7}4.2)", minable: false },
+        Scenario { id: "S4", name: "Overpass / interchange on flat ground", stresses: "Crossing detection, network constraints, embankments", mechanism: "Stacking DAG within S (\u{a7}4.1)", minable: true },
+        Scenario { id: "S5", name: "Mountain tunnel", stresses: "Annotation mistrust, portal placement, terrain holes", mechanism: "Structure as consequence (\u{a7}4.5)", minable: true },
+        Scenario { id: "S6", name: "Urban underpass / cut-and-cover", stresses: "The flat-ground tunnel case terrain alone cannot express", mechanism: "Imprint (\u{a7}4.3)", minable: true },
+        Scenario { id: "S7", name: "Bridge directly into tunnel", stresses: "Structure-to-structure continuity", mechanism: "Shared node variable (\u{a7}4.4)", minable: true },
+        Scenario { id: "S8", name: "Dual carriageway on one structure", stresses: "Entity resolution across parallel segments", mechanism: "Structure entity (\u{a7}4.4)", minable: false },
+        Scenario { id: "S9", name: "At-grade mountain road", stresses: "Knowing when to do nothing; grade limits must not fix a road that genuinely climbs", mechanism: "Soft-only constraints (\u{a7}4.4)", minable: true },
+        Scenario { id: "S10", name: "Annotation noise", stresses: "Robustness; graceful degradation; solved structure ends", mechanism: "Structure as consequence (\u{a7}4.5)", minable: false },
+        Scenario { id: "S11", name: "Building on a steep slope", stresses: "Building-ground reconciliation, per-LOD terrain agreement", mechanism: "B against final ground (\u{a7}4.2)", minable: false },
+        Scenario { id: "S12", name: "Dense old town with courtyards", stresses: "Roof synthesis, courtyard meshing, LOD aggregation", mechanism: "Synthesis (\u{a7}5 step 4)", minable: false },
+        Scenario { id: "S13", name: "Building beside a road cut or embankment", stresses: "Cross-class ground agreement", mechanism: "Ground accumulation (\u{a7}4.3)", minable: false },
+        Scenario { id: "S14", name: "Lakefront", stresses: "Water surfaces, shoreline continuity", mechanism: "H imprint, then S (\u{a7}4.3)", minable: false },
+        Scenario { id: "S15", name: "Level crossing", stresses: "The equality case of vertical order; the one place two strata are known to touch", mechanism: "Equality constraint (\u{a7}4.5)", minable: false },
+        Scenario { id: "S16", name: "Street-running tram", stresses: "Right-of-way classification: a rail modality with no authority", mechanism: "D stratum (\u{a7}4.2)", minable: false },
+        Scenario { id: "S17", name: "Railway over a road", stresses: "Authority independent of stacking", mechanism: "Authority perpendicular to stacking (\u{a7}4.1)", minable: false },
+        Scenario { id: "S18", name: "Rack railway on a 45 % flank", stresses: "Per-class constraint shape; a senior datum that must not float", mechanism: "Priors (\u{a7}9), datum float check (\u{a7}8)", minable: false },
+        Scenario { id: "S19", name: "Aqueduct on a viaduct", stresses: "Back-edge handling: a senior modality carried by a junior structure", mechanism: "Back-edge rule (\u{a7}4.6)", minable: false },
     ]
 }
 
@@ -222,17 +230,20 @@ pub fn mine(scan: &ArchiveScan<'_>, zoom: u8, max_tiles: usize) -> HashMap<Strin
 mod tests {
     use super::*;
 
+    /// The catalogue is §6's table, so it must be a contiguous S1..Sn with no
+    /// gaps and no duplicates — pinning the *count* instead is what stopped
+    /// S15–S19 from being added when the doc grew them.
     #[test]
-    fn the_catalogue_is_the_fourteen_from_the_design_doc() {
+    fn the_catalogue_is_a_contiguous_run_of_the_design_docs_situations() {
         let c = catalogue();
-        assert_eq!(c.len(), 14);
-        assert_eq!(c[0].id, "S1");
-        assert_eq!(c[13].id, "S14");
-        // Every id unique, so a corpus file can key on them.
-        let mut ids: Vec<&str> = c.iter().map(|s| s.id).collect();
-        ids.sort_unstable();
-        ids.dedup();
-        assert_eq!(ids.len(), 14);
+        assert!(!c.is_empty());
+        for (i, s) in c.iter().enumerate() {
+            assert_eq!(s.id, format!("S{}", i + 1), "situation {i} is out of order or missing");
+            // A situation with no mechanism is one the design has not answered;
+            // §6's mechanism column exists so that cannot pass silently.
+            assert!(!s.stresses.is_empty(), "{} states nothing it stresses", s.id);
+            assert!(!s.mechanism.is_empty(), "{} names no mechanism", s.id);
+        }
     }
 
     #[test]

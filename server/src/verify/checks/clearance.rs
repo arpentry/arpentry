@@ -43,7 +43,7 @@
 use crate::priors::DECK_THICKNESS_M;
 use crate::verify::dist::Dist;
 use crate::verify::scene::TileScene;
-use crate::verify::{Metric, Offender, Sense, Worst};
+use crate::verify::{Invariant, Metric, Offender, Sense, Worst};
 
 use super::{Check, Options};
 
@@ -61,6 +61,8 @@ const BURIED_DECK_M: f64 = -(DECK_THICKNESS_M + 0.5);
 const EXPOSED_BORE_M: f64 = -1.0;
 
 pub struct Clearance {
+    /// Plan sample spacing, kept so each metric can state its own population.
+    spacing_m: f64,
     order: Dist,
     order_worst: Worst,
     over_ground: Dist,
@@ -72,6 +74,7 @@ pub struct Clearance {
 impl Clearance {
     pub fn new(opt: &Options) -> Clearance {
         Clearance {
+            spacing_m: opt.spacing_m,
             order: Dist::metres(),
             order_worst: Worst::new(Sense::LowerIsWorse, opt.worst_k),
             over_ground: Dist::metres(),
@@ -177,8 +180,14 @@ impl Check for Clearance {
         vec![
             Metric {
                 id: "order.deck_above_carriageway".into(),
-                invariant: 3,
+                invariant: Invariant::I3,
                 title: "Elevated structure above the at-grade asphalt".into(),
+                population: format!(
+                    "Structure surface samples at {:.1} m plan spacing where at-grade asphalt \
+                     shares the plan position, in the tile proper. Excludes decks over bare \
+                     ground, which have nothing to be ordered against.",
+                    self.spacing_m
+                ),
                 detail: "Deck running surface minus the at-grade carriageway sharing its plan \
                          position. Negative past the touchdown band means a level-1 structure is \
                          drawn underneath a level-0 one — the ordinal ordering inverted, which \
@@ -194,8 +203,13 @@ impl Check for Clearance {
             },
             Metric {
                 id: "clearance.deck_over_ground".into(),
-                invariant: 4,
+                invariant: Invariant::I4,
                 title: "Bridge soffit above the drawn ground".into(),
+                population: format!(
+                    "Every deck (level > 0) surface sample at {:.1} m plan spacing in the tile \
+                     proper, against the terrain mesh of the same tile.",
+                    self.spacing_m
+                ),
                 detail: format!(
                     "Deck underside minus the terrain mesh beneath it. A deck touching down at \
                      its abutment sits a deck-thickness low by construction, so the threshold is \
@@ -210,8 +224,13 @@ impl Check for Clearance {
             },
             Metric {
                 id: "clearance.bore_cover".into(),
-                invariant: 4,
+                invariant: Invariant::I4,
                 title: "Ground cover over the tunnel roof".into(),
+                population: format!(
+                    "Every bore (level < 0) surface sample at {:.1} m plan spacing in the tile \
+                     proper, against the terrain mesh of the same tile.",
+                    self.spacing_m
+                ),
                 detail: format!(
                     "Terrain mesh minus the bore roof. The roof crosses the surface at a portal \
                      mouth by design, so the threshold is {EXPOSED_BORE_M:.1} m; past it the tube \

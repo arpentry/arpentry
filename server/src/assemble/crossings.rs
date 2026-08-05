@@ -1,13 +1,11 @@
-//! Geometric crossing detection (docs/GENERATION.md D4, scenarios S4/S6).
+//! Geometric crossing detection (docs/GENERATION.md D4, scenario S4).
 //!
 //! No link in the data connects an overpass to the road it crosses; the
-//! crossing must be found geometrically. The structure spans of every
-//! corridor are indexed in a uniform grid, and a second pass over the
-//! transportation input tests every feature's edges against the nearby span
-//! edges. A plan intersection on a *bridge* span whose level exceeds the
-//! feature's is a [`Crossing`] (the deck must clear it); one on a *tunnel*
-//! span whose level is below the feature's is an [`Underpass`] (the bore
-//! must fit under it).
+//! crossing must be found geometrically. The *bridge* spans of every corridor
+//! are indexed in a uniform grid, and a second pass over the transportation
+//! input tests every feature's edges against the nearby span edges. A plan
+//! intersection on a bridge span whose level exceeds the feature's is a
+//! [`Crossing`]: the deck must clear it.
 //!
 //! Two intersections are neither:
 //! - **Junctions**: features that share a connector meet, they don't pass
@@ -22,22 +20,21 @@ use geo_types::{Coord, Geometry};
 
 use crate::geoparquet::{GeoParquet, ReadError};
 use crate::levels::LevelRun;
-use crate::scene::{run_cos_lat, CrossedKind, Crossing, SceneGraph, SpanKind, Underpass};
+use crate::scene::{run_cos_lat, CrossedKind, Crossing, SceneGraph, SpanKind};
 use crate::value::Value;
 
 use super::grid::GridIndex;
 
-/// One indexed structure-span edge.
+/// One indexed bridge-span edge.
 struct SpanEdge {
     corridor: u32,
     /// Corridor node index; the edge spans `nodes[i]..nodes[i+1]`.
     node: usize,
     level: i64,
-    kind: SpanKind,
 }
 
-/// The corridors' structure-span edges in a grid, shared by the road and
-/// water passes.
+/// The corridors' bridge-span edges in a grid, shared by the road and water
+/// passes.
 struct SpanIndex {
     edges: Vec<SpanEdge>,
     grid: GridIndex,
@@ -47,7 +44,7 @@ fn index_spans(scene: &SceneGraph) -> SpanIndex {
     let mut edges: Vec<SpanEdge> = Vec::new();
     let mut grid = GridIndex::new();
     for c in &scene.corridors {
-        for span in c.spans.iter().filter(|s| s.kind != SpanKind::Grade) {
+        for span in c.spans.iter().filter(|s| s.kind == SpanKind::Bridge) {
             for i in 0..c.nodes.len() - 1 {
                 // Edge overlaps the span's arc interval.
                 if c.arc[i + 1] <= span.arc0 || c.arc[i] >= span.arc1 {
@@ -56,29 +53,28 @@ fn index_spans(scene: &SceneGraph) -> SpanIndex {
                 let (a, b) = (c.nodes[i], c.nodes[i + 1]);
                 let bb = (a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y));
                 grid.insert(bb, edges.len() as u32);
-                edges.push(SpanEdge { corridor: c.id, node: i, level: span.level, kind: span.kind });
+                edges.push(SpanEdge { corridor: c.id, node: i, level: span.level });
             }
         }
     }
     SpanIndex { edges, grid }
 }
 
-/// Detects crossings (bridge spans over features) and underpasses (tunnel
-/// spans under features), streaming the input a second time.
+/// Detects crossings — bridge spans passing over features — streaming the
+/// input a second time.
 pub fn detect(
     path: &Path,
     bbox: (f64, f64, f64, f64),
     scene: &SceneGraph,
-) -> Result<(Vec<Crossing>, Vec<Underpass>), ReadError> {
+) -> Result<Vec<Crossing>, ReadError> {
     let SpanIndex { edges, grid } = index_spans(scene);
     if grid.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok(Vec::new());
     }
 
     let gp = GeoParquet::open(path)?;
     let row_groups = gp.row_groups_intersecting(bbox);
     let mut crossings: Vec<Crossing> = Vec::new();
-    let mut underpasses: Vec<Underpass> = Vec::new();
     let mut seen: HashSet<(u32, u64, i64, i64)> = HashSet::new();
     let mut candidates: Vec<u32> = Vec::new();
     for feature in gp.features(row_groups, super::ATTRS)? {
@@ -124,15 +120,9 @@ pub fn detect(
                     0.0
                 };
                 let feature_level = level_at(&f.level_runs, frac);
-                // A bridge span passes over lower-level features; a tunnel
-                // span passes under higher-level ones. Anything else is the
-                // reverse pair's report or a same-level braid — skipped.
-                let relevant = match e.kind {
-                    SpanKind::Bridge => feature_level < e.level,
-                    SpanKind::Tunnel => feature_level > e.level,
-                    SpanKind::Grade => false,
-                };
-                if !relevant {
+                // A bridge span passes over lower-level features. A same-level
+                // braid, or the reverse pair's report, is not a crossing.
+                if feature_level >= e.level {
                     continue;
                 }
                 let point = Coord { x: a.x + (b.x - a.x) * t_span, y: a.y + (b.y - a.y) * t_span };
@@ -144,25 +134,15 @@ pub fn detect(
                 if !seen.insert(key) {
                     continue;
                 }
-                match e.kind {
-                    SpanKind::Bridge => crossings.push(Crossing {
-                        upper: upper.id,
-                        upper_arc: span_arc,
-                        point,
-                        lower: other_corridor,
-                        lower_kind: other_kind,
-                        upper_level: e.level,
-                        lower_level: feature_level,
-                    }),
-                    _ => underpasses.push(Underpass {
-                        corridor: upper.id,
-                        arc: span_arc,
-                        point,
-                        over: other_corridor,
-                        over_level: feature_level,
-                        under_level: e.level,
-                    }),
-                }
+                crossings.push(Crossing {
+                    upper: upper.id,
+                    upper_arc: span_arc,
+                    point,
+                    lower: other_corridor,
+                    lower_kind: other_kind,
+                    upper_level: e.level,
+                    lower_level: feature_level,
+                });
             }
         }
     }
@@ -171,10 +151,7 @@ pub fn detect(
         (a.upper, a.upper_arc.to_bits(), a.lower_level)
             .cmp(&(b.upper, b.upper_arc.to_bits(), b.lower_level))
     });
-    underpasses.sort_by(|a, b| {
-        (a.corridor, a.arc.to_bits(), a.over_level).cmp(&(b.corridor, b.arc.to_bits(), b.over_level))
-    });
-    Ok((crossings, underpasses))
+    Ok(crossings)
 }
 
 /// Detects bridge spans crossing water features (rivers, canals, lakes) in
@@ -207,9 +184,6 @@ pub fn detect_water(
                 grid.query(bb, &mut candidates);
                 for &ei in candidates.iter() {
                     let e = &edges[ei as usize];
-                    if e.kind != SpanKind::Bridge {
-                        continue; // a bore under a river needs no freeboard
-                    }
                     let upper = &scene.corridors[e.corridor as usize];
                     let (a, b) = (upper.nodes[e.node], upper.nodes[e.node + 1]);
                     let Some((t_span, _)) = seg_intersect(a, b, c0, c1, upper.cos_lat) else {

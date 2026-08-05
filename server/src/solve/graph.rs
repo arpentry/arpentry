@@ -336,7 +336,7 @@ fn build_crossings(
     corridors: &[CorridorNodes],
     ci_of: &[Option<usize>],
 ) -> Vec<GraphCrossing> {
-    let ranks = super::crossings::corridor_ranks(scene);
+    let ranks = corridor_ranks(scene);
     let mut out: Vec<(u32, GraphCrossing)> = Vec::new();
     for c in &scene.crossings {
         let Some(upper_ci) = ci_of.get(c.upper as usize).copied().flatten() else {
@@ -370,6 +370,83 @@ fn build_crossings(
     }
     out.sort_by_key(|(rank, _)| *rank);
     out.into_iter().map(|(_, gc)| gc).collect()
+}
+
+/// Processing rank of every corridor from the crossing DAG: a corridor is
+/// ranked strictly above every corridor its deck passes over, so a lower deck
+/// reaches its final height before the deck above reads it. The rank is derived
+/// from the actual crossing pairs (an edge lower → upper), not the absolute
+/// level ordinal, so it stays correct where the level tags don't form a
+/// consistent global order.
+///
+/// Cyclic constraints — A over B over C over A, contradictory tags — cannot be
+/// satisfied; the cycle is broken at its weakest edge (the smallest level gap),
+/// which is logged and dropped, so a bad datum costs one clearance rather than
+/// hanging the solve (docs/GENERATION.md I6). Kahn's algorithm with longest-path
+/// layering; corridors in no crossing keep rank 0.
+fn corridor_ranks(scene: &SceneGraph) -> Vec<u32> {
+    let n = scene.corridors.len();
+    // Edges lower → upper, with the level gap as the constraint's strength.
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut indeg = vec![0u32; n];
+    let mut edges: Vec<(usize, usize, i64)> = Vec::new();
+    for c in &scene.crossings {
+        if let Some(l) = c.lower {
+            let (lo, up) = (l as usize, c.upper as usize);
+            if lo != up && lo < n && up < n {
+                edges.push((lo, up, (c.upper_level - c.lower_level).abs()));
+            }
+        }
+    }
+    edges.sort_unstable();
+    edges.dedup_by_key(|&mut (lo, up, _)| (lo, up));
+    for &(lo, up, _) in &edges {
+        adj[lo].push(up);
+        indeg[up] += 1;
+    }
+    let mut rank = vec![0u32; n];
+    let mut queue: Vec<usize> = (0..n).filter(|&v| indeg[v] == 0).collect();
+    let mut processed = 0usize;
+    let involved = edges
+        .iter()
+        .flat_map(|&(lo, up, _)| [lo, up])
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    while processed < involved {
+        while let Some(u) = queue.pop() {
+            processed += 1;
+            for &v in &adj[u] {
+                rank[v] = rank[v].max(rank[u] + 1);
+                indeg[v] -= 1;
+                if indeg[v] == 0 {
+                    queue.push(v);
+                }
+            }
+        }
+        if processed >= involved {
+            break;
+        }
+        // Stalled on a cycle: break the weakest still-blocked edge and resume.
+        let Some(&(lo, up, gap)) =
+            edges.iter().filter(|&&(_, up, _)| indeg[up] > 0).min_by_key(|&&(_, _, g)| g)
+        else {
+            break; // no breakable edge left (defensive)
+        };
+        eprintln!(
+            "warning: cyclic crossing constraint (corridors {lo} over {up}, level gap {gap}); \
+             dropping the weakest edge to break the cycle"
+        );
+        indeg[up] -= 1;
+        // Remove the edge so it can't be picked again.
+        if let Some(pos) = adj[lo].iter().position(|&v| v == up) {
+            adj[lo].swap_remove(pos);
+        }
+        edges.retain(|&(a, b, _)| !(a == lo && b == up));
+        if indeg[up] == 0 {
+            queue.push(up);
+        }
+    }
+    rank
 }
 
 /// The surface an *unprofiled* crossed feature is taken to lie on: the lowest
@@ -795,5 +872,58 @@ mod tests {
         for c in &g.corridors {
             assert_eq!(c.vars.len(), c.arc.len());
         }
+    }
+
+    /// A scene of `n` bare corridors carrying the given crossings, for testing
+    /// the rank DAG in isolation: `(upper, lower, upper_level, lower_level)`.
+    fn scene_with_crossings(n: u32, xs: &[(u32, Option<u32>, i64, i64)]) -> SceneGraph {
+        use crate::scene::{Crossing, CrossedKind};
+        let mut scene = SceneGraph::new(
+            (0..n).map(|id| corridor(id, 6.0, 100.0, 2, RoadClass::Secondary)).collect(),
+        );
+        scene.crossings = xs
+            .iter()
+            .map(|&(upper, lower, upper_level, lower_level)| Crossing {
+                upper,
+                upper_arc: 50.0,
+                point: Coord { x: 6.005, y: 46.0 },
+                lower,
+                lower_kind: CrossedKind::Road,
+                upper_level,
+                lower_level,
+            })
+            .collect();
+        scene
+    }
+
+    #[test]
+    fn ranks_order_stacked_crossings_bottom_up() {
+        // C under B under A (edges C→B, B→A): the ranks must climb C < B < A so
+        // the solve finalizes the lower deck before the one above reads it.
+        let scene = scene_with_crossings(3, &[(2, Some(1), 2, 1), (1, Some(0), 1, 0)]);
+        let r = corridor_ranks(&scene);
+        assert!(r[0] < r[1] && r[1] < r[2], "ranks {r:?} must be C < B < A");
+    }
+
+    #[test]
+    fn ranks_stay_correct_when_level_ordinals_disagree() {
+        // Both crossings tagged the same absolute ordinal (1 over 0 twice), but
+        // the pairs still stack B over A and C over B: the DAG rank orders them
+        // where an absolute-level tier sort would flatten them into one tier.
+        let scene = scene_with_crossings(3, &[(1, Some(0), 1, 0), (2, Some(1), 1, 0)]);
+        let r = corridor_ranks(&scene);
+        assert!(
+            r[0] < r[1] && r[1] < r[2],
+            "ranks {r:?} must stack from the pairs, not the ordinal"
+        );
+    }
+
+    #[test]
+    fn ranks_break_a_cycle_without_hanging() {
+        // A over B and B over A: contradictory tags. corridor_ranks must break
+        // the cycle and return finite ranks instead of looping forever.
+        let scene = scene_with_crossings(2, &[(0, Some(1), 1, 0), (1, Some(0), 1, 0)]);
+        let r = corridor_ranks(&scene);
+        assert_eq!(r.len(), 2, "the cycle is broken and every corridor is ranked");
     }
 }

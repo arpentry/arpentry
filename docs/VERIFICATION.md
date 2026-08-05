@@ -86,22 +86,27 @@ scorecard get skimmed.
 
 ## 4. What is measured
 
+The `inv` column is `GENERATION.md` §7's predicate, and it is a type in the code
+(`verify::Invariant`) rather than a hand-typed integer — which is how
+`slope.road_grade` came to claim invariant 6 while §8 gives the grade ceiling to
+I2. Every metric also states its own population; the table below is the summary.
+
 | metric | inv | what it means |
 |---|---|---|
-| `contact.kerb_lip` | 4 | Carriageway edge height minus the drawn ground a metre outside it. Not a defect on its own — it is how tall a wall the model implies, and a road on a real embankment has a real drop at its edge. It is what still sees a road standing on an embankment nobody built. |
-| `contact.kerb_unwalled` | 4 | The part of that drop with no apron face spanning it. This is the gate: the lip is the wall's height, this is how much of the wall is missing. |
-| `order.deck_above_carriageway` | 3 | Deck running surface minus the at-grade asphalt sharing its plan position. Negative past the touchdown band means the level ordinal inverted. |
-| `clearance.deck_over_ground` | 4 | Deck soffit minus the terrain beneath it. Past a deck thickness, the deck ploughs into the hillside. |
-| `clearance.bore_cover` | 4 | Terrain minus the bore roof. Negative past a portal mouth means the tube is in open air. |
-| `seam.terrain_step` | 2 | Spread of the heights two adjacent tiles derive for the same border lattice point. |
-| `seam.terrain_split` | 2 | Spread between coincident vertices *inside* one tile: the ground cracked open. |
-| `seam.pavement_step` | 2 | Border disagreement, for the at-grade road surface. |
-| `order.at_grade_overlap` | 3 | Vertical separation where two level-0 paved regions share a plan position with nothing to order them. |
-| `slope.terrain_face` | 6 | Rise over plan run of every terrain triangle spanning ≥10 cm. Finds manufactured retaining walls. |
-| `slope.carriageway_face` | 6 | The same for interior asphalt, excluding the kerb rim. |
-| `slope.road_grade` | 6 | Rise over run between consecutive vertices of a drawn drivable centerline. Measured *along* the road, which the carriageway mesh cannot answer: a clearance lift dropped on one node is a spike the face metric reads as ordinary cross-fall. |
-| `slope.terrain_tearing` | 6 | How far a terrain vertex stands off the plane of its neighbours, counted only where opposite breaks flank it on both sides. Separates a wall from a wall drawn as teeth, which no steepness can. |
-| `lod.structure_drift` | 5 | Structure height at one zoom against the same structure one rung coarser. |
+| `contact.kerb_lip` | I4 | Carriageway edge height minus the drawn ground a metre outside it. Not a defect on its own — it is how tall a wall the model implies, and a road on a real embankment has a real drop at its edge. It is what still sees a road standing on an embankment nobody built. |
+| `contact.kerb_unwalled` | I4 | The part of that drop with no apron face spanning it. This is the gate: the lip is the wall's height, this is how much of the wall is missing. |
+| `order.deck_above_carriageway` | I3 | Deck running surface minus the at-grade asphalt sharing its plan position. Negative past the touchdown band means the level ordinal inverted. |
+| `clearance.deck_over_ground` | I4 | Deck soffit minus the terrain beneath it. Past a deck thickness, the deck ploughs into the hillside. |
+| `clearance.bore_cover` | I4 | Terrain minus the bore roof. Negative past a portal mouth means the tube is in open air. |
+| `seam.terrain_step` | I2 | Spread of the heights two adjacent tiles derive for the same border lattice point. |
+| `seam.terrain_split` | I2 | Spread between coincident vertices *inside* one tile: the ground cracked open. |
+| `seam.pavement_step` | I2 | Border disagreement, for the at-grade road surface. |
+| `order.at_grade_overlap` | I3 | Vertical separation where two level-0 paved regions share a plan position with nothing to order them. |
+| `slope.terrain_face` | I6 | Rise over plan run of every terrain triangle spanning ≥10 cm. Finds manufactured retaining walls. |
+| `slope.carriageway_face` | I6 | The same for interior asphalt, excluding the kerb rim. |
+| `slope.road_grade` | I2 | Rise over run between consecutive vertices of a drawn drivable centerline. Measured *along* the road, which the carriageway mesh cannot answer: a clearance lift dropped on one node is a spike the face metric reads as ordinary cross-fall. |
+| `slope.terrain_tearing` | I6 | How far a terrain vertex stands off the plane of its neighbours, counted only where opposite breaks flank it on both sides. Separates a wall from a wall drawn as teeth, which no steepness can. |
+| `lod.structure_drift` | I5 | Structure height at one zoom against the same structure one rung coarser. |
 
 ### Where the thresholds come from
 
@@ -211,8 +216,8 @@ could not:
 - At the worst overlap (`6.928167,46.426206`): a level-0 asphalt block floating
   ~9 m on near-vertical sides, with a second level-0 region correctly following
   the ground beneath it. Three metrics — `slope.carriageway_face`,
-  `order.at_grade_overlap`, `contact.pavement_over_terrain` — turn out to be one
-  defect seen from three angles.
+  `order.at_grade_overlap`, and the interior-burial probe that has since retired
+  — turn out to be one defect seen from three angles.
 - At the worst burial (`6.933446,46.449455`): the drawn ground spikes 6 m in a
   sharp zigzag exactly where the asphalt ends. The road height is not wrong; a
   manufactured wall sliver is standing over it. The terrain-hole study inferred

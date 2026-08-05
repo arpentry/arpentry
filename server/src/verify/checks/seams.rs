@@ -45,7 +45,7 @@ use std::collections::HashMap;
 use crate::verify::dist::Dist;
 use crate::verify::mesh::SurfaceMesh;
 use crate::verify::scene::TileScene;
-use crate::verify::{Metric, Offender, Sense, Worst};
+use crate::verify::{Invariant, Metric, Offender, Sense, Worst};
 
 use super::{Check, Options};
 
@@ -222,7 +222,12 @@ fn measure(
     vec![
         Metric {
             id: format!("seam.{what}_step"),
-            invariant: 2,
+            invariant: Invariant::I2,
+            population: format!(
+                "Every global border lattice point of the {subject} mesh claimed by two or more \
+                 tiles at this zoom. Points where one side had split open have no single answer \
+                 to compare and are excluded — they are counted under seam.{what}_split."
+            ),
             title: format!("{subject} height disagreement across a tile border"),
             detail: step_detail,
             sense: Sense::HigherIsWorse,
@@ -234,7 +239,11 @@ fn measure(
         match kind {
             SelfDisagreement::Crack => Metric {
                 id: format!("seam.{what}_split"),
-                invariant: 2,
+                invariant: Invariant::I2,
+                population: format!(
+                    "Every pair of coincident {subject} border vertices inside one tile. Needs \
+                     no neighbour, so it covers border tiles the step metric cannot score."
+                ),
                 title: format!("{subject} disagreeing with itself at one point"),
                 detail: "Spread between coincident vertices inside a single tile. One surface \
                          carrying two heights at one plan position has split open — a crack, not \
@@ -248,7 +257,11 @@ fn measure(
             },
             SelfDisagreement::UnorderedOverlap => Metric {
                 id: "order.at_grade_overlap".into(),
-                invariant: 3,
+                invariant: Invariant::I3,
+                population: "Coincident border vertices of two different level-0 road_surface \
+                             meshes in one tile. Border vertices only — that is what this pass \
+                             collects; a whole-mesh version would find more overlap."
+                    .into(),
                 title: "Overlapping at-grade asphalt with nothing to order it".into(),
                 detail: "Vertical separation where two level-0 paved regions share a plan \
                          position. Several regions per level are by design — `synth::pavement` \
@@ -469,7 +482,7 @@ mod tests {
         let overlap = metric(&m, "order.at_grade_overlap");
         assert!(overlap.violations() > 0);
         assert!((overlap.worst_value().unwrap() - 8.8).abs() < 1e-3);
-        assert_eq!(overlap.invariant, 3, "this is a vertical-ordering finding");
+        assert_eq!(overlap.invariant, Invariant::I3, "this is a vertical-ordering finding");
         assert!(m.iter().all(|x| x.id != "seam.pavement_split"), "not a crack");
         // And the seam metric must not double-count it: the tile has no single
         // answer at those points, so there is nothing to compare a neighbour to.

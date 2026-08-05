@@ -26,7 +26,7 @@
 use crate::verify::dist::Dist;
 use crate::verify::mesh::SurfaceMesh;
 use crate::verify::scene::TileScene;
-use crate::verify::{Metric, Offender, Sense, Worst};
+use crate::verify::{Invariant, Metric, Offender, Sense, Worst};
 
 use super::{Check, Options};
 
@@ -182,8 +182,15 @@ impl Check for Contact {
         vec![
             Metric {
                 id: "contact.kerb_unwalled".into(),
-                invariant: 4,
+                invariant: Invariant::I4,
                 title: "Gap at the hole's rim with nothing spanning it".into(),
+                population: format!(
+                    "Every terrain-mesh boundary edge midpoint that is not on the tile's own \
+                     edge and has at-grade asphalt or casing over it. A cut edge carries no \
+                     apron by design and is excluded with the tile edge. The apron is vertical, \
+                     so its span is asked within {APRON_NEAR_M:.1} m of the rim rather than at \
+                     it, with {APRON_SLOP_M:.1} m of slack at each end."
+                ),
                 detail: "Watertightness, walked along the terrain's own hole rim: at every \
                          terrain boundary edge that is not the tile's edge, the asphalt's height \
                          over it against the terrain's, where no apron spans the difference. \
@@ -201,8 +208,13 @@ impl Check for Contact {
             },
             Metric {
                 id: "contact.kerb_lip".into(),
-                invariant: 4,
+                invariant: Invariant::I4,
                 title: "Drop from the kerb to the ground beside it".into(),
+                population: format!(
+                    "Every silhouette (boundary) edge midpoint of every level-0 road_surface \
+                     mesh inside the tile proper, probed {LIP_PROBE_M:.0} m along the outward \
+                     normal. Structures are excluded: a deck edge is not a kerb."
+                ),
                 detail: format!(
                     "Carriageway edge height minus the drawn ground {LIP_PROBE_M:.0} m outside \
                      it. With the ground cut back to the kerb this is where the road and the \

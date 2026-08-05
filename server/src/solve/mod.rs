@@ -17,9 +17,7 @@
 //! levels (no popping).
 
 pub mod consistency;
-pub mod crossings;
 pub mod graph;
-pub mod junctions;
 pub mod portals;
 pub mod profile;
 pub mod relax;
@@ -172,12 +170,10 @@ pub fn run(
 
     // Global vertical consistency (docs/GENERATION.md §4.4): fuse the per-corridor
     // profiles into one constraint graph whose junction connectors are *shared*
-    // height variables, and relax it. Continuity (invariant 2) then holds by
-    // construction — two corridors at a connector read one number, so no step is
-    // representable — and clearance (invariant 3) is enforced as a raise-only
-    // projection in the same loop. This replaces the one-shot capped weld
-    // (`junctions::apply`) and greedy clearance raise (`crossings::apply`),
-    // whose caps left the steps the graph now removes.
+    // height variables, and relax it. Continuity (I2) then holds by construction
+    // — two corridors at a connector read one number, so no step is
+    // representable — and clearance (I3) is enforced as a raise-only projection
+    // in the same loop.
     // The junction heights are read out of the graph before it is dropped: they
     // are what the surface mesh pins each intersection to, and nothing else can
     // reproduce them exactly once the values have been scattered into `road_m`.

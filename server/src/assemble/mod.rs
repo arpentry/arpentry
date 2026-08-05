@@ -112,9 +112,7 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
     // is actually tested). Water gets its own pass: a bridge over a river
     // owes freeboard, not road clearance (S3).
     let bb = (bbox.west, bbox.south, bbox.east, bbox.north);
-    let (crossings, underpasses) = crossings::detect(path, bb, &scene)?;
-    scene.crossings = crossings;
-    scene.underpasses = underpasses;
+    scene.crossings = crossings::detect(path, bb, &scene)?;
     if let Some(water_path) = water {
         let mut water_crossings = crossings::detect_water(water_path, bb, &scene)?;
         scene.crossings.append(&mut water_crossings);
