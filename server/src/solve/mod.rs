@@ -17,6 +17,7 @@
 //! levels (no popping).
 
 pub mod consistency;
+pub mod crossings;
 pub mod graph;
 pub mod portals;
 pub mod profile;
@@ -40,6 +41,16 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 /// The solved vertical model: one profile per corridor that needs one, indexed
 /// by [`CorridorId`]. Immutable after the solve; shared by every emit worker.
 pub struct SolvedModel {
+    /// The crossings this solve derived (§4.5). They live on the *output*
+    /// because they are a consequence of the solved heights, not an input to
+    /// them: stored on the scene they went stale the moment anything changed a
+    /// span, and nothing re-derived them.
+    pub crossings: Vec<crate::scene::Crossing>,
+    /// What the relaxation could not honour — the clearance demands its
+    /// plausibility cap rejected. Carried on the model so the run can report
+    /// them: a silently dropped constraint is indistinguishable from one that
+    /// was satisfied.
+    pub relaxed: relax::Relaxed,
     profiles: Vec<Option<Profile>>,
     /// The height every junction's members share, by index into
     /// `SceneGraph::junctions`; `None` where no member carries a profile. Dense
@@ -53,7 +64,13 @@ pub struct SolvedModel {
 impl SolvedModel {
     /// A model with no profiles — the DEM-less run, where nothing is elevated.
     pub fn empty(z_ref: u8) -> SolvedModel {
-        SolvedModel { profiles: Vec::new(), junction_h: Vec::new(), z_ref }
+        SolvedModel {
+            crossings: Vec::new(),
+            relaxed: relax::Relaxed::default(),
+            profiles: Vec::new(),
+            junction_h: Vec::new(),
+            z_ref,
+        }
     }
 
     /// Wraps already-solved profiles — for tests and stage-isolated tooling.
@@ -61,7 +78,13 @@ impl SolvedModel {
     /// the corridors' own profiles, which is what it does at an unprofiled
     /// intersection anyway.
     pub fn from_profiles(profiles: Vec<Option<Profile>>, z_ref: u8) -> SolvedModel {
-        SolvedModel { profiles, junction_h: Vec::new(), z_ref }
+        SolvedModel {
+            crossings: Vec::new(),
+            relaxed: relax::Relaxed::default(),
+            profiles,
+            junction_h: Vec::new(),
+            z_ref,
+        }
     }
 
     /// Attaches solved junction heights to a model assembled in stages — the
@@ -174,14 +197,19 @@ pub fn run(
     // The junction heights are read out of the graph before it is dropped: they
     // are what the surface mesh pins each intersection to, and nothing else can
     // reproduce them exactly once the values have been scattered into `road_m`.
-    let junction_h = {
-        let mut g = graph::build(scene, &profiles);
-        relax::solve(&mut g);
+    // Crossings are derived here, from the solved profiles, and handed
+    // straight to the graph — never stored on the scene (§4.5). Nothing can
+    // mutate the model between deriving them and consuming them, because there
+    // is nowhere for them to wait.
+    let derived = crossings::derive(scene, &profiles);
+    let (junction_h, relaxed) = {
+        let mut g = graph::build(scene, &profiles, &derived);
+        let relaxed = relax::solve(&mut g);
         relax::reconstruct(&g, &mut profiles);
-        relax::junction_heights(&g)
+        (relax::junction_heights(&g), relaxed)
     };
 
-    Ok(SolvedModel { profiles, junction_h, z_ref })
+    Ok(SolvedModel { relaxed, crossings: derived, profiles, junction_h, z_ref })
 }
 
 /// The terrain fate of the short structure spans assemble keeps

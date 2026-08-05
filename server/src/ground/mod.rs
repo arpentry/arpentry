@@ -870,7 +870,7 @@ mod tests {
             Span { arc0: 450.0, arc1: 550.0, level: 1, kind: SpanKind::Bridge },
             Span { arc0: 550.0, arc1: 1000.0, level: 0, kind: SpanKind::Grade },
         ];
-        let mut scene = SceneGraph::new(vec![Corridor {
+        let scene = SceneGraph::new(vec![Corridor {
             id: 0,
             nodes: nodes.clone(),
             arc,
@@ -884,11 +884,12 @@ mod tests {
             connectors: vec![],
         }]);
         let mid = Coord { x: 6.0 + deg * 0.5, y: 46.0 };
-        scene.crossings = vec![Crossing {
+        let crossings = vec![Crossing {
             upper: 0,
             upper_arc: 500.0,
             point: mid,
             lower: None,
+            lower_arc: 0.0,
             lower_kind: Kind::Road(RoadClass::Residential),
             upper_level: 1,
             lower_level: 0,
@@ -904,7 +905,7 @@ mod tests {
         // pipeline runs, so what this test asserts about the ground is what the
         // shipped solve actually produces.
         {
-            let mut g = crate::solve::graph::build(&scene, &profiles);
+            let mut g = crate::solve::graph::build(&scene, &profiles, &crossings);
             crate::solve::relax::solve(&mut g);
             crate::solve::relax::reconstruct(&g, &mut profiles);
         }

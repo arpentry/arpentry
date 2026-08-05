@@ -68,12 +68,30 @@ const MAX_SWEEPS: usize = 96;
 /// this far in a sweep, the (junction-only) reconciliation has settled.
 const TOL_M: f64 = 1e-4;
 
-/// Solves the graph in place: relaxes `g.h` to the constrained profile. Returns
-/// the sweep count actually used (for diagnostics/tests).
-pub fn solve(g: &mut SolveGraph) -> usize {
+/// What the relaxation could not honour, reported rather than discarded.
+///
+/// A clearance demand past [`MAX_CLEARANCE_LIFT_M`] is dropped as a data
+/// contradiction. That is the right call — honouring one once flattened
+/// kilometres of viaduct at the highest demand — but until now it happened in
+/// silence, so a change that doubled the number of impossible demands looked
+/// exactly like a change that fixed them.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Relaxed {
+    /// Sweeps actually used (the budget is a cap, not a target).
+    pub sweeps: usize,
+    /// Clearance demands dropped for exceeding the plausibility cap, counted
+    /// on the closing settle so each is counted once rather than once a sweep.
+    pub demands_dropped: u64,
+    /// The largest deficit so dropped, in metres — how far past plausible the
+    /// worst contradiction reaches.
+    pub worst_dropped_m: f64,
+}
+
+/// Solves the graph in place: relaxes `g.h` to the constrained profile.
+pub fn solve(g: &mut SolveGraph) -> Relaxed {
     let n = g.vars.len();
     if n == 0 {
-        return 0;
+        return Relaxed::default();
     }
     let mut num = vec![0.0f64; n];
     let mut den = vec![0.0f64; n];
@@ -83,6 +101,7 @@ pub fn solve(g: &mut SolveGraph) -> usize {
     // once.
     let sites = var_sites(g);
     let mut used = MAX_SWEEPS;
+    let mut dropped = Dropped::default();
     for sweep in 0..MAX_SWEEPS {
         prev.copy_from_slice(&g.h);
         soft_pass(g, &prev, &mut num, &mut den);
@@ -92,7 +111,7 @@ pub fn solve(g: &mut SolveGraph) -> usize {
             }
         }
         deviation_pass(g);
-        clearance_pass(g, &sites);
+        clearance_pass(g, &sites, &mut Dropped::default());
         rigidity_pass(g);
         let resid = g.h.iter().zip(&prev).map(|(&a, &b)| (a - b).abs()).fold(0.0, f64::max);
         if resid < TOL_M {
@@ -110,9 +129,26 @@ pub fn solve(g: &mut SolveGraph) -> usize {
         }
     }
     deviation_pass(g);
-    clearance_pass(g, &sites);
+    // The closing settle is where the drops are counted: the main loop applies
+    // the same demands every sweep, so counting there would multiply each
+    // contradiction by the sweep count.
+    clearance_pass(g, &sites, &mut dropped);
     rigidity_pass(g);
-    used
+    Relaxed { sweeps: used, demands_dropped: dropped.count, worst_dropped_m: dropped.worst_m }
+}
+
+/// Tally of demands the plausibility cap rejected in one pass.
+#[derive(Default)]
+struct Dropped {
+    count: u64,
+    worst_m: f64,
+}
+
+impl Dropped {
+    fn note(&mut self, deficit_m: f64) {
+        self.count += 1;
+        self.worst_m = self.worst_m.max(deficit_m);
+    }
 }
 
 /// One soft Jacobi step (terrain spring + smoothness), reading `prev`, writing
@@ -172,11 +208,11 @@ fn grade_pass(g: &mut SolveGraph) -> f64 {
 
 /// Raise-only clearance over every crossing, in rank order: lift each deck to
 /// clear its crossed feature (both span anchors, so the straight deck rises).
-fn clearance_pass(g: &mut SolveGraph, sites: &VarSites) {
+fn clearance_pass(g: &mut SolveGraph, sites: &VarSites, dropped: &mut Dropped) {
     for gc in &g.crossings {
         let lower_h = gc.lower_var.map(|v| g.h[v]).unwrap_or(gc.lower_terrain_m);
         let need = lower_h + gc.extra_m;
-        let targets = clearance_targets(g, sites, gc, need);
+        let targets = clearance_targets(g, sites, gc, need, dropped);
         for (v, d) in targets {
             g.h[v] += d;
         }
@@ -287,6 +323,7 @@ fn clearance_targets(
     sites: &VarSites,
     gc: &GraphCrossing,
     need: f64,
+    dropped: &mut Dropped,
 ) -> Vec<(VarId, f64)> {
     let c = &g.corridors[gc.upper_ci];
     let h = &g.h;
@@ -300,7 +337,11 @@ fn clearance_targets(
                 h[c.vars[lo]]
             };
             let deficit = need - deck;
-            if deficit > 0.0 && deficit <= MAX_CLEARANCE_LIFT_M {
+            if deficit > MAX_CLEARANCE_LIFT_M {
+                dropped.note(deficit);
+                return Vec::new();
+            }
+            if deficit > 0.0 {
                 vec![(c.vars[lo], deficit), (c.vars[hi], deficit)]
             } else {
                 Vec::new()
@@ -309,7 +350,11 @@ fn clearance_targets(
         None => {
             let k = nearest_local(c, gc.upper_arc);
             let deficit = need - h[c.vars[k]];
-            if deficit <= 0.0 || deficit > MAX_CLEARANCE_LIFT_M {
+            if deficit > MAX_CLEARANCE_LIFT_M {
+                dropped.note(deficit);
+                return Vec::new();
+            }
+            if deficit <= 0.0 {
                 return Vec::new();
             }
             ramp_targets(g, sites, gc.upper_ci, k, need)
@@ -585,7 +630,7 @@ mod tests {
         let bn = scene.corridors[1].nodes.clone();
         let mut profiles =
             vec![Some(Profile::flat(&an, 400.0)), Some(Profile::flat(&bn, 406.0))];
-        let mut g = super::super::graph::build(&scene, &profiles);
+        let mut g = super::super::graph::build(&scene, &profiles, &[]);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
 
@@ -617,7 +662,7 @@ mod tests {
         let an = scene.corridors[0].nodes.clone();
         let mut profiles =
             vec![Some(Profile::from_heights(&an, terrain.clone(), terrain.clone()))];
-        let mut g = super::super::graph::build(&scene, &profiles);
+        let mut g = super::super::graph::build(&scene, &profiles, &[]);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
@@ -642,14 +687,14 @@ mod tests {
         let scene = SceneGraph::new(vec![a]);
         let an = scene.corridors[0].nodes.clone();
         let mut profiles = vec![Some(Profile::from_heights(&an, terrain.clone(), terrain.clone()))];
-        let mut g = super::super::graph::build(&scene, &profiles);
+        let mut g = super::super::graph::build(&scene, &profiles, &[]);
         let sweeps = solve(&mut g);
         reconstruct(&g, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
         for (k, &t) in terrain.iter().enumerate() {
             assert!((p.road_m()[k] - t).abs() < 0.5, "node {k} drifted off terrain");
         }
-        assert!(sweeps < MAX_SWEEPS, "a gentle corridor must converge, took {sweeps}");
+        assert!(sweeps.sweeps < MAX_SWEEPS, "a gentle corridor must converge, took {} sweeps", sweeps.sweeps);
     }
 
     /// A deck over a crossing is lifted to clear it (raise-only clearance). The
@@ -848,7 +893,7 @@ mod tests {
         let scene = SceneGraph::new(vec![a]);
         let an = scene.corridors[0].nodes.clone();
         let mut profiles = vec![Some(Profile::from_heights(&an, terrain.clone(), terrain.clone()))];
-        let mut g = super::super::graph::build(&scene, &profiles);
+        let mut g = super::super::graph::build(&scene, &profiles, &[]);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
@@ -892,7 +937,7 @@ mod tests {
         let run = || {
             let profiles =
                 vec![Some(Profile::flat(&an, 400.0)), Some(Profile::flat(&bn, 406.0))];
-            let mut g = super::super::graph::build(&scene, &profiles);
+            let mut g = super::super::graph::build(&scene, &profiles, &[]);
             solve(&mut g);
             g.h
         };

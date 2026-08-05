@@ -198,6 +198,12 @@ pub struct Stats {
     pub p99_junction_step_m: f64,
     pub junction_steps_over: u64,
     pub max_clearance_violation_m: f64,
+    /// Clearance demands the relaxation's plausibility cap rejected, and the
+    /// worst of them. A dropped demand is a data contradiction resolved in
+    /// favour of the profile — the right call, but one that must be counted:
+    /// silently dropping twice as many looks exactly like fixing them.
+    pub clearance_demands_dropped: u64,
+    pub worst_dropped_demand_m: f64,
     /// Phase-1 worker threads used.
     pub threads: usize,
     pub timings: Timings,
@@ -294,7 +300,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     stats.timings.pavement = t_pave.elapsed();
     stats.corridors = scene.corridors.len() as u64;
     stats.profiles = solved.solved_count() as u64;
-    stats.crossings = scene.crossings.len() as u64;
+    stats.crossings = solved.crossings.len() as u64;
     stats.earthworks = ground.earthwork_count() as u64;
     stats.crest_segments = ground.breaklines().len() as u64;
     let (pulled, dropped) = ground.breaklines().crowding();
@@ -307,6 +313,8 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     stats.p99_junction_step_m = consistency.p99_junction_step_m;
     stats.junction_steps_over = consistency.junction_steps_over;
     stats.max_clearance_violation_m = consistency.max_clearance_violation_m;
+    stats.clearance_demands_dropped = solved.relaxed.demands_dropped;
+    stats.worst_dropped_demand_m = solved.relaxed.worst_dropped_m;
     stats.timings.model = t_model.elapsed();
     if let Some(dir) = &cfg.dump {
         dump::write(dir, &scene, &solved, &ground)?;
@@ -2286,7 +2294,7 @@ mod tests {
                 );
             }
             eprintln!("crossings on this corridor in range:");
-            for x in &scene.crossings {
+            for x in &solved.crossings {
                 let mine = if x.upper == id {
                     Some((x.upper_arc, "upper"))
                 } else if x.lower == Some(id) {

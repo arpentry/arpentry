@@ -22,7 +22,7 @@ pub fn write(
 ) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     fs::write(dir.join("corridors.geojson"), corridors_geojson(scene).to_string())?;
-    fs::write(dir.join("crossings.geojson"), crossings_geojson(scene).to_string())?;
+    fs::write(dir.join("crossings.geojson"), crossings_geojson(solved).to_string())?;
     fs::write(dir.join("junctions.geojson"), junctions_geojson(scene, solved).to_string())?;
     fs::write(dir.join("profiles.geojson"), profiles_geojson(scene, solved).to_string())?;
     fs::write(dir.join("smooth.geojson"), smooth_geojson(scene, solved).to_string())?;
@@ -74,8 +74,8 @@ fn junctions_geojson(scene: &SceneGraph, solved: &SolvedModel) -> Json {
 }
 
 /// The detected crossings: one Point each, with the level ordering.
-fn crossings_geojson(scene: &SceneGraph) -> Json {
-    let features: Vec<Json> = scene
+fn crossings_geojson(solved: &SolvedModel) -> Json {
+    let features: Vec<Json> = solved
         .crossings
         .iter()
         .map(|c| {

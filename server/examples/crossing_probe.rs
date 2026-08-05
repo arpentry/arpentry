@@ -122,7 +122,7 @@ fn main() {
 
             // The crossings, which are what raise a road that no junction ties
             // to anything: clearance over whatever the DAG put underneath it.
-            for x in &scene.crossings {
+            for x in &solved.crossings {
                 let d = ((x.point.x - lon) * DEG_M * lat.to_radians().cos())
                     .hypot((x.point.y - lat) * DEG_M);
                 if d > 40.0 {
@@ -264,7 +264,7 @@ fn main() {
         // different defect from a road that is simply steep.
         let mut at_crossing = 0usize;
         for (_, p, _) in &steep {
-            let near = scene.crossings.iter().any(|x| {
+            let near = solved.crossings.iter().any(|x| {
                 let d = ((x.point.x - p.x) * DEG_M * 46.4f64.to_radians().cos())
                     .hypot((x.point.y - p.y) * DEG_M);
                 d < 30.0

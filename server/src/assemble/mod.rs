@@ -12,7 +12,6 @@
 
 pub mod columns;
 pub mod corridors;
-pub mod crossings;
 pub mod grid;
 pub mod water;
 
@@ -121,18 +120,16 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
     let (corridors, junctions) = corridors::build(raw);
     let mut scene = SceneGraph::new(corridors);
     scene.junctions = junctions;
-    // Second pass: find where the corridors' structure spans cross the rest
-    // of the network (the input is streamed again; only geometry near a span
-    // is actually tested). Water gets its own pass: a bridge over a river
-    // owes freeboard, not road clearance (S3).
-    let bb = (bbox.west, bbox.south, bbox.east, bbox.north);
-    scene.crossings = crossings::detect(path, bb, &scene)?;
+    // No crossings. They are a consequence of the solved heights, so they are
+    // derived at the solve and handed straight to the graph (`solve::crossings`,
+    // §4.5) — the second pass over the input that used to find them here could
+    // only ever see the annotated half, and what it found went stale as soon as
+    // anything downstream touched a span.
     if let Some(water_path) = water {
-        let mut water_crossings = crossings::detect_water(water_path, bb, &scene)?;
-        scene.crossings.append(&mut water_crossings);
-        // Still water bodies for the ground stage to flatten (invariant 4) —
-        // read whatever the network does, since a lake is flattened even where
-        // no bridge crosses it.
+        // Still water bodies for the ground stage to flatten (I4) — read
+        // whatever the network does, since a lake is flattened even where no
+        // bridge crosses it.
+        let bb = (bbox.west, bbox.south, bbox.east, bbox.north);
         scene.water = water::read(water_path, bb)?;
     }
     Ok(scene)

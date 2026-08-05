@@ -121,6 +121,9 @@ pub struct Crossing {
     /// for a plain road/rail with no vertical model of its own (its height is
     /// the ground).
     pub lower: Option<CorridorId>,
+    /// Arc along the crossed corridor, metres — known to the derivation, so
+    /// nothing downstream has to recover it by projection.
+    pub lower_arc: f64,
     /// What is being crossed, as the §9 key: it is the *crossed* feature's
     /// `clearance_over_m` that the deck above must respect, so this is the
     /// prior key, not a coarse bucket.
@@ -254,7 +257,6 @@ impl Corridor {
 #[derive(Default)]
 pub struct SceneGraph {
     pub corridors: Vec<Corridor>,
-    pub crossings: Vec<Crossing>,
     /// Where corridors meet and their heights must agree (invariant 2). With
     /// every paving road a corridor, this covers the street intersections
     /// too — the synth stage plates any junction with three or more legs.
@@ -275,7 +277,6 @@ impl SceneGraph {
         }
         SceneGraph {
             corridors,
-            crossings: Vec::new(),
             junctions: Vec::new(),
             water: Vec::new(),
             by_source,

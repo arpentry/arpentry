@@ -62,15 +62,17 @@ pub fn measure(scene: &SceneGraph, solved: &SolvedModel) -> Consistency {
     let p99_junction_step_m = percentile(&mut steps, 0.99);
 
     let mut max_clearance_violation_m = 0.0f64;
-    for c in &scene.crossings {
+    for c in &solved.crossings {
         let Some(up) = solved.profile(c.upper) else { continue };
-        // The crossed surface: the lower corridor's solved road where it has a
-        // profile, else the reference terrain (an at-grade feature lies on the
-        // ground) — the same rule `crossings::required_deck_m` uses.
+        // The crossed surface, read at the arc the derivation already knows
+        // rather than by projecting the plan point back onto the corridor.
+        // Every derived crossing names both sides (`solve::crossings`), so the
+        // old fallback — the *upper's own* terrain, where the crossed feature
+        // was not in the scene — is gone with the crossings that needed it.
         let lower_m = c
             .lower
             .and_then(|id| solved.profile(id))
-            .map(|lp| lp.height_at(c.point.x, c.point.y))
+            .map(|lp| lp.road_at_arc(c.lower_arc))
             .unwrap_or_else(|| up.surface_at(c.point.x, c.point.y));
         let required = lower_m + c.lower_kind.prior().clearance_over_m + DECK_THICKNESS_M;
         let actual = up.deck_height_at(c.point.x, c.point.y);

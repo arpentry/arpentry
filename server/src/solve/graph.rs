@@ -153,7 +153,11 @@ impl UnionFind {
 /// profile). Junction members sharing a connector are unified into one
 /// variable; consecutive nodes and structure spans become the solver's edges
 /// and rigidity groups.
-pub fn build(scene: &SceneGraph, profiles: &[Option<Profile>]) -> SolveGraph {
+pub fn build(
+    scene: &SceneGraph,
+    profiles: &[Option<Profile>],
+    crossings: &[crate::scene::Crossing],
+) -> SolveGraph {
     // Global slot = a flat index over every node of every profiled corridor.
     // `slot_base[corridor_id]` is where that corridor's nodes start; `None`
     // (unprofiled) corridors get no slots.
@@ -314,7 +318,7 @@ pub fn build(scene: &SceneGraph, profiles: &[Option<Profile>]) -> SolveGraph {
     for (ci, c) in corridors.iter().enumerate() {
         ci_of[c.id as usize] = Some(ci);
     }
-    let crossings = build_crossings(scene, profiles, &corridors, &ci_of);
+    let crossings = build_crossings(crossings, profiles, &corridors, &ci_of);
 
     // Resolve each junction's anchor slot to the variable its members ended up
     // sharing. Going through the same `root_var` the node maps went through is
@@ -331,14 +335,14 @@ pub fn build(scene: &SceneGraph, profiles: &[Option<Profile>]) -> SolveGraph {
 /// required clearance-plus-slab. Sorted into ascending rank order so a stacked
 /// interchange resolves bottom-up.
 fn build_crossings(
-    scene: &SceneGraph,
+    scene_crossings: &[crate::scene::Crossing],
     profiles: &[Option<Profile>],
     corridors: &[CorridorNodes],
     ci_of: &[Option<usize>],
 ) -> Vec<GraphCrossing> {
-    let ranks = corridor_ranks(scene);
+    let ranks = corridor_ranks(scene_crossings, profiles.len());
     let mut out: Vec<(u32, GraphCrossing)> = Vec::new();
-    for c in &scene.crossings {
+    for c in scene_crossings {
         let Some(upper_ci) = ci_of.get(c.upper as usize).copied().flatten() else {
             continue;
         };
@@ -384,13 +388,12 @@ fn build_crossings(
 /// which is logged and dropped, so a bad datum costs one clearance rather than
 /// hanging the solve (docs/GENERATION.md I6). Kahn's algorithm with longest-path
 /// layering; corridors in no crossing keep rank 0.
-fn corridor_ranks(scene: &SceneGraph) -> Vec<u32> {
-    let n = scene.corridors.len();
+fn corridor_ranks(scene_crossings: &[crate::scene::Crossing], n: usize) -> Vec<u32> {
     // Edges lower → upper, with the level gap as the constraint's strength.
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut indeg = vec![0u32; n];
     let mut edges: Vec<(usize, usize, i64)> = Vec::new();
-    for c in &scene.crossings {
+    for c in scene_crossings {
         if let Some(l) = c.lower {
             let (lo, up) = (l as usize, c.upper as usize);
             if lo != up && lo < n && up < n {
@@ -683,7 +686,7 @@ mod tests {
         let bn = scene.corridors[1].nodes.clone();
         let profiles =
             vec![Some(Profile::flat(&an, 400.0)), Some(Profile::flat(&bn, 402.0))];
-        let g = build(&scene, &profiles);
+        let g = build(&scene, &profiles, &[]);
 
         // Corridor 0's last node and corridor 1's first node are the SAME var.
         let a_end = *g.corridors[0].vars.last().unwrap();
@@ -721,7 +724,7 @@ mod tests {
         let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
         let profiles: Vec<Option<Profile>> =
             ns.iter().map(|n| Some(Profile::flat(n, 300.0))).collect();
-        let g = build(&scene, &profiles);
+        let g = build(&scene, &profiles, &[]);
         let va = *g.corridors[0].vars.last().unwrap();
         let vb = g.corridors[1].vars[0];
         let vc = g.corridors[2].vars[0];
@@ -759,7 +762,7 @@ mod tests {
             .map(|(nodes, h)| Some(Profile::flat(nodes, h)))
             .collect();
 
-        let mut g = build(&scene, &profiles);
+        let mut g = build(&scene, &profiles, &[]);
         super::super::relax::solve(&mut g);
         super::super::relax::reconstruct(&g, &mut profiles);
         let heights = super::super::relax::junction_heights(&g);
@@ -799,7 +802,7 @@ mod tests {
             }];
             s
         };
-        let g = build(&scene, &vec![None]);
+        let g = build(&scene, &vec![None], &[]);
         assert_eq!(super::super::relax::junction_heights(&g), vec![None]);
     }
 
@@ -841,7 +844,7 @@ mod tests {
         let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
         let profiles: Vec<Option<Profile>> =
             ns.iter().map(|n| Some(Profile::flat(n, 400.0))).collect();
-        let g = build(&scene, &profiles);
+        let g = build(&scene, &profiles, &[]);
         // Every footway node maps to the same variable as a road node — the two
         // corridors are fused into one structure component.
         assert_eq!(g.n_components, 1, "parallel decks must fuse into one component");
@@ -863,7 +866,7 @@ mod tests {
         let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
         let profiles: Vec<Option<Profile>> =
             ns.iter().map(|n| Some(Profile::flat(n, 400.0))).collect();
-        let g = build(&scene, &profiles);
+        let g = build(&scene, &profiles, &[]);
         assert_eq!(g.n_components, 2, "a distant footbridge stays its own structure");
     }
 
@@ -877,7 +880,7 @@ mod tests {
         let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
         let profiles: Vec<Option<Profile>> =
             ns.iter().map(|n| Some(Profile::flat(n, 100.0))).collect();
-        let g = build(&scene, &profiles);
+        let g = build(&scene, &profiles, &[]);
         assert_eq!(g.n_components, 2, "no shared connector → two components");
         assert_eq!(g.corridors.len(), 2);
         for c in &g.corridors {
@@ -887,32 +890,28 @@ mod tests {
 
     /// A scene of `n` bare corridors carrying the given crossings, for testing
     /// the rank DAG in isolation: `(upper, lower, upper_level, lower_level)`.
-    fn scene_with_crossings(n: u32, xs: &[(u32, Option<u32>, i64, i64)]) -> SceneGraph {
+    fn crossings_for(xs: &[(u32, Option<u32>, i64, i64)]) -> Vec<crate::scene::Crossing> {
         use crate::scene::Crossing;
-        let mut scene = SceneGraph::new(
-            (0..n).map(|id| corridor(id, 6.0, 100.0, 2, RoadClass::Secondary)).collect(),
-        );
-        scene.crossings = xs
-            .iter()
+        xs.iter()
             .map(|&(upper, lower, upper_level, lower_level)| Crossing {
                 upper,
                 upper_arc: 50.0,
                 point: Coord { x: 6.005, y: 46.0 },
                 lower,
+                lower_arc: 50.0,
                 lower_kind: Kind::Road(RoadClass::Residential),
                 upper_level,
                 lower_level,
             })
-            .collect();
-        scene
+            .collect()
     }
 
     #[test]
     fn ranks_order_stacked_crossings_bottom_up() {
         // C under B under A (edges C→B, B→A): the ranks must climb C < B < A so
         // the solve finalizes the lower deck before the one above reads it.
-        let scene = scene_with_crossings(3, &[(2, Some(1), 2, 1), (1, Some(0), 1, 0)]);
-        let r = corridor_ranks(&scene);
+        let xs = crossings_for(&[(2, Some(1), 2, 1), (1, Some(0), 1, 0)]);
+        let r = corridor_ranks(&xs, 3);
         assert!(r[0] < r[1] && r[1] < r[2], "ranks {r:?} must be C < B < A");
     }
 
@@ -921,8 +920,8 @@ mod tests {
         // Both crossings tagged the same absolute ordinal (1 over 0 twice), but
         // the pairs still stack B over A and C over B: the DAG rank orders them
         // where an absolute-level tier sort would flatten them into one tier.
-        let scene = scene_with_crossings(3, &[(1, Some(0), 1, 0), (2, Some(1), 1, 0)]);
-        let r = corridor_ranks(&scene);
+        let xs = crossings_for(&[(1, Some(0), 1, 0), (2, Some(1), 1, 0)]);
+        let r = corridor_ranks(&xs, 3);
         assert!(
             r[0] < r[1] && r[1] < r[2],
             "ranks {r:?} must stack from the pairs, not the ordinal"
@@ -933,8 +932,8 @@ mod tests {
     fn ranks_break_a_cycle_without_hanging() {
         // A over B and B over A: contradictory tags. corridor_ranks must break
         // the cycle and return finite ranks instead of looping forever.
-        let scene = scene_with_crossings(2, &[(0, Some(1), 1, 0), (1, Some(0), 1, 0)]);
-        let r = corridor_ranks(&scene);
+        let xs = crossings_for(&[(0, Some(1), 1, 0), (1, Some(0), 1, 0)]);
+        let r = corridor_ranks(&xs, 2);
         assert_eq!(r.len(), 2, "the cycle is broken and every corridor is ranked");
     }
 }
