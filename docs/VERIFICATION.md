@@ -281,6 +281,37 @@ profile put it and the ground where the DEM had it, with air between.
 | Cap the **cross-slope term only**, so an embankment always benches | Six metrics regressed. Terrain faces 264:1 → **542:1**, worst burial −4.2 → **−7.6 m**, deck-into-hillside −6.9 → **−12.5 m**. Every tall fill benched, and a fill whose batter cannot daylight becomes a retaining wall. The worst float did not improve at all. |
 | Delete the prior and ask whether the **batter daylights** instead | Far too strict. A 1:2 cross-slope closes nowhere against a 1:2.5 batter, so an ordinary hillside street loses its bench. Rejected by `a_street_bench_is_flat_across_a_side_slope`. |
 
+### The mass-aware clearance projection
+
+`GENERATION.md` §4.4 says a correction *"distributes by inverse mass"*, and
+`clearance_pass` is the one projection that never asked: raise-only, it always
+lifts the upper side. Where the data says a road tunnels *under* another it
+therefore lifts the road above instead of sinking the bore, which is why 10 % of
+annotated tunnel nodes end at or above the ground.
+
+Splitting the correction by inverse mass — the light (structure) side spending
+first, the heavy (ground-pinned) side covering whatever separation remained —
+was tried and **rejected by measurement**.
+
+| attempt | result |
+|---|---|
+| Split the correction in proportion to inverse mass | The inequality stops being guaranteed. Neither side alone satisfies it, and where the light side cannot actually move the demand is simply never met: a 6.5 m fixture settled at **2.0 m**. |
+| Spend the light side first, then ask the heavy side for the remainder | Better in the fixture (2.0 → 3.8 m) and far worse on the extract: **clearance shortfall 51.93 → 293.61 m**, a five-fold regression of a hard invariant, with `structure.annotated_lost` also up. |
+
+**Why it fails is geometric, not arithmetic.** A bore is chorded between its
+at-grade anchors, so it can only sink as deep as those anchors can be ramped
+down to, and the ramp is bounded by the class grade: 6.5 m at 6 % needs ~97 m of
+approach. Anchors further out than the ramp reaches hold the chord at grade and
+`rigidity_pass` undoes the dip. Reallocating the correction does not change what
+the geometry allows; it only takes the guarantee away from the side that could
+have met it.
+
+What the rule needs is for the dip and the lift to be solved *together* to
+feasibility, rather than allocated between them in one pass — the light side
+first is the right instinct and a two-line reallocation is not enough machinery
+to keep §4.4's Strong constraint strong. Recorded so nobody spends a day
+rediscovering that the principled version of this is the easy part.
+
 **The conclusion is structural.** On steep or tall ground the earthwork must
 choose between a wall, a float, and no bench. All three are defects, and all
 three are visible *only because the ground is drawn under the asphalt at all*.
