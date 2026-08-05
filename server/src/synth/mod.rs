@@ -12,6 +12,7 @@
 //! plain, never something wrong.
 
 pub mod area;
+pub mod draped;
 pub mod height;
 pub mod junction;
 pub mod markings;
@@ -51,6 +52,11 @@ pub enum Synth {
     Road { corridor: Option<CorridorId>, deck: bool },
     /// A bridge deck or tunnel bore swept along the corridor's solved profile.
     Structure { corridor: CorridorId, kind: SpanKind },
+    /// A structure carried by a **draped** feature — a footbridge, a path over
+    /// a stream. It has no corridor and no solved profile, because carrying a
+    /// span is not a promotion (§4.2): the deck is fitted to the finished
+    /// ground at its two ends and constrains nothing. See [`draped`].
+    DrapedDeck,
 }
 
 /// Runs the feature's generator. A no-op for [`Synth::None`] and for DEM-less
@@ -85,6 +91,13 @@ pub fn emit(
             // grade-separation sheet its own road is on there — it must not
             // blend with whatever passes beneath.
             road::bake(f, profile, deck, corridor, paved_field, sampler, z, solved.z_ref, bounds);
+        }
+        Synth::DrapedDeck => {
+            // Fitted, not solved. Falls back to a plain draped line when there
+            // is no solid to draw, exactly as a solved structure does.
+            if !draped::stamp(f, sampler, solved.z_ref, bounds) {
+                road::bake(f, None, false, None, paved_field, sampler, z, solved.z_ref, bounds);
+            }
         }
         Synth::Structure { corridor, kind } => {
             match solved.profile(corridor) {

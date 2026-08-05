@@ -114,6 +114,7 @@ fn encode_synth(synth: Synth) -> [u8; 9] {
         Synth::Structure { corridor, kind } => {
             (2, corridor, matches!(kind, crate::scene::SpanKind::Tunnel) as u32)
         }
+        Synth::DrapedDeck => (3, 0, 0),
     };
     let mut out = [0u8; 9];
     out[0] = tag;
@@ -211,6 +212,7 @@ impl<'a> Reader<'a> {
                     crate::scene::SpanKind::Bridge
                 },
             }),
+            3 => Ok(Synth::DrapedDeck),
             other => Err(RecordError::BadSynth(other)),
         }
     }

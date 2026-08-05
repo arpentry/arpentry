@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use geo_types::{Geometry, LineString};
+use geo_types::{Coord, Geometry, LineString};
 
 use crate::archive::{ArchiveMeta, ArchiveWriter};
 use crate::assemble;
@@ -92,6 +92,11 @@ fn attrs_for(layer: u8) -> &'static [&'static str] {
             "subclass",
             "names.primary",
             "level_rules",
+            // The `is_bridge`/`is_tunnel` fallback: a substantial share of
+            // structures carry only the flag. `synth::draped` needs the same
+            // annotations the assemble stage reads, or a footbridge mapped
+            // that way gets no deck.
+            "road_flags",
             "width_rules",
             "road_surface",
             "access_restrictions",
@@ -1075,7 +1080,7 @@ fn process_feature(
                 let (synth, mark_synth) = match piece.kind {
                     SpanKind::Grade => {
                         let s = Synth::Road {
-                            corridor: corridor.needs_profile().then_some(corridor.id),
+                            corridor: Some(corridor.id),
                             deck: false,
                         };
                         (s, s)
@@ -1121,7 +1126,11 @@ fn process_feature(
             }
             return Ok(());
         }
-        // Unclaimed: a plain road that drapes on the rendered ground.
+        // Unclaimed: a draped feature. It drapes on the rendered ground —
+        // except where it carries an elevated span, which is still a bridge
+        // even though it is junior to everything (§4.2). Those pieces get a
+        // deck fitted to the finished ground (`synth::draped`); nothing here
+        // enters a solve.
         let synth = Synth::Road { corridor: None, deck: false };
         if let Some((class, oneway, width, areas)) = &marks {
             if let Geometry::LineString(line) = &f.geometry {
@@ -1130,9 +1139,99 @@ fn process_feature(
                 }
             }
         }
+        if let Geometry::LineString(line) = &f.geometry {
+            if !f.level_runs.is_empty() {
+                for (piece, level) in level_pieces(line, &f.level_runs) {
+                    let mut props = f.properties.clone();
+                    let tag = if level > 0 {
+                        // The level ordinal survives as a property so the
+                        // client colours it as a structure, exactly as a
+                        // solved deck's does.
+                        props.push(("level_rules".to_string(), Value::Int(level)));
+                        Synth::DrapedDeck
+                    } else {
+                        synth
+                    };
+                    emit_geometry(
+                        layer,
+                        &Geometry::LineString(piece),
+                        &props,
+                        tag,
+                        cfg,
+                        sorter,
+                        stats,
+                    )?;
+                }
+                return Ok(());
+            }
+        }
         return emit_geometry(layer, &f.geometry, &f.properties, synth, cfg, sorter, stats);
     }
     emit_geometry(layer, &f.geometry, &f.properties, Synth::None, cfg, sorter, stats)
+}
+
+/// Cuts a draped feature's line at its level-run boundaries, yielding each
+/// piece with the level covering it (0 between and around the runs).
+///
+/// The runs are fractions of the line's *arc*, so the cut points are
+/// interpolated by length rather than by vertex index — a bridge annotated
+/// over the middle third of a segment must land where that third actually is,
+/// however the vertices are spaced. Pieces share their boundary vertex
+/// exactly, so the drape and the deck meet without a gap.
+fn level_pieces(line: &LineString, runs: &[crate::levels::LevelRun]) -> Vec<(LineString, i64)> {
+    let nodes = &line.0;
+    if nodes.len() < 2 {
+        return Vec::new();
+    }
+    let cos_lat = crate::scene::run_cos_lat(nodes);
+    let mut arc = Vec::with_capacity(nodes.len());
+    let mut acc = 0.0;
+    for (i, &c) in nodes.iter().enumerate() {
+        if i > 0 {
+            acc += crate::scene::metric_len(nodes[i - 1], c, cos_lat);
+        }
+        arc.push(acc);
+    }
+    let total = acc;
+    if total <= 0.0 {
+        return Vec::new();
+    }
+    // Boundaries in arc metres, deduplicated and clamped to the line.
+    let mut cuts = vec![0.0, total];
+    for r in runs {
+        cuts.push((r.start * total).clamp(0.0, total));
+        cuts.push((r.end * total).clamp(0.0, total));
+    }
+    cuts.sort_by(|a, b| a.partial_cmp(b).expect("finite arc"));
+    cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+
+    let point_at = |d: f64| -> Coord {
+        let i = arc.partition_point(|&a| a < d).clamp(1, arc.len() - 1);
+        let (a0, a1) = (arc[i - 1], arc[i]);
+        let t = if a1 > a0 { ((d - a0) / (a1 - a0)).clamp(0.0, 1.0) } else { 0.0 };
+        Coord {
+            x: nodes[i - 1].x + (nodes[i].x - nodes[i - 1].x) * t,
+            y: nodes[i - 1].y + (nodes[i].y - nodes[i - 1].y) * t,
+        }
+    };
+
+    let mut out = Vec::new();
+    for w in cuts.windows(2) {
+        let (d0, d1) = (w[0], w[1]);
+        let mid = 0.5 * (d0 + d1);
+        let level = runs
+            .iter()
+            .find(|r| mid >= r.start * total && mid <= r.end * total)
+            .map_or(0, |r| r.level);
+        let mut pts = vec![point_at(d0)];
+        pts.extend(nodes.iter().zip(&arc).filter(|(_, &a)| a > d0 && a < d1).map(|(c, _)| *c));
+        pts.push(point_at(d1));
+        pts.dedup();
+        if pts.len() >= 2 {
+            out.push((LineString(pts), level));
+        }
+    }
+    out
 }
 
 /// The marking inputs for a transportation feature — its class, one-way
@@ -1537,6 +1636,47 @@ impl LayerStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A draped feature's line is cut at its level-run boundaries so the
+    /// elevated part can be decked and the rest drapes. The cut is by *arc*,
+    /// not by vertex index: a bridge over the middle third must land where the
+    /// middle third is.
+    #[test]
+    fn level_pieces_cut_by_arc_and_abut_exactly() {
+        use crate::levels::LevelRun;
+        // 4 nodes, unevenly spaced: 0, 10, 90, 100 m along.
+        let line = LineString(vec![
+            Coord { x: 0.0, y: 0.0 },
+            Coord { x: 10.0 / crate::scene::DEG_M, y: 0.0 },
+            Coord { x: 90.0 / crate::scene::DEG_M, y: 0.0 },
+            Coord { x: 100.0 / crate::scene::DEG_M, y: 0.0 },
+        ]);
+        let runs = vec![LevelRun { start: 0.25, end: 0.75, level: 1 }];
+        let pieces = level_pieces(&line, &runs);
+        assert_eq!(pieces.len(), 3, "grade, bridge, grade");
+        assert_eq!(pieces.iter().map(|(_, l)| *l).collect::<Vec<_>>(), vec![0, 1, 0]);
+        // Abutting pieces share their boundary vertex exactly, so the drape
+        // meets the deck with no gap.
+        assert_eq!(*pieces[0].0 .0.last().unwrap(), pieces[1].0 .0[0]);
+        assert_eq!(*pieces[1].0 .0.last().unwrap(), pieces[2].0 .0[0]);
+        // The cut is at 25 m and 75 m of arc, not at a vertex.
+        let x0 = pieces[1].0 .0[0].x * crate::scene::DEG_M;
+        assert!((x0 - 25.0).abs() < 1e-6, "bridge starts at 25 m, got {x0}");
+    }
+
+    /// A line with no level runs at all yields nothing to cut — the caller
+    /// emits it whole.
+    #[test]
+    fn level_pieces_of_an_unannotated_line_is_one_grade_piece() {
+        let line = LineString(vec![
+            Coord { x: 0.0, y: 0.0 },
+            Coord { x: 100.0 / crate::scene::DEG_M, y: 0.0 },
+        ]);
+        let pieces = level_pieces(&line, &[]);
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(pieces[0].1, 0);
+    }
+
     use crate::fb::tile::arpentry::tiles as fbt;
     use crate::fb::tileset::arpentry::tiles as fbts;
 

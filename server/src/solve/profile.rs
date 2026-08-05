@@ -604,13 +604,15 @@ impl Profile {
         }
     }
 
-    /// Test constructor: a profile over `nodes` with explicit per-node road and
-    /// terrain heights, so a bore's buried span and portal crossings can be set
-    /// up deterministically without a DEM.
-    #[cfg(test)]
+    /// A profile over `nodes` with explicit per-node road and terrain heights.
+    ///
+    /// The constructor for a surface that was *fitted* rather than solved: a
+    /// draped feature's deck chorded between the ground at its ends
+    /// ([`crate::synth::draped`]), and the test fixtures that set up a bore's
+    /// buried span and portal crossings deterministically without a DEM.
     pub fn from_heights(nodes: &[Coord], road_m: Vec<f64>, terrain_m: Vec<f64>) -> Profile {
-        // Tests supply the road heights they want a deck to ride directly, so
-        // the deck ramp is the road profile as given (no span-splitting here).
+        // The caller supplies the road heights it wants a deck to ride, so the
+        // deck ramp is the road profile as given (no span-splitting here).
         // Every node is flagged at grade: burial is expressed through the
         // heights (the road/terrain gap), and an all-absorbed flag set would
         // make `portals::grow_spans` swallow whole corridors.

@@ -188,20 +188,6 @@ impl Corridor {
         *self.arc.last().unwrap_or(&0.0)
     }
 
-    /// Whether the solver needs an elevation profile for this corridor: it
-    /// lays a carriageway ([`crate::priors::paves_today`]), holds a surveyed
-    /// road alignment, or carries a structure span.
-    ///
-    /// That last clause is the promotion §4.2 forbids — carrying a span is not
-    /// authority. M2 replaces the whole predicate with the stratum, and fits a
-    /// draped feature's deck to the finished ground instead of solving it.
-    pub fn needs_profile(&self) -> bool {
-        crate::priors::paves_today(self.kind)
-            || (self.kind.prior().engineered && matches!(self.kind, Kind::Road(_)))
-            || self.spans.iter().any(|s| s.kind != SpanKind::Grade)
-            || self.spans.iter().any(|s| s.kind != SpanKind::Grade)
-    }
-
     /// Cuts one source segment into constant-kind pieces at the span
     /// boundaries. Pieces follow corridor direction; interior vertices are
     /// preserved and cut points interpolated, so abutting pieces share their
@@ -397,22 +383,6 @@ mod tests {
         let scene = SceneGraph::new(vec![c]);
         assert!(scene.lookup(1).is_some());
         assert!(scene.lookup(99).is_none());
-    }
-
-    #[test]
-    fn needs_profile_for_paving_or_structure_corridors() {
-        // A paving class at grade: profiled (every such road holds a profile).
-        assert!(corridor(vec![span(0.0, 1000.0, 0)], 3, 1000.0).needs_profile());
-        // A draped class at grade (a footpath, rail): just drapes.
-        let mut c = corridor(vec![span(0.0, 1000.0, 0)], 3, 1000.0);
-        c.kind = Kind::Road(RoadClass::Footway);
-        assert!(!c.needs_profile());
-        // Draped but carrying a structure: profiled for the deck. This is the
-        // promotion §4.2 forbids — carrying a span is not authority — and M2
-        // is where it goes.
-        let mut c = corridor(vec![span(0.0, 1000.0, 1)], 3, 1000.0);
-        c.kind = Kind::Road(RoadClass::Footway);
-        assert!(c.needs_profile());
     }
 
     #[test]

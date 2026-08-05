@@ -124,13 +124,10 @@ pub fn run(
 
     // Spans are settled: the workers below only read.
     let scene: &SceneGraph = scene;
-    let todo: Vec<usize> = scene
-        .corridors
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| c.needs_profile())
-        .map(|(i, _)| i)
-        .collect();
+    // Every corridor in the scene is solved. The gate upstream admits only
+    // strata that solve (`assemble::run`), so "does this need a profile" is no
+    // longer a question asked here — a draped feature never reaches this point.
+    let todo: Vec<usize> = (0..scene.corridors.len()).collect();
     let mut profiles: Vec<Option<Profile>> = Vec::new();
     profiles.resize_with(scene.corridors.len(), || None);
 

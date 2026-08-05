@@ -71,19 +71,24 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
             Some(class_key.as_str()),
             subclass.as_deref(),
         );
-        // A feature enters the scene graph when it lays a carriageway, or
-        // holds a surveyed road alignment, or carries a structure annotation.
+        // **The stratum decides.** A feature enters the scene graph when it
+        // belongs to a stratum that solves — and a draped feature never does,
+        // whatever it is annotated with: carrying a structure span is not a
+        // promotion (§4.2). That discipline is the point. Draped features are
+        // 46.9 % of the road network, and any loophole admitting one into a
+        // solve is a loophole through which half the network can perturb the
+        // other half. Their structures are *fitted* to the finished ground
+        // instead (`synth::draped`).
         //
-        // Two things are wrong with that and the design names both: a level
-        // annotation is the promotion §4.2 forbids, and a railway belongs in
-        // the scene as stratum R whatever it is annotated with. Neither can be
-        // corrected here — see [`priors::paves_today`] for what happens to the
-        // rail viaduct if the population moves before rail is solved as rail.
-        // M2 replaces the gate with the stratum; M6 admits rail.
-        let prior = kind.prior();
-        let surveyed_road = prior.engineered && matches!(kind, Kind::Road(_));
-        if f.level_runs.is_empty() && !surveyed_road && !priors::paves_today(kind) {
-            continue; // nothing to solve: plain draped feature
+        // Rail is the one stratum this cannot yet express. It is senior (R)
+        // and belongs in the scene unconditionally, but admitting it before it
+        // is solved as rail leaves its viaducts chorded across a descent — see
+        // [`priors::paves_today`] for the measurement. So rail keeps today's
+        // annotation-driven admission until M6 gives it a real alignment.
+        if !priors::paves_today(kind)
+            && !(matches!(kind, Kind::Rail(_)) && !f.level_runs.is_empty())
+        {
+            continue; // draped: it samples the finished ground, it never solves
         }
         // Only a linestring can be linearly referenced and chained.
         let Geometry::LineString(ref line) = f.geometry else {
