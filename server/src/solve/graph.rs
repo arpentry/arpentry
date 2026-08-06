@@ -420,7 +420,7 @@ pub fn build(
         ci_of[c.id as usize] = Some(ci);
     }
     let undercuts = build_undercuts(crossings, profiles, &ci_of);
-    let crossings = build_crossings(crossings, profiles, &corridors, &ci_of);
+    let crossings = build_crossings(crossings, profiles, &corridors, &ci_of, scene);
     let contacts: Vec<Contact> = contact_slots
         .into_iter()
         .filter_map(|(slot, height_m)| {
@@ -459,6 +459,7 @@ fn build_crossings(
     profiles: &[Option<Profile>],
     corridors: &[CorridorNodes],
     ci_of: &[Option<usize>],
+    scene: &SceneGraph,
 ) -> Vec<GraphCrossing> {
     let ranks = corridor_ranks(scene_crossings, profiles.len());
     let mut out: Vec<(u32, GraphCrossing)> = Vec::new();
@@ -469,6 +470,9 @@ fn build_crossings(
         let Some(up) = profiles.get(c.upper as usize).and_then(|p| p.as_ref()) else {
             continue;
         };
+        if in_immovable_bore(scene, ci_of, c) {
+            continue;
+        }
         // The crossed surface. A corridor of *this* stratum is a shared
         // unknown; a senior one is its published height, read and never
         // written; anything else is the trough the unprofiled feature runs in.
@@ -494,6 +498,45 @@ fn build_crossings(
     }
     out.sort_by_key(|(rank, _)| *rank);
     out.into_iter().map(|(_, gc)| gc).collect()
+}
+
+/// Whether the crossed feature runs in a bore **this stratum may not move** —
+/// in which case the crossing buys no clearance at all.
+///
+/// A clearance demand exists to separate two *surfaces*, and it is written
+/// against the lower one's carriageway. Where that carriageway is inside a hole
+/// in the ground the demand has nothing to buy: the road above stands on the
+/// ground, the feature below runs under it, and what governs the gap between
+/// them is the bore's own cover (`clearance.bore_cover`), not a clearance plus
+/// a slab over a road surface.
+///
+/// **Movability is the whole discriminator.** Where the bore belongs to this
+/// stratum it enters as a [`Lower::Var`] and
+/// [`super::relax::clearance_pass`] spends the deficit on *it*: the bore is the
+/// light side, so an urban underpass (S6) sinks under the street above instead
+/// of the street humping over it. That is the flat-ground tunnel case the
+/// terrain cannot express, and it must keep its demand. Where the bore belongs
+/// to a **senior** stratum it has no variable at all (§4.4, I7) — it is a
+/// published constant, and the only side left to move is the road on top. The
+/// road then climbs the full `clearance_over_m + DECK_THICKNESS_M` above a
+/// railway that is already underground: measured at Montreux station, a
+/// tertiary street ramped out of its own portal at the 15 % grade ceiling to
+/// stand +8.84 m over its terrain, on a 9 m embankment nobody built.
+fn in_immovable_bore(
+    scene: &SceneGraph,
+    ci_of: &[Option<usize>],
+    c: &crate::scene::Crossing,
+) -> bool {
+    let Some(id) = c.lower else { return false };
+    // In this graph — so a variable, so free to dip. Keep the demand.
+    if ci_of.get(id as usize).copied().flatten().is_some() {
+        return false;
+    }
+    scene.corridors[id as usize]
+        .spans
+        .iter()
+        .find(|s| c.lower_arc >= s.arc0 && c.lower_arc <= s.arc1)
+        .is_some_and(|s| s.kind == crate::scene::SpanKind::Tunnel)
 }
 
 /// Marks the nodes of every non-at-grade run the annotation calls a *tunnel*.
@@ -703,10 +746,104 @@ mod tests {
     use super::*;
     use crate::scene::{Span, SpanKind};
     use geo_types::Coord;
-    use crate::priors::{Kind, RoadClass};
+    use crate::priors::{Kind, RailClass, RoadClass};
     use crate::scene::{Corridor, Junction, JunctionMember, SegmentRef, DEG_M};
         fn cos_lat() -> f64 {
         46.0_f64.to_radians().cos()
+    }
+
+    /// The same line, re-badged: a corridor of an arbitrary kind carrying
+    /// arbitrary spans, for the tests that care who owns it rather than where
+    /// it runs.
+    fn corridor_of(id: u32, len_m: f64, n: usize, kind: Kind, spans: Vec<Span>) -> Corridor {
+        let mut c = corridor(id, 6.0, len_m, n, RoadClass::Residential);
+        c.kind = kind;
+        c.spans = spans;
+        c
+    }
+
+    /// One road crossing one other feature at its midpoint, and the graph the
+    /// street stratum builds from it.
+    fn crossing_graph(lower: Corridor, lower_kind: Kind, lower_level: i64) -> SolveGraph {
+        let len = 200.0;
+        let n = 11;
+        let scene = SceneGraph::new(vec![corridor(0, 6.0, len, n, RoadClass::Tertiary), lower]);
+        let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
+        // The lower sits a metre under the upper — a bore just below the road,
+        // which is what a tunnel under a street is.
+        let profiles =
+            vec![Some(Profile::flat(&ns[0], 400.0)), Some(Profile::flat(&ns[1], 399.0))];
+        let x = crate::scene::Crossing {
+            upper: 0,
+            upper_arc: len / 2.0,
+            point: ns[0][n / 2],
+            lower: Some(1),
+            lower_arc: len / 2.0,
+            lower_kind,
+            upper_level: 0,
+            lower_level,
+        };
+        build(&scene, &profiles, &[x], Stratum::S)
+    }
+
+    /// A road passing over a **railway in a tunnel** is asked to clear nothing.
+    ///
+    /// The demand exists to separate two surfaces, and a railway in a bore is
+    /// already under the ground the road stands on. Rail is senior, so it
+    /// enters the street graph as a [`Lower::Constant`] that I7 forbids moving
+    /// — leaving the road as the only side that *can* move. Buy the full
+    /// `RAIL_CLEARANCE_M + DECK_THICKNESS_M` against it and the road climbs
+    /// 8.5 m over a railway that is underground: measured at Montreux station,
+    /// a tertiary street stood +8.84 m over its own terrain on an embankment
+    /// nobody built.
+    #[test]
+    fn a_road_over_a_bore_it_may_not_move_is_not_asked_to_clear_it() {
+        let rail = |kind| {
+            corridor_of(
+                1,
+                200.0,
+                11,
+                Kind::Rail(RailClass::NarrowGauge),
+                vec![Span { arc0: 0.0, arc1: 200.0, level: -1, kind }],
+            )
+        };
+        let g = crossing_graph(rail(SpanKind::Tunnel), Kind::Rail(RailClass::NarrowGauge), -1);
+        assert!(
+            g.crossings.is_empty(),
+            "a bore this stratum cannot move must buy no clearance; got {} demand(s)",
+            g.crossings.len()
+        );
+
+        // The discriminator is the *bore*, not the seniority: the same railway
+        // at grade is a real thing to clear, and still is.
+        let g = crossing_graph(rail(SpanKind::Grade), Kind::Rail(RailClass::NarrowGauge), 0);
+        assert_eq!(g.crossings.len(), 1, "an at-grade railway is still cleared");
+    }
+
+    /// ...but a bore this stratum *does* own keeps its demand, because that is
+    /// the demand an urban underpass (S6) dips to satisfy.
+    ///
+    /// The pair matters more than either half. Dropping every bore-lower
+    /// crossing also fixes Montreux, and it silently deletes the flat-ground
+    /// tunnel case: `relax::clearance_pass` spends the deficit on a
+    /// [`Lower::Var`] in a bore, which is the only thing that makes a
+    /// cut-and-cover road sink under the street above instead of the street
+    /// humping over it.
+    #[test]
+    fn a_road_over_a_bore_it_owns_still_buys_its_clearance() {
+        let under = corridor_of(
+            1,
+            200.0,
+            11,
+            Kind::Road(RoadClass::Residential),
+            vec![Span { arc0: 0.0, arc1: 200.0, level: -1, kind: SpanKind::Tunnel }],
+        );
+        let g = crossing_graph(under, Kind::Road(RoadClass::Residential), -1);
+        assert_eq!(g.crossings.len(), 1, "the S6 underpass demand must survive");
+        assert!(
+            matches!(g.crossings[0].lower, Lower::Var(_)),
+            "and it must be the movable kind, or nothing dips"
+        );
     }
 
     fn corridor(id: u32, x0: f64, len_m: f64, n: usize, class: RoadClass) -> Corridor {

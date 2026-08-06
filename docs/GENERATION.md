@@ -412,6 +412,18 @@ Two consequences are normative:
   there. That is an equality constraint — stronger and more useful than the
   inequality a grade separation gets. Discarding it throws away the one place
   the two strata are known to touch.
+- **A crossing over a bore buys clearance only from a bore that can yield.** A
+  clearance separates two *surfaces*, and a feature running in a bore is already
+  beneath the ground the crossing feature stands on; what governs the gap there
+  is the bore's own cover, not a clearance plus a slab over its carriageway.
+  Where the bore belongs to the solving stratum the demand is exactly what it
+  dips to satisfy — that is S6, the flat-ground underpass, and the correction
+  lands on the bore because it is the light side (§4.4). Where the bore belongs
+  to a *senior* stratum, §4.1 forbids moving it, so the only side left to move
+  is the surface above; charged the full class clearance it climbs into the air
+  over a railway that is underground, on an embankment nothing asked for. The
+  demand is therefore dropped in that case, and the cover is left to the
+  stratum that owns it.
 
 ### 4.6 Degradation and back-edges
 
