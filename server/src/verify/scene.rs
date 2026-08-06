@@ -100,6 +100,23 @@ pub struct RoadLine {
     pub parts: Vec<Vec<(f64, f64, f64)>>,
 }
 
+impl RoadLine {
+    /// Whether this is a railway: its class names a gauge or a system.
+    ///
+    /// The archive carries a feature's `class` but not its `subtype`, so the
+    /// modality has to be read back out of the class alone. `unknown` rail is
+    /// not counted — it is indistinguishable here from a road class the parser
+    /// does not recognise, and `priors` gives it the junior default for the same
+    /// reason.
+    pub fn is_rail(&self) -> bool {
+        use crate::priors::{Kind, RailClass};
+        matches!(
+            Kind::parse(Some("rail"), Some(&self.class), None),
+            Kind::Rail(c) if c != RailClass::Unknown
+        )
+    }
+}
+
 /// One tile, decoded into the surfaces the checks compare.
 pub struct TileScene {
     pub z: u8,

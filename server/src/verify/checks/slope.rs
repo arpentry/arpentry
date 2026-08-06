@@ -177,9 +177,7 @@ impl Slope {
             // holds 3 % where a residential street holds 15 %, so one threshold
             // would call every railway fine and every street a defect, or the
             // reverse.
-            let rail = crate::priors::Kind::parse(Some("rail"), Some(&line.class), None);
-            let is_rail = matches!(rail, crate::priors::Kind::Rail(c)
-                if c != crate::priors::RailClass::Unknown);
+            let is_rail = line.is_rail();
             let drivable = crate::priors::paint_width_m(Some(&line.class), None).is_some()
                 || line.class == "marking";
             if !drivable && !is_rail {

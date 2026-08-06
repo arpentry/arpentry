@@ -150,6 +150,36 @@ const CARRY_NEAR_M: f64 = 2.0;
 /// duplicate-bridge defect costs.
 const CARRY_M: f64 = 1.0;
 
+/// How far a drawn railway may stand off the ground directly beneath it before
+/// the gap is air rather than the mesh's own resolution.
+///
+/// This is not the kerb's question. `contact.kerb_lip` probes a metre *outside*
+/// the road, where a real embankment has a real drop; this asks the ground
+/// *under* the formation, which the bench is supposed to have brought up to
+/// meet it. There is no legitimate positive answer — a railway on an embankment
+/// stands on the embankment.
+///
+/// So the threshold is only the width of what the mesh cannot help. Read off
+/// the classes that bench: `standard_gauge` benches at 98.9 % of its at-grade
+/// nodes and its standoff runs p95 0.80 m, p98 1.45 m, p99 1.62 m, then jumps
+/// to 5.52 m at p999 — and the level-0 *road* lines, which share the drape
+/// path, reach only 1.27 m at p999. The 2–4 m bin holds 0.12 % of standard
+/// gauge. Two metres sits in that empty band: past the ~3 m detail cell's worth
+/// of relief a profile can disagree with the lattice by on a steep flank, and
+/// far short of the metres the float costs.
+const RAIL_STANDOFF_M: f64 = 2.0;
+
+/// How close a drawn structure surface must be to a rail stroke, vertically,
+/// for the stroke to be *on* it.
+///
+/// The population trap this closes: a structure span emits its paint stroke
+/// before the level ordinal is attached to the properties (`pipeline.rs`), so
+/// the stroke over a viaduct arrives in the archive at level 0 and metres above
+/// the ground — which is what a viaduct is for. Counting those would measure
+/// the emit order rather than the defect, and on the Montreux extract they are
+/// 19,993 of the level-0 vertices.
+const RAIL_ON_DECK_M: f64 = 1.0;
+
 pub struct Contact {
     lip: Dist,
     lip_worst: Worst,
@@ -159,6 +189,8 @@ pub struct Contact {
     seat_worst: Worst,
     carried: Dist,
     carried_worst: Worst,
+    rail: Dist,
+    rail_worst: Worst,
 }
 
 impl Contact {
@@ -172,6 +204,65 @@ impl Contact {
             seat_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             carried: Dist::metres(),
             carried_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            rail: Dist::metres(),
+            rail_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+        }
+    }
+
+    /// Invariant 4 under a railway: how far the drawn formation stands off the
+    /// drawn ground beneath it.
+    ///
+    /// **Why rail needs its own metric.** Every other I4 contact check is
+    /// anchored on asphalt — the kerb, the hole's rim, an apron. A railway lays
+    /// none: `priors::Prior::paves` is false for every rail class, so it has no
+    /// carriageway mesh, no kerb, no hole cut in the terrain under it and no
+    /// apron closing one. It is drawn as a cartographic stroke riding its solved
+    /// profile, straight over ground that was never asked to come up and meet
+    /// it. `MAX_BENCH_FACE_M` says outright what that costs — "refusing the
+    /// bench does not put the road back on the ground, it leaves the road where
+    /// the profile put it and the ground where the DEM had it, with air between"
+    /// — and then says the cost is measured at the kerb instead. For rail there
+    /// is no kerb, so it was measured nowhere.
+    ///
+    /// The contrast is what makes the number mean something: over the Montreux
+    /// extract the level-0 road and path strokes, which take the same drape
+    /// path, sit within half a metre of the ground 97.5 % of the time and reach
+    /// 1.27 m at p999. The rail strokes reach 5.25 m at p95 and 33.29 m at
+    /// worst.
+    fn visit_rail(&mut self, tile: &TileScene, terrain: &SurfaceMesh) {
+        let decks: Vec<&RoadMesh> = tile.roads.iter().filter(|r| r.is_deck()).collect();
+        for line in tile.lines.iter().filter(|l| l.level == 0 && l.is_rail()) {
+            for part in &line.parts {
+                for &(px, py, h) in part {
+                    if !tile.owns(px, py) {
+                        continue;
+                    }
+                    let Some(gz) = terrain.height_at(px, py) else {
+                        continue; // no drawn ground here to stand off from
+                    };
+                    // Paint on a deck, not a formation in the air.
+                    if decks.iter().any(|d| {
+                        d.mesh.height_at(px, py).is_some_and(|z| (h - z).abs() < RAIL_ON_DECK_M)
+                    }) {
+                        continue;
+                    }
+                    let v = h - gz;
+                    self.rail.push(v);
+                    if v > RAIL_STANDOFF_M {
+                        let (lon, lat) = tile.lonlat(px, py);
+                        self.rail_worst.offer(Offender {
+                            lon,
+                            lat,
+                            zoom: tile.z,
+                            value: v,
+                            note: format!(
+                                "{} formation {h:.2} m, drawn ground {gz:.2} m, nothing between them",
+                                line.class
+                            ),
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -518,6 +609,7 @@ impl Check for Contact {
         self.visit_carried(tile);
         let Some(terrain) = &tile.terrain else { return };
         self.visit_seats(tile, terrain);
+        self.visit_rail(tile, terrain);
         // The kerb lip: at every silhouette edge of the carriageway, the road's
         // own height against the ground a metre outside it.
         //
@@ -750,6 +842,43 @@ impl Check for Contact {
                 }),
                 dist: self.carried,
                 worst: self.carried_worst.into_vec(),
+            },
+            Metric {
+                id: "contact.rail_standoff".into(),
+                invariant: Invariant::I4,
+                title: "Drawn railway standing off the ground beneath it".into(),
+                population: format!(
+                    "Every vertex of every level-0 rail centerline inside the tile proper whose \
+                     class names a gauge or a system, where the drawn terrain has a triangle \
+                     under it. `unknown` rail is excluded — the archive carries no subtype, so \
+                     that class is indistinguishable from an unrecognised road class. A vertex \
+                     within {RAIL_ON_DECK_M:.1} m of a drawn structure surface is excluded too: \
+                     a structure span emits its paint stroke before the level ordinal is \
+                     attached, so a viaduct's stroke arrives here at level 0 and metres up, \
+                     which is what a viaduct is for. Coverage limit: the terrain's hole under \
+                     the asphalt means street-running rail over a paved region has no ground to \
+                     answer for it and is not measured."
+                ),
+                detail: format!(
+                    "Rail formation height minus the drawn ground directly under it. Distinct \
+                     from `contact.kerb_lip`, which probes a metre *outside* a carriageway where \
+                     an embankment legitimately drops away: this asks under the formation, which \
+                     the bench is supposed to have raised to meet, so there is no legitimate \
+                     positive answer. Rail is the population that shows it — a rail class paves \
+                     nothing, so it has no kerb, no hole and no apron, and every other I4 \
+                     contact metric is anchored on asphalt it does not have. Past \
+                     {RAIL_STANDOFF_M:.1} m the gap is wider than the detail lattice can explain \
+                     and the track is in the air."
+                ),
+                sense: Sense::HigherIsWorse,
+                threshold: RAIL_STANDOFF_M,
+                skipped: self.rail.is_empty().then(|| {
+                    "no rail centerline carries per-vertex heights at this zoom, or the archive \
+                     carries no terrain mesh"
+                        .to_string()
+                }),
+                dist: self.rail,
+                worst: self.rail_worst.into_vec(),
             },
         ]
     }
@@ -1167,5 +1296,81 @@ mod tests {
         let terrain = ground_strip(&[(0.0, 435.0), (0.30, 435.0), (0.33, 415.0), (1.0, 415.0)]);
         let m = run(&with_ground(terrain, vec![deck("motorway", 0.32, 0.40, 421.0, 435.0)]));
         assert!(m[SEAT].skipped.is_some(), "no fitted decks here: {:?}", m[SEAT].dist.count());
+    }
+
+    const RAIL: &str = "contact.rail_standoff";
+
+    /// A tile whose whole extent is flat ground at `ground_m`, carrying one
+    /// level-0 centerline of `class` at `line_m`, plus any extra meshes.
+    fn railed(class: &str, ground_m: f32, line_m: f64, extra: Vec<RoadMesh>) -> TileScene {
+        let b = Bounds::of_tile(16, 34000, 23000);
+        TileScene {
+            z: 16,
+            x: 34000,
+            y: 23000,
+            scale: Scale::of(&b),
+            bounds: b,
+            terrain: Some(quad(0.0, 1.0, ground_m)),
+            roads: extra,
+            lines: vec![crate::verify::scene::RoadLine {
+                class: class.into(),
+                level: 0,
+                parts: vec![vec![(0.3, 0.5, line_m), (0.5, 0.5, line_m), (0.7, 0.5, line_m)]],
+            }],
+        }
+    }
+
+    #[test]
+    fn a_railway_in_the_air_is_caught() {
+        let m = run(&railed("narrow_gauge", 800.0, 812.0, vec![]));
+        let rail = &m[RAIL];
+        assert!(rail.violations() > 0, "a 12 m gap under a railway must be caught");
+        assert!(
+            (rail.worst_value().unwrap() - 12.0).abs() < 0.5,
+            "the height of the air under it, in metres: {:?}",
+            rail.worst_value()
+        );
+    }
+
+    /// The formation is where the ground is. Nothing to report, and the
+    /// population is still counted — a zero is evidence, a skip is not.
+    #[test]
+    fn a_railway_on_its_formation_scores_zero() {
+        let m = run(&railed("standard_gauge", 800.0, 800.0, vec![]));
+        assert!(m[RAIL].skipped.is_none() && m[RAIL].dist.count() > 0, "the samples are the proof");
+        assert_eq!(m[RAIL].violations(), 0);
+    }
+
+    /// The population trap: a viaduct's paint stroke reaches the archive at
+    /// level 0 because the level ordinal is attached after it is emitted
+    /// (`pipeline.rs`). It is metres above the ground because that is what a
+    /// viaduct is, and counting it would measure the emit order.
+    #[test]
+    fn paint_riding_a_viaduct_is_not_a_float() {
+        let m = run(&railed(
+            "narrow_gauge",
+            800.0,
+            812.0,
+            vec![RoadMesh { class: "narrow_gauge".into(), level: 1, mesh: quad(0.0, 1.0, 812.0) }],
+        ));
+        assert!(m[RAIL].skipped.is_some(), "a deck under the stroke carries it: {:?}", m[RAIL].dist.count());
+    }
+
+    /// `unknown` rail is excluded, because the archive carries no subtype and
+    /// the class is then indistinguishable from a road class the parser does
+    /// not recognise — the same reason `priors` gives it the junior default.
+    #[test]
+    fn an_unclassified_railway_is_not_in_the_population() {
+        let m = run(&railed("unknown", 800.0, 812.0, vec![]));
+        assert!(m[RAIL].skipped.is_some(), "no gauge, no measurement");
+    }
+
+    /// A road is not measured here. It has a kerb, a hole and an apron, and
+    /// `contact.kerb_lip` is where its drop is reported; folding it in would
+    /// pool two populations with different legitimate bands.
+    #[test]
+    fn a_road_centerline_is_not_measured_as_rail() {
+        let m = run(&railed("residential", 800.0, 812.0, vec![]));
+        assert!(m[RAIL].skipped.is_some(), "a street is the kerb metric's business");
     }
 }

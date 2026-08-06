@@ -97,6 +97,7 @@ I2. Every metric also states its own population; the table below is the summary.
 | `contact.kerb_unwalled` | I4 | The part of that drop with no apron face spanning it. This is the gate: the lip is the wall's height, this is how much of the wall is missing. |
 | `contact.deck_seat` | I4 | How far a *fitted* deck's lower abutment stands below the wall beside it, bounded by its own far end. A footbridge whose span edge landed part way down a gorge wall begins in the riverbed it crosses. Both halves of the rule earn their keep: without the wall test a bridge landing at the foot of a slope reads as buried, and without the bound a level footbridge on a hillside scores the hillside. |
 | `contact.deck_carried` | I4 | How far a *fitted* deck sinks below the solved deck running alongside it, over the population of fitted decks that one is actually carrying. The sample count is half the measurement: an ordinary footbridge is not a weak instance of this and is not counted, so a rule that puts sidewalks on their bridges empties the population rather than flattening it — 16 carried decks before `synth::carried`, 1 after. |
+| `contact.rail_standoff` | I4 | Drawn rail formation minus the drawn ground directly beneath it. Every other I4 contact metric is anchored on asphalt, and a rail class paves none — no kerb, no hole, no apron — so a railway standing in the air was measured nowhere. |
 | `order.deck_above_carriageway` | I3 | Deck running surface minus the at-grade asphalt sharing its plan position. Negative past the touchdown band means the level ordinal inverted. |
 | `clearance.deck_over_ground` | I4 | Deck soffit minus the terrain beneath it. Past a deck thickness, the deck ploughs into the hillside. |
 | `clearance.bore_cover` | I4 | Terrain minus the bore roof. Negative past a portal mouth means the tube is in open air. |
@@ -208,6 +209,21 @@ one of them badly wrong, which is why they are documented here:
   against the drawn deck surface rather than the centerline, `contact.deck_carried`
   finds 25 candidates too. A threshold that lands in an empty band, confirmed
   from both ends of the pipeline, is one that will not need revisiting.
+- **Under the formation there is no legitimate gap.** `contact.kerb_lip` probes
+  a metre *outside* a carriageway, where a road on a real embankment has a real
+  drop, so it is a size and not a verdict. `contact.rail_standoff` asks under
+  the track, which the bench is supposed to have raised to meet it, so any
+  positive answer is air. The threshold is therefore only as wide as the mesh's
+  own resolution, and it is read off the classes that do bench: `standard_gauge`
+  benches at 98.9 % of its at-grade nodes and runs p95 0.80 m, p98 1.45 m, p99
+  1.62 m, then jumps to 5.52 m at p999, with 0.12 % of its samples in the 2–4 m
+  bin. The level-0 *road* strokes, which take the same drape path, reach 1.27 m
+  at p999. Two metres sits in that empty band. What it costs is one exclusion
+  that has to be made or the metric measures the wrong thing: a structure span
+  emits its paint stroke *before* the level ordinal is attached to the
+  properties (`pipeline.rs`), so a viaduct's stroke arrives at level 0 and
+  metres up — 19,993 vertices on the Montreux extract — and is dropped by asking
+  whether a drawn structure surface lies within a metre of it.
 - A **quantized plan run divides into noise.** Plan coordinates are a `uint16`
   lattice, about 2 cm at z16, so a centerline step of a few centimetres carries
   a real height over a rounded run and reports a ratio that is mostly the
