@@ -96,6 +96,7 @@ I2. Every metric also states its own population; the table below is the summary.
 | `contact.kerb_lip` | I4 | Carriageway edge height minus the drawn ground a metre outside it. Not a defect on its own — it is how tall a wall the model implies, and a road on a real embankment has a real drop at its edge. It is what still sees a road standing on an embankment nobody built. |
 | `contact.kerb_unwalled` | I4 | The part of that drop with no apron face spanning it. This is the gate: the lip is the wall's height, this is how much of the wall is missing. |
 | `contact.deck_seat` | I4 | How far a *fitted* deck's lower abutment stands below the wall beside it, bounded by its own far end. A footbridge whose span edge landed part way down a gorge wall begins in the riverbed it crosses. Both halves of the rule earn their keep: without the wall test a bridge landing at the foot of a slope reads as buried, and without the bound a level footbridge on a hillside scores the hillside. |
+| `contact.deck_carried` | I4 | How far a *fitted* deck sinks below the solved deck running alongside it, over the population of fitted decks that one is actually carrying. The sample count is half the measurement: an ordinary footbridge is not a weak instance of this and is not counted, so a rule that puts sidewalks on their bridges empties the population rather than flattening it — 16 carried decks before `synth::carried`, 1 after. |
 | `order.deck_above_carriageway` | I3 | Deck running surface minus the at-grade asphalt sharing its plan position. Negative past the touchdown band means the level ordinal inverted. |
 | `clearance.deck_over_ground` | I4 | Deck soffit minus the terrain beneath it. Past a deck thickness, the deck ploughs into the hillside. |
 | `clearance.bore_cover` | I4 | Terrain minus the bore roof. Negative past a portal mouth means the tube is in open air. |
@@ -177,6 +178,36 @@ one of them badly wrong, which is why they are documented here:
   the ground comes at the span's edge. What is left is a deck tilted because one
   end fell down a wall: 12 of 115 fitted decks, against 60-odd that a rim search
   called broken.
+- A **path under a viaduct is not its sidewalk.** `contact.deck_carried` asks
+  which fitted decks a solved deck is carrying, and the tempting answer — the
+  ones running close alongside it — is wrong on 3 of the 25 the Montreux extract
+  offers, the worst being a 12 m footbridge over a stream *underneath* a
+  motorway whose deck is 68 m overhead. What separates them is that a sidewalk
+  **joins** its bridge: it arrives at the same abutment, so wherever the
+  annotation and the DEM agree at one end the fitted chord already lands on the
+  deck, while a path passing under one never touches it at either end. Two other
+  tests carry their own weight — the decks must be near-parallel, since with a
+  10 m lateral reach a short footbridge *crossing* a road bridge still reads as
+  79 % alongside it; and the shared run must be most of the span, which rejects
+  three long walkways that ride a bridge for part of their length and carry
+  themselves for the rest.
+- **Take the threshold from the gap, not from the middle.** The join ceiling
+  above was first set at a metre, reasoning from the population's median
+  (0.49 m). Sorted, the population says otherwise: seventeen candidates meet
+  their carrier within 1.91 m, then nothing at all until 4.69 m, then the three
+  passing underneath. A metre cuts straight through a dense cluster — 1.16,
+  1.26, 1.45, 1.76, 1.77, 1.85, 1.91 — and it showed, leaving six sidewalks
+  hanging under their own bridges that a ceiling anywhere in the empty band
+  claims. A median says where a population sits; only the sorted list says
+  where it can be cut.
+- **Two instruments, one population.** The lateral reach is the one constant
+  here that needed no judgement. `examples/carried_probe` searched the *scene
+  model* out to 25 m and found every carried path between 2.0 m and 9.5 m of a
+  solved centerline, with nothing at all in between 9.5 m and 25 m; a 4 m gap
+  and a 16 m gap claim the same 25 spans. Reading the *emitted archive* instead,
+  against the drawn deck surface rather than the centerline, `contact.deck_carried`
+  finds 25 candidates too. A threshold that lands in an empty band, confirmed
+  from both ends of the pipeline, is one that will not need revisiting.
 - A **quantized plan run divides into noise.** Plan coordinates are a `uint16`
   lattice, about 2 cm at z16, so a centerline step of a few centimetres carries
   a real height over a rounded run and reports a ratio that is mostly the

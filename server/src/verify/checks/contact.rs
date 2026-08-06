@@ -25,7 +25,7 @@
 
 use crate::verify::dist::Dist;
 use crate::verify::mesh::SurfaceMesh;
-use crate::verify::scene::TileScene;
+use crate::verify::scene::{RoadMesh, TileScene};
 use crate::verify::{Invariant, Metric, Offender, Sense, Worst};
 
 use super::{Check, Options};
@@ -72,6 +72,84 @@ const SEAT_WALL_GRADE: f64 = 0.6;
 /// failing.
 const SEAT_M: f64 = 2.0;
 
+/// How far, in plan, a footway may run from a solved deck's own *surface* and
+/// still be a sidewalk on that bridge rather than a bridge beside it.
+///
+/// The probe's finding is that this threshold is not delicate, and the reason
+/// to trust it: searching out to 25 m, `examples/carried_probe` found the
+/// centerline offset of every carried path between 2.0 m and 9.5 m, and
+/// **nothing at all between 9.5 m and 25 m**. Any cut through that empty band
+/// claims the same spans (a 4 m gap and a 16 m gap both claim 25 of 110).
+///
+/// Ten metres reads that finding into archive space, where the distance
+/// available is to the carrier's drawn *surface* rather than to its
+/// centerline. Surface distance is the smaller of the two by the deck's own
+/// half-width, so it cannot push a carried span past 9.5 m, and it cannot pull
+/// an uncarried one — over 25 m away by centerline — nearer than about 20 m.
+/// The two instruments agree on the count it produces: 25 candidate carriers
+/// from the scene model, 25 from the emitted archive.
+const CARRY_LATERAL_M: f64 = 10.0;
+
+/// How much of a fitted deck must run alongside one solved deck before that
+/// deck counts as carrying it — the test that separates a sidewalk *on* a
+/// bridge from a footway that merely reaches one.
+///
+/// Measured over the 13 archive pairs that clear [`CARRY_LATERAL_M`] and
+/// [`CARRY_JOIN_M`], coverage is sharply bimodal — p0 0.08, then p25 0.90, p50
+/// 1.00 — and the gate sits in the empty middle: 0.3 through 0.9 all keep 10 or
+/// 11 of the 13. The same split read as a shared run in metres is cleaner
+/// still, with the rejected three sharing 1.7 m, 11.7 m and 14.7 m of their
+/// span and every accepted one sharing 15 m or more.
+///
+/// The three it rejects are real, and rejecting them is the point: they are
+/// long walkways that run beside a road bridge for part of their length and
+/// carry themselves for the rest. A rule that seats a whole span on a carrier
+/// has nothing to say about a span that is mostly not on one, and a check
+/// should claim what its rule can fix.
+const CARRY_COVER: f64 = 0.7;
+
+/// How closely the two decks must meet at one of the footway's ends.
+///
+/// This is the half of the rule that keeps a genuine footbridge out of the
+/// population, and it is not optional: 3 of the 25 spans the lateral test alone
+/// claims are paths passing *underneath* a structure, including a 12 m
+/// footbridge under a motorway viaduct whose deck is 68 m overhead. A sidewalk
+/// **joins** its road bridge — it arrives at the same abutment — so wherever
+/// the annotation and the DEM agree at one end the fitted chord already lands
+/// on the deck (p50 0.49 m). A path passing under one never touches it at
+/// either end.
+///
+/// Sorted, the population separates itself and leaves this threshold a band to
+/// sit in rather than a value to tune: seventeen candidates within 1.91 m, then
+/// nothing until 4.69 m, then the three passing underneath. Every ceiling from
+/// 2.0 m to 4.6 m claims the same spans.
+const CARRY_JOIN_M: f64 = 3.0;
+
+/// How nearly parallel the two decks' axes must be — |cos| of the angle
+/// between them, so 0.87 is 30°.
+///
+/// A sidewalk is parallel to its bridge by construction, and this is the test
+/// that says *along* rather than *across*. Coverage cannot do it on its own:
+/// with a [`CARRY_LATERAL_M`] reach of ten metres, a twenty-metre footbridge
+/// crossing a road bridge at right angles still has most of its samples within
+/// reach of it, and reads as 79 % covered. Thirty degrees leaves room for a
+/// bridge that curves — both axes are end-to-end chords, which a curving deck
+/// and its sidewalk strike at slightly different angles.
+const CARRY_ALONG: f64 = 0.87;
+
+/// Sample spacing along a fitted deck's axis, and how far off that axis the
+/// deck's own surface may be and still answer for it. A fitted deck is
+/// pedestrian-scale (`priors::PATH_STRUCTURE_HALF_WIDTH_M` = 1.25 m), so two
+/// metres reaches its far edge on a span that curves away from its own chord.
+const CARRY_STEP_M: f64 = 2.0;
+const CARRY_NEAR_M: f64 = 2.0;
+
+/// How far a footway may sink below the deck carrying it before the two read
+/// as separate structures. A sidewalk sits within a kerb and a parapet of its
+/// carriageway; a metre is past both and far short of the p50 3.84 m that the
+/// duplicate-bridge defect costs.
+const CARRY_M: f64 = 1.0;
+
 pub struct Contact {
     lip: Dist,
     lip_worst: Worst,
@@ -79,6 +157,8 @@ pub struct Contact {
     unwalled_worst: Worst,
     seat: Dist,
     seat_worst: Worst,
+    carried: Dist,
+    carried_worst: Worst,
 }
 
 impl Contact {
@@ -90,6 +170,72 @@ impl Contact {
             unwalled_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             seat: Dist::metres(),
             seat_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            carried: Dist::metres(),
+            carried_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+        }
+    }
+
+    /// Invariant 4 alongside a road bridge: how far a footway's own deck sinks
+    /// below the solved deck that is actually carrying it.
+    ///
+    /// Overture maps a road bridge's separated sidewalk as an independently
+    /// `bridge`-tagged footway, and a footway is a **D** feature, so
+    /// `synth::draped` fits it a deck of its own chorded to the ground at the
+    /// two ends of its span. Where the path runs *along* a road bridge that
+    /// assumption is wrong twice over: the ground it reads is the ground under
+    /// the bridge, and the result is a second, smaller structure hanging
+    /// beneath the real one — joined to it at the abutment where the two
+    /// happen to agree, and diving under it at the other end. In the Montreux
+    /// extract that is 22.7 % of every footbridge in the scene.
+    ///
+    /// Three conditions say *carried*, and all three are load-bearing:
+    ///
+    /// - it runs within [`CARRY_LATERAL_M`] of a solved deck's surface,
+    /// - over at least [`CARRY_COVER`] of its own length,
+    /// - and **meets** that deck within [`CARRY_JOIN_M`] at one of its ends.
+    ///
+    /// The last is what separates a sidewalk from a path passing underneath.
+    /// Without it the worst offender in the extract is a 12 m footbridge
+    /// crossing a stream under a motorway viaduct, reported as 68 m wrong for
+    /// the crime of being beneath a road — which is what it is for.
+    fn visit_carried(&mut self, tile: &TileScene) {
+        let carriers: Vec<&RoadMesh> =
+            tile.roads.iter().filter(|r| r.is_deck() && !r.is_fitted_deck()).collect();
+        for deck in tile.roads.iter().filter(|r| r.is_fitted_deck()) {
+            let Some(ends) = deck_ends(&deck.mesh) else { continue };
+            // A deck clipped by the tile border has an "end" that is the
+            // border, and this measurement is taken at the ends; the tile that
+            // owns them answers for it.
+            if ends.iter().any(|e| !tile.owns(e.x, e.y)) {
+                continue;
+            }
+            // The population is the *carried* decks, not every fitted one. A
+            // footbridge that carries itself is not a weak instance of this
+            // defect, it is a different thing, and counting it would bury the
+            // measurement under a hundred structural zeroes. It also makes the
+            // sample count the headline: a rule that puts sidewalks on their
+            // bridges empties this population rather than flattening it.
+            let Some(carrier) = carried_below(tile, deck, &carriers, &ends) else { continue };
+            let v = carrier.sink;
+            self.carried.push(v);
+            if v > CARRY_M {
+                let (lon, lat) = tile.lonlat(ends[0].x, ends[0].y);
+                self.carried_worst.offer(Offender {
+                    lon,
+                    lat,
+                    zoom: tile.z,
+                    value: v,
+                    note: format!(
+                        "{} deck runs {:.0} % along a {} deck it meets to {:.2} m at one end, \
+                         and sinks {:.2} m below it",
+                        deck.class,
+                        carrier.covered * 100.0,
+                        carrier.class,
+                        carrier.join,
+                        v
+                    ),
+                });
+            }
         }
     }
 
@@ -249,8 +395,127 @@ fn deck_ends(m: &SurfaceMesh) -> Option<[DeckEnd; 2]> {
     Some([end(true)?, end(false)?])
 }
 
+/// The solved deck carrying a fitted one, and how far the fitted deck sinks
+/// below it.
+struct Carrier<'a> {
+    class: &'a str,
+    /// Fraction of the fitted deck's samples that found this deck alongside.
+    covered: f64,
+    /// The closer of the two ends' height disagreements — how well the two
+    /// decks meet where the sidewalk joins its bridge.
+    join: f64,
+    /// The deepest the fitted deck runs below it, never negative: a footway
+    /// riding a little *above* its carriageway is a kerb, not a defect.
+    sink: f64,
+}
+
+/// A deck's long axis as a unit vector in metres. Unit plan space is not
+/// isotropic — a tile is about twice as wide as it is tall in metres per unit —
+/// so an angle taken there would call two decks parallel that are not.
+fn axis_dir(tile: &TileScene, ends: &[DeckEnd; 2]) -> Option<(f64, f64)> {
+    let dx = (ends[1].x - ends[0].x) * tile.scale.mx;
+    let dy = (ends[1].y - ends[0].y) * tile.scale.my;
+    let len = dx.hypot(dy);
+    (len > 0.0).then(|| (dx / len, dy / len))
+}
+
+/// Which solved deck, if any, is carrying this fitted one.
+///
+/// Walks the fitted deck's own axis and asks, at each step, what a solved deck
+/// spans nearby. The carrier is the one alongside the most of it — the same
+/// rule `examples/carried_probe` uses, and for the same reason: a footway at a
+/// road junction can run beside two decks, and the one it is *on* is the one
+/// it never leaves.
+fn carried_below<'a>(
+    tile: &TileScene,
+    deck: &RoadMesh,
+    carriers: &[&'a RoadMesh],
+    ends: &[DeckEnd; 2],
+) -> Option<Carrier<'a>> {
+    if carriers.is_empty() {
+        return None;
+    }
+    let len = tile.scale.dist(ends[0].x, ends[0].y, ends[1].x, ends[1].y);
+    if len < 1.0 {
+        return None;
+    }
+    // The fitted deck's own top along its axis. The height is read off the
+    // chord rather than out of the mesh: a fitted deck *is* a chord between its
+    // two ends (`synth::draped`), so this is exact, where a `span_near` on its
+    // own surface would return the highest corner of whatever triangle reaches
+    // the query — the far abutment, on a deck swept as two long triangles.
+    // The mesh is still asked whether it is *there*, so a span that curves away
+    // from its chord drops the samples that left it instead of measuring the
+    // air beside it.
+    let steps = (len / CARRY_STEP_M).ceil() as usize;
+    let mut axis: Vec<(f64, f64, f64)> = Vec::with_capacity(steps + 1);
+    for i in 0..=steps {
+        let t = i as f64 / steps as f64;
+        let px = ends[0].x + (ends[1].x - ends[0].x) * t;
+        let py = ends[0].y + (ends[1].y - ends[0].y) * t;
+        if deck.mesh.span_near(px, py, &tile.scale, CARRY_NEAR_M).is_some() {
+            axis.push((px, py, ends[0].top + (ends[1].top - ends[0].top) * t));
+        }
+    }
+    if axis.len() < 2 {
+        return None;
+    }
+    let along = axis_dir(tile, ends)?;
+    let mut best: Option<Carrier> = None;
+    for c in carriers {
+        // Along it, not across it. Asked before any sampling: a deck the
+        // footway merely crosses answers the lateral and coverage tests over a
+        // short span and has no business being called its carrier.
+        let parallel = deck_ends(&c.mesh)
+            .and_then(|e| axis_dir(tile, &e))
+            .is_some_and(|d| (d.0 * along.0 + d.1 * along.1).abs() >= CARRY_ALONG);
+        if !parallel {
+            continue;
+        }
+        let (mut hits, mut sink) = (0usize, f64::NEG_INFINITY);
+        // The disagreement at the *nearest sample to each end* that found this
+        // deck at all, rather than at the end sample itself. A road bridge's
+        // deck rarely starts and stops exactly where the sidewalk's annotated
+        // span does, and demanding it be there at the last centimetre rejects
+        // the carrier over a metre of arc.
+        let (mut first, mut last) = (None, None);
+        for &(px, py, top) in axis.iter() {
+            let Some((_, ctop)) = c.mesh.span_near(px, py, &tile.scale, CARRY_LATERAL_M) else {
+                continue;
+            };
+            hits += 1;
+            sink = sink.max(ctop - top);
+            first = first.or(Some(ctop - top));
+            last = Some(ctop - top);
+        }
+        let covered = hits as f64 / axis.len() as f64;
+        if covered < CARRY_COVER {
+            continue;
+        }
+        // How well they meet at an end. A deck reaching neither end of the
+        // footway is not what the footway is standing on, whatever it covers
+        // in between.
+        let join = match (first, last) {
+            (Some(f), Some(l)) => f.abs().min(l.abs()),
+            (Some(x), None) | (None, Some(x)) => x.abs(),
+            (None, None) => continue,
+        };
+        if join > CARRY_JOIN_M {
+            continue;
+        }
+        if best.as_ref().is_none_or(|b| covered > b.covered) {
+            best = Some(Carrier { class: c.class.as_str(), covered, join, sink: sink.max(0.0) });
+        }
+    }
+    best
+}
+
 impl Check for Contact {
     fn visit(&mut self, tile: &TileScene, _opt: &Options) {
+        // Two decks against each other: no terrain needed, and asked before the
+        // terrain gate so a zoom that carries structures but no ground mesh
+        // still answers for them.
+        self.visit_carried(tile);
         let Some(terrain) = &tile.terrain else { return };
         self.visit_seats(tile, terrain);
         // The kerb lip: at every silhouette edge of the carriageway, the road's
@@ -448,6 +713,43 @@ impl Check for Contact {
                 }),
                 dist: self.seat,
                 worst: self.seat_worst.into_vec(),
+            },
+            Metric {
+                id: "contact.deck_carried".into(),
+                invariant: Invariant::I4,
+                title: "Footway deck sunk below the bridge carrying it".into(),
+                population: format!(
+                    "Every *carried* fitted deck (`synth::draped`) whose two ends lie inside \
+                     the tile proper — one where a single solved deck runs within \
+                     {CARRY_LATERAL_M:.0} m of it in plan over {:.0} % of its length and meets \
+                     it to within {CARRY_JOIN_M:.1} m at one end. The sample count is half the \
+                     measurement: an ordinary footbridge is not a weak instance of this defect \
+                     and is not counted, so a rule that puts sidewalks on their bridges empties \
+                     this population rather than flattening it. Two coverage limits: a footway \
+                     whose carrier is in the neighbouring tile is not measured, and the lateral \
+                     test is to the carrier's drawn surface, so a deck narrower than the real \
+                     carriageway shortens the reach.",
+                    CARRY_COVER * 100.0
+                ),
+                detail: format!(
+                    "How far a footway's own deck sinks below the solved deck alongside it. \
+                     Overture tags a road bridge's separated sidewalk as a bridge in its own \
+                     right, and a footway is a draped feature, so it is fitted a deck chorded \
+                     to the ground at its span's ends — the ground *under* the bridge it is \
+                     standing on. What is drawn is a second, smaller structure hanging \
+                     beneath the real one, joined to it at whichever abutment the annotation \
+                     and the DEM happen to agree on. Past {CARRY_M:.1} m — beyond any kerb or \
+                     parapet — the two read as separate bridges."
+                ),
+                sense: Sense::HigherIsWorse,
+                threshold: CARRY_M,
+                skipped: self.carried.is_empty().then(|| {
+                    "no fitted decks at this zoom — the extract carries no draped feature with \
+                     an elevated span"
+                        .to_string()
+                }),
+                dist: self.carried,
+                worst: self.carried_worst.into_vec(),
             },
         ]
     }
@@ -743,6 +1045,118 @@ mod tests {
             "a 100 % hillside above a level deck is terrain, not a defect: {:?}",
             m[SEAT].worst_value()
         );
+    }
+
+    const CARRIED: &str = "contact.deck_carried";
+
+    /// A slab from `x0..x1` and `y0..y1`, its top running `z0` to `z1`.
+    fn slab(class: &str, x0: f32, x1: f32, y0: f32, y1: f32, z0: f32, z1: f32) -> RoadMesh {
+        RoadMesh {
+            class: class.into(),
+            level: 1,
+            mesh: SurfaceMesh::from_parts(
+                vec![x0, x1, x1, x0],
+                vec![y0, y0, y1, y1],
+                vec![z0, z1, z1, z0],
+                vec![0, 1, 2, 0, 2, 3],
+            )
+            .unwrap(),
+        }
+    }
+
+    /// A tile holding decks and no ground: the carried check compares two
+    /// structures and reads no terrain, so it must answer without one.
+    fn decks_only(roads: Vec<RoadMesh>) -> TileScene {
+        let b = Bounds::of_tile(16, 34000, 23000);
+        TileScene {
+            z: 16,
+            x: 34000,
+            y: 23000,
+            scale: Scale::of(&b),
+            bounds: b,
+            terrain: None,
+            roads,
+            lines: Vec::new(),
+        }
+    }
+
+    /// The shape Overture gives a road bridge with a separated sidewalk: a
+    /// 55 m residential deck, and 3 m beside it a footway tagged as a bridge
+    /// of its own. `sink` is how far the footway's far end falls below the
+    /// deck it joins at the near one. The tile is ~546 m across and ~304 m
+    /// up, so the y offsets here are metres, not a coincidence of scale.
+    fn sidewalk(sink: f32) -> Vec<RoadMesh> {
+        vec![
+            slab("residential", 0.45, 0.55, 0.4934, 0.5066, 500.0, 500.0),
+            slab("footway", 0.45, 0.55, 0.5124, 0.5206, 500.0, 500.0 - sink),
+        ]
+    }
+
+    /// The defect: the sidewalk is fitted to the ground *under* the bridge it
+    /// is standing on, so it joins the deck at one abutment and dives away
+    /// from it at the other.
+    #[test]
+    fn a_sidewalk_sunk_below_its_road_bridge_is_caught() {
+        let m = run(&decks_only(sidewalk(4.0)));
+        assert!(m[CARRIED].violations() > 0, "a footway 4 m under its bridge must be caught");
+        let worst = m[CARRIED].worst_value().unwrap();
+        assert!((worst - 4.0).abs() < 0.5, "the sink in metres: {worst:?}");
+    }
+
+    /// The same sidewalk, riding the deck that carries it. Still in the
+    /// population — it is a carried deck — but nothing to report.
+    #[test]
+    fn a_sidewalk_level_with_its_bridge_is_clean() {
+        let m = run(&decks_only(sidewalk(0.0)));
+        assert_eq!(m[CARRIED].dist.count(), 1, "a carried deck is measured either way");
+        assert_eq!(m[CARRIED].violations(), 0, "level with its carrier is not a defect");
+    }
+
+    /// A footbridge passing *underneath* a viaduct is not its sidewalk, and
+    /// this is the case that made the end-agreement test necessary: without it
+    /// the worst offender in the extract is a 12 m footbridge under a motorway
+    /// whose deck is 68 m overhead.
+    #[test]
+    fn a_footbridge_under_a_viaduct_is_not_carried() {
+        let mut roads = sidewalk(0.0);
+        roads[1] = slab("footway", 0.45, 0.55, 0.5124, 0.5206, 460.0, 460.0);
+        let m = run(&decks_only(roads));
+        assert!(m[CARRIED].skipped.is_some(), "40 m below is passing under, not riding on");
+    }
+
+    /// A footbridge with no structure beside it is an ordinary footbridge, and
+    /// not a weak instance of this defect: it is not in the population at all.
+    #[test]
+    fn a_lone_footbridge_is_not_in_the_population() {
+        let m = run(&decks_only(vec![slab(
+            "footway", 0.45, 0.55, 0.5124, 0.5206, 500.0, 496.0,
+        )]));
+        assert!(m[CARRIED].skipped.is_some(), "nothing is carrying it: {:?}", m[CARRIED].dist.count());
+    }
+
+    /// A road bridge 25 m away carries nothing. The lateral test is what says
+    /// so, and the probe's finding is that it has a wide empty band to sit in.
+    #[test]
+    fn a_deck_too_far_to_one_side_does_not_carry() {
+        let mut roads = sidewalk(4.0);
+        roads[0] = slab("residential", 0.45, 0.55, 0.5988, 0.6120, 500.0, 500.0);
+        let m = run(&decks_only(roads));
+        assert!(m[CARRIED].skipped.is_some(), "a deck 25 m off is a different bridge");
+    }
+
+    /// A footway crossing a bridge at right angles shares one deck width with
+    /// it, not its length. Coverage is the test that says so — without it the
+    /// join and lateral tests alone would call every path near an abutment a
+    /// sidewalk.
+    #[test]
+    fn a_footway_crossing_a_bridge_is_not_carried_by_it() {
+        let m = run(&decks_only(vec![
+            slab("residential", 0.45, 0.55, 0.4934, 0.5066, 500.0, 500.0),
+            // Across the deck rather than along it, and long enough that the
+            // shared run is a small fraction of it.
+            slab("footway", 0.4975, 0.5025, 0.45, 0.55, 500.0, 496.0),
+        ]));
+        assert!(m[CARRIED].skipped.is_some(), "crossing a bridge is not riding it");
     }
 
     /// A solved deck is not this check's business: its abutments come from a

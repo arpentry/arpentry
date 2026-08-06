@@ -287,6 +287,23 @@ only ever make a deck less steep, and the new abutment is a point on the ground,
 so the deck still meets the ground at both ends and the approach drapes up to it
 with no step.
 
+Fitting a deck at all assumes there *is* a second structure, and often there is
+not. Overture maps a road bridge's separated sidewalk as an independently
+`bridge`-tagged footway, so the assumption fails wherever a path runs *along* a
+road bridge: the ground the fit reads is the ground under the bridge the path is
+standing on, and what gets drawn is a second, smaller structure hanging beneath
+the real one — joined to it at whichever abutment the annotation and the DEM
+happen to agree on, and diving away from it at the other. That is 22.7 % of
+every footbridge in the extract. The answer is not a better fit but a different
+one: **where a run is carried, there is no second bridge.** A span that runs
+alongside one solved deck, *along* it rather than across it, and meets it at one
+of its own ends, stops being a fitted deck and becomes a line riding the
+carrier's solved deck — the mechanism a tunnel's ribbon already uses for its
+bore ramp. Nothing is stamped, so no duplicate solid exists to hang. This is not
+a promotion either: reading a senior stratum's datum is precisely what a draped
+feature is *for*, and the footway still writes nothing back. The only change is
+that the finished world beneath a sidewalk is a deck rather than the ground.
+
 **B — Buildings.** Founded on the finished ground; no authority over any
 network.
 
@@ -551,6 +568,7 @@ check exists that would have found it.
 | I3 (at grade) | `contact.level_crossing` | Every same-level crossing | Road and rail surfaces not coincident |
 | I4 | `contact.*`, `clearance.deck_over_ground` | Structure ends, supports, building bases, portal mouths | A gap or an intersection outside the contact band |
 | I4 (fitted decks) | `contact.deck_seat` | The lower abutment of every deck fitted to the ground (§4.2, D) | A deck starting below the wall beside it — a footbridge beginning in the riverbed it crosses |
+| I4 (carried decks) | `contact.deck_carried` | Every fitted deck running along a solved one (§4.2, D) | A deck sunk below the structure carrying it — a sidewalk hanging under its own road bridge |
 | I5 | `lod.structure_drift`, `seam.*` | Geometry shared between tiles and zooms | Any height difference |
 | I6 | `slope.terrain_face`, `slope.carriageway_face`, `slope.terrain_tearing`, plus degradation-ladder assertions | Terrain and asphalt triangles; features with degraded input | A manufactured retaining wall, a torn surface, or a feature that produced spectacle instead of falling a rung |
 | **I7** | **`authority.inversion`** | Every senior datum | **Re-solve with a junior stratum deleted; any senior height that changed** |

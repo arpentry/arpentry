@@ -414,6 +414,12 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         Some(path) => Some(Dem::open(path)?),
         None => None,
     };
+    // Every solved bridge deck, indexed by plan position, so phase 1 can ask
+    // whether a draped feature's elevated span is really the sidewalk on one
+    // of them (`synth::carried`). Built once and shared: the answer is a
+    // function of the solved model, so every worker and every tile must get
+    // the same one (I5).
+    let carriers = synth::carried::Carriers::build(&scene, &solved);
     // Phase 1 parallelism is bounded by its work items (row groups); the emit
     // pool below is not.
     let phase1_threads = threads.min(queue.len().max(1));
@@ -434,6 +440,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             &junctions,
             &ground,
             primary_dem,
+            &carriers,
         )?;
         merge_phase1(&mut stats, &partial);
         sorters.push(sorter);
@@ -444,6 +451,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             // the closure moves that one binding and borrows the rest.
             let (inputs, queue) = (&inputs, &queue);
             let (scene, solved, junctions, ground) = (&scene, &solved, &junctions, &ground);
+            let carriers = &carriers;
             for _ in 0..phase1_threads {
                 let dem = match &primary_dem {
                     Some(d) => Some(d.fork()?),
@@ -460,6 +468,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
                         junctions,
                         ground,
                         dem,
+                        carriers,
                     )
                 }));
             }
@@ -1046,6 +1055,7 @@ fn phase1_worker(
     junctions: &JunctionModel,
     ground: &Arc<GroundStack>,
     dem: Option<Dem>,
+    carriers: &synth::carried::Carriers,
 ) -> Result<(ExternalSorter, Stats), Error> {
     let mut sorter = ExternalSorter::new(&cfg.tmp_dir, mem_budget);
     let mut stats = Stats::default();
@@ -1088,6 +1098,7 @@ fn phase1_worker(
                 junctions,
                 &mut spans_cache,
                 &mut sampler,
+                carriers,
             )?;
         }
     }
@@ -1125,6 +1136,7 @@ fn process_feature(
     junctions: &JunctionModel,
     spans_cache: &mut HashMap<u32, Vec<Span>>,
     sampler: &mut GroundSampler,
+    carriers: &synth::carried::Carriers,
 ) -> Result<(), Error> {
     stats.features_read += 1;
     let Some(bb) = clip::bbox(&f.geometry) else {
@@ -1232,7 +1244,17 @@ fn process_feature(
                         // client colours it as a structure, exactly as a
                         // solved deck's does.
                         props.push(("level_rules".to_string(), Value::Int(level)));
-                        Synth::DrapedDeck
+                        // Unless there is no second bridge: a sidewalk tagged
+                        // as its own structure rides the road bridge carrying
+                        // it, and stamps nothing (`synth::carried`). Reading
+                        // the street stratum's deck is not a promotion — the
+                        // path still writes nothing back.
+                        match carriers.of(&piece.0, scene, solved, sampler, solved.z_ref) {
+                            Some(corridor) => {
+                                Synth::Road { corridor: Some(corridor), deck: true }
+                            }
+                            None => Synth::DrapedDeck,
+                        }
                     } else {
                         synth
                     };

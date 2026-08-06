@@ -12,6 +12,7 @@
 //! plain, never something wrong.
 
 pub mod area;
+pub mod carried;
 pub mod draped;
 pub mod height;
 pub mod junction;
