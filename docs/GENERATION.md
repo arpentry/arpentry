@@ -271,6 +271,22 @@ loophole admitting a D feature into a solve is a loophole through which half
 the network can perturb the other half. In particular, **carrying a structure
 span is not a promotion**.
 
+A fitted deck has no anchors and no grade ceiling, so its whole vertical answer
+rests on the ground read at the two ends of the annotated span — which §2.1
+says is exactly where the data is least trustworthy. Against a near-vertical
+wall the two errors compound: two metres of plan disagreement between the
+annotation and the DEM is a dozen metres of height, and the chord starts part
+way down the gorge it is meant to cross. One constraint answers it, and it is
+about *where a structure may begin* rather than how high it is: **a path cannot
+descend a cliff.** Where the ground immediately outside an abutment climbs
+faster than the class walks, that abutment did not land on a bank, and it walks
+outward along the path's own line to ground that can carry it — stopping at the
+bank, or at the height of the span's other abutment, whichever comes first. The
+cap is what keeps this a fitting rule rather than a solve: the correction can
+only ever make a deck less steep, and the new abutment is a point on the ground,
+so the deck still meets the ground at both ends and the approach drapes up to it
+with no step.
+
 **B — Buildings.** Founded on the finished ground; no authority over any
 network.
 
@@ -534,6 +550,7 @@ check exists that would have found it.
 | I3 | `clearance.*`, `order.*` | Every derived crossing | Gap below `clearance(kind)`; inverted order |
 | I3 (at grade) | `contact.level_crossing` | Every same-level crossing | Road and rail surfaces not coincident |
 | I4 | `contact.*`, `clearance.deck_over_ground` | Structure ends, supports, building bases, portal mouths | A gap or an intersection outside the contact band |
+| I4 (fitted decks) | `contact.deck_seat` | The lower abutment of every deck fitted to the ground (§4.2, D) | A deck starting below the wall beside it — a footbridge beginning in the riverbed it crosses |
 | I5 | `lod.structure_drift`, `seam.*` | Geometry shared between tiles and zooms | Any height difference |
 | I6 | `slope.terrain_face`, `slope.carriageway_face`, `slope.terrain_tearing`, plus degradation-ladder assertions | Terrain and asphalt triangles; features with degraded input | A manufactured retaining wall, a torn surface, or a feature that produced spectacle instead of falling a rung |
 | **I7** | **`authority.inversion`** | Every senior datum | **Re-solve with a junior stratum deleted; any senior height that changed** |

@@ -406,6 +406,14 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         inputs.push((*layer, gp));
     }
 
+    // One DEM handle per phase-1 worker, forked from a primary so the decoded
+    // tiles are shared — the same arrangement the emit pool uses. Phase 1 reads
+    // the ground only where a draped feature carries an elevated span, which is
+    // a few hundred features in a city extract.
+    let primary_dem = match &cfg.terrain {
+        Some(path) => Some(Dem::open(path)?),
+        None => None,
+    };
     // Phase 1 parallelism is bounded by its work items (row groups); the emit
     // pool below is not.
     let phase1_threads = threads.min(queue.len().max(1));
@@ -416,16 +424,43 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     let queue = Mutex::new(queue);
     let mut sorters: Vec<ExternalSorter> = Vec::with_capacity(phase1_threads);
     if phase1_threads == 1 {
-        let (sorter, partial) =
-            phase1_worker(&inputs, &queue, cfg, worker_budget, &scene, &solved, &junctions)?;
+        let (sorter, partial) = phase1_worker(
+            &inputs,
+            &queue,
+            cfg,
+            worker_budget,
+            &scene,
+            &solved,
+            &junctions,
+            &ground,
+            primary_dem,
+        )?;
         merge_phase1(&mut stats, &partial);
         sorters.push(sorter);
     } else {
         std::thread::scope(|scope| -> Result<(), Error> {
             let mut handles = Vec::with_capacity(phase1_threads);
+            // Only the DEM handle is per-worker; everything else is shared, so
+            // the closure moves that one binding and borrows the rest.
+            let (inputs, queue) = (&inputs, &queue);
+            let (scene, solved, junctions, ground) = (&scene, &solved, &junctions, &ground);
             for _ in 0..phase1_threads {
-                handles.push(scope.spawn(|| {
-                    phase1_worker(&inputs, &queue, cfg, worker_budget, &scene, &solved, &junctions)
+                let dem = match &primary_dem {
+                    Some(d) => Some(d.fork()?),
+                    None => None,
+                };
+                handles.push(scope.spawn(move || {
+                    phase1_worker(
+                        inputs,
+                        queue,
+                        cfg,
+                        worker_budget,
+                        scene,
+                        solved,
+                        junctions,
+                        ground,
+                        dem,
+                    )
                 }));
             }
             for handle in handles {
@@ -1009,9 +1044,17 @@ fn phase1_worker(
     scene: &SceneGraph,
     solved: &SolvedModel,
     junctions: &JunctionModel,
+    ground: &Arc<GroundStack>,
+    dem: Option<Dem>,
 ) -> Result<(ExternalSorter, Stats), Error> {
     let mut sorter = ExternalSorter::new(&cfg.tmp_dir, mem_budget);
     let mut stats = Stats::default();
+    // The engineered ground, for the one phase-1 decision that needs it: where
+    // a draped feature's elevated span may start (`synth::draped::seat`). It is
+    // taken before the cut because moving an abutment moves the boundary
+    // between the deck and the path draped up to it, and the cut is here.
+    let mut sampler =
+        GroundSampler::new(dem, Arc::clone(ground), solved.z_ref, mesh_options(cfg));
     // Solved-reconciled span lists, built lazily per corridor — a corridor's
     // many segments all cut against the same list.
     let mut spans_cache: HashMap<u32, Vec<Span>> = HashMap::new();
@@ -1044,6 +1087,7 @@ fn phase1_worker(
                 solved,
                 junctions,
                 &mut spans_cache,
+                &mut sampler,
             )?;
         }
     }
@@ -1080,6 +1124,7 @@ fn process_feature(
     solved: &SolvedModel,
     junctions: &JunctionModel,
     spans_cache: &mut HashMap<u32, Vec<Span>>,
+    sampler: &mut GroundSampler,
 ) -> Result<(), Error> {
     stats.features_read += 1;
     let Some(bb) = clip::bbox(&f.geometry) else {
@@ -1175,7 +1220,12 @@ fn process_feature(
         }
         if let Geometry::LineString(line) = &f.geometry {
             if !f.level_runs.is_empty() {
-                for (piece, level) in level_pieces(line, &f.level_runs) {
+                // Where the span's edge landed on a wall rather than on a bank,
+                // the abutment is re-seated on ground that can carry it before
+                // the cut is made — otherwise the deck is chorded from a point
+                // part way down the gorge it is supposed to cross.
+                let runs = synth::draped::seat(line, &f.level_runs, sampler, solved.z_ref);
+                for (piece, level) in level_pieces(line, &runs) {
                     let mut props = f.properties.clone();
                     let tag = if level > 0 {
                         // The level ordinal survives as a property so the

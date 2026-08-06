@@ -95,6 +95,7 @@ I2. Every metric also states its own population; the table below is the summary.
 |---|---|---|
 | `contact.kerb_lip` | I4 | Carriageway edge height minus the drawn ground a metre outside it. Not a defect on its own — it is how tall a wall the model implies, and a road on a real embankment has a real drop at its edge. It is what still sees a road standing on an embankment nobody built. |
 | `contact.kerb_unwalled` | I4 | The part of that drop with no apron face spanning it. This is the gate: the lip is the wall's height, this is how much of the wall is missing. |
+| `contact.deck_seat` | I4 | How far a *fitted* deck's lower abutment stands below the wall beside it, bounded by its own far end. A footbridge whose span edge landed part way down a gorge wall begins in the riverbed it crosses. Both halves of the rule earn their keep: without the wall test a bridge landing at the foot of a slope reads as buried, and without the bound a level footbridge on a hillside scores the hillside. |
 | `order.deck_above_carriageway` | I3 | Deck running surface minus the at-grade asphalt sharing its plan position. Negative past the touchdown band means the level ordinal inverted. |
 | `clearance.deck_over_ground` | I4 | Deck soffit minus the terrain beneath it. Past a deck thickness, the deck ploughs into the hillside. |
 | `clearance.bore_cover` | I4 | Terrain minus the bore roof. Negative past a portal mouth means the tube is in open air. |
@@ -164,6 +165,18 @@ one of them badly wrong, which is why they are documented here:
   (`APRON_NEAR_M`), and allows `APRON_SLOP_M` at each end for quantization and
   for a probe standing a metre out on sloping ground. Measuring it the obvious
   way reported every apron as absent.
+- A **mountain above a footbridge is not a defect.** The first version of
+  `contact.deck_seat` asked how far the ground beyond an abutment climbs above
+  it, and on a Montreux hillside that scores the hillside: over the extract's
+  220 abutments the ground's own outward grade is p50 9 %, p75 32 %, p95 83 %,
+  so a plain rim search finds the mountain on half the population and reports
+  20 m for a level footbridge crossing its own gully. Two filters make the
+  measurement mean what it says — only ground steeper than 60 % is followed
+  (below that is a slope the path walks), and the climb is bounded by the
+  deck's *own far end*, which is the only evidence in the archive of how high
+  the ground comes at the span's edge. What is left is a deck tilted because one
+  end fell down a wall: 12 of 115 fitted decks, against 60-odd that a rim search
+  called broken.
 - A **quantized plan run divides into noise.** Plan coordinates are a `uint16`
   lattice, about 2 cm at z16, so a centerline step of a few centimetres carries
   a real height over a rounded run and reports a ratio that is mostly the

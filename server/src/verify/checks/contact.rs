@@ -53,11 +53,32 @@ const APRON_SLOP_M: f64 = 0.5;
 /// still the ground *at* the kerb and not the next thing along.
 const LIP_PROBE_M: f64 = 1.0;
 
+/// How far past an abutment the ground is followed, and in what steps, looking
+/// for the wall the deck should have started on top of. Matched to
+/// `synth::draped`'s own reach and step so the two see the same wall.
+const SEAT_PROBE_M: f64 = 20.0;
+const SEAT_STEP_M: f64 = 2.0;
+
+/// The climb that makes ground beside an abutment a wall rather than a slope
+/// the path walks up. `synth::draped`'s `WALL_GRADE`, restated here because
+/// this check must be able to disagree with the generator: sharing the constant
+/// by import would make a change to the rule silently move the measurement too.
+const SEAT_WALL_GRADE: f64 = 0.6;
+
+/// How far a fitted deck's abutment may stand below the wall beside it before
+/// it reads as seated in the notch rather than on its bank. The seating rule
+/// declines corrections under a metre, and one probe step of a 60 % wall is
+/// another 1.2 m, so anything under about that is the rule working rather than
+/// failing.
+const SEAT_M: f64 = 2.0;
+
 pub struct Contact {
     lip: Dist,
     lip_worst: Worst,
     unwalled: Dist,
     unwalled_worst: Worst,
+    seat: Dist,
+    seat_worst: Worst,
 }
 
 impl Contact {
@@ -67,13 +88,171 @@ impl Contact {
             lip_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             unwalled: Dist::metres(),
             unwalled_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            seat: Dist::metres(),
+            seat_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
         }
     }
+
+    /// Invariant 4 at a footbridge's abutment: how far the deck's lower end
+    /// stands below the wall that runs up beside it.
+    ///
+    /// A fitted deck is chorded between the ground at its annotated ends
+    /// (`synth::draped`). Where that end landed part way down a gorge wall the
+    /// bridge starts in the riverbed it is supposed to cross, and the path
+    /// dives in after it. The wall is what separates that from a bridge that
+    /// correctly ends at the foot of a slope the path climbs: ground going up
+    /// at a walkable grade is ground the path can be on, and only ground
+    /// steeper than [`SEAT_WALL_GRADE`] is followed.
+    ///
+    /// Asked at the *lower* abutment, and bounded by the height of the higher
+    /// one. Both halves are needed, and each excludes a whole population the
+    /// other admits: without the wall test a footbridge landing at the foot of
+    /// a slope reads as buried, and without the bound a level footbridge on a
+    /// steep hillside — a hairpin path crossing its own gully — reads as
+    /// twenty metres wrong because the mountain is above it, which it is
+    /// supposed to be. What is left is the thing that is actually broken: a
+    /// deck tilted because one of its ends fell down a wall, measured against
+    /// the end that did not.
+    fn visit_seats(&mut self, tile: &TileScene, terrain: &SurfaceMesh) {
+        for deck in tile.roads.iter().filter(|r| r.is_fitted_deck()) {
+            let Some([a, b]) = deck_ends(&deck.mesh) else { continue };
+            // A deck clipped by the tile border has an "end" that is the
+            // border; the tile that owns it answers for it.
+            if !tile.owns(a.x, a.y) || !tile.owns(b.x, b.y) {
+                continue;
+            }
+            let (low, high) = if a.top <= b.top { (a, b) } else { (b, a) };
+            let (dx, dy) = (
+                (low.x - high.x) * tile.scale.mx,
+                (low.y - high.y) * tile.scale.my,
+            );
+            let len = dx.hypot(dy);
+            if len < 1.0 {
+                continue;
+            }
+            let (ux, uy) = (dx / len / tile.scale.mx, dy / len / tile.scale.my);
+            // The ground *at* the abutment counts before any marching: a deck
+            // whose end is already under the surface it is supposed to start on
+            // is buried, and that needs no wall to be a defect.
+            let mut prev = drawn_ground(tile, terrain, low.x, low.y).unwrap_or(low.top);
+            let mut climbed = (prev - low.top).max(0.0);
+            let mut d = SEAT_STEP_M;
+            while d <= SEAT_PROBE_M {
+                let Some(h) = drawn_ground(tile, terrain, low.x + ux * d, low.y + uy * d) else {
+                    break;
+                };
+                if (h - prev) / SEAT_STEP_M < SEAT_WALL_GRADE {
+                    break; // the climb relaxed: the wall, if any, ends here
+                }
+                climbed = climbed.max(h - low.top);
+                prev = h;
+                d += SEAT_STEP_M;
+            }
+            let v = climbed.clamp(0.0, high.top - low.top);
+            self.seat.push(v);
+            if v > SEAT_M {
+                let (lon, lat) = tile.lonlat(low.x, low.y);
+                self.seat_worst.offer(Offender {
+                    lon,
+                    lat,
+                    zoom: tile.z,
+                    value: v,
+                    note: format!(
+                        "{} deck starts at {:.2} m against {:.2} m at its far end, with wall \
+                         above it the whole way",
+                        deck.class, low.top, high.top
+                    ),
+                });
+            }
+        }
+    }
+}
+
+/// The drawn ground at a plan point, through the hole cut under the asphalt.
+///
+/// The terrain mesh stops at the kerb (docs/GROUND.md §3), so a probe that
+/// walked onto a road would find nothing and stop — which is exactly where a
+/// footbridge's bank tends to be, since the path arrives at a street. Where
+/// there is no terrain the at-grade carriageway *is* the drawn ground.
+fn drawn_ground(tile: &TileScene, terrain: &SurfaceMesh, px: f64, py: f64) -> Option<f64> {
+    terrain.height_at(px, py).or_else(|| {
+        tile.roads
+            .iter()
+            .filter(|r| r.is_pavement() || r.is_casing())
+            .find_map(|r| r.mesh.height_at(px, py))
+    })
+}
+
+/// One end of a deck: a point on its centerline and the deck top there.
+struct DeckEnd {
+    x: f64,
+    y: f64,
+    top: f64,
+}
+
+/// A deck's two ends, in unit plan space.
+///
+/// The long axis is taken as the vertex furthest from the centroid and the
+/// vertex furthest from *that*, which for a swept slab is a pair of opposite
+/// end corners. Each end is then the centroid of the vertices in the outermost
+/// tenth of the projection onto that axis, so the point sits on the deck's
+/// centerline rather than on a corner — a corner query lands on the boundary,
+/// where the terrain lookup is a coin toss.
+fn deck_ends(m: &SurfaceMesh) -> Option<[DeckEnd; 2]> {
+    let n = m.vertex_count();
+    if n < 3 {
+        return None;
+    }
+    let (mut cx, mut cy) = (0.0, 0.0);
+    for i in 0..n {
+        let (x, y, _) = m.vertex(i);
+        cx += x / n as f64;
+        cy += y / n as f64;
+    }
+    let far = |from: (f64, f64)| {
+        (0..n).fold(((0.0, 0.0), -1.0), |best, i| {
+            let (x, y, _) = m.vertex(i);
+            let d = (x - from.0).hypot(y - from.1);
+            if d > best.1 {
+                ((x, y), d)
+            } else {
+                best
+            }
+        })
+        .0
+    };
+    let a = far((cx, cy));
+    let b = far(a);
+    let (ax, ay) = (b.0 - a.0, b.1 - a.1);
+    let len2 = ax * ax + ay * ay;
+    if len2 <= 0.0 {
+        return None;
+    }
+    let t_of = |i: usize| {
+        let (x, y, _) = m.vertex(i);
+        ((x - a.0) * ax + (y - a.1) * ay) / len2
+    };
+    let end = |near_zero: bool| {
+        let (mut sx, mut sy, mut top, mut k) = (0.0, 0.0, f64::NEG_INFINITY, 0usize);
+        for i in 0..n {
+            let t = t_of(i);
+            if (near_zero && t <= 0.1) || (!near_zero && t >= 0.9) {
+                let (x, y, z) = m.vertex(i);
+                sx += x;
+                sy += y;
+                top = top.max(z);
+                k += 1;
+            }
+        }
+        (k > 0).then(|| DeckEnd { x: sx / k as f64, y: sy / k as f64, top })
+    };
+    Some([end(true)?, end(false)?])
 }
 
 impl Check for Contact {
     fn visit(&mut self, tile: &TileScene, _opt: &Options) {
         let Some(terrain) = &tile.terrain else { return };
+        self.visit_seats(tile, terrain);
         // The kerb lip: at every silhouette edge of the carriageway, the road's
         // own height against the ground a metre outside it.
         //
@@ -229,6 +408,46 @@ impl Check for Contact {
                 skipped: self.lip.is_empty().then(skipped),
                 dist: self.lip,
                 worst: self.lip_worst.into_vec(),
+            },
+            Metric {
+                id: "contact.deck_seat".into(),
+                invariant: Invariant::I4,
+                title: "Wall standing over a footbridge's lower abutment".into(),
+                population: format!(
+                    "The lower abutment of every *fitted* deck — a draped class carrying an \
+                     elevated span, whose deck is chorded to the ground rather than solved \
+                     (`synth::draped`) — lying wholly inside the tile proper. Followed \
+                     {SEAT_PROBE_M:.0} m outward along the deck's own axis in \
+                     {SEAT_STEP_M:.0} m steps, and only while the ground climbs at \
+                     {:.0} % or more. Three coverage limits: a deck clipped by the tile \
+                     border is left to the tile that owns it; a span whose abutment stands on \
+                     a wall the drawn terrain mesh is too coarse to resolve reads lower than \
+                     it is; and a span with *both* abutments down in the notch reads zero, \
+                     because the bound is its own far end and there is nothing in the archive \
+                     that says how high the path beyond it goes.",
+                    SEAT_WALL_GRADE * 100.0
+                ),
+                detail: format!(
+                    "How far a footbridge's lower abutment stands below the wall beside it, \
+                     bounded by its own far end. A fitted deck's ends come from the ground at \
+                     the annotated span's edges, and against a near-vertical wall two metres \
+                     of plan disagreement between the annotation and the DEM is a dozen metres \
+                     of height: the bridge begins part way down the gorge it crosses and the \
+                     path dives in after it. Ground under {:.0} % is a slope the path walks \
+                     rather than a wall it cannot, and the bound keeps a level footbridge on a \
+                     hillside from scoring the hillside. Past {SEAT_M:.1} m the deck is tilted \
+                     into the notch instead of sitting on its bank.",
+                    SEAT_WALL_GRADE * 100.0
+                ),
+                sense: Sense::HigherIsWorse,
+                threshold: SEAT_M,
+                skipped: self.seat.is_empty().then(|| {
+                    "no fitted decks at this zoom — the extract carries no draped feature with \
+                     an elevated span, or the archive carries no DEM"
+                        .to_string()
+                }),
+                dist: self.seat,
+                worst: self.seat_worst.into_vec(),
             },
         ]
     }
@@ -421,5 +640,118 @@ mod tests {
             let (lon, _) = (o.lon, o.lat);
             assert!(lon >= b.west && lon <= b.east, "offender at {lon} is outside the tile");
         }
+    }
+
+    /// A terrain profile as a strip of quads along `x`, from `(x, height)`
+    /// breakpoints — the ground a deck's abutment is judged against.
+    fn ground_strip(pts: &[(f32, f32)]) -> SurfaceMesh {
+        let (mut x, mut y, mut z, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for (i, &(px, pz)) in pts.iter().enumerate() {
+            x.extend([px, px]);
+            y.extend([-1.0, 2.0]);
+            z.extend([pz, pz]);
+            if i > 0 {
+                let b = (i as u32 - 1) * 2;
+                idx.extend([b, b + 1, b + 3, b, b + 3, b + 2]);
+            }
+        }
+        SurfaceMesh::from_parts(x, y, z, idx).unwrap()
+    }
+
+    /// A deck: a slab from `x0` to `x1` with its top running `z0` to `z1`.
+    fn deck(class: &str, x0: f32, x1: f32, z0: f32, z1: f32) -> RoadMesh {
+        RoadMesh {
+            class: class.into(),
+            level: 1,
+            mesh: SurfaceMesh::from_parts(
+                vec![x0, x1, x1, x0],
+                vec![0.4, 0.4, 0.6, 0.6],
+                vec![z0, z1, z1, z0],
+                vec![0, 1, 2, 0, 2, 3],
+            )
+            .unwrap(),
+        }
+    }
+
+    fn with_ground(terrain: SurfaceMesh, roads: Vec<RoadMesh>) -> TileScene {
+        let b = Bounds::of_tile(16, 34000, 23000);
+        TileScene {
+            z: 16,
+            x: 34000,
+            y: 23000,
+            scale: Scale::of(&b),
+            bounds: b,
+            terrain: Some(terrain),
+            roads,
+            lines: Vec::new(),
+        }
+    }
+
+    const SEAT: &str = "contact.deck_seat";
+
+    /// The defect: a footbridge whose lower end fell down a gorge wall, so it
+    /// starts part way into what it is supposed to cross. The tile is ~600 m
+    /// wide, so 0.02 of unit space is about 12 m.
+    #[test]
+    fn a_deck_that_starts_down_a_wall_is_caught() {
+        // Bank at 435 to x = 0.30, a wall to the riverbed at 415, far bank at
+        // 435. The deck runs from 421 — part way down the near wall — to 435.
+        let terrain = ground_strip(&[
+            (0.0, 435.0),
+            (0.30, 435.0),
+            (0.33, 415.0),
+            (0.37, 415.0),
+            (0.40, 435.0),
+            (1.0, 435.0),
+        ]);
+        let m = run(&with_ground(terrain, vec![deck("footway", 0.32, 0.40, 421.0, 435.0)]));
+        assert!(m[SEAT].violations() > 0, "an abutment 14 m down a wall must be caught");
+        assert!(
+            m[SEAT].worst_value().unwrap() > 5.0,
+            "the wall above it is metres, not centimetres: {:?}",
+            m[SEAT].worst_value()
+        );
+    }
+
+    /// The same bridge, seated: both ends on their banks, the deck level over
+    /// the gorge. Nothing to report, though the ground under mid-span is 20 m
+    /// below the deck — which is what a bridge is.
+    #[test]
+    fn a_deck_seated_on_its_banks_is_clean() {
+        let terrain = ground_strip(&[
+            (0.0, 435.0),
+            (0.30, 435.0),
+            (0.33, 415.0),
+            (0.37, 415.0),
+            (0.40, 435.0),
+            (1.0, 435.0),
+        ]);
+        let m = run(&with_ground(terrain, vec![deck("footway", 0.29, 0.41, 435.0, 435.0)]));
+        assert_eq!(m[SEAT].violations(), 0, "a level deck bank to bank is not a defect");
+    }
+
+    /// A level footbridge on a mountainside keeps its clean bill: the ground
+    /// climbing away above it is the mountain, and the deck's own far end —
+    /// level with the near one — is the bound that says so.
+    #[test]
+    fn a_level_deck_on_a_hillside_does_not_score_the_hillside() {
+        let terrain = ground_strip(&[(0.0, 560.0), (0.5, 500.0), (1.0, 440.0)]);
+        let m = run(&with_ground(terrain, vec![deck("path", 0.48, 0.52, 502.4, 502.4)]));
+        assert_eq!(
+            m[SEAT].violations(),
+            0,
+            "a 100 % hillside above a level deck is terrain, not a defect: {:?}",
+            m[SEAT].worst_value()
+        );
+    }
+
+    /// A solved deck is not this check's business: its abutments come from a
+    /// profile with anchors and a grade ceiling, not from the ground at an
+    /// annotation's edge.
+    #[test]
+    fn a_solved_deck_is_not_in_the_population() {
+        let terrain = ground_strip(&[(0.0, 435.0), (0.30, 435.0), (0.33, 415.0), (1.0, 415.0)]);
+        let m = run(&with_ground(terrain, vec![deck("motorway", 0.32, 0.40, 421.0, 435.0)]));
+        assert!(m[SEAT].skipped.is_some(), "no fitted decks here: {:?}", m[SEAT].dist.count());
     }
 }

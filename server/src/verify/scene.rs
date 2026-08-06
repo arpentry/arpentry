@@ -59,6 +59,33 @@ impl RoadMesh {
     pub fn is_bore(&self) -> bool {
         self.level < 0
     }
+
+    /// A deck *fitted* to the finished ground rather than solved with the
+    /// network — a footbridge, a path over a stream (`synth::draped`). Its
+    /// abutments come from where the ground is, not from a profile with
+    /// anchors and a grade ceiling, so it is the population that can seat an
+    /// abutment part way down a wall.
+    ///
+    /// Named classes only. An unrecognised class takes `RoadClass::Other`,
+    /// which is also how a rail class looks when it arrives without its
+    /// subtype (the archive carries neither), and counting those would put
+    /// solved decks into a fitted deck's population.
+    pub fn is_fitted_deck(&self) -> bool {
+        use crate::priors::{Kind, RoadClass};
+        self.level > 0
+            && matches!(
+                Kind::parse(Some("road"), Some(&self.class), None),
+                Kind::Road(
+                    RoadClass::Track
+                        | RoadClass::Footway
+                        | RoadClass::Pedestrian
+                        | RoadClass::Path
+                        | RoadClass::Steps
+                        | RoadClass::Cycleway
+                        | RoadClass::Bridleway
+                )
+            )
+    }
 }
 
 /// One drawn road centerline, at the heights the client strokes it at
