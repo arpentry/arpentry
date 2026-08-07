@@ -360,7 +360,7 @@ pub fn build(
             node_vars.push(var);
         }
         let c = &scene.corridors[cid];
-        let grade = corridor_grade(c);
+        let grade = corridor_grade(c, p);
         let deviation = c.kind.prior().deviation_m;
         let bore = bore_nodes(&c.spans, &arc, &at_grade);
         corridors.push(CorridorNodes {
@@ -714,11 +714,18 @@ fn trough_terrain_m(p: &Profile, arc0: f64) -> f64 {
 /// The grade ceiling a corridor's edges are held to: a ramp climbs at the ramp
 /// grade whatever its class; an engineered class holds its ceiling; a street
 /// holds its (looser) bed grade.
-fn corridor_grade(c: &crate::scene::Corridor) -> f64 {
+///
+/// Read off the *profile*, not the prior, so the relaxation holds the corridor
+/// to the ceiling it was actually solved to
+/// ([`profile::measured_grade`](super::profile::Profile::max_grade)). A rack
+/// railway whose profile earned an 11 % ceiling from its own track bed would
+/// otherwise be dragged back to its class's 7 % here, undoing the warm start
+/// it was given.
+fn corridor_grade(c: &crate::scene::Corridor, p: &Profile) -> f64 {
     if c.link {
         RAMP_GRADE
     } else {
-        c.kind.prior().grade().unwrap_or(RAMP_GRADE)
+        p.max_grade().or_else(|| c.kind.prior().grade()).unwrap_or(RAMP_GRADE)
     }
 }
 

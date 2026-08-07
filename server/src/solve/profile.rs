@@ -85,6 +85,25 @@ const VGRADE_LAMBDA: f64 = 0.5;
 /// a few steps; the cap bounds the creep on pathological terrain.
 const ABSORB_PASSES: usize = 8;
 
+/// Percentile of the ground's own grade, along the stretches the data maps as
+/// at grade, taken as the alignment's measured grade in [`measured_grade`].
+/// High enough that the line's steepest sustained character counts, below 1 so
+/// a single DEM step or a digitising spike cannot set the ceiling by itself.
+const MEASURED_GRADE_PCTL: f64 = 0.90;
+
+/// Least mapped-at-grade length a corridor must carry before its ground is
+/// read as a measurement of its grade. Below this the sample is a handful of
+/// edges beside a structure — exactly the cliff [`absorb_infeasible_anchors`]
+/// exists to catch — and the class prior stands.
+const MEASURED_GRADE_MIN_M: f64 = 100.0;
+
+/// Ceiling on the grade the ground may claim. Beyond this the read is a DEM
+/// defect or a mis-chained corridor, not an alignment: the steepest adhesion
+/// railway in the world holds ~14 % and the steepest rack ~48 %, but nothing
+/// that a *road or rail centerline* is mapped along sustains a third of its
+/// length past this.
+const MEASURED_GRADE_MAX: f64 = 0.30;
+
 /// A solved at-grade pitch steeper than this multiple of the class grade
 /// ceiling, adjacent to a structure, marks the stretch as infeasible — the
 /// deviation budget lost to the terrain there, so the road cannot in fact be
@@ -152,6 +171,12 @@ pub struct Profile {
     terrain_m: Vec<f64>,
     /// Whether each node lies in an at-grade span (an anchor) or a structure.
     at_grade: Vec<bool>,
+    /// The grade ceiling this profile was actually solved to — the class prior
+    /// raised to the alignment's own measured grade where the ground says so
+    /// ([`measured_grade`]). `None` for a draped class, which holds no grade.
+    /// The relaxation must hold the corridor's edges to *this*, not to the
+    /// prior, or it undoes the profile it was warm-started from.
+    max_grade: Option<f64>,
     /// `cos(mean latitude)`, scaling longitude into the local metric space.
     cos_lat: f64,
 }
@@ -223,6 +248,17 @@ impl Mode {
         }
     }
 
+    /// The grade this mode holds before the ground is consulted. `None` for a
+    /// draped class, which holds none.
+    pub fn grade(self) -> Option<f64> {
+        match self {
+            Mode::Engineered { grade }
+            | Mode::Street { grade, .. }
+            | Mode::Constant { grade } => Some(grade),
+            Mode::Draped => None,
+        }
+    }
+
     /// Profile node spacing, metres — the street classes sample sparsely to
     /// bound the network-wide solve.
     fn spacing_m(self) -> f64 {
@@ -266,9 +302,17 @@ pub fn solve(
     let road_ref = condition_reference(&arc, &terrain);
     let mut at_grade: Vec<bool> =
         arc.iter().map(|&a| kind_at(spans, a) == SpanKind::Grade).collect();
+    // The alignment's own grade, read before `seek_rim_anchors` moves an
+    // anchor: the question is what the *data* maps as lying on the ground.
+    let measured = measured_grade(&arc, &road_ref, &at_grade);
+    let mut max_grade = mode.grade();
     let mut road_m;
     match mode {
         Mode::Engineered { grade: g } => {
+            // A ceiling that the ground under the mapped alignment already
+            // beats is not a ceiling, it is a contradiction; the ground wins.
+            let g = g.max(measured.unwrap_or(0.0));
+            max_grade = Some(g);
             // Robust structure anchors: snap each structure-bounding anchor to
             // the local terrain extremum (a bridge launches from the rim crest,
             // a bore emerges at the flank base) before any chord is fit — an
@@ -356,7 +400,17 @@ pub fn solve(
     }
     let deck_m = deck_ramp(&arc, &road_m, &at_grade);
     let smooth = smooth_path(&spline_path(raw, &params, cos_lat));
-    Some(Profile { nodes, smooth, arc, road_m, deck_m, terrain_m: terrain, at_grade, cos_lat })
+    Some(Profile {
+        nodes,
+        smooth,
+        arc,
+        road_m,
+        deck_m,
+        terrain_m: terrain,
+        at_grade,
+        max_grade,
+        cos_lat,
+    })
 }
 
 /// The span kind at arc position `a` (grade when no span covers it).
@@ -539,6 +593,13 @@ impl Profile {
     }
 
     /// Per-node at-grade flags (false inside a structure span).
+    /// The grade ceiling this profile was solved to — the class prior raised
+    /// to the alignment's measured grade where the ground earned it
+    /// ([`measured_grade`]). `None` for a draped class.
+    pub fn max_grade(&self) -> Option<f64> {
+        self.max_grade
+    }
+
     pub fn at_grade(&self) -> &[bool] {
         &self.at_grade
     }
@@ -638,6 +699,8 @@ impl Profile {
             // everywhere (no buried span, no bore).
             terrain_m: vec![height_m; n],
             at_grade: vec![true; n],
+            // Not solved to any ceiling: a single height holds no grade.
+            max_grade: None,
         }
     }
 
@@ -664,6 +727,9 @@ impl Profile {
             deck_m,
             terrain_m,
             at_grade: vec![true; n],
+            // Fitted, not solved: the caller's heights are the answer, and no
+            // ceiling was applied to reach them.
+            max_grade: None,
         }
     }
 }
@@ -1073,6 +1139,52 @@ fn limit_road_grade(
             }
         }
     }
+}
+
+/// The grade the ground itself holds along the stretches the data maps as at
+/// grade — the alignment's grade as *built*, against the class prior's grade
+/// as *designed*.
+///
+/// A class ceiling is a convention for a profile the solve has to invent. Where
+/// a corridor is mapped at grade, the conditioned terrain under it is not a
+/// guess: it is the formation, cuttings and embankments included, and the
+/// railway is the reason that shape is there (§4.2). So the ceiling is the
+/// prior *or* this, whichever is steeper.
+///
+/// The case that forces it: Overture has no class for a rack railway. The
+/// Montreux–Glion line climbs 285 m in 2.6 km — 11 % sustained, and it is
+/// tagged `narrow_gauge`, whose adhesion prior is 7 %. Held to 7 % the profile
+/// dives tens of metres under its own track bed, which
+/// [`absorb_infeasible_anchors`] then reads as an annotation that ended early
+/// and flies the whole alignment into the air.
+///
+/// Taken as a [percentile](MEASURED_GRADE_PCTL) over at-grade edges, so a
+/// *sustained* steep line raises its ceiling while a *local* plunge at a
+/// structure end — the annotation shortfall absorption exists for — does not.
+/// `None` when too little of the corridor is mapped at grade
+/// ([`MEASURED_GRADE_MIN_M`]) for the read to mean anything.
+fn measured_grade(arc: &[f64], reference: &[f64], at_grade: &[bool]) -> Option<f64> {
+    let mut grades: Vec<f64> = Vec::new();
+    let mut spanned = 0.0;
+    for i in 1..arc.len() {
+        // Both ends at grade: an edge into or out of a structure is a chord,
+        // and its pitch is the solve's, not the ground's.
+        if !at_grade[i] || !at_grade[i - 1] {
+            continue;
+        }
+        let run = arc[i] - arc[i - 1];
+        if run <= 0.0 {
+            continue;
+        }
+        spanned += run;
+        grades.push((reference[i] - reference[i - 1]).abs() / run);
+    }
+    if spanned < MEASURED_GRADE_MIN_M || grades.is_empty() {
+        return None;
+    }
+    grades.sort_by(|a, b| a.partial_cmp(b).expect("finite grade"));
+    let k = ((grades.len() - 1) as f64 * MEASURED_GRADE_PCTL).round() as usize;
+    Some(grades[k].min(MEASURED_GRADE_MAX))
 }
 
 /// Re-pins every two-sided structure chord to the *limited* road heights at
@@ -1540,6 +1652,64 @@ mod tests {
     }
 
     #[test]
+    fn a_sustained_steep_alignment_rides_its_own_track_bed() {
+        // The Montreux–Glion case: a rack railway tagged `narrow_gauge`, whose
+        // ground falls at 11 % for its whole mapped-at-grade length while the
+        // class prior says 7 %. Held to the prior the profile dives tens of
+        // metres under its own track bed; the ground is a measurement of what
+        // was built, so it must win and the rail must stay on it.
+        let (nodes, len_m) = line(80, 0.008);
+        let slope = 0.11;
+        let base = nodes[0].x;
+        let cos = 46.0_f64.to_radians().cos();
+        let ground = |c: Coord| 400.0 + (c.x - base) * cos * DEG_M * slope;
+        let p = profile_from_limited(&nodes, &[span(0.0, len_m, 0)], 0.07, ground);
+
+        assert!(p.max_grade().expect("engineered") >= slope - 0.01,
+            "ceiling {:?} must rise to the ground's own {slope}", p.max_grade());
+        let n = p.arc().len();
+        for i in 0..n {
+            assert!(p.at_grade()[i], "node {i} must stay at grade, not be absorbed");
+            let standoff = p.road_m()[i] - p.terrain_m()[i];
+            // The vertical-curve smoothing has no outward neighbour to chord
+            // against at the very ends, so allow it a metre or two there; along
+            // the run the rail must lie on its bed. Held to the 7 % prior these
+            // same nodes sit tens of metres under it.
+            let budget = if i < 3 || i + 3 >= n { 2.0 } else { 0.5 };
+            assert!(standoff.abs() < budget,
+                "node {i} stands {standoff:.2} m off its track bed");
+        }
+    }
+
+    #[test]
+    fn a_local_plunge_beside_a_structure_does_not_raise_the_ceiling() {
+        // The case absorption exists for, which the measured ceiling must not
+        // disarm: a level alignment that drops off a cliff at one end. The
+        // steep stretch is local, so the corridor's measured grade stays at
+        // the flat majority and the class prior still stands.
+        let (nodes, len_m) = line(80, 0.008);
+        let base = nodes[0].x;
+        let cos = 46.0_f64.to_radians().cos();
+        let ground = |c: Coord| {
+            let s = (c.x - base) * cos * DEG_M;
+            // Flat for 90 % of the run, then a gorge wall.
+            if s < len_m * 0.9 { 400.0 } else { 400.0 - (s - len_m * 0.9) * 0.6 }
+        };
+        let p = profile_from_limited(&nodes, &[span(0.0, len_m, 0)], 0.07, ground);
+        assert!(p.max_grade().expect("engineered") < 0.08,
+            "a local cliff must not raise the ceiling, got {:?}", p.max_grade());
+    }
+
+    #[test]
+    fn measured_grade_ignores_a_corridor_with_too_little_at_grade() {
+        // Below `MEASURED_GRADE_MIN_M` of mapped-at-grade length the sample is
+        // a few edges beside a structure, not a reading of the alignment.
+        let arc: Vec<f64> = (0..8).map(|i| i as f64 * 8.0).collect();
+        let reference: Vec<f64> = arc.iter().map(|a| a * 0.2).collect();
+        assert_eq!(measured_grade(&arc, &reference, &vec![true; 8]), None);
+    }
+
+    #[test]
     fn vgrades_round_an_engineered_corner_but_pin_draped_nodes() {
         // A road draped at 100 m on both ends, lifted into a sharp tent (an
         // embankment) over the middle with a corner apex. Smoothing must round
@@ -1753,6 +1923,7 @@ mod tests {
             deck_m,
             terrain_m: vec![0.0; n],
             at_grade: vec![false; n],
+            max_grade: None,
         };
 
         let deck = p.deck_line(&nodes);
