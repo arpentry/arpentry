@@ -72,6 +72,15 @@ pub struct CorridorNodes {
     /// under a crossing yield (docs/VERIFICATION.md §6): the dip was applied and
     /// then projected straight back out, once a sweep.
     pub bore: Vec<bool>,
+    /// Which nodes lie inside a **mapped tunnel span** — per node, by the
+    /// node's own arc, unlike [`bore`](Self::bore), which classifies a whole
+    /// run by its midpoint. The run answer is right for the rigidity question
+    /// (one run is one beam or one hole) and wrong for the surface ceiling
+    /// ([`super::relax`]'s bore seed): a tunnel–bridge–tunnel sequence is one
+    /// contiguous run, and capping the whole of it under the terrain clamped
+    /// the bridge's clearance lift with it — the funicular's deck over the
+    /// Collonge road was pinned 8 m under its own crossing demand.
+    pub tunnel: Vec<bool>,
     /// The grade ceiling this corridor's edges are held to.
     pub grade: f64,
     /// How far an at-grade node may leave its conditioned terrain reference,
@@ -363,12 +372,25 @@ pub fn build(
         let grade = corridor_grade(c, p);
         let deviation = c.kind.prior().deviation_m;
         let bore = bore_nodes(&c.spans, &arc, &at_grade);
+        // Per-node, not per-run: the surface ceiling must not reach the bridge
+        // inside a tunnel–bridge–tunnel run (see the field doc).
+        let tunnel: Vec<bool> = arc
+            .iter()
+            .zip(&at_grade)
+            .map(|(&a, &g)| {
+                !g && c
+                    .spans
+                    .iter()
+                    .any(|s| s.kind == crate::scene::SpanKind::Tunnel && a >= s.arc0 && a <= s.arc1)
+            })
+            .collect();
         corridors.push(CorridorNodes {
             id: cid as CorridorId,
             vars: node_vars,
             arc,
             at_grade,
             bore,
+            tunnel,
             grade,
             deviation,
         });

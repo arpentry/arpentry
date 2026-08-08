@@ -106,6 +106,9 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
     // junctions. The graph does not change during the solve, so this is built
     // once.
     let sites = var_sites(g);
+    // A bore lies under the ground: seed the ceiling before any sweep, so the
+    // rigidity projection enforces it from the first chord onward.
+    seed_bore_ceilings(g, &sites);
     let mut used = MAX_SWEEPS;
     let mut dropped = Dropped::default();
     for sweep in 0..MAX_SWEEPS {
@@ -157,6 +160,81 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
 
 /// Dips this stratum under every senior feature crossing above it (§4.1).
 ///
+/// How far inside a mapped bore the roof reaches full cover, metres of arc.
+/// At a portal edge the ceiling is the bare surface — the road must cross it
+/// exactly there — and it deepens linearly to
+/// [`TUNNEL_HEIGHT_M`](crate::priors::TUNNEL_HEIGHT_M) `+`
+/// [`TUNNEL_COVER_M`](crate::priors::TUNNEL_COVER_M) of margin over this
+/// distance, the dive an urban cut-and-cover makes in its approach ramp.
+/// Short galleries whose every node sits within the transition are left
+/// nearly free: near the surface is what they are.
+const BORE_SURFACE_TRANSITION_M: f64 = 60.0;
+
+/// A bore lies **under the ground** — the constraint whose absence let a
+/// mapped tunnel fly. A structure span has almost no terrain-pinned anchors,
+/// so nothing else relates its chord to the surface: the Territet–Glion
+/// funicular's 169 m "tunnel" solved to a ramp 3–7 m *above* its hillside for
+/// its entire length (the fragment's two ends were its only hard points, and
+/// the smooth ramp between them happened to clear the flank), and the
+/// Rochers-de-Naye line's bore roof stood 6.8 m proud at a thin-cover stretch.
+///
+/// The seed writes the surface (minus the roof-and-cover margin, relaxed to
+/// zero at a portal edge) into `slack[v].1` — the same ceiling an undercut
+/// establishes — and [`project_spans`] then holds every bore chord beneath it,
+/// sweep by sweep. Two exclusions keep it honest:
+///
+/// - **A fragment boundary is not a portal.** Relief is granted where the
+///   mapped tunnel ends inside the corridor — an at-grade portal or a bridge
+///   abutment, both of which the profile must rise to meet — but a corridor
+///   that *ends* mid-tunnel continues in its neighbour, and surfacing at the
+///   seam would float both.
+/// - **A variable shared with any at-grade node is not capped.** A junction
+///   inside a bore belongs to the at-grade machinery (contact, deviation);
+///   capping the shared height would drag the surface road under its own
+///   terrain.
+fn seed_bore_ceilings(g: &mut SolveGraph, sites: &VarSites) {
+    let cover = crate::priors::TUNNEL_HEIGHT_M + crate::priors::TUNNEL_COVER_M;
+    let SolveGraph { vars, corridors, slack, .. } = g;
+    for c in corridors.iter() {
+        let m = c.at_grade.len();
+        let mut k = 0;
+        while k < m {
+            // The per-node mapped-tunnel flag, not the per-run `bore`: a
+            // tunnel–bridge–tunnel sequence is one run, and the ceiling must
+            // stop at the abutments — a deck holds its clearance lift.
+            if !c.tunnel[k] {
+                k += 1;
+                continue;
+            }
+            let start = k;
+            while k < m && c.tunnel[k] {
+                k += 1;
+            }
+            let end = k - 1;
+            // Relief on a side whose neighbour is anything but more tunnel: an
+            // at-grade portal or a bridge abutment both sit at the surface the
+            // profile must rise to meet.
+            let lo = (start > 0).then(|| c.arc[start - 1]);
+            let hi = (end + 1 < m).then(|| c.arc[end + 1]);
+            for j in start..=end {
+                let v = c.vars[j];
+                if sites[v]
+                    .iter()
+                    .any(|&(oc, ok)| corridors[oc as usize].at_grade[ok as usize])
+                {
+                    continue;
+                }
+                let d = [lo.map(|a| c.arc[j] - a), hi.map(|a| a - c.arc[j])]
+                    .into_iter()
+                    .flatten()
+                    .fold(f64::INFINITY, f64::min);
+                let depth = cover * (d / BORE_SURFACE_TRANSITION_M).min(1.0);
+                slack[v].1 = slack[v].1.min(vars[v].terrain_m - depth);
+            }
+        }
+    }
+}
+
 /// The exact mirror of [`clearance_pass`]: a lower-only *ceiling* spread
 /// outward by the same shortest-path-in-height-budget walk, so the road falls
 /// into a trough at the crossing and climbs back to its own profile at its
@@ -927,6 +1005,67 @@ mod tests {
         }
     }
 
+    /// A mapped tunnel whose chord rides above the surface is pulled beneath
+    /// it. The pathological data case this pins: a structure span has almost
+    /// no terrain-pinned anchors, so nothing but [`seed_bore_ceilings`]
+    /// relates its chord to the ground — the Territet–Glion funicular's 169 m
+    /// "tunnel" solved to a ramp 3–7 m above its hillside end to end.
+    #[test]
+    fn a_mapped_tunnel_above_the_surface_is_pulled_beneath_it() {
+        use crate::priors::{TUNNEL_COVER_M, TUNNEL_HEIGHT_M};
+        use crate::scene::{Span, SpanKind};
+        // Flat anchors at 108 m; the mapped tunnel's middle crosses ground at
+        // 100 m. The chord between the anchors runs level at 108 — eight
+        // metres *above* the ground the annotation says it passes under.
+        let mut a = corridor(0, 6.0, 600.0, 61, RoadClass::Motorway);
+        a.spans = vec![
+            Span { arc0: 0.0, arc1: 200.0, level: 0, kind: SpanKind::Grade },
+            Span { arc0: 200.0, arc1: 400.0, level: -1, kind: SpanKind::Tunnel },
+            Span { arc0: 400.0, arc1: 600.0, level: 0, kind: SpanKind::Grade },
+        ];
+        let spans = a.spans.clone();
+        let scene = SceneGraph::new(vec![a]);
+        let nodes = scene.corridors[0].nodes.clone();
+        let elev = |c: Coord| {
+            let arc = (c.x - 6.0) * DEG_M * cos_lat();
+            if (210.0..390.0).contains(&arc) {
+                100.0
+            } else {
+                108.0
+            }
+        };
+        let warm = super::super::profile::solve(
+            &nodes,
+            &spans,
+            super::super::profile::Mode::Engineered { grade: 0.06 },
+            &mut |c| elev(c),
+        )
+        .expect("a profile");
+        let mut profiles = vec![Some(warm)];
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S);
+        solve(&mut g);
+        reconstruct(&g, &mut profiles);
+
+        let p = profiles[0].as_ref().unwrap();
+        let cover = TUNNEL_HEIGHT_M + TUNNEL_COVER_M;
+        // Deep inside the bore (a transition past either portal) the road is
+        // under the ground by the full roof-and-cover margin.
+        for arc in [290.0, 300.0, 310.0] {
+            let road = p.road_at_arc(arc);
+            assert!(
+                road <= 100.0 - cover + 1e-6,
+                "bore interior at arc {arc} rides at {road}, above {}",
+                100.0 - cover
+            );
+        }
+        // The at-grade thirds stay on their own ground: the ceiling is the
+        // bore's, not the corridor's.
+        for arc in [50.0, 550.0] {
+            let road = p.road_at_arc(arc);
+            assert!((road - 108.0).abs() < 1.5, "at-grade at arc {arc} moved to {road}");
+        }
+    }
+
     /// A gentle corridor on plausible terrain is left on the ground.
     #[test]
     fn a_gentle_corridor_stays_on_terrain() {
@@ -977,6 +1116,7 @@ mod tests {
                 vars: (0..n).collect(),
                 arc,
                 bore: vec![false; n],
+                tunnel: vec![false; n],
                 at_grade,
                 grade: 0.06,
                 deviation: 1e9, // not under test here — leave the ground box open
@@ -1031,6 +1171,7 @@ mod tests {
                 vars: (0..n).collect(),
                 arc,
                 bore: vec![false; n],
+                tunnel: vec![false; n],
                 at_grade: vec![true; n],
                 grade: 0.15,
                 deviation: 1e9, // the ground box is not what is under test
@@ -1103,6 +1244,7 @@ mod tests {
                 vars: (0..n).collect(),
                 arc,
                 bore: vec![false; n],
+                tunnel: vec![false; n],
                 at_grade,
                 grade: 0.06, // 6 %: the 12 m rise over 300 m (4 %) is well within
                 deviation: 1e9, // not under test here — leave the ground box open
@@ -1213,6 +1355,7 @@ mod tests {
             vars: (base..base + n).collect(),
             arc: arc.clone(),
             at_grade,
+            tunnel: bore.clone(),
             bore,
             grade: 0.06,
             deviation: 1e9, // the ground box is not what is under test
