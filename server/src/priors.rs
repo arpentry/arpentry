@@ -99,8 +99,6 @@ pub enum GradeShape {
     /// `|dh/ds| <= g`. Every drivable road; what differs between a motorway
     /// and a lane is the deviation budget, not the shape.
     Bounded(f64),
-    /// One gradient end to end — a funicular.
-    Constant(f64),
     /// A ceiling plus a vertical-curve radius: a surveyed railway.
     CurvatureLimited { grade: f64, radius_m: f64 },
     /// No profile at all: the feature samples the finished ground.
@@ -113,7 +111,7 @@ impl GradeShape {
     /// draped class, which holds no grade of its own.
     pub fn grade(self) -> Option<f64> {
         match self {
-            GradeShape::Bounded(g) | GradeShape::Constant(g) => Some(g),
+            GradeShape::Bounded(g) => Some(g),
             GradeShape::CurvatureLimited { grade, .. } => Some(grade),
             GradeShape::Draped => None,
         }
@@ -351,11 +349,31 @@ pub fn of(kind: Kind) -> &'static Prior {
         half_width_m: Some(1.75),
         ..MAINLINE
     };
-    // A funicular holds **one gradient end to end** — the reason `grade_shape`
-    // is a shape and not a number (§9). A ceiling cannot express it: a cable
-    // railway has no vertical curves to bound, it has a slope.
+    // A funicular is laid *on* its hillside — no cuttings, no embankments, a
+    // pair of rails pinned to the slope — so the DEM along it is its track bed
+    // and the bed is the answer. Measured on the Territet–Glion line, the
+    // ground under the alignment climbs at 56.9 %, which is that funicular's
+    // published 54–57 %.
+    //
+    // This was a `Constant(0.45)` — one gradient end to end — and that model
+    // failed twice over. The line arrives split into fragments at every
+    // connector (four of them inside 640 m at Territet), so a chord between
+    // *fragment* ends is neither the funicular's gradient nor the ground's;
+    // and where a fragment opens inside a tunnel span it has no ground anchor
+    // to start from at all, which floated one 15–21 m over the hill and
+    // carried the junction — and both loop tracks above it — with it.
+    //
+    // So: a ceiling, held at the class convention and raised to the measured
+    // bed where the ground earns it (`solve::profile::measured_grade`).
+    //
+    // 70 %, not the 45 % the constant gradient carried: the number's meaning
+    // changed with the shape. As one gradient it was the *typical* incline; as
+    // a ceiling it has to cover the steepest the class runs, and 45 % is under
+    // Territet–Glion's own 57 %. Held too low it clamps a fragment's structure
+    // chord — the Territet bore needs 47.9 % to reach its portal — and lifts
+    // the tunnel out of the hillside it is bored through.
     const FUNICULAR: Prior =
-        Prior { grade_shape: GradeShape::Constant(0.45), half_width_m: Some(1.75), ..MAINLINE };
+        Prior { grade_shape: GradeShape::Bounded(0.70), half_width_m: Some(1.75), ..MAINLINE };
     // Street-running rail lies *on* the carriageway: rail modality, no
     // authority (S16). The right-of-way test, not the modality, decides — and
     // an unclassified railway takes the same junior default (§4.6, §10),

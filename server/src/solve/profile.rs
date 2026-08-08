@@ -97,12 +97,20 @@ const MEASURED_GRADE_PCTL: f64 = 0.90;
 /// exists to catch — and the class prior stands.
 const MEASURED_GRADE_MIN_M: f64 = 100.0;
 
-/// Ceiling on the grade the ground may claim. Beyond this the read is a DEM
-/// defect or a mis-chained corridor, not an alignment: the steepest adhesion
-/// railway in the world holds ~14 % and the steepest rack ~48 %, but nothing
-/// that a *road or rail centerline* is mapped along sustains a third of its
-/// length past this.
+/// Floor of the plausibility cap on the grade the ground may claim: beyond
+/// this the read is a DEM defect or a mis-chained corridor, not an alignment.
+/// Sized for the classes whose convention is gentle — a motorway prior of 6 %
+/// and a narrow-gauge one of 7 % both cover the steepest rack railway here at
+/// 22 % with room to spare, and nothing a *road* is mapped along sustains a
+/// third of its length past it.
 const MEASURED_GRADE_MAX: f64 = 0.30;
+
+/// How far past its own convention a class's ground may be believed, when the
+/// class is steeper than [`MEASURED_GRADE_MAX`]. A funicular's prior is 45 %
+/// and the Territet–Glion bed measures 56.9 %: a bound that cannot admit that
+/// would clip the very alignment the prior was written for, and one with no
+/// class in it would let a 7 % railway claim a cliff.
+const MEASURED_GRADE_HEADROOM: f64 = 1.5;
 
 /// A solved at-grade pitch steeper than this multiple of the class grade
 /// ceiling, adjacent to a structure, marks the stretch as infeasible — the
@@ -209,13 +217,6 @@ pub enum Mode {
     Street { grade: f64, deviation_m: f64, spacing_m: f64 },
     /// At-grade spans drape as they are; structures chord between anchors.
     Draped,
-    /// One constant gradient from end to end — a funicular (§9).
-    ///
-    /// Not a ceiling. A cable railway has no vertical curves to bound; it has a
-    /// slope, and a parameter that pretends otherwise is a lie the solver acts
-    /// on: held as a *maximum* of 45 %, a funicular would simply drape the
-    /// mountain it was built to climb straight up.
-    Constant { grade: f64 },
 }
 
 impl Mode {
@@ -228,9 +229,6 @@ impl Mode {
         use crate::priors::GradeShape;
         let prior = kind.prior();
         match prior.grade_shape {
-            // One gradient end to end. A ceiling cannot express it, so it gets
-            // its own mode rather than a very steep `Engineered`.
-            GradeShape::Constant(grade) => Mode::Constant { grade },
             // A surveyed alignment — a motorway, a trunk road, a railway — gets
             // rim anchoring, the class ceiling, and infeasible-anchor
             // absorption into structures.
@@ -252,9 +250,7 @@ impl Mode {
     /// draped class, which holds none.
     pub fn grade(self) -> Option<f64> {
         match self {
-            Mode::Engineered { grade }
-            | Mode::Street { grade, .. }
-            | Mode::Constant { grade } => Some(grade),
+            Mode::Engineered { grade } | Mode::Street { grade, .. } => Some(grade),
             Mode::Draped => None,
         }
     }
@@ -264,7 +260,6 @@ impl Mode {
     fn spacing_m(self) -> f64 {
         match self {
             Mode::Street { spacing_m, .. } => spacing_m,
-            Mode::Constant { .. } => NODE_SPACING_M,
             _ => NODE_SPACING_M,
         }
     }
@@ -304,7 +299,7 @@ pub fn solve(
         arc.iter().map(|&a| kind_at(spans, a) == SpanKind::Grade).collect();
     // The alignment's own grade, read before `seek_rim_anchors` moves an
     // anchor: the question is what the *data* maps as lying on the ground.
-    let measured = measured_grade(&arc, &road_ref, &at_grade);
+    let measured = measured_grade(&arc, &road_ref, &at_grade, mode.grade().unwrap_or(0.0));
     let mut max_grade = mode.grade();
     let mut road_m;
     match mode {
@@ -359,28 +354,6 @@ pub fn solve(
         Mode::Draped => {
             road_m = road_profile(&arc, &road_ref, &at_grade);
         }
-        // One straight line in height, from where the alignment starts to
-        // where it ends. Every intermediate node lies on it by construction,
-        // so the gradient is constant by construction rather than by a
-        // constraint that could fail — the same "make it unrepresentable"
-        // move the shared junction variable makes for continuity.
-        //
-        // The ends are the terrain the funicular's stations stand on: they are
-        // the only two heights the data supports, and everything between them
-        // is the cable.
-        Mode::Constant { grade: _ } => {
-            let draped = road_profile(&arc, &road_ref, &at_grade);
-            let total = *arc.last().unwrap_or(&0.0);
-            let (h0, h1) = (
-                draped.first().copied().unwrap_or(0.0),
-                draped.last().copied().unwrap_or(0.0),
-            );
-            road_m = if total > 0.0 {
-                arc.iter().map(|&a| h0 + (h1 - h0) * (a / total)).collect()
-            } else {
-                draped
-            };
-        }
     }
     // Round the profile's grade breaks (abutments, cut/fill kinks) into
     // gentle vertical curves. Engineered classes move only nodes already
@@ -395,8 +368,6 @@ pub fn solve(
             smooth_vgrades_street(&arc, &mut road_m, &road_ref, &at_grade, deviation_m)
         }
         Mode::Draped => {}
-        // A straight line has no grade breaks to round.
-        Mode::Constant { .. } => {}
     }
     let deck_m = deck_ramp(&arc, &road_m, &at_grade);
     let smooth = smooth_path(&spline_path(raw, &params, cos_lat));
@@ -1161,9 +1132,17 @@ fn limit_road_grade(
 /// Taken as a [percentile](MEASURED_GRADE_PCTL) over at-grade edges, so a
 /// *sustained* steep line raises its ceiling while a *local* plunge at a
 /// structure end — the annotation shortfall absorption exists for — does not.
-/// `None` when too little of the corridor is mapped at grade
+/// Bounded by [`MEASURED_GRADE_MAX`] or the class's own convention plus
+/// [`MEASURED_GRADE_HEADROOM`], whichever is larger, so a gentle class cannot
+/// claim a cliff and a steep one is not clipped below the bed it was written
+/// for. `None` when too little of the corridor is mapped at grade
 /// ([`MEASURED_GRADE_MIN_M`]) for the read to mean anything.
-fn measured_grade(arc: &[f64], reference: &[f64], at_grade: &[bool]) -> Option<f64> {
+fn measured_grade(
+    arc: &[f64],
+    reference: &[f64],
+    at_grade: &[bool],
+    class_grade: f64,
+) -> Option<f64> {
     let mut grades: Vec<f64> = Vec::new();
     let mut spanned = 0.0;
     for i in 1..arc.len() {
@@ -1184,7 +1163,8 @@ fn measured_grade(arc: &[f64], reference: &[f64], at_grade: &[bool]) -> Option<f
     }
     grades.sort_by(|a, b| a.partial_cmp(b).expect("finite grade"));
     let k = ((grades.len() - 1) as f64 * MEASURED_GRADE_PCTL).round() as usize;
-    Some(grades[k].min(MEASURED_GRADE_MAX))
+    let cap = MEASURED_GRADE_MAX.max(class_grade * MEASURED_GRADE_HEADROOM);
+    Some(grades[k].min(cap))
 }
 
 /// Re-pins every two-sided structure chord to the *limited* road heights at
@@ -1701,12 +1681,28 @@ mod tests {
     }
 
     #[test]
+    fn a_steep_class_is_not_clipped_below_the_bed_its_prior_was_written_for() {
+        // A funicular's prior is 45 % and the Territet–Glion bed measures
+        // 56.9 %. A flat plausibility bound would clip it to 30 % and bury the
+        // line in the hillside it is pinned to; the class earns headroom over
+        // its own convention, while a gentle class keeps the flat bound.
+        let arc: Vec<f64> = (0..40).map(|i| i as f64 * 8.0).collect();
+        let bed: Vec<f64> = arc.iter().map(|a| 400.0 + a * 0.569).collect();
+        let at_grade = vec![true; arc.len()];
+        let funicular = measured_grade(&arc, &bed, &at_grade, 0.45).expect("enough at grade");
+        assert!(funicular > 0.55, "funicular bed clipped to {funicular}");
+        // The same ground under a narrow-gauge prior is a cliff, not a bed.
+        let rail = measured_grade(&arc, &bed, &at_grade, 0.07).expect("enough at grade");
+        assert!((rail - MEASURED_GRADE_MAX).abs() < 1e-9, "gentle class claimed {rail}");
+    }
+
+    #[test]
     fn measured_grade_ignores_a_corridor_with_too_little_at_grade() {
         // Below `MEASURED_GRADE_MIN_M` of mapped-at-grade length the sample is
         // a few edges beside a structure, not a reading of the alignment.
         let arc: Vec<f64> = (0..8).map(|i| i as f64 * 8.0).collect();
         let reference: Vec<f64> = arc.iter().map(|a| a * 0.2).collect();
-        assert_eq!(measured_grade(&arc, &reference, &vec![true; 8]), None);
+        assert_eq!(measured_grade(&arc, &reference, &vec![true; 8], 0.07), None);
     }
 
     #[test]
