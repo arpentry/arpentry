@@ -145,6 +145,19 @@ pub fn grow_spans(profile: &Profile, spans: &[Span]) -> Vec<Span> {
     if spans.len() < 2 || at_grade.is_empty() {
         return spans.to_vec();
     }
+    let (road, terrain) = (profile.road_m(), profile.terrain_m());
+    // A deck grows only over nodes it actually clears, a bore only over nodes
+    // it actually runs beneath. Absorption marks a node as structure from the
+    // *profile's* side; it does not promise the ground stayed out of the way,
+    // and a deck swept past the point where the hillside comes back up is a
+    // deck buried in it. The Territet funicular's bridge grew 20 m past its
+    // annotated end into the embankment of the road above and sat 9.8 m under
+    // the drawn ground.
+    let holds = |kind: SpanKind, k: usize| match kind {
+        SpanKind::Bridge => road[k] >= terrain[k],
+        SpanKind::Tunnel => road[k] <= terrain[k],
+        SpanKind::Grade => false,
+    };
     let mut out = spans.to_vec();
     for i in 0..out.len() {
         if out[i].kind == SpanKind::Grade {
@@ -157,7 +170,7 @@ pub fn grow_spans(profile: &Profile, spans: &[Span]) -> Vec<Span> {
                 if arc[k] >= out[i].arc0 {
                     continue;
                 }
-                if arc[k] <= out[i - 1].arc0 || at_grade[k] {
+                if arc[k] <= out[i - 1].arc0 || at_grade[k] || !holds(out[i].kind, k) {
                     break;
                 }
                 a0 = arc[k];
@@ -174,7 +187,7 @@ pub fn grow_spans(profile: &Profile, spans: &[Span]) -> Vec<Span> {
                 if arc[k] <= out[i].arc1 {
                     continue;
                 }
-                if arc[k] >= out[i + 1].arc1 || at_grade[k] {
+                if arc[k] >= out[i + 1].arc1 || at_grade[k] || !holds(out[i].kind, k) {
                     break;
                 }
                 a1 = arc[k];
@@ -353,6 +366,43 @@ mod tests {
         let out = reconcile_spans(&p, &[span(300.0, 700.0)]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind, SpanKind::Grade, "nothing buried: paint it as road");
+    }
+
+    #[test]
+    fn a_bridge_stops_growing_where_the_ground_comes_back_up() {
+        // The Territet funicular's case: absorption marks nodes past the
+        // annotated deck end as structure, but the ground rises over the road
+        // there (an embankment). Grown blindly, the deck is swept into the
+        // hillside and drawn metres under the terrain.
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let len = 400.0;
+        let deg = len / (DEG_M * cos_lat);
+        let n = 101;
+        let nodes: Vec<Coord> =
+            (0..n).map(|i| Coord { x: 6.0 + deg * i as f64 / (n - 1) as f64, y: 46.0 }).collect();
+        // Road climbs steadily; ground dips under the deck, then overtakes it.
+        let road: Vec<f64> = (0..n).map(|i| 100.0 + i as f64).collect();
+        let terrain: Vec<f64> = (0..n)
+            .map(|i| if i < 60 { 100.0 + i as f64 - 10.0 } else { 100.0 + i as f64 + 20.0 })
+            .collect();
+        let p = Profile::from_heights(&nodes, road, terrain);
+        // `from_heights` flags every node at grade, so drive the growth off a
+        // profile whose absorbed run reaches past the rise.
+        let spans = vec![
+            Span { arc0: 0.0, arc1: 100.0, level: 0, kind: SpanKind::Grade },
+            Span { arc0: 100.0, arc1: 150.0, level: 1, kind: SpanKind::Bridge },
+            Span { arc0: 150.0, arc1: len, level: 0, kind: SpanKind::Grade },
+        ];
+        let out = grow_spans(&p, &spans);
+        let deck = out.iter().find(|s| s.kind == SpanKind::Bridge).expect("bridge kept");
+        let arc = p.arc();
+        let over = arc.partition_point(|&a| a < deck.arc1).min(arc.len() - 1);
+        assert!(
+            p.road_m()[over] >= p.terrain_m()[over] - 1e-6,
+            "deck ends at arc {:.1} where the road is {:.1} under the ground",
+            deck.arc1,
+            p.terrain_m()[over] - p.road_m()[over],
+        );
     }
 
     #[test]
