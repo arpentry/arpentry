@@ -430,7 +430,19 @@ fn corridor_earthworks(
         let centre_reach = |k: usize| batter_reach(road[k] - terrain[k], 0.0);
         let mut batter: Vec<[(f64, f64); 2]> =
             (0..nodes.len()).map(|k| [centre_reach(k), centre_reach(k)]).collect();
-        // Whether a bench is plausible at all here — see [`MAX_BENCH_FACE_M`].
+        // Whether a bench is plausible at all here — see [`MAX_BENCH_FACE_M`]
+        // for the trade that cap balances.
+        //
+        // A railway is not on either side of that trade, so it benches
+        // unconditionally. Refusing buys a smaller retaining wall and pays for
+        // it with a float, and for a road the float is invisible: the terrain
+        // is cut back to the kerb, so the drawn ground never competes with the
+        // drawn asphalt. Rail paves nothing — no carriageway mesh, no kerb, no
+        // hole, no apron — so it buys nothing and pays the whole price in
+        // daylight. The face is bounded anyway by the profile's own deviation
+        // budget; what the cap adds is a *discontinuity*, benching a node and
+        // declining its neighbour, and the step it leaves is the defect.
+        let always_bench = c.kind.modality() == crate::priors::Modality::Rail;
         let mut benched: Vec<bool> = vec![true; nodes.len()];
         if let Some(sample) = side {
             for k in 0..nodes.len() {
@@ -454,7 +466,7 @@ fn corridor_earthworks(
                 let (rise_l, reach_l) = face(1.0);
                 let (rise_r, reach_r) = face(-1.0);
                 batter[k] = [reach_l, reach_r];
-                benched[k] = rise_l.abs().max(rise_r.abs()) <= MAX_BENCH_FACE_M;
+                benched[k] = always_bench || rise_l.abs().max(rise_r.abs()) <= MAX_BENCH_FACE_M;
             }
         }
 
