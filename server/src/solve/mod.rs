@@ -140,7 +140,7 @@ pub fn run(
         // No DEM: no terrain test — every short span demotes, so a flat run
         // never bakes tiny decks floating over its flat ground.
         for c in &mut scene.corridors {
-            demote_short_spans(&mut c.spans, &mut |_| true);
+            demote_short_spans(&mut c.spans, &mut |_, _| true);
         }
         return Ok(SolvedModel::empty(z_ref));
     };
@@ -263,11 +263,22 @@ pub fn run(
 /// float over the hill. The deep-gully case is why the test exists at all: a
 /// 25 m annotated bridge over a 30 m stream cut, demoted blindly, dived
 /// through the gorge and dragged its earthworks with it.
+///
+/// A span that passes over or under another mapped alignment is exempt, whether
+/// or not the ground moves under it ([`crossings::spans_over_a_corridor`]): what
+/// makes it a structure is the carriageway beneath, and the annotation is the
+/// only thing in the data that says which of the two is on top. Demoting it
+/// hands that ordering to the derivation, which reads it off metre-scale
+/// differences between solved surfaces — so one alignment ends up crossing over
+/// some roads and under others.
 fn reconcile_short_spans(scene: &mut SceneGraph, sample: &mut impl FnMut(Coord) -> f64) {
-    for c in &mut scene.corridors {
+    // Against the whole scene, before any corridor is mutated.
+    let over = crossings::spans_over_a_corridor(scene);
+    for (ci, c) in scene.corridors.iter_mut().enumerate() {
         let (nodes, arc) = (std::mem::take(&mut c.nodes), std::mem::take(&mut c.arc));
-        demote_short_spans(&mut c.spans, &mut |span: &Span| {
-            !spans_a_gap(&nodes, &arc, span, sample)
+        let over = &over[ci];
+        demote_short_spans(&mut c.spans, &mut |i: usize, span: &Span| {
+            !over[i] && !spans_a_gap(&nodes, &arc, span, sample)
         });
         (c.nodes, c.arc) = (nodes, arc);
     }
@@ -275,10 +286,10 @@ fn reconcile_short_spans(scene: &mut SceneGraph, sample: &mut impl FnMut(Coord) 
 
 /// Demotes every sub-[`MIN_STRUCTURE_M`] structure span for which `demote`
 /// says so, then coalesces the adjacent same-kind spans the demotions leave.
-fn demote_short_spans(spans: &mut Vec<Span>, demote: &mut impl FnMut(&Span) -> bool) {
+fn demote_short_spans(spans: &mut Vec<Span>, demote: &mut impl FnMut(usize, &Span) -> bool) {
     let mut changed = false;
-    for s in spans.iter_mut() {
-        if s.kind != SpanKind::Grade && s.arc1 - s.arc0 < MIN_STRUCTURE_M && demote(s) {
+    for (i, s) in spans.iter_mut().enumerate() {
+        if s.kind != SpanKind::Grade && s.arc1 - s.arc0 < MIN_STRUCTURE_M && demote(i, s) {
             s.kind = SpanKind::Grade;
             s.level = 0;
             changed = true;

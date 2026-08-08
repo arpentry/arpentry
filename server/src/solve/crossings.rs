@@ -149,6 +149,94 @@ pub fn derive(
     out
 }
 
+/// Which structure spans pass over or under *another mapped alignment*, per
+/// corridor and parallel to its `spans`.
+///
+/// [`super::reconcile_short_spans`] asks of a short span "does the ground fall
+/// away here?", which is the right question for a bridge over a gully and the
+/// wrong one for a bridge over a street: a rail crossing one road is 10–15 m
+/// long and lifts clear of a carriageway, not of a landform, so it fails both
+/// the length test and the dip test. It is also the case where the annotation
+/// matters most — it is the only statement in the data about which of the two
+/// is on top. Demoted, it leaves the ordering to be *derived* from metre-scale
+/// differences between solved surfaces, and one line then crosses over some
+/// roads and under others.
+///
+/// Measured on the Montreux extract, the short-span test demoted 110 of 156
+/// annotated rail structures (1,516 m). The Montreux–Glion funicular's single
+/// bridge — its one crossing of a road — missed the dip threshold by 0.43 m.
+///
+/// A shared connector still means the two *meet* rather than cross
+/// ([`meets_here`]), so a junction inside a span is not a reason to keep it.
+///
+/// Only corridors are asked, which is exactly the set that holds a profile to
+/// order: a draped feature never reaches `scene.corridors` (`assemble::run`
+/// admits H, R and S), and its deck is fitted after the solve from the ground
+/// at its ends rather than ordered against anything.
+pub fn spans_over_a_corridor(scene: &SceneGraph) -> Vec<Vec<bool>> {
+    let mut edges: Vec<Edge> = Vec::new();
+    let mut grid = GridIndex::new();
+    for c in &scene.corridors {
+        for i in 0..c.nodes.len().saturating_sub(1) {
+            let (a, b) = (c.nodes[i], c.nodes[i + 1]);
+            grid.insert((a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)), edges.len() as u32);
+            edges.push(Edge { corridor: c.id, node: i });
+        }
+    }
+
+    let mut candidates: Vec<u32> = Vec::new();
+    scene
+        .corridors
+        .iter()
+        .map(|c| {
+            let mut over = vec![false; c.spans.len()];
+            for (si, s) in c.spans.iter().enumerate() {
+                if s.kind == SpanKind::Grade {
+                    continue;
+                }
+                for i in 0..c.nodes.len().saturating_sub(1) {
+                    // Only the corridor edges this span actually covers.
+                    if c.arc[i + 1] < s.arc0 || c.arc[i] > s.arc1 {
+                        continue;
+                    }
+                    let (a, b) = (c.nodes[i], c.nodes[i + 1]);
+                    grid.query(
+                        (a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)),
+                        &mut candidates,
+                    );
+                    for &ei in candidates.iter() {
+                        let e = &edges[ei as usize];
+                        if e.corridor == c.id {
+                            continue; // never a corridor with itself
+                        }
+                        let other = &scene.corridors[e.corridor as usize];
+                        let (o_a, o_b) = (other.nodes[e.node], other.nodes[e.node + 1]);
+                        let Some((t, _)) = seg_intersect(a, b, o_a, o_b, c.cos_lat) else {
+                            continue;
+                        };
+                        // The intersection must land inside the span, not merely
+                        // on an edge that overlaps its ends.
+                        let arc_here = c.arc[i] + t * (c.arc[i + 1] - c.arc[i]);
+                        if arc_here < s.arc0 || arc_here > s.arc1 {
+                            continue;
+                        }
+                        let point = Coord { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+                        if meets_here(c, other, point, (a, b), (o_a, o_b)) {
+                            continue;
+                        }
+                        over[si] = true;
+                        break;
+                    }
+                    if over[si] {
+                        break;
+                    }
+                }
+            }
+            over
+        })
+        .collect()
+}
+
 /// How close two intersections of one corridor pair must be, along the upper
 /// corridor, to be the same crossing reported twice.
 ///
@@ -338,6 +426,53 @@ mod tests {
 
     fn flat(c: &Corridor, h: f64) -> Option<Profile> {
         Some(Profile::flat(&c.nodes, h))
+    }
+
+    #[test]
+    fn a_short_span_over_another_corridor_is_seen_as_crossing_it() {
+        // The funicular-at-Collonge case: a 13 m annotated bridge whose whole
+        // reason to exist is the road beneath it. `reconcile_short_spans` may
+        // not demote it, or the crossing order falls to the derivation.
+        let len = 200.0;
+        let bridge = Span { arc0: 90.0, arc1: 103.0, level: 1, kind: SpanKind::Bridge };
+        let over = corridor(
+            0,
+            6.0,
+            46.0,
+            false,
+            len,
+            vec![
+                Span { arc0: 0.0, arc1: 90.0, level: 0, kind: SpanKind::Grade },
+                bridge,
+                Span { arc0: 103.0, arc1: len, level: 0, kind: SpanKind::Grade },
+            ],
+        );
+        // A road running east through the bridge's plan extent.
+        let mid = over.nodes[2];
+        let under = corridor(1, mid.x - 0.001, mid.y, true, len, grade(len));
+        let scene = SceneGraph::new(vec![over, under]);
+        let flags = spans_over_a_corridor(&scene);
+        assert!(flags[0][1], "the bridge span must be seen crossing the road");
+        assert!(!flags[0][0] && !flags[0][2], "grade spans are never marked");
+    }
+
+    #[test]
+    fn a_span_that_crosses_nothing_is_left_to_the_terrain_test() {
+        let len = 200.0;
+        let lone = corridor(
+            0,
+            6.0,
+            46.0,
+            false,
+            len,
+            vec![
+                Span { arc0: 0.0, arc1: 90.0, level: 0, kind: SpanKind::Grade },
+                Span { arc0: 90.0, arc1: 103.0, level: 1, kind: SpanKind::Bridge },
+                Span { arc0: 103.0, arc1: len, level: 0, kind: SpanKind::Grade },
+            ],
+        );
+        let scene = SceneGraph::new(vec![lone]);
+        assert!(!spans_over_a_corridor(&scene)[0][1]);
     }
 
     /// The annotated case the file pass used to find: a bridge span over an
