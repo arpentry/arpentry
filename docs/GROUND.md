@@ -196,13 +196,20 @@ would pin vertices in the wrong place and double the constraint count to
 do it.
 
 **The hole.** At the detail rung the terrain mesh *stops at the kerb*. The
-level-0 paved rings enter the triangulation as constraints alongside the crest
-lines, and every face whose centroid falls inside them is dropped. The asphalt
-is opaque and watertight, so ground drawn beneath it is redundant — and being
-redundant is where every artifact of this family lived. Measured on Montreux at
-z16, at-grade asphalt below the drawn ground went from 253,651 samples to
-**zero**, not by a smaller margin but by construction: there is nothing left
-underneath to be below.
+level-0 paved rings — asphalt carriageways and rail formation bands alike, every
+region of the unioned surface — enter the triangulation as constraints alongside
+the crest lines, and every face whose centroid falls inside them is dropped. The
+drawn surface is opaque and watertight, so ground drawn beneath it is redundant
+— and being redundant is where every artifact of this family lived. Measured on
+Montreux at z16, at-grade asphalt below the drawn ground went from 253,651
+samples to **zero**, not by a smaller margin but by construction: there is
+nothing left underneath to be below. Rail is in the union for the same reason
+it benches unconditionally: a railway used to have no surface at all — no mesh,
+no kerb, no hole, no apron — so every vertical disagreement between its solved
+profile and the drawn ground was daylight under a floating stroke. As a
+`Ballast` region it gets the identical treatment in another material, and the
+residual disagreement becomes a kerb lip and an apron wall, measured where a
+road's is.
 
 Three rules make it safe rather than merely effective:
 

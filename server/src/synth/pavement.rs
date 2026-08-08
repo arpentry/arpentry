@@ -50,6 +50,11 @@ pub struct LevelShapes {
     /// layers overlap in plan but are metres apart vertically, so they are
     /// separate regions that occlude each other rather than one merged surface.
     pub layer: u32,
+    /// The material of this region ([`priors::Surface`]): asphalt and ballast
+    /// are separate regions, emitted as separate features, so a rail
+    /// formation renders in its own colour instead of merging into the
+    /// carriageway that crosses it. Never [`priors::Surface::None`].
+    pub surface: priors::Surface,
     /// Outer boundaries counter-clockwise, holes clockwise — `i_overlay`'s
     /// convention, preserved so the mesher can tell them apart without a
     /// winding test.
@@ -214,16 +219,21 @@ fn bake_chunk(
     // straight road came out of this as one region per segment. Stroking the run
     // as a polyline also gets proper mitered joins at its bends instead of a pair
     // of square corners.
-    let mut by_level: HashMap<(i64, u32), Shapes> = HashMap::new();
+    let mut by_level: HashMap<(i64, u32, priors::Surface), Shapes> = HashMap::new();
     for run in runs(junctions, source_ids) {
         let line: Vec<[f64; 2]> = run.line.iter().map(|&c| frame.to_m(c)).collect();
         let buffered = poly::buffer_line(&line, run.half_m);
         if !buffered.is_empty() {
-            by_level.entry((run.level, run.layer)).or_default().extend(buffered);
+            by_level.entry((run.level, run.layer, run.surface)).or_default().extend(buffered);
         }
     }
-    let mut levels: Vec<(i64, u32)> = by_level.keys().copied().collect();
-    levels.sort_unstable();
+    // Sorted by (level, layer) and asphalt before ballast within a pair, so
+    // the output order — and the subtraction below — is a function of the
+    // model, never of hashing.
+    let mut levels: Vec<(i64, u32, priors::Surface)> = by_level.keys().copied().collect();
+    levels.sort_unstable_by_key(|&(level, layer, surface)| {
+        (level, layer, surface != priors::Surface::Asphalt)
+    });
 
     // The closing masks: each intersection's paved extent, in chunk metres. Only
     // the intersections near this chunk matter, and only their *shape* — the
@@ -232,12 +242,27 @@ fn bake_chunk(
     let masks = intersection_masks(junctions, &rect, pad, &frame);
 
     let mut out = Vec::new();
-    for (level, layer) in levels {
-        let open = poly::union_all(&by_level[&(level, layer)]);
+    for (level, layer, surface) in levels {
+        let open = poly::union_all(&by_level[&(level, layer, surface)]);
         if open.is_empty() {
             continue;
         }
-        let closed = poly::close_within(&open, priors::CURB_RETURN_M, &masks);
+        let mut closed = poly::close_within(&open, priors::CURB_RETURN_M, &masks);
+        // Where a rail formation and a carriageway share a level and a layer —
+        // a level crossing, the S15 equality case — the two regions coincide
+        // in plan at the same height, and two coplanar surfaces z-fight. The
+        // asphalt wins the fill: the carriageway is what is physically laid
+        // across the formation, and the ballast region is trimmed under it.
+        if surface == priors::Surface::Ballast {
+            if let Some(asphalt) = by_level.get(&(level, layer, priors::Surface::Asphalt)) {
+                let asphalt_closed =
+                    poly::close_within(&poly::union_all(asphalt), priors::CURB_RETURN_M, &masks);
+                closed = poly::difference(&closed, &asphalt_closed);
+                if closed.is_empty() {
+                    continue;
+                }
+            }
+        }
         // Clip in metres — i_overlay's exact rect intersection — then convert and
         // snap the cut coordinates onto the chunk rect's own lon/lat so the seam
         // is bit-identical from the neighbouring chunk.
@@ -261,18 +286,19 @@ fn bake_chunk(
                     .collect()
             })
             .collect();
-        out.push(LevelShapes { level, layer, shapes });
+        out.push(LevelShapes { level, layer, surface, shapes });
     }
     out
 }
 
-/// One carriageway run: a polyline of constant width and level, to be stroked in
-/// a single pass.
+/// One carriageway run: a polyline of constant width, level and surface, to be
+/// stroked in a single pass.
 struct Run {
     line: Vec<Coord>,
     half_m: f64,
     level: i64,
     layer: u32,
+    surface: priors::Surface,
 }
 
 /// Chains a chunk's carriageway segments back into polylines.
@@ -299,6 +325,7 @@ fn runs(junctions: &JunctionModel, source_ids: &[u32]) -> Vec<Run> {
             let last = *r.line.last().expect("a run has points");
             r.level == s.level
                 && r.layer == s.layer
+                && r.surface == s.surface
                 && r.half_m == s.half_m
                 && last.x == s.a.x
                 && last.y == s.a.y
@@ -306,7 +333,13 @@ fn runs(junctions: &JunctionModel, source_ids: &[u32]) -> Vec<Run> {
         if continues {
             out.last_mut().expect("a run exists").line.push(s.b);
         } else {
-            out.push(Run { line: vec![s.a, s.b], half_m: s.half_m, level: s.level, layer: s.layer });
+            out.push(Run {
+                line: vec![s.a, s.b],
+                half_m: s.half_m,
+                level: s.level,
+                layer: s.layer,
+                surface: s.surface,
+            });
         }
     }
     out
@@ -695,6 +728,39 @@ mod tests {
         for ls in levels {
             assert_eq!(ls.shapes.len(), 1, "a layer should hold one ribbon");
         }
+    }
+
+    #[test]
+    fn a_level_crossing_keeps_ballast_and_asphalt_apart_and_the_asphalt_wins() {
+        // S15: a railway and a street meet at grade. The two are separate
+        // regions — a formation must not merge into the carriageway that
+        // crosses it — and where they coincide in plan at the same height the
+        // asphalt wins the fill: the ballast is trimmed under it, so the two
+        // coplanar surfaces cannot z-fight. The road cuts the formation into
+        // its two approaches.
+        let road = corridor(0, 6.0 - 100.0 / m_lon(), LAT, 1.0, 0.0, 200.0, 11, 6.0);
+        let mut rail = corridor(1, 6.0, LAT - 100.0 / DEG_M, 0.0, 1.0, 200.0, 11, 5.0);
+        rail.kind = crate::priors::Kind::Rail(crate::priors::RailClass::StandardGauge);
+        rail.class_key = "standard_gauge".to_string();
+        let model = bake_scene(vec![road, rail]);
+        let levels = model.chunk_for(&crate::solve::tile_containing(15, 6.0, LAT)).expect("surfaces");
+        assert_eq!(levels.len(), 2, "asphalt and ballast must be separate regions");
+        let asphalt = &levels[0];
+        let ballast = &levels[1];
+        assert_eq!(asphalt.surface, crate::priors::Surface::Asphalt);
+        assert_eq!(ballast.surface, crate::priors::Surface::Ballast);
+        assert_eq!(asphalt.shapes.len(), 1, "the road is one band");
+        assert_eq!(
+            ballast.shapes.len(),
+            2,
+            "the crossing must cut the formation into two approaches"
+        );
+        // Area by inclusion-exclusion, with the whole overlap charged to the
+        // road: bands are width + 2 x STRUCTURE_SHOULDER_M wide.
+        let (road_w, rail_w) = (8.0, 7.0);
+        let want = 200.0 * road_w + 200.0 * rail_w - road_w * rail_w;
+        let got = model.area_m2();
+        assert!((got - want).abs() < want * 0.02, "area {got:.0} != {want:.0}");
     }
 
     #[test]

@@ -74,14 +74,19 @@ pub fn stamp(f: &mut EncoderFeature, profile: &Profile, kind: SpanKind, bounds: 
     // same carriageway width the surface band and paint stroke use — the mapped
     // `width_m` the attribute profiler resolved (measured `width_rules` when
     // plausible, else the class prior; `synth::surface` reads the identical
-    // property) — plus the structure shoulder, so the deck-top asphalt frames
+    // property) — plus the structure shoulder, so the deck-top surface frames
     // the road ribbon and meets the approach band edge-to-edge with no width
     // step at the abutment. Falls back to the class half-width when a drivable
-    // corridor carries no `width_m` (a non-P1 street). A structure carrying a
-    // class that lays no asphalt — a footbridge, cycleway or pedestrian bridge
-    // — is pedestrian-scale instead: a narrow slab with no vehicle shoulder,
+    // corridor carries no `width_m` (a non-P1 street). Any class with a
+    // surface band takes this branch — a rail formation as much as a
+    // carriageway, so a railway bridge is a rail-scale deck rather than the
+    // footbridge slab it used to fall to. A structure carrying a class with
+    // no surface of its own — a footbridge, cycleway or pedestrian bridge —
+    // is pedestrian-scale instead: a narrow slab with no vehicle shoulder,
     // not the car-lane deck a street half-width would otherwise bake.
-    let half_w = match feature_kind.prior().paves.then(|| feature_kind.prior().half_width_m(link)).flatten()
+    let half_w = match (feature_kind.prior().surface != crate::priors::Surface::None)
+        .then(|| feature_kind.prior().half_width_m(link))
+        .flatten()
     {
         Some(prior_half) => {
             let half_carriageway = f

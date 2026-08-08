@@ -60,6 +60,10 @@ struct TaggedRing {
 /// that antialiases and casings its silhouette.
 pub struct PavedMesh {
     pub level: i64,
+    /// The region's material ([`crate::priors::Surface`]) — asphalt or
+    /// ballast — which picks the class the feature is emitted under, and with
+    /// it the style entry that colours it.
+    pub material: crate::priors::Surface,
     pub surface: TerrainMesh,
     pub casing: Option<TerrainMesh>,
     /// A point inside the region, for the feature's anchor geometry.
@@ -165,7 +169,15 @@ pub fn tile_meshes(
             );
         }
         if let Some((surface, casing, region)) = meshed {
-            out.push(PavedMesh { level: ls.level, surface, casing, anchor, region, apron });
+            out.push(PavedMesh {
+                level: ls.level,
+                material: ls.surface,
+                surface,
+                casing,
+                anchor,
+                region,
+                apron,
+            });
         }
     }
     out

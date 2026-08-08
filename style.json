@@ -341,6 +341,39 @@
           ],
           "width": 0,
           "min_level": 13
+        },
+        {
+          "class": "rail_surface",
+          "color": [
+            158,
+            150,
+            138,
+            255
+          ],
+          "width": 0,
+          "min_level": 13
+        },
+        {
+          "class": "rail_casing",
+          "color": [
+            128,
+            121,
+            110,
+            255
+          ],
+          "width": 0,
+          "min_level": 13
+        },
+        {
+          "class": "rail_apron",
+          "color": [
+            168,
+            162,
+            152,
+            255
+          ],
+          "width": 0,
+          "min_level": 13
         }
       ]
     },

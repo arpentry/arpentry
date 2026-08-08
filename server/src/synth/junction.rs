@@ -141,6 +141,10 @@ pub struct SourceSeg {
     pub height_a: f64,
     pub height_b: f64,
     pub corridor: CorridorId,
+    /// What this stretch's surface is made of ([`priors::Surface`]): asphalt
+    /// and ballast are separate regions with separate materials, so the union
+    /// must not merge a carriageway with the rail formation it crosses.
+    pub surface: priors::Surface,
 }
 
 impl SourceSeg {
@@ -348,6 +352,7 @@ fn carriageway_sources(scene: &SceneGraph, solved: &SolvedModel) -> Vec<SourceSe
                     height_a: at(c.arc[k]),
                     height_b: at(c.arc[k + 1]),
                     corridor: c.id,
+                    surface: c.kind.prior().surface,
                 });
             }
         }
@@ -547,20 +552,35 @@ fn cluster(scene: &SceneGraph, ports: &Ports) -> Vec<Cluster> {
 /// How far one junction's own paved area reaches, in metres — its widest
 /// member's half-width. The merge rules compare corridor lengths against this:
 /// a stub shorter than the areas that would meet over it is not a street.
+///
+/// Asphalt members only, here and in [`bake_one`]: an intersection plate is a
+/// *flat* entity — one height its legs share — and that is the road model. A
+/// rail junction is a switch on whatever grade its line climbs, and pinning
+/// the height field flat across one tilts the formation around it: measured
+/// as an 828 % interior face at the Chamby rail junction. Rail corridors
+/// contribute carriageway *sources* (the union and the field need them) and
+/// never plates, pins or closing masks.
 fn junction_reach_m(scene: &SceneGraph, j: usize) -> f64 {
     scene.junctions[j]
         .members
         .iter()
+        .filter(|m| plates(&scene.corridors[m.corridor as usize]))
         .filter_map(|m| corridor_half_width_m(&scene.corridors[m.corridor as usize]))
         .fold(0.0, f64::max)
 }
 
-/// The half-width in metres of a corridor's paved band — its carriageway plus
-/// the structure shoulder, exactly what `synth::surface` offsets to. `None`
-/// for a non-drivable corridor: a footway or a crossing joins an intersection
-/// without paving any of it.
+/// Whether a corridor's class takes part in intersection plates — see
+/// [`junction_reach_m`] for why this is asphalt-only.
+fn plates(c: &Corridor) -> bool {
+    c.kind.prior().surface == priors::Surface::Asphalt
+}
+
+/// The half-width in metres of a corridor's surface band — its carriageway or
+/// rail formation plus the structure shoulder, exactly what `synth::surface`
+/// offsets to. `None` for a corridor with no surface of its own: a footway or
+/// a crossing joins an intersection without paving any of it.
 pub(crate) fn corridor_half_width_m(c: &Corridor) -> Option<f64> {
-    c.kind.prior().paves.then_some(())?;
+    (c.kind.prior().surface != priors::Surface::None).then_some(())?;
     Some(c.width_m? * 0.5 + priors::STRUCTURE_SHOULDER_M)
 }
 
@@ -596,6 +616,9 @@ fn bake_one(
         offset_max = offset_max.max(off.0.hypot(off.1));
         for m in &jn.members {
             let c = &scene.corridors[m.corridor as usize];
+            if !plates(c) {
+                continue; // rail joins here but takes no part in the plate
+            }
             has_profiled_member |= solved.profile(m.corridor).is_some();
             let Some(half_w) = corridor_half_width_m(c) else {
                 continue; // a footway joins here but paves nothing

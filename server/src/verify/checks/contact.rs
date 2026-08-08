@@ -864,11 +864,12 @@ impl Check for Contact {
                      from `contact.kerb_lip`, which probes a metre *outside* a carriageway where \
                      an embankment legitimately drops away: this asks under the formation, which \
                      the bench is supposed to have raised to meet, so there is no legitimate \
-                     positive answer. Rail is the population that shows it — a rail class paves \
-                     nothing, so it has no kerb, no hole and no apron, and every other I4 \
-                     contact metric is anchored on asphalt it does not have. Past \
-                     {RAIL_STANDOFF_M:.1} m the gap is wider than the detail lattice can explain \
-                     and the track is in the air."
+                     positive answer. Since the rail formation became a drawn surface \
+                     (`rail_surface`, with its own hole in the terrain), the population here is \
+                     the *residue*: rail whose ballast band failed to mesh, so the drawn ground \
+                     survived beneath the stroke — the band itself is measured where asphalt is, \
+                     by the kerb and burial checks. Past {RAIL_STANDOFF_M:.1} m the gap is wider \
+                     than the detail lattice can explain and the track is in the air."
                 ),
                 sense: Sense::HigherIsWorse,
                 threshold: RAIL_STANDOFF_M,

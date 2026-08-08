@@ -528,6 +528,7 @@ mod tests {
             height_a: h0,
             height_b: h1,
             corridor,
+            surface: crate::priors::Surface::Asphalt,
         }
     }
 
@@ -543,6 +544,7 @@ mod tests {
             height_a: h,
             height_b: h,
             corridor,
+            surface: crate::priors::Surface::Asphalt,
         }
     }
 

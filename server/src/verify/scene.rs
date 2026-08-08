@@ -17,9 +17,10 @@ use super::mesh::{Scale, SurfaceMesh};
 /// A transportation mesh with the two properties that decide what it is.
 ///
 /// `class` is `road_surface` / `road_casing` for the unioned at-grade asphalt
-/// and the road's own class (`motorway`, `residential`, …) for a baked
-/// structure; `level` is the reserved ordinal (FORMAT.md §8) — 0 at grade,
-/// positive on a deck, negative in a bore.
+/// (`rail_surface` / `rail_casing` for a rail formation's ballast band — the
+/// same machinery in another material) and the road's own class (`motorway`,
+/// `residential`, …) for a baked structure; `level` is the reserved ordinal
+/// (FORMAT.md §8) — 0 at grade, positive on a deck, negative in a bore.
 pub struct RoadMesh {
     pub class: String,
     pub level: i64,
@@ -27,18 +28,19 @@ pub struct RoadMesh {
 }
 
 impl RoadMesh {
-    /// The opaque at-grade carriageway — what invariant 4 says must lie on the
-    /// rendered terrain of every zoom.
+    /// The opaque at-grade surface band — carriageway or rail formation —
+    /// what invariant 4 says must lie on the rendered terrain of every zoom.
+    /// One population: the invariant does not care what the band is made of.
     pub fn is_pavement(&self) -> bool {
-        self.level == 0 && self.class == "road_surface"
+        self.level == 0 && matches!(self.class.as_str(), "road_surface" | "rail_surface")
     }
 
-    /// The casing rim: the strip between the carriageway's inset interior and
-    /// its true silhouette. It is asphalt, so it answers for the road's height
+    /// The casing rim: the strip between the surface band's inset interior and
+    /// its true silhouette. It is surface, so it answers for the band's height
     /// at the very edge — which the interior mesh, ending an inset short of it,
     /// cannot.
     pub fn is_casing(&self) -> bool {
-        self.level == 0 && self.class == "road_casing"
+        self.level == 0 && matches!(self.class.as_str(), "road_casing" | "rail_casing")
     }
 
     /// The wall drawn between the kerb and the ground beside it
@@ -46,7 +48,7 @@ impl RoadMesh {
     /// construction, so a steepness check that counted it would read a
     /// deliberate face as a defect.
     pub fn is_apron(&self) -> bool {
-        self.class == "road_apron"
+        matches!(self.class.as_str(), "road_apron" | "rail_apron")
     }
 
     /// A bridge deck: rides above the ground on purpose, and owes the feature

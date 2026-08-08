@@ -960,11 +960,24 @@ fn stamp_synth(
 /// exactly a feature with a `width_m` to buffer. A marking has one too and must
 /// keep its stroke — that *is* its geometry — and a footway has none, so it keeps
 /// the cartographic stroke that is all it has ever had.
+///
+/// A railway keeps its stroke too, though its formation is in the union: the
+/// asphalt fill *replaces* a road's stroke, but the rail stroke is not a fill —
+/// it is the track, riding the ballast band the way a marking rides the
+/// asphalt, and it is also the line `contact.rail_standoff` measures.
 fn paves_via_union(f: &EncoderFeature) -> bool {
     if is_marking(f) {
         return false;
     }
     if !matches!(f.synth, Synth::Road { corridor: Some(_), .. }) {
+        return false;
+    }
+    let class = f.properties.iter().find_map(|(k, v)| match (k.as_str(), v) {
+        ("class", Value::String(s)) => Some(s.as_str()),
+        _ => None,
+    });
+    let kind = crate::priors::Kind::parse(None, class, None);
+    if kind.prior().surface != crate::priors::Surface::Asphalt {
         return false;
     }
     f.properties
@@ -999,6 +1012,14 @@ fn add_road_surface(
     for paved in synth::pave_mesh::tile_meshes(levels, field, sampler, z, z_ref, bounds, hole) {
         let anchor = paved.anchor;
         let id = anchor.x.to_bits() ^ anchor.y.to_bits().rotate_left(32);
+        // The material picks the class family, and with it the style entry: a
+        // rail formation is the same machinery as a carriageway in another
+        // colour, and the client's own styling is where the colour lives.
+        let (surface_class, casing_class, apron_class) =
+            match paved.material {
+                crate::priors::Surface::Ballast => ("rail_surface", "rail_casing", "rail_apron"),
+                _ => ("road_surface", "road_casing", "road_apron"),
+            };
         // The casing rides after the surface so its blended rim composites over
         // the opaque interior rather than under it.
         let mut push = |class: &str, mesh: crate::terrain::TerrainMesh, bump: u64| {
@@ -1024,9 +1045,9 @@ fn add_road_surface(
         if paved.level == 0 && hole && !paved.region.is_empty() {
             cut.push(paved.region);
         }
-        push("road_surface", paved.surface, 0);
+        push(surface_class, paved.surface, 0);
         if let Some(casing) = paved.casing {
-            push("road_casing", casing, 1);
+            push(casing_class, casing, 1);
         }
         // The wall between the kerb and the ground beside it. A sibling
         // feature rather than part of the terrain: the terrain mesh carries no
@@ -1035,7 +1056,7 @@ fn add_road_surface(
         // invisible to the terrain steepness check, which must not read a
         // deliberate wall as a manufactured cliff.
         if let Some(apron) = paved.apron {
-            push("road_apron", apron, 2);
+            push(apron_class, apron, 2);
         }
     }
     cut

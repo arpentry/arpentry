@@ -164,12 +164,34 @@ pub struct Prior {
     /// Half the physical cross-section, metres. `None` for a class with no
     /// width of its own — a footpath's stroke is cartographic.
     pub half_width_m: Option<f64>,
-    /// Whether this class lays asphalt: a carriageway in the paved union, with
-    /// markings and junction plates. Distinct from having a width, because a
-    /// railway has a formation to bench and no asphalt to draw.
-    pub paves: bool,
+    /// The surface band this class draws — the material of its carriageway in
+    /// the paved union. Distinct from having a width, because a draped class
+    /// has earthworks as wide as a lane and no surface of its own to draw.
+    pub surface: Surface,
     /// Which stratum this class is solved in.
     pub stratum: Stratum,
+}
+
+/// What a class's drawn surface is made of. This decides *whether* a class
+/// enters the unioned surface (`Surface::None` keeps a cartographic stroke and
+/// nothing else) and *which region* it lands in — ballast and asphalt are
+/// separate regions with separate materials, never one merged slab. What stays
+/// keyed on `Asphalt` alone: markings, junction plates, casing paint — the
+/// road-furniture the ladder paints on asphalt and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Surface {
+    /// A carriageway: the road classes that pave.
+    Asphalt,
+    /// A rail formation: the track bed of independent rail (§4.2 stratum R).
+    /// It gets the same treatment a carriageway gets — a benched band, a
+    /// surface mesh, a hole in the drawn ground, an apron where the model
+    /// implies a wall — because every drawn-world mechanism that makes a road
+    /// robust to a wrong height was missing for rail, and rail paid the whole
+    /// price in daylight.
+    Ballast,
+    /// No surface band: paths, tracks, street-running rail, water. The stroke
+    /// is cartographic and the ground is the feature.
+    None,
 }
 
 /// Half-width in metres of a ramp, whatever its class: a single lane plus
@@ -200,18 +222,27 @@ impl Kind {
     /// junior plausible one (§4.6). A misclassification that costs authority is
     /// recoverable; one that grants it is not.
     pub fn parse(subtype: Option<&str>, class: Option<&str>, _subclass: Option<&str>) -> Kind {
+        // The rail and road class vocabularies are disjoint, so a caller that
+        // only has the class string (the width helpers, archive-side checks)
+        // still lands on the right modality: a named rail class is rail with
+        // or without its subtype. Only the ambiguous `unknown` needs the
+        // subtype to tell a rail from a road.
+        let rail_class = |class: Option<&str>| match class {
+            Some("standard_gauge") => RailClass::StandardGauge,
+            Some("narrow_gauge") => RailClass::NarrowGauge,
+            Some("broad_gauge") => RailClass::BroadGauge,
+            Some("funicular") => RailClass::Funicular,
+            Some("subway") => RailClass::Subway,
+            Some("light_rail") => RailClass::LightRail,
+            Some("monorail") => RailClass::Monorail,
+            Some("tram") => RailClass::Tram,
+            _ => RailClass::Unknown,
+        };
+        if subtype.is_none() && rail_class(class) != RailClass::Unknown {
+            return Kind::Rail(rail_class(class));
+        }
         match subtype {
-            Some("rail") => Kind::Rail(match class {
-                Some("standard_gauge") => RailClass::StandardGauge,
-                Some("narrow_gauge") => RailClass::NarrowGauge,
-                Some("broad_gauge") => RailClass::BroadGauge,
-                Some("funicular") => RailClass::Funicular,
-                Some("subway") => RailClass::Subway,
-                Some("light_rail") => RailClass::LightRail,
-                Some("monorail") => RailClass::Monorail,
-                Some("tram") => RailClass::Tram,
-                _ => RailClass::Unknown,
-            }),
+            Some("rail") => Kind::Rail(rail_class(class)),
             Some("water") => Kind::Water(match class {
                 Some("river" | "stream" | "canal" | "drain" | "ditch") => WaterClass::Watercourse,
                 _ => WaterClass::Still,
@@ -279,7 +310,7 @@ pub fn of(kind: Kind) -> &'static Prior {
         clearance_under_m: ROAD_CLEARANCE_M,
         min_structure_m: MIN_STRUCTURE_M,
         half_width_m: Some(4.5),
-        paves: true,
+        surface: Surface::Asphalt,
         stratum: Stratum::S,
     };
     const TRUNK: Prior = Prior { half_width_m: Some(4.0), ..MOTORWAY };
@@ -322,14 +353,15 @@ pub fn of(kind: Kind) -> &'static Prior {
         // wide too. What a draped class has no business holding is a
         // *profile*, which `GradeShape::Draped` above says outright.
         half_width_m: Some(2.75),
-        paves: false,
+        surface: Surface::None,
         stratum: Stratum::D,
     };
     // **Independent rail.** A surveyed alignment on its own formation, and
     // decisively the reason its cuttings and embankments exist: the terrain is
     // a response to the railway, not the other way round (§4.2). Senior to
-    // every road, engineered like a motorway and tighter — and it lays no
-    // asphalt at all, which is the split `drivable` could never express.
+    // every road, engineered like a motorway and tighter — and it lays
+    // ballast, not asphalt: the same surface machinery, its own material and
+    // none of the road furniture.
     const MAINLINE: Prior = Prior {
         grade_shape: GradeShape::CurvatureLimited { grade: 0.03, radius_m: 2000.0 },
         engineered: true,
@@ -339,7 +371,7 @@ pub fn of(kind: Kind) -> &'static Prior {
         clearance_under_m: ROAD_CLEARANCE_M,
         min_structure_m: MIN_STRUCTURE_M,
         half_width_m: Some(2.5),
-        paves: false,
+        surface: Surface::Ballast,
         stratum: Stratum::R,
     };
     // Narrow gauge was built to reach places standard gauge could not, so it
@@ -416,7 +448,7 @@ const WATER: Prior = Prior {
     clearance_under_m: WATER_FREEBOARD_M,
     min_structure_m: MIN_STRUCTURE_M,
     half_width_m: None,
-    paves: false,
+    surface: Surface::None,
     stratum: Stratum::H,
 };
 
@@ -443,10 +475,11 @@ pub fn is_link(subclass: Option<&str>) -> bool {
 /// mapped medians run ~3 m).
 pub const SERVICE_WAY_WIDTH_M: f64 = 3.0;
 
-/// Physical painted width in metres of a paved road — twice the prior's
-/// half-width, so the paint stroke and the deck it rides are sized from the
-/// same number and meet edge-to-edge. `None` for a class that lays no asphalt
-/// (paths, rail, tracks), which keeps its cartographic stroke.
+/// Physical width in metres of a class's surface band — twice the prior's
+/// half-width, so the band and the deck it rides are sized from the same
+/// number and meet edge-to-edge. Asphalt carriageways and rail formations
+/// both have one; `None` for a class with no surface band (paths, tracks,
+/// street rail), which keeps its cartographic stroke.
 pub fn paint_width_m(class: Option<&str>, subclass: Option<&str>) -> Option<f64> {
     paint_width_of(Kind::parse(None, class, subclass), subclass)
 }
@@ -454,7 +487,7 @@ pub fn paint_width_m(class: Option<&str>, subclass: Option<&str>) -> Option<f64>
 /// [`paint_width_m`] against an already-parsed kind.
 pub fn paint_width_of(kind: Kind, subclass: Option<&str>) -> Option<f64> {
     let prior = of(kind);
-    if !prior.paves {
+    if prior.surface == Surface::None {
         return None;
     }
     // The small service ways are narrower than any street class.
@@ -911,10 +944,13 @@ mod tests {
         // street's carriageway or a formation's authority.
         let other = Kind::parse(Some("road"), Some("busway"), None);
         assert_eq!(other, Kind::Road(RoadClass::Other));
-        assert!(!other.prior().paves, "an unread class must not pave");
+        assert_eq!(other.prior().surface, Surface::None, "an unread class must not pave");
         assert_eq!(other.stratum(), Stratum::D, "nor take authority");
         // Overture's literal `unknown` is different: it is mapped as a road.
-        assert!(Kind::parse(Some("road"), Some("unknown"), None).prior().paves);
+        assert_eq!(
+            Kind::parse(Some("road"), Some("unknown"), None).prior().surface,
+            Surface::Asphalt
+        );
     }
 
     #[test]
@@ -937,7 +973,7 @@ mod tests {
             let p = road(c);
             assert_eq!(p.grade_shape, GradeShape::Draped, "{c:?} holds a grade");
             assert!(p.grade().is_none(), "{c:?} reports a grade");
-            assert!(!p.paves, "{c:?} paves");
+            assert_eq!(p.surface, Surface::None, "{c:?} paves");
             // `Other` shares this prior, so cover it here too.
             assert!(!p.engineered, "{c:?} claims a survey");
             assert_eq!(p.stratum, Stratum::D, "{c:?} has authority");
@@ -989,14 +1025,44 @@ mod tests {
     }
 
     #[test]
-    fn no_rail_class_paves() {
-        // A railway has a formation to bench and no asphalt to draw. This is
-        // the split that `drivable` could not express.
+    fn independent_rail_lays_ballast_and_street_rail_lays_nothing() {
+        // A railway on its own formation draws a ballast band — the same
+        // surface machinery a carriageway gets, its own material — and it is
+        // still not asphalt: no markings, no junction plates, no casing.
+        // Street-running rail lies on someone else's carriageway and draws
+        // nothing of its own.
+        for c in [RailClass::StandardGauge, RailClass::NarrowGauge, RailClass::BroadGauge,
+                  RailClass::Funicular, RailClass::Subway] {
+            assert_eq!(of(Kind::Rail(c)).surface, Surface::Ballast, "{c:?} surface");
+            assert!(
+                paint_width_of(Kind::Rail(c), None).is_some(),
+                "{c:?} has no formation width"
+            );
+        }
+        for c in [RailClass::LightRail, RailClass::Monorail, RailClass::Tram,
+                  RailClass::Unknown] {
+            assert_eq!(of(Kind::Rail(c)).surface, Surface::None, "{c:?} surface");
+        }
         for c in [RailClass::StandardGauge, RailClass::NarrowGauge, RailClass::BroadGauge,
                   RailClass::Funicular, RailClass::Subway, RailClass::LightRail,
                   RailClass::Monorail, RailClass::Tram, RailClass::Unknown] {
-            assert!(!of(Kind::Rail(c)).paves, "{c:?} paves");
+            assert_ne!(of(Kind::Rail(c)).surface, Surface::Asphalt, "{c:?} lays asphalt");
         }
+    }
+
+    #[test]
+    fn a_named_rail_class_is_rail_without_its_subtype() {
+        // The width helpers and the archive-side checks only have the class
+        // string. The vocabularies are disjoint, so the string alone must
+        // land on the rail prior — a formation width, not a street's.
+        assert_eq!(
+            Kind::parse(None, Some("standard_gauge"), None),
+            Kind::Rail(RailClass::StandardGauge)
+        );
+        assert_eq!(paint_width_m(Some("funicular"), None), Some(3.5));
+        // The ambiguous `unknown` still needs the subtype: mapped as a road
+        // it is drivable, and without one it must not become a railway.
+        assert_eq!(Kind::parse(None, Some("unknown"), None), Kind::Road(RoadClass::Unknown));
     }
 
     #[test]
@@ -1081,7 +1147,7 @@ mod tests {
             assert_eq!(p.deviation_m, dev, "{c:?} deviation");
             assert_eq!(p.node_spacing_m, spacing, "{c:?} spacing");
             assert_eq!(p.half_width_m(false), Some(half), "{c:?} half-width");
-            assert!(p.paves, "{c:?} must pave");
+            assert_eq!(p.surface, Surface::Asphalt, "{c:?} must pave");
         }
     }
 }

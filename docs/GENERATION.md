@@ -257,6 +257,18 @@ the ground it created is available to anyone else. Rail is also where
 class-specific constraint *shape* matters, not merely parameter values — a
 funicular's constraint is *constant grade*, not *bounded grade* (§9).
 
+Drawn-world-wise, independent rail is **a paving modality in another
+material**: its formation is a `Ballast` band through the same machinery a
+carriageway gets — the unioned surface, the fill mesh at the solved profile,
+the hole in the drawn terrain, the apron where the model implies a wall,
+formation-width decks and bores. The alternative was tried and is why this
+sentence exists: a railway drawn as a bare stroke over independently-drawn
+terrain pays every model error in daylight, because none of the mechanisms
+that make a road's drawn world forgiving (mesh *is* the profile; hole removes
+the competing ground; apron draws the residue as a wall) existed for it. At a
+level crossing (S15) the asphalt wins the fill and the ballast region is
+trimmed under it, so the two coplanar surfaces cannot fight.
+
 **S — Street network.** The negotiating layer, and the only stratum that is
 genuinely a joint solve: interchanges, junction clusters and dual carriageways
 are mutually coupled and cannot be stratified against each other. Internally
