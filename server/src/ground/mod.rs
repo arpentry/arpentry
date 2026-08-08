@@ -381,8 +381,19 @@ fn corridor_earthworks(
         // (at a grazing view the crest occludes the deck's lower edge, and a
         // wiggling crest reads as a jagged deck).
         let nodes = p.smooth();
-        let road = p.road_m();
-        let terrain = p.terrain_m();
+        // ...but the smoothed line is not the raw one *along* its own
+        // direction: low-passing a curved centerline shortens it, so
+        // `smooth[k]` lags `nodes[k]` by a lag that accumulates through every
+        // bend — 11.6 m by the middle of the Territet funicular. Pairing it
+        // with `road[k]` puts the bench at the height of a point it is no
+        // longer standing at, and that error is the lag times the grade:
+        // 0.7 m at a motorway's 6 %, where it hides inside the batter, and
+        // 6.9 m at a funicular's 59 %, where it buries the track under its own
+        // bench. So read the profile at the arc the smoothed point occupies.
+        let at: Vec<f64> = nodes.iter().map(|c| p.arc_of(c.x, c.y)).collect();
+        let road: Vec<f64> = at.iter().map(|&a| p.road_at_arc(a)).collect();
+        let terrain: Vec<f64> = at.iter().map(|&a| p.surface_at_arc(a)).collect();
+        let (road, terrain) = (&road[..], &terrain[..]);
         let at_grade = p.at_grade();
         let arcs = p.arc();
         let cos_lat = c.cos_lat;
@@ -1048,6 +1059,49 @@ mod tests {
         let mode = crate::solve::Mode::for_kind(Kind::Road(RoadClass::Residential));
         let p = crate::solve::profile::solve(pts, &[], mode, sample).expect("a street profile");
         (c, p)
+    }
+
+    /// A bench edge must carry the height of the place it actually stands, not
+    /// of the raw node it was indexed by. Smoothing shortens a curved
+    /// centerline, so `smooth[k]` lags `nodes[k]` along the alignment — and on
+    /// a steep climb that lag is a height error big enough to bury the very
+    /// alignment the bench is for (the Territet funicular, 11.6 m of lag at
+    /// 59 %, 6.9 m of ground over its own track).
+    #[test]
+    fn a_bench_carries_the_height_of_the_point_it_stands_at() {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        // A curved, steeply climbing alignment: bends give smoothing something
+        // to shorten, and the grade turns the lag into metres.
+        let n = 60;
+        let pts: Vec<Coord> = (0..n)
+            .map(|i| {
+                let t = i as f64 / (n - 1) as f64;
+                Coord {
+                    x: 6.0 + (200.0 * t + 25.0 * (t * 6.0).sin()) / (DEG_M * cos_lat),
+                    y: 46.0 + (60.0 * t) / DEG_M,
+                }
+            })
+            .collect();
+        // Ground climbing 50 % along the alignment, so the profile rides it.
+        let ground = |c: Coord| {
+            400.0 + ((c.x - 6.0) * DEG_M * cos_lat + (c.y - 46.0) * DEG_M) * 0.5
+        };
+        let (mut c, p) = street(&pts, &mut |c| ground(c));
+        c.kind = Kind::Rail(crate::priors::RailClass::Funicular);
+        let mut side = |c: Coord| ground(c);
+        let edges = corridor_earthworks(&c, &p, Some(&mut side));
+        assert!(!edges.is_empty(), "a climbing alignment must bench");
+        // Every bench target must match the profile at the arc its own
+        // endpoint occupies. Paired with the raw node instead, these differ by
+        // the lag times the grade.
+        for e in &edges {
+            let want = p.road_at_arc(p.arc_of(e.a.x, e.a.y));
+            assert!(
+                (e.target_a - want).abs() < 0.5,
+                "bench at ({:.6},{:.6}) targets {:.2} where the profile is {:.2}",
+                e.a.x, e.a.y, e.target_a, want,
+            );
+        }
     }
 
     /// A street across a side-slope: its bench holds the solved profile flat
