@@ -81,6 +81,12 @@ pub struct CorridorNodes {
     /// the bridge's clearance lift with it — the funicular's deck over the
     /// Collonge road was pinned 8 m under its own crossing demand.
     pub tunnel: Vec<bool>,
+    /// The direction a monotone class climbs (`+1.0` toward the last node,
+    /// `-1.0` toward the first), read from the *bed* at the corridor's ends —
+    /// never from the solved heights, which are exactly what the constraint
+    /// corrects. `None` for every non-monotone class, and for a monotone one
+    /// whose net bed rise is under the trust threshold (a station loop).
+    pub monotone: Option<f64>,
     /// The grade ceiling this corridor's edges are held to.
     pub grade: f64,
     /// How far an at-grade node may leave its conditioned terrain reference,
@@ -384,6 +390,12 @@ pub fn build(
                     .any(|s| s.kind == crate::scene::SpanKind::Tunnel && a >= s.arc0 && a <= s.arc1)
             })
             .collect();
+        let monotone = c
+            .kind
+            .prior()
+            .monotone
+            .then(|| super::profile::monotone_direction(terrain))
+            .flatten();
         corridors.push(CorridorNodes {
             id: cid as CorridorId,
             vars: node_vars,
@@ -391,6 +403,7 @@ pub fn build(
             at_grade,
             bore,
             tunnel,
+            monotone,
             grade,
             deviation,
         });

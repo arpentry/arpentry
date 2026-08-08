@@ -255,7 +255,8 @@ depths, widths, or gradients), so the vertical model is deliberately modest:
 the railway, not the other way round, so the alignment must be solved before
 the ground it created is available to anyone else. Rail is also where
 class-specific constraint *shape* matters, not merely parameter values — a
-funicular's constraint is *constant grade*, not *bounded grade* (§9).
+funicular's constraint is *monotone on its bed*, not merely *bounded grade*
+(§9).
 
 Drawn-world-wise, independent rail is **a paving modality in another
 material**: its formation is a `Ballast` band through the same machinery a
@@ -641,15 +642,27 @@ Representative values (calibrated separately; the shapes are the design point):
 | Modality/class | `grade_shape` | Stratum |
 |----------------|---------------|---------|
 | rail / `standard_gauge` | `curvature_limited(0.03, R)` | R |
-| rail / `funicular` | `constant(g)` — one gradient end to end | R |
+| rail / `funicular` | `bounded(g)` + **monotone** + bed-tight deviation | R |
 | rail / `tram` | *draped* — no profile | D |
 | road / `motorway` | `bounded(0.06)` | S |
 | road / `residential` | `bounded(g)`, wide deviation — follows the hill | S |
 | road / `footway` | *draped* — no profile | D |
 
-The funicular is the reason `grade_shape` is a shape and not a number: a
-constant-gradient alignment cannot be expressed as a ceiling, and a parameter
-that pretends otherwise is a lie the solver will act on.
+The funicular is the reason the constraint is a shape and not a number, and it
+took two designs to find the right shape. `constant(g)` — one gradient end to
+end — was the first, and it failed against the data: the line arrives split
+into fragments at every connector, so a chord between *fragment* ends is
+neither the funicular's gradient nor the ground's, and a fragment opening
+inside a tunnel span has no ground anchor to hold its chord at all. The shape
+that survives fragmentation states the physics rather than the geometry:
+**one cable, one hill**. The bed is the datum (a tight deviation keeps the
+at-grade line on the slope it is pinned to, because for this class the DEM
+along the alignment *is* the track bed), and the profile is **monotone** —
+heights never reverse between the two ends. Monotone is Required-level and
+composes with everything else by refutation: a bore ceiling diving at a
+data-gap end, a fragment seam stepping, a junction kink — each would put a dip
+in a cable railway, so each is projected out by the same single invariant
+instead of being patched at its own site.
 
 ---
 

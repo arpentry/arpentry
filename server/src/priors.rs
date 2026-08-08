@@ -168,6 +168,16 @@ pub struct Prior {
     /// the paved union. Distinct from having a width, because a draped class
     /// has earthworks as wide as a lane and no surface of its own to draw.
     pub surface: Surface,
+    /// Whether this class's profile is **monotone** along its alignment: one
+    /// cable, one hill — heights never reverse between the two ends. True for
+    /// a funicular and nothing else; a mainline railway undulates and a road
+    /// does whatever its hill does. A Required-level constraint, not a
+    /// preference: a funicular with a dip is not a steep railway, it is a
+    /// physical impossibility, and every defect that puts one there (a bore
+    /// ceiling diving at a data-gap end, a fragment seam stepping, a junction
+    /// kink) is refuted by this single invariant rather than patched at its
+    /// own site.
+    pub monotone: bool,
     /// Which stratum this class is solved in.
     pub stratum: Stratum,
 }
@@ -311,6 +321,7 @@ pub fn of(kind: Kind) -> &'static Prior {
         min_structure_m: MIN_STRUCTURE_M,
         half_width_m: Some(4.5),
         surface: Surface::Asphalt,
+        monotone: false,
         stratum: Stratum::S,
     };
     const TRUNK: Prior = Prior { half_width_m: Some(4.0), ..MOTORWAY };
@@ -354,6 +365,7 @@ pub fn of(kind: Kind) -> &'static Prior {
         // *profile*, which `GradeShape::Draped` above says outright.
         half_width_m: Some(2.75),
         surface: Surface::None,
+        monotone: false,
         stratum: Stratum::D,
     };
     // **Independent rail.** A surveyed alignment on its own formation, and
@@ -372,6 +384,7 @@ pub fn of(kind: Kind) -> &'static Prior {
         min_structure_m: MIN_STRUCTURE_M,
         half_width_m: Some(2.5),
         surface: Surface::Ballast,
+        monotone: false,
         stratum: Stratum::R,
     };
     // Narrow gauge was built to reach places standard gauge could not, so it
@@ -404,8 +417,18 @@ pub fn of(kind: Kind) -> &'static Prior {
     // Territet–Glion's own 57 %. Held too low it clamps a fragment's structure
     // chord — the Territet bore needs 47.9 % to reach its portal — and lifts
     // the tunnel out of the hillside it is bored through.
-    const FUNICULAR: Prior =
-        Prior { grade_shape: GradeShape::Bounded(0.70), half_width_m: Some(1.75), ..MAINLINE };
+    // Bed-first and monotone, both from the same physics: the line is a cable
+    // up one hill. The tight deviation keeps the at-grade line on its slope
+    // (its bed *is* the terrain), and `monotone` refutes every reversal a
+    // constraint interaction can manufacture — a bore ceiling diving at a
+    // data-gap end, a fragment seam stepping, a junction kink.
+    const FUNICULAR: Prior = Prior {
+        grade_shape: GradeShape::Bounded(0.70),
+        half_width_m: Some(1.75),
+        deviation_m: 2.5,
+        monotone: true,
+        ..MAINLINE
+    };
     // Street-running rail lies *on* the carriageway: rail modality, no
     // authority (S16). The right-of-way test, not the modality, decides — and
     // an unclassified railway takes the same junior default (§4.6, §10),
@@ -449,6 +472,7 @@ const WATER: Prior = Prior {
     min_structure_m: MIN_STRUCTURE_M,
     half_width_m: None,
     surface: Surface::None,
+    monotone: false,
     stratum: Stratum::H,
 };
 

@@ -1385,6 +1385,57 @@ fn absorb_infeasible_anchors(
     changed
 }
 
+/// Net bed rise below which a monotone class's direction is not trusted: a
+/// station loop or a stub is effectively level, and forcing a direction onto
+/// noise would tilt a flat track.
+pub const MONOTONE_MIN_RISE_M: f64 = 5.0;
+
+/// The direction a monotone corridor climbs, read from its *bed* (the terrain
+/// reference at its two ends) rather than its solved heights — the solved
+/// heights are exactly what the constraint exists to correct. `None` when the
+/// net rise is under [`MONOTONE_MIN_RISE_M`].
+pub fn monotone_direction(terrain: &[f64]) -> Option<f64> {
+    let (first, last) = (*terrain.first()?, *terrain.last()?);
+    let rise = last - first;
+    (rise.abs() >= MONOTONE_MIN_RISE_M).then(|| rise.signum())
+}
+
+/// Projects `h` onto the monotone (non-decreasing along `dir`) sequence
+/// nearest to it — isotonic regression by pool-adjacent-violators, uniform
+/// weights. The L2 projection, not a directional clamp: a clamp propagates a
+/// single bad height across everything downstream of it, where the projection
+/// averages the violators into the level stretch a real line would hold.
+pub fn monotone_project(h: &mut [f64], dir: f64) {
+    let n = h.len();
+    if n < 2 {
+        return;
+    }
+    // Work in ascending orientation; flip for a descending line.
+    let flip = dir < 0.0;
+    let val = |h: &[f64], i: usize| if flip { -h[i] } else { h[i] };
+    // Pools of (mean, count), merged while the tail violates.
+    let mut mean: Vec<f64> = Vec::with_capacity(n);
+    let mut count: Vec<usize> = Vec::with_capacity(n);
+    for i in 0..n {
+        mean.push(val(h, i));
+        count.push(1);
+        while mean.len() > 1 && mean[mean.len() - 2] > mean[mean.len() - 1] {
+            let (m2, c2) = (mean.pop().expect("tail"), count.pop().expect("tail"));
+            let l = mean.len() - 1;
+            let c1 = count[l] as f64;
+            mean[l] = (mean[l] * c1 + m2 * c2 as f64) / (c1 + c2 as f64);
+            count[l] += c2;
+        }
+    }
+    let mut i = 0;
+    for (m, c) in mean.iter().zip(&count) {
+        for _ in 0..*c {
+            h[i] = if flip { -m } else { *m };
+            i += 1;
+        }
+    }
+}
+
 /// Rounds the sharp vertical grade breaks of an *engineered* road profile into
 /// gentle parabolic curves — the abutment corner where an embankment approach
 /// meets a deck ramp, and the kinks [`limit_road_grade`] leaves on a cut or
