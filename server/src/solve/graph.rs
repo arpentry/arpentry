@@ -454,7 +454,7 @@ pub fn build(
     for (ci, c) in corridors.iter().enumerate() {
         ci_of[c.id as usize] = Some(ci);
     }
-    let undercuts = build_undercuts(crossings, profiles, &ci_of);
+    let undercuts = build_undercuts(crossings, profiles, &ci_of, scene);
     let crossings = build_crossings(crossings, profiles, &corridors, &ci_of, scene);
     let contacts: Vec<Contact> = contact_slots
         .into_iter()
@@ -505,6 +505,20 @@ fn build_crossings(
         let Some(up) = profiles.get(c.upper as usize).and_then(|p| p.as_ref()) else {
             continue;
         };
+        // §4.1: authority chooses the mover, and a senior never moves for a
+        // junior. A crossing whose lower side belongs to a junior stratum does
+        // not enter this graph at all — the junior yields in its *own* solve,
+        // where this stratum's surface is a published constant (an undercut
+        // ceiling under the deck, a clearance floor over the bore). Charging
+        // the senior here read the junior's warm start as a fact and lifted
+        // the Territet–Glion funicular 6.9 m off its bed to clear a road that
+        // is junior to it — a 128 % hump in a cable railway.
+        if c.lower.is_some_and(|id| {
+            scene.corridors[id as usize].kind.stratum()
+                > scene.corridors[c.upper as usize].kind.stratum()
+        }) {
+            continue;
+        }
         if in_immovable_bore(scene, ci_of, c) {
             continue;
         }
@@ -686,13 +700,14 @@ fn corridor_ranks(scene_crossings: &[crate::scene::Crossing], n: usize) -> Vec<u
 }
 
 /// Resolves the crossings where **this stratum passes underneath** into
-/// ceilings. The upper side is senior — already solved, immovable — so the
-/// constraint is one-sided downward, exactly as the clearance case is one-sided
-/// upward.
+/// ceilings. The upper side must be *senior* — already solved, immovable — so
+/// the constraint is one-sided downward, exactly as the clearance case is
+/// one-sided upward.
 fn build_undercuts(
     scene_crossings: &[crate::scene::Crossing],
     profiles: &[Option<Profile>],
     ci_of: &[Option<usize>],
+    scene: &SceneGraph,
 ) -> Vec<Undercut> {
     let mut out = Vec::new();
     for c in scene_crossings {
@@ -702,6 +717,16 @@ fn build_undercuts(
         let Some(lower) = c.lower else { continue };
         let Some(under_ci) = ci_of.get(lower as usize).copied().flatten() else { continue };
         if ci_of.get(c.upper as usize).copied().flatten().is_some() {
+            continue;
+        }
+        // Senior means senior, not merely absent: a *junior* upper's warm
+        // start is not a fact, and §4.1 forbids it moving this stratum — a
+        // residential overpass's unsolved deck was pushing the funicular
+        // beneath it under its own bed. The junior climbs in its own solve
+        // instead, reading this stratum as the constant.
+        if scene.corridors[c.upper as usize].kind.stratum()
+            > scene.corridors[lower as usize].kind.stratum()
+        {
             continue;
         }
         let Some(up) = profiles.get(c.upper as usize).and_then(|p| p.as_ref()) else { continue };
@@ -860,6 +885,66 @@ mod tests {
         // at grade is a real thing to clear, and still is.
         let g = crossing_graph(rail(SpanKind::Grade), Kind::Rail(RailClass::NarrowGauge), 0);
         assert_eq!(g.crossings.len(), 1, "an at-grade railway is still cleared");
+    }
+
+    /// §4.1: a senior stratum is never moved by a junior — in either
+    /// direction. In the rail graph a funicular crossing *over* a residential
+    /// road must enter no clearance demand (the road dips in its own solve,
+    /// reading the funicular as a constant), and a junior overpass *above* a
+    /// railway must establish no undercut ceiling on it (the overpass climbs
+    /// in its own solve). Both charges existed and both moved the
+    /// Territet–Glion funicular off its bed: a 6.9 m lift at one road
+    /// crossing, and a junior deck's warm start pressing its tunnel under the
+    /// bed at another.
+    #[test]
+    fn a_senior_is_neither_lifted_nor_ducked_for_a_junior() {
+        let len = 200.0;
+        let n = 11;
+        let funi = corridor_of(
+            0,
+            len,
+            n,
+            Kind::Rail(RailClass::Funicular),
+            vec![Span { arc0: 90.0, arc1: 110.0, level: 1, kind: SpanKind::Bridge }],
+        );
+        let road = corridor(1, 6.0, len, n, RoadClass::Residential);
+        let scene = SceneGraph::new(vec![funi, road]);
+        let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
+        let profiles =
+            vec![Some(Profile::flat(&ns[0], 405.0)), Some(Profile::flat(&ns[1], 400.0))];
+        let over = crate::scene::Crossing {
+            upper: 0,
+            upper_arc: len / 2.0,
+            point: ns[0][n / 2],
+            lower: Some(1),
+            lower_arc: len / 2.0,
+            lower_kind: Kind::Road(RoadClass::Residential),
+            upper_level: 1,
+            lower_level: 0,
+        };
+        let g = build(&scene, &profiles, &[over], Stratum::R);
+        assert!(
+            g.crossings.is_empty(),
+            "a junior road must not lift the funicular; got {} demand(s)",
+            g.crossings.len()
+        );
+
+        let under = crate::scene::Crossing {
+            upper: 1,
+            upper_arc: len / 2.0,
+            point: ns[1][n / 2],
+            lower: Some(0),
+            lower_arc: len / 2.0,
+            lower_kind: Kind::Rail(RailClass::Funicular),
+            upper_level: 1,
+            lower_level: 0,
+        };
+        let g = build(&scene, &profiles, &[under], Stratum::R);
+        assert!(
+            g.undercuts.is_empty(),
+            "a junior overpass must not duck the funicular; got {} ceiling(s)",
+            g.undercuts.len()
+        );
     }
 
     /// ...but a bore this stratum *does* own keeps its demand, because that is

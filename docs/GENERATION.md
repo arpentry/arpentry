@@ -379,8 +379,16 @@ Two structures follow:
 
 **Cross-stratum constraints are boundary conditions, not couplings.** A senior
 feature enters a junior stratum's system as a *constant*, with no variable of
-its own. This is the mechanical statement of authority, and it means the design
-needs no second solver:
+its own. The door swings one way only: a **junior never enters a senior's
+system at all** — not as a variable, not as a constant, not as a clearance or
+undercut charge — because a junior's unsolved warm start is not a fact, and
+§4.1 already names the mover. Every senior-junior crossing is resolved
+entirely inside the junior's own solve, reading the senior's published
+surface. (Both violations were built and measured before this sentence was
+written: a road's warm start lifted the funicular senior to it 6.9 m off its
+bed at one crossing, and pressed its gallery beneath its own bed at another.)
+This is the mechanical statement of authority, and it means the design needs
+no second solver:
 
 > **A stratum boundary is the limit of the mass ladder — infinite mass.**
 
