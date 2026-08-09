@@ -873,6 +873,12 @@ pub fn reconstruct(g: &SolveGraph, profiles: &mut [Option<Profile>]) {
         if let Some(p) = profiles.get_mut(c.id as usize).and_then(|p| p.as_mut()) {
             let road: Vec<f64> = c.vars.iter().map(|&v| g.h[v]).collect();
             p.set_road_m(&road);
+            // A monotone class's deck is its line (§9): the per-run straight
+            // ramp `set_road_m` refits would put a drawn deck piece metres off
+            // the band it abuts wherever a run spans curved bed.
+            if c.monotone.is_some() {
+                p.set_deck_to_road();
+            }
         }
     }
 }
@@ -1123,6 +1129,14 @@ mod tests {
             assert!(
                 (r - t).abs() < 3.0,
                 "node {k} left the bed: road {r} vs bed {t}"
+            );
+        }
+        // The drawn deck rides the same line: a per-run ramp fit over the
+        // curved bed would step against the band at the abutment seam.
+        for (k, (&d, &r)) in p.deck_m().iter().zip(road).enumerate() {
+            assert!(
+                (d - r).abs() < 1e-9,
+                "deck departs the line at node {k}: deck {d} vs road {r}"
             );
         }
     }

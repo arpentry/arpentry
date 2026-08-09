@@ -642,6 +642,19 @@ impl Profile {
         self.deck_m = deck_ramp(&self.arc, &self.road_m, &self.at_grade);
     }
 
+    /// Makes the deck ride the road profile exactly, node for node — for a
+    /// monotone class, whose line hugs its bed through bridge and bore alike
+    /// (§9: one cable, one hill). The straight-ramp fit is per *non-at-grade
+    /// run*, and a funicular's run can span a whole tunnel–bridge–absorbed
+    /// sequence: one chord over 209 m of curved bed put the drawn 13 m bridge
+    /// deck metres above the band it must meet at the abutment — a step in a
+    /// line that cannot step. With the deck equal to the road, the seam
+    /// between a band piece and a deck piece is the same number on both sides
+    /// by construction.
+    pub fn set_deck_to_road(&mut self) {
+        self.deck_m = self.road_m.clone();
+    }
+
     /// Overwrites the solved road heights with the global relaxation's output
     /// ([`crate::solve::relax`]) and refits the deck ramps. `road` must have one
     /// entry per node; a length mismatch leaves the profile unchanged (the
