@@ -111,7 +111,8 @@ impl Carriers {
         let mut index = GridIndex::new();
         for c in &scene.corridors {
             let Some(p) = solved.profile(c.id) else { continue };
-            for s in crate::solve::portals::reconcile_spans(p, &c.spans) {
+            // The spans are the solved-reconciled truth (`solve::reconcile_stratum`).
+            for s in c.spans.iter().copied() {
                 if s.kind != SpanKind::Bridge {
                     continue;
                 }

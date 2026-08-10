@@ -149,17 +149,31 @@ pub fn derive(
     out
 }
 
-/// Every place another corridor's alignment crosses each corridor, as
-/// `(arc, clear_m)` per corridor, sorted by arc — the *plan* facts only, with
-/// no ordering and no heights. `clear_m` is how far along this corridor the
-/// crossing feature's drawn band reaches from the intersection: its half-width
-/// plus [`ANNEX_SHOULDER_M`] of shoulder, verge and annotation slack.
-///
-/// This is the gate [`super::portals`] needs to extend a mapped bore through a
-/// crossing sitting just past its annotation edge (§4.5: portals sit at the
-/// true emergence). Heights are deliberately not consulted: the bore side's
-/// own buried run is the height evidence, and it is measured there.
-pub fn plan_crossings(scene: &SceneGraph) -> Vec<Vec<(f64, f64)>> {
+/// One plan intersection as seen from one corridor: where it sits along this
+/// corridor, how far the crossing feature's band reaches, and who the other
+/// side is — so a consumer that needs the other side's *annotation* (never its
+/// heights) can look it up.
+#[derive(Debug, Clone, Copy)]
+pub struct PlanCrossing {
+    /// Arc along this corridor where the other alignment crosses.
+    pub arc: f64,
+    /// How far along this corridor the crossing feature's drawn band reaches
+    /// from the intersection: its half-width plus [`ANNEX_SHOULDER_M`] of
+    /// shoulder, verge and annotation slack.
+    pub clear_m: f64,
+    /// The crossing corridor.
+    pub other: u32,
+    /// The crossing's arc along the *other* corridor.
+    pub other_arc: f64,
+}
+
+/// Every place another corridor's alignment crosses each corridor, per
+/// corridor, sorted by arc — the *plan* facts only, with no ordering and no
+/// heights. Heights are deliberately not consulted anywhere here: a junior's
+/// warm start is not a fact, and the consumers that need height evidence
+/// measure it on their own side ([`super::portals::span_bounds`]'s buried run,
+/// [`super::relax`]'s bore ceilings against this corridor's own terrain).
+pub fn plan_index(scene: &SceneGraph) -> Vec<Vec<PlanCrossing>> {
     let mut edges: Vec<Edge> = Vec::new();
     let mut grid = GridIndex::new();
     for c in &scene.corridors {
@@ -173,7 +187,7 @@ pub fn plan_crossings(scene: &SceneGraph) -> Vec<Vec<(f64, f64)>> {
         c.width_m.map_or(0.0, |w| w * 0.5) + ANNEX_SHOULDER_M
     };
     let debug = std::env::var_os("ARPT_DEBUG_ANNEX").is_some();
-    let mut out: Vec<Vec<(f64, f64)>> = vec![Vec::new(); scene.corridors.len()];
+    let mut out: Vec<Vec<PlanCrossing>> = vec![Vec::new(); scene.corridors.len()];
     let mut candidates: Vec<u32> = Vec::new();
     for c in &scene.corridors {
         for i in 0..c.nodes.len().saturating_sub(1) {
@@ -207,16 +221,116 @@ pub fn plan_crossings(scene: &SceneGraph) -> Vec<Vec<(f64, f64)>> {
                         c.id, e.corridor, point.x, point.y, arc_c, arc_o
                     );
                 }
-                out[c.id as usize].push((arc_c, clear(other)));
-                out[e.corridor as usize].push((arc_o, clear(c)));
+                out[c.id as usize].push(PlanCrossing {
+                    arc: arc_c,
+                    clear_m: clear(other),
+                    other: e.corridor,
+                    other_arc: arc_o,
+                });
+                out[e.corridor as usize].push(PlanCrossing {
+                    arc: arc_o,
+                    clear_m: clear(c),
+                    other: c.id,
+                    other_arc: arc_c,
+                });
             }
         }
     }
     for list in &mut out {
-        list.sort_by(|a, b| a.partial_cmp(b).expect("finite arcs"));
-        list.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-9);
+        list.sort_by(|a, b| {
+            (a.arc.to_bits(), a.other, a.other_arc.to_bits())
+                .cmp(&(b.arc.to_bits(), b.other, b.other_arc.to_bits()))
+        });
+        list.dedup_by(|a, b| (a.arc - b.arc).abs() < 1e-9 && a.other == b.other);
     }
     out
+}
+
+/// [`plan_index`] reduced to the `(arc, clear_m)` pairs the bore annex
+/// consumes ([`super::portals::annex_spans`]).
+pub fn plan_crossings(scene: &SceneGraph) -> Vec<Vec<(f64, f64)>> {
+    plan_index(scene).into_iter().map(|list| reaches(&list)).collect()
+}
+
+/// One corridor's [`PlanCrossing`]s as bare `(arc, clear_m)` reaches.
+pub fn reaches(list: &[PlanCrossing]) -> Vec<(f64, f64)> {
+    list.iter().map(|x| (x.arc, x.clear_m)).collect()
+}
+
+/// The span kind a corridor's partition gives at `arc` — the annotation, not a
+/// height. Out-of-partition arcs (float slop at the ends) read as grade.
+pub fn kind_at(scene: &SceneGraph, corridor: u32, arc: f64) -> SpanKind {
+    scene.corridors[corridor as usize]
+        .spans
+        .iter()
+        .find(|s| arc >= s.arc0 && arc <= s.arc1)
+        .map_or(SpanKind::Grade, |s| s.kind)
+}
+
+/// Per corridor, the windows of its mapped tunnel spans that another mapped
+/// alignment crosses over **from above**, as `(arc0, arc1)` in arc order.
+///
+/// This is the burial license [`super::relax::seed_bore_ceilings`] needs
+/// (§4.5): a bore's annotation says "below the ground", and where a feature
+/// annotated *above* it crosses, the ground there carries that feature's
+/// roadbed — an at-grade band directly, a low local bridge through the
+/// abutments it stands on — so the bore must actually pass beneath, roof and
+/// cover included. The gate is annotation-only on both sides, never a height:
+/// the crossing side's warm start is not a fact (§4.1), and the level
+/// ordinals are an ordering, which is exactly the question. The ordering is
+/// what excludes the cases that license nothing: a peer bore crossing at the
+/// same level, and a deeper tunnel passing below.
+pub fn covered_bores(scene: &SceneGraph, plan: &[Vec<PlanCrossing>]) -> Vec<Vec<(f64, f64)>> {
+    covered_sites(scene, plan)
+        .into_iter()
+        .map(|sites| sites.iter().map(|x| (x.arc - x.clear_m, x.arc + x.clear_m)).collect())
+        .collect()
+}
+
+/// The gated sites behind [`covered_bores`], one [`PlanCrossing`] per place a
+/// mapped tunnel span is crossed by an at-grade band — shared with the
+/// `structure.bore_daylight` check so the measurement and the constraint can
+/// never drift apart.
+pub fn covered_sites(scene: &SceneGraph, plan: &[Vec<PlanCrossing>]) -> Vec<Vec<PlanCrossing>> {
+    let debug = std::env::var_os("ARPT_DEBUG_ANNEX").is_some();
+    scene
+        .corridors
+        .iter()
+        .map(|c| {
+            let mut sites: Vec<PlanCrossing> = Vec::new();
+            for s in c.spans.iter().filter(|s| s.kind == SpanKind::Tunnel) {
+                for x in &plan[c.id as usize] {
+                    if x.arc < s.arc0 || x.arc > s.arc1 {
+                        continue;
+                    }
+                    let above = level_at(scene, x.other, x.other_arc) > s.level;
+                    if debug {
+                        eprintln!(
+                            "[cover] corridor {} {:?} tunnel [{:.1}, {:.1}] level {} crossed at \
+                             {:.1} by {} ({:?} level {} at {:.1}){}",
+                            c.id,
+                            c.kind,
+                            s.arc0,
+                            s.arc1,
+                            s.level,
+                            x.arc,
+                            x.other,
+                            kind_at(scene, x.other, x.other_arc),
+                            level_at(scene, x.other, x.other_arc),
+                            x.other_arc,
+                            if above { " -> buried" } else { "" }
+                        );
+                    }
+                    if !above {
+                        continue;
+                    }
+                    sites.push(*x);
+                }
+            }
+            sites.sort_by(|a, b| a.arc.partial_cmp(&b.arc).expect("finite arcs"));
+            sites
+        })
+        .collect()
 }
 
 /// Shoulder added to a crossing feature's half-width when a bore is extended
@@ -712,6 +826,58 @@ mod tests {
         // Both corridors are 6 m wide: reach = 3 + ANNEX_SHOULDER_M.
         assert!((plan[0][0].1 - (3.0 + ANNEX_SHOULDER_M)).abs() < 1e-9);
         assert!((plan[1][0].1 - (3.0 + ANNEX_SHOULDER_M)).abs() < 1e-9);
+    }
+
+    /// The burial license fires only for a mapped tunnel crossed by an
+    /// **at-grade** band: a crossing bridge flies over the mouth (S7) and a
+    /// deeper tunnel passes below, and neither puts a roadbed on the ground
+    /// the bore must pierce.
+    #[test]
+    fn covered_bores_gate_on_both_annotations() {
+        let len = 200.0;
+        let tunnel_spans = |lo: f64, hi: f64| {
+            vec![
+                Span { arc0: 0.0, arc1: lo, level: 0, kind: SpanKind::Grade },
+                Span { arc0: lo, arc1: hi, level: -1, kind: SpanKind::Tunnel },
+                Span { arc0: hi, arc1: len, level: 0, kind: SpanKind::Grade },
+            ]
+        };
+        // The bore runs north–south; the other road crosses it mid-tunnel.
+        let bore = corridor(0, 6.0009, 46.0, false, len, tunnel_spans(50.0, 150.0));
+        let road = corridor(1, 6.0, 46.0009, true, len, grade(len));
+        let scene = SceneGraph::new(vec![bore, road]);
+        let plan = plan_index(&scene);
+        let covered = covered_bores(&scene, &plan);
+        assert_eq!(covered[0].len(), 1, "an at-grade band covers the bore: {covered:?}");
+        let (w0, w1) = covered[0][0];
+        assert!(w0 < w1 && w0 > 50.0 && w1 < 150.0, "window inside the tunnel: {covered:?}");
+        assert!(covered[1].is_empty(), "the at-grade side carries no license");
+
+        // A mapped bridge *above* the tunnel states the same ordering demand
+        // as an at-grade band: the bore passes beneath it. (The Territet
+        // road's 16 m deck snapped over the funicular's crossing — refusing
+        // the license there left the rail a storey under the soffit.)
+        let bore = corridor(0, 6.0009, 46.0, false, len, tunnel_spans(50.0, 150.0));
+        let mut road = corridor(1, 6.0, 46.0009, true, len, grade(len));
+        road.spans = vec![Span { arc0: 0.0, arc1: len, level: 1, kind: SpanKind::Bridge }];
+        let scene = SceneGraph::new(vec![bore, road]);
+        let plan = plan_index(&scene);
+        assert_eq!(covered_bores(&scene, &plan)[0].len(), 1, "a bridge above still covers");
+
+        // A deeper tunnel passes below and licenses nothing.
+        let bore = corridor(0, 6.0009, 46.0, false, len, tunnel_spans(50.0, 150.0));
+        let mut deeper = corridor(1, 6.0, 46.0009, true, len, grade(len));
+        deeper.spans = vec![Span { arc0: 0.0, arc1: len, level: -2, kind: SpanKind::Tunnel }];
+        let scene = SceneGraph::new(vec![bore, deeper]);
+        let plan = plan_index(&scene);
+        assert!(covered_bores(&scene, &plan)[0].is_empty(), "a deeper bore passes below");
+
+        // A crossing outside the tunnel span licenses nothing either.
+        let bore = corridor(0, 6.0009, 46.0, false, len, tunnel_spans(120.0, 150.0));
+        let road = corridor(1, 6.0, 46.0009, true, len, grade(len));
+        let scene = SceneGraph::new(vec![bore, road]);
+        let plan = plan_index(&scene);
+        assert!(covered_bores(&scene, &plan)[0].is_empty(), "the crossing is in the open");
     }
 
     /// A junction is a meeting, not a crossing, in the plan index too.

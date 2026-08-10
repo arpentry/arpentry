@@ -675,6 +675,28 @@ impl Profile {
         }
     }
 
+    /// Marks `[arc0, arc1]` as running at grade — the inverse of
+    /// [`Self::annex_structure`], for a tunnel stretch the reconciliation
+    /// degraded (`portals::reconcile_spans`): the solved line never went
+    /// below the ground here, so the benches, the bands and the paint must
+    /// all treat it as an open roadbed. Heights are left as solved — on a
+    /// degraded stretch the line rides at or above its terrain by
+    /// construction (the bore ceiling caps it at the surface and the zero
+    /// crossings bound the buried run) — so only the flags move, and the deck
+    /// refits around the runs that remain.
+    pub fn degrade_structure(&mut self, arc0: f64, arc1: f64, deck_follows_road: bool) {
+        for k in 0..self.at_grade.len() {
+            if self.arc[k] >= arc0 && self.arc[k] <= arc1 {
+                self.at_grade[k] = true;
+            }
+        }
+        if deck_follows_road {
+            self.set_deck_to_road();
+        } else {
+            self.rebuild_deck();
+        }
+    }
+
     /// Overwrites the solved road heights with the global relaxation's output
     /// ([`crate::solve::relax`]) and refits the deck ramps. `road` must have one
     /// entry per node; a length mismatch leaves the profile unchanged (the

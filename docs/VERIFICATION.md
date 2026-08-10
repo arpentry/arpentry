@@ -128,9 +128,10 @@ them so one table and one baseline cover both halves.
 | metric | inv | what it means |
 |---|---|---|
 | `solve.determinism` | I5 | The same scene solved twice, compared bit for bit. Non-zero means a height depends on an iteration order or a thread interleaving, and every guarantee below rests on it not doing so. |
-| `authority.inversion_R` | I7 | Stratum R re-solved with every junior corridor deleted from the scene. Any senior height that moved is an authority violation. |
+| `authority.inversion_R` | I7 | Stratum R re-solved with every junior corridor deleted from the scene, the burial licenses held at the full scene's values (the plan skeleton is input, §7 I7). Any senior height that moved is an authority violation. |
 | `authority.inversion_S` | I7 | The same for S. |
 | `ground.footprint` | I8 | Every layer of the ground stack against the one beneath it: where a layer moved the ground, its own declared footprint must cover the point. |
+| `structure.bore_daylight` | I3 | The crossing premise, measured. A crossing over a mapped bore buys no clearance (§4.5), which stands on the premise that the bore passes beneath the ground the crossing feature rides on. At every plan crossing of a mapped tunnel span by an alignment annotated above it — the same gate that seeds the solver's burial ceilings — the bore's roof plus cover against its own terrain, signed. Positive is a bore daylighting through a roadbed: the waiver stood on nothing, and the two bands draw a storey apart with neither a bore nor a deck between them. Archive-side only `contact.kerb_lip` can see this class, because a dismissed tunnel paves no band for `order.grade_stack` to catch. |
 
 The perturbation checks are the only ones that verify the *design* rather than
 the output, and they cannot be passed by luck. They are opt-in because they

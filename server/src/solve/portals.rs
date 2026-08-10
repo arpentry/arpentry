@@ -204,9 +204,10 @@ pub fn grow_spans(profile: &Profile, spans: &[Span]) -> Vec<Span> {
 }
 
 /// Tunnel spans extended through the crossings their still-buried tails pass
-/// beneath — the *growing* half of portal placement, applied once after the
-/// solve and written back into the scene, where the shrinking half
-/// ([`reconcile_spans`]) stays an emit-time view.
+/// beneath — the *growing* half of portal placement. Both halves run in the
+/// per-stratum write-back (`solve::reconcile_stratum`): the annex first, then
+/// the shrinking half ([`reconcile_spans`]), and the result is written into
+/// the scene as the one span truth every consumer cuts (§4.5).
 ///
 /// An annotation edge is where a mapper split the segment (S5), and a bore
 /// whose tail is still below its own terrain when another mapped alignment
@@ -329,11 +330,13 @@ const MIN_ANNEX_STUB_M: f64 = 2.0;
 /// annotation slack — the stretch a mapper tagged "tunnel" where the road in
 /// fact still runs above ground — is re-covered by grade spans, so the
 /// approach up to a portal mouth is painted road instead of naked ground. A
-/// tunnel with no buried run at all becomes grade end to end (the same
-/// degradation the bore mesh applies, decided once here so paint and solids
-/// agree). Only shrinking is reconciled: a buried run reaching *past* the
-/// annotation is left to the bore sweep's own outward march, where the
-/// neighbouring span's paint simply passes under the ground it is buried by.
+/// tunnel with no buried run at all becomes grade end to end. Called once per
+/// corridor from the per-stratum write-back (`solve::reconcile_stratum`) and
+/// written into the scene, so paint, bands, benches and solids all cut one
+/// partition (§4.5). Only shrinking is reconciled: a buried run reaching
+/// *past* the annotation is left to the bore sweep's own outward march, where
+/// the neighbouring span's paint simply passes under the ground it is buried
+/// by.
 pub fn reconcile_spans(profile: &Profile, spans: &[Span]) -> Vec<Span> {
     /// Shortest grade stub worth emitting, in metres — below this the piece
     /// quantizes away.

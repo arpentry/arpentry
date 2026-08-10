@@ -93,8 +93,44 @@ pub fn inversion(m: &Model<'_>) -> Vec<Metric> {
             continue;
         }
         let (mut truncated, keeps) = without_junior(m.scene, keep);
-        let Ok(senior_only) = solve::run(&mut truncated, Some(terrain), m.solved.z_ref, m.threads)
-        else {
+        // The plan skeleton is held at the full scene's values, remapped to
+        // the surviving corridor ids: the covered-bore burial licenses AND
+        // the crossing reaches the reconciliation write-back walks. Both are
+        // plan facts — crossing locations, band reaches and level ordinals,
+        // no junior *height* among them — and I7's claim is stated against
+        // them: senior heights are a function of the strata and the plan
+        // skeleton, and of nothing the deleted juniors solved. Recomputing
+        // either on the truncated scene deletes part of the input and
+        // measures the difference as a violation — an unpinned `over` demotes
+        // the short senior structures the junior crossings justify, and an
+        // unpinned reach leaks through a senior's *reconciled* span partition
+        // into the next stratum's crossing ordering (the m2 chain in
+        // `solve::PlanPin`).
+        let full = clone_scene(m.scene);
+        let plan = solve::crossings::plan_index(&full);
+        let all_covered = solve::crossings::covered_bores(&full, &plan);
+        let all_over = solve::crossings::spans_over_a_corridor(&full);
+        let kept = keeps.iter().flatten().count();
+        let mut pin = solve::PlanPin {
+            covered: vec![Vec::new(); kept],
+            reaches: vec![Vec::new(); kept],
+            over: vec![Vec::new(); kept],
+        };
+        for (old, new) in keeps.iter().enumerate() {
+            if let Some(new) = new {
+                pin.covered[*new as usize] = all_covered.get(old).cloned().unwrap_or_default();
+                pin.reaches[*new as usize] =
+                    plan.get(old).map(|l| solve::crossings::reaches(l)).unwrap_or_default();
+                pin.over[*new as usize] = all_over.get(old).cloned().unwrap_or_default();
+            }
+        }
+        let Ok(senior_only) = solve::run_licensed(
+            &mut truncated,
+            Some(terrain),
+            m.solved.z_ref,
+            m.threads,
+            Some(pin),
+        ) else {
             out.push(skipped(&format!("authority.inversion_{name}"), Invariant::I7, "re-solve failed"));
             continue;
         };
@@ -145,6 +181,9 @@ fn without_junior(scene: &SceneGraph, keep: Stratum) -> (SceneGraph, Vec<Option<
         }
         map[c.id as usize] = Some(corridors.len() as u32);
         let mut c = c.clone();
+        // Restored to the annotation, as in [`clone_scene`]: the experiment
+        // replays the run's input, not the run's output.
+        c.spans = scene.annotated(c.id).to_vec();
         c.id = corridors.len() as u32;
         corridors.push(c);
     }
@@ -176,10 +215,19 @@ fn without_junior(scene: &SceneGraph, keep: Stratum) -> (SceneGraph, Vec<Option<
     (out, map)
 }
 
-/// A structural copy of a scene, for the determinism re-solve. The solve mutates
-/// spans, so the original must not be handed to it twice.
+/// A structural copy of a scene **restored to its annotation**, for the
+/// re-solves. The solve's write-back reconciles `corridors[..].spans` with the
+/// solved geometry (`solve::reconcile_stratum`), so handing the mutated scene
+/// to a second run replays the solve against its own output — tunnels already
+/// clamped, degraded stretches already at grade — and the heights genuinely
+/// differ. The annotation snapshot is the run's true input, and restoring it
+/// is what makes "the same scene solved twice" the same scene.
 fn clone_scene(scene: &SceneGraph) -> SceneGraph {
-    let mut out = SceneGraph::new(scene.corridors.clone());
+    let mut corridors = scene.corridors.clone();
+    for c in corridors.iter_mut() {
+        c.spans = scene.annotated(c.id).to_vec();
+    }
+    let mut out = SceneGraph::new(corridors);
     out.junctions = scene.junctions.clone();
     out.water = scene.water.clone();
     out

@@ -20,7 +20,7 @@
 //! pool and written back in stream order. `Config::threads == 1` runs both
 //! phases serially on the calling thread.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -41,7 +41,7 @@ use crate::layers;
 use crate::profile;
 use crate::project::Bounds;
 use crate::record;
-use crate::scene::{source_hash, SceneGraph, Span, SpanKind};
+use crate::scene::{source_hash, SceneGraph, SpanKind};
 use crate::simplify;
 use crate::solve::{self, SolvedModel};
 use crate::sort::{self, ExternalSorter};
@@ -1086,9 +1086,6 @@ fn phase1_worker(
     // between the deck and the path draped up to it, and the cut is here.
     let mut sampler =
         GroundSampler::new(dem, Arc::clone(ground), solved.z_ref, mesh_options(cfg));
-    // Solved-reconciled span lists, built lazily per corridor — a corridor's
-    // many segments all cut against the same list.
-    let mut spans_cache: HashMap<u32, Vec<Span>> = HashMap::new();
     loop {
         let item = queue.lock().expect("phase-1 queue poisoned").pop_front();
         let Some(item) = item else {
@@ -1117,7 +1114,6 @@ fn phase1_worker(
                 scene,
                 solved,
                 junctions,
-                &mut spans_cache,
                 &mut sampler,
                 carriers,
             )?;
@@ -1155,7 +1151,6 @@ fn process_feature(
     scene: &SceneGraph,
     solved: &SolvedModel,
     junctions: &JunctionModel,
-    spans_cache: &mut HashMap<u32, Vec<Span>>,
     sampler: &mut GroundSampler,
     carriers: &synth::carried::Carriers,
 ) -> Result<(), Error> {
@@ -1174,17 +1169,11 @@ fn process_feature(
         let marks = marking_context(f, junctions, bb);
         let claimed = prop_id(&f.properties).and_then(|id| scene.lookup(source_hash(&id)));
         if let Some((corridor, seg)) = claimed {
-            // Cut against the solved-reconciled spans: tunnels clamped to
-            // their portal crossings so the above-ground approach a mapper
-            // tagged "tunnel" is painted road right up to the portal mouth
-            // (`solve::portals::reconcile_spans`).
-            let spans = spans_cache.entry(corridor.id).or_insert_with(|| {
-                match solved.profile(corridor.id) {
-                    Some(p) => solve::portals::reconcile_spans(p, &corridor.spans),
-                    None => corridor.spans.clone(),
-                }
-            });
-            for piece in corridor.pieces_in(seg, spans) {
+            // The corridor's spans are already the solved-reconciled truth —
+            // tunnels clamped to their buried runs, the freed slack painted
+            // as road up to the portal mouth (`solve::reconcile_stratum`,
+            // §4.5) — the same partition the bands, benches and solids cut.
+            for piece in corridor.pieces(seg) {
                 let line = LineString(piece.line);
                 let mut props = seg.properties.clone();
                 // The marking synth: at-grade markings drape like the paint;

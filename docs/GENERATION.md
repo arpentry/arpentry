@@ -445,6 +445,31 @@ Two consequences are normative:
   over a railway that is underground, on an embankment nothing asked for. The
   demand is therefore dropped in that case, and the cover is left to the
   stratum that owns it.
+- **A waived clearance is a burial promise, and the bore's own solve keeps
+  it.** The waiver above stands on a premise — *the bore passes beneath the
+  ground the crossing feature rides on* — and nothing about the annotation
+  makes that true by itself: a mapped tunnel whose line hugs its slope rides
+  *at* the surface, and the two bands then draw a storey apart with neither a
+  bore nor a deck between them (the Territet funicular crossing). So wherever
+  another mapped alignment crosses a tunnel span from above (by the level
+  ordinals — an ordering, never a height), the bore's ceiling there deepens
+  from the bare surface to the surface less its roof and cover. The demand is
+  local to the crossing band, which is what separates it from a global burial
+  margin: depth is demanded only where the surface above is someone's roadbed,
+  never on open hillside or at a data-gap end. `structure.bore_daylight`
+  measures the premise at exactly these sites.
+- **After a stratum solves, there is one span truth.** The annotation serves
+  the solve as a prior; what survives the solve is the *reconciled* partition
+  — tunnel spans grown through the crossings their still-buried tails pass
+  beneath, then clamped to their buried runs, the freed slack re-covered as
+  grade, a tunnel with no buried run degraded end to end — written back into
+  the scene before any junior stratum or any consumer reads the spans. Every
+  reader — the junior solves deciding "the senior is in a bore here", the
+  bands, the benches, the sheets, the paint, the solids — cuts the same
+  partition, so "the paint reconciled privately while the surfaces read the
+  annotation" is unrepresentable. The annotation itself survives only as a
+  snapshot on the scene, for the checks that score the solve *against* the
+  mapper's claim (`structure.annotated_lost` and friends).
 
 ### 4.6 Degradation and back-edges
 
@@ -574,9 +599,14 @@ spectacle (a deck diving into a ravine, a floating slab, a staircase at a tile
 seam).
 
 **I7 — Datum monotonicity (authority).** A feature's solved height is a
-function of its own stratum and strata senior to it, and of nothing else.
-Equivalently: **deleting every junior feature changes no senior height, bit for
-bit.**
+function of its own stratum, strata senior to it, and the **plan skeleton** —
+where mapped alignments cross and their level ordinals, which are input data
+of the same standing as the feature's own annotation and carry no junior
+*height* — and of nothing else. Equivalently: **deleting every junior feature,
+while holding the plan skeleton, changes no senior height, bit for bit.** The
+skeleton clause exists for the burial license (§4.5): a senior bore dips
+because a mapped alignment crosses it in plan, never because of anything that
+alignment *solved*.
 
 **I8 — Ground monotonicity.** `groundₙ₊₁` differs from `groundₙ` only inside
 stratum *n*'s declared footprints, and each stratum's imprint is applied

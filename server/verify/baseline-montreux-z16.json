@@ -1,5 +1,5 @@
 {
-  "archive": "../data/overture-ch/preview.arpa",
+  "archive": "/private/tmp/claude-501/-Users-bchapuis-Projects-arpentry-arpentry/410a562e-d74b-45b5-942a-bcf1043805ea/scratchpad/preview-fixed.arpa",
   "metrics": [
     {
       "id": "contact.kerb_unwalled",
@@ -9,70 +9,70 @@
         {
           "lat": 46.435145479626954,
           "lon": 6.945542944595218,
-          "note": "asphalt 1123.50 m, terrain rim 1122.41 m, nothing between them",
-          "value": 1.0921371225208532,
+          "note": "asphalt 1123.50 m, terrain rim 1122.39 m, nothing between them",
+          "value": 1.1041610483021032,
           "zoom": 16
         },
         {
           "lat": 46.43513822928071,
           "lon": 6.94552400149405,
-          "note": "asphalt 1122.08 m, terrain rim 1121.01 m, nothing between them",
-          "value": 1.0731551889271032,
+          "note": "asphalt 1122.08 m, terrain rim 1120.99 m, nothing between them",
+          "value": 1.0986678842396032,
           "zoom": 16
         },
         {
           "lat": 46.43563904799521,
           "lon": 6.945918286219239,
-          "note": "asphalt 1117.22 m, terrain rim 1116.29 m, nothing between them",
-          "value": 0.926389981956163,
+          "note": "asphalt 1117.22 m, terrain rim 1116.41 m, nothing between them",
+          "value": 0.806883146018663,
           "zoom": 16
         },
         {
-          "lat": 46.44135806243867,
-          "lon": 6.909926645457745,
-          "note": "asphalt 489.76 m, terrain rim 490.66 m, nothing between them",
-          "value": 0.899732961283064,
+          "lat": 46.45487132482231,
+          "lon": 6.900657266378403,
+          "note": "asphalt 531.38 m, terrain rim 530.63 m, nothing between them",
+          "value": 0.7493865966797557,
           "zoom": 16
         },
         {
           "lat": 46.43564428668469,
           "lon": 6.9459249917417765,
-          "note": "asphalt 1118.59 m, terrain rim 1117.69 m, nothing between them",
-          "value": 0.8913558022688903,
-          "zoom": 16
-        },
-        {
-          "lat": 46.441357056610286,
-          "lon": 6.909924298524857,
-          "note": "asphalt 488.80 m, terrain rim 489.58 m, nothing between them",
-          "value": 0.7837356468299959,
+          "note": "asphalt 1118.59 m, terrain rim 1117.84 m, nothing between them",
+          "value": 0.7488387124251403,
           "zoom": 16
         },
         {
           "lat": 46.39963852241635,
           "lon": 6.932189734652638,
           "note": "asphalt 413.75 m, terrain rim 413.03 m, nothing between them",
-          "value": 0.7229489699403189,
+          "value": 0.7239560500184439,
           "zoom": 16
         },
         {
-          "lat": 46.45487132482231,
-          "lon": 6.900657266378403,
-          "note": "asphalt 531.38 m, terrain rim 530.68 m, nothing between them",
-          "value": 0.701513671875091,
+          "lat": 46.44135806243867,
+          "lon": 6.909926645457745,
+          "note": "asphalt 489.76 m, terrain rim 490.48 m, nothing between them",
+          "value": 0.722874059305525,
+          "zoom": 16
+        },
+        {
+          "lat": 46.441357056610286,
+          "lon": 6.909924298524857,
+          "note": "asphalt 488.80 m, terrain rim 489.49 m, nothing between them",
+          "value": 0.6903728386024568,
           "zoom": 16
         }
       ],
       "population": "Every terrain-mesh boundary edge midpoint that is not on the tile's own edge and has at-grade asphalt or casing over it. A cut edge carries no apron by design and is excluded with the tile edge. The apron is vertical, so its span is asked within 1.5 m of the rim rather than at it, with 0.5 m of slack at each end.",
-      "samples": 430423,
+      "samples": 436859,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.006666666666667709,
       "threshold": 0.5,
       "title": "Gap at the hole's rim with nothing spanning it",
-      "violation_pct": 0.0027879551046296317,
-      "violations": 12,
-      "worst": 1.0921371225208532
+      "violation_pct": 0.0034336021462302484,
+      "violations": 15,
+      "worst": 1.1041610483021032
     },
     {
       "id": "contact.kerb_lip",
@@ -80,72 +80,72 @@
       "median": -0.006666666666664156,
       "offenders": [
         {
-          "lat": 46.43372328020632,
-          "lon": 6.925425203517079,
-          "note": "kerb 720.26 m, ground 703.84 m a metre outside it",
-          "value": 16.42061202830064,
+          "lat": 46.428577713668346,
+          "lon": 6.923615299165249,
+          "note": "kerb 490.19 m, ground 475.21 m a metre outside it",
+          "value": 14.981612619242867,
           "zoom": 16
         },
         {
-          "lat": 46.43373157829046,
-          "lon": 6.925416486337781,
-          "note": "kerb 720.25 m, ground 704.25 m a metre outside it",
-          "value": 15.998707101597802,
+          "lat": 46.45328023005277,
+          "lon": 6.896527418866754,
+          "note": "kerb 492.58 m, ground 479.97 m a metre outside it",
+          "value": 12.609751729431196,
           "zoom": 16
         },
         {
-          "lat": 46.43347794190049,
-          "lon": 6.925338450819254,
-          "note": "kerb 721.24 m, ground 706.55 m a metre outside it",
-          "value": 14.686389716636995,
+          "lat": 46.453249300830066,
+          "lon": 6.896486263722181,
+          "note": "kerb 492.36 m, ground 479.78 m a metre outside it",
+          "value": 12.58651132641387,
           "zoom": 16
         },
         {
-          "lat": 46.43346721306443,
-          "lon": 6.925342138856649,
-          "note": "kerb 721.27 m, ground 706.60 m a metre outside it",
-          "value": 14.666435107952452,
+          "lat": 46.4532623346895,
+          "lon": 6.896505290642381,
+          "note": "kerb 492.36 m, ground 479.96 m a metre outside it",
+          "value": 12.404940558845624,
           "zoom": 16
         },
         {
-          "lat": 46.43345350865275,
-          "lon": 6.925346916541457,
-          "note": "kerb 721.30 m, ground 706.69 m a metre outside it",
-          "value": 14.616623841052615,
+          "lat": 46.453258730471134,
+          "lon": 6.896498082205653,
+          "note": "kerb 492.36 m, ground 479.98 m a metre outside it",
+          "value": 12.382150379957409,
           "zoom": 16
         },
         {
-          "lat": 46.43350828438997,
-          "lon": 6.925328057259321,
-          "note": "kerb 721.15 m, ground 706.56 m a metre outside it",
-          "value": 14.597182487897953,
+          "lat": 46.45328689366579,
+          "lon": 6.896535800769925,
+          "note": "kerb 492.58 m, ground 480.24 m a metre outside it",
+          "value": 12.339901076507942,
           "zoom": 16
         },
         {
-          "lat": 46.43352613784373,
-          "lon": 6.92539544776082,
-          "note": "kerb 721.14 m, ground 706.63 m a metre outside it",
-          "value": 14.508209756755832,
+          "lat": 46.45321082789451,
+          "lon": 6.896437732502818,
+          "note": "kerb 492.36 m, ground 480.04 m a metre outside it",
+          "value": 12.324971524610191,
           "zoom": 16
         },
         {
-          "lat": 46.43351792357862,
-          "lon": 6.925346162170172,
-          "note": "kerb 721.14 m, ground 706.66 m a metre outside it",
-          "value": 14.477726301057146,
+          "lat": 46.45329804159701,
+          "lon": 6.896549882367253,
+          "note": "kerb 492.58 m, ground 480.31 m a metre outside it",
+          "value": 12.26714407159983,
           "zoom": 16
         }
       ],
       "population": "Every silhouette (boundary) edge midpoint of every level-0 road_surface mesh inside the tile proper, probed 1 m along the outward normal. Structures are excluded: a deck edge is not a kerb.",
-      "samples": 397895,
+      "samples": 402911,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 6.313333333333333,
+      "tail": 6.073333333333338,
       "threshold": 0.5,
       "title": "Drop from the kerb to the ground beside it",
-      "violation_pct": 12.570150416567184,
-      "violations": 50016,
-      "worst": 16.42061202830064
+      "violation_pct": 12.756166994696098,
+      "violations": 51396,
+      "worst": 14.981612619242867
     },
     {
       "id": "contact.deck_seat",
@@ -167,6 +167,13 @@
           "zoom": 16
         },
         {
+          "lat": 46.43864576239139,
+          "lon": 6.914913542568684,
+          "note": "footway deck starts at 512.10 m against 515.26 m at its far end, with wall above it the whole way",
+          "value": 3.15203857421875,
+          "zoom": 16
+        },
+        {
           "lat": 46.424520830623806,
           "lon": 6.936417566612363,
           "note": "path deck starts at 580.42 m against 583.27 m at its far end, with wall above it the whole way",
@@ -175,14 +182,14 @@
         }
       ],
       "population": "The lower abutment of every *fitted* deck — a draped class carrying an elevated span, whose deck is chorded to the ground rather than solved (`synth::draped`) — lying wholly inside the tile proper. Followed 20 m outward along the deck's own axis in 2 m steps, and only while the ground climbs at 60 % or more. Three coverage limits: a deck clipped by the tile border is left to the tile that owns it; a span whose abutment stands on a wall the drawn terrain mesh is too coarse to resolve reads lower than it is; and a span with *both* abutments down in the notch reads zero, because the bound is its own far end and there is nothing in the archive that says how high the path beyond it goes.",
-      "samples": 91,
+      "samples": 86,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 4.046666666666667,
       "threshold": 2.0,
       "title": "Wall standing over a footbridge's lower abutment",
-      "violation_pct": 3.2967032967032965,
-      "violations": 3,
+      "violation_pct": 4.651162790697675,
+      "violations": 4,
       "worst": 4.048004150390625
     },
     {
@@ -212,294 +219,367 @@
     {
       "id": "contact.rail_standoff",
       "invariant": "I4",
-      "median": -0.006666666666664156,
+      "median": -2.9933333333333323,
       "offenders": [
+        {
+          "lat": 46.461181640625,
+          "lon": 6.91159950569272,
+          "note": "narrow_gauge formation 680.68 m, drawn ground 656.74 m, nothing between them",
+          "value": 23.940238481521646,
+          "zoom": 16
+        },
+        {
+          "lat": 46.461180970072746,
+          "lon": 6.911600679159164,
+          "note": "narrow_gauge formation 680.68 m, drawn ground 656.82 m, nothing between them",
+          "value": 23.868518814086883,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4611800480634,
+          "lon": 6.911602020263672,
+          "note": "narrow_gauge formation 680.69 m, drawn ground 656.92 m, nothing between them",
+          "value": 23.76532605934142,
+          "zoom": 16
+        },
+        {
+          "lat": 46.46117786876857,
+          "lon": 6.9116053730249405,
+          "note": "narrow_gauge formation 680.70 m, drawn ground 657.18 m, nothing between them",
+          "value": 23.518203947067263,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4611678943038,
+          "lon": 6.9116174429655075,
+          "note": "narrow_gauge formation 680.74 m, drawn ground 658.25 m, nothing between them",
+          "value": 22.48722642517089,
+          "zoom": 16
+        },
+        {
+          "lat": 46.46116454154253,
+          "lon": 6.91162146627903,
+          "note": "narrow_gauge formation 680.75 m, drawn ground 658.51 m, nothing between them",
+          "value": 22.237641189575243,
+          "zoom": 16
+        },
+        {
+          "lat": 46.46116018295288,
+          "lon": 6.911626495420933,
+          "note": "narrow_gauge formation 680.76 m, drawn ground 658.85 m, nothing between them",
+          "value": 21.919042720794664,
+          "zoom": 16
+        },
         {
           "lat": 46.43646240234375,
           "lon": 6.933807022869587,
-          "note": "narrow_gauge formation 840.30 m, drawn ground 807.01 m, nothing between them",
-          "value": 33.28947837066653,
-          "zoom": 16
-        },
-        {
-          "lat": 46.42738580703735,
-          "lon": 6.9234917499125,
-          "note": "funicular formation 439.89 m, drawn ground 410.42 m, nothing between them",
-          "value": 29.46784750652313,
-          "zoom": 16
-        },
-        {
-          "lat": 46.427386896684766,
-          "lon": 6.9234917499125,
-          "note": "funicular formation 439.95 m, drawn ground 410.57 m, nothing between them",
-          "value": 29.372550507545498,
-          "zoom": 16
-        },
-        {
-          "lat": 46.42736946232617,
-          "lon": 6.92349074408412,
-          "note": "funicular formation 439.08 m, drawn ground 409.93 m, nothing between them",
-          "value": 29.14726353073121,
-          "zoom": 16
-        },
-        {
-          "lat": 46.42736476846039,
-          "lon": 6.923490408807993,
-          "note": "funicular formation 438.84 m, drawn ground 409.79 m, nothing between them",
-          "value": 29.057874578475946,
-          "zoom": 16
-        },
-        {
-          "lat": 46.427364349365234,
-          "lon": 6.923490408807993,
-          "note": "funicular formation 438.82 m, drawn ground 409.77 m, nothing between them",
-          "value": 29.05552665996555,
-          "zoom": 16
-        },
-        {
-          "lat": 46.42770767211914,
-          "lon": 6.923512537032366,
-          "note": "funicular formation 455.92 m, drawn ground 426.91 m, nothing between them",
-          "value": 29.003628556251556,
-          "zoom": 16
-        },
-        {
-          "lat": 46.42770683392882,
-          "lon": 6.923512369394302,
-          "note": "funicular formation 455.88 m, drawn ground 426.89 m, nothing between them",
-          "value": 28.990792585372958,
+          "note": "narrow_gauge formation 823.60 m, drawn ground 807.01 m, nothing between them",
+          "value": 16.596478370666546,
           "zoom": 16
         }
       ],
       "population": "Every vertex of every level-0 rail centerline inside the tile proper whose class names a gauge or a system, where the drawn terrain has a triangle under it. `unknown` rail is excluded — the archive carries no subtype, so that class is indistinguishable from an unrecognised road class. A vertex within 1.0 m of a drawn structure surface is excluded too: a structure span emits its paint stroke before the level ordinal is attached, so a viaduct's stroke arrives here at level 0 and metres up, which is what a viaduct is for. Coverage limit: the terrain's hole under the asphalt means street-running rail over a paved region has no ground to answer for it and is not measured.",
-      "samples": 71232,
+      "samples": 9024,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 27.833333333333336,
+      "tail": 14.56666666666667,
       "threshold": 2.0,
       "title": "Drawn railway standing off the ground beneath it",
-      "violation_pct": 9.02122641509434,
-      "violations": 6426,
-      "worst": 33.28947837066653
+      "violation_pct": 1.6289893617021276,
+      "violations": 147,
+      "worst": 23.940238481521646
     },
     {
       "id": "order.deck_above_carriageway",
       "invariant": "I3",
-      "median": 7.300000000000004,
+      "median": 7.100000000000001,
       "offenders": [
         {
-          "lat": 46.46935328375548,
-          "lon": 6.897942870855331,
-          "note": "narrow_gauge L1 surface 672.72 m under at-grade asphalt 679.88 m",
-          "value": -7.162563543427382,
+          "lat": 46.438658494502306,
+          "lon": 6.914937447756529,
+          "note": "footway L1 surface 512.42 m under at-grade asphalt 517.01 m",
+          "value": -4.585210148738042,
           "zoom": 16
         },
         {
-          "lat": 46.46935328375548,
-          "lon": 6.897942870855331,
-          "note": "narrow_gauge L1 surface 672.72 m under at-grade asphalt 679.88 m",
-          "value": -7.162563543427382,
+          "lat": 46.438658494502306,
+          "lon": 6.914937447756529,
+          "note": "footway L1 surface 512.42 m under at-grade asphalt 517.01 m",
+          "value": -4.585210148738042,
           "zoom": 16
         },
         {
-          "lat": 46.469351917505264,
-          "lon": 6.8979430720210075,
-          "note": "narrow_gauge L1 surface 672.71 m under at-grade asphalt 679.87 m",
-          "value": -7.160726129861018,
+          "lat": 46.43865573685616,
+          "lon": 6.914936006069183,
+          "note": "footway L1 surface 512.37 m under at-grade asphalt 516.68 m",
+          "value": -4.312086586133887,
           "zoom": 16
         },
         {
-          "lat": 46.469351917505264,
-          "lon": 6.8979430720210075,
-          "note": "narrow_gauge L1 surface 672.71 m under at-grade asphalt 679.87 m",
-          "value": -7.160726129861018,
+          "lat": 46.43865573685616,
+          "lon": 6.914936006069183,
+          "note": "footway L1 surface 512.37 m under at-grade asphalt 516.68 m",
+          "value": -4.312086586133887,
           "zoom": 16
         },
         {
-          "lat": 46.469351917505264,
-          "lon": 6.8979430720210075,
-          "note": "narrow_gauge L1 surface 672.71 m under at-grade asphalt 679.87 m",
-          "value": -7.160726129861018,
+          "lat": 46.43865573685616,
+          "lon": 6.914936006069183,
+          "note": "footway L1 surface 512.37 m under at-grade asphalt 516.68 m",
+          "value": -4.312086586133887,
           "zoom": 16
         },
         {
-          "lat": 46.469351917505264,
-          "lon": 6.8979430720210075,
-          "note": "narrow_gauge L1 surface 672.71 m under at-grade asphalt 679.87 m",
-          "value": -7.160726129861018,
+          "lat": 46.43865573685616,
+          "lon": 6.914936006069183,
+          "note": "footway L1 surface 512.37 m under at-grade asphalt 516.68 m",
+          "value": -4.312086586133887,
           "zoom": 16
         },
         {
-          "lat": 46.469351917505264,
-          "lon": 6.8979430720210075,
-          "note": "narrow_gauge L1 surface 672.71 m under at-grade asphalt 679.87 m",
-          "value": -7.160726129861018,
+          "lat": 46.43865573685616,
+          "lon": 6.914936006069183,
+          "note": "footway L1 surface 512.37 m under at-grade asphalt 516.68 m",
+          "value": -4.312086586133887,
           "zoom": 16
         },
         {
-          "lat": 46.469351917505264,
-          "lon": 6.8979430720210075,
-          "note": "narrow_gauge L1 surface 672.71 m under at-grade asphalt 679.87 m",
-          "value": -7.160726129861018,
+          "lat": 46.43865573685616,
+          "lon": 6.914936006069183,
+          "note": "footway L1 surface 512.37 m under at-grade asphalt 516.68 m",
+          "value": -4.312086586133887,
           "zoom": 16
         }
       ],
       "population": "Structure surface samples at 1.0 m plan spacing where at-grade asphalt shares the plan position, in the tile proper. Excludes decks over bare ground, which have nothing to be ordered against.",
-      "samples": 100276,
+      "samples": 111814,
       "sense": "lower_is_worse",
       "skipped": null,
-      "tail": -1.6199999999999974,
+      "tail": -1.379999999999999,
       "threshold": -0.5,
       "title": "Elevated structure above the at-grade asphalt",
-      "violation_pct": 1.474929195420639,
-      "violations": 1479,
-      "worst": -7.162563543427382
+      "violation_pct": 2.23853900227163,
+      "violations": 2503,
+      "worst": -4.585210148738042
     },
     {
       "id": "clearance.deck_over_ground",
       "invariant": "I4",
-      "median": 15.113333333333337,
+      "median": 15.406666666666666,
       "offenders": [
         {
-          "lat": 46.469188593328,
-          "lon": 6.897960584610701,
-          "note": "narrow_gauge L1 soffit 669.53 m, drawn ground 677.68 m",
-          "value": -8.14629971475324,
+          "lat": 46.45534632727504,
+          "lon": 6.941689532250166,
+          "note": "funicular L1 soffit 1018.04 m, drawn ground 1024.97 m",
+          "value": -6.932596951245159,
           "zoom": 16
         },
         {
-          "lat": 46.469188593328,
-          "lon": 6.897960584610701,
-          "note": "narrow_gauge L1 soffit 669.53 m, drawn ground 677.68 m",
-          "value": -8.14629971475324,
+          "lat": 46.45534632727504,
+          "lon": 6.941689532250166,
+          "note": "funicular L1 soffit 1018.04 m, drawn ground 1024.97 m",
+          "value": -6.932596951245159,
           "zoom": 16
         },
         {
-          "lat": 46.469188593328,
-          "lon": 6.897960584610701,
-          "note": "narrow_gauge L1 soffit 669.53 m, drawn ground 677.68 m",
-          "value": -8.14629971475324,
+          "lat": 46.45534632727504,
+          "lon": 6.941689532250166,
+          "note": "funicular L1 soffit 1018.04 m, drawn ground 1024.97 m",
+          "value": -6.932596951245159,
           "zoom": 16
         },
         {
-          "lat": 46.469188593328,
-          "lon": 6.897960584610701,
-          "note": "narrow_gauge L1 soffit 669.53 m, drawn ground 677.68 m",
-          "value": -8.14629971475324,
+          "lat": 46.45534632727504,
+          "lon": 6.941689532250166,
+          "note": "funicular L1 soffit 1018.04 m, drawn ground 1024.97 m",
+          "value": -6.932596951245159,
           "zoom": 16
         },
         {
-          "lat": 46.46919598337263,
-          "lon": 6.897959774360061,
-          "note": "narrow_gauge L1 soffit 669.61 m, drawn ground 677.73 m",
-          "value": -8.126510220585487,
+          "lat": 46.45534632727504,
+          "lon": 6.941689532250166,
+          "note": "funicular L1 soffit 1018.04 m, drawn ground 1024.97 m",
+          "value": -6.932596951245159,
           "zoom": 16
         },
         {
-          "lat": 46.46919598337263,
-          "lon": 6.897959774360061,
-          "note": "narrow_gauge L1 soffit 669.61 m, drawn ground 677.73 m",
-          "value": -8.126510220585487,
+          "lat": 46.45534632727504,
+          "lon": 6.941689532250166,
+          "note": "funicular L1 soffit 1018.04 m, drawn ground 1024.97 m",
+          "value": -6.932596951245159,
           "zoom": 16
         },
         {
-          "lat": 46.469181147404015,
-          "lon": 6.897961171343923,
-          "note": "narrow_gauge L1 soffit 669.46 m, drawn ground 677.58 m",
-          "value": -8.117913959243083,
+          "lat": 46.45534632727504,
+          "lon": 6.941689532250166,
+          "note": "funicular L1 soffit 1018.04 m, drawn ground 1024.97 m",
+          "value": -6.932596951245159,
           "zoom": 16
         },
         {
-          "lat": 46.469181147404015,
-          "lon": 6.897961171343923,
-          "note": "narrow_gauge L1 soffit 669.46 m, drawn ground 677.58 m",
-          "value": -8.117913959243083,
+          "lat": 46.45534632727504,
+          "lon": 6.941689532250166,
+          "note": "funicular L1 soffit 1018.04 m, drawn ground 1024.97 m",
+          "value": -6.932596951245159,
           "zoom": 16
         }
       ],
       "population": "Every deck (level > 0) surface sample at 1.0 m plan spacing in the tile proper, against the terrain mesh of the same tile.",
-      "samples": 882690,
+      "samples": 838013,
       "sense": "lower_is_worse",
       "skipped": null,
-      "tail": -7.233333333333331,
+      "tail": -2.6999999999999993,
       "threshold": -2.0,
       "title": "Bridge soffit above the drawn ground",
-      "violation_pct": 1.1569180573021105,
-      "violations": 10212,
-      "worst": -8.14629971475324
+      "violation_pct": 0.35691570417165364,
+      "violations": 2991,
+      "worst": -6.932596951245159
     },
     {
       "id": "clearance.bore_cover",
       "invariant": "I4",
-      "median": 586.611906664712,
+      "median": 587.1987736225128,
       "offenders": [
         {
-          "lat": 46.433631582185626,
-          "lon": 6.920819766819477,
-          "note": "motorway L-5 roof 529.47 m, drawn ground 518.37 m",
-          "value": -11.099007368087882,
+          "lat": 46.412669265304096,
+          "lon": 6.931741310452873,
+          "note": "service L-2 roof 439.79 m, drawn ground 426.54 m",
+          "value": -13.242980957031307,
           "zoom": 16
         },
         {
-          "lat": 46.433631582185626,
-          "lon": 6.920819766819477,
-          "note": "motorway L-5 roof 529.47 m, drawn ground 518.37 m",
-          "value": -11.099007368087882,
+          "lat": 46.41264175742187,
+          "lon": 6.931761350821365,
+          "note": "service L-2 roof 439.79 m, drawn ground 426.54 m",
+          "value": -13.242980957031307,
           "zoom": 16
         },
         {
-          "lat": 46.433631582185626,
-          "lon": 6.920819766819477,
-          "note": "motorway L-5 roof 529.47 m, drawn ground 518.37 m",
-          "value": -11.099007368087769,
+          "lat": 46.412669265304096,
+          "lon": 6.931741310452873,
+          "note": "service L-2 roof 439.79 m, drawn ground 426.54 m",
+          "value": -13.242980957031307,
           "zoom": 16
         },
         {
-          "lat": 46.433631582185626,
-          "lon": 6.920819766819477,
-          "note": "motorway L-5 roof 529.47 m, drawn ground 518.37 m",
-          "value": -11.099007368087769,
+          "lat": 46.41264175742187,
+          "lon": 6.931761350821365,
+          "note": "service L-2 roof 439.79 m, drawn ground 426.54 m",
+          "value": -13.242980957031307,
           "zoom": 16
         },
         {
-          "lat": 46.433631582185626,
-          "lon": 6.920819766819477,
-          "note": "motorway L-5 roof 529.47 m, drawn ground 518.37 m",
-          "value": -11.099007368087769,
+          "lat": 46.41268026845699,
+          "lon": 6.931733294305476,
+          "note": "service L-2 roof 439.79 m, drawn ground 426.54 m",
+          "value": -13.24298095703125,
           "zoom": 16
         },
         {
-          "lat": 46.433631582185626,
-          "lon": 6.920819766819477,
-          "note": "motorway L-5 roof 529.47 m, drawn ground 518.37 m",
-          "value": -11.099007368087769,
+          "lat": 46.41267476688054,
+          "lon": 6.931737302379175,
+          "note": "service L-2 roof 439.79 m, drawn ground 426.54 m",
+          "value": -13.24298095703125,
           "zoom": 16
         },
         {
-          "lat": 46.433631582185626,
-          "lon": 6.920819766819477,
-          "note": "motorway L-5 roof 529.47 m, drawn ground 518.37 m",
-          "value": -11.099007368087769,
+          "lat": 46.41266376372766,
+          "lon": 6.931745318526572,
+          "note": "service L-2 roof 439.79 m, drawn ground 426.54 m",
+          "value": -13.24298095703125,
           "zoom": 16
         },
         {
-          "lat": 46.433631582185626,
-          "lon": 6.920819766819477,
-          "note": "motorway L-5 roof 529.47 m, drawn ground 518.37 m",
-          "value": -11.099007368087769,
+          "lat": 46.41265826215121,
+          "lon": 6.931749326600269,
+          "note": "service L-2 roof 439.79 m, drawn ground 426.54 m",
+          "value": -13.24298095703125,
           "zoom": 16
         }
       ],
       "population": "Every bore (level < 0) surface sample at 1.0 m plan spacing in the tile proper, against the terrain mesh of the same tile.",
-      "samples": 585492,
+      "samples": 630478,
       "sense": "lower_is_worse",
       "skipped": null,
-      "tail": -7.993333333333332,
+      "tail": -8.379999999999999,
       "threshold": -1.0,
       "title": "Ground cover over the tunnel roof",
-      "violation_pct": 13.399670704296557,
-      "violations": 78454,
-      "worst": -11.099007368087882
+      "violation_pct": 15.80895764800675,
+      "violations": 99672,
+      "worst": -13.242980957031307
+    },
+    {
+      "id": "order.grade_stack",
+      "invariant": "I3",
+      "median": 1.4066666666666663,
+      "offenders": [
+        {
+          "lat": 46.457171123474836,
+          "lon": 6.9419825077056885,
+          "note": "at-grade road_surface at 1045.20 m over at-grade road_surface at 1032.29 m, nothing between them",
+          "value": 12.913369439526377,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45717157050967,
+          "lon": 6.941984910517931,
+          "note": "at-grade road_surface at 1045.20 m over at-grade road_surface at 1032.29 m, nothing between them",
+          "value": 12.910244336182814,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45717157050967,
+          "lon": 6.941984910517931,
+          "note": "at-grade road_surface at 1045.20 m over at-grade road_surface at 1032.29 m, nothing between them",
+          "value": 12.910244336182814,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45717176608741,
+          "lon": 6.941985972225666,
+          "note": "at-grade road_surface at 1045.20 m over at-grade road_surface at 1032.30 m, nothing between them",
+          "value": 12.907149021442137,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45717196166515,
+          "lon": 6.941987033933401,
+          "note": "at-grade road_surface at 1045.20 m over at-grade road_surface at 1032.30 m, nothing between them",
+          "value": 12.904039859771729,
+          "zoom": 16
+        },
+        {
+          "lat": 46.457172157242894,
+          "lon": 6.941988095641136,
+          "note": "at-grade road_surface at 1045.21 m over at-grade road_surface at 1032.30 m, nothing between them",
+          "value": 12.900929927825928,
+          "zoom": 16
+        },
+        {
+          "lat": 46.457172157242894,
+          "lon": 6.941988095641136,
+          "note": "at-grade road_surface at 1045.21 m over at-grade road_surface at 1032.30 m, nothing between them",
+          "value": 12.900929927825928,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45717391744256,
+          "lon": 6.941998028196394,
+          "note": "at-grade road_surface at 1045.21 m over at-grade road_surface at 1032.34 m, nothing between them",
+          "value": 12.873184561729431,
+          "zoom": 16
+        }
+      ],
+      "population": "Surface samples of every level-0 band (carriageway or rail formation) at 1.0 m plan spacing in the tile proper, where another level-0 band lies at or below the same plan position. Each stacked pair is measured once, from its upper side. Abutting regions meet at zero and sit in the population's floor.",
+      "samples": 50075,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 12.60666666666667,
+      "threshold": 3.0,
+      "title": "At-grade band standing over another at-grade band",
+      "violation_pct": 10.973539690464303,
+      "violations": 5495,
+      "worst": 12.913369439526377
     },
     {
       "id": "seam.terrain_step",
@@ -507,7 +587,7 @@
       "median": 0.0033333333333333335,
       "offenders": [],
       "population": "Every global border lattice point of the Terrain mesh claimed by two or more tiles at this zoom. Points where one side had split open have no single answer to compare and are excluded — they are counted under seam.terrain_split.",
-      "samples": 162121,
+      "samples": 150426,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.0033333333333333335,
@@ -523,7 +603,7 @@
       "median": 0.0033333333333333335,
       "offenders": [],
       "population": "Every pair of coincident Terrain border vertices inside one tile. Needs no neighbour, so it covers border tiles the step metric cannot score.",
-      "samples": 338746,
+      "samples": 314662,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.0033333333333333335,
@@ -596,13 +676,13 @@
         }
       ],
       "population": "Every global border lattice point of the Carriageway mesh claimed by two or more tiles at this zoom. Points where one side had split open have no single answer to compare and are excluded — they are counted under seam.pavement_split.",
-      "samples": 22321,
+      "samples": 21546,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.0033333333333333335,
       "threshold": 0.005,
       "title": "Carriageway height disagreement across a tile border",
-      "violation_pct": 0.06272120424712155,
+      "violation_pct": 0.0649772579597141,
       "violations": 14,
       "worst": 2.97198486328125
     },
@@ -647,13 +727,6 @@
           "zoom": 16
         },
         {
-          "lat": 46.44195556640625,
-          "lon": 6.910915374755859,
-          "note": "one tile holds coincident vertices at 523.409 m and 527.346 m",
-          "value": 3.93701171875,
-          "zoom": 16
-        },
-        {
           "lat": 46.43841505050659,
           "lon": 6.910400390625,
           "note": "one tile holds coincident vertices at 422.261 m and 426.197 m",
@@ -665,18 +738,25 @@
           "lon": 6.910400390625,
           "note": "one tile holds coincident vertices at 422.261 m and 426.197 m",
           "value": 3.936004638671875,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43592596054077,
+          "lon": 6.9488525390625,
+          "note": "one tile holds coincident vertices at 1196.579 m and 1200.116 m",
+          "value": 3.5369873046875,
           "zoom": 16
         }
       ],
       "population": "Coincident border vertices of two different level-0 road_surface meshes in one tile. Border vertices only — that is what this pass collects; a whole-mesh version would find more overlap.",
-      "samples": 63904,
+      "samples": 61199,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 1.0433333333333334,
+      "tail": 1.0166666666666668,
       "threshold": 0.005,
       "title": "Overlapping at-grade asphalt with nothing to order it",
-      "violation_pct": 0.5367426139208813,
-      "violations": 343,
+      "violation_pct": 0.4411836794718868,
+      "violations": 270,
       "worst": 5.427978515625
     },
     {
@@ -687,70 +767,70 @@
         {
           "lat": 46.42196936532855,
           "lon": 6.933057010173798,
-          "note": "terrain face at 207:1 spanning 2.66 m, tile 16/34030/49669",
-          "value": 206.77683074237848,
-          "zoom": 16
-        },
-        {
-          "lat": 46.474449606612325,
-          "lon": 6.89508643001318,
-          "note": "terrain face at 124:1 spanning 1.97 m, tile 16/34023/49688",
-          "value": 124.0881838672064,
-          "zoom": 16
-        },
-        {
-          "lat": 46.446011289954185,
-          "lon": 6.915938705205917,
-          "note": "terrain face at 118:1 spanning 3.73 m, tile 16/34027/49678",
-          "value": 117.54830551273861,
-          "zoom": 16
-        },
-        {
-          "lat": 46.44601134583354,
-          "lon": 6.915939934551716,
-          "note": "terrain face at 118:1 spanning 3.73 m, tile 16/34027/49678",
-          "value": 117.54830551273861,
-          "zoom": 16
-        },
-        {
-          "lat": 46.39901348389685,
-          "lon": 6.939841546118259,
-          "note": "terrain face at 107:1 spanning 3.28 m, tile 16/34031/49661",
-          "value": 107.08181052638807,
+          "note": "terrain face at 202:1 spanning 2.60 m, tile 16/34030/49669",
+          "value": 201.79505679259424,
           "zoom": 16
         },
         {
           "lat": 46.41437150537968,
           "lon": 6.945702061057091,
-          "note": "terrain face at 101:1 spanning 1.60 m, tile 16/34032/49666",
-          "value": 100.78872790276571,
+          "note": "terrain face at 149:1 spanning 2.36 m, tile 16/34032/49666",
+          "value": 148.9080120974251,
           "zoom": 16
         },
         {
-          "lat": 46.41435597091913,
-          "lon": 6.945710498839617,
-          "note": "terrain face at 101:1 spanning 1.60 m, tile 16/34032/49666",
-          "value": 100.78872790276571,
+          "lat": 46.41435580328107,
+          "lon": 6.9457087107002735,
+          "note": "terrain face at 149:1 spanning 2.36 m, tile 16/34032/49666",
+          "value": 148.9080120974251,
           "zoom": 16
         },
         {
-          "lat": 46.446011206135154,
-          "lon": 6.915940046310425,
-          "note": "terrain face at 94:1 spanning 3.73 m, tile 16/34027/49678",
-          "value": 93.9194321517243,
+          "lat": 46.446011289954185,
+          "lon": 6.915938705205917,
+          "note": "terrain face at 121:1 spanning 3.83 m, tile 16/34027/49678",
+          "value": 120.70426195179996,
+          "zoom": 16
+        },
+        {
+          "lat": 46.44601134583354,
+          "lon": 6.915939934551716,
+          "note": "terrain face at 121:1 spanning 3.83 m, tile 16/34027/49678",
+          "value": 120.70426195179996,
+          "zoom": 16
+        },
+        {
+          "lat": 46.44071054644883,
+          "lon": 6.921386606991291,
+          "note": "terrain face at 109:1 spanning 2.81 m, tile 16/34027/49676",
+          "value": 109.17968476428894,
+          "zoom": 16
+        },
+        {
+          "lat": 46.44071817398071,
+          "lon": 6.921386606991291,
+          "note": "terrain face at 109:1 spanning 2.81 m, tile 16/34027/49676",
+          "value": 109.17968476428894,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43532729707658,
+          "lon": 6.91216204315424,
+          "note": "terrain face at 108:1 spanning 3.31 m, tile 16/34026/49674",
+          "value": 107.91124598034573,
           "zoom": 16
         }
       ],
       "population": "Every terrain triangle in every measured tile whose rise is at least 0.10 m. Below that a steep ratio is quantization on a sliver, not a cliff.",
-      "samples": 13974332,
+      "samples": 12934309,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 3.5533333333333337,
+      "tail": 3.486666666666667,
       "threshold": 2.0,
       "title": "Drawn terrain face steepness",
-      "violation_pct": 0.6246309304802548,
-      "violations": 87288,
-      "worst": 206.77683074237848
+      "violation_pct": 0.6150077286695408,
+      "violations": 79547,
+      "worst": 201.79505679259424
     },
     {
       "id": "slope.carriageway_face",
@@ -758,10 +838,31 @@
       "median": 0.08666666666666667,
       "offenders": [
         {
-          "lat": 46.449065739288926,
+          "lat": 46.43333715386689,
+          "lon": 6.912113483995199,
+          "note": "interior asphalt at 879 % spanning 7.22 m",
+          "value": 8.787051998365115,
+          "zoom": 16
+        },
+        {
+          "lat": 46.44906571134925,
           "lon": 6.930268853902817,
-          "note": "interior asphalt at 825 % spanning 2.93 m",
-          "value": 8.247231352162878,
+          "note": "interior asphalt at 828 % spanning 2.91 m",
+          "value": 8.281838573065908,
+          "zoom": 16
+        },
+        {
+          "lat": 46.401717849075794,
+          "lon": 6.927237790077925,
+          "note": "interior asphalt at 769 % spanning 11.70 m",
+          "value": 7.694246684111739,
+          "zoom": 16
+        },
+        {
+          "lat": 46.46731551736593,
+          "lon": 6.872933842241764,
+          "note": "interior asphalt at 662 % spanning 5.41 m",
+          "value": 6.6166246599425795,
           "zoom": 16
         },
         {
@@ -786,50 +887,36 @@
           "zoom": 16
         },
         {
-          "lat": 46.45738285034895,
-          "lon": 6.884507965296507,
-          "note": "interior asphalt at 592 % spanning 1.55 m",
-          "value": 5.917323518933648,
-          "zoom": 16
-        },
-        {
-          "lat": 46.45395163446665,
-          "lon": 6.8950943648815155,
-          "note": "interior asphalt at 557 % spanning 2.34 m",
-          "value": 5.567855805030827,
-          "zoom": 16
-        },
-        {
-          "lat": 46.4462907705456,
-          "lon": 6.891074683517218,
-          "note": "interior asphalt at 534 % spanning 1.47 m",
-          "value": 5.343988277432631,
-          "zoom": 16
-        },
-        {
-          "lat": 46.43798651173711,
-          "lon": 6.922259163111448,
-          "note": "interior asphalt at 466 % spanning 0.97 m",
-          "value": 4.66111263337046,
+          "lat": 46.431059231981635,
+          "lon": 6.914934329688549,
+          "note": "interior asphalt at 561 % spanning 7.82 m",
+          "value": 5.614016392279037,
           "zoom": 16
         }
       ],
       "population": "Every level-0 road_surface triangle spanning at least 0.10 m of height, excluding the mesh silhouette. The kerb rim is vertical by design and was 44 % of the steep faces counted before it was excluded.",
-      "samples": 374503,
+      "samples": 386930,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 1.34,
+      "tail": 1.4333333333333333,
       "threshold": 0.3,
       "title": "Interior carriageway face steepness",
-      "violation_pct": 1.413873854148031,
-      "violations": 5295,
-      "worst": 8.247231352162878
+      "violation_pct": 1.8739823740728296,
+      "violations": 7251,
+      "worst": 8.787051998365115
     },
     {
       "id": "slope.road_grade",
       "invariant": "I2",
       "median": 0.02416666666666667,
       "offenders": [
+        {
+          "lat": 46.43863603938371,
+          "lon": 6.91488990560174,
+          "note": "marking at level 0 climbs 10.21 m over 1.58 m (647 %)",
+          "value": 6.465370074059713,
+          "zoom": 16
+        },
         {
           "lat": 46.43361410591751,
           "lon": 6.920739719644189,
@@ -840,8 +927,8 @@
         {
           "lat": 46.44868116360158,
           "lon": 6.930135665461421,
-          "note": "marking at level 0 climbs -5.29 m over 2.12 m (250 %)",
-          "value": 2.4964194638571717,
+          "note": "marking at level 0 climbs -5.33 m over 2.12 m (251 %)",
+          "value": 2.5138703461853034,
           "zoom": 16
         },
         {
@@ -852,124 +939,117 @@
           "zoom": 16
         },
         {
+          "lat": 46.426311833783984,
+          "lon": 6.92725027911365,
+          "note": "unknown at level 0 climbs -2.82 m over 1.78 m (159 %)",
+          "value": 1.5866254419834183,
+          "zoom": 16
+        },
+        {
+          "lat": 46.42630512826145,
+          "lon": 6.927237119525671,
+          "note": "unknown at level 0 climbs -3.12 m over 2.14 m (146 %)",
+          "value": 1.459752741623004,
+          "zoom": 16
+        },
+        {
+          "lat": 46.426313552074134,
+          "lon": 6.9272322580218315,
+          "note": "unknown at level 0 climbs -1.46 m over 1.01 m (144 %)",
+          "value": 1.4414164586171778,
+          "zoom": 16
+        },
+        {
           "lat": 46.44595469813794,
           "lon": 6.915972847491503,
-          "note": "marking at level 0 climbs -1.68 m over 1.21 m (139 %)",
-          "value": 1.3928933773670429,
-          "zoom": 16
-        },
-        {
-          "lat": 46.461473079398274,
-          "lon": 6.931570312008262,
-          "note": "marking at level 0 climbs 1.93 m over 1.41 m (137 %)",
-          "value": 1.368988571612105,
-          "zoom": 16
-        },
-        {
-          "lat": 46.433697044849396,
-          "lon": 6.921038869768381,
-          "note": "marking at level 0 climbs -1.22 m over 0.90 m (135 %)",
-          "value": 1.35246866333697,
-          "zoom": 16
-        },
-        {
-          "lat": 46.433603460900486,
-          "lon": 6.920757237821817,
-          "note": "marking at level 0 climbs 2.30 m over 1.71 m (135 %)",
-          "value": 1.350956778118888,
-          "zoom": 16
-        },
-        {
-          "lat": 46.42605698201805,
-          "lon": 6.924059120938182,
-          "note": "unknown at level 0 climbs -1.19 m over 0.90 m (132 %)",
-          "value": 1.3202065743411744,
+          "note": "marking at level 0 climbs -1.69 m over 1.21 m (139 %)",
+          "value": 1.3937200203210445,
           "zoom": 16
         }
       ],
       "population": "Consecutive vertex pairs of every drivable centerline carrying per-vertex heights, midpoint inside the tile proper, plan run at least 0.50 m. Coverage limit: from z13 the union paves the carriageway and stamp_synth drops the fill stroke, so at detail zooms this samples the drivable network through the markings and deck strokes that remain — not all of it. Non-drivable classes are excluded: a footway may be a staircase and a rack railway climbs at 20 %.",
-      "samples": 69055,
+      "samples": 63231,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 0.6691666666666667,
+      "tail": 0.6675000000000001,
       "threshold": 0.3,
       "title": "Longitudinal grade of the drawn road",
-      "violation_pct": 0.5082904930852219,
-      "violations": 351,
-      "worst": 3.0018281236952102
+      "violation_pct": 0.5203144027454888,
+      "violations": 329,
+      "worst": 6.465370074059713
     },
     {
       "id": "slope.rail_grade",
       "invariant": "I2",
-      "median": 0.02416666666666667,
+      "median": 0.020833333333333336,
       "offenders": [
         {
           "lat": 46.42965051345527,
           "lon": 6.9236227590590715,
-          "note": "funicular climbs at 106 % over 2.2 m",
-          "value": 1.0551858698620726,
+          "note": "funicular climbs at 77 % over 2.2 m",
+          "value": 0.7696270574157198,
           "zoom": 16
         },
         {
           "lat": 46.42967239022255,
           "lon": 6.923624519258738,
-          "note": "funicular climbs at 105 % over 2.1 m",
-          "value": 1.050773003842481,
+          "note": "funicular climbs at 77 % over 2.1 m",
+          "value": 0.7665593446796384,
           "zoom": 16
         },
         {
-          "lat": 46.43772907555103,
-          "lon": 6.963243596255779,
-          "note": "narrow_gauge climbs at 99 % over 1.0 m",
-          "value": 0.9933559708188158,
+          "lat": 46.42955793533474,
+          "lon": 6.923638014122844,
+          "note": "funicular climbs at 74 % over 1.1 m",
+          "value": 0.7351564837550845,
           "zoom": 16
         },
         {
-          "lat": 46.437727441079915,
-          "lon": 6.963259102776647,
-          "note": "narrow_gauge climbs at 99 % over 1.4 m",
-          "value": 0.9894999112067243,
+          "lat": 46.429547290317714,
+          "lon": 6.923638181760907,
+          "note": "funicular climbs at 73 % over 1.3 m",
+          "value": 0.7349819639954489,
           "zoom": 16
         },
         {
-          "lat": 46.437724591232836,
-          "lon": 6.963286260142922,
-          "note": "narrow_gauge climbs at 99 % over 2.2 m",
-          "value": 0.9893216916773708,
+          "lat": 46.42958731390536,
+          "lon": 6.9236375112086535,
+          "note": "funicular climbs at 73 % over 0.7 m",
+          "value": 0.7340783445216031,
           "zoom": 16
         },
         {
-          "lat": 46.45695154555142,
-          "lon": 6.939223241060972,
-          "note": "funicular climbs at 72 % over 1.0 m",
-          "value": 0.7199660901949599,
+          "lat": 46.42957930918783,
+          "lon": 6.923637678846717,
+          "note": "funicular climbs at 73 % over 1.1 m",
+          "value": 0.7329248610302367,
           "zoom": 16
         },
         {
-          "lat": 46.45697430241853,
-          "lon": 6.9391875341534615,
-          "note": "funicular climbs at 72 % over 0.5 m",
-          "value": 0.7190079511994486,
+          "lat": 46.42953454982489,
+          "lon": 6.923638265579939,
+          "note": "funicular climbs at 73 % over 0.7 m",
+          "value": 0.7311805459556716,
           "zoom": 16
         },
         {
-          "lat": 46.45693888887763,
-          "lon": 6.939243106171489,
-          "note": "funicular climbs at 72 % over 0.7 m",
-          "value": 0.7175432756104826,
+          "lat": 46.42956950236112,
+          "lon": 6.92363784648478,
+          "note": "funicular climbs at 73 % over 1.1 m",
+          "value": 0.7309647455459505,
           "zoom": 16
         }
       ],
       "population": "Consecutive vertex pairs of every drawn rail centerline whose class names a gauge or a system, plan run at least 0.50 m. `unknown` rail is excluded: it is draped by design (§4.6), so it holds no ceiling to measure against and counting it would score the class table rather than the solve.",
-      "samples": 49509,
+      "samples": 47663,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 0.6041666666666667,
+      "tail": 0.7041666666666667,
       "threshold": 0.1,
       "title": "Longitudinal grade of the drawn railway",
-      "violation_pct": 17.093861722111132,
-      "violations": 8463,
-      "worst": 1.0551858698620726
+      "violation_pct": 15.7984180601305,
+      "violations": 7530,
+      "worst": 0.7696270574157198
     },
     {
       "id": "slope.terrain_tearing",
@@ -977,17 +1057,10 @@
       "median": 0.0033333333333333335,
       "offenders": [
         {
-          "lat": 46.43438100814819,
-          "lon": 6.978120803833008,
-          "note": "terrain alternates 20.96 m up / 6.69 m down between neighbouring vertices, tile 16/34038/49674",
-          "value": 6.694783528645833,
-          "zoom": 16
-        },
-        {
           "lat": 46.43362998962402,
           "lon": 6.92112922668457,
-          "note": "terrain alternates 15.98 m up / 6.47 m down between neighbouring vertices, tile 16/34027/49673",
-          "value": 6.472686767578123,
+          "note": "terrain alternates 16.00 m up / 6.49 m down between neighbouring vertices, tile 16/34027/49673",
+          "value": 6.4853515625,
           "zoom": 16
         },
         {
@@ -1007,8 +1080,8 @@
         {
           "lat": 46.43354415893555,
           "lon": 6.920828819274902,
-          "note": "terrain alternates 15.47 m up / 5.54 m down between neighbouring vertices, tile 16/34027/49673",
-          "value": 5.538523356119791,
+          "note": "terrain alternates 15.48 m up / 5.54 m down between neighbouring vertices, tile 16/34027/49673",
+          "value": 5.542022705078124,
           "zoom": 16
         },
         {
@@ -1031,18 +1104,25 @@
           "note": "terrain alternates 6.29 m up / 4.93 m down between neighbouring vertices, tile 16/34038/49687",
           "value": 4.931986490885416,
           "zoom": 16
+        },
+        {
+          "lat": 46.44549608230591,
+          "lon": 6.973271369934082,
+          "note": "terrain alternates 5.74 m up / 4.87 m down between neighbouring vertices, tile 16/34037/49678",
+          "value": 4.871643066406249,
+          "zoom": 16
         }
       ],
       "population": "Every interior terrain vertex flanked by opposite-signed breaks on both sides — an oscillation, not a step. Counting one-sided breaks would report every wall ever drawn: unfiltered it called 3.9 % of the extract torn, and with the filter 0.20 %.",
-      "samples": 10440428,
+      "samples": 9675385,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.5900000000000001,
       "threshold": 0.5,
       "title": "Drawn terrain standing off its own neighbours",
-      "violation_pct": 0.145597479337054,
-      "violations": 15201,
-      "worst": 6.694783528645833
+      "violation_pct": 0.14524486622496158,
+      "violations": 14053,
+      "worst": 6.4853515625
     },
     {
       "id": "lod.structure_drift",
@@ -1107,14 +1187,14 @@
         }
       ],
       "population": "Structure (level != 0) surface samples at the finest measured zoom, against the same class and level in the parent tile one rung coarser — and only where the parent holds exactly one candidate. Structures carry no identity across zooms, so an ambiguous parent would compare two different bridges; those are skipped and counted in the detail line.",
-      "samples": 58366,
+      "samples": 40635,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 0.12333333333333334,
+      "tail": 0.15000000000000002,
       "threshold": 0.005,
       "title": "Structure height drift between adjacent zooms",
-      "violation_pct": 2.3027104821300073,
-      "violations": 1344,
+      "violation_pct": 1.678356096960748,
+      "violations": 682,
       "worst": 0.3714535374109573
     },
     {
@@ -1170,7 +1250,7 @@
       "invariant": "I8",
       "median": 0.006666666666667709,
       "offenders": [],
-      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 600774 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
+      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 601585 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
       "samples": 10409256,
       "sense": "higher_is_worse",
       "skipped": null,
@@ -1182,52 +1262,68 @@
       "worst": 0.0
     },
     {
+      "id": "structure.bore_daylight",
+      "invariant": "I3",
+      "median": 0.006666666666667709,
+      "offenders": [],
+      "population": "Every place a mapped tunnel span is crossed in plan by another alignment whose own annotation is at grade there — the exact set the solver holds under the ground (the same gate, solve::crossings::covered_sites), and the exact set the crossing machinery waives clearance for. Scored by roof + cover minus this corridor's own terrain, signed: negative is burial margin.",
+      "samples": 272,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 5.300000000000004,
+      "threshold": 0.5,
+      "title": "A crossed mapped bore standing clear of its own ground",
+      "violation_pct": 14.338235294117647,
+      "violations": 39,
+      "worst": 5.300040936830442
+    },
+    {
       "id": "structure.annotated_lost",
       "invariant": "I6",
       "median": 591.7616213769492,
       "offenders": [],
       "population": "Every non-grade span of every corridor, scored by the metres of it no derived run of the same kind covers. Metres of centerline, not a count: one long viaduct and a hundred slivers are not the same finding.",
-      "samples": 495,
+      "samples": 1020,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 591.7616213769492,
       "threshold": 0.5,
       "title": "Annotated structure the solve does not imply",
-      "violation_pct": 92.72727272727273,
-      "violations": 459,
+      "violation_pct": 94.01960784313725,
+      "violations": 959,
       "worst": 591.7616213769492
     },
     {
       "id": "structure.derived_new",
       "invariant": "I6",
-      "median": 1733.3488513134132,
+      "median": 323.8676440523015,
       "offenders": [],
       "population": "Every derived run, scored by the metres of it no annotated span of the same kind covers.",
-      "samples": 775,
+      "samples": 761,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 1733.3488513134132,
+      "tail": 323.8676440523015,
       "threshold": 0.5,
       "title": "Structure the solve implies that nothing annotated",
-      "violation_pct": 58.83870967741935,
-      "violations": 456,
-      "worst": 1733.3488513134132
+      "violation_pct": 53.350854139290405,
+      "violations": 406,
+      "worst": 323.8676440523015
     },
     {
       "id": "structure.edge_drift",
       "invariant": "I6",
-      "median": 2254.182233994201,
+      "median": 2254.218771755339,
       "offenders": [],
       "population": "Every derived run that overlaps an annotated span of the same kind, against the span it overlaps most, scored by the larger of its two end movements.",
-      "samples": 411,
+      "samples": 498,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 2254.182233994201,
+      "tail": 2254.218771755339,
       "threshold": 0.5,
       "title": "How far a structure's ends move when derived",
-      "violation_pct": 99.51338199513383,
-      "violations": 409,
-      "worst": 2254.182233994201
+      "violation_pct": 99.19678714859438,
+      "violations": 494,
+      "worst": 2254.218771755339
     }
   ],
   "zooms": [

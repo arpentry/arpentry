@@ -39,6 +39,113 @@ pub use profile::{Mode, Profile};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
+/// One measured site of the crossing premise: a mapped bore, crossed by an
+/// at-grade band, scored by how far its roof-plus-cover stands above this
+/// corridor's own ground there. Positive means the "tunnel" the crossing
+/// machinery declined to buy clearance from does not actually pass beneath
+/// the ground the crossing feature rides on — the two drawn surfaces then
+/// stack with neither a bore nor a deck between them.
+#[derive(Debug, Clone, Copy)]
+pub struct Daylight {
+    pub corridor: CorridorId,
+    pub arc: f64,
+    pub lon: f64,
+    pub lat: f64,
+    /// `road + TUNNEL_HEIGHT_M + TUNNEL_COVER_M − terrain`, signed: negative
+    /// is honest burial margin, positive is roof daylighting through the
+    /// crossing feature's roadbed.
+    pub deficit_m: f64,
+}
+
+/// One stratum's reconciliation write-back — where the annotation hands over
+/// to the solved truth (§4.5).
+///
+/// For each of the stratum's corridors: grow its tunnel spans through the
+/// crossings their buried tails pass beneath ([`portals::annex_spans`]),
+/// measure the crossing premise at the covered-bore sites
+/// (`structure.bore_daylight` — before reconciliation rewrites the spans it
+/// is stated against), then clamp every tunnel span to its buried run and
+/// re-cover the freed slack as grade ([`portals::reconcile_spans`]), flipping
+/// the profile's at-grade flags over each degraded stretch so the benches and
+/// the bands read the same partition as the paint. The result is written into
+/// `scene.corridors[..].spans`: after this, there is exactly one span truth
+/// and every consumer — junior solves included — reads it.
+fn reconcile_stratum(
+    scene: &mut SceneGraph,
+    profiles: &mut [Option<Profile>],
+    stratum: Stratum,
+    reaches: &[Vec<(f64, f64)>],
+    sites: &[Vec<crossings::PlanCrossing>],
+    daylight: &mut Vec<Daylight>,
+) {
+    // ARPT_DEBUG_ANNEX: one line per tunnel-bearing corridor with crossings —
+    // the tail bounds against the crossing arcs, and whether the annex took.
+    let debug_annex = std::env::var_os("ARPT_DEBUG_ANNEX").is_some();
+    for c in scene.corridors.iter_mut() {
+        if c.kind.stratum() != stratum {
+            continue;
+        }
+        let Some(p) = profiles.get_mut(c.id as usize).and_then(|p| p.as_mut()) else {
+            continue;
+        };
+        let reaches = reaches.get(c.id as usize).cloned().unwrap_or_default();
+        if debug_annex && c.spans.iter().any(|s| s.kind == SpanKind::Tunnel) {
+            for s in c.spans.iter().filter(|s| s.kind == SpanKind::Tunnel) {
+                let bounds = portals::span_bounds(p, s);
+                let near: Vec<&(f64, f64)> = reaches
+                    .iter()
+                    .filter(|(x, _)| *x > s.arc0 - 250.0 && *x < s.arc1 + 250.0)
+                    .collect();
+                eprintln!(
+                    "[annex] corridor {} {:?} tunnel [{:.1}, {:.1}] bounds {:?} crossings {:?}",
+                    c.id, c.kind, s.arc0, s.arc1, bounds, near
+                );
+            }
+        }
+        // The deck contract mirrors `relax::reconstruct`: a monotone class's
+        // deck is its line; everyone else refits per-run ramps.
+        let deck_follows_road = c.kind.prior().monotone
+            && profile::monotone_direction(p.terrain_m()).is_some();
+        let mut spans = std::mem::take(&mut c.spans);
+        if let Some(annexed) = portals::annex_spans(p, &spans, &reaches) {
+            if debug_annex {
+                eprintln!("[annex] corridor {} {:?} annexed: {:?}", c.id, c.kind, annexed);
+            }
+            for s in annexed.iter().filter(|s| s.kind == SpanKind::Tunnel) {
+                p.annex_structure(s.arc0, s.arc1, deck_follows_road);
+            }
+            spans = annexed;
+        }
+        // The crossing premise, measured against the spans the solve used.
+        for x in &sites[c.id as usize] {
+            let roof = p.road_at_arc(x.arc)
+                + crate::priors::TUNNEL_HEIGHT_M
+                + crate::priors::TUNNEL_COVER_M;
+            let pt = p.point_at_arc(x.arc);
+            daylight.push(Daylight {
+                corridor: c.id,
+                arc: x.arc,
+                lon: pt.x,
+                lat: pt.y,
+                deficit_m: roof - p.surface_at_arc(x.arc),
+            });
+        }
+        // Shrink to the geometry: each tunnel clamped to its buried run, the
+        // freed annotation slack re-covered as painted grade, a tunnel with
+        // no buried run at all degraded end to end.
+        let reconciled = portals::reconcile_spans(p, &spans);
+        for g in reconciled.iter().filter(|s| s.kind == SpanKind::Grade) {
+            for t in spans.iter().filter(|s| s.kind == SpanKind::Tunnel) {
+                let (lo, hi) = (g.arc0.max(t.arc0), g.arc1.min(t.arc1));
+                if hi - lo > f64::EPSILON {
+                    p.degrade_structure(lo, hi, deck_follows_road);
+                }
+            }
+        }
+        c.spans = reconciled;
+    }
+}
+
 /// The solved vertical model: one profile per corridor that needs one, indexed
 /// by [`CorridorId`]. Immutable after the solve; shared by every emit worker.
 pub struct SolvedModel {
@@ -58,6 +165,15 @@ pub struct SolvedModel {
     /// them: a silently dropped constraint is indistinguishable from one that
     /// was satisfied.
     pub relaxed: relax::Relaxed,
+    /// The crossing premise, measured (`structure.bore_daylight`): one entry
+    /// per place a mapped tunnel span is crossed by another alignment's
+    /// at-grade band. Carried on the model because the premise is about how
+    /// the scene was *solved* — the crossing machinery waives clearance
+    /// wherever the lower side's annotation says "bore"
+    /// (`graph::in_immovable_bore`), and these entries are that waiver's
+    /// collateral, measured against the solved heights before any
+    /// reconciliation rewrites the spans.
+    pub daylight: Vec<Daylight>,
     profiles: Vec<Option<Profile>>,
     /// The height every junction's members share, by index into
     /// `SceneGraph::junctions`; `None` where no member carries a profile. Dense
@@ -75,6 +191,7 @@ impl SolvedModel {
             structures: Vec::new(),
             crossings: Vec::new(),
             relaxed: relax::Relaxed::default(),
+            daylight: Vec::new(),
             profiles: Vec::new(),
             junction_h: Vec::new(),
             z_ref,
@@ -90,6 +207,7 @@ impl SolvedModel {
             structures: Vec::new(),
             crossings: Vec::new(),
             relaxed: relax::Relaxed::default(),
+            daylight: Vec::new(),
             profiles,
             junction_h: Vec::new(),
             z_ref,
@@ -136,6 +254,48 @@ pub fn run(
     z_ref: u8,
     threads: usize,
 ) -> Result<SolvedModel, Error> {
+    run_licensed(scene, terrain_path, z_ref, threads, None)
+}
+
+/// The plan skeleton, as the solve consumes it: per corridor, the burial
+/// licenses (`crossings::covered_bores`), the crossing reaches the annex
+/// walks (`crossings::reaches`), and the spans-over-a-corridor exemptions the
+/// short-span demotion honours (`crossings::spans_over_a_corridor` — indexed
+/// per span, parallel to the corridor's annotated spans). Heights-free by
+/// construction — arcs, band reaches, level ordinals and crossing existence
+/// only.
+pub struct PlanPin {
+    pub covered: Vec<Vec<(f64, f64)>>,
+    pub reaches: Vec<Vec<(f64, f64)>>,
+    pub over: Vec<Vec<bool>>,
+}
+
+/// [`run`], with the plan skeleton supplied rather than derived from this
+/// scene.
+///
+/// The skeleton is **input data** — where mapped alignments cross, how far
+/// their bands reach, and their level ordinals — which I7 counts alongside
+/// the annotation, never as a junior's solved output (no junior *height* is
+/// in it). The perturbation experiment (`authority.inversion_*`) is what
+/// needs the override: it deletes the junior corridors and re-solves, and
+/// holding the skeleton at the full scene's values is exactly the statement
+/// "senior heights are a function of the strata and the plan skeleton, and of
+/// nothing the deleted juniors *solved*". All three limbs must be pinned —
+/// the burial ceilings read `covered`, the reconciliation write-back walks
+/// `reaches`, and the short-span demotion honours `over` — because each is a
+/// place a junior's plan existence classifies a senior's spans, and a span
+/// classification feeds the senior's own solve. Measured on the Lausanne m2
+/// twins: unpinned `over` demoted their 26 m station tunnel once the junior
+/// streets crossing it were deleted, the burial ceiling then had no tunnel
+/// node to cap, and the pair read 11.46 m shallower — an "authority
+/// violation" that was really the experiment deleting part of the input.
+pub fn run_licensed(
+    scene: &mut SceneGraph,
+    terrain_path: Option<&Path>,
+    z_ref: u8,
+    threads: usize,
+    licenses: Option<PlanPin>,
+) -> Result<SolvedModel, Error> {
     let Some(path) = terrain_path else {
         // No DEM: no terrain test — every short span demotes, so a flat run
         // never bakes tiny decks floating over its flat ground.
@@ -144,18 +304,26 @@ pub fn run(
         }
         return Ok(SolvedModel::empty(z_ref));
     };
+    let (pin_over, pin_covered, pin_reaches) = match licenses {
+        Some(p) => (Some(p.over), Some(p.covered), Some(p.reaches)),
+        None => (None, None, None),
+    };
     // One primary DEM handle; the reconcile pass and every solve worker fork
     // it to share the decoded-tile cache.
     let primary_dem = Dem::open(path)?;
     {
         let mut dem = primary_dem.fork()?;
-        reconcile_short_spans(scene, &mut |c: Coord| {
-            reference_surface(&mut dem, z_ref, c.x, c.y)
-        });
+        reconcile_short_spans(
+            scene,
+            &mut |c: Coord| reference_surface(&mut dem, z_ref, c.x, c.y),
+            pin_over.as_deref(),
+        );
     }
 
-    // Spans are settled until the post-solve annex below: the workers and the
-    // stratum loop only read.
+    // Spans are settled until each stratum's own write-back
+    // (`reconcile_stratum`): the workers and every read inside the loop see
+    // either the annotation (their own stratum, not yet solved) or a senior's
+    // reconciled truth (already written back).
     let scene_mut = scene;
     let scene: &SceneGraph = scene_mut;
     // Every corridor in the scene is solved. The gate upstream admits only
@@ -213,6 +381,15 @@ pub fn run(
     let mut crossings: Vec<crate::scene::Crossing> = Vec::new();
     let mut junction_h: Vec<Option<f64>> = vec![None; scene.junctions.len()];
     let mut relaxed = relax::Relaxed::default();
+    // The plan facts, once: arcs and identities only, no heights (§4.1 — a
+    // junior's warm start is not a fact, so nothing height-bearing may cross a
+    // stratum boundary here). `covered` is the burial license the bore
+    // ceilings need: where an at-grade band crosses a mapped tunnel span, the
+    // bore must actually pass beneath the ground that band rides on.
+    let plan = crossings::plan_index(scene);
+    let covered = pin_covered.unwrap_or_else(|| crossings::covered_bores(scene, &plan));
+    let reaches =
+        pin_reaches.unwrap_or_else(|| plan.iter().map(|l| crossings::reaches(l)).collect());
     // Every stratum with members, in authority order — including D. A draped
     // feature has no business in the scene at all (§4.2), and after M2 none
     // is, except the railway `paves_today` still admits as a street. Skipping
@@ -221,12 +398,21 @@ pub fn run(
     // a 2.40 m step where two railways meet, one classed `unknown` and one
     // `standard_gauge`. Solving D last — junior to everything, reading R and S
     // as constants — is both correct and what M6 will inherit.
+    // The covered-bore sites, kept alongside the windows: the write-back
+    // measures the crossing premise at exactly the sites the ceilings were
+    // seeded from (`structure.bore_daylight`).
+    let sites = crossings::covered_sites(scene, &plan);
+    let mut daylight: Vec<Daylight> = Vec::new();
     for stratum in [Stratum::H, Stratum::R, Stratum::S, Stratum::D, Stratum::B] {
+        // Fresh immutable view per stratum: the write-back below needs the
+        // scene mutable, and each iteration's reads must see the seniors'
+        // reconciled truth, not the annotation they were assembled with.
+        let scene: &SceneGraph = scene_mut;
         if !scene.corridors.iter().any(|c| c.kind.stratum() == stratum) {
             continue;
         }
         let derived = crossings::derive(scene, &profiles, stratum);
-        let mut g = graph::build(scene, &profiles, &derived, stratum);
+        let mut g = graph::build(scene, &profiles, &derived, stratum, &covered);
         let r = relax::solve(&mut g);
         relax::reconstruct(&g, &mut profiles);
         // Each stratum publishes the junction heights it owns; a junction
@@ -240,50 +426,18 @@ pub fn run(
         relaxed.demands_dropped += r.demands_dropped;
         relaxed.worst_dropped_m = relaxed.worst_dropped_m.max(r.worst_dropped_m);
         crossings.extend(derived);
-    }
-
-    // Portals at the true emergence (§4.5, S5): a mapped bore whose tail is
-    // still buried where another alignment crosses it has not emerged — the
-    // annotation edge is a mapper's cut, and paved as annotated the buried
-    // tail becomes open formation benched and holed beneath the crossing
-    // feature's band (`order.grade_stack`). Each such tunnel span is extended
-    // through the crossing and written back, so the sources, the sheets, the
-    // earthworks, the paint and the bore sweep all read one partition.
-    let plan = crossings::plan_crossings(scene);
-    // ARPT_DEBUG_ANNEX: one line per tunnel-bearing corridor with crossings —
-    // the tail bounds against the crossing arcs, and whether the annex took.
-    let debug_annex = std::env::var_os("ARPT_DEBUG_ANNEX").is_some();
-    for c in scene_mut.corridors.iter_mut() {
-        let Some(p) = profiles.get_mut(c.id as usize).and_then(|p| p.as_mut()) else {
-            continue;
-        };
-        if debug_annex && c.spans.iter().any(|s| s.kind == SpanKind::Tunnel) {
-            for s in c.spans.iter().filter(|s| s.kind == SpanKind::Tunnel) {
-                let bounds = portals::span_bounds(p, s);
-                let near: Vec<&(f64, f64)> = plan[c.id as usize]
-                    .iter()
-                    .filter(|(x, _)| *x > s.arc0 - 250.0 && *x < s.arc1 + 250.0)
-                    .collect();
-                eprintln!(
-                    "[annex] corridor {} {:?} tunnel [{:.1}, {:.1}] bounds {:?} crossings {:?}",
-                    c.id, c.kind, s.arc0, s.arc1, bounds, near
-                );
-            }
-        }
-        let Some(spans) = portals::annex_spans(p, &c.spans, &plan[c.id as usize]) else {
-            continue;
-        };
-        if debug_annex {
-            eprintln!("[annex] corridor {} {:?} annexed: {:?}", c.id, c.kind, spans);
-        }
-        // The deck contract mirrors `relax::reconstruct`: a monotone class's
-        // deck is its line; everyone else refits per-run ramps.
-        let deck_follows_road = c.kind.prior().monotone
-            && profile::monotone_direction(p.terrain_m()).is_some();
-        for s in spans.iter().filter(|s| s.kind == SpanKind::Tunnel) {
-            p.annex_structure(s.arc0, s.arc1, deck_follows_road);
-        }
-        c.spans = spans;
+        // **One truth per stratum** (§4.5): the annotation served as the
+        // solve's prior; what survives it is the *reconciled* partition —
+        // tunnels grown through the crossings their buried tails pass beneath
+        // (annex), then clamped to their buried runs, the freed slack
+        // re-covered as grade — written back before any junior stratum or any
+        // consumer reads the spans. A junior deciding "the senior is in a
+        // bore here" (`graph::in_immovable_bore`) then reads a bore that
+        // exists, and the bands, benches, sheets, paint and solids all cut
+        // one partition. The split this closes: paint reconciled privately at
+        // emit while the surfaces read the annotation, so a dismissed tunnel
+        // was stroked as a road over ground that never benched it.
+        reconcile_stratum(scene_mut, &mut profiles, stratum, &reaches, &sites, &mut daylight);
     }
 
     // The structures the result implies, derived once the heights are final.
@@ -296,7 +450,7 @@ pub fn run(
         })
         .collect();
 
-    Ok(SolvedModel { structures, relaxed, crossings, profiles, junction_h, z_ref })
+    Ok(SolvedModel { structures, relaxed, crossings, daylight, profiles, junction_h, z_ref })
 }
 
 /// The terrain fate of the short structure spans assemble keeps
@@ -317,14 +471,29 @@ pub fn run(
 /// hands that ordering to the derivation, which reads it off metre-scale
 /// differences between solved surfaces — so one alignment ends up crossing over
 /// some roads and under others.
-fn reconcile_short_spans(scene: &mut SceneGraph, sample: &mut impl FnMut(Coord) -> f64) {
+fn reconcile_short_spans(
+    scene: &mut SceneGraph,
+    sample: &mut impl FnMut(Coord) -> f64,
+    // The crossing exemptions, pinned by the perturbation experiment: they
+    // are a limb of the plan skeleton (I7), and recomputing them with the
+    // juniors deleted demotes exactly the short senior structures the juniors
+    // justify. `None` derives them from this scene.
+    over_pin: Option<&[Vec<bool>]>,
+) {
     // Against the whole scene, before any corridor is mutated.
-    let over = crossings::spans_over_a_corridor(scene);
+    let over_own;
+    let over: &[Vec<bool>] = match over_pin {
+        Some(o) => o,
+        None => {
+            over_own = crossings::spans_over_a_corridor(scene);
+            &over_own
+        }
+    };
     for (ci, c) in scene.corridors.iter_mut().enumerate() {
         let (nodes, arc) = (std::mem::take(&mut c.nodes), std::mem::take(&mut c.arc));
         let over = &over[ci];
         demote_short_spans(&mut c.spans, &mut |i: usize, span: &Span| {
-            !over[i] && !spans_a_gap(&nodes, &arc, span, sample)
+            !over.get(i).copied().unwrap_or(false) && !spans_a_gap(&nodes, &arc, span, sample)
         });
         (c.nodes, c.arc) = (nodes, arc);
     }
@@ -473,13 +642,13 @@ mod tests {
             500.0 - (1.0 - ((x - 102.5) / 15.0).abs()).max(0.0) * 30.0
         };
         let mut scene = SceneGraph::new(vec![corridor(short_bridge())]);
-        reconcile_short_spans(&mut scene, &mut |c| gully(c));
+        reconcile_short_spans(&mut scene, &mut |c| gully(c), None);
         let kinds: Vec<SpanKind> = scene.corridors[0].spans.iter().map(|s| s.kind).collect();
         assert_eq!(kinds, vec![SpanKind::Grade, SpanKind::Bridge, SpanKind::Grade]);
 
         // Flat ground: the footbridge annotation demotes, spans coalesce to one.
         let mut scene = SceneGraph::new(vec![corridor(short_bridge())]);
-        reconcile_short_spans(&mut scene, &mut |_| 500.0);
+        reconcile_short_spans(&mut scene, &mut |_| 500.0, None);
         let spans = &scene.corridors[0].spans;
         assert_eq!(spans.len(), 1, "demoted spans must coalesce, got {spans:?}");
         assert_eq!(spans[0].kind, SpanKind::Grade);
@@ -492,7 +661,7 @@ mod tests {
             Span { arc0: 160.0, arc1: 200.0, level: 0, kind: SpanKind::Grade },
         ];
         let mut scene = SceneGraph::new(vec![corridor(long)]);
-        reconcile_short_spans(&mut scene, &mut |_| 500.0);
+        reconcile_short_spans(&mut scene, &mut |_| 500.0, None);
         assert!(scene.corridors[0].spans.iter().any(|s| s.kind == SpanKind::Bridge));
     }
 }

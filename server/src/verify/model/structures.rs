@@ -56,7 +56,11 @@ pub fn check(m: &Model<'_>) -> Vec<Metric> {
 
     for c in &m.scene.corridors {
         let runs = m.solved.structures.get(c.id as usize).map(Vec::as_slice).unwrap_or(&[]);
-        let annotated: Vec<&Span> = c.spans.iter().filter(|s| s.kind != SpanKind::Grade).collect();
+        // The *annotation snapshot*, not the working spans: after the solve's
+        // write-back the working spans are the reconciled truth, and scoring
+        // the derived runs against them would compare the solve to itself.
+        let annotated: Vec<&Span> =
+            m.scene.annotated(c.id).iter().filter(|s| s.kind != SpanKind::Grade).collect();
 
         for s in &annotated {
             let covered = overlap_with(runs, s.arc0, s.arc1, s.kind);
@@ -107,7 +111,65 @@ pub fn check(m: &Model<'_>) -> Vec<Metric> {
         }
     }
 
+    // The crossing premise, measured at the solve's own gate
+    // (`solve::crossings::covered_sites`): wherever a mapped tunnel span is
+    // crossed by another alignment's at-grade band, the crossing machinery
+    // waives the clearance demand on the strength of the annotation
+    // (`solve::graph::in_immovable_bore`). These entries score whether the
+    // waived-for bore actually passes beneath the ground that band rides on.
+    let mut daylight = Dist::metres();
+    let mut daylight_worst = Worst::new(Sense::HigherIsWorse, 8);
+    for d in &m.solved.daylight {
+        daylight.push(d.deficit_m);
+        if d.deficit_m > EPS_M {
+            let kind = m
+                .scene
+                .corridors
+                .get(d.corridor as usize)
+                .map_or_else(|| "?".to_string(), |c| format!("{:?}", c.kind));
+            daylight_worst.offer(crate::verify::Offender {
+                lon: d.lon,
+                lat: d.lat,
+                zoom: m.solved.z_ref,
+                value: d.deficit_m,
+                note: format!(
+                    "{kind} mapped bore crossed by an at-grade band, roof + cover {:.1} m \
+                     above its own ground",
+                    d.deficit_m
+                ),
+            });
+        }
+    }
+
     vec![
+        Metric {
+            id: "structure.bore_daylight".into(),
+            // The waived clearance is an I3 ordering fact: two surfaces cross,
+            // and the model's answer is "the lower one is underground". This
+            // measures that answer.
+            invariant: Invariant::I3,
+            title: "A crossed mapped bore standing clear of its own ground".into(),
+            population: "Every place a mapped tunnel span is crossed in plan by another \
+                         alignment whose own annotation is at grade there — the exact set the \
+                         solver holds under the ground (the same gate, \
+                         solve::crossings::covered_sites), and the exact set the crossing \
+                         machinery waives clearance for. Scored by roof + cover minus this \
+                         corridor's own terrain, signed: negative is burial margin."
+                .into(),
+            detail: "The split-brain check. A crossing over a mapped bore buys no clearance \
+                     (the road above stands on the ground, the feature below runs under it) — \
+                     but that is a premise about the solved geometry, not a fact of the \
+                     annotation. Where the solve leaves the bore at the surface, the waiver \
+                     stands on nothing: road band and rail band draw a storey apart with \
+                     neither a bore nor a deck between them, which is the Territet funicular \
+                     crossing at 6.9234,46.4275."
+                .into(),
+            sense: Sense::HigherIsWorse,
+            threshold: EPS_M,
+            skipped: daylight.is_empty().then(|| "no crossed mapped bores".to_string()),
+            dist: daylight,
+            worst: daylight_worst.into_vec(),
+        },
         metric(
             "structure.annotated_lost",
             "Annotated structure the solve does not imply",

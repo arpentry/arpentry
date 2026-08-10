@@ -263,6 +263,13 @@ pub struct SceneGraph {
     pub junctions: Vec<Junction>,
     /// Still water bodies whose surface the ground stage flattens (invariant 4).
     pub water: Vec<WaterBody>,
+    /// The corridors' spans as assembled — the annotation, snapshotted before
+    /// the solve reconciles `corridors[..].spans` with the geometry
+    /// (`solve::reconcile_stratum`). One list per corridor, in corridor
+    /// order. The working spans are the single truth every consumer cuts;
+    /// this copy exists so the model checks can still ask what the *mapper*
+    /// claimed (`structure.annotated_lost` and friends) after the hand-over.
+    annotated: Vec<Vec<Span>>,
     /// Source feature id hash → (corridor, segment index within it).
     by_source: HashMap<u64, (CorridorId, u32)>,
 }
@@ -276,11 +283,23 @@ impl SceneGraph {
             }
         }
         SceneGraph {
+            annotated: corridors.iter().map(|c| c.spans.clone()).collect(),
             corridors,
             junctions: Vec::new(),
             water: Vec::new(),
             by_source,
         }
+    }
+
+    /// The annotated (assemble-time) spans of a corridor — what the mapper
+    /// claimed, unmoved by the solve's reconciliation. Falls back to the
+    /// working spans for a corridor id the snapshot never saw (test scenes
+    /// assembled by hand).
+    pub fn annotated(&self, corridor: CorridorId) -> &[Span] {
+        self.annotated
+            .get(corridor as usize)
+            .map(Vec::as_slice)
+            .unwrap_or_else(|| self.corridors[corridor as usize].spans.as_slice())
     }
 
     /// Looks a source feature up by its id hash, returning its corridor and

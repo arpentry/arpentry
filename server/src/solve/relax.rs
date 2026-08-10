@@ -161,23 +161,37 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
 }
 
 /// A mapped tunnel may not ride **above** the ground — and that is all the
-/// annotation licenses (§4.5: a prior on the constraint, never a command to
-/// build geometry). A structure span has almost no terrain-pinned anchors, so
-/// nothing else relates its chord to the surface: the Territet–Glion
-/// funicular's 169 m "tunnel" solved to a ramp 3–7 m *above* its hillside end
-/// to end, and the Rochers-de-Naye line's bore roof stood 6.8 m proud.
+/// annotation licenses in the open (§4.5: a prior on the constraint, never a
+/// command to build geometry). A structure span has almost no terrain-pinned
+/// anchors, so nothing else relates its chord to the surface: the
+/// Territet–Glion funicular's 169 m "tunnel" solved to a ramp 3–7 m *above*
+/// its hillside end to end, and the Rochers-de-Naye line's bore roof stood
+/// 6.8 m proud.
 ///
-/// The seed writes the bare surface into `slack[v].1` — the same ceiling an
+/// The seed writes the ceiling into `slack[v].1` — the same ceiling an
 /// undercut establishes — and [`project_spans`] holds every bore chord beneath
-/// it, sweep by sweep. Nothing here *buries* the span: how deep it runs is
-/// decided by its own profile and its crossings (an S5 chord dives under the
-/// mountain, an S6 undercut dips under the street), and whether a bore is
-/// drawn at all is decided afterwards from where the profile actually ended up
-/// (`portals::reconcile_spans` degrades a tunnel with no buried run to grade).
-/// A first version added a roof-and-cover burial margin here, and it was
-/// wrong twice over: it invented 5.5 m of depth for a funicular whose gallery
-/// hugs its slope, and at a data-gap corridor end it manufactured a plunge no
-/// cable railway can have.
+/// it, sweep by sweep. The ceiling is the bare surface, except at the
+/// **covered nodes** ([`CorridorNodes::covered`]): where another mapped
+/// alignment's at-grade band crosses the bore, the ground the bore must stay
+/// beneath carries that feature's roadbed, so the ceiling deepens by the
+/// bore's roof and cover. That local demand is what makes
+/// [`super::graph::in_immovable_bore`]'s waiver true: the crossing above buys
+/// no clearance *because* the bore passes underneath, and without the
+/// deepened ceiling nothing made it pass underneath — a surface-hugging
+/// funicular "tunnel" drew its band a storey under the road that crossed it
+/// (`structure.bore_daylight`, the Territet crossing at 6.9234,46.4275).
+///
+/// Elsewhere nothing here *buries* the span: how deep it runs is decided by
+/// its own profile and its crossings (an S5 chord dives under the mountain,
+/// an S6 undercut dips under the street), and whether a bore is drawn at all
+/// is decided afterwards from where the profile actually ended up
+/// (`portals::reconcile_spans` degrades a tunnel with no buried run to
+/// grade). A first version applied the roof-and-cover margin *everywhere*,
+/// and it was wrong twice over: it invented 5.5 m of depth for a funicular
+/// whose gallery hugs its slope, and at a data-gap corridor end it
+/// manufactured a plunge no cable railway can have. The covered gate is the
+/// difference: depth is demanded only under a crossing band, where the
+/// surface above is someone's roadbed rather than open hillside.
 ///
 /// One exclusion: **a variable shared with any at-grade node is not capped.**
 /// A junction inside a bore belongs to the at-grade machinery (contact,
@@ -196,7 +210,12 @@ fn seed_bore_ceilings(g: &mut SolveGraph, sites: &VarSites) {
             if sites[v].iter().any(|&(oc, ok)| corridors[oc as usize].at_grade[ok as usize]) {
                 continue;
             }
-            slack[v].1 = slack[v].1.min(vars[v].terrain_m);
+            let bury = if c.covered[k] {
+                crate::priors::TUNNEL_HEIGHT_M + crate::priors::TUNNEL_COVER_M
+            } else {
+                0.0
+            };
+            slack[v].1 = slack[v].1.min(vars[v].terrain_m - bury);
         }
     }
 }
@@ -541,7 +560,7 @@ fn monotone_pass(g: &mut SolveGraph) {
     /// both), so alternating projections converge (POCS); a handful of rounds
     /// spreads the disagreement into both corridors at their own ceilings.
     const ROUNDS: usize = 8;
-    let SolveGraph { corridors, h, .. } = g;
+    let SolveGraph { corridors, h, slack, .. } = g;
     for _ in 0..ROUNDS {
         let mut moved = 0.0_f64;
         for c in corridors.iter() {
@@ -555,6 +574,20 @@ fn monotone_pass(g: &mut SolveGraph) {
             // bumpier than that, the line holds its grade and the ground stage
             // digs the cut (`monotone_project_graded`).
             super::profile::monotone_project_graded(&mut vals, &c.arc, dir, c.grade);
+            // Back inside the slack box after the projection, *inside* the
+            // rounds: the projection alone can lift a covered bore node back
+            // through its burial ceiling (it knows monotone and grade, not
+            // bounds), and clamping outside the loop would hand the next
+            // sweep a line that violates one set or the other permanently.
+            // Alternated here, the rounds are projections onto the two convex
+            // sets — {monotone, grade-capped} and the slack box — whose
+            // intersection is non-empty (any within-grade line under the
+            // ceilings is in both), so the alternation settles into it (POCS)
+            // instead of oscillating.
+            for (i, &v) in c.vars.iter().enumerate() {
+                let (floor, ceiling) = slack[v];
+                vals[i] = vals[i].clamp(floor, ceiling);
+            }
             for (&v, &val) in c.vars.iter().zip(&vals) {
                 moved = moved.max((h[v] - val).abs());
                 h[v] = val;
@@ -991,7 +1024,7 @@ mod tests {
         let bn = scene.corridors[1].nodes.clone();
         let mut profiles =
             vec![Some(Profile::flat(&an, 400.0)), Some(Profile::flat(&bn, 406.0))];
-        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[]);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
 
@@ -1023,7 +1056,7 @@ mod tests {
         let an = scene.corridors[0].nodes.clone();
         let mut profiles =
             vec![Some(Profile::from_heights(&an, terrain.clone(), terrain.clone()))];
-        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[]);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
@@ -1077,7 +1110,7 @@ mod tests {
         )
         .expect("a profile");
         let mut profiles = vec![Some(warm)];
-        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[]);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
 
@@ -1127,7 +1160,7 @@ mod tests {
         )
         .expect("a profile");
         let mut profiles = vec![Some(warm)];
-        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::R);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::R, &[]);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
@@ -1175,7 +1208,7 @@ mod tests {
         let scene = SceneGraph::new(vec![a]);
         let an = scene.corridors[0].nodes.clone();
         let mut profiles = vec![Some(Profile::from_heights(&an, terrain.clone(), terrain.clone()))];
-        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[]);
         let sweeps = solve(&mut g);
         reconstruct(&g, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
@@ -1215,6 +1248,7 @@ mod tests {
                 arc,
                 bore: vec![false; n],
                 tunnel: vec![false; n],
+                covered: vec![false; n],
                 monotone: None,
                 at_grade,
                 grade: 0.06,
@@ -1240,6 +1274,143 @@ mod tests {
         // The deck stays straight over the span (rigidity): nodes 4,5,6 colinear.
         let mid = 0.5 * (g.h[4] + g.h[6]);
         assert!((g.h[5] - mid).abs() < 1e-6, "deck must be straight over the span");
+    }
+
+    /// A mapped bore that rides at its own terrain is held a roof-and-cover
+    /// beneath it wherever another alignment's at-grade band crosses over —
+    /// the Territet funicular case (`structure.bore_daylight`): left at the
+    /// surface, the crossing machinery's clearance waiver
+    /// (`graph::in_immovable_bore`) stands on nothing and the two bands draw
+    /// a storey apart.
+    #[test]
+    fn a_covered_bore_is_held_under_the_band_that_crosses_it() {
+        use super::super::graph::{CorridorNodes, SolveGraph, VarNode};
+        use crate::priors::{TUNNEL_COVER_M, TUNNEL_HEIGHT_M};
+        // 31 nodes, 10 m apart, flat ground at 100 m. Mapped tunnel over
+        // nodes 8..=22, covered by a crossing band at nodes 14..=16.
+        let n = 31;
+        let arc: Vec<f64> = (0..n).map(|i| i as f64 * 10.0).collect();
+        let tunnel: Vec<bool> = (0..n).map(|i| (8..=22).contains(&i)).collect();
+        let covered: Vec<bool> = (0..n).map(|i| (14..=16).contains(&i)).collect();
+        let at_grade: Vec<bool> = tunnel.iter().map(|&t| !t).collect();
+        let vars: Vec<VarNode> = (0..n)
+            .map(|i| VarNode {
+                target_m: 100.0,
+                terrain_m: 100.0,
+                terrain_pinned: at_grade[i],
+                inv_mass: if at_grade[i] { 1.0 } else { 8.0 },
+            })
+            .collect();
+        let mut g = SolveGraph {
+            vars,
+            h: vec![100.0; n],
+            corridors: vec![CorridorNodes {
+                id: 0,
+                vars: (0..n).collect(),
+                arc,
+                bore: tunnel.clone(),
+                tunnel,
+                covered,
+                monotone: None,
+                at_grade,
+                grade: 0.15,
+                deviation: 1e9,
+            }],
+            crossings: Vec::new(),
+            contacts: Vec::new(),
+            undercuts: Vec::new(),
+            slack: vec![(f64::NEG_INFINITY, f64::INFINITY); n],
+            component: vec![0; n],
+            n_components: 1,
+            junction_var: Vec::new(),
+        };
+        solve(&mut g);
+        let bury = TUNNEL_HEIGHT_M + TUNNEL_COVER_M;
+        for k in 14..=16 {
+            assert!(
+                g.h[k] <= 100.0 - bury + 1e-3,
+                "covered bore node {k} must run under the band: {} vs {}",
+                g.h[k],
+                100.0 - bury
+            );
+        }
+        // Outside the window the annotation licenses no depth: the open
+        // tunnel nodes stay at or below the surface, never above.
+        for k in 8..=22 {
+            assert!(g.h[k] <= 100.0 + 1e-6, "tunnel node {k} above ground: {}", g.h[k]);
+        }
+        // The at-grade approaches stay on their ground.
+        assert!((g.h[0] - 100.0).abs() < 0.1 && (g.h[n - 1] - 100.0).abs() < 0.1);
+    }
+
+    /// The same burial demand on a **monotone** corridor: the graded monotone
+    /// projection (the last word on a monotone line's shape) must not lift
+    /// the covered nodes back through the ceiling, and the line stays
+    /// non-reversing while it passes beneath the crossing band.
+    #[test]
+    fn a_monotone_covered_bore_dips_without_reversing() {
+        use super::super::graph::{CorridorNodes, SolveGraph, VarNode};
+        use crate::priors::{TUNNEL_COVER_M, TUNNEL_HEIGHT_M};
+        // 61 nodes, 10 m apart, bed climbing at 4 %. Mapped tunnel over
+        // nodes 15..=45; a crossing band covers nodes 29..=31 (arc 290–310).
+        let n = 61;
+        let arc: Vec<f64> = (0..n).map(|i| i as f64 * 10.0).collect();
+        let bed: Vec<f64> = arc.iter().map(|&s| 100.0 + 0.04 * s).collect();
+        let tunnel: Vec<bool> = (0..n).map(|i| (15..=45).contains(&i)).collect();
+        let covered: Vec<bool> = (0..n).map(|i| (29..=31).contains(&i)).collect();
+        let at_grade: Vec<bool> = tunnel.iter().map(|&t| !t).collect();
+        let vars: Vec<VarNode> = (0..n)
+            .map(|i| VarNode {
+                target_m: bed[i],
+                terrain_m: bed[i],
+                terrain_pinned: at_grade[i],
+                inv_mass: if at_grade[i] { 1.0 } else { 8.0 },
+            })
+            .collect();
+        let mut g = SolveGraph {
+            vars,
+            h: bed.clone(),
+            corridors: vec![CorridorNodes {
+                id: 0,
+                vars: (0..n).collect(),
+                arc,
+                bore: tunnel.clone(),
+                tunnel,
+                covered,
+                monotone: Some(1.0),
+                at_grade,
+                grade: 0.70,
+                deviation: 2.5,
+            }],
+            crossings: Vec::new(),
+            contacts: Vec::new(),
+            undercuts: Vec::new(),
+            slack: vec![(f64::NEG_INFINITY, f64::INFINITY); n],
+            component: vec![0; n],
+            n_components: 1,
+            junction_var: Vec::new(),
+        };
+        solve(&mut g);
+        let bury = TUNNEL_HEIGHT_M + TUNNEL_COVER_M;
+        for k in 29..=31 {
+            assert!(
+                g.h[k] <= bed[k] - bury + 0.05,
+                "covered monotone node {k} must run under the band: {} vs {}",
+                g.h[k],
+                bed[k] - bury
+            );
+        }
+        // One cable, one hill: the dip must not put a reversal in the line.
+        for k in 1..n {
+            assert!(
+                g.h[k] >= g.h[k - 1] - 0.02,
+                "line reverses at node {k}: {} -> {}",
+                g.h[k - 1],
+                g.h[k]
+            );
+        }
+        // And the ends still hold their bed.
+        assert!((g.h[0] - bed[0]).abs() < 0.5 && (g.h[n - 1] - bed[n - 1]).abs() < 0.5);
     }
 
     /// A crossing on a corridor with **no structure span** — the mapped level
@@ -1271,6 +1442,7 @@ mod tests {
                 arc,
                 bore: vec![false; n],
                 tunnel: vec![false; n],
+                covered: vec![false; n],
                 monotone: None,
                 at_grade: vec![true; n],
                 grade: 0.15,
@@ -1345,6 +1517,7 @@ mod tests {
                 arc,
                 bore: vec![false; n],
                 tunnel: vec![false; n],
+                covered: vec![false; n],
                 monotone: None,
                 at_grade,
                 grade: 0.06, // 6 %: the 12 m rise over 300 m (4 %) is well within
@@ -1397,7 +1570,7 @@ mod tests {
         let scene = SceneGraph::new(vec![a]);
         let an = scene.corridors[0].nodes.clone();
         let mut profiles = vec![Some(Profile::from_heights(&an, terrain.clone(), terrain.clone()))];
-        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[]);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
@@ -1455,6 +1628,7 @@ mod tests {
             id: (base / n) as u32,
             vars: (base..base + n).collect(),
             arc: arc.clone(),
+            covered: vec![false; at_grade.len()],
             at_grade,
             tunnel: bore.clone(),
             monotone: None,
@@ -1529,7 +1703,7 @@ mod tests {
         let run = || {
             let profiles =
                 vec![Some(Profile::flat(&an, 400.0)), Some(Profile::flat(&bn, 406.0))];
-            let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S);
+            let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[]);
             solve(&mut g);
             g.h
         };
