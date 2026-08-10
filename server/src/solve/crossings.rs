@@ -149,6 +149,83 @@ pub fn derive(
     out
 }
 
+/// Every place another corridor's alignment crosses each corridor, as
+/// `(arc, clear_m)` per corridor, sorted by arc — the *plan* facts only, with
+/// no ordering and no heights. `clear_m` is how far along this corridor the
+/// crossing feature's drawn band reaches from the intersection: its half-width
+/// plus [`ANNEX_SHOULDER_M`] of shoulder, verge and annotation slack.
+///
+/// This is the gate [`super::portals`] needs to extend a mapped bore through a
+/// crossing sitting just past its annotation edge (§4.5: portals sit at the
+/// true emergence). Heights are deliberately not consulted: the bore side's
+/// own buried run is the height evidence, and it is measured there.
+pub fn plan_crossings(scene: &SceneGraph) -> Vec<Vec<(f64, f64)>> {
+    let mut edges: Vec<Edge> = Vec::new();
+    let mut grid = GridIndex::new();
+    for c in &scene.corridors {
+        for i in 0..c.nodes.len().saturating_sub(1) {
+            let (a, b) = (c.nodes[i], c.nodes[i + 1]);
+            grid.insert((a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)), edges.len() as u32);
+            edges.push(Edge { corridor: c.id, node: i });
+        }
+    }
+    let clear = |c: &crate::scene::Corridor| {
+        c.width_m.map_or(0.0, |w| w * 0.5) + ANNEX_SHOULDER_M
+    };
+    let debug = std::env::var_os("ARPT_DEBUG_ANNEX").is_some();
+    let mut out: Vec<Vec<(f64, f64)>> = vec![Vec::new(); scene.corridors.len()];
+    let mut candidates: Vec<u32> = Vec::new();
+    for c in &scene.corridors {
+        for i in 0..c.nodes.len().saturating_sub(1) {
+            let (a, b) = (c.nodes[i], c.nodes[i + 1]);
+            grid.query((a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)), &mut candidates);
+            for &ei in candidates.iter() {
+                let e = &edges[ei as usize];
+                if e.corridor <= c.id {
+                    continue; // each pair once, and never a corridor with itself
+                }
+                let other = &scene.corridors[e.corridor as usize];
+                let (o_a, o_b) = (other.nodes[e.node], other.nodes[e.node + 1]);
+                let Some((t, u)) = seg_intersect(a, b, o_a, o_b, c.cos_lat) else {
+                    continue;
+                };
+                let point = Coord { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+                if meets_here(c, other, point, (a, b), (o_a, o_b)) {
+                    if debug {
+                        eprintln!(
+                            "[plan] meet {}x{} at {:.6},{:.6}",
+                            c.id, e.corridor, point.x, point.y
+                        );
+                    }
+                    continue;
+                }
+                let arc_c = c.arc[i] + t * (c.arc[i + 1] - c.arc[i]);
+                let arc_o = other.arc[e.node] + u * (other.arc[e.node + 1] - other.arc[e.node]);
+                if debug {
+                    eprintln!(
+                        "[plan] cross {}x{} at {:.6},{:.6} arcs {:.1}/{:.1}",
+                        c.id, e.corridor, point.x, point.y, arc_c, arc_o
+                    );
+                }
+                out[c.id as usize].push((arc_c, clear(other)));
+                out[e.corridor as usize].push((arc_o, clear(c)));
+            }
+        }
+    }
+    for list in &mut out {
+        list.sort_by(|a, b| a.partial_cmp(b).expect("finite arcs"));
+        list.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-9);
+    }
+    out
+}
+
+/// Shoulder added to a crossing feature's half-width when a bore is extended
+/// beneath it: the drawn band's structure shoulder, the bench verge outside
+/// it, and a metre of annotation slack, so the portal the annex implies
+/// daylights beyond the crossing feature's drawn footprint rather than inside
+/// its kerb.
+const ANNEX_SHOULDER_M: f64 = 4.0;
+
 /// Which structure spans pass over or under *another mapped alignment*, per
 /// corridor and parallel to its `spans`.
 ///
@@ -619,6 +696,38 @@ mod tests {
             out[0].upper_arc,
             out[1].upper_arc
         );
+    }
+
+    /// The plan index records the crossing on both corridors, with the *other*
+    /// side's reach, and heights play no part.
+    #[test]
+    fn plan_crossings_record_both_sides_and_no_heights() {
+        let len = 200.0;
+        let a = corridor(0, 6.0, 46.0009, true, len, grade(len));
+        let b = corridor(1, 6.0009, 46.0, false, len, grade(len));
+        let scene = SceneGraph::new(vec![a, b]);
+        let plan = plan_crossings(&scene);
+        assert_eq!(plan[0].len(), 1, "one crossing on a: {:?}", plan[0]);
+        assert_eq!(plan[1].len(), 1, "one crossing on b: {:?}", plan[1]);
+        // Both corridors are 6 m wide: reach = 3 + ANNEX_SHOULDER_M.
+        assert!((plan[0][0].1 - (3.0 + ANNEX_SHOULDER_M)).abs() < 1e-9);
+        assert!((plan[1][0].1 - (3.0 + ANNEX_SHOULDER_M)).abs() < 1e-9);
+    }
+
+    /// A junction is a meeting, not a crossing, in the plan index too.
+    #[test]
+    fn plan_crossings_exempt_a_shared_connector() {
+        let len = 200.0;
+        let mut a = corridor(0, 6.0, 46.0009, true, len, grade(len));
+        let mut b = corridor(1, 6.0009, 46.0, false, len, grade(len));
+        a.connectors = vec![77];
+        b.connectors = vec![77];
+        let meet = Coord { x: b.nodes[0].x, y: a.nodes[0].y };
+        a.nodes[2] = meet;
+        b.nodes[2] = meet;
+        let scene = SceneGraph::new(vec![a, b]);
+        let plan = plan_crossings(&scene);
+        assert!(plan[0].is_empty() && plan[1].is_empty(), "{plan:?}");
     }
 
     /// Derivation is a function of the model: same scene, same answer, in the

@@ -105,6 +105,7 @@ I2. Every metric also states its own population; the table below is the summary.
 | `seam.terrain_split` | I2 | Spread between coincident vertices *inside* one tile: the ground cracked open. |
 | `seam.pavement_step` | I2 | Border disagreement, for the at-grade road surface. |
 | `order.at_grade_overlap` | I3 | Vertical separation where two level-0 paved regions share a plan position with nothing to order them. |
+| `order.grade_stack` | I3 | Vertical separation between two at-grade surface bands at one plan point, measured whole-mesh (the overlap metric above sees border vertices only). At grade means on the ground, and there is one ground: past 3 m — the same boundary `crossings::SEPARATION_M` draws from the model side — the upper band is in the air over the lower with no structure between them. The class it exists to keep dead: a mapped bore's still-buried tail paved as open cut, sliding beneath the band of the feature crossing just past its portal (the Collonge funicular over the rack railway). |
 | `slope.terrain_face` | I6 | Rise over plan run of every terrain triangle spanning ≥10 cm. Finds manufactured retaining walls. |
 | `slope.carriageway_face` | I6 | The same for interior asphalt, excluding the kerb rim. |
 | `slope.road_grade` | I2 | Rise over run between consecutive vertices of a drawn drivable centerline. Measured *along* the road, which the carriageway mesh cannot answer: a clearance lift dropped on one node is a spike the face metric reads as ordinary cross-fall. |

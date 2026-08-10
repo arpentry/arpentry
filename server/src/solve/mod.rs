@@ -154,8 +154,10 @@ pub fn run(
         });
     }
 
-    // Spans are settled: the workers below only read.
-    let scene: &SceneGraph = scene;
+    // Spans are settled until the post-solve annex below: the workers and the
+    // stratum loop only read.
+    let scene_mut = scene;
+    let scene: &SceneGraph = scene_mut;
     // Every corridor in the scene is solved. The gate upstream admits only
     // strata that solve (`assemble::run`), so "does this need a profile" is no
     // longer a question asked here — a draped feature never reaches this point.
@@ -240,8 +242,52 @@ pub fn run(
         crossings.extend(derived);
     }
 
+    // Portals at the true emergence (§4.5, S5): a mapped bore whose tail is
+    // still buried where another alignment crosses it has not emerged — the
+    // annotation edge is a mapper's cut, and paved as annotated the buried
+    // tail becomes open formation benched and holed beneath the crossing
+    // feature's band (`order.grade_stack`). Each such tunnel span is extended
+    // through the crossing and written back, so the sources, the sheets, the
+    // earthworks, the paint and the bore sweep all read one partition.
+    let plan = crossings::plan_crossings(scene);
+    // ARPT_DEBUG_ANNEX: one line per tunnel-bearing corridor with crossings —
+    // the tail bounds against the crossing arcs, and whether the annex took.
+    let debug_annex = std::env::var_os("ARPT_DEBUG_ANNEX").is_some();
+    for c in scene_mut.corridors.iter_mut() {
+        let Some(p) = profiles.get_mut(c.id as usize).and_then(|p| p.as_mut()) else {
+            continue;
+        };
+        if debug_annex && c.spans.iter().any(|s| s.kind == SpanKind::Tunnel) {
+            for s in c.spans.iter().filter(|s| s.kind == SpanKind::Tunnel) {
+                let bounds = portals::span_bounds(p, s);
+                let near: Vec<&(f64, f64)> = plan[c.id as usize]
+                    .iter()
+                    .filter(|(x, _)| *x > s.arc0 - 250.0 && *x < s.arc1 + 250.0)
+                    .collect();
+                eprintln!(
+                    "[annex] corridor {} {:?} tunnel [{:.1}, {:.1}] bounds {:?} crossings {:?}",
+                    c.id, c.kind, s.arc0, s.arc1, bounds, near
+                );
+            }
+        }
+        let Some(spans) = portals::annex_spans(p, &c.spans, &plan[c.id as usize]) else {
+            continue;
+        };
+        if debug_annex {
+            eprintln!("[annex] corridor {} {:?} annexed: {:?}", c.id, c.kind, spans);
+        }
+        // The deck contract mirrors `relax::reconstruct`: a monotone class's
+        // deck is its line; everyone else refits per-run ramps.
+        let deck_follows_road = c.kind.prior().monotone
+            && profile::monotone_direction(p.terrain_m()).is_some();
+        for s in spans.iter().filter(|s| s.kind == SpanKind::Tunnel) {
+            p.annex_structure(s.arc0, s.arc1, deck_follows_road);
+        }
+        c.spans = spans;
+    }
+
     // The structures the result implies, derived once the heights are final.
-    let structures = scene
+    let structures = scene_mut
         .corridors
         .iter()
         .map(|c| match profiles.get(c.id as usize).and_then(|p| p.as_ref()) {

@@ -655,6 +655,26 @@ impl Profile {
         self.deck_m = self.road_m.clone();
     }
 
+    /// Marks `[arc0, arc1]` as running in a structure — an annexed bore
+    /// (`portals::annex_spans`) — and refits the deck over the merged run.
+    /// One-way: nodes are only ever *removed* from the at-grade set, so an
+    /// absorbed stretch the solve already flagged stays flagged. With
+    /// `deck_follows_road` the deck stays the road line node for node (the
+    /// monotone contract, [`Self::set_deck_to_road`]); otherwise the per-run
+    /// straight ramps are refit.
+    pub fn annex_structure(&mut self, arc0: f64, arc1: f64, deck_follows_road: bool) {
+        for k in 0..self.at_grade.len() {
+            if self.arc[k] >= arc0 && self.arc[k] <= arc1 {
+                self.at_grade[k] = false;
+            }
+        }
+        if deck_follows_road {
+            self.set_deck_to_road();
+        } else {
+            self.rebuild_deck();
+        }
+    }
+
     /// Overwrites the solved road heights with the global relaxation's output
     /// ([`crate::solve::relax`]) and refits the deck ramps. `road` must have one
     /// entry per node; a length mismatch leaves the profile unchanged (the

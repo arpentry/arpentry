@@ -60,6 +60,19 @@ const BURIED_DECK_M: f64 = -(DECK_THICKNESS_M + 0.5);
 /// than emerging at a portal mouth.
 const EXPOSED_BORE_M: f64 = -1.0;
 
+/// Two at-grade surface bands further apart than this are a drawn
+/// impossibility: at grade means *on the ground*, and there is one ground.
+/// Below it sit the pairs the sheets machinery legitimately layers — split
+/// carriageways on a cross-slope, a kerb-height braid — and
+/// `solve::crossings::SEPARATION_M` already encodes the same boundary from the
+/// other side: within 3 m two alignments are a braid, never a grade
+/// separation. Past it, one band is standing in the air over the other with no
+/// structure under it, which is how a formation whose mapped bore stopped
+/// short of a crossing looks — the buried tail is paved as open cut and slides
+/// beneath the crossing feature's band (the Collonge funicular over the
+/// rack railway's portal was drawn exactly so).
+const GRADE_STACK_M: f64 = 3.0;
+
 pub struct Clearance {
     /// Plan sample spacing, kept so each metric can state its own population.
     spacing_m: f64,
@@ -69,6 +82,8 @@ pub struct Clearance {
     over_ground_worst: Worst,
     bore_cover: Dist,
     bore_cover_worst: Worst,
+    stack: Dist,
+    stack_worst: Worst,
 }
 
 impl Clearance {
@@ -81,6 +96,8 @@ impl Clearance {
             over_ground_worst: Worst::new(Sense::LowerIsWorse, opt.worst_k),
             bore_cover: Dist::metres(),
             bore_cover_worst: Worst::new(Sense::LowerIsWorse, opt.worst_k),
+            stack: Dist::metres(),
+            stack_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
         }
     }
 }
@@ -141,6 +158,52 @@ impl Check for Clearance {
                                 ),
                             });
                         }
+                    }
+                }
+            });
+        }
+
+        // Two at-grade bands at one plan point: each stacked pair is measured
+        // once, from its upper side. Border-vertex coincidences are already
+        // `order.at_grade_overlap`; this is the whole-mesh interior that check's
+        // own doc note says it cannot see.
+        for (i, a) in tile.roads.iter().enumerate() {
+            if !a.is_pavement() {
+                continue;
+            }
+            a.mesh.sample(&tile.scale, opt.spacing_m, |px, py, _| {
+                if !tile.owns(px, py) {
+                    return;
+                }
+                let Some((_, own)) = a.mesh.height_range_at(px, py) else { return };
+                let mut below = f64::NEG_INFINITY;
+                let mut under_class = "";
+                for (j, b) in tile.roads.iter().enumerate() {
+                    if j == i || !b.is_pavement() {
+                        continue;
+                    }
+                    let Some((_, top)) = b.mesh.height_range_at(px, py) else { continue };
+                    if top <= own && top > below {
+                        below = top;
+                        under_class = &b.class;
+                    }
+                }
+                if below.is_finite() {
+                    let v = own - below;
+                    self.stack.push(v);
+                    if v > GRADE_STACK_M {
+                        let (lon, lat) = tile.lonlat(px, py);
+                        self.stack_worst.offer(Offender {
+                            lon,
+                            lat,
+                            zoom: tile.z,
+                            value: v,
+                            note: format!(
+                                "at-grade {} at {own:.2} m over at-grade {under_class} at \
+                                 {below:.2} m, nothing between them",
+                                a.class
+                            ),
+                        });
                     }
                 }
             });
@@ -243,6 +306,33 @@ impl Check for Clearance {
                 skipped: none(&self.bore_cover, "tunnel bore under drawn ground"),
                 dist: self.bore_cover,
                 worst: self.bore_cover_worst.into_vec(),
+            },
+            Metric {
+                id: "order.grade_stack".into(),
+                invariant: Invariant::I3,
+                title: "At-grade band standing over another at-grade band".into(),
+                population: format!(
+                    "Surface samples of every level-0 band (carriageway or rail formation) at \
+                     {:.1} m plan spacing in the tile proper, where another level-0 band lies \
+                     at or below the same plan position. Each stacked pair is measured once, \
+                     from its upper side. Abutting regions meet at zero and sit in the \
+                     population's floor.",
+                    self.spacing_m
+                ),
+                detail: format!(
+                    "Vertical separation between two at-grade surface bands at one plan point. \
+                     At grade means on the ground, and there is one ground: past \
+                     {GRADE_STACK_M:.1} m — the same boundary crossings::SEPARATION_M draws \
+                     from the model side — the upper band is in the air over the lower with no \
+                     structure between them. The class this exists to keep dead: a mapped \
+                     bore's still-buried tail paved as open cut, sliding beneath the band of \
+                     the feature that crosses just past its portal."
+                ),
+                sense: Sense::HigherIsWorse,
+                threshold: GRADE_STACK_M,
+                skipped: none(&self.stack, "two at-grade bands sharing a plan position"),
+                dist: self.stack,
+                worst: self.stack_worst.into_vec(),
             },
         ]
     }
@@ -384,6 +474,40 @@ mod tests {
         let m = run(&t);
         assert_eq!(m[2].violations(), 0);
         assert!((m[2].worst_value().unwrap() - 10.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn two_at_grade_bands_stacked_in_the_air_are_caught() {
+        // The Collonge drawing: a rail formation's open cut sliding 8.5 m under
+        // the band of the funicular crossing just past its mapped portal. Both
+        // are level 0; only a whole-mesh sample can see the interior overlap.
+        let t = tile(
+            vec![
+                RoadMesh { class: "rail_surface".into(), level: 0, mesh: flat(524.0) },
+                RoadMesh { class: "rail_surface".into(), level: 0, mesh: flat(532.5) },
+            ],
+            None,
+        );
+        let m = run(&t);
+        let stack = m.iter().find(|x| x.id == "order.grade_stack").unwrap();
+        assert!(stack.violations() > 0);
+        assert!((stack.worst_value().unwrap() - 8.5).abs() < 1e-3);
+        assert_eq!(stack.invariant, Invariant::I3);
+    }
+
+    #[test]
+    fn abutting_bands_at_one_height_are_the_populations_floor() {
+        let t = tile(
+            vec![
+                RoadMesh { class: "road_surface".into(), level: 0, mesh: flat(100.0) },
+                RoadMesh { class: "rail_surface".into(), level: 0, mesh: flat(100.0) },
+            ],
+            None,
+        );
+        let m = run(&t);
+        let stack = m.iter().find(|x| x.id == "order.grade_stack").unwrap();
+        assert_eq!(stack.violations(), 0, "coincident bands owe each other nothing");
+        assert!(!stack.dist.is_empty(), "but the pair is in the population");
     }
 
     #[test]
