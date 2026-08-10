@@ -244,6 +244,15 @@ impl UnionFind {
 /// everything else is either senior (read as a published constant) or junior
 /// (not yet solved, and invisible). That is the partition of §4.4 — *one
 /// solver, run over a partition* — and it is why no second solver is needed.
+/// How far a twin track may stand from its pair's centerline, anywhere along
+/// it, and still be one roadbed. Read against what twins are: parallel tracks
+/// on one formation sit 3.5–4.5 m centre to centre, a passing loop's rails
+/// about two. Two alignments further apart than a formation's width are
+/// separate earthworks that may genuinely hold different heights, and a
+/// proximity weld across that boundary is how a rail viaduct was once dragged
+/// 26 m down onto a road bridge's grade line.
+const TWIN_TRACK_LATERAL_M: f64 = 6.0;
+
 pub fn build(
     scene: &SceneGraph,
     profiles: &[Option<Profile>],
@@ -314,15 +323,79 @@ pub fn build(
         }
     }
 
-    // S8 (a dual carriageway on one structure) has no entity resolution here.
-    // What stood in its place bound a *footbridge*'s deck nodes to the road
-    // deck it ran alongside, on proximity — and since the stratum decides the
-    // scene, no draped feature is a corridor at all, so it could never fire
-    // again. The case it was written for is handled where it belongs now, by
-    // fitting the footbridge to the finished world (`synth::draped`). The real
-    // S8 — two paving carriageways sharing one grade line — was never
-    // implemented, and wants a structure entity rather than a lateral distance
-    // (§4.4).
+    // The narrowest slice of S8 — one grade line under parallel carriageways
+    // (§4.4): two corridors of one class that share BOTH end junctions and run
+    // within a formation's width of each other are twin tracks on a single
+    // roadbed. A funicular's passing loop is the type specimen: two rails two
+    // metres apart that a car crosses at speed cannot stand at two heights.
+    // Solved apart, each track takes its own ±deviation box around its own
+    // conditioned bed and its own monotone projection, and on a steep flank
+    // the pair legally ends up metres apart: the blended band twists, and the
+    // drawn line kinks through angles no rail can take (Collonge read 212 %
+    // over half a metre). Welding their nodes gives the pair one height
+    // everywhere, the way the shared junction variable already does at the
+    // ends.
+    //
+    // The weld is deliberately narrow — same class, both end junctions
+    // shared, every node within [`TWIN_TRACK_LATERAL_M`] of the other line —
+    // which is what separates it from the deleted proximity rule that once
+    // dragged a rail viaduct onto a road bridge's grade line (authority
+    // inversion, §4.1). What remains of S8 — a dual carriageway sharing one
+    // *structure* without sharing its end connectors — still wants a
+    // structure entity, not a lateral distance.
+    {
+        let mut ends: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        for j in &scene.junctions {
+            let mut ms: Vec<u32> = j
+                .members
+                .iter()
+                .map(|m| m.corridor)
+                .filter(|&cid| slot_base[cid as usize].is_some())
+                .collect();
+            ms.sort_unstable();
+            ms.dedup();
+            for i in 0..ms.len() {
+                for k in i + 1..ms.len() {
+                    *ends.entry((ms[i], ms[k])).or_insert(0) += 1;
+                }
+            }
+        }
+        let mut pairs: Vec<(u32, u32)> =
+            ends.into_iter().filter(|&(_, n)| n >= 2).map(|(p, _)| p).collect();
+        pairs.sort_unstable();
+        for (a, b) in pairs {
+            let (ca, cb) = (&scene.corridors[a as usize], &scene.corridors[b as usize]);
+            if ca.class_key != cb.class_key {
+                continue;
+            }
+            let (Some(pa), Some(pb)) =
+                (profiles[a as usize].as_ref(), profiles[b as usize].as_ref())
+            else {
+                continue;
+            };
+            let lateral = |from: &Profile, onto: &Profile| -> f64 {
+                from.nodes()
+                    .iter()
+                    .map(|c| {
+                        let q = onto.point_at_arc(onto.arc_of(c.x, c.y));
+                        let dx = (q.x - c.x) * ca.cos_lat * crate::scene::DEG_M;
+                        let dy = (q.y - c.y) * crate::scene::DEG_M;
+                        (dx * dx + dy * dy).sqrt()
+                    })
+                    .fold(0.0, f64::max)
+            };
+            if lateral(pa, pb).max(lateral(pb, pa)) > TWIN_TRACK_LATERAL_M {
+                continue;
+            }
+            let base_a = slot_base[a as usize].expect("member");
+            let base_b = slot_base[b as usize].expect("member");
+            for (k, c) in pb.nodes().iter().enumerate() {
+                let ka = nearest_node(pa.arc(), pa.arc_of(c.x, c.y));
+                uf.union(base_a + ka, base_b + k);
+            }
+        }
+    }
 
     // Compact union-find roots into dense VarIds.
     let mut root_var: Vec<Option<VarId>> = vec![None; total_slots];
@@ -1029,6 +1102,102 @@ mod tests {
         assert_eq!(g.n_components, 1);
         // The shared var's warm start is the mean of the two disagreeing ends.
         assert!((g.h[a_end] - 401.0).abs() < 1e-9, "warm start is the meeting mean");
+    }
+
+    /// A passing loop's twin corridors — one class, both end junctions shared,
+    /// two metres apart — are welded node for node: one roadbed, one height.
+    #[test]
+    fn a_passing_loop_is_one_roadbed() {
+        let len = 100.0;
+        let n = 6;
+        let mut a = corridor(0, 6.0, len, n, RoadClass::Residential);
+        let mut b = corridor(1, 6.0, len, n, RoadClass::Residential);
+        a.class_key = "funicular".into();
+        b.class_key = "funicular".into();
+        for c in &mut b.nodes {
+            c.y += 2.0 / DEG_M; // two metres north: the other rail of the loop
+        }
+        let (start, end) = (a.nodes[0], *a.nodes.last().unwrap());
+        let scene = {
+            let mut s = SceneGraph::new(vec![a, b]);
+            s.junctions = vec![
+                Junction {
+                    point: start,
+                    connector: 0,
+                    members: vec![
+                        JunctionMember { corridor: 0, arc: 0.0 },
+                        JunctionMember { corridor: 1, arc: 0.0 },
+                    ],
+                },
+                Junction {
+                    point: end,
+                    connector: 1,
+                    members: vec![
+                        JunctionMember { corridor: 0, arc: len },
+                        JunctionMember { corridor: 1, arc: len },
+                    ],
+                },
+            ];
+            s
+        };
+        let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
+        let profiles =
+            vec![Some(Profile::flat(&ns[0], 400.0)), Some(Profile::flat(&ns[1], 404.0))];
+        let g = build(&scene, &profiles, &[], Stratum::S);
+        for (k, &vb) in g.corridors[1].vars.iter().enumerate() {
+            assert!(
+                g.corridors[0].vars.contains(&vb),
+                "loop node {k} must share its variable with the twin track"
+            );
+        }
+        // The welded pair warm-starts on the mean of the two disagreeing beds.
+        let mid = g.corridors[1].vars[n / 2];
+        assert!((g.h[mid] - 402.0).abs() < 1e-9, "one height for the pair, got {}", g.h[mid]);
+    }
+
+    /// Two corridors that share both ends but run a street apart are separate
+    /// earthworks: the weld must not fire on a block's two sides.
+    #[test]
+    fn parallel_corridors_a_street_apart_stay_separate() {
+        let len = 100.0;
+        let n = 6;
+        let a = corridor(0, 6.0, len, n, RoadClass::Residential);
+        let mut b = corridor(1, 6.0, len, n, RoadClass::Residential);
+        for c in &mut b.nodes {
+            c.y += 20.0 / DEG_M;
+        }
+        let (start, end) = (a.nodes[0], *a.nodes.last().unwrap());
+        let scene = {
+            let mut s = SceneGraph::new(vec![a, b]);
+            s.junctions = vec![
+                Junction {
+                    point: start,
+                    connector: 0,
+                    members: vec![
+                        JunctionMember { corridor: 0, arc: 0.0 },
+                        JunctionMember { corridor: 1, arc: 0.0 },
+                    ],
+                },
+                Junction {
+                    point: end,
+                    connector: 1,
+                    members: vec![
+                        JunctionMember { corridor: 0, arc: len },
+                        JunctionMember { corridor: 1, arc: len },
+                    ],
+                },
+            ];
+            s
+        };
+        let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
+        let profiles =
+            vec![Some(Profile::flat(&ns[0], 400.0)), Some(Profile::flat(&ns[1], 404.0))];
+        let g = build(&scene, &profiles, &[], Stratum::S);
+        let mid_b = g.corridors[1].vars[n / 2];
+        assert!(
+            !g.corridors[0].vars.contains(&mid_b),
+            "20 m apart is not a twin: interior nodes stay independent"
+        );
     }
 
     /// A three-way fork unifies all three legs' ends into one variable.
