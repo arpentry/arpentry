@@ -1469,6 +1469,57 @@ pub fn monotone_project(h: &mut [f64], dir: f64) {
     }
 }
 
+/// Projects `h` onto the monotone sequences of direction `dir` whose rise per
+/// metre never exceeds `max_grade` — §9's line, with the class's own bend
+/// limit attached.
+///
+/// The plain projection alone turns a bed bump into a lurch and a plateau: the
+/// pooled average clears the bump inside one node spacing and then holds level
+/// while the bed catches up — measured as a 133 % pitch on the Collonge
+/// funicular's north approach, where a gully crosses the alignment and the DEM
+/// carries the scar into the conditioned bed. A rail cannot pitch like that; it
+/// holds its grade and cuts through the bump, and the ground stage digs
+/// whatever the line now passes through.
+///
+/// The set {monotone along `dir`, |rise| ≤ `max_grade`·Δarc} is the
+/// intersection of two convex cone constraints, each of which is one PAVA in a
+/// transformed coordinate (the slope cap is isotonic regression on
+/// `h − g·arc`, run the other way). A few alternating projections land near
+/// the intersection; a final forward/backward clamp guarantees feasibility
+/// exactly, redistributing any residual into the constant-grade ramp a real
+/// line would hold.
+pub fn monotone_project_graded(h: &mut [f64], arcs: &[f64], dir: f64, max_grade: f64) {
+    let n = h.len();
+    if n < 2 || arcs.len() != n || max_grade <= 0.0 {
+        monotone_project(h, dir);
+        return;
+    }
+    // Ascending orientation: w must be non-decreasing with slope ≤ g.
+    let s = if dir < 0.0 { -1.0 } else { 1.0 };
+    let mut w: Vec<f64> = h.iter().map(|&v| s * v).collect();
+    for _ in 0..3 {
+        monotone_project(&mut w, 1.0);
+        for (v, &a) in w.iter_mut().zip(arcs) {
+            *v -= max_grade * a;
+        }
+        monotone_project(&mut w, -1.0);
+        for (v, &a) in w.iter_mut().zip(arcs) {
+            *v += max_grade * a;
+        }
+    }
+    for k in 1..n {
+        let step = max_grade * (arcs[k] - arcs[k - 1]).max(0.0);
+        w[k] = w[k].clamp(w[k - 1], w[k - 1] + step);
+    }
+    for k in (0..n - 1).rev() {
+        let step = max_grade * (arcs[k + 1] - arcs[k]).max(0.0);
+        w[k] = w[k].clamp(w[k + 1] - step, w[k + 1]);
+    }
+    for (out, &v) in h.iter_mut().zip(&w) {
+        *out = s * v;
+    }
+}
+
 /// Rounds the sharp vertical grade breaks of an *engineered* road profile into
 /// gentle parabolic curves — the abutment corner where an embankment approach
 /// meets a deck ramp, and the kinks [`limit_road_grade`] leaves on a cut or
@@ -1678,6 +1729,41 @@ fn catmull_rom(p0: Coord, p1: Coord, p2: Coord, p3: Coord, t: f64, cos_lat: f64)
 mod tests {
     use super::*;
     use crate::scene::DEG_M;
+
+    /// The graded projection keeps the line monotone AND under the class
+    /// ceiling: a bed lurch that the plain projection would answer with one
+    /// impossible pitch and a plateau comes out as a constant-grade ramp.
+    #[test]
+    fn a_graded_monotone_line_never_exceeds_its_ceiling() {
+        // 8 m spacing; a steady 50 % climb, then an 8 m lurch in one step,
+        // then flat — the Collonge north-approach shape.
+        let arcs: Vec<f64> = (0..12).map(|i| 8.0 * i as f64).collect();
+        let mut h: Vec<f64> =
+            vec![500.0, 504.0, 508.0, 512.0, 516.0, 524.0, 524.2, 524.4, 528.0, 532.0, 536.0, 540.0];
+        let before = h.clone();
+        monotone_project_graded(&mut h, &arcs, 1.0, 0.70);
+        for k in 1..h.len() {
+            let step = h[k] - h[k - 1];
+            assert!(step >= -1e-9, "monotone broken at {k}: {step}");
+            assert!(step <= 0.70 * 8.0 + 1e-9, "ceiling broken at {k}: {step}");
+        }
+        // It is a projection, not a rescale: the line stays near the input.
+        let drift: f64 = h.iter().zip(&before).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+        assert!(drift < 4.0, "moved {drift} m from the input");
+    }
+
+    /// A descending line takes the same bound, mirrored.
+    #[test]
+    fn a_graded_projection_mirrors_for_a_descending_line() {
+        let arcs: Vec<f64> = (0..6).map(|i| 8.0 * i as f64).collect();
+        let mut h: Vec<f64> = vec![540.0, 536.0, 526.0, 525.8, 521.8, 517.8];
+        monotone_project_graded(&mut h, &arcs, -1.0, 0.70);
+        for k in 1..h.len() {
+            let step = h[k - 1] - h[k];
+            assert!(step >= -1e-9, "monotone broken at {k}: {step}");
+            assert!(step <= 0.70 * 8.0 + 1e-9, "ceiling broken at {k}: {step}");
+        }
+    }
 
     /// A structure span in corridor arc metres.
     fn span(arc0: f64, arc1: f64, level: i64) -> Span {

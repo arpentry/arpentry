@@ -532,13 +532,36 @@ fn rigidity_pass(g: &mut SolveGraph) {
 /// stretch a real line would hold, instead of propagating one bad height
 /// downhill.
 fn monotone_pass(g: &mut SolveGraph) {
+    /// Rounds of alternating projection. Two monotone corridors sharing a
+    /// junction variable are two convex sets with one common coordinate: each
+    /// projection is consistent internally, but a single sweep lets the last
+    /// writer move the shared node and re-break its neighbour's closing edge —
+    /// measured as a 133 % pitch concentrated in the loop's 1.6 m stub edge at
+    /// the Collonge north node. The sets intersect (any common-grade line is in
+    /// both), so alternating projections converge (POCS); a handful of rounds
+    /// spreads the disagreement into both corridors at their own ceilings.
+    const ROUNDS: usize = 8;
     let SolveGraph { corridors, h, .. } = g;
-    for c in corridors.iter() {
-        let Some(dir) = c.monotone else { continue };
-        let mut vals: Vec<f64> = c.vars.iter().map(|&v| h[v]).collect();
-        super::profile::monotone_project(&mut vals, dir);
-        for (&v, &val) in c.vars.iter().zip(&vals) {
-            h[v] = val;
+    for _ in 0..ROUNDS {
+        let mut moved = 0.0_f64;
+        for c in corridors.iter() {
+            let Some(dir) = c.monotone else { continue };
+            let mut vals: Vec<f64> = c.vars.iter().map(|&v| h[v]).collect();
+            // Slope-bounded: this is the last word on a monotone line's shape
+            // (only `contact_pass` runs after it), and the plain projection's
+            // answer to a bed bump — clear it in one node spacing, hold level
+            // after — is a pitch no rail can take. The ceiling is the same
+            // `c.grade` the grade pass enforces; where the bed is steeper or
+            // bumpier than that, the line holds its grade and the ground stage
+            // digs the cut (`monotone_project_graded`).
+            super::profile::monotone_project_graded(&mut vals, &c.arc, dir, c.grade);
+            for (&v, &val) in c.vars.iter().zip(&vals) {
+                moved = moved.max((h[v] - val).abs());
+                h[v] = val;
+            }
+        }
+        if moved < 0.01 {
+            break;
         }
     }
 }
