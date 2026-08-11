@@ -122,6 +122,18 @@ fn reconcile_stratum(
                 + crate::priors::TUNNEL_HEIGHT_M
                 + crate::priors::TUNNEL_COVER_M;
             let pt = p.point_at_arc(x.arc);
+            if let Some(dbg) = std::env::var_os("ARPT_DEBUG_BURY") {
+                if dbg.to_string_lossy().parse::<u32>() == Ok(c.id) {
+                    eprintln!(
+                        "[bury] daylight corridor {} arc={:.1} road={:.2} surface={:.2} deficit={:+.2}",
+                        c.id,
+                        x.arc,
+                        p.road_at_arc(x.arc),
+                        p.surface_at_arc(x.arc),
+                        roof - p.surface_at_arc(x.arc)
+                    );
+                }
+            }
             daylight.push(Daylight {
                 corridor: c.id,
                 arc: x.arc,

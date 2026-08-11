@@ -157,6 +157,18 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
     // gets chorded away with it. Applied after them all, the equality holds at
     // the output, which is what I2 asks of a junction.
     contact_pass(g);
+    if let Some(dbg) = std::env::var_os("ARPT_DEBUG_BURY") {
+        if let Ok(want) = dbg.to_string_lossy().parse::<u32>() {
+            for c in g.corridors.iter().filter(|c| c.id == want) {
+                for (k, &v) in c.vars.iter().enumerate() {
+                    eprintln!(
+                        "[bury] exit corridor {} k={} h={:.2} slack=({:.2},{:.2})",
+                        c.id, k, g.h[v], g.slack[v].0, g.slack[v].1
+                    );
+                }
+            }
+        }
+    }
     Relaxed { sweeps: used, demands_dropped: dropped.count, worst_dropped_m: dropped.worst_m }
 }
 
@@ -216,6 +228,14 @@ fn seed_bore_ceilings(g: &mut SolveGraph, sites: &VarSites) {
                 0.0
             };
             slack[v].1 = slack[v].1.min(vars[v].terrain_m - bury);
+            if let Some(dbg) = std::env::var_os("ARPT_DEBUG_BURY") {
+                if dbg.to_string_lossy().parse::<u32>() == Ok(c.id) {
+                    eprintln!(
+                        "[bury] seed corridor {} k={} covered={} terrain={:.2} ceiling={:.2}",
+                        c.id, k, c.covered[k], vars[v].terrain_m, slack[v].1
+                    );
+                }
+            }
         }
     }
 }

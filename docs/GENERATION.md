@@ -463,7 +463,29 @@ Two consequences are normative:
   — tunnel spans grown through the crossings their still-buried tails pass
   beneath, then clamped to their buried runs, the freed slack re-covered as
   grade, a tunnel with no buried run degraded end to end — written back into
-  the scene before any junior stratum or any consumer reads the spans. Every
+  the scene before any junior stratum or any consumer reads the spans.
+  *Buried* is judged by the run's own geometry. Its interior is the line's:
+  a gully crossing the alignment or a shore gallery whose cover thins mid-run
+  never splits the run, because the line never daylights there — judged by
+  the roof it degraded a few metres of the A9 under a gully wall and benched
+  an open slot through it. Its ends follow **whichever criterion the run
+  elects by majority of fit** (`solve::portals::tube_fit_majority`): a bore
+  is a constant-section solid a roof high, and a real tunnel — the A9 at
+  Glion, the Caux and Veytaux galleries — holds that tube over 90 % of its
+  run, so its shallow mouths are the portal transition they always were and
+  the portals stay on the line's crossings. A run that fits the tube only in
+  a minority — the Territet funicular's 45 m "tunnel", grazing a metre under
+  its slope with real depth only in the licensed window under the road — is
+  a surface gallery: its ends pull back to the roof's crossings, and the
+  shallow tails degrade to the open cutting they are instead of drawing a
+  roof metres proud of the hillside (66 % of a tile's `clearance.bore_cover`
+  samples). The cover margin is *not* part of either criterion — the burial
+  ceiling above puts a licensed crossing at exactly roof + cover, and
+  demanding the cover back would drop the one stretch the license just paid
+  for. Cover stays a quality margin, measured by `clearance.bore_cover`; the
+  elected crossing is the portal fact, and the mesh sweep, the portal cuts
+  and the span truth all read it from one place
+  (`solve::portals::tube_fit_majority`, `solve::portals::span_bounds`). Every
   reader — the junior solves deciding "the senior is in a bore here", the
   bands, the benches, the sheets, the paint, the solids — cuts the same
   partition, so "the paint reconciled privately while the surfaces read the

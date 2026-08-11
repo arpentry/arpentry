@@ -501,6 +501,20 @@ pub fn build(
             .monotone
             .then(|| super::profile::monotone_direction(terrain))
             .flatten();
+        if let Some(dbg) = std::env::var_os("ARPT_DEBUG_BURY") {
+            if dbg.to_string_lossy().parse::<usize>() == Ok(cid) {
+                eprintln!(
+                    "[bury] build stratum {:?} corridor {} windows {:?} monotone {:?}",
+                    stratum, cid, windows, monotone
+                );
+                for k in 0..arc.len() {
+                    eprintln!(
+                        "[bury]   k={} arc={:.1} at_grade={} tunnel={} covered={}",
+                        k, arc[k], at_grade[k], tunnel[k], covered[k]
+                    );
+                }
+            }
+        }
         corridors.push(CorridorNodes {
             id: cid as CorridorId,
             vars: node_vars,

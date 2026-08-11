@@ -2,15 +2,23 @@
 //! (docs/GENERATION.md S5).
 //!
 //! An annotation edge is where a mapper split the segment, not where the road
-//! pierces the hillside; the geometric fact is the zero crossing of the
-//! signed gap `road − terrain`. Each tunnel span's buried run is bounded by
-//! its two crossings — searched outward past the annotation edges up to
-//! [`PORTAL_MAX_M`], the same trust model the bore mesh uses. The solved
-//! portals feed the ground stage (the carve that daylights the mouth); the
-//! mesh finds the same crossings itself from the same profile, so the two
-//! agree by construction.
+//! pierces the hillside; the geometric facts are two signed gaps. The run's
+//! *interior* is where the road line runs below the terrain; its *ends* are
+//! where the drawn tube — a constant-section solid a [`TUNNEL_HEIGHT_M`]
+//! tall — last fits under it ([`roof_gap`]). Judged by the line alone, an
+//! end tail grazing half a metre under the DEM kept its tunnel span and drew
+//! a roof standing four metres proud of the hillside (the Territet
+//! funicular's gallery, `clearance.bore_cover` at 66 % of a tile's samples);
+//! judged by the roof alone, an interior thin-cover dip — a gully crossing
+//! the alignment — split one tunnel into two and benched an open trench
+//! between them (see [`span_bounds`]). Each tunnel span's buried run is
+//! searched outward past the annotation edges up to [`PORTAL_MAX_M`], the
+//! same trust model the bore mesh uses. The solved portals feed the ground
+//! stage (the carve that daylights the mouth); the mesh caps its tube on the
+//! same roof crossings from the same profile, so the two agree by
+//! construction.
 
-use crate::priors::{DECK_THICKNESS_M, PORTAL_MAX_M};
+use crate::priors::{DECK_THICKNESS_M, PORTAL_MAX_M, TUNNEL_HEIGHT_M};
 use crate::scene::{Span, SpanKind};
 
 use super::profile::Profile;
@@ -23,6 +31,23 @@ pub struct Portal {
     pub arc: f64,
     pub outward: f64,
     pub floor_m: f64,
+}
+
+/// The signed daylight of the drawn tube at one node: how far the bore's
+/// roof stands above the natural ground. Negative is buried — the whole
+/// constant-section tube fits under the hill — and the zero crossing is the
+/// portal. This is *the* burial criterion: the solve-side reconciliation
+/// ([`span_bounds`], [`grow_spans`]) and the mesh sweep
+/// (`synth::structure::bore_section`) all read it, so where a bore is kept,
+/// where its mouth lands and where the tube is drawn cannot disagree. The
+/// [`crate::priors::TUNNEL_COVER_M`] margin is deliberately *not* demanded
+/// here: the covered-bore ceiling (`relax::seed_bore_ceilings`) buries a
+/// licensed crossing to exactly roof + cover, and a criterion that demanded
+/// the cover back would sit bit-for-bit on that boundary and drop the one
+/// stretch the license just paid for. Cover is a quality margin, measured by
+/// `clearance.bore_cover`; the roof is the draw/no-draw fact.
+pub fn roof_gap(road_m: f64, terrain_m: f64) -> f64 {
+    road_m + TUNNEL_HEIGHT_M - terrain_m
 }
 
 /// The first node (in arc order) of the *dominant* buried run overlapping the
@@ -70,45 +95,146 @@ fn dominant_buried_seed(arc: &[f64], road: &[f64], terrain: &[f64], span: &Span)
     best
 }
 
-/// The buried run of one tunnel span: the arcs of the gap zero-crossings
-/// bounding it, searched outward past the annotation edges up to
-/// [`PORTAL_MAX_M`]. `None` when the span has no buried node (a tunnel tagged
-/// over flat ground — nothing is buried, so nothing emerges). A side whose
-/// run never surfaces within reach reports `None` for that crossing (the
-/// bore runs out of data, not out of the hill).
+/// Whether the tube fits under the ground over the **majority** of the
+/// line-buried run containing `at_arc` — the per-run answer to "is this a
+/// bore with shallow mouths, or a surface gallery with one licensed dip?".
+///
+/// A real tunnel's line-buried run holds the tube almost everywhere and
+/// grazes only at its mouths: the A9 Glion bore fits over 99 % of its run,
+/// the Caux and Veytaux galleries over 90 %. The Territet funicular's
+/// "tunnel" is the opposite — 45 m of line grazing a metre under its slope,
+/// fitting the tube only in the 10 m the covered-crossing ceiling bought —
+/// and drawing it as a tube snaked a roof metres proud of the hillside on
+/// both sides of the road it crossed under. The majority is the same logic
+/// [`dominant_buried_seed`] already applies between runs, applied within
+/// one: whichever reading of the annotation covers most of the geometry is
+/// the annotation's meaning.
+///
+/// Judged blanket-by-the-roof instead, every real portal moved into the
+/// hill: the freed line-buried mouths were benched as open rail under the
+/// Veytaux shore road (`order.grade_stack` 12.9 → 14.2) and the deepened
+/// portal cuts tore the A9 and Caux flanks (`slope.terrain_tearing`
+/// 6.5 → 11.1). Shared with the bore mesh (`synth::structure`), which picks
+/// its cap criterion per piece from the same walk, so the span truth and the
+/// drawn tube cannot disagree.
+///
+/// The walk is deliberately *unclamped* (no [`PORTAL_MAX_M`] reach) so both
+/// callers see the same run whatever window they hold. `false` when no
+/// line-buried node exists at or beside `at_arc`.
+pub fn tube_fit_majority(profile: &Profile, at_arc: f64) -> bool {
+    let arc = profile.arc();
+    let road = profile.road_m();
+    let terrain = profile.terrain_m();
+    let n = arc.len();
+    if n == 0 {
+        return false;
+    }
+    let line = |i: usize| road[i] - terrain[i];
+    let mut s = arc.partition_point(|&a| a < at_arc).min(n - 1);
+    if line(s) >= 0.0 {
+        if s > 0 && line(s - 1) < 0.0 {
+            s -= 1;
+        } else if s + 1 < n && line(s + 1) < 0.0 {
+            s += 1;
+        } else {
+            return false;
+        }
+    }
+    let mut f = s;
+    while f > 0 && line(f - 1) < 0.0 {
+        f -= 1;
+    }
+    let mut l = s;
+    while l + 1 < n && line(l + 1) < 0.0 {
+        l += 1;
+    }
+    let fit = (f..=l).filter(|&i| roof_gap(road[i], terrain[i]) < 0.0).count();
+    2 * fit >= l - f + 1
+}
+
+/// The buried run of one tunnel span: its **interior by the line, its ends
+/// by whichever criterion the run's own geometry elects**
+/// ([`tube_fit_majority`]).
+///
+/// The run's extent is where the road runs below the terrain — searched
+/// outward past the annotation edges (mapper cuts, not geometry) up to
+/// [`PORTAL_MAX_M`]. When the tube fits under the majority of that run, the
+/// bounds are the line's zero crossings, exactly as a portal has always been
+/// placed: the shallow mouths are the transition band of a real bore, and
+/// pulling them back only deepened the daylighting cut and benched the freed
+/// metres as open track under whatever runs above. When the tube fits only a
+/// minority, the annotation names a surface gallery: each end is pulled back
+/// to the last node where the tube fits, the bound interpolated onto the
+/// roof's zero crossing, and the freed tails degrade to the open cutting
+/// they are.
+///
+/// An *interior dip* — a gully crossing the alignment, a shore gallery whose
+/// cover thins mid-run — never splits the run under either criterion: the
+/// line stays under the ground through it, so it is a covered stretch of one
+/// tunnel, not two tunnels with a benched trench between them.
+///
+/// `None` when the span has no buried node, or when nothing in a
+/// minority-fit run holds the tube — a tunnel tagged over flat or shallow
+/// ground end to end has no bore, and the open cutting is what is there. A
+/// side whose run never surfaces within reach reports `None` for that
+/// crossing (the bore runs out of data, not out of the hill).
 pub fn span_bounds(profile: &Profile, span: &Span) -> Option<(Option<f64>, Option<f64>)> {
     let arc = profile.arc();
     let road = profile.road_m();
     let terrain = profile.terrain_m();
     let n = arc.len();
-    let gap = |i: usize| road[i] - terrain[i];
+    let line = |i: usize| road[i] - terrain[i];
+    let roof = |i: usize| roof_gap(road[i], terrain[i]);
 
     // Seed on the *dominant* buried run overlapping the annotation — not the
-    // first buried node — then expand that run outward past the annotation
-    // edges (mapper cuts, not geometry) but no further than the search reach.
-    // Seeding on the first node let a shallow DEM-noise graze on the approach
-    // capture the whole solve: the graze became the "tunnel" and the real,
-    // deep run past it was re-covered as at-grade road painted over the massif
-    // (docs/GENERATION.md S5, S10). The deepest run outscores a brief graze by
-    // orders of magnitude, so the bore lands under the hill it belongs to.
+    // first buried node. Seeding on the first node let a shallow DEM-noise
+    // graze on the approach capture the whole solve: the graze became the
+    // "tunnel" and the real, deep run past it was re-covered as at-grade road
+    // painted over the massif (docs/GENERATION.md S5, S10). The deepest run
+    // outscores a brief graze by orders of magnitude, so the bore lands under
+    // the hill it belongs to.
     let lo_arc = span.arc0 - PORTAL_MAX_M;
     let hi_arc = span.arc1 + PORTAL_MAX_M;
     let seed = dominant_buried_seed(arc, road, terrain, span)?;
     let mut f = seed;
-    while f > 0 && gap(f - 1) < 0.0 && arc[f - 1] >= lo_arc {
+    while f > 0 && line(f - 1) < 0.0 && arc[f - 1] >= lo_arc {
         f -= 1;
     }
     let mut l = seed;
-    while l + 1 < n && gap(l + 1) < 0.0 && arc[l + 1] <= hi_arc {
+    while l + 1 < n && line(l + 1) < 0.0 && arc[l + 1] <= hi_arc {
         l += 1;
     }
-    // Interpolate each bounding crossing, when the run does surface.
-    let low = (f > 0 && gap(f - 1) >= 0.0).then(|| {
-        let t = gap(f - 1) / (gap(f - 1) - gap(f));
+    if tube_fit_majority(profile, arc[seed]) {
+        // A bore with shallow mouths: portals on the line's own crossings.
+        let low = (f > 0 && line(f - 1) >= 0.0).then(|| {
+            let t = line(f - 1) / (line(f - 1) - line(f));
+            arc[f - 1] + t * (arc[f] - arc[f - 1])
+        });
+        let high = (l + 1 < n && line(l + 1) >= 0.0).then(|| {
+            let t = line(l) / (line(l) - line(l + 1));
+            arc[l] + t * (arc[l + 1] - arc[l])
+        });
+        return Some((low, high));
+    }
+    // A surface gallery: pull each end back to the tube's fit. A run the tube
+    // fits nowhere in is no bore at all.
+    while f <= l && roof(f) >= 0.0 {
+        f += 1;
+    }
+    while l > f && roof(l) >= 0.0 {
+        l -= 1;
+    }
+    if f > l || roof(f) >= 0.0 {
+        return None;
+    }
+    // Interpolate each bounding crossing onto the roof's zero crossing, when
+    // the neighbour outside the run has emerged.
+    let low = (f > 0 && roof(f - 1) >= 0.0).then(|| {
+        let t = roof(f - 1) / (roof(f - 1) - roof(f));
         arc[f - 1] + t * (arc[f] - arc[f - 1])
     });
-    let high = (l + 1 < n && gap(l + 1) >= 0.0).then(|| {
-        let t = gap(l) / (gap(l) - gap(l + 1));
+    let high = (l + 1 < n && roof(l + 1) >= 0.0).then(|| {
+        let t = roof(l) / (roof(l) - roof(l + 1));
         arc[l] + t * (arc[l + 1] - arc[l])
     });
     Some((low, high))
@@ -147,12 +273,14 @@ pub fn grow_spans(profile: &Profile, spans: &[Span]) -> Vec<Span> {
     }
     let (road, terrain) = (profile.road_m(), profile.terrain_m());
     // A deck grows only over nodes it actually clears, a bore only over nodes
-    // it actually runs beneath. Absorption marks a node as structure from the
-    // *profile's* side; it does not promise the ground stayed out of the way,
-    // and a deck swept past the point where the hillside comes back up is a
-    // deck buried in it. The Territet funicular's bridge grew 20 m past its
-    // annotated end into the embankment of the road above and sat 9.8 m under
-    // the drawn ground.
+    // it actually runs beneath — the line criterion, because growth covers
+    // *interior* absorbed material and the ends are pulled back to the tube's
+    // fit by [`span_bounds`] afterwards. Absorption marks a node as structure
+    // from the *profile's* side; it does not promise the ground stayed out of
+    // the way, and a deck swept past the point where the hillside comes back
+    // up is a deck buried in it. The Territet funicular's bridge grew 20 m
+    // past its annotated end into the embankment of the road above and sat
+    // 9.8 m under the drawn ground.
     let holds = |kind: SpanKind, k: usize| match kind {
         SpanKind::Bridge => road[k] >= terrain[k],
         SpanKind::Tunnel => road[k] <= terrain[k],
@@ -218,8 +346,9 @@ pub fn grow_spans(profile: &Profile, spans: &[Span]) -> Vec<Span> {
 /// the Collonge funicular made over the rack railway's short portal
 /// (`order.grade_stack` keeps the class dead).
 ///
-/// The gate is deliberately double: the tail must be buried (this profile's
-/// own gap sign, searched by [`span_bounds`] out to [`PORTAL_MAX_M`]) *and*
+/// The gate is deliberately double: the tail must be buried (the tube still
+/// fits under the ground — [`roof_gap`], searched by [`span_bounds`] out to
+/// [`PORTAL_MAX_M`]) *and*
 /// crossed (`crossings::plan_crossings`). Burial alone would swallow the open
 /// trench approach of a flat-ground underpass (S6); a crossing alone is any
 /// street the line meets at grade. Each qualifying side extends to the last
@@ -405,12 +534,102 @@ mod tests {
         // Annotation roughly over the buried middle (mapper slop included).
         let ps = portals(&p, &[span(0.42 * len, 0.58 * len)]);
         assert_eq!(ps.len(), 2, "a through-tunnel has two portals");
-        // Crossings at u = 0.5 ± 0.1125.
+        // A deep hill fits the tube over most of its run (majority-fit), so
+        // this is a real bore and its mouths sit on the *line's* crossings at
+        // u = 0.5 ± 0.1125 — the shallow approach is the portal transition,
+        // not open cutting.
         assert!((ps[0].arc - 387.5).abs() < 10.0, "west portal at {}", ps[0].arc);
         assert!((ps[1].arc - 612.5).abs() < 10.0, "east portal at {}", ps[1].arc);
         assert_eq!(ps[0].outward, -1.0);
         assert_eq!(ps[1].outward, 1.0);
         assert!((ps[0].floor_m - 98.5).abs() < 0.1, "floor = road − slab");
+    }
+
+    #[test]
+    fn an_interior_thin_cover_dip_does_not_split_the_tunnel() {
+        // Two deep hills with a saddle between them where the cover thins to
+        // 2 m: the line stays buried through the saddle (gap −2) but the
+        // 5 m tube does not fit under it. That saddle is a covered stretch of
+        // one tunnel — a gully crossing the alignment, the Veytaux shore
+        // gallery — not two tunnels: judged by the roof alone, the saddle
+        // degraded to a few metres of open rail whose bench dug a 25 m slot
+        // through the gully wall (the MGN at 6.9211,46.4336). The bounds must
+        // span hill to hill, ends on the outer roof crossings.
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let len = 1000.0;
+        let deg = len / (DEG_M * cos_lat);
+        let n = 201;
+        let nodes: Vec<Coord> =
+            (0..n).map(|i| Coord { x: 6.0 + deg * i as f64 / (n - 1) as f64, y: 46.0 }).collect();
+        let road = vec![100.0; n];
+        let ramp = |u: f64, u0: f64, u1: f64, h0: f64, h1: f64| h0 + (h1 - h0) * (u - u0) / (u1 - u0);
+        let terrain: Vec<f64> = (0..n)
+            .map(|i| {
+                let u = i as f64 / (n - 1) as f64;
+                match u {
+                    _ if u < 0.30 => 90.0,
+                    _ if u < 0.34 => ramp(u, 0.30, 0.34, 90.0, 130.0),
+                    _ if u < 0.42 => 130.0,
+                    _ if u < 0.46 => ramp(u, 0.42, 0.46, 130.0, 102.0),
+                    _ if u < 0.54 => 102.0,
+                    _ if u < 0.58 => ramp(u, 0.54, 0.58, 102.0, 130.0),
+                    _ if u < 0.66 => 130.0,
+                    _ if u < 0.70 => ramp(u, 0.66, 0.70, 130.0, 90.0),
+                    _ => 90.0,
+                }
+            })
+            .collect();
+        let p = Profile::from_heights(&nodes, road, terrain);
+        let (low, high) = span_bounds(&p, &span(0.28 * len, 0.72 * len)).expect("buried");
+        // Majority-fit (the two hills dominate the run), so the ends are the
+        // line's crossings on the *outer* flanks: u = 0.31 and 0.69. The
+        // saddle never splits the run.
+        let low = low.expect("west portal");
+        let high = high.expect("east portal");
+        assert!((low - 310.0).abs() < 10.0, "west end on the outer flank, at {low}");
+        assert!((high - 690.0).abs() < 10.0, "east end on the outer flank, at {high}");
+    }
+
+    #[test]
+    fn a_minority_fit_gallery_pulls_its_ends_to_the_tubes_fit() {
+        // The Territet funicular's shape: a "tunnel" whose line grazes 2 m
+        // under its slope for most of the run and holds real depth only in a
+        // short licensed window. Drawn to the line's crossings, the tube
+        // snaked its roof metres proud of the hillside on both sides of the
+        // road above the window; a minority-fit run is a surface gallery, so
+        // its ends pull back to the roof's crossings and the shallow tails
+        // degrade to the open cutting they are.
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let len = 1000.0;
+        let deg = len / (DEG_M * cos_lat);
+        let n = 201;
+        let nodes: Vec<Coord> =
+            (0..n).map(|i| Coord { x: 6.0 + deg * i as f64 / (n - 1) as f64, y: 46.0 }).collect();
+        let road = vec![100.0; n];
+        let ramp = |u: f64, u0: f64, u1: f64, h0: f64, h1: f64| h0 + (h1 - h0) * (u - u0) / (u1 - u0);
+        let terrain: Vec<f64> = (0..n)
+            .map(|i| {
+                let u = i as f64 / (n - 1) as f64;
+                match u {
+                    _ if u < 0.30 => 90.0,
+                    _ if u < 0.32 => ramp(u, 0.30, 0.32, 90.0, 102.0),
+                    _ if u < 0.45 => 102.0,
+                    _ if u < 0.47 => ramp(u, 0.45, 0.47, 102.0, 112.0),
+                    _ if u < 0.53 => 112.0,
+                    _ if u < 0.55 => ramp(u, 0.53, 0.55, 112.0, 102.0),
+                    _ if u < 0.68 => 102.0,
+                    _ if u < 0.70 => ramp(u, 0.68, 0.70, 102.0, 90.0),
+                    _ => 90.0,
+                }
+            })
+            .collect();
+        let p = Profile::from_heights(&nodes, road, terrain);
+        let (low, high) = span_bounds(&p, &span(0.28 * len, 0.72 * len)).expect("buried");
+        // Roof (105) crossings on the notch flanks: u = 0.456 and 0.544.
+        let low = low.expect("west portal");
+        let high = high.expect("east portal");
+        assert!((low - 456.0).abs() < 10.0, "west end at the tube's fit, at {low}");
+        assert!((high - 544.0).abs() < 10.0, "east end at the tube's fit, at {high}");
     }
 
     #[test]

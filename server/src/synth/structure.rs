@@ -16,11 +16,13 @@
 //!   tunnel meets a bridge the bore ends solidly and the deck meets that face
 //!   at the road surface.
 //!
-//! The portal is placed where the road *actually emerges from the ground*, not
-//! where the annotation happens to end (S5): the bore is the span where the
-//! signed gap `g = road − terrain` is negative (road under ground), and the
-//! cap sits on its zero crossing — by construction the mouth is always exactly
-//! at the surface, never buried, never floating. A tunnel tagged over flat
+//! The portal is placed where the tunnel *actually emerges from the ground*,
+//! not where the annotation happens to end (S5): the bore is the span where
+//! the tube fits under the hill — the signed gap is the **roof's** daylight,
+//! [`crate::solve::portals::roof_gap`], negative where the whole
+//! constant-section solid is below the surface — and the cap sits on its zero
+//! crossing, so by construction the mouth is always exactly flush with the
+//! ground, never buried, never poking. A tunnel tagged over flat or shallow
 //! ground (the gap never goes negative) has no bore at all; the caller drapes
 //! it instead (the degradation ladder).
 //!
@@ -279,10 +281,20 @@ fn sweep_bore(
     if pts.len() < 2 {
         return;
     }
+    // The cap criterion this run's own geometry elects (see
+    // `solve::portals::tube_fit_majority`): a real bore trims and caps on the
+    // line's crossings — its shallow mouths are the portal transition — while
+    // a surface gallery caps on the roof's, so the tube is drawn only where
+    // it fits. Same walk as the span reconciliation, so the mesh and the span
+    // truth agree on where the mouth is.
+    let mid = 0.5
+        * (profile.arc_of(pts[0].x, pts[0].y)
+            + profile.arc_of(pts[pts.len() - 1].x, pts[pts.len() - 1].y));
+    let roof_caps = !crate::solve::portals::tube_fit_majority(profile, mid);
     let mut sections: Vec<Section> = profile
         .deck_nodes(&pts)
         .into_iter()
-        .map(|d| bore_section(d.lon, d.lat, d.height_m, d.left_e, d.left_n, profile))
+        .map(|d| bore_section(d.lon, d.lat, d.height_m, d.left_e, d.left_n, profile, roof_caps))
         .collect();
     if sections.len() < 2 {
         return;
@@ -296,8 +308,8 @@ fn sweep_bore(
     // continuing in the neighbour.
     let start_interior = !on_tile_edge(pts[0], bounds);
     let end_interior = !on_tile_edge(pts[pts.len() - 1], bounds);
-    let cap_high = resolve_portal(&mut sections, frame, profile, End::High, end_interior);
-    let cap_low = resolve_portal(&mut sections, frame, profile, End::Low, start_interior);
+    let cap_high = resolve_portal(&mut sections, frame, profile, End::High, end_interior, roof_caps);
+    let cap_low = resolve_portal(&mut sections, frame, profile, End::Low, start_interior, roof_caps);
 
     // No buried span means the road never runs under the ground here: a tunnel
     // tagged over flat (or shallow) terrain. Drawing a bore would float a box
@@ -329,14 +341,19 @@ enum End {
 /// deck-aligned bottom), and the signed terrain gap sampled from the profile.
 ///
 /// The section is the *same* everywhere along the bore: a constant tube riding
-/// the profile, never squeezed by the cover overhead. Where the hill above is
-/// thinner than the headroom the roof simply pokes through the ground — the
-/// tube keeps its shape and the terrain is what gives, not the tunnel.
-///
-/// `gap_m` is the centreline `road − terrain` read from the *natural* ground
-/// ([`Profile::surface_at`], pre-earthwork) — the zero crossing the
-/// [`crate::solve::portals`] solver also places, so the mesh and the
-/// daylighting cut agree on where the mouth is.
+/// the profile, never squeezed by the cover overhead. `gap_m` carries the
+/// criterion the run elected (`roof_caps`, from
+/// [`crate::solve::portals::tube_fit_majority`], read against
+/// [`Profile::surface_at`], pre-earthwork — the natural ground): a real
+/// bore's gap is the road line's, so its mouth sits where the road emerges
+/// and the roof pokes briefly through the thinning cover — the portal
+/// transition it always had. A surface gallery's gap is the roof's
+/// ([`crate::solve::portals::roof_gap`]), so the tube is drawn only where it
+/// fits; swept by the line, the Territet gallery snaked its roof out of the
+/// slope on both sides of the road that crossed it. Either way the trim, the
+/// outward march and the portal cap sit on the same zero crossing the
+/// [`crate::solve::portals`] solver places, so the mesh, the span truth and
+/// the daylighting cut agree on where the mouth is.
 fn bore_section(
     lon: f64,
     lat: f64,
@@ -344,6 +361,7 @@ fn bore_section(
     left_e: f64,
     left_n: f64,
     profile: &Profile,
+    roof_caps: bool,
 ) -> Section {
     let terrain = profile.surface_at(lon, lat);
     Section {
@@ -351,7 +369,11 @@ fn bore_section(
         lat,
         top_mm: project::quantize_z(road_m + TUNNEL_HEIGHT_M),
         bot_mm: project::quantize_z(road_m - DECK_THICKNESS_M),
-        gap_m: road_m - terrain,
+        gap_m: if roof_caps {
+            crate::solve::portals::roof_gap(road_m, terrain)
+        } else {
+            road_m - terrain
+        },
         left_e,
         left_n,
     }
@@ -370,6 +392,7 @@ fn resolve_portal(
     profile: &Profile,
     end: End,
     interior: bool,
+    roof_caps: bool,
 ) -> bool {
     let last = sections.len() - 1;
     let edge = match end {
@@ -387,7 +410,9 @@ fn resolve_portal(
         End::Low => 1,
         End::High => last - 1,
     };
-    if let Some(cap) = march_to_crossing(&sections[edge], &sections[inner], frame, profile) {
+    if let Some(cap) =
+        march_to_crossing(&sections[edge], &sections[inner], frame, profile, roof_caps)
+    {
         match end {
             End::Low => sections.insert(0, cap),
             End::High => sections.push(cap),
@@ -443,6 +468,7 @@ fn march_to_crossing(
     inner: &Section,
     _frame: &Frame,
     profile: &Profile,
+    roof_caps: bool,
 ) -> Option<Section> {
     let a_edge = profile.arc_of(edge.lon, edge.lat);
     let a_inner = profile.arc_of(inner.lon, inner.lat);
@@ -454,7 +480,7 @@ fn march_to_crossing(
     let at = |dist: f64| -> Section {
         let a = a_edge + outward * dist;
         let p = profile.point_at_arc(a);
-        bore_section(p.x, p.y, profile.road_at_arc(a), edge.left_e, edge.left_n, profile)
+        bore_section(p.x, p.y, profile.road_at_arc(a), edge.left_e, edge.left_n, profile, roof_caps)
     };
     let mut prev = (0.0, edge.gap_m.min(-f64::MIN_POSITIVE)); // (dist, gap), buried
     let mut dist = PORTAL_MARCH_M;
@@ -928,22 +954,49 @@ mod tests {
     }
 
     #[test]
-    fn bore_keeps_its_section_under_a_shallow_cover() {
-        // A covered urban road where the ground barely rises above the
-        // carriageway (a 2 m cover, not a hill): the tube is the same tube it
-        // is under a mountain — full headroom, never squeezed by the cover.
+    fn a_tube_that_does_not_fit_is_not_drawn() {
+        // A covered urban road where the ground rises only 2 m above the
+        // carriageway: the constant tube is TUNNEL_HEIGHT_M tall, so there is
+        // no room to drive through — the roof would stand 3 m proud of the
+        // ground for the whole run. The old behaviour swept it anyway ("the
+        // terrain is what gives"), which drew the Territet gallery snaking
+        // out of its hillside; now the roof gap never goes negative, so no
+        // bore is emitted at all and the span reconciles to open grade
+        // upstream.
         let b = Bounds::of_tile(14, 8500, 5800);
         let cy = (b.south + b.north) * 0.5;
         let n = 201;
         let nodes: Vec<Coord> = (0..n)
             .map(|i| Coord { x: b.west + b.width() * i as f64 / (n - 1) as f64, y: cy })
             .collect();
-        // Road at 100; ground 2 m over it across the middle (buried, gap −2),
-        // dropping below the road at the flanks so the bore has portals.
         let terrain_m: Vec<f64> = (0..n)
             .map(|i| {
                 let d = (i as f64 / (n - 1) as f64 - 0.5).abs();
                 if d < 0.25 { 102.0 } else { 90.0 }
+            })
+            .collect();
+        let profile = Profile::from_heights(&nodes, vec![100.0; n], terrain_m);
+        assert!(
+            bore(&sub_line(&b, 0.40, 0.60), &profile, &b).is_none(),
+            "a 2 m cover fits no {TUNNEL_HEIGHT_M} m tube: nothing is drawn"
+        );
+    }
+
+    #[test]
+    fn bore_keeps_its_section_under_a_thin_but_sufficient_cover() {
+        // Ground half a metre over the roof — the covered-bore ceiling's own
+        // margin (TUNNEL_COVER_M): the tube is the same tube it is under a
+        // mountain, full headroom, never squeezed by the cover.
+        let b = Bounds::of_tile(14, 8500, 5800);
+        let cy = (b.south + b.north) * 0.5;
+        let n = 201;
+        let nodes: Vec<Coord> = (0..n)
+            .map(|i| Coord { x: b.west + b.width() * i as f64 / (n - 1) as f64, y: cy })
+            .collect();
+        let terrain_m: Vec<f64> = (0..n)
+            .map(|i| {
+                let d = (i as f64 / (n - 1) as f64 - 0.5).abs();
+                if d < 0.25 { 100.0 + TUNNEL_HEIGHT_M + 0.5 } else { 90.0 }
             })
             .collect();
         let profile = Profile::from_heights(&nodes, vec![100.0; n], terrain_m);
