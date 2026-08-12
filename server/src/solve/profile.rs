@@ -41,15 +41,39 @@ pub use crate::priors::NODE_SPACING_M;
 /// inputs; real corridors are bounded by `priors::MAX_CORRIDOR_M`.
 const MAX_NODES: usize = 65_536;
 
-/// Half-window in metres of the local quadratic regression that smooths the
-/// centerline before sweeping. A digitised road line carries lateral vertex
+/// Half-window ceiling in metres of the local quadratic regression that smooths
+/// the centerline before sweeping. A digitised road line carries lateral vertex
 /// wiggle out to ~120 m wavelength — the scales that read as a snaking deck
-/// edge — so the window must span a full period of the worst of it to
-/// average it away. A real road curve holds near-constant curvature over
-/// this scale, and a quadratic fit reproduces a constant-curvature arc
-/// almost exactly (≤ ~0.2 m over ±100 m at a 400 m radius), so the road's
-/// true curve passes through while the wiggle goes.
+/// edge — so the window wants to span a full period of the worst of it to
+/// average it away. It is a *ceiling* because on anything but a straight road
+/// the turn budget below binds first.
 const SMOOTH_WINDOW_M: f64 = 100.0;
+
+/// How much the road may turn, in radians, between the node being fitted and
+/// either edge of its window.
+///
+/// **This is what keeps a curve a curve.** The fit is a quadratic in arc length
+/// per coordinate, which is a parabola in the plane, and a parabola matches a
+/// circular arc only while the arc is shallow: fitting a radius `R` over a half
+/// window `L` displaces the fitted point at the centre by about `L⁴/(280·R³)`,
+/// which is `R·Δθ⁴/280` at a turn of `Δθ = L/R`. The error is therefore
+/// governed by the *angle* the window spans, not by its length — and a fixed
+/// 100 m half-window spans 4 radians on a 50 m corner, where no polynomial in
+/// any frame can follow the road at all.
+///
+/// That is exactly what the fixed window did: measured on the Montreux extract,
+/// nodes on radii under 60 m were displaced a median 4.00 m — the deviation
+/// clamp, saturated, meaning the fit wanted to cut the corner even further —
+/// and the whole network sat a median 0.84 m off its own centerline. Held to
+/// 0.6 rad the same formula gives under 0.1 m out to a 200 m radius and
+/// millimetres on anything straighter, while a 50 m corner keeps a ±30 m
+/// window, which is several vertices and still averages its own scale of
+/// wiggle. A corner is a short feature; its window should be short too.
+///
+/// The turn is accumulated *signed*, so digitising zigzag — which is what the
+/// smoothing exists to remove — cancels instead of closing the window at
+/// precisely the places that need it open.
+const SMOOTH_MAX_TURN_RAD: f64 = 0.6;
 
 /// Passes of the local quadratic regression. Each pass deepens the noise
 /// suppression; curves survive every pass (the fit reproduces them), so a
@@ -57,9 +81,12 @@ const SMOOTH_WINDOW_M: f64 = 100.0;
 const SMOOTH_PASSES: usize = 2;
 
 /// Safety cap on how far smoothing may displace a centerline node from its
-/// input position, in metres. The quadratic fit only degrades on hairpins
-/// tighter than the window; the clamp bounds the corner-cutting there.
-const SMOOTH_MAX_DEV_M: f64 = 4.0;
+/// input position, in metres — a backstop on the shapes the turn budget cannot
+/// bound, a reversal inside a single vertex above all. With the window held to
+/// [`SMOOTH_MAX_TURN_RAD`] the fit's own error is decimetres, so this stops
+/// being the thing that decides where a road goes and goes back to being what
+/// its name says.
+const SMOOTH_MAX_DEV_M: f64 = 1.0;
 
 /// Relaxation passes for [`limit_road_grade`]. A handful alternating forward
 /// and backward spreads a steep pitch's deviation evenly — a cut on the way
@@ -832,13 +859,23 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 
 /// Endpoint-preserving centerline smoothing: [`SMOOTH_PASSES`] passes of a
 /// local quadratic regression along arc length (Savitzky–Golay style), each
-/// node refit from its ±[`SMOOTH_WINDOW_M`] neighbourhood. A quadratic in arc
-/// reproduces a constant-curvature road arc exactly, so genuine curves pass
-/// through unchanged while uncorrelated vertex wiggle averages away — heavy
-/// smoothing with no straight-chord kinks (a plain low-pass clamped to a
-/// deviation tube goes piecewise-straight and kinks where it touches the
-/// tube). A [`SMOOTH_MAX_DEV_M`] clamp bounds the one place the fit degrades:
-/// hairpins tighter than the window.
+/// node refit from the neighbourhood that reaches ±[`SMOOTH_WINDOW_M`] or
+/// ±[`SMOOTH_MAX_TURN_RAD`] of the road's own turning, whichever comes first.
+/// Uncorrelated vertex wiggle averages away with no straight-chord kinks (a
+/// plain low-pass clamped to a deviation tube goes piecewise-straight and kinks
+/// where it touches the tube), while the turn budget is what keeps a genuine
+/// curve: the fit is a parabola in the plane, which follows a road arc only
+/// while the window spans a shallow angle of it.
+///
+/// A quadratic in arc length does **not** reproduce a circular arc — the claim
+/// this once carried, and the reason the window was allowed to run to a fixed
+/// ±100 m. It reproduces a parabola, which agrees with a circle to fourth order
+/// and then leaves it: over a half window `L` on radius `R` the fitted centre
+/// misses by about `L⁴/(280·R³)`, six millimetres at 400 m radius and 2.9
+/// metres at 50 m. That is why the fixed window read as heavy corner-cutting on
+/// every urban corner and hairpin in the extract, and why the budget is now on
+/// the angle. [`SMOOTH_MAX_DEV_M`] remains as a backstop for the shapes an
+/// angle cannot bound.
 fn smooth_path(nodes: &[Coord]) -> Vec<Coord> {
     let n = nodes.len();
     if n < 5 {
@@ -846,17 +883,22 @@ fn smooth_path(nodes: &[Coord]) -> Vec<Coord> {
     }
     let cos_lat = run_cos_lat(nodes);
     let arc = cumulative(nodes);
+    let heading = cumulative_heading(nodes, cos_lat);
     let max_dev_x = SMOOTH_MAX_DEV_M / (DEG_M * cos_lat.max(1e-9));
     let max_dev_y = SMOOTH_MAX_DEV_M / DEG_M;
     let mut cur = nodes.to_vec();
     for _ in 0..SMOOTH_PASSES {
         let prev = cur.clone();
         for i in 1..n - 1 {
+            // The window: as much arc as the ceiling allows, but never more of
+            // the road than the turn budget — a quadratic can only follow a
+            // shallow arc, so the angle is the binding constraint on a curve.
+            let turned = |j: usize| (heading[j] - heading[i]).abs() > SMOOTH_MAX_TURN_RAD;
             let (mut lo, mut hi) = (i, i);
-            while lo > 0 && arc[i] - arc[lo - 1] <= SMOOTH_WINDOW_M {
+            while lo > 0 && arc[i] - arc[lo - 1] <= SMOOTH_WINDOW_M && !turned(lo - 1) {
                 lo -= 1;
             }
-            while hi + 1 < n && arc[hi + 1] - arc[i] <= SMOOTH_WINDOW_M {
+            while hi + 1 < n && arc[hi + 1] - arc[i] <= SMOOTH_WINDOW_M && !turned(hi + 1) {
                 hi += 1;
             }
             if hi - lo < 4 {
@@ -1741,16 +1783,43 @@ fn densify(run: &[Coord], cos_lat: f64, spacing_m: f64) -> (Vec<Coord>, Vec<f64>
     (nodes, arc, params)
 }
 
+/// Subsamples per raw segment used to measure the spline's own arc length when
+/// inverting its parameterisation. The spline is a cubic over one segment, so
+/// a chord sum this fine resolves its length to well under a centimetre on the
+/// longest edges mapped roads carry.
+const SPLINE_ARC_SAMPLES: usize = 32;
+
 /// The line a deck box is swept along: a centripetal Catmull-Rom spline
-/// through the raw corridor vertices, evaluated at each densified node's
-/// `(segment, t)` position. The raw polyline is a chain of chords — every
-/// vertex a visible corner when swept as a 8 m-wide box — while the spline is
-/// C¹ through the same vertices, so the swept edge curves instead of kinking.
-/// The centripetal parameterisation (α = ½) is the standard choice that never
-/// loops or overshoots on the wildly uneven vertex spacing of mapped roads.
+/// through the raw corridor vertices, sampled at each densified node's
+/// **station**. The raw polyline is a chain of chords — every vertex a visible
+/// corner when swept as a 8 m-wide box — while the spline is C¹ through the
+/// same vertices, so the swept edge curves instead of kinking. The centripetal
+/// parameterisation (α = ½) is the standard choice that never loops or
+/// overshoots on the wildly uneven vertex spacing of mapped roads.
+///
+/// **The station is the whole contract.** Every consumer pairs this array with
+/// the densified one by index: `deck_nodes` places a cross-section at
+/// `smooth_point(i, t)` and gives it the height `deck_m[i]`, and
+/// `ground::corridor_earthworks` benches along `smooth[k]` at the road height
+/// `road[k]`. So `smooth[i]` must be the *same point of the road* as
+/// `nodes[i]`, only cleaned up. A centripetal Catmull-Rom's parameter is not
+/// arc length — that is the point of the parameterisation — so evaluating it at
+/// the densifier's chord fraction lands somewhere else along the segment
+/// entirely, by a distance that grows with the segment's length and with how
+/// uneven its neighbours are. Measured on the Montreux extract before this was
+/// inverted: a median 0.37 m of slide, 9 % of nodes past 3.9 m, and a corridor
+/// whose vertex spacing runs from metres to kilometres slid 721 m. A deck swept
+/// at the wrong station carries the height solved for another one (the slide
+/// times the grade) and lands its abutment short of or past the span it
+/// belongs to — `verify::checks::abutment` measures both.
+///
+/// So the chord fraction is inverted into the parameter that sits at the same
+/// *arc-length* fraction of the segment's own spline. Both ends are fixed
+/// points of that map (the spline interpolates its control points), so the raw
+/// vertices stay exactly where they were and only the interior is corrected.
 fn spline_path(raw: &[Coord], params: &[(usize, f64)], cos_lat: f64) -> Vec<Coord> {
     let n = raw.len();
-    let point = |&(k, t): &(usize, f64)| -> Coord {
+    let eval = |k: usize, t: f64| -> Coord {
         let p1 = raw[k.min(n - 1)];
         let p2 = raw[(k + 1).min(n - 1)];
         if n < 3 {
@@ -1761,7 +1830,81 @@ fn spline_path(raw: &[Coord], params: &[(usize, f64)], cos_lat: f64) -> Vec<Coor
         let p3 = if k + 2 >= n { mirror(p2, p1) } else { raw[k + 2] };
         catmull_rom(p0, p1, p2, p3, t, cos_lat)
     };
-    params.iter().map(point).collect()
+    // Cumulative arc length of each segment's spline at `SPLINE_ARC_SAMPLES`
+    // even parameter steps, built once per segment rather than per query: a
+    // densified corridor asks for many stations on each.
+    let mut table: Vec<Vec<f64>> = Vec::with_capacity(n.saturating_sub(1).max(1));
+    for k in 0..n.saturating_sub(1).max(1) {
+        let mut cum = Vec::with_capacity(SPLINE_ARC_SAMPLES + 1);
+        cum.push(0.0);
+        let mut prev = eval(k, 0.0);
+        let mut total = 0.0;
+        for j in 1..=SPLINE_ARC_SAMPLES {
+            let c = eval(k, j as f64 / SPLINE_ARC_SAMPLES as f64);
+            total += metric_len(prev, c, cos_lat);
+            cum.push(total);
+            prev = c;
+        }
+        table.push(cum);
+    }
+    params
+        .iter()
+        .map(|&(k, t)| {
+            let cum = &table[k.min(table.len() - 1)];
+            let total = cum[SPLINE_ARC_SAMPLES];
+            if total <= 0.0 {
+                return eval(k, t);
+            }
+            // The parameter whose arc length is `t` of the way along.
+            let target = t.clamp(0.0, 1.0) * total;
+            let j = cum.partition_point(|&c| c < target).clamp(1, SPLINE_ARC_SAMPLES);
+            let (lo, hi) = (cum[j - 1], cum[j]);
+            let f = if hi > lo { (target - lo) / (hi - lo) } else { 0.0 };
+            eval(k, (j as f64 - 1.0 + f) / SPLINE_ARC_SAMPLES as f64)
+        })
+        .collect()
+}
+
+/// Cumulative *signed* heading in radians along a polyline, one entry per node
+/// (the first two share the first edge's direction, which has no predecessor to
+/// turn from).
+///
+/// Signed and cumulative is the whole point. A road that curves accumulates
+/// turn monotonically, so the distance between two nodes' entries is the angle
+/// the road really turned through between them — which is what
+/// [`SMOOTH_MAX_TURN_RAD`] budgets. Digitising zigzag turns one way and back
+/// again, so it cancels and leaves the window open over the noise the smoother
+/// exists to remove. Summing |turn| instead would do the opposite of what is
+/// wanted: close the window tightest exactly where the line is noisiest.
+fn cumulative_heading(nodes: &[Coord], cos_lat: f64) -> Vec<f64> {
+    let n = nodes.len();
+    let mut out = vec![0.0; n];
+    if n < 3 {
+        return out;
+    }
+    let dir = |a: Coord, b: Coord| -> Option<f64> {
+        let (dx, dy) = ((b.x - a.x) * cos_lat, b.y - a.y);
+        (dx.abs() > 1e-15 || dy.abs() > 1e-15).then(|| dy.atan2(dx))
+    };
+    let mut prev = dir(nodes[0], nodes[1]);
+    let mut total = 0.0;
+    for i in 1..n - 1 {
+        if let (Some(p), Some(d)) = (prev, dir(nodes[i], nodes[i + 1])) {
+            // Wrap the turn into (−π, π]: a heading crossing due west would
+            // otherwise read as a 2π turn the road never made.
+            let mut turn = d - p;
+            while turn > std::f64::consts::PI {
+                turn -= std::f64::consts::TAU;
+            }
+            while turn <= -std::f64::consts::PI {
+                turn += std::f64::consts::TAU;
+            }
+            total += turn;
+            prev = Some(d);
+        }
+        out[i + 1] = total;
+    }
+    out
 }
 
 /// The ghost point beyond `a`, mirroring `b` through it.

@@ -6,6 +6,7 @@
 //! low enough friction that a defect found by eye can become a permanent
 //! measurement in the same sitting, which is the whole point.
 
+pub mod abutment;
 pub mod clearance;
 pub mod contact;
 pub mod lod;
@@ -52,6 +53,7 @@ pub fn run(scan: &ArchiveScan<'_>, opt: &Options) -> Scorecard {
     let zooms = if opt.zooms.is_empty() { vec![scan.max_zoom()] } else { opt.zooms.clone() };
 
     let mut checks: Vec<Box<dyn Check>> = vec![
+        Box::new(abutment::Abutment::new(opt)),
         Box::new(contact::Contact::new(opt)),
         Box::new(clearance::Clearance::new(opt)),
         Box::new(paint::Paint::new(opt)),

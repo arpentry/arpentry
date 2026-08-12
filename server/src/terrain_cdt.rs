@@ -43,7 +43,30 @@ const NORMAL_STEP_M: f64 = 2.0;
 /// one field. Returns the mesh and its `(min, max)` elevation, or `None`
 /// when there is nothing to constrain or the triangulation fails — the
 /// caller falls back to the plain lattice (invariant 6: plain, not wrong).
+///
+/// "The triangulation fails" includes the geometric kernel giving up: spade's
+/// constraint splitting asserts rather than returning on some
+/// nearly-degenerate configurations, and an assertion in an emit worker takes
+/// the whole tiling run with it. One tile's breaklines are not worth that, and
+/// the fallback this promises is exactly the right answer for them, so the
+/// panic is caught here and becomes the `None` the contract already describes.
+/// It is caught and not prevented because the trigger is upstream and
+/// configuration-dependent: the alternative is guessing at which degeneracies
+/// spade dislikes and silently dropping constraints that were fine.
 pub fn constrained_mesh(
+    grid: u32,
+    bounds: &Bounds,
+    segments: &[(Coord, Coord)],
+    regions: &[Region],
+    sample: &mut dyn FnMut(f64, f64) -> f64,
+) -> Option<(TerrainMesh, f64, f64)> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        constrained_mesh_inner(grid, bounds, segments, regions, sample)
+    }))
+    .unwrap_or(None)
+}
+
+fn constrained_mesh_inner(
     grid: u32,
     bounds: &Bounds,
     segments: &[(Coord, Coord)],

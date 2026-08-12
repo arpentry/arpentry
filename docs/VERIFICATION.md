@@ -104,6 +104,9 @@ I2. Every metric also states its own population; the table below is the summary.
 | `seam.terrain_step` | I2 | Spread of the heights two adjacent tiles derive for the same border lattice point. |
 | `seam.terrain_split` | I2 | Spread between coincident vertices *inside* one tile: the ground cracked open. |
 | `seam.pavement_step` | I2 | Border disagreement, for the at-grade road surface. |
+| `seam.abutment_plan` | I2 | Plan distance between the two road-stroke ends that meet at a bridge abutment or tunnel portal. `Corridor::pieces` cuts the approach and the span from one shared coordinate, so the correct answer is zero and there is no prior to argue about — anything here is a generator having moved it. What it catches: the approach and the structure ride different curves (the band is buffered around the raw corridor nodes, a structure is swept along the smoothed sweep line), which puts the deck beside its own road and starts it short of or past the abutment. |
+| `seam.abutment_step` | I2 | Height difference between the same two ends: the deck ramp must arrive at the road it launches from. Separated from the plan break because either occurs alone, and because a sweep line that has slid *along* the alignment produces both at once — the deck then carries the height solved for a different station, worth the slide times the grade. |
+| `seam.abutment_bare` | I2 | Bare ground between an abutment and the at-grade band that continues it, marched along the approach's own direction. A third quantity with a third cause: the strokes are cut at the exact span arc, but the band was assembled from whole mapped segments, so it ended at a vertex while the deck began at the boundary. The hole that leaves is half a segment wide and a mapper's vertex spacing decides how big. |
 | `order.at_grade_overlap` | I3 | Vertical separation where two level-0 paved regions share a plan position with nothing to order them. |
 | `order.grade_stack` | I3 | Vertical separation between two at-grade surface bands at one plan point, measured whole-mesh (the overlap metric above sees border vertices only). At grade means on the ground, and there is one ground: past 3 m — the same boundary `crossings::SEPARATION_M` draws from the model side — the upper band is in the air over the lower with no structure between them. The class it exists to keep dead: a mapped bore's still-buried tail paved as open cut, sliding beneath the band of the feature crossing just past its portal (the Collonge funicular over the rack railway). |
 | `slope.terrain_face` | I6 | Rise over plan run of every terrain triangle spanning ≥10 cm. Finds manufactured retaining walls. |
@@ -247,6 +250,26 @@ one of them badly wrong, which is why they are documented here:
   The 0.50 m threshold is read off that distribution — real landform lives in
   the centimetres, and at a ~3 m detail cell half a metre of alternation is the
   mesh disagreeing with itself.
+- **At an abutment there is no contact band at all**, which makes the
+  `seam.abutment_*` family the one place in this list with nothing to read off a
+  distribution. The approach and the span are cut from a *single coordinate* in
+  the model, so the two ends are the same point and any distance between them is
+  a generator having moved one. The threshold is therefore the format's own
+  resolution — 5 cm, just above the ~2.6 cm two independently quantized
+  `uint16` vertices can differ by — and it is a floor rather than a tolerance.
+  What *did* need care is the **pairing**, which is where a check like this goes
+  wrong. Three rules earn their place, each because it was measured without
+  them: the two ends must carry the same `class`; they must leave the cut back
+  to back within 0.6 rad, or a footway ending beside a bridge pairs with it and
+  the angle between two roads is reported as a break in one; and *fitted* decks
+  are excluded entirely, because `synth::draped` deliberately walks a
+  footbridge's abutment along the bank to seat it (`contact.deck_seat`) — the
+  shared-coordinate premise does not hold for them, and including them reported
+  the seating rule working as an 11.9 m defect. Carried-ness is read from the
+  drawn deck or bore rather than from the stroke's `level`, for the reason the
+  rail-standoff note above gives: a solved structure's own paint arrives at
+  level 0, so a `level` test sees only the fitted footbridges and misses every
+  solved bridge in the archive.
 
 ### What is deliberately not measured
 

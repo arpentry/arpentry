@@ -502,12 +502,35 @@ the scenario table (§4).
     the same curve.** Increment 4(b) put the paint on whichever of them
     it lies on, which is the best a marking-side fix can do — the two
     surfaces still step apart by the smoothing displacement at every
-    abutment, and the paint steps with them. Closing it means giving the
-    union the same smoothed centerline the structure sweep already uses
-    (H2: "every consumer must read the same one or decks, asphalt, and
-    paint drift apart"), which moves every square metre of asphalt and is
-    its own piece of work. Its residue is the 0.7 % tail of
-    `paint.marking_offside`.
+    abutment, and the paint steps with them.
+
+    Three quarters of that step turned out not to be the curve
+    disagreement at all, and are gone (`seam.abutment_plan`, median
+    2.79 m → 1.01 m). The sweep line was sampled at the densifier's
+    *chord* fraction on a centripetal Catmull-Rom, whose parameter is not
+    arc length, so a structure was swept at the wrong **station** — a
+    median 0.37 m of slide, out to 721 m where vertex spacing was wildly
+    uneven — carrying the height solved for somewhere else and landing
+    its abutment short of or past the span. And the smoother's fixed
+    ±100 m window spans four radians of a 50 m corner, which a quadratic
+    cannot follow at all, so it cut every tight curve to its deviation
+    clamp; the window is now bounded by the road's own turning
+    (`SMOOTH_MAX_TURN_RAD`) and the displacement it can produce fell from
+    a median 0.84 m to 0.37 m. Separately, the band was assembled from
+    whole mapped segments while the deck began at the exact span arc,
+    which drew bare ground at a quarter of all abutments, out to 19 m
+    (`seam.abutment_bare`); `level_runs` now cuts in arc.
+
+    What remains is the original item and nothing else: the union is
+    still buffered around the raw nodes while the structure sweeps along
+    the smoothed line, and the ~1 m that separates them is what
+    `seam.abutment_plan` still reports. Closing it means giving the union
+    the same smoothed centerline (H2: "every consumer must read the same
+    one or decks, asphalt, and paint drift apart"), which moves every
+    square metre of asphalt — and, less obviously, the junction plates
+    with it, since a plate radiates from a raw junction node that several
+    corridors share and each corridor smooths its own line
+    independently. That is why it is still its own piece of work.
 - **P4 — Symbols.** The MSDF atlas: gore chevrons from diverge geometry;
   crossing glyphs where `cycle_crossing` meets a carriageway. Turn arrows
   are deferred — the schema carries no turn data (P0); they wait on an

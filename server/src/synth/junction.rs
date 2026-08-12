@@ -328,7 +328,12 @@ fn carriageway_sources(scene: &SceneGraph, solved: &SolvedModel) -> Vec<SourceSe
             continue; // not a carriageway: paves nothing, so covers nothing
         };
         let profile = solved.profile(c.id);
-        for ((lo, hi), level, kind) in level_runs(c) {
+        // Read at the stretch's own *arc*. `Profile::height_at` projects onto
+        // the nearest corridor edge in plan, which at a hairpin is the other
+        // arm — and telling the two arms apart is precisely what this height is
+        // for.
+        let at = |arc: f64| profile.map_or(0.0, |p| p.road_at_arc(arc));
+        for (a0, a1, level, kind) in level_runs(c) {
             // Only at-grade asphalt is unioned. A bridge or a bore already
             // carries its road surface as a swept solid (`synth::structure`), so
             // paving its level here would draw the carriageway twice — once as a
@@ -336,21 +341,29 @@ fn carriageway_sources(scene: &SceneGraph, solved: &SolvedModel) -> Vec<SourceSe
             if kind != SpanKind::Grade {
                 continue;
             }
-            for k in lo..hi {
-                // Read at the stretch's own *arc*. `Profile::height_at` projects
-                // onto the nearest corridor edge in plan, which at a hairpin is
-                // the other arm — and telling the two arms apart is precisely
-                // what this height is for.
-                let at = |arc: f64| profile.map_or(0.0, |p| p.road_at_arc(arc));
+            for k in 0..c.nodes.len().saturating_sub(1) {
+                // The part of this segment inside the run, in arc. Both cuts
+                // are exact: the run boundary is where the deck begins, so the
+                // band has to end *there* and not at the nearest mapped vertex.
+                let (s0, s1) = (c.arc[k], c.arc[k + 1]);
+                let (lo, hi) = (s0.max(a0), s1.min(a1));
+                if hi - lo <= RUN_EPS_M || s1 - s0 <= RUN_EPS_M {
+                    continue;
+                }
+                let on_edge = |arc: f64| -> Coord {
+                    let t = ((arc - s0) / (s1 - s0)).clamp(0.0, 1.0);
+                    let (p, q) = (c.nodes[k], c.nodes[k + 1]);
+                    Coord { x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t }
+                };
                 out.push(SourceSeg {
-                    a: c.nodes[k],
-                    b: c.nodes[k + 1],
+                    a: on_edge(lo),
+                    b: on_edge(hi),
                     cos_lat: c.cos_lat,
                     half_m,
                     level,
                     layer: 0,
-                    height_a: at(c.arc[k]),
-                    height_b: at(c.arc[k + 1]),
+                    height_a: at(lo),
+                    height_b: at(hi),
                     corridor: c.id,
                     surface: c.kind.prior().surface,
                 });
@@ -360,48 +373,64 @@ fn carriageway_sources(scene: &SceneGraph, solved: &SolvedModel) -> Vec<SourceSe
     out
 }
 
-/// The corridor's node index runs of constant level, as `((first, last), level)`.
+/// A run shorter than this is float slop at a boundary, not a stretch of road.
+const RUN_EPS_M: f64 = 1e-6;
+
+/// The corridor's runs of constant `(level, kind)`, in **arc**, as
+/// `(arc0, arc1, level, kind)` covering the whole corridor end to end.
 ///
 /// A corridor's level lives on its spans, not on the corridor
 /// (`scene.rs:41-47`), so anything that partitions by level has to get it from
 /// them.
 ///
-/// Each *segment* is assigned to the span containing its **midpoint**, and
-/// consecutive segments agreeing on level and kind are then grouped into runs.
-/// Midpoint assignment is what makes the partition exact: a span boundary falls
-/// at an arbitrary arc, rarely on a node, so the segment straddling it belongs to
-/// neither span under a node-range rule and to both under a widened one.
+/// **In arc, because a span boundary is an arc.** It falls where the solve put
+/// the abutment, which is almost never on a mapped vertex, and the boundary is
+/// where the deck begins — so the band must end exactly there or the two are
+/// not one surface. Rounding it to a node is a hole or an overlap of up to half
+/// a segment, and a mapper's vertex spacing decides which and how big: measured
+/// on the Montreux extract, a quarter of all abutments had bare ground drawn
+/// between the approach and the deck, out to 19 m of it (`seam.abutment_bare`).
 ///
-/// Both mistakes have been made here. Widening let the at-grade runs on either
-/// side of a bridge meet in the middle and pave the whole flyover; exact node
-/// ranges then dropped one segment of asphalt at *every* boundary, which at an
-/// interchange reads as a row of holes punched across the carriageway. Assigning
-/// by midpoint gives each segment exactly one owner, so neither can happen.
-fn level_runs(c: &Corridor) -> Vec<((usize, usize), i64, SpanKind)> {
+/// Three rules have been tried here and only this one is exact. Widening a node
+/// range to cover the boundary let the at-grade runs on either side of a bridge
+/// meet in the middle and pave the whole flyover. Truncating it dropped a
+/// segment of asphalt at *every* boundary, which at an interchange reads as a
+/// row of holes punched across the carriageway. Assigning each segment to the
+/// span holding its midpoint gave every segment exactly one owner and so could
+/// do neither — but it still moved the boundary to the nearest half-segment,
+/// which is this metric's whole population. Cutting the segment at the boundary
+/// keeps the one-owner property and puts the cut where it belongs.
+fn level_runs(c: &Corridor) -> Vec<(f64, f64, i64, SpanKind)> {
     let n = c.nodes.len();
     if n < 2 {
         return Vec::new();
     }
+    let total = c.arc[n - 1];
     if c.spans.is_empty() {
-        return vec![((0, n - 1), 0, SpanKind::Grade)];
+        return vec![(0.0, total, 0, SpanKind::Grade)];
     }
-    let mut out: Vec<((usize, usize), i64, SpanKind)> = Vec::new();
-    for k in 0..n - 1 {
-        let mid = 0.5 * (c.arc[k] + c.arc[k + 1]);
-        // The span covering the midpoint; a segment past the last span's end
-        // (float slop at the very tail) falls to that span rather than vanishing.
-        let Some(s) = c
-            .spans
-            .iter()
-            .find(|s| mid >= s.arc0 && mid < s.arc1)
-            .or_else(|| c.spans.last())
-        else {
-            continue;
-        };
-        match out.last_mut() {
-            Some(((_, hi), lv, kd)) if *lv == s.level && *kd == s.kind && *hi == k => *hi = k + 1,
-            _ => out.push(((k, k + 1), s.level, s.kind)),
+    // Spans in arc order, with the gaps between them at grade: a corridor is
+    // covered end to end, and what no span claims is road on the ground.
+    let mut spans: Vec<&crate::scene::Span> = c.spans.iter().collect();
+    spans.sort_by(|a, b| a.arc0.total_cmp(&b.arc0));
+    let mut out: Vec<(f64, f64, i64, SpanKind)> = Vec::new();
+    let mut cursor = 0.0;
+    for s in spans {
+        let (a0, a1) = (s.arc0.clamp(0.0, total), s.arc1.clamp(0.0, total));
+        if a1 - cursor <= RUN_EPS_M {
+            continue; // wholly behind us: overlapping spans, first claim wins
         }
+        let a0 = a0.max(cursor);
+        if a0 - cursor > RUN_EPS_M {
+            out.push((cursor, a0, 0, SpanKind::Grade));
+        }
+        if a1 - a0 > RUN_EPS_M {
+            out.push((a0, a1, s.level, s.kind));
+        }
+        cursor = a1;
+    }
+    if total - cursor > RUN_EPS_M {
+        out.push((cursor, total, 0, SpanKind::Grade));
     }
     out
 }
@@ -752,13 +781,31 @@ mod tests {
         }
     }
 
+    /// Every point of the corridor belongs to exactly one run: the runs are
+    /// contiguous, in order, and reach both ends. Stated as a tiling rather
+    /// than per segment, because the runs are now cut in arc and a boundary
+    /// falls wherever the solve put the abutment.
+    fn assert_tiles(runs: &[(f64, f64, i64, SpanKind)], total: f64) {
+        assert!(!runs.is_empty(), "no runs");
+        assert!(runs[0].0.abs() < 1e-9, "first run starts at {}, not 0: {runs:?}", runs[0].0);
+        for w in runs.windows(2) {
+            assert!(
+                (w[1].0 - w[0].1).abs() < 1e-9,
+                "run {:?} does not begin where {:?} ends",
+                w[1],
+                w[0]
+            );
+        }
+        let end = runs[runs.len() - 1].1;
+        assert!((end - total).abs() < 1e-9, "last run ends at {end}, not {total}: {runs:?}");
+    }
+
     #[test]
-    fn level_runs_cover_every_segment_once_per_level() {
-                let mut c = corridor(6.0, 11);
+    fn level_runs_cover_every_metre_once_per_level() {
+        let mut c = corridor(6.0, 11);
         // No spans: one at-grade run over the whole corridor.
-        assert_eq!(level_runs(&c), vec![((0, 10), 0, SpanKind::Grade)]);
-        // Grade / bridge / grade: the bridge is its own level, and the runs
-        // overlap by a node so no segment falls between two runs.
+        assert_eq!(level_runs(&c), vec![(0.0, 100.0, 0, SpanKind::Grade)]);
+        // Grade / bridge / grade: the bridge is its own level.
         c.spans = vec![
             Span { arc0: 0.0, arc1: 40.0, level: 0, kind: SpanKind::Grade },
             Span { arc0: 40.0, arc1: 60.0, level: 1, kind: SpanKind::Bridge },
@@ -766,34 +813,61 @@ mod tests {
         ];
         let runs = level_runs(&c);
         assert_eq!(runs.len(), 3, "three runs: {runs:?}");
-        assert_eq!(runs[1].1, 1, "the middle run is the bridge level");
-        assert_eq!(runs[1].2, SpanKind::Bridge, "and it is a bridge, so the union skips it");
-        // Every segment is covered exactly once — no gap, no double-paving.
-        for k in 0..10 {
-            let owners = runs.iter().filter(|&&((lo, hi), _, _)| k >= lo && k + 1 <= hi).count();
-            assert_eq!(owners, 1, "segment {k} has {owners} owners: {runs:?}");
-        }
+        assert_eq!(runs[1].2, 1, "the middle run is the bridge level");
+        assert_eq!(runs[1].3, SpanKind::Bridge, "and it is a bridge, so the union skips it");
+        assert_tiles(&runs, 100.0);
 
-        // The boundary case that matters: spans that end *between* nodes. A
-        // node-range rule drops the straddling segment (a hole in the asphalt at
-        // every bridge end); a widened one gives it to both (paving the flyover).
+        // The boundary case that matters: spans that end *between* nodes. The
+        // cut lands on the boundary itself, so the band ends where the deck
+        // begins instead of at the nearest mapped vertex — neither a hole nor
+        // an overlap of half a segment.
         c.spans = vec![
             Span { arc0: 0.0, arc1: 35.0, level: 0, kind: SpanKind::Grade },
             Span { arc0: 35.0, arc1: 65.0, level: 1, kind: SpanKind::Bridge },
             Span { arc0: 65.0, arc1: 100.0, level: 0, kind: SpanKind::Grade },
         ];
         let runs = level_runs(&c);
-        for k in 0..10 {
-            let owners = runs.iter().filter(|&&((lo, hi), _, _)| k >= lo && k + 1 <= hi).count();
-            assert_eq!(owners, 1, "off-node boundary: segment {k} has {owners} owners: {runs:?}");
-        }
-        // Segment 3 spans arc 30..40, straddling the 35 m boundary; its midpoint
-        // is 35, so it belongs to the bridge and to nothing else.
-        let owner = runs.iter().find(|&&((lo, hi), _, _)| 3 >= lo && 4 <= hi).expect("an owner");
-        assert_eq!(owner.2, SpanKind::Bridge, "the straddling segment went to the wrong span");
+        assert_tiles(&runs, 100.0);
+        assert_eq!(runs[1].0, 35.0, "the bridge run starts at the boundary: {runs:?}");
+        assert_eq!(runs[1].1, 65.0, "and ends at it: {runs:?}");
+
+        // A span that does not reach an end leaves at-grade road either side.
+        c.spans = vec![Span { arc0: 20.0, arc1: 30.0, level: 1, kind: SpanKind::Bridge }];
+        let runs = level_runs(&c);
+        assert_tiles(&runs, 100.0);
+        assert_eq!(runs.len(), 3, "grade, bridge, grade: {runs:?}");
         // A degenerate corridor yields nothing.
         c.nodes.truncate(1);
         assert!(level_runs(&c).is_empty());
+    }
+
+    #[test]
+    fn a_band_is_cut_at_the_abutment_not_at_the_nearest_vertex() {
+        // Nodes every 10 m; the bridge runs 35..65, straddling two of them.
+        let mut c = corridor(6.0, 11);
+        c.spans = vec![
+            Span { arc0: 0.0, arc1: 35.0, level: 0, kind: SpanKind::Grade },
+            Span { arc0: 35.0, arc1: 65.0, level: 1, kind: SpanKind::Bridge },
+            Span { arc0: 65.0, arc1: 100.0, level: 0, kind: SpanKind::Grade },
+        ];
+        let mut scene = SceneGraph::default();
+        scene.corridors.push(c);
+        let solved = SolvedModel::from_profiles(vec![None], 16);
+        let sources = carriageway_sources(&scene, &solved);
+        // The paved share of the corridor: 35 m of its 100 before the bridge
+        // and 35 after, so 70 %. Measured as a fraction of the corridor's own
+        // length because the fixture's `arc` is synthetic and does not match
+        // the metric length of its nodes. A vertex-rounded cut gives 60 % or
+        // 80 %, which is exactly the half-segment this is here to keep out.
+        let span = |a: Coord, b: Coord| (b.x - a.x).hypot(b.y - a.y);
+        let paved: f64 = sources.iter().map(|s| span(s.a, s.b)).sum();
+        let total = span(scene.corridors[0].nodes[0], scene.corridors[0].nodes[10]);
+        let share = paved / total;
+        assert!(
+            (share - 0.70).abs() < 0.005,
+            "the band should cover 70 % of the corridor, not {:.1} %",
+            share * 100.0
+        );
     }
 
     #[test]

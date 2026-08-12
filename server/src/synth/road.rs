@@ -103,9 +103,11 @@ pub fn bake(
     //   around the corridor's **raw** nodes
     //   (`synth::junction::carriageway_sources` reads `Corridor::nodes`).
     //   Carrying it onto the smooth line puts it off the middle of its own
-    //   asphalt by the whole smoothing displacement — a median 1.0 m on the
-    //   classes that carry markings, out to the 4 m clamp, which on a 6 m
-    //   street is a centre line sitting in a lane.
+    //   asphalt by the whole smoothing displacement, which on a 6 m street is a
+    //   centre line sitting in a lane. That displacement is now bounded by the
+    //   smoother's turn budget rather than by its deviation clamp — a median
+    //   0.37 m across the network where it was 0.84 m — but it is not zero, and
+    //   the two surfaces still disagree by it.
     //
     // Below the zooms that draw asphalt there is no surface to disagree with —
     // the stroke *is* the road — so the smooth curve is taken there, which is
