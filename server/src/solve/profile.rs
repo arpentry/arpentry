@@ -436,26 +436,77 @@ impl Profile {
             .collect()
     }
 
-    /// The point of the smoothed sweep line nearest to `(lon, lat)`, or
-    /// `None` when the projection falls on the corridor's very ends (where
-    /// pulling a vertex would fold a line that continues past the corridor)
-    /// or farther than `max_m` away (a vertex that isn't really this
-    /// corridor's). Road paint snaps onto this so a corridor road's line
-    /// work follows the same smooth curve as its swept structures instead of
-    /// tracing raw digitising wiggle beside them.
+    /// `(lon, lat)` carried from the raw corridor line onto the smoothed sweep
+    /// line **at its own lateral offset**, or `None` when the projection falls
+    /// on the corridor's very ends (where pulling a vertex would fold a line
+    /// that continues past the corridor) or when the carry would move it
+    /// farther than `max_m` (a vertex that isn't really this corridor's).
+    ///
+    /// Road line work snaps through this so a corridor's paint follows the same
+    /// smooth curve as its swept structures instead of tracing raw digitising
+    /// wiggle beside them. **The offset is part of the answer, not noise to be
+    /// projected away.** A road's centerline sits at offset zero and lands on
+    /// the sweep line exactly as before; a painted marking sits at the offset
+    /// the cross-section put it at (`synth::markings` — an edge line 4.2 m out
+    /// on a 9 m carriageway) and must keep it. Projecting every vertex onto the
+    /// curve collapsed both edge lines and every lane divider onto the axis,
+    /// which is the road-relative parameterization of docs/ROADS.md H4 thrown
+    /// away one stage after it was computed.
+    ///
+    /// The offset is measured against the raw edge the vertex projects to and
+    /// re-applied along the *smoothed* line's own normal there, so paint stays
+    /// square to the curve it now rides.
     pub fn smooth_at(&self, lon: f64, lat: f64, max_m: f64) -> Option<Coord> {
         let edges = self.nodes.len().saturating_sub(1);
         if edges == 0 {
             return None;
         }
-        let (i, t) = nearest_edge(&self.nodes, self.cos_lat, 0, edges, Coord { x: lon, y: lat });
+        let p = Coord { x: lon, y: lat };
+        let (i, t) = nearest_edge(&self.nodes, self.cos_lat, 0, edges, p);
         if (i == 0 && t <= 0.0) || (i + 1 >= edges && t >= 1.0) {
             return None;
         }
-        let c = self.smooth_point(i, t);
+        let c = self.offset_from(self.smooth_point(i, t), i, t, self.lateral_offset_m(i, p));
         let de = (c.x - lon) * self.cos_lat * DEG_M;
         let dn = (c.y - lat) * DEG_M;
         (de * de + dn * dn <= max_m * max_m).then_some(c)
+    }
+
+    /// Signed distance in metres from raw edge `i` to `p`, positive to the left
+    /// of the edge's direction of travel.
+    fn lateral_offset_m(&self, i: usize, p: Coord) -> f64 {
+        let (a, b) = (self.nodes[i], self.nodes[i + 1]);
+        let (ex, en) = ((b.x - a.x) * self.cos_lat, b.y - a.y);
+        let len = (ex * ex + en * en).sqrt();
+        if len < 1e-12 {
+            return 0.0;
+        }
+        let (px, pn) = ((p.x - a.x) * self.cos_lat, p.y - a.y);
+        (ex * pn - en * px) / len * DEG_M
+    }
+
+    /// `c` moved `offset_m` metres to the left of the smoothed sweep line's
+    /// direction at edge `i`, parameter `t`. A zero offset returns `c`
+    /// unchanged, which is the road centerline's own case.
+    fn offset_from(&self, c: Coord, i: usize, t: f64, offset_m: f64) -> Coord {
+        if offset_m.abs() < 1e-9 {
+            return c;
+        }
+        // The tangent by central difference on the same curve, in the local
+        // metric frame. The Catmull-Rom is a polynomial, so evaluating it a
+        // little outside `[0, 1]` at the ends is a valid extrapolation.
+        const H: f64 = 1e-3;
+        let (before, after) = (self.smooth_point(i, t - H), self.smooth_point(i, t + H));
+        let (tx, ty) = ((after.x - before.x) * self.cos_lat, after.y - before.y);
+        let len = (tx * tx + ty * ty).sqrt();
+        if len < 1e-15 {
+            return c;
+        }
+        let (lx, ly) = (-ty / len, tx / len);
+        Coord {
+            x: c.x + lx * offset_m / (DEG_M * self.cos_lat),
+            y: c.y + ly * offset_m / DEG_M,
+        }
     }
 
     /// The smoothed sweep line evaluated at edge `i`, parameter `t` — a
@@ -2086,6 +2137,77 @@ mod tests {
         let dx = 0.06 * 0.2 * cos_lat * DEG_M;
         let grade = (b - a).abs() / dx;
         assert!(grade < 0.15, "deck grade {grade} too steep (a={a} b={b})");
+    }
+
+    #[test]
+    fn the_smooth_snap_carries_a_painted_line_at_its_own_offset() {
+        // A raw centerline with a metre of digitising wiggle on it, smoothed
+        // the way a corridor's sweep line is. Paint generated 4.2 m to the left
+        // of the raw line — an edge line on a 9 m carriageway — must arrive
+        // 4.2 m to the left of the *smoothed* line, not on top of it.
+        //
+        // Projecting it onto the curve instead collapsed both edge lines and
+        // every lane divider onto the axis, which is the whole cross-section
+        // thrown away one stage after it was computed.
+        let (raw, _) = line(64, 0.02);
+        let cos_lat = run_cos_lat(&raw);
+        let wiggly: Vec<Coord> = raw
+            .iter()
+            .enumerate()
+            .map(|(i, c)| Coord {
+                x: c.x,
+                y: c.y + if i % 2 == 0 { 1.0 } else { -1.0 } / DEG_M,
+            })
+            .collect();
+        let n = wiggly.len();
+        let arc = cumulative(&wiggly);
+        let p = Profile {
+            cos_lat,
+            smooth: smooth_path(&wiggly),
+            nodes: wiggly.clone(),
+            arc,
+            road_m: vec![100.0; n],
+            deck_m: vec![100.0; n],
+            terrain_m: vec![0.0; n],
+            at_grade: vec![true; n],
+            max_grade: None,
+        };
+
+        // The distance from a snapped point to the smoothed line, measured by
+        // brute force against its own Catmull-Rom samples.
+        let to_smooth = |c: Coord| -> f64 {
+            let edges = p.nodes.len() - 1;
+            let mut best = f64::INFINITY;
+            for i in 0..edges {
+                for k in 0..=20 {
+                    let s = p.smooth_point(i, k as f64 / 20.0);
+                    let de = (s.x - c.x) * cos_lat * DEG_M;
+                    let dn = (s.y - c.y) * DEG_M;
+                    best = best.min((de * de + dn * dn).sqrt());
+                }
+            }
+            best
+        };
+
+        let (mut centre, mut edge) = (0usize, 0usize);
+        for i in 8..n - 8 {
+            let raw_pt = wiggly[i];
+            // The centerline itself still lands *on* the sweep line.
+            let on = p.smooth_at(raw_pt.x, raw_pt.y, 6.0).expect("an interior vertex snaps");
+            assert!(to_smooth(on) < 0.05, "centerline pulled {} m off the sweep line", to_smooth(on));
+            centre += 1;
+
+            // A painted line 4.2 m to the left keeps its 4.2 m.
+            let left = Coord { x: raw_pt.x, y: raw_pt.y + 4.2 / DEG_M };
+            let Some(painted) = p.smooth_at(left.x, left.y, 6.0) else { continue };
+            let d = to_smooth(painted);
+            assert!(
+                (d - 4.2).abs() < 0.35,
+                "edge line landed {d:.2} m from the sweep line, not 4.2 m"
+            );
+            edge += 1;
+        }
+        assert!(centre > 20 && edge > 20, "too few vertices exercised: {centre}/{edge}");
     }
 
     #[test]

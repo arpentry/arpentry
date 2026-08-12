@@ -9,6 +9,7 @@
 pub mod clearance;
 pub mod contact;
 pub mod lod;
+pub mod paint;
 pub mod seams;
 pub mod slope;
 
@@ -53,6 +54,7 @@ pub fn run(scan: &ArchiveScan<'_>, opt: &Options) -> Scorecard {
     let mut checks: Vec<Box<dyn Check>> = vec![
         Box::new(contact::Contact::new(opt)),
         Box::new(clearance::Clearance::new(opt)),
+        Box::new(paint::Paint::new(opt)),
         Box::new(seams::Seams::new(opt)),
         Box::new(slope::Slope::new(opt)),
     ];

@@ -452,10 +452,62 @@ the scenario table (§4).
     one-way even untagged, each carriageway is one by construction; plus
     tagged one-way primary/secondary). A 9 m motorway carriageway reads
     as two lanes split by a dashed line inside its solid edges.
+  - *Increment 4 — the paint is registered to its own asphalt again
+    (done 2026-08-12).* Two independent losses of registration, both in
+    the emit stage, both invisible to every check in the scorecard
+    because a misregistered marking is still perfectly draped.
+
+    **(a) The offset was projected away.** The baker's arithmetic was
+    right — an edge line comes out of `synth::markings` at ±(w/2 −
+    0.3 m), a lane divider at its own boundary — and phase 2 threw it
+    away: `synth::road::bake` snapped every road vertex onto the
+    corridor's smoothed sweep line (so paint would not trace digitising
+    wiggle beside its own smooth-swept bridges) by **projecting** it,
+    which is the one operation that annihilates a signed offset. Both
+    edge lines and every lane divider landed coincident down the middle
+    of the carriageway. `Profile::smooth_at` now measures the vertex's
+    lateral offset against the raw edge it projects to and re-applies it
+    along the smoothed line's own normal: the centerline (offset zero)
+    is unmoved, and paint keeps its `t`. This is H4's road-relative
+    parameterization made to survive the pipeline, not just the baker.
+
+    **(b) The paint and the asphalt were on different curves.** Even at
+    offset zero, at-grade paint was carried onto the *smoothed* sweep
+    line while the unioned carriageway is buffered around the corridor's
+    **raw** nodes (`synth::junction::carriageway_sources`). The two are
+    a median 1.0 m apart on the classes that carry markings, out to the
+    `SMOOTH_MAX_DEV_M` clamp — on a 6 m street, a centre line sitting in
+    a lane. Paint now rides the line the surface under it was built
+    from: the smoothed one on a structure (a deck and a bore are swept
+    along it), the raw one at grade, and the smoothed one at zooms below
+    `ROAD_SURFACE_MIN_ZOOM`, where no asphalt is drawn and the stroke is
+    the road — which is the cartographic reason the snap was written.
+
+    Measured on the Montreux extract, before → after: an edge line's
+    near kerb 5.40 m (half a carriageway — the collapse) → **1.30 m**
+    against the 1.30 m the cross-section asks for, with p25 and p75 on
+    the same value; a centre or lane line's left/right asymmetry 1.35 m
+    → **0.05 m** at the median; markings landing off the drawn asphalt
+    4.43 % → **0.19 %**. `slope.road_grade` improved with them (6.47 →
+    2.94), since paint pulled sideways onto another curve had been
+    reading its height from ground it does not lie on, and the rail
+    standoff population halved as rail strokes came back onto their own
+    ballast. Guarded by `paint.edge_line_inset` and
+    `paint.marking_offside` (docs/VERIFICATION.md).
   - *Remaining:* symbols (arrows, chevrons — the MSDF atlas, P4);
     distance fade — sub-texel lines shimmer at grazing angles; stop
     lines and zebra crosswalks from `crosswalk` segments; dividers on
-    wide two-way roads (2×2 boulevards).
+    wide two-way roads (2×2 boulevards). Also open, and now measured
+    rather than invisible: **the at-grade band and the deck are not on
+    the same curve.** Increment 4(b) put the paint on whichever of them
+    it lies on, which is the best a marking-side fix can do — the two
+    surfaces still step apart by the smoothing displacement at every
+    abutment, and the paint steps with them. Closing it means giving the
+    union the same smoothed centerline the structure sweep already uses
+    (H2: "every consumer must read the same one or decks, asphalt, and
+    paint drift apart"), which moves every square metre of asphalt and is
+    its own piece of work. Its residue is the 0.7 % tail of
+    `paint.marking_offside`.
 - **P4 — Symbols.** The MSDF atlas: gore chevrons from diverge geometry;
   crossing glyphs where `cycle_crossing` meets a carriageway. Turn arrows
   are deferred — the schema carries no turn data (P0); they wait on an

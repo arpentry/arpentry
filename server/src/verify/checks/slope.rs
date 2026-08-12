@@ -616,6 +616,7 @@ mod tests {
         crate::verify::scene::RoadLine {
             class: class.into(),
             level: 0,
+            width_m: 0.0,
             parts: vec![pts.iter().map(|&(e, h)| (0.5 + e / mx, 0.5, h)).collect()],
         }
     }

@@ -1316,6 +1316,7 @@ mod tests {
             lines: vec![crate::verify::scene::RoadLine {
                 class: class.into(),
                 level: 0,
+                width_m: 0.0,
                 parts: vec![vec![(0.3, 0.5, line_m), (0.5, 0.5, line_m), (0.7, 0.5, line_m)]],
             }],
         }

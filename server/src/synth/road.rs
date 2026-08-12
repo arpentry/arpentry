@@ -91,10 +91,35 @@ pub fn bake(
             _ => surface_height(profile, deck, sampler, z, z_ref, bounds, lon, lat),
         }
     };
-    // A corridor road's paint follows the corridor's *smoothed* sweep line —
-    // the same curve its bridges and tunnels are swept along — instead of
-    // tracing the raw line's digitising wiggle beside them.
+    // **Paint rides the line the surface under it was built from.** There are
+    // two of them and they are metres apart:
+    //
+    // - A structure span's paint rides a deck or a bore, and those are swept
+    //   along the corridor's *smoothed* sweep line (`Profile::deck_nodes` →
+    //   `smooth_point`). So it is carried onto that line, which is also what
+    //   keeps it from tracing raw digitising wiggle beside its own smooth
+    //   structure.
+    // - At-grade paint rides the unioned carriageway, and that is buffered
+    //   around the corridor's **raw** nodes
+    //   (`synth::junction::carriageway_sources` reads `Corridor::nodes`).
+    //   Carrying it onto the smooth line puts it off the middle of its own
+    //   asphalt by the whole smoothing displacement — a median 1.0 m on the
+    //   classes that carry markings, out to the 4 m clamp, which on a 6 m
+    //   street is a centre line sitting in a lane.
+    //
+    // Below the zooms that draw asphalt there is no surface to disagree with —
+    // the stroke *is* the road — so the smooth curve is taken there, which is
+    // the cartographic reason the snap was written for in the first place.
+    //
+    // The residual this leaves is real and belongs to the surfaces, not to the
+    // paint: at an abutment the at-grade band and the deck are themselves that
+    // far apart in plan, and the paint now steps with them instead of hiding
+    // the step by matching neither.
+    let carry = deck || z < crate::priors::ROAD_SURFACE_MIN_ZOOM;
     let mut snap = |c: Coord| -> Coord {
+        if !carry {
+            return c;
+        }
         profile.and_then(|p| p.smooth_at(c.x, c.y, PAINT_SNAP_MAX_M)).unwrap_or(c)
     };
     let seg_q = if profile.is_some() { CORRIDOR_SEGMENT_Q } else { ROAD_SEGMENT_Q };

@@ -98,6 +98,11 @@ impl RoadMesh {
 pub struct RoadLine {
     pub class: String,
     pub level: i64,
+    /// The stroke's stated physical width in metres (FORMAT.md `width_m`), or 0
+    /// when the feature carries none. A painted marking states its own painted
+    /// width here — 12 cm for a centre or lane line, 15 cm for an edge line —
+    /// which is the only thing in the archive that says *which* line it is.
+    pub width_m: f64,
     /// One entry per part, each a run of `(x, y, height_m)` in unit plan space.
     pub parts: Vec<Vec<(f64, f64, f64)>>,
 }
@@ -262,7 +267,7 @@ impl<'a> ArchiveScan<'a> {
             } else if name == layers::NAMES[layers::TRANSPORTATION as usize] {
                 for fi in 0..feats.len() {
                     let f = feats.get(fi);
-                    let (mut class, mut level) = (String::new(), 0i64);
+                    let (mut class, mut level, mut width_m) = (String::new(), 0i64, 0.0f64);
                     if let Some(props) = f.properties() {
                         for pi in 0..props.len() {
                             let p = props.get(pi);
@@ -271,6 +276,7 @@ impl<'a> ArchiveScan<'a> {
                             match k {
                                 "class" => class = v.string_value().unwrap_or("").to_string(),
                                 "level" => level = v.int_value(),
+                                "width_m" => width_m = v.double_value(),
                                 _ => {}
                             }
                         }
@@ -282,7 +288,7 @@ impl<'a> ArchiveScan<'a> {
                     } else if let Some(g) = f.geometry_as_line_geometry() {
                         let parts = line_parts(&g);
                         if !parts.is_empty() {
-                            scene.lines.push(RoadLine { class, level, parts });
+                            scene.lines.push(RoadLine { class, level, width_m, parts });
                         }
                     }
                 }
