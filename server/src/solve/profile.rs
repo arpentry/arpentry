@@ -75,6 +75,13 @@ const SMOOTH_WINDOW_M: f64 = 100.0;
 /// precisely the places that need it open.
 const SMOOTH_MAX_TURN_RAD: f64 = 0.6;
 
+/// Shortest chord, in metres, that a heading is read over when measuring how far
+/// the road has turned. Long enough to span a period of the lateral wiggle the
+/// smoothing exists to remove — so that wiggle cancels out of the turn instead
+/// of closing the window on it — and short enough to still resolve a real bend
+/// at the scale [`SMOOTH_MAX_TURN_RAD`] budgets.
+const HEADING_CHORD_M: f64 = 15.0;
+
 /// Passes of the local quadratic regression. Each pass deepens the noise
 /// suppression; curves survive every pass (the fit reproduces them), so a
 /// few passes cost nothing but time.
@@ -667,6 +674,19 @@ impl Profile {
         }
     }
 
+    /// The same station on the **smoothed** sweep line — the curve a structure
+    /// is swept along, a bore tubed along, and the ground benched beside.
+    ///
+    /// This is the accessor that lets the at-grade band read the same
+    /// centerline as everything else (docs/ROADS.md H2 and invariant 5). It
+    /// takes an arc rather than a point on purpose: a plan lookup projects,
+    /// and projection is what puts a hairpin's vertex on the other arm and
+    /// throws a lateral offset away.
+    pub fn smooth_at_arc(&self, a: f64) -> Coord {
+        let (i, t) = self.edge_at_arc(a);
+        self.smooth_point(i, t)
+    }
+
     /// The solved road height at arc position `a`.
     pub fn road_at_arc(&self, a: f64) -> f64 {
         let (i, t) = self.edge_at_arc(a);
@@ -883,7 +903,7 @@ fn smooth_path(nodes: &[Coord]) -> Vec<Coord> {
     }
     let cos_lat = run_cos_lat(nodes);
     let arc = cumulative(nodes);
-    let heading = cumulative_heading(nodes, cos_lat);
+    let heading = cumulative_heading(nodes, &arc, cos_lat);
     let max_dev_x = SMOOTH_MAX_DEV_M / (DEG_M * cos_lat.max(1e-9));
     let max_dev_y = SMOOTH_MAX_DEV_M / DEG_M;
     let mut cur = nodes.to_vec();
@@ -1865,18 +1885,25 @@ fn spline_path(raw: &[Coord], params: &[(usize, f64)], cos_lat: f64) -> Vec<Coor
         .collect()
 }
 
-/// Cumulative *signed* heading in radians along a polyline, one entry per node
-/// (the first two share the first edge's direction, which has no predecessor to
-/// turn from).
+/// Cumulative *signed* heading in radians along a polyline, one entry per node,
+/// read over chords of at least [`HEADING_CHORD_M`].
 ///
-/// Signed and cumulative is the whole point. A road that curves accumulates
-/// turn monotonically, so the distance between two nodes' entries is the angle
-/// the road really turned through between them — which is what
+/// Signed and cumulative is half the point. A road that curves accumulates turn
+/// monotonically, so the difference between two nodes' entries is the angle the
+/// road really turned through between them — which is what
 /// [`SMOOTH_MAX_TURN_RAD`] budgets. Digitising zigzag turns one way and back
 /// again, so it cancels and leaves the window open over the noise the smoother
 /// exists to remove. Summing |turn| instead would do the opposite of what is
 /// wanted: close the window tightest exactly where the line is noisiest.
-fn cumulative_heading(nodes: &[Coord], cos_lat: f64) -> Vec<f64> {
+///
+/// The chord is the other half, and without it the cancellation never gets a
+/// chance. Read edge by edge, a zigzag's *first* step already turns further
+/// than the whole budget, so the window closes on the immediate neighbour and
+/// the fit is skipped for want of points — the smoother switching itself off
+/// precisely on the lines it exists for. Over a chord long enough to span a
+/// period of the wiggle the two halves cancel before the angle is ever taken,
+/// and what is left is the road's own bend.
+fn cumulative_heading(nodes: &[Coord], arc: &[f64], cos_lat: f64) -> Vec<f64> {
     let n = nodes.len();
     let mut out = vec![0.0; n];
     if n < 3 {
@@ -1886,23 +1913,34 @@ fn cumulative_heading(nodes: &[Coord], cos_lat: f64) -> Vec<f64> {
         let (dx, dy) = ((b.x - a.x) * cos_lat, b.y - a.y);
         (dx.abs() > 1e-15 || dy.abs() > 1e-15).then(|| dy.atan2(dx))
     };
-    let mut prev = dir(nodes[0], nodes[1]);
+    let mut prev: Option<f64> = None;
+    let mut anchor = 0usize;
     let mut total = 0.0;
-    for i in 1..n - 1 {
-        if let (Some(p), Some(d)) = (prev, dir(nodes[i], nodes[i + 1])) {
-            // Wrap the turn into (−π, π]: a heading crossing due west would
-            // otherwise read as a 2π turn the road never made.
-            let mut turn = d - p;
-            while turn > std::f64::consts::PI {
-                turn -= std::f64::consts::TAU;
-            }
-            while turn <= -std::f64::consts::PI {
-                turn += std::f64::consts::TAU;
-            }
-            total += turn;
-            prev = Some(d);
+    for i in 1..n {
+        // Only close a chord once it is long enough to have a direction worth
+        // reading. Under this length the heading is the noise's, not the
+        // road's.
+        if arc[i] - arc[anchor] < HEADING_CHORD_M && i + 1 < n {
+            out[i] = total;
+            continue;
         }
-        out[i + 1] = total;
+        if let Some(d) = dir(nodes[anchor], nodes[i]) {
+            if let Some(p) = prev {
+                // Wrap the turn into (−π, π]: a heading crossing due west would
+                // otherwise read as a 2π turn the road never made.
+                let mut turn = d - p;
+                while turn > std::f64::consts::PI {
+                    turn -= std::f64::consts::TAU;
+                }
+                while turn <= -std::f64::consts::PI {
+                    turn += std::f64::consts::TAU;
+                }
+                total += turn;
+            }
+            prev = Some(d);
+            anchor = i;
+        }
+        out[i] = total;
     }
     out
 }

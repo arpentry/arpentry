@@ -258,13 +258,25 @@ impl Check for Abutment {
             if !s.carried || !tile.owns(s.px, s.py) {
                 continue;
             }
+
             // The nearest at-grade end of the same class. Nearest rather than
             // any-within-radius: at a junction of two same-class roads several
             // ends sit close together, and the one that shares this abutment is
             // the one the cut produced, which is the nearest by construction.
             let mut best: Option<(f64, &End)> = None;
             for (j, g) in ends.iter().enumerate() {
-                if i == j || g.carried || g.class != s.class || !aligned(s, g) {
+                // The partner is any aligned end of the same class, carried or
+                // not. **Not "the uncarried one".** Once the band and the deck
+                // are on one centerline the deck's end cap covers the
+                // approach's last vertex, so the approach reads as carried too
+                // — and a rule that demanded an uncarried partner would skip
+                // the real one and pair with something further away, reporting
+                // the fix as a regression. A both-carried pair is counted from
+                // its lower index only, so each break is measured once.
+                if i == j || g.class != s.class || !aligned(s, g) {
+                    continue;
+                }
+                if g.carried && j < i {
                     continue;
                 }
                 let d = tile.scale.dist(s.px, s.py, g.px, g.py);
@@ -284,7 +296,10 @@ impl Check for Abutment {
             // that should meet it: from the approach end, march *into* the
             // approach — the direction its own last segment points — to the
             // first sample the drawn band covers.
-            let bare = if paved.is_empty() {
+            // Bare ground is only meaningful against the *approach*: if the
+            // partner is itself carried this is a span meeting a span, and
+            // there is no band that ought to be there.
+            let bare = if paved.is_empty() || g.carried {
                 None
             } else {
                 let (ux, uy) = (g.heading.cos() / tile.scale.mx, g.heading.sin() / tile.scale.my);

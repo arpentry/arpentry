@@ -497,40 +497,65 @@ the scenario table (§4).
   - *Remaining:* symbols (arrows, chevrons — the MSDF atlas, P4);
     distance fade — sub-texel lines shimmer at grazing angles; stop
     lines and zebra crosswalks from `crosswalk` segments; dividers on
-    wide two-way roads (2×2 boulevards). Also open, and now measured
-    rather than invisible: **the at-grade band and the deck are not on
-    the same curve.** Increment 4(b) put the paint on whichever of them
-    it lies on, which is the best a marking-side fix can do — the two
-    surfaces still step apart by the smoothing displacement at every
-    abutment, and the paint steps with them.
+    wide two-way roads (2×2 boulevards).
 
-    Three quarters of that step turned out not to be the curve
-    disagreement at all, and are gone (`seam.abutment_plan`, median
-    2.79 m → 1.01 m). The sweep line was sampled at the densifier's
-    *chord* fraction on a centripetal Catmull-Rom, whose parameter is not
-    arc length, so a structure was swept at the wrong **station** — a
-    median 0.37 m of slide, out to 721 m where vertex spacing was wildly
-    uneven — carrying the height solved for somewhere else and landing
-    its abutment short of or past the span. And the smoother's fixed
-    ±100 m window spans four radians of a 50 m corner, which a quadratic
-    cannot follow at all, so it cut every tight curve to its deviation
-    clamp; the window is now bounded by the road's own turning
-    (`SMOOTH_MAX_TURN_RAD`) and the displacement it can produce fell from
-    a median 0.84 m to 0.37 m. Separately, the band was assembled from
-    whole mapped segments while the deck began at the exact span arc,
-    which drew bare ground at a quarter of all abutments, out to 19 m
-    (`seam.abutment_bare`); `level_runs` now cuts in arc.
+    *Increment 5 — one centerline (done).* "The at-grade band and the
+    deck are not on the same curve" was the long-standing item here, and
+    it was four defects rather than one. Measured by
+    `verify::checks::abutment`, which reads the handoff directly: the
+    approach and the span are cut from a **single shared coordinate**
+    (`Corridor::pieces`), so the two ends are one point, zero is the
+    correct answer, and there is no prior to negotiate.
 
-    What remains is the original item and nothing else: the union is
-    still buffered around the raw nodes while the structure sweeps along
-    the smoothed line, and the ~1 m that separates them is what
-    `seam.abutment_plan` still reports. Closing it means giving the union
-    the same smoothed centerline (H2: "every consumer must read the same
-    one or decks, asphalt, and paint drift apart"), which moves every
-    square metre of asphalt — and, less obviously, the junction plates
-    with it, since a plate radiates from a raw junction node that several
-    corridors share and each corridor smooths its own line
-    independently. That is why it is still its own piece of work.
+    - The sweep line was at the wrong **station**. It was sampled at the
+      densifier's *chord* fraction on a centripetal Catmull-Rom, whose
+      parameter is not arc length, so `smooth[i]` was not the point of
+      the road that `nodes[i]` is — which every consumer assumes by
+      index. Median 0.37 m of slide, out to 721 m where vertex spacing
+      ran from metres to kilometres; a deck swept there carries the
+      height solved for another station and lands its abutment off the
+      span. The parameterisation is now inverted per segment.
+    - The smoother **cut every corner**. A quadratic in arc length
+      reproduces a parabola, not a circular arc, so its error is set by
+      the *angle* the window spans; a fixed ±100 m half-window spans four
+      radians of a 50 m corner, and nodes under a 60 m radius were
+      displaced a median 4.00 m — the deviation clamp, saturated. The
+      window is now bounded by the road's own signed turning
+      (`SMOOTH_MAX_TURN_RAD`), read over a chord long enough for
+      digitising zigzag to cancel out of it rather than close it.
+    - The band was cut at **whole mapped segments** while the deck began
+      at the exact span arc, drawing bare ground at a quarter of all
+      abutments, out to 27 m (`seam.abutment_bare`). `level_runs` now
+      cuts in arc.
+    - And the original item: the union is now buffered around the same
+      smoothed line the structures sweep, sampled at the corridor's own
+      solved stations, and at-grade paint rides it too. H2 holds —
+      "every consumer must read the same one or decks, asphalt, and
+      paint drift apart" — and the carry in `synth::road::bake` is
+      unconditional again because there is no second curve to choose
+      between.
+
+    Montreux z16, HEAD → after: `seam.abutment_plan` median 0.98 m →
+    **0.007 m** (the quantization floor) with 82 % → 27 % of abutments
+    past 5 cm; `seam.abutment_step` 35 % → 22 % over; `seam.abutment_bare`
+    16.4 % → 10.0 % over, worst 27.8 → 9.5 m; `paint.marking_offside`
+    worst 165 m → 0.05 m.
+
+    What it costs, and where to look if it bites: the junction `Area` is
+    still built at the mapped connector point with mapped leg headings,
+    so a mouth and the band that lands on it now disagree by the
+    smoothing displacement (a median 0.45 m). That is within what the
+    `Area` is for — it "only has to say roughly where the intersection
+    is, for the marking trim, the height-field pin and the curb-return
+    mask", since the union paves the real shape — but it is no longer
+    the *by construction* agreement invariant 1 claims. The measurable
+    cost is at **hairpins**, where smoothing pulls the two arms of a
+    switchback towards each other: `order.grade_stack` 11.4 % → 12.2 %
+    over and `slope.carriageway_face` worst 8.9 → 18.8 (both arms' bands
+    merging into one region and the mesh ramping between them). Tightening
+    `SMOOTH_MAX_DEV_M` trades that back against kinking, and now that the
+    displacement is *shared* by every consumer it buys no consistency —
+    only fidelity to the mapped line — so that is the dial to turn.
 - **P4 — Symbols.** The MSDF atlas: gore chevrons from diverge geometry;
   crossing glyphs where `cycle_crossing` meets a carriageway. Turn arrows
   are deferred — the schema carries no turn data (P0); they wait on an

@@ -16,9 +16,20 @@
 //! one primitive serve the plate mesh, the point test, and the band and
 //! marking trims. A leg's width comes from its corridor's
 //! [`Corridor::width_m`] — the same cross-section the surface band reads, so a
-//! mouth and the band that lands on it agree by construction (ROADS.md
-//! invariant 1 and 5); a non-drivable member (a footway, a crossing) joins the
-//! intersection without contributing paved area.
+//! mouth and the band that lands on it are the same width (ROADS.md invariant 1
+//! and 5); a non-drivable member (a footway, a crossing) joins the intersection
+//! without contributing paved area.
+//!
+//! They are no longer in the same *place*, though, to within the smoothing
+//! displacement: the area is built at the mapped connector point with mapped
+//! leg headings, while the band is buffered around the corridor's smoothed
+//! sweep line ([`carriageway_sources`]), a median 0.45 m away. That is inside
+//! what this extent is for — it only has to say roughly where the intersection
+//! is, for the marking trim, the height-field pin and the curb-return mask,
+//! since the union paves the real shape — but it is the one place the
+//! "by construction" in invariant 1 is now an approximation. Moving it would
+//! mean choosing *which* member's smoothed line a shared connector sits on, and
+//! each corridor smooths its own independently.
 //!
 //! Plates are baked once from the solved model (heights are a pure function of
 //! it) and emitted by the single tile that owns the intersection centre, so
@@ -341,32 +352,46 @@ fn carriageway_sources(scene: &SceneGraph, solved: &SolvedModel) -> Vec<SourceSe
             if kind != SpanKind::Grade {
                 continue;
             }
-            for k in 0..c.nodes.len().saturating_sub(1) {
-                // The part of this segment inside the run, in arc. Both cuts
-                // are exact: the run boundary is where the deck begins, so the
-                // band has to end *there* and not at the nearest mapped vertex.
-                let (s0, s1) = (c.arc[k], c.arc[k + 1]);
-                let (lo, hi) = (s0.max(a0), s1.min(a1));
-                if hi - lo <= RUN_EPS_M || s1 - s0 <= RUN_EPS_M {
+            // The stations this run is buffered around. **The corridor's own
+            // solved stations, not its mapped vertices** — the band rides the
+            // smoothed sweep line (below), and a smoothed curve sampled at the
+            // mapped vertices is chorded straight back across every correction
+            // between them. The profile's densified nodes are where the
+            // smoothing lives, so they are where the band has to be read; a
+            // corridor with no profile keeps its own vertices, since there is
+            // no other curve to sample.
+            let stations: Vec<f64> = match profile {
+                Some(p) => p.arc().iter().copied().filter(|&s| s > a0 && s < a1).collect(),
+                None => c.arc.iter().copied().filter(|&s| s > a0 && s < a1).collect(),
+            };
+            // Both ends are exact: the run boundary is where the deck begins,
+            // so the band has to end *there* and not at the nearest station.
+            let mut prev = a0;
+            for s in stations.into_iter().chain(std::iter::once(a1)) {
+                if s - prev <= RUN_EPS_M {
                     continue;
                 }
-                let on_edge = |arc: f64| -> Coord {
-                    let t = ((arc - s0) / (s1 - s0)).clamp(0.0, 1.0);
-                    let (p, q) = (c.nodes[k], c.nodes[k + 1]);
-                    Coord { x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t }
+                // **One centerline** (docs/ROADS.md H2, invariant 5): the band
+                // is buffered around the same smoothed line the deck is swept
+                // along and the ground benched beside, so nothing steps at the
+                // abutment where one hands over to the other.
+                let point = |arc: f64| match profile {
+                    Some(p) => p.smooth_at_arc(arc),
+                    None => raw_point_at_arc(c, arc),
                 };
                 out.push(SourceSeg {
-                    a: on_edge(lo),
-                    b: on_edge(hi),
+                    a: point(prev),
+                    b: point(s),
                     cos_lat: c.cos_lat,
                     half_m,
                     level,
                     layer: 0,
-                    height_a: at(lo),
-                    height_b: at(hi),
+                    height_a: at(prev),
+                    height_b: at(s),
                     corridor: c.id,
                     surface: c.kind.prior().surface,
                 });
+                prev = s;
             }
         }
     }
@@ -375,6 +400,24 @@ fn carriageway_sources(scene: &SceneGraph, solved: &SolvedModel) -> Vec<SourceSe
 
 /// A run shorter than this is float slop at a boundary, not a stretch of road.
 const RUN_EPS_M: f64 = 1e-6;
+
+/// The point at arc `a` on a corridor's own mapped polyline — the fallback for
+/// a corridor the solve returned no profile for, which therefore has no
+/// smoothed line to read.
+fn raw_point_at_arc(c: &Corridor, a: f64) -> Coord {
+    let n = c.nodes.len();
+    if n < 2 {
+        return c.nodes.first().copied().unwrap_or(Coord { x: 0.0, y: 0.0 });
+    }
+    let i = match c.arc.binary_search_by(|v| v.partial_cmp(&a).expect("finite arc")) {
+        Ok(i) => i.min(n - 2),
+        Err(i) => i.saturating_sub(1).min(n - 2),
+    };
+    let span = c.arc[i + 1] - c.arc[i];
+    let t = if span > 0.0 { ((a - c.arc[i]) / span).clamp(0.0, 1.0) } else { 0.0 };
+    let (p, q) = (c.nodes[i], c.nodes[i + 1]);
+    Coord { x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t }
+}
 
 /// The corridor's runs of constant `(level, kind)`, in **arc**, as
 /// `(arc0, arc1, level, kind)` covering the whole corridor end to end.
@@ -839,6 +882,94 @@ mod tests {
         // A degenerate corridor yields nothing.
         c.nodes.truncate(1);
         assert!(level_runs(&c).is_empty());
+    }
+
+    /// Plan distance in metres from `q` to a polyline.
+    fn to_polyline(pts: &[Coord], cos_lat: f64, q: Coord) -> f64 {
+        let m = |c: Coord| (c.x * cos_lat * 111_320.0, c.y * 110_540.0);
+        let (qx, qy) = m(q);
+        let mut best = f64::INFINITY;
+        for w in pts.windows(2) {
+            let ((ax, ay), (bx, by)) = (m(w[0]), m(w[1]));
+            let (ex, ey) = (bx - ax, by - ay);
+            let len2 = ex * ex + ey * ey;
+            let t = if len2 > 0.0 { (((qx - ax) * ex + (qy - ay) * ey) / len2).clamp(0.0, 1.0) } else { 0.0 };
+            best = best.min((qx - (ax + ex * t)).hypot(qy - (ay + ey * t)));
+        }
+        best
+    }
+
+    #[test]
+    fn the_band_rides_the_same_smoothed_line_the_deck_is_swept_along() {
+        // A wiggly corridor, so the smoother has something to remove and the
+        // two curves are actually distinct: without that this passes for the
+        // wrong reason.
+        let mut c = corridor(6.0, 21);
+        for (i, n) in c.nodes.iter_mut().enumerate() {
+            n.y += if i % 2 == 0 { 1.2e-5 } else { -1.2e-5 };
+        }
+        // The corridor's own metric arc, so its run bounds and the profile's
+        // stations are the same measure of the same line.
+        let cos_lat = c.cos_lat;
+        let mut arc = vec![0.0];
+        for w in c.nodes.windows(2) {
+            let (dx, dy) = ((w[1].x - w[0].x) * cos_lat * 111_320.0, (w[1].y - w[0].y) * 110_540.0);
+            arc.push(arc[arc.len() - 1] + dx.hypot(dy));
+        }
+        let total = arc[arc.len() - 1];
+        c.arc = arc;
+        let (b0, b1) = (total * 0.4, total * 0.6);
+        c.spans = vec![
+            Span { arc0: 0.0, arc1: b0, level: 0, kind: SpanKind::Grade },
+            Span { arc0: b0, arc1: b1, level: 1, kind: SpanKind::Bridge },
+            Span { arc0: b1, arc1: total, level: 0, kind: SpanKind::Grade },
+        ];
+        let p = crate::solve::Profile::from_heights(
+            &c.nodes,
+            vec![400.0; c.nodes.len()],
+            vec![400.0; c.nodes.len()],
+        );
+        let smooth: Vec<Coord> = p.smooth().to_vec();
+        let raw = c.nodes.clone();
+        // The smoother must have moved the line, or this proves nothing.
+        let moved = raw
+            .iter()
+            .map(|r| to_polyline(&smooth, cos_lat, *r))
+            .fold(0.0f64, f64::max);
+        assert!(moved > 0.2, "fixture not wiggly enough to tell the curves apart ({moved:.3} m)");
+
+        let mut scene = SceneGraph::default();
+        scene.corridors.push(c);
+        let solved = SolvedModel::from_profiles(vec![Some(p)], 16);
+        let sources = carriageway_sources(&scene, &solved);
+        assert!(!sources.is_empty(), "the corridor paved nothing");
+
+        // Every source endpoint lies on the smoothed line...
+        let off_smooth = sources
+            .iter()
+            .flat_map(|s| [s.a, s.b])
+            .map(|q| to_polyline(&smooth, cos_lat, q))
+            .fold(0.0f64, f64::max);
+        assert!(off_smooth < 0.01, "a band source stands {off_smooth:.3} m off the smoothed line");
+        // ...and not on the raw one, which is the whole change.
+        let off_raw = sources
+            .iter()
+            .flat_map(|s| [s.a, s.b])
+            .map(|q| to_polyline(&raw, cos_lat, q))
+            .fold(0.0f64, f64::max);
+        assert!(off_raw > 0.2, "the band is still on the raw line ({off_raw:.3} m from it)");
+
+        // And it stops exactly where the deck's sweep starts. This is the point:
+        // `synth::structure` sweeps from `smooth_at_arc(b0)`, so the approach
+        // must end on that same coordinate or the two surfaces step apart at the
+        // abutment (`seam.abutment_plan`).
+        let p = solved.profile(0).expect("profiled");
+        let abutment = p.smooth_at_arc(b0);
+        let nearest = sources
+            .iter()
+            .map(|s| to_polyline(&[s.b, s.b], cos_lat, abutment))
+            .fold(f64::INFINITY, f64::min);
+        assert!(nearest < 0.01, "no band source ends at the abutment ({nearest:.3} m away)");
     }
 
     #[test]

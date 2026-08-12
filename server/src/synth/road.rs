@@ -91,37 +91,23 @@ pub fn bake(
             _ => surface_height(profile, deck, sampler, z, z_ref, bounds, lon, lat),
         }
     };
-    // **Paint rides the line the surface under it was built from.** There are
-    // two of them and they are metres apart:
+    // **Paint rides the line the surface under it was built from — and there is
+    // now one of them.** A structure span's paint rides a deck or a bore, swept
+    // along the corridor's *smoothed* sweep line (`Profile::deck_nodes` →
+    // `smooth_point`); at-grade paint rides the unioned carriageway, which is
+    // buffered around that same line (`synth::junction::carriageway_sources`).
+    // Below the zooms that draw asphalt there is no surface to agree with — the
+    // stroke *is* the road — and the smooth curve is what a stroke should trace
+    // anyway, which is the cartographic reason this snap was written for in the
+    // first place. So the carry is unconditional.
     //
-    // - A structure span's paint rides a deck or a bore, and those are swept
-    //   along the corridor's *smoothed* sweep line (`Profile::deck_nodes` →
-    //   `smooth_point`). So it is carried onto that line, which is also what
-    //   keeps it from tracing raw digitising wiggle beside its own smooth
-    //   structure.
-    // - At-grade paint rides the unioned carriageway, and that is buffered
-    //   around the corridor's **raw** nodes
-    //   (`synth::junction::carriageway_sources` reads `Corridor::nodes`).
-    //   Carrying it onto the smooth line puts it off the middle of its own
-    //   asphalt by the whole smoothing displacement, which on a 6 m street is a
-    //   centre line sitting in a lane. That displacement is now bounded by the
-    //   smoother's turn budget rather than by its deviation clamp — a median
-    //   0.37 m across the network where it was 0.84 m — but it is not zero, and
-    //   the two surfaces still disagree by it.
-    //
-    // Below the zooms that draw asphalt there is no surface to disagree with —
-    // the stroke *is* the road — so the smooth curve is taken there, which is
-    // the cartographic reason the snap was written for in the first place.
-    //
-    // The residual this leaves is real and belongs to the surfaces, not to the
-    // paint: at an abutment the at-grade band and the deck are themselves that
-    // far apart in plan, and the paint now steps with them instead of hiding
-    // the step by matching neither.
-    let carry = deck || z < crate::priors::ROAD_SURFACE_MIN_ZOOM;
+    // It was not always. While the union was buffered around the corridor's raw
+    // nodes, carrying at-grade paint onto the smooth line put it off the middle
+    // of its own asphalt by the whole smoothing displacement — on a 6 m street,
+    // a centre line sitting in a lane — so paint had to ride whichever of the
+    // two curves lay under it, and step with them at every abutment. What fixed
+    // that is not a paint change: the two surfaces are one curve now.
     let mut snap = |c: Coord| -> Coord {
-        if !carry {
-            return c;
-        }
         profile.and_then(|p| p.smooth_at(c.x, c.y, PAINT_SNAP_MAX_M)).unwrap_or(c)
     };
     let seg_q = if profile.is_some() { CORRIDOR_SEGMENT_Q } else { ROAD_SEGMENT_Q };
