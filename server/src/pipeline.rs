@@ -1009,7 +1009,18 @@ fn add_road_surface(
     // answer (see `build_rim`).
     let hole = sampler.cuts_hole(z);
     let mut cut: Vec<Region> = Vec::new();
-    for paved in synth::pave_mesh::tile_meshes(levels, field, sampler, z, z_ref, bounds, hole) {
+    // `ARPT_KERB_AT_HANDOVER=1` withholds the abutment cuts, so every boundary
+    // edge is treated as kerb and the rim goes back to wrapping the whole
+    // silhouette. The same reason `--no-hole` exists: an A/B re-tile of a
+    // change to the drawn surface should be a flag rather than a patch.
+    let handovers = if std::env::var_os("ARPT_KERB_AT_HANDOVER").is_some() {
+        &[][..]
+    } else {
+        pavement.handovers_for(bounds)
+    };
+    for paved in
+        synth::pave_mesh::tile_meshes(levels, field, sampler, z, z_ref, bounds, hole, handovers)
+    {
         let anchor = paved.anchor;
         let id = anchor.x.to_bits() ^ anchor.y.to_bits().rotate_left(32);
         // The material picks the class family, and with it the style entry: a
@@ -1215,6 +1226,27 @@ fn process_feature(
                         // attribute profiler emits the reserved `level` the
                         // client colours structures by.
                         props.push(("level_rules".to_string(), Value::Int(piece.level)));
+                        // Which drawn surface this structure's top *is*, named
+                        // as a style class so the client paints it the same
+                        // colour as the band it continues (docs/ROADS.md
+                        // invariant 1: one cross-section, one surface). Without
+                        // it the deck top takes its road class's own grey and a
+                        // residential bridge is visibly a lighter tone than the
+                        // asphalt either side of it. The modality is decided
+                        // here because only the server knows it — the archive
+                        // carries a class but not its subtype, and a railway
+                        // deck belongs to the ballast band, not the asphalt.
+                        let surface = match corridor.kind.prior().surface {
+                            crate::priors::Surface::Ballast => Some("rail_surface"),
+                            crate::priors::Surface::Asphalt => Some("road_surface"),
+                            crate::priors::Surface::None => None,
+                        };
+                        if let Some(s) = surface {
+                            props.push((
+                                "band_class".to_string(),
+                                Value::String(s.to_string()),
+                            ));
+                        }
                         (Synth::Structure { corridor: corridor.id, kind }, stroke)
                     }
                 };

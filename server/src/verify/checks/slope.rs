@@ -536,6 +536,7 @@ mod tests {
         let rim = RoadMesh {
             class: "road_surface".into(),
             level: 0,
+            band: String::new(),
             mesh: SurfaceMesh::from_parts(
                 vec![0.5, 0.5 + w, 0.5 + w],
                 vec![0.5, 0.5, 0.5 + w],
@@ -574,6 +575,7 @@ mod tests {
         RoadMesh {
             class: "road_surface".into(),
             level: 0,
+            band: String::new(),
             mesh: SurfaceMesh::from_parts(px, py, pz, idx).unwrap(),
         }
     }

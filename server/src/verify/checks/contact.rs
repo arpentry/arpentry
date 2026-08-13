@@ -934,6 +934,7 @@ mod tests {
         let mut roads = vec![RoadMesh {
             class: "road_surface".into(),
             level: 0,
+            band: String::new(),
             mesh: quad(0.0, 0.5, road_m),
         }];
         roads.extend(extra);
@@ -1005,7 +1006,7 @@ mod tests {
         // earthwork is still ten metres tall, and that is honest — but nothing
         // is unwalled, which is the property the apron exists to give.
         let apron =
-            RoadMesh { class: "road_apron".into(), level: 0, mesh: wall(0.5, 100.0, 110.0) };
+            RoadMesh { class: "road_apron".into(), level: 0, band: String::new(), mesh: wall(0.5, 100.0, 110.0) };
         let m = run(&kerbed(110.0, 100.0, vec![apron]));
         assert!(m[LIP].violations() > 0, "the lip is a fact about the model, not a defect");
         assert_eq!(m[UNWALLED].violations(), 0, "the apron spans it, so nothing is unwalled");
@@ -1017,7 +1018,7 @@ mod tests {
         // metres of sky. Spanning *part* of the gap must not count as spanning
         // it, or a truncated apron reads as a closed one.
         let apron =
-            RoadMesh { class: "road_apron".into(), level: 0, mesh: wall(0.5, 107.0, 110.0) };
+            RoadMesh { class: "road_apron".into(), level: 0, band: String::new(), mesh: wall(0.5, 107.0, 110.0) };
         let m = run(&kerbed(110.0, 100.0, vec![apron]));
         assert!(m[UNWALLED].violations() > 0, "a partial wall does not close the gap");
     }
@@ -1031,7 +1032,7 @@ mod tests {
         let m = run(&kerbed(100.0, 108.0, vec![]));
         assert!(m[UNWALLED].violations() > 0, "a cutting leaves the same open gap");
         let apron =
-            RoadMesh { class: "road_apron".into(), level: 0, mesh: wall(0.5, 100.0, 108.0) };
+            RoadMesh { class: "road_apron".into(), level: 0, band: String::new(), mesh: wall(0.5, 100.0, 108.0) };
         let m = run(&kerbed(100.0, 108.0, vec![apron]));
         assert_eq!(m[UNWALLED].violations(), 0, "and the same apron closes it");
     }
@@ -1060,6 +1061,7 @@ mod tests {
             roads: vec![RoadMesh {
                 class: "road_surface".into(),
                 level: 0,
+                band: String::new(),
                 mesh: quad(-0.4, 0.5, 110.0),
             }],
             lines: Vec::new(),
@@ -1095,6 +1097,7 @@ mod tests {
         RoadMesh {
             class: class.into(),
             level: 1,
+            band: String::new(),
             mesh: SurfaceMesh::from_parts(
                 vec![x0, x1, x1, x0],
                 vec![0.4, 0.4, 0.6, 0.6],
@@ -1184,6 +1187,7 @@ mod tests {
         RoadMesh {
             class: class.into(),
             level: 1,
+            band: String::new(),
             mesh: SurfaceMesh::from_parts(
                 vec![x0, x1, x1, x0],
                 vec![y0, y0, y1, y1],
@@ -1353,7 +1357,7 @@ mod tests {
             "narrow_gauge",
             800.0,
             812.0,
-            vec![RoadMesh { class: "narrow_gauge".into(), level: 1, mesh: quad(0.0, 1.0, 812.0) }],
+            vec![RoadMesh { class: "narrow_gauge".into(), level: 1, band: String::new(), mesh: quad(0.0, 1.0, 812.0) }],
         ));
         assert!(m[RAIL].skipped.is_some(), "a deck under the stroke carries it: {:?}", m[RAIL].dist.count());
     }

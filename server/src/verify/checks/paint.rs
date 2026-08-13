@@ -406,6 +406,7 @@ mod tests {
         RoadMesh {
             class: class.into(),
             level: 0,
+            band: String::new(),
             mesh: SurfaceMesh::from_parts(x, y, z, vec![0, 1, 2, 0, 2, 3]).expect("a slab"),
         }
     }

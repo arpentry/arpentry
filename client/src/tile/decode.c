@@ -436,13 +436,21 @@ static bool collect_layer_meshes(const void *flatbuf,
         values = tile ? arpentry_tiles_Tile_values(tile) : NULL;
     }
 
-    /* Per-vertex deck colour: resolve each structure's road class against the
-       style so its top face is painted the same grey its ribbon uses (not always
-       motorway grey). Skipped when the caller passes no style (buildings). */
-    uint32_t class_key = UINT32_MAX;
+    /* Per-vertex deck colour, resolved against the style. `band_class` is the
+       one to prefer: the tiler names the surface band this structure's top *is*
+       (`road_surface` / `rail_surface`), so a bridge is painted the same
+       asphalt as the road either side of it. Reading the road class instead
+       gives a residential deck its own lighter grey, and the tone then steps at
+       every abutment — the deck stops reading as a continuation of the road and
+       starts reading as a different object laid over it. The road class remains
+       the fallback: a tile from an older archive carries no `band_class`, and a
+       structure whose class paves nothing (a footbridge) has none to carry.
+       Skipped when the caller passes no style (buildings). */
+    uint32_t class_key = UINT32_MAX, band_key = UINT32_MAX;
     bool want_color = colors != NULL && class_names != NULL && class_count > 0;
     if (want_color) {
         class_key = find_key_index(flatbuf, "class");
+        band_key = find_key_index(flatbuf, "band_class");
         if (!values) {
             arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root(flatbuf);
             values = tile ? arpentry_tiles_Tile_values(tile) : NULL;
@@ -527,7 +535,10 @@ static bool collect_layer_meshes(const void *flatbuf,
         uint8_t cr = 0, cg = 0, cb = 0, ca = 0;
         if (out->color) {
             uint8_t cls =
-                resolve_class(feat, class_key, values, class_names, class_count);
+                resolve_class(feat, band_key, values, class_names, class_count);
+            if (cls == 0)
+                cls = resolve_class(feat, class_key, values, class_names,
+                                    class_count);
             if (cls != 0) {
                 const float *c = colors[cls];
                 cr = (uint8_t)(c[0] <= 0.0f ? 0 : c[0] >= 1.0f ? 255 : c[0] * 255.0f + 0.5f);

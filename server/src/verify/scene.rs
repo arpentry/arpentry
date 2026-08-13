@@ -24,6 +24,16 @@ use super::mesh::{Scale, SurfaceMesh};
 pub struct RoadMesh {
     pub class: String,
     pub level: i64,
+    /// For a structure, the surface band its running top *is* — `road_surface`
+    /// or `rail_surface`, as the tiler named it (`profile::profile`). Empty at
+    /// grade, where the band draws itself, and empty for a structure whose
+    /// class paves nothing.
+    ///
+    /// It is the only thing in the archive that says a deck and a band are the
+    /// same *surface*: the union dissolves road identity, so pairing them
+    /// otherwise means re-deriving the modality from the deck's road class and
+    /// hoping the two agree.
+    pub band: String,
     pub mesh: SurfaceMesh,
 }
 
@@ -268,6 +278,7 @@ impl<'a> ArchiveScan<'a> {
                 for fi in 0..feats.len() {
                     let f = feats.get(fi);
                     let (mut class, mut level, mut width_m) = (String::new(), 0i64, 0.0f64);
+                    let mut band = String::new();
                     if let Some(props) = f.properties() {
                         for pi in 0..props.len() {
                             let p = props.get(pi);
@@ -277,13 +288,16 @@ impl<'a> ArchiveScan<'a> {
                                 "class" => class = v.string_value().unwrap_or("").to_string(),
                                 "level" => level = v.int_value(),
                                 "width_m" => width_m = v.double_value(),
+                                "band_class" => {
+                                    band = v.string_value().unwrap_or("").to_string()
+                                }
                                 _ => {}
                             }
                         }
                     }
                     if let Some(g) = f.geometry_as_mesh_geometry() {
                         if let Some(mesh) = SurfaceMesh::from_geometry(&g) {
-                            scene.roads.push(RoadMesh { class, level, mesh });
+                            scene.roads.push(RoadMesh { class, level, band, mesh });
                         }
                     } else if let Some(g) = f.geometry_as_line_geometry() {
                         let parts = line_parts(&g);
@@ -305,6 +319,7 @@ mod tests {
     #[test]
     fn a_mesh_is_classified_by_class_and_level() {
         let mk = |class: &str, level: i64| RoadMesh {
+            band: String::new(),
             class: class.to_string(),
             level,
             mesh: dummy(),

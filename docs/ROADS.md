@@ -556,6 +556,93 @@ the scenario table (§4).
     `SMOOTH_MAX_DEV_M` trades that back against kinking, and now that the
     displacement is *shared* by every consumer it buys no consistency —
     only fidelity to the mapped line — so that is the dial to turn.
+
+    *Increment 6 — the surface handoff (measured, not fixed).* Everything
+    above was measured on the **strokes**, and at the zooms where the road
+    surface actually exists there are none: from
+    `priors::ROAD_SURFACE_MIN_ZOOM` a carriageway's own stroke is deleted
+    because the union paves it (`pipeline::paves_via_union`), so every
+    `seam.abutment_*` sample at z16 is a *railway* — a railway keeps its
+    stroke, since its track is not a fill. Which inverts what the numbers
+    mean: on a rail bridge that ribbon is drawn over both the ballast band
+    and the deck, so the joint underneath it is hidden by the very thing
+    being measured, while a road has nothing over the joint and shows every
+    millimetre. Rail is the population with the bad numbers and the good
+    picture; roads had the opposite and no numbers at all.
+    `verify::checks::handoff` closes that: it anchors on the **band mesh's
+    own silhouette** and marches out to the deck that continues it
+    (`seam.band_deck_bare`, `seam.band_deck_step`). Montreux z16: 854
+    joints, 586 on asphalt, median gap 0.10 m and median step 0.007 m —
+    both the instrument's own floor, so the typical joint is flush and
+    increment 5 holds for the surface as well as for the paint — with
+    19.7 % of gaps past 0.15 m gathering into 58 places, 41 of them
+    asphalt, and 16.5 % of steps past 5 cm. The worst are not
+    seams but holes: at 6.9338,46.4081 the motorway band stops **10.7 m**
+    short of its own viaduct, over a ravine 14 m below, and at
+    6.9154,46.4400 a service road stops 7.0 m short. The cause is not the
+    centerline — those joints are cut from one arc — so the next place to
+    look is which spans the union declines to pave and which the sweep
+    declines to draw.
+
+    *Increment 7 — no kerb line across a handover.* The rim exists to edge
+    the paved surface against the ground it stops at (§6.1). Its skip rule
+    exempted only *tile* cuts, so it also wrapped the abutment, drawing a
+    `PAVE_RIM_M` line in the casing's darker tone across the carriageway a
+    third of a metre before every bridge — on **98.5 %** of joints, measured
+    by `seam.handover_kerb`. The deck carries no matching rim, so the joint
+    read as a border rather than as a road. `synth::junction` now records
+    the cut where an at-grade run ends at a span boundary (`Handover` — the
+    only stage that still knows, since the union is a boolean over buffered
+    polylines and dissolves which input each stretch of boundary came from),
+    the pavement bake files them per chunk, and `build_rim` sends those
+    quads to the **surface** instead of the casing. They keep their geometry
+    — the interior is inset and something has to cover the strip — and lose
+    the tone and the across-coordinate with it, so the asphalt runs into the
+    deck unbroken.
+
+    Same bbox, A/B by `ARPT_KERB_AT_HANDOVER=1` (which withholds the cuts,
+    the way `--no-hole` withholds the hole): `seam.handover_kerb`
+    98.5 % → **15.0 %**, and 37 of the 54 edges left are on joints
+    `seam.band_deck_bare` also calls broken — where the band's edge is not
+    at the span boundary at all, so no cut lies on it and the kerb line is
+    correct. The real residual is nearer 5 % — 17 edges, not yet attributed;
+    a curb-return fillet reshaping the cut and a corridor the solve gave no
+    profile are the two candidates. `seam.band_deck_bare` reads 21.7 % → 16.4 %
+    over, mostly because the anchor moved: the interior mesh now reaches the
+    true silhouette at a handover, so the march starts a rim-width further
+    out. The one cost is `slope.carriageway_face`, worst 18.4 → 20.7: those
+    rim quads were excluded from it as kerb, and now that they are surface
+    they are counted — the geometry did not move, only the population, and
+    the new worst is a pre-existing 7 m height jump in the band at
+    6.9121,46.4333 that the casing was already drawing.
+    *Increment 8 — the deck is the same asphalt.* Invariant 1 says one
+    cross-section; the colour did not follow it. A structure's top is
+    painted per-vertex from the style entry its **road class** names
+    (`decode.c`, `fs_deck`), while the band beside it is painted from
+    `road_surface` — so a residential deck came out 166,168,172 against the
+    band's 151,154,159 and the tone stepped at every abutment. The deck
+    stopped reading as a continuation of the road and started reading as a
+    different object laid over it, which no amount of geometric agreement
+    fixes. Structures now carry `band_class`, naming the band their running
+    top *is* (`road_surface` / `rail_surface`), and the client paints from
+    that, falling back to the road class where there is none. The modality
+    is decided server-side because only the server has it: the archive
+    carries a class but not its subtype, and a railway deck belongs to the
+    ballast band. Montreux z16, small-bbox retile: 46 of 47 drawn decks name
+    their band — the 47th is a class that paves nothing, which correctly
+    names none — and no geometry metric moves (`seam.band_deck_bare` 359
+    samples, 16.4 % over, before and after).
+
+    *Still open:* the deck top has the analytic edge AA (`sweep_prism`
+    already writes ±1 `edge_across` on its two edge strips) but not the
+    band's **kerb line**, so the rim runs along the approach and stops at
+    the abutment. Closing it means two extra longitudinal vertex rows at
+    ±(half-width − `PAVE_RIM_M`) with a piecewise `edge_across`, a second
+    per-vertex colour on the structure pipeline for the casing tone (the
+    style already parses `casing_color` per class), and `fs_deck` picking
+    between them. It is a GPU vertex-layout change and a purely visual one,
+    so it wants a render in front of it.
+
 - **P4 — Symbols.** The MSDF atlas: gore chevrons from diverge geometry;
   crossing glyphs where `cycle_crossing` meets a carriageway. Turn arrows
   are deferred — the schema carries no turn data (P0); they wait on an

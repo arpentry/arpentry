@@ -118,6 +118,27 @@ pub struct JunctionModel {
     /// per tile would re-derive it for every zoom.
     sources: Vec<SourceSeg>,
     source_grid: GridIndex,
+    /// Where the at-grade band stops because a structure takes over
+    /// ([`Handover`]). Recorded here because this is the only walk that still
+    /// knows it: the union that follows is a boolean over buffered polylines
+    /// and dissolves which input each stretch of boundary came from.
+    handovers: Vec<Handover>,
+}
+
+/// The line across the band where an at-grade run ends at a span boundary — a
+/// bridge abutment or a tunnel portal, in plan.
+///
+/// It exists so the mesher can tell that piece of boundary apart from a kerb.
+/// The two are opposite situations wearing the same shape: a kerb is where the
+/// paved surface *ends* and the ground beside it begins, which is what the
+/// casing rim is drawn to edge; a handover is where the surface continues onto
+/// a deck, and edging it draws a line straight across the carriageway a few
+/// tenths of a metre before the bridge.
+#[derive(Debug, Clone, Copy)]
+pub struct Handover {
+    /// The cut's two ends, one per side of the carriageway.
+    pub a: Coord,
+    pub b: Coord,
 }
 
 /// One stretch of centerline between two nodes, and how far either side of it
@@ -174,7 +195,11 @@ fn grid_cell(x: f64, y: f64) -> (i32, i32) {
 }
 
 impl JunctionModel {
-    fn build(junctions: Vec<BakedJunction>, sources: Vec<SourceSeg>) -> JunctionModel {
+    fn build(
+        junctions: Vec<BakedJunction>,
+        sources: Vec<SourceSeg>,
+        handovers: Vec<Handover>,
+    ) -> JunctionModel {
         let mut grid: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
         for (i, j) in junctions.iter().enumerate() {
             let p = j.point();
@@ -193,7 +218,13 @@ impl JunctionModel {
                 i as u32,
             );
         }
-        JunctionModel { junctions, grid, sources, source_grid }
+        JunctionModel { junctions, grid, sources, source_grid, handovers }
+    }
+
+    /// Every abutment cut in the extract. Few — one per structure span end —
+    /// so the consumers filter them by box rather than index them.
+    pub fn handovers(&self) -> &[Handover] {
+        &self.handovers
     }
 
     /// The carriageway segments whose paved band reaches into the
@@ -312,12 +343,12 @@ pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> JunctionModel {
     // carriageway stretch (`synth::sheets`), not read off the mapped bridge
     // spans per corridor. Sources are built first because the layering is a
     // property of how they overlap, then stamped back onto them.
-    let mut sources = carriageway_sources(scene, solved);
+    let (mut sources, handovers) = carriageway_sources(scene, solved);
     let layers = sheets::assign(scene, &sources);
     for (s, &l) in sources.iter_mut().zip(layers.iter()) {
         s.layer = l;
     }
-    let mut model = JunctionModel::build(junctions, sources);
+    let mut model = JunctionModel::build(junctions, sources, handovers);
     // An intersection pins the sheet it stands on, which is the sheet of the
     // asphalt at its own solved height. Resolved after the sources are stamped,
     // because that is when there is a layering to read.
@@ -332,8 +363,12 @@ pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> JunctionModel {
 /// Every carriageway segment of every corridor that paves anything, in corridor
 /// then node order. The height field's corridor sources; also the input the
 /// unioned surface buffers. Layers are stamped afterwards by [`bake`].
-fn carriageway_sources(scene: &SceneGraph, solved: &SolvedModel) -> Vec<SourceSeg> {
+fn carriageway_sources(
+    scene: &SceneGraph,
+    solved: &SolvedModel,
+) -> (Vec<SourceSeg>, Vec<Handover>) {
     let mut out = Vec::new();
+    let mut handovers = Vec::new();
     for c in &scene.corridors {
         let Some(half_m) = corridor_half_width_m(c) else {
             continue; // not a carriageway: paves nothing, so covers nothing
@@ -351,6 +386,19 @@ fn carriageway_sources(scene: &SceneGraph, solved: &SolvedModel) -> Vec<SourceSe
             // deck top and once as a region floating at the same height.
             if kind != SpanKind::Grade {
                 continue;
+            }
+            // Each end of this run that a span is on the other side of. A run
+            // covers the corridor end to end ([`level_runs`]), so an at-grade
+            // run starting past zero or ending short of the total has a
+            // structure beside it there and nothing else can.
+            let total = *c.arc.last().unwrap_or(&0.0);
+            for (arc, at_end) in [(a0, false), (a1, true)] {
+                if (at_end && arc >= total - RUN_EPS_M) || (!at_end && arc <= RUN_EPS_M) {
+                    continue;
+                }
+                if let Some(h) = handover_cut(c, profile, arc, half_m) {
+                    handovers.push(h);
+                }
             }
             // The stations this run is buffered around. **The corridor's own
             // solved stations, not its mapped vertices** — the band rides the
@@ -395,8 +443,62 @@ fn carriageway_sources(scene: &SceneGraph, solved: &SolvedModel) -> Vec<SourceSe
             }
         }
     }
-    out
+    (out, handovers)
 }
+
+/// The cut across the band at arc `arc` — the line the at-grade run ends on and
+/// the deck begins on, both being swept from that same station on the same
+/// smoothed centerline.
+///
+/// Extended a little past the paved half-width on each side. The union can
+/// widen the band beyond its own buffer where a fillet or a second carriageway
+/// reaches the abutment, and a cut that stopped at the half-width would leave
+/// the outer corner of a widened cut still wearing a kerb line.
+fn handover_cut(
+    c: &Corridor,
+    profile: Option<&crate::solve::Profile>,
+    arc: f64,
+    half_m: f64,
+) -> Option<Handover> {
+    let point = |a: f64| match profile {
+        Some(p) => p.smooth_at_arc(a),
+        None => raw_point_at_arc(c, a),
+    };
+    let total = *c.arc.last()?;
+    // The tangent from a short chord about the station, clamped inside the
+    // corridor so an end station reads the curve it is on rather than a
+    // degenerate zero-length step.
+    let d = TANGENT_CHORD_M.min(total * 0.5).max(RUN_EPS_M);
+    let (before, after) = ((arc - d).max(0.0), (arc + d).min(total));
+    let (p0, p1) = (point(before), point(after));
+    let (dx, dy) = ((p1.x - p0.x) * c.cos_lat, p1.y - p0.y);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= 0.0 {
+        return None;
+    }
+    // Left normal, back into degrees, at the reach the band can occupy.
+    let reach = half_m + CUT_OVERREACH_M;
+    let mid = point(arc);
+    let (nx, ny) = (-dy / len, dx / len);
+    let deg_m = crate::scene::DEG_M;
+    let (ex, ey) = (nx * reach / (deg_m * c.cos_lat), ny * reach / deg_m);
+    Some(Handover {
+        a: Coord { x: mid.x - ex, y: mid.y - ey },
+        b: Coord { x: mid.x + ex, y: mid.y + ey },
+    })
+}
+
+/// Chord half-length, in metres, for reading a station's direction. Long enough
+/// that a densified node step does not dominate it, short enough that the
+/// tangent is still the road's at that station rather than the corner's.
+const TANGENT_CHORD_M: f64 = 1.0;
+
+/// How far past its own half-width a handover cut reaches, in metres — the
+/// slack that keeps a widened or filleted abutment fully covered. Half a
+/// curb-return radius: enough for the fillet material at a junction that
+/// happens to sit on an abutment, and short enough that the cut cannot reach a
+/// second carriageway that merely passes nearby.
+const CUT_OVERREACH_M: f64 = 0.5 * crate::priors::CURB_RETURN_M;
 
 /// A run shorter than this is float slop at a boundary, not a stretch of road.
 const RUN_EPS_M: f64 = 1e-6;
@@ -941,7 +1043,7 @@ mod tests {
         let mut scene = SceneGraph::default();
         scene.corridors.push(c);
         let solved = SolvedModel::from_profiles(vec![Some(p)], 16);
-        let sources = carriageway_sources(&scene, &solved);
+        let (sources, _) = carriageway_sources(&scene, &solved);
         assert!(!sources.is_empty(), "the corridor paved nothing");
 
         // Every source endpoint lies on the smoothed line...
@@ -984,7 +1086,7 @@ mod tests {
         let mut scene = SceneGraph::default();
         scene.corridors.push(c);
         let solved = SolvedModel::from_profiles(vec![None], 16);
-        let sources = carriageway_sources(&scene, &solved);
+        let (sources, _) = carriageway_sources(&scene, &solved);
         // The paved share of the corridor: 35 m of its 100 before the bridge
         // and 35 after, so 70 %. Measured as a fraction of the corridor's own
         // length because the fixture's `arc` is synthetic and does not match
@@ -1008,7 +1110,7 @@ mod tests {
         let c = corridor(6.0, 11);
         let scene = crate::scene::SceneGraph::new(vec![c]);
         let solved = SolvedModel::empty(15);
-        assert_eq!(carriageway_sources(&scene, &solved).len(), 10, "one per segment");
+        assert_eq!(carriageway_sources(&scene, &solved).0.len(), 10, "one per segment");
         let half = corridor_half_width_m(&scene.corridors[0]).expect("a carriageway");
         assert!((half - (3.0 + priors::STRUCTURE_SHOULDER_M)).abs() < 1e-12);
 
@@ -1016,7 +1118,7 @@ mod tests {
         path.kind = crate::priors::Kind::Road(crate::priors::RoadClass::Footway);
         path.width_m = None;
         let scene = crate::scene::SceneGraph::new(vec![path]);
-        assert!(carriageway_sources(&scene, &solved).is_empty(), "a footway paves nothing");
+        assert!(carriageway_sources(&scene, &solved).0.is_empty(), "a footway paves nothing");
         assert!(corridor_half_width_m(&scene.corridors[0]).is_none());
     }
 }

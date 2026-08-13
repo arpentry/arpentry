@@ -107,6 +107,9 @@ I2. Every metric also states its own population; the table below is the summary.
 | `seam.abutment_plan` | I2 | Plan distance between the two road-stroke ends that meet at a bridge abutment or tunnel portal. `Corridor::pieces` cuts the approach and the span from one shared coordinate, so the correct answer is zero and there is no prior to argue about — anything here is a generator having moved it. What it catches: the approach and the structure ride different curves (the band is buffered around the raw corridor nodes, a structure is swept along the smoothed sweep line), which puts the deck beside its own road and starts it short of or past the abutment. |
 | `seam.abutment_step` | I2 | Height difference between the same two ends: the deck ramp must arrive at the road it launches from. Separated from the plan break because either occurs alone, and because a sweep line that has slid *along* the alignment produces both at once — the deck then carries the height solved for a different station, worth the slide times the grade. |
 | `seam.abutment_bare` | I2 | Bare ground between an abutment and the at-grade band that continues it, marched along the approach's own direction. A third quantity with a third cause: the strokes are cut at the exact span arc, but the band was assembled from whole mapped segments, so it ended at a vertex while the deck began at the boundary. The hole that leaves is half a segment wide and a mapper's vertex spacing decides how big. |
+| `seam.band_deck_bare` | I2 | Drawn ground between the at-grade *surface band* and the bridge deck that continues it, marched out along the band's own silhouette. The surface half of `seam.abutment_*`, and the only one of the two that can see a road at the zooms where the road surface exists: from `ROAD_SURFACE_MIN_ZOOM` a carriageway's own stroke is deleted, because the union paves it (`pipeline::paves_via_union`), so every abutment sample the stroke check takes at z16 is a railway. The modality also decides whether the defect is *visible*: a railway keeps its stroke and draws that ribbon over both the ballast band and the deck, hiding the joint underneath it, while a road has nothing over the joint and shows every millimetre of it. |
+| `seam.band_deck_step` | I2 | Height across that same joint. The two sides are fitted by different machinery and nothing makes them meet: the band's vertices come from the height field over `Profile::road_at_arc`, the deck's from `Profile::deck_at_arc` — a ramp fitted to the middle two thirds of the structure run (`fit_ramp` trims a sixth at each end) and written onto the structure nodes only, so the two series disagree across the boundary edge by whatever the fit's residual is there. |
+| `seam.handover_kerb` | I2 | Share of those joints wearing a `road_casing` rim — a kerb line drawn straight across the carriageway a third of a metre before the bridge. The rim edges the paved surface against the ground it stops at, and at a handoff it stops at nothing. Its sample is 1 or 0, so the `over` column is the share. The residual after the fix is not noise: two thirds of it sits on joints `seam.band_deck_bare` also calls broken, where the band's edge genuinely is not at the span boundary and a kerb there is right. |
 | `order.at_grade_overlap` | I3 | Vertical separation where two level-0 paved regions share a plan position with nothing to order them. |
 | `order.grade_stack` | I3 | Vertical separation between two at-grade surface bands at one plan point, measured whole-mesh (the overlap metric above sees border vertices only). At grade means on the ground, and there is one ground: past 3 m — the same boundary `crossings::SEPARATION_M` draws from the model side — the upper band is in the air over the lower with no structure between them. The class it exists to keep dead: a mapped bore's still-buried tail paved as open cut, sliding beneath the band of the feature crossing just past its portal (the Collonge funicular over the rack railway). |
 | `slope.terrain_face` | I6 | Rise over plan run of every terrain triangle spanning ≥10 cm. Finds manufactured retaining walls. |
@@ -270,6 +273,40 @@ one of them badly wrong, which is why they are documented here:
   rail-standoff note above gives: a solved structure's own paint arrives at
   level 0, so a `level` test sees only the fitted footbridges and misses every
   solved bridge in the archive.
+- **The band does not draw its own edge.** The trap that decides whether
+  `seam.band_deck_bare` means anything. `road_surface` is an *inset* of the
+  paved region — the outer `PAVE_RIM_M` (0.35 m) is a separate `road_casing`
+  feature (`synth::pave_mesh`) — so a march that stopped at the interior would
+  report a third of a metre of bare ground at every abutment in the extract, a
+  floor no change could ever remove. The march anchors on the interior's edge
+  but counts interior and casing alike as surface, and reports the distance
+  between the last drawn surface and the first drawn deck. Its threshold is the
+  instrument's own resolution rather than a tolerance: two 0.1 m march steps,
+  which also covers the lattice under two independently encoded surfaces.
+- **A road does not hand over to a railway.** The pairing rule for the same
+  check, and the one that had to be measured to be believed. The union
+  *dissolves* road identity — a `road_surface` region is every carriageway that
+  touched it — so the only evidence left that a band and a deck are the same
+  feature is what the two are made of. Pairing on geometry alone, a street
+  ending near a railway viaduct pairs with it: on the Montreux extract that was
+  a third of everything the metric called a gap, asphalt bands handing over to
+  `narrow_gauge` and `funicular` decks. Requiring the modalities to match cost
+  32 of 886 samples and removed a quarter of the violations with them: the
+  discarded pairings were almost all in the tail, which is the signature of a
+  false pair rather than of a defect.
+- **A band metres below is another road, not this one's continuation.** The
+  second pairing trap in the same check, and the one that produced its most
+  alarming early number. The march looks for where the drawn surface *stops*,
+  and at Montreux station it walked off the upper of two at-grade bands standing
+  13 m apart (`order.grade_stack`) onto the lower one — which both closed the
+  gap it was measuring and gave `seam.band_deck_step` the wrong height to
+  compare the deck against, reporting 13.06 m of step at a joint it had just
+  measured 0.10 m wide. Surface only counts as this band continuing when it is
+  within a slab of the edge's own height, which is also what a real
+  continuation can vary by over the reach at the steepest grade a carriageway
+  takes. The metric's ceiling is the honest consequence: about 3.5 m, past which
+  a joint has come apart rather than stepped, and `order.deck_above_carriageway`
+  owns it.
 
 ### What is deliberately not measured
 

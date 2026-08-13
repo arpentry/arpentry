@@ -36,7 +36,7 @@ use geo_types::Coord;
 use crate::priors::{self, PAVE_BAKE_Z, PAVE_PAD_M};
 use crate::project::Bounds;
 use crate::scene::DEG_M;
-use crate::synth::junction::JunctionModel;
+use crate::synth::junction::{Handover, JunctionModel};
 use crate::synth::poly::{self, MFrame, Shapes};
 
 /// A chunk key: the `(x, y)` of its z13 tile.
@@ -65,6 +65,12 @@ pub struct LevelShapes {
 /// through an `Arc`.
 pub struct PavementModel {
     chunks: HashMap<ChunkKey, Vec<LevelShapes>>,
+    /// The abutment cuts ([`crate::synth::junction::Handover`]) reaching each
+    /// chunk, so the mesher can tell the boundary where a deck takes over from
+    /// the boundary where the ground does. Kept beside the shapes rather than
+    /// inside them because a cut belongs to the *pair* of regions it separates,
+    /// and one of the two is not in this model at all.
+    handovers: HashMap<ChunkKey, Vec<Handover>>,
 }
 
 impl PavementModel {
@@ -74,6 +80,12 @@ impl PavementModel {
     pub fn chunk_for(&self, bounds: &Bounds) -> Option<&[LevelShapes]> {
         let c = chunk_of(bounds.west + 0.5 * bounds.width(), bounds.south + 0.5 * bounds.height());
         self.chunks.get(&c).map(|v| v.as_slice())
+    }
+
+    /// The abutment cuts of the chunk containing a tile.
+    pub fn handovers_for(&self, bounds: &Bounds) -> &[Handover] {
+        let c = chunk_of(bounds.west + 0.5 * bounds.width(), bounds.south + 0.5 * bounds.height());
+        self.handovers.get(&c).map_or(&[], |v| v.as_slice())
     }
 
     /// Number of chunks carrying asphalt.
@@ -195,8 +207,26 @@ pub fn bake(junctions: &JunctionModel, threads: usize) -> PavementModel {
         }
     });
 
-    let chunks = out.into_inner().expect("pavement results poisoned").into_iter().collect();
-    PavementModel { chunks }
+    let chunks: HashMap<ChunkKey, Vec<LevelShapes>> =
+        out.into_inner().expect("pavement results poisoned").into_iter().collect();
+
+    // Abutment cuts, filed under every chunk they reach. A cut is a short
+    // segment, so both its ends' chunks — and any between — are enough; the
+    // rect a chunk meshes is its own, and a cut on the seam is wanted by both
+    // sides.
+    let mut handovers: HashMap<ChunkKey, Vec<Handover>> = HashMap::new();
+    for h in junctions.handovers() {
+        let (x0, y0) = chunk_of(h.a.x.min(h.b.x), h.a.y.min(h.b.y));
+        let (x1, y1) = chunk_of(h.a.x.max(h.b.x), h.a.y.max(h.b.y));
+        for cx in x0..=x1 {
+            for cy in y0..=y1 {
+                if chunks.contains_key(&(cx, cy)) {
+                    handovers.entry((cx, cy)).or_default().push(*h);
+                }
+            }
+        }
+    }
+    PavementModel { chunks, handovers }
 }
 
 /// Bakes one chunk: buffer every source, union per level, round the curb returns

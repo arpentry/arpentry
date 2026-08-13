@@ -396,8 +396,8 @@ mod tests {
         // that road no clearance and must not be scored as if it did.
         let t = tile(
             vec![
-                RoadMesh { class: "road_surface".into(), level: 0, mesh: flat(100.0) },
-                RoadMesh { class: "motorway".into(), level: 1, mesh: slab(100.0, 1.5) },
+                RoadMesh { class: "road_surface".into(), level: 0, band: String::new(), mesh: flat(100.0) },
+                RoadMesh { class: "motorway".into(), level: 1, band: String::new(), mesh: slab(100.0, 1.5) },
             ],
             Some(flat(100.0)),
         );
@@ -410,8 +410,8 @@ mod tests {
     fn a_deck_flying_over_the_road_is_not_a_violation_either() {
         let t = tile(
             vec![
-                RoadMesh { class: "road_surface".into(), level: 0, mesh: flat(100.0) },
-                RoadMesh { class: "motorway".into(), level: 1, mesh: slab(107.0, 1.5) },
+                RoadMesh { class: "road_surface".into(), level: 0, band: String::new(), mesh: flat(100.0) },
+                RoadMesh { class: "motorway".into(), level: 1, band: String::new(), mesh: slab(107.0, 1.5) },
             ],
             Some(flat(100.0)),
         );
@@ -426,8 +426,8 @@ mod tests {
         // the geometry says otherwise.
         let t = tile(
             vec![
-                RoadMesh { class: "road_surface".into(), level: 0, mesh: flat(100.0) },
-                RoadMesh { class: "path".into(), level: 1, mesh: slab(97.5, 1.5) },
+                RoadMesh { class: "road_surface".into(), level: 0, band: String::new(), mesh: flat(100.0) },
+                RoadMesh { class: "path".into(), level: 1, band: String::new(), mesh: slab(97.5, 1.5) },
             ],
             Some(flat(90.0)),
         );
@@ -441,7 +441,7 @@ mod tests {
     fn a_deck_ploughing_into_the_hillside_is_caught_past_its_own_thickness() {
         // Ground at 110 m, soffit at 105 m: 5 m under, far past a touchdown.
         let t = tile(
-            vec![RoadMesh { class: "motorway".into(), level: 1, mesh: slab(106.5, 1.5) }],
+            vec![RoadMesh { class: "motorway".into(), level: 1, band: String::new(), mesh: slab(106.5, 1.5) }],
             Some(flat(110.0)),
         );
         let m = run(&t);
@@ -453,13 +453,13 @@ mod tests {
     fn a_bore_in_the_open_air_is_caught_but_a_portal_mouth_is_not() {
         // Roof 3 m above ground: a tube in daylight.
         let t = tile(
-            vec![RoadMesh { class: "motorway".into(), level: -1, mesh: slab(103.0, 5.0) }],
+            vec![RoadMesh { class: "motorway".into(), level: -1, band: String::new(), mesh: slab(103.0, 5.0) }],
             Some(flat(100.0)),
         );
         assert!(run(&t)[2].violations() > 0);
         // Roof level with the ground: a portal mouth, which is the design.
         let t = tile(
-            vec![RoadMesh { class: "motorway".into(), level: -1, mesh: slab(100.0, 5.0) }],
+            vec![RoadMesh { class: "motorway".into(), level: -1, band: String::new(), mesh: slab(100.0, 5.0) }],
             Some(flat(100.0)),
         );
         assert_eq!(run(&t)[2].violations(), 0);
@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn a_buried_bore_reports_its_cover_as_a_positive_depth() {
         let t = tile(
-            vec![RoadMesh { class: "motorway".into(), level: -1, mesh: slab(90.0, 5.0) }],
+            vec![RoadMesh { class: "motorway".into(), level: -1, band: String::new(), mesh: slab(90.0, 5.0) }],
             Some(flat(100.0)),
         );
         let m = run(&t);
@@ -483,8 +483,8 @@ mod tests {
         // are level 0; only a whole-mesh sample can see the interior overlap.
         let t = tile(
             vec![
-                RoadMesh { class: "rail_surface".into(), level: 0, mesh: flat(524.0) },
-                RoadMesh { class: "rail_surface".into(), level: 0, mesh: flat(532.5) },
+                RoadMesh { class: "rail_surface".into(), level: 0, band: String::new(), mesh: flat(524.0) },
+                RoadMesh { class: "rail_surface".into(), level: 0, band: String::new(), mesh: flat(532.5) },
             ],
             None,
         );
@@ -499,8 +499,8 @@ mod tests {
     fn abutting_bands_at_one_height_are_the_populations_floor() {
         let t = tile(
             vec![
-                RoadMesh { class: "road_surface".into(), level: 0, mesh: flat(100.0) },
-                RoadMesh { class: "rail_surface".into(), level: 0, mesh: flat(100.0) },
+                RoadMesh { class: "road_surface".into(), level: 0, band: String::new(), mesh: flat(100.0) },
+                RoadMesh { class: "rail_surface".into(), level: 0, band: String::new(), mesh: flat(100.0) },
             ],
             None,
         );
@@ -513,7 +513,7 @@ mod tests {
     #[test]
     fn an_extract_without_structures_skips_rather_than_scoring_clean() {
         let t = tile(
-            vec![RoadMesh { class: "road_surface".into(), level: 0, mesh: flat(100.0) }],
+            vec![RoadMesh { class: "road_surface".into(), level: 0, band: String::new(), mesh: flat(100.0) }],
             Some(flat(100.0)),
         );
         let m = run(&t);

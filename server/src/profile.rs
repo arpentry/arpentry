@@ -106,6 +106,15 @@ pub fn profile(
         ) {
             properties.push(("width_m".to_string(), Value::Double(w)));
         }
+        // Which drawn surface band a structure's running top *is*, named as a
+        // style class (`road_surface` / `rail_surface`). The client paints the
+        // deck top from it instead of from the road class, so a bridge is the
+        // same asphalt as the road either side of it rather than its class's
+        // own lighter grey — invariant 1's one cross-section, in colour. Only
+        // structures carry it; at grade the band draws itself.
+        if let Some(s) = find_str(props, "band_class") {
+            properties.push(("band_class".to_string(), Value::String(s)));
+        }
         // The mapped surface material and one-way verdict ride along for
         // styling and the marking phases (docs/ROADS.md P3); sparse, so only
         // emitted when present.
@@ -344,6 +353,35 @@ mod tests {
         assert_eq!(p.rank, 40);
         assert!(p.properties.contains(&("class".into(), Value::String("river".into()))));
         assert!(p.properties.contains(&("subclass".into(), Value::String("canal".into()))));
+    }
+
+    /// The profiler is a whitelist, so a property the emit stage invents has to
+    /// be added here or it is dropped without a word. `band_class` names the
+    /// surface a structure's top *is*, and the client paints the deck from it.
+    #[test]
+    fn a_structure_carries_the_band_it_continues() {
+        let props = vec![
+            ("class".to_string(), Value::String("residential".into())),
+            ("level_rules".to_string(), Value::Int(1)),
+            ("band_class".to_string(), Value::String("road_surface".into())),
+        ];
+        let p = profile(layers::TRANSPORTATION, &props, 0, 16);
+        assert!(
+            p.properties.contains(&("band_class".into(), Value::String("road_surface".into()))),
+            "the deck lost the band it continues: {:?}",
+            p.properties
+        );
+        assert!(p.properties.contains(&("level".into(), Value::Int(1))), "and its level");
+    }
+
+    /// At grade there is no band property: the band draws itself, and a
+    /// carriageway that carried one would tell the client to paint a stroke
+    /// with it.
+    #[test]
+    fn an_at_grade_road_carries_no_band_class() {
+        let props = vec![("class".to_string(), Value::String("residential".into()))];
+        let p = profile(layers::TRANSPORTATION, &props, 0, 16);
+        assert!(p.properties.iter().all(|(k, _)| k != "band_class"));
     }
 
     #[test]
