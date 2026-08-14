@@ -294,6 +294,15 @@ one of them badly wrong, which is why they are documented here:
   32 of 886 samples and removed a quarter of the violations with them: the
   discarded pairings were almost all in the tail, which is the signature of a
   false pair rather than of a defect.
+- **The skipped samples are half the evidence.** `seam.band_deck_bare` counts
+  edges where a deck starts past the band; it *skips* edges where the deck
+  already covers the band, as an overlap rather than a handoff, and until those
+  were printed (`ARPT_DEBUG_OVERLAP`) the gap looked like the band being short.
+  It was not: 40 of the 43 gapping joints had a skipped, overlapping edge within
+  12 m of the same cap, which is a joint cut at the wrong *angle* rather than in
+  the wrong *place* — and no distribution of the gaps alone could have said so.
+  When a metric drops samples on a rule, count them and look at where they land;
+  a defect that is signed will hide half of itself in the exclusion.
 - **A band metres below is another road, not this one's continuation.** The
   second pairing trap in the same check, and the one that produced its most
   alarming early number. The march looks for where the drawn surface *stops*,

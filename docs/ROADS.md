@@ -633,6 +633,63 @@ the scenario table (§4).
     names none — and no geometry metric moves (`seam.band_deck_bare` 359
     samples, 16.4 % over, before and after).
 
+    *Increment 9 — one shape cuts the other.* Two ends cut from one arc
+    still did not meet, because each side turned that arc into geometry
+    its own way. The deck lays down an **explicit cross-section**
+    (`Profile::deck_nodes`: a point, a left vector, a half-width); the
+    band gets whatever `poly::buffer_line` butts onto the **last chord**
+    of its polyline, a station's worth of curve back. Those two lines
+    cross at the centreline and diverge to either kerb — bare ground at
+    one, an overlap at the other, `half_w · θ` wide for the turn θ that
+    chord spans, which is 0.4 m at the profile's ~4 m stations on a 25 m
+    ramp radius. It reads as a thin wedge just before the bridge, which
+    is exactly how it was reported.
+
+    The confirmation was in the samples the check was *dropping*: of 43
+    gapping joints, 40 had an overlapping edge within 12 m of the same
+    cap, and 441 edges archive-wide were already buried under their deck
+    (`ARPT_DEBUG_OVERLAP`). A signed defect hides half of itself in
+    whatever exclusion the metric applies.
+
+    Two patches were built and both are wrong in the same way. Making the
+    band's last chord short enough to *be* the tangent (a 0.25 m cap
+    chord) fixes only the angle, and took the small gaps 31 → 22 —
+    because the cap angle is one of several things two constructions can
+    disagree about. Overshooting the boundary by 0.5 m took them 31 → 7,
+    but only by burying every residual disagreement under the deck: the
+    measurable joint count fell 359 → 248, which is the instrument going
+    blind rather than the surface getting better.
+
+    What landed instead: `synth::junction` builds the handover cut from
+    `deck_nodes` — so the line *is* the deck's end face rather than a
+    second derivation of it — buffers the band `STRUCTURE_OVERRUN_M`
+    (1.5 m) **past** the boundary, and `synth::pavement::bake_chunk`
+    subtracts everything beyond that cut, per run, before the union.
+    Generate long, trim to the thing it must meet. The shared edge is one
+    set of coordinates because one shape cut the other, which is a
+    different kind of agreement from two constructions arriving at the
+    same place. The trim is per *run* because that is the last moment the
+    model still knows which band a cut belongs to: after the boolean the
+    region has dissolved it, and a cut applied there would as happily
+    take a bite out of the road passing underneath.
+
+    Montreux z16, A/B by `ARPT_NO_ABUTMENT_CUT=1`: small gaps
+    (0.15-1 m) **31 → 7**, violations 59 → 32, and the site reported from
+    the viewer 5 → 0 — the overlap's result without the overlap, and with
+    the joint count held at 351 so the joints stay measurable. The ≥1 m
+    population is untouched (28 → 25): that is the band stopping metres
+    short, a different defect. `contact.kerb_lip` returns to 13.79 %,
+    where the overshoot had cost 0.03 pp. Two metrics read slightly worse
+    and both are the measurement improving rather than the surface
+    degrading: `seam.band_deck_step` 16.7 → 17.7 %, because the step is
+    now compared at the true joint instead of a rim-width back, and
+    `order.deck_above_carriageway` 0.92 → 1.03 %, the band's edge now
+    landing exactly under the deck's.
+
+    What it retires is as much the point as what it fixes: with the band
+    cut by the structure, there is no cap angle to match, no chord length
+    to tune, and no threshold anywhere in it.
+
     *Still open:* the deck top has the analytic edge AA (`sweep_prism`
     already writes ±1 `edge_across` on its two edge strips) but not the
     band's **kerb line**, so the rim runs along the approach and stops at

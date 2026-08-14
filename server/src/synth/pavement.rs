@@ -252,7 +252,27 @@ fn bake_chunk(
     let mut by_level: HashMap<(i64, u32, priors::Surface), Shapes> = HashMap::new();
     for run in runs(junctions, source_ids) {
         let line: Vec<[f64; 2]> = run.line.iter().map(|&c| frame.to_m(c)).collect();
-        let buffered = poly::buffer_line(&line, run.half_m);
+        let mut buffered = poly::buffer_line(&line, run.half_m);
+        // Trim to the deck's face. This is the whole of the abutment fix: the
+        // band was generated past the boundary (`synth::junction`), and what a
+        // structure carries is removed from it by *that structure's own*
+        // cross-section, so the two share an edge rather than each construct
+        // one. Per run, before the union, because that is the last moment the
+        // model still knows which band this cut belongs to — afterwards the
+        // boolean has dissolved it into the region, and a cut applied there
+        // would just as happily take a bite out of the road passing underneath.
+        let n = line.len();
+        let ends = [
+            run.cut_start.map(|c| (c, [line[0][0] - line[1][0], line[0][1] - line[1][1]])),
+            run.cut_end
+                .map(|c| (c, [line[n - 1][0] - line[n - 2][0], line[n - 1][1] - line[n - 2][1]])),
+        ];
+        for (cut, outward) in ends.into_iter().flatten() {
+            if buffered.is_empty() {
+                break;
+            }
+            buffered = poly::difference(&buffered, &cut_beyond(&cut, &frame, outward));
+        }
         if !buffered.is_empty() {
             by_level.entry((run.level, run.layer, run.surface)).or_default().extend(buffered);
         }
@@ -329,7 +349,57 @@ struct Run {
     level: i64,
     layer: u32,
     surface: priors::Surface,
+    /// The structure cross-sections bounding this run's two ends, where it has
+    /// one. The run is buffered *through* them and then cut back to them, so
+    /// its edge at an abutment is the deck's own end face.
+    cut_start: Option<Handover>,
+    cut_end: Option<Handover>,
 }
+
+/// Everything on the far side of a structure's cross-section, as a shape in
+/// chunk metres — what the band loses to the deck.
+///
+/// A quad rather than a true half-plane, because the boolean wants a bounded
+/// shape. `outward` is the run's own direction at that end, which is what says
+/// which side is the deck's: the run was generated *past* the cut, so it points
+/// from the band into the structure.
+fn cut_beyond(cut: &Handover, frame: &MFrame, outward: [f64; 2]) -> Shapes {
+    let (a, b) = (frame.to_m(cut.a), frame.to_m(cut.b));
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len = (dx * dx + dy * dy).sqrt();
+    if !(len > 0.0) {
+        return Vec::new();
+    }
+    let (mut nx, mut ny) = (-dy / len, dx / len);
+    if nx * outward[0] + ny * outward[1] < 0.0 {
+        (nx, ny) = (-nx, -ny);
+    }
+    let r = CUT_REACH_M;
+    let mut ring = vec![
+        [a[0], a[1]],
+        [b[0], b[1]],
+        [b[0] + nx * r, b[1] + ny * r],
+        [a[0] + nx * r, a[1] + ny * r],
+    ];
+    // Counter-clockwise, the convention the rest of this module keeps: flipping
+    // the normal above reverses the quad's winding, and a clockwise subtrahend
+    // under the non-zero rule is a hole rather than a shape.
+    let area: f64 = (0..ring.len())
+        .map(|i| {
+            let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
+            p[0] * q[1] - q[0] * p[1]
+        })
+        .sum();
+    if area < 0.0 {
+        ring.reverse();
+    }
+    vec![vec![ring]]
+}
+
+/// How far past a structure's cross-section the trim quad reaches, in metres.
+/// Several times the overrun the band was generated with, so the quad's far
+/// edge can never fall inside the material it is there to remove.
+const CUT_REACH_M: f64 = 8.0;
 
 /// Chains a chunk's carriageway segments back into polylines.
 ///
@@ -361,7 +431,9 @@ fn runs(junctions: &JunctionModel, source_ids: &[u32]) -> Vec<Run> {
                 && last.y == s.a.y
         });
         if continues {
-            out.last_mut().expect("a run exists").line.push(s.b);
+            let r = out.last_mut().expect("a run exists");
+            r.line.push(s.b);
+            r.cut_end = s.cut_b;
         } else {
             out.push(Run {
                 line: vec![s.a, s.b],
@@ -369,6 +441,8 @@ fn runs(junctions: &JunctionModel, source_ids: &[u32]) -> Vec<Run> {
                 level: s.level,
                 layer: s.layer,
                 surface: s.surface,
+                cut_start: s.cut_a,
+                cut_end: s.cut_b,
             });
         }
     }

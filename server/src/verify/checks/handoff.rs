@@ -325,6 +325,10 @@ impl Check for Handoff {
                 // to confirm.
                 if carried((px - ux * OVERLAP_PROBE_M, py - uy * OVERLAP_PROBE_M)).is_some() {
                     self.0.overlapped += 1;
+                    if std::env::var_os("ARPT_DEBUG_OVERLAP").is_some() {
+                        let (lon, lat) = tile.lonlat(px, py);
+                        eprintln!("[overlap] {lon:.6},{lat:.6}");
+                    }
                     continue;
                 }
 

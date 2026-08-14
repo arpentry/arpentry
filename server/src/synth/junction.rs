@@ -162,6 +162,13 @@ pub struct SourceSeg {
     /// the mesh then ramped continuously between two roads that are metres apart
     /// vertically.
     pub layer: u32,
+    /// The structure cross-section bounding this segment's own end of the run,
+    /// where one does. The band is buffered *through* the boundary and then
+    /// cut by this line, so its edge there is the deck's end face rather than
+    /// whatever the buffer's cap happened to butt onto — see
+    /// [`carriageway_sources`].
+    pub cut_a: Option<Handover>,
+    pub cut_b: Option<Handover>,
     /// The solved road-surface height at `a` and at `b`, metres — read at the
     /// segment's own *arc*, never by plan lookup, so a corridor that doubles
     /// back on itself gives each arm its own height instead of the nearer one's.
@@ -369,6 +376,11 @@ fn carriageway_sources(
 ) -> (Vec<SourceSeg>, Vec<Handover>) {
     let mut out = Vec::new();
     let mut handovers = Vec::new();
+    // `ARPT_NO_ABUTMENT_CUT=1` stops the band on the boundary again and
+    // withholds the cuts with it, so an A/B re-tile of this is a flag rather
+    // than a patch — the same reason `--no-hole` exists. Read once: it is a
+    // constant for the run, and this loop is every carriageway in the extract.
+    let no_cut = std::env::var_os("ARPT_NO_ABUTMENT_CUT").is_some();
     for c in &scene.corridors {
         let Some(half_m) = corridor_half_width_m(c) else {
             continue; // not a carriageway: paves nothing, so covers nothing
@@ -391,15 +403,48 @@ fn carriageway_sources(
             // covers the corridor end to end ([`level_runs`]), so an at-grade
             // run starting past zero or ending short of the total has a
             // structure beside it there and nothing else can.
+            //
+            // **and the line the band is cut by there.** Two ends cut from one
+            // arc still do not meet, because each side turns that arc into
+            // geometry its own way: the deck lays down an explicit cross-section
+            // (`Profile::deck_nodes`), while the band gets whatever
+            // `poly::buffer_line` butts onto the last chord of its polyline, a
+            // station's worth of curve back. The two lines cross at the
+            // centreline and diverge to either kerb — bare ground at one, an
+            // overlap at the other. Montreux z16 measured 43 joints gapping
+            // 0.15-0.6 m, 40 of them with an overlapping edge on the same cap.
+            //
+            // Neither side is patched here. The band is buffered *through* the
+            // boundary by [`STRUCTURE_OVERRUN_M`] and then **cut by the deck's
+            // own cross-section** ([`handover_cut`], applied in
+            // `synth::pavement::bake_chunk`): generate long, trim to the thing
+            // it must meet. The shared edge is then one set of coordinates
+            // because one shape cut the other, which is a different kind of
+            // agreement from two constructions arriving at the same place.
             let total = *c.arc.last().unwrap_or(&0.0);
-            for (arc, at_end) in [(a0, false), (a1, true)] {
-                if (at_end && arc >= total - RUN_EPS_M) || (!at_end && arc <= RUN_EPS_M) {
-                    continue;
+            let at_span = |arc: f64, at_end: bool| {
+                if at_end {
+                    arc < total - RUN_EPS_M
+                } else {
+                    arc > RUN_EPS_M
                 }
-                if let Some(h) = handover_cut(c, profile, arc, half_m) {
-                    handovers.push(h);
-                }
-            }
+            };
+            let cut_lo = at_span(a0, false)
+                .then(|| handover_cut(c, profile, a0, half_m))
+                .flatten();
+            let cut_hi = at_span(a1, true)
+                .then(|| handover_cut(c, profile, a1, half_m))
+                .flatten();
+            handovers.extend(cut_lo.iter().chain(cut_hi.iter()).copied());
+            let (cut_lo, cut_hi) = if no_cut { (None, None) } else { (cut_lo, cut_hi) };
+            // Generate long: the band runs on into the span and the cut takes it
+            // back to the deck's face. Only where the run has the length to
+            // spare — on a stretch shorter than two overruns the two cuts would
+            // pass each other and leave nothing.
+            let overrun = if no_cut { 0.0 } else { STRUCTURE_OVERRUN_M };
+            let room = ((a1 - a0) * 0.5).min(overrun).max(0.0);
+            let lo = if cut_lo.is_some() { a0 - room } else { a0 };
+            let hi = if cut_hi.is_some() { a1 + room } else { a1 };
             // The stations this run is buffered around. **The corridor's own
             // solved stations, not its mapped vertices** — the band rides the
             // smoothed sweep line (below), and a smoothed curve sampled at the
@@ -409,13 +454,14 @@ fn carriageway_sources(
             // corridor with no profile keeps its own vertices, since there is
             // no other curve to sample.
             let stations: Vec<f64> = match profile {
-                Some(p) => p.arc().iter().copied().filter(|&s| s > a0 && s < a1).collect(),
-                None => c.arc.iter().copied().filter(|&s| s > a0 && s < a1).collect(),
+                Some(p) => p.arc().iter().copied().filter(|&s| s > lo && s < hi).collect(),
+                None => c.arc.iter().copied().filter(|&s| s > lo && s < hi).collect(),
             };
             // Both ends are exact: the run boundary is where the deck begins,
             // so the band has to end *there* and not at the nearest station.
-            let mut prev = a0;
-            for s in stations.into_iter().chain(std::iter::once(a1)) {
+            let mut prev = lo;
+            let mut first = true;
+            for s in stations.into_iter().chain(std::iter::once(hi)) {
                 if s - prev <= RUN_EPS_M {
                     continue;
                 }
@@ -434,12 +480,15 @@ fn carriageway_sources(
                     half_m,
                     level,
                     layer: 0,
-                    height_a: at(prev),
-                    height_b: at(s),
+                    cut_a: first.then_some(cut_lo).flatten(),
+                    cut_b: (s >= hi - RUN_EPS_M).then_some(cut_hi).flatten(),
+                    height_a: at(prev.clamp(a0, a1)),
+                    height_b: at(s.clamp(a0, a1)),
                     corridor: c.id,
                     surface: c.kind.prior().surface,
                 });
                 prev = s;
+                first = false;
             }
         }
     }
@@ -460,38 +509,39 @@ fn handover_cut(
     arc: f64,
     half_m: f64,
 ) -> Option<Handover> {
-    let point = |a: f64| match profile {
-        Some(p) => p.smooth_at_arc(a),
-        None => raw_point_at_arc(c, a),
-    };
-    let total = *c.arc.last()?;
-    // The tangent from a short chord about the station, clamped inside the
-    // corridor so an end station reads the curve it is on rather than a
-    // degenerate zero-length step.
-    let d = TANGENT_CHORD_M.min(total * 0.5).max(RUN_EPS_M);
-    let (before, after) = ((arc - d).max(0.0), (arc + d).min(total));
-    let (p0, p1) = (point(before), point(after));
-    let (dx, dy) = ((p1.x - p0.x) * c.cos_lat, p1.y - p0.y);
-    let len = (dx * dx + dy * dy).sqrt();
-    if len <= 0.0 {
+    let profile = profile?;
+    // **The deck's own cross-section**, not a second derivation of it. The
+    // sweep places its end face at `deck_nodes`' position with `deck_nodes`'
+    // left vector (`synth::structure::sweep_deck`), so asking the same
+    // function the same question is what makes this line *be* that face rather
+    // than agree with it to within whatever two constructions have in common.
+    // The band is then cut by it, so the two share coordinates instead of
+    // sharing an intention.
+    // The point is taken in the *profile's* own arc space and handed back to
+    // the profile, so `deck_nodes` walks to the station this cut is for. Going
+    // through the corridor's arc instead would work only where the two
+    // parameterisations coincide, which is a thing that happens to be true
+    // rather than a thing that is arranged.
+    let node = profile.deck_nodes(&[profile.point_at_arc(arc)]).into_iter().next()?;
+    let len = (node.left_e * node.left_e + node.left_n * node.left_n).sqrt();
+    if !(len > 0.0) {
         return None;
     }
-    // Left normal, back into degrees, at the reach the band can occupy.
+    // Out to the reach the band can occupy — wider than the deck, since the
+    // cut has to remove *all* of the overrun, including whatever a fillet or a
+    // second carriageway added to it, and everything past the cut is the
+    // deck's to draw.
     let reach = half_m + CUT_OVERREACH_M;
-    let mid = point(arc);
-    let (nx, ny) = (-dy / len, dx / len);
     let deg_m = crate::scene::DEG_M;
-    let (ex, ey) = (nx * reach / (deg_m * c.cos_lat), ny * reach / deg_m);
+    let (ex, ey) = (
+        node.left_e / len * reach / (deg_m * c.cos_lat),
+        node.left_n / len * reach / deg_m,
+    );
     Some(Handover {
-        a: Coord { x: mid.x - ex, y: mid.y - ey },
-        b: Coord { x: mid.x + ex, y: mid.y + ey },
+        a: Coord { x: node.lon - ex, y: node.lat - ey },
+        b: Coord { x: node.lon + ex, y: node.lat + ey },
     })
 }
-
-/// Chord half-length, in metres, for reading a station's direction. Long enough
-/// that a densified node step does not dominate it, short enough that the
-/// tangent is still the road's at that station rather than the corner's.
-const TANGENT_CHORD_M: f64 = 1.0;
 
 /// How far past its own half-width a handover cut reaches, in metres — the
 /// slack that keeps a widened or filleted abutment fully covered. Half a
@@ -502,6 +552,21 @@ const CUT_OVERREACH_M: f64 = 0.5 * crate::priors::CURB_RETURN_M;
 
 /// A run shorter than this is float slop at a boundary, not a stretch of road.
 const RUN_EPS_M: f64 = 1e-6;
+
+/// How far the band is buffered *past* a structure boundary before being cut
+/// back to the deck's face, in metres.
+///
+/// Generate long, trim to the thing it must meet: the overrun exists only to
+/// guarantee there is material on the far side of the cut for the cut to
+/// remove, so it needs to exceed the two constructions' disagreement and
+/// nothing more. That disagreement is `half_w · θ`, θ being the turn the
+/// buffer's last chord spans — 0.4 m at the profile's ~4 m stations on a 25 m
+/// ramp radius. A metre and a half covers it several times over and is still
+/// short enough that a short at-grade stretch between two structures keeps a
+/// middle.
+///
+/// None of it is drawn: everything past the cut is removed before the union.
+const STRUCTURE_OVERRUN_M: f64 = 1.5;
 
 /// The point at arc `a` on a corridor's own mapped polyline — the fallback for
 /// a corridor the solve returned no profile for, which therefore has no
@@ -1043,14 +1108,24 @@ mod tests {
         let mut scene = SceneGraph::default();
         scene.corridors.push(c);
         let solved = SolvedModel::from_profiles(vec![Some(p)], 16);
-        let (sources, _) = carriageway_sources(&scene, &solved);
+        let (sources, cuts) = carriageway_sources(&scene, &solved);
         assert!(!sources.is_empty(), "the corridor paved nothing");
 
-        // Every source endpoint lies on the smoothed line...
+        // Every source endpoint lies on the smoothed line. Sampled densely
+        // rather than taken as the chord polyline through the smooth nodes: the
+        // band reads `smooth_at_arc`, which is the Catmull-Rom *through* those
+        // nodes, so a point taken between two of them stands off their chord by
+        // the spline's own sagitta and would read as a defect it is not. The
+        // abutment overrun deliberately takes such a point.
+        let prof = solved.profile(0).expect("profiled");
+        let total = *prof.arc().last().expect("an arc");
+        let curve: Vec<Coord> = (0..=(total / 0.1) as usize)
+            .map(|i| prof.smooth_at_arc((i as f64 * 0.1).min(total)))
+            .collect();
         let off_smooth = sources
             .iter()
             .flat_map(|s| [s.a, s.b])
-            .map(|q| to_polyline(&smooth, cos_lat, q))
+            .map(|q| to_polyline(&curve, cos_lat, q))
             .fold(0.0f64, f64::max);
         assert!(off_smooth < 0.01, "a band source stands {off_smooth:.3} m off the smoothed line");
         // ...and not on the raw one, which is the whole change.
@@ -1061,17 +1136,28 @@ mod tests {
             .fold(0.0f64, f64::max);
         assert!(off_raw > 0.2, "the band is still on the raw line ({off_raw:.3} m from it)");
 
-        // And it stops exactly where the deck's sweep starts. This is the point:
-        // `synth::structure` sweeps from `smooth_at_arc(b0)`, so the approach
-        // must end on that same coordinate or the two surfaces step apart at the
-        // abutment (`seam.abutment_plan`).
-        let p = solved.profile(0).expect("profiled");
-        let abutment = p.smooth_at_arc(b0);
-        let nearest = sources
+        // And it is generated *past* where the deck's sweep starts, so the trim
+        // in `synth::pavement` has material to take back to the deck's face.
+        // The band no longer tries to *end* on the boundary: two constructions
+        // cannot be made to agree there, so one cuts the other instead.
+        let beyond = sources
             .iter()
-            .map(|s| to_polyline(&[s.b, s.b], cos_lat, abutment))
-            .fold(f64::INFINITY, f64::min);
-        assert!(nearest < 0.01, "no band source ends at the abutment ({nearest:.3} m away)");
+            .flat_map(|s| [s.a, s.b])
+            .map(|q| to_polyline(&[q, q], cos_lat, prof.smooth_at_arc(b0)))
+            .filter(|d| *d < STRUCTURE_OVERRUN_M * 2.0)
+            .fold(0.0f64, f64::max);
+        assert!(
+            beyond > STRUCTURE_OVERRUN_M * 0.9,
+            "the band should run past the abutment for the cut to trim, got {beyond:.3} m"
+        );
+        // And the cut it will be trimmed by is the deck's own cross-section.
+        assert!(
+            cuts.iter().any(|h| {
+                let mid = Coord { x: 0.5 * (h.a.x + h.b.x), y: 0.5 * (h.a.y + h.b.y) };
+                to_polyline(&[mid, mid], cos_lat, prof.smooth_at_arc(b0)) < 0.01
+            }),
+            "no handover cut lands on the abutment"
+        );
     }
 
     #[test]
@@ -1088,10 +1174,11 @@ mod tests {
         let solved = SolvedModel::from_profiles(vec![None], 16);
         let (sources, _) = carriageway_sources(&scene, &solved);
         // The paved share of the corridor: 35 m of its 100 before the bridge
-        // and 35 after, so 70 %. Measured as a fraction of the corridor's own
-        // length because the fixture's `arc` is synthetic and does not match
-        // the metric length of its nodes. A vertex-rounded cut gives 60 % or
-        // 80 %, which is exactly the half-segment this is here to keep out.
+        // and 35 after, so 70 %. Measured as a
+        // fraction of the corridor's own length because the fixture's `arc` is
+        // synthetic and does not match the metric length of its nodes. A
+        // vertex-rounded cut gives 60 % or 80 %, which is exactly the
+        // half-segment this is here to keep out.
         let span = |a: Coord, b: Coord| (b.x - a.x).hypot(b.y - a.y);
         let paved: f64 = sources.iter().map(|s| span(s.a, s.b)).sum();
         let total = span(scene.corridors[0].nodes[0], scene.corridors[0].nodes[10]);
