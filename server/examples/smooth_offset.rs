@@ -5,7 +5,7 @@
 //! *smoothed* one (`Profile::deck_nodes` → `smooth_point`), and so is the paint
 //! that rides them (`synth::road::bake`'s snap). The unioned at-grade surface is
 //! buffered around the **raw** corridor nodes
-//! (`synth::junction::carriageway_sources` reads `Corridor::nodes`). Wherever
+//! (`synth::carriageway::carriageway_sources` reads `Corridor::nodes`). Wherever
 //! the two disagree, a centre line generated at offset zero is off the centre of
 //! its own asphalt by exactly that much — and no marking-side fix can close it,
 //! because both ends of the discrepancy are correct in their own terms.

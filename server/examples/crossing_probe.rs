@@ -18,7 +18,7 @@ use arpentry_server::assemble::grid::GridIndex;
 use arpentry_server::project::Bounds;
 use arpentry_server::scene::{CorridorId, SceneGraph, DEG_M};
 use arpentry_server::solve::{self, SolvedModel};
-use arpentry_server::synth::junction::{self, SourceSeg};
+use arpentry_server::synth::carriageway::{self, SourceSeg};
 use geo_types::Coord;
 
 fn main() {
@@ -32,7 +32,7 @@ fn main() {
     let solved = solve::run(&mut scene, terrain.as_deref(), 16, 8).expect("solve");
     eprintln!("corridors {} profiles {}", scene.corridors.len(), solved.solved_count());
 
-    let model = junction::bake(&scene, &solved);
+    let model = carriageway::bake(&scene, &solved);
     let n = model.source_count();
     eprintln!("carriageway sources: {n}");
 

@@ -44,7 +44,7 @@ use crate::ground::sampler::GroundSampler;
 use crate::priors;
 use crate::project::{self, Bounds};
 use crate::synth::height::HeightField;
-use crate::synth::junction::Handover;
+use crate::synth::carriageway::Handover;
 use crate::synth::pavement::LevelShapes;
 use crate::synth::region::Region;
 use crate::terrain::TerrainMesh;
@@ -448,7 +448,7 @@ fn mesh_rings(
     // The rim splits by what its edge actually bounds. A kerb edge gets the
     // casing: the surface ends there, and the darker tone plus the analytic
     // fade are what edge it against the ground. A **handover** edge — the cut
-    // where a deck takes over (`synth::junction::Handover`) — bounds nothing:
+    // where a deck takes over (`synth::carriageway::Handover`) — bounds nothing:
     // the road carries straight on across it, and edging it draws a kerb line
     // over the carriageway a third of a metre before the bridge. Those quads
     // keep their geometry (the interior is inset and something must cover the

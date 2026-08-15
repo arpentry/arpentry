@@ -135,7 +135,7 @@ struct End {
 /// formation, not a footway.
 ///
 /// The population rule, not a nicety. A class with no surface contributes
-/// nothing to the union (`synth::junction::carriageway_sources` skips it), so
+/// nothing to the union (`synth::carriageway::carriageway_sources` skips it), so
 /// "the band that continues this abutment" does not exist for it and the march
 /// finds whatever asphalt happens to be nearest — a footway ending near a road
 /// bridge measured 19 m of "bare ground" that is simply a footway. It is also
@@ -451,7 +451,7 @@ impl Check for Abutment {
                      continues into — the hole a bridge's approach leaves in the asphalt. This \
                      is a different quantity from the plan break above, and it has a different \
                      cause: the strokes are cut at the exact span arc, while the at-grade *band* \
-                     is assembled from the corridor's own runs (`synth::junction::level_runs`). \
+                     is assembled from the corridor's own runs (`synth::carriageway::level_runs`). \
                      Assembled from whole mapped segments, the band ended at a vertex while the \
                      deck began at the boundary, and the difference — up to half a segment of a \
                      road digitised at whatever spacing a mapper chose — was drawn as ground. \

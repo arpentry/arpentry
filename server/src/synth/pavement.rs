@@ -36,7 +36,7 @@ use geo_types::Coord;
 use crate::priors::{self, PAVE_BAKE_Z, PAVE_PAD_M};
 use crate::project::Bounds;
 use crate::scene::DEG_M;
-use crate::synth::junction::{Handover, JunctionModel};
+use crate::synth::carriageway::{Handover, CarriagewayModel};
 use crate::synth::poly::{self, MFrame, Shapes};
 
 /// A chunk key: the `(x, y)` of its z13 tile.
@@ -46,7 +46,7 @@ pub type ChunkKey = (u32, u32);
 pub struct LevelShapes {
     pub level: i64,
     /// The grade-separation layer this region belongs to
-    /// ([`crate::synth::junction::SourceSeg::layer`]). Regions on different
+    /// ([`crate::synth::carriageway::SourceSeg::layer`]). Regions on different
     /// layers overlap in plan but are metres apart vertically, so they are
     /// separate regions that occlude each other rather than one merged surface.
     pub layer: u32,
@@ -65,7 +65,7 @@ pub struct LevelShapes {
 /// through an `Arc`.
 pub struct PavementModel {
     chunks: HashMap<ChunkKey, Vec<LevelShapes>>,
-    /// The abutment cuts ([`crate::synth::junction::Handover`]) reaching each
+    /// The abutment cuts ([`crate::synth::carriageway::Handover`]) reaching each
     /// chunk, so the mesher can tell the boundary where a deck takes over from
     /// the boundary where the ground does. Kept beside the shapes rather than
     /// inside them because a cut belongs to the *pair* of regions it separates,
@@ -138,7 +138,7 @@ fn chunk_centre(cx: u32, cy: u32) -> Coord {
 /// are taken in the model's own (corridor, node) order, and the boolean itself is
 /// a function of the input *set* rather than of the order it was collected in
 /// (see [`poly::union_all`]).
-pub fn bake(junctions: &JunctionModel, threads: usize) -> PavementModel {
+pub fn bake(junctions: &CarriagewayModel, threads: usize) -> PavementModel {
     // Which chunks each carriageway segment can influence: its own extent plus
     // the pad, since a union boundary inside a chunk can be moved by geometry
     // just outside it.
@@ -232,7 +232,7 @@ pub fn bake(junctions: &JunctionModel, threads: usize) -> PavementModel {
 /// Bakes one chunk: buffer every source, union per level, round the curb returns
 /// at the intersections, clip to the chunk rect.
 fn bake_chunk(
-    junctions: &JunctionModel,
+    junctions: &CarriagewayModel,
     key: ChunkKey,
     source_ids: &[u32],
 ) -> Vec<LevelShapes> {
@@ -254,7 +254,7 @@ fn bake_chunk(
         let line: Vec<[f64; 2]> = run.line.iter().map(|&c| frame.to_m(c)).collect();
         let mut buffered = poly::buffer_line(&line, run.half_m);
         // Trim to the deck's face. This is the whole of the abutment fix: the
-        // band was generated past the boundary (`synth::junction`), and what a
+        // band was generated past the boundary (`synth::carriageway`), and what a
         // structure carries is removed from it by *that structure's own*
         // cross-section, so the two share an edge rather than each construct
         // one. Per run, before the union, because that is the last moment the
@@ -417,7 +417,7 @@ const CUT_REACH_M: f64 = 8.0;
 /// `source_ids` is sorted, and the segments behind it were pushed in
 /// corridor-then-node order, so the walk order — and therefore the output — is a
 /// function of the model rather than of the traversal.
-fn runs(junctions: &JunctionModel, source_ids: &[u32]) -> Vec<Run> {
+fn runs(junctions: &CarriagewayModel, source_ids: &[u32]) -> Vec<Run> {
     let mut out: Vec<Run> = Vec::new();
     for &i in source_ids {
         let s = junctions.source(i);
@@ -453,7 +453,7 @@ fn runs(junctions: &JunctionModel, source_ids: &[u32]) -> Vec<Run> {
 /// curb-return radius so a fillet that reaches just outside the paved area is
 /// still inside its own mask.
 fn intersection_masks(
-    junctions: &JunctionModel,
+    junctions: &CarriagewayModel,
     rect: &Bounds,
     pad_deg: f64,
     frame: &MFrame,
@@ -565,7 +565,7 @@ mod tests {
     fn bake_scene(corridors: Vec<Corridor>) -> PavementModel {
         let scene = SceneGraph::new(corridors);
         let solved = SolvedModel::from_profiles((0..scene.corridors.len()).map(|_| None).collect(), 15);
-        let junctions = crate::synth::junction::bake(&scene, &solved);
+        let junctions = crate::synth::carriageway::bake(&scene, &solved);
         bake(&junctions, 1)
     }
 
@@ -658,7 +658,7 @@ mod tests {
         };
         let scene = SceneGraph::new(make());
         let solved = SolvedModel::from_profiles((0..2).map(|_| None).collect(), 15);
-        let junctions = crate::synth::junction::bake(&scene, &solved);
+        let junctions = crate::synth::carriageway::bake(&scene, &solved);
         let one = bake(&junctions, 1);
         let many = bake(&junctions, 8);
         assert_eq!(one.chunk_count(), many.chunk_count());
@@ -750,7 +750,7 @@ mod tests {
     #[test]
     fn the_closing_rounds_the_curb_returns_at_an_intersection() {
         let (scene, solved) = crossroads();
-        let junctions = crate::synth::junction::bake(&scene, &solved);
+        let junctions = crate::synth::carriageway::bake(&scene, &solved);
         assert_eq!(junctions.len(), 1, "the crossroads plates as one intersection");
         let model = bake(&junctions, 1);
         let filleted = model.area_m2();
@@ -763,7 +763,7 @@ mod tests {
             );
             let bare_solved =
                 SolvedModel::from_profiles((0..4).map(|_| None).collect(), 15);
-            let j = crate::synth::junction::bake(&bare_scene, &bare_solved);
+            let j = crate::synth::carriageway::bake(&bare_scene, &bare_solved);
             assert_eq!(j.len(), 0, "no intersection extent without profiles");
             bake(&j, 1).area_m2()
         };
@@ -816,7 +816,7 @@ mod tests {
             ],
             15,
         );
-        let junctions = crate::synth::junction::bake(&scene, &solved);
+        let junctions = crate::synth::carriageway::bake(&scene, &solved);
 
         let model = bake(&junctions, 1);
         let levels =

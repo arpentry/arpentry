@@ -403,7 +403,7 @@ fn corridor_earthworks(
         let bench_half_width = half_width + EARTHWORK_MARGIN_M;
         // The asphalt this bench carries, which it holds against any neighbour
         // (see `EarthworkEdge::carriageway_m`): the half-width the pavement
-        // paints (`synth::junction::corridor_half_width_m`) *plus the verge*,
+        // paints (`synth::carriageway::corridor_half_width_m`) *plus the verge*,
         // bounded by the bench itself so the claim never exceeds what is held.
         //
         // The verge is the point. Where this bench loses to a neighbour the

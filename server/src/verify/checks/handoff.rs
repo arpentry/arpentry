@@ -34,7 +34,7 @@
 //!
 //! - [`seam.band_deck_bare`] — drawn ground between where the at-grade surface
 //!   stops and where the deck starts. The correct answer is zero: the band is
-//!   cut at the exact span arc (`synth::junction::level_runs`) and the deck is
+//!   cut at the exact span arc (`synth::carriageway::level_runs`) and the deck is
 //!   swept from that same arc, so the two share a boundary rather than
 //!   approach one.
 //! - [`seam.band_deck_step`] — the height the surface jumps across that joint.
@@ -476,7 +476,7 @@ impl Check for Handoff {
                 detail: format!(
                     "Plan distance from the last drawn at-grade surface to the first drawn deck, \
                      along the band edge's outward normal. Zero is the correct answer: the band \
-                     is cut at the exact span arc (`synth::junction::level_runs`) and the deck is \
+                     is cut at the exact span arc (`synth::carriageway::level_runs`) and the deck is \
                      swept from that same arc, so the two share a boundary rather than approach \
                      one. On screen it is the defect this check was written for — the carriageway \
                      stopping short of its own bridge, with the hillside showing through the gap. \

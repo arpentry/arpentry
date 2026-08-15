@@ -62,7 +62,7 @@ use geo_types::Coord;
 use crate::assemble::grid::GridIndex;
 use crate::scene::{CorridorId, SceneGraph, DEG_M};
 
-use super::junction::SourceSeg;
+use super::carriageway::SourceSeg;
 
 /// How far apart two overlapping carriageways must be, in metres, to be
 /// different sheets rather than one warped surface.
@@ -153,7 +153,7 @@ fn merge_joined(
 /// The run each source belongs to, and how many runs there are.
 ///
 /// A run is a maximal chain of sources of one corridor joined end to start.
-/// [`crate::synth::junction::carriageway_sources`] emits them in corridor then
+/// [`crate::synth::carriageway::carriageway_sources`] emits them in corridor then
 /// node order, so a chain is a contiguous span of the slice; a corridor whose
 /// at-grade asphalt is interrupted — by a bridge span or a bore — comes back as
 /// two runs, which is right, since two stretches with a structure between them

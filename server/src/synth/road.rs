@@ -95,7 +95,7 @@ pub fn bake(
     // now one of them.** A structure span's paint rides a deck or a bore, swept
     // along the corridor's *smoothed* sweep line (`Profile::deck_nodes` →
     // `smooth_point`); at-grade paint rides the unioned carriageway, which is
-    // buffered around that same line (`synth::junction::carriageway_sources`).
+    // buffered around that same line (`synth::carriageway::carriageway_sources`).
     // Below the zooms that draw asphalt there is no surface to agree with — the
     // stroke *is* the road — and the smooth curve is what a stroke should trace
     // anyway, which is the cartographic reason this snap was written for in the

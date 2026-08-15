@@ -45,7 +45,7 @@ use crate::scene::{source_hash, SceneGraph, SpanKind};
 use crate::simplify;
 use crate::solve::{self, SolvedModel};
 use crate::sort::{self, ExternalSorter};
-use crate::synth::junction::JunctionModel;
+use crate::synth::carriageway::CarriagewayModel;
 use crate::synth::region::Region;
 use crate::synth::{self, Synth};
 use crate::terrain::{self, TerrainMesh, TERRAIN_GRID};
@@ -176,8 +176,8 @@ pub struct World {
     pub solved: Arc<SolvedModel>,
     pub ground: Arc<GroundStack>,
     /// Carriageway sources, handover cuts and intersection extents, derived
-    /// from the solved model (`synth::junction`).
-    pub junctions: Arc<JunctionModel>,
+    /// from the solved model (`synth::carriageway`).
+    pub junctions: Arc<CarriagewayModel>,
     /// The unioned road surface, one paved region per level per z13 chunk.
     pub pavement: Arc<synth::pavement::PavementModel>,
     /// Every solved bridge deck indexed by plan position, so phase 1 can ask
@@ -209,7 +209,10 @@ pub struct Stats {
     pub crossings: u64,
     pub earthworks: u64,
     pub water: u64,
-    pub junction_plates: u64,
+    /// Intersections clustered from the scene's connectors. An extent count,
+    /// not a geometry count: nothing here is drawn since the union replaced the
+    /// plates.
+    pub intersections: u64,
     /// The bench contact lines the detail terrain holds (docs/GROUND.md §3),
     /// and how crowded they are: crest nodes pulled in off their nominal offset
     /// because a contending bench holds the ground there, and crest nodes
@@ -325,7 +328,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     let ground = Arc::new(ground::derive(&scene, &solved, cfg.terrain.as_deref(), threads));
     // Junction plates: a paved area meshed across each corridor junction, baked
     // once from the solved model and emitted by the tile that owns its centre.
-    let junctions = Arc::new(synth::junction::bake(&scene, &solved));
+    let junctions = Arc::new(synth::carriageway::bake(&scene, &solved));
     // The unioned road surface: one paved region per level per z13 chunk, baked
     // once from the same carriageway sources the intersections came from.
     let t_pave = Instant::now();
@@ -350,7 +353,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     stats.crests_pulled = pulled as u64;
     stats.crests_dropped = dropped as u64;
     stats.water = ground.water_count() as u64;
-    stats.junction_plates = junctions.len() as u64;
+    stats.intersections = junctions.len() as u64;
     let consistency = solve::consistency::measure(&scene, &solved);
     stats.max_junction_step_m = consistency.max_junction_step_m;
     stats.p99_junction_step_m = consistency.p99_junction_step_m;
@@ -1381,7 +1384,7 @@ fn level_pieces(line: &LineString, runs: &[crate::levels::LevelRun]) -> Vec<(Lin
 /// query is skipped entirely).
 fn marking_context<'a>(
     f: &crate::geoparquet::Feature,
-    junctions: &'a JunctionModel,
+    junctions: &'a CarriagewayModel,
     bb: (f64, f64, f64, f64),
 ) -> Option<(String, bool, f64, Vec<&'a crate::synth::area::Area>)> {
     let find_str = |key: &str| {

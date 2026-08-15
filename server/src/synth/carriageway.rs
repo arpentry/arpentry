@@ -1,49 +1,61 @@
-//! Junction plates — a filled road surface meshed across an intersection so
-//! the legs meet on one paved area instead of overlapping strokes
-//! (docs/GENERATION.md scenario S4, docs/ROADS.md R6/R10).
+//! What the paved surface is built out of: the carriageway stretches, the cuts
+//! that trim them at a structure, and the extents of the intersections they
+//! meet at (docs/GENERATION.md scenario S4, docs/ROADS.md R6/R10).
 //!
-//! The unit here is the *intersection*, not the connector. Overture maps a
-//! place where roads meet as however many connectors its geometry needs: a
-//! plain crossroads is one, a staggered junction two, a roundabout a dozen
-//! ringed around an island. Plating each connector separately is what made a
-//! roundabout render as a ring of shards, so this module clusters connectors
-//! into intersections first ([`cluster`]) and bakes one [`Area`] per cluster.
-//! A roundabout needs no rule of its own: its ring arcs are short corridors,
-//! so the clustering swallows them and the areas of its exits meet as one
-//! paved band around the island.
+//! Three products, all baked once from the solved model and shared by every
+//! worker, because heights are a pure function of that model and tiles must
+//! agree at their seams (invariant 5):
 //!
-//! The area itself is a star-shaped region (`synth::area`), which is what lets
-//! one primitive serve the plate mesh, the point test, and the band and
-//! marking trims. A leg's width comes from its corridor's
-//! [`Corridor::width_m`] — the same cross-section the surface band reads, so a
-//! mouth and the band that lands on it are the same width (ROADS.md invariant 1
-//! and 5); a non-drivable member (a footway, a crossing) joins the intersection
-//! without contributing paved area.
+//! - [`SourceSeg`] — every carriageway stretch with the width it paves, read
+//!   along the corridor's *smoothed* sweep line so the band rides the same
+//!   centerline the deck is swept along and the ground benched beside
+//!   (ROADS.md H2). `synth::pavement` buffers and unions these into the road
+//!   surface; `synth::height` uses them as the road height field's sources.
+//! - [`Handover`] — the line across the band where an at-grade run ends and a
+//!   deck takes over. Recorded here because this is the only walk that still
+//!   knows it: the union that follows is a boolean over buffered polylines and
+//!   dissolves which input each stretch of boundary came from.
+//! - [`Intersection`] — the extent of each place roads meet, with the height
+//!   and grade-separation layer its members share. Used as an *extent*: the
+//!   marking trim, the height-field pin and the curb-return mask.
 //!
-//! They are no longer in the same *place*, though, to within the smoothing
-//! displacement: the area is built at the mapped connector point with mapped
-//! leg headings, while the band is buffered around the corridor's smoothed
-//! sweep line ([`carriageway_sources`]), a median 0.45 m away. That is inside
-//! what this extent is for — it only has to say roughly where the intersection
-//! is, for the marking trim, the height-field pin and the curb-return mask,
-//! since the union paves the real shape — but it is the one place the
-//! "by construction" in invariant 1 is now an approximation. Moving it would
-//! mean choosing *which* member's smoothed line a shared connector sits on, and
-//! each corridor smooths its own independently.
+//! **This module no longer draws anything.** It was written to mesh a filled
+//! plate per intersection, and that is what its name and this comment used to
+//! say; the unioned surface (`synth::pavement`) replaced the plates, and
+//! [`Area`] has had no meshing operation since. What survived is the model the
+//! union is built from, which is why the file is named for that instead.
 //!
-//! Plates are baked once from the solved model (heights are a pure function of
-//! it) and emitted by the single tile that owns the intersection centre, so
-//! tiles agree at their seams (invariant 5). Coordinates are tile-local
-//! quantized uint16 / int32-mm with an up ENU normal, matching `MeshGeometry`.
+//! The unit for an intersection is the *place*, not the connector. Overture
+//! maps a place where roads meet as however many connectors its geometry
+//! needs: a plain crossroads is one, a staggered junction two, a roundabout a
+//! dozen ringed around an island. Treating each connector separately is what
+//! made a roundabout render as a ring of shards, so connectors are clustered
+//! into intersections first ([`cluster`]) and one [`Area`] baked per cluster.
+//! A roundabout needs no rule of its own: its ring arcs are short corridors, so
+//! the clustering swallows them.
+//!
+//! A leg's width comes from its corridor's [`Corridor::width_m`] — the same
+//! cross-section the surface band reads, so a mouth and the band that lands on
+//! it are the same width (ROADS.md invariant 1 and 5); a non-drivable member (a
+//! footway, a crossing) joins the intersection without contributing paved area.
+//!
+//! The extent and the band are not in quite the same *place*, to within the
+//! smoothing displacement: the area is built at the mapped connector point with
+//! mapped leg headings, while the band is buffered around the smoothed sweep
+//! line ([`carriageway_sources`]), a median 0.45 m away. That is inside what
+//! the extent is for — it only has to say roughly where the intersection is —
+//! but it is the one place the "by construction" in invariant 1 is now an
+//! approximation. Moving it would mean choosing *which* member's smoothed line
+//! a shared connector sits on, and each corridor smooths its own
+//! independently.
 
 use std::collections::HashMap;
 
 use geo_types::Coord;
 
 use crate::assemble::grid::GridIndex;
-use crate::scene::DEG_M;
 use crate::priors;
-use crate::scene::{Corridor, CorridorId, SceneGraph, SpanKind};
+use crate::scene::{Corridor, CorridorId, SceneGraph, SpanKind, DEG_M};
 use crate::solve::SolvedModel;
 use crate::synth::area::{Area, Leg};
 use crate::synth::sheets;
@@ -60,13 +72,16 @@ const MERGE_SLACK_M: f64 = 6.0;
 
 /// Widest an intersection cluster may grow, in metres. The merge rule is
 /// local and could otherwise walk a dense old town into one lake of asphalt;
-/// past this the next merge is refused and the junctions plate separately.
+/// past this the next merge is refused and the junctions stay separate places.
 const MAX_CLUSTER_M: f64 = 45.0;
 
-/// A baked intersection plate: its paved area, the styling class, and its
-/// surface level — a fixed int32-mm height (an engineered junction, at its
-/// welded level) or `None` for an at-grade one, which drapes on the ground.
-pub struct BakedJunction {
+/// One place roads meet: its extent, the height its members solved to share,
+/// and the grade-separation layer that puts it on.
+///
+/// An *extent*, not a surface. Nothing here is drawn — the union paves the real
+/// shape — so this only has to say roughly where the intersection is, for the
+/// marking trim, the height-field pin and the curb-return mask.
+pub struct Intersection {
     area: Area,
     /// The height the intersection's members solved to share, metres — the mean
     /// over its clustered junctions of [`SolvedModel::junction_height`]. `None`
@@ -81,7 +96,7 @@ pub struct BakedJunction {
     layer: u32,
 }
 
-impl BakedJunction {
+impl Intersection {
     /// The intersection centre.
     pub fn point(&self) -> Coord {
         self.area.centre()
@@ -103,13 +118,12 @@ impl BakedJunction {
     }
 }
 
-/// Every intersection plate, baked from the solved model — shared by the emit
-/// workers through an `Arc`. A coarse geographic grid answers "which plates
-/// are near this box" without a linear scan, which both the per-tile plate
-/// emission and the per-segment marking trims (phase 1, millions of
-/// segments) depend on.
-pub struct JunctionModel {
-    junctions: Vec<BakedJunction>,
+/// The paved network's inputs, baked once from the solved model and shared by
+/// every worker through an `Arc`. Coarse spatial indexes answer "what is near
+/// this box" without a linear scan, which the per-segment marking trims (phase
+/// 1, millions of segments) and the per-tile height field both depend on.
+pub struct CarriagewayModel {
+    junctions: Vec<Intersection>,
     grid: HashMap<(i32, i32), Vec<u32>>,
     /// Every carriageway segment in the extract, with the width it paves — the
     /// corridor half of the road height field's sources
@@ -201,12 +215,12 @@ fn grid_cell(x: f64, y: f64) -> (i32, i32) {
     ((x / GRID_DEG).floor() as i32, (y / GRID_DEG).floor() as i32)
 }
 
-impl JunctionModel {
+impl CarriagewayModel {
     fn build(
-        junctions: Vec<BakedJunction>,
+        junctions: Vec<Intersection>,
         sources: Vec<SourceSeg>,
         handovers: Vec<Handover>,
-    ) -> JunctionModel {
+    ) -> CarriagewayModel {
         let mut grid: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
         for (i, j) in junctions.iter().enumerate() {
             let p = j.point();
@@ -225,7 +239,7 @@ impl JunctionModel {
                 i as u32,
             );
         }
-        JunctionModel { junctions, grid, sources, source_grid, handovers }
+        CarriagewayModel { junctions, grid, sources, source_grid, handovers }
     }
 
     /// Every abutment cut in the extract. Few — one per structure span end —
@@ -282,14 +296,14 @@ impl JunctionModel {
         self.junctions.is_empty()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &BakedJunction> {
+    pub fn iter(&self) -> impl Iterator<Item = &Intersection> {
         self.junctions.iter()
     }
 
     /// The plates whose centres fall in the `(west, south, east, north)` box.
     /// The caller pads the box by whatever reach (trim radius, plate size)
     /// matters to it.
-    pub fn near(&self, b: (f64, f64, f64, f64)) -> Vec<&BakedJunction> {
+    pub fn near(&self, b: (f64, f64, f64, f64)) -> Vec<&Intersection> {
         // Tested against each plate's *area*, not its centre. A star-shaped
         // intersection region reaches far past the padding a tile query carries
         // — a big roundabout's legs run tens of metres — so a centre test drops
@@ -337,7 +351,7 @@ impl JunctionModel {
 /// members' benches already agree there (the street weld), and a fixed disc
 /// would cut into the slope the intersection genuinely sits on. One with no
 /// profiled member has no known height and is skipped.
-pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> JunctionModel {
+pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> CarriagewayModel {
     let ports = Ports::build(scene);
     let clusters = cluster(scene, &ports);
     let mut junctions = Vec::new();
@@ -355,7 +369,7 @@ pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> JunctionModel {
     for (s, &l) in sources.iter_mut().zip(layers.iter()) {
         s.layer = l;
     }
-    let mut model = JunctionModel::build(junctions, sources, handovers);
+    let mut model = CarriagewayModel::build(junctions, sources, handovers);
     // An intersection pins the sheet it stands on, which is the sheet of the
     // asphalt at its own solved height. Resolved after the sources are stamped,
     // because that is when there is a layering to read.
@@ -830,7 +844,7 @@ fn bake_one(
     solved: &SolvedModel,
     ports: &Ports,
     cluster: &Cluster,
-) -> Option<BakedJunction> {
+) -> Option<Intersection> {
     let centre = cluster.centre;
     let m_lon = DEG_M * centre.y.to_radians().cos();
 
@@ -893,7 +907,7 @@ fn bake_one(
     // overshoots into asphalt its own band should be laying.
     let area = Area::new(centre, legs, half_max + offset_max)?;
 
-    Some(BakedJunction {
+    Some(Intersection {
         area,
         height: (pin_count > 0).then(|| pin_sum / pin_count as f64),
         layer: 0, // stamped by `bake` once the sources are layered

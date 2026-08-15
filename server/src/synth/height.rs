@@ -65,7 +65,7 @@ use crate::project::Bounds;
 use crate::scene::DEG_M;
 use crate::solve::{Profile, SolvedModel};
 use crate::synth::area::Area;
-use crate::synth::junction::JunctionModel;
+use crate::synth::carriageway::CarriagewayModel;
 use crate::synth::road;
 
 /// One carriageway segment: the stretch of centerline between two nodes, and how
@@ -108,7 +108,7 @@ impl<'a> HeightField<'a> {
     /// the baked intersections; nothing here infers anything the model does not
     /// already state.
     pub fn for_tile(
-        junctions: &'a JunctionModel,
+        junctions: &'a CarriagewayModel,
         solved: &'a SolvedModel,
         z: u8,
         bounds: &Bounds,
@@ -566,7 +566,7 @@ mod tests {
         let nodes = c.nodes.clone();
         let scene = SceneGraph::new(vec![c]);
         let solved = SolvedModel::from_profiles(vec![Some(Profile::flat(&nodes, 400.0))], Z);
-        let junctions = crate::synth::junction::bake(&scene, &solved);
+        let junctions = crate::synth::carriageway::bake(&scene, &solved);
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
         let field = HeightField::for_tile(&junctions, &solved, Z, &bounds);
         let mut s = sampler();
@@ -619,7 +619,7 @@ mod tests {
         }];
         let solved =
             SolvedModel::from_profiles(profiles, Z).with_junction_heights(vec![Some(500.0)]);
-        let junctions = crate::synth::junction::bake(&scene, &solved);
+        let junctions = crate::synth::carriageway::bake(&scene, &solved);
         assert_eq!(junctions.len(), 1, "the three legs plate as one intersection");
 
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
@@ -699,7 +699,7 @@ mod tests {
         // …but the junction is pinned 20 m below it.
         let solved =
             SolvedModel::from_profiles(profiles, Z).with_junction_heights(vec![Some(480.0)]);
-        let junctions = crate::synth::junction::bake(&scene, &solved);
+        let junctions = crate::synth::carriageway::bake(&scene, &solved);
         let ground = Arc::new(crate::ground::derive(&scene, &solved, None, 1));
         assert!(ground.earthwork_count() > 0, "the legs must bench the ground to 500");
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
@@ -740,7 +740,7 @@ mod tests {
             vec![Some(Profile::flat(&a.nodes, 400.0)), Some(Profile::flat(&b.nodes, cross_h))];
         let scene = SceneGraph::new(vec![a, b]);
         let solved = SolvedModel::from_profiles(profiles, Z);
-        let junctions = crate::synth::junction::bake(&scene, &solved);
+        let junctions = crate::synth::carriageway::bake(&scene, &solved);
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
         let field = HeightField::for_tile(&junctions, &solved, Z, &bounds);
         let mut s = sampler();
@@ -814,7 +814,7 @@ mod tests {
         let nodes = c.nodes.clone();
         let scene = SceneGraph::new(vec![c]);
         let solved = SolvedModel::from_profiles(vec![Some(Profile::flat(&nodes, 400.0))], Z);
-        let junctions = crate::synth::junction::bake(&scene, &solved);
+        let junctions = crate::synth::carriageway::bake(&scene, &solved);
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
         let field = HeightField::for_tile(&junctions, &solved, Z, &bounds);
         let mut s = sampler();
@@ -841,7 +841,7 @@ mod tests {
         let scene = SceneGraph::new(vec![c]);
         // A road solved 30 m up: an embankment or a bridge approach.
         let solved = SolvedModel::from_profiles(vec![Some(Profile::flat(&nodes, 30.0))], Z);
-        let junctions = crate::synth::junction::bake(&scene, &solved);
+        let junctions = crate::synth::carriageway::bake(&scene, &solved);
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
         let field = HeightField::for_tile(&junctions, &solved, Z, &bounds);
         let mut s = sampler();
@@ -870,7 +870,7 @@ mod tests {
         let nodes = c.nodes.clone();
         let scene = SceneGraph::new(vec![c]);
         let solved = SolvedModel::from_profiles(vec![Some(Profile::flat(&nodes, 400.0))], Z);
-        let junctions = crate::synth::junction::bake(&scene, &solved);
+        let junctions = crate::synth::carriageway::bake(&scene, &solved);
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
         let field = HeightField::for_tile(&junctions, &solved, Z, &bounds);
         let mut s = sampler();

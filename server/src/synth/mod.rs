@@ -12,10 +12,10 @@
 //! plain, never something wrong.
 
 pub mod area;
+pub mod carriageway;
 pub mod carried;
 pub mod draped;
 pub mod height;
-pub mod junction;
 pub mod markings;
 pub mod pave_mesh;
 pub mod pavement;

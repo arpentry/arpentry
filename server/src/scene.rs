@@ -321,7 +321,7 @@ impl SceneGraph {
 /// is *not* below anything measured is two of them disagreeing: `synth` used to
 /// carry a second pair (`110_540` for latitude, from the building mesher's
 /// local-tangent normals) and `terrain`/`gen` a third literal (`111_319.5`),
-/// with `synth::junction` and `synth::pave_mesh` reading from both sets. The
+/// with `synth::carriageway` and `synth::pave_mesh` reading from both sets. The
 /// two latitude figures differ by 0.70 %, or 7 mm per metre, so a ring buffered
 /// against one and inset against the other picks up a systematic north–south
 /// bias of the same order as `seam.abutment_plan`'s whole 5 cm threshold.

@@ -87,14 +87,14 @@ fn report_timings(stats: &pipeline::Stats) {
         if stats.threads == 1 { "" } else { "s" },
     );
     eprintln!(
-        "model   {:>8}  {} corridors, {} profiles, {} crossings, {} earthwork edges, {} water bodies, {} junction plates",
+        "model   {:>8}  {} corridors, {} profiles, {} crossings, {} earthwork edges, {} water bodies, {} intersections",
         secs(t.model),
         stats.corridors,
         stats.profiles,
         stats.crossings,
         stats.earthworks,
         stats.water,
-        stats.junction_plates,
+        stats.intersections,
     );
     eprintln!(
         "crests            {} segments, {} nodes pulled in by a contending bench, {} dropped",
