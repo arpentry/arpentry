@@ -65,6 +65,12 @@ pub fn run(scan: &ArchiveScan<'_>, opt: &Options) -> Scorecard {
 
     let mut visited = 0usize;
     let mut truncated = false;
+    // The extent actually measured, grown tile by tile. Recorded on the
+    // scorecard because a metric is only comparable against one taken over the
+    // same ground: two archives covering different bboxes differ in every
+    // population, and that difference reads exactly like a change in the
+    // geometry.
+    let mut bbox: Option<(f64, f64, f64, f64)> = None;
     for &z in &zooms {
         let mut tiles = scan.tiles_at(z);
         if let Some((lon, lat)) = opt.at {
@@ -80,6 +86,13 @@ pub fn run(scan: &ArchiveScan<'_>, opt: &Options) -> Scorecard {
         for (tz, tx, ty, id) in tiles {
             let Some(tile) = scan.decode(tz, tx, ty, id) else { continue };
             visited += 1;
+            let b = crate::project::Bounds::of_tile(tz, tx, ty);
+            bbox = Some(match bbox {
+                None => (b.west, b.south, b.east, b.north),
+                Some((w, s, e, n)) => {
+                    (w.min(b.west), s.min(b.south), e.max(b.east), n.max(b.north))
+                }
+            });
             for c in checks.iter_mut() {
                 c.visit(&tile, opt);
             }
@@ -101,5 +114,26 @@ pub fn run(scan: &ArchiveScan<'_>, opt: &Options) -> Scorecard {
         }
     }
 
-    Scorecard { archive: String::new(), zooms, metrics }
+    let scope = crate::verify::Scope {
+        tiles: visited,
+        bbox,
+        spacing_m: opt.spacing_m,
+        max_tiles: opt.max_tiles,
+        at: opt.at,
+        truncated,
+        commit: git_commit(),
+    };
+    Scorecard { archive: String::new(), zooms, scope, metrics }
+}
+
+/// The tree this run measured, best-effort. A baseline that cannot name its
+/// commit cannot be re-cut, and re-cutting is the only way to tell a stale
+/// baseline from a real regression.
+fn git_commit() -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }

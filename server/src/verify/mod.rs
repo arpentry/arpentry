@@ -215,10 +215,41 @@ impl Metric {
     }
 }
 
+/// What a run actually measured — the provenance a committed baseline needs.
+///
+/// A scorecard is only comparable to another one taken over the same ground.
+/// Without this, a baseline is a column of numbers with no way to tell whether
+/// it describes the same extent, the same zoom or the same tree: the committed
+/// Montreux baseline recorded only its archive *filename*, which pointed at a
+/// throwaway A/B archive in a session scratchpad, so nothing about it could be
+/// reproduced or even located. Every field here is something that changes the
+/// population a metric is measured over, which is to say something that can
+/// move a number without anything being wrong.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Scope {
+    /// Tiles actually decoded and visited, across all measured zooms.
+    pub tiles: usize,
+    /// Plan extent of those tiles: `(west, south, east, north)`. `None` when
+    /// nothing was visited.
+    pub bbox: Option<(f64, f64, f64, f64)>,
+    /// The sampling options that decide how densely the surface is probed.
+    pub spacing_m: f64,
+    pub max_tiles: usize,
+    /// Set when `--at` scoped the run to one tile.
+    pub at: Option<(f64, f64)>,
+    /// Whether `max_tiles` bit, so partial coverage never reads as full.
+    pub truncated: bool,
+    /// The tree that produced the run, best-effort `git rev-parse --short
+    /// HEAD`. `None` outside a repository — the tool still works, it just
+    /// cannot say what it was measuring.
+    pub commit: Option<String>,
+}
+
 /// A run's full set of measurements.
 pub struct Scorecard {
     pub archive: String,
     pub zooms: Vec<u8>,
+    pub scope: Scope,
     pub metrics: Vec<Metric>,
 }
 

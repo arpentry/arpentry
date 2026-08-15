@@ -42,7 +42,15 @@ fixed, and then re-findable only visually.
 arpentry_verify data/overture-ch/preview.arpa
 
 # Did this change make it better? Exit 1 on any regression, so it can gate.
+# Judged on how often the defect happens, then how bad its tail is; a lone
+# moved extreme prints as `outlier only` and does not gate (§9.1).
 arpentry_verify preview.arpa --baseline server/verify/baseline-montreux-z16.json
+
+# The archive half only measures what was drawn. Merge the model-side checks
+# (I5, I7, I8) so one baseline covers both, and re-cut it the same way.
+arpentry_tiler ... --verify-model data/overture-ch/preview.arpa.model.json
+arpentry_verify preview.arpa --model data/overture-ch/preview.arpa.model.json \
+    --baseline server/verify/baseline-montreux-z16.json
 
 # What is happening at the place that looks wrong?
 arpentry_verify preview.arpa --at 6.9290,46.4200
@@ -543,12 +551,83 @@ Re-mine after retiling a different extract; the sites are extract-specific.
 correct — it records what was true when it was written, including the deviations
 that are known and accepted. Its job is to make the *next* change legible.
 
-A metric that regressed exits 1. A metric present in the baseline and absent
-from the run also reports, because a check that stopped running looks exactly
-like a check that passed.
-
 Regenerate with `--json`, and say in the commit message which numbers moved and
 why.
+
+### 9.1 What decides the verdict
+
+A metric is three numbers, and the diff consults them in order of how much of
+the distribution has to change for the answer to change:
+
+1. **How often** — `violation_pct`, the share of samples past the threshold.
+   A statistic over every sample, so a move in it means the geometry moved.
+   Gates.
+2. **How bad** — `tail`, the p99.9 a single outlier cannot dominate. Reached
+   when the rate holds: the same sites failing, each one worse. Gates.
+3. **The extreme** — `worst`. Reported as `outlier only`, and **never gates.**
+
+The order was originally the reverse, and it made the gate unusable. `worst` is
+a maximum over as many as thirteen million samples, so it is the least stable
+number on the card, and the rate was consulted only if it moved by less than a
+centimetre — which it essentially never does. Measured on Montreux, that
+reported seven regressions, *none* of which had moved its median to three
+decimals: one new sliver triangle took `slope.terrain_face` from 201.8 to 349.9
+with the rate at 0.617 → 0.616, and `contact.kerb_lip` was called a regression
+on the run where its violation rate fell from 12.8 % to 8.7 %. It failed the
+other way too, calling `clearance.bore_cover` and `order.grade_stack` improved
+while both were getting steadily worse on rate.
+
+A gate that fires on every run gets turned off, which is strictly worse than no
+gate: at the time this was found the committed baseline was three commits stale,
+`arpentry_verify --baseline` exited 1 on the committed tree, and the eight
+metrics added by those three commits had no baseline entry at all. A genuine
+per-site catastrophe is what §8's corpus scenarios and the offender lists are
+for; it is not something a max over the whole extract can be asked to find.
+
+**The noise floors.** A rate move must clear all three of: 0.01 percentage
+points absolute (so a rare defect is not swamped), 2 % relative (so a common one
+has no hair trigger), and **three binomial standard errors** at the pooled rate
+over the smaller population. A tail move must clear 5 cm, because the histogram
+bins at 1.3 cm and a quantile that slips one bin has not measured anything.
+
+The statistical floor is what makes the small-population metrics usable at all.
+`seam.abutment_bare` has twenty samples, so one new offender is a five-point
+move; `seam.abutment_plan` has a hundred and forty-three, so one is nearly a
+point. Both reported as confident regressions on a run that had changed a
+constant by 0.7 %. Three sigma at n = 20 is fifteen points — which is the honest
+statement that twenty samples cannot resolve less.
+
+For the same reason the tail only gates above **ten thousand samples**. `tail`
+is the p99.9, and it only means "the bulk of the tail" once the top thousandth
+holds several samples; at twenty, p99.9 and the maximum are the same number, and
+gating on it would smuggle back the single-outlier gate this ladder exists to
+remove.
+
+The cost is real and worth stating: the seam metrics (143–922 samples at
+Montreux) can only gate on large moves. If a change needs finer resolution than
+that, the answer is a larger extract, not a lower floor.
+
+A metric present in the baseline and absent from the run also reports, because a
+check that stopped running looks exactly like a check that passed. So does the
+reverse — a check with no baseline entry prints `absent` and is named as ungated
+on stderr, so newly added checks cannot quietly protect nothing.
+
+### 9.2 What makes two scorecards comparable
+
+Every scorecard carries a `scope` block: the commit, the tiles visited and the
+plan extent they cover, the sample spacing, and whether the tile cap bit. A diff
+reports any drift in it *before* the verdicts, because a baseline cut over
+different ground produces a full column of confident, meaningless verdicts — and
+a population that moves on its own moves every metric with it.
+
+The `samples` column carries the same warning per metric, flagged with `!` past
+5 %. This is the trap that hid the largest real change on the last five commits:
+`contact.rail_standoff` lost 37 % of its population and shifted its median by
+12.5 m, and the old table summarised it as a 1.3 m improvement.
+
+The baseline this replaced recorded only an archive *filename*, which pointed at
+a throwaway A/B archive in a session scratchpad — no bbox, no zoom, no commit.
+Nothing about it could be reproduced or even located.
 
 ## 10. Adding a check
 

@@ -210,6 +210,34 @@ fn main() -> ExitCode {
         };
         let changes = card.diff(&base);
         println!("\n{}", report::diff_table(&changes));
+
+        // Whether the two runs measured the same ground, before any verdict is
+        // taken seriously. A baseline cut over a different extent produces a
+        // full column of confident, meaningless verdicts.
+        let drift = card.scope_drift(&base);
+        if !drift.is_empty() {
+            eprintln!("scope differs from the baseline — verdicts below are not comparable:");
+            for d in &drift {
+                eprintln!("  {d}");
+            }
+        }
+
+        // Outliers are reported and never gate: `worst` is a maximum over
+        // millions of samples, and a gate keyed on it fires constantly.
+        let outliers: Vec<&str> =
+            changes.iter().filter(|c| c.verdict == Move::Outlier).map(|c| c.id.as_str()).collect();
+        if !outliers.is_empty() {
+            eprintln!(
+                "extreme moved on an unchanged distribution (not gated): {}",
+                outliers.join(", ")
+            );
+        }
+        let absent: Vec<&str> =
+            changes.iter().filter(|c| c.verdict == Move::Absent).map(|c| c.id.as_str()).collect();
+        if !absent.is_empty() {
+            eprintln!("no baseline entry, so ungated: {}", absent.join(", "));
+        }
+
         let regressed: Vec<&str> =
             changes.iter().filter(|c| c.verdict == Move::Regressed).map(|c| c.id.as_str()).collect();
         if !regressed.is_empty() {
