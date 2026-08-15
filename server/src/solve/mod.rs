@@ -336,8 +336,14 @@ pub fn run_licensed(
     // (`reconcile_stratum`): the workers and every read inside the loop see
     // either the annotation (their own stratum, not yet solved) or a senior's
     // reconciled truth (already written back).
+    // The `let scene = &*scene_mut` reborrow is deliberate and not a swap:
+    // the per-stratum loop below needs the scene mutable for its write-back and
+    // immutable for every read, so the mutable handle is renamed once here and
+    // an immutable view taken from it. Written as two same-named `let`s it
+    // tripped clippy's `almost_swapped`, which is deny-by-default and so failed
+    // the whole lint run.
     let scene_mut = scene;
-    let scene: &SceneGraph = scene_mut;
+    let scene: &SceneGraph = &*scene_mut;
     // Every corridor in the scene is solved. The gate upstream admits only
     // strata that solve (`assemble::run`), so "does this need a profile" is no
     // longer a question asked here — a draped feature never reaches this point.

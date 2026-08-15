@@ -154,6 +154,37 @@ fn mesh_options(cfg: &Config) -> ground::sampler::MeshOptions {
     ground::sampler::MeshOptions { breaklines: cfg.breaklines, hole: cfg.hole }
 }
 
+/// The global world model: everything stages 1–3 built, and the derived models
+/// stage 4 reads. Built once before tiling, shared by every worker.
+///
+/// **A type, so that the invariant is not a comment.** Every height an emit
+/// worker writes is a function of these and the global terrain lattice, never
+/// of the tile window — which is what makes adjacent tiles and successive zooms
+/// agree by construction (invariant 5). Passing the six pieces separately said
+/// nothing about that and cost twelve-argument signatures: `flush_tile` took
+/// twelve, `emit_parallel` eleven, `phase1_worker` and `process_feature` ten
+/// each, four of them carrying a `too_many_arguments` waiver. Nothing in those
+/// lists distinguished the shared model from the per-tile state it is the whole
+/// point to keep separate.
+///
+/// Everything here is behind an `Arc` and immutable after construction. The
+/// per-tile state — the `GroundSampler`, the height field, the buckets — is
+/// deliberately *not* here: it is the half that varies, and it stays in the
+/// argument lists where it is visible.
+pub struct World {
+    pub scene: SceneGraph,
+    pub solved: Arc<SolvedModel>,
+    pub ground: Arc<GroundStack>,
+    /// Carriageway sources, handover cuts and intersection extents, derived
+    /// from the solved model (`synth::junction`).
+    pub junctions: Arc<JunctionModel>,
+    /// The unioned road surface, one paved region per level per z13 chunk.
+    pub pavement: Arc<synth::pavement::PavementModel>,
+    /// Every solved bridge deck indexed by plan position, so phase 1 can ask
+    /// whether a draped feature's elevated span is a sidewalk on one of them.
+    pub carriers: synth::carried::Carriers,
+}
+
 /// Summary counts from a run.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Stats {
@@ -299,6 +330,14 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // once from the same carriageway sources the intersections came from.
     let t_pave = Instant::now();
     let pavement = Arc::new(synth::pavement::bake(&junctions, threads));
+    // Every solved bridge deck, indexed by plan position, so phase 1 can ask
+    // whether a draped feature's elevated span is really the sidewalk on one
+    // of them (`synth::carried`). Built once and shared: the answer is a
+    // function of the solved model, so every worker and every tile must get
+    // the same one (I5).
+    let carriers = synth::carried::Carriers::build(&scene, &solved);
+    let world = World { scene, solved, ground, junctions, pavement, carriers };
+    let World { scene, solved, ground, junctions, pavement, .. } = &world;
     stats.pave_chunks = pavement.chunk_count() as u64;
     stats.pave_area_m2 = pavement.area_m2();
     stats.timings.pavement = t_pave.elapsed();
@@ -328,9 +367,9 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // model and not the archive. Opt-in, because it re-solves the scene.
     if let Some(path) = &cfg.verify_model {
         let m = crate::verify::model::Model {
-            scene: &scene,
-            solved: &solved,
-            ground: &ground,
+            scene,
+            solved,
+            ground,
             terrain: cfg.terrain.as_deref(),
             threads,
         };
@@ -414,12 +453,6 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         Some(path) => Some(Dem::open(path)?),
         None => None,
     };
-    // Every solved bridge deck, indexed by plan position, so phase 1 can ask
-    // whether a draped feature's elevated span is really the sidewalk on one
-    // of them (`synth::carried`). Built once and shared: the answer is a
-    // function of the solved model, so every worker and every tile must get
-    // the same one (I5).
-    let carriers = synth::carried::Carriers::build(&scene, &solved);
     // Phase 1 parallelism is bounded by its work items (row groups); the emit
     // pool below is not.
     let phase1_threads = threads.min(queue.len().max(1));
@@ -430,46 +463,23 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     let queue = Mutex::new(queue);
     let mut sorters: Vec<ExternalSorter> = Vec::with_capacity(phase1_threads);
     if phase1_threads == 1 {
-        let (sorter, partial) = phase1_worker(
-            &inputs,
-            &queue,
-            cfg,
-            worker_budget,
-            &scene,
-            &solved,
-            &junctions,
-            &ground,
-            primary_dem,
-            &carriers,
-        )?;
+        let (sorter, partial) =
+            phase1_worker(&inputs, &queue, cfg, worker_budget, &world, primary_dem)?;
         merge_phase1(&mut stats, &partial);
         sorters.push(sorter);
     } else {
         std::thread::scope(|scope| -> Result<(), Error> {
             let mut handles = Vec::with_capacity(phase1_threads);
-            // Only the DEM handle is per-worker; everything else is shared, so
+            // Only the DEM handle is per-worker; the world model is shared, so
             // the closure moves that one binding and borrows the rest.
-            let (inputs, queue) = (&inputs, &queue);
-            let (scene, solved, junctions, ground) = (&scene, &solved, &junctions, &ground);
-            let carriers = &carriers;
+            let (inputs, queue, world) = (&inputs, &queue, &world);
             for _ in 0..phase1_threads {
                 let dem = match &primary_dem {
                     Some(d) => Some(d.fork()?),
                     None => None,
                 };
                 handles.push(scope.spawn(move || {
-                    phase1_worker(
-                        inputs,
-                        queue,
-                        cfg,
-                        worker_budget,
-                        scene,
-                        solved,
-                        junctions,
-                        ground,
-                        dem,
-                        carriers,
-                    )
+                    phase1_worker(inputs, queue, cfg, worker_budget, world, dem)
                 }));
             }
             for handle in handles {
@@ -514,7 +524,8 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             None => None,
         };
         let mut sampler =
-            GroundSampler::new(dem, Arc::clone(&ground), solved.z_ref, mesh_options(cfg));
+            GroundSampler::new(dem, Arc::clone(ground), solved.z_ref, mesh_options(cfg));
+        let tile_ctx = TileContext { flat: &flat, world: &world, quality: cfg.brotli_quality };
         let mut sorted = sorted;
         let mut current: Option<u64> = None;
         let mut buckets: Vec<Vec<EncoderFeature>> =
@@ -530,7 +541,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             let tile_id = tileid::key_tile_id(key);
             if current != Some(tile_id) {
                 if let Some(prev) = current {
-                    flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut sampler, &solved, &pavement, &junctions, &mut elevation, cfg.brotli_quality)?;
+                    flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &tile_ctx, &mut sampler, &mut elevation)?;
                 }
                 current = Some(tile_id);
             }
@@ -543,22 +554,11 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             }
         }
         if let Some(prev) = current {
-            flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &flat, &mut sampler, &solved, &pavement, &junctions, &mut elevation, cfg.brotli_quality)?;
+            flush_tile(&mut writer, prev, &mut buckets, &mut layer_stats, &mut stats, &tile_ctx, &mut sampler, &mut elevation)?;
         }
     } else {
-        emit_parallel(
-            cfg,
-            sorted,
-            threads,
-            &mut writer,
-            &mut layer_stats,
-            &mut stats,
-            &mut elevation,
-            &solved,
-            &ground,
-            &pavement,
-            &junctions,
-        )?;
+        emit_parallel(cfg, sorted, threads, &mut writer, &mut layer_stats, &mut stats,
+            &mut elevation, &world)?;
     }
 
     let elevation_range = if elevation.0.is_finite() { elevation } else { (0.0, 0.0) };
@@ -580,6 +580,18 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     stats.timings.write += t_write.elapsed();
     stats.timings.phase2 = phase2_start.elapsed();
     Ok(stats)
+}
+
+/// What every tile encode reads and none of them may modify: the shared world
+/// model, the flat fallback mesh, and the compression setting.
+///
+/// Split from the mutable per-tile state on purpose — the sampler, the buckets,
+/// the writer and the stats stay separate arguments, because those are the ones
+/// that vary and the ones a reader has to keep track of.
+struct TileContext<'a> {
+    flat: &'a TerrainMesh,
+    world: &'a World,
+    quality: i32,
 }
 
 /// One tile's worth of consecutive sorted records, ready to encode.
@@ -640,10 +652,7 @@ fn emit_parallel(
     layer_stats: &mut LayerStats,
     stats: &mut Stats,
     elevation: &mut (f64, f64),
-    solved: &Arc<SolvedModel>,
-    ground: &Arc<GroundStack>,
-    pavement: &Arc<synth::pavement::PavementModel>,
-    junctions: &Arc<JunctionModel>,
+    world: &World,
 ) -> Result<(), Error> {
     use std::sync::mpsc;
 
@@ -713,18 +722,17 @@ fn emit_parallel(
         for _ in 0..threads {
             let job_rx = Arc::clone(&job_rx);
             let result_tx = result_tx.clone();
-            let solved = Arc::clone(solved);
-            let ground = Arc::clone(ground);
-            let pavement = Arc::clone(pavement);
-            let junctions = Arc::clone(junctions);
+            let ground = Arc::clone(&world.ground);
+            let z_ref = world.solved.z_ref;
             let dem = match &primary_dem {
                 Some(d) => Some(d.fork()?),
                 None => None,
             };
             workers.push(scope.spawn(move || -> Result<(), Error> {
                 let flat = terrain::flat_mesh(TERRAIN_GRID);
-                let mut sampler =
-                    GroundSampler::new(dem, ground, solved.z_ref, mesh_options(cfg));
+                let tile_ctx =
+                    TileContext { flat: &flat, world, quality: cfg.brotli_quality };
+                let mut sampler = GroundSampler::new(dem, ground, z_ref, mesh_options(cfg));
                 loop {
                     // Blocking recv under the lock serializes idle waits only;
                     // a queued job is handed off immediately.
@@ -733,7 +741,7 @@ fn emit_parallel(
                         break;
                     };
                     let result =
-                        encode_tile(job, &flat, &mut sampler, &solved, &pavement, &junctions, cfg.brotli_quality);
+                        encode_tile(job, &tile_ctx, &mut sampler);
                     if result_tx.send(result).is_err() {
                         break;
                     }
@@ -786,13 +794,12 @@ fn emit_parallel(
 /// plus the stats the writer folds in.
 fn encode_tile(
     job: TileJob,
-    flat: &TerrainMesh,
+    tile: &TileContext<'_>,
     sampler: &mut GroundSampler,
-    solved: &SolvedModel,
-    pavement: &synth::pavement::PavementModel,
-    junctions: &JunctionModel,
-    quality: i32,
 ) -> Result<TileResult, Error> {
+    let TileContext { flat, world, quality } = tile;
+    let World { solved, pavement, junctions, .. } = *world;
+    let quality = *quality;
     let (z, x, y) = hilbert::tile_id_decode(job.tile_id);
     let bounds = Bounds::of_tile(z, x, y);
 
@@ -1082,12 +1089,8 @@ fn phase1_worker(
     queue: &Mutex<VecDeque<WorkItem>>,
     cfg: &Config,
     mem_budget: usize,
-    scene: &SceneGraph,
-    solved: &SolvedModel,
-    junctions: &JunctionModel,
-    ground: &Arc<GroundStack>,
+    world: &World,
     dem: Option<Dem>,
-    carriers: &synth::carried::Carriers,
 ) -> Result<(ExternalSorter, Stats), Error> {
     let mut sorter = ExternalSorter::new(&cfg.tmp_dir, mem_budget);
     let mut stats = Stats::default();
@@ -1095,8 +1098,12 @@ fn phase1_worker(
     // a draped feature's elevated span may start (`synth::draped::seat`). It is
     // taken before the cut because moving an abutment moves the boundary
     // between the deck and the path draped up to it, and the cut is here.
-    let mut sampler =
-        GroundSampler::new(dem, Arc::clone(ground), solved.z_ref, mesh_options(cfg));
+    let mut sampler = GroundSampler::new(
+        dem,
+        Arc::clone(&world.ground),
+        world.solved.z_ref,
+        mesh_options(cfg),
+    );
     loop {
         let item = queue.lock().expect("phase-1 queue poisoned").pop_front();
         let Some(item) = item else {
@@ -1116,18 +1123,7 @@ fn phase1_worker(
             let Some(feature) = next else {
                 break;
             };
-            process_feature(
-                *layer,
-                &feature?,
-                cfg,
-                &mut sorter,
-                &mut stats,
-                scene,
-                solved,
-                junctions,
-                &mut sampler,
-                carriers,
-            )?;
+            process_feature(*layer, &feature?, cfg, &mut sorter, &mut stats, world, &mut sampler)?;
         }
     }
     Ok((sorter, stats))
@@ -1152,19 +1148,16 @@ fn phase1_worker(
 /// records emitted instead of `covered tiles × vertices`. Detail is carried at
 /// `tolerance_for(layer, zmax)`; coarser zooms re-simplify their (small)
 /// per-tile pieces on emission.
-#[allow(clippy::too_many_arguments)]
 fn process_feature(
     layer: u8,
     f: &crate::geoparquet::Feature,
     cfg: &Config,
     sorter: &mut ExternalSorter,
     stats: &mut Stats,
-    scene: &SceneGraph,
-    solved: &SolvedModel,
-    junctions: &JunctionModel,
+    world: &World,
     sampler: &mut GroundSampler,
-    carriers: &synth::carried::Carriers,
 ) -> Result<(), Error> {
+    let World { scene, solved, junctions, carriers, .. } = world;
     stats.features_read += 1;
     let Some(bb) = clip::bbox(&f.geometry) else {
         return Ok(());
@@ -1637,14 +1630,13 @@ fn flush_tile(
     buckets: &mut [Vec<EncoderFeature>],
     layer_stats: &mut LayerStats,
     stats: &mut Stats,
-    flat: &TerrainMesh,
+    tile: &TileContext<'_>,
     sampler: &mut GroundSampler,
-    solved: &SolvedModel,
-    pavement: &synth::pavement::PavementModel,
-    junctions: &JunctionModel,
     elevation: &mut (f64, f64),
-    quality: i32,
 ) -> Result<(), Error> {
+    let TileContext { flat, world, quality } = tile;
+    let World { solved, pavement, junctions, .. } = *world;
+    let quality = *quality;
     let (z, x, y) = hilbert::tile_id_decode(tile_id);
     let bounds = Bounds::of_tile(z, x, y);
     stamp_elevations(buckets, sampler, z);
