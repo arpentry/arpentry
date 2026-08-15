@@ -306,15 +306,8 @@ fn build_corridor(
     }
 
     let cos_lat = run_cos_lat(&nodes);
-    let mut arc = Vec::with_capacity(nodes.len());
-    let mut acc = 0.0;
-    for (i, &c) in nodes.iter().enumerate() {
-        if i > 0 {
-            acc += metric_len(nodes[i - 1], c, cos_lat);
-        }
-        arc.push(acc);
-    }
-    let total = acc;
+    let arc = crate::scene::cumulative_arc(&nodes);
+    let total = arc[arc.len() - 1];
     if total <= 0.0 {
         return None;
     }

@@ -34,10 +34,7 @@ const ROOF_RISE_FRACTION: f64 = 0.5;
 const MAX_ROOF_RISE_M: f64 = 6.0;
 const MIN_ROOF_RISE_M: f64 = 1.0;
 
-/// Metres per degree, for the local-tangent normal computation. Latitude is
-/// near-constant; longitude is scaled by the tile-centre latitude.
-pub(crate) const M_PER_DEG_LAT: f64 = 110_540.0;
-pub(crate) const M_PER_DEG_LON_EQUATOR: f64 = 111_320.0;
+use crate::scene::DEG_M;
 
 /// Roof geometry kind, parsed from Overture's `roof_shape`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -102,7 +99,7 @@ impl Frame {
             east: [-slon, coslon, 0.0],
             north: [-slat * coslon, -slat * slon, coslat],
             up: [coslat * coslon, coslat * slon, slat],
-            m_per_deg_lon: M_PER_DEG_LON_EQUATOR * clat.to_radians().cos(),
+            m_per_deg_lon: DEG_M * clat.to_radians().cos(),
         }
     }
 
@@ -110,7 +107,7 @@ impl Frame {
     pub(crate) fn local_m(&self, lon: f64, lat: f64, z_mm: i32) -> [f64; 3] {
         [
             (lon - self.clon) * self.m_per_deg_lon,
-            (lat - self.clat) * M_PER_DEG_LAT,
+            (lat - self.clat) * DEG_M,
             z_mm as f64 / 1000.0,
         ]
     }

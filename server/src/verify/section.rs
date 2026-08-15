@@ -62,9 +62,11 @@ pub fn render(scan: &ArchiveScan<'_>, cut: &Cut) -> Option<String> {
     let n = ((cut.length_m / cut.step_m).ceil() as usize).clamp(2, 20_000);
     let (sin_b, cos_b) = cut.bearing.to_radians().sin_cos();
     // Metres per degree at this latitude; the section is short enough that a
-    // local tangent plane is exact for the purpose.
-    let m_per_lat = 110_540.0;
-    let m_per_lon = 111_320.0 * cut.lat.to_radians().cos().abs().max(1e-6);
+    // local tangent plane is exact for the purpose. The same constant the
+    // geometry was built with, so a distance along the cut means what it means
+    // everywhere else.
+    let m_per_lat = crate::scene::DEG_M;
+    let m_per_lon = crate::scene::DEG_M * cut.lat.to_radians().cos().abs().max(1e-6);
 
     let mut ground = Trace::new("drawn ground", "#8a7b62", false);
     let mut asphalt = Trace::new("asphalt (level 0)", "#2b2b2b", false);

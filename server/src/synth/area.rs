@@ -22,7 +22,7 @@
 
 use geo_types::Coord;
 
-use crate::building_mesh::{M_PER_DEG_LAT, M_PER_DEG_LON_EQUATOR};
+use crate::scene::DEG_M;
 
 /// A road leaving the intersection: the unit ENU heading out of the centre and
 /// the half-width of the carriageway that runs along it.
@@ -75,7 +75,7 @@ impl Area {
         }
         let mut area = Area {
             centre,
-            m_per_deg_lon: M_PER_DEG_LON_EQUATOR * centre.y.to_radians().cos(),
+            m_per_deg_lon: DEG_M * centre.y.to_radians().cos(),
             legs,
             reach,
             ring: Vec::new(),
@@ -91,12 +91,12 @@ impl Area {
 
     /// The ENU metre offset of a world point from the centre.
     pub fn offset_m(&self, c: Coord) -> (f64, f64) {
-        ((c.x - self.centre.x) * self.m_per_deg_lon, (c.y - self.centre.y) * M_PER_DEG_LAT)
+        ((c.x - self.centre.x) * self.m_per_deg_lon, (c.y - self.centre.y) * DEG_M)
     }
 
     /// The world point at an ENU metre offset from the centre.
     pub fn point_at(&self, de: f64, dn: f64) -> Coord {
-        Coord { x: self.centre.x + de / self.m_per_deg_lon, y: self.centre.y + dn / M_PER_DEG_LAT }
+        Coord { x: self.centre.x + de / self.m_per_deg_lon, y: self.centre.y + dn / DEG_M }
     }
 
     /// The boundary, counter-clockwise, as ENU metre offsets from the centre.
@@ -112,7 +112,7 @@ impl Area {
             e_max = e_max.max((e as f64).abs());
             n_max = n_max.max((n as f64).abs());
         }
-        (e_max / self.m_per_deg_lon, n_max / M_PER_DEG_LAT)
+        (e_max / self.m_per_deg_lon, n_max / DEG_M)
     }
 
     /// How far the boundary lies from the centre along the unit direction

@@ -257,8 +257,8 @@ fn constrained_mesh_inner(
     let mut normals: Vec<i8> = vec![0; kept * 2];
     let (mut emin, mut emax) = (f64::INFINITY, f64::NEG_INFINITY);
     let mid_lat = (bounds.south + bounds.north) * 0.5;
-    let dlat = NORMAL_STEP_M / 111_319.5;
-    let dlon = NORMAL_STEP_M / (111_319.5 * (mid_lat * PI / 180.0).cos());
+    let dlat = NORMAL_STEP_M / crate::scene::DEG_M;
+    let dlon = NORMAL_STEP_M / (crate::scene::DEG_M * (mid_lat * PI / 180.0).cos());
     for (v, &(qx, qy)) in qpos.iter().enumerate() {
         if !used[v] {
             continue;

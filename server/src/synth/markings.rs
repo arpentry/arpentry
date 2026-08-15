@@ -21,7 +21,8 @@
 
 use geo_types::{Coord, Geometry, LineString, MultiLineString};
 
-use crate::building_mesh::{Frame, M_PER_DEG_LAT, M_PER_DEG_LON_EQUATOR};
+use crate::building_mesh::Frame;
+use crate::scene::DEG_M;
 use crate::priors;
 use crate::project::Bounds;
 use crate::synth::area::Area;
@@ -195,8 +196,8 @@ fn arc_lengths(pts: &[Coord]) -> Vec<f64> {
     let mut arc = Vec::with_capacity(pts.len());
     arc.push(0.0);
     for w in pts.windows(2) {
-        let de = (w[1].x - w[0].x) * M_PER_DEG_LON_EQUATOR * cosk;
-        let dn = (w[1].y - w[0].y) * M_PER_DEG_LAT;
+        let de = (w[1].x - w[0].x) * DEG_M * cosk;
+        let dn = (w[1].y - w[0].y) * DEG_M;
         arc.push(arc.last().expect("non-empty") + (de * de + dn * dn).sqrt());
     }
     arc
@@ -239,7 +240,7 @@ fn line_len_m(line: &LineString, frame: &Frame) -> f64 {
         .windows(2)
         .map(|w| {
             let de = (w[1].x - w[0].x) * frame.m_per_deg_lon;
-            let dn = (w[1].y - w[0].y) * M_PER_DEG_LAT;
+            let dn = (w[1].y - w[0].y) * DEG_M;
             (de * de + dn * dn).sqrt()
         })
         .sum()
@@ -255,7 +256,7 @@ fn offset_line(line: &LineString, offset_m: f64, frame: &Frame) -> Option<LineSt
     }
     let m_lon = frame.m_per_deg_lon;
     let dir = |a: Coord, b: Coord| -> Option<(f64, f64)> {
-        let (de, dn) = ((b.x - a.x) * m_lon, (b.y - a.y) * M_PER_DEG_LAT);
+        let (de, dn) = ((b.x - a.x) * m_lon, (b.y - a.y) * DEG_M);
         let len = (de * de + dn * dn).sqrt();
         (len > 1e-9).then(|| (de / len, dn / len))
     };
@@ -279,7 +280,7 @@ fn offset_line(line: &LineString, offset_m: f64, frame: &Frame) -> Option<LineSt
         let reach = offset_m * scale;
         out.push(Coord {
             x: pts[i].x + pe * reach / m_lon,
-            y: pts[i].y + pn * reach / M_PER_DEG_LAT,
+            y: pts[i].y + pn * reach / DEG_M,
         });
     }
     (out.len() >= 2).then(|| LineString(out))
@@ -303,7 +304,7 @@ fn trim_line(line: &LineString, areas: &[&Area]) -> Vec<LineString> {
     // Cumulative arclength in metres (local equirectangular scale).
     let cosk = pts[0].y.to_radians().cos();
     let en = |from: Coord, to: Coord| {
-        ((to.x - from.x) * M_PER_DEG_LON_EQUATOR * cosk, (to.y - from.y) * M_PER_DEG_LAT)
+        ((to.x - from.x) * DEG_M * cosk, (to.y - from.y) * DEG_M)
     };
     let mut arc = Vec::with_capacity(pts.len());
     arc.push(0.0);
@@ -397,7 +398,7 @@ mod tests {
 
     fn straight(len_m: f64) -> LineString {
         let cy: f64 = 46.0;
-        let m_lon = M_PER_DEG_LON_EQUATOR * cy.to_radians().cos();
+        let m_lon = DEG_M * cy.to_radians().cos();
         LineString(vec![
             Coord { x: 7.0, y: cy },
             Coord { x: 7.0 + len_m / m_lon, y: cy },
@@ -410,7 +411,7 @@ mod tests {
         let dashes = cut_dashes(&straight(50.0), 4.0, 6.0);
         assert_eq!(dashes.len(), 5);
         let cy: f64 = 46.0;
-        let m_lon = M_PER_DEG_LON_EQUATOR * cy.to_radians().cos();
+        let m_lon = DEG_M * cy.to_radians().cos();
         for (k, d) in dashes.iter().enumerate() {
             let s = (d.0.first().expect("start").x - 7.0) * m_lon;
             let e = (d.0.last().expect("end").x - 7.0) * m_lon;
@@ -465,7 +466,7 @@ mod tests {
     fn dashes_inside_an_intersection_are_dropped() {
         let line = straight(50.0);
         let cy: f64 = 46.0;
-        let m_lon = M_PER_DEG_LON_EQUATOR * cy.to_radians().cos();
+        let m_lon = DEG_M * cy.to_radians().cos();
         // A crossroads over the middle: the [20,24] dash (mid 22) is on it.
         let centre = Coord { x: 7.0 + 22.0 / m_lon, y: cy };
         let legs = vec![
@@ -500,7 +501,7 @@ mod tests {
         // A 200 m west→east line through a 10 m intersection at its middle:
         // two pieces, each ending at the intersection edge (tucked under it).
         let cy: f64 = 46.0;
-        let m_lon = M_PER_DEG_LON_EQUATOR * cy.to_radians().cos();
+        let m_lon = DEG_M * cy.to_radians().cos();
         let c = Coord { x: 7.0, y: cy };
         let line = LineString(vec![
             Coord { x: c.x - 100.0 / m_lon, y: cy },
@@ -534,7 +535,7 @@ mod tests {
         // corner notch and back in — two cuts, one kept piece between them.
         // The circular trim this replaced could only ever make one cut.
         let cy: f64 = 46.0;
-        let m_lon = M_PER_DEG_LON_EQUATOR * cy.to_radians().cos();
+        let m_lon = DEG_M * cy.to_radians().cos();
         let c = Coord { x: 7.0, y: cy };
         let legs = vec![
             crate::synth::area::Leg { e: 1.0, n: 0.0, half_w: 4.0 },
@@ -544,7 +545,7 @@ mod tests {
         // Reach 20 m: the three arms stick well out of the 8 m core, so a
         // line across them at 12 m north is inside, outside, inside.
         let area = Area::new(c, legs, 20.0).expect("a tee");
-        let at = |de: f64, dn: f64| Coord { x: c.x + de / m_lon, y: c.y + dn / M_PER_DEG_LAT };
+        let at = |de: f64, dn: f64| Coord { x: c.x + de / m_lon, y: c.y + dn / DEG_M };
         let line = LineString(vec![at(-30.0, 12.0), at(30.0, 12.0)]);
         let pieces = trim_line(&line, &[&area]);
         assert_eq!(pieces.len(), 2, "west and east of the north arm survive");

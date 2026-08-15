@@ -41,7 +41,7 @@ use std::collections::HashMap;
 use geo_types::Coord;
 
 use crate::assemble::grid::GridIndex;
-use crate::building_mesh::{M_PER_DEG_LAT, M_PER_DEG_LON_EQUATOR};
+use crate::scene::DEG_M;
 use crate::priors;
 use crate::scene::{Corridor, CorridorId, SceneGraph, SpanKind};
 use crate::solve::SolvedModel;
@@ -832,7 +832,7 @@ fn bake_one(
     cluster: &Cluster,
 ) -> Option<BakedJunction> {
     let centre = cluster.centre;
-    let m_lon = M_PER_DEG_LON_EQUATOR * centre.y.to_radians().cos();
+    let m_lon = DEG_M * centre.y.to_radians().cos();
 
     let mut legs: Vec<Leg> = Vec::new();
     let mut paves = false;
@@ -851,7 +851,7 @@ fn bake_one(
             pin_count += 1;
         }
         let jn = &scene.junctions[j as usize];
-        let off = ((jn.point.x - centre.x) * m_lon, (jn.point.y - centre.y) * M_PER_DEG_LAT);
+        let off = ((jn.point.x - centre.x) * m_lon, (jn.point.y - centre.y) * DEG_M);
         offset_max = offset_max.max(off.0.hypot(off.1));
         for m in &jn.members {
             let c = &scene.corridors[m.corridor as usize];
@@ -964,8 +964,8 @@ fn union_box(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> (f64, f64, f64
 
 /// The diagonal of a lon/lat box in metres.
 fn box_extent_m(b: (f64, f64, f64, f64), lat: f64) -> f64 {
-    let m_lon = M_PER_DEG_LON_EQUATOR * lat.to_radians().cos();
-    ((b.2 - b.0) * m_lon).hypot((b.3 - b.1) * M_PER_DEG_LAT)
+    let m_lon = DEG_M * lat.to_radians().cos();
+    ((b.2 - b.0) * m_lon).hypot((b.3 - b.1) * DEG_M)
 }
 
 #[cfg(test)]
@@ -1053,7 +1053,7 @@ mod tests {
 
     /// Plan distance in metres from `q` to a polyline.
     fn to_polyline(pts: &[Coord], cos_lat: f64, q: Coord) -> f64 {
-        let m = |c: Coord| (c.x * cos_lat * 111_320.0, c.y * 110_540.0);
+        let m = |c: Coord| (c.x * cos_lat * DEG_M, c.y * DEG_M);
         let (qx, qy) = m(q);
         let mut best = f64::INFINITY;
         for w in pts.windows(2) {
@@ -1075,14 +1075,14 @@ mod tests {
         for (i, n) in c.nodes.iter_mut().enumerate() {
             n.y += if i % 2 == 0 { 1.2e-5 } else { -1.2e-5 };
         }
-        // The corridor's own metric arc, so its run bounds and the profile's
-        // stations are the same measure of the same line.
-        let cos_lat = c.cos_lat;
-        let mut arc = vec![0.0];
-        for w in c.nodes.windows(2) {
-            let (dx, dy) = ((w[1].x - w[0].x) * cos_lat * 111_320.0, (w[1].y - w[0].y) * 110_540.0);
-            arc.push(arc[arc.len() - 1] + dx.hypot(dy));
-        }
+        // The corridor's own metric arc, built by the one function that builds
+        // every arc, so its run bounds and the profile's stations are the same
+        // parameterisation of the same line. Rolling a third copy here is what
+        // hid this test's real residual: it used a different latitude scale, so
+        // the fixture's stations and the profile's disagreed by 0.7 % and the
+        // error cancelled against the offset being measured.
+        let cos_lat = crate::scene::run_cos_lat(&c.nodes);
+        let arc = crate::scene::cumulative_arc(&c.nodes);
         let total = arc[arc.len() - 1];
         c.arc = arc;
         let (b0, b1) = (total * 0.4, total * 0.6);
@@ -1119,8 +1119,19 @@ mod tests {
         // abutment overrun deliberately takes such a point.
         let prof = solved.profile(0).expect("profiled");
         let total = *prof.arc().last().expect("an arc");
-        let curve: Vec<Coord> = (0..=(total / 0.1) as usize)
-            .map(|i| prof.smooth_at_arc((i as f64 * 0.1).min(total)))
+        // Sampled at a centimetre, not a decimetre. `smooth_at_arc` takes an
+        // arc but spends it as a *spline* parameter (`edge_at_arc` turns it
+        // into a fraction of the raw edge, `smooth_point` feeds that to the
+        // Catmull-Rom), and a Catmull-Rom's parameter is not arc length. So
+        // stepping the arc uniformly does not step along the curve uniformly:
+        // where the parameterisation compresses, two samples 0.1 m apart in arc
+        // are far enough apart in space that a point genuinely *on* the curve
+        // stands 28 mm off the chord between them. That is this proxy
+        // polyline's error, not the band's, and it read as the band's until the
+        // fixture stopped hiding it.
+        const STEP_M: f64 = 0.01;
+        let curve: Vec<Coord> = (0..=(total / STEP_M) as usize)
+            .map(|i| prof.smooth_at_arc((i as f64 * STEP_M).min(total)))
             .collect();
         let off_smooth = sources
             .iter()

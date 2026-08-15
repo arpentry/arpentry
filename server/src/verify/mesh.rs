@@ -20,6 +20,7 @@ use std::collections::HashMap;
 
 use crate::fb::tile::arpentry::tiles as fbt;
 use crate::project::Bounds;
+use crate::scene::DEG_M;
 
 /// Metres per unit of tile-local plan space, per axis. Tiles are 2:1 in
 /// degrees and longitude degrees shorten with latitude, so the two differ by
@@ -33,11 +34,16 @@ pub struct Scale {
 }
 
 impl Scale {
+    /// The same [`DEG_M`] the generators measured with, on both axes. An
+    /// instrument calibrated differently from the thing it measures reports the
+    /// difference as a defect: this used to read latitude at 110_540 while
+    /// every buffer, inset and bench it scores was built at 111_320, putting a
+    /// 0.70 % north–south bias into every plan distance on the scorecard.
     pub fn of(b: &Bounds) -> Scale {
         let mid = (b.south + b.north) * 0.5;
         Scale {
-            mx: b.width() * 111_320.0 * mid.to_radians().cos().abs().max(1e-6),
-            my: b.height() * 110_540.0,
+            mx: b.width() * DEG_M * mid.to_radians().cos().abs().max(1e-6),
+            my: b.height() * DEG_M,
         }
     }
 

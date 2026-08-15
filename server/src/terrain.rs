@@ -137,8 +137,8 @@ where
 
     // Approximate cell size in metres for the finite-difference slope.
     let mid_lat = (bounds.south + bounds.north) * 0.5;
-    let cell_w_m = cell_lon * 111_319.5 * (mid_lat * PI / 180.0).cos();
-    let cell_h_m = cell_lat * 111_319.5;
+    let cell_w_m = cell_lon * crate::scene::DEG_M * (mid_lat * PI / 180.0).cos();
+    let cell_h_m = cell_lat * crate::scene::DEG_M;
 
     // Padded elevation grid: one halo row/column on each side (rows/cols -1..=n).
     let pad_w = (n + 2) as usize;

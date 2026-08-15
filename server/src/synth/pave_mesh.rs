@@ -38,7 +38,8 @@
 use geo_types::Coord;
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 
-use crate::building_mesh::{Frame, M_PER_DEG_LAT};
+use crate::building_mesh::Frame;
+use crate::scene::DEG_M;
 use crate::ground::sampler::GroundSampler;
 use crate::priors;
 use crate::project::{self, Bounds};
@@ -293,7 +294,7 @@ fn mesh_rings(
     height: &mut dyn FnMut(f64, f64) -> i32,
 ) -> Option<(TerrainMesh, Option<TerrainMesh>, Region)> {
     let up = Frame::at_center(bounds).encode_enu(0.0, 0.0, 1.0);
-    let m_lon = crate::building_mesh::M_PER_DEG_LON_EQUATOR
+    let m_lon = crate::scene::DEG_M
         * ((bounds.south + bounds.north) * 0.5).to_radians().cos();
 
     // The inset boundary: what the interior is triangulated to, leaving the rim
@@ -571,7 +572,7 @@ fn inset_ring(ring: &TaggedRing, m_lon: f64) -> Option<Vec<Coord>> {
     if n < 3 {
         return None;
     }
-    let m_lat = crate::building_mesh::M_PER_DEG_LAT;
+    let m_lat = crate::scene::DEG_M;
     // The material is on the left for both ring kinds (see above), so there is no
     // per-kind sign: the offset direction is the left normal either way.
     let sign = 1.0f64;
@@ -753,13 +754,13 @@ const CUT_PARALLEL_RAD: f64 = 0.5;
 /// a kerb. Both are silhouette; only one of them is an edge of anything.
 fn is_handover(a: Coord, b: Coord, handovers: &[Handover], m_lon: f64) -> bool {
     let mid = Coord { x: 0.5 * (a.x + b.x), y: 0.5 * (a.y + b.y) };
-    let (ex, ey) = ((b.x - a.x) * m_lon, (b.y - a.y) * M_PER_DEG_LAT);
+    let (ex, ey) = ((b.x - a.x) * m_lon, (b.y - a.y) * DEG_M);
     let elen = (ex * ex + ey * ey).sqrt();
     if elen <= 0.0 {
         return false;
     }
     handovers.iter().any(|h| {
-        let (dx, dy) = ((h.b.x - h.a.x) * m_lon, (h.b.y - h.a.y) * M_PER_DEG_LAT);
+        let (dx, dy) = ((h.b.x - h.a.x) * m_lon, (h.b.y - h.a.y) * DEG_M);
         let len2 = dx * dx + dy * dy;
         if len2 <= 0.0 {
             return false;
@@ -770,7 +771,7 @@ fn is_handover(a: Coord, b: Coord, handovers: &[Handover], m_lon: f64) -> bool {
         if cos < CUT_PARALLEL_RAD.cos() {
             return false;
         }
-        let (qx, qy) = ((mid.x - h.a.x) * m_lon, (mid.y - h.a.y) * M_PER_DEG_LAT);
+        let (qx, qy) = ((mid.x - h.a.x) * m_lon, (mid.y - h.a.y) * DEG_M);
         let t = ((qx * dx + qy * dy) / len2).clamp(0.0, 1.0);
         let (px, py) = (qx - dx * t, qy - dy * t);
         (px * px + py * py).sqrt() <= CUT_NEAR_M
@@ -801,7 +802,7 @@ fn build_rim(
         normals: Vec::new(),
         edge_across: Vec::new(),
     };
-    let m_lon = crate::building_mesh::M_PER_DEG_LON_EQUATOR
+    let m_lon = crate::scene::DEG_M
         * ((bounds.south + bounds.north) * 0.5).to_radians().cos();
     let mut hand = empty();
     let mut mesh = empty();
@@ -919,7 +920,7 @@ fn unit(a: Coord, b: Coord, m_lon: f64, m_lat: f64) -> Option<(f64, f64)> {
 /// Twice the signed area of a ring in metre-ish units — only its sign and
 /// relative magnitude are used.
 fn signed_area(ring: &[Coord], m_lon: f64) -> f64 {
-    let m_lat = crate::building_mesh::M_PER_DEG_LAT;
+    let m_lat = crate::scene::DEG_M;
     let mut acc = 0.0;
     for k in 0..ring.len() {
         let a = ring[k];
@@ -1097,7 +1098,7 @@ mod tests {
         // parallel to the western kerb, square across the southern one.
         let (a, c) = (ring[0], ring[3]);
         let handovers = [Handover { a, b: c }];
-        let m_lon = crate::building_mesh::M_PER_DEG_LON_EQUATOR
+        let m_lon = crate::scene::DEG_M
             * ((b.south + b.north) * 0.5).to_radians().cos();
         assert!(
             is_handover(ring[3], ring[0], &handovers, m_lon),
@@ -1139,7 +1140,7 @@ mod tests {
         }
         // The ring still bounds the same area — densifying adds vertices, never
         // moves the boundary.
-        let m_lon = crate::building_mesh::M_PER_DEG_LON_EQUATOR
+        let m_lon = crate::scene::DEG_M
             * ((b.south + b.north) * 0.5).to_radians().cos();
         let (a0, a1) = (signed_area(&ring.pts, m_lon), signed_area(&dense.pts, m_lon));
         assert!((a0 - a1).abs() / a0.abs() < 1e-9, "the boundary moved: {a0} vs {a1}");
@@ -1321,7 +1322,7 @@ mod tests {
         // A ring narrower than twice the rim cannot be inset: the mesher must
         // still produce a surface, just without the fade.
         let b = bounds();
-        let m_lat = crate::building_mesh::M_PER_DEG_LAT;
+        let m_lat = crate::scene::DEG_M;
         let thin = 0.3 * priors::PAVE_RIM_M; // well under 2 x the rim
         let pts = vec![
             Coord { x: b.west + 0.2 * b.width(), y: b.south + 0.5 * b.height() },
@@ -1345,7 +1346,7 @@ mod tests {
         // and it must still get a rim, which an "area always decreases" guard
         // silently denied it.
         let b = bounds();
-        let m_lon = crate::building_mesh::M_PER_DEG_LON_EQUATOR
+        let m_lon = crate::scene::DEG_M
             * ((b.south + b.north) * 0.5).to_radians().cos();
 
         let outer = tagged(box_ring(&b, 0.1), &b, true);

@@ -39,7 +39,8 @@
 
 use geo_types::{Coord, Geometry, LineString};
 
-use crate::building_mesh::{Frame, M_PER_DEG_LAT};
+use crate::building_mesh::Frame;
+use crate::scene::DEG_M;
 use crate::clip;
 use crate::priors::{
     Kind, DECK_THICKNESS_M, PORTAL_CLEARANCE_M, PORTAL_MARCH_M, PORTAL_MAX_M,
@@ -522,7 +523,7 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 /// The (qx, qy) corner of a cross-section offset `side` half-widths to its left.
 fn corner(s: &Section, side: f64, frame: &Frame, bounds: &Bounds, half_w: f64) -> (u16, u16) {
     let dlon = s.left_e * half_w * side / frame.m_per_deg_lon;
-    let dlat = s.left_n * half_w * side / M_PER_DEG_LAT;
+    let dlat = s.left_n * half_w * side / DEG_M;
     (project::quantize_x(s.lon + dlon, bounds), project::quantize_y(s.lat + dlat, bounds))
 }
 
@@ -539,7 +540,7 @@ fn cap_end(
     let (el, er) =
         (corner(end, 1.0, frame, bounds, half_w), corner(end, -1.0, frame, bounds, half_w));
     let de = (end.lon - inner.lon) * frame.m_per_deg_lon;
-    let dn = (end.lat - inner.lat) * M_PER_DEG_LAT;
+    let dn = (end.lat - inner.lat) * DEG_M;
     let len = (de * de + dn * dn).sqrt().max(1e-9);
     let nrm = frame.encode_enu(de / len, dn / len, 0.0);
     quad(acc, (el, end.bot_mm), (er, end.bot_mm), (er, end.top_mm), (el, end.top_mm), nrm);
@@ -580,7 +581,7 @@ fn sweep_prism(
         let (p, q) = (&sections[i.saturating_sub(1)], &sections[(i + 1).min(n - 1)]);
         // Local tangent (ENU metres, grade included) over the neighbours.
         let fe = (q.lon - p.lon) * frame.m_per_deg_lon;
-        let fnn = (q.lat - p.lat) * M_PER_DEG_LAT;
+        let fnn = (q.lat - p.lat) * DEG_M;
         let fu = (q.top_mm - p.top_mm) as f64 / 1000.0;
         // Top normal = tangent × left, flipped upward when a clipped fragment
         // runs opposite the corridor (its left then opposes the travel
@@ -647,7 +648,7 @@ fn densify(pts: &[Coord], frame: &Frame) -> Vec<Coord> {
     for w in pts.windows(2) {
         let (p0, p1) = (w[0], w[1]);
         let de = (p1.x - p0.x) * frame.m_per_deg_lon;
-        let dn = (p1.y - p0.y) * M_PER_DEG_LAT;
+        let dn = (p1.y - p0.y) * DEG_M;
         let len = (de * de + dn * dn).sqrt();
         let steps = ((len / SEGMENT_M).ceil() as usize).clamp(1, MAX_VERTS);
         for i in 1..=steps {

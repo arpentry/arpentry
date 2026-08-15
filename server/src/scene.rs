@@ -312,8 +312,23 @@ impl SceneGraph {
     }
 }
 
-/// Metres per degree of latitude (spherical approximation), for the local
-/// metric space every stage measures arcs in.
+/// Metres per degree, for the local metric space every stage measures in:
+/// latitude directly, longitude scaled by `cos(lat)` at the call site.
+///
+/// **One constant, for both axes, everywhere.** The spherical approximation is
+/// 0.15 % off at Montreux's latitude, which is 5 mm across a carriageway and
+/// 7 cm across the widest intersection cluster — below anything measured. What
+/// is *not* below anything measured is two of them disagreeing: `synth` used to
+/// carry a second pair (`110_540` for latitude, from the building mesher's
+/// local-tangent normals) and `terrain`/`gen` a third literal (`111_319.5`),
+/// with `synth::junction` and `synth::pave_mesh` reading from both sets. The
+/// two latitude figures differ by 0.70 %, or 7 mm per metre, so a ring buffered
+/// against one and inset against the other picks up a systematic north–south
+/// bias of the same order as `seam.abutment_plan`'s whole 5 cm threshold.
+///
+/// An error shared by every stage cancels in every comparison between stages,
+/// which is what all the invariants are. An error that differs between them
+/// does not cancel anywhere.
 pub const DEG_M: f64 = 111_320.0;
 
 /// Planar distance between two lon/lat points in metres (lon scaled by
@@ -328,6 +343,29 @@ pub fn metric_len(a: Coord, b: Coord, cos_lat: f64) -> f64 {
 pub fn run_cos_lat(run: &[Coord]) -> f64 {
     let mean = run.iter().map(|c| c.y).sum::<f64>() / run.len().max(1) as f64;
     mean.to_radians().cos()
+}
+
+/// Cumulative arc length along a run, in metres, one entry per node.
+///
+/// **The** station measure. A corridor's `arc`, its profile's stations, its
+/// span bounds and every `*_at_arc` lookup have to be the same parameterisation
+/// of the same line, or a span boundary names a different place than the
+/// profile does there — which is the whole subject of the abutment work
+/// (docs/ROADS.md, `seam.abutment_plan`). `assemble` and `solve::profile` used
+/// to compute this separately; identically, but nothing said so, and a test
+/// fixture that rolled its own third copy with a different latitude scale
+/// masked 28 mm of real band-to-sweep-line offset by cancelling against it.
+pub fn cumulative_arc(nodes: &[Coord]) -> Vec<f64> {
+    let cos_lat = run_cos_lat(nodes);
+    let mut arc = Vec::with_capacity(nodes.len());
+    let mut acc = 0.0;
+    for (i, &c) in nodes.iter().enumerate() {
+        if i > 0 {
+            acc += metric_len(nodes[i - 1], c, cos_lat);
+        }
+        arc.push(acc);
+    }
+    arc
 }
 
 /// Deterministic hash of a source feature id (FNV-1a). Links the assemble

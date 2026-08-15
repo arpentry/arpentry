@@ -860,16 +860,7 @@ impl Profile {
 
 /// Cumulative metric arc length at each node.
 fn cumulative(nodes: &[Coord]) -> Vec<f64> {
-    let cos_lat = run_cos_lat(nodes);
-    let mut arc = Vec::with_capacity(nodes.len());
-    let mut acc = 0.0;
-    for (i, &c) in nodes.iter().enumerate() {
-        if i > 0 {
-            acc += metric_len(nodes[i - 1], c, cos_lat);
-        }
-        arc.push(acc);
-    }
-    arc
+    crate::scene::cumulative_arc(nodes)
 }
 
 /// Linear interpolation between `a` and `b` at `t`.

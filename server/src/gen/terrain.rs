@@ -132,8 +132,8 @@ fn town_base_elevation() -> f64 {
 /// smoothstep across the transition ring.
 fn town_flatten_weight(lon_deg: f64, lat_deg: f64) -> f64 {
     let cos_lat = (TOWN_FLAT_CENTER_LAT * PI / 180.0).cos();
-    let dx = (lon_deg - TOWN_FLAT_CENTER_LON) * cos_lat * 111_319.5;
-    let dy = (lat_deg - TOWN_FLAT_CENTER_LAT) * 111_319.5;
+    let dx = (lon_deg - TOWN_FLAT_CENTER_LON) * cos_lat * crate::scene::DEG_M;
+    let dy = (lat_deg - TOWN_FLAT_CENTER_LAT) * crate::scene::DEG_M;
     let d = (dx * dx + dy * dy).sqrt();
     let t = ((TOWN_FLAT_OUTER_M - d) / (TOWN_FLAT_OUTER_M - TOWN_FLAT_INNER_M)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t) // smoothstep
@@ -204,8 +204,8 @@ pub fn build_mesh(bounds: &Bounds) -> TerrainMesh {
     // Approximate cell size in metres (for the finite-difference slope).
     let mid_lat = (bounds.south + bounds.north) * 0.5;
     let cos_lat = (mid_lat * PI / 180.0).cos();
-    let cell_w_m = cell_lon * 111_319.5 * cos_lat;
-    let cell_h_m = cell_lat * 111_319.5;
+    let cell_w_m = cell_lon * crate::scene::DEG_M * cos_lat;
+    let cell_h_m = cell_lat * crate::scene::DEG_M;
 
     let pad_w = TERRAIN_VERTS + 2;
     let elev = build_elevation_grid(bounds, cell_lon, cell_lat);

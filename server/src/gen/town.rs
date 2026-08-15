@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 
 use crate::project::Bounds;
 
-const DEG_PER_M: f64 = 1.0 / 111_319.5;
+const DEG_PER_M: f64 = 1.0 / crate::scene::DEG_M;
 
 // Town bounding box (~1800 m, covering node jitter + building setbacks).
 const TOWN_WEST: f64 = -0.0080;

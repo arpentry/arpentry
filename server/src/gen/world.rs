@@ -19,7 +19,7 @@ use crate::project::{self, Bounds};
 const BROTLI_QUALITY: i32 = 4;
 
 /// Metres → degrees at the equator (for building footprint half-extents).
-const M_TO_DEG: f64 = 1.0 / 111_319.5;
+const M_TO_DEG: f64 = 1.0 / crate::scene::DEG_M;
 
 /// Town roads and buildings are a single global list emitted into every tile
 /// overlapping the town, positioned by quantization. A feature far outside a

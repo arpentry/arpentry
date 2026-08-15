@@ -46,7 +46,7 @@ use i_overlay::mesh::outline::offset::OutlineOffset;
 use i_overlay::mesh::stroke::offset::StrokeOffset;
 use i_overlay::mesh::style::{LineJoin, OutlineStyle, StrokeStyle};
 
-use crate::building_mesh::{M_PER_DEG_LAT, M_PER_DEG_LON_EQUATOR};
+use crate::scene::DEG_M;
 
 /// A point in local ENU metres. `i_overlay`'s native point type, so no
 /// conversion happens on the hot path.
@@ -93,19 +93,19 @@ pub struct MFrame {
 impl MFrame {
     /// The frame about `origin`.
     pub fn of(origin: Coord) -> MFrame {
-        MFrame { origin, m_per_deg_lon: M_PER_DEG_LON_EQUATOR * origin.y.to_radians().cos() }
+        MFrame { origin, m_per_deg_lon: DEG_M * origin.y.to_radians().cos() }
     }
 
     /// The metre offset of a world point from the origin.
     pub fn to_m(&self, c: Coord) -> Pt {
-        [(c.x - self.origin.x) * self.m_per_deg_lon, (c.y - self.origin.y) * M_PER_DEG_LAT]
+        [(c.x - self.origin.x) * self.m_per_deg_lon, (c.y - self.origin.y) * DEG_M]
     }
 
     /// The world point at a metre offset from the origin.
     pub fn to_deg(&self, p: Pt) -> Coord {
         Coord {
             x: self.origin.x + p[0] / self.m_per_deg_lon,
-            y: self.origin.y + p[1] / M_PER_DEG_LAT,
+            y: self.origin.y + p[1] / DEG_M,
         }
     }
 }
