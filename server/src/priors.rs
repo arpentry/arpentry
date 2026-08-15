@@ -487,6 +487,33 @@ pub const RAIL_CLEARANCE_M: f64 = 7.0;
 /// Freeboard a deck must keep over a water surface (S3).
 pub const WATER_FREEBOARD_M: f64 = 4.0;
 
+/// Whether a bare class string names a railway.
+///
+/// The archive carries a feature's `class` but not its `subtype`, so anything
+/// reading a tile back — the verify checks, the section cutter — has to recover
+/// the modality from the class alone. `unknown` rail does not count: it is
+/// indistinguishable here from a road class the parser does not recognise, and
+/// [`of`] gives it the junior default for the same reason.
+///
+/// Here rather than beside each caller because it is a statement about the
+/// class vocabulary, and because it was written twice with identical bodies
+/// (`verify::scene::RoadLine::is_rail`, `verify::checks::handoff`).
+pub fn class_is_rail(class: &str) -> bool {
+    matches!(Kind::parse(Some("rail"), Some(class), None), Kind::Rail(c) if c != RailClass::Unknown)
+}
+
+/// Whether a bare class string draws a surface of its own — a carriageway or a
+/// rail formation, not a footway.
+///
+/// A class with no surface contributes nothing to the union
+/// (`synth::carriageway::carriageway_sources` skips it), so for anything asking
+/// "which drawn band belongs to this feature" the answer for such a class is
+/// "none", and a search that does not know that finds whatever happens to be
+/// nearest instead.
+pub fn class_paves(class: &str) -> bool {
+    Kind::parse(None, Some(class), None).prior().surface != Surface::None
+}
+
 /// Whether an Overture `subclass` marks a ramp — narrower than its class's
 /// mainline carriageway, whatever that class.
 pub fn is_link(subclass: Option<&str>) -> bool {

@@ -142,8 +142,7 @@ struct End {
 /// junior geometry that no corridor partition cut, so the shared-coordinate
 /// premise is not its premise either.
 fn paves(class: &str) -> bool {
-    use crate::priors::{Kind, Surface};
-    Kind::parse(None, Some(class), None).prior().surface != Surface::None
+    crate::priors::class_paves(class)
 }
 
 /// Whether two ends leave their cut along the same alignment. The two pieces

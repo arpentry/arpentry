@@ -14,7 +14,6 @@ use geo_types::{Coord, Geometry, Polygon};
 use crate::geoparquet::{GeoParquet, ReadError};
 use crate::priors::MIN_WATER_BODY_M;
 use crate::scene::{WaterBody, DEG_M};
-use crate::value::Value;
 
 /// Overture water `subtype`s whose surface is still, so flattening one level is
 /// right. Flowing water (`stream`, `river`, `canal`) wants a monotone descent
@@ -31,7 +30,7 @@ pub fn read(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<Vec<WaterBody>, R
     let mut out = Vec::new();
     for feature in gp.features(row_groups, &["subtype", "class"])? {
         let f = feature?;
-        if !is_still(prop_str(&f.properties, "subtype").as_deref()) {
+        if !is_still(crate::value::str_of(&f.properties, "subtype")) {
             continue;
         }
         collect(&f.geometry, &mut out);
@@ -78,9 +77,3 @@ fn bounds(ring: &[Coord]) -> (f64, f64, f64, f64) {
     )
 }
 
-fn prop_str(props: &[(String, Value)], key: &str) -> Option<String> {
-    props.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
-        Value::String(s) => Some(s.clone()),
-        _ => None,
-    })
-}

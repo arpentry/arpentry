@@ -23,7 +23,6 @@ use crate::geoparquet::{GeoParquet, ReadError};
 use crate::priors::{self, Kind, Stratum};
 use crate::project::Bounds;
 use crate::scene::{source_hash, SceneGraph};
-use crate::value::Value;
 
 use corridors::RawSegment;
 
@@ -62,14 +61,10 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
     let mut raw: Vec<RawSegment> = Vec::new();
     for feature in gp.features(row_groups, ATTRS)? {
         let f = feature?;
-        let class_key = prop_string(&f.properties, "class").unwrap_or_default();
-        let subclass = prop_string(&f.properties, "subclass");
-        let subtype_key = prop_string(&f.properties, "subtype").unwrap_or_default();
-        let kind = Kind::parse(
-            Some(subtype_key.as_str()),
-            Some(class_key.as_str()),
-            subclass.as_deref(),
-        );
+        let class_key = crate::value::str_of(&f.properties, "class").unwrap_or_default();
+        let subclass = crate::value::str_of(&f.properties, "subclass");
+        let subtype_key = crate::value::str_of(&f.properties, "subtype").unwrap_or_default();
+        let kind = Kind::parse(Some(subtype_key), Some(class_key), subclass);
         // **The stratum decides.** A feature enters the scene graph when it
         // belongs to a stratum that solves — and a draped feature never does,
         // whatever it is annotated with: carrying a structure span is not a
@@ -93,7 +88,7 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
         if line.0.len() < 2 {
             continue;
         }
-        let Some(source) = prop_string(&f.properties, "id").map(|s| source_hash(&s)) else {
+        let Some(source) = crate::value::str_of(&f.properties, "id").map(|s| source_hash(&s)) else {
             continue; // no stable id: the tiling phase could never look it up
         };
         let start_connector =
@@ -104,9 +99,9 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
             source,
             line: line.0.clone(),
             kind,
-            link: priors::is_link(subclass.as_deref()),
-            class_key,
-            subtype_key,
+            link: priors::is_link(subclass),
+            class_key: class_key.to_string(),
+            subtype_key: subtype_key.to_string(),
             level_runs: f.level_runs,
             start_connector,
             end_connector,
@@ -132,9 +127,3 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
     Ok(scene)
 }
 
-fn prop_string(props: &[(String, Value)], key: &str) -> Option<String> {
-    props.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
-        Value::String(s) => Some(s.clone()),
-        _ => None,
-    })
-}

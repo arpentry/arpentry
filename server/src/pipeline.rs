@@ -982,17 +982,13 @@ fn paves_via_union(f: &EncoderFeature) -> bool {
     if !matches!(f.synth, Synth::Road { corridor: Some(_), .. }) {
         return false;
     }
-    let class = f.properties.iter().find_map(|(k, v)| match (k.as_str(), v) {
-        ("class", Value::String(s)) => Some(s.as_str()),
-        _ => None,
-    });
-    let kind = crate::priors::Kind::parse(None, class, None);
-    if kind.prior().surface != crate::priors::Surface::Asphalt {
+    let class = crate::value::str_of(&f.properties, "class");
+    if crate::priors::Kind::parse(None, class, None).prior().surface
+        != crate::priors::Surface::Asphalt
+    {
         return false;
     }
-    f.properties
-        .iter()
-        .any(|(k, v)| k.as_str() == "width_m" && matches!(v, Value::Double(w) if *w > 0.0))
+    crate::value::f64_of(&f.properties, "width_m").is_some_and(|w| w > 0.0)
 }
 
 /// Adds this tile's share of the unioned road surface: one opaque `road_surface`
@@ -1387,13 +1383,7 @@ fn marking_context<'a>(
     junctions: &'a CarriagewayModel,
     bb: (f64, f64, f64, f64),
 ) -> Option<(String, bool, f64, Vec<&'a crate::synth::area::Area>)> {
-    let find_str = |key: &str| {
-        f.properties.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
-            Value::String(s) => Some(s.clone()),
-            _ => None,
-        })
-    };
-    let class = find_str("class")?;
+    let class = crate::value::str_of(&f.properties, "class")?.to_string();
     let oneway = f
         .properties
         .iter()
@@ -1401,12 +1391,9 @@ fn marking_context<'a>(
     if !crate::priors::has_centre_line(&class, oneway) && !crate::priors::has_edge_lines(&class) {
         return None;
     }
-    let measured = f.properties.iter().find_map(|(k, v)| match (k.as_str(), v) {
-        ("width_rules", Value::Double(w)) => Some(*w),
-        _ => None,
-    });
-    let width =
-        crate::priors::carriageway_width_m(Some(&class), find_str("subclass").as_deref(), measured)?;
+    let measured = crate::value::width_rules_m(&f.properties);
+    let subclass = crate::value::str_of(&f.properties, "subclass");
+    let width = crate::priors::carriageway_width_m(Some(&class), subclass, measured)?;
     // Pad by more than any plausible intersection reach (~200 m in degrees).
     const MARGIN: f64 = 0.002;
     let areas = junctions

@@ -210,11 +210,7 @@ fn in_box(b: &[f64; 4], x: f64, y: f64) -> bool {
 /// the metric called a gap: asphalt bands handing over to `narrow_gauge` and
 /// `funicular` decks, which is not a handoff any road makes.
 fn is_rail_class(class: &str) -> bool {
-    use crate::priors::{Kind, RailClass};
-    matches!(
-        Kind::parse(Some("rail"), Some(class), None),
-        Kind::Rail(c) if c != RailClass::Unknown
-    )
+    crate::priors::class_is_rail(class)
 }
 
 impl Check for Handoff {

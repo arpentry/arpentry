@@ -126,11 +126,7 @@ impl RoadLine {
     /// does not recognise, and `priors` gives it the junior default for the same
     /// reason.
     pub fn is_rail(&self) -> bool {
-        use crate::priors::{Kind, RailClass};
-        matches!(
-            Kind::parse(Some("rail"), Some(&self.class), None),
-            Kind::Rail(c) if c != RailClass::Unknown
-        )
+        crate::priors::class_is_rail(&self.class)
     }
 }
 

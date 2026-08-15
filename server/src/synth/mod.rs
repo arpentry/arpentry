@@ -90,13 +90,8 @@ pub fn emit(
     // region's layer is fixed — and the stroke lands on it by reading the same
     // per-corridor profile the band's bench holds, so the field buys the rail
     // stroke nothing and costs it a cliff.
-    let has_width = f.properties.iter().any(|(k, v)| {
-        k.as_str() == "width_m" && matches!(v, crate::value::Value::Double(w) if *w > 0.0)
-    });
-    let class = f.properties.iter().find_map(|(k, v)| match (k.as_str(), v) {
-        ("class", crate::value::Value::String(s)) => Some(s.as_str()),
-        _ => None,
-    });
+    let has_width = crate::value::f64_of(&f.properties, "width_m").is_some_and(|w| w > 0.0);
+    let class = crate::value::str_of(&f.properties, "class");
     let paved = has_width
         && (class == Some("marking")
             || crate::priors::Kind::parse(None, class, None).prior().surface

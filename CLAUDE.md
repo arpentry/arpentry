@@ -18,6 +18,7 @@ Read these docs before making changes to understand the design and conventions:
 | `docs/GROUND.md` | The ground imprint and its per-zoom meshes |
 | `docs/ROADS.md` | The horizontal road surface: widths, junction areas, markings |
 | `docs/VERIFICATION.md` | Measuring an emitted archive against the invariants: the scorecard, its thresholds, the scenario corpus |
+| `docs/TILER.md` | Tiler mechanics: the five stages, the sort key, the `.arpa` archive layout, the modules, the CLI |
 
 Follow `docs/DESIGN.md` principles and `docs/STYLE.md` conventions in all code.
 

@@ -1,17 +1,58 @@
 # Arpentry Tiler
 
-The tiler (Rust, in `server/`) generates `.arpa` tile archives from GeoParquet data. Tile generation is framed as a sort problem: features are clipped to tiles, sorted by a space-filling curve key, grouped, encoded, and written to a single archive file.
+The tiler (Rust, in `server/`) generates `.arpa` tile archives from GeoParquet
+data. This document owns the **mechanics** — how features become tiles, the
+archive layout, the modules, the CLI. It does not own the *model*: what the
+heights mean and why they are what they are is `docs/GENERATION.md`, and this
+file defers to it wherever the two touch.
+
+Tiling proper is framed as a sort problem: features are clipped to tiles,
+sorted by a space-filling curve key, grouped, encoded, and written to a single
+archive file. But the sort is only the last of five stages, and it is
+deliberately the one with no modelling in it.
 
 ```
-Features → Quadtree walk (simplify + clip per tile) → Sort by tile ID → Group → Build FlatBuffer → Write archive
+Assemble ─→ Solve ─→ Ground ─→ ┐
+(scene)    (heights) (imprint)  │
+                                ├─→ Sort-based tiling ─→ .arpa
+Features ─────────────────────→ ┘   (clip, sort, group,
+                                     synthesize, encode)
 ```
 
 ---
 
 ## 1. Pipeline
 
-The pipeline runs two phases separated by an external merge sort, both parallel
-(`std::thread` + channels, no async runtime):
+### Stages 1–3: the world model, built once
+
+Before a single tile is cut, `pipeline::run` builds the global model that every
+tile then reads (docs/GENERATION.md §5):
+
+- **Assemble** (`assemble`) — splice the transportation input's segments into
+  corridors, find the junctions where they meet, resolve level annotations into
+  corridor-wide structure spans.
+- **Solve** (`solve`) — give every corridor a vertical profile, stratum by
+  stratum in authority order, with junction continuity and crossing clearance
+  holding by construction.
+- **Ground** (`ground`) — derive the engineered ground the solved model
+  implies: earthworks, bench contact lines, water.
+
+Two derived models follow, both pure functions of the solve:
+`synth::carriageway` (the carriageway stretches, handover cuts and intersection
+extents the paved surface is built from) and `synth::pavement` (the unioned
+road surface itself).
+
+All of it is bundled in `pipeline::World` and shared behind `Arc`s. **This is
+the load-bearing property of the whole design**: every height an emit worker
+writes is a function of the world model and the global terrain lattice, never
+of the tile window, so adjacent tiles and successive zooms agree by
+construction (GENERATION.md invariant 5) and the tiling below carries no
+modelling responsibility at all.
+
+### Stages 4–5: the tiling
+
+Two phases separated by an external merge sort, both parallel (`std::thread` +
+channels, no async runtime):
 
 **Phase 1 — process.** Each input's Parquet row groups become work items
 (pruned against the tiling bbox using the `bbox` column's row-group
@@ -33,6 +74,12 @@ flat), assembles the FlatBuffer, and Brotli-compresses it; the writer thread
 restores stream order with a small sequence-keyed heap and appends tiles to
 the archive. Workers own their DEM readers — the Hilbert order keeps their
 tile caches hot.
+
+Geometry synthesis (stage 4, `synth`) happens inside the emit job: each
+feature carries a `Synth` tag decided back in phase 1, and the generator for
+that tag reads the shared world model. A generator degrades rather than fails
+(invariant 6) — a structure whose corridor has no profile falls back to a
+draped road, something plain rather than something wrong.
 
 ### Sort key
 

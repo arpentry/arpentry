@@ -390,17 +390,9 @@ fn build_corridor(
 /// tiled `width_m` property uses: the mapped `width_rules` value where
 /// plausible, else the class prior. `None` for a non-drivable class.
 fn segment_width_m(seg: &RawSegment) -> Option<f64> {
-    let find_str = |key: &str| {
-        seg.properties.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
-            Value::String(s) => Some(s.as_str()),
-            _ => None,
-        })
-    };
-    let measured = seg.properties.iter().find_map(|(k, v)| match (k.as_str(), v) {
-        ("width_rules", Value::Double(w)) => Some(*w),
-        _ => None,
-    });
-    crate::priors::carriageway_width_m(Some(seg.class_key.as_str()), find_str("subclass"), measured)
+    let measured = crate::value::width_rules_m(&seg.properties);
+    let subclass = crate::value::str_of(&seg.properties, "subclass");
+    crate::priors::carriageway_width_m(Some(seg.class_key.as_str()), subclass, measured)
 }
 
 /// Resolves arc-referenced level runs into a clean partition of `[0, total]`:

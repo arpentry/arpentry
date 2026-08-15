@@ -388,19 +388,12 @@ fn build_building_mesh_feature<'a>(
 
 /// Reads a numeric property (Int or Double) from a feature, if present.
 fn prop_f64(f: &EncoderFeature, key: &str) -> Option<f64> {
-    f.properties.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
-        Value::Double(d) => Some(*d),
-        Value::Int(i) => Some(*i as f64),
-        _ => None,
-    })
+    crate::value::f64_of(&f.properties, key)
 }
 
 /// Reads a string property from a feature, if present.
 pub fn prop_str(f: &EncoderFeature, key: &str) -> Option<String> {
-    f.properties.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
-        Value::String(s) => Some(s.clone()),
-        _ => None,
-    })
+    crate::value::str_of(&f.properties, key).map(str::to_string)
 }
 
 /// Builds the geometry union member for a feature, returning its type tag and
