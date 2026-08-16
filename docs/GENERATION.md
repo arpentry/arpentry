@@ -657,7 +657,7 @@ check exists that would have found it.
 | I5 | `lod.structure_drift`, `seam.*` | Geometry shared between tiles and zooms | Any height difference |
 | I6 | `slope.terrain_face`, `slope.carriageway_face`, `slope.terrain_tearing`, plus degradation-ladder assertions | Terrain and asphalt triangles; features with degraded input | A manufactured retaining wall, a torn surface, or a feature that produced spectacle instead of falling a rung |
 | **I7** | **`authority.inversion`** | Every senior datum | **Re-solve with a junior stratum deleted; any senior height that changed** |
-| I7 | `datum.float` | Every senior node | Height beyond its class deviation budget from its terrain reference |
+| I4 | `datum.float` | Every node the reconciled partition leaves at grade, any stratum, water excluded | Height beyond its class deviation budget from its conditioned terrain reference |
 | I8 | `ground.footprint` | Every ground sample | A change outside the imprinting stratum's declared footprints |
 | §4.5 | `crossing.orphan` | Every clearance demand | A demand with no solved feature on both sides — must be structurally zero |
 
@@ -666,9 +666,14 @@ Three notes on what makes these strong:
 - **`authority.inversion` is a proof, not a sample.** It re-runs the model with
   a stratum removed and compares bit patterns. It cannot be passed by luck, and
   it is the only check that verifies the design rather than the output.
-- **`datum.float` catches errors at their source.** A senior feature drifting
-  from its terrain is the *cause* of downstream clearance errors; measuring it
-  directly beats measuring the three-stage-downstream symptom.
+- **`datum.float` catches errors at their source.** A feature drifting from its
+  terrain is the *cause* of downstream clearance errors; measuring it directly
+  beats measuring the three-stage-downstream symptom. It was specified here as
+  a senior-only check and implemented over every stratum, because the first
+  thing it found was junior: a service road mapped as a tunnel up the rock face
+  at Chillon, whose bore mouth had ratcheted 76 m above the lake shore between
+  the grade pass and the rigidity pass. A senior-only population would have
+  watched that happen and reported nothing.
 - **`crossing.orphan` must read zero by construction.** A non-zero count means
   §4.5 has been violated somewhere, and is a design failure rather than a
   quality regression.

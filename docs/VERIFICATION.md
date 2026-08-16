@@ -146,6 +146,7 @@ them so one table and one baseline cover both halves.
 | `solve.determinism` | I5 | The same scene solved twice, compared bit for bit. Non-zero means a height depends on an iteration order or a thread interleaving, and every guarantee below rests on it not doing so. |
 | `authority.inversion_R` | I7 | Stratum R re-solved with every junior corridor deleted from the scene, the burial licenses held at the full scene's values (the plan skeleton is input, §7 I7). Any senior height that moved is an authority violation. |
 | `authority.inversion_S` | I7 | The same for S. |
+| `datum.float` | I4 | At grade means on the ground. Every node the reconciled partition leaves at grade, in every stratum, water excluded: how far the solved road stands from its conditioned terrain reference — either direction, a road sunk into its own hillside being the same defect upside down — less the class deviation budget, so 0.0 is within the cut and fill the class is built on. Structure nodes are outside the population by definition. This is the *source* check: a corridor off its own datum is upstream of every clearance, cover and kerb number that will report it as something else. Known legitimate tail: a clearance lift raises an at-grade road by up to `MAX_CLEARANCE_LIFT_M` and keeps it at grade. |
 | `ground.footprint` | I8 | Every layer of the ground stack against the one beneath it: where a layer moved the ground, its own declared footprint must cover the point. |
 | `structure.bore_daylight` | I3 | The crossing premise, measured. A crossing over a mapped bore buys no clearance (§4.5), which stands on the premise that the bore passes beneath the ground the crossing feature rides on. At every plan crossing of a mapped tunnel span by an alignment annotated above it — the same gate that seeds the solver's burial ceilings — the bore's roof plus cover against its own terrain, signed. Positive is a bore daylighting through a roadbed: the waiver stood on nothing, and the two bands draw a storey apart with neither a bore nor a deck between them. Archive-side only `contact.kerb_lip` can see this class, because a dismissed tunnel paves no band for `order.grade_stack` to catch. |
 
@@ -476,7 +477,11 @@ stop it and cuts a sawtooth instead (`slope.rail_grade` 303 %).
 So the general rule stays unimplemented, and it now has a **named
 prerequisite**: `datum.float`. A two-sided correction cannot be safe while some
 corridors sit hundreds of metres off their own datum, because those are exactly
-the ones whose demands are nonsense. Held to the runs the data calls tunnels,
+the ones whose demands are nonsense. The prerequisite is now measured (§5): on
+the Montreux extract 389,250 at-grade nodes read a median 0.01 m and a p99 of
+1.45 m off their reference, with 0.15 % past half a metre — so the population is
+mostly clean and the question is entirely about its tail, whose worst is a
+residential road sitting 20 m *under* its own ground at 6.7042,46.5073. Held to the runs the data calls tunnels,
 the correction goes where §4.5's prior points and nowhere else: `bore_cover`
 violations 14.14 → 13.42 %, `kerb_lip` 13.49 → 13.45 %, 463 m of annotated
 tunnel recovered, and every extreme in the scorecard unmoved.

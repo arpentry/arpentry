@@ -19,6 +19,7 @@
 //! column carries the largest movement, which is the number to go and look at.
 
 pub mod authority;
+pub mod datum;
 pub mod footprint;
 pub mod structures;
 
@@ -42,6 +43,7 @@ pub fn run(m: &Model<'_>) -> Vec<Metric> {
     let mut out = Vec::new();
     out.extend(authority::determinism(m));
     out.extend(authority::inversion(m));
+    out.extend(datum::check(m));
     out.extend(footprint::check(m));
     out.extend(structures::check(m));
     out
