@@ -119,6 +119,10 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
                 break;
             }
         }
+        // Before anything downstream reads a height: the grade pass is the one
+        // that lifts a bore against its ceiling, and a demand read off that
+        // excursion outlives the sweep that invented it.
+        project_bore_ceilings(g);
         deviation_pass(g);
         contact_pass(g);
         clearance_pass(g, &sites, &mut Dropped::default(), true);
@@ -140,6 +144,7 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
             break;
         }
     }
+    project_bore_ceilings(g);
     deviation_pass(g);
     // The closing settle is where the drops are counted: the main loop applies
     // the same demands every sweep, so counting there would multiply each
@@ -150,6 +155,10 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
     undercut_pass(g, &sites);
     rigidity_pass(g);
     monotone_pass(g);
+    // The last word on a bore, after the passes that can raise one: a clearance
+    // lift takes both bounding anchors of the structure span it sits in, and a
+    // bore mouth is such an anchor.
+    project_bore_ceilings(g);
     // **Contacts last.** A shared connector with a senior stratum is an
     // equality, and the passes above are inequalities and projections that will
     // happily move the node that has to meet it — `rigidity_pass` chords a
@@ -235,6 +244,49 @@ fn seed_bore_ceilings(g: &mut SolveGraph, sites: &VarSites) {
                         c.id, k, c.covered[k], vars[v].terrain_m, slack[v].1
                     );
                 }
+            }
+        }
+    }
+}
+
+/// The burial ceiling, re-asserted on every mapped-tunnel node.
+///
+/// [`seed_bore_ceilings`] writes the ceiling once, before the first sweep, and
+/// it is *hard*: a mapped tunnel may not ride above the ground. Only
+/// [`rigidity_pass`] ever enforced it, and only on the nodes its chord projects
+/// — the run's interior. Two consequences, both measured at the Chillon
+/// gallery, a service road mapped as a tunnel up a 46 % rock face whose lower
+/// end is a free dead-end at the lake shore:
+///
+/// - **The run's end ratchets away.** Nothing owns that node: it is the chord's
+///   anchor rather than one of its projections, `soft_pass` springs only
+///   terrain-pinned nodes, `deviation_pass` skips it for the same reason. What
+///   is left is [`grade_pass`], which splits each violation it cannot satisfy
+///   across *both* ends of the edge — and against interior nodes pinned on a
+///   ceiling four times steeper than the class grade, the pair never agrees, so
+///   every sweep hands the free end another share of the same violation. The
+///   mouth left the shore at 393 m and reached 469.85 m in 96 sweeps, was
+///   reconciled to grade because a road that high is not buried, and drew a
+///   slab of asphalt in the sky with a 76 m kerb hanging off it
+///   (`contact.kerb_lip`, the worst in the extract; `datum.float` 74.31 m).
+/// - **Every pass between grade and rigidity believes the excursion.** The
+///   window is not cosmetic: [`clearance_pass`] sizes its demand from the lower
+///   side's height, and it read this bore mid-ratchet at 463.83 m — 63 m above
+///   the ground it is bored through — and lifted 4.5 km of A9 viaduct 9.42 m to
+///   clear a road that ends the same sweep at 400 m. A lift is recorded as a
+///   floor, so the transient became permanent, with 10 m cliffs where the
+///   lifted run met the rest of the motorway.
+///
+/// So the ceiling is asserted where the sweep can violate it (after the grade
+/// loop, before anything reads a height) and once at the end of the closing
+/// settle, so the output honours it whatever the last pass did. Cheap: one
+/// `min` per mapped-tunnel node, and no other node carries a seeded ceiling.
+fn project_bore_ceilings(g: &mut SolveGraph) {
+    let SolveGraph { corridors, h, slack, .. } = g;
+    for c in corridors.iter() {
+        for (k, &v) in c.vars.iter().enumerate() {
+            if c.tunnel[k] {
+                h[v] = h[v].min(slack[v].1);
             }
         }
     }
@@ -894,6 +946,11 @@ fn nearest_local(c: &CorridorNodes, arc: f64) -> usize {
 /// [`super::profile::deck_ramp`] already does when it fits the deck; leaving the
 /// road on a stale warm start here is exactly what let the road dip beneath its
 /// own straight deck and step off the abutment.
+///
+/// "Its warm-start height" is the one claim here that does not hold on its own:
+/// a free dead-end inside a structure is the only node in the graph nothing
+/// owns, so the grade pass walks it, and [`project_bore_ceilings`] is what
+/// bounds the walk.
 fn project_spans(h: &mut [f64], slack: &[(f64, f64)], c: &CorridorNodes) {
     let m = c.at_grade.len();
     let mut k = 0;
@@ -1214,6 +1271,60 @@ mod tests {
                 (d - r).abs() < 1e-9,
                 "deck departs the line at node {k}: deck {d} vs road {r}"
             );
+        }
+    }
+
+    /// The Chillon gallery: a service road mapped as a tunnel end to end, up a
+    /// 46 % rock face, its lower end a free dead-end at the lake shore. Two
+    /// hard constraints contradict each other there — the class holds 15 % and
+    /// the burial ceiling holds every interior node on a hillside four times
+    /// steeper — and the node that pays for it is the one nothing owns. The
+    /// grade pass splits each violation across both ends of the edge; the
+    /// rigidity pass puts the interior back on its ceiling and leaves the
+    /// terminal where the grade pass left it; ninety-six sweeps of that walked
+    /// the mouth from 393 m to 469.85 m, 76 m over the lake, where it was
+    /// reconciled to grade and drawn as a slab in the air.
+    #[test]
+    fn a_bore_mouth_at_a_corridor_end_does_not_ratchet_into_the_air() {
+        use crate::scene::{Span, SpanKind};
+        let mut a = corridor(0, 6.0, 340.0, 21, RoadClass::Service);
+        // Mapped as bore for all but the last stretch — the annotation the
+        // Fort de Chillon gallery carries, and the reason every node but the
+        // far anchor is a structure node with no terrain spring on it.
+        a.spans = vec![
+            Span { arc0: 0.0, arc1: 320.0, level: -2, kind: SpanKind::Tunnel },
+            Span { arc0: 320.0, arc1: 340.0, level: 0, kind: SpanKind::Grade },
+        ];
+        let spans = a.spans.clone();
+        let scene = SceneGraph::new(vec![a]);
+        let nodes = scene.corridors[0].nodes.clone();
+        let elev = |c: Coord| 393.0 + 0.46 * (c.x - 6.0) * DEG_M * cos_lat();
+        let warm = super::super::profile::solve(
+            &nodes,
+            &spans,
+            super::super::profile::Mode::for_kind(Kind::Road(RoadClass::Service)),
+            &mut |c| elev(c),
+        )
+        .expect("a profile");
+        let mut profiles = vec![Some(warm)];
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[]);
+        solve(&mut g);
+        reconstruct(&g, &mut profiles);
+        let p = profiles[0].as_ref().unwrap();
+        let (road, terrain) = (p.road_m(), p.terrain_m());
+        // A mapped tunnel may not ride above the ground — at its mouth as much
+        // as in its middle. The mouth is the whole point: it is the only node
+        // the chord projection treats as an anchor while nothing anchors it.
+        assert!(
+            road[0] <= terrain[0] + 1e-6,
+            "the bore mouth rides {:.2} m above its own ground",
+            road[0] - terrain[0]
+        );
+        // And no node anywhere on the line stands off the hill it is bored
+        // through: the ratchet was 76 m, so a metre of tolerance is a fence
+        // around the defect rather than a calibration.
+        for (k, (&r, &t)) in road.iter().zip(terrain).enumerate() {
+            assert!(r <= t + 1.0, "node {k} floats {:.2} m over the hillside", r - t);
         }
     }
 
