@@ -109,7 +109,7 @@ pub fn inversion(m: &Model<'_>) -> Vec<Metric> {
         let full = clone_scene(m.scene);
         let plan = solve::crossings::plan_index(&full);
         let all_covered = solve::crossings::covered_bores(&full, &plan);
-        let all_over = solve::crossings::spans_over_a_corridor(&full);
+        let all_over = solve::crossings::spans_over_a_mapped_line(&full);
         let kept = keeps.iter().flatten().count();
         let mut pin = solve::PlanPin {
             covered: vec![Vec::new(); kept],
@@ -230,6 +230,7 @@ fn clone_scene(scene: &SceneGraph) -> SceneGraph {
     let mut out = SceneGraph::new(corridors);
     out.junctions = scene.junctions.clone();
     out.water = scene.water.clone();
+    out.witnesses = scene.witnesses.clone();
     out
 }
 

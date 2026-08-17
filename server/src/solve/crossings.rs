@@ -340,6 +340,13 @@ pub fn covered_sites(scene: &SceneGraph, plan: &[Vec<PlanCrossing>]) -> Vec<Vec<
 /// its kerb.
 const ANNEX_SHOULDER_M: f64 = 4.0;
 
+/// How far inside a witness line a crossing must sit. A crossing at the
+/// line's own terminus is a meeting — a footpath drawn to the railway and
+/// ending on it, or a couple of metres past it — not a passage beneath.
+/// Witness lines carry no connector topology, so locality along the line
+/// stands in for [`meets_here`]'s identity half.
+const WITNESS_MEET_M: f64 = 2.0;
+
 /// Which structure spans pass over or under *another mapped alignment*, per
 /// corridor and parallel to its `spans`.
 ///
@@ -360,11 +367,16 @@ const ANNEX_SHOULDER_M: f64 = 4.0;
 /// A shared connector still means the two *meet* rather than cross
 /// ([`meets_here`]), so a junction inside a span is not a reason to keep it.
 ///
-/// Only corridors are asked, which is exactly the set that holds a profile to
-/// order: a draped feature never reaches `scene.corridors` (`assemble::run`
-/// admits H, R and S), and its deck is fitted after the solve from the ground
-/// at its ends rather than ordered against anything.
-pub fn spans_over_a_corridor(scene: &SceneGraph) -> Vec<Vec<bool>> {
+/// The mapped alignments are the other corridors **and the witness lines**
+/// (`SceneGraph::witnesses`): a draped path or a flowing watercourse never
+/// solves — its deck is fitted after the solve, its surface left to the DEM —
+/// but its plan existence is the same statement, that something passes under
+/// (or over) this span. Measured after the corridor exemption landed, the dip
+/// test still demoted 408 short annotated structures (4.9 km) on the Montreux
+/// extract, and 312 of them (3.5 km) crossed a mapped watercourse or path the
+/// scene had dropped: the DEM cannot see the 2 m stream cut under a 10 m
+/// bridge, and the map is the only thing left that can.
+pub fn spans_over_a_mapped_line(scene: &SceneGraph) -> Vec<Vec<bool>> {
     let mut edges: Vec<Edge> = Vec::new();
     let mut grid = GridIndex::new();
     for c in &scene.corridors {
@@ -374,6 +386,18 @@ pub fn spans_over_a_corridor(scene: &SceneGraph) -> Vec<Vec<bool>> {
             edges.push(Edge { corridor: c.id, node: i });
         }
     }
+    // The witness edges, in their own index, with each line's cumulative arc
+    // for the terminus test.
+    let mut wedges: Vec<(u32, u32)> = Vec::new();
+    let mut wgrid = GridIndex::new();
+    for (li, line) in scene.witnesses.iter().enumerate() {
+        for j in 0..line.len().saturating_sub(1) {
+            let (a, b) = (line[j], line[j + 1]);
+            wgrid.insert((a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)), wedges.len() as u32);
+            wedges.push((li as u32, j as u32));
+        }
+    }
+    let warcs: Vec<Vec<f64>> = scene.witnesses.iter().map(|l| cumulative_arc(l)).collect();
 
     let mut candidates: Vec<u32> = Vec::new();
     scene
@@ -421,11 +445,53 @@ pub fn spans_over_a_corridor(scene: &SceneGraph) -> Vec<Vec<bool>> {
                     if over[si] {
                         break;
                     }
+                    wgrid.query(
+                        (a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)),
+                        &mut candidates,
+                    );
+                    for &wi in candidates.iter() {
+                        let (li, j) = wedges[wi as usize];
+                        let line = &scene.witnesses[li as usize];
+                        let (o_a, o_b) = (line[j as usize], line[j as usize + 1]);
+                        let Some((t, u)) = seg_intersect(a, b, o_a, o_b, c.cos_lat) else {
+                            continue;
+                        };
+                        let arc_here = c.arc[i] + t * (c.arc[i + 1] - c.arc[i]);
+                        if arc_here < s.arc0 || arc_here > s.arc1 {
+                            continue;
+                        }
+                        let wa = &warcs[li as usize];
+                        let w_arc = wa[j as usize] + u * (wa[j as usize + 1] - wa[j as usize]);
+                        let w_len = *wa.last().expect("witness lines have >= 2 vertices");
+                        if w_arc < WITNESS_MEET_M || w_arc > w_len - WITNESS_MEET_M {
+                            continue; // its terminus: a meeting, not a passage
+                        }
+                        over[si] = true;
+                        break;
+                    }
+                    if over[si] {
+                        break;
+                    }
                 }
             }
             over
         })
         .collect()
+}
+
+/// Cumulative arc length (metres) at each vertex of a witness line.
+fn cumulative_arc(line: &[Coord]) -> Vec<f64> {
+    let cos_lat = line.first().map_or(1.0, |p| p.y.to_radians().cos());
+    let mut arc = Vec::with_capacity(line.len());
+    let mut acc = 0.0;
+    arc.push(0.0);
+    for w in line.windows(2) {
+        let dx = (w[1].x - w[0].x) * cos_lat;
+        let dy = w[1].y - w[0].y;
+        acc += (dx * dx + dy * dy).sqrt() * crate::scene::DEG_M;
+        arc.push(acc);
+    }
+    arc
 }
 
 /// How close two intersections of one corridor pair must be, along the upper
@@ -642,7 +708,7 @@ mod tests {
         let mid = over.nodes[2];
         let under = corridor(1, mid.x - 0.001, mid.y, true, len, grade(len));
         let scene = SceneGraph::new(vec![over, under]);
-        let flags = spans_over_a_corridor(&scene);
+        let flags = spans_over_a_mapped_line(&scene);
         assert!(flags[0][1], "the bridge span must be seen crossing the road");
         assert!(!flags[0][0] && !flags[0][2], "grade spans are never marked");
     }
@@ -663,7 +729,71 @@ mod tests {
             ],
         );
         let scene = SceneGraph::new(vec![lone]);
-        assert!(!spans_over_a_corridor(&scene)[0][1]);
+        assert!(!spans_over_a_mapped_line(&scene)[0][1]);
+    }
+
+    /// A corridor with a short bridge span at arc 90..103 (running north from
+    /// `y0 = 46.0`), and a scene holding it plus the given witness lines.
+    fn scene_with_witnesses(witnesses: Vec<Vec<Coord>>) -> SceneGraph {
+        let len = 200.0;
+        let c = corridor(
+            0,
+            6.0,
+            46.0,
+            false,
+            len,
+            vec![
+                Span { arc0: 0.0, arc1: 90.0, level: 0, kind: SpanKind::Grade },
+                Span { arc0: 90.0, arc1: 103.0, level: 1, kind: SpanKind::Bridge },
+                Span { arc0: 103.0, arc1: len, level: 0, kind: SpanKind::Grade },
+            ],
+        );
+        let mut scene = SceneGraph::new(vec![c]);
+        scene.witnesses = witnesses;
+        scene
+    }
+
+    /// The latitude of the bridge span's midpoint (arc ≈ 96.5 m north of 46.0).
+    fn mid_span_y() -> f64 {
+        46.0 + 96.5 / DEG_M
+    }
+
+    #[test]
+    fn a_short_span_over_a_witness_line_is_seen_as_crossing_it() {
+        // A mapped stream under a 13 m annotated bridge: the DEM never shows
+        // the metre-wide cut, the water line is the only evidence — and it is
+        // enough. The line runs east through the span, ends well clear of it.
+        let dx = 0.001;
+        let line = vec![
+            Coord { x: 6.0 - dx, y: mid_span_y() },
+            Coord { x: 6.0 + dx, y: mid_span_y() },
+        ];
+        let flags = spans_over_a_mapped_line(&scene_with_witnesses(vec![line]));
+        assert!(flags[0][1], "the bridge span must be seen crossing the witness");
+        assert!(!flags[0][0] && !flags[0][2], "grade spans are never marked");
+    }
+
+    #[test]
+    fn a_witness_ending_on_the_span_is_a_meeting_not_a_crossing() {
+        // A footpath drawn up to the railway and a metre past its centerline
+        // ends there — nothing passes beneath, so it keeps no bridge.
+        let overshoot = 1.0 / (DEG_M * cos_lat());
+        let line = vec![
+            Coord { x: 6.0 - 0.001, y: mid_span_y() },
+            Coord { x: 6.0 + overshoot, y: mid_span_y() },
+        ];
+        assert!(!spans_over_a_mapped_line(&scene_with_witnesses(vec![line]))[0][1]);
+    }
+
+    #[test]
+    fn a_witness_crossing_outside_the_span_keeps_nothing() {
+        // The path crosses the corridor at arc ≈ 50 m, inside a grade span:
+        // no structure span covers the crossing, so no exemption.
+        let y = 46.0 + 50.0 / DEG_M;
+        let line =
+            vec![Coord { x: 6.0 - 0.001, y }, Coord { x: 6.0 + 0.001, y }];
+        let flags = spans_over_a_mapped_line(&scene_with_witnesses(vec![line]));
+        assert!(!flags.concat().iter().any(|&b| b));
     }
 
     /// The annotated case the file pass used to find: a bridge span over an

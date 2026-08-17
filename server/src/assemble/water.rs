@@ -38,6 +38,44 @@ pub fn read(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<Vec<WaterBody>, R
     Ok(out)
 }
 
+/// The Overture water `subtype`s that flow, and so are skipped by [`read`].
+fn is_flowing(subtype: Option<&str>) -> bool {
+    matches!(subtype, Some("river" | "stream" | "canal"))
+}
+
+/// Reads the flowing-water lines intersecting `bbox`: linestrings as they
+/// are, wide rivers by their bank rings. Plan geometry only — no height and
+/// no surface come from these; they are crossing witnesses for the short-span
+/// reconciliation (`SceneGraph::witnesses`), nothing more. The monotone
+/// descent flowing water owes (GENERATION.md §4.2 H) remains future work.
+pub fn flowing_lines(
+    path: &Path,
+    bbox: (f64, f64, f64, f64),
+) -> Result<Vec<Vec<Coord>>, ReadError> {
+    let gp = GeoParquet::open(path)?;
+    let row_groups = gp.row_groups_intersecting(bbox);
+    let mut out = Vec::new();
+    for feature in gp.features(row_groups, &["subtype"])? {
+        let f = feature?;
+        if !is_flowing(crate::value::str_of(&f.properties, "subtype")) {
+            continue;
+        }
+        let mut push = |line: &[Coord]| {
+            if line.len() >= 2 {
+                out.push(line.to_vec());
+            }
+        };
+        match &f.geometry {
+            Geometry::LineString(l) => push(&l.0),
+            Geometry::MultiLineString(ml) => ml.0.iter().for_each(|l| push(&l.0)),
+            Geometry::Polygon(p) => push(&p.exterior().0),
+            Geometry::MultiPolygon(mp) => mp.0.iter().for_each(|p| push(&p.exterior().0)),
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
 /// Pushes a [`WaterBody`] per polygon big enough to matter (a multipolygon
 /// yields several); ponds finer than the DEM resolves stay draped.
 fn collect(g: &Geometry, out: &mut Vec<WaterBody>) {

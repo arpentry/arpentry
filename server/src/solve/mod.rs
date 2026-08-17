@@ -272,7 +272,7 @@ pub fn run(
 /// The plan skeleton, as the solve consumes it: per corridor, the burial
 /// licenses (`crossings::covered_bores`), the crossing reaches the annex
 /// walks (`crossings::reaches`), and the spans-over-a-corridor exemptions the
-/// short-span demotion honours (`crossings::spans_over_a_corridor` — indexed
+/// short-span demotion honours (`crossings::spans_over_a_mapped_line` — indexed
 /// per span, parallel to the corridor's annotated spans). Heights-free by
 /// construction — arcs, band reaches, level ordinals and crossing existence
 /// only.
@@ -483,12 +483,15 @@ pub fn run_licensed(
 /// through the gorge and dragged its earthworks with it.
 ///
 /// A span that passes over or under another mapped alignment is exempt, whether
-/// or not the ground moves under it ([`crossings::spans_over_a_corridor`]): what
-/// makes it a structure is the carriageway beneath, and the annotation is the
-/// only thing in the data that says which of the two is on top. Demoting it
-/// hands that ordering to the derivation, which reads it off metre-scale
-/// differences between solved surfaces — so one alignment ends up crossing over
-/// some roads and under others.
+/// or not the ground moves under it ([`crossings::spans_over_a_mapped_line`]): what
+/// makes it a structure is the carriageway, path or watercourse beneath, and
+/// the annotation is the only thing in the data that says which of the two is
+/// on top. Demoting it hands that ordering to the derivation, which reads it
+/// off metre-scale differences between solved surfaces — so one alignment ends
+/// up crossing over some roads and under others. The alignments include the
+/// scene's witness lines (`SceneGraph::witnesses`): most short annotated
+/// bridges span a mapped stream or footpath whose metre-wide cut no DEM
+/// resolves, and those lines are the only evidence left.
 fn reconcile_short_spans(
     scene: &mut SceneGraph,
     sample: &mut impl FnMut(Coord) -> f64,
@@ -503,7 +506,7 @@ fn reconcile_short_spans(
     let over: &[Vec<bool>] = match over_pin {
         Some(o) => o,
         None => {
-            over_own = crossings::spans_over_a_corridor(scene);
+            over_own = crossings::spans_over_a_mapped_line(scene);
             &over_own
         }
     };

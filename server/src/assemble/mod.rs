@@ -17,14 +17,15 @@ pub mod water;
 
 use std::path::Path;
 
-use geo_types::Geometry;
+use geo_types::{Coord, Geometry};
 
 use crate::geoparquet::{GeoParquet, ReadError};
-use crate::priors::{self, Kind, Stratum};
+use crate::priors::{self, Kind, Stratum, MIN_STRUCTURE_M};
 use crate::project::Bounds;
-use crate::scene::{source_hash, SceneGraph};
+use crate::scene::{source_hash, Corridor, SceneGraph, SpanKind};
 
 use corridors::RawSegment;
+use grid::GridIndex;
 
 /// A connector within this fraction of an end is that end's connector.
 const END_AT_EPS: f64 = 1e-3;
@@ -59,6 +60,7 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
     let row_groups =
         gp.row_groups_intersecting((bbox.west, bbox.south, bbox.east, bbox.north));
     let mut raw: Vec<RawSegment> = Vec::new();
+    let mut witnesses: Vec<Vec<Coord>> = Vec::new();
     for feature in gp.features(row_groups, ATTRS)? {
         let f = feature?;
         let class_key = crate::value::str_of(&f.properties, "class").unwrap_or_default();
@@ -79,7 +81,16 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
         // with a bridge, which is the promotion §4.2 forbids, but because a
         // railway's alignment exists independently of the street network.
         if !matches!(kind.stratum(), Stratum::H | Stratum::R | Stratum::S) {
-            continue; // draped: it samples the finished ground, it never solves
+            // Draped: it samples the finished ground, it never solves. Its
+            // *plan* line is still evidence — a short annotated bridge is a
+            // bridge because of what passes beneath it, and half the time
+            // that is a footpath the scene would otherwise never see.
+            if let Geometry::LineString(ref line) = f.geometry {
+                if line.0.len() >= 2 {
+                    witnesses.push(line.0.clone());
+                }
+            }
+            continue;
         }
         // Only a linestring can be linearly referenced and chained.
         let Geometry::LineString(ref line) = f.geometry else {
@@ -123,7 +134,63 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
         // bridge crosses it.
         let bb = (bbox.west, bbox.south, bbox.east, bbox.north);
         scene.water = water::read(water_path, bb)?;
+        // Flowing water joins the draped alignments as a crossing witness:
+        // a mapped stream under a short annotated bridge is the gully the
+        // DEM cannot resolve.
+        witnesses.append(&mut water::flowing_lines(water_path, bb)?);
     }
+    scene.witnesses = near_short_spans(&scene.corridors, witnesses);
     Ok(scene)
+}
+
+/// Keeps only the witness lines that could decide a short structure span's
+/// terrain fate. The crossing test is asked strictly inside sub-
+/// [`MIN_STRUCTURE_M`] structure spans (`solve::crossings::
+/// spans_over_a_mapped_line`), so a line whose every edge misses every such
+/// span's stretch of its corridor can never testify — and draped alignments
+/// are 46.9 % of the network, dead weight the scene would otherwise carry to
+/// the end of the run.
+fn near_short_spans(corridors: &[Corridor], witnesses: Vec<Vec<Coord>>) -> Vec<Vec<Coord>> {
+    let mut grid = GridIndex::new();
+    let mut n = 0u32;
+    for c in corridors {
+        for s in c.spans.iter().filter(|s| s.kind != SpanKind::Grade) {
+            if s.arc1 - s.arc0 >= MIN_STRUCTURE_M {
+                continue;
+            }
+            for i in 0..c.nodes.len().saturating_sub(1) {
+                if c.arc[i + 1] < s.arc0 || c.arc[i] > s.arc1 {
+                    continue;
+                }
+                let (a, b) = (c.nodes[i], c.nodes[i + 1]);
+                grid.insert(
+                    (a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)),
+                    n,
+                );
+                n += 1;
+            }
+        }
+    }
+    if grid.is_empty() {
+        return Vec::new();
+    }
+    let mut hits: Vec<u32> = Vec::new();
+    witnesses
+        .into_iter()
+        .filter(|line| {
+            line.windows(2).any(|e| {
+                grid.query(
+                    (
+                        e[0].x.min(e[1].x),
+                        e[0].y.min(e[1].y),
+                        e[0].x.max(e[1].x),
+                        e[0].y.max(e[1].y),
+                    ),
+                    &mut hits,
+                );
+                !hits.is_empty()
+            })
+        })
+        .collect()
 }
 

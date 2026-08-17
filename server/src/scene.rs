@@ -263,6 +263,14 @@ pub struct SceneGraph {
     pub junctions: Vec<Junction>,
     /// Still water bodies whose surface the ground stage flattens (invariant 4).
     pub water: Vec<WaterBody>,
+    /// Mapped lines the scene never solves — draped alignments and flowing
+    /// watercourses — kept for their plan existence only: no heights, no
+    /// spans, no authority. Crossing one is what makes a short annotated
+    /// structure a structure (`solve::crossings::spans_over_a_mapped_line`):
+    /// the DEM cannot see the 2 m stream cut under a 10 m bridge, but the map
+    /// says something passes beneath. Assemble keeps only the lines near a
+    /// short structure span, which is the only place the question is asked.
+    pub witnesses: Vec<Vec<Coord>>,
     /// The corridors' spans as assembled — the annotation, snapshotted before
     /// the solve reconciles `corridors[..].spans` with the geometry
     /// (`solve::reconcile_stratum`). One list per corridor, in corridor
@@ -287,6 +295,7 @@ impl SceneGraph {
             corridors,
             junctions: Vec::new(),
             water: Vec::new(),
+            witnesses: Vec::new(),
             by_source,
         }
     }
