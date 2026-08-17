@@ -57,49 +57,49 @@
           "lat": 46.5072797,
           "lon": 6.704188033333334,
           "note": "Road(Residential) at grade 20.2 m below its reference ground, 17.7 m past the 2.5 m this class is built on",
-          "value": 17.660889038998334,
+          "value": 17.660889039002313,
           "zoom": 16
         },
         {
           "lat": 46.5070769,
           "lon": 6.70375475,
           "note": "Road(Residential) at grade 20.1 m below its reference ground, 17.6 m past the 2.5 m this class is built on",
-          "value": 17.625247242967475,
+          "value": 17.625247242971454,
           "zoom": 16
         },
         {
           "lat": 46.5072098,
           "lon": 6.703935,
           "note": "Road(Residential) at grade 20.0 m below its reference ground, 17.5 m past the 2.5 m this class is built on",
-          "value": 17.52145038741139,
+          "value": 17.52145038741537,
           "zoom": 16
         },
         {
           "lat": 46.5073496,
           "lon": 6.704441066666667,
           "note": "Road(Residential) at grade 19.4 m below its reference ground, 16.9 m past the 2.5 m this class is built on",
-          "value": 16.887919994620006,
+          "value": 16.887919994623985,
           "zoom": 16
         },
         {
           "lat": 46.5074195,
           "lon": 6.7046941,
           "note": "Road(Residential) at grade 17.6 m below its reference ground, 15.1 m past the 2.5 m this class is built on",
-          "value": 15.064588623001555,
+          "value": 15.064588623005534,
           "zoom": 16
         },
         {
           "lat": 46.5132179,
           "lon": 6.6904489,
           "note": "Road(Residential) at grade 17.4 m below its reference ground, 14.9 m past the 2.5 m this class is built on",
-          "value": 14.944224062499302,
+          "value": 14.944224062499416,
           "zoom": 16
         },
         {
           "lat": 46.5132567,
           "lon": 6.6904703,
           "note": "Road(Residential) at grade 16.8 m below its reference ground, 14.3 m past the 2.5 m this class is built on",
-          "value": 14.251224062499318,
+          "value": 14.251224062499432,
           "zoom": 16
         },
         {
@@ -111,22 +111,22 @@
         }
       ],
       "population": "Every node of every solved profile that the *reconciled* partition leaves at grade, in every stratum, water excluded. Scored by how far the solved road stands from the conditioned terrain reference — in either direction, since a road buried under its own hillside is the same defect upside down — less the class deviation budget, so 0.0 means within the cut and fill the class is built on. Structure nodes are outside the population by definition. Known legitimate tail: a clearance lift raises an at-grade road over a crossing by up to 15 m and keeps it at grade, so a demand-sized excess near a crossing is the model working.",
-      "samples": 389250,
+      "samples": 388719,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 1.4533333333333334,
       "threshold": 0.5,
       "title": "Solved at-grade road standing off its own ground",
-      "violation_pct": 0.14771997430956968,
+      "violation_pct": 0.14792176353612763,
       "violations": 575,
-      "worst": 17.660889038998334
+      "worst": 17.660889039002313
     },
     {
       "id": "ground.footprint",
       "invariant": "I8",
       "median": 0.006666666666667709,
       "offenders": [],
-      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 606550 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
+      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 606442 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
       "samples": 10409256,
       "sense": "higher_is_worse",
       "skipped": null,
@@ -313,14 +313,14 @@
           "lat": 46.51259303787017,
           "lon": 6.691094181347376,
           "note": "Tunnel implied over 121 m, 121 m of it unannotated",
-          "value": 121.37078951446122,
+          "value": 121.37078951446381,
           "zoom": 16
         },
         {
           "lat": 46.506799340055274,
           "lon": 6.702503698282921,
           "note": "Tunnel implied over 117 m, 117 m of it unannotated",
-          "value": 116.58986267719354,
+          "value": 116.5898626772431,
           "zoom": 16
         },
         {
@@ -346,13 +346,13 @@
         }
       ],
       "population": "Every derived run, scored by the metres of it no annotated span of the same kind covers.",
-      "samples": 754,
+      "samples": 753,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 323.84000000000003,
       "threshold": 0.5,
       "title": "Structure the solve implies that nothing annotated",
-      "violation_pct": 52.51989389920424,
+      "violation_pct": 52.58964143426295,
       "violations": 396,
       "worst": 323.8676440523015
     },
@@ -362,10 +362,10 @@
       "median": 8.96,
       "offenders": [
         {
-          "lat": 46.42319777715281,
-          "lon": 6.930756802241815,
+          "lat": 46.42319802789911,
+          "lon": 6.93075679204085,
           "note": "Bridge end moved 2254 m from where it was annotated",
-          "value": 2254.218771755339,
+          "value": 2254.246695805701,
           "zoom": 16
         },
         {
@@ -376,10 +376,10 @@
           "zoom": 16
         },
         {
-          "lat": 46.40363024641588,
-          "lon": 6.933974680439584,
+          "lat": 46.403630880544405,
+          "lon": 6.93397473001386,
           "note": "Bridge end moved 1998 m from where it was annotated",
-          "value": 1998.1689904374434,
+          "value": 1998.3143005049442,
           "zoom": 16
         },
         {
@@ -397,10 +397,10 @@
           "zoom": 16
         },
         {
-          "lat": 46.407316751256964,
-          "lon": 6.933759235387175,
+          "lat": 46.40731723688571,
+          "lon": 6.933759150991775,
           "note": "Bridge end moved 404 m from where it was annotated",
-          "value": 404.1191683359757,
+          "value": 404.17361500576953,
           "zoom": 16
         },
         {
@@ -419,15 +419,15 @@
         }
       ],
       "population": "Every derived run that overlaps an annotated span of the same kind, against the span it overlaps most, scored by the larger of its two end movements.",
-      "samples": 498,
+      "samples": 499,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 2254.08,
       "threshold": 0.5,
       "title": "How far a structure's ends move when derived",
-      "violation_pct": 99.19678714859438,
-      "violations": 494,
-      "worst": 2254.218771755339
+      "violation_pct": 99.19839679358718,
+      "violations": 495,
+      "worst": 2254.246695805701
     }
   ]
 }
