@@ -1733,11 +1733,36 @@ fn smooth_vgrades_street(
     }
 }
 
+/// How far into a span a pinned boundary's correction is blended back into
+/// the straight fit, in metres — the deck's vertical transition at an
+/// abutment. About six profile nodes: the scale [`smooth_vgrades`] rounds an
+/// abutment's grade break over, which is what the fit's residual at a
+/// boundary mostly is (measured over the Montreux extract: 95 % of run ends
+/// are already exact, the rest ≤ 3 m). A span shorter than two tapers uses
+/// half its length, so each end's correction dies before the other end and
+/// both still land exactly.
+const DECK_PIN_TAPER_M: f64 = 24.0;
+
 /// The deck-top height at each node: [`road_profile`]'s heights with every
 /// structure span (a maximal run of non-at-grade nodes) replaced by a single
 /// straight ramp fit over that span and its bounding anchors. The at-grade
 /// nodes keep their draped road height, so a deck meets the ground exactly at
 /// an abutment.
+///
+/// **The ramp's ends are pinned to the road wherever a band meets them.** The
+/// at-grade band ends at the span arc reading `road_at_arc`, and that arc
+/// lies inside the boundary node's own segment — so the two surfaces agree at
+/// the handover exactly when the boundary *structure* node carries the road
+/// height (`seam.band_deck_step`, invariant 2). The fit alone misses it by
+/// its end residual, which is whatever the vertical-curve rounding and the
+/// clearance solve did to the road inside the trimmed sixth. The correction
+/// is blended back into the fit over [`DECK_PIN_TAPER_M`] (a smoothstep, so
+/// the deck leaves the joint at the ramp's own grade and rejoins the fit
+/// tangentially): mid-span stays the straight fit — a whole-span tilt to the
+/// boundary heights is the rejected first cut of the datum work, which
+/// daylit bore roofs mid-span. A run at the corridor's own end has no band
+/// on the far side and keeps the bare fit there: pinning it would chase the
+/// annotation touchdown the trim exists to ignore.
 fn deck_ramp(arc: &[f64], road_m: &[f64], at_grade: &[bool]) -> Vec<f64> {
     let n = road_m.len();
     let mut deck = road_m.to_vec();
@@ -1754,13 +1779,52 @@ fn deck_ramp(arc: &[f64], road_m: &[f64], at_grade: &[bool]) -> Vec<f64> {
         while i < n && !at_grade[i] {
             i += 1;
         }
+        let end = i;
         let lo = start.saturating_sub(1);
-        let hi = i.min(n - 1);
+        let hi = end.min(n - 1);
         let fitted = fit_ramp(&arc[lo..=hi], &road_m[lo..=hi]);
         for (k, &v) in (lo..=hi).zip(fitted.iter()) {
             // Overwrite only the structure nodes; at-grade anchors stay draped.
             if !at_grade[k] {
                 deck[k] = v;
+            }
+        }
+        let last = end - 1;
+        let taper = (0.5 * (arc[last] - arc[start])).min(DECK_PIN_TAPER_M);
+        // Smoothstep from 1 at the boundary to 0 a taper in, flat at both
+        // ends: the correction is a vertical transition curve, not a kink.
+        let blend = |u: f64| {
+            let v = (1.0 - u.clamp(0.0, 1.0)).powi(2);
+            v * (1.0 + 2.0 * u.clamp(0.0, 1.0))
+        };
+        if start > 0 {
+            // An at-grade anchor precedes: a band ends on this boundary.
+            let e = road_m[start] - deck[start];
+            if taper > 0.0 {
+                for k in start..end {
+                    let u = (arc[k] - arc[start]) / taper;
+                    if u >= 1.0 {
+                        break;
+                    }
+                    deck[k] += e * blend(u);
+                }
+            } else {
+                deck[start] = road_m[start];
+            }
+        }
+        if end < n {
+            // An at-grade anchor follows.
+            let e = road_m[last] - deck[last];
+            if taper > 0.0 {
+                for k in (start..end).rev() {
+                    let u = (arc[last] - arc[k]) / taper;
+                    if u >= 1.0 {
+                        break;
+                    }
+                    deck[k] += e * blend(u);
+                }
+            } else {
+                deck[last] = road_m[last];
             }
         }
     }
@@ -2414,6 +2478,69 @@ mod tests {
             assert!(second.abs() < 1e-6, "deck not straight: {deck:?}");
         }
         assert!(deck[n - 1] > deck[0], "deck should ramp up, got {deck:?}");
+    }
+
+    #[test]
+    fn deck_ramp_arrives_at_the_road_where_a_band_meets_it() {
+        // An anchored span whose road bulges 3 m mid-span (a clearance lift)
+        // and so is nowhere near a chord: the straight fit misses the road at
+        // both boundary nodes by the bulge's share. The band ends at the span
+        // arc reading `road_at_arc`, inside the boundary node's own segment —
+        // so the deck agrees with it exactly iff the boundary structure node
+        // carries the road height (seam.band_deck_step, invariant 2).
+        let n = 61;
+        let arc: Vec<f64> = (0..n).map(|i| i as f64 * 5.0).collect();
+        let at_grade: Vec<bool> = (0..n).map(|i| !(10..=50).contains(&i)).collect();
+        let road: Vec<f64> = (0..n)
+            .map(|i| {
+                let u = (i as f64 - 10.0) / 40.0; // 0..1 across the span
+                if (0.0..=1.0).contains(&u) {
+                    100.0 + 3.0 * (std::f64::consts::PI * u).sin()
+                } else {
+                    100.0
+                }
+            })
+            .collect();
+        let deck = deck_ramp(&arc, &road, &at_grade);
+        assert!(
+            (deck[10] - road[10]).abs() < 1e-9 && (deck[50] - road[50]).abs() < 1e-9,
+            "deck must land on the road at the anchored boundaries: \
+             {} vs {} and {} vs {}",
+            deck[10],
+            road[10],
+            deck[50],
+            road[50]
+        );
+        // Mid-span keeps the fitted line, not the chord between the boundary
+        // heights: tilting the whole span to its ends is the rejected first
+        // cut of the datum work (it daylit bore roofs mid-span).
+        assert!(deck[30] > 101.0, "mid-span sank toward the chord: {}", deck[30]);
+        // Beyond the taper the ramp is straight again.
+        let clear: Vec<f64> = (0..n)
+            .filter(|&k| {
+                !at_grade[k]
+                    && arc[k] > arc[10] + DECK_PIN_TAPER_M
+                    && arc[k] < arc[50] - DECK_PIN_TAPER_M
+            })
+            .map(|k| deck[k])
+            .collect();
+        for w in clear.windows(3) {
+            let second = (w[2] - w[1]) - (w[1] - w[0]);
+            assert!(second.abs() < 1e-6, "deck bent beyond the taper");
+        }
+    }
+
+    #[test]
+    fn a_short_span_pins_both_ends_exactly() {
+        // Two structure nodes 4 m apart between anchors: the taper is half
+        // the span, so each end's correction dies before the other node and
+        // both still land exactly on the road.
+        let arc: Vec<f64> = vec![0.0, 4.0, 8.0, 12.0, 16.0];
+        let at_grade = vec![true, false, false, true, true];
+        let road = vec![100.0, 100.9, 101.4, 102.0, 102.0];
+        let deck = deck_ramp(&arc, &road, &at_grade);
+        assert!((deck[1] - road[1]).abs() < 1e-9, "low end missed: {} vs {}", deck[1], road[1]);
+        assert!((deck[2] - road[2]).abs() < 1e-9, "high end missed: {} vs {}", deck[2], road[2]);
     }
 
     #[test]

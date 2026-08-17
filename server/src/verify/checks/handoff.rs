@@ -22,12 +22,12 @@
 //! triangle shares). Most of them are kerb, where the ground beside the road
 //! is the correct neighbour. An **abutment edge** is one where a drawn
 //! structure solid takes over instead: marching out along the edge's own
-//! outward normal reaches a deck whose vertical range brackets the band's
-//! height there. That last test is what separates a handoff from a viaduct
-//! passing overhead, and it is the same one `abutment` uses on strokes — a
-//! deck's top *is* the road surface and its soffit a [`crate::priors::DECK_THICKNESS_M`]
-//! below, so the approach's height lies inside the solid's own range at the
-//! joint and metres outside it at a flyover.
+//! outward normal reaches a deck whose *top* is at the band's height there.
+//! That last test is what separates a handoff from a viaduct passing
+//! overhead — and from a band passing *under* a low deck: a deck's top *is*
+//! the road surface, so an approach meeting it arrives at the top, while a
+//! band at soffit level is in an underpass whose clearance is somebody
+//! else's defect (`order.grade_stack`, `clearance.deck_over_ground`).
 //!
 //! Two quantities come out of that march, with different causes and different
 //! fixes:
@@ -40,8 +40,12 @@
 //! - [`seam.band_deck_step`] — the height the surface jumps across that joint.
 //!   The band's vertices are sampled from the height field over `road_at_arc`;
 //!   the deck's come from `Profile::deck_at_arc`, a ramp fitted to the middle
-//!   two thirds of the structure run. Nothing forces the two to agree at the
-//!   span boundary, and invariant 2 says they must.
+//!   two thirds of the structure run — and pinned to the road at every
+//!   anchored boundary (`solve::profile::deck_ramp`), which is what makes the
+//!   two agree at the span arc. Invariant 2 says they must; what a step here
+//!   reports now is a boundary the pin does not reach — a run at its
+//!   corridor's own end, a handover fed by a different corridor at a junction
+//!   — or the two sides disagreeing about the per-zoom datum shift.
 //!
 //! ## The band does not draw its own edge
 //!
@@ -97,16 +101,23 @@ const BARE_M: f64 = 0.15;
 /// carriageway the priors allow is under a centimetre of legitimate difference.
 const STEP_BREAK_M: f64 = 0.05;
 
-/// How far the band's height may sit outside a solid's own vertical range and
-/// still count as handed over to it.
+/// How far the band's height may sit from the deck's *top* and still count as
+/// handed over to it.
 ///
-/// The joint's own geometry sets this: a deck's top *is* the road surface and
-/// its soffit a [`crate::priors::DECK_THICKNESS_M`] below, so an approach meeting it lies
-/// inside the range by construction and the slack only has to cover
-/// quantization and the deck's thickness at a sloping end cap. It is also this
-/// check's coverage limit in the height dimension — a joint that steps by more
-/// than a deck thickness plus this slack stops looking like a handoff at all
-/// and is not counted. `order.deck_above_carriageway` owns that case.
+/// The joint's own geometry sets this: a deck's top *is* the road surface, so
+/// an approach meeting it arrives at the top, and the slack only has to cover
+/// quantization, the grade over the marched gap, and the deck's thickness at
+/// a sloping end cap. Anchoring on the top rather than bracketing the solid's
+/// whole vertical range is what separates a handoff from an *underpass*: a
+/// band passing under a bridge whose clearance demand went unmet sits at
+/// soffit level — inside the old bracket — and a whole cluster of such bands
+/// beside the Villeneuve rail yard scored their bridge's unmet clearance as
+/// 2.48 m handover steps (one deck thickness: the soffit resting on the road
+/// below). That defect is real but it is `order.grade_stack` /
+/// `clearance.deck_over_ground` material, not a seam. The slack is also this
+/// check's coverage limit in the height dimension — a joint that steps by
+/// more than it stops looking like a handoff at all and is not counted;
+/// `order.deck_above_carriageway` owns that case.
 const CARRIED_SLACK_M: f64 = 1.0;
 
 /// How far back inside the band the overlap probe stands, in metres. Far
@@ -242,18 +253,33 @@ impl Check for Handoff {
         // The drawn at-grade surface: the interior band welded to its casing
         // rim. The interior alone is an inset of the true silhouette, and a
         // march that stopped at it would report `PAVE_RIM_M` of bare ground at
-        // every abutment ever built.
-        let paved: Vec<&SurfaceMesh> = tile
-            .roads
-            .iter()
-            .filter(|m| m.is_pavement() || m.is_casing())
-            .map(|m| &m.mesh)
-            .collect();
-        if paved.is_empty() {
+        // every abutment ever built. Split by modality, like the decks: the
+        // surface that continues a ballast band is ballast, and only ballast.
+        // The slab filter alone cannot say so — where a rail bridge crosses a
+        // road, the road's asphalt approaches its underpass *through* the
+        // band-height slab, the march walks `paved_h` down it, and the joint
+        // is scored against the road below: a flush rack-line abutment at
+        // 6.9474,46.4342 measured 2.76 m of step that way.
+        let paved_of = |rail: bool| -> Vec<&SurfaceMesh> {
+            tile.roads
+                .iter()
+                .filter(|m| m.is_pavement() || m.is_casing())
+                .filter(|m| m.class.starts_with("rail") == rail)
+                .map(|m| &m.mesh)
+                .collect()
+        };
+        let paved_by: [Vec<&SurfaceMesh>; 2] = [paved_of(false), paved_of(true)];
+        if paved_by.iter().all(|p| p.is_empty()) {
             return;
         }
-        let casings: Vec<&SurfaceMesh> =
-            tile.roads.iter().filter(|m| m.is_casing()).map(|m| &m.mesh).collect();
+        let casings_of = |rail: bool| -> Vec<&SurfaceMesh> {
+            tile.roads
+                .iter()
+                .filter(|m| m.is_casing() && m.class.starts_with("rail") == rail)
+                .map(|m| &m.mesh)
+                .collect()
+        };
+        let casings_by: [Vec<&SurfaceMesh>; 2] = [casings_of(false), casings_of(true)];
         self.0.decks += decks.len();
         self.0.decks_named += tile
             .roads
@@ -266,6 +292,10 @@ impl Check for Handoff {
 
         for band in tile.roads.iter().filter(|m| m.is_pavement()) {
             let ballast = band.class.starts_with("rail");
+            let paved = &paved_by[ballast as usize];
+            if paved.is_empty() {
+                continue;
+            }
             for (ia, ib, iopp) in band.mesh.boundary_edges() {
                 let (ax, ay, az) = band.mesh.vertex(ia);
                 let (bx, by, bz) = band.mesh.vertex(ib);
@@ -304,7 +334,9 @@ impl Check for Handoff {
                             if hi - lo > SLAB_MAX_M {
                                 continue; // stacked on itself: no single top
                             }
-                            if h >= lo - CARRIED_SLACK_M && h <= hi + CARRIED_SLACK_M {
+                            // At the *top*: a band at soffit level is passing
+                            // underneath, not handing over.
+                            if (h - hi).abs() <= CARRIED_SLACK_M {
                                 return Some((hi, class));
                             }
                         }
@@ -382,7 +414,7 @@ impl Check for Handoff {
                 // inset edge, which is where this march started, and the band's
                 // true silhouette.
                 let rim = PAVE_RIM_M * KERB_PROBE_FRAC;
-                let kerb = casings
+                let kerb = casings_by[ballast as usize]
                     .iter()
                     .any(|m| m.height_at(px + ux * rim, py + uy * rim).is_some());
                 self.0.kerb.push(if kerb { 1.0 } else { 0.0 });
@@ -435,8 +467,10 @@ impl Check for Handoff {
         let population = format!(
             "Every boundary edge of a drawn at-grade surface band, inside the tile proper, that a \
              solved bridge deck continues: marching out along the edge's own outward normal \
-             reaches a deck whose vertical range brackets the band's height there, within \
-             {CARRIED_SLACK_M:.1} m. {} edges on asphalt and {} on ballast; {} more were skipped \
+             reaches a deck whose top is at the band's height there, within \
+             {CARRIED_SLACK_M:.1} m — at the *top*, because a band at soffit level is passing \
+             under a low bridge, not handing over to it. {} edges on asphalt and {} on ballast; \
+             {} more were skipped \
              because a deck already covers the band's edge in plan, which is an overlap rather \
              than a handoff (`order.deck_above_carriageway`). One abutment contributes several \
              edges, so the population is weighted by how wide the joint is. {} of {} drawn decks \
@@ -448,9 +482,12 @@ impl Check for Handoff {
              {PAVE_RIM_M:.2} m is the separate casing rim, so the march anchors on the interior \
              edge but counts interior and casing alike as surface: what is reported is the \
              distance between the last drawn surface and the first drawn deck. Only surface \
-             within {SLAB_MAX_M:.1} m of the edge's own height counts as that band continuing — \
-             a region metres below is a road passing under the joint, and counting it shrinks \
-             the gap it lies in and hands the step an unrelated height to compare against. \
+             within {SLAB_MAX_M:.1} m of the edge's own height, and of the band's own modality, \
+             counts as that band continuing — a region metres below is a road passing under the \
+             joint, and a road *approaching* its underpass passes through the height slab too, \
+             so without the modality test the march walks the step's reference down the other \
+             road's ramp. Counting either shrinks the gap it lies in and hands the step an \
+             unrelated height to compare against. \
              \
              Coverage limits, all of them silent otherwise: bores are excluded, since a bore's \
              drawn top is its roof rather than a road surface — a portal needs its own \
@@ -493,19 +530,22 @@ impl Check for Handoff {
                 population: population.clone(),
                 detail: format!(
                     "Height difference across the same joint, which invariant 2 puts at zero. The \
-                     two sides are fitted by different machinery and nothing forces them to meet: \
-                     the band's vertices come from the height field over `Profile::road_at_arc`, \
-                     the deck's from `Profile::deck_at_arc` — a ramp fitted to the middle two \
-                     thirds of the structure run (`fit_ramp` trims a sixth at each end) and \
-                     written onto the structure nodes only, so `deck_m` and `road_m` disagree \
-                     across the boundary edge by whatever the fit's residual is there. Separated \
-                     from the gap because either occurs alone, and because a deck that is short \
-                     in plan carries the height solved for a different station and produces both \
-                     ({STEP_BREAK_M:.2} m gate). The instrument's ceiling is about \
-                     {:.1} m — a deck further than that from the band no longer reads as taking \
-                     over from it, and surface that far from the edge no longer reads as the \
-                     band — so a joint that has come apart completely leaves this population \
-                     rather than topping it; `order.deck_above_carriageway` is where it lands.",
+                     band's vertices come from the height field over `Profile::road_at_arc`, the \
+                     deck's from `Profile::deck_at_arc` — a ramp fitted to the middle two thirds \
+                     of the structure run (`fit_ramp` trims a sixth at each end) whose ends are \
+                     pinned back to the road at every anchored boundary \
+                     (`solve::profile::deck_ramp`), so at the span arc the two are the same \
+                     number by construction. What remains here is a boundary the pin does not \
+                     reach: a structure run at its corridor's own end, a handover fed by a \
+                     different corridor at a junction, or the per-zoom datum shift read \
+                     differently by the two sides. Separated from the gap because either occurs \
+                     alone, and because a deck that is short in plan carries the height solved \
+                     for a different station and produces both ({STEP_BREAK_M:.2} m gate). The \
+                     instrument's ceiling is about {:.1} m — a deck further than that from the \
+                     band no longer reads as taking over from it, and surface that far from the \
+                     edge no longer reads as the band — so a joint that has come apart \
+                     completely leaves this population rather than topping it; \
+                     `order.deck_above_carriageway` is where it lands.",
                     SLAB_MAX_M + CARRIED_SLACK_M
                 ),
                 sense: Sense::HigherIsWorse,
@@ -624,6 +664,36 @@ mod tests {
         ]);
         let step = step.expect("step");
         assert!((step - 0.6).abs() < 0.05, "0.60 m step measured as {step}");
+    }
+
+    /// A quad with distinct top and soffit sheets, so `height_range_at`
+    /// answers the solid's real vertical range the way a swept deck's does.
+    fn slab(class: &str, level: i64, x0: f64, x1: f64, soffit: f32, top: f32) -> RoadMesh {
+        let (y0, y1) = (0.49, 0.51);
+        let (x0, x1) = (x0 as f32, x1 as f32);
+        let mesh = SurfaceMesh::from_parts(
+            vec![x0, x1, x1, x0, x0, x1, x1, x0],
+            vec![y0, y0, y1, y1, y0, y0, y1, y1],
+            vec![top, top, top, top, soffit, soffit, soffit, soffit],
+            vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
+        )
+        .expect("a slab meshes");
+        RoadMesh { class: class.to_string(), level, band: String::new(), mesh }
+    }
+
+    #[test]
+    fn a_band_under_a_low_deck_is_not_a_handoff() {
+        // A bridge whose clearance demand went unmet: the soffit sits on the
+        // band passing beneath. The band's height is inside the solid's
+        // vertical range — the old bracket paired it and scored the missing
+        // clearance as a deck-thickness step — but it is nowhere near the
+        // top, and a handoff hands the surface to the top.
+        let edge = 0.5;
+        let (_, _, n) = measure(vec![
+            quad("road_surface", 0, 0.4, edge, 400.0),
+            slab("residential", 1, edge, 0.6, 400.0, 402.5),
+        ]);
+        assert_eq!(n, 0, "an underpass at soffit level was paired as an abutment");
     }
 
     #[test]

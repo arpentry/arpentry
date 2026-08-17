@@ -20,21 +20,19 @@
 //! own road. Two things move that point, and they are separated here because
 //! they have different fixes:
 //!
-//! - [`seam.abutment_plan`] — the two pieces are on **different curves**. A
-//!   structure is swept along the corridor's *smoothed* sweep line
-//!   (`Profile::deck_nodes` → `smooth_point`) and its paint is carried onto it;
-//!   the at-grade band is buffered around the **raw** `Corridor::nodes` and its
-//!   paint stays there (`synth::road::bake`'s own note: "at an abutment the
-//!   at-grade band and the deck are themselves that far apart in plan"). The
-//!   break is the smoothing displacement, and it is both lateral (the deck sits
-//!   beside the approach) and longitudinal (the deck starts short of or past
-//!   the abutment, leaving bare ground or an overlap).
+//! - [`seam.abutment_plan`] — the two pieces are on **different curves**. Both
+//!   strokes ride the corridor's smoothed sweep line now (`synth::road::bake`
+//!   snaps unconditionally), so the correct value really is zero; what a break
+//!   here reports is one side leaving that line — a snap the
+//!   `PAINT_SNAP_MAX_M` cap refused, a piece with no profile to snap to.
 //! - [`seam.abutment_step`] — the deck ramp does not arrive at the road. The
-//!   deck's height is `Profile::deck_m`, the approach's is `road_m`, and they
-//!   are fitted separately; where the sweep line has also slid *along* the
-//!   alignment the deck carries the height solved for a different station, so
-//!   a plan break and a height step have a common cause and this separates
-//!   them anyway, because either can occur alone.
+//!   deck's height is `Profile::deck_m`, the approach's is `road_m`; the ramp
+//!   fit is pinned back to the road at every anchored span boundary
+//!   (`solve::profile::deck_ramp`), so a step is a boundary the pin does not
+//!   reach, or the sweep line having slid *along* the alignment so the deck
+//!   carries the height solved for a different station. A plan break and a
+//!   height step can share a cause, and this separates them anyway, because
+//!   either can occur alone.
 //!
 //! ## What is paired, and why it is not guesswork
 //!
@@ -110,12 +108,16 @@ const BREAK_M: f64 = 0.05;
 const BARE_REACH_M: f64 = 30.0;
 const BARE_STEP_M: f64 = 0.25;
 
-/// How far a stroke's height may sit from a structure solid's own height range
-/// at that point and still count as carried by it. A deck's top *is* the road
-/// surface and a bore's floor is aligned to it, so the stroke lies inside the
-/// range by construction; the slack covers the millimetre quantization of two
-/// separately encoded features and the deck's own thickness at a sloping end
-/// cap.
+/// How far a stroke's height may sit from where its structure solid carries
+/// the road — a deck's *top*, a bore's floor plus the
+/// [`crate::priors::DECK_THICKNESS_M`] the floor hangs below the road — and
+/// still count as carried by it. Anchored there rather than anywhere inside
+/// the solid's vertical range, because the range test cannot tell a carried
+/// stroke from one passing *underneath*: a rail line under a bridge whose
+/// clearance demand went unmet runs at soffit level, inside the range, and
+/// read as that bridge's own stroke. The slack covers the millimetre
+/// quantization of two separately encoded features and the deck's thickness
+/// at a sloping end cap.
 const CARRIED_SLACK_M: f64 = 1.0;
 
 /// One end of a drawn road stroke.
@@ -168,6 +170,10 @@ pub struct Abutment {
     /// left to be assumed away.
     unpaired: usize,
     paired: usize,
+    /// Carried ends whose nearest partner is a lower-indexed carried end: the
+    /// other half of a flush joint already measured once. Reported so the
+    /// population change from retiring the spurious re-pairings is visible.
+    second_half: usize,
 }
 
 impl Abutment {
@@ -181,6 +187,7 @@ impl Abutment {
             bare_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             unpaired: 0,
             paired: 0,
+            second_half: 0,
         }
     }
 }
@@ -195,11 +202,13 @@ impl Check for Abutment {
         // leave the annotation's edge, so the shared-coordinate premise this
         // whole check rests on does not hold for it, and measuring it here
         // reported the seating rule working as an 11.9 m defect.
-        let solids: Vec<&crate::verify::mesh::SurfaceMesh> = tile
+        // `(is bore, mesh)`: where the solid carries its road differs — a
+        // deck on its top, a bore on the floor a deck thickness under it.
+        let solids: Vec<(bool, &crate::verify::mesh::SurfaceMesh)> = tile
             .roads
             .iter()
             .filter(|m| (m.is_deck() || m.is_bore()) && !m.is_fitted_deck())
-            .map(|m| &m.mesh)
+            .map(|m| (m.is_bore(), &m.mesh))
             .collect();
         if solids.is_empty() {
             return;
@@ -214,9 +223,10 @@ impl Check for Abutment {
             .map(|m| &m.mesh)
             .collect();
         let carried = |px: f64, py: f64, h: f64| {
-            solids.iter().any(|m| {
+            solids.iter().any(|(bore, m)| {
                 m.height_range_at(px, py).is_some_and(|(lo, hi)| {
-                    h >= lo - CARRIED_SLACK_M && h <= hi + CARRIED_SLACK_M
+                    let road = if *bore { lo + crate::priors::DECK_THICKNESS_M } else { hi };
+                    (h - road).abs() <= CARRIED_SLACK_M
                 })
             })
         };
@@ -258,35 +268,43 @@ impl Check for Abutment {
                 continue;
             }
 
-            // The nearest at-grade end of the same class. Nearest rather than
-            // any-within-radius: at a junction of two same-class roads several
-            // ends sit close together, and the one that shares this abutment is
-            // the one the cut produced, which is the nearest by construction.
-            let mut best: Option<(f64, &End)> = None;
+            // The nearest aligned end of the same class, over *all* candidates
+            // — carried or not. Nearest rather than any-within-radius: at a
+            // junction of two same-class roads several ends sit close
+            // together, and the one that shares this abutment is the one the
+            // cut produced, which is the nearest by construction. And nearest
+            // FIRST, eligibility second: at a flush joint both halves read as
+            // carried (the deck's end cap covers the shared vertex), the pair
+            // is counted from its lower index, and the higher index must then
+            // contribute *nothing* — not go looking for the next candidate in
+            // reach. Removing the true partner from the search instead of
+            // skipping the sample paired the leftover half with whatever else
+            // stood within 12 m: the far end of the same short span (its
+            // length reported as a plan break) or the parallel track (the
+            // climb across the span reported as a height step). Every top
+            // offender of `seam.abutment_plan` was one of these — a 0.00 m
+            // joint scored as 11 m.
+            let mut best: Option<(f64, usize)> = None;
             for (j, g) in ends.iter().enumerate() {
-                // The partner is any aligned end of the same class, carried or
-                // not. **Not "the uncarried one".** Once the band and the deck
-                // are on one centerline the deck's end cap covers the
-                // approach's last vertex, so the approach reads as carried too
-                // — and a rule that demanded an uncarried partner would skip
-                // the real one and pair with something further away, reporting
-                // the fix as a regression. A both-carried pair is counted from
-                // its lower index only, so each break is measured once.
                 if i == j || g.class != s.class || !aligned(s, g) {
-                    continue;
-                }
-                if g.carried && j < i {
                     continue;
                 }
                 let d = tile.scale.dist(s.px, s.py, g.px, g.py);
                 if d <= PAIR_MAX_M && best.is_none_or(|(bd, _)| d < bd) {
-                    best = Some((d, g));
+                    best = Some((d, j));
                 }
             }
-            let Some((plan, g)) = best else {
+            let Some((plan, j)) = best else {
                 self.unpaired += 1;
                 continue;
             };
+            if ends[j].carried && j < i {
+                // The other half of a both-carried pair: measured once, from
+                // its lower index.
+                self.second_half += 1;
+                continue;
+            }
+            let g = &ends[j];
             self.paired += 1;
             let step = (s.h - g.h).abs();
             self.plan.push(plan);
@@ -372,18 +390,25 @@ impl Check for Abutment {
     fn finish(self: Box<Self>) -> Vec<Metric> {
         let population = format!(
             "Every end of every road stroke inside the tile proper that a drawn deck or bore \
-             carries — its height inside the solid's own range there, within {CARRIED_SLACK_M:.1} \
-             m — and that has an *uncarried* stroke of the same class ending within \
+             carries — its height within {CARRIED_SLACK_M:.1} m of where the solid carries its \
+             road: a deck's top, a bore's floor plus the deck thickness. Inside the solid's \
+             range is not enough: a stroke at soffit level is passing underneath. Each is \
+             paired with the *nearest* aligned stroke end of the same class within \
              {PAIR_MAX_M:.0} m: the two halves of one abutment or portal, which \
              `Corridor::pieces` cut from a single shared coordinate. {} paired, {} carried ends \
              left unpaired and not counted: a stroke the tile clipped (a clip cuts one piece \
              without producing its neighbour at the same place), or a span meeting another span \
-             rather than the ground. Carried-ness is read from the drawn solid rather than from \
+             rather than the ground. {} more were the second half of a flush both-carried joint \
+             (the deck's end cap covers the shared vertex, so both halves read as carried): the \
+             pair is measured once from its lower index, and the leftover half contributes \
+             nothing rather than pairing with the next end in reach — which used to score the \
+             far end of the same short span, or the parallel track, as an 11 m break at a joint \
+             that measures 0.00 m. Carried-ness is read from the drawn solid rather than from \
              the stroke's `level`, which a solved structure's paint does not carry. Only the tile \
              proper is measured, since strokes are clipped to the tile *plus buffer* and every \
              neighbour draws its own copy of a border abutment. A tile with no structure solid at \
              all contributes nothing.",
-            self.paired, self.unpaired
+            self.paired, self.unpaired, self.second_half
         );
         vec![
             Metric {
@@ -393,13 +418,10 @@ impl Check for Abutment {
                 population: population.clone(),
                 detail: format!(
                     "Plan distance between the two ends. The correct value is zero — they are \
-                     one coordinate in the model — so anything above the {BREAK_M:.2} m \
-                     quantization floor is a generator moving it. The known cause is that the \
-                     two pieces ride different curves: a structure is swept along the smoothed \
-                     sweep line and the at-grade band is buffered around the raw corridor nodes. \
-                     Across the road it puts the deck beside its own approach; along it, the \
-                     deck starts short of or past the abutment, which is the gap seen at a \
-                     bridge's ends."
+                     one coordinate in the model, and both strokes are snapped onto the same \
+                     smoothed sweep line — so anything above the {BREAK_M:.2} m quantization \
+                     floor is a generator moving one of them off that line: a sideways snap the \
+                     `PAINT_SNAP_MAX_M` cap refused, or a piece with no profile to snap to."
                 ),
                 sense: Sense::HigherIsWorse,
                 threshold: BREAK_M,
@@ -465,5 +487,78 @@ impl Check for Abutment {
                 worst: self.bare_worst.into_vec(),
             },
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::Bounds;
+    use crate::verify::mesh::{Scale, SurfaceMesh};
+    use crate::verify::scene::{RoadLine, RoadMesh, TileScene};
+
+    fn tile(roads: Vec<RoadMesh>, lines: Vec<RoadLine>) -> TileScene {
+        let bounds = Bounds::of_tile(16, 34028, 49670);
+        TileScene {
+            z: 16,
+            x: 34028,
+            y: 49670,
+            scale: Scale::of(&bounds),
+            bounds,
+            terrain: None,
+            roads,
+            lines,
+        }
+    }
+
+    /// A flat deck solid from `x0` to `x1` across the middle of the tile.
+    fn deck(x0: f64, x1: f64, h: f32) -> RoadMesh {
+        let (y0, y1) = (0.49, 0.51);
+        let mesh = SurfaceMesh::from_parts(
+            vec![x0 as f32, x1 as f32, x1 as f32, x0 as f32],
+            vec![y0, y0, y1, y1],
+            vec![h; 4],
+            vec![0, 1, 2, 0, 2, 3],
+        )
+        .expect("a quad meshes");
+        RoadMesh { class: "residential".into(), level: 1, band: String::new(), mesh }
+    }
+
+    /// A west→east stroke from `x0` to `x1` at height `h`.
+    fn stroke(x0: f64, x1: f64, h: f64) -> RoadLine {
+        RoadLine {
+            class: "residential".into(),
+            level: 0,
+            width_m: 0.0,
+            parts: vec![vec![(x0, 0.5, h), (x1, 0.5, h)]],
+        }
+    }
+
+    #[test]
+    fn a_flush_joint_is_measured_once_and_as_zero() {
+        // approach | 8 m deck | approach, every piece cut from a shared vertex
+        // — so four carried ends stand in two co-located pairs. Each pair must
+        // yield exactly one sample of ~0; the leftover halves must NOT pair
+        // with the far end of the span 8 m away, which is what reported every
+        // flush short-span joint as a metres-long break.
+        let b = Bounds::of_tile(16, 34028, 49670);
+        let mx = Scale::of(&b).mx;
+        let (lo, hi) = (0.5, 0.5 + 8.0 / mx);
+        // The solid overhangs the shared vertices by a hair, the way
+        // quantization lands a flush end strictly inside the end cap.
+        let eps = 0.05 / mx;
+        let scene = tile(
+            vec![deck(lo - eps, hi + eps, 400.0)],
+            vec![stroke(0.44, lo, 400.0), stroke(lo, hi, 400.0), stroke(hi, 0.56, 400.0)],
+        );
+        let mut c = Box::new(Abutment::new(&Options::default()));
+        c.visit(&scene, &Options::default());
+        let plan = c.finish().swap_remove(0).dist;
+        assert_eq!(plan.count(), 2, "one sample per joint, not per carried end");
+        assert!(
+            plan.max().expect("samples") <= BREAK_M,
+            "a flush joint measured {:?} m of plan break",
+            plan.max()
+        );
     }
 }
