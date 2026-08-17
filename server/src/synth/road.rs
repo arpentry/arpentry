@@ -150,7 +150,11 @@ pub(crate) fn surface_height(
     // the clearance clamps) diverge from mid-span; paint baked at road height
     // sinks inside the solid wherever the fitted ramp rises above it.
     if let (Some(p), true) = (profile, deck) {
-        return p.deck_height_at(lon, lat);
+        // Per-zoom datum: at a coarse zoom the stroke carries the same shared
+        // shift curve its solid is swept from (`synth::datum::shift_at_arc`),
+        // so it stays on the drawn deck. Zero at the reference zoom.
+        return p.deck_height_at(lon, lat)
+            + crate::synth::datum::shift_at_arc(p, p.arc_of(lon, lat), sampler, z, z_ref);
     }
     let ground = ground_height(sampler, z, z_ref, bounds, lon, lat);
     on_ground(ground, profile, sampler, z, z_ref, lon, lat)

@@ -14,6 +14,7 @@
 pub mod area;
 pub mod carriageway;
 pub mod carried;
+pub mod datum;
 pub mod draped;
 pub mod height;
 pub mod markings;
@@ -109,13 +110,13 @@ pub fn emit(
         Synth::DrapedDeck => {
             // Fitted, not solved. Falls back to a plain draped line when there
             // is no solid to draw, exactly as a solved structure does.
-            if !draped::stamp(f, sampler, solved.z_ref, bounds) {
+            if !draped::stamp(f, sampler, z, solved.z_ref, bounds) {
                 road::bake(f, None, false, None, paved_field, sampler, z, solved.z_ref, bounds);
             }
         }
         Synth::Structure { corridor, kind } => {
             match solved.profile(corridor) {
-                Some(p) if structure::stamp(f, p, kind, bounds) => {}
+                Some(p) if structure::stamp(f, p, kind, sampler, z, solved.z_ref, bounds) => {}
                 // Degradation ladder: no solved profile, or no solid to draw
                 // (a tunnel tagged over flat ground) → a plain draped road, on
                 // the same terms any other road gets. Its own layer, and the

@@ -296,6 +296,18 @@ impl<'a> HeightField<'a> {
         let mut lambda = 0.0f64;
 
         self.pin_grid.query((lon, lat, lon, lat), scratch);
+        // The pin is solved in the reference datum. At a coarse zoom every leg
+        // reads `surface(z) + max(profile − surface(z_ref), 0)` — the local
+        // datum shift plus its clamp — so an absolute pin sat a lattice-error
+        // below (or above) the legs it overrides, doming every plate on a
+        // flank. Re-express it in this zoom's datum (`synth::datum`) and let it
+        // carry the same clamp: `max(ground, height + shift)` is exactly the
+        // leg rule applied to the pin's own height.
+        let pin_shift = if scratch.is_empty() {
+            0.0
+        } else {
+            crate::synth::datum::shift(sampler, z, z_ref, lon, lat)
+        };
         for &i in scratch.iter() {
             let p = &self.pins[i as usize];
             // An intersection pins its *own* sheet — a flyover passing overhead
@@ -314,7 +326,7 @@ impl<'a> HeightField<'a> {
             // field exists to prevent (ROADS.md invariant 5). With the ground
             // cut away there is no hillside to be inside of, and clamping here
             // while the corridors do not is itself a disagreement.
-            let height = if hole { p.height } else { p.height.max(ground) };
+            let height = if hole { p.height } else { (p.height + pin_shift).max(ground) };
             let (de, dn) = p.area.offset_m(Coord { x: lon, y: lat });
             let d = (de * de + dn * dn).sqrt();
             if best.is_none_or(|(bd, _, _)| d < bd) {

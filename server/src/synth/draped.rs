@@ -97,6 +97,7 @@ const SEAT_LIFT_MIN_M: f64 = 1.0;
 pub fn stamp(
     f: &mut EncoderFeature,
     sampler: &mut GroundSampler,
+    z: u8,
     z_ref: u8,
     bounds: &Bounds,
 ) -> bool {
@@ -108,7 +109,9 @@ pub fn stamp(
     let terrain: Vec<f64> =
         nodes.iter().map(|c| sampler.ground(c.x, c.y, z_ref)).collect();
     let profile = Profile::from_heights(&nodes, chord(&nodes, &terrain), terrain);
-    structure::stamp(f, &profile, SpanKind::Bridge, bounds)
+    // The fitted profile is all at-grade, so the per-zoom structure datum
+    // (`synth::datum`) finds no run here and the fitted deck stays absolute.
+    structure::stamp(f, &profile, SpanKind::Bridge, sampler, z, z_ref, bounds)
 }
 
 /// Re-seats every elevated span's abutments on the ground that can carry them.

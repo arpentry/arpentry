@@ -346,8 +346,26 @@ radius drop the inner contact line rather than emit a folded one.
   reference-zoom ground, never below the drawn surface. This is the
   coarse-LOD rule, not a workaround: the coarse lattice cannot carry a
   bench, so the road hugs the terrain that *is* drawn (invariant 4).
-- **On structures** the road rides the deck ramp at every zoom, the same
-  heights the deck and bore solids are swept from (invariant 2).
+- **On structures** the road rides the deck ramp, the same heights the deck
+  and bore solids are swept from (invariant 2) — and at coarser zooms the
+  whole span carries the same rule the road does: every structure vertex
+  adds the local **datum shift**, the drawn ground at that zoom over the
+  drawn ground at the reference (`synth::datum`), so the span rides the
+  coarse canvas by the identical local displacement and every *relative*
+  relation — the step at an abutment, the clearance over a crossed road, a
+  bore roof's burial — is inherited from the reference world pointwise. An
+  absolutely-positioned span at a coarse zoom sat a lattice-error away from
+  everything drawn around it: a path bridge 17 m under the hillside a z14
+  cell smoothed over its gully, a band arriving metres below the deck it
+  hands over to (`seam.band_deck_step` 98 % over at z14). The shift is read
+  from one shared piecewise-linear curve per span, stationed on the global
+  corridor arc, so the solid and the paint riding it reconstruct the same
+  function from any tile; the intersection pin carries it too, with the
+  same raise-only clamp its legs have. Zero at the reference zoom by
+  definition. A structure's *absolute* top therefore legitimately differs
+  between rungs by the canvases' divergence — `lod.structure_drift`
+  measures the height over each zoom's own drawn ground instead.
+  `ARPT_NO_ZOOM_DATUM=1` restores absolute structures for an A/B re-tile.
 
 Reading the field is not enough on its own: the asphalt has to be *meshed*
 finely enough to hold what it read. Sampling the field only at the paved

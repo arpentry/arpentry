@@ -68,7 +68,15 @@ const MAX_VERTS: usize = 4096;
 /// geometry under either. Returns whether a solid was emitted — `false` (a
 /// tunnel over flat ground, degenerate geometry) tells the caller to drape the
 /// road instead.
-pub fn stamp(f: &mut EncoderFeature, profile: &Profile, kind: SpanKind, bounds: &Bounds) -> bool {
+pub fn stamp(
+    f: &mut EncoderFeature,
+    profile: &Profile,
+    kind: SpanKind,
+    sampler: &mut crate::ground::sampler::GroundSampler,
+    z: u8,
+    z_ref: u8,
+    bounds: &Bounds,
+) -> bool {
     let frame = Frame::at_center(bounds);
     let feature_kind =
         Kind::parse(None, prop_str(f, "class").as_deref(), prop_str(f, "subclass").as_deref());
@@ -107,12 +115,21 @@ pub fn stamp(f: &mut EncoderFeature, profile: &Profile, kind: SpanKind, bounds: 
         None => crate::priors::PATH_STRUCTURE_HALF_WIDTH_M,
     };
 
+    // The per-zoom datum shift (zero at the reference zoom, or when disabled):
+    // at a coarse zoom the solid is re-expressed against that zoom's drawn
+    // ground, station for station, so it rides the coarse canvas by the same
+    // local displacement the at-grade world already does — and by the same
+    // shared curve its own paint reads (`synth::datum::shift_at_arc`).
+    let mut shift =
+        |arc: f64| crate::synth::datum::shift_at_arc(profile, arc, sampler, z, z_ref);
     let mut acc = Accum::default();
     for line in lines(&f.geometry) {
         for piece in proper_pieces(&line.0, bounds) {
             match kind {
-                SpanKind::Tunnel => sweep_bore(&mut acc, &frame, bounds, profile, &piece, half_w),
-                _ => sweep_deck(&mut acc, &frame, bounds, profile, &piece, half_w),
+                SpanKind::Tunnel => {
+                    sweep_bore(&mut acc, &frame, bounds, profile, &piece, half_w, &mut shift)
+                }
+                _ => sweep_deck(&mut acc, &frame, bounds, profile, &piece, half_w, &mut shift),
             }
         }
     }
@@ -235,6 +252,7 @@ fn sweep_deck(
     profile: &Profile,
     span: &[Coord],
     half_w: f64,
+    shift: &mut dyn FnMut(f64) -> f64,
 ) {
     let pts = densify(span, frame);
     if pts.len() < 2 {
@@ -243,14 +261,17 @@ fn sweep_deck(
     let sections: Vec<Section> = profile
         .deck_nodes(&pts)
         .into_iter()
-        .map(|d| Section {
-            lon: d.lon,
-            lat: d.lat,
-            top_mm: project::quantize_z(d.height_m),
-            bot_mm: project::quantize_z(d.height_m - DECK_THICKNESS_M),
-            gap_m: 0.0, // a deck rides occlusion, not the gap
-            left_e: d.left_e,
-            left_n: d.left_n,
+        .map(|d| {
+            let h = d.height_m + shift(d.arc_m);
+            Section {
+                lon: d.lon,
+                lat: d.lat,
+                top_mm: project::quantize_z(h),
+                bot_mm: project::quantize_z(h - DECK_THICKNESS_M),
+                gap_m: 0.0, // a deck rides occlusion, not the gap
+                left_e: d.left_e,
+                left_n: d.left_n,
+            }
         })
         .collect();
     sweep_prism(acc, frame, bounds, &sections, half_w, true);
@@ -277,6 +298,7 @@ fn sweep_bore(
     profile: &Profile,
     span: &[Coord],
     half_w: f64,
+    shift: &mut dyn FnMut(f64) -> f64,
 ) {
     let pts = densify(span, frame);
     if pts.len() < 2 {
@@ -317,6 +339,17 @@ fn sweep_bore(
     // on the surface, so emit nothing and let the caller drape the road.
     if sections.len() < 2 || sections.iter().all(|s| s.gap_m >= 0.0) {
         return;
+    }
+
+    // Per-zoom datum: shift the drawn tube only, after the portals resolved.
+    // `gap_m` and the cap placement keep reading the reference terrain, so
+    // where the mouth sits in plan is zoom-independent; what shifts is the
+    // height it is drawn at, onto this zoom's ground — station by station, so
+    // the roof's burial under the coarse hill is the reference burial.
+    for s in sections.iter_mut() {
+        let c_mm = (shift(profile.arc_of(s.lon, s.lat)) * 1000.0).round() as i32;
+        s.top_mm += c_mm;
+        s.bot_mm += c_mm;
     }
 
     sweep_prism(acc, frame, bounds, &sections, half_w, false);
@@ -718,7 +751,7 @@ mod tests {
         let half_w = Kind::Road(RoadClass::Motorway).prior().half_width_m(false).unwrap();
         let mut acc = Accum::default();
         for piece in proper_pieces(&line.0, b) {
-            sweep_deck(&mut acc, &frame, b, profile, &piece, half_w);
+            sweep_deck(&mut acc, &frame, b, profile, &piece, half_w, &mut |_| 0.0);
         }
         acc.into_mesh()
     }
@@ -729,9 +762,20 @@ mod tests {
         let half_w = Kind::Road(RoadClass::Motorway).prior().half_width_m(false).unwrap();
         let mut acc = Accum::default();
         for piece in proper_pieces(&line.0, b) {
-            sweep_bore(&mut acc, &frame, b, profile, &piece, half_w);
+            sweep_bore(&mut acc, &frame, b, profile, &piece, half_w, &mut |_| 0.0);
         }
         acc.into_mesh()
+    }
+
+    /// An inert sampler for `stamp` tests: no DEM, empty ground, and a zoom
+    /// equal to the reference, so the datum shift is zero by definition.
+    fn flat_sampler() -> crate::ground::sampler::GroundSampler {
+        crate::ground::sampler::GroundSampler::new(
+            None,
+            std::sync::Arc::new(crate::ground::GroundStack::empty()),
+            14,
+            crate::ground::sampler::MeshOptions::default(),
+        )
     }
 
     #[test]
@@ -756,7 +800,7 @@ mod tests {
                 mesh: None,
                 synth: crate::synth::Synth::None,
             };
-            assert!(stamp(&mut f, &profile, SpanKind::Bridge, &b));
+            assert!(stamp(&mut f, &profile, SpanKind::Bridge, &mut flat_sampler(), 14, 14, &b));
             let mesh = f.mesh.expect("deck mesh");
             // The west→east line spreads its cross-section in y.
             let (lo, hi) =
@@ -846,7 +890,7 @@ mod tests {
             mesh: None,
             synth: crate::synth::Synth::None,
         };
-        assert!(!stamp(&mut f, &profile, SpanKind::Tunnel, &b));
+        assert!(!stamp(&mut f, &profile, SpanKind::Tunnel, &mut flat_sampler(), 14, 14, &b));
         assert!(f.mesh.is_none());
     }
 

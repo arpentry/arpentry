@@ -126,7 +126,7 @@ I2. Every metric also states its own population; the table below is the summary.
 | `slope.terrain_tearing` | I6 | How far a terrain vertex stands off the plane of its neighbours, counted only where opposite breaks flank it on both sides. Separates a wall from a wall drawn as teeth, which no steepness can. |
 | `paint.marking_offside` | I4 | Plan distance from a painted marking to the asphalt it is painted on, zero when it is on it. Contact in *plan*: every other check reads a height, and a marking that has lost its lateral registration is still perfectly draped, so every height check reports it clean. |
 | `paint.edge_line_inset` | I4 | How far an edge line's near kerb sits from where the cross-section puts it (0.30 m inset inside a carriageway buffered by a 1.0 m shoulder = 1.30 m). Edge lines are the one painted line the archive can name — 0.15 m is their width and nothing else's — so they are the one place a lost lateral offset is a number rather than a shape. Paint projected onto the road's axis reads half a carriageway here. Centre lines and lane dividers are deliberately outside the population: both are 0.12 m, and the archive cannot tell a divider that belongs a third of the way across from a centre line that belongs in the middle. |
-| `lod.structure_drift` | I5 | Structure height at one zoom against the same structure one rung coarser. |
+| `lod.structure_drift` | I5 | Structure height *over its own zoom's drawn ground* against the same structure one rung coarser. Absolute tops differ between rungs by design since the per-zoom datum (`GROUND.md` §4): the span rides each zoom's canvas, so what must agree across rungs is the relation to the ground drawn under it. |
 
 ### The model half
 
@@ -343,7 +343,10 @@ prior-free half of invariant 3 without ambiguity — the level ordering — so t
 is what `order.deck_above_carriageway` measures.
 
 **Cross-zoom equality for at-grade roads.** Zoom-dependent by design; see
-`GROUND.md` §4.
+`GROUND.md` §4. Since the per-zoom structure datum the same is true of a
+structure's absolute height — the equality that remains promised, and that
+`lod.structure_drift` measures, is its height over its own zoom's drawn
+ground.
 
 **Longitudinal grade of every drivable road at the detail zoom.** From z13 the
 union paves the carriageway as a mesh and `stamp_synth` drops the fill stroke

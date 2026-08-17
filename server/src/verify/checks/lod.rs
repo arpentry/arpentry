@@ -1,5 +1,5 @@
-//! Invariant 5 across the LOD ladder: any two zoom levels derive identical
-//! heights for shared geometry.
+//! Invariant 5 across the LOD ladder: any two zoom levels derive the same
+//! *relation* between shared geometry and the ground drawn under it.
 //!
 //! Scoped, deliberately, to structures. docs/GROUND.md §4 is explicit that
 //! at-grade road height is *supposed* to differ by zoom — below the reference
@@ -10,11 +10,17 @@
 //! with a column nobody can ever drive to zero is a scorecard people learn to
 //! skim.
 //!
-//! What the same section does promise without qualification: "On structures the
-//! road rides the deck ramp at every zoom, the same heights the deck and bore
-//! solids are swept from." So a deck at z15 and the same deck at z16 must agree
-//! to the millimetre, and any drift is D5's forbidden case — a deck changing
-//! height between LODs — which on screen is a bridge that jumps as you zoom.
+//! Structures ride the same rule since the per-zoom datum (`synth::datum`): at
+//! a coarse zoom a deck is the solved ramp re-expressed against that zoom's
+//! drawn ground, so its *absolute* top legitimately differs between rungs by
+//! exactly the two canvases' divergence. What §4 promises instead is the
+//! relation: a structure's height over its own zoom's drawn ground is the
+//! reference relation at every rung. So the drift compared here is
+//! `(top_fine − ground_fine) − (top_coarse − ground_coarse)` — a deck that
+//! keeps its clearance while the canvas refines reads zero, and a deck that
+//! jumps *against its own ground* as the camera zooms is what the check
+//! catches. Samples with no drawn ground on either side (the kerb hole at the
+//! detail rung) are absent, as in `clearance.deck_over_ground`.
 //!
 //! ## Only where the match is certain
 //!
@@ -38,9 +44,19 @@ use crate::verify::{Invariant, Metric, Offender, Sense, Worst};
 
 use super::Options;
 
-/// Heights are int32 millimetres; two zooms that agree in the model agree here
-/// to the millimetre, so anything past half a centimetre is drift.
-const DRIFT_M: f64 = 0.005;
+/// The drift gate on the canvas-relative comparison. The residue of a correct
+/// datum shift is not zero: the shift is built from the ground *field*
+/// evaluated on each zoom's lattice, while this check reads each zoom's
+/// *drawn* terrain — which at the detail rung is a breakline-constrained mesh
+/// that legitimately departs the lattice interpolation by the size of the
+/// relief a lattice cell cannot hold. Measured on Montreux with the shift
+/// landed, that residue tails at 1.6 m for the z14/z13 pair, 3.5 m for
+/// z15/z14, and 5.9 m for z16/z15 — the last dominated by gorges the
+/// constrained mesh draws and the lattice field cannot. Two metres sits
+/// above the coarse pairs' tracking residue while still reading the
+/// detail-pair refinement honestly; as everywhere on this scorecard, the
+/// verdict is the baseline diff, not the absolute rate.
+const DRIFT_M: f64 = 2.0;
 
 /// How many coarse tiles to hold decoded at once. Tiles arrive in Hilbert
 /// order, so their parents come in runs and a small cache hits almost always.
@@ -109,12 +125,22 @@ pub fn measure(scan: &ArchiveScan<'_>, zooms: &[u8], opt: &Options) -> Vec<Metri
                     return;
                 }
                 let Some((_, top)) = s.mesh.height_range_at(px, py) else { return };
+                let Some(g_fine) =
+                    tile.terrain.as_ref().and_then(|t| t.height_at(px, py))
+                else {
+                    return;
+                };
                 let (lon, lat) = tile.lonlat(px, py);
                 let cx = (lon - parent.bounds.west) / parent.bounds.width();
                 let cy = (lat - parent.bounds.south) / parent.bounds.height();
                 let Some((_, coarse_top)) = coarse_mesh.height_range_at(cx, cy) else { return };
+                let Some(g_coarse) =
+                    parent.terrain.as_ref().and_then(|t| t.height_at(cx, cy))
+                else {
+                    return;
+                };
                 compared += 1;
-                let d = (top - coarse_top).abs();
+                let d = ((top - g_fine) - (coarse_top - g_coarse)).abs();
                 dist.push(d);
                 if d > DRIFT_M {
                     worst.offer(Offender {
@@ -123,8 +149,11 @@ pub fn measure(scan: &ArchiveScan<'_>, zooms: &[u8], opt: &Options) -> Vec<Metri
                         zoom: fine,
                         value: d,
                         note: format!(
-                            "{} L{}: z{fine} reads {top:.3} m, z{coarse} reads {coarse_top:.3} m",
-                            s.class, s.level
+                            "{} L{}: z{fine} clears its ground by {:.2} m, z{coarse} by {:.2} m",
+                            s.class,
+                            s.level,
+                            top - g_fine,
+                            coarse_top - g_coarse
                         ),
                     });
                 }
@@ -159,11 +188,12 @@ fn metric(dist: Dist, worst: Worst, skipped: Option<&str>) -> Metric {
                      across zooms, so an ambiguous parent would compare two different bridges; \
                      those are skipped and counted in the detail line."
             .into(),
-        detail: "Absolute difference between a deck or bore surface at one zoom and the same \
-                 structure one rung coarser. Scoped to structures on purpose: at-grade road \
-                 height is zoom-dependent by design (the datum lift, docs/GROUND.md §4), but a \
-                 deck must ride the same ramp at every zoom, and drift here is a bridge that \
-                 jumps as the camera zooms."
+        detail: "Difference in a structure's clearance over its own zoom's drawn ground, between \
+                 one zoom and the same structure one rung coarser. Absolute tops legitimately \
+                 differ between rungs by the canvases' divergence (the per-zoom datum, \
+                 docs/GROUND.md §4); what must not change is the relation to the ground drawn \
+                 under it, and drift here is a bridge that jumps against its own hillside as \
+                 the camera zooms."
             .into(),
         sense: Sense::HigherIsWorse,
         threshold: DRIFT_M,
