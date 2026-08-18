@@ -23,6 +23,12 @@
 //! - **`structure.edge_drift`** — where both agree a structure exists, how far
 //!   its ends move. The annotation ends where a mapper split the way; the
 //!   derivation ends where the road actually reaches the ground (S5).
+//!   Measured per annotated *end* against the nearest same-kind run edge:
+//!   the first cut paired each run with the span it overlapped most and
+//!   scored both end offsets, under which an 85 m fragment of the Chillon
+//!   viaduct's coverage reported 2,254 m of "end movement" — the span's own
+//!   length echoed back, the same span-length-as-finding disease the
+//!   handover pairing had (docs/VERIFICATION.md).
 //!
 //! All three are reported in **metres of centerline**, not counts, because a
 //! count cannot distinguish one long viaduct from a hundred slivers.
@@ -73,6 +79,17 @@ pub fn check(m: &Model<'_>) -> Vec<Metric> {
                     s.arc1 - s.arc0
                 ));
             }
+            // Where the derive agrees a structure exists here, how far each of
+            // this span's ends sits from the derived world's nearest edge.
+            if let Some((d, arc)) = end_drift(runs, s) {
+                drift.push(d);
+                if d > EPS_M {
+                    offer(&mut drift_worst, m, c, arc, d, &format!(
+                        "{:?} end moved {d:.0} m from where it was annotated",
+                        s.kind
+                    ));
+                }
+            }
         }
 
         for r in runs {
@@ -89,24 +106,6 @@ pub fn check(m: &Model<'_>) -> Vec<Metric> {
                     r.kind,
                     r.arc1 - r.arc0
                 ));
-            }
-            // Where an annotation and a run overlap, how far the ends moved.
-            if let Some(s) = annotated
-                .iter()
-                .filter(|s| s.kind == r.kind && r.arc1 > s.arc0 && r.arc0 < s.arc1)
-                .max_by(|a, b| {
-                    let ov = |s: &Span| (r.arc1.min(s.arc1) - r.arc0.max(s.arc0)).max(0.0);
-                    ov(a).partial_cmp(&ov(b)).unwrap_or(std::cmp::Ordering::Equal)
-                })
-            {
-                let d = (r.arc0 - s.arc0).abs().max((r.arc1 - s.arc1).abs());
-                drift.push(d);
-                if d > EPS_M {
-                    offer(&mut drift_worst, m, c, r.arc0, d, &format!(
-                        "{:?} end moved {d:.0} m from where it was annotated",
-                        r.kind
-                    ));
-                }
             }
         }
     }
@@ -196,8 +195,10 @@ pub fn check(m: &Model<'_>) -> Vec<Metric> {
         metric(
             "structure.edge_drift",
             "How far a structure's ends move when derived",
-            "Every derived run that overlaps an annotated span of the same kind, against the \
-             span it overlaps most, scored by the larger of its two end movements.",
+            "Every annotated non-grade span that a derived run of its kind overlaps, each end \
+             scored against the nearest such run's matching edge; the worse end is the sample. \
+             Per-end, because pairing whole runs echoed a long span's own length back as \
+             \"movement\" wherever its coverage was fragmented.",
             "The annotation ends where a mapper split the way; the derivation ends where the \
              road actually reaches the ground (S5). Drift here is the correction, not the error \
              — but it is also how far every consumer's geometry moves, so it is worth knowing \
@@ -216,6 +217,28 @@ fn overlap_with(runs: &[StructureRun], arc0: f64, arc1: f64, kind: SpanKind) -> 
         .sum()
 }
 
+/// How far this span's ends sit from the derived world's, and the arc of the
+/// worse end. `None` where no same-kind run overlaps the span (that is
+/// `annotated_lost`'s whole-loss family, not drift).
+///
+/// Each end is scored against the **nearest** same-kind overlapping run's
+/// matching edge, and the worse end wins. Pairing a whole run against the
+/// span it overlaps most — the first cut — scored *both* of the run's end
+/// offsets, so any fragment of a long structure's coverage reported nearly
+/// the span's length as "movement" (an 85 m fragment of the 2,339 m Chillon
+/// annotation read 2,254 m). Nearest-per-end keeps the honest cases intact:
+/// a 1:1 pair scores identically, a fused run still reports how far the
+/// derived structure's edge sits beyond the mapper's split, and a missing
+/// end fragment reports the real distance to where the derivation stops.
+fn end_drift(runs: &[StructureRun], s: &Span) -> Option<(f64, f64)> {
+    let overlapping =
+        || runs.iter().filter(|r| r.kind == s.kind && r.arc1 > s.arc0 && r.arc0 < s.arc1);
+    overlapping().next()?;
+    let d0 = overlapping().map(|r| (r.arc0 - s.arc0).abs()).fold(f64::INFINITY, f64::min);
+    let d1 = overlapping().map(|r| (r.arc1 - s.arc1).abs()).fold(f64::INFINITY, f64::min);
+    Some(if d0 >= d1 { (d0, s.arc0) } else { (d1, s.arc1) })
+}
+
 fn offer(
     w: &mut Worst,
     m: &Model<'_>,
@@ -227,6 +250,55 @@ fn offer(
     let Some(p) = m.solved.profile(c.id) else { return };
     let pt = p.point_at_arc(arc);
     w.offer(Offender { lon: pt.x, lat: pt.y, zoom: m.solved.z_ref, value, note: note.into() });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span(arc0: f64, arc1: f64) -> Span {
+        Span { arc0, arc1, level: 1, kind: SpanKind::Bridge }
+    }
+
+    fn run(arc0: f64, arc1: f64) -> StructureRun {
+        StructureRun { arc0, arc1, kind: SpanKind::Bridge }
+    }
+
+    /// The 1:1 case both pairings agree on: one run, shifted and trimmed.
+    #[test]
+    fn a_single_run_scores_its_worse_end() {
+        let (d, arc) = end_drift(&[run(20.0, 90.0)], &span(0.0, 100.0)).unwrap();
+        assert_eq!(d, 20.0);
+        assert_eq!(arc, 0.0);
+    }
+
+    /// The Chillon disease: fragmented coverage of one long span must report
+    /// the real end offsets, not a fragment's distance to the far end. The
+    /// run-paired rule read 890 m here (fragment 0..110 against end 1000).
+    #[test]
+    fn fragmented_coverage_does_not_echo_the_span_length() {
+        let runs = [run(10.0, 110.0), run(400.0, 500.0), run(880.0, 990.0)];
+        let (d, _) = end_drift(&runs, &span(0.0, 1000.0)).unwrap();
+        assert_eq!(d, 10.0);
+    }
+
+    /// A fused run (the mapper split one structure in two) still reports how
+    /// far the derived edge sits beyond this span's annotated end.
+    #[test]
+    fn a_fused_run_reports_the_absorbed_distance() {
+        let (d, arc) = end_drift(&[run(0.0, 250.0)], &span(150.0, 250.0)).unwrap();
+        assert_eq!(d, 150.0);
+        assert_eq!(arc, 150.0);
+    }
+
+    /// No overlapping run is whole loss, not zero drift.
+    #[test]
+    fn no_overlap_is_no_sample() {
+        assert!(end_drift(&[run(200.0, 300.0)], &span(0.0, 100.0)).is_none());
+        // A different kind does not pair either.
+        let bore = StructureRun { arc0: 0.0, arc1: 100.0, kind: SpanKind::Tunnel };
+        assert!(end_drift(&[bore], &span(0.0, 100.0)).is_none());
+    }
 }
 
 fn metric(

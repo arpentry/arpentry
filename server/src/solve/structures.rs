@@ -89,6 +89,17 @@ pub const DECK_STANDOFF_M: f64 = 4.0;
 /// Almost nothing at grade reaches it — the at-grade p05 is −0.5 m.
 pub const BORE_COVER_M: f64 = TUNNEL_HEIGHT_M + TUNNEL_COVER_M;
 
+/// Tolerance on the bore test at exactly [`BORE_COVER_M`], because the burial
+/// license *clamps* a bore to its ceiling: `terrain − roof − cover`, computed
+/// from the same terrain samples, so the gap at a clamped node equals the
+/// threshold to the float. A strict comparison makes "at the guarantee"
+/// unsatisfiable, and every ceiling-clamped run is censored by its own
+/// license — measured on the Montreux extract as 21 annotated tunnels
+/// (1.3 km) whose max departure was +5.500 m to the millimetre, with nothing
+/// else between −21 mm and +36 mm of the threshold. One millimetre admits the
+/// clamped contact and no genuine cutting.
+pub const CEILING_CONTACT_M: f64 = 1e-3;
+
 /// Derives the structures a solved profile implies.
 ///
 /// The gap `road − terrain` is the whole signal: past [`DECK_STANDOFF_M`] above
@@ -112,7 +123,7 @@ pub fn derive(p: &Profile, prior: &Prior) -> Vec<StructureRun> {
         let gap = road[i] - terrain[i];
         if gap > DECK_STANDOFF_M {
             Some(SpanKind::Bridge)
-        } else if gap < -BORE_COVER_M {
+        } else if gap <= -BORE_COVER_M + CEILING_CONTACT_M {
             Some(SpanKind::Tunnel)
         } else {
             None
@@ -309,6 +320,20 @@ mod tests {
         terrain[20] = 99.0; // one node brushing the standoff
         let runs = derive(&profile(n, 200.0, road, terrain), prior());
         assert_eq!(runs.len(), 1, "one viaduct, got {runs:?}");
+    }
+
+    /// A bore clamped to its licensed ceiling sits at exactly
+    /// `terrain − BORE_COVER_M` — the license's own arithmetic — and must
+    /// still read as a bore. A strict threshold censored 21 such tunnels
+    /// (1.3 km) on the Montreux extract: at the guarantee is *in*, not out.
+    #[test]
+    fn a_bore_at_its_licensed_ceiling_is_a_bore() {
+        let n = 21;
+        let terrain = vec![100.0; n];
+        let road: Vec<f64> = terrain.iter().map(|t| t - BORE_COVER_M).collect();
+        let runs = derive(&profile(n, 2000.0, road, terrain), prior());
+        assert_eq!(runs.len(), 1, "one bore, got {runs:?}");
+        assert_eq!(runs[0].kind, SpanKind::Tunnel);
     }
 
     /// A benched road reads *below* the raw DEM — it was cut into the hillside
