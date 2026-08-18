@@ -140,7 +140,58 @@ pub fn check(m: &Model<'_>) -> Vec<Metric> {
         }
     }
 
+    // §8's structural claim for §4.5: every clearance demand has a solved
+    // feature on both sides, **zero by construction** — when structures are
+    // outputs there is no "crossing whose bridge was deleted". A non-zero
+    // count is a design failure, not a quality regression: a crossing derived
+    // from a corridor the solve then failed to profile. `lower: None` is not
+    // an orphan — it names a crossed feature whose height *is* the ground.
+    let mut orphan = Dist::new(0.0, 2.0);
+    let mut orphan_worst = Worst::new(Sense::HigherIsWorse, 8);
+    for c in &m.solved.crossings {
+        let upper_solved = m.solved.profile(c.upper).is_some();
+        let lower_solved = c.lower.map_or(true, |id| m.solved.profile(id).is_some());
+        let orphaned = !upper_solved as u8 + !lower_solved as u8;
+        orphan.push(orphaned as f64);
+        if orphaned > 0 {
+            orphan_worst.offer(crate::verify::Offender {
+                lon: c.point.x,
+                lat: c.point.y,
+                zoom: m.solved.z_ref,
+                value: orphaned as f64,
+                note: format!(
+                    "crossing with {} unsolved side(s): upper #{} {}, lower {:?}",
+                    orphaned,
+                    c.upper,
+                    if upper_solved { "solved" } else { "UNSOLVED" },
+                    c.lower
+                ),
+            });
+        }
+    }
+
     vec![
+        Metric {
+            id: "crossing.orphan".into(),
+            invariant: Invariant::I3,
+            title: "A clearance demand with an unsolved side".into(),
+            population: "Every derived crossing in the solved model — the exact set the \
+                         clearance demands are seeded from — scored by how many of its sides \
+                         name a corridor the solve holds no profile for. A crossing whose \
+                         lower side is a plain surface feature (its height is the ground) is \
+                         whole, not orphaned."
+                .into(),
+            detail: "Structurally zero by §4.5: structures are outputs, so \"a crossing whose \
+                     bridge was deleted\" is unrepresentable — unless a crossing survives a \
+                     corridor its profile did not. Any count here is a design failure rather \
+                     than a quality regression (GENERATION.md §8)."
+                .into(),
+            sense: Sense::HigherIsWorse,
+            threshold: 0.5,
+            skipped: orphan.is_empty().then(|| "no crossings in this extract".to_string()),
+            dist: orphan,
+            worst: orphan_worst.into_vec(),
+        },
         Metric {
             id: "structure.bore_daylight".into(),
             // The waived clearance is an I3 ordering fact: two surfaces cross,
