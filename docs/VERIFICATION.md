@@ -477,17 +477,67 @@ reference down with it; the deficit reopens; and 96 sweeps later the railway is
 because grade drags them; clamping each dipped node against its own terrain does
 stop it and cuts a sawtooth instead (`slope.rail_grade` 303 %).
 
-So the general rule stays unimplemented, and it now has a **named
+So the general rule stayed unimplemented, and it acquired a **named
 prerequisite**: `datum.float`. A two-sided correction cannot be safe while some
 corridors sit hundreds of metres off their own datum, because those are exactly
 the ones whose demands are nonsense. The prerequisite is now measured (§5): on
 the Montreux extract 389,250 at-grade nodes read a median 0.01 m and a p99 of
 1.45 m off their reference, with 0.15 % past half a metre — so the population is
-mostly clean and the question is entirely about its tail, whose worst is a
+mostly clean and the question is entirely about its tail, whose worst was a
 residential road sitting 20 m *under* its own ground at 6.7042,46.5073. Held to the runs the data calls tunnels,
 the correction goes where §4.5's prior points and nowhere else: `bore_cover`
 violations 14.14 → 13.42 %, `kerb_lip` 13.49 → 13.45 %, 463 m of annotated
 tunnel recovered, and every extreme in the scorecard unmoved.
+
+### What chasing that tail found (2026-08-18)
+
+The `datum.float` tail was not a bad demand — it was the correction machinery
+failing in both directions at once, and fixing the two failures is what the
+"solved together to feasibility" ambition turns out to mean inside one stratum.
+
+**The dip's footprint was unbounded.** A dip ramp's ceiling rose away from the
+crossing at the class grade, absolutely. On a hillside steeper than that grade
+the ceiling never overtakes the terrain, so it chased the whole uphill network
+— through every junction, permanently, since the walk records its bounds into
+the slack box the deviation clamp yields to. At Lutry two 4.5 m rail
+underpasses sank a residential grid 8–20 m below its own ground, and
+`structure.derived_new` read the sunken streets back as a 324 m phantom
+tunnel. The fix bounds the *depth*: no walked node is asked further below its
+own reference than the crossing's dip less the budget already spent. On flat
+ground this is algebraically identical to the old ceiling; on the hill it ends
+the excavation where a real approach ramp would. The grid came back to its
+2.5 m class box with the genuine 4.3 m dip kept at the underpass itself
+(`a_hillside_underpass_dip_stays_local`).
+
+**The lift missed every structure run that reaches a corridor end.** Such a
+run has no at-grade anchor on that side, so the span lookup declared "no span"
+and the lift fell to the at-grade ramp: interior nodes rose, `rigidity_pass`
+chorded them back through the never-lifted ends, and the closing settle read
+the inflated interiors as satisfaction — a hard I3 violation that no counter
+counted. Corridor #18064 at Villeneuve, a whole-corridor bridge welded to its
+junctions, sat 6.8 m under eight rail-yard demands with *zero demands
+dropped*. The fix anchors such runs at their end nodes — the same anchoring
+the rigidity chord already uses — and spreads the lift outward from each
+anchor through the junction-welded network, so the approaches arrive on a ramp
+(`a_bridge_reaching_its_corridor_ends_still_clears_its_crossing`). The
+solve-wide clearance shortfall maximum fell 7.66 → 3.75 m.
+
+**The measured trade.** `datum.float` 0.148 → 0.132 %, worst 17.66 m *under*
+→ 11.33 m *over*; `order.grade_stack` 13.52 → 13.26 %,
+`clearance.deck_over_ground` 1.08 → 0.92 %, `slope.road_grade` 0.55 → 0.46 %.
+The sign flip on the worst is the honest cost stated plainly: at La Conversion
+a 9 m bridge legitimately crosses the double-track Bern line 15.7 m over the
+road's own conditioned reference, and where the old code left that lift on two
+anchor nodes with a 13.5 m wall beside them, the ramp now spreads it as the
+approach embankment the overpass needs. Ramped approaches also stand off the
+ground far enough to *derive* as unannotated bridges
+(`structure.derived_new`'s worst is now such an approach) — that is §4.5's
+switch territory, not a defect of the lift. `contact.kerb_lip` +0.11 pp is the
+same embankment's kerbs. What still holds the rule short of "general": a
+junior stratum still cannot ask a senior to share a lift (I7, by design), and
+the bore-roof-versus-drawn-ground family (`clearance.bore_cover`, the A9 roof
+at 6.9208,46.4336) is a ceiling-seeding question this machinery does not
+touch.
 
 **The conclusion is structural.** On steep or tall ground the earthwork must
 choose between a wall, a float, and no bench. All three are defects, and all

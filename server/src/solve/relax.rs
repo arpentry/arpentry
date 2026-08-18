@@ -436,11 +436,22 @@ fn grade_pass(g: &mut SolveGraph) -> f64 {
 /// constraint into a hope: clearance shortfall 51.93 → 293.61 m
 /// (docs/VERIFICATION.md §6).
 fn clearance_pass(g: &mut SolveGraph, sites: &VarSites, dropped: &mut Dropped, share: bool) {
+    let debug_id: Option<u32> = std::env::var("ARPT_DEBUG_CLEAR")
+        .ok()
+        .and_then(|s| s.parse().ok());
     for i in 0..g.crossings.len() {
         // By value: the passes below write `g.h`, and a crossing is four
         // numbers.
         let gc = g.crossings[i];
         let gc = &gc;
+        if debug_id == Some(g.corridors[gc.upper_ci].id) {
+            let c = &g.corridors[gc.upper_ci];
+            let span = structure_span_at(c, gc.upper_arc);
+            eprintln!(
+                "[clear] upper {} arc {:.1} lower {:?} extra {:.2} span {:?} deck {:.2} settle={}",
+                c.id, gc.upper_arc, gc.lower, gc.extra_m, span, upper_height(g, gc), !share
+            );
+        }
         let lower_h = match gc.lower {
             Lower::Var(v) => g.h[v],
             Lower::Constant(h) => h,
@@ -776,11 +787,27 @@ fn clearance_targets(
                 dropped.note(deficit);
                 return Vec::new();
             }
-            if deficit > 0.0 {
-                vec![(c.vars[lo], deficit), (c.vars[hi], deficit)]
-            } else {
-                Vec::new()
+            if deficit <= 0.0 {
+                return Vec::new();
             }
+            // Lift the chord by lifting its anchors — and floor the network
+            // outward from each anchor, so the approaches arrive at the
+            // lifted deck on a ramp rather than in one step (§4.4:
+            // approaches bend to meet decks). The anchor itself is the walk's
+            // seed at zero budget, so it takes exactly the deficit; where the
+            // anchor is a corridor end shared with at-grade streets, the ramp
+            // is what carries the lift through the junction instead of
+            // leaving a wall beside it.
+            let anchors: &[usize] = if lo == hi { &[lo] } else { &[lo, hi] };
+            let mut lift: HashMap<VarId, f64> = HashMap::new();
+            for &a in anchors {
+                let target = h[c.vars[a]] + deficit;
+                for (v, d) in ramp_targets(g, sites, gc.upper_ci, a, target, Sense::Up) {
+                    let e = lift.entry(v).or_insert(0.0);
+                    *e = e.max(d);
+                }
+            }
+            lift.into_iter().collect()
         }
         None => {
             let k = nearest_local(c, gc.upper_arc);
@@ -834,6 +861,18 @@ fn ramp_targets(
     heap.push(Reverse((0, start_ci as u32, start_k as u32)));
     best.insert((start_ci as u32, start_k as u32), 0);
 
+    // A dip is a local excavation, not a datum shift: how far below its *own*
+    // ground the crossing asks the road, spent down by the same budget the
+    // absolute ceiling rises by. On flat ground the two bounds coincide
+    // exactly. On a hillside steeper than the class grade the absolute
+    // ceiling alone never overtakes the terrain, so it chased whole uphill
+    // networks down with it — at Lutry two 4.5 m rail underpasses sank a
+    // residential grid 8–20 m below its ground (`datum.float` 17.66 m past
+    // budget on a road that crosses nothing), and `structure.derived_new`
+    // read the sunken streets back as a 324 m phantom tunnel. Beyond the
+    // excavation the deviation box governs: the road breaks grade rather
+    // than dive (docs/GENERATION.md §4.4).
+    let dip0 = g.vars[g.corridors[start_ci].vars[start_k]].target_m - need;
     let mut lift: HashMap<VarId, f64> = HashMap::new();
     while let Some(Reverse((cost, ci, k))) = heap.pop() {
         if best.get(&(ci, k)).copied().unwrap_or(u64::MAX) < cost {
@@ -843,9 +882,12 @@ fn ramp_targets(
         let v = c.vars[k as usize];
         // A floor rises away from the crossing as the budget is spent; a
         // ceiling falls away from it. One walk, one sign.
+        let spent = cost as f64 * 0.001;
         let bound = match sense {
-            Sense::Up => need - cost as f64 * 0.001,
-            Sense::Down => need + cost as f64 * 0.001,
+            Sense::Up => need - spent,
+            Sense::Down => {
+                (need + spent).max(g.vars[v].target_m - (dip0 - spent).max(0.0))
+            }
         };
         let raised = match sense {
             Sense::Up => bound > g.h[v],
@@ -894,9 +936,17 @@ fn ramp_targets(
     lift.into_iter().collect()
 }
 
-/// The bounding at-grade anchors (local node indices) of the structure span
-/// containing `arc`, or `None` when `arc` is not inside a two-sided structure
-/// span (at grade, or a one-sided span running off a corridor end).
+/// The bounding nodes (local indices) of the structure span containing `arc`,
+/// or `None` when the nearest node is at grade.
+///
+/// The bound each side is the at-grade anchor where the run has one, and the
+/// **corridor end** where it does not — the same anchoring [`project_spans`]
+/// chords through. Treating an end-reaching run as "no span" sent its
+/// clearance lifts down the at-grade ramp instead: interior nodes rose,
+/// rigidity chorded them back through the never-lifted ends, and the closing
+/// settle read the inflated interiors as satisfaction. Corridor #18064 at
+/// Villeneuve — a whole-corridor bridge welded to its junctions — ended flush,
+/// 6.8 m under eight crossing demands, with zero demands dropped.
 fn structure_span_at(c: &CorridorNodes, arc: f64) -> Option<(usize, usize)> {
     let k = nearest_local(c, arc);
     if c.at_grade[k] {
@@ -910,13 +960,7 @@ fn structure_span_at(c: &CorridorNodes, arc: f64) -> Option<(usize, usize)> {
     while hi + 1 < c.at_grade.len() && !c.at_grade[hi] {
         hi += 1;
     }
-    // `lo`/`hi` now sit on the bounding at-grade anchors — unless the run
-    // reaches a corridor end (no anchor that side).
-    if c.at_grade[lo] && c.at_grade[hi] {
-        Some((lo, hi))
-    } else {
-        None
-    }
+    Some((lo, hi))
 }
 
 /// The local node index whose arc is nearest `arc`.
@@ -1839,5 +1883,171 @@ mod tests {
             g.h
         };
         assert_eq!(run(), run(), "identical inputs must give identical heights");
+    }
+
+    /// A dip under a senior crossing is a local excavation, not a datum shift.
+    ///
+    /// On a hillside steeper than the class grade, the old ceiling — rising at
+    /// the class grade from the crossing — never overtakes the terrain, so a
+    /// 4.5 m underpass dip chased the whole uphill network down with it:
+    /// measured at Lutry (6.7042,46.5073), two rail underpasses sank a
+    /// residential grid 8–20 m below its own ground, and `datum.float` read
+    /// 17.66 m past budget on a road that crosses nothing.
+    #[test]
+    fn a_hillside_underpass_dip_stays_local() {
+        use super::super::graph::{CorridorNodes, SolveGraph, Undercut, VarNode};
+        // 41 nodes, 10 m apart, on a 10 % hill; the class grade is 6 %, so the
+        // old absolute ceiling never catches the terrain uphill.
+        let n = 41;
+        let arc: Vec<f64> = (0..n).map(|i| i as f64 * 10.0).collect();
+        let target: Vec<f64> = arc.iter().map(|&s| 100.0 + 0.10 * s).collect();
+        let vars: Vec<VarNode> = target
+            .iter()
+            .map(|&t| VarNode { target_m: t, terrain_m: t, terrain_pinned: true, inv_mass: 1.0 })
+            .collect();
+        let dip = 4.5;
+        let mut g = SolveGraph {
+            h: target.clone(),
+            vars,
+            corridors: vec![CorridorNodes {
+                id: 0,
+                vars: (0..n).collect(),
+                arc,
+                bore: vec![false; n],
+                tunnel: vec![false; n],
+                covered: vec![false; n],
+                monotone: None,
+                at_grade: vec![true; n],
+                grade: 0.06,
+                deviation: 2.5,
+            }],
+            crossings: Vec::new(),
+            contacts: Vec::new(),
+            // A senior feature crosses at node 5 (arc 50) and its soffit
+            // demands the road 4.5 m under its own ground there.
+            undercuts: vec![Undercut {
+                under_ci: 0,
+                under_arc: 50.0,
+                ceiling_m: target[5] - dip,
+            }],
+            slack: vec![(f64::NEG_INFINITY, f64::INFINITY); n],
+            component: vec![0; n],
+            n_components: 1,
+            junction_var: Vec::new(),
+        };
+        solve(&mut g);
+        // The dip itself holds: the road passes under the senior.
+        assert!(
+            g.h[5] <= target[5] - dip + 1e-3,
+            "the crossing must dip: {} vs ceiling {}",
+            g.h[5],
+            target[5] - dip
+        );
+        // No node anywhere is asked deeper below its own ground than the
+        // crossing's own dip — the excavation is local.
+        for k in 0..n {
+            assert!(
+                g.h[k] >= target[k] - dip - 0.01,
+                "node {k} dug {:.2} m below its own ground (dip is {dip})",
+                target[k] - g.h[k]
+            );
+        }
+        // And uphill, past the dip's own footprint, the road is back inside
+        // its ground-hugging box: the neighbourhood does not sink with the
+        // underpass.
+        assert!(
+            g.h[30] >= target[30] - 2.5 - 0.01,
+            "a node 250 m uphill sank {:.2} m below its ground",
+            target[30] - g.h[30]
+        );
+    }
+
+    /// A structure run that reaches its corridor ends still delivers its
+    /// clearance.
+    ///
+    /// A whole-corridor bridge has no at-grade anchors, so the lift used to
+    /// fall to the at-grade ramp: interior nodes rose, `rigidity_pass` chorded
+    /// them back through the never-lifted ends, and the closing settle read the
+    /// inflated interiors as satisfaction — corridor #18064 at Villeneuve ended
+    /// flush with its junctions, 6.8 m under eight crossing demands, with zero
+    /// demands dropped (`order.grade_stack`'s worst site).
+    #[test]
+    fn a_bridge_reaching_its_corridor_ends_still_clears_its_crossing() {
+        use super::super::graph::{CorridorNodes, GraphCrossing, SolveGraph, VarNode};
+        // Corridor 0: a 180 m bridge, no at-grade node anywhere. Its end
+        // connectors (vars 0 and 6) are each shared with an at-grade street
+        // (vars 7–10 and 11–14), the junction weld that held #18064 flush.
+        let bn = 7;
+        let mut vars: Vec<VarNode> = (0..bn)
+            .map(|_| VarNode { target_m: 101.0, terrain_m: 101.0, terrain_pinned: false, inv_mass: 8.0 })
+            .collect();
+        for _ in 0..8 {
+            vars.push(VarNode { target_m: 101.0, terrain_m: 101.0, terrain_pinned: true, inv_mass: 1.0 });
+        }
+        let bridge = CorridorNodes {
+            id: 0,
+            vars: (0..bn).collect(),
+            arc: (0..bn).map(|i| i as f64 * 30.0).collect(),
+            bore: vec![false; bn],
+            tunnel: vec![false; bn],
+            covered: vec![false; bn],
+            monotone: None,
+            at_grade: vec![false; bn],
+            grade: 0.06,
+            deviation: 1e9,
+        };
+        let street = |connector: usize, base: usize| CorridorNodes {
+            id: 1 + base as u32,
+            vars: vec![connector, base, base + 1, base + 2, base + 3],
+            arc: (0..5).map(|i| i as f64 * 30.0).collect(),
+            bore: vec![false; 5],
+            tunnel: vec![false; 5],
+            covered: vec![false; 5],
+            monotone: None,
+            at_grade: vec![true; 5],
+            grade: 0.06,
+            deviation: 1e9,
+        };
+        let nv = vars.len();
+        let mut g = SolveGraph {
+            vars,
+            h: vec![101.0; nv],
+            corridors: vec![bridge, street(0, 7), street(6, 11)],
+            // A senior rail line beneath mid-span: rail clearance 7 + slab 1.5.
+            crossings: vec![GraphCrossing {
+                upper_ci: 0,
+                upper_arc: 90.0,
+                lower: Lower::Constant(100.0),
+                extra_m: 8.5,
+            }],
+            contacts: Vec::new(),
+            undercuts: Vec::new(),
+            slack: vec![(f64::NEG_INFINITY, f64::INFINITY); nv],
+            component: vec![0; nv],
+            n_components: 1,
+            junction_var: Vec::new(),
+        };
+        solve(&mut g);
+        // The deck clears the demand at the crossing — the invariant, not a
+        // preference: the settle exists to make this true at the output.
+        let deck = 0.5 * (g.h[0] + g.h[6]);
+        assert!(
+            g.h[3] >= 108.5 - 1e-3,
+            "the deck must clear its crossing: {} vs 108.5 (chord {deck})",
+            g.h[3]
+        );
+        // Straight over the span: the lift moved the chord, not a bulge the
+        // rigidity projection erases.
+        assert!((g.h[3] - deck).abs() < 1e-6, "deck must stay straight over the span");
+        // The approaches arrive at the lifted ends on a ramp, not in one step:
+        // the street node beside each junction stands within a grade-length of
+        // the connector it meets.
+        for (conn, first) in [(0usize, 7usize), (6, 11)] {
+            assert!(
+                g.h[conn] - g.h[first] <= 0.06 * 30.0 + 0.01,
+                "street steps {:.2} m up to its junction in 30 m",
+                g.h[conn] - g.h[first]
+            );
+        }
     }
 }
