@@ -600,6 +600,7 @@ mod tests {
             roads,
             lines: Vec::new(),
             waters: Vec::new(),
+            buildings: Vec::new(),
         }
     }
 

@@ -25,7 +25,7 @@ use crate::terrain::{encode_octahedral, TerrainMesh};
 /// Extra depth, below the footprint's lowest ground, that walls sink to (2 m):
 /// covers sub-metre relief rounding and DEM jitter on flat ground. The buried
 /// part is hidden by the opaque terrain.
-const FOUNDATION_MARGIN_MM: i32 = 2000;
+pub(crate) const FOUNDATION_MARGIN_MM: i32 = 2000;
 
 /// Default roof rise (eave-to-ridge) when `roof_height` is absent, as a fraction
 /// of the footprint's short side, capped by [`MAX_ROOF_RISE_M`]. Overture rarely

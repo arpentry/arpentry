@@ -948,6 +948,7 @@ mod tests {
             roads,
             lines: Vec::new(),
             waters: Vec::new(),
+            buildings: Vec::new(),
         }
     }
 
@@ -1067,6 +1068,7 @@ mod tests {
             }],
             lines: Vec::new(),
             waters: Vec::new(),
+            buildings: Vec::new(),
         };
         let m = run(&tile);
         // The kerb at x = 0.5 is inside the tile and reported; the outer edge at
@@ -1122,6 +1124,7 @@ mod tests {
             roads,
             lines: Vec::new(),
             waters: Vec::new(),
+            buildings: Vec::new(),
         }
     }
 
@@ -1215,6 +1218,7 @@ mod tests {
             roads,
             lines: Vec::new(),
             waters: Vec::new(),
+            buildings: Vec::new(),
         }
     }
 
@@ -1328,6 +1332,7 @@ mod tests {
                 parts: vec![vec![(0.3, 0.5, line_m), (0.5, 0.5, line_m), (0.7, 0.5, line_m)]],
             }],
             waters: Vec::new(),
+            buildings: Vec::new(),
         }
     }
 

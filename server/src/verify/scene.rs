@@ -160,6 +160,12 @@ pub struct TileScene {
     pub lines: Vec<RoadLine>,
     /// Flowing watercourse centerlines, for the descent check.
     pub waters: Vec<WaterLine>,
+    /// Building meshes with their stamped ground relief, for the seat check.
+    /// `relief_m` is the tiler's `ground_relief` property (highest minus
+    /// lowest stack ground under the footprint, whole metres; absent = 0), so
+    /// a check can reconstruct the designed seat band from the mesh's own
+    /// foot: `[foot, foot + relief + foundation margin]`.
+    pub buildings: Vec<(f64, SurfaceMesh)>,
 }
 
 impl TileScene {
@@ -304,6 +310,7 @@ impl<'a> ArchiveScan<'a> {
             roads: Vec::new(),
             lines: Vec::new(),
             waters: Vec::new(),
+            buildings: Vec::new(),
         };
 
         for li in 0..layers_v.len() {
@@ -379,6 +386,25 @@ impl<'a> ArchiveScan<'a> {
                         }
                     }
                 }
+            } else if name == layers::NAMES[layers::BUILDING as usize] {
+                for fi in 0..feats.len() {
+                    let f = feats.get(fi);
+                    let mut relief = 0.0f64;
+                    if let Some(props) = f.properties() {
+                        for pi in 0..props.len() {
+                            let p = props.get(pi);
+                            let Some(k) = keys.iter().nth(p.key() as usize) else { continue };
+                            if k == "ground_relief" {
+                                relief = values.get(p.value() as usize).int_value() as f64;
+                            }
+                        }
+                    }
+                    if let Some(g) = f.geometry_as_mesh_geometry() {
+                        if let Some(mesh) = SurfaceMesh::from_geometry(&g) {
+                            scene.buildings.push((relief, mesh));
+                        }
+                    }
+                }
             }
         }
         Some(scene)
@@ -417,6 +443,7 @@ mod tests {
             roads: Vec::new(),
             lines: Vec::new(),
             waters: Vec::new(),
+            buildings: Vec::new(),
         };
         assert!(s.owns(0.0, 0.0) && s.owns(1.0, 1.0) && s.owns(0.5, 0.5));
         assert!(!s.owns(-0.01, 0.5), "west buffer belongs to the neighbour");
@@ -436,6 +463,7 @@ mod tests {
             roads: Vec::new(),
             lines: Vec::new(),
             waters: Vec::new(),
+            buildings: Vec::new(),
         };
         let (lon, lat) = s.lonlat(0.0, 0.0);
         assert!((lon - b.west).abs() < 1e-12 && (lat - b.south).abs() < 1e-12);
