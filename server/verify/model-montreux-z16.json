@@ -54,59 +54,59 @@
       "median": 0.013333333333333334,
       "offenders": [
         {
-          "lat": 46.5072797,
-          "lon": 6.704188033333334,
-          "note": "Road(Residential) at grade 20.2 m below its reference ground, 17.7 m past the 2.5 m this class is built on",
-          "value": 17.660889039002313,
+          "lat": 46.4963352,
+          "lon": 6.7207605,
+          "note": "Road(Tertiary) at grade 13.8 m above its reference ground, 11.3 m past the 2.5 m this class is built on",
+          "value": 11.32714978528952,
           "zoom": 16
         },
         {
-          "lat": 46.5070769,
-          "lon": 6.70375475,
-          "note": "Road(Residential) at grade 20.1 m below its reference ground, 17.6 m past the 2.5 m this class is built on",
-          "value": 17.625247242971454,
+          "lat": 46.4963625,
+          "lon": 6.7208035,
+          "note": "Road(Tertiary) at grade 13.5 m above its reference ground, 11.0 m past the 2.5 m this class is built on",
+          "value": 11.041345471759655,
           "zoom": 16
         },
         {
-          "lat": 46.5072098,
-          "lon": 6.703935,
-          "note": "Road(Residential) at grade 20.0 m below its reference ground, 17.5 m past the 2.5 m this class is built on",
-          "value": 17.52145038741537,
+          "lat": 46.4963625,
+          "lon": 6.7208035,
+          "note": "Road(Tertiary) at grade 13.5 m above its reference ground, 11.0 m past the 2.5 m this class is built on",
+          "value": 11.041345471759655,
           "zoom": 16
         },
         {
-          "lat": 46.5073496,
-          "lon": 6.704441066666667,
-          "note": "Road(Residential) at grade 19.4 m below its reference ground, 16.9 m past the 2.5 m this class is built on",
-          "value": 16.887919994623985,
+          "lat": 46.4963625,
+          "lon": 6.7208035,
+          "note": "Road(Unclassified) at grade 13.5 m above its reference ground, 11.0 m past the 2.5 m this class is built on",
+          "value": 11.041345471759655,
           "zoom": 16
         },
         {
-          "lat": 46.5074195,
-          "lon": 6.7046941,
-          "note": "Road(Residential) at grade 17.6 m below its reference ground, 15.1 m past the 2.5 m this class is built on",
-          "value": 15.064588623005534,
+          "lat": 46.4963625,
+          "lon": 6.7208035,
+          "note": "Road(Tertiary) at grade 13.5 m above its reference ground, 11.0 m past the 2.5 m this class is built on",
+          "value": 11.041345471759655,
           "zoom": 16
         },
         {
-          "lat": 46.5132179,
-          "lon": 6.6904489,
-          "note": "Road(Residential) at grade 17.4 m below its reference ground, 14.9 m past the 2.5 m this class is built on",
-          "value": 14.944224062499416,
+          "lat": 46.4963796,
+          "lon": 6.7209006,
+          "note": "Road(Tertiary) at grade 13.4 m above its reference ground, 10.9 m past the 2.5 m this class is built on",
+          "value": 10.936741776831468,
           "zoom": 16
         },
         {
-          "lat": 46.5132567,
-          "lon": 6.6904703,
-          "note": "Road(Residential) at grade 16.8 m below its reference ground, 14.3 m past the 2.5 m this class is built on",
-          "value": 14.251224062499432,
+          "lat": 46.4966189,
+          "lon": 6.7206937,
+          "note": "Road(Residential) at grade 13.2 m above its reference ground, 10.7 m past the 2.5 m this class is built on",
+          "value": 10.718997333693551,
           "zoom": 16
         },
         {
-          "lat": 46.4470958,
-          "lon": 6.9173627,
-          "note": "Road(Service) at grade 16.0 m below its reference ground, 13.5 m past the 2.5 m this class is built on",
-          "value": 13.533795454510027,
+          "lat": 46.4966189,
+          "lon": 6.7206937,
+          "note": "Road(Residential) at grade 13.2 m above its reference ground, 10.7 m past the 2.5 m this class is built on",
+          "value": 10.718997333693551,
           "zoom": 16
         }
       ],
@@ -114,19 +114,19 @@
       "samples": 388719,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 1.4533333333333334,
+      "tail": 1.0266666666666668,
       "threshold": 0.5,
       "title": "Solved at-grade road standing off its own ground",
-      "violation_pct": 0.14792176353612763,
-      "violations": 575,
-      "worst": 17.660889039002313
+      "violation_pct": 0.1319719385983191,
+      "violations": 513,
+      "worst": 11.32714978528952
     },
     {
       "id": "ground.footprint",
       "invariant": "I8",
       "median": 0.006666666666667709,
       "offenders": [],
-      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 606442 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
+      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 606480 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
       "samples": 10409256,
       "sense": "higher_is_worse",
       "skipped": null,
@@ -213,7 +213,7 @@
     {
       "id": "structure.annotated_lost",
       "invariant": "I6",
-      "median": 11.520000000000001,
+      "median": 10.666666666666668,
       "offenders": [
         {
           "lat": 46.42450838850159,
@@ -279,8 +279,8 @@
       "tail": 498.77333333333337,
       "threshold": 0.5,
       "title": "Annotated structure the solve does not imply",
-      "violation_pct": 94.11764705882354,
-      "violations": 960,
+      "violation_pct": 93.43137254901961,
+      "violations": 953,
       "worst": 591.7616213769492
     },
     {
@@ -289,17 +289,17 @@
       "median": 1.28,
       "offenders": [
         {
-          "lat": 46.50738554432217,
-          "lon": 6.704571182713217,
-          "note": "Tunnel implied over 324 m, 324 m of it unannotated",
-          "value": 323.8676440523015,
+          "lat": 46.495955249521195,
+          "lon": 6.719275748617138,
+          "note": "Bridge implied over 254 m, 254 m of it unannotated",
+          "value": 253.9134079855154,
           "zoom": 16
         },
         {
-          "lat": 46.45659296812909,
-          "lon": 6.9423454389206825,
-          "note": "Tunnel implied over 171 m, 171 m of it unannotated",
-          "value": 171.15678797620876,
+          "lat": 46.50501989290806,
+          "lon": 6.703046411205475,
+          "note": "Bridge implied over 212 m, 212 m of it unannotated",
+          "value": 211.7376159549222,
           "zoom": 16
         },
         {
@@ -310,20 +310,6 @@
           "zoom": 16
         },
         {
-          "lat": 46.51259303787017,
-          "lon": 6.691094181347376,
-          "note": "Tunnel implied over 121 m, 121 m of it unannotated",
-          "value": 121.37078951446381,
-          "zoom": 16
-        },
-        {
-          "lat": 46.506799340055274,
-          "lon": 6.702503698282921,
-          "note": "Tunnel implied over 117 m, 117 m of it unannotated",
-          "value": 116.5898626772431,
-          "zoom": 16
-        },
-        {
           "lat": 46.328687714461566,
           "lon": 7.000753712149299,
           "note": "Bridge implied over 109 m, 109 m of it unannotated",
@@ -331,30 +317,44 @@
           "zoom": 16
         },
         {
-          "lat": 46.513320870093374,
-          "lon": 6.690968017252802,
-          "note": "Tunnel implied over 105 m, 105 m of it unannotated",
-          "value": 104.91258648074403,
+          "lat": 46.31526107216789,
+          "lon": 6.916513666203927,
+          "note": "Bridge implied over 441 m, 102 m of it unannotated",
+          "value": 101.82178054078088,
           "zoom": 16
         },
         {
-          "lat": 46.51210094707988,
-          "lon": 6.686567248041102,
-          "note": "Tunnel implied over 98 m, 98 m of it unannotated",
-          "value": 98.15429899649915,
+          "lat": 46.4874911898554,
+          "lon": 6.770271021498338,
+          "note": "Bridge implied over 126 m, 88 m of it unannotated",
+          "value": 88.33292687231841,
+          "zoom": 16
+        },
+        {
+          "lat": 46.49626508223555,
+          "lon": 6.720264622178896,
+          "note": "Bridge implied over 85 m, 85 m of it unannotated",
+          "value": 85.39184085988177,
+          "zoom": 16
+        },
+        {
+          "lat": 46.487307857110345,
+          "lon": 6.770388918577314,
+          "note": "Bridge implied over 119 m, 76 m of it unannotated",
+          "value": 76.4728273391338,
           "zoom": 16
         }
       ],
       "population": "Every derived run, scored by the metres of it no annotated span of the same kind covers.",
-      "samples": 753,
+      "samples": 755,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 323.84000000000003,
+      "tail": 253.86666666666667,
       "threshold": 0.5,
       "title": "Structure the solve implies that nothing annotated",
-      "violation_pct": 52.58964143426295,
-      "violations": 396,
-      "worst": 323.8676440523015
+      "violation_pct": 50.99337748344371,
+      "violations": 385,
+      "worst": 253.9134079855154
     },
     {
       "id": "structure.edge_drift",
@@ -362,24 +362,24 @@
       "median": 8.96,
       "offenders": [
         {
-          "lat": 46.42319802789911,
-          "lon": 6.93075679204085,
+          "lat": 46.42319862806423,
+          "lon": 6.930756767624684,
           "note": "Bridge end moved 2254 m from where it was annotated",
-          "value": 2254.246695805701,
+          "value": 2254.313532449185,
           "zoom": 16
         },
         {
-          "lat": 46.42384047645641,
-          "lon": 6.930328595826799,
+          "lat": 46.42384028472856,
+          "lon": 6.930328614381107,
           "note": "Bridge end moved 2233 m from where it was annotated",
-          "value": 2233.0402508044717,
+          "value": 2233.0513033177413,
           "zoom": 16
         },
         {
-          "lat": 46.403630880544405,
-          "lon": 6.93397473001386,
+          "lat": 46.40363024560055,
+          "lon": 6.933974680375844,
           "note": "Bridge end moved 1998 m from where it was annotated",
-          "value": 1998.3143005049442,
+          "value": 1998.2658048937046,
           "zoom": 16
         },
         {
@@ -397,10 +397,10 @@
           "zoom": 16
         },
         {
-          "lat": 46.40731723688571,
-          "lon": 6.933759150991775,
+          "lat": 46.40731713004021,
+          "lon": 6.933759169560009,
           "note": "Bridge end moved 404 m from where it was annotated",
-          "value": 404.17361500576953,
+          "value": 404.1616359347554,
           "zoom": 16
         },
         {
@@ -419,15 +419,15 @@
         }
       ],
       "population": "Every derived run that overlaps an annotated span of the same kind, against the span it overlaps most, scored by the larger of its two end movements.",
-      "samples": 499,
+      "samples": 513,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 2254.08,
       "threshold": 0.5,
       "title": "How far a structure's ends move when derived",
-      "violation_pct": 99.19839679358718,
-      "violations": 495,
-      "worst": 2254.246695805701
+      "violation_pct": 98.24561403508773,
+      "violations": 504,
+      "worst": 2254.313532449185
     }
   ]
 }
