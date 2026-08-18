@@ -379,6 +379,7 @@ mod tests {
             terrain,
             roads,
             lines: Vec::new(),
+            waters: Vec::new(),
         }
     }
 

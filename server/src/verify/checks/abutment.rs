@@ -508,6 +508,7 @@ mod tests {
             terrain: None,
             roads,
             lines,
+            waters: Vec::new(),
         }
     }
 

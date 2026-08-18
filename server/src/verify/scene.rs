@@ -130,6 +130,18 @@ impl RoadLine {
     }
 }
 
+/// One flowing watercourse centerline, plan-only. Water lines carry no
+/// heights of their own — flowing water is drawn draped, so its vertical
+/// profile *is* the drawn terrain along it — which is exactly why the descent
+/// check samples the terrain mesh at these points rather than reading a `z`
+/// the format does not have.
+pub struct WaterLine {
+    /// `river`, `stream` or `canal` (the emitted `class` property).
+    pub class: String,
+    /// One entry per part, each a run of `(x, y)` in unit plan space.
+    pub parts: Vec<Vec<(f64, f64)>>,
+}
+
 /// One tile, decoded into the surfaces the checks compare.
 pub struct TileScene {
     pub z: u8,
@@ -146,6 +158,8 @@ pub struct TileScene {
     /// stamp elevations, in which case a grade check has nothing to read and
     /// says so rather than reporting a flat scene as perfect.
     pub lines: Vec<RoadLine>,
+    /// Flowing watercourse centerlines, for the descent check.
+    pub waters: Vec<WaterLine>,
 }
 
 impl TileScene {
@@ -196,6 +210,38 @@ fn line_parts(g: &fbt::LineGeometry<'_>) -> Vec<Vec<(f64, f64, f64)>> {
                         crate::verify::mesh::dequantize(gx.get(i)),
                         crate::verify::mesh::dequantize(gy.get(i)),
                         gz.get(i) as f64 * 0.001,
+                    )
+                })
+                .collect(),
+        );
+    }
+    parts
+}
+
+/// A line feature's parts in unit plan space, heights ignored — for the water
+/// layer, whose lines are drawn draped and never carry `z`.
+fn plan_parts(g: &fbt::LineGeometry<'_>) -> Vec<Vec<(f64, f64)>> {
+    let (gx, gy) = (g.x(), g.y());
+    let n = gx.len().min(gy.len());
+    if n < 2 {
+        return Vec::new();
+    }
+    let bounds: Vec<u32> = match g.line_offsets() {
+        Some(o) => (0..o.len()).map(|i| o.get(i)).collect(),
+        None => vec![0, n as u32],
+    };
+    let mut parts = Vec::new();
+    for w in bounds.windows(2) {
+        let (lo, hi) = (w[0] as usize, (w[1] as usize).min(n));
+        if hi <= lo + 1 {
+            continue;
+        }
+        parts.push(
+            (lo..hi)
+                .map(|i| {
+                    (
+                        crate::verify::mesh::dequantize(gx.get(i)),
+                        crate::verify::mesh::dequantize(gy.get(i)),
                     )
                 })
                 .collect(),
@@ -257,6 +303,7 @@ impl<'a> ArchiveScan<'a> {
             terrain: None,
             roads: Vec::new(),
             lines: Vec::new(),
+            waters: Vec::new(),
         };
 
         for li in 0..layers_v.len() {
@@ -302,6 +349,36 @@ impl<'a> ArchiveScan<'a> {
                         }
                     }
                 }
+            } else if name == layers::NAMES[layers::WATER as usize] {
+                for fi in 0..feats.len() {
+                    let f = feats.get(fi);
+                    let mut class = String::new();
+                    if let Some(props) = f.properties() {
+                        for pi in 0..props.len() {
+                            let p = props.get(pi);
+                            let Some(k) = keys.iter().nth(p.key() as usize) else { continue };
+                            if k == "class" {
+                                class = values
+                                    .get(p.value() as usize)
+                                    .string_value()
+                                    .unwrap_or("")
+                                    .to_string();
+                            }
+                        }
+                    }
+                    // Lines only: a wide river's polygon has no along-flow
+                    // order to walk, and the still bodies are the flatten's
+                    // business, not the descent's.
+                    if !matches!(class.as_str(), "river" | "stream" | "canal") {
+                        continue;
+                    }
+                    if let Some(g) = f.geometry_as_line_geometry() {
+                        let parts = plan_parts(&g);
+                        if !parts.is_empty() {
+                            scene.waters.push(WaterLine { class, parts });
+                        }
+                    }
+                }
             }
         }
         Some(scene)
@@ -339,6 +416,7 @@ mod tests {
             terrain: None,
             roads: Vec::new(),
             lines: Vec::new(),
+            waters: Vec::new(),
         };
         assert!(s.owns(0.0, 0.0) && s.owns(1.0, 1.0) && s.owns(0.5, 0.5));
         assert!(!s.owns(-0.01, 0.5), "west buffer belongs to the neighbour");
@@ -357,6 +435,7 @@ mod tests {
             terrain: None,
             roads: Vec::new(),
             lines: Vec::new(),
+            waters: Vec::new(),
         };
         let (lon, lat) = s.lonlat(0.0, 0.0);
         assert!((lon - b.west).abs() < 1e-12 && (lat - b.south).abs() < 1e-12);
