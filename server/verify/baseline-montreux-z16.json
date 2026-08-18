@@ -523,75 +523,33 @@
     {
       "id": "contact.rail_standoff",
       "invariant": "I4",
-      "median": -20.166666666666664,
+      "median": -0.006666666666664156,
       "offenders": [
-        {
-          "lat": 46.461181640625,
-          "lon": 6.911643762141466,
-          "note": "narrow_gauge formation 680.74 m, drawn ground 658.12 m, nothing between them",
-          "value": 22.62560278511046,
-          "zoom": 16
-        },
-        {
-          "lat": 46.46118130534887,
-          "lon": 6.911644265055656,
-          "note": "narrow_gauge formation 680.74 m, drawn ground 658.15 m, nothing between them",
-          "value": 22.588602035522513,
-          "zoom": 16
-        },
-        {
-          "lat": 46.461180970072746,
-          "lon": 6.91164493560791,
-          "note": "narrow_gauge formation 680.75 m, drawn ground 658.19 m, nothing between them",
-          "value": 22.5584937286377,
-          "zoom": 16
-        },
-        {
-          "lat": 46.43646240234375,
-          "lon": 6.9338418915867805,
-          "note": "narrow_gauge formation 823.66 m, drawn ground 807.41 m, nothing between them",
-          "value": 16.255643665313755,
-          "zoom": 16
-        },
-        {
-          "lat": 46.4337158203125,
-          "lon": 6.917074229568243,
-          "note": "narrow_gauge formation 443.82 m, drawn ground 431.27 m, nothing between them",
-          "value": 12.54992890262605,
-          "zoom": 16
-        },
-        {
-          "lat": 46.44744873046875,
-          "lon": 6.901270318776369,
-          "note": "narrow_gauge formation 504.26 m, drawn ground 498.68 m, nothing between them",
-          "value": 5.584849273681641,
-          "zoom": 16
-        },
-        {
-          "lat": 46.46942138671875,
-          "lon": 6.868478637188673,
-          "note": "narrow_gauge formation 516.19 m, drawn ground 511.04 m, nothing between them",
-          "value": 5.148179022789009,
-          "zoom": 16
-        },
         {
           "lat": 46.433954536914825,
           "lon": 6.9168646819889545,
           "note": "narrow_gauge formation 440.77 m, drawn ground 436.49 m, nothing between them",
           "value": 4.280978824579904,
           "zoom": 16
+        },
+        {
+          "lat": 46.401690915226936,
+          "lon": 6.927295625209808,
+          "note": "standard_gauge formation 370.45 m, drawn ground 368.29 m, nothing between them",
+          "value": 2.1608087734646233,
+          "zoom": 16
         }
       ],
       "population": "Every vertex of every level-0 rail centerline inside the tile proper whose class names a gauge or a system, where the drawn terrain has a triangle under it. `unknown` rail is excluded — the archive carries no subtype, so that class is indistinguishable from an unrecognised road class. A vertex within 1.0 m of a drawn structure surface is excluded too: a structure span emits its paint stroke before the level ordinal is attached, so a viaduct's stroke arrives here at level 0 and metres up, which is what a viaduct is for. Coverage limit: the terrain's hole under the asphalt means street-running rail over a paved region has no ground to answer for it and is not measured.",
-      "samples": 5235,
+      "samples": 98,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 5.580000000000005,
+      "tail": 4.286666666666669,
       "threshold": 2.0,
       "title": "Drawn railway standing off the ground beneath it",
-      "violation_pct": 0.21012416427889208,
-      "violations": 11,
-      "worst": 22.62560278511046
+      "violation_pct": 2.0408163265306123,
+      "violations": 2,
+      "worst": 4.280978824579904
     },
     {
       "id": "order.deck_above_carriageway",
@@ -1816,7 +1774,7 @@
       6.9873046875,
       46.47491455078125
     ],
-    "commit": "1735dcc",
+    "commit": "c2acc19",
     "max_tiles": 4096,
     "spacing_m": 1.0,
     "tiles": 696,
