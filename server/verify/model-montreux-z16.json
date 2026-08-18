@@ -138,6 +138,22 @@
       "worst": 0.0
     },
     {
+      "id": "crossing.orphan",
+      "invariant": "I3",
+      "median": 0.00020833333333333335,
+      "offenders": [],
+      "population": "Every derived crossing in the solved model — the exact set the clearance demands are seeded from — scored by how many of its sides name a corridor the solve holds no profile for. A crossing whose lower side is a plain surface feature (its height is the ground) is whole, not orphaned.",
+      "samples": 772,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 0.00020833333333333335,
+      "threshold": 0.5,
+      "title": "A clearance demand with an unsolved side",
+      "violation_pct": 0.0,
+      "violations": 0,
+      "worst": 0.0
+    },
+    {
       "id": "structure.bore_daylight",
       "invariant": "I3",
       "median": -1.2199999999999989,
