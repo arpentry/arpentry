@@ -243,11 +243,6 @@ impl UnionFind {
     }
 }
 
-/// Builds the constraint graph from the scene and the per-corridor initial
-/// profiles (indexed by [`CorridorId`]; `None` where a corridor has no
-/// profile). Junction members sharing a connector are unified into one
-/// variable; consecutive nodes and structure spans become the solver's edges
-/// and rigidity groups.
 /// Builds one **stratum's** constraint graph.
 ///
 /// `member` says which corridors this stratum owns. Only those get variables;

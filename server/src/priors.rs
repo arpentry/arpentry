@@ -956,8 +956,6 @@ pub const MIN_WATER_BODY_M: f64 = 40.0;
 /// flattened surface settles in its basin instead of spilling over the shore.
 pub const WATER_LEVEL_PCTL: f64 = 0.3;
 
-/// Highest a junction weld may lift a corridor's leg to meet the road it joins
-/// (invariant 2): a ramp diverging from an elevated flyover is pulled up to the
 /// Longest chain of segments joined into one corridor, in metres. Corridors
 /// longer than this are split; junction-continuity constraints (solve stage)
 /// carry coherence across the cut. Bounds the profile arrays and keeps a
