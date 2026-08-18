@@ -1374,75 +1374,75 @@
     {
       "id": "slope.rail_grade",
       "invariant": "I2",
-      "median": 0.01916666666666667,
+      "median": -0.024062499999999987,
       "offenders": [
         {
           "lat": 46.43664722330868,
           "lon": 6.910698199644685,
-          "note": "narrow_gauge climbs at 77 % over 1.4 m",
-          "value": 0.7686824070822803,
+          "note": "narrow_gauge climbs at 77 % over 1.4 m against its class ceiling of 7 %",
+          "value": 0.6986824070822804,
           "zoom": 16
         },
         {
           "lat": 46.43662522081286,
           "lon": 6.910705324262381,
-          "note": "narrow_gauge climbs at 76 % over 2.0 m",
-          "value": 0.7639104458169067,
-          "zoom": 16
-        },
-        {
-          "lat": 46.4296505972743,
-          "lon": 6.923623094335198,
-          "note": "funicular climbs at 76 % over 2.2 m",
-          "value": 0.762054683307925,
-          "zoom": 16
-        },
-        {
-          "lat": 46.42967247404158,
-          "lon": 6.923624770715833,
-          "note": "funicular climbs at 76 % over 2.1 m",
-          "value": 0.7610903250169241,
+          "note": "narrow_gauge climbs at 76 % over 2.0 m against its class ceiling of 7 %",
+          "value": 0.6939104458169068,
           "zoom": 16
         },
         {
           "lat": 46.43660548143089,
           "lon": 6.910712532699108,
-          "note": "narrow_gauge climbs at 76 % over 1.6 m",
-          "value": 0.7609505577705714,
+          "note": "narrow_gauge climbs at 76 % over 1.6 m against its class ceiling of 7 %",
+          "value": 0.6909505577705715,
           "zoom": 16
         },
         {
-          "lat": 46.42955726478249,
-          "lon": 6.923638014122844,
-          "note": "funicular climbs at 73 % over 0.9 m",
-          "value": 0.7299796965885272,
+          "lat": 46.4023343520239,
+          "lon": 6.927522271871567,
+          "note": "standard_gauge climbs at 70 % over 0.7 m against its class ceiling of 3 %",
+          "value": 0.6670940413661962,
           "zoom": 16
         },
         {
-          "lat": 46.42958731390536,
-          "lon": 6.9236375112086535,
-          "note": "funicular climbs at 73 % over 0.7 m",
-          "value": 0.7289364820171889,
+          "lat": 46.402370017021894,
+          "lon": 6.9275373592972755,
+          "note": "standard_gauge climbs at 69 % over 0.9 m against its class ceiling of 3 %",
+          "value": 0.6629403529149561,
           "zoom": 16
         },
         {
-          "lat": 46.42957930918783,
-          "lon": 6.923637678846717,
-          "note": "funicular climbs at 73 % over 1.1 m",
-          "value": 0.7277901235929082,
+          "lat": 46.40235459432006,
+          "lon": 6.927530821412802,
+          "note": "standard_gauge climbs at 69 % over 1.8 m against its class ceiling of 3 %",
+          "value": 0.66228592937722,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40234114136547,
+          "lon": 6.927525121718645,
+          "note": "standard_gauge climbs at 69 % over 0.8 m against its class ceiling of 3 %",
+          "value": 0.6598665069444605,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40232718549669,
+          "lon": 6.927519254386425,
+          "note": "standard_gauge climbs at 64 % over 0.9 m against its class ceiling of 3 %",
+          "value": 0.6056172838151695,
           "zoom": 16
         }
       ],
-      "population": "Consecutive vertex pairs of every drawn rail centerline whose class names a gauge or a system, plan run at least 0.50 m. `unknown` rail is excluded: it is draped by design (§4.6), so it holds no ceiling to measure against and counting it would score the class table rather than the solve.",
+      "population": "Consecutive vertex pairs of every drawn rail centerline whose class names a gauge or a system, plan run at least 0.50 m, scored by grade in excess of the class's own §9 ceiling (signed: negative is margin). `unknown` rail is excluded: it is draped by design (§4.6), so it holds no ceiling to measure against and counting it would score the class table rather than the solve.",
       "samples": 51188,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 0.7008333333333334,
-      "threshold": 0.1,
-      "title": "Longitudinal grade of the drawn railway",
-      "violation_pct": 16.28702039540517,
-      "violations": 8337,
-      "worst": 0.7686824070822803
+      "tail": 0.2571874999999999,
+      "threshold": 0.2,
+      "title": "Drawn railway grade over its class ceiling",
+      "violation_pct": 0.7736188169102133,
+      "violations": 396,
+      "worst": 0.6986824070822804
     },
     {
       "id": "slope.terrain_tearing",
@@ -1816,7 +1816,7 @@
       6.9873046875,
       46.47491455078125
     ],
-    "commit": "581e32e",
+    "commit": "1735dcc",
     "max_tiles": 4096,
     "spacing_m": 1.0,
     "tiles": 696,
