@@ -1205,6 +1205,15 @@ fn process_feature(
                         // draping over the ground it passes beneath — then
                         // re-emerges at the portal.
                         let stroke = Synth::Road { corridor: Some(corridor.id), deck: true };
+                        // The level ordinal survives as a property only so the
+                        // attribute profiler emits the reserved `level` the
+                        // client colours structures by. Attached before the
+                        // stroke, which shares the span's level: emitted ahead
+                        // of it, 19,993 viaduct-stroke vertices arrived at
+                        // level 0 metres above the ground, and the rail
+                        // contact check had to un-count them by vertical
+                        // proximity instead of reading the ordinal.
+                        props.push(("level_rules".to_string(), Value::Int(piece.level)));
                         emit_geometry(
                             layer,
                             &Geometry::LineString(line.clone()),
@@ -1214,10 +1223,6 @@ fn process_feature(
                             sorter,
                             stats,
                         )?;
-                        // The level ordinal survives as a property only so the
-                        // attribute profiler emits the reserved `level` the
-                        // client colours structures by.
-                        props.push(("level_rules".to_string(), Value::Int(piece.level)));
                         // Which drawn surface this structure's top *is*, named
                         // as a style class so the client paints it the same
                         // colour as the band it continues (docs/ROADS.md
