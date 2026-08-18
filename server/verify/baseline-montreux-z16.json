@@ -1518,6 +1518,79 @@
       "worst": 10.892191569010416
     },
     {
+      "id": "water.descends",
+      "invariant": "I4",
+      "median": 0.02666666666666667,
+      "offenders": [
+        {
+          "lat": 46.449209636493215,
+          "lon": 6.871560710183914,
+          "note": "the drawn ground under this stream stands 8.7 m above the level the water already reached",
+          "value": 8.681346654891968,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40703209324406,
+          "lon": 6.950998467586513,
+          "note": "the drawn ground under this stream stands 8.5 m above the level the water already reached",
+          "value": 8.535545088985714,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40674870609391,
+          "lon": 6.952975185757333,
+          "note": "the drawn ground under this stream stands 8.4 m above the level the water already reached",
+          "value": 8.446873136343811,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40675262844359,
+          "lon": 6.952986844222654,
+          "note": "the drawn ground under this stream stands 8.3 m above the level the water already reached",
+          "value": 8.337571878126596,
+          "zoom": 16
+        },
+        {
+          "lat": 46.44910610452728,
+          "lon": 6.871518875535541,
+          "note": "the drawn ground under this stream stands 8.3 m above the level the water already reached",
+          "value": 8.301770179776327,
+          "zoom": 16
+        },
+        {
+          "lat": 46.406744783744216,
+          "lon": 6.952963527292013,
+          "note": "the drawn ground under this stream stands 8.3 m above the level the water already reached",
+          "value": 8.286417123748038,
+          "zoom": 16
+        },
+        {
+          "lat": 46.44921826415704,
+          "lon": 6.871564196404612,
+          "note": "the drawn ground under this stream stands 8.3 m above the level the water already reached",
+          "value": 8.28269334556984,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40675655079328,
+          "lon": 6.952998502687975,
+          "note": "the drawn ground under this stream stands 8.2 m above the level the water already reached",
+          "value": 8.228528409998034,
+          "zoom": 16
+        }
+      ],
+      "population": "Every 1 m-spaced sample of the drawn terrain along every flowing-water centerline (river, stream, canal) the tile owns, scored by ascent above the running minimum along flow. Direction is inferred per part from its net drop, so a reversed line cannot read as a climb; samples over the pavement hole are skipped with the minimum carried across.",
+      "samples": 67639,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 6.48,
+      "threshold": 1.0,
+      "title": "Watercourse climbing along its own flow",
+      "violation_pct": 2.3492363872913558,
+      "violations": 1589,
+      "worst": 8.681346654891968
+    },
+    {
       "id": "lod.structure_drift",
       "invariant": "I5",
       "median": 0.17,
@@ -1743,7 +1816,7 @@
       6.9873046875,
       46.47491455078125
     ],
-    "commit": "f19d79b",
+    "commit": "581e32e",
     "max_tiles": 4096,
     "spacing_m": 1.0,
     "tiles": 696,
