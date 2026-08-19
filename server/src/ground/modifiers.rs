@@ -390,7 +390,7 @@ fn point_in_ring(ring: &[Coord], x: f64, y: f64) -> bool {
 /// Lateral distance in metres from `(lon, lat)` to the edge, the clamped
 /// parameter along it, and which side of the directed edge the point lies on
 /// (0 = left of `a → b`, 1 = right) — the side whose batter reach applies.
-fn lateral_distance(e: &EarthworkEdge, lon: f64, lat: f64) -> (f64, f64, usize) {
+pub(super) fn lateral_distance(e: &EarthworkEdge, lon: f64, lat: f64) -> (f64, f64, usize) {
     let ax = e.a.x * e.cos_lat;
     let dx = (e.b.x - e.a.x) * e.cos_lat;
     let dy = e.b.y - e.a.y;

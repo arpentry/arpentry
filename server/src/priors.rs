@@ -893,6 +893,19 @@ pub const EARTHWORK_SHOULDER_M: f64 = 1.0;
 /// would eat the abutment it daylights.
 pub const EARTHWORK_MARGIN_M: f64 = 0.5;
 
+/// Widest gap, in metres between bench edges, across which a face that could
+/// not daylight reaches for a neighbouring bench instead of collapsing
+/// (docs/GROUND.md §2, the crowded-bench formulation; `ground::span_bench_gaps`).
+///
+/// Inside this window two benches are one earthwork problem: the ground between
+/// a rail trench and the road above it, or between a switchback's arms, is
+/// engineered — the alignments are the better vertical control than the DEM
+/// between them, which carries a median 84 % of the separation the profiles
+/// carry. Beyond it the strip is open hillside: a face reaching across a wider
+/// gap would cut (or dam) ground that genuinely belongs to the terrain, so the
+/// collapsed face keeps its wall-at-the-edge answer there.
+pub const BENCH_GAP_SPAN_M: f64 = 16.0;
+
 /// Thickness of a bridge deck slab in metres — deck surface to its underside.
 pub const DECK_THICKNESS_M: f64 = 1.5;
 

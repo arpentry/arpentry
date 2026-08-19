@@ -152,10 +152,30 @@ not work and cannot be made to: which pair brackets a point is not continuous in
 the point, so two neighbouring lattice vertices pick different pairs and the
 field steps between them — `slope.terrain_tearing` caught exactly that, worst
 6.46 → 9.24 m, along with the kerb lip and two more tails. A formulation that
-can work has to be continuous by construction, and the shape is already here:
-let each bench's face reach *to the other bench's edge* rather than collapse
-where it cannot daylight, so the two faces meet each other. That stays a
-`min`/`max` of planes, and planes cannot tear.
+can work has to be continuous by construction: let each bench's face reach *to
+the other bench's edge* rather than collapse where it cannot daylight, so the
+two faces meet each other. That stays a `min`/`max` of planes, and planes
+cannot tear.
+
+This is built (`ground::span_bench_gaps`), and it applies exactly where the
+collapse rule above leaves a face at the wall slope or at zero: if a *higher*
+bench stands within `BENCH_GAP_SPAN_M` of the collapsed side, the face is
+rebuilt as the cut plane leaving this bench's verge at its own target and
+landing *inside* the partner's bench, so its far end falls where the partner's
+crest line already constrains the mesh and no step is left in open ground. The
+plane shaves the natural sliver that would otherwise stand proud between them
+— the wall of hillside a camera found hugging the outermost rail of the
+Territet trench, two metres from the rails and five metres tall. Cut only: the
+mirrored fill plane — the upper bench reaching down — was tried and measured,
+and where the gap drains a stream that plane is a dam (`water.descends`
+2.498 % → 2.511 %); a cut cannot dam anything, and the fill-side deficit
+already has its answer in the drawn apron (§3). The pass runs over the
+assembled stack, because the pair is usually cross-stratum (a rail trench
+beside the road bench above it) and the side that collapsed derives before its
+partner exists; it reads only bench geometry, never the batters it rewrites,
+so it stays a function of the model alone (invariant 5). Beyond the window,
+where no partner stands, and downhill, the collapse rule keeps its answer:
+open hillside belongs to the terrain.
 
 **Where a bench is not plausible at all.** Holding a band flat across a
 cross-slope costs a face at its edge of half-width × slope. Past

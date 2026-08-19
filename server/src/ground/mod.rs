@@ -21,9 +21,10 @@ use std::sync::Mutex;
 
 use geo_types::Coord;
 
+use crate::assemble::grid::GridIndex;
 use crate::dem::Dem;
 use crate::priors::{
-    DECK_THICKNESS_M, EARTHWORK_BATTER,
+    BENCH_GAP_SPAN_M, DECK_THICKNESS_M, EARTHWORK_BATTER,
     BATTER_DIVERGENCE_SLOP, EARTHWORK_MARGIN_M, EARTHWORK_MAX_BATTER_M, MAX_BENCH_FACE_M,
     EARTHWORK_MIN_BATTER_M, EARTHWORK_SHOULDER_M, WALL_BATTER,
     MAX_CLEARANCE_LIFT_M,
@@ -280,7 +281,206 @@ pub fn derive(
             waters: Waters::new(Vec::new()),
         });
     }
-    GroundStack::new(layers)
+    GroundStack::new(span_bench_gaps(layers))
+}
+
+/// Arc separation past which two edges of one chain count as different legs —
+/// a switchback returning above itself — rather than the same run continuing
+/// around a bend. A hairpin tight enough to matter turns through at least this
+/// much arc between its arms; contiguous neighbours along a curve never do.
+const HAIRPIN_ARC_M: f64 = 50.0;
+
+/// Smallest bench-to-bench height difference worth a connecting face; below it
+/// the natural ground carries the step on its own.
+const PARTNER_STEP_MIN_M: f64 = 0.1;
+
+/// Lateral march step when probing for a partner bench, metres.
+const PARTNER_PROBE_STEP_M: f64 = 0.5;
+
+/// The crowded-bench formulation of docs/GROUND.md §2: where a face could not
+/// daylight — the reach collapsed to a wall at the bench edge, or to zero —
+/// but another bench stands within [`BENCH_GAP_SPAN_M`] on that side, the face
+/// is rebuilt as the plane reaching **to the other bench's edge**, so the two
+/// benches' faces meet instead of leaving the natural ground standing between
+/// them.
+///
+/// The defect this retires was measured on the Territet rail trench: the
+/// cutting's east face collapsed against the climbing flank, so the DEM stood
+/// proud in the two-to-eight-metre strip between the rail formation and the
+/// road bench above it — a near-vertical sliver of hillside hugging the
+/// outermost rail (`slope.terrain_face` 23:1 over 0.64 m at the wall retry,
+/// 112:1 where the reach collapsed to zero), with the step landing in open
+/// ground where no contact line runs (`slope.terrain_tearing`). The connecting
+/// plane spans the whole gap instead: it leaves this bench's verge at its
+/// target and lands *inside* the partner's bench, so its far end falls where
+/// the partner's own crest line already constrains the mesh, and there is no
+/// step in open ground left to tear. It stays a `min`/`max` of planes, and
+/// planes cannot tear.
+///
+/// **Both faces are rewritten to the one plane** — "meet each other" is
+/// literal. The cut plane alone measured as no change at all at the site that
+/// motivated it: the partner's own face toward the gap was derived against the
+/// pre-pass proud ground, so in the fold the junior road's gentle stale fill
+/// re-raised the strip right over the senior rail's new ramp
+/// (`max(ramp, fill)`), and the drawn section did not move. So the partner's
+/// facing face is *steepened* to the plane's run — never lengthened, and only
+/// where the plane is steeper than the face it replaces. A steeper fill face
+/// is strictly less fill, so the rewrite cannot dam what the face was not
+/// already damming; within the partner's existing reach its face now lies on
+/// the plane, the collapsed side's cut lies on the plane, and the two compose
+/// seamlessly while ground genuinely below the plane (a drainage notch) keeps
+/// its dips.
+///
+/// The pass runs over the assembled stack — every stratum's edges at once —
+/// because the pair this exists for is usually cross-stratum (a rail trench
+/// beside a road bench) and the senior side, which is the one whose face
+/// collapsed, derives before the junior bench exists. It reads only bench
+/// geometry (extents, targets, chains), never the batters it rewrites, so the
+/// result is independent of iteration order (invariant 5).
+fn span_bench_gaps(layers: Vec<GroundLayer>) -> Vec<GroundLayer> {
+    // Snapshot every bench in the stack, with a grid over bench extents so a
+    // probe point resolves to the benches that hold the ground there.
+    let mut edges: Vec<Vec<EarthworkEdge>> =
+        layers.iter().map(|l| l.earthworks.edges().to_vec()).collect();
+    let benches: Vec<(usize, usize)> = edges
+        .iter()
+        .enumerate()
+        .flat_map(|(li, es)| {
+            es.iter().enumerate().filter(|(_, e)| !e.carve).map(move |(ei, _)| (li, ei))
+        })
+        .collect();
+    if benches.is_empty() {
+        return layers;
+    }
+    let mut grid = GridIndex::new();
+    for (bi, &(li, ei)) in benches.iter().enumerate() {
+        let e = &edges[li][ei];
+        let r = e.half_width_m / (DEG_M * e.cos_lat.min(1.0).max(0.1));
+        grid.insert(
+            (
+                e.a.x.min(e.b.x) - r,
+                e.a.y.min(e.b.y) - r,
+                e.a.x.max(e.b.x) + r,
+                e.a.y.max(e.b.y) + r,
+            ),
+            bi as u32,
+        );
+    }
+
+    // (layer, edge, side) → the connecting face, computed wholly from the
+    // snapshot before anything is rewritten. `clamps` steepens the partner's
+    // facing face to the same plane; it never lengthens a reach.
+    let mut faces: Vec<(usize, usize, usize, f64, f64)> = Vec::new();
+    let mut clamps: Vec<(usize, usize, usize, f64)> = Vec::new();
+    let mut scratch: Vec<u32> = Vec::new();
+    for &(li, ei) in &benches {
+        let e = &edges[li][ei];
+        let dx = (e.b.x - e.a.x) * e.cos_lat;
+        let dy = e.b.y - e.a.y;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-15 {
+            continue;
+        }
+        let (ux, uy) = (dx / len, dy / len);
+        let mid = Coord { x: (e.a.x + e.b.x) * 0.5, y: (e.a.y + e.b.y) * 0.5 };
+        let target = (e.target_a + e.target_b) * 0.5;
+        for side in [LEFT, RIGHT] {
+            let collapsed = e.batter_run[side] == WALL_BATTER || e.batter_m[side] == 0.0;
+            if !collapsed {
+                continue;
+            }
+            let (lx, ly) = if side == LEFT { (-uy, ux) } else { (uy, -ux) };
+            let mut d = e.half_width_m + PARTNER_PROBE_STEP_M;
+            let hit = loop {
+                if d > e.half_width_m + BENCH_GAP_SPAN_M {
+                    break None;
+                }
+                let q = Coord {
+                    x: mid.x + d * lx / (DEG_M * e.cos_lat.min(1.0).max(0.1)),
+                    y: mid.y + d * ly / DEG_M,
+                };
+                grid.query((q.x, q.y, q.x, q.y), &mut scratch);
+                scratch.sort_unstable();
+                let found = scratch.iter().find_map(|&bi| {
+                    let (pl, pe) = benches[bi as usize];
+                    if (pl, pe) == (li, ei) {
+                        return None;
+                    }
+                    let p = &edges[pl][pe];
+                    if p.chain == e.chain && (p.arc0 - e.arc0).abs() < HAIRPIN_ARC_M {
+                        return None; // the same run continuing, not a partner
+                    }
+                    let (dp, tp, _) = modifiers::lateral_distance(p, q.x, q.y);
+                    if dp > p.half_width_m {
+                        return None;
+                    }
+                    Some((pl, pe, dp, p.target_a + (p.target_b - p.target_a) * tp))
+                });
+                if let Some(hit) = found {
+                    break Some((d, hit));
+                }
+                d += PARTNER_PROBE_STEP_M;
+            };
+            // Cut toward a higher partner only. The mirrored fill extension —
+            // a collapsed face reaching *down* to a lower partner — was tried
+            // and measured: it holds diving ground up across the gap, and
+            // where that gap drains a stream the plane is a dam
+            // (`water.descends` 2.498 % → 2.511 %). A cut cannot dam
+            // anything, and the fill-side deficit already has its answer: the
+            // rim wall the model implies is drawn as an apron and measured at
+            // the kerb (docs/GROUND.md §3).
+            if let Some((d, (pl, pe, dp, partner))) = hit {
+                let dh = partner - target;
+                if dh > PARTNER_STEP_MIN_M {
+                    // One plane through both crests: the run comes from the
+                    // true edge-to-edge gap, so this side's cut and the
+                    // partner's fill are the same function. Only the *reach*
+                    // is biased long (the probe point lies inside the partner
+                    // bench), so the plane's far end always crosses the
+                    // partner's crest line rather than stopping short of it.
+                    let reach = d - e.half_width_m;
+                    let gap = (reach - (edges[pl][pe].half_width_m - dp))
+                        .max(PARTNER_PROBE_STEP_M * 0.5);
+                    let run = gap / dh;
+                    faces.push((li, ei, side, reach, run));
+                    // The partner's face toward this bench joins the same
+                    // plane — steepened only, within its existing reach, so
+                    // its stale fill (derived against the pre-pass proud
+                    // ground) stops standing over the ramp.
+                    let (_, _, facing) = modifiers::lateral_distance(
+                        &edges[pl][pe],
+                        mid.x,
+                        mid.y,
+                    );
+                    clamps.push((pl, pe, facing, run));
+                }
+            }
+        }
+    }
+
+    if faces.is_empty() {
+        return layers;
+    }
+    for &(li, ei, side, reach, run) in &faces {
+        edges[li][ei].batter_m[side] = reach;
+        edges[li][ei].batter_run[side] = run;
+    }
+    // Steepen-only, so the cumulative result is the min over every suggesting
+    // plane whatever the order, and a face already steeper is left alone.
+    for &(li, ei, side, run) in &clamps {
+        if run < edges[li][ei].batter_run[side] {
+            edges[li][ei].batter_run[side] = run;
+        }
+    }
+    layers
+        .into_iter()
+        .zip(edges)
+        .map(|(l, es)| GroundLayer {
+            stratum: l.stratum,
+            earthworks: Earthworks::new(es),
+            waters: l.waters,
+        })
+        .collect()
 }
 
 /// Every profiled corridor's earthworks, derived in parallel (the bench-edge
@@ -901,6 +1101,140 @@ mod tests {
     use crate::priors::{Kind, RoadClass};
     use crate::scene::{Corridor, Crossing, SegmentRef, Span, SpanKind, DEG_M};
     use geo_types::Coord;
+
+    /// An E-W bench edge ~160 m long at lat 46 with a collapsed face where the
+    /// caller says so — the [`span_bench_gaps`] fixtures.
+    fn gap_edge(target: f64, north_m: f64, chain: u32, arc0: f64) -> EarthworkEdge {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        EarthworkEdge {
+            a: Coord { x: 6.0, y: 46.0 + north_m / DEG_M },
+            b: Coord { x: 6.0 + 160.0 / (DEG_M * cos_lat), y: 46.0 + north_m / DEG_M },
+            target_a: target,
+            target_b: target,
+            half_width_m: 4.0,
+            carriageway_m: 3.0,
+            batter_m: [2.0; 2],
+            batter_run: [EARTHWORK_BATTER; 2],
+            chain,
+            arc0,
+            cos_lat,
+            carve: false,
+        }
+    }
+
+    /// The §2 crowded-bench formulation, cross-stratum: a rail bench whose
+    /// north face collapsed to zero, a road bench 12 m north and 5 m up. The
+    /// pass rebuilds the face as the plane landing inside the road bench, so
+    /// natural ground standing proud between them is cut to the connecting
+    /// plane instead of hugging the rail as a wall.
+    #[test]
+    fn a_collapsed_face_spans_to_the_partner_bench() {
+        let mut rail = gap_edge(390.0, 0.0, 0, 0.0);
+        rail.batter_m[LEFT] = 0.0; // collapsed: no face at all
+        let road = gap_edge(395.0, 12.0, 1, 0.0);
+        let layers = span_bench_gaps(vec![
+            GroundLayer::of_earthworks(Stratum::R, Earthworks::new(vec![rail])),
+            GroundLayer::of_earthworks(Stratum::S, Earthworks::new(vec![road])),
+        ]);
+        let stack = GroundStack::new(layers);
+        let mut sc = Vec::new();
+        let mid_x = 6.0 + 80.0 / (DEG_M * 46.0_f64.to_radians().cos());
+        // Mid-gap, natural ground standing a metre proud of the road bench:
+        // cut down to the connecting plane (390 at the rail verge, 395 inside
+        // the road bench, ~392.5 six metres out).
+        let h = stack.height(mid_x, 46.0 + 6.0 / DEG_M, 396.0, 0.0, &mut sc);
+        assert!(
+            (h - 392.5).abs() < 0.5,
+            "mid-gap ground must lie on the connecting plane, got {h}"
+        );
+        // Just outside the rail verge the plane has barely left the bench.
+        let toe = stack.height(mid_x, 46.0 + 4.5 / DEG_M, 396.0, 0.0, &mut sc);
+        assert!(toe < 391.0, "the face must leave the bench at its target, got {toe}");
+        // Ground already below the plane is not raised by the cut face.
+        let dip = stack.height(mid_x, 46.0 + 6.0 / DEG_M, 391.0, 0.0, &mut sc);
+        assert!(dip <= 391.0 + 1e-9, "a cut face must not fill, got {dip}");
+        // The partner's facing face is steepened onto the same plane: inside
+        // its own reach it now fills to the plane (393.75 here), not to the
+        // gentle stale face (394.6) that used to stand over the ramp.
+        let joined = stack.height(mid_x, 46.0 + 7.0 / DEG_M, 391.0, 0.0, &mut sc);
+        assert!(
+            (joined - 393.75).abs() < 0.1,
+            "the partner face must lie on the connecting plane, got {joined}"
+        );
+    }
+
+    /// No partner within [`BENCH_GAP_SPAN_M`]: the collapsed face stays
+    /// collapsed — a road cut into an open mountain flank keeps its wall at
+    /// the bench edge, and the hillside beyond stays the hillside.
+    #[test]
+    fn a_collapsed_face_with_no_partner_stays_collapsed() {
+        let mut rail = gap_edge(390.0, 0.0, 0, 0.0);
+        rail.batter_m[LEFT] = 0.0;
+        let layers = span_bench_gaps(vec![GroundLayer::of_earthworks(
+            Stratum::R,
+            Earthworks::new(vec![rail]),
+        )]);
+        let stack = GroundStack::new(layers);
+        let mut sc = Vec::new();
+        let mid_x = 6.0 + 80.0 / (DEG_M * 46.0_f64.to_radians().cos());
+        let h = stack.height(mid_x, 46.0 + 6.0 / DEG_M, 396.0, 0.0, &mut sc);
+        assert_eq!(h, 396.0, "with no partner bench the ground stays natural");
+    }
+
+    /// A lower partner does not get a connecting plane: the mirrored fill —
+    /// the upper bench reaching down — holds diving ground up across the gap,
+    /// and where the gap drains a stream that plane is a dam
+    /// (`water.descends` measured it, 2.498 % → 2.511 %). The upper bench
+    /// keeps its collapsed edge, and the wall the model implies there is the
+    /// apron's to draw.
+    #[test]
+    fn a_lower_partner_does_not_hoist_the_gap() {
+        let mut upper = gap_edge(395.0, 0.0, 0, 0.0);
+        upper.batter_m[LEFT] = 1.0;
+        upper.batter_run[LEFT] = WALL_BATTER; // collapsed to the wall retry
+        let lower = gap_edge(390.0, 12.0, 1, 0.0);
+        let layers = span_bench_gaps(vec![
+            GroundLayer::of_earthworks(Stratum::R, Earthworks::new(vec![upper])),
+            GroundLayer::of_earthworks(Stratum::S, Earthworks::new(vec![lower])),
+        ]);
+        let stack = GroundStack::new(layers);
+        let mut sc = Vec::new();
+        let mid_x = 6.0 + 80.0 / (DEG_M * 46.0_f64.to_radians().cos());
+        // Mid-gap over a dive to 385: the stream notch between the benches
+        // stays a notch (the collapsed wall reaches 1 m; past it, natural).
+        let h = stack.height(mid_x, 46.0 + 6.0 / DEG_M, 385.0, 0.0, &mut sc);
+        assert_eq!(h, 385.0, "diving ground between benches must stay natural");
+    }
+
+    /// One chain, two arms: a probe must not take the same run continuing
+    /// around a bend for a partner, but a switchback returning far along its
+    /// own arc is one.
+    #[test]
+    fn a_partner_on_the_same_chain_needs_arc_separation() {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let mid_x = 6.0 + 80.0 / (DEG_M * cos_lat);
+        let mut sc = Vec::new();
+        // Near in arc: not a partner, the face stays collapsed.
+        let mut a = gap_edge(390.0, 0.0, 7, 0.0);
+        a.batter_m[LEFT] = 0.0;
+        let near = gap_edge(395.0, 12.0, 7, 20.0);
+        let stack = GroundStack::new(span_bench_gaps(vec![GroundLayer::of_earthworks(
+            Stratum::S,
+            Earthworks::new(vec![a, near]),
+        )]));
+        let h = stack.height(mid_x, 46.0 + 6.0 / DEG_M, 396.0, 0.0, &mut sc);
+        assert_eq!(h, 396.0, "a contiguous neighbour along the run is not a partner");
+        // Far in arc — a returning switchback leg — is.
+        let mut a = gap_edge(390.0, 0.0, 7, 0.0);
+        a.batter_m[LEFT] = 0.0;
+        let far = gap_edge(395.0, 12.0, 7, 200.0);
+        let stack = GroundStack::new(span_bench_gaps(vec![GroundLayer::of_earthworks(
+            Stratum::S,
+            Earthworks::new(vec![a, far]),
+        )]));
+        let h = stack.height(mid_x, 46.0 + 6.0 / DEG_M, 396.0, 0.0, &mut sc);
+        assert!((h - 392.5).abs() < 0.5, "a returning leg spans the gap, got {h}");
+    }
 
     /// A viaduct over a valley with one sharp DEM bump poking above the deck
     /// mid-span (a wooded ridge a surface DEM reads as ground): the bump is
