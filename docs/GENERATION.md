@@ -311,8 +311,9 @@ every footbridge in the extract. The answer is not a better fit but a different
 one: **where a run is carried, there is no second bridge.** A span that runs
 alongside one solved deck, *along* it rather than across it, and meets it at one
 of its own ends, stops being a fitted deck and becomes a line riding the
-carrier's solved deck — the mechanism a tunnel's ribbon already uses for its
-bore ramp. Nothing is stamped, so no duplicate solid exists to hang. This is not
+carrier's solved deck — the mechanism a bridge span's re-emitted paint already
+uses for its deck ramp. Nothing is stamped, so no duplicate solid exists to
+hang. This is not
 a promotion either: reading a senior stratum's datum is precisely what a draped
 feature is *for*, and the footway still writes nothing back. The only change is
 that the finished world beneath a sidewalk is a deck rather than the ground.

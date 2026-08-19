@@ -48,15 +48,13 @@ const MAX_VERTS: usize = 4096;
 /// Bakes a road's per-vertex elevation onto the feature, densifying the
 /// (clipped) centerline so it follows the relief and writing the heights into
 /// `f.z`. A no-op for non-line geometry. `deck` marks paint re-emitted over a
-/// *structure* span — a bridge deck or a tunnel bore: it always rides the
-/// solved deck ramp directly ([`Profile::deck_height_at`], the same heights
-/// the deck and bore sweeps build their solids from), so the stroke lies on
-/// the deck top of a bridge and on the bore's road surface of a tunnel at
-/// every zoom, instead of following the per-zoom drape correction (which would
-/// step off the structure wherever the coarse lattice disagrees with the
-/// reference). Where a bore runs buried the ramp dips under the hill, so the
-/// ribbon sinks with the mesh and the terrain occludes it rather than draping
-/// the hillside above the buried span.
+/// *bridge* span: it always rides the solved deck ramp directly
+/// ([`Profile::deck_height_at`], the same heights the deck sweep builds its
+/// solid from), so the stroke lies on the deck top at every zoom, instead of
+/// following the per-zoom drape correction (which would step off the structure
+/// wherever the coarse lattice disagrees with the reference). Tunnel spans
+/// never reach here as paint: the stroke stops at the portal
+/// (`pipeline::process_feature`), so no ribbon rides a bore's road surface.
 pub fn bake(
     f: &mut EncoderFeature,
     profile: Option<&Profile>,
@@ -144,11 +142,11 @@ pub(crate) fn surface_height(
     lon: f64,
     lat: f64,
 ) -> f64 {
-    // Structure paint rides the *deck ramp* at every zoom — the same `deck_m`
-    // heights the deck/bore sweep builds its solid from (a bridge's deck top, a
-    // tunnel bore's road surface) — not the road profile, which the ramp fit (and
-    // the clearance clamps) diverge from mid-span; paint baked at road height
-    // sinks inside the solid wherever the fitted ramp rises above it.
+    // Bridge paint rides the *deck ramp* at every zoom — the same `deck_m`
+    // heights the deck sweep builds its solid from — not the road profile,
+    // which the ramp fit (and the clearance clamps) diverge from mid-span;
+    // paint baked at road height sinks inside the solid wherever the fitted
+    // ramp rises above it.
     if let (Some(p), true) = (profile, deck) {
         // Per-zoom datum: at a coarse zoom the stroke carries the same shared
         // shift curve its solid is swept from (`synth::datum::shift_at_arc`),

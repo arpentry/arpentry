@@ -1,4 +1,5 @@
-//! Is the paint on the asphalt, at the offset the cross-section put it at?
+//! Is the paint on the asphalt, at the offset the cross-section put it at —
+//! and above the ground a viewer can see it from?
 //!
 //! `docs/ROADS.md` invariant 3: "Markings are functions of the cross-section.
 //! Every painted element is placed by the lane model… No marking is placed by
@@ -8,8 +9,8 @@
 //! draped on the surface it is no longer registered to.
 //!
 //! It is measured here, and not in `contact`, because the contact family is
-//! anchored on the kerb and asks vertical questions of it. These two ask where
-//! a line lies *across* the carriageway:
+//! anchored on the kerb and asks vertical questions of it. The first two ask
+//! where a line lies *across* the carriageway:
 //!
 //! - [`paint.marking_offside`] — how far a painted line lies outside the drawn
 //!   asphalt. The universal one: whatever a marking is, it is on the road.
@@ -25,6 +26,17 @@
 //! away exactly the signed offset that makes a marking a marking. Both edge
 //! lines and every lane divider collapsed onto the axis: a motorway drew three
 //! coincident lines down its middle and none at its edges.
+//!
+//! The third asks the vertical question no other check owns:
+//!
+//! - [`paint.buried`] — how far under the drawn terrain a stroke vertex sits.
+//!   The client strokes lines as decals depth-tested against the ground, so a
+//!   buried vertex is paint nobody can see — and at the coarse rungs, paint
+//!   that surfaces wherever the buried run and the lattice's chords disagree.
+//!   The population it exists to keep dead: a tunnel span's paint. The stroke,
+//!   the markings and the rail heads all stop at the portal now
+//!   (`pipeline::process_feature`), so nothing legitimate is left below the
+//!   ground it is drawn under.
 
 use crate::verify::dist::Dist;
 use crate::verify::mesh::{Scale, SurfaceMesh};
@@ -94,11 +106,26 @@ const REACH_CAP_M: f64 = 12.0;
 const REACH_COARSE_M: f64 = 0.25;
 const REACH_FINE_M: f64 = 0.05;
 
+/// How far under the drawn terrain a stroke vertex may sit and still count as
+/// on the ground. An at-grade stroke is draped chord-exactly on the rendered
+/// surface of its own zoom (`synth::road::densify_road_line` inserts a vertex
+/// at every lattice crossing), so the bulk of the population reads millimetres
+/// (measured median 7 mm at z16) and the metre clears its quantization noise
+/// outright. What stays above the gate is the portal-mouth approach: the last
+/// metres of an at-grade piece pass under the cut face climbing over the bore,
+/// which on a cliff portal stands up to ~9 m overhead within the approach's
+/// final vertices — about 0.03 % of the extract's samples, recorded in the
+/// baseline. The mode this metric exists to keep dead read 4.2 % of vertices
+/// and 592 m under: a tunnel span's own paint riding the bore.
+const BURIED_M: f64 = 1.0;
+
 pub struct Paint {
     offside: Dist,
     offside_worst: Worst,
     inset: Dist,
     inset_worst: Worst,
+    buried: Dist,
+    buried_worst: Worst,
 }
 
 impl Paint {
@@ -108,12 +135,50 @@ impl Paint {
             offside_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             inset: Dist::metres(),
             inset_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            buried: Dist::metres(),
+            buried_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+        }
+    }
+
+    /// Every owned vertex of every stroke at level ≤ 0, against the drawn
+    /// terrain over it. Positive levels are excluded — a bridge stroke rides
+    /// its deck above the ground by design, and its solid answers to the
+    /// clearance checks. A vertex with no terrain over it (the pavement hole,
+    /// a portal cut, a zoom with no terrain mesh) contributes nothing: there
+    /// is no drawn ground there to be buried under.
+    fn visit_buried(&mut self, tile: &TileScene) {
+        let Some(terrain) = &tile.terrain else { return };
+        for line in tile.lines.iter().filter(|l| l.level <= 0) {
+            for part in &line.parts {
+                for &(px, py, h) in part {
+                    if !tile.owns(px, py) {
+                        continue;
+                    }
+                    let Some(gz) = terrain.height_at(px, py) else { continue };
+                    let under = (gz - h).max(0.0);
+                    self.buried.push(under);
+                    if under > BURIED_M {
+                        let (lon, lat) = tile.lonlat(px, py);
+                        self.buried_worst.offer(Offender {
+                            lon,
+                            lat,
+                            zoom: tile.z,
+                            value: under,
+                            note: format!(
+                                "a {} stroke (level {}) runs {under:.2} m under the drawn ground",
+                                line.class, line.level
+                            ),
+                        });
+                    }
+                }
+            }
         }
     }
 }
 
 impl Check for Paint {
     fn visit(&mut self, tile: &TileScene, _opt: &Options) {
+        self.visit_buried(tile);
         let marks: Vec<_> = tile.lines.iter().filter(|l| l.class == "marking").collect();
         if marks.is_empty() {
             return;
@@ -284,6 +349,48 @@ impl Check for Paint {
                 }),
                 dist: self.inset,
                 worst: self.inset_worst.into_vec(),
+            },
+            Metric {
+                id: "paint.buried".into(),
+                invariant: Invariant::I4,
+                title: "Painted stroke running under the drawn ground".into(),
+                population: "Every vertex the tile owns of every transportation stroke at \
+                     level ≤ 0 — the road and rail fill strokes of the pre-surface rungs, \
+                     markings, rail heads, and every draped path — against the drawn terrain \
+                     over it. Positive levels are excluded: a bridge stroke rides its deck \
+                     above the ground by design, and the deck itself answers to the clearance \
+                     checks. A vertex with no terrain over it contributes nothing — the \
+                     pavement hole and the portal cuts are exactly where a stroke is supposed \
+                     to have no drawn ground overhead, and a zoom with no terrain mesh has \
+                     nothing to measure against."
+                    .into(),
+                detail: format!(
+                    "How far under the drawn terrain the stroke sits. The client strokes \
+                     lines as decals depth-tested against the ground, so a buried vertex is \
+                     paint nobody can see — and at the coarse rungs, paint that surfaces \
+                     wherever the buried run and the lattice's chords disagree. The \
+                     population this keeps dead: a tunnel span's paint. The stroke, its \
+                     markings and its rail heads all stop at the portal \
+                     (`pipeline::process_feature`), so nothing is emitted riding a bore's \
+                     road surface under the hill any more. An at-grade stroke is draped \
+                     chord-exactly on its own zoom's rendered surface, so the bulk reads \
+                     millimetres and the {BURIED_M:.1} m gate clears its quantization noise \
+                     outright. The residue above the gate is the portal-mouth approach — \
+                     the last metres of an at-grade piece passing under the cut face that \
+                     climbs over the bore mouth, up to ~9 m overhead on a cliff portal — \
+                     which is the approach running where it should, under ground that is \
+                     really there. It is a fraction of a percent and the baseline records \
+                     it; the mode to watch for is the rate jumping back toward the 4 % the \
+                     tunnel paint read."
+                ),
+                sense: Sense::HigherIsWorse,
+                threshold: BURIED_M,
+                skipped: self
+                    .buried
+                    .is_empty()
+                    .then(|| "no stroke lies over drawn terrain at this zoom".to_string()),
+                dist: self.buried,
+                worst: self.buried_worst.into_vec(),
             },
         ]
     }
@@ -482,6 +589,67 @@ mod tests {
         );
         let worst = collapsed[1].worst_value().expect("a worst offender");
         assert!((worst - (5.5 - 1.3)).abs() < 0.3, "how far off its inset, in metres: {worst}");
+    }
+
+    /// A full-tile flat terrain slab at height `h`.
+    fn terrain(h: f32) -> SurfaceMesh {
+        let x = vec![0.0f32, 1.0, 1.0, 0.0];
+        let y = vec![0.0f32, 0.0, 1.0, 1.0];
+        let z = vec![h; 4];
+        SurfaceMesh::from_parts(x, y, z, vec![0, 1, 2, 0, 2, 3]).expect("a terrain slab")
+    }
+
+    /// A stroke on the drawn ground reads zero; one metres under it — a tunnel
+    /// span's paint — is caught, at its burial depth.
+    #[test]
+    fn paint_under_the_drawn_ground_is_caught() {
+        let mut tile = scene(Vec::new(), vec![stripe(0.12, 0.5)]);
+        tile.terrain = Some(terrain(100.0));
+        let m = run(&tile);
+        assert_eq!(m[2].violations(), 0, "a stroke on the ground is not buried");
+        assert!(m[2].dist.count() > 0, "and it is counted, not skipped");
+
+        let mut buried = stripe(0.12, 0.5);
+        for part in &mut buried.parts {
+            for v in part.iter_mut() {
+                v.2 = 90.0;
+            }
+        }
+        let mut tile = scene(Vec::new(), vec![buried]);
+        tile.terrain = Some(terrain(100.0));
+        let m = run(&tile);
+        assert!(m[2].violations() > 0, "paint under the ground must be caught");
+        let worst = m[2].worst_value().expect("a worst offender");
+        assert!((worst - 10.0).abs() < 0.1, "the burial depth in metres: {worst}");
+    }
+
+    /// A bridge stroke rides its deck above the ground by design and is not in
+    /// the population; a tunnel stroke (level < 0) is.
+    #[test]
+    fn a_bridge_stroke_is_not_in_the_buried_population() {
+        let mut deck = stripe(0.12, 0.5);
+        deck.level = 1;
+        for part in &mut deck.parts {
+            for v in part.iter_mut() {
+                v.2 = 90.0; // under the slab, but a positive level is excluded
+            }
+        }
+        let mut tile = scene(Vec::new(), vec![deck]);
+        tile.terrain = Some(terrain(100.0));
+        let m = run(&tile);
+        assert!(m[2].skipped.is_some(), "a positive level contributes nothing");
+
+        let mut bore = stripe(0.12, 0.5);
+        bore.level = -1;
+        for part in &mut bore.parts {
+            for v in part.iter_mut() {
+                v.2 = 90.0;
+            }
+        }
+        let mut tile = scene(Vec::new(), vec![bore]);
+        tile.terrain = Some(terrain(100.0));
+        let m = run(&tile);
+        assert!(m[2].violations() > 0, "a tunnel stroke under the ground is caught");
     }
 
     /// A centre line is 0.12 m wide, so it never enters the inset population —

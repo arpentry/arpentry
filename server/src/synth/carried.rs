@@ -13,7 +13,7 @@
 //! The answer is not to fit a better deck. It is that **there is no second
 //! bridge**: the path is on the road's. So a carried span stops being a fitted
 //! deck and becomes a line riding the carrier's solved deck — the same
-//! mechanism a tunnel's ribbon uses to ride its bore ramp
+//! mechanism a bridge span's re-emitted paint uses to ride its deck ramp
 //! (`Synth::Road { deck: true }`). Nothing is stamped, so no duplicate solid
 //! exists to hang.
 //!

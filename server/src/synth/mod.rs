@@ -42,15 +42,15 @@ pub enum Synth {
     None,
     /// A road draped on the rendered ground; with a corridor, lifted by the
     /// corridor's solved cut/fill so engineered classes hold their grade.
-    /// `deck` marks the paint stroke re-emitted over a *structure* span — a
-    /// bridge deck or a tunnel bore. Both carry the road surface on the same
-    /// solved ramp (`Profile::deck_m`, which the bore sweep rides too), so the
-    /// paint rides that ramp directly at every zoom rather than draping: it
-    /// lies on the deck top of a bridge and on the bore's road surface of a
-    /// tunnel, so the road surface continues across the structure instead of
-    /// stopping at the abutment or portal. Where a bore runs buried the ramp
-    /// dips under the hill, so the ribbon sinks with the mesh and the terrain
-    /// occludes it — never floating over the ground the tunnel passes beneath.
+    /// `deck` marks the paint stroke re-emitted over a *bridge* span: it rides
+    /// the solved ramp (`Profile::deck_m`) directly at every zoom rather than
+    /// draping, so it lies on the deck top and the painted carriageway
+    /// continues across the span instead of stopping at the abutment. A tunnel
+    /// span re-emits no paint at all — the stroke, its markings and its rail
+    /// heads stop at the portal (`pipeline::process_feature`), because a
+    /// ribbon riding the bore's road surface is invisible where the terrain
+    /// buries it and drawn across the mountain wherever a coarse rung's
+    /// chords disagree with the buried run (`paint.buried`).
     Road { corridor: Option<CorridorId>, deck: bool },
     /// A bridge deck or tunnel bore swept along the corridor's solved profile.
     Structure { corridor: CorridorId, kind: SpanKind },

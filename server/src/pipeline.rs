@@ -1195,20 +1195,19 @@ fn process_feature(
                         (s, s)
                     }
                     kind => {
-                        // A structure span emits twice: the solid (deck or
-                        // bore), and the road paint re-emitted over it so the
-                        // painted carriageway continues across the span instead
-                        // of terminating at the abutment or portal. A bridge
-                        // deck and a tunnel bore both carry the road surface on
-                        // the same solved ramp (`Profile::deck_m` — the bore
-                        // sweep rides it too), so the paint rides that ramp
-                        // (`deck = true`) for either kind: it lies on the deck
-                        // top of a bridge and on the bore's road surface of a
-                        // tunnel. Where a bore runs buried the ramp dips under
-                        // the hill, so the ribbon sinks with the mesh and the
-                        // terrain occludes it — following the tunnel instead of
-                        // draping over the ground it passes beneath — then
-                        // re-emerges at the portal.
+                        // A *bridge* span emits twice: the deck solid, and the
+                        // road paint re-emitted over it (`deck = true`, riding
+                        // the solved ramp `Profile::deck_m`) so the painted
+                        // carriageway continues across the span instead of
+                        // terminating at the abutment. A *tunnel* span emits
+                        // its bore solid only: the paint stops at the portal.
+                        // The ribbon that used to ride the bore's road surface
+                        // was paint nobody could see where it worked — buried
+                        // under the drawn ground, depth-tested away — and
+                        // paint drawn across the mountain where the coarse
+                        // rungs' lattice chords disagreed with the buried run
+                        // (`paint.buried`: 4.2 % of stroke vertices at z16,
+                        // worst 592 m under).
                         let stroke = Synth::Road { corridor: Some(corridor.id), deck: true };
                         // The level ordinal survives as a property only so the
                         // attribute profiler emits the reserved `level` the
@@ -1219,15 +1218,17 @@ fn process_feature(
                         // contact check had to un-count them by vertical
                         // proximity instead of reading the ordinal.
                         props.push(("level_rules".to_string(), Value::Int(piece.level)));
-                        emit_geometry(
-                            layer,
-                            &Geometry::LineString(line.clone()),
-                            &props,
-                            stroke,
-                            cfg,
-                            sorter,
-                            stats,
-                        )?;
+                        if kind != SpanKind::Tunnel {
+                            emit_geometry(
+                                layer,
+                                &Geometry::LineString(line.clone()),
+                                &props,
+                                stroke,
+                                cfg,
+                                sorter,
+                                stats,
+                            )?;
+                        }
                         // Which drawn surface this structure's top *is*, named
                         // as a style class so the client paints it the same
                         // colour as the band it continues (docs/ROADS.md
@@ -1252,16 +1253,23 @@ fn process_feature(
                         (Synth::Structure { corridor: corridor.id, kind }, stroke)
                     }
                 };
-                if let Some((class, oneway, width, areas)) = &marks {
+                // Paint stops at the portal with the stroke: a tunnel piece
+                // gets no markings and no rail heads, on the same grounds as
+                // no ribbon — the bore's interior is not a visible surface,
+                // and invisible paint is what surfaced through the coarse
+                // rungs' chords (`paint.buried`).
+                let paints = piece.kind != SpanKind::Tunnel;
+                if let Some((class, oneway, width, areas)) = marks.as_ref().filter(|_| paints) {
                     for m in synth::markings::for_line(&line, class, *oneway, *width, areas) {
                         emit_geometry(layer, &m.geometry, &m.properties(), mark_synth, cfg, sorter, stats)?;
                     }
                 }
                 // The rail heads: paint riding the ballast band the way the
                 // markings above ride the asphalt, on the same synth (at
-                // grade they drape with the band, over a structure they ride
+                // grade they drape with the band, over a bridge they ride
                 // the deck ramp with the re-emitted paint).
                 if let Some(gauge) = crate::priors::rail_gauge_m(&corridor.kind)
+                    .filter(|_| paints)
                     .filter(|_| corridor.kind.prior().surface == crate::priors::Surface::Ballast)
                 {
                     for m in synth::markings::rails_for_line(&line, gauge) {
