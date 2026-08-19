@@ -54,80 +54,80 @@
       "median": 0.013333333333333334,
       "offenders": [
         {
-          "lat": 46.4963352,
-          "lon": 6.7207605,
-          "note": "Road(Tertiary) at grade 13.8 m above its reference ground, 11.3 m past the 2.5 m this class is built on",
-          "value": 11.32714978528952,
+          "lat": 46.4386354,
+          "lon": 6.9149456,
+          "note": "Road(Service) at grade 15.2 m above its reference ground, 12.7 m past the 2.5 m this class is built on",
+          "value": 12.68922023633786,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4386095,
+          "lon": 6.9149277,
+          "note": "Road(Tertiary) at grade 14.9 m above its reference ground, 12.4 m past the 2.5 m this class is built on",
+          "value": 12.44076534269152,
+          "zoom": 16
+        },
+        {
+          "lat": 46.438808,
+          "lon": 6.9149301,
+          "note": "Road(Tertiary) at grade 14.8 m above its reference ground, 12.3 m past the 2.5 m this class is built on",
+          "value": 12.253287115673402,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4385843,
+          "lon": 6.9148938,
+          "note": "Road(Tertiary) at grade 14.3 m above its reference ground, 11.8 m past the 2.5 m this class is built on",
+          "value": 11.768765342691495,
           "zoom": 16
         },
         {
           "lat": 46.4963625,
           "lon": 6.7208035,
-          "note": "Road(Tertiary) at grade 13.5 m above its reference ground, 11.0 m past the 2.5 m this class is built on",
-          "value": 11.041345471759655,
+          "note": "Road(Tertiary) at grade 14.0 m above its reference ground, 11.5 m past the 2.5 m this class is built on",
+          "value": 11.51145264968693,
           "zoom": 16
         },
         {
           "lat": 46.4963625,
           "lon": 6.7208035,
-          "note": "Road(Tertiary) at grade 13.5 m above its reference ground, 11.0 m past the 2.5 m this class is built on",
-          "value": 11.041345471759655,
+          "note": "Road(Tertiary) at grade 14.0 m above its reference ground, 11.5 m past the 2.5 m this class is built on",
+          "value": 11.51145264968693,
           "zoom": 16
         },
         {
           "lat": 46.4963625,
           "lon": 6.7208035,
-          "note": "Road(Unclassified) at grade 13.5 m above its reference ground, 11.0 m past the 2.5 m this class is built on",
-          "value": 11.041345471759655,
+          "note": "Road(Unclassified) at grade 14.0 m above its reference ground, 11.5 m past the 2.5 m this class is built on",
+          "value": 11.51145264968693,
           "zoom": 16
         },
         {
           "lat": 46.4963625,
           "lon": 6.7208035,
-          "note": "Road(Tertiary) at grade 13.5 m above its reference ground, 11.0 m past the 2.5 m this class is built on",
-          "value": 11.041345471759655,
-          "zoom": 16
-        },
-        {
-          "lat": 46.4963796,
-          "lon": 6.7209006,
-          "note": "Road(Tertiary) at grade 13.4 m above its reference ground, 10.9 m past the 2.5 m this class is built on",
-          "value": 10.936741776831468,
-          "zoom": 16
-        },
-        {
-          "lat": 46.4966189,
-          "lon": 6.7206937,
-          "note": "Road(Residential) at grade 13.2 m above its reference ground, 10.7 m past the 2.5 m this class is built on",
-          "value": 10.718997333693551,
-          "zoom": 16
-        },
-        {
-          "lat": 46.4966189,
-          "lon": 6.7206937,
-          "note": "Road(Residential) at grade 13.2 m above its reference ground, 10.7 m past the 2.5 m this class is built on",
-          "value": 10.718997333693551,
+          "note": "Road(Tertiary) at grade 14.0 m above its reference ground, 11.5 m past the 2.5 m this class is built on",
+          "value": 11.51145264968693,
           "zoom": 16
         }
       ],
       "population": "Every node of every solved profile that the *reconciled* partition leaves at grade, in every stratum, water excluded. Scored by how far the solved road stands from the conditioned terrain reference — in either direction, since a road buried under its own hillside is the same defect upside down — less the class deviation budget, so 0.0 means within the cut and fill the class is built on. Structure nodes are outside the population by definition. Known legitimate tail: a clearance lift raises an at-grade road over a crossing by up to 15 m and keeps it at grade, so a demand-sized excess near a crossing is the model working.",
-      "samples": 388720,
+      "samples": 389134,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 1.0266666666666668,
+      "tail": 1.0533333333333335,
       "threshold": 0.5,
       "title": "Solved at-grade road standing off its own ground",
-      "violation_pct": 0.13197159909446388,
-      "violations": 513,
-      "worst": 11.32714978528952
+      "violation_pct": 0.13645685033947175,
+      "violations": 531,
+      "worst": 12.68922023633786
     },
     {
       "id": "ground.footprint",
       "invariant": "I8",
       "median": 0.006666666666667709,
       "offenders": [],
-      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 607179 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
-      "samples": 10409256,
+      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 6939504 probes, 111436 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
+      "samples": 6939504,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.006666666666667709,
@@ -143,17 +143,17 @@
       "median": -0.024062499999999987,
       "offenders": [
         {
-          "lat": 46.43662385,
-          "lon": 6.9107035,
-          "note": "narrow_gauge climbs at 77 % against its class ceiling of 7 % (solved to 7 %)",
-          "value": 0.6981503359481478,
-          "zoom": 16
-        },
-        {
           "lat": 46.4023493,
           "lon": 6.9275296,
           "note": "standard_gauge climbs at 69 % against its class ceiling of 3 % (solved to 3 %)",
-          "value": 0.6622451931531302,
+          "value": 0.6622451931515739,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43662385,
+          "lon": 6.9107035,
+          "note": "narrow_gauge climbs at 69 % against its class ceiling of 7 % (solved to 7 %)",
+          "value": 0.6208448743369417,
           "zoom": 16
         },
         {
@@ -200,15 +200,31 @@
         }
       ],
       "population": "Consecutive solved-profile nodes (the solve's own ~8 m spacing, runs of at least 0.50 m) of every rail corridor whose class names a gauge or a system, over the heights the drawn line carries — the road at grade, the fitted ramp across structures — scored by grade in excess of the class's own §9 ceiling (signed: negative is margin). Model-side: from z13 the union paves the formation and deletes the stroke this walk used to ride, so the solve is the only place the alignment still exists as a line. Steps are clipped to the extract's bbox — assemble admits whole parquet row groups, so corridors spill past the zone into ground no DEM constrained, and a grade there scores the extraction boundary. Street-running and `unknown` rail are excluded: draped by design (§4.6), they hold no ceiling to measure against, and counting them would score the class table rather than the solve.",
-      "samples": 9425,
+      "samples": 10226,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.24968750000000006,
       "threshold": 0.2,
       "title": "Drawn railway grade over its class ceiling",
-      "violation_pct": 0.9655172413793104,
-      "violations": 91,
-      "worst": 0.6981503359481478
+      "violation_pct": 0.9583414824955995,
+      "violations": 98,
+      "worst": 0.6622451931515739
+    },
+    {
+      "id": "graph.connector_step",
+      "invariant": "I2",
+      "median": 0.006666666666666667,
+      "offenders": [],
+      "population": "Every source connector touched by two or more distinct profiled corridors whose classes pave a surface — read from the corridors' own connector lists, ends and segment-interior attachments alike, not from the junction set, so a connector the assembler failed to junction still counts. Scored as the spread of the members' solved road heights at the connector's arc, clipped to the extract bbox. Zero is the weld holding; anything past the 0.5 m sheet separation is drawn as one surface floating over another.",
+      "samples": 2826,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 0.1,
+      "threshold": 0.5,
+      "title": "Solved height disagreement at a shared source connector",
+      "violation_pct": 0.0,
+      "violations": 0,
+      "worst": 0.12116064223027934
     },
     {
       "id": "crossing.orphan",
@@ -229,41 +245,41 @@
     {
       "id": "structure.bore_daylight",
       "invariant": "I3",
-      "median": -1.2199999999999989,
+      "median": -1.1666666666666643,
       "offenders": [
         {
           "lat": 46.54130636351306,
           "lon": 6.657964157093937,
-          "note": "Rail(Subway) mapped bore crossed by an at-grade band, roof + cover 5.3 m above its own ground",
-          "value": 5.300040936830442,
+          "note": "Rail(Subway) mapped bore crossed by an at-grade band, roof + cover 5.2 m above its own ground",
+          "value": 5.1968536784783055,
           "zoom": 16
         },
         {
           "lat": 46.54130835910147,
           "lon": 6.657967050697135,
-          "note": "Rail(Subway) mapped bore crossed by an at-grade band, roof + cover 5.1 m above its own ground",
-          "value": 5.062711670966451,
+          "note": "Rail(Subway) mapped bore crossed by an at-grade band, roof + cover 5.0 m above its own ground",
+          "value": 4.96414501018387,
           "zoom": 16
         },
         {
           "lat": 46.53873995459829,
           "lon": 6.6592180914206365,
-          "note": "Road(Residential) mapped bore crossed by an at-grade band, roof + cover 4.1 m above its own ground",
-          "value": 4.090270802590339,
+          "note": "Road(Residential) mapped bore crossed by an at-grade band, roof + cover 4.2 m above its own ground",
+          "value": 4.165626725700463,
           "zoom": 16
         },
         {
           "lat": 46.541311908311314,
           "lon": 6.657981008647386,
-          "note": "Rail(Subway) mapped bore crossed by an at-grade band, roof + cover 4.1 m above its own ground",
-          "value": 4.066717703641871,
+          "note": "Rail(Subway) mapped bore crossed by an at-grade band, roof + cover 4.0 m above its own ground",
+          "value": 3.9875421924840566,
           "zoom": 16
         },
         {
           "lat": 46.54130813547328,
           "lon": 6.65798262390828,
-          "note": "Rail(Subway) mapped bore crossed by an at-grade band, roof + cover 4.1 m above its own ground",
-          "value": 4.053908384592319,
+          "note": "Rail(Subway) mapped bore crossed by an at-grade band, roof + cover 4.0 m above its own ground",
+          "value": 3.974982259907165,
           "zoom": 16
         },
         {
@@ -292,12 +308,12 @@
       "samples": 272,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 5.300000000000004,
+      "tail": 5.193333333333335,
       "threshold": 0.5,
       "title": "A crossed mapped bore standing clear of its own ground",
       "violation_pct": 15.073529411764707,
       "violations": 41,
-      "worst": 5.300040936830442
+      "worst": 5.1968536784783055
     },
     {
       "id": "structure.annotated_lost",
@@ -307,8 +323,8 @@
         {
           "lat": 46.42450838850159,
           "lon": 7.0425723783406395,
-          "note": "Bridge annotated over 621 m, 592 m of it not implied by the solve",
-          "value": 591.7616213769492,
+          "note": "Bridge annotated over 621 m, 563 m of it not implied by the solve",
+          "value": 562.5713298991753,
           "zoom": 16
         },
         {
@@ -370,7 +386,7 @@
       "title": "Annotated structure the solve does not imply",
       "violation_pct": 93.33333333333333,
       "violations": 952,
-      "worst": 591.7616213769492
+      "worst": 562.5713298991753
     },
     {
       "id": "structure.derived_new",
@@ -378,17 +394,10 @@
       "median": 0.4266666666666667,
       "offenders": [
         {
-          "lat": 46.495955249521195,
-          "lon": 6.719275748617138,
-          "note": "Bridge implied over 254 m, 254 m of it unannotated",
-          "value": 253.9134079855154,
-          "zoom": 16
-        },
-        {
-          "lat": 46.50501989290806,
-          "lon": 6.703046411205475,
-          "note": "Bridge implied over 212 m, 212 m of it unannotated",
-          "value": 211.7376159549222,
+          "lat": 46.43829664850541,
+          "lon": 6.914486738192341,
+          "note": "Bridge implied over 214 m, 194 m of it unannotated",
+          "value": 193.94467568790503,
           "zoom": 16
         },
         {
@@ -399,10 +408,24 @@
           "zoom": 16
         },
         {
+          "lat": 46.4388722070648,
+          "lon": 6.914115508223455,
+          "note": "Bridge implied over 127 m, 127 m of it unannotated",
+          "value": 126.62396377624985,
+          "zoom": 16
+        },
+        {
           "lat": 46.328687714461566,
           "lon": 7.000753712149299,
           "note": "Bridge implied over 109 m, 109 m of it unannotated",
           "value": 109.13022234557411,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43833577848734,
+          "lon": 6.91434277162272,
+          "note": "Bridge implied over 108 m, 108 m of it unannotated",
+          "value": 108.2444698579098,
           "zoom": 16
         },
         {
@@ -413,37 +436,30 @@
           "zoom": 16
         },
         {
+          "lat": 46.496204212670555,
+          "lon": 6.720270537082095,
+          "note": "Bridge implied over 91 m, 91 m of it unannotated",
+          "value": 91.10637743703138,
+          "zoom": 16
+        },
+        {
           "lat": 46.4874911898554,
           "lon": 6.770271021498338,
           "note": "Bridge implied over 126 m, 88 m of it unannotated",
           "value": 88.33292687231841,
           "zoom": 16
-        },
-        {
-          "lat": 46.49626508223555,
-          "lon": 6.720264622178896,
-          "note": "Bridge implied over 85 m, 85 m of it unannotated",
-          "value": 85.39184085988177,
-          "zoom": 16
-        },
-        {
-          "lat": 46.487307857110345,
-          "lon": 6.770388918577314,
-          "note": "Bridge implied over 119 m, 76 m of it unannotated",
-          "value": 76.4728273391338,
-          "zoom": 16
         }
       ],
       "population": "Every derived run, scored by the metres of it no annotated span of the same kind covers.",
-      "samples": 771,
+      "samples": 683,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 253.86666666666667,
+      "tail": 194.13333333333335,
       "threshold": 0.5,
       "title": "Structure the solve implies that nothing annotated",
-      "violation_pct": 49.93514915693904,
-      "violations": 385,
-      "worst": 253.9134079855154
+      "violation_pct": 43.48462664714495,
+      "violations": 297,
+      "worst": 193.94467568790503
     },
     {
       "id": "structure.edge_drift",
@@ -453,8 +469,8 @@
         {
           "lat": 46.4237701,
           "lon": 7.0394887,
-          "note": "Bridge end moved 332 m from where it was annotated",
-          "value": 331.7138889097758,
+          "note": "Bridge end moved 328 m from where it was annotated",
+          "value": 327.659929672553,
           "zoom": 16
         },
         {
@@ -475,7 +491,14 @@
           "lat": 46.49451672402796,
           "lon": 6.750350161133479,
           "note": "Bridge end moved 173 m from where it was annotated",
-          "value": 173.18629051492871,
+          "value": 173.18629051677271,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43863538192236,
+          "lon": 6.914945587506188,
+          "note": "Bridge end moved 159 m from where it was annotated",
+          "value": 159.1214116267396,
           "zoom": 16
         },
         {
@@ -498,25 +521,18 @@
           "note": "Tunnel end moved 134 m from where it was annotated",
           "value": 134.44247050997902,
           "zoom": 16
-        },
-        {
-          "lat": 46.4944524561069,
-          "lon": 6.750231018685622,
-          "note": "Bridge end moved 127 m from where it was annotated",
-          "value": 126.63815427412737,
-          "zoom": 16
         }
       ],
       "population": "Every annotated non-grade span that a derived run of its kind overlaps, each end scored against the nearest such run's matching edge; the worse end is the sample. Per-end, because pairing whole runs echoed a long span's own length back as \"movement\" wherever its coverage was fragmented.",
-      "samples": 510,
+      "samples": 507,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 331.52000000000004,
+      "tail": 327.25333333333333,
       "threshold": 0.5,
       "title": "How far a structure's ends move when derived",
-      "violation_pct": 98.03921568627452,
-      "violations": 500,
-      "worst": 331.7138889097758
+      "violation_pct": 97.83037475345168,
+      "violations": 496,
+      "worst": 327.659929672553
     }
   ]
 }
