@@ -99,10 +99,14 @@ pub struct Corridor {
     pub spans: Vec<Span>,
     /// Source segments in corridor order.
     pub segments: Vec<SegmentRef>,
-    /// Every connector id its member segments touch, sorted. A plan
-    /// intersection with a feature sharing one of these is a *junction*
-    /// (things meeting), never a crossing (things passing over each other).
-    pub connectors: Vec<u64>,
+    /// Every connector its member segments touch, as `(id, corridor arc)`,
+    /// sorted by id — the ends, the splice points, and the ones interior to a
+    /// member segment alike. A plan intersection with a feature sharing one of
+    /// these ids is a *junction* (things meeting), never a crossing (things
+    /// passing over each other); the arc is where along this corridor the
+    /// meeting is, which is what lets a check read the solved height at the
+    /// exact place two corridors claim to connect.
+    pub connectors: Vec<(u64, f64)>,
 }
 
 /// One geometric crossing: a corridor's bridge span passing over another

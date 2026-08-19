@@ -660,6 +660,7 @@ check exists that would have found it.
 | I4 | `datum.float` | Every node the reconciled partition leaves at grade, any stratum, water excluded | Height beyond its class deviation budget from its conditioned terrain reference |
 | I8 | `ground.footprint` | Every ground sample | A change outside the imprinting stratum's declared footprints |
 | §4.5 | `crossing.orphan` | Every clearance demand | A demand with no solved feature on both sides — must be structurally zero |
+| I2 | `graph.connector_step` | Every source connector shared by two or more profiled, paving corridors — read from the corridors' connector lists, not the junction set | A solved height spread at the shared place; past the sheet separation it is drawn as one surface floating over the other |
 
 Three notes on what makes these strong:
 

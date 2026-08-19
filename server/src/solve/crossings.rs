@@ -536,7 +536,11 @@ fn meets_here(
     edge: (Coord, Coord),
     other_edge: (Coord, Coord),
 ) -> bool {
-    if !c.connectors.iter().any(|k| other.connectors.binary_search(k).is_ok()) {
+    if !c
+        .connectors
+        .iter()
+        .any(|(k, _)| other.connectors.binary_search_by(|(o, _)| o.cmp(k)).is_ok())
+    {
         return false;
     }
     at_vertex(point, edge, c.cos_lat) && at_vertex(point, other_edge, c.cos_lat)
@@ -854,8 +858,8 @@ mod tests {
         let len = 200.0;
         let mut a = corridor(0, 6.0, 46.0009, true, len, grade(len));
         let mut b = corridor(1, 6.0009, 46.0, false, len, grade(len));
-        a.connectors = vec![77];
-        b.connectors = vec![77];
+        a.connectors = vec![(77, 0.0)];
+        b.connectors = vec![(77, 0.0)];
         // Put a vertex of each exactly at the plan intersection: that point is
         // the connector, and this is the T-junction it models.
         let meet = Coord { x: b.nodes[0].x, y: a.nodes[0].y };
@@ -884,8 +888,8 @@ mod tests {
         );
         let mut b = corridor(1, 6.0009, 46.0, false, len, grade(len));
         // They share connector 77 — at their far ends, not where they cross.
-        a.connectors = vec![77];
-        b.connectors = vec![77];
+        a.connectors = vec![(77, 0.0)];
+        b.connectors = vec![(77, 0.0)];
         let profiles = vec![flat(&a, 400.0), flat(&b, 400.0)];
         let scene = SceneGraph::new(vec![a, b]);
         let out = derive(&scene, &profiles, crate::priors::Stratum::S);
@@ -1016,8 +1020,8 @@ mod tests {
         let len = 200.0;
         let mut a = corridor(0, 6.0, 46.0009, true, len, grade(len));
         let mut b = corridor(1, 6.0009, 46.0, false, len, grade(len));
-        a.connectors = vec![77];
-        b.connectors = vec![77];
+        a.connectors = vec![(77, 0.0)];
+        b.connectors = vec![(77, 0.0)];
         let meet = Coord { x: b.nodes[0].x, y: a.nodes[0].y };
         a.nodes[2] = meet;
         b.nodes[2] = meet;

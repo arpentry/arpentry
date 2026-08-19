@@ -45,9 +45,13 @@ pub struct RawSegment {
     pub start_connector: Option<u64>,
     /// Connector at the segment's last vertex, if any.
     pub end_connector: Option<u64>,
-    /// Every connector the segment touches (ends and interior), for the
-    /// crossing detector's junction exclusion.
-    pub connector_ids: Vec<u64>,
+    /// Every connector the segment touches with its linear reference — the
+    /// ends *and* the interior ones. Overture attaches a side road to a
+    /// through road by a connector partway along the through segment
+    /// (`0 < at < 1`), and on the Swiss extract that is most attachments:
+    /// 749,524 paved connectors are interior to one segment while an end of
+    /// another. Ends alone are not the graph.
+    pub connectors: Vec<super::columns::Connector>,
     pub properties: Vec<(String, Value)>,
 }
 
@@ -73,11 +77,17 @@ pub fn build(segments: Vec<RawSegment>) -> (Vec<Corridor>, Vec<Junction>) {
     let links = splice_links(&segments);
     let chains = walk_chains(&segments, &links);
     let mut corridors = Vec::with_capacity(chains.len());
+    // `ARPT_NO_INTERIOR_PORTS=1` keeps the junctions end-only again, so an A/B
+    // re-tile of the interior ports is a flag rather than a patch — the same
+    // reason `ARPT_NO_ABUTMENT_CUT` exists.
+    let interior_ports = std::env::var_os("ARPT_NO_INTERIOR_PORTS").is_none();
     // Every corridor's connector ports (connector id → the corridor and the arc
     // it sits at), bucketed by connector so shared ones become junctions.
     let mut by_connector: HashMap<u64, Vec<(CorridorId, f64, Coord)>> = HashMap::new();
     for chain in chains {
-        if let Some((c, ports)) = build_corridor(corridors.len() as u32, &segments, &chain) {
+        if let Some((c, ports)) =
+            build_corridor(corridors.len() as u32, &segments, &chain, interior_ports)
+        {
             for (conn, arc, point) in ports {
                 by_connector.entry(conn).or_default().push((c.id, arc, point));
             }
@@ -281,6 +291,7 @@ fn build_corridor(
     id: u32,
     segments: &[RawSegment],
     chain: &[ChainLink],
+    interior_ports: bool,
 ) -> Option<(Corridor, Vec<(u64, f64, Coord)>)> {
     // Concatenate oriented nodes, remembering each segment's node range.
     let mut nodes: Vec<Coord> = Vec::new();
@@ -338,26 +349,51 @@ fn build_corridor(
             properties: segments[si].properties.clone(),
         })
         .collect();
-    let mut connectors: Vec<u64> =
-        chain.iter().flat_map(|&(si, _)| segments[si].connector_ids.iter().copied()).collect();
-    connectors.sort_unstable();
-    connectors.dedup();
-
-    // The corridor's connector ports: each member segment's end connectors at
-    // the corridor arc (and coordinate) they sit at. A reversed segment's start
-    // connector lands at its high node and vice versa. Shared with other
-    // corridors, these ports are the junctions.
+    // The corridor's connector ports: every connector of every member segment,
+    // at the corridor arc (and coordinate) it sits at. A reversed segment's
+    // start connector lands at its high node and vice versa; an *interior*
+    // connector — a side road attached partway along the segment — lands at
+    // its linear reference. Shared with other corridors, these ports are the
+    // junctions, and the interior ones are most of them: keyed on ends alone,
+    // a through road passing a connector mid-segment could never be a junction
+    // member there, so the fork it carries got no weld, no plate, and a side
+    // road solved metres off the surface it joins (the Colondalles fork,
+    // 6.9026,46.4455, stood 4.7 m over its tertiary).
     let mut ports: Vec<(u64, f64, Coord)> = Vec::new();
+    // The same entries as `(id, arc)` for [`Corridor::connectors`] — one
+    // derivation, so the crossing exclusion and the verify checks read the
+    // ports the junctions were built from.
+    let mut connectors: Vec<(u64, f64)> = Vec::new();
     for (&(si, forward), &(node0, node1, _)) in chain.iter().zip(&ranges) {
         let seg = &segments[si];
         let (sc_node, ec_node) = if forward { (node0, node1) } else { (node1, node0) };
-        if let Some(c) = seg.start_connector {
-            ports.push((c, arc[sc_node], nodes[sc_node]));
-        }
-        if let Some(c) = seg.end_connector {
-            ports.push((c, arc[ec_node], nodes[ec_node]));
+        let (a0, a1) = (arc[node0], arc[node1]);
+        for c in &seg.connectors {
+            // An end connector sits exactly on its node — read the node's arc
+            // rather than re-deriving it, so the two sides of a splice agree
+            // bitwise and dedup to one entry.
+            let (carc, point, interior) = if c.at <= super::END_AT_EPS {
+                (arc[sc_node], nodes[sc_node], false)
+            } else if c.at >= 1.0 - super::END_AT_EPS {
+                (arc[ec_node], nodes[ec_node], false)
+            } else {
+                // `at` is a fraction of the segment's length, and the
+                // segment's span of corridor arc is its length, so the two
+                // scales agree by construction.
+                let frac = if forward { c.at } else { 1.0 - c.at };
+                let carc = a0 + frac * (a1 - a0);
+                (carc, point_at_arc(&nodes, &arc, carc), true)
+            };
+            connectors.push((c.id, carc));
+            if !interior || interior_ports {
+                ports.push((c.id, carc, point));
+            }
         }
     }
+    connectors.sort_unstable_by(|a, b| {
+        a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).expect("finite arc"))
+    });
+    connectors.dedup();
 
     Some((
         Corridor {
@@ -384,6 +420,22 @@ fn build_corridor(
         },
         ports,
     ))
+}
+
+/// The point at arc `a` on the corridor's node chain — where an interior
+/// connector's port sits. The connector is a vertex of the mapped line, so the
+/// interpolation lands on (or within float noise of) that vertex.
+fn point_at_arc(nodes: &[Coord], arc: &[f64], a: f64) -> Coord {
+    let n = nodes.len();
+    debug_assert!(n >= 2 && arc.len() == n);
+    let i = match arc.binary_search_by(|v| v.partial_cmp(&a).expect("finite arc")) {
+        Ok(i) => i.min(n - 2),
+        Err(i) => i.saturating_sub(1).min(n - 2),
+    };
+    let span = arc[i + 1] - arc[i];
+    let t = if span > 0.0 { ((a - arc[i]) / span).clamp(0.0, 1.0) } else { 0.0 };
+    let (p, q) = (nodes[i], nodes[i + 1]);
+    Coord { x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t }
 }
 
 /// One segment's carriageway width in metres, from the same derivation the
@@ -523,9 +575,41 @@ mod tests {
             level_runs: runs,
             start_connector: start,
             end_connector: end,
-            connector_ids: start.into_iter().chain(end).collect(),
+            connectors: start
+                .into_iter()
+                .map(|id| Connector { id, at: 0.0 })
+                .chain(end.into_iter().map(|id| Connector { id, at: 1.0 }))
+                .collect(),
             properties: vec![],
         }
+    }
+
+    use crate::assemble::columns::Connector;
+
+    /// A straight segment from `(x0_m, y0_m)` metres east/north of (lon 6,
+    /// lat 46), running `len_m` metres at `bearing_deg`.
+    fn seg_at(
+        source: &str,
+        x0_m: f64,
+        y0_m: f64,
+        len_m: f64,
+        bearing_deg: f64,
+        class: &str,
+        start: Option<u64>,
+        end: Option<u64>,
+    ) -> RawSegment {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let (de, dn) = (bearing_deg.to_radians().sin(), bearing_deg.to_radians().cos());
+        let n = 8;
+        let point = |m: f64| Coord {
+            x: 6.0 + (x0_m + de * m) / (crate::scene::DEG_M * cos_lat),
+            y: 46.0 + (y0_m + dn * m) / crate::scene::DEG_M,
+        };
+        let mut s = seg(source, 0.0, len_m, vec![], start, end);
+        s.line = (0..=n).map(|i| point(len_m * i as f64 / n as f64)).collect();
+        s.class_key = class.into();
+        s.kind = Kind::parse(Some("road"), Some(class), None);
+        s
     }
 
     fn run(start: f64, end: f64, level: i64) -> LevelRun {
@@ -575,6 +659,54 @@ mod tests {
         // The fork is a junction: all three corridors meet at connector 7.
         assert_eq!(junctions.len(), 1, "the shared fork connector is one junction");
         assert_eq!(junctions[0].members.len(), 3, "all three legs are members");
+    }
+
+    #[test]
+    fn an_interior_connector_is_a_junction_with_the_through_road() {
+        // A side road ends on a connector partway along the through road's one
+        // segment — Overture's usual T-attachment. The through road must be a
+        // junction member there, at the arc the connector sits at; keyed on
+        // segment ends it never was, and the side road solved unwelded.
+        let mut through = seg("t", 0.0, 1000.0, vec![], Some(1), Some(2));
+        through.connectors.push(Connector { id: 9, at: 0.5 });
+        let side = seg_at("s", 500.0, 0.0, 200.0, 0.0, "primary", Some(9), Some(3));
+        let (cs, junctions) = build(vec![through, side]);
+        assert_eq!(cs.len(), 2);
+        assert_eq!(junctions.len(), 1, "the interior attachment is a junction");
+        let j = &junctions[0];
+        assert_eq!(j.connector, 9);
+        assert_eq!(j.members.len(), 2, "the through road is a member");
+        let through_member = j
+            .members
+            .iter()
+            .find(|m| m.arc > 1.0)
+            .expect("the through member sits mid-corridor");
+        assert!(
+            (through_member.arc - 500.0).abs() < 1.0,
+            "through arc {} should be the connector's linear reference",
+            through_member.arc
+        );
+    }
+
+    #[test]
+    fn a_fork_off_a_through_road_keeps_its_junction() {
+        // The Colondalles shape (6.9026,46.4455): two same-class arms fork off
+        // a through road at one interior connector. The arms turn under 120°
+        // so they splice into one V-shaped corridor — and with end-only ports
+        // that V deduped to a single port and the junction vanished, leaving
+        // the fork unwelded 4.7 m over the road it joins.
+        let mut through = seg("t", 0.0, 1000.0, vec![], Some(1), Some(2));
+        through.connectors.push(Connector { id: 9, at: 0.5 });
+        let arm_a = seg_at("a", 500.0, 0.0, 200.0, -60.0, "primary", Some(9), Some(3));
+        let arm_b = seg_at("b", 500.0, 0.0, 200.0, 60.0, "primary", Some(9), Some(4));
+        let (cs, junctions) = build(vec![through, arm_a, arm_b]);
+        assert_eq!(cs.len(), 2, "the arms splice into one V corridor");
+        assert_eq!(junctions.len(), 1, "the fork connector is still a junction");
+        assert_eq!(junctions[0].members.len(), 2, "the V and the through road");
+        assert!(
+            junctions[0].members.iter().any(|m| (m.arc - 500.0).abs() < 1.0),
+            "the through road meets the fork mid-corridor"
+        );
     }
 
     #[test]

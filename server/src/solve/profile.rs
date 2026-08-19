@@ -381,8 +381,20 @@ pub fn solve(
         // seeking, no absorption: an unengineered annotation is trusted), and
         // any structure chord is re-pinned to where the relaxed road arrives.
         Mode::Street { grade, deviation_m, .. } => {
+            // The measured bed raises the cap here for the same reason it does
+            // for the engineered classes: a ceiling the ground under the mapped
+            // alignment already beats is a contradiction, and the ground wins.
+            // The street case that forces it is a junction chain down a flank
+            // steeper than the class bed grade — the Chauderon gorge lanes
+            // measure 23–41 % under a 15 % cap. The published `max_grade` is
+            // also the fused graph's edge cap (`graph::build`), and held at
+            // the class number there, the junction welds won over the
+            // ground-hugging box and the chain hung 26 m over its own hillside
+            // at grade.
+            let g = grade.max(measured.unwrap_or(0.0));
+            max_grade = Some(g);
             road_m = road_profile(&arc, &road_ref, &at_grade);
-            limit_road_grade(&arc, &mut road_m, &road_ref, &at_grade, grade, deviation_m);
+            limit_road_grade(&arc, &mut road_m, &road_ref, &at_grade, g, deviation_m);
             rechord_structures(&arc, &mut road_m, &at_grade);
         }
         Mode::Draped => {

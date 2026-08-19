@@ -483,8 +483,8 @@ fn classify(scene: &SceneGraph, a: CorridorId, b: CorridorId, at: Coord) -> Kind
     let shared: Vec<u64> = ca
         .connectors
         .iter()
-        .copied()
-        .filter(|c| cb.connectors.binary_search(c).is_ok())
+        .map(|&(id, _)| id)
+        .filter(|id| cb.connectors.binary_search_by(|(o, _)| o.cmp(id)).is_ok())
         .collect();
     if shared.is_empty() {
         return Kind::Unrelated;

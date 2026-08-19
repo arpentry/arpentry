@@ -22,6 +22,7 @@ pub mod authority;
 pub mod datum;
 pub mod footprint;
 pub mod grade;
+pub mod graph;
 pub mod structures;
 
 use crate::ground::GroundStack;
@@ -53,6 +54,7 @@ pub fn run(m: &Model<'_>) -> Vec<Metric> {
     out.extend(datum::check(m));
     out.extend(footprint::check(m));
     out.extend(grade::check(m));
+    out.extend(graph::check(m));
     out.extend(structures::check(m));
     out
 }

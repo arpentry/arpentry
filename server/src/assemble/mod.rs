@@ -28,7 +28,7 @@ use corridors::RawSegment;
 use grid::GridIndex;
 
 /// A connector within this fraction of an end is that end's connector.
-const END_AT_EPS: f64 = 1e-3;
+pub(crate) const END_AT_EPS: f64 = 1e-3;
 
 /// Attribute columns the assemble stage reads. The scalar ones become the
 /// styling properties re-emitted with every piece of the segment (matching
@@ -116,7 +116,7 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
             level_runs: f.level_runs,
             start_connector,
             end_connector,
-            connector_ids: f.connectors.iter().map(|c| c.id).collect(),
+            connectors: f.connectors,
             properties: f.properties,
         });
     }

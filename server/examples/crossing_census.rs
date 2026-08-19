@@ -95,7 +95,9 @@ fn main() {
                             .push(point0);
                     }
                 }
-                if !c.connectors.iter().any(|k| other.connectors.binary_search(k).is_ok()) {
+                if !c.connectors.iter().any(|(k, _)| {
+                    other.connectors.binary_search_by(|(o, _)| o.cmp(k)).is_ok()
+                }) {
                     continue;
                 }
                 shared += 1;
