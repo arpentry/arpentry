@@ -860,8 +860,9 @@ mod tests {
             "the crossing must cut the formation into two approaches"
         );
         // Area by inclusion-exclusion, with the whole overlap charged to the
-        // road: bands are width + 2 x STRUCTURE_SHOULDER_M wide.
-        let (road_w, rail_w) = (8.0, 7.0);
+        // road: an asphalt band is width + 2 x STRUCTURE_SHOULDER_M wide, a
+        // ballast band is its track-zone width outright (`Prior::shoulder_m`).
+        let (road_w, rail_w) = (8.0, 5.0);
         let want = 200.0 * road_w + 200.0 * rail_w - road_w * rail_w;
         let got = model.area_m2();
         assert!((got - want).abs() < want * 0.02, "area {got:.0} != {want:.0}");

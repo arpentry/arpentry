@@ -83,14 +83,16 @@ pub fn emit(
     // bridge approach was lifted metres into the air by exactly that.
     //
     // A rail stroke has a width too — its formation is in the union — and it
-    // still must not read the field. The field's per-vertex sheet resolution
-    // (`layer_at`) picks the nearest of the *corridor's own* sources, and two
-    // rail alignments running metres apart in plan and tens of metres apart in
-    // height flip that answer between consecutive vertices: measured as a
-    // 446 % grade over one 0.8 m chord. The ballast band cannot flip — a
-    // region's layer is fixed — and the stroke lands on it by reading the same
-    // per-corridor profile the band's bench holds, so the field buys the rail
-    // stroke nothing and costs it a cliff.
+    // still must not read the field. Below the surface zoom the stroke is the
+    // railway (from `ROAD_SURFACE_MIN_ZOOM` `paves_via_union` deletes it, the
+    // band and decks carrying the surface), and the field's per-vertex sheet
+    // resolution (`layer_at`) picks the nearest of the *corridor's own*
+    // sources: two rail alignments running metres apart in plan and tens of
+    // metres apart in height flip that answer between consecutive vertices —
+    // measured as a 446 % grade over one 0.8 m chord. The ballast band cannot
+    // flip — a region's layer is fixed — and the stroke lands on it by reading
+    // the same per-corridor profile the band's bench holds, so the field buys
+    // the rail stroke nothing and costs it a cliff.
     let has_width = crate::value::f64_of(&f.properties, "width_m").is_some_and(|w| w > 0.0);
     let class = crate::value::str_of(&f.properties, "class");
     let paved = has_width

@@ -828,13 +828,15 @@ fn plates(c: &Corridor) -> bool {
     c.kind.prior().surface == priors::Surface::Asphalt
 }
 
-/// The half-width in metres of a corridor's surface band — its carriageway or
-/// rail formation plus the structure shoulder, exactly what `synth::surface`
-/// offsets to. `None` for a corridor with no surface of its own: a footway or
-/// a crossing joins an intersection without paving any of it.
+/// The half-width in metres of a corridor's surface band — its carriageway
+/// plus the class's shoulder, or its rail formation outright
+/// ([`priors::Prior::shoulder_m`]), exactly what `synth::surface` offsets to.
+/// `None` for a corridor with no surface of its own: a footway or a crossing
+/// joins an intersection without paving any of it.
 pub(crate) fn corridor_half_width_m(c: &Corridor) -> Option<f64> {
-    (c.kind.prior().surface != priors::Surface::None).then_some(())?;
-    Some(c.width_m? * 0.5 + priors::STRUCTURE_SHOULDER_M)
+    let prior = c.kind.prior();
+    (prior.surface != priors::Surface::None).then_some(())?;
+    Some(c.width_m? * 0.5 + prior.shoulder_m())
 }
 
 /// Bakes one cluster's plate, or `None` when it paves nothing: fewer than

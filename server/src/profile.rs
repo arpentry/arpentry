@@ -69,8 +69,11 @@ pub fn profile(
         .map(|i| i.clamp(0, tileid::MAX_RANK as i64) as u16)
         .unwrap_or(0);
     // Markings sort after every road stroke in their layer, so within a tile
-    // they decode — and draw — over the carriageway they are painted on.
-    if layer == layers::TRANSPORTATION && class.as_deref() == Some("marking") {
+    // they decode — and draw — over the carriageway they are painted on. The
+    // rail heads are paint too, riding the ballast band.
+    if layer == layers::TRANSPORTATION
+        && matches!(class.as_deref(), Some("marking" | "rail_line"))
+    {
         rank = tileid::MAX_RANK;
     }
 
@@ -262,8 +265,8 @@ fn overture_min_zoom(layer: LayerIndex, class: &str) -> Option<u8> {
             | "crosswalk" | "unknown",
         ) => 14,
         // Synthesized painted markings (docs/ROADS.md P3): sub-pixel until
-        // the camera is close.
-        (layers::TRANSPORTATION, "marking") => crate::priors::MARKING_MIN_ZOOM,
+        // the camera is close. The rail heads gate with them.
+        (layers::TRANSPORTATION, "marking" | "rail_line") => crate::priors::MARKING_MIN_ZOOM,
         // Rail (Overture `subtype=rail`, class is the gauge).
         (
             layers::TRANSPORTATION,

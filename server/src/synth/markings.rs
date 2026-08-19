@@ -51,13 +51,19 @@ const LANE_GAP_M: f64 = 9.0;
 pub struct Marking {
     pub geometry: Geometry,
     pub width_m: f64,
+    /// The style class the paint is emitted as: `"marking"` for road paint,
+    /// `"rail_line"` for the rail heads riding the ballast band. Distinct
+    /// classes because colour is keyed by class (paint is white, a rail is
+    /// dark), and because the calibrated `paint.*` check populations filter
+    /// on the literal `"marking"`.
+    pub class: &'static str,
 }
 
 impl Marking {
     /// The tile properties of a marking feature.
     pub fn properties(&self) -> Vec<(String, Value)> {
         vec![
-            ("class".to_string(), Value::String("marking".to_string())),
+            ("class".to_string(), Value::String(self.class.to_string())),
             ("width_m".to_string(), Value::Double(self.width_m)),
         ]
     }
@@ -97,6 +103,7 @@ pub fn for_line(
             out.push(Marking {
                 geometry: Geometry::MultiLineString(MultiLineString(kept)),
                 width_m: width,
+                class: "marking",
             });
         }
     };
@@ -135,6 +142,7 @@ pub fn for_line(
                     out.push(Marking {
                         geometry: Geometry::MultiLineString(MultiLineString(pieces)),
                         width_m: priors::EDGE_LINE_WIDTH_M,
+                        class: "marking",
                     });
                 }
             }
@@ -244,6 +252,33 @@ fn line_len_m(line: &LineString, frame: &Frame) -> f64 {
             (de * de + dn * dn).sqrt()
         })
         .sum()
+}
+
+/// The two rail heads of a track: the centerline offset ±half the class
+/// gauge, each drawn as a thin dark line riding the ballast band the way
+/// road paint rides the asphalt (docs/ROADS.md P3, extended to rail).
+///
+/// No dashes and no intersection trim, on purpose: a rail is continuous
+/// steel, and at a level crossing it runs *through* the asphalt — trimming
+/// it at the crossing's area would break exactly the place a rail is most
+/// visible. The lateral offset survives the paint snap because
+/// `Profile::smooth_at` re-applies the query point's offset about the raw
+/// edge onto the smoothed curve (the two-curves fix; guarded by
+/// `paint.edge_line_inset` for road paint).
+pub fn rails_for_line(line: &LineString, gauge_m: f64) -> Vec<Marking> {
+    if line.0.len() < 2 {
+        return Vec::new();
+    }
+    let frame = frame_at(line.0[0]);
+    [0.5, -0.5]
+        .into_iter()
+        .filter_map(|side| offset_line(line, gauge_m * side, &frame))
+        .map(|rail| Marking {
+            geometry: Geometry::LineString(rail),
+            width_m: priors::RAIL_HEAD_WIDTH_M,
+            class: "rail_line",
+        })
+        .collect()
 }
 
 /// The centerline offset sideways by `offset_m` (positive = left of travel),

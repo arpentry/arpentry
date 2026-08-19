@@ -21,6 +21,7 @@
 pub mod authority;
 pub mod datum;
 pub mod footprint;
+pub mod grade;
 pub mod structures;
 
 use crate::ground::GroundStack;
@@ -29,12 +30,18 @@ use crate::solve::SolvedModel;
 use crate::verify::Metric;
 
 /// What a model check is given: the assembled scene, what the solve made of it,
-/// the ground that fell out, and the DEM to re-run against.
+/// the ground that fell out, the DEM to re-run against, and the extract's own
+/// bbox. The scene is *larger* than the bbox — assemble admits whole parquet
+/// row groups, so corridors spill past the zone into ground no DEM
+/// constrained — and a check that samples solved heights must clip to the
+/// bbox or its worst rung ranks the extraction boundary instead of the
+/// pipeline.
 pub struct Model<'a> {
     pub scene: &'a SceneGraph,
     pub solved: &'a SolvedModel,
     pub ground: &'a GroundStack,
     pub terrain: Option<&'a std::path::Path>,
+    pub bounds: crate::project::Bounds,
     pub threads: usize,
 }
 
@@ -45,6 +52,7 @@ pub fn run(m: &Model<'_>) -> Vec<Metric> {
     out.extend(authority::inversion(m));
     out.extend(datum::check(m));
     out.extend(footprint::check(m));
+    out.extend(grade::check(m));
     out.extend(structures::check(m));
     out
 }

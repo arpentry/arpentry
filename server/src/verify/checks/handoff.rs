@@ -2,18 +2,16 @@
 //!
 //! [`super::abutment`] asks the same question of the **strokes**, and at the
 //! zooms where the road surface actually exists it cannot answer it: from
-//! [`crate::priors::ROAD_SURFACE_MIN_ZOOM`] the tiler deletes a carriageway's
-//! own stroke, because the unioned asphalt *is* the surface now
-//! (`pipeline::paves_via_union`). A railway keeps its stroke — its track is not
-//! a fill — so at z16 every abutment sample that check takes is a railway, and
-//! the road handoff, which is the one a viewer is looking at, is measured
-//! nowhere. That is the hole this file fills.
+//! [`crate::priors::ROAD_SURFACE_MIN_ZOOM`] the tiler deletes the stroke of
+//! every class the union paves — carriageway and rail formation alike
+//! (`pipeline::paves_via_union`) — so at z16 the stroke check has no
+//! population at all and this file is the only abutment instrument.
 //!
-//! It also inverts which defect is visible. On a rail bridge the track ribbon
-//! is one continuous object drawn *over* both the ballast band and the deck, so
-//! a break underneath it is hidden by the very thing that is measured; on a
-//! road bridge nothing is drawn over the joint, so the two meshes have to meet
-//! by themselves and every millimetre between them shows.
+//! Neither modality hides the joint any more. A rail bridge used to draw its
+//! track ribbon as one continuous object over both the ballast band and the
+//! deck, so a break underneath was hidden by the very thing being measured;
+//! now a ballast band must meet its deck as nakedly as asphalt does, and
+//! every millimetre between the two meshes shows.
 //!
 //! ## What is paired, and against what
 //!
@@ -513,9 +511,9 @@ impl Check for Handoff {
                      swept from that same arc, so the two share a boundary rather than approach \
                      one. On screen it is the defect this check was written for — the carriageway \
                      stopping short of its own bridge, with the hillside showing through the gap. \
-                     A road cannot hide it the way a railway does: the rail stroke survives these \
-                     zooms and is drawn over the joint, while a carriageway's stroke is deleted \
-                     once the union paves it ({BARE_M:.2} m gate)."
+                     Nothing hides it on either modality: the rail stroke is deleted with the \
+                     carriageway's once the union paves the formation, so a ballast band meets \
+                     its deck as nakedly as asphalt does ({BARE_M:.2} m gate)."
                 ),
                 sense: Sense::HigherIsWorse,
                 threshold: BARE_M,

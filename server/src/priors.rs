@@ -222,6 +222,26 @@ impl Prior {
     pub fn grade(&self) -> Option<f64> {
         self.grade_shape.grade()
     }
+
+    /// The shoulder this class's drawn *band* carries beyond its `width_m`,
+    /// in metres of half-width.
+    ///
+    /// Asphalt gets [`STRUCTURE_SHOULDER_M`]: a road's `width_m` is the
+    /// painted carriageway, and the real surface continues past the lanes as
+    /// verge and edge beam — band and deck both add it, so they meet flush.
+    /// Ballast gets none: a rail class's `width_m` is the track zone
+    /// (sleepers plus tamped shoulder, the §9 half-widths), the earthworks
+    /// beyond are the ground bench's, and only the *structure sweep* adds the
+    /// shoulder back (`synth::structure` — a real rail deck is wider than its
+    /// track). Drawn with the asphalt rule a single standard-gauge track read
+    /// 7 m wide, within a lane of a residential street's whole band.
+    pub fn shoulder_m(&self) -> f64 {
+        match self.surface {
+            Surface::Asphalt => STRUCTURE_SHOULDER_M,
+            Surface::Ballast | Surface::None => 0.0,
+        }
+    }
+
 }
 
 impl Kind {
@@ -382,16 +402,23 @@ pub fn of(kind: Kind) -> &'static Prior {
         clearance_over_m: RAIL_CLEARANCE_M,
         clearance_under_m: ROAD_CLEARANCE_M,
         min_structure_m: MIN_STRUCTURE_M,
-        half_width_m: Some(2.5),
+        // The drawn band is the *track zone* — a 2.6 m sleeper plus the
+        // tamped ballast shoulder — not the formation. The earthworks beyond
+        // are the ground bench's (`ground`, prior half + EARTHWORK_SHOULDER_M),
+        // and a structure adds [`STRUCTURE_SHOULDER_M`] back (a real rail
+        // deck or bore is wider than its track). Drawn at the 5 m formation
+        // the railway read as wide as a residential street.
+        half_width_m: Some(1.75),
         surface: Surface::Ballast,
         monotone: false,
         stratum: Stratum::R,
     };
     // Narrow gauge was built to reach places standard gauge could not, so it
-    // holds a steeper ceiling and turns tighter.
+    // holds a steeper ceiling and turns tighter; its track zone is a 1.8 m
+    // sleeper plus the same tamped shoulder.
     const NARROW: Prior = Prior {
         grade_shape: GradeShape::CurvatureLimited { grade: 0.07, radius_m: 500.0 },
-        half_width_m: Some(1.75),
+        half_width_m: Some(1.3),
         ..MAINLINE
     };
     // A funicular is laid *on* its hillside — no cuttings, no embankments, a
@@ -424,7 +451,7 @@ pub fn of(kind: Kind) -> &'static Prior {
     // data-gap end, a fragment seam stepping, a junction kink.
     const FUNICULAR: Prior = Prior {
         grade_shape: GradeShape::Bounded(0.70),
-        half_width_m: Some(1.75),
+        half_width_m: Some(1.3),
         deviation_m: 2.5,
         monotone: true,
         ..MAINLINE
@@ -684,6 +711,29 @@ pub const MARKING_MIN_ZOOM: u8 = 15;
 pub const CENTRE_LINE_WIDTH_M: f64 = 0.12;
 pub const EDGE_LINE_WIDTH_M: f64 = 0.15;
 pub const EDGE_LINE_INSET_M: f64 = 0.30;
+
+/// Drawn width of one rail head, in metres. A real head is ~0.07 m; 0.12
+/// matches the centre-line convention and takes the same sub-pixel floor and
+/// fade the road paint does (`road.wgsl` MARK_MIN_HALF_WIDTH_PX).
+pub const RAIL_HEAD_WIDTH_M: f64 = 0.12;
+
+/// Rail gauge by class, in metres — the lateral spacing of the two painted
+/// rail heads (`synth::markings::rails_for_line`).
+///
+/// `None` for street-running rail: it lays no ballast band and keeps its
+/// cartographic stroke, so it has no surface for rail heads to ride (yet —
+/// a tram's rails would sit on the *road* asphalt, a different drape).
+/// Broad gauge is really 1.52–1.67 m, but the Swiss extract holds none and
+/// a centimetre of gauge is invisible at these widths.
+pub fn rail_gauge_m(kind: &Kind) -> Option<f64> {
+    match kind {
+        Kind::Rail(RailClass::StandardGauge | RailClass::BroadGauge | RailClass::Subway) => {
+            Some(1.435)
+        }
+        Kind::Rail(RailClass::NarrowGauge | RailClass::Funicular) => Some(1.0),
+        _ => None,
+    }
+}
 
 /// The marking ladder (docs/ROADS.md §6.5): which longitudinal lines a class
 /// paints. The data never says (marking style is almost never mapped), so
@@ -1103,12 +1153,12 @@ mod tests {
     fn a_named_rail_class_is_rail_without_its_subtype() {
         // The width helpers and the archive-side checks only have the class
         // string. The vocabularies are disjoint, so the string alone must
-        // land on the rail prior — a formation width, not a street's.
+        // land on the rail prior — a track-zone width, not a street's.
         assert_eq!(
             Kind::parse(None, Some("standard_gauge"), None),
             Kind::Rail(RailClass::StandardGauge)
         );
-        assert_eq!(paint_width_m(Some("funicular"), None), Some(3.5));
+        assert_eq!(paint_width_m(Some("funicular"), None), Some(2.6));
         // The ambiguous `unknown` still needs the subtype: mapped as a road
         // it is drivable, and without one it must not become a railway.
         assert_eq!(Kind::parse(None, Some("unknown"), None), Kind::Road(RoadClass::Unknown));

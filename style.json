@@ -374,6 +374,17 @@
           ],
           "width": 0,
           "min_level": 13
+        },
+        {
+          "class": "rail_line",
+          "color": [
+            66,
+            66,
+            70,
+            235
+          ],
+          "width": 1,
+          "min_level": 15
         }
       ]
     },

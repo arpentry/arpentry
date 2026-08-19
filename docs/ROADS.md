@@ -584,6 +584,14 @@ the scenario table (§4).
     look is which spans the union declines to pave and which the sweep
     declines to draw.
 
+    The stroke asymmetry this increment measured has since been closed:
+    rail joined the road rule, so from `ROAD_SURFACE_MIN_ZOOM`
+    `paves_via_union` deletes the rail stroke with the carriageway's and
+    the ballast band meets its deck as nakedly as asphalt does.
+    `slope.rail_grade` moved model-side with it (`verify::model::grade` —
+    the solve is the only place the alignment still exists as a line), and
+    `seam.abutment_*` reports its designed skip at the detail rung.
+
     *Increment 7 — no kerb line across a handover.* The rim exists to edge
     the paved surface against the ground it stops at (§6.1). Its skip rule
     exempted only *tile* cuts, so it also wrapped the abutment, drawing a

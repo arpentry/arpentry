@@ -108,7 +108,12 @@ pub fn stamp(
                     _ => None,
                 })
                 .unwrap_or(prior_half);
-            half_carriageway + crate::priors::STRUCTURE_SHOULDER_M
+            // The class shoulder, not the constant: an asphalt deck adds the
+            // edge-beam/barrier width beyond the carriageway, while a ballast
+            // structure is drawn at the band's own track-zone width
+            // (`Prior::shoulder_m`) — so a rail deck or bore continues its
+            // band edge-to-edge instead of flaring past the approach.
+            half_carriageway + feature_kind.prior().shoulder_m()
         }
         // No cross-section of its own: a footbridge, cycleway or pedestrian
         // bridge is pedestrian-scale — a narrow slab with no vehicle shoulder.

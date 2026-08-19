@@ -212,23 +212,19 @@ impl Contact {
     /// Invariant 4 under a railway: how far the drawn formation stands off the
     /// drawn ground beneath it.
     ///
-    /// **Why rail needs its own metric.** Every other I4 contact check is
-    /// anchored on asphalt — the kerb, the hole's rim, an apron. A railway lays
-    /// none: `priors::Prior::paves` is false for every rail class, so it has no
-    /// carriageway mesh, no kerb, no hole cut in the terrain under it and no
-    /// apron closing one. It is drawn as a cartographic stroke riding its solved
-    /// profile, straight over ground that was never asked to come up and meet
-    /// it. `MAX_BENCH_FACE_M` says outright what that costs — "refusing the
-    /// bench does not put the road back on the ground, it leaves the road where
-    /// the profile put it and the ground where the DEM had it, with air between"
-    /// — and then says the cost is measured at the kerb instead. For rail there
-    /// is no kerb, so it was measured nowhere.
-    ///
-    /// The contrast is what makes the number mean something: over the Montreux
-    /// extract the level-0 road and path strokes, which take the same drape
-    /// path, sit within half a metre of the ground 97.5 % of the time and reach
-    /// 1.27 m at p999. The rail strokes reach 5.25 m at p95 and 33.29 m at
-    /// worst.
+    /// **A coarse-rung instrument now.** This walk was written when a railway
+    /// laid no surface and was drawn as a cartographic stroke riding its
+    /// solved profile, straight over ground that was never asked to come up
+    /// and meet it (rail strokes reached 5.25 m at p95 where road strokes
+    /// held half a metre at 97.5 %). The formation band closed most of that,
+    /// leaving this the residue: rail whose ballast band failed to mesh. Then
+    /// the stroke itself left the detail zooms — from
+    /// `priors::ROAD_SURFACE_MIN_ZOOM` the union paves the formation and
+    /// `pipeline::paves_via_union` deletes the rail stroke with the
+    /// carriageway's — so at the surface zooms this population is empty by
+    /// construction and the walk only measures pre-surface rungs. The residue
+    /// class it used to catch is unmeasured until the formation-coverage
+    /// check (roadmap) lands.
     fn visit_rail(&mut self, tile: &TileScene, terrain: &SurfaceMesh) {
         let decks: Vec<&RoadMesh> = tile.roads.iter().filter(|r| r.is_deck()).collect();
         for line in tile.lines.iter().filter(|l| l.level == 0 && l.is_rail()) {
@@ -240,7 +236,11 @@ impl Contact {
                     let Some(gz) = terrain.height_at(px, py) else {
                         continue; // no drawn ground here to stand off from
                     };
-                    // Paint on a deck, not a formation in the air.
+                    // Paint on a deck, not a formation in the air. Guards an
+                    // empty class at the surface zooms — the deck stroke is
+                    // deleted with the rest — and, on the coarse rungs this
+                    // walk still measures, the viaduct strokes that ride
+                    // their solids.
                     if decks.iter().any(|d| {
                         d.mesh.height_at(px, py).is_some_and(|z| (h - z).abs() < RAIL_ON_DECK_M)
                     }) {
@@ -852,31 +852,35 @@ impl Check for Contact {
                      class names a gauge or a system, where the drawn terrain has a triangle \
                      under it. `unknown` rail is excluded — the archive carries no subtype, so \
                      that class is indistinguishable from an unrecognised road class. A vertex \
-                     within {RAIL_ON_DECK_M:.1} m of a drawn structure surface is excluded too: \
-                     a structure span emits its paint stroke before the level ordinal is \
-                     attached, so a viaduct's stroke arrives here at level 0 and metres up, \
-                     which is what a viaduct is for. Coverage limit: the terrain's hole under \
-                     the asphalt means street-running rail over a paved region has no ground to \
-                     answer for it and is not measured."
+                     within {RAIL_ON_DECK_M:.1} m of a drawn structure surface is excluded too. \
+                     Coverage limit: from z{} the union paves the formation and \
+                     `pipeline::paves_via_union` deletes the rail stroke, so at the surface \
+                     zooms this population is empty by construction — the band itself is \
+                     measured where asphalt is, by the kerb and burial checks, and a \
+                     formation-coverage successor (every ballast model arc covered by drawn \
+                     band or deck) is on the roadmap. Measure a pre-surface rung to see this.",
+                    crate::priors::ROAD_SURFACE_MIN_ZOOM
                 ),
                 detail: format!(
                     "Rail formation height minus the drawn ground directly under it. Distinct \
                      from `contact.kerb_lip`, which probes a metre *outside* a carriageway where \
                      an embankment legitimately drops away: this asks under the formation, which \
                      the bench is supposed to have raised to meet, so there is no legitimate \
-                     positive answer. Since the rail formation became a drawn surface \
-                     (`rail_surface`, with its own hole in the terrain), the population here is \
-                     the *residue*: rail whose ballast band failed to mesh, so the drawn ground \
-                     survived beneath the stroke — the band itself is measured where asphalt is, \
-                     by the kerb and burial checks. Past {RAIL_STANDOFF_M:.1} m the gap is wider \
-                     than the detail lattice can explain and the track is in the air."
+                     positive answer. When the rail stroke existed at the detail zooms the \
+                     population here was the *residue*: rail whose ballast band failed to mesh, \
+                     so the drawn ground survived beneath the stroke. Past \
+                     {RAIL_STANDOFF_M:.1} m the gap is wider than the detail lattice can \
+                     explain and the track is in the air."
                 ),
                 sense: Sense::HigherIsWorse,
                 threshold: RAIL_STANDOFF_M,
                 skipped: self.rail.is_empty().then(|| {
-                    "no rail centerline carries per-vertex heights at this zoom, or the archive \
-                     carries no terrain mesh"
-                        .to_string()
+                    format!(
+                        "no rail stroke at this zoom — from z{} the union paves the formation \
+                         and the stroke is deleted (pipeline::paves_via_union); measure a \
+                         pre-surface rung to see this",
+                        crate::priors::ROAD_SURFACE_MIN_ZOOM
+                    )
                 }),
                 dist: self.rail,
                 worst: self.rail_worst.into_vec(),

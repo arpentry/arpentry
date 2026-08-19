@@ -374,6 +374,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             solved,
             ground,
             terrain: cfg.terrain.as_deref(),
+            bounds: cfg.bbox,
             threads,
         };
         let t_model_verify = Instant::now();
@@ -971,10 +972,14 @@ fn stamp_synth(
 /// keep its stroke — that *is* its geometry — and a footway has none, so it keeps
 /// the cartographic stroke that is all it has ever had.
 ///
-/// A railway keeps its stroke too, though its formation is in the union: the
-/// asphalt fill *replaces* a road's stroke, but the rail stroke is not a fill —
-/// it is the track, riding the ballast band the way a marking rides the
-/// asphalt, and it is also the line `contact.rail_standoff` measures.
+/// Independent rail joins the road rule: its formation band is in the union, so
+/// from the surface zoom its stroke is a second coat over the ballast — at
+/// grade and on the `deck:true` re-paint alike, where the solid's
+/// `band_class`-coloured top carries the surface. A street-running railway
+/// (`Surface::None`) keeps its stroke: it lays no band, so the stroke is its
+/// whole geometry. Nothing measures the deleted stroke any more —
+/// `slope.rail_grade` walks the solved profile model-side
+/// (`verify::model::grade`).
 fn paves_via_union(f: &EncoderFeature) -> bool {
     if is_marking(f) {
         return false;
@@ -984,7 +989,7 @@ fn paves_via_union(f: &EncoderFeature) -> bool {
     }
     let class = crate::value::str_of(&f.properties, "class");
     if crate::priors::Kind::parse(None, class, None).prior().surface
-        != crate::priors::Surface::Asphalt
+        == crate::priors::Surface::None
     {
         return false;
     }
@@ -1249,6 +1254,17 @@ fn process_feature(
                 };
                 if let Some((class, oneway, width, areas)) = &marks {
                     for m in synth::markings::for_line(&line, class, *oneway, *width, areas) {
+                        emit_geometry(layer, &m.geometry, &m.properties(), mark_synth, cfg, sorter, stats)?;
+                    }
+                }
+                // The rail heads: paint riding the ballast band the way the
+                // markings above ride the asphalt, on the same synth (at
+                // grade they drape with the band, over a structure they ride
+                // the deck ramp with the re-emitted paint).
+                if let Some(gauge) = crate::priors::rail_gauge_m(&corridor.kind)
+                    .filter(|_| corridor.kind.prior().surface == crate::priors::Surface::Ballast)
+                {
+                    for m in synth::markings::rails_for_line(&line, gauge) {
                         emit_geometry(layer, &m.geometry, &m.properties(), mark_synth, cfg, sorter, stats)?;
                     }
                 }

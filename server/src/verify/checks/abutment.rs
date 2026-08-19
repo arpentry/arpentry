@@ -61,6 +61,17 @@
 //! Only ends inside the tile proper are measured. Strokes are clipped to the
 //! tile plus its buffer, so a neighbour draws its own copy of every abutment
 //! near a border; counting those would report each one several times.
+//!
+//! ## Where the population lives
+//!
+//! From `priors::ROAD_SURFACE_MIN_ZOOM` the union paves carriageway and rail
+//! formation alike and `pipeline::paves_via_union` deletes both strokes, so at
+//! the detail rung this check's population is the classes that still stroke —
+//! street-running rail and draped ways carried by a solid — which on most
+//! extracts is empty. That is by design: at those zooms the surface handoff is
+//! measured on the meshes themselves (`seam.band_deck_*`, `verify::checks::handoff`),
+//! and this file earns its keep on the pre-surface rungs, where the stroke is
+//! the road.
 
 use crate::verify::dist::Dist;
 use crate::verify::scene::TileScene;
@@ -426,8 +437,12 @@ impl Check for Abutment {
                 sense: Sense::HigherIsWorse,
                 threshold: BREAK_M,
                 skipped: self.plan.is_empty().then(|| {
-                    "no structure stroke meets an at-grade stroke of its own class at this zoom"
-                        .to_string()
+                    format!(
+                        "no stroke meets a structure stroke of its own class at this zoom — from \
+                         z{} the union paves carriageway and rail formation alike and both \
+                         strokes are deleted; the surface handoff is seam.band_deck_*",
+                        crate::priors::ROAD_SURFACE_MIN_ZOOM
+                    )
                 }),
                 dist: self.plan,
                 worst: self.plan_worst.into_vec(),
@@ -448,8 +463,12 @@ impl Check for Abutment {
                 sense: Sense::HigherIsWorse,
                 threshold: BREAK_M,
                 skipped: self.step.is_empty().then(|| {
-                    "no structure stroke meets an at-grade stroke of its own class at this zoom"
-                        .to_string()
+                    format!(
+                        "no stroke meets a structure stroke of its own class at this zoom — from \
+                         z{} the union paves carriageway and rail formation alike and both \
+                         strokes are deleted; the surface handoff is seam.band_deck_*",
+                        crate::priors::ROAD_SURFACE_MIN_ZOOM
+                    )
                 }),
                 dist: self.step,
                 worst: self.step_worst.into_vec(),
