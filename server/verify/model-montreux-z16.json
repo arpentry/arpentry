@@ -111,13 +111,13 @@
         }
       ],
       "population": "Every node of every solved profile that the *reconciled* partition leaves at grade, in every stratum, water excluded. Scored by how far the solved road stands from the conditioned terrain reference — in either direction, since a road buried under its own hillside is the same defect upside down — less the class deviation budget, so 0.0 means within the cut and fill the class is built on. Structure nodes are outside the population by definition. Known legitimate tail: a clearance lift raises an at-grade road over a crossing by up to 15 m and keeps it at grade, so a demand-sized excess near a crossing is the model working.",
-      "samples": 388719,
+      "samples": 388720,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 1.0266666666666668,
       "threshold": 0.5,
       "title": "Solved at-grade road standing off its own ground",
-      "violation_pct": 0.1319719385983191,
+      "violation_pct": 0.13197159909446388,
       "violations": 513,
       "worst": 11.32714978528952
     },
@@ -126,7 +126,7 @@
       "invariant": "I8",
       "median": 0.006666666666667709,
       "offenders": [],
-      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 606480 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
+      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 607179 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
       "samples": 10409256,
       "sense": "higher_is_worse",
       "skipped": null,
@@ -136,6 +136,79 @@
       "violation_pct": 0.0,
       "violations": 0,
       "worst": 0.0
+    },
+    {
+      "id": "slope.rail_grade",
+      "invariant": "I2",
+      "median": -0.024062499999999987,
+      "offenders": [
+        {
+          "lat": 46.43662385,
+          "lon": 6.9107035,
+          "note": "narrow_gauge climbs at 77 % against its class ceiling of 7 % (solved to 7 %)",
+          "value": 0.6981503359481478,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4023493,
+          "lon": 6.9275296,
+          "note": "standard_gauge climbs at 69 % against its class ceiling of 3 % (solved to 3 %)",
+          "value": 0.6622451931531302,
+          "zoom": 16
+        },
+        {
+          "lat": 46.436747491666665,
+          "lon": 6.9106907500000005,
+          "note": "narrow_gauge climbs at 64 % against its class ceiling of 7 % (solved to 7 %)",
+          "value": 0.5745887358433268,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40167285,
+          "lon": 6.927241,
+          "note": "standard_gauge climbs at 57 % against its class ceiling of 3 % (solved to 3 %)",
+          "value": 0.5387704669361495,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40227994999999,
+          "lon": 6.9274515999999995,
+          "note": "standard_gauge climbs at 55 % against its class ceiling of 3 % (solved to 3 %)",
+          "value": 0.5221423281389759,
+          "zoom": 16
+        },
+        {
+          "lat": 46.442887125,
+          "lon": 6.97685605,
+          "note": "narrow_gauge climbs at 54 % against its class ceiling of 7 % (solved to 30 %)",
+          "value": 0.46634695817394595,
+          "zoom": 16
+        },
+        {
+          "lat": 46.401666766666665,
+          "lon": 6.927287916666666,
+          "note": "standard_gauge climbs at 46 % against its class ceiling of 3 % (solved to 3 %)",
+          "value": 0.43222356615451174,
+          "zoom": 16
+        },
+        {
+          "lat": 46.454184,
+          "lon": 6.958616774999999,
+          "note": "narrow_gauge climbs at 44 % against its class ceiling of 7 % (solved to 13 %)",
+          "value": 0.36990524688903453,
+          "zoom": 16
+        }
+      ],
+      "population": "Consecutive solved-profile nodes (the solve's own ~8 m spacing, runs of at least 0.50 m) of every rail corridor whose class names a gauge or a system, over the heights the drawn line carries — the road at grade, the fitted ramp across structures — scored by grade in excess of the class's own §9 ceiling (signed: negative is margin). Model-side: from z13 the union paves the formation and deletes the stroke this walk used to ride, so the solve is the only place the alignment still exists as a line. Steps are clipped to the extract's bbox — assemble admits whole parquet row groups, so corridors spill past the zone into ground no DEM constrained, and a grade there scores the extraction boundary. Street-running and `unknown` rail are excluded: draped by design (§4.6), they hold no ceiling to measure against, and counting them would score the class table rather than the solve.",
+      "samples": 9425,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 0.24968750000000006,
+      "threshold": 0.2,
+      "title": "Drawn railway grade over its class ceiling",
+      "violation_pct": 0.9655172413793104,
+      "violations": 91,
+      "worst": 0.6981503359481478
     },
     {
       "id": "crossing.orphan",
