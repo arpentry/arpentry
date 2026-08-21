@@ -52,6 +52,11 @@ arpentry_tiler ... --verify-model data/overture-ch/preview.arpa.model.json
 arpentry_verify preview.arpa --model data/overture-ch/preview.arpa.model.json \
     --baseline server/verify/baseline-montreux-z16.json
 
+# And the rungs the detail zoom cannot see: everything per-zoom is correct at
+# z_ref by construction, so a broken correction only shows out here (§9).
+arpentry_verify preview.arpa --zoom 13,14,15 \
+    --baseline server/verify/baseline-montreux-coarse.json
+
 # What is happening at the place that looks wrong?
 arpentry_verify preview.arpa --at 6.9290,46.4200
 
@@ -618,6 +623,14 @@ Re-mine after retiling a different extract; the sites are extract-specific.
 `data/overture-ch/preview.arpa` at z16. It is not a statement that the scene is
 correct — it records what was true when it was written, including the deviations
 that are known and accepted. Its job is to make the *next* change legible.
+
+`server/verify/baseline-montreux-coarse.json` is the same archive over
+`--zoom 13,14,15`, and it exists because the detail rung cannot see the rung
+problems. Everything per-zoom — the terrain lattice, the structure datum, a
+foundation's contact with the drawn ground — is by construction *correct at
+z_ref and only there*, so a defect in the correction is invisible to a z16
+baseline. `contact.building_seat` was 49.7 % over at z13 while reading 0.012 %
+at z16; nothing gated it. Cut both, and diff both.
 
 Regenerate with `--json`, and say in the commit message which numbers moved and
 why.

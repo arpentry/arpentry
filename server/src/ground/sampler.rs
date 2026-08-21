@@ -99,6 +99,12 @@ impl GroundSampler {
         self.dem.is_some()
     }
 
+    /// The reference rung: the zoom whose lattice the solve was anchored to,
+    /// and the one every per-zoom correction is stated against.
+    pub fn z_ref(&self) -> u8 {
+        self.z_ref
+    }
+
     /// The engineered ground height at `(lon, lat)`, sampling the DEM at zoom
     /// `z`. Zero without a DEM (the flat parity world).
     pub fn ground(&mut self, lon: f64, lat: f64, z: u8) -> f64 {

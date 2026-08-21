@@ -894,15 +894,40 @@ const GROUND_RELIEF_KEY: &str = "ground_relief";
 /// ground (see `building_mesh`). Sampling every footprint vertex captures that
 /// spread; the bbox centre alone cannot. POIs are points, so a single centre
 /// sample is their anchor.
+///
+/// **The sample is the ground that is drawn at this zoom, not the ground
+/// function.** A foundation is a contact: it is right when the surface the
+/// viewer sees meets it, and away from the reference rung those are two
+/// different heights. The ground stack is exact everywhere; the drawn terrain
+/// is a lattice whose cell is 150 m across at z13, so on a flank the two part
+/// company by tens of metres and the building either floats over daylight or
+/// is swallowed to the eaves — `contact.building_seat` reads 51.9 % over at
+/// z13 against 0.009 % at z16, and the check's own note names this pair as the
+/// only thing it can see. Structures answered the same question with the
+/// per-zoom datum (`synth::datum`); a building has no span to shift along, so
+/// it simply reads the rendered lattice ([`GroundSampler::surface`]) through
+/// the tile that contains each vertex — a global function of the zoom, so
+/// every tile that holds a fragment of the footprint stamps it identically
+/// (invariant 5). At the reference rung the mesh is the breakline
+/// triangulation rather than the lattice, and there the stack *is* what is
+/// drawn, so nothing changes.
 fn stamp_elevations(buckets: &mut [Vec<EncoderFeature>], sampler: &mut GroundSampler, z: u8) {
     if !sampler.has_elevation() {
         return;
     }
+    let z_ref = sampler.z_ref();
+    let drawn = |sampler: &mut GroundSampler, lon: f64, lat: f64| {
+        if z >= z_ref {
+            return sampler.ground(lon, lat, z);
+        }
+        let tile = solve::tile_containing(z, lon, lat);
+        sampler.surface(&tile, lon, lat, z)
+    };
 
     for f in &mut buckets[layers::BUILDING as usize] {
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
         clip::for_each_coord(&f.geometry, &mut |c| {
-            let e = sampler.ground(c.x, c.y, z);
+            let e = drawn(sampler, c.x, c.y);
             lo = lo.min(e);
             hi = hi.max(e);
         });
@@ -916,10 +941,12 @@ fn stamp_elevations(buckets: &mut [Vec<EncoderFeature>], sampler: &mut GroundSam
         }
     }
 
+    // A label anchor is a contact too: it belongs on the ground being drawn
+    // under it, for the same reason and by the same rule.
     for f in &mut buckets[layers::POI as usize] {
         if let Some((min_x, min_y, max_x, max_y)) = clip::bbox(&f.geometry) {
             let (lon, lat) = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0);
-            f.elevation = Some(sampler.ground(lon, lat, z));
+            f.elevation = Some(drawn(sampler, lon, lat));
         }
     }
 }
