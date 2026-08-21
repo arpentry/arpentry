@@ -54,13 +54,6 @@
       "median": 0.013333333333333334,
       "offenders": [
         {
-          "lat": 46.4386354,
-          "lon": 6.9149456,
-          "note": "Road(Service) at grade 15.2 m above its reference ground, 12.7 m past the 2.5 m this class is built on",
-          "value": 12.68922023633786,
-          "zoom": 16
-        },
-        {
           "lat": 46.4963625,
           "lon": 6.7208035,
           "note": "Road(Tertiary) at grade 14.0 m above its reference ground, 11.5 m past the 2.5 m this class is built on",
@@ -96,30 +89,37 @@
           "zoom": 16
         },
         {
-          "lat": 46.4388238,
-          "lon": 6.9149716,
-          "note": "Road(Service) at grade 13.8 m above its reference ground, 11.3 m past the 2.5 m this class is built on",
-          "value": 11.27614270081591,
+          "lat": 46.4386541,
+          "lon": 6.9147159,
+          "note": "Road(Service) at grade 13.2 m above its reference ground, 10.7 m past the 2.5 m this class is built on",
+          "value": 10.705770737580906,
           "zoom": 16
         },
         {
-          "lat": 46.4386832,
-          "lon": 6.9150367,
-          "note": "Road(Service) at grade 13.3 m above its reference ground, 10.8 m past the 2.5 m this class is built on",
-          "value": 10.836245239855657,
+          "lat": 46.4386525,
+          "lon": 6.914625,
+          "note": "Road(Residential) at grade 13.1 m above its reference ground, 10.6 m past the 2.5 m this class is built on",
+          "value": 10.581230531612846,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4966189,
+          "lon": 6.7206937,
+          "note": "Road(Residential) at grade 12.8 m above its reference ground, 10.3 m past the 2.5 m this class is built on",
+          "value": 10.318045284315758,
           "zoom": 16
         }
       ],
       "population": "Every node of every solved profile that the *reconciled* partition leaves at grade, in every stratum, water excluded. Scored by how far the solved road stands from the conditioned terrain reference — in either direction, since a road buried under its own hillside is the same defect upside down — less the class deviation budget, so 0.0 means within the cut and fill the class is built on. Structure nodes are outside the population by definition. Known legitimate tail: a clearance lift raises an at-grade road over a crossing by up to 15 m and keeps it at grade, so a demand-sized excess near a crossing is the model working.",
-      "samples": 388377,
+      "samples": 388369,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 0.76,
+      "tail": 0.7333333333333334,
       "threshold": 0.5,
       "title": "Solved at-grade road standing off its own ground",
-      "violation_pct": 0.11844161729453598,
-      "violations": 460,
-      "worst": 12.68922023633786
+      "violation_pct": 0.1163841604247507,
+      "violations": 452,
+      "worst": 11.51145264968693
     },
     {
       "id": "ground.footprint",
