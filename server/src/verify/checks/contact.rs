@@ -172,12 +172,20 @@ const RAIL_STANDOFF_M: f64 = 2.0;
 /// How close a drawn structure surface must be to a rail stroke, vertically,
 /// for the stroke to be *on* it.
 ///
-/// The population trap this closes: a structure span emits its paint stroke
-/// before the level ordinal is attached to the properties (`pipeline.rs`), so
-/// the stroke over a viaduct arrives in the archive at level 0 and metres above
-/// the ground — which is what a viaduct is for. Counting those would measure
-/// the emit order rather than the defect, and on the Montreux extract they are
-/// 19,993 of the level-0 vertices.
+/// The population trap this first closed was an emit-order bug: a structure
+/// span emitted its paint stroke *before* the level ordinal was attached
+/// (`pipeline.rs`), so the stroke over a viaduct arrived in the archive at
+/// level 0 and metres above the ground — 19,993 of the level-0 vertices on the
+/// Montreux extract. That bug is fixed (the ordinal is attached first), and the
+/// guard was flagged for removal on the assumption its population had gone
+/// empty with it.
+///
+/// **Measured, it has not, and the guard stays.** Turned off, the coarse rungs
+/// gain 47 vertices at z12 and 15 at z11 — strokes riding their own deck
+/// solids, which is not a formation floating over the ground however far above
+/// it they are. The rate barely moves (6.674 → 6.781 % at z12) and the worst
+/// not at all, so this is a correctness guard rather than a number: what it
+/// removes is a different class, not a tail.
 const RAIL_ON_DECK_M: f64 = 1.0;
 
 pub struct Contact {
