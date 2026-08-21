@@ -82,6 +82,7 @@ fn reconcile_stratum(
     profiles: &mut [Option<Profile>],
     stratum: Stratum,
     reaches: &[Vec<(f64, f64)>],
+    carried: &[Vec<(f64, f64)>],
     covered: &[Vec<(f64, f64)>],
     sites: &[Vec<crossings::PlanCrossing>],
     daylight: &mut Vec<Daylight>,
@@ -115,11 +116,12 @@ fn reconcile_stratum(
         let deck_follows_road = c.kind.prior().monotone
             && profile::monotone_direction(p.terrain_m()).is_some();
         let mut spans = std::mem::take(&mut c.spans);
-        if let Some(annexed) = portals::annex_spans(p, &spans, &reaches) {
+        let carried = carried.get(c.id as usize).cloned().unwrap_or_default();
+        if let Some(annexed) = portals::annex_spans(p, &spans, &reaches, &carried) {
             if debug_annex {
                 eprintln!("[annex] corridor {} {:?} annexed: {:?}", c.id, c.kind, annexed);
             }
-            for s in annexed.iter().filter(|s| s.kind == SpanKind::Tunnel) {
+            for s in annexed.iter().filter(|s| s.kind != SpanKind::Grade) {
                 p.annex_structure(s.arc0, s.arc1, deck_follows_road);
             }
             spans = annexed;
@@ -300,6 +302,11 @@ pub struct PlanPin {
     /// with the rest of the skeleton.
     pub lateral: Vec<Vec<(f64, f64, f64)>>,
     pub reaches: Vec<Vec<(f64, f64)>>,
+    /// The carrying license (`crossings::carried_crossings`): where a mapped
+    /// bridge span crosses an alignment annotated below it. Pinned with the
+    /// rest of the skeleton for the same reason `covered` is — it is a junior
+    /// alignment's *existence* classifying a senior's spans.
+    pub carried: Vec<Vec<(f64, f64)>>,
     pub over: Vec<Vec<bool>>,
 }
 
@@ -337,9 +344,11 @@ pub fn run_licensed(
         }
         return Ok(SolvedModel::empty(z_ref));
     };
-    let (pin_over, pin_covered, pin_reaches, pin_lateral) = match licenses {
-        Some(p) => (Some(p.over), Some(p.covered), Some(p.reaches), Some(p.lateral)),
-        None => (None, None, None, None),
+    let (pin_over, pin_covered, pin_reaches, pin_carried, pin_lateral) = match licenses {
+        Some(p) => {
+            (Some(p.over), Some(p.covered), Some(p.reaches), Some(p.carried), Some(p.lateral))
+        }
+        None => (None, None, None, None, None),
     };
     // One primary DEM handle; the reconcile pass and every solve worker fork
     // it to share the decoded-tile cache.
@@ -449,6 +458,9 @@ pub fn run_licensed(
     };
     let reaches =
         pin_reaches.unwrap_or_else(|| plan.iter().map(|l| crossings::reaches(l)).collect());
+    // The carrying license, the mirror of `covered`: where a mapped deck
+    // crosses an alignment annotated beneath it, and so must span its band.
+    let carried = pin_carried.unwrap_or_else(|| crossings::carried_crossings(scene, &plan));
     // Every stratum with members, in authority order — including D. A draped
     // feature has no business in the scene at all (§4.2), and after M2 none
     // is, except the railway `paves_today` still admits as a street. Skipping
@@ -501,6 +513,7 @@ pub fn run_licensed(
             &mut profiles,
             stratum,
             &reaches,
+            &carried,
             &covered,
             &sites,
             &mut daylight,

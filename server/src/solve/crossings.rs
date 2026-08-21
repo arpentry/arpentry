@@ -287,6 +287,65 @@ pub fn covered_bores(scene: &SceneGraph, plan: &[Vec<PlanCrossing>]) -> Vec<Vec<
         .collect()
 }
 
+/// Per corridor, the `(arc, clear_m)` of every crossing a mapped **bridge**
+/// span makes with an alignment annotated below it — the carrying license, and
+/// the exact mirror of [`covered_bores`].
+///
+/// A deck is mapped to its own length; the feature under it is as wide as that
+/// feature, divided by the sine of the crossing angle. Where the second
+/// exceeds the first, the deck's own at-grade formation is drawn over the
+/// lower band with nothing between them — three 10 m rail decks over one road
+/// cut at Burier, `order.grade_stack` 100 % over on 157 samples (S17). So
+/// [`super::portals::annex_spans`] grows the deck through the band it carries,
+/// and this is the list it may grow through.
+///
+/// The gate is the level ordinals and nothing else, for the same reason the
+/// burial license uses them: the crossing side's warm start is not a fact
+/// (§4.1), and here the DEM cannot help either — the road under a rail bridge
+/// is a *solved* cut, so the raw surface at the deck's own position reads the
+/// ground the road has not yet dug. Crossings are kept when their band
+/// overlaps the span at all, because the ones that matter straddle its ends.
+pub fn carried_crossings(scene: &SceneGraph, plan: &[Vec<PlanCrossing>]) -> Vec<Vec<(f64, f64)>> {
+    let debug = std::env::var_os("ARPT_DEBUG_ANNEX").is_some();
+    scene
+        .corridors
+        .iter()
+        .map(|c| {
+            let mut out: Vec<(f64, f64)> = Vec::new();
+            for s in c.spans.iter().filter(|s| s.kind == SpanKind::Bridge) {
+                for x in &plan[c.id as usize] {
+                    if x.arc + x.clear_m < s.arc0 || x.arc - x.clear_m > s.arc1 {
+                        continue;
+                    }
+                    if level_at(scene, x.other, x.other_arc) >= s.level {
+                        continue;
+                    }
+                    if debug {
+                        eprintln!(
+                            "[carry] corridor {} {:?} bridge [{:.1}, {:.1}] level {} carries {} \
+                             ({:?} level {}) at {:.1} reach ±{:.1}",
+                            c.id,
+                            c.kind,
+                            s.arc0,
+                            s.arc1,
+                            s.level,
+                            x.other,
+                            kind_at(scene, x.other, x.other_arc),
+                            level_at(scene, x.other, x.other_arc),
+                            x.arc,
+                            x.clear_m
+                        );
+                    }
+                    out.push((x.arc, x.clear_m));
+                }
+            }
+            out.sort_by(|a, b| (a.0.to_bits(), a.1.to_bits()).cmp(&(b.0.to_bits(), b.1.to_bits())));
+            out.dedup();
+            out
+        })
+        .collect()
+}
+
 /// The gated sites behind [`covered_bores`], one [`PlanCrossing`] per place a
 /// mapped tunnel span is crossed by an at-grade band — shared with the
 /// `structure.bore_daylight` check so the measurement and the constraint can

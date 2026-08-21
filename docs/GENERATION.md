@@ -461,10 +461,20 @@ Two consequences are normative:
   measures the premise at exactly these sites.
 - **After a stratum solves, there is one span truth.** The annotation serves
   the solve as a prior; what survives the solve is the *reconciled* partition
-  — tunnel spans grown through the crossings their still-buried tails pass
-  beneath, then clamped to their buried runs, the freed slack re-covered as
-  grade, a tunnel with no buried run degraded end to end — written back into
-  the scene before any junior stratum or any consumer reads the spans.
+  — structure spans grown through the crossings they serve, then tunnels
+  clamped to their buried runs, the freed slack re-covered as grade, a tunnel
+  with no buried run degraded end to end — written back into the scene before
+  any junior stratum or any consumer reads the spans. **Both kinds of span
+  are mapped shorter than the crossing they serve**, because an annotation
+  edge is where a way was split: a bore's tail is still under the ground when
+  the feature above crosses it, and a deck is mapped to its own length while
+  the thing beneath it is as wide as *it* is, divided by the sine of the
+  crossing angle. Either way the structure's own at-grade band is drawn over
+  the other band with nothing between them, which is what `order.grade_stack`
+  counts; either way the span grows to cover the crossing feature's band, by
+  the level ordinals alone and by one band-reach at most. Two mirrored
+  licenses, `crossings::covered_bores` and `crossings::carried_crossings`,
+  and no height on either side of either.
   *Buried* is judged by the run's own geometry. Its interior is the line's:
   a gully crossing the alignment or a shore gallery whose cover thins mid-run
   never splits the run, because the line never daylights there — judged by

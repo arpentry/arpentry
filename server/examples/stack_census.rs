@@ -176,6 +176,77 @@ fn main() {
     println!("    annotation stopped short {short_annotation_m:8.1} m");
     println!("    reconcile shrank it back {shrunk_m:8.1} m");
 
+    // ---- part 3: decks shorter than the crossing they carry ----------------
+    // The bore annex's missing twin. A mapped deck ends where a mapper split
+    // the way; the band of the feature passing beneath is as wide as that
+    // feature, divided by the sine of the crossing angle. Where the second
+    // exceeds the first the deck's own formation band is drawn at grade over
+    // the lower band — annotation-only, so this is measured with no height.
+    // (shortfall_m, lon, lat, carrier, under, deck_len, reach)
+    let mut short_decks: Vec<(f64, f64, f64, u32, u32, f64, f64)> = Vec::new();
+    for c in &scene.corridors {
+        let Some(p) = solved.profile(c.id) else { continue };
+        for x in &plan[c.id as usize] {
+            let under = &scene.corridors[x.other as usize];
+            let my_level = c.spans.iter().find(|s| x.arc >= s.arc0 && x.arc <= s.arc1).map(|s| s.level);
+            let their_level = under
+                .spans
+                .iter()
+                .find(|s| x.other_arc >= s.arc0 && x.other_arc <= s.arc1)
+                .map_or(0, |s| s.level);
+            let Some(0..) = my_level else { continue };
+            if my_level.unwrap_or(0) <= their_level {
+                continue; // not carried over this one
+            }
+            // The deck this crossing belongs to, if any: the Bridge span
+            // containing it or ending nearest it.
+            let Some(deck) = c
+                .spans
+                .iter()
+                .filter(|s| s.kind == SpanKind::Bridge)
+                .min_by(|a, b| {
+                    let d = |s: &Span| {
+                        if x.arc >= s.arc0 && x.arc <= s.arc1 {
+                            0.0
+                        } else {
+                            (s.arc0 - x.arc).abs().min((s.arc1 - x.arc).abs())
+                        }
+                    };
+                    d(a).total_cmp(&d(b))
+                })
+                // The crossing's own band must reach the deck: a crossing a
+                // span-length away is another span's business, or nobody's.
+                .filter(|s| x.arc + x.clear_m > s.arc0 && x.arc - x.clear_m < s.arc1)
+            else {
+                continue;
+            };
+            let short = (deck.arc0 - (x.arc - x.clear_m)).max(0.0)
+                + ((x.arc + x.clear_m) - deck.arc1).max(0.0);
+            if short <= 0.0 {
+                continue;
+            }
+            let pt = p.point_at_arc(x.arc);
+            if pt.x < bbox.west || pt.x > bbox.east || pt.y < bbox.south || pt.y > bbox.north {
+                continue;
+            }
+            short_decks.push((
+                short,
+                pt.x,
+                pt.y,
+                c.id,
+                x.other,
+                deck.arc1 - deck.arc0,
+                2.0 * x.clear_m,
+            ));
+            if dump == Some(c.id) {
+                println!(
+                    "  deck #{} [{:.1}, {:.1}] carries #{} at arc {:.1} reach ±{:.1} — short by {short:.1} m",
+                    c.id, deck.arc0, deck.arc1, x.other, x.arc, x.clear_m
+                );
+            }
+        }
+    }
+
     stacked.sort_by(|a, b| b.0.total_cmp(&a.0));
     println!(
         "\nSTACKED CROSSINGS ({} sites over {:.1} m, both sides level-0 grade)",
@@ -193,5 +264,18 @@ fn main() {
     println!("\nTOP 30 BY GAP");
     for (gap, lon, lat, up, lo, cause, detail) in stacked.iter().take(30) {
         println!("  {gap:7.2} m  {lon:.6},{lat:.6}  #{up} over #{lo}  {cause:16} {detail}");
+    }
+
+    short_decks.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let total: f64 = short_decks.iter().map(|s| s.0).sum();
+    println!(
+        "\nDECKS SHORTER THAN THE CROSSING THEY CARRY: {} of them, {total:.0} m of shortfall",
+        short_decks.len()
+    );
+    for (short, lon, lat, up, lo, len, reach) in short_decks.iter().take(25) {
+        println!(
+            "  short {short:6.1} m  {lon:.6},{lat:.6}  deck #{up} ({len:.0} m) over #{lo} \
+             (band reach {reach:.0} m)"
+        );
     }
 }

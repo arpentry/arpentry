@@ -127,12 +127,14 @@ pub fn inversion(m: &Model<'_>) -> Vec<Metric> {
                 solve::reference_surface(&mut dem, z, c.x, c.y)
             })
         };
+        let all_carried = solve::crossings::carried_crossings(&full, &plan);
         let all_over = solve::crossings::spans_over_a_mapped_line(&full);
         let kept = keeps.iter().flatten().count();
         let mut pin = solve::PlanPin {
             covered: vec![Vec::new(); kept],
             lateral: vec![Vec::new(); kept],
             reaches: vec![Vec::new(); kept],
+            carried: vec![Vec::new(); kept],
             over: vec![Vec::new(); kept],
         };
         for (old, new) in keeps.iter().enumerate() {
@@ -141,6 +143,7 @@ pub fn inversion(m: &Model<'_>) -> Vec<Metric> {
                 pin.lateral[*new as usize] = all_lateral.get(old).cloned().unwrap_or_default();
                 pin.reaches[*new as usize] =
                     plan.get(old).map(|l| solve::crossings::reaches(l)).unwrap_or_default();
+                pin.carried[*new as usize] = all_carried.get(old).cloned().unwrap_or_default();
                 pin.over[*new as usize] = all_over.get(old).cloned().unwrap_or_default();
             }
         }

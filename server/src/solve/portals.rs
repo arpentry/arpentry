@@ -420,115 +420,158 @@ pub fn absorb_hanging_approaches(
     }
 }
 
-/// Tunnel spans extended through the crossings their still-buried tails pass
-/// beneath — the *growing* half of portal placement. Both halves run in the
+/// Extends span `i` forward to `target`, eating the grade spans in the way.
+/// A mapped bridge or bore is a boundary the annex never moves. Returns
+/// whether the span's end actually shifted.
+fn grow_high(out: &mut [Span], i: usize, target: f64) -> bool {
+    if target <= out[i].arc1 {
+        return false;
+    }
+    let mut a1 = out[i].arc1;
+    for s in out.iter_mut().skip(i + 1) {
+        if s.arc1 - s.arc0 <= f64::EPSILON {
+            continue; // already eaten by an earlier annex
+        }
+        if s.kind != SpanKind::Grade || a1 >= target {
+            break;
+        }
+        if s.arc1 - target < MIN_ANNEX_STUB_M {
+            a1 = s.arc1; // the whole span, rather than leaving a sliver
+            s.arc0 = s.arc1;
+        } else {
+            a1 = target;
+            s.arc0 = target;
+        }
+    }
+    let moved = a1 > out[i].arc1;
+    out[i].arc1 = a1;
+    moved
+}
+
+/// [`grow_high`] mirrored onto the low side.
+fn grow_low(out: &mut [Span], i: usize, target: f64) -> bool {
+    if target >= out[i].arc0 {
+        return false;
+    }
+    let mut a0 = out[i].arc0;
+    for s in out[..i].iter_mut().rev() {
+        if s.arc1 - s.arc0 <= f64::EPSILON {
+            continue;
+        }
+        if s.kind != SpanKind::Grade || a0 <= target {
+            break;
+        }
+        if target - s.arc0 < MIN_ANNEX_STUB_M {
+            a0 = s.arc0;
+            s.arc1 = s.arc0;
+        } else {
+            a0 = target;
+            s.arc1 = target;
+        }
+    }
+    let moved = a0 < out[i].arc0;
+    out[i].arc0 = a0;
+    moved
+}
+
+/// Structure spans extended through the crossings they pass beneath or carry
+/// over — the *growing* half of span reconciliation. Both halves run in the
 /// per-stratum write-back (`solve::reconcile_stratum`): the annex first, then
 /// the shrinking half ([`reconcile_spans`]), and the result is written into
 /// the scene as the one span truth every consumer cuts (§4.5).
 ///
-/// An annotation edge is where a mapper split the segment (S5), and a bore
-/// whose tail is still below its own terrain when another mapped alignment
-/// crosses it has not emerged: the ground it must pierce includes that
-/// feature's band and bench. Left as annotated, the buried tail is paved as
-/// open formation — benched, holed, sheeted — sliding beneath the crossing
+/// An annotation edge is where a mapper split the segment (S5), not where the
+/// structure stops doing its job, and both kinds of span are mapped shorter
+/// than the crossing they serve.
+///
+/// **A bore whose tail is still below its own terrain when another mapped
+/// alignment crosses it has not emerged**: the ground it must pierce includes
+/// that feature's band and bench. Left as annotated, the buried tail is paved
+/// as open formation — benched, holed, sheeted — sliding beneath the crossing
 /// feature's band metres up, which is exactly the two-superposed-lines drawing
 /// the Collonge funicular made over the rack railway's short portal
-/// (`order.grade_stack` keeps the class dead).
-///
-/// The gate is deliberately double: the tail must be buried (the tube still
-/// fits under the ground — [`roof_gap`], searched by [`span_bounds`] out to
-/// [`PORTAL_MAX_M`]) *and*
+/// (`order.grade_stack` keeps the class dead). The gate is deliberately
+/// double: the tail must be buried (the tube still fits under the ground —
+/// [`roof_gap`], searched by [`span_bounds`] out to [`PORTAL_MAX_M`]) *and*
 /// crossed (`crossings::plan_crossings`). Burial alone would swallow the open
 /// trench approach of a flat-ground underpass (S6); a crossing alone is any
-/// street the line meets at grade. Each qualifying side extends to the last
-/// such crossing plus its `clear_m`, eating only neighbouring *grade* spans —
-/// a mapped bridge or a second bore is a boundary the annex never moves.
+/// street the line meets at grade.
 ///
-/// Returns `None` when nothing changed.
+/// **A deck is mapped to its own length, and the thing under it is as wide as
+/// it is** — divided by the sine of the crossing angle, which no mapper
+/// adjusts for. Where the lower feature's band straddles the deck's end, the
+/// deck's own *formation band* is drawn at grade over the lower band with
+/// nothing between them: three 10 m rail decks over one road cut at Burier
+/// (S17) leave 3.5 m of formation each hanging 6.6 m over the road. Censused
+/// over the Montreux zone, 23 decks are shorter than the crossing they carry,
+/// by 111 m in total. The gate here is the level ordinals — `carried` holds
+/// only the crossings a mapped alignment annotated *below* this span makes,
+/// the mirror of the burial license's "from above" — and the reach is one
+/// band, so a deck grows at most a `clear_m` at each end. No height is read
+/// on either side (§4.1); the DEM has no cut for the road anyway, because the
+/// road digs it.
+///
+/// Each qualifying side extends to the last such crossing plus its `clear_m`,
+/// eating only neighbouring *grade* spans. Returns `None` when nothing
+/// changed.
 pub fn annex_spans(
     profile: &Profile,
     spans: &[Span],
     crossings: &[(f64, f64)],
+    carried: &[(f64, f64)],
 ) -> Option<Vec<Span>> {
-    if crossings.is_empty() {
+    if crossings.is_empty() && carried.is_empty() {
         return None;
     }
     let total = *profile.arc().last()?;
     let mut out = spans.to_vec();
     let mut changed = false;
     for i in 0..out.len() {
-        if out[i].kind != SpanKind::Tunnel {
-            continue;
-        }
-        let Some((low, high)) = span_bounds(profile, &out[i]) else {
-            continue;
-        };
-        // High side: the buried run past the annotation edge, bounded by the
-        // true emergence when one exists and by the search reach when the run
-        // never surfaces (out of data, not out of the hill). A crossing
-        // qualifies when its *band* pokes past the span end — its centre may
-        // sit metres inside the annotation and the band still straddle the
-        // edge, which was the Collonge measurement: crossings 1.4 m inside a
-        // snapped span end, band reaching 4.4 m beyond it.
-        let tail_hi = high.unwrap_or(out[i].arc1 + PORTAL_MAX_M).min(total);
-        let mut target = out[i].arc1;
-        for &(x, clear) in crossings {
-            if x > out[i].arc0 && x <= tail_hi && x + clear > out[i].arc1 {
-                target = target.max((x + clear).min(total));
+        let (lo, hi) = match out[i].kind {
+            SpanKind::Grade => continue,
+            SpanKind::Bridge => {
+                // The lower feature's band must actually straddle the end:
+                // a crossing wholly inside the deck is already carried, and
+                // one wholly outside is another span's business.
+                let (a0, a1) = (out[i].arc0, out[i].arc1);
+                let lo = carried
+                    .iter()
+                    .filter(|&&(x, clear)| x - clear < a0 && x + clear > a0)
+                    .fold(a0, |t, &(x, clear)| t.min((x - clear).max(0.0)));
+                let hi = carried
+                    .iter()
+                    .filter(|&&(x, clear)| x - clear < a1 && x + clear > a1)
+                    .fold(a1, |t, &(x, clear)| t.max((x + clear).min(total)));
+                (lo, hi)
             }
-        }
-        if target > out[i].arc1 {
-            let mut a1 = out[i].arc1;
-            for s in out.iter_mut().skip(i + 1) {
-                if s.arc1 - s.arc0 <= f64::EPSILON {
-                    continue; // already eaten by an earlier annex
-                }
-                if s.kind != SpanKind::Grade || a1 >= target {
-                    break;
-                }
-                if s.arc1 - target < MIN_ANNEX_STUB_M {
-                    a1 = s.arc1; // the whole span, rather than leaving a sliver
-                    s.arc0 = s.arc1;
-                } else {
-                    a1 = target;
-                    s.arc0 = target;
-                }
-            }
-            if a1 > out[i].arc1 {
-                out[i].arc1 = a1;
-                changed = true;
-            }
-        }
-        // Low side, mirrored.
-        let tail_lo = low.unwrap_or(out[i].arc0 - PORTAL_MAX_M).max(0.0);
-        let mut target = out[i].arc0;
-        for &(x, clear) in crossings {
-            if x < out[i].arc1 && x >= tail_lo && x - clear < out[i].arc0 {
-                target = target.min((x - clear).max(0.0));
-            }
-        }
-        if target < out[i].arc0 {
-            let mut a0 = out[i].arc0;
-            for s in out[..i].iter_mut().rev() {
-                if s.arc1 - s.arc0 <= f64::EPSILON {
+            SpanKind::Tunnel => {
+                let Some((low, high)) = span_bounds(profile, &out[i]) else {
                     continue;
-                }
-                if s.kind != SpanKind::Grade || a0 <= target {
-                    break;
-                }
-                if target - s.arc0 < MIN_ANNEX_STUB_M {
-                    a0 = s.arc0;
-                    s.arc1 = s.arc0;
-                } else {
-                    a0 = target;
-                    s.arc1 = target;
-                }
+                };
+                // The buried run past the annotation edge, bounded by the true
+                // emergence when one exists and by the search reach when the
+                // run never surfaces (out of data, not out of the hill). A
+                // crossing qualifies when its *band* pokes past the span end —
+                // its centre may sit metres inside the annotation and the band
+                // still straddle the edge, which was the Collonge measurement:
+                // crossings 1.4 m inside a snapped span end, band reaching
+                // 4.4 m beyond it.
+                let tail_hi = high.unwrap_or(out[i].arc1 + PORTAL_MAX_M).min(total);
+                let tail_lo = low.unwrap_or(out[i].arc0 - PORTAL_MAX_M).max(0.0);
+                let (a0, a1) = (out[i].arc0, out[i].arc1);
+                let hi = crossings
+                    .iter()
+                    .filter(|&&(x, clear)| x > a0 && x <= tail_hi && x + clear > a1)
+                    .fold(a1, |t, &(x, clear)| t.max((x + clear).min(total)));
+                let lo = crossings
+                    .iter()
+                    .filter(|&&(x, clear)| x < a1 && x >= tail_lo && x - clear < a0)
+                    .fold(a0, |t, &(x, clear)| t.min((x - clear).max(0.0)));
+                (lo, hi)
             }
-            if a0 < out[i].arc0 {
-                out[i].arc0 = a0;
-                changed = true;
-            }
-        }
+        };
+        changed |= grow_high(&mut out, i, hi);
+        changed |= grow_low(&mut out, i, lo);
     }
     if !changed {
         return None;
@@ -802,7 +845,7 @@ mod tests {
             span(0.42 * len, 0.55 * len),
             Span { arc0: 0.55 * len, arc1: len, level: 0, kind: SpanKind::Grade },
         ];
-        let out = annex_spans(&p, &spans, &[(560.0, 6.0)]).expect("the span must grow");
+        let out = annex_spans(&p, &spans, &[(560.0, 6.0)], &[]).expect("the span must grow");
         assert_eq!(out.len(), 3, "the partition keeps its three spans: {out:?}");
         assert_eq!(out[1].kind, SpanKind::Tunnel);
         assert!((out[1].arc1 - 566.0).abs() < 1e-9, "portal past the crossing, got {}", out[1].arc1);
@@ -822,7 +865,7 @@ mod tests {
             span(0.42 * len, 0.55 * len),
             Span { arc0: 0.55 * len, arc1: len, level: 0, kind: SpanKind::Grade },
         ];
-        let out = annex_spans(&p, &spans, &[(545.0, 6.0)]).expect("the span must grow");
+        let out = annex_spans(&p, &spans, &[(545.0, 6.0)], &[]).expect("the span must grow");
         assert!((out[1].arc1 - 551.0).abs() < 1e-9, "portal past the band, got {}", out[1].arc1);
     }
 
@@ -837,7 +880,7 @@ mod tests {
             span(0.42 * len, 0.55 * len),
             Span { arc0: 0.55 * len, arc1: len, level: 0, kind: SpanKind::Grade },
         ];
-        assert!(annex_spans(&p, &spans, &[(700.0, 6.0)]).is_none());
+        assert!(annex_spans(&p, &spans, &[(700.0, 6.0)], &[]).is_none());
     }
 
     #[test]
@@ -851,7 +894,42 @@ mod tests {
             Span { arc0: 0.55 * len, arc1: 0.60 * len, level: 1, kind: SpanKind::Bridge },
             Span { arc0: 0.60 * len, arc1: len, level: 0, kind: SpanKind::Grade },
         ];
-        assert!(annex_spans(&p, &spans, &[(570.0, 6.0)]).is_none());
+        assert!(annex_spans(&p, &spans, &[(570.0, 6.0)], &[]).is_none());
+    }
+
+    #[test]
+    fn a_deck_grows_over_the_band_it_carries() {
+        // S17 at Burier: a 10 m rail deck over a road whose band reaches 7 m
+        // either side of the crossing. Mapped, the deck ends 2 m short at each
+        // end and the rail's own formation is drawn at grade over the road
+        // band. The reach is one band and no more — a crossing wholly inside
+        // the deck is already carried and moves nothing.
+        let (p, len) = hill();
+        let spans = vec![
+            Span { arc0: 0.0, arc1: 0.50 * len, level: 0, kind: SpanKind::Grade },
+            Span { arc0: 0.50 * len, arc1: 0.51 * len, level: 1, kind: SpanKind::Bridge },
+            Span { arc0: 0.51 * len, arc1: len, level: 0, kind: SpanKind::Grade },
+        ];
+        let out = annex_spans(&p, &spans, &[], &[(505.0, 7.0)]).expect("the deck must grow");
+        assert_eq!(out.len(), 3, "the partition keeps its three spans: {out:?}");
+        assert_eq!(out[1].kind, SpanKind::Bridge);
+        assert!((out[1].arc0 - 498.0).abs() < 1e-9, "low end over the band, got {}", out[1].arc0);
+        assert!((out[1].arc1 - 512.0).abs() < 1e-9, "high end over the band, got {}", out[1].arc1);
+        assert!(annex_spans(&p, &out, &[], &[(505.0, 4.0)]).is_none(), "a carried band moves nothing");
+    }
+
+    #[test]
+    fn a_deck_never_grows_over_a_crossing_it_does_not_reach() {
+        // The mirror of the tunnel's emergence test: a crossing a band-width
+        // clear of the deck is met on the embankment, and growing the deck to
+        // it would fly a structure over ground that carries it.
+        let (p, len) = hill();
+        let spans = vec![
+            Span { arc0: 0.0, arc1: 0.50 * len, level: 0, kind: SpanKind::Grade },
+            Span { arc0: 0.50 * len, arc1: 0.51 * len, level: 1, kind: SpanKind::Bridge },
+            Span { arc0: 0.51 * len, arc1: len, level: 0, kind: SpanKind::Grade },
+        ];
+        assert!(annex_spans(&p, &spans, &[], &[(560.0, 7.0)]).is_none());
     }
 
     #[test]
