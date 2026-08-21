@@ -126,7 +126,7 @@
       "invariant": "I8",
       "median": 0.006666666666667709,
       "offenders": [],
-      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 607585 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
+      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 607584 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
       "samples": 10409256,
       "sense": "higher_is_worse",
       "skipped": null,
@@ -143,41 +143,6 @@
       "median": 0.006666666666667709,
       "offenders": [
         {
-          "lat": 46.43365742,
-          "lon": 6.9211108800000005,
-          "note": "Road(Motorway) 3959 solved its structure here against 538.14 m; the ground                          drawn is 525.63 m",
-          "value": 12.509747145544452,
-          "zoom": 16
-        },
-        {
-          "lat": 46.433571658333335,
-          "lon": 6.920812124999999,
-          "note": "Road(Motorway) 3958 solved its structure here against 533.17 m; the ground                          drawn is 522.90 m",
-          "value": 10.277082631494068,
-          "zoom": 16
-        },
-        {
-          "lat": 46.42404691111111,
-          "lon": 6.930683877777778,
-          "note": "Road(Motorway) 3959 solved its structure here against 501.05 m; the ground                          drawn is 491.59 m",
-          "value": 9.45553691676838,
-          "zoom": 16
-        },
-        {
-          "lat": 46.454389400000004,
-          "lon": 6.96014418,
-          "note": "Rail(NarrowGauge) 20294 solved its structure here against 1067.75 m; the ground                          drawn is 1058.31 m",
-          "value": 9.435886555727393,
-          "zoom": 16
-        },
-        {
-          "lat": 46.4280176,
-          "lon": 6.9277203,
-          "note": "Rail(NarrowGauge) 20016 solved its structure here against 579.05 m; the ground                          drawn is 570.10 m",
-          "value": 8.950162455724126,
-          "zoom": 16
-        },
-        {
           "lat": 46.4338097,
           "lon": 6.916575,
           "note": "Road(Tertiary) 20059 solved its structure here against 425.39 m; the ground                          drawn is 434.28 m",
@@ -192,10 +157,45 @@
           "zoom": 16
         },
         {
-          "lat": 46.42395785,
-          "lon": 6.93031293,
-          "note": "Road(Motorway) 3958 solved its structure here against 497.97 m; the ground                          drawn is 490.32 m",
-          "value": 7.643975429093814,
+          "lat": 46.4286607,
+          "lon": 6.9235111,
+          "note": "Road(Tertiary) 19985 solved its structure here against 480.01 m; the ground                          drawn is 487.38 m",
+          "value": 7.369574276845526,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45536009999999,
+          "lon": 6.9417209,
+          "note": "Rail(Funicular) 20317 solved its structure here against 1017.70 m; the ground                          drawn is 1024.59 m",
+          "value": 6.8870324052476235,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40175606666667,
+          "lon": 6.927313766666667,
+          "note": "Rail(StandardGauge) 19490 solved its structure here against 375.68 m; the ground                          drawn is 382.48 m",
+          "value": 6.794417364929473,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43584833333333,
+          "lon": 6.911505633333333,
+          "note": "Rail(NarrowGauge) 19525 solved its structure here against 405.77 m; the ground                          drawn is 399.02 m",
+          "value": 6.754942504939493,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40232373333333,
+          "lon": 6.927518233333333,
+          "note": "Rail(StandardGauge) 19490 solved its structure here against 375.23 m; the ground                          drawn is 368.48 m",
+          "value": 6.749219682188027,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4366309,
+          "lon": 6.9107196,
+          "note": "Rail(NarrowGauge) 19525 solved its structure here against 401.43 m; the ground                          drawn is 394.77 m",
+          "value": 6.658395589225165,
           "zoom": 16
         }
       ],
@@ -203,12 +203,12 @@
       "samples": 2744,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 9.46,
+      "tail": 7.366666666666667,
       "threshold": 1.0,
       "title": "A structural decision taken against a ground nobody drew",
-      "violation_pct": 8.126822157434402,
-      "violations": 223,
-      "worst": 12.509747145544452
+      "violation_pct": 6.960641399416909,
+      "violations": 191,
+      "worst": 8.892394311680903
     },
     {
       "id": "slope.rail_grade",
@@ -289,7 +289,7 @@
       "median": 0.006666666666666667,
       "offenders": [],
       "population": "Every source connector touched by two or more distinct profiled corridors whose classes pave a surface — read from the corridors' own connector lists, ends and segment-interior attachments alike, not from the junction set, so a connector the assembler failed to junction still counts. Scored as the spread of the members' solved road heights at the connector's arc, clipped to the extract bbox. Zero is the weld holding; anything past the 0.5 m sheet separation is drawn as one surface floating over another.",
-      "samples": 2826,
+      "samples": 2830,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.1,
