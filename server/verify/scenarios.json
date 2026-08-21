@@ -51,6 +51,13 @@
       "source": "mined: at-grade road at 28 % grade — the steepest carriageway still plausible as a real road, where the correct action is to do nothing"
     },
     {
+      "id": "S17",
+      "lon": 6.8789,
+      "lat": 46.4477,
+      "zoom": 16,
+      "source": "hand-sited 2026-08-21: three standard-gauge lines crossing Chemin de Vau over the road's cut at Burier — each on a mapped deck 9–55 m long while the formation bands beside those decks still share the road band's plan position. order.grade_stack 157 samples, 100 % over, worst 6.69 m (rail formation 396.7 m over the road at 390.0 m, nothing between them): the half of the mouth family the burial license cannot reach, because neither side is annotated a bore"
+    },
+    {
       "id": "S20",
       "lon": 6.9149,
       "lat": 46.4386,
@@ -101,10 +108,6 @@
     {
       "id": "S16",
       "why": "Street-running tram. Needs modality in the archive: the transportation layer carries class and level, and a tram class is not yet distinguished from the street it lies on."
-    },
-    {
-      "id": "S17",
-      "why": "Railway over a road. Needs rail to be solved and drawn as its own surface; today an at-grade railway is not in the scene at all."
     },
     {
       "id": "S18",

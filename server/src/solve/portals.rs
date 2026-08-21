@@ -555,7 +555,25 @@ const MIN_ANNEX_STUB_M: f64 = 2.0;
 /// *past* the annotation is left to the bore sweep's own outward march, where
 /// the neighbouring span's paint simply passes under the ground it is buried
 /// by.
-pub fn reconcile_spans(profile: &Profile, spans: &[Span]) -> Vec<Span> {
+///
+/// **The shrink stops at the burial license.** `covered` carries this
+/// corridor's covered-crossing windows — the §4.5 license
+/// (`crossings::covered_bores`) that seeded the bore's ceilings and that
+/// [`annex_spans`] grew the span through — and no arc inside one is ever
+/// re-covered as grade. The buried run is measured against the *reference*
+/// surface, and inside a licensed window that surface is the open cutting the
+/// crossing feature bridges or embanks over: the ground the tube must fit
+/// under there is that feature's roadbed, which the DEM does not carry. Judged
+/// by the reference alone, the shrink undid the annex the same sweep it ran —
+/// a service road's 12 m underpass at Clarens (6.9165,46.4305) came back out
+/// as 2 m of tube between two open trenches, and the Veytaux shore line's
+/// portal tail was paved as open formation 13.5 m under the primary road
+/// crossing above it. That is the superposition `order.grade_stack` counts,
+/// and it was 61 % of the metric's violations over the Montreux extract.
+/// The license is annotation-only on both sides, so this reads no junior's
+/// solved height (§4.1); it decides only whether a stretch is *drawn* open,
+/// never how deep the profile runs.
+pub fn reconcile_spans(profile: &Profile, spans: &[Span], covered: &[(f64, f64)]) -> Vec<Span> {
     /// Shortest grade stub worth emitting, in metres — below this the piece
     /// quantizes away.
     const MIN_STUB_M: f64 = 0.25;
@@ -566,16 +584,31 @@ pub fn reconcile_spans(profile: &Profile, spans: &[Span]) -> Vec<Span> {
             out.push(*s);
             continue;
         }
-        let Some((low, high)) = span_bounds(profile, s) else {
+        // The licensed part of this span, if any: one interval, so a window
+        // straddling a thin-cover dip cannot split one tunnel into two (the
+        // reason [`span_bounds`] spans its dips as well).
+        let licensed = covered
+            .iter()
+            .map(|&(w0, w1)| (w0.max(s.arc0), w1.min(s.arc1)))
+            .filter(|(l0, l1)| l1 > l0)
+            .fold(None, |acc: Option<(f64, f64)>, (l0, l1)| {
+                Some(acc.map_or((l0, l1), |(a, b)| (a.min(l0), b.max(l1))))
+            });
+        let fitted = span_bounds(profile, s)
+            .map(|(low, high)| {
+                (low.map_or(s.arc0, |a| a.max(s.arc0)), high.map_or(s.arc1, |a| a.min(s.arc1)))
+            })
+            .filter(|(a0, a1)| a1 - a0 >= MIN_STUB_M);
+        let kept = match (fitted, licensed) {
+            (Some((a0, a1)), Some((l0, l1))) => Some((a0.min(l0), a1.max(l1))),
+            (Some(f), None) => Some(f),
+            (None, Some(l)) => Some(l),
+            (None, None) => None,
+        };
+        let Some((a0, a1)) = kept.filter(|(a0, a1)| a1 - a0 >= MIN_STUB_M) else {
             out.push(Span { level: 0, kind: SpanKind::Grade, ..*s });
             continue;
         };
-        let a0 = low.map_or(s.arc0, |a| a.max(s.arc0));
-        let a1 = high.map_or(s.arc1, |a| a.min(s.arc1));
-        if a1 - a0 < MIN_STUB_M {
-            out.push(Span { level: 0, kind: SpanKind::Grade, ..*s });
-            continue;
-        }
         if a0 - s.arc0 > MIN_STUB_M {
             out.push(Span { arc0: s.arc0, arc1: a0, level: 0, kind: SpanKind::Grade });
         }
@@ -843,7 +876,7 @@ mod tests {
             span(0.40 * len, 0.62 * len),
             Span { arc0: 0.62 * len, arc1: len, level: 0, kind: SpanKind::Grade },
         ];
-        let out = reconcile_spans(&p, &spans);
+        let out = reconcile_spans(&p, &spans, &[]);
         assert_eq!(out.len(), 4, "tunnel + freed high-side stub: {out:?}");
         assert_eq!(out[1].kind, SpanKind::Tunnel);
         assert!((out[1].arc0 - 0.40 * len).abs() < 1e-9, "low side stays annotated");
@@ -853,13 +886,42 @@ mod tests {
     }
 
     #[test]
+    fn the_shrink_does_not_take_back_what_the_burial_license_holds() {
+        // The same annotation and the same geometry as above, but another
+        // mapped alignment's band crosses the freed stub at 617 m. The
+        // reference surface there is the cutting that alignment bridges or
+        // embanks over, so the roof-fit run ends at 612.5 and the shrink used
+        // to pave the last 7.5 m as open formation directly under the
+        // crossing band — the Clarens underpass and the Veytaux shore line,
+        // and 61 % of `order.grade_stack`'s violations over Montreux.
+        let (p, len) = hill();
+        let spans = vec![
+            Span { arc0: 0.0, arc1: 0.40 * len, level: 0, kind: SpanKind::Grade },
+            span(0.40 * len, 0.62 * len),
+            Span { arc0: 0.62 * len, arc1: len, level: 0, kind: SpanKind::Grade },
+        ];
+        let out = reconcile_spans(&p, &spans, &[(611.0, 623.0)]);
+        assert_eq!(out.len(), 3, "no stub is freed under the crossing: {out:?}");
+        assert_eq!(out[1].kind, SpanKind::Tunnel);
+        assert!(
+            (out[1].arc1 - 0.62 * len).abs() < 1e-9,
+            "the tunnel keeps the licensed arc, clamped to the annotation"
+        );
+        // A window past the annotation grows nothing: growing is the annex's
+        // half of the reconciliation, and it runs before this one.
+        let far = reconcile_spans(&p, &spans, &[(630.0, 660.0)]);
+        assert_eq!(far.len(), 4, "an unlicensed stub is still freed: {far:?}");
+        assert!((far[1].arc1 - 612.5).abs() < 10.0);
+    }
+
+    #[test]
     fn reconciled_flat_ground_tunnel_becomes_grade() {
         let cos_lat = 46.0_f64.to_radians().cos();
         let deg = 1000.0 / (DEG_M * cos_lat);
         let nodes: Vec<Coord> =
             (0..101).map(|i| Coord { x: 6.0 + deg * i as f64 / 100.0, y: 46.0 }).collect();
         let p = Profile::from_heights(&nodes, vec![100.0; 101], vec![95.0; 101]);
-        let out = reconcile_spans(&p, &[span(300.0, 700.0)]);
+        let out = reconcile_spans(&p, &[span(300.0, 700.0)], &[]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind, SpanKind::Grade, "nothing buried: paint it as road");
     }
@@ -998,7 +1060,7 @@ mod tests {
             .collect();
         let (mut p, spans) = hung(road, terrain);
         absorb_hanging_approaches(&mut p, &spans, false);
-        let out = reconcile_spans(&p, &spans);
+        let out = reconcile_spans(&p, &spans, &[]);
         assert_eq!(out.len(), 3, "the partition keeps three spans: {out:?}");
         let deck = &out[1];
         assert_eq!(deck.kind, SpanKind::Bridge);
@@ -1042,7 +1104,7 @@ mod tests {
             let inside = p.arc()[k] >= 225.0 && p.arc()[k] <= 275.0;
             g || inside
         }), "no node outside the mapped span may be absorbed");
-        let out = reconcile_spans(&p, &spans);
+        let out = reconcile_spans(&p, &spans, &[]);
         assert_eq!(out, before, "an embankment approach leaves the spans alone");
     }
 }

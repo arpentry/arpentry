@@ -486,7 +486,19 @@ Two consequences are normative:
   for. Cover stays a quality margin, measured by `clearance.bore_cover`; the
   elected crossing is the portal fact, and the mesh sweep, the portal cuts
   and the span truth all read it from one place
-  (`solve::portals::tube_fit_majority`, `solve::portals::span_bounds`). Every
+  (`solve::portals::tube_fit_majority`, `solve::portals::span_bounds`).
+  **The clamp stops where the burial license holds.** Both criteria are
+  measured against the reference surface, and inside a covered-crossing window
+  that surface is the cutting the crossing feature bridges or embanks over:
+  the ground the tube must fit under there is that feature's roadbed, which no
+  DEM carries. Handed the reference alone the clamp took back, on the same
+  sweep, exactly what the annex had just grown — a 12 m underpass at Clarens
+  came out as 2 m of tube between two open trenches, and the Veytaux shore
+  line's portal tail was paved as open formation 13.5 m beneath the road
+  crossing over it. So no arc a license covers is re-covered as grade. The
+  license is annotation-only on both sides, so this reads no junior's solved
+  height; it decides only whether a stretch is *drawn* open, never how deep
+  the profile runs. Every
   reader — the junior solves deciding "the senior is in a bore here", the
   bands, the benches, the sheets, the paint, the solids — cuts the same
   partition, so "the paint reconciled privately while the surfaces read the
@@ -582,7 +594,7 @@ A generator is adequate when it handles all of these. Each is a test scenario.
 | S14 | **Lakefront**: flat water, shoreline, roads and buildings at the edge | Water level as a constraint on the ground and its neighbours | Water surfaces, shoreline continuity | H imprint, then S (§4.3) |
 | S15 | **Level crossing**: road meets rail at grade | Neither — the two surfaces coincide | The equality case of vertical order; the one place two strata are known to touch | Equality constraint (§4.5) |
 | S16 | **Street-running tram** | The carriageway it lies on | Right-of-way classification: a rail modality with no authority | D stratum (§4.2) |
-| S17 | **Railway over a road** | The rail alignment; the road ducks under it | Authority independent of stacking | Authority ⟂ stacking (§4.1) |
+| S17 | **Railway over a road** | The rail alignment; the road ducks under it | Authority independent of stacking; and the *width* of the crossing — the mapped span covers the deck, the two bands overlap in plan well past it, and whichever side is short pours an at-grade band over an at-grade band | Authority ⟂ stacking (§4.1); span grown through the crossing it carries and never clamped back inside the license (§4.5) |
 | S18 | **Rack railway on a 45 % flank** | Its own steep ceiling, held tight to the ground | Per-class constraint shape; a senior datum that must not float | Priors (§9), datum float check (§8) |
 | S19 | **Aqueduct on a viaduct** | The structure carries the water | Back-edge handling: a senior modality carried by a junior structure | Back-edge rule (§4.6) |
 | S20 | **Slot gorge crossed at grade**: a notch too deep for the fill cap, crossed transversely by features the data says stay level | The rim-to-rim grade line; the gorge stays open beneath | The case between S1 and S9 — the data says level-across, the DEM says gorge, and splitting the difference dams the slot with 15 m walls | Notch-crossing span promotion (§4.5) |

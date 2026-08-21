@@ -70,11 +70,19 @@ pub struct Daylight {
 /// the bands read the same partition as the paint. The result is written into
 /// `scene.corridors[..].spans`: after this, there is exactly one span truth
 /// and every consumer — junior solves included — reads it.
+///
+/// The two halves read the *same* burial license `covered` that seeded the
+/// ceilings (`relax::seed_bore_ceilings`): the annex grows a span through the
+/// crossings its buried tail passes beneath, and the shrink may not take back
+/// what the license holds. Handed the reference surface alone, the shrink
+/// undid the annex on the same corridor in the same sweep, which is the
+/// superposition `order.grade_stack` counts.
 fn reconcile_stratum(
     scene: &mut SceneGraph,
     profiles: &mut [Option<Profile>],
     stratum: Stratum,
     reaches: &[Vec<(f64, f64)>],
+    covered: &[Vec<(f64, f64)>],
     sites: &[Vec<crossings::PlanCrossing>],
     daylight: &mut Vec<Daylight>,
 ) {
@@ -149,8 +157,10 @@ fn reconcile_stratum(
         portals::absorb_hanging_approaches(p, &spans, deck_follows_road);
         // Shrink to the geometry: each tunnel clamped to its buried run, the
         // freed annotation slack re-covered as painted grade, a tunnel with
-        // no buried run at all degraded end to end.
-        let reconciled = portals::reconcile_spans(p, &spans);
+        // no buried run at all degraded end to end — except where the burial
+        // license holds, which the reference surface cannot see.
+        let covered = covered.get(c.id as usize).map(Vec::as_slice).unwrap_or(&[]);
+        let reconciled = portals::reconcile_spans(p, &spans, covered);
         for g in reconciled.iter().filter(|s| s.kind == SpanKind::Grade) {
             for t in spans.iter().filter(|s| s.kind == SpanKind::Tunnel) {
                 let (lo, hi) = (g.arc0.max(t.arc0), g.arc1.min(t.arc1));
@@ -486,7 +496,15 @@ pub fn run_licensed(
         // one partition. The split this closes: paint reconciled privately at
         // emit while the surfaces read the annotation, so a dismissed tunnel
         // was stroked as a road over ground that never benched it.
-        reconcile_stratum(scene_mut, &mut profiles, stratum, &reaches, &sites, &mut daylight);
+        reconcile_stratum(
+            scene_mut,
+            &mut profiles,
+            stratum,
+            &reaches,
+            &covered,
+            &sites,
+            &mut daylight,
+        );
     }
 
     // The structures the result implies, derived once the heights are final.
