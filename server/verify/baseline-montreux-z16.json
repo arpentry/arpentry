@@ -1719,6 +1719,22 @@
       "worst": 0.0
     },
     {
+      "id": "contact.level_crossing",
+      "invariant": "I3",
+      "median": null,
+      "offenders": [],
+      "population": "Every plan crossing of two profiled corridors whose classes pave a surface,              where both sides' reconciled spans read grade and their solved surfaces lie              within 3.0 m — the model's own boundary for what is still a level              crossing rather than a grade separation. Pairs that *meet* are excluded by              `plan_index` itself, so this is crossings only, and the equality is owed              whether or not they share a connector.",
+      "samples": 0,
+      "sense": "higher_is_worse",
+      "skipped": "no at-grade plan crossings in this extract",
+      "tail": null,
+      "threshold": 0.15,
+      "title": "Two alignments crossing at grade, not coincident",
+      "violation_pct": 0.0,
+      "violations": 0,
+      "worst": null
+    },
+    {
       "id": "crossing.orphan",
       "invariant": "I3",
       "median": 0.006666666666667709,
@@ -1807,7 +1823,7 @@
       6.9818115234375,
       46.47216796875
     ],
-    "commit": "9f55d8e",
+    "commit": "3393dcd",
     "max_tiles": 4096,
     "spacing_m": 1.0,
     "tiles": 621,

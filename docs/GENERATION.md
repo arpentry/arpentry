@@ -685,6 +685,7 @@ check exists that would have found it.
 | I2 | `seam.*`, `slope.road_grade` | Shared nodes; consecutive centerline vertices | A non-zero step; a grade past the class ceiling |
 | I3 | `clearance.*`, `order.*` | Every derived crossing | Gap below `clearance(kind)`; inverted order |
 | I3 (at grade) | `contact.level_crossing` | Every same-level crossing | Road and rail surfaces not coincident |
+
 | I4 | `contact.*`, `clearance.deck_over_ground` | Structure ends, supports, building bases, portal mouths | A gap or an intersection outside the contact band |
 | I4 (fitted decks) | `contact.deck_seat` | The lower abutment of every deck fitted to the ground (§4.2, D) | A deck starting below the wall beside it — a footbridge beginning in the riverbed it crosses |
 | I4 (carried decks) | `contact.deck_carried` | Every fitted deck running along a solved one (§4.2, D) | A deck sunk below the structure carrying it — a sidewalk hanging under its own road bridge |

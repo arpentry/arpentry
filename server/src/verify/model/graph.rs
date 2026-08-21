@@ -23,6 +23,7 @@
 use std::collections::BTreeMap;
 
 use crate::priors::Surface;
+use crate::scene::SpanKind;
 use crate::verify::dist::Dist;
 use crate::verify::{Invariant, Metric, Offender, Sense, Worst};
 
@@ -38,6 +39,135 @@ use crate::synth::sheets::SHEET_SEPARATION_M;
 const RANGE_M: f64 = 64.0;
 
 pub fn check(m: &Model<'_>) -> Vec<Metric> {
+    let mut out = connector_step(m);
+    out.extend(level_crossing(m));
+    out
+}
+
+/// **S15, the equality case of vertical order** — the one row of
+/// GENERATION.md §8 that had no instrument.
+///
+/// Where two mapped alignments cross in plan and *both* are at grade there, the
+/// two surfaces are the same ground and must coincide. The solve says so twice
+/// over: `crossings::derive` deliberately leaves the same-level touching case
+/// alone ("that is an equality rather than an inequality, and it belongs with
+/// the strata"), and `graph::Contact` closes it — but only where the two share
+/// a connector. A road that crosses a railway at grade without a shared node
+/// gets nothing, and nothing measured whether that mattered.
+///
+/// The population is `crossings::plan_index`, which excludes the pairs that
+/// *meet* (`meets_here`), so every member of it is a genuine crossing rather
+/// than a junction. Scored as the two solved surfaces' disagreement at the
+/// crossing point, over the pairs whose reconciled spans both read `Grade`
+/// there. Beyond [`SEPARATION_M`] the model's own vocabulary stops calling it
+/// a level crossing — two surfaces that far apart at a plan intersection are
+/// grade-separated whatever the data says — so the population stops there too,
+/// and `order.grade_stack` owns what lies past it. Measuring both would report
+/// one defect twice.
+fn level_crossing(m: &Model<'_>) -> Vec<Metric> {
+    use crate::solve::crossings::{kind_at, plan_index, SEPARATION_M};
+    let mut dist = Dist::metres();
+    let mut worst = Worst::new(Sense::HigherIsWorse, 8);
+    let plan = plan_index(m.scene);
+    let (mut pairs, mut paved, mut both_grade, mut inside, mut separated) = (0, 0, 0, 0, 0);
+    for c in &m.scene.corridors {
+        let Some(p) = m.solved.profile(c.id) else { continue };
+        for x in &plan[c.id as usize] {
+            if x.other <= c.id {
+                continue; // each pair once, from the lower id
+            }
+            let Some(q) = m.solved.profile(x.other) else { continue };
+            let other = &m.scene.corridors[x.other as usize];
+            pairs += 1;
+            if c.kind.prior().surface == Surface::None
+                || other.kind.prior().surface == Surface::None
+            {
+                continue; // a drape has no surface of its own to coincide with
+            }
+            paved += 1;
+            if kind_at(m.scene, c.id, x.arc) != SpanKind::Grade
+                || kind_at(m.scene, x.other, x.other_arc) != SpanKind::Grade
+            {
+                continue;
+            }
+            both_grade += 1;
+            let pt = p.point_at_arc(x.arc);
+            if std::env::var_os("ARPT_DEBUG_LX").is_some() {
+                eprintln!(
+                    "[lx] at-grade crossing {:.6},{:.6}  {:?} {} x {:?} {}  step {:.2}  in-bbox {}",
+                    pt.x,
+                    pt.y,
+                    c.kind,
+                    c.id,
+                    other.kind,
+                    other.id,
+                    (q.road_at_arc(x.other_arc) - p.road_at_arc(x.arc)).abs(),
+                    m.bounds.contains(pt.x, pt.y)
+                );
+            }
+            if !m.bounds.contains(pt.x, pt.y) {
+                continue;
+            }
+            inside += 1;
+            let step = (q.road_at_arc(x.other_arc) - p.road_at_arc(x.arc)).abs();
+            if step > SEPARATION_M {
+                separated += 1;
+                continue; // grade-separated by the model's own definition
+            }
+            dist.push(step);
+            if step > LEVEL_CROSSING_M {
+                worst.offer(Offender {
+                    lon: pt.x,
+                    lat: pt.y,
+                    zoom: m.solved.z_ref,
+                    value: step,
+                    note: format!(
+                        "{:?} {} and {:?} {} cross at grade but solve {step:.2} m apart",
+                        c.kind, c.id, other.kind, other.id
+                    ),
+                });
+            }
+        }
+    }
+    if std::env::var_os("ARPT_DEBUG_LX").is_some() {
+        eprintln!(
+            "[lx] plan pairs {pairs}, paved {paved}, both grade {both_grade}, in bbox \
+             {inside}, separated {separated}"
+        );
+    }
+    vec![Metric {
+        id: "contact.level_crossing".into(),
+        invariant: Invariant::I3,
+        title: "Two alignments crossing at grade, not coincident".into(),
+        population: format!(
+            "Every plan crossing of two profiled corridors whose classes pave a surface,              where both sides' reconciled spans read grade and their solved surfaces lie              within {SEPARATION_M:.1} m — the model's own boundary for what is still a level              crossing rather than a grade separation. Pairs that *meet* are excluded by              `plan_index` itself, so this is crossings only, and the equality is owed              whether or not they share a connector."
+        ),
+        detail: format!(
+            "A road meeting a railway at grade is the one place two strata are known to              touch, and an equality is stronger than the inequality a grade separation              gets (§4.5). It is enforced only through a shared connector              (`solve::graph::Contact`); a crossing without one has nothing holding it, and              this is what sees that. Past {LEVEL_CROSSING_M:.2} m the two surfaces are drawn              as a step through the crossing."
+        ),
+        sense: Sense::HigherIsWorse,
+        threshold: LEVEL_CROSSING_M,
+        skipped: dist.is_empty().then(|| "no at-grade plan crossings in this extract".into()),
+        dist,
+        worst: worst.into_vec(),
+    }]
+}
+
+/// How far two surfaces that share a level crossing may solve apart before the
+/// equality has plainly not held.
+///
+/// Read off the population, which is only reachable outside the extract: the
+/// Montreux bbox contains **no at-grade plan crossing at all** — of 808 plan
+/// pairs, 799 pave a surface, 22 have both sides at grade, and every one of
+/// those 22 lies in the row-group spill beyond the bbox. Sorted, those 22
+/// separate cleanly: eight sit at or under 0.06 m — the weld holding, through
+/// a shared connector — then **nothing until 0.24 m**, then a spread to
+/// 1.06 m with one 6.97 m outlier that [`SEPARATION_M`] excludes as a grade
+/// separation. This sits in that gap. A quarter of a metre, the first number
+/// tried, falls *inside* the failing cluster and would pass a 0.24 m step.
+const LEVEL_CROSSING_M: f64 = 0.15;
+
+fn connector_step(m: &Model<'_>) -> Vec<Metric> {
     // Every (corridor, arc) touching each connector, over the corridors whose
     // class paves a surface and whose profile solved. A BTreeMap so the walk
     // order is a function of the model, never of hashing (invariant 5).
