@@ -111,14 +111,14 @@
         }
       ],
       "population": "Every node of every solved profile that the *reconciled* partition leaves at grade, in every stratum, water excluded. Scored by how far the solved road stands from the conditioned terrain reference — in either direction, since a road buried under its own hillside is the same defect upside down — less the class deviation budget, so 0.0 means within the cut and fill the class is built on. Structure nodes are outside the population by definition. Known legitimate tail: a clearance lift raises an at-grade road over a crossing by up to 15 m and keeps it at grade, so a demand-sized excess near a crossing is the model working.",
-      "samples": 388425,
+      "samples": 388377,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 0.8133333333333334,
+      "tail": 0.76,
       "threshold": 0.5,
       "title": "Solved at-grade road standing off its own ground",
-      "violation_pct": 0.1202291304627663,
-      "violations": 467,
+      "violation_pct": 0.11844161729453598,
+      "violations": 460,
       "worst": 12.68922023633786
     },
     {
