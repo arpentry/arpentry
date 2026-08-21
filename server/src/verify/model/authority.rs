@@ -109,16 +109,36 @@ pub fn inversion(m: &Model<'_>) -> Vec<Metric> {
         let full = clone_scene(m.scene);
         let plan = solve::crossings::plan_index(&full);
         let all_covered = solve::crossings::covered_bores(&full, &plan);
+        // The parallel-overlap license carries a raw-DEM surface per window —
+        // input data, but derived from junior alignments' existence, so it is
+        // pinned with the rest of the skeleton (deleting the juniors would
+        // delete their license and read the seniors' rise as a violation).
+        let all_lateral = {
+            let Ok(mut dem) = crate::dem::Dem::open(terrain) else {
+                out.push(skipped(
+                    &format!("authority.inversion_{name}"),
+                    Invariant::I7,
+                    "DEM unreadable for the lateral license pin",
+                ));
+                continue;
+            };
+            let z = m.solved.z_ref;
+            solve::crossings::lateral_cover(&full, &mut |c: geo_types::Coord| {
+                solve::reference_surface(&mut dem, z, c.x, c.y)
+            })
+        };
         let all_over = solve::crossings::spans_over_a_mapped_line(&full);
         let kept = keeps.iter().flatten().count();
         let mut pin = solve::PlanPin {
             covered: vec![Vec::new(); kept],
+            lateral: vec![Vec::new(); kept],
             reaches: vec![Vec::new(); kept],
             over: vec![Vec::new(); kept],
         };
         for (old, new) in keeps.iter().enumerate() {
             if let Some(new) = new {
                 pin.covered[*new as usize] = all_covered.get(old).cloned().unwrap_or_default();
+                pin.lateral[*new as usize] = all_lateral.get(old).cloned().unwrap_or_default();
                 pin.reaches[*new as usize] =
                     plan.get(old).map(|l| solve::crossings::reaches(l)).unwrap_or_default();
                 pin.over[*new as usize] = all_over.get(old).cloned().unwrap_or_default();

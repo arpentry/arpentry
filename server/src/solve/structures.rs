@@ -215,7 +215,7 @@ fn coalesce(runs: &mut Vec<StructureRun>) {
 /// Whether a run is long enough to be a real structure, or short but over
 /// ground that genuinely falls away.
 fn plausible(p: &Profile, prior: &Prior, r: &StructureRun) -> bool {
-    if r.arc1 - r.arc0 >= prior.min_structure_m.max(MIN_STRUCTURE_M).min(MIN_STRUCTURE_M) {
+    if r.arc1 - r.arc0 >= prior.min_structure_m.min(MIN_STRUCTURE_M) {
         return true;
     }
     // The deep-gully case: a short span over a real ravine is a real bridge,

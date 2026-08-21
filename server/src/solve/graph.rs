@@ -91,6 +91,15 @@ pub struct CorridorNodes {
     /// then draw a storey apart with neither a bore nor a deck between them
     /// (`structure.bore_daylight`).
     pub covered: Vec<bool>,
+    /// Per [`tunnel`](Self::tunnel) node, the covering surface of a mapped
+    /// alignment running **lengthwise above** the bore
+    /// ([`super::crossings::lateral_cover`], S21) — the parallel-overlap half
+    /// of the burial license. `Some(surface_m)` carries the raw surface at
+    /// the covering alignment's own position: a street downhill of the bore
+    /// line reads lower there than at the bore's centerline, which is exactly
+    /// why the own-terrain ceiling left the Vernex-Dessus gallery roof
+    /// standing 6.5 m out of the carved ground.
+    pub lateral: Vec<Option<f64>>,
     /// The direction a monotone class climbs (`+1.0` toward the last node,
     /// `-1.0` toward the first), read from the *bed* at the corridor's ends —
     /// never from the solved heights, which are exactly what the constraint
@@ -264,6 +273,7 @@ pub fn build(
     crossings: &[crate::scene::Crossing],
     stratum: Stratum,
     covered: &[Vec<(f64, f64)>],
+    lateral: &[Vec<(f64, f64, f64)>],
 ) -> SolveGraph {
     let stratum_of = |id: CorridorId| scene.corridors[id as usize].kind.stratum();
     let member = |id: CorridorId| stratum_of(id) == stratum;
@@ -490,6 +500,28 @@ pub fn build(
                 }
             }
         }
+        // The lateral windows, per node: the lowest covering surface of any
+        // window containing the node, with the same bracketing rule as the
+        // transverse windows above (a window narrower than the node spacing
+        // must still claim the edge it sits on).
+        let lateral_windows = lateral.get(cid).map(Vec::as_slice).unwrap_or(&[]);
+        let mut lateral: Vec<Option<f64>> = vec![None; arc.len()];
+        let mut claim = |k: usize, surf: f64| {
+            if tunnel[k] {
+                lateral[k] = Some(lateral[k].map_or(surf, |s: f64| s.min(surf)));
+            }
+        };
+        for &(w0, w1, surf) in lateral_windows {
+            for (k, &a) in arc.iter().enumerate() {
+                if a >= w0 && a <= w1 {
+                    claim(k, surf);
+                }
+            }
+            let x = 0.5 * (w0 + w1);
+            let i = arc.partition_point(|&a| a < x).clamp(1, arc.len() - 1);
+            claim(i - 1, surf);
+            claim(i, surf);
+        }
         let monotone = c
             .kind
             .prior()
@@ -518,6 +550,7 @@ pub fn build(
             bore,
             tunnel,
             covered,
+            lateral,
             monotone,
             grade,
             deviation,
@@ -965,7 +998,7 @@ mod tests {
             upper_level: 0,
             lower_level,
         };
-        build(&scene, &profiles, &[x], Stratum::S, &[])
+        build(&scene, &profiles, &[x], Stratum::S, &[], &[])
     }
 
     /// A road passing over a **railway in a tunnel** is asked to clear nothing.
@@ -1037,7 +1070,7 @@ mod tests {
             upper_level: 1,
             lower_level: 0,
         };
-        let g = build(&scene, &profiles, &[over], Stratum::R, &[]);
+        let g = build(&scene, &profiles, &[over], Stratum::R, &[], &[]);
         assert!(
             g.crossings.is_empty(),
             "a junior road must not lift the funicular; got {} demand(s)",
@@ -1054,7 +1087,7 @@ mod tests {
             upper_level: 1,
             lower_level: 0,
         };
-        let g = build(&scene, &profiles, &[under], Stratum::R, &[]);
+        let g = build(&scene, &profiles, &[under], Stratum::R, &[], &[]);
         assert!(
             g.undercuts.is_empty(),
             "a junior overpass must not duck the funicular; got {} ceiling(s)",
@@ -1134,7 +1167,7 @@ mod tests {
         let bn = scene.corridors[1].nodes.clone();
         let profiles =
             vec![Some(Profile::flat(&an, 400.0)), Some(Profile::flat(&bn, 402.0))];
-        let g = build(&scene, &profiles, &[], Stratum::S, &[]);
+        let g = build(&scene, &profiles, &[], Stratum::S, &[], &[]);
 
         // Corridor 0's last node and corridor 1's first node are the SAME var.
         let a_end = *g.corridors[0].vars.last().unwrap();
@@ -1185,7 +1218,7 @@ mod tests {
         let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
         let profiles =
             vec![Some(Profile::flat(&ns[0], 400.0)), Some(Profile::flat(&ns[1], 404.0))];
-        let g = build(&scene, &profiles, &[], Stratum::S, &[]);
+        let g = build(&scene, &profiles, &[], Stratum::S, &[], &[]);
         for (k, &vb) in g.corridors[1].vars.iter().enumerate() {
             assert!(
                 g.corridors[0].vars.contains(&vb),
@@ -1234,7 +1267,7 @@ mod tests {
         let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
         let profiles =
             vec![Some(Profile::flat(&ns[0], 400.0)), Some(Profile::flat(&ns[1], 404.0))];
-        let g = build(&scene, &profiles, &[], Stratum::S, &[]);
+        let g = build(&scene, &profiles, &[], Stratum::S, &[], &[]);
         let mid_b = g.corridors[1].vars[n / 2];
         assert!(
             !g.corridors[0].vars.contains(&mid_b),
@@ -1268,7 +1301,7 @@ mod tests {
         let ns: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
         let profiles: Vec<Option<Profile>> =
             ns.iter().map(|n| Some(Profile::flat(n, 300.0))).collect();
-        let g = build(&scene, &profiles, &[], Stratum::S, &[]);
+        let g = build(&scene, &profiles, &[], Stratum::S, &[], &[]);
         let va = *g.corridors[0].vars.last().unwrap();
         let vb = g.corridors[1].vars[0];
         let vc = g.corridors[2].vars[0];
@@ -1306,7 +1339,7 @@ mod tests {
             .map(|(nodes, h)| Some(Profile::flat(nodes, h)))
             .collect();
 
-        let mut g = build(&scene, &profiles, &[], Stratum::S, &[]);
+        let mut g = build(&scene, &profiles, &[], Stratum::S, &[], &[]);
         super::super::relax::solve(&mut g);
         super::super::relax::reconstruct(&g, &mut profiles);
         let heights = super::super::relax::junction_heights(&g);
@@ -1346,7 +1379,7 @@ mod tests {
             }];
             s
         };
-        let g = build(&scene, &vec![None], &[], Stratum::S, &[]);
+        let g = build(&scene, &vec![None], &[], Stratum::S, &[], &[]);
         assert_eq!(super::super::relax::junction_heights(&g), vec![None]);
     }
 
@@ -1413,7 +1446,7 @@ mod tests {
             // which sees the rail only as a published constant.
             for stratum in [Stratum::R, Stratum::S] {
                 let derived = super::super::crossings::derive(&scene, &profiles, stratum);
-                let mut g = build(&scene, &profiles, &derived, stratum, &[]);
+                let mut g = build(&scene, &profiles, &derived, stratum, &[], &[]);
                 super::super::relax::solve(&mut g);
                 super::super::relax::reconstruct(&g, &mut profiles);
             }

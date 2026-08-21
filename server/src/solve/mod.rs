@@ -142,6 +142,11 @@ fn reconcile_stratum(
                 deficit_m: roof - p.surface_at_arc(x.arc),
             });
         }
+        // The deck twin of the tunnel annex above: approaches the relaxation
+        // left hanging beside a bridge span (standoff past the absorb
+        // threshold, at grade) are the structure's — flagged here, grown into
+        // the partition by `reconcile_spans`' grow step (S10/S20).
+        portals::absorb_hanging_approaches(p, &spans, deck_follows_road);
         // Shrink to the geometry: each tunnel clamped to its buried run, the
         // freed annotation slack re-covered as painted grade, a tunnel with
         // no buried run at all degraded end to end.
@@ -278,6 +283,12 @@ pub fn run(
 /// only.
 pub struct PlanPin {
     pub covered: Vec<Vec<(f64, f64)>>,
+    /// The parallel-overlap burial windows (`crossings::lateral_cover`),
+    /// `(arc0, arc1, surface_m)` per corridor. Carries a raw-DEM surface —
+    /// input data, not a junior's solved height — but derives from junior
+    /// alignments' existence, so the perturbation experiment must pin it
+    /// with the rest of the skeleton.
+    pub lateral: Vec<Vec<(f64, f64, f64)>>,
     pub reaches: Vec<Vec<(f64, f64)>>,
     pub over: Vec<Vec<bool>>,
 }
@@ -316,15 +327,22 @@ pub fn run_licensed(
         }
         return Ok(SolvedModel::empty(z_ref));
     };
-    let (pin_over, pin_covered, pin_reaches) = match licenses {
-        Some(p) => (Some(p.over), Some(p.covered), Some(p.reaches)),
-        None => (None, None, None),
+    let (pin_over, pin_covered, pin_reaches, pin_lateral) = match licenses {
+        Some(p) => (Some(p.over), Some(p.covered), Some(p.reaches), Some(p.lateral)),
+        None => (None, None, None, None),
     };
     // One primary DEM handle; the reconcile pass and every solve worker fork
     // it to share the decoded-tile cache.
     let primary_dem = Dem::open(path)?;
     {
         let mut dem = primary_dem.fork()?;
+        // S20 first, so the demotion test below re-validates every promoted
+        // span the same way it judges an annotated one. Idempotent on a
+        // re-entrant scene (the perturbation experiment, the determinism
+        // check): a promoted interval no longer sits inside a Grade span.
+        promote_notch_crossings(scene, &mut |c: Coord| {
+            reference_surface(&mut dem, z_ref, c.x, c.y)
+        });
         reconcile_short_spans(
             scene,
             &mut |c: Coord| reference_surface(&mut dem, z_ref, c.x, c.y),
@@ -406,6 +424,19 @@ pub fn run_licensed(
     // bore must actually pass beneath the ground that band rides on.
     let plan = crossings::plan_index(scene);
     let covered = pin_covered.unwrap_or_else(|| crossings::covered_bores(scene, &plan));
+    // The parallel-overlap half of the license (S21): windows where a
+    // higher-ordinal alignment runs lengthwise above a bore, each carrying
+    // the covering side's own raw surface — a street downhill of the bore
+    // line is the case the own-terrain ceiling cannot see.
+    let lateral = match pin_lateral {
+        Some(l) => l,
+        None => {
+            let mut dem = primary_dem.fork()?;
+            crossings::lateral_cover(scene, &mut |c: Coord| {
+                reference_surface(&mut dem, z_ref, c.x, c.y)
+            })
+        }
+    };
     let reaches =
         pin_reaches.unwrap_or_else(|| plan.iter().map(|l| crossings::reaches(l)).collect());
     // Every stratum with members, in authority order — including D. A draped
@@ -430,7 +461,7 @@ pub fn run_licensed(
             continue;
         }
         let derived = crossings::derive(scene, &profiles, stratum);
-        let mut g = graph::build(scene, &profiles, &derived, stratum, &covered);
+        let mut g = graph::build(scene, &profiles, &derived, stratum, &covered, &lateral);
         let r = relax::solve(&mut g);
         relax::reconstruct(&g, &mut profiles);
         // Each stratum publishes the junction heights it owns; a junction
@@ -469,6 +500,81 @@ pub fn run_licensed(
         .collect();
 
     Ok(SolvedModel { structures, relaxed, crossings, daylight, profiles, junction_h, z_ref })
+}
+
+/// Sampling step for the notch-crossing detector, metres. Fine enough that a
+/// slot narrower than the gap between two mapped nodes cannot hide between
+/// samples; the forked DEM's tile cache makes the extra reads cheap.
+const NOTCH_SAMPLE_STEP_M: f64 = 4.0;
+
+/// The terrain fate of a *mapped-at-grade* run over a slot the conditioning
+/// refuses (S20). The anchor surface keeps every notch deeper than the fill
+/// cap (`profile::refused_notches`); where a corridor's Grade span crosses
+/// one transversely — in and out within a single notch span, both rims
+/// inside the same at-grade run — the level annotation and the DEM
+/// contradict each other, and "level across a 16 m slot" is a structure,
+/// not a bed. The crossing is spliced into the span partition as a bridge
+/// span, entering the solve exactly as a mapped `is_bridge` would: a prior
+/// on the constraint (§4.5), which [`reconcile_short_spans`]' own terrain
+/// test re-validates — a false positive over ground the closing merely
+/// mis-read demotes straight back.
+///
+/// Left alone deliberately: an interval not wholly inside one Grade span
+/// (the mapped annotation already claims the slot, or the notch is a
+/// structure's own approach); an interval reaching a corridor end (a
+/// cul-de-sac at a gorge rim ends at a retaining face — there is no far rim
+/// to bridge to); and every Stratum::H corridor (water *descends through*
+/// the notch — that is the one class for which the dive is the truth).
+///
+/// The measured need is the Chauderon slot at Route de Chernex (S20): the
+/// rim streets' at-grade bands dammed a 16 m gorge with 15.8 m kerb cliffs
+/// (`contact.kerb_lip` 25.7 % over in that tile) and stood drawn asphalt
+/// over the gorge-floor footbridge (`order.deck_above_carriageway` 25.6 %).
+fn promote_notch_crossings(scene: &mut SceneGraph, sample: &mut impl FnMut(Coord) -> f64) {
+    for c in &mut scene.corridors {
+        if c.nodes.len() < 2 || c.kind.stratum() == Stratum::H {
+            continue;
+        }
+        let total = *c.arc.last().expect("a corridor has arc entries");
+        if !(total > 0.0) {
+            continue;
+        }
+        // A densified terrain profile: mapped nodes are sparse enough to
+        // straddle a whole slot, so the detector may not run on `c.arc` alone.
+        let steps = ((total / NOTCH_SAMPLE_STEP_M).ceil() as usize).max(1);
+        let mut sarc = Vec::with_capacity(steps + 1);
+        let mut sh = Vec::with_capacity(steps + 1);
+        let mut seg = 0usize;
+        for k in 0..=steps {
+            let a = total * k as f64 / steps as f64;
+            while seg + 2 < c.arc.len() && c.arc[seg + 1] < a {
+                seg += 1;
+            }
+            let (a0, a1) = (c.arc[seg], c.arc[seg + 1]);
+            let t = if a1 > a0 { ((a - a0) / (a1 - a0)).clamp(0.0, 1.0) } else { 0.0 };
+            let (p0, p1) = (c.nodes[seg], c.nodes[seg + 1]);
+            sarc.push(a);
+            sh.push(sample(Coord { x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t }));
+        }
+        for (n0, n1) in profile::refused_notches(&sarc, &sh) {
+            // One sampling step of margin each side lands the span edge on
+            // the rim rather than on the last lifted sample.
+            let (a0, a1) = (n0 - NOTCH_SAMPLE_STEP_M, n1 + NOTCH_SAMPLE_STEP_M);
+            // Strictly interior to one Grade span (see the doc for why).
+            let Some(i) = c
+                .spans
+                .iter()
+                .position(|s| s.kind == SpanKind::Grade && s.arc0 < a0 && a1 < s.arc1)
+            else {
+                continue;
+            };
+            let host = c.spans[i];
+            c.spans[i] = Span { arc0: host.arc0, arc1: a0, level: host.level, kind: SpanKind::Grade };
+            c.spans.insert(i + 1, Span { arc0: a0, arc1: a1, level: 1, kind: SpanKind::Bridge });
+            c.spans
+                .insert(i + 2, Span { arc0: a1, arc1: host.arc1, level: host.level, kind: SpanKind::Grade });
+        }
+    }
 }
 
 /// The terrain fate of the short structure spans assemble keeps
@@ -684,5 +790,114 @@ mod tests {
         let mut scene = SceneGraph::new(vec![corridor(long)]);
         reconcile_short_spans(&mut scene, &mut |_| 500.0, None);
         assert!(scene.corridors[0].spans.iter().any(|s| s.kind == SpanKind::Bridge));
+    }
+
+    use crate::priors::{Kind, RailClass, RoadClass, WaterClass};
+    use crate::scene::{Corridor, SegmentRef, DEG_M};
+
+    /// A 200 m corridor along a parallel of latitude, `spans` as given.
+    fn test_corridor(kind: Kind, spans: Vec<Span>) -> Corridor {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let len_m = 200.0;
+        let deg = len_m / (DEG_M * cos_lat);
+        let n = 41;
+        Corridor {
+            id: 0,
+            nodes: (0..n)
+                .map(|i| Coord { x: 6.0 + deg * i as f64 / (n - 1) as f64, y: 46.0 })
+                .collect(),
+            arc: (0..n).map(|i| len_m * i as f64 / (n - 1) as f64).collect(),
+            cos_lat,
+            kind,
+            class_key: String::new(),
+            link: false,
+            width_m: Some(5.5),
+            spans,
+            segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
+            connectors: vec![],
+        }
+    }
+
+    /// A V-slot `depth_m` deep and 30 m wide at `at_m` along the test
+    /// corridor — narrower than `NOTCH_SPAN_M`, so past the fill cap it is a
+    /// *refused* notch (S20).
+    fn slot(at_m: f64, depth_m: f64) -> impl Fn(Coord) -> f64 {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let deg = 200.0 / (DEG_M * cos_lat);
+        move |c: Coord| {
+            let x = (c.x - 6.0) / deg * 200.0;
+            500.0 - depth_m * (1.0 - ((x - at_m) / 15.0).abs()).max(0.0)
+        }
+    }
+
+    /// The S20 case: a street mapped level across a slot the fill cap
+    /// refuses earns a bridge span over it, and the demotion test that runs
+    /// next keeps the deck the same way it would keep an annotated one.
+    #[test]
+    fn a_grade_run_across_a_refused_slot_earns_a_bridge_span() {
+        let all_grade = vec![Span { arc0: 0.0, arc1: 200.0, level: 0, kind: SpanKind::Grade }];
+        let mut scene =
+            SceneGraph::new(vec![test_corridor(Kind::Road(RoadClass::Residential), all_grade)]);
+        let gorge = slot(100.0, 20.0);
+        promote_notch_crossings(&mut scene, &mut |c| gorge(c));
+        let kinds: Vec<SpanKind> = scene.corridors[0].spans.iter().map(|s| s.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![SpanKind::Grade, SpanKind::Bridge, SpanKind::Grade],
+            "a refused slot under a mapped-level run is a crossing, got {:?}",
+            scene.corridors[0].spans
+        );
+        let deck = scene.corridors[0].spans[1];
+        assert_eq!(deck.level, 1);
+        assert!(
+            deck.arc0 > 70.0 && deck.arc1 < 130.0 && deck.arc1 - deck.arc0 > 15.0,
+            "the span brackets the slot, not the corridor: {deck:?}"
+        );
+        // The demotion pass re-validates rather than undoes the promotion.
+        let gorge = slot(100.0, 20.0);
+        reconcile_short_spans(&mut scene, &mut |c| gorge(c), None);
+        assert!(scene.corridors[0].spans.iter().any(|s| s.kind == SpanKind::Bridge));
+        // Idempotent: a promoted interval no longer sits inside a Grade span.
+        let gorge = slot(100.0, 20.0);
+        promote_notch_crossings(&mut scene, &mut |c| gorge(c));
+        assert_eq!(scene.corridors[0].spans.len(), 3, "re-promotion must not re-splice");
+    }
+
+    /// The boundary cases that must NOT promote: a slot the closing fills
+    /// (shallower than the cap), a slot at the corridor end (no far rim),
+    /// a slot an annotated span already claims, and a watercourse (which
+    /// genuinely descends through its own notch).
+    #[test]
+    fn a_slot_promotes_only_interior_grade_crossings() {
+        let all_grade = || vec![Span { arc0: 0.0, arc1: 200.0, level: 0, kind: SpanKind::Grade }];
+        // Shallow: the conditioning fills it; the road rides the fill (S9).
+        let mut scene =
+            SceneGraph::new(vec![test_corridor(Kind::Road(RoadClass::Residential), all_grade())]);
+        let dip = slot(100.0, 8.0);
+        promote_notch_crossings(&mut scene, &mut |c| dip(c));
+        assert_eq!(scene.corridors[0].spans.len(), 1, "a filled notch is not a crossing");
+        // At the corridor start: no far rim to bridge to.
+        let mut scene =
+            SceneGraph::new(vec![test_corridor(Kind::Road(RoadClass::Residential), all_grade())]);
+        let edge = slot(10.0, 20.0);
+        promote_notch_crossings(&mut scene, &mut |c| edge(c));
+        assert_eq!(scene.corridors[0].spans.len(), 1, "an end slot keeps its face");
+        // Already annotated: the mapped span claims the slot, nothing to add.
+        let annotated = vec![
+            Span { arc0: 0.0, arc1: 85.0, level: 0, kind: SpanKind::Grade },
+            Span { arc0: 85.0, arc1: 118.0, level: 1, kind: SpanKind::Bridge },
+            Span { arc0: 118.0, arc1: 200.0, level: 0, kind: SpanKind::Grade },
+        ];
+        let mut scene =
+            SceneGraph::new(vec![test_corridor(Kind::Rail(RailClass::NarrowGauge), annotated.clone())]);
+        let gorge = slot(100.0, 20.0);
+        promote_notch_crossings(&mut scene, &mut |c| gorge(c));
+        assert_eq!(scene.corridors[0].spans, annotated, "annotation wins where present");
+        // A watercourse descends through the notch: that dive is the truth.
+        let mut scene =
+            SceneGraph::new(vec![test_corridor(Kind::Water(WaterClass::Watercourse), all_grade())]);
+        let gorge = slot(100.0, 20.0);
+        promote_notch_crossings(&mut scene, &mut |c| gorge(c));
+        assert_eq!(scene.corridors[0].spans.len(), 1, "water is never bridged over its own bed");
     }
 }

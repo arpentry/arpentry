@@ -333,6 +333,168 @@ pub fn covered_sites(scene: &SceneGraph, plan: &[Vec<PlanCrossing>]) -> Vec<Vec<
         .collect()
 }
 
+/// Sampling step along a tunnel span for the lateral cover detector, metres.
+/// Matches the tunnel node spacing, so a covering street shorter than one
+/// step cannot slip between samples of the profile it must bury.
+const LATERAL_SAMPLE_STEP_M: f64 = 8.0;
+
+/// Grid query pad for the lateral cover detector, metres — an upper bound on
+/// any covering feature's half-width plus [`ANNEX_SHOULDER_M`]. Candidates
+/// found inside it are still tested against their own true reach.
+const LATERAL_QUERY_PAD_M: f64 = 24.0;
+
+/// How far inside a tunnel span's ends the lateral license reaches, metres —
+/// two portal cuts. Near a mouth the roof legitimately crosses the surface
+/// (the portal transition, `clearance.bore_cover`'s contact band), and
+/// deepening there only marches the zero crossing outward: measured without
+/// this guard, the tube footprint grew 4.1 % and `clearance.bore_cover`
+/// 7.46 → 8.23 % — marginal violations along the extended mouths — while the
+/// mid-run burials it was built for (`order.grade_stack` tail 13.45 → 6.69)
+/// did not need the ends at all. A span shorter than twice the guard gets no
+/// lateral license: a short urban underpass is the transverse license's case
+/// (S6), with its own crossing to gate on.
+///
+/// Measured both ways before settling here: unguarded, the license also
+/// halved `order.grade_stack`'s worst (13.52 → 6.69, the road-over-rail
+/// superposition at 6.9273,46.4017) — but a 12 m bisection showed that win
+/// needs the license *inside* one portal cut of the mouth, exactly where the
+/// bore_cover cost lives. The two are the same stretch; a distance guard
+/// cannot keep one and drop the other, so the mouth family is left for its
+/// own treatment and the guard holds the license to the mid-run burials it
+/// can win cleanly.
+const LATERAL_PORTAL_GUARD_M: f64 = 24.0;
+
+/// Per corridor, the windows of its mapped tunnel spans that another mapped
+/// alignment runs **lengthwise above**, as `(arc0, arc1, surface_m)` — the
+/// parallel-overlap half of the §4.5 burial license (S21), where
+/// [`covered_bores`] is the transverse half.
+///
+/// The burial promise says depth is demanded "wherever the surface above is
+/// someone's roadbed", and a roadbed overlaps a bore two ways: crossing it,
+/// or running along on top of it. The covered approach into Montreux
+/// (Vernex-Dessus) is the measured case for the second: the MOB gallery runs
+/// lengthwise beneath the town's streets, its own centerline surface reads
+/// the mid-slope above the terrace, so the own-terrain ceiling left the roof
+/// standing while the streets' benches carved the drawn ground 6.5 m below
+/// it (`clearance.bore_cover`, 71 % of the S21 tile's samples).
+///
+/// The gate is the same ordering as the transverse license — the other
+/// alignment's level ordinal above the span's, never a height — but the
+/// ceiling cannot be: a covering street *downhill* of the bore line is
+/// exactly the failing case, so each window carries the **raw surface
+/// sampled at the covering alignment's own position** (the minimum over the
+/// window), and the seed takes the lower of that and the bore's own terrain.
+/// Raw DEM at a plan position is input, not a junior's solved height, so I7
+/// holds — but the windows derive from junior alignments' *existence* and
+/// must be pinned across the perturbation experiment like the transverse
+/// ones (`solve::PlanPin`).
+pub fn lateral_cover(
+    scene: &SceneGraph,
+    sample: &mut dyn FnMut(Coord) -> f64,
+) -> Vec<Vec<(f64, f64, f64)>> {
+    // Edge grid over every corridor, as in `plan_index`.
+    let mut edges: Vec<Edge> = Vec::new();
+    let mut grid = GridIndex::new();
+    for c in &scene.corridors {
+        for i in 0..c.nodes.len().saturating_sub(1) {
+            let (a, b) = (c.nodes[i], c.nodes[i + 1]);
+            grid.insert((a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)), edges.len() as u32);
+            edges.push(Edge { corridor: c.id, node: i });
+        }
+    }
+    let mut out: Vec<Vec<(f64, f64, f64)>> = vec![Vec::new(); scene.corridors.len()];
+    let mut candidates: Vec<u32> = Vec::new();
+    for c in &scene.corridors {
+        if !c.spans.iter().any(|s| s.kind == SpanKind::Tunnel) {
+            continue;
+        }
+        let (pad_x, pad_y) =
+            (LATERAL_QUERY_PAD_M / (crate::scene::DEG_M * c.cos_lat), LATERAL_QUERY_PAD_M / crate::scene::DEG_M);
+        for s in c.spans.iter().filter(|s| s.kind == SpanKind::Tunnel) {
+            // The license stays clear of the portal transitions (see the
+            // guard's doc); the ends keep the own-terrain ceiling.
+            let (g0, g1) = (s.arc0 + LATERAL_PORTAL_GUARD_M, s.arc1 - LATERAL_PORTAL_GUARD_M);
+            let len = g1 - g0;
+            if len <= 0.0 {
+                continue;
+            }
+            let steps = ((len / LATERAL_SAMPLE_STEP_M).ceil() as usize).max(1);
+            // Per sample: the lowest covering surface seen, if any.
+            let mut cover: Vec<Option<f64>> = Vec::with_capacity(steps + 1);
+            let mut arcs: Vec<f64> = Vec::with_capacity(steps + 1);
+            let mut seg = 0usize;
+            for q in 0..=steps {
+                let a = g0 + len * q as f64 / steps as f64;
+                while seg + 2 < c.arc.len() && c.arc[seg + 1] < a {
+                    seg += 1;
+                }
+                let (a0, a1) = (c.arc[seg], c.arc[seg + 1]);
+                let t = if a1 > a0 { ((a - a0) / (a1 - a0)).clamp(0.0, 1.0) } else { 0.0 };
+                let (p0, p1) = (c.nodes[seg], c.nodes[seg + 1]);
+                let p = Coord { x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t };
+                grid.query((p.x - pad_x, p.y - pad_y, p.x + pad_x, p.y + pad_y), &mut candidates);
+                let mut lowest: Option<f64> = None;
+                for &ei in candidates.iter() {
+                    let e = &edges[ei as usize];
+                    if e.corridor == c.id {
+                        continue;
+                    }
+                    let other = &scene.corridors[e.corridor as usize];
+                    let (o_a, o_b) = (other.nodes[e.node], other.nodes[e.node + 1]);
+                    let (dist, u) = point_segment(p, o_a, o_b, c.cos_lat);
+                    let reach = other.width_m.map_or(0.0, |w| w * 0.5) + ANNEX_SHOULDER_M;
+                    if dist > reach {
+                        continue;
+                    }
+                    let o_arc =
+                        other.arc[e.node] + u * (other.arc[e.node + 1] - other.arc[e.node]);
+                    if level_at(scene, e.corridor, o_arc) <= s.level {
+                        continue;
+                    }
+                    let np = Coord { x: o_a.x + (o_b.x - o_a.x) * u, y: o_a.y + (o_b.y - o_a.y) * u };
+                    let surf = sample(np);
+                    lowest = Some(lowest.map_or(surf, |l: f64| l.min(surf)));
+                }
+                arcs.push(a);
+                cover.push(lowest);
+            }
+            // Merge consecutive covered samples into windows carrying the
+            // lowest covering surface each.
+            let mut q = 0;
+            while q < cover.len() {
+                let Some(first) = cover[q] else {
+                    q += 1;
+                    continue;
+                };
+                let start = q;
+                let mut low = first;
+                while q + 1 < cover.len() {
+                    let Some(next) = cover[q + 1] else { break };
+                    low = low.min(next);
+                    q += 1;
+                }
+                out[c.id as usize].push((arcs[start], arcs[q], low));
+                q += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Nearest point of segment `(a, b)` to `p` in the local metric frame:
+/// `(distance in metres, fraction along the segment)`.
+fn point_segment(p: Coord, a: Coord, b: Coord, cos_lat: f64) -> (f64, f64) {
+    let m = crate::scene::DEG_M;
+    let (px, py) = (p.x * cos_lat * m, p.y * m);
+    let (ax, ay) = (a.x * cos_lat * m, a.y * m);
+    let (bx, by) = (b.x * cos_lat * m, b.y * m);
+    let (rx, ry) = (bx - ax, by - ay);
+    let len2 = rx * rx + ry * ry;
+    let u = if len2 > 0.0 { (((px - ax) * rx + (py - ay) * ry) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    let (nx, ny) = (ax + rx * u, ay + ry * u);
+    (((px - nx).powi(2) + (py - ny).powi(2)).sqrt(), u)
+}
+
 /// Shoulder added to a crossing feature's half-width when a bore is extended
 /// beneath it: the drawn band's structure shoulder, the bench verge outside
 /// it, and a metre of annotation slack, so the portal the annex implies
@@ -1047,5 +1209,57 @@ mod tests {
         };
         assert_eq!(key(&first), key(&again));
         assert_eq!(first.len(), 2, "both north-south roads pass under");
+    }
+
+    fn tunnel(len: f64) -> Vec<Span> {
+        vec![Span { arc0: 0.0, arc1: len, level: -1, kind: SpanKind::Tunnel }]
+    }
+
+    /// The Vernex-Dessus shape (S21): a street running lengthwise above a
+    /// bore licenses burial along the whole overlap, and the window carries
+    /// the *street side's* surface — the downhill case the bore's own
+    /// centerline terrain cannot see.
+    #[test]
+    fn a_street_running_lengthwise_above_a_bore_licenses_burial() {
+        let len = 200.0;
+        let bore = corridor(0, 6.0, 46.0, true, len, tunnel(len));
+        // A parallel street 3 m north — inside the 6 m width / 2 + shoulder
+        // reach — at grade (level 0, above the bore's −1).
+        let off = 3.0 / DEG_M;
+        let street = corridor(1, 6.0, 46.0 + off, true, len, grade(len));
+        let scene = SceneGraph::new(vec![bore, street]);
+        // The street side of the centerline reads 480, the bore's own side 500.
+        let mut sample = |c: Coord| if c.y > 46.0 + off * 0.5 { 480.0 } else { 500.0 };
+        let out = lateral_cover(&scene, &mut sample);
+        assert_eq!(out[0].len(), 1, "one continuous overlap window: {:?}", out[0]);
+        let (w0, w1, surf) = out[0][0];
+        // The window spans the overlap, held one portal guard off each mouth.
+        assert!(
+            (w0 - LATERAL_PORTAL_GUARD_M).abs() < 1.0
+                && (w1 - (len - LATERAL_PORTAL_GUARD_M)).abs() < 1.0,
+            "the window spans the guarded overlap: {w0}..{w1}"
+        );
+        assert_eq!(surf, 480.0, "the ceiling reads the covering street's surface");
+        assert!(out[1].is_empty(), "the street itself is licensed nothing");
+    }
+
+    /// The ordering gate, same as the transverse license: a peer bore at the
+    /// same level licenses nothing, and a street beyond the band reach
+    /// licenses nothing.
+    #[test]
+    fn lateral_cover_gates_on_level_and_reach() {
+        let len = 200.0;
+        // A parallel peer tunnel at the same level: not above, no license.
+        let bore = corridor(0, 6.0, 46.0, true, len, tunnel(len));
+        let peer = corridor(1, 6.0, 46.0 + 3.0 / DEG_M, true, len, tunnel(len));
+        let scene = SceneGraph::new(vec![bore, peer]);
+        let out = lateral_cover(&scene, &mut |_| 500.0);
+        assert!(out[0].is_empty(), "a peer bore covers nothing: {:?}", out[0]);
+        // A street 10 m off: outside half-width 3 + shoulder 4.
+        let bore = corridor(0, 6.0, 46.0, true, len, tunnel(len));
+        let far = corridor(1, 6.0, 46.0 + 10.0 / DEG_M, true, len, grade(len));
+        let scene = SceneGraph::new(vec![bore, far]);
+        let out = lateral_cover(&scene, &mut |_| 500.0);
+        assert!(out[0].is_empty(), "a street beyond its reach covers nothing: {:?}", out[0]);
     }
 }

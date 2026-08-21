@@ -231,17 +231,23 @@ fn seed_bore_ceilings(g: &mut SolveGraph, sites: &VarSites) {
             if sites[v].iter().any(|&(oc, ok)| corridors[oc as usize].at_grade[ok as usize]) {
                 continue;
             }
-            let bury = if c.covered[k] {
-                crate::priors::TUNNEL_HEIGHT_M + crate::priors::TUNNEL_COVER_M
-            } else {
-                0.0
-            };
+            let bury = if c.covered[k] { super::structures::BORE_COVER_M } else { 0.0 };
             slack[v].1 = slack[v].1.min(vars[v].terrain_m - bury);
+            // The parallel-overlap license (S21): where a mapped alignment
+            // runs lengthwise above, the ceiling reads the *covering side's*
+            // surface — a street downhill of the bore line sits below the
+            // bore's own centerline surface, and the own-terrain ceiling
+            // alone leaves the roof standing in the ground that street's
+            // bench will carve.
+            if let Some(surf) = c.lateral[k] {
+                slack[v].1 =
+                    slack[v].1.min(surf.min(vars[v].terrain_m) - super::structures::BORE_COVER_M);
+            }
             if let Some(dbg) = std::env::var_os("ARPT_DEBUG_BURY") {
                 if dbg.to_string_lossy().parse::<u32>() == Ok(c.id) {
                     eprintln!(
-                        "[bury] seed corridor {} k={} covered={} terrain={:.2} ceiling={:.2}",
-                        c.id, k, c.covered[k], vars[v].terrain_m, slack[v].1
+                        "[bury] seed corridor {} k={} covered={} lateral={:?} terrain={:.2} ceiling={:.2}",
+                        c.id, k, c.covered[k], c.lateral[k], vars[v].terrain_m, slack[v].1
                     );
                 }
             }
@@ -1145,7 +1151,7 @@ mod tests {
         let bn = scene.corridors[1].nodes.clone();
         let mut profiles =
             vec![Some(Profile::flat(&an, 400.0)), Some(Profile::flat(&bn, 406.0))];
-        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[]);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[], &[]);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
 
@@ -1177,7 +1183,7 @@ mod tests {
         let an = scene.corridors[0].nodes.clone();
         let mut profiles =
             vec![Some(Profile::from_heights(&an, terrain.clone(), terrain.clone()))];
-        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[]);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[], &[]);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
@@ -1231,7 +1237,7 @@ mod tests {
         )
         .expect("a profile");
         let mut profiles = vec![Some(warm)];
-        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[]);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[], &[]);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
 
@@ -1281,7 +1287,7 @@ mod tests {
         )
         .expect("a profile");
         let mut profiles = vec![Some(warm)];
-        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::R, &[]);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::R, &[], &[]);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
@@ -1351,7 +1357,7 @@ mod tests {
         )
         .expect("a profile");
         let mut profiles = vec![Some(warm)];
-        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[]);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[], &[]);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
@@ -1383,7 +1389,7 @@ mod tests {
         let scene = SceneGraph::new(vec![a]);
         let an = scene.corridors[0].nodes.clone();
         let mut profiles = vec![Some(Profile::from_heights(&an, terrain.clone(), terrain.clone()))];
-        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[]);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[], &[]);
         let sweeps = solve(&mut g);
         reconstruct(&g, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
@@ -1424,6 +1430,7 @@ mod tests {
                 bore: vec![false; n],
                 tunnel: vec![false; n],
                 covered: vec![false; n],
+                lateral: vec![None; n],
                 monotone: None,
                 at_grade,
                 grade: 0.06,
@@ -1486,6 +1493,7 @@ mod tests {
                 bore: tunnel.clone(),
                 tunnel,
                 covered,
+                lateral: vec![None; n],
                 monotone: None,
                 at_grade,
                 grade: 0.15,
@@ -1552,6 +1560,7 @@ mod tests {
                 bore: tunnel.clone(),
                 tunnel,
                 covered,
+                lateral: vec![None; n],
                 monotone: Some(1.0),
                 at_grade,
                 grade: 0.70,
@@ -1618,6 +1627,7 @@ mod tests {
                 bore: vec![false; n],
                 tunnel: vec![false; n],
                 covered: vec![false; n],
+                lateral: vec![None; n],
                 monotone: None,
                 at_grade: vec![true; n],
                 grade: 0.15,
@@ -1693,6 +1703,7 @@ mod tests {
                 bore: vec![false; n],
                 tunnel: vec![false; n],
                 covered: vec![false; n],
+                lateral: vec![None; n],
                 monotone: None,
                 at_grade,
                 grade: 0.06, // 6 %: the 12 m rise over 300 m (4 %) is well within
@@ -1745,7 +1756,7 @@ mod tests {
         let scene = SceneGraph::new(vec![a]);
         let an = scene.corridors[0].nodes.clone();
         let mut profiles = vec![Some(Profile::from_heights(&an, terrain.clone(), terrain.clone()))];
-        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[]);
+        let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[], &[]);
         solve(&mut g);
         reconstruct(&g, &mut profiles);
         let p = profiles[0].as_ref().unwrap();
@@ -1804,6 +1815,7 @@ mod tests {
             vars: (base..base + n).collect(),
             arc: arc.clone(),
             covered: vec![false; at_grade.len()],
+            lateral: vec![None; at_grade.len()],
             at_grade,
             tunnel: bore.clone(),
             monotone: None,
@@ -1878,7 +1890,7 @@ mod tests {
         let run = || {
             let profiles =
                 vec![Some(Profile::flat(&an, 400.0)), Some(Profile::flat(&bn, 406.0))];
-            let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[]);
+            let mut g = super::super::graph::build(&scene, &profiles, &[], Stratum::S, &[], &[]);
             solve(&mut g);
             g.h
         };
@@ -1916,6 +1928,7 @@ mod tests {
                 bore: vec![false; n],
                 tunnel: vec![false; n],
                 covered: vec![false; n],
+                lateral: vec![None; n],
                 monotone: None,
                 at_grade: vec![true; n],
                 grade: 0.06,
@@ -1991,6 +2004,7 @@ mod tests {
             bore: vec![false; bn],
             tunnel: vec![false; bn],
             covered: vec![false; bn],
+            lateral: vec![None; bn],
             monotone: None,
             at_grade: vec![false; bn],
             grade: 0.06,
@@ -2003,6 +2017,7 @@ mod tests {
             bore: vec![false; 5],
             tunnel: vec![false; 5],
             covered: vec![false; 5],
+            lateral: vec![None; 5],
             monotone: None,
             at_grade: vec![true; 5],
             grade: 0.06,

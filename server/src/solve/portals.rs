@@ -21,7 +21,7 @@
 use crate::priors::{DECK_THICKNESS_M, PORTAL_MAX_M, TUNNEL_HEIGHT_M};
 use crate::scene::{Span, SpanKind};
 
-use super::profile::Profile;
+use super::profile::{Profile, ABSORB_STANDOFF_M};
 
 /// One solved portal: its arc position, which way "out of the hill" faces
 /// along the corridor (`-1.0` toward decreasing arc, `+1.0` increasing), and
@@ -329,6 +329,77 @@ pub fn grow_spans(profile: &Profile, spans: &[Span]) -> Vec<Span> {
     // A grade span fully absorbed from one side collapses to nothing: drop it.
     out.retain(|s| s.arc1 - s.arc0 > f64::EPSILON);
     out
+}
+
+/// The post-relax twin of `profile::solve`'s infeasible-anchor absorption
+/// (S10), for the modes that never absorb and the hangs only the fused
+/// relaxation creates. A crossing clearance lifts a deck; the approaches are
+/// re-pinned to the lifted ends and, held to their class grade against a
+/// reference that falls away faster, arrive nowhere: at-grade nodes standing
+/// many metres over their own terrain. At grade they pave and bench —
+/// measured at the Chauderon slot (S20), the two approaches of a correctly
+/// mapped 20 m bridge hung +8..+17 m for ~100 m, and their benches dammed
+/// the gorge with 15.8 m kerb walls (`contact.kerb_lip` 25.7 % over in that
+/// tile, `order.deck_above_carriageway` 25.6 % — asphalt drawn over the
+/// gorge-floor footbridge).
+///
+/// Beside each bridge span, every contiguous at-grade run still standing
+/// more than [`ABSORB_STANDOFF_M`] off the reference after the relaxation
+/// belongs to the structure: flagged into the profile here, extended into
+/// the span partition by [`grow_spans`] on the next step of the write-back.
+/// The ordinary approach embankment survives untouched — p99 approach
+/// standoff across the network is ~2.5 m, and a ramp descending to flat
+/// ground drops under the threshold within a few nodes of the deck. Reads
+/// only this stratum's own solved heights, so it is the stratum deciding
+/// its own structures (§4.5), not a cross-stratum coupling.
+pub fn absorb_hanging_approaches(
+    profile: &mut Profile,
+    spans: &[Span],
+    deck_follows_road: bool,
+) {
+    let mut runs: Vec<(f64, f64)> = Vec::new();
+    {
+        let arc = profile.arc();
+        let at_grade = profile.at_grade();
+        let (road, terrain) = (profile.road_m(), profile.terrain_m());
+        let hanging = |k: usize| at_grade[k] && road[k] - terrain[k] > ABSORB_STANDOFF_M;
+        // A node landing on the span edge to within float noise is the
+        // span's own boundary node, not the approach's first.
+        const EDGE_EPS_M: f64 = 1e-6;
+        for s in spans.iter().filter(|s| s.kind == SpanKind::Bridge) {
+            // Backward over the approach before the span.
+            let mut lo = None;
+            for k in (0..arc.len()).rev() {
+                if arc[k] >= s.arc0 - EDGE_EPS_M {
+                    continue;
+                }
+                if !hanging(k) {
+                    break;
+                }
+                lo = Some(arc[k]);
+            }
+            if let Some(lo) = lo {
+                runs.push((lo, s.arc0));
+            }
+            // Forward over the approach after it.
+            let mut hi = None;
+            for k in 0..arc.len() {
+                if arc[k] <= s.arc1 + EDGE_EPS_M {
+                    continue;
+                }
+                if !hanging(k) {
+                    break;
+                }
+                hi = Some(arc[k]);
+            }
+            if let Some(hi) = hi {
+                runs.push((s.arc1, hi));
+            }
+        }
+    }
+    for (a0, a1) in runs {
+        profile.annex_structure(a0, a1, deck_follows_road);
+    }
 }
 
 /// Tunnel spans extended through the crossings their still-buried tails pass
@@ -870,5 +941,90 @@ mod tests {
         let ps = portals(&p, &[span(0.0, 550.0)]);
         assert_eq!(ps.len(), 1, "only the emerging side gets a portal");
         assert_eq!(ps[0].outward, 1.0);
+    }
+
+    /// A 500 m corridor of 101 nodes with a bridge span in the middle and
+    /// per-node road/terrain as given — the hanging-approach fixture.
+    fn hung(road: Vec<f64>, terrain: Vec<f64>) -> (Profile, Vec<Span>) {
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let deg = 500.0 / (DEG_M * cos_lat);
+        let n = road.len();
+        let nodes: Vec<Coord> =
+            (0..n).map(|i| Coord { x: 6.0 + deg * i as f64 / (n - 1) as f64, y: 46.0 }).collect();
+        let spans = vec![
+            Span { arc0: 0.0, arc1: 225.0, level: 0, kind: SpanKind::Grade },
+            Span { arc0: 225.0, arc1: 275.0, level: 1, kind: SpanKind::Bridge },
+            Span { arc0: 275.0, arc1: 500.0, level: 0, kind: SpanKind::Grade },
+        ];
+        (Profile::from_heights(&nodes, road, terrain), spans)
+    }
+
+    /// The Chauderon shape (S20): the relaxation left both approaches of a
+    /// mapped bridge 8–17 m over a reference that plunges faster than the
+    /// road may descend. The hanging runs are the structure's; the write-back
+    /// (absorb, then grow) extends the deck over them, and the far at-grade
+    /// road survives.
+    #[test]
+    fn a_hanging_approach_beside_a_bridge_is_absorbed_into_the_deck() {
+        let n = 101; // node every 5 m
+        // Road: level 100 everywhere (the lifted deck height carried outward).
+        let road = vec![100.0; n];
+        // Terrain: at road level on the outer thirds, diving to 84 under the
+        // span and its approaches — hanging (>5 m) for u in (0.30, 0.70).
+        let terrain: Vec<f64> = (0..n)
+            .map(|i| {
+                let u = i as f64 / (n - 1) as f64;
+                let d = (u - 0.5).abs();
+                if d < 0.2 { 84.0 + (d / 0.2) * 16.0 } else { 100.0 }
+            })
+            .collect();
+        let (mut p, spans) = hung(road, terrain);
+        absorb_hanging_approaches(&mut p, &spans, false);
+        let out = reconcile_spans(&p, &spans);
+        assert_eq!(out.len(), 3, "the partition keeps three spans: {out:?}");
+        let deck = &out[1];
+        assert_eq!(deck.kind, SpanKind::Bridge);
+        // The deck now covers the hanging runs on both sides — standoff
+        // crosses 5 m at u = 0.5 ± 0.1375 (arc 181/319), so with 5 m nodes
+        // the grown ends land at 185 and 315 — and no further.
+        assert!(
+            (deck.arc0 - 185.0).abs() < 6.0,
+            "deck start must reach the 5 m-standoff point, got {:.1}",
+            deck.arc0
+        );
+        assert!(
+            (deck.arc1 - 315.0).abs() < 6.0,
+            "deck end must reach the 5 m-standoff point, got {:.1}",
+            deck.arc1
+        );
+        // Beyond the absorbed runs the road is on the ground and stays grade.
+        assert_eq!(out[0].kind, SpanKind::Grade);
+        assert_eq!(out[2].kind, SpanKind::Grade);
+    }
+
+    /// An ordinary embankment approach — under the absorb threshold beside
+    /// the deck — is ground the earthworks own, and stays at grade (the p99
+    /// approach berm is ~2.5 m; absorbing it would turn every overpass ramp
+    /// into deck).
+    #[test]
+    fn an_ordinary_embankment_approach_stays_at_grade() {
+        let n = 101;
+        let road = vec![100.0; n];
+        // Terrain 4 m under the road beside the span: an embankment, not a hang.
+        let terrain: Vec<f64> = (0..n)
+            .map(|i| {
+                let u = i as f64 / (n - 1) as f64;
+                if (0.45..=0.55).contains(&u) { 90.0 } else { 96.0 }
+            })
+            .collect();
+        let (mut p, spans) = hung(road, terrain);
+        let before = spans.clone();
+        absorb_hanging_approaches(&mut p, &spans, false);
+        assert!(p.at_grade().iter().enumerate().all(|(k, &g)| {
+            let inside = p.arc()[k] >= 225.0 && p.arc()[k] <= 275.0;
+            g || inside
+        }), "no node outside the mapped span may be absorbed");
+        let out = reconcile_spans(&p, &spans);
+        assert_eq!(out, before, "an embankment approach leaves the spans alone");
     }
 }

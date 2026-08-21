@@ -37,7 +37,7 @@ pub enum SpanKind {
 /// A maximal constant-kind stretch of a corridor, in corridor arc metres.
 /// Consecutive same-level annotation runs — across segment boundaries — are
 /// merged into one span, so a span is a whole structure entity (S1/S8).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Span {
     pub arc0: f64,
     pub arc1: f64,

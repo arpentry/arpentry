@@ -161,7 +161,7 @@ const ABSORB_GRADE_FACTOR: f64 = 1.5;
 /// standoff across a dense network is ~2.5 m) and below the tallest
 /// embankments a road really is built on, so only annotation shortfall — a
 /// viaduct mapped as a single short span over the road it crosses — is caught.
-const ABSORB_STANDOFF_M: f64 = 5.0;
+pub(crate) const ABSORB_STANDOFF_M: f64 = 5.0;
 
 /// How far outward of a structure edge [`seek_rim_anchors`] may migrate the
 /// bounding anchor to the local terrain extremum — the gorge rim a deck
@@ -1100,9 +1100,35 @@ pub fn condition_reference(arc: &[f64], h: &[f64]) -> Vec<f64> {
 /// over ±`span`/2, with per-run reversion wherever the fill exceeds `cap`
 /// (the trust boundary — see the callers for what a too-deep run means).
 fn close_bounded(arc: &[f64], h: &[f64], span: f64, cap: f64) -> Vec<f64> {
+    close_bounded_runs(arc, h, span, cap).0
+}
+
+/// The arc intervals [`close_notches`] *refused* — narrow valleys whose fill
+/// would exceed [`NOTCH_FILL_MAX_M`], reverted to raw terrain by the bounded
+/// closing. Each interval covers exactly the nodes the closing wanted to lift
+/// (the notch interior); the bracketing rim nodes, where the closing already
+/// meets the terrain, are outside it. This is the detector behind the S20
+/// notch-crossing span promotion (`solve::promote_notch_crossings`): a slot
+/// this deep under a line mapped level across it is a crossing owed a
+/// structure, not a bed. Computed from the closing pass on the raw heights —
+/// never from [`open_bumps`], whose reverted runs are refused *crests* on
+/// negated heights, nor from [`condition_reference`], whose opening pass
+/// reshapes what the closing saw.
+pub fn refused_notches(arc: &[f64], h: &[f64]) -> Vec<(f64, f64)> {
+    close_bounded_runs(arc, h, NOTCH_SPAN_M, NOTCH_FILL_MAX_M).1
+}
+
+/// [`close_bounded`] plus the reverted runs: the closed heights, and one
+/// `(arc_first, arc_last)` per contiguous run whose fill exceeded `cap`.
+fn close_bounded_runs(
+    arc: &[f64],
+    h: &[f64],
+    span: f64,
+    cap: f64,
+) -> (Vec<f64>, Vec<(f64, f64)>) {
     let n = h.len();
     if n == 0 {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let r = span * 0.5;
     // Pad each end with one edge-replicated virtual node at ±r: the erosion
@@ -1122,6 +1148,7 @@ fn close_bounded(arc: &[f64], h: &[f64], span: f64, cap: f64) -> Vec<f64> {
     let dilated = window_fold(&pa, &ph, r, f64::max);
     let closed_padded = window_fold(&pa, &dilated, r, f64::min);
     let mut closed: Vec<f64> = closed_padded[1..=n].to_vec();
+    let mut refused: Vec<(f64, f64)> = Vec::new();
     let mut i = 0;
     while i < n {
         if closed[i] - h[i] <= 1e-6 {
@@ -1139,9 +1166,10 @@ fn close_bounded(arc: &[f64], h: &[f64], span: f64, cap: f64) -> Vec<f64> {
             for k in start..i {
                 closed[k] = h[k];
             }
+            refused.push((arc[start], arc[i - 1]));
         }
     }
-    closed
+    (closed, refused)
 }
 
 /// `fold` of `h` over the arc window ±`r` around each node. The window is
@@ -2255,6 +2283,38 @@ mod tests {
         assert_eq!(closed[5], 512.0, "closing must not shave bumps");
     }
 
+    /// The refused-notch report: exactly the reverted run, rims excluded, and
+    /// nothing at all for a notch the closing filled. This interval is what
+    /// `solve::promote_notch_crossings` turns into a bridge span (S20), so its
+    /// bounds are load-bearing: a rim node inside the interval would move a
+    /// structure anchor off the rim.
+    #[test]
+    fn refused_notches_reports_the_reverted_run_and_only_it() {
+        // Same fixture as the closing test: a single-node 25 m dip at arc 150
+        // between 30 m-spaced nodes.
+        let arc: Vec<f64> = (0..11).map(|i| i as f64 * 30.0).collect();
+        let mut h = vec![500.0; 11];
+        h[5] = 475.0;
+        let refused = refused_notches(&arc, &h);
+        assert_eq!(refused, vec![(150.0, 150.0)], "the refused run is the dip node alone");
+        // A filled notch reports nothing.
+        h[5] = 492.0;
+        assert!(refused_notches(&arc, &h).is_empty(), "a filled notch is not refused");
+        // A two-node-wide refused slot spans both nodes, not the rims.
+        let arc2: Vec<f64> = (0..12).map(|i| i as f64 * 15.0).collect();
+        let mut slot = vec![500.0; 12];
+        slot[5] = 480.0;
+        slot[6] = 480.0;
+        let refused = refused_notches(&arc2, &slot);
+        assert_eq!(refused, vec![(75.0, 90.0)], "the interval covers the interior, rims outside");
+        // A refused *crest* must not surface as a refused notch: closing only
+        // fills, so a 25 m bump yields nothing (the open_bumps dual runs on
+        // negated heights and must stay a separate channel).
+        let mut crest = vec![500.0; 11];
+        crest[5] = 525.0;
+        assert!(refused_notches(&arc, &crest).is_empty(), "a crest is not a notch");
+    }
+
     #[test]
     fn open_bumps_shaves_narrow_and_keeps_tall() {
         // 11 nodes, 25 m apart (BUMP_SPAN_M = 50, so a single-node crest is
@@ -2332,7 +2392,12 @@ mod tests {
             (road - 500.0).abs() < 0.75,
             "the road must span the notch at rim height, got {road}"
         );
-        // A gorge deeper than the fill cap keeps the terrain: genuine descent.
+        // A gorge deeper than the fill cap keeps the terrain in the anchor
+        // surface — the *profile* still dives here, because the crossing is a
+        // structure decision made a level up: `solve::promote_notch_crossings`
+        // splices a bridge span over exactly this V before any profile is
+        // solved (S20), so a bare all-grade span list means the promotion
+        // declined (a corridor end, water, an annotated claim).
         let gorge = move |c: Coord| {
             let dm = (c.x - mid).abs() * cos_lat * DEG_M;
             if dm < 25.0 { 500.0 - 25.0 * (1.0 - dm / 25.0) } else { 500.0 }

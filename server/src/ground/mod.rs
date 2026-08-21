@@ -1350,7 +1350,7 @@ mod tests {
         // pipeline runs, so what this test asserts about the ground is what the
         // shipped solve actually produces.
         {
-            let mut g = crate::solve::graph::build(&scene, &profiles, &crossings, Stratum::S, &[]);
+            let mut g = crate::solve::graph::build(&scene, &profiles, &crossings, Stratum::S, &[], &[]);
             crate::solve::relax::solve(&mut g);
             crate::solve::relax::reconstruct(&g, &mut profiles);
         }

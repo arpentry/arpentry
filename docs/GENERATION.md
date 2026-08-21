@@ -585,6 +585,8 @@ A generator is adequate when it handles all of these. Each is a test scenario.
 | S17 | **Railway over a road** | The rail alignment; the road ducks under it | Authority independent of stacking | Authority ⟂ stacking (§4.1) |
 | S18 | **Rack railway on a 45 % flank** | Its own steep ceiling, held tight to the ground | Per-class constraint shape; a senior datum that must not float | Priors (§9), datum float check (§8) |
 | S19 | **Aqueduct on a viaduct** | The structure carries the water | Back-edge handling: a senior modality carried by a junior structure | Back-edge rule (§4.6) |
+| S20 | **Slot gorge crossed at grade**: a notch too deep for the fill cap, crossed transversely by features the data says stay level | The rim-to-rim grade line; the gorge stays open beneath | The case between S1 and S9 — the data says level-across, the DEM says gorge, and splitting the difference dams the slot with 15 m walls | Notch-crossing span promotion (§4.5) |
+| S21 | **Covered gallery under parallel streets**: a senior bore running lengthwise beneath a junior's roadbed, not across it | The junior's surface less roof and cover, along the whole overlap | The burial license beyond transverse crossings; a bore capped only at its own centerline's raw surface pokes out of the ground the streets carve | Burial license (§4.5) |
 
 ---
 

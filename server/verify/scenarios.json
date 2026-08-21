@@ -49,6 +49,20 @@
       "lat": 46.43636869266629,
       "zoom": 16,
       "source": "mined: at-grade road at 28 % grade — the steepest carriageway still plausible as a real road, where the correct action is to do nothing"
+    },
+    {
+      "id": "S20",
+      "lon": 6.9149,
+      "lat": 46.4386,
+      "zoom": 16,
+      "source": "hand-sited 2026-08-20: the Chauderon slot at Route de Chernex — a refused notch (deeper than the fill cap) crossed transversely by streets mapped at grade; contact.kerb_lip 25.7 % over (worst 15.8 m) and order.deck_above_carriageway 25.6 % over (footbridge 15.2 m under at-grade asphalt) before the span-promotion fix"
+    },
+    {
+      "id": "S21",
+      "lon": 6.9107,
+      "lat": 46.4366,
+      "zoom": 16,
+      "source": "hand-sited 2026-08-20: the Vernex-Dessus terrace — the MOB covered approach running parallel beneath the town streets, roof 6.5 m above the carved ground; clearance.bore_cover 71 % over in this tile before the parallel-overlap burial license"
     }
   ],
   "unsited": [

@@ -1301,6 +1301,17 @@ fn process_feature(
                 // part way down the gorge it is supposed to cross.
                 let runs = synth::draped::seat(line, &f.level_runs, sampler, solved.z_ref);
                 for (piece, level) in level_pieces(line, &runs) {
+                    // A negative level with no structure flag is the covered
+                    // pedestrian underworld — station subways, passages under
+                    // buildings. It is real and it is *underground*: drawn as
+                    // a surface drape it lies on ground that belongs to the
+                    // streets above it (`paint.buried` 1.1 m under, steps L1
+                    // soffits under the drawn terrain at Montreux station).
+                    // A viewer above sees none of it, so neither does the
+                    // tile: the piece is simply not emitted.
+                    if level < 0 {
+                        continue;
+                    }
                     let mut props = f.properties.clone();
                     let tag = if level > 0 {
                         // The level ordinal survives as a property so the
