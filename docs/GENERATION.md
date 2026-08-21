@@ -474,7 +474,16 @@ Two consequences are normative:
   counts; either way the span grows to cover the crossing feature's band, by
   the level ordinals alone and by one band-reach at most. Two mirrored
   licenses, `crossings::covered_bores` and `crossings::carried_crossings`,
-  and no height on either side of either.
+  and no height on either side of either. Last, **a corridor with no ground
+  of its own is a structure**: where a junction weld leaves a stub standing on
+  another corridor's deck and every at-grade node it has is metres off its own
+  reference, the stub is carried whole rather than paving and benching the
+  void it crosses (`portals::hangs_end_to_end`). The discriminator is that
+  corridor's own geometry, not the chain of welds behind it — a run that comes
+  back down to its ground is an approach embankment, and an embankment drawn
+  with a soffit under it is worse than one drawn with the wall the ground
+  stage already gives it (S13, and `contact.kerb_unwalled` is what says
+  whether that wall is there).
   *Buried* is judged by the run's own geometry. Its interior is the line's:
   a gully crossing the alignment or a shore gallery whose cover thins mid-run
   never splits the run, because the line never daylights there — judged by

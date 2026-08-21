@@ -420,6 +420,91 @@ pub fn absorb_hanging_approaches(
     }
 }
 
+/// The same absorption asked across a junction: a road welded into another
+/// corridor **inside that corridor's deck** is standing on the deck, and what
+/// carries it from there is a structure of its own.
+///
+/// [`absorb_hanging_approaches`] walks along one corridor from its own span,
+/// and a corridor with no span of its own is invisible to it. That is the
+/// whole Chauderon residue: after the slot crossing was promoted and its
+/// approaches absorbed (S20), two service stubs — 22 m and 18 m — remain
+/// welded to Route de Chernex at junctions *inside* its bridge span, held by
+/// the weld at 527.7 m over a gorge floor their own reference reads at 512.5.
+/// At grade they pave, and their bands are drawn over the footbridge crossing
+/// the slot beneath: `order.deck_above_carriageway` −15.36 m, the worst
+/// inversion in the extract, with `contact.kerb_lip`'s worst on the same kerb.
+///
+/// Censused over the Montreux zone, every at-grade run standing past
+/// [`ABSORB_STANDOFF_M`] falls into four kinds, and this is the only one with
+/// a structural explanation at its end: 3 runs, 40 m. The 275 m of *junction
+/// cluster* behind them — stubs welded to those stubs, and a 91 m residential
+/// ramp descending to its ground — is deliberately **not** taken. Propagating
+/// the absorption through the cluster would draw a soffit under an embankment,
+/// and the instrument that gates a walled terrace, `contact.kerb_unwalled`,
+/// reads zero over the whole cluster: the walls the model implies are all
+/// drawn, which is what S13 says a road cut into a flank has.
+///
+/// Whether this profile has **no ground of its own**: every node the partition
+/// still calls at grade stands more than [`ABSORB_STANDOFF_M`] off its own
+/// reference. `false` for a profile with no at-grade node at all — that one is
+/// already a structure end to end.
+///
+/// This is the discriminator between a stub held in the air and an approach
+/// embankment, and it is what stops the absorption from walking a whole
+/// terrace. Measured at Chauderon: the two service stubs welded onto Route de
+/// Chernex's deck hang over all of their 22 m and 18 m, while Chemin des
+/// Vuarennes hangs over 91 m of its 156 m and comes down to +1.7 m at its far
+/// end. The first pair is a span between two points in the air; the second is
+/// a road on a long fill, and a fill drawn with a soffit under it is worse
+/// than a fill drawn with the wall the ground stage already gives it
+/// (`contact.kerb_unwalled` reads zero across the whole cluster).
+pub fn hangs_end_to_end(profile: &Profile) -> bool {
+    let at_grade = profile.at_grade();
+    let (road, terrain) = (profile.road_m(), profile.terrain_m());
+    let mut any = false;
+    for k in 0..at_grade.len() {
+        if !at_grade[k] {
+            continue;
+        }
+        any = true;
+        if road[k] - terrain[k] <= ABSORB_STANDOFF_M {
+            return false;
+        }
+    }
+    any
+}
+
+/// Every grade span of a corridor turned into a level-1 deck, with the profile
+/// flagged to match — for a stub [`hangs_end_to_end`] says has no ground of
+/// its own and whose weld lands inside someone else's deck.
+///
+/// [`absorb_hanging_approaches`] walks along one corridor from its own span,
+/// and a corridor with no span of its own is invisible to it. That is the
+/// whole Chauderon residue: after the slot crossing was promoted and its
+/// approaches absorbed (S20), two service stubs remain welded to Route de
+/// Chernex at junctions *inside* its bridge, held by the weld at 526.7 and
+/// 527.7 m over a gorge floor their own reference reads at 512. At grade they
+/// pave, and their bands are drawn over the footbridge crossing the slot
+/// beneath — `order.deck_above_carriageway` −15.36 m, the worst inversion in
+/// the extract, with `contact.kerb_lip`'s worst on the same kerb. A road
+/// standing on a deck at one end and in the air everywhere else is a
+/// structure, which is what §4.5 says a surface departed from the ground is.
+pub fn carry_whole_corridor(
+    profile: &mut Profile,
+    spans: &[Span],
+    deck_follows_road: bool,
+) -> Vec<Span> {
+    let total = profile.arc().last().copied().unwrap_or(0.0);
+    profile.annex_structure(0.0, total, deck_follows_road);
+    spans
+        .iter()
+        .map(|s| match s.kind {
+            SpanKind::Grade => Span { level: 1, kind: SpanKind::Bridge, ..*s },
+            _ => *s,
+        })
+        .collect()
+}
+
 /// Extends span `i` forward to `target`, eating the grade spans in the way.
 /// A mapped bridge or bore is a boundary the annex never moves. Returns
 /// whether the span's end actually shifted.
@@ -895,6 +980,32 @@ mod tests {
             Span { arc0: 0.60 * len, arc1: len, level: 0, kind: SpanKind::Grade },
         ];
         assert!(annex_spans(&p, &spans, &[(570.0, 6.0)], &[]).is_none());
+    }
+
+    #[test]
+    fn a_stub_with_no_ground_of_its_own_is_carried_whole() {
+        // The Chauderon stubs: 100 m of road held in the air end to end. The
+        // discriminator is having no at-grade node back on its own reference —
+        // an approach that comes down to the ground is an embankment, and the
+        // ground stage already walls those.
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let deg = 100.0 / (DEG_M * cos_lat);
+        let nodes: Vec<Coord> =
+            (0..11).map(|i| Coord { x: 6.0 + deg * i as f64 / 10.0, y: 46.0 }).collect();
+        let spans = vec![Span { arc0: 0.0, arc1: 100.0, level: 0, kind: SpanKind::Grade }];
+
+        let mut hung = Profile::from_heights(&nodes, vec![520.0; 11], vec![508.0; 11]);
+        assert!(hangs_end_to_end(&hung), "12 m off its reference the whole way");
+        let out = carry_whole_corridor(&mut hung, &spans, false);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, SpanKind::Bridge);
+        assert_eq!(out[0].level, 1);
+        assert!(hung.at_grade().iter().all(|&g| !g), "and nothing is at grade any more");
+
+        // A ramp that reaches its ground keeps every metre of itself at grade.
+        let terrain: Vec<f64> = (0..11).map(|i| 508.0 + 1.2 * i as f64).collect();
+        let ramp = Profile::from_heights(&nodes, vec![520.0; 11], terrain);
+        assert!(!hangs_end_to_end(&ramp), "its far end is on the ground");
     }
 
     #[test]

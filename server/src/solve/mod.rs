@@ -173,6 +173,72 @@ fn reconcile_stratum(
         }
         c.spans = reconciled;
     }
+    carry_stubs_welded_onto_decks(scene, profiles, stratum, debug_annex);
+}
+
+/// The write-back's second sweep: stubs a junction weld leaves standing in the
+/// air on somebody's deck (`portals::carry_whole_corridor`).
+///
+/// Run after the whole stratum's spans are final, because the deck a stub
+/// stands on may itself have been grown by the first sweep — Route de
+/// Chernex's bridge reaches one of the two Chauderon welds only after
+/// `absorb_hanging_approaches` extends it. Taken to a fixpoint, so the answer
+/// does not depend on the order corridors are visited in: absorbing a stub can
+/// only ever make another corridor eligible, never ineligible, so the least
+/// fixpoint is unique. It terminates on the geometry rather than on a hop
+/// count — a corridor with any ground of its own is never a candidate
+/// ([`portals::hangs_end_to_end`]), so the cluster of hanging streets behind
+/// the two stubs is not walked: the first of them, Chemin des Vuarennes,
+/// descends to its own ground and is an embankment, not a span.
+///
+/// The deck must belong to this stratum or one senior to it. A senior's spans
+/// are a published fact; reading a junior's would invert authority (§4.1) and
+/// break the perturbation experiment.
+fn carry_stubs_welded_onto_decks(
+    scene: &mut SceneGraph,
+    profiles: &mut [Option<Profile>],
+    stratum: Stratum,
+    debug: bool,
+) {
+    let mut candidates: Vec<CorridorId> = scene
+        .corridors
+        .iter()
+        .filter(|c| c.kind.stratum() == stratum)
+        .filter(|c| {
+            profiles
+                .get(c.id as usize)
+                .and_then(|p| p.as_ref())
+                .is_some_and(portals::hangs_end_to_end)
+        })
+        .map(|c| c.id)
+        .collect();
+    while !candidates.is_empty() {
+        let Some(pick) = candidates.iter().position(|&id| {
+            scene.junctions.iter().any(|j| {
+                if !j.members.iter().any(|m| m.corridor == id) {
+                    return false;
+                }
+                j.members.iter().filter(|o| o.corridor != id).any(|o| {
+                    let oc = &scene.corridors[o.corridor as usize];
+                    oc.kind.stratum() <= stratum
+                        && oc.spans.iter().any(|s| {
+                            s.kind == SpanKind::Bridge && o.arc >= s.arc0 && o.arc <= s.arc1
+                        })
+                })
+            })
+        }) else {
+            break; // nothing left that stands on a deck
+        };
+        let id = candidates.swap_remove(pick);
+        let Some(p) = profiles.get_mut(id as usize).and_then(|p| p.as_mut()) else { continue };
+        let c = &mut scene.corridors[id as usize];
+        let deck_follows_road = c.kind.prior().monotone
+            && profile::monotone_direction(p.terrain_m()).is_some();
+        c.spans = portals::carry_whole_corridor(p, &c.spans, deck_follows_road);
+        if debug {
+            eprintln!("[annex] corridor {id} {:?} carried whole: {:?}", c.kind, c.spans);
+        }
+    }
 }
 
 /// The solved vertical model: one profile per corridor that needs one, indexed
