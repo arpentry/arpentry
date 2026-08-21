@@ -701,6 +701,7 @@ fn corridor_earthworks(
                 arc0: arcs[k],
                 cos_lat: crate::scene::run_cos_lat(&[nodes[k], nodes[k + 1]]),
                 carve: false,
+                headwall: false,
             });
         }
 
@@ -754,6 +755,7 @@ fn corridor_earthworks(
                         arc0: arcs[k],
                         cos_lat: crate::scene::run_cos_lat(&[nodes[k], nodes[k + 1]]),
                         carve: true,
+                        headwall: false,
                     });
                 }
             }
@@ -762,7 +764,10 @@ fn corridor_earthworks(
         // Portal daylighting: carve the ground down to the bore floor in a
         // short cut outward from each solved portal, so the mouth's lower
         // metres stand clear instead of hiding below grade. Cut-only — where
-        // the ground has already fallen away there is nothing to remove.
+        // the ground has already fallen away there is nothing to remove — and
+        // closed at the mouth by its own face (`headwall`), because the cut is
+        // in *front* of the portal and the hill behind it is the tunnel's
+        // cover.
         for portal in portals::portals(p, &c.spans) {
             let a = p.point_at_arc(portal.arc);
             let b = p.point_at_arc(portal.arc + portal.outward * PORTAL_CUT_LEN_M);
@@ -783,6 +788,7 @@ fn corridor_earthworks(
                 arc0: portal.arc,
                 cos_lat: crate::scene::run_cos_lat(&[a, b]),
                 carve: true,
+                headwall: true,
             });
         }
     }
@@ -999,6 +1005,7 @@ mod tests {
             arc0: 0.0,
             cos_lat,
             carve: false,
+            headwall: false,
         };
         let stack = GroundStack::new(vec![
             GroundLayer::of_earthworks(Stratum::R, Earthworks::new(vec![bench(400.0, 0)])),
@@ -1040,6 +1047,7 @@ mod tests {
             arc0: 0.0,
             cos_lat,
             carve: false,
+            headwall: false,
         };
         // A senior embankment at 420 m over ground the DEM puts at 400 m.
         let senior = GroundLayer::of_earthworks(Stratum::R, Earthworks::new(vec![bench(420.0, 0)]));
@@ -1080,6 +1088,7 @@ mod tests {
                 arc0: 0.0,
                 cos_lat,
                 carve: false,
+                headwall: false,
             }]),
         );
         let stack = GroundStack::new(vec![layer]);
@@ -1119,6 +1128,7 @@ mod tests {
             arc0,
             cos_lat,
             carve: false,
+            headwall: false,
         }
     }
 
@@ -1709,6 +1719,7 @@ mod tests {
             arc0: 0.0,
             cos_lat,
             carve: false,
+            headwall: false,
         }]);
         let g = GroundStack::new(vec![GroundLayer { stratum: Stratum::S, earthworks, waters }]);
         // Open water away from the berm: flattened to the level (over raw 360).

@@ -469,6 +469,7 @@ mod tests {
             arc0: 0.0,
             cos_lat: 46.0_f64.to_radians().cos(),
             carve: false,
+            headwall: false,
         }
     }
 

@@ -190,6 +190,19 @@ Carves (portal cuts, under-deck daylighting) remain separate cut-only
 notches, bounding the benched ground from above — a carve is a hole, not a
 target.
 
+**A portal cut ends at a face.** Every other edge fades out around its ends in
+a half-disc of its own reach, which is right for a run that simply stops and
+wrong for a trench dug *in front of* a tunnel mouth: the hill behind that mouth
+is the cover the tunnel runs under. Left to fade, the trench floor swings
+around the mouth and takes half-width-plus-batter of hillside off the first
+metres of tube — eight metres of it on a motorway — so the bore surfaces well
+before the drawn hill begins and the ground it should have entered stands as a
+cliff at the rim of the scoop. A portal carve therefore declares itself
+`headwall`: its influence stops at the plane through its inner end, in the
+height fold, in the footprint I8 is stated over, and in the bed query alike.
+What is left at the plane is a step of the mouth's own height, which is what a
+portal is, and the tube stamped through it fills exactly that opening.
+
 The ground model is a pure function of the global solved model: built once,
 queried pointwise, identical from every tile that asks (invariant 5).
 Terrain meshing, road draping, surface bands, junction plates, and building

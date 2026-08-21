@@ -107,6 +107,25 @@ pub struct EarthworkEdge {
     /// it — a portal daylighting cut must not build a berm where the natural
     /// ground already sits below the bore floor.
     pub carve: bool,
+    /// The edge's influence stops at the plane through `a`: nothing behind that
+    /// end is touched, however close it lies. Every other edge fades out around
+    /// its endpoints in a half-disc of its own reach, which is right for a run
+    /// that simply ends and wrong for a cut that ends **at a face**.
+    ///
+    /// A portal trench is the case. It is dug outward from the mouth to
+    /// daylight it, and the mouth is where the bore roof meets the ground: the
+    /// hillside behind it is the cover the tunnel runs under. Left to fade, the
+    /// trench floor swings around the mouth and scoops
+    /// `half_width_m + batter_m` of hill out from over the first metres of
+    /// tube — eight metres of it on a motorway — so the bore emerges into the
+    /// open well before the drawn hillside starts, and the ground it should
+    /// have entered stands as a cliff at the rim of the scoop. The A9's western
+    /// portal above Clarens lost 12.5 m of cover that way.
+    ///
+    /// So the trench is bounded by the portal face, which is what a portal is.
+    /// The step left at the plane is the mouth's own height, and the tube
+    /// stamped through it fills exactly that opening.
+    pub headwall: bool,
 }
 
 impl EarthworkEdge {
@@ -396,11 +415,20 @@ pub(super) fn lateral_distance(e: &EarthworkEdge, lon: f64, lat: f64) -> (f64, f
     let dy = e.b.y - e.a.y;
     let px = lon * e.cos_lat;
     let len2 = dx * dx + dy * dy;
-    let t = if len2 > 0.0 {
-        (((px - ax) * dx + (lat - e.a.y) * dy) / len2).clamp(0.0, 1.0)
+    let raw = if len2 > 0.0 {
+        ((px - ax) * dx + (lat - e.a.y) * dy) / len2
     } else {
         0.0
     };
+    // A headwalled edge ends at a face (see [`EarthworkEdge::headwall`]):
+    // behind the plane through `a` it has no reach at all, which every caller
+    // reads the same way because they all bound their own reach against this
+    // distance — the height fold, the footprint predicate I8 is stated over,
+    // and the bed query.
+    if e.headwall && raw < 0.0 {
+        return (f64::INFINITY, 0.0, LEFT);
+    }
+    let t = raw.clamp(0.0, 1.0);
     let cx = ax + dx * t;
     let cy = e.a.y + dy * t;
     let dd = ((px - cx) * (px - cx) + (lat - cy) * (lat - cy)).sqrt() * DEG_M;
@@ -429,6 +457,7 @@ mod tests {
             arc0: 0.0,
             cos_lat,
             carve: false,
+            headwall: false,
         }
     }
 
@@ -443,6 +472,41 @@ mod tests {
         assert!((ew.height(mid_x, 46.0, 110.0, 0.0, &mut scratch) - 105.0).abs() < 1e-9);
         // Ground already below the target: untouched (no berm).
         assert_eq!(ew.height(mid_x, 46.0, 100.0, 0.0, &mut scratch), 100.0);
+    }
+
+    /// A portal trench is dug in front of the mouth and the hill behind it is
+    /// the tunnel's cover, so the cut stops at its own face instead of fading
+    /// out in a half-disc that scoops the first metres of hillside away.
+    #[test]
+    fn a_headwalled_cut_reaches_forward_and_not_back() {
+        let mut scratch = Vec::new();
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let x_of = |m: f64| 6.0 + m / (DEG_M * cos_lat);
+        let mut e = edge(105.0);
+        e.carve = true;
+        let plain = Earthworks::new(vec![e]);
+        e.headwall = true;
+        let faced = Earthworks::new(vec![e]);
+
+        // Along the cut both agree: the ground comes down to the trench floor.
+        for m in [0.0, 40.0, 160.0] {
+            assert_eq!(faced.height(x_of(m), 46.0, 120.0, 0.0, &mut scratch), 105.0);
+            assert_eq!(plain.height(x_of(m), 46.0, 120.0, 0.0, &mut scratch), 105.0);
+        }
+        // Behind the `a` end the plain edge keeps digging out to its reach —
+        // 15 m of hill in this geometry — and the faced one takes nothing.
+        for m in [-1.0, -8.0, -17.0] {
+            assert_eq!(faced.height(x_of(m), 46.0, 120.0, 0.0, &mut scratch), 120.0);
+            assert!(plain.height(x_of(m), 46.0, 120.0, 0.0, &mut scratch) < 120.0);
+        }
+        // The face is a plane, not a radius: a point beside the mouth but not
+        // behind it is still in the trench.
+        let beside = 46.0 + 5.0 / DEG_M;
+        assert_eq!(faced.height(x_of(0.0), beside, 120.0, 0.0, &mut scratch), 105.0);
+        // And the footprint I8 is stated over agrees with the height, or the
+        // ground would move outside what the layer declares it covers.
+        assert!(!faced.covers(x_of(-8.0), 46.0, &mut scratch));
+        assert!(faced.covers(x_of(8.0), 46.0, &mut scratch));
     }
 
     #[test]
