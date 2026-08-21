@@ -1687,6 +1687,22 @@
       "worst": 0.0
     },
     {
+      "id": "ground.single_source",
+      "invariant": "I1",
+      "median": 0.006666666666667709,
+      "offenders": [],
+      "population": "Every profile node inside a structure span, over every corridor the                      solve holds a profile for, clipped to the extract bbox. Scored as the                      published engineered ground minus the reference surface the solve read                      at that node, with the reference passed to the stack as its own base so                      only the ground stage's own work is left. At-grade nodes are excluded:                      there the difference is the corridor's own bench, which is the imprint                      working and is scored by contact.kerb_*.",
+      "samples": 2744,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 12.513333333333335,
+      "threshold": 1.0,
+      "title": "A structural decision taken against a ground nobody drew",
+      "violation_pct": 8.126822157434402,
+      "violations": 223,
+      "worst": 12.509747145544452
+    },
+    {
       "id": "slope.rail_grade",
       "invariant": "I2",
       "median": 0.006666666666667709,
@@ -1823,7 +1839,7 @@
       6.9818115234375,
       46.47216796875
     ],
-    "commit": "3393dcd",
+    "commit": "13df60a",
     "max_tiles": 4096,
     "spacing_m": 1.0,
     "tiles": 621,

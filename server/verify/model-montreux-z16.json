@@ -138,6 +138,79 @@
       "worst": 0.0
     },
     {
+      "id": "ground.single_source",
+      "invariant": "I1",
+      "median": 0.006666666666667709,
+      "offenders": [
+        {
+          "lat": 46.43365742,
+          "lon": 6.9211108800000005,
+          "note": "Road(Motorway) 3959 solved its structure here against 538.14 m; the ground                          drawn is 525.63 m",
+          "value": 12.509747145544452,
+          "zoom": 16
+        },
+        {
+          "lat": 46.433571658333335,
+          "lon": 6.920812124999999,
+          "note": "Road(Motorway) 3958 solved its structure here against 533.17 m; the ground                          drawn is 522.90 m",
+          "value": 10.277082631494068,
+          "zoom": 16
+        },
+        {
+          "lat": 46.42404691111111,
+          "lon": 6.930683877777778,
+          "note": "Road(Motorway) 3959 solved its structure here against 501.05 m; the ground                          drawn is 491.59 m",
+          "value": 9.45553691676838,
+          "zoom": 16
+        },
+        {
+          "lat": 46.454389400000004,
+          "lon": 6.96014418,
+          "note": "Rail(NarrowGauge) 20294 solved its structure here against 1067.75 m; the ground                          drawn is 1058.31 m",
+          "value": 9.435886555727393,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4280176,
+          "lon": 6.9277203,
+          "note": "Rail(NarrowGauge) 20016 solved its structure here against 579.05 m; the ground                          drawn is 570.10 m",
+          "value": 8.950162455724126,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4338097,
+          "lon": 6.916575,
+          "note": "Road(Tertiary) 20059 solved its structure here against 425.39 m; the ground                          drawn is 434.28 m",
+          "value": 8.892394311680903,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4022726,
+          "lon": 6.9274955,
+          "note": "Rail(StandardGauge) 19490 solved its structure here against 376.11 m; the ground                          drawn is 368.46 m",
+          "value": 7.650640290399167,
+          "zoom": 16
+        },
+        {
+          "lat": 46.42395785,
+          "lon": 6.93031293,
+          "note": "Road(Motorway) 3958 solved its structure here against 497.97 m; the ground                          drawn is 490.32 m",
+          "value": 7.643975429093814,
+          "zoom": 16
+        }
+      ],
+      "population": "Every profile node inside a structure span, over every corridor the                      solve holds a profile for, clipped to the extract bbox. Scored as the                      published engineered ground minus the reference surface the solve read                      at that node, with the reference passed to the stack as its own base so                      only the ground stage's own work is left. At-grade nodes are excluded:                      there the difference is the corridor's own bench, which is the imprint                      working and is scored by contact.kerb_*.",
+      "samples": 2744,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 9.46,
+      "threshold": 1.0,
+      "title": "A structural decision taken against a ground nobody drew",
+      "violation_pct": 8.126822157434402,
+      "violations": 223,
+      "worst": 12.509747145544452
+    },
+    {
       "id": "slope.rail_grade",
       "invariant": "I2",
       "median": -0.024062499999999987,
