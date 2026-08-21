@@ -117,27 +117,32 @@ pub fn emit(
             }
         }
         Synth::Structure { corridor, kind } => {
-            match solved.profile(corridor) {
-                Some(p) if structure::stamp(f, p, kind, sampler, z, solved.z_ref, bounds) => {}
+            let profile = solved.profile(corridor);
+            let stamped =
+                profile.map(|p| structure::stamp(f, p, kind, sampler, z, solved.z_ref, bounds));
+            match stamped {
+                // A solid, or a tube the finished ground hides: either way this
+                // feature has had everything it is owed. Draping the hidden one
+                // would paint a surface line over a bore running under the
+                // terrace that line would be drawn on.
+                Some(structure::Stamped::Solid | structure::Stamped::Hidden) => {}
                 // Degradation ladder: no solved profile, or no solid to draw
                 // (a tunnel tagged over flat ground) → a plain draped road, on
                 // the same terms any other road gets. Its own layer, and the
                 // field only if it is part of the paved surface: a demoted
                 // structure is still the corridor it was, and reading the field
                 // on layer 0 would drape a flyover onto the street beneath it.
-                other => {
-                    road::bake(
-                        f,
-                        other,
-                        false,
-                        Some(corridor),
-                        paved_field,
-                        sampler,
-                        z,
-                        solved.z_ref,
-                        bounds,
-                    )
-                }
+                _ => road::bake(
+                    f,
+                    profile,
+                    false,
+                    Some(corridor),
+                    paved_field,
+                    sampler,
+                    z,
+                    solved.z_ref,
+                    bounds,
+                ),
             }
         }
     }

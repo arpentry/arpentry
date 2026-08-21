@@ -112,6 +112,7 @@ pub fn stamp(
     // The fitted profile is all at-grade, so the per-zoom structure datum
     // (`synth::datum`) finds no run here and the fitted deck stays absolute.
     structure::stamp(f, &profile, SpanKind::Bridge, sampler, z, z_ref, bounds)
+        == structure::Stamped::Solid
 }
 
 /// Re-seats every elevated span's abutments on the ground that can carry them.

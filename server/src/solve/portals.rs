@@ -122,12 +122,31 @@ fn dominant_buried_seed(arc: &[f64], road: &[f64], terrain: &[f64], span: &Span)
 /// callers see the same run whatever window they hold. `false` when no
 /// line-buried node exists at or beside `at_arc`.
 pub fn tube_fit_majority(profile: &Profile, at_arc: f64) -> bool {
+    let Some((f, l)) = line_buried_run(profile, at_arc) else {
+        return false;
+    };
+    let road = profile.road_m();
+    let terrain = profile.terrain_m();
+    let fit = (f..=l).filter(|&i| roof_gap(road[i], terrain[i]) < 0.0).count();
+    2 * fit >= l - f + 1
+}
+
+/// The **line-buried run** containing `at_arc`: the maximal stretch of nodes
+/// where the road runs below the reference surface, as inclusive node indices.
+///
+/// The run, not the annotation: a mapper's span edge is where a way was split,
+/// and every consumer that needs "this tunnel, whole" needs the geometry's own
+/// answer instead. Unclamped by [`PORTAL_MAX_M`] on purpose, so a caller
+/// holding a tile-clipped piece of the tunnel still sees the same run as one
+/// holding the corridor — which is what lets a per-tile drawing decision come
+/// out the same in every tile (invariant 5).
+pub fn line_buried_run(profile: &Profile, at_arc: f64) -> Option<(usize, usize)> {
     let arc = profile.arc();
     let road = profile.road_m();
     let terrain = profile.terrain_m();
     let n = arc.len();
     if n == 0 {
-        return false;
+        return None;
     }
     let line = |i: usize| road[i] - terrain[i];
     let mut s = arc.partition_point(|&a| a < at_arc).min(n - 1);
@@ -137,7 +156,7 @@ pub fn tube_fit_majority(profile: &Profile, at_arc: f64) -> bool {
         } else if s + 1 < n && line(s + 1) < 0.0 {
             s += 1;
         } else {
-            return false;
+            return None;
         }
     }
     let mut f = s;
@@ -148,8 +167,7 @@ pub fn tube_fit_majority(profile: &Profile, at_arc: f64) -> bool {
     while l + 1 < n && line(l + 1) < 0.0 {
         l += 1;
     }
-    let fit = (f..=l).filter(|&i| roof_gap(road[i], terrain[i]) < 0.0).count();
-    2 * fit >= l - f + 1
+    Some((f, l))
 }
 
 /// The buried run of one tunnel span: its **interior by the line, its ends

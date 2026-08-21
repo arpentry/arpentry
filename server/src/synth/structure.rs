@@ -63,11 +63,46 @@ const SEGMENT_M: f64 = 4.0;
 /// Cap on densified centerline vertices per line — a runaway guard.
 const MAX_VERTS: usize = 4096;
 
+/// Shortest stretch of bare tube worth cutting the solid apart for, in metres
+/// of centerline (see [`drawn_runs`]). Below it the tube grazes the finished
+/// ground for a section or two — DEM relief the sweep happens to sample — and
+/// interrupting the solid there buys two portal faces to hide a sliver.
+const BARE_TUBE_MIN_M: f64 = 10.0;
+
+/// How far from the ends of its buried run a tube is still at its mouth, in
+/// metres of centerline (see [`drawn_runs`]).
+///
+/// A portal is a transition, not a plane: the road dives, the ground climbs,
+/// and between "the tube stands in the open" and "the hill covers it" there is
+/// a stretch of tube standing proud that is exactly what a cut-and-cover
+/// approach looks like — the daylighting cut ([`crate::priors::PORTAL_CUT_LEN_M`])
+/// trenches the first twelve metres of it on purpose. Measured over the
+/// Montreux zone, 84 % of every exposed metre of tube in the extract lies
+/// within 25 m of the end of its run and 58 % within ten; past that the
+/// distribution is flat and thin, which is a wall standing in a hillside
+/// rather than a mouth opening out of one.
+const MOUTH_BAND_M: f64 = 25.0;
+
+/// What [`stamp`] made of a structure feature, and what the caller owes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stamped {
+    /// A solid was written to `f.mesh`.
+    Solid,
+    /// No solid, and none is owed: the finished ground hides the whole tube
+    /// here. Drawing the road instead would paint a surface line over a
+    /// railway that runs under the terrace it is drawn on.
+    Hidden,
+    /// No solid to draw, because the annotation and the geometry disagree — a
+    /// tunnel tagged over flat ground, a degenerate span. The road is what is
+    /// really there, so the caller drapes it (the degradation ladder).
+    Degrade,
+}
+
 /// Builds the structure box for a transportation feature and stores it in
 /// `f.mesh`. A deck is the bare slab and a bore the bare tube — no supporting
-/// geometry under either. Returns whether a solid was emitted — `false` (a
-/// tunnel over flat ground, degenerate geometry) tells the caller to drape the
-/// road instead.
+/// geometry under either. The return says what the caller owes the feature:
+/// [`Stamped::Degrade`] (a tunnel over flat ground, degenerate geometry) asks
+/// for a draped road instead, [`Stamped::Hidden`] for nothing at all.
 pub fn stamp(
     f: &mut EncoderFeature,
     profile: &Profile,
@@ -76,7 +111,7 @@ pub fn stamp(
     z: u8,
     z_ref: u8,
     bounds: &Bounds,
-) -> bool {
+) -> Stamped {
     let frame = Frame::at_center(bounds);
     let feature_kind =
         Kind::parse(None, prop_str(f, "class").as_deref(), prop_str(f, "subclass").as_deref());
@@ -120,30 +155,29 @@ pub fn stamp(
         None => crate::priors::PATH_STRUCTURE_HALF_WIDTH_M,
     };
 
-    // The per-zoom datum shift (zero at the reference zoom, or when disabled):
-    // at a coarse zoom the solid is re-expressed against that zoom's drawn
-    // ground, station for station, so it rides the coarse canvas by the same
-    // local displacement the at-grade world already does — and by the same
-    // shared curve its own paint reads (`synth::datum::shift_at_arc`).
-    let mut shift =
-        |arc: f64| crate::synth::datum::shift_at_arc(profile, arc, sampler, z, z_ref);
     let mut acc = Accum::default();
+    let mut hidden = false;
     for line in lines(&f.geometry) {
         for piece in proper_pieces(&line.0, bounds) {
             match kind {
                 SpanKind::Tunnel => {
-                    sweep_bore(&mut acc, &frame, bounds, profile, &piece, half_w, &mut shift)
+                    hidden |= sweep_bore(
+                        &mut acc, &frame, bounds, profile, &piece, half_w, sampler, z, z_ref,
+                    );
                 }
-                _ => sweep_deck(&mut acc, &frame, bounds, profile, &piece, half_w, &mut shift),
+                _ => sweep_deck(
+                    &mut acc, &frame, bounds, profile, &piece, half_w, sampler, z, z_ref,
+                ),
             }
         }
     }
     match acc.into_mesh() {
         Some(mesh) => {
             f.mesh = Some(mesh);
-            true
+            Stamped::Solid
         }
-        None => false,
+        None if hidden => Stamped::Hidden,
+        None => Stamped::Degrade,
     }
 }
 
@@ -257,7 +291,9 @@ fn sweep_deck(
     profile: &Profile,
     span: &[Coord],
     half_w: f64,
-    shift: &mut dyn FnMut(f64) -> f64,
+    sampler: &mut crate::ground::sampler::GroundSampler,
+    z: u8,
+    z_ref: u8,
 ) {
     let pts = densify(span, frame);
     if pts.len() < 2 {
@@ -267,7 +303,13 @@ fn sweep_deck(
         .deck_nodes(&pts)
         .into_iter()
         .map(|d| {
-            let h = d.height_m + shift(d.arc_m);
+            // The per-zoom datum shift (zero at the reference zoom, or when
+            // disabled): at a coarse zoom the solid is re-expressed against
+            // that zoom's drawn ground, station for station, so it rides the
+            // coarse canvas by the same local displacement the at-grade world
+            // already does — and by the same shared curve its own paint reads.
+            let h = d.height_m
+                + crate::synth::datum::shift_at_arc(profile, d.arc_m, sampler, z, z_ref);
             Section {
                 lon: d.lon,
                 lat: d.lat,
@@ -296,6 +338,10 @@ fn sweep_deck(
 /// bridge deck's underside so the bore's bottom aligns with an adjoining deck.
 /// Each *real* portal mouth (a run end inside the tile, not a tile-boundary
 /// clip) is capped with a portal face.
+///
+/// Returns whether any stretch of tube was withheld because the *finished*
+/// ground stands below its roof there ([`drawn_runs`]) — the caller owes such
+/// a piece nothing rather than a draped road.
 fn sweep_bore(
     acc: &mut Accum,
     frame: &Frame,
@@ -303,11 +349,13 @@ fn sweep_bore(
     profile: &Profile,
     span: &[Coord],
     half_w: f64,
-    shift: &mut dyn FnMut(f64) -> f64,
-) {
+    sampler: &mut crate::ground::sampler::GroundSampler,
+    z: u8,
+    z_ref: u8,
+) -> bool {
     let pts = densify(span, frame);
     if pts.len() < 2 {
-        return;
+        return false;
     }
     // The cap criterion this run's own geometry elects (see
     // `solve::portals::tube_fit_majority`): a real bore trims and caps on the
@@ -325,7 +373,7 @@ fn sweep_bore(
         .map(|d| bore_section(d.lon, d.lat, d.height_m, d.left_e, d.left_n, profile, roof_caps))
         .collect();
     if sections.len() < 2 {
-        return;
+        return false;
     }
 
     // Resolve each end to the road/terrain crossing. Trimming an above-ground
@@ -343,7 +391,51 @@ fn sweep_bore(
     // tagged over flat (or shallow) terrain. Drawing a bore would float a box
     // on the surface, so emit nothing and let the caller drape the road.
     if sections.len() < 2 || sections.iter().all(|s| s.gap_m >= 0.0) {
-        return;
+        return false;
+    }
+
+    // What the *finished* ground does not hide, the tube does not draw. Every
+    // decision above reads the reference surface the solve read — which is the
+    // right datum for where a mouth sits, and the wrong one for whether a tube
+    // is buried, because the ground stage carves that surface afterwards and
+    // nothing re-reads it (docs/GENERATION.md §4.3). Sampled at the reference
+    // zoom, so a tube is drawn over the same stretch at every rung.
+    let cover: Option<Vec<f64>> = sampler
+        .has_elevation()
+        .then(|| sections.iter().map(|s| sampler.ground(s.lon, s.lat, z_ref)).collect());
+    // How far each section sits from the ends of its **buried run** — the
+    // geometry's own tunnel, walked on the profile rather than on this tile's
+    // clipped piece, so every tile draws the same stretches (invariant 5).
+    let mouths = crate::solve::portals::line_buried_run(profile, mid)
+        .map(|(f, l)| (profile.arc()[f], profile.arc()[l]));
+    let runs = match (&cover, mouths) {
+        (Some(c), Some((a0, a1))) => {
+            let from_mouth: Vec<f64> = sections
+                .iter()
+                .map(|s| {
+                    let a = profile.arc_of(s.lon, s.lat);
+                    (a - a0).min(a1 - a).max(0.0)
+                })
+                .collect();
+            drawn_runs(&sections, c, &from_mouth)
+        }
+        _ => vec![(0, sections.len() - 1)],
+    };
+    if std::env::var_os("ARPT_DEBUG_TUBE").is_some() {
+        if let Some(c) = &cover {
+            let bare = (0..sections.len())
+                .filter(|&i| c[i] < sections[i].top_mm as f64 / 1000.0)
+                .count();
+            eprintln!(
+                "[tube] {:.6},{:.6} n={} bare={} mouths={:?} runs={:?}",
+                sections[0].lon,
+                sections[0].lat,
+                sections.len(),
+                bare,
+                mouths,
+                runs,
+            );
+        }
     }
 
     // Per-zoom datum: shift the drawn tube only, after the portals resolved.
@@ -352,20 +444,112 @@ fn sweep_bore(
     // height it is drawn at, onto this zoom's ground — station by station, so
     // the roof's burial under the coarse hill is the reference burial.
     for s in sections.iter_mut() {
-        let c_mm = (shift(profile.arc_of(s.lon, s.lat)) * 1000.0).round() as i32;
+        let c_mm = (crate::synth::datum::shift_at_arc(
+            profile,
+            profile.arc_of(s.lon, s.lat),
+            sampler,
+            z,
+            z_ref,
+        ) * 1000.0)
+            .round() as i32;
         s.top_mm += c_mm;
         s.bot_mm += c_mm;
     }
 
-    sweep_prism(acc, frame, bounds, &sections, half_w, false);
-
     let n = sections.len();
-    if cap_low {
-        cap_end(acc, frame, bounds, &sections[0], &sections[1], half_w);
+    for &(lo, hi) in &runs {
+        if hi <= lo {
+            continue;
+        }
+        sweep_prism(acc, frame, bounds, &sections[lo..=hi], half_w, false);
+        // The piece's own ends keep the portal decision; a boundary the cut
+        // created is always capped — it is a real end of a real solid, and it
+        // sits under the ground that cut it, so the face is hidden.
+        if lo > 0 || cap_low {
+            cap_end(acc, frame, bounds, &sections[lo], &sections[lo + 1], half_w);
+        }
+        if hi < n - 1 || cap_high {
+            cap_end(acc, frame, bounds, &sections[hi], &sections[hi - 1], half_w);
+        }
     }
-    if cap_high {
-        cap_end(acc, frame, bounds, &sections[n - 1], &sections[n - 2], half_w);
+    runs.iter().map(|&(lo, hi)| hi - lo + 1).sum::<usize>() < n
+}
+
+/// The stretches of the resolved tube that are drawn, as inclusive index ranges
+/// into `sections`, given the finished ground `cover` at each of them and each
+/// one's distance `from_mouth` to the nearer end of its buried run.
+///
+/// A bore is drawn where the ground hides it and at its mouths, and the two are
+/// not the same thing. **A tube standing proud of the finished ground is only
+/// honest at a mouth**: there the road dives while the ground climbs, the
+/// daylighting cut trenches the first metres to the bore floor on purpose
+/// (`ground::derive`), and a tube standing in that trench is a cut-and-cover
+/// approach — the one part of a tunnel anybody is meant to see. Away from the
+/// mouths it is the other thing: every decision above reads the reference
+/// surface the solve read, the ground stage carves that surface afterwards
+/// (docs/GENERATION.md §4.3), and nothing re-reads it — so where a bench cut a
+/// terrace below a roof that was capped against the raw DEM, what is drawn is a
+/// box wall crossing a hillside nothing enters or leaves.
+///
+/// So a bare stretch past [`MOUTH_BAND_M`] from both ends of the run, and at
+/// least [`BARE_TUBE_MIN_M`] long, is not drawn: the solid is cut there and
+/// capped at each new end, under the ground that cut it. Measured over the
+/// Montreux zone this hides 100 m — 82 m of the MOB's Vernex-Dessus gallery
+/// standing up to 2.6 m out of a benched terrace (the dark box of
+/// docs/GENERATION.md S21, and the whole of `clearance.bore_cover`'s interior
+/// family) plus one 18 m neighbour — and leaves all 834 m of mouth transition
+/// alone, including the short cut-and-cover spans that are *mostly* trench and
+/// would not survive a majority test.
+///
+/// `from_mouth` is measured on the profile, not on this tile's clipped piece,
+/// so the same stretches are drawn in every tile that holds a fragment of the
+/// run (invariant 5).
+///
+/// The span itself is untouched. This is the drawn solid only: the tunnel stays
+/// one tunnel, so nothing here paves, benches or paints the stretch it hides
+/// (`solve::portals::span_bounds` deliberately refuses to split a run at an
+/// interior dip, on those grounds).
+fn drawn_runs(sections: &[Section], cover: &[f64], from_mouth: &[f64]) -> Vec<(usize, usize)> {
+    let n = sections.len();
+    let bare = |i: usize| {
+        cover[i] < sections[i].top_mm as f64 / 1000.0 && from_mouth[i] > MOUTH_BAND_M
+    };
+    let m_per_deg_lon = DEG_M * sections[0].lat.to_radians().cos();
+    let plan_m = |a: usize, b: usize| -> f64 {
+        let de = (sections[b].lon - sections[a].lon) * m_per_deg_lon;
+        let dn = (sections[b].lat - sections[a].lat) * DEG_M;
+        (de * de + dn * dn).sqrt()
+    };
+    let mut hidden = vec![false; n];
+    let mut i = 0;
+    while i < n {
+        if !bare(i) {
+            i += 1;
+            continue;
+        }
+        let first = i;
+        while i < n && bare(i) {
+            i += 1;
+        }
+        let last = i - 1;
+        if plan_m(first, last) >= BARE_TUBE_MIN_M {
+            hidden[first..=last].fill(true);
+        }
     }
+    let mut runs = Vec::new();
+    let mut i = 0;
+    while i < n {
+        if hidden[i] {
+            i += 1;
+            continue;
+        }
+        let first = i;
+        while i < n && !hidden[i] {
+            i += 1;
+        }
+        runs.push((first, i - 1));
+    }
+    runs
 }
 
 /// Which end of the ordered section list a portal sits on.
@@ -756,7 +940,7 @@ mod tests {
         let half_w = Kind::Road(RoadClass::Motorway).prior().half_width_m(false).unwrap();
         let mut acc = Accum::default();
         for piece in proper_pieces(&line.0, b) {
-            sweep_deck(&mut acc, &frame, b, profile, &piece, half_w, &mut |_| 0.0);
+            sweep_deck(&mut acc, &frame, b, profile, &piece, half_w, &mut flat_sampler(), 14, 14);
         }
         acc.into_mesh()
     }
@@ -767,7 +951,7 @@ mod tests {
         let half_w = Kind::Road(RoadClass::Motorway).prior().half_width_m(false).unwrap();
         let mut acc = Accum::default();
         for piece in proper_pieces(&line.0, b) {
-            sweep_bore(&mut acc, &frame, b, profile, &piece, half_w, &mut |_| 0.0);
+            sweep_bore(&mut acc, &frame, b, profile, &piece, half_w, &mut flat_sampler(), 14, 14);
         }
         acc.into_mesh()
     }
@@ -805,7 +989,10 @@ mod tests {
                 mesh: None,
                 synth: crate::synth::Synth::None,
             };
-            assert!(stamp(&mut f, &profile, SpanKind::Bridge, &mut flat_sampler(), 14, 14, &b));
+            assert_eq!(
+                stamp(&mut f, &profile, SpanKind::Bridge, &mut flat_sampler(), 14, 14, &b),
+                Stamped::Solid
+            );
             let mesh = f.mesh.expect("deck mesh");
             // The west→east line spreads its cross-section in y.
             let (lo, hi) =
@@ -895,7 +1082,10 @@ mod tests {
             mesh: None,
             synth: crate::synth::Synth::None,
         };
-        assert!(!stamp(&mut f, &profile, SpanKind::Tunnel, &mut flat_sampler(), 14, 14, &b));
+        assert_eq!(
+            stamp(&mut f, &profile, SpanKind::Tunnel, &mut flat_sampler(), 14, 14, &b),
+            Stamped::Degrade
+        );
         assert!(f.mesh.is_none());
     }
 
@@ -970,6 +1160,65 @@ mod tests {
         let crossing = b.west + 0.60 * b.width();
         assert!(mesh_e < crossing, "bore must stop at the crossing, not run onto the flank");
         assert!(mesh_e < line_e, "bore must not reach the above-ground line end");
+    }
+
+    /// A straight north-running section list at `lat0`, one section every
+    /// `step_m`, with the roof at `roof_m` — enough for [`drawn_runs`], which
+    /// reads only the roof and the plan positions.
+    fn cover_sections(n: usize, step_m: f64, roof_m: f64) -> Vec<Section> {
+        (0..n)
+            .map(|i| Section {
+                lon: 6.9,
+                lat: 46.4 + i as f64 * step_m / DEG_M,
+                top_mm: project::quantize_z(roof_m),
+                bot_mm: project::quantize_z(roof_m - 6.5),
+                gap_m: -1.0,
+                left_e: 1.0,
+                left_n: 0.0,
+            })
+            .collect()
+    }
+
+    /// Distance to the nearer end of the run, for `n` sections `step_m` apart
+    /// spanning the whole run — what `sweep_bore` measures on the profile.
+    fn from_mouth(n: usize, step_m: f64) -> Vec<f64> {
+        let len = (n - 1) as f64 * step_m;
+        (0..n).map(|i| (i as f64 * step_m).min(len - i as f64 * step_m)).collect()
+    }
+
+    #[test]
+    fn a_tube_bare_away_from_its_mouths_is_not_drawn() {
+        // The S21 gallery in miniature: a benched terrace sitting below the
+        // roof through the middle of a buried run. Nothing enters or leaves a
+        // tube there, so the solid is cut and the stretch left to the ground.
+        let sections = cover_sections(41, 4.0, 100.0);
+        let mut cover = vec![103.0; 41];
+        cover[10..=30].fill(97.4); // 84 m standing 2.6 m proud, mid-run
+        let runs = drawn_runs(&sections, &cover, &from_mouth(41, 4.0));
+        assert_eq!(runs, vec![(0, 9), (31, 40)], "the bare middle must not be drawn");
+    }
+
+    #[test]
+    fn a_tube_bare_at_its_mouth_is_drawn() {
+        // The portal transition: the road dives while the ground climbs, and
+        // the daylighting cut trenches the first metres on purpose. A tube
+        // standing in that trench is a cut-and-cover approach, not a wall.
+        let sections = cover_sections(41, 4.0, 100.0);
+        let mut cover = vec![103.0; 41];
+        cover[0..=5].fill(94.0); // emerging: 20 m of tube in the open
+        let runs = drawn_runs(&sections, &cover, &from_mouth(41, 4.0));
+        assert_eq!(runs, vec![(0, 40)], "a mouth's own exposure must stay drawn");
+    }
+
+    #[test]
+    fn a_brief_graze_does_not_cut_the_tube() {
+        // A section or two of DEM relief brushing the roof is not a defect
+        // worth two portal faces to hide.
+        let sections = cover_sections(41, 4.0, 100.0);
+        let mut cover = vec![103.0; 41];
+        cover[19..=20].fill(99.5); // 4 m grazing half a metre proud, mid-run
+        let runs = drawn_runs(&sections, &cover, &from_mouth(41, 4.0));
+        assert_eq!(runs, vec![(0, 40)], "a graze shorter than the minimum keeps the tube whole");
     }
 
     #[test]

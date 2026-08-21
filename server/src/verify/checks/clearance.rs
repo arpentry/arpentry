@@ -299,7 +299,11 @@ impl Check for Clearance {
                      mouth by design, so the threshold is {EXPOSED_BORE_M:.1} m; past it the tube \
                      is in open air. Expected to fire: the roof-cover clamp was deliberately \
                      dropped for the constant-section tube, so this metric exists to keep an \
-                     accepted cost from drifting."
+                     accepted cost from drifting. Most of what it counts is that accepted cost — \
+                     censused over Montreux, 84 % of the exposed tube lies within 25 m of the end \
+                     of its buried run, standing in the daylighting cut that trenches the mouth on \
+                     purpose. What is *not* accepted is exposure away from the mouths, which \
+                     `synth::structure::drawn_runs` no longer draws."
                 ),
                 sense: Sense::LowerIsWorse,
                 threshold: EXPOSED_BORE_M,
