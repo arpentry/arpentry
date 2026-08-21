@@ -1336,6 +1336,24 @@ fn limit_road_grade(
 /// claim a cliff and a steep one is not clipped below the bed it was written
 /// for. `None` when too little of the corridor is mapped at grade
 /// ([`MEASURED_GRADE_MIN_M`]) for the read to mean anything.
+///
+/// **Per-edge, and a windowed rule was measured and rejected.** The obvious
+/// worry about the per-edge percentile is that a V-shaped plunge-and-recover
+/// inside one notch span has steep edges while going nowhere, so it could buy
+/// a licence to dive that a road crossing a gully should not have. Replacing
+/// the edge grades with the reference's *net* rise over
+/// [`NOTCH_SPAN_M`]-wide windows — which a V cancels out of — was censused
+/// before it was built (`examples/grade_census`), and it is not a tightening
+/// but a deletion: of the 1,998 corridors the escape raises over the Montreux
+/// zone, 1,857 would lose it, **including 22 of the 26 narrow-gauge escapes**,
+/// which is the rack railway this exists for (S18). The escape is not a rare
+/// exception — 8.5 % of the network holds one and 94 % of those spend it —
+/// because a mapped centerline traversing a steep flank disagrees with the DEM
+/// at the 12–24 m node scale far more than it does over 60 m. Any future
+/// attempt has to separate cross-slope sampling disagreement from a genuine
+/// V, which the window does not do; and see the `Mode::Street` arm below for
+/// why holding a street to its class number instead is what hung the Chauderon
+/// chain 26 m over its own hillside.
 fn measured_grade(
     arc: &[f64],
     reference: &[f64],
