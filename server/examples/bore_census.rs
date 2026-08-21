@@ -8,6 +8,14 @@
 //!   solve read (a portal transition by design, or a profile defect), or the
 //!   engineered ground was cut below it afterwards, in which case the layer and
 //!   the kind of edge that cut it are named (portal carve, bench, cutting face).
+//! - **by owner** — whether the edge that took the cover belongs to the tube's
+//!   own corridor (its daylighting approach, which is what a trench is for) or
+//!   to somebody else, with the (cutter, victim) pairs listed.
+//! - **against the counterfactual** — the whole stack refolded with every
+//!   foreign edge floored at the tube's own cover line, which is what a
+//!   "nobody may cut through a tunnel" rule would buy, and again with only
+//!   foreign *faces* floored, since a bench is somebody's roadbed and raising
+//!   the ground to a cover line would bury the road that rides it.
 //! - **by position** — distance to the end of the span, and whether the exposed
 //!   stretch reaches a run end (the mouth) or is closed off by covered tube.
 //! - **by run** — what fraction of each span's tube the finished ground hides,
@@ -23,7 +31,7 @@
 
 use arpentry_server::dem::Dem;
 use arpentry_server::ground;
-use arpentry_server::priors::{Stratum, TUNNEL_HEIGHT_M};
+use arpentry_server::priors::{Stratum, TUNNEL_COVER_M, TUNNEL_HEIGHT_M};
 use arpentry_server::project::Bounds;
 use arpentry_server::scene::SpanKind;
 use arpentry_server::{assemble, solve};
@@ -41,6 +49,84 @@ fn layer_parts(
     lat: f64,
     raw: f64,
 ) -> (Option<f64>, f64, f64, f64) {
+    let (b, f, c, cv, _) = layer_parts_owned(ew, lon, lat, raw);
+    (b, f, c, cv)
+}
+
+/// [`layer_parts`], plus the chain of the edge that produced the lowest of the
+/// three cutting answers — the corridor whose earthwork took the cover away.
+/// A tube cut by its *own* corridor's trench is the daylighting approach; one
+/// cut by somebody else's is a neighbour digging through it.
+fn layer_parts_owned(
+    ew: &ground::modifiers::Earthworks,
+    lon: f64,
+    lat: f64,
+    raw: f64,
+) -> (Option<f64>, f64, f64, f64, Option<(u32, f64)>) {
+    let cos_lat = lat.to_radians().cos();
+    let (mut bench, mut fill, mut cut, mut carve) =
+        (None::<(f64, f64)>, f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY);
+    // (chain, height) of the lowest cutting edge seen, whatever its kind.
+    let mut lowest: Option<(u32, f64)> = None;
+    for e in ew.edges() {
+        let px = (lon - e.a.x) * 111_320.0 * cos_lat;
+        let py = (lat - e.a.y) * 110_540.0;
+        let ex = (e.b.x - e.a.x) * 111_320.0 * cos_lat;
+        let ey = (e.b.y - e.a.y) * 110_540.0;
+        let len2 = ex * ex + ey * ey;
+        let raw_t = if len2 > 0.0 { (px * ex + py * ey) / len2 } else { 0.0 };
+        if e.headwall && raw_t < 0.0 {
+            continue; // bounded by its own face: no reach behind `a`
+        }
+        let t = raw_t.clamp(0.0, 1.0);
+        let (qx, qy) = (px - t * ex, py - t * ey);
+        let d = (qx * qx + qy * qy).sqrt();
+        let side = if ex * py - ey * px >= 0.0 { 0 } else { 1 };
+        if d >= e.half_width_m + e.batter_m[side] {
+            continue;
+        }
+        let target = e.target_a + (e.target_b - e.target_a) * t;
+        let rise = (d - e.half_width_m).max(0.0) / e.batter_run[side];
+        let mut note = |h: f64| {
+            if lowest.is_none_or(|(_, lh)| h < lh) {
+                lowest = Some((e.chain, h));
+            }
+        };
+        if e.carve {
+            note(target + rise);
+            carve = carve.min(target + rise);
+            continue;
+        }
+        if d <= e.half_width_m {
+            note(target);
+            if bench.is_none_or(|(bd, _)| d < bd) {
+                bench = Some((d, target));
+            }
+        } else if target > raw {
+            fill = fill.max(target - rise);
+        } else {
+            note(target + rise);
+            cut = cut.min(target + rise);
+        }
+    }
+    (bench.map(|(_, t)| t), fill, cut, carve, lowest)
+}
+
+/// One layer's height at a point, reproducing [`Earthworks::height`] — bench
+/// wins outright, else the cut digs and the fill raises, then carves bound the
+/// result from above — with one optional change: every cutting answer from an
+/// edge whose chain is **not** `own` is floored at `cover`, which is the
+/// counterfactual "a foreign earthwork may not cut below this tube's cover
+/// line". The floor never raises the ground above what came in (`base`), so a
+/// tube whose cover has already gone at a mouth keeps its trench.
+fn layer_height_guarded(
+    ew: &ground::modifiers::Earthworks,
+    lon: f64,
+    lat: f64,
+    base: f64,
+    guard: Option<(u32, f64)>,
+    benches_too: bool,
+) -> f64 {
     let cos_lat = lat.to_radians().cos();
     let (mut bench, mut fill, mut cut, mut carve) =
         (None::<(f64, f64)>, f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY);
@@ -50,7 +136,11 @@ fn layer_parts(
         let ex = (e.b.x - e.a.x) * 111_320.0 * cos_lat;
         let ey = (e.b.y - e.a.y) * 110_540.0;
         let len2 = ex * ex + ey * ey;
-        let t = if len2 > 0.0 { ((px * ex + py * ey) / len2).clamp(0.0, 1.0) } else { 0.0 };
+        let raw_t = if len2 > 0.0 { (px * ex + py * ey) / len2 } else { 0.0 };
+        if e.headwall && raw_t < 0.0 {
+            continue;
+        }
+        let t = raw_t.clamp(0.0, 1.0);
         let (qx, qy) = (px - t * ex, py - t * ey);
         let d = (qx * qx + qy * qy).sqrt();
         let side = if ex * py - ey * px >= 0.0 { 0 } else { 1 };
@@ -59,21 +149,32 @@ fn layer_parts(
         }
         let target = e.target_a + (e.target_b - e.target_a) * t;
         let rise = (d - e.half_width_m).max(0.0) / e.batter_run[side];
+        // The guard: a foreign edge's cutting answer may not go below the
+        // cover line, and the cover line may not exceed what came in.
+        let floored = |v: f64| match guard {
+            Some((own, cover)) if own != e.chain => v.max(cover.min(base)),
+            _ => v,
+        };
         if e.carve {
-            carve = carve.min(target + rise);
+            carve = carve.min(floored(target + rise));
             continue;
         }
         if d <= e.half_width_m {
             if bench.is_none_or(|(bd, _)| d < bd) {
-                bench = Some((d, target));
+                bench = Some((d, if benches_too { floored(target) } else { target }));
             }
-        } else if target > raw {
+        } else if target > base {
             fill = fill.max(target - rise);
         } else {
-            cut = cut.min(target + rise);
+            cut = cut.min(floored(target + rise));
         }
     }
-    (bench.map(|(_, t)| t), fill, cut, carve)
+    let mut h = match bench {
+        Some((_, t)) => t,
+        None => base.min(cut).max(fill),
+    };
+    h = h.min(carve);
+    h
 }
 
 fn main() {
@@ -103,6 +204,17 @@ fn main() {
     // Exposed metres bucketed by distance to the nearest end of the span:
     // 0-10, 10-25, 25-50, 50-100, 100+ m.
     let mut from_mouth = [0.0f64; 5];
+    // Carved metres split by who owns the cutting edge: the tube's own
+    // corridor, a peer in the same stratum, or another stratum.
+    let mut whose = [0.0f64; 3];
+    // whose × [portal carve, bench, cutting face, other]
+    let mut whose_kind = [[0.0f64; 4]; 3];
+    // The counterfactual guard: exposed metres this instrument reproduces, and
+    // how many survive flooring every foreign edge at the tube's cover line.
+    let (mut guard_before, mut guard_after, mut guard_faces) = (0.0f64, 0.0f64, 0.0f64);
+    // Metres taken by a *neighbour*, per (cutter, victim) pair.
+    let mut pairs: std::collections::BTreeMap<(u32, u32), (f64, f64)> =
+        std::collections::BTreeMap::new();
     let mut mouth_stretch_m = 0.0f64;
     let mut interior_stretch_m = 0.0f64;
     let mut interior_stretches: Vec<(f64, f64, f64, f64, u32, String)> = Vec::new();
@@ -171,19 +283,40 @@ fn main() {
                     let h = stack.height_through(n + 1, pt.x, pt.y, raw, 0.0, &mut scratch);
                     if prev > roof && h <= roof {
                         carved_by = Some(n);
-                        let (bench, fill, cut, carve) =
-                            layer_parts(stack.layers()[n].earthworks(), pt.x, pt.y, prev);
+                        let (bench, fill, cut, carve, owner) =
+                            layer_parts_owned(stack.layers()[n].earthworks(), pt.x, pt.y, prev);
+                        // Whose earthwork took the cover: this tube's own
+                        // corridor (its daylighting approach), or somebody
+                        // else's, in which case record the pair.
+                        let owner_id = owner.map(|(id, _)| id);
+                        let w = match owner_id {
+                            Some(id) if id == c.id => 0,
+                            Some(id) => {
+                                let peer = scene.corridors.iter().find(|o| o.id == id);
+                                let same = peer.is_some_and(|o| o.kind.stratum() == c.kind.stratum());
+                                let e = pairs.entry((id, c.id)).or_insert((0.0, 0.0));
+                                e.0 += step;
+                                e.1 = e.1.max(roof - h);
+                                if same { 1 } else { 2 }
+                            }
+                            None => 2,
+                        };
+                        whose[w] += step;
                         let kind = if carve <= roof {
                             kinds[n * 4] += step;
+                            whose_kind[w][0] += step;
                             format!("portal carve to {carve:.2}")
                         } else if bench.is_some_and(|b| b <= roof) {
                             kinds[n * 4 + 1] += step;
+                            whose_kind[w][1] += step;
                             format!("bench at {:.2}", bench.unwrap())
                         } else if cut <= roof {
                             kinds[n * 4 + 2] += step;
+                            whose_kind[w][2] += step;
                             format!("cutting face to {cut:.2}")
                         } else {
                             kinds[n * 4 + 3] += step;
+                            whose_kind[w][3] += step;
                             format!("other (fill {fill:.2} cut {cut:.2})")
                         };
                         culprit = format!("{st:?} {prev:.2} -> {h:.2}: {kind}");
@@ -201,6 +334,29 @@ fn main() {
                 }
                 if let Some(n) = carved_by {
                     by_layer[n] += step;
+                }
+                // The counterfactual: refold the whole stack with every foreign
+                // edge floored at this tube's cover line. What is still exposed
+                // afterwards is what such a rule would *not* buy — and the
+                // difference between the two is the whole case for it.
+                {
+                    let (mut g, mut faces, mut plain) = (raw, raw, raw);
+                    let cover = Some((c.id, roof + TUNNEL_COVER_M));
+                    for layer in stack.layers() {
+                        let ew = layer.earthworks();
+                        g = layer_height_guarded(ew, pt.x, pt.y, g, cover, true);
+                        faces = layer_height_guarded(ew, pt.x, pt.y, faces, cover, false);
+                        plain = layer_height_guarded(ew, pt.x, pt.y, plain, None, false);
+                    }
+                    if roof > plain {
+                        guard_before += step;
+                        if roof > g {
+                            guard_after += step;
+                        }
+                        if roof > faces {
+                            guard_faces += step;
+                        }
+                    }
                 }
                 worst.push((
                     ground_m - roof,
@@ -269,6 +425,40 @@ fn main() {
                 by_layer[n], kinds[n * 4], kinds[n * 4 + 1], kinds[n * 4 + 2], kinds[n * 4 + 3]
             );
         }
+    }
+    println!("      whose edge          total   portal carve   bench   cutting face   other");
+    for (w, label) in
+        ["own corridor", "a peer, same stratum", "another stratum"].iter().enumerate()
+    {
+        println!(
+            "        {label:<22}{:5.0} m {:10.0} m {:7.0} m {:11.0} m {:7.0} m",
+            whose[w], whose_kind[w][0], whose_kind[w][1], whose_kind[w][2], whose_kind[w][3]
+        );
+    }
+    println!(
+        "\n  counterfactual — floor every FOREIGN edge at the tube's own cover line:\n    \
+         {guard_before:.0} m exposed as the instrument refolds it; with every foreign edge \
+         floored {guard_after:.0} m remain ({:.0} m recovered), with only foreign *faces* \
+         floored (a bench is somebody's roadbed) {guard_faces:.0} m remain ({:.0} m recovered)",
+        guard_before - guard_after,
+        guard_before - guard_faces
+    );
+    let mut worst_pairs: Vec<_> = pairs.iter().map(|(k, v)| (v.0, v.1, *k)).collect();
+    worst_pairs.sort_by(|a, b| b.0.total_cmp(&a.0));
+    for (m, deep, (cutter, victim)) in worst_pairs.iter().take(8) {
+        let name = |id: u32| {
+            scene
+                .corridors
+                .iter()
+                .find(|o| o.id == id)
+                .map(|o| format!("{:?} {}", o.kind, o.id))
+                .unwrap_or_else(|| format!("? {id}"))
+        };
+        println!(
+            "        {m:5.0} m, up to {deep:4.2} m deep: {} cuts the cover off {}",
+            name(*cutter),
+            name(*victim)
+        );
     }
 
     println!(
