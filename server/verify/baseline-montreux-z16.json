@@ -184,14 +184,14 @@
           "zoom": 16
         }
       ],
-      "population": "Every boundary edge of a drawn at-grade surface band, inside the tile proper, that a solved bridge deck continues: marching out along the edge's own outward normal reaches a deck whose top is at the band's height there, within 1.0 m — at the *top*, because a band at soffit level is passing under a low bridge, not handing over to it. 852 edges on asphalt and 247 on ballast; 631 more were skipped because a deck already covers the band's edge in plan, which is an overlap rather than a handoff (`order.deck_above_carriageway`). One abutment contributes several edges, so the population is weighted by how wide the joint is. 174 of 175 drawn decks name the band they continue (`band_class`); the rest fall back to re-deriving the modality from the road class, which is what an archive tiled before that property gives. The band's *interior* mesh is an inset of the paved region and the outer 0.35 m is the separate casing rim, so the march anchors on the interior edge but counts interior and casing alike as surface: what is reported is the distance between the last drawn surface and the first drawn deck. Only surface within 2.5 m of the edge's own height, and of the band's own modality, counts as that band continuing — a region metres below is a road passing under the joint, and a road *approaching* its underpass passes through the height slab too, so without the modality test the march walks the step's reference down the other road's ramp. Counting either shrinks the gap it lies in and hands the step an unrelated height to compare against. Coverage limits, all of them silent otherwise: bores are excluded, since a bore's drawn top is its roof rather than a road surface — a portal needs its own instrument; fitted decks are excluded, since their ends are deliberately walked to seat them (`contact.deck_seat`); a joint that steps by more than a deck thickness plus the slack no longer reads as a handoff and drops out of the population rather than being counted as a huge one; and a deck whose approach band is missing altogether has no edge to anchor on and contributes nothing.",
-      "samples": 1099,
+      "population": "Every boundary edge of a drawn at-grade surface band, inside the tile proper, that a solved bridge deck continues: marching out along the edge's own outward normal reaches a deck whose top is at the band's height there, within 1.0 m — at the *top*, because a band at soffit level is passing under a low bridge, not handing over to it. 853 edges on asphalt and 247 on ballast; 631 more were skipped because a deck already covers the band's edge in plan, which is an overlap rather than a handoff (`order.deck_above_carriageway`). One abutment contributes several edges, so the population is weighted by how wide the joint is. 174 of 175 drawn decks name the band they continue (`band_class`); the rest fall back to re-deriving the modality from the road class, which is what an archive tiled before that property gives. The band's *interior* mesh is an inset of the paved region and the outer 0.35 m is the separate casing rim, so the march anchors on the interior edge but counts interior and casing alike as surface: what is reported is the distance between the last drawn surface and the first drawn deck. Only surface within 2.5 m of the edge's own height, and of the band's own modality, counts as that band continuing — a region metres below is a road passing under the joint, and a road *approaching* its underpass passes through the height slab too, so without the modality test the march walks the step's reference down the other road's ramp. Counting either shrinks the gap it lies in and hands the step an unrelated height to compare against. Coverage limits, all of them silent otherwise: bores are excluded, since a bore's drawn top is its roof rather than a road surface — a portal needs its own instrument; fitted decks are excluded, since their ends are deliberately walked to seat them (`contact.deck_seat`); a joint that steps by more than a deck thickness plus the slack no longer reads as a handoff and drops out of the population rather than being counted as a huge one; and a deck whose approach band is missing altogether has no edge to anchor on and contributes nothing.",
+      "samples": 1100,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 11.193333333333335,
       "threshold": 0.15,
       "title": "Ground drawn between the road surface and the deck continuing it",
-      "violation_pct": 10.009099181073703,
+      "violation_pct": 10.0,
       "violations": 110,
       "worst": 11.499999999999973
     },
@@ -257,14 +257,14 @@
           "zoom": 16
         }
       ],
-      "population": "Every boundary edge of a drawn at-grade surface band, inside the tile proper, that a solved bridge deck continues: marching out along the edge's own outward normal reaches a deck whose top is at the band's height there, within 1.0 m — at the *top*, because a band at soffit level is passing under a low bridge, not handing over to it. 852 edges on asphalt and 247 on ballast; 631 more were skipped because a deck already covers the band's edge in plan, which is an overlap rather than a handoff (`order.deck_above_carriageway`). One abutment contributes several edges, so the population is weighted by how wide the joint is. 174 of 175 drawn decks name the band they continue (`band_class`); the rest fall back to re-deriving the modality from the road class, which is what an archive tiled before that property gives. The band's *interior* mesh is an inset of the paved region and the outer 0.35 m is the separate casing rim, so the march anchors on the interior edge but counts interior and casing alike as surface: what is reported is the distance between the last drawn surface and the first drawn deck. Only surface within 2.5 m of the edge's own height, and of the band's own modality, counts as that band continuing — a region metres below is a road passing under the joint, and a road *approaching* its underpass passes through the height slab too, so without the modality test the march walks the step's reference down the other road's ramp. Counting either shrinks the gap it lies in and hands the step an unrelated height to compare against. Coverage limits, all of them silent otherwise: bores are excluded, since a bore's drawn top is its roof rather than a road surface — a portal needs its own instrument; fitted decks are excluded, since their ends are deliberately walked to seat them (`contact.deck_seat`); a joint that steps by more than a deck thickness plus the slack no longer reads as a handoff and drops out of the population rather than being counted as a huge one; and a deck whose approach band is missing altogether has no edge to anchor on and contributes nothing.",
-      "samples": 1099,
+      "population": "Every boundary edge of a drawn at-grade surface band, inside the tile proper, that a solved bridge deck continues: marching out along the edge's own outward normal reaches a deck whose top is at the band's height there, within 1.0 m — at the *top*, because a band at soffit level is passing under a low bridge, not handing over to it. 853 edges on asphalt and 247 on ballast; 631 more were skipped because a deck already covers the band's edge in plan, which is an overlap rather than a handoff (`order.deck_above_carriageway`). One abutment contributes several edges, so the population is weighted by how wide the joint is. 174 of 175 drawn decks name the band they continue (`band_class`); the rest fall back to re-deriving the modality from the road class, which is what an archive tiled before that property gives. The band's *interior* mesh is an inset of the paved region and the outer 0.35 m is the separate casing rim, so the march anchors on the interior edge but counts interior and casing alike as surface: what is reported is the distance between the last drawn surface and the first drawn deck. Only surface within 2.5 m of the edge's own height, and of the band's own modality, counts as that band continuing — a region metres below is a road passing under the joint, and a road *approaching* its underpass passes through the height slab too, so without the modality test the march walks the step's reference down the other road's ramp. Counting either shrinks the gap it lies in and hands the step an unrelated height to compare against. Coverage limits, all of them silent otherwise: bores are excluded, since a bore's drawn top is its roof rather than a road surface — a portal needs its own instrument; fitted decks are excluded, since their ends are deliberately walked to seat them (`contact.deck_seat`); a joint that steps by more than a deck thickness plus the slack no longer reads as a handoff and drops out of the population rather than being counted as a huge one; and a deck whose approach band is missing altogether has no edge to anchor on and contributes nothing.",
+      "samples": 1100,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.9933333333333323,
       "threshold": 0.05,
       "title": "Road surface stepping where the band hands over to the deck",
-      "violation_pct": 14.740673339399454,
+      "violation_pct": 14.727272727272727,
       "violations": 162,
       "worst": 1.2269554514421088
     },
@@ -330,14 +330,14 @@
           "zoom": 16
         }
       ],
-      "population": "Every boundary edge of a drawn at-grade surface band, inside the tile proper, that a solved bridge deck continues: marching out along the edge's own outward normal reaches a deck whose top is at the band's height there, within 1.0 m — at the *top*, because a band at soffit level is passing under a low bridge, not handing over to it. 852 edges on asphalt and 247 on ballast; 631 more were skipped because a deck already covers the band's edge in plan, which is an overlap rather than a handoff (`order.deck_above_carriageway`). One abutment contributes several edges, so the population is weighted by how wide the joint is. 174 of 175 drawn decks name the band they continue (`band_class`); the rest fall back to re-deriving the modality from the road class, which is what an archive tiled before that property gives. The band's *interior* mesh is an inset of the paved region and the outer 0.35 m is the separate casing rim, so the march anchors on the interior edge but counts interior and casing alike as surface: what is reported is the distance between the last drawn surface and the first drawn deck. Only surface within 2.5 m of the edge's own height, and of the band's own modality, counts as that band continuing — a region metres below is a road passing under the joint, and a road *approaching* its underpass passes through the height slab too, so without the modality test the march walks the step's reference down the other road's ramp. Counting either shrinks the gap it lies in and hands the step an unrelated height to compare against. Coverage limits, all of them silent otherwise: bores are excluded, since a bore's drawn top is its roof rather than a road surface — a portal needs its own instrument; fitted decks are excluded, since their ends are deliberately walked to seat them (`contact.deck_seat`); a joint that steps by more than a deck thickness plus the slack no longer reads as a handoff and drops out of the population rather than being counted as a huge one; and a deck whose approach band is missing altogether has no edge to anchor on and contributes nothing.",
-      "samples": 1099,
+      "population": "Every boundary edge of a drawn at-grade surface band, inside the tile proper, that a solved bridge deck continues: marching out along the edge's own outward normal reaches a deck whose top is at the band's height there, within 1.0 m — at the *top*, because a band at soffit level is passing under a low bridge, not handing over to it. 853 edges on asphalt and 247 on ballast; 631 more were skipped because a deck already covers the band's edge in plan, which is an overlap rather than a handoff (`order.deck_above_carriageway`). One abutment contributes several edges, so the population is weighted by how wide the joint is. 174 of 175 drawn decks name the band they continue (`band_class`); the rest fall back to re-deriving the modality from the road class, which is what an archive tiled before that property gives. The band's *interior* mesh is an inset of the paved region and the outer 0.35 m is the separate casing rim, so the march anchors on the interior edge but counts interior and casing alike as surface: what is reported is the distance between the last drawn surface and the first drawn deck. Only surface within 2.5 m of the edge's own height, and of the band's own modality, counts as that band continuing — a region metres below is a road passing under the joint, and a road *approaching* its underpass passes through the height slab too, so without the modality test the march walks the step's reference down the other road's ramp. Counting either shrinks the gap it lies in and hands the step an unrelated height to compare against. Coverage limits, all of them silent otherwise: bores are excluded, since a bore's drawn top is its roof rather than a road surface — a portal needs its own instrument; fitted decks are excluded, since their ends are deliberately walked to seat them (`contact.deck_seat`); a joint that steps by more than a deck thickness plus the slack no longer reads as a handoff and drops out of the population rather than being counted as a huge one; and a deck whose approach band is missing altogether has no edge to anchor on and contributes nothing.",
+      "samples": 1100,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 1.0,
       "threshold": 0.5,
       "title": "Kerb line drawn across the carriageway at a bridge's end",
-      "violation_pct": 12.010919017288444,
+      "violation_pct": 12.0,
       "violations": 132,
       "worst": 1.0
     },
@@ -404,13 +404,13 @@
         }
       ],
       "population": "Every terrain-mesh boundary edge midpoint that is not on the tile's own edge and has at-grade asphalt or casing over it. A cut edge carries no apron by design and is excluded with the tile edge. The apron is vertical, so its span is asked within 1.5 m of the rim rather than at it, with 0.5 m of slack at each end.",
-      "samples": 464157,
+      "samples": 464136,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.006666666666667709,
       "threshold": 0.5,
       "title": "Gap at the hole's rim with nothing spanning it",
-      "violation_pct": 0.01982087957307549,
+      "violation_pct": 0.019821776375889825,
       "violations": 92,
       "worst": 3.1886700557863605
     },
@@ -431,6 +431,13 @@
           "lon": 6.9166123028844595,
           "note": "kerb 434.12 m, ground 418.46 m a metre outside it",
           "value": 15.65909561427759,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40170369762927,
+          "lon": 6.9272643607109785,
+          "note": "kerb 383.56 m, ground 367.93 m a metre outside it",
+          "value": 15.635986328125,
           "zoom": 16
         },
         {
@@ -467,24 +474,17 @@
           "note": "kerb 527.69 m, ground 512.48 m a metre outside it",
           "value": 15.208651237135541,
           "zoom": 16
-        },
-        {
-          "lat": 46.438646600581706,
-          "lon": 6.914918068796396,
-          "note": "kerb 527.40 m, ground 512.26 m a metre outside it",
-          "value": 15.133263523157666,
-          "zoom": 16
         }
       ],
       "population": "Every silhouette (boundary) edge midpoint of every level-0 road_surface mesh inside the tile proper, probed 1 m along the outward normal. Structures are excluded: a deck edge is not a kerb.",
-      "samples": 424397,
+      "samples": 424374,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 7.553333333333335,
+      "tail": 7.633333333333333,
       "threshold": 0.5,
       "title": "Drop from the kerb to the ground beside it",
-      "violation_pct": 7.35137147529318,
-      "violations": 31199,
+      "violation_pct": 7.348235283028649,
+      "violations": 31184,
       "worst": 15.747047403314127
     },
     {
@@ -774,88 +774,88 @@
         }
       ],
       "population": "Every bore (level < 0) surface sample at 1.0 m plan spacing in the tile proper, against the terrain mesh of the same tile.",
-      "samples": 501445,
+      "samples": 501780,
       "sense": "lower_is_worse",
       "skipped": null,
-      "tail": -7.299999999999997,
+      "tail": -7.273333333333333,
       "threshold": -1.0,
       "title": "Ground cover over the tunnel roof",
-      "violation_pct": 6.684880694792051,
-      "violations": 33521,
+      "violation_pct": 6.733428992785683,
+      "violations": 33787,
       "worst": -11.040536063058084
     },
     {
       "id": "order.grade_stack",
       "invariant": "I3",
-      "median": 6.4466666666666725,
+      "median": 6.0333333333333385,
       "offenders": [
         {
-          "lat": 46.402254581451416,
-          "lon": 6.927454948425293,
-          "note": "at-grade road_surface at 383.22 m over at-grade rail_surface at 369.70 m, nothing between them",
-          "value": 13.523356916777345,
+          "lat": 46.402344703674316,
+          "lon": 6.927532196044922,
+          "note": "at-grade road_surface at 383.22 m over at-grade rail_surface at 371.49 m, nothing between them",
+          "value": 11.727643501126124,
           "zoom": 16
         },
         {
-          "lat": 46.40225887298584,
-          "lon": 6.927437782287598,
-          "note": "at-grade road_surface at 383.19 m over at-grade rail_surface at 369.74 m, nothing between them",
-          "value": 13.449923627182216,
+          "lat": 46.402344703674316,
+          "lon": 6.927534341812134,
+          "note": "at-grade road_surface at 383.22 m over at-grade rail_surface at 371.52 m, nothing between them",
+          "value": 11.694561207051152,
           "zoom": 16
         },
         {
-          "lat": 46.40225887298584,
-          "lon": 6.927437782287598,
-          "note": "at-grade road_surface at 383.19 m over at-grade rail_surface at 369.74 m, nothing between them",
-          "value": 13.449923627182216,
+          "lat": 46.402344703674316,
+          "lon": 6.9275407791137695,
+          "note": "at-grade road_surface at 383.22 m over at-grade rail_surface at 371.63 m, nothing between them",
+          "value": 11.595314324826631,
           "zoom": 16
         },
         {
-          "lat": 46.40225887298584,
-          "lon": 6.927437782287598,
-          "note": "at-grade road_surface at 383.19 m over at-grade rail_surface at 369.74 m, nothing between them",
-          "value": 13.449923627182216,
+          "lat": 46.402351101860404,
+          "lon": 6.927511263638735,
+          "note": "at-grade road_surface at 383.22 m over at-grade rail_surface at 371.64 m, nothing between them",
+          "value": 11.580617331233668,
           "zoom": 16
         },
         {
-          "lat": 46.40225887298584,
-          "lon": 6.927437782287598,
-          "note": "at-grade road_surface at 383.19 m over at-grade rail_surface at 369.74 m, nothing between them",
-          "value": 13.449923627182216,
+          "lat": 46.40234899939969,
+          "lon": 6.9275244092568755,
+          "note": "at-grade road_surface at 383.22 m over at-grade rail_surface at 371.69 m, nothing between them",
+          "value": 11.531904445156954,
           "zoom": 16
         },
         {
-          "lat": 46.40225887298584,
-          "lon": 6.927437782287598,
-          "note": "at-grade road_surface at 383.19 m over at-grade rail_surface at 369.74 m, nothing between them",
-          "value": 13.449923627182216,
+          "lat": 46.402344703674316,
+          "lon": 6.927545070648193,
+          "note": "at-grade road_surface at 383.22 m over at-grade rail_surface at 371.69 m, nothing between them",
+          "value": 11.529213102364281,
           "zoom": 16
         },
         {
-          "lat": 46.40225887298584,
-          "lon": 6.927437782287598,
-          "note": "at-grade road_surface at 383.19 m over at-grade rail_surface at 369.74 m, nothing between them",
-          "value": 13.449923627182216,
+          "lat": 46.40235076658428,
+          "lon": 6.927517969161272,
+          "note": "at-grade road_surface at 383.22 m over at-grade rail_surface at 371.72 m, nothing between them",
+          "value": 11.501601795052636,
           "zoom": 16
         },
         {
-          "lat": 46.40225887298584,
-          "lon": 6.927446365356445,
-          "note": "at-grade road_surface at 383.19 m over at-grade rail_surface at 369.85 m, nothing between them",
-          "value": 13.348326962202691,
+          "lat": 46.40235043130815,
+          "lon": 6.927524674683809,
+          "note": "at-grade road_surface at 383.22 m over at-grade rail_surface at 371.80 m, nothing between them",
+          "value": 11.422605107766856,
           "zoom": 16
         }
       ],
       "population": "Surface samples of every level-0 band (carriageway or rail formation) at 1.0 m plan spacing in the tile proper, where another level-0 band lies at or below the same plan position. Each stacked pair is measured once, from its upper side. Abutting regions meet at zero and sit in the population's floor.",
-      "samples": 1165,
+      "samples": 585,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 13.446666666666673,
+      "tail": 11.726666666666667,
       "threshold": 3.0,
       "title": "At-grade band standing over another at-grade band",
-      "violation_pct": 90.72961373390558,
-      "violations": 1057,
-      "worst": 13.523356916777345
+      "violation_pct": 85.64102564102564,
+      "violations": 501,
+      "worst": 11.727643501126124
     },
     {
       "id": "paint.marking_offside",
@@ -863,7 +863,7 @@
       "median": 0.006666666666667709,
       "offenders": [],
       "population": "Every vertex of every `marking` stroke at least 8 m inside the tile proper, at a zoom that draws the road surface. The drawn carriageway is the `road_surface` interior welded to its `road_casing` rim — the interior alone is an inset of the true silhouette, and measuring against it would report the rim's width as a defect. Vertices riding a deck or a bore are excluded: their cross-section is the structure's, and a swept solid answers with its roof. The border margin is not decoration: surfaces are clipped to the tile proper and markings to the tile *plus buffer*, so without it a road running along a border paints into its neighbour and reads as hundreds of metres from any asphalt while rendering perfectly. Coverage limits: that margin drops about 7 % of a z16 tile's area, and a tile carrying markings but no paved surface at all contributes nothing, so a road that paved *nothing* is invisible here.",
-      "samples": 74542,
+      "samples": 74530,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.006666666666667709,
@@ -942,8 +942,8 @@
       "tail": 8.406666666666666,
       "threshold": 2.0,
       "title": "Edge line standing off its own kerb",
-      "violation_pct": 6.663439819296547,
-      "violations": 2478,
+      "violation_pct": 6.652683661396149,
+      "violations": 2474,
       "worst": 9.75
     },
     {
@@ -1009,13 +1009,13 @@
         }
       ],
       "population": "Every vertex the tile owns of every transportation stroke at level ≤ 0 — the road and rail fill strokes of the pre-surface rungs, markings, rail heads, and every draped path — against the drawn terrain over it. Positive levels are excluded: a bridge stroke rides its deck above the ground by design, and the deck itself answers to the clearance checks. A vertex with no terrain over it contributes nothing — the pavement hole and the portal cuts are exactly where a stroke is supposed to have no drawn ground overhead, and a zoom with no terrain mesh has nothing to measure against.",
-      "samples": 388671,
+      "samples": 388676,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.5399999999999991,
       "threshold": 1.0,
       "title": "Painted stroke running under the drawn ground",
-      "violation_pct": 0.026500562172119865,
+      "violation_pct": 0.02650022126398337,
       "violations": 103,
       "worst": 9.175169752413467
     },
@@ -1245,8 +1245,8 @@
       "tail": 3.526666666666667,
       "threshold": 2.0,
       "title": "Drawn terrain face steepness",
-      "violation_pct": 0.6009758190668557,
-      "violations": 78097,
+      "violation_pct": 0.600921952327628,
+      "violations": 78090,
       "worst": 238.56456741326306
     },
     {
@@ -1312,14 +1312,14 @@
         }
       ],
       "population": "Every level-0 road_surface triangle spanning at least 0.10 m of height, excluding the mesh silhouette. The kerb rim is vertical by design and was 44 % of the steep faces counted before it was excluded.",
-      "samples": 364798,
+      "samples": 364741,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 1.4733333333333334,
       "threshold": 0.3,
       "title": "Interior carriageway face steepness",
-      "violation_pct": 1.874462031041837,
-      "violations": 6838,
+      "violation_pct": 1.861046605673615,
+      "violations": 6788,
       "worst": 18.101337482760588
     },
     {
@@ -1385,14 +1385,14 @@
         }
       ],
       "population": "Consecutive vertex pairs of every drivable centerline carrying per-vertex heights, midpoint inside the tile proper, plan run at least 0.50 m. Coverage limit: from z13 the union paves the carriageway and stamp_synth drops the fill stroke, so at detail zooms this samples the drivable network through the markings and deck strokes that remain — not all of it. Non-drivable classes are excluded: a footway may be a staircase and a rack railway climbs at 20 %.",
-      "samples": 59457,
+      "samples": 59450,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.5608333333333334,
       "threshold": 0.3,
       "title": "Longitudinal grade of the drawn road",
-      "violation_pct": 0.3599239786736633,
-      "violations": 214,
+      "violation_pct": 0.34987384356602186,
+      "violations": 208,
       "worst": 2.598589135963431
     },
     {
@@ -1458,14 +1458,14 @@
         }
       ],
       "population": "Every interior terrain vertex flanked by opposite-signed breaks on both sides — an oscillation, not a step. Counting one-sided breaks would report every wall ever drawn: unfiltered it called 3.9 % of the extract torn, and with the filter 0.20 %.",
-      "samples": 9730494,
+      "samples": 9730525,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.5700000000000001,
       "threshold": 0.5,
       "title": "Drawn terrain standing off its own neighbours",
-      "violation_pct": 0.1361081975899682,
-      "violations": 13244,
+      "violation_pct": 0.1360872100940083,
+      "violations": 13242,
       "worst": 6.965026855468749
     },
     {
@@ -1604,14 +1604,14 @@
         }
       ],
       "population": "Structure (level != 0) surface samples at the finest measured zoom, against the same class and level in the parent tile one rung coarser — and only where the parent holds exactly one candidate. Structures carry no identity across zooms, so an ambiguous parent would compare two different bridges; those are skipped and counted in the detail line.",
-      "samples": 35485,
+      "samples": 35543,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 4.923333333333334,
       "threshold": 2.0,
       "title": "Structure height drift between adjacent zooms",
-      "violation_pct": 1.583767789206707,
-      "violations": 562,
+      "violation_pct": 1.688096108938469,
+      "violations": 600,
       "worst": 5.950214028739481
     },
     {
@@ -1668,14 +1668,14 @@
       "median": 0.006666666666667709,
       "offenders": [],
       "population": "Every node of every solved profile that the *reconciled* partition leaves at grade, in every stratum, water excluded. Scored by how far the solved road stands from the conditioned terrain reference — in either direction, since a road buried under its own hillside is the same defect upside down — less the class deviation budget, so 0.0 means within the cut and fill the class is built on. Structure nodes are outside the population by definition. Known legitimate tail: a clearance lift raises an at-grade road over a crossing by up to 15 m and keeps it at grade, so a demand-sized excess near a crossing is the model working.",
-      "samples": 388431,
+      "samples": 388425,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 12.686666666666667,
       "threshold": 0.5,
       "title": "Solved at-grade road standing off its own ground",
-      "violation_pct": 0.12074216527517113,
-      "violations": 469,
+      "violation_pct": 0.1202291304627663,
+      "violations": 467,
       "worst": 12.68922023633786
     },
     {
@@ -1683,7 +1683,7 @@
       "invariant": "I8",
       "median": 0.006666666666667709,
       "offenders": [],
-      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 607586 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
+      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 607585 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
       "samples": 10409256,
       "sense": "higher_is_worse",
       "skipped": null,
@@ -1815,7 +1815,7 @@
       6.9818115234375,
       46.47216796875
     ],
-    "commit": "170df57",
+    "commit": "73a1f23",
     "max_tiles": 4096,
     "spacing_m": 1.0,
     "tiles": 621,
