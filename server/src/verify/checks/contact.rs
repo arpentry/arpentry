@@ -76,8 +76,8 @@ const SEAT_M: f64 = 2.0;
 /// still be a sidewalk on that bridge rather than a bridge beside it.
 ///
 /// The probe's finding is that this threshold is not delicate, and the reason
-/// to trust it: searching out to 25 m, `examples/carried_probe` found the
-/// centerline offset of every carried path between 2.0 m and 9.5 m, and
+/// to trust it: searching out to 25 m, the centerline offset of every carried
+/// path in the extract lies between 2.0 m and 9.5 m, and
 /// **nothing at all between 9.5 m and 25 m**. Any cut through that empty band
 /// claims the same spans (a 4 m gap and a 16 m gap both claim 25 of 110).
 ///
@@ -514,7 +514,7 @@ fn axis_dir(tile: &TileScene, ends: &[DeckEnd; 2]) -> Option<(f64, f64)> {
 ///
 /// Walks the fitted deck's own axis and asks, at each step, what a solved deck
 /// spans nearby. The carrier is the one alongside the most of it — the same
-/// rule `examples/carried_probe` uses, and for the same reason: a footway at a
+/// rule `synth::carried` uses, and for the same reason: a footway at a
 /// road junction can run beside two decks, and the one it is *on* is the one
 /// it never leaves.
 fn carried_below<'a>(

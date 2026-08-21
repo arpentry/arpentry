@@ -29,10 +29,10 @@
 //! restated in `verify::checks::contact` rather than shared, so the measurement
 //! can disagree with the rule.
 //!
-//! - **Alongside** ([`LATERAL_M`]). `examples/carried_probe` searched out to
-//!   25 m and found every carried path between 2.0 m and 9.5 m of a solved
-//!   centerline, and *nothing at all* from 9.5 m to 25 m. Any cut through that
-//!   empty band claims the same spans.
+//! - **Alongside** ([`LATERAL_M`]). Searched out to 25 m, every carried path
+//!   in the extract lies between 2.0 m and 9.5 m of a solved centerline, and
+//!   *nothing at all* from 9.5 m to 25 m. Any cut through that empty band
+//!   claims the same spans.
 //! - **Along it, not across it** ([`ALONG`]). A footway crossing over a bridge
 //!   is beside it for its whole width, which on a short span is most of the
 //!   span. The arc of the carrier a run projects onto shrinks by the cosine of
@@ -43,6 +43,11 @@
 //!   agree at one end the chord already lands on the deck. Without it the worst
 //!   "carried" span in the extract is a 12 m footbridge over a stream
 //!   *underneath* a motorway viaduct whose deck is 68 m overhead.
+//!
+//! `ARPT_DEBUG_CARRY` prints one line per candidate run×deck pair with
+//! everything the three tests decide on. That is how each threshold below was
+//! read off its population, and how a disagreement with the measurement is
+//! traced to the test that causes it.
 
 use geo_types::Coord;
 
@@ -61,7 +66,21 @@ const LATERAL_M: f64 = 10.0;
 /// p50 1.00). What this rejects is a long walkway that rides a bridge for part
 /// of its length and carries itself for the rest — a span a rule that seats
 /// the *whole* run on a carrier has no business claiming.
-const COVER: f64 = 0.7;
+///
+/// **0.7 cut through the population, and the sample it cut off was a
+/// sidewalk.** The arc window below admits a sample only within [`STEP_M`] of
+/// the deck's own span, and a mapper's footway bridge rarely starts and stops
+/// where the road's does (S10) — censused with `ARPT_DEBUG_CARRY`, a third of
+/// the extract's candidate pairs lose one to three end samples to that cut.
+/// That slack is a fixed couple of metres, so on a 100 m walkway it is
+/// nothing and on a 15 m sidewalk it is a third of the run: the extract's
+/// worst carried deck (6.8966,46.4515, sinking 5.31 m under its bridge) sat
+/// at 6/9 with a 1.96 m join. Over the 30 candidate pairs the join test
+/// accepts, coverage runs 0.667 and then **nothing until 0.800** — so any cut
+/// in [0.5, 0.667] carries all thirty and none of the three low-coverage
+/// pairs the join already rejects. This sits in the middle of that band
+/// rather than at either edge, as [`JOIN_M`] does.
+const COVER: f64 = 0.6;
 
 /// How nearly the run must follow the carrier rather than cross it, as the
 /// fraction of its own length it advances along the carrier's arc — which is
@@ -207,21 +226,46 @@ impl Carriers {
             let Some(p) = solved.profile(d.corridor) else { continue };
             let corr = &scene.corridors[d.corridor as usize];
             let mut hits = 0usize;
+            let (mut past_end, mut too_far) = (0usize, 0usize);
             // The first and last samples that found this deck: where the run
             // enters and leaves it, in its own arc and in the carrier's.
             let (mut enter, mut leave) = (None, None);
             for &(s, c) in &pts {
                 let a = p.arc_of(c.x, c.y);
                 if a < d.arc0 - STEP_M || a > d.arc1 + STEP_M {
+                    past_end += 1;
                     continue;
                 }
                 if metric_len(c, p.point_at_arc(a), corr.cos_lat) > LATERAL_M {
+                    too_far += 1;
                     continue;
                 }
                 hits += 1;
                 let join = p.deck_at_arc(a) - (ends.0 + (ends.1 - ends.0) * (s / total));
                 enter = enter.or(Some((s, a, join)));
                 leave = Some((s, a, join));
+            }
+            // ARPT_DEBUG_CARRY: one line per candidate deck, with everything
+            // `carries` decides on. The measurement (`verify::checks::contact`)
+            // restates the rule against the *drawn* meshes rather than sharing
+            // it, so when the two disagree this is where the disagreement is.
+            if std::env::var_os("ARPT_DEBUG_CARRY").is_some() {
+                let shared = leave.zip(enter).map(|(l, e)| l.0 - e.0).unwrap_or(0.0);
+                let advance = leave.zip(enter).map(|(l, e)| (l.1 - e.1).abs()).unwrap_or(0.0);
+                eprintln!(
+                    "[carry] run {:.6},{:.6} len {total:.1} vs deck #{} [{:.1}, {:.1}]: hits \
+                     {hits}/{} (past-end {past_end}, too-far {too_far}) shared {shared:.1} \
+                     advance {advance:.1} joins {:?} {:?} -> {}",
+                    nodes[0].x,
+                    nodes[0].y,
+                    d.corridor,
+                    d.arc0,
+                    d.arc1,
+                    pts.len(),
+                    enter.map(|e| (e.2 * 100.0).round() / 100.0),
+                    leave.map(|l| (l.2 * 100.0).round() / 100.0),
+                    carries(enter, leave, hits, pts.len())
+                );
             }
             if !carries(enter, leave, hits, pts.len()) {
                 continue;
@@ -301,6 +345,27 @@ mod tests {
     fn a_sidewalk_along_its_whole_bridge_is_carried() {
         let (a, b, h, n) = seen(30.0, 0.0, 30.0, 30.0, 0.1, 3.8);
         assert!(carries(a, b, h, n));
+    }
+
+    /// The extract's last hanging sidewalk (6.8966,46.4515): a 15 m footway
+    /// whose annotated span is offset from the road bridge's, so a third of
+    /// its samples project past the deck's own arc window and it covered only
+    /// 6 of 9. The coverage cut is a fixed couple of metres of annotation
+    /// slack (S10), which is nothing on a long walkway and a third of a short
+    /// sidewalk — and it meets the deck to 1.96 m at the end it shares.
+    #[test]
+    fn a_sidewalk_offset_from_its_bridge_is_still_carried() {
+        let (a, b, h, n) = seen(16.0, 0.0, 10.0, 9.6, 1.96, 5.23);
+        assert_eq!(h * 3, n * 2, "6 of 9, the measured coverage");
+        assert!(carries(a, b, h, n), "annotation slack at one end is not a second bridge");
+    }
+
+    /// But a walkway that rides a bridge for a third of its length and carries
+    /// itself for the rest is a structure of its own, whatever it meets.
+    #[test]
+    fn a_walkway_mostly_on_its_own_is_not_carried() {
+        let (a, b, h, n) = seen(60.0, 0.0, 18.0, 17.5, 0.1, 0.2);
+        assert!(!carries(a, b, h, n), "a rule that seats the whole run may not claim this");
     }
 
     /// A path passing underneath touches the deck at neither end, however

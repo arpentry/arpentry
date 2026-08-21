@@ -56,7 +56,7 @@ use super::structure;
 /// abutments of the Montreux extract's draped spans the ground's own outward
 /// grade at an abutment is p50 0.09, p75 0.32, p95 0.83 — most abutments stand
 /// on ground that is nearly flat, as an abutment should. What the choice buys,
-/// per `examples/footdeck_probe`:
+/// measured over that population:
 ///
 /// | ceiling | abutments re-seated | median move | median lift |
 /// |--------:|--------------------:|------------:|------------:|
