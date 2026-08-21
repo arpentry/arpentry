@@ -774,14 +774,14 @@
         }
       ],
       "population": "Every bore (level < 0) surface sample at 1.0 m plan spacing in the tile proper, against the terrain mesh of the same tile.",
-      "samples": 506817,
+      "samples": 501445,
       "sense": "lower_is_worse",
       "skipped": null,
-      "tail": -7.286666666666665,
+      "tail": -7.299999999999997,
       "threshold": -1.0,
       "title": "Ground cover over the tunnel roof",
-      "violation_pct": 7.435425409960597,
-      "violations": 37684,
+      "violation_pct": 6.684880694792051,
+      "violations": 33521,
       "worst": -11.040536063058084
     },
     {
@@ -1815,7 +1815,7 @@
       6.9818115234375,
       46.47216796875
     ],
-    "commit": "2ec1767",
+    "commit": "170df57",
     "max_tiles": 4096,
     "spacing_m": 1.0,
     "tiles": 621,
