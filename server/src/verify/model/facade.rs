@@ -91,6 +91,13 @@ pub fn check(m: &Model<'_>) -> Vec<Metric> {
     let mut all: Vec<f64> = Vec::new();
     let mut moved = 0u64;
     let mut truncated = false;
+    // ARPT_DEBUG_FACADE attribution: a wall standing on a bench and a wall
+    // standing on a batter face are two different fixes — narrow the bench, or
+    // stop the face. Counting them apart is what says which one the population
+    // is made of.
+    let debug = std::env::var_os("ARPT_DEBUG_FACADE").is_some();
+    let (mut on_bench, mut on_face) = (0u64, 0u64);
+    let (mut cut, mut fill) = (0u64, 0u64);
     for e in edges {
         if all.len() >= MAX_SAMPLES {
             truncated = true;
@@ -117,6 +124,18 @@ pub fn check(m: &Model<'_>) -> Vec<Metric> {
             if v > 0.0 {
                 moved += 1;
             }
+            if debug && v > FACADE_GROUND_M {
+                if m.ground.bed_target(lon, lat, &mut scratch).is_some() {
+                    on_bench += 1;
+                } else {
+                    on_face += 1;
+                }
+                if published < raw {
+                    cut += 1;
+                } else {
+                    fill += 1;
+                }
+            }
             if v > FACADE_GROUND_M {
                 worst.offer(Offender {
                     lon,
@@ -135,10 +154,12 @@ pub fn check(m: &Model<'_>) -> Vec<Metric> {
         all.sort_by(f64::total_cmp);
         let q = |f: f64| all.get(((all.len().max(1) - 1) as f64 * f) as usize).copied().unwrap_or(0.0);
         eprintln!(
-            "[facade] {:.1}s n={} moved={moved} p50 {:.2} p90 {:.2} p95 {:.2} p98 {:.2} \
+            "[facade] {:.1}s n={} moved={moved} over={} (bench {on_bench} / face {on_face}, \
+             cut {cut} / fill {fill}) p50 {:.2} p90 {:.2} p95 {:.2} p98 {:.2} \
              p99 {:.2} max {:.2}",
             t0.elapsed().as_secs_f64(),
             all.len(),
+            on_bench + on_face,
             q(0.50),
             q(0.90),
             q(0.95),
