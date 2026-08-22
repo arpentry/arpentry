@@ -444,7 +444,7 @@ fn runs(junctions: &CarriagewayModel, source_ids: &[u32]) -> Vec<Run> {
                 && last.x == s.a.x
                 && last.y == s.a.y
         });
-        let sect = |x: crate::synth::carriageway::Section| [x.left_m, x.right_m];
+        let sect = |x: crate::assemble::facades::Section| [x.left_m, x.right_m];
         if continues {
             let r = out.last_mut().expect("a run exists");
             r.line.push(s.b);

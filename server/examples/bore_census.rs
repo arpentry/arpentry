@@ -82,11 +82,11 @@ fn layer_parts_owned(
         let (qx, qy) = (px - t * ex, py - t * ey);
         let d = (qx * qx + qy * qy).sqrt();
         let side = if ex * py - ey * px >= 0.0 { 0 } else { 1 };
-        if d >= e.half_width_m + e.batter_m[side] {
+        if d >= e.half_width_m[side] + e.batter_m[side] {
             continue;
         }
         let target = e.target_a + (e.target_b - e.target_a) * t;
-        let rise = (d - e.half_width_m).max(0.0) / e.batter_run[side];
+        let rise = (d - e.half_width_m[side]).max(0.0) / e.batter_run[side];
         let mut note = |h: f64| {
             if lowest.is_none_or(|(_, lh)| h < lh) {
                 lowest = Some((e.chain, h));
@@ -97,7 +97,7 @@ fn layer_parts_owned(
             carve = carve.min(target + rise);
             continue;
         }
-        if d <= e.half_width_m {
+        if d <= e.half_width_m[side] {
             note(target);
             if bench.is_none_or(|(bd, _)| d < bd) {
                 bench = Some((d, target));
@@ -144,11 +144,11 @@ fn layer_height_guarded(
         let (qx, qy) = (px - t * ex, py - t * ey);
         let d = (qx * qx + qy * qy).sqrt();
         let side = if ex * py - ey * px >= 0.0 { 0 } else { 1 };
-        if d >= e.half_width_m + e.batter_m[side] {
+        if d >= e.half_width_m[side] + e.batter_m[side] {
             continue;
         }
         let target = e.target_a + (e.target_b - e.target_a) * t;
-        let rise = (d - e.half_width_m).max(0.0) / e.batter_run[side];
+        let rise = (d - e.half_width_m[side]).max(0.0) / e.batter_run[side];
         // The guard: a foreign edge's cutting answer may not go below the
         // cover line, and the cover line may not exceed what came in.
         let floored = |v: f64| match guard {
@@ -159,7 +159,7 @@ fn layer_height_guarded(
             carve = carve.min(floored(target + rise));
             continue;
         }
-        if d <= e.half_width_m {
+        if d <= e.half_width_m[side] {
             if bench.is_none_or(|(bd, _)| d < bd) {
                 bench = Some((d, if benches_too { floored(target) } else { target }));
             }
@@ -190,7 +190,7 @@ fn main() {
 
     let mut scene = assemble::run(std::path::Path::new(&a[0]), None, &bbox).expect("assemble");
     let solved = solve::run(&mut scene, Some(&terrain), 16, 0).expect("solve");
-    let stack = ground::derive(&scene, &solved, Some(&terrain), 0);
+    let stack = ground::derive(&scene, &solved, &arpentry_server::assemble::facades::Facades::empty(), Some(&terrain), 0);
     let mut dem = Dem::open(&terrain).expect("dem");
     let mut scratch: Vec<u32> = Vec::new();
     let strata: Vec<Stratum> = stack.layers().iter().map(|l| l.stratum).collect();
@@ -540,16 +540,16 @@ fn main() {
                 let d = (qx * qx + qy * qy).sqrt();
                 let cross = ex * py - ey * px;
                 let side = if cross >= 0.0 { 0 } else { 1 };
-                let reach = e.half_width_m + e.batter_m[side];
+                let reach = e.half_width_m[side] + e.batter_m[side];
                 if d >= reach {
                     continue;
                 }
                 let target = e.target_a + (e.target_b - e.target_a) * t;
-                let rise = (d - e.half_width_m).max(0.0) / e.batter_run[side];
+                let rise = (d - e.half_width_m[side]).max(0.0) / e.batter_run[side];
                 println!(
                     "    edge {i} chain {} d {d:5.1} reach {reach:5.1} side {side}  target {target:.2} \
                      hw {:.1} batter {:.1} run {:.1} carve {}  face {:.2}",
-                    e.chain, e.half_width_m, e.batter_m[side], e.batter_run[side], e.carve,
+                    e.chain, e.half_width_m[side], e.batter_m[side], e.batter_run[side], e.carve,
                     target + rise
                 );
             }

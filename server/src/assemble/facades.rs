@@ -28,6 +28,7 @@ use std::path::Path;
 use geo_types::{Coord, Geometry, Polygon};
 
 use crate::geoparquet::{GeoParquet, ReadError};
+use crate::priors;
 use crate::scene::DEG_M;
 
 use super::grid::GridIndex;
@@ -61,6 +62,65 @@ impl Room {
     /// The room an open-ground centerline has: `reach` on both sides.
     pub fn open(reach_m: f64) -> Room {
         Room { left: reach_m, right: reach_m }
+    }
+
+    /// What a band of nominal half-width `prior_m` gets on each side here:
+    /// the prior, capped by the room less [`priors::FACADE_CLEAR_M`], and
+    /// never below `floor_m`.
+    ///
+    /// **One function, because the consumers must agree.** The drawn asphalt,
+    /// the bench under it and the batter beyond all spend the same room, and a
+    /// bench allocated by a second derivation would come out narrower than the
+    /// band it carries on some other stretch than the one where it was
+    /// checked. ROADS.md invariant 1 says one cross-section function; this is
+    /// where the facade's argument to it lives.
+    pub fn allot(&self, prior_m: f64, floor_m: f64) -> Section {
+        Section {
+            left_m: allot_side(self.left, prior_m, floor_m),
+            right_m: allot_side(self.right, prior_m, floor_m),
+        }
+    }
+}
+
+/// One side's share of the room. `floor_m` is bounded by `prior_m` before it
+/// applies, so a floor above the prior never *widens* a band.
+pub fn allot_side(room_m: f64, prior_m: f64, floor_m: f64) -> f64 {
+    (room_m - priors::FACADE_CLEAR_M).clamp(floor_m.min(prior_m), prior_m)
+}
+
+/// The half-width on each side of a centerline that some band actually gets,
+/// in metres — the class prior where nothing crowds it, less where a facade
+/// stands closer.
+///
+/// Two numbers rather than one because a wall stands on one side of a street
+/// far more often than on both, and a symmetric cap would pay for a single
+/// close facade by narrowing the open side too.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Section {
+    pub left_m: f64,
+    pub right_m: f64,
+}
+
+impl Section {
+    /// The uniform cross-section of a corridor with room to spare.
+    pub fn uniform(half_m: f64) -> Section {
+        Section { left_m: half_m, right_m: half_m }
+    }
+
+    /// The wider of the two sides — what a query that only has one number to
+    /// spend (a padding radius, a cut's reach, an index footprint) must use.
+    pub fn reach_m(&self) -> f64 {
+        self.left_m.max(self.right_m)
+    }
+
+    /// The side's half-width, indexed as [`super::grid`] and
+    /// `ground::modifiers` index a side: 0 left of the directed edge, 1 right.
+    pub fn on(&self, side: usize) -> f64 {
+        if side == 0 {
+            self.left_m
+        } else {
+            self.right_m
+        }
     }
 }
 

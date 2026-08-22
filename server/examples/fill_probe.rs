@@ -17,7 +17,7 @@ fn main() {
 
     let mut scene = assemble::run(std::path::Path::new(&a[0]), None, &bbox).expect("assemble");
     let solved = solve::run(&mut scene, Some(&terrain), 16, 0).expect("solve");
-    let stack = ground::derive(&scene, &solved, Some(&terrain), 0);
+    let stack = ground::derive(&scene, &solved, &arpentry_server::assemble::facades::Facades::empty(), Some(&terrain), 0);
     let mut scratch: Vec<u32> = Vec::new();
     let r = stack.layer(Stratum::R).expect("an R layer");
     let ew = r.earthworks();
@@ -35,7 +35,7 @@ fn main() {
             if hits <= 8 {
                 println!(
                     "  edge {i}: node {:.1} m away  target {:.2}..{:.2}  half_width {:.2}  batter [{:.1},{:.1}]  carve {}",
-                    d, e.target_a, e.target_b, e.half_width_m, e.batter_m[0], e.batter_m[1], e.carve
+                    d, e.target_a, e.target_b, e.bench_m(), e.batter_m[0], e.batter_m[1], e.carve
                 );
             }
         }

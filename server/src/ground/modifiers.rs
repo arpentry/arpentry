@@ -58,8 +58,18 @@ pub struct EarthworkEdge {
     pub target_a: f64,
     pub target_b: f64,
     /// Held at target within this lateral distance (carriageway + shoulder +
-    /// verge), metres — the bench.
-    pub half_width_m: f64,
+    /// verge), metres — the bench. Indexed `[left, right]` of the directed
+    /// edge, like [`EarthworkEdge::batter_m`].
+    ///
+    /// **Per side because a wall is on one side.** The bench is the class
+    /// half-width plus a shoulder plus a verge, wider than the asphalt it
+    /// carries, and where a facade stands closer than that it is the facade
+    /// that decides — a road may not lay a terrace under a building
+    /// (`authority.facade_ground`). A single number would have paid for one
+    /// close wall by narrowing the open side of the street too, and 52 % of
+    /// that check's population is on the *face* beyond the bench, which is why
+    /// [`EarthworkEdge::batter_m`] is clipped to the same room.
+    pub half_width_m: [f64; 2],
     /// Half-width in metres of the *drawn asphalt* this bench carries — the
     /// paved band, inside the bench's own verge.
     ///
@@ -132,12 +142,20 @@ impl EarthworkEdge {
     /// The edge's reach on `side` (0 = left of `a → b`, 1 = right): past this
     /// lateral distance it cannot touch the ground there.
     fn reach_on(&self, side: usize) -> f64 {
-        self.half_width_m + self.batter_m[side]
+        self.half_width_m[side] + self.batter_m[side]
     }
 
-    /// The edge's widest reach — its index footprint.
+    /// The edge's widest reach — its index footprint. The max over both sides,
+    /// so the grid never has to know which side a query lands on and a cell
+    /// hit is only ever conservative.
     pub fn reach_m(&self) -> f64 {
-        self.half_width_m + self.batter_m[0].max(self.batter_m[1])
+        self.reach_on(LEFT).max(self.reach_on(RIGHT))
+    }
+
+    /// The bench's widest half-width — what a caller with one number to spend
+    /// (a probe radius, a lattice-resolution gate) must use.
+    pub fn bench_m(&self) -> f64 {
+        self.half_width_m[LEFT].max(self.half_width_m[RIGHT])
     }
 
     /// How far the face has left the bench height at lateral distance `d` on
@@ -145,7 +163,7 @@ impl EarthworkEdge {
     /// [`EarthworkEdge::batter_run`] metres outward. The face is `target - rise`
     /// on the fill side and `target + rise` on the cut side.
     fn face_rise(&self, d: f64, side: usize) -> f64 {
-        (d - self.half_width_m).max(0.0) / self.batter_run[side]
+        (d - self.half_width_m[side]).max(0.0) / self.batter_run[side]
     }
 }
 
@@ -218,7 +236,7 @@ impl Earthworks {
         let (mut fill, mut cut) = (f64::NEG_INFINITY, f64::INFINITY);
         for &i in scratch {
             let e = &self.edges[i as usize];
-            if e.carve || e.half_width_m < cell_m {
+            if e.carve || e.bench_m() < cell_m {
                 continue;
             }
             let (d, t, side) = lateral_distance(e, lon, lat);
@@ -226,7 +244,7 @@ impl Earthworks {
                 continue;
             }
             let target = e.target_a + (e.target_b - e.target_a) * t;
-            if d <= e.half_width_m {
+            if d <= e.half_width_m[side] {
                 let rank = if d <= e.carriageway_m { &mut paved } else { &mut bench };
                 let better = match *rank {
                     None => true,
@@ -279,7 +297,7 @@ impl Earthworks {
         // above. A hole is not a surface to average.
         for &i in scratch.iter() {
             let e = &self.edges[i as usize];
-            if !e.carve || e.half_width_m < cell_m {
+            if !e.carve || e.bench_m() < cell_m {
                 continue;
             }
             let (d, t, side) = lateral_distance(e, lon, lat);
@@ -449,7 +467,7 @@ mod tests {
             b: Coord { x: 6.0 + 160.0 / (DEG_M * cos_lat), y: 46.0 },
             target_a: target,
             target_b: target,
-            half_width_m: 8.0,
+            half_width_m: [8.0; 2],
             carriageway_m: 6.0,
             batter_m: [10.0; 2],
             batter_run: [EARTHWORK_BATTER; 2],
@@ -609,7 +627,7 @@ mod tests {
         let mut scratch = Vec::new();
         let cos_lat = 46.0_f64.to_radians().cos();
         let mut street = edge(400.0);
-        street.half_width_m = 4.25;
+        street.half_width_m = [4.25; 2];
         street.carriageway_m = 3.75;
         street.batter_m = [10.0; 2];
         let mut track = street;
@@ -651,7 +669,7 @@ mod tests {
         // Street-like benches held to 7.75 m, centerlines 18 m apart: the
         // upper road's batter reaches across the gap and over the lower road.
         let mut lower = edge(103.0);
-        lower.half_width_m = 7.75;
+        lower.half_width_m = [7.75; 2];
         lower.batter_m = [30.0; 2];
         let mut upper = lower;
         upper.target_a = 110.0;

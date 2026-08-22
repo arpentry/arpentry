@@ -83,7 +83,7 @@ fn main() {
 
     let mut scene = assemble::run(&seg, None, &bbox).expect("assemble");
     let solved = solve::run(&mut scene, terrain.as_deref(), 16, 8).expect("solve");
-    let ground = arpentry_server::ground::derive(&scene, &solved, terrain.as_deref(), 8);
+    let ground = arpentry_server::ground::derive(&scene, &solved, &facades, terrain.as_deref(), 8);
     eprintln!(
         "corridors {} profiles {} earthworks {}",
         scene.corridors.len(),

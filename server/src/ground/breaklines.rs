@@ -19,7 +19,7 @@ use geo_types::Coord;
 use crate::assemble::grid::GridIndex;
 use crate::scene::DEG_M;
 
-use super::modifiers::EarthworkEdge;
+use super::modifiers::{self, EarthworkEdge};
 use super::GroundLayer;
 
 /// Sharpest miter kept when offsetting at a polyline joint, as a scale
@@ -238,15 +238,19 @@ fn emit_run(
         offsets.push((-uy, ux)); // left perpendicular (may carry miter scale)
     }
     let node = |k: usize| if k == 0 { run[0].a } else { run[k - 1].b };
-    // The bench half-width varies per edge; a node takes the max of its
-    // adjacent edges so the crest line never pinches inside the bench.
-    let node_half_width = |k: usize| -> f64 {
+    // The bench half-width varies per edge *and per side*; a node takes the
+    // max of its adjacent edges so the crest line never pinches inside the
+    // bench. Per side because a facade can clip one flank of a street and not
+    // the other (`EarthworkEdge::half_width_m`), and a crest drawn at the
+    // wider side's offset would stand out in ground this bench no longer
+    // holds.
+    let node_half_width = |k: usize, side: usize| -> f64 {
         let mut hw: f64 = 0.0;
         if k > 0 {
-            hw = hw.max(run[k - 1].half_width_m);
+            hw = hw.max(run[k - 1].half_width_m[side]);
         }
         if k < run.len() {
-            hw = hw.max(run[k].half_width_m);
+            hw = hw.max(run[k].half_width_m[side]);
         }
         (hw - CREST_INSET_M).max(0.0)
     };
@@ -268,10 +272,13 @@ fn emit_run(
         }
     };
     for side in [-1.0, 1.0] {
+        // `offsets` is the *left* perpendicular, so a positive multiplier is
+        // the left of the directed edge — the index `half_width_m` uses.
+        let s = if side > 0.0 { modifiers::LEFT } else { modifiers::RIGHT };
         // Where the crest sits at each of the run's own nodes.
         let mut held: Vec<Option<f64>> = Vec::with_capacity(n);
         for k in 0..n {
-            let h = crest_offset(layers, node_target(k), node_half_width(k), scratch, &mut |d| {
+            let h = crest_offset(layers, node_target(k), node_half_width(k, s), scratch, &mut |d| {
                 offset_point(k, side, d)
             });
             match h {
@@ -279,7 +286,7 @@ fn emit_run(
                 // holds the ground right up to the road's own axis, and it
                 // draws the crest the mesh needs. The line breaks here.
                 None => tally.1 += 1,
-                Some(v) if v < node_half_width(k) - 1e-9 => tally.0 += 1,
+                Some(v) if v < node_half_width(k, s) - 1e-9 => tally.0 += 1,
                 Some(_) => {}
             }
             held.push(h);
@@ -313,7 +320,7 @@ fn emit_run(
                 // A contended segment tracks the boundary instead of chording
                 // it (see CREST_SEGMENT_M); an uncontended one is exact as it
                 // stands and keeps its two nodes.
-                let pulled = |k: usize| held[k].is_some_and(|v| v < node_half_width(k) - 1e-9);
+                let pulled = |k: usize| held[k].is_some_and(|v| v < node_half_width(k, s) - 1e-9);
                 let (a, b) = (node(e), node(k));
                 let len = ((b.x - a.x) * cos_lat).hypot(b.y - a.y) * DEG_M;
                 let steps = if pulled(e) || pulled(k) {
@@ -332,7 +339,7 @@ fn emit_run(
                         y: base.y + side * py * d / DEG_M,
                     };
                     let nominal =
-                        node_half_width(e) + (node_half_width(k) - node_half_width(e)) * t;
+                        node_half_width(e, s) + (node_half_width(k, s) - node_half_width(e, s)) * t;
                     let target = run[e].target_a + (run[e].target_b - run[e].target_a) * t;
                     match crest_offset(layers, target, nominal, scratch, &mut |d| at(d)) {
                         Some(hi) => {
@@ -461,7 +468,7 @@ mod tests {
             b,
             target_a: 400.0,
             target_b: 400.0,
-            half_width_m: hw,
+            half_width_m: [hw; 2],
             carriageway_m: (hw - 1.0).max(0.0),
             batter_m: [batter; 2],
             batter_run: [crate::priors::EARTHWORK_BATTER; 2],

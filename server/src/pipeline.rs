@@ -342,7 +342,8 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // reads the corridor spans.
     let solved =
         Arc::new(solve::run(&mut scene, cfg.terrain.as_deref(), cfg.max_zoom, threads)?);
-    let ground = Arc::new(ground::derive(&scene, &solved, cfg.terrain.as_deref(), threads));
+    let ground =
+        Arc::new(ground::derive(&scene, &solved, &facades, cfg.terrain.as_deref(), threads));
     // Junction plates: a paved area meshed across each corridor junction, baked
     // once from the solved model and emitted by the tile that owns its centre.
     let junctions = Arc::new(synth::carriageway::bake(&scene, &solved, &facades));
@@ -2310,7 +2311,7 @@ mod tests {
                 .expect("assemble");
         let solved =
             Arc::new(solve::run(&mut scene, terrain.as_deref(), z_ref, 0).expect("solve"));
-        let ground = Arc::new(ground::derive(&scene, &solved, terrain.as_deref(), 0));
+        let ground = Arc::new(ground::derive(&scene, &solved, &assemble::facades::Facades::empty(), terrain.as_deref(), 0));
         eprintln!(
             "model: {} corridors, {} profiles, {} earthwork edges, {} breakline segments",
             scene.corridors.len(),
@@ -2619,7 +2620,7 @@ mod tests {
         let mut scene = assemble::run(FsPath::new(&seg), water.as_deref().map(FsPath::new), &bounds)
             .expect("assemble");
         let solved = Arc::new(solve::run(&mut scene, terrain.as_deref(), z_ref, 0).expect("solve"));
-        let ground = Arc::new(ground::derive(&scene, &solved, terrain.as_deref(), 0));
+        let ground = Arc::new(ground::derive(&scene, &solved, &assemble::facades::Facades::empty(), terrain.as_deref(), 0));
         let mut dem = terrain.as_deref().and_then(|p| Dem::open(p).ok());
         let raw = match &mut dem {
             Some(d) => d.elevation(lon, lat, z_ref),
@@ -2652,7 +2653,7 @@ mod tests {
             // a diverging face is rebuilt as a wall and a probe that assumes
             // the earth slope explains a shape that is not there.
             let side = if dx * (lat - e.a.y) - dy * (lon * e.cos_lat - ax) >= 0.0 { 0 } else { 1 };
-            let rise = (d - e.half_width_m).max(0.0) / e.batter_run[side];
+            let rise = (d - e.half_width_m[side]).max(0.0) / e.batter_run[side];
             let target = e.target_a + (e.target_b - e.target_a) * t;
             let class = scene
                 .corridors
@@ -2669,7 +2670,7 @@ mod tests {
                     e.chain,
                     e.arc0,
                     d,
-                    e.half_width_m,
+                    e.half_width_m[side],
                     e.carriageway_m,
                     if side == 0 { "L" } else { "R" },
                     e.batter_m[side],
@@ -2677,7 +2678,7 @@ mod tests {
                     target,
                     if d <= e.carriageway_m {
                         "CARRIAGEWAY".to_string() // outranks any nearer verge
-                    } else if d <= e.half_width_m {
+                    } else if d <= e.half_width_m[side] {
                         "bench (verge)".to_string()
                     } else {
                         format!("face fill={:.2} cut={:.2}", target - rise, target + rise)

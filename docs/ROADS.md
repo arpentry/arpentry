@@ -773,6 +773,47 @@ the scenario table (§4).
     half-widths, the walk band that belongs between them, and the
     facade-clipped batter are the phases after this one.
 
+    *Increment 11 — the bench's cross-section, built and left switched
+    off (2026-08-22).* `EarthworkEdge::half_width_m` is per side, the room
+    is resolved once per profile node at derive time and baked onto each
+    edge, and `Room::allot` is the one function the asphalt and the ground
+    both spend the room through (invariant 1). `ARPT_FACADE_BENCH=1` turns
+    the clip on; `ARPT_FACADE_BATTER=1` adds the face's.
+
+    **It is off because the measurement says it is not yet a net
+    improvement, and the reason is a phase that has not landed.** Tiled and
+    scored against the same control:
+
+    | | bench clip | + batter clip |
+    |---|---|---|
+    | `authority.facade_ground` | 1.934 → 1.096 % | 1.934 → 0.656 % |
+    | wall samples past a metre | −2,225 | −3,408 |
+    | `contact.kerb_lip` | 6.80 → 7.70 % | 6.80 → 8.63 % |
+    | kerbs gaining a drop | **+3,850** | **+7,828** |
+
+    Both halves of the trade are 1 m-scale defects on comparable
+    populations (261 k wall samples against 429 k kerbs), and both times
+    the cost is larger than the gain. `slope.terrain_tearing` and
+    `contact.kerb_unwalled` improve either way; `contact.sidewalk_grade`
+    and `slope.terrain_face` follow the kerb.
+
+    The mechanism is mechanical once seen: `contact.kerb_lip` probes one
+    metre outside the kerb, so narrowing the bench moves that probe off
+    the verge and onto the batter face. *Any* narrowing costs it, whatever
+    the room says — until something occupies the strip between the kerb
+    and the facade. That something is the walk band (P5, "adjacent
+    infrastructure"), riding the host's cross-section at `KERB_RISE_M`.
+    So the phase order in the plan was right and the dependency runs the
+    other way from how it looked: the bench cannot be allocated out of the
+    room before the sidewalk is there to receive what it gives up.
+
+    One thing the build settled on its own: the ground stops **at** the
+    wall, not a clearance short of it. `FACADE_CLEAR_M` keeps a drawn
+    surface off a footprint; a wall stands *on* ground, and a street
+    between buildings is flat from facade to facade. Clipping the bench
+    half a metre short was built first and read `contact.kerb_lip` 9.08 %,
+    worse than clipping at the wall.
+
     *Still open:* the deck top has the analytic edge AA (`sweep_prism`
     already writes ±1 `edge_across` on its two edge strips) but not the
     band's **kerb line**, so the rim runs along the approach and stops at

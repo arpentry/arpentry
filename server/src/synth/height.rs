@@ -714,7 +714,7 @@ mod tests {
         let solved =
             SolvedModel::from_profiles(profiles, Z).with_junction_heights(vec![Some(480.0)]);
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
-        let ground = Arc::new(crate::ground::derive(&scene, &solved, None, 1));
+        let ground = Arc::new(crate::ground::derive(&scene, &solved, &Facades::empty(), None, 1));
         assert!(ground.earthwork_count() > 0, "the legs must bench the ground to 500");
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
         let field = HeightField::for_tile(&junctions, &solved, Z, &bounds);

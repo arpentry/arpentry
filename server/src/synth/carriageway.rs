@@ -53,7 +53,7 @@ use std::collections::HashMap;
 
 use geo_types::Coord;
 
-use crate::assemble::facades::Facades;
+use crate::assemble::facades::{Facades, Section};
 use crate::assemble::grid::GridIndex;
 use crate::priors;
 use crate::scene::{Corridor, CorridorId, SceneGraph, SpanKind, DEG_M};
@@ -154,34 +154,6 @@ pub struct Handover {
     /// The cut's two ends, one per side of the carriageway.
     pub a: Coord,
     pub b: Coord,
-}
-
-/// The band's half-width on each side of the centerline at one station, in
-/// metres — the street's cross-section where the facades leave less room than
-/// the class prior asks for.
-///
-/// Two numbers rather than one because a wall stands on one side of a street
-/// far more often than on both, and a symmetric cap would pay for a single
-/// close facade by narrowing the open side too. Equal to the corridor's
-/// [`corridor_half_width_m`] wherever nothing is close, which is most of the
-/// network — so the varying-width path costs nothing where it buys nothing.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Section {
-    pub left_m: f64,
-    pub right_m: f64,
-}
-
-impl Section {
-    /// The uniform cross-section of a corridor with room to spare.
-    pub fn uniform(half_m: f64) -> Section {
-        Section { left_m: half_m, right_m: half_m }
-    }
-
-    /// The wider of the two sides — what a query that only has one number to
-    /// spend (a padding radius, a cut's reach) must use.
-    pub fn reach_m(&self) -> f64 {
-        self.left_m.max(self.right_m)
-    }
 }
 
 /// One stretch of centerline between two nodes, and how far either side of it
@@ -593,9 +565,6 @@ fn sections_along(
         return uniform;
     }
     let m_lon = DEG_M * c.cos_lat;
-    // Never widen, and never narrow a street out of existence: a corridor whose
-    // prior is already under the floor keeps its prior.
-    let floor = priors::MIN_CARRIAGEWAY_HALF_M.min(half_m);
     let reach = half_m + priors::FACADE_CLEAR_M;
     let mut out = uniform;
     for i in 0..stops.len() {
@@ -623,8 +592,7 @@ fn sections_along(
             .min(ROOM_WINDOW_MAX_M);
         let room =
             facades.room(pts[i], c.cos_lat, (dx / len, dy / len), reach, window, scratch);
-        let allot = |r: f64| (r - priors::FACADE_CLEAR_M).clamp(floor, half_m);
-        out[i] = Section { left_m: allot(room.left), right_m: allot(room.right) };
+        out[i] = room.allot(half_m, priors::MIN_CARRIAGEWAY_HALF_M);
     }
     out
 }
