@@ -390,6 +390,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             scene,
             solved,
             ground,
+            facades: &world.facades,
             terrain: cfg.terrain.as_deref(),
             bounds: cfg.bbox,
             threads,

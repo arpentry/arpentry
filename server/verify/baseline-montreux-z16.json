@@ -1817,6 +1817,22 @@
       "worst": 11.51145264968693
     },
     {
+      "id": "authority.facade_ground",
+      "invariant": "I8",
+      "median": 0.006666666666667709,
+      "offenders": [],
+      "population": "Every 2 m of every building footprint edge inside the extract bbox (52280 walls read), scored as the engineered ground minus the reference surface the solve itself read — zero wherever no earthwork reaches, so the rate is the share of *wall* standing on something a road decided. Of 261282 samples, 31947 stand on ground an earthwork moved at all.",
+      "samples": 261282,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 10.273333333333333,
+      "threshold": 1.0,
+      "title": "A road earthwork deciding the ground under a building",
+      "violation_pct": 1.9335430684088457,
+      "violations": 5052,
+      "worst": 10.272060644183057
+    },
+    {
       "id": "ground.footprint",
       "invariant": "I8",
       "median": 0.006666666666667709,
@@ -1985,7 +2001,7 @@
       6.9818115234375,
       46.47216796875
     ],
-    "commit": "543dac2",
+    "commit": "c475a8d",
     "max_tiles": 4096,
     "spacing_m": 1.0,
     "tiles": 621,

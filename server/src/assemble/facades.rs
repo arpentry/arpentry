@@ -158,6 +158,13 @@ impl Facades {
         self.footprints
     }
 
+    /// Every wall edge, in no particular geographic order but in a stable one —
+    /// the order the input yielded them. What a check walks to ask what the
+    /// ground under a wall is made of.
+    pub fn edges(&self) -> &[Edge] {
+        &self.edges
+    }
+
     pub fn edge_count(&self) -> usize {
         self.edges.len()
     }

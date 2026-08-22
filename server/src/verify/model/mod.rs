@@ -20,6 +20,7 @@
 
 pub mod authority;
 pub mod datum;
+pub mod facade;
 pub mod footprint;
 pub mod grade;
 pub mod graph;
@@ -41,6 +42,11 @@ pub struct Model<'a> {
     pub scene: &'a SceneGraph,
     pub solved: &'a SolvedModel,
     pub ground: &'a GroundStack,
+    /// The walls the world was built among (`assemble::facades`). Here because
+    /// "what is the ground under this building made of" is a question about
+    /// authority, and the archive cannot answer it: it carries the ground that
+    /// was drawn, never the ground that would have been there.
+    pub facades: &'a crate::assemble::facades::Facades,
     pub terrain: Option<&'a std::path::Path>,
     pub bounds: crate::project::Bounds,
     pub threads: usize,
@@ -52,6 +58,7 @@ pub fn run(m: &Model<'_>) -> Vec<Metric> {
     out.extend(authority::determinism(m));
     out.extend(authority::inversion(m));
     out.extend(datum::check(m));
+    out.extend(facade::check(m));
     out.extend(footprint::check(m));
     out.extend(grade::check(m));
     out.extend(graph::check(m));
