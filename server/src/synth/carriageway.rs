@@ -53,6 +53,7 @@ use std::collections::HashMap;
 
 use geo_types::Coord;
 
+use crate::assemble::facades::Facades;
 use crate::assemble::grid::GridIndex;
 use crate::priors;
 use crate::scene::{Corridor, CorridorId, SceneGraph, SpanKind, DEG_M};
@@ -155,6 +156,34 @@ pub struct Handover {
     pub b: Coord,
 }
 
+/// The band's half-width on each side of the centerline at one station, in
+/// metres — the street's cross-section where the facades leave less room than
+/// the class prior asks for.
+///
+/// Two numbers rather than one because a wall stands on one side of a street
+/// far more often than on both, and a symmetric cap would pay for a single
+/// close facade by narrowing the open side too. Equal to the corridor's
+/// [`corridor_half_width_m`] wherever nothing is close, which is most of the
+/// network — so the varying-width path costs nothing where it buys nothing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Section {
+    pub left_m: f64,
+    pub right_m: f64,
+}
+
+impl Section {
+    /// The uniform cross-section of a corridor with room to spare.
+    pub fn uniform(half_m: f64) -> Section {
+        Section { left_m: half_m, right_m: half_m }
+    }
+
+    /// The wider of the two sides — what a query that only has one number to
+    /// spend (a padding radius, a cut's reach) must use.
+    pub fn reach_m(&self) -> f64 {
+        self.left_m.max(self.right_m)
+    }
+}
+
 /// One stretch of centerline between two nodes, and how far either side of it
 /// that corridor's asphalt reaches. Carries the corridor *id* rather than a
 /// borrowed profile so the model stays self-contained and shareable.
@@ -163,7 +192,20 @@ pub struct SourceSeg {
     pub a: Coord,
     pub b: Coord,
     pub cos_lat: f64,
+    /// The class's own half-width — what this corridor paves where nothing
+    /// crowds it. Still the segment's identity for everything that reasons
+    /// about the corridor rather than about the drawn edge: the run chaining,
+    /// the handover cut's reach, the chunk padding, and the road height field,
+    /// whose support must not shrink away from the bench beside it just
+    /// because a wall narrowed the asphalt.
     pub half_m: f64,
+    /// What is actually drawn at each end of the stretch — [`half_m`] on both
+    /// sides, or less where a facade stands closer than
+    /// [`priors::FACADE_CLEAR_M`] outside it.
+    ///
+    /// [`half_m`]: Self::half_m
+    pub sect_a: Section,
+    pub sect_b: Section,
     pub level: i64,
     /// Grade-separation layer: which *sheet* of asphalt this stretch belongs to
     /// ([`crate::synth::sheets`]). Zero for anything nothing else stacks over,
@@ -351,7 +393,7 @@ impl CarriagewayModel {
 /// members' benches already agree there (the street weld), and a fixed disc
 /// would cut into the slope the intersection genuinely sits on. One with no
 /// profiled member has no known height and is skipped.
-pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> CarriagewayModel {
+pub fn bake(scene: &SceneGraph, solved: &SolvedModel, facades: &Facades) -> CarriagewayModel {
     let ports = Ports::build(scene);
     let clusters = cluster(scene, &ports);
     let mut junctions = Vec::new();
@@ -364,7 +406,7 @@ pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> CarriagewayModel {
     // carriageway stretch (`synth::sheets`), not read off the mapped bridge
     // spans per corridor. Sources are built first because the layering is a
     // property of how they overlap, then stamped back onto them.
-    let (mut sources, handovers) = carriageway_sources(scene, solved);
+    let (mut sources, handovers) = carriageway_sources(scene, solved, facades);
     let layers = sheets::assign(scene, &sources);
     for (s, &l) in sources.iter_mut().zip(layers.iter()) {
         s.layer = l;
@@ -387,6 +429,7 @@ pub fn bake(scene: &SceneGraph, solved: &SolvedModel) -> CarriagewayModel {
 fn carriageway_sources(
     scene: &SceneGraph,
     solved: &SolvedModel,
+    facades: &Facades,
 ) -> (Vec<SourceSeg>, Vec<Handover>) {
     let mut out = Vec::new();
     let mut handovers = Vec::new();
@@ -395,6 +438,10 @@ fn carriageway_sources(
     // than a patch — the same reason `--no-hole` exists. Read once: it is a
     // constant for the run, and this loop is every carriageway in the extract.
     let no_cut = std::env::var_os("ARPT_NO_ABUTMENT_CUT").is_some();
+    // `ARPT_NO_FACADE_ROOM=1` gives every street the open-ground cross-section
+    // again, for the same reason.
+    let no_room = std::env::var_os("ARPT_NO_FACADE_ROOM").is_some();
+    let mut scratch: Vec<u32> = Vec::new();
     for c in &scene.corridors {
         let Some(half_m) = corridor_half_width_m(c) else {
             continue; // not a carriageway: paves nothing, so covers nothing
@@ -473,41 +520,123 @@ fn carriageway_sources(
             };
             // Both ends are exact: the run boundary is where the deck begins,
             // so the band has to end *there* and not at the nearest station.
-            let mut prev = lo;
-            let mut first = true;
+            let mut stops: Vec<f64> = Vec::with_capacity(stations.len() + 2);
+            stops.push(lo);
             for s in stations.into_iter().chain(std::iter::once(hi)) {
-                if s - prev <= RUN_EPS_M {
-                    continue;
+                if s - stops[stops.len() - 1] > RUN_EPS_M {
+                    stops.push(s);
                 }
-                // **One centerline** (docs/ROADS.md H2, invariant 5): the band
-                // is buffered around the same smoothed line the deck is swept
-                // along and the ground benched beside, so nothing steps at the
-                // abutment where one hands over to the other.
-                let point = |arc: f64| match profile {
-                    Some(p) => p.smooth_at_arc(arc),
-                    None => raw_point_at_arc(c, arc),
-                };
+            }
+            if stops.len() < 2 {
+                continue;
+            }
+            // **One centerline** (docs/ROADS.md H2, invariant 5): the band is
+            // buffered around the same smoothed line the deck is swept along
+            // and the ground benched beside, so nothing steps at the abutment
+            // where one hands over to the other.
+            let point = |arc: f64| match profile {
+                Some(p) => p.smooth_at_arc(arc),
+                None => raw_point_at_arc(c, arc),
+            };
+            let pts: Vec<Coord> = stops.iter().map(|&s| point(s)).collect();
+            let sections = sections_along(c, &stops, &pts, half_m, facades, no_room, &mut scratch);
+            for i in 0..stops.len() - 1 {
                 out.push(SourceSeg {
-                    a: point(prev),
-                    b: point(s),
+                    a: pts[i],
+                    b: pts[i + 1],
                     cos_lat: c.cos_lat,
                     half_m,
+                    sect_a: sections[i],
+                    sect_b: sections[i + 1],
                     level,
                     layer: 0,
-                    cut_a: first.then_some(cut_lo).flatten(),
-                    cut_b: (s >= hi - RUN_EPS_M).then_some(cut_hi).flatten(),
-                    height_a: at(prev.clamp(a0, a1)),
-                    height_b: at(s.clamp(a0, a1)),
+                    cut_a: (i == 0).then_some(cut_lo).flatten(),
+                    cut_b: (i + 2 == stops.len()).then_some(cut_hi).flatten(),
+                    height_a: at(stops[i].clamp(a0, a1)),
+                    height_b: at(stops[i + 1].clamp(a0, a1)),
                     corridor: c.id,
                     surface: c.kind.prior().surface,
                 });
-                prev = s;
-                first = false;
             }
         }
     }
     (out, handovers)
 }
+
+/// The cross-section at every station of one run: the class prior on both
+/// sides, narrowed where a facade stands closer than [`priors::FACADE_CLEAR_M`]
+/// outside the asphalt, and never below [`priors::MIN_CARRIAGEWAY_HALF_M`].
+///
+/// **The allocation order is the model, and asphalt is last in it.** A
+/// footprint carries its own plan error while a carriageway width is a survey
+/// prior, so the room a wall leaves is spent on the sidewalk and the verge
+/// before any of it is taken off the road (`data/plans` — the street as a room
+/// between facades). Phase 2 has only asphalt to spend it on, so the whole cap
+/// lands here; when the walk band and the per-side bench exist they take their
+/// share first and this becomes the remainder.
+///
+/// Asphalt only. A railway through a building is a station under its roof, not
+/// a formation drawn through a wall, and narrowing the ballast there would
+/// shave the platform it stands on — the same exclusion `order.building_overlap`
+/// makes on the measuring side.
+fn sections_along(
+    c: &Corridor,
+    stops: &[f64],
+    pts: &[Coord],
+    half_m: f64,
+    facades: &Facades,
+    no_room: bool,
+    scratch: &mut Vec<u32>,
+) -> Vec<Section> {
+    let uniform = vec![Section::uniform(half_m); stops.len()];
+    if no_room || facades.is_empty() || c.kind.prior().surface != priors::Surface::Asphalt {
+        return uniform;
+    }
+    let m_lon = DEG_M * c.cos_lat;
+    // Never widen, and never narrow a street out of existence: a corridor whose
+    // prior is already under the floor keeps its prior.
+    let floor = priors::MIN_CARRIAGEWAY_HALF_M.min(half_m);
+    let reach = half_m + priors::FACADE_CLEAR_M;
+    let mut out = uniform;
+    for i in 0..stops.len() {
+        // The tangent is a central difference where there is one, so a station
+        // reads the direction the road runs *through* it rather than the
+        // direction of whichever chord happens to be indexed with it.
+        let (j, k) = (i.saturating_sub(1), (i + 1).min(stops.len() - 1));
+        if j == k {
+            continue;
+        }
+        let (dx, dy) = ((pts[k].x - pts[j].x) * m_lon, (pts[k].y - pts[j].y) * DEG_M);
+        let len = dx.hypot(dy);
+        if !(len > 0.0) {
+            continue;
+        }
+        // **A station is responsible for its own stretch of centerline**, so it
+        // looks at least as far along the road as the gap to its neighbours.
+        // That is what makes consecutive stations see the same wall: a facade
+        // is caught by every station whose window it falls in, so the two that
+        // bracket its ends are both narrowed and the width interpolated between
+        // them never crosses it. A shorter window would let a wall between two
+        // stations go unseen; a longer one only tapers the street sooner.
+        let window = (stops[k] - stops[j])
+            .max(ROOM_WINDOW_MIN_M)
+            .min(ROOM_WINDOW_MAX_M);
+        let room =
+            facades.room(pts[i], c.cos_lat, (dx / len, dy / len), reach, window, scratch);
+        let allot = |r: f64| (r - priors::FACADE_CLEAR_M).clamp(floor, half_m);
+        out[i] = Section { left_m: allot(room.left), right_m: allot(room.right) };
+    }
+    out
+}
+
+/// Shortest and longest stretch of centerline, in metres, that one station
+/// looks along for the walls beside it ([`sections_along`]). The floor keeps a
+/// densified profile's centimetre stations from each reading a slit of wall;
+/// the ceiling bounds the query on a corridor whose mapped vertices are
+/// hundreds of metres apart, where the cap would otherwise reach far past
+/// anything it could be said to measure.
+const ROOM_WINDOW_MIN_M: f64 = 4.0;
+const ROOM_WINDOW_MAX_M: f64 = 32.0;
 
 /// The cut across the band at arc `arc` — the line the at-grade run ends on and
 /// the deck begins on, both being swept from that same station on the same
@@ -1124,7 +1253,7 @@ mod tests {
         let mut scene = SceneGraph::default();
         scene.corridors.push(c);
         let solved = SolvedModel::from_profiles(vec![Some(p)], 16);
-        let (sources, cuts) = carriageway_sources(&scene, &solved);
+        let (sources, cuts) = carriageway_sources(&scene, &solved, &Facades::empty());
         assert!(!sources.is_empty(), "the corridor paved nothing");
 
         // Every source endpoint lies on the smoothed line. Sampled densely
@@ -1199,7 +1328,7 @@ mod tests {
         let mut scene = SceneGraph::default();
         scene.corridors.push(c);
         let solved = SolvedModel::from_profiles(vec![None], 16);
-        let (sources, _) = carriageway_sources(&scene, &solved);
+        let (sources, _) = carriageway_sources(&scene, &solved, &Facades::empty());
         // The paved share of the corridor: 35 m of its 100 before the bridge
         // and 35 after, so 70 %. Measured as a
         // fraction of the corridor's own length because the fixture's `arc` is
@@ -1217,6 +1346,107 @@ mod tests {
         );
     }
 
+    /// A straight west→east corridor whose arc really is its metric length —
+    /// the room measurement is in metres and reads both, so the fixture above
+    /// (10 m of arc over 7.7 m of ground) would make the window a lie.
+    fn ew_corridor(width_m: f64, n: usize, step_m: f64) -> Corridor {
+        let cos_lat = 46f64.to_radians().cos();
+        let d = step_m / (DEG_M * cos_lat);
+        Corridor {
+            id: 0,
+            nodes: (0..n).map(|i| Coord { x: 6.0 + i as f64 * d, y: 46.0 }).collect(),
+            arc: (0..n).map(|i| i as f64 * step_m).collect(),
+            cos_lat,
+            kind: Kind::Road(RoadClass::Residential),
+            class_key: "residential".to_string(),
+            link: false,
+            width_m: Some(width_m),
+            spans: Vec::new(),
+            segments: Vec::new(),
+            connectors: Vec::new(),
+        }
+    }
+
+    /// A wall parallel to [`ew_corridor`], `north_m` north of it (negative for
+    /// south), running the whole fixture.
+    fn parallel_wall(north_m: f64) -> Facades {
+        let y = 46.0 + north_m / DEG_M;
+        Facades::from_edges([[Coord { x: 5.99, y }, Coord { x: 6.01, y }]])
+    }
+
+    /// The cross-sections of every source of a one-corridor scene.
+    fn sections_of(c: Corridor, facades: &Facades) -> Vec<Section> {
+        let scene = SceneGraph::new(vec![c]);
+        let solved = SolvedModel::empty(15);
+        let (sources, _) = carriageway_sources(&scene, &solved, facades);
+        sources.iter().flat_map(|s| [s.sect_a, s.sect_b]).collect()
+    }
+
+    #[test]
+    fn open_ground_keeps_the_class_prior_on_both_sides() {
+        let half = 3.0 + priors::STRUCTURE_SHOULDER_M;
+        for s in sections_of(ew_corridor(6.0, 11, 10.0), &Facades::empty()) {
+            assert_eq!(s, Section::uniform(half));
+        }
+    }
+
+    #[test]
+    fn a_facade_narrows_the_side_it_stands_on_and_only_that_side() {
+        // 3.5 m of room minus the half-metre clearance leaves 3.0 m of asphalt
+        // on the north side; the south side never saw a wall.
+        let half = 3.0 + priors::STRUCTURE_SHOULDER_M;
+        let sections = sections_of(ew_corridor(6.0, 11, 10.0), &parallel_wall(3.5));
+        for s in &sections {
+            assert!((s.left_m - 3.0).abs() < 1e-6, "left {} is not 3.0", s.left_m);
+            assert_eq!(s.right_m, half, "the open side keeps its prior");
+        }
+    }
+
+    #[test]
+    fn a_facade_past_the_prior_narrows_nothing() {
+        // The prior is 4 m and the clearance half a metre, so a wall 4.5 m out
+        // is exactly the reach: it costs the street nothing.
+        let half = 3.0 + priors::STRUCTURE_SHOULDER_M;
+        for s in sections_of(ew_corridor(6.0, 11, 10.0), &parallel_wall(4.5)) {
+            assert_eq!(s, Section::uniform(half), "a wall at the reach is not a wall in the way");
+        }
+    }
+
+    #[test]
+    fn a_wall_on_the_centerline_leaves_a_lane_rather_than_no_road() {
+        // The floor is what separates a street a wall crowds from a way whose
+        // centerline runs inside a footprint: the second keeps a carriageway.
+        for s in sections_of(ew_corridor(6.0, 11, 10.0), &parallel_wall(0.2)) {
+            assert_eq!(s.left_m, priors::MIN_CARRIAGEWAY_HALF_M);
+            assert!(s.right_m > s.left_m, "the far side is untouched: {s:?}");
+        }
+    }
+
+    #[test]
+    fn a_rail_formation_is_not_narrowed_by_the_roof_over_it() {
+        let mut c = ew_corridor(6.0, 11, 10.0);
+        c.kind = Kind::Rail(crate::priors::RailClass::StandardGauge);
+        c.class_key = "rail".to_string();
+        let half = corridor_half_width_m(&c).expect("a formation");
+        for s in sections_of(c, &parallel_wall(1.0)) {
+            assert_eq!(s, Section::uniform(half), "a platform is not a defect");
+        }
+    }
+
+    #[test]
+    fn a_wall_shorter_than_the_station_spacing_is_still_seen() {
+        // A 3 m stub of wall halfway between two 10 m-spaced stations. The
+        // window is what catches it; without one it would fall through the
+        // sampling entirely and the band would be drawn straight over it.
+        let cos_lat = 46f64.to_radians().cos();
+        let at = |m: f64| 6.0 + m / (DEG_M * cos_lat);
+        let y = 46.0 + 3.0 / DEG_M;
+        let f = Facades::from_edges([[Coord { x: at(43.5), y }, Coord { x: at(46.5), y }]]);
+        let sections = sections_of(ew_corridor(6.0, 11, 10.0), &f);
+        let narrowest = sections.iter().fold(f64::INFINITY, |m, s| m.min(s.left_m));
+        assert!((narrowest - 2.5).abs() < 1e-6, "narrowest left is {narrowest}, not 2.5");
+    }
+
     #[test]
     fn only_carriageways_become_sources() {
         // A drivable corridor contributes one source per segment; a footway
@@ -1224,7 +1454,7 @@ mod tests {
         let c = corridor(6.0, 11);
         let scene = crate::scene::SceneGraph::new(vec![c]);
         let solved = SolvedModel::empty(15);
-        assert_eq!(carriageway_sources(&scene, &solved).0.len(), 10, "one per segment");
+        assert_eq!(carriageway_sources(&scene, &solved, &Facades::empty()).0.len(), 10, "one per segment");
         let half = corridor_half_width_m(&scene.corridors[0]).expect("a carriageway");
         assert!((half - (3.0 + priors::STRUCTURE_SHOULDER_M)).abs() < 1e-12);
 
@@ -1232,7 +1462,7 @@ mod tests {
         path.kind = crate::priors::Kind::Road(crate::priors::RoadClass::Footway);
         path.width_m = None;
         let scene = crate::scene::SceneGraph::new(vec![path]);
-        assert!(carriageway_sources(&scene, &solved).0.is_empty(), "a footway paves nothing");
+        assert!(carriageway_sources(&scene, &solved, &Facades::empty()).0.is_empty(), "a footway paves nothing");
         assert!(corridor_half_width_m(&scene.corridors[0]).is_none());
     }
 }

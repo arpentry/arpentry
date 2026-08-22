@@ -126,6 +126,110 @@ pub fn buffer_line(line: &[Pt], half_m: f64) -> Shapes {
     line.stroke_fixed_scale_as::<i64>(style, false, SCALE).unwrap_or_default()
 }
 
+/// The paved region of one centerline whose cross-section varies along it:
+/// `half[i]` is `[left, right]` in metres at vertex `i`, left being the side
+/// the vertex's outgoing direction has on its left.
+///
+/// This is the same band [`buffer_line`] draws, for the case where a facade has
+/// taken some of it back on one side or the other (`assemble::facades`), and it
+/// is a separate entry point rather than a generalisation because a stroke of
+/// constant width is what `i_overlay` does natively and well. A uniform run
+/// still goes through [`buffer_line`], so the joins on the 99 % of the network
+/// nothing crowds keep the exact miters they have always had.
+///
+/// **The construction is a union of convex pieces, not an offset ring.** One
+/// trapezoid per segment, one patch per interior vertex to fill the join, all
+/// unioned under the non-zero rule. An offset ring would have to decide what to
+/// do where the inner side of a bend crosses itself; a set of convex pieces has
+/// no such case, at the cost of beveling the outside of a join instead of
+/// mitering it — a difference of `half · tan(θ/2)` at the corner, under a
+/// centimetre at the ~4 m stations a profile is densified to.
+///
+/// Each piece is grown past its interior ends by [`JOINT_OVERLAP_M`] so that
+/// consecutive pieces genuinely *overlap*. Pieces that merely touch along an
+/// edge come back out of the union as separate regions, which is the seam a
+/// straight road grew when the band was buffered per segment.
+pub fn buffer_section(line: &[Pt], half: &[[f64; 2]]) -> Shapes {
+    if line.len() < 2 || half.len() != line.len() {
+        return Vec::new();
+    }
+    let mut pieces: Shapes = Vec::new();
+    let mut normals: Vec<Pt> = Vec::with_capacity(line.len() - 1);
+    for i in 0..line.len() - 1 {
+        let (p, q) = (line[i], line[i + 1]);
+        let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
+        let len = dx.hypot(dy);
+        if !(len > 0.0) {
+            normals.push([0.0, 0.0]);
+            continue;
+        }
+        let (ux, uy) = (dx / len, dy / len);
+        normals.push([-uy, ux]);
+        let (n, e) = ([-uy, ux], JOINT_OVERLAP_M);
+        // Grow past interior ends only: the run's own two ends are butt caps,
+        // for the same reason `buffer_line`'s are.
+        let (e0, e1) = (if i == 0 { 0.0 } else { e }, if i + 2 == line.len() { 0.0 } else { e });
+        let (l0, r0) = (half[i][0], half[i][1]);
+        let (l1, r1) = (half[i + 1][0], half[i + 1][1]);
+        push_ccw(
+            &mut pieces,
+            vec![
+                [p[0] - n[0] * r0 - ux * e0, p[1] - n[1] * r0 - uy * e0],
+                [q[0] - n[0] * r1 + ux * e1, q[1] - n[1] * r1 + uy * e1],
+                [q[0] + n[0] * l1 + ux * e1, q[1] + n[1] * l1 + uy * e1],
+                [p[0] + n[0] * l0 - ux * e0, p[1] + n[1] * l0 - uy * e0],
+            ],
+        );
+    }
+    // The join patches: the four offset points either segment puts at the
+    // shared vertex, taken in angular order about it. Four points around a
+    // centre in angular order bound a simple polygon, and this one is exactly
+    // the beveled join — it adds the outer wedge and nothing outside the band.
+    for i in 1..line.len() - 1 {
+        let (a, b) = (normals[i - 1], normals[i]);
+        if a == [0.0, 0.0] || b == [0.0, 0.0] {
+            continue;
+        }
+        let (p, l, r) = (line[i], half[i][0], half[i][1]);
+        let mut ring = vec![
+            [p[0] + a[0] * l, p[1] + a[1] * l],
+            [p[0] - a[0] * r, p[1] - a[1] * r],
+            [p[0] + b[0] * l, p[1] + b[1] * l],
+            [p[0] - b[0] * r, p[1] - b[1] * r],
+        ];
+        ring.sort_by(|u, v| {
+            let ang = |w: &Pt| (w[1] - p[1]).atan2(w[0] - p[0]);
+            ang(u).partial_cmp(&ang(v)).expect("finite offsets")
+        });
+        push_ccw(&mut pieces, ring);
+    }
+    union_all(&pieces)
+}
+
+/// How far each piece of a varying-width band is grown past its interior ends,
+/// in metres. A hundred times [`GRID_M`], so the overlap survives the snap to
+/// the integer lattice, and small enough to be invisible against the
+/// centimetre a tile quantizes to.
+const JOINT_OVERLAP_M: f64 = 0.01;
+
+/// Pushes `ring` as a one-contour shape, reversed if it came out clockwise —
+/// a clockwise contour under the non-zero rule is a hole, not a region.
+fn push_ccw(out: &mut Shapes, mut ring: Ring) {
+    let area: f64 = (0..ring.len())
+        .map(|i| {
+            let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
+            p[0] * q[1] - q[0] * p[1]
+        })
+        .sum();
+    if area == 0.0 {
+        return; // degenerate: a straight join, or a zero-width cross-section
+    }
+    if area < 0.0 {
+        ring.reverse();
+    }
+    out.push(vec![ring]);
+}
+
 /// The union of everything in `shapes`, as disjoint regions with their holes.
 ///
 /// One boolean pass, not a fold: overlapping counter-clockwise contours under
@@ -264,6 +368,55 @@ mod tests {
         assert!(shapes[0].len() == 1, "no holes: {:?}", shapes[0].len());
         let a = area(&shapes);
         assert!((a - 800.0).abs() < 800.0 * 0.01, "area {a} is not 100 x 8");
+    }
+
+    #[test]
+    fn a_uniform_section_is_the_band_the_stroke_draws() {
+        // The two entry points have to agree where they overlap, or a street
+        // would step at the vertex where a facade first bites.
+        let line = vec![[-50.0, 0.0], [0.0, 0.0], [50.0, 0.0]];
+        let shapes = buffer_section(&line, &[[4.0, 4.0]; 3]);
+        assert_eq!(shapes.len(), 1, "one region, not one per piece");
+        let a = area(&shapes);
+        assert!((a - 800.0).abs() < 800.0 * 0.01, "area {a} is not 100 x 8");
+    }
+
+    #[test]
+    fn narrowing_one_side_takes_that_side_only() {
+        // 100 m, 4 m either side, with the left side halved over the middle
+        // third: the loss is the trapezoid the taper cuts, and the right side
+        // keeps every metre of its own.
+        let line = vec![[-50.0, 0.0], [-16.0, 0.0], [16.0, 0.0], [50.0, 0.0]];
+        let half = [[4.0, 4.0], [2.0, 4.0], [2.0, 4.0], [4.0, 4.0]];
+        let shapes = buffer_section(&line, &half);
+        assert_eq!(shapes.len(), 1, "one region");
+        // Left area: 34 m tapering 4→2, 32 m at 2, 34 m tapering 2→4.
+        let left = 34.0 * 3.0 + 32.0 * 2.0 + 34.0 * 3.0;
+        let want = left + 100.0 * 4.0;
+        let a = area(&shapes);
+        assert!((a - want).abs() < want * 0.01, "area {a} is not {want}");
+        // Nothing crosses to the left of −2 m in the narrowed middle.
+        let north = shapes[0][0]
+            .iter()
+            .filter(|p| p[0].abs() < 10.0)
+            .fold(f64::NEG_INFINITY, |m, p| m.max(p[1]));
+        assert!(north <= 2.0 + 1e-6, "the band reaches {north} m left, past its 2 m");
+    }
+
+    #[test]
+    fn a_varying_band_stays_one_region_around_a_bend() {
+        // A right-angle bend: the join patch has to close the corner, or the
+        // two legs come back as separate regions and the mesh cracks there.
+        let line = vec![[-40.0, 0.0], [0.0, 0.0], [0.0, 40.0]];
+        let shapes = buffer_section(&line, &[[4.0, 4.0], [3.0, 4.0], [2.0, 4.0]]);
+        assert_eq!(shapes.len(), 1, "one region across the bend");
+        assert_eq!(shapes[0].len(), 1, "and no hole at the corner");
+    }
+
+    #[test]
+    fn a_degenerate_section_buffers_to_nothing() {
+        assert!(buffer_section(&[], &[]).is_empty(), "no points");
+        assert!(buffer_section(&straight(100.0), &[[4.0, 4.0]]).is_empty(), "mismatched lengths");
     }
 
     #[test]

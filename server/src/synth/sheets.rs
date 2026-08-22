@@ -496,6 +496,7 @@ pub(crate) fn point_to_segment(p: Coord, a: Coord, b: Coord, cos_lat: f64) -> (f
 mod tests {
     use super::*;
     use crate::scene::{Junction, JunctionMember};
+    use crate::synth::carriageway::Section;
 
     const LAT: f64 = 46.0;
 
@@ -523,6 +524,8 @@ mod tests {
             b: Coord { x: 6.0 + x1_m / m_lon(), y: LAT + off_m / DEG_M },
             cos_lat: LAT.to_radians().cos(),
             half_m: 3.0,
+            sect_a: Section::uniform(3.0),
+            sect_b: Section::uniform(3.0),
             cut_a: None,
             cut_b: None,
             level: 0,
@@ -541,6 +544,8 @@ mod tests {
             b: Coord { x: 6.0 + x_m / m_lon(), y: LAT + y1_m / DEG_M },
             cos_lat: LAT.to_radians().cos(),
             half_m: 3.0,
+            sect_a: Section::uniform(3.0),
+            sect_b: Section::uniform(3.0),
             cut_a: None,
             cut_b: None,
             level: 0,

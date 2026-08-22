@@ -12,6 +12,7 @@
 
 pub mod columns;
 pub mod corridors;
+pub mod facades;
 pub mod grid;
 pub mod water;
 

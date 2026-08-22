@@ -24,7 +24,16 @@ pub struct GridIndex {
 
 impl GridIndex {
     pub fn new() -> GridIndex {
-        GridIndex { cell_deg: CELL_M / crate::scene::DEG_M, cells: HashMap::new() }
+        GridIndex::with_cell_m(CELL_M)
+    }
+
+    /// A grid whose cells are `cell_m` across, for a population denser than
+    /// [`CELL_M`] was sized for. Cells are sized to the *query* radius, and a
+    /// facade lookup reaches a carriageway's half-width rather than an
+    /// earthwork's — with 128 m cells a town centre puts a hundred-odd
+    /// footprint edges in every cell a 4 m query touches.
+    pub fn with_cell_m(cell_m: f64) -> GridIndex {
+        GridIndex { cell_deg: cell_m / crate::scene::DEG_M, cells: HashMap::new() }
     }
 
     fn cell_of(&self, x: f64, y: f64) -> (i32, i32) {

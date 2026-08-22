@@ -877,6 +877,32 @@ pub const EARTHWORK_MAX_BATTER_M: f64 = 40.0;
 /// road height (the shoulder) before the slope starts.
 pub const EARTHWORK_SHOULDER_M: f64 = 1.0;
 
+/// How far a drawn surface keeps off a building footprint, in metres — the
+/// clearance the street's cross-section is allocated *inside*
+/// (`assemble::facades`).
+///
+/// Half a metre is the plan error a wall and a centerline can be expected to
+/// disagree by in the source, so demanding more would narrow streets on
+/// evidence the data does not carry. It is also the threshold
+/// `order.building_overlap` scores against, and deliberately the same number:
+/// the check asks whether the drawn surface stayed out of the footprint by the
+/// margin the model set out to keep, not by some other margin invented for
+/// measuring.
+pub const FACADE_CLEAR_M: f64 = 0.5;
+
+/// The narrowest a facade may make a carriageway, in metres of half-width —
+/// one lane's worth, below the [`LINK_HALF_WIDTH_M`] a ramp gets.
+///
+/// A footprint carries its own plan error, and a street is a stronger fact
+/// than a wall's exact position: where the two say a road cannot fit, the road
+/// stays and keeps a lane. This floor is also what separates the two families
+/// `order.building_overlap` measures — a street a wall crowds, which the room
+/// narrows, and a way whose *centerline* runs inside a footprint (a parking
+/// structure's service aisles, a courtyard passage), which is a level relation
+/// no width can fix. The second family keeps a road rather than being cut into
+/// disconnected pieces.
+pub const MIN_CARRIAGEWAY_HALF_M: f64 = 2.0;
+
 /// Flat margin beyond the shoulder that a road earthwork keeps at road
 /// height before the batter starts — the verge between the asphalt edge and
 /// the top of the batter.

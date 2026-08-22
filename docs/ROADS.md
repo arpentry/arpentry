@@ -181,7 +181,11 @@ either representation alone.
    and priors to the band stack and total width, read by everything that
    needs a width: the cartographic stroke, the surface mesh, the structure
    sweep, the earthworks. (Today `half_width_m`/`paint_width_m` already
-   share one prior; this widens that contract.)
+   share one prior; this widens that contract.) The prior is what the class
+   asks for; what a stretch of street actually gets is that capped by the
+   **room its facades leave** (§6.6 P3 increment 10), which is per station
+   and per side — one function still, with an argument the priors alone
+   could not supply.
 2. **A closed, simple silhouette.** The paved surface has no gaps, no
    slivers, no overlapping fills. Held *by construction* since P2 increment 5:
    the surface is literally one unioned region per level, so there are no two
@@ -697,6 +701,77 @@ the scenario table (§4).
     What it retires is as much the point as what it fixes: with the band
     cut by the structure, there is no cap angle to match, no chord length
     to tune, and no threshold anywhere in it.
+
+    *Increment 10 — a street is a room between facades (done
+    2026-08-22).* Nothing owned a street's cross-section. The carriageway
+    took the band its class prior asked for, the bench took a wider one,
+    and both were drawn through whatever wall stood there: **28,719 m²
+    of drawn at-grade asphalt inside 1,662 of Montreux's 8,615
+    footprints** (`order.building_overlap`, 0.985 % of samples past
+    `FACADE_CLEAR_M` at z16, 1.197 % at the coarse rungs).
+
+    The obvious fix was measured and rejected before it was built.
+    Widening the bench to reach the sidewalks beside a street would drive
+    a road earthwork under a facade on **19.7 %** of residential street
+    length, and a building anchors at the highest drawn ground under its
+    footprint — a bench under a wall sets that anchor from a road
+    earthwork and the building rides up on it. The room to widen into is
+    not there.
+
+    So the cross-section is **allocated out of the room the buildings
+    leave**, not asserted from the class prior. `assemble::facades` reads
+    every footprint edge into a grid index and answers one question:
+    standing at this station on this centerline, how far is the nearest
+    wall to my left, and to my right? It is a *cross-section*, not a
+    proximity — only the stretch of wall within a window along the
+    centerline counts, and it counts by its lateral offset, so a building
+    at the head of a cul-de-sac does not narrow the street leading to it.
+    The window is at least the gap to the neighbouring stations, which is
+    what makes consecutive stations see the same wall: a facade is caught
+    by every station whose window it falls in, so the two bracketing its
+    ends are both narrowed and the width interpolated between them never
+    crosses it.
+
+    `synth::carriageway` spends that room at bake time — the class prior,
+    capped by `room − FACADE_CLEAR_M`, floored at
+    `MIN_CARRIAGEWAY_HALF_M` — and bakes the result onto each source as a
+    per-end, **per-side** `Section`. Per side because a wall stands on
+    one side of a street far more often than on both, and a symmetric cap
+    would pay for one close facade by narrowing the open side too. A run
+    whose section is uniform still goes through the constant-width stroke
+    it always did, so the joins on the network nothing crowds keep their
+    exact miters; a run that varies is built by `poly::buffer_section` as
+    a union of convex pieces — one trapezoid per segment, one patch per
+    join — which has no self-crossing case to arbitrate, at the cost of
+    beveling the outside of a join instead of mitering it (under a
+    centimetre at the profile's ~4 m stations).
+
+    The floor is not a safety margin, it is a **classification**. The
+    population has two families and only one is a width problem: a street
+    a wall crowds, which the room narrows, and a way whose *centerline*
+    runs inside a footprint — a parking structure's service aisles, the
+    Casino Barrière's 7,533 m² footprint with an `unknown`-class way
+    through it — which no cap can move and which subtracting the
+    footprint would cut into disconnected pieces. The floor keeps that
+    second family a road, and the check keeps reporting it.
+
+    Montreux, control tiled from the same commit: `order.building_overlap`
+    **0.985 → 0.293 %** at z16 and **1.197 → 0.371 %** coarse — 71 % and
+    69 % of the violations gone — with the worst unmoved at 28 m, which
+    is the second family staying exactly where it was. At Rue du Marché,
+    6.074 → 1.502 % and the worst 3.89 → 2.18 m. `contact.kerb_lip`
+    (−5.7 % violations), `order.deck_above_carriageway` (−3.5 %) and
+    `slope.carriageway_face` (−9.4 % at z16) improved with it; the paved
+    area fell 0.69 %, and `paint.edge_line_inset` did not move, edge
+    lines being a motorway-network marking and a motorway having the room.
+
+    *Still open:* the **bench** is not yet allocated from the room — only
+    the asphalt is. Between the narrowed kerb and the unchanged earthwork
+    edge there is now drawn ground at bench level where asphalt used to
+    be, which is why `slope.terrain_tearing` picked up 5.3 % more
+    violations at z16 on a population that grew 0.24 %. Per-side bench
+    half-widths, the walk band that belongs between them, and the
+    facade-clipped batter are the phases after this one.
 
     *Still open:* the deck top has the analytic edge AA (`sweep_prism`
     already writes ±1 `edge_across` on its two edge strips) but not the

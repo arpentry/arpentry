@@ -32,7 +32,8 @@ fn main() {
     let solved = solve::run(&mut scene, terrain.as_deref(), 16, 8).expect("solve");
     eprintln!("corridors {} profiles {}", scene.corridors.len(), solved.solved_count());
 
-    let model = carriageway::bake(&scene, &solved);
+    let facades = arpentry_server::assemble::facades::Facades::empty();
+    let model = carriageway::bake(&scene, &solved, &facades);
     let n = model.source_count();
     eprintln!("carriageway sources: {n}");
 

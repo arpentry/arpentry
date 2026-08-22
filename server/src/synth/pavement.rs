@@ -252,7 +252,15 @@ fn bake_chunk(
     let mut by_level: HashMap<(i64, u32, priors::Surface), Shapes> = HashMap::new();
     for run in runs(junctions, source_ids) {
         let line: Vec<[f64; 2]> = run.line.iter().map(|&c| frame.to_m(c)).collect();
-        let mut buffered = poly::buffer_line(&line, run.half_m);
+        // A run nothing crowds keeps the constant-width stroke it has always
+        // had — same joins, same vertices, so the change is confined to the
+        // streets a facade actually narrows.
+        let uniform = run.section.iter().all(|&[l, r]| l == run.half_m && r == run.half_m);
+        let mut buffered = if uniform {
+            poly::buffer_line(&line, run.half_m)
+        } else {
+            poly::buffer_section(&line, &run.section)
+        };
         // Trim to the deck's face. This is the whole of the abutment fix: the
         // band was generated past the boundary (`synth::carriageway`), and what a
         // structure carries is removed from it by *that structure's own*
@@ -341,11 +349,17 @@ fn bake_chunk(
     out
 }
 
-/// One carriageway run: a polyline of constant width, level and surface, to be
+/// One carriageway run: a polyline of one class, level and surface, to be
 /// stroked in a single pass.
 struct Run {
     line: Vec<Coord>,
+    /// The class's own half-width — constant along the run, and what makes two
+    /// segments part of the same run.
     half_m: f64,
+    /// What is drawn at each vertex: `[left, right]` in metres, `half_m` on
+    /// both sides except where a facade has taken some of it back
+    /// (`synth::carriageway::Section`). Same length as `line`.
+    section: Vec<[f64; 2]>,
     level: i64,
     layer: u32,
     surface: priors::Surface,
@@ -430,14 +444,19 @@ fn runs(junctions: &CarriagewayModel, source_ids: &[u32]) -> Vec<Run> {
                 && last.x == s.a.x
                 && last.y == s.a.y
         });
+        let sect = |x: crate::synth::carriageway::Section| [x.left_m, x.right_m];
         if continues {
             let r = out.last_mut().expect("a run exists");
             r.line.push(s.b);
+            // The shared vertex already carries its cross-section from the
+            // previous segment; the two agree, being read at one station.
+            r.section.push(sect(s.sect_b));
             r.cut_end = s.cut_b;
         } else {
             out.push(Run {
                 line: vec![s.a, s.b],
                 half_m: s.half_m,
+                section: vec![sect(s.sect_a), sect(s.sect_b)],
                 level: s.level,
                 layer: s.layer,
                 surface: s.surface,
@@ -517,9 +536,11 @@ const CUT_EPS_M: f64 = 1e-3;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assemble::facades::Facades;
     use crate::priors::{Kind, RoadClass};
     use crate::scene::{Corridor, SceneGraph};
     use crate::solve::SolvedModel;
+    use crate::synth::carriageway;
 
     const LAT: f64 = 46.0;
 
@@ -565,7 +586,7 @@ mod tests {
     fn bake_scene(corridors: Vec<Corridor>) -> PavementModel {
         let scene = SceneGraph::new(corridors);
         let solved = SolvedModel::from_profiles((0..scene.corridors.len()).map(|_| None).collect(), 15);
-        let junctions = crate::synth::carriageway::bake(&scene, &solved);
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
         bake(&junctions, 1)
     }
 
@@ -658,7 +679,7 @@ mod tests {
         };
         let scene = SceneGraph::new(make());
         let solved = SolvedModel::from_profiles((0..2).map(|_| None).collect(), 15);
-        let junctions = crate::synth::carriageway::bake(&scene, &solved);
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
         let one = bake(&junctions, 1);
         let many = bake(&junctions, 8);
         assert_eq!(one.chunk_count(), many.chunk_count());
@@ -750,7 +771,7 @@ mod tests {
     #[test]
     fn the_closing_rounds_the_curb_returns_at_an_intersection() {
         let (scene, solved) = crossroads();
-        let junctions = crate::synth::carriageway::bake(&scene, &solved);
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
         assert_eq!(junctions.len(), 1, "the crossroads plates as one intersection");
         let model = bake(&junctions, 1);
         let filleted = model.area_m2();
@@ -763,7 +784,7 @@ mod tests {
             );
             let bare_solved =
                 SolvedModel::from_profiles((0..4).map(|_| None).collect(), 15);
-            let j = crate::synth::carriageway::bake(&bare_scene, &bare_solved);
+            let j = carriageway::bake(&bare_scene, &bare_solved, &Facades::empty());
             assert_eq!(j.len(), 0, "no intersection extent without profiles");
             bake(&j, 1).area_m2()
         };
@@ -816,7 +837,7 @@ mod tests {
             ],
             15,
         );
-        let junctions = crate::synth::carriageway::bake(&scene, &solved);
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
 
         let model = bake(&junctions, 1);
         let levels =

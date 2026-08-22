@@ -183,6 +183,10 @@ pub struct World {
     /// Every solved bridge deck indexed by plan position, so phase 1 can ask
     /// whether a draped feature's elevated span is a sidewalk on one of them.
     pub carriers: synth::carried::Carriers,
+    /// Every building footprint edge, indexed by plan position: the room a
+    /// street's cross-section is allocated out of (`assemble::facades`). Read
+    /// at bake time only — never per lattice vertex.
+    pub facades: assemble::facades::Facades,
 }
 
 /// Summary counts from a run.
@@ -315,6 +319,19 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     let transportation =
         cfg.inputs.iter().find(|(l, _)| *l == layers::TRANSPORTATION).map(|(_, p)| p.clone());
     let water = cfg.inputs.iter().find(|(l, _)| *l == layers::WATER).map(|(_, p)| p.clone());
+    // The facades a street is bounded by. Read here rather than in phase 1
+    // because the room they leave is spent on the *model* — the width the
+    // carriageway is baked at — and every tile has to be handed the same
+    // answer (invariant 5). Absent building input, every query answers "open
+    // ground" and nothing downstream branches.
+    let facades = match cfg.inputs.iter().find(|(l, _)| *l == layers::BUILDING) {
+        Some((_, path)) => assemble::facades::Facades::read(
+            path,
+            (cfg.bbox.west, cfg.bbox.south, cfg.bbox.east, cfg.bbox.north),
+        )
+        .map_err(|e| format!("{}: {e}", path.display()))?,
+        None => assemble::facades::Facades::empty(),
+    };
     let mut scene = match &transportation {
         Some(path) => assemble::run(path, water.as_deref(), &cfg.bbox)
             .map_err(|e| format!("{}: {e}", path.display()))?,
@@ -328,7 +345,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     let ground = Arc::new(ground::derive(&scene, &solved, cfg.terrain.as_deref(), threads));
     // Junction plates: a paved area meshed across each corridor junction, baked
     // once from the solved model and emitted by the tile that owns its centre.
-    let junctions = Arc::new(synth::carriageway::bake(&scene, &solved));
+    let junctions = Arc::new(synth::carriageway::bake(&scene, &solved, &facades));
     // The unioned road surface: one paved region per level per z13 chunk, baked
     // once from the same carriageway sources the intersections came from.
     let t_pave = Instant::now();
@@ -339,7 +356,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // function of the solved model, so every worker and every tile must get
     // the same one (I5).
     let carriers = synth::carried::Carriers::build(&scene, &solved);
-    let world = World { scene, solved, ground, junctions, pavement, carriers };
+    let world = World { scene, solved, ground, junctions, pavement, carriers, facades };
     let World { scene, solved, ground, junctions, pavement, .. } = &world;
     stats.pave_chunks = pavement.chunk_count() as u64;
     stats.pave_area_m2 = pavement.area_m2();
