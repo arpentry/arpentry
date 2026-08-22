@@ -1269,6 +1269,152 @@
       "worst": 64.70633951822917
     },
     {
+      "id": "order.building_overlap",
+      "invariant": "I3",
+      "median": 0.006666666666666667,
+      "offenders": [
+        {
+          "lat": 46.42953450791538,
+          "lon": 6.9116913713514805,
+          "note": "drawn road_surface stands 28.1 m inside a building footprint",
+          "value": 28.056183871580135,
+          "zoom": 15
+        },
+        {
+          "lat": 46.42953450791538,
+          "lon": 6.9116913713514805,
+          "note": "drawn road_surface stands 28.1 m inside a building footprint",
+          "value": 28.056183871580135,
+          "zoom": 15
+        },
+        {
+          "lat": 46.42953044269234,
+          "lon": 6.911688828840852,
+          "note": "drawn road_surface stands 28.0 m inside a building footprint",
+          "value": 27.95809161327768,
+          "zoom": 15
+        },
+        {
+          "lat": 46.42953739967197,
+          "lon": 6.911685112863779,
+          "note": "drawn road_surface stands 27.9 m inside a building footprint",
+          "value": 27.9108329282267,
+          "zoom": 15
+        },
+        {
+          "lat": 46.42953387647867,
+          "lon": 6.911700502038002,
+          "note": "drawn road_surface stands 27.9 m inside a building footprint",
+          "value": 27.892036647790757,
+          "zoom": 14
+        },
+        {
+          "lat": 46.42953407764435,
+          "lon": 6.911700367927551,
+          "note": "drawn road_surface stands 27.9 m inside a building footprint",
+          "value": 27.866011651758107,
+          "zoom": 13
+        },
+        {
+          "lat": 46.42953470349312,
+          "lon": 6.911699529737234,
+          "note": "drawn road_surface stands 27.8 m inside a building footprint",
+          "value": 27.82899873176959,
+          "zoom": 15
+        },
+        {
+          "lat": 46.42953617870808,
+          "lon": 6.911695495247841,
+          "note": "drawn road_surface stands 27.8 m inside a building footprint",
+          "value": 27.777092662840534,
+          "zoom": 14
+        }
+      ],
+      "population": "Every drawn at-grade road surface sample (road_surface and its road_casing rim) the tile owns, scored by how far inside a building footprint it stands — zero everywhere it is outside one, so the rate is the share of the drawn street surface that is inside a building rather than a rate over the defect itself. Measured over the Montreux extract at z16: 1.4 % of samples lie inside a footprint, and by uniform raster that is 28,719 m² over 1,662 of 8,615 buildings — 19.3 % of them, 1.0 % of the 3.02 Mm² of drawn at-grade surface. Levels order themselves out: a bridge or a bore is not level 0. Three limits are not covered. Rail bands are excluded (a station roof over its platforms is a level relation the archive cannot state — 2,772 m² here). An `is_covered` arcade at grade cannot be told from a defect, because no level rule fires on the flag and the archive carries no property for it; in plan space that is 3 pairs and 174 m², about 1.5 % of the at-grade overlap. And a footprint carries its own survey error, which is why the threshold is where it is.",
+      "samples": 69354750,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 3.4333333333333336,
+      "threshold": 0.5,
+      "title": "Drawn at-grade asphalt standing inside a building footprint",
+      "violation_pct": 1.196647670130741,
+      "violations": 829932,
+      "worst": 28.056183871580135
+    },
+    {
+      "id": "contact.sidewalk_grade",
+      "invariant": "I4",
+      "median": 0.11333333333333334,
+      "offenders": [
+        {
+          "lat": 46.40239533036947,
+          "lon": 6.927557028830051,
+          "note": "footway stands 14.7 m below the carriageway it runs alongside",
+          "value": 14.675284246603667,
+          "zoom": 15
+        },
+        {
+          "lat": 46.402391474694014,
+          "lon": 6.92754752933979,
+          "note": "footway stands 14.6 m below the carriageway it runs alongside",
+          "value": 14.64970757563907,
+          "zoom": 15
+        },
+        {
+          "lat": 46.40239459276199,
+          "lon": 6.927555564790964,
+          "note": "footway stands 14.6 m below the carriageway it runs alongside",
+          "value": 14.576872892677784,
+          "zoom": 14
+        },
+        {
+          "lat": 46.402387619018555,
+          "lon": 6.927538029849529,
+          "note": "footway stands 14.4 m below the carriageway it runs alongside",
+          "value": 14.399987431367265,
+          "zoom": 15
+        },
+        {
+          "lat": 46.40238370746374,
+          "lon": 6.927528362721205,
+          "note": "footway stands 14.4 m below the carriageway it runs alongside",
+          "value": 14.360142940282856,
+          "zoom": 15
+        },
+        {
+          "lat": 46.40237979590893,
+          "lon": 6.92751869559288,
+          "note": "footway stands 14.3 m below the carriageway it runs alongside",
+          "value": 14.32029844919839,
+          "zoom": 15
+        },
+        {
+          "lat": 46.402375884354115,
+          "lon": 6.927509028464556,
+          "note": "footway stands 14.3 m below the carriageway it runs alongside",
+          "value": 14.28045395811398,
+          "zoom": 15
+        },
+        {
+          "lat": 46.4023719727993,
+          "lon": 6.927499361336231,
+          "note": "footway stands 14.2 m below the carriageway it runs alongside",
+          "value": 14.240609467029628,
+          "zoom": 15
+        }
+      ],
+      "population": "Every metre along every level-0 pedestrian centerline (footway, path, cycleway, pedestrian, bridleway — not steps, whose purpose is to change height) whose part runs with a street for at least 80 % of its length and which is locally parallel to the kerb within 30°, taken where it is beside the asphalt rather than over it. The value is |drawn surface under the way − drawn carriageway at the nearest kerb point|, unsigned because a way stranded on a bank above its street is the same defect as one in a ditch below it; the offender note carries the side. Over the Montreux extract at z16 that is 45 k samples of 421 k pedestrian samples — 12 % of the rest are over the asphalt, and the remainder do not run with a street. Signed, the population reads p05 −1.00 m, p50 0.00 m, p95 +0.77 m, worst 10.19 m below and 7.52 m above. Attachment here is geometric only: the archive carries a way's class but never the `subclass='sidewalk'` tag, so the third of tagged sidewalks that fail a geometric test are outside this population.",
+      "samples": 82568,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 7.446666666666667,
+      "threshold": 1.0,
+      "title": "A pedestrian way's surface departing from the street beside it",
+      "violation_pct": 6.24454994671059,
+      "violations": 5156,
+      "worst": 14.675284246603667
+    },
+    {
       "id": "water.descends",
       "invariant": "I4",
       "median": 0.02666666666666667,

@@ -133,6 +133,8 @@ I2. Every metric also states its own population; the table below is the summary.
 | `paint.marking_offside` | I4 | Plan distance from a painted marking to the asphalt it is painted on, zero when it is on it. Contact in *plan*: every other check reads a height, and a marking that has lost its lateral registration is still perfectly draped, so every height check reports it clean. |
 | `paint.edge_line_inset` | I4 | How far an edge line's near kerb sits from where the cross-section puts it (0.30 m inset inside a carriageway buffered by a 1.0 m shoulder = 1.30 m). Edge lines are the one painted line the archive can name — 0.15 m is their width and nothing else's — so they are the one place a lost lateral offset is a number rather than a shape. Paint projected onto the road's axis reads half a carriageway here. Centre lines and lane dividers are deliberately outside the population: both are 0.12 m, and the archive cannot tell a divider that belongs a third of the way across from a centre line that belongs in the middle. **Read the population before the rate.** Edge lines exist only on motorway and trunk carriageways, so over the Montreux extract this is a *one-road* metric — every one of its 2,474 violations lies on the A9, in six 0.01° buckets. And most of them are not "a line off its inset": the A9's corridor is the 9.0 m prior with no data width, so its band reaches 5.5 m from the axis, yet 74.7 % of the violations report a nearest kerb further than that — 1,391 of them at *exactly* 6.95 m across four separate sites. A constant that sharp is a structural distance, not scattered misregistration: `near_kerb` marches across whatever asphalt is there, and where the union has paved a carriageway together with its neighbour or its link the march runs past the line's own kerb to the far edge of the merged region. Splitting that term from a genuinely lost lateral offset needs an instrument that can see the *band* a vertex belongs to, which neither this check nor the archive has today. |
 | `paint.buried` | I4 | How far under the drawn terrain a stroke vertex at level ≤ 0 sits. The client strokes lines as decals depth-tested against the ground, so buried paint is invisible where it works and drawn across the mountain wherever a coarse rung's chords disagree with the buried run. The mode it keeps dead is a tunnel span's own paint — the stroke, its markings and its rail heads all stop at the portal now (`pipeline::process_feature`), where they used to ride the bore's road surface (4.2 % of z16 stroke vertices, worst 592 m under). Positive levels are excluded (a bridge stroke rides its deck by design), and a vertex over the pavement hole or a portal cut has no ground overhead and contributes nothing. The residue above the metre gate is the portal-mouth approach passing under the cut face that climbs over the bore — ground that is really there — at ~0.03 % of samples. |
+| `order.building_overlap` | I3 | How far drawn at-grade asphalt reaches inside a building footprint, over every drawn at-grade road surface sample — zero everywhere outside one, so the rate is the share of the drawn street surface standing in a building and not a rate over the defect itself. A road's width is a class prior, a footprint is surveyed, and nothing reconciles them: the band is laid at the prior's half-width whatever is standing there. Levels order themselves out (a bridge or a bore is not level 0), and rail is excluded because a station roof over its platforms is a level relation the archive cannot state. **Depth separates two families and only one is a width problem.** The shallow mass is a band overrunning a facade, which capping the band against the room removes; the deep mass is a way whose *centerline* runs inside a footprint — a parking structure's internal service ways, the Casino Barrière's 7,533 m² footprint with an unknown-class way through it — which no cap can move. That is why the threshold is low and reasoned rather than cut at the gap the population does show: the gap (only 2.8 % of inside samples in the whole band from 3 m to 5 m) sits between the two families, and gating there would gate on the unfixable half. Read it against a scoped run to see the shallow family alone: at Rue du Marché the whole tile reads 8.3 % inside with a worst of 3.9 m and nothing past 5 m. |
+| `contact.sidewalk_grade` | I4 | How far the drawn surface an attached pedestrian way stands on departs from the drawn carriageway at its nearest kerb point. A street's bench reaches its half-width plus a shoulder and a margin and stops, so a way outside that band drapes on whatever the hillside does. Unsigned, and the measurement is why: the population is 44.9 % below the kerb and 55.1 % above it — the fill side and the cutting side of one missing cross-section — so a signed metric would report half the defect and call the other half margin. **Attachment is the whole instrument.** Proximity at a point is not attachment: taken on proximity alone the population is 117 k samples reaching 12.4 m above the kerb and 14.2 m below, which is hillside paths passing near roads. Requiring the *part* to run with a street for 80 % of its length (the cut the plan-space census read off the tagged `subclass='sidewalk'` population) and to be locally parallel within 30° takes it to 30 k and the worst from 14.2 m to 10.2 m. Steps are excluded, for the reason `slope.road_grade` excludes non-drivable classes: a staircase changes height beside what it runs along on purpose. Two limits: the archive carries a way's class but never the sidewalk tag, so the third of tagged sidewalks that fail a geometric test are outside the population; and past a few metres the tail is a street on a terrace with a path along the foot of its wall, which is `contact.kerb_lip`'s question. Read the body, not the extreme. |
 | `lod.structure_drift` | I5 | Structure height *over its own zoom's drawn ground* against the same structure one rung coarser. Absolute tops differ between rungs by design since the per-zoom datum (`GROUND.md` §4): the span rides each zoom's canvas, so what must agree across rungs is the relation to the ground drawn under it. |
 
 ### The model half
@@ -327,6 +329,55 @@ one of them badly wrong, which is why they are documented here:
   the wrong *place* — and no distribution of the gaps alone could have said so.
   When a metric drops samples on a rule, count them and look at where they land;
   a defect that is signed will hide half of itself in the exclusion.
+- **A gap in the wrong place is worse than no gap at all.**
+  `order.building_overlap` is the one threshold here read *against* a measured
+  separation rather than off it. Its population does separate: 17.5 % of
+  inside-samples lie past 2 m and 9.6 % past 3 m, then only 2.8 % in the whole
+  band from 3 m to 5 m, and 6.8 % beyond it. Cutting there would have been the
+  obvious move and it would have been wrong, because the two modes are not
+  noise and defect — they are two defects with different fixes. Past the gap is
+  a way whose *centerline* is inside a footprint, which no width cap can move;
+  below it is a band overrunning a facade, which is the whole point of
+  allocating the cross-section out of the room. A threshold at 4 m would
+  therefore have gated on exactly the half no change was going to close, and
+  reported the half that closed as unmoved. So it sits at `FACADE_CLEAR_M`
+  (0.5 m) instead — the clearance the drawn surface is *meant* to keep off a
+  footprint, making half a metre inside one a full metre from where the model
+  puts it, which is past what a surveyed footprint's own error explains.
+  Confirming the split is a scoped run rather than an argument: at Rue du
+  Marché the whole tile reads 8.3 % inside, worst 3.9 m, and **nothing past
+  5 m**.
+- **A proximity test is not an attachment test.** The trap that decides whether
+  `contact.sidewalk_grade` measures sidewalks or hillsides. Scored on "within
+  eight metres of a kerb" alone, the population is 117,200 samples running from
+  14.2 m below the carriageway to 12.4 m above it — and the top of both tails
+  is paths that merely pass near a road on a Montreux flank, not sidewalks in a
+  ditch. Two rules fix it, and both were measured rather than assumed: the
+  *part* must run with a street for 80 % of its length (53 k samples, worst
+  10.97 m), and it must be locally parallel to the kerb within 30° (30 k
+  samples, worst 10.19 m). The coverage figure is not invented here either —
+  the plan-space census scored the same test against the tagged
+  `subclass='sidewalk'` population as ground truth and found 65.7 % of tagged
+  sidewalks over 0.8 corridor coverage against 14.4 % of untagged ways. What is
+  left still has a tail that is not this metric's defect, and the note says so:
+  past a few metres it is a street on a terrace with a path along the foot of
+  its wall, which `contact.kerb_lip` and `contact.kerb_unwalled` own.
+- **Both signs are the same defect.** `contact.sidewalk_grade` is unsigned, and
+  the population is what argues for it: 44.9 % of the departures are below the
+  kerb and 55.1 % above it. The plan-space study that prompted the check found
+  the sidewalk *below* its street and it was right, but only about the fill
+  side of the hill — on the cutting side the bench cuts the road down and
+  leaves the pedestrian way stranded on the bank, which is the same missing
+  cross-section upside down and is fractionally the larger half. A signed
+  metric would have reported a bit under half of it and counted the rest as
+  margin. The threshold is then read off the magnitude, which is two-moded:
+  27.2 % past 0.25 m, 12.9 % past 0.5 m, 8.2 % past 0.75 m, and then a knee
+  into a flat tail — 6.3 % past 1 m, 5.4 % past 1.25 m, 4.7 % past 1.5 m. A
+  metre sits at that knee, clear of a kerb rise plus a verge's cross-fall, and
+  clear of what the instrument can manufacture on its own: the reference is the
+  *nearest* kerb point in plan, up to eight metres away, so at a corner some of
+  that distance is along the road and the street's own longitudinal grade
+  contributes.
 - **A band metres below is another road, not this one's continuation.** The
   second pairing trap in the same check, and the one that produced its most
   alarming early number. The march looks for where the drawn surface *stops*,
@@ -382,9 +433,17 @@ reported 2.06 m of drift on a deck whose parent held *nine* candidates, which is
 evidence of comparing two bridges, not of drift. Samples count only on a
 one-to-one match, and the skipped count is reported.
 
-**Buildings and water.** Invariants 4 and 6 cover both (S3, S11–S14); the
-verifier decodes only the terrain and transportation layers today. This is the
-largest gap.
+**Buildings and water, in the parts that are left.** This used to read "the
+verifier decodes only the terrain and transportation layers", and it no longer
+does: buildings are scored twice — `contact.building_seat` for the foundation
+and `order.building_overlap` for the street running through the wall — and
+flowing water once, by `water.descends`. What is still unmeasured is narrower
+and worth naming so the gap does not get lost inside a sentence that is now
+mostly false: **still water** (the flatten's own subject, S12 — the descent
+check walks lines and a body has no along-flow order to walk), **building
+heights and roof shapes** (the seat check reads the footprint's contact with
+the ground and nothing above it), and **land cover and land use**, which the
+verifier does not decode at all.
 
 ## 5. Sections: the diagnostic half
 

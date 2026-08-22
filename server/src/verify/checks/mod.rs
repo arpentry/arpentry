@@ -15,6 +15,7 @@ pub mod lod;
 pub mod paint;
 pub mod seams;
 pub mod slope;
+pub mod street;
 pub mod water;
 
 use crate::verify::scene::{ArchiveScan, TileScene};
@@ -64,6 +65,7 @@ pub fn run(scan: &ArchiveScan<'_>, opt: &Options) -> Scorecard {
         Box::new(paint::Paint::new(opt)),
         Box::new(seams::Seams::new(opt)),
         Box::new(slope::Slope::new(opt)),
+        Box::new(street::Street::new(opt)),
         Box::new(water::Water::new(opt)),
     ];
 
