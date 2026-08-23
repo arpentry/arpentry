@@ -201,6 +201,11 @@ either representation alone.
    Their cartographic strokes are deleted at those zooms for the same reason
    a carriageway's is: the mesh *is* the surface. What keeps a stroke is what
    the walkway model did not draw — a footbridge, a subway, a crosswalk.
+   And, being a surface, each **benches the ground under it** exactly as a
+   carriageway does (docs/GROUND.md §2): the bands are derived once, before the
+   ground stage, and stage 3 imprints those same segments in stratum D. The
+   band that draws the surface and the bench that holds it up are one
+   cross-section, not two constructions of one.
 2. **A closed, simple silhouette.** The paved surface has no gaps, no
    slivers, no overlapping fills. Held *by construction* since P2 increment 5:
    the surface is literally one unioned region per level, so there are no two

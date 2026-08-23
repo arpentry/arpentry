@@ -186,6 +186,58 @@ rock cut on one side and as much fill on the other — and it is a fiction the
 mesh cannot draw: the crest tears into sawtooth where the wall exceeds what a
 cell can hold. For a trail cut into a cliff, draped *is* the truth.
 
+**The ground under a walkway is the walkway.** A pedestrian band is a drawn
+surface with its own hole and its own apron (docs/ROADS.md invariant 7), and it
+had no bench at all: a sidewalk was seated on its host's cross-section a kerb
+above the carriageway while the ground under it was still the street's bench —
+which stops a verge past the asphalt — or the batter face beyond it, and a path
+*was* the drawn ground, tilted at whatever angle the hillside carried. Measured:
+the band met the ground at a step over 19 % of its own rim (`contact.walk_rim`,
+p50 0.19 m over the sidewalk half, reaching 15 m), and half of all drawn path
+length tilted more than 30 % across its own two metres (`slope.walk_crossfall`).
+
+So every at-grade band benches, in **stratum D** — the layer draped features
+imprint, applied last over the finished H → R → S ground, which is what a
+walkway is: no authority, no solve, laid on whatever the seniors built. Three
+things distinguish it from a corridor bench, and each is the band being narrow:
+
+- **It is derived from the band, not from a class prior.** `synth::walkway`
+  builds the bands once, before stage 3, and the ground benches those same
+  segments (`ground::walk_earthworks`). One derivation, two readers: a bench
+  from a second construction of the same band is a bench that does not fit it.
+- **Its target is its seat.** A sidewalk's is the host's road surface plus the
+  kerb — the height the band is drawn at. A path's is the ground *beneath this
+  stratum*, sampled at **both ends of each segment**, so the bench flattens the
+  cross-section and changes nothing along the way: a footpath still climbs
+  whatever hill it climbs. Reading one height per segment instead — the
+  midpoint's — turns a climbing path into a staircase of terraces, each flat at
+  its own middle and stepping to the next, and the lateral face cap cannot see
+  it because at the midpoint there is nothing to see. It drew as a 324:1 terrain
+  face.
+- **It emits no contact lines.** The band's own ring is already a constraint and
+  the bench is a verge wider than the band on each side, so the ring falls
+  inside the bench exactly where §3 says to draw a crest, and every rim vertex
+  samples the flat bench already. A second line half a metre outside the first
+  would double the constraint count of the densest network in the extract to say
+  the same thing twice. It follows that the walkway must not *contend* for the
+  crests of others either: at 0.12 m of kerb rise against a 0.05 m same-bench
+  tolerance, every sidewalked street failed the test at its own bench edge and
+  dragged 17,635 crest nodes inward, so the crest question is asked of the
+  benches that draw crests (`Earthworks::crest_target_at`).
+
+Because it draws no lines, it is **bounded instead of constrained**, and the two
+materials do not hold the same bound. A path holds `WALK_MAX_FACE_M` — a metre,
+the earthwork a footpath actually builds — so the largest step it can leave in
+open ground is two metres, which a lattice cell carries as a slope rather than a
+wall. A sidewalk holds the street's own `MAX_BENCH_FACE_M`, because where a
+street stands on a terrace with a wall down to the hillside the sidewalk stands
+on the same terrace and the wall is the street's; its apron draws it. Held to
+the street's allowance on *both*, footpaths start eating tunnel cover, moving
+the ground under walls and damming streams — five unrelated metrics move, and
+they come back the moment the path is held to its metre.
+`ARPT_NO_WALK_BENCH=1` draws the bands and leaves the ground unbenched, which is
+the A/B control every number above was measured against.
+
 Carves (portal cuts, under-deck daylighting) remain separate cut-only
 notches, bounding the benched ground from above — a carve is a hole, not a
 target.

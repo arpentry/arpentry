@@ -919,6 +919,33 @@ pub const EARTHWORK_MIN_BATTER_M: f64 = 2.0;
 /// `contact.kerb_unwalled` is the share of that wall the apron fails to close.
 pub const MAX_BENCH_FACE_M: f64 = 3.0;
 
+/// The same cap for a **path** across open ground — the earthwork a footpath
+/// builds for itself, as opposed to the one a street builds and its sidewalk
+/// stands on (`ground::walk_edge` holds a sidewalk to [`MAX_BENCH_FACE_M`],
+/// which is the street's own allowance).
+///
+/// A metre, because that is the size of the thing. A hillside path is cut a
+/// spade's depth or two into the flank; a two-metre ribbon that cuts three
+/// metres in is a retaining structure nobody built, and holding one flat is the
+/// fiction docs/GROUND.md §2 already names — "for a trail cut into a cliff,
+/// draped *is* the truth". The bound doubles as the reason a walkway bench
+/// needs no contact lines ([`crate::ground::modifiers::EarthworkEdge::crest`]):
+/// it never departs the ground beneath it by more than this, so the largest
+/// step it can leave in open ground is twice this, which a lattice cell at the
+/// reference zoom carries as a slope rather than as a wall.
+///
+/// **Set by what the alternative cost elsewhere.** Held to the street's 3.0 m,
+/// the pedestrian metrics reach their best — `contact.walk_rim` 19.0 → 1.3 %,
+/// `slope.walk_crossfall` 56.1 → 19.2 % — and five unrelated ones move with
+/// them: `clearance.bore_cover` 5.861 → 6.192 %, `contact.building_seat` 0.011
+/// → 0.015, `slope.terrain_face` 0.600 → 0.624, `water.descends` 2.462 →
+/// 2.562, `slope.terrain_tearing` 0.138 → 0.140. That is footpaths eating
+/// tunnel cover, moving the ground under walls and damming streams. At a metre
+/// all five return to the control and the pedestrian metrics keep most of their
+/// result (2.8 % and 32.7 %), which is the evidence that the tall path
+/// earthworks were the fiction rather than the fix.
+pub const WALK_MAX_FACE_M: f64 = 1.0;
+
 /// How much further than its flat-ground daylight distance a batter face may
 /// reach before the ground counts as running away with it and the face is
 /// abandoned for a retaining wall. Above 1 so a gently falling flank still

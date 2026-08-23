@@ -71,6 +71,7 @@ pub fn render(scan: &ArchiveScan<'_>, cut: &Cut) -> Option<String> {
     let mut ground = Trace::new("drawn ground", "#8a7b62", false);
     let mut asphalt = Trace::new("asphalt (level 0)", "#2b2b2b", false);
     let mut asphalt_b = Trace::new("asphalt (second region)", "#c2410c", false);
+    let mut walk = Trace::new("walkway / path band", "#15803d", false);
     let mut deck_top = Trace::new("deck / bore top", "#1d4ed8", false);
     let mut deck_low = Trace::new("deck soffit / bore invert", "#1d4ed8", true);
 
@@ -93,7 +94,9 @@ pub fn render(scan: &ArchiveScan<'_>, cut: &Cut) -> Option<String> {
                 .and_then(|&(z, x, y, id)| scan.decode(z, x, y, id));
         }
         let Some(tile) = cached.as_ref() else {
-            for t in [&mut ground, &mut asphalt, &mut asphalt_b, &mut deck_top, &mut deck_low] {
+            for t in
+                [&mut ground, &mut asphalt, &mut asphalt_b, &mut walk, &mut deck_top, &mut deck_low]
+            {
                 t.pts.push(None);
             }
             continue;
@@ -118,6 +121,24 @@ pub fn render(scan: &ArchiveScan<'_>, cut: &Cut) -> Option<String> {
         asphalt.pts.push(paved.first().map(|&h| (d, h)));
         asphalt_b.pts.push(paved.get(1).map(|&h| (d, h)));
 
+        // The pedestrian band, in its own trace rather than folded into the
+        // asphalt: a sidewalk stands a kerb above the carriageway and a path
+        // stands on the ground, and both questions — where the band is and what
+        // the ground under it does — are the section's whole subject here.
+        walk.pts.push(
+            tile.roads
+                .iter()
+                .filter(|r| {
+                    r.level == 0
+                        && (r.class.starts_with("walk_") || r.class.starts_with("path_"))
+                        && !r.class.ends_with("_apron")
+                })
+                .filter_map(|r| r.mesh.height_range_at(px, py))
+                .map(|(_, hi)| hi)
+                .reduce(f64::max)
+                .map(|h| (d, h)),
+        );
+
         let structure = tile
             .roads
             .iter()
@@ -128,7 +149,7 @@ pub fn render(scan: &ArchiveScan<'_>, cut: &Cut) -> Option<String> {
         deck_low.pts.push(structure.map(|(lo, _)| (d, lo)));
     }
 
-    let traces = vec![ground, asphalt, asphalt_b, deck_top, deck_low];
+    let traces = vec![ground, asphalt, asphalt_b, walk, deck_top, deck_low];
     if traces.iter().all(|t| t.pts.iter().all(Option::is_none)) {
         return None;
     }

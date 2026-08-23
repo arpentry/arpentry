@@ -535,6 +535,7 @@ mod tests {
             corridor,
             surface: crate::priors::Surface::Asphalt,
             rise_m: 0.0,
+            arc0: 0.0,
         }
     }
 
@@ -556,6 +557,7 @@ mod tests {
             corridor,
             surface: crate::priors::Surface::Asphalt,
             rise_m: 0.0,
+            arc0: 0.0,
         }
     }
 

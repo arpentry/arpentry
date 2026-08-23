@@ -17,7 +17,7 @@ fn main() {
 
     let mut scene = assemble::run(std::path::Path::new(&a[0]), None, &bbox).expect("assemble");
     let solved = solve::run(&mut scene, Some(&terrain), 16, 0).expect("solve");
-    let stack = ground::derive(&scene, &solved, &arpentry_server::assemble::facades::Facades::empty(), Some(&terrain), 0);
+    let stack = ground::derive(&scene, &solved, &arpentry_server::assemble::facades::Facades::empty(), &[], Some(&terrain), 0);
     let mut scratch: Vec<u32> = Vec::new();
     let r = stack.layer(Stratum::R).expect("an R layer");
     let ew = r.earthworks();

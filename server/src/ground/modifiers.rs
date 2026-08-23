@@ -136,6 +136,24 @@ pub struct EarthworkEdge {
     /// The step left at the plane is the mouth's own height, and the tube
     /// stamped through it fills exactly that opening.
     pub headwall: bool,
+    /// Whether this bench's edges are contact lines the detail mesh must hold
+    /// as constraints ([`super::breaklines`], docs/GROUND.md §3).
+    ///
+    /// True for every corridor bench, where it is what keeps the flat band flat
+    /// all the way to the kerb instead of letting the triangulation smear the
+    /// batter's slope break inward across a whole lattice cell.
+    ///
+    /// False for a **walkway** bench, and the reason is that its constraint is
+    /// already there. A band takes its own hole out of the terrain, so the ring
+    /// the mesher cuts is a constraint edge — and the bench is
+    /// [`EARTHWORK_MARGIN_M`] wider than the band on each side, which puts that
+    /// ring half a metre *inside* the bench edge, exactly where §3 says to draw
+    /// a crest. Every rim vertex therefore samples the flat bench already. A
+    /// second line half a metre outside the first would double the constraint
+    /// count of the densest network in the extract to say the same thing twice.
+    ///
+    /// [`EARTHWORK_MARGIN_M`]: crate::priors::EARTHWORK_MARGIN_M
+    pub crest: bool,
 }
 
 impl EarthworkEdge {
@@ -228,6 +246,7 @@ impl Earthworks {
         lat: f64,
         raw: f64,
         cell_m: f64,
+        crested_only: bool,
         scratch: &[u32],
     ) -> (Option<f64>, f64, f64) {
         // (d, idx, target) for the paved rank and the verge rank.
@@ -236,7 +255,7 @@ impl Earthworks {
         let (mut fill, mut cut) = (f64::NEG_INFINITY, f64::INFINITY);
         for &i in scratch {
             let e = &self.edges[i as usize];
-            if e.carve || e.bench_m() < cell_m {
+            if e.carve || e.bench_m() < cell_m || (crested_only && !e.crest) {
                 continue;
             }
             let (d, t, side) = lateral_distance(e, lon, lat);
@@ -281,7 +300,7 @@ impl Earthworks {
     ) -> f64 {
         self.grid.query((lon, lat, lon, lat), scratch);
         scratch.sort_unstable();
-        let (bench, fill, cut) = self.benches_and_faces(lon, lat, raw, cell_m, scratch);
+        let (bench, fill, cut) = self.benches_and_faces(lon, lat, raw, cell_m, false, scratch);
         // A bench is the road surface itself. Outside it the cuttings dig
         // first and the embankments are raised over them, so where a road in a
         // cutting sits beside a road on fill the embankment survives and the
@@ -343,7 +362,41 @@ impl Earthworks {
         scratch.sort_unstable();
         // The bench answer does not depend on the natural ground, so the
         // caller needs no DEM sample to ask what the road rides.
-        self.benches_and_faces(lon, lat, f64::NAN, 0.0, scratch).0
+        self.benches_and_faces(lon, lat, f64::NAN, 0.0, false, scratch).0
+    }
+
+    /// The same question asked of the benches that draw contact lines only
+    /// ([`EarthworkEdge::crest`]) — what [`super::breaklines`] must ask.
+    ///
+    /// A crest is pulled in from its nominal offset where *another* bench holds
+    /// the ground there, because a line drawn inside a neighbour's reign samples
+    /// the neighbour's height and the mesh then ramps it back across the road
+    /// the line was drawn to protect. A walkway bench is not that neighbour. It
+    /// stands a kerb above the street's own bench, over a strip that is entirely
+    /// covered by drawn surface — the asphalt's hole on one side of the kerb and
+    /// the band's on the other — so there is no drawn terrain between them for a
+    /// constraint to hold, and no line to be misplaced.
+    ///
+    /// Asked unfiltered, the walkway moves lines it has no business moving:
+    /// [`crate::priors::KERB_RISE_M`] is 0.12 m against a 0.05 m same-bench
+    /// tolerance, so *every* sidewalked street failed the test at its own bench
+    /// edge — 17,635 more crest nodes dragged inward and 1,471 crests dropped
+    /// outright (110,938/10,427 → 128,573/11,898 over the Montreux extract).
+    /// Filtered, the crest counts come back **bit-identical to the no-walkway
+    /// control**, which is the result to want: a sidewalk changes where the
+    /// ground is, never where the street's contact lines are.
+    ///
+    /// What it did *not* do is move the scorecard — `contact.kerb_lip` 7.074 →
+    /// 7.071 %, `slope.terrain_face` 0.709 → 0.708 %. Those regressions had a
+    /// different cause (a walkway bench held flat at its segment's midpoint,
+    /// `super::walk_edge`), and this filter was written on the hypothesis that
+    /// they were this. The hypothesis was wrong and the filter is still right:
+    /// 18 thousand misplaced constraints that happen not to show up in a rate
+    /// are 18 thousand misplaced constraints.
+    pub fn crest_target_at(&self, lon: f64, lat: f64, scratch: &mut Vec<u32>) -> Option<f64> {
+        self.grid.query((lon, lat, lon, lat), scratch);
+        scratch.sort_unstable();
+        self.benches_and_faces(lon, lat, f64::NAN, 0.0, true, scratch).0
     }
 }
 
@@ -476,6 +529,7 @@ mod tests {
             cos_lat,
             carve: false,
             headwall: false,
+            crest: true,
         }
     }
 

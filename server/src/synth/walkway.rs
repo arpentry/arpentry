@@ -58,17 +58,20 @@ const PATH_STATION_M: f64 = 8.0;
 /// whose casing is most of it.
 const MIN_BAND_M: f64 = 4.0;
 
-/// Builds every walkway band in the extract, as sources for the union.
+/// Builds every walkway band in the extract: the geometry, the seat and the
+/// material, with no grade layer yet.
+///
+/// **Model, not drawing, and that is why it is split from [`stamp_layers`].**
+/// The band is derived once, before stage 3, because the ground under a
+/// walkway is that walkway (`ground::walk_earthworks`) and a bench derived
+/// from a *second* construction of the same band would be a bench that does
+/// not fit it — the sliver family this codebase keeps re-learning. One
+/// derivation, two readers: the ground benches it, and the union draws it.
 ///
 /// They are *not* handed to `synth::sheets`: a band's sheet is its host's, and
 /// letting a sidewalk vote on the grade-separation layering would let the thing
 /// standing on a surface decide what that surface is.
-pub fn bake(
-    scene: &SceneGraph,
-    solved: &SolvedModel,
-    facades: &Facades,
-    grade_runs: &[GradeRun],
-) -> Vec<SourceSeg> {
+pub fn bands(scene: &SceneGraph, solved: &SolvedModel, facades: &Facades) -> Vec<SourceSeg> {
     let mut out = Vec::new();
     if std::env::var_os("ARPT_NO_WALK_BAND").is_some() {
         return out;
@@ -79,11 +82,31 @@ pub fn bake(
             continue; // a crossing is paint on the carriageway, not a band
         }
         for a in attached {
-            attached_band(scene, solved, facades, grade_runs, a, &mut out, &mut scratch);
+            attached_band(scene, solved, facades, a, &mut out, &mut scratch);
         }
         path_bands(line, attached, &mut out);
     }
     out
+}
+
+/// Stamps each band with the grade-separation layer of the carriageway stretch
+/// it rides, once `synth::sheets` has settled them.
+///
+/// A band belongs to its host's sheet by definition, so the lookup is the run
+/// containing the segment's own arc. A path has no host and no sheet to ride:
+/// it stays on layer 0, where everything at grade that nothing stacks over
+/// lives.
+pub fn stamp_layers(bands: &mut [SourceSeg], grade_runs: &[GradeRun]) {
+    for s in bands.iter_mut().filter(|s| s.corridor != NO_HOST) {
+        s.layer = grade_runs
+            .iter()
+            .find(|g| {
+                g.corridor == s.corridor
+                    && g.arc0 <= s.arc0 + RUN_EPS_M
+                    && g.arc1 >= s.arc0 - RUN_EPS_M
+            })
+            .map_or(0, |g| g.layer);
+    }
 }
 
 /// The band of one attachment: the host's own centerline, offset to the side
@@ -92,7 +115,6 @@ fn attached_band(
     scene: &SceneGraph,
     solved: &SolvedModel,
     facades: &Facades,
-    grade_runs: &[GradeRun],
     a: &Attachment,
     out: &mut Vec<SourceSeg>,
     scratch: &mut Vec<u32>,
@@ -112,10 +134,6 @@ fn attached_band(
         if hi - lo < MIN_BAND_M {
             continue;
         }
-        let layer = grade_runs
-            .iter()
-            .find(|g| g.corridor == c.id && g.arc0 <= lo + RUN_EPS_M && g.arc1 >= hi - RUN_EPS_M)
-            .map_or(0, |g| g.layer);
         // The host's own stations, so the band is sampled on the same curve the
         // asphalt is buffered around and the two stay parallel by construction.
         let stations: Vec<f64> = match profile {
@@ -167,7 +185,7 @@ fn attached_band(
                 sect_a: Section::uniform(half),
                 sect_b: Section::uniform(half),
                 level,
-                layer,
+                layer: 0,
                 cut_a: None,
                 cut_b: None,
                 height_a: height(stops[i]) + priors::KERB_RISE_M,
@@ -175,6 +193,7 @@ fn attached_band(
                 corridor: c.id,
                 surface: priors::Surface::Walkway,
                 rise_m: priors::KERB_RISE_M,
+                arc0: stops[i],
             });
         }
     }
@@ -311,8 +330,8 @@ fn path_bands(line: &WalkLine, attached: &[Attachment], out: &mut Vec<SourceSeg>
     }
     let half = priors::WALK_WIDTH_M * 0.5;
     for (g0, g1) in gaps {
-        let pts = resample(&line.line, &arc, g0, g1, PATH_STATION_M);
-        for w in pts.windows(2) {
+        let (stops, pts) = resample(&line.line, &arc, g0, g1, PATH_STATION_M);
+        for (i, w) in pts.windows(2).enumerate() {
             out.push(SourceSeg {
                 a: w[0],
                 b: w[1],
@@ -332,14 +351,22 @@ fn path_bands(line: &WalkLine, attached: &[Attachment], out: &mut Vec<SourceSeg>
                 corridor: NO_HOST,
                 surface: priors::Surface::Path,
                 rise_m: 0.0,
+                arc0: stops[i],
             });
         }
     }
 }
 
 /// The stretch `[from_m, to_m]` of a polyline, stationed at most `step_m`
-/// apart and keeping every mapped vertex in between.
-fn resample(line: &[Coord], arc: &[f64], from_m: f64, to_m: f64, step_m: f64) -> Vec<Coord> {
+/// apart and keeping every mapped vertex in between: the stations' arcs along
+/// the way, and the points they fall at.
+fn resample(
+    line: &[Coord],
+    arc: &[f64],
+    from_m: f64,
+    to_m: f64,
+    step_m: f64,
+) -> (Vec<f64>, Vec<Coord>) {
     let at = |s: f64| -> Coord {
         let i = arc.partition_point(|&a| a < s).clamp(1, line.len() - 1);
         let (a0, a1) = (arc[i - 1], arc[i]);
@@ -373,7 +400,8 @@ fn resample(line: &[Coord], arc: &[f64], from_m: f64, to_m: f64, step_m: f64) ->
     if to_m - stops[stops.len() - 1] > RUN_EPS_M {
         stops.push(to_m);
     }
-    stops.into_iter().map(at).collect()
+    let pts = stops.iter().map(|&s| at(s)).collect();
+    (stops, pts)
 }
 
 #[cfg(test)]

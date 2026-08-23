@@ -619,7 +619,7 @@ mod tests {
     fn bake_scene(corridors: Vec<Corridor>) -> PavementModel {
         let scene = SceneGraph::new(corridors);
         let solved = SolvedModel::from_profiles((0..scene.corridors.len()).map(|_| None).collect(), 15);
-        let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
         bake(&junctions, 1)
     }
 
@@ -712,7 +712,7 @@ mod tests {
         };
         let scene = SceneGraph::new(make());
         let solved = SolvedModel::from_profiles((0..2).map(|_| None).collect(), 15);
-        let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
         let one = bake(&junctions, 1);
         let many = bake(&junctions, 8);
         assert_eq!(one.chunk_count(), many.chunk_count());
@@ -804,7 +804,7 @@ mod tests {
     #[test]
     fn the_closing_rounds_the_curb_returns_at_an_intersection() {
         let (scene, solved) = crossroads();
-        let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
         assert_eq!(junctions.len(), 1, "the crossroads plates as one intersection");
         let model = bake(&junctions, 1);
         let filleted = model.area_m2();
@@ -817,7 +817,7 @@ mod tests {
             );
             let bare_solved =
                 SolvedModel::from_profiles((0..4).map(|_| None).collect(), 15);
-            let j = carriageway::bake(&bare_scene, &bare_solved, &Facades::empty());
+            let j = carriageway::bake(&bare_scene, &bare_solved, &Facades::empty(), Vec::new());
             assert_eq!(j.len(), 0, "no intersection extent without profiles");
             bake(&j, 1).area_m2()
         };
@@ -870,7 +870,7 @@ mod tests {
             ],
             15,
         );
-        let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
 
         let model = bake(&junctions, 1);
         let levels =

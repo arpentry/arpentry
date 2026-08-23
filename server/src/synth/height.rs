@@ -619,7 +619,7 @@ mod tests {
         let nodes = c.nodes.clone();
         let scene = SceneGraph::new(vec![c]);
         let solved = SolvedModel::from_profiles(vec![Some(Profile::flat(&nodes, 400.0))], Z);
-        let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
         let field = HeightField::for_tile(&junctions, &solved, Z, &bounds);
         let mut s = sampler();
@@ -672,7 +672,7 @@ mod tests {
         }];
         let solved =
             SolvedModel::from_profiles(profiles, Z).with_junction_heights(vec![Some(500.0)]);
-        let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
         assert_eq!(junctions.len(), 1, "the three legs plate as one intersection");
 
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
@@ -752,8 +752,8 @@ mod tests {
         // …but the junction is pinned 20 m below it.
         let solved =
             SolvedModel::from_profiles(profiles, Z).with_junction_heights(vec![Some(480.0)]);
-        let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
-        let ground = Arc::new(crate::ground::derive(&scene, &solved, &Facades::empty(), None, 1));
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
+        let ground = Arc::new(crate::ground::derive(&scene, &solved, &Facades::empty(), &[], None, 1));
         assert!(ground.earthwork_count() > 0, "the legs must bench the ground to 500");
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
         let field = HeightField::for_tile(&junctions, &solved, Z, &bounds);
@@ -793,7 +793,7 @@ mod tests {
             vec![Some(Profile::flat(&a.nodes, 400.0)), Some(Profile::flat(&b.nodes, cross_h))];
         let scene = SceneGraph::new(vec![a, b]);
         let solved = SolvedModel::from_profiles(profiles, Z);
-        let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
         let field = HeightField::for_tile(&junctions, &solved, Z, &bounds);
         let mut s = sampler();
@@ -867,7 +867,7 @@ mod tests {
         let nodes = c.nodes.clone();
         let scene = SceneGraph::new(vec![c]);
         let solved = SolvedModel::from_profiles(vec![Some(Profile::flat(&nodes, 400.0))], Z);
-        let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
         let field = HeightField::for_tile(&junctions, &solved, Z, &bounds);
         let mut s = sampler();
@@ -894,7 +894,7 @@ mod tests {
         let scene = SceneGraph::new(vec![c]);
         // A road solved 30 m up: an embankment or a bridge approach.
         let solved = SolvedModel::from_profiles(vec![Some(Profile::flat(&nodes, 30.0))], Z);
-        let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
         let field = HeightField::for_tile(&junctions, &solved, Z, &bounds);
         let mut s = sampler();
@@ -923,7 +923,7 @@ mod tests {
         let nodes = c.nodes.clone();
         let scene = SceneGraph::new(vec![c]);
         let solved = SolvedModel::from_profiles(vec![Some(Profile::flat(&nodes, 400.0))], Z);
-        let junctions = carriageway::bake(&scene, &solved, &Facades::empty());
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
         let bounds = crate::solve::tile_containing(Z, 6.0, LAT);
         let field = HeightField::for_tile(&junctions, &solved, Z, &bounds);
         let mut s = sampler();

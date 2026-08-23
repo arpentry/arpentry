@@ -122,12 +122,85 @@
       "worst": 11.51145264968693
     },
     {
+      "id": "authority.facade_ground",
+      "invariant": "I8",
+      "median": 0.006666666666667709,
+      "offenders": [
+        {
+          "lat": 46.4122699,
+          "lon": 6.93430195,
+          "note": "the hill is at 523.90 m here and the ground under this wall is 513.62 m — an earthwork's, not the terrain's",
+          "value": 10.272060644183057,
+          "zoom": 16
+        },
+        {
+          "lat": 46.412261300000004,
+          "lon": 6.9342784250000005,
+          "note": "the hill is at 522.13 m here and the ground under this wall is 513.37 m — an earthwork's, not the terrain's",
+          "value": 8.757195632248909,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4122527,
+          "lon": 6.9342549,
+          "note": "the hill is at 520.59 m here and the ground under this wall is 513.37 m — an earthwork's, not the terrain's",
+          "value": 7.211474255991561,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4122527,
+          "lon": 6.9342549,
+          "note": "the hill is at 520.59 m here and the ground under this wall is 513.37 m — an earthwork's, not the terrain's",
+          "value": 7.211474255991561,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4302828,
+          "lon": 6.9147019,
+          "note": "the hill is at 392.18 m here and the ground under this wall is 385.67 m — an earthwork's, not the terrain's",
+          "value": 6.509385186668737,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4302828,
+          "lon": 6.9147019,
+          "note": "the hill is at 392.18 m here and the ground under this wall is 385.67 m — an earthwork's, not the terrain's",
+          "value": 6.509385186668737,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4302828,
+          "lon": 6.9147019,
+          "note": "the hill is at 392.18 m here and the ground under this wall is 385.67 m — an earthwork's, not the terrain's",
+          "value": 6.509385186668737,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4302828,
+          "lon": 6.9147019,
+          "note": "the hill is at 392.18 m here and the ground under this wall is 385.67 m — an earthwork's, not the terrain's",
+          "value": 6.509385186668737,
+          "zoom": 16
+        }
+      ],
+      "population": "Every 2 m of every building footprint edge inside the extract bbox (52280 walls read), scored as the engineered ground minus the reference surface the solve itself read — zero wherever no earthwork reaches, so the rate is the share of *wall* standing on something a road decided. Of 261282 samples, 35843 stand on ground an earthwork moved at all.",
+      "samples": 261282,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 2.780000000000001,
+      "threshold": 1.0,
+      "title": "A road earthwork deciding the ground under a building",
+      "violation_pct": 2.0755352454436204,
+      "violations": 5423,
+      "worst": 10.272060644183057
+    },
+    {
       "id": "ground.footprint",
       "invariant": "I8",
       "median": 0.006666666666667709,
       "offenders": [],
-      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 10409256 probes, 607584 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
-      "samples": 10409256,
+      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 13879008 probes, 633009 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
+      "samples": 13879008,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.006666666666667709,
@@ -142,13 +215,6 @@
       "invariant": "I1",
       "median": 0.006666666666667709,
       "offenders": [
-        {
-          "lat": 46.4338097,
-          "lon": 6.916575,
-          "note": "Road(Tertiary) 20059 solved its structure here against 425.39 m; the ground                          drawn is 434.28 m",
-          "value": 8.892394311680903,
-          "zoom": 16
-        },
         {
           "lat": 46.4022726,
           "lon": 6.9274955,
@@ -197,18 +263,25 @@
           "note": "Rail(NarrowGauge) 19525 solved its structure here against 401.43 m; the ground                          drawn is 394.77 m",
           "value": 6.658395589225165,
           "zoom": 16
+        },
+        {
+          "lat": 46.4365963,
+          "lon": 6.9107375,
+          "note": "Rail(NarrowGauge) 19525 solved its structure here against 401.31 m; the ground                          drawn is 394.77 m",
+          "value": 6.531547695744507,
+          "zoom": 16
         }
       ],
       "population": "Every profile node inside a structure span, over every corridor the                      solve holds a profile for, clipped to the extract bbox. Scored as the                      published engineered ground minus the reference surface the solve read                      at that node, with the reference passed to the stack as its own base so                      only the ground stage's own work is left. At-grade nodes are excluded:                      there the difference is the corridor's own bench, which is the imprint                      working and is scored by contact.kerb_*.",
-      "samples": 2744,
+      "samples": 2692,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 7.366666666666667,
+      "tail": 6.88666666666667,
       "threshold": 1.0,
       "title": "A structural decision taken against a ground nobody drew",
-      "violation_pct": 6.960641399416909,
-      "violations": 191,
-      "worst": 8.892394311680903
+      "violation_pct": 7.355126300148588,
+      "violations": 198,
+      "worst": 7.650640290399167
     },
     {
       "id": "slope.rail_grade",
@@ -265,22 +338,22 @@
           "zoom": 16
         },
         {
-          "lat": 46.433298199999996,
-          "lon": 6.981153925,
-          "note": "narrow_gauge climbs at 43 % against its class ceiling of 7 % (solved to 25 %)",
-          "value": 0.36391743785302283,
+          "lat": 46.43615495,
+          "lon": 6.93573555,
+          "note": "narrow_gauge climbs at 34 % against its class ceiling of 7 % (solved to 30 %)",
+          "value": 0.2679708997463222,
           "zoom": 16
         }
       ],
       "population": "Consecutive solved-profile nodes (the solve's own ~8 m spacing, runs of at least 0.50 m) of every rail corridor whose class names a gauge or a system, over the heights the drawn line carries — the road at grade, the fitted ramp across structures — scored by grade in excess of the class's own §9 ceiling (signed: negative is margin). Model-side: from z13 the union paves the formation and deletes the stroke this walk used to ride, so the solve is the only place the alignment still exists as a line. Steps are clipped to the extract's bbox — assemble admits whole parquet row groups, so corridors spill past the zone into ground no DEM constrained, and a grade there scores the extraction boundary. Street-running and `unknown` rail are excluded: draped by design (§4.6), they hold no ceiling to measure against, and counting them would score the class table rather than the solve.",
-      "samples": 10226,
+      "samples": 9425,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.23093750000000002,
       "threshold": 0.2,
       "title": "Drawn railway grade over its class ceiling",
-      "violation_pct": 0.9485624877762566,
-      "violations": 97,
+      "violation_pct": 0.9549071618037135,
+      "violations": 90,
       "worst": 0.7092967828297838
     },
     {
@@ -289,7 +362,7 @@
       "median": 0.006666666666666667,
       "offenders": [],
       "population": "Every source connector touched by two or more distinct profiled corridors whose classes pave a surface — read from the corridors' own connector lists, ends and segment-interior attachments alike, not from the junction set, so a connector the assembler failed to junction still counts. Scored as the spread of the members' solved road heights at the connector's arc, clipped to the extract bbox. Zero is the weld holding; anything past the 0.5 m sheet separation is drawn as one surface floating over another.",
-      "samples": 2830,
+      "samples": 2421,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.1,

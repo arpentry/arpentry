@@ -145,13 +145,17 @@ impl Breaklines {
         // shared endpoint) so joint offsets miter instead of gapping.
         let mut i = 0;
         while i < edges.len() {
-            if edges[i].carve {
+            // A carve is a hole rather than a bench, and a walkway bench states
+            // its own edge through the ring its band already cuts
+            // ([`EarthworkEdge::crest`]). Neither draws a contact line.
+            if edges[i].carve || !edges[i].crest {
                 i += 1;
                 continue;
             }
             let start = i;
             while i + 1 < edges.len()
                 && !edges[i + 1].carve
+                && edges[i + 1].crest
                 && edges[i + 1].chain == edges[i].chain
                 && edges[i + 1].a == edges[i].b
             {
@@ -405,7 +409,7 @@ fn crest_offset(
         // The most junior bench covering the point is the one that holds the
         // ground there — the fold applies layers in order, so a later bench
         // overrides an earlier one.
-        match layers.iter().rev().find_map(|l| l.target_at(p.x, p.y, scratch)) {
+        match layers.iter().rev().find_map(|l| l.crest_target_at(p.x, p.y, scratch)) {
             // No bench at all under the line: the batter starts here, which is
             // the contact the crest stands for. Nothing to pull in from.
             None => true,
@@ -477,6 +481,7 @@ mod tests {
             cos_lat: 46.0_f64.to_radians().cos(),
             carve: false,
             headwall: false,
+            crest: true,
         }
     }
 

@@ -348,11 +348,21 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // reads the corridor spans.
     let solved =
         Arc::new(solve::run(&mut scene, cfg.terrain.as_deref(), cfg.max_zoom, threads)?);
-    let ground =
-        Arc::new(ground::derive(&scene, &solved, &facades, cfg.terrain.as_deref(), threads));
+    // The pedestrian bands, derived before the ground because the ground under
+    // a walkway is that walkway: stage 3 benches them and stage 4 draws them,
+    // from this one derivation (`synth::walkway::bands`).
+    let walk_bands = synth::walkway::bands(&scene, &solved, &facades);
+    let ground = Arc::new(ground::derive(
+        &scene,
+        &solved,
+        &facades,
+        &walk_bands,
+        cfg.terrain.as_deref(),
+        threads,
+    ));
     // Junction plates: a paved area meshed across each corridor junction, baked
     // once from the solved model and emitted by the tile that owns its centre.
-    let junctions = Arc::new(synth::carriageway::bake(&scene, &solved, &facades));
+    let junctions = Arc::new(synth::carriageway::bake(&scene, &solved, &facades, walk_bands));
     // The unioned road surface: one paved region per level per z13 chunk, baked
     // once from the same carriageway sources the intersections came from.
     let t_pave = Instant::now();
@@ -2367,7 +2377,7 @@ mod tests {
                 .expect("assemble");
         let solved =
             Arc::new(solve::run(&mut scene, terrain.as_deref(), z_ref, 0).expect("solve"));
-        let ground = Arc::new(ground::derive(&scene, &solved, &assemble::facades::Facades::empty(), terrain.as_deref(), 0));
+        let ground = Arc::new(ground::derive(&scene, &solved, &assemble::facades::Facades::empty(), &[], terrain.as_deref(), 0));
         eprintln!(
             "model: {} corridors, {} profiles, {} earthwork edges, {} breakline segments",
             scene.corridors.len(),
@@ -2676,7 +2686,7 @@ mod tests {
         let mut scene = assemble::run(FsPath::new(&seg), water.as_deref().map(FsPath::new), &bounds)
             .expect("assemble");
         let solved = Arc::new(solve::run(&mut scene, terrain.as_deref(), z_ref, 0).expect("solve"));
-        let ground = Arc::new(ground::derive(&scene, &solved, &assemble::facades::Facades::empty(), terrain.as_deref(), 0));
+        let ground = Arc::new(ground::derive(&scene, &solved, &assemble::facades::Facades::empty(), &[], terrain.as_deref(), 0));
         let mut dem = terrain.as_deref().and_then(|p| Dem::open(p).ok());
         let raw = match &mut dem {
             Some(d) => d.elevation(lon, lat, z_ref),

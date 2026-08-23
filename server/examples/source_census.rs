@@ -122,7 +122,7 @@ fn main() {
 
     let mut scene = assemble::run(std::path::Path::new(&a[0]), None, &bbox).expect("assemble");
     let solved = solve::run(&mut scene, Some(&terrain), 16, 0).expect("solve");
-    let stack = ground::derive(&scene, &solved, &arpentry_server::assemble::facades::Facades::empty(), Some(&terrain), 0);
+    let stack = ground::derive(&scene, &solved, &arpentry_server::assemble::facades::Facades::empty(), &[], Some(&terrain), 0);
     let mut dem = Dem::open(&terrain).expect("dem");
     let mut scratch: Vec<u32> = Vec::new();
     let strata: Vec<Stratum> = stack.layers().iter().map(|l| l.stratum).collect();

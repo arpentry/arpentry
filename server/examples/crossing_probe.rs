@@ -33,7 +33,7 @@ fn main() {
     eprintln!("corridors {} profiles {}", scene.corridors.len(), solved.solved_count());
 
     let facades = arpentry_server::assemble::facades::Facades::empty();
-    let model = carriageway::bake(&scene, &solved, &facades);
+    let model = carriageway::bake(&scene, &solved, &facades, Vec::new());
     let n = model.source_count();
     eprintln!("carriageway sources: {n}");
 

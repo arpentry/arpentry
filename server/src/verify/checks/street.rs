@@ -95,6 +95,40 @@ const WALK_GRADE_M: f64 = 1.0;
 /// cross-section feature being measured.
 const WALK_STEP_M: f64 = 1.0;
 
+/// How far the drawn ground at a pedestrian band's own rim may stand from the
+/// band before it is a wall rather than a joint.
+///
+/// The two surfaces meet along that rim by construction — the band's region is
+/// what cut the hole the rim bounds — so the honest zero here is a joint, not a
+/// contact band: unlike a building's seat or a deck's, no thickness, no
+/// foundation and no clearance stands between them. What is left is
+/// quantization (a centimetre on each surface) and the terrain's own rounding
+/// of the ring it triangulated. A tenth of a metre is comfortably past that and
+/// is also [`priors::KERB_RISE_M`], which is the smallest step in the model
+/// worth drawing at all.
+const WALK_RIM_M: f64 = 0.1;
+
+/// How far in from a band's edge the cross-fall is read, in metres, and how far
+/// in it must stop being the band for the sample to count as a *side* edge.
+///
+/// A band is [`priors::WALK_WIDTH_M`] wide, so a metre in from one side is its
+/// centreline and three metres in is off it. An edge that still has band under
+/// it three metres in is an *end* — where "inward" is along the way rather than
+/// across it, and the reading would be the way's own longitudinal grade — or a
+/// plaza, where there is no cross-section to be wrong about. Both are dropped.
+const WALK_FALL_IN_M: f64 = 1.0;
+const WALK_FALL_OUT_M: f64 = 3.0;
+
+/// Cross-fall a pedestrian band may carry before it is a hillside rather than a
+/// walkway, as rise per metre across.
+///
+/// Set from the drainage cross-fall a real footway is built to (2 %, and 4 % at
+/// the accessible limit) with room for the drawn world's own noise on top: the
+/// band is triangulated over the terrain lattice, so a metre across it spans a
+/// vertex pair whose heights each carry a centimetre of quantization. A tenth
+/// is past all of that and far below anything a hillside contributes.
+const WALK_FALL: f64 = 0.10;
+
 /// The pedestrian classes this check scores, which is the model's class table
 /// ([`priors::is_pedestrian`]) less `steps`.
 ///
@@ -370,6 +404,23 @@ pub struct Street {
     overlap_worst: Worst,
     grade: Dist,
     grade_worst: Worst,
+    /// The step at a pedestrian band's rim, unsigned, and the same step with
+    /// its sign for the histogram — the ground stands above the band as often
+    /// as it falls away from it, and which it does says which earthwork is
+    /// missing.
+    rim: Dist,
+    rim_signed: Dist,
+    rim_worst: Worst,
+    /// The band's cross-fall, as rise per metre across it.
+    fall: Dist,
+    fall_worst: Worst,
+    /// The same two populations split by material, for `ARPT_DEBUG_STREET`. A
+    /// sidewalk and a path stand on the ground for different reasons — one is
+    /// seated on its host's cross-section, the other *is* the drawn ground — so
+    /// a single histogram of either metric is two modes stacked, and reading it
+    /// as one would attribute a path's tilt to a sidewalk's seat.
+    rim_by: [Dist; 2],
+    fall_by: [Dist; 2],
     /// The same departures with their sign kept. The scored metric is unsigned
     /// — a way on a bank above its street is the same defect as one in a ditch
     /// — but which side the population sits on is the first thing anyone
@@ -394,6 +445,13 @@ impl Street {
             grade: Dist::new(0.0, 64.0),
             grade_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             grade_signed: Dist::metres(),
+            rim: Dist::new(0.0, 64.0),
+            rim_signed: Dist::metres(),
+            rim_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            fall: Dist::new(0.0, 8.0),
+            fall_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            rim_by: [Dist::new(0.0, 64.0), Dist::new(0.0, 64.0)],
+            fall_by: [Dist::new(0.0, 8.0), Dist::new(0.0, 8.0)],
             inside: 0,
             footprint_tiles: 0,
         }
@@ -603,6 +661,22 @@ fn is_walk_band(r: &RoadMesh) -> bool {
     r.level == 0 && matches!(r.class.as_str(), "walk_surface" | "walk_casing")
 }
 
+/// Every drawn pedestrian surface at grade — sidewalk *and* path, interior band
+/// and casing rim.
+///
+/// Wider than [`is_walk_band`] on purpose, and the difference is the whole
+/// reason the two materials exist. `contact.sidewalk_grade` asks how a band
+/// relates to the street beside it, which a path across a hillside has no
+/// answer to. The ground under a band is a question every pedestrian surface
+/// answers, and the path is where it is most often answered badly.
+fn is_pedestrian_band(r: &RoadMesh) -> bool {
+    r.level == 0
+        && matches!(
+            r.class.as_str(),
+            "walk_surface" | "walk_casing" | "path_surface" | "path_casing"
+        )
+}
+
 /// Sorted quantiles of one population, for `ARPT_DEBUG_STREET`. VERIFICATION.md
 /// §10: before believing a new check's first number, histogram what it scores
 /// and look for a second mode.
@@ -645,10 +719,171 @@ fn resample(part: &[(f64, f64, f64)], scale: &Scale) -> Vec<(f64, f64, f64)> {
     out
 }
 
+impl Street {
+    /// Invariant 1 under a pedestrian band: whether the ground beneath it is
+    /// *its* ground.
+    ///
+    /// A carriageway benches the ground it stands on and the terrain mesh then
+    /// stops at its kerb, so the two surfaces meet along one rim at one height.
+    /// A pedestrian band takes the same hole out of the same terrain and has no
+    /// bench under it at all: it is seated on the host's cross-section (a
+    /// sidewalk) or draped on whatever the DEM does (a path). Two consequences,
+    /// and this walk measures both.
+    ///
+    /// - [`contact.walk_rim`] — the step where the band meets the ground. Read
+    ///   at the terrain's own hole rim rather than a metre outside it, as
+    ///   `contact.kerb_lip` reads a carriageway's: a metre out lands on the
+    ///   batter face, which is a legitimate slope, and the question here is
+    ///   whether the *joint* holds. Anchoring on the rim also survives the trap
+    ///   phase 5 fell into — a probe that reads the terrain where the band's own
+    ///   hole removed it does not measure a better world, it measures a smaller
+    ///   population.
+    /// - [`slope.walk_crossfall`] — how far the band tilts across its own
+    ///   width. A sidewalk is flat by construction (its height is the host's
+    ///   road surface plus a kerb); a path is the hillside, because the drawn
+    ///   ground *is* what it stands on. The metric is what separates the two
+    ///   claims, and what a bench under the band would move.
+    fn visit_walk_ground(&mut self, tile: &TileScene) {
+        let bands: Vec<&RoadMesh> =
+            tile.roads.iter().filter(|r| is_pedestrian_band(r)).collect();
+        if bands.is_empty() {
+            return;
+        }
+        // The band over a rim point, taken as the one **closest in height** to
+        // the rim rather than the first found. Two bands can cover one plan
+        // point at grade — a sidewalk on a terrace with a path along the foot
+        // of its wall, ten metres below — and reading the far one would score
+        // the terrace's whole height as a joint that failed. Closest is also
+        // the conservative choice: where a stack is a genuine defect it is
+        // `order.at_grade_overlap`'s to report, not this one's.
+        let band_at = |px: f64, py: f64, near: f64| -> Option<(f64, usize)> {
+            bands
+                .iter()
+                .filter_map(|r| {
+                    r.mesh
+                        .height_at(px, py)
+                        .map(|h| (h, usize::from(r.class.starts_with("path_"))))
+                })
+                .min_by(|a, b| (a.0 - near).abs().total_cmp(&(b.0 - near).abs()))
+        };
+
+        // The rim: every hole-rim edge of the drawn terrain that a pedestrian
+        // band covers. The tile's own edge is not a rim — the neighbour's
+        // terrain continues across it — and neither is an edge with no band
+        // over it, which is a carriageway's rim and `contact.kerb_*`'s to score.
+        if let Some(terrain) = &tile.terrain {
+            for (a, b, _) in terrain.boundary_edges() {
+                let (ax, ay, az) = terrain.vertex(a);
+                let (bx, by, bz) = terrain.vertex(b);
+                let (mx, my) = ((ax + bx) * 0.5, (ay + by) * 0.5);
+                if !tile.owns(mx, my) {
+                    continue;
+                }
+                let on_edge = |v: f64| v.abs() < 1e-6 || (v - 1.0).abs() < 1e-6;
+                if on_edge(mx) || on_edge(my) {
+                    continue;
+                }
+                let rim_z = (az + bz) * 0.5;
+                let Some((band_z, material)) = band_at(mx, my, rim_z) else { continue };
+                let step = band_z - rim_z;
+                self.rim.push(step.abs());
+                self.rim_signed.push(step);
+                self.rim_by[material].push(step.abs());
+                if step.abs() > WALK_RIM_M {
+                    let (lon, lat) = tile.lonlat(mx, my);
+                    let side = if step > 0.0 { "above" } else { "below" };
+                    self.rim_worst.offer(Offender {
+                        lon,
+                        lat,
+                        zoom: tile.z,
+                        value: step.abs(),
+                        note: format!(
+                            "the band stands {:.2} m {side} the ground at its own rim \
+                             (band {band_z:.2} m, ground {rim_z:.2} m)",
+                            step.abs()
+                        ),
+                    });
+                }
+            }
+        }
+
+        // The cross-fall: at every side edge of a band, the band's own height
+        // against its height a metre in.
+        //
+        // Read on **one mesh**, the interior band's — never across meshes. A
+        // casing ring is a third of a metre wide, so a metre inward from its
+        // edge is already on a different mesh, and where two bands stack in
+        // plan it can be a different band on a different terrace: the first cut
+        // of this walk scored a sidewalk at 623 m against a path 9.6 m below it
+        // and called the pair a 963 % cross-fall. The interior mesh's own
+        // silhouette is inset from the true edge by the casing's width, which
+        // costs nothing here — the question is the band's tilt, not where
+        // exactly it stops.
+        for r in bands.iter().filter(|r| r.class.ends_with("_surface")) {
+            for (a, b, opp) in r.mesh.boundary_edges() {
+                let (ax, ay, az) = r.mesh.vertex(a);
+                let (bx, by, bz) = r.mesh.vertex(b);
+                let (ox, oy, _) = r.mesh.vertex(opp);
+                let (mx, my) = ((ax + bx) * 0.5, (ay + by) * 0.5);
+                if !tile.owns(mx, my) {
+                    continue;
+                }
+                // **Across is the edge's own perpendicular**, turned toward the
+                // triangle that holds it — not the direction of that triangle's
+                // far vertex, which is only perpendicular when the triangle
+                // happens to be small. The band is meshed over the terrain
+                // lattice, so it usually is; a band drawn as two big triangles
+                // is not, and the reading would then run along the way and
+                // report its grade as a cross-fall.
+                let (ex, ey) = ((bx - ax) * tile.scale.mx, (by - ay) * tile.scale.my);
+                let elen = ex.hypot(ey);
+                if elen <= 0.0 {
+                    continue;
+                }
+                let (nx, ny) = (-ey / elen, ex / elen);
+                let inward = ((ox - mx) * tile.scale.mx * nx + (oy - my) * tile.scale.my * ny)
+                    .signum();
+                // Back into plan space, where the probe points live.
+                let (dx, dy) =
+                    (inward * nx / tile.scale.mx, inward * ny / tile.scale.my);
+                let at = |m: f64| (mx + dx * m, my + dy * m);
+                let (ix, iy) = at(WALK_FALL_IN_M);
+                let (fx, fy) = at(WALK_FALL_OUT_M);
+                let Some(in_z) = r.mesh.height_at(ix, iy) else { continue };
+                // An end edge, or a plaza: inward is not across (see
+                // [`WALK_FALL_OUT_M`]).
+                if r.mesh.height_at(fx, fy).is_some() {
+                    continue;
+                }
+                let edge_z = (az + bz) * 0.5;
+                let fall = (in_z - edge_z).abs() / WALK_FALL_IN_M;
+                self.fall.push(fall);
+                self.fall_by[usize::from(r.class.starts_with("path_"))].push(fall);
+                if fall > WALK_FALL {
+                    let (lon, lat) = tile.lonlat(mx, my);
+                    self.fall_worst.offer(Offender {
+                        lon,
+                        lat,
+                        zoom: tile.z,
+                        value: fall,
+                        note: format!(
+                            "the {} falls {:.0} % across its own width ({edge_z:.2} m at the \
+                             edge, {in_z:.2} m a metre in)",
+                            r.class,
+                            fall * 100.0
+                        ),
+                    });
+                }
+            }
+        }
+    }
+}
+
 impl Check for Street {
     fn visit(&mut self, tile: &TileScene, opt: &Options) {
         self.visit_overlap(tile, opt);
         self.visit_grade(tile, opt);
+        self.visit_walk_ground(tile);
     }
 
     fn finish(self: Box<Self>) -> Vec<Metric> {
@@ -673,6 +908,24 @@ impl Check for Street {
             for t in [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 5.0] {
                 eprintln!("    |departure| > {t:.2} m: {:.4} %", 100.0 - self.grade.pct_below(t));
             }
+            report_population("contact.walk_rim |step|", &self.rim);
+            report_population("contact.walk_rim signed", &self.rim_signed);
+            eprintln!(
+                "  band below the ground {:.2} %, above it {:.2} %",
+                self.rim_signed.pct_below(0.0),
+                100.0 - self.rim_signed.pct_below(0.0)
+            );
+            for t in [0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0] {
+                eprintln!("    |step| > {t:.2} m: {:.4} %", 100.0 - self.rim.pct_below(t));
+            }
+            report_population("  walk_rim sidewalk", &self.rim_by[0]);
+            report_population("  walk_rim path", &self.rim_by[1]);
+            report_population("slope.walk_crossfall", &self.fall);
+            for t in [0.02, 0.05, 0.1, 0.2, 0.4, 0.8] {
+                eprintln!("    fall > {:.0} %: {:.4} %", t * 100.0, 100.0 - self.fall.pct_below(t));
+            }
+            report_population("  crossfall sidewalk", &self.fall_by[0]);
+            report_population("  crossfall path", &self.fall_by[1]);
         }
         vec![
             Metric {
@@ -769,6 +1022,75 @@ impl Check for Street {
                     .then(|| "no pedestrian way running alongside a drawn carriageway".to_string()),
                 dist: self.grade,
                 worst: self.grade_worst.into_vec(),
+            },
+            Metric {
+                id: "contact.walk_rim".into(),
+                invariant: Invariant::I1,
+                title: "Step where a pedestrian band meets the ground at its own rim".into(),
+                population: "Every terrain-mesh boundary edge midpoint the tile owns that is \
+                             not on the tile's own edge and has a level-0 pedestrian surface \
+                             over it (`walk_surface`/`walk_casing` and \
+                             `path_surface`/`path_casing` alike). The value is |band − rim|, \
+                             unsigned: the ground standing above a band is the same missing \
+                             earthwork as the ground falling away from it, and the offender \
+                             note carries the side. Read at the rim rather than a metre \
+                             outside it, which is where `contact.kerb_lip` reads a \
+                             carriageway's: a metre out lands on the batter face, whose slope \
+                             is legitimate, so it cannot separate a joint that holds from one \
+                             that does not. A rim with no band over it is a carriageway's and \
+                             is `contact.kerb_unwalled`'s to score; the two populations do not \
+                             overlap."
+                    .into(),
+                detail: "The mesher cuts one hole for the whole unioned surface and the band \
+                         is part of it, so the band and the drawn ground meet along this rim \
+                         by construction — nothing but quantization stands between them. What \
+                         puts a step there is that nothing benched the ground for the band: a \
+                         sidewalk is seated on its host's cross-section a kerb above the \
+                         carriageway while the ground under it is still the street's bench \
+                         (which stops a verge past the asphalt) or the batter face beyond it, \
+                         and a path is drawn on the drawn ground with no earthwork of its own \
+                         at all. Where the step is a wall the `walk_apron` draws it, which is \
+                         honest and is not the same as the wall not being there."
+                    .into(),
+                sense: Sense::HigherIsWorse,
+                threshold: WALK_RIM_M,
+                skipped: self
+                    .rim
+                    .is_empty()
+                    .then(|| "no drawn pedestrian band at this zoom (below \
+                              WALK_SURFACE_MIN_ZOOM, or the archive carries no DEM)".to_string()),
+                dist: self.rim,
+                worst: self.rim_worst.into_vec(),
+            },
+            Metric {
+                id: "slope.walk_crossfall".into(),
+                invariant: Invariant::I1,
+                title: "Cross-fall of a drawn pedestrian band".into(),
+                population: "Every side-edge midpoint of every level-0 pedestrian band the \
+                             tile owns: the band's height there against its height a metre \
+                             inward, as rise per metre. An edge that still has band under it \
+                             three metres inward is an end (where inward is along the way, so \
+                             the reading would be its longitudinal grade) or a plaza, and is \
+                             dropped — a band is two metres wide, so a side edge always \
+                             leaves it inside three."
+                    .into(),
+                detail: "A sidewalk's height is its host's road surface plus a kerb, so it is \
+                         flat across by construction whatever the hillside does. A path's is \
+                         the drawn ground, so it carries the full cross-slope of whatever it \
+                         crosses — a two-metre ribbon tilted at the angle of the hill, which \
+                         is neither what a footpath is nor what one looks like. The fix is the \
+                         same one a road has: bench the ground under the band and let the band \
+                         read it."
+                    .into(),
+                sense: Sense::HigherIsWorse,
+                threshold: WALK_FALL,
+                skipped: self
+                    .fall
+                    .is_empty()
+                    .then(|| "no drawn pedestrian band at this zoom (below \
+                              WALK_SURFACE_MIN_ZOOM)".to_string()),
+                dist: self.fall,
+                worst: self.fall_worst.into_vec(),
             },
         ]
     }
@@ -1130,5 +1452,101 @@ mod tests {
         );
         let m = run(&tile);
         assert!(m[OVERLAP].skipped.is_some(), "no footprint anywhere must read as a skip");
+    }
+
+    const RIM: &str = "contact.walk_rim";
+    const FALL: &str = "slope.walk_crossfall";
+
+    /// A pedestrian band over the plan rectangle `(x0, x1, y0, y1)` whose height
+    /// ramps across its width, from `z0` at `y0` to `z1` at `y1`.
+    fn tilted(s: &Site, class: &str, r: (f64, f64, f64, f64), z0: f64, z1: f64) -> RoadMesh {
+        let mesh = SurfaceMesh::from_parts(
+            vec![s.ux(r.0), s.ux(r.1), s.ux(r.1), s.ux(r.0)],
+            vec![s.uy(r.2), s.uy(r.2), s.uy(r.3), s.uy(r.3)],
+            vec![z0 as f32, z0 as f32, z1 as f32, z1 as f32],
+            vec![0, 1, 2, 0, 2, 3],
+        )
+        .unwrap();
+        RoadMesh { class: class.into(), level: 0, band: String::new(), mesh }
+    }
+
+    /// The terrain's rim and the band's own height are one joint: the band's
+    /// region is what cut the hole the rim bounds, so a bench under it makes
+    /// the two the same number.
+    #[test]
+    fn a_band_flush_with_the_ground_reads_no_step_at_its_rim() {
+        let s = Site::new();
+        // Terrain stopping under the band's near edge, the band continuing east.
+        let tile = s.scene(
+            vec![s.band("path_surface", 0, (10.0, 24.0, 0.0, 40.0), 100.0)],
+            Vec::new(),
+            Vec::new(),
+            Some(s.slab(-20.0, 11.0, 0.0, 40.0, 100.0)),
+        );
+        let m = run(&tile);
+        assert!(m[RIM].dist.count() > 0, "the rim must be walked");
+        assert_eq!(m[RIM].violations(), 0, "a joint at one height is not a step");
+    }
+
+    /// The defect: a band seated on its host's cross-section with the drawn
+    /// ground still on the hillside under it.
+    #[test]
+    fn a_band_standing_above_its_ground_is_caught_at_the_rim() {
+        let s = Site::new();
+        let tile = s.scene(
+            vec![s.band("walk_surface", 0, (10.0, 24.0, 0.0, 40.0), 101.5)],
+            Vec::new(),
+            Vec::new(),
+            Some(s.slab(-20.0, 11.0, 0.0, 40.0, 100.0)),
+        );
+        let m = run(&tile);
+        assert!(m[RIM].violations() > 0);
+        let worst = m[RIM].worst_value().unwrap();
+        assert!((worst - 1.5).abs() < 0.05, "a metre and a half of wall, got {worst}");
+    }
+
+    /// A path drawn on the drawn ground carries the hillside's cross-slope; the
+    /// metric is read across the band, from one side edge inward.
+    #[test]
+    fn a_tilted_band_reads_the_fall_across_its_own_width() {
+        let s = Site::new();
+        // Two metres wide, a metre of rise across it: 50 %.
+        let tile = s.scene(
+            vec![tilted(&s, "path_surface", (0.0, 40.0, 0.0, 2.0), 100.0, 101.0)],
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+        let m = run(&tile);
+        assert!(m[FALL].dist.count() > 0, "the side edges must be walked");
+        let worst = m[FALL].worst_value().unwrap();
+        assert!((worst - 0.5).abs() < 0.02, "half a metre per metre across, got {worst}");
+        // A sidewalk seated on its host's cross-section is flat across, and the
+        // same walk says so rather than saying nothing.
+        let flat = s.scene(
+            vec![s.band("walk_surface", 0, (0.0, 40.0, 0.0, 2.0), 100.0)],
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+        let m = run(&flat);
+        assert!(m[FALL].dist.count() > 0);
+        assert_eq!(m[FALL].violations(), 0);
+    }
+
+    /// An end edge is not a cross-section: inward there is *along* the way, so
+    /// the reading would be its longitudinal grade. A band that is nothing but
+    /// ends — three metres of it, so every edge fails the test — contributes
+    /// nothing at all rather than contributing its grade.
+    #[test]
+    fn an_end_edge_is_not_a_cross_section() {
+        let s = Site::new();
+        let tile = s.scene(
+            vec![tilted(&s, "path_surface", (0.0, 3.0, 0.0, 3.0), 100.0, 103.0)],
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+        assert_eq!(run(&tile)[FALL].dist.count(), 0);
     }
 }

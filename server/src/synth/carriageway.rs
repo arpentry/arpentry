@@ -241,6 +241,16 @@ pub struct SourceSeg {
     /// The height field blends the two, so the rise ramps out over a band's
     /// width instead of stepping — which is what a dropped kerb is.
     pub rise_m: f64,
+    /// Arc of `a` along whatever line this stretch was stationed on: its
+    /// corridor's, or — for a walkway band with no host — the way's own.
+    ///
+    /// Carried because a band outlives the loop that built it. It is built
+    /// before the ground is derived (the ground under a walkway is that
+    /// walkway, `ground::walk_earthworks`) and stamped with its grade layer
+    /// after the carriageway has settled its sheets, and both of those readers
+    /// need to know *where along its run* a segment sits without re-deriving
+    /// it from the plan.
+    pub arc0: f64,
 }
 
 impl SourceSeg {
@@ -394,7 +404,12 @@ impl CarriagewayModel {
 /// members' benches already agree there (the street weld), and a fixed disc
 /// would cut into the slope the intersection genuinely sits on. One with no
 /// profiled member has no known height and is skipped.
-pub fn bake(scene: &SceneGraph, solved: &SolvedModel, facades: &Facades) -> CarriagewayModel {
+pub fn bake(
+    scene: &SceneGraph,
+    solved: &SolvedModel,
+    facades: &Facades,
+    walk_bands: Vec<SourceSeg>,
+) -> CarriagewayModel {
     let ports = Ports::build(scene);
     let clusters = cluster(scene, &ports);
     let mut junctions = Vec::new();
@@ -414,11 +429,16 @@ pub fn bake(scene: &SceneGraph, solved: &SolvedModel, facades: &Facades) -> Carr
     }
     // The walkway bands ride the sheets the carriageway just settled, and are
     // appended *after* the assignment: a sidewalk must not vote on the
-    // grade-separation layering of the street it stands beside.
+    // grade-separation layering of the street it stands beside. They arrive
+    // already built — the ground was benched from these same segments before
+    // this stage ran (`synth::walkway::bands`) — and all that is left is the
+    // sheet each one rides.
     for r in &mut grade_runs {
         r.layer = layers.get(r.first).copied().unwrap_or(0);
     }
-    sources.extend(super::walkway::bake(scene, solved, facades, &grade_runs));
+    let mut walk_bands = walk_bands;
+    super::walkway::stamp_layers(&mut walk_bands, &grade_runs);
+    sources.extend(walk_bands);
     let mut model = CarriagewayModel::build(junctions, sources, handovers);
     // An intersection pins the sheet it stands on, which is the sheet of the
     // asphalt at its own solved height. Resolved after the sources are stamped,
@@ -576,6 +596,7 @@ fn carriageway_sources(
                     corridor: c.id,
                     surface: c.kind.prior().surface,
                     rise_m: 0.0,
+                    arc0: stops[i],
                 });
             }
         }
