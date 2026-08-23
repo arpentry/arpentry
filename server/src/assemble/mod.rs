@@ -14,6 +14,7 @@ pub mod columns;
 pub mod corridors;
 pub mod facades;
 pub mod grid;
+pub mod walks;
 pub mod water;
 
 use std::path::Path;
@@ -62,6 +63,7 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
         gp.row_groups_intersecting((bbox.west, bbox.south, bbox.east, bbox.north));
     let mut raw: Vec<RawSegment> = Vec::new();
     let mut witnesses: Vec<Vec<Coord>> = Vec::new();
+    let mut pedestrians: Vec<walks::WalkLine> = Vec::new();
     for feature in gp.features(row_groups, ATTRS)? {
         let f = feature?;
         let class_key = crate::value::str_of(&f.properties, "class").unwrap_or_default();
@@ -88,6 +90,24 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
             // that is a footpath the scene would otherwise never see.
             if let Geometry::LineString(ref line) = f.geometry {
                 if line.0.len() >= 2 {
+                    // …and a pedestrian one's plan line is evidence of a
+                    // second kind: which street it belongs to. That relation
+                    // is resolved once the corridors exist (`walks::attach`);
+                    // it is still not a promotion — nothing here solves.
+                    if priors::is_pedestrian(kind) {
+                        if let Some(source) =
+                            crate::value::str_of(&f.properties, "id").map(|s| source_hash(&s))
+                        {
+                            pedestrians.push(walks::WalkLine {
+                                source,
+                                line: line.0.clone(),
+                                kind,
+                                tagged: subclass == Some("sidewalk"),
+                                crosswalk: subclass == Some("crosswalk"),
+                                connectors: f.connectors.iter().map(|c| c.id).collect(),
+                            });
+                        }
+                    }
                     witnesses.push(line.0.clone());
                 }
             }
@@ -124,6 +144,11 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
     let (corridors, junctions) = corridors::build(raw);
     let mut scene = SceneGraph::new(corridors);
     scene.junctions = junctions;
+    // Which street each pedestrian way belongs to. Resolved here because it is
+    // a plan-space relation between the lines just read and the corridors just
+    // chained, and because it must be resolved *once*: a band whose host was
+    // decided per tile would move at a tile boundary (invariant 5).
+    scene.walks = walks::attach(&scene.corridors, &pedestrians);
     // No crossings. They are a consequence of the solved heights, so they are
     // derived at the solve and handed straight to the graph (`solve::crossings`,
     // §4.5) — the second pass over the input that used to find them here could

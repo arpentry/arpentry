@@ -30,6 +30,7 @@
 
 use std::collections::HashMap;
 
+use crate::priors::{self, WALK_ALONG, WALK_ATTACH_M, WALK_COVER};
 use crate::verify::dist::Dist;
 use crate::verify::mesh::{Scale, SurfaceMesh};
 use crate::verify::scene::{RoadMesh, TileScene};
@@ -58,39 +59,17 @@ use super::{Check, Options};
 /// is for.
 const FACADE_M: f64 = 0.5;
 
-/// How far, in plan, a pedestrian way may run from a carriageway's kerb and
-/// still be part of that street's cross-section rather than a separate path.
-///
-/// The plan-space census this comes from measured sidewalk offsets from the
-/// *centerline* (p50 5.3–8.5 m by street class, p90 7.5–12.0 m); against the
-/// drawn kerb the same population reads p50 1.8 m and p90 5.7 m. Eight metres
-/// keeps the p99 (7.7 m) and cuts the 10.9 % of tagged sidewalks that lie more
-/// than 10 m from any street, which are misattached or genuinely separate.
-const WALK_ATTACH_M: f64 = 8.0;
-
-/// What share of a pedestrian part's length must run with a street before the
-/// whole part counts as attached to it.
-///
-/// Proximity at a *point* is not attachment, and the measurement says so
-/// loudly: taken on proximity alone the departure population is 117,200
-/// samples reaching 12.4 m above the kerb and 14.2 m below it, which is
-/// hillside paths that happen to pass near a road, not sidewalks in a ditch.
-/// Coverage cuts that to 53 k and takes the worst to 10.97 m.
-/// The plan-space attachment study scored the same test against the tagged
-/// `subclass='sidewalk'` population as ground truth and found 65.7 % of tagged
-/// sidewalks over 0.8 corridor coverage against 14.4 % of untagged ways, so
-/// 0.8 is where that study cut it and this reads it into archive space.
-const WALK_COVER: f64 = 0.8;
-
-/// |cos| of the angle between the way's own direction and the kerb it is
-/// nearest — 0.87 is 30°, the same cut `contact.deck_carried` uses to separate
-/// a sidewalk *along* a bridge from a footway *across* it.
-///
-/// Coverage alone cannot say along-versus-across: with an eight-metre reach a
-/// short way crossing a street has most of its samples within reach of a kerb.
-/// It costs 14 % of the covered population and takes the worst departure from
-/// 10.97 m to 7.52 m.
-const WALK_ALONG: f64 = 0.87;
+// The attachment rule — `WALK_ATTACH_M`, `WALK_COVER`, `WALK_ALONG` — is read
+// from `crate::priors`, where the model that states it keeps it
+// (`assemble::walks`). **One definition, deliberately.** The three numbers
+// were measured here first, in archive space, because this check had to decide
+// what a sidewalk was before anything else did; now the model attaches the
+// same population, and a check scoring a different one would be reporting a
+// metric about nothing. The reasoning for each number lives with the constant.
+//
+// What stays archive-side is which *evidence* is available: the archive
+// carries a way's class and its geometry, never the `subclass='sidewalk'` tag,
+// so this population is the geometric half of the rule alone.
 
 /// How far the surface under an attached pedestrian way may stand from the
 /// carriageway beside it before the two are not one cross-section.
@@ -116,13 +95,16 @@ const WALK_GRADE_M: f64 = 1.0;
 /// cross-section feature being measured.
 const WALK_STEP_M: f64 = 1.0;
 
+/// The pedestrian classes this check scores, which is the model's class table
+/// ([`priors::is_pedestrian`]) less `steps`.
+///
 /// A staircase's purpose is to change height relative to what is beside it, so
 /// counting one measures the class table rather than the defect — the same
-/// reason `slope.road_grade` excludes non-drivable classes. Every other
-/// pedestrian class is in: the model attaches any draped pedestrian feature
-/// running inside a street's room, not only the ones tagged as sidewalks.
+/// reason `slope.road_grade` excludes non-drivable classes. It is still
+/// *attached* by the model; it is just not evidence about a cross-section.
+/// Every other pedestrian class is in, tagged as a sidewalk or not.
 fn is_pedestrian(class: &str) -> bool {
-    matches!(class, "footway" | "path" | "cycleway" | "pedestrian" | "bridleway")
+    class != "steps" && priors::is_pedestrian(priors::Kind::parse(None, Some(class), None))
 }
 
 /// The at-grade *road* surface: the union's interior band and its casing rim.

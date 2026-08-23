@@ -101,6 +101,11 @@ fn report_timings(stats: &pipeline::Stats) {
         stats.crest_segments, stats.crests_pulled, stats.crests_dropped,
     );
     eprintln!(
+        "sidewalks         {} ways attached to a street over {:.1} km of it",
+        stats.walks,
+        stats.walk_host_m / 1000.0,
+    );
+    eprintln!(
         "pavement {:>7}  {} chunks, {:.0} m2 paved",
         secs(t.pavement),
         stats.pave_chunks,

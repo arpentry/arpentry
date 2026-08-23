@@ -547,6 +547,32 @@ pub fn is_link(subclass: Option<&str>) -> bool {
     subclass == Some("link")
 }
 
+/// Whether a class walks: the draped classes that carry people on foot beside
+/// a street, and can therefore be *attached* to one (`assemble::walks`).
+///
+/// One class table, read by the model that attaches and by the archive-side
+/// check that scores the result (`contact.sidewalk_grade`) — a second list
+/// would let the two disagree about what a sidewalk is, and the check would
+/// score a population the model never built. Where a consumer needs a narrower
+/// set it says so at the call site: the grade check drops `steps`, whose whole
+/// purpose is to change height relative to what is beside it.
+///
+/// `track` is out — a farm track beside a road is not its sidewalk — and so is
+/// every drivable class, whatever its width.
+pub fn is_pedestrian(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Road(
+            RoadClass::Footway
+                | RoadClass::Path
+                | RoadClass::Steps
+                | RoadClass::Cycleway
+                | RoadClass::Pedestrian
+                | RoadClass::Bridleway
+        )
+    )
+}
+
 /// Painted width in metres of the small service ways — driveways, parking
 /// aisles, alleys: a single car's track plus margins, well under the minor
 /// street their `service` class would otherwise inherit (Swiss-extract
@@ -902,6 +928,47 @@ pub const FACADE_CLEAR_M: f64 = 0.5;
 /// no width can fix. The second family keeps a road rather than being cut into
 /// disconnected pieces.
 pub const MIN_CARRIAGEWAY_HALF_M: f64 = 2.0;
+
+/// How far, in plan, a pedestrian way may run from a carriageway's kerb and
+/// still be part of that street's cross-section rather than a separate path.
+///
+/// **Measured from the kerb, not the centerline, and that is what makes it one
+/// number.** The plan-space census took sidewalk offsets from the centerline
+/// and got a different answer per class (p50 5.3–8.5 m, p90 7.5–12.0 m);
+/// subtract each class's half-width and the same population collapses to p50
+/// ~3 m and p90 ~7 m whatever the street is. A sidewalk is at a fixed remove
+/// from the kerb it serves, and a class-blind reach off the centerline would
+/// refuse the sidewalks of wide roads while admitting hillside paths beside
+/// narrow ones. Eight metres keeps the p99 and cuts the 10.9 % of tagged
+/// sidewalks that lie more than 10 m from any street, which are misattached or
+/// genuinely separate.
+pub const WALK_ATTACH_M: f64 = 8.0;
+
+/// What share of a pedestrian way's length must run alongside a street before
+/// it counts as that street's, in the geometric half of the attachment rule.
+///
+/// Proximity at a *point* is not attachment. Scored against the tagged
+/// `subclass='sidewalk'` population as ground truth, 65.7 % of tagged sidewalks
+/// cover more than 0.8 of their length against 14.4 % of untagged ways, which
+/// is where the plan-space study cut it.
+pub const WALK_COVER: f64 = 0.8;
+
+/// |cos| of the angle between a pedestrian way's own direction and the street
+/// it is nearest — 0.87 is 30°, the same cut `contact.deck_carried` uses to
+/// separate a sidewalk *along* a bridge from a footway *across* it.
+///
+/// Coverage alone cannot say along-versus-across: with an eight-metre reach a
+/// short way crossing a street has most of its samples within reach of a kerb.
+pub const WALK_ALONG: f64 = 0.87;
+
+/// Shortest stretch, in metres of host arc, that an attachment is kept over.
+///
+/// An attachment is a *band* to be drawn along a street, and a band shorter
+/// than a couple of stations is a way clipping a corner or nicking a junction
+/// mouth, not a sidewalk. It is also the floor under the arc range: below this
+/// the mean offset is read off two or three samples and says nothing about
+/// where the band would run.
+pub const WALK_ATTACH_MIN_M: f64 = 10.0;
 
 /// Flat margin beyond the shoulder that a road earthwork keeps at road
 /// height before the batter starts — the verge between the asphalt edge and

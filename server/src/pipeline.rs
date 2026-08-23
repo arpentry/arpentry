@@ -226,6 +226,12 @@ pub struct Stats {
     pub crest_segments: u64,
     pub crests_pulled: u64,
     pub crests_dropped: u64,
+    /// Pedestrian ways attached to a street, and the host arc they ride
+    /// (`assemble::walks`). Nothing is drawn from the relation yet, so this is
+    /// the only place a change in it is visible: an attachment count that
+    /// halves is a rule that stopped recognising sidewalks.
+    pub walks: u64,
+    pub walk_host_m: f64,
     /// Chunks carrying a unioned road surface, and its total area in m² — the
     /// coarse check that the union actually unioned rather than passing the
     /// per-road bands through.
@@ -371,6 +377,8 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     stats.crests_pulled = pulled as u64;
     stats.crests_dropped = dropped as u64;
     stats.water = ground.water_count() as u64;
+    stats.walks = scene.walks.len() as u64;
+    stats.walk_host_m = scene.walks.census().host_arc_m;
     stats.intersections = junctions.len() as u64;
     let consistency = solve::consistency::measure(&scene, &solved);
     stats.max_junction_step_m = consistency.max_junction_step_m;

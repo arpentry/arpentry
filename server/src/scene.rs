@@ -275,6 +275,17 @@ pub struct SceneGraph {
     /// says something passes beneath. Assemble keeps only the lines near a
     /// short structure span, which is the only place the question is asked.
     pub witnesses: Vec<Vec<Coord>>,
+    /// Which street each draped pedestrian way belongs to, and over what arc
+    /// range of it (`assemble::walks`).
+    ///
+    /// **A side table, deliberately.** A sidewalk is a *relation* between a
+    /// mapped line and a street, and the temptation is to make it an entity —
+    /// to chain footways into corridors of their own so the machinery that
+    /// already exists applies to them. That would give half the road network a
+    /// profile and a vote, which §4.2 forbids for good reason. Nothing here
+    /// solves, nothing here has a height; the relation says only which
+    /// finished cross-section a way rides.
+    pub walks: crate::assemble::walks::Walks,
     /// The corridors' spans as assembled — the annotation, snapshotted before
     /// the solve reconciles `corridors[..].spans` with the geometry
     /// (`solve::reconcile_stratum`). One list per corridor, in corridor
@@ -300,6 +311,7 @@ impl SceneGraph {
             junctions: Vec::new(),
             water: Vec::new(),
             witnesses: Vec::new(),
+            walks: Default::default(),
             by_source,
         }
     }

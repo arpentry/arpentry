@@ -185,7 +185,10 @@ either representation alone.
    asks for; what a stretch of street actually gets is that capped by the
    **room its facades leave** (§6.6 P3 increment 10), which is per station
    and per side — one function still, with an argument the priors alone
-   could not supply.
+   could not supply. A sidewalk is part of that cross-section and not a
+   feature of its own: its band takes its shape from the **host centerline**
+   over the arc range `assemble::walks` attached it across, never from its
+   own mapped polyline, which decides only *where* a sidewalk is.
 2. **A closed, simple silhouette.** The paved surface has no gaps, no
    slivers, no overlapping fills. Held *by construction* since P2 increment 5:
    the surface is literally one unioned region per level, so there are no two

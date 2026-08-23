@@ -556,6 +556,15 @@ next stratum reads.
    runs, junction clusters, parallel carriageways. **No crossings are stored** —
    they are derived per stratum in step 3.
 
+   Two plan-space *relations* between things that never solve are also resolved
+   here, once, because both must give every tile the same answer (I5): which
+   facades bound a street's room (`assemble::facades`), and which street each
+   draped pedestrian way belongs to (`assemble::walks`). A sidewalk is a
+   relation and not an entity — attaching one is emphatically **not** a
+   promotion out of stratum D, and nothing about the attachment has a height.
+   It says only which finished cross-section the way rides, over which arc
+   range of which side of which host.
+
 2. **Condition the terrain.** Produce `ground₀`: the DEM with narrow notches
    filled and narrow convex bumps shaved, both bounded in span and depth, so
    DEM noise never enters a profile while genuine relief always does.
