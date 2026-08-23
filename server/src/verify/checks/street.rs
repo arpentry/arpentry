@@ -119,6 +119,25 @@ const WALK_RIM_M: f64 = 0.1;
 const WALK_FALL_IN_M: f64 = 1.0;
 const WALK_FALL_OUT_M: f64 = 3.0;
 
+/// The shorter reaches the probe falls back to where a metre inward is already
+/// off the band, and the shortest baseline a reading is trusted over.
+///
+/// **A fixed metre made the metric blind to exactly the bands most likely to be
+/// wrong.** `synth::pave_mesh` insets a band's surface by
+/// [`priors::PAVE_RIM_M`] on each side for the casing, so the interior of a
+/// band is its width less 0.70 m and a probe a metre inward needs a band
+/// **1.70 m wide** to land on anything. Narrower bands exist — the facade room
+/// already narrows a sidewalk to [`priors::WALK_MIN_WIDTH_M`] = 0.8 m — and
+/// every one of them left the population rather than entering the offender set,
+/// silently. That is a metric that rewards narrowing a band over flattening it,
+/// which is the wrong incentive to hand a fix.
+///
+/// So the probe takes the longest baseline the band actually offers. The floor
+/// is a quarter metre because the band is triangulated over the terrain lattice
+/// and a shorter run divides a centimetre of vertex quantization by too little
+/// to mean anything.
+const WALK_FALL_LADDER_M: [f64; 3] = [WALK_FALL_IN_M, 0.5, 0.25];
+
 /// Cross-fall a pedestrian band may carry before it is a hillside rather than a
 /// walkway, as rise per metre across.
 ///
@@ -847,16 +866,24 @@ impl Street {
                 let (dx, dy) =
                     (inward * nx / tile.scale.mx, inward * ny / tile.scale.my);
                 let at = |m: f64| (mx + dx * m, my + dy * m);
-                let (ix, iy) = at(WALK_FALL_IN_M);
                 let (fx, fy) = at(WALK_FALL_OUT_M);
-                let Some(in_z) = r.mesh.height_at(ix, iy) else { continue };
                 // An end edge, or a plaza: inward is not across (see
-                // [`WALK_FALL_OUT_M`]).
+                // [`WALK_FALL_OUT_M`]). Asked before the ladder, so a wide band
+                // is rejected for the same reason at any baseline.
                 if r.mesh.height_at(fx, fy).is_some() {
                     continue;
                 }
+                // The longest baseline this band offers (see
+                // [`WALK_FALL_LADDER_M`]) — a fixed metre reads nothing at all
+                // on a band under 1.70 m.
+                let Some((run, in_z)) = WALK_FALL_LADDER_M.iter().find_map(|&m| {
+                    let (ix, iy) = at(m);
+                    r.mesh.height_at(ix, iy).map(|z| (m, z))
+                }) else {
+                    continue;
+                };
                 let edge_z = (az + bz) * 0.5;
-                let fall = (in_z - edge_z).abs() / WALK_FALL_IN_M;
+                let fall = (in_z - edge_z).abs() / run;
                 self.fall.push(fall);
                 self.fall_by[usize::from(r.class.starts_with("path_"))].push(fall);
                 if fall > WALK_FALL {
@@ -868,7 +895,7 @@ impl Street {
                         value: fall,
                         note: format!(
                             "the {} falls {:.0} % across its own width ({edge_z:.2} m at the \
-                             edge, {in_z:.2} m a metre in)",
+                             edge, {in_z:.2} m {run:.2} m in)",
                             r.class,
                             fall * 100.0
                         ),

@@ -89,6 +89,197 @@ pub fn bands(scene: &SceneGraph, solved: &SolvedModel, facades: &Facades) -> Vec
     out
 }
 
+/// How much of the face allowance a narrowed band aims at, so it lands inside
+/// it rather than on it.
+///
+/// The width whose face is *exactly* the cap is what a straight line through
+/// two samples predicts, and a hillside between them is not straight: aiming at
+/// the cap itself recovered a sixth of the length the estimate said it would,
+/// because every bit of roughness put the re-probe back over.
+const FIT_MARGIN: f64 = 0.85;
+
+/// Narrows every at-grade band to the width the ground under it can actually
+/// carry, and drops the ones left under [`priors::WALK_MIN_WIDTH_M`].
+///
+/// **The third bound on a seat.** [`seat`] already allots a band out of the room
+/// between its kerb and its facade; this is the same allotment against a third
+/// constraint — the earthwork the material may plausibly build — and it is the
+/// one bound that cannot be read from the plan, because it is a fact about the
+/// ground. Hence the split in `ground::derive`: the seniors imprint first, the
+/// band is fitted to them here, and stratum D then benches the band it was
+/// given (`ground::walk_earthworks`). One cross-section, decided once.
+///
+/// **Why it is not the bench's job to narrow itself.** Measured both ways. A
+/// bench that narrows while its band stays wide keeps the surface flat — the
+/// refused length falls 16.8 % → 4.6 % and `slope.walk_crossfall` 22.5 → 8.5 %
+/// — but it spends its verge doing it, and the verge is what guarantees the
+/// drawn terrain's hole rim lands on flat ground rather than where the batter
+/// starts: `contact.walk_rim` went 2.8 → 3.8 % for it. Narrowing the *band*
+/// keeps the verge by construction, because the bench is derived from the band
+/// after the fact and is always [`priors::EARTHWORK_MARGIN_M`] wider than it.
+///
+/// **A path on a flank is genuinely narrower**, which is what makes this a
+/// model and not a dodge: two metres of promenade across a 45° hillside is a
+/// claim about the world that a footpath there does not support, and where the
+/// allowance leaves less than a band's minimum there is no band — the same rule
+/// [`seat`] already applies to a street too narrow for a sidewalk, said once
+/// against a different bound.
+pub fn fit_to_ground(
+    bands: &mut Vec<SourceSeg>,
+    seniors: &[crate::ground::GroundLayer],
+    terrain_path: Option<&std::path::Path>,
+    z_ref: u8,
+) {
+    if std::env::var_os("ARPT_NO_WALK_FIT").is_some() {
+        return; // the A/B control: bands sized from the plan alone, as before
+    }
+    // Only what is drawn at grade, matching the population the bench serves: a
+    // band over a bridge is carried by the structure and has no ground under it
+    // to be fitted to.
+    let seats: Vec<usize> = (0..bands.len()).filter(|&i| bands[i].level == 0).collect();
+    if seats.is_empty() {
+        return;
+    }
+    let fitted = crate::ground::over_senior_ground(
+        seats.len(),
+        seniors,
+        terrain_path,
+        z_ref,
+        |k, sample| fitted_half(&bands[seats[k]], sample),
+    );
+    let mut drop: Vec<bool> = vec![false; bands.len()];
+    let census = std::env::var_os("ARPT_DEBUG_WALK").is_some();
+    // Length by what the fit did to it, so the cost of the rule is reported
+    // rather than inferred: kept as it was, narrowed, or given up on.
+    let mut by = [[0.0f64; 4]; 2]; // [path][kept, narrowed, sliver, dropped]
+    for (k, half) in fitted.into_iter().enumerate() {
+        let i = seats[k];
+        let len = crate::scene::metric_len(bands[i].a, bands[i].b, bands[i].cos_lat);
+        let path = usize::from(bands[i].corridor == NO_HOST);
+        match half {
+            Some(half) => {
+                // A band whose interior is narrower than one casing rim reads
+                // as a dark hairline rather than a surface (`PAVE_RIM_M`), and
+                // `slope.walk_crossfall` cannot probe a metre across it. Counted
+                // separately because that is the cost this floor is trading.
+                let bucket = if half >= bands[i].half_m - 1e-9 {
+                    0
+                } else if 2.0 * half >= 3.0 * priors::PAVE_RIM_M {
+                    1
+                } else {
+                    2
+                };
+                by[path][bucket] += len;
+                bands[i].half_m = half;
+                bands[i].sect_a = Section::uniform(half);
+                bands[i].sect_b = Section::uniform(half);
+            }
+            None => {
+                by[path][3] += len;
+                drop[i] = true;
+            }
+        }
+    }
+    let mut i = 0;
+    bands.retain(|_| {
+        i += 1;
+        !drop[i - 1]
+    });
+    if census {
+        for (path, name) in [(0usize, "sidewalk"), (1, "path")] {
+            let t: f64 = by[path].iter().sum();
+            if t <= 0.0 {
+                continue;
+            }
+            eprintln!(
+                "[walk] {name:<9} fit: {:>8.2} km   full {:>5.1} %   narrowed {:>5.1} %   \
+                 hairline {:>4.1} %   dropped {:>4.1} %",
+                t / 1000.0,
+                100.0 * by[path][0] / t,
+                100.0 * by[path][1] / t,
+                100.0 * by[path][2] / t,
+                100.0 * by[path][3] / t,
+            );
+        }
+    }
+}
+
+/// The narrowest band the fit may narrow *to*, in metres.
+///
+/// **A band narrower than its own two casing rims has no surface left to
+/// draw.** `synth::pave_mesh` insets the silhouette by [`priors::PAVE_RIM_M`]
+/// on each side and meshes the interior as the surface, so under 0.70 m a band
+/// is pure casing and under about 1.05 m the interior is a hairline — which is
+/// what [`priors::WALK_MIN_WIDTH_M`] at 0.8 m already permits, from the facade
+/// room, and the first cut of this fit made common.
+///
+/// `ARPT_WALK_FIT_MIN` overrides it, which is how the number below was chosen
+/// rather than guessed: `slope.walk_crossfall` reads the band's height a metre
+/// inward from its own surface edge, so it is **blind to any band under
+/// 1.70 m** — narrow enough bands leave the metric's population rather than its
+/// offender set, and a fit that narrowed freely would have scored itself by
+/// deleting the evidence.
+fn min_width_m() -> f64 {
+    std::env::var_os("ARPT_WALK_FIT_MIN")
+        .and_then(|v| v.to_str()?.parse().ok())
+        .unwrap_or(priors::WALK_MIN_WIDTH_M)
+}
+
+/// The half-width this segment's band can be given: the widest that keeps the
+/// bench under it inside its material's face allowance, or `None` where even
+/// the narrowest band worth drawing does not fit.
+///
+/// Two probes at most, and the first answers for the great majority. The face
+/// grows with the bench's width, so where the nominal verge already fits there
+/// is nothing to decide; where it does not, the width whose face is the cap is
+/// the cap's share of the one just measured, and the second probe reads the
+/// ground there rather than trusting that estimate.
+fn fitted_half(s: &SourceSeg, sample: &mut dyn FnMut(Coord) -> f64) -> Option<f64> {
+    let cos_lat = s.cos_lat;
+    let (dx, dy) = ((s.b.x - s.a.x) * cos_lat, s.b.y - s.a.y);
+    let len = (dx * dx + dy * dy).sqrt();
+    if !(len > 0.0) {
+        return Some(s.half_m); // degenerate: the bench declines it anyway
+    }
+    let (px, py) = (-dy / len, dx / len); // lateral unit, metric (left)
+    let mid = Coord { x: (s.a.x + s.b.x) * 0.5, y: (s.a.y + s.b.y) * 0.5 };
+    // The same seat the bench will take: a sidewalk's is the height it is drawn
+    // at, a path's is the ground along its own centerline, read at both ends
+    // (`ground::walk_edge` says why never at the middle).
+    let target = if s.corridor == NO_HOST {
+        (sample(s.a) + sample(s.b)) * 0.5
+    } else {
+        (s.height_a + s.height_b) * 0.5
+    };
+    let cap = priors::bench_face_cap_m(s.surface);
+    // The deepest of the two verge faces a bench of half-width `w` would carry.
+    let face = |w: f64, sample: &mut dyn FnMut(Coord) -> f64| -> f64 {
+        let at = |side: f64| Coord {
+            x: mid.x + side * px * w / (DEG_M * cos_lat),
+            y: mid.y + side * py * w / DEG_M,
+        };
+        (target - sample(at(1.0))).abs().max((target - sample(at(-1.0))).abs())
+    };
+    let nominal = s.half_m + priors::EARTHWORK_MARGIN_M;
+    let rise = face(nominal, sample);
+    if rise <= cap {
+        return Some(s.half_m);
+    }
+    // Never wider than it was asked to be, and never narrower than a band worth
+    // drawing — below that the answer is no band at all rather than a sliver.
+    //
+    // **The floor never widens a band.** A band that arrives already narrower
+    // than the floor was narrowed by [`seat`], out of the room its facades left
+    // it; this fit only ever takes width away, so for such a band the floor is
+    // its own width and the only question left is whether it benches at all.
+    let floor = (min_width_m() * 0.5 + priors::EARTHWORK_MARGIN_M).min(nominal);
+    let w = (nominal * cap * FIT_MARGIN / rise).clamp(floor, nominal);
+    if face(w, sample) > cap {
+        return None;
+    }
+    Some(w - priors::EARTHWORK_MARGIN_M)
+}
+
 /// Stamps each band with the grade-separation layer of the carriageway stretch
 /// it rides, once `synth::sheets` has settled them.
 ///

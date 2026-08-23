@@ -348,17 +348,28 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // reads the corridor spans.
     let solved =
         Arc::new(solve::run(&mut scene, cfg.terrain.as_deref(), cfg.max_zoom, threads)?);
-    // The pedestrian bands, derived before the ground because the ground under
-    // a walkway is that walkway: stage 3 benches them and stage 4 draws them,
-    // from this one derivation (`synth::walkway::bands`).
-    let walk_bands = synth::walkway::bands(&scene, &solved, &facades);
-    let ground = Arc::new(ground::derive(
-        &scene,
-        &solved,
-        &facades,
+    // **The seniors, then the band, then the band's own ground.** A walkway is a
+    // draped feature, and §4.2 defines one as sampling the *finished* ground —
+    // so the strata that hold authority imprint first, the pedestrian band is
+    // shaped and then fitted to what it finds (`synth::walkway::fit_to_ground`:
+    // a band is only as wide as the earthwork under it may plausibly be), and
+    // stratum D benches the band that came out. Stage 4 draws that same band,
+    // so the surface and the ground under it are one cross-section rather than
+    // two constructions of one.
+    let seniors =
+        ground::derive_seniors(&scene, &solved, &facades, cfg.terrain.as_deref(), threads);
+    let mut walk_bands = synth::walkway::bands(&scene, &solved, &facades);
+    synth::walkway::fit_to_ground(
+        &mut walk_bands,
+        &seniors,
+        cfg.terrain.as_deref(),
+        solved.z_ref,
+    );
+    let ground = Arc::new(ground::derive_draped(
+        seniors,
         &walk_bands,
         cfg.terrain.as_deref(),
-        threads,
+        solved.z_ref,
     ));
     // Junction plates: a paved area meshed across each corridor junction, baked
     // once from the solved model and emitted by the tile that owns its centre.

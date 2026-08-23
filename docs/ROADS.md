@@ -202,10 +202,16 @@ either representation alone.
    a carriageway's is: the mesh *is* the surface. What keeps a stroke is what
    the walkway model did not draw — a footbridge, a subway, a crosswalk.
    And, being a surface, each **benches the ground under it** exactly as a
-   carriageway does (docs/GROUND.md §2): the bands are derived once, before the
-   ground stage, and stage 3 imprints those same segments in stratum D. The
-   band that draws the surface and the bench that holds it up are one
-   cross-section, not two constructions of one.
+   carriageway does (docs/GROUND.md §2): the bands are derived once and stage 3
+   imprints those same segments in stratum D. The band that draws the surface
+   and the bench that holds it up are one cross-section, not two constructions
+   of one. That cross-section is allotted out of **three** bounds, not two: the
+   kerb it starts at, the facade it stops short of, and — since the band is
+   fitted to the senior ground before D benches it — the earthwork its own
+   material may plausibly build. Where any of the three leaves less than
+   `WALK_MIN_WIDTH_M`, there is no band, which is the same sentence invariant 6
+   speaks about a street too narrow for a sidewalk. A path across a 45° flank is
+   narrower than a promenade, and past a point it is not a drawn surface at all.
 2. **A closed, simple silhouette.** The paved surface has no gaps, no
    slivers, no overlapping fills. Held *by construction* since P2 increment 5:
    the surface is literally one unioned region per level, so there are no two

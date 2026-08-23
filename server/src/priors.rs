@@ -946,6 +946,29 @@ pub const MAX_BENCH_FACE_M: f64 = 3.0;
 /// earthworks were the fiction rather than the fix.
 pub const WALK_MAX_FACE_M: f64 = 1.0;
 
+/// How deep a face the bench under a drawn surface may cut or fill before the
+/// earthwork stops being one the material plausibly builds — **keyed by the
+/// surface, which is the thing making the claim**.
+///
+/// It was written twice as `if corridor == CorridorId::MAX` — once where the
+/// bench is laid and once where a band's width is fitted to what the bench can
+/// hold — and a cap those two disagreed on would fit a band to one allowance
+/// and bench it against another, which is the pair of constructions
+/// `synth::walkway::fit_to_ground` exists to collapse.
+///
+/// A carriageway and a rail formation take the street's own allowance: they
+/// stand on a solved profile, and the wall under a road on a terrace is the
+/// road's. See [`MAX_BENCH_FACE_M`] and [`WALK_MAX_FACE_M`] for where the two
+/// numbers come from.
+pub fn bench_face_cap_m(surface: Surface) -> f64 {
+    match surface {
+        Surface::Path => WALK_MAX_FACE_M,
+        Surface::Walkway | Surface::Asphalt | Surface::Ballast | Surface::None => {
+            MAX_BENCH_FACE_M
+        }
+    }
+}
+
 /// How much further than its flat-ground daylight distance a batter face may
 /// reach before the ground counts as running away with it and the face is
 /// abandoned for a retaining wall. Above 1 so a gently falling flank still

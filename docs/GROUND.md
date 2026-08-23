@@ -202,9 +202,9 @@ walkway is: no authority, no solve, laid on whatever the seniors built. Three
 things distinguish it from a corridor bench, and each is the band being narrow:
 
 - **It is derived from the band, not from a class prior.** `synth::walkway`
-  builds the bands once, before stage 3, and the ground benches those same
-  segments (`ground::walk_earthworks`). One derivation, two readers: a bench
-  from a second construction of the same band is a bench that does not fit it.
+  builds the bands once and the ground benches those same segments
+  (`ground::walk_earthworks`). One derivation, two readers: a bench from a
+  second construction of the same band is a bench that does not fit it.
 - **Its target is its seat.** A sidewalk's is the host's road surface plus the
   kerb — the height the band is drawn at. A path's is the ground *beneath this
   stratum*, sampled at **both ends of each segment**, so the bench flattens the
@@ -226,7 +226,8 @@ things distinguish it from a corridor bench, and each is the band being narrow:
   benches that draw crests (`Earthworks::crest_target_at`).
 
 Because it draws no lines, it is **bounded instead of constrained**, and the two
-materials do not hold the same bound. A path holds `WALK_MAX_FACE_M` — a metre,
+materials do not hold the same bound (`priors::bench_face_cap_m`, keyed on the
+surface — the thing making the claim). A path holds `WALK_MAX_FACE_M` — a metre,
 the earthwork a footpath actually builds — so the largest step it can leave in
 open ground is two metres, which a lattice cell carries as a slope rather than a
 wall. A sidewalk holds the street's own `MAX_BENCH_FACE_M`, because where a
@@ -237,6 +238,48 @@ the ground under walls and damming streams — five unrelated metrics move, and
 they come back the moment the path is held to its metre.
 `ARPT_NO_WALK_BENCH=1` draws the bands and leaves the ground unbenched, which is
 the A/B control every number above was measured against.
+
+### The band is fitted to the ground before the ground is benched
+
+**A bound that refuses is not a gentler world — it is a worse one.** The bench
+above declines wherever its face is past the allowance, and what that leaves is
+not an unbuilt earthwork but a *drawn band standing on the raw hillside*. For a
+carriageway the same ladder rung costs nothing, because the terrain is cut back
+to the kerb and the drawn ground never competes with the drawn asphalt. For a
+path the band **is** the visible ground. Measured on the Montreux window:
+**16.8 % of drawn path length was refused a bench**, refusal was exactly
+"cross-slope past two thirds" — the allowance divided by the verge it is read at
+— and that population carried a p50 72 % cross-fall. It was nearly the whole of
+`slope.walk_crossfall`'s remaining 22.1 %.
+
+So the band is **fitted to the ground before the ground is benched**
+(`synth::walkway::fit_to_ground`). The face a bench must cut grows with the
+width it is held to, so a band that cannot be benched at two metres can be
+benched at one, and a path across a 45° flank is genuinely narrower than a
+promenade. This is the same allotment `synth::walkway::seat` already performs
+against the kerb and the facade, against a third bound — the one that cannot be
+read from the plan, because it is a fact about the ground.
+
+That ordering is why `ground::derive` splits. GENERATION.md §4.2 defines a
+stratum-D feature as one that samples the *finished* ground, and the walkway
+band could not: it was built before `derive` ran, from a world with no railway
+embankment and no street terrace in it. Now `derive_seniors` imprints H → R → S,
+the band is fitted to what it finds, and `derive_draped` benches the band that
+came out — both reading one sampler (`ground::over_senior_ground`) so the width
+and the bench can never be fitted against two different worlds. **The bench now
+refuses nothing**, which is the invariant rather than a result: every band that
+is drawn has ground under it that fits it.
+
+What the rule costs, by drawn length: a path keeps its full width over 83.2 %,
+narrows over 13.3 %, and is **given up on over 3.6 %** — a cliff, where the same
+sentence `seat` already speaks about a street too narrow for a sidewalk applies
+against a different bound. A sidewalk, which mostly stands on its street's
+terrace and holds the street's allowance, keeps full width over 96.6 % and is
+dropped over 3.0 %. Of the narrowed path length, 4.3 points fall under
+3 × `PAVE_RIM_M` — where the casing rim is most of the band and the interior
+reads as a hairline — which is the standing cost of this floor and the next
+thing to spend on. `ARPT_NO_WALK_FIT=1` sizes the bands from the plan alone,
+which is the A/B control; `ARPT_WALK_FIT_MIN=<m>` moves the floor.
 
 Carves (portal cuts, under-deck daylighting) remain separate cut-only
 notches, bounding the benched ground from above — a carve is a hole, not a

@@ -270,6 +270,33 @@ pub fn derive(
     terrain_path: Option<&Path>,
     threads: usize,
 ) -> GroundStack {
+    let seniors = derive_seniors(scene, solved, facades, terrain_path, threads);
+    derive_draped(seniors, walk_bands, terrain_path, solved.z_ref)
+}
+
+/// The strata that hold authority — H, R and S — imprinted in that order.
+///
+/// **Split from [`derive_draped`] so a draped feature can see the ground it
+/// stands on.** GENERATION.md §4.2 defines stratum D as the layer that *samples
+/// the finished ground*, and until this split the one draped feature that
+/// imprints — the walkway band — could not: `synth::walkway::bands` ran before
+/// `derive`, so the band's own width was chosen against a world in which no
+/// railway embankment and no street terrace existed yet. The ground then had to
+/// bench whatever plan the band had already committed to, and where that bench
+/// was implausible it was refused outright and the band was left standing on
+/// the raw hillside — 16.8 % of drawn path length, which was nearly all of
+/// `slope.walk_crossfall`.
+///
+/// With the seniors in hand the band is fitted to them first
+/// (`synth::walkway::fit_to_ground`) and D benches the fitted band, so the two
+/// are one cross-section rather than two constructions of one.
+pub fn derive_seniors(
+    scene: &SceneGraph,
+    solved: &SolvedModel,
+    facades: &Facades,
+    terrain_path: Option<&Path>,
+    threads: usize,
+) -> Vec<GroundLayer> {
     // H first: water is gravity-defined and no earthwork changes it, so it is
     // the ground everything else is cut into.
     let waters = derive_waters(scene, solved, terrain_path, threads);
@@ -277,7 +304,7 @@ pub fn derive(
     if !waters.is_empty() {
         layers.push(GroundLayer { stratum: Stratum::H, earthworks: Earthworks::new(Vec::new()), waters });
     }
-    for stratum in [Stratum::R, Stratum::S, Stratum::D] {
+    for stratum in [Stratum::R, Stratum::S] {
         let members: Vec<usize> = scene
             .corridors
             .iter()
@@ -285,27 +312,45 @@ pub fn derive(
             .filter(|(_, c)| c.kind.stratum() == stratum && solved.profile(c.id).is_some())
             .map(|(i, _)| i)
             .collect();
-        let mut edges = if members.is_empty() {
-            Vec::new()
-        } else {
-            derive_earthworks(scene, solved, facades, &members, &layers, terrain_path, threads)
-        };
-        // **The walkway is a draped feature, and D is where draped features
-        // imprint.** A pedestrian way holds no authority and solves nothing
-        // (§4.2): it samples the finished ground and lays its own narrow bench
-        // on top of it, which is the last earthwork built and the first any
-        // other stratum would overwrite. So it belongs in this layer, and only
-        // here — put junior to the street it borders, its bench would be cut
-        // away again by the street's own batter, which is the defect it exists
-        // to remove.
-        if stratum == Stratum::D {
-            edges.extend(walk_earthworks(walk_bands, &layers, terrain_path, solved.z_ref));
+        if members.is_empty() {
+            continue;
         }
+        let edges =
+            derive_earthworks(scene, solved, facades, &members, &layers, terrain_path, threads);
         if edges.is_empty() {
             continue;
         }
         layers.push(GroundLayer {
             stratum,
+            earthworks: Earthworks::new(edges),
+            waters: Waters::new(Vec::new()),
+        });
+    }
+    layers
+}
+
+/// Stratum D over the seniors, and the finished ground.
+///
+/// **The walkway is a draped feature, and D is where draped features imprint.**
+/// A pedestrian way holds no authority and solves nothing (§4.2): it samples
+/// the finished ground and lays its own narrow bench on top of it, which is the
+/// last earthwork built and the first any other stratum would overwrite. So it
+/// belongs in this layer, and only here — put junior to the street it borders,
+/// its bench would be cut away again by the street's own batter, which is the
+/// defect it exists to remove.
+///
+/// No corridor is draped: `assemble::run` admits a feature to the scene graph
+/// only if its stratum solves, so the whole of D is the walkway bands.
+pub fn derive_draped(
+    mut layers: Vec<GroundLayer>,
+    walk_bands: &[crate::synth::carriageway::SourceSeg],
+    terrain_path: Option<&Path>,
+    z_ref: u8,
+) -> GroundStack {
+    let edges = walk_earthworks(walk_bands, &layers, terrain_path, z_ref);
+    if !edges.is_empty() {
+        layers.push(GroundLayer {
+            stratum: Stratum::D,
             earthworks: Earthworks::new(edges),
             waters: Waters::new(Vec::new()),
         });
@@ -387,10 +432,49 @@ fn walk_earthworks(
         chain_of.push(chain);
     }
 
+    let census = std::env::var_os("ARPT_DEBUG_WALK").is_some();
+    let rules = WalkBenchRules::from_env();
+    let seated: Vec<(Option<EarthworkEdge>, Option<WalkCensusRow>)> =
+        over_senior_ground(seats.len(), beneath, terrain_path, z_ref, |k, sample| {
+            let s = &bands[seats[k]];
+            let e = walk_edge(s, chain_of[k], &rules, sample);
+            let row = census.then(|| walk_census_row(s, e.is_some(), sample));
+            (e, row)
+        });
+    let (edges, rows): (Vec<_>, Vec<_>) = seated.into_iter().unzip();
+    if census {
+        report_walk_census(&rows.into_iter().flatten().collect::<Vec<_>>());
+    }
+    let mut edges: Vec<EarthworkEdge> = edges.into_iter().flatten().collect();
+    // Back into band order whatever the threads did with them (invariant 5).
+    edges.sort_by(|a, b| (a.chain, a.arc0).partial_cmp(&(b.chain, b.arc0)).expect("finite arcs"));
+    edges
+}
+
+/// Runs `f` over `0..n`, handing each call a sampler for **the ground a draped
+/// feature stands on**: the reference surface the solve read
+/// ([`reference_surface`], not a raw DEM point — a point sample charges the
+/// in-cell interpolation to the earthwork), with every senior stratum's
+/// earthworks already applied (§4.3). A sidewalk beside a street reads the
+/// terrace the street cut, not the hillside it cut it from.
+///
+/// Shared by the two readers of that ground — `synth::walkway::fit_to_ground`,
+/// which decides how wide a band the allowance can carry, and
+/// [`walk_earthworks`], which benches the band it decided on — so the width and
+/// the bench can never be fitted against two different worlds.
+///
+/// Results come back indexed by item, so the answer is a function of the model
+/// and not of how the threads happened to interleave (invariant 5).
+pub fn over_senior_ground<T: Send>(
+    n: usize,
+    beneath: &[GroundLayer],
+    terrain_path: Option<&Path>,
+    z_ref: u8,
+    f: impl Fn(usize, &mut dyn FnMut(Coord) -> f64) -> T + Sync,
+) -> Vec<T> {
     let dem = terrain_path.and_then(|p| Dem::open(p).ok());
-    let threads = dem.as_ref().map_or(1, |_| seats.len().min(8).max(1));
-    let out: Mutex<Vec<Vec<EarthworkEdge>>> =
-        Mutex::new((0..threads).map(|_| Vec::new()).collect());
+    let threads = dem.as_ref().map_or(1, |_| n.min(8).max(1));
+    let out: Mutex<Vec<Vec<(usize, T)>>> = Mutex::new((0..threads).map(|_| Vec::new()).collect());
     let next = Mutex::new(0usize);
     // Work is handed out in blocks: a band segment is eight metres of a
     // footpath, far too little to pay for a lock per item, and neighbouring
@@ -398,28 +482,23 @@ fn walk_earthworks(
     const BLOCK: usize = 256;
     std::thread::scope(|scope| {
         for t in 0..threads {
-            let (out, next, chain_of, seats) = (&out, &next, &chain_of, &seats);
+            let (out, next, f) = (&out, &next, &f);
             let dem = dem.as_ref();
             scope.spawn(move || {
                 let mut fork = dem.and_then(|d| d.fork().ok());
                 let mut scratch: Vec<u32> = Vec::new();
-                let mut mine: Vec<EarthworkEdge> = Vec::new();
+                let mut mine: Vec<(usize, T)> = Vec::new();
                 loop {
                     let lo = {
-                        let mut cur = next.lock().expect("walk earthwork queue poisoned");
-                        if *cur >= seats.len() {
+                        let mut cur = next.lock().expect("senior ground queue poisoned");
+                        if *cur >= n {
                             break;
                         }
                         let lo = *cur;
                         *cur += BLOCK;
                         lo
                     };
-                    for k in lo..(lo + BLOCK).min(seats.len()) {
-                        // The ground this stratum imprints on: the DEM the solve
-                        // read, with every senior stratum's earthworks already
-                        // applied (§4.3). A sidewalk beside a street benches on
-                        // the terrace the street cut, not on the hillside it cut
-                        // it from.
+                    for k in lo..(lo + BLOCK).min(n) {
                         let mut sample = |q: Coord| {
                             let raw = match fork.as_mut() {
                                 Some(d) => reference_surface(d, z_ref, q.x, q.y),
@@ -431,26 +510,216 @@ fn walk_earthworks(
                             }
                             h
                         };
-                        if let Some(e) = walk_edge(&bands[seats[k]], chain_of[k], &mut sample) {
-                            mine.push(e);
-                        }
+                        mine.push((k, f(k, &mut sample)));
                     }
                 }
-                out.lock().expect("walk earthwork results poisoned")[t] = mine;
+                out.lock().expect("senior ground results poisoned")[t] = mine;
             });
         }
     });
-    let mut edges: Vec<EarthworkEdge> =
-        out.into_inner().expect("walk earthwork results poisoned").into_iter().flatten().collect();
-    // Back into band order whatever the threads did with them (invariant 5).
-    edges.sort_by(|a, b| (a.chain, a.arc0).partial_cmp(&(b.chain, b.arc0)).expect("finite arcs"));
-    edges
+    let mut all: Vec<(usize, T)> =
+        out.into_inner().expect("senior ground results poisoned").into_iter().flatten().collect();
+    all.sort_by_key(|(k, _)| *k);
+    all.into_iter().map(|(_, v)| v).collect()
+}
+
+/// One band segment, as `ARPT_DEBUG_WALK` sees it: whether its bench was laid,
+/// how much cut or fill it asked for, and the cross-slope of the ground it was
+/// asked to lay it on.
+struct WalkCensusRow {
+    path: bool,
+    benched: bool,
+    len_m: f64,
+    /// The deeper of the two verge faces the bench would cut or fill — the
+    /// quantity [`walk_edge`]'s cap is read against.
+    face_m: f64,
+    /// The natural cross-slope across the band, rise per metre: the tilt the
+    /// drawn band inherits wherever no bench is laid, and what
+    /// `slope.walk_crossfall` reads.
+    fall: f64,
+    /// The half-width the bench asked its face at: the band's own plus the
+    /// verge.
+    bench_w_m: f64,
+}
+
+/// Reads one band segment for the census, sampling the same three points
+/// [`walk_edge`] does so the two agree by construction.
+fn walk_census_row(
+    s: &crate::synth::carriageway::SourceSeg,
+    benched: bool,
+    sample: &mut dyn FnMut(Coord) -> f64,
+) -> WalkCensusRow {
+    let cos_lat = s.cos_lat;
+    let (dx, dy) = ((s.b.x - s.a.x) * cos_lat, s.b.y - s.a.y);
+    let len = (dx * dx + dy * dy).sqrt();
+    let mid = Coord { x: (s.a.x + s.b.x) * 0.5, y: (s.a.y + s.b.y) * 0.5 };
+    let path = s.corridor == CorridorId::MAX;
+    let mut row = WalkCensusRow {
+        path,
+        benched,
+        len_m: len * DEG_M,
+        face_m: 0.0,
+        fall: 0.0,
+        bench_w_m: s.half_m + EARTHWORK_MARGIN_M,
+    };
+    if !(len > 0.0) {
+        return row;
+    }
+    let (px, py) = (-dy / len, dx / len);
+    let w = s.half_m + EARTHWORK_MARGIN_M;
+    let target =
+        if path { (sample(s.a) + sample(s.b)) * 0.5 } else { (s.height_a + s.height_b) * 0.5 };
+    let at = |side: f64| Coord {
+        x: mid.x + side * px * w / (DEG_M * cos_lat),
+        y: mid.y + side * py * w / DEG_M,
+    };
+    let (l, r) = (sample(at(1.0)), sample(at(-1.0)));
+    row.face_m = (target - l).abs().max((target - r).abs());
+    row.fall = (l - r).abs() / (2.0 * w);
+    row
+}
+
+fn report_walk_census(rows: &[WalkCensusRow]) {
+    let q = |v: &mut Vec<f64>, f: f64| -> f64 {
+        if v.is_empty() {
+            return 0.0;
+        }
+        v.sort_by(f64::total_cmp);
+        v[((v.len() - 1) as f64 * f) as usize]
+    };
+    for (name, path) in [("sidewalk", false), ("path", true)] {
+        let mine: Vec<&WalkCensusRow> = rows.iter().filter(|r| r.path == path).collect();
+        if mine.is_empty() {
+            continue;
+        }
+        let total_m: f64 = mine.iter().map(|r| r.len_m).sum();
+        let refused: Vec<&&WalkCensusRow> = mine.iter().filter(|r| !r.benched).collect();
+        let refused_m: f64 = refused.iter().map(|r| r.len_m).sum();
+        eprintln!(
+            "[walk] {name:<9} {:>7} segments  {:>8.2} km   refused {:>6} ({:>5.2} %)  \
+             {:>7.2} km ({:>5.2} % of length)",
+            mine.len(),
+            total_m / 1000.0,
+            refused.len(),
+            100.0 * refused.len() as f64 / mine.len() as f64,
+            refused_m / 1000.0,
+            100.0 * refused_m / total_m.max(1e-9),
+        );
+        let mut face: Vec<f64> = mine.iter().map(|r| r.face_m).collect();
+        eprintln!(
+            "[walk]   face asked (m)   p50 {:.2}  p75 {:.2}  p90 {:.2}  p95 {:.2}  p99 {:.2}  \
+             max {:.2}",
+            q(&mut face, 0.50),
+            q(&mut face, 0.75),
+            q(&mut face, 0.90),
+            q(&mut face, 0.95),
+            q(&mut face, 0.99),
+            q(&mut face, 1.0),
+        );
+        let mut all_fall: Vec<f64> = mine.iter().map(|r| r.fall).collect();
+        let mut ref_fall: Vec<f64> = refused.iter().map(|r| r.fall).collect();
+        eprintln!(
+            "[walk]   ground fall      p50 {:.2}  p90 {:.2}  max {:.2}   \
+             (refused only: p50 {:.2}  p90 {:.2}  max {:.2})",
+            q(&mut all_fall, 0.50),
+            q(&mut all_fall, 0.90),
+            q(&mut all_fall, 1.0),
+            q(&mut ref_fall, 0.50),
+            q(&mut ref_fall, 0.90),
+            q(&mut ref_fall, 1.0),
+        );
+        // What a *lower* cap would refuse, and what a higher one would accept:
+        // the fraction of length on each side of a candidate face allowance.
+        let mut line = String::from("[walk]   length by face:");
+        for t in [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0] {
+            let over: f64 = mine.iter().filter(|r| r.face_m > t).map(|r| r.len_m).sum();
+            line.push_str(&format!("  >{t:.2}m {:.1} %", 100.0 * over / total_m.max(1e-9)));
+        }
+        eprintln!("{line}");
+        // **The band narrowed to what the allowance can bench**, estimated: the
+        // face grows with the bench's width, so the width whose face is the cap
+        // is the cap's share of the width this one asked at, and the band
+        // inside it is that less the verge. The question the estimate answers
+        // is whether a rule that narrows the surface instead of refusing its
+        // bench leaves a plausible world or deletes the mountain paths.
+        for (cap_name, cap) in [("1.0 m", WALK_MAX_FACE_M), ("1.5 m", 1.5)] {
+            let (mut full, mut narrowed, mut gone) = (0.0, 0.0, 0.0);
+            for r in &mine {
+                let w = r.bench_w_m;
+                let allow = if r.face_m > cap { w * cap / r.face_m } else { w };
+                let width = 2.0 * (allow - EARTHWORK_MARGIN_M);
+                if width >= 2.0 * (w - EARTHWORK_MARGIN_M) - 1e-9 {
+                    full += r.len_m;
+                } else if width >= crate::priors::WALK_MIN_WIDTH_M {
+                    narrowed += r.len_m;
+                } else {
+                    gone += r.len_m;
+                }
+            }
+            let t = total_m.max(1e-9);
+            eprintln!(
+                "[walk]   band at cap {cap_name}:  full width {:.1} %   narrowed {:.1} %   \
+                 under the minimum {:.1} %",
+                100.0 * full / t,
+                100.0 * narrowed / t,
+                100.0 * gone / t,
+            );
+        }
+    }
+}
+
+/// How much of the cap a narrowed bench aims at, so it lands inside it rather
+/// than on it.
+const FIT_MARGIN: f64 = 0.85;
+
+/// The two knobs the walk bench is being measured on, read once per derivation
+/// rather than per band segment.
+///
+/// Both are **experiments**, off by default, and both exist to put a number on
+/// the same question: the bench refuses itself where its verge face is deeper
+/// than the material may plausibly retain, and a refused bench leaves the drawn
+/// band standing on the raw hillside — 16.8 % of drawn path length in the
+/// Montreux window, carrying a p50 72 % cross-slope, which is nearly all of
+/// what `slope.walk_crossfall` reports.
+struct WalkBenchRules {
+    /// `ARPT_WALK_CAP` — override the per-material plausibility cap. At
+    /// effectively no cap the tilt collapses (`slope.walk_crossfall` 22.5 →
+    /// 2.4 %, `contact.walk_rim` 2.8 → 0.5 %), which is what says the refusals
+    /// *are* the defect; it also builds the fictional earthworks the cap exists
+    /// to refuse (`clearance.bore_cover` 5.87 → 6.14 %,
+    /// `lod.structure_drift` 1.65 → 1.80 %), which is what says the answer is
+    /// not simply a bigger allowance.
+    cap_m: Option<f64>,
+    /// `ARPT_WALK_FIT` — narrow the bench until its face fits the cap instead
+    /// of dropping it, floored at the drawn band's own half-width. Recovers
+    /// three quarters of the refused length at the *existing* allowance
+    /// (16.8 → 4.6 %) and takes `slope.walk_crossfall` 22.5 → 8.5 %, but pays
+    /// `contact.walk_rim` 2.8 → 3.8 %: a bench narrowed to the band has no
+    /// verge left, so the terrain's hole rim lands where the batter starts.
+    /// That regression is the argument for narrowing the *band* with the bench
+    /// rather than the bench alone.
+    fit: bool,
+}
+
+impl WalkBenchRules {
+    /// The shipped rule: the per-material cap, refusing rather than narrowing.
+    fn shipped() -> Self {
+        WalkBenchRules { cap_m: None, fit: false }
+    }
+
+    fn from_env() -> Self {
+        WalkBenchRules {
+            cap_m: std::env::var_os("ARPT_WALK_CAP").and_then(|v| v.to_str()?.parse().ok()),
+            fit: std::env::var_os("ARPT_WALK_FIT").is_some(),
+        }
+    }
 }
 
 /// One band segment's bench, or `None` where holding one is not plausible.
 fn walk_edge(
     s: &crate::synth::carriageway::SourceSeg,
     chain: u32,
+    rules: &WalkBenchRules,
     sample: &mut dyn FnMut(Coord) -> f64,
 ) -> Option<EarthworkEdge> {
     let cos_lat = s.cos_lat;
@@ -482,7 +751,7 @@ fn walk_edge(
         (s.height_a, s.height_b)
     };
     let target = (target_a + target_b) * 0.5;
-    let mut face = |side: f64| -> (f64, (f64, f64)) {
+    let mut face = |side: f64, w: f64| -> (f64, (f64, f64)) {
         let q = Coord {
             x: mid.x + side * px * w / (DEG_M * cos_lat),
             y: mid.y + side * py * w / DEG_M,
@@ -490,8 +759,8 @@ fn walk_edge(
         let edge = sample(q);
         (target - edge, batter_reach(target - edge, (edge - ground) / w.max(1e-6)))
     };
-    let (rise_l, reach_l) = face(1.0);
-    let (rise_r, reach_r) = face(-1.0);
+    let (rise_l, reach_l) = face(1.0, w);
+    let (rise_r, reach_r) = face(-1.0, w);
     // The plausibility cap (docs/GROUND.md §2), and **the two materials do not
     // hold the same one**, because they are not the same claim about the world.
     //
@@ -506,7 +775,37 @@ fn walk_edge(
     // A *path* across open ground claims an earthwork of its own, and a
     // two-metre ribbon cutting three metres into a flank is not a footpath, it
     // is a retaining structure nobody built ([`WALK_MAX_FACE_M`]).
-    let cap = if s.corridor == CorridorId::MAX { WALK_MAX_FACE_M } else { MAX_BENCH_FACE_M };
+    let cap = rules.cap_m.unwrap_or(crate::priors::bench_face_cap_m(s.surface));
+    // **Narrowing before refusing** (`ARPT_WALK_FIT`, the experiment). A bench
+    // whose verge face is too deep is not the same claim as a bench that cannot
+    // be built: the face grows with the width, so pulling the verge in until it
+    // fits keeps the band flat and shrinks the earthwork instead of dropping
+    // both. The floor is the drawn band's own half-width — a bench narrower
+    // than the surface it carries hangs that surface over unbenched ground,
+    // which is what `carriageway_m` exists to prevent, and it is the same floor
+    // the road bench takes against the room a facade leaves it.
+    let (mut w_l, mut w_r) = (w, w);
+    let (mut rise_l, mut reach_l) = (rise_l, reach_l);
+    let (mut rise_r, mut reach_r) = (rise_r, reach_r);
+    if rules.fit {
+        let mut fit = |side: f64, rise: f64, w_side: &mut f64| -> (f64, (f64, f64)) {
+            if rise.abs() <= cap {
+                return (rise, face(side, *w_side).1);
+            }
+            // The ground is near-linear across a two-metre band, so the width
+            // whose face is exactly the cap is the cap's share of this one —
+            // taken with a margin, because landing *on* the cap means any
+            // roughness in the ground between the two samples puts it back
+            // over, and the first cut of this recovered a sixth of what the
+            // linear estimate said it should.
+            *w_side = (w * cap * FIT_MARGIN / rise.abs()).max(s.half_m);
+            face(side, *w_side)
+        };
+        let l = fit(1.0, rise_l, &mut w_l);
+        let r = fit(-1.0, rise_r, &mut w_r);
+        (rise_l, reach_l) = l;
+        (rise_r, reach_r) = r;
+    }
     if rise_l.abs().max(rise_r.abs()) > cap {
         return None;
     }
@@ -515,7 +814,7 @@ fn walk_edge(
         b: s.b,
         target_a,
         target_b,
-        half_width_m: [w; 2],
+        half_width_m: [w_l, w_r],
         // The drawn band itself, held outright against any neighbouring bench —
         // the same rule that keeps a road's own carriageway out of a
         // neighbour's reach (`EarthworkEdge::carriageway_m`).
@@ -2264,6 +2563,13 @@ mod tests {
     ) -> crate::synth::carriageway::SourceSeg {
         let cos_lat = 46.0_f64.to_radians().cos();
         let east = |m: f64| 6.0 + m / (DEG_M * cos_lat);
+        // Material and kerb follow the host, exactly as `synth::walkway` emits
+        // them: a band with no corridor is a path standing on the ground, and
+        // one with a host is a sidewalk a kerb above its street. The fixture
+        // used to call every band a `Walkway` whatever its corridor, which was
+        // invisible while the face cap was keyed on the corridor and wrong the
+        // moment it was keyed on the material it is a statement about.
+        let path = corridor == crate::scene::CorridorId::MAX;
         crate::synth::carriageway::SourceSeg {
             a: Coord { x: east(from_m), y: 46.0 },
             b: Coord { x: east(to_m), y: 46.0 },
@@ -2278,8 +2584,8 @@ mod tests {
             height_a: height.0,
             height_b: height.1,
             corridor,
-            surface: crate::priors::Surface::Walkway,
-            rise_m: crate::priors::KERB_RISE_M,
+            surface: if path { crate::priors::Surface::Path } else { crate::priors::Surface::Walkway },
+            rise_m: if path { 0.0 } else { crate::priors::KERB_RISE_M },
             arc0: from_m,
         }
     }
@@ -2298,13 +2604,13 @@ mod tests {
         // the bench is plausible, steep enough along it to matter.
         let cos_lat = seg.cos_lat;
         let mut ground = |q: Coord| (q.x - 6.0) * DEG_M * cos_lat * 0.25;
-        let e = walk_edge(&seg, 0, &mut ground).expect("a plausible bench");
+        let e = walk_edge(&seg, 0, &WalkBenchRules::shipped(), &mut ground).expect("a plausible bench");
         assert!((e.target_a - 0.0).abs() < 1e-6, "the west end: {}", e.target_a);
         assert!((e.target_b - 2.0).abs() < 1e-6, "the east end: {}", e.target_b);
         // The next segment starts where this one ends, so the two agree there
         // by construction and no step is left between them.
         let next = band(8.0, 16.0, 1.0, CorridorId::MAX, (0.0, 0.0));
-        let n = walk_edge(&next, 0, &mut ground).expect("a plausible bench");
+        let n = walk_edge(&next, 0, &WalkBenchRules::shipped(), &mut ground).expect("a plausible bench");
         assert!((n.target_a - e.target_b).abs() < 1e-6, "{} vs {}", n.target_a, e.target_b);
     }
 
@@ -2314,7 +2620,7 @@ mod tests {
     fn a_walkway_bench_is_the_band_plus_a_verge_and_draws_no_crest() {
         let seg = band(0.0, 8.0, 1.0, CorridorId::MAX, (0.0, 0.0));
         let mut flat = |_: Coord| 0.0;
-        let e = walk_edge(&seg, 7, &mut flat).expect("flat ground always benches");
+        let e = walk_edge(&seg, 7, &WalkBenchRules::shipped(), &mut flat).expect("flat ground always benches");
         assert_eq!(e.half_width_m, [1.0 + EARTHWORK_MARGIN_M; 2]);
         assert_eq!(e.carriageway_m, 1.0);
         assert_eq!(e.chain, 7);
@@ -2331,10 +2637,10 @@ mod tests {
         // A flank falling north at 100 %: the bench edge is 1.5 m out, so
         // holding the band flat would cut and fill 1.5 m — past WALK_MAX_FACE_M.
         let mut flank = |q: Coord| (q.y - 46.0) * DEG_M;
-        assert!(walk_edge(&seg, 0, &mut flank).is_none());
+        assert!(walk_edge(&seg, 0, &WalkBenchRules::shipped(), &mut flank).is_none());
         // At a third of that slope the same band benches: half a metre of face.
         let mut gentle = |q: Coord| (q.y - 46.0) * DEG_M * 0.33;
-        assert!(walk_edge(&seg, 0, &mut gentle).is_some());
+        assert!(walk_edge(&seg, 0, &WalkBenchRules::shipped(), &mut gentle).is_some());
     }
 
     /// A sidewalk is seated where its street's cross-section puts it, and may
@@ -2344,11 +2650,11 @@ mod tests {
     fn a_sidewalk_bench_takes_its_seat_from_its_host_not_from_the_ground() {
         let seg = band(0.0, 8.0, 1.0, 3, (410.0, 411.0));
         let mut ground = |_: Coord| 408.0;
-        let e = walk_edge(&seg, 0, &mut ground).expect("the street's own allowance");
+        let e = walk_edge(&seg, 0, &WalkBenchRules::shipped(), &mut ground).expect("the street's own allowance");
         assert_eq!((e.target_a, e.target_b), (410.0, 411.0));
         // Two metres above the hillside beside it — past a path's cap, inside
         // the street's.
         let mut deeper = |_: Coord| 405.0;
-        assert!(walk_edge(&seg, 0, &mut deeper).is_none(), "past the street's cap too");
+        assert!(walk_edge(&seg, 0, &WalkBenchRules::shipped(), &mut deeper).is_none(), "past the street's cap too");
     }
 }
