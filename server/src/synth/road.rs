@@ -84,7 +84,7 @@ pub fn bake(
             Some(f) if !deck && !f.is_empty() => {
                 let layer =
                     corridor.map_or(0, |c| f.layer_at(c, lon, lat, &mut scratch));
-                f.at(sampler, AT_GRADE_LEVEL, layer, z, z_ref, bounds, lon, lat, &mut scratch)
+                f.at(sampler, crate::synth::height::Sheet::road(AT_GRADE_LEVEL, layer), z, z_ref, bounds, lon, lat, &mut scratch)
             }
             _ => surface_height(profile, deck, sampler, z, z_ref, bounds, lon, lat),
         }

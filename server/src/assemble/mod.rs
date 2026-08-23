@@ -105,6 +105,12 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
                                 tagged: subclass == Some("sidewalk"),
                                 crosswalk: subclass == Some("crosswalk"),
                                 connectors: f.connectors.iter().map(|c| c.id).collect(),
+                                spans: f
+                                    .level_runs
+                                    .iter()
+                                    .filter(|r| r.level != 0)
+                                    .map(|r| (r.start, r.end))
+                                    .collect(),
                             });
                         }
                     }
@@ -148,7 +154,7 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
     // a plan-space relation between the lines just read and the corridors just
     // chained, and because it must be resolved *once*: a band whose host was
     // decided per tile would move at a tile boundary (invariant 5).
-    scene.walks = walks::attach(&scene.corridors, &pedestrians);
+    scene.walks = walks::attach(&scene.corridors, pedestrians);
     // No crossings. They are a consequence of the solved heights, so they are
     // derived at the solve and handed straight to the graph (`solve::crossings`,
     // §4.5) — the second pass over the input that used to find them here could

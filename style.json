@@ -376,6 +376,72 @@
           "min_level": 13
         },
         {
+          "class": "walk_surface",
+          "color": [
+            196,
+            193,
+            187,
+            255
+          ],
+          "width": 0,
+          "min_level": 16
+        },
+        {
+          "class": "walk_casing",
+          "color": [
+            170,
+            167,
+            161,
+            255
+          ],
+          "width": 0,
+          "min_level": 16
+        },
+        {
+          "class": "walk_apron",
+          "color": [
+            168,
+            162,
+            152,
+            255
+          ],
+          "width": 0,
+          "min_level": 16
+        },
+        {
+          "class": "path_surface",
+          "color": [
+            186,
+            178,
+            166,
+            255
+          ],
+          "width": 0,
+          "min_level": 16
+        },
+        {
+          "class": "path_casing",
+          "color": [
+            164,
+            156,
+            144,
+            255
+          ],
+          "width": 0,
+          "min_level": 16
+        },
+        {
+          "class": "path_apron",
+          "color": [
+            168,
+            162,
+            152,
+            255
+          ],
+          "width": 0,
+          "min_level": 16
+        },
+        {
           "class": "rail_line",
           "color": [
             66,

@@ -64,6 +64,16 @@ impl Room {
         Room { left: reach_m, right: reach_m }
     }
 
+    /// One side's room, indexed as [`Section::on`] indexes a side: 0 left of
+    /// the directed edge, 1 right.
+    pub fn on(&self, side: usize) -> f64 {
+        if side == 0 {
+            self.left
+        } else {
+            self.right
+        }
+    }
+
     /// What a band of nominal half-width `prior_m` gets on each side here:
     /// the prior, capped by the room less [`priors::FACADE_CLEAR_M`], and
     /// never below `floor_m`.

@@ -87,6 +87,15 @@ pub struct WalkLine {
     pub crosswalk: bool,
     /// Connector ids the line touches, for that shared-connector evidence.
     pub connectors: Vec<u64>,
+    /// The stretches of the way that are *not* on the ground, as fractions of
+    /// its length — a footbridge, a subway, a passage under a building.
+    ///
+    /// Carrying a span is still not a promotion (§4.2): nothing here solves.
+    /// But a band is a piece of drawn ground, and there is no ground under a
+    /// footbridge — the way carries its own fitted deck there
+    /// (`synth::draped`), which *is* the walkway over that stretch. Banding it
+    /// as well would draw a second one lying in the river.
+    pub spans: Vec<(f64, f64)>,
 }
 
 /// Why a way is attached. The tag and the geometry are independent evidences
@@ -108,11 +117,20 @@ pub enum Evidence {
 /// The arc range is in **host** corridor metres, because that is the space the
 /// band will be built in: a sidewalk's shape comes from the centerline it
 /// parallels, never from its own polyline, which is what makes the band
-/// constant-width and kerb-aligned by construction.
+/// constant-width and kerb-aligned by construction. The way's *own* range
+/// rides along ([`walk0`](Self::walk0)) so the stretches that attached to
+/// nothing can be recovered as the complement — a path is drawn along its
+/// whole length whether or not a street claimed part of it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Attachment {
     /// Source hash of the pedestrian feature.
     pub walk: u64,
+    /// Its index in [`Walks::lines`].
+    pub line: u32,
+    /// The stretch of the way's *own* length this covers, in metres from its
+    /// first vertex.
+    pub walk0: f64,
+    pub walk1: f64,
     /// Its class. A `steps` beside a street is attached to it — it is that
     /// street's stair — but it is not a band candidate on the same terms as a
     /// footway, since a staircase's whole purpose is to change height relative
@@ -192,8 +210,18 @@ pub struct Census {
 ///
 /// A side table, keyed both ways: the band is built per host corridor, while
 /// the tiling phase meets the way itself and needs to know it is attached.
+///
+/// **The lines are kept, not consumed.** A way that attached to nothing is
+/// still drawn — as a path across the ground rather than as a sidewalk — so
+/// `synth::walkway` needs every pedestrian line and the stretches of it that
+/// found a street, not only the second.
 #[derive(Default)]
 pub struct Walks {
+    lines: Vec<WalkLine>,
+    /// Attachments of `lines[i]`, as a half-open range into `attachments`.
+    /// They are pushed line by line and in walk-arc order within a line, so
+    /// the range is contiguous by construction.
+    line_ranges: Vec<(u32, u32)>,
     attachments: Vec<Attachment>,
     by_host: HashMap<CorridorId, Vec<u32>>,
     by_source: HashMap<u64, Vec<u32>>,
@@ -207,6 +235,19 @@ impl Walks {
 
     pub fn len(&self) -> usize {
         self.attachments.len()
+    }
+
+    /// Every draped pedestrian line the run read, with what attached along it.
+    /// A crosswalk is in the list and has no attachments — it is paint on a
+    /// carriageway, never a band beside one.
+    pub fn lines(&self) -> impl Iterator<Item = (&WalkLine, &[Attachment])> {
+        self.lines.iter().zip(self.line_ranges.iter()).map(|(l, &(a, b))| {
+            (l, &self.attachments[a as usize..b as usize])
+        })
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.lines.len()
     }
 
     /// Every attachment, in a stable order (input order of the pedestrian
@@ -254,7 +295,7 @@ impl Walks {
 /// Hosts are the **asphalt** corridors. Rail is out for the reason it is out of
 /// `order.building_overlap`: a platform beside a track is not a sidewalk beside
 /// a street, and the formation's cross-section is not a street's.
-pub fn attach(corridors: &[Corridor], walks: &[WalkLine]) -> Walks {
+pub fn attach(corridors: &[Corridor], walks: Vec<WalkLine>) -> Walks {
     let mut out = Walks::default();
     let hosts = Hosts::build(corridors);
     // The shared-connector evidence: which connectors a crosswalk touches. A
@@ -265,7 +306,11 @@ pub fn attach(corridors: &[Corridor], walks: &[WalkLine]) -> Walks {
         .flat_map(|w| w.connectors.iter().copied())
         .collect();
     let mut scratch: Vec<u32> = Vec::new();
-    for w in walks {
+    for (li, w) in walks.iter().enumerate() {
+        // Every line gets a range, in step with `lines`, whether or not
+        // anything attaches to it — the empty ones are the paths.
+        let first = out.attachments.len() as u32;
+        out.line_ranges.push((first, first));
         if w.crosswalk || w.line.len() < 2 {
             continue;
         }
@@ -341,6 +386,9 @@ pub fn attach(corridors: &[Corridor], walks: &[WalkLine]) -> Walks {
             attached_m += n * STATION_M;
             out.push(Attachment {
                 walk: w.source,
+                line: li as u32,
+                walk0: run.0 as f64 * STATION_M,
+                walk1: run.1 as f64 * STATION_M,
                 kind: w.kind,
                 host: hit.host,
                 side: hit.side,
@@ -352,6 +400,7 @@ pub fn attach(corridors: &[Corridor], walks: &[WalkLine]) -> Walks {
             });
             out.census.host_arc_m += hi - lo;
         }
+        out.line_ranges[li].1 = out.attachments.len() as u32;
         if out.len() > before {
             out.census.attached_lines += 1;
             out.census.attached_m += attached_m;
@@ -362,6 +411,7 @@ pub fn attach(corridors: &[Corridor], walks: &[WalkLine]) -> Walks {
             }
         }
     }
+    out.lines = walks;
     out
 }
 
@@ -615,6 +665,18 @@ mod tests {
         ]
     }
 
+    fn clone_of(w: &WalkLine) -> WalkLine {
+        WalkLine {
+            source: w.source,
+            line: w.line.clone(),
+            kind: w.kind,
+            tagged: w.tagged,
+            crosswalk: w.crosswalk,
+            connectors: w.connectors.clone(),
+            spans: w.spans.clone(),
+        }
+    }
+
     fn walk(line: Vec<Coord>, tagged: bool) -> WalkLine {
         WalkLine {
             source: 1,
@@ -623,12 +685,13 @@ mod tests {
             tagged,
             crosswalk: false,
             connectors: Vec::new(),
+            spans: Vec::new(),
         }
     }
 
     #[test]
     fn a_footway_running_beside_a_street_attaches_to_its_side() {
-        let w = attach(&[street(100.0)], &[walk(beside(5.0, 10.0, 90.0), false)]);
+        let w = attach(&[street(100.0)], vec![walk(beside(5.0, 10.0, 90.0), false)]);
         assert_eq!(w.len(), 1, "{:?}", w.all());
         let a = w.all()[0];
         assert_eq!(a.host, 0);
@@ -640,14 +703,14 @@ mod tests {
 
     #[test]
     fn the_far_side_is_the_other_side() {
-        let w = attach(&[street(100.0)], &[walk(beside(-5.0, 10.0, 90.0), false)]);
+        let w = attach(&[street(100.0)], vec![walk(beside(-5.0, 10.0, 90.0), false)]);
         assert_eq!(w.all()[0].side, 1);
     }
 
     #[test]
     fn a_path_out_of_reach_attaches_to_nothing() {
         // 14 m out is 11.25 m clear of a 5.5 m-wide street's kerb.
-        let w = attach(&[street(100.0)], &[walk(beside(14.0, 10.0, 90.0), false)]);
+        let w = attach(&[street(100.0)], vec![walk(beside(14.0, 10.0, 90.0), false)]);
         assert!(w.is_empty(), "{:?}", w.all());
         assert_eq!(w.census().covered_m, 0.0);
     }
@@ -656,11 +719,11 @@ mod tests {
     fn the_reach_is_measured_from_the_kerb_not_the_centerline() {
         // 12 m out: outside the reach of a 5.5 m street (9.25 m clear), inside
         // that of a 20 m one (2 m clear) whose kerb is right beside it.
-        let narrow = attach(&[street(100.0)], &[walk(beside(12.0, 10.0, 90.0), false)]);
+        let narrow = attach(&[street(100.0)], vec![walk(beside(12.0, 10.0, 90.0), false)]);
         assert!(narrow.is_empty(), "{:?}", narrow.all());
         let mut wide = street(100.0);
         wide.width_m = Some(20.0);
-        assert_eq!(attach(&[wide], &[walk(beside(12.0, 10.0, 90.0), false)]).len(), 1);
+        assert_eq!(attach(&[wide], vec![walk(beside(12.0, 10.0, 90.0), false)]).len(), 1);
     }
 
     #[test]
@@ -669,7 +732,7 @@ mod tests {
             Coord { x: 6.9 + east(50.0), y: LAT - north(6.0) },
             Coord { x: 6.9 + east(50.0), y: LAT + north(6.0) },
         ];
-        let w = attach(&[street(100.0)], &[walk(across, false)]);
+        let w = attach(&[street(100.0)], vec![walk(across, false)]);
         assert!(w.is_empty(), "{:?}", w.all());
         assert!(w.census().covered_m > 0.0, "it was in reach — it just ran across");
         assert_eq!(w.census().alongside_m, 0.0);
@@ -681,7 +744,7 @@ mod tests {
         // well under WALK_COVER, and untagged.
         let mut line = beside(5.0, 0.0, 20.0);
         line.push(Coord { x: 6.9 + east(30.0), y: LAT + north(180.0) });
-        let w = attach(&[street(100.0)], &[walk(line, false)]);
+        let w = attach(&[street(100.0)], vec![walk(line, false)]);
         assert!(w.is_empty(), "{:?}", w.all());
     }
 
@@ -689,7 +752,7 @@ mod tests {
     fn the_tag_admits_the_stretch_that_does_run_with_the_street() {
         let mut line = beside(5.0, 0.0, 20.0);
         line.push(Coord { x: 6.9 + east(30.0), y: LAT + north(180.0) });
-        let w = attach(&[street(100.0)], &[walk(line, true)]);
+        let w = attach(&[street(100.0)], vec![walk(line, true)]);
         assert_eq!(w.len(), 1, "the tagged way keeps its attached stretch");
         assert_eq!(w.all()[0].evidence, Evidence::Tag);
         assert!(w.all()[0].len_m() < 25.0, "and only that stretch");
@@ -697,7 +760,7 @@ mod tests {
 
     #[test]
     fn a_tagged_sidewalk_nowhere_near_a_street_is_still_refused() {
-        let w = attach(&[street(100.0)], &[walk(beside(40.0, 0.0, 90.0), true)]);
+        let w = attach(&[street(100.0)], vec![walk(beside(40.0, 0.0, 90.0), true)]);
         assert!(w.is_empty(), "the tag is evidence, not authority");
         assert_eq!(w.census().tagged_unhosted, 1);
     }
@@ -711,7 +774,7 @@ mod tests {
             Coord { x: 6.9 + east(50.0), y: LAT - north(5.0) },
             Coord { x: 6.9 + east(95.0), y: LAT - north(5.0) },
         ];
-        let w = attach(&[street(100.0)], &[walk(line, true)]);
+        let w = attach(&[street(100.0)], vec![walk(line, true)]);
         assert_eq!(w.len(), 2, "{:?}", w.all());
         assert_eq!(w.all()[0].side, 0);
         assert_eq!(w.all()[1].side, 1);
@@ -719,7 +782,7 @@ mod tests {
 
     #[test]
     fn a_nick_at_a_corner_is_too_short_to_be_a_band() {
-        let w = attach(&[street(100.0)], &[walk(beside(5.0, 50.0, 56.0), true)]);
+        let w = attach(&[street(100.0)], vec![walk(beside(5.0, 50.0, 56.0), true)]);
         assert!(w.is_empty(), "{:?}", w.all());
         assert_eq!(w.census().dropped_short, 1);
     }
@@ -740,9 +803,9 @@ mod tests {
         zebra.source = 2;
         zebra.crosswalk = true;
         zebra.connectors = vec![77];
-        let alone = attach(&[street(100.0)], std::slice::from_ref(&sidewalk));
+        let alone = attach(&[street(100.0)], vec![clone_of(&sidewalk)]);
         assert!(alone.is_empty(), "half its length is not enough on its own");
-        let joined = attach(&[street(100.0)], &[sidewalk, zebra]);
+        let joined = attach(&[street(100.0)], vec![sidewalk, zebra]);
         assert_eq!(joined.len(), 1, "the crossing is the other half of the evidence");
         assert!(joined.of_walk(2).next().is_none(), "and the crossing itself is paint");
     }
@@ -752,7 +815,7 @@ mod tests {
         let mut rail = street(100.0);
         rail.kind = Kind::Road(RoadClass::Residential);
         rail.kind = Kind::Rail(crate::priors::RailClass::StandardGauge);
-        let w = attach(&[rail], &[walk(beside(5.0, 10.0, 90.0), true)]);
+        let w = attach(&[rail], vec![walk(beside(5.0, 10.0, 90.0), true)]);
         assert!(w.is_empty(), "a platform is not a sidewalk");
     }
 
@@ -766,14 +829,14 @@ mod tests {
         service.id = 1;
         service.nodes.iter_mut().for_each(|n| n.y += north(9.0));
         service.width_m = Some(3.0);
-        let w = attach(&[main, service], &[walk(beside(4.0, 10.0, 90.0), true)]);
+        let w = attach(&[main, service], vec![walk(beside(4.0, 10.0, 90.0), true)]);
         assert_eq!(w.len(), 1, "{:?}", w.all());
         assert_eq!(w.all()[0].host, 0, "the main street's kerb is nearer");
     }
 
     #[test]
     fn the_census_counts_what_it_saw() {
-        let w = attach(&[street(100.0)], &[walk(beside(5.0, 10.0, 90.0), true)]);
+        let w = attach(&[street(100.0)], vec![walk(beside(5.0, 10.0, 90.0), true)]);
         let c = w.census();
         assert_eq!(c.lines, 1);
         assert_eq!(c.tagged_lines, 1);

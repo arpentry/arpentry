@@ -75,10 +75,41 @@ struct Src<'a> {
     b: Coord,
     cos_lat: f64,
     half_m: f64,
-    level: i64,
-    layer: u32,
+    sheet: Sheet,
+    rise_m: f64,
     corridor: crate::scene::CorridorId,
     profile: Option<&'a Profile>,
+}
+
+/// Which sheet of the field a query is about: the level, the grade-separation
+/// layer, and whether it is the walkway standing on that sheet or the
+/// carriageway itself.
+///
+/// **The walkway is its own sheet, and the other two materials are not.** A
+/// level crossing is one physical surface whose asphalt and ballast must agree
+/// on a height, so those blend; a sidewalk stands a kerb *above* the
+/// carriageway beside it, and blending the two would lift the kerb line of the
+/// road by half a kerb and drop the sidewalk by the other half — which is the
+/// failure the plan warned a walk source on the carriageway's own sheet would
+/// cause. Separated, each reads only its own kind and the kerb stays a step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sheet {
+    pub level: i64,
+    pub layer: u32,
+    pub walk: bool,
+}
+
+impl Sheet {
+    /// The carriageway sheet at a level and layer — what everything that is not
+    /// a walkway reads.
+    pub fn road(level: i64, layer: u32) -> Sheet {
+        Sheet { level, layer, walk: false }
+    }
+
+    /// The sheet a region of this material stands on.
+    pub fn of(level: i64, layer: u32, surface: crate::priors::Surface) -> Sheet {
+        Sheet { level, layer, walk: surface.is_pedestrian() }
+    }
 }
 
 /// One intersection: its paved extent, the sheet it stands on, and the height
@@ -160,8 +191,8 @@ impl<'a> HeightField<'a> {
                 b: s.b,
                 cos_lat: s.cos_lat,
                 half_m: s.half_m,
-                level: s.level,
-                layer: s.layer,
+                sheet: Sheet::of(s.level, s.layer, s.surface),
+                rise_m: s.rise_m,
                 corridor: s.corridor,
                 profile: solved.profile(s.corridor),
             });
@@ -213,12 +244,15 @@ impl<'a> HeightField<'a> {
         let mut best: Option<(f64, u32)> = None;
         for &i in scratch.iter() {
             let s = &self.srcs[i as usize];
-            if s.corridor != corridor {
+            // The *carriageway*'s layer. A walkway rides its host's sheet by
+            // construction, so answering with one would be circular — and this
+            // is asked by things (paint, a stroke) that ride the road.
+            if s.corridor != corridor || s.sheet.walk {
                 continue;
             }
             let d = point_to_segment_m(lon, lat, s.a, s.b, s.cos_lat);
             if best.is_none_or(|(bd, _)| d < bd) {
-                best = Some((d, s.layer));
+                best = Some((d, s.sheet.layer));
             }
         }
         best.map_or(0, |(_, l)| l)
@@ -232,8 +266,7 @@ impl<'a> HeightField<'a> {
     pub fn at(
         &self,
         sampler: &mut GroundSampler,
-        level: i64,
-        layer: u32,
+        sheet: Sheet,
         z: u8,
         z_ref: u8,
         bounds: &Bounds,
@@ -265,7 +298,7 @@ impl<'a> HeightField<'a> {
         self.src_grid.query((lon, lat, lon, lat), scratch);
         for &i in scratch.iter() {
             let s = &self.srcs[i as usize];
-            if s.level != level || s.layer != layer {
+            if s.sheet != sheet {
                 continue;
             }
             let d = point_to_segment_m(lon, lat, s.a, s.b, s.cos_lat);
@@ -274,7 +307,10 @@ impl<'a> HeightField<'a> {
             // `surface_height` is exactly `on_ground(ground_height(..))`, so the
             // single-source case is still identical to it by construction rather
             // than by two copies of the arithmetic agreeing.
-            let h = road::on_ground(ground, s.profile, sampler, z, z_ref, lon, lat);
+            // Plus whatever this source *stands on* that surface: a walkway's
+            // kerb. A carriageway's rise is zero, so the road answer is
+            // unchanged by construction rather than by a branch.
+            let h = road::on_ground(ground, s.profile, sampler, z, z_ref, lon, lat) + s.rise_m;
             if best.is_none_or(|(bd, _, _)| d < bd) {
                 best = Some((d, s.half_m, h));
             }
@@ -312,8 +348,11 @@ impl<'a> HeightField<'a> {
             let p = &self.pins[i as usize];
             // An intersection pins its *own* sheet — a flyover passing overhead
             // must not be dragged to the height of the junction beneath it, and
-            // a junction up on a stacked arm must still pin that arm.
-            if p.level != level || p.layer != layer {
+            // a junction up on a stacked arm must still pin that arm. A plate
+            // is carriageway, so it pins the carriageway sheet and leaves the
+            // sidewalk beside it to the kerb: pinning both would flatten the
+            // kerb line across every junction mouth.
+            if Sheet::road(p.level, p.layer) != sheet {
                 continue;
             }
             // The pin carries the same clamp every carriageway source carries
@@ -595,7 +634,7 @@ mod tests {
                 let lat = LAT + off_m / DEG_M;
                 let want =
                     road::surface_height(profile, false, &mut s, Z, Z, &bounds, lon, lat);
-                let got = field.at(&mut s, 0, 0, Z, Z, &bounds, lon, lat, &mut scratch);
+                let got = field.at(&mut s, Sheet::road(0, 0), Z, Z, &bounds, lon, lat, &mut scratch);
                 assert!(
                     (got - want).abs() < 1e-9,
                     "field {got} != corridor surface {want} at {lon},{lat}"
@@ -642,7 +681,7 @@ mod tests {
         let mut scratch = Vec::new();
 
         let at = |s: &mut GroundSampler, east_m: f64, scratch: &mut Vec<u32>| {
-            field.at(s, 0, 0, Z, Z, &bounds, centre.x + east_m / m_lon(), centre.y, scratch)
+            field.at(s, Sheet::road(0, 0), Z, Z, &bounds, centre.x + east_m / m_lon(), centre.y, scratch)
         };
 
         // Exact at the centre: this is the number the solver guarantees.
@@ -720,7 +759,7 @@ mod tests {
         let field = HeightField::for_tile(&junctions, &solved, Z, &bounds);
         let mut scratch = Vec::new();
         let probe = |s: &mut GroundSampler, east_m: f64, scratch: &mut Vec<u32>| {
-            field.at(s, 0, 0, Z, Z, &bounds, centre.x + east_m / m_lon(), centre.y, scratch)
+            field.at(s, Sheet::road(0, 0), Z, Z, &bounds, centre.x + east_m / m_lon(), centre.y, scratch)
         };
 
         // Ground drawn underneath: the clamp holds the plate up to it.
@@ -765,7 +804,7 @@ mod tests {
         let (mut worst, mut lo, mut hi) = (0.0f64, f64::INFINITY, f64::NEG_INFINITY);
         for i in 0..=n {
             let lon = 6.0 + (-20.0 + i as f64 * step_m) / m_lon();
-            let h = field.at(&mut s, 0, layer, Z, Z, &bounds, lon, LAT, &mut scratch);
+            let h = field.at(&mut s, Sheet::road(0, layer), Z, Z, &bounds, lon, LAT, &mut scratch);
             if let Some(p) = prev {
                 worst = worst.max((h - p).abs());
             }
@@ -836,7 +875,7 @@ mod tests {
 
         for i in 0..20 {
             let lon = 6.0 + (10.0 + i as f64 * 9.0) / m_lon();
-            let h = field.at(&mut s, 0, 0, Z, Z, &bounds, lon, LAT, &mut scratch);
+            let h = field.at(&mut s, Sheet::road(0, 0), Z, Z, &bounds, lon, LAT, &mut scratch);
             assert!(h >= 400.0 - 1e-9, "the road sank to {h}, below its 400 m profile");
         }
     }
@@ -862,7 +901,7 @@ mod tests {
         let mut scratch = Vec::new();
 
         let at = |s: &mut GroundSampler, off_m: f64, scratch: &mut Vec<u32>| {
-            field.at(s, 0, 0, Z, Z, &bounds, 6.0, LAT + off_m / DEG_M, scratch)
+            field.at(s, Sheet::road(0, 0), Z, Z, &bounds, 6.0, LAT + off_m / DEG_M, scratch)
         };
         // On the carriageway: the road's own height, 30 m up.
         assert!((at(&mut s, 0.0, &mut scratch) - 30.0).abs() < 1e-9);
@@ -891,8 +930,8 @@ mod tests {
         let mut scratch = Vec::new();
 
         let lon = 6.0 + 100.0 / m_lon();
-        let on_grade = field.at(&mut s, 0, 0, Z, Z, &bounds, lon, LAT, &mut scratch);
-        let upstairs = field.at(&mut s, 3, 0, Z, Z, &bounds, lon, LAT, &mut scratch);
+        let on_grade = field.at(&mut s, Sheet::road(0, 0), Z, Z, &bounds, lon, LAT, &mut scratch);
+        let upstairs = field.at(&mut s, Sheet::road(3, 0), Z, Z, &bounds, lon, LAT, &mut scratch);
         assert!((on_grade - 400.0).abs() < 1e-9, "at grade reads {on_grade}");
         assert!(upstairs.abs() < 1e-9, "level 3 read {upstairs}, not the bare ground");
     }

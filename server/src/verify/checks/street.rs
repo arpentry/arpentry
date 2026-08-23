@@ -452,22 +452,33 @@ impl Street {
     /// Invariant 4 at the verge: how far the surface an attached pedestrian way
     /// stands on departs from the carriageway beside it.
     ///
-    /// Attachment is decided per *part* and the whole part is then scored,
-    /// which is coarser than the arc ranges the model will attach over but is
-    /// the only evidence the archive holds: it carries a way's class and its
-    /// geometry, never the `subclass='sidewalk'` tag the plan-space census
-    /// used. So this population is the geometric half of the attachment rule
-    /// alone, and the tag's own third — the 34 % of tagged sidewalks that fail
-    /// a geometric test, mostly long runs beside wide roads — is outside it.
-    fn visit_grade(&mut self, tile: &TileScene) {
+    /// **Two populations, because a sidewalk stopped being a line.** From
+    /// [`priors::WALK_SURFACE_MIN_ZOOM`] a pedestrian way is drawn as a
+    /// `walk_surface` band and its cartographic stroke is deleted, so scoring
+    /// the stroke there scores nothing — the metric read 0.000 % on a
+    /// population that had emptied by 99.9 %, which is the failure mode
+    /// VERIFICATION.md §10 warns about, arriving as a spectacular improvement.
+    /// So the band is scored where one exists and the line where it does not,
+    /// and both answer the same question: is the thing a pedestrian stands on
+    /// part of the street's cross-section, or a metre off it?
+    ///
+    /// The band's population is the stricter of the two. A stroke had to pass
+    /// [`WALK_COVER`] and the along-versus-across test to count, both of them
+    /// archive-side re-derivations of the model's attachment rule; a band is
+    /// there *because* the model attached it, so every sample counts.
+    fn visit_grade(&mut self, tile: &TileScene, opt: &Options) {
         // Resampling every kerb in the tile is the expensive half, and most
         // tiles hold no pedestrian way at all — so ask that first.
-        if !tile.lines.iter().any(|l| l.level == 0 && is_pedestrian(&l.class)) {
+        let has_band = tile.roads.iter().any(is_walk_band);
+        if !has_band && !tile.lines.iter().any(|l| l.level == 0 && is_pedestrian(&l.class)) {
             return;
         }
         let kerbs = Kerbs::build(tile);
         if kerbs.is_empty() {
             return;
+        }
+        if has_band {
+            self.visit_walk_band(tile, &kerbs, opt);
         }
         let bands: Vec<&RoadMesh> = tile.roads.iter().filter(|r| is_road_band(r)).collect();
         for line in tile.lines.iter().filter(|l| l.level == 0 && is_pedestrian(&l.class)) {
@@ -532,6 +543,64 @@ impl Street {
             }
         }
     }
+
+    /// The band half of [`Self::visit_grade`]: every `walk_surface` sample
+    /// against the kerb it stands beside.
+    ///
+    /// The band's *own* height is read from the mesh rather than through
+    /// [`walk_ground`], because that is the number in question — a band drawn
+    /// at the right plan position and the wrong height is precisely the defect,
+    /// and a lookup that fell back to the terrain would hide it by measuring
+    /// the ground the band was supposed to replace.
+    ///
+    /// A sample with no kerb within [`WALK_ATTACH_M`] is a path across open
+    /// ground, which has no cross-section relation to be wrong about; it is
+    /// out of the population rather than scored against nothing.
+    fn visit_walk_band(&mut self, tile: &TileScene, kerbs: &Kerbs, opt: &Options) {
+        let mut dist = Dist::new(0.0, 64.0);
+        let mut signed = Dist::metres();
+        let mut worst = Worst::new(Sense::HigherIsWorse, opt.worst_k);
+        for r in tile.roads.iter().filter(|r| is_walk_band(r)) {
+            r.mesh.sample(&tile.scale, opt.spacing_m, |px, py, z| {
+                if !tile.owns(px, py) {
+                    return;
+                }
+                let Some((_, k)) = kerbs.nearest(px, py, &tile.scale) else { return };
+                let departure = (z - k.z).abs();
+                dist.push(departure);
+                signed.push(z - k.z);
+                if departure > WALK_GRADE_M {
+                    let (lon, lat) = tile.lonlat(px, py);
+                    let side = if z < k.z { "below" } else { "above" };
+                    worst.offer(Offender {
+                        lon,
+                        lat,
+                        zoom: tile.z,
+                        value: departure,
+                        note: format!(
+                            "the walkway stands {departure:.1} m {side} the carriageway it \
+                             runs alongside"
+                        ),
+                    });
+                }
+            });
+        }
+        self.grade.merge(&dist);
+        self.grade_signed.merge(&signed);
+        self.grade_worst.merge(worst);
+    }
+}
+
+/// The drawn **sidewalk**: the band attached to a street, and its casing rim,
+/// at grade.
+///
+/// `path_surface` is deliberately out. A path across a hillside stands on the
+/// ground and belongs to no street, so measuring it against the nearest kerb
+/// within [`WALK_ATTACH_M`] scores a relation that does not exist — the worst
+/// site in the extract was a footpath 17.7 m up a slope from a road it passed
+/// near. The two materials are separate for this reason (`priors::Surface`).
+fn is_walk_band(r: &RoadMesh) -> bool {
+    r.level == 0 && matches!(r.class.as_str(), "walk_surface" | "walk_casing")
 }
 
 /// Sorted quantiles of one population, for `ARPT_DEBUG_STREET`. VERIFICATION.md
@@ -579,7 +648,7 @@ fn resample(part: &[(f64, f64, f64)], scale: &Scale) -> Vec<(f64, f64, f64)> {
 impl Check for Street {
     fn visit(&mut self, tile: &TileScene, opt: &Options) {
         self.visit_overlap(tile, opt);
-        self.visit_grade(tile);
+        self.visit_grade(tile, opt);
     }
 
     fn finish(self: Box<Self>) -> Vec<Metric> {

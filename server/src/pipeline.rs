@@ -1008,14 +1008,54 @@ fn stamp_synth(
     bounds: &Bounds,
 ) {
     let surface_zoom = z >= crate::priors::ROAD_SURFACE_MIN_ZOOM;
+    let walk_zoom = z >= crate::priors::WALK_SURFACE_MIN_ZOOM;
     buckets[layers::TRANSPORTATION as usize].retain_mut(|f| {
         synth::emit(f, field, sampler, solved, z, bounds);
         // A carriageway the union paved has no business also painting its SDF
         // fill: the mesh *is* the surface now. This covers the at-grade stroke and
         // the `deck: true` stroke re-painted over a structure, whose own solid
         // carries its top.
-        !(surface_zoom && paves_via_union(f))
+        !(surface_zoom && paves_via_union(f)) && !(walk_zoom && paves_via_walkway(f))
     });
+}
+
+/// Whether the walkway model has drawn this feature as a band, so its
+/// cartographic stroke would be a line painted over its own surface.
+///
+/// The test is the class and nothing else, because `synth::walkway` bands
+/// **every** pedestrian line: the stretches that attached to a street as
+/// sidewalks and the rest as paths across the ground. It cannot be
+/// `paves_via_union`'s test — a footway has no `width_m` and no corridor, since
+/// its band comes from the walkway model rather than from a carriageway of its
+/// own.
+///
+/// Three pedestrian features keep their stroke, and each is a stretch the
+/// walkway model deliberately did not band:
+///
+/// - **A footbridge, or any elevated piece.** The band is only drawn where the
+///   way is on the ground; over a span the way carries its own fitted deck
+///   ([`Synth::DrapedDeck`]) or rides the road bridge under it
+///   ([`synth::carried`]), and that geometry *is* the walkway there. Deleting
+///   the stroke deletes the footbridge with it.
+/// - **A crosswalk.** Not a band and not yet paint either (the plan's phase 6),
+///   so deleting the line would delete the crossing.
+/// - **A tunnel or subway piece**, for the same reason as the bridge: the
+///   drawn world has no band under the ground.
+fn paves_via_walkway(f: &EncoderFeature) -> bool {
+    if is_marking(f) {
+        return false;
+    }
+    if !matches!(f.synth, Synth::None | Synth::Road { corridor: None, deck: false }) {
+        return false;
+    }
+    if crate::value::str_of(&f.properties, "subclass") == Some("crosswalk") {
+        return false;
+    }
+    if crate::value::f64_of(&f.properties, "level_rules").is_some_and(|l| l != 0.0) {
+        return false;
+    }
+    let class = crate::value::str_of(&f.properties, "class");
+    crate::priors::is_pedestrian(crate::priors::Kind::parse(None, class, None))
 }
 
 /// Whether the unioned surface covers this feature, so its own fill stroke would
@@ -1094,6 +1134,8 @@ fn add_road_surface(
         let (surface_class, casing_class, apron_class) =
             match paved.material {
                 crate::priors::Surface::Ballast => ("rail_surface", "rail_casing", "rail_apron"),
+                crate::priors::Surface::Walkway => ("walk_surface", "walk_casing", "walk_apron"),
+                crate::priors::Surface::Path => ("path_surface", "path_casing", "path_apron"),
                 _ => ("road_surface", "road_casing", "road_apron"),
             };
         // The casing rides after the surface so its blended rim composites over
@@ -1296,7 +1338,13 @@ fn process_feature(
                         let surface = match corridor.kind.prior().surface {
                             crate::priors::Surface::Ballast => Some("rail_surface"),
                             crate::priors::Surface::Asphalt => Some("road_surface"),
-                            crate::priors::Surface::None => None,
+                            // No prior returns `Walkway` — a walkway is a band
+                            // the model derives, never a corridor's own
+                            // cross-section — and a corridor is what this
+                            // matches on, so a deck top is never one.
+                            crate::priors::Surface::Walkway
+                            | crate::priors::Surface::Path
+                            | crate::priors::Surface::None => None,
                         };
                         if let Some(s) = surface {
                             props.push((

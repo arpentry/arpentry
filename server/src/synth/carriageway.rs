@@ -156,6 +156,24 @@ pub struct Handover {
     pub b: Coord,
 }
 
+/// One at-grade stretch of one corridor, and the sheet it stands on.
+///
+/// It exists so `synth::walkway` can put a sidewalk on the same sheet as the
+/// asphalt it borders without re-deriving the layering: `synth::sheets`
+/// decides once, here, and the band reads the verdict. A band that decided for
+/// itself would occasionally put a sidewalk on the flyover its street passes
+/// under.
+#[derive(Debug, Clone, Copy)]
+pub struct GradeRun {
+    pub corridor: CorridorId,
+    pub arc0: f64,
+    pub arc1: f64,
+    pub layer: u32,
+    /// Index of this run's first [`SourceSeg`], which is where its layer is
+    /// read from once the sheets are assigned.
+    pub first: usize,
+}
+
 /// One stretch of centerline between two nodes, and how far either side of it
 /// that corridor's asphalt reaches. Carries the corridor *id* rather than a
 /// borrowed profile so the model stays self-contained and shareable.
@@ -212,6 +230,17 @@ pub struct SourceSeg {
     /// and ballast are separate regions with separate materials, so the union
     /// must not merge a carriageway with the rail formation it crosses.
     pub surface: priors::Surface,
+    /// How far this stretch's surface stands *above* the height its corridor's
+    /// profile gives — the kerb a sidewalk rides
+    /// ([`priors::KERB_RISE_M`]). Zero for everything that is the road
+    /// surface rather than something standing on it.
+    ///
+    /// It lives on the source rather than on the region because the two ends
+    /// of the same walkway are not alike: the stretch attached to a street
+    /// carries the kerb, and the path it continues into stands on the ground.
+    /// The height field blends the two, so the rise ramps out over a band's
+    /// width instead of stepping — which is what a dropped kerb is.
+    pub rise_m: f64,
 }
 
 impl SourceSeg {
@@ -378,11 +407,18 @@ pub fn bake(scene: &SceneGraph, solved: &SolvedModel, facades: &Facades) -> Carr
     // carriageway stretch (`synth::sheets`), not read off the mapped bridge
     // spans per corridor. Sources are built first because the layering is a
     // property of how they overlap, then stamped back onto them.
-    let (mut sources, handovers) = carriageway_sources(scene, solved, facades);
+    let (mut sources, handovers, mut grade_runs) = carriageway_sources(scene, solved, facades);
     let layers = sheets::assign(scene, &sources);
     for (s, &l) in sources.iter_mut().zip(layers.iter()) {
         s.layer = l;
     }
+    // The walkway bands ride the sheets the carriageway just settled, and are
+    // appended *after* the assignment: a sidewalk must not vote on the
+    // grade-separation layering of the street it stands beside.
+    for r in &mut grade_runs {
+        r.layer = layers.get(r.first).copied().unwrap_or(0);
+    }
+    sources.extend(super::walkway::bake(scene, solved, facades, &grade_runs));
     let mut model = CarriagewayModel::build(junctions, sources, handovers);
     // An intersection pins the sheet it stands on, which is the sheet of the
     // asphalt at its own solved height. Resolved after the sources are stamped,
@@ -402,9 +438,10 @@ fn carriageway_sources(
     scene: &SceneGraph,
     solved: &SolvedModel,
     facades: &Facades,
-) -> (Vec<SourceSeg>, Vec<Handover>) {
+) -> (Vec<SourceSeg>, Vec<Handover>, Vec<GradeRun>) {
     let mut out = Vec::new();
     let mut handovers = Vec::new();
+    let mut grade_runs: Vec<GradeRun> = Vec::new();
     // `ARPT_NO_ABUTMENT_CUT=1` stops the band on the boundary again and
     // withholds the cuts with it, so an A/B re-tile of this is a flag rather
     // than a patch — the same reason `--no-hole` exists. Read once: it is a
@@ -502,6 +539,16 @@ fn carriageway_sources(
             if stops.len() < 2 {
                 continue;
             }
+            // Where this at-grade run's sources begin, so `synth::sheets`'
+            // verdict on them can be read back and handed to the walkway that
+            // rides the same stretch — one sheet decision, not two.
+            grade_runs.push(GradeRun {
+                corridor: c.id,
+                arc0: a0,
+                arc1: a1,
+                layer: 0,
+                first: out.len(),
+            });
             // **One centerline** (docs/ROADS.md H2, invariant 5): the band is
             // buffered around the same smoothed line the deck is swept along
             // and the ground benched beside, so nothing steps at the abutment
@@ -528,11 +575,12 @@ fn carriageway_sources(
                     height_b: at(stops[i + 1].clamp(a0, a1)),
                     corridor: c.id,
                     surface: c.kind.prior().surface,
+                    rise_m: 0.0,
                 });
             }
         }
     }
-    (out, handovers)
+    (out, handovers, grade_runs)
 }
 
 /// The cross-section at every station of one run: the class prior on both
@@ -551,7 +599,7 @@ fn carriageway_sources(
 /// a formation drawn through a wall, and narrowing the ballast there would
 /// shave the platform it stands on — the same exclusion `order.building_overlap`
 /// makes on the measuring side.
-fn sections_along(
+pub(crate) fn sections_along(
     c: &Corridor,
     stops: &[f64],
     pts: &[Coord],
@@ -603,8 +651,8 @@ fn sections_along(
 /// the ceiling bounds the query on a corridor whose mapped vertices are
 /// hundreds of metres apart, where the cap would otherwise reach far past
 /// anything it could be said to measure.
-const ROOM_WINDOW_MIN_M: f64 = 4.0;
-const ROOM_WINDOW_MAX_M: f64 = 32.0;
+pub(crate) const ROOM_WINDOW_MIN_M: f64 = 4.0;
+pub(crate) const ROOM_WINDOW_MAX_M: f64 = 32.0;
 
 /// The cut across the band at arc `arc` — the line the at-grade run ends on and
 /// the deck begins on, both being swept from that same station on the same
@@ -662,7 +710,7 @@ fn handover_cut(
 const CUT_OVERREACH_M: f64 = 0.5 * crate::priors::CURB_RETURN_M;
 
 /// A run shorter than this is float slop at a boundary, not a stretch of road.
-const RUN_EPS_M: f64 = 1e-6;
+pub(crate) const RUN_EPS_M: f64 = 1e-6;
 
 /// How far the band is buffered *past* a structure boundary before being cut
 /// back to the deck's face, in metres.
@@ -682,7 +730,7 @@ const STRUCTURE_OVERRUN_M: f64 = 1.5;
 /// The point at arc `a` on a corridor's own mapped polyline — the fallback for
 /// a corridor the solve returned no profile for, which therefore has no
 /// smoothed line to read.
-fn raw_point_at_arc(c: &Corridor, a: f64) -> Coord {
+pub(crate) fn raw_point_at_arc(c: &Corridor, a: f64) -> Coord {
     let n = c.nodes.len();
     if n < 2 {
         return c.nodes.first().copied().unwrap_or(Coord { x: 0.0, y: 0.0 });
@@ -721,7 +769,7 @@ fn raw_point_at_arc(c: &Corridor, a: f64) -> Coord {
 /// do neither — but it still moved the boundary to the nearest half-segment,
 /// which is this metric's whole population. Cutting the segment at the boundary
 /// keeps the one-owner property and puts the cut where it belongs.
-fn level_runs(c: &Corridor) -> Vec<(f64, f64, i64, SpanKind)> {
+pub(crate) fn level_runs(c: &Corridor) -> Vec<(f64, f64, i64, SpanKind)> {
     let n = c.nodes.len();
     if n < 2 {
         return Vec::new();
@@ -1221,7 +1269,7 @@ mod tests {
         let mut scene = SceneGraph::default();
         scene.corridors.push(c);
         let solved = SolvedModel::from_profiles(vec![Some(p)], 16);
-        let (sources, cuts) = carriageway_sources(&scene, &solved, &Facades::empty());
+        let (sources, cuts, _) = carriageway_sources(&scene, &solved, &Facades::empty());
         assert!(!sources.is_empty(), "the corridor paved nothing");
 
         // Every source endpoint lies on the smoothed line. Sampled densely
@@ -1296,7 +1344,7 @@ mod tests {
         let mut scene = SceneGraph::default();
         scene.corridors.push(c);
         let solved = SolvedModel::from_profiles(vec![None], 16);
-        let (sources, _) = carriageway_sources(&scene, &solved, &Facades::empty());
+        let (sources, _, _) = carriageway_sources(&scene, &solved, &Facades::empty());
         // The paved share of the corridor: 35 m of its 100 before the bridge
         // and 35 after, so 70 %. Measured as a
         // fraction of the corridor's own length because the fixture's `arc` is
@@ -1346,7 +1394,7 @@ mod tests {
     fn sections_of(c: Corridor, facades: &Facades) -> Vec<Section> {
         let scene = SceneGraph::new(vec![c]);
         let solved = SolvedModel::empty(15);
-        let (sources, _) = carriageway_sources(&scene, &solved, facades);
+        let (sources, _, _) = carriageway_sources(&scene, &solved, facades);
         sources.iter().flat_map(|s| [s.sect_a, s.sect_b]).collect()
     }
 

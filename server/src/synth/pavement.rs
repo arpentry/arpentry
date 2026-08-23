@@ -289,9 +289,7 @@ fn bake_chunk(
     // the output order — and the subtraction below — is a function of the
     // model, never of hashing.
     let mut levels: Vec<(i64, u32, priors::Surface)> = by_level.keys().copied().collect();
-    levels.sort_unstable_by_key(|&(level, layer, surface)| {
-        (level, layer, surface != priors::Surface::Asphalt)
-    });
+    levels.sort_unstable_by_key(|&(level, layer, surface)| (level, layer, material_rank(surface)));
 
     // The closing masks: each intersection's paved extent, in chunk metres. Only
     // the intersections near this chunk matter, and only their *shape* — the
@@ -306,20 +304,25 @@ fn bake_chunk(
             continue;
         }
         let mut closed = poly::close_within(&open, priors::CURB_RETURN_M, &masks);
-        // Where a rail formation and a carriageway share a level and a layer —
-        // a level crossing, the S15 equality case — the two regions coincide
-        // in plan at the same height, and two coplanar surfaces z-fight. The
-        // asphalt wins the fill: the carriageway is what is physically laid
-        // across the formation, and the ballast region is trimmed under it.
-        if surface == priors::Surface::Ballast {
-            if let Some(asphalt) = by_level.get(&(level, layer, priors::Surface::Asphalt)) {
-                let asphalt_closed =
-                    poly::close_within(&poly::union_all(asphalt), priors::CURB_RETURN_M, &masks);
-                closed = poly::difference(&closed, &asphalt_closed);
-                if closed.is_empty() {
-                    continue;
-                }
+        // Where two materials share a level and a layer their regions coincide
+        // in plan at the same height and two coplanar surfaces z-fight. The
+        // more physical one wins the fill and the junior region is trimmed
+        // under it: asphalt over ballast, because a level crossing's
+        // carriageway is what is physically laid across the formation; both
+        // over the walkway, because a sidewalk that overlaps a carriageway is
+        // a band whose seat the room could not narrow far enough, not a
+        // pavement laid on the road.
+        for &senior in seniors(surface) {
+            let Some(shapes) = by_level.get(&(level, layer, senior)) else { continue };
+            let senior_closed =
+                poly::close_within(&poly::union_all(shapes), priors::CURB_RETURN_M, &masks);
+            closed = poly::difference(&closed, &senior_closed);
+            if closed.is_empty() {
+                break;
             }
+        }
+        if closed.is_empty() {
+            continue;
         }
         // Clip in metres — i_overlay's exact rect intersection — then convert and
         // snap the cut coordinates onto the chunk rect's own lon/lat so the seam
@@ -347,6 +350,36 @@ fn bake_chunk(
         out.push(LevelShapes { level, layer, surface, shapes });
     }
     out
+}
+
+/// Which materials outrank this one where the two coincide in plan on one
+/// sheet — what is subtracted from it before it is emitted.
+///
+/// The order is physical, not arbitrary: the carriageway is laid across the
+/// formation at a level crossing, and both are laid before the footway beside
+/// them. It is also the emission order ([`material_rank`]), so a region is
+/// always trimmed against one already resolved.
+fn seniors(surface: priors::Surface) -> &'static [priors::Surface] {
+    match surface {
+        priors::Surface::Asphalt => &[],
+        priors::Surface::Ballast => &[priors::Surface::Asphalt],
+        priors::Surface::Walkway => &[priors::Surface::Asphalt, priors::Surface::Ballast],
+        priors::Surface::Path => {
+            &[priors::Surface::Asphalt, priors::Surface::Ballast, priors::Surface::Walkway]
+        }
+        priors::Surface::None => &[],
+    }
+}
+
+/// A material's place in that order, for sorting the regions of one sheet.
+fn material_rank(surface: priors::Surface) -> u8 {
+    match surface {
+        priors::Surface::Asphalt => 0,
+        priors::Surface::Ballast => 1,
+        priors::Surface::Walkway => 2,
+        priors::Surface::Path => 3,
+        priors::Surface::None => 4,
+    }
 }
 
 /// One carriageway run: a polyline of one class, level and surface, to be

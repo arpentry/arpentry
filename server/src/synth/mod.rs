@@ -25,6 +25,7 @@ pub mod region;
 pub mod sheets;
 pub mod road;
 pub mod structure;
+pub mod walkway;
 
 use crate::ground::sampler::GroundSampler;
 use crate::project::Bounds;

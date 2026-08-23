@@ -199,9 +199,42 @@ pub enum Surface {
     /// robust to a wrong height was missing for rail, and rail paid the whole
     /// price in daylight.
     Ballast,
-    /// No surface band: paths, tracks, street-running rail, water. The stroke
-    /// is cartographic and the ground is the feature.
+    /// A footway: the band people walk on beside a street, or the strip a path
+    /// wears across open ground.
+    ///
+    /// **No class prior returns this**, and that is deliberate rather than an
+    /// omission. `surface` on a [`Prior`] answers "what carriageway does this
+    /// class lay", and every consumer of it reads it that way — a `None` there
+    /// means "no cross-section of its own", which is what decides that a
+    /// footbridge gets a pedestrian slab rather than a car deck and that a
+    /// footway never becomes a corridor. A walkway is not a cross-section a
+    /// class asks for; it is a band the model *derives*, from an attachment to
+    /// a street (`assemble::walks`) or from a draped pedestrian line, and it
+    /// arrives as the material on a `synth::carriageway::SourceSeg`.
+    Walkway,
+    /// The strip a pedestrian way wears where it belongs to no street: a
+    /// hillside path, a track through a park, the stretch of a footway between
+    /// the two ends it is a sidewalk on.
+    ///
+    /// Not the same material as a [`Walkway`](Self::Walkway) and not a
+    /// pedantic distinction: a sidewalk stands a kerb above a carriageway and
+    /// is part of that street's cross-section, while a path stands on the
+    /// ground and is part of nothing. Drawn as one class they are also
+    /// *measured* as one, and `contact.sidewalk_grade` — which asks how far a
+    /// sidewalk departs from the street beside it — read a hillside path 17.7 m
+    /// above a road it merely passed near as a 17.7 m defect.
+    Path,
+    /// No surface band: tracks, street-running rail, water. The stroke is
+    /// cartographic and the ground is the feature.
     None,
+}
+
+impl Surface {
+    /// Whether this material is a pedestrian band — the walkway sheet of the
+    /// height field, and the zooms [`WALK_SURFACE_MIN_ZOOM`] gates.
+    pub fn is_pedestrian(self) -> bool {
+        matches!(self, Surface::Walkway | Surface::Path)
+    }
 }
 
 /// Half-width in metres of a ramp, whatever its class: a single lane plus
@@ -238,7 +271,7 @@ impl Prior {
     pub fn shoulder_m(&self) -> f64 {
         match self.surface {
             Surface::Asphalt => STRUCTURE_SHOULDER_M,
-            Surface::Ballast | Surface::None => 0.0,
+            Surface::Ballast | Surface::Walkway | Surface::Path | Surface::None => 0.0,
         }
     }
 
@@ -969,6 +1002,38 @@ pub const WALK_ALONG: f64 = 0.87;
 /// the mean offset is read off two or three samples and says nothing about
 /// where the band would run.
 pub const WALK_ATTACH_MIN_M: f64 = 10.0;
+
+/// Width in metres of the band a pedestrian way is drawn as — the sidewalk
+/// beside a street and the strip a path wears across open ground alike.
+///
+/// Two metres is a sidewalk two people pass on. It is a *nominal*: an attached
+/// band gives way to the room its street has, down to
+/// [`WALK_MIN_WIDTH_M`], below which no band is drawn — which is what a street
+/// too narrow for a sidewalk looks like.
+pub const WALK_WIDTH_M: f64 = 2.0;
+
+/// Narrowest walkway band worth drawing, in metres. Under this the band is a
+/// sliver whose casing rim is most of its area, and a way squeezed to it is
+/// telling you there is no sidewalk there.
+pub const WALK_MIN_WIDTH_M: f64 = 0.8;
+
+/// How high a walkway attached to a street stands above the carriageway edge
+/// beside it, in metres — the kerb.
+///
+/// A real kerb is 0.10–0.15 m. It is the whole visible difference between a
+/// sidewalk and a painted margin, and it is what makes the band's own apron
+/// wall a kerb face rather than a crack. An unattached path carries no rise:
+/// it stands on the ground, which is what it is.
+pub const KERB_RISE_M: f64 = 0.12;
+
+/// First zoom that meshes walkway bands.
+///
+/// Three rungs above [`ROAD_SURFACE_MIN_ZOOM`], because a 2 m band is a third
+/// of a pixel at z13 and a fifth of the carriageway it borders: drawing it
+/// there costs a region, a hole and an apron per path for something no viewer
+/// can resolve. **Anything per-zoom is invisible to a `z_ref` baseline** — a
+/// change here has to be scored against the coarse scorecard too.
+pub const WALK_SURFACE_MIN_ZOOM: u8 = 16;
 
 /// Flat margin beyond the shoulder that a road earthwork keeps at road
 /// height before the batter starts — the verge between the asphalt edge and

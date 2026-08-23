@@ -428,6 +428,26 @@ fn drawn_ground(tile: &TileScene, terrain: &SurfaceMesh, px: f64, py: f64) -> Op
     })
 }
 
+/// What a metre outside a kerb is standing on: the walkway band where one has
+/// been laid, and the drawn terrain everywhere else.
+///
+/// **The probe follows the drawn world, not the terrain mesh.** A walkway takes
+/// its own hole out of the ground, so once sidewalks exist the terrain answers
+/// `None` exactly where the strip beside the kerb is properly occupied — and
+/// `contact.kerb_lip`, reading terrain alone, silently dropped those samples
+/// and reported a *worse* rate on the bare verges left behind. The metric had
+/// not moved; its best members had left the population. Reading the band gives
+/// the honest answer there: a kerb rise, not a drop.
+fn beside_ground(tile: &TileScene, terrain: &SurfaceMesh, px: f64, py: f64) -> Option<f64> {
+    tile.roads
+        .iter()
+        .filter(|r| {
+            r.level == 0 && (r.class.starts_with("walk_") || r.class.starts_with("path_"))
+        })
+        .find_map(|r| r.mesh.height_at(px, py))
+        .or_else(|| terrain.height_at(px, py))
+}
+
 /// One end of a deck: a point on its centerline and the deck top there.
 struct DeckEnd {
     x: f64,
@@ -643,7 +663,7 @@ impl Check for Contact {
                     mx + dx / len * LIP_PROBE_M,
                     my + dy / len * LIP_PROBE_M,
                 );
-                let Some(gz) = terrain.height_at(px, py) else { continue };
+                let Some(gz) = beside_ground(tile, terrain, px, py) else { continue };
                 let kerb_z = (az + bz) * 0.5;
                 let v = kerb_z - gz;
                 self.lip.push(v);

@@ -98,6 +98,14 @@ pub fn tile_meshes(
 ) -> Vec<PavedMesh> {
     let mut out = Vec::new();
     for ls in levels {
+        // A two-metre band is a third of a pixel at the rungs where asphalt
+        // first meshes, so the walkway starts higher up
+        // ([`priors::WALK_SURFACE_MIN_ZOOM`]) — a region, a hole and an apron
+        // per footpath, for something no viewer can resolve, is the whole cost
+        // and none of the benefit.
+        if ls.surface.is_pedestrian() && z < priors::WALK_SURFACE_MIN_ZOOM {
+            continue;
+        }
         let rings = clip_to_tile(&ls.shapes, bounds);
         if rings.is_empty() {
             continue;
@@ -130,9 +138,13 @@ pub fn tile_meshes(
         let rings: Vec<TaggedRing> =
             rings.iter().map(|r| densify_ring(r, bounds, grid)).collect();
 
+        // Which sheet this region's heights come from. A walkway reads its own,
+        // so the kerb between it and the carriageway beside it is a step rather
+        // than a blend (`synth::height::Sheet`).
+        let sheet = crate::synth::height::Sheet::of(ls.level, ls.layer, ls.surface);
         let mut scratch = Vec::new();
         let mut height = |lon: f64, lat: f64| {
-            let h = field.at(sampler, ls.level, ls.layer, z, z_ref, bounds, lon, lat, &mut scratch);
+            let h = field.at(sampler, sheet, z, z_ref, bounds, lon, lat, &mut scratch);
             project::quantize_z(h)
         };
         let probe = std::env::var_os("ARPT_PAVE_PROBE").is_some();
@@ -149,7 +161,7 @@ pub fn tile_meshes(
             drop(height);
             let mut both = |lon: f64, lat: f64| -> (i32, i32) {
                 let road =
-                    field.at(sampler, ls.level, ls.layer, z, z_ref, bounds, lon, lat, &mut scratch);
+                    field.at(sampler, sheet, z, z_ref, bounds, lon, lat, &mut scratch);
                 // The same query the constrained terrain mesh makes for its own
                 // vertices at this rung, so the apron's foot lands exactly on
                 // the ground the neighbouring triangle draws.

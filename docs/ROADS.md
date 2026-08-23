@@ -188,7 +188,19 @@ either representation alone.
    could not supply. A sidewalk is part of that cross-section and not a
    feature of its own: its band takes its shape from the **host centerline**
    over the arc range `assemble::walks` attached it across, never from its
-   own mapped polyline, which decides only *where* a sidewalk is.
+   own mapped polyline, which decides only *where* a sidewalk is, *which
+   side*, and *how far out* (`synth::walkway`). The room is spent in order —
+   carriageway, then walkway, then verge — so a street with no room for a
+   sidewalk simply has none, which is what a narrow street looks like.
+7. **A pedestrian way is a surface, not a line.** From
+   `WALK_SURFACE_MIN_ZOOM` every footway, path, cycleway and stair is a
+   region in the union like a carriageway: its own material, its own hole in
+   the drawn ground, its own apron. Two materials, because they are two
+   things — a `Walkway` stands a kerb (`KERB_RISE_M`) above the carriageway
+   it belongs to, and a `Path` stands on the ground and belongs to nothing.
+   Their cartographic strokes are deleted at those zooms for the same reason
+   a carriageway's is: the mesh *is* the surface. What keeps a stroke is what
+   the walkway model did not draw — a footbridge, a subway, a crosswalk.
 2. **A closed, simple silhouette.** The paved surface has no gaps, no
    slivers, no overlapping fills. Held *by construction* since P2 increment 5:
    the surface is literally one unioned region per level, so there are no two
