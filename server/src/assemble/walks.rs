@@ -85,8 +85,12 @@ pub struct WalkLine {
     /// (phase 6), never a band beside one, so it attaches to nothing — but the
     /// connectors it shares are evidence about the ways it joins.
     pub crosswalk: bool,
-    /// Connector ids the line touches, for that shared-connector evidence.
-    pub connectors: Vec<u64>,
+    /// The connectors the line touches — id and `at` fraction along the way,
+    /// as Overture maps them. The ids are the shared-connector evidence; the
+    /// fractions say *where* a way joins the network, which is what lets an
+    /// endpoint know it is supposed to connect to something
+    /// (`verify::model::network`).
+    pub connectors: Vec<super::columns::Connector>,
     /// The stretches of the way that are *not* on the ground, as fractions of
     /// its length — a footbridge, a subway, a passage under a building.
     ///
@@ -303,7 +307,7 @@ pub fn attach(corridors: &[Corridor], walks: Vec<WalkLine>) -> Walks {
     let crossing_nodes: HashSet<u64> = walks
         .iter()
         .filter(|w| w.crosswalk)
-        .flat_map(|w| w.connectors.iter().copied())
+        .flat_map(|w| w.connectors.iter().map(|c| c.id))
         .collect();
     let mut scratch: Vec<u32> = Vec::new();
     for (li, w) in walks.iter().enumerate() {
@@ -311,7 +315,11 @@ pub fn attach(corridors: &[Corridor], walks: Vec<WalkLine>) -> Walks {
         // anything attaches to it — the empty ones are the paths.
         let first = out.attachments.len() as u32;
         out.line_ranges.push((first, first));
-        if w.crosswalk || w.line.len() < 2 {
+        // A crossing is paint on a carriageway, and a **track** is not street
+        // furniture — "a farm track beside a road is not its sidewalk". Both
+        // stay in `lines`, so `synth::walkway` still bands them along their
+        // own polylines; neither may take a street's cross-section.
+        if w.crosswalk || !priors::is_pedestrian(w.kind) || w.line.len() < 2 {
             continue;
         }
         let cos_lat = crate::scene::run_cos_lat(&w.line);
@@ -346,7 +354,7 @@ pub fn attach(corridors: &[Corridor], walks: Vec<WalkLine>) -> Walks {
         // crosswalk clears a lower bar, since the crossing is independent
         // evidence that it is street furniture.
         let cover = covered as f64 / hits.len() as f64;
-        let joined = w.connectors.iter().any(|c| crossing_nodes.contains(c));
+        let joined = w.connectors.iter().any(|c| crossing_nodes.contains(&c.id));
         let by_cover = cover >= priors::WALK_COVER;
         let geometric = by_cover || (joined && cover >= WALK_COVER_JOINED);
         if !w.tagged && !geometric {
@@ -789,8 +797,9 @@ mod tests {
 
     #[test]
     fn a_crosswalk_attaches_to_nothing_but_vouches_for_what_it_joins() {
+        let joint = |id| super::super::columns::Connector { id, at: 1.0 };
         let mut sidewalk = walk(beside(5.0, 0.0, 30.0), false);
-        sidewalk.connectors = vec![77];
+        sidewalk.connectors = vec![joint(77)];
         // Half of a 60 m way runs with the street: under WALK_COVER on its own.
         sidewalk.line.push(Coord { x: 6.9 + east(40.0), y: LAT + north(35.0) });
         let mut zebra = walk(
@@ -802,7 +811,7 @@ mod tests {
         );
         zebra.source = 2;
         zebra.crosswalk = true;
-        zebra.connectors = vec![77];
+        zebra.connectors = vec![joint(77)];
         let alone = attach(&[street(100.0)], vec![clone_of(&sidewalk)]);
         assert!(alone.is_empty(), "half its length is not enough on its own");
         let joined = attach(&[street(100.0)], vec![sidewalk, zebra]);

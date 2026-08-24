@@ -183,6 +183,16 @@ pub struct World {
     /// Every solved bridge deck indexed by plan position, so phase 1 can ask
     /// whether a draped feature's elevated span is a sidewalk on one of them.
     pub carriers: synth::carried::Carriers,
+    /// Every registered crosswalk's paint chords, by source hash
+    /// (`synth::walkway::crossings`): phase 1 paints the zebra ladder from
+    /// these, and a crosswalk that registered keeps no stroke at the walk
+    /// zooms — the ladder and its stub bands are the crossing.
+    pub crossings: std::collections::HashMap<u64, Vec<(Coord, Coord)>>,
+    /// Source hashes of the pedestrian ways that came out of the walkway
+    /// model as drawn band. A way outside this set was declined — the seat
+    /// had no room, or the ground fit could not carry a band there — and it
+    /// keeps its cartographic stroke at every zoom rather than disappearing.
+    pub banded_walks: std::collections::HashSet<u64>,
     /// Every building footprint edge, indexed by plan position: the room a
     /// street's cross-section is allocated out of (`assemble::facades`). Read
     /// at bake time only — never per lattice vertex.
@@ -358,13 +368,30 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // two constructions of one.
     let seniors =
         ground::derive_seniors(&scene, &solved, &facades, cfg.terrain.as_deref(), threads);
-    let mut walk_bands = synth::walkway::bands(&scene, &solved, &facades);
+    let (mut walk_bands, mut walk_sources) = synth::walkway::bands(&scene, &solved, &facades);
+    // The crossings, registered once against the same carriageways the union
+    // buffers: the kerb stubs join the bands — they are the strip of real
+    // sidewalk between the kerb and whatever the crossing joins, so they are
+    // fitted, benched and unioned like any band — and the paint chords ride to
+    // phase 1, which draws the zebra ladder from them.
+    let (crossing_paints, crossing_stubs) = synth::walkway::crossings(&scene);
+    // A stub carries no source: whether a crossing was *drawn* is decided by
+    // its registration (`crossing_drawn`), and its zebra survives even where
+    // the fit declines the kerb stubs.
+    walk_sources.resize(walk_bands.len() + crossing_stubs.len(), 0);
+    walk_bands.extend(crossing_stubs);
     synth::walkway::fit_to_ground(
         &mut walk_bands,
+        &mut walk_sources,
         &seniors,
         cfg.terrain.as_deref(),
         solved.z_ref,
     );
+    // Which pedestrian ways survived as drawn surface. Anything not in here
+    // keeps the cartographic stroke that is all it has: the surface model
+    // declining to build a band must cost detail, never the feature (I6).
+    let banded_walks: std::collections::HashSet<u64> =
+        walk_sources.into_iter().filter(|&s| s != 0).collect();
     let ground = Arc::new(ground::derive_draped(
         seniors,
         &walk_bands,
@@ -384,7 +411,9 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // function of the solved model, so every worker and every tile must get
     // the same one (I5).
     let carriers = synth::carried::Carriers::build(&scene, &solved);
-    let world = World { scene, solved, ground, junctions, pavement, carriers, facades };
+    let crossings = crossing_paints.into_iter().map(|c| (c.source, c.chords)).collect();
+    let world =
+        World { scene, solved, ground, junctions, pavement, carriers, facades, crossings, banded_walks };
     let World { scene, solved, ground, junctions, pavement, .. } = &world;
     stats.pave_chunks = pavement.chunk_count() as u64;
     stats.pave_area_m2 = pavement.area_m2();
@@ -421,6 +450,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             solved,
             ground,
             facades: &world.facades,
+            junctions,
             terrain: cfg.terrain.as_deref(),
             bounds: cfg.bbox,
             threads,
@@ -1005,9 +1035,10 @@ fn stamp_elevations(buckets: &mut [Vec<EncoderFeature>], sampler: &mut GroundSam
 /// they ride, so this class check is what separates them from a road when the
 /// fill stroke is dropped — markings keep their SDF stroke at every zoom.
 fn is_marking(f: &EncoderFeature) -> bool {
-    f.properties
-        .iter()
-        .any(|(k, v)| k.as_str() == "class" && matches!(v, Value::String(s) if s.as_str() == "marking"))
+    f.properties.iter().any(|(k, v)| {
+        k.as_str() == "class"
+            && matches!(v, Value::String(s) if matches!(s.as_str(), "marking" | "crossing"))
+    })
 }
 
 /// Stage 4 for the tile: runs each transportation feature's generator against
@@ -1036,7 +1067,11 @@ fn stamp_synth(
         // fill: the mesh *is* the surface now. This covers the at-grade stroke and
         // the `deck: true` stroke re-painted over a structure, whose own solid
         // carries its top.
-        !(surface_zoom && paves_via_union(f)) && !(walk_zoom && paves_via_walkway(f))
+        let keep = !(surface_zoom && paves_via_union(f)) && !(walk_zoom && paves_via_walkway(f));
+        // The registration stamp has done its job; it is pipeline plumbing,
+        // not a tile attribute.
+        f.properties.retain(|(k, _)| k != "crossing_drawn" && k != "walk_banded");
+        keep
     });
 }
 
@@ -1058,8 +1093,12 @@ fn stamp_synth(
 ///   ([`Synth::DrapedDeck`]) or rides the road bridge under it
 ///   ([`synth::carried`]), and that geometry *is* the walkway there. Deleting
 ///   the stroke deletes the footbridge with it.
-/// - **A crosswalk.** Not a band and not yet paint either (the plan's phase 6),
-///   so deleting the line would delete the crossing.
+/// - **A crosswalk that registered no paint** — mapped across a path, or
+///   floating in data noise. A *registered* one is drawn: the zebra ladder
+///   plus its kerb stub bands (`synth::walkway::crossings`), so its stroke
+///   would be a line painted over its own crossing. Phase 1 stamps the
+///   registration onto the feature (`crossing_drawn`), because this test
+///   cannot see the model.
 /// - **A tunnel or subway piece**, for the same reason as the bridge: the
 ///   drawn world has no band under the ground.
 fn paves_via_walkway(f: &EncoderFeature) -> bool {
@@ -1070,13 +1109,26 @@ fn paves_via_walkway(f: &EncoderFeature) -> bool {
         return false;
     }
     if crate::value::str_of(&f.properties, "subclass") == Some("crosswalk") {
+        return f
+            .properties
+            .iter()
+            .any(|(k, v)| k == "crossing_drawn" && matches!(v, Value::Int(1)));
+    }
+    // **Only where a band was actually built.** The class says what kind of
+    // thing this is; the stamp says what the walkway model made of it. A way
+    // the seat had no room for, or whose band the ground fit declined on a
+    // steep flank, keeps its stroke — losing the band must cost detail, never
+    // the feature (I6). Without this the Territet switchback at
+    // 6.9189,46.4304 drew as a handful of disjoint slabs with nothing at all
+    // between them.
+    if !f.properties.iter().any(|(k, v)| k == "walk_banded" && matches!(v, Value::Int(1))) {
         return false;
     }
     if crate::value::f64_of(&f.properties, "level_rules").is_some_and(|l| l != 0.0) {
         return false;
     }
     let class = crate::value::str_of(&f.properties, "class");
-    crate::priors::is_pedestrian(crate::priors::Kind::parse(None, class, None))
+    crate::priors::earns_walk_band(crate::priors::Kind::parse(None, class, None))
 }
 
 /// Whether the unioned surface covers this feature, so its own fill stroke would
@@ -1416,6 +1468,41 @@ fn process_feature(
                 }
             }
         }
+        // Did the walkway model actually draw this way? The stamp is stripped
+        // before encoding (`stamp_synth`); it exists so the stroke-deletion
+        // test can ask what was *built* rather than what class this is, and a
+        // way the ground fit declined keeps the line that is all it has.
+        let base_props: Vec<(String, Value)> = {
+            let mut p = f.properties.clone();
+            if prop_id(&f.properties)
+                .is_some_and(|id| world.banded_walks.contains(&source_hash(&id)))
+            {
+                p.push(("walk_banded".to_string(), Value::Int(1)));
+            }
+            p
+        };
+        // A registered crosswalk paints its zebra ladder — one run of bars per
+        // kerb-to-kerb chord (`synth::walkway::crossings`) — and its stroke is
+        // deleted at the walk zooms (`paves_via_walkway`): the ladder and the
+        // kerb stub bands are the crossing now. An unregistered one (mapped
+        // across a path, or floating in data noise) keeps the stroke that is
+        // all it has ever had.
+        let registered_crossing = prop_id(&f.properties)
+            .and_then(|id| world.crossings.get(&source_hash(&id)));
+        if let Some(chords) = registered_crossing {
+            for &(a, b) in chords {
+                for m in synth::markings::crossing_bars(a, b) {
+                    emit_geometry(layer, &m.geometry, &m.properties(), synth, cfg, sorter, stats)?;
+                }
+            }
+            // The stroke goes out stamped with its registration, so the walk
+            // zooms can delete it (`paves_via_walkway`) while the coarse zooms
+            // keep the line that is all a crossing is down there. The stamp is
+            // stripped from the tile before encoding (`stamp_synth`).
+            let mut props = base_props.clone();
+            props.push(("crossing_drawn".to_string(), Value::Int(1)));
+            return emit_geometry(layer, &f.geometry, &props, synth, cfg, sorter, stats);
+        }
         if let Geometry::LineString(line) = &f.geometry {
             if !f.level_runs.is_empty() {
                 // Where the span's edge landed on a wall rather than on a bank,
@@ -1435,7 +1522,7 @@ fn process_feature(
                     if level < 0 {
                         continue;
                     }
-                    let mut props = f.properties.clone();
+                    let mut props = base_props.clone();
                     let tag = if level > 0 {
                         // The level ordinal survives as a property so the
                         // client colours it as a structure, exactly as a
@@ -1468,7 +1555,7 @@ fn process_feature(
                 return Ok(());
             }
         }
-        return emit_geometry(layer, &f.geometry, &f.properties, synth, cfg, sorter, stats);
+        return emit_geometry(layer, &f.geometry, &base_props, synth, cfg, sorter, stats);
     }
     emit_geometry(layer, &f.geometry, &f.properties, Synth::None, cfg, sorter, stats)
 }

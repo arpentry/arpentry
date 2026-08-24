@@ -58,6 +58,255 @@ const PATH_STATION_M: f64 = 8.0;
 /// whose casing is most of it.
 const MIN_BAND_M: f64 = 4.0;
 
+/// How far a crossing's mapped line is extended past each end when it is
+/// registered against the carriageways, in metres. A crosswalk is mapped by
+/// hand across the road it crosses and its endpoints rarely lie on the kerbs
+/// (docs/ROADS.md §2); the extension lets the registration find the asphalt
+/// the mapped stub stops short of. It bounds search, not paint — the painted
+/// extent is exactly the on-asphalt interval, wherever the mapped ends are.
+const CROSSING_EXTEND_M: f64 = 8.0;
+
+/// Registration sampling step along a crossing line, in metres — fine enough
+/// that a kerb lands within a step of where the buffer test says.
+const CROSSING_STEP_M: f64 = 0.25;
+
+/// Two on-asphalt intervals closer than this merge, in metres: a lane
+/// divider's worth of noise is not a refuge island.
+const CROSSING_MERGE_M: f64 = 1.0;
+
+/// Shortest on-asphalt interval that counts as a crossed carriageway, in
+/// metres — under it the line grazed an edge rather than crossed a road.
+const CROSSING_MIN_CHORD_M: f64 = 1.5;
+
+/// Shortest kerb stub worth a band, in metres. Under it the strip is inside
+/// the quantization of the kerb itself.
+const CROSSING_MIN_STUB_M: f64 = 0.4;
+
+/// One crosswalk, registered: the kerb-to-kerb chords its paint spans. The
+/// stubs — the stretches of the *mapped* line outside every chord — are
+/// returned by [`crossings`] as ordinary band segments instead, because they
+/// are the strip of real sidewalk between the kerb and whatever the crossing
+/// joins.
+pub struct CrossingPaint {
+    /// Source hash of the crosswalk feature, for the phase-1 lookup.
+    pub source: u64,
+    /// Kerb-to-kerb chords over drawn asphalt, in walk order along the line.
+    /// More than one where the crossing spans a divided carriageway: the gap
+    /// between them is the refuge island, and it is not painted.
+    pub chords: Vec<(Coord, Coord)>,
+}
+
+/// Registers every crosswalk line against the carriageways: the paint chords
+/// per crossing, and the kerb stubs as Walkway band segments.
+///
+/// **One derivation, two readers** (the codebase's own sliver lesson): the
+/// interval a crossing lies on asphalt is computed once, here; the paint
+/// ladder is its inside and the stub bands are its outside, so the two meet
+/// at the kerb by construction. Registration is against the corridors' raw
+/// centerlines and drawn half-widths — the same cross-section the union
+/// buffers — so the chord and the asphalt edge agree to the smoothing
+/// displacement (a median half-metre at junction mouths), which the paint's
+/// decal bias absorbs.
+///
+/// A crossing that registers no chord — mapped across a path, or floating in
+/// data noise (R12) — contributes nothing here and keeps its cartographic
+/// stroke, which is exactly the previous behaviour.
+pub fn crossings(scene: &SceneGraph) -> (Vec<CrossingPaint>, Vec<SourceSeg>) {
+    let mut paints = Vec::new();
+    let mut stubs = Vec::new();
+    if std::env::var_os("ARPT_NO_CROSSING").is_some() {
+        return (paints, stubs);
+    }
+    // Every drivable carriageway edge, indexed by plan position — the same
+    // hosts `assemble::walks` attaches against, indexed the same way.
+    let mut grid = crate::assemble::grid::GridIndex::with_cell_m(64.0);
+    let mut edges: Vec<(u32, u32)> = Vec::new();
+    let mut reach_m = 0.0f64;
+    for (ci, c) in scene.corridors.iter().enumerate() {
+        if c.kind.prior().surface != priors::Surface::Asphalt {
+            continue;
+        }
+        let Some(half) = super::carriageway::corridor_half_width_m(c) else { continue };
+        reach_m = reach_m.max(half);
+        for i in 0..c.nodes.len().saturating_sub(1) {
+            let (a, b) = (c.nodes[i], c.nodes[i + 1]);
+            grid.insert(
+                (a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)),
+                edges.len() as u32,
+            );
+            edges.push((ci as u32, i as u32));
+        }
+    }
+    let mut scratch: Vec<u32> = Vec::new();
+    for (line, _) in scene.walks.lines() {
+        if !line.crosswalk || line.line.len() < 2 {
+            continue;
+        }
+        if !line.spans.is_empty() {
+            continue; // partly elevated: not paint on an at-grade carriageway
+        }
+        let cos_lat = crate::scene::run_cos_lat(&line.line);
+        let arc = crate::scene::cumulative_arc(&line.line);
+        let total = *arc.last().unwrap_or(&0.0);
+        if !(total > 0.0) {
+            continue;
+        }
+        // The extended line: the mapped one, pushed out along its end
+        // tangents. Positions are parameterized by extended arc `t` in
+        // [-EXTEND, total + EXTEND].
+        let at = |t: f64| -> Coord {
+            if t < 0.0 {
+                end_extension(&line.line, cos_lat, false, -t)
+            } else if t > total {
+                end_extension(&line.line, cos_lat, true, t - total)
+            } else {
+                point_on(&line.line, &arc, t)
+            }
+        };
+        // On-asphalt intervals of the extended line.
+        let mut on: Vec<(f64, f64)> = Vec::new();
+        let mut t = -CROSSING_EXTEND_M;
+        let mut open: Option<f64> = None;
+        while t <= total + CROSSING_EXTEND_M + 1e-9 {
+            let p = at(t);
+            let inside = on_asphalt(scene, &grid, &edges, reach_m, p, cos_lat, &mut scratch);
+            match (inside, open) {
+                (true, None) => open = Some(t),
+                (false, Some(s)) => {
+                    on.push((s, t - CROSSING_STEP_M));
+                    open = None;
+                }
+                _ => {}
+            }
+            t += CROSSING_STEP_M;
+        }
+        if let Some(s) = open {
+            on.push((s, total + CROSSING_EXTEND_M));
+        }
+        // Merge across noise, drop the grazes.
+        let mut merged: Vec<(f64, f64)> = Vec::new();
+        for (s, e) in on {
+            match merged.last_mut() {
+                Some(last) if s - last.1 < CROSSING_MERGE_M => last.1 = e,
+                _ => merged.push((s, e)),
+            }
+        }
+        merged.retain(|&(s, e)| e - s >= CROSSING_MIN_CHORD_M);
+        if merged.is_empty() {
+            continue; // nothing crossed: keep the stroke, draw nothing
+        }
+        // The stubs: the mapped line outside every chord. Only what the map
+        // actually draws — the extension found the kerb, it is not sidewalk.
+        let mut cursor = 0.0f64;
+        for &(s, e) in &merged {
+            stub_band(&line.line, &arc, cursor.min(total), s.clamp(0.0, total), cos_lat, &mut stubs);
+            cursor = e.max(cursor);
+        }
+        stub_band(&line.line, &arc, cursor.clamp(0.0, total), total, cos_lat, &mut stubs);
+        paints.push(CrossingPaint {
+            source: line.source,
+            chords: merged.iter().map(|&(s, e)| (at(s), at(e))).collect(),
+        });
+    }
+    (paints, stubs)
+}
+
+/// Whether a point lies on a drawn carriageway: within some corridor's own
+/// drawn half-width of its centerline.
+fn on_asphalt(
+    scene: &SceneGraph,
+    grid: &crate::assemble::grid::GridIndex,
+    edges: &[(u32, u32)],
+    reach_m: f64,
+    p: Coord,
+    cos_lat: f64,
+    scratch: &mut Vec<u32>,
+) -> bool {
+    let (rx, ry) = (reach_m / (DEG_M * cos_lat), reach_m / DEG_M);
+    grid.query((p.x - rx, p.y - ry, p.x + rx, p.y + ry), scratch);
+    for &e in scratch.iter() {
+        let (ci, ni) = edges[e as usize];
+        let c = &scene.corridors[ci as usize];
+        let Some(half) = super::carriageway::corridor_half_width_m(c) else { continue };
+        let (a, b) = (c.nodes[ni as usize], c.nodes[ni as usize + 1]);
+        if probe_seg_dist_m(p, a, b, c.cos_lat) <= half {
+            return true;
+        }
+    }
+    false
+}
+
+/// A point `over_m` past one end of a polyline, along that end's tangent.
+fn end_extension(line: &[Coord], cos_lat: f64, at_end: bool, over_m: f64) -> Coord {
+    let (p, q) = if at_end {
+        (line[line.len() - 1], line[line.len() - 2])
+    } else {
+        (line[0], line[1])
+    };
+    let m_lon = DEG_M * cos_lat;
+    let (dx, dy) = ((p.x - q.x) * m_lon, (p.y - q.y) * DEG_M);
+    let len = dx.hypot(dy);
+    if !(len > 0.0) {
+        return p;
+    }
+    Coord { x: p.x + dx / len * over_m / m_lon, y: p.y + dy / len * over_m / DEG_M }
+}
+
+/// The point at arc `s` along a polyline (clamped to it).
+fn point_on(line: &[Coord], arc: &[f64], s: f64) -> Coord {
+    let i = arc.partition_point(|&a| a < s).clamp(1, line.len() - 1);
+    let (a0, a1) = (arc[i - 1], arc[i]);
+    let t = if a1 > a0 { ((s - a0) / (a1 - a0)).clamp(0.0, 1.0) } else { 0.0 };
+    Coord {
+        x: line[i - 1].x + (line[i].x - line[i - 1].x) * t,
+        y: line[i - 1].y + (line[i].y - line[i - 1].y) * t,
+    }
+}
+
+/// Bands the stretch `[s0, s1]` of a crossing's mapped line — a kerb stub:
+/// the strip of real sidewalk between the carriageway edge and whatever the
+/// crossing joins. Walkway material **on the ground**: the end of a crossing
+/// is a dropped kerb by construction — it is where a person steps off — and a
+/// rise here would float the band above the bench stratum D cuts for it,
+/// which keys a hostless band's target to the ground along its centerline
+/// (`contact.walk_rim` read the 0.12 m float on every stub, measured).
+fn stub_band(
+    line: &[Coord],
+    arc: &[f64],
+    s0: f64,
+    s1: f64,
+    cos_lat: f64,
+    out: &mut Vec<SourceSeg>,
+) {
+    if s1 - s0 < CROSSING_MIN_STUB_M {
+        return;
+    }
+    // A sidewalk's width, not the crossing's. `CROSSING_WIDTH_M` is how deep
+    // the *paint* is along the road axis; the stub is the piece of pavement
+    // the crossing lands on, and drawing it wider than the band it joins put
+    // a bulge at every kerb.
+    let half = priors::WALK_WIDTH_M * 0.5;
+    let (a, b) = (point_on(line, arc, s0), point_on(line, arc, s1));
+    out.push(SourceSeg {
+        a,
+        b,
+        cos_lat,
+        half_m: half,
+        sect_a: Section::uniform(half),
+        sect_b: Section::uniform(half),
+        level: 0,
+        layer: 0,
+        cut_a: None,
+        cut_b: None,
+        height_a: 0.0,
+        height_b: 0.0,
+        corridor: NO_HOST,
+        surface: priors::Surface::Walkway,
+        rise_m: 0.0,
+        arc0: s0,
+    });
+}
+
 /// Builds every walkway band in the extract: the geometry, the seat and the
 /// material, with no grade layer yet.
 ///
@@ -71,22 +320,150 @@ const MIN_BAND_M: f64 = 4.0;
 /// They are *not* handed to `synth::sheets`: a band's sheet is its host's, and
 /// letting a sidewalk vote on the grade-separation layering would let the thing
 /// standing on a surface decide what that surface is.
-pub fn bands(scene: &SceneGraph, solved: &SolvedModel, facades: &Facades) -> Vec<SourceSeg> {
+/// Builds every walkway band, and — in step with it — the **source each
+/// segment came from**.
+///
+/// The second vector is what lets the drawing keep its promise of graceful
+/// degradation (docs/GENERATION.md I6). A pedestrian way's cartographic
+/// stroke is deleted at the walk zooms because the band *is* the surface
+/// (`pipeline::paves_via_walkway`), and that test was the class and nothing
+/// else — so a way whose band the ground fit declined to build lost its
+/// stroke too and vanished from the map entirely. On a steep flank that is
+/// exactly where it happens: the Territet switchback at 6.9189,46.4304 came
+/// out as a handful of disjoint slabs with nothing between them. Carrying the
+/// source per segment lets phase 1 ask *was anything actually drawn for this
+/// feature* rather than *is this feature the kind of thing we draw*.
+pub fn bands(
+    scene: &SceneGraph,
+    solved: &SolvedModel,
+    facades: &Facades,
+) -> (Vec<SourceSeg>, Vec<u64>) {
     let mut out = Vec::new();
+    let mut sources: Vec<u64> = Vec::new();
     if std::env::var_os("ARPT_NO_WALK_BAND").is_some() {
-        return out;
+        return (out, sources);
     }
     let mut scratch: Vec<u32> = Vec::new();
-    for (line, attached) in scene.walks.lines() {
+    let mut census = AttachCensus::default();
+    // `ARPT_PROBE_WALK="lon,lat[,r_m]"`: for every pedestrian line passing
+    // within `r_m` (default 30) of the point, print what the model made of it
+    // — the attachments it won and the band segments that actually came out —
+    // so a bare spot in the render can be traced to the rule that made it.
+    let probe = std::env::var("ARPT_PROBE_WALK").ok().and_then(|s| {
+        let v: Vec<f64> = s.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+        match v.as_slice() {
+            [lon, lat] => Some((*lon, *lat, 30.0)),
+            [lon, lat, r] => Some((*lon, *lat, *r)),
+            _ => None,
+        }
+    });
+    for (li, (line, attached)) in scene.walks.lines().enumerate() {
         if line.crosswalk || line.line.len() < 2 {
             continue; // a crossing is paint on the carriageway, not a band
         }
-        for a in attached {
-            attached_band(scene, solved, facades, a, &mut out, &mut scratch);
+        let near_probe = probe.map(|(lon, lat, r)| {
+            let cos_lat = crate::scene::run_cos_lat(&line.line);
+            line.line.windows(2).any(|w| {
+                probe_seg_dist_m(Coord { x: lon, y: lat }, w[0], w[1], cos_lat) <= r
+            })
+        });
+        if near_probe == Some(true) {
+            eprintln!(
+                "[walk probe] line {li} source {:x} kind {:?} tagged {} len {:.0} m  \
+                 spans {:?}",
+                line.source,
+                line.kind,
+                line.tagged,
+                crate::scene::cumulative_arc(&line.line).last().unwrap_or(&0.0),
+                line.spans,
+            );
         }
-        path_bands(line, attached, &mut out);
+        let before = out.len();
+        // Which attachments produced a band at all. A gap is only a *corner*
+        // when what bounds it is drawn: a claim that built nothing — the host
+        // on a structure, the seat out of room — is no claim, and the stretch
+        // between two of those is the middle of a bare run, not a link (the
+        // Glion gallery sidewalk grew ground-level "corners" under a host
+        // 13 m overhead this way).
+        let mut built: Vec<(f64, f64)> = Vec::new();
+        for a in attached {
+            let b0 = out.len();
+            attached_band(scene, solved, facades, a, &mut out, &mut scratch, &mut census);
+            if out.len() > b0 {
+                built.push((a.walk0, a.walk1));
+            }
+            if near_probe == Some(true) {
+                eprintln!(
+                    "  attach host {} side {} walk {:.0}..{:.0} arc {:.0}..{:.0} \
+                     offset {:.1} spread {:.1} {:?} -> {} segs",
+                    a.host,
+                    a.side,
+                    a.walk0,
+                    a.walk1,
+                    a.arc0,
+                    a.arc1,
+                    a.offset_m,
+                    a.spread_m,
+                    a.evidence,
+                    out.len() - b0,
+                );
+            }
+        }
+        let banded = out.len();
+        path_bands(line, attached, &built, &mut out);
+        if near_probe == Some(true) {
+            eprintln!(
+                "  built: {} attached segs, {} path segs",
+                banded - before,
+                out.len() - banded
+            );
+        }
+        sources.resize(out.len(), line.source);
     }
-    out
+    census.report();
+    (out, sources)
+}
+
+/// What became of the host arc the attachments claimed — the census that says
+/// how much sidewalk the drawing lost after the relation was already won, and
+/// to which rule. Under `ARPT_DEBUG_WALK`, printed by [`bands`].
+#[derive(Default)]
+struct AttachCensus {
+    /// Host arc claimed by attachments, in metres.
+    claimed_m: f64,
+    /// …whose host has no drawable width at all.
+    no_width_m: f64,
+    /// …where the host is not on the ground (the structure carries any
+    /// sidewalk there — `synth::carried`).
+    non_grade_m: f64,
+    /// …in stretches under [`MIN_BAND_M`].
+    short_m: f64,
+    /// …where the seat found no room between kerb and facade.
+    no_room_m: f64,
+    /// …where the room left less than a band worth drawing.
+    narrow_m: f64,
+    /// …that produced a band segment.
+    built_m: f64,
+}
+
+impl AttachCensus {
+    fn report(&self) {
+        if std::env::var_os("ARPT_DEBUG_WALK").is_none() || !(self.claimed_m > 0.0) {
+            return;
+        }
+        let pct = |v: f64| 100.0 * v / self.claimed_m;
+        eprintln!(
+            "[walk] attached {:>8.2} km of host arc:   built {:>5.1} %   no-width {:>4.1} %   \
+             non-grade {:>4.1} %   short {:>4.1} %   no-room {:>4.1} %   narrow {:>4.1} %",
+            self.claimed_m / 1000.0,
+            pct(self.built_m),
+            pct(self.no_width_m),
+            pct(self.non_grade_m),
+            pct(self.short_m),
+            pct(self.no_room_m),
+            pct(self.narrow_m),
+        );
+    }
 }
 
 /// How much of the face allowance a narrowed band aims at, so it lands inside
@@ -126,10 +503,15 @@ const FIT_MARGIN: f64 = 0.85;
 /// against a different bound.
 pub fn fit_to_ground(
     bands: &mut Vec<SourceSeg>,
+    sources: &mut Vec<u64>,
     seniors: &[crate::ground::GroundLayer],
     terrain_path: Option<&std::path::Path>,
     z_ref: u8,
 ) {
+    // The source list is per-segment and is dropped in lockstep below, so a
+    // way whose every segment the fit declines leaves the set entirely — which
+    // is exactly the question `pipeline::paves_via_walkway` asks of it.
+    sources.resize(bands.len(), 0);
     if std::env::var_os("ARPT_NO_WALK_FIT").is_some() {
         return; // the A/B control: bands sized from the plan alone, as before
     }
@@ -170,6 +552,7 @@ pub fn fit_to_ground(
                     2
                 };
                 by[path][bucket] += len;
+                let half = priors::quantize_walk_width(half * 2.0) * 0.5;
                 bands[i].half_m = half;
                 bands[i].sect_a = Section::uniform(half);
                 bands[i].sect_b = Section::uniform(half);
@@ -185,6 +568,13 @@ pub fn fit_to_ground(
         i += 1;
         !drop[i - 1]
     });
+    let mut j = 0;
+    sources.retain(|_| {
+        j += 1;
+        !drop[j - 1]
+    });
+    unify_width_along_ways(bands, sources);
+    width_census(bands, sources);
     if census {
         for (path, name) in [(0usize, "sidewalk"), (1, "path")] {
             let t: f64 = by[path].iter().sum();
@@ -202,6 +592,141 @@ pub fn fit_to_ground(
             );
         }
     }
+}
+
+/// **A way is drawn at one width — by narrowing to it, never by widening.**
+/// The width most of its length carries; stretches drawn wider than that come
+/// down to it, and stretches the ground holds *below* it keep what the ground
+/// allows.
+///
+/// This is the last of the three sources of "why is this path a different
+/// size every few metres". The class nominal is one number
+/// ([`priors::WALK_WIDTH_M`]) and the ladder
+/// ([`priors::quantize_walk_width`]) removes the fine jitter, but the room a
+/// band is allotted still varies along a street — a facade steps in, a flank
+/// steepens — and resolved per station that draws as a ribbon that keeps
+/// changing size for reasons a viewer cannot see. Measured before any of
+/// this: **31.9 % of ways varied along themselves, p90 by 1.23 m.**
+///
+/// **Widening was built, measured and rejected**, and the number is worth
+/// keeping: letting a pinched stretch borrow one ladder rung (0.4 m) to match
+/// its way took the varying share only 27.1 % → 25.8 %, and cost
+/// `contact.walk_rim` 0.381 → 0.764 % with its worst 3.19 → **7.07 m**. The
+/// mechanism is not subtle — the bench is derived from these same segments,
+/// so a band drawn wider than the ground was measured to carry gets a deeper
+/// batter face and a bigger step at its own rim. A band may always give width
+/// up and may never take it, which is the same asymmetry
+/// [`fit_to_ground`] is built on.
+///
+/// So the residual variation is the ground fit doing its job: a path on a
+/// steep flank is genuinely narrower than a promenade, and forcing it wide
+/// gives back the fix that took `slope.walk_crossfall` from 22.5 % to 6.3 %.
+///
+/// Chosen by *length*, not by segment count, so a long uniform stretch is not
+/// outvoted by a scatter of short pinched ones.
+fn unify_width_along_ways(bands: &mut [SourceSeg], sources: &[u64]) {
+    if std::env::var_os("ARPT_NO_WALK_UNIFORM").is_some() {
+        return; // the A/B control: width resolved per station, as before
+    }
+    // Length carried at each quantized width, per way.
+    let mut by: std::collections::HashMap<u64, std::collections::HashMap<u64, f64>> =
+        std::collections::HashMap::new();
+    let key = |w: f64| (w * 1000.0).round() as u64;
+    for (s, &src) in bands.iter().zip(sources) {
+        if src == 0 {
+            continue;
+        }
+        let len = crate::scene::metric_len(s.a, s.b, s.cos_lat);
+        *by.entry(src).or_default().entry(key(s.half_m)).or_insert(0.0) += len;
+    }
+    // The width that carries the most length wins the way; ties go to the
+    // wider, so a way split evenly does not thin for nothing.
+    let target: std::collections::HashMap<u64, f64> = by
+        .into_iter()
+        .filter_map(|(src, hist)| {
+            let best = hist
+                .into_iter()
+                .max_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))?;
+            Some((src, best.0 as f64 / 1000.0))
+        })
+        .collect();
+    for (s, &src) in bands.iter_mut().zip(sources) {
+        let Some(&want) = target.get(&src) else { continue };
+        if want >= s.half_m - 1e-9 {
+            continue; // never take width, only give it
+        }
+        s.half_m = want;
+        s.sect_a = Section::uniform(want);
+        s.sect_b = Section::uniform(want);
+    }
+}
+
+/// Under `ARPT_DEBUG_WIDTH`, what the drawn pedestrian network's width
+/// actually looks like — the diagnostic behind "why are these all different
+/// sizes".
+///
+/// Two questions, because there are two kinds of non-uniformity and they have
+/// different fixes. **Across** classes: what width does each material come
+/// out at, which is the nominal ladder (`WALK_WIDTH_M`, `TRACK_WIDTH_M`,
+/// `CROSSING_WIDTH_M`) plus whatever the seat and the fit took off it.
+/// **Along** one way: how much a single mapped way's own width varies from
+/// end to end, which is the seat and the fit deciding per *segment* — a way
+/// that pulses between 0.8 m and 2.0 m along its length reads as a different
+/// object every few metres however uniform the class table is.
+fn width_census(bands: &[SourceSeg], sources: &[u64]) {
+    if std::env::var_os("ARPT_DEBUG_WIDTH").is_none() {
+        return;
+    }
+    let q = |v: &mut Vec<f64>, f: f64| -> f64 {
+        if v.is_empty() {
+            return 0.0;
+        }
+        v.sort_by(f64::total_cmp);
+        v[(((v.len() - 1) as f64) * f) as usize]
+    };
+    for (label, want_walk, hosted) in
+        [("sidewalk", true, Some(true)), ("walk (hostless)", true, Some(false)), ("path/track", false, None)]
+    {
+        let mut w: Vec<f64> = bands
+            .iter()
+            .filter(|s| (s.surface == priors::Surface::Walkway) == want_walk)
+            .filter(|s| hosted.is_none_or(|h| (s.corridor != NO_HOST) == h))
+            .map(|s| s.half_m * 2.0)
+            .collect();
+        if w.is_empty() {
+            continue;
+        }
+        eprintln!(
+            "[width] {label:<16} n={:<7} p10 {:.2}  p50 {:.2}  p90 {:.2}  min {:.2}  max {:.2}",
+            w.len(),
+            q(&mut w, 0.10),
+            q(&mut w, 0.50),
+            q(&mut w, 0.90),
+            q(&mut w, 0.0),
+            q(&mut w, 1.0),
+        );
+    }
+    // Along one way: the spread of a single source's own widths.
+    let mut by: std::collections::HashMap<u64, (f64, f64, u32)> = std::collections::HashMap::new();
+    for (s, &src) in bands.iter().zip(sources) {
+        if src == 0 {
+            continue;
+        }
+        let e = by.entry(src).or_insert((f64::MAX, f64::MIN, 0));
+        e.0 = e.0.min(s.half_m * 2.0);
+        e.1 = e.1.max(s.half_m * 2.0);
+        e.2 += 1;
+    }
+    let mut spread: Vec<f64> = by.values().filter(|v| v.2 >= 3).map(|v| v.1 - v.0).collect();
+    let n = spread.len();
+    let varying = spread.iter().filter(|&&d| d > 0.05).count();
+    eprintln!(
+        "[width] along one way   n={n:<7} p50 {:.2}  p90 {:.2}  max {:.2}   varying by >5 cm: {:.1} %",
+        q(&mut spread, 0.50),
+        q(&mut spread, 0.90),
+        q(&mut spread, 1.0),
+        100.0 * varying as f64 / n.max(1) as f64,
+    );
 }
 
 /// The narrowest band the fit may narrow *to*, in metres.
@@ -247,7 +772,19 @@ fn fitted_half(s: &SourceSeg, sample: &mut dyn FnMut(Coord) -> f64) -> Option<f6
     // at, a path's is the ground along its own centerline, read at both ends
     // (`ground::walk_edge` says why never at the middle).
     let target = if s.corridor == NO_HOST {
-        (sample(s.a) + sample(s.b)) * 0.5
+        let (ha, hb) = (sample(s.a), sample(s.b));
+        // **A link between two bands must be a link, not a wall.** A hostless
+        // Walkway piece is a corner or a crossing stub — connective tissue
+        // between two claimed stretches — and where the ground jumps more
+        // than a storey within one segment it is not wrapping a corner, it
+        // is draping across the bench cliff between a switchback's two arms
+        // (6.9166,46.4338 is the type specimen: `slope.walk_crossfall`'s
+        // worst read a 6.3 m step across 0.25 m of band there). No drawn
+        // piece beats a wall.
+        if s.surface == priors::Surface::Walkway && (ha - hb).abs() > CORNER_STEP_M {
+            return None;
+        }
+        (ha + hb) * 0.5
     } else {
         (s.height_a + s.height_b) * 0.5
     };
@@ -302,6 +839,7 @@ pub fn stamp_layers(bands: &mut [SourceSeg], grade_runs: &[GradeRun]) {
 
 /// The band of one attachment: the host's own centerline, offset to the side
 /// the way is on, over the stretch of it the way covers.
+#[allow(clippy::too_many_arguments)]
 fn attached_band(
     scene: &SceneGraph,
     solved: &SolvedModel,
@@ -309,9 +847,14 @@ fn attached_band(
     a: &Attachment,
     out: &mut Vec<SourceSeg>,
     scratch: &mut Vec<u32>,
+    census: &mut AttachCensus,
 ) {
+    census.claimed_m += a.len_m();
     let Some(c) = scene.corridors.get(a.host as usize) else { return };
-    let Some(half_m) = super::carriageway::corridor_half_width_m(c) else { return };
+    let Some(half_m) = super::carriageway::corridor_half_width_m(c) else {
+        census.no_width_m += a.len_m();
+        return;
+    };
     let profile = solved.profile(c.id);
     for (r0, r1, level, kind) in level_runs(c) {
         // **Only where the host is on the ground.** Over a bridge or in a bore
@@ -319,10 +862,12 @@ fn attached_band(
         // and a band drawn there would be a second one floating beside the
         // deck — 1.5 % of attached host arc, measured in phase 3.
         if kind != SpanKind::Grade {
+            census.non_grade_m += (a.arc1.min(r1) - a.arc0.max(r0)).max(0.0);
             continue;
         }
         let (lo, hi) = (a.arc0.max(r0), a.arc1.min(r1));
         if hi - lo < MIN_BAND_M {
+            census.short_m += (hi - lo).max(0.0);
             continue;
         }
         // The host's own stations, so the band is sampled on the same curve the
@@ -356,6 +901,7 @@ fn attached_band(
         let height = |arc: f64| profile.map_or(0.0, |p| p.road_at_arc(arc));
         for i in 0..stops.len() - 1 {
             let (Some((oa, ha)), Some((ob, hb))) = (seats[i], seats[i + 1]) else {
+                census.no_room_m += stops[i + 1] - stops[i];
                 continue; // the band stops where the room does
             };
             // One half-width per segment, so the run chains: the union strokes
@@ -364,8 +910,10 @@ fn attached_band(
             // clear of the facade at both.
             let half = ha.min(hb);
             if 2.0 * half < priors::WALK_MIN_WIDTH_M {
+                census.narrow_m += stops[i + 1] - stops[i];
                 continue;
             }
+            census.built_m += stops[i + 1] - stops[i];
             let normal_a = normal_at(&pts, i, c.cos_lat, side);
             let normal_b = normal_at(&pts, i + 1, c.cos_lat, side);
             out.push(SourceSeg {
@@ -433,7 +981,9 @@ fn seat(
     if avail < priors::WALK_MIN_WIDTH_M {
         return None;
     }
-    let half = avail.min(priors::WALK_WIDTH_M) * 0.5;
+    // Snapped down to the width ladder, so a strip that merely varies along
+    // the street draws one width instead of a new one at every station.
+    let half = priors::quantize_walk_width(avail.min(priors::WALK_WIDTH_M)) * 0.5;
     Some((want.clamp(kerb + half, kerb + avail - half), half))
 }
 
@@ -491,9 +1041,39 @@ fn offset(p: Coord, n: (f64, f64), d: f64, cos_lat: f64) -> Coord {
     Coord { x: p.x + n.0 * d / m_lon, y: p.y + n.1 * d / DEG_M }
 }
 
-/// The bands for the stretches of a way that attached to nothing: a path,
-/// buffered along its own line and standing on the ground.
-fn path_bands(line: &WalkLine, attached: &[Attachment], out: &mut Vec<SourceSeg>) {
+/// Plan distance from `p` to the segment `a`–`b`, in metres — the probe's own,
+/// so it needs nothing from its neighbours.
+fn probe_seg_dist_m(p: Coord, a: Coord, b: Coord, cos_lat: f64) -> f64 {
+    let m_lon = DEG_M * cos_lat;
+    let (ex, ey) = ((b.x - a.x) * m_lon, (b.y - a.y) * DEG_M);
+    let (qx, qy) = ((p.x - a.x) * m_lon, (p.y - a.y) * DEG_M);
+    let len2 = ex * ex + ey * ey;
+    let u = if len2 > 0.0 { ((qx * ex + qy * ey) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    (qx - ex * u).hypot(qy - ey * u)
+}
+
+/// The bands for the stretches of a way that attached to nothing: paths
+/// across open ground, and — where a stretch is *pinched between two claimed
+/// ones* — the corner a sidewalk wraps between its two streets.
+///
+/// **The corner is a sidewalk, not a path.** `assemble::walks::runs` breaks
+/// an attachment where the way turns across its host, correctly — a band must
+/// not bridge the mouth of a side street — so the stretch that wraps a corner
+/// attaches to nothing by construction. Left to the path rule it came out the
+/// wrong feature twice over: `Path` material on the ground where its two
+/// neighbours are `Walkway` on a kerb, and *nothing at all* under
+/// [`MIN_BAND_M`] — and a junction's corners are exactly where sub-4 m
+/// stretches arise, between the two crossing connectors of a corner. So a
+/// bounded gap under [`priors::WALK_CORNER_MAX_M`] keeps the material, the
+/// kerb rise and the width of the sidewalk it continues, at any length worth
+/// a segment at all: it is the link between two bands, and a link has no
+/// minimum worth existing.
+fn path_bands(
+    line: &WalkLine,
+    attached: &[Attachment],
+    built: &[(f64, f64)],
+    out: &mut Vec<SourceSeg>,
+) {
     let cos_lat = crate::scene::run_cos_lat(&line.line);
     let arc = crate::scene::cumulative_arc(&line.line);
     let total = *arc.last().unwrap_or(&0.0);
@@ -505,8 +1085,14 @@ fn path_bands(line: &WalkLine, attached: &[Attachment], out: &mut Vec<SourceSeg>
     let mut taken: Vec<(f64, f64)> = attached.iter().map(|a| (a.walk0, a.walk1)).collect();
     taken.extend(line.spans.iter().map(|&(s, e)| (s * total, e * total)));
     taken.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // A gap's end is *drawn* when the claim it borders produced a band —
+    // matched by the claim's own walk range, so a span or an empty claim
+    // bounds a path, never a corner.
+    let drawn_left = |lo: f64| built.iter().any(|&(_, w1)| (w1 - lo).abs() < 1e-6);
+    let drawn_right = |hi: f64| built.iter().any(|&(w0, _)| (w0 - hi).abs() < 1e-6);
     let mut cursor = 0.0f64;
-    let mut gaps: Vec<(f64, f64)> = Vec::new();
+    // `(from, to, corner)`: a gap, and whether both of its ends are drawn.
+    let mut gaps: Vec<(f64, f64, bool)> = Vec::new();
     for (w0, w1) in taken.into_iter().chain(std::iter::once((total, total))) {
         // The ranges come from two measurements of the same line — station
         // counts and level-run fractions — so neither is guaranteed to land
@@ -515,12 +1101,28 @@ fn path_bands(line: &WalkLine, attached: &[Attachment], out: &mut Vec<SourceSeg>
         let lo = cursor.min(total);
         let hi = w0.clamp(lo, total);
         cursor = cursor.max(w1);
-        if hi - lo > MIN_BAND_M {
-            gaps.push((lo, hi));
+        let corner = hi - lo <= priors::WALK_CORNER_MAX_M
+            && drawn_left(lo)
+            && drawn_right(hi);
+        if hi - lo > if corner { MIN_CORNER_M } else { MIN_BAND_M } {
+            gaps.push((lo, hi, corner));
         }
     }
-    let half = priors::WALK_WIDTH_M * 0.5;
-    for (g0, g1) in gaps {
+    // A track is drawn at a vehicle's width, everything else at a walker's.
+    let nominal = if matches!(line.kind, crate::priors::Kind::Road(crate::priors::RoadClass::Track))
+    {
+        priors::TRACK_WIDTH_M
+    } else {
+        priors::WALK_WIDTH_M
+    };
+    for (g0, g1, corner) in gaps {
+        let half = nominal * 0.5;
+        // A corner keeps the sidewalk's *material* but stands on the ground:
+        // a hostless band's bench targets the ground along its own centerline,
+        // so a rise here is exactly a float above its own bench — the height
+        // field ramps the neighbouring kerbs down into it, which is what a
+        // corner's dropped kerbs are.
+        let surface = if corner { priors::Surface::Walkway } else { priors::Surface::Path };
         let (stops, pts) = resample(&line.line, &arc, g0, g1, PATH_STATION_M);
         for (i, w) in pts.windows(2).enumerate() {
             out.push(SourceSeg {
@@ -540,13 +1142,24 @@ fn path_bands(line: &WalkLine, attached: &[Attachment], out: &mut Vec<SourceSeg>
                 height_a: 0.0,
                 height_b: 0.0,
                 corridor: NO_HOST,
-                surface: priors::Surface::Path,
+                surface,
                 rise_m: 0.0,
                 arc0: stops[i],
             });
         }
     }
 }
+
+/// Shortest corner link worth a segment, in metres — a guard against
+/// zero-length slivers, not a claim about sidewalks: the whole point of the
+/// corner rule is that a two-metre link still draws.
+const MIN_CORNER_M: f64 = 0.4;
+
+/// Largest ground step a hostless Walkway segment may span end to end, in
+/// metres, before it is a wall rather than a link ([`fitted_half`]). Higher
+/// than any kerb or corner ramp, lower than the arm separation of the
+/// shallowest switchback the extract holds (~5 m).
+const CORNER_STEP_M: f64 = 1.5;
 
 /// The stretch `[from_m, to_m]` of a polyline, stationed at most `step_m`
 /// apart and keeping every mapped vertex in between: the stations' arcs along
@@ -629,7 +1242,7 @@ mod tests {
     fn a_path_with_no_attachment_is_banded_along_its_whole_length() {
         let w = walk_line(line(0.0, 40.0, 0.0));
         let mut out = Vec::new();
-        path_bands(&w, &[], &mut out);
+        path_bands(&w, &[], &[], &mut out);
         assert!(!out.is_empty());
         assert!(out.iter().all(|s| s.corridor == NO_HOST && s.rise_m == 0.0));
         let span: f64 = out
@@ -658,7 +1271,7 @@ mod tests {
             evidence: crate::assemble::walks::Evidence::Tag,
         };
         let mut out = Vec::new();
-        path_bands(&w, &[a], &mut out);
+        path_bands(&w, &[a], &[], &mut out);
         let span: f64 = out
             .iter()
             .map(|s| crate::scene::metric_len(s.a, s.b, s.cos_lat))
@@ -667,7 +1280,7 @@ mod tests {
     }
 
     #[test]
-    fn a_nick_of_a_gap_is_not_worth_a_band() {
+    fn a_gap_pinched_between_two_claims_is_the_sidewalk_wrapping_its_corner() {
         let w = walk_line(line(0.0, 100.0, 0.0));
         let stub = |w0: f64, w1: f64| Attachment {
             walk: 1,
@@ -683,10 +1296,37 @@ mod tests {
             spread_m: 0.0,
             evidence: crate::assemble::walks::Evidence::Tag,
         };
-        // Two attachments 2 m apart: the gap between them is not a path.
+        // Two attachments 2 m apart: the gap is the link between two bands —
+        // kept, in the sidewalk's own material at the kerb rise, under any
+        // path-band minimum.
         let mut out = Vec::new();
-        path_bands(&w, &[stub(0.0, 49.0), stub(51.0, 100.0)], &mut out);
-        assert!(out.is_empty(), "{out:?}", out = out.len());
+        path_bands(
+            &w,
+            &[stub(0.0, 49.0), stub(51.0, 100.0)],
+            &[(0.0, 49.0), (51.0, 100.0)],
+            &mut out,
+        );
+        assert!(!out.is_empty(), "the corner link must be banded");
+        assert!(out
+            .iter()
+            .all(|s| s.surface == crate::priors::Surface::Walkway && s.rise_m == 0.0));
+        let span: f64 =
+            out.iter().map(|s| crate::scene::metric_len(s.a, s.b, s.cos_lat)).sum();
+        assert!((span - 2.0).abs() < 0.5, "just the gap: {span}");
+        // A sliver under MIN_CORNER_M is still nothing.
+        let mut none = Vec::new();
+        path_bands(
+            &w,
+            &[stub(0.0, 49.9), stub(50.2, 100.0)],
+            &[(0.0, 49.9), (50.2, 100.0)],
+            &mut none,
+        );
+        assert!(none.is_empty(), "{}", none.len());
+        // And an *unbounded* stretch keeps the path rule: the leading 30 m
+        // before a single attachment is a path, not a corner.
+        let mut open = Vec::new();
+        path_bands(&w, &[stub(30.0, 100.0)], &[(30.0, 100.0)], &mut open);
+        assert!(open.iter().all(|s| s.surface == crate::priors::Surface::Path));
     }
 
     #[test]

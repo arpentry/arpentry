@@ -24,6 +24,7 @@ pub mod facade;
 pub mod footprint;
 pub mod grade;
 pub mod graph;
+pub mod network;
 pub mod structures;
 
 use crate::ground::GroundStack;
@@ -47,6 +48,12 @@ pub struct Model<'a> {
     /// authority, and the archive cannot answer it: it carries the ground that
     /// was drawn, never the ground that would have been there.
     pub facades: &'a crate::assemble::facades::Facades,
+    /// The band sources the union will buffer — carriageways, formations and
+    /// walk bands after every narrowing and drop has had its say. Here because
+    /// "is the mapped pedestrian network drawn connected" is a question about
+    /// what was *not* drawn, and the archive carries only what was
+    /// (`network`).
+    pub junctions: &'a crate::synth::carriageway::CarriagewayModel,
     pub terrain: Option<&'a std::path::Path>,
     pub bounds: crate::project::Bounds,
     pub threads: usize,
@@ -62,6 +69,7 @@ pub fn run(m: &Model<'_>) -> Vec<Metric> {
     out.extend(footprint::check(m));
     out.extend(grade::check(m));
     out.extend(graph::check(m));
+    out.extend(network::check(m));
     out.extend(structures::check(m));
     out
 }

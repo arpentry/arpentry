@@ -282,7 +282,12 @@ fn bake_chunk(
             buffered = poly::difference(&buffered, &cut_beyond(&cut, &frame, outward));
         }
         if !buffered.is_empty() {
-            by_level.entry((run.level, run.layer, run.surface)).or_default().extend(buffered);
+            // Keyed on the **drawn** material rather than the modelled one
+            // where [`drawn`] says so: a footway and the sidewalk it runs into
+            // would then be one region, unioning instead of the junior being
+            // subtracted under the senior and each wearing its own casing.
+            // Opt-in — see [`drawn`] for what the measurement said about it.
+            by_level.entry((run.level, run.layer, drawn(run.surface))).or_default().extend(buffered);
         }
     }
     // Sorted by (level, layer) and asphalt before ballast within a pair, so
@@ -350,6 +355,27 @@ fn bake_chunk(
         out.push(LevelShapes { level, layer, surface, shapes });
     }
     out
+}
+
+/// The material a run is drawn as.
+///
+/// **Opt-in, and the measurement is why.** Merging `Path` into `Walkway` at
+/// the region key is right in principle ([`priors::drawn_material`]) and
+/// nearly free in geometry — it moves total drawn pedestrian area by 0.1 %
+/// and `contact.walk_rim` by 0.004 pp. What it is not is *landable*: the one
+/// check that tells a sidewalk from a path does so by class, and merged it
+/// starts scoring hillside tracks against roads they merely pass near
+/// (`contact.sidewalk_grade` 0.39 % → 8.42 %, worst 7.75 → 17.96 m). That is
+/// the instrument going blind, not the surface getting worse, and this
+/// codebase does not blind an instrument to land a change. The tonal half of
+/// the win is already taken for free in `style.json`, where `path_*` uses
+/// `walk_*`'s colours; what stays unbought is the double casing rim where a
+/// path meets a pavement. `ARPT_WALK_MERGE=1` turns it on for the A/B.
+fn drawn(surface: priors::Surface) -> priors::Surface {
+    if std::env::var_os("ARPT_WALK_MERGE").is_some() {
+        return priors::drawn_material(surface);
+    }
+    surface
 }
 
 /// Which materials outrank this one where the two coincide in plan on one

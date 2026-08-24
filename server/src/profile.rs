@@ -267,6 +267,9 @@ fn overture_min_zoom(layer: LayerIndex, class: &str) -> Option<u8> {
         // Synthesized painted markings (docs/ROADS.md P3): sub-pixel until
         // the camera is close. The rail heads gate with them.
         (layers::TRANSPORTATION, "marking" | "rail_line") => crate::priors::MARKING_MIN_ZOOM,
+        // The zebra ladder rides the walk bands' zoom: a crossing joins
+        // surfaces that only exist from there (docs/ROADS.md R7).
+        (layers::TRANSPORTATION, "crossing") => crate::priors::WALK_SURFACE_MIN_ZOOM,
         // Rail (Overture `subtype=rail`, class is the gauge).
         (
             layers::TRANSPORTATION,

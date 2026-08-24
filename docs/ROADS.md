@@ -200,7 +200,20 @@ either representation alone.
    it belongs to, and a `Path` stands on the ground and belongs to nothing.
    Their cartographic strokes are deleted at those zooms for the same reason
    a carriageway's is: the mesh *is* the surface. What keeps a stroke is what
-   the walkway model did not draw — a footbridge, a subway, a crosswalk.
+   the walkway model did not draw — a footbridge, a subway, a crosswalk that
+   registered against no carriageway, and **any way the model declined to
+   band at all**. That last is the test asking what was *built* rather than
+   what class a feature is: the seat can run out of room and the ground fit
+   can refuse a band on a steep flank, and deleting the stroke on the class
+   alone made those ways vanish outright instead of degrading to a line
+   (invariant 6 — lost detail, never spectacle). `synth::walkway::bands`
+   returns the source of every segment so phase 1 can stamp `walk_banded`,
+   which is what `paves_via_walkway` reads. The Territet switchback at
+   6.9189,46.4304 is the type specimen: a stair-and-footway zigzag on a flank
+   too steep to bench, drawn as a handful of disjoint slabs with nothing
+   between them, now continuous — band where one was built, stroke where it
+   was not. Granularity is the *feature*, so a long way that is banded along
+   part of its length still loses its stroke on the rest.
    And, being a surface, each **benches the ground under it** exactly as a
    carriageway does (docs/GROUND.md §2): the bands are derived once and stage 3
    imprints those same segments in stratum D. The band that draws the surface
@@ -526,8 +539,60 @@ the scenario table (§4).
     `paint.marking_offside` (docs/VERIFICATION.md).
   - *Remaining:* symbols (arrows, chevrons — the MSDF atlas, P4);
     distance fade — sub-texel lines shimmer at grazing angles; stop
-    lines and zebra crosswalks from `crosswalk` segments; dividers on
-    wide two-way roads (2×2 boulevards).
+    lines; dividers on wide two-way roads (2×2 boulevards).
+
+    *Increment 4b — the crossing is drawn (done 2026-08-24).* R7, and the
+    largest single break in the drawn pedestrian network: a `crosswalk`
+    segment was neither band (correctly — it is paint on the carriageway)
+    nor paint (this increment had never been built), so at the walk zooms a
+    crossing was a thin unregistered stroke dissolving into the asphalt, and
+    every sidewalk→crossing→sidewalk edge of the mapped graph drew as band /
+    nearly nothing / band. Now one registration per crosswalk
+    (`synth::walkway::crossings`): the mapped line, extended along its end
+    tangents, is sampled against the same corridors and drawn half-widths
+    the union buffers; the on-asphalt interval is the kerb-to-kerb **chord**
+    and the mapped remainder outside it the **stubs** — one derivation, two
+    readers, so paint and kerb meet by construction. The stubs join the walk
+    bands (Walkway material, **on the ground** — the end of a crossing is a
+    dropped kerb by construction, and a rise would float the band above the
+    bench stratum D cuts for a hostless one; `contact.walk_rim` measured
+    exactly that 0.12 m float on the first cut) and are fitted, benched and
+    unioned like any band. The chord paints a zebra
+    ladder (`synth::markings::crossing_bars`, class `crossing`, style-keyed
+    colour): stripes longitudinal to traffic at the bar/gap priors, each
+    drawn as a *transverse* stroke — the client's round caps reach half the
+    stroke width past a line's ends, so chord-wise dashes at the crossing's
+    depth grew 1.4 m of cap into every gap and fused into one slab; stroked
+    across, the caps round the stripe ends instead, which is how the paint
+    wears. A registered crossing's stroke is deleted at the walk zooms
+    (`paves_via_walkway` reads the `crossing_drawn` stamp, stripped before
+    encoding); an unregistered one — mapped across a path, data noise (R12)
+    — keeps the stroke that is all it ever had. A divided carriageway
+    registers one chord per roadway and the refuge island is unpainted.
+    Registration is against raw centerlines, so it agrees with the drawn
+    asphalt to the smoothing displacement (median ~0.5 m at junction
+    mouths); the decal bias absorbs it. Guarded by `network.walk_cover` /
+    `network.walk_reach` (docs/VERIFICATION.md): crossing-attributed bare
+    length on the Villeneuve cut went to zero.
+
+    *Increment 4c — the corner is a sidewalk (done 2026-08-24).*
+    `assemble::walks::runs` breaks an attachment where the way turns across
+    its host — correctly, a band must not bridge a side street's mouth — so
+    the stretch of a sidewalk polyline that wraps a corner attaches to
+    nothing, and the path rule then drew it as the wrong feature twice over:
+    `Path` material on the ground between two `Walkway` neighbours on a
+    kerb, or nothing at all under the 4 m minimum — and a junction's corners
+    are exactly where sub-4 m stretches arise, between the two crossing
+    connectors of a corner. An unattached gap *pinched between two claimed
+    stretches* of the same line, under `WALK_CORNER_MAX_M`, now keeps the
+    sidewalk's material and width at any length worth a segment: it is the
+    link between two bands, and a link has no minimum worth existing. It
+    stands on the ground, not on a kerb — a hostless band's bench targets
+    the ground along its own centerline, so a rise is a float above its own
+    bench, and the height field ramping the neighbouring kerbs down into the
+    corner is what a corner's dropped kerbs are. Longer or unbounded
+    stretches stay paths — a tagged sidewalk that wanders off across a park
+    is genuinely one.
 
     *Increment 5 — one centerline (done).* "The at-grade band and the
     deck are not on the same curve" was the long-standing item here, and

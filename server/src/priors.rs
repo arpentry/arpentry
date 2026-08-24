@@ -606,6 +606,97 @@ pub fn is_pedestrian(kind: Kind) -> bool {
     )
 }
 
+/// Whether a class is **drawn as a band** rather than as a cartographic
+/// stroke at the walk zooms.
+///
+/// Wider than [`is_pedestrian`] by exactly one class, and the difference is
+/// the point. `is_pedestrian` answers *may this way attach to a street as its
+/// sidewalk*, and a farm track may not — it is not street furniture. But that
+/// verdict was doing a second job it was never argued for: a track got no
+/// band either, so the one road-ish class outside the carriageway model was
+/// drawn as a stroke over whatever the ground did, at every zoom. On the
+/// Montreux window that is **90.4 km of track against 89.5 km of footway** —
+/// the surface model was skipping as much length as it drew.
+///
+/// A track is a surface: it is graded, it wears a width, and at z16 a person
+/// looking at a hillside sees a track exactly as they see a path. It earns a
+/// band on its own polyline at [`TRACK_WIDTH_M`], standing on the ground like
+/// any [`Surface::Path`] — it simply never attaches.
+pub fn earns_walk_band(kind: Kind) -> bool {
+    is_pedestrian(kind) || matches!(kind, Kind::Road(RoadClass::Track))
+}
+
+/// Drawn width in metres of a track's band.
+///
+/// A track is physically a vehicle's width — [`SERVICE_WAY_WIDTH_M`]'s 3 m
+/// is the honest number, and it is what this was. It is **deliberately the
+/// same as [`WALK_WIDTH_M`]** anyway: the pedestrian network is read as one
+/// object at the detail zooms, and a network drawn at three nominals (a 2 m
+/// path, a 2.8 m crossing stub, a 3 m track) reads as three kinds of thing
+/// meeting at every junction rather than as one surface with branches.
+/// Raise it here to get the physical distinction back — it is one number and
+/// nothing else depends on it.
+pub const TRACK_WIDTH_M: f64 = WALK_WIDTH_M;
+
+/// Quantum of a drawn pedestrian band's width, in metres.
+///
+/// The nominal is one number, but the *room* is not: a band gives way to the
+/// facade beside it (`synth::walkway::seat`) and to the earthwork under it
+/// ([`crate::synth::walkway::fit_to_ground`]), and both are resolved per
+/// station. Left continuous, that makes a single mapped way pulse along its
+/// own length — measured at **31.9 % of ways varying, p90 by 1.23 m** on a
+/// 2 m nominal, which is what "why is this path a different size every few
+/// metres" looks like from the camera.
+///
+/// Snapping **down** to a ladder fixes it without giving up either
+/// constraint: a stretch whose room is 1.94 m and a stretch whose room is
+/// 1.62 m both draw at 1.6 m, so the width is constant wherever the
+/// constraint is merely *varying* and steps only where it genuinely changes
+/// band. Down and never up, so a quantized band is never wider than the room
+/// or the bench that was measured for it — the one-cross-section rule holds
+/// by construction rather than by arithmetic agreeing.
+pub const WALK_WIDTH_STEP_M: f64 = 0.4;
+
+/// A drawn pedestrian band's width, snapped down to [`WALK_WIDTH_STEP_M`]
+/// and never below [`WALK_MIN_WIDTH_M`]. Widths at or above the nominal are
+/// returned unchanged, which is the overwhelming majority.
+pub fn quantize_walk_width(width_m: f64) -> f64 {
+    if width_m >= WALK_WIDTH_M {
+        return width_m;
+    }
+    let stepped = (width_m / WALK_WIDTH_STEP_M).floor() * WALK_WIDTH_STEP_M;
+    stepped.max(WALK_MIN_WIDTH_M).min(width_m)
+}
+
+/// The material a surface is **drawn** as, which is deliberately coarser than
+/// the material it is **modelled** as.
+///
+/// [`Surface::Walkway`] and [`Surface::Path`] are two different things to the
+/// model and one thing to the eye. To the model the distinction is
+/// load-bearing twice over: a walkway rides its host's cross-section a
+/// [`KERB_RISE_M`] above the carriageway while a path stands on the ground,
+/// and the earthwork a path's material may plausibly build is a third of a
+/// sidewalk's ([`bench_face_cap_m`]) — five metrics chose those numbers. To
+/// the eye they are both pavement, and drawing them as two regions costs
+/// exactly what two regions always cost here: the boolean keeps *touching*
+/// shapes apart, so a footway running into a sidewalk leaves a hairline; the
+/// junior region is subtracted under the senior one, so the footway is bitten
+/// off where it overlaps; and each carries its own [`PAVE_RIM_M`] casing, so
+/// the two abut as a double dark seam. One region unions instead of
+/// subtracting, and a person walks from path to pavement without the drawing
+/// announcing a change of object.
+///
+/// This is the same call `road_surface` already made for carriageways: "all
+/// roads share a colour at detail zooms; class distinction now comes from
+/// width and paint" (docs/ROADS.md P2). The model keeps the distinction; the
+/// drawing does not need it.
+pub fn drawn_material(surface: Surface) -> Surface {
+    match surface {
+        Surface::Path => Surface::Walkway,
+        other => other,
+    }
+}
+
 /// Painted width in metres of the small service ways — driveways, parking
 /// aisles, alleys: a single car's track plus margins, well under the minor
 /// street their `service` class would otherwise inherit (Swiss-extract
@@ -1075,6 +1166,29 @@ pub const WALK_MIN_WIDTH_M: f64 = 0.8;
 /// wall a kerb face rather than a crack. An unattached path carries no rise:
 /// it stands on the ground, which is what it is.
 pub const KERB_RISE_M: f64 = 0.12;
+
+/// Longest unattached stretch pinched between two street-claimed ones that
+/// still counts as *the sidewalk wrapping a corner*, in metres — kept in the
+/// sidewalk's own material at the kerb rise, at any length
+/// (`synth::walkway::path_bands`). A quarter-turn at a mapped sidewalk's
+/// typical offset is five to fifteen metres of arc; past this the way has
+/// genuinely left its streets — a plaza edge, a shortcut across a green —
+/// and is a path like any other.
+pub const WALK_CORNER_MAX_M: f64 = 25.0;
+
+/// How deep the painted crossing ladder is along the road axis, in metres —
+/// the stripe length, and the width of the walkable band a crossing spans.
+///
+/// Swiss zebra stripes run 2.5–4 m with the road's speed class; one value
+/// keeps the ladder machinery simple, at the narrow end so paint never
+/// outreaches the surface a mapper drew a crossing onto.
+pub const CROSSING_WIDTH_M: f64 = 2.8;
+
+/// The zebra bar and its gap, in metres along the *walking* direction —
+/// stripes are longitudinal to traffic, so a pedestrian steps bar, gap, bar.
+/// 0.5/0.5 is the convention almost everywhere the marking exists.
+pub const CROSSING_BAR_M: f64 = 0.5;
+pub const CROSSING_GAP_M: f64 = 0.5;
 
 /// First zoom that meshes walkway bands.
 ///

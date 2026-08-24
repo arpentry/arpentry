@@ -411,9 +411,9 @@
         {
           "class": "path_surface",
           "color": [
-            186,
-            178,
-            166,
+            196,
+            193,
+            187,
             255
           ],
           "width": 0,
@@ -422,9 +422,9 @@
         {
           "class": "path_casing",
           "color": [
-            164,
-            156,
-            144,
+            170,
+            167,
+            161,
             255
           ],
           "width": 0,
@@ -433,9 +433,9 @@
         {
           "class": "path_apron",
           "color": [
+            88,
             86,
-            81,
-            74,
+            82,
             255
           ],
           "width": 0,
@@ -451,6 +451,28 @@
           ],
           "width": 1,
           "min_level": 15
+        },
+        {
+          "class": "marking",
+          "color": [
+            250,
+            250,
+            248,
+            235
+          ],
+          "width": 1,
+          "min_level": 13
+        },
+        {
+          "class": "crossing",
+          "color": [
+            252,
+            252,
+            250,
+            240
+          ],
+          "width": 1,
+          "min_level": 16
         }
       ]
     },

@@ -151,6 +151,57 @@ pub fn for_line(
     out
 }
 
+/// The zebra ladder of one registered crossing chord (docs/ROADS.md R7).
+///
+/// The chord runs kerb to kerb — the *walking* direction — and zebra stripes
+/// are longitudinal to traffic, so a stripe sits every
+/// [`priors::CROSSING_BAR_M`]-plus-gap along the chord. Each stripe is drawn
+/// as a **transverse** line — [`priors::CROSSING_WIDTH_M`] long, along the
+/// road — stroked at the bar width, *not* as a piece of the chord stroked to
+/// the crossing depth: the client's stroke wears round caps that reach half
+/// the stroke width past each end, so chord-wise dashes at a 2.8 m width grow
+/// 1.4 m of cap into every gap and the ladder fuses into one slab. Stroked
+/// this way the caps reach along the stripe's own length, where a rounded
+/// stripe end is how the paint actually wears. The pattern is centred on the
+/// chord — both kerbs get the same margin — and is a function of the chord
+/// alone (I5): every tile cuts identical bars.
+///
+/// Class `crossing`, not `marking`: colour is keyed by class, and the
+/// calibrated `paint.*` populations filter on the literal `"marking"` — a
+/// transverse ladder in them would poison the offset statistics.
+pub fn crossing_bars(a: Coord, b: Coord) -> Vec<Marking> {
+    let cos_lat = ((a.y + b.y) * 0.5).to_radians().cos().max(0.1);
+    let m_lon = DEG_M * cos_lat;
+    let (dx, dy) = ((b.x - a.x) * m_lon, (b.y - a.y) * DEG_M);
+    let len = dx.hypot(dy);
+    let period = priors::CROSSING_BAR_M + priors::CROSSING_GAP_M;
+    let n = ((len + priors::CROSSING_GAP_M) / period).floor().max(0.0) as usize;
+    if n == 0 || !(len > 0.0) {
+        return Vec::new();
+    }
+    let pattern = n as f64 * priors::CROSSING_BAR_M + (n - 1) as f64 * priors::CROSSING_GAP_M;
+    let start = (len - pattern) * 0.5;
+    // Unit vectors along the chord and across it (the road axis), in metres.
+    let (ux, uy) = (dx / len, dy / len);
+    let (px, py) = (-uy, ux);
+    let half = priors::CROSSING_WIDTH_M * 0.5;
+    let bars: Vec<LineString> = (0..n)
+        .map(|k| {
+            let s = start + k as f64 * period + priors::CROSSING_BAR_M * 0.5;
+            let c = (a.x + ux * s / m_lon, a.y + uy * s / DEG_M);
+            LineString(vec![
+                Coord { x: c.0 - px * half / m_lon, y: c.1 - py * half / DEG_M },
+                Coord { x: c.0 + px * half / m_lon, y: c.1 + py * half / DEG_M },
+            ])
+        })
+        .collect();
+    vec![Marking {
+        geometry: Geometry::MultiLineString(MultiLineString(bars)),
+        width_m: priors::CROSSING_BAR_M,
+        class: "crossing",
+    }]
+}
+
 /// A local ENU frame at a point (marking generation runs before any tile
 /// exists, so there are no tile bounds to centre one on).
 fn frame_at(c: Coord) -> Frame {

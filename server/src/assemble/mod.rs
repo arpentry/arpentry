@@ -94,7 +94,7 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
                     // second kind: which street it belongs to. That relation
                     // is resolved once the corridors exist (`walks::attach`);
                     // it is still not a promotion — nothing here solves.
-                    if priors::is_pedestrian(kind) {
+                    if priors::earns_walk_band(kind) {
                         if let Some(source) =
                             crate::value::str_of(&f.properties, "id").map(|s| source_hash(&s))
                         {
@@ -104,7 +104,7 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
                                 kind,
                                 tagged: subclass == Some("sidewalk"),
                                 crosswalk: subclass == Some("crosswalk"),
-                                connectors: f.connectors.iter().map(|c| c.id).collect(),
+                                connectors: f.connectors.clone(),
                                 spans: f
                                     .level_runs
                                     .iter()
