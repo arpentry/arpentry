@@ -478,6 +478,47 @@ fn merge_spans(sorted: &[(f64, f64, u64)]) -> Vec<(f64, f64)> {
     spans
 }
 
+/// Which sides of which corridors carry a pavement — the same question
+/// [`street_bands`] answers when it builds one, asked early enough for the
+/// **ground** to hear it.
+///
+/// `ground::derive_seniors` runs before the strips exist (the seniors imprint,
+/// the band is fitted to what it finds, and stratum D benches the result), so
+/// the road bench cannot read the strips themselves. It can read the same two
+/// inputs they come from: what the data claims, and what the synthesis prior
+/// would add. That is enough for a street's bench to be as wide as its own
+/// cross-section, which is what stops the pavement from cutting a second
+/// terrace beside the first.
+pub(crate) fn pavement_sides(
+    scene: &SceneGraph,
+    solved: &SolvedModel,
+    facades: &Facades,
+) -> std::collections::HashSet<(u32, u8)> {
+    let mut out = std::collections::HashSet::new();
+    if std::env::var_os("ARPT_NO_WALK_BAND").is_some() {
+        return out;
+    }
+    for (line, attached) in scene.walks.lines() {
+        if line.crosswalk || matches!(line.kind, Kind::Road(RoadClass::Steps)) {
+            continue;
+        }
+        for a in attached {
+            out.insert((a.host, a.side));
+        }
+    }
+    if std::env::var_os("ARPT_WALK_SYNTH").is_some() {
+        let mut scratch: Vec<u32> = Vec::new();
+        for c in &scene.corridors {
+            if priors::synthesizes_pavement(c.kind) && built_up(c, solved, facades, &mut scratch) {
+                out.insert((c.id, 0));
+                out.insert((c.id, 1));
+            }
+        }
+    }
+    out
+}
+
+
 /// How far a wall may stand from a street's centerline and still make it a
 /// built-up street, in metres.
 ///
@@ -516,7 +557,12 @@ const BUILT_UP_STEP_M: f64 = 10.0;
 /// the right way round: assemble admits whole parquet row groups, so the scene
 /// runs far past the extract into ground no footprint covers, and a synthesis
 /// prior that fired there would invent pavement precisely where it knows least.
-fn built_up(c: &Corridor, solved: &SolvedModel, facades: &Facades, scratch: &mut Vec<u32>) -> bool {
+pub(crate) fn built_up(
+    c: &Corridor,
+    solved: &SolvedModel,
+    facades: &Facades,
+    scratch: &mut Vec<u32>,
+) -> bool {
     if facades.is_empty() {
         return false;
     }

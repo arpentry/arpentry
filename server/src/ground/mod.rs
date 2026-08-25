@@ -300,6 +300,9 @@ pub fn derive_seniors(
     // H first: water is gravity-defined and no earthwork changes it, so it is
     // the ground everything else is cut into.
     let waters = derive_waters(scene, solved, terrain_path, threads);
+    // Which corridor sides owe a pavement — asked here, before the strips
+    // exist, so a street's bench can be as wide as its own cross-section.
+    let paves = crate::synth::walkway::pavement_sides(scene, solved, facades);
     let mut layers: Vec<GroundLayer> = Vec::new();
     if !waters.is_empty() {
         layers.push(GroundLayer { stratum: Stratum::H, earthworks: Earthworks::new(Vec::new()), waters });
@@ -315,8 +318,16 @@ pub fn derive_seniors(
         if members.is_empty() {
             continue;
         }
-        let edges =
-            derive_earthworks(scene, solved, facades, &members, &layers, terrain_path, threads);
+        let edges = derive_earthworks(
+            scene,
+            solved,
+            facades,
+            &paves,
+            &members,
+            &layers,
+            terrain_path,
+            threads,
+        );
         if edges.is_empty() {
             continue;
         }
@@ -413,7 +424,15 @@ fn walk_earthworks(
     // Only what is drawn at grade. A band over a bridge is carried by the
     // structure (`synth::carried`) and a band under one is not what the ground
     // there is; neither has a bench to lay.
-    let seats: Vec<usize> = (0..bands.len()).filter(|&i| bands[i].level == 0).collect();
+    // **A hosted strip does not bench for itself.** Its street's bench was
+    // widened to carry it (`pavement_of`), and a second terrace beside the first
+    // is the sawtooth, not the support. A *free* band still benches: nothing
+    // else has made ground for a path across a field.
+    let street_bench = std::env::var_os("ARPT_STREET_BENCH").is_some();
+    let seats: Vec<usize> = (0..bands.len())
+        .filter(|&i| bands[i].level == 0)
+        .filter(|&i| !street_bench || bands[i].corridor == CorridorId::MAX)
+        .collect();
     if seats.is_empty() {
         return Vec::new();
     }
@@ -1035,10 +1054,12 @@ fn span_bench_gaps(layers: Vec<GroundLayer>) -> Vec<GroundLayer> {
 /// side sampling is DEM-decode bound, like the shoreline reads) and
 /// flattened in corridor order, so the edge indices — and the modifier
 /// tie-breaking they feed — are deterministic run to run (invariant 5).
+#[allow(clippy::too_many_arguments)]
 fn derive_earthworks(
     scene: &SceneGraph,
     solved: &SolvedModel,
     facades: &Facades,
+    paves: &std::collections::HashSet<(u32, u8)>,
     members: &[usize],
     beneath: &[GroundLayer],
     terrain_path: Option<&Path>,
@@ -1053,7 +1074,9 @@ fn derive_earthworks(
             .iter()
             .map(|&i| &scene.corridors[i])
             .filter_map(|c| {
-                solved.profile(c.id).map(|p| corridor_earthworks(c, p, Some(facades), None))
+                solved
+                    .profile(c.id)
+                    .map(|p| corridor_earthworks(c, p, Some(facades), None, pavement_of(paves, c)))
             })
             .flatten()
             .collect();
@@ -1097,13 +1120,34 @@ fn derive_earthworks(
                         }
                         h
                     };
-                    let edges = corridor_earthworks(c, p, Some(facades), Some(&mut sample));
+                    let edges =
+                        corridor_earthworks(c, p, Some(facades), Some(&mut sample), pavement_of(paves, c));
                     out.lock().expect("earthwork results poisoned")[i] = edges;
                 }
             });
         }
     });
     out.into_inner().expect("earthwork results poisoned").into_iter().flatten().collect()
+}
+
+/// The pavement width this corridor's bench must carry on each side, in metres.
+///
+/// Zero where no pavement is owed, so a street with none benches exactly what it
+/// always did. Behind `ARPT_STREET_BENCH` while it is measured.
+fn pavement_of(
+    paves: &std::collections::HashSet<(u32, u8)>,
+    c: &crate::scene::Corridor,
+) -> [f64; 2] {
+    if std::env::var_os("ARPT_STREET_BENCH").is_none() {
+        return [0.0; 2];
+    }
+    [0u8, 1].map(|side| {
+        if paves.contains(&(c.id, side)) {
+            crate::priors::WALK_WIDTH_M
+        } else {
+            0.0
+        }
+    })
 }
 
 /// The earthwork edges one profiled corridor implies (docs/GROUND.md §2):
@@ -1124,6 +1168,7 @@ fn corridor_earthworks(
     p: &crate::solve::Profile,
     facades: Option<&Facades>,
     side: Option<&mut dyn FnMut(Coord) -> f64>,
+    paves: [f64; 2],
 ) -> Vec<EarthworkEdge> {
     let mut edges: Vec<EarthworkEdge> = Vec::new();
     {
@@ -1153,6 +1198,32 @@ fn corridor_earthworks(
         // verge beyond the asphalt (see EARTHWORK_MARGIN_M).
         let half_width = c.kind.prior().half_width_m(c.link).unwrap_or(0.0) + EARTHWORK_SHOULDER_M;
         let bench_half_width = half_width + EARTHWORK_MARGIN_M;
+        // **A street's bench is as wide as the street's cross-section.** The
+        // pavement is part of that cross-section (ROADS.md invariant 1), so the
+        // terrace under it is this bench, widened — not a second terrace cut
+        // beside the first by stratum D. Two benches a metre apart at slightly
+        // different heights are what `slope.terrain_tearing` reads as a
+        // sawtooth: measured with the synthesis prior on, its worst went 6.08 →
+        // 6.37 m and returned to 3.08 with the walk bench withheld, which is
+        // the two terraces disagreeing and nothing else.
+        //
+        // Anchored on the **drawn** edge, not on the class prior. The two are
+        // different numbers — the bench is sized from `prior.half_width_m`
+        // while the asphalt is drawn at `width_m * 0.5 + shoulder`
+        // (`corridor_half_width_m`) — and where a mapped width exceeds its
+        // prior the pavement outruns a bench widened by the strip alone. That
+        // mismatch is already known here: `carriageway` below is computed from
+        // the drawn width and then *capped* at `bench_half_width`.
+        let drawn_half =
+            crate::synth::carriageway::corridor_half_width_m(c).unwrap_or(bench_half_width);
+        let seat = |side: usize| {
+            if paves[side] > 0.0 {
+                bench_half_width.max(drawn_half + paves[side] + EARTHWORK_MARGIN_M)
+            } else {
+                bench_half_width
+            }
+        };
+        let base = Section { left_m: seat(0), right_m: seat(1) };
         // The asphalt this bench carries, which it holds against any neighbour
         // (see `EarthworkEdge::carriageway_m`): the half-width the pavement
         // paints (`synth::carriageway::corridor_half_width_m`) *plus the verge*,
@@ -1210,13 +1281,13 @@ fn corridor_earthworks(
         // exists to prevent.
         let band_nominal = c.width_m.map(|w| w * 0.5 + c.kind.prior().shoulder_m());
         let mut room_at: Vec<Room> = vec![Room::open(f64::INFINITY); nodes.len()];
-        let mut bench: Vec<Section> = vec![Section::uniform(bench_half_width); nodes.len()];
+        let mut bench: Vec<Section> = vec![base; nodes.len()];
         if let Some(facades) = clips {
             let mut scratch: Vec<u32> = Vec::new();
             // Far enough out to see the wall a *face* would run under, not
             // only the one the bench would: half the population this exists
             // for is on the batter beyond the bench.
-            let reach = bench_half_width + EARTHWORK_MAX_BATTER_M;
+            let reach = base.reach_m() + EARTHWORK_MAX_BATTER_M;
             for k in 0..nodes.len() {
                 if !at_grade[k] {
                     continue;
@@ -1242,8 +1313,8 @@ fn corridor_earthworks(
                 // terrace continuing *past* the building line into the hill,
                 // which is the batter's clip below.
                 bench[k] = Section {
-                    left_m: bench_half_width.min(room_at[k].left).max(band.left_m),
-                    right_m: bench_half_width.min(room_at[k].right).max(band.right_m),
+                    left_m: base.left_m.min(room_at[k].left).max(band.left_m),
+                    right_m: base.right_m.min(room_at[k].right).max(band.right_m),
                 };
             }
         }
@@ -2152,7 +2223,7 @@ mod tests {
             + EARTHWORK_MARGIN_M;
         let mut side = |c: Coord| ground(c);
         let edges =
-            with_clip(false, || corridor_earthworks(&c, &p, Some(&wall_north(3.0)), Some(&mut side)));
+            with_clip(false, || corridor_earthworks(&c, &p, Some(&wall_north(3.0)), Some(&mut side), [0.0; 2]));
         assert!(!edges.is_empty(), "the street must bench");
         for e in edges.iter().filter(|e| !e.carve) {
             // The corridor runs west→east, so north is its left.
@@ -2175,12 +2246,12 @@ mod tests {
             + EARTHWORK_SHOULDER_M
             + EARTHWORK_MARGIN_M;
         let mut side = |c: Coord| ground(c);
-        let open = corridor_earthworks(&c, &p, None, Some(&mut side));
+        let open = corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]);
         // The wall stands *outside* the bench (4.25 m) but inside the face's
         // reach, so the bench itself fits and only the batter is cut short —
         // the half of the population a bench-only fix would have made worse.
         let clipped =
-            with_clip(true, || corridor_earthworks(&c, &p, Some(&wall_north(4.6)), Some(&mut side)));
+            with_clip(true, || corridor_earthworks(&c, &p, Some(&wall_north(4.6)), Some(&mut side), [0.0; 2]));
         let reach = |es: &[EarthworkEdge], s: usize| {
             es.iter()
                 .filter(|e| !e.carve)
@@ -2216,7 +2287,7 @@ mod tests {
         let mut side = |c: Coord| ground(c);
         // A wall almost on the centerline: the room is gone entirely.
         let edges =
-            with_clip(false, || corridor_earthworks(&c, &p, Some(&wall_north(0.2)), Some(&mut side)));
+            with_clip(false, || corridor_earthworks(&c, &p, Some(&wall_north(0.2)), Some(&mut side), [0.0; 2]));
         let band = 5.5 * 0.5 + crate::priors::STRUCTURE_SHOULDER_M;
         let floor = crate::priors::MIN_CARRIAGEWAY_HALF_M.min(band);
         for e in edges.iter().filter(|e| !e.carve) {
@@ -2236,9 +2307,9 @@ mod tests {
         let (mut c, p, ground) = cross_slope_street(12, 0.2);
         c.kind = Kind::Rail(crate::priors::RailClass::StandardGauge);
         let mut side = |c: Coord| ground(c);
-        let open = corridor_earthworks(&c, &p, None, Some(&mut side));
+        let open = corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]);
         let clipped =
-            with_clip(true, || corridor_earthworks(&c, &p, Some(&wall_north(2.0)), Some(&mut side)));
+            with_clip(true, || corridor_earthworks(&c, &p, Some(&wall_north(2.0)), Some(&mut side), [0.0; 2]));
         assert_eq!(open.len(), clipped.len());
         for (a, b) in open.iter().zip(clipped.iter()) {
             assert_eq!(a.half_width_m, b.half_width_m, "a platform is not a defect");
@@ -2274,7 +2345,7 @@ mod tests {
         let (mut c, p) = street(&pts, &mut |c| ground(c));
         c.kind = Kind::Rail(crate::priors::RailClass::Funicular);
         let mut side = |c: Coord| ground(c);
-        let edges = corridor_earthworks(&c, &p, None, Some(&mut side));
+        let edges = corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]);
         assert!(!edges.is_empty(), "a climbing alignment must bench");
         // Every bench target must match the profile at the arc its own
         // endpoint occupies. Paired with the raw node instead, these differ by
@@ -2304,7 +2375,7 @@ mod tests {
         let slope = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M * 0.5;
         let (c, p) = street(&pts, &mut |c| slope(c));
         let mut side = |c: Coord| slope(c);
-        let edges = corridor_earthworks(&c, &p, None, Some(&mut side));
+        let edges = corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]);
         assert!(!edges.is_empty(), "the cross-slope must trigger a bench");
         assert!(edges.iter().all(|e| (e.target_a - 400.0).abs() < 1e-9));
 
@@ -2333,7 +2404,7 @@ mod tests {
         let (c, p) = street(&pts, &mut |c| cliff(c));
         let mut side = |c: Coord| cliff(c);
         assert!(
-            corridor_earthworks(&c, &p, None, Some(&mut side)).is_empty(),
+            corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]).is_empty(),
             "a terrace on a cliff is a fiction: no bench there"
         );
     }
@@ -2443,7 +2514,7 @@ mod tests {
         let gentle = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M * 0.15;
         let (c, p) = street(&pts, &mut |c| gentle(c));
         let mut side = |c: Coord| gentle(c);
-        let edges = corridor_earthworks(&c, &p, None, Some(&mut side));
+        let edges = corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]);
         assert!(!edges.is_empty());
         let want = (0.15 * bench_half) / (1.0 / EARTHWORK_BATTER - 0.15);
         for e in &edges {
@@ -2462,7 +2533,7 @@ mod tests {
         let leaning = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M * 0.3;
         let (c, p) = street(&pts, &mut |c| leaning(c));
         let mut side = |c: Coord| leaning(c);
-        let edges = corridor_earthworks(&c, &p, None, Some(&mut side));
+        let edges = corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]);
         assert!(!edges.is_empty());
         for e in &edges {
             assert_eq!(e.batter_run[LEFT], WALL_BATTER, "the uphill face must be a wall");
@@ -2493,7 +2564,7 @@ mod tests {
         // target is the ground.
         let (c, p) = street(&pts, &mut |_| 400.0);
         let mut side = |_: Coord| 400.0;
-        let edges = corridor_earthworks(&c, &p, None, Some(&mut side));
+        let edges = corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]);
         assert!(!edges.is_empty(), "every at-grade road benches its own band");
         assert!(edges.iter().all(|e| e.batter_m == [EARTHWORK_MIN_BATTER_M; 2]));
         let ew = Earthworks::new(edges);
