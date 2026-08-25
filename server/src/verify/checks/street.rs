@@ -642,7 +642,24 @@ impl Street {
                 if !tile.owns(px, py) {
                     return;
                 }
-                let Some((_, k)) = kerbs.nearest(px, py, &tile.scale) else { return };
+                let Some((d, k)) = kerbs.nearest(px, py, &tile.scale) else { return };
+                // **The population is a kerb-anchored strip, not a class.** A
+                // sidewalk starts at the carriageway edge and is at most
+                // `WALK_WIDTH_M` wide (`street.kerb_join` reads 0.00 %), so
+                // every sample of one is within a band-width of a kerb. A path
+                // that merely passes a road is not, and scoring it against that
+                // road measures a relation that does not exist — the worst site
+                // in the extract was a footpath 17.7 m up a slope.
+                //
+                // Reading that from the *geometry* rather than from the drawn
+                // material is what lets the material be merged: `drawn_material`
+                // makes a path and the sidewalk it continues one region so they
+                // share one casing, and a class test would then have quietly
+                // started scoring hillsides. Measured with the merge withheld,
+                // the tightening alone moves this metric by a hair.
+                if d > STRIP_REACH_M {
+                    return;
+                }
                 let departure = (z - k.z).abs();
                 dist.push(departure);
                 signed.push(z - k.z);
@@ -718,6 +735,17 @@ fn report_population(label: &str, d: &Dist) {
         d.max().unwrap_or(f64::NAN),
     );
 }
+
+/// How far from a kerb a drawn pedestrian sample can be and still be part of
+/// *that street's* cross-section, in metres.
+///
+/// A strip is seated with its inner edge on the carriageway edge and allotted
+/// at most [`priors::WALK_WIDTH_M`], so its far edge is one band-width out; the
+/// slack covers the profile-smoothing displacement between the drawn kerb and
+/// the centerline the strip was offset from. This replaced a test on the drawn
+/// *class*, which stopped being able to tell a sidewalk from a path once the
+/// two became one drawn region.
+const STRIP_REACH_M: f64 = priors::WALK_WIDTH_M + 1.0;
 
 /// A line part resampled at [`WALK_STEP_M`], so a long straight run is not one
 /// sample and a densely digitised curve is not a thousand.

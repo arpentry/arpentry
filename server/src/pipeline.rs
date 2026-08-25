@@ -451,6 +451,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             ground,
             facades: &world.facades,
             junctions,
+            crossings: &world.crossings,
             terrain: cfg.terrain.as_deref(),
             bounds: cfg.bbox,
             threads,

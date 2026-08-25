@@ -258,6 +258,33 @@ impl SourceSeg {
     pub fn height_at(&self, t: f64) -> f64 {
         self.height_a + (self.height_b - self.height_a) * t
     }
+
+    /// The half-width actually drawn at parameter `t` along `a`→`b`, metres.
+    ///
+    /// **Read this, never [`half_m`], for anything about the drawn edge.** The
+    /// two were the same number for a pedestrian band until the band became a
+    /// side of a corridor, and the difference is load-bearing:
+    /// [`synth::pavement::runs`] chains segments into one buffered polyline
+    /// only while `half_m` matches, so a band that varies its width *there*
+    /// breaks into one polyline per rung — and the union keeps merely-touching
+    /// shapes apart, which is a straight pavement drawn as a row of slabs. The
+    /// carriageway has always kept its class prior in `half_m` and its drawn
+    /// width in `sect_*`; the pavement now does the same.
+    ///
+    /// [`half_m`]: Self::half_m
+    /// [`synth::pavement::runs`]: crate::synth::pavement
+    pub fn drawn_half_at(&self, t: f64) -> f64 {
+        let (a, b) = (self.sect_a.reach_m(), self.sect_b.reach_m());
+        a + (b - a) * t.clamp(0.0, 1.0)
+    }
+
+    /// The widest the band is drawn anywhere along this segment — the one
+    /// number a consumer with nowhere to put a parameter can use without ever
+    /// claiming less surface than exists (a bench narrower than the band it
+    /// carries hangs that band over unbenched ground).
+    pub fn drawn_half(&self) -> f64 {
+        self.sect_a.reach_m().max(self.sect_b.reach_m())
+    }
 }
 
 /// Grid cell size in degrees (~1 km): plates per cell stay in the tens even
@@ -578,15 +605,21 @@ fn carriageway_sources(
                 None => raw_point_at_arc(c, arc),
             };
             let pts: Vec<Coord> = stops.iter().map(|&s| point(s)).collect();
-            let sections = sections_along(c, &stops, &pts, half_m, facades, no_room, &mut scratch);
+            // The asphalt's share of the one allotment (`synth::cross`). No
+            // pavement is asked for here — `synth::walkway` makes the same call
+            // with the evidence it has — and asking for none is exactly the
+            // query this has always made.
+            let sections = super::cross::sections_along(
+                c, &stops, &pts, half_m, &[], facades, no_room, &mut scratch,
+            );
             for i in 0..stops.len() - 1 {
                 out.push(SourceSeg {
                     a: pts[i],
                     b: pts[i + 1],
                     cos_lat: c.cos_lat,
                     half_m,
-                    sect_a: sections[i],
-                    sect_b: sections[i + 1],
+                    sect_a: sections[i].carriage,
+                    sect_b: sections[i + 1].carriage,
                     level,
                     layer: 0,
                     cut_a: (i == 0).then_some(cut_lo).flatten(),
@@ -602,68 +635,6 @@ fn carriageway_sources(
         }
     }
     (out, handovers, grade_runs)
-}
-
-/// The cross-section at every station of one run: the class prior on both
-/// sides, narrowed where a facade stands closer than [`priors::FACADE_CLEAR_M`]
-/// outside the asphalt, and never below [`priors::MIN_CARRIAGEWAY_HALF_M`].
-///
-/// **The allocation order is the model, and asphalt is last in it.** A
-/// footprint carries its own plan error while a carriageway width is a survey
-/// prior, so the room a wall leaves is spent on the sidewalk and the verge
-/// before any of it is taken off the road (`data/plans` — the street as a room
-/// between facades). Phase 2 has only asphalt to spend it on, so the whole cap
-/// lands here; when the walk band and the per-side bench exist they take their
-/// share first and this becomes the remainder.
-///
-/// Asphalt only. A railway through a building is a station under its roof, not
-/// a formation drawn through a wall, and narrowing the ballast there would
-/// shave the platform it stands on — the same exclusion `order.building_overlap`
-/// makes on the measuring side.
-pub(crate) fn sections_along(
-    c: &Corridor,
-    stops: &[f64],
-    pts: &[Coord],
-    half_m: f64,
-    facades: &Facades,
-    no_room: bool,
-    scratch: &mut Vec<u32>,
-) -> Vec<Section> {
-    let uniform = vec![Section::uniform(half_m); stops.len()];
-    if no_room || facades.is_empty() || c.kind.prior().surface != priors::Surface::Asphalt {
-        return uniform;
-    }
-    let m_lon = DEG_M * c.cos_lat;
-    let reach = half_m + priors::FACADE_CLEAR_M;
-    let mut out = uniform;
-    for i in 0..stops.len() {
-        // The tangent is a central difference where there is one, so a station
-        // reads the direction the road runs *through* it rather than the
-        // direction of whichever chord happens to be indexed with it.
-        let (j, k) = (i.saturating_sub(1), (i + 1).min(stops.len() - 1));
-        if j == k {
-            continue;
-        }
-        let (dx, dy) = ((pts[k].x - pts[j].x) * m_lon, (pts[k].y - pts[j].y) * DEG_M);
-        let len = dx.hypot(dy);
-        if !(len > 0.0) {
-            continue;
-        }
-        // **A station is responsible for its own stretch of centerline**, so it
-        // looks at least as far along the road as the gap to its neighbours.
-        // That is what makes consecutive stations see the same wall: a facade
-        // is caught by every station whose window it falls in, so the two that
-        // bracket its ends are both narrowed and the width interpolated between
-        // them never crosses it. A shorter window would let a wall between two
-        // stations go unseen; a longer one only tapers the street sooner.
-        let window = (stops[k] - stops[j])
-            .max(ROOM_WINDOW_MIN_M)
-            .min(ROOM_WINDOW_MAX_M);
-        let room =
-            facades.room(pts[i], c.cos_lat, (dx / len, dy / len), reach, window, scratch);
-        out[i] = room.allot(half_m, priors::MIN_CARRIAGEWAY_HALF_M);
-    }
-    out
 }
 
 /// Shortest and longest stretch of centerline, in metres, that one station

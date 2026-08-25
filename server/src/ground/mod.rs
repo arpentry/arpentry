@@ -560,13 +560,17 @@ fn walk_census_row(
         len_m: len * DEG_M,
         face_m: 0.0,
         fall: 0.0,
-        bench_w_m: s.half_m + EARTHWORK_MARGIN_M,
+        bench_w_m: s.drawn_half() + EARTHWORK_MARGIN_M,
     };
     if !(len > 0.0) {
         return row;
     }
     let (px, py) = (-dy / len, dx / len);
-    let w = s.half_m + EARTHWORK_MARGIN_M;
+    // The width the band is *drawn* at. `half_m` is the run's chaining key
+    // (`SourceSeg::drawn_half_at`) and is the class nominal however much the
+    // room took off, so benching off it would carve a terrace wider than the
+    // pavement standing on it.
+    let w = s.drawn_half() + EARTHWORK_MARGIN_M;
     let target =
         if path { (sample(s.a) + sample(s.b)) * 0.5 } else { (s.height_a + s.height_b) * 0.5 };
     let at = |side: f64| Coord {
@@ -730,7 +734,11 @@ fn walk_edge(
     }
     let (px, py) = (-dy / len, dx / len); // lateral unit, metric (left)
     let mid = Coord { x: (s.a.x + s.b.x) * 0.5, y: (s.a.y + s.b.y) * 0.5 };
-    let w = s.half_m + EARTHWORK_MARGIN_M;
+    // The width the band is *drawn* at. `half_m` is the run's chaining key
+    // (`SourceSeg::drawn_half_at`) and is the class nominal however much the
+    // room took off, so benching off it would carve a terrace wider than the
+    // pavement standing on it.
+    let w = s.drawn_half() + EARTHWORK_MARGIN_M;
     let ground = sample(mid);
     // A sidewalk's seat is the height it is drawn at; a path's is the ground it
     // stands on, read at its own centerline so the bench flattens the section
@@ -798,7 +806,7 @@ fn walk_edge(
             // roughness in the ground between the two samples puts it back
             // over, and the first cut of this recovered a sixth of what the
             // linear estimate said it should.
-            *w_side = (w * cap * FIT_MARGIN / rise.abs()).max(s.half_m);
+            *w_side = (w * cap * FIT_MARGIN / rise.abs()).max(s.drawn_half());
             face(side, *w_side)
         };
         let l = fit(1.0, rise_l, &mut w_l);
@@ -818,7 +826,7 @@ fn walk_edge(
         // The drawn band itself, held outright against any neighbouring bench —
         // the same rule that keeps a road's own carriageway out of a
         // neighbour's reach (`EarthworkEdge::carriageway_m`).
-        carriageway_m: s.half_m,
+        carriageway_m: s.drawn_half(),
         batter_m: [reach_l.0, reach_r.0],
         batter_run: [reach_l.1, reach_r.1],
         chain,

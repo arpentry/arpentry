@@ -14,6 +14,7 @@
 pub mod area;
 pub mod carriageway;
 pub mod carried;
+pub mod cross;
 pub mod datum;
 pub mod draped;
 pub mod height;

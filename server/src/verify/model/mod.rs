@@ -25,6 +25,7 @@ pub mod footprint;
 pub mod grade;
 pub mod graph;
 pub mod network;
+pub mod street;
 pub mod structures;
 
 use crate::ground::GroundStack;
@@ -54,6 +55,11 @@ pub struct Model<'a> {
     /// what was *not* drawn, and the archive carries only what was
     /// (`network`).
     pub junctions: &'a crate::synth::carriageway::CarriagewayModel,
+    /// Every registered crosswalk's paint chords, by source hash. Here because
+    /// "does this zebra lie on the street it crosses" is a question about the
+    /// *registration*, and the archive carries the bars with no memory of which
+    /// carriageway was supposed to have justified them (`street`).
+    pub crossings: &'a std::collections::HashMap<u64, Vec<(geo_types::Coord, geo_types::Coord)>>,
     pub terrain: Option<&'a std::path::Path>,
     pub bounds: crate::project::Bounds,
     pub threads: usize,
@@ -70,6 +76,7 @@ pub fn run(m: &Model<'_>) -> Vec<Metric> {
     out.extend(grade::check(m));
     out.extend(graph::check(m));
     out.extend(network::check(m));
+    out.extend(street::check(m));
     out.extend(structures::check(m));
     out
 }

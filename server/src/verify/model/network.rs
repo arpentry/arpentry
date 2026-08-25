@@ -204,7 +204,8 @@ pub fn check(m: &Model<'_>) -> Vec<Metric> {
                             if !matches!(src.surface, Surface::Walkway | Surface::Path) {
                                 continue;
                             }
-                            let d = point_to_segment_m(p, src.a, src.b, src.cos_lat) - src.half_m;
+                            let (d0, t) = project_m(p, src.a, src.b, src.cos_lat);
+                            let d = d0 - src.drawn_half_at(t);
                             if d < brute {
                                 brute = d;
                                 brute_c = src.corridor;
@@ -454,7 +455,12 @@ fn cover_at(
     let mut band = f64::MAX;
     for &i in scratch.iter() {
         let s = junctions.source(i);
-        let d = point_to_segment_m(p, s.a, s.b, s.cos_lat) - s.half_m;
+        let (d0, t) = project_m(p, s.a, s.b, s.cos_lat);
+        // The width the band is *drawn* at. `half_m` became the run's chaining
+        // key when the pavement turned into a side of a corridor, and reading
+        // it here would report a strip the room narrowed as covering ground it
+        // does not.
+        let d = d0 - s.drawn_half_at(t);
         if d < hard {
             hard = d;
         }
@@ -498,7 +504,8 @@ fn own_host_band_m(
         if s.surface != Surface::Walkway || s.corridor != host {
             continue;
         }
-        let d = point_to_segment_m(p, s.a, s.b, s.cos_lat) - s.half_m;
+        let (d0, t) = project_m(p, s.a, s.b, s.cos_lat);
+        let d = d0 - s.drawn_half_at(t);
         if d < best {
             best = d;
         }
@@ -570,6 +577,16 @@ fn point_at(line: &[Coord], arc: &[f64], s: f64) -> Coord {
 }
 
 /// Plan distance from `p` to the segment `a`–`b`, in metres.
+/// `(distance in metres, parameter along a→b)` of the closest point to `p`.
+fn project_m(p: Coord, a: Coord, b: Coord, cos_lat: f64) -> (f64, f64) {
+    let m_lon = DEG_M * cos_lat;
+    let (ex, ey) = ((b.x - a.x) * m_lon, (b.y - a.y) * DEG_M);
+    let (qx, qy) = ((p.x - a.x) * m_lon, (p.y - a.y) * DEG_M);
+    let len2 = ex * ex + ey * ey;
+    let u = if len2 > 0.0 { ((qx * ex + qy * ey) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    ((qx - ex * u).hypot(qy - ey * u), u)
+}
+
 fn point_to_segment_m(p: Coord, a: Coord, b: Coord, cos_lat: f64) -> f64 {
     let m_lon = DEG_M * cos_lat;
     let (ex, ey) = ((b.x - a.x) * m_lon, (b.y - a.y) * DEG_M);

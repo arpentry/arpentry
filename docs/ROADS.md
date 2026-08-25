@@ -185,46 +185,77 @@ either representation alone.
    asks for; what a stretch of street actually gets is that capped by the
    **room its facades leave** (§6.6 P3 increment 10), which is per station
    and per side — one function still, with an argument the priors alone
-   could not supply. A sidewalk is part of that cross-section and not a
-   feature of its own: its band takes its shape from the **host centerline**
-   over the arc range `assemble::walks` attached it across, never from its
-   own mapped polyline, which decides only *where* a sidewalk is, *which
-   side*, and *how far out* (`synth::walkway`). The room is spent in order —
-   carriageway, then walkway, then verge — so a street with no room for a
-   sidewalk simply has none, which is what a narrow street looks like.
+   could not supply. That function is `synth::cross::sections_along`, and it
+   returns the **whole** cross-section — carriageway, pavement, verge, per
+   side — from a single query of the room. It replaced two: the asphalt used
+   to be allotted here and the pavement re-measured the same facades with a
+   different reach, so neither allocation could see what the other had spent.
+   A sidewalk is part of that cross-section and not a feature of its own: it
+   is a **side of a corridor**, drawn as one continuous strip over the whole
+   extent the data claims, taking its shape from the **host centerline** and
+   never from its own mapped polyline — which decides only *whether* a
+   pavement is there and *which side*, no longer how wide or how far out. Its
+   inner edge *is* the carriageway's outer edge, one number read twice, so
+   bare ground between a road and its own pavement is unrepresentable
+   (`street.kerb_join`). The room is spent in order — carriageway, then
+   walkway, then verge — so a street with no room for a sidewalk simply has
+   none, which is what a narrow street looks like; on the Montreux extract
+   that rule alone is the whole of `street.strip_continuity`'s residual
+   (12.5 % of claimed pavement, falling to 1.5 % with the facade cap
+   withheld), and it is the next thing the model has to argue about rather
+   than a defect in the drawing.
 7. **A pedestrian way is a surface, not a line.** From
    `WALK_SURFACE_MIN_ZOOM` every footway, path, cycleway and stair is a
    region in the union like a carriageway: its own material, its own hole in
-   the drawn ground, its own apron. Two materials, because they are two
-   things — a `Walkway` stands a kerb (`KERB_RISE_M`) above the carriageway
-   it belongs to, and a `Path` stands on the ground and belongs to nothing.
-   Their cartographic strokes are deleted at those zooms for the same reason
-   a carriageway's is: the mesh *is* the surface. What keeps a stroke is what
-   the walkway model did not draw — a footbridge, a subway, a crosswalk that
-   registered against no carriageway, and **any way the model declined to
-   band at all**. That last is the test asking what was *built* rather than
-   what class a feature is: the seat can run out of room and the ground fit
-   can refuse a band on a steep flank, and deleting the stroke on the class
-   alone made those ways vanish outright instead of degrading to a line
-   (invariant 6 — lost detail, never spectacle). `synth::walkway::bands`
-   returns the source of every segment so phase 1 can stamp `walk_banded`,
-   which is what `paves_via_walkway` reads. The Territet switchback at
-   6.9189,46.4304 is the type specimen: a stair-and-footway zigzag on a flank
-   too steep to bench, drawn as a handful of disjoint slabs with nothing
-   between them, now continuous — band where one was built, stroke where it
-   was not. Granularity is the *feature*, so a long way that is banded along
-   part of its length still loses its stroke on the rest.
+   the drawn ground, its own apron. Their cartographic strokes are deleted at
+   those zooms for the same reason a carriageway's is: the mesh *is* the
+   surface. What keeps a stroke is what the walkway model did not draw — a
+   footbridge, a subway, a crosswalk that registered against no carriageway,
+   and **any way the model declined to draw at all**. That last is the test
+   asking what was *built* rather than what class a feature is (I6 — lost
+   detail, never spectacle), and it is the same distinction the free bands
+   are bounded by: a stretch whose claim the strip declined must still be
+   drawn by something, or it is bare ground with neither. The Territet
+   switchback at 6.9189,46.4304 is the type specimen.
+
+   **Two producers, because there are two things.** A way that runs beside a
+   street is a *side of that street* — one continuous strip per corridor side
+   over the merged extent of its claims, seated on the kerb, sized by
+   invariant 1's one allotment, and standing `KERB_RISE_M` above the
+   carriageway it belongs to. A way that runs beside nothing is a *free band*
+   on its own polyline, standing on the ground and belonging to nothing.
+   Neither is built per *attachment*, and that is the whole of the change:
+   `assemble::walks` breaks a run wherever a way turns across its host, so
+   building per attachment drew one mapped pavement as an alternating chain
+   of two materials on two curves — a lateral jump at every corner, a hole at
+   every stretch under a minimum length, and a silent nothing wherever a seat
+   ran out of room. **Continuity has to be structural, because no census can
+   see it**: the attach census read 98 % of claimed arc built while a third
+   of it drew as disjoint slabs, since a census counts arc that produced a
+   segment and cannot ask whether the segments join.
+
+   **A strip keeps one `half_m` and varies its `Section`.** `pavement::runs`
+   chains segments into one buffered polyline only while `half_m` matches,
+   and the union keeps merely-touching shapes apart, so a band that put its
+   width variation in `half_m` was drawn as one slab per 0.4 m rung. The
+   carriageway has always kept its class prior there and its drawn width in
+   `sect_*`; the pavement now does the same, and `SourceSeg::drawn_half_at`
+   is what every consumer of the drawn edge must read — the bench included,
+   since benching off the nominal would carve a terrace wider than the
+   pavement on it.
+
    And, being a surface, each **benches the ground under it** exactly as a
-   carriageway does (docs/GROUND.md §2): the bands are derived once and stage 3
-   imprints those same segments in stratum D. The band that draws the surface
-   and the bench that holds it up are one cross-section, not two constructions
-   of one. That cross-section is allotted out of **three** bounds, not two: the
-   kerb it starts at, the facade it stops short of, and — since the band is
-   fitted to the senior ground before D benches it — the earthwork its own
-   material may plausibly build. Where any of the three leaves less than
-   `WALK_MIN_WIDTH_M`, there is no band, which is the same sentence invariant 6
-   speaks about a street too narrow for a sidewalk. A path across a 45° flank is
-   narrower than a promenade, and past a point it is not a drawn surface at all.
+   carriageway does (docs/GROUND.md §2): the strips are derived once and
+   stage 3 imprints those same segments in stratum D. The band that draws the
+   surface and the bench that holds it up are one cross-section, not two
+   constructions of one. That cross-section is allotted out of **three**
+   bounds: the kerb it starts at, the facade it stops short of, and — since
+   the band is fitted to the senior ground before D benches it — the
+   earthwork its own material may plausibly build. Where any of the three
+   leaves less than `WALK_MIN_WIDTH_M`, there is no band, which is the same
+   sentence invariant 1 speaks about a street too narrow for a sidewalk. A
+   path across a 45° flank is narrower than a promenade, and past a point it
+   is not a drawn surface at all.
 2. **A closed, simple silhouette.** The paved surface has no gaps, no
    slivers, no overlapping fills. Held *by construction* since P2 increment 5:
    the surface is literally one unioned region per level, so there are no two
