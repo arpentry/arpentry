@@ -424,15 +424,22 @@ fn walk_earthworks(
     // Only what is drawn at grade. A band over a bridge is carried by the
     // structure (`synth::carried`) and a band under one is not what the ground
     // there is; neither has a bench to lay.
-    // **A hosted strip does not bench for itself.** Its street's bench was
-    // widened to carry it (`pavement_of`), and a second terrace beside the first
-    // is the sawtooth, not the support. A *free* band still benches: nothing
-    // else has made ground for a path across a field.
-    let street_bench = std::env::var_os("ARPT_STREET_BENCH").is_some();
-    let seats: Vec<usize> = (0..bands.len())
-        .filter(|&i| bands[i].level == 0)
-        .filter(|&i| !street_bench || bands[i].corridor == CorridorId::MAX)
-        .collect();
+    // **A hosted strip benches, and it benches *coplanar with its street*.**
+    // Withholding its bench entirely was built and measured and is wrong: the
+    // walk bench is not only flattening the strip, its batter is what carries
+    // the natural ground up to the band's rim on a downhill side, and the
+    // street's own bench cannot reproduce that once its edge moves far enough
+    // down the slope for the face to exceed `EARTHWORK_MAX_BATTER_M`
+    // (6.915741,46.433957: ground meets the band at 435.5 m with this bench and
+    // stops at 430.0 m without it). It is a stratum argument too — D exists so a
+    // drawn surface holds its own ground against everything senior, and a
+    // portal carve takes the ground back the moment the strip stops claiming it
+    // (6.910742,46.436612, a bore invert at 393.8 beside a road at 401.5).
+    //
+    // What was right about that experiment was the *plan*: one terrace, not two.
+    // That is now had by giving the strip's bench the **same target** as its
+    // street's — see `walk_edge`.
+    let seats: Vec<usize> = (0..bands.len()).filter(|&i| bands[i].level == 0).collect();
     if seats.is_empty() {
         return Vec::new();
     }
@@ -722,18 +729,33 @@ struct WalkBenchRules {
     /// That regression is the argument for narrowing the *band* with the bench
     /// rather than the bench alone.
     fit: bool,
+    /// `ARPT_WALK_COPLANAR` — a hosted strip's bench targets the *road* surface
+    /// rather than the band's own height, so it is one plane with the street's
+    /// bench instead of a second terrace `KERB_RISE_M` above it.
+    ///
+    /// **Built, measured and rejected**, and kept as the flag because the number
+    /// is worth not rediscovering: it takes `contact.walk_rim` 1.12 → **32.49 %**
+    /// on its own, against a widened street bench that reads 1.12 %. Isolated
+    /// against that widening, so it is this target and nothing else. A 12 cm
+    /// change in the bench's height should move a rim step by 12 cm and instead
+    /// moves a third of the population past a metre, which says the rim sample
+    /// is not reading the flat top it is assumed to read — the mechanism is not
+    /// understood and the experiment is not worth more than this note until
+    /// something needs it.
+    coplanar: bool,
 }
 
 impl WalkBenchRules {
     /// The shipped rule: the per-material cap, refusing rather than narrowing.
     fn shipped() -> Self {
-        WalkBenchRules { cap_m: None, fit: false }
+        WalkBenchRules { cap_m: None, fit: false, coplanar: false }
     }
 
     fn from_env() -> Self {
         WalkBenchRules {
             cap_m: std::env::var_os("ARPT_WALK_CAP").and_then(|v| v.to_str()?.parse().ok()),
             fit: std::env::var_os("ARPT_WALK_FIT").is_some(),
+            coplanar: std::env::var_os("ARPT_WALK_COPLANAR").is_some(),
         }
     }
 }
@@ -774,6 +796,15 @@ fn walk_edge(
     // endpoint samples makes consecutive benches agree there by construction.
     let (target_a, target_b) = if s.corridor == CorridorId::MAX {
         (sample(s.a), sample(s.b))
+    } else if rules.coplanar {
+        // **The ground under a pavement is the road's ground; the pavement sits
+        // a kerb above it.** Targeting the band's own height instead put this
+        // terrace `KERB_RISE_M` above the street's, and two terraces a
+        // centimetre-scale step apart with overlapping extents are what
+        // `slope.terrain_tearing` reads as a sawtooth. One plane, so they agree
+        // wherever they overlap, and `contact.walk_rim` then reads the kerb
+        // itself rather than zero — which is what is really there.
+        (s.height_a - s.rise_m, s.height_b - s.rise_m)
     } else {
         (s.height_a, s.height_b)
     };
