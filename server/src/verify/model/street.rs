@@ -117,6 +117,7 @@ const QUERY_M: f64 = 32.0;
 const EVIDENCE_MERGE_M: f64 = crate::priors::WALK_CORNER_MAX_M;
 
 pub fn check(m: &Model<'_>) -> Vec<Metric> {
+    synth_census(m);
     vec![strip_continuity(m), kerb_join(m), crossing_extent(m), width_step(m)]
 }
 
@@ -666,6 +667,190 @@ fn width_step(m: &Model<'_>) -> Metric {
         skipped: (pairs == 0).then(|| "no pedestrian run in this extract".to_string()),
         dist,
         worst: worst.into_vec(),
+    }
+}
+
+// ------------------------------------------------------------ sizing the prior
+
+/// How far a wall may stand from a street's centerline and still make it a
+/// built-up street, in metres. Three values, so the sensitivity to this number
+/// is visible rather than assumed.
+const BUILT_UP_REACH_M: [f64; 3] = [15.0, 25.0, 40.0];
+
+/// Station spacing for the built-up walk, in metres — coarse, because the
+/// question is what a whole street is, not what one metre of it is.
+const BUILT_UP_STEP_M: f64 = 10.0;
+
+/// Share of a corridor's measured at-grade length that must have walls on both
+/// sides for the corridor to count as built-up.
+const BUILT_UP_SHARE: f64 = 0.5;
+
+/// **Sizing the synthesis prior, before writing it.** Under `ARPT_DEBUG_SYNTH`,
+/// per class: how much street side-length there is inside the extract, how much
+/// of it the data already claims a pavement for, and how much of it a
+/// "built-up" test would hand one to.
+///
+/// The question is not whether synthesizing pavement is a good idea but *how
+/// much of the world it invents*. Handing a sidewalk to every residential street
+/// is only defensible where the mapped data is sparse **and** the street is
+/// genuinely urban, and the second half is the load-bearing claim: facade
+/// proximity on one side would pave a mountain road that passes a single barn.
+/// So the test is walls on **both** sides — a street is a room, and a room needs
+/// two walls.
+///
+/// **Clipped to the bbox, and that is not a detail.** `assemble` admits whole
+/// parquet row groups, so the corridor set runs far past the extract into ground
+/// no building input covers; measured unclipped, every rural kilometre reads
+/// "no walls" and the built-up share of *residential* came out at 0.2 %, which
+/// is a fact about where the footprints were loaded and not about Montreux.
+fn synth_census(m: &Model<'_>) {
+    if std::env::var_os("ARPT_DEBUG_SYNTH").is_none() {
+        return;
+    }
+    // Per class, split by whether the corridor is built-up:
+    // [side-km, mapped side-km] for built-up and for not, plus the walled
+    // share at each reach for the sensitivity column.
+    let mut by: HashMap<&'static str, [f64; 7]> = HashMap::new();
+    let mut scratch: Vec<u32> = Vec::new();
+    // **Merged**, not summed: several ways claim one stretch of kerb routinely,
+    // and adding their lengths reported 322 % of a primary as mapped.
+    let mut raw: HashMap<(u32, u8), Vec<(f64, f64, u64)>> = HashMap::new();
+    for (line, attached) in m.scene.walks.lines() {
+        for a in attached {
+            raw.entry((a.host, a.side)).or_default().push((a.arc0, a.arc1, line.source));
+        }
+    }
+    let claimed_m: HashMap<(u32, u8), Vec<(f64, f64)>> = raw
+        .into_iter()
+        .map(|(k, mut v)| {
+            v.sort_by(|x, y| x.0.total_cmp(&y.0));
+            (k, merge_ranges(&v.iter().map(|&(a, b, _)| (a, b)).collect::<Vec<_>>(), 0.0))
+        })
+        .collect();
+
+    for c in &m.scene.corridors {
+        let Some(half_m) = corridor_half_width_m(c) else { continue };
+        if c.kind.prior().surface != crate::priors::Surface::Asphalt {
+            continue;
+        }
+        let mut grade: Vec<(f64, f64)> = Vec::new();
+        let mut walled = [0.0f64; 3];
+        let mut grade_m = 0.0f64;
+        for (r0, r1, _, kind) in crate::synth::carriageway::level_runs(c) {
+            if kind != SpanKind::Grade {
+                continue;
+            }
+            let mut a = r0;
+            let mut seen0 = f64::NAN;
+            while a < r1 {
+                let b = (a + BUILT_UP_STEP_M).min(r1);
+                let mid = 0.5 * (a + b);
+                let p = point_at_arc(m, c, mid);
+                if !m.bounds.contains(p.x, p.y) {
+                    a = b;
+                    continue;
+                }
+                if seen0.is_nan() {
+                    seen0 = a;
+                }
+                let step = b - a;
+                grade_m += step;
+                grade.push((a, b));
+                let q = point_at_arc(m, c, (mid + 1.0).min(r1));
+                let m_lon = DEG_M * c.cos_lat;
+                let (dx, dy) = ((q.x - p.x) * m_lon, (q.y - p.y) * DEG_M);
+                let len = dx.hypot(dy);
+                if len > 0.0 {
+                    for (k, &reach) in BUILT_UP_REACH_M.iter().enumerate() {
+                        let r = half_m + reach;
+                        let room = m.facades.room(
+                            p,
+                            c.cos_lat,
+                            (dx / len, dy / len),
+                            r,
+                            crate::synth::carriageway::ROOM_WINDOW_MAX_M,
+                            &mut scratch,
+                        );
+                        // A street is a room, and a room needs two walls.
+                        if room.left < r && room.right < r {
+                            walled[k] += step;
+                        }
+                    }
+                }
+                a = b;
+            }
+        }
+        if !(grade_m > 0.0) {
+            continue;
+        }
+        // Mapped length, clipped to the same stretches the walk measured, so
+        // the two shares are over one denominator.
+        let mut mapped = 0.0f64;
+        for side in [0u8, 1] {
+            let Some(spans) = claimed_m.get(&(c.id, side)) else { continue };
+            for &(s0, s1) in spans {
+                for &(g0, g1) in &grade {
+                    mapped += (s1.min(g1) - s0.max(g0)).max(0.0);
+                }
+            }
+        }
+        let built_up = walled[1] >= BUILT_UP_SHARE * grade_m;
+        let e = by.entry(class_name(c.kind)).or_default();
+        let base = usize::from(!built_up) * 2;
+        e[base] += 2.0 * grade_m;
+        e[base + 1] += mapped;
+        for k in 0..3 {
+            e[4 + k] += 2.0 * walled[k];
+        }
+    }
+    let mut names: Vec<&'static str> = by.keys().copied().collect();
+    names.sort_unstable();
+    eprintln!(
+        "[synth]                  BUILT-UP (>={:.0} % both-walled at {} m)      NOT BUILT-UP        \
+         walled % at {:?} m",
+        100.0 * BUILT_UP_SHARE,
+        BUILT_UP_REACH_M[1],
+        BUILT_UP_REACH_M,
+    );
+    eprintln!(
+        "[synth] class             side-km  mapped %  UNMAPPED km   side-km  mapped %"
+    );
+    for n in names {
+        let e = by[n];
+        if e[0] + e[2] < 200.0 {
+            continue;
+        }
+        let pct = |num: f64, den: f64| if den > 0.0 { 100.0 * num / den } else { 0.0 };
+        eprintln!(
+            "[synth] {n:<16} {:>8.2} {:>8.1}  {:>10.2}  {:>8.2} {:>8.1}   {:>5.1} {:>5.1} {:>5.1}",
+            e[0] / 1000.0,
+            pct(e[1], e[0]),
+            (e[0] - e[1]) / 1000.0,
+            e[2] / 1000.0,
+            pct(e[3], e[2]),
+            pct(e[4], e[0] + e[2]),
+            pct(e[5], e[0] + e[2]),
+            pct(e[6], e[0] + e[2]),
+        );
+    }
+}
+
+/// The class name the synthesis prior is keyed on.
+fn class_name(kind: crate::priors::Kind) -> &'static str {
+    use crate::priors::{Kind, RoadClass};
+    match kind {
+        Kind::Road(RoadClass::Motorway) => "motorway",
+        Kind::Road(RoadClass::Trunk) => "trunk",
+        Kind::Road(RoadClass::Primary) => "primary",
+        Kind::Road(RoadClass::Secondary) => "secondary",
+        Kind::Road(RoadClass::Tertiary) => "tertiary",
+        Kind::Road(RoadClass::Unclassified) => "unclassified",
+        Kind::Road(RoadClass::Residential) => "residential",
+        Kind::Road(RoadClass::LivingStreet) => "living_street",
+        Kind::Road(RoadClass::Service) => "service",
+        Kind::Road(RoadClass::Unknown) => "unknown",
+        Kind::Road(RoadClass::Track) => "track",
+        _ => "other",
     }
 }
 

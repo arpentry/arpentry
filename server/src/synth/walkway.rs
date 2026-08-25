@@ -36,7 +36,7 @@ use geo_types::Coord;
 
 use crate::assemble::facades::{Facades, Section};
 use crate::priors::{self, Kind, RoadClass};
-use crate::scene::{CorridorId, SceneGraph, SpanKind, DEG_M};
+use crate::scene::{Corridor, CorridorId, SceneGraph, SpanKind, DEG_M};
 use crate::solve::SolvedModel;
 
 use std::collections::HashMap;
@@ -478,6 +478,99 @@ fn merge_spans(sorted: &[(f64, f64, u64)]) -> Vec<(f64, f64)> {
     spans
 }
 
+/// How far a wall may stand from a street's centerline and still make it a
+/// built-up street, in metres.
+///
+/// Read off the sizing census rather than guessed: over Montreux the share of
+/// side-length with walls on both sides moves 59.7 / 68.4 / 75.1 % for
+/// residential at 15 / 25 / 40 m, so the answer is not sharp and the middle
+/// value is the honest one. What the number must do is separate a town street
+/// from the same class winding up a hillside, and at 25 m it does: motorway
+/// comes out 0.00 km built-up against 18.9 km not, and unclassified — mostly
+/// rural lanes here — 5.0 against 88.5.
+const BUILT_UP_REACH_M: f64 = 25.0;
+
+/// Share of a corridor's at-grade length that must have walls on both sides
+/// for the corridor to be a built-up street.
+///
+/// A whole-corridor verdict rather than a per-station one, deliberately: a
+/// pavement that switched on and off as a street left and re-entered a terrace
+/// of houses is the fragmentation this model was rebuilt to stop.
+const BUILT_UP_SHARE: f64 = 0.5;
+
+/// Station spacing for the built-up walk, in metres — coarse, because the
+/// question is what a whole street is, not what one metre of it is.
+const BUILT_UP_STEP_M: f64 = 10.0;
+
+/// Whether this corridor is a street with rooms either side of it: walls within
+/// [`BUILT_UP_REACH_M`] on **both** sides over [`BUILT_UP_SHARE`] of its
+/// at-grade length.
+///
+/// **Two walls, not one.** A single facade within reach is a barn beside a
+/// mountain road; two facing each other across the carriageway is a street. The
+/// test is the load-bearing half of the synthesis prior — the class table says
+/// only which classes *could* carry a pavement — and it is what stops
+/// `priors::synthesizes_pavement` from paving the countryside.
+///
+/// A corridor outside the building input's coverage answers **false**, which is
+/// the right way round: assemble admits whole parquet row groups, so the scene
+/// runs far past the extract into ground no footprint covers, and a synthesis
+/// prior that fired there would invent pavement precisely where it knows least.
+fn built_up(c: &Corridor, solved: &SolvedModel, facades: &Facades, scratch: &mut Vec<u32>) -> bool {
+    if facades.is_empty() {
+        return false;
+    }
+    let Some(half_m) = super::carriageway::corridor_half_width_m(c) else { return false };
+    let profile = solved.profile(c.id);
+    let point = |arc: f64| match profile {
+        Some(p) => p.smooth_at_arc(arc),
+        None => super::carriageway::raw_point_at_arc(c, arc),
+    };
+    let reach = half_m + BUILT_UP_REACH_M;
+    let (mut total, mut walled) = (0.0f64, 0.0f64);
+    for (r0, r1, _, kind) in level_runs(c) {
+        if kind != SpanKind::Grade {
+            continue;
+        }
+        let mut a = r0;
+        while a < r1 {
+            let b = (a + BUILT_UP_STEP_M).min(r1);
+            let mid = 0.5 * (a + b);
+            let step = b - a;
+            let (p, q) = (point(mid), point((mid + 1.0).min(r1)));
+            // Only where the building input was actually read. A corridor runs
+            // far past the extract, and counting its unsurveyed tail as "no
+            // walls" put a town street at a few per cent built-up — the verdict
+            // then said countryside about the middle of Montreux, and the whole
+            // synthesis fired on 259 earthwork edges.
+            if !facades.covered(p) {
+                a = b;
+                continue;
+            }
+            total += step;
+            let m_lon = DEG_M * c.cos_lat;
+            let (dx, dy) = ((q.x - p.x) * m_lon, (q.y - p.y) * DEG_M);
+            let len = dx.hypot(dy);
+            if len > 0.0 {
+                let room = facades.room(
+                    p,
+                    c.cos_lat,
+                    (dx / len, dy / len),
+                    reach,
+                    super::carriageway::ROOM_WINDOW_MAX_M,
+                    scratch,
+                );
+                if room.left < reach && room.right < reach {
+                    walled += step;
+                }
+            }
+            a = b;
+        }
+    }
+    total > 0.0 && walled >= BUILT_UP_SHARE * total
+}
+
+
 /// The pavements: one continuous strip per corridor side, over the whole extent
 /// the data claims.
 ///
@@ -503,10 +596,17 @@ fn street_bands(
 ) {
     let no_room = std::env::var_os("ARPT_NO_FACADE_ROOM").is_some();
     let mut scratch: Vec<u32> = Vec::new();
+    // **Where the data maps no pavement, the class and the facades decide.**
+    // Opt-in while it is measured; `priors::synthesizes_pavement` says which
+    // classes could and [`built_up`] says whether this street actually is one.
+    let synthesize = std::env::var_os("ARPT_WALK_SYNTH").is_some();
     for c in &scene.corridors {
         let sides: [Option<&SideClaims>; 2] =
             [claims.get(&(c.id, 0)), claims.get(&(c.id, 1))];
-        if sides[0].is_none() && sides[1].is_none() {
+        let synth = synthesize
+            && priors::synthesizes_pavement(c.kind)
+            && built_up(c, solved, facades, &mut scratch);
+        if sides[0].is_none() && sides[1].is_none() && !synth {
             continue;
         }
         let claimed: f64 = sides
@@ -571,9 +671,9 @@ fn street_bands(
             let want: Vec<[f64; 2]> = stops
                 .iter()
                 .map(|&s| {
-                    [0usize, 1].map(|side| match sides[side] {
-                        Some(cl) if cl.covers(s) => priors::WALK_WIDTH_M,
-                        _ => 0.0,
+                    [0usize, 1].map(|side| {
+                        let mapped = sides[side].is_some_and(|cl| cl.covers(s));
+                        if mapped || synth { priors::WALK_WIDTH_M } else { 0.0 }
                     })
                 })
                 .collect();
@@ -584,13 +684,18 @@ fn street_bands(
             );
             let height = |arc: f64| profile.map_or(0.0, |p| p.road_at_arc(arc));
             for side in 0..2 {
-                let Some(cl) = sides[side] else { continue };
+                let cl = sides[side];
+                if cl.is_none() && !synth {
+                    continue;
+                }
                 for i in 0..stops.len() - 1 {
                     let len = stops[i + 1] - stops[i];
                     // Read at the midpoint: the boundaries are stations now, so
                     // a segment lies wholly inside one claim or wholly outside
-                    // every claim, and its midpoint says which.
-                    if !cl.covers(0.5 * (stops[i] + stops[i + 1])) {
+                    // every claim, and its midpoint says which. A synthesized
+                    // street claims its whole at-grade length.
+                    let mid = 0.5 * (stops[i] + stops[i + 1]);
+                    if !synth && !cl.is_some_and(|c| c.covers(mid)) {
                         continue; // outside the claimed extent: nothing owed
                     }
                     let (wa, wb) = (sections[i].walk[side], sections[i + 1].walk[side]);
@@ -626,7 +731,13 @@ fn street_bands(
                         rise_m: priors::KERB_RISE_M,
                         arc0: stops[i],
                     });
-                    sources.push(cl.owner(stops[i]));
+                    // A synthesized stretch belongs to no mapped way, so it
+                    // owns no source: nothing loses a stroke for it, and
+                    // `banded_walks` is untouched.
+                    sources.push(match cl {
+                        Some(c) if c.covers(mid) => c.owner(stops[i]),
+                        _ => 0,
+                    });
                     // The extent that actually became pavement, so the free
                     // bands can be its complement rather than the claim's.
                     let spans = built.entry((c.id, side as u8)).or_default();

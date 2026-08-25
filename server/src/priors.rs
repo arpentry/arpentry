@@ -606,6 +606,43 @@ pub fn is_pedestrian(kind: Kind) -> bool {
     )
 }
 
+/// Whether a street of this class carries a pavement **where the data maps
+/// none** — the synthesis prior.
+///
+/// A pavement is part of a street's cross-section (docs/ROADS.md invariant 1),
+/// and OSM maps one on a small minority of the streets that have one: over an
+/// 8 x 6 km window on Montreux, of the built-up side-length only **10.4 % of
+/// residential** and 0.8 % of service is mapped, against 48 % of tertiary and
+/// 54 % of secondary. Drawing only what is mapped therefore draws a town whose
+/// arterials have pavements and whose residential streets do not, which is not
+/// a fact about the town.
+///
+/// This says only *which classes could*. Whether a given street actually does
+/// is a second question — it must be built-up, a room between two walls — and
+/// that is answered per corridor against the facades, because the class alone
+/// cannot tell a residential street in a town from the same class winding up a
+/// hillside.
+///
+/// **Service is out, and it is the biggest single exclusion.** Driveways,
+/// parking aisles and alleys are 77 km of built-up side-length in that window —
+/// as much as residential — and a pedestrian does not walk a kerbed pavement
+/// down a parking aisle. **Motorway and trunk are out** because they are not
+/// rooms: the census measures 0.00 km of built-up motorway against 18.9 km that
+/// is not, which is the test agreeing.
+pub fn synthesizes_pavement(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Road(
+            RoadClass::Primary
+                | RoadClass::Secondary
+                | RoadClass::Tertiary
+                | RoadClass::Unclassified
+                | RoadClass::Residential
+                | RoadClass::LivingStreet
+        )
+    )
+}
+
 /// Whether a class is **drawn as a band** rather than as a cartographic
 /// stroke at the walk zooms.
 ///

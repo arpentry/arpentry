@@ -139,6 +139,16 @@ pub struct Facades {
     edges: Vec<Edge>,
     grid: GridIndex,
     footprints: usize,
+    /// The box the footprints were read for, `(w, s, e, n)`.
+    ///
+    /// Carried because "no wall here" and "no building data here" are different
+    /// answers and only the caller can tell them apart. `assemble` admits whole
+    /// parquet row groups, so the scene runs far past the extract into ground no
+    /// footprint covers, and a consumer that reads open ground there will get a
+    /// confident wrong answer: the synthesis prior measured a town street as
+    /// 2 % built-up because most of its length lay outside this box
+    /// (`synth::walkway::built_up`).
+    covers: Option<(f64, f64, f64, f64)>,
 }
 
 impl Default for Facades {
@@ -152,7 +162,12 @@ impl Facades {
     /// ground". Nothing downstream needs to branch on whether buildings were
     /// supplied.
     pub fn empty() -> Facades {
-        Facades { edges: Vec::new(), grid: GridIndex::with_cell_m(CELL_M), footprints: 0 }
+        Facades {
+            edges: Vec::new(),
+            grid: GridIndex::with_cell_m(CELL_M),
+            footprints: 0,
+            covers: None,
+        }
     }
 
     /// Reads the footprints intersecting `bbox` from the building input.
@@ -161,6 +176,7 @@ impl Facades {
     /// exactly as the outer wall does. No class filter — a shed is a wall and
     /// the drawn asphalt has no business inside one either.
     pub fn read(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<Facades, ReadError> {
+        // Remembered so `covered` can tell open ground from unsurveyed ground.
         let gp = GeoParquet::open(path)?;
         let row_groups = gp.row_groups_intersecting(bbox);
         let mut out = Facades::empty();
@@ -185,7 +201,21 @@ impl Facades {
                 out.footprints += 1;
             }
         }
+        out.covers = Some(bbox);
         Ok(out)
+    }
+
+    /// Whether the building input was read for the ground under `p`.
+    ///
+    /// **"No wall" and "no data" are different answers.** A query outside this
+    /// box returns open ground on every side, which is true of the index and
+    /// says nothing about the world; a consumer deciding what to *build* from
+    /// the absence of walls has to ask this first. `Facades::empty` and
+    /// `from_edges` cover nothing, so a test fixture never claims survey it
+    /// does not have.
+    pub fn covered(&self, p: Coord) -> bool {
+        self.covers
+            .is_some_and(|(w, s, e, n)| p.x >= w && p.x <= e && p.y >= s && p.y <= n)
     }
 
     fn push_polygon(&mut self, p: &Polygon, keep: &impl Fn(Coord) -> bool) {
