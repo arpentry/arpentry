@@ -628,6 +628,47 @@ the scenario table (§4).
     stretches stay paths — a tagged sidewalk that wanders off across a park
     is genuinely one.
 
+    *Increment 4d — a crossing crosses a street, it does not run beside
+    one (done 2026-08-27).* Registration asked the wrong question. A chord
+    was grown by marching the extended line and testing each point with
+    `on_asphalt` — *is there asphalt under me* — which a road the crossing
+    runs **alongside** answers as readily as one it spans. So a crosswalk
+    laid along a station forecourt annexed the service roads flanking it and
+    painted a zebra ladder the length of the line: `street.crossing_extent`
+    read **22.34 %**, with chords like *"23.6 m of a 24 m zebra chord lies
+    off the 1 carriageway it crosses"* at La Tour-de-Peilz, and the ladder
+    ran *down* a side street rather than across it.
+
+    The distinction was already written down — in the **check**, whose own
+    comment says "a corridor it merely runs beside is not crossed, and that
+    distinction is the whole check — `on_asphalt` does not make it".
+    `crossed_hosts` now makes it in the generator, with the same
+    `segments_cross` predicate the check scores with: the carriageways a
+    crossing may claim are those whose centerline its own line properly
+    intersects, and `on_asphalt` is restricted to them. The *extended* line
+    is tested rather than the mapped one, because a hand-mapped stub rarely
+    reaches a centerline (§2) — and an extension is collinear with the end it
+    leaves, so it cannot admit a parallel road either. A crossing that
+    properly intersects nothing paints nothing and keeps the cartographic
+    stroke that is all it ever had, which is the R12 ladder already in this
+    file.
+
+    Montreux z16, control tiled from the same commit: `street.crossing_extent`
+    **22.340 → 13.212 %**, worst **23.56 → 13.50 m**, violating chords
+    **105 → 58**. The population falls 470 → 439 — 31 crossings now cross
+    nothing and paint nothing — and that is part of the gain rather than the
+    instrument going blind: `network.walk_cover` (4.306 %),
+    `walk_material` (3.030 → 3.029 %), `walk_reach`, `strip_continuity`,
+    `contact.sidewalk_grade`, `walk_rim`, `walk_crossfall`, `kerb_lip` and
+    `paint.stroke_over_band` are **all unmoved to three decimals**, so no
+    route lost its cover when the paint stopped.
+
+    *Still open:* the residual 13.2 % is a second mechanism, not this one —
+    a chord that does cross its street and then overruns it, worst 13.5 m.
+    A divided carriageway whose median the merge closes (`CROSSING_MERGE_M`)
+    and a crossing meeting a second road at a shallow angle are the two
+    candidates.
+
     *Increment 5 — one centerline (done).* "The at-grade band and the
     deck are not on the same curve" was the long-standing item here, and
     it was four defects rather than one. Measured by
@@ -948,6 +989,67 @@ the scenario table (§4).
     painted in its surface's own colour (§6.1), so band and deck each draw as
     one tone and the only thing either carries at its edge is the fade, which
     both already have.
+
+    *Increment 12 — the pavement is synthesised, and it rides the street's
+    bench (on by default 2026-08-27).* Overture carries no `sidewalk=*` on a
+    road (docs/SOURCES.md §7), so a street whose pavement nobody drew is
+    indistinguishable from one that has none — and only **10.4 %** of built-up
+    residential side-length is mapped here against 48 % of tertiary. Drawing
+    only what is mapped therefore draws a town whose arterials have pavements
+    and whose residential streets do not, which is not a fact about the town.
+
+    Two switches, previously opt-in, are now the default and withheld by
+    `ARPT_NO_WALK_SYNTH=1` / `ARPT_NO_STREET_BENCH=1`:
+    `priors::synthesizes_pavement` names the classes that could carry a
+    pavement and `walkway::built_up` decides whether a given street is a **room
+    between two walls** — facades within 25 m on *both* sides over half its
+    at-grade length. **The buildings are what make the inference safe**: the
+    class table alone cannot tell a residential street in a town from the same
+    class winding up a hillside, and the built-up test measures motorway at
+    0.00 km built-up against 18.9 km that is not. Service is the largest single
+    exclusion at 77 km — a pedestrian does not walk a kerbed pavement down a
+    parking aisle.
+
+    And the strip does not hold up its own terrace: `pavement_of` widens the
+    **street's** bench to the cross-section standing on it, so the pavement
+    takes the earthwork the street already made instead of cutting a second one
+    beside it. That widening is what makes the synthesis affordable — withheld,
+    it costs `walk_rim`, `walk_crossfall` and `bore_cover` together.
+
+    Montreux z16, against a control tiled from the same commit (this row
+    includes increment 4d, which is independent):
+
+    | | control | shipped |
+    |---|---|---|
+    | `contact.sidewalk_grade` | 0.779 % / 2.55 M | **0.725 % / 5.47 M** |
+    | `street.kerb_join` | 2.023 % / 7,267 | **1.225 % / 19,353** |
+    | `network.walk_material` | 3.030 % | **2.576 %** |
+    | `order.deck_above_carriageway` | 1.042 % | **0.712 %** |
+    | `order.walk_indoors` | 0.083 % | **0.066 %** |
+    | `slope.walk_crossfall` | 2.467 %, worst 12.51 | 2.519 %, worst **6.98** |
+    | **`contact.walk_rim`** | **0.235 %, worst 3.17** | **0.655 %, worst 3.57** |
+    | `authority.facade_ground` | 1.972 % | 3.013 % |
+    | `contact.kerb_lip` | 6.740 % | 7.152 % |
+    | `slope.terrain_face` | 0.635 %, worst 175.7 | 0.648 %, worst **228.6** |
+
+    **The gains are on populations that doubled**, which is the strongest thing
+    in the ledger: `sidewalk_grade` improves while its sample count goes 2.55 M
+    → 5.47 M, so the *synthesised* strips are better than the mapped ones, not
+    merely more numerous. `walk_crossfall`'s worst halves for the same reason
+    even as its rate ticks up on a third more samples. Archive cost is +2.1 %
+    (155.7 → 159.0 MB) and tiling is flat — a strip is thin and a tile is
+    terrain.
+
+    **`contact.walk_rim` is the bill, and it is not paid.** 0.235 → 0.655 %
+    (2,806 violations of 428,602) is a real I1 regression: the step where a
+    band meets the ground at its own rim. It is *not* the missing verge — the
+    widened bench already carries `paves[side] + EARTHWORK_MARGIN_M`. Nor is it
+    the coplanar target, which was measured on its own and sends this metric to
+    32 % for reasons still unexplained (increment 11). `authority.facade_ground`
+    1.97 → 3.01 % and `slope.terrain_face`'s worst 175 → 229 are the same
+    family: a strip laid against a wall or a flank on ground that was never
+    asked to come up and meet it. **This is the next thing to fix**, and until
+    it is, every one of these is reproducible with a one-flag A/B.
 
 - **P4 — Symbols.** The MSDF atlas: gore chevrons from diverge geometry;
   crossing glyphs where `cycle_crossing` meets a carriageway. Turn arrows

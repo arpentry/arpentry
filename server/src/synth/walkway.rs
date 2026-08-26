@@ -134,13 +134,13 @@ pub fn crossings(scene: &SceneGraph) -> (Vec<CrossingPaint>, Vec<SourceSeg>) {
     // hosts `assemble::walks` attaches against, indexed the same way.
     let mut grid = crate::assemble::grid::GridIndex::with_cell_m(64.0);
     let mut edges: Vec<(u32, u32)> = Vec::new();
-    let mut reach_m = 0.0f64;
     for (ci, c) in scene.corridors.iter().enumerate() {
         if c.kind.prior().surface != priors::Surface::Asphalt {
             continue;
         }
-        let Some(half) = super::carriageway::corridor_half_width_m(c) else { continue };
-        reach_m = reach_m.max(half);
+        if super::carriageway::corridor_half_width_m(c).is_none() {
+            continue;
+        }
         for i in 0..c.nodes.len().saturating_sub(1) {
             let (a, b) = (c.nodes[i], c.nodes[i + 1]);
             grid.insert(
@@ -176,13 +176,22 @@ pub fn crossings(scene: &SceneGraph) -> (Vec<CrossingPaint>, Vec<SourceSeg>) {
                 point_on(&line.line, &arc, t)
             }
         };
+        // **The carriageways this crossing actually crosses.** Without this the
+        // registration asks only "is there asphalt under me", which a road the
+        // crossing runs *beside* answers as readily as one it spans — so a
+        // crossing at a station forecourt annexed the service roads flanking it
+        // and painted a ladder over a railway.
+        let hosts = crossed_hosts(&at, total, scene, &grid, &edges, &mut scratch);
+        if hosts.is_empty() {
+            continue; // crosses nothing: keep the stroke, draw nothing
+        }
         // On-asphalt intervals of the extended line.
         let mut on: Vec<(f64, f64)> = Vec::new();
         let mut t = -CROSSING_EXTEND_M;
         let mut open: Option<f64> = None;
         while t <= total + CROSSING_EXTEND_M + 1e-9 {
             let p = at(t);
-            let inside = on_asphalt(scene, &grid, &edges, reach_m, p, cos_lat, &mut scratch);
+            let inside = on_asphalt(scene, &hosts, p);
             match (inside, open) {
                 (true, None) => open = Some(t),
                 (false, Some(s)) => {
@@ -224,29 +233,92 @@ pub fn crossings(scene: &SceneGraph) -> (Vec<CrossingPaint>, Vec<SourceSeg>) {
     (paints, stubs)
 }
 
-/// Whether a point lies on a drawn carriageway: within some corridor's own
-/// drawn half-width of its centerline.
-fn on_asphalt(
+/// The carriageways whose centerline this crossing's line properly intersects.
+///
+/// **This is the predicate `verify::model::street::crossing_extent` scores
+/// against**, and the two now make the same distinction rather than only the
+/// check making it: a corridor a crossing merely runs beside is not crossed,
+/// however much of it lies under the line.
+///
+/// The *extended* line is tested, not the mapped one. A crosswalk is mapped by
+/// hand and its endpoints rarely reach the kerbs, let alone the centerline
+/// (docs/ROADS.md §2), so a short stub across a wide road properly intersects
+/// nothing — and the extension is the same 8 m of tangent the chord march
+/// already walks. It cannot admit a parallel road: an extension is collinear
+/// with the end it leaves, so a corridor running alongside the crossing is no
+/// more crossed by the extension than by the line itself.
+fn crossed_hosts(
+    at: &dyn Fn(f64) -> Coord,
+    total: f64,
     scene: &SceneGraph,
     grid: &crate::assemble::grid::GridIndex,
     edges: &[(u32, u32)],
-    reach_m: f64,
-    p: Coord,
-    cos_lat: f64,
     scratch: &mut Vec<u32>,
-) -> bool {
-    let (rx, ry) = (reach_m / (DEG_M * cos_lat), reach_m / DEG_M);
-    grid.query((p.x - rx, p.y - ry, p.x + rx, p.y + ry), scratch);
-    for &e in scratch.iter() {
-        let (ci, ni) = edges[e as usize];
-        let c = &scene.corridors[ci as usize];
-        let Some(half) = super::carriageway::corridor_half_width_m(c) else { continue };
-        let (a, b) = (c.nodes[ni as usize], c.nodes[ni as usize + 1]);
-        if probe_seg_dist_m(p, a, b, c.cos_lat) <= half {
-            return true;
+) -> Vec<u32> {
+    // The extended line as a polyline: both extensions plus the mapped nodes,
+    // walked pairwise. `at` is the one parameterization the chord march uses,
+    // so the two cannot disagree about where the crossing is.
+    let mut pts: Vec<Coord> = vec![at(-CROSSING_EXTEND_M)];
+    let mut t = 0.0;
+    while t < total {
+        pts.push(at(t));
+        t += CROSSING_STEP_M;
+    }
+    pts.push(at(total));
+    pts.push(at(total + CROSSING_EXTEND_M));
+
+    let mut hosts: Vec<u32> = Vec::new();
+    for w in pts.windows(2) {
+        let bbox =
+            (w[0].x.min(w[1].x), w[0].y.min(w[1].y), w[0].x.max(w[1].x), w[0].y.max(w[1].y));
+        grid.query(bbox, scratch);
+        for &e in scratch.iter() {
+            let (ci, ni) = edges[e as usize];
+            let c = &scene.corridors[ci as usize];
+            let (a, b) = (c.nodes[ni as usize], c.nodes[ni as usize + 1]);
+            if segments_cross(w[0], w[1], a, b) {
+                hosts.push(ci);
+            }
         }
     }
-    false
+    hosts.sort_unstable();
+    hosts.dedup();
+    hosts
+}
+
+/// Whether two segments properly cross — opposite orientations both ways.
+///
+/// The same test `verify::model::street` makes, in plan degrees. Scaling to
+/// metres would not change a sign, and a sign is all this reads.
+fn segments_cross(a0: Coord, a1: Coord, b0: Coord, b1: Coord) -> bool {
+    let orient = |p: Coord, q: Coord, r: Coord| {
+        let v = (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+        if v > 0.0 {
+            1i8
+        } else if v < 0.0 {
+            -1
+        } else {
+            0
+        }
+    };
+    let (d1, d2) = (orient(b0, b1, a0), orient(b0, b1, a1));
+    let (d3, d4) = (orient(a0, a1, b0), orient(a0, a1, b1));
+    d1 != d2 && d3 != d4
+}
+
+/// Whether a point lies on a carriageway **this crossing crosses**: within the
+/// drawn half-width of the centerline of one of its registered hosts.
+///
+/// Corridor-wide, matching `over_hosts` in the check exactly: a crossing that
+/// spans a street is entitled to that street's asphalt wherever the chord meets
+/// it, and holding the generator to a stricter rule than the instrument scores
+/// would shorten chords with nothing to catch it.
+fn on_asphalt(scene: &SceneGraph, hosts: &[u32], p: Coord) -> bool {
+    hosts.iter().any(|&ci| {
+        let c = &scene.corridors[ci as usize];
+        let Some(half) = super::carriageway::corridor_half_width_m(c) else { return false };
+        c.nodes.windows(2).any(|w| probe_seg_dist_m(p, w[0], w[1], c.cos_lat) <= half)
+    })
 }
 
 /// A point `over_m` past one end of a polyline, along that end's tangent.
@@ -606,7 +678,7 @@ pub(crate) fn pavement_sides(
             out.insert((a.host, a.side));
         }
     }
-    if std::env::var_os("ARPT_WALK_SYNTH").is_some() {
+    if std::env::var_os("ARPT_NO_WALK_SYNTH").is_none() {
         let mut scratch: Vec<u32> = Vec::new();
         for c in &scene.corridors {
             if priors::synthesizes_pavement(c.kind) && built_up(c, solved, facades, &mut scratch) {
@@ -743,9 +815,13 @@ fn street_bands(
     let no_room = std::env::var_os("ARPT_NO_FACADE_ROOM").is_some();
     let mut scratch: Vec<u32> = Vec::new();
     // **Where the data maps no pavement, the class and the facades decide.**
-    // Opt-in while it is measured; `priors::synthesizes_pavement` says which
-    // classes could and [`built_up`] says whether this street actually is one.
-    let synthesize = std::env::var_os("ARPT_WALK_SYNTH").is_some();
+    // Overture carries no `sidewalk=*` on a road (docs/SOURCES.md §7), so a
+    // street whose pavement nobody drew is indistinguishable from one with
+    // none, and taking the data's silence for absence leaves a town's
+    // residential streets bare. `priors::synthesizes_pavement` says which
+    // classes could carry one and [`built_up`] says whether this street
+    // actually is one. `ARPT_NO_WALK_SYNTH=1` withholds it, for the A/B.
+    let synthesize = std::env::var_os("ARPT_NO_WALK_SYNTH").is_none();
     for c in &scene.corridors {
         let sides: [Option<&SideClaims>; 2] =
             [claims.get(&(c.id, 0)), claims.get(&(c.id, 1))];
@@ -1886,6 +1962,76 @@ mod tests {
         for s in &sections {
             assert_eq!(s.walk_centre(0) - s.walk[0] * 0.5, s.carriage.on(0));
         }
+    }
+
+    /// A crossing spans the street it crosses; one drawn beside a street
+    /// crosses nothing, however much of that street lies under it.
+    ///
+    /// This is the distinction `street.crossing_extent` scores and the
+    /// registration used not to make: `on_asphalt` asked only whether there was
+    /// asphalt underfoot, so a crossing along a station forecourt's service
+    /// roads annexed them and painted a ladder the length of the line.
+    #[test]
+    fn a_crossing_crosses_a_street_it_does_not_run_beside_one() {
+        // A street running east-west along y = LAT.
+        let mut scene = SceneGraph::default();
+        scene.corridors = vec![corridor()];
+        let mut grid = crate::assemble::grid::GridIndex::with_cell_m(64.0);
+        let mut edges: Vec<(u32, u32)> = Vec::new();
+        for i in 0..scene.corridors[0].nodes.len() - 1 {
+            let (a, b) = (scene.corridors[0].nodes[i], scene.corridors[0].nodes[i + 1]);
+            grid.insert(
+                (a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)),
+                edges.len() as u32,
+            );
+            edges.push((0, i as u32));
+        }
+        let mut scratch: Vec<u32> = Vec::new();
+
+        // Across it: a north-south line through x = 25 m, from 6 m south to
+        // 6 m north. It properly intersects the centerline.
+        let across = vec![
+            Coord { x: 6.9 + east(25.0), y: LAT - 6.0 / DEG_M },
+            Coord { x: 6.9 + east(25.0), y: LAT + 6.0 / DEG_M },
+        ];
+        let arc = crate::scene::cumulative_arc(&across);
+        let total = *arc.last().expect("two points");
+        let at = |t: f64| -> Coord {
+            if t < 0.0 {
+                end_extension(&across, LAT.to_radians().cos(), false, -t)
+            } else if t > total {
+                end_extension(&across, LAT.to_radians().cos(), true, t - total)
+            } else {
+                point_on(&across, &arc, t)
+            }
+        };
+        let hosts = crossed_hosts(&at, total, &scene, &grid, &edges, &mut scratch);
+        assert_eq!(hosts, vec![0], "a line across the street crosses it");
+
+        // Beside it: a line parallel to the street, one metre off its
+        // centerline, so every point of it is on the asphalt and none of it
+        // crosses anything.
+        let beside = vec![
+            Coord { x: 6.9 + east(10.0), y: LAT + 1.0 / DEG_M },
+            Coord { x: 6.9 + east(40.0), y: LAT + 1.0 / DEG_M },
+        ];
+        let arc = crate::scene::cumulative_arc(&beside);
+        let total = *arc.last().expect("two points");
+        let at = |t: f64| -> Coord {
+            if t < 0.0 {
+                end_extension(&beside, LAT.to_radians().cos(), false, -t)
+            } else if t > total {
+                end_extension(&beside, LAT.to_radians().cos(), true, t - total)
+            } else {
+                point_on(&beside, &arc, t)
+            }
+        };
+        assert!(
+            on_asphalt(&scene, &[0], at(total * 0.5)),
+            "the fixture must lie on the asphalt, or it proves nothing"
+        );
+        let hosts = crossed_hosts(&at, total, &scene, &grid, &edges, &mut scratch);
+        assert!(hosts.is_empty(), "a line beside the street crosses nothing: {hosts:?}");
     }
 
     fn corridor() -> Corridor {

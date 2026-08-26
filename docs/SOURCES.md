@@ -282,6 +282,19 @@ Recorded so the search stops here.
   whose pavement nobody drew is indistinguishable from a street with none.
   `data/plans/` records this being measured and the wrong conclusion nearly
   drawn from it.
+
+  Since this attribute does not exist, the silence is answered with a **prior
+  rather than a read**, which is the one place in the pedestrian model where
+  that is true: `priors::synthesizes_pavement` names the classes that could
+  carry one and `walkway::built_up` decides whether a given street is a room
+  between two walls — walls within 25 m on **both** sides over half its
+  at-grade length. Only 10.4 % of built-up residential side-length is mapped
+  here, so drawing only what is mapped draws a town whose arterials have
+  pavements and whose residential streets do not. The buildings are what make
+  the inference safe: motorway comes out 0.00 km built-up against 18.9 km that
+  is not. Service is excluded and is the largest single exclusion at 77 km —
+  a pedestrian does not walk a kerbed pavement down a parking aisle. See
+  docs/ROADS.md P3 increment 12 for what it costs.
 - **Steps have no `step_count`, `incline`, or `handrail`.** 9.6 km of steps in
   the Montreux zone, and nothing in the schema distinguishes a flight of
   stairs from a ramp of the same gradient.

@@ -1165,12 +1165,20 @@ fn derive_earthworks(
 /// The pavement width this corridor's bench must carry on each side, in metres.
 ///
 /// Zero where no pavement is owed, so a street with none benches exactly what it
-/// always did. Behind `ARPT_STREET_BENCH` while it is measured.
+/// always did.
+///
+/// **The widening is what makes the pavement affordable.** A strip standing on
+/// ground its street's bench never reached is a strip holding up its own
+/// terrace against the hillside, and measured on its own that costs
+/// `contact.walk_rim`, `slope.walk_crossfall` and `clearance.bore_cover`
+/// together. Carrying it on the street's bench instead — one terrace as wide as
+/// the cross-section standing on it — pays all three back (docs/ROADS.md P3
+/// increment 11). `ARPT_NO_STREET_BENCH=1` withholds it, for the A/B.
 fn pavement_of(
     paves: &std::collections::HashSet<(u32, u8)>,
     c: &crate::scene::Corridor,
 ) -> [f64; 2] {
-    if std::env::var_os("ARPT_STREET_BENCH").is_none() {
+    if std::env::var_os("ARPT_NO_STREET_BENCH").is_some() {
         return [0.0; 2];
     }
     [0u8, 1].map(|side| {
