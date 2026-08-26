@@ -153,11 +153,32 @@ wikidata, source_tags`.
 
 Two of these rows are load-bearing for this project.
 
-**Retaining walls.** The ground solve manufactures a retaining wall wherever a
-bench face exceeds what a batter can absorb, and `docs/GENERATION.md` §7 scores
-that as a defect — the model cannot tell a wall it invented from a wall that is
-there. Overture can. Note the limit before planning on it: `height` is filled
-on ~2 % of walls. The data says *where*, not *how tall*.
+**Retaining walls.** The obvious hope was that these would license the faces
+`slope.terrain_face` counts — its own doc says a retaining wall "is steep and
+*correct*" and that the check cannot tell one from a manufactured one.
+**Measured, and that hope is wrong.** Distance from a `terrain_face` offender
+to the nearest mapped wall, against a uniform-random null over the same bbox:
+
+| population | median | p25 | within 10 m |
+|---|---:|---:|---:|
+| 500 steepest drawn faces | 407 m | 177 m | 14 / 500 |
+| random points (null) | 1120 m | 522 m | 0 / 500 |
+
+14 against 0 is real signal rather than chance — both populations favour built-up
+ground — but **97 % of the manufactured faces have no mapped wall anywhere near
+them.** Mapped walls do not explain that population and will not license it.
+
+What they *do* mark is the opposite: real vertical faces the generator draws as
+graded slopes. Sectioned across the two longest mapped walls in the zone
+(6.921734,46.427999 and 6.920255,46.429266, 246 m and 188 m), the drawn ground
+steps between road terraces by 3.5 m and by 4–10 m, every one of them a smooth
+roughly 1:1 batter where the map says concrete. So the value here is *added
+geometry*, not a defect fix — and taking it would raise `terrain_face`, which
+counts a vertical face as spectacle. Drawing the wall and licensing it in the
+check are one change, not two.
+
+Note the limit before planning on it: `height` is filled on ~2 % of walls. The
+data says *where*, not *how tall*.
 
 **Crossing points.** 513 of them against 402 crosswalk subclass runs in the
 same zone — a denser and independently-mapped registration of the same fact.
