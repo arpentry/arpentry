@@ -227,17 +227,28 @@ things distinguish it from a corridor bench, and each is the band being narrow:
 
 Because it draws no lines, it is **bounded instead of constrained**, and the two
 materials do not hold the same bound (`priors::bench_face_cap_m`, keyed on the
-surface — the thing making the claim). A path holds `WALK_MAX_FACE_M` — a metre,
-the earthwork a footpath actually builds — so the largest step it can leave in
-open ground is two metres, which a lattice cell carries as a slope rather than a
-wall. A sidewalk holds the street's own `MAX_BENCH_FACE_M`, because where a
+surface — the thing making the claim). A path holds `WALK_MAX_FACE_M` — 1.5 m,
+the earthwork a footpath plausibly builds — so the largest step it can leave in
+open ground is three metres, which a lattice cell carries as a slope rather than
+a wall. A sidewalk holds the street's own `MAX_BENCH_FACE_M`, because where a
 street stands on a terrace with a wall down to the hillside the sidewalk stands
 on the same terrace and the wall is the street's; its apron draws it. Held to
 the street's allowance on *both*, footpaths start eating tunnel cover, moving
-the ground under walls and damming streams — five unrelated metrics move, and
-they come back the moment the path is held to its metre.
-`ARPT_NO_WALK_BENCH=1` draws the bands and leaves the ground unbenched, which is
-the A/B control every number above was measured against.
+the ground under walls and damming streams.
+
+**The cap is a knee, and refusing a bench is not free.** Past it the segment is
+not narrowed, it is *dropped* — so the cap is also the rule that decides whether
+a mapped path is drawn at all. At a metre that deleted 78.5 km of path on the
+Montreux zone, clustered on steep flanks, where a way came out as a row of
+disjoint slabs; nothing measured it while the pedestrian strokes were still
+being drawn over the holes. The face those segments needed is p50 1.18 m, p75
+1.42 m — they miss a metre by centimetres. Sweeping the cap
+(`ARPT_WALK_FACE_CAP`) puts the knee at 1.5 m: `slope.walk_crossfall` 3.034 →
+2.530 % on a 17.7 % larger population with no other metric moving, against
+`clearance.bore_cover` +0.369 at 2.0 m for 2.2 % more population, and 3.0 m
+buying 0.6 % more than that for the same collateral. `ARPT_NO_WALK_BENCH=1`
+draws the bands and leaves the ground unbenched, which is the A/B control every
+number above was measured against.
 
 ### The band is fitted to the ground before the ground is benched
 

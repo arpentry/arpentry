@@ -27,7 +27,7 @@ use crate::dem::Dem;
 use crate::priors::{
     BENCH_GAP_SPAN_M, DECK_THICKNESS_M, EARTHWORK_BATTER,
     BATTER_DIVERGENCE_SLOP, EARTHWORK_MARGIN_M, EARTHWORK_MAX_BATTER_M, MAX_BENCH_FACE_M,
-    EARTHWORK_MIN_BATTER_M, EARTHWORK_SHOULDER_M, WALK_MAX_FACE_M, WALL_BATTER,
+    EARTHWORK_MIN_BATTER_M, EARTHWORK_SHOULDER_M, WALL_BATTER,
     MAX_CLEARANCE_LIFT_M,
     PORTAL_CLEARANCE_M, PORTAL_CUT_LEN_M, WATER_LEVEL_PCTL,
 };
@@ -672,7 +672,8 @@ fn report_walk_census(rows: &[WalkCensusRow]) {
         // inside it is that less the verge. The question the estimate answers
         // is whether a rule that narrows the surface instead of refusing its
         // bench leaves a plausible world or deletes the mountain paths.
-        for (cap_name, cap) in [("1.0 m", WALK_MAX_FACE_M), ("1.5 m", 1.5)] {
+        for cap in [crate::priors::walk_max_face_m(), 2.0] {
+            let cap_name = format!("{cap:.1} m");
             let (mut full, mut narrowed, mut gone) = (0.0, 0.0, 0.0);
             for r in &mine {
                 let w = r.bench_w_m;
@@ -2744,11 +2745,12 @@ mod tests {
     fn a_path_across_too_steep_a_flank_gets_no_bench() {
         let seg = band(0.0, 8.0, 1.0, CorridorId::MAX, (0.0, 0.0));
         let cos_lat = seg.cos_lat;
-        // A flank falling north at 100 %: the bench edge is 1.5 m out, so
-        // holding the band flat would cut and fill 1.5 m — past WALK_MAX_FACE_M.
-        let mut flank = |q: Coord| (q.y - 46.0) * DEG_M;
+        // A flank falling north at 200 %: the bench edge is 1.5 m out, so
+        // holding the band flat would cut and fill 3 m — twice
+        // WALK_MAX_FACE_M, so the margin survives a retune of the cap.
+        let mut flank = |q: Coord| (q.y - 46.0) * DEG_M * 2.0;
         assert!(walk_edge(&seg, 0, &WalkBenchRules::shipped(), &mut flank).is_none());
-        // At a third of that slope the same band benches: half a metre of face.
+        // At a sixth of that slope the same band benches: half a metre of face.
         let mut gentle = |q: Coord| (q.y - 46.0) * DEG_M * 0.33;
         assert!(walk_edge(&seg, 0, &WalkBenchRules::shipped(), &mut gentle).is_some());
     }

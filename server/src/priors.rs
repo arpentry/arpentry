@@ -1058,27 +1058,56 @@ pub const MAX_BENCH_FACE_M: f64 = 3.0;
 /// stands on (`ground::walk_edge` holds a sidewalk to [`MAX_BENCH_FACE_M`],
 /// which is the street's own allowance).
 ///
-/// A metre, because that is the size of the thing. A hillside path is cut a
-/// spade's depth or two into the flank; a two-metre ribbon that cuts three
-/// metres in is a retaining structure nobody built, and holding one flat is the
-/// fiction docs/GROUND.md §2 already names — "for a trail cut into a cliff,
-/// draped *is* the truth". The bound doubles as the reason a walkway bench
-/// needs no contact lines ([`crate::ground::modifiers::EarthworkEdge::crest`]):
-/// it never departs the ground beneath it by more than this, so the largest
-/// step it can leave in open ground is twice this, which a lattice cell at the
-/// reference zoom carries as a slope rather than as a wall.
+/// A path is cut a spade's depth or two into a flank; a two-metre ribbon that
+/// cuts three metres in is a retaining structure nobody built, and holding one
+/// flat is the fiction docs/GROUND.md §2 already names — "for a trail cut into
+/// a cliff, draped *is* the truth". The bound doubles as the reason a walkway
+/// bench needs no contact lines
+/// ([`crate::ground::modifiers::EarthworkEdge::crest`]): it never departs the
+/// ground beneath it by more than this, so the largest step it can leave in
+/// open ground is twice this, which a lattice cell at the reference zoom
+/// carries as a slope rather than as a wall.
 ///
-/// **Set by what the alternative cost elsewhere.** Held to the street's 3.0 m,
-/// the pedestrian metrics reach their best — `contact.walk_rim` 19.0 → 1.3 %,
-/// `slope.walk_crossfall` 56.1 → 19.2 % — and five unrelated ones move with
-/// them: `clearance.bore_cover` 5.861 → 6.192 %, `contact.building_seat` 0.011
-/// → 0.015, `slope.terrain_face` 0.600 → 0.624, `water.descends` 2.462 →
-/// 2.562, `slope.terrain_tearing` 0.138 → 0.140. That is footpaths eating
-/// tunnel cover, moving the ground under walls and damming streams. At a metre
-/// all five return to the control and the pedestrian metrics keep most of their
-/// result (2.8 % and 32.7 %), which is the evidence that the tall path
-/// earthworks were the fiction rather than the fix.
-pub const WALK_MAX_FACE_M: f64 = 1.0;
+/// **This was a metre, and the metre was chosen against a scorecard that could
+/// not see what it cost.** Refusing the bench does not narrow the band — it
+/// *deletes the segment* (`synth::walkway::fit_to_ground`), and on the Montreux
+/// zone that was **78.5 km of path**, clustered on steep flanks, where a mapped
+/// way came out as a row of disjoint slabs. Nothing measured it: the pedestrian
+/// strokes were still being drawn over the holes (`paint.stroke_over_band`), so
+/// the only visible cost of the metre was zero.
+///
+/// **1.5 m is the knee, and it is a knee, not a preference.** The face those
+/// dropped segments actually needed is p50 1.18 m, p75 1.42 m — they miss the
+/// old cap by centimetres. Sweeping the cap over the zone (`ARPT_WALK_FACE_CAP`,
+/// z16, all metrics against the 1.0 m control):
+///
+/// - **1.5 m** — `slope.walk_crossfall` 3.034 → 2.530 % on a **17.7 % larger
+///   population**, and *nothing else moves*: `clearance.bore_cover` +0.030,
+///   `slope.terrain_face` +0.007, `water.descends` +0.002,
+///   `contact.building_seat` +0.000, `contact.walk_rim` +0.019 with its worst
+///   unchanged. No metric regresses.
+/// - **2.0 m** — buys 2.2 % more population and starts the collateral:
+///   `clearance.bore_cover` **+0.369**, `slope.terrain_face` +0.015,
+///   `contact.walk_rim` +0.042. That is footpaths eating tunnel cover, the same
+///   mode the 3.0 m experiment reported.
+/// - **3.0 m** (the street's own allowance) — 0.6 % more population than 2.0 m
+///   for the same collateral (`bore_cover` +0.379). Making a path exactly as
+///   entitled as a road is measurably not worth it.
+///
+/// So the earlier finding stands and is sharpened rather than reversed: tall
+/// path earthworks are the fiction. What was wrong was the assumption that
+/// refusing one is free.
+pub const WALK_MAX_FACE_M: f64 = 1.5;
+
+/// [`WALK_MAX_FACE_M`], overridable by `ARPT_WALK_FACE_CAP` so the number can
+/// be chosen by re-tiling rather than by rebuilding. Both the fit
+/// (`synth::walkway::fitted_half`) and the bench (`ground::walk_edge`) read it
+/// through [`bench_face_cap_m`], which is what keeps them from disagreeing.
+pub fn walk_max_face_m() -> f64 {
+    std::env::var_os("ARPT_WALK_FACE_CAP")
+        .and_then(|v| v.to_str()?.parse().ok())
+        .unwrap_or(WALK_MAX_FACE_M)
+}
 
 /// How deep a face the bench under a drawn surface may cut or fill before the
 /// earthwork stops being one the material plausibly builds — **keyed by the
@@ -1096,7 +1125,7 @@ pub const WALK_MAX_FACE_M: f64 = 1.0;
 /// numbers come from.
 pub fn bench_face_cap_m(surface: Surface) -> f64 {
     match surface {
-        Surface::Path => WALK_MAX_FACE_M,
+        Surface::Path => walk_max_face_m(),
         Surface::Walkway | Surface::Asphalt | Surface::Ballast | Surface::None => {
             MAX_BENCH_FACE_M
         }
