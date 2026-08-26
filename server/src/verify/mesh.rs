@@ -453,7 +453,8 @@ impl SurfaceMesh {
     /// question a wall can answer.
     pub fn span_near(&self, px: f64, py: f64, scale: &Scale, radius_m: f64) -> Option<(f64, f64)> {
         let mut range: Option<(f64, f64)> = None;
-        for &t in self.grid.candidates(px, py) {
+        let (rx, ry) = (radius_m / scale.mx.max(1e-12), radius_m / scale.my.max(1e-12));
+        self.grid.candidates_within(px, py, rx, ry, |t| {
             let tri = self.triangle(t as usize);
             // Distance to the triangle in plan, via its three edges — which is
             // exact for a degenerate one, where the "triangle" is a segment.
@@ -468,7 +469,7 @@ impl SurfaceMesh {
                 near = near.min((ex * ex + ey * ey).sqrt());
             }
             if near > radius_m {
-                continue;
+                return;
             }
             for c in tri {
                 range = Some(match range {
@@ -476,7 +477,7 @@ impl SurfaceMesh {
                     None => (c.2, c.2),
                 });
             }
-        }
+        });
         range
     }
 
@@ -714,6 +715,26 @@ impl Grid {
         let c = self.cell_y(py) * self.nx + self.cell_x(px);
         let (a, b) = (self.starts[c] as usize, self.starts[c + 1] as usize);
         &self.items[a..b]
+    }
+
+    /// Triangles whose bounding box covers any cell within `(rx, ry)` plan
+    /// units of `(px, py)` — the query [`SurfaceMesh::span_near`] needs, which
+    /// a single-cell walk answers wrongly: a wall two metres away sits in the
+    /// neighbouring cell and a same-cell walk never sees it. A triangle
+    /// spanning several cells is visited once per cell; the caller's fold must
+    /// tolerate duplicates (a min/max fold does).
+    fn candidates_within(&self, px: f64, py: f64, rx: f64, ry: f64, mut f: impl FnMut(u32)) {
+        let (cx0, cx1) = (self.cell_x(px - rx), self.cell_x(px + rx));
+        let (cy0, cy1) = (self.cell_y(py - ry), self.cell_y(py + ry));
+        for cy in cy0..=cy1 {
+            for cx in cx0..=cx1 {
+                let c = cy * self.nx + cx;
+                let (a, b) = (self.starts[c] as usize, self.starts[c + 1] as usize);
+                for &t in &self.items[a..b] {
+                    f(t);
+                }
+            }
+        }
     }
 }
 

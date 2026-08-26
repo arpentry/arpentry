@@ -10,6 +10,7 @@ pub mod abutment;
 pub mod building;
 pub mod clearance;
 pub mod contact;
+pub mod fabric;
 pub mod handoff;
 pub mod lod;
 pub mod paint;
@@ -62,6 +63,7 @@ pub fn run(scan: &ArchiveScan<'_>, opt: &Options) -> Scorecard {
         Box::new(handoff::Handoff::new(opt)),
         Box::new(contact::Contact::new(opt)),
         Box::new(clearance::Clearance::new(opt)),
+        Box::new(fabric::Fabric::new(opt)),
         Box::new(paint::Paint::new(opt)),
         Box::new(seams::Seams::new(opt)),
         Box::new(slope::Slope::new(opt)),

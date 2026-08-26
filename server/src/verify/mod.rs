@@ -66,6 +66,11 @@ pub enum Invariant {
     /// Ground monotonicity: a layer changes the ground only inside its own
     /// declared footprints, exactly once.
     I8,
+    /// Closure: wherever two drawn elements are plan-adjacent and differ in
+    /// height past the contact band, a face spans the step. Air is legal only
+    /// where a structure separates two levels, and then the structure's own
+    /// solids are the closure.
+    I9,
 }
 
 impl Invariant {
@@ -79,6 +84,7 @@ impl Invariant {
             Invariant::I6 => "I6",
             Invariant::I7 => "I7",
             Invariant::I8 => "I8",
+            Invariant::I9 => "I9",
         }
     }
 }

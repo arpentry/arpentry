@@ -680,6 +680,19 @@ exactly once.
 I7 and I8 are *structural* claims: they are established by construction and
 falsifiable by a single perturbation experiment, not sampled by a metric.
 
+**I9 — Closure.** The drawn world at the detail zooms is one fabric: wherever
+two drawn elements — any band, deck, building, or the ground — are
+plan-adjacent and differ in height past the contact band, a face spans the
+step. Air between two surfaces is legal only where a structure separates two
+levels, and then the structure's own solids are the closure. What a closing
+face is made of is deliberately not part of the claim: an interior asphalt
+wall closes the world and fails `slope.carriageway_face`, each defect scored
+by its own instrument. (The claim was written after its check refuted the
+obvious reading of `order.grade_stack`: of 115k stacked-surface samples on the
+Montreux extract, 99.997 % were already closed by drawn geometry the stacking
+metric could not see — the defect is a site list of genuine holes, not an
+epidemic of missing structures.)
+
 ---
 
 ## 8. Verification
@@ -705,6 +718,7 @@ check exists that would have found it.
 | I8 | `ground.footprint` | Every ground sample | A change outside the imprinting stratum's declared footprints |
 | §4.5 | `crossing.orphan` | Every clearance demand | A demand with no solved feature on both sides — must be structurally zero |
 | I2 | `graph.connector_step` | Every source connector shared by two or more profiled, paving corridors — read from the corridors' connector lists, not the junction set | A solved height spread at the shared place; past the sheet separation it is drawn as one surface floating over the other |
+| I9 | `fabric.closure` | Every stacked pair of level-0 surfaces (carriageway, formation, walkway, path) sharing a plan position, measured from the upper side | A vertical step no drawn geometry spans — a hole you can see the world through. The hole-rim half of closure is `contact.kerb_unwalled`'s population |
 
 Three notes on what makes these strong:
 
