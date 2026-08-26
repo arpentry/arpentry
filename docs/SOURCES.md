@@ -90,21 +90,46 @@ Cutting on those shatters the band into pieces that each fit their own bench.
 A crossing is exempt: it is paint, never a band, so the width floor says
 nothing about it.
 
-**The crossing runs are held back.** Excluding a crossing from banding is
-right, but it leaves the pavement either side ending at a kerb, and a band end
-there reads as cross-fall until the kerb stub is seated on the band it
-continues. Measured:
+**The crossing runs cost nothing once the stub is seated.** Taking them cut
+`slope.walk_crossfall` to 2.561 % against a 2.481 % control, and the cause was
+not the crossing — it was the kerb stub the crossing brings with it, which
+`synth::walkway::seat_stubs` now fixes (see below). Measured:
 
-| variant | sidewalks attached | `slope.walk_crossfall` | gate |
-|---|---|---|---|
-| control | 5312 ways / 354.1 km | 2.481 % | — |
-| sidewalk runs only | 5384 / 356.2 km | 2.545 % | same |
-| + crossing runs | 5387 / 356.3 km | 2.561 % | REGRESSED |
+| variant | crossings | stub | sidewalks attached | `walk_crossfall` | gate |
+|---|---|---|---|---|---|
+| control | flat only | unseated | 5312 / 354.1 km | 2.481 % | — |
+| sidewalk runs only | flat only | unseated | 5384 / 356.2 km | 2.545 % | same |
+| + crossing runs | all | unseated | 5387 / 356.3 km | 2.561 % | REGRESSED |
+| stubs off (ceiling) | all | none | 5387 / 356.3 km | 2.438 % | — |
+| **+ crossing runs** | **all** | **seated** | **5387 / 356.3 km** | **2.469 %** | **none** |
 
-The sidewalk runs carry 72 of the 75 recovered ways at a verdict of "same";
-the crossing runs buy three more and tip the metric. Take them when the stub
-lands. In all three the worst sample is unchanged at 12.51 — this is a rate
-moving on an unchanged distribution, not a new defect.
+The worst sample is 12.51 in every row — throughout, this was a rate moving on
+an unchanged distribution, not a new defect.
+
+### The kerb stub was seated on the ground
+
+Isolating the stub from the paint (`ARPT_NO_CROSSING_STUB`) reproduced the
+stubs-off row exactly, so the paint contributes nothing to these metrics and
+the whole cost was the stub band. **22 % of stub samples violated cross-fall
+against a 2.4 % baseline.**
+
+`fitted_half` takes a `NO_HOST` band's seat from the ground under its own ends
+and a hosted band's from `height_a`/`height_b` — the height its street's
+cross-section draws it at, kerb included. A stub was built hostless with both
+heights zero, so it and the pavement it continues met in plan and nowhere in
+section. At 6.856580,46.457663 the band ran 384.2 → 383.67 → 384.3: a 0.6 m
+notch a third of a metre wide, and the cross-fall probe read the drop off the
+stub's own edge.
+
+`seat_stubs` gives each stub the corridor, drawn height and kerb rise of the
+nearest hosted walkway band at its ends — the same claim the stub's own doc
+already made in prose, made to the machinery that decides heights. A stub that
+finds no band within `STUB_SEAT_REACH_M` stays hostless and drapes as before:
+a crossing onto a path, or onto a pavement the fit declined.
+
+This was a defect in its own right, not one the subclass work introduced. Every
+row above carries the 222 flat-subclass crossings' stubs, so the unseated stub
+was costing the control too.
 
 ## 3. The `infrastructure` type, which is not downloaded
 

@@ -138,13 +138,8 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
                             // the crossing runs buys 3 more ways and tips the
                             // same metric to REGRESSED (2.561 %). Take the
                             // crossings when the stub lands, not before.
-                            let runs: Vec<_> = f
-                                .subclass_runs
-                                .iter()
-                                .filter(|r| r.value != "crosswalk")
-                                .cloned()
-                                .collect();
-                            pedestrians.extend(walks::split_by_subclass(whole, &runs));
+                            pedestrians
+                                .extend(walks::split_by_subclass(whole, &f.subclass_runs));
                         }
                     }
                     witnesses.push(line.0.clone());

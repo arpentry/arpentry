@@ -379,7 +379,12 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // its registration (`crossing_drawn`), and its zebra survives even where
     // the fit declines the kerb stubs.
     walk_sources.resize(walk_bands.len() + crossing_stubs.len(), 0);
+    let stub_from = walk_bands.len();
     walk_bands.extend(crossing_stubs);
+    // …and a stub seats on the band it continues, not on the ground under the
+    // kerb it stands at. Before this the two met in plan and nowhere in
+    // section (`synth::walkway::seat_stubs`).
+    synth::walkway::seat_stubs(&mut walk_bands, stub_from);
     synth::walkway::fit_to_ground(
         &mut walk_bands,
         &mut walk_sources,

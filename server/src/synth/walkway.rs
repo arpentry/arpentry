@@ -294,6 +294,12 @@ fn stub_band(
     if s1 - s0 < CROSSING_MIN_STUB_M {
         return;
     }
+    // The stub half of `ARPT_NO_CROSSING`, so the paint and the band it meets
+    // at the kerb can be measured apart — they are one derivation with two
+    // readers, and a metric that moves needs to say which reader moved it.
+    if std::env::var_os("ARPT_NO_CROSSING_STUB").is_some() {
+        return;
+    }
     // A sidewalk's width, not the crossing's. `CROSSING_WIDTH_M` is how deep
     // the *paint* is along the road axis; the stub is the piece of pavement
     // the crossing lands on, and drawing it wider than the band it joins put
@@ -318,6 +324,100 @@ fn stub_band(
         rise_m: 0.0,
         arc0: s0,
     });
+}
+
+/// How far a kerb stub looks for the band it continues, in metres.
+///
+/// The stub ends on the pavement, so the pavement's *centerline* is within
+/// half a band width of it — [`priors::WALK_WIDTH_M`] and half again covers a
+/// band the street narrowed, without reaching across a road to the pavement
+/// opposite.
+const STUB_SEAT_REACH_M: f64 = priors::WALK_WIDTH_M * 1.5;
+
+/// Seats each kerb stub on the band it continues.
+///
+/// **A stub was seated on the ground while the pavement beside it was seated
+/// on its street.** [`fitted_half`] takes a `NO_HOST` segment's target from
+/// the ground under its own ends and a hosted one's from `height_a`/`height_b`
+/// — the height its street's cross-section draws it at, kerb included. A stub
+/// was built hostless with both heights zero, so the two met at the kerb in
+/// plan and nowhere in section: at 6.856580,46.457663 the band ran
+/// 384.2 → 383.67 → 384.3, a 0.6 m notch a third of a metre wide, and
+/// `slope.walk_crossfall` read the drop off the stub's own edge.
+///
+/// So a stub takes the corridor, the drawn height and the kerb rise of the
+/// nearest hosted walkway band at each of its ends. It is the same claim the
+/// stub's doc already makes — "the strip of real sidewalk between the kerb and
+/// whatever the crossing joins" — made to the machinery that decides heights
+/// rather than only to the reader. A stub that finds no band within
+/// [`STUB_SEAT_REACH_M`] stays hostless and drapes as before: a crossing onto
+/// a path, or onto a pavement the fit declined.
+pub fn seat_stubs(bands: &mut [SourceSeg], stub_from: usize) {
+    if stub_from >= bands.len() {
+        return;
+    }
+    let mut grid = crate::assemble::grid::GridIndex::with_cell_m(64.0);
+    let mut hosted: Vec<u32> = Vec::new();
+    for (i, s) in bands[..stub_from].iter().enumerate() {
+        if s.surface != priors::Surface::Walkway || s.corridor == NO_HOST {
+            continue;
+        }
+        grid.insert(
+            (s.a.x.min(s.b.x), s.a.y.min(s.b.y), s.a.x.max(s.b.x), s.a.y.max(s.b.y)),
+            hosted.len() as u32,
+        );
+        hosted.push(i as u32);
+    }
+    if hosted.is_empty() {
+        return;
+    }
+
+    let mut scratch: Vec<u32> = Vec::new();
+    for si in stub_from..bands.len() {
+        let stub = bands[si];
+        let seat = |end: Coord, scratch: &mut Vec<u32>| -> Option<(CorridorId, f64, f64)> {
+            let (dx, dy) = (
+                STUB_SEAT_REACH_M / (DEG_M * stub.cos_lat),
+                STUB_SEAT_REACH_M / DEG_M,
+            );
+            scratch.clear();
+            grid.query((end.x - dx, end.y - dy, end.x + dx, end.y + dy), scratch);
+            let mut best: Option<(f64, CorridorId, f64, f64)> = None;
+            for &h in scratch.iter() {
+                let s = &bands[hosted[h as usize] as usize];
+                let (d, t) = point_to_seg(end, s.a, s.b, stub.cos_lat);
+                if d > STUB_SEAT_REACH_M {
+                    continue;
+                }
+                if best.is_none_or(|(bd, ..)| d < bd) {
+                    let h = s.height_a + (s.height_b - s.height_a) * t;
+                    best = Some((d, s.corridor, h, s.rise_m));
+                }
+            }
+            best.map(|(_, c, h, r)| (c, h, r))
+        };
+        let (sa, sb) = (seat(stub.a, &mut scratch), seat(stub.b, &mut scratch));
+        // One end is enough: a stub is a couple of metres long, and the end
+        // that found a band is the one that is *on* the pavement — the other
+        // is at the kerb, over the carriageway's own hole.
+        let Some((corridor, _, rise)) = sa.or(sb) else { continue };
+        let s = &mut bands[si];
+        s.corridor = corridor;
+        s.rise_m = rise;
+        s.height_a = sa.or(sb).map(|(_, h, _)| h).expect("one end seated");
+        s.height_b = sb.or(sa).map(|(_, h, _)| h).expect("one end seated");
+    }
+}
+
+/// Distance in metres from `p` to segment `a`–`b`, and the fraction along it
+/// of the closest point.
+fn point_to_seg(p: Coord, a: Coord, b: Coord, cos_lat: f64) -> (f64, f64) {
+    let (ax, ay) = ((b.x - a.x) * cos_lat * DEG_M, (b.y - a.y) * DEG_M);
+    let (px, py) = ((p.x - a.x) * cos_lat * DEG_M, (p.y - a.y) * DEG_M);
+    let len2 = ax * ax + ay * ay;
+    let t = if len2 > 0.0 { ((px * ax + py * ay) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    let (dx, dy) = (px - ax * t, py - ay * t);
+    ((dx * dx + dy * dy).sqrt(), t)
 }
 
 /// Builds every walkway band in the extract: the geometry, the seat and the
@@ -1654,6 +1754,71 @@ mod tests {
             Coord { x: 6.9 + east(from_m), y: LAT + north_m / DEG_M },
             Coord { x: 6.9 + east(to_m), y: LAT + north_m / DEG_M },
         ]
+    }
+
+    /// A `SourceSeg` at the given plan positions and drawn heights.
+    fn seg(from_m: f64, to_m: f64, north_m: f64, h: f64, corridor: CorridorId) -> SourceSeg {
+        let pts = line(from_m, to_m, north_m);
+        let half = priors::WALK_WIDTH_M * 0.5;
+        SourceSeg {
+            a: pts[0],
+            b: pts[1],
+            cos_lat: LAT.to_radians().cos(),
+            half_m: half,
+            sect_a: Section::uniform(half),
+            sect_b: Section::uniform(half),
+            level: 0,
+            layer: 0,
+            cut_a: None,
+            cut_b: None,
+            height_a: h,
+            height_b: h,
+            corridor,
+            surface: priors::Surface::Walkway,
+            rise_m: if corridor == NO_HOST { 0.0 } else { priors::KERB_RISE_M },
+            arc0: 0.0,
+        }
+    }
+
+    /// The defect this fixes: `fitted_half` seats a `NO_HOST` band on the
+    /// ground and a hosted one on `height_a`/`height_b`, so an unseated stub
+    /// met the pavement in plan and nowhere in section.
+    #[test]
+    fn a_kerb_stub_takes_the_height_of_the_band_it_continues() {
+        // A pavement at 384.3 running east, and a stub running north off its
+        // far end — the strip between the kerb and the crossing.
+        let mut bands = vec![seg(0.0, 20.0, 0.0, 384.3, 5), seg(20.0, 21.5, 0.0, 0.0, NO_HOST)];
+        seat_stubs(&mut bands, 1);
+        assert_eq!(bands[1].corridor, 5, "the stub joins its pavement's street");
+        assert!((bands[1].height_a - 384.3).abs() < 1e-6);
+        assert!((bands[1].height_b - 384.3).abs() < 1e-6);
+        assert!((bands[1].rise_m - priors::KERB_RISE_M).abs() < 1e-9, "and rides its kerb");
+    }
+
+    /// A crossing onto a path, or onto a pavement the fit declined, finds
+    /// nothing to seat on and must drape exactly as it did before.
+    #[test]
+    fn a_stub_with_no_band_in_reach_stays_hostless() {
+        let mut bands = vec![
+            seg(0.0, 20.0, 0.0, 384.3, 5),
+            seg(0.0, 1.5, STUB_SEAT_REACH_M + 5.0, 0.0, NO_HOST),
+        ];
+        seat_stubs(&mut bands, 1);
+        assert_eq!(bands[1].corridor, NO_HOST);
+        assert_eq!(bands[1].height_a, 0.0);
+    }
+
+    /// The reach must not step across a carriageway to the pavement opposite.
+    #[test]
+    fn a_stub_seats_on_the_nearer_of_two_pavements() {
+        let mut bands = vec![
+            seg(0.0, 20.0, 0.0, 384.3, 5),
+            seg(0.0, 20.0, 2.0, 390.0, 9),
+            seg(10.0, 10.0 + 1.5, 0.4, 0.0, NO_HOST),
+        ];
+        seat_stubs(&mut bands, 2);
+        assert_eq!(bands[2].corridor, 5, "0.4 m away beats 1.6 m away");
+        assert!((bands[2].height_a - 384.3).abs() < 1e-6);
     }
 
     #[test]
