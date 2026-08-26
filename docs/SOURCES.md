@@ -1,0 +1,232 @@
+# The Source Data
+
+Every other document in this repository reasons about a world the generator
+builds. This one is about the world it is given: what Overture Maps actually
+carries, what the tiler reads of it, and — the reason the document exists —
+the gap between the two.
+
+The gap matters because the generator's whole method is to recover a 3D world
+from a 2D plan plus priors. A prior is what you invent when the data is
+silent. Every attribute the source *does* carry and the tiler *does not* read
+is a prior invented over an available fact, and priors are where artifacts
+come from. `docs/GENERATION.md` §7 counts manufactured retaining walls as an
+invariant violation; Overture ships the real ones. The pedestrian network
+synthesises crossings from geometry; Overture says where they are, to a
+fractional position along the way.
+
+Measurements below are on release `2026-05` for Switzerland
+(`data/overture-ch/`), and on the Montreux preview zone
+`6.855469,46.398010,6.981700,46.472168` where a figure is local. Lengths are
+spheroid lengths, not projected ones.
+
+## 1. What the tiler reads today
+
+Two lists, and they agree by design — `assemble::ATTRS` and `pipeline`'s
+transportation entry request the same columns, so the assemble stage and the
+tiling phase cannot disagree about what a segment is:
+
+```
+id  type  subtype  class  subclass  names.primary
+level_rules  road_flags  connectors
+width_rules  road_surface  access_restrictions
+cartography.min_zoom  cartography.max_zoom  cartography.sort_key
+```
+
+The inputs are set in `scripts/run-overture-ch.sh`: `land_cover`, `land_use`,
+`water`, `segment`, `building`, `place`, `division_boundary`. Seven of the
+fifteen Overture types.
+
+## 2. How Overture says a thing is true over *part* of a way
+
+This is the single most important fact about the schema, and the one the
+tiler currently does not honour.
+
+An OSM way is tagged uniformly; an Overture segment is not. Overture models an
+attribute as a **linearly-referenced rule list** —
+`list<struct<value, between: [f64; 2]>>` — where `between` is a pair of
+fractions along the segment. A rule with no `between` applies to the whole
+segment. The scalar column beside it (`subclass`) is a *convenience*: Overture
+populates it only when the value is uniform, and leaves it **null** the moment
+any rule is partial.
+
+That last clause is the trap. A footway that is a sidewalk over its first 60 %
+and a crossing over the rest has `subclass = NULL`. A reader of the scalar
+column does not see a mixed way; it sees a way with no subclass at all — an
+anonymous footway. The information is not missing, it is in a column nobody
+opened.
+
+The tiler honours this shape for `level_rules` (parsed into runs by
+`crate::levels`) and reduces it for `width_rules` / `road_surface` (dominant
+value, `crate::rules`). It does not read `subclass_rules` at all.
+
+### What that costs, measured
+
+In the Montreux preview zone, footway and cycleway segments:
+
+| subclass | whole-segment | partial rules | share invisible |
+|---|---:|---:|---:|
+| `sidewalk` | 70.29 km (259 seg) | **24.27 km (217 rules)** | 25.7 % by length |
+| `crosswalk` | 2.79 km (222 seg) | **1.91 km (180 rules)** | **45 % by count** |
+
+Switzerland-wide, 29,590 footway segments are a sidewalk over part of their
+length and 30,357 are a crosswalk over part; **24,640 are both, over different
+stretches.** That last figure is the point. A sidewalk that runs to a corner,
+crosses the road, and continues is *one* Overture segment carrying two
+subclass runs — which is precisely the sidewalk-continues-across-the-road
+relation `assemble::walks` and the `network.*` checks are reconstructing from
+geometry and shared connectors.
+
+### What reading it changed
+
+`assemble::walks::split_by_subclass` cuts a pedestrian line where its subclass
+changes, so a mixed way becomes the sidewalk and the crossing it actually is.
+Two guards earned their place by measurement, both on the Montreux zone against
+a control tiled from the same inputs:
+
+**A run shorter than the band is wide is absorbed into its neighbour.** The
+sidewalk runs Overture leaves either side of a crossing have a p25 of 1.61 m
+and a minimum of 0.59 m — kerb-to-crossing stubs, not stretches of pavement.
+Cutting on those shatters the band into pieces that each fit their own bench.
+A crossing is exempt: it is paint, never a band, so the width floor says
+nothing about it.
+
+**The crossing runs are held back.** Excluding a crossing from banding is
+right, but it leaves the pavement either side ending at a kerb, and a band end
+there reads as cross-fall until the kerb stub is seated on the band it
+continues. Measured:
+
+| variant | sidewalks attached | `slope.walk_crossfall` | gate |
+|---|---|---|---|
+| control | 5312 ways / 354.1 km | 2.481 % | — |
+| sidewalk runs only | 5384 / 356.2 km | 2.545 % | same |
+| + crossing runs | 5387 / 356.3 km | 2.561 % | REGRESSED |
+
+The sidewalk runs carry 72 of the 75 recovered ways at a verdict of "same";
+the crossing runs buy three more and tip the metric. Take them when the stub
+lands. In all three the worst sample is unchanged at 12.51 — this is a rate
+moving on an unchanged distribution, not a new defect.
+
+## 3. The `infrastructure` type, which is not downloaded
+
+`overturemaps download --type=infrastructure` (theme `base`) is a valid type
+the pipeline has never fetched. In the Montreux zone alone:
+
+| class | n | extent |
+|---|---:|---|
+| `transportation/crossing` | 513 | points |
+| `bridge/bridge` | 279 | 12.85 km |
+| `barrier/kerb` | 133 | 130 points, 3 lines |
+| `transit/platform` | 130 | 43 polygons |
+| `barrier/hedge` | 121 | 5.90 km |
+| `barrier/wall` | 75 | 4.38 km |
+| **`barrier/retaining_wall`** | **55** | **3.34 km** |
+| `barrier/fence` | 32 | 5.84 km |
+| `pier/pier` | 28 | 1.04 km |
+
+Columns: `id, geometry, subtype, class, names, level, height, surface,
+wikidata, source_tags`.
+
+Two of these rows are load-bearing for this project.
+
+**Retaining walls.** The ground solve manufactures a retaining wall wherever a
+bench face exceeds what a batter can absorb, and `docs/GENERATION.md` §7 scores
+that as a defect — the model cannot tell a wall it invented from a wall that is
+there. Overture can. Note the limit before planning on it: `height` is filled
+on ~2 % of walls. The data says *where*, not *how tall*.
+
+**Crossing points.** 513 of them against 402 crosswalk subclass runs in the
+same zone — a denser and independently-mapped registration of the same fact.
+
+## 4. `source_tags`: the one place OSM survives
+
+`infrastructure` carries a `source_tags` column: a verbatim `map<varchar,
+varchar>` of the originating OSM tags, populated on **100 %** of features. It
+is the only passthrough of raw OSM tags anywhere in Overture. `segment` has no
+equivalent — its `sources` column is a provenance struct (dataset, licence,
+record id, confidence), not tags. **OSM tags on ways are genuinely lost; OSM
+tags on nodes and barriers are not.**
+
+On the 513 Montreux crossing points:
+
+| tag | present | values |
+|---|---:|---|
+| `crossing` | 490 | `marked`, `uncontrolled`, `traffic_signals` |
+| `crossing:island` | 426 | **79 `yes`** |
+| `crossing:markings` | 375 | 335 `zebra`, 37 explicitly `no`, 1 `lines` |
+| `tactile_paving` | 225 | |
+| `kerb` | 40 | 29 `lowered`, 6 `flush`, 5 `raised` |
+
+Three consequences worth stating plainly. Zebra stripes are currently drawn on
+every crossing; 37 of these say there are no markings at all. A traffic island
+is a raised refuge in the middle of a carriageway — 79 pieces of 3D geometry
+nobody is building. And the synthesised kerb rise is applied uniformly, while
+`kerb=flush` and `kerb=lowered` name the exact places where the rise should be
+zero — which is where a pavement meets a crossing, the junction the
+`street.kerb_join` and `seam.handover_kerb` checks are measuring.
+
+## 5. Flags the level parser discards
+
+`levels::parse_flags` maps `is_bridge` → +1 and `is_tunnel` → −1 and states
+that the rest "contribute nothing". The rest are `is_link`, `is_covered`,
+`is_indoor`, `is_under_construction`, `is_abandoned`.
+
+Switzerland: 3,332 covered and 1,631 indoor footways; 871 covered and 771
+indoor steps. In the Montreux zone this is 0.4 km covered and 0.07 km indoor —
+not a current artifact, which is why it is recorded here rather than acted on.
+It becomes one in a station concourse or a shopping centre, where an indoor
+footway benched into the terrain is a walkway cut through a building's floor.
+
+## 6. `land_use` never reaches the solve
+
+`land_use` is layer 6, a paint layer. It is styled and drawn and it does not
+participate in the ground solve, the imprint, or the profile.
+
+Overture's `land_use` carries `subtype = pedestrian`: 5,052 `pedestrian` and
+2,365 `plaza` polygons in Switzerland. These are paved, level, walked-on
+surfaces — the same material as a carriageway and with the same claim on the
+ground under them. They are currently draped colour on whatever the terrain
+does, while a footway crossing the same square benches its own band through
+it.
+
+## 7. What Overture does not have
+
+Recorded so the search stops here.
+
+- **`sidewalk = both/left/right/no` on the road segment.** OSM's answer to
+  "does this street have a pavement" is not modelled anywhere in Overture. The
+  only evidence of a pavement is a separately-mapped sidewalk way, so a street
+  whose pavement nobody drew is indistinguishable from a street with none.
+  `data/plans/` records this being measured and the wrong conclusion nearly
+  drawn from it.
+- **Steps have no `step_count`, `incline`, or `handrail`.** 9.6 km of steps in
+  the Montreux zone, and nothing in the schema distinguishes a flight of
+  stairs from a ramp of the same gradient.
+- **No sidepath or parent-street relation.** Nothing links a sidewalk to the
+  street it serves. Attachment must stay geometric, which is what
+  `assemble::walks` does.
+- **Sparse where it does exist.** By length in the Montreux zone: footway
+  `width_rules` 1.8 %, steps 0.3 %, footway `road_surface` 22.7 %, footway
+  `level_rules` 12.5 %. The 2 m nominal band width is not a fallback, it is
+  the answer for 98 % of pedestrian ways.
+
+## 8. Schema freshness
+
+Release `2026-08-19.0` has the identical 21-column `segment` schema as the
+local extract. Re-downloading buys fresher data, not new fields — worth
+knowing before treating a missing attribute as a staleness problem.
+
+`overturemaps download` reaches S3, which is not in the sandbox allowlist; it
+fails with `Could not resolve host` and needs the sandbox disabled.
+
+## 9. Ranked
+
+1. **Read `subclass_rules`.** One column in a file already open. Recovers 180
+   crossings and 24 km of sidewalk identity in the zone every metric is
+   measured on.
+2. **Add `infrastructure` as an input.** Mapped retaining walls let the solve
+   tell an invented wall from a real one; `source_tags` is the back door to
+   real kerb, marking, and island data at crossings.
+3. **Stop benching `is_indoor` ways.** Small, bounded, and kills a class of
+   defect before it is met.
+4. **Give pedestrian and plaza land use a claim on the ground.** The largest
+   of the four, and the one that needs a design rather than a read.

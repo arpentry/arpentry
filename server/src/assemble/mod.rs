@@ -43,6 +43,12 @@ const ATTRS: &[&str] = &[
     "subtype",
     "class",
     "subclass",
+    // The linearly-referenced form of `subclass`, and the *only* form when a
+    // rule covers part of a segment — Overture nulls the scalar then, so a
+    // footway that is a sidewalk for half its length reads as anonymous
+    // without this (`docs/SOURCES.md` §2). `walks::split_by_subclass` cuts
+    // pedestrian lines on it.
+    "subclass_rules",
     "names.primary",
     "level_rules",
     "road_flags",
@@ -98,7 +104,12 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
                         if let Some(source) =
                             crate::value::str_of(&f.properties, "id").map(|s| source_hash(&s))
                         {
-                            pedestrians.push(walks::WalkLine {
+                            // …and a way is not obliged to be one subclass for
+                            // its whole length. Where it is, this is one line
+                            // in and one line out; where it is not, it is cut
+                            // into the sidewalk and the crossing it actually
+                            // is (`walks::split_by_subclass`).
+                            let whole = walks::WalkLine {
                                 source,
                                 line: line.0.clone(),
                                 kind,
@@ -111,7 +122,29 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
                                     .filter(|r| r.level != 0)
                                     .map(|r| (r.start, r.end))
                                     .collect(),
-                            });
+                            };
+                            // **The crossing runs are held back, and the
+                            // reason is measured.** Cutting a crossing out of
+                            // a way is right — `synth::walkway` does not band
+                            // a crosswalk, it registers its paint — but it
+                            // leaves the pavement either side ending at a
+                            // kerb, and a band end there reads as cross-fall
+                            // until the kerb stub is seated on the band it
+                            // continues (the open item in `synth::walkway`).
+                            // Measured on the Montreux zone against a control:
+                            // the sidewalk runs alone carry +72 of the +75
+                            // attached ways and hold `slope.walk_crossfall` at
+                            // a verdict of "same" (2.481 → 2.545 %); adding
+                            // the crossing runs buys 3 more ways and tips the
+                            // same metric to REGRESSED (2.561 %). Take the
+                            // crossings when the stub lands, not before.
+                            let runs: Vec<_> = f
+                                .subclass_runs
+                                .iter()
+                                .filter(|r| r.value != "crosswalk")
+                                .cloned()
+                                .collect();
+                            pedestrians.extend(walks::split_by_subclass(whole, &runs));
                         }
                     }
                     witnesses.push(line.0.clone());

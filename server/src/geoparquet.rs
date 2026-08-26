@@ -63,6 +63,11 @@ pub struct Feature {
     /// Overture transportation `connectors` (empty for everything else); the
     /// assemble stage joins segments into corridors on these.
     pub connectors: Vec<crate::assemble::columns::Connector>,
+    /// Overture transportation `subclass_rules` parsed into runs (empty for
+    /// everything else). Where the scalar `subclass` is uniform this holds one
+    /// full-length run saying the same thing; where it is partial the scalar
+    /// is null and this is the only record of it (`docs/SOURCES.md` §2).
+    pub subclass_runs: Vec<crate::assemble::columns::SubclassRun>,
 }
 
 /// Errors from opening or decoding a GeoParquet file.
@@ -297,6 +302,7 @@ impl Iterator for Features {
             let mut level_runs = Vec::new();
             let mut flag_runs = Vec::new();
             let mut connectors = Vec::new();
+            let mut subclass_runs = Vec::new();
             for (name, arr) in &cur.resolved {
                 // Overture's bridge/tunnel signal is `level_rules`, a
                 // linearly-referenced `list<struct<value, between>>` rather than
@@ -318,6 +324,16 @@ impl Iterator for Features {
                 // assemble stage joins corridors on.
                 if name == "connectors" {
                     connectors = crate::assemble::columns::parse_connectors(arr.as_ref(), row);
+                    continue;
+                }
+                // `subclass_rules` is the linearly-referenced form of the
+                // scalar `subclass` beside it — and the only form when any run
+                // is partial, because Overture nulls the scalar then
+                // (`docs/SOURCES.md` §2). Parsed into runs here; the assemble
+                // stage cuts pedestrian lines on them.
+                if name == "subclass_rules" {
+                    subclass_runs =
+                        crate::assemble::columns::parse_subclass_rules(arr.as_ref(), row);
                     continue;
                 }
                 // The horizontal road attributes share `level_rules`' nested
@@ -353,7 +369,13 @@ impl Iterator for Features {
             if level_runs.is_empty() {
                 level_runs = flag_runs;
             }
-            return Some(Ok(Feature { geometry, properties, level_runs, connectors }));
+            return Some(Ok(Feature {
+                geometry,
+                properties,
+                level_runs,
+                connectors,
+                subclass_runs,
+            }));
         }
     }
 }

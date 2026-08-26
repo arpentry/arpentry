@@ -9,6 +9,7 @@ Read these docs before making changes to understand the design and conventions:
 | Document | What it owns |
 |----------|-------------|
 | `docs/MOTIVATION.md` | Project motivation and background |
+| `docs/SOURCES.md` | The source data: what Overture carries, what the tiler reads, and the measured gap |
 | `docs/DESIGN.md` | Design principles (deep modules, pull complexity downward, define errors out of existence) |
 | `docs/STYLE.md` | C coding style guide |
 | `docs/FORMAT.md` | Tile format specification: geometry model, coordinate space, properties, FlatBuffers schema |

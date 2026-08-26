@@ -34,6 +34,7 @@ use geo_types::Coord;
 use crate::priors::{self, Kind, Surface};
 use crate::scene::{Corridor, CorridorId, DEG_M};
 
+use super::columns::{SubclassRun, SPAN_EPS};
 use super::grid::GridIndex;
 
 /// Sample spacing along a pedestrian line, in metres. The same metre the
@@ -72,6 +73,7 @@ const WALK_COVER_JOINED: f64 = 0.5;
 
 /// One draped pedestrian line, as the transportation read saw it — the input
 /// to [`attach`]. Its geometry is kept only until the relation is resolved.
+#[derive(Clone)]
 pub struct WalkLine {
     /// Hash of the source feature id ([`crate::scene::source_hash`]).
     pub source: u64,
@@ -101,6 +103,203 @@ pub struct WalkLine {
     /// as well would draw a second one lying in the river.
     pub spans: Vec<(f64, f64)>,
 }
+
+/// Cuts a pedestrian line into pieces of one subclass each.
+///
+/// **A mixed way cannot be one line.** The two subclasses that matter here are
+/// answered in opposite directions: a sidewalk attaches to the street it runs
+/// beside and is drawn as a band; a crosswalk attaches to nothing, because it
+/// is paint on a carriageway ([`attach`] skips it outright). A single Overture
+/// segment that is a sidewalk to the corner, a crossing over the road, and a
+/// sidewalk again is all three, and one [`WalkLine`] can only be one of them.
+/// So the line is cut where the subclass changes, and each piece answers for
+/// itself.
+///
+/// The common segment does not move: where `subclass_rules` is absent, or
+/// holds a single full-length run, this returns `base` untouched. Cutting only
+/// happens for the segments `docs/SOURCES.md` §2 counts — the ones whose
+/// scalar `subclass` Overture nulled because a rule was partial.
+///
+/// Fractions are of the segment's **length**, and are read through
+/// [`crate::scene::cumulative_arc`] — the same parameterisation `connectors.at`
+/// and `level_rules.between` are resolved with, so a cut lands where the source
+/// says it does.
+pub fn split_by_subclass(base: WalkLine, runs: &[SubclassRun]) -> Vec<WalkLine> {
+    if runs.is_empty() || base.line.len() < 2 {
+        return vec![base];
+    }
+    let intervals = subclass_intervals(runs);
+    // One interval spanning the whole way is what a uniform segment looks like
+    // from here: the scalar `subclass` said the same thing, and `base` already
+    // carries it.
+    if intervals.len() < 2 {
+        return vec![base];
+    }
+
+    let arc = crate::scene::cumulative_arc(&base.line);
+    let total = *arc.last().expect("a line with two nodes has an arc");
+    if total <= 0.0 {
+        return vec![base];
+    }
+    let intervals = absorb_slivers(intervals, total);
+    if intervals.len() < 2 {
+        // Every cut was a sliver: the way is one thing after all, and it is
+        // whatever survived.
+        let mut whole = base;
+        let value = intervals.first().and_then(|iv| iv.2.as_deref());
+        whole.tagged = value == Some("sidewalk");
+        whole.crosswalk = value == Some("crosswalk");
+        return vec![whole];
+    }
+
+    let mut out = Vec::with_capacity(intervals.len());
+    for (t0, t1, value) in intervals {
+        let line = cut(&base.line, &arc, t0 * total, t1 * total);
+        if line.len() < 2 {
+            continue;
+        }
+        let width = t1 - t0;
+        out.push(WalkLine {
+            source: base.source,
+            line,
+            kind: base.kind,
+            tagged: value.as_deref() == Some("sidewalk"),
+            crosswalk: value.as_deref() == Some("crosswalk"),
+            // A connector on a cut boundary belongs to **both** neighbours: it
+            // is the node they meet at, and the "joined to a crossing" evidence
+            // is about what a way touches, not which side of it.
+            connectors: base
+                .connectors
+                .iter()
+                .filter(|c| c.at >= t0 - SPAN_EPS && c.at <= t1 + SPAN_EPS)
+                .map(|c| super::columns::Connector {
+                    id: c.id,
+                    at: ((c.at - t0) / width).clamp(0.0, 1.0),
+                })
+                .collect(),
+            spans: base
+                .spans
+                .iter()
+                .filter_map(|&(s, e)| {
+                    let (s, e) = (s.max(t0), e.min(t1));
+                    (e - s > SPAN_EPS).then(|| ((s - t0) / width, (e - t0) / width))
+                })
+                .collect(),
+        });
+    }
+    if out.is_empty() { vec![base] } else { out }
+}
+
+/// The runs resolved into a partition of `0..1`: consecutive, non-overlapping,
+/// each with the subclass in force there (`None` where no rule reaches).
+///
+/// Overlapping rules resolve last-wins, mirroring source order — the same rule
+/// `assemble::corridors::resolve_spans` uses for overlapping level runs.
+fn subclass_intervals(runs: &[SubclassRun]) -> Vec<(f64, f64, Option<String>)> {
+    let mut breaks = vec![0.0, 1.0];
+    for r in runs {
+        breaks.push(r.start);
+        breaks.push(r.end);
+    }
+    breaks.sort_by(|a, b| a.partial_cmp(b).expect("finite fractions"));
+    breaks.dedup_by(|a, b| (*a - *b).abs() <= SPAN_EPS);
+
+    let mut out: Vec<(f64, f64, Option<String>)> = Vec::new();
+    for w in breaks.windows(2) {
+        let (t0, t1) = (w[0], w[1]);
+        if t1 - t0 <= SPAN_EPS {
+            continue;
+        }
+        let mid = 0.5 * (t0 + t1);
+        let value = runs
+            .iter()
+            .rev()
+            .find(|r| mid >= r.start && mid <= r.end)
+            .map(|r| r.value.clone());
+        match out.last_mut() {
+            Some(last) if last.2 == value => last.1 = t1,
+            _ => out.push((t0, t1, value)),
+        }
+    }
+    out
+}
+
+/// Merges away runs too short to be the thing they claim to be.
+///
+/// **A band shorter than it is wide is a joint, not a stretch of walkway.**
+/// Overture references a crossing along a longer way, and the sidewalk left
+/// either side of it is often the few centimetres between the kerb and the
+/// crossing's endpoint — in the Montreux zone the sidewalk runs have a p25 of
+/// 1.61 m and a minimum of 0.59 m. Cut on those and the walk band shatters
+/// into pieces that each fit their own bench, which is a cross-fall step at
+/// every joint; the first cut of this change cost `slope.walk_crossfall`
+/// +0.086 pp for exactly that.
+///
+/// So a run under [`priors::WALK_WIDTH_M`] is absorbed into its longer
+/// neighbour and takes that neighbour's subclass. A **crosswalk is exempt**:
+/// it is paint, never a band, so "shorter than the band is wide" says nothing
+/// about it — and the crossings Overture maps here are 2.03 m at their
+/// shortest, well clear of the floor anyway.
+///
+/// Mirrors `corridors::resolve_spans`, which drops sub-`SNAP_RUN_M` grade
+/// slivers wedged between two structures for the same reason.
+fn absorb_slivers(
+    mut intervals: Vec<(f64, f64, Option<String>)>,
+    total_m: f64,
+) -> Vec<(f64, f64, Option<String>)> {
+    let min_frac = (priors::WALK_WIDTH_M / total_m).min(1.0);
+    loop {
+        let sliver = intervals
+            .iter()
+            .position(|iv| iv.1 - iv.0 < min_frac && iv.2.as_deref() != Some("crosswalk"));
+        let Some(i) = sliver.filter(|_| intervals.len() > 1) else { break };
+        // Into the longer neighbour, so a sliver between two runs joins the
+        // one that can carry it.
+        let take_prev = match (i > 0, i + 1 < intervals.len()) {
+            (true, false) => true,
+            (false, true) => false,
+            _ => intervals[i - 1].1 - intervals[i - 1].0 >= intervals[i + 1].1 - intervals[i + 1].0,
+        };
+        let (lo, hi) = (intervals[i].0, intervals[i].1);
+        if take_prev {
+            intervals[i - 1].1 = hi;
+        } else {
+            intervals[i + 1].0 = lo;
+        }
+        intervals.remove(i);
+        // Absorbing can leave two same-valued runs adjacent.
+        intervals.dedup_by(|b, a| (a.2 == b.2).then(|| a.1 = b.1).is_some());
+    }
+    intervals
+}
+
+/// The sub-polyline between two arc positions, with interpolated ends.
+fn cut(line: &[Coord], arc: &[f64], a0: f64, a1: f64) -> Vec<Coord> {
+    let mut out = vec![point_at_arc(line, arc, a0)];
+    for (i, &a) in arc.iter().enumerate() {
+        if a > a0 + CUT_EPS_M && a < a1 - CUT_EPS_M {
+            out.push(line[i]);
+        }
+    }
+    out.push(point_at_arc(line, arc, a1));
+    out
+}
+
+/// The line's point at arc `s`, linearly interpolated between the bracketing
+/// nodes (clamped to the ends).
+fn point_at_arc(line: &[Coord], arc: &[f64], s: f64) -> Coord {
+    let i = arc.partition_point(|&a| a < s).clamp(1, arc.len() - 1);
+    let (a0, a1) = (arc[i - 1], arc[i]);
+    let t = if a1 > a0 { ((s - a0) / (a1 - a0)).clamp(0.0, 1.0) } else { 0.0 };
+    Coord {
+        x: line[i - 1].x + (line[i].x - line[i - 1].x) * t,
+        y: line[i - 1].y + (line[i].y - line[i - 1].y) * t,
+    }
+}
+
+/// A source vertex closer than this to a cut lands on the cut instead of
+/// spawning a millimetre-long first edge.
+const CUT_EPS_M: f64 = 1e-6;
 
 /// Why a way is attached. The tag and the geometry are independent evidences
 /// and neither substitutes for the other: 34 % of tagged sidewalks fail the
@@ -695,6 +894,145 @@ mod tests {
             connectors: Vec::new(),
             spans: Vec::new(),
         }
+    }
+
+    /// A straight east–west line of `n` metres from the origin, so an arc
+    /// fraction and a metre offset are the same number over `DEG_M`.
+    fn straight(n: f64) -> Vec<Coord> {
+        vec![Coord { x: 0.0, y: 0.0 }, Coord { x: n / DEG_M, y: 0.0 }]
+    }
+
+    fn rule(value: &str, start: f64, end: f64) -> SubclassRun {
+        SubclassRun { start, end, value: value.to_string() }
+    }
+
+    #[test]
+    fn a_way_with_no_subclass_rules_is_not_cut() {
+        let out = split_by_subclass(walk(straight(100.0), true), &[]);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].tagged, "the scalar subclass still speaks for the way");
+    }
+
+    /// The uniform segment — the overwhelming majority — must come through
+    /// byte-identical, or every metric moves for a reason that is not the fix.
+    #[test]
+    fn a_full_length_run_leaves_the_way_whole() {
+        let out = split_by_subclass(walk(straight(100.0), true), &[rule("sidewalk", 0.0, 1.0)]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].line.len(), 2);
+        assert!(out[0].tagged);
+        assert!(!out[0].crosswalk);
+    }
+
+    /// The case `docs/SOURCES.md` §2 is about: one segment, two identities,
+    /// and today the scalar `subclass` is null so it reads as neither.
+    #[test]
+    fn a_sidewalk_that_becomes_a_crossing_is_cut_in_two() {
+        let base = walk(straight(100.0), false);
+        let out = split_by_subclass(
+            base,
+            &[rule("sidewalk", 0.0, 0.6), rule("crosswalk", 0.6, 1.0)],
+        );
+        assert_eq!(out.len(), 2);
+        assert!(out[0].tagged && !out[0].crosswalk);
+        assert!(out[1].crosswalk && !out[1].tagged);
+        // The cut lands where the source put it, in metres along the way.
+        let cos_lat = crate::scene::run_cos_lat(&out[0].line);
+        assert!((length_m(&out[0].line, cos_lat) - 60.0).abs() < 0.01);
+        assert!((length_m(&out[1].line, cos_lat) - 40.0).abs() < 0.01);
+        // …and the pieces meet, rather than leaving a gap at the boundary.
+        assert_eq!(out[0].line.last(), out[1].line.first());
+    }
+
+    /// A rule reaching only part way leaves the rest genuinely unlabelled —
+    /// a plain footway, which is what it is. It must not inherit the tag.
+    #[test]
+    fn the_stretch_no_rule_reaches_is_untagged() {
+        let out =
+            split_by_subclass(walk(straight(100.0), false), &[rule("sidewalk", 0.0, 0.4)]);
+        assert_eq!(out.len(), 2);
+        assert!(out[0].tagged);
+        assert!(!out[1].tagged && !out[1].crosswalk);
+    }
+
+    /// The crossing's connectors are the evidence that the pavement either
+    /// side of it is street furniture (`WALK_COVER_JOINED`). A cut must not
+    /// throw that away: a connector on the boundary belongs to both pieces.
+    #[test]
+    fn a_cut_remaps_connectors_and_shares_the_boundary_node() {
+        let mut base = walk(straight(100.0), false);
+        base.connectors = vec![
+            super::super::columns::Connector { id: 7, at: 0.0 },
+            super::super::columns::Connector { id: 8, at: 0.5 },
+            super::super::columns::Connector { id: 9, at: 1.0 },
+        ];
+        let out = split_by_subclass(
+            base,
+            &[rule("sidewalk", 0.0, 0.5), rule("crosswalk", 0.5, 1.0)],
+        );
+        assert_eq!(out.len(), 2);
+        let ids = |w: &WalkLine| w.connectors.iter().map(|c| c.id).collect::<Vec<_>>();
+        assert_eq!(ids(&out[0]), vec![7, 8]);
+        assert_eq!(ids(&out[1]), vec![8, 9]);
+        // Fractions are renormalised onto the piece they now sit on.
+        assert!((out[0].connectors[1].at - 1.0).abs() < 1e-9);
+        assert!((out[1].connectors[0].at - 0.0).abs() < 1e-9);
+    }
+
+    /// A structure span is a fraction of the way it was read from; after a cut
+    /// it must be a fraction of the piece, or a footbridge suppresses the band
+    /// on the wrong stretch (`WalkLine::spans`).
+    #[test]
+    fn a_cut_renormalises_structure_spans_onto_the_piece() {
+        let mut base = walk(straight(100.0), false);
+        base.spans = vec![(0.5, 0.75)];
+        let out = split_by_subclass(
+            base,
+            &[rule("sidewalk", 0.0, 0.5), rule("crosswalk", 0.5, 1.0)],
+        );
+        assert_eq!(out.len(), 2);
+        assert!(out[0].spans.is_empty(), "the span is wholly in the second piece");
+        assert_eq!(out[1].spans.len(), 1);
+        assert!((out[1].spans[0].0 - 0.0).abs() < 1e-9);
+        assert!((out[1].spans[0].1 - 0.5).abs() < 1e-9);
+    }
+
+    /// The kerb-to-crossing stub: a sidewalk run too short to be a band joins
+    /// the run beside it rather than shattering the walkway at the joint.
+    #[test]
+    fn a_sidewalk_sliver_is_absorbed_into_its_neighbour() {
+        let out = split_by_subclass(
+            walk(straight(100.0), false),
+            // 0.5 m of sidewalk against 99.5 m of crossing-free way.
+            &[rule("sidewalk", 0.0, 0.005)],
+        );
+        assert_eq!(out.len(), 1, "a half-metre sidewalk is a joint, not a stretch");
+        assert!(!out[0].tagged);
+    }
+
+    /// …but a crossing is paint, not a band, so the width floor does not apply
+    /// to it. Losing a short crossing would lose the crossing.
+    #[test]
+    fn a_short_crossing_is_never_absorbed() {
+        let out = split_by_subclass(
+            walk(straight(100.0), false),
+            &[rule("sidewalk", 0.0, 0.99), rule("crosswalk", 0.99, 1.0)],
+        );
+        assert_eq!(out.len(), 2);
+        assert!(out[1].crosswalk, "a 1 m crossing is still a crossing");
+    }
+
+    /// Overlapping rules are last-wins, matching `corridors::resolve_spans`.
+    #[test]
+    fn overlapping_rules_resolve_in_source_order() {
+        let out = split_by_subclass(
+            walk(straight(100.0), false),
+            &[rule("sidewalk", 0.0, 1.0), rule("crosswalk", 0.4, 0.6)],
+        );
+        assert_eq!(out.len(), 3);
+        assert!(out[0].tagged);
+        assert!(out[1].crosswalk);
+        assert!(out[2].tagged);
     }
 
     #[test]
