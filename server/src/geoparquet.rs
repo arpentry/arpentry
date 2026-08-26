@@ -68,6 +68,10 @@ pub struct Feature {
     /// full-length run saying the same thing; where it is partial the scalar
     /// is null and this is the only record of it (`docs/SOURCES.md` §2).
     pub subclass_runs: Vec<crate::assemble::columns::SubclassRun>,
+    /// Stretches Overture's `road_flags` marks `is_indoor`, as fractions. Not
+    /// levels — an indoor way has no ordinal — so they ride separately from
+    /// `level_runs` and reach `WalkLine::spans` (`crate::levels::indoor_runs`).
+    pub indoor_runs: Vec<(f64, f64)>,
 }
 
 /// Errors from opening or decoding a GeoParquet file.
@@ -303,6 +307,7 @@ impl Iterator for Features {
             let mut flag_runs = Vec::new();
             let mut connectors = Vec::new();
             let mut subclass_runs = Vec::new();
+            let mut indoor_runs = Vec::new();
             for (name, arr) in &cur.resolved {
                 // Overture's bridge/tunnel signal is `level_rules`, a
                 // linearly-referenced `list<struct<value, between>>` rather than
@@ -318,6 +323,9 @@ impl Iterator for Features {
                 // have only the flag, no `level_rules` (see `crate::levels`).
                 if name == "road_flags" {
                     flag_runs = crate::levels::parse_flags(arr.as_ref(), row);
+                    // The same cell also says whether the way is indoors,
+                    // which is not a level and is dropped by the level parse.
+                    indoor_runs = crate::levels::indoor_runs(arr.as_ref(), row);
                     continue;
                 }
                 // `connectors` is likewise nested: the graph topology the
@@ -375,6 +383,7 @@ impl Iterator for Features {
                 level_runs,
                 connectors,
                 subclass_runs,
+                indoor_runs,
             }));
         }
     }

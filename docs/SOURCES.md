@@ -216,11 +216,49 @@ zero — which is where a pavement meets a crossing, the junction the
 that the rest "contribute nothing". The rest are `is_link`, `is_covered`,
 `is_indoor`, `is_under_construction`, `is_abandoned`.
 
-Switzerland: 3,332 covered and 1,631 indoor footways; 871 covered and 771
-indoor steps. In the Montreux zone this is 0.4 km covered and 0.07 km indoor —
-not a current artifact, which is why it is recorded here rather than acted on.
-It becomes one in a station concourse or a shopping centre, where an indoor
-footway benched into the terrain is a walkway cut through a building's floor.
+So an indoor way was an ordinary level-0 footway to every stage after it: it
+earned a walk band, benched stratum D, and was drawn as pavement through the
+building's floor. `order.walk_indoors` is the instrument — the pedestrian half
+of `order.building_overlap`'s question, which had only ever scored road
+surface. It reads **3.318 % over 0.5 m at Zurich Airport, worst 42.9 m**, a
+path drawn 43 m inside the terminal, against 0.850 % for the road population in
+the same tiles.
+
+The defect **clusters**, which is why Montreux never showed it: 545 indoor ways
+and 19 km in one 0.02° cell over the airport, against 0.07 km in the whole
+Montreux zone, where the metric reads 0.083 %. Switzerland holds 3,332 covered
+and 1,631 indoor footways plus 871 covered and 771 indoor steps. 96.7 % of the
+airport's indoor ways carry no level rule, so nothing else ordered them out.
+
+`levels::indoor_runs` now parses the `is_indoor` spans — 18.8 % of them are
+*partial*, so a boolean will not do — and they reach `WalkLine::spans`, whose
+own doc already named this case ("a passage under a building") and which the
+band suppression already read.
+
+**A wholly indoor way is silent, not degraded.** Suppressing the band alone
+made it worse in a way worth recording: the way dropped out of `banded_walks`,
+fell back to its cartographic stroke under I6, and drew a line through the
+building instead of a band — Montreux `paint.stroke_over_band` 10.965 →
+19.745 %. I6's fallback exists for a band the surface model declined for lack
+of room; it does not license drawing a footway through a terminal, because that
+line *is* the spectacle I6 forbids. So a way whose indoor runs cover it
+entirely joins `banded_walks` and says nothing at all. A partly indoor way is
+untouched: the stretch outside is real, it gets a band, and the band deletes
+the stroke by the ordinary rule.
+
+| | Zurich Airport | Montreux |
+|---|---|---|
+| `order.walk_indoors` | 3.318 % → **0.495 %** | 0.093 % → 0.083 % |
+| worst | 42.9 m → 31.0 m | 18.55 m → 18.55 m |
+| `paint.stroke_over_band` | 23.041 % → **21.026 %** | 10.965 % → **10.965 %** |
+
+Both gates exit 0. The residual 0.495 % sits against the road population's
+0.850 % in the same tiles, which is the ordinary facade-clipping band rather
+than a way indoors.
+
+`is_covered` is deliberately left alone. An arcade at grade under its own
+building is real pavement people walk on — Bern's Lauben are 9 km of it — and
+no property in the archive tells that from a way through a wall.
 
 ## 6. `land_use` never reaches the solve
 

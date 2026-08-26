@@ -395,8 +395,18 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // Which pedestrian ways survived as drawn surface. Anything not in here
     // keeps the cartographic stroke that is all it has: the surface model
     // declining to build a band must cost detail, never the feature (I6).
-    let banded_walks: std::collections::HashSet<u64> =
+    let mut banded_walks: std::collections::HashSet<u64> =
         walk_sources.into_iter().filter(|&s| s != 0).collect();
+    // …and the one case where losing the band must cost the feature too. A way
+    // that is wholly **indoors** got no band because it is not on the ground,
+    // not because there was no room for one, so the I6 fallback above does not
+    // apply: its cartographic stroke would be a line drawn through a building's
+    // floor, which is the spectacle I6 exists to forbid. `order.walk_indoors`
+    // is what measures it. Joining `banded_walks` is how a way says its drawn
+    // representation is not a stroke — here that representation is nothing.
+    banded_walks.extend(
+        scene.walks.lines().map(|(l, _)| l).filter(|l| l.is_wholly_indoor()).map(|l| l.source),
+    );
     let ground = Arc::new(ground::derive_draped(
         seniors,
         &walk_bands,

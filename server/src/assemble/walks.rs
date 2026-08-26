@@ -102,7 +102,53 @@ pub struct WalkLine {
     /// (`synth::draped`), which *is* the walkway over that stretch. Banding it
     /// as well would draw a second one lying in the river.
     pub spans: Vec<(f64, f64)>,
+    /// The stretches the way spends **indoors**, as fractions — Overture's
+    /// `is_indoor` (`crate::levels::indoor_runs`).
+    ///
+    /// These are also in [`spans`], because indoors is one of the ways a
+    /// stretch is not on the ground and that is the field the band suppression
+    /// reads. They are kept separately as well because the two are not
+    /// interchangeable *here*: a footbridge is fully spanned too and must keep
+    /// the cartographic stroke that is all it has, while a way that is wholly
+    /// indoors must not — its stroke would be a line drawn through a
+    /// building's floor ([`WalkLine::is_wholly_indoor`]).
+    ///
+    /// [`spans`]: Self::spans
+    pub indoor: Vec<(f64, f64)>,
 }
+
+impl WalkLine {
+    /// Whether the way spends effectively all of its length indoors.
+    ///
+    /// **The one case where losing the band must also cost the feature.** I6's
+    /// fallback — a way the surface model declined keeps its cartographic
+    /// stroke — exists for a band there was no room for. It does not license
+    /// drawing a footway through a terminal: that line *is* the spectacle I6
+    /// forbids, and `order.walk_indoors` is what measures it. A way that is
+    /// only partly indoors is not silenced, because the stretch outside is
+    /// real and gets a band, which deletes the stroke by the ordinary rule.
+    pub fn is_wholly_indoor(&self) -> bool {
+        if self.indoor.is_empty() {
+            return false;
+        }
+        let mut runs: Vec<(f64, f64)> = self.indoor.clone();
+        runs.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("finite fractions"));
+        let (mut covered, mut reach) = (0.0, 0.0);
+        for (s, e) in runs {
+            let s = s.max(reach);
+            if e > s {
+                covered += e - s;
+                reach = e;
+            }
+        }
+        covered >= 1.0 - INDOOR_WHOLE_EPS
+    }
+}
+
+/// How much of a way may lie outside its indoor runs and still count as wholly
+/// indoors. A way is cut at connectors, not at doors, so the last fraction of
+/// a percent is registration noise rather than a stretch of outdoor pavement.
+const INDOOR_WHOLE_EPS: f64 = 0.02;
 
 /// Cuts a pedestrian line into pieces of one subclass each.
 ///
@@ -177,14 +223,8 @@ pub fn split_by_subclass(base: WalkLine, runs: &[SubclassRun]) -> Vec<WalkLine> 
                     at: ((c.at - t0) / width).clamp(0.0, 1.0),
                 })
                 .collect(),
-            spans: base
-                .spans
-                .iter()
-                .filter_map(|&(s, e)| {
-                    let (s, e) = (s.max(t0), e.min(t1));
-                    (e - s > SPAN_EPS).then(|| ((s - t0) / width, (e - t0) / width))
-                })
-                .collect(),
+            spans: clip_runs(&base.spans, t0, t1, width),
+            indoor: clip_runs(&base.indoor, t0, t1, width),
         });
     }
     if out.is_empty() { vec![base] } else { out }
@@ -271,6 +311,16 @@ fn absorb_slivers(
         intervals.dedup_by(|b, a| (a.2 == b.2).then(|| a.1 = b.1).is_some());
     }
     intervals
+}
+
+/// The runs of `runs` that fall inside `[t0, t1]`, renormalised onto it.
+fn clip_runs(runs: &[(f64, f64)], t0: f64, t1: f64, width: f64) -> Vec<(f64, f64)> {
+    runs.iter()
+        .filter_map(|&(s, e)| {
+            let (s, e) = (s.max(t0), e.min(t1));
+            (e - s > SPAN_EPS).then(|| ((s - t0) / width, (e - t0) / width))
+        })
+        .collect()
 }
 
 /// The sub-polyline between two arc positions, with interpolated ends.
@@ -879,6 +929,7 @@ mod tests {
             kind: w.kind,
             tagged: w.tagged,
             crosswalk: w.crosswalk,
+            indoor: w.indoor.clone(),
             connectors: w.connectors.clone(),
             spans: w.spans.clone(),
         }
@@ -893,6 +944,7 @@ mod tests {
             crosswalk: false,
             connectors: Vec::new(),
             spans: Vec::new(),
+            indoor: Vec::new(),
         }
     }
 
@@ -1020,6 +1072,58 @@ mod tests {
         );
         assert_eq!(out.len(), 2);
         assert!(out[1].crosswalk, "a 1 m crossing is still a crossing");
+    }
+
+    /// A way through a terminal gets no band *and* no stroke: the line would
+    /// be drawn through the building's floor, which is the spectacle I6 exists
+    /// to forbid rather than the detail it protects.
+    #[test]
+    fn a_wholly_indoor_way_is_silent() {
+        let mut w = walk(straight(100.0), false);
+        w.indoor = vec![(0.0, 1.0)];
+        assert!(w.is_wholly_indoor());
+        // Reported in pieces, as Overture often maps it.
+        let mut split = walk(straight(100.0), false);
+        split.indoor = vec![(0.0, 0.4), (0.4, 0.75), (0.75, 1.0)];
+        assert!(split.is_wholly_indoor());
+    }
+
+    /// A way only partly indoors keeps its voice: the stretch outside is real,
+    /// it gets a band, and the band deletes the stroke by the ordinary rule.
+    #[test]
+    fn a_partly_indoor_way_is_not_silenced() {
+        let mut w = walk(straight(100.0), false);
+        w.indoor = vec![(0.0, 0.5)];
+        assert!(!w.is_wholly_indoor());
+        // Overlaps must not be double-counted into full coverage.
+        let mut overlapped = walk(straight(100.0), false);
+        overlapped.indoor = vec![(0.0, 0.5), (0.1, 0.6), (0.2, 0.7)];
+        assert!(!overlapped.is_wholly_indoor(), "0.7 of a way is not all of it");
+    }
+
+    /// A footbridge is fully *spanned* and must not be mistaken for silence —
+    /// which is exactly why `indoor` is kept apart from `spans`.
+    #[test]
+    fn a_fully_spanned_footbridge_is_not_indoors() {
+        let mut w = walk(straight(100.0), false);
+        w.spans = vec![(0.0, 1.0)];
+        assert!(!w.is_wholly_indoor());
+    }
+
+    /// A cut piece inherits the indoor runs that fall on it, so silence
+    /// survives `split_by_subclass` and does not leak onto its neighbour.
+    #[test]
+    fn a_cut_keeps_indoor_runs_on_the_piece_they_fall_on() {
+        let mut base = walk(straight(100.0), false);
+        base.indoor = vec![(0.5, 1.0)];
+        base.spans = vec![(0.5, 1.0)];
+        let out = split_by_subclass(
+            base,
+            &[rule("sidewalk", 0.0, 0.5), rule("crosswalk", 0.5, 1.0)],
+        );
+        assert_eq!(out.len(), 2);
+        assert!(out[0].indoor.is_empty());
+        assert!(out[1].is_wholly_indoor(), "the indoor half is wholly indoor once cut");
     }
 
     /// Overlapping rules are last-wins, matching `corridors::resolve_spans`.

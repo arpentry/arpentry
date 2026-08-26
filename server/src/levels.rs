@@ -115,6 +115,59 @@ fn parse_flags_inner(array: &dyn Array, row: usize) -> Option<Vec<LevelRun>> {
     Some(runs)
 }
 
+/// The stretches an Overture `road_flags` cell marks `is_indoor`, as
+/// `[start, end]` fractions of the segment.
+///
+/// **A way inside a building is not on the ground.** [`parse_flags`] reads
+/// only `is_bridge` and `is_tunnel` and says the rest "contribute nothing",
+/// which left an indoor way an ordinary level-0 footway to every stage after
+/// it: it earned a walk band, benched stratum D, and was drawn as pavement
+/// through a terminal's floor. `order.walk_indoors` measured 3.318 % of the
+/// drawn pedestrian surface inside a footprint over Zurich Airport, worst
+/// 42.9 m in.
+///
+/// These are not levels — an indoor way has no ordinal and does not order
+/// itself against anything — so they are returned as bare spans for
+/// `WalkLine::spans`, the list of stretches a way is not banded over. That
+/// field's own doc already names this case: "a passage under a building".
+///
+/// `is_covered` is deliberately **not** here. An arcade at grade under its own
+/// building is real pavement people walk on — Bern's Lauben are 9 km of it —
+/// and no property in the archive tells that from a way through a wall.
+pub fn indoor_runs(array: &dyn Array, row: usize) -> Vec<(f64, f64)> {
+    indoor_inner(array, row).unwrap_or_default()
+}
+
+fn indoor_inner(array: &dyn Array, row: usize) -> Option<Vec<(f64, f64)>> {
+    if array.is_null(row) {
+        return Some(Vec::new());
+    }
+    let list = array.as_any().downcast_ref::<ListArray>()?;
+    let rules = list.value(row);
+    let st = rules.as_any().downcast_ref::<StructArray>()?;
+    let values = st.column_by_name("values")?.as_any().downcast_ref::<ListArray>()?;
+    let between = st.column_by_name("between")?.as_any().downcast_ref::<ListArray>()?;
+
+    let mut out = Vec::new();
+    for i in 0..st.len() {
+        if values.is_null(i) {
+            continue;
+        }
+        let flags = values.value(i);
+        let flags = flags.as_any().downcast_ref::<StringArray>()?;
+        let indoor = (0..flags.len()).any(|k| !flags.is_null(k) && flags.value(k) == "is_indoor");
+        if !indoor {
+            continue;
+        }
+        // Reuse the level parser's span reading so an indoor run and a bridge
+        // run cannot disagree about what `between` means.
+        let mut one = Vec::new();
+        push_run(&mut one, between, i, 1);
+        out.extend(one.into_iter().map(|r| (r.start, r.end)));
+    }
+    Some(out)
+}
+
 /// Appends the run for rule `i` at `level`, reading its `between` span — a
 /// missing one means the rule covers the whole segment. Degenerate spans are
 /// dropped.

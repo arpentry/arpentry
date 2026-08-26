@@ -116,28 +116,33 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
                                 tagged: subclass == Some("sidewalk"),
                                 crosswalk: subclass == Some("crosswalk"),
                                 connectors: f.connectors.clone(),
+                                // The stretches this way is not banded over:
+                                // the structures it carries, and — the same
+                                // fact for a different reason — the stretches
+                                // it spends **indoors**. A way through a
+                                // terminal is no more on the ground than a
+                                // footbridge is, and `order.walk_indoors`
+                                // measured what banding it anyway costs:
+                                // 3.318 % of the drawn pedestrian surface
+                                // inside a footprint over Zurich Airport,
+                                // worst 42.9 m in.
                                 spans: f
                                     .level_runs
                                     .iter()
                                     .filter(|r| r.level != 0)
                                     .map(|r| (r.start, r.end))
+                                    .chain(f.indoor_runs.iter().copied())
                                     .collect(),
+                                indoor: f.indoor_runs.clone(),
                             };
-                            // **The crossing runs are held back, and the
-                            // reason is measured.** Cutting a crossing out of
-                            // a way is right — `synth::walkway` does not band
-                            // a crosswalk, it registers its paint — but it
-                            // leaves the pavement either side ending at a
-                            // kerb, and a band end there reads as cross-fall
-                            // until the kerb stub is seated on the band it
-                            // continues (the open item in `synth::walkway`).
-                            // Measured on the Montreux zone against a control:
-                            // the sidewalk runs alone carry +72 of the +75
-                            // attached ways and hold `slope.walk_crossfall` at
-                            // a verdict of "same" (2.481 → 2.545 %); adding
-                            // the crossing runs buys 3 more ways and tips the
-                            // same metric to REGRESSED (2.561 %). Take the
-                            // crossings when the stub lands, not before.
+                            // Crossing runs included: cutting a crossing out
+                            // of a way is right — `synth::walkway` does not
+                            // band a crosswalk, it registers its paint — and
+                            // it became free once `walkway::seat_stubs` sat
+                            // the kerb stub on the band it continues. Before
+                            // that it cost `slope.walk_crossfall` 2.545 →
+                            // 2.561 % against a 2.481 % control; seated, the
+                            // same cut reads 2.469 %.
                             pedestrians
                                 .extend(walks::split_by_subclass(whole, &f.subclass_runs));
                         }
