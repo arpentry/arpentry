@@ -115,6 +115,7 @@ fn encode_synth(synth: Synth) -> [u8; 9] {
             (2, corridor, matches!(kind, crate::scene::SpanKind::Tunnel) as u32)
         }
         Synth::DrapedDeck => (3, 0, 0),
+        Synth::DrapedBand => (4, 0, 0),
     };
     let mut out = [0u8; 9];
     out[0] = tag;
@@ -213,6 +214,7 @@ impl<'a> Reader<'a> {
                 },
             }),
             3 => Ok(Synth::DrapedDeck),
+            4 => Ok(Synth::DrapedBand),
             other => Err(RecordError::BadSynth(other)),
         }
     }
@@ -267,6 +269,8 @@ mod tests {
             Synth::Road { corridor: Some(7), deck: true },
             Synth::Structure { corridor: 3, kind: SpanKind::Bridge },
             Synth::Structure { corridor: 9, kind: SpanKind::Tunnel },
+            Synth::DrapedDeck,
+            Synth::DrapedBand,
         ] {
             let f = EncoderFeature {
                 id: 1,

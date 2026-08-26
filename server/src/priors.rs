@@ -186,7 +186,7 @@ pub struct Prior {
 /// enters the unioned surface (`Surface::None` keeps a cartographic stroke and
 /// nothing else) and *which region* it lands in — ballast and asphalt are
 /// separate regions with separate materials, never one merged slab. What stays
-/// keyed on `Asphalt` alone: markings, junction plates, casing paint — the
+/// keyed on `Asphalt` alone: markings, junction plates, rim paint — the
 /// road-furniture the ladder paints on asphalt and nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Surface {
@@ -718,10 +718,10 @@ pub fn quantize_walk_width(width_m: f64) -> f64 {
 /// exactly what two regions always cost here: the boolean keeps *touching*
 /// shapes apart, so a footway running into a sidewalk leaves a hairline; the
 /// junior region is subtracted under the senior one, so the footway is bitten
-/// off where it overlaps; and each carries its own [`PAVE_RIM_M`] casing, so
-/// the two abut as a double dark seam. One region unions instead of
-/// subtracting, and a person walks from path to pavement without the drawing
-/// announcing a change of object.
+/// off where it overlaps; and each carries its own [`PAVE_RIM_M`] rim, so at
+/// the coarse rungs the two abut as a double fade. One region unions instead
+/// of subtracting, and a person walks from path to pavement without the
+/// drawing announcing a change of object.
 ///
 /// This is the same call `road_surface` already made for carriageways: "all
 /// roads share a colour at detail zooms; class distinction now comes from
@@ -829,8 +829,14 @@ pub const CURB_RETURN_M: f64 = 3.0;
 
 /// Width of the antialiasing rim inset from the paved boundary, in metres. The
 /// strip that carries `edge_across` from the silhouette (127) to the interior
-/// (0), and with it the darker casing tone. Wide enough to hold the ~1 px fade
-/// at a grazing angle, narrow enough to read as a kerb line rather than a band.
+/// (0). Wide enough to hold the ~1 px fade at a grazing angle, narrow enough
+/// that the strip costs a narrow band little of its area.
+///
+/// **The rim is not an outline.** It is emitted under its surface's own class
+/// and takes its colour, so a road, a pavement and a path each draw as one
+/// tone (`pipeline::add_road_surface`). It used to be toned darker, which on a
+/// 2 m path put 42 % of the drawn area into a border — a line with a fill
+/// rather than a surface.
 pub const PAVE_RIM_M: f64 = 0.35;
 
 /// Coarsest the paved boundary may be simplified, in metres — a cap *on top of*
@@ -1191,7 +1197,7 @@ pub const WALK_ATTACH_MIN_M: f64 = 10.0;
 pub const WALK_WIDTH_M: f64 = 2.0;
 
 /// Narrowest walkway band worth drawing, in metres. Under this the band is a
-/// sliver whose casing rim is most of its area, and a way squeezed to it is
+/// sliver whose rim is most of its area, and a way squeezed to it is
 /// telling you there is no sidewalk there.
 pub const WALK_MIN_WIDTH_M: f64 = 0.8;
 
@@ -1499,7 +1505,7 @@ mod tests {
     fn independent_rail_lays_ballast_and_street_rail_lays_nothing() {
         // A railway on its own formation draws a ballast band — the same
         // surface machinery a carriageway gets, its own material — and it is
-        // still not asphalt: no markings, no junction plates, no casing.
+        // still not asphalt: no markings, no junction plates, no rim.
         // Street-running rail lies on someone else's carriageway and draws
         // nothing of its own.
         for c in [RailClass::StandardGauge, RailClass::NarrowGauge, RailClass::BroadGauge,

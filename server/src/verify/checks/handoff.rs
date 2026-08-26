@@ -49,11 +49,11 @@
 //!
 //! The measurement trap that decides whether this check means anything. The
 //! `road_surface` mesh is an **inset** of the paved region: the outer
-//! [`crate::priors::PAVE_RIM_M`] is a separate `road_casing` feature
+//! [`crate::priors::PAVE_RIM_M`] is a separate `road_rim` feature
 //! (`synth::pave_mesh`). Marching to the interior alone reports the rim's width
 //! as bare ground at every abutment in the extract — a floor of 0.35 m that no
 //! change could ever remove. So the march *starts* at the interior's edge but
-//! counts the casing as surface, and what it reports is the distance between
+//! counts the rim as surface, and what it reports is the distance between
 //! the last drawn surface and the first drawn deck.
 //!
 //! Bores are deliberately outside the population: a bore's drawn top is its
@@ -150,7 +150,7 @@ struct Handoffs {
     bare_worst: Worst,
     step: Dist,
     step_worst: Worst,
-    /// One per handoff: 1 where a casing rim is drawn across the joint, 0 where
+    /// One per handoff: 1 where a rim is drawn across the joint, 0 where
     /// the surface runs through it.
     kerb: Dist,
     kerb_worst: Worst,
@@ -248,8 +248,8 @@ impl Check for Handoff {
         if decks.is_empty() {
             return;
         }
-        // The drawn at-grade surface: the interior band welded to its casing
-        // rim. The interior alone is an inset of the true silhouette, and a
+        // The drawn at-grade surface: the interior band welded to its rim.
+        // The interior alone is an inset of the true silhouette, and a
         // march that stopped at it would report `PAVE_RIM_M` of bare ground at
         // every abutment ever built. Split by modality, like the decks: the
         // surface that continues a ballast band is ballast, and only ballast.
@@ -261,7 +261,7 @@ impl Check for Handoff {
         let paved_of = |rail: bool| -> Vec<&SurfaceMesh> {
             tile.roads
                 .iter()
-                .filter(|m| m.is_pavement() || m.is_casing())
+                .filter(|m| m.is_pavement() || m.is_rim())
                 .filter(|m| m.class.starts_with("rail") == rail)
                 .map(|m| &m.mesh)
                 .collect()
@@ -270,14 +270,20 @@ impl Check for Handoff {
         if paved_by.iter().all(|p| p.is_empty()) {
             return;
         }
-        let casings_of = |rail: bool| -> Vec<&SurfaceMesh> {
+        // **The rims that draw something of their own.** A rim takes its
+        // surface's own colour (`pipeline::add_road_surface`), so the only
+        // thing it can put across a joint is its fade — and it carries one only
+        // where the ground under the asphalt is not cut away. A rim without a
+        // fade *is* the surface there, and counting it would report a border
+        // that nothing draws.
+        let rims_of = |rail: bool| -> Vec<&SurfaceMesh> {
             tile.roads
                 .iter()
-                .filter(|m| m.is_casing() && m.class.starts_with("rail") == rail)
+                .filter(|m| m.is_rim() && m.fades && m.class.starts_with("rail") == rail)
                 .map(|m| &m.mesh)
                 .collect()
         };
-        let casings_by: [Vec<&SurfaceMesh>; 2] = [casings_of(false), casings_of(true)];
+        let rims_by: [Vec<&SurfaceMesh>; 2] = [rims_of(false), rims_of(true)];
         self.0.decks += decks.len();
         self.0.decks_named += tile
             .roads
@@ -412,7 +418,7 @@ impl Check for Handoff {
                 // inset edge, which is where this march started, and the band's
                 // true silhouette.
                 let rim = PAVE_RIM_M * KERB_PROBE_FRAC;
-                let kerb = casings_by[ballast as usize]
+                let kerb = rims_by[ballast as usize]
                     .iter()
                     .any(|m| m.height_at(px + ux * rim, py + uy * rim).is_some());
                 self.0.kerb.push(if kerb { 1.0 } else { 0.0 });
@@ -477,8 +483,8 @@ impl Check for Handoff {
              gives. \
              \
              The band's *interior* mesh is an inset of the paved region and the outer \
-             {PAVE_RIM_M:.2} m is the separate casing rim, so the march anchors on the interior \
-             edge but counts interior and casing alike as surface: what is reported is the \
+             {PAVE_RIM_M:.2} m is the separate rim, so the march anchors on the interior \
+             edge but counts interior and rim alike as surface: what is reported is the \
              distance between the last drawn surface and the first drawn deck. Only surface \
              within {SLAB_MAX_M:.1} m of the edge's own height, and of the band's own modality, \
              counts as that band continuing — a region metres below is a road passing under the \
@@ -558,14 +564,16 @@ impl Check for Handoff {
                 title: "Kerb line drawn across the carriageway at a bridge's end".into(),
                 population,
                 detail: format!(
-                    "One per handoff: 1 where a `road_casing` rim covers the joint, 0 where the \
+                    "One per handoff: 1 where a *fading* rim covers the joint, 0 where the \
                      surface runs through it — so the `over` column is the share of bridge ends \
                      wearing a kerb line. The rim's job is to edge the paved surface against the \
                      ground it stops at, and at a handoff it stops at nothing: the road continues \
-                     onto the deck, and a rim there draws a {PAVE_RIM_M:.2} m line in the casing's \
-                     darker tone straight across the carriageway a third of a metre before the \
-                     bridge. The deck carries no matching rim, so the joint reads as a border \
-                     rather than as a road. Probed at {KERB_PROBE_FRAC:.1} of the rim width \
+                     onto the deck, and a fading rim there draws a {PAVE_RIM_M:.2} m strip of \
+                     half-alpha carriageway straight across the road a third of a metre before \
+                     the bridge. The deck carries no matching rim, so the joint reads as a border \
+                     rather than as a road. Only the fade counts: a rim takes its surface's own \
+                     colour, so where the terrain hole makes the fade unnecessary the rim over a \
+                     joint is simply the road. Probed at {KERB_PROBE_FRAC:.1} of the rim width \
                      outside the interior mesh's inset edge, which is where the strip is."
                 ),
                 sense: Sense::HigherIsWorse,
@@ -613,7 +621,7 @@ mod tests {
             vec![0, 1, 2, 0, 2, 3],
         )
         .expect("a quad meshes");
-        RoadMesh { class: class.to_string(), level, band: String::new(), mesh }
+        RoadMesh { class: class.to_string(), level, band: String::new(), fades: false, mesh }
     }
 
     fn measure(roads: Vec<RoadMesh>) -> (Option<f64>, Option<f64>, u64) {
@@ -678,7 +686,7 @@ mod tests {
             vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
         )
         .expect("a slab meshes");
-        RoadMesh { class: class.to_string(), level, band: String::new(), mesh }
+        RoadMesh { class: class.to_string(), level, band: String::new(), fades: false, mesh }
     }
 
     #[test]
@@ -720,21 +728,21 @@ mod tests {
     }
 
     #[test]
-    fn the_casing_rim_is_surface_and_not_a_gap() {
+    fn the_rim_is_surface_and_not_a_gap() {
         // The interior band stops a rim short of the true edge, exactly as
-        // `synth::pave_mesh` emits it. Counting the casing as bare ground would
+        // `synth::pave_mesh` emits it. Counting the rim as bare ground would
         // put a floor of PAVE_RIM_M under every abutment in the archive.
         let edge = 0.5;
         let inset = edge - PAVE_RIM_M / mx();
         let (bare, _, n) = measure(vec![
             quad("road_surface", 0, 0.4, inset, 400.0),
-            quad("road_casing", 0, inset, edge, 400.0),
+            quad("road_rim", 0, inset, edge, 400.0),
             quad("residential", 1, edge, 0.6, 400.0),
         ]);
         assert!(n > 0, "the abutment was not paired");
         assert!(
             bare.expect("bare") <= BARE_M,
-            "the casing rim was counted as bare ground: {bare:?}"
+            "the rim was counted as bare ground: {bare:?}"
         );
     }
 }

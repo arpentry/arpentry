@@ -119,6 +119,13 @@ const REACH_FINE_M: f64 = 0.05;
 /// and 592 m under: a tunnel span's own paint riding the bore.
 const BURIED_M: f64 = 1.0;
 
+/// The classes drawn as a pedestrian band from [`WALK_SURFACE_MIN_ZOOM`]
+/// ([`crate::priors::earns_walk_band`], read back from the archive's `class`
+/// alone). Restated here rather than derived, so a change to what earns a band
+/// cannot silently move the population this metric watches.
+const BANDED_CLASSES: [&str; 6] =
+    ["footway", "path", "steps", "cycleway", "pedestrian", "track"];
+
 pub struct Paint {
     offside: Dist,
     offside_worst: Worst,
@@ -126,6 +133,9 @@ pub struct Paint {
     inset_worst: Worst,
     buried: Dist,
     buried_worst: Worst,
+    doubled: Dist,
+    doubled_worst: Worst,
+    doubled_seen: bool,
 }
 
 impl Paint {
@@ -137,6 +147,66 @@ impl Paint {
             inset_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             buried: Dist::metres(),
             buried_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            doubled: Dist::new(0.0, 1.0),
+            doubled_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            doubled_seen: false,
+        }
+    }
+
+    /// Every owned vertex of every at-grade pedestrian stroke, scored 1 where a
+    /// drawn pedestrian band already covers it.
+    ///
+    /// A way the walkway model banded has its cartographic stroke deleted at
+    /// these zooms, because the band *is* the way there
+    /// (`pipeline::paves_via_walkway`). A stroke standing on a band is that
+    /// deletion having failed, and the failure is silent: the line renders in
+    /// its class colour on top of its own surface, which looks like a way that
+    /// is merely styled oddly rather than like a bug.
+    ///
+    /// It was silent for exactly that reason. The deletion test used to read
+    /// two properties phase 1 stamped on the feature, and `profile::profile`
+    /// builds a tile's properties from a fixed whitelist of *source*
+    /// attributes — so the stamps never arrived and the test could never fire.
+    /// Every banded way in the archive drew twice: 351 km of stroke at z16 on
+    /// the Montreux extract, 82 % of it directly over its own band.
+    fn visit_doubled(&mut self, tile: &TileScene) {
+        let bands: Vec<&SurfaceMesh> = tile
+            .roads
+            .iter()
+            .filter(|r| r.level == 0 && is_walk_material(&r.class))
+            .map(|r| &r.mesh)
+            .collect();
+        if bands.is_empty() {
+            return;
+        }
+        self.doubled_seen = true;
+        for line in tile
+            .lines
+            .iter()
+            .filter(|l| l.level == 0 && BANDED_CLASSES.contains(&l.class.as_str()))
+        {
+            for part in &line.parts {
+                for &(px, py, _) in part {
+                    if !tile.owns(px, py) {
+                        continue;
+                    }
+                    let on = bands.iter().any(|m| m.height_at(px, py).is_some());
+                    self.doubled.push(if on { 1.0 } else { 0.0 });
+                    if on {
+                        let (lon, lat) = tile.lonlat(px, py);
+                        self.doubled_worst.offer(Offender {
+                            lon,
+                            lat,
+                            zoom: tile.z,
+                            value: 1.0,
+                            note: format!(
+                                "a {} stroke is drawn over the pedestrian band that replaced it",
+                                line.class
+                            ),
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -179,19 +249,20 @@ impl Paint {
 impl Check for Paint {
     fn visit(&mut self, tile: &TileScene, _opt: &Options) {
         self.visit_buried(tile);
+        self.visit_doubled(tile);
         let marks: Vec<_> = tile.lines.iter().filter(|l| l.class == "marking").collect();
         if marks.is_empty() {
             return;
         }
         // The at-grade carriageway is two features — an interior triangulated to
-        // an inset of the silhouette, and the casing rim that covers the strip
+        // an inset of the silhouette, and the rim that covers the strip
         // out to it (`synth::pave_mesh`) — so both are needed before anything is
         // asked whether it is "on the asphalt", and the silhouette has to be
         // taken across the welded pair rather than from either alone.
         let paved: Vec<&SurfaceMesh> = tile
             .roads
             .iter()
-            .filter(|m| m.is_pavement() || m.is_casing())
+            .filter(|m| m.is_pavement() || m.is_rim())
             .map(|m| &m.mesh)
             .collect();
         if paved.is_empty() {
@@ -284,7 +355,7 @@ impl Check for Paint {
                 population: format!(
                     "Every vertex of every `marking` stroke at least {BORDER_MARGIN_M:.0} m \
                      inside the tile proper, at a zoom that draws the road surface. The drawn \
-                     carriageway is the `road_surface` interior welded to its `road_casing` rim \
+                     carriageway is the `road_surface` interior welded to its `road_rim` rim \
                      — the interior alone is an inset of the true silhouette, and measuring \
                      against it would report the rim's width as a defect. Vertices riding a deck \
                      or a bore are excluded: their cross-section is the structure's, and a swept \
@@ -356,13 +427,24 @@ impl Check for Paint {
                 title: "Painted stroke running under the drawn ground".into(),
                 population: "Every vertex the tile owns of every transportation stroke at \
                      level ≤ 0 — the road and rail fill strokes of the pre-surface rungs, \
-                     markings, rail heads, and every draped path — against the drawn terrain \
-                     over it. Positive levels are excluded: a bridge stroke rides its deck \
-                     above the ground by design, and the deck itself answers to the clearance \
-                     checks. A vertex with no terrain over it contributes nothing — the \
-                     pavement hole and the portal cuts are exactly where a stroke is supposed \
-                     to have no drawn ground overhead, and a zoom with no terrain mesh has \
-                     nothing to measure against."
+                     markings, rail heads, and whatever draped ways still stroke — against \
+                     the drawn terrain over it. Positive levels are excluded: a bridge \
+                     stroke rides its deck above the ground by design, and the deck itself \
+                     answers to the clearance checks. A vertex with no terrain over it \
+                     contributes nothing — the pavement hole and the portal cuts are exactly \
+                     where a stroke is supposed to have no drawn ground overhead, and a zoom \
+                     with no terrain mesh has nothing to measure against.\n\n\
+                     **The population thins as the surface model grows, and the rate is not \
+                     comparable across that.** Each class the drawing promotes from a stroke \
+                     to a band leaves here: the carriageways at \
+                     `ROAD_SURFACE_MIN_ZOOM`, then the pedestrian ways at \
+                     `WALK_SURFACE_MIN_ZOOM` — which alone took 68 km of footway, path, track \
+                     and steps off the Montreux zone's z16 tally, 39 % of the samples, \
+                     without moving the worst by a millimetre. What is left is denser in \
+                     genuine paint, so the rate rises on an unchanged defect. Those ways are \
+                     not unmeasured: a band's contact with the ground is \
+                     `contact.walk_rim` and `contact.sidewalk_grade`, which is where the \
+                     samples went."
                     .into(),
                 detail: format!(
                     "How far under the drawn terrain the stroke sits. The client strokes \
@@ -392,8 +474,57 @@ impl Check for Paint {
                 dist: self.buried,
                 worst: self.buried_worst.into_vec(),
             },
+            Metric {
+                id: "paint.stroke_over_band".into(),
+                invariant: Invariant::I1,
+                title: "Cartographic stroke drawn over the band that replaced it".into(),
+                population: format!(
+                    "Every owned vertex of every at-grade stroke whose class is drawn as a \
+                     pedestrian band ({}), on a tile that draws at least one such band. The \
+                     sample is 1 where a band covers the vertex and 0 where it does not, so \
+                     the `over` column is the share of pedestrian stroke standing on its own \
+                     surface. Tiles with no band contribute nothing: below \
+                     `WALK_SURFACE_MIN_ZOOM` the stroke is the only thing a pedestrian way \
+                     has and drawing it is correct.",
+                    BANDED_CLASSES.join(", ")
+                ),
+                detail: "A way the walkway model banded has its stroke deleted at the walk \
+                     zooms, because the band is the way there — so a stroke over a band is a \
+                     line painted on its own surface, in the class colour, at a constant \
+                     screen width that ignores the surface underneath. It fails silently: two \
+                     coats of the same object read as odd styling rather than as a bug, which \
+                     is how the deletion stayed broken.\n\n\
+                     **The floor is not zero, and what sets it is the join.** A way that \
+                     survives here is one the model did *not* band — a way the seat had no \
+                     room for, or the ground fit declined — and `banded_walks` is per source, \
+                     so such a way has no band anywhere along it. Its own vertices therefore \
+                     score 0 except where it *meets* a way that was banded: the last vertex or \
+                     two of an unbanded path standing on the pavement it runs into. Measured \
+                     on the Montreux zone: 46 of 494 vertices, over 26 of the 178 still-stroked \
+                     features, **37 of the 46 within two vertices of a part end** and the hit \
+                     runs a median of 1 vertex long (the longest, 8). That residue scales with \
+                     the number of joins, not with length, so read the count rather than the \
+                     rate — the population shrinks as the model bands more, which inflates the \
+                     share a fixed residue represents. A reading that grows in the *middle* of \
+                     features is the real defect coming back."
+                    .into(),
+                sense: Sense::HigherIsWorse,
+                threshold: 0.5,
+                skipped: (!self.doubled_seen).then(|| {
+                    "no tile at this zoom draws a pedestrian band — below \
+                     WALK_SURFACE_MIN_ZOOM the stroke is the pedestrian way"
+                        .to_string()
+                }),
+                dist: self.doubled,
+                worst: self.doubled_worst.into_vec(),
+            },
         ]
     }
+}
+
+/// Whether a class names drawn pedestrian pavement — a band, or its rim.
+fn is_walk_material(class: &str) -> bool {
+    matches!(class, "walk_surface" | "walk_rim" | "path_surface" | "path_rim")
 }
 
 /// The silhouette of a set of meshes: every edge no other triangle in the set
@@ -513,7 +644,7 @@ mod tests {
         RoadMesh {
             class: class.into(),
             level: 0,
-            band: String::new(),
+            band: String::new(), fades: false,
             mesh: SurfaceMesh::from_parts(x, y, z, vec![0, 1, 2, 0, 2, 3]).expect("a slab"),
         }
     }

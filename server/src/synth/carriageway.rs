@@ -146,7 +146,7 @@ pub struct CarriagewayModel {
 /// It exists so the mesher can tell that piece of boundary apart from a kerb.
 /// The two are opposite situations wearing the same shape: a kerb is where the
 /// paved surface *ends* and the ground beside it begins, which is what the
-/// casing rim is drawn to edge; a handover is where the surface continues onto
+/// rim is drawn to edge; a handover is where the surface continues onto
 /// a deck, and edging it draws a line straight across the carriageway a few
 /// tenths of a metre before the bridge.
 #[derive(Debug, Clone, Copy)]

@@ -1,5 +1,6 @@
 //! Meshing the unioned road surface — one tile's asphalt as an opaque interior
-//! plus an antialiased casing rim (docs/ROADS.md §6.1, P2).
+//! plus the antialiased rim that carries its silhouette (docs/ROADS.md §6.1,
+//! P2).
 //!
 //! [`crate::synth::pavement`] produces the paved region as rings; this turns one
 //! tile's share of it into [`TerrainMesh`]es. Three things have to be true at
@@ -59,7 +60,7 @@ struct TaggedRing {
 }
 
 /// The paved surface of one tile at one level: the opaque interior and the rim
-/// that antialiases and casings its silhouette.
+/// that carries its silhouette.
 pub struct PavedMesh {
     pub level: i64,
     /// The region's material ([`crate::priors::Surface`]) — asphalt or
@@ -67,7 +68,15 @@ pub struct PavedMesh {
     /// it the style entry that colours it.
     pub material: crate::priors::Surface,
     pub surface: TerrainMesh,
-    pub casing: Option<TerrainMesh>,
+    /// The strip between the interior's inset edge and the true silhouette. Its
+    /// own mesh rather than part of `surface` for one reason: it carries an
+    /// across-coordinate and the interior does not, and an empty `edge_across`
+    /// means "no analytic AA" for a whole mesh. It is emitted under a class of
+    /// its own (`road_rim`, `walk_rim`, …) so the checks can name the strip,
+    /// and the style paints that class in its surface's own colour — it is the
+    /// outer [`priors::PAVE_RIM_M`] of the same pavement, not a line drawn
+    /// around it.
+    pub rim: Option<TerrainMesh>,
     /// A point inside the region, for the feature's anchor geometry.
     pub anchor: Coord,
     /// The wall between the kerb and the ground beside it, where the two are
@@ -183,12 +192,12 @@ pub fn tile_meshes(
                 t.elapsed()
             );
         }
-        if let Some((surface, casing, region)) = meshed {
+        if let Some((surface, rim, region)) = meshed {
             out.push(PavedMesh {
                 level: ls.level,
                 material: ls.surface,
                 surface,
-                casing,
+                rim,
                 anchor,
                 region,
                 apron,
@@ -457,16 +466,17 @@ fn mesh_rings(
     // the rim is what fades. An empty `edge_across` means "no analytic AA" to
     // the decoder, which is exactly right for the interior.
     let mut surface = TerrainMesh { x, y, z: zs, indices, normals, edge_across: Vec::new() };
-    // The rim splits by what its edge actually bounds. A kerb edge gets the
-    // casing: the surface ends there, and the darker tone plus the analytic
-    // fade are what edge it against the ground. A **handover** edge — the cut
-    // where a deck takes over (`synth::carriageway::Handover`) — bounds nothing:
-    // the road carries straight on across it, and edging it draws a kerb line
-    // over the carriageway a third of a metre before the bridge. Those quads
-    // keep their geometry (the interior is inset and something must cover the
-    // strip) and join the *surface*, which is opaque, untoned and carries no
-    // across-coordinate, so the asphalt runs into the deck unbroken.
-    let (casing, handover) = build_rim(rings, &insets, bounds, up, hole, height, handovers);
+    // The rim splits by what its edge actually bounds. A kerb edge keeps the
+    // analytic fade: the surface ends there, and fading the outer pixel into
+    // the ground is what edges it where MSAA cannot (a coplanar boundary with
+    // no silhouette). A **handover** edge — the cut where a deck takes over
+    // (`synth::carriageway::Handover`) — bounds nothing: the road carries
+    // straight on across it, and fading it draws a seam over the carriageway a
+    // third of a metre before the bridge. Those quads keep their geometry (the
+    // interior is inset and something must cover the strip) and join the
+    // *surface*, which is opaque and carries no across-coordinate, so the
+    // asphalt runs into the deck unbroken.
+    let (rim, handover) = build_rim(rings, &insets, bounds, up, hole, height, handovers);
     if let Some(h) = handover {
         append_mesh(&mut surface, h);
     }
@@ -490,7 +500,7 @@ fn mesh_rings(
                 .collect()
         })
         .collect();
-    Some((surface, casing, Region::new(sil)))
+    Some((surface, rim, Region::new(sil)))
 }
 
 /// Splits every ring edge where it crosses a line of the terrain lattice, so no
@@ -793,7 +803,7 @@ fn is_handover(a: Coord, b: Coord, handovers: &[Handover], m_lon: f64) -> bool {
 /// The rim: one quad per non-cut boundary edge, `edge_across` 127 on the
 /// silhouette pair and 0 on the inset pair, so the client fades the outer pixel.
 ///
-/// Returns `(casing, handover)` — the kerb rim, and the quads on handover cuts,
+/// Returns `(rim, handover)` — the kerb rim, and the quads on handover cuts,
 /// which the caller folds into the opaque surface instead. Either is `None`
 /// when nothing of that kind was built.
 #[allow(clippy::too_many_arguments)]
@@ -832,7 +842,7 @@ fn build_rim(
             //
             // At a sharp spike the mitered inset can overshoot past the edge it
             // belongs to, folding the quad into a bowtie — and drawn in the
-            // casing's darker tone a bowtie reads as a small dark spur poking out
+            // surface a bowtie reads as a small spur poking out
             // of the asphalt. Checking the offset geometry in degrees is not
             // enough: quantization to u16 can collapse a thin quad or flip its
             // orientation on its own, so a quad that is well-formed in metres can
@@ -865,11 +875,13 @@ fn build_rim(
             // in the map. With the hole the asphalt boundary and the terrain
             // boundary are the same edge at the same heights, drawn by two
             // adjacent opaque meshes, which MSAA resolves per-sample for free.
-            // So the rim keeps its geometry and its darker tone and loses only
-            // the sub-pixel fade (docs/ROADS.md §6.1).
+            // So the rim keeps its geometry and loses only the sub-pixel fade
+            // (docs/ROADS.md §6.1) — which at the detail rungs leaves it
+            // indistinguishable from the interior it continues, exactly as it
+            // should be: it is the outer third of a metre of the same pavement.
             let across = if hole { [0i8; 4] } else { [127i8, 127, 0, 0] };
             // A handover quad goes to the surface instead, and there it is
-            // interior: opaque, no across-coordinate, no tone of its own.
+            // interior: opaque, with no across-coordinate to fade.
             let handover = is_handover(r.pts[k], r.pts[k1], handovers, m_lon);
             let out = if handover { &mut hand } else { &mut mesh };
             let base = out.x.len() as u32;
@@ -879,7 +891,7 @@ fn build_rim(
                 // Sampled at the *rounded* position, which is where the vertex
                 // is emitted and where the interior mesh samples its own. The
                 // two used to disagree by a sub-quantum amount, an invisible
-                // hairline between casing and surface — and once the terrain
+                // hairline between rim and interior — and once the terrain
                 // seams to these heights it would stop being invisible.
                 out.z.push(height(
                     project::dequantize_x(qc.0 as u16, bounds),
@@ -973,11 +985,11 @@ mod tests {
     fn an_interior_ring_meshes_watertight_and_inside_itself() {
         let b = bounds();
         let ring = tagged(box_ring(&b, 0.25), &b, true);
-        let (surface, casing, _) =
+        let (surface, rim, _) =
             mesh_rings(&[ring], &b, 1, false, &[], &mut |_, _| 1000).expect("a mesh");
         assert!(!surface.indices.is_empty());
         assert_eq!(surface.indices.len() % 3, 0);
-        assert!(casing.is_some(), "an interior ring gets a full rim");
+        assert!(rim.is_some(), "an interior ring gets a full rim");
 
         // Watertight: no edge shared by more than two faces (the census
         // `terrain_cdt` uses).
@@ -1057,10 +1069,10 @@ mod tests {
     /// A boundary edge on a handover cut carries no kerb line: the road runs
     /// straight on across it onto the deck. The quad still has to be *drawn* —
     /// the interior is inset and something must cover the strip — so it moves
-    /// into the opaque surface instead of into the casing, and it brings no
+    /// into the opaque interior instead of into the rim, and it brings no
     /// across-coordinate with it.
     #[test]
-    fn a_handover_edge_joins_the_surface_instead_of_the_casing() {
+    fn a_handover_edge_joins_the_surface_instead_of_the_rim() {
         let b = bounds();
         let ring = box_ring(&b, 0.25);
         // The cut runs along the ring's southern edge, a little past each end,
@@ -1074,18 +1086,18 @@ mod tests {
         let tagged_ring = tagged(ring, &b, true);
 
         let plain = mesh_rings(&[tagged(box_ring(&b, 0.25), &b, true)], &b, 1, true, &[], &mut |_, _| 0);
-        let (plain_surface, plain_casing, _) = plain.expect("a mesh");
+        let (plain_surface, plain_rim, _) = plain.expect("a mesh");
         let handovers = [Handover { a: cut[0], b: cut[1] }];
-        let (surface, casing, _) =
+        let (surface, rim, _) =
             mesh_rings(&[tagged_ring], &b, 1, true, &handovers, &mut |_, _| 0).expect("a mesh");
-        let casing = casing.expect("three kerb edges still get a rim");
-        let plain_casing = plain_casing.expect("a rim on all four edges");
+        let rim = rim.expect("three kerb edges still get a rim");
+        let plain_rim = plain_rim.expect("a rim on all four edges");
 
-        // One of the four rim quads left the casing…
+        // One of the four rim quads left the rim mesh…
         assert_eq!(
-            plain_casing.indices.len() - casing.indices.len(),
+            plain_rim.indices.len() - rim.indices.len(),
             6,
-            "exactly one quad should have left the casing"
+            "exactly one quad should have left the rim"
         );
         // …and arrived in the surface, which has grown by that quad and still
         // carries no analytic AA.
@@ -1100,10 +1112,10 @@ mod tests {
 
     /// A cut is only the cut where the boundary actually runs *along* it. The
     /// kerb edges meeting it at its two corners cross it at a right angle, and
-    /// stripping their casing would take the kerb line off the road for half a
+    /// stripping their rim would take the fade off the road edge for half a
     /// carriageway either side of every bridge.
     #[test]
-    fn a_kerb_crossing_the_cut_keeps_its_casing() {
+    fn a_kerb_crossing_the_cut_keeps_its_rim() {
         let b = bounds();
         let ring = box_ring(&b, 0.25);
         // A cut through the ring's south-west corner, running north-south:
@@ -1183,10 +1195,10 @@ mod tests {
     fn the_rim_carries_across_only_on_the_silhouette() {
         let b = bounds();
         let ring = tagged(box_ring(&b, 0.25), &b, true);
-        let (surface, casing, _) = mesh_rings(&[ring], &b, 1, false, &[], &mut |_, _| 0).expect("a mesh");
+        let (surface, rim, _) = mesh_rings(&[ring], &b, 1, false, &[], &mut |_, _| 0).expect("a mesh");
         // The interior declares no across-coordinate at all: it is opaque.
         assert!(surface.edge_across.is_empty());
-        let rim = casing.expect("a rim");
+        let rim = rim.expect("a rim");
         assert_eq!(rim.edge_across.len(), rim.x.len());
         let outer = rim.edge_across.iter().filter(|&&a| a == 127).count();
         let inner = rim.edge_across.iter().filter(|&&a| a == 0).count();
@@ -1208,8 +1220,8 @@ mod tests {
         ];
         let ring = tagged(pts, &b, true);
         assert_eq!(ring.cut, vec![false, false, false, true], "the west edge is the cut");
-        let (_, casing, _) = mesh_rings(&[ring], &b, 1, false, &[], &mut |_, _| 0).expect("a mesh");
-        let rim = casing.expect("a rim on the three real edges");
+        let (_, rim, _) = mesh_rings(&[ring], &b, 1, false, &[], &mut |_, _| 0).expect("a mesh");
+        let rim = rim.expect("a rim on the three real edges");
         // Three real edges, one quad each — the cut edge contributed none.
         assert_eq!(rim.indices.len(), 3 * 6, "expected three rim quads");
         assert_eq!(rim.x.len(), 3 * 4);
@@ -1294,7 +1306,7 @@ mod tests {
     fn a_folded_rim_quad_is_dropped_rather_than_drawn() {
         // A ring with a needle-thin spike. The mitered inset at the spike's tip
         // overshoots past the edges it belongs to; those quads must be dropped,
-        // not emitted as bowties — drawn in the casing's darker tone a bowtie
+        // not emitted as bowties — drawn as surface a bowtie
         // reads as a dark spur poking out of the asphalt.
         let b = bounds();
         let (w, h) = (b.width(), b.height());
@@ -1308,10 +1320,10 @@ mod tests {
             Coord { x: cx - 0.2 * w, y: cy + 0.05 * h },
         ];
         let ring = tagged(pts, &b, true);
-        let Some((_, casing, _)) = mesh_rings(&[ring], &b, 1, false, &[], &mut |_, _| 0) else {
+        let Some((_, rim_mesh, _)) = mesh_rings(&[ring], &b, 1, false, &[], &mut |_, _| 0) else {
             return; // degenerating entirely is also acceptable
         };
-        let Some(rim) = casing else { return };
+        let Some(rim) = rim_mesh else { return };
         // Every surviving quad is a proper one: its inset pair is on the material
         // side of its silhouette pair, so its two triangles wind the same way.
         for q in rim.x.chunks_exact(4).zip(rim.y.chunks_exact(4)) {
@@ -1345,8 +1357,8 @@ mod tests {
         let ring = tagged(pts, &b, true);
         assert!(inset_ring(&ring, 77000.0).is_none(), "a sliver must not inset");
         let meshed = mesh_rings(&[ring], &b, 1, false, &[], &mut |_, _| 0);
-        if let Some((surface, casing, _)) = meshed {
-            assert!(casing.is_none(), "a sliver must not carry a rim");
+        if let Some((surface, rim, _)) = meshed {
+            assert!(rim.is_none(), "a sliver must not carry a rim");
             assert!(surface.edge_across.is_empty());
         }
     }
@@ -1381,8 +1393,8 @@ mod tests {
         );
 
         // And a region with a hole produces rim quads for both boundaries.
-        let (_, casing, _) = mesh_rings(&[outer, hole], &b, 1, false, &[], &mut |_, _| 0).expect("a mesh");
-        let rim = casing.expect("a rim");
+        let (_, rim, _) = mesh_rings(&[outer, hole], &b, 1, false, &[], &mut |_, _| 0).expect("a mesh");
+        let rim = rim.expect("a rim");
         let quads = rim.x.len() / 4;
         assert!(quads >= 8, "expected rim on both rings' four sides, got {quads} quads");
     }

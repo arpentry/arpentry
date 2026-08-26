@@ -442,8 +442,11 @@ the scenario table (§4).
     `synth/pave_mesh.rs` clips the region to the tile proper, simplifies the
     boundary to the zoom's budget capped at `PAVE_SIMPLIFY_M`, insets it by
     `PAVE_RIM_M` and meshes the interior with the same constrained-Delaunay
-    contract as `terrain_cdt`, leaving a rim strip that carries both the
-    analytic edge antialiasing and the darker casing tone.
+    contract as `terrain_cdt`, leaving a rim strip that carries the analytic
+    edge antialiasing. The rim is emitted under its own class (`road_rim`,
+    `walk_rim`, …) so the checks can name it, and the style paints that class
+    in its surface's own colour: the rim is the outer third of a metre of the
+    same pavement, not a line drawn round it.
 
     The interior is triangulated over the **terrain's own lattice**, not from
     the boundary alone. A region meshed from its outline is spanned by
@@ -493,8 +496,8 @@ the scenario table (§4).
     bounded by its own extent, so an ungated z0 tile collected every
     carriageway segment in the extract to draw none of them, which alone cost
     780 s of the run.
-  - *Remaining:* the surface is one uniform class (`road_surface`) with a
-    darker `road_casing` rim, per the decision that all roads share a colour
+  - *Remaining:* the surface is one uniform class (`road_surface`) with an
+    untoned `road_rim` strip, per the decision that all roads share a colour
     at detail zooms; class distinction now comes from width and paint. Still
     open: `road_flags` ingestion.
 - **P3 — Longitudinal paint.** The marking baker and the client decal
@@ -596,8 +599,8 @@ the scenario table (§4).
     depth grew 1.4 m of cap into every gap and fused into one slab; stroked
     across, the caps round the stripe ends instead, which is how the paint
     wears. A registered crossing's stroke is deleted at the walk zooms
-    (`paves_via_walkway` reads the `crossing_drawn` stamp, stripped before
-    encoding); an unregistered one — mapped across a path, data noise (R12)
+    (phase 1 tags it `Synth::DrapedBand` and `paves_via_walkway` reads the
+    tag); an unregistered one — mapped across a path, data noise (R12)
     — keeps the stroke that is all it ever had. A divided carriageway
     registers one chord per roadway and the refuge island is unpainted.
     Registration is against raw centerlines, so it agrees with the drawn
@@ -721,7 +724,7 @@ the scenario table (§4).
     *Increment 7 — no kerb line across a handover.* The rim exists to edge
     the paved surface against the ground it stops at (§6.1). Its skip rule
     exempted only *tile* cuts, so it also wrapped the abutment, drawing a
-    `PAVE_RIM_M` line in the casing's darker tone across the carriageway a
+    `PAVE_RIM_M` line in the rim's then-darker tone across the carriageway a
     third of a metre before every bridge — on **98.5 %** of joints, measured
     by `seam.handover_kerb`. The deck carries no matching rim, so the joint
     read as a border rather than as a road. `synth::junction` now records
@@ -729,7 +732,7 @@ the scenario table (§4).
     only stage that still knows, since the union is a boolean over buffered
     polylines and dissolves which input each stretch of boundary came from),
     the pavement bake files them per chunk, and `build_rim` sends those
-    quads to the **surface** instead of the casing. They keep their geometry
+    quads to the **surface** instead of the rim. They keep their geometry
     — the interior is inset and something has to cover the strip — and lose
     the tone and the across-coordinate with it, so the asphalt runs into the
     deck unbroken.
@@ -748,7 +751,7 @@ the scenario table (§4).
     rim quads were excluded from it as kerb, and now that they are surface
     they are counted — the geometry did not move, only the population, and
     the new worst is a pre-existing 7 m height jump in the band at
-    6.9121,46.4333 that the casing was already drawing.
+    6.9121,46.4333 that the rim was already drawing.
     *Increment 8 — the deck is the same asphalt.* Invariant 1 says one
     cross-section; the colour did not follow it. A structure's top is
     painted per-vertex from the style entry its **road class** names
@@ -936,15 +939,15 @@ the scenario table (§4).
     half a metre short was built first and read `contact.kerb_lip` 9.08 %,
     worse than clipping at the wall.
 
-    *Still open:* the deck top has the analytic edge AA (`sweep_prism`
-    already writes ±1 `edge_across` on its two edge strips) but not the
-    band's **kerb line**, so the rim runs along the approach and stops at
-    the abutment. Closing it means two extra longitudinal vertex rows at
-    ±(half-width − `PAVE_RIM_M`) with a piecewise `edge_across`, a second
-    per-vertex colour on the structure pipeline for the casing tone (the
-    style already parses `casing_color` per class), and `fs_deck` picking
-    between them. It is a GPU vertex-layout change and a purely visual one,
-    so it wants a render in front of it.
+    *Closed by deletion (2026-08-25):* this used to read "the deck top has
+    the analytic edge AA (`sweep_prism` already writes ±1 `edge_across` on
+    its two edge strips) but not the band's **kerb line**, so the rim runs
+    along the approach and stops at the abutment", and it proposed two extra
+    longitudinal vertex rows plus a second per-vertex colour to give the deck
+    a matching dark edge. There is no kerb line to match any more: the rim is
+    painted in its surface's own colour (§6.1), so band and deck each draw as
+    one tone and the only thing either carries at its edge is the fade, which
+    both already have.
 
 - **P4 — Symbols.** The MSDF atlas: gore chevrons from diverge geometry;
   crossing glyphs where `cycle_crossing` meets a carriageway. Turn arrows

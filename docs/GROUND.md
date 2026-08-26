@@ -276,7 +276,7 @@ sentence `seat` already speaks about a street too narrow for a sidewalk applies
 against a different bound. A sidewalk, which mostly stands on its street's
 terrace and holds the street's allowance, keeps full width over 96.6 % and is
 dropped over 3.0 %. Of the narrowed path length, 4.3 points fall under
-3 × `PAVE_RIM_M` — where the casing rim is most of the band and the interior
+3 × `PAVE_RIM_M` — where the rim is most of the band and the interior
 reads as a hairline — which is the standing cost of this floor and the next
 thing to spend on. `ARPT_NO_WALK_FIT=1` sizes the bands from the plan alone,
 which is the A/B control; `ARPT_WALK_FIT_MIN=<m>` moves the floor.
@@ -352,7 +352,7 @@ Three rules make it safe rather than merely effective:
   same number and nothing more is needed. Where none does they differ by
   whatever the model failed to build, and that difference is emitted as an
   explicit vertical face — one quad per silhouette edge, from the kerb down to
-  the ground — as a `road_apron` feature beside the surface and its casing.
+  the ground — as a `road_apron` feature beside the surface and its rim.
   Fifteen metres of it is the retaining wall that is physically there; a few
   centimetres is a kerb and is skipped (`APRON_MIN_M`).
 

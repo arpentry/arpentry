@@ -23,7 +23,7 @@
 //!
 //! Both read the *drawn* archive rather than the plan. A duckdb buffer of the
 //! centerlines answers a related but different question — it knows the class
-//! prior's half-width and nothing about junction plates, the casing rim or the
+//! prior's half-width and nothing about junction plates, the rim or the
 //! links the union dissolves into one region — and the two numbers differ by
 //! more than a factor of two for exactly that reason (see the population note
 //! on `order.building_overlap`).
@@ -124,7 +124,7 @@ const WALK_FALL_OUT_M: f64 = 3.0;
 ///
 /// **A fixed metre made the metric blind to exactly the bands most likely to be
 /// wrong.** `synth::pave_mesh` insets a band's surface by
-/// [`priors::PAVE_RIM_M`] on each side for the casing, so the interior of a
+/// [`priors::PAVE_RIM_M`] on each side for the rim, so the interior of a
 /// band is its width less 0.70 m and a probe a metre inward needs a band
 /// **1.70 m wide** to land on anything. Narrower bands exist — the facade room
 /// already narrows a sidewalk to [`priors::WALK_MIN_WIDTH_M`] = 0.8 m — and
@@ -160,14 +160,14 @@ fn is_pedestrian(class: &str) -> bool {
     class != "steps" && priors::is_pedestrian(priors::Kind::parse(None, Some(class), None))
 }
 
-/// The at-grade *road* surface: the union's interior band and its casing rim.
+/// The at-grade *road* surface: the union's interior band and its rim.
 ///
 /// Rail is deliberately out of the footprint population. A station roof stands
 /// over its own platforms, which is a level relation the archive cannot state
 /// and not asphalt through a wall — 2,772 m² of the Montreux extract, all of it
 /// under station roofs.
 fn is_road_band(r: &RoadMesh) -> bool {
-    r.level == 0 && matches!(r.class.as_str(), "road_surface" | "road_casing")
+    r.level == 0 && matches!(r.class.as_str(), "road_surface" | "road_rim")
 }
 
 /// The drawn surface a pedestrian way stands on: a walkway band where one
@@ -181,7 +181,7 @@ fn is_road_band(r: &RoadMesh) -> bool {
 /// cross-section it was built to measure.
 fn walk_ground(tile: &TileScene, px: f64, py: f64) -> Option<f64> {
     for r in tile.roads.iter().filter(|r| {
-        r.level == 0 && matches!(r.class.as_str(), "walk_surface" | "walk_casing")
+        r.level == 0 && matches!(r.class.as_str(), "walk_surface" | "walk_rim")
     }) {
         if let Some(h) = r.mesh.height_at(px, py) {
             return Some(h);
@@ -350,9 +350,9 @@ struct Kerbs {
 impl Kerbs {
     /// Resamples the silhouette of every at-grade road band.
     ///
-    /// Both the interior band and its casing rim contribute. `road_surface` is
+    /// Both the interior band and its rim contribute. `road_surface` is
     /// an *inset* of the paved region by `PAVE_RIM_M`, so its silhouette is a
-    /// third of a metre inside the true kerb; the casing carries the real one.
+    /// third of a metre inside the true kerb; the rim carries the real one.
     /// Taking the union and asking for the nearest means a way outside the
     /// street finds the outer rim, which is the kerb it stands beside.
     fn build(tile: &TileScene) -> Kerbs {
@@ -654,7 +654,7 @@ impl Street {
                 // Reading that from the *geometry* rather than from the drawn
                 // material is what lets the material be merged: `drawn_material`
                 // makes a path and the sidewalk it continues one region so they
-                // share one casing, and a class test would then have quietly
+                // share one rim, and a class test would then have quietly
                 // started scoring hillsides. Measured with the merge withheld,
                 // the tightening alone moves this metric by a hair.
                 if d > STRIP_REACH_M {
@@ -685,7 +685,7 @@ impl Street {
     }
 }
 
-/// The drawn **sidewalk**: the band attached to a street, and its casing rim,
+/// The drawn **sidewalk**: the band attached to a street, and its rim,
 /// at grade.
 ///
 /// `path_surface` is deliberately out. A path across a hillside stands on the
@@ -694,11 +694,11 @@ impl Street {
 /// site in the extract was a footpath 17.7 m up a slope from a road it passed
 /// near. The two materials are separate for this reason (`priors::Surface`).
 fn is_walk_band(r: &RoadMesh) -> bool {
-    r.level == 0 && matches!(r.class.as_str(), "walk_surface" | "walk_casing")
+    r.level == 0 && matches!(r.class.as_str(), "walk_surface" | "walk_rim")
 }
 
 /// Every drawn pedestrian surface at grade — sidewalk *and* path, interior band
-/// and casing rim.
+/// and rim.
 ///
 /// Wider than [`is_walk_band`] on purpose, and the difference is the whole
 /// reason the two materials exist. `contact.sidewalk_grade` asks how a band
@@ -709,7 +709,7 @@ fn is_pedestrian_band(r: &RoadMesh) -> bool {
     r.level == 0
         && matches!(
             r.class.as_str(),
-            "walk_surface" | "walk_casing" | "path_surface" | "path_casing"
+            "walk_surface" | "walk_rim" | "path_surface" | "path_rim"
         )
 }
 
@@ -858,12 +858,12 @@ impl Street {
         // against its height a metre in.
         //
         // Read on **one mesh**, the interior band's — never across meshes. A
-        // casing ring is a third of a metre wide, so a metre inward from its
+        // rim ring is a third of a metre wide, so a metre inward from its
         // edge is already on a different mesh, and where two bands stack in
         // plan it can be a different band on a different terrace: the first cut
         // of this walk scored a sidewalk at 623 m against a path 9.6 m below it
         // and called the pair a 963 % cross-fall. The interior mesh's own
-        // silhouette is inset from the true edge by the casing's width, which
+        // silhouette is inset from the true edge by the rim's width, which
         // costs nothing here — the question is the band's tilt, not where
         // exactly it stops.
         for r in bands.iter().filter(|r| r.class.ends_with("_surface")) {
@@ -988,7 +988,7 @@ impl Check for Street {
                 invariant: Invariant::I3,
                 title: "Drawn at-grade asphalt standing inside a building footprint".into(),
                 population: "Every drawn at-grade road surface sample (road_surface and its \
-                             road_casing rim) the tile owns, scored by how far inside a \
+                             road_rim strip) the tile owns, scored by how far inside a \
                              building footprint it stands, and zero everywhere it is outside \
                              one. Scoring the zeros is what makes the rate mean something: \
                              over the inside-samples alone the population would be nothing but \
@@ -1019,7 +1019,7 @@ impl Check for Street {
                          7,533 m² footprint with an unknown-class way through it). The \
                          plan-space estimate of the same defect — centerlines buffered to the \
                          tiler's own half-widths — reads 11,937 m², less than half of this, \
-                         because it knows nothing of the junction plates, the casing rim and \
+                         because it knows nothing of the junction plates, the rim and \
                          the links the union dissolves into one region. This measures what is \
                          drawn."
                     .into(),
@@ -1084,8 +1084,8 @@ impl Check for Street {
                 title: "Step where a pedestrian band meets the ground at its own rim".into(),
                 population: "Every terrain-mesh boundary edge midpoint the tile owns that is \
                              not on the tile's own edge and has a level-0 pedestrian surface \
-                             over it (`walk_surface`/`walk_casing` and \
-                             `path_surface`/`path_casing` alike). The value is |band − rim|, \
+                             over it (`walk_surface`/`walk_rim` and \
+                             `path_surface`/`path_rim` alike). The value is |band − rim|, \
                              unsigned: the ground standing above a band is the same missing \
                              earthwork as the ground falling away from it, and the offender \
                              note carries the side. Read at the rim rather than a metre \
@@ -1201,7 +1201,7 @@ mod tests {
             RoadMesh {
                 class: class.into(),
                 level,
-                band: String::new(),
+                band: String::new(), fades: false,
                 mesh: self.slab(r.0, r.1, r.2, r.3, z),
             }
         }
@@ -1522,7 +1522,7 @@ mod tests {
             vec![0, 1, 2, 0, 2, 3],
         )
         .unwrap();
-        RoadMesh { class: class.into(), level: 0, band: String::new(), mesh }
+        RoadMesh { class: class.into(), level: 0, band: String::new(), fades: false, mesh }
     }
 
     /// The terrain's rim and the band's own height are one joint: the band's

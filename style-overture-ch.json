@@ -431,17 +431,6 @@
           "min_level": 4
         },
         {
-          "class": "road_casing",
-          "color": [
-            122,
-            125,
-            130,
-            255
-          ],
-          "width": 0,
-          "min_level": 13
-        },
-        {
           "class": "road_apron",
           "color": [
             78,
@@ -464,6 +453,17 @@
           "min_level": 13
         },
         {
+          "class": "road_rim",
+          "color": [
+            151,
+            154,
+            159,
+            255
+          ],
+          "width": 0,
+          "min_level": 13
+        },
+        {
           "class": "rail_surface",
           "color": [
             158,
@@ -475,11 +475,11 @@
           "min_level": 13
         },
         {
-          "class": "rail_casing",
+          "class": "rail_rim",
           "color": [
-            128,
-            121,
-            110,
+            158,
+            150,
+            138,
             255
           ],
           "width": 0,
@@ -508,11 +508,11 @@
           "min_level": 16
         },
         {
-          "class": "walk_casing",
+          "class": "walk_rim",
           "color": [
-            170,
-            167,
-            161,
+            196,
+            193,
+            187,
             255
           ],
           "width": 0,
@@ -541,11 +541,11 @@
           "min_level": 16
         },
         {
-          "class": "path_casing",
+          "class": "path_rim",
           "color": [
-            164,
-            156,
-            144,
+            186,
+            178,
+            166,
             255
           ],
           "width": 0,

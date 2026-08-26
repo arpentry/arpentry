@@ -339,9 +339,9 @@ fn stub_band(
 /// The second vector is what lets the drawing keep its promise of graceful
 /// degradation (docs/GENERATION.md I6). A pedestrian way's cartographic
 /// stroke is deleted at the walk zooms because the band *is* the surface
-/// (`pipeline::paves_via_walkway`), and that test was the class and nothing
-/// else — so a way whose band the ground fit declined to build lost its
-/// stroke too and vanished from the map entirely. On a steep flank that is
+/// (`pipeline::paves_via_walkway`), and if that test were the class and
+/// nothing else, a way whose band the ground fit declined to build would lose
+/// its stroke too and vanish from the map entirely. On a steep flank that is
 /// exactly where it happens: the Territet switchback at 6.9189,46.4304 came
 /// out as a handful of disjoint slabs with nothing between them. Carrying the
 /// source per segment lets phase 1 ask *was anything actually drawn for this
@@ -855,7 +855,7 @@ fn free_bands(
         // **A way that is a street's pavement somewhere is its pavement
         // everywhere.** Where a strip was built for this way, the stretches that
         // leave the street are the same object continuing — so they take the
-        // same material and merge into one region with one casing rather than
+        // same material and merge into one region with one rim rather than
         // drawing as a second kind of thing beside the first. They still stand
         // on the ground and carry no kerb rise: a hostless band is benched along
         // its own centerline, and a rise there would be a float above its own
@@ -1165,8 +1165,8 @@ pub fn fit_to_ground(
         let path = usize::from(bands[i].corridor == NO_HOST);
         match half {
             Some(half) => {
-                // A band whose interior is narrower than one casing rim reads
-                // as a dark hairline rather than a surface (`PAVE_RIM_M`), and
+                // A band whose interior is narrower than one rim reads
+                // as a hairline rather than a surface (`PAVE_RIM_M`), and
                 // `slope.walk_crossfall` cannot probe a metre across it. Counted
                 // separately because that is the cost this floor is trading.
                 let bucket = if half >= bands[i].drawn_half() - 1e-9 {
@@ -1386,7 +1386,7 @@ fn width_census(bands: &[SourceSeg], sources: &[u64]) {
     // and the first question that answers is whether a single mapped way comes
     // out as one material at one height. A way that is part street strip
     // (`Walkway`, riding its host's kerb) and part free band (`Path`, on the
-    // ground) draws as two objects with a casing rim between them, however
+    // ground) draws as two objects with a rim between them, however
     // closely their colours are matched in the style.
     let mut kinds: HashMap<u64, [f64; 2]> = HashMap::new();
     for (s, &src) in bands.iter().zip(sources) {
@@ -1442,10 +1442,10 @@ fn width_census(bands: &[SourceSeg], sources: &[u64]) {
 
 /// The narrowest band the fit may narrow *to*, in metres.
 ///
-/// **A band narrower than its own two casing rims has no surface left to
+/// **A band narrower than its own two rims has no surface left to
 /// draw.** `synth::pave_mesh` insets the silhouette by [`priors::PAVE_RIM_M`]
 /// on each side and meshes the interior as the surface, so under 0.70 m a band
-/// is pure casing and under about 1.05 m the interior is a hairline — which is
+/// is pure rim and under about 1.05 m the interior is a hairline — which is
 /// what [`priors::WALK_MIN_WIDTH_M`] at 0.8 m already permits, from the facade
 /// room, and the first cut of this fit made common.
 ///

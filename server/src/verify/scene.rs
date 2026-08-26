@@ -16,8 +16,8 @@ use super::mesh::{Scale, SurfaceMesh};
 
 /// A transportation mesh with the two properties that decide what it is.
 ///
-/// `class` is `road_surface` / `road_casing` for the unioned at-grade asphalt
-/// (`rail_surface` / `rail_casing` for a rail formation's ballast band — the
+/// `class` is `road_surface` / `road_rim` for the unioned at-grade asphalt
+/// (`rail_surface` / `rail_rim` for a rail formation's ballast band — the
 /// same machinery in another material) and the road's own class (`motorway`,
 /// `residential`, …) for a baked structure; `level` is the reserved ordinal
 /// (FORMAT.md §8) — 0 at grade, positive on a deck, negative in a bore.
@@ -34,6 +34,18 @@ pub struct RoadMesh {
     /// otherwise means re-deriving the modality from the deck's road class and
     /// hoping the two agree.
     pub band: String,
+    /// Whether this mesh carries a non-zero `edge_across` anywhere, i.e. the
+    /// client fades its outer pixel into whatever is behind it
+    /// (`fs_deck` in `client/shaders/terrain.wgsl`).
+    ///
+    /// The rim carries the fade only where the ground is *not* cut away under
+    /// the asphalt — with the hole, the paved boundary and the terrain
+    /// boundary are the same edge and MSAA resolves it for free
+    /// (`synth::pave_mesh::build_rim`). So this is the difference between a rim
+    /// that draws something of its own and one that is simply the outer third
+    /// of a metre of its surface, and a check about what the rim *draws* has to
+    /// read it rather than the class.
+    pub fades: bool,
     pub mesh: SurfaceMesh,
 }
 
@@ -45,12 +57,12 @@ impl RoadMesh {
         self.level == 0 && matches!(self.class.as_str(), "road_surface" | "rail_surface")
     }
 
-    /// The casing rim: the strip between the surface band's inset interior and
+    /// The rim: the strip between the surface band's inset interior and
     /// its true silhouette. It is surface, so it answers for the band's height
     /// at the very edge — which the interior mesh, ending an inset short of it,
     /// cannot.
-    pub fn is_casing(&self) -> bool {
-        self.level == 0 && matches!(self.class.as_str(), "road_casing" | "rail_casing")
+    pub fn is_rim(&self) -> bool {
+        self.level == 0 && matches!(self.class.as_str(), "road_rim" | "rail_rim")
     }
 
     /// The wall drawn between the kerb and the ground beside it
@@ -347,7 +359,10 @@ impl<'a> ArchiveScan<'a> {
                     }
                     if let Some(g) = f.geometry_as_mesh_geometry() {
                         if let Some(mesh) = SurfaceMesh::from_geometry(&g) {
-                            scene.roads.push(RoadMesh { class, level, band, mesh });
+                            let fades = g
+                                .edge_across()
+                                .is_some_and(|a| (0..a.len()).any(|i| a.get(i) != 0));
+                            scene.roads.push(RoadMesh { class, level, band, fades, mesh });
                         }
                     } else if let Some(g) = f.geometry_as_line_geometry() {
                         let parts = line_parts(&g);
@@ -418,13 +433,13 @@ mod tests {
     #[test]
     fn a_mesh_is_classified_by_class_and_level() {
         let mk = |class: &str, level: i64| RoadMesh {
-            band: String::new(),
+            band: String::new(), fades: false,
             class: class.to_string(),
             level,
             mesh: dummy(),
         };
         assert!(mk("road_surface", 0).is_pavement());
-        assert!(!mk("road_casing", 0).is_pavement(), "the rim is not the carriageway");
+        assert!(!mk("road_rim", 0).is_pavement(), "the rim is not the carriageway");
         assert!(!mk("motorway", 1).is_pavement());
         assert!(mk("motorway", 1).is_deck());
         assert!(mk("motorway", -5).is_bore());

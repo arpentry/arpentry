@@ -1068,68 +1068,42 @@ fn stamp_synth(
         // fill: the mesh *is* the surface now. This covers the at-grade stroke and
         // the `deck: true` stroke re-painted over a structure, whose own solid
         // carries its top.
-        let keep = !(surface_zoom && paves_via_union(f)) && !(walk_zoom && paves_via_walkway(f));
-        // The registration stamp has done its job; it is pipeline plumbing,
-        // not a tile attribute.
-        f.properties.retain(|(k, _)| k != "crossing_drawn" && k != "walk_banded");
-        keep
+        !(surface_zoom && paves_via_union(f)) && !(walk_zoom && paves_via_walkway(f))
     });
 }
 
-/// Whether the walkway model has drawn this feature as a band, so its
-/// cartographic stroke would be a line painted over its own surface.
+/// Whether the walkway model drew this feature as a band, so its cartographic
+/// stroke would be a line painted over its own surface.
 ///
-/// The test is the class and nothing else, because `synth::walkway` bands
-/// **every** pedestrian line: the stretches that attached to a street as
-/// sidewalks and the rest as paths across the ground. It cannot be
-/// `paves_via_union`'s test — a footway has no `width_m` and no corridor, since
-/// its band comes from the walkway model rather than from a carriageway of its
-/// own.
-///
-/// Three pedestrian features keep their stroke, and each is a stretch the
+/// One test, because phase 1 already answered it: only a way the model
+/// actually banded carries [`Synth::DrapedBand`]. Everything that keeps its
+/// stroke is something phase 1 tagged differently, and each is a stretch the
 /// walkway model deliberately did not band:
 ///
 /// - **A footbridge, or any elevated piece.** The band is only drawn where the
 ///   way is on the ground; over a span the way carries its own fitted deck
 ///   ([`Synth::DrapedDeck`]) or rides the road bridge under it
 ///   ([`synth::carried`]), and that geometry *is* the walkway there. Deleting
-///   the stroke deletes the footbridge with it.
+///   the stroke deletes the footbridge with it. `level_pieces` tags the
+///   elevated pieces and only the at-grade ones inherit the band tag.
 /// - **A crosswalk that registered no paint** — mapped across a path, or
 ///   floating in data noise. A *registered* one is drawn: the zebra ladder
 ///   plus its kerb stub bands (`synth::walkway::crossings`), so its stroke
-///   would be a line painted over its own crossing. Phase 1 stamps the
-///   registration onto the feature (`crossing_drawn`), because this test
-///   cannot see the model.
-/// - **A tunnel or subway piece**, for the same reason as the bridge: the
-///   drawn world has no band under the ground.
+///   would be a line over its own crossing.
+/// - **A way the seat had no room for**, or whose band the ground fit declined
+///   on a steep flank. It is not in `banded_walks` and keeps the line that is
+///   all it has: losing the band must cost detail, never the feature (I6).
+///   Without that the Territet switchback at 6.9189,46.4304 drew as a handful
+///   of disjoint slabs with nothing at all between them.
+///
+/// This used to be a five-part test over two properties phase 1 stamped on the
+/// feature, and it could never fire: `profile::profile` builds a tile's
+/// properties from a fixed whitelist of *source* attributes, so a stamp
+/// invented in phase 1 never survived to the tile. Every pedestrian way in the
+/// archive therefore drew its band **and** its line — 351 km of it at z16 on
+/// the Montreux extract, 82 % of it directly over its own band.
 fn paves_via_walkway(f: &EncoderFeature) -> bool {
-    if is_marking(f) {
-        return false;
-    }
-    if !matches!(f.synth, Synth::None | Synth::Road { corridor: None, deck: false }) {
-        return false;
-    }
-    if crate::value::str_of(&f.properties, "subclass") == Some("crosswalk") {
-        return f
-            .properties
-            .iter()
-            .any(|(k, v)| k == "crossing_drawn" && matches!(v, Value::Int(1)));
-    }
-    // **Only where a band was actually built.** The class says what kind of
-    // thing this is; the stamp says what the walkway model made of it. A way
-    // the seat had no room for, or whose band the ground fit declined on a
-    // steep flank, keeps its stroke — losing the band must cost detail, never
-    // the feature (I6). Without this the Territet switchback at
-    // 6.9189,46.4304 drew as a handful of disjoint slabs with nothing at all
-    // between them.
-    if !f.properties.iter().any(|(k, v)| k == "walk_banded" && matches!(v, Value::Int(1))) {
-        return false;
-    }
-    if crate::value::f64_of(&f.properties, "level_rules").is_some_and(|l| l != 0.0) {
-        return false;
-    }
-    let class = crate::value::str_of(&f.properties, "class");
-    crate::priors::earns_walk_band(crate::priors::Kind::parse(None, class, None))
+    matches!(f.synth, Synth::DrapedBand)
 }
 
 /// Whether the unioned surface covers this feature, so its own fill stroke would
@@ -1165,7 +1139,9 @@ fn paves_via_union(f: &EncoderFeature) -> bool {
 }
 
 /// Adds this tile's share of the unioned road surface: one opaque `road_surface`
-/// mesh per level plus the `road_casing` rim that antialiases and edges it.
+/// mesh per level, the `road_rim` strip that carries its silhouette — its own
+/// class so the checks can name it, its surface's colour so it draws no
+/// outline — and the `road_apron` wall where the hole exposes a kerb.
 ///
 /// Unlike the junction plates this replaced, there is no "which tile owns it"
 /// question — the region is clipped to the tile proper, so every tile emits
@@ -1183,7 +1159,7 @@ fn add_road_surface(
         return Vec::new();
     }
     let Some(levels) = pavement.chunk_for(bounds) else { return Vec::new() };
-    // The casing goes opaque on exactly the tiles whose ground is cut away, so
+    // The rim goes opaque on exactly the tiles whose ground is cut away, so
     // the paver has to be asked the same question the terrain mesher will
     // answer (see `build_rim`).
     let hole = sampler.cuts_hole(z);
@@ -1205,15 +1181,14 @@ fn add_road_surface(
         // The material picks the class family, and with it the style entry: a
         // rail formation is the same machinery as a carriageway in another
         // colour, and the client's own styling is where the colour lives.
-        let (surface_class, casing_class, apron_class) =
-            match paved.material {
-                crate::priors::Surface::Ballast => ("rail_surface", "rail_casing", "rail_apron"),
-                crate::priors::Surface::Walkway => ("walk_surface", "walk_casing", "walk_apron"),
-                crate::priors::Surface::Path => ("path_surface", "path_casing", "path_apron"),
-                _ => ("road_surface", "road_casing", "road_apron"),
-            };
-        // The casing rides after the surface so its blended rim composites over
-        // the opaque interior rather than under it.
+        let (surface_class, rim_class, apron_class) = match paved.material {
+            crate::priors::Surface::Ballast => ("rail_surface", "rail_rim", "rail_apron"),
+            crate::priors::Surface::Walkway => ("walk_surface", "walk_rim", "walk_apron"),
+            crate::priors::Surface::Path => ("path_surface", "path_rim", "path_apron"),
+            _ => ("road_surface", "road_rim", "road_apron"),
+        };
+        // The rim rides after the interior so its blended edge composites over
+        // the opaque middle rather than under it.
         let mut push = |class: &str, mesh: crate::terrain::TerrainMesh, bump: u64| {
             buckets[layers::TRANSPORTATION as usize].push(EncoderFeature {
                 id: id ^ bump,
@@ -1238,8 +1213,16 @@ fn add_road_surface(
             cut.push(paved.region);
         }
         push(surface_class, paved.surface, 0);
-        if let Some(casing) = paved.casing {
-            push(casing_class, casing, 1);
+        // **The rim is the surface, not a line around it.** It keeps a class of
+        // its own because it *is* a distinguishable thing — the strip outside
+        // the interior's inset edge, and the only mesh carrying an
+        // across-coordinate — and three checks have to be able to name it. What
+        // it does not keep is a tone: the style paints `*_rim` in its
+        // surface's own colour, so a road, a pavement and a path each read as
+        // one surface instead of a band inside an outline. On a 2 m path the
+        // outline was 42 % of the drawn area (docs/ROADS.md §6.1).
+        if let Some(rim) = paved.rim {
+            push(rim_class, rim, 1);
         }
         // The wall between the kerb and the ground beside it. A sibling
         // feature rather than part of the terrain: the terrain mesh carries no
@@ -1469,19 +1452,6 @@ fn process_feature(
                 }
             }
         }
-        // Did the walkway model actually draw this way? The stamp is stripped
-        // before encoding (`stamp_synth`); it exists so the stroke-deletion
-        // test can ask what was *built* rather than what class this is, and a
-        // way the ground fit declined keeps the line that is all it has.
-        let base_props: Vec<(String, Value)> = {
-            let mut p = f.properties.clone();
-            if prop_id(&f.properties)
-                .is_some_and(|id| world.banded_walks.contains(&source_hash(&id)))
-            {
-                p.push(("walk_banded".to_string(), Value::Int(1)));
-            }
-            p
-        };
         // A registered crosswalk paints its zebra ladder — one run of bars per
         // kerb-to-kerb chord (`synth::walkway::crossings`) — and its stroke is
         // deleted at the walk zooms (`paves_via_walkway`): the ladder and the
@@ -1496,14 +1466,33 @@ fn process_feature(
                     emit_geometry(layer, &m.geometry, &m.properties(), synth, cfg, sorter, stats)?;
                 }
             }
-            // The stroke goes out stamped with its registration, so the walk
-            // zooms can delete it (`paves_via_walkway`) while the coarse zooms
-            // keep the line that is all a crossing is down there. The stamp is
-            // stripped from the tile before encoding (`stamp_synth`).
-            let mut props = base_props.clone();
-            props.push(("crossing_drawn".to_string(), Value::Int(1)));
-            return emit_geometry(layer, &f.geometry, &props, synth, cfg, sorter, stats);
+            // The stroke goes out tagged as drawn, so the walk zooms delete it
+            // and the coarse zooms keep the line that is all a crossing is
+            // down there.
+            return emit_geometry(
+                layer,
+                &f.geometry,
+                &f.properties,
+                Synth::DrapedBand,
+                cfg,
+                sorter,
+                stats,
+            );
         }
+        // Did the walkway model actually draw this way? Its answer travels as
+        // the synth tag, because that is the only channel from phase 1 to the
+        // tile: a property invented here never reaches the encoder
+        // (`profile::profile` keeps a whitelist). A way the seat had no room
+        // for, or whose band the ground fit declined on a steep flank, is not
+        // in the set and keeps its stroke — losing the band must cost detail,
+        // never the feature (I6).
+        let synth = if prop_id(&f.properties)
+            .is_some_and(|id| world.banded_walks.contains(&source_hash(&id)))
+        {
+            Synth::DrapedBand
+        } else {
+            synth
+        };
         if let Geometry::LineString(line) = &f.geometry {
             if !f.level_runs.is_empty() {
                 // Where the span's edge landed on a wall rather than on a bank,
@@ -1523,7 +1512,7 @@ fn process_feature(
                     if level < 0 {
                         continue;
                     }
-                    let mut props = base_props.clone();
+                    let mut props = f.properties.clone();
                     let tag = if level > 0 {
                         // The level ordinal survives as a property so the
                         // client colours it as a structure, exactly as a
@@ -1556,7 +1545,7 @@ fn process_feature(
                 return Ok(());
             }
         }
-        return emit_geometry(layer, &f.geometry, &base_props, synth, cfg, sorter, stats);
+        return emit_geometry(layer, &f.geometry, &f.properties, synth, cfg, sorter, stats);
     }
     emit_geometry(layer, &f.geometry, &f.properties, Synth::None, cfg, sorter, stats)
 }

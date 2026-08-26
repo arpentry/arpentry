@@ -285,7 +285,7 @@ fn bake_chunk(
             // Keyed on the **drawn** material rather than the modelled one
             // where [`drawn`] says so: a footway and the sidewalk it runs into
             // would then be one region, unioning instead of the junior being
-            // subtracted under the senior and each wearing its own casing.
+            // subtracted under the senior and each wearing its own rim.
             // Opt-in — see [`drawn`] for what the measurement said about it.
             by_level.entry((run.level, run.layer, drawn(run.surface))).or_default().extend(buffered);
         }
@@ -369,7 +369,7 @@ fn bake_chunk(
 /// the instrument going blind, not the surface getting worse, and this
 /// codebase does not blind an instrument to land a change. The tonal half of
 /// the win is already taken for free in `style.json`, where `path_*` uses
-/// `walk_*`'s colours; what stays unbought is the double casing rim where a
+/// `walk_*`'s colours; what stays unbought is the double rim where a
 /// path meets a pavement. `ARPT_WALK_MERGE=1` turns it on for the A/B.
 fn drawn(surface: priors::Surface) -> priors::Surface {
     if std::env::var_os("ARPT_WALK_MERGE").is_some() {

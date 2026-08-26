@@ -54,6 +54,21 @@ pub enum Synth {
     /// buries it and drawn across the mountain wherever a coarse rung's
     /// chords disagree with the buried run (`paint.buried`).
     Road { corridor: Option<CorridorId>, deck: bool },
+    /// A draped pedestrian way the walkway model **drew as a band** — a
+    /// sidewalk seated on its street's cross-section, a path standing on the
+    /// ground, a registered crossing's zebra (`synth::walkway`). Geometrically
+    /// it is a plain draped road and it bakes as one; the tag exists so the
+    /// tile stage can drop its cartographic stroke at the walk zooms, where the
+    /// band *is* the way and the line would be a second coat over its own
+    /// surface (`pipeline::stamp_synth`).
+    ///
+    /// Phase 1 is the only place that knows: the answer is a lookup in the
+    /// walkway model, which stage 4 cannot see and the tile properties do not
+    /// carry — `profile::profile` keeps a fixed whitelist of source attributes
+    /// and an extra one invented here is dropped on the way to the sorter.
+    /// The synth tag is the channel that does survive, and it is already the
+    /// answer to "what did phase 1 decide this feature is drawn as".
+    DrapedBand,
     /// A bridge deck or tunnel bore swept along the corridor's solved profile.
     Structure { corridor: CorridorId, kind: SpanKind },
     /// A structure carried by a **draped** feature — a footbridge, a path over
@@ -104,6 +119,11 @@ pub fn emit(
     let paved_field = paved.then_some(field);
     match f.synth {
         Synth::None => {}
+        // A band's line is a draped road in every respect the generator cares
+        // about — no corridor, no deck, no field (it has no `width_m`).
+        Synth::DrapedBand => {
+            road::bake(f, None, false, None, None, sampler, z, solved.z_ref, bounds)
+        }
         Synth::Road { corridor, deck } => {
             let profile = corridor.and_then(|c| solved.profile(c));
             // The corridor rides along so the paint can ask, per vertex, which

@@ -466,7 +466,7 @@ mod tests {
         let region = |h: f32| RoadMesh {
             class: "road_surface".into(),
             level: 0,
-            band: String::new(),
+            band: String::new(), fades: false,
             mesh: SurfaceMesh::from_parts(
                 vec![0.0, 1.0, 1.0, 0.0],
                 vec![0.0, 0.0, 1.0, 1.0],
@@ -505,7 +505,7 @@ mod tests {
         let pave = |west: f32, east: f32| RoadMesh {
             class: "road_surface".into(),
             level: 0,
-            band: String::new(),
+            band: String::new(), fades: false,
             mesh: SurfaceMesh::from_parts(
                 vec![0.0, 1.0, 1.0, 0.0],
                 vec![0.4, 0.4, 0.6, 0.6],

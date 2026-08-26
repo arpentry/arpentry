@@ -27,7 +27,7 @@ const CORNER_CAP: usize = 262_144;
 ///
 /// Carried as one value and set once, at construction. Half a dozen places have
 /// to agree on the answer — the terrain mesher that cuts the hole, the paver
-/// that makes its casing opaque, the road that drops its raise-only clamp — and
+/// that makes its rim opaque, the road that drops its raise-only clamp — and
 /// a sampler that could be reconfigured after the fact is a sampler that can be
 /// configured inconsistently.
 #[derive(Debug, Clone, Copy)]
@@ -85,7 +85,7 @@ impl GroundSampler {
     /// Whether the ground under the asphalt is cut away at zoom `z`.
     ///
     /// The single definition. [`GroundSampler::terrain_mesh`] cuts on it, the
-    /// paver makes its casing opaque and builds its apron on it
+    /// paver makes its rim opaque and builds its apron on it
     /// (`synth::pave_mesh`), and the road drops its raise-only clamp on it
     /// (`synth::road::on_ground`). Letting any of those spell the condition out
     /// for itself is how a plate ends up clamped while the roads meeting it are

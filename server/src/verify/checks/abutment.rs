@@ -224,13 +224,13 @@ impl Check for Abutment {
         if solids.is_empty() {
             return;
         }
-        // The drawn at-grade asphalt: the interior band welded to its casing
+        // The drawn at-grade asphalt: the interior band welded to its rim
         // rim, because the interior alone is an inset of the true silhouette
         // and marching to it would report the rim's width as bare ground.
         let paved: Vec<&crate::verify::mesh::SurfaceMesh> = tile
             .roads
             .iter()
-            .filter(|m| m.is_pavement() || m.is_casing())
+            .filter(|m| m.is_pavement() || m.is_rim())
             .map(|m| &m.mesh)
             .collect();
         let carried = |px: f64, py: f64, h: f64| {
@@ -542,7 +542,7 @@ mod tests {
             vec![0, 1, 2, 0, 2, 3],
         )
         .expect("a quad meshes");
-        RoadMesh { class: "residential".into(), level: 1, band: String::new(), mesh }
+        RoadMesh { class: "residential".into(), level: 1, band: String::new(), fades: false, mesh }
     }
 
     /// A west→east stroke from `x0` to `x1` at height `h`.

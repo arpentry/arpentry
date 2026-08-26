@@ -423,7 +423,7 @@ fn drawn_ground(tile: &TileScene, terrain: &SurfaceMesh, px: f64, py: f64) -> Op
     terrain.height_at(px, py).or_else(|| {
         tile.roads
             .iter()
-            .filter(|r| r.is_pavement() || r.is_casing())
+            .filter(|r| r.is_pavement() || r.is_rim())
             .find_map(|r| r.mesh.height_at(px, py))
     })
 }
@@ -686,7 +686,7 @@ impl Check for Contact {
         // boundaries are 35 cm apart and no query anchored on one finds the
         // other. Anchoring on the terrain's rim instead makes it structural:
         // every terrain boundary edge that is not the tile's own edge is a hole
-        // rim, the asphalt (interior or casing) answers for the road's height
+        // rim, the asphalt (interior or rim) answers for the road's height
         // over it, and anything between the two heights that no apron spans is
         // a gap you can see through.
         for (a, b, _) in terrain.boundary_edges() {
@@ -706,7 +706,7 @@ impl Check for Contact {
             let Some(road_z) = tile
                 .roads
                 .iter()
-                .filter(|r| r.is_pavement() || r.is_casing())
+                .filter(|r| r.is_pavement() || r.is_rim())
                 .filter_map(|r| r.mesh.height_at(mx, my))
                 .next()
             else {
@@ -750,7 +750,7 @@ impl Check for Contact {
                 title: "Gap at the hole's rim with nothing spanning it".into(),
                 population: format!(
                     "Every terrain-mesh boundary edge midpoint that is not on the tile's own \
-                     edge and has at-grade asphalt or casing over it. A cut edge carries no \
+                     edge and has at-grade asphalt or rim over it. A cut edge carries no \
                      apron by design and is excluded with the tile edge. The apron is vertical, \
                      so its span is asked within {APRON_NEAR_M:.1} m of the rim rather than at \
                      it, with {APRON_SLOP_M:.1} m of slack at each end."
@@ -966,7 +966,7 @@ mod tests {
         let mut roads = vec![RoadMesh {
             class: "road_surface".into(),
             level: 0,
-            band: String::new(),
+            band: String::new(), fades: false,
             mesh: quad(0.0, 0.5, road_m),
         }];
         roads.extend(extra);
@@ -1040,7 +1040,7 @@ mod tests {
         // earthwork is still ten metres tall, and that is honest — but nothing
         // is unwalled, which is the property the apron exists to give.
         let apron =
-            RoadMesh { class: "road_apron".into(), level: 0, band: String::new(), mesh: wall(0.5, 100.0, 110.0) };
+            RoadMesh { class: "road_apron".into(), level: 0, band: String::new(), fades: false, mesh: wall(0.5, 100.0, 110.0) };
         let m = run(&kerbed(110.0, 100.0, vec![apron]));
         assert!(m[LIP].violations() > 0, "the lip is a fact about the model, not a defect");
         assert_eq!(m[UNWALLED].violations(), 0, "the apron spans it, so nothing is unwalled");
@@ -1052,7 +1052,7 @@ mod tests {
         // metres of sky. Spanning *part* of the gap must not count as spanning
         // it, or a truncated apron reads as a closed one.
         let apron =
-            RoadMesh { class: "road_apron".into(), level: 0, band: String::new(), mesh: wall(0.5, 107.0, 110.0) };
+            RoadMesh { class: "road_apron".into(), level: 0, band: String::new(), fades: false, mesh: wall(0.5, 107.0, 110.0) };
         let m = run(&kerbed(110.0, 100.0, vec![apron]));
         assert!(m[UNWALLED].violations() > 0, "a partial wall does not close the gap");
     }
@@ -1066,7 +1066,7 @@ mod tests {
         let m = run(&kerbed(100.0, 108.0, vec![]));
         assert!(m[UNWALLED].violations() > 0, "a cutting leaves the same open gap");
         let apron =
-            RoadMesh { class: "road_apron".into(), level: 0, band: String::new(), mesh: wall(0.5, 100.0, 108.0) };
+            RoadMesh { class: "road_apron".into(), level: 0, band: String::new(), fades: false, mesh: wall(0.5, 100.0, 108.0) };
         let m = run(&kerbed(100.0, 108.0, vec![apron]));
         assert_eq!(m[UNWALLED].violations(), 0, "and the same apron closes it");
     }
@@ -1095,7 +1095,7 @@ mod tests {
             roads: vec![RoadMesh {
                 class: "road_surface".into(),
                 level: 0,
-                band: String::new(),
+                band: String::new(), fades: false,
                 mesh: quad(-0.4, 0.5, 110.0),
             }],
             lines: Vec::new(),
@@ -1133,7 +1133,7 @@ mod tests {
         RoadMesh {
             class: class.into(),
             level: 1,
-            band: String::new(),
+            band: String::new(), fades: false,
             mesh: SurfaceMesh::from_parts(
                 vec![x0, x1, x1, x0],
                 vec![0.4, 0.4, 0.6, 0.6],
@@ -1225,7 +1225,7 @@ mod tests {
         RoadMesh {
             class: class.into(),
             level: 1,
-            band: String::new(),
+            band: String::new(), fades: false,
             mesh: SurfaceMesh::from_parts(
                 vec![x0, x1, x1, x0],
                 vec![y0, y0, y1, y1],
@@ -1399,7 +1399,7 @@ mod tests {
             "narrow_gauge",
             800.0,
             812.0,
-            vec![RoadMesh { class: "narrow_gauge".into(), level: 1, band: String::new(), mesh: quad(0.0, 1.0, 812.0) }],
+            vec![RoadMesh { class: "narrow_gauge".into(), level: 1, band: String::new(), fades: false, mesh: quad(0.0, 1.0, 812.0) }],
         ));
         assert!(m[RAIL].skipped.is_some(), "a deck under the stroke carries it: {:?}", m[RAIL].dist.count());
     }

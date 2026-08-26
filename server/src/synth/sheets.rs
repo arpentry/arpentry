@@ -36,7 +36,7 @@
 //!
 //! **A run is atomic, because a road is.** The layer keys the region partition,
 //! and a region boundary across a carriageway is *drawn*: the two sides mesh
-//! against different height fields, the casing rims each one and the apron walls
+//! against different height fields, the rims each one and the apron walls
 //! it. Layering per segment cut every road wherever its layer changed — 32,022
 //! cuts inside 23,360 runs on the Montreux extract — which renders as a road
 //! arriving in disconnected plates. It also made the defect it exists to remove
