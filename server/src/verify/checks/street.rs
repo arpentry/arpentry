@@ -170,6 +170,7 @@ fn is_road_band(r: &RoadMesh) -> bool {
     r.level == 0 && matches!(r.class.as_str(), "road_surface" | "road_rim")
 }
 
+
 /// The drawn surface a pedestrian way stands on: a walkway band where one
 /// exists, and the drawn ground where it does not.
 ///
@@ -421,6 +422,10 @@ impl Kerbs {
 pub struct Street {
     overlap: Dist,
     overlap_worst: Worst,
+    /// The same, over the at-grade pedestrian surface ([`is_walk_band`]).
+    walk_indoors: Dist,
+    walk_indoors_worst: Worst,
+    walk_inside: u64,
     grade: Dist,
     grade_worst: Worst,
     /// The step at a pedestrian band's rim, unsigned, and the same step with
@@ -461,6 +466,9 @@ impl Street {
         Street {
             overlap: Dist::new(0.0, 64.0),
             overlap_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            walk_indoors: Dist::new(0.0, 64.0),
+            walk_indoors_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            walk_inside: 0,
             grade: Dist::new(0.0, 64.0),
             grade_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             grade_signed: Dist::metres(),
@@ -523,6 +531,40 @@ impl Street {
             self.overlap.merge(&dist);
             self.overlap_worst.merge(worst);
             self.inside += inside;
+        }
+        // The pedestrian population, over the same footprints and by the same
+        // rule: every at-grade band sampled, zeros included.
+        for r in tile.roads.iter().filter(|r| is_pedestrian_band(r)) {
+            let (mut dist, mut worst) =
+                (Dist::new(0.0, 64.0), Worst::new(Sense::HigherIsWorse, opt.worst_k));
+            let mut inside = 0u64;
+            r.mesh.sample(&tile.scale, opt.spacing_m, |px, py, _| {
+                if !tile.owns(px, py) {
+                    return;
+                }
+                let hit = prints.depth(px, py, &tile.scale);
+                let d = hit.unwrap_or(0.0);
+                if hit.is_some() {
+                    inside += 1;
+                }
+                dist.push(d);
+                if d > FACADE_M {
+                    let (lon, lat) = tile.lonlat(px, py);
+                    worst.offer(Offender {
+                        lon,
+                        lat,
+                        zoom: tile.z,
+                        value: d,
+                        note: format!(
+                            "drawn {} stands {d:.1} m inside a building footprint",
+                            r.class
+                        ),
+                    });
+                }
+            });
+            self.walk_indoors.merge(&dist);
+            self.walk_indoors_worst.merge(worst);
+            self.walk_inside += inside;
         }
     }
 
@@ -1029,6 +1071,43 @@ impl Check for Street {
                     .then(|| "no building footprint over drawn at-grade road surface".to_string()),
                 dist: self.overlap,
                 worst: self.overlap_worst.into_vec(),
+            },
+            Metric {
+                id: "order.walk_indoors".into(),
+                invariant: Invariant::I3,
+                title: "Drawn at-grade pedestrian surface standing inside a building".into(),
+                population: "Every drawn at-grade pedestrian surface sample (walk_surface, \
+                             path_surface and their rims) the tile owns, scored by how far \
+                             inside a building footprint it stands, and zero everywhere it is \
+                             outside one — the same footprints and the same zero-scoring rule \
+                             as `order.building_overlap`, over the other half of the drawn \
+                             surface. Split from it because the two are different defects: a \
+                             carriageway inside a footprint is a class width prior meeting a \
+                             survey error at the facade, while a walkway inside one is a way \
+                             that is *indoors*."
+                    .into(),
+                detail: "Overture flags a way `is_indoor` or `is_covered` in `road_flags`, and \
+                         `levels::parse_flags` reads neither — only `is_bridge` and \
+                         `is_tunnel` — so an indoor way is an ordinary level-0 footway to \
+                         every stage after it. It earns a walk band, benches stratum D and is \
+                         drawn as pavement, which inside a terminal or a shopping centre is a \
+                         walkway cut through the building's floor. The Swiss extract holds \
+                         3,332 covered and 1,631 indoor footways plus 871 covered and 771 \
+                         indoor steps; they cluster hard, 545 indoor ways and 19 km of them in \
+                         one 0.02° cell over Zurich Airport, against 0.07 km in the whole \
+                         Montreux zone — which is why this reads near zero there and is worth \
+                         measuring anyway. 96.7 % of the airport's indoor ways carry no level \
+                         rule, so nothing else orders them out. An arcade is the honest \
+                         ambiguity in the population, the same one `order.building_overlap` \
+                         names: `is_covered` at grade under its own building is real pavement, \
+                         and no property in the archive tells it from a way through a wall."
+                    .into(),
+                sense: Sense::HigherIsWorse,
+                threshold: FACADE_M,
+                skipped: (self.footprint_tiles == 0)
+                    .then(|| "no building footprint over drawn at-grade pedestrian surface".to_string()),
+                dist: self.walk_indoors,
+                worst: self.walk_indoors_worst.into_vec(),
             },
             Metric {
                 id: "contact.sidewalk_grade".into(),
