@@ -192,6 +192,64 @@ pub fn tile_meshes(
                 t.elapsed()
             );
         }
+        // ARPT_MESH_AT=lon,lat — one line per level entry of the tile holding
+        // the point: where between the chunk region and the drawn mesh a
+        // stretch of surface is lost. The instrument for a band with a hole
+        // the union coverage cannot explain.
+        if let Some(at) = std::env::var_os("ARPT_MESH_AT") {
+            if let Some((plon, plat)) = at
+                .to_str()
+                .and_then(|s| s.split_once(','))
+                .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))
+            {
+                if bounds.contains(plon, plat) {
+                    let eo = |rings: &[TaggedRing]| -> bool {
+                        let mut inside = false;
+                        for r in rings {
+                            let n = r.pts.len();
+                            for i in 0..n {
+                                let (p, q) = (r.pts[i], r.pts[(i + 1) % n]);
+                                if (p.y > plat) != (q.y > plat)
+                                    && plon < p.x + (q.x - p.x) * (plat - p.y) / (q.y - p.y)
+                                {
+                                    inside = !inside;
+                                }
+                            }
+                        }
+                        inside
+                    };
+                    let pre = ls.shapes.iter().any(|sh| {
+                        let mut inside = false;
+                        for ring in sh {
+                            let n = ring.len();
+                            for i in 0..n {
+                                let (p, q) = (ring[i], ring[(i + 1) % n]);
+                                if (p.y > plat) != (q.y > plat)
+                                    && plon < p.x + (q.x - p.x) * (plat - p.y) / (q.y - p.y)
+                                {
+                                    inside = !inside;
+                                }
+                            }
+                        }
+                        inside
+                    });
+                    let qx = 16384.0 + (plon - bounds.west) / bounds.width() * 32768.0;
+                    let qy = 16384.0 + (plat - bounds.south) / bounds.height() * 32768.0;
+                    eprintln!(
+                        "[mesh-at] z{z} level {} layer {} {:?}: pre-clip in={pre}, \
+                         post-clip in={}, meshed={}, region in={}",
+                        ls.level,
+                        ls.layer,
+                        ls.surface,
+                        eo(&rings),
+                        meshed
+                            .as_ref()
+                            .map_or("NO".into(), |(m, _, _)| format!("{} tris", m.indices.len() / 3)),
+                        meshed.as_ref().is_some_and(|(_, _, r)| r.contains((qx, qy))),
+                    );
+                }
+            }
+        }
         if let Some((surface, rim, region)) = meshed {
             out.push(PavedMesh {
                 level: ls.level,

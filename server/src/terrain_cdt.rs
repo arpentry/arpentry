@@ -235,6 +235,26 @@ fn constrained_mesh_inner(
             if regions.iter().any(|r| r.contains(cen)) {
                 continue;
             }
+            // ARPT_CDT_AT=qx,qy — why did faces near this quantized point
+            // survive the hole: the centroid and each region's winding verdict.
+            if let Some(at) = std::env::var_os("ARPT_CDT_AT") {
+                if let Some((px, py)) = at
+                    .to_str()
+                    .and_then(|s| s.split_once(','))
+                    .and_then(|(a, b)| {
+                        Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?))
+                    })
+                {
+                    if (cen.0 - px).abs() < 600.0 && (cen.1 - py).abs() < 600.0 {
+                        let verdicts: Vec<bool> =
+                            regions.iter().map(|r| r.contains(cen)).collect();
+                        eprintln!(
+                            "[cdt-at] face cen ({:.0},{:.0}) survives; regions contain: {verdicts:?}",
+                            cen.0, cen.1
+                        );
+                    }
+                }
+            }
         }
         let tri = if area2 > 0 { [a, b, c] } else { [a, c, b] };
         for &v in &tri {
