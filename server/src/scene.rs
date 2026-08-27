@@ -275,6 +275,15 @@ pub struct SceneGraph {
     /// says something passes beneath. Assemble keeps only the lines near a
     /// short structure span, which is the only place the question is asked.
     pub witnesses: Vec<Vec<Coord>>,
+    /// Every flowing watercourse centerline in the extract, unfiltered — what
+    /// the H stratum's channel shave walks (`ground::channel_shave`). Distinct
+    /// from [`witnesses`], which keeps only the lines near a short structure
+    /// span; a channel is conditioned along its whole length or not at all,
+    /// and a footprint filtered by somebody else's question would carve a
+    /// different ground in every bbox (invariant 5).
+    ///
+    /// [`witnesses`]: Self::witnesses
+    pub flows: Vec<Vec<Coord>>,
     /// Which street each draped pedestrian way belongs to, and over what arc
     /// range of it (`assemble::walks`).
     ///
@@ -311,6 +320,7 @@ impl SceneGraph {
             junctions: Vec::new(),
             water: Vec::new(),
             witnesses: Vec::new(),
+            flows: Vec::new(),
             walks: Default::default(),
             by_source,
         }

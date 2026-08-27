@@ -298,14 +298,22 @@ pub fn derive_seniors(
     threads: usize,
 ) -> Vec<GroundLayer> {
     // H first: water is gravity-defined and no earthwork changes it, so it is
-    // the ground everything else is cut into.
+    // the ground everything else is cut into. Its earthwork is the channel
+    // shave: flowing centerlines conditioned to a bounded monotone descent,
+    // which every later stratum's bench legitimately covers (an embankment
+    // over a culvert) and nothing may deepen.
     let waters = derive_waters(scene, solved, terrain_path, threads);
+    let channels = channel_shave(scene, solved, terrain_path, threads);
     // Which corridor sides owe a pavement — asked here, before the strips
     // exist, so a street's bench can be as wide as its own cross-section.
     let paves = crate::synth::walkway::pavement_sides(scene, solved, facades);
     let mut layers: Vec<GroundLayer> = Vec::new();
-    if !waters.is_empty() {
-        layers.push(GroundLayer { stratum: Stratum::H, earthworks: Earthworks::new(Vec::new()), waters });
+    if !waters.is_empty() || !channels.is_empty() {
+        layers.push(GroundLayer {
+            stratum: Stratum::H,
+            earthworks: Earthworks::new(channels),
+            waters,
+        });
     }
     for stratum in [Stratum::R, Stratum::S] {
         let members: Vec<usize> = scene
@@ -1693,6 +1701,196 @@ fn heading(nodes: &[Coord], i: usize, cos_lat: f64) -> (f64, f64) {
     } else {
         (dx / len, dy / len)
     }
+}
+
+/// Station spacing when walking a flowing centerline, metres.
+const CHANNEL_STATION_M: f64 = 8.0;
+
+/// The channel's held half-width, metres — a mountain stream's bed, not a
+/// river's (rivers wide enough to matter are mapped as polygons and flattened
+/// as still bodies where still).
+const CHANNEL_HALF_M: f64 = 1.5;
+
+/// The deepest the shave may cut below the reference surface, metres. The
+/// bound is the design (docs/GENERATION.md §4.2 H: water constrains, it does
+/// not excavate): within it the visible class — a stream the DEM never
+/// carved a channel for, ponding a metre or two against every bump — is
+/// conditioned away; past it the DEM is disagreeing with the map, and
+/// cutting further would trench a gorge the data does not support. The
+/// embankment-crossing class (an 11 m road fill over a mapped culvert) is
+/// deliberately left standing: a senior bench re-covers the crossing, and
+/// `water.descends` keeps the residue on the books.
+const CHANNEL_SHAVE_MAX_M: f64 = 1.5;
+
+/// Lines shorter than this are skipped: direction is inferred from the net
+/// drop, and a stub's net drop is noise.
+const CHANNEL_MIN_LINE_M: f64 = 30.0;
+
+/// Cross-slope across twice the channel width past which the station is a
+/// wall, not a bed, and is left uncut.
+const CHANNEL_CLIFF_M: f64 = 5.0;
+
+/// Where channel chain ids start, clear of corridors and walkway chains.
+const CHANNEL_CHAIN_BASE: u32 = WALK_CHAIN_BASE + u32::MAX / 4;
+
+/// The H stratum's earthwork: every flowing centerline shaved to a monotone
+/// descent, bounded in depth (invariant 4's "watercourses descend", within
+/// §4.2 H's "water constrains, it does not excavate").
+///
+/// The walk mirrors `water.descends`' own: direction from the net drop over
+/// the line, then a running minimum downstream. The carve targets the running
+/// minimum but never cuts more than [`CHANNEL_SHAVE_MAX_M`] below the
+/// reference surface, and a cut-only edge never fills — so a channel the DEM
+/// already carries is untouched, a bump the DEM never resolved is opened, and
+/// an embankment stays an embankment (its own stratum benches over this layer
+/// afterwards; benches win).
+fn channel_shave(
+    scene: &SceneGraph,
+    solved: &SolvedModel,
+    terrain_path: Option<&Path>,
+    threads: usize,
+) -> Vec<EarthworkEdge> {
+    if scene.flows.is_empty() || std::env::var_os("ARPT_NO_CHANNEL_SHAVE").is_some() {
+        return Vec::new();
+    }
+    let Some(path) = terrain_path else { return Vec::new() };
+    let Ok(primary) = Dem::open(path) else { return Vec::new() };
+    let z_ref = solved.z_ref;
+    let n = scene.flows.len();
+    let threads = threads.max(1).min(n.max(1));
+    let next = Mutex::new(0usize);
+    let out: Mutex<Vec<Vec<EarthworkEdge>>> = Mutex::new(vec![Vec::new(); n]);
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                let Ok(mut dem) = primary.fork() else { return };
+                loop {
+                    let i = {
+                        let mut cur = next.lock().expect("channel queue poisoned");
+                        if *cur >= n {
+                            break;
+                        }
+                        let i = *cur;
+                        *cur += 1;
+                        i
+                    };
+                    let edges = shave_line(
+                        &scene.flows[i],
+                        CHANNEL_CHAIN_BASE + i as u32,
+                        &mut dem,
+                        z_ref,
+                    );
+                    if !edges.is_empty() {
+                        out.lock().expect("channel edges poisoned")[i] = edges;
+                    }
+                }
+            });
+        }
+    });
+    out.into_inner().expect("channel edges poisoned").into_iter().flatten().collect()
+}
+
+/// One flowing line's carve chain, or nothing where the line is too short or
+/// already descends.
+fn shave_line(line: &[Coord], chain: u32, dem: &mut Dem, z_ref: u8) -> Vec<EarthworkEdge> {
+    if line.len() < 2 {
+        return Vec::new();
+    }
+    let cos_lat = crate::scene::run_cos_lat(line);
+    // Stations at a fixed metric pitch along the mapped polyline.
+    let mut stations: Vec<Coord> = Vec::new();
+    let mut arcs: Vec<f64> = Vec::new();
+    let mut arc = 0.0f64;
+    stations.push(line[0]);
+    arcs.push(0.0);
+    for w in line.windows(2) {
+        let seg = crate::scene::metric_len(w[0], w[1], cos_lat);
+        if !(seg > 0.0) {
+            continue;
+        }
+        let steps = (seg / CHANNEL_STATION_M).ceil().max(1.0) as usize;
+        for k in 1..=steps {
+            let f = k as f64 / steps as f64;
+            stations.push(Coord {
+                x: w[0].x + (w[1].x - w[0].x) * f,
+                y: w[0].y + (w[1].y - w[0].y) * f,
+            });
+            arcs.push(arc + seg * f);
+        }
+        arc += seg;
+    }
+    if arc < CHANNEL_MIN_LINE_M {
+        return Vec::new();
+    }
+    let mut ref_h: Vec<f64> =
+        stations.iter().map(|c| reference_surface(dem, z_ref, c.x, c.y)).collect();
+    // Downstream is the end the net drop points to.
+    if ref_h.first() < ref_h.last() {
+        stations.reverse();
+        ref_h.reverse();
+        let total = arc;
+        for a in arcs.iter_mut() {
+            *a = total - *a;
+        }
+        arcs.reverse();
+    }
+    // The running minimum is the level the water has already reached; the
+    // target never cuts deeper than the shave bound below the reference.
+    let mut rmin = f64::INFINITY;
+    let mut target: Vec<f64> = Vec::with_capacity(ref_h.len());
+    for &h in &ref_h {
+        rmin = rmin.min(h);
+        target.push(rmin.max(h - CHANNEL_SHAVE_MAX_M));
+    }
+    // Where the line runs on a wall, don't cut. A slot gorge's mapped stream
+    // and the DEM routinely disagree by a couple of metres in plan, and two
+    // metres of plan on a cliff is a storey of height: a carve rim placed
+    // there saw-tooths the face (`slope.terrain_tearing`'s batter-floor
+    // class — the Baye gorge read 15.5 m of alternation from exactly this).
+    // The cross-slope across the channel's own width is the discriminator:
+    // past it, the misregistration dominates the meltwater and the honest
+    // conditioning is none.
+    let cliff: Vec<bool> = stations
+        .iter()
+        .map(|c| {
+            let dx = 2.0 * CHANNEL_HALF_M / (DEG_M * cos_lat);
+            let dy = 2.0 * CHANNEL_HALF_M / DEG_M;
+            let a = reference_surface(dem, z_ref, c.x - dx, c.y);
+            let b = reference_surface(dem, z_ref, c.x + dx, c.y);
+            let s = reference_surface(dem, z_ref, c.x, c.y - dy);
+            let t = reference_surface(dem, z_ref, c.x, c.y + dy);
+            (a - b).abs().max((s - t).abs()) > CHANNEL_CLIFF_M
+        })
+        .collect();
+    let mut edges = Vec::new();
+    for i in 0..stations.len() - 1 {
+        if cliff[i] || cliff[i + 1] {
+            continue;
+        }
+        // Emit only where there is something to cut; a cut-only edge whose
+        // target sits at the surface is a no-op that still costs a footprint.
+        let cut = (ref_h[i] - target[i]).max(ref_h[i + 1] - target[i + 1]);
+        if cut < 0.05 {
+            continue;
+        }
+        edges.push(EarthworkEdge {
+            a: stations[i],
+            b: stations[i + 1],
+            target_a: target[i],
+            target_b: target[i + 1],
+            half_width_m: [CHANNEL_HALF_M; 2],
+            carriageway_m: 0.0,
+            batter_m: [(EARTHWORK_BATTER * cut).max(EARTHWORK_MIN_BATTER_M); 2],
+            batter_run: [EARTHWORK_BATTER; 2],
+            chain,
+            arc0: arcs[i],
+            cos_lat,
+            carve: true,
+            headwall: false,
+            crest: true,
+        });
+    }
+    edges
 }
 
 /// Reads a flat surface level for every still water body from the DEM along its

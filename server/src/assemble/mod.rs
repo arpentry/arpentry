@@ -202,7 +202,9 @@ pub fn run(path: &Path, water: Option<&Path>, bbox: &Bounds) -> Result<SceneGrap
         // Flowing water joins the draped alignments as a crossing witness:
         // a mapped stream under a short annotated bridge is the gully the
         // DEM cannot resolve.
-        witnesses.append(&mut water::flowing_lines(water_path, bb)?);
+        let mut flowing = water::flowing_lines(water_path, bb)?;
+        scene.flows = flowing.clone();
+        witnesses.append(&mut flowing);
     }
     scene.witnesses = near_short_spans(&scene.corridors, witnesses);
     Ok(scene)
