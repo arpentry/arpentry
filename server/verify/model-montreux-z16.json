@@ -155,43 +155,43 @@
           "zoom": 16
         },
         {
-          "lat": 46.4302828,
-          "lon": 6.9147019,
-          "note": "the hill is at 392.18 m here and the ground under this wall is 385.67 m — an earthwork's, not the terrain's",
-          "value": 6.509385186668737,
+          "lat": 46.4338269,
+          "lon": 6.9162912,
+          "note": "the hill is at 425.87 m here and the ground under this wall is 433.03 m — an earthwork's, not the terrain's",
+          "value": 7.164406363894216,
           "zoom": 16
         },
         {
-          "lat": 46.4302828,
-          "lon": 6.9147019,
-          "note": "the hill is at 392.18 m here and the ground under this wall is 385.67 m — an earthwork's, not the terrain's",
-          "value": 6.509385186668737,
+          "lat": 46.412244262711866,
+          "lon": 6.934231830508475,
+          "note": "the hill is at 519.86 m here and the ground under this wall is 513.37 m — an earthwork's, not the terrain's",
+          "value": 6.4819270109532,
           "zoom": 16
         },
         {
-          "lat": 46.4302828,
-          "lon": 6.9147019,
-          "note": "the hill is at 392.18 m here and the ground under this wall is 385.67 m — an earthwork's, not the terrain's",
-          "value": 6.509385186668737,
+          "lat": 46.4324378,
+          "lon": 6.9126144,
+          "note": "the hill is at 396.55 m here and the ground under this wall is 402.54 m — an earthwork's, not the terrain's",
+          "value": 5.99568637502864,
           "zoom": 16
         },
         {
-          "lat": 46.4302828,
-          "lon": 6.9147019,
-          "note": "the hill is at 392.18 m here and the ground under this wall is 385.67 m — an earthwork's, not the terrain's",
-          "value": 6.509385186668737,
+          "lat": 46.4324378,
+          "lon": 6.9126144,
+          "note": "the hill is at 396.55 m here and the ground under this wall is 402.54 m — an earthwork's, not the terrain's",
+          "value": 5.99568637502864,
           "zoom": 16
         }
       ],
-      "population": "Every 2 m of every building footprint edge inside the extract bbox (52280 walls read), scored as the engineered ground minus the reference surface the solve itself read — zero wherever no earthwork reaches, so the rate is the share of *wall* standing on something a road decided. Of 261282 samples, 35843 stand on ground an earthwork moved at all.",
+      "population": "Every 2 m of every building footprint edge inside the extract bbox (52280 walls read), scored as the engineered ground minus the reference surface the solve itself read — zero wherever no earthwork reaches, so the rate is the share of *wall* standing on something a road decided. Of 261282 samples, 45680 stand on ground an earthwork moved at all.",
       "samples": 261282,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 2.780000000000001,
+      "tail": 3.366666666666667,
       "threshold": 1.0,
       "title": "A road earthwork deciding the ground under a building",
-      "violation_pct": 2.0755352454436204,
-      "violations": 5423,
+      "violation_pct": 3.22065813948148,
+      "violations": 8415,
       "worst": 10.272060644183057
     },
     {
@@ -199,7 +199,7 @@
       "invariant": "I8",
       "median": 0.006666666666667709,
       "offenders": [],
-      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 13879008 probes, 633009 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
+      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 13879008 probes, 663518 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
       "samples": 13879008,
       "sense": "higher_is_worse",
       "skipped": null,
@@ -216,6 +216,27 @@
       "median": 0.006666666666667709,
       "offenders": [
         {
+          "lat": 46.401763,
+          "lon": 6.927266599999999,
+          "note": "Rail(StandardGauge) 19491 solved its structure here against 374.46 m; the ground                          drawn is 383.57 m",
+          "value": 9.109109163012533,
+          "zoom": 16
+        },
+        {
+          "lat": 46.431062,
+          "lon": 6.9149044,
+          "note": "Road(Residential) 20108 solved its structure here against 394.53 m; the ground                          drawn is 403.01 m",
+          "value": 8.485302825202496,
+          "zoom": 16
+        },
+        {
+          "lat": 46.40175606666667,
+          "lon": 6.927313766666667,
+          "note": "Rail(StandardGauge) 19490 solved its structure here against 375.68 m; the ground                          drawn is 383.69 m",
+          "value": 8.008800225168955,
+          "zoom": 16
+        },
+        {
           "lat": 46.4022726,
           "lon": 6.9274955,
           "note": "Rail(StandardGauge) 19490 solved its structure here against 376.11 m; the ground                          drawn is 368.46 m",
@@ -223,52 +244,31 @@
           "zoom": 16
         },
         {
-          "lat": 46.4286607,
-          "lon": 6.9235111,
-          "note": "Road(Tertiary) 19985 solved its structure here against 480.01 m; the ground                          drawn is 487.38 m",
-          "value": 7.369574276845526,
+          "lat": 46.401821,
+          "lon": 6.9272839,
+          "note": "Rail(StandardGauge) 19491 solved its structure here against 374.62 m; the ground                          drawn is 382.26 m",
+          "value": 7.641438906073802,
           "zoom": 16
         },
         {
-          "lat": 46.45536009999999,
-          "lon": 6.9417209,
-          "note": "Rail(Funicular) 20317 solved its structure here against 1017.70 m; the ground                          drawn is 1024.59 m",
-          "value": 6.8870324052476235,
+          "lat": 46.4016985,
+          "lon": 6.9272962,
+          "note": "Rail(StandardGauge) 19490 solved its structure here against 375.56 m; the ground                          drawn is 383.18 m",
+          "value": 7.619450106053364,
           "zoom": 16
         },
         {
-          "lat": 46.40175606666667,
-          "lon": 6.927313766666667,
-          "note": "Rail(StandardGauge) 19490 solved its structure here against 375.68 m; the ground                          drawn is 382.48 m",
-          "value": 6.794417364929473,
+          "lat": 46.401879,
+          "lon": 6.9273012,
+          "note": "Rail(StandardGauge) 19491 solved its structure here against 374.57 m; the ground                          drawn is 382.14 m",
+          "value": 7.574220905486982,
           "zoom": 16
         },
         {
-          "lat": 46.43584833333333,
-          "lon": 6.911505633333333,
-          "note": "Rail(NarrowGauge) 19525 solved its structure here against 405.77 m; the ground                          drawn is 399.02 m",
-          "value": 6.754942504939493,
-          "zoom": 16
-        },
-        {
-          "lat": 46.40232373333333,
-          "lon": 6.927518233333333,
-          "note": "Rail(StandardGauge) 19490 solved its structure here against 375.23 m; the ground                          drawn is 368.48 m",
-          "value": 6.749219682188027,
-          "zoom": 16
-        },
-        {
-          "lat": 46.4366309,
-          "lon": 6.9107196,
-          "note": "Rail(NarrowGauge) 19525 solved its structure here against 401.43 m; the ground                          drawn is 394.77 m",
-          "value": 6.658395589225165,
-          "zoom": 16
-        },
-        {
-          "lat": 46.4365963,
-          "lon": 6.9107375,
-          "note": "Rail(NarrowGauge) 19525 solved its structure here against 401.31 m; the ground                          drawn is 394.77 m",
-          "value": 6.531547695744507,
+          "lat": 46.402061,
+          "lon": 6.9274170999999996,
+          "note": "Rail(StandardGauge) 19490 solved its structure here against 374.73 m; the ground                          drawn is 382.27 m",
+          "value": 7.538970430555423,
           "zoom": 16
         }
       ],
@@ -276,12 +276,12 @@
       "samples": 2692,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 6.88666666666667,
+      "tail": 8.006666666666668,
       "threshold": 1.0,
       "title": "A structural decision taken against a ground nobody drew",
-      "violation_pct": 7.355126300148588,
-      "violations": 198,
-      "worst": 7.650640290399167
+      "violation_pct": 8.469539375928678,
+      "violations": 228,
+      "worst": 9.109109163012533
     },
     {
       "id": "slope.rail_grade",
@@ -387,6 +387,460 @@
       "violation_pct": 0.0,
       "violations": 0,
       "worst": null
+    },
+    {
+      "id": "network.walk_cover",
+      "invariant": "I4",
+      "median": 0.006666666666667709,
+      "offenders": [
+        {
+          "lat": 46.419004808461956,
+          "lon": 6.9413726623814735,
+          "note": "a free stretch of a mapped footway, and the nearest drawn surface of any kind is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.41901182536616,
+          "lon": 6.94138079868474,
+          "note": "a free stretch of a mapped footway, and the nearest drawn surface of any kind is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.41901898983097,
+          "lon": 6.941388654855707,
+          "note": "a free stretch of a mapped footway, and the nearest drawn surface of any kind is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.419026245186146,
+          "lon": 6.9413963384783814,
+          "note": "a free stretch of a mapped footway, and the nearest drawn surface of any kind is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.41903350054133,
+          "lon": 6.9414040221010564,
+          "note": "a free stretch of a mapped footway, and the nearest drawn surface of any kind is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.41904075589651,
+          "lon": 6.9414117057237315,
+          "note": "a free stretch of a mapped footway, and the nearest drawn surface of any kind is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.41904801125169,
+          "lon": 6.9414193893464065,
+          "note": "a free stretch of a mapped footway, and the nearest drawn surface of any kind is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.419055266606875,
+          "lon": 6.9414270729690815,
+          "note": "a free stretch of a mapped footway, and the nearest drawn surface of any kind is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        }
+      ],
+      "population": "Every 1 m of every mapped pedestrian line inside the bbox (18502 lines), on-ground stretches only, scored as the plan distance to the nearest drawn hard surface of any kind — a walk or path band, a carriageway or formation, or a junction's paved extent. Zero on any drawn surface, so the rate is the share of mapped pedestrian length a person crosses bare ground for.",
+      "samples": 328683,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 9.166666666666671,
+      "threshold": 0.5,
+      "title": "Mapped pedestrian ways with no drawn surface at all",
+      "violation_pct": 4.225043583026807,
+      "violations": 13887,
+      "worst": 24.0
+    },
+    {
+      "id": "network.walk_material",
+      "invariant": "I4",
+      "median": 0.006666666666667709,
+      "offenders": [
+        {
+          "lat": 46.46979492499059,
+          "lon": 6.884891148816879,
+          "note": "a street-attached stretch of a mapped footway (tagged sidewalk), drawn as no walkable band — the nearest is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.46979903412588,
+          "lon": 6.884879550451135,
+          "note": "a street-attached stretch of a mapped footway (tagged sidewalk), drawn as no walkable band — the nearest is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.469803143261174,
+          "lon": 6.884867952085391,
+          "note": "a street-attached stretch of a mapped footway (tagged sidewalk), drawn as no walkable band — the nearest is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.469807252396464,
+          "lon": 6.8848563537196465,
+          "note": "a street-attached stretch of a mapped footway (tagged sidewalk), drawn as no walkable band — the nearest is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.46981136153176,
+          "lon": 6.884844755353902,
+          "note": "a street-attached stretch of a mapped footway (tagged sidewalk), drawn as no walkable band — the nearest is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.46981547066705,
+          "lon": 6.884833156988158,
+          "note": "a street-attached stretch of a mapped footway (tagged sidewalk), drawn as no walkable band — the nearest is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.46981957980234,
+          "lon": 6.884821558622413,
+          "note": "a street-attached stretch of a mapped footway (tagged sidewalk), drawn as no walkable band — the nearest is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.46982368893764,
+          "lon": 6.884809960256669,
+          "note": "a street-attached stretch of a mapped footway (tagged sidewalk), drawn as no walkable band — the nearest is 24.0 m away",
+          "value": 24.0,
+          "zoom": 16
+        }
+      ],
+      "population": "The same stations, non-crossing lines only. An attached stretch scores zero when its own host built a walk band within the seat's play (8 m — the band is the mapped line's re-seated stand-in), and its distance to the nearest band otherwise; an unattached stretch scores its distance to the nearest walkable band, which should be on its own polyline.",
+      "samples": 325275,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 21.84666666666667,
+      "threshold": 1.5,
+      "title": "Mapped walking routes drawn as no walkable band",
+      "violation_pct": 2.6488356006456075,
+      "violations": 8616,
+      "worst": 24.0
+    },
+    {
+      "id": "network.walk_reach",
+      "invariant": "I4",
+      "median": 0.006666666666667709,
+      "offenders": [
+        {
+          "lat": 46.4401803,
+          "lon": 6.8961612,
+          "note": "a mapped footway (tagged sidewalk) joins the network here and its first 20.0 m are bare ground",
+          "value": 20.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4175408,
+          "lon": 6.9280057,
+          "note": "a mapped stair joins the network here and its first 20.0 m are bare ground",
+          "value": 20.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4174664,
+          "lon": 6.9279813,
+          "note": "a mapped stair joins the network here and its first 20.0 m are bare ground",
+          "value": 20.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.409814,
+          "lon": 6.9312237,
+          "note": "a mapped footway joins the network here and its first 20.0 m are bare ground",
+          "value": 20.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4370437,
+          "lon": 6.9105353,
+          "note": "a mapped stair joins the network here and its first 20.0 m are bare ground",
+          "value": 20.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4371392,
+          "lon": 6.9104882,
+          "note": "a mapped stair joins the network here and its first 20.0 m are bare ground",
+          "value": 20.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4398648,
+          "lon": 6.9039284,
+          "note": "a mapped footway (tagged sidewalk) joins the network here and its first 20.0 m are bare ground",
+          "value": 20.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.442895,
+          "lon": 6.9123636,
+          "note": "a mapped stair joins the network here and its first 20.0 m are bare ground",
+          "value": 20.0,
+          "zoom": 16
+        }
+      ],
+      "population": "Every endpoint of a mapped pedestrian line that the data joins to something else — a connector another feature carries, or another pedestrian line ending within 0.75 m — scored as the bare metres walking in from that endpoint before any drawn hard surface appears (capped at 20 m). The joints are where the eye reads connectivity, and where a band that stopped short is a link that visibly is not there.",
+      "samples": 4012,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 20.006666666666668,
+      "threshold": 1.0,
+      "title": "Pedestrian ways that stop short of the network they join",
+      "violation_pct": 0.922233300099701,
+      "violations": 37,
+      "worst": 20.0
+    },
+    {
+      "id": "street.strip_continuity",
+      "invariant": "I4",
+      "median": 0.006666666666667709,
+      "offenders": [
+        {
+          "lat": 46.447296615694164,
+          "lon": 6.874811289949345,
+          "note": "123 m of primary side left carries a mapped pavement and draws none",
+          "value": 123.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.433004029845094,
+          "lon": 6.925557495530738,
+          "note": "119 m of residential side right carries a mapped pavement and draws none",
+          "value": 119.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43400832813744,
+          "lon": 6.915751874086217,
+          "note": "86 m of tertiary side left carries a mapped pavement and draws none",
+          "value": 86.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.46008242666264,
+          "lon": 6.865136806770683,
+          "note": "84 m of residential side right carries a mapped pavement and draws none",
+          "value": 84.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4697966562339,
+          "lon": 6.884941738676229,
+          "note": "82 m of secondary side right carries a mapped pavement and draws none",
+          "value": 82.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45384574222408,
+          "lon": 6.88005269107485,
+          "note": "82 m of residential side right carries a mapped pavement and draws none",
+          "value": 82.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.44327470726655,
+          "lon": 6.88793104095571,
+          "note": "81 m of residential side left carries a mapped pavement and draws none",
+          "value": 81.0,
+          "zoom": 16
+        },
+        {
+          "lat": 46.4466237540607,
+          "lon": 6.885888655544822,
+          "note": "80 m of residential side left carries a mapped pavement and draws none",
+          "value": 80.0,
+          "zoom": 16
+        }
+      ],
+      "population": "Every 1 m of every (corridor, side) that `assemble::walks` attached a pedestrian way to, over the merged extent of its claims — two claims within 25 m are one, since the attachment breaks at every corner and driveway by design. At-grade stretches inside the bbox only. A station scores zero when any walk or path band lies within the strip from the drawn kerb to 8 m out (the seat's own play, so a legitimately re-seated pavement counts), and otherwise the length of the interruption it belongs to. The rate is therefore the share of claimed pavement drawn bare, and the worst is the longest single hole. `ARPT_DEBUG_STRIP` prints the sides, the extent and the break count.",
+      "samples": 67480,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 123.0,
+      "threshold": 0.5,
+      "title": "Claimed pavement with none drawn beside the street",
+      "violation_pct": 7.591879075281565,
+      "violations": 5123,
+      "worst": 123.0
+    },
+    {
+      "id": "street.kerb_join",
+      "invariant": "I4",
+      "median": 0.006666666666667709,
+      "offenders": [
+        {
+          "lat": 46.445296914317765,
+          "lon": 6.895572406230606,
+          "note": "a pavement stands 3.78 m clear of the carriageway edge it belongs to",
+          "value": 3.7781793793657563,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43988229131957,
+          "lon": 6.904390015097027,
+          "note": "a pavement stands 3.77 m clear of the carriageway edge it belongs to",
+          "value": 3.768043198638992,
+          "zoom": 16
+        },
+        {
+          "lat": 46.43977727121502,
+          "lon": 6.904549866777645,
+          "note": "a pavement stands 3.48 m clear of the carriageway edge it belongs to",
+          "value": 3.4769233681295457,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45449657981494,
+          "lon": 6.862795183166236,
+          "note": "a pavement stands 3.16 m clear of the carriageway edge it belongs to",
+          "value": 3.1605983341128816,
+          "zoom": 16
+        },
+        {
+          "lat": 46.450400717361305,
+          "lon": 6.863407602483732,
+          "note": "a pavement stands 2.76 m clear of the carriageway edge it belongs to",
+          "value": 2.757375617161159,
+          "zoom": 16
+        },
+        {
+          "lat": 46.454938883165326,
+          "lon": 6.89787533043212,
+          "note": "a pavement stands 2.70 m clear of the carriageway edge it belongs to",
+          "value": 2.7049583837301734,
+          "zoom": 16
+        },
+        {
+          "lat": 46.44816539980613,
+          "lon": 6.873750948579737,
+          "note": "a pavement stands 2.67 m clear of the carriageway edge it belongs to",
+          "value": 2.6747540059194854,
+          "zoom": 16
+        },
+        {
+          "lat": 46.44810268790597,
+          "lon": 6.87384272978853,
+          "note": "a pavement stands 2.61 m clear of the carriageway edge it belongs to",
+          "value": 2.6072470889962993,
+          "zoom": 16
+        }
+      ],
+      "population": "Every walk band segment attached to a host corridor, inside the bbox (16001 measured), scored as the plan distance from the band's inner edge to the drawn edge of *that same corridor's* asphalt — never the nearest asphalt, since a pavement on a corner stands close to a side street it does not belong to. Overlap is clamped to zero: a band the room could not narrow far enough is `order.at_grade_overlap`'s question, and the union already subtracts it. Hostless bands — paths, corner links, crossing stubs — are out of the population, having no kerb to join.",
+      "samples": 16001,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 2.020000000000003,
+      "threshold": 0.5,
+      "title": "Bare ground between a carriageway and its own pavement",
+      "violation_pct": 1.2186738328854447,
+      "violations": 195,
+      "worst": 3.7781793793657563
+    },
+    {
+      "id": "street.crossing_extent",
+      "invariant": "I4",
+      "median": 0.006666666666667709,
+      "offenders": [
+        {
+          "lat": 46.46782622654875,
+          "lon": 6.865561239414885,
+          "note": "13.5 m of a 13 m zebra chord lies off the 1 carriageway it crosses",
+          "value": 13.499860738075007,
+          "zoom": 16
+        },
+        {
+          "lat": 46.46972933024561,
+          "lon": 6.862822451390904,
+          "note": "10.9 m of a 11 m zebra chord lies off the 2 carriageways it crosses",
+          "value": 10.948897294771227,
+          "zoom": 16
+        },
+        {
+          "lat": 46.469170555586985,
+          "lon": 6.895965630706963,
+          "note": "10.7 m of a 18 m zebra chord lies off the 1 carriageway it crosses",
+          "value": 10.697780233927123,
+          "zoom": 16
+        },
+        {
+          "lat": 46.437588445330526,
+          "lon": 6.90967096645477,
+          "note": "9.4 m of a 20 m zebra chord lies off the 1 carriageway it crosses",
+          "value": 9.37974683553688,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45031533682035,
+          "lon": 6.868451357164593,
+          "note": "8.4 m of a 16 m zebra chord lies off the 1 carriageway it crosses",
+          "value": 8.410128834371855,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45053195439415,
+          "lon": 6.86680470629492,
+          "note": "8.2 m of a 8 m zebra chord lies off the 1 carriageway it crosses",
+          "value": 8.247014660397634,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45286952958277,
+          "lon": 6.892523426025495,
+          "note": "8.0 m of a 8 m zebra chord lies off the 1 carriageway it crosses",
+          "value": 7.999999999939803,
+          "zoom": 16
+        },
+        {
+          "lat": 46.46455772253936,
+          "lon": 6.894682402027433,
+          "note": "7.8 m of a 8 m zebra chord lies off the 1 carriageway it crosses",
+          "value": 7.815711299643617,
+          "zoom": 16
+        }
+      ],
+      "population": "Every registered crossing chord (371 scored) with an end inside the bbox, marched at 0.25 m and scored as the total length lying further than its own drawn half-width from every corridor the *mapped crosswalk polyline actually intersects*. Crossings whose polyline crosses no drivable centerline are out of the population (11 of them) — nothing owes them a width — and so is a chord wholly outside the bbox.",
+      "samples": 371,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 13.5,
+      "threshold": 0.5,
+      "title": "Zebra painted off the carriageway it crosses",
+      "violation_pct": 14.824797843665769,
+      "violations": 55,
+      "worst": 13.499860738075007
+    },
+    {
+      "id": "street.width_step",
+      "invariant": "I6",
+      "median": 0.006666666666667709,
+      "offenders": [],
+      "population": "Every shared vertex of two consecutive walk or path band segments that `synth::pavement` will chain into one buffered polyline (55724 inside the bbox), scored as the change in *drawn* width across it. The chaining test is the union's own, less `half_m` — which is the field the pavement stopped varying, and the reason a ribbon can now taper at all instead of breaking into a slab per rung.",
+      "samples": 55724,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 0.006666666666667709,
+      "threshold": 0.01,
+      "title": "Pedestrian ribbon changing width mid-run",
+      "violation_pct": 0.0,
+      "violations": 0,
+      "worst": 0.0
     },
     {
       "id": "crossing.orphan",

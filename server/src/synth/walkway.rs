@@ -41,7 +41,7 @@ use crate::solve::SolvedModel;
 
 use std::collections::HashMap;
 
-use super::carriageway::{level_runs, GradeRun, SourceSeg, RUN_EPS_M};
+use super::carriageway::{level_runs, SourceSeg, RUN_EPS_M};
 
 /// The corridor id a band with no host carries. Nothing resolves it to a
 /// profile (`SolvedModel::profile` answers `None` past the end of its list),
@@ -499,16 +499,18 @@ fn point_to_seg(p: Coord, a: Coord, b: Coord, cos_lat: f64) -> (f64, f64) {
 /// Builds every walkway band in the extract: the geometry, the seat and the
 /// material, with no grade layer yet.
 ///
-/// **Model, not drawing, and that is why it is split from [`stamp_layers`].**
-/// The band is derived once, before stage 3, because the ground under a
-/// walkway is that walkway (`ground::walk_earthworks`) and a bench derived
-/// from a *second* construction of the same band would be a bench that does
-/// not fit it — the sliver family this codebase keeps re-learning. One
-/// derivation, two readers: the ground benches it, and the union draws it.
+/// **Model, not drawing, and that is why the grade layer comes later.** The
+/// band is derived once, before stage 3, because the ground under a walkway
+/// is that walkway (`ground::walk_earthworks`) and a bench derived from a
+/// *second* construction of the same band would be a bench that does not fit
+/// it — the sliver family this codebase keeps re-learning. One derivation,
+/// two readers: the ground benches it, and the union draws it.
 ///
-/// They are *not* handed to `synth::sheets`: a band's sheet is its host's, and
-/// letting a sidewalk vote on the grade-separation layering would let the thing
-/// standing on a surface decide what that surface is.
+/// The layer is stamped in `synth::carriageway::bake`, by running the sheet
+/// layering (`synth::sheets`) over the walk bands *among themselves* — never
+/// mixed into the carriageway assignment: a sidewalk must not vote on the
+/// grade-separation layering of the street it stands beside, and the walk
+/// sheet is its own namespace (`height::Sheet::walk`).
 /// Builds every walkway band, and — in step with it — the **source each
 /// segment came from**.
 ///
@@ -1317,9 +1319,10 @@ pub fn fit_to_ground(
     // way whose every segment the fit declines leaves the set entirely — which
     // is exactly the question `pipeline::paves_via_walkway` asks of it.
     sources.resize(bands.len(), 0);
-    if std::env::var_os("ARPT_NO_WALK_FIT").is_some() {
-        return; // the A/B control: bands sized from the plan alone, as before
-    }
+    // The A/B control: bands sized from the plan alone, as before. The seat
+    // heights below are still read and stamped — they are a fact about the
+    // model, not a product of the fit.
+    let no_fit = std::env::var_os("ARPT_NO_WALK_FIT").is_some();
     // Only what is drawn at grade, matching the population the bench serves: a
     // band over a bridge is carried by the structure and has no ground under it
     // to be fitted to.
@@ -1332,15 +1335,34 @@ pub fn fit_to_ground(
         seniors,
         terrain_path,
         z_ref,
-        |k, sample| fitted_half(&bands[seats[k]], sample),
+        |k, sample| {
+            let s = &bands[seats[k]];
+            // A hostless band's seat: the senior ground under its own two ends
+            // — the same target the fit checks its faces against and stratum D
+            // benches to. Read here, once, and stamped onto the band below: it
+            // is built with `height_a`/`height_b` zero, and everything that
+            // compares band heights — the walk sheet layering
+            // (`synth::sheets`), the trench yields — needs the real seat, not
+            // the zero.
+            let ends = (s.corridor == NO_HOST).then(|| (sample(s.a), sample(s.b)));
+            let half = if no_fit { None } else { fitted_half(s, ends, sample) };
+            (half, ends)
+        },
     );
     let mut drop: Vec<bool> = vec![false; bands.len()];
     let census = std::env::var_os("ARPT_DEBUG_WALK").is_some();
     // Length by what the fit did to it, so the cost of the rule is reported
     // rather than inferred: kept as it was, narrowed, or given up on.
     let mut by = [[0.0f64; 4]; 2]; // [path][kept, narrowed, sliver, dropped]
-    for (k, half) in fitted.into_iter().enumerate() {
+    for (k, (half, ends)) in fitted.into_iter().enumerate() {
         let i = seats[k];
+        if let Some((ha, hb)) = ends {
+            bands[i].height_a = ha;
+            bands[i].height_b = hb;
+        }
+        if no_fit {
+            continue; // seats stamped, widths untouched, nothing dropped
+        }
         let len = crate::scene::metric_len(bands[i].a, bands[i].b, bands[i].cos_lat);
         let path = usize::from(bands[i].corridor == NO_HOST);
         match half {
@@ -1372,6 +1394,9 @@ pub fn fit_to_ground(
                 drop[i] = true;
             }
         }
+    }
+    if no_fit {
+        return;
     }
     let mut i = 0;
     bands.retain(|_| {
@@ -1645,12 +1670,21 @@ fn min_width_m() -> f64 {
 /// bench under it inside its material's face allowance, or `None` where even
 /// the narrowest band worth drawing does not fit.
 ///
+/// `ends` is a hostless band's seat — the senior ground under its two ends,
+/// sampled once by the caller (which also stamps it onto the band); a hosted
+/// band passes `None` and seats on `height_a`/`height_b`, the height its
+/// street's cross-section draws it at.
+///
 /// Two probes at most, and the first answers for the great majority. The face
 /// grows with the bench's width, so where the nominal verge already fits there
 /// is nothing to decide; where it does not, the width whose face is the cap is
 /// the cap's share of the one just measured, and the second probe reads the
 /// ground there rather than trusting that estimate.
-fn fitted_half(s: &SourceSeg, sample: &mut dyn FnMut(Coord) -> f64) -> Option<f64> {
+fn fitted_half(
+    s: &SourceSeg,
+    ends: Option<(f64, f64)>,
+    sample: &mut dyn FnMut(Coord) -> f64,
+) -> Option<f64> {
     let cos_lat = s.cos_lat;
     let (dx, dy) = ((s.b.x - s.a.x) * cos_lat, s.b.y - s.a.y);
     let len = (dx * dx + dy * dy).sqrt();
@@ -1659,11 +1693,9 @@ fn fitted_half(s: &SourceSeg, sample: &mut dyn FnMut(Coord) -> f64) -> Option<f6
     }
     let (px, py) = (-dy / len, dx / len); // lateral unit, metric (left)
     let mid = Coord { x: (s.a.x + s.b.x) * 0.5, y: (s.a.y + s.b.y) * 0.5 };
-    // The same seat the bench will take: a sidewalk's is the height it is drawn
-    // at, a path's is the ground along its own centerline, read at both ends
+    // The same seat the bench will take, read at both ends
     // (`ground::walk_edge` says why never at the middle).
-    let target = if s.corridor == NO_HOST {
-        let (ha, hb) = (sample(s.a), sample(s.b));
+    let target = if let Some((ha, hb)) = ends {
         // **A link between two bands must be a link, not a wall.** A hostless
         // Walkway piece is a corner or a crossing stub — connective tissue
         // between two claimed stretches — and where the ground jumps more
@@ -1733,26 +1765,6 @@ fn fitted_half(s: &SourceSeg, sample: &mut dyn FnMut(Coord) -> f64) -> Option<f6
         return None;
     }
     Some(w - priors::EARTHWORK_MARGIN_M)
-}
-
-/// Stamps each band with the grade-separation layer of the carriageway stretch
-/// it rides, once `synth::sheets` has settled them.
-///
-/// A band belongs to its host's sheet by definition, so the lookup is the run
-/// containing the segment's own arc. A path has no host and no sheet to ride:
-/// it stays on layer 0, where everything at grade that nothing stacks over
-/// lives.
-pub fn stamp_layers(bands: &mut [SourceSeg], grade_runs: &[GradeRun]) {
-    for s in bands.iter_mut().filter(|s| s.corridor != NO_HOST) {
-        s.layer = grade_runs
-            .iter()
-            .find(|g| {
-                g.corridor == s.corridor
-                    && g.arc0 <= s.arc0 + RUN_EPS_M
-                    && g.arc1 >= s.arc0 - RUN_EPS_M
-            })
-            .map_or(0, |g| g.layer);
-    }
 }
 
 /// The unit normal at station `i`, pointing to `side` (0 left, 1 right) — the
@@ -1895,7 +1907,7 @@ mod tests {
                 400.0
             }
         };
-        let got = fitted_half(&s, &mut sample);
+        let got = fitted_half(&s, None, &mut sample);
         // The nominal reaches past 1.2 m, so the wall is inside the width and
         // the fit must either refuse or narrow to keep the bench off it.
         match got {

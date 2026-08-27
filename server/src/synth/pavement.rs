@@ -448,8 +448,13 @@ fn trench_yields(
                 continue; // each pair once
             }
             let t = junctions.source(j);
-            if t.layer == s.layer {
-                continue; // one sheet: joined, braided or the same ribbon
+            // One sheet: joined, braided or the same ribbon. Layers are a
+            // namespace per side of `height::Sheet::walk` — the carriageway
+            // layering and the walk layering never compare numbers — so a
+            // pedestrian band and a carriageway are never one sheet, and their
+            // equal layer is a coincidence the gap test below must arbitrate.
+            if s.surface.is_pedestrian() == t.surface.is_pedestrian() && t.layer == s.layer {
+                continue;
             }
             let (d, ts, tt) = closest_approach(s, t);
             if d > s.half_m + t.half_m {

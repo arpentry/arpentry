@@ -156,24 +156,6 @@ pub struct Handover {
     pub b: Coord,
 }
 
-/// One at-grade stretch of one corridor, and the sheet it stands on.
-///
-/// It exists so `synth::walkway` can put a sidewalk on the same sheet as the
-/// asphalt it borders without re-deriving the layering: `synth::sheets`
-/// decides once, here, and the band reads the verdict. A band that decided for
-/// itself would occasionally put a sidewalk on the flyover its street passes
-/// under.
-#[derive(Debug, Clone, Copy)]
-pub struct GradeRun {
-    pub corridor: CorridorId,
-    pub arc0: f64,
-    pub arc1: f64,
-    pub layer: u32,
-    /// Index of this run's first [`SourceSeg`], which is where its layer is
-    /// read from once the sheets are assigned.
-    pub first: usize,
-}
-
 /// One stretch of centerline between two nodes, and how far either side of it
 /// that corridor's asphalt reaches. Carries the corridor *id* rather than a
 /// borrowed profile so the model stays self-contained and shareable.
@@ -244,12 +226,11 @@ pub struct SourceSeg {
     /// Arc of `a` along whatever line this stretch was stationed on: its
     /// corridor's, or — for a walkway band with no host — the way's own.
     ///
-    /// Carried because a band outlives the loop that built it. It is built
+    /// Carried because a band outlives the loop that built it: it is built
     /// before the ground is derived (the ground under a walkway is that
-    /// walkway, `ground::walk_earthworks`) and stamped with its grade layer
-    /// after the carriageway has settled its sheets, and both of those readers
-    /// need to know *where along its run* a segment sits without re-deriving
-    /// it from the plan.
+    /// walkway, `ground::walk_earthworks`), and readers after that loop need
+    /// to know *where along its run* a segment sits without re-deriving it
+    /// from the plan.
     pub arc0: f64,
 }
 
@@ -354,6 +335,12 @@ impl CarriagewayModel {
         let mut best: Option<(f64, u32)> = None;
         for &i in scratch.iter() {
             let s = &self.sources[i as usize];
+            if s.surface.is_pedestrian() {
+                // The pin stands on the carriageway sheet, never the walk one
+                // — walk layers are a separate namespace (`height::Sheet`),
+                // and a sidewalk's seat can match the pin's height exactly.
+                continue;
+            }
             // Read the stretch's surface *beside the pin*, not at its midpoint:
             // on a grade those are different heights and only the near one is
             // the asphalt this intersection stands on.
@@ -449,22 +436,26 @@ pub fn bake(
     // carriageway stretch (`synth::sheets`), not read off the mapped bridge
     // spans per corridor. Sources are built first because the layering is a
     // property of how they overlap, then stamped back onto them.
-    let (mut sources, handovers, mut grade_runs) = carriageway_sources(scene, solved, facades);
+    let (mut sources, handovers) = carriageway_sources(scene, solved, facades);
     let layers = sheets::assign(scene, &sources);
     for (s, &l) in sources.iter_mut().zip(layers.iter()) {
         s.layer = l;
     }
-    // The walkway bands ride the sheets the carriageway just settled, and are
-    // appended *after* the assignment: a sidewalk must not vote on the
-    // grade-separation layering of the street it stands beside. They arrive
-    // already built — the ground was benched from these same segments before
-    // this stage ran (`synth::walkway::bands`) — and all that is left is the
-    // sheet each one rides.
-    for r in &mut grade_runs {
-        r.layer = layers.get(r.first).copied().unwrap_or(0);
-    }
+    // The walkway bands get the same layering, run over themselves: stacked
+    // walk bands are separate sheets exactly as stacked carriageways are, with
+    // separate regions and each its own rim. They used to inherit their host's
+    // layer instead, which no free band has — so a strip descending into a
+    // trench mouth and the path on the rim above it shared one sheet, and the
+    // height kernel blended a storey of difference across a band's width
+    // (`slope.walk_crossfall`'s tail). Kept apart from the carriageway
+    // assignment: a sidewalk must not vote on the grade-separation layering of
+    // the street it stands beside, and the walk sheet is its own namespace
+    // (`height::Sheet::walk`), so the two layerings never compare numbers.
     let mut walk_bands = walk_bands;
-    super::walkway::stamp_layers(&mut walk_bands, &grade_runs);
+    let walk_layers = sheets::assign(scene, &walk_bands);
+    for (s, &l) in walk_bands.iter_mut().zip(walk_layers.iter()) {
+        s.layer = l;
+    }
     sources.extend(walk_bands);
     let mut model = CarriagewayModel::build(junctions, sources, handovers);
     // An intersection pins the sheet it stands on, which is the sheet of the
@@ -485,10 +476,9 @@ fn carriageway_sources(
     scene: &SceneGraph,
     solved: &SolvedModel,
     facades: &Facades,
-) -> (Vec<SourceSeg>, Vec<Handover>, Vec<GradeRun>) {
+) -> (Vec<SourceSeg>, Vec<Handover>) {
     let mut out = Vec::new();
     let mut handovers = Vec::new();
-    let mut grade_runs: Vec<GradeRun> = Vec::new();
     // `ARPT_NO_ABUTMENT_CUT=1` stops the band on the boundary again and
     // withholds the cuts with it, so an A/B re-tile of this is a flag rather
     // than a patch — the same reason `--no-hole` exists. Read once: it is a
@@ -586,16 +576,6 @@ fn carriageway_sources(
             if stops.len() < 2 {
                 continue;
             }
-            // Where this at-grade run's sources begin, so `synth::sheets`'
-            // verdict on them can be read back and handed to the walkway that
-            // rides the same stretch — one sheet decision, not two.
-            grade_runs.push(GradeRun {
-                corridor: c.id,
-                arc0: a0,
-                arc1: a1,
-                layer: 0,
-                first: out.len(),
-            });
             // **One centerline** (docs/ROADS.md H2, invariant 5): the band is
             // buffered around the same smoothed line the deck is swept along
             // and the ground benched beside, so nothing steps at the abutment
@@ -634,7 +614,7 @@ fn carriageway_sources(
             }
         }
     }
-    (out, handovers, grade_runs)
+    (out, handovers)
 }
 
 /// Shortest and longest stretch of centerline, in metres, that one station
@@ -1261,7 +1241,7 @@ mod tests {
         let mut scene = SceneGraph::default();
         scene.corridors.push(c);
         let solved = SolvedModel::from_profiles(vec![Some(p)], 16);
-        let (sources, cuts, _) = carriageway_sources(&scene, &solved, &Facades::empty());
+        let (sources, cuts) = carriageway_sources(&scene, &solved, &Facades::empty());
         assert!(!sources.is_empty(), "the corridor paved nothing");
 
         // Every source endpoint lies on the smoothed line. Sampled densely
@@ -1336,7 +1316,7 @@ mod tests {
         let mut scene = SceneGraph::default();
         scene.corridors.push(c);
         let solved = SolvedModel::from_profiles(vec![None], 16);
-        let (sources, _, _) = carriageway_sources(&scene, &solved, &Facades::empty());
+        let (sources, _) = carriageway_sources(&scene, &solved, &Facades::empty());
         // The paved share of the corridor: 35 m of its 100 before the bridge
         // and 35 after, so 70 %. Measured as a
         // fraction of the corridor's own length because the fixture's `arc` is
@@ -1386,7 +1366,7 @@ mod tests {
     fn sections_of(c: Corridor, facades: &Facades) -> Vec<Section> {
         let scene = SceneGraph::new(vec![c]);
         let solved = SolvedModel::empty(15);
-        let (sources, _, _) = carriageway_sources(&scene, &solved, facades);
+        let (sources, _) = carriageway_sources(&scene, &solved, facades);
         sources.iter().flat_map(|s| [s.sect_a, s.sect_b]).collect()
     }
 

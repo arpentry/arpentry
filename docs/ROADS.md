@@ -468,10 +468,19 @@ the scenario table (§4).
     *approaches* are ordinary at-grade spans at level 0 — and so is the road
     they pass over. Keyed on level alone they merged into one region and the
     mesh ramped continuously between two roads metres apart vertically. The
-    layer comes from `solve::crossings::corridor_ranks`, the existing crossing
-    DAG, so a corridor that crosses nothing stays at layer 0 and ordinary
-    streets still merge at their intersections. The height field partitions the
-    same way, or it would blend the two surfaces back together.
+    layer is derived from the solved heights per *run* (`synth/sheets.rs`):
+    two sheets overlapping in plan more than the sheet separation apart are
+    stacked, runs that join anywhere are one sheet everywhere, so a corridor
+    that crosses nothing stays at layer 0 and ordinary streets still merge at
+    their intersections. The height field partitions the same way, or it
+    would blend the two surfaces back together. Pedestrian bands get the same
+    layering run over themselves — their own sheet namespace, never mixed
+    into the carriageway's, since a walk source never blends with a road
+    source anyway — so a strip descending into a trench mouth and the path on
+    the rim above it are separate regions with separate rims instead of one
+    covering set the kernel smears a storey across (a hostless band's seat is
+    stamped from the senior ground by the walkway fit expressly so this
+    layering has heights to compare).
 
     Heights come from a new **road height field** (`synth/height.rs`): one
     continuous function per level, blending the corridors covering a point and
