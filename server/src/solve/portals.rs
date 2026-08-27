@@ -701,7 +701,21 @@ const MIN_ANNEX_STUB_M: f64 = 2.0;
 /// The license is annotation-only on both sides, so this reads no junior's
 /// solved height (§4.1); it decides only whether a stretch is *drawn* open,
 /// never how deep the profile runs.
-pub fn reconcile_spans(profile: &Profile, spans: &[Span], covered: &[(f64, f64)]) -> Vec<Span> {
+///
+/// **The shrink also stops at a twin's bore.** `twin` carries the windows
+/// where a same-formation sibling's vetted tunnel runs beside this corridor
+/// (`solve::twin_bore_windows`, S8's entity rule): the two lines are one
+/// earthwork, and this line's own fit cannot see the hill its twin is proved
+/// to pass under — at Chamby the per-line shrink kept 118 m of bore on one
+/// track and 9 m on its twin, and the twin's freed slack then benched an
+/// open cutting through its sibling's cover. Merged exactly like the burial
+/// license: an interval the kept tunnel may not fall below.
+pub fn reconcile_spans(
+    profile: &Profile,
+    spans: &[Span],
+    covered: &[(f64, f64)],
+    twin: &[(f64, f64)],
+) -> Vec<Span> {
     /// Shortest grade stub worth emitting, in metres — below this the piece
     /// quantizes away.
     const MIN_STUB_M: f64 = 0.25;
@@ -717,6 +731,7 @@ pub fn reconcile_spans(profile: &Profile, spans: &[Span], covered: &[(f64, f64)]
         // reason [`span_bounds`] spans its dips as well).
         let licensed = covered
             .iter()
+            .chain(twin.iter())
             .map(|&(w0, w1)| (w0.max(s.arc0), w1.min(s.arc1)))
             .filter(|(l0, l1)| l1 > l0)
             .fold(None, |acc: Option<(f64, f64)>, (l0, l1)| {
@@ -1065,7 +1080,7 @@ mod tests {
             span(0.40 * len, 0.62 * len),
             Span { arc0: 0.62 * len, arc1: len, level: 0, kind: SpanKind::Grade },
         ];
-        let out = reconcile_spans(&p, &spans, &[]);
+        let out = reconcile_spans(&p, &spans, &[], &[]);
         assert_eq!(out.len(), 4, "tunnel + freed high-side stub: {out:?}");
         assert_eq!(out[1].kind, SpanKind::Tunnel);
         assert!((out[1].arc0 - 0.40 * len).abs() < 1e-9, "low side stays annotated");
@@ -1089,7 +1104,7 @@ mod tests {
             span(0.40 * len, 0.62 * len),
             Span { arc0: 0.62 * len, arc1: len, level: 0, kind: SpanKind::Grade },
         ];
-        let out = reconcile_spans(&p, &spans, &[(611.0, 623.0)]);
+        let out = reconcile_spans(&p, &spans, &[(611.0, 623.0)], &[]);
         assert_eq!(out.len(), 3, "no stub is freed under the crossing: {out:?}");
         assert_eq!(out[1].kind, SpanKind::Tunnel);
         assert!(
@@ -1098,9 +1113,32 @@ mod tests {
         );
         // A window past the annotation grows nothing: growing is the annex's
         // half of the reconciliation, and it runs before this one.
-        let far = reconcile_spans(&p, &spans, &[(630.0, 660.0)]);
+        let far = reconcile_spans(&p, &spans, &[(630.0, 660.0)], &[]);
         assert_eq!(far.len(), 4, "an unlicensed stub is still freed: {far:?}");
         assert!((far[1].arc1 - 612.5).abs() < 10.0);
+    }
+
+    #[test]
+    fn the_shrink_does_not_take_back_what_a_twins_bore_holds() {
+        // The twin-bore entity (`solve::twin_bore_windows`, S8): the same
+        // shape as the burial license above, through the second keep channel.
+        // At Chamby both lines of one double track were annotated in tunnel;
+        // this line's own fit ends at 612.5, its twin's vetted bore runs on
+        // beside it to 620 — the shrink used to free that stub as grade, and
+        // its bench then carved the cutting that unroofed the sibling.
+        let (p, len) = hill();
+        let spans = vec![
+            Span { arc0: 0.0, arc1: 0.40 * len, level: 0, kind: SpanKind::Grade },
+            span(0.40 * len, 0.62 * len),
+            Span { arc0: 0.62 * len, arc1: len, level: 0, kind: SpanKind::Grade },
+        ];
+        let out = reconcile_spans(&p, &spans, &[], &[(500.0, 620.0)]);
+        assert_eq!(out.len(), 3, "no stub is freed beside the twin's bore: {out:?}");
+        assert_eq!(out[1].kind, SpanKind::Tunnel);
+        assert!(
+            (out[1].arc1 - 0.62 * len).abs() < 1e-9,
+            "the tunnel keeps the twin's window, clamped to the annotation"
+        );
     }
 
     #[test]
@@ -1110,7 +1148,7 @@ mod tests {
         let nodes: Vec<Coord> =
             (0..101).map(|i| Coord { x: 6.0 + deg * i as f64 / 100.0, y: 46.0 }).collect();
         let p = Profile::from_heights(&nodes, vec![100.0; 101], vec![95.0; 101]);
-        let out = reconcile_spans(&p, &[span(300.0, 700.0)], &[]);
+        let out = reconcile_spans(&p, &[span(300.0, 700.0)], &[], &[]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind, SpanKind::Grade, "nothing buried: paint it as road");
     }
@@ -1249,7 +1287,7 @@ mod tests {
             .collect();
         let (mut p, spans) = hung(road, terrain);
         absorb_hanging_approaches(&mut p, &spans, false);
-        let out = reconcile_spans(&p, &spans, &[]);
+        let out = reconcile_spans(&p, &spans, &[], &[]);
         assert_eq!(out.len(), 3, "the partition keeps three spans: {out:?}");
         let deck = &out[1];
         assert_eq!(deck.kind, SpanKind::Bridge);
@@ -1293,7 +1331,7 @@ mod tests {
             let inside = p.arc()[k] >= 225.0 && p.arc()[k] <= 275.0;
             g || inside
         }), "no node outside the mapped span may be absorbed");
-        let out = reconcile_spans(&p, &spans, &[]);
+        let out = reconcile_spans(&p, &spans, &[], &[]);
         assert_eq!(out, before, "an embankment approach leaves the spans alone");
     }
 }

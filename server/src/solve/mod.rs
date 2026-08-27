@@ -90,6 +90,11 @@ fn reconcile_stratum(
     // ARPT_DEBUG_ANNEX: one line per tunnel-bearing corridor with crossings —
     // the tail bounds against the crossing arcs, and whether the annex took.
     let debug_annex = std::env::var_os("ARPT_DEBUG_ANNEX").is_some();
+    // The twin-bore entity (S8): computed before the per-corridor loop so the
+    // windows read every sibling's annotation, spliced where a twin is at
+    // grade, and held below against the shrink where it is not.
+    let twins = twin_bore_windows(scene, profiles, stratum);
+    apply_twin_windows(scene, profiles, &twins, debug_annex);
     for c in scene.corridors.iter_mut() {
         if c.kind.stratum() != stratum {
             continue;
@@ -160,9 +165,12 @@ fn reconcile_stratum(
         // Shrink to the geometry: each tunnel clamped to its buried run, the
         // freed annotation slack re-covered as painted grade, a tunnel with
         // no buried run at all degraded end to end — except where the burial
-        // license holds, which the reference surface cannot see.
+        // license holds, which the reference surface cannot see, and where a
+        // twin's vetted bore runs beside it, which this line's own fit
+        // cannot see either (the twin-bore entity, [`twin_bore_windows`]).
         let covered = covered.get(c.id as usize).map(Vec::as_slice).unwrap_or(&[]);
-        let reconciled = portals::reconcile_spans(p, &spans, covered);
+        let twin: Vec<(f64, f64)> = twins[c.id as usize].iter().map(|&(a, b, _)| (a, b)).collect();
+        let reconciled = portals::reconcile_spans(p, &spans, covered, &twin);
         for g in reconciled.iter().filter(|s| s.kind == SpanKind::Grade) {
             for t in spans.iter().filter(|s| s.kind == SpanKind::Tunnel) {
                 let (lo, hi) = (g.arc0.max(t.arc0), g.arc1.min(t.arc1));
@@ -174,6 +182,242 @@ fn reconcile_stratum(
         c.spans = reconciled;
     }
     carry_stubs_welded_onto_decks(scene, profiles, stratum, debug_annex);
+}
+
+/// S8's entity rule, applied to rail twins: where a corridor's twin runs in a
+/// bore beside it, the corridor is in that bore too — one formation, one
+/// trench, one portal, per twin pair.
+///
+/// One physical double-track railway arrives as two corridors, each carrying
+/// its own span annotation and each vetted against its *own* solved line, and
+/// the two verdicts can disagree: at Chamby both lines are annotated in
+/// tunnel end to end, but the reconciliation's shrink kept 118 m of bore on
+/// one line and 9 m on its twin four metres away — so the twin's freed slack
+/// benched a 5.6 m open cutting through its sibling's cover, and
+/// `clearance.bore_cover` read the roof that far proud (134 m of it over the
+/// Montreux extract, the family's whole real mass once the accepted
+/// mouth-transition design is set aside; the standard-gauge pair at Territet
+/// is the other site). The same reasoning that gives a structure entity one
+/// grade line under parallel carriageways (§4.4), applied to the span
+/// partition.
+///
+/// The windows computed here are the mechanism, used twice:
+///
+/// - where the twin is annotated at *grade*, the window is spliced in as a
+///   tunnel span ([`apply_twin_windows`]) and the reconciliation that follows
+///   vets it like any annotated tunnel;
+/// - where the twin's own tunnel is about to *shrink*, the window rides into
+///   [`portals::reconcile_spans`] beside the burial license: the kept
+///   interval may not fall below what the sibling's bore holds beside it.
+///
+/// Both directions are needed because the vetting is per-line and the entity
+/// is the pair; neither alone survived measurement (the splice was clamped
+/// straight back out by the shrink it did not protect against).
+///
+/// The gates: rail only and same class (the census's population — the
+/// lateral gate alone would admit a narrow pair of parallel streets whose
+/// tunnels are genuinely separate); every windowed node within
+/// [`graph::TWIN_TRACK_LATERAL_M`] of the sibling's line (the width that
+/// already welds a passing loop's variables); and the two solved beds within
+/// [`TWIN_LEVEL_M`] of each other — parallel tracks on one roadbed agree to
+/// well under a metre, and without the height gate a station siding running
+/// six metres *above* a bore under its throat would adopt that bore and draw
+/// itself underground. Twins share a stratum, so reading both solved heights
+/// inverts no authority (§4.1).
+fn twin_bore_windows(
+    scene: &SceneGraph,
+    profiles: &[Option<Profile>],
+    stratum: Stratum,
+) -> Vec<Vec<(f64, f64, i64)>> {
+    use crate::priors::Kind;
+    /// Shortest window worth acting on, in metres — below this it is
+    /// quantization noise between two mouths, not a shared bore.
+    const MIN_ADOPT_M: f64 = 2.0;
+    /// How far apart the two solved beds may sit where they share a
+    /// formation, in metres.
+    const TWIN_LEVEL_M: f64 = 1.5;
+    let mut windows: Vec<Vec<(f64, f64, i64)>> = vec![Vec::new(); scene.corridors.len()];
+    let rail = |c: &crate::scene::Corridor| {
+        c.kind.stratum() == stratum && matches!(c.kind, Kind::Rail(_))
+    };
+    let rails: Vec<u32> = scene
+        .corridors
+        .iter()
+        .filter(|c| rail(c))
+        .filter(|c| profiles.get(c.id as usize).and_then(|p| p.as_ref()).is_some())
+        .map(|c| c.id)
+        .collect();
+    if rails.len() < 2 {
+        return windows;
+    }
+    // Every vetted bore of the stratum: the fitted interval of each annotated
+    // tunnel span, in its own corridor's arc.
+    let mut bores: Vec<(u32, f64, f64, i64)> = Vec::new();
+    for &a in &rails {
+        let c = &scene.corridors[a as usize];
+        let p = profiles[a as usize].as_ref().expect("profiled");
+        for s in c.spans.iter().filter(|s| s.kind == SpanKind::Tunnel) {
+            let Some((low, high)) = portals::span_bounds(p, s) else {
+                continue; // no buried run: this tunnel is about to degrade
+            };
+            let (lo, hi) =
+                (low.map_or(s.arc0, |x| x.max(s.arc0)), high.map_or(s.arc1, |x| x.min(s.arc1)));
+            if hi - lo >= MIN_ADOPT_M {
+                bores.push((a, lo, hi, s.level));
+            }
+        }
+    }
+    if bores.is_empty() {
+        return windows;
+    }
+    for &b in &rails {
+        let cb = &scene.corridors[b as usize];
+        let pb = profiles[b as usize].as_ref().expect("profiled");
+        for &(a, t0, t1, level) in &bores {
+            if a == b || scene.corridors[a as usize].class_key != cb.class_key {
+                continue;
+            }
+            let ca = &scene.corridors[a as usize];
+            let pa = profiles[a as usize].as_ref().expect("profiled");
+            // The stretch of `b` standing on the sibling's formation over its
+            // bore: maximal node runs within the twin width of the bored
+            // interval, at the formation's own level. Nodes, not span ends —
+            // the twins are parameterised independently and only the plan can
+            // align them.
+            let (nodes, arc) = (pb.nodes(), pb.arc());
+            let mut start: Option<usize> = None;
+            for k in 0..=nodes.len() {
+                let inside = k < nodes.len() && {
+                    let q = nodes[k];
+                    let aa = pa.arc_of(q.x, q.y);
+                    aa >= t0 && aa <= t1 && {
+                        let w = pa.point_at_arc(aa);
+                        let dx = (w.x - q.x) * ca.cos_lat * crate::scene::DEG_M;
+                        let dy = (w.y - q.y) * crate::scene::DEG_M;
+                        (dx * dx + dy * dy).sqrt() <= graph::TWIN_TRACK_LATERAL_M
+                            && (pb.road_at_arc(arc[k]) - pa.road_at_arc(aa)).abs()
+                                <= TWIN_LEVEL_M
+                    }
+                };
+                match (inside, start) {
+                    (true, None) => start = Some(k),
+                    (false, Some(s0)) => {
+                        if k - s0 >= 2 && arc[k - 1] - arc[s0] >= MIN_ADOPT_M {
+                            windows[b as usize].push((arc[s0], arc[k - 1], level));
+                        }
+                        start = None;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    for w in windows.iter_mut() {
+        w.sort_by(|x, y| x.0.total_cmp(&y.0));
+    }
+    windows
+}
+
+/// The splice half of the twin-bore entity ([`twin_bore_windows`]): windows
+/// falling on a twin's *grade* spans become tunnel spans, with the profile
+/// reshaped over them ([`Profile::annex_structure`], exactly as an annexed
+/// span is). The per-corridor reconciliation that follows vets the splice
+/// like any annotated tunnel — clamps it to the twin's own buried run plus
+/// the window itself — so an over-generous splice costs nothing, and no
+/// fixpoint is needed (the one built here before was refuted, 99b66e1).
+fn apply_twin_windows(
+    scene: &mut SceneGraph,
+    profiles: &mut [Option<Profile>],
+    windows: &[Vec<(f64, f64, i64)>],
+    debug: bool,
+) {
+    const MIN_ADOPT_M: f64 = 2.0;
+    for (cid, wins) in windows.iter().enumerate() {
+        if wins.is_empty() {
+            continue;
+        }
+        let c = &mut scene.corridors[cid];
+        let p = profiles[cid].as_mut().expect("windowed corridors are profiled");
+        for &(lo, hi, level) in wins {
+            for (g0, g1) in grade_clip(&c.spans, lo, hi) {
+                if g1 - g0 < MIN_ADOPT_M {
+                    continue;
+                }
+                if debug {
+                    eprintln!(
+                        "[annex] corridor {} {:?} adopts twin bore [{g0:.1}, {g1:.1}]",
+                        c.id, c.kind
+                    );
+                }
+                splice_tunnel(&mut c.spans, g0, g1, level);
+                let deck_follows_road = c.kind.prior().monotone
+                    && profile::monotone_direction(p.terrain_m()).is_some();
+                p.annex_structure(g0, g1, deck_follows_road);
+            }
+        }
+    }
+}
+
+/// The sub-intervals of `[lo, hi]` not claimed by any structure span — what a
+/// span list holds at grade, explicit grade spans and gaps alike.
+fn grade_clip(spans: &[Span], lo: f64, hi: f64) -> Vec<(f64, f64)> {
+    let mut taken: Vec<(f64, f64)> = spans
+        .iter()
+        .filter(|s| s.kind != SpanKind::Grade && s.arc1 > lo && s.arc0 < hi)
+        .map(|s| (s.arc0.max(lo), s.arc1.min(hi)))
+        .collect();
+    taken.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut out = Vec::new();
+    let mut cursor = lo;
+    for (a0, a1) in taken {
+        if a0 > cursor {
+            out.push((cursor, a0));
+        }
+        cursor = cursor.max(a1);
+    }
+    if hi > cursor {
+        out.push((cursor, hi));
+    }
+    out
+}
+
+/// Splices a tunnel over `[lo, hi]` into a span list, trimming the grade spans
+/// it displaces and merging with an abutting tunnel of the same level — two
+/// spans meeting inside one hill would each clamp to the shared buried run
+/// and mesh a joint where no daylight is.
+fn splice_tunnel(spans: &mut Vec<Span>, lo: f64, hi: f64, level: i64) {
+    /// A displaced grade remnant shorter than this quantizes away.
+    const MIN_STUB_M: f64 = 0.25;
+    let mut out: Vec<Span> = Vec::with_capacity(spans.len() + 2);
+    for s in spans.iter() {
+        if s.kind != SpanKind::Grade || s.arc1 <= lo || s.arc0 >= hi {
+            out.push(*s);
+            continue;
+        }
+        if lo - s.arc0 > MIN_STUB_M {
+            out.push(Span { arc1: lo, ..*s });
+        }
+        if s.arc1 - hi > MIN_STUB_M {
+            out.push(Span { arc0: hi, ..*s });
+        }
+    }
+    out.push(Span { arc0: lo, arc1: hi, level, kind: SpanKind::Tunnel });
+    out.sort_by(|x, y| x.arc0.total_cmp(&y.arc0));
+    let mut merged: Vec<Span> = Vec::with_capacity(out.len());
+    for s in out {
+        match merged.last_mut() {
+            Some(t)
+                if t.kind == SpanKind::Tunnel
+                    && s.kind == SpanKind::Tunnel
+                    && t.level == s.level
+                    && s.arc0 - t.arc1 <= MIN_STUB_M =>
+            {
+                t.arc1 = t.arc1.max(s.arc1)
+            }
+            _ => merged.push(s),
+        }
+    }
+    *spans = merged;
 }
 
 /// The write-back's second sweep: stubs a junction weld leaves standing in the
@@ -996,5 +1240,91 @@ mod tests {
         let gorge = slot(100.0, 20.0);
         promote_notch_crossings(&mut scene, &mut |c| gorge(c));
         assert_eq!(scene.corridors[0].spans.len(), 1, "water is never bridged over its own bed");
+    }
+
+    /// S8 for rail twins: a line at grade over the hill its twin is bored
+    /// under adopts the bore; a parallel line a street away does not. The
+    /// Chamby double track is the type specimen — one formation, two
+    /// corridors, and only one of them annotated through the hill.
+    #[test]
+    fn a_twin_adopts_its_siblings_bore_and_a_neighbour_does_not() {
+        use crate::priors::{Kind, RailClass};
+        use crate::scene::{Corridor, SegmentRef, DEG_M};
+        let cos_lat = 46.0_f64.to_radians().cos();
+        let len_m = 1000.0;
+        let deg = len_m / (DEG_M * cos_lat);
+        let n = 201;
+        let line = |off_m: f64| -> Vec<Coord> {
+            (0..n)
+                .map(|i| Coord {
+                    x: 6.0 + deg * i as f64 / (n - 1) as f64,
+                    y: 46.0 + off_m / DEG_M,
+                })
+                .collect()
+        };
+        let arc: Vec<f64> = (0..n).map(|i| len_m * i as f64 / (n - 1) as f64).collect();
+        let corridor = |id: u32, nodes: &Vec<Coord>, spans: Vec<Span>| Corridor {
+            id,
+            nodes: nodes.clone(),
+            arc: arc.clone(),
+            cos_lat,
+            kind: Kind::Rail(RailClass::NarrowGauge),
+            class_key: "narrow_gauge".to_string(),
+            link: false,
+            width_m: Some(3.0),
+            spans,
+            segments: vec![SegmentRef { source: 1, node0: 0, node1: n - 1, properties: vec![] }],
+            connectors: vec![],
+        };
+        // Road flat at 100 under a hill to 130 over the middle third — the
+        // portals fixture's shape, so the tunnel's fitted interval is real.
+        let profile = |nodes: &[Coord]| {
+            let road = vec![100.0; n];
+            let terrain: Vec<f64> = (0..n)
+                .map(|i| {
+                    let u = i as f64 / (n - 1) as f64;
+                    let d = (u - 0.5_f64).abs();
+                    if d < 0.15 { 130.0 - d / 0.15 * 40.0 } else { 90.0 }
+                })
+                .collect();
+            Profile::from_heights(nodes, road, terrain)
+        };
+        let grade = vec![Span { arc0: 0.0, arc1: len_m, level: 0, kind: SpanKind::Grade }];
+        let tunnel = vec![
+            Span { arc0: 0.0, arc1: 400.0, level: 0, kind: SpanKind::Grade },
+            Span { arc0: 400.0, arc1: 600.0, level: -1, kind: SpanKind::Tunnel },
+            Span { arc0: 600.0, arc1: len_m, level: 0, kind: SpanKind::Grade },
+        ];
+        let (a, b, far) = (line(0.0), line(4.0), line(30.0));
+        let mut scene = SceneGraph::new(vec![
+            corridor(0, &a, tunnel),
+            corridor(1, &b, grade.clone()),
+            corridor(2, &far, grade),
+        ]);
+        let stratum = scene.corridors[0].kind.stratum();
+        let mut profiles = vec![Some(profile(&a)), Some(profile(&b)), Some(profile(&far))];
+        let windows = twin_bore_windows(&scene, &profiles, stratum);
+        assert!(!windows[1].is_empty(), "the twin must see its sibling's bore");
+        assert!(windows[2].is_empty(), "30 m away is not a twin");
+        apply_twin_windows(&mut scene, &mut profiles, &windows, false);
+        let bored = |c: &Corridor| -> Vec<(f64, f64)> {
+            c.spans
+                .iter()
+                .filter(|s| s.kind == SpanKind::Tunnel)
+                .map(|s| (s.arc0, s.arc1))
+                .collect()
+        };
+        let twin = bored(&scene.corridors[1]);
+        assert_eq!(twin.len(), 1, "the twin must adopt one bore, got {twin:?}");
+        // It covers the sibling's fitted interval, to a node step.
+        assert!(twin[0].0 < 420.0 && twin[0].1 > 580.0, "adopted {twin:?}");
+        // The spans still tile the corridor end to end.
+        let s = &scene.corridors[1].spans;
+        assert!((s[0].arc0 - 0.0).abs() < 1e-9);
+        assert!((s[s.len() - 1].arc1 - len_m).abs() < 1e-9);
+        for w in s.windows(2) {
+            assert!((w[1].arc0 - w[0].arc1).abs() < 1e-9, "gap between {:?} and {:?}", w[0], w[1]);
+        }
+        assert!(bored(&scene.corridors[2]).is_empty(), "30 m away is not a twin");
     }
 }

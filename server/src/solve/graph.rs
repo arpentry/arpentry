@@ -265,7 +265,7 @@ impl UnionFind {
 /// separate earthworks that may genuinely hold different heights, and a
 /// proximity weld across that boundary is how a rail viaduct was once dragged
 /// 26 m down onto a road bridge's grade line.
-const TWIN_TRACK_LATERAL_M: f64 = 6.0;
+pub(crate) const TWIN_TRACK_LATERAL_M: f64 = 6.0;
 
 pub fn build(
     scene: &SceneGraph,

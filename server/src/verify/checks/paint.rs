@@ -210,15 +210,24 @@ impl Paint {
         }
     }
 
-    /// Every owned vertex of every stroke at level ≤ 0, against the drawn
+    /// Every owned vertex of every stroke at level 0, against the drawn
     /// terrain over it. Positive levels are excluded — a bridge stroke rides
     /// its deck above the ground by design, and its solid answers to the
-    /// clearance checks. A vertex with no terrain over it (the pavement hole,
-    /// a portal cut, a zoom with no terrain mesh) contributes nothing: there
-    /// is no drawn ground there to be buried under.
+    /// clearance checks. Negative levels are excluded on the mirror of that
+    /// sentence: a bore's carrier line runs *under* the drawn ground by
+    /// design (`synth::structure::Stamped::Hidden` ships it at bore depth
+    /// precisely so nothing drapes it onto the terrace above), and its solid
+    /// answers to `clearance.bore_cover` — restoring the cover over a bore
+    /// used to read here as new buried "paint", charging the world for
+    /// getting better. Leaked tunnel *markings* would be missed by this
+    /// exclusion, but their visible symptom is paint surfacing at the coarse
+    /// rungs, which the ordering checks catch. A vertex with no terrain over
+    /// it (the pavement hole, a portal cut, a zoom with no terrain mesh)
+    /// contributes nothing: there is no drawn ground there to be buried
+    /// under.
     fn visit_buried(&mut self, tile: &TileScene) {
         let Some(terrain) = &tile.terrain else { return };
-        for line in tile.lines.iter().filter(|l| l.level <= 0) {
+        for line in tile.lines.iter().filter(|l| l.level == 0) {
             for part in &line.parts {
                 for &(px, py, h) in part {
                     if !tile.owns(px, py) {
@@ -770,6 +779,11 @@ mod tests {
         let m = run(&tile);
         assert!(m[2].skipped.is_some(), "a positive level contributes nothing");
 
+        // The mirror case: a bore's carrier line runs under the drawn ground
+        // by design (`Stamped::Hidden`), so a negative level contributes
+        // nothing either — restoring the cover over a tunnel must not read
+        // as new buried paint. The bore's own contract is
+        // `clearance.bore_cover`'s to hold.
         let mut bore = stripe(0.12, 0.5);
         bore.level = -1;
         for part in &mut bore.parts {
@@ -780,7 +794,7 @@ mod tests {
         let mut tile = scene(Vec::new(), vec![bore]);
         tile.terrain = Some(terrain(100.0));
         let m = run(&tile);
-        assert!(m[2].violations() > 0, "a tunnel stroke under the ground is caught");
+        assert!(m[2].skipped.is_some(), "a hidden bore's line contributes nothing");
     }
 
     /// A centre line is 0.12 m wide, so it never enters the inset population —

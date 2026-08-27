@@ -111,14 +111,14 @@
         }
       ],
       "population": "Every node of every solved profile that the *reconciled* partition leaves at grade, in every stratum, water excluded. Scored by how far the solved road stands from the conditioned terrain reference — in either direction, since a road buried under its own hillside is the same defect upside down — less the class deviation budget, so 0.0 means within the cut and fill the class is built on. Structure nodes are outside the population by definition. Known legitimate tail: a clearance lift raises an at-grade road over a crossing by up to 15 m and keeps it at grade, so a demand-sized excess near a crossing is the model working.",
-      "samples": 388369,
+      "samples": 388331,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.7333333333333334,
       "threshold": 0.5,
       "title": "Solved at-grade road standing off its own ground",
-      "violation_pct": 0.1163841604247507,
-      "violations": 452,
+      "violation_pct": 0.11588052460401049,
+      "violations": 450,
       "worst": 11.51145264968693
     },
     {
@@ -183,15 +183,15 @@
           "zoom": 16
         }
       ],
-      "population": "Every 2 m of every building footprint edge inside the extract bbox (52280 walls read), scored as the engineered ground minus the reference surface the solve itself read — zero wherever no earthwork reaches, so the rate is the share of *wall* standing on something a road decided. Of 261282 samples, 45680 stand on ground an earthwork moved at all.",
+      "population": "Every 2 m of every building footprint edge inside the extract bbox (52280 walls read), scored as the engineered ground minus the reference surface the solve itself read — zero wherever no earthwork reaches, so the rate is the share of *wall* standing on something a road decided. Of 261282 samples, 45642 stand on ground an earthwork moved at all.",
       "samples": 261282,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 3.366666666666667,
       "threshold": 1.0,
       "title": "A road earthwork deciding the ground under a building",
-      "violation_pct": 3.22065813948148,
-      "violations": 8415,
+      "violation_pct": 3.219127226521536,
+      "violations": 8411,
       "worst": 10.272060644183057
     },
     {
@@ -199,7 +199,7 @@
       "invariant": "I8",
       "median": 0.006666666666667709,
       "offenders": [],
-      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 13879008 probes, 663518 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
+      "population": "Every ground layer at every point of a 4 m lattice over the extract: `groundₙ₊₁` against `groundₙ`, and where they differ, whether layer n declares it. Of 13879008 probes, 663508 found a layer moving the ground inside its own footprint — the population the predicate is actually about. Coverage: sampled every 5 lattice steps to stay inside the sample cap; a denser walk would find more.",
       "samples": 13879008,
       "sense": "higher_is_worse",
       "skipped": null,
@@ -273,14 +273,14 @@
         }
       ],
       "population": "Every profile node inside a structure span, over every corridor the                      solve holds a profile for, clipped to the extract bbox. Scored as the                      published engineered ground minus the reference surface the solve read                      at that node, with the reference passed to the stack as its own base so                      only the ground stage's own work is left. At-grade nodes are excluded:                      there the difference is the corridor's own bench, which is the imprint                      working and is scored by contact.kerb_*.",
-      "samples": 2692,
+      "samples": 2712,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 8.006666666666668,
       "threshold": 1.0,
       "title": "A structural decision taken against a ground nobody drew",
-      "violation_pct": 8.469539375928678,
-      "violations": 228,
+      "violation_pct": 8.075221238938052,
+      "violations": 219,
       "worst": 9.109109163012533
     },
     {
@@ -288,13 +288,6 @@
       "invariant": "I2",
       "median": -0.024062499999999987,
       "offenders": [
-        {
-          "lat": 46.43662385,
-          "lon": 6.9107035,
-          "note": "narrow_gauge climbs at 78 % against its class ceiling of 7 % (solved to 7 %)",
-          "value": 0.7092967828297838,
-          "zoom": 16
-        },
         {
           "lat": 46.4023493,
           "lon": 6.9275296,
@@ -343,6 +336,13 @@
           "note": "narrow_gauge climbs at 34 % against its class ceiling of 7 % (solved to 30 %)",
           "value": 0.2679708997463222,
           "zoom": 16
+        },
+        {
+          "lat": 46.431462175,
+          "lon": 6.936696062499999,
+          "note": "narrow_gauge climbs at 32 % against its class ceiling of 7 % (solved to 30 %)",
+          "value": 0.25043831302268044,
+          "zoom": 16
         }
       ],
       "population": "Consecutive solved-profile nodes (the solve's own ~8 m spacing, runs of at least 0.50 m) of every rail corridor whose class names a gauge or a system, over the heights the drawn line carries — the road at grade, the fitted ramp across structures — scored by grade in excess of the class's own §9 ceiling (signed: negative is margin). Model-side: from z13 the union paves the formation and deletes the stroke this walk used to ride, so the solve is the only place the alignment still exists as a line. Steps are clipped to the extract's bbox — assemble admits whole parquet row groups, so corridors spill past the zone into ground no DEM constrained, and a grade there scores the extraction boundary. Street-running and `unknown` rail are excluded: draped by design (§4.6), they hold no ceiling to measure against, and counting them would score the class table rather than the solve.",
@@ -352,9 +352,9 @@
       "tail": 0.23093750000000002,
       "threshold": 0.2,
       "title": "Drawn railway grade over its class ceiling",
-      "violation_pct": 0.9549071618037135,
-      "violations": 90,
-      "worst": 0.7092967828297838
+      "violation_pct": 0.9442970822281167,
+      "violations": 89,
+      "worst": 0.6622451931515739
     },
     {
       "id": "graph.connector_step",
