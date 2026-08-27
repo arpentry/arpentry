@@ -82,9 +82,27 @@ fn main() {
                 } else if kind_at(&annotated[c.id as usize], mid) == SpanKind::Tunnel {
                     degraded_m += step;
                     shrunk_m += step;
+                    println!(
+                        "  SHRUNK  #{} {:?} arc {:.1}  at {:.6},{:.6}  drawn {:?}",
+                        c.id,
+                        c.kind,
+                        mid,
+                        pt.x,
+                        pt.y,
+                        kind_at(&c.spans, mid)
+                    );
                 } else {
                     degraded_m += step;
                     short_annotation_m += step;
+                    println!(
+                        "  SHORT-ANN  #{} {:?} arc {:.1}  at {:.6},{:.6}  drawn {:?}",
+                        c.id,
+                        c.kind,
+                        mid,
+                        pt.x,
+                        pt.y,
+                        kind_at(&c.spans, mid)
+                    );
                 }
             }
         }

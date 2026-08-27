@@ -416,7 +416,7 @@ impl JunctionPorts {
 }
 
 /// A source's buffered bounding box, in degrees.
-fn bbox_of(s: &SourceSeg) -> (f64, f64, f64, f64) {
+pub(crate) fn bbox_of(s: &SourceSeg) -> (f64, f64, f64, f64) {
     let pad = s.half_m / DEG_M;
     (
         s.a.x.min(s.b.x) - pad,
@@ -441,7 +441,7 @@ fn along(s: &SourceSeg, t: f64) -> Coord {
 /// Minimum distance between segments is attained at an endpoint of one of them
 /// unless they cross, so the four endpoint projections are exact, and crossing
 /// is handled first.
-fn closest_approach(s: &SourceSeg, t: &SourceSeg) -> (f64, f64, f64) {
+pub(crate) fn closest_approach(s: &SourceSeg, t: &SourceSeg) -> (f64, f64, f64) {
     if let Some((ts, tt)) = crossing_params(s, t) {
         return (0.0, ts, tt);
     }

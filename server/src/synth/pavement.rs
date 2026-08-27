@@ -290,6 +290,10 @@ fn bake_chunk(
             by_level.entry((run.level, run.layer, drawn(run.surface))).or_default().extend(buffered);
         }
     }
+    // Where two at-grade sheets stack past the grade-separation boundary, the
+    // junior yields the contested plan space (docs/GENERATION.md I9).
+    let yields = trench_yields(junctions, source_ids, &frame);
+
     // Sorted by (level, layer) and asphalt before ballast within a pair, so
     // the output order — and the subtraction below — is a function of the
     // model, never of hashing.
@@ -325,6 +329,12 @@ fn bake_chunk(
             if closed.is_empty() {
                 break;
             }
+        }
+        // The trench yield: the plan space another sheet's open band claims
+        // more than a storey away vertically is not this surface's to pave
+        // (`trench_yields`).
+        if let Some(cuts) = yields.get(&(level, layer, surface)) {
+            closed = poly::difference(&closed, &poly::union_all(cuts));
         }
         if closed.is_empty() {
             continue;
@@ -376,6 +386,140 @@ fn drawn(surface: priors::Surface) -> priors::Surface {
         return priors::drawn_material(surface);
     }
     surface
+}
+
+/// Where two at-grade sheets stack past the grade-separation boundary, the
+/// plan space the junior must yield — keyed by the junior's own region key.
+///
+/// An open trench and an at-grade surface cannot coexist vertically
+/// (docs/GENERATION.md I9): air between two surfaces is legal only under a
+/// structure, and where the lower band is in a bore no open band is drawn at
+/// all. What remains is the drawn impossibility `order.grade_stack` names —
+/// at Territet the unioned terrace streets, each at its prior width, canopy
+/// the whole open rail cutting between them, and the ballast band slides
+/// beneath 11 m of open air. Nobody owns the space between, so nothing closes
+/// it: the road's apron only stands on its region boundary, and over the
+/// trench the road has none.
+///
+/// So the junior yields the overlap, and the yield is what closes the world:
+/// the junior's region gains a boundary along the senior's band edge, and the
+/// existing rim + apron machinery does the rest — a wall from the yielded rim
+/// down to the ground, which inside the senior's bench *is* the trench floor.
+/// Who is junior is the stratum ladder (docs/GENERATION.md §4.2), read off
+/// the drawn material: rail holds its formation against a street
+/// (`stratum_rank`), a street holds its carriageway against a footway — the
+/// pedestrian underpass drawn as an open stack loses its band under the road,
+/// two mouths instead of a see-through slot (I6: detail, not spectacle).
+/// Between peers the upper yields: trimming the overhang leaves a rim the
+/// apron can close downward, while trimming the tucked-under band would leave
+/// the upper's interior floating over air with no boundary at all.
+///
+/// Scoped by the sheet partition: joined runs share a layer
+/// (`sheets::merge_joined`), so a level crossing — same plan, same height —
+/// is never a candidate, and only genuinely stacked sheets are compared.
+/// The boundary is [`crossings::SEPARATION_M`], the same one the model draws
+/// from the other side and `order.grade_stack` measures against.
+fn trench_yields(
+    junctions: &CarriagewayModel,
+    source_ids: &[u32],
+    frame: &MFrame,
+) -> HashMap<(i64, u32, priors::Surface), Shapes> {
+    use crate::assemble::grid::GridIndex;
+    use crate::solve::crossings::SEPARATION_M;
+    use crate::synth::sheets::{bbox_of, closest_approach};
+
+    let mut grid = GridIndex::new();
+    for &i in source_ids {
+        let s = junctions.source(i);
+        if s.level == 0 {
+            grid.insert(bbox_of(s), i);
+        }
+    }
+    let mut out: HashMap<(i64, u32, priors::Surface), Shapes> = HashMap::new();
+    let mut cand: Vec<u32> = Vec::new();
+    for &i in source_ids {
+        let s = junctions.source(i);
+        if s.level != 0 {
+            continue;
+        }
+        grid.query(bbox_of(s), &mut cand);
+        for &j in cand.iter() {
+            if j <= i {
+                continue; // each pair once
+            }
+            let t = junctions.source(j);
+            if t.layer == s.layer {
+                continue; // one sheet: joined, braided or the same ribbon
+            }
+            let (d, ts, tt) = closest_approach(s, t);
+            if d > s.half_m + t.half_m {
+                continue; // the bands never meet in plan
+            }
+            let gap = s.height_at(ts) - t.height_at(tt);
+            if gap.abs() <= SEPARATION_M {
+                continue; // the sheets machinery layers it; the step is a kerb
+            }
+            let (junior, senior) = match stratum_rank(s.surface).cmp(&stratum_rank(t.surface)) {
+                std::cmp::Ordering::Less => (s, t),
+                std::cmp::Ordering::Greater => (t, s),
+                // Peers: the upper yields its overhang, so the retreat leaves
+                // a rim over the lower band that the apron closes downward.
+                std::cmp::Ordering::Equal => {
+                    if gap > 0.0 {
+                        (s, t)
+                    } else {
+                        (t, s)
+                    }
+                }
+            };
+            // A transverse crossing severs, a lateral overlap narrows — and a
+            // drivable band is never severed: an unannotated flyover crossing
+            // a trench is a missing *structure* (§4.5's to derive), and cutting
+            // the carriageway across its direction of travel is spectacle, not
+            // degradation. A pedestrian band is the one thing severing
+            // degrades correctly: the stretch under a senior's roadbed
+            // disappears and two mouths remain (I6 — a pedestrian underpass
+            // drawn as an open stack loses its band, not its feature).
+            if d == 0.0 && stratum_rank(junior.surface) >= 1 {
+                continue;
+            }
+            // A *free* pedestrian band yields only from below. Above a trench
+            // it already ends at the rim the fit gave it, and cutting it back
+            // re-shapes its region so the surviving sliver drapes the trench's
+            // batter. A *hosted* strip is the opposite case: its geometry is a
+            // side of its street's cross-section, so where the street yields
+            // its trench overhang the strip must yield with it — left behind,
+            // it is the last thing hanging over the hole its host abandoned
+            // (a sidewalk falling 8 m across its own width at 6.8932,46.4435).
+            let junior_below = (junior.height_at(if std::ptr::eq(junior, s) { ts } else { tt }))
+                < (senior.height_at(if std::ptr::eq(senior, s) { ts } else { tt }));
+            if stratum_rank(junior.surface) == 0
+                && !junior_below
+                && junior.corridor == crate::synth::walkway::NO_HOST
+            {
+                continue;
+            }
+            let line = [frame.to_m(senior.a), frame.to_m(senior.b)];
+            let quad = poly::buffer_line(&line, senior.half_m);
+            out.entry((junior.level, junior.layer, drawn(junior.surface)))
+                .or_default()
+                .extend(quad);
+        }
+    }
+    out
+}
+
+/// The authority a drawn material carries when two sheets stack: the stratum
+/// ladder of docs/GENERATION.md §4.2, read off the surface. Independent rail
+/// is decisively the reason its cuttings exist; every drivable road negotiates
+/// below it; a pedestrian band drapes on the finished world and yields to
+/// both.
+fn stratum_rank(surface: priors::Surface) -> u8 {
+    match surface {
+        priors::Surface::Ballast => 2,
+        priors::Surface::Asphalt => 1,
+        priors::Surface::Walkway | priors::Surface::Path | priors::Surface::None => 0,
+    }
 }
 
 /// Which materials outrank this one where the two coincide in plan on one
@@ -912,6 +1056,79 @@ mod tests {
         for ls in levels {
             assert_eq!(ls.shapes.len(), 1, "a layer should hold one ribbon");
         }
+    }
+
+    #[test]
+    fn a_terrace_street_yields_its_overhang_over_an_open_trench() {
+        // The Territet defect (docs/GENERATION.md I9): a street runs along an
+        // open rail cutting, close enough that its prior-width band spills
+        // over the trench the railway sits in, eleven metres down. The road is
+        // junior to independent rail, and the overlap is lateral, so the road
+        // yields the contested strip: its region retreats to the formation's
+        // edge, gains a rim there, and the apron machinery closes the wall.
+        // The formation itself is untouched.
+        let road = corridor(0, 6.0 - 100.0 / m_lon(), LAT, 1.0, 0.0, 200.0, 11, 8.0);
+        let mut rail =
+            corridor(1, 6.0 - 100.0 / m_lon(), LAT - 6.0 / DEG_M, 1.0, 0.0, 200.0, 11, 5.0);
+        rail.kind = crate::priors::Kind::Rail(crate::priors::RailClass::StandardGauge);
+        rail.class_key = "standard_gauge".to_string();
+        let scene = SceneGraph::new(vec![road, rail]);
+        let nodes: Vec<Vec<Coord>> = scene.corridors.iter().map(|c| c.nodes.clone()).collect();
+        let solved = SolvedModel::from_profiles(
+            vec![
+                Some(crate::solve::Profile::flat(&nodes[0], 411.0)),
+                Some(crate::solve::Profile::flat(&nodes[1], 400.0)),
+            ],
+            15,
+        );
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
+        let model = bake(&junctions, 1);
+        let levels =
+            model.chunk_for(&crate::solve::tile_containing(15, 6.0, LAT)).expect("surfaces");
+        let road_ls = levels
+            .iter()
+            .find(|l| l.surface == crate::priors::Surface::Asphalt)
+            .expect("asphalt");
+        let rail_ls = levels
+            .iter()
+            .find(|l| l.surface == crate::priors::Surface::Ballast)
+            .expect("ballast");
+        // The road band is 8 + shoulder wide either side of a centerline 8 m
+        // north of the rail's; the rail band reaches to 5 + shoulder of its
+        // own. The two overlap laterally by several metres, and the road's
+        // area must come out short of its unyielded footprint by about that
+        // overlap, while the rail keeps its full ribbon.
+        let area = |ls: &LevelShapes| -> f64 {
+            ls.shapes
+                .iter()
+                .flat_map(|sh| sh.iter())
+                .map(|ring| {
+                    let mut a = 0.0;
+                    for i in 0..ring.len() {
+                        let p = ring[i];
+                        let q = ring[(i + 1) % ring.len()];
+                        a += (p.x * q.y - q.x * p.y) * m_lon() * DEG_M;
+                    }
+                    a / 2.0
+                })
+                .sum()
+        };
+        let road_area = area(road_ls).abs();
+        let rail_area = area(rail_ls).abs();
+        let road_half = 8.0 / 2.0 + priors::STRUCTURE_SHOULDER_M;
+        let rail_half = 5.0 / 2.0; // ballast carries no asphalt shoulder
+        let overlap = (road_half + rail_half - 6.0).max(0.0);
+        assert!(overlap > 1.0, "the fixture must actually overlap ({overlap:.2} m)");
+        let full_road = 200.0 * 2.0 * road_half;
+        assert!(
+            road_area < full_road - 0.5 * overlap * 200.0,
+            "the road must yield its overhang: area {road_area:.0} of {full_road:.0}"
+        );
+        let full_rail = 200.0 * 2.0 * rail_half;
+        assert!(
+            rail_area > full_rail * 0.95,
+            "the formation keeps its ribbon: area {rail_area:.0} of {full_rail:.0}"
+        );
     }
 
     #[test]
