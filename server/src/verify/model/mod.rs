@@ -25,6 +25,7 @@ pub mod footprint;
 pub mod grade;
 pub mod graph;
 pub mod network;
+pub mod relaxation;
 pub mod street;
 pub mod structures;
 
@@ -76,6 +77,7 @@ pub fn run(m: &Model<'_>) -> Vec<Metric> {
     out.extend(grade::check(m));
     out.extend(graph::check(m));
     out.extend(network::check(m));
+    out.extend(relaxation::check(m));
     out.extend(street::check(m));
     out.extend(structures::check(m));
     out

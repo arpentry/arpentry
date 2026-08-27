@@ -181,6 +181,76 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
     Relaxed { sweeps: used, demands_dropped: dropped.count, worst_dropped_m: dropped.worst_m }
 }
 
+/// One projection family's residual at the solved point.
+///
+/// The distribution is of per-variable distances one further application of
+/// the family's own pass would move the output. A point is feasible for a
+/// projection exactly when the projection fixes it, so **the pass itself is
+/// the instrument**: no second construction of the constraint math exists to
+/// drift from the one the solver enforces (the codebase's sliver lesson,
+/// applied to measurement).
+pub struct PassResidual {
+    pub name: &'static str,
+    /// Per-variable |move| of one further pass application, in metres.
+    pub dist: crate::verify::dist::Dist,
+}
+
+/// Measures every constraint family's residual at the solved point — the
+/// review's §4 ask: the pass order in [`solve`] is load-bearing and earned,
+/// and nothing at the output said which constraints actually hold. This does,
+/// in the scorecard's own discipline (`solve.residual_*`), so reordering or
+/// adding a pass becomes a measured change instead of a hope.
+///
+/// Each family is measured **independently from the same point**: the solved
+/// heights are restored between passes, so a family's residual is its own
+/// disagreement with the output rather than whatever the previous family's
+/// re-projection left behind. The families run in the closing settle's order;
+/// a pass that writes ceilings into `slack` (clearance, undercut) does so
+/// after every family that reads them has been measured, and the graph is
+/// only ever read through its heights afterwards, which are restored.
+///
+/// The soft pass is deliberately absent: terrain adherence and smoothness are
+/// preferences the hierarchy spends first, not feasible sets, and a "residual"
+/// against a preference is just the price the constraints charged.
+pub fn residuals(g: &mut SolveGraph) -> Vec<PassResidual> {
+    let n = g.vars.len();
+    let mut out: Vec<PassResidual> = Vec::new();
+    if n == 0 {
+        return out;
+    }
+    let sites = var_sites(g);
+    let point = g.h.clone();
+    let mut measure = |g: &mut SolveGraph, name: &'static str| {
+        let mut dist = crate::verify::dist::Dist::metres();
+        for (a, b) in g.h.iter().zip(point.iter()) {
+            dist.push((a - b).abs());
+        }
+        g.h.copy_from_slice(&point);
+        out.push(PassResidual { name, dist });
+    };
+    for _ in 0..GRADE_INNER {
+        if grade_pass(g) < TOL_M {
+            break;
+        }
+    }
+    measure(g, "grade");
+    project_bore_ceilings(g);
+    measure(g, "bore_ceiling");
+    deviation_pass(g);
+    measure(g, "deviation");
+    clearance_pass(g, &sites, &mut Dropped::default(), false);
+    measure(g, "clearance");
+    undercut_pass(g, &sites);
+    measure(g, "undercut");
+    rigidity_pass(g);
+    measure(g, "rigidity");
+    monotone_pass(g);
+    measure(g, "monotone");
+    contact_pass(g);
+    measure(g, "contact");
+    out
+}
+
 /// A mapped tunnel may not ride **above** the ground — and that is all the
 /// annotation licenses in the open (§4.5: a prior on the constraint, never a
 /// command to build geometry). A structure span has almost no terrain-pinned

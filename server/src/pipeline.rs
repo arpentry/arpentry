@@ -256,6 +256,12 @@ pub struct Stats {
     pub p99_junction_step_m: f64,
     pub junction_steps_over: u64,
     pub max_clearance_violation_m: f64,
+    /// Per-constraint-family relaxation residuals, as `(family, max metres)`
+    /// (`solve::relax::residuals`): which constraints actually hold at the
+    /// solved output. Zero everywhere is the pass order working on this
+    /// scene. Fixed-size (`Stats` is `Copy`); unused slots keep the empty
+    /// name.
+    pub relax_residuals: [(&'static str, f64); 8],
     /// Clearance demands the relaxation's plausibility cap rejected, and the
     /// worst of them. A dropped demand is a data contradiction resolved in
     /// favour of the profile — the right call, but one that must be counted:
@@ -452,6 +458,9 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     stats.max_clearance_violation_m = consistency.max_clearance_violation_m;
     stats.clearance_demands_dropped = solved.relaxed.demands_dropped;
     stats.worst_dropped_demand_m = solved.relaxed.worst_dropped_m;
+    for (slot, r) in stats.relax_residuals.iter_mut().zip(solved.residuals.iter()) {
+        *slot = (r.name, r.dist.max().unwrap_or(0.0));
+    }
     stats.timings.model = t_model.elapsed();
     if let Some(dir) = &cfg.dump {
         dump::write(dir, &scene, &solved, &ground)?;

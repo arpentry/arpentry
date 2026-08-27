@@ -120,6 +120,18 @@ fn report_timings(stats: &pipeline::Stats) {
         stats.clearance_demands_dropped,
         stats.worst_dropped_demand_m,
     );
+    if stats.relax_residuals.iter().any(|(name, _)| !name.is_empty()) {
+        eprintln!(
+            "residuals         {}",
+            stats
+                .relax_residuals
+                .iter()
+                .filter(|(name, _)| !name.is_empty())
+                .map(|(name, max)| format!("{name} {max:.3}"))
+                .collect::<Vec<_>>()
+                .join("  ")
+        );
+    }
     eprintln!(
         "phase 1 {:>8}  cpu: read {}, simplify {}, clip {}, sort {}",
         secs(t.phase1),

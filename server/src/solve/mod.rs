@@ -504,6 +504,13 @@ pub struct SolvedModel {
     /// them: a silently dropped constraint is indistinguishable from one that
     /// was satisfied.
     pub relaxed: relax::Relaxed,
+    /// Per-constraint-family residuals at the solved point
+    /// ([`relax::residuals`]), merged across strata. Carried on the model so
+    /// the scorecard can say which constraints actually hold at the output —
+    /// the pass order in the relaxation is load-bearing, and before this the
+    /// only evidence it worked on a given scene was the absence of drawn
+    /// artifacts downstream.
+    pub residuals: Vec<relax::PassResidual>,
     /// The crossing premise, measured (`structure.bore_daylight`): one entry
     /// per place a mapped tunnel span is crossed by another alignment's
     /// at-grade band. Carried on the model because the premise is about how
@@ -530,6 +537,7 @@ impl SolvedModel {
             structures: Vec::new(),
             crossings: Vec::new(),
             relaxed: relax::Relaxed::default(),
+            residuals: Vec::new(),
             daylight: Vec::new(),
             profiles: Vec::new(),
             junction_h: Vec::new(),
@@ -546,6 +554,7 @@ impl SolvedModel {
             structures: Vec::new(),
             crossings: Vec::new(),
             relaxed: relax::Relaxed::default(),
+            residuals: Vec::new(),
             daylight: Vec::new(),
             profiles,
             junction_h: Vec::new(),
@@ -746,6 +755,7 @@ pub fn run_licensed(
     let mut crossings: Vec<crate::scene::Crossing> = Vec::new();
     let mut junction_h: Vec<Option<f64>> = vec![None; scene.junctions.len()];
     let mut relaxed = relax::Relaxed::default();
+    let mut residuals: Vec<relax::PassResidual> = Vec::new();
     // The plan facts, once: arcs and identities only, no heights (§4.1 — a
     // junior's warm start is not a fact, so nothing height-bearing may cross a
     // stratum boundary here). `covered` is the burial license the bore
@@ -806,6 +816,15 @@ pub fn run_licensed(
         relaxed.sweeps = relaxed.sweeps.max(r.sweeps);
         relaxed.demands_dropped += r.demands_dropped;
         relaxed.worst_dropped_m = relaxed.worst_dropped_m.max(r.worst_dropped_m);
+        // Which constraints actually hold at this stratum's output — measured
+        // after the heights were read back, so a pass that perturbs ceilings
+        // while measuring can no longer influence anything.
+        for pr in relax::residuals(&mut g) {
+            match residuals.iter_mut().find(|p: &&mut relax::PassResidual| p.name == pr.name) {
+                Some(p) => p.dist.merge(&pr.dist),
+                None => residuals.push(pr),
+            }
+        }
         crossings.extend(derived);
         // **One truth per stratum** (§4.5): the annotation served as the
         // solve's prior; what survives it is the *reconciled* partition —
@@ -840,7 +859,7 @@ pub fn run_licensed(
         })
         .collect();
 
-    Ok(SolvedModel { structures, relaxed, crossings, daylight, profiles, junction_h, z_ref })
+    Ok(SolvedModel { structures, relaxed, residuals, crossings, daylight, profiles, junction_h, z_ref })
 }
 
 /// Sampling step for the notch-crossing detector, metres. Fine enough that a
