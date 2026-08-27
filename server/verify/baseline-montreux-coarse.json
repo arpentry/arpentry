@@ -1387,7 +1387,7 @@
     {
       "id": "contact.sidewalk_grade",
       "invariant": "I4",
-      "median": 0.1,
+      "median": 0.08666666666666667,
       "offenders": [
         {
           "lat": 46.402328208088875,
@@ -1397,25 +1397,11 @@
           "zoom": 14
         },
         {
-          "lat": 46.40239918604493,
-          "lon": 6.9275665283203125,
-          "note": "footway stands 14.8 m below the carriageway it runs alongside",
-          "value": 14.758874833583832,
-          "zoom": 15
-        },
-        {
           "lat": 46.40232978388667,
           "lon": 6.927394866943359,
           "note": "footway stands 14.6 m below the carriageway it runs alongside",
           "value": 14.634153664112091,
           "zoom": 15
-        },
-        {
-          "lat": 46.40239901840687,
-          "lon": 6.9275665283203125,
-          "note": "footway stands 14.6 m below the carriageway it runs alongside",
-          "value": 14.556855618953705,
-          "zoom": 14
         },
         {
           "lat": 46.4023258946836,
@@ -1432,29 +1418,43 @@
           "zoom": 14
         },
         {
-          "lat": 46.40240294113755,
-          "lon": 6.927575848996639,
-          "note": "footway stands 13.6 m below the carriageway it runs alongside",
-          "value": 13.627027201652538,
+          "lat": 46.40232200548053,
+          "lon": 6.927375823259354,
+          "note": "footway stands 13.4 m below the carriageway it runs alongside",
+          "value": 13.378112089633987,
           "zoom": 15
         },
         {
-          "lat": 46.402402840554714,
-          "lon": 6.927575916051865,
-          "note": "footway stands 13.5 m below the carriageway it runs alongside",
-          "value": 13.466056877374683,
+          "lat": 46.402319356799126,
+          "lon": 6.927369184792042,
+          "note": "footway stands 12.8 m below the carriageway it runs alongside",
+          "value": 12.78070210913819,
           "zoom": 14
+        },
+        {
+          "lat": 46.402318116277456,
+          "lon": 6.927366301417351,
+          "note": "footway stands 12.8 m below the carriageway it runs alongside",
+          "value": 12.750091302394821,
+          "zoom": 15
+        },
+        {
+          "lat": 46.402314227074385,
+          "lon": 6.927356779575348,
+          "note": "footway stands 12.1 m below the carriageway it runs alongside",
+          "value": 12.122070515155826,
+          "zoom": 15
         }
       ],
-      "population": "Every metre along every level-0 pedestrian centerline (footway, path, cycleway, pedestrian, bridleway — not steps, whose purpose is to change height) whose part runs with a street for at least 80 % of its length and which is locally parallel to the kerb within 30°, taken where it is beside the asphalt rather than over it. The value is |drawn surface under the way − drawn carriageway at the nearest kerb point|, unsigned because a way stranded on a bank above its street is the same defect as one in a ditch below it; the offender note carries the side. Over the Montreux extract at z16 that is 30,366 samples out of 421 k pedestrian samples — 12 % of the rest are drawn over the asphalt and the remainder do not run with a street. The population is very nearly symmetric, 44.9 % below the kerb and 55.1 % above it, which is the whole point of the unsigned value: the cutting side and the fill side of one missing cross-section. Signed it reads p05 −0.55 m, p50 +0.01 m, p95 +0.66 m, from 10.19 m below to 7.84 m above. Two coverage limits. Attachment is geometric only, because the archive carries a way's class but never the `subclass='sidewalk'` tag, so the third of tagged sidewalks that fail a geometric test are outside this population altogether. And the far tail is not all this metric's defect: past a few metres it is a street on a terrace with a path along the foot of its wall, which is `contact.kerb_lip`'s question — at the worst site (6.8961,46.4649) the section shows a carriageway at 624 m and drawn ground at 613.5 m a metre away. Read the body, not the extreme.",
-      "samples": 85477,
+      "population": "Every metre along every level-0 pedestrian centerline (footway, path, cycleway, pedestrian, bridleway — not steps, whose purpose is to change height) whose part runs with a street for at least 80 % of its length and which is locally parallel to the kerb within 30°, taken where it is beside the asphalt rather than over it. The value is |drawn surface under the way − drawn carriageway at the nearest kerb point|, unsigned because a way stranded on a bank above its street is the same defect as one in a ditch below it; the offender note carries the side. Over the Montreux extract at z16 that is 30,366 samples out of 421 k pedestrian samples — 12 % of the rest are drawn over the asphalt and the remainder do not run with a street. The population is very nearly symmetric, 44.9 % below the kerb and 55.1 % above it, which is the whole point of the unsigned value: the cutting side and the fill side of one missing cross-section. Signed it reads p05 −0.55 m, p50 +0.01 m, p95 +0.66 m, from 10.19 m below to 7.84 m above. Two coverage limits. Attachment is geometric only, because the archive carries a way's class but never the `subclass='sidewalk'` tag, so the third of tagged sidewalks that fail a geometric test are outside this population altogether. And a pair whose step the drawn world *closes* is out of the population (F3: height disposes what plan proposed): a way a storey from a kerb behind a drawn wall — the wall-foot paths of Montreux, a lower walk sheet beside a terrace street — is another terrace, measured by the closure question `fabric.closure` asks (open air past the check's own 1 m bar keeps the pair in; a closed face excludes it). What remains charged is a pedestrian surface with visible air between it and the kerb it runs beside, which is the strip genuinely hanging off its street.",
+      "samples": 81004,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 6.446666666666667,
+      "tail": 5.166666666666667,
       "threshold": 1.0,
       "title": "A pedestrian way's surface departing from the street beside it",
-      "violation_pct": 5.320729552979164,
-      "violations": 4548,
+      "violation_pct": 0.23332181126857934,
+      "violations": 189,
       "worst": 14.790241671933074
     },
     {
@@ -1644,7 +1644,7 @@
       6.9873046875,
       46.47216796875
     ],
-    "commit": "4f7d9e4",
+    "commit": "6be6902",
     "max_tiles": 4096,
     "spacing_m": 1.0,
     "tiles": 222,

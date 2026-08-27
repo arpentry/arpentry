@@ -641,6 +641,18 @@ impl Street {
                     }
                     let Some(g) = walk_ground(tile, px, py) else { continue };
                     let departure = (g - k.z).abs();
+                    // **Height disposes what plan proposed** (F3). A way a
+                    // storey from a kerb behind a *closed* step is on another
+                    // terrace — the wall between them is drawn, the world is
+                    // whole (I9), and the pavement relation this check scores
+                    // does not exist. Only visible air past the check's own
+                    // bar keeps the pair in the population.
+                    if departure > WALK_GRADE_M
+                        && super::fabric::open_step(tile, px, py, g.min(k.z), g.max(k.z))
+                            <= WALK_GRADE_M
+                    {
+                        continue;
+                    }
                     self.grade.push(departure);
                     self.grade_signed.push(g - k.z);
                     if departure > WALK_GRADE_M {
@@ -703,6 +715,22 @@ impl Street {
                     return;
                 }
                 let departure = (z - k.z).abs();
+                // **Height disposes what plan proposed** (F3). A walkway a
+                // storey from a kerb behind a *closed* step is on another
+                // terrace — the wall between them is drawn, the world is
+                // whole (I9), and the pavement relation this check scores
+                // does not exist: the wall-foot paths of Montreux, and the
+                // lower walk sheets the sheet assignment now draws honestly
+                // instead of blending upward, are real configurations, not
+                // strips off their kerb. Only visible air past the check's
+                // own bar keeps the pair in the population; a strip genuinely
+                // hanging beside its street is exactly that air.
+                if departure > WALK_GRADE_M
+                    && super::fabric::open_step(tile, px, py, z.min(k.z), z.max(k.z))
+                        <= WALK_GRADE_M
+                {
+                    return;
+                }
                 dist.push(departure);
                 signed.push(z - k.z);
                 if departure > WALK_GRADE_M {
@@ -1132,13 +1160,16 @@ impl Check for Street {
                              coverage limits. Attachment is geometric only, because the \
                              archive carries a way's class but never the `subclass='sidewalk'` \
                              tag, so the third of tagged sidewalks that fail a geometric test \
-                             are outside this population altogether. And the far tail is not \
-                             all this metric's defect: past a few metres it is a street on a \
-                             terrace with a path along the foot of its wall, which is \
-                             `contact.kerb_lip`'s question — at the worst site \
-                             (6.8961,46.4649) the section shows a carriageway at 624 m and \
-                             drawn ground at 613.5 m a metre away. Read the body, not the \
-                             extreme."
+                             are outside this population altogether. And a pair whose step the \
+                             drawn world *closes* is out of the population (F3: height \
+                             disposes what plan proposed): a way a storey from a kerb behind a \
+                             drawn wall — the wall-foot paths of Montreux, a lower walk sheet \
+                             beside a terrace street — is another terrace, measured by the \
+                             closure question `fabric.closure` asks (open air past the \
+                             check's own 1 m bar keeps the pair in; a closed face excludes \
+                             it). What remains charged is a pedestrian surface with visible \
+                             air between it and the kerb it runs beside, which is the strip \
+                             genuinely hanging off its street."
                     .into(),
                 detail: "A street's bench reaches its half-width plus a shoulder and a margin \
                          and stops, so a pedestrian way outside that band drapes on whatever \

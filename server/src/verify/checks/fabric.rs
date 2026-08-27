@@ -88,6 +88,38 @@ impl Fabric {
     }
 }
 
+/// The largest sub-interval of `[lo, hi]` at `(px, py)` that no drawn mesh
+/// spans — the closure question (I9), asked pointwise: aprons, solids,
+/// buildings, the drawn terrain and the surface bands themselves all count
+/// as spans, rims do not.
+///
+/// Shared with `street`'s `contact.sidewalk_grade`, whose population gate
+/// asks the same question with the opposite sense: a walkway a storey from a
+/// kerb *behind a closed face* is a terrace with a wall, not that street's
+/// pavement, and the relation the check would score does not exist.
+pub(super) fn open_step(tile: &TileScene, px: f64, py: f64, lo: f64, hi: f64) -> f64 {
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    for r in tile.roads.iter() {
+        if !is_closure(r) {
+            continue;
+        }
+        if let Some(s) = r.mesh.span_near(px, py, &tile.scale, SPAN_NEAR_M) {
+            spans.push(s);
+        }
+    }
+    if let Some(terrain) = &tile.terrain {
+        if let Some(s) = terrain.span_near(px, py, &tile.scale, SPAN_NEAR_M) {
+            spans.push(s);
+        }
+    }
+    for (_, b) in &tile.buildings {
+        if let Some(s) = b.span_near(px, py, &tile.scale, SPAN_NEAR_M) {
+            spans.push(s);
+        }
+    }
+    largest_uncovered(lo, hi, &mut spans)
+}
+
 /// The largest sub-interval of `[lo, hi]` no span covers, with
 /// [`SPAN_SLOP_M`] forgiven at each end.
 fn largest_uncovered(lo: f64, hi: f64, spans: &mut Vec<(f64, f64)>) -> f64 {
@@ -186,29 +218,10 @@ impl Check for Fabric {
                 }
                 // The step is real. What spans [below, own] here? The upper
                 // band's own mesh is consulted too: where the union welds two
-                // heights into one region, the weld face is that mesh's.
-                let mut spans: Vec<(f64, f64)> = Vec::new();
-                for r in tile.roads.iter() {
-                    if !is_closure(r) {
-                        continue;
-                    }
-                    if let Some(s) = r.mesh.span_near(px, py, &tile.scale, SPAN_NEAR_M) {
-                        spans.push(s);
-                    }
-                }
-                if let Some(terrain) = &tile.terrain {
-                    // A drawn cutting or embankment face between the two bands
-                    // is exactly the closure this invariant asks for.
-                    if let Some(s) = terrain.span_near(px, py, &tile.scale, SPAN_NEAR_M) {
-                        spans.push(s);
-                    }
-                }
-                for (_, b) in &tile.buildings {
-                    if let Some(s) = b.span_near(px, py, &tile.scale, SPAN_NEAR_M) {
-                        spans.push(s);
-                    }
-                }
-                let open = largest_uncovered(below, own, &mut spans);
+                // heights into one region, the weld face is that mesh's — and
+                // a drawn cutting or embankment face between the two bands is
+                // exactly the closure this invariant asks for.
+                let open = open_step(tile, px, py, below, own);
                 self.closure.push(open);
                 if open > STACK_M {
                     let (lon, lat) = tile.lonlat(px, py);

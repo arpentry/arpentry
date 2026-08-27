@@ -1674,29 +1674,29 @@
           "zoom": 16
         },
         {
-          "lat": 46.43864178098738,
-          "lon": 6.914917817339301,
-          "note": "the walkway stands 10.0 m below the carriageway it runs alongside",
-          "value": 10.002044677734375,
-          "zoom": 16
-        },
-        {
           "lat": 46.438640230335295,
           "lon": 6.914921086281538,
           "note": "the walkway stands 10.0 m below the carriageway it runs alongside",
           "value": 10.002044677734375,
           "zoom": 16
+        },
+        {
+          "lat": 46.43864060752094,
+          "lon": 6.914924271404743,
+          "note": "the walkway stands 10.0 m below the carriageway it runs alongside",
+          "value": 9.98504638671875,
+          "zoom": 16
         }
       ],
-      "population": "Every metre along every level-0 pedestrian centerline (footway, path, cycleway, pedestrian, bridleway — not steps, whose purpose is to change height) whose part runs with a street for at least 80 % of its length and which is locally parallel to the kerb within 30°, taken where it is beside the asphalt rather than over it. The value is |drawn surface under the way − drawn carriageway at the nearest kerb point|, unsigned because a way stranded on a bank above its street is the same defect as one in a ditch below it; the offender note carries the side. Over the Montreux extract at z16 that is 30,366 samples out of 421 k pedestrian samples — 12 % of the rest are drawn over the asphalt and the remainder do not run with a street. The population is very nearly symmetric, 44.9 % below the kerb and 55.1 % above it, which is the whole point of the unsigned value: the cutting side and the fill side of one missing cross-section. Signed it reads p05 −0.55 m, p50 +0.01 m, p95 +0.66 m, from 10.19 m below to 7.84 m above. Two coverage limits. Attachment is geometric only, because the archive carries a way's class but never the `subclass='sidewalk'` tag, so the third of tagged sidewalks that fail a geometric test are outside this population altogether. And the far tail is not all this metric's defect: past a few metres it is a street on a terrace with a path along the foot of its wall, which is `contact.kerb_lip`'s question — at the worst site (6.8961,46.4649) the section shows a carriageway at 624 m and drawn ground at 613.5 m a metre away. Read the body, not the extreme.",
-      "samples": 5170625,
+      "population": "Every metre along every level-0 pedestrian centerline (footway, path, cycleway, pedestrian, bridleway — not steps, whose purpose is to change height) whose part runs with a street for at least 80 % of its length and which is locally parallel to the kerb within 30°, taken where it is beside the asphalt rather than over it. The value is |drawn surface under the way − drawn carriageway at the nearest kerb point|, unsigned because a way stranded on a bank above its street is the same defect as one in a ditch below it; the offender note carries the side. Over the Montreux extract at z16 that is 30,366 samples out of 421 k pedestrian samples — 12 % of the rest are drawn over the asphalt and the remainder do not run with a street. The population is very nearly symmetric, 44.9 % below the kerb and 55.1 % above it, which is the whole point of the unsigned value: the cutting side and the fill side of one missing cross-section. Signed it reads p05 −0.55 m, p50 +0.01 m, p95 +0.66 m, from 10.19 m below to 7.84 m above. Two coverage limits. Attachment is geometric only, because the archive carries a way's class but never the `subclass='sidewalk'` tag, so the third of tagged sidewalks that fail a geometric test are outside this population altogether. And a pair whose step the drawn world *closes* is out of the population (F3: height disposes what plan proposed): a way a storey from a kerb behind a drawn wall — the wall-foot paths of Montreux, a lower walk sheet beside a terrace street — is another terrace, measured by the closure question `fabric.closure` asks (open air past the check's own 1 m bar keeps the pair in; a closed face excludes it). What remains charged is a pedestrian surface with visible air between it and the kerb it runs beside, which is the strip genuinely hanging off its street.",
+      "samples": 5107379,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 3.8600000000000003,
+      "tail": 0.9533333333333334,
       "threshold": 1.0,
       "title": "A pedestrian way's surface departing from the street beside it",
-      "violation_pct": 1.2012087513598453,
-      "violations": 62110,
+      "violation_pct": 0.0034851535396139585,
+      "violations": 178,
       "worst": 10.01904296875
     },
     {
@@ -2480,7 +2480,7 @@
       6.9818115234375,
       46.47216796875
     ],
-    "commit": "4f7d9e4",
+    "commit": "6be6902",
     "max_tiles": 4096,
     "spacing_m": 1.0,
     "tiles": 621,
