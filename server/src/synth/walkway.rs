@@ -67,6 +67,10 @@ const PATH_STATION_M: f64 = 8.0;
 /// separation of the shallowest switchback the extract holds (~5 m).
 const CORNER_STEP_M: f64 = 1.5;
 
+/// Lateral sampling pitch of the bench-face probe, metres — fine enough that
+/// a wall inside the band's width cannot hide between two samples.
+const FACE_STEP_M: f64 = 0.75;
+
 /// Longest hostless Walkway segment [`CORNER_STEP_M`] applies to, in metres —
 /// what counts as connective tissue rather than a way going somewhere.
 const CORNER_LINK_MAX_M: f64 = 4.0;
@@ -1682,13 +1686,29 @@ fn fitted_half(s: &SourceSeg, sample: &mut dyn FnMut(Coord) -> f64) -> Option<f6
         (s.height_a + s.height_b) * 0.5
     };
     let cap = priors::bench_face_cap_m(s.surface);
-    // The deepest of the two verge faces a bench of half-width `w` would carry.
+    // The deepest deviation anywhere across the bench a half-width `w` would
+    // carry — sampled at sub-metre steps, not at the two edges alone. The
+    // edge pair jumps a wall standing *inside* the width: at a trench mouth
+    // the outer probe lands on the neighbouring bench (the trench road's own
+    // carriageway, at road height) and the inner on the strip's seat, both
+    // near the target, and the strip is approved straight across the wall
+    // between them — drawn, it falls eight metres across a quarter-metre of
+    // band (6.8932,46.4435). On a monotone cross-slope the edge *is* the
+    // deepest sample, so this only ever measures more, never less.
     let face = |w: f64, sample: &mut dyn FnMut(Coord) -> f64| -> f64 {
-        let at = |side: f64| Coord {
-            x: mid.x + side * px * w / (DEG_M * cos_lat),
-            y: mid.y + side * py * w / DEG_M,
-        };
-        (target - sample(at(1.0))).abs().max((target - sample(at(-1.0))).abs())
+        let steps = (w / FACE_STEP_M).ceil().max(1.0) as i32;
+        let mut worst = 0.0f64;
+        for k in 1..=steps {
+            let d = w * k as f64 / steps as f64;
+            for side in [-1.0f64, 1.0] {
+                let at = Coord {
+                    x: mid.x + side * px * d / (DEG_M * cos_lat),
+                    y: mid.y + side * py * d / DEG_M,
+                };
+                worst = worst.max((target - sample(at)).abs());
+            }
+        }
+        worst
     };
     // The width the band is *drawn* at, not `half_m` — that is the run's
     // chaining key now and is the class nominal whatever the room left
@@ -1853,6 +1873,37 @@ mod tests {
             surface: priors::Surface::Walkway,
             rise_m: if corridor == NO_HOST { 0.0 } else { priors::KERB_RISE_M },
             arc0: 0.0,
+        }
+    }
+
+    /// A wall standing *inside* the band's width must fail the face probe.
+    /// The old two-point probe read only the edges: one landed on the strip's
+    /// own seat and the other on the bench beyond the wall, both near the
+    /// target, and the strip was approved straight across the drop.
+    #[test]
+    fn a_wall_inside_the_width_fails_the_face() {
+        let s = seg(0.0, 8.0, 0.0, 400.0, 5);
+        // Ground: at the target on the seat line, a 6 m trench from 1.2 m to
+        // 2.2 m north, and the neighbouring bench at the target again beyond —
+        // the exact geometry that blinded the two-point probe: both edges land
+        // on bench-height ground and the wall between them goes unseen.
+        let mut sample = |c: Coord| -> f64 {
+            let north_m = (c.y - LAT) * crate::scene::DEG_M;
+            if north_m > 1.2 && north_m <= 2.2 {
+                394.0
+            } else {
+                400.0
+            }
+        };
+        let got = fitted_half(&s, &mut sample);
+        // The nominal reaches past 1.2 m, so the wall is inside the width and
+        // the fit must either refuse or narrow to keep the bench off it.
+        match got {
+            None => {}
+            Some(half) => assert!(
+                half <= 1.2,
+                "a 6 m wall 1.2 m out must not be inside the approved half ({half:.2})"
+            ),
         }
     }
 
