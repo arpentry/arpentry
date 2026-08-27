@@ -75,6 +75,26 @@ const FACE_STEP_M: f64 = 0.75;
 /// what counts as connective tissue rather than a way going somewhere.
 const CORNER_LINK_MAX_M: f64 = 4.0;
 
+/// Steepest end-to-end seat fall a hostless Walkway segment may carry, as a
+/// grade — past it the segment is draping a wall, whatever its length.
+///
+/// [`CORNER_STEP_M`]'s length exemption was written so a sidewalk leaving its
+/// street could legitimately fall a storey over a hundred metres — and it
+/// exempted the type specimen with it: an 8 m segment at the trench mouth of
+/// 6.8932,46.4435 whose stamped seat falls 5.6 m (a 70 % walkway, drawn as a
+/// near-vertical curtain between two terraces; `slope.walk_crossfall`'s
+/// worst, 908 %). The allowance therefore grows with length at this grade
+/// instead of vanishing: a link keeps the absolute step, a longer segment is
+/// allowed `len ×` this, and nothing keeps a wall.
+///
+/// Read off the census (`ARPT_DEBUG_WALK`, Montreux zone, 7,531 hostless
+/// Walkway segments): p50 0.039, p90 0.182, p99 0.491, max 3.567. The
+/// steepest sidewalks anywhere are ~0.3; past 0.5 is stair territory, and a
+/// `steps` way is excluded from Walkway bands by design (it draws as a free
+/// band until P5 gives it a profile). The ceiling refuses 215 m over the
+/// whole zone — 0.05 % of the drawn sidewalk length — all of it wall.
+const WALK_WALL_GRADE: f64 = 0.5;
+
 /// How far a crossing's mapped line is extended past each end when it is
 /// registered against the carriageways, in metres. A crosswalk is mapped by
 /// hand across the road it crosses and its endpoints rarely lie on the kerbs
@@ -1354,11 +1374,21 @@ pub fn fit_to_ground(
     // Length by what the fit did to it, so the cost of the rule is reported
     // rather than inferred: kept as it was, narrowed, or given up on.
     let mut by = [[0.0f64; 4]; 2]; // [path][kept, narrowed, sliver, dropped]
+    // The end-to-end fall of every hostless band's seat, as a grade — the
+    // population the wall-drape guard's ceiling is read off (see
+    // [`fitted_half`]'s link check and the census report below).
+    let mut falls: Vec<(f64, f64)> = Vec::new(); // (grade, len_m), Walkway only
     for (k, (half, ends)) in fitted.into_iter().enumerate() {
         let i = seats[k];
         if let Some((ha, hb)) = ends {
             bands[i].height_a = ha;
             bands[i].height_b = hb;
+            if census && bands[i].surface == priors::Surface::Walkway {
+                let len = crate::scene::metric_len(bands[i].a, bands[i].b, bands[i].cos_lat);
+                if len > 1.0 {
+                    falls.push(((ha - hb).abs() / len, len));
+                }
+            }
         }
         if no_fit {
             continue; // seats stamped, widths untouched, nothing dropped
@@ -1425,6 +1455,22 @@ pub fn fit_to_ground(
                 100.0 * by[path][1] / t,
                 100.0 * by[path][2] / t,
                 100.0 * by[path][3] / t,
+            );
+        }
+        if !falls.is_empty() {
+            falls.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let q = |f: f64| falls[((falls.len() - 1) as f64 * f) as usize].0;
+            let steep_m: f64 = falls.iter().filter(|(g, _)| *g > 0.5).map(|(_, l)| l).sum();
+            eprintln!(
+                "[walk] hostless walkway seat fall  n={}  p50 {:.3}  p90 {:.3}  p99 {:.3}  \
+                 p999 {:.3}  max {:.3}   over 50 %: {:.0} m",
+                falls.len(),
+                q(0.50),
+                q(0.90),
+                q(0.99),
+                q(0.999),
+                q(1.0),
+                steep_m,
             );
         }
     }
@@ -1704,13 +1750,15 @@ fn fitted_half(
         // (6.9166,46.4338 is the type specimen: `slope.walk_crossfall`'s
         // worst read a 6.3 m step across 0.25 m of band there). No drawn
         // piece beats a wall.
-        // Only a *short* link. The guard was written for a crossing stub or a
-        // corner — connective tissue a couple of metres long — and a hostless
-        // Walkway is now also the stretch of a sidewalk that leaves its street,
-        // which can run a hundred metres down a flank and legitimately fall
-        // more than a storey along the way.
-        let link = crate::scene::metric_len(s.a, s.b, cos_lat) <= CORNER_LINK_MAX_M;
-        if link && s.surface == priors::Surface::Walkway && (ha - hb).abs() > CORNER_STEP_M {
+        //
+        // The allowance grows with length rather than vanishing past a link
+        // ([`WALK_WALL_GRADE`]): a sidewalk leaving its street may fall a
+        // storey over a hundred metres, and may not fall one over eight —
+        // the length exemption that said otherwise approved an 8 m segment
+        // draping 5.6 m down a trench-mouth wall (6.8932,46.4435).
+        let len = crate::scene::metric_len(s.a, s.b, cos_lat);
+        let allow = CORNER_STEP_M.max(len * WALK_WALL_GRADE);
+        if s.surface == priors::Surface::Walkway && (ha - hb).abs() > allow {
             return None;
         }
         (ha + hb) * 0.5
@@ -1917,6 +1965,25 @@ mod tests {
                 "a 6 m wall 1.2 m out must not be inside the approved half ({half:.2})"
             ),
         }
+    }
+
+    /// **A walkway may fall a storey over a hundred metres and may not fall
+    /// one over eight.** The wall-drape guard ([`WALK_WALL_GRADE`]): an 8 m
+    /// hostless segment whose seat falls 5.6 m is a wall and is refused; the
+    /// same fall over 100 m is a hillside sidewalk and stands.
+    #[test]
+    fn a_seat_falling_a_storey_over_eight_metres_is_a_wall() {
+        let mut sample = |_: Coord| 400.0;
+        let steep = seg(0.0, 8.0, 0.0, 0.0, NO_HOST);
+        assert!(
+            fitted_half(&steep, Some((400.0, 394.4)), &mut sample).is_none(),
+            "a 70 % walkway must be refused"
+        );
+        let long = seg(0.0, 100.0, 0.0, 0.0, NO_HOST);
+        assert!(
+            fitted_half(&long, Some((400.0, 394.4)), &mut sample).is_some(),
+            "a 5.6 % hillside sidewalk must stand"
+        );
     }
 
     /// The defect this fixes: `fitted_half` seats a `NO_HOST` band on the

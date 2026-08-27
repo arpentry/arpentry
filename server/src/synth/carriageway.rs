@@ -456,6 +456,33 @@ pub fn bake(
     for (s, &l) in walk_bands.iter_mut().zip(walk_layers.iter()) {
         s.layer = l;
     }
+    // ARPT_WALK_SHEET_AT=lon,lat — every walk band within ~30 m of the point,
+    // with the sheet verdict it was just given: the instrument for a walk
+    // surface smearing between two terraces.
+    if let Some(at) = std::env::var_os("ARPT_WALK_SHEET_AT") {
+        if let Some((plon, plat)) = at
+            .to_str()
+            .and_then(|s| s.split_once(','))
+            .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))
+        {
+            for s in &walk_bands {
+                let (d, _) = sheets::point_to_segment(
+                    Coord { x: plon, y: plat },
+                    s.a,
+                    s.b,
+                    s.cos_lat,
+                );
+                if d <= 30.0 {
+                    eprintln!(
+                        "[walk-sheet] corridor {} {:?} arc0 {:.1} layer {} level {} \
+                         h {:.2}..{:.2} rise {:.2} d {:.1} m",
+                        s.corridor, s.surface, s.arc0, s.layer, s.level, s.height_a, s.height_b,
+                        s.rise_m, d
+                    );
+                }
+            }
+        }
+    }
     sources.extend(walk_bands);
     let mut model = CarriagewayModel::build(junctions, sources, handovers);
     // An intersection pins the sheet it stands on, which is the sheet of the
