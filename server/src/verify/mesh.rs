@@ -481,6 +481,79 @@ impl SurfaceMesh {
         range
     }
 
+    /// The local long axis of this surface within `radius_m` of a plan point:
+    /// a metric-space unit vector along the direction the nearby geometry
+    /// extends, and the anisotropy ratio √(λ₁/λ₂) of the vertex covariance.
+    /// `None` where fewer than three vertices lie in the window. A ribbon —
+    /// a deck — answers with its own axis and a high ratio; a compact patch
+    /// answers with a ratio near 1, which a caller must treat as "no axis".
+    pub fn axis_near(
+        &self,
+        px: f64,
+        py: f64,
+        scale: &Scale,
+        radius_m: f64,
+    ) -> Option<((f64, f64), f64)> {
+        let (rx, ry) = (radius_m / scale.mx.max(1e-12), radius_m / scale.my.max(1e-12));
+        // A structure tensor over the *edge directions*, each weighted by the
+        // length it runs inside the window — not a vertex covariance. At a
+        // ribbon's very end the window holds only the end cap's corners, and a
+        // vertex PCA reads the cap's direction (across) instead of the
+        // ribbon's; the edges disagree, because the two long sides run through
+        // the window however coarse the mesh is.
+        let (mut n, mut cxx, mut cxy, mut cyy) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        self.grid.candidates_within(px, py, rx, ry, |t| {
+            let tri = self.triangle(t as usize);
+            for i in 0..3 {
+                let (a, b) = (tri[i], tri[(i + 1) % 3]);
+                let (ex, ey) = ((b.0 - a.0) * scale.mx, (b.1 - a.1) * scale.my);
+                let len = (ex * ex + ey * ey).sqrt();
+                if len < 1e-9 {
+                    continue;
+                }
+                let (ux, uy) = (ex / len, ey / len);
+                // Length of this edge inside the window, walked at metre steps.
+                let steps = (len.ceil() as usize).clamp(1, 64);
+                let mut inside = 0.0f64;
+                for k in 0..=steps {
+                    let f = k as f64 / steps as f64;
+                    let (qx, qy) = (
+                        (a.0 + (b.0 - a.0) * f - px) * scale.mx,
+                        (a.1 + (b.1 - a.1) * f - py) * scale.my,
+                    );
+                    if qx * qx + qy * qy <= radius_m * radius_m {
+                        inside += len / steps as f64;
+                    }
+                }
+                if inside <= 0.0 {
+                    continue;
+                }
+                n += inside;
+                cxx += inside * ux * ux;
+                cxy += inside * ux * uy;
+                cyy += inside * uy * uy;
+            }
+        });
+        if n < 1.0 {
+            return None;
+        }
+        // Eigenvalues of the 2×2 covariance; the major axis is the eigenvector
+        // of the larger.
+        let tr = cxx + cyy;
+        let det = cxx * cyy - cxy * cxy;
+        let disc = (tr * tr * 0.25 - det).max(0.0).sqrt();
+        let (l1, l2) = (tr * 0.5 + disc, (tr * 0.5 - disc).max(1e-12));
+        let (ax, ay) = if cxy.abs() > 1e-12 {
+            (l1 - cyy, cxy)
+        } else if cxx >= cyy {
+            (1.0, 0.0)
+        } else {
+            (0.0, 1.0)
+        };
+        let len = (ax * ax + ay * ay).sqrt().max(1e-12);
+        Some(((ax / len, ay / len), (l1 / l2).sqrt()))
+    }
+
     /// Every edge no other triangle shares, as `(a, b, opposite)` vertex
     /// indices — the two ends of the silhouette edge and the third corner of
     /// the one triangle holding it, which is what says which way is *out*.
@@ -844,6 +917,24 @@ mod tests {
         assert!(worst_surface > 3.5, "surface sampling must see the ridge, saw {worst_surface}");
     }
 
+    #[test]
+    fn axis_near_reads_a_ribbon_along_its_length() {
+        let mesh = SurfaceMesh::from_parts(
+            vec![0.5, 0.6, 0.6, 0.5],
+            vec![0.49, 0.49, 0.51, 0.51],
+            vec![400.0; 4],
+            vec![0, 1, 2, 0, 2, 3],
+        )
+        .unwrap();
+        let scale = Scale { mx: 420.0, my: 610.0 };
+        let r = mesh.axis_near(0.503, 0.5, &scale, 8.0);
+        eprintln!("axis_near -> {r:?}");
+        let ((ax, ay), ratio) = r.expect("axis");
+        eprintln!("ax {ax} ay {ay} ratio {ratio}");
+        assert!(ax.abs() > 0.9, "axis along x, got ({ax},{ay}) ratio {ratio}");
+    }
+
+    #[test]
     #[test]
     fn the_grid_agrees_with_a_linear_scan() {
         let m = ramp();

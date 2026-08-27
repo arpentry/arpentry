@@ -118,6 +118,20 @@ const STEP_BREAK_M: f64 = 0.05;
 /// `order.deck_above_carriageway` owns that case.
 const CARRIED_SLACK_M: f64 = 1.0;
 
+/// Window for the deck's local long axis at the march's entry point, metres —
+/// wide enough to read a ribbon's direction, narrow enough to stay on the
+/// deck's own end.
+const AXIS_WINDOW_M: f64 = 8.0;
+
+/// Anisotropy below which the axis says nothing (a compact patch), and the
+/// pairing is kept rather than guessed about.
+const AXIS_MIN_RATIO: f64 = 2.0;
+
+/// |cos| between the deck's axis and the march below which the deck lies
+/// across the path — a passer-by, not a continuation. A 45° skew crossing
+/// reads 0.71 and stays; the censused passer-by population reads median 0.23.
+const ACROSS_COS: f64 = 0.35;
+
 /// How far back inside the band the overlap probe stands, in metres. Far
 /// enough to be unambiguously *on* the band rather than on its boundary, and
 /// short enough that the smallest overlap it lets through is smaller than the
@@ -161,6 +175,9 @@ struct Handoffs {
     ballast: usize,
     /// Band edges a deck already covers in plan: an overlap, not a handoff.
     overlapped: usize,
+    /// Joints rejected because the deck found lay across the march — a
+    /// passer-by, not a continuation. Counted so the exclusion is visible.
+    across: usize,
     /// Drawn decks, and how many of them name the band they continue
     /// (`band_class`). An archive tiled before that property states none, and
     /// the modality then falls back to re-deriving from the road class — so the
@@ -183,6 +200,7 @@ impl Handoff {
             asphalt: 0,
             ballast: 0,
             overlapped: 0,
+            across: 0,
             decks: 0,
             decks_named: 0,
         })
@@ -329,8 +347,8 @@ impl Check for Handoff {
                 let (ux, uy) = (nx / mx, ny / my);
                 let h = 0.5 * (az + bz);
 
-                let carried = |q: (f64, f64)| -> Option<(f64, &str)> {
-                    for ((class, rail, m), b) in decks.iter().zip(&boxes) {
+                let carried = |q: (f64, f64)| -> Option<(f64, &str, usize)> {
+                    for (di, ((class, rail, m), b)) in decks.iter().zip(&boxes).enumerate() {
                         if !in_box(b, q.0, q.1) || *rail != ballast {
                             continue; // a road does not hand over to a railway
                         }
@@ -341,7 +359,7 @@ impl Check for Handoff {
                             // At the *top*: a band at soffit level is passing
                             // underneath, not handing over.
                             if (h - hi).abs() <= CARRIED_SLACK_M {
-                                return Some((hi, class));
+                                return Some((hi, class, di));
                             }
                         }
                     }
@@ -365,7 +383,7 @@ impl Check for Handoff {
                 }
 
                 let (mut last_paved, mut paved_h) = (0.0f64, h);
-                let mut found: Option<(f64, f64, &str)> = None;
+                let mut found: Option<(f64, f64, &str, usize)> = None;
                 let mut d = STEP_M;
                 while d <= REACH_M {
                     let q = (px + ux * d, py + uy * d);
@@ -375,8 +393,8 @@ impl Check for Handoff {
                     if !tile.owns(q.0, q.1) {
                         break;
                     }
-                    if let Some((top, class)) = carried(q) {
-                        found = Some((d, top, class));
+                    if let Some((top, class, di)) = carried(q) {
+                        found = Some((d, top, class, di));
                         break;
                     }
                     // Surface at this sample, but only surface that could be
@@ -402,7 +420,28 @@ impl Check for Handoff {
                     }
                     d += STEP_M;
                 }
-                let Some((deck_d, top, class)) = found else { continue };
+                let Some((deck_d, top, class, di)) = found else { continue };
+                // **A deck lying across the march is passing by, not
+                // continuing the band.** The 2026-08-22 census: 9.5 % of
+                // joints were "detached" past 0.15 m and carried every bare
+                // violation — and 58.5 % of them marched into the *side* of a
+                // deck whose road is someone else's (median |cos| 0.23 against
+                // 1.00 for touching joints; confirmed twice in section, a
+                // gully and a third road between the band and "its" deck).
+                // The discriminator is the deck's own long axis at the entry
+                // point against the march: rejected only when the deck is
+                // confidently a ribbon (anisotropy ≥ 2) and confidently
+                // across (|cos| < 0.35) — a genuinely *skewed* abutment lives
+                // at 45° = 0.71 and stays in the population.
+                let entry = (px + ux * deck_d, py + uy * deck_d);
+                if let Some((axis, ratio)) =
+                    decks[di].2.axis_near(entry.0, entry.1, &tile.scale, AXIS_WINDOW_M)
+                {
+                    if ratio >= AXIS_MIN_RATIO && (axis.0 * nx + axis.1 * ny).abs() < ACROSS_COS {
+                        self.0.across += 1;
+                        continue;
+                    }
+                }
                 if ballast {
                     self.0.ballast += 1;
                 } else {
