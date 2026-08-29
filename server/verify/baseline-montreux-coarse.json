@@ -1385,6 +1385,22 @@
       "worst": null
     },
     {
+      "id": "order.walk_on_asphalt",
+      "invariant": "I3",
+      "median": null,
+      "offenders": [],
+      "population": "Every drawn at-grade pedestrian surface sample (walk_surface, path_surface and their rims) the tile owns, scored by how deep onto the at-grade carriageway it stands — the plan distance to the nearest road silhouette point, capped at the attachment reach — wherever the band lies within [`priors::WALK_ON_ASPHALT_M`] of the asphalt sharing its plan position, and zero everywhere else. The zeros are scored for the same reason `order.building_overlap` scores them: over the on-samples alone the population would be nothing but the defect. Over the Montreux extract at z16, 15.0 M samples, of which 1.05 M were coincident before the model-side yield and their dz median was +0.11 m — the kerb rise itself, which is the signature this check exists to catch. The height gate keeps the legitimate stacks out: a footbridge over the street and a rim path above a sunken road both fail it and score zero.",
+      "samples": 0,
+      "sense": "higher_is_worse",
+      "skipped": "no drawn at-grade pedestrian surface",
+      "tail": null,
+      "threshold": 0.75,
+      "title": "Drawn pedestrian surface standing on the carriageway",
+      "violation_pct": 0.0,
+      "violations": 0,
+      "worst": null
+    },
+    {
       "id": "contact.sidewalk_grade",
       "invariant": "I4",
       "median": 0.08666666666666667,
@@ -1644,7 +1660,7 @@
       6.9873046875,
       46.47216796875
     ],
-    "commit": "6be6902",
+    "commit": "2c0ea43",
     "max_tiles": 4096,
     "spacing_m": 1.0,
     "tiles": 222,
