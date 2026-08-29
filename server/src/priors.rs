@@ -1239,6 +1239,23 @@ pub const WALK_MIN_WIDTH_M: f64 = 0.8;
 /// it stands on the ground, which is what it is.
 pub const KERB_RISE_M: f64 = 0.12;
 
+/// How far a pedestrian band may stand off the carriageway sharing its plan
+/// position and still be *on* it, in metres — the band that yields the plan
+/// space rather than stacks over it (`synth::pavement`), and the same bar the
+/// scorecard measures the yield against (`order.walk_on_asphalt`). One
+/// definition, deliberately, for the same reason the attachment rule lives
+/// here: a check scoring a different coincidence band than the model trims
+/// would be reporting a metric about nothing.
+///
+/// Within a metre the band is part of the street's own cross-section plane —
+/// a correct band rides [`KERB_RISE_M`] above the asphalt, and a junction's
+/// arms disagree by decimetres where their profiles blend. Past a metre it is
+/// a different storey: a footbridge, or a rim path above the sunken road the
+/// walk-sheet split draws honestly. Both are stacks the trim must leave alone,
+/// and height is the only thing that tells them from a band lying on the
+/// plate.
+pub const WALK_ON_ASPHALT_M: f64 = 1.0;
+
 /// Longest unattached stretch pinched between two street-claimed ones that
 /// still counts as *the sidewalk wrapping a corner*, in metres — kept in the
 /// sidewalk's own material at the kerb rise, at any length

@@ -148,6 +148,30 @@ const WALK_FALL_LADDER_M: [f64; 3] = [WALK_FALL_IN_M, 0.5, 0.25];
 /// is past all of that and far below anything a hillside contributes.
 const WALK_FALL: f64 = 0.10;
 
+/// How far a pedestrian band may stand above or below the carriageway sharing
+/// its plan position and still be *on* it rather than over or under it.
+///
+/// [`priors::WALK_ON_ASPHALT_M`], where the model that trims the coincident
+/// band keeps it (`synth::pavement`) — one definition, deliberately, like the
+/// attachment rule above: within the band a correct pavement rides
+/// [`priors::KERB_RISE_M`] above the asphalt and a coincident one must have
+/// yielded, while past it a footbridge or a rim path above a sunken road is a
+/// stack the model draws on purpose. A check scoring a different coincidence
+/// band than the model trims would report a metric about nothing.
+const ON_ASPHALT_DZ_M: f64 = priors::WALK_ON_ASPHALT_M;
+
+/// How deep onto the carriageway a coincident band sample must reach before it
+/// is a band on the plate rather than the shared kerb edge.
+///
+/// A sidewalk legitimately *meets* the asphalt along the kerb, so the seam
+/// itself must score zero. The depth is read against the road silhouette
+/// resampled at [`WALK_STEP_M`], whose nearest-point error is up to half a
+/// step; and `road_surface` is inset [`priors::PAVE_RIM_M`] = 0.35 m from the
+/// true kerb, so its own silhouette duplicates the boundary a third of a metre
+/// in. Three quarters of a metre is past both, and anything deeper is plan
+/// space the carriageway owns.
+const ON_ASPHALT_EDGE_M: f64 = 0.75;
+
 /// The pedestrian classes this check scores, which is the model's class table
 /// ([`priors::is_pedestrian`]) less `steps`.
 ///
@@ -426,6 +450,13 @@ pub struct Street {
     walk_indoors: Dist,
     walk_indoors_worst: Worst,
     walk_inside: u64,
+    /// How deep onto the at-grade carriageway a pedestrian band stands, where
+    /// it stands *on* it (within [`ON_ASPHALT_DZ_M`] vertically), and zero
+    /// where it does not. The signed height off the asphalt over the
+    /// coincident samples alone, for `ARPT_DEBUG_STREET`.
+    on_asphalt: Dist,
+    on_asphalt_worst: Worst,
+    on_asphalt_dz: Dist,
     grade: Dist,
     grade_worst: Worst,
     /// The step at a pedestrian band's rim, unsigned, and the same step with
@@ -469,6 +500,9 @@ impl Street {
             walk_indoors: Dist::new(0.0, 64.0),
             walk_indoors_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             walk_inside: 0,
+            on_asphalt: Dist::new(0.0, 64.0),
+            on_asphalt_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            on_asphalt_dz: Dist::metres(),
             grade: Dist::new(0.0, 64.0),
             grade_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             grade_signed: Dist::metres(),
@@ -753,6 +787,88 @@ impl Street {
         self.grade_signed.merge(&signed);
         self.grade_worst.merge(worst);
     }
+
+    /// Invariant 3 on the street's own plan space: a drawn pedestrian band
+    /// standing **on** the at-grade carriageway rather than beside it.
+    ///
+    /// `contact.sidewalk_grade` deliberately scores a way only *beside* the
+    /// asphalt, and every height check tolerates the kerb rise — so a band
+    /// lying on the plate, 0.12 m above it, is invisible to all of them while
+    /// being the most visible defect on screen: the junction diced into blobs
+    /// by pavements crossing it. The band and the asphalt genuinely share plan
+    /// space; only the plan can say so.
+    ///
+    /// The value is the plan depth onto the carriageway — the distance to the
+    /// nearest at-grade road silhouette point — wherever the band stands
+    /// within [`ON_ASPHALT_DZ_M`] of the asphalt under it, zero everywhere
+    /// else. Zeros are scored over the whole pedestrian surface for the same
+    /// reason `order.building_overlap` scores them: over the on-samples alone
+    /// the population would be nothing but the defect. A footbridge over the
+    /// street and a rim path above a sunken road fail the height test and
+    /// score zero; they are stacks the model draws on purpose.
+    fn visit_on_asphalt(&mut self, tile: &TileScene, opt: &Options) {
+        if !tile.roads.iter().any(is_pedestrian_band) {
+            return;
+        }
+        let has_asphalt = tile.roads.iter().any(|r| is_road_band(r));
+        // The silhouette is only resampled when there is asphalt to stand on;
+        // a band tile without any still contributes its zeros below.
+        let kerbs = if has_asphalt { Some(Kerbs::build(tile)) } else { None };
+        let mut dist = Dist::new(0.0, 64.0);
+        let mut dz_dist = Dist::metres();
+        let mut worst = Worst::new(Sense::HigherIsWorse, opt.worst_k);
+        for r in tile.roads.iter().filter(|r| is_pedestrian_band(r)) {
+            r.mesh.sample(&tile.scale, opt.spacing_m, |px, py, z| {
+                if !tile.owns(px, py) {
+                    return;
+                }
+                // The asphalt nearest the band in *height*, where surface and
+                // rim overlap the same plan point.
+                let mut dz: Option<f64> = None;
+                if has_asphalt {
+                    for a in tile.roads.iter().filter(|r| is_road_band(r)) {
+                        if let Some(h) = a.mesh.height_at(px, py) {
+                            let d = z - h;
+                            if dz.is_none_or(|b: f64| d.abs() < b.abs()) {
+                                dz = Some(d);
+                            }
+                        }
+                    }
+                }
+                let dz = dz.filter(|d| d.abs() <= ON_ASPHALT_DZ_M);
+                let d = match (dz, &kerbs) {
+                    // On the plate, no silhouette within reach: deeper than
+                    // the index can answer, so the reach itself is the floor.
+                    (Some(_), Some(k)) => k
+                        .nearest(px, py, &tile.scale)
+                        .map_or(priors::WALK_ATTACH_M, |(d, _)| d),
+                    _ => 0.0,
+                };
+                dist.push(d);
+                if let Some(dz) = dz {
+                    dz_dist.push(dz);
+                }
+                if d > ON_ASPHALT_EDGE_M {
+                    let (lon, lat) = tile.lonlat(px, py);
+                    worst.offer(Offender {
+                        lon,
+                        lat,
+                        zoom: tile.z,
+                        value: d,
+                        note: format!(
+                            "the {} stands {d:.1} m onto the carriageway \
+                             ({:+.2} m off its surface)",
+                            r.class,
+                            dz.unwrap_or(0.0)
+                        ),
+                    });
+                }
+            });
+        }
+        self.on_asphalt.merge(&dist);
+        self.on_asphalt_dz.merge(&dz_dist);
+        self.on_asphalt_worst.merge(worst);
+    }
 }
 
 /// The drawn **sidewalk**: the band attached to a street, and its rim,
@@ -1008,6 +1124,7 @@ impl Check for Street {
     fn visit(&mut self, tile: &TileScene, opt: &Options) {
         self.visit_overlap(tile, opt);
         self.visit_grade(tile, opt);
+        self.visit_on_asphalt(tile, opt);
         self.visit_walk_ground(tile);
     }
 
@@ -1032,6 +1149,14 @@ impl Check for Street {
             );
             for t in [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 5.0] {
                 eprintln!("    |departure| > {t:.2} m: {:.4} %", 100.0 - self.grade.pct_below(t));
+            }
+            report_population("order.walk_on_asphalt depth", &self.on_asphalt);
+            report_population("  on-asphalt dz (coincident only)", &self.on_asphalt_dz);
+            for t in [0.25, 0.5, 0.75, 1.0, 2.0, 4.0, 6.0] {
+                eprintln!(
+                    "    depth > {t:.2} m: {:.4} %",
+                    100.0 - self.on_asphalt.pct_below(t)
+                );
             }
             report_population("contact.walk_rim |step|", &self.rim);
             report_population("contact.walk_rim signed", &self.rim_signed);
@@ -1136,6 +1261,51 @@ impl Check for Street {
                     .then(|| "no building footprint over drawn at-grade pedestrian surface".to_string()),
                 dist: self.walk_indoors,
                 worst: self.walk_indoors_worst.into_vec(),
+            },
+            Metric {
+                id: "order.walk_on_asphalt".into(),
+                invariant: Invariant::I3,
+                title: "Drawn pedestrian surface standing on the carriageway".into(),
+                population: "Every drawn at-grade pedestrian surface sample (walk_surface, \
+                             path_surface and their rims) the tile owns, scored by how deep \
+                             onto the at-grade carriageway it stands — the plan distance to \
+                             the nearest road silhouette point, capped at the attachment \
+                             reach — wherever the band lies within [`priors::WALK_ON_ASPHALT_M`] \
+                             of the asphalt sharing its plan position, and zero everywhere \
+                             else. The zeros are scored for the same reason \
+                             `order.building_overlap` scores them: over the on-samples alone \
+                             the population would be nothing but the defect. Over the \
+                             Montreux extract at z16, 15.0 M samples, of which 1.05 M were \
+                             coincident before the model-side yield and their dz median was \
+                             +0.11 m — the kerb rise itself, which is the signature this \
+                             check exists to catch. The height gate keeps the legitimate \
+                             stacks out: a footbridge over the street and a rim path above a \
+                             sunken road both fail it and score zero."
+                    .into(),
+                detail: "By construction no pedestrian band belongs on the plate: crossings \
+                         are drawn as zebra paint on the asphalt plus kerb stubs, never as a \
+                         band across it, so everything this measures is a band whose plan \
+                         space the carriageway owns. The mechanism it was built against: \
+                         `synth::pavement::bake_chunk` trimmed Walkway under Asphalt only \
+                         within one (level, layer) key, and the walk-sheet assignment gave \
+                         walk bands their own layer namespace — where the road sheet number \
+                         differed the trim went silently dead, and synthesized pavements \
+                         crisscrossed the junction 0.12 m above it, dicing it into blobs \
+                         (Montreux, Rue du Marché / Grand-Rue, 6.9113,46.4324; 3.80 % of \
+                         the drawn pedestrian surface zone-wide). No height check can see \
+                         this: the band rides at exactly the kerb rise every contact \
+                         tolerance forgives. The kerb-coincident yield in \
+                         `synth::pavement::trench_yields` — segment cuts plus the \
+                         intersection's own extent for the fillet space the closing adds — \
+                         is the model-side answer, and 0.43 % remains: mostly one family, \
+                         bands standing slightly below the asphalt drawn over them."
+                    .into(),
+                sense: Sense::HigherIsWorse,
+                threshold: ON_ASPHALT_EDGE_M,
+                skipped: (self.on_asphalt.count() == 0)
+                    .then(|| "no drawn at-grade pedestrian surface".to_string()),
+                dist: self.on_asphalt,
+                worst: self.on_asphalt_worst.into_vec(),
             },
             Metric {
                 id: "contact.sidewalk_grade".into(),
@@ -1269,6 +1439,7 @@ mod tests {
 
     const OVERLAP: &str = "order.building_overlap";
     const GRADE: &str = "contact.sidewalk_grade";
+    const ON_ASPHALT: &str = "order.walk_on_asphalt";
 
     /// A tile, with everything laid out in metres from its south-west corner.
     ///
@@ -1417,6 +1588,67 @@ mod tests {
         assert!(m[OVERLAP].dist.count() > 100, "the band must be sampled");
         assert_eq!(m[OVERLAP].violations(), 0, "asphalt four metres clear of a wall");
         assert_eq!(m[OVERLAP].worst_value(), Some(0.0));
+    }
+
+    #[test]
+    fn a_sidewalk_beside_its_street_is_not_on_it() {
+        // The correct cross-section: band beside the kerb, one kerb rise up.
+        // The shared edge must score zero — the seam is where the two are
+        // *supposed* to meet.
+        let s = Site::new();
+        let tile = s.scene(
+            vec![
+                s.band("road_surface", 0, (0.0, 8.0, 0.0, 80.0), 100.0),
+                s.band("walk_surface", 0, (8.0, 11.0, 0.0, 80.0), 100.12),
+            ],
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+        let m = run(&tile);
+        assert!(m[ON_ASPHALT].dist.count() > 100, "the band must be sampled");
+        assert_eq!(m[ON_ASPHALT].violations(), 0, "beside the street is not on it");
+    }
+
+    #[test]
+    fn a_band_across_the_carriageway_is_on_it() {
+        // The dead-trim defect: a pavement band lying across the plate at
+        // kerb rise. The depth is read against the road silhouette, so the
+        // band's centre — four metres from either kerb — is the worst sample.
+        let s = Site::new();
+        let tile = s.scene(
+            vec![
+                s.band("road_surface", 0, (0.0, 8.0, 0.0, 80.0), 100.0),
+                s.band("walk_surface", 0, (0.0, 8.0, 30.0, 33.0), 100.12),
+            ],
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+        let m = run(&tile);
+        assert!(m[ON_ASPHALT].violations() > 0, "a band on the plate must score");
+        let worst = m[ON_ASPHALT].worst_value().unwrap();
+        assert!((worst - 4.0).abs() < 0.8, "expected ~4 m onto the plate, got {worst}");
+    }
+
+    #[test]
+    fn a_walkway_a_storey_up_is_a_stack_and_not_on_the_asphalt() {
+        // A rim path above a sunken road — or a footbridge — shares the plan
+        // and not the plane. The height gate is what keeps both legitimate
+        // stacks out of the population.
+        let s = Site::new();
+        let tile = s.scene(
+            vec![
+                s.band("road_surface", 0, (0.0, 8.0, 0.0, 80.0), 100.0),
+                s.band("path_surface", 0, (0.0, 8.0, 30.0, 33.0), 103.5),
+            ],
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+        let m = run(&tile);
+        assert!(m[ON_ASPHALT].dist.count() > 100, "the band is still scored");
+        assert_eq!(m[ON_ASPHALT].violations(), 0, "a storey of air is a stack");
     }
 
     #[test]

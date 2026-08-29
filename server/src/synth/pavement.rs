@@ -317,10 +317,10 @@ fn bake_chunk(
         // in plan at the same height and two coplanar surfaces z-fight. The
         // more physical one wins the fill and the junior region is trimmed
         // under it: asphalt over ballast, because a level crossing's
-        // carriageway is what is physically laid across the formation; both
-        // over the walkway, because a sidewalk that overlaps a carriageway is
-        // a band whose seat the room could not narrow far enough, not a
-        // pavement laid on the road.
+        // carriageway is what is physically laid across the formation. A
+        // sidewalk overlapping a carriageway is the same sentence spoken
+        // across the two sheet namespaces, where this key cannot reach — the
+        // kerb-coincident yield in [`trench_yields`] speaks it instead.
         for &senior in seniors(surface) {
             let Some(shapes) = by_level.get(&(level, layer, senior)) else { continue };
             let senior_closed =
@@ -419,6 +419,12 @@ fn drawn(surface: priors::Surface) -> priors::Surface {
 /// is never a candidate, and only genuinely stacked sheets are compared.
 /// The boundary is [`crossings::SEPARATION_M`], the same one the model draws
 /// from the other side and `order.grade_stack` measures against.
+///
+/// Below that boundary one more family yields here: a pedestrian band within
+/// [`priors::WALK_ON_ASPHALT_M`] of a carriageway is *on* the plate, not
+/// stacked over it, and it yields the road's drawn cross-section — the
+/// cross-namespace half of the [`seniors`] sentence, spoken where heights
+/// exist to keep the footbridge and the trench-rim path out of it.
 fn trench_yields(
     junctions: &CarriagewayModel,
     source_ids: &[u32],
@@ -462,7 +468,36 @@ fn trench_yields(
             }
             let gap = s.height_at(ts) - t.height_at(tt);
             if gap.abs() <= SEPARATION_M {
-                continue; // the sheets machinery layers it; the step is a kerb
+                // **The kerb-coincident case.** Below the grade-separation
+                // boundary the sheets machinery layers same-material overlaps,
+                // but a pedestrian band within [`priors::WALK_ON_ASPHALT_M`]
+                // of a carriageway is not a layering question: it is a band
+                // lying *on* the plate, and the plan space is the road's
+                // (docs/GENERATION.md I3 — the same sentence the region-level
+                // seniority spoke, until the walk-sheet namespaces stopped its
+                // (level, layer) key from ever matching a road's; see
+                // [`seniors`]). The cut is the senior's *drawn* cross-section,
+                // so the band's new edge is the kerb the asphalt actually
+                // reaches — a facade-narrowed street cuts with its narrowed
+                // width, not its class prior. Free bands yield here too: the
+                // from-below-only exemption is about a trench rim a storey up,
+                // and within the kerb band there is no rim to protect.
+                if s.surface.is_pedestrian() != t.surface.is_pedestrian()
+                    && gap.abs() <= priors::WALK_ON_ASPHALT_M
+                {
+                    let (junior, senior) =
+                        if s.surface.is_pedestrian() { (s, t) } else { (t, s) };
+                    let sect = |x: crate::assemble::facades::Section| [x.left_m, x.right_m];
+                    let line = [frame.to_m(senior.a), frame.to_m(senior.b)];
+                    let quad = poly::buffer_section(
+                        &line,
+                        &[sect(senior.sect_a), sect(senior.sect_b)],
+                    );
+                    out.entry((junior.level, junior.layer, drawn(junior.surface)))
+                        .or_default()
+                        .extend(quad);
+                }
+                continue;
             }
             let (junior, senior) = match stratum_rank(s.surface).cmp(&stratum_rank(t.surface)) {
                 std::cmp::Ordering::Less => (s, t),
@@ -511,6 +546,42 @@ fn trench_yields(
                 .extend(quad);
         }
     }
+    // **The fillet half of the kerb-coincident yield.** The closing adds
+    // plate area inside an intersection that no source quad covers
+    // ([`intersection_masks`]), so a band the segment cuts severed at the
+    // kerbs could keep a sliver over the fillet — every sample of it an edge
+    // sample, which is how it lands in `slope.walk_crossfall` as well as on
+    // the plate. The intersection's own extent is the shape of that space,
+    // and its pinned height says which bands are on it rather than over it —
+    // a walkway crossing above a sunken junction keeps its plan space exactly
+    // as it does against the segments.
+    let mut cut: std::collections::HashSet<((i64, u32, priors::Surface), (u64, u64))> =
+        std::collections::HashSet::new();
+    for &i in source_ids {
+        let s = junctions.source(i);
+        if s.level != 0 || !s.surface.is_pedestrian() {
+            continue;
+        }
+        let band_h = 0.5 * (s.height_a + s.height_b);
+        for j in junctions.near(bbox_of(s)) {
+            let Some(h) = j.height() else { continue };
+            if (band_h - h).abs() > priors::WALK_ON_ASPHALT_M {
+                continue;
+            }
+            let key = (s.level, s.layer, drawn(s.surface));
+            let p = j.point();
+            if !cut.insert((key, (p.x.to_bits(), p.y.to_bits()))) {
+                continue;
+            }
+            let area = j.area();
+            let centre = frame.to_m(area.centre());
+            let ring: Vec<[f64; 2]> =
+                area.ring().map(|(e, n)| [centre[0] + e, centre[1] + n]).collect();
+            if ring.len() >= 3 {
+                out.entry(key).or_default().push(vec![ring]);
+            }
+        }
+    }
     out
 }
 
@@ -534,14 +605,25 @@ fn stratum_rank(surface: priors::Surface) -> u8 {
 /// formation at a level crossing, and both are laid before the footway beside
 /// them. It is also the emission order ([`material_rank`]), so a region is
 /// always trimmed against one already resolved.
+///
+/// **Same namespace only.** The key this subtraction matches on is
+/// `(level, layer)`, and a layer number only means anything against another
+/// number from the same `sheets::assign` run — the road layering and the walk
+/// layering are separate namespaces that never compare (`synth::carriageway`).
+/// A pedestrian band listing Asphalt here was the pre-namespace arrangement
+/// surviving its own premise: after the split the key matched only by
+/// *accident* — trimming an elevated walk sheet under a road that happened to
+/// share its number, and leaving a band lying on a junction plate untrimmed
+/// because the plate's sheet was 3 and the band's was 0, which diced the
+/// plate into blobs at every junction near grade-separated fabric. The
+/// cross-namespace sentence is now spoken where heights exist to say it
+/// honestly: the kerb-coincident yield in [`trench_yields`].
 fn seniors(surface: priors::Surface) -> &'static [priors::Surface] {
     match surface {
         priors::Surface::Asphalt => &[],
         priors::Surface::Ballast => &[priors::Surface::Asphalt],
-        priors::Surface::Walkway => &[priors::Surface::Asphalt, priors::Surface::Ballast],
-        priors::Surface::Path => {
-            &[priors::Surface::Asphalt, priors::Surface::Ballast, priors::Surface::Walkway]
-        }
+        priors::Surface::Walkway => &[],
+        priors::Surface::Path => &[priors::Surface::Walkway],
         priors::Surface::None => &[],
     }
 }
@@ -747,6 +829,7 @@ mod tests {
     use crate::assemble::facades::Facades;
     use crate::priors::{Kind, RoadClass};
     use crate::scene::{Corridor, SceneGraph};
+    use crate::synth::carriageway::SourceSeg;
     use crate::solve::SolvedModel;
     use crate::synth::carriageway;
 
@@ -844,6 +927,82 @@ mod tests {
         let model = bake_scene(vec![north, south]);
         let levels = model.chunk_for(&crate::solve::tile_containing(15, 6.0, LAT)).expect("asphalt");
         assert_eq!(levels[0].shapes.len(), 2, "the median was bridged");
+    }
+
+    /// A hand-built walkway band, the shape `street_bands` emits: uniform
+    /// section, the kerb rise, no host.
+    fn walk_band(a: Coord, b: Coord, half_m: f64, z: f64) -> SourceSeg {
+        use crate::assemble::facades::Section;
+        SourceSeg {
+            a,
+            b,
+            cos_lat: LAT.to_radians().cos(),
+            half_m,
+            sect_a: Section::uniform(half_m),
+            sect_b: Section::uniform(half_m),
+            level: 0,
+            layer: 0,
+            cut_a: None,
+            cut_b: None,
+            height_a: z,
+            height_b: z,
+            corridor: crate::synth::walkway::NO_HOST,
+            surface: priors::Surface::Walkway,
+            rise_m: priors::KERB_RISE_M,
+            arc0: 0.0,
+        }
+    }
+
+    /// The walkway regions of the chunk holding the test crossing.
+    fn walk_shapes(model: &PavementModel) -> Vec<usize> {
+        let levels = model.chunk_for(&crate::solve::tile_containing(15, 6.0, LAT)).expect("paved");
+        levels
+            .iter()
+            .filter(|l| l.surface == priors::Surface::Walkway)
+            .map(|l| l.shapes.len())
+            .collect()
+    }
+
+    #[test]
+    fn a_band_on_the_carriageway_yields_the_crossing() {
+        // An east-west road at grade and a walkway band crossing it at the
+        // kerb rise — the layer numbers agree here (both flat sheets read 0),
+        // but the yield must not depend on that: the two layerings are
+        // separate namespaces, and the height is what says the band is ON the
+        // plate. The road's cross-section is cut out of the band, so the band
+        // survives as its two kerb-to-kerb halves.
+        let road = corridor(0, 6.0 - 100.0 / m_lon(), LAT, 1.0, 0.0, 200.0, 11, 6.0);
+        let band = walk_band(
+            Coord { x: 6.0, y: LAT - 20.0 / DEG_M },
+            Coord { x: 6.0, y: LAT + 20.0 / DEG_M },
+            1.5,
+            priors::KERB_RISE_M,
+        );
+        let scene = SceneGraph::new(vec![road]);
+        let solved = SolvedModel::from_profiles(vec![None], 15);
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), vec![band]);
+        let model = bake(&junctions, 1);
+        assert_eq!(walk_shapes(&model), vec![2], "the band must be severed at the kerbs");
+    }
+
+    #[test]
+    fn a_band_a_storey_up_keeps_its_plan_space() {
+        // The same crossing five metres up: a footbridge, or the rim path
+        // above a sunken road the walk-sheet split draws honestly. Height is
+        // the only thing separating it from the yielded band above, and it
+        // must survive whole.
+        let road = corridor(0, 6.0 - 100.0 / m_lon(), LAT, 1.0, 0.0, 200.0, 11, 6.0);
+        let band = walk_band(
+            Coord { x: 6.0, y: LAT - 20.0 / DEG_M },
+            Coord { x: 6.0, y: LAT + 20.0 / DEG_M },
+            1.5,
+            5.0,
+        );
+        let scene = SceneGraph::new(vec![road]);
+        let solved = SolvedModel::from_profiles(vec![None], 15);
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), vec![band]);
+        let model = bake(&junctions, 1);
+        assert_eq!(walk_shapes(&model), vec![1], "a stacked band is not on the plate");
     }
 
     #[test]
