@@ -198,9 +198,23 @@ fn reconcile_stratum(
         // cannot see either (the twin-bore entity, [`twin_bore_windows`]).
         let covered = covered.get(c.id as usize).map(Vec::as_slice).unwrap_or(&[]);
         let twin: Vec<(f64, f64)> = twins[c.id as usize].iter().map(|&(a, b, _)| (a, b)).collect();
-        let reconciled = portals::reconcile_spans(p, &spans, covered, &twin);
+        let mut reconciled = portals::reconcile_spans(p, &spans, covered, &twin);
+        // The bridge half of the pure partition, in the fold where every
+        // consumer reads it (`ARPT_BRIDGE_TRIM=1`). The 2026-08-28 slice was
+        // withdrawn because the trimmed stretches were never degraded: the
+        // spans said grade, the profile still held the annotated deck ramp,
+        // and the handover cut and the sweep — built from the ramp — did not
+        // move with the partition, so every trimmed bridge gained a joint
+        // that could not meet. The degrade below is the tunnel loop's exact
+        // treatment applied to bridges, which is what "the partition moves
+        // with its consumers" means here: the ramp refits to the trimmed
+        // extent, and the cut, the sweep, the sheets and the benches all read
+        // the same trimmed truth.
+        if std::env::var_os("ARPT_BRIDGE_TRIM").is_some() {
+            reconciled = partition::bridge_trim(p, &reconciled, c.kind.prior());
+        }
         for g in reconciled.iter().filter(|s| s.kind == SpanKind::Grade) {
-            for t in spans.iter().filter(|s| s.kind == SpanKind::Tunnel) {
+            for t in spans.iter().filter(|s| s.kind != SpanKind::Grade) {
                 let (lo, hi) = (g.arc0.max(t.arc0), g.arc1.min(t.arc1));
                 if hi - lo > f64::EPSILON {
                     p.degrade_structure(lo, hi, deck_follows_road);

@@ -65,7 +65,7 @@ pub fn partition(
 /// Each `Bridge` span clamped to the extent of the deck runs the solved
 /// heights imply inside it, the slack re-covered as grade. A span no deck run
 /// overlaps is kept whole.
-fn bridge_trim(profile: &Profile, spans: &[Span], prior: &Prior) -> Vec<Span> {
+pub(crate) fn bridge_trim(profile: &Profile, spans: &[Span], prior: &Prior) -> Vec<Span> {
     let runs = structures::derive(profile, prior);
     let mut out = Vec::with_capacity(spans.len() + 4);
     for s in spans {
