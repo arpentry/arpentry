@@ -987,11 +987,41 @@ fn encode_tile(
         }
     }
 
+    // S5 prototype (`ARPT_ONE_MESH=z/x/y`): this tile draws the one mesh —
+    // terrain, group-0 asphalt and the walls between them as one classified
+    // triangulation — and its group-0 surface/rim/apron features are
+    // withheld, since the mesh now carries them.
+    let one_mesh_full = std::env::var_os("ARPT_ONE_MESH")
+        .filter(|v| v.to_string_lossy() == format!("{z}/{x}/{y}"))
+        .and_then(|_| build_one_mesh(sampler, &bounds, z, solved.z_ref, pavement, &field, &cut_regions));
+    if one_mesh_full.is_some() {
+        for l in enc_layers.iter_mut() {
+            if l.name != "transportation" {
+                continue;
+            }
+            l.features.retain(|f| {
+                let g0_surface = f.mesh.is_some()
+                    && f.properties.iter().any(|(k, v)| {
+                        k == "class"
+                            && matches!(v, Value::String(s)
+                                if s.ends_with("_surface") || s.ends_with("_rim") || s.ends_with("_apron"))
+                    })
+                    && f.properties
+                        .iter()
+                        .any(|(k, v)| k == "sheet" && matches!(v, Value::Int(0)))
+                    && f.properties
+                        .iter()
+                        .any(|(k, v)| k == "level" && matches!(v, Value::Int(0)));
+                !g0_surface
+            });
+        }
+    }
+
     // Every tile carries a terrain mesh — the client requires it to render.
     observed.push((layers::TERRAIN as usize, GeometryType::Mesh));
     let (blob, elevation, t_mesh, t_encode) = if sampler.has_elevation() {
         let t = Instant::now();
-        let ((mesh, emin, emax), t_mesh) = match early_terrain.take() {
+        let ((mesh, emin, emax), t_mesh) = match one_mesh_full.map(|m| (m, Duration::ZERO)).or(early_terrain.take()) {
             Some((drawn, dt)) => (drawn, dt),
             None => (sampler.terrain_mesh(&bounds, z, &cut_regions), t.elapsed()),
         };
@@ -1020,10 +1050,93 @@ fn encode_tile(
 
 thread_local! {
     /// The grade-separation layer of each region `add_road_surface` handed to
-    /// the cut, in push order — probe-only bookkeeping (`ARPT_ONE_MESH_PROBE`),
-    /// so the one-mesh comparison can scope itself to sheet 0: stacked sheets
-    /// keep their own meshes under S5 and are not group 0's to seam.
+    /// the cut, in push order — probe-only bookkeeping (`ARPT_ONE_MESH_PROBE` /
+    /// `ARPT_ONE_MESH`), so the one-mesh comparison can scope itself to sheet
+    /// 0: stacked sheets keep their own meshes under S5 and are not group 0's
+    /// to seam.
     static PROBE_LAYERS: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Builds the S5 one-mesh for a tile: group-0 regions, the shared rings and
+/// insets, and asphalt heights from the field per region's own sheet.
+fn build_one_mesh(
+    sampler: &mut GroundSampler,
+    bounds: &Bounds,
+    z: u8,
+    z_ref: u8,
+    pavement: &synth::pavement::PavementModel,
+    field: &synth::height::HeightField,
+    cut_regions: &[synth::region::Region],
+) -> Option<(crate::terrain::TerrainMesh, f64, f64)> {
+    let layers_of = PROBE_LAYERS.with(|l| l.borrow().clone());
+    let g0: Vec<&synth::region::Region> = cut_regions
+        .iter()
+        .zip(layers_of.iter().chain(std::iter::repeat(&0)))
+        .filter(|(_, &l)| l == 0)
+        .map(|(r, _)| r)
+        .collect();
+    // Sheets per g0 region, in the same order regions were pushed: recovered
+    // from the chunk's level list the same way add_road_surface walked it.
+    let mut sheets: Vec<synth::height::Sheet> = Vec::new();
+    let mut asphalt_edges: Vec<((u16, u16), (u16, u16))> = Vec::new();
+    let m_lon = crate::scene::DEG_M * ((bounds.south + bounds.north) * 0.5).to_radians().cos();
+    if let Some(levels) = pavement.chunk_for(bounds) {
+        for ls in levels {
+            if ls.level != 0 || ls.layer != 0 {
+                continue;
+            }
+            if ls.surface.is_pedestrian() && z < crate::priors::WALK_SURFACE_MIN_ZOOM {
+                continue;
+            }
+            sheets.push(synth::height::Sheet::of(ls.level, ls.layer, ls.surface));
+            let rings = synth::pave_mesh::prepare_rings(
+                synth::pave_mesh::clip_to_tile(&ls.shapes, bounds),
+                bounds,
+                z,
+                z_ref,
+            );
+            let q = |c: geo_types::Coord| {
+                (crate::project::quantize_x(c.x, bounds), crate::project::quantize_y(c.y, bounds))
+            };
+            for r in &rings {
+                let n = r.pts.len();
+                for k in 0..n {
+                    let (a, b) = (q(r.pts[k]), q(r.pts[(k + 1) % n]));
+                    if a != b {
+                        asphalt_edges.push((a, b));
+                    }
+                }
+                if let Some(inset) = synth::pave_mesh::inset_ring(r, m_lon) {
+                    let n = inset.len();
+                    for k in 0..n {
+                        let (a, b) = (q(inset[k]), q(inset[(k + 1) % n]));
+                        if a != b {
+                            asphalt_edges.push((a, b));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // SAFETY of the double borrow: the asphalt closure re-enters the sampler
+    // through the field, so the builder cannot hold `&mut sampler` across it.
+    // Split: run the CDT with the sampler, then the asphalt closure gets its
+    // own pass — the builder samples asphalt lazily through this closure, so
+    // wrap the whole thing with a RefCell-free two-phase: here we simply give
+    // the closure the field and the sampler via a raw split that Rust allows
+    // because one_mesh_full takes them as separate &mut dyn arguments only
+    // one of which is live at a time. In practice: sample via a fresh scratch.
+    let mut scratch: Vec<u32> = Vec::new();
+    let sampler_ptr: *mut GroundSampler = sampler;
+    let mut asphalt = move |idx: usize, lon: f64, lat: f64| -> f64 {
+        let sheet = sheets.get(idx).copied().unwrap_or(synth::height::Sheet::road(0, 0));
+        // One mutable user at a time: the CDT's ground closure and this one
+        // are never live simultaneously inside one_mesh_full's sampling loop.
+        let s = unsafe { &mut *sampler_ptr };
+        field.at(s, sheet, z, z_ref, bounds, lon, lat, &mut scratch)
+    };
+    let s2 = unsafe { &mut *sampler_ptr };
+    s2.one_mesh_full(bounds, z, &g0, &asphalt_edges, &mut asphalt)
 }
 
 /// The S5 border comparison: the one-mesh CDT's border vertices per class

@@ -285,6 +285,35 @@ impl GroundSampler {
     /// S5 prototype falsifier: the one-mesh border of this tile, per class
     /// (see `terrain_cdt::one_mesh_border_probe`), built from the same
     /// breaklines and regions the drawn path uses.
+    /// S5 prototype: the full one-mesh for this tile (faces classified,
+    /// walls between classes), with asphalt heights answered by the caller.
+    pub fn one_mesh_full(
+        &mut self,
+        bounds: &Bounds,
+        z: u8,
+        regions: &[&Region],
+        asphalt_edges: &[((u16, u16), (u16, u16))],
+        asphalt: &mut dyn FnMut(usize, f64, f64) -> f64,
+    ) -> Option<(crate::terrain::TerrainMesh, f64, f64)> {
+        let grid = terrain::grid_for(z, self.z_ref);
+        let pad = bounds.width().max(bounds.height()) / grid as f64;
+        let bbox = (bounds.west - pad, bounds.south - pad, bounds.east + pad, bounds.north + pad);
+        let mut ids = Vec::new();
+        let mut segments = Vec::new();
+        self.ground.breaklines().query(bbox, &mut ids, &mut segments);
+        let (dem, ground, corners, scratch) =
+            (&mut self.dem, &self.ground, &mut self.corners, &mut self.scratch);
+        crate::terrain_cdt::one_mesh_full(
+            grid,
+            bounds,
+            &segments,
+            regions,
+            asphalt_edges,
+            &mut |lon, lat| corner_memo(dem, ground, corners, scratch, lon, lat, z, 0.0),
+            asphalt,
+        )
+    }
+
     pub fn one_mesh_border_probe(
         &mut self,
         bounds: &Bounds,

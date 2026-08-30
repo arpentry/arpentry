@@ -857,3 +857,212 @@ fn one_mesh_border_probe_inner(
         .collect();
     Some((terrain, asphalt_b))
 }
+
+
+/// **The one mesh** (S5's prototype body): the combined triangulation with
+/// its faces *kept and classified* — terrain faces sampling the engineered
+/// ground, asphalt faces sampling the road field per region — vertices
+/// duplicated per class where the two meet, and a vertical wall quad emitted
+/// along every boundary edge whose two sides disagree in height. One
+/// `TerrainMesh`, standing in for the tile's terrain plus its group-0 paved
+/// surfaces plus the aprons between them.
+#[allow(clippy::too_many_arguments)]
+pub fn one_mesh_full(
+    grid: u32,
+    bounds: &Bounds,
+    segments: &[(Coord, Coord)],
+    regions: &[&Region],
+    asphalt_edges: &[((u16, u16), (u16, u16))],
+    ground: &mut dyn FnMut(f64, f64) -> f64,
+    asphalt: &mut dyn FnMut(usize, f64, f64) -> f64,
+) -> Option<(TerrainMesh, f64, f64)> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        one_mesh_full_inner(grid, bounds, segments, regions, asphalt_edges, ground, asphalt)
+    }))
+    .unwrap_or(None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn one_mesh_full_inner(
+    grid: u32,
+    bounds: &Bounds,
+    segments: &[(Coord, Coord)],
+    regions: &[&Region],
+    asphalt_edges: &[((u16, u16), (u16, u16))],
+    ground: &mut dyn FnMut(f64, f64) -> f64,
+    asphalt: &mut dyn FnMut(usize, f64, f64) -> f64,
+) -> Option<(TerrainMesh, f64, f64)> {
+    let grid = grid.max(1);
+    let n = grid + 1;
+    let step = EXTENT / grid as f64;
+    let mut constraints: Vec<((u16, u16), (u16, u16))> = Vec::new();
+    for &(a, b) in segments {
+        let Some((ca, cb)) = clip_to_bounds(a, b, bounds) else { continue };
+        let qa = (project::quantize_x(ca.x, bounds), project::quantize_y(ca.y, bounds));
+        let qb = (project::quantize_x(cb.x, bounds), project::quantize_y(cb.y, bounds));
+        if qa != qb {
+            constraints.push((qa, qb));
+        }
+    }
+    let cell_of = |q: u16| -> i64 { ((q as f64 - BUFFER) / step).floor() as i64 };
+    let mut crossed = vec![false; (grid * grid) as usize];
+    {
+        let mut mark = |qa: (u16, u16), qb: (u16, u16)| {
+            let (c0, c1) = (cell_of(qa.0.min(qb.0)), cell_of(qa.0.max(qb.0)));
+            let (r0, r1) = (cell_of(qa.1.min(qb.1)), cell_of(qa.1.max(qb.1)));
+            for r in r0.max(0)..=r1.min(grid as i64 - 1) {
+                for c in c0.max(0)..=c1.min(grid as i64 - 1) {
+                    crossed[(r * grid as i64 + c) as usize] = true;
+                }
+            }
+        };
+        for &(qa, qb) in constraints.iter().chain(asphalt_edges.iter()) {
+            mark(qa, qb);
+        }
+    }
+    let mut cdt: ConstrainedDelaunayTriangulation<Point2<f64>> =
+        ConstrainedDelaunayTriangulation::new();
+    let origin = BUFFER as u32;
+    let qstep = EXTENT as u32 / grid;
+    let mut lattice = Vec::with_capacity((n * n) as usize);
+    for row in 0..n {
+        for col in 0..n {
+            let p = Point2::new((origin + col * qstep) as f64, (origin + row * qstep) as f64);
+            lattice.push(cdt.insert(p).ok()?);
+        }
+    }
+    for row in 0..grid {
+        for col in 0..grid {
+            if crossed[(row * grid + col) as usize] {
+                continue;
+            }
+            let tl = lattice[(row * n + col) as usize];
+            let br = lattice[((row + 1) * n + col + 1) as usize];
+            if cdt.can_add_constraint(tl, br) {
+                cdt.add_constraint(tl, br);
+            }
+        }
+    }
+    for &(qa, qb) in constraints.iter().chain(asphalt_edges.iter()) {
+        let va = cdt.insert(Point2::new(qa.0 as f64, qa.1 as f64)).ok()?;
+        let vb = cdt.insert(Point2::new(qb.0 as f64, qb.1 as f64)).ok()?;
+        if va != vb {
+            cdt.add_constraint_and_split(va, vb, |p| p);
+        }
+    }
+    let vcount = cdt.num_vertices();
+    let mut qpos: Vec<(u16, u16)> = Vec::with_capacity(vcount);
+    for v in cdt.vertices() {
+        let p = v.position();
+        qpos.push((
+            p.x.round().clamp(0.0, 65535.0) as u16,
+            p.y.round().clamp(0.0, 65535.0) as u16,
+        ));
+    }
+    // Face classes: usize::MAX = terrain, else the owning region's index.
+    let mut tri: Vec<[usize; 3]> = Vec::new();
+    let mut class: Vec<usize> = Vec::new();
+    for face in cdt.inner_faces() {
+        let [a, b, c] = face.vertices().map(|v| v.fix().index());
+        let (ax, ay) = (qpos[a].0 as i64, qpos[a].1 as i64);
+        let (bx, by) = (qpos[b].0 as i64, qpos[b].1 as i64);
+        let (cx, cy) = (qpos[c].0 as i64, qpos[c].1 as i64);
+        let area2 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        if area2 == 0 {
+            continue;
+        }
+        let cen = ((ax + bx + cx) as f64 / 3.0, (ay + by + cy) as f64 / 3.0);
+        let cls = regions.iter().position(|r| r.contains(cen)).unwrap_or(usize::MAX);
+        tri.push(if area2 > 0 { [a, b, c] } else { [a, c, b] });
+        class.push(cls);
+    }
+    if tri.is_empty() {
+        return None;
+    }
+    // Vertices are duplicated per (vertex, class): each class samples its own
+    // height, so a kerb vertex exists once on the asphalt at the field's
+    // height and once on the ground at the terrain's.
+    let mut ids: std::collections::HashMap<(usize, usize), u32> = std::collections::HashMap::new();
+    let mut x: Vec<u16> = Vec::new();
+    let mut y: Vec<u16> = Vec::new();
+    let mut z: Vec<i32> = Vec::new();
+    let (mut emin, mut emax) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut sampled: std::collections::HashMap<(usize, usize), f64> = std::collections::HashMap::new();
+    let mut vid = |v: usize,
+                   cls: usize,
+                   qpos: &Vec<(u16, u16)>,
+                   ground: &mut dyn FnMut(f64, f64) -> f64,
+                   asphalt: &mut dyn FnMut(usize, f64, f64) -> f64,
+                   x: &mut Vec<u16>,
+                   y: &mut Vec<u16>,
+                   z: &mut Vec<i32>,
+                   emin: &mut f64,
+                   emax: &mut f64,
+                   ids: &mut std::collections::HashMap<(usize, usize), u32>,
+                   sampled: &mut std::collections::HashMap<(usize, usize), f64>|
+     -> u32 {
+        if let Some(&i) = ids.get(&(v, cls)) {
+            return i;
+        }
+        let (qx, qy) = qpos[v];
+        let lon = project::dequantize_x(qx, bounds);
+        let lat = project::dequantize_y(qy, bounds);
+        let h = *sampled.entry((v, cls)).or_insert_with(|| {
+            if cls == usize::MAX { ground(lon, lat) } else { asphalt(cls, lon, lat) }
+        });
+        *emin = emin.min(h);
+        *emax = emax.max(h);
+        let i = x.len() as u32;
+        x.push(qx);
+        y.push(qy);
+        z.push(project::quantize_z(h));
+        ids.insert((v, cls), i);
+        i
+    };
+    let mut indices: Vec<u32> = Vec::new();
+    // Edge → (class, third vertex) for wall detection.
+    let mut edge_class: std::collections::HashMap<(usize, usize), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (t, f) in tri.iter().enumerate() {
+        for k in 0..3 {
+            let (a, b) = (f[k], f[(k + 1) % 3]);
+            let key = (a.min(b), a.max(b));
+            edge_class.entry(key).or_default().push(t);
+        }
+        for &v in f {
+            let i = vid(v, class[t], &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
+            indices.push(i);
+        }
+    }
+    // Walls: every interior edge whose two faces carry different classes gets
+    // a vertical quad between the two class copies of each endpoint.
+    let mut walls = 0usize;
+    for ((a, b), ts) in &edge_class {
+        if ts.len() != 2 || class[ts[0]] == class[ts[1]] {
+            continue;
+        }
+        let (c0, c1) = (class[ts[0]], class[ts[1]]);
+        let ia0 = vid(*a, c0, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
+        let ib0 = vid(*b, c0, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
+        let ia1 = vid(*a, c1, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
+        let ib1 = vid(*b, c1, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
+        if z[ia0 as usize] == z[ia1 as usize] && z[ib0 as usize] == z[ib1 as usize] {
+            continue; // flush: nothing to close
+        }
+        walls += 1;
+        // Two triangles, both windings drawn (the wall is seen from either
+        // side; cull-off is the structure pipeline's job — as terrain it is
+        // drawn back-face too via the second pair).
+        indices.extend_from_slice(&[ia0, ib0, ib1, ia0, ib1, ia1]);
+        indices.extend_from_slice(&[ia0, ib1, ib0, ia0, ia1, ib1]);
+    }
+    eprintln!(
+        "[one-mesh] full: {} faces ({} asphalt), {} wall edges, {} verts",
+        tri.len(),
+        class.iter().filter(|&&c| c != usize::MAX).count(),
+        walls,
+        x.len()
+    );
+    let normals = vec![0i8; x.len() * 2];
+    Some((TerrainMesh { x, y, z, indices, normals, edge_across: Vec::new() }, emin, emax))
+}
