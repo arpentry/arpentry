@@ -519,6 +519,16 @@ radius drop the inner contact line rather than emit a folded one.
   `contact.kerb_lip` 11 → 27 %, worst 54 m; `lod.structure_drift` 0.7 →
   16 %). Bake 1.65×. It becomes the default only once `surface(z)` samples
   the mesh the tile draws.
+  A second measurement (same day) closed the building half: under the
+  switch the tile's paved regions are cut first, the terrain drawn and
+  remembered, and a building foot reads the drawn mesh
+  (`GroundSampler::surface_drawn`) — `contact.building_seat` back to
+  0.001 % (worst 3.1 m). The datum field must NOT read it: drawn stations
+  off the asphalt mixed with lattice stations inside the hole put the step
+  back at every abutment (`band_deck_step` 38 → 73 %, reverted). What
+  remains — `kerb_lip` 27 %, `deck_over_ground`, `structure_drift` 16 % —
+  is the structure-and-kerb side of the same fork, closable only when the
+  band itself rides the drawn basis: one mesh (S5).
 
 Reading the field is not enough on its own: the asphalt has to be *meshed*
 finely enough to hold what it read. Sampling the field only at the paved
