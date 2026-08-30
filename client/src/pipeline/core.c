@@ -883,7 +883,7 @@ void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view) {
         .view = r->depth_view,
         .depthLoadOp = WGPULoadOp_Clear,
         .depthStoreOp = WGPUStoreOp_Store,
-        .depthClearValue = 1.0f,
+        .depthClearValue = ARPT_DEPTH_CLEAR,
     };
     WGPURenderPassDescriptor rp = {
         .colorAttachmentCount = 1,

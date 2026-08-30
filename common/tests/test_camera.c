@@ -29,11 +29,14 @@ void test_projection_near_far(void) {
     arpt_camera_set_viewport(cam, 1920, 1080);
     arpt_mat4 p = arpt_camera_projection(cam);
 
-    /* Near = max(1, alt*0.01) = 100, Far = alt*10 = 100000 */
-    /* Check that near maps to z=0 in NDC */
+    /* Near = max(1, alt*0.01) = 100. Reversed-Z: near maps to z=1 in NDC
+       and depth falls toward 0 with distance. */
     float z_near = p.m[10] * (-100.0f) + p.m[14];
     float w_near = p.m[11] * (-100.0f);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, z_near / w_near);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.0f, z_near / w_near);
+    float z_far = p.m[10] * (-100000.0f) + p.m[14];
+    float w_far = p.m[11] * (-100000.0f);
+    TEST_ASSERT_TRUE(z_far / w_far < z_near / w_near);
 
     arpt_camera_free(cam);
 }

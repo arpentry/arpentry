@@ -23,7 +23,7 @@ struct VsOut {
         vec2<f32>(3.0, -1.0),
     );
     var out: VsOut;
-    out.pos = vec4<f32>(p[vi], 1.0, 1.0);  // z=1.0 for far plane
+    out.pos = vec4<f32>(p[vi], 0.0, 1.0);  // z=0.0: the far plane under reversed-Z
     out.ndc = p[vi];
     return out;
 }

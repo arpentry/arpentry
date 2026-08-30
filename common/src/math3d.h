@@ -127,31 +127,42 @@ static inline arpt_dvec3 arpt_dmat4_rotate(arpt_dmat4 m, arpt_dvec3 v) {
 
 /* mat4 operations */
 
-/* Perspective projection for WebGPU (z clip = [0, 1]). */
+/* Reversed-Z perspective projection for WebGPU (z clip = [0, 1]) with the
+   far plane at infinity: the near plane maps to NDC z = 1 and infinity to 0,
+   so z_ndc = near / -z_view. `far` is accepted for signature symmetry with
+   the orthographic form and ignored — nothing is clipped at the far end,
+   which a globe seen from orbit wants anyway. Paired with a float depth
+   buffer and a GreaterEqual test (client/src/renderer.h), the float's
+   exponent tracks the 1/z of the projection and the depth quantum is a
+   near-constant ~1e-7 of the eye distance along the whole ray, where the
+   forward mapping spent all its precision within a few near-plane lengths.
+   Depth ordering is reversed: nearer is greater. */
 static inline arpt_mat4 arpt_mat4_perspective(float fov_y, float aspect,
                                               float near, float far) {
+    (void)far;
     float f = 1.0f / tanf(fov_y * 0.5f);
     arpt_mat4 r = {0};
     r.m[0] = f / aspect;
     r.m[5] = f;
-    /* WebGPU NDC z = [0, 1]: maps near → 0, far → 1 */
-    r.m[10] = far / (near - far);
+    r.m[10] = 0.0f;
     r.m[11] = -1.0f;
-    r.m[14] = (near * far) / (near - far);
+    r.m[14] = near;
     return r;
 }
 
-/* Orthographic projection for WebGPU (z clip = [0, 1]). */
+/* Reversed-Z orthographic projection for WebGPU (z clip = [0, 1]): near maps
+   to 1, far to 0, linearly. Finite, since an orthographic depth has no 1/z to
+   push the far plane out to. */
 static inline arpt_mat4 arpt_mat4_orthographic(float left, float right,
                                                 float bottom, float top,
                                                 float near, float far) {
     arpt_mat4 r = {0};
     r.m[0] = 2.0f / (right - left);
     r.m[5] = 2.0f / (top - bottom);
-    r.m[10] = 1.0f / (near - far);
+    r.m[10] = 1.0f / (far - near);
     r.m[12] = -(right + left) / (right - left);
     r.m[13] = -(top + bottom) / (top - bottom);
-    r.m[14] = near / (near - far);
+    r.m[14] = far / (far - near);
     r.m[15] = 1.0f;
     return r;
 }

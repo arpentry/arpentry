@@ -58,7 +58,7 @@ WGPURenderPipeline arpt__mesh_create_pipeline(WGPUDevice device,
     WGPUDepthStencilState ds = {
         .format = ARPT_DEPTH_FORMAT,
         .depthWriteEnabled = true,
-        .depthCompare = WGPUCompareFunction_LessEqual,
+        .depthCompare = ARPT_DEPTH_COMPARE,
         .stencilFront = {.compare = WGPUCompareFunction_Always},
         .stencilBack = {.compare = WGPUCompareFunction_Always},
         .stencilReadMask = 0,
@@ -329,7 +329,7 @@ void arpt__mesh_draw_buildings(arpt_renderer *r, arpt_tile_gpu *tile) {
 }
 
 /* Structure pipeline (bridge decks + tunnel bores): the terrain shader + vertex
-   layout, drawn as ordinary opaque 3D geometry (depth-test LessEqual + depth
+   layout, drawn as ordinary opaque 3D geometry (depth-test ARPT_DEPTH_COMPARE + depth
    write). A bridge deck stands above the terrain (a viaduct); a tunnel box is
    occluded by the terrain it passes under, so the bore reads as genuinely
    underground, surfacing only at the portals. Culling is off so the solid
@@ -396,7 +396,7 @@ WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
     WGPUDepthStencilState ds = {
         .format = ARPT_DEPTH_FORMAT,
         .depthWriteEnabled = depth_write,
-        .depthCompare = WGPUCompareFunction_LessEqual,
+        .depthCompare = ARPT_DEPTH_COMPARE,
         .stencilFront = {.compare = WGPUCompareFunction_Always},
         .stencilBack = {.compare = WGPUCompareFunction_Always},
         .stencilReadMask = 0,

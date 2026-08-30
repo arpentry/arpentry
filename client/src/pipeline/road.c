@@ -56,16 +56,18 @@ WGPURenderPipeline arpt__road_create_pipeline(WGPUDevice device,
        The small geometric lift in road.wgsl keeps them just above the surface
        (occluded correctly by hills), so only a tiny constant depth bias is
        needed against residual z-fighting — NOT a slope-scaled one, which at
-       grazing angles on steep terrain would punch roads through ridges. */
+       grazing angles on steep terrain would punch roads through ridges.
+       Under reversed-Z (renderer.h) "toward the camera" is +depth, so the
+       one-unit bias is positive. */
     WGPUDepthStencilState ds = {
         .format = ARPT_DEPTH_FORMAT,
         .depthWriteEnabled = false,
-        .depthCompare = WGPUCompareFunction_LessEqual,
+        .depthCompare = ARPT_DEPTH_COMPARE,
         .stencilFront = {.compare = WGPUCompareFunction_Always},
         .stencilBack = {.compare = WGPUCompareFunction_Always},
         .stencilReadMask = 0,
         .stencilWriteMask = 0,
-        .depthBias = -1,
+        .depthBias = 1,
         .depthBiasSlopeScale = 0.0f,
         .depthBiasClamp = 0.0f,
     };

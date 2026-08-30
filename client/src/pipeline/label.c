@@ -56,7 +56,7 @@ WGPURenderPipeline arpt__label_create_pipeline(WGPUDevice device,
     WGPUDepthStencilState ds = {
         .format = ARPT_DEPTH_FORMAT,
         .depthWriteEnabled = true,
-        .depthCompare = WGPUCompareFunction_LessEqual,
+        .depthCompare = ARPT_DEPTH_COMPARE,
         .stencilFront = {.compare = WGPUCompareFunction_Always},
         .stencilBack = {.compare = WGPUCompareFunction_Always},
         .stencilReadMask = 0,
@@ -316,7 +316,10 @@ void arpt__label_collect(arpt_renderer *r, arpt_tile_gpu *tile) {
         float cz = proj[2]*mx + proj[6]*my + proj[10]*mz + proj[14]*mw;
         float cw = proj[3]*mx + proj[7]*my + proj[11]*mz + proj[15]*mw;
 
-        if (cw <= 0.0f || cz < 0.0f) continue;
+        /* Behind the camera: w flips negative under perspective; under
+           orthographic w stays 1 and the reversed depth runs past the near
+           plane's 1 instead, so test z > w rather than z < 0. */
+        if (cw <= 0.0f || cz > cw) continue;
 
         float sx = (cx / cw * 0.5f + 0.5f) * vw;
         float sy = (1.0f - (cy / cw * 0.5f + 0.5f)) * vh;
@@ -350,10 +353,12 @@ void arpt__label_collect(arpt_renderer *r, arpt_tile_gpu *tile) {
     }
 }
 
+/* Reversed-Z: the nearer label has the greater NDC depth, so closest-first
+   is descending. */
 static int compare_pending_depth(const void *a, const void *b) {
     float da = ((const arpt_pending_label *)a)->depth;
     float db = ((const arpt_pending_label *)b)->depth;
-    return (da > db) - (da < db);
+    return (da < db) - (da > db);
 }
 
 void arpt__label_draw_all(arpt_renderer *r) {

@@ -14,7 +14,20 @@ typedef struct arpt_tile_prims arpt_tile_prims;
 typedef struct arpt_model arpt_model;
 
 #define ARPT_MSAA_SAMPLES     4
-#define ARPT_DEPTH_FORMAT     WGPUTextureFormat_Depth24Plus
+
+/* Reversed-Z: near maps to depth 1, infinity to 0, on a float depth buffer
+   (see arpt_mat4_perspective). The three settle one convention together and
+   every 3D pipeline reads them from here, so no pipeline can disagree
+   silently: a "nearer" fragment has the GREATER depth, the clear is the far
+   value 0, and a bias toward the camera is a positive depthBias. Floats
+   under reversed-Z hold near-constant relative precision along the whole
+   ray (a ~0.2 mm quantum at 2 km eye distance, against ~0.2 m for a
+   forward 24-bit buffer with a 1:10^7 near:far ratio), which is what lets
+   a 12 cm kerb separate a walkway from its road at range without a
+   metre-scale bias. */
+#define ARPT_DEPTH_FORMAT     WGPUTextureFormat_Depth32Float
+#define ARPT_DEPTH_COMPARE    WGPUCompareFunction_GreaterEqual
+#define ARPT_DEPTH_CLEAR      0.0f
 
 /* Renderer lifecycle */
 

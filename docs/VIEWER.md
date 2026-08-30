@@ -146,7 +146,7 @@ Uploaded once per tile, freed on eviction. No re-upload on camera movement.
 
 - **Vertex**: dequantize + ECEF + model transform; decode octahedral normals (rotate by model rotation); pass altitude as varying
 - **Fragment**: elevation color ramp + diffuse sun lighting with 0.15 ambient
-- **Depth**: `Depth24Plus`, clear 1.0, less-equal
+- **Depth**: reversed-Z on `Depth32Float` — infinite-far perspective (near → 1, ∞ → 0), clear 0.0, greater-equal; a bias toward the camera is +depth. `ARPT_DEPTH_FORMAT` / `ARPT_DEPTH_COMPARE` / `ARPT_DEPTH_CLEAR` in `renderer.h` are the one place the convention lives
 - **Clear color**: `(0.05, 0.05, 0.08, 1.0)`
 
 ---

@@ -294,7 +294,7 @@ void arpt__line_label_collect(arpt_renderer *r, arpt_tile_gpu *tile) {
             float cy = proj[1]*mx + proj[5]*my + proj[9]*mz + proj[13]*mw;
             float cz = proj[2]*mx + proj[6]*my + proj[10]*mz + proj[14]*mw;
             float cw = proj[3]*mx + proj[7]*my + proj[11]*mz + proj[15]*mw;
-            if (cw <= 0.0f || cz < 0.0f) {
+            if (cw <= 0.0f || cz > cw) {  /* behind the camera, see label.c */
                 visible = false;
                 break;
             }

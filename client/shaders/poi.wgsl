@@ -120,17 +120,21 @@ fn geodetic_to_ecef(lon: f32, lat: f32, alt: f32) -> vec3<f32> {
     );
 
     // Place labels at a fixed near depth so they are never occluded by
-    // terrain or buildings.  Under perspective, w = -z_view (large) and
-    // the depth buffer is highly non-linear, so near_z = 0.01*w maps to
-    // z_ndc = 0.01 — safely in front of all geometry.  Under ortho, w = 1
-    // and depth is LINEAR, so terrain sits very close to z_ndc ≈ 0 and
-    // we need an even smaller value to stay in front.
-    let near_z = select(0.01, 0.0001, anchor_clip.w < 1.5) * anchor_clip.w;
+    // terrain or buildings. Reversed-Z: the near plane is z_ndc = 1 and
+    // nearer is greater. Under perspective, w = -z_view (large) and depth
+    // is 1/z, so near_z = 0.99*w maps to z_ndc = 0.99 — in front of all
+    // geometry. Under ortho, w = 1 and depth is LINEAR over near..far ≈ 2R,
+    // so everything in view sits within ~1e-4 of z_ndc = 1 and the label
+    // must sit closer still: 1 − 1e-5 is ~130 m from the near plane, and a
+    // float depth resolves that a hundred times over (the old 24-bit pin of
+    // 1e-4 let any building within 1.3 km of the camera clip a label).
+    let near_z = select(0.99, 0.99999, anchor_clip.w < 1.5) * anchor_clip.w;
 
     // Cull labels behind the camera: under perspective w<0 pushes them
-    // offscreen, but under ortho w=1 always so we must check z explicitly.
+    // offscreen, but under ortho w=1 always so we must check z explicitly —
+    // behind the near plane the reversed depth runs past 1, i.e. z > w.
     // Set w=0 to collapse the vertex to a degenerate triangle.
-    let behind = anchor_clip.z < 0.0;
+    let behind = anchor_clip.z > anchor_clip.w;
     let cull_w = select(anchor_clip.w, 0.0, behind);
     var out: VsOut;
     out.pos = vec4<f32>(anchor_clip.x + clip_dx, anchor_clip.y + clip_dy, near_z, cull_w);

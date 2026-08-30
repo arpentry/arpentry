@@ -53,7 +53,7 @@ WGPURenderPipeline arpt__instance_create_pipeline(WGPUDevice device,
     WGPUDepthStencilState ds = {
         .format = ARPT_DEPTH_FORMAT,
         .depthWriteEnabled = true,
-        .depthCompare = WGPUCompareFunction_LessEqual,
+        .depthCompare = ARPT_DEPTH_COMPARE,
         .stencilFront = {.compare = WGPUCompareFunction_Always},
         .stencilBack = {.compare = WGPUCompareFunction_Always},
         .stencilReadMask = 0,

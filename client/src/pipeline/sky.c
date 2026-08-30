@@ -17,7 +17,8 @@ WGPURenderPipeline arpt__sky_create_pipeline(WGPUDevice device,
     WGPUFragmentState frag = {
         .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
 
-    /* Depth: always pass, write 1.0 so terrain overwrites */
+    /* Depth: always pass, write the far value (0 under reversed-Z) so
+       terrain overwrites */
     WGPUDepthStencilState ds = {
         .format = ARPT_DEPTH_FORMAT,
         .depthWriteEnabled = true,
