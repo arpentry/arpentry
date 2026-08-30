@@ -247,13 +247,28 @@ fn measure(
             step.push(s);
             if s > STEP_M {
                 let (lon, lat) = lonlat(*gx, *gy, zoom);
-                let heights: Vec<String> = group.iter().map(|c| format!("{:.3}", c.lo)).collect();
+                    let heights: Vec<String> = group
+                        .iter()
+                        .map(|c| {
+                            format!(
+                                "{}/{} s{:?} {:.3}",
+                                c.tile >> 32,
+                                c.tile & 0xffff_ffff,
+                                c.sheet,
+                                c.lo
+                            )
+                        })
+                        .collect();
                 step_worst.offer(Offender {
                     lon,
                     lat,
                     zoom,
                     value: s,
-                    note: format!("{} neighbouring tiles read {}", group.len(), heights.join(" / ")),
+                    note: format!(
+                        "{} neighbouring tiles read {} (lattice {gx},{gy})",
+                        group.len(),
+                        heights.join(" / ")
+                    ),
                 });
             }
         }

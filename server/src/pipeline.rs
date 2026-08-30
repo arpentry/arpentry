@@ -1114,7 +1114,8 @@ thread_local! {
     /// `ARPT_ONE_MESH`), so the one-mesh comparison can scope itself to sheet
     /// 0: stacked sheets keep their own meshes under S5 and are not group 0's
     /// to seam.
-    static PROBE_LAYERS: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
+    static PROBE_LAYERS: std::cell::RefCell<Vec<(u32, crate::priors::Surface)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Builds the S5 one-mesh for a tile: group-0 regions, the shared rings and
@@ -1128,17 +1129,28 @@ fn build_one_mesh(
     field: &synth::height::HeightField,
     cut_regions: &[synth::region::Region],
 ) -> Option<(crate::terrain_cdt::OneMesh, f64, f64, Vec<crate::priors::Surface>, f64, f64)> {
+    // One walk decides everything: the cut-layer ledger records, in cut push
+    // order, each region's sheet ordinal and surface — so the g0 region list,
+    // the sheet each one samples with, and the class each one emits as cannot
+    // drift apart. Recovering sheets from the chunk's level list here used to
+    // do exactly that: with the ledger unrecorded, a stacked sheet-3 band
+    // joined g0 and its area sampled a stranger's sheet (the last 4
+    // pavement_step points, 2–7 cm).
     let layers_of = PROBE_LAYERS.with(|l| l.borrow().clone());
-    let g0: Vec<&synth::region::Region> = cut_regions
-        .iter()
-        .zip(layers_of.iter().chain(std::iter::repeat(&0)))
-        .filter(|(_, &l)| l == 0)
-        .map(|(r, _)| r)
-        .collect();
-    // Sheets per g0 region, in the same order regions were pushed: recovered
-    // from the chunk's level list the same way add_road_surface walked it.
+    let mut g0: Vec<&synth::region::Region> = Vec::new();
     let mut sheets: Vec<synth::height::Sheet> = Vec::new();
     let mut kinds: Vec<crate::priors::Surface> = Vec::new();
+    for (r, &(layer, surface)) in cut_regions
+        .iter()
+        .zip(layers_of.iter().chain(std::iter::repeat(&(0, crate::priors::Surface::Asphalt))))
+    {
+        if layer != 0 {
+            continue;
+        }
+        g0.push(r);
+        sheets.push(synth::height::Sheet::of(0, layer, surface));
+        kinds.push(surface);
+    }
     let mut asphalt_edges: Vec<((u16, u16), (u16, u16))> = Vec::new();
     let m_lon = crate::scene::DEG_M * ((bounds.south + bounds.north) * 0.5).to_radians().cos();
     if let Some(levels) = pavement.chunk_for(bounds) {
@@ -1149,8 +1161,6 @@ fn build_one_mesh(
             if ls.surface.is_pedestrian() && z < crate::priors::WALK_SURFACE_MIN_ZOOM {
                 continue;
             }
-            sheets.push(synth::height::Sheet::of(ls.level, ls.layer, ls.surface));
-            kinds.push(ls.surface);
             let rings = synth::pave_mesh::prepare_rings(
                 synth::pave_mesh::clip_to_tile(&ls.shapes, bounds),
                 bounds,
@@ -1288,8 +1298,8 @@ fn one_mesh_probe(
     let layers = PROBE_LAYERS.with(|l| std::mem::take(&mut *l.borrow_mut()));
     let g0: Vec<&synth::region::Region> = cut_regions
         .iter()
-        .zip(layers.iter().chain(std::iter::repeat(&0)))
-        .filter(|(_, &l)| l == 0)
+        .zip(layers.iter().chain(std::iter::repeat(&(0, crate::priors::Surface::Asphalt))))
+        .filter(|(_, &(l, _))| l == 0)
         .map(|(r, _)| r)
         .collect();
     let Some((om_terrain, om_asphalt)) =
@@ -1637,6 +1647,10 @@ fn add_road_surface(
     // answer (see `build_rim`).
     let hole = sampler.cuts_hole(z);
     let mut cut: Vec<Region> = Vec::new();
+    // The cut-layer ledger restarts with the cut list: it records the sheet
+    // ordinal of each region pushed below, in push order, and a stale entry
+    // from another tile on this worker thread would shift every index.
+    PROBE_LAYERS.with(|l| l.borrow_mut().clear());
     // `ARPT_KERB_AT_HANDOVER=1` withholds the abutment cuts, so every boundary
     // edge is treated as kerb and the rim goes back to wrapping the whole
     // silhouette. The same reason `--no-hole` exists: an A/B re-tile of a
@@ -1690,8 +1704,10 @@ fn add_road_surface(
         // handed on are those whose asphalt was *actually meshed*, so a level
         // that failed to mesh leaves no hole with nothing over it (invariant 6).
         if paved.level == 0 && hole && !paved.region.is_empty() {
-            if std::env::var_os("ARPT_ONE_MESH_PROBE").is_some() {
-                PROBE_LAYERS.with(|l| l.borrow_mut().push(paved.layer));
+            if std::env::var_os("ARPT_ONE_MESH_PROBE").is_some()
+                || std::env::var_os("ARPT_ONE_MESH").is_some()
+            {
+                PROBE_LAYERS.with(|l| l.borrow_mut().push((paved.layer, paved.material)));
             }
             cut.push(paved.region);
         }

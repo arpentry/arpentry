@@ -1050,6 +1050,13 @@ fn one_mesh_full_inner(
         let h = *sampled.entry((v, cls)).or_insert_with(|| {
             if cls == usize::MAX { ground(slon, slat) } else { asphalt(cls, lon, lat) }
         });
+        if let Some(dbg) = std::env::var_os("ARPT_OM_DEBUG_Q") {
+            let want = dbg.to_string_lossy().to_string();
+            let key = format!("{},{}", qx, qy);
+            if want.split(';').any(|w| w == key) {
+                eprintln!("[om-debug] q=({qx},{qy}) cls={cls} h={h:.3}");
+            }
+        }
         *emin = emin.min(h);
         *emax = emax.max(h);
         let i = x.len() as u32;
