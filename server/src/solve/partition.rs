@@ -87,6 +87,28 @@ fn dem_blind(
     a1: f64,
     flank: &mut dyn FnMut(Coord) -> f64,
 ) -> bool {
+    let ratio = dem_blind_ratio(profile, a0, a1, flank);
+    if std::env::var_os("ARPT_BRIDGE_TRIM_CENSUS").is_some() {
+        let pt = profile.point_at_arc(0.5 * (a0 + a1));
+        eprintln!(
+            "[trim-census] ratio {ratio:.2} len {:.0} m at {:.6},{:.6}",
+            a1 - a0,
+            pt.x,
+            pt.y
+        );
+    }
+    2.0 * ratio > 1.0
+}
+
+/// The fraction of a stretch's probe stations whose flanks say "deck": the
+/// number the calibration reads (`ARPT_BRIDGE_TRIM_CENSUS=1` histograms it
+/// per candidate stretch).
+fn dem_blind_ratio(
+    profile: &Profile,
+    a0: f64,
+    a1: f64,
+    flank: &mut dyn FnMut(Coord) -> f64,
+) -> f64 {
     let n = (((a1 - a0) / FLANK_STEP_M).ceil() as usize).clamp(1, 64);
     let mut blind = 0usize;
     for k in 0..n {
@@ -115,7 +137,7 @@ fn dem_blind(
             blind += 1;
         }
     }
-    2 * blind > n
+    blind as f64 / n as f64
 }
 
 /// Each `Bridge` span clamped to the extent of the deck runs the solved
