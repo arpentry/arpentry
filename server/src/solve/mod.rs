@@ -137,6 +137,18 @@ fn reconcile_stratum(
         let mut spans = std::mem::take(&mut c.spans);
         // The spans as they enter the fold: the pure partition's input.
         let entering = spans.clone();
+        // **Pass 2 freezes the partition** (the quiet week's first lever,
+        // chosen from the two bba7dbd names): the structure predicates read
+        // pass 1's verdicts as settled — no annex, no absorb, no shrink —
+        // because they are not idempotent under the re-relax (graph-build ∘
+        // relax moves heights from its own output, approaches hang again,
+        // and the fold grew 1,834 m of bridge on identical profiles). Pass 1
+        // already wrote the reconciled truth; pass 2 re-solves heights
+        // against it and hands it back unchanged.
+        if pass > 0 {
+            c.spans = spans;
+            continue;
+        }
         let carried = carried.get(c.id as usize).cloned().unwrap_or_default();
         if let Some(annexed) = portals::annex_spans(p, &spans, &reaches, &carried) {
             if debug_annex {
