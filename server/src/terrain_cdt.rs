@@ -1063,6 +1063,47 @@ fn one_mesh_full_inner(
         walls,
         x.len()
     );
-    let normals = vec![0i8; x.len() * 2];
+    // Normals per vertex from central differences of the vertex's own class
+    // field — the ground for terrain vertices, the road field for asphalt —
+    // exactly the old meshes' recipe, one class at a time. Wall vertices are
+    // copies of these, and a flat-lit wall is right for a wall.
+    let mid_lat = (bounds.south + bounds.north) * 0.5;
+    let dlat = NORMAL_STEP_M / crate::scene::DEG_M;
+    let dlon = NORMAL_STEP_M / (crate::scene::DEG_M * (mid_lat * PI / 180.0).cos());
+    let mut normals = vec![0i8; x.len() * 2];
+    let mut by_index: Vec<Option<(usize, usize)>> = vec![None; x.len()];
+    for (&(v, cls), &i) in ids.iter() {
+        by_index[i as usize] = Some((v, cls));
+    }
+    for (i, slot) in by_index.iter().enumerate() {
+        let Some((v, cls)) = *slot else { continue };
+        let (qx, qy) = qpos[v];
+        let lon = project::dequantize_x(qx, bounds);
+        let lat = project::dequantize_y(qy, bounds);
+        let mut h = |lo: f64, la: f64| -> f64 {
+            if cls == usize::MAX { ground(lo, la) } else { asphalt(cls, lo, la) }
+        };
+        let dz_dx = (h(lon + dlon, lat) - h(lon - dlon, lat)) / (2.0 * NORMAL_STEP_M);
+        let dz_dy = (h(lon, lat + dlat) - h(lon, lat - dlat)) / (2.0 * NORMAL_STEP_M);
+        let lon_r = lon * (PI / 180.0);
+        let lat_r = lat * (PI / 180.0);
+        let (sin_lon, cos_lon) = (lon_r.sin(), lon_r.cos());
+        let (sin_lat, cos_lat) = (lat_r.sin(), lat_r.cos());
+        let (ex, ey, ez) = (-sin_lon, cos_lon, 0.0);
+        let (nx_e, ny_e, nz_e) = (-sin_lat * cos_lon, -sin_lat * sin_lon, cos_lat);
+        let (ux, uy, uz) = (cos_lat * cos_lon, cos_lat * sin_lon, sin_lat);
+        let mut nx = ux - dz_dx * ex - dz_dy * nx_e;
+        let mut ny = uy - dz_dx * ey - dz_dy * ny_e;
+        let mut nz = uz - dz_dx * ez - dz_dy * nz_e;
+        let len = (nx * nx + ny * ny + nz * nz).sqrt();
+        if len > 0.0 {
+            nx /= len;
+            ny /= len;
+            nz /= len;
+        }
+        let (ox, oy) = encode_octahedral(nx, ny, nz);
+        normals[i * 2] = ox;
+        normals[i * 2 + 1] = oy;
+    }
     Some((TerrainMesh { x, y, z, indices, normals, edge_across: Vec::new() }, emin, emax))
 }
