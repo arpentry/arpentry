@@ -734,47 +734,6 @@ pub fn run_licensed(
     // the whole lint run.
     let scene_mut = scene;
     let scene: &SceneGraph = &*scene_mut;
-    // Every corridor in the scene is solved. The gate upstream admits only
-    // strata that solve (`assemble::run`), so "does this need a profile" is no
-    // longer a question asked here — a draped feature never reaches this point.
-    let todo: Vec<usize> = (0..scene.corridors.len()).collect();
-    let mut profiles: Vec<Option<Profile>> = Vec::new();
-    profiles.resize_with(scene.corridors.len(), || None);
-
-    let threads = threads.max(1).min(todo.len().max(1));
-    let next = Mutex::new(0usize);
-    let results: Mutex<&mut Vec<Option<Profile>>> = Mutex::new(&mut profiles);
-    std::thread::scope(|scope| -> Result<(), Error> {
-        let mut handles = Vec::with_capacity(threads);
-        for _ in 0..threads {
-            handles.push(scope.spawn(|| -> Result<(), Error> {
-                let mut dem = primary_dem.fork()?;
-                loop {
-                    let i = {
-                        let mut n = next.lock().expect("solve queue poisoned");
-                        if *n >= todo.len() {
-                            break;
-                        }
-                        let i = *n;
-                        *n += 1;
-                        i
-                    };
-                    let c = &scene.corridors[todo[i]];
-                    let mode = Mode::for_kind(c.kind);
-                    let solved = profile::solve(&c.nodes, &c.spans, mode, &mut |p| {
-                        reference_surface(&mut dem, z_ref, p.x, p.y)
-                    });
-                    results.lock().expect("solve results poisoned")[todo[i]] = solved;
-                }
-                Ok(())
-            }));
-        }
-        for handle in handles {
-            handle.join().map_err(|_| "solve worker panicked")??;
-        }
-        Ok(())
-    })?;
-
     // **The partition** (§4.4): one solver, run over the strata in authority
     // order. Each stratum fuses its own corridors into one graph — junction
     // connectors are shared height variables, so continuity (I2) holds by
@@ -829,6 +788,68 @@ pub fn run_licensed(
     let sites = crossings::covered_sites(scene, &plan);
     let mut daylight: Vec<Daylight> = Vec::new();
     let mut partition_div: Vec<PartitionDivergence> = Vec::new();
+    // **The two-pass solve** (`data/plans/pure-partition-2026-08-28.md` §4,
+    // step 2): under `ARPT_TWO_PASS=1` the whole solve — per-corridor
+    // profiles, then the strata in authority order with their write-back —
+    // runs a second time, with the spans pass 1 reconciled standing as the
+    // priors the annotation stood as, and the licenses unchanged (plan facts,
+    // computed once above). The fold still writes back after pass 2, so this
+    // step changes nothing where pass 1's partition was already the truth:
+    // the residual rows and the scorecard must read the same, which is the
+    // fixpoint claim (99b66e1) verified per run before the write-back moves.
+    let mut profiles: Vec<Option<Profile>> = Vec::new();
+    let passes = if std::env::var_os("ARPT_TWO_PASS").is_some() { 2 } else { 1 };
+    for pass in 0..passes {
+        let scene: &SceneGraph = &*scene_mut;
+        if pass > 0 {
+            crossings.clear();
+            junction_h.iter_mut().for_each(|h| *h = None);
+            relaxed = relax::Relaxed::default();
+            residuals.clear();
+            daylight.clear();
+            partition_div.clear();
+        }
+    // Every corridor in the scene is solved. The gate upstream admits only
+    // strata that solve (`assemble::run`), so "does this need a profile" is no
+    // longer a question asked here — a draped feature never reaches this point.
+    let todo: Vec<usize> = (0..scene.corridors.len()).collect();
+    profiles = Vec::new();
+    profiles.resize_with(scene.corridors.len(), || None);
+
+    let threads = threads.max(1).min(todo.len().max(1));
+    let next = Mutex::new(0usize);
+    let results: Mutex<&mut Vec<Option<Profile>>> = Mutex::new(&mut profiles);
+    std::thread::scope(|scope| -> Result<(), Error> {
+        let mut handles = Vec::with_capacity(threads);
+        for _ in 0..threads {
+            handles.push(scope.spawn(|| -> Result<(), Error> {
+                let mut dem = primary_dem.fork()?;
+                loop {
+                    let i = {
+                        let mut n = next.lock().expect("solve queue poisoned");
+                        if *n >= todo.len() {
+                            break;
+                        }
+                        let i = *n;
+                        *n += 1;
+                        i
+                    };
+                    let c = &scene.corridors[todo[i]];
+                    let mode = Mode::for_kind(c.kind);
+                    let solved = profile::solve(&c.nodes, &c.spans, mode, &mut |p| {
+                        reference_surface(&mut dem, z_ref, p.x, p.y)
+                    });
+                    results.lock().expect("solve results poisoned")[todo[i]] = solved;
+                }
+                Ok(())
+            }));
+        }
+        for handle in handles {
+            handle.join().map_err(|_| "solve worker panicked")??;
+        }
+        Ok(())
+    })?;
+
     for stratum in [Stratum::H, Stratum::R, Stratum::S, Stratum::D, Stratum::B] {
         // Fresh immutable view per stratum: the write-back below needs the
         // scene mutable, and each iteration's reads must see the seniors'
@@ -883,6 +904,7 @@ pub fn run_licensed(
             &mut daylight,
             &mut partition_div,
         );
+    }
     }
 
     // The structures the result implies, derived once the heights are final.
