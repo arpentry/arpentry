@@ -943,9 +943,19 @@ fn one_mesh_full_inner(
             }
         }
     }
-    for &(qa, qb) in constraints.iter().chain(asphalt_edges.iter()) {
+    for &(qa, qb) in constraints.iter() {
         let va = cdt.insert(Point2::new(qa.0 as f64, qa.1 as f64)).ok()?;
         let vb = cdt.insert(Point2::new(qb.0 as f64, qb.1 as f64)).ok()?;
+        if va != vb {
+            cdt.add_constraint_and_split(va, vb, |p| p);
+        }
+    }
+    let mut ring_verts: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for &(qa, qb) in asphalt_edges.iter() {
+        let va = cdt.insert(Point2::new(qa.0 as f64, qa.1 as f64)).ok()?;
+        let vb = cdt.insert(Point2::new(qb.0 as f64, qb.1 as f64)).ok()?;
+        ring_verts.insert(va.index());
+        ring_verts.insert(vb.index());
         if va != vb {
             cdt.add_constraint_and_split(va, vb, |p| p);
         }
@@ -990,6 +1000,7 @@ fn one_mesh_full_inner(
     let mut sampled: std::collections::HashMap<(usize, usize), f64> = std::collections::HashMap::new();
     let mut vid = |v: usize,
                    cls: usize,
+                   toward: Option<(f64, f64)>,
                    qpos: &Vec<(u16, u16)>,
                    ground: &mut dyn FnMut(f64, f64) -> f64,
                    asphalt: &mut dyn FnMut(usize, f64, f64) -> f64,
@@ -1007,8 +1018,28 @@ fn one_mesh_full_inner(
         let (qx, qy) = qpos[v];
         let lon = project::dequantize_x(qx, bounds);
         let lat = project::dequantize_y(qy, bounds);
+        // The kerb ambiguity's fix (c00bac8): a terrain-class copy of a ring
+        // vertex samples its ground a few centimetres inward toward its own
+        // face — the point ON the crest resolves to bench or batter by
+        // sub-quantum rounding, and consecutive vertices then alternate wall
+        // and no-wall (the silhouette teeth).
+        let (mut slon, mut slat) = (lon, lat);
+        if cls == usize::MAX && ring_verts.contains(&v) {
+            if let Some((cx, cy)) = toward {
+                let (dx, dy) = (cx - qx as f64, cy - qy as f64);
+                let len = (dx * dx + dy * dy).sqrt();
+                if len > 0.0 {
+                    let m_lon2 = crate::scene::DEG_M
+                        * ((bounds.south + bounds.north) * 0.5).to_radians().cos();
+                    let step_deg_x = 0.05 / m_lon2;
+                    let step_deg_y = 0.05 / crate::scene::DEG_M;
+                    slon = lon + dx / len * step_deg_x;
+                    slat = lat + dy / len * step_deg_y;
+                }
+            }
+        }
         let h = *sampled.entry((v, cls)).or_insert_with(|| {
-            if cls == usize::MAX { ground(lon, lat) } else { asphalt(cls, lon, lat) }
+            if cls == usize::MAX { ground(slon, slat) } else { asphalt(cls, lon, lat) }
         });
         *emin = emin.min(h);
         *emax = emax.max(h);
@@ -1033,9 +1064,13 @@ fn one_mesh_full_inner(
             let key = (a.min(b), a.max(b));
             edge_class.entry(key).or_default().push(t);
         }
+        let cen = (
+            (qpos[f[0]].0 as f64 + qpos[f[1]].0 as f64 + qpos[f[2]].0 as f64) / 3.0,
+            (qpos[f[0]].1 as f64 + qpos[f[1]].1 as f64 + qpos[f[2]].1 as f64) / 3.0,
+        );
         let bucket = tri_by_class.entry(class[t]).or_default();
         for &v in f {
-            let i = vid(v, class[t], &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
+            let i = vid(v, class[t], Some(cen), &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
             bucket.push(i);
         }
     }
@@ -1047,10 +1082,10 @@ fn one_mesh_full_inner(
             continue;
         }
         let (c0, c1) = (class[ts[0]], class[ts[1]]);
-        let ia0 = vid(*a, c0, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
-        let ib0 = vid(*b, c0, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
-        let ia1 = vid(*a, c1, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
-        let ib1 = vid(*b, c1, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
+        let ia0 = vid(*a, c0, None, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
+        let ib0 = vid(*b, c0, None, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
+        let ia1 = vid(*a, c1, None, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
+        let ib1 = vid(*b, c1, None, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
         if z[ia0 as usize] == z[ia1 as usize] && z[ib0 as usize] == z[ib1 as usize] {
             continue;
         }
