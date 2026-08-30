@@ -993,7 +993,17 @@ fn encode_tile(
     // withheld, since the mesh now carries them.
     let one_mesh_full = std::env::var_os("ARPT_ONE_MESH")
         .filter(|v| v.to_string_lossy() == format!("{z}/{x}/{y}"))
-        .and_then(|_| build_one_mesh(sampler, &bounds, z, solved.z_ref, pavement, &field, &cut_regions));
+        .and_then(|_| {
+            let t = Instant::now();
+            let m = build_one_mesh(sampler, &bounds, z, solved.z_ref, pavement, &field, &cut_regions);
+            eprintln!("[one-mesh] build {:?} for {z}/{x}/{y}", t.elapsed());
+            m
+        });
+    // The budget's other side (`ARPT_TIME_TILE=z/x/y`): the old path's cost
+    // for the same tile — surfaces + aprons (inside t_stamp..here) and the
+    // terrain mesh, printed after both are done below.
+    let time_tile = std::env::var_os("ARPT_TIME_TILE")
+        .is_some_and(|v| v.to_string_lossy() == format!("{z}/{x}/{y}"));
     let one_mesh_full = if let Some((one, emin, emax, kinds, _, _)) = one_mesh_full {
         for l in enc_layers.iter_mut() {
             if l.name != "transportation" {
@@ -1077,6 +1087,13 @@ fn encode_tile(
         (blob, None, Duration::ZERO, t.elapsed())
     };
     t_terrain += t_mesh;
+    if time_tile {
+        eprintln!(
+            "[time-tile] {z}/{x}/{y}: stamp+surfaces {:?}, terrain mesh {:?}",
+            t_terrain - t_mesh,
+            t_mesh
+        );
+    }
     Ok(TileResult {
         seq: job.seq,
         z,
