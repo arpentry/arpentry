@@ -104,7 +104,7 @@ void arpt__mesh_upload_terrain(arpt_renderer *r, arpt_tile_gpu *t,
 
     /* Pad normals to 4-byte stride (terrain carries no across-coords → NULL) */
     {
-        int8_t *padded = pad_normals_2to4(prim->normals, NULL, vc);
+        int8_t *padded = pad_normals_2to4(prim->normals, NULL, NULL, vc);
         if (!padded) return;
         t->buf_normals = create_buffer(r->device, r->queue,
                                        WGPUBufferUsage_Vertex, padded, vc * 4);
@@ -355,7 +355,8 @@ WGPURenderPipeline arpt__mesh_create_structure_pipeline(WGPUDevice device,
         .format = WGPUVertexFormat_Sint32, .offset = 0, .shaderLocation = 1};
     /* Two attributes share the 4-byte normals buffer: the int8×2 octahedral
        normal at byte 0, and the signed across-carriageway coord (snorm8) the
-       server packs into byte 2 for analytic edge AA (Snorm8x2 → .x is the
+       server packs into byte 2 for analytic edge AA and the decoder's stacking
+       priority in byte 3 (Snorm8x2 → .x is the
        coord, .y the reserved byte 3). */
     WGPUVertexAttribute attr_norm[2] = {
         {.format = WGPUVertexFormat_Sint8x2, .offset = 0, .shaderLocation = 2},
@@ -435,7 +436,8 @@ void arpt__mesh_upload_structure(arpt_renderer *r, arpt_mesh_draw *d,
     d->buf_z = create_buffer(r->device, r->queue, WGPUBufferUsage_Vertex,
                              prim->z, nv * sizeof(int32_t));
     {
-        int8_t *padded = pad_normals_2to4(prim->normals, prim->edge_across, nv);
+        int8_t *padded = pad_normals_2to4(prim->normals, prim->edge_across,
+                                          prim->priority, nv);
         if (!padded) return;
         d->buf_normals = create_buffer(
             r->device, r->queue, WGPUBufferUsage_Vertex, padded, nv * 4);

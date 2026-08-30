@@ -409,10 +409,74 @@ static bool keep_by_level(arpentry_tiles_Feature_table_t feat, int mode,
     }
 }
 
+/* The material rank of a surface feature's class: pedestrian surfaces (and
+   their rims and aprons) rank above the carriageway and rail formation they
+   stand beside, so where the two coincide the pavement composites on top. */
+static int material_rank(arpentry_tiles_Feature_table_t feat,
+                         uint32_t class_key, arpentry_tiles_Value_vec_t values) {
+    if (class_key == UINT32_MAX || !values) return 0;
+    arpentry_tiles_Property_vec_t props =
+        arpentry_tiles_Feature_properties(feat);
+    if (!props) return 0;
+    size_t np = arpentry_tiles_Property_vec_len(props);
+    for (size_t p = 0; p < np; p++) {
+        arpentry_tiles_Property_struct_t pr =
+            arpentry_tiles_Property_vec_at(props, p);
+        if (pr && pr->key == class_key) {
+            size_t vi = pr->value;
+            if (vi >= arpentry_tiles_Value_vec_len(values)) return 0;
+            flatbuffers_string_t s = arpentry_tiles_Value_string_value(
+                arpentry_tiles_Value_vec_at(values, vi));
+            if (!s) return 0;
+            return (strncmp(s, "walk_", 5) == 0 || strncmp(s, "path_", 5) == 0)
+                       ? 1 : 0;
+        }
+    }
+    return 0;
+}
+
+/* A surface feature's stacking priority, `(level, sheet, material)` folded to
+   one byte: `clamp(level+1, 0..7) << 4 | clamp(sheet, 0..3) << 2 | material`.
+   At most 127, so it rides the padded normals stream's free byte as a Snorm8
+   and the shader recovers it with round(y * 127). The level bits decide the
+   draw order across the concatenated mesh; the low four are what the deck
+   shader turns into its epsilon ladder (`SHEET_STEP_M`), since two surfaces
+   on different levels are metres apart already. `sheet` is the tiler's
+   grade-separation ordinal (FORMAT.md §9); an archive without it reads 0 and
+   the byte degrades to `(level, material)`. */
+static uint8_t stack_priority(arpentry_tiles_Feature_table_t feat,
+                              uint32_t level_key, uint32_t sheet_key,
+                              uint32_t class_key,
+                              arpentry_tiles_Value_vec_t values) {
+    int64_t lv = resolve_int(feat, level_key, values, 0) + 1;
+    int64_t sh = resolve_int(feat, sheet_key, values, 0);
+    if (lv < 0) lv = 0;
+    if (lv > 7) lv = 7;
+    if (sh < 0) sh = 0;
+    if (sh > 3) sh = 3;
+    return (uint8_t)((lv << 4) | (sh << 2) | material_rank(feat, class_key, values));
+}
+
+/* A matching mesh feature and its priority, for the ordered concatenation. */
+typedef struct {
+    uint32_t index;
+    uint8_t priority;
+} arpt_ordered_feat;
+
+/* Ascending priority; ties keep the layer's own order (a rim follows its
+   surface), which the index makes the sort stable. */
+static int compare_ordered_feat(const void *a, const void *b) {
+    const arpt_ordered_feat *fa = a, *fb = b;
+    if (fa->priority != fb->priority) return fa->priority < fb->priority ? -1 : 1;
+    return (fa->index > fb->index) - (fa->index < fb->index);
+}
+
 /* Concatenate the MeshGeometry features of a layer into one mesh primitive
    (xy/z/normals/indices), offsetting indices per feature. `level_sign` filters
-   by the reserved `level` property — see the ARPT_LEVEL_* bands above. Returns
-   false (with `out` zeroed) when no matching mesh. */
+   by the reserved `level` property — see the ARPT_LEVEL_* bands above — and
+   the filtered passes concatenate in ascending stacking priority, carried per
+   vertex in `out->priority`. Returns false (with `out` zeroed) when no
+   matching mesh. */
 static bool collect_layer_meshes(const void *flatbuf,
                                  arpentry_tiles_Layer_table_t layer,
                                  int level_sign,
@@ -427,11 +491,14 @@ static bool collect_layer_meshes(const void *flatbuf,
     size_t n_feat = arpentry_tiles_Feature_vec_len(features);
     if (n_feat == 0) return false;
 
-    /* Resolve the `level` key + value table once for the filtered passes. */
-    uint32_t level_key = UINT32_MAX;
+    /* Resolve the `level` / `sheet` / `class` keys + value table once for the
+       filtered passes: `level` filters, and all three fold into the priority. */
+    uint32_t level_key = UINT32_MAX, sheet_key = UINT32_MAX, prio_class_key = UINT32_MAX;
     arpentry_tiles_Value_vec_t values = NULL;
     if (level_sign != 0) {
         level_key = find_key_index(flatbuf, "level");
+        sheet_key = find_key_index(flatbuf, "sheet");
+        prio_class_key = find_key_index(flatbuf, "class");
         arpentry_tiles_Tile_table_t tile = arpentry_tiles_Tile_as_root(flatbuf);
         values = tile ? arpentry_tiles_Tile_values(tile) : NULL;
     }
@@ -457,7 +524,11 @@ static bool collect_layer_meshes(const void *flatbuf,
         }
     }
 
-    /* First pass: total vertices and indices across all matching mesh features. */
+    /* First pass: the matching mesh features, their priorities, and the total
+       vertices and indices across them. */
+    arpt_ordered_feat *order = malloc(n_feat * sizeof(*order));
+    if (!order) return false;
+    size_t n_order = 0;
     size_t total_v = 0, total_i = 0;
     for (size_t i = 0; i < n_feat; i++) {
         arpentry_tiles_Feature_table_t feat =
@@ -475,8 +546,20 @@ static bool collect_layer_meshes(const void *flatbuf,
         if (!xv || !iv) continue;
         total_v += flatbuffers_uint16_vec_len(xv);
         total_i += flatbuffers_uint32_vec_len(iv);
+        order[n_order].index = (uint32_t)i;
+        order[n_order].priority =
+            level_sign != 0
+                ? stack_priority(feat, level_key, sheet_key, prio_class_key, values)
+                : 0;
+        n_order++;
     }
-    if (total_v == 0 || total_i == 0) return false;
+    if (total_v == 0 || total_i == 0) {
+        free(order);
+        return false;
+    }
+    /* Junior surfaces first, so within one depth-writing draw a senior sheet
+       is blended over its juniors and the rim of each follows its interior. */
+    if (level_sign != 0) qsort(order, n_order, sizeof(*order), compare_ordered_feat);
 
     out->xy = malloc(total_v * 2 * sizeof(uint16_t));
     out->z = malloc(total_v * sizeof(int32_t));
@@ -486,27 +569,29 @@ static bool collect_layer_meshes(const void *flatbuf,
     /* Zeroed by default: a mesh without across-coords reads 0 everywhere, which
        the shader treats as "centre" (fully opaque, no analytic AA → MSAA). */
     out->edge_across = calloc(total_v, 1);
+    out->priority = level_sign != 0 ? calloc(total_v, 1) : NULL;
     if (!out->xy || !out->z || !out->normals || !out->indices ||
-        !out->edge_across || (want_color && !out->color)) {
+        !out->edge_across || (want_color && !out->color) ||
+        (level_sign != 0 && !out->priority)) {
         free(out->xy);
         free(out->z);
         free(out->normals);
         free(out->indices);
         free(out->color);
         free(out->edge_across);
+        free(out->priority);
+        free(order);
         memset(out, 0, sizeof(*out));
         return false;
     }
 
-    /* Second pass: concatenate the meshes, offsetting indices per feature. */
+    /* Second pass: concatenate the meshes in priority order, offsetting
+       indices per feature. */
     size_t vi = 0, ii = 0;
-    for (size_t i = 0; i < n_feat; i++) {
+    for (size_t oi = 0; oi < n_order; oi++) {
         arpentry_tiles_Feature_table_t feat =
-            arpentry_tiles_Feature_vec_at(features, i);
-        if (!feat || arpentry_tiles_Feature_geometry_type(feat) !=
-                         arpentry_tiles_Geometry_MeshGeometry)
-            continue;
-        if (!keep_by_level(feat, level_sign, level_key, values)) continue;
+            arpentry_tiles_Feature_vec_at(features, order[oi].index);
+        uint8_t prio = order[oi].priority;
         arpentry_tiles_MeshGeometry_table_t mesh =
             (arpentry_tiles_MeshGeometry_table_t)
                 arpentry_tiles_Feature_geometry(feat);
@@ -558,6 +643,7 @@ static bool collect_layer_meshes(const void *flatbuf,
                 out->normals[(vi + v) * 2 + 1] = nv[2 * v + 1];
             }
             if (have_a) out->edge_across[vi + v] = av[v];
+            if (out->priority) out->priority[vi + v] = (int8_t)prio;
             if (out->color) {
                 out->color[(vi + v) * 4] = cr;
                 out->color[(vi + v) * 4 + 1] = cg;
@@ -571,6 +657,7 @@ static bool collect_layer_meshes(const void *flatbuf,
         vi += vc;
         ii += ic;
     }
+    free(order);
 
     out->vertex_count = vi;
     out->index_count = ii;

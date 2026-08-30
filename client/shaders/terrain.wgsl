@@ -10,9 +10,10 @@ struct GlobalUniforms {
     sun_dir: vec3<f32>,
     apply_gamma: f32,
     altitude: f32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    _viewport_w: f32,
+    _viewport_h: f32,
+    // ARPT_SHOW_SHEETS: fs_deck paints each surface by its stacking priority.
+    debug_sheets: f32,
 };
 
 struct TileUniforms {
@@ -55,6 +56,8 @@ struct VsOut {
     // the outer ~1px of a drivable surface from `1 - |across|` for a crisp
     // analytic edge. 0 on every non-drivable face → no AA (MSAA).
     @location(5) across: f32,
+    // Stacking priority (0..127, flat per feature), for the debug view.
+    @location(6) @interpolate(flat) prio: f32,
 };
 
 // sin for tile-relative angle deltas. The native sin() is compiled with fast
@@ -140,8 +143,21 @@ const BRIDGE_DEPTH_MARGIN_M: f32 = 0.05;
 // always carries the larger margin and wins.
 const BRIDGE_DEPTH_MARGIN_FRAC: f32 = 0.0002;
 
+// The epsilon ladder, one rung per unit of the priority's low four bits
+// (sheet << 2 | material — see decode.c `stack_priority`). Two surfaces that
+// coincide in the model — a pavement on its junction plate, the rim of a walk
+// band on the asphalt it was cut from — are separated by *rule*: the senior
+// one takes one more rung toward the camera, and the depth test decides the
+// tie the same way every frame at every range. Depth-only, so nothing
+// parallaxes; 2 cm is ~100 float quanta at 2 km and invisible as a lift.
+// Surfaces on different levels are metres apart already, so the level bits
+// are left to the geometry.
+const SHEET_STEP_M: f32 = 0.02;
+
 fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
-             deck_color: vec4<f32>, across: f32) -> VsOut {
+             deck_color: vec4<f32>, across: f32, prio_snorm: f32) -> VsOut {
+    let prio = round(clamp(prio_snorm, 0.0, 1.0) * 127.0);
+    let rung = f32(u32(prio) & 15u);
     let u = (f32(qxy.x) - 16384.0) / 32768.0;
     let v = (f32(qxy.y) - 16384.0) / 32768.0;
     let dlam = tile.rel_bounds.x + u * (tile.rel_bounds.z - tile.rel_bounds.x);
@@ -162,11 +178,13 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
     var p = globals.projection * world_pos;
     if (depth_margin != 0.0) {
         var shifted = world_pos;
-        shifted.z += min(depth_margin, length(world_pos.xyz) * BRIDGE_DEPTH_MARGIN_FRAC);
+        shifted.z += min(depth_margin, length(world_pos.xyz) * BRIDGE_DEPTH_MARGIN_FRAC)
+                   + rung * SHEET_STEP_M;
         let ps = globals.projection * shifted;
         p = vec4<f32>(p.xy, ps.z / ps.w * p.w, p.w);
     }
     out.pos = p;
+    out.prio = prio;
     out.uv = vec2<f32>(u, v);
     let enc = vec2<f32>(f32(oct_norm.x) / 127.0, f32(oct_norm.y) / 127.0);
     let obj_normal = decode_octahedral(enc);
@@ -194,7 +212,7 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
     @location(1) qz: i32,
     @location(2) oct_norm: vec2<i32>,
 ) -> VsOut {
-    return vs_common(qxy, qz, oct_norm, 0.0, vec4<f32>(0.0), 0.0);
+    return vs_common(qxy, qz, oct_norm, 0.0, vec4<f32>(0.0), 0.0, 0.0);
 }
 
 // Tunnel bores: carry the road-class colour, but NO depth margin — a buried
@@ -206,7 +224,7 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
     @location(3) deck_color: vec4<f32>,
     @location(5) across_in: vec2<f32>,
 ) -> VsOut {
-    return vs_common(qxy, qz, oct_norm, 0.0, deck_color, across_in.x);
+    return vs_common(qxy, qz, oct_norm, 0.0, deck_color, across_in.x, across_in.y);
 }
 
 // Bridge decks: road-class colour plus the small camera-facing margin that wins
@@ -218,7 +236,8 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
     @location(3) deck_color: vec4<f32>,
     @location(5) across_in: vec2<f32>,
 ) -> VsOut {
-    return vs_common(qxy, qz, oct_norm, BRIDGE_DEPTH_MARGIN_M, deck_color, across_in.x);
+    return vs_common(qxy, qz, oct_norm, BRIDGE_DEPTH_MARGIN_M, deck_color, across_in.x,
+                     across_in.y);
 }
 
 @fragment fn fs(
@@ -231,6 +250,7 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
     // fragment-input location sets to agree.
     @location(4) deck_color: vec4<f32>,
     @location(5) across: f32,
+    @location(6) @interpolate(flat) prio: f32,
 ) -> @location(0) vec4<f32> {
     let margin = 0.0625;
     let tex_uv = (uv + vec2<f32>(margin, margin)) / (1.0 + 2.0 * margin);
@@ -305,6 +325,7 @@ const DECK_ASPHALT: vec3<f32> = vec3<f32>(0.5804, 0.5922, 0.6157);
     @location(3) topness: f32,
     @location(4) deck_color: vec4<f32>,
     @location(5) across: f32,
+    @location(6) @interpolate(flat) prio: f32,
 ) -> @location(0) vec4<f32> {
     let margin = 0.0625;
     let tex_uv = (uv + vec2<f32>(margin, margin)) / (1.0 + 2.0 * margin);
@@ -323,7 +344,18 @@ const DECK_ASPHALT: vec3<f32> = vec3<f32>(0.5804, 0.5922, 0.6157);
 
     // Top face → flat asphalt in the road's own class colour (or the motorway
     // fallback when the client shipped none); sides → lit concrete.
-    let asphalt = select(DECK_ASPHALT, deck_color.rgb, deck_color.a > 0.0);
+    var asphalt = select(DECK_ASPHALT, deck_color.rgb, deck_color.a > 0.0);
+    // Debug view: one distinct colour per priority — hue from the sheet and
+    // material bits, lightness from the level — so the stacking order reads
+    // off the screen (ARPT_SHOW_SHEETS=1).
+    if (globals.debug_sheets > 0.5) {
+        let p = u32(prio);
+        let hue = f32(p & 15u) / 16.0;
+        let lvl = f32(p >> 4u) / 8.0;
+        let k = fract(hue + vec3<f32>(0.0, 2.0 / 3.0, 1.0 / 3.0));
+        let rgb = clamp(abs(k * 6.0 - 3.0) - 1.0, vec3<f32>(0.0), vec3<f32>(1.0));
+        asphalt = mix(rgb * 0.7 + 0.15, vec3<f32>(1.0), lvl * 0.5);
+    }
     let top = smoothstep(0.55, 0.80, topness);
     let out = mix(concrete_out, asphalt, top);
     // Analytic edge antialiasing on the drivable top face: `across` is ±1 at the

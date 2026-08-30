@@ -87,6 +87,13 @@ typedef struct {
        0 = centre), driving analytic edge AA on drivable surface meshes. NULL when
        the mesh carries none (terrain, buildings, plates) — falls back to MSAA. */
     int8_t *edge_across;
+    /* Per-vertex stacking priority (0..127), for the surface pass: the feature's
+       (level, sheet, material) folded to one byte — see decode.c
+       `stack_priority`. Features are concatenated in ascending priority, and the
+       deck shader reads the low bits as an epsilon ladder so a pavement on its
+       plate composites over it by rule rather than by depth-precision chance.
+       NULL for buildings. */
+    int8_t *priority;
     size_t vertex_count, index_count;
 } arpt_building_prim;
 

@@ -1,5 +1,6 @@
 #include "unity.h"
 #include "tile/decode.h"
+#include "tile/prepare.h"
 #include "tile_builder.h"
 
 #include <stdlib.h>
@@ -173,7 +174,100 @@ static void *build_line_label_tile(size_t *out_size) {
     return buf;
 }
 
+/* A transportation tile of three level-0 surface meshes, emitted in the
+   order [walk sheet 0, road sheet 1, road sheet 0] — the order the decoder
+   must NOT keep. Each is one triangle whose x[0] names it: 100, 200, 300.
+   Tile.keys = ["class", "level", "sheet"]; values = ["walk_surface",
+   "road_surface", 0, 1]. */
+static void *build_surface_tile(size_t *out_size) {
+    flatcc_builder_t b;
+    flatcc_builder_init(&b);
+    arpentry_tiles_Tile_start_as_root(&b);
+    arpentry_tiles_Tile_version_add(&b, 1);
+    arpentry_tiles_Tile_layers_start(&b);
+    arpentry_tiles_Tile_layers_push_start(&b);
+    arpentry_tiles_Layer_name_create_str(&b, "transportation");
+    arpentry_tiles_Layer_features_start(&b);
+    const uint16_t tag[3] = {100, 200, 300};
+    const uint32_t cls[3] = {0, 1, 1};   /* walk, road, road */
+    const uint32_t sheet[3] = {2, 3, 2}; /* 0, 1, 0 */
+    for (int f = 0; f < 3; f++) {
+        arpentry_tiles_Layer_features_push_start(&b);
+        arpentry_tiles_Feature_id_add(&b, (uint64_t)f + 1);
+        uint16_t xs[] = {tag[f], 30000, 30000};
+        uint16_t ys[] = {20000, 20000, 30000};
+        int32_t zs[] = {0, 0, 0};
+        uint32_t idx[] = {0, 1, 2};
+        arpentry_tiles_MeshGeometry_start(&b);
+        arpentry_tiles_MeshGeometry_x_create(&b, xs, 3);
+        arpentry_tiles_MeshGeometry_y_create(&b, ys, 3);
+        arpentry_tiles_MeshGeometry_z_create(&b, zs, 3);
+        arpentry_tiles_MeshGeometry_indices_create(&b, idx, 3);
+        arpentry_tiles_Feature_geometry_MeshGeometry_add(
+            &b, arpentry_tiles_MeshGeometry_end(&b));
+        arpentry_tiles_Feature_properties_start(&b);
+        arpentry_tiles_Feature_properties_push_create(&b, 0, cls[f]);
+        arpentry_tiles_Feature_properties_push_create(&b, 1, 2); /* level 0 */
+        arpentry_tiles_Feature_properties_push_create(&b, 2, sheet[f]);
+        arpentry_tiles_Feature_properties_end(&b);
+        arpentry_tiles_Layer_features_push_end(&b);
+    }
+    arpentry_tiles_Layer_features_end(&b);
+    arpentry_tiles_Tile_layers_push_end(&b);
+    arpentry_tiles_Tile_layers_end(&b);
+    arpentry_tiles_Tile_keys_start(&b);
+    arpentry_tiles_Tile_keys_push_create_str(&b, "class");
+    arpentry_tiles_Tile_keys_push_create_str(&b, "level");
+    arpentry_tiles_Tile_keys_push_create_str(&b, "sheet");
+    arpentry_tiles_Tile_keys_end(&b);
+    arpentry_tiles_Tile_values_start(&b);
+    const char *strs[2] = {"walk_surface", "road_surface"};
+    for (int i = 0; i < 2; i++) {
+        arpentry_tiles_Tile_values_push_start(&b);
+        arpentry_tiles_Value_type_add(&b, arpentry_tiles_PropertyValueType_String);
+        arpentry_tiles_Value_string_value_create_str(&b, strs[i]);
+        arpentry_tiles_Tile_values_push_end(&b);
+    }
+    for (int i = 0; i < 2; i++) {
+        arpentry_tiles_Tile_values_push_start(&b);
+        arpentry_tiles_Value_type_add(&b, arpentry_tiles_PropertyValueType_Int);
+        arpentry_tiles_Value_int_value_add(&b, i);
+        arpentry_tiles_Tile_values_push_end(&b);
+    }
+    arpentry_tiles_Tile_values_end(&b);
+    arpentry_tiles_Tile_end_as_root(&b);
+    void *buf = flatcc_builder_finalize_buffer(&b, out_size);
+    flatcc_builder_clear(&b);
+    return buf;
+}
+
 /* Tests */
+
+void test_surfaces_concatenate_in_stacking_priority(void) {
+    /* (level, sheet, material) -> clamp(level+1)<<4 | sheet<<2 | material:
+       road sheet 0 = 16, walk sheet 0 = 17, road sheet 1 = 20. Ascending, so
+       the concatenated mesh runs road s0, walk s0, road s1 — the emitted
+       order was walk s0, road s1, road s0. */
+    size_t size;
+    void *buf = build_surface_tile(&size);
+    arpt_building_prim prim;
+    TEST_ASSERT_TRUE(arpt_decode_bridge_mesh(buf, size, "transportation",
+                                             NULL, 0, NULL, &prim));
+    TEST_ASSERT_EQUAL_size_t(9, prim.vertex_count);
+    TEST_ASSERT_NOT_NULL(prim.priority);
+    TEST_ASSERT_EQUAL_UINT16(300, prim.xy[0 * 2]);
+    TEST_ASSERT_EQUAL_INT8(16, prim.priority[0]);
+    TEST_ASSERT_EQUAL_UINT16(100, prim.xy[3 * 2]);
+    TEST_ASSERT_EQUAL_INT8(17, prim.priority[3]);
+    TEST_ASSERT_EQUAL_UINT16(200, prim.xy[6 * 2]);
+    TEST_ASSERT_EQUAL_INT8(20, prim.priority[6]);
+    /* Indices were re-based to the new order. */
+    TEST_ASSERT_EQUAL_UINT32(3, prim.indices[3]);
+    TEST_ASSERT_EQUAL_UINT32(6, prim.indices[6]);
+    free(prim.xy); free(prim.z); free(prim.normals); free(prim.indices);
+    free(prim.color); free(prim.edge_across); free(prim.priority);
+    free(buf);
+}
 
 void test_basic_extraction(void) {
     size_t size;
@@ -272,6 +366,7 @@ void test_line_labels_missing_layer(void) {
 
 int main(void) {
     UNITY_BEGIN();
+    RUN_TEST(test_surfaces_concatenate_in_stacking_priority);
     RUN_TEST(test_basic_extraction);
     RUN_TEST(test_normals_present);
     RUN_TEST(test_normals_absent);

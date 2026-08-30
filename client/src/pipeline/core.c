@@ -831,6 +831,9 @@ void arpt_renderer_set_globals(arpt_renderer *r, arpt_mat4 projection,
     u.altitude = altitude;
     u.viewport_w = (float)r->width;
     u.viewport_h = (float)r->height;
+    static int show_sheets = -1;
+    if (show_sheets < 0) show_sheets = getenv("ARPT_SHOW_SHEETS") ? 1 : 0;
+    u.debug_sheets = (float)show_sheets;
 
     if (memcmp(&u, &r->prev_globals, sizeof(u)) == 0) return;
 

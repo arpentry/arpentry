@@ -912,6 +912,7 @@ void arpt_tile_prims_free(arpt_tile_prims *p) {
     free(p->buildings.indices);
     free(p->buildings.color);
     free(p->buildings.edge_across);
+    free(p->buildings.priority);
 
     /* road structures — bridges + tunnels (same form as buildings) */
     free(p->bridges.xy);
@@ -920,12 +921,14 @@ void arpt_tile_prims_free(arpt_tile_prims *p) {
     free(p->bridges.indices);
     free(p->bridges.color);
     free(p->bridges.edge_across);
+    free(p->bridges.priority);
     free(p->tunnels.xy);
     free(p->tunnels.z);
     free(p->tunnels.normals);
     free(p->tunnels.indices);
     free(p->tunnels.color);
     free(p->tunnels.edge_across);
+    free(p->tunnels.priority);
 
     /* instances */
     if (p->instances.batches) {

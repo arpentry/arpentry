@@ -85,13 +85,26 @@ type Shared = HashMap<(i64, i64), Vec<Claim>>;
 pub struct Seams {
     terrain: Shared,
     pavement: Shared,
+    /// Pavement meshes seen, and how many of them carried no `sheet` — an
+    /// archive cut before the property was emitted, or an emitter that
+    /// dropped it. The ordering metric reports the count, since without the
+    /// ordinal the client is back to ordering by chance.
+    meshes: u64,
+    sheetless: u64,
     worst_k: usize,
     zoom: u8,
 }
 
 impl Seams {
     pub fn new(opt: &Options) -> Seams {
-        Seams { terrain: Shared::new(), pavement: Shared::new(), worst_k: opt.worst_k, zoom: 0 }
+        Seams {
+            terrain: Shared::new(),
+            pavement: Shared::new(),
+            meshes: 0,
+            sheetless: 0,
+            worst_k: opt.worst_k,
+            zoom: 0,
+        }
     }
 }
 
@@ -333,6 +346,10 @@ impl Check for Seams {
             collect(&mut self.terrain, t, None, tile);
         }
         for road in tile.roads.iter().filter(|r| r.is_pavement()) {
+            self.meshes += 1;
+            if road.sheet.is_none() {
+                self.sheetless += 1;
+            }
             collect(&mut self.pavement, &road.mesh, road.sheet, tile);
         }
     }
@@ -346,14 +363,27 @@ impl Check for Seams {
             "Terrain",
             SelfDisagreement::Crack,
         );
-        out.extend(measure(
+        let mut pavement = measure(
             self.pavement,
             self.zoom,
             self.worst_k,
             "pavement",
             "Carriageway",
             SelfDisagreement::UnorderedOverlap,
-        ));
+        );
+        if let Some(m) = pavement.iter_mut().find(|m| m.id == "order.at_grade_overlap") {
+            m.detail.push_str(&format!(
+                " {} of {} carriageway meshes carried a `sheet`{}.",
+                self.meshes - self.sheetless,
+                self.meshes,
+                if self.sheetless > 0 {
+                    " — the rest reach the client with no ordinal at all"
+                } else {
+                    ""
+                }
+            ));
+        }
+        out.extend(pavement);
         out
     }
 }

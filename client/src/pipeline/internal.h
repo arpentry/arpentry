@@ -36,7 +36,9 @@ typedef struct {
        visible at grazing angles). Other shaders ignore these slots. */
     float viewport_w;
     float viewport_h;
-    float _pad;
+    /* ARPT_SHOW_SHEETS=1: the deck fragment paints each surface by its stacking
+       priority instead of its asphalt, so the sheet ordering is visible. */
+    float debug_sheets;
 } global_uniforms_t;
 
 typedef struct {
@@ -394,11 +396,14 @@ static inline void restore_terrain_pipeline(arpt_renderer *r) {
 
 /* Widen int8×2 normals to a 4-byte stride (wgpu needs the buffer 4-aligned) and,
    for drivable surface meshes, pack the signed across-carriageway coord into the
-   otherwise-unused third byte (read by the deck shader as Snorm8x2.x for analytic
-   edge AA). `edge_across` may be NULL — terrain/buildings/plates leave byte 2 at
-   0, which the shader treats as "centre" (no AA). Byte 3 stays reserved. */
+   third byte and the stacking priority into the fourth (read by the deck shader
+   as Snorm8x2 .x and .y: analytic edge AA, and the epsilon ladder that orders
+   coincident surfaces). Either may be NULL — terrain/buildings/plates leave
+   byte 2 at 0, which the shader treats as "centre" (no AA), and byte 3 at 0,
+   the bottom of the ladder. */
 static inline int8_t *pad_normals_2to4(const int8_t *normals,
-                                       const int8_t *edge_across, size_t count) {
+                                       const int8_t *edge_across,
+                                       const int8_t *priority, size_t count) {
     int8_t *padded = calloc(count, 4);
     if (!padded) return NULL;
     for (size_t i = 0; i < count; i++) {
@@ -407,6 +412,7 @@ static inline int8_t *pad_normals_2to4(const int8_t *normals,
             padded[i * 4 + 1] = normals[i * 2 + 1];
         }
         if (edge_across) padded[i * 4 + 2] = edge_across[i];
+        if (priority) padded[i * 4 + 3] = priority[i];
     }
     return padded;
 }
