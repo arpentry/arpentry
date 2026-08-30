@@ -895,6 +895,28 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
         start_fetch(tm, tm->visible[i], 0);
     }
 
+    /* Diagnostic (env ARPT_PRELOAD="level/x/y"): keep that tile loaded and
+       fresh although it is not visible, so a --screenshot run — which zooms
+       straight in and never caches the rungs above — can stage the frame an
+       interactive zoom produces: a child's parent as its ready ancestor. */
+    static int preload = -2;
+    static arpt_tile_key pk;
+    if (preload == -2) {
+        const char *s = getenv("ARPT_PRELOAD");
+        preload = (s && sscanf(s, "%d/%d/%d", &pk.level, &pk.x, &pk.y) == 3) ? 1 : -1;
+    }
+    if (preload == 1) {
+        tile_entry lookup = {.key = pk};
+        const tile_entry *e = hashmap_get(tm->cache, &lookup);
+        if (!e) {
+            if (tm->active_fetches < tm->config.max_concurrent) start_fetch(tm, pk, 0);
+        } else if (e->state == TILE_READY) {
+            tile_entry updated = *e;
+            updated.last_used = tm->frame;
+            tm_hashmap_set(tm, &updated);
+        }
+    }
+
     evict_oldest(tm);
 
     /* Sample the real terrain height under the camera's interest point so
@@ -1026,17 +1048,30 @@ void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
        ancestor drawn for one unready child would otherwise also draw under
        its ready siblings, and its coarser ground stabs through their roads
        wherever it runs higher (one frame per child load, at every tilt). */
+    /* Diagnostic (env ARPT_FORCE_UNREADY="level/x/y"): treat that visible tile
+       as not yet loaded, so the frame a child load produces — its ancestor
+       drawn under its ready siblings — can be captured on demand; and
+       ARPT_NO_QUAD_MASK=1 draws that ancestor unmasked, for the A/B. */
+    static int force = -2; /* -2 unparsed, -1 off */
+    static int fz, fx, fy;
+    static int no_mask = -1;
+    if (force == -2) {
+        const char *s = getenv("ARPT_FORCE_UNREADY");
+        force = (s && sscanf(s, "%d/%d/%d", &fz, &fx, &fy) == 3) ? 1 : -1;
+        no_mask = getenv("ARPT_NO_QUAD_MASK") ? 1 : 0;
+    }
     bool ready[MAX_VISIBLE_TILES];
     for (int i = 0; i < tm->visible_count; i++) {
         tile_entry lookup = {.key = tm->visible[i]};
         const tile_entry *e = hashmap_get(tm->cache, &lookup);
         ready[i] = e && e->state == TILE_READY && e->gpu;
+        if (force == 1 && tm->visible[i].level == fz && tm->visible[i].x == fx &&
+            tm->visible[i].y == fy)
+            ready[i] = false;
     }
 
     for (int i = 0; i < tm->visible_count; i++) {
-        tile_entry lookup = {.key = tm->visible[i]};
-        const tile_entry *e = hashmap_get(tm->cache, &lookup);
-        if (e && e->state == TILE_READY && e->gpu) continue;
+        if (ready[i]) continue;
 
         /* Walk up the hierarchy to find the nearest READY ancestor */
         int al = tm->visible[i].level;
@@ -1059,8 +1094,12 @@ void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
                 }
             }
             if (!already) {
-                uint32_t mask = arpt_tile_covered_quadrants(
+                uint32_t mask = no_mask ? 0 : arpt_tile_covered_quadrants(
                     al, ax, ay, tm->visible, ready, tm->visible_count);
+                if (force == 1)
+                    fprintf(stderr, "[quad-mask] ancestor %d/%d/%d for %d/%d/%d mask=%u\n",
+                            al, ax, ay, tm->visible[i].level, tm->visible[i].x,
+                            tm->visible[i].y, mask);
                 draw_entry(r, cam, ancestor, tm->config.max_level, mask);
                 if (drawn_count < MAX_VISIBLE_TILES)
                     drawn_ancestors[drawn_count++] =
@@ -1072,9 +1111,9 @@ void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
 
     /* Phase 2: draw READY tiles on top of ancestors */
     for (int i = 0; i < tm->visible_count; i++) {
+        if (!ready[i]) continue;
         tile_entry lookup = {.key = tm->visible[i]};
         const tile_entry *e = hashmap_get(tm->cache, &lookup);
-        if (e && e->state == TILE_READY && e->gpu)
-            draw_entry(r, cam, e, tm->config.max_level, 0);
+        draw_entry(r, cam, e, tm->config.max_level, 0);
     }
 }
