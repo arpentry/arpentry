@@ -426,3 +426,81 @@ mod tests {
         assert_eq!(EXTENT as u32 % TERRAIN_GRID_DETAIL, 0);
     }
 }
+
+
+/// A drawn terrain mesh with a bucket index over its triangles, so a plan
+/// point can be answered with the height the mesh actually draws there —
+/// the reading every consumer standing on the drawn ground wants under the
+/// one-canvas rule (`ground::sampler::one_canvas`), where the mirror lattice
+/// and the constrained triangulation no longer agree off the lattice.
+pub struct DrawnMesh {
+    mesh: TerrainMesh,
+    /// Triangle ids per bucket of a `cells × cells` grid over the tile proper
+    /// plus buffer (quantized 0..65535 on each axis).
+    buckets: Vec<Vec<u32>>,
+    cells: usize,
+}
+
+impl DrawnMesh {
+    pub fn new(mesh: TerrainMesh) -> DrawnMesh {
+        let tris = mesh.indices.len() / 3;
+        let cells = ((tris as f64).sqrt().ceil() as usize).clamp(8, 256);
+        let mut buckets = vec![Vec::new(); cells * cells];
+        let span = 65536.0 / cells as f64;
+        for t in 0..tris {
+            let (a, b, c) = (
+                mesh.indices[3 * t] as usize,
+                mesh.indices[3 * t + 1] as usize,
+                mesh.indices[3 * t + 2] as usize,
+            );
+            let xs = [mesh.x[a] as f64, mesh.x[b] as f64, mesh.x[c] as f64];
+            let ys = [mesh.y[a] as f64, mesh.y[b] as f64, mesh.y[c] as f64];
+            let (x0, x1) = (xs.iter().cloned().fold(f64::INFINITY, f64::min), xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+            let (y0, y1) = (ys.iter().cloned().fold(f64::INFINITY, f64::min), ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+            let (c0, c1) = ((x0 / span).floor().max(0.0) as usize, ((x1 / span).floor() as usize).min(cells - 1));
+            let (r0, r1) = ((y0 / span).floor().max(0.0) as usize, ((y1 / span).floor() as usize).min(cells - 1));
+            for r in r0..=r1 {
+                for col in c0..=c1 {
+                    buckets[r * cells + col].push(t as u32);
+                }
+            }
+        }
+        DrawnMesh { mesh, buckets, cells }
+    }
+
+    pub fn mesh(&self) -> &TerrainMesh {
+        &self.mesh
+    }
+
+    /// The drawn height at quantized plan point `(qx, qy)`, or `None` where
+    /// no triangle covers it — inside a hole, or off the mesh.
+    pub fn height_at(&self, qx: f64, qy: f64) -> Option<f64> {
+        if !(0.0..65536.0).contains(&qx) || !(0.0..65536.0).contains(&qy) {
+            return None;
+        }
+        let span = 65536.0 / self.cells as f64;
+        let (col, row) = ((qx / span) as usize, (qy / span) as usize);
+        let m = &self.mesh;
+        for &t in &self.buckets[row.min(self.cells - 1) * self.cells + col.min(self.cells - 1)] {
+            let t = t as usize;
+            let (a, b, c) = (m.indices[3 * t] as usize, m.indices[3 * t + 1] as usize, m.indices[3 * t + 2] as usize);
+            let (ax, ay) = (m.x[a] as f64, m.y[a] as f64);
+            let (bx, by) = (m.x[b] as f64, m.y[b] as f64);
+            let (cx, cy) = (m.x[c] as f64, m.y[c] as f64);
+            let det = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+            if det.abs() < 1e-12 {
+                continue;
+            }
+            let l1 = ((bx - ax) * (qy - ay) - (qx - ax) * (by - ay)) / det; // weight of c
+            let l2 = ((qx - ax) * (cy - ay) - (cx - ax) * (qy - ay)) / det; // weight of b
+            let l0 = 1.0 - l1 - l2;
+            const EPS: f64 = -1e-9;
+            if l0 >= EPS && l1 >= EPS && l2 >= EPS {
+                return Some(
+                    (l0 * m.z[a] as f64 + l2 * m.z[b] as f64 + l1 * m.z[c] as f64) * 0.001,
+                );
+            }
+        }
+        None
+    }
+}

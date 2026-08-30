@@ -64,6 +64,12 @@ pub struct GroundSampler {
     /// corner, collapsing the 4-corner fan-out of `surface` into ~one DEM
     /// sample per distinct corner.
     corners: HashMap<(u8, u64, u64), f64>,
+    /// The terrain meshes this worker has drawn, by tile, for the one-canvas
+    /// rule: `surface` answers from the mesh the tile actually draws wherever
+    /// one exists (`terrain::DrawnMesh`), so a building foot, a structure
+    /// datum or a kerb reads the ground that is on screen rather than the
+    /// mirror lattice it diverges from between constraints.
+    drawn: HashMap<(u8, u32, u32), std::sync::Arc<terrain::DrawnMesh>>,
 }
 
 impl GroundSampler {
@@ -73,7 +79,15 @@ impl GroundSampler {
         z_ref: u8,
         mesh: MeshOptions,
     ) -> GroundSampler {
-        GroundSampler { dem, ground, z_ref, mesh, scratch: Vec::new(), corners: HashMap::new() }
+        GroundSampler {
+            dem,
+            ground,
+            z_ref,
+            mesh,
+            scratch: Vec::new(),
+            corners: HashMap::new(),
+            drawn: HashMap::new(),
+        }
     }
 
     /// Whether zoom `z` is the detail rung — the only one that gets a
@@ -167,6 +181,47 @@ impl GroundSampler {
         terrain::surface_height(bounds, grid, lon, lat, &mut |a, o| self.corner(a, o, z))
     }
 
+    /// The ground a thing standing on the drawn world reads: the mesh the
+    /// tile draws where one is cached and covers the point (the one-canvas
+    /// rule), the lattice mirror otherwise. For consumers whose neighbours
+    /// are the *pixels* — a building foot — never for the datum field, whose
+    /// stations must all reconstruct one basis along a span: mixing drawn
+    /// stations off the asphalt with lattice stations inside the hole put a
+    /// step back at every abutment (`seam.band_deck_step` 38 → 73 % over,
+    /// measured 2026-08-30).
+    pub fn surface_drawn(&mut self, bounds: &Bounds, lon: f64, lat: f64, z: u8) -> f64 {
+        if one_canvas() && self.is_detail(z) {
+            if let Some(h) = self.drawn_height(bounds, lon, lat, z) {
+                return h;
+            }
+        }
+        self.surface(bounds, lon, lat, z)
+    }
+
+    /// The drawn height at a point from this worker's cached mesh of the
+    /// zoom-`z` tile containing it, if any.
+    fn drawn_height(&self, bounds: &Bounds, lon: f64, lat: f64, z: u8) -> Option<f64> {
+        let (tx, ty) = tile_xy(bounds, z);
+        let m = self.drawn.get(&(z, tx, ty))?;
+        let qx = crate::project::BUFFER + (lon - bounds.west) / bounds.width() * crate::project::EXTENT;
+        let qy = crate::project::BUFFER + (lat - bounds.south) / bounds.height() * crate::project::EXTENT;
+        m.height_at(qx, qy)
+    }
+
+    /// Records the mesh a tile draws, so [`GroundSampler::surface`] can read
+    /// it (one canvas). Bounded: a worker keeps the last few tiles only.
+    pub fn remember_drawn(&mut self, bounds: &Bounds, z: u8, mesh: &TerrainMesh) {
+        if !one_canvas() {
+            return;
+        }
+        const KEEP: usize = 8;
+        if self.drawn.len() >= KEEP {
+            self.drawn.clear();
+        }
+        let (tx, ty) = tile_xy(bounds, z);
+        self.drawn.insert((z, tx, ty), std::sync::Arc::new(terrain::DrawnMesh::new(mesh.clone())));
+    }
+
     /// The exact engineered roadbed height under `(lon, lat)` when the point
     /// lies fully inside a road earthwork's held width — a corridor's roadbed
     /// or a street bench — else `None`. The drape rides this at the reference
@@ -224,6 +279,15 @@ impl GroundSampler {
 pub fn one_canvas() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("ARPT_ONE_CANVAS").is_some())
+}
+
+/// The tile grid index of `bounds` at zoom `z` (its south-west corner).
+fn tile_xy(bounds: &Bounds, z: u8) -> (u32, u32) {
+    let n = (1u64 << z) as f64;
+    (
+        ((bounds.west + 180.0) / 360.0 * n).round() as u32,
+        ((bounds.south + 90.0) / 180.0 * n).round() as u32,
+    )
 }
 
 /// [`GroundSampler::corner`] with the sampler's fields split apart, so a

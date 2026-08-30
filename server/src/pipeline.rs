@@ -919,16 +919,35 @@ fn encode_tile(
         buckets[*layer].push(decoded);
     }
     let t_stamp = Instant::now();
-    stamp_elevations(&mut buckets, sampler, z);
     // One height field per tile, shared by the paint, the bands and the plates —
     // so all three land on the same asphalt (docs/ROADS.md invariant 5).
     let field = synth::height::HeightField::for_tile(junctions, solved, z, &bounds);
-    stamp_synth(&mut buckets, &field, sampler, solved, z, &bounds);
-    // The at-grade paved regions this tile actually meshed — what the terrain
-    // mesh below cuts its hole from (docs/GROUND.md §3). Empty where no hole is
-    // cut, so the terrain mesher needs no second opinion on whether to cut.
-    let cut_regions =
-        add_road_surface(&mut buckets, pavement, &field, sampler, &bounds, z, solved.z_ref);
+    let one_canvas = crate::ground::sampler::one_canvas() && sampler.has_elevation();
+    // Under the one-canvas rule the paved regions come first, the terrain is
+    // drawn from them next and remembered, and only then do the buildings and
+    // the structures take their heights — from the mesh that is on screen.
+    // Otherwise the historical order: everything stamps against the lattice
+    // mirror, and the terrain is meshed last.
+    let mut early_terrain = None;
+    let cut_regions = if one_canvas {
+        let regions =
+            add_road_surface(&mut buckets, pavement, &field, sampler, &bounds, z, solved.z_ref);
+        let t = Instant::now();
+        let drawn = sampler.terrain_mesh(&bounds, z, &regions);
+        sampler.remember_drawn(&bounds, z, &drawn.0);
+        early_terrain = Some((drawn, t.elapsed()));
+        stamp_elevations(&mut buckets, sampler, z);
+        stamp_synth(&mut buckets, &field, sampler, solved, z, &bounds);
+        regions
+    } else {
+        stamp_elevations(&mut buckets, sampler, z);
+        stamp_synth(&mut buckets, &field, sampler, solved, z, &bounds);
+        // The at-grade paved regions this tile actually meshed — what the
+        // terrain mesh below cuts its hole from (docs/GROUND.md §3). Empty
+        // where no hole is cut, so the terrain mesher needs no second opinion
+        // on whether to cut.
+        add_road_surface(&mut buckets, pavement, &field, sampler, &bounds, z, solved.z_ref)
+    };
     let mut t_terrain = t_stamp.elapsed();
 
     // Vector layers in decode-priority (index) order.
@@ -954,8 +973,10 @@ fn encode_tile(
     observed.push((layers::TERRAIN as usize, GeometryType::Mesh));
     let (blob, elevation, t_mesh, t_encode) = if sampler.has_elevation() {
         let t = Instant::now();
-        let (mesh, emin, emax) = sampler.terrain_mesh(&bounds, z, &cut_regions);
-        let t_mesh = t.elapsed();
+        let ((mesh, emin, emax), t_mesh) = match early_terrain.take() {
+            Some((drawn, dt)) => (drawn, dt),
+            None => (sampler.terrain_mesh(&bounds, z, &cut_regions), t.elapsed()),
+        };
         let t = Instant::now();
         let blob = tile_build::build_tile_q(&bounds, Some(&mesh), &enc_layers, quality);
         (blob, Some((emin, emax)), t_mesh, t.elapsed())
@@ -1024,7 +1045,7 @@ fn stamp_elevations(buckets: &mut [Vec<EncoderFeature>], sampler: &mut GroundSam
             return sampler.ground(lon, lat, z);
         }
         let tile = solve::tile_containing(z, lon, lat);
-        sampler.surface(&tile, lon, lat, z)
+        sampler.surface_drawn(&tile, lon, lat, z)
     };
 
     for f in &mut buckets[layers::BUILDING as usize] {
