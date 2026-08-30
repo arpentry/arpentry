@@ -100,6 +100,7 @@ fn reconcile_stratum(
     daylight: &mut Vec<Daylight>,
     divergence: &mut Vec<PartitionDivergence>,
     pass: usize,
+    flank: &mut dyn FnMut(Coord) -> f64,
 ) {
     // ARPT_DEBUG_ANNEX: one line per tunnel-bearing corridor with crossings —
     // the tail bounds against the crossing arcs, and whether the annex took.
@@ -211,7 +212,7 @@ fn reconcile_stratum(
         // extent, and the cut, the sweep, the sheets and the benches all read
         // the same trimmed truth.
         if std::env::var_os("ARPT_BRIDGE_TRIM").is_some() {
-            reconciled = partition::bridge_trim(p, &reconciled, c.kind.prior());
+            reconciled = partition::bridge_trim(p, &reconciled, c.kind.prior(), flank);
         }
         for g in reconciled.iter().filter(|s| s.kind == SpanKind::Grade) {
             for t in spans.iter().filter(|s| s.kind != SpanKind::Grade) {
@@ -246,6 +247,7 @@ fn reconcile_stratum(
             &entering,
             &partition::Licenses { covered, twin: &twin, reaches: &reaches, carried: &carried },
             c.kind.prior(),
+            flank,
         );
         let d = partition::divergence(&reconciled, &pure);
         if d.metres > 0.0 || reconciled.iter().any(|s| s.kind != SpanKind::Grade) {
@@ -830,6 +832,10 @@ pub fn run_licensed(
     // measures the crossing premise at exactly the sites the ceilings were
     // seeded from (`structure.bore_daylight`).
     let sites = crossings::covered_sites(scene, &plan);
+    // The flank probe's own DEM handle (partition::dem_blind): the trim asks
+    // whether a "grounded" stretch of an annotated bridge is the deck the DEM
+    // rasterised, which only the ground beside the corridor can say.
+    let mut flank_dem = primary_dem.fork()?;
     let mut daylight: Vec<Daylight> = Vec::new();
     let mut partition_div: Vec<PartitionDivergence> = Vec::new();
     // **The two-pass solve** (`data/plans/pure-partition-2026-08-28.md` §4,
@@ -956,6 +962,7 @@ pub fn run_licensed(
             &mut daylight,
             &mut partition_div,
             pass,
+            &mut |c: Coord| reference_surface(&mut flank_dem, z_ref, c.x, c.y),
         );
     }
     }

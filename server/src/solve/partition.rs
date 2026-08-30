@@ -20,6 +20,8 @@
 //! overlaps at all keeps its annotation, since a DEM-blind span has no
 //! departure to trim to.
 
+use geo_types::Coord;
+
 use crate::priors::Prior;
 use crate::scene::{Span, SpanKind};
 
@@ -51,6 +53,7 @@ pub fn partition(
     annotated: &[Span],
     lic: &Licenses<'_>,
     prior: &Prior,
+    flank: &mut dyn FnMut(Coord) -> f64,
 ) -> Vec<Span> {
     // License arithmetic: crossing reaches and carried windows as inputs.
     let spans = portals::annex_spans(profile, annotated, lic.reaches, lic.carried)
@@ -59,13 +62,73 @@ pub fn partition(
     // bore to its buried run, hold the licensed windows.
     let spans = portals::reconcile_spans(profile, &spans, lic.covered, lic.twin);
     // The bridge half.
-    bridge_trim(profile, &spans, prior)
+    bridge_trim(profile, &spans, prior, flank)
+}
+
+/// How far beside the centerline the DEM is asked whether a "grounded"
+/// stretch of an annotated bridge is really ground, in metres. Wide enough
+/// to step off a viaduct's deck as the DEM rasterised it, narrow enough to
+/// stay inside the gorge it spans.
+const FLANK_M: f64 = 25.0;
+
+/// Station spacing of the flank probe along a candidate stretch, metres.
+const FLANK_STEP_M: f64 = 16.0;
+
+/// Whether a stretch of an annotated bridge that hugs its own terrain is
+/// DEM-blind — the DEM carries the deck, so the on-axis gap says "ground"
+/// while the ground beside the corridor still falls away. Probed on both
+/// flanks at [`FLANK_M`]; a majority of stations with either flank more than
+/// the deck standoff below the road says the "ground" is the deck itself
+/// (§7's F4 family, measured 2026-08-30 as grade_stack 9.5 → 60.7 % when
+/// trimmed without this guard).
+fn dem_blind(
+    profile: &Profile,
+    a0: f64,
+    a1: f64,
+    flank: &mut dyn FnMut(Coord) -> f64,
+) -> bool {
+    let n = (((a1 - a0) / FLANK_STEP_M).ceil() as usize).clamp(1, 64);
+    let mut blind = 0usize;
+    for k in 0..n {
+        let arc = a0 + (a1 - a0) * (k as f64 + 0.5) / n as f64;
+        let p0 = profile.point_at_arc((arc - 2.0).max(a0));
+        let p1 = profile.point_at_arc((arc + 2.0).min(a1));
+        let pt = profile.point_at_arc(arc);
+        let m_lon = crate::scene::DEG_M * pt.y.to_radians().cos();
+        let (dx, dy) = ((p1.x - p0.x) * m_lon, (p1.y - p0.y) * crate::scene::DEG_M);
+        let len = (dx * dx + dy * dy).sqrt();
+        if !(len > 0.0) {
+            continue;
+        }
+        let (nx, ny) = (-dy / len, dx / len);
+        let road = profile.road_at_arc(arc);
+        let mut side = |sign: f64| {
+            flank(Coord {
+                x: pt.x + sign * nx * FLANK_M / m_lon,
+                y: pt.y + sign * ny * FLANK_M / crate::scene::DEG_M,
+            })
+        };
+        let left = side(1.0);
+        let right = side(-1.0);
+        let low = left.min(right);
+        if road - low > structures::DECK_STANDOFF_M {
+            blind += 1;
+        }
+    }
+    2 * blind > n
 }
 
 /// Each `Bridge` span clamped to the extent of the deck runs the solved
-/// heights imply inside it, the slack re-covered as grade. A span no deck run
-/// overlaps is kept whole.
-pub(crate) fn bridge_trim(profile: &Profile, spans: &[Span], prior: &Prior) -> Vec<Span> {
+/// heights imply inside it, the slack re-covered as grade — except where the
+/// slack is DEM-blind ([`dem_blind`]): there the annotation stands, because
+/// the "ground" the derive saw is the deck the DEM rasterised. A span no
+/// deck run overlaps at all is kept whole (the original whole-span guard).
+pub(crate) fn bridge_trim(
+    profile: &Profile,
+    spans: &[Span],
+    prior: &Prior,
+    flank: &mut dyn FnMut(Coord) -> f64,
+) -> Vec<Span> {
     let runs = structures::derive(profile, prior);
     let mut out = Vec::with_capacity(spans.len() + 4);
     for s in spans {
@@ -80,10 +143,18 @@ pub(crate) fn bridge_trim(profile: &Profile, spans: &[Span], prior: &Prior) -> V
                 let (a, b) = (r.arc0.max(s.arc0), r.arc1.min(s.arc1));
                 Some(acc.map_or((a, b), |(x, y)| (x.min(a), y.max(b))))
             });
-        let Some((a0, a1)) = fitted.filter(|(a0, a1)| a1 - a0 >= MIN_STUB_M) else {
+        let Some((mut a0, mut a1)) = fitted.filter(|(a0, a1)| a1 - a0 >= MIN_STUB_M) else {
             out.push(*s);
             continue;
         };
+        // The slack on either side keeps its annotation where it is DEM-blind:
+        // grow the kept extent back over it rather than re-cover deck as grade.
+        if a0 - s.arc0 > MIN_STUB_M && dem_blind(profile, s.arc0, a0, flank) {
+            a0 = s.arc0;
+        }
+        if s.arc1 - a1 > MIN_STUB_M && dem_blind(profile, a1, s.arc1, flank) {
+            a1 = s.arc1;
+        }
         if a0 - s.arc0 > MIN_STUB_M {
             out.push(Span { arc0: s.arc0, arc1: a0, level: 0, kind: SpanKind::Grade });
         }
@@ -188,7 +259,10 @@ mod tests {
     fn a_bridge_is_clamped_to_the_deck_the_heights_imply() {
         let (p, spans, len) = gorge();
         let prior = crate::priors::Kind::Road(crate::priors::RoadClass::Residential).prior();
-        let out = bridge_trim(&p, &spans, prior);
+        // The gorge is a gorge beside the line too: the flank probe reads the
+        // same field, so the trim's verdict is untouched by the guard.
+        let mut flank = |c: Coord| if (0.4..=0.6).contains(&(((c.x - 6.0) * DEG_M * 46.0_f64.to_radians().cos()) / len)) { 70.0 } else { 100.0 };
+        let out = bridge_trim(&p, &spans, prior, &mut flank);
         let bridge = out.iter().find(|s| s.kind == SpanKind::Bridge).expect("a bridge");
         // The deck run starts where the gap crosses the standoff — within a
         // node spacing of the gorge lip, not at the mapper's 30 %.
@@ -219,7 +293,7 @@ mod tests {
         );
         spans[1].kind = SpanKind::Bridge;
         let prior = crate::priors::Kind::Road(crate::priors::RoadClass::Residential).prior();
-        let out = bridge_trim(&flat, &spans, prior);
+        let out = bridge_trim(&flat, &spans, prior, &mut |_| 100.0);
         assert_eq!(out, spans);
         assert_eq!(divergence(&spans, &out).metres, 0.0);
     }
