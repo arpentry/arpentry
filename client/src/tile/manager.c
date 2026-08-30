@@ -953,7 +953,7 @@ bool arpt_tile_manager_sample_ground(const arpt_tile_manager *tm,
 /* Draw helpers */
 
 static void draw_entry(arpt_renderer *r, const arpt_camera *cam,
-                       const tile_entry *e) {
+                       const tile_entry *e, int max_level) {
     /* Diagnostic (env ARPT_ONLY_TILE="level/x/y"): draw only that tile. */
     static int only_tile = -2; /* -2 unparsed, -1 off */
     static int oz, ox, oy;
@@ -973,8 +973,14 @@ static void draw_entry(arpt_renderer *r, const arpt_camera *cam,
         e->bounds.east * M_PI / 180.0,
         e->bounds.north * M_PI / 180.0,
     };
+    /* The detail rung is the one whose terrain is holed under the pavement
+       (the tiler's `cuts_hole`: the grid is the detail grid only at the
+       reference zoom, the tileset's max level). */
+    float stroke_margin = e->key.level >= max_level ? ARPT_STROKE_MARGIN_DETAIL_M
+                                                    : ARPT_STROKE_MARGIN_COARSE_M;
     arpt_tile_gpu_set_uniforms((arpt_tile_gpu *)e->gpu, model, bounds_rad,
-                               e->center_lon_rad, e->center_lat_rad);
+                               e->center_lon_rad, e->center_lat_rad,
+                               stroke_margin);
     arpt_renderer_draw_tile(r, (arpt_tile_gpu *)e->gpu);
 }
 
@@ -1041,7 +1047,7 @@ void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
                 }
             }
             if (!already) {
-                draw_entry(r, cam, ancestor);
+                draw_entry(r, cam, ancestor, tm->config.max_level);
                 if (drawn_count < MAX_VISIBLE_TILES)
                     drawn_ancestors[drawn_count++] =
                         (arpt_tile_key){al, ax, ay};
@@ -1055,6 +1061,6 @@ void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
         tile_entry lookup = {.key = tm->visible[i]};
         const tile_entry *e = hashmap_get(tm->cache, &lookup);
         if (e && e->state == TILE_READY && e->gpu)
-            draw_entry(r, cam, e);
+            draw_entry(r, cam, e, tm->config.max_level);
     }
 }

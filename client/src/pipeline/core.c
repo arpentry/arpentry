@@ -732,9 +732,10 @@ bool arpt_renderer_tile_set_overzoom(arpt_renderer *r, arpt_tile_gpu *t,
 
 void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile, arpt_mat4 model,
                                 const double bounds_rad[4], double center_lon,
-                                double center_lat) {
+                                double center_lat, float stroke_margin_m) {
     tile_uniforms_t u = {0};
     memcpy(u.model, model.m, sizeof(u.model));
+    u.stroke_margin_m = stroke_margin_m;
     for (int i = 0; i < 4; i++) u.bounds[i] = (float)bounds_rad[i];
     /* The relative bounds and the center's sin/cos are derived in double:
        the shader rebuilds each vertex position from these small, exact

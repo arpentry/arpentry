@@ -63,7 +63,12 @@ typedef struct {
     float sincos[4];
     float center_lon;
     float center_lat;
-    float _pad0;
+    /* Depth-only camera bias for this tile's road strokes, metres. 12 m on
+       the coarse rungs, where the grade-limited roadbed cuts below a terrain
+       mesh that cannot follow it and the margin is what surfaces the cutting;
+       the stack epsilon on the detail rung, where the ground under the
+       pavement is cut away and paint only has to beat the deck it lies on. */
+    float stroke_margin_m;
     float _pad1;
 } tile_uniforms_t;
 

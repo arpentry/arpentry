@@ -103,7 +103,17 @@ bool arpt_renderer_tile_set_overzoom(arpt_renderer *r, arpt_tile_gpu *t,
  *  ECEF (whose ~0.5 m rounding scallops every straight edge). */
 void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile, arpt_mat4 model,
                                 const double bounds_rad[4], double center_lon,
-                                double center_lat);
+                                double center_lat, float stroke_margin_m);
+
+/* The road strokes' depth-only camera bias per rung (metres). On the coarse
+   rungs the grade-limited roadbed cuts below a terrain mesh too coarse to
+   follow it, and 12 m is what surfaces those cuttings while a real hill still
+   occludes a road behind it. On the detail rung (the tileset's max level) the
+   tiler cuts the ground away under the pavement (docs/GROUND.md), so there is
+   nothing to surface and the paint only has to beat the deck it lies on: the
+   deck margin plus the whole sheet ladder (terrain.wgsl), with room to spare. */
+#define ARPT_STROKE_MARGIN_COARSE_M 12.0f
+#define ARPT_STROKE_MARGIN_DETAIL_M 0.5f
 
 void arpt_tile_gpu_free(arpt_tile_gpu *tile);
 

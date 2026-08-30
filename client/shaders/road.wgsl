@@ -8,13 +8,15 @@ const WGS84_A: f32 = 6378137.0;
 const WGS84_E2: f32 = 0.00669437999014;
 
 // How far, in metres, a road is biased toward the camera along the view ray so it
-// wins the depth test against terrain that rises above it.  The grade-limited road
-// (server `structures::limit_road_grade`) holds an engineered grade and so cuts a
-// few metres below the coarse terrain mesh where it crosses a steep flank; without
-// this it would be occluded (buried) by ground drawn in front of it.  Sized to the
-// shallow cuttings the limiter carves — large enough to surface them, small enough
-// that a genuine hill (deeper than this in front) still occludes a road behind it.
-const ROAD_DEPTH_MARGIN_M: f32 = 12.0;
+// wins the depth test against terrain that rises above it, per tile
+// (`tile.stroke_margin_m`, set by the tile manager). On the coarse rungs the
+// grade-limited road (server `structures::limit_road_grade`) holds an engineered
+// grade and so cuts a few metres below the coarse terrain mesh where it crosses a
+// steep flank; without the 12 m it would be occluded (buried) by ground drawn in
+// front of it — sized to the shallow cuttings the limiter carves, large enough
+// to surface them, small enough that a genuine hill still occludes a road behind
+// it. On the detail rung the ground is cut away under the pavement, so the
+// margin drops to the stack epsilon and paint sits tight on its deck.
 
 // The margin as a fraction of the viewing distance, capping the absolute
 // margin up close: a fixed 12 m is nothing against a 5 km map view but a
@@ -64,7 +66,8 @@ struct TileUniforms {
     sincos: vec4<f32>,
     center_lon: f32,
     center_lat: f32,
-    _pad0: f32,
+    // Depth-only camera bias for this tile's strokes, metres (see above).
+    stroke_margin_m: f32,
     _pad1: f32,
 };
 
@@ -139,7 +142,7 @@ fn tile_to_world(qx: f32, qy: f32, alt: f32) -> vec4<f32> {
     let world_pos = tile_to_world(f32(qxy.x), f32(qxy.y), alt);
 
     // Bias the stroke toward the camera by a fixed world margin so it wins the
-    // LessEqual depth test against terrain up to ROAD_DEPTH_MARGIN_M in front of it
+    // depth test against terrain up to `tile.stroke_margin_m` in front of it
     // — surfacing the shallow cuttings the grade-limited road carves — while ground
     // deeper than that (a real hill) still occludes a road behind it.  The tile
     // model is view-aligned (the eye at the origin, looking down -z), so moving the
@@ -152,7 +155,7 @@ fn tile_to_world(qx: f32, qy: f32, alt: f32) -> vec4<f32> {
     // street-level altitudes a 12 m shift visibly slides the paint off its deck
     // and parallaxes as the camera moves.
     var shifted = world_pos;
-    shifted.z += min(ROAD_DEPTH_MARGIN_M, length(world_pos.xyz) * ROAD_DEPTH_MARGIN_FRAC);
+    shifted.z += min(tile.stroke_margin_m, length(world_pos.xyz) * ROAD_DEPTH_MARGIN_FRAC);
 
     var out: VsOut;
     let p = globals.projection * world_pos;
