@@ -974,7 +974,16 @@ fn encode_tile(
     if let Some(v) = std::env::var_os("ARPT_ONE_MESH_PROBE") {
         let want = v.to_string_lossy().to_string();
         if want == format!("{z}/{x}/{y}") {
-            one_mesh_probe(&mut enc_layers, sampler, &bounds, z, solved.z_ref, pavement, &cut_regions);
+            one_mesh_probe(
+                &mut enc_layers,
+                sampler,
+                &bounds,
+                z,
+                solved.z_ref,
+                pavement,
+                &field,
+                &cut_regions,
+            );
         }
     }
 
@@ -1029,8 +1038,14 @@ fn one_mesh_probe(
     z: u8,
     z_ref: u8,
     pavement: &synth::pavement::PavementModel,
+    field: &synth::height::HeightField,
     cut_regions: &[synth::region::Region],
 ) {
+    // One-mesh asphalt heights at the border: the field, per sheet, at the
+    // shared vertex set — what the one-mesh's asphalt faces would carry.
+    let mut om_heights: std::collections::HashMap<(u16, u16), Vec<i32>> =
+        std::collections::HashMap::new();
+    let mut scratch: Vec<u32> = Vec::new();
     // The paved boundary exactly as the paved mesher will state it: the
     // shared preprocessing (`pave_mesh::prepare_rings`) plus the rim insets,
     // for every group-0 level of the chunk.
@@ -1053,6 +1068,22 @@ fn one_mesh_probe(
             let q = |c: geo_types::Coord| {
                 (crate::project::quantize_x(c.x, bounds), crate::project::quantize_y(c.y, bounds))
             };
+            let sheet = synth::height::Sheet::of(ls.level, ls.layer, ls.surface);
+            let lo = 16384u16;
+            let hi = 49152u16;
+            let mut note_h = |sampler: &mut GroundSampler,
+                              scratch: &mut Vec<u32>,
+                              om_heights: &mut std::collections::HashMap<(u16, u16), Vec<i32>>,
+                              c: geo_types::Coord| {
+                let qq = q(c);
+                if (qq.0 == lo || qq.0 == hi || qq.1 == lo || qq.1 == hi)
+                    && (lo..=hi).contains(&qq.0)
+                    && (lo..=hi).contains(&qq.1)
+                {
+                    let h = field.at(sampler, sheet, z, z_ref, bounds, c.x, c.y, scratch);
+                    om_heights.entry(qq).or_default().push(crate::project::quantize_z(h));
+                }
+            };
             for r in &rings {
                 let n = r.pts.len();
                 for k in 0..n {
@@ -1060,6 +1091,7 @@ fn one_mesh_probe(
                     if a != b {
                         asphalt_edges.push((a, b));
                     }
+                    note_h(sampler, &mut scratch, &mut om_heights, r.pts[k]);
                 }
                 if let Some(inset) = synth::pave_mesh::inset_ring(r, m_lon) {
                     let n = inset.len();
@@ -1068,6 +1100,7 @@ fn one_mesh_probe(
                         if a != b {
                             asphalt_edges.push((a, b));
                         }
+                        note_h(sampler, &mut scratch, &mut om_heights, inset[k]);
                     }
                 }
             }
@@ -1170,6 +1203,36 @@ fn one_mesh_probe(
         om_set.len() - a_matched,
         old_set.len() - a_matched
     );
+    // Heights at the matched asphalt border: old feature z vs the field.
+    let (mut h_cmp, mut h_worst) = (0usize, 0i64);
+    for l in enc_layers.iter() {
+        if l.name != "transportation" {
+            continue;
+        }
+        for feat in &l.features {
+            let ok = feat.properties.iter().any(|(k, v)| {
+                k == "class"
+                    && matches!(v, Value::String(s)
+                        if s.ends_with("_surface") || s.ends_with("_rim"))
+            }) && feat
+                .properties
+                .iter()
+                .any(|(k, v)| k == "sheet" && matches!(v, Value::Int(0)));
+            if !ok {
+                continue;
+            }
+            let Some(m) = &feat.mesh else { continue };
+            for i in 0..m.x.len() {
+                if let Some(hs) = om_heights.get(&(m.x[i], m.y[i])) {
+                    let best =
+                        hs.iter().map(|&h| (h as i64 - m.z[i] as i64).abs()).min().unwrap_or(0);
+                    h_cmp += 1;
+                    h_worst = h_worst.max(best);
+                }
+            }
+        }
+    }
+    eprintln!("[one-mesh] asphalt border heights: {h_cmp} samples, worst |dz| {h_worst} mm");
     let only: std::collections::HashSet<(u16, u16)> =
         old_set.difference(&om_set).copied().collect();
     for l in enc_layers.iter() {
