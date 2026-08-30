@@ -294,7 +294,7 @@ impl GroundSampler {
         regions: &[&Region],
         asphalt_edges: &[((u16, u16), (u16, u16))],
         asphalt: &mut dyn FnMut(usize, f64, f64) -> f64,
-    ) -> Option<(crate::terrain::TerrainMesh, f64, f64)> {
+    ) -> Option<(crate::terrain_cdt::OneMesh, f64, f64)> {
         let grid = terrain::grid_for(z, self.z_ref);
         let pad = bounds.width().max(bounds.height()) / grid as f64;
         let bbox = (bounds.west - pad, bounds.south - pad, bounds.east + pad, bounds.north + pad);

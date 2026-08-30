@@ -875,7 +875,7 @@ pub fn one_mesh_full(
     asphalt_edges: &[((u16, u16), (u16, u16))],
     ground: &mut dyn FnMut(f64, f64) -> f64,
     asphalt: &mut dyn FnMut(usize, f64, f64) -> f64,
-) -> Option<(TerrainMesh, f64, f64)> {
+) -> Option<(OneMesh, f64, f64)> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         one_mesh_full_inner(grid, bounds, segments, regions, asphalt_edges, ground, asphalt)
     }))
@@ -891,7 +891,7 @@ fn one_mesh_full_inner(
     asphalt_edges: &[((u16, u16), (u16, u16))],
     ground: &mut dyn FnMut(f64, f64) -> f64,
     asphalt: &mut dyn FnMut(usize, f64, f64) -> f64,
-) -> Option<(TerrainMesh, f64, f64)> {
+) -> Option<(OneMesh, f64, f64)> {
     let grid = grid.max(1);
     let n = grid + 1;
     let step = EXTENT / grid as f64;
@@ -1019,8 +1019,12 @@ fn one_mesh_full_inner(
         ids.insert((v, cls), i);
         i
     };
-    let mut indices: Vec<u32> = Vec::new();
-    // Edge → (class, third vertex) for wall detection.
+    // Faces bucketed per class; walls per asphalt-side class (they are that
+    // surface's aprons). All indices point into the one shared vertex pool —
+    // the single triangulation is the invariant; the per-class split is only
+    // which *feature* a face is emitted under, so each wears its own material.
+    let mut tri_by_class: std::collections::HashMap<usize, Vec<u32>> =
+        std::collections::HashMap::new();
     let mut edge_class: std::collections::HashMap<(usize, usize), Vec<usize>> =
         std::collections::HashMap::new();
     for (t, f) in tri.iter().enumerate() {
@@ -1029,13 +1033,14 @@ fn one_mesh_full_inner(
             let key = (a.min(b), a.max(b));
             edge_class.entry(key).or_default().push(t);
         }
+        let bucket = tri_by_class.entry(class[t]).or_default();
         for &v in f {
             let i = vid(v, class[t], &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
-            indices.push(i);
+            bucket.push(i);
         }
     }
-    // Walls: every interior edge whose two faces carry different classes gets
-    // a vertical quad between the two class copies of each endpoint.
+    let mut walls_by_class: std::collections::HashMap<usize, Vec<u32>> =
+        std::collections::HashMap::new();
     let mut walls = 0usize;
     for ((a, b), ts) in &edge_class {
         if ts.len() != 2 || class[ts[0]] == class[ts[1]] {
@@ -1047,14 +1052,15 @@ fn one_mesh_full_inner(
         let ia1 = vid(*a, c1, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
         let ib1 = vid(*b, c1, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
         if z[ia0 as usize] == z[ia1 as usize] && z[ib0 as usize] == z[ib1 as usize] {
-            continue; // flush: nothing to close
+            continue;
         }
         walls += 1;
-        // Two triangles, both windings drawn (the wall is seen from either
-        // side; cull-off is the structure pipeline's job — as terrain it is
-        // drawn back-face too via the second pair).
-        indices.extend_from_slice(&[ia0, ib0, ib1, ia0, ib1, ia1]);
-        indices.extend_from_slice(&[ia0, ib1, ib0, ia0, ia1, ib1]);
+        // Owned by the asphalt side (aprons are the surface's wall to its
+        // ground). Between two asphalt classes the junior-indexed one owns it.
+        let owner = if c0 != usize::MAX { c0 } else { c1 };
+        let w = walls_by_class.entry(owner).or_default();
+        w.extend_from_slice(&[ia0, ib0, ib1, ia0, ib1, ia1]);
+        w.extend_from_slice(&[ia0, ib1, ib0, ia0, ia1, ib1]);
     }
     eprintln!(
         "[one-mesh] full: {} faces ({} asphalt), {} wall edges, {} verts",
@@ -1063,10 +1069,7 @@ fn one_mesh_full_inner(
         walls,
         x.len()
     );
-    // Normals per vertex from central differences of the vertex's own class
-    // field — the ground for terrain vertices, the road field for asphalt —
-    // exactly the old meshes' recipe, one class at a time. Wall vertices are
-    // copies of these, and a flat-lit wall is right for a wall.
+    // Normals per vertex from central differences of the vertex's own class.
     let mid_lat = (bounds.south + bounds.north) * 0.5;
     let dlat = NORMAL_STEP_M / crate::scene::DEG_M;
     let dlon = NORMAL_STEP_M / (crate::scene::DEG_M * (mid_lat * PI / 180.0).cos());
@@ -1105,5 +1108,46 @@ fn one_mesh_full_inner(
         normals[i * 2] = ox;
         normals[i * 2 + 1] = oy;
     }
-    Some((TerrainMesh { x, y, z, indices, normals, edge_across: Vec::new() }, emin, emax))
+    // Split the shared pool into per-feature meshes (compacted).
+    let extract = |idx: &[u32]| -> TerrainMesh {
+        let mut remap: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        let (mut mx, mut my, mut mz, mut mn) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut mi = Vec::with_capacity(idx.len());
+        for &i in idx {
+            let ni = *remap.entry(i).or_insert_with(|| {
+                let ni = mx.len() as u32;
+                mx.push(x[i as usize]);
+                my.push(y[i as usize]);
+                mz.push(z[i as usize]);
+                mn.push(normals[i as usize * 2]);
+                mn.push(normals[i as usize * 2 + 1]);
+                ni
+            });
+            mi.push(ni);
+        }
+        TerrainMesh { x: mx, y: my, z: mz, indices: mi, normals: mn, edge_across: Vec::new() }
+    };
+    let terrain_idx = tri_by_class.remove(&usize::MAX).unwrap_or_default();
+    let terrain = extract(&terrain_idx);
+    let mut surfaces: Vec<(usize, TerrainMesh)> = tri_by_class
+        .into_iter()
+        .map(|(c, idx)| (c, extract(&idx)))
+        .collect();
+    surfaces.sort_by_key(|(c, _)| *c);
+    let mut wallsv: Vec<(usize, TerrainMesh)> =
+        walls_by_class.into_iter().map(|(c, idx)| (c, extract(&idx))).collect();
+    wallsv.sort_by_key(|(c, _)| *c);
+    if terrain.indices.is_empty() || !emin.is_finite() {
+        return None;
+    }
+    Some((OneMesh { terrain, surfaces, walls: wallsv }, emin, emax))
+}
+
+/// The one mesh, split for emission: one triangulation, per-class features.
+pub struct OneMesh {
+    pub terrain: TerrainMesh,
+    /// Asphalt faces per group-0 region index, each a feature-ready mesh.
+    pub surfaces: Vec<(usize, TerrainMesh)>,
+    /// Walls per owning region index (that surface's aprons).
+    pub walls: Vec<(usize, TerrainMesh)>,
 }

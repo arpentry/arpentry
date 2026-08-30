@@ -994,7 +994,7 @@ fn encode_tile(
     let one_mesh_full = std::env::var_os("ARPT_ONE_MESH")
         .filter(|v| v.to_string_lossy() == format!("{z}/{x}/{y}"))
         .and_then(|_| build_one_mesh(sampler, &bounds, z, solved.z_ref, pavement, &field, &cut_regions));
-    if one_mesh_full.is_some() {
+    let one_mesh_full = if let Some((one, emin, emax, kinds, _, _)) = one_mesh_full {
         for l in enc_layers.iter_mut() {
             if l.name != "transportation" {
                 continue;
@@ -1014,8 +1014,51 @@ fn encode_tile(
                         .any(|(k, v)| k == "level" && matches!(v, Value::Int(0)));
                 !g0_surface
             });
+            // The one mesh's classified faces, emitted as ordinary per-class
+            // features over the shared triangulation: each wears its own
+            // material through the style exactly as the old meshes did.
+            let class_of = |idx: usize, kind: &str| -> String {
+                match kinds.get(idx) {
+                    Some(crate::priors::Surface::Ballast) => format!("rail_{kind}"),
+                    Some(crate::priors::Surface::Walkway) => format!("walk_{kind}"),
+                    Some(crate::priors::Surface::Path) => format!("path_{kind}"),
+                    _ => format!("road_{kind}"),
+                }
+            };
+            let mut push = |mesh: &crate::terrain::TerrainMesh, class: String, bump: u64| {
+                if mesh.indices.is_empty() {
+                    return;
+                }
+                let lon = crate::project::dequantize_x(mesh.x[0], &bounds);
+                let lat = crate::project::dequantize_y(mesh.y[0], &bounds);
+                l.features.push(EncoderFeature {
+                    id: 0x0e_e5 ^ bump,
+                    geometry: geo_types::Geometry::Point(geo_types::Point(geo_types::Coord {
+                        x: lon,
+                        y: lat,
+                    })),
+                    properties: vec![
+                        ("class".to_string(), Value::String(class)),
+                        ("level".to_string(), Value::Int(0)),
+                        ("sheet".to_string(), Value::Int(0)),
+                    ],
+                    elevation: None,
+                    z: None,
+                    mesh: Some(mesh.clone()),
+                    synth: synth::Synth::None,
+                });
+            };
+            for (i, (cls, m)) in one.surfaces.iter().enumerate() {
+                push(m, class_of(*cls, "surface"), i as u64);
+            }
+            for (i, (cls, m)) in one.walls.iter().enumerate() {
+                push(m, class_of(*cls, "apron"), 0x100 ^ i as u64);
+            }
         }
-    }
+        Some((one.terrain.clone(), emin, emax))
+    } else {
+        None
+    };
 
     // Every tile carries a terrain mesh — the client requires it to render.
     observed.push((layers::TERRAIN as usize, GeometryType::Mesh));
@@ -1067,7 +1110,7 @@ fn build_one_mesh(
     pavement: &synth::pavement::PavementModel,
     field: &synth::height::HeightField,
     cut_regions: &[synth::region::Region],
-) -> Option<(crate::terrain::TerrainMesh, f64, f64)> {
+) -> Option<(crate::terrain_cdt::OneMesh, f64, f64, Vec<crate::priors::Surface>, f64, f64)> {
     let layers_of = PROBE_LAYERS.with(|l| l.borrow().clone());
     let g0: Vec<&synth::region::Region> = cut_regions
         .iter()
@@ -1078,6 +1121,7 @@ fn build_one_mesh(
     // Sheets per g0 region, in the same order regions were pushed: recovered
     // from the chunk's level list the same way add_road_surface walked it.
     let mut sheets: Vec<synth::height::Sheet> = Vec::new();
+    let mut kinds: Vec<crate::priors::Surface> = Vec::new();
     let mut asphalt_edges: Vec<((u16, u16), (u16, u16))> = Vec::new();
     let m_lon = crate::scene::DEG_M * ((bounds.south + bounds.north) * 0.5).to_radians().cos();
     if let Some(levels) = pavement.chunk_for(bounds) {
@@ -1089,6 +1133,7 @@ fn build_one_mesh(
                 continue;
             }
             sheets.push(synth::height::Sheet::of(ls.level, ls.layer, ls.surface));
+            kinds.push(ls.surface);
             let rings = synth::pave_mesh::prepare_rings(
                 synth::pave_mesh::clip_to_tile(&ls.shapes, bounds),
                 bounds,
@@ -1136,7 +1181,8 @@ fn build_one_mesh(
         field.at(s, sheet, z, z_ref, bounds, lon, lat, &mut scratch)
     };
     let s2 = unsafe { &mut *sampler_ptr };
-    s2.one_mesh_full(bounds, z, &g0, &asphalt_edges, &mut asphalt)
+    let (m, emin, emax) = s2.one_mesh_full(bounds, z, &g0, &asphalt_edges, &mut asphalt)?;
+    Some((m, emin, emax, kinds, emin, emax))
 }
 
 /// The S5 border comparison: the one-mesh CDT's border vertices per class
