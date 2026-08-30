@@ -145,7 +145,9 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     WGPUBindGroupLayoutEntry tile_entries[] = {
         {
             .binding = 0,
-            .visibility = WGPUShaderStage_Vertex,
+            /* Fragment too: the masked terrain variant reads the tile's
+               quadrant discard mask. */
+            .visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment,
             .buffer = {.type = WGPUBufferBindingType_Uniform,
                        .minBindingSize = sizeof(tile_uniforms_t)},
         },
@@ -168,9 +170,14 @@ arpt_renderer *arpt_renderer_create(WGPUDevice device, WGPUQueue queue,
     /* Terrain + building pipeline (opaque), plus a semi-transparent twin used
        only for the terrain mesh so buried tunnels read through the ground. */
     r->pipeline = arpt__mesh_create_pipeline(device, format, r->global_bgl,
-                                             r->tile_bgl, false);
+                                             r->tile_bgl, false, "fs");
     r->terrain_xray_pipeline = arpt__mesh_create_pipeline(
-        device, format, r->global_bgl, r->tile_bgl, true);
+        device, format, r->global_bgl, r->tile_bgl, true, "fs");
+    /* Ancestor fallbacks: the same terrain shading behind a per-quadrant
+       discard, kept out of the main pipeline so the ordinary draw keeps its
+       early depth test. */
+    r->terrain_masked_pipeline = arpt__mesh_create_pipeline(
+        device, format, r->global_bgl, r->tile_bgl, false, "fs_masked");
 
     /* Model bind group layout */
     WGPUBindGroupLayoutEntry model_entry = {
@@ -400,6 +407,7 @@ void arpt_renderer_free(arpt_renderer *r) {
     if (r->sky_bgl) wgpuBindGroupLayoutRelease(r->sky_bgl);
     if (r->pipeline) wgpuRenderPipelineRelease(r->pipeline);
     if (r->terrain_xray_pipeline) wgpuRenderPipelineRelease(r->terrain_xray_pipeline);
+    if (r->terrain_masked_pipeline) wgpuRenderPipelineRelease(r->terrain_masked_pipeline);
     if (r->tree_pipeline) wgpuRenderPipelineRelease(r->tree_pipeline);
     if (r->road_pipeline) wgpuRenderPipelineRelease(r->road_pipeline);
     if (r->bridge_pipeline) wgpuRenderPipelineRelease(r->bridge_pipeline);
@@ -732,10 +740,13 @@ bool arpt_renderer_tile_set_overzoom(arpt_renderer *r, arpt_tile_gpu *t,
 
 void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile, arpt_mat4 model,
                                 const double bounds_rad[4], double center_lon,
-                                double center_lat, float stroke_margin_m) {
+                                double center_lat, float stroke_margin_m,
+                                uint32_t discard_mask) {
     tile_uniforms_t u = {0};
     memcpy(u.model, model.m, sizeof(u.model));
     u.stroke_margin_m = stroke_margin_m;
+    u.discard_mask = (float)(discard_mask & 15u);
+    tile->discard_mask = discard_mask & 15u;
     for (int i = 0; i < 4; i++) u.bounds[i] = (float)bounds_rad[i];
     /* The relative bounds and the center's sin/cos are derived in double:
        the shader rebuilds each vertex position from these small, exact
@@ -928,7 +939,9 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
     if (xray < 0)
         xray = getenv("ARPT_XRAY") ? 1 : 0;
     wgpuRenderPassEncoderSetPipeline(
-        r->pass, xray ? r->terrain_xray_pipeline : r->pipeline);
+        r->pass, xray ? r->terrain_xray_pipeline
+                      : tile->discard_mask ? r->terrain_masked_pipeline
+                                           : r->pipeline);
     arpt__mesh_draw_terrain(r, tile);
     arpt__mesh_draw_skirts(r, tile);
     /* Back to the opaque pipeline for everything sitting on the surface. */

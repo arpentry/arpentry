@@ -69,7 +69,10 @@ typedef struct {
        the stack epsilon on the detail rung, where the ground under the
        pavement is cut away and paint only has to beat the deck it lies on. */
     float stroke_margin_m;
-    float _pad1;
+    /* Ancestor draws only: 4-bit mask of child quadrants covered by ready
+       tiles (arpt_tile_covered_quadrants); the masked terrain pipeline
+       discards fragments there. 0 on every other draw. */
+    float discard_mask;
 } tile_uniforms_t;
 
 typedef struct {
@@ -124,6 +127,9 @@ struct arpt_tile_gpu {
     WGPUTextureView surface_view;
     uint32_t index_count;
     arpt_renderer *renderer;
+    /* The discard mask last written to the uniforms: non-zero selects the
+       masked terrain pipeline for this draw. */
+    uint32_t discard_mask;
 
     /* Retained polygon fill primitives, owned by this tile, so the surface
        texture can be re-rasterized at a higher resolution when the tile is
@@ -234,7 +240,8 @@ struct arpt_renderer {
     float building_color[4];
 
     WGPURenderPipeline pipeline;
-    WGPURenderPipeline terrain_xray_pipeline; /* terrain only, semi-transparent */
+    WGPURenderPipeline terrain_xray_pipeline;
+    WGPURenderPipeline terrain_masked_pipeline; /* terrain only, semi-transparent */
     WGPUBindGroupLayout global_bgl;
     WGPUBindGroupLayout tile_bgl;
 
@@ -443,11 +450,14 @@ static inline WGPUBuffer create_buffer(WGPUDevice device, WGPUQueue queue,
 /* Internal subsystem functions */
 
 /* render_mesh.c */
+/* `fs_entry` picks the terrain fragment: "fs", or "fs_masked" for the
+   ancestor-fallback variant that discards covered quadrants. */
 WGPURenderPipeline arpt__mesh_create_pipeline(WGPUDevice device,
                                                WGPUTextureFormat format,
                                                WGPUBindGroupLayout global_bgl,
                                                WGPUBindGroupLayout tile_bgl,
-                                               bool blend);
+                                               bool blend,
+                                               const char *fs_entry);
 void arpt__mesh_upload_terrain(arpt_renderer *r, arpt_tile_gpu *t,
                                const arpt_terrain_mesh *prim);
 void arpt__mesh_upload_skirts(arpt_renderer *r, arpt_tile_gpu *t,

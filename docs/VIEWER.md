@@ -146,6 +146,7 @@ Uploaded once per tile, freed on eviction. No re-upload on camera movement.
 
 - **Vertex**: dequantize + ECEF + model transform; decode octahedral normals (rotate by model rotation); pass altitude as varying
 - **Fragment**: elevation color ramp + diffuse sun lighting with 0.15 ambient
+- **Ancestor fallbacks**: an ancestor drawn for an unready child carries a 4-bit mask of its child quadrants covered by ready visible tiles (`arpt_tile_covered_quadrants`); the masked terrain pipeline (`fs_masked`) discards its fragments there, so its coarser ground cannot stab through the ready children drawn on top
 - **Surface stacking**: every surface feature (level ≥ 0 in the transportation layer) decodes to a stacking priority `clamp(level+1,0..7)<<4 | clamp(sheet,0..3)<<2 | material` (road/rail 0, walk/path 1), carried per vertex in the padded normals stream's fourth byte; features concatenate in ascending priority into the one depth-writing surface draw, and the deck shader adds `SHEET_STEP_M` (2 cm) per unit of the low four bits to its depth-only camera bias, so coincident surfaces are ordered by rule, not by depth precision. `ARPT_SHOW_SHEETS=1` paints each surface by its priority
 - **Depth**: reversed-Z on `Depth32Float` — infinite-far perspective (near → 1, ∞ → 0), clear 0.0, greater-equal; a bias toward the camera is +depth. `ARPT_DEPTH_FORMAT` / `ARPT_DEPTH_COMPARE` / `ARPT_DEPTH_CLEAR` in `renderer.h` are the one place the convention lives
 - **Clear color**: `(0.05, 0.05, 0.08, 1.0)`

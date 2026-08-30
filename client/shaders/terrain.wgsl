@@ -26,8 +26,10 @@ struct TileUniforms {
     sincos: vec4<f32>,
     center_lon: f32,
     center_lat: f32,
-    _pad0: f32,
-    _pad1: f32,
+    _stroke_margin_m: f32,
+    // Ancestor draws: 4-bit mask of child quadrants covered by ready tiles
+    // (bit (uv.x >= 0.5) | (uv.y >= 0.5) << 1); fs_masked discards there.
+    discard_mask: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: GlobalUniforms;
@@ -240,18 +242,8 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
                      across_in.y);
 }
 
-@fragment fn fs(
-    @location(0) uv: vec2<f32>,
-    @location(1) normal_cam: vec3<f32>,
-    @location(2) view_pos: vec3<f32>,
-    @location(3) topness: f32,
-    // Unused here (terrain/buildings), but declared so this fragment's input
-    // interface matches VsOut — wgpu requires the vertex-output and
-    // fragment-input location sets to agree.
-    @location(4) deck_color: vec4<f32>,
-    @location(5) across: f32,
-    @location(6) @interpolate(flat) prio: f32,
-) -> @location(0) vec4<f32> {
+// Terrain/building shading, shared by the plain and the masked entry.
+fn shade_terrain(uv: vec2<f32>, normal_cam: vec3<f32>, view_pos: vec3<f32>) -> vec4<f32> {
     let margin = 0.0625;
     let tex_uv = (uv + vec2<f32>(margin, margin)) / (1.0 + 2.0 * margin);
     let albedo_srgb = textureSample(surface_tex, surface_samp, tex_uv).rgb;
@@ -310,6 +302,41 @@ fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
 // resolve. The common path uses the per-vertex `deck_color` instead, so a deck
 // matches whatever grey its own class's ribbon emits.
 const DECK_ASPHALT: vec3<f32> = vec3<f32>(0.5804, 0.5922, 0.6157);
+
+@fragment fn fs(
+    @location(0) uv: vec2<f32>,
+    @location(1) normal_cam: vec3<f32>,
+    @location(2) view_pos: vec3<f32>,
+    @location(3) topness: f32,
+    // Unused here (terrain/buildings), but declared so this fragment's input
+    // interface matches VsOut — wgpu requires the vertex-output and
+    // fragment-input location sets to agree.
+    @location(4) deck_color: vec4<f32>,
+    @location(5) across: f32,
+    @location(6) @interpolate(flat) prio: f32,
+) -> @location(0) vec4<f32> {
+    return shade_terrain(uv, normal_cam, view_pos);
+}
+
+// Ancestor fallback: the same shading, minus the quadrants whose ready
+// children draw on top in phase 2 — the ancestor's coarser ground would only
+// stab through their roads where it runs higher. Its own pipeline, so the
+// ordinary terrain draw never carries a discard.
+@fragment fn fs_masked(
+    @location(0) uv: vec2<f32>,
+    @location(1) normal_cam: vec3<f32>,
+    @location(2) view_pos: vec3<f32>,
+    @location(3) topness: f32,
+    @location(4) deck_color: vec4<f32>,
+    @location(5) across: f32,
+    @location(6) @interpolate(flat) prio: f32,
+) -> @location(0) vec4<f32> {
+    let q = select(0u, 1u, uv.x >= 0.5) | (select(0u, 1u, uv.y >= 0.5) << 1u);
+    if (((u32(tile.discard_mask) >> q) & 1u) == 1u) {
+        discard;
+    }
+    return shade_terrain(uv, normal_cam, view_pos);
+}
 
 // Structure-top fragment (bridge decks and tunnel bores): the up-facing top
 // face *is* the road, so paint it the flat asphalt the ribbon uses — the

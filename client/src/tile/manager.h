@@ -38,6 +38,42 @@ static inline bool arpt_tile_ancestor(int level, int x, int y, int *plevel,
     return true;
 }
 
+/* Which of an ancestor's four child quadrants are covered by READY visible
+   tiles, as a 4-bit mask with bit `(cx & 1) | (cy & 1) << 1` for the child
+   `(cx, cy)` at `level + 1` — bit 0 south-west, 1 south-east, 2 north-west,
+   3 north-east, matching the tile's own uv quadrants. A quadrant is covered
+   when at least one visible tile lies inside it and every visible tile
+   inside it is ready: the ready children draw on top in phase 2, so the
+   ancestor's coarser terrain has nothing to contribute there and would only
+   stab through their roads where it happens to run higher. A quadrant with
+   an unready tile stays drawn — it is what the fallback exists for.
+   `visible`/`ready` are parallel arrays of `n`. */
+static inline uint32_t arpt_tile_covered_quadrants(int level, int x, int y,
+                                                   const arpt_tile_key *visible,
+                                                   const bool *ready, int n) {
+    int count[4] = {0, 0, 0, 0};
+    bool unready[4] = {false, false, false, false};
+    for (int i = 0; i < n; i++) {
+        if (visible[i].level <= level) continue;
+        int l = visible[i].level, cx = visible[i].x, cy = visible[i].y;
+        while (l > level + 1) {
+            int pl, px, py;
+            if (!arpt_tile_ancestor(l, cx, cy, &pl, &px, &py)) break;
+            l = pl;
+            cx = px;
+            cy = py;
+        }
+        if (l != level + 1 || (cx >> 1) != x || (cy >> 1) != y) continue;
+        int q = (cx & 1) | ((cy & 1) << 1);
+        count[q]++;
+        if (!ready[i]) unready[q] = true;
+    }
+    uint32_t mask = 0;
+    for (int q = 0; q < 4; q++)
+        if (count[q] > 0 && !unready[q]) mask |= 1u << q;
+    return mask;
+}
+
 /* Tile manager (requires renderer) */
 
 typedef struct arpt_tile_manager arpt_tile_manager;

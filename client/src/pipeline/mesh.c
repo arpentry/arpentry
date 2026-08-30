@@ -9,7 +9,7 @@ WGPURenderPipeline arpt__mesh_create_pipeline(WGPUDevice device,
                                                WGPUTextureFormat format,
                                                WGPUBindGroupLayout global_bgl,
                                                WGPUBindGroupLayout tile_bgl,
-                                               bool blend) {
+                                               bool blend, const char *fs_entry) {
     WGPUShaderModule sm = create_shader(device, terrain_wgsl);
     if (!sm) return NULL;
 
@@ -54,7 +54,7 @@ WGPURenderPipeline arpt__mesh_create_pipeline(WGPUDevice device,
                                .blend = blend ? &bs : NULL,
                                .writeMask = WGPUColorWriteMask_All};
     WGPUFragmentState frag = {
-        .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
+        .module = sm, .entryPoint = fs_entry, .targetCount = 1, .targets = &ct};
     WGPUDepthStencilState ds = {
         .format = ARPT_DEPTH_FORMAT,
         .depthWriteEnabled = true,

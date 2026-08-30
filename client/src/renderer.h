@@ -103,7 +103,8 @@ bool arpt_renderer_tile_set_overzoom(arpt_renderer *r, arpt_tile_gpu *t,
  *  ECEF (whose ~0.5 m rounding scallops every straight edge). */
 void arpt_tile_gpu_set_uniforms(arpt_tile_gpu *tile, arpt_mat4 model,
                                 const double bounds_rad[4], double center_lon,
-                                double center_lat, float stroke_margin_m);
+                                double center_lat, float stroke_margin_m,
+                                uint32_t discard_mask);
 
 /* The road strokes' depth-only camera bias per rung (metres). On the coarse
    rungs the grade-limited roadbed cuts below a terrain mesh too coarse to
