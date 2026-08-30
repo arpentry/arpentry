@@ -1138,6 +1138,7 @@ fn build_one_mesh(
     // pavement_step points, 2–7 cm).
     let layers_of = PROBE_LAYERS.with(|l| l.borrow().clone());
     let mut g0: Vec<&synth::region::Region> = Vec::new();
+    let mut voids: Vec<&synth::region::Region> = Vec::new();
     let mut sheets: Vec<synth::height::Sheet> = Vec::new();
     let mut kinds: Vec<crate::priors::Surface> = Vec::new();
     for (r, &(layer, surface)) in cut_regions
@@ -1145,6 +1146,10 @@ fn build_one_mesh(
         .zip(layers_of.iter().chain(std::iter::repeat(&(0, crate::priors::Surface::Asphalt))))
     {
         if layer != 0 {
+            // A stacked band's mesh is retained from the old path (its sheet
+            // is not 0), but its hole in the ground is still this mesh's to
+            // keep: its region classifies faces as voids.
+            voids.push(r);
             continue;
         }
         g0.push(r);
@@ -1155,12 +1160,16 @@ fn build_one_mesh(
     let m_lon = crate::scene::DEG_M * ((bounds.south + bounds.north) * 0.5).to_radians().cos();
     if let Some(levels) = pavement.chunk_for(bounds) {
         for ls in levels {
-            if ls.level != 0 || ls.layer != 0 {
+            if ls.level != 0 {
                 continue;
             }
             if ls.surface.is_pedestrian() && z < crate::priors::WALK_SURFACE_MIN_ZOOM {
                 continue;
             }
+            // Stacked (layer > 0) levels contribute their silhouette as
+            // constraints — the void classification needs faces split along
+            // it — but no inset: a hole has no rim of this mesh's own.
+            let stacked = ls.layer != 0;
             let rings = synth::pave_mesh::prepare_rings(
                 synth::pave_mesh::clip_to_tile(&ls.shapes, bounds),
                 bounds,
@@ -1177,6 +1186,9 @@ fn build_one_mesh(
                     if a != b {
                         asphalt_edges.push((a, b));
                     }
+                }
+                if stacked {
+                    continue;
                 }
                 if let Some(inset) = synth::pave_mesh::inset_ring(r, m_lon) {
                     let n = inset.len();
@@ -1208,7 +1220,7 @@ fn build_one_mesh(
         field.at(s, sheet, z, z_ref, bounds, lon, lat, &mut scratch)
     };
     let s2 = unsafe { &mut *sampler_ptr };
-    let (m, emin, emax) = s2.one_mesh_full(bounds, z, &g0, &asphalt_edges, &mut asphalt)?;
+    let (m, emin, emax) = s2.one_mesh_full(bounds, z, &g0, &voids, &asphalt_edges, &mut asphalt)?;
     Some((m, emin, emax, kinds, emin, emax))
 }
 
@@ -1239,12 +1251,16 @@ fn one_mesh_probe(
     let m_lon = crate::scene::DEG_M * ((bounds.south + bounds.north) * 0.5).to_radians().cos();
     if let Some(levels) = pavement.chunk_for(bounds) {
         for ls in levels {
-            if ls.level != 0 || ls.layer != 0 {
+            if ls.level != 0 {
                 continue;
             }
             if ls.surface.is_pedestrian() && z < crate::priors::WALK_SURFACE_MIN_ZOOM {
                 continue;
             }
+            // Stacked (layer > 0) levels contribute their silhouette as
+            // constraints — the void classification needs faces split along
+            // it — but no inset: a hole has no rim of this mesh's own.
+            let stacked = ls.layer != 0;
             let rings = synth::pave_mesh::prepare_rings(
                 synth::pave_mesh::clip_to_tile(&ls.shapes, bounds),
                 bounds,
@@ -1278,6 +1294,9 @@ fn one_mesh_probe(
                         asphalt_edges.push((a, b));
                     }
                     note_h(sampler, &mut scratch, &mut om_heights, r.pts[k]);
+                }
+                if stacked {
+                    continue;
                 }
                 if let Some(inset) = synth::pave_mesh::inset_ring(r, m_lon) {
                     let n = inset.len();

@@ -292,6 +292,7 @@ impl GroundSampler {
         bounds: &Bounds,
         z: u8,
         regions: &[&Region],
+        voids: &[&Region],
         asphalt_edges: &[((u16, u16), (u16, u16))],
         asphalt: &mut dyn FnMut(usize, f64, f64) -> f64,
     ) -> Option<(crate::terrain_cdt::OneMesh, f64, f64)> {
@@ -308,6 +309,7 @@ impl GroundSampler {
             bounds,
             &segments,
             regions,
+            voids,
             asphalt_edges,
             &mut |lon, lat| corner_memo(dem, ground, corners, scratch, lon, lat, z, 0.0),
             asphalt,

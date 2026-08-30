@@ -866,18 +866,24 @@ fn one_mesh_border_probe_inner(
 /// along every boundary edge whose two sides disagree in height. One
 /// `TerrainMesh`, standing in for the tile's terrain plus its group-0 paved
 /// surfaces plus the aprons between them.
+/// The face class of a hole with no surface of this mesh's own over it: the
+/// area of a stacked (layer > 0) at-grade band, whose mesh is retained from
+/// the old path while the ground under it stays cut away.
+const VOID_CLASS: usize = usize::MAX - 1;
+
 #[allow(clippy::too_many_arguments)]
 pub fn one_mesh_full(
     grid: u32,
     bounds: &Bounds,
     segments: &[(Coord, Coord)],
     regions: &[&Region],
+    voids: &[&Region],
     asphalt_edges: &[((u16, u16), (u16, u16))],
     ground: &mut dyn FnMut(f64, f64) -> f64,
     asphalt: &mut dyn FnMut(usize, f64, f64) -> f64,
 ) -> Option<(OneMesh, f64, f64)> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        one_mesh_full_inner(grid, bounds, segments, regions, asphalt_edges, ground, asphalt)
+        one_mesh_full_inner(grid, bounds, segments, regions, voids, asphalt_edges, ground, asphalt)
     }))
     .unwrap_or(None)
 }
@@ -888,6 +894,7 @@ fn one_mesh_full_inner(
     bounds: &Bounds,
     segments: &[(Coord, Coord)],
     regions: &[&Region],
+    voids: &[&Region],
     asphalt_edges: &[((u16, u16), (u16, u16))],
     ground: &mut dyn FnMut(f64, f64) -> f64,
     asphalt: &mut dyn FnMut(usize, f64, f64) -> f64,
@@ -982,7 +989,13 @@ fn one_mesh_full_inner(
             continue;
         }
         let cen = ((ax + bx + cx) as f64 / 3.0, (ay + by + cy) as f64 / 3.0);
-        let cls = regions.iter().position(|r| r.contains(cen)).unwrap_or(usize::MAX);
+        // A face inside a stacked (layer > 0) band's region and no group-0
+        // region is a VOID: the stacked band keeps its own retained mesh, and
+        // under it the ground is cut away exactly as the old path's hole cut
+        // it. Drawing terrain there buried the band (walk_rim, 0.88 m).
+        let cls = regions.iter().position(|r| r.contains(cen)).unwrap_or_else(|| {
+            if voids.iter().any(|r| r.contains(cen)) { VOID_CLASS } else { usize::MAX }
+        });
         tri.push(if area2 > 0 { [a, b, c] } else { [a, c, b] });
         class.push(cls);
     }
@@ -1048,7 +1061,7 @@ fn one_mesh_full_inner(
             }
         }
         let h = *sampled.entry((v, cls)).or_insert_with(|| {
-            if cls == usize::MAX { ground(slon, slat) } else { asphalt(cls, lon, lat) }
+            if cls >= VOID_CLASS { ground(slon, slat) } else { asphalt(cls, lon, lat) }
         });
         if let Some(dbg) = std::env::var_os("ARPT_OM_DEBUG_Q") {
             let want = dbg.to_string_lossy().to_string();
@@ -1084,6 +1097,9 @@ fn one_mesh_full_inner(
             (qpos[f[0]].0 as f64 + qpos[f[1]].0 as f64 + qpos[f[2]].0 as f64) / 3.0,
             (qpos[f[0]].1 as f64 + qpos[f[1]].1 as f64 + qpos[f[2]].1 as f64) / 3.0,
         );
+        if class[t] == VOID_CLASS {
+            continue; // a void face is a hole: no feature draws it
+        }
         let bucket = tri_by_class.entry(class[t]).or_default();
         for &v in f {
             let i = vid(v, class[t], Some(cen), &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
@@ -1098,6 +1114,11 @@ fn one_mesh_full_inner(
             continue;
         }
         let (c0, c1) = (class[ts[0]], class[ts[1]]);
+        // Terrain and void both stand at the ground; the rim of the hole is
+        // the retained stacked band's own apron, not this mesh's to draw.
+        if c0.min(c1) == VOID_CLASS && c0.max(c1) == usize::MAX {
+            continue;
+        }
         let ia0 = vid(*a, c0, None, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
         let ib0 = vid(*b, c0, None, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
         let ia1 = vid(*a, c1, None, &qpos, ground, asphalt, &mut x, &mut y, &mut z, &mut emin, &mut emax, &mut ids, &mut sampled);
@@ -1108,7 +1129,7 @@ fn one_mesh_full_inner(
         walls += 1;
         // Owned by the asphalt side (aprons are the surface's wall to its
         // ground). Between two asphalt classes the junior-indexed one owns it.
-        let owner = if c0 != usize::MAX { c0 } else { c1 };
+        let owner = if c0 < VOID_CLASS { c0 } else { c1 };
         // Single-sided, facing away from the owner: the wall is seen from the
         // ground side, like the old apron. Orientation from the non-owner
         // face's centroid against the edge normal in plan.
@@ -1135,7 +1156,7 @@ fn one_mesh_full_inner(
     eprintln!(
         "[one-mesh] full: {} faces ({} asphalt), {} wall edges, {} verts",
         tri.len(),
-        class.iter().filter(|&&c| c != usize::MAX).count(),
+        class.iter().filter(|&&c| c < VOID_CLASS).count(),
         walls,
         x.len()
     );
