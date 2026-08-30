@@ -656,10 +656,11 @@ pub fn one_mesh_border_probe(
     bounds: &Bounds,
     segments: &[(Coord, Coord)],
     regions: &[&Region],
+    asphalt_edges: &[((u16, u16), (u16, u16))],
     sample: &mut dyn FnMut(f64, f64) -> f64,
 ) -> Option<(Vec<(u16, u16, i32)>, Vec<(u16, u16)>)> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        one_mesh_border_probe_inner(grid, bounds, segments, regions, sample)
+        one_mesh_border_probe_inner(grid, bounds, segments, regions, asphalt_edges, sample)
     }))
     .unwrap_or(None)
 }
@@ -669,6 +670,7 @@ fn one_mesh_border_probe_inner(
     bounds: &Bounds,
     segments: &[(Coord, Coord)],
     regions: &[&Region],
+    asphalt_edges: &[((u16, u16), (u16, u16))],
     sample: &mut dyn FnMut(f64, f64) -> f64,
 ) -> Option<(Vec<(u16, u16, i32)>, Vec<(u16, u16)>)> {
     let grid = grid.max(1);
@@ -785,6 +787,17 @@ fn one_mesh_border_probe_inner(
             prev = Some(v);
         }
     }
+    // The paved boundary as the paved mesher states it — the shared
+    // prepared rings and their insets, already simplified and densified —
+    // inserted as constraints so the one-mesh's asphalt border is the same
+    // vertex set the old paved mesh derives.
+    for &(qa, qb) in asphalt_edges {
+        let va = cdt.insert(Point2::new(qa.0 as f64, qa.1 as f64)).ok()?;
+        let vb = cdt.insert(Point2::new(qb.0 as f64, qb.1 as f64)).ok()?;
+        if va != vb {
+            cdt.add_constraint_and_split(va, vb, |p| p);
+        }
+    }
     let vcount = cdt.num_vertices();
     let mut qpos: Vec<(u16, u16)> = Vec::with_capacity(vcount);
     for v in cdt.vertices() {
@@ -820,6 +833,13 @@ fn one_mesh_border_probe_inner(
                 } else {
                     terrain_b.push(qpos[v]);
                 }
+            }
+        }
+    }
+    for &(qa, qb) in asphalt_edges {
+        for q in [qa, qb] {
+            if on_border(q) {
+                asphalt_b.push(q);
             }
         }
     }

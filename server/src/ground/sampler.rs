@@ -290,6 +290,7 @@ impl GroundSampler {
         bounds: &Bounds,
         z: u8,
         regions: &[&Region],
+        asphalt_edges: &[((u16, u16), (u16, u16))],
     ) -> Option<(Vec<(u16, u16, i32)>, Vec<(u16, u16)>)> {
         let grid = terrain::grid_for(z, self.z_ref);
         let pad = bounds.width().max(bounds.height()) / grid as f64;
@@ -299,7 +300,7 @@ impl GroundSampler {
         self.ground.breaklines().query(bbox, &mut ids, &mut segments);
         let (dem, ground, corners, scratch) =
             (&mut self.dem, &self.ground, &mut self.corners, &mut self.scratch);
-        crate::terrain_cdt::one_mesh_border_probe(grid, bounds, &segments, regions, &mut |lon, lat| {
+        crate::terrain_cdt::one_mesh_border_probe(grid, bounds, &segments, regions, asphalt_edges, &mut |lon, lat| {
             corner_memo(dem, ground, corners, scratch, lon, lat, z, 0.0)
         })
     }

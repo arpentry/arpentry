@@ -53,11 +53,11 @@ use crate::terrain::TerrainMesh;
 
 /// A boundary ring clipped to the tile, with each edge flagged as a tile cut.
 /// `cut[i]` describes the edge from `pts[i]` to `pts[i + 1]`.
-struct TaggedRing {
-    pts: Vec<Coord>,
-    cut: Vec<bool>,
+pub(crate) struct TaggedRing {
+    pub(crate) pts: Vec<Coord>,
+    pub(crate) cut: Vec<bool>,
     /// Whether this ring bounds paved area (outer) rather than a hole.
-    outer: bool,
+    pub(crate) outer: bool,
 }
 
 /// The paved surface of one tile at one level: the opaque interior and the rim
@@ -146,13 +146,7 @@ pub fn tile_meshes(
         // Capped at `PAVE_SIMPLIFY_M`: the generic per-zoom budget is sized for
         // cartographic lines, where only the path matters, and at z13 it would
         // move a carriageway edge by a fifth of the road's own width.
-        let tol = crate::pipeline::tolerance(z).min(priors::PAVE_SIMPLIFY_M / crate::scene::DEG_M);
-        let rings: Vec<TaggedRing> = rings.iter().map(|r| simplify_ring(r, tol)).collect();
-        // …then densified back to the terrain's own resolution, so the
-        // silhouette samples the ground as often as the ground is drawn.
-        let grid = crate::terrain::grid_for(z, z_ref);
-        let rings: Vec<TaggedRing> =
-            rings.iter().map(|r| densify_ring(r, bounds, grid)).collect();
+        let rings = prepare_rings(rings, bounds, z, z_ref);
 
         // Which sheet this region's heights come from. A walkway reads its own,
         // so the kerb between it and the carriageway beside it is a step rather
@@ -301,7 +295,25 @@ pub fn tile_meshes(
 /// Rings are clipped independently, as `clip.rs` does for a polygon's holes. A
 /// hole wholly outside the tile disappears; one straddling the border comes back
 /// hugging it, which the even-odd face test reads correctly either way.
-fn clip_to_tile(shapes: &[Vec<Vec<Coord>>], bounds: &Bounds) -> Vec<TaggedRing> {
+/// The shared preprocessing every consumer of a region's boundary runs —
+/// simplify to the zoom's budget (cut runs verbatim), densify to the terrain
+/// grid — extracted so the one-mesh (S5) derives the *same* rings, insets and
+/// cut flags the paved mesher does, instead of a second construction agreeing
+/// to within whatever two pipelines share (`carmack-rewrite-plan` S5, the
+/// prototype body's opening move).
+pub(crate) fn prepare_rings(
+    rings: Vec<TaggedRing>,
+    bounds: &Bounds,
+    z: u8,
+    z_ref: u8,
+) -> Vec<TaggedRing> {
+    let tol = crate::pipeline::tolerance(z).min(priors::PAVE_SIMPLIFY_M / crate::scene::DEG_M);
+    let rings: Vec<TaggedRing> = rings.iter().map(|r| simplify_ring(r, tol)).collect();
+    let grid = crate::terrain::grid_for(z, z_ref);
+    rings.iter().map(|r| densify_ring(r, bounds, grid)).collect()
+}
+
+pub(crate) fn clip_to_tile(shapes: &[Vec<Vec<Coord>>], bounds: &Bounds) -> Vec<TaggedRing> {
     let mut out = Vec::new();
     for shape in shapes {
         if !shape.first().is_some_and(|outer| ring_overlaps_tile(outer, bounds)) {
@@ -669,7 +681,7 @@ fn densify_ring(r: &TaggedRing, bounds: &Bounds, grid: u32) -> TaggedRing {
 /// Giving holes the opposite sign, as this first did, shrinks them instead, so the
 /// interior spills a rim's width into every island and median and each hole's rim
 /// quads come out inverted.
-fn inset_ring(ring: &TaggedRing, m_lon: f64) -> Option<Vec<Coord>> {
+pub(crate) fn inset_ring(ring: &TaggedRing, m_lon: f64) -> Option<Vec<Coord>> {
     let n = ring.pts.len();
     if n < 3 {
         return None;

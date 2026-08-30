@@ -974,7 +974,7 @@ fn encode_tile(
     if let Some(v) = std::env::var_os("ARPT_ONE_MESH_PROBE") {
         let want = v.to_string_lossy().to_string();
         if want == format!("{z}/{x}/{y}") {
-            one_mesh_probe(&mut enc_layers, sampler, &bounds, z, &cut_regions);
+            one_mesh_probe(&mut enc_layers, sampler, &bounds, z, solved.z_ref, pavement, &cut_regions);
         }
     }
 
@@ -1027,8 +1027,52 @@ fn one_mesh_probe(
     sampler: &mut GroundSampler,
     bounds: &Bounds,
     z: u8,
+    z_ref: u8,
+    pavement: &synth::pavement::PavementModel,
     cut_regions: &[synth::region::Region],
 ) {
+    // The paved boundary exactly as the paved mesher will state it: the
+    // shared preprocessing (`pave_mesh::prepare_rings`) plus the rim insets,
+    // for every group-0 level of the chunk.
+    let mut asphalt_edges: Vec<((u16, u16), (u16, u16))> = Vec::new();
+    let m_lon = crate::scene::DEG_M * ((bounds.south + bounds.north) * 0.5).to_radians().cos();
+    if let Some(levels) = pavement.chunk_for(bounds) {
+        for ls in levels {
+            if ls.level != 0 || ls.layer != 0 {
+                continue;
+            }
+            if ls.surface.is_pedestrian() && z < crate::priors::WALK_SURFACE_MIN_ZOOM {
+                continue;
+            }
+            let rings = synth::pave_mesh::prepare_rings(
+                synth::pave_mesh::clip_to_tile(&ls.shapes, bounds),
+                bounds,
+                z,
+                z_ref,
+            );
+            let q = |c: geo_types::Coord| {
+                (crate::project::quantize_x(c.x, bounds), crate::project::quantize_y(c.y, bounds))
+            };
+            for r in &rings {
+                let n = r.pts.len();
+                for k in 0..n {
+                    let (a, b) = (q(r.pts[k]), q(r.pts[(k + 1) % n]));
+                    if a != b {
+                        asphalt_edges.push((a, b));
+                    }
+                }
+                if let Some(inset) = synth::pave_mesh::inset_ring(r, m_lon) {
+                    let n = inset.len();
+                    for k in 0..n {
+                        let (a, b) = (q(inset[k]), q(inset[(k + 1) % n]));
+                        if a != b {
+                            asphalt_edges.push((a, b));
+                        }
+                    }
+                }
+            }
+        }
+    }
     // Group 0 only: terrain plus the sheet-0 at-grade regions. Stacked
     // sheets keep their own meshes (S5), so they are out of the comparison
     // on both sides.
@@ -1040,7 +1084,7 @@ fn one_mesh_probe(
         .map(|(r, _)| r)
         .collect();
     let Some((om_terrain, om_asphalt)) =
-        sampler.one_mesh_border_probe(bounds, z, &g0)
+        sampler.one_mesh_border_probe(bounds, z, &g0, &asphalt_edges)
     else {
         eprintln!("[one-mesh] probe: CDT abstained");
         return;
