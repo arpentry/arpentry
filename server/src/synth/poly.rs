@@ -41,7 +41,11 @@
 use geo_types::Coord;
 use i_overlay::core::fill_rule::FillRule;
 use i_overlay::core::overlay_rule::OverlayRule;
+use i_overlay::core::overlay::ShapeType;
+use i_overlay::float::overlay::FloatOverlay;
 use i_overlay::float::scale::FixedScaleFloatOverlay;
+use i_overlay::i_float::adapter::FloatPointAdapter;
+use i_overlay::i_float::float::rect::FloatRect;
 use i_overlay::mesh::outline::offset::OutlineOffset;
 use i_overlay::mesh::stroke::offset::StrokeOffset;
 use i_overlay::mesh::style::{LineJoin, OutlineStyle, StrokeStyle};
@@ -69,6 +73,40 @@ pub(crate) const GRID_M: f64 = 1e-4;
 
 /// The scale `i_overlay`'s `_fixed_scale` entry points want: reciprocal grid.
 const SCALE: f64 = 1.0 / GRID_M;
+
+/// Whether the boolean lattice is pinned (`ARPT_PIN_LATTICE=1`, stage S1b of
+/// `data/plans/carmack-rewrite-plan-2026-08-29.md`). The `_fixed_scale` entry
+/// points fix the grid's *scale* but let each operation anchor its origin at
+/// its own input's bounding-rect centre (`i_float`'s `float_to_int` subtracts
+/// it before rounding), so every boolean re-snaps its vertices to a lattice
+/// of its own — up to 0.7 grid units per op, which is what held the exact
+/// handover tags to 66 % agreement (S1). Pinned, every boolean shares one
+/// adapter whose rect is centred on the chunk frame's origin: an integer in
+/// is an integer out, `round(x / GRID_M)` is the lattice, and only newly
+/// created intersection vertices round — once. The outline ops (buffer,
+/// dilate/erode) take no adapter and keep their own; their outputs re-round
+/// once on the next pinned boolean.
+fn pin_lattice() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("ARPT_PIN_LATTICE").is_some())
+}
+
+/// Half-extent of the pinned adapter's rect, metres. Centred on the frame
+/// origin so the lattice offset is exactly zero; wide enough for a chunk
+/// (±~1.5 km), its pads, cut reaches and every test fixture, and narrow
+/// enough that i64 coordinates stay far from any overflow.
+const PIN_RECT_M: f64 = 16384.0;
+
+/// One boolean on the pinned lattice.
+fn overlay_pinned(a: &Shapes, b: &Shapes, rule: OverlayRule) -> Shapes {
+    let rect = FloatRect::new(-PIN_RECT_M, PIN_RECT_M, -PIN_RECT_M, PIN_RECT_M);
+    let adapter = FloatPointAdapter::<Pt, i64>::with_scale(rect, SCALE);
+    let cap = a.iter().chain(b.iter()).flatten().map(Vec::len).sum();
+    FloatOverlay::<Pt, i64>::with_adapter(adapter, cap)
+        .unsafe_add_source(a, ShapeType::Subject)
+        .unsafe_add_source(b, ShapeType::Clip)
+        .overlay(rule, FillRule::NonZero)
+}
 
 /// Minimum join angle in radians before a miter bevels — the `MITER_MAX = 1.5`
 /// clamp of the band this replaces, expressed as the angle where the miter scale
@@ -240,6 +278,9 @@ pub fn union_all(shapes: &Shapes) -> Shapes {
         return Vec::new();
     }
     let empty: Shapes = Vec::new();
+    if pin_lattice() {
+        return overlay_pinned(shapes, &empty, OverlayRule::Subject);
+    }
     shapes
         .overlay_with_fixed_scale_as::<i64>(&empty, OverlayRule::Subject, FillRule::NonZero, SCALE)
         .unwrap_or_default()
@@ -269,6 +310,9 @@ pub fn intersect(a: &Shapes, b: &Shapes) -> Shapes {
     if a.is_empty() || b.is_empty() {
         return Vec::new();
     }
+    if pin_lattice() {
+        return overlay_pinned(a, b, OverlayRule::Intersect);
+    }
     a.overlay_with_fixed_scale_as::<i64>(b, OverlayRule::Intersect, FillRule::NonZero, SCALE)
         .unwrap_or_default()
 }
@@ -277,6 +321,9 @@ pub fn intersect(a: &Shapes, b: &Shapes) -> Shapes {
 pub fn difference(a: &Shapes, b: &Shapes) -> Shapes {
     if a.is_empty() || b.is_empty() {
         return a.clone();
+    }
+    if pin_lattice() {
+        return overlay_pinned(a, b, OverlayRule::Difference);
     }
     a.overlay_with_fixed_scale_as::<i64>(b, OverlayRule::Difference, FillRule::NonZero, SCALE)
         .unwrap_or_default()
