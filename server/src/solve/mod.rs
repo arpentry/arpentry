@@ -19,6 +19,7 @@
 pub mod consistency;
 pub mod crossings;
 pub mod graph;
+pub mod partition;
 pub mod portals;
 pub mod profile;
 pub mod relax;
@@ -57,6 +58,17 @@ pub struct Daylight {
     pub deficit_m: f64,
 }
 
+/// Where the pure partition ([`partition::partition`]) disagrees with the
+/// fold's spans for one corridor — the diagnostic of the two-pass refactor's
+/// first step (`data/plans/pure-partition-2026-08-28.md` §5).
+#[derive(Debug, Clone, Copy)]
+pub struct PartitionDivergence {
+    pub corridor: CorridorId,
+    pub lon: f64,
+    pub lat: f64,
+    pub d: partition::Divergence,
+}
+
 /// One stratum's reconciliation write-back — where the annotation hands over
 /// to the solved truth (§4.5).
 ///
@@ -86,6 +98,7 @@ fn reconcile_stratum(
     covered: &[Vec<(f64, f64)>],
     sites: &[Vec<crossings::PlanCrossing>],
     daylight: &mut Vec<Daylight>,
+    divergence: &mut Vec<PartitionDivergence>,
 ) {
     // ARPT_DEBUG_ANNEX: one line per tunnel-bearing corridor with crossings —
     // the tail bounds against the crossing arcs, and whether the annex took.
@@ -121,6 +134,8 @@ fn reconcile_stratum(
         let deck_follows_road = c.kind.prior().monotone
             && profile::monotone_direction(p.terrain_m()).is_some();
         let mut spans = std::mem::take(&mut c.spans);
+        // The spans as they enter the fold: the pure partition's input.
+        let entering = spans.clone();
         let carried = carried.get(c.id as usize).cloned().unwrap_or_default();
         if let Some(annexed) = portals::annex_spans(p, &spans, &reaches, &carried) {
             if debug_annex {
@@ -178,6 +193,20 @@ fn reconcile_stratum(
                     p.degrade_structure(lo, hi, deck_follows_road);
                 }
             }
+        }
+        // The pure partition, computed from the same inputs and compared —
+        // never written. Its distance from the fold is what the two-pass
+        // switch is judged against before anything moves.
+        let pure = partition::partition(
+            p,
+            &entering,
+            &partition::Licenses { covered, twin: &twin, reaches: &reaches, carried: &carried },
+            c.kind.prior(),
+        );
+        let d = partition::divergence(&reconciled, &pure);
+        if d.metres > 0.0 || reconciled.iter().any(|s| s.kind != SpanKind::Grade) {
+            let pt = p.point_at_arc(if d.metres > 0.0 { d.worst_arc } else { 0.5 * p.arc().last().copied().unwrap_or(0.0) });
+            divergence.push(PartitionDivergence { corridor: c.id, lon: pt.x, lat: pt.y, d });
         }
         c.spans = reconciled;
     }
@@ -520,6 +549,9 @@ pub struct SolvedModel {
     /// collateral, measured against the solved heights before any
     /// reconciliation rewrites the spans.
     pub daylight: Vec<Daylight>,
+    /// Where the pure partition disagrees with the written spans
+    /// (`partition.divergence`), one entry per corridor with any structure.
+    pub partition: Vec<PartitionDivergence>,
     profiles: Vec<Option<Profile>>,
     /// The height every junction's members share, by index into
     /// `SceneGraph::junctions`; `None` where no member carries a profile. Dense
@@ -539,6 +571,7 @@ impl SolvedModel {
             relaxed: relax::Relaxed::default(),
             residuals: Vec::new(),
             daylight: Vec::new(),
+            partition: Vec::new(),
             profiles: Vec::new(),
             junction_h: Vec::new(),
             z_ref,
@@ -556,6 +589,7 @@ impl SolvedModel {
             relaxed: relax::Relaxed::default(),
             residuals: Vec::new(),
             daylight: Vec::new(),
+            partition: Vec::new(),
             profiles,
             junction_h: Vec::new(),
             z_ref,
@@ -794,6 +828,7 @@ pub fn run_licensed(
     // seeded from (`structure.bore_daylight`).
     let sites = crossings::covered_sites(scene, &plan);
     let mut daylight: Vec<Daylight> = Vec::new();
+    let mut partition_div: Vec<PartitionDivergence> = Vec::new();
     for stratum in [Stratum::H, Stratum::R, Stratum::S, Stratum::D, Stratum::B] {
         // Fresh immutable view per stratum: the write-back below needs the
         // scene mutable, and each iteration's reads must see the seniors'
@@ -846,6 +881,7 @@ pub fn run_licensed(
             &covered,
             &sites,
             &mut daylight,
+            &mut partition_div,
         );
     }
 
@@ -859,7 +895,17 @@ pub fn run_licensed(
         })
         .collect();
 
-    Ok(SolvedModel { structures, relaxed, residuals, crossings, daylight, profiles, junction_h, z_ref })
+    Ok(SolvedModel {
+        structures,
+        relaxed,
+        residuals,
+        crossings,
+        daylight,
+        partition: partition_div,
+        profiles,
+        junction_h,
+        z_ref,
+    })
 }
 
 /// Sampling step for the notch-crossing detector, metres. Fine enough that a
