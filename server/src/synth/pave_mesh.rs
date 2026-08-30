@@ -173,6 +173,9 @@ pub fn tile_meshes(
         if std::env::var_os("ARPT_EXACT_HANDOVER").is_some() {
             EXACT_CENSUS.with(|c| *c.borrow_mut() = Some(ExactCensus::new(bounds)));
         }
+        if exact_tags() {
+            EXACT_FRAME.with(|f| f.set(crate::synth::pavement::chunk_frame_for(bounds)));
+        }
         let meshed =
             mesh_rings(&rings, bounds, crate::terrain::grid_for(z, z_ref), hole, handovers, &mut height);
         if let Some(c) = EXACT_CENSUS.with(|c| c.borrow_mut().take()) {
@@ -899,6 +902,21 @@ fn is_handover(a: Coord, b: Coord, handovers: &[Handover], m_lon: f64) -> bool {
 /// agreement between the two is what decides whether an edge's provenance can
 /// be carried exactly through the pipeline at all.
 fn is_handover_exact(a: Coord, b: Coord, handovers: &[Handover], frame: &MFrame) -> bool {
+    is_handover_within(a, b, handovers, frame, 1)
+}
+
+/// [`is_handover_exact`] with the collinearity budget in grid units. One unit
+/// is the census's exactness; the tagging path (`ARPT_EXACT_TAGS`) allows
+/// [`EXACT_TAG_UNITS`], because the closing's dilate/erode runs on its own
+/// unpinnable lattice and can leave a genuine cut edge a unit or two off the
+/// line — 0.4 mm, still four thousand times tighter than `CUT_NEAR_M`.
+fn is_handover_within(
+    a: Coord,
+    b: Coord,
+    handovers: &[Handover],
+    frame: &MFrame,
+    units: i64,
+) -> bool {
     let g = |c: Coord| -> [i64; 2] {
         let p = frame.to_m(c);
         [(p[0] / poly::GRID_M).round() as i64, (p[1] / poly::GRID_M).round() as i64]
@@ -915,16 +933,34 @@ fn is_handover_exact(a: Coord, b: Coord, handovers: &[Handover], frame: &MFrame)
             let (qx, qy) = (p[0] - ha[0], p[1] - ha[1]);
             let cross = (qx * dy - qy * dx) as i128;
             let dot = qx * dx + qy * dy;
-            cross * cross <= len2 as i128 && dot >= 0 && dot <= len2
+            cross * cross <= (units * units * len2) as i128 && dot >= 0 && dot <= len2
         };
         on(pa) && on(pb)
     })
+}
+
+/// The tagging budget for [`is_handover_within`] under `ARPT_EXACT_TAGS`.
+const EXACT_TAG_UNITS: i64 = 4;
+
+/// Whether the cut/kerb verdict comes from the lattice test instead of the
+/// half-metre proximity heuristic (`ARPT_EXACT_TAGS=1`; wants
+/// `ARPT_PIN_LATTICE=1` with it, or the boolean drift S1 measured comes
+/// back). The withdrawn 15 % are the heuristic's false positives — kerb and
+/// fillet edges leaving the cut at its corner — which then keep their rim
+/// and its fade instead of being drawn as bare handover interior.
+fn exact_tags() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("ARPT_EXACT_TAGS").is_some())
 }
 
 thread_local! {
     /// The shadow census for the tile being meshed on this thread, if
     /// `ARPT_EXACT_HANDOVER` asked for one.
     static EXACT_CENSUS: std::cell::RefCell<Option<ExactCensus>> = const { std::cell::RefCell::new(None) };
+    /// The chunk frame of the tile being meshed on this thread, for the
+    /// exact tagging path — set by `tile_meshes` before any ring walks.
+    static EXACT_FRAME: std::cell::Cell<MFrame> =
+        std::cell::Cell::new(MFrame::of(Coord { x: 0.0, y: 0.0 }));
 }
 
 /// The shadow census of `ARPT_EXACT_HANDOVER=1`: how often the tolerant and
@@ -1136,7 +1172,13 @@ fn build_rim(
             let across = if hole { [0i8; 4] } else { [127i8, 127, 0, 0] };
             // A handover quad goes to the surface instead, and there it is
             // interior: opaque, with no across-coordinate to fade.
-            let handover = is_handover(r.pts[k], r.pts[k1], handovers, m_lon);
+            let handover = if exact_tags() {
+                EXACT_FRAME.with(|f| {
+                    is_handover_within(r.pts[k], r.pts[k1], handovers, &f.get(), EXACT_TAG_UNITS)
+                })
+            } else {
+                is_handover(r.pts[k], r.pts[k1], handovers, m_lon)
+            };
             EXACT_CENSUS.with(|c| {
                 if let Some(c) = c.borrow_mut().as_mut() {
                     c.record(r.pts[k], r.pts[k1], handovers, handover);
