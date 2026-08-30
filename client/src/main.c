@@ -861,16 +861,10 @@ static bool fetch_style(const char *base_url, arpt_style *style) {
                 }
                 float w = arpentry_tiles_PaintEntry_width(entry);
                 if (w > 0) style->stroke_widths[cls] = w;
-                const arpentry_tiles_RGBA_t *cc =
-                    arpentry_tiles_PaintEntry_casing_color(entry);
-                if (cc) {
-                    style->casing_colors[cls][0] = cc->r / 255.0f;
-                    style->casing_colors[cls][1] = cc->g / 255.0f;
-                    style->casing_colors[cls][2] = cc->b / 255.0f;
-                    style->casing_colors[cls][3] = cc->a / 255.0f;
-                }
-                float cw = arpentry_tiles_PaintEntry_casing_width(entry);
-                if (cw > 0) style->casing_widths[cls] = cw;
+                /* casing_color / casing_width stay in the schema for older
+                   styles but nothing draws a casing since the rim became the
+                   surface (docs/ROADS.md §6.1): parsed nowhere, stored
+                   nowhere. */
                 uint8_t ml = arpentry_tiles_PaintEntry_min_level(entry);
                 if (ml > 0) style->class_min_levels[cls] = ml;
             }

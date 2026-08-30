@@ -53,9 +53,9 @@ WGPURenderPipeline arpt__road_create_pipeline(WGPUDevice device,
         .module = sm, .entryPoint = "fs", .targetCount = 1, .targets = &ct};
 
     /* Roads are decals: test against the terrain depth but do not write it.
-       The small geometric lift in road.wgsl keeps them just above the surface
-       (occluded correctly by hills), so only a tiny constant depth bias is
-       needed against residual z-fighting — NOT a slope-scaled one, which at
+       road.wgsl's camera-facing margin is DEPTH-ONLY (the projected position
+       keeps the true vertex), so only a tiny constant depth bias is needed
+       against residual z-fighting — NOT a slope-scaled one, which at
        grazing angles on steep terrain would punch roads through ridges.
        Under reversed-Z (renderer.h) "toward the camera" is +depth, so the
        one-unit bias is positive. */

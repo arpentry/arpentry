@@ -205,14 +205,15 @@ bool arpt_decode_building_mesh(const void *flatbuf, size_t size,
 
 /* Road structures arrive as server-baked box prisms (MeshGeometry) carried inside
    the transportation layer next to the road lines. These split them by the
-   reserved `level` property into three disjoint bands so each renders in its own
-   pass: elevated bridge decks (level > 0), tunnel bores (level < 0), and at-grade
-   junction plates (level == 0, via arpt_decode_plate_mesh). Each scans the named
-   layer and concatenates only its band's meshes into the primitive (same form as
-   buildings). `class_names`/`colors` (the style) paint each deck top the
-   road-class asphalt its ribbon uses; pass class_count 0 to skip the per-vertex
-   colour. Returns true and fills `out` when the layer holds matching meshes;
-   false (with `out` zeroed) otherwise. */
+   reserved `level` property into two disjoint bands so each renders in its own
+   pass: the surface band — at-grade asphalt and elevated decks (level >= 0) —
+   and tunnel bores (level < 0). (A third band of junction plates existed until
+   the server learned to union the carriageway; its decoder is gone with it.)
+   Each scans the named layer and concatenates only its band's meshes into the
+   primitive (same form as buildings). `class_names`/`colors` (the style) paint
+   each deck top the road-class asphalt its ribbon uses; pass class_count 0 to
+   skip the per-vertex colour. Returns true and fills `out` when the layer holds
+   matching meshes; false (with `out` zeroed) otherwise. */
 bool arpt_decode_bridge_mesh(const void *flatbuf, size_t size,
                              const char *layer_name,
                              const char (*class_names)[32], int class_count,
@@ -221,10 +222,6 @@ bool arpt_decode_tunnel_mesh(const void *flatbuf, size_t size,
                              const char *layer_name,
                              const char (*class_names)[32], int class_count,
                              const float (*colors)[4], arpt_building_prim *out);
-bool arpt_decode_plate_mesh(const void *flatbuf, size_t size,
-                            const char *layer_name,
-                            const char (*class_names)[32], int class_count,
-                            const float (*colors)[4], arpt_building_prim *out);
 
 void arpt_prepare_instances(const arpt_tree_data *trees, int model_count,
                             arpt_instance_prim *out);
