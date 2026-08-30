@@ -1024,7 +1024,16 @@ fn one_mesh_full_inner(
         // sub-quantum rounding, and consecutive vertices then alternate wall
         // and no-wall (the silhouette teeth).
         let (mut slon, mut slat) = (lon, lat);
-        if cls == usize::MAX && ring_verts.contains(&v) {
+        // Border vertices are exempt: the neighbour samples exactly at the
+        // vertex, and an offset sample here breaks I5 parity at the seam
+        // (terrain_step 0 → 0.069 %, measured).
+        let on_tile_border = {
+            let (qxi, qyi) = (qx as i64, qy as i64);
+            let lo = BUFFER as i64;
+            let hi = (BUFFER + EXTENT) as i64;
+            qxi == lo || qxi == hi || qyi == lo || qyi == hi
+        };
+        if cls == usize::MAX && ring_verts.contains(&v) && !on_tile_border {
             if let Some((cx, cy)) = toward {
                 let (dx, dy) = (cx - qx as f64, cy - qy as f64);
                 let len = (dx * dx + dy * dy).sqrt();
@@ -1195,6 +1204,82 @@ fn one_mesh_full_inner(
         normals[i * 2] = ox;
         normals[i * 2 + 1] = oy;
     }
+    // T-vertices: a constraint crossing exactly on the tile border leaves a
+    // split vertex the neighbour's edge runs through but does not hold. Its
+    // sampled height sits off the neighbour's linear edge by the field's
+    // curvature (7 cm at the worst of four, measured). A border vertex that
+    // is not in the shared set — the lattice border points and the asphalt
+    // edges' own endpoints — takes its height by interpolation between its
+    // nearest same-class border neighbours instead, which is exactly the
+    // value the neighbour draws through it.
+    {
+        let lo = BUFFER as i64;
+        let hi = (BUFFER + EXTENT) as i64;
+        let mut shared: std::collections::HashSet<(u16, u16)> = std::collections::HashSet::new();
+        for &(qa, qb) in asphalt_edges {
+            shared.insert(qa);
+            shared.insert(qb);
+        }
+        let qstep_u = (EXTENT as u32 / grid) as i64;
+        let on_border = |qx: i64, qy: i64| {
+            (qx == lo || qx == hi || qy == lo || qy == hi)
+                && (lo..=hi).contains(&qx)
+                && (lo..=hi).contains(&qy)
+        };
+        // Border verts per (class, border side): (position along, index).
+        let mut rails: std::collections::HashMap<(usize, u8), Vec<(i64, u32)>> =
+            std::collections::HashMap::new();
+        let mut orphans: Vec<(usize, u8, i64, u32)> = Vec::new();
+        for (&(v, cls), &i) in ids.iter() {
+            // Asphalt only: a terrain border vertex off the lattice is a
+            // breakline's own border crossing, which the neighbour clips from
+            // the same global polyline and therefore SHARES — rewriting it
+            // opened the terrain seam 0 → 2 % (measured, reverted).
+            if cls == usize::MAX {
+                continue;
+            }
+            let (qx, qy) = (qpos[v].0 as i64, qpos[v].1 as i64);
+            if !on_border(qx, qy) {
+                continue;
+            }
+            let sides: [(bool, u8, i64); 4] = [
+                (qx == lo, 0, qy),
+                (qx == hi, 1, qy),
+                (qy == lo, 2, qx),
+                (qy == hi, 3, qx),
+            ];
+            for &(hit, side, along) in &sides {
+                if !hit {
+                    continue;
+                }
+                rails.entry((cls, side)).or_default().push((along, i));
+                let lattice_pt = along % qstep_u == 0;
+                if !lattice_pt && !shared.contains(&qpos[v]) {
+                    orphans.push((cls, side, along, i));
+                }
+            }
+        }
+        for v in rails.values_mut() {
+            v.sort_unstable();
+        }
+        if !orphans.is_empty() {
+            eprintln!("[one-mesh] {} orphan border T-vertices interpolated", orphans.len());
+        }
+        for (cls, side, along, i) in orphans {
+            let rail = &rails[&(cls, side)];
+            let pos = rail.partition_point(|&(a, _)| a < along);
+            let before = rail[..pos].iter().rev().find(|&&(a, _)| a < along);
+            let after = rail[pos..].iter().find(|&&(a, _)| a > along);
+            if let (Some(&(a0, i0)), Some(&(a1, i1))) = (before, after) {
+                if a1 > a0 {
+                    let t = (along - a0) as f64 / (a1 - a0) as f64;
+                    let zi = z[i0 as usize] as f64 + (z[i1 as usize] as f64 - z[i0 as usize] as f64) * t;
+                    z[i as usize] = zi.round() as i32;
+                }
+            }
+        }
+    }
+
     // Split the shared pool into per-feature meshes (compacted).
     let extract = |idx: &[u32]| -> TerrainMesh {
         let mut remap: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
