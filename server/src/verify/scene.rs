@@ -24,6 +24,12 @@ use super::mesh::{Scale, SurfaceMesh};
 pub struct RoadMesh {
     pub class: String,
     pub level: i64,
+    /// The sheet ordinal the tiler keyed this at-grade region by (`sheet`,
+    /// from `synth::sheets`), `None` for an archive cut before it was
+    /// emitted or for a structure. Two level-0 meshes on different sheets
+    /// are stacked by design; two on the same sheet, or with none, share an
+    /// ordinal with nothing to order them.
+    pub sheet: Option<i64>,
     /// For a structure, the surface band its running top *is* — `road_surface`
     /// or `rail_surface`, as the tiler named it (`profile::profile`). Empty at
     /// grade, where the band draws itself, and empty for a structure whose
@@ -341,6 +347,7 @@ impl<'a> ArchiveScan<'a> {
                     let f = feats.get(fi);
                     let (mut class, mut level, mut width_m) = (String::new(), 0i64, 0.0f64);
                     let mut band = String::new();
+                    let mut sheet = None;
                     if let Some(props) = f.properties() {
                         for pi in 0..props.len() {
                             let p = props.get(pi);
@@ -349,6 +356,7 @@ impl<'a> ArchiveScan<'a> {
                             match k {
                                 "class" => class = v.string_value().unwrap_or("").to_string(),
                                 "level" => level = v.int_value(),
+                                "sheet" => sheet = Some(v.int_value()),
                                 "width_m" => width_m = v.double_value(),
                                 "band_class" => {
                                     band = v.string_value().unwrap_or("").to_string()
@@ -362,7 +370,7 @@ impl<'a> ArchiveScan<'a> {
                             let fades = g
                                 .edge_across()
                                 .is_some_and(|a| (0..a.len()).any(|i| a.get(i) != 0));
-                            scene.roads.push(RoadMesh { class, level, band, fades, mesh });
+                            scene.roads.push(RoadMesh { class, level, sheet, band, fades, mesh });
                         }
                     } else if let Some(g) = f.geometry_as_line_geometry() {
                         let parts = line_parts(&g);
@@ -433,7 +441,7 @@ mod tests {
     #[test]
     fn a_mesh_is_classified_by_class_and_level() {
         let mk = |class: &str, level: i64| RoadMesh {
-            band: String::new(), fades: false,
+            band: String::new(), fades: false, sheet: None,
             class: class.to_string(),
             level,
             mesh: dummy(),

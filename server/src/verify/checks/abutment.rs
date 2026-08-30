@@ -542,7 +542,7 @@ mod tests {
             vec![0, 1, 2, 0, 2, 3],
         )
         .expect("a quad meshes");
-        RoadMesh { class: "residential".into(), level: 1, band: String::new(), fades: false, mesh }
+        RoadMesh { class: "residential".into(), level: 1, band: String::new(), fades: false, sheet: None, mesh }
     }
 
     /// A west→east stroke from `x0` to `x1` at height `h`.

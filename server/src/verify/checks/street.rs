@@ -1482,7 +1482,7 @@ mod tests {
             RoadMesh {
                 class: class.into(),
                 level,
-                band: String::new(), fades: false,
+                band: String::new(), fades: false, sheet: None,
                 mesh: self.slab(r.0, r.1, r.2, r.3, z),
             }
         }
@@ -1864,7 +1864,7 @@ mod tests {
             vec![0, 1, 2, 0, 2, 3],
         )
         .unwrap();
-        RoadMesh { class: class.into(), level: 0, band: String::new(), fades: false, mesh }
+        RoadMesh { class: class.into(), level: 0, band: String::new(), fades: false, sheet: None, mesh }
     }
 
     /// The terrain's rim and the band's own height are one joint: the band's

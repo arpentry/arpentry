@@ -63,6 +63,12 @@ struct TaggedRing {
 /// that carries its silhouette.
 pub struct PavedMesh {
     pub level: i64,
+    /// The grade-separation layer of the region this mesh is cut from
+    /// ([`crate::synth::pavement::LevelShapes::layer`]) — the sheet ordinal
+    /// the stacking model computed. Emitted as the `sheet` property so that
+    /// two opaque level-0 surfaces overlapping in plan reach the client with
+    /// their order attached rather than as two meshes at one ordinal.
+    pub layer: u32,
     /// The region's material ([`crate::priors::Surface`]) — asphalt or
     /// ballast — which picks the class the feature is emitted under, and with
     /// it the style entry that colours it.
@@ -253,6 +259,7 @@ pub fn tile_meshes(
         if let Some((surface, rim, region)) = meshed {
             out.push(PavedMesh {
                 level: ls.level,
+                layer: ls.layer,
                 material: ls.surface,
                 surface,
                 rim,

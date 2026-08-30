@@ -480,7 +480,11 @@ the scenario table (§4).
     the rim above it are separate regions with separate rims instead of one
     covering set the kernel smears a storey across (a hostless band's seat is
     stamped from the senior ground by the walkway fit expressly so this
-    layering has heights to compare).
+    layering has heights to compare). The layer reaches the tile as the
+    surface feature's `sheet` property (FORMAT.md §9): a client that finds
+    two opaque level-0 surfaces at one point has their order in hand instead
+    of two meshes at one ordinal, and `order.at_grade_overlap` now charges
+    only surfaces that share a sheet.
 
     Heights come from a new **road height field** (`synth/height.rs`): one
     continuous function per level, blending the corridors covering a point and

@@ -1220,6 +1220,13 @@ fn add_road_surface(
                 properties: vec![
                     ("class".to_string(), Value::String(class.to_string())),
                     ("level".to_string(), Value::Int(paved.level)),
+                    // The sheet ordinal (`synth::sheets`) the region was keyed
+                    // by. `level` alone left several opaque level-0 surfaces
+                    // at one ordinal with nothing to order them by — the
+                    // `order.at_grade_overlap` gap — and it is what the
+                    // client's stratigraphic sort will read. Per chunk, not
+                    // global: a corridor may change number at a z13 border.
+                    ("sheet".to_string(), Value::Int(i64::from(paved.layer))),
                 ],
                 elevation: None,
                 z: None,

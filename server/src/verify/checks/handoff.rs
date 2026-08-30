@@ -621,7 +621,7 @@ mod tests {
             vec![0, 1, 2, 0, 2, 3],
         )
         .expect("a quad meshes");
-        RoadMesh { class: class.to_string(), level, band: String::new(), fades: false, mesh }
+        RoadMesh { class: class.to_string(), level, sheet: None, band: String::new(), fades: false, mesh }
     }
 
     fn measure(roads: Vec<RoadMesh>) -> (Option<f64>, Option<f64>, u64) {
@@ -686,7 +686,7 @@ mod tests {
             vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
         )
         .expect("a slab meshes");
-        RoadMesh { class: class.to_string(), level, band: String::new(), fades: false, mesh }
+        RoadMesh { class: class.to_string(), level, sheet: None, band: String::new(), fades: false, mesh }
     }
 
     #[test]

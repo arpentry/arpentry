@@ -35,10 +35,21 @@
 //! `layer` is the grade-separation layer, and its own doc note says regions on
 //! different layers "overlap in plan but are metres apart vertically". So a
 //! tile legitimately carries several level-0 asphalt meshes. What is *not*
-//! legitimate is that `add_road_surface` encodes only `level`: the layer that
-//! separated them is dropped, and the client receives several opaque surfaces
-//! at one ordinal with nothing to order them by. Hence the metric name — this
-//! is an ordering gap, not a seam.
+//! legitimate is two of them at one ordinal: until 2026-08-30
+//! `add_road_surface` encoded only `level`, the layer that separated them was
+//! dropped, and the client received several opaque surfaces with nothing to
+//! order them by. The layer now travels as the `sheet` property, and this
+//! check reads it: two meshes on different sheets are stacked by design and
+//! are not charged; two on the same sheet, or two with no sheet at all (an
+//! archive cut before the property existed), still are. Hence the metric name
+//! — this is an ordering gap, not a seam.
+//!
+//! The sheet also decides what a *seam* compares. Where each tile holds one
+//! surface at a border point the two are compared as before, whatever their
+//! numbers — a corridor may change sheet number at a z13 chunk border, and
+//! its seam is still one seam. Only where a tile holds several surfaces at
+//! one point are they paired across the border by sheet, which is what lets
+//! stacked asphalt be seam-checked at all instead of excluded as ambiguous.
 
 use std::collections::HashMap;
 
@@ -60,6 +71,10 @@ const STEP_M: f64 = 0.005;
 #[derive(Clone, Copy)]
 struct Claim {
     tile: u64,
+    /// The mesh's `sheet` ordinal; `None` for the terrain and for a surface
+    /// emitted without one. One claim per `(tile, sheet)`: two meshes on
+    /// different sheets are two answers by design, not one surface split open.
+    sheet: Option<i64>,
     lo: f32,
     hi: f32,
 }
@@ -81,7 +96,7 @@ impl Seams {
 }
 
 /// Folds every border vertex of `mesh` into `into`.
-fn collect(into: &mut Shared, mesh: &SurfaceMesh, tile: &TileScene) {
+fn collect(into: &mut Shared, mesh: &SurfaceMesh, sheet: Option<i64>, tile: &TileScene) {
     let id = (tile.x as u64) << 32 | tile.y as u64;
     for i in 0..mesh.vertex_count() {
         let (px, py, pz) = mesh.vertex(i);
@@ -100,12 +115,12 @@ fn collect(into: &mut Shared, mesh: &SurfaceMesh, tile: &TileScene) {
         let key = (tile.x as i64 * EXTENT + qx, tile.y as i64 * EXTENT + qy);
         let z = pz as f32;
         let claims = into.entry(key).or_default();
-        match claims.iter_mut().find(|c| c.tile == id) {
+        match claims.iter_mut().find(|c| c.tile == id && c.sheet == sheet) {
             Some(c) => {
                 c.lo = c.lo.min(z);
                 c.hi = c.hi.max(z);
             }
-            None => claims.push(Claim { tile: id, lo: z, hi: z }),
+            None => claims.push(Claim { tile: id, sheet, lo: z, hi: z }),
         }
     }
 }
@@ -158,50 +173,76 @@ fn measure(
                     lat,
                     zoom,
                     value: s,
-                    note: format!(
-                        "one tile holds coincident vertices at {:.3} m and {:.3} m",
-                        c.lo, c.hi
-                    ),
+                    note: match c.sheet {
+                        Some(sheet) => format!(
+                            "one tile holds coincident vertices at {:.3} m and {:.3} m on sheet {sheet}",
+                            c.lo, c.hi
+                        ),
+                        None => format!(
+                            "one tile holds coincident vertices at {:.3} m and {:.3} m",
+                            c.lo, c.hi
+                        ),
+                    },
                 });
             }
         }
 
-        // A point only one tile ever saw proves nothing about agreement.
-        if claims.len() < 2 {
-            continue;
-        }
-        // A tile that has split open has no single answer at this point, so
-        // there is nothing to compare its neighbour against. Whatever extra
-        // height it carries is already reported as a crack; charging the
-        // difference to the seam as well would count one defect twice and send
-        // the reader to the wrong module.
-        if claims.iter().any(|c| (c.hi - c.lo) as f64 > STEP_M) {
-            unusable += 1;
-            continue;
-        }
-        shared += 1;
-        // Compare like with like: each tile's lowest against the others', and
-        // each tile's highest against the others'.
-        let spread = |f: fn(&Claim) -> f32| {
-            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
-            for c in claims {
-                lo = lo.min(f(c));
-                hi = hi.max(f(c));
-            }
-            (hi - lo) as f64
+        // Which claims to compare across the border. Where every tile holds
+        // one surface at this point, compare them all whatever their sheet
+        // numbers say — the numbers are per chunk, and one surface meeting
+        // one surface is one seam. Where a tile holds several, pair them by
+        // sheet: asphalt stacked over asphalt has a partner on the other side
+        // only on its own sheet.
+        let mut tiles: Vec<u64> = claims.iter().map(|c| c.tile).collect();
+        tiles.sort_unstable();
+        tiles.dedup();
+        let one_each = tiles.len() == claims.len();
+        let mut groups: Vec<Vec<&Claim>> = if one_each {
+            vec![claims.iter().collect()]
+        } else {
+            let mut sheets: Vec<Option<i64>> = claims.iter().map(|c| c.sheet).collect();
+            sheets.sort_unstable();
+            sheets.dedup();
+            sheets.into_iter().map(|s| claims.iter().filter(|c| c.sheet == s).collect()).collect()
         };
-        let s = spread(|c| c.lo).max(spread(|c| c.hi));
-        step.push(s);
-        if s > STEP_M {
-            let (lon, lat) = lonlat(*gx, *gy, zoom);
-            let heights: Vec<String> = claims.iter().map(|c| format!("{:.3}", c.lo)).collect();
-            step_worst.offer(Offender {
-                lon,
-                lat,
-                zoom,
-                value: s,
-                note: format!("{} neighbouring tiles read {}", claims.len(), heights.join(" / ")),
-            });
+        for group in groups.iter_mut() {
+            // A point only one tile ever saw proves nothing about agreement.
+            if group.len() < 2 {
+                continue;
+            }
+            // A tile that has split open has no single answer at this point,
+            // so there is nothing to compare its neighbour against. Whatever
+            // extra height it carries is already reported as a crack; charging
+            // the difference to the seam as well would count one defect twice
+            // and send the reader to the wrong module.
+            if group.iter().any(|c| (c.hi - c.lo) as f64 > STEP_M) {
+                unusable += 1;
+                continue;
+            }
+            shared += 1;
+            // Compare like with like: each tile's lowest against the others',
+            // and each tile's highest against the others'.
+            let spread = |f: fn(&Claim) -> f32| {
+                let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+                for c in group.iter() {
+                    lo = lo.min(f(c));
+                    hi = hi.max(f(c));
+                }
+                (hi - lo) as f64
+            };
+            let s = spread(|c| c.lo).max(spread(|c| c.hi));
+            step.push(s);
+            if s > STEP_M {
+                let (lon, lat) = lonlat(*gx, *gy, zoom);
+                let heights: Vec<String> = group.iter().map(|c| format!("{:.3}", c.lo)).collect();
+                step_worst.offer(Offender {
+                    lon,
+                    lat,
+                    zoom,
+                    value: s,
+                    note: format!("{} neighbouring tiles read {}", group.len(), heights.join(" / ")),
+                });
+            }
         }
     }
 
@@ -259,16 +300,19 @@ fn measure(
                 id: "order.at_grade_overlap".into(),
                 invariant: Invariant::I3,
                 population: "Coincident border vertices of two different level-0 road_surface \
-                             meshes in one tile. Border vertices only — that is what this pass \
-                             collects; a whole-mesh version would find more overlap."
+                             meshes in one tile that carry the same `sheet` ordinal, or none. \
+                             Border vertices only — that is what this pass collects; a \
+                             whole-mesh version would find more overlap."
                     .into(),
                 title: "Overlapping at-grade asphalt with nothing to order it".into(),
                 detail: "Vertical separation where two level-0 paved regions share a plan \
-                         position. Several regions per level are by design — `synth::pavement` \
-                         keys them by (level, layer), and different grade-separation layers \
-                         overlap in plan while sitting metres apart. The defect is that \
-                         `add_road_surface` encodes only `level`, so the client receives \
-                         several opaque surfaces at one ordinal with no way to order them. \
+                         position and an ordinal. Several regions per level are by design — \
+                         `synth::pavement` keys them by (level, layer), and different \
+                         grade-separation layers overlap in plan while sitting metres apart — \
+                         and since 2026-08-30 the layer reaches the client as the `sheet` \
+                         property, so two surfaces on different sheets are ordered and not \
+                         charged. What remains is two surfaces the client cannot order: the \
+                         same sheet at two heights, or an archive with no `sheet` at all. \
                          Scoped to border vertices, which is what this check collects; a \
                          whole-mesh version would find more."
                     .into(),
@@ -286,10 +330,10 @@ impl Check for Seams {
     fn visit(&mut self, tile: &TileScene, _opt: &Options) {
         self.zoom = tile.z;
         if let Some(t) = &tile.terrain {
-            collect(&mut self.terrain, t, tile);
+            collect(&mut self.terrain, t, None, tile);
         }
         for road in tile.roads.iter().filter(|r| r.is_pavement()) {
-            collect(&mut self.pavement, &road.mesh, tile);
+            collect(&mut self.pavement, &road.mesh, road.sheet, tile);
         }
     }
 
@@ -456,17 +500,12 @@ mod tests {
         assert!((split.worst_value().unwrap() - 3.5).abs() < 1e-3);
     }
 
-    #[test]
-    fn two_at_grade_regions_at_one_point_are_reported_as_an_ordering_gap() {
-        // Two level-0 `road_surface` meshes overlapping in plan, 8.8 m apart.
-        // Legitimate as geometry — they are different grade-separation layers —
-        // but the encoded feature carries only `level`, so nothing orders them.
-        // It must land under the ordering metric, not under a seam or a crack.
-        let b = Bounds::of_tile(16, 100, 23000);
-        let region = |h: f32| RoadMesh {
+    /// A full-tile level-0 `road_surface` slab at height `h` on `sheet`.
+    fn region(h: f32, sheet: Option<i64>) -> RoadMesh {
+        RoadMesh {
             class: "road_surface".into(),
             level: 0,
-            band: String::new(), fades: false,
+            band: String::new(), fades: false, sheet,
             mesh: SurfaceMesh::from_parts(
                 vec![0.0, 1.0, 1.0, 0.0],
                 vec![0.0, 0.0, 1.0, 1.0],
@@ -474,20 +513,33 @@ mod tests {
                 vec![0, 1, 2, 0, 2, 3],
             )
             .unwrap(),
-        };
-        let t = TileScene {
+        }
+    }
+
+    /// One tile holding `roads`, and no terrain.
+    fn stacked(x: u32, roads: Vec<RoadMesh>) -> TileScene {
+        let b = Bounds::of_tile(16, x, 23000);
+        TileScene {
             z: 16,
-            x: 100,
+            x,
             y: 23000,
             scale: Scale::of(&b),
             bounds: b,
             terrain: None,
-            roads: vec![region(480.0), region(488.8)],
+            roads,
             lines: Vec::new(),
             waters: Vec::new(),
             buildings: Vec::new(),
-        };
-        let m = run(&[t]);
+        }
+    }
+
+    #[test]
+    fn two_at_grade_regions_at_one_point_are_reported_as_an_ordering_gap() {
+        // Two level-0 `road_surface` meshes overlapping in plan, 8.8 m apart,
+        // in an archive that carries no `sheet`. Legitimate as geometry — they
+        // are different grade-separation layers — but nothing orders them. It
+        // must land under the ordering metric, not under a seam or a crack.
+        let m = run(&[stacked(100, vec![region(480.0, None), region(488.8, None)])]);
         let overlap = metric(&m, "order.at_grade_overlap");
         assert!(overlap.violations() > 0);
         assert!((overlap.worst_value().unwrap() - 8.8).abs() < 1e-3);
@@ -499,13 +551,52 @@ mod tests {
     }
 
     #[test]
+    fn two_regions_on_different_sheets_are_ordered_and_not_a_gap() {
+        // The same stack, with the sheet ordinal emitted: the client can order
+        // the two, so there is nothing to charge.
+        let m = run(&[stacked(100, vec![region(480.0, Some(0)), region(488.8, Some(1))])]);
+        assert_eq!(metric(&m, "order.at_grade_overlap").violations(), 0);
+        // Two regions on ONE sheet at two heights are still a gap.
+        let m = run(&[stacked(100, vec![region(480.0, Some(1)), region(488.8, Some(1))])]);
+        assert!(metric(&m, "order.at_grade_overlap").violations() > 0);
+    }
+
+    #[test]
+    fn stacked_asphalt_is_seam_checked_sheet_by_sheet() {
+        // Two tiles, each holding two stacked sheets. The lower sheet agrees
+        // across the border and the upper does not; the seam must pair by
+        // sheet and find the upper one's 0.7 m, rather than exclude the point
+        // as ambiguous or compare the lower sheet against the upper.
+        let a = stacked(100, vec![region(480.0, Some(0)), region(488.8, Some(1))]);
+        let b = stacked(101, vec![region(480.0, Some(0)), region(489.5, Some(1))]);
+        let m = run(&[a, b]);
+        let step = metric(&m, "seam.pavement_step");
+        assert!(step.violations() > 0);
+        assert!((step.worst_value().unwrap() - 0.7).abs() < 1e-3);
+        assert_eq!(metric(&m, "order.at_grade_overlap").violations(), 0);
+    }
+
+    #[test]
+    fn one_surface_each_side_is_one_seam_whatever_its_sheet_number() {
+        // Sheet numbers are per chunk: across a chunk border the same corridor
+        // may be sheet 0 on one side and sheet 2 on the other. With one
+        // surface per tile at the point, the two are still compared.
+        let a = stacked(100, vec![region(480.0, Some(0))]);
+        let b = stacked(101, vec![region(480.9, Some(2))]);
+        let m = run(&[a, b]);
+        let step = metric(&m, "seam.pavement_step");
+        assert!(step.violations() > 0);
+        assert!((step.worst_value().unwrap() - 0.9).abs() < 1e-3);
+    }
+
+    #[test]
     fn the_carriageway_seam_is_measured_separately_from_the_ground() {
         let mut a = strip(100, 200.0, 250.0);
         let mut b = strip(101, 250.0, 300.0);
         let pave = |west: f32, east: f32| RoadMesh {
             class: "road_surface".into(),
             level: 0,
-            band: String::new(), fades: false,
+            band: String::new(), fades: false, sheet: None,
             mesh: SurfaceMesh::from_parts(
                 vec![0.0, 1.0, 1.0, 0.0],
                 vec![0.4, 0.4, 0.6, 0.6],

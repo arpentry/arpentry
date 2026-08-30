@@ -681,6 +681,7 @@ Roads, rail, and other linear transport features.
 |---|---|---|
 | class | string | `motorway`, `trunk`, `primary`, `secondary`, `tertiary`, `residential`, … |
 | name | string | Street name |
+| sheet | int | Surface meshes only (`road_surface`, `rail_surface`, `walk_surface`, `path_surface` and their `*_rim` / `*_apron`): the grade-separation sheet ordinal the tiler keyed the region by (see GENERATION.md, `synth::sheets`). Two level-0 surfaces overlapping in plan carry different sheets; the higher sheet is above. Numbered per z13 chunk, so a corridor may change number at a chunk border — the ordinal orders surfaces *within a tile*, it does not identify a corridor across tiles. |
 
 ### tree
 
