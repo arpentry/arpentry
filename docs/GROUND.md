@@ -505,6 +505,20 @@ radius drop the inner contact line rather than emit a folded one.
   between rungs by the canvases' divergence — `lod.structure_drift`
   measures the height over each zoom's own drawn ground instead.
   `ARPT_NO_ZOOM_DATUM=1` restores absolute structures for an A/B re-tile.
+- **`ARPT_ONE_CANVAS=1` (opt-in, measured 2026-08-30)** applies the one-canvas
+  rule at every asphalt rung (z ≥ 13): the hole is cut and the mesh
+  constrained there with the ground unfiltered, and the at-grade band reads
+  its profile plus the same `shift_at_arc` the deck is swept with — no clamp.
+  On the Montreux zone at z13–15 it closes the seam family as the algebra
+  says it must (`seam.band_deck_step` 82 → 38 % over, tail 2.05 → 0.99 m;
+  `seam.handover_kerb` 12 → 0 %; `slope.carriageway_face` 26 → 4.8 %) and
+  opens the fork it was never meant to leave: every other consumer still
+  reads the *lattice mirror* `surface(z)`, while the tile now draws a
+  constrained mesh, and at a 300 m z13 cell the two differ by tens of
+  metres (`contact.building_seat` 0 → 10.7 % over, worst 58 m;
+  `contact.kerb_lip` 11 → 27 %, worst 54 m; `lod.structure_drift` 0.7 →
+  16 %). Bake 1.65×. It becomes the default only once `surface(z)` samples
+  the mesh the tile draws.
 
 Reading the field is not enough on its own: the asphalt has to be *meshed*
 finely enough to hold what it read. Sampling the field only at the paved

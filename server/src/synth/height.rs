@@ -365,7 +365,8 @@ impl<'a> HeightField<'a> {
             // field exists to prevent (ROADS.md invariant 5). With the ground
             // cut away there is no hillside to be inside of, and clamping here
             // while the corridors do not is itself a disagreement.
-            let height = if hole { p.height } else { (p.height + pin_shift).max(ground) };
+            let height =
+                if hole { p.height + pin_shift } else { (p.height + pin_shift).max(ground) };
             let (de, dn) = p.area.offset_m(Coord { x: lon, y: lat });
             let d = (de * de + dn * dn).sqrt();
             if best.is_none_or(|(bd, _, _)| d < bd) {

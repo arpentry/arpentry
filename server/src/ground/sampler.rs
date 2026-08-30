@@ -79,6 +79,14 @@ impl GroundSampler {
     /// Whether zoom `z` is the detail rung — the only one that gets a
     /// breakline-constrained mesh, and so the only one that can cut a hole.
     fn is_detail(&self, z: u8) -> bool {
+        if one_canvas() {
+            // One canvas displacement (docs/GROUND.md §4, data/plans/
+            // carmack-rewrite-plan-2026-08-29.md item ②): every rung that
+            // draws asphalt cuts the hole under it and holds its benches in
+            // the constrained mesh, so there is no rung on which ground is
+            // drawn under the carriageway for the road to be clamped above.
+            return z >= crate::priors::ROAD_SURFACE_MIN_ZOOM;
+        }
         terrain::grid_for(z, self.z_ref) == terrain::TERRAIN_GRID_DETAIL
     }
 
@@ -122,7 +130,10 @@ impl GroundSampler {
     /// breakline-constrained mesh holds every bench exactly, so nothing is
     /// filtered out there; coarser rungs drop what they cannot draw.
     fn cell_m(&self, lat: f64, z: u8) -> f64 {
-        if z >= self.z_ref {
+        // A rung whose mesh is constrained holds every bench exactly, so it
+        // asks for the ground unfiltered; the resolution filter is only for
+        // the plain lattice, which spikes on a bench narrower than its cell.
+        if z >= self.z_ref || self.is_detail(z) {
             return 0.0;
         }
         let tile_deg = 360.0 / (1u64 << z) as f64;
@@ -203,6 +214,16 @@ impl GroundSampler {
         }
         terrain::elevated_mesh(grid, bounds, |lon, lat| self.corner(lon, lat, z))
     }
+}
+
+/// Whether the one-canvas rule is on for this run (`ARPT_ONE_CANVAS=1`, an
+/// opt-in until it is measured to hold): the hole is cut and the mesh
+/// constrained at every asphalt rung, and the at-grade band reads its
+/// profile plus the structure datum shift — the deck's own formula — with no
+/// clamp. Read once: the sampler asks per vertex.
+pub fn one_canvas() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("ARPT_ONE_CANVAS").is_some())
 }
 
 /// [`GroundSampler::corner`] with the sampler's fields split apart, so a

@@ -224,14 +224,18 @@ pub(crate) fn on_ground(
     lat: f64,
 ) -> f64 {
     match profile {
-        Some(p) if z == z_ref => {
-            let road_m = p.height_at(lon, lat);
-            if sampler.cuts_hole(z) {
-                road_m
-            } else {
-                ground.max(road_m)
-            }
+        // Where the ground under the asphalt is cut away the band is its own
+        // profile, carried onto this rung's canvas by the same datum shift
+        // the deck it hands over to is swept with (`datum::shift_at_arc`, on
+        // the same global stations) — so band and deck agree by construction
+        // rather than by two reconstructions of one field on different node
+        // sets. Zero shift at the reference rung, where this is the profile
+        // outright. No clamp: there is no drawn ground left to poke through.
+        Some(p) if sampler.cuts_hole(z) => {
+            p.height_at(lon, lat)
+                + crate::synth::datum::shift_at_arc(p, p.arc_of(lon, lat), sampler, z, z_ref)
         }
+        Some(p) if z == z_ref => ground.max(p.height_at(lon, lat)),
         Some(p) => {
             let ref_bounds = solve::tile_containing(z_ref, lon, lat);
             let lift = p.height_at(lon, lat) - sampler.surface(&ref_bounds, lon, lat, z_ref);
