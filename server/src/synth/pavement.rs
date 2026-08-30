@@ -112,6 +112,16 @@ impl PavementModel {
     }
 }
 
+/// The metre frame a tile's rings were baked in — the frame of the chunk
+/// containing the tile ([`bake_chunk`]'s own `MFrame::of(chunk_centre)`), so
+/// a reader can put a ring vertex back on the exact grid the boolean snapped
+/// it to. Anything that wants to test a baked edge *exactly* (rather than
+/// within a tolerance) has to work in this frame, not the tile's.
+pub fn chunk_frame_for(bounds: &Bounds) -> MFrame {
+    let (cx, cy) = chunk_of(bounds.west + 0.5 * bounds.width(), bounds.south + 0.5 * bounds.height());
+    MFrame::of(chunk_centre(cx, cy))
+}
+
 /// The z13 chunk containing a world point.
 fn chunk_of(lon: f64, lat: f64) -> ChunkKey {
     let n = 1u32 << PAVE_BAKE_Z;

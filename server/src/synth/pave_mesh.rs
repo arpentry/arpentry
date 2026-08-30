@@ -47,6 +47,7 @@ use crate::project::{self, Bounds};
 use crate::synth::height::HeightField;
 use crate::synth::carriageway::Handover;
 use crate::synth::pavement::LevelShapes;
+use crate::synth::poly::{self, MFrame};
 use crate::synth::region::Region;
 use crate::terrain::TerrainMesh;
 
@@ -165,8 +166,18 @@ pub fn tile_meshes(
         let probe = std::env::var_os("ARPT_PAVE_PROBE").is_some();
         let t = std::time::Instant::now();
         let verts: usize = rings.iter().map(|r| r.pts.len()).sum();
+        // The shadow census rides a thread-local for the duration of this
+        // tile's meshing (a tile is meshed on one thread): the rim builder
+        // records every verdict into it without the census threading through
+        // every signature between here and there.
+        if std::env::var_os("ARPT_EXACT_HANDOVER").is_some() {
+            EXACT_CENSUS.with(|c| *c.borrow_mut() = Some(ExactCensus::new(bounds)));
+        }
         let meshed =
             mesh_rings(&rings, bounds, crate::terrain::grid_for(z, z_ref), hole, handovers, &mut height);
+        if let Some(c) = EXACT_CENSUS.with(|c| c.borrow_mut().take()) {
+            c.report(z, bounds);
+        }
         // The apron is the wall the hole exposes, so it is built only where the
         // hole is cut and only for the at-grade surface: a deck's silhouette is
         // its own edge over open air, not a kerb against the ground.
@@ -865,6 +876,184 @@ fn is_handover(a: Coord, b: Coord, handovers: &[Handover], m_lon: f64) -> bool {
     })
 }
 
+/// Whether a boundary edge is the cut where a structure takes over — the
+/// **exact** answer, on the boolean's own grid, to the question [`is_handover`]
+/// answers within half a metre.
+///
+/// The cut was applied in the chunk's metre frame on a 0.1 mm integer grid
+/// (`poly::GRID_M`): `cut_beyond`'s quad has the cut for an edge, and the
+/// boolean's output vertices along it are that line's intersections with the
+/// band, rounded to the grid. So a boundary vertex the cut produced lies
+/// within one grid unit of the line through the cut's own snapped ends — and
+/// a kerb vertex does not, by metres. Both ends of the edge must lie on the
+/// line and within the cut's extent. Simplification only removes vertices,
+/// and densification interpolates between two that qualify, so the test
+/// survives both; the tile clip's border vertices sit on the cut line too.
+///
+/// Integer arithmetic throughout: `cross² ≤ len²` is "within one unit of the
+/// line" with no division, and the cross of two chunk-scale offsets (~2e7
+/// units) needs the i128 only for its square.
+///
+/// This is stage S1 of `data/plans/carmack-rewrite-plan-2026-08-29.md` — run
+/// in the shadow of the tolerant test under `ARPT_EXACT_HANDOVER=1`, and the
+/// agreement between the two is what decides whether an edge's provenance can
+/// be carried exactly through the pipeline at all.
+fn is_handover_exact(a: Coord, b: Coord, handovers: &[Handover], frame: &MFrame) -> bool {
+    let g = |c: Coord| -> [i64; 2] {
+        let p = frame.to_m(c);
+        [(p[0] / poly::GRID_M).round() as i64, (p[1] / poly::GRID_M).round() as i64]
+    };
+    let (pa, pb) = (g(a), g(b));
+    handovers.iter().any(|h| {
+        let (ha, hb) = (g(h.a), g(h.b));
+        let (dx, dy) = (hb[0] - ha[0], hb[1] - ha[1]);
+        let len2 = dx * dx + dy * dy;
+        if len2 == 0 {
+            return false;
+        }
+        let on = |p: [i64; 2]| {
+            let (qx, qy) = (p[0] - ha[0], p[1] - ha[1]);
+            let cross = (qx * dy - qy * dx) as i128;
+            let dot = qx * dx + qy * dy;
+            cross * cross <= len2 as i128 && dot >= 0 && dot <= len2
+        };
+        on(pa) && on(pb)
+    })
+}
+
+thread_local! {
+    /// The shadow census for the tile being meshed on this thread, if
+    /// `ARPT_EXACT_HANDOVER` asked for one.
+    static EXACT_CENSUS: std::cell::RefCell<Option<ExactCensus>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The shadow census of `ARPT_EXACT_HANDOVER=1`: how often the tolerant and
+/// the exact handover tests agree, per tile, with the first few disagreements
+/// placed so they can be inspected.
+struct ExactCensus {
+    frame: MFrame,
+    both: u64,
+    tol_only: u64,
+    exact_only: u64,
+    neither: u64,
+    /// Every tolerant-true edge, bucketed by the farther of its two ends'
+    /// distance from the nearest cut's line, in grid units — the distribution
+    /// the exactness threshold has to be read off. Buckets: ≤1, ≤2, ≤4, ≤8,
+    /// ≤16, ≤100, ≤1000, beyond.
+    far: [u64; 8],
+    samples: Vec<String>,
+}
+
+const FAR_BUCKETS: [f64; 7] = [1.0, 2.0, 4.0, 8.0, 16.0, 100.0, 1000.0];
+
+impl ExactCensus {
+    fn new(bounds: &Bounds) -> ExactCensus {
+        ExactCensus {
+            frame: crate::synth::pavement::chunk_frame_for(bounds),
+            both: 0,
+            tol_only: 0,
+            exact_only: 0,
+            neither: 0,
+            far: [0; 8],
+            samples: Vec::new(),
+        }
+    }
+
+    fn record(&mut self, a: Coord, b: Coord, handovers: &[Handover], tolerant: bool) {
+        let exact = is_handover_exact(a, b, handovers, &self.frame);
+        match (tolerant, exact) {
+            (true, true) => self.both += 1,
+            (true, false) => self.tol_only += 1,
+            (false, true) => self.exact_only += 1,
+            (false, false) => self.neither += 1,
+        }
+        if tolerant || exact {
+            let g = |c: Coord| -> [f64; 2] {
+                let p = self.frame.to_m(c);
+                [p[0] / poly::GRID_M, p[1] / poly::GRID_M]
+            };
+            let dist = |p: [f64; 2]| -> f64 {
+                handovers
+                    .iter()
+                    .map(|h| {
+                        let (ha, hb) = (g(h.a), g(h.b));
+                        let (dx, dy) = (hb[0] - ha[0], hb[1] - ha[1]);
+                        let len = (dx * dx + dy * dy).sqrt().max(1e-9);
+                        ((p[0] - ha[0]) * dy - (p[1] - ha[1]) * dx).abs() / len
+                    })
+                    .fold(f64::INFINITY, f64::min)
+            };
+            let far = dist(g(a)).max(dist(g(b)));
+            let bucket = FAR_BUCKETS.iter().position(|&b| far <= b).unwrap_or(7);
+            self.far[bucket] += 1;
+        }
+        if tolerant != exact && self.samples.len() < 4 {
+            // How far the edge's ends sit from the nearest cut, in grid units,
+            // so a disagreement reads as "off by 3 units" or "off by 4 000".
+            let g = |c: Coord| -> [f64; 2] {
+                let p = self.frame.to_m(c);
+                [p[0] / poly::GRID_M, p[1] / poly::GRID_M]
+            };
+            let dist = |p: [f64; 2]| -> f64 {
+                handovers
+                    .iter()
+                    .map(|h| {
+                        let (ha, hb) = (g(h.a), g(h.b));
+                        let (dx, dy) = (hb[0] - ha[0], hb[1] - ha[1]);
+                        let len = (dx * dx + dy * dy).sqrt().max(1e-9);
+                        ((p[0] - ha[0]) * dy - (p[1] - ha[1]) * dx).abs() / len
+                    })
+                    .fold(f64::INFINITY, f64::min)
+            };
+            // And where along the nearest cut each end sits, as a fraction of
+            // its length: outside [0, 1] is "collinear but past the cut's end".
+            let along = |p: [f64; 2]| -> f64 {
+                handovers
+                    .iter()
+                    .map(|h| {
+                        let (ha, hb) = (g(h.a), g(h.b));
+                        let (dx, dy) = (hb[0] - ha[0], hb[1] - ha[1]);
+                        let len2 = (dx * dx + dy * dy).max(1e-9);
+                        let d = ((p[0] - ha[0]) * dy - (p[1] - ha[1]) * dx).abs() / len2.sqrt();
+                        (d, ((p[0] - ha[0]) * dx + (p[1] - ha[1]) * dy) / len2)
+                    })
+                    .fold((f64::INFINITY, f64::NAN), |best, c| if c.0 < best.0 { c } else { best })
+                    .1
+            };
+            self.samples.push(format!(
+                "{:.6},{:.6} tol={tolerant} exact={exact} line-dist {:.1}/{:.1} units along {:.3}/{:.3} len {:.2} m",
+                0.5 * (a.x + b.x),
+                0.5 * (a.y + b.y),
+                dist(g(a)),
+                dist(g(b)),
+                along(g(a)),
+                along(g(b)),
+                {
+                    let (pa, pb) = (self.frame.to_m(a), self.frame.to_m(b));
+                    ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2)).sqrt()
+                }
+            ));
+        }
+    }
+
+    fn report(&self, z: u8, bounds: &Bounds) {
+        if self.both + self.tol_only + self.exact_only == 0 {
+            return;
+        }
+        eprintln!(
+            "[exact-handover] z{z} {:.5},{:.5} both={} tol_only={} exact_only={} neither={} far={}{}",
+            bounds.west + 0.5 * bounds.width(),
+            bounds.south + 0.5 * bounds.height(),
+            self.both,
+            self.tol_only,
+            self.exact_only,
+            self.neither,
+            self.far.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("/"),
+            self.samples.iter().map(|s| format!("\n    {s}")).collect::<String>()
+        );
+    }
+}
+
 /// The rim: one quad per non-cut boundary edge, `edge_across` 127 on the
 /// silhouette pair and 0 on the inset pair, so the client fades the outer pixel.
 ///
@@ -948,6 +1137,11 @@ fn build_rim(
             // A handover quad goes to the surface instead, and there it is
             // interior: opaque, with no across-coordinate to fade.
             let handover = is_handover(r.pts[k], r.pts[k1], handovers, m_lon);
+            EXACT_CENSUS.with(|c| {
+                if let Some(c) = c.borrow_mut().as_mut() {
+                    c.record(r.pts[k], r.pts[k1], handovers, handover);
+                }
+            });
             let out = if handover { &mut hand } else { &mut mesh };
             let base = out.x.len() as u32;
             for ((_, a), qc) in quad.iter().zip(across).zip(&q) {
@@ -1197,6 +1391,20 @@ mod tests {
             !is_handover(ring[0], ring[1], &handovers, m_lon),
             "the southern kerb only meets the cut at its corner"
         );
+        // The exact test agrees on both, on the boolean's own grid: the
+        // western kerb's two ends are the cut's own ends, the southern kerb's
+        // far end is 5 grid units short of nothing — it is metres off the line.
+        let frame = crate::synth::pavement::chunk_frame_for(&b);
+        assert!(is_handover_exact(ring[3], ring[0], &handovers, &frame));
+        assert!(!is_handover_exact(ring[0], ring[1], &handovers, &frame));
+        // A vertex one grid unit off the line still counts (the boolean rounds
+        // its intersections to the grid); ten units off does not.
+        let off = |units: f64| {
+            let p = frame.to_m(ring[0]);
+            frame.to_deg([p[0] + units * crate::synth::poly::GRID_M, p[1]])
+        };
+        assert!(is_handover_exact(ring[3], off(1.0), &handovers, &frame));
+        assert!(!is_handover_exact(ring[3], off(10.0), &handovers, &frame));
     }
 
     /// The silhouette is split at every lattice line it crosses, so no stretch

@@ -65,7 +65,7 @@ pub type Shapes = Vec<Shape>;
 
 /// The float→integer grid, in metres — 0.1 mm, four orders of magnitude below
 /// the centimetre that survives tile quantization, so snapping is invisible.
-const GRID_M: f64 = 1e-4;
+pub(crate) const GRID_M: f64 = 1e-4;
 
 /// The scale `i_overlay`'s `_fixed_scale` entry points want: reciprocal grid.
 const SCALE: f64 = 1.0 / GRID_M;
