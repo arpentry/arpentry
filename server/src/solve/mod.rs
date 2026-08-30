@@ -99,6 +99,7 @@ fn reconcile_stratum(
     sites: &[Vec<crossings::PlanCrossing>],
     daylight: &mut Vec<Daylight>,
     divergence: &mut Vec<PartitionDivergence>,
+    pass: usize,
 ) {
     // ARPT_DEBUG_ANNEX: one line per tunnel-bearing corridor with crossings —
     // the tail bounds against the crossing arcs, and whether the annex took.
@@ -192,6 +193,23 @@ fn reconcile_stratum(
                 if hi - lo > f64::EPSILON {
                     p.degrade_structure(lo, hi, deck_follows_road);
                 }
+            }
+        }
+        // Two-pass attribution (`ARPT_TWO_PASS_DIVERGENCE=1`, pass 2 only):
+        // where the second pass's fold output differs from the first's — the
+        // non-fixpoint 167a143 measured, per corridor and per kind family, so
+        // step 3's blocker is a list of mechanisms instead of a total.
+        // `entering` IS pass 1's reconciled spans on pass 2, so the divergence
+        // between the passes is divergence(entering, reconciled) verbatim.
+        if pass > 0 && std::env::var_os("ARPT_TWO_PASS_DIVERGENCE").is_some() {
+            let d = partition::divergence(&entering, &reconciled);
+            if d.metres > 0.5 {
+                let pt = p.point_at_arc(d.worst_arc);
+                eprintln!(
+                    "[two-pass] corridor {} {:?} {:.1} m differ: b→g {:.1} g→b {:.1} t→g {:.1} g→t {:.1} other {:.1} at {:.6},{:.6} (longest {:.0} m)",
+                    c.id, c.kind, d.metres, d.bridge_to_grade, d.grade_to_bridge,
+                    d.tunnel_to_grade, d.grade_to_tunnel, d.other, pt.x, pt.y, d.worst_metres
+                );
             }
         }
         // The pure partition, computed from the same inputs and compared —
@@ -903,6 +921,7 @@ pub fn run_licensed(
             &sites,
             &mut daylight,
             &mut partition_div,
+            pass,
         );
     }
     }
