@@ -608,6 +608,79 @@
       "worst": 20.0
     },
     {
+      "id": "partition.divergence",
+      "invariant": "I2",
+      "median": 0.4266666666666667,
+      "offenders": [
+        {
+          "lat": 46.49481702063055,
+          "lon": 6.749806138480965,
+          "note": "Road(Motorway) #3958: 697 m differ (bridge→grade 697, grade→bridge 0, tunnel→grade 0, grade→tunnel 0, other 0); longest stretch 149 m",
+          "value": 697.0741636016915,
+          "zoom": 16
+        },
+        {
+          "lat": 46.49513209984309,
+          "lon": 6.749658882750177,
+          "note": "Road(Motorway) #4646: 397 m differ (bridge→grade 397, grade→bridge 0, tunnel→grade 0, grade→tunnel 0, other 0); longest stretch 173 m",
+          "value": 397.26121242291424,
+          "zoom": 16
+        },
+        {
+          "lat": 46.42356417862298,
+          "lon": 7.041421674523528,
+          "note": "Road(Service) #21329: 363 m differ (bridge→grade 363, grade→bridge 0, tunnel→grade 0, grade→tunnel 0, other 0); longest stretch 328 m",
+          "value": 363.16477017753317,
+          "zoom": 16
+        },
+        {
+          "lat": 46.392393298577126,
+          "lon": 6.93771959008788,
+          "note": "Road(Motorway) #3959: 274 m differ (bridge→grade 274, grade→bridge 0, tunnel→grade 0, grade→tunnel 0, other 0); longest stretch 43 m",
+          "value": 274.4780593322357,
+          "zoom": 16
+        },
+        {
+          "lat": 46.42505655562489,
+          "lon": 7.129987924306772,
+          "note": "Road(Primary) #16716: 246 m differ (bridge→grade 246, grade→bridge 0, tunnel→grade 0, grade→tunnel 0, other 0); longest stretch 73 m",
+          "value": 245.82628232583716,
+          "zoom": 16
+        },
+        {
+          "lat": 46.48327474418317,
+          "lon": 6.886006491285522,
+          "note": "Road(Motorway) #9305: 206 m differ (bridge→grade 206, grade→bridge 0, tunnel→grade 0, grade→tunnel 0, other 0); longest stretch 46 m",
+          "value": 206.0383877028862,
+          "zoom": 16
+        },
+        {
+          "lat": 46.52657871897589,
+          "lon": 6.89393472709178,
+          "note": "Rail(NarrowGauge) #9148: 201 m differ (bridge→grade 201, grade→bridge 0, tunnel→grade 0, grade→tunnel 0, other 0); longest stretch 152 m",
+          "value": 201.17627820709157,
+          "zoom": 16
+        },
+        {
+          "lat": 46.341335126730336,
+          "lon": 7.00702344351445,
+          "note": "Rail(NarrowGauge) #17308: 191 m differ (bridge→grade 191, grade→bridge 0, tunnel→grade 0, grade→tunnel 0, other 0); longest stretch 74 m",
+          "value": 190.8011796224555,
+          "zoom": 16
+        }
+      ],
+      "population": "Every corridor that ends the write-back holding any structure span, scored by the metres of centerline on which solve::partition — the same predicates as one function, plus the bridge half clamped to the derived deck runs — names a different kind than the spans the fold wrote.",
+      "samples": 597,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 696.7466666666667,
+      "threshold": 0.5,
+      "title": "Where the pure partition disagrees with the fold",
+      "violation_pct": 36.68341708542714,
+      "violations": 219,
+      "worst": 697.0741636016915
+    },
+    {
       "id": "solve.residual_grade",
       "invariant": "I2",
       "median": 0.006666666666667709,

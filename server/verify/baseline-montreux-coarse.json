@@ -357,18 +357,18 @@
           "zoom": 14
         },
         {
+          "lat": 46.402314361184835,
+          "lon": 6.927446499466896,
+          "note": "kerb 393.10 m, ground 378.02 m a metre outside it",
+          "value": 15.07818972322184,
+          "zoom": 14
+        },
+        {
           "lat": 46.40230882912874,
           "lon": 6.927489414811134,
           "note": "kerb 400.19 m, ground 385.11 m a metre outside it",
           "value": 15.076944839754901,
           "zoom": 13
-        },
-        {
-          "lat": 46.402314361184835,
-          "lon": 6.927446499466896,
-          "note": "kerb 393.10 m, ground 378.02 m a metre outside it",
-          "value": 15.075744897404547,
-          "zoom": 14
         },
         {
           "lat": 46.402340177446604,
@@ -379,14 +379,14 @@
         }
       ],
       "population": "Every silhouette (boundary) edge midpoint of every level-0 road_surface mesh inside the tile proper, probed 1 m along the outward normal. Structures are excluded: a deck edge is not a kerb.",
-      "samples": 377006,
+      "samples": 377145,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 7.526666666666671,
       "threshold": 0.5,
       "title": "Drop from the kerb to the ground beside it",
-      "violation_pct": 10.92979952573699,
-      "violations": 41206,
+      "violation_pct": 10.937968155483965,
+      "violations": 41252,
       "worst": 15.617298863970177
     },
     {
@@ -462,7 +462,7 @@
     {
       "id": "order.deck_above_carriageway",
       "invariant": "I3",
-      "median": 7.859999999999999,
+      "median": 7.846666666666671,
       "offenders": [
         {
           "lat": 46.438724510371685,
@@ -522,14 +522,14 @@
         }
       ],
       "population": "Structure surface samples at 1.0 m plan spacing where at-grade asphalt shares the plan position, in the tile proper. Excludes decks over bare ground, which have nothing to be ordered against.",
-      "samples": 366117,
+      "samples": 366308,
       "sense": "lower_is_worse",
       "skipped": null,
       "tail": -9.966666666666665,
       "threshold": -0.5,
       "title": "Elevated structure above the at-grade asphalt",
-      "violation_pct": 5.084440219929695,
-      "violations": 18615,
+      "violation_pct": 5.088340958974415,
+      "violations": 18639,
       "worst": -10.729707117257817
     },
     {
@@ -692,16 +692,16 @@
         },
         {
           "lat": 46.4023126848042,
-          "lon": 6.927454546093941,
+          "lon": 6.927454210817814,
           "note": "at-grade road_surface at 393.24 m over at-grade rail_surface at 383.02 m, nothing between them",
-          "value": 10.213810851420703,
+          "value": 10.213900888946682,
           "zoom": 14
         },
         {
           "lat": 46.40231117606163,
-          "lon": 6.927462592720985,
-          "note": "at-grade road_surface at 393.31 m over at-grade rail_surface at 383.10 m, nothing between them",
-          "value": 10.211622073401884,
+          "lon": 6.927461922168732,
+          "note": "at-grade road_surface at 393.31 m over at-grade rail_surface at 383.09 m, nothing between them",
+          "value": 10.211802148453785,
           "zoom": 14
         },
         {
@@ -713,9 +713,9 @@
         },
         {
           "lat": 46.402312852442265,
-          "lon": 6.927454546093941,
-          "note": "at-grade road_surface at 393.17 m over at-grade rail_surface at 383.02 m, nothing between them",
-          "value": 10.146883813818022,
+          "lon": 6.927454210817814,
+          "note": "at-grade road_surface at 393.16 m over at-grade rail_surface at 383.02 m, nothing between them",
+          "value": 10.146973851344,
           "zoom": 14
         },
         {
@@ -727,13 +727,13 @@
         }
       ],
       "population": "Surface samples of every level-0 band (carriageway or rail formation) at 1.0 m plan spacing in the tile proper, where another level-0 band lies at or below the same plan position. Each stacked pair is measured once, from its upper side. Abutting regions meet at zero and sit in the population's floor.",
-      "samples": 114,
+      "samples": 115,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 10.220000000000006,
       "threshold": 3.0,
       "title": "At-grade band standing over another at-grade band",
-      "violation_pct": 5.2631578947368425,
+      "violation_pct": 5.217391304347826,
       "violations": 6,
       "worst": 10.21599962943958
     },
@@ -743,7 +743,7 @@
       "median": 0.006666666666667709,
       "offenders": [],
       "population": "Surface samples of every level-0 band — carriageway, rail formation, walkway or path — at 1.0 m plan spacing in the tile proper, where another level-0 band lies at or below the same plan position; each stacked pair measured once, from its upper side. Pairs within 3.0 m are the contact band (braids, sheets, kerb steps) and enter as closed. The terrain hole rim is contact.kerb_unwalled's population, not this one.",
-      "samples": 114,
+      "samples": 115,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 1.4733333333333363,
@@ -969,7 +969,7 @@
       "median": 0.0033333333333333335,
       "offenders": [],
       "population": "Every global border lattice point of the Carriageway mesh claimed by two or more tiles at this zoom. Points where one side had split open have no single answer to compare and are excluded — they are counted under seam.pavement_split.",
-      "samples": 3159,
+      "samples": 3166,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.0033333333333333335,
@@ -983,25 +983,17 @@
       "id": "order.at_grade_overlap",
       "invariant": "I3",
       "median": 0.0033333333333333335,
-      "offenders": [
-        {
-          "lat": 46.395263671875,
-          "lon": 6.937351226806641,
-          "note": "one tile holds coincident vertices at 406.663 m and 406.692 m",
-          "value": 0.02899169921875,
-          "zoom": 15
-        }
-      ],
-      "population": "Coincident border vertices of two different level-0 road_surface meshes in one tile. Border vertices only — that is what this pass collects; a whole-mesh version would find more overlap.",
-      "samples": 12849,
+      "offenders": [],
+      "population": "Coincident border vertices of two different level-0 road_surface meshes in one tile that carry the same `sheet` ordinal, or none. Border vertices only — that is what this pass collects; a whole-mesh version would find more overlap.",
+      "samples": 12868,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 0.0033333333333333335,
       "threshold": 0.005,
       "title": "Overlapping at-grade asphalt with nothing to order it",
-      "violation_pct": 0.007782706825433886,
-      "violations": 1,
-      "worst": 0.02899169921875
+      "violation_pct": 0.0,
+      "violations": 0,
+      "worst": 0.0
     },
     {
       "id": "slope.terrain_face",
@@ -1089,8 +1081,8 @@
           "zoom": 15
         },
         {
-          "lat": 46.454249918460846,
-          "lon": 6.946097910404205,
+          "lat": 46.45424969494343,
+          "lon": 6.946098804473877,
           "note": "interior asphalt at 358 % spanning 2.65 m",
           "value": 3.5774629210166413,
           "zoom": 15
@@ -1139,14 +1131,14 @@
         }
       ],
       "population": "Every level-0 road_surface triangle spanning at least 0.10 m of height, excluding the mesh silhouette. The kerb rim is vertical by design and was 44 % of the steep faces counted before it was excluded.",
-      "samples": 52218,
+      "samples": 52206,
       "sense": "higher_is_worse",
       "skipped": null,
       "tail": 1.3933333333333333,
       "threshold": 0.3,
       "title": "Interior carriageway face steepness",
-      "violation_pct": 25.931671071278103,
-      "violations": 13541,
+      "violation_pct": 25.9127303375091,
+      "violations": 13528,
       "worst": 7.137336660674599
     },
     {
@@ -1358,14 +1350,14 @@
         }
       ],
       "population": "Every drawn at-grade road surface sample (road_surface and its road_rim strip) the tile owns, scored by how far inside a building footprint it stands, and zero everywhere it is outside one. Scoring the zeros is what makes the rate mean something: over the inside-samples alone the population would be nothing but the defect, and closing a site would remove samples rather than move the number. Over the Montreux extract at z16, 22.3 M samples from 621 tiles of which 338 carry a footprint: 320,828 samples (1.44 %) lie inside one, and by uniform raster that is 28,719 m² over 1,662 of 8,615 buildings — 19.3 % of them, 1.0 % of the drawn at-grade road surface. Levels order themselves out: a bridge or a bore is not level 0. Three limits are not. Rail bands are excluded, because a station roof over its platforms is a level relation the archive cannot state (2,772 m² here). An `is_covered` arcade at grade cannot be told from a defect — no level rule fires on the flag and the archive carries no property for it — which in plan space is 3 pairs and 174 m², about 1.5 % of the at-grade overlap. And a footprint carries its own survey error, which is what the threshold is set against.",
-      "samples": 68536531,
+      "samples": 68537468,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 5.380000000000001,
+      "tail": 5.406666666666667,
       "threshold": 0.5,
       "title": "Drawn at-grade asphalt standing inside a building footprint",
-      "violation_pct": 0.37121808805876094,
-      "violations": 254420,
+      "violation_pct": 0.37135891859909387,
+      "violations": 254520,
       "worst": 28.110123529697226
     },
     {
@@ -1403,7 +1395,7 @@
     {
       "id": "contact.sidewalk_grade",
       "invariant": "I4",
-      "median": 0.08666666666666667,
+      "median": 0.1,
       "offenders": [
         {
           "lat": 46.402328208088875,
@@ -1463,14 +1455,14 @@
         }
       ],
       "population": "Every metre along every level-0 pedestrian centerline (footway, path, cycleway, pedestrian, bridleway — not steps, whose purpose is to change height) whose part runs with a street for at least 80 % of its length and which is locally parallel to the kerb within 30°, taken where it is beside the asphalt rather than over it. The value is |drawn surface under the way − drawn carriageway at the nearest kerb point|, unsigned because a way stranded on a bank above its street is the same defect as one in a ditch below it; the offender note carries the side. Over the Montreux extract at z16 that is 30,366 samples out of 421 k pedestrian samples — 12 % of the rest are drawn over the asphalt and the remainder do not run with a street. The population is very nearly symmetric, 44.9 % below the kerb and 55.1 % above it, which is the whole point of the unsigned value: the cutting side and the fill side of one missing cross-section. Signed it reads p05 −0.55 m, p50 +0.01 m, p95 +0.66 m, from 10.19 m below to 7.84 m above. Two coverage limits. Attachment is geometric only, because the archive carries a way's class but never the `subclass='sidewalk'` tag, so the third of tagged sidewalks that fail a geometric test are outside this population altogether. And a pair whose step the drawn world *closes* is out of the population (F3: height disposes what plan proposed): a way a storey from a kerb behind a drawn wall — the wall-foot paths of Montreux, a lower walk sheet beside a terrace street — is another terrace, measured by the closure question `fabric.closure` asks (open air past the check's own 1 m bar keeps the pair in; a closed face excludes it). What remains charged is a pedestrian surface with visible air between it and the kerb it runs beside, which is the strip genuinely hanging off its street.",
-      "samples": 81004,
+      "samples": 80972,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 5.166666666666667,
+      "tail": 5.193333333333333,
       "threshold": 1.0,
       "title": "A pedestrian way's surface departing from the street beside it",
-      "violation_pct": 0.23332181126857934,
-      "violations": 189,
+      "violation_pct": 0.235884009287161,
+      "violations": 191,
       "worst": 14.790241671933074
     },
     {
@@ -1660,7 +1652,7 @@
       6.9873046875,
       46.47216796875
     ],
-    "commit": "2c0ea43",
+    "commit": "92b3d38",
     "max_tiles": 4096,
     "spacing_m": 1.0,
     "tiles": 222,

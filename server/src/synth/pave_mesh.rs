@@ -173,6 +173,7 @@ pub fn tile_meshes(
         if std::env::var_os("ARPT_EXACT_HANDOVER").is_some() {
             EXACT_CENSUS.with(|c| *c.borrow_mut() = Some(ExactCensus::new(bounds)));
         }
+        EXACT_ON.with(|e| e.set(exact_tags() && z >= z_ref));
         if exact_tags() {
             EXACT_FRAME.with(|f| f.set(crate::synth::pavement::chunk_frame_for(bounds)));
         }
@@ -943,14 +944,16 @@ fn is_handover_within(
 const EXACT_TAG_UNITS: i64 = 4;
 
 /// Whether the cut/kerb verdict comes from the lattice test instead of the
-/// half-metre proximity heuristic (`ARPT_EXACT_TAGS=1`; wants
-/// `ARPT_PIN_LATTICE=1` with it, or the boolean drift S1 measured comes
-/// back). The withdrawn 15 % are the heuristic's false positives — kerb and
-/// fillet edges leaving the cut at its corner — which then keep their rim
-/// and its fade instead of being drawn as bare handover interior.
+/// half-metre proximity heuristic — the default since 2026-08-30
+/// (`ARPT_NO_EXACT_TAGS=1` withholds it; wants the pinned lattice with it,
+/// or the boolean drift S1 measured comes back). The ~15 % the heuristic
+/// classified differently are its false positives — kerb and fillet edges
+/// leaving the cut at its corner — which keep their rim and its fade
+/// instead of being drawn as bare handover interior; the full-zone A/B read
+/// `same` on every gated metric.
 fn exact_tags() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ARPT_EXACT_TAGS").is_some())
+    *ON.get_or_init(|| std::env::var_os("ARPT_NO_EXACT_TAGS").is_none())
 }
 
 thread_local! {
@@ -961,6 +964,12 @@ thread_local! {
     /// exact tagging path — set by `tile_meshes` before any ring walks.
     static EXACT_FRAME: std::cell::Cell<MFrame> =
         std::cell::Cell::new(MFrame::of(Coord { x: 0.0, y: 0.0 }));
+    /// Whether this thread's tile takes the exact verdict. Detail rungs only:
+    /// a coarse rung's boundary is simplified to a cartographic budget and
+    /// re-densified, and against those chords the lattice test under-matched
+    /// real cut edges by 9 pp of joints (`seam.handover_kerb` 12 → 21 % at
+    /// z13–15, measured 2026-08-30) — the heuristic stays theirs.
+    static EXACT_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The shadow census of `ARPT_EXACT_HANDOVER=1`: how often the tolerant and
@@ -1172,7 +1181,7 @@ fn build_rim(
             let across = if hole { [0i8; 4] } else { [127i8, 127, 0, 0] };
             // A handover quad goes to the surface instead, and there it is
             // interior: opaque, with no across-coordinate to fade.
-            let handover = if exact_tags() {
+            let handover = if EXACT_ON.with(|e| e.get()) {
                 EXACT_FRAME.with(|f| {
                     is_handover_within(r.pts[k], r.pts[k1], handovers, &f.get(), EXACT_TAG_UNITS)
                 })

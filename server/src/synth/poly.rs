@@ -74,7 +74,8 @@ pub(crate) const GRID_M: f64 = 1e-4;
 /// The scale `i_overlay`'s `_fixed_scale` entry points want: reciprocal grid.
 const SCALE: f64 = 1.0 / GRID_M;
 
-/// Whether the boolean lattice is pinned (`ARPT_PIN_LATTICE=1`, stage S1b of
+/// Whether the boolean lattice is pinned — the default since 2026-08-30
+/// (`ARPT_NO_PIN_LATTICE=1` withholds it for an A/B; stage S1b of
 /// `data/plans/carmack-rewrite-plan-2026-08-29.md`). The `_fixed_scale` entry
 /// points fix the grid's *scale* but let each operation anchor its origin at
 /// its own input's bounding-rect centre (`i_float`'s `float_to_int` subtracts
@@ -88,7 +89,7 @@ const SCALE: f64 = 1.0 / GRID_M;
 /// once on the next pinned boolean.
 fn pin_lattice() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ARPT_PIN_LATTICE").is_some())
+    *ON.get_or_init(|| std::env::var_os("ARPT_NO_PIN_LATTICE").is_none())
 }
 
 /// Half-extent of the pinned adapter's rect, metres. Centred on the frame
