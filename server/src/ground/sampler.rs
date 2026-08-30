@@ -281,6 +281,30 @@ pub fn one_canvas() -> bool {
     *ON.get_or_init(|| std::env::var_os("ARPT_ONE_CANVAS").is_some())
 }
 
+impl GroundSampler {
+    /// S5 prototype falsifier: the one-mesh border of this tile, per class
+    /// (see `terrain_cdt::one_mesh_border_probe`), built from the same
+    /// breaklines and regions the drawn path uses.
+    pub fn one_mesh_border_probe(
+        &mut self,
+        bounds: &Bounds,
+        z: u8,
+        regions: &[Region],
+    ) -> Option<(Vec<(u16, u16, i32)>, Vec<(u16, u16)>)> {
+        let grid = terrain::grid_for(z, self.z_ref);
+        let pad = bounds.width().max(bounds.height()) / grid as f64;
+        let bbox = (bounds.west - pad, bounds.south - pad, bounds.east + pad, bounds.north + pad);
+        let mut ids = Vec::new();
+        let mut segments = Vec::new();
+        self.ground.breaklines().query(bbox, &mut ids, &mut segments);
+        let (dem, ground, corners, scratch) =
+            (&mut self.dem, &self.ground, &mut self.corners, &mut self.scratch);
+        crate::terrain_cdt::one_mesh_border_probe(grid, bounds, &segments, regions, &mut |lon, lat| {
+            corner_memo(dem, ground, corners, scratch, lon, lat, z, 0.0)
+        })
+    }
+}
+
 /// The tile grid index of `bounds` at zoom `z` (its south-west corner).
 fn tile_xy(bounds: &Bounds, z: u8) -> (u32, u32) {
     let n = (1u64 << z) as f64;

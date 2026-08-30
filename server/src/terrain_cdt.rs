@@ -639,3 +639,171 @@ mod tests {
         }
     }
 }
+
+
+/// **The S5 prototype's first falsifier** (`carmack-rewrite-plan-2026-08-29`
+/// S5, kill criterion 1): build the one-mesh CDT — the terrain lattice, the
+/// breaklines and the paved rings in a single triangulation, with the faces
+/// inside the regions *classified* instead of dropped — and hand back its
+/// border vertices per class. Mixed adjacency is possible exactly when this
+/// border matches the old path's border vertex-for-vertex: the terrain-class
+/// vertices with the same positions and heights the old terrain CDT derives,
+/// and the asphalt-class vertices at the same positions the old paved mesh
+/// clips and densifies to (heights then agree by I5 — both sides sample one
+/// field at one point). Any disagreement is the stage's own kill.
+pub fn one_mesh_border_probe(
+    grid: u32,
+    bounds: &Bounds,
+    segments: &[(Coord, Coord)],
+    regions: &[Region],
+    sample: &mut dyn FnMut(f64, f64) -> f64,
+) -> Option<(Vec<(u16, u16, i32)>, Vec<(u16, u16)>)> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        one_mesh_border_probe_inner(grid, bounds, segments, regions, sample)
+    }))
+    .unwrap_or(None)
+}
+
+fn one_mesh_border_probe_inner(
+    grid: u32,
+    bounds: &Bounds,
+    segments: &[(Coord, Coord)],
+    regions: &[Region],
+    sample: &mut dyn FnMut(f64, f64) -> f64,
+) -> Option<(Vec<(u16, u16, i32)>, Vec<(u16, u16)>)> {
+    let grid = grid.max(1);
+    let n = grid + 1;
+    let step = EXTENT / grid as f64;
+    let mut constraints: Vec<((u16, u16), (u16, u16))> = Vec::new();
+    for &(a, b) in segments {
+        let Some((ca, cb)) = clip_to_bounds(a, b, bounds) else { continue };
+        let qa = (project::quantize_x(ca.x, bounds), project::quantize_y(ca.y, bounds));
+        let qb = (project::quantize_x(cb.x, bounds), project::quantize_y(cb.y, bounds));
+        if qa != qb {
+            constraints.push((qa, qb));
+        }
+    }
+    let cell_of = |q: u16| -> i64 { ((q as f64 - BUFFER) / step).floor() as i64 };
+    let mut crossed = vec![false; (grid * grid) as usize];
+    let mut mark = |qa: (u16, u16), qb: (u16, u16)| {
+        let (c0, c1) = (cell_of(qa.0.min(qb.0)), cell_of(qa.0.max(qb.0)));
+        let (r0, r1) = (cell_of(qa.1.min(qb.1)), cell_of(qa.1.max(qb.1)));
+        for r in r0.max(0)..=r1.min(grid as i64 - 1) {
+            for c in c0.max(0)..=c1.min(grid as i64 - 1) {
+                crossed[(r * grid as i64 + c) as usize] = true;
+            }
+        }
+    };
+    for &(qa, qb) in &constraints {
+        mark(qa, qb);
+    }
+    let mut ring_edges: Vec<((u16, u16), (u16, u16))> = Vec::new();
+    for r in regions {
+        for ring in r.rings() {
+            let n = ring.len();
+            if n < 3 {
+                continue;
+            }
+            for k in 0..n {
+                let a = ring[k];
+                let b = ring[(k + 1) % n];
+                let qa = (a.0.round() as u16, a.1.round() as u16);
+                let qb = (b.0.round() as u16, b.1.round() as u16);
+                if qa != qb {
+                    ring_edges.push((qa, qb));
+                }
+            }
+        }
+    }
+    for &(qa, qb) in &ring_edges {
+        mark(qa, qb);
+    }
+    let mut cdt: ConstrainedDelaunayTriangulation<Point2<f64>> =
+        ConstrainedDelaunayTriangulation::new();
+    let origin = BUFFER as u32;
+    let qstep = EXTENT as u32 / grid;
+    let mut lattice = Vec::with_capacity((n * n) as usize);
+    for row in 0..n {
+        for col in 0..n {
+            let p = Point2::new((origin + col * qstep) as f64, (origin + row * qstep) as f64);
+            lattice.push(cdt.insert(p).ok()?);
+        }
+    }
+    for row in 0..grid {
+        for col in 0..grid {
+            if crossed[(row * grid + col) as usize] {
+                continue;
+            }
+            let tl = lattice[(row * n + col) as usize];
+            let br = lattice[((row + 1) * n + col + 1) as usize];
+            if cdt.can_add_constraint(tl, br) {
+                cdt.add_constraint(tl, br);
+            }
+        }
+    }
+    for &(qa, qb) in &constraints {
+        let va = cdt.insert(Point2::new(qa.0 as f64, qa.1 as f64)).ok()?;
+        let vb = cdt.insert(Point2::new(qb.0 as f64, qb.1 as f64)).ok()?;
+        if va != vb {
+            cdt.add_constraint_and_split(va, vb, |p| p);
+        }
+    }
+    for &(qa, qb) in &ring_edges {
+        let va = cdt.insert(Point2::new(qa.0 as f64, qa.1 as f64)).ok()?;
+        let vb = cdt.insert(Point2::new(qb.0 as f64, qb.1 as f64)).ok()?;
+        if va != vb {
+            cdt.add_constraint_and_split(va, vb, |p| p);
+        }
+    }
+    let vcount = cdt.num_vertices();
+    let mut qpos: Vec<(u16, u16)> = Vec::with_capacity(vcount);
+    for v in cdt.vertices() {
+        let p = v.position();
+        qpos.push((
+            p.x.round().clamp(0.0, 65535.0) as u16,
+            p.y.round().clamp(0.0, 65535.0) as u16,
+        ));
+    }
+    // Classify faces and collect tile-proper border vertices per class.
+    let lo = BUFFER as i64;
+    let hi = (BUFFER + EXTENT) as i64;
+    let on_border = |q: (u16, u16)| -> bool {
+        let (x, y) = (q.0 as i64, q.1 as i64);
+        (x == lo || x == hi || y == lo || y == hi) && (lo..=hi).contains(&x) && (lo..=hi).contains(&y)
+    };
+    let mut terrain_b: Vec<(u16, u16)> = Vec::new();
+    let mut asphalt_b: Vec<(u16, u16)> = Vec::new();
+    for face in cdt.inner_faces() {
+        let [a, b, c] = face.vertices().map(|v| v.fix().index());
+        let (ax, ay) = (qpos[a].0 as i64, qpos[a].1 as i64);
+        let (bx, by) = (qpos[b].0 as i64, qpos[b].1 as i64);
+        let (cx, cy) = (qpos[c].0 as i64, qpos[c].1 as i64);
+        if (bx - ax) * (cy - ay) - (by - ay) * (cx - ax) == 0 {
+            continue;
+        }
+        let cen = ((ax + bx + cx) as f64 / 3.0, (ay + by + cy) as f64 / 3.0);
+        let paved = regions.iter().any(|r| r.contains(cen));
+        for &v in &[a, b, c] {
+            if on_border(qpos[v]) {
+                if paved {
+                    asphalt_b.push(qpos[v]);
+                } else {
+                    terrain_b.push(qpos[v]);
+                }
+            }
+        }
+    }
+    terrain_b.sort_unstable();
+    terrain_b.dedup();
+    asphalt_b.sort_unstable();
+    asphalt_b.dedup();
+    let terrain: Vec<(u16, u16, i32)> = terrain_b
+        .into_iter()
+        .map(|(qx, qy)| {
+            let lon = project::dequantize_x(qx, bounds);
+            let lat = project::dequantize_y(qy, bounds);
+            (qx, qy, project::quantize_z(sample(lon, lat)))
+        })
+        .collect();
+    Some((terrain, asphalt_b))
+}

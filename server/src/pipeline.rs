@@ -969,6 +969,15 @@ fn encode_tile(
         }
     }
 
+    // S5 prototype falsifier (`ARPT_ONE_MESH_PROBE=z/x/y`): the one-mesh
+    // CDT's border per class against the old path's meshes for this tile.
+    if let Some(v) = std::env::var_os("ARPT_ONE_MESH_PROBE") {
+        let want = v.to_string_lossy().to_string();
+        if want == format!("{z}/{x}/{y}") {
+            one_mesh_probe(&mut enc_layers, sampler, &bounds, z, &cut_regions);
+        }
+    }
+
     // Every tile carries a terrain mesh — the client requires it to render.
     observed.push((layers::TERRAIN as usize, GeometryType::Mesh));
     let (blob, elevation, t_mesh, t_encode) = if sampler.has_elevation() {
@@ -998,6 +1007,91 @@ fn encode_tile(
         terrain: t_terrain,
         encode: t_encode,
     })
+}
+
+/// The S5 border comparison: the one-mesh CDT's border vertices per class
+/// against the old path's terrain and paved meshes for the same tile.
+/// Terrain matched by position with the height diff in millimetres; asphalt
+/// by position only (heights agree by I5 once positions do — both sides
+/// sample one field at one point).
+fn one_mesh_probe(
+    enc_layers: &mut [EncoderLayer],
+    sampler: &mut GroundSampler,
+    bounds: &Bounds,
+    z: u8,
+    cut_regions: &[synth::region::Region],
+) {
+    let Some((om_terrain, om_asphalt)) =
+        sampler.one_mesh_border_probe(bounds, z, cut_regions)
+    else {
+        eprintln!("[one-mesh] probe: CDT abstained");
+        return;
+    };
+    let lo = 16384u16;
+    let hi = 49152u16;
+    let border = |mx: &[u16], my: &[u16]| -> Vec<(u16, u16)> {
+        let mut out: Vec<(u16, u16)> = mx
+            .iter()
+            .zip(my)
+            .map(|(&a, &b)| (a, b))
+            .filter(|&(a, b)| (a == lo || a == hi || b == lo || b == hi)
+                && (lo..=hi).contains(&a) && (lo..=hi).contains(&b))
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    };
+    // Old terrain: rebuild it exactly as the emit will (same call, memoized).
+    let (old_terrain, _, _) = sampler.terrain_mesh(bounds, z, cut_regions);
+    let mut old_t: std::collections::HashMap<(u16, u16), i32> = std::collections::HashMap::new();
+    for i in 0..old_terrain.x.len() {
+        let key = (old_terrain.x[i], old_terrain.y[i]);
+        if (key.0 == lo || key.0 == hi || key.1 == lo || key.1 == hi)
+            && (lo..=hi).contains(&key.0) && (lo..=hi).contains(&key.1)
+        {
+            old_t.insert(key, old_terrain.z[i]);
+        }
+    }
+    let (mut matched, mut worst_mm, mut om_only) = (0usize, 0i64, 0usize);
+    for &(qx, qy, zmm) in &om_terrain {
+        match old_t.get(&(qx, qy)) {
+            Some(&oz) => {
+                matched += 1;
+                worst_mm = worst_mm.max((zmm as i64 - oz as i64).abs());
+            }
+            None => om_only += 1,
+        }
+    }
+    let old_only = old_t.len().saturating_sub(matched);
+    // Old paved borders, from the encoded features (every *_surface/_rim).
+    let mut old_a: Vec<(u16, u16)> = Vec::new();
+    for l in enc_layers.iter() {
+        if l.name != "transportation" {
+            continue;
+        }
+        for f in &l.features {
+            if let Some(m) = &f.mesh {
+                old_a.extend(border(&m.x, &m.y));
+            }
+        }
+    }
+    old_a.sort_unstable();
+    old_a.dedup();
+    let old_set: std::collections::HashSet<(u16, u16)> = old_a.iter().copied().collect();
+    let om_set: std::collections::HashSet<(u16, u16)> = om_asphalt.iter().copied().collect();
+    let a_matched = om_set.intersection(&old_set).count();
+    eprintln!(
+        "[one-mesh] terrain border: {} one-mesh vs {} old — matched {matched}, one-mesh-only          {om_only}, old-only {old_only}, worst |dz| {worst_mm} mm",
+        om_terrain.len(),
+        old_t.len(),
+    );
+    eprintln!(
+        "[one-mesh] asphalt border: {} one-mesh vs {} old — matched {a_matched}, one-mesh-only {},          old-only {}",
+        om_set.len(),
+        old_set.len(),
+        om_set.len() - a_matched,
+        old_set.len() - a_matched
+    );
 }
 
 /// Tiler-computed property carrying a building's ground relief (highest minus
