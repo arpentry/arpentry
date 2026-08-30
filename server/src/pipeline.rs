@@ -987,12 +987,16 @@ fn encode_tile(
         }
     }
 
-    // S5 prototype (`ARPT_ONE_MESH=z/x/y`): this tile draws the one mesh —
-    // terrain, group-0 asphalt and the walls between them as one classified
-    // triangulation — and its group-0 surface/rim/apron features are
-    // withheld, since the mesh now carries them.
+    // S5 prototype (`ARPT_ONE_MESH=z/x/y` for one tile, `=z` for every tile
+    // of a zoom): this tile draws the one mesh — terrain, group-0 asphalt and
+    // the walls between them as one classified triangulation — and its
+    // group-0 surface/rim/apron features are withheld, since the mesh now
+    // carries them.
     let one_mesh_full = std::env::var_os("ARPT_ONE_MESH")
-        .filter(|v| v.to_string_lossy() == format!("{z}/{x}/{y}"))
+        .filter(|v| {
+            let v = v.to_string_lossy();
+            v == format!("{z}/{x}/{y}") || v == format!("{z}")
+        })
         .and_then(|_| {
             let t = Instant::now();
             let m = build_one_mesh(sampler, &bounds, z, solved.z_ref, pavement, &field, &cut_regions);
