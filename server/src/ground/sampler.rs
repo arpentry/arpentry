@@ -289,7 +289,7 @@ impl GroundSampler {
         &mut self,
         bounds: &Bounds,
         z: u8,
-        regions: &[Region],
+        regions: &[&Region],
     ) -> Option<(Vec<(u16, u16, i32)>, Vec<(u16, u16)>)> {
         let grid = terrain::grid_for(z, self.z_ref);
         let pad = bounds.width().max(bounds.height()) / grid as f64;

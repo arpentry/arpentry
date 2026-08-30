@@ -655,7 +655,7 @@ pub fn one_mesh_border_probe(
     grid: u32,
     bounds: &Bounds,
     segments: &[(Coord, Coord)],
-    regions: &[Region],
+    regions: &[&Region],
     sample: &mut dyn FnMut(f64, f64) -> f64,
 ) -> Option<(Vec<(u16, u16, i32)>, Vec<(u16, u16)>)> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -668,7 +668,7 @@ fn one_mesh_border_probe_inner(
     grid: u32,
     bounds: &Bounds,
     segments: &[(Coord, Coord)],
-    regions: &[Region],
+    regions: &[&Region],
     sample: &mut dyn FnMut(f64, f64) -> f64,
 ) -> Option<(Vec<(u16, u16, i32)>, Vec<(u16, u16)>)> {
     let grid = grid.max(1);
@@ -749,10 +749,40 @@ fn one_mesh_border_probe_inner(
         }
     }
     for &(qa, qb) in &ring_edges {
-        let va = cdt.insert(Point2::new(qa.0 as f64, qa.1 as f64)).ok()?;
-        let vb = cdt.insert(Point2::new(qb.0 as f64, qb.1 as f64)).ok()?;
-        if va != vb {
-            cdt.add_constraint_and_split(va, vb, |p| p);
+        // Densified to the lattice, exactly as the paved mesher densifies its
+        // rings (`pave_mesh::densify_ring`): every crossing of a grid line
+        // becomes a vertex, so the one-mesh's asphalt silhouette carries the
+        // same border vertex set the old paved mesh derives, and a one-mesh
+        // tile can seam against an old-mesh neighbour vertex-for-vertex.
+        let (ax, ay) = (qa.0 as f64, qa.1 as f64);
+        let (bx, by) = (qb.0 as f64, qb.1 as f64);
+        let mut ts: Vec<f64> = vec![0.0, 1.0];
+        let step_f = qstep as f64;
+        for (a, b) in [(ax, bx), (ay, by)] {
+            if (a - b).abs() < 1e-12 {
+                continue;
+            }
+            let (lo_g, hi_g) = (a.min(b), a.max(b));
+            let mut g = ((lo_g - origin as f64) / step_f).ceil() * step_f + origin as f64;
+            while g < hi_g {
+                if g > lo_g {
+                    ts.push((g - a) / (b - a));
+                }
+                g += step_f;
+            }
+        }
+        ts.sort_by(f64::total_cmp);
+        ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+        let mut prev: Option<_> = None;
+        for &t in &ts {
+            let p = Point2::new(ax + (bx - ax) * t, ay + (by - ay) * t);
+            let v = cdt.insert(p).ok()?;
+            if let Some(pv) = prev {
+                if pv != v {
+                    cdt.add_constraint_and_split(pv, v, |p| p);
+                }
+            }
+            prev = Some(v);
         }
     }
     let vcount = cdt.num_vertices();

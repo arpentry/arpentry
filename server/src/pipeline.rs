@@ -1009,6 +1009,14 @@ fn encode_tile(
     })
 }
 
+thread_local! {
+    /// The grade-separation layer of each region `add_road_surface` handed to
+    /// the cut, in push order — probe-only bookkeeping (`ARPT_ONE_MESH_PROBE`),
+    /// so the one-mesh comparison can scope itself to sheet 0: stacked sheets
+    /// keep their own meshes under S5 and are not group 0's to seam.
+    static PROBE_LAYERS: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// The S5 border comparison: the one-mesh CDT's border vertices per class
 /// against the old path's terrain and paved meshes for the same tile.
 /// Terrain matched by position with the height diff in millimetres; asphalt
@@ -1021,8 +1029,18 @@ fn one_mesh_probe(
     z: u8,
     cut_regions: &[synth::region::Region],
 ) {
+    // Group 0 only: terrain plus the sheet-0 at-grade regions. Stacked
+    // sheets keep their own meshes (S5), so they are out of the comparison
+    // on both sides.
+    let layers = PROBE_LAYERS.with(|l| std::mem::take(&mut *l.borrow_mut()));
+    let g0: Vec<&synth::region::Region> = cut_regions
+        .iter()
+        .zip(layers.iter().chain(std::iter::repeat(&0)))
+        .filter(|(_, &l)| l == 0)
+        .map(|(r, _)| r)
+        .collect();
     let Some((om_terrain, om_asphalt)) =
-        sampler.one_mesh_border_probe(bounds, z, cut_regions)
+        sampler.one_mesh_border_probe(bounds, z, &g0)
     else {
         eprintln!("[one-mesh] probe: CDT abstained");
         return;
@@ -1070,6 +1088,22 @@ fn one_mesh_probe(
             continue;
         }
         for f in &l.features {
+            // Only the at-grade surface band and its rim — the region the
+            // one-mesh hosts. Aprons become walls-from-tags in S5, and
+            // structures keep their own meshes, so neither belongs to the
+            // border being compared.
+            let surface_or_rim = f.properties.iter().any(|(k, v)| {
+                k == "class"
+                    && matches!(v, Value::String(s)
+                        if s.ends_with("_surface") || s.ends_with("_rim"))
+            });
+            let sheet0 = f
+                .properties
+                .iter()
+                .any(|(k, v)| k == "sheet" && matches!(v, Value::Int(0)));
+            if !surface_or_rim || !sheet0 {
+                continue;
+            }
             if let Some(m) = &f.mesh {
                 old_a.extend(border(&m.x, &m.y));
             }
@@ -1092,6 +1126,23 @@ fn one_mesh_probe(
         om_set.len() - a_matched,
         old_set.len() - a_matched
     );
+    let only: std::collections::HashSet<(u16, u16)> =
+        old_set.difference(&om_set).copied().collect();
+    for l in enc_layers.iter() {
+        if l.name != "transportation" {
+            continue;
+        }
+        for f in &l.features {
+            let Some(m) = &f.mesh else { continue };
+            let hits = border(&m.x, &m.y).iter().filter(|q| only.contains(q)).count();
+            if hits > 0 {
+                eprintln!(
+                    "[one-mesh]   old-only owner: {:?} ({} border verts unmatched)",
+                    f.properties, hits
+                );
+            }
+        }
+    }
 }
 
 /// Tiler-computed property carrying a building's ground relief (highest minus
@@ -1356,6 +1407,9 @@ fn add_road_surface(
         // handed on are those whose asphalt was *actually meshed*, so a level
         // that failed to mesh leaves no hole with nothing over it (invariant 6).
         if paved.level == 0 && hole && !paved.region.is_empty() {
+            if std::env::var_os("ARPT_ONE_MESH_PROBE").is_some() {
+                PROBE_LAYERS.with(|l| l.borrow_mut().push(paved.layer));
+            }
             cut.push(paved.region);
         }
         push(surface_class, paved.surface, 0);
