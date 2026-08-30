@@ -1058,9 +1058,28 @@ fn one_mesh_full_inner(
         // Owned by the asphalt side (aprons are the surface's wall to its
         // ground). Between two asphalt classes the junior-indexed one owns it.
         let owner = if c0 != usize::MAX { c0 } else { c1 };
+        // Single-sided, facing away from the owner: the wall is seen from the
+        // ground side, like the old apron. Orientation from the non-owner
+        // face's centroid against the edge normal in plan.
+        let other_t = if class[ts[0]] == owner { ts[1] } else { ts[0] };
+        let f = tri[other_t];
+        let cen = (
+            (qpos[f[0]].0 as f64 + qpos[f[1]].0 as f64 + qpos[f[2]].0 as f64) / 3.0,
+            (qpos[f[0]].1 as f64 + qpos[f[1]].1 as f64 + qpos[f[2]].1 as f64) / 3.0,
+        );
+        let (ax, ay) = (qpos[*a].0 as f64, qpos[*a].1 as f64);
+        let (bx, by) = (qpos[*b].0 as f64, qpos[*b].1 as f64);
+        let (ex, ey) = (bx - ax, by - ay);
+        // Left normal of a→b; the quad below (a0,b0,b1 top/bottom order) faces
+        // left of a→b when wound (ia0, ib0, ib1)(ia0, ib1, ia1) with +z up.
+        let left = (-(ey), ex);
+        let toward_other = (cen.0 - ax) * left.0 + (cen.1 - ay) * left.1;
         let w = walls_by_class.entry(owner).or_default();
-        w.extend_from_slice(&[ia0, ib0, ib1, ia0, ib1, ia1]);
-        w.extend_from_slice(&[ia0, ib1, ib0, ia0, ia1, ib1]);
+        if toward_other >= 0.0 {
+            w.extend_from_slice(&[ia0, ib0, ib1, ia0, ib1, ia1]);
+        } else {
+            w.extend_from_slice(&[ia0, ib1, ib0, ia0, ia1, ib1]);
+        }
     }
     eprintln!(
         "[one-mesh] full: {} faces ({} asphalt), {} wall edges, {} verts",
