@@ -1088,25 +1088,58 @@ fn one_mesh_full_inner(
         walls,
         x.len()
     );
-    // Normals per vertex from central differences of the vertex's own class.
+    // Normals from the mesh itself: each face's plane gradient in metres,
+    // area-weighted onto its own class's vertex copies. Field differences at
+    // a kerb straddle the step — a terrain vertex on the ring differenced
+    // the asphalt's height a metre away and the shading sawtoothed — while a
+    // face gradient is strictly the face's own class.
     let mid_lat = (bounds.south + bounds.north) * 0.5;
-    let dlat = NORMAL_STEP_M / crate::scene::DEG_M;
-    let dlon = NORMAL_STEP_M / (crate::scene::DEG_M * (mid_lat * PI / 180.0).cos());
-    let mut normals = vec![0i8; x.len() * 2];
-    let mut by_index: Vec<Option<(usize, usize)>> = vec![None; x.len()];
-    for (&(v, cls), &i) in ids.iter() {
-        by_index[i as usize] = Some((v, cls));
+    let m_lon = crate::scene::DEG_M * (mid_lat * PI / 180.0).cos();
+    let m_lat = crate::scene::DEG_M;
+    let met = |i: u32| -> (f64, f64, f64) {
+        let qx = x[i as usize];
+        let qy = y[i as usize];
+        (
+            project::dequantize_x(qx, bounds) * m_lon,
+            project::dequantize_y(qy, bounds) * m_lat,
+            z[i as usize] as f64 * 0.001,
+        )
+    };
+    let mut grad: Vec<(f64, f64, f64)> = vec![(0.0, 0.0, 0.0); x.len()]; // (Σw·gx, Σw·gy, Σw)
+    let mut all_faces: Vec<[u32; 3]> = Vec::new();
+    for idx in tri_by_class.values() {
+        for f in idx.chunks_exact(3) {
+            all_faces.push([f[0], f[1], f[2]]);
+        }
     }
-    for (i, slot) in by_index.iter().enumerate() {
-        let Some((v, cls)) = *slot else { continue };
-        let (qx, qy) = qpos[v];
-        let lon = project::dequantize_x(qx, bounds);
-        let lat = project::dequantize_y(qy, bounds);
-        let mut h = |lo: f64, la: f64| -> f64 {
-            if cls == usize::MAX { ground(lo, la) } else { asphalt(cls, lo, la) }
-        };
-        let dz_dx = (h(lon + dlon, lat) - h(lon - dlon, lat)) / (2.0 * NORMAL_STEP_M);
-        let dz_dy = (h(lon, lat + dlat) - h(lon, lat - dlat)) / (2.0 * NORMAL_STEP_M);
+    // Terrain bucket was removed from the map before? No: removal happens
+    // below at extraction; here the map still holds every class.
+    for f in &all_faces {
+        let (ax, ay, az) = met(f[0]);
+        let (bx, by, bz) = met(f[1]);
+        let (cx, cy, cz) = met(f[2]);
+        let (ux, uy, uz2) = (bx - ax, by - ay, bz - az);
+        let (vx, vy, vz2) = (cx - ax, cy - ay, cz - az);
+        let det = ux * vy - vx * uy;
+        if det.abs() < 1e-9 {
+            continue;
+        }
+        let gx = (uz2 * vy - vz2 * uy) / det;
+        let gy = (ux * vz2 - vx * uz2) / det;
+        let w = det.abs() * 0.5;
+        for &vi in f {
+            let g = &mut grad[vi as usize];
+            g.0 += w * gx;
+            g.1 += w * gy;
+            g.2 += w;
+        }
+    }
+    let mut normals = vec![0i8; x.len() * 2];
+    for i in 0..x.len() {
+        let (sgx, sgy, sw) = grad[i];
+        let (dz_dx, dz_dy) = if sw > 0.0 { (sgx / sw, sgy / sw) } else { (0.0, 0.0) };
+        let lon = project::dequantize_x(x[i], bounds);
+        let lat = project::dequantize_y(y[i], bounds);
         let lon_r = lon * (PI / 180.0);
         let lat_r = lat * (PI / 180.0);
         let (sin_lon, cos_lon) = (lon_r.sin(), lon_r.cos());
