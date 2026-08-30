@@ -123,17 +123,22 @@ fn decode_octahedral(enc: vec2<f32>) -> vec3<f32> {
 // roadbed the ground stage carves at the same height, so deck and terrain
 // are near-coplanar for long stretches; the depth test then draws their
 // jagged, lattice-scale intersection contour as the apparent deck edge.
-// Biasing the deck a few metres toward the camera (exactly the road paint's
-// trick, see road.wgsl) makes the deck win those ties, so the visible edge
-// is its own smooth geometry. Small enough that ground genuinely above the
-// deck (a real hill, a buried run) still occludes it.
-const BRIDGE_DEPTH_MARGIN_M: f32 = 3.0;
+// Biasing the deck toward the camera (exactly the road paint's trick, see
+// road.wgsl) makes the deck win those ties, so the visible edge is its own
+// smooth geometry. This is a precision margin, not a model one: it only has
+// to beat the depth quantum at the tie, and under reversed-Z on a float
+// buffer (renderer.h) that quantum is ~1e-7 of the eye distance — so 5 cm
+// where it was 3 m, small enough that ground genuinely above the deck (a
+// real hill, a buried run, a cutting wall seen at grazing tilt) occludes it
+// instead of the deck X-raying through.
+const BRIDGE_DEPTH_MARGIN_M: f32 = 0.05;
 
-// The deck margin as a fraction of the viewing distance — a quarter of the
-// road paint's fraction (road.wgsl), so the paint re-emitted over a deck
-// always carries the larger margin and wins their coplanar tie at any range,
-// while neither X-rays through terrain up close.
-const BRIDGE_DEPTH_MARGIN_FRAC: f32 = 0.0075;
+// The deck margin as a fraction of the viewing distance: 2e-7 of the range
+// is the float quantum, so 2e-4 is a thousand quanta — comfortably above
+// the interpolation noise of a coplanar tie and still a hundred times under
+// the road paint's fraction (road.wgsl), so a stroke re-emitted over a deck
+// always carries the larger margin and wins.
+const BRIDGE_DEPTH_MARGIN_FRAC: f32 = 0.0002;
 
 fn vs_common(qxy: vec2<u32>, qz: i32, oct_norm: vec2<i32>, depth_margin: f32,
              deck_color: vec4<f32>, across: f32) -> VsOut {
