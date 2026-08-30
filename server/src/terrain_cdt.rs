@@ -903,8 +903,58 @@ fn one_mesh_full_inner(
     let n = grid + 1;
     let step = EXTENT / grid as f64;
     let mut constraints: Vec<((u16, u16), (u16, u16))> = Vec::new();
+    // A breakline constrains the ground, and under a group-0 region or a void
+    // there is no ground: the old path inserted these segments and then
+    // dropped every face inside the hole, so its paved mesh never sampled
+    // them. Reused as asphalt vertices they sample the field mid-band at a
+    // density the paved mesh never had, and where the field steps between two
+    // close arms of one region the step is drawn as a cliff
+    // (slope.carriageway_face worst 18 → 101 m/m, the A9 switchbacks). A
+    // segment wholly inside the cut is dropped; one that crosses a ring keeps
+    // its ends and lets the CDT split it at the constraint.
+    let inside_cut = |qx: f64, qy: f64| -> bool {
+        regions.iter().any(|r| r.contains((qx, qy)))
+            || voids.iter().any(|r| r.contains((qx, qy)))
+    };
+    // A breakline constrains the ground, and under a group-0 region or a void
+    // there is no ground: the old path inserted these segments and then
+    // dropped every face inside the hole, so its paved mesh never sampled
+    // them. Reused as asphalt vertices they sample the field mid-band at a
+    // density the paved mesh never had, and where the field steps between two
+    // close arms of one region the step is drawn as a cliff
+    // (slope.carriageway_face worst 18 -> 101 m/m, the A9 switchbacks). A
+    // segment wholly inside the cut is dropped; one that crosses a ring keeps
+    // its ends and lets the CDT split it at the constraint.
+    let inside_cut = |qx: f64, qy: f64| -> bool {
+        regions.iter().any(|r| r.contains((qx, qy)))
+            || voids.iter().any(|r| r.contains((qx, qy)))
+    };
     for &(a, b) in segments {
         let Some((ca, cb)) = clip_to_bounds(a, b, bounds) else { continue };
+        {
+            let qax = project::quantize_x(ca.x, bounds) as f64;
+            let qay = project::quantize_y(ca.y, bounds) as f64;
+            let qbx = project::quantize_x(cb.x, bounds) as f64;
+            let qby = project::quantize_y(cb.y, bounds) as f64;
+            if inside_cut(qax, qay)
+                && inside_cut(qbx, qby)
+                && inside_cut((qax + qbx) * 0.5, (qay + qby) * 0.5)
+            {
+                continue;
+            }
+        }
+        {
+            let qax = project::quantize_x(ca.x, bounds) as f64;
+            let qay = project::quantize_y(ca.y, bounds) as f64;
+            let qbx = project::quantize_x(cb.x, bounds) as f64;
+            let qby = project::quantize_y(cb.y, bounds) as f64;
+            if inside_cut(qax, qay)
+                && inside_cut(qbx, qby)
+                && inside_cut((qax + qbx) * 0.5, (qay + qby) * 0.5)
+            {
+                continue;
+            }
+        }
         let qa = (project::quantize_x(ca.x, bounds), project::quantize_y(ca.y, bounds));
         let qb = (project::quantize_x(cb.x, bounds), project::quantize_y(cb.y, bounds));
         if qa != qb {
@@ -1061,7 +1111,27 @@ fn one_mesh_full_inner(
             }
         }
         let h = *sampled.entry((v, cls)).or_insert_with(|| {
-            if cls >= VOID_CLASS { ground(slon, slat) } else { asphalt(cls, lon, lat) }
+            if cls >= VOID_CLASS {
+                let g = ground(slon, slat);
+                if (slon, slat) == (lon, lat) {
+                    g
+                } else {
+                    // The inward sample exists to resolve the crest's
+                    // sub-quantum bench-or-batter ambiguity — a few
+                    // centimetres. When it differs from the on-ring sample by
+                    // more, the 5 cm stepped over a wall and would present
+                    // the far side's height at the rim's position (the rim
+                    // plunged 1.5 m at a flying path edge, terrain_face worst
+                    // 603 m/m; taking the higher side instead buried sunken
+                    // walkways 3 m under their own rims). Past the ambiguity's
+                    // scale the offset has nothing to say: the rim vertex
+                    // stands where the old path put it, on the ring.
+                    let g_at = ground(lon, lat);
+                    if (g - g_at).abs() <= 0.3 { g } else { g_at }
+                }
+            } else {
+                asphalt(cls, lon, lat)
+            }
         });
         if let Some(dbg) = std::env::var_os("ARPT_OM_DEBUG_Q") {
             let want = dbg.to_string_lossy().to_string();
@@ -1153,6 +1223,59 @@ fn one_mesh_full_inner(
             w.extend_from_slice(&[ia0, ib1, ib0, ia0, ia1, ib1]);
         }
     }
+    // An asphalt face steeper than any road can be is the kerb wall between
+    // two near-coincident band boundaries, drawn on the surface: the field
+    // steps a metre and a half across the two-centimetre sliver the twin
+    // rings leave, and the old path drew exactly that geometry as a
+    // plan-degenerate apron (slope.carriageway_face worst 65-390 m/m along
+    // the A9, absent from the old population). It is the wall's face, so it
+    // is emitted as the class's apron, not its surface.
+    const ASPHALT_WALL_SLOPE: f64 = 2.0;
+    {
+        let mid_lat2 = (bounds.south + bounds.north) * 0.5;
+        let m_lon2 = crate::scene::DEG_M * (mid_lat2 * PI / 180.0).cos();
+        let qx_m = bounds.width() / EXTENT * m_lon2;
+        let qy_m = bounds.height() / EXTENT * crate::scene::DEG_M;
+        for (&cls, idx) in tri_by_class.iter_mut() {
+            if cls == usize::MAX {
+                continue;
+            }
+            let mut keep: Vec<u32> = Vec::with_capacity(idx.len());
+            for f in idx.chunks_exact(3) {
+                let (ax, ay, az) = (
+                    x[f[0] as usize] as f64 * qx_m,
+                    y[f[0] as usize] as f64 * qy_m,
+                    z[f[0] as usize] as f64 * 0.001,
+                );
+                let (bx2, by2, bz) = (
+                    x[f[1] as usize] as f64 * qx_m,
+                    y[f[1] as usize] as f64 * qy_m,
+                    z[f[1] as usize] as f64 * 0.001,
+                );
+                let (cx2, cy2, cz) = (
+                    x[f[2] as usize] as f64 * qx_m,
+                    y[f[2] as usize] as f64 * qy_m,
+                    z[f[2] as usize] as f64 * 0.001,
+                );
+                let (ux, uy, uz2) = (bx2 - ax, by2 - ay, bz - az);
+                let (vx, vy, vz2) = (cx2 - ax, cy2 - ay, cz - az);
+                let det = ux * vy - vx * uy;
+                let steep = if det.abs() < 1e-9 {
+                    true
+                } else {
+                    let gx = (uz2 * vy - vz2 * uy) / det;
+                    let gy = (ux * vz2 - vx * uz2) / det;
+                    (gx * gx + gy * gy).sqrt() > ASPHALT_WALL_SLOPE
+                };
+                if steep {
+                    walls_by_class.entry(cls).or_default().extend_from_slice(f);
+                } else {
+                    keep.extend_from_slice(f);
+                }
+            }
+            *idx = keep;
+        }
+    }
     eprintln!(
         "[one-mesh] full: {} faces ({} asphalt), {} wall edges, {} verts",
         tri.len(),
@@ -1198,6 +1321,20 @@ fn one_mesh_full_inner(
         }
         let gx = (uz2 * vy - vz2 * uy) / det;
         let gy = (ux * vz2 - vx * uz2) / det;
+        if let Some(th) = std::env::var_os("ARPT_OM_STEEP") {
+            if let Ok(th) = th.to_string_lossy().parse::<f64>() {
+                let sl = (gx * gx + gy * gy).sqrt();
+                if sl > th {
+                    eprintln!(
+                        "[om-steep] slope {:.1} q ({},{})z{} ({},{})z{} ({},{})z{}",
+                        sl,
+                        x[f[0] as usize], y[f[0] as usize], z[f[0] as usize],
+                        x[f[1] as usize], y[f[1] as usize], z[f[1] as usize],
+                        x[f[2] as usize], y[f[2] as usize], z[f[2] as usize],
+                    );
+                }
+            }
+        }
         let w = det.abs() * 0.5;
         for &vi in f {
             let g = &mut grad[vi as usize];

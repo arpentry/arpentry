@@ -1223,6 +1223,30 @@ fn build_one_mesh(
         let s = unsafe { &mut *sampler_ptr };
         field.at(s, sheet, z, z_ref, bounds, lon, lat, &mut scratch)
     };
+    if let Some(pt) = std::env::var_os("ARPT_OM_DEBUG_PT") {
+        let v = pt.to_string_lossy();
+        if let Some((lon, lat)) = v.split_once(',').and_then(|(a, b)| {
+            Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))
+        }) {
+            if lon >= bounds.west && lon <= bounds.east && lat >= bounds.south && lat <= bounds.north {
+                let q = (
+                    crate::project::quantize_x(lon, bounds) as f64,
+                    crate::project::quantize_y(lat, bounds) as f64,
+                );
+                for (i, r) in g0.iter().enumerate() {
+                    if r.contains(q) {
+                        eprintln!("[om-pt] {z} g0[{i}] kind={:?} contains ({lon},{lat})", kinds[i]);
+                    }
+                }
+                for (i, r) in voids.iter().enumerate() {
+                    if r.contains(q) {
+                        eprintln!("[om-pt] {z} void[{i}] contains ({lon},{lat})");
+                    }
+                }
+                eprintln!("[om-pt] {z} g0={} voids={} checked", g0.len(), voids.len());
+            }
+        }
+    }
     let s2 = unsafe { &mut *sampler_ptr };
     let (m, emin, emax) = s2.one_mesh_full(bounds, z, &g0, &voids, &asphalt_edges, &mut asphalt)?;
     Some((m, emin, emax, kinds, emin, emax))
