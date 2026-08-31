@@ -146,6 +146,24 @@ if [ -n "$ZONE" ]; then
         elif [ -f "$DATA_DIR/terrain.pmtiles" ]; then
             TERRAIN_FILE="$DATA_DIR/terrain.pmtiles"
         fi
+        # A stale extract is silently wrong: an extraction made when the
+        # default max zoom was lower keeps being "reused" while the preview
+        # tiles z16 against it, and every hillside renders as giant z14
+        # triangles — the "grey walls" this cost a day of hunting
+        # (2026-08-31). Say so, loudly, with the one command that fixes it.
+        if [ -n "$TERRAIN_FILE" ] && command -v pmtiles >/dev/null 2>&1; then
+            have_z=$(pmtiles show "$TERRAIN_FILE" 2>/dev/null | awk '/^max zoom:/ {print $3}')
+            if [ -n "$have_z" ] && [ "$have_z" -lt "$MAX_ZOOM" ] && [ "$have_z" -lt 18 ]; then
+                echo "WARNING: $TERRAIN_FILE only holds terrain up to z$have_z but this"
+                echo "         preview tiles to z$MAX_ZOOM - hillsides will render as giant"
+                echo "         z$have_z triangles. Refresh it with:"
+                echo "           rm '$TERRAIN_FILE' && $0 --zone <w,s,e,n> --hires-terrain \\"
+                echo "             # (rerun; the extraction happens in the non-zone path)"
+                echo "         or directly:"
+                echo "           pmtiles extract $MAPTERHORN_HIRES_URL '$TERRAIN_FILE' \\"
+                echo "             --bbox=$BBOX --minzoom=13 --maxzoom=$MAX_ZOOM"
+            fi
+        fi
     fi
 fi
 
@@ -277,7 +295,21 @@ else
                     echo "  -> $(du -h "$terrain_src" | cut -f1)"
                 fi
             else
-                echo "Reusing terrain: $terrain_src ($(du -h "$terrain_src" | cut -f1))"
+                # Re-extract when the cached file's zoom ceiling is below what
+                # this run tiles to (see the preview-path warning above).
+                have_z=""
+                command -v pmtiles >/dev/null 2>&1 &&
+                    have_z=$(pmtiles show "$terrain_src" 2>/dev/null | awk '/^max zoom:/ {print $3}')
+                if [ -n "$have_z" ] && [ "$have_z" -lt "$tmaxz" ]; then
+                    echo "Terrain $terrain_src holds z<=$have_z but the run needs z$tmaxz;" \
+                         "re-extracting..."
+                    rm -f "$terrain_src"
+                    pmtiles extract "$MAPTERHORN_URL" "$terrain_src" \
+                        --bbox="$BBOX" --minzoom="$tminz" --maxzoom="$tmaxz"
+                    echo "  -> $(du -h "$terrain_src" | cut -f1)"
+                else
+                    echo "Reusing terrain: $terrain_src ($(du -h "$terrain_src" | cut -f1))"
+                fi
             fi
         fi
         [ -n "$terrain_src" ] && TERRAIN_ARG=(--terrain "$terrain_src")
