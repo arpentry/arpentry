@@ -987,16 +987,15 @@ fn encode_tile(
         }
     }
 
-    // S5 prototype (`ARPT_ONE_MESH=z/x/y` for one tile, `=z` for every tile
-    // of a zoom): this tile draws the one mesh — terrain, group-0 asphalt and
-    // the walls between them as one classified triangulation — and its
-    // group-0 surface/rim/apron features are withheld, since the mesh now
-    // carries them.
-    let one_mesh_full = std::env::var_os("ARPT_ONE_MESH")
-        .filter(|v| {
-            let v = v.to_string_lossy();
-            v == format!("{z}/{x}/{y}") || v == format!("{z}")
-        })
+    // S5: at the detail rungs this tile draws the one mesh — terrain,
+    // group-0 asphalt and the walls between them as one classified
+    // triangulation — and its group-0 surface/rim/apron features are
+    // withheld, since the mesh now carries them. Default since the zone-scale
+    // A/B held (every worst and tail at or better than the old path);
+    // `ARPT_NO_ONE_MESH=1` withholds it, and `ARPT_ONE_MESH=z/x/y` (one
+    // tile) or `=z` (one zoom) pins an explicit scope instead.
+    let one_mesh_full = one_mesh_on(z, x, y, solved.z_ref)
+        .then(|| ())
         .and_then(|_| {
             let t = Instant::now();
             let m = build_one_mesh(sampler, &bounds, z, solved.z_ref, pavement, &field, &cut_regions);
@@ -1120,6 +1119,23 @@ thread_local! {
     /// to seam.
     static PROBE_LAYERS: std::cell::RefCell<Vec<(u32, crate::priors::Surface)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Whether this tile draws the S5 one mesh. Default at the detail rungs
+/// (`z >= z_ref`, the same scope as the exact handover tags);
+/// `ARPT_NO_ONE_MESH` withholds it, `ARPT_ONE_MESH` pins an explicit
+/// tile (`z/x/y`) or zoom (`z`) scope instead.
+fn one_mesh_on(z: u8, x: u32, y: u32, z_ref: u8) -> bool {
+    if std::env::var_os("ARPT_NO_ONE_MESH").is_some() {
+        return false;
+    }
+    match std::env::var_os("ARPT_ONE_MESH") {
+        Some(v) => {
+            let v = v.to_string_lossy();
+            v == format!("{z}/{x}/{y}") || v == format!("{z}")
+        }
+        None => z >= z_ref,
+    }
 }
 
 /// Builds the S5 one-mesh for a tile: group-0 regions, the shared rings and
@@ -1751,8 +1767,8 @@ fn add_road_surface(
         // handed on are those whose asphalt was *actually meshed*, so a level
         // that failed to mesh leaves no hole with nothing over it (invariant 6).
         if paved.level == 0 && hole && !paved.region.is_empty() {
-            if std::env::var_os("ARPT_ONE_MESH_PROBE").is_some()
-                || std::env::var_os("ARPT_ONE_MESH").is_some()
+            if std::env::var_os("ARPT_NO_ONE_MESH").is_none()
+                || std::env::var_os("ARPT_ONE_MESH_PROBE").is_some()
             {
                 PROBE_LAYERS.with(|l| l.borrow_mut().push((paved.layer, paved.material)));
             }
