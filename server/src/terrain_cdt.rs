@@ -909,19 +909,6 @@ fn one_mesh_full_inner(
     // them. Reused as asphalt vertices they sample the field mid-band at a
     // density the paved mesh never had, and where the field steps between two
     // close arms of one region the step is drawn as a cliff
-    // (slope.carriageway_face worst 18 → 101 m/m, the A9 switchbacks). A
-    // segment wholly inside the cut is dropped; one that crosses a ring keeps
-    // its ends and lets the CDT split it at the constraint.
-    let inside_cut = |qx: f64, qy: f64| -> bool {
-        regions.iter().any(|r| r.contains((qx, qy)))
-            || voids.iter().any(|r| r.contains((qx, qy)))
-    };
-    // A breakline constrains the ground, and under a group-0 region or a void
-    // there is no ground: the old path inserted these segments and then
-    // dropped every face inside the hole, so its paved mesh never sampled
-    // them. Reused as asphalt vertices they sample the field mid-band at a
-    // density the paved mesh never had, and where the field steps between two
-    // close arms of one region the step is drawn as a cliff
     // (slope.carriageway_face worst 18 -> 101 m/m, the A9 switchbacks). A
     // segment wholly inside the cut is dropped; one that crosses a ring keeps
     // its ends and lets the CDT split it at the constraint.
@@ -931,18 +918,6 @@ fn one_mesh_full_inner(
     };
     for &(a, b) in segments {
         let Some((ca, cb)) = clip_to_bounds(a, b, bounds) else { continue };
-        {
-            let qax = project::quantize_x(ca.x, bounds) as f64;
-            let qay = project::quantize_y(ca.y, bounds) as f64;
-            let qbx = project::quantize_x(cb.x, bounds) as f64;
-            let qby = project::quantize_y(cb.y, bounds) as f64;
-            if inside_cut(qax, qay)
-                && inside_cut(qbx, qby)
-                && inside_cut((qax + qbx) * 0.5, (qay + qby) * 0.5)
-            {
-                continue;
-            }
-        }
         {
             let qax = project::quantize_x(ca.x, bounds) as f64;
             let qay = project::quantize_y(ca.y, bounds) as f64;

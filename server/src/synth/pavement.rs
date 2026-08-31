@@ -148,7 +148,31 @@ fn chunk_centre(cx: u32, cy: u32) -> Coord {
 /// are taken in the model's own (corridor, node) order, and the boolean itself is
 /// a function of the input *set* rather than of the order it was collected in
 /// (see [`poly::union_all`]).
-pub fn bake(junctions: &CarriagewayModel, threads: usize) -> PavementModel {
+/// What the bake needs to answer yield questions from the *blended field*
+/// instead of each band's own frozen chord (S3, `ARPT_FIELD_YIELDS=1`): the
+/// solved model and the ground, from which each bake worker builds its own
+/// sampler and each chunk its own `HeightField`.
+pub struct FieldYields<'a> {
+    pub solved: &'a crate::solve::SolvedModel,
+    pub ground: std::sync::Arc<crate::ground::GroundStack>,
+    pub terrain: Option<std::path::PathBuf>,
+    pub mesh: crate::ground::sampler::MeshOptions,
+    pub z_ref: u8,
+}
+
+/// The S3 switch: plan-space yields sample the blended sheet field the mesher
+/// drapes, so the yield agrees with what is drawn. Off by default until the
+/// bake reorder is judged (`order.walk_on_asphalt`'s 0.42 % residue).
+fn field_yields() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("ARPT_FIELD_YIELDS").is_some())
+}
+
+pub fn bake(
+    junctions: &CarriagewayModel,
+    threads: usize,
+    field: Option<&FieldYields>,
+) -> PavementModel {
     // Which chunks each carriageway segment can influence: its own extent plus
     // the pad, since a union boundary inside a chunk can be moved by geometry
     // just outside it.
@@ -187,9 +211,25 @@ pub fn bake(junctions: &CarriagewayModel, threads: usize) -> PavementModel {
     let out: std::sync::Mutex<Vec<(ChunkKey, Vec<LevelShapes>)>> =
         std::sync::Mutex::new(Vec::new());
     let threads = threads.max(1).min(keys.len().max(1));
+    let field = if field_yields() { field } else { None };
     std::thread::scope(|scope| {
         for _ in 0..threads {
-            scope.spawn(|| loop {
+            scope.spawn(|| {
+                // One sampler per worker (its own DEM handle and caches), one
+                // field per chunk — the "sampler-backed chunk field".
+                let mut sampler = field.map(|f| {
+                    let dem = f
+                        .terrain
+                        .as_deref()
+                        .and_then(|p| crate::dem::Dem::open(p).ok());
+                    crate::ground::sampler::GroundSampler::new(
+                        dem,
+                        std::sync::Arc::clone(&f.ground),
+                        f.z_ref,
+                        f.mesh,
+                    )
+                });
+                loop {
                 let k = {
                     let mut n = next.lock().expect("pavement queue poisoned");
                     if *n >= keys.len() {
@@ -200,7 +240,19 @@ pub fn bake(junctions: &CarriagewayModel, threads: usize) -> PavementModel {
                     keys[i]
                 };
                 let t = std::time::Instant::now();
-                let levels = bake_chunk(junctions, k, &by_chunk[&k]);
+                let chunk_field = field.map(|f| {
+                    crate::synth::height::HeightField::for_tile(
+                        junctions,
+                        f.solved,
+                        f.z_ref,
+                        &chunk_bounds(k.0, k.1),
+                    )
+                });
+                let mut fy = match (&chunk_field, &mut sampler, field) {
+                    (Some(hf), Some(sm), Some(f)) => Some((hf, sm, f.z_ref)),
+                    _ => None,
+                };
+                let levels = bake_chunk(junctions, k, &by_chunk[&k], &mut fy);
                 if std::env::var_os("ARPT_PAVE_PROBE").is_some() && t.elapsed().as_millis() > 200 {
                     eprintln!(
                         "[pave] chunk {:?}: {} sources -> {} levels in {:?}",
@@ -212,6 +264,7 @@ pub fn bake(junctions: &CarriagewayModel, threads: usize) -> PavementModel {
                 }
                 if !levels.is_empty() {
                     out.lock().expect("pavement results poisoned").push((k, levels));
+                }
                 }
             });
         }
@@ -245,6 +298,11 @@ fn bake_chunk(
     junctions: &CarriagewayModel,
     key: ChunkKey,
     source_ids: &[u32],
+    field: &mut Option<(
+        &crate::synth::height::HeightField,
+        &mut crate::ground::sampler::GroundSampler,
+        u8,
+    )>,
 ) -> Vec<LevelShapes> {
     let (cx, cy) = key;
     let rect = chunk_bounds(cx, cy);
@@ -302,7 +360,7 @@ fn bake_chunk(
     }
     // Where two at-grade sheets stack past the grade-separation boundary, the
     // junior yields the contested plan space (docs/GENERATION.md I9).
-    let yields = trench_yields(junctions, source_ids, &frame);
+    let yields = trench_yields(junctions, source_ids, &frame, &rect, field);
 
     // Sorted by (level, layer) and asphalt before ballast within a pair, so
     // the output order — and the subtraction below — is a function of the
@@ -439,6 +497,12 @@ fn trench_yields(
     junctions: &CarriagewayModel,
     source_ids: &[u32],
     frame: &MFrame,
+    rect: &Bounds,
+    field: &mut Option<(
+        &crate::synth::height::HeightField,
+        &mut crate::ground::sampler::GroundSampler,
+        u8,
+    )>,
 ) -> HashMap<(i64, u32, priors::Surface), Shapes> {
     use crate::assemble::grid::GridIndex;
     use crate::solve::crossings::SEPARATION_M;
@@ -476,7 +540,45 @@ fn trench_yields(
             if d > s.half_m + t.half_m {
                 continue; // the bands never meet in plan
             }
-            let gap = s.height_at(ts) - t.height_at(tt);
+            // The gap that decides every branch below. By the band's own
+            // frozen chord normally; from the blended sheet field under
+            // `ARPT_FIELD_YIELDS` (S3) — the same field the mesher drapes, so
+            // near a junction plate the yield reads the height the band is
+            // actually drawn at, pins and blending included, not the chord
+            // the plate displaced.
+            let gap = match field {
+                Some((hf, sm, z_ref)) => {
+                    let chord = s.height_at(ts) - t.height_at(tt);
+                    let mut scratch: Vec<u32> = Vec::new();
+                    let ps = Coord {
+                        x: s.a.x + (s.b.x - s.a.x) * ts,
+                        y: s.a.y + (s.b.y - s.a.y) * ts,
+                    };
+                    let pt = Coord {
+                        x: t.a.x + (t.b.x - t.a.x) * tt,
+                        y: t.a.y + (t.b.y - t.a.y) * tt,
+                    };
+                    let sheet_s = crate::synth::height::Sheet::of(s.level, s.layer, s.surface);
+                    let sheet_t = crate::synth::height::Sheet::of(t.level, t.layer, t.surface);
+                    let hs = hf.at(sm, sheet_s, *z_ref, *z_ref, rect, ps.x, ps.y, &mut scratch);
+                    let ht = hf.at(sm, sheet_t, *z_ref, *z_ref, rect, pt.x, pt.y, &mut scratch);
+                    let g = hs - ht;
+                    if std::env::var_os("ARPT_FIELD_YIELDS_CENSUS").is_some() {
+                        use crate::solve::crossings::SEPARATION_M;
+                        let flip_sep = (g.abs() <= SEPARATION_M) != (chord.abs() <= SEPARATION_M);
+                        let flip_kerb = (g.abs() <= priors::WALK_ON_ASPHALT_M)
+                            != (chord.abs() <= priors::WALK_ON_ASPHALT_M);
+                        if flip_sep || flip_kerb {
+                            eprintln!(
+                                "[fy] flip sep={flip_sep} kerb={flip_kerb} chord={chord:.2} field={g:.2} at {:.6},{:.6}",
+                                ps.x, ps.y
+                            );
+                        }
+                    }
+                    g
+                }
+                None => s.height_at(ts) - t.height_at(tt),
+            };
             if gap.abs() <= SEPARATION_M {
                 // **The kerb-coincident case.** Below the grade-separation
                 // boundary the sheets machinery layers same-material overlaps,
@@ -888,7 +990,7 @@ mod tests {
         let scene = SceneGraph::new(corridors);
         let solved = SolvedModel::from_profiles((0..scene.corridors.len()).map(|_| None).collect(), 15);
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
-        bake(&junctions, 1)
+        bake(&junctions, 1, None)
     }
 
     #[test]
@@ -991,7 +1093,7 @@ mod tests {
         let scene = SceneGraph::new(vec![road]);
         let solved = SolvedModel::from_profiles(vec![None], 15);
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), vec![band]);
-        let model = bake(&junctions, 1);
+        let model = bake(&junctions, 1, None);
         assert_eq!(walk_shapes(&model), vec![2], "the band must be severed at the kerbs");
     }
 
@@ -1011,7 +1113,7 @@ mod tests {
         let scene = SceneGraph::new(vec![road]);
         let solved = SolvedModel::from_profiles(vec![None], 15);
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), vec![band]);
-        let model = bake(&junctions, 1);
+        let model = bake(&junctions, 1, None);
         assert_eq!(walk_shapes(&model), vec![1], "a stacked band is not on the plate");
     }
 
@@ -1057,8 +1159,8 @@ mod tests {
         let scene = SceneGraph::new(make());
         let solved = SolvedModel::from_profiles((0..2).map(|_| None).collect(), 15);
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
-        let one = bake(&junctions, 1);
-        let many = bake(&junctions, 8);
+        let one = bake(&junctions, 1, None);
+        let many = bake(&junctions, 8, None);
         assert_eq!(one.chunk_count(), many.chunk_count());
         let b = crate::solve::tile_containing(15, 6.0, LAT);
         let a = one.chunk_for(&b).expect("asphalt");
@@ -1150,7 +1252,7 @@ mod tests {
         let (scene, solved) = crossroads();
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
         assert_eq!(junctions.len(), 1, "the crossroads plates as one intersection");
-        let model = bake(&junctions, 1);
+        let model = bake(&junctions, 1, None);
         let filleted = model.area_m2();
 
         // The same network with the intersection extent withheld: no mask, so no
@@ -1163,7 +1265,7 @@ mod tests {
                 SolvedModel::from_profiles((0..4).map(|_| None).collect(), 15);
             let j = carriageway::bake(&bare_scene, &bare_solved, &Facades::empty(), Vec::new());
             assert_eq!(j.len(), 0, "no intersection extent without profiles");
-            bake(&j, 1).area_m2()
+            bake(&j, 1, None).area_m2()
         };
 
         assert!(filleted > bare, "the closing added no fillet area at all");
@@ -1216,7 +1318,7 @@ mod tests {
         );
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
 
-        let model = bake(&junctions, 1);
+        let model = bake(&junctions, 1, None);
         let levels =
             model.chunk_for(&crate::solve::tile_containing(15, 6.0, LAT)).expect("asphalt");
         assert_eq!(levels.len(), 2, "the two roads must be separate regions");
@@ -1256,7 +1358,7 @@ mod tests {
             15,
         );
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
-        let model = bake(&junctions, 1);
+        let model = bake(&junctions, 1, None);
         let levels =
             model.chunk_for(&crate::solve::tile_containing(15, 6.0, LAT)).expect("surfaces");
         let road_ls = levels

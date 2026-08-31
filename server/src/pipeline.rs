@@ -425,7 +425,14 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // The unioned road surface: one paved region per level per z13 chunk, baked
     // once from the same carriageway sources the intersections came from.
     let t_pave = Instant::now();
-    let pavement = Arc::new(synth::pavement::bake(&junctions, threads));
+    let field_ctx = synth::pavement::FieldYields {
+        solved: &solved,
+        ground: Arc::clone(&ground),
+        terrain: cfg.terrain.as_ref().map(std::path::PathBuf::from),
+        mesh: mesh_options(cfg),
+        z_ref: solved.z_ref,
+    };
+    let pavement = Arc::new(synth::pavement::bake(&junctions, threads, Some(&field_ctx)));
     // Every solved bridge deck, indexed by plan position, so phase 1 can ask
     // whether a draped feature's elevated span is really the sidewalk on one
     // of them (`synth::carried`). Built once and shared: the answer is a

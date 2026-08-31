@@ -31,7 +31,7 @@ fn main() {
     let solved = solve::run(&mut scene, Some(&terrain), 16, 0).expect("solve");
     let facades = assemble::facades::Facades::empty();
     let junctions = synth::carriageway::bake(&scene, &solved, &facades, Vec::new());
-    let pavement = synth::pavement::bake(&junctions, 1);
+    let pavement = synth::pavement::bake(&junctions, 1, None);
 
     let m_lat = 110_540.0;
     let m_lon = 111_320.0 * lat0.to_radians().cos();
