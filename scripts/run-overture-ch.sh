@@ -139,29 +139,57 @@ if [ -n "$ZONE" ]; then
         MAX_ZOOM=16
     fi
     # Prefer the local high-res DEM for a crisp preview, then the planet extract,
-    # else flat — but never extract over HTTP (that is the slow part we skip).
+    # else flat. This path avoids the network — except when the cached DEM
+    # cannot serve this preview's zooms: an extraction made when the default
+    # max zoom was lower keeps being "reused" while the preview tiles z16
+    # against it, and every hillside renders as giant z14 triangles — the
+    # "grey walls" this cost a day of hunting (2026-08-31, twice). A zone at
+    # z13-16 is ~100 MB and seconds over HTTP, nothing like the full-bbox
+    # extraction this path exists to skip, so pull a zone-scoped extract into
+    # terrain-hires-zone.pmtiles and reuse it while it still covers the zone.
     if [ "$USE_TERRAIN" = true ] && [ -z "$TERRAIN_FILE" ]; then
         if [ -f "$DATA_DIR/terrain-hires.pmtiles" ]; then
             TERRAIN_FILE="$DATA_DIR/terrain-hires.pmtiles"
         elif [ -f "$DATA_DIR/terrain.pmtiles" ]; then
             TERRAIN_FILE="$DATA_DIR/terrain.pmtiles"
         fi
-        # A stale extract is silently wrong: an extraction made when the
-        # default max zoom was lower keeps being "reused" while the preview
-        # tiles z16 against it, and every hillside renders as giant z14
-        # triangles — the "grey walls" this cost a day of hunting
-        # (2026-08-31). Say so, loudly, with the one command that fixes it.
         if [ -n "$TERRAIN_FILE" ] && command -v pmtiles >/dev/null 2>&1; then
             have_z=$(pmtiles show "$TERRAIN_FILE" 2>/dev/null | awk '/^max zoom:/ {print $3}')
             if [ -n "$have_z" ] && [ "$have_z" -lt "$MAX_ZOOM" ] && [ "$have_z" -lt 18 ]; then
-                echo "WARNING: $TERRAIN_FILE only holds terrain up to z$have_z but this"
-                echo "         preview tiles to z$MAX_ZOOM - hillsides will render as giant"
-                echo "         z$have_z triangles. Refresh it with:"
-                echo "           rm '$TERRAIN_FILE' && $0 --zone <w,s,e,n> --hires-terrain \\"
-                echo "             # (rerun; the extraction happens in the non-zone path)"
-                echo "         or directly:"
-                echo "           pmtiles extract $MAPTERHORN_HIRES_URL '$TERRAIN_FILE' \\"
-                echo "             --bbox=$BBOX --minzoom=13 --maxzoom=$MAX_ZOOM"
+                ZONE_DEM="$DATA_DIR/terrain-hires-zone.pmtiles"
+                zone_maxz=$MAX_ZOOM
+                [ "$zone_maxz" -gt 18 ] && zone_maxz=18
+                # Pad past the zone: a z13 output tile's buffer reaches ~2.4 km
+                # beyond the bbox, and DEM reads past the extract return the
+                # flat-0 fallback — cliffs to sea level along the zone rim.
+                pad_bbox=$(echo "$BBOX" | awk -F, \
+                    '{printf "%.4f,%.4f,%.4f,%.4f", $1-0.03, $2-0.03, $3+0.03, $4+0.03}')
+                covers=$(pmtiles show "$ZONE_DEM" 2>/dev/null | awk \
+                    -F'[(): ,]+' -v bbox="$pad_bbox" -v z="$zone_maxz" '
+                    /^bounds:/ { w=$3; s=$5; e=$7; n=$9 }
+                    /^max zoom:/ { mz=$3 }
+                    END {
+                        split(bbox, b, ",")
+                        if (w != "" && mz >= z && w <= b[1] && s <= b[2] &&
+                            e >= b[3] && n >= b[4]) print "yes"; else print "no"
+                    }')
+                if [ "$covers" = yes ]; then
+                    echo "Zone DEM covers this preview: $ZONE_DEM"
+                    TERRAIN_FILE="$ZONE_DEM"
+                elif [ "$USE_TERRAIN" = true ] &&
+                     pmtiles extract "$MAPTERHORN_HIRES_URL" "$ZONE_DEM.tmp" \
+                         --bbox="$pad_bbox" --minzoom=13 --maxzoom="$zone_maxz"; then
+                    mv "$ZONE_DEM.tmp" "$ZONE_DEM"
+                    echo "Zone DEM extracted: $ZONE_DEM ($(du -h "$ZONE_DEM" | cut -f1))"
+                    TERRAIN_FILE="$ZONE_DEM"
+                else
+                    rm -f "$ZONE_DEM.tmp"
+                    echo "WARNING: $TERRAIN_FILE only holds terrain up to z$have_z but this"
+                    echo "         preview tiles to z$MAX_ZOOM, and the zone extraction failed -"
+                    echo "         hillsides will render as giant z$have_z triangles. Retry:"
+                    echo "           pmtiles extract $MAPTERHORN_HIRES_URL '$ZONE_DEM' \\"
+                    echo "             --bbox=$pad_bbox --minzoom=13 --maxzoom=$zone_maxz"
+                fi
             fi
         fi
     fi
