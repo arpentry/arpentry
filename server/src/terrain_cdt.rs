@@ -1021,6 +1021,20 @@ fn one_mesh_full_inner(
         let cls = regions.iter().position(|r| r.contains(cen)).unwrap_or_else(|| {
             if voids.iter().any(|r| r.contains(cen)) { VOID_CLASS } else { usize::MAX }
         });
+        // The buffer carries no terrain. The lattice stops at the tile border
+        // (both paths'), but breakline and ring endpoints clipped to the
+        // buffered bounds still enter the CDT, and the hull then fans giant
+        // skinny triangles across the buffer strip — chords that float over
+        // the neighbour's real terrain on a steep flank (the grey planes with
+        // razor edges, visible from one side), with garbage one-sided normals
+        // at their hub vertices (95° against the border row, measured).
+        // Asphalt spill into the buffer is by design and stays.
+        if cls >= VOID_CLASS {
+            let (lo, hi) = (BUFFER, BUFFER + EXTENT);
+            if cen.0 < lo || cen.0 > hi || cen.1 < lo || cen.1 > hi {
+                continue;
+            }
+        }
         tri.push(if area2 > 0 { [a, b, c] } else { [a, c, b] });
         class.push(cls);
     }

@@ -239,6 +239,12 @@ impl SurfaceMesh {
     }
 
     /// Triangle `t` as three `(x, y, z)` corners.
+    /// Vertex indices of triangle `t`, for callers walking mesh adjacency
+    /// (normal-continuity probes pair endpoint normals per edge).
+    pub fn triangle_indices(&self, t: usize) -> [u32; 3] {
+        [self.idx[t * 3], self.idx[t * 3 + 1], self.idx[t * 3 + 2]]
+    }
+
     pub fn triangle(&self, t: usize) -> [(f64, f64, f64); 3] {
         let c = |k: usize| {
             let v = self.idx[t * 3 + k] as usize;

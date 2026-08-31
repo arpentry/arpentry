@@ -74,6 +74,16 @@ const STEP_M: f64 = 0.005;
 /// steep flank measured tens.
 const SHADE_DEG: f64 = 5.0;
 
+/// A terrain face never lives in the buffer: both meshers' lattices stop at
+/// the tile border, so a face whose centroid lies outside the proper is drawn
+/// ground where only the neighbour's ground belongs. The plan overhang can be
+/// centimetres — the one-mesh's hull fans were slivers hugging the border in
+/// plan — while the face spans tens of metres of *height*, a near-vertical
+/// ribbon rendered as a grey curtain. So a spilling face is scored by its
+/// height span, and anything past this is a visible ribbon, not a rounding
+/// sliver.
+const SPILL_M: f64 = 0.5;
+
 /// What one tile says about one lattice point on its border.
 #[derive(Clone, Copy)]
 struct Claim {
@@ -102,6 +112,10 @@ pub struct Seams {
     /// Terrain normals at border lattice points, per tile: the light's
     /// side of the seam question (`seam.terrain_shade`).
     shade: std::collections::HashMap<(i64, i64), Vec<(u64, (i8, i8))>>,
+    /// How far each terrain face's centroid lies outside the tile proper, in
+    /// metres (`seam.terrain_spill`) — drawn ground in the buffer strip.
+    spill: Dist,
+    spill_worst: Worst,
     zoom: u8,
 }
 
@@ -111,6 +125,8 @@ impl Seams {
             terrain: Shared::new(),
             pavement: Shared::new(),
             shade: Default::default(),
+            spill: Dist::new(0.0, 400.0),
+            spill_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             meshes: 0,
             sheetless: 0,
             worst_k: opt.worst_k,
@@ -170,6 +186,44 @@ fn collect_shade(
         }
         let key = (tile.x as i64 * EXTENT + qx, tile.y as i64 * EXTENT + qy);
         into.entry(key).or_default().push((id, n));
+    }
+}
+
+/// Folds every terrain face into the spill measurement: how far, in metres,
+/// its plan centroid lies outside the tile proper. The terrain layer's
+/// contract is the lattice's: it covers the tile proper exactly, and the
+/// buffer is the neighbour's ground. A face out there is a chord across the
+/// buffer strip — on a steep flank it floats over the neighbour's real
+/// terrain and draws a grey plane with razor edges, lit by the garbage
+/// one-sided normals of its own sparse hull (the one-mesh's buffer fans,
+/// 2026-08-31).
+fn collect_spill(spill: &mut Dist, worst: &mut Worst, mesh: &SurfaceMesh, tile: &TileScene) {
+    // A quantum of slack: a centroid computed from rounded coordinates may sit
+    // a hair past the border without the face living in the buffer.
+    const EPS: f64 = 1.0 / EXTENT as f64;
+    for t in 0..mesh.triangle_count() {
+        let [(ax, ay, az), (bx, by, bz), (cx, cy, cz)] = mesh.triangle(t);
+        let (px, py) = ((ax + bx + cx) / 3.0, (ay + by + cy) / 3.0);
+        let outside =
+            px < -EPS || px > 1.0 + EPS || py < -EPS || py > 1.0 + EPS;
+        if !outside {
+            spill.push(0.0);
+            continue;
+        }
+        let span = az.max(bz).max(cz) - az.min(bz).min(cz);
+        spill.push(span);
+        if span > SPILL_M {
+            let (lon, lat) = tile.lonlat(px, py);
+            worst.offer(Offender {
+                lon,
+                lat,
+                zoom: tile.z,
+                value: span,
+                note: format!(
+                    "a terrain face in the buffer spans {span:.1} m of height"
+                ),
+            });
+        }
     }
 }
 
@@ -411,6 +465,7 @@ impl Check for Seams {
         if let Some(t) = &tile.terrain {
             collect(&mut self.terrain, t, None, tile);
             collect_shade(&mut self.shade, t, tile);
+            collect_spill(&mut self.spill, &mut self.spill_worst, t, tile);
         }
         for road in tile.roads.iter().filter(|r| r.is_pavement()) {
             self.meshes += 1;
@@ -506,6 +561,30 @@ impl Check for Seams {
             skipped: none,
             dist: shade,
             worst: shade_worst.into_vec(),
+        });
+        let spill_skip =
+            self.spill.is_empty().then(|| "no terrain mesh at this zoom".to_string());
+        out.push(Metric {
+            id: "seam.terrain_spill".into(),
+            invariant: Invariant::I2,
+            title: "Terrain drawn outside the tile proper".into(),
+            population: "Every terrain face; one whose plan centroid lies outside the tile \
+                         proper is scored by its height span in metres, the rest score 0."
+                .into(),
+            detail: format!(
+                "The terrain layer covers the tile proper exactly — the lattice stops at the \
+                 border, and the buffer is the neighbour's ground. A face out there is a chord \
+                 across the buffer strip: a sliver in plan (centimetres past the border) that \
+                 spans tens of metres of height on a steep flank, rendered as a grey curtain \
+                 with razor edges floating over the neighbour's real terrain, lit by its own \
+                 sparse hull's one-sided normals (the one-mesh's buffer fans, 2026-08-31). \
+                 Anything past {SPILL_M} m of height is a visible ribbon, not rounding."
+            ),
+            sense: Sense::HigherIsWorse,
+            threshold: SPILL_M,
+            skipped: spill_skip,
+            dist: self.spill,
+            worst: self.spill_worst.into_vec(),
         });
         out
     }
