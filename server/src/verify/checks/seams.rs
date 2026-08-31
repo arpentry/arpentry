@@ -67,6 +67,13 @@ const EXTENT: i64 = 32768;
 /// agree in the model agree here to the millimetre or not at all.
 const STEP_M: f64 = 0.005;
 
+/// Two tiles lighting one border point more than this many degrees apart draw
+/// a visible crease in oblique light. Snorm8 quantization is under a degree;
+/// honest derivation differences (the same central difference computed from
+/// two tiles' f64 paths) are under two; a one-sided face accumulation on a
+/// steep flank measured tens.
+const SHADE_DEG: f64 = 5.0;
+
 /// What one tile says about one lattice point on its border.
 #[derive(Clone, Copy)]
 struct Claim {
@@ -92,6 +99,9 @@ pub struct Seams {
     meshes: u64,
     sheetless: u64,
     worst_k: usize,
+    /// Terrain normals at border lattice points, per tile: the light's
+    /// side of the seam question (`seam.terrain_shade`).
+    shade: std::collections::HashMap<(i64, i64), Vec<(u64, (i8, i8))>>,
     zoom: u8,
 }
 
@@ -100,6 +110,7 @@ impl Seams {
         Seams {
             terrain: Shared::new(),
             pavement: Shared::new(),
+            shade: Default::default(),
             meshes: 0,
             sheetless: 0,
             worst_k: opt.worst_k,
@@ -136,6 +147,46 @@ fn collect(into: &mut Shared, mesh: &SurfaceMesh, sheet: Option<i64>, tile: &Til
             None => claims.push(Claim { tile: id, sheet, lo: z, hi: z }),
         }
     }
+}
+
+/// Folds every border vertex's stored normal into the shade map. Terrain
+/// only, and only meshes that carry normals (older archives skip the metric).
+fn collect_shade(
+    into: &mut HashMap<(i64, i64), Vec<(u64, (i8, i8))>>,
+    mesh: &SurfaceMesh,
+    tile: &TileScene,
+) {
+    let id = (tile.x as u64) << 32 | tile.y as u64;
+    for i in 0..mesh.vertex_count() {
+        let Some(n) = mesh.normal(i) else { return };
+        let (px, py, _) = mesh.vertex(i);
+        let qx = (px * EXTENT as f64).round() as i64;
+        let qy = (py * EXTENT as f64).round() as i64;
+        if !(qx == 0 || qx == EXTENT || qy == 0 || qy == EXTENT) {
+            continue;
+        }
+        if !(0..=EXTENT).contains(&qx) || !(0..=EXTENT).contains(&qy) {
+            continue;
+        }
+        let key = (tile.x as i64 * EXTENT + qx, tile.y as i64 * EXTENT + qy);
+        into.entry(key).or_default().push((id, n));
+    }
+}
+
+/// The angle between two stored normal pairs, in degrees: both decode as
+/// (nx, ny, +nz) unit vectors (the format's snorm8 pair with the up
+/// component reconstructed), which is exactly what the shader lights.
+fn shade_angle(a: (i8, i8), b: (i8, i8)) -> f64 {
+    let dec = |p: (i8, i8)| -> (f64, f64, f64) {
+        let nx = p.0 as f64 / 127.0;
+        let ny = p.1 as f64 / 127.0;
+        let nz = (1.0 - (nx * nx + ny * ny)).max(0.0).sqrt();
+        (nx, ny, nz)
+    };
+    let (ax, ay, az) = dec(a);
+    let (bx, by, bz) = dec(b);
+    let dot = (ax * bx + ay * by + az * bz).clamp(-1.0, 1.0);
+    dot.acos().to_degrees()
 }
 
 /// Geodetic position of a global border lattice point.
@@ -359,6 +410,7 @@ impl Check for Seams {
         self.zoom = tile.z;
         if let Some(t) = &tile.terrain {
             collect(&mut self.terrain, t, None, tile);
+            collect_shade(&mut self.shade, t, tile);
         }
         for road in tile.roads.iter().filter(|r| r.is_pavement()) {
             self.meshes += 1;
@@ -399,6 +451,62 @@ impl Check for Seams {
             ));
         }
         out.extend(pavement);
+        // The shade seam: the same border lattice points, compared in the
+        // light instead of the ground.
+        let mut shade = Dist::new(0.0, 180.0);
+        let mut shade_worst = Worst::new(Sense::HigherIsWorse, self.worst_k);
+        for (&(gx, gy), claims) in &self.shade {
+            // One normal per tile (a border vertex can be duplicated per
+            // class; terrain claims here are one class, but a tile may still
+            // hold two copies — compare across tiles only, worst pair).
+            let mut tiles: Vec<u64> = claims.iter().map(|c| c.0).collect();
+            tiles.sort_unstable();
+            tiles.dedup();
+            if tiles.len() < 2 {
+                continue;
+            }
+            let mut worst = 0.0f64;
+            for i in 0..claims.len() {
+                for j in i + 1..claims.len() {
+                    if claims[i].0 == claims[j].0 {
+                        continue;
+                    }
+                    worst = worst.max(shade_angle(claims[i].1, claims[j].1));
+                }
+            }
+            shade.push(worst);
+            if worst > SHADE_DEG {
+                let (lon, lat) = lonlat(gx, gy, self.zoom);
+                shade_worst.offer(Offender {
+                    lon,
+                    lat,
+                    zoom: self.zoom,
+                    value: worst,
+                    note: format!(
+                        "{} tiles light this border point {worst:.0}° apart (lattice {gx},{gy})",
+                        tiles.len()
+                    ),
+                });
+            }
+        }
+        let none = shade
+            .is_empty()
+            .then(|| "no terrain normals at shared border points (an older archive, or a single tile)".to_string());
+        out.push(Metric {
+            id: "seam.terrain_shade".into(),
+            invariant: Invariant::I2,
+            title: "Terrain lit differently across a tile border".into(),
+            population: "Every shared border lattice point of the terrain mesh where two or                          more tiles carry stored normals, scored as the worst angle between                          any two tiles' normals there."
+                .into(),
+            detail: format!(
+                "The heights can seam at zero and the light still crease: a normal derived                  from one tile's faces alone sees half the neighbourhood its neighbour sees,                  and on a steep flank the two disagree by tens of degrees — a visible shelf                  along every border (user-reported 2026-08-31; the one mesh's border normals                  now come from central differences of the height functions, which both sides                  compute identically). Past {SHADE_DEG:.0}° the crease is visible in any                  oblique light."
+            ),
+            sense: Sense::HigherIsWorse,
+            threshold: SHADE_DEG,
+            skipped: none,
+            dist: shade,
+            worst: shade_worst.into_vec(),
+        });
         out
     }
 }

@@ -154,6 +154,11 @@ pub struct SurfaceMesh {
     y: Vec<f32>,
     z: Vec<f32>,
     idx: Vec<u32>,
+    /// Per-vertex normals as the archive's oct-ish snorm pair, when the
+    /// geometry carried one (two i8 per vertex, empty otherwise). Read by
+    /// `seam.terrain_shade`, which compares the *light* across a border the
+    /// way the height checks compare the ground.
+    normals: Vec<i8>,
     grid: Grid,
 }
 
@@ -195,7 +200,23 @@ impl SurfaceMesh {
                 idx.extend_from_slice(&[a, b, c]);
             }
         }
-        SurfaceMesh::from_parts(x, y, z, idx)
+        let mut mesh = SurfaceMesh::from_parts(x, y, z, idx)?;
+        if let Some(gn) = g.normals() {
+            if gn.len() == n * 2 {
+                mesh.normals = (0..n * 2).map(|i| gn.get(i)).collect();
+            }
+        }
+        Some(mesh)
+    }
+
+    /// The stored normal pair of vertex `i`, or `None` when the mesh carried
+    /// none.
+    pub fn normal(&self, i: usize) -> Option<(i8, i8)> {
+        if self.normals.len() == self.x.len() * 2 {
+            Some((self.normals[i * 2], self.normals[i * 2 + 1]))
+        } else {
+            None
+        }
     }
 
     /// Builds a surface from raw arrays already in unit plan space and metres.
@@ -206,7 +227,7 @@ impl SurfaceMesh {
             return None;
         }
         let grid = Grid::build(&x, &y, &idx);
-        Some(SurfaceMesh { x, y, z, idx, grid })
+        Some(SurfaceMesh { x, y, z, idx, normals: Vec::new(), grid })
     }
 
     pub fn vertex_count(&self) -> usize {

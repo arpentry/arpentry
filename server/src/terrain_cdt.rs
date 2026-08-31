@@ -1318,10 +1318,50 @@ fn one_mesh_full_inner(
             g.2 += w;
         }
     }
+    // The class of every vertex copy, read back off the intern map: the
+    // border-normal fix below needs to differentiate the copy's own height
+    // function.
+    let mut cls_of: Vec<usize> = vec![usize::MAX; x.len()];
+    for (&(_, cls), &i) in &ids {
+        cls_of[i as usize] = cls;
+    }
+    // One lattice cell in metres, the central-difference step: the same
+    // number on both sides of a border, so the two tiles derive the same
+    // normal from the same function at the same points.
+    let qstep_m = {
+        let qx_m = bounds.width() / EXTENT * m_lon;
+        let qy_m = bounds.height() / EXTENT * m_lat;
+        (qx_m.max(qy_m) * (EXTENT / grid as f64) * 0.5).max(0.5)
+    };
     let mut normals = vec![0i8; x.len() * 2];
     for i in 0..x.len() {
         let (sgx, sgy, sw) = grad[i];
-        let (dz_dx, dz_dy) = if sw > 0.0 { (sgx / sw, sgy / sw) } else { (0.0, 0.0) };
+        let (mut dz_dx, mut dz_dy) = if sw > 0.0 { (sgx / sw, sgy / sw) } else { (0.0, 0.0) };
+        // **A border vertex's faces are one-sided**: the accumulation above
+        // sees only this tile's triangles, the neighbour sees only its own,
+        // and on a steep flank the two half-neighbourhoods disagree enough to
+        // draw a shading crease along every tile edge (the "visible tile
+        // boundaries" a user reported — heights seam at 0.000 %, the light
+        // did not). On the border the normal comes from central differences
+        // of the copy's own height function instead, which is
+        // tile-independent: both tiles ask the same ground or the same field
+        // at the same four points and shade identically.
+        let on_border = {
+            let lo = BUFFER as u16;
+            let hi = (BUFFER + EXTENT as f64) as u16;
+            x[i] == lo || x[i] == hi || y[i] == lo || y[i] == hi
+        };
+        if on_border {
+            let lon0 = project::dequantize_x(x[i], bounds);
+            let lat0 = project::dequantize_y(y[i], bounds);
+            let (dlon, dlat) = (qstep_m / m_lon, qstep_m / m_lat);
+            let cls = cls_of[i];
+            let mut h = |lon: f64, lat: f64| -> f64 {
+                if cls >= VOID_CLASS { ground(lon, lat) } else { asphalt(cls, lon, lat) }
+            };
+            dz_dx = (h(lon0 + dlon, lat0) - h(lon0 - dlon, lat0)) / (2.0 * qstep_m);
+            dz_dy = (h(lon0, lat0 + dlat) - h(lon0, lat0 - dlat)) / (2.0 * qstep_m);
+        }
         let lon = project::dequantize_x(x[i], bounds);
         let lat = project::dequantize_y(y[i], bounds);
         let lon_r = lon * (PI / 180.0);
