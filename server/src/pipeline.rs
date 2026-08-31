@@ -994,7 +994,12 @@ fn encode_tile(
     // A/B held (every worst and tail at or better than the old path);
     // `ARPT_NO_ONE_MESH=1` withholds it, and `ARPT_ONE_MESH=z/x/y` (one
     // tile) or `=z` (one zoom) pins an explicit scope instead.
-    let one_mesh_full = one_mesh_on(z, x, y, solved.z_ref)
+    // Gated on the hole like every other consumer of the cut: with
+    // `--no-hole` or `--no-breaklines` the cut list is empty, and a one mesh
+    // built from an empty group 0 would classify everything as terrain while
+    // the emit path below still withheld the old surfaces — a tile with the
+    // asphalt deleted.
+    let one_mesh_full = (one_mesh_on(z, x, y, solved.z_ref) && sampler.cuts_hole(z))
         .then(|| ())
         .and_then(|_| {
             let t = Instant::now();
