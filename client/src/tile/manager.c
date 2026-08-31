@@ -1070,11 +1070,19 @@ void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
     static int force = -2; /* -2 unparsed, -1 off */
     static int fz, fx, fy;
     static int no_mask = -1;
+    static int dbg = -1;
     if (force == -2) {
         const char *s = getenv("ARPT_FORCE_UNREADY");
         force = (s && sscanf(s, "%d/%d/%d", &fz, &fx, &fy) == 3) ? 1 : -1;
         no_mask = getenv("ARPT_NO_QUAD_MASK") ? 1 : 0;
+        dbg = getenv("ARPT_TILE_DEBUG") ? 1 : 0;
     }
+    /* ARPT_TILE_DEBUG=1: once a second, say what every visible tile actually
+       is — ready, loading, failed (with retry count), or covered by which
+       ancestor stand-in. The session-state questions a screenshot cannot
+       answer ("is that wall a stand-in for a tile this session gave up
+       on?") become one glance at the log. */
+    bool dbg_now = dbg == 1 && (tm->frame % 60 == 0);
     bool ready[MAX_VISIBLE_TILES];
     for (int i = 0; i < tm->visible_count; i++) {
         tile_entry lookup = {.key = tm->visible[i]};
@@ -1083,6 +1091,22 @@ void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
         if (force == 1 && tm->visible[i].level == fz && tm->visible[i].x == fx &&
             tm->visible[i].y == fy)
             ready[i] = false;
+        if (dbg_now && !ready[i]) {
+            const char *st = !e                        ? "unrequested"
+                             : e->state == TILE_LOADING ? "loading"
+                             : e->state == TILE_FAILED  ? "FAILED"
+                                                        : "ready-no-gpu";
+            fprintf(stderr, "[tile-debug] %d/%d/%d %s retries=%d\n",
+                    tm->visible[i].level, tm->visible[i].x, tm->visible[i].y,
+                    st, e ? e->retries : 0);
+        }
+    }
+    if (dbg_now) {
+        int n_ready = 0;
+        for (int i = 0; i < tm->visible_count; i++)
+            if (ready[i]) n_ready++;
+        fprintf(stderr, "[tile-debug] frame %llu: %d visible, %d ready\n",
+                (unsigned long long)tm->frame, tm->visible_count, n_ready);
     }
 
     for (int i = 0; i < tm->visible_count; i++) {
@@ -1111,8 +1135,9 @@ void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
             if (!already) {
                 uint32_t mask = no_mask ? 0 : arpt_tile_covered_quadrants(
                     al, ax, ay, tm->visible, ready, tm->visible_count);
-                if (force == 1)
-                    fprintf(stderr, "[quad-mask] ancestor %d/%d/%d for %d/%d/%d mask=%u\n",
+                if (force == 1 || dbg_now)
+                    fprintf(stderr, "[%s] ancestor %d/%d/%d STANDS IN for %d/%d/%d mask=%u\n",
+                            force == 1 ? "quad-mask" : "tile-debug",
                             al, ax, ay, tm->visible[i].level, tm->visible[i].x,
                             tm->visible[i].y, mask);
                 draw_entry(r, cam, ancestor, tm->config.max_level, mask);
