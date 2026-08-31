@@ -14,7 +14,22 @@
 #include <string.h>
 
 #define MAX_VISIBLE_TILES 256
-#define MAX_RETRIES 3
+/* A tile whose *payload* cannot be decoded is dead for the session: refetching
+   the same bytes cannot help.  An HTTP failure is the opposite — the server is
+   restarting, the network blinked — and a session that gives up on a tile
+   forever draws its coarse ancestor as a permanent wall at the tile's border
+   (user-reported twice, 2026-08-31: restart the tile server, and every visible
+   tile burned its retries inside a quarter second of frame-based backoff).
+   HTTP failures therefore retry forever, with the backoff below. */
+#define TILE_RETRIES_PERMANENT 1000000
+
+/* Backoff before retry attempt n, in frames: ~0.5 s doubling to ~30 s at
+   60 fps.  Frames are the only clock this module keeps; a stall that slows
+   the frame rate slows the retries with it, which errs the right way. */
+static uint64_t tile_retry_backoff(int retries) {
+    int shift = retries < 6 ? retries : 6;
+    return (uint64_t)(30u << shift);
+}
 
 /* Internal types */
 
@@ -532,11 +547,11 @@ static void tile_finish_main(bool success, void *payload, void *userdata) {
         updated.state = TILE_FAILED;
         if (p) {
             /* HTTP succeeded but decode/prepare failed — permanent. */
-            updated.retries = MAX_RETRIES;
+            updated.retries = TILE_RETRIES_PERMANENT;
         } else {
             /* HTTP failure — retry with backoff. */
             updated.retries = retries + 1;
-            updated.retry_after = tm->frame + (1u << updated.retries);
+            updated.retry_after = tm->frame + tile_retry_backoff(updated.retries);
         }
         tm_hashmap_set(tm, &updated);
         prepared_tile_free(p);
@@ -566,7 +581,7 @@ static void tile_finish_main(bool success, void *payload, void *userdata) {
            retrying rather than refetching every frame. */
         updated.state = TILE_FAILED;
         updated.retries = retries + 1;
-        updated.retry_after = tm->frame + (1u << updated.retries);
+        updated.retry_after = tm->frame + tile_retry_backoff(updated.retries);
     }
     tm_hashmap_set(tm, &updated);
 
@@ -700,7 +715,7 @@ static void start_fetch(arpt_tile_manager *tm, arpt_tile_key key,
         tile_entry failed = new_entry;
         failed.state = TILE_FAILED;
         failed.retries = prev_retries + 1;
-        failed.retry_after = tm->frame + (1u << failed.retries);
+        failed.retry_after = tm->frame + tile_retry_backoff(failed.retries);
         tm_hashmap_set(tm, &failed);
         free(ctx);
     }
@@ -859,7 +874,7 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
 
         if (existing) {
             if (existing->state == TILE_FAILED) {
-                if (existing->retries >= MAX_RETRIES) {
+                if (existing->retries >= TILE_RETRIES_PERMANENT) {
                     /* Permanently failed — stop retrying */
                     tile_entry updated = *existing;
                     updated.last_used = tm->frame;

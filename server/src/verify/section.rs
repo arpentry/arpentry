@@ -74,6 +74,12 @@ pub fn render(scan: &ArchiveScan<'_>, cut: &Cut) -> Option<String> {
     let mut walk = Trace::new("walkway / path band", "#15803d", false);
     let mut deck_top = Trace::new("deck / bore top", "#1d4ed8", false);
     let mut deck_low = Trace::new("deck soffit / bore invert", "#1d4ed8", true);
+    // The walls: aprons are plan-degenerate (a vertical quad has no plan
+    // area), so they were invisible here — and a user-reported "vertical wall"
+    // is exactly the geometry a section is for. Drawn as top and foot traces
+    // of any apron within a step of the cut.
+    let mut wall_top = Trace::new("apron / wall top", "#9f1239", false);
+    let mut wall_low = Trace::new("apron / wall foot", "#9f1239", true);
 
     // Cache the tile of the previous sample: a section walks a short line, so
     // consecutive samples nearly always share one.
@@ -94,9 +100,16 @@ pub fn render(scan: &ArchiveScan<'_>, cut: &Cut) -> Option<String> {
                 .and_then(|&(z, x, y, id)| scan.decode(z, x, y, id));
         }
         let Some(tile) = cached.as_ref() else {
-            for t in
-                [&mut ground, &mut asphalt, &mut asphalt_b, &mut walk, &mut deck_top, &mut deck_low]
-            {
+            for t in [
+                &mut ground,
+                &mut asphalt,
+                &mut asphalt_b,
+                &mut walk,
+                &mut deck_top,
+                &mut deck_low,
+                &mut wall_top,
+                &mut wall_low,
+            ] {
                 t.pts.push(None);
             }
             continue;
@@ -147,9 +160,48 @@ pub fn render(scan: &ArchiveScan<'_>, cut: &Cut) -> Option<String> {
             .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)));
         deck_top.pts.push(structure.map(|(_, hi)| (d, hi)));
         deck_low.pts.push(structure.map(|(lo, _)| (d, lo)));
+
+        // Aprons from this tile AND its neighbours: a mesh may reach past its
+        // own border into the buffer, where the client draws it but the owning
+        // tile's decode never sees it — a wall the per-tile read is blind to.
+        let mut wall = tile
+            .roads
+            .iter()
+            .filter(|r| r.class.ends_with("_apron"))
+            .filter_map(|r| r.mesh.span_near(px, py, &tile.scale, cut.step_m))
+            .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)));
+        for &(z, x, y, id) in tiles.iter() {
+            let b = crate::project::Bounds::of_tile(z, x, y);
+            if b.contains(lon, lat) {
+                continue; // the owning tile, already read
+            }
+            // Within half a tile: the buffer's own reach.
+            if (lon - (b.west + 0.5 * b.width())).abs() > b.width()
+                || (lat - (b.south + 0.5 * b.height())).abs() > b.height()
+            {
+                continue;
+            }
+            let Some(nb) = scan.decode(z, x, y, id) else { continue };
+            let npx = (lon - nb.bounds.west) / nb.bounds.width();
+            let npy = (lat - nb.bounds.south) / nb.bounds.height();
+            let w = nb
+                .roads
+                .iter()
+                .filter(|r| r.class.ends_with("_apron"))
+                .filter_map(|r| r.mesh.span_near(npx, npy, &nb.scale, cut.step_m))
+                .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)));
+            if let Some(w) = w {
+                wall = Some(match wall {
+                    Some(v) => (v.0.min(w.0), v.1.max(w.1)),
+                    None => w,
+                });
+            }
+        }
+        wall_top.pts.push(wall.map(|(_, hi)| (d, hi)));
+        wall_low.pts.push(wall.map(|(lo, _)| (d, lo)));
     }
 
-    let traces = vec![ground, asphalt, asphalt_b, walk, deck_top, deck_low];
+    let traces = vec![ground, asphalt, asphalt_b, walk, deck_top, deck_low, wall_top, wall_low];
     if traces.iter().all(|t| t.pts.iter().all(Option::is_none)) {
         return None;
     }
