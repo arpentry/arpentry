@@ -1440,6 +1440,7 @@ pub fn fit_to_ground(
     });
     unify_width_along_ways(bands, sources);
     taper_along_runs(bands);
+    weld_joints(bands);
     width_census(bands, sources);
     if census {
         for (path, name) in [(0usize, "sidewalk"), (1, "path")] {
@@ -1599,6 +1600,132 @@ fn unify_width_along_ways(bands: &mut [SourceSeg], sources: &[u64]) {
 /// end to end, which is the seat and the fit deciding per *segment* — a way
 /// that pulses between 0.8 m and 2.0 m along its length reads as a different
 /// object every few metres however uniform the class table is.
+/// Welds the pedestrian network's joints in height.
+///
+/// A hostless band seats on the ground under its own two ends; an attached
+/// band rides its host street's kerb. Nothing reconciled the two where the
+/// data joins them, so a path meeting a sidewalk on an embankment kept the
+/// hillside's height while the sidewalk kept the street's, and the drawn band
+/// cliffed the whole difference in the metre their buffers overlap
+/// (`network.walk_joint`: 13.4 % of the zone's joints past 0.3 m, worst
+/// 2.54 m — the user-visible "connected paths that do not join",
+/// 2026-08-31). The junction weld is what streets get; this is the walk
+/// network's, at its own scale: every free end takes the joint's
+/// authoritative height — the attached bands' where any stands there, the
+/// ends' mean otherwise — and the correction rides the band's own station to
+/// its far end, which is the ramp a real path climbs an embankment with.
+///
+/// `ARPT_NO_WALK_WELD=1` withholds it.
+fn weld_joints(bands: &mut [SourceSeg]) {
+    if std::env::var_os("ARPT_NO_WALK_WELD").is_some() {
+        return;
+    }
+    /// How far past a band's own drawn edge a free end still stands on it, in
+    /// metres: the boolean kernel, quantization, and an endpoint a vertex
+    /// short of the kerb line (`network.walk_joint` uses the same slack).
+    const ON_M: f64 = 0.25;
+    /// Past this the disagreement is a structure or a mismap, not a joint to
+    /// close — the same boundary `crossings::SEPARATION_M` draws.
+    const WELD_MAX_M: f64 = 3.0;
+    use crate::assemble::grid::GridIndex;
+    let mut grid = GridIndex::new();
+    for (i, s) in bands.iter().enumerate() {
+        if s.level != 0 {
+            continue;
+        }
+        let pad_lat = (s.half_m + ON_M) / DEG_M;
+        let pad_lon = pad_lat / s.cos_lat.max(1e-6);
+        grid.insert(
+            (
+                s.a.x.min(s.b.x) - pad_lon,
+                s.a.y.min(s.b.y) - pad_lat,
+                s.a.x.max(s.b.x) + pad_lon,
+                s.a.y.max(s.b.y) + pad_lat,
+            ),
+            i as u32,
+        );
+    }
+    // The free ends, gathered first: the weld reads heights while it decides,
+    // so it must not see its own writes (one pass, decisions from the
+    // pre-weld state, deterministic in band order).
+    struct Weld {
+        band: u32,
+        which: u8,
+        target: f64,
+    }
+    let mut welds: Vec<Weld> = Vec::new();
+    let mut cand: Vec<u32> = Vec::new();
+    for (i, s) in bands.iter().enumerate() {
+        if s.level != 0 || s.corridor != NO_HOST {
+            continue; // the street's side of the joint is the authority
+        }
+        for (which, p, h) in [(0u8, s.a, s.height_a), (1u8, s.b, s.height_b)] {
+            grid.query((p.x, p.y, p.x, p.y), &mut cand);
+            let (mut att_sum, mut att_n) = (0.0f64, 0u32);
+            let (mut oth_sum, mut oth_n) = (0.0f64, 0u32);
+            for &j in cand.iter() {
+                if j as usize == i {
+                    continue;
+                }
+                let t = &bands[j as usize];
+                // A chain-mate shares this exact endpoint bit-for-bit (both
+                // computed it from the same station); its height is this
+                // band's own and welding to it would be a no-op that dilutes
+                // the real neighbour's vote.
+                if t.a == p || t.b == p {
+                    continue;
+                }
+                let (d, tt) = point_to_seg(p, t.a, t.b, s.cos_lat);
+                let half =
+                    t.sect_a.reach_m() + (t.sect_b.reach_m() - t.sect_a.reach_m()) * tt;
+                if d > half + ON_M {
+                    continue; // the end does not stand on this band
+                }
+                let th = t.height_at(tt);
+                if t.corridor != NO_HOST {
+                    att_sum += th;
+                    att_n += 1;
+                } else {
+                    oth_sum += th;
+                    oth_n += 1;
+                }
+            }
+            // The joint's authority: the attached bands where any stands
+            // here — they ride their host street and the street is senior —
+            // the other bands' mean otherwise (a through band has no end
+            // here, keeps its height, and so becomes the authority of every
+            // T-joint by construction).
+            let target = if att_n > 0 {
+                att_sum / att_n as f64
+            } else if oth_n > 0 {
+                oth_sum / oth_n as f64
+            } else {
+                continue; // alone: a true dead end owes nothing
+            };
+            let delta = target - h;
+            if delta.abs() <= 0.02 || delta.abs() > WELD_MAX_M {
+                continue; // already agreed, or not a joint at all
+            }
+            welds.push(Weld { band: i as u32, which, target });
+        }
+    }
+    for w in &welds {
+        let b = &mut bands[w.band as usize];
+        // Every co-located end of the same chain must move with this one, or
+        // the chain steps against itself where the weld begins — handled by
+        // the caller order: consecutive segments share the endpoint
+        // bit-for-bit, so both ends produce the same weld independently.
+        if w.which == 0 {
+            b.height_a = w.target;
+        } else {
+            b.height_b = w.target;
+        }
+    }
+    if std::env::var_os("ARPT_DEBUG_WALK").is_some() {
+        eprintln!("[walk] joint weld: {} free ends welded", welds.len());
+    }
+}
+
 fn width_census(bands: &[SourceSeg], sources: &[u64]) {
     if std::env::var_os("ARPT_DEBUG_WIDTH").is_none() {
         return;

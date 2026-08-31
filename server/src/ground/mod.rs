@@ -804,7 +804,18 @@ fn walk_edge(
     // blind to it because at the midpoint there is nothing to see. Sharing the
     // endpoint samples makes consecutive benches agree there by construction.
     let (target_a, target_b) = if s.corridor == CorridorId::MAX {
-        (sample(s.a), sample(s.b))
+        // The band's stamped seats, not a fresh sample. The two are the same
+        // number by construction — `fit_to_ground` stamps the seats from this
+        // very sampler — except where `walkway::weld_joints` moved a free end
+        // to meet the band it joins: the bench must follow the weld or the
+        // drawn band cliffs the whole disagreement at the joint
+        // (`network.walk_joint`, worst 2.54 m). Zero seats mean the fit never
+        // ran (a test scene): fall back to sampling.
+        if s.height_a != 0.0 || s.height_b != 0.0 {
+            (s.height_a, s.height_b)
+        } else {
+            (sample(s.a), sample(s.b))
+        }
     } else if rules.coplanar {
         // **The ground under a pavement is the road's ground; the pavement sits
         // a kerb above it.** Targeting the band's own height instead put this

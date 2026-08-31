@@ -102,6 +102,18 @@ const JOIN_EPS_M: f64 = 0.75;
 /// bounded time, and the metric says so when it bites.
 const MAX_SAMPLES: usize = 2_000_000;
 
+/// Two connected bands whose drawn heights differ by more than this at their
+/// shared joint read as a step no route continues across, in metres. A kerb is
+/// about a quarter metre (`pave_mesh::APRON_MIN_M`) and is the tallest thing a
+/// joint legitimately carries — the crossing's kerb stub owns that case — so
+/// past it the joint is drawn broken however connected the plan is.
+const JOINT_STEP_M: f64 = 0.30;
+
+/// How far past a band's own drawn edge a joint point still counts as on it,
+/// in metres: the boolean kernel, quantization, and an endpoint one vertex
+/// short of the kerb line.
+const JOINT_ON_M: f64 = 0.25;
+
 /// The two cover distances at a point: to the nearest drawn hard surface of
 /// any kind, and to the nearest walkable band.
 struct Cover {
@@ -116,6 +128,11 @@ pub fn check(m: &Model<'_>) -> Vec<Metric> {
     let mut mat_worst = Worst::new(Sense::HigherIsWorse, 8);
     let mut reach_dist = Dist::metres();
     let mut reach_worst = Worst::new(Sense::HigherIsWorse, 8);
+    let mut joint_dist = Dist::metres();
+    let mut joint_worst = Worst::new(Sense::HigherIsWorse, 8);
+    // One measurement per joint, not per participating end: joints are keyed
+    // on a half-metre grid of their position.
+    let mut joint_seen: std::collections::HashSet<(i64, i64)> = Default::default();
     let mut scratch: Vec<u32> = Vec::new();
     let debug = std::env::var_os("ARPT_DEBUG_NETWORK").is_some();
     // Attribution by bare length, in the fix's own categories: a crossing, a
@@ -319,6 +336,35 @@ pub fn check(m: &Model<'_>) -> Vec<Metric> {
             if !joined_by_id && !joined_by_touch() {
                 continue; // a true dead end owes nothing
             }
+            // The joint's drawn heights: every walkable band standing at this
+            // point, one height each. Plan connectivity is the three metrics
+            // above; this is the fourth failure — bands present and touching
+            // in plan, drawn a step apart in height, which a person reads as
+            // paths that do not join (measured after a user report,
+            // 2026-08-31).
+            let joint_key = (
+                (p_end.x * DEG_M * cos_lat / 0.5).round() as i64,
+                (p_end.y * DEG_M / 0.5).round() as i64,
+            );
+            if joint_seen.insert(joint_key) {
+                if let Some((lo, hi, n)) =
+                    joint_heights(m.junctions, p_end, cos_lat, &mut scratch)
+                {
+                    joint_dist.push(hi - lo);
+                    if hi - lo > JOINT_STEP_M {
+                        joint_worst.offer(Offender {
+                            lon: p_end.x,
+                            lat: p_end.y,
+                            zoom: m.solved.z_ref,
+                            value: hi - lo,
+                            note: format!(
+                                "{n} walkable bands meet here and their drawn heights span {:.2} m ({lo:.2}..{hi:.2})",
+                                hi - lo
+                            ),
+                        });
+                    }
+                }
+            }
             let mut t = 0.0;
             let mut uncovered = REACH_CAP_M;
             while t <= REACH_CAP_M && t <= total {
@@ -432,6 +478,23 @@ pub fn check(m: &Model<'_>) -> Vec<Metric> {
             skipped: None,
             dist: reach_dist,
             worst: reach_worst.into_vec(),
+        },
+        Metric {
+            id: "network.walk_joint".into(),
+            invariant: Invariant::I4,
+            title: "Connected pedestrian bands drawn a step apart in height".into(),
+            population: format!(
+                "Every joint of the mapped pedestrian network (the walk_reach joints, one measurement per joint) where two or more walkable bands stand at the joint point in plan, scored as the spread of their drawn band heights there."
+            ),
+            detail: format!(
+                "Plan connectivity is the three metrics above; this is the fourth failure: both bands present and touching in plan, drawn at different heights. Each pedestrian way's band drapes and benches on its own, and nothing welds two ways at their shared connector the way the junction weld welds streets — so two paths joining on a hillside can each be right about the ground and still disagree at the node. Past {JOINT_STEP_M:.2} m — a kerb's height, the tallest thing a joint legitimately carries — the joint is drawn broken however connected the plan is."
+            ),
+            sense: Sense::HigherIsWorse,
+            threshold: JOINT_STEP_M,
+            skipped: (joint_dist.is_empty())
+                .then(|| "no joint stood on two walkable bands in the bbox".to_string()),
+            dist: joint_dist,
+            worst: joint_worst.into_vec(),
         },
     ]
 }
@@ -566,6 +629,40 @@ fn class_name(line: &crate::assemble::walks::WalkLine) -> &'static str {
 }
 
 /// The point at arc `s` along a polyline with cumulative arc `arc`.
+/// The drawn heights of every walkable at-grade band standing at `p`: the
+/// (min, max) band height and how many distinct bands stood there, or `None`
+/// when fewer than two did. A band stands at `p` when the point lies within
+/// its drawn half-width plus [`JOINT_ON_M`].
+fn joint_heights(
+    junctions: &CarriagewayModel,
+    p: Coord,
+    cos_lat: f64,
+    scratch: &mut Vec<u32>,
+) -> Option<(f64, f64, usize)> {
+    let (rx, ry) = (QUERY_M / (DEG_M * cos_lat), QUERY_M / DEG_M);
+    junctions.sources_near((p.x - rx, p.y - ry, p.x + rx, p.y + ry), scratch);
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    let mut bands: Vec<u32> = Vec::new();
+    for &i in scratch.iter() {
+        let src = junctions.source(i);
+        if src.level != 0 || !matches!(src.surface, Surface::Walkway | Surface::Path) {
+            continue;
+        }
+        let (d, t) = project_m(p, src.a, src.b, src.cos_lat);
+        if d - src.drawn_half_at(t) > JOINT_ON_M {
+            continue;
+        }
+        let h = src.height_at(t);
+        lo = lo.min(h);
+        hi = hi.max(h);
+        if !bands.contains(&src.corridor) {
+            bands.push(src.corridor);
+        }
+    }
+    (bands.len() >= 2).then_some((lo, hi, bands.len()))
+}
+
 fn point_at(line: &[Coord], arc: &[f64], s: f64) -> Coord {
     let i = arc.partition_point(|&a| a < s).clamp(1, line.len() - 1);
     let (a0, a1) = (arc[i - 1], arc[i]);
