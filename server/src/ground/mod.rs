@@ -1945,9 +1945,15 @@ fn derive_waters(
                         i
                     };
                     let w = &bodies[i];
-                    if let Some(level) =
-                        water_level(&w.exterior, |c| reference_surface(&mut dem, z_ref, c.x, c.y))
-                    {
+                    if let Some(level) = water_level(&w.exterior, |c| {
+                        // A shoreline point the DEM does not image is not a
+                        // measurement: a bbox-clipped extract covers only part
+                        // of a big lake's shore, and counting the gap's flat-0
+                        // fallback drags the percentile — and the whole lake —
+                        // to sea level.
+                        dem.imaged(c.x, c.y, z_ref)?;
+                        Some(reference_surface(&mut dem, z_ref, c.x, c.y))
+                    }) {
                         fills.lock().expect("water fills poisoned")[i] = Some(WaterFill {
                             exterior: w.exterior.clone(),
                             holes: w.holes.clone(),
@@ -1968,13 +1974,16 @@ fn derive_waters(
 /// toward the water rather than a vertex that climbed the bank, so the flat
 /// surface sits in its basin instead of spilling over the shore. The ring is
 /// subsampled to at most [`SHORELINE_SAMPLES`] points so a huge lake stays
-/// cheap. The sampler is injected so the level is testable without a DEM.
-fn water_level(ring: &[Coord], mut sample: impl FnMut(Coord) -> f64) -> Option<f64> {
+/// cheap. The sampler is injected so the level is testable without a DEM; it
+/// returns `None` for a point it cannot measure (outside the DEM's coverage),
+/// and such points simply don't count — a body whose shore is entirely
+/// unmeasured gets no level and stays draped on the terrain.
+fn water_level(ring: &[Coord], mut sample: impl FnMut(Coord) -> Option<f64>) -> Option<f64> {
     if ring.len() < 3 {
         return None;
     }
     let step = (ring.len() / SHORELINE_SAMPLES).max(1);
-    let mut hs: Vec<f64> = ring.iter().step_by(step).map(|&c| sample(c)).collect();
+    let mut hs: Vec<f64> = ring.iter().step_by(step).filter_map(|&c| sample(c)).collect();
     if hs.is_empty() {
         return None;
     }
@@ -2829,10 +2838,25 @@ mod tests {
         let ring: Vec<Coord> =
             (0..20).map(|i| Coord { x: 6.0 + i as f64 * 0.001, y: 46.0 }).collect();
         let level = water_level(&ring, |c| {
-            if ((c.x * 1000.0).round() as i64) % 5 == 0 { 378.0 } else { 372.0 }
+            Some(if ((c.x * 1000.0).round() as i64) % 5 == 0 { 378.0 } else { 372.0 })
         })
         .expect("a level from a 20-vertex ring");
         assert!((level - 372.0).abs() < 1e-9, "level {level} must be the waterline, not the bank");
+    }
+
+    #[test]
+    fn water_level_ignores_shoreline_the_dem_does_not_image() {
+        // A big lake whose shore mostly lies outside a bbox-clipped DEM
+        // extract: the unmeasured majority must not count, or the low
+        // percentile lands on the gap's flat-0 fallback and the whole lake
+        // burns flat at sea level — a 372 m cliff along the waterline.
+        let ring: Vec<Coord> =
+            (0..100).map(|i| Coord { x: 6.0 + i as f64 * 0.001, y: 46.0 }).collect();
+        let level = water_level(&ring, |c| if c.x < 6.090 { None } else { Some(372.0) })
+            .expect("a level from the imaged minority of the shore");
+        assert!((level - 372.0).abs() < 1e-9, "level {level} must ignore unmeasured shore");
+        // And a shore the DEM images nowhere yields no level at all.
+        assert!(water_level(&ring, |_| None).is_none());
     }
 
     #[test]

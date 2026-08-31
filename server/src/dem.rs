@@ -154,8 +154,18 @@ impl Dem {
     /// where the archive has no coverage (e.g. beyond the Mercator latitude
     /// limit or in a gap), so callers get a flat sea-level surface there.
     pub fn elevation(&mut self, lon: f64, lat: f64, out_zoom: u8) -> f64 {
+        self.imaged(lon, lat, out_zoom).unwrap_or(0.0)
+    }
+
+    /// Like [`Dem::elevation`], but `None` where the archive has no coverage
+    /// instead of the flat 0 fallback. For callers deriving a *level* from a
+    /// set of samples (a water surface read along a shoreline): a bbox-clipped
+    /// extract images only part of a big lake's shore, and a gap mistaken for
+    /// sea level drags a low-percentile statistic to 0 — a 372 m cliff drawn
+    /// along the waterline.
+    pub fn imaged(&mut self, lon: f64, lat: f64, out_zoom: u8) -> Option<f64> {
         if !(-MERCATOR_LAT_LIMIT..=MERCATOR_LAT_LIMIT).contains(&lat) {
-            return 0.0;
+            return None;
         }
         let z = self.source_zoom(out_zoom);
         let n = (1u64 << z as u32) as f64;
@@ -176,10 +186,7 @@ impl Dem {
             DECODES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             archive.tile(z, tx, ty).ok().flatten().and_then(|bytes| decode_terrarium(&bytes))
         });
-        match tile {
-            Some(t) => t.sample(px, py),
-            None => 0.0,
-        }
+        tile.as_ref().map(|t| t.sample(px, py))
     }
 
     /// The cache slot for a source tile: the per-handle front cache first,
