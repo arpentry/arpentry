@@ -456,6 +456,11 @@ pub fn bake(
     for (s, &l) in walk_bands.iter_mut().zip(walk_layers.iter()) {
         s.layer = l;
     }
+    // The unified-namespace shadow (`ARPT_SHEET_CENSUS`): what one ordinal
+    // space over both populations would change, before it is applied.
+    if std::env::var_os("ARPT_SHEET_CENSUS").is_some() {
+        sheets::census_unified(scene, &sources, &walk_bands);
+    }
     // ARPT_WALK_SHEET_AT=lon,lat — every walk band within ~30 m of the point,
     // with the sheet verdict it was just given: the instrument for a walk
     // surface smearing between two terraces.
