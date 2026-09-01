@@ -92,6 +92,26 @@ const AT_JUNCTION_M: f64 = 15.0;
 /// layering walks a fixed order. The result is a function of the model, never
 /// of hashing or of thread scheduling (invariant 5).
 pub fn assign(scene: &SceneGraph, sources: &[SourceSeg]) -> Vec<u32> {
+    assign_full(scene, sources).layers
+}
+
+/// [`assign`]'s result with its structure still visible: the run and sheet
+/// partition the per-source layers were read off. [`assign_all`] places the
+/// walk population *relative* to the road one, and a placement is per sheet —
+/// joined runs must land on one ordinal or the merge rationale above is
+/// violated by the placement that came after it.
+struct Assigned {
+    layers: Vec<u32>,
+    run_of: Vec<u32>,
+    sheet_of_run: Vec<u32>,
+    sheet_layer: Vec<u32>,
+    /// The surviving (lower, upper) sheet edges — acyclic after
+    /// [`layer_of`]'s cycle breaking, so a pass over them in layer order
+    /// terminates.
+    above: Vec<(u32, u32)>,
+}
+
+fn assign_full(scene: &SceneGraph, sources: &[SourceSeg]) -> Assigned {
     let (run_of, run_count) = runs(sources);
     let verdicts = overlap_verdicts(scene, sources, &run_of);
     // Joined runs are not merely unconstrained, they are *one sheet*. Leaving
@@ -102,73 +122,70 @@ pub fn assign(scene: &SceneGraph, sources: &[SourceSeg]) -> Vec<u32> {
     // different further along.
     let (sheet_of, sheet_count) = merge_joined(run_count, &verdicts);
     let above = stacking_edges(&verdicts, &sheet_of);
-    let (sheet_layer, _) = layer_of(sheet_count, above);
-    run_of.iter().map(|&r| sheet_layer[sheet_of[r as usize] as usize]).collect()
+    let (sheet_layer, above) = layer_of(sheet_count, above);
+    let layers =
+        run_of.iter().map(|&r| sheet_layer[sheet_of[r as usize] as usize]).collect();
+    Assigned { layers, run_of, sheet_of_run: sheet_of, sheet_layer, above }
 }
 
-/// The unified layering of both stacking populations — carriageways and walk
-/// bands in **one ordinal namespace** — plus the census of what unification
-/// changes. Shadow-computable (`ARPT_SHEET_CENSUS`) before it is applied.
+/// Both stacking populations in **one ordinal namespace** — by *placement*,
+/// not by one joint DAG. The joint DAG was built in shadow first and the
+/// census falsified it: 2,867 walk-under-road stacking edges made the walk
+/// bands the ground floor under every bridge and lifted 58 % of road
+/// ordinals, breaking the one-mesh `sheet == 0` filters and the client's
+/// 2-bit sheet clamp. So:
 ///
-/// Same-population pairs keep [`assign`]'s exact rules. Mixed (walk × road)
-/// pairs are **never `joined`**: a sidewalk rides a kerb above its street,
-/// within [`SHEET_SEPARATION_M`] of it, and one accidental join would
-/// transitively merge a road sheet with a walk sheet and collapse the kerb
-/// across the whole component. Instead a mixed pair within
-/// [`crate::priors::WALK_ON_ASPHALT_M`] is *coplanar-with* — the walk run
-/// takes its street sheet's ordinal after the layering — and past that it is
-/// an ordinary stacking edge in the now-shared DAG.
+/// - **Road ordinals are immutable** — exactly [`assign`]'s, by construction,
+///   so the identity is structural rather than tested.
+/// - **A walk sheet is placed relative to them**: coplanar with a street —
+///   within [`crate::priors::WALK_ON_ASPHALT_M`] where they meet — it takes
+///   that street sheet's ordinal (a kerb shares its street's rung, and the
+///   client's material rank orders the two at one ordinal, which is the only
+///   place epsilon order matters; a truly stacked pair is metres apart and
+///   never z-fights). Otherwise it keeps its own walk-DAG layer.
+/// - **Walk-over-walk order survives placement**: along the walk population's
+///   own surviving stacking edges, an upper sheet is lifted above its lower
+///   (`ordinal(upper) ≥ ordinal(lower) + 1`), so two terraces a storey apart
+///   whose hosts happen to share a rung are not re-merged into one blend —
+///   the collapse `assign`'s own walk pass exists to prevent.
+///
+/// Mixed pairs are **never `joined`**: 204,280 of them sit within the join
+/// threshold, and one union would transitively collapse a kerb across a whole
+/// component.
 pub struct Unified {
     pub road_layers: Vec<u32>,
     pub walk_layers: Vec<u32>,
-    /// Mixed pairs today's join rule would have united had the two
-    /// populations been fed to [`assign`] naively — the transitive-merge
-    /// hazard the coplanar relation exists to absorb.
-    pub mixed_joined_would: usize,
     pub mixed_coplanar: usize,
     pub mixed_stacked: usize,
-    /// Coplanar directives that disagreed about a walk sheet's ordinal
-    /// (two streets at different layers both claiming one walk run).
+    /// Coplanar directives that disagreed about a walk sheet's ordinal.
     pub coplanar_conflicts: usize,
+    /// Walk sheets lifted off their coplanar target to keep walk-over-walk
+    /// order — a kerb tie deliberately broken for a separation.
+    pub lifted_off_target: usize,
 }
 
+/// `road` must arrive **stamped** ([`assign`]'s layers on `SourceSeg::layer`)
+/// — the placement reads them as the rails, and returns them untouched:
+/// road-ordinal identity is a property of the shape, not a tested claim.
 pub fn assign_all(scene: &SceneGraph, road: &[SourceSeg], walk: &[SourceSeg]) -> Unified {
-    let (r_run, r_n) = runs(road);
-    let (w_run, w_n) = runs(walk);
-    let total_runs = r_n + w_n;
-    let src = |g: u32| -> &SourceSeg {
-        if (g as usize) < road.len() { &road[g as usize] } else { &walk[g as usize - road.len()] }
-    };
-    let run_of = |g: u32| -> u32 {
-        if (g as usize) < road.len() {
-            r_run[g as usize]
-        } else {
-            w_run[g as usize - road.len()] + r_n as u32
-        }
-    };
-    let is_walk = |g: u32| (g as usize) >= road.len();
+    let w = assign_full(scene, walk);
 
+    // The mixed pass: every walk segment against the road segments it meets.
     let mut grid = GridIndex::new();
-    for g in 0..(road.len() + walk.len()) as u32 {
-        grid.insert(bbox_of(src(g)), g);
+    for (i, s) in road.iter().enumerate() {
+        grid.insert(bbox_of(s), i as u32);
     }
-    let ports = JunctionPorts::build(scene);
-    let mut seen: std::collections::BTreeMap<(u32, u32), Verdict> = Default::default();
-    let mut coplanar: std::collections::BTreeSet<(u32, u32)> = Default::default(); // (walk run, road run)
-    let mut mixed_joined_would = 0usize;
+    let mut coplanar: std::collections::BTreeMap<u32, u32> = Default::default();
+    let mut coplanar_conflicts = 0usize;
+    let mut mixed_coplanar = 0usize;
     let mut mixed_stacked = 0usize;
-
     let mut cand: Vec<u32> = Vec::new();
-    for g in 0..(road.len() + walk.len()) as u32 {
-        let s = src(g);
+    for (i, s) in walk.iter().enumerate() {
         grid.query(bbox_of(s), &mut cand);
-        for &h in cand.iter() {
-            if h <= g {
-                continue;
-            }
-            let t = src(h);
-            let (rg, rh) = (run_of(g), run_of(h));
-            if rg == rh || s.level != t.level {
+        let ws = w.sheet_of_run[w.run_of[i] as usize];
+        for &j in cand.iter() {
+            let t = &road[j as usize];
+            if s.level != t.level {
                 continue;
             }
             let (d, ts, tt) = closest_approach(s, t);
@@ -176,90 +193,59 @@ pub fn assign_all(scene: &SceneGraph, road: &[SourceSeg], walk: &[SourceSeg]) ->
                 continue;
             }
             let gap = s.height_at(ts) - t.height_at(tt);
-            if is_walk(g) != is_walk(h) {
-                // The mixed pair: the kerb relation, never a join.
-                if gap.abs() <= SHEET_SEPARATION_M {
-                    mixed_joined_would += 1;
-                }
-                if gap.abs() <= crate::priors::WALK_ON_ASPHALT_M {
-                    let (wr, rr) = if is_walk(g) { (rg, rh) } else { (rh, rg) };
-                    coplanar.insert((wr, rr));
-                    continue;
-                }
+            if gap.abs() > crate::priors::WALK_ON_ASPHALT_M {
                 mixed_stacked += 1;
-                let key = (rg.min(rh), rg.max(rh));
-                let v = seen.entry(key).or_default();
-                let lower = if gap < 0.0 { rg } else { rh };
-                if lower == key.0 {
-                    v.lower_first = true;
-                } else {
-                    v.upper_first = true;
+                continue;
+            }
+            mixed_coplanar += 1;
+            let want = t.layer;
+            match coplanar.entry(ws) {
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    e.insert(want);
                 }
-                continue;
-            }
-            // Same population: assign's own rules, verbatim.
-            let key = (rg.min(rh), rg.max(rh));
-            let v = seen.entry(key).or_default();
-            if gap.abs() <= SHEET_SEPARATION_M
-                || ports.share_intersection_near(s.corridor, t.corridor, along(s, ts))
-            {
-                v.joined = true;
-                continue;
-            }
-            let lower = if gap < 0.0 { rg } else { rh };
-            if lower == key.0 {
-                v.lower_first = true;
-            } else {
-                v.upper_first = true;
-            }
-        }
-    }
-
-    let (sheet_of, sheet_count) = merge_joined(total_runs, &seen);
-    let above = stacking_edges(&seen, &sheet_of);
-    let (sheet_layer, _) = layer_of(sheet_count, above);
-
-    // The coplanar directives, applied after the layering: a walk sheet takes
-    // its street sheet's ordinal. Conflicts (two streets at different layers
-    // claiming one walk sheet) resolve to the higher, deterministically, and
-    // are counted for the census.
-    let mut walk_override: std::collections::BTreeMap<u32, u32> = Default::default();
-    let mut coplanar_conflicts = 0usize;
-    for &(wr, rr) in &coplanar {
-        let (ws, rs) = (sheet_of[wr as usize], sheet_of[rr as usize]);
-        let want = sheet_layer[rs as usize];
-        match walk_override.entry(ws) {
-            std::collections::btree_map::Entry::Vacant(e) => {
-                e.insert(want);
-            }
-            std::collections::btree_map::Entry::Occupied(mut e) => {
-                if *e.get() != want {
-                    coplanar_conflicts += 1;
-                    let m = (*e.get()).max(want);
-                    e.insert(m);
+                std::collections::btree_map::Entry::Occupied(mut e) => {
+                    if *e.get() != want {
+                        coplanar_conflicts += 1;
+                        let m = (*e.get()).max(want);
+                        e.insert(m);
+                    }
                 }
             }
         }
     }
 
-    let road_layers =
-        (0..road.len()).map(|i| sheet_layer[sheet_of[r_run[i] as usize] as usize]).collect();
+    // Placement: the coplanar target, else the walk DAG's own layer; then the
+    // walk population's surviving stacking edges re-assert their order. The
+    // edges are acyclic and (lower, upper) — sweeping them in the lowers'
+    // layer order reaches the fixpoint in one pass per chain link, and the
+    // sweep count is bounded by the deepest walk stack, which the DAG already
+    // measured.
+    let mut ordinal: Vec<u32> = (0..w.sheet_layer.len() as u32)
+        .map(|sh| coplanar.get(&sh).copied().unwrap_or(w.sheet_layer[sh as usize]))
+        .collect();
+    let depth = w.sheet_layer.iter().copied().max().unwrap_or(0) as usize + 1;
+    for _ in 0..depth {
+        for &(lo, up) in &w.above {
+            if ordinal[up as usize] <= ordinal[lo as usize] {
+                ordinal[up as usize] = ordinal[lo as usize] + 1;
+            }
+        }
+    }
+    let lifted_off_target = coplanar
+        .iter()
+        .filter(|(&sh, &want)| ordinal[sh as usize] != want)
+        .count();
+
     let walk_layers = (0..walk.len())
-        .map(|i| {
-            let sheet = sheet_of[(w_run[i] + r_n as u32) as usize];
-            walk_override
-                .get(&sheet)
-                .copied()
-                .unwrap_or(sheet_layer[sheet as usize])
-        })
+        .map(|i| ordinal[w.sheet_of_run[w.run_of[i] as usize] as usize])
         .collect();
     Unified {
-        road_layers,
+        road_layers: road.iter().map(|s| s.layer).collect(),
         walk_layers,
-        mixed_joined_would,
-        mixed_coplanar: coplanar.len(),
+        mixed_coplanar,
         mixed_stacked,
         coplanar_conflicts,
+        lifted_off_target,
     }
 }
 
@@ -268,49 +254,38 @@ pub fn assign_all(scene: &SceneGraph, road: &[SourceSeg], walk: &[SourceSeg]) ->
 /// chunk's ordinals outgrow the client's 2-bit sheet clamp
 /// (`client/src/tile/decode.c` saturates the ordinal at 3).
 pub fn census_unified(scene: &SceneGraph, road: &[SourceSeg], walk: &[SourceSeg]) {
-    // The identity control: with no walk population the unified pass must
-    // reproduce `assign` bit for bit, or the shadow itself is wrong and every
-    // other number here is noise.
-    let control = assign_all(scene, road, &[]);
-    let control_changed =
-        road.iter().zip(&control.road_layers).filter(|(s, &l)| s.layer != l).count();
-    eprintln!(
-        "[sheets] identity control: {} of {} road sources differ from assign with no walk \
-         population (must be 0)",
-        control_changed,
-        road.len(),
-    );
     let u = assign_all(scene, road, walk);
-    let road_changed = road.iter().zip(&u.road_layers).filter(|(s, &l)| s.layer != l).count();
     let walk_changed = walk.iter().zip(&u.walk_layers).filter(|(s, &l)| s.layer != l).count();
-    // Max unified ordinal per z13 chunk (`pavement::chunk_of`'s own bins).
+    // Distinct unified ordinals per z13 chunk (`pavement::chunk_of`'s bins):
+    // the client clamps the sheet ordinal to 2 bits, and the per-chunk
+    // densify that feeds it can renumber, so the constraint is the count of
+    // distinct rungs a chunk uses, not their absolute values.
     let chunk = |c: Coord| -> (u32, u32) {
         let n = 1u32 << crate::priors::PAVE_BAKE_Z;
         let x = ((c.x + 180.0) / (360.0 / n as f64)).floor().clamp(0.0, (n - 1) as f64) as u32;
         let y = ((c.y + 90.0) / (180.0 / n as f64)).floor().clamp(0.0, (n - 1) as f64) as u32;
         (x, y)
     };
-    let mut max_of: std::collections::BTreeMap<(u32, u32), u32> = Default::default();
+    let mut of: std::collections::BTreeMap<(u32, u32), std::collections::BTreeSet<u32>> =
+        Default::default();
     for (s, &l) in road.iter().zip(&u.road_layers).chain(walk.iter().zip(&u.walk_layers)) {
-        let m = max_of.entry(chunk(s.a)).or_insert(0);
-        *m = (*m).max(l);
+        of.entry(chunk(s.a)).or_default().insert(l);
     }
-    let over_clamp = max_of.values().filter(|&&m| m > 3).count();
-    let max_ordinal = max_of.values().copied().max().unwrap_or(0);
+    let over_clamp = of.values().filter(|set| set.len() > 4).count();
+    let distinct_max = of.values().map(|s| s.len()).max().unwrap_or(0);
     eprintln!(
-        "[sheets] unified: {} of {} road sources change ordinal, {} of {} walk; \
-         mixed pairs: {} coplanar ({} conflicts), {} stacked, {} today-would-join; \
-         {} chunks, max ordinal {}, {} chunks past the client's 2-bit clamp",
-        road_changed,
-        road.len(),
+        "[sheets] placed: {} of {} walk sources change ordinal (road ordinals immutable by \
+         construction); \
+         mixed: {} coplanar segs ({} sheet conflicts), {} stacked segs, {} sheets lifted off \
+         their kerb target; {} chunks, max {} distinct ordinals, {} chunks past the 2-bit clamp",
         walk_changed,
         walk.len(),
         u.mixed_coplanar,
         u.coplanar_conflicts,
         u.mixed_stacked,
-        u.mixed_joined_would,
-        max_of.len(),
-        max_ordinal,
+        u.lifted_off_target,
+        of.len(),
+        distinct_max,
         over_clamp,
     );
 }
