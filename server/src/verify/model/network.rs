@@ -94,9 +94,9 @@ const REACH_BARE_M: f64 = 1.0;
 const END_AT: f64 = 0.05;
 
 /// Two pedestrian endpoints within this, in metres, are one joint even
-/// without a shared connector id — hand-mapped ways meet without sharing
-/// nodes routinely.
-const JOIN_EPS_M: f64 = 0.75;
+/// without a shared connector id — the number is `priors::WALK_JOIN_EPS_M` so
+/// the generator's joint graph and this check's are the same graph.
+const JOIN_EPS_M: f64 = crate::priors::WALK_JOIN_EPS_M;
 
 /// Sample cap, as in the facade walk: a continental extract still answers in
 /// bounded time, and the metric says so when it bites.

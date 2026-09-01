@@ -84,6 +84,8 @@ pub struct Clearance {
     bore_cover_worst: Worst,
     stack: Dist,
     stack_worst: Worst,
+    walk_level: Dist,
+    walk_level_worst: Worst,
 }
 
 impl Clearance {
@@ -98,6 +100,8 @@ impl Clearance {
             bore_cover_worst: Worst::new(Sense::LowerIsWorse, opt.worst_k),
             stack: Dist::metres(),
             stack_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            walk_level: Dist::metres(),
+            walk_level_worst: Worst::new(Sense::LowerIsWorse, opt.worst_k),
         }
     }
 }
@@ -161,6 +165,52 @@ impl Check for Clearance {
                     }
                 }
             });
+        }
+
+        // An elevated pedestrian stroke under the at-grade surface. The deck
+        // half of this ordering is the metric above; strokes need their own
+        // population because an elevated draped span that fails to stamp a
+        // solid falls back to a plain drape — a level-1 line drawn at bare
+        // ground, with no mesh for the deck metric to see (first measured at
+        // 6.9149,46.4387: a footway L1 drawn 9.6 m under the carriageway
+        // beside it, while `contact.deck_carried` reported no fitted decks).
+        for line in tile
+            .lines
+            .iter()
+            .filter(|l| l.level >= 1 && crate::priors::class_is_pedestrian(&l.class))
+        {
+            for part in &line.parts {
+                for &(px, py, h) in part {
+                    if !tile.owns(px, py) {
+                        continue;
+                    }
+                    let under = tile
+                        .roads
+                        .iter()
+                        .filter(|r| r.is_pavement())
+                        .filter_map(|r| r.mesh.height_range_at(px, py))
+                        .map(|(_, hi)| hi)
+                        .fold(f64::NEG_INFINITY, f64::max);
+                    if !under.is_finite() {
+                        continue;
+                    }
+                    let v = h - under;
+                    self.walk_level.push(v);
+                    if v < TOUCHDOWN_M {
+                        let (lon, lat) = tile.lonlat(px, py);
+                        self.walk_level_worst.offer(Offender {
+                            lon,
+                            lat,
+                            zoom: tile.z,
+                            value: v,
+                            note: format!(
+                                "{} L{} stroke {h:.2} m under at-grade surface {under:.2} m",
+                                line.class, line.level
+                            ),
+                        });
+                    }
+                }
+            }
         }
 
         // Two at-grade bands at one plan point: each stacked pair is measured
@@ -265,6 +315,32 @@ impl Check for Clearance {
                 worst: self.order_worst.into_vec(),
             },
             Metric {
+                id: "order.walk_level".into(),
+                invariant: Invariant::I3,
+                title: "Elevated pedestrian stroke above the at-grade surface".into(),
+                population: "Every owned vertex of every pedestrian-class stroke emitted at \
+                             level ≥ 1, where an at-grade surface band shares the plan \
+                             position. Strokes, not meshes: an elevated span that declines to \
+                             stamp a solid leaves no mesh for order.deck_above_carriageway to \
+                             see."
+                    .into(),
+                detail: "Stroke height minus the at-grade band top at the same plan position. \
+                         Positive is an elevated way crossing over, zero its touchdown; \
+                         negative past the touchdown band means the level-1 way is drawn \
+                         under the level-0 surface — an elevated span degraded to a plain \
+                         ground drape, standing in the trench or underpass its own level says \
+                         it flies over."
+                    .into(),
+                sense: Sense::LowerIsWorse,
+                threshold: TOUCHDOWN_M,
+                skipped: none(
+                    &self.walk_level,
+                    "elevated pedestrian stroke sharing plan with an at-grade surface",
+                ),
+                dist: self.walk_level,
+                worst: self.walk_level_worst.into_vec(),
+            },
+            Metric {
                 id: "clearance.deck_over_ground".into(),
                 invariant: Invariant::I4,
                 title: "Bridge soffit above the drawn ground".into(),
@@ -347,7 +423,7 @@ mod tests {
     use super::*;
     use crate::project::Bounds;
     use crate::verify::mesh::{Scale, SurfaceMesh};
-    use crate::verify::scene::RoadMesh;
+    use crate::verify::scene::{RoadLine, RoadMesh};
 
     /// A flat slab spanning the middle of the tile: `top` at its running
     /// surface, `top - thickness` at its soffit, both faces present.
@@ -396,6 +472,44 @@ mod tests {
     }
 
     #[test]
+    fn an_elevated_walk_stroke_under_the_asphalt_is_caught_and_one_above_is_not() {
+        let stroke = |z: f64| RoadLine {
+            class: "footway".into(),
+            level: 1,
+            width_m: 0.0,
+            parts: vec![vec![(0.4, 0.5, z), (0.6, 0.5, z)]],
+        };
+        // Drawn 6 m under the at-grade surface: the Degrade fallback's drape.
+        let mut t = tile(
+            vec![RoadMesh { class: "road_surface".into(), level: 0, band: String::new(), fades: false, sheet: None, mesh: flat(100.0) }],
+            Some(flat(94.0)),
+        );
+        t.lines.push(stroke(94.0));
+        let m = run(&t);
+        assert!(m[1].violations() > 0);
+        assert!((m[1].worst_value().unwrap() + 6.0).abs() < 1e-3);
+        // Riding its deck 5 m over the same surface: the ordering it claims.
+        let mut t = tile(
+            vec![RoadMesh { class: "road_surface".into(), level: 0, band: String::new(), fades: false, sheet: None, mesh: flat(100.0) }],
+            Some(flat(94.0)),
+        );
+        t.lines.push(stroke(105.0));
+        assert_eq!(run(&t)[1].violations(), 0);
+        // A drivable stroke is not this population.
+        let mut t = tile(
+            vec![RoadMesh { class: "road_surface".into(), level: 0, band: String::new(), fades: false, sheet: None, mesh: flat(100.0) }],
+            Some(flat(94.0)),
+        );
+        t.lines.push(RoadLine {
+            class: "residential".into(),
+            level: 1,
+            width_m: 0.0,
+            parts: vec![vec![(0.4, 0.5, 94.0), (0.6, 0.5, 94.0)]],
+        });
+        assert!(run(&t)[1].skipped.is_some());
+    }
+
+    #[test]
     fn a_deck_meeting_the_road_at_grade_is_not_a_violation() {
         // The regression the first version of this module shipped: an abutment,
         // where the deck surface sits level with the road it joins. It owes
@@ -409,7 +523,7 @@ mod tests {
         );
         let m = run(&t);
         assert_eq!(m[0].violations(), 0, "touchdown is not an ordering inversion");
-        assert_eq!(m[1].violations(), 0, "a soffit one thickness low is a touchdown");
+        assert_eq!(m[2].violations(), 0, "a soffit one thickness low is a touchdown");
     }
 
     #[test]
@@ -451,8 +565,8 @@ mod tests {
             Some(flat(110.0)),
         );
         let m = run(&t);
-        assert!(m[1].violations() > 0);
-        assert!((m[1].worst_value().unwrap() + 5.0).abs() < 1e-3);
+        assert!(m[2].violations() > 0);
+        assert!((m[2].worst_value().unwrap() + 5.0).abs() < 1e-3);
     }
 
     #[test]
@@ -462,13 +576,13 @@ mod tests {
             vec![RoadMesh { class: "motorway".into(), level: -1, band: String::new(), fades: false, sheet: None, mesh: slab(103.0, 5.0) }],
             Some(flat(100.0)),
         );
-        assert!(run(&t)[2].violations() > 0);
+        assert!(run(&t)[3].violations() > 0);
         // Roof level with the ground: a portal mouth, which is the design.
         let t = tile(
             vec![RoadMesh { class: "motorway".into(), level: -1, band: String::new(), fades: false, sheet: None, mesh: slab(100.0, 5.0) }],
             Some(flat(100.0)),
         );
-        assert_eq!(run(&t)[2].violations(), 0);
+        assert_eq!(run(&t)[3].violations(), 0);
     }
 
     #[test]
@@ -478,8 +592,8 @@ mod tests {
             Some(flat(100.0)),
         );
         let m = run(&t);
-        assert_eq!(m[2].violations(), 0);
-        assert!((m[2].worst_value().unwrap() - 10.0).abs() < 1e-3);
+        assert_eq!(m[3].violations(), 0);
+        assert!((m[3].worst_value().unwrap() - 10.0).abs() < 1e-3);
     }
 
     #[test]

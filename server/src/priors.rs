@@ -562,6 +562,20 @@ pub fn class_is_rail(class: &str) -> bool {
     matches!(Kind::parse(Some("rail"), Some(class), None), Kind::Rail(c) if c != RailClass::Unknown)
 }
 
+/// Whether a bare class string is a pedestrian way ([`is_pedestrian`] read
+/// back out of the archive, which carries `class` but not `subtype`).
+pub fn class_is_pedestrian(class: &str) -> bool {
+    is_pedestrian(Kind::parse(None, Some(class), None))
+}
+
+/// Two pedestrian endpoints within this are one joint even without a shared
+/// connector id — hand-mapped ways meet without sharing nodes routinely, in
+/// metres. One number for the generator and the check: the joint graph the
+/// drawn world is welded on and the joint graph `network.walk_joint` scores
+/// must be the same graph, or the weld satisfies a definition the check never
+/// measures.
+pub const WALK_JOIN_EPS_M: f64 = 0.75;
+
 /// Whether a bare class string draws a surface of its own — a carriageway or a
 /// rail formation, not a footway.
 ///
