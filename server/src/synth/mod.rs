@@ -26,6 +26,7 @@ pub mod region;
 pub mod sheets;
 pub mod road;
 pub mod structure;
+pub mod walkgraph;
 pub mod walkway;
 
 use crate::ground::sampler::GroundSampler;
@@ -85,6 +86,7 @@ pub fn emit(
     field: &height::HeightField,
     sampler: &mut GroundSampler,
     solved: &SolvedModel,
+    walkgraph: Option<&walkgraph::WalkGraph>,
     z: u8,
     bounds: &Bounds,
 ) {
@@ -134,7 +136,7 @@ pub fn emit(
         Synth::DrapedDeck => {
             // Fitted, not solved. Falls back to a plain draped line when there
             // is no solid to draw, exactly as a solved structure does.
-            if !draped::stamp(f, sampler, z, solved.z_ref, bounds) {
+            if !draped::stamp(f, sampler, walkgraph, z, solved.z_ref, bounds) {
                 road::bake(f, None, false, None, paved_field, sampler, z, solved.z_ref, bounds);
             }
         }

@@ -192,6 +192,10 @@ pub struct World {
     /// baked per feature, and each feature's dashes must yield to every
     /// ladder near them, not just to its own (`synth::markings::ChordIndex`).
     pub chord_index: synth::markings::ChordIndex,
+    /// The pedestrian joint graph (`synth::walkgraph`): one height per joint
+    /// of the drawn walk network. Elevated draped spans anchor their chord
+    /// ends on it; `None` under its revert switches.
+    pub walkgraph: Option<Arc<synth::walkgraph::WalkGraph>>,
     /// Source hashes of the pedestrian ways that came out of the walkway
     /// model as drawn band. A way outside this set was declined — the seat
     /// had no room, or the ground fit could not carry a band there — and it
@@ -403,6 +407,25 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         cfg.terrain.as_deref(),
         solved.z_ref,
     );
+    // The pedestrian joint graph: one node per joint of the drawn walk
+    // network, one height per node — hosted seats and street connectors pin
+    // it, free nodes relax toward their neighbours, and the free bands'
+    // seats are re-stamped from it. This replaces the weld
+    // (`walkway::weld_joints`), whose joints were plan-proximity guesses at
+    // the graph built here; `ARPT_NO_WALK_GRAPH` reverts to the weld.
+    let mut walkgraph: Option<Arc<synth::walkgraph::WalkGraph>> = None;
+    if std::env::var_os("ARPT_NO_WALK_GRAPH").is_none() {
+        let graph = synth::walkgraph::WalkGraph::build(&scene, &solved, &walk_bands);
+        graph.stamp(&mut walk_bands);
+        if std::env::var("ARPT_WALK_GRAPH").as_deref() == Ok("census") {
+            graph.census(walk_bands.len());
+        }
+        // The elevated spans read their end anchors from the same graph
+        // (`synth::draped`); `ARPT_NO_WALK_SPAN_GRAPH` reverts just that.
+        if std::env::var_os("ARPT_NO_WALK_SPAN_GRAPH").is_none() {
+            walkgraph = Some(Arc::new(graph));
+        }
+    }
     // Which pedestrian ways survived as drawn surface. Anything not in here
     // keeps the cartographic stroke that is all it has: the surface model
     // declining to build a band must cost detail, never the feature (I6).
@@ -459,6 +482,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         crossings,
         chord_index,
         banded_walks,
+        walkgraph,
     };
     let World { scene, solved, ground, junctions, pavement, .. } = &world;
     stats.pave_chunks = pavement.chunk_count() as u64;
@@ -962,11 +986,11 @@ fn encode_tile(
         sampler.remember_drawn(&bounds, z, &drawn.0);
         early_terrain = Some((drawn, t.elapsed()));
         stamp_elevations(&mut buckets, sampler, z);
-        stamp_synth(&mut buckets, &field, sampler, solved, z, &bounds);
+        stamp_synth(&mut buckets, &field, sampler, solved, world.walkgraph.as_deref(), z, &bounds);
         regions
     } else {
         stamp_elevations(&mut buckets, sampler, z);
-        stamp_synth(&mut buckets, &field, sampler, solved, z, &bounds);
+        stamp_synth(&mut buckets, &field, sampler, solved, world.walkgraph.as_deref(), z, &bounds);
         // The at-grade paved regions this tile actually meshed — what the
         // terrain mesh below cuts its hole from (docs/GROUND.md §3). Empty
         // where no hole is cut, so the terrain mesher needs no second opinion
@@ -1633,13 +1657,14 @@ fn stamp_synth(
     field: &synth::height::HeightField,
     sampler: &mut GroundSampler,
     solved: &SolvedModel,
+    walkgraph: Option<&synth::walkgraph::WalkGraph>,
     z: u8,
     bounds: &Bounds,
 ) {
     let surface_zoom = z >= crate::priors::ROAD_SURFACE_MIN_ZOOM;
     let walk_zoom = z >= crate::priors::WALK_SURFACE_MIN_ZOOM;
     buckets[layers::TRANSPORTATION as usize].retain_mut(|f| {
-        synth::emit(f, field, sampler, solved, z, bounds);
+        synth::emit(f, field, sampler, solved, walkgraph, z, bounds);
         // A carriageway the union paved has no business also painting its SDF
         // fill: the mesh *is* the surface now. This covers the at-grade stroke and
         // the `deck: true` stroke re-painted over a structure, whose own solid
@@ -2091,7 +2116,8 @@ fn process_feature(
                 // the abutment is re-seated on ground that can carry it before
                 // the cut is made — otherwise the deck is chorded from a point
                 // part way down the gorge it is supposed to cross.
-                let runs = synth::draped::seat(line, &f.level_runs, sampler, solved.z_ref);
+                let runs =
+                    synth::draped::seat(line, &f.level_runs, sampler, world.walkgraph.as_deref(), solved.z_ref);
                 for (piece, level) in level_pieces(line, &runs) {
                     // A negative level with no structure flag is the covered
                     // pedestrian underworld — station subways, passages under
@@ -2463,7 +2489,7 @@ fn flush_tile(
     let bounds = Bounds::of_tile(z, x, y);
     stamp_elevations(buckets, sampler, z);
     let field = synth::height::HeightField::for_tile(junctions, solved, z, &bounds);
-    stamp_synth(buckets, &field, sampler, solved, z, &bounds);
+    stamp_synth(buckets, &field, sampler, solved, world.walkgraph.as_deref(), z, &bounds);
     let cut_regions =
         add_road_surface(buckets, pavement, &field, sampler, &bounds, z, solved.z_ref);
 

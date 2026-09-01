@@ -87,6 +87,12 @@ const SEAT_STEP_M: f64 = 2.0;
 /// between the deck and its approach buys nothing.
 const SEAT_LIFT_MIN_M: f64 = 1.0;
 
+/// How close a walk-graph joint must stand to a span end to be its anchor,
+/// in metres. The on-ground neighbour band ends exactly at the span
+/// boundary, so this only has to absorb the boundary's own quantization —
+/// the joint epsilon is the natural width.
+const ANCHOR_EPS_M: f64 = crate::priors::WALK_JOIN_EPS_M;
+
 /// Sweeps a deck for one annotated span of a draped feature, chorded between
 /// the finished ground at its ends. Returns whether a solid was emitted;
 /// `false` tells the caller to drape the line instead (the degradation ladder).
@@ -97,6 +103,7 @@ const SEAT_LIFT_MIN_M: f64 = 1.0;
 pub fn stamp(
     f: &mut EncoderFeature,
     sampler: &mut GroundSampler,
+    graph: Option<&crate::synth::walkgraph::WalkGraph>,
     z: u8,
     z_ref: u8,
     bounds: &Bounds,
@@ -106,9 +113,22 @@ pub fn stamp(
         return false;
     }
     // The finished ground under every node, and the chord between the ends.
+    // An end where the walk graph holds a joint is anchored there — **raise
+    // only**: the approach band's own seat outranks a ground read at an
+    // annotated edge the data never registered to the terrain (§2.1), which
+    // is how a chord started part way down the gorge it crosses. Downward it
+    // never wins, because a deck must still end on ground that carries it
+    // (I4) — measured, an unconditional anchor pushed abutment soffits past
+    // the contact band wherever a band seat sat under its terrain
+    // (`clearance.deck_over_ground` 0.570 → 0.596 %).
     let terrain: Vec<f64> =
         nodes.iter().map(|c| sampler.ground(c.x, c.y, z_ref)).collect();
-    let profile = Profile::from_heights(&nodes, chord(&nodes, &terrain), terrain);
+    let anchor = |p: Coord, t: f64| {
+        graph.and_then(|g| g.pinned_height_near(p, ANCHOR_EPS_M)).map_or(t, |a| a.max(t))
+    };
+    let h0 = anchor(nodes[0], terrain[0]);
+    let h1 = anchor(nodes[nodes.len() - 1], terrain[terrain.len() - 1]);
+    let profile = Profile::from_heights(&nodes, chord(&nodes, h0, h1), terrain);
     // The fitted profile is all at-grade, so the per-zoom structure datum
     // (`synth::datum`) finds no run here and the fitted deck stays absolute.
     structure::stamp(f, &profile, SpanKind::Bridge, sampler, z, z_ref, bounds)
@@ -148,14 +168,25 @@ pub fn seat(
     line: &LineString,
     runs: &[LevelRun],
     sampler: &mut GroundSampler,
+    graph: Option<&crate::synth::walkgraph::WalkGraph>,
     z: u8,
 ) -> Vec<LevelRun> {
-    seat_on(&line.0, runs, &mut |c| sampler.ground(c.x, c.y, z))
+    seat_on(&line.0, runs, &mut |c| sampler.ground(c.x, c.y, z), &|c| {
+        graph.is_some_and(|g| g.pinned_height_near(c, ANCHOR_EPS_M).is_some())
+    })
 }
 
 /// [`seat`] against a bare ground field, so the rule can be tested without a
-/// DEM and a ground stack behind it.
-fn seat_on(nodes: &[Coord], runs: &[LevelRun], ground: &mut impl FnMut(Coord) -> f64) -> Vec<LevelRun> {
+/// DEM and a ground stack behind it. `anchored` says whether the walk graph
+/// holds a joint at a point: an anchored abutment is where the network
+/// arrives, and it is never walked away from that joint — the chord takes the
+/// joint's height instead ([`stamp`]).
+fn seat_on(
+    nodes: &[Coord],
+    runs: &[LevelRun],
+    ground: &mut impl FnMut(Coord) -> f64,
+    anchored: &impl Fn(Coord) -> bool,
+) -> Vec<LevelRun> {
     let mut out = runs.to_vec();
     if nodes.len() < 2 {
         return out;
@@ -195,13 +226,16 @@ fn seat_on(nodes: &[Coord], runs: &[LevelRun], ground: &mut impl FnMut(Coord) ->
             .fold(total, |m: f64, r| m.min(r.start * total));
         let mut ground_at = |s: f64| ground(point_at(nodes, &arc, s));
         let (h0, h1) = (ground_at(s0), ground_at(s1));
-        // Only the lower end moves, and only up to the height of the higher.
-        if h0 < h1 {
+        // Only the lower end moves, and only up to the height of the higher —
+        // and never an anchored one: a joint of the walk network is where the
+        // approach arrives, so the abutment belongs on it whatever the ground
+        // beside it does.
+        if h0 < h1 && !anchored(point_at(nodes, &arc, s0)) {
             let reach = (s0 - before).min(SEAT_REACH_M);
             if let Some(d) = walk(s0, -1.0, h1, reach, &mut ground_at) {
                 out[i].start = (s0 - d) / total;
             }
-        } else if h1 < h0 {
+        } else if h1 < h0 && !anchored(point_at(nodes, &arc, s1)) {
             let reach = (after - s1).min(SEAT_REACH_M);
             if let Some(d) = walk(s1, 1.0, h0, reach, &mut ground_at) {
                 out[i].end = (s1 + d) / total;
@@ -263,9 +297,9 @@ fn point_at(nodes: &[Coord], arc: &[f64], s: f64) -> Coord {
     }
 }
 
-/// The deck line: a straight chord in height between the first and last node,
+/// The deck line: a straight chord in height between the two end heights,
 /// parameterised by arc so a curving span still rises evenly along its length.
-fn chord(nodes: &[geo_types::Coord], terrain: &[f64]) -> Vec<f64> {
+fn chord(nodes: &[geo_types::Coord], h0: f64, h1: f64) -> Vec<f64> {
     let cos_lat = crate::scene::run_cos_lat(nodes);
     let mut arc = Vec::with_capacity(nodes.len());
     let mut acc = 0.0;
@@ -275,7 +309,6 @@ fn chord(nodes: &[geo_types::Coord], terrain: &[f64]) -> Vec<f64> {
         }
         arc.push(acc);
     }
-    let (h0, h1) = (terrain[0], terrain[terrain.len() - 1]);
     let total = acc;
     if total <= 0.0 {
         return vec![h0; nodes.len()];
@@ -309,7 +342,7 @@ mod tests {
         // deck must not follow it. The chord is what the data supports.
         let nodes = line(5, 0.002);
         let terrain = vec![100.0, 80.0, 60.0, 80.0, 110.0];
-        let deck = chord(&nodes, &terrain);
+        let deck = chord(&nodes, terrain[0], terrain[terrain.len() - 1]);
         assert_eq!(deck[0], 100.0, "starts on the ground it leaves");
         assert_eq!(deck[4], 110.0, "ends on the ground it meets");
         // Evenly spaced nodes, so the interior is the linear interpolation —
@@ -321,14 +354,14 @@ mod tests {
     #[test]
     fn a_level_span_gives_a_level_deck() {
         let nodes = line(4, 0.001);
-        let deck = chord(&nodes, &[200.0, 195.0, 205.0, 200.0]);
+        let deck = chord(&nodes, 200.0, 200.0);
         assert!(deck.iter().all(|h| (h - 200.0).abs() < 1e-9), "flat ends, flat deck");
     }
 
     #[test]
     fn a_degenerate_span_does_not_divide_by_zero() {
         let nodes = vec![Coord { x: 6.0, y: 46.0 }, Coord { x: 6.0, y: 46.0 }];
-        let deck = chord(&nodes, &[100.0, 100.0]);
+        let deck = chord(&nodes, 100.0, 100.0);
         assert!(deck.iter().all(|h| h.is_finite()));
     }
 
@@ -391,7 +424,7 @@ mod tests {
             &[(0.0, 430.0), (12.0, 430.0), (20.0, 415.5), (24.0, 415.5), (32.0, 440.0), (40.0, 440.0)],
         );
         let annotated = p.run(19.0, 31.0, 1);
-        let seated = seat_on(&nodes, &[annotated], &mut p.ground(&nodes));
+        let seated = seat_on(&nodes, &[annotated], &mut p.ground(&nodes), &|_| false);
         let (s0, s1) = p.arc_of(&seated[0]);
         assert!((s1 - 31.0).abs() < 1e-6, "the far abutment was already on its bank");
         assert!(
@@ -417,7 +450,7 @@ mod tests {
             &[(0.0, 470.0), (16.0, 420.0), (20.0, 415.5), (24.0, 415.5), (32.0, 435.5), (40.0, 435.5)],
         );
         let annotated = p.run(19.0, 31.0, 1);
-        let seated = seat_on(&nodes, &[annotated], &mut p.ground(&nodes));
+        let seated = seat_on(&nodes, &[annotated], &mut p.ground(&nodes), &|_| false);
         let (s0, s1) = p.arc_of(&seated[0]);
         let (h0, h1) = (p.at(s0), p.at(s1));
         assert!(h0 <= h1 + 1e-6, "seated at {h0:.2} m, above its opposite at {h1:.2} m");
@@ -446,7 +479,7 @@ mod tests {
             ],
         );
         let runs = [p.run(28.0, 32.0, 1)];
-        let seated = seat_on(&nodes, &runs, &mut p.ground(&nodes));
+        let seated = seat_on(&nodes, &runs, &mut p.ground(&nodes), &|_| false);
         assert_eq!(seated, runs, "nothing to correct: the flanks are walkable");
     }
 
@@ -458,7 +491,7 @@ mod tests {
         let nodes = metre_line(len);
         let p = Profile::new(len, &[(0.0, 100.0), (20.0, 140.0)]);
         let runs = [LevelRun { start: 0.0, end: 1.0, level: 1 }];
-        let seated = seat_on(&nodes, &runs, &mut p.ground(&nodes));
+        let seated = seat_on(&nodes, &runs, &mut p.ground(&nodes), &|_| false);
         assert_eq!(seated, runs);
     }
 
@@ -472,7 +505,7 @@ mod tests {
             &[(0.0, 100.0), (18.0, 100.0), (19.0, 80.0), (21.0, 80.0), (22.0, 100.0), (40.0, 100.0)],
         );
         let runs = [p.run(19.0, 21.0, -1)];
-        let seated = seat_on(&nodes, &runs, &mut p.ground(&nodes));
+        let seated = seat_on(&nodes, &runs, &mut p.ground(&nodes), &|_| false);
         assert_eq!(seated, runs);
     }
 }

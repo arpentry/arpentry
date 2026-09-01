@@ -1583,7 +1583,12 @@ pub fn fit_to_ground(
     });
     unify_width_along_ways(bands, sources);
     taper_along_runs(bands);
-    weld_joints(bands);
+    // The joint weld is the walk graph's predecessor (`synth::walkgraph`
+    // stamps every joint from one shared graph); it runs only under the
+    // graph's revert switch so the two never fight over one seat.
+    if std::env::var_os("ARPT_NO_WALK_GRAPH").is_some() {
+        weld_joints(bands);
+    }
     width_census(bands, sources);
     if census {
         for (path, name) in [(0usize, "sidewalk"), (1, "path")] {
