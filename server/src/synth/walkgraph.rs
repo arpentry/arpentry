@@ -71,6 +71,12 @@ const REACH_M: f64 = 3.0;
 /// result is a function of the graph alone.
 const SWEEPS: usize = 32;
 
+/// How far a kerb stub's end may stand from the hosted band it continues and
+/// still take its seat — `walkway::seat_stubs`' own reach, inherited with its
+/// job: a stub is the strip between the kerb and whatever the crossing joins,
+/// and its inner end lands up to a band-width short of the pavement.
+const STUB_SEAT_REACH_M: f64 = crate::priors::WALK_WIDTH_M * 1.5;
+
 /// The terrain mass in the free-node update, per metre of incident edge:
 /// the screening that keeps a correction local instead of dragging a whole
 /// hillside path toward one joint.
@@ -131,6 +137,7 @@ pub struct WalkGraph {
     stat_t_hosts: usize,
     stat_street_pins: usize,
     stat_out_of_reach: usize,
+    stat_stub_pins: usize,
     spreads: Vec<(f64, Coord, bool)>,
 }
 
@@ -142,11 +149,16 @@ struct ConnectorSeed {
 }
 
 impl WalkGraph {
-    pub fn build(scene: &SceneGraph, solved: &SolvedModel, bands: &[SourceSeg]) -> WalkGraph {
-        Self::build_inner(bands, &connector_seeds(scene, solved))
+    pub fn build(
+        scene: &SceneGraph,
+        solved: &SolvedModel,
+        bands: &[SourceSeg],
+        sources: &[u64],
+    ) -> WalkGraph {
+        Self::build_inner(bands, sources, &connector_seeds(scene, solved))
     }
 
-    fn build_inner(bands: &[SourceSeg], seeds: &[ConnectorSeed]) -> WalkGraph {
+    fn build_inner(bands: &[SourceSeg], sources: &[u64], seeds: &[ConnectorSeed]) -> WalkGraph {
         let live: Vec<u32> =
             (0..bands.len() as u32).filter(|&i| bands[i as usize].level == 0).collect();
         let mut g = WalkGraph {
@@ -161,6 +173,7 @@ impl WalkGraph {
             stat_t_hosts: 0,
             stat_street_pins: 0,
             stat_out_of_reach: 0,
+            stat_stub_pins: 0,
             spreads: Vec::new(),
             node_grid: GridIndex::with_cell_m(CELL_M),
             cos_lat: 1.0,
@@ -295,6 +308,46 @@ impl WalkGraph {
             }
         }
 
+        // Stub pins: a crossing's kerb stub carries no source of its own
+        // (`sources[i] == 0`), and its inner end may stand up to a band-width
+        // short of the pavement it continues — wider than the joint epsilon.
+        // The nearest hosted band within [`STUB_SEAT_REACH_M`] joins its end
+        // as a hosted member at the interpolated seat, which is exactly what
+        // `walkway::seat_stubs` stamped before the graph owned the joints —
+        // now subject to the same reach decline every other pin gets.
+        for &slot in &slots {
+            let band = (slot / 2) as usize;
+            let s = &bands[band];
+            if s.corridor != NO_HOST || sources.get(band).copied().unwrap_or(1) != 0 {
+                continue;
+            }
+            let p = end_pos(slot);
+            let (rx, ry) = eps(STUB_SEAT_REACH_M);
+            band_grid.query((p.x - rx, p.y - ry, p.x + rx, p.y + ry), &mut scratch);
+            let root = uf.find(slot);
+            let mut best: Option<(f64, u32, f64)> = None;
+            for &o in &scratch {
+                let t = &bands[o as usize];
+                if t.corridor == NO_HOST {
+                    continue;
+                }
+                let (d, tt) = point_to_seg_m(p, t.a, t.b, cos_lat);
+                if d <= STUB_SEAT_REACH_M
+                    && best.map_or(true, |(bd, bo, _)| d < bd || (d == bd && o < bo))
+                {
+                    best = Some((d, o, t.height_at(tt)));
+                }
+            }
+            if let Some((_, o, h)) = best {
+                g.stat_stub_pins += 1;
+                joints.entry(root).or_default().push(Member {
+                    band: o,
+                    height: h,
+                    hosted: true,
+                });
+            }
+        }
+
         // Nodes. A joint's seed is its **free** members' mean seat — the
         // ground its bands were fitted to. A pin (hosted seats' mean, else
         // the street surface at a shared connector) takes the node only
@@ -369,6 +422,11 @@ impl WalkGraph {
             }
         }
 
+        g.cos_lat = cos_lat;
+        for (n, p) in g.at.iter().enumerate() {
+            g.node_grid.insert((p.x, p.y, p.x, p.y), n as u32);
+        }
+
         // Edges: one per **free** band, between its two end nodes, weight
         // 1/length. A hosted band is a boundary condition — it enters as its
         // end nodes' pins and never as a smoothing edge, or a pin the reach
@@ -387,7 +445,6 @@ impl WalkGraph {
             let len = seg_len_m(s).max(0.5);
             edges.push((na, nb, 1.0 / len));
         }
-
         // The relaxation, on the **correction field**, not the heights: a
         // pinned node's correction is `pin − seed`, a free node's decays
         // toward zero under the ground mass. Solving deltas rather than
@@ -424,10 +481,6 @@ impl WalkGraph {
                 g.height[n] = g.seed[n] + c[n].clamp(-REACH_M, REACH_M);
             }
         }
-        g.cos_lat = cos_lat;
-        for (n, p) in g.at.iter().enumerate() {
-            g.node_grid.insert((p.x, p.y, p.x, p.y), n as u32);
-        }
         g
     }
 
@@ -454,13 +507,23 @@ impl WalkGraph {
     }
 
     fn node_near(&self, p: Coord, eps_m: f64) -> Option<u32> {
-        let (ex, ey) = (eps_m / (DEG_M * self.cos_lat), eps_m / DEG_M);
+        Self::node_near_in(&self.node_grid, &self.at, self.cos_lat, p, eps_m)
+    }
+
+    fn node_near_in(
+        grid: &GridIndex,
+        at: &[Coord],
+        cos_lat: f64,
+        p: Coord,
+        eps_m: f64,
+    ) -> Option<u32> {
+        let (ex, ey) = (eps_m / (DEG_M * cos_lat), eps_m / DEG_M);
         let mut out = Vec::new();
-        self.node_grid.query((p.x - ex, p.y - ey, p.x + ex, p.y + ey), &mut out);
+        grid.query((p.x - ex, p.y - ey, p.x + ex, p.y + ey), &mut out);
         let mut best: Option<(f64, u32)> = None;
         for &n in &out {
-            let q = self.at[n as usize];
-            let dx = (q.x - p.x) * DEG_M * self.cos_lat;
+            let q = at[n as usize];
+            let dx = (q.x - p.x) * DEG_M * cos_lat;
             let dy = (q.y - p.y) * DEG_M;
             let d = dx.hypot(dy);
             if d <= eps_m && best.map_or(true, |(bd, bn)| d < bd || (d == bd && n < bn)) {
@@ -502,7 +565,8 @@ impl WalkGraph {
         };
         eprintln!(
             "[walkgraph] {} bands, {} nodes ({} multi-band, {} multi-corridor, \
-             {} via connector ids, {} T-hosts, {} street pins, {} pins out of reach)",
+             {} via connector ids, {} T-hosts, {} street pins, {} pins out of reach, \
+             {} stub pins)",
             bands_n,
             self.height.len(),
             self.stat_multi,
@@ -511,6 +575,7 @@ impl WalkGraph {
             self.stat_t_hosts,
             self.stat_street_pins,
             self.stat_out_of_reach,
+            self.stat_stub_pins,
         );
         eprintln!(
             "[walkgraph] seat spread at multi-band joints: p50 {:.2} m, p90 {:.2} m, \
@@ -652,7 +717,7 @@ mod tests {
     }
 
     fn build(bands: &[SourceSeg]) -> WalkGraph {
-        WalkGraph::build_inner(bands, &[])
+        WalkGraph::build_inner(bands, &vec![1; bands.len()], &[])
     }
 
     const D: f64 = 20.0 / DEG_M; // a 20 m step in plan degrees
@@ -749,6 +814,36 @@ mod tests {
             assert_eq!(x.height_a.to_bits(), y.height_a.to_bits());
             assert_eq!(x.height_b.to_bits(), y.height_b.to_bits());
         }
+    }
+
+    #[test]
+    fn a_stub_takes_the_hosted_seat_it_stands_short_of() {
+        // A kerb stub (no source of its own) whose inner end lands 2 m from
+        // the hosted band it continues: the stub-pin rule seats it there,
+        // wider than the joint epsilon reaches.
+        let gap = 2.0 / DEG_M;
+        let bands = vec![
+            band((0.0, 0.0), (D, 0.0), (120.0, 120.0), 7),
+            band((D + gap, 0.0), (D + gap + 3.0 / DEG_M, 0.0), (118.9, 118.9), NO_HOST),
+        ];
+        let mut bands2 = bands.clone();
+        let sources = vec![9, 0]; // the second band is a stub
+        let g = WalkGraph::build_inner(&bands, &sources, &[]);
+        g.stamp(&mut bands2);
+        assert!(
+            (bands2[1].height_a - 120.0).abs() < 1e-9,
+            "the stub's inner end takes the hosted seat, got {}",
+            bands2[1].height_a
+        );
+        // The same band with a real source is a path, not a stub: no pin.
+        let mut bands3 = bands.clone();
+        let g = WalkGraph::build_inner(&bands, &vec![9, 8], &[]);
+        g.stamp(&mut bands3);
+        assert!(
+            (bands3[1].height_a - 118.9).abs() < 1e-9,
+            "a path 2 m short of a band keeps its own seat, got {}",
+            bands3[1].height_a
+        );
     }
 
     #[test]

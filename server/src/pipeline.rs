@@ -396,10 +396,13 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     walk_sources.resize(walk_bands.len() + crossing_stubs.len(), 0);
     let stub_from = walk_bands.len();
     walk_bands.extend(crossing_stubs);
-    // …and a stub seats on the band it continues, not on the ground under the
-    // kerb it stands at. Before this the two met in plan and nowhere in
-    // section (`synth::walkway::seat_stubs`).
-    synth::walkway::seat_stubs(&mut walk_bands, stub_from);
+    // …and a stub seats on the band it continues, not on the ground under
+    // the kerb it stands at — via the walk graph's stub pins below. The
+    // pre-graph mechanism survives only under the revert switch, so the two
+    // never fight over one seat.
+    if std::env::var_os("ARPT_NO_WALK_GRAPH").is_some() {
+        synth::walkway::seat_stubs(&mut walk_bands, stub_from);
+    }
     synth::walkway::fit_to_ground(
         &mut walk_bands,
         &mut walk_sources,
@@ -415,7 +418,8 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // the graph built here; `ARPT_NO_WALK_GRAPH` reverts to the weld.
     let mut walkgraph: Option<Arc<synth::walkgraph::WalkGraph>> = None;
     if std::env::var_os("ARPT_NO_WALK_GRAPH").is_none() {
-        let graph = synth::walkgraph::WalkGraph::build(&scene, &solved, &walk_bands);
+        let graph =
+            synth::walkgraph::WalkGraph::build(&scene, &solved, &walk_bands, &walk_sources);
         graph.stamp(&mut walk_bands);
         if std::env::var("ARPT_WALK_GRAPH").as_deref() == Ok("census") {
             graph.census(walk_bands.len());
