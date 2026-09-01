@@ -79,6 +79,11 @@ struct Src<'a> {
     rise_m: f64,
     corridor: crate::scene::CorridorId,
     profile: Option<&'a Profile>,
+    /// The stamped seats at `a` and `b`, for the sources whose seats *are*
+    /// the drawn truth: the pedestrian bands, whose joint heights the walk
+    /// graph solved (`synth::walkgraph`). A carriageway's height stays its
+    /// profile — its seats are stamped *from* it and carry nothing more.
+    seat: Option<(f64, f64)>,
 }
 
 /// Which sheet of the field a query is about: the level, the grade-separation
@@ -128,6 +133,13 @@ pub struct HeightField<'a> {
     src_grid: GridIndex,
     pins: Vec<Pin<'a>>,
     pin_grid: GridIndex,
+    /// Whether pedestrian sources answer from their seat chords instead of
+    /// re-deriving profile + rise / bare ground — the default; the field and
+    /// the walk graph are one authority. `ARPT_NO_SEAT_FIELD` reverts.
+    /// Measured on the Montreux zone: `contact.walk_rim` 0.710 → 0.348 %,
+    /// `slope.walk_crossfall` 2.600 → 2.382 % (worst 9.08 → 5.76 m),
+    /// everything else unchanged at z16 and z15. Read once per field.
+    seat_field: bool,
 }
 
 impl<'a> HeightField<'a> {
@@ -159,6 +171,7 @@ impl<'a> HeightField<'a> {
                 src_grid: GridIndex::new(),
                 pins: Vec::new(),
                 pin_grid: GridIndex::new(),
+                seat_field: false,
             };
         }
         let pad = crate::priors::PAVE_PAD_M / DEG_M;
@@ -195,6 +208,7 @@ impl<'a> HeightField<'a> {
                 rise_m: s.rise_m,
                 corridor: s.corridor,
                 profile: solved.profile(s.corridor),
+                seat: s.surface.is_pedestrian().then_some((s.height_a, s.height_b)),
             });
         }
 
@@ -215,7 +229,13 @@ impl<'a> HeightField<'a> {
             pins.push(Pin { area: j.area(), level: 0, layer: j.layer(), height });
         }
 
-        HeightField { srcs, src_grid, pins, pin_grid }
+        HeightField {
+            srcs,
+            src_grid,
+            pins,
+            pin_grid,
+            seat_field: std::env::var_os("ARPT_NO_SEAT_FIELD").is_none(),
+        }
     }
 
     /// Whether the field carries no sources at all — below the surface zoom, or
@@ -301,7 +321,7 @@ impl<'a> HeightField<'a> {
             if s.sheet != sheet {
                 continue;
             }
-            let d = point_to_segment_m(lon, lat, s.a, s.b, s.cos_lat);
+            let (d, t) = point_to_segment_mt(lon, lat, s.a, s.b, s.cos_lat);
             // *The* per-corridor answer, called rather than reproduced — the
             // shared ground raised to this corridor's own solved profile.
             // `surface_height` is exactly `on_ground(ground_height(..))`, so the
@@ -310,7 +330,30 @@ impl<'a> HeightField<'a> {
             // Plus whatever this source *stands on* that surface: a walkway's
             // kerb. A carriageway's rise is zero, so the road answer is
             // unchanged by construction rather than by a branch.
-            let h = road::on_ground(ground, s.profile, sampler, z, z_ref, lon, lat) + s.rise_m;
+            //
+            // A pedestrian source answers from its **seat chord** instead:
+            // the seats are the walk graph's solved
+            // joint heights (rise included at stamping), and the field reading
+            // anything else makes the graph a suggestion. The chord carries
+            // the same rung semantics `on_ground` gives a profile — outright
+            // plus the local datum shift where the hole is cut, clamped to
+            // the ground at the reference rung, ground plus the fill lift at
+            // coarser rungs.
+            let h = match (self.seat_field, s.seat) {
+                (true, Some((ha, hb))) => {
+                    let seat = ha + (hb - ha) * t;
+                    if hole {
+                        seat + crate::synth::datum::shift(sampler, z, z_ref, lon, lat)
+                    } else if z == z_ref {
+                        ground.max(seat)
+                    } else {
+                        let ref_bounds = crate::solve::tile_containing(z_ref, lon, lat);
+                        let lift = seat - sampler.surface(&ref_bounds, lon, lat, z_ref);
+                        ground + lift.max(0.0)
+                    }
+                }
+                _ => road::on_ground(ground, s.profile, sampler, z, z_ref, lon, lat) + s.rise_m,
+            };
             if best.is_none_or(|(bd, _, _)| d < bd) {
                 best = Some((d, s.half_m, h));
             }
@@ -486,16 +529,22 @@ fn pin_kernel(d: f64, r: f64) -> f64 {
 
 /// Distance in metres from a lon/lat point to the segment `a → b`.
 fn point_to_segment_m(lon: f64, lat: f64, a: Coord, b: Coord, cos_lat: f64) -> f64 {
+    point_to_segment_mt(lon, lat, a, b, cos_lat).0
+}
+
+/// [`point_to_segment_m`], plus the parameter of the closest point — the
+/// interpolant a per-source chord (a seat) is read at.
+fn point_to_segment_mt(lon: f64, lat: f64, a: Coord, b: Coord, cos_lat: f64) -> (f64, f64) {
     let m_lon = DEG_M * cos_lat;
     let (px, py) = ((lon - a.x) * m_lon, (lat - a.y) * DEG_M);
     let (ex, ey) = ((b.x - a.x) * m_lon, (b.y - a.y) * DEG_M);
     let len2 = ex * ex + ey * ey;
     if len2 < 1e-18 {
-        return (px * px + py * py).sqrt();
+        return ((px * px + py * py).sqrt(), 0.0);
     }
     let t = ((px * ex + py * ey) / len2).clamp(0.0, 1.0);
     let (dx, dy) = (px - ex * t, py - ey * t);
-    (dx * dx + dy * dy).sqrt()
+    ((dx * dx + dy * dy).sqrt(), t)
 }
 
 #[cfg(test)]
