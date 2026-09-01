@@ -731,6 +731,30 @@ fn stratum_rank(surface: priors::Surface) -> u8 {
 /// cross-namespace sentence is now spoken where heights exist to say it
 /// honestly: the kerb-coincident yield in [`trench_yields`].
 fn seniors(surface: priors::Surface) -> &'static [priors::Surface] {
+    // Under the one-ordinal namespace (the default; `ARPT_TWO_SHEETS`
+    // reverts) the cross-namespace
+    // sentence comes back to the region level, where it belongs: a coplanar
+    // walk shares its street's (level, layer) **by construction** now, so the
+    // key matches by meaning rather than accident — and a walk genuinely
+    // above a road is floored off the road's rung (`sheets::assign_all`), so
+    // the trench-rim accident that removed this cannot recur. The region
+    // subtraction is what the per-segment kerb quads could never be: the
+    // union's own shape — a footway lying 8 m inside a paved field at
+    // 6.9130,46.4397 survived every segment cross-section cut and cannot
+    // survive this one.
+    if std::env::var_os("ARPT_TWO_SHEETS").is_none() {
+        return match surface {
+            priors::Surface::Asphalt => &[],
+            priors::Surface::Ballast => &[priors::Surface::Asphalt],
+            priors::Surface::Walkway => &[priors::Surface::Asphalt, priors::Surface::Ballast],
+            priors::Surface::Path => &[
+                priors::Surface::Walkway,
+                priors::Surface::Asphalt,
+                priors::Surface::Ballast,
+            ],
+            priors::Surface::None => &[],
+        };
+    }
     match surface {
         priors::Surface::Asphalt => &[],
         priors::Surface::Ballast => &[priors::Surface::Asphalt],

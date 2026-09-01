@@ -452,14 +452,16 @@ pub fn bake(
     // the street it stands beside, and the walk sheet is its own namespace
     // (`height::Sheet::walk`), so the two layerings never compare numbers.
     let mut walk_bands = walk_bands;
-    if std::env::var_os("ARPT_ONE_SHEET").is_some() {
-        // One ordinal namespace: the walk sheets placed relative to the road
-        // ones (`sheets::assign_all`) — a kerb-coplanar walk takes its
-        // street's rung, walk-over-walk order survives the placement, and
-        // road ordinals are untouched by construction. The walk-only
-        // namespace below never compared numbers with the road one, so the
-        // client's stratigraphic sort and every (level, layer) key were
-        // comparing apples to oranges wherever a walk stood beside a street.
+    if std::env::var_os("ARPT_TWO_SHEETS").is_none() {
+        // One ordinal namespace — the default: the walk sheets placed
+        // relative to the road ones (`sheets::assign_all`), a kerb-coplanar
+        // walk taking its street's rung, walk-over-walk order surviving the
+        // placement, road ordinals untouched by construction. Measured with
+        // the region-level seniority it unlocks (`pavement::seniors`):
+        // walk_on_asphalt 0.379 -> 0.243 %, walk_crossfall 2.384 -> 2.086 %,
+        // against walk_rim +0.05 pp (the seat-vs-refused-bench residue, worst
+        // 3.52 m at 6.9279,46.4240) — the named bill. `ARPT_TWO_SHEETS`
+        // reverts to the split namespaces.
         let unified = sheets::assign_all(scene, &sources, &walk_bands);
         for (s, &l) in walk_bands.iter_mut().zip(unified.walk_layers.iter()) {
             s.layer = l;

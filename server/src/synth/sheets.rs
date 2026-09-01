@@ -176,6 +176,14 @@ pub fn assign_all(scene: &SceneGraph, road: &[SourceSeg], walk: &[SourceSeg]) ->
         grid.insert(bbox_of(s), i as u32);
     }
     let mut coplanar: std::collections::BTreeMap<u32, u32> = Default::default();
+    // A walk sheet genuinely *above* a road may not share that road's rung:
+    // one number would read as coplanar to every (level, layer) consumer,
+    // and the region-level seniority would trim a trench-rim path under the
+    // sunken street it stands a storey over — the exact accident that got
+    // the cross-namespace subtraction removed. A floor of road + 1 keeps the
+    // stack a stack. (Below a road, a shared number is harmless: the trench
+    // yield severs that band regardless.)
+    let mut above_floor: std::collections::BTreeMap<u32, u32> = Default::default();
     let mut coplanar_conflicts = 0usize;
     let mut mixed_coplanar = 0usize;
     let mut mixed_stacked = 0usize;
@@ -195,6 +203,10 @@ pub fn assign_all(scene: &SceneGraph, road: &[SourceSeg], walk: &[SourceSeg]) ->
             let gap = s.height_at(ts) - t.height_at(tt);
             if gap.abs() > crate::priors::WALK_ON_ASPHALT_M {
                 mixed_stacked += 1;
+                if gap > 0.0 {
+                    let f = above_floor.entry(ws).or_insert(0);
+                    *f = (*f).max(t.layer + 1);
+                }
                 continue;
             }
             mixed_coplanar += 1;
@@ -223,6 +235,13 @@ pub fn assign_all(scene: &SceneGraph, road: &[SourceSeg], walk: &[SourceSeg]) ->
     let mut ordinal: Vec<u32> = (0..w.sheet_layer.len() as u32)
         .map(|sh| coplanar.get(&sh).copied().unwrap_or(w.sheet_layer[sh as usize]))
         .collect();
+    // The constant floors first, then the walk edges: the edges only lift
+    // uppers, so a floor once satisfied stays satisfied.
+    for (&sh, &floor) in &above_floor {
+        if ordinal[sh as usize] < floor {
+            ordinal[sh as usize] = floor;
+        }
+    }
     let depth = w.sheet_layer.iter().copied().max().unwrap_or(0) as usize + 1;
     for _ in 0..depth {
         for &(lo, up) in &w.above {
