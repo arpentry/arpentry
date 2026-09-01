@@ -21,6 +21,7 @@
 
 use geo_types::{Coord, Geometry, LineString, MultiLineString};
 
+use crate::assemble::grid::GridIndex;
 use crate::building_mesh::Frame;
 use crate::scene::DEG_M;
 use crate::priors;
@@ -45,6 +46,20 @@ const CENTRE_GAP_M: f64 = 6.0;
 /// guide line, as on a real carriageway.
 const LANE_DASH_M: f64 = 5.0;
 const LANE_GAP_M: f64 = 9.0;
+
+/// How much clear asphalt a longitudinal line keeps before a zebra ladder, in
+/// metres, beyond the ladder's own half-depth. The bars reach
+/// `priors::CROSSING_WIDTH_M / 2` from the chord ([`crossing_bars`] strokes
+/// them centred on it), and paint stopping flush with the outermost bar still
+/// touches it once the client rounds the cap — so the stop keeps the margin
+/// road paint actually holds before a crosswalk. Well over the bar's own
+/// clearance, and the excess is not generosity: the filter runs on the
+/// model-space line and the paint is drawn snapped to the smoothed sweep,
+/// which displaces it laterally — a median half-metre at a junction mouth
+/// (`street.kerb_join`), which is exactly where crossings live. A margin
+/// sized to the ladder alone let displaced dash tips back inside it (0.33 to
+/// 0.45 m from a bar at three Montreux sites at 0.6 m; one survived 1.0 m).
+const CROSSING_STOP_M: f64 = 1.5;
 
 /// One painted line to emit: its geometry and painted width. The caller
 /// attaches the `marking` class and the synth tag of the road it lies on.
@@ -77,13 +92,16 @@ impl Marking {
 /// must be pre-clip geometry — a whole segment or a corridor span piece — so
 /// the dash phase anchors to a global arclength origin. `areas` are the paved
 /// intersections near the line: solid lines stop at them, and any dash whose
-/// midpoint falls inside one is dropped.
+/// midpoint falls inside one is dropped. `chords` are the registered crossing
+/// chords: a dash reaching inside a zebra ladder's footprint is dropped too,
+/// because the crossing owns that stretch of paint ([`ChordIndex`]).
 pub fn for_line(
     line: &LineString,
     class: &str,
     oneway: bool,
     width_m: f64,
     areas: &[&Area],
+    chords: &ChordIndex,
 ) -> Vec<Marking> {
     let centre = priors::has_centre_line(class, oneway);
     let lanes = if priors::has_lane_lines(class, oneway) {
@@ -97,8 +115,10 @@ pub fn for_line(
     }
     let mut out = Vec::new();
     let mut push_dashes = |dashes: Vec<LineString>, width: f64| {
-        let kept: Vec<LineString> =
-            dashes.into_iter().filter(|d| !midpoint_paved(d, areas)).collect();
+        let kept: Vec<LineString> = dashes
+            .into_iter()
+            .filter(|d| !midpoint_paved(d, areas) && !chords.blocks(d))
+            .collect();
         if !kept.is_empty() {
             out.push(Marking {
                 geometry: Geometry::MultiLineString(MultiLineString(kept)),
@@ -136,6 +156,7 @@ pub fn for_line(
                 };
                 let pieces: Vec<LineString> = trim_line(&edge, areas)
                     .into_iter()
+                    .flat_map(|p| chords.cut(&p))
                     .filter(|p| line_len_m(p, &frame) >= MIN_LINE_M)
                     .collect();
                 if !pieces.is_empty() {
@@ -200,6 +221,147 @@ pub fn crossing_bars(a: Coord, b: Coord) -> Vec<Marking> {
         width_m: priors::CROSSING_BAR_M,
         class: "crossing",
     }]
+}
+
+/// The registered crossing chords, indexed for the dash filter.
+///
+/// Longitudinal paint yields to the zebra: a centre line drawn through a
+/// crosswalk is two painted systems contradicting each other, and the junction
+/// areas `midpoint_paved` consults cannot say so — a crossing is not an area,
+/// and most sit mid-leg where no area reaches. The chords are a phase-1
+/// product (`synth::walkway::crossings`) and the dashes are cut per feature in
+/// phase 2, so the index is built once on the world and every feature's
+/// dashes are asked against every ladder near them, not just their own.
+pub struct ChordIndex {
+    grid: GridIndex,
+    chords: Vec<(Coord, Coord)>,
+}
+
+impl ChordIndex {
+    /// An index over no chords — nothing blocks. For worlds with no registered
+    /// crossing, and for tests exercising the ladder alone.
+    pub fn empty() -> ChordIndex {
+        ChordIndex { grid: GridIndex::with_cell_m(64.0), chords: Vec::new() }
+    }
+
+    pub fn build<I: IntoIterator<Item = (Coord, Coord)>>(chords: I) -> ChordIndex {
+        let mut idx = ChordIndex::empty();
+        for (a, b) in chords {
+            idx.grid.insert(
+                (a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)),
+                idx.chords.len() as u32,
+            );
+            idx.chords.push((a, b));
+        }
+        idx
+    }
+
+    /// Whether the dash reaches inside a ladder's footprint plus the stop
+    /// margin: within `CROSSING_WIDTH_M / 2 + CROSSING_STOP_M` of a chord.
+    fn blocks(&self, dash: &LineString) -> bool {
+        if self.chords.is_empty() || dash.0.len() < 2 {
+            return false;
+        }
+        let reach = priors::CROSSING_WIDTH_M * 0.5 + CROSSING_STOP_M;
+        let cosk = dash.0[0].y.to_radians().cos().max(0.1);
+        let pad = reach / (DEG_M * cosk);
+        let (mut w, mut s, mut e, mut n) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for c in &dash.0 {
+            w = w.min(c.x);
+            e = e.max(c.x);
+            s = s.min(c.y);
+            n = n.max(c.y);
+        }
+        let mut hits: Vec<u32> = Vec::new();
+        self.grid.query((w - pad, s - pad, e + pad, n + pad), &mut hits);
+        hits.iter().any(|&i| {
+            let (a, b) = self.chords[i as usize];
+            dash.0.windows(2).any(|d| seg_seg_m(d[0], d[1], a, b, cosk) < reach)
+        })
+    }
+
+    /// The pieces of a solid line that lie clear of every ladder: the covered
+    /// arc intervals are cut out, the way `trim_line` cuts junction areas. An
+    /// edge line is interrupted across a crosswalk exactly as a centre line
+    /// is — the difference is only that a solid line is cut where a dashed
+    /// one is dropped whole.
+    fn cut(&self, line: &LineString) -> Vec<LineString> {
+        if self.chords.is_empty() || line.0.len() < 2 {
+            return vec![line.clone()];
+        }
+        let reach = priors::CROSSING_WIDTH_M * 0.5 + CROSSING_STOP_M;
+        let cosk = line.0[0].y.to_radians().cos().max(0.1);
+        let pad = reach / (DEG_M * cosk);
+        let (mut w, mut s, mut e, mut n) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for c in &line.0 {
+            w = w.min(c.x);
+            e = e.max(c.x);
+            s = s.min(c.y);
+            n = n.max(c.y);
+        }
+        let mut hits: Vec<u32> = Vec::new();
+        self.grid.query((w - pad, s - pad, e + pad, n + pad), &mut hits);
+        if hits.is_empty() {
+            return vec![line.clone()];
+        }
+        // March the line and keep the maximal clear runs. A quarter metre
+        // resolves the ladder edge well inside the stop margin.
+        let arc = arc_lengths(&line.0);
+        let total = *arc.last().expect("non-empty");
+        let step = 0.25;
+        let m = (total / step).ceil().max(1.0) as usize;
+        let clear_at = |sm: f64| -> bool {
+            let p = slice(&line.0, &arc, sm, sm)[0];
+            let q = Coord { x: p.x + 1e-9, y: p.y };
+            hits.iter().all(|&i| {
+                let (a, b) = self.chords[i as usize];
+                seg_seg_m(p, q, a, b, cosk) >= reach
+            })
+        };
+        let mut out = Vec::new();
+        let mut run: Option<f64> = None;
+        for k in 0..=m {
+            let sm = (k as f64 * step).min(total);
+            match (clear_at(sm), run) {
+                (true, None) => run = Some(sm),
+                (false, Some(from)) => {
+                    let piece = slice(&line.0, &arc, from, sm - step);
+                    if piece.len() >= 2 {
+                        out.push(LineString(piece));
+                    }
+                    run = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(from) = run {
+            let piece = slice(&line.0, &arc, from, total);
+            if piece.len() >= 2 {
+                out.push(LineString(piece));
+            }
+        }
+        out
+    }
+}
+
+/// Plan distance between two segments in metres (equirectangular at `cosk`),
+/// zero where they cross.
+fn seg_seg_m(a0: Coord, a1: Coord, b0: Coord, b1: Coord, cosk: f64) -> f64 {
+    let m = |c: Coord| (c.x * DEG_M * cosk, c.y * DEG_M);
+    let (a0, a1, b0, b1) = (m(a0), m(a1), m(b0), m(b1));
+    let cross = |o: (f64, f64), p: (f64, f64), q: (f64, f64)| {
+        (p.0 - o.0) * (q.1 - o.1) - (p.1 - o.1) * (q.0 - o.0)
+    };
+    if cross(a0, a1, b0) * cross(a0, a1, b1) < 0.0 && cross(b0, b1, a0) * cross(b0, b1, a1) < 0.0 {
+        return 0.0;
+    }
+    let pt = |p: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let l2 = dx * dx + dy * dy;
+        let t = if l2 > 0.0 { (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
+    };
+    pt(a0, b0, b1).min(pt(a1, b0, b1)).min(pt(b0, a0, a1)).min(pt(b1, a0, a1))
 }
 
 /// A local ENU frame at a point (marking generation runs before any tile
@@ -482,6 +644,61 @@ fn slice_arc(pts: &[Coord], arc: &[f64], a: f64, b: f64) -> Vec<Coord> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn centre_dashes_yield_to_a_crossing_chord() {
+        // A 100 m west→east secondary with a crossing chord across it at
+        // x = +25 m: the dash whose run covers that station is dropped, the
+        // rest of the ladder survives, and an empty index drops nothing.
+        let cy: f64 = 46.0;
+        let m_lon = DEG_M * cy.to_radians().cos();
+        let at = |de: f64, dn: f64| Coord { x: 7.0 + de / m_lon, y: cy + dn / DEG_M };
+        let line = LineString(vec![at(0.0, 0.0), at(100.0, 0.0)]);
+        let clear = for_line(&line, "secondary", false, 6.0, &[], &ChordIndex::empty());
+        assert_eq!(clear.len(), 1);
+        let Geometry::MultiLineString(all) = &clear[0].geometry else { panic!("dashes") };
+
+        let chord = ChordIndex::build([(at(25.0, -4.0), at(25.0, 4.0))]);
+        let out = for_line(&line, "secondary", false, 6.0, &[], &chord);
+        assert_eq!(out.len(), 1);
+        let Geometry::MultiLineString(kept) = &out[0].geometry else { panic!("dashes") };
+        assert!(kept.0.len() < all.0.len(), "a dash under the ladder is dropped");
+        let reach = priors::CROSSING_WIDTH_M * 0.5 + CROSSING_STOP_M;
+        for d in &kept.0 {
+            for v in &d.0 {
+                let de = ((v.x - 7.0) * m_lon - 25.0).abs();
+                assert!(de > reach - 1e-6, "kept paint {de:.2} m from the chord");
+            }
+        }
+        // A chord a street away blocks nothing.
+        let far = ChordIndex::build([(at(25.0, 20.0), at(25.0, 28.0))]);
+        let unharmed = for_line(&line, "secondary", false, 6.0, &[], &far);
+        let Geometry::MultiLineString(u) = &unharmed[0].geometry else { panic!("dashes") };
+        assert_eq!(u.0.len(), all.0.len());
+    }
+
+    #[test]
+    fn edge_lines_are_cut_at_a_crossing_chord() {
+        // A motorway's solid edge lines split at a chord across the road; a
+        // clear run of the same road keeps one piece per side.
+        let cy: f64 = 46.0;
+        let m_lon = DEG_M * cy.to_radians().cos();
+        let at = |de: f64, dn: f64| Coord { x: 7.0 + de / m_lon, y: cy + dn / DEG_M };
+        let line = LineString(vec![at(0.0, 0.0), at(200.0, 0.0)]);
+        let solid = |ms: &[Marking]| -> usize {
+            ms.iter()
+                .filter(|m| (m.width_m - priors::EDGE_LINE_WIDTH_M).abs() < 1e-6)
+                .map(|m| match &m.geometry {
+                    Geometry::MultiLineString(p) => p.0.len(),
+                    _ => 0,
+                })
+                .sum()
+        };
+        let clear = for_line(&line, "motorway", true, 9.0, &[], &ChordIndex::empty());
+        let chord = ChordIndex::build([(at(100.0, -6.0), at(100.0, 6.0))]);
+        let cut = for_line(&line, "motorway", true, 9.0, &[], &chord);
+        assert_eq!(solid(&cut), solid(&clear) * 2, "each edge line splits in two");
+    }
+
     fn straight(len_m: f64) -> LineString {
         let cy: f64 = 46.0;
         let m_lon = DEG_M * cy.to_radians().cos();
@@ -514,15 +731,15 @@ mod tests {
     #[test]
     fn centre_line_is_dashed_and_edge_lines_are_solid() {
         let line = straight(100.0);
-        let centre = for_line(&line, "secondary", false, 6.0, &[]);
+        let centre = for_line(&line, "secondary", false, 6.0, &[], &ChordIndex::empty());
         assert_eq!(centre.len(), 1);
         assert!(matches!(&centre[0].geometry, Geometry::MultiLineString(m) if m.0.len() == 10));
         assert_eq!(centre[0].width_m, priors::CENTRE_LINE_WIDTH_M);
         // A one-way secondary of one lane's width paints nothing.
-        assert!(for_line(&line, "secondary", true, 3.5, &[]).is_empty());
+        assert!(for_line(&line, "secondary", true, 3.5, &[], &ChordIndex::empty()).is_empty());
         // A two-lane motorway carriageway paints one dashed lane divider
         // (down its middle) plus two solid edge lines — no centre line.
-        let mw = for_line(&line, "motorway", true, 9.0, &[]);
+        let mw = for_line(&line, "motorway", true, 9.0, &[], &ChordIndex::empty());
         assert_eq!(mw.len(), 3);
         let dashed = mw
             .iter()
@@ -532,7 +749,7 @@ mod tests {
         let solid = mw.iter().filter(|m| m.width_m == priors::EDGE_LINE_WIDTH_M).count();
         assert_eq!(solid, 2, "two solid edge lines");
         // A wide (three-lane) carriageway paints two dividers.
-        let wide = for_line(&line, "motorway", true, 12.0, &[]);
+        let wide = for_line(&line, "motorway", true, 12.0, &[], &ChordIndex::empty());
         assert_eq!(wide.len(), 4, "two dividers + two edges");
     }
 
@@ -562,7 +779,7 @@ mod tests {
             crate::synth::area::Leg { e: 0.0, n: -1.0, half_w: 5.0 },
         ];
         let area = Area::new(centre, legs, 5.0).expect("an intersection");
-        let out = for_line(&line, "secondary", false, 6.0, &[&area]);
+        let out = for_line(&line, "secondary", false, 6.0, &[&area], &ChordIndex::empty());
         assert_eq!(out.len(), 1);
         let Geometry::MultiLineString(m) = &out[0].geometry else {
             panic!("a multiline of dashes");

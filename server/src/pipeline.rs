@@ -188,6 +188,10 @@ pub struct World {
     /// these, and a crosswalk that registered keeps no stroke at the walk
     /// zooms — the ladder and its stub bands are the crossing.
     pub crossings: std::collections::HashMap<u64, Vec<(Coord, Coord)>>,
+    /// The same chords, spatially indexed for the dash filter: markings are
+    /// baked per feature, and each feature's dashes must yield to every
+    /// ladder near them, not just to its own (`synth::markings::ChordIndex`).
+    pub chord_index: synth::markings::ChordIndex,
     /// Source hashes of the pedestrian ways that came out of the walkway
     /// model as drawn band. A way outside this set was declined — the seat
     /// had no room, or the ground fit could not carry a band there — and it
@@ -380,7 +384,8 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // sidewalk between the kerb and whatever the crossing joins, so they are
     // fitted, benched and unioned like any band — and the paint chords ride to
     // phase 1, which draws the zebra ladder from them.
-    let (crossing_paints, crossing_stubs) = synth::walkway::crossings(&scene);
+    let (crossing_paints, crossing_stubs) =
+        synth::walkway::crossings(&scene, &solved, cfg.terrain.as_deref());
     // A stub carries no source: whether a crossing was *drawn* is decided by
     // its registration (`crossing_drawn`), and its zebra survives even where
     // the fit declines the kerb stubs.
@@ -439,9 +444,22 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // function of the solved model, so every worker and every tile must get
     // the same one (I5).
     let carriers = synth::carried::Carriers::build(&scene, &solved);
-    let crossings = crossing_paints.into_iter().map(|c| (c.source, c.chords)).collect();
-    let world =
-        World { scene, solved, ground, junctions, pavement, carriers, facades, crossings, banded_walks };
+    let crossings: std::collections::HashMap<u64, Vec<(Coord, Coord)>> =
+        crossing_paints.into_iter().map(|c| (c.source, c.chords)).collect();
+    let chord_index =
+        synth::markings::ChordIndex::build(crossings.values().flatten().copied());
+    let world = World {
+        scene,
+        solved,
+        ground,
+        junctions,
+        pavement,
+        carriers,
+        facades,
+        crossings,
+        chord_index,
+        banded_walks,
+    };
     let World { scene, solved, ground, junctions, pavement, .. } = &world;
     stats.pave_chunks = pavement.chunk_count() as u64;
     stats.pave_area_m2 = pavement.area_m2();
@@ -1993,7 +2011,7 @@ fn process_feature(
                 // rungs' chords (`paint.buried`).
                 let paints = piece.kind != SpanKind::Tunnel;
                 if let Some((class, oneway, width, areas)) = marks.as_ref().filter(|_| paints) {
-                    for m in synth::markings::for_line(&line, class, *oneway, *width, areas) {
+                    for m in synth::markings::for_line(&line, class, *oneway, *width, areas, &world.chord_index) {
                         emit_geometry(layer, &m.geometry, &m.properties(), mark_synth, cfg, sorter, stats)?;
                     }
                 }
@@ -2021,7 +2039,7 @@ fn process_feature(
         let synth = Synth::Road { corridor: None, deck: false };
         if let Some((class, oneway, width, areas)) = &marks {
             if let Geometry::LineString(line) = &f.geometry {
-                for m in synth::markings::for_line(line, class, *oneway, *width, areas) {
+                for m in synth::markings::for_line(line, class, *oneway, *width, areas, &world.chord_index) {
                     emit_geometry(layer, &m.geometry, &m.properties(), synth, cfg, sorter, stats)?;
                 }
             }

@@ -47,6 +47,7 @@ use crate::assemble::facades::Section;
 use crate::priors::Surface;
 use crate::scene::{Corridor, DEG_M, SpanKind};
 use crate::synth::carriageway::{SourceSeg, corridor_half_width_m};
+use crate::synth::walkway;
 use crate::verify::dist::Dist;
 use crate::verify::{Invariant, Metric, Offender, Sense, Worst};
 
@@ -100,6 +101,19 @@ const CHORD_STEP_M: f64 = 0.25;
 /// carriageway edge by the smoothing displacement, and nothing beyond that.
 const CHORD_BARE_M: f64 = 0.5;
 
+/// A crossing chord further off square than this is skewed, in degrees.
+///
+/// The zebra's bars are longitudinal to traffic by construction
+/// (`synth::markings::crossing_bars` draws them perpendicular to the chord),
+/// so the chord's angle to the crossed centerline *is* the bars' angle to the
+/// traffic axis, and a square crossing reads 0 here whatever direction the
+/// street runs. Real crosswalks are mapped a few degrees oblique where a
+/// refuge island or a bent kerb line skews the walking line; twenty degrees
+/// is past what any of that explains, and the first offender measured — a
+/// Territet junction mouth whose chord picked kerb points that are not
+/// opposite each other — read 26°.
+const CHORD_SKEW_DEG: f64 = 20.0;
+
 /// Half-size of a source query box, in metres — the widest half-width any band
 /// carries, plus the strip reach, so a probe finds every source that could
 /// cover it.
@@ -118,7 +132,7 @@ const EVIDENCE_MERGE_M: f64 = crate::priors::WALK_CORNER_MAX_M;
 
 pub fn check(m: &Model<'_>) -> Vec<Metric> {
     synth_census(m);
-    vec![strip_continuity(m), kerb_join(m), crossing_extent(m), width_step(m)]
+    vec![strip_continuity(m), kerb_join(m), crossing_extent(m), crossing_skew(m), width_step(m)]
 }
 
 // ---------------------------------------------------------------- continuity
@@ -410,10 +424,26 @@ fn kerb_join(m: &Model<'_>) -> Metric {
 
 /// Every registered zebra chord, scored by the length of it that no carriageway
 /// the crossing actually *crosses* accounts for.
+/// The crossing's mapped polyline pushed out along its end tangents by the
+/// same 8 m the registration extends it (`walkway::CROSSING_EXTEND_M`). Hosts
+/// must be derived from this line, not the mapped one: a crosswalk mapped
+/// short of the second roadway of a divided street finds it only through the
+/// extension, and a check that refuses the extension scores that roadway's
+/// chord as bare — 4.7 m of a 5 m chord at 6.90847,46.43794, on a drawing
+/// that is right.
+fn extended_line(line: &[Coord], cos_lat: f64) -> Vec<Coord> {
+    let mut ext = Vec::with_capacity(line.len() + 2);
+    ext.push(walkway::end_extension(line, cos_lat, false, walkway::CROSSING_EXTEND_M));
+    ext.extend_from_slice(line);
+    ext.push(walkway::end_extension(line, cos_lat, true, walkway::CROSSING_EXTEND_M));
+    ext
+}
+
 fn crossing_extent(m: &Model<'_>) -> Metric {
     let mut dist = Dist::metres();
     let mut worst = Worst::new(Sense::HigherIsWorse, 8);
     let debug = std::env::var_os("ARPT_DEBUG_STRIP").is_some();
+    let mut dem = m.terrain.and_then(|p| crate::dem::Dem::open(p).ok());
 
     // Every drivable centerline segment, indexed by plan position — the same
     // index `synth::walkway::crossings` scans, so the two disagree only about
@@ -443,13 +473,18 @@ fn crossing_extent(m: &Model<'_>) -> Metric {
         }
         let Some(painted) = m.crossings.get(&line.source) else { continue };
         let cos_lat = crate::scene::run_cos_lat(&line.line);
+        let anchor = dem
+            .as_mut()
+            .map(|d| walkway::crossing_level_anchor(&line.line, d, m.solved.z_ref));
         // The streets this crossing *crosses*: those whose centerline its own
-        // mapped polyline properly intersects. A corridor it merely runs beside
-        // is not crossed, and that distinction is the whole check — `on_asphalt`
-        // does not make it, which is how a crossing came to annex a station
-        // forecourt's service roads and paint a ladder over a railway.
-        let mut hosts: Vec<u32> = Vec::new();
-        for w in line.line.windows(2) {
+        // mapped polyline properly intersects at the crossing's own level. A
+        // corridor it merely runs beside is not crossed, and a plan-crossed
+        // one a terrace away is not either — that distinction is the whole
+        // check, and the registration now makes both
+        // (`walkway::crossed_hosts`), so the two share one derivation.
+        let ext = extended_line(&line.line, cos_lat);
+        let mut hosts: Vec<(u32, Vec<f64>)> = Vec::new();
+        for w in ext.windows(2) {
             let bbox = (
                 w[0].x.min(w[1].x),
                 w[0].y.min(w[1].y),
@@ -460,13 +495,24 @@ fn crossing_extent(m: &Model<'_>) -> Metric {
             for &e in scratch.iter() {
                 let (ci, ni) = edges[e as usize];
                 let c = &m.scene.corridors[ci as usize];
-                if segments_cross(w[0], w[1], c.nodes[ni as usize], c.nodes[ni as usize + 1]) {
-                    hosts.push(ci);
+                let (t0, t1) = (c.nodes[ni as usize], c.nodes[ni as usize + 1]);
+                if !segments_cross(w[0], w[1], t0, t1)
+                    || !walkway::incidence_ok(w[0], w[1], t0, t1, c.cos_lat)
+                {
+                    continue;
+                }
+                let mid = Coord { x: (w[0].x + w[1].x) * 0.5, y: (w[0].y + w[1].y) * 0.5 };
+                if !walkway::host_level_ok(m.solved, ci, mid, anchor) {
+                    continue;
+                }
+                let s = c.arc[ni as usize]
+                    + crate::scene::metric_len(c.nodes[ni as usize], mid, c.cos_lat);
+                match hosts.iter_mut().find(|(h, _)| *h == ci) {
+                    Some((_, arcs)) => arcs.push(s),
+                    None => hosts.push((ci, vec![s])),
                 }
             }
         }
-        hosts.sort_unstable();
-        hosts.dedup();
         if hosts.is_empty() {
             hostless += 1;
             continue; // crosses nothing: no carriageway owes it a chord
@@ -491,7 +537,7 @@ fn crossing_extent(m: &Model<'_>) -> Metric {
             for k in 0..n {
                 let f = (k as f64 + 0.5) / n as f64;
                 let p = Coord { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
-                if over_hosts(m, &hosts, p) {
+                if over_hosts(m, &hosts, anchor, p) {
                     run = 0;
                     continue;
                 }
@@ -566,14 +612,185 @@ fn crossing_extent(m: &Model<'_>) -> Metric {
     }
 }
 
-/// Whether `p` lies on the drawn carriageway of one of `hosts`.
-fn over_hosts(m: &Model<'_>, hosts: &[u32], p: Coord) -> bool {
-    hosts.iter().any(|&ci| {
+/// How far each registered chord lies from square across the street it
+/// crosses.
+fn crossing_skew(m: &Model<'_>) -> Metric {
+    let mut dist = Dist::new(0.0, 90.0);
+    let mut worst = Worst::new(Sense::HigherIsWorse, 8);
+    let mut dem = m.terrain.and_then(|p| crate::dem::Dem::open(p).ok());
+
+    // The same centerline index crossing_extent scans, for the same reason.
+    let mut grid = crate::assemble::grid::GridIndex::with_cell_m(64.0);
+    let mut edges: Vec<(u32, u32)> = Vec::new();
+    for (ci, c) in m.scene.corridors.iter().enumerate() {
+        if c.kind.prior().surface != Surface::Asphalt || corridor_half_width_m(c).is_none() {
+            continue;
+        }
+        for i in 0..c.nodes.len().saturating_sub(1) {
+            let (a, b) = (c.nodes[i], c.nodes[i + 1]);
+            grid.insert(
+                (a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)),
+                edges.len() as u32,
+            );
+            edges.push((ci as u32, i as u32));
+        }
+    }
+
+    /// How far from a centerline intersection a chord's midpoint may lie and
+    /// still be the chord that paints that crossing, in metres. Registration
+    /// moves chords *along* the mapped line, so the right chord is close;
+    /// pairing by "anything within reach" instead scored corner crossings
+    /// against the *other* street of their junction, which reads ~90° however
+    /// square both ladders are.
+    const PAIR_REACH_M: f64 = 15.0;
+
+    let mut scratch: Vec<u32> = Vec::new();
+    let mut chords = 0u64;
+    for (line, _) in m.scene.walks.lines() {
+        if !line.crosswalk || line.line.len() < 2 {
+            continue;
+        }
+        let Some(painted) = m.crossings.get(&line.source) else { continue };
+        let cos_lat = crate::scene::run_cos_lat(&line.line);
+        let anchor = dem
+            .as_mut()
+            .map(|d| walkway::crossing_level_anchor(&line.line, d, m.solved.z_ref));
+        // Every (tangent, place) where the mapped polyline properly crosses a
+        // drivable centerline at the crossing's own level: the streets this
+        // crossing crosses, each with the direction traffic runs where it is
+        // crossed. The level gate is what keeps a terrace crosswalk from
+        // being scored against the avenue below it, which read as 80–89° of
+        // skew on ladders that are square to their own street.
+        let ext = extended_line(&line.line, cos_lat);
+        let mut hosts: Vec<(f64, f64, Coord)> = Vec::new();
+        for w in ext.windows(2) {
+            let bbox = (
+                w[0].x.min(w[1].x),
+                w[0].y.min(w[1].y),
+                w[0].x.max(w[1].x),
+                w[0].y.max(w[1].y),
+            );
+            grid.query(bbox, &mut scratch);
+            for &e in scratch.iter() {
+                let (ci, ni) = edges[e as usize];
+                let c = &m.scene.corridors[ci as usize];
+                let (t0, t1) = (c.nodes[ni as usize], c.nodes[ni as usize + 1]);
+                if !segments_cross(w[0], w[1], t0, t1) {
+                    continue;
+                }
+                if !walkway::incidence_ok(w[0], w[1], t0, t1, c.cos_lat) {
+                    continue;
+                }
+                {
+                    let mid = Coord { x: (w[0].x + w[1].x) * 0.5, y: (w[0].y + w[1].y) * 0.5 };
+                    if !walkway::host_level_ok(m.solved, ci, mid, anchor) {
+                        continue;
+                    }
+                }
+                let (tx, ty) = ((t1.x - t0.x) * cos_lat, t1.y - t0.y);
+                let len = tx.hypot(ty);
+                if len > 0.0 {
+                    let mid = Coord { x: (w[0].x + w[1].x) * 0.5, y: (w[0].y + w[1].y) * 0.5 };
+                    hosts.push((tx / len, ty / len, mid));
+                }
+            }
+        }
+        // One chord answers for each crossed street: the one whose midpoint
+        // lies nearest the crossing point, with an end in the bbox.
+        let mut scored: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for &(tx, ty, at) in &hosts {
+            let mut best: Option<(f64, f64, f64, Coord)> = None; // (dist, ux, uy, mid)
+            for &(a, b) in painted.iter() {
+                if !m.bounds.contains(a.x, a.y) && !m.bounds.contains(b.x, b.y) {
+                    continue;
+                }
+                let (ux, uy) = ((b.x - a.x) * cos_lat, b.y - a.y);
+                let len = ux.hypot(uy);
+                if !(len > 0.0) {
+                    continue;
+                }
+                let mid = Coord { x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5 };
+                let d = crate::scene::metric_len(mid, at, cos_lat);
+                if d <= PAIR_REACH_M && best.as_ref().is_none_or(|(bd, ..)| d < *bd) {
+                    best = Some((d, ux / len, uy / len, mid));
+                }
+            }
+            let Some((_, ux, uy, mid)) = best else { continue };
+            scored.insert((mid.x.to_bits() as usize) ^ (mid.y.to_bits() as usize));
+            let skew = (ux * tx + uy * ty).abs().min(1.0).asin().to_degrees();
+            if std::env::var_os("ARPT_DEBUG_STRIP").is_some() {
+                eprintln!("[skew] {skew:6.1} deg, chord mid {:.6},{:.6}", mid.x, mid.y);
+            }
+            dist.push(skew);
+            if skew > CHORD_SKEW_DEG {
+                worst.offer(Offender {
+                    lon: mid.x,
+                    lat: mid.y,
+                    zoom: m.solved.z_ref,
+                    value: skew,
+                    note: format!(
+                        "the chord crosses its street {skew:.0}° off square — every \
+                         zebra bar is drawn {skew:.0}° off the traffic axis"
+                    ),
+                });
+            }
+        }
+        chords += scored.len() as u64;
+    }
+
+    Metric {
+        id: "street.crossing_skew".into(),
+        invariant: Invariant::I4,
+        title: "Crossing chord off square to the street it crosses".into(),
+        population: format!(
+            "One sample per (crossed centerline, chord) pair ({chords} chords scored): \
+             every place a crossing's own mapped polyline properly intersects a drivable \
+             centerline, scored against the crossing's *nearest* registered chord within \
+             15 m — the chord that paints that crossing point. Pairing by proximity alone \
+             instead scored corner crossings against the other street of their junction, \
+             which reads ~90° however square both ladders are. A chord near no \
+             intersection yields nothing — what it crosses is `street.crossing_extent`'s \
+             question — and a crossing whose polyline crosses no centerline is out of the \
+             population entirely."
+        ),
+        detail: format!(
+            "The angle between the chord and square-across the crossed centerline, in \
+             degrees. The bars are drawn perpendicular to the chord \
+             (`synth::markings::crossing_bars`), so this is exactly how far every bar in \
+             the ladder lies from longitudinal to traffic — the drawn symptom is a zebra \
+             rotated against its own street, unmistakable in plan. Obliquity can be real \
+             (a refuge island, a bent kerb), so the {CHORD_SKEW_DEG:.0}° gate is loose; \
+             what it catches is the chord *derivation* pairing kerb points that are not \
+             opposite each other, which skews the whole ladder however faithfully the \
+             crosswalk was mapped."
+        ),
+        sense: Sense::HigherIsWorse,
+        threshold: CHORD_SKEW_DEG,
+        skipped: (chords == 0)
+            .then(|| "no registered chord crosses a centerline in this extract".to_string()),
+        dist,
+        worst: worst.into_vec(),
+    }
+}
+
+/// Whether `p` lies on the drawn carriageway of one of `hosts`, at the
+/// crossing's own level — the same per-sample gate the registration marches
+/// with (`walkway::on_asphalt`): a host is a whole spliced corridor, and
+/// without the gate a hairpin's upper arm answers for the lower one.
+fn over_hosts(m: &Model<'_>, hosts: &[(u32, Vec<f64>)], anchor: Option<f64>, p: Coord) -> bool {
+    hosts.iter().any(|(ci, arcs)| {
+        let ci = *ci;
+        if !walkway::host_level_ok(m.solved, ci, p, anchor) {
+            return false;
+        }
         let c = &m.scene.corridors[ci as usize];
         let Some(half) = corridor_half_width_m(c) else { return false };
-        c.nodes
-            .windows(2)
-            .any(|w| point_to_segment_m(p, w[0], w[1], c.cos_lat) <= half)
+        (0..c.nodes.len().saturating_sub(1)).any(|i| {
+            arcs.iter().any(|&x| {
+                c.arc[i] <= x + walkway::CROSSING_ARC_WINDOW_M
+                    && c.arc[i + 1] >= x - walkway::CROSSING_ARC_WINDOW_M
+            }) && point_to_segment_m(p, c.nodes[i], c.nodes[i + 1], c.cos_lat) <= half
+        })
     })
 }
 

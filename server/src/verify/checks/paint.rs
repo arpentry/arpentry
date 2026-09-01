@@ -119,6 +119,22 @@ const REACH_FINE_M: f64 = 0.05;
 /// and 592 m under: a tunnel span's own paint riding the bore.
 const BURIED_M: f64 = 1.0;
 
+/// How close to a zebra bar's centerline a `marking` vertex may lie before
+/// the two painted systems are drawn in conflict. The ladder is periodic at
+/// `priors::CROSSING_BAR_M + CROSSING_GAP_M` ≈ 0.96 m, so every point inside
+/// its footprint lies within half a period — 0.48 m — of some bar's
+/// centerline, while a longitudinal line keeping a lawful stop margin before
+/// the ladder never comes closer than that margin. Half a metre therefore
+/// separates "inside the ladder" from "stopped short of it", with no band
+/// between for a threshold to argue over.
+const CROSSING_CONFLICT_M: f64 = 0.5;
+
+/// Height reach when pairing a marking vertex with a bar. The conflict is two
+/// coats on one asphalt; a centre line on a deck passing over an underpass
+/// crossing is two roads, and charging it would punish the grade separation
+/// for existing.
+const CROSSING_LEVEL_REACH_M: f64 = 1.5;
+
 /// The classes drawn as a pedestrian band from [`WALK_SURFACE_MIN_ZOOM`]
 /// ([`crate::priors::earns_walk_band`], read back from the archive's `class`
 /// alone). Restated here rather than derived, so a change to what earns a band
@@ -136,6 +152,9 @@ pub struct Paint {
     doubled: Dist,
     doubled_worst: Worst,
     doubled_seen: bool,
+    xing: Dist,
+    xing_worst: Worst,
+    xing_seen: bool,
 }
 
 impl Paint {
@@ -150,6 +169,9 @@ impl Paint {
             doubled: Dist::new(0.0, 1.0),
             doubled_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             doubled_seen: false,
+            xing: Dist::new(0.0, 1.0),
+            xing_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            xing_seen: false,
         }
     }
 
@@ -253,12 +275,81 @@ impl Paint {
             }
         }
     }
-}
 
+    /// Every owned vertex of every at-grade `marking` stroke on a tile that
+    /// draws a zebra ladder, scored 1 where it lies inside a ladder's
+    /// footprint — within [`CROSSING_CONFLICT_M`] of a `crossing` bar at its
+    /// own height — and 0 where it does not.
+    ///
+    /// The defect this keeps dead: the dash filter drops a dash only where
+    /// its midpoint lies on a junction *area*
+    /// (`synth::markings::midpoint_paved`), and a crossing is not an area —
+    /// so nothing made longitudinal paint yield to a crosswalk, and a centre
+    /// line rode straight through the ladder (first seen at 6.90896,46.44008,
+    /// a dash 0.28 m from the bars). The bake now drops any dash reaching
+    /// inside the ladder plus a stop margin (`markings::ChordIndex`); this
+    /// measures the drawn tile, so a regression anywhere in that plumbing —
+    /// chords not built, a feature filtering on the wrong index — reads here
+    /// rather than in a unit test's fixture.
+    fn visit_marking_on_crossing(&mut self, tile: &TileScene) {
+        let bars: Vec<[(f64, f64, f64); 2]> = tile
+            .lines
+            .iter()
+            .filter(|l| l.class == "crossing" && l.level == 0)
+            .flat_map(|l| l.parts.iter())
+            .flat_map(|p| p.windows(2).map(|w| [w[0], w[1]]))
+            .collect();
+        if bars.is_empty() {
+            return;
+        }
+        self.xing_seen = true;
+        for line in tile.lines.iter().filter(|l| l.class == "marking" && l.level == 0) {
+            for part in &line.parts {
+                for &(px, py, h) in part {
+                    if !tile.owns(px, py) {
+                        continue;
+                    }
+                    let (qx, qy) = (px * tile.scale.mx, py * tile.scale.my);
+                    let mut d = f64::INFINITY;
+                    for b in &bars {
+                        if (h - (b[0].2 + b[1].2) * 0.5).abs() > CROSSING_LEVEL_REACH_M {
+                            continue;
+                        }
+                        d = d.min(point_seg(
+                            qx,
+                            qy,
+                            b[0].0 * tile.scale.mx,
+                            b[0].1 * tile.scale.my,
+                            b[1].0 * tile.scale.mx,
+                            b[1].1 * tile.scale.my,
+                        ));
+                    }
+                    let on = d < CROSSING_CONFLICT_M;
+                    self.xing.push(if on { 1.0 } else { 0.0 });
+                    if on {
+                        let (lon, lat) = tile.lonlat(px, py);
+                        self.xing_worst.offer(Offender {
+                            lon,
+                            lat,
+                            zoom: tile.z,
+                            value: 1.0,
+                            note: format!(
+                                "a {:.2} m marking runs {d:.2} m from a zebra bar — \
+                                 longitudinal paint inside the ladder",
+                                line.width_m
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
 impl Check for Paint {
     fn visit(&mut self, tile: &TileScene, _opt: &Options) {
         self.visit_buried(tile);
         self.visit_doubled(tile);
+        self.visit_marking_on_crossing(tile);
         let marks: Vec<_> = tile.lines.iter().filter(|l| l.class == "marking").collect();
         if marks.is_empty() {
             return;
@@ -526,6 +617,42 @@ impl Check for Paint {
                 }),
                 dist: self.doubled,
                 worst: self.doubled_worst.into_vec(),
+            },
+            Metric {
+                id: "paint.marking_on_crossing".into(),
+                invariant: Invariant::I4,
+                title: "Longitudinal paint drawn through a zebra ladder".into(),
+                population: format!(
+                    "Every owned vertex of every at-grade `marking` stroke on a tile that \
+                     draws a `crossing` ladder at all, scored 1 where it lies within \
+                     {CROSSING_CONFLICT_M:.1} m of a zebra bar within \
+                     {CROSSING_LEVEL_REACH_M:.1} m of its own height, 0 where it does not — \
+                     so `over` is the share of marking paint standing inside a ladder. \
+                     Tiles with no ladder contribute nothing: with no crossing drawn there \
+                     is no conflict to measure. The height reach keeps a deck's centre line \
+                     over an underpass crossing out of the population — that is two roads, \
+                     not two coats."
+                ),
+                detail: format!(
+                    "Two painted systems contradicting each other on one asphalt: the dash \
+                     filter dropped a dash only where its midpoint lay on a junction area \
+                     (`synth::markings::midpoint_paved`), and a crossing is not an area, so \
+                     a centre line rode straight through the ladder — first measured as a \
+                     dash 0.28 m from the bars at a Territet junction mouth. The bake now \
+                     drops any dash reaching inside the ladder's footprint plus a stop \
+                     margin (`synth::markings::ChordIndex`); the {CROSSING_CONFLICT_M:.1} m \
+                     gate sits inside that margin, so anything it reads is the plumbing \
+                     having failed, not the threshold arguing with the rule. Half a metre \
+                     is also half the ladder's bar period: every point inside the ladder is \
+                     within it of some bar, so the measure cannot slip between bars."
+                ),
+                sense: Sense::HigherIsWorse,
+                threshold: 0.5,
+                skipped: (!self.xing_seen).then(|| {
+                    "no tile at this zoom draws a zebra ladder".to_string()
+                }),
+                dist: self.xing,
+                worst: self.xing_worst.into_vec(),
             },
         ]
     }

@@ -119,6 +119,41 @@ const CROSSING_MIN_CHORD_M: f64 = 1.5;
 /// the quantization of the kerb itself.
 const CROSSING_MIN_STUB_M: f64 = 0.4;
 
+/// How far a carriageway's solved height may lie from the crossing's own
+/// ground level and still be the street this at-grade crosswalk crosses, in
+/// metres.
+///
+/// Registration used to be plan-only, and Territet showed what that admits: a
+/// crosswalk on a terrace plan-crosses the avenue 13 m below it, a hairpin's
+/// upper arm lies 8 m over the lower arm the crossing was mapped on, and an
+/// underpass runs 4–6 m under the surface street at its portal — each one
+/// "asphalt under the line" to a plan test, and each one annexed into the
+/// chord (a 20 m ladder climbing 6.4 m over the portal at 6.9097,46.4376;
+/// `street.crossing_skew` reading 83–89° against streets the crossing never
+/// touches). Three metres passes a kerb, benching and a clearance-lifted
+/// approach on one street, and rejects every measured stacked-street
+/// separation, which starts at four.
+pub(crate) const CROSSING_LEVEL_M: f64 = 3.0;
+
+/// The smallest incidence at which a proper plan intersection counts as
+/// *crossing* a street, as the sine of the angle between the crossing line
+/// and the street's local tangent (0.342 = 20°). Real crosswalks cross at
+/// 60–90°; a mapped skew survives to ~40°. What this rejects is the
+/// geometric accident: at a hairpin the extended line grazes the far arm
+/// nearly parallel — a proper intersection by orientation signs, and a
+/// street the pedestrian never crosses. Measured before the gate: a 22 m
+/// ladder around the bend at 6.9118,46.4387, `street.crossing_skew` 88.8°.
+pub(crate) const CROSSING_MIN_INCIDENCE_SIN: f64 = 0.342;
+
+/// How far along a crossed street's own arc its asphalt answers the chord
+/// march, in metres each way from the crossing point. A crossing crosses one
+/// street at one station; the host is a whole spliced corridor, so without
+/// this window the asphalt of the same street two bends away — a hairpin's
+/// other arm, 80 m by road and 5 m in plan — answers as readily as the
+/// asphalt underfoot. Wide enough for the widest junction mouth a chord may
+/// legitimately traverse.
+pub(crate) const CROSSING_ARC_WINDOW_M: f64 = 25.0;
+
 /// One crosswalk, registered: the kerb-to-kerb chords its paint spans. The
 /// stubs — the stretches of the *mapped* line outside every chord — are
 /// returned by [`crossings`] as ordinary band segments instead, because they
@@ -148,12 +183,20 @@ pub struct CrossingPaint {
 /// A crossing that registers no chord — mapped across a path, or floating in
 /// data noise (R12) — contributes nothing here and keeps its cartographic
 /// stroke, which is exactly the previous behaviour.
-pub fn crossings(scene: &SceneGraph) -> (Vec<CrossingPaint>, Vec<SourceSeg>) {
+pub fn crossings(
+    scene: &SceneGraph,
+    solved: &SolvedModel,
+    terrain: Option<&std::path::Path>,
+) -> (Vec<CrossingPaint>, Vec<SourceSeg>) {
     let mut paints = Vec::new();
     let mut stubs = Vec::new();
     if std::env::var_os("ARPT_NO_CROSSING").is_some() {
         return (paints, stubs);
     }
+    // The level gate's ground reference. Absent (a flat synthetic world, a
+    // run without terrain) every level test passes and registration is the
+    // plan-only one it always was.
+    let mut dem = terrain.and_then(|p| crate::dem::Dem::open(p).ok());
     // Every drivable carriageway edge, indexed by plan position — the same
     // hosts `assemble::walks` attaches against, indexed the same way.
     let mut grid = crate::assemble::grid::GridIndex::with_cell_m(64.0);
@@ -205,7 +248,10 @@ pub fn crossings(scene: &SceneGraph) -> (Vec<CrossingPaint>, Vec<SourceSeg>) {
         // crossing runs *beside* answers as readily as one it spans — so a
         // crossing at a station forecourt annexed the service roads flanking it
         // and painted a ladder over a railway.
-        let hosts = crossed_hosts(&at, total, scene, &grid, &edges, &mut scratch);
+        let anchor =
+            dem.as_mut().map(|d| crossing_level_anchor(&line.line, d, solved.z_ref));
+        let hosts =
+            crossed_hosts(&at, total, scene, solved, anchor, &grid, &edges, &mut scratch);
         if hosts.is_empty() {
             continue; // crosses nothing: keep the stroke, draw nothing
         }
@@ -215,7 +261,7 @@ pub fn crossings(scene: &SceneGraph) -> (Vec<CrossingPaint>, Vec<SourceSeg>) {
         let mut open: Option<f64> = None;
         while t <= total + CROSSING_EXTEND_M + 1e-9 {
             let p = at(t);
-            let inside = on_asphalt(scene, &hosts, p);
+            let inside = on_asphalt(scene, solved, anchor, &hosts, p);
             match (inside, open) {
                 (true, None) => open = Some(t),
                 (false, Some(s)) => {
@@ -257,6 +303,55 @@ pub fn crossings(scene: &SceneGraph) -> (Vec<CrossingPaint>, Vec<SourceSeg>) {
     (paints, stubs)
 }
 
+/// The at-grade level a crossing is drawn at: the reference terrain at its
+/// mapped line, read as the median of three interior stations so one station
+/// hanging over a terrace edge cannot move it. This is the anchor every
+/// registration decision measures against — an at-grade crosswalk has one
+/// seat, and a carriageway that is not near it is not crossed however much of
+/// it lies under the line in plan.
+pub(crate) fn crossing_level_anchor(
+    line: &[Coord],
+    dem: &mut crate::dem::Dem,
+    z_ref: u8,
+) -> f64 {
+    let arc = crate::scene::cumulative_arc(line);
+    let total = *arc.last().unwrap_or(&0.0);
+    let mut hs: [f64; 3] = [0.25, 0.5, 0.75].map(|f| {
+        let p = point_on(line, &arc, total * f);
+        crate::solve::reference_surface(dem, z_ref, p.x, p.y)
+    });
+    hs.sort_by(f64::total_cmp);
+    hs[1]
+}
+
+/// Whether the carriageway `ci` is at the crossing's own level at plan point
+/// `p`. Permissive by construction where there is nothing to measure: no
+/// anchor (no DEM) or no solved profile leaves the plan test in charge,
+/// which is exactly the previous behaviour.
+pub(crate) fn host_level_ok(
+    solved: &SolvedModel,
+    ci: CorridorId,
+    p: Coord,
+    anchor: Option<f64>,
+) -> bool {
+    let (Some(anchor), Some(prof)) = (anchor, solved.profile(ci)) else {
+        return true;
+    };
+    (prof.height_at(p.x, p.y) - anchor).abs() <= CROSSING_LEVEL_M
+}
+
+/// Where two segments cross. Called only when [`segments_cross`] said they
+/// do, so the denominator cannot vanish other than by degeneracy, which
+/// falls back to an endpoint.
+fn seg_intersection(a0: Coord, a1: Coord, b0: Coord, b1: Coord) -> Coord {
+    let d = (a1.x - a0.x) * (b1.y - b0.y) - (a1.y - a0.y) * (b1.x - b0.x);
+    if d.abs() < 1e-18 {
+        return a0;
+    }
+    let t = ((b0.x - a0.x) * (b1.y - b0.y) - (b0.y - a0.y) * (b1.x - b0.x)) / d;
+    Coord { x: a0.x + (a1.x - a0.x) * t, y: a0.y + (a1.y - a0.y) * t }
+}
+
 /// The carriageways whose centerline this crossing's line properly intersects.
 ///
 /// **This is the predicate `verify::model::street::crossing_extent` scores
@@ -271,14 +366,25 @@ pub fn crossings(scene: &SceneGraph) -> (Vec<CrossingPaint>, Vec<SourceSeg>) {
 /// already walks. It cannot admit a parallel road: an extension is collinear
 /// with the end it leaves, so a corridor running alongside the crossing is no
 /// more crossed by the extension than by the line itself.
+///
+/// Plan intersection alone is not enough where streets stack: each candidate
+/// must also hold [`host_level_ok`] at the intersection — its solved height
+/// within [`CROSSING_LEVEL_M`] of the crossing's own ground — or a terrace
+/// crosswalk registers the avenue below it (see the constant's comment for
+/// the measured menagerie). The same gate runs per sample in [`on_asphalt`],
+/// because a host is a whole spliced corridor: a hairpin's two arms share one
+/// id, and only the sample-level test keeps the chord off the arm eight
+/// metres up the slope.
 fn crossed_hosts(
     at: &dyn Fn(f64) -> Coord,
     total: f64,
     scene: &SceneGraph,
+    solved: &SolvedModel,
+    anchor: Option<f64>,
     grid: &crate::assemble::grid::GridIndex,
     edges: &[(u32, u32)],
     scratch: &mut Vec<u32>,
-) -> Vec<u32> {
+) -> Vec<(u32, Vec<f64>)> {
     // The extended line as a polyline: both extensions plus the mapped nodes,
     // walked pairwise. `at` is the one parameterization the chord march uses,
     // so the two cannot disagree about where the crossing is.
@@ -291,7 +397,7 @@ fn crossed_hosts(
     pts.push(at(total));
     pts.push(at(total + CROSSING_EXTEND_M));
 
-    let mut hosts: Vec<u32> = Vec::new();
+    let mut hosts: Vec<(u32, Vec<f64>)> = Vec::new();
     for w in pts.windows(2) {
         let bbox =
             (w[0].x.min(w[1].x), w[0].y.min(w[1].y), w[0].x.max(w[1].x), w[0].y.max(w[1].y));
@@ -300,14 +406,37 @@ fn crossed_hosts(
             let (ci, ni) = edges[e as usize];
             let c = &scene.corridors[ci as usize];
             let (a, b) = (c.nodes[ni as usize], c.nodes[ni as usize + 1]);
-            if segments_cross(w[0], w[1], a, b) {
-                hosts.push(ci);
+            if !segments_cross(w[0], w[1], a, b)
+                || !incidence_ok(w[0], w[1], a, b, c.cos_lat)
+            {
+                continue;
+            }
+            let x = seg_intersection(w[0], w[1], a, b);
+            if !host_level_ok(solved, ci, x, anchor) {
+                continue;
+            }
+            let s = c.arc[ni as usize]
+                + crate::scene::metric_len(c.nodes[ni as usize], x, c.cos_lat);
+            match hosts.iter_mut().find(|(h, _)| *h == ci) {
+                Some((_, arcs)) => arcs.push(s),
+                None => hosts.push((ci, vec![s])),
             }
         }
     }
-    hosts.sort_unstable();
-    hosts.dedup();
     hosts
+}
+
+/// Whether two crossing segments meet at a believable incidence for a
+/// crosswalk: `|sin|` of the angle between them at least
+/// [`CROSSING_MIN_INCIDENCE_SIN`].
+pub(crate) fn incidence_ok(w0: Coord, w1: Coord, a: Coord, b: Coord, cos_lat: f64) -> bool {
+    let (ux, uy) = ((w1.x - w0.x) * cos_lat, w1.y - w0.y);
+    let (vx, vy) = ((b.x - a.x) * cos_lat, b.y - a.y);
+    let (lu, lv) = (ux.hypot(uy), vx.hypot(vy));
+    if !(lu > 0.0 && lv > 0.0) {
+        return false;
+    }
+    ((ux * vy - uy * vx) / (lu * lv)).abs() >= CROSSING_MIN_INCIDENCE_SIN
 }
 
 /// Whether two segments properly cross — opposite orientations both ways.
@@ -333,20 +462,34 @@ fn segments_cross(a0: Coord, a1: Coord, b0: Coord, b1: Coord) -> bool {
 /// Whether a point lies on a carriageway **this crossing crosses**: within the
 /// drawn half-width of the centerline of one of its registered hosts.
 ///
-/// Corridor-wide, matching `over_hosts` in the check exactly: a crossing that
-/// spans a street is entitled to that street's asphalt wherever the chord meets
-/// it, and holding the generator to a stricter rule than the instrument scores
-/// would shorten chords with nothing to catch it.
-fn on_asphalt(scene: &SceneGraph, hosts: &[u32], p: Coord) -> bool {
-    hosts.iter().any(|&ci| {
-        let c = &scene.corridors[ci as usize];
+/// Corridor-wide in plan, gated by level: a crossing that spans a street is
+/// entitled to that street's asphalt wherever the chord meets it *at the
+/// crossing's own level* — a host is a whole spliced corridor, so without the
+/// per-sample gate a hairpin's upper arm answers for the lower arm the
+/// crossing was mapped on. `verify::model::street` scores with the same gate.
+fn on_asphalt(
+    scene: &SceneGraph,
+    solved: &SolvedModel,
+    anchor: Option<f64>,
+    hosts: &[(u32, Vec<f64>)],
+    p: Coord,
+) -> bool {
+    hosts.iter().any(|(ci, arcs)| {
+        let c = &scene.corridors[*ci as usize];
         let Some(half) = super::carriageway::corridor_half_width_m(c) else { return false };
-        c.nodes.windows(2).any(|w| probe_seg_dist_m(p, w[0], w[1], c.cos_lat) <= half)
+        (0..c.nodes.len().saturating_sub(1)).any(|i| {
+            let (w0, w1) = (c.nodes[i], c.nodes[i + 1]);
+            let near_station = arcs.iter().any(|&x| {
+                c.arc[i] <= x + CROSSING_ARC_WINDOW_M
+                    && c.arc[i + 1] >= x - CROSSING_ARC_WINDOW_M
+            });
+            near_station && probe_seg_dist_m(p, w0, w1, c.cos_lat) <= half
+        }) && host_level_ok(solved, *ci, p, anchor)
     })
 }
 
 /// A point `over_m` past one end of a polyline, along that end's tangent.
-fn end_extension(line: &[Coord], cos_lat: f64, at_end: bool, over_m: f64) -> Coord {
+pub(crate) fn end_extension(line: &[Coord], cos_lat: f64, at_end: bool, over_m: f64) -> Coord {
     let (p, q) = if at_end {
         (line[line.len() - 1], line[line.len() - 2])
     } else {
@@ -1668,11 +1811,18 @@ fn weld_joints(bands: &mut [SourceSeg]) {
                     continue;
                 }
                 let t = &bands[j as usize];
-                // A chain-mate shares this exact endpoint bit-for-bit (both
-                // computed it from the same station); its height is this
-                // band's own and welding to it would be a no-op that dilutes
-                // the real neighbour's vote.
-                if t.a == p || t.b == p {
+                // A chain-mate shares this exact endpoint bit-for-bit AND the
+                // height there — both computed it from the same station, so
+                // its vote is a no-op that dilutes the real neighbour's. A
+                // band at the same point with a *different* height is the
+                // opposite of a chain-mate: it is the joint itself. The
+                // coordinate-only test excluded exactly the partner whenever
+                // the map was clean — an attached walkway and a hostless path
+                // meeting at one mapped node — which is how a 0.35 m step
+                // survived the weld at 6.90932,46.43744 with att_n 0.
+                if (t.a == p && (t.height_a - h).abs() <= 0.02)
+                    || (t.b == p && (t.height_b - h).abs() <= 0.02)
+                {
                     continue;
                 }
                 let (d, tt) = point_to_seg(p, t.a, t.b, s.cos_lat);
@@ -1688,6 +1838,21 @@ fn weld_joints(bands: &mut [SourceSeg]) {
                 } else {
                     oth_sum += th;
                     oth_n += 1;
+                }
+            }
+            if let Some(at) = std::env::var_os("ARPT_WELD_AT") {
+                if let Some((plon, plat)) = at
+                    .to_str()
+                    .and_then(|v| v.split_once(','))
+                    .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))
+                {
+                    let d = crate::scene::metric_len(p, Coord { x: plon, y: plat }, s.cos_lat);
+                    if d < 3.0 {
+                        eprintln!(
+                            "[weld] end {which} of band {i} at {:.6},{:.6} h {h:.2} att_n {att_n} oth_n {oth_n}",
+                            p.x, p.y
+                        );
+                    }
                 }
             }
             // The joint's authority: the attached bands where any stands
@@ -2026,6 +2191,26 @@ mod tests {
     use super::*;
     use crate::scene::Corridor;
 
+    #[test]
+    fn level_gate_is_permissive_only_when_there_is_nothing_to_measure() {
+        // No anchor, or no profile: the plan test stays in charge. With both
+        // present the gate is a hard CROSSING_LEVEL_M band.
+        let solved = SolvedModel::empty(16);
+        let p = Coord { x: 6.9, y: LAT };
+        assert!(host_level_ok(&solved, 0, p, None));
+        assert!(host_level_ok(&solved, 0, p, Some(390.0)), "no profile: permissive");
+    }
+
+    #[test]
+    fn seg_intersection_finds_the_crossing_point() {
+        let a0 = Coord { x: 0.0, y: -1.0 };
+        let a1 = Coord { x: 0.0, y: 1.0 };
+        let b0 = Coord { x: -1.0, y: 0.5 };
+        let b1 = Coord { x: 1.0, y: 0.5 };
+        let x = seg_intersection(a0, a1, b0, b1);
+        assert!((x.x - 0.0).abs() < 1e-12 && (x.y - 0.5).abs() < 1e-12);
+    }
+
     const LAT: f64 = 46.44;
 
     fn east(m: f64) -> f64 {
@@ -2262,8 +2447,11 @@ mod tests {
                 point_on(&across, &arc, t)
             }
         };
-        let hosts = crossed_hosts(&at, total, &scene, &grid, &edges, &mut scratch);
-        assert_eq!(hosts, vec![0], "a line across the street crosses it");
+        let hosts = crossed_hosts(&at, total, &scene, &SolvedModel::empty(16), None, &grid, &edges, &mut scratch);
+        assert_eq!(hosts.len(), 1, "a line across the street crosses it: {hosts:?}");
+        assert_eq!(hosts[0].0, 0);
+        // The intersection sits mid-street: 25 m along a 50 m corridor.
+        assert!((hosts[0].1[0] - 25.0).abs() < 1.0, "arc {:?}", hosts[0].1);
 
         // Beside it: a line parallel to the street, one metre off its
         // centerline, so every point of it is on the asphalt and none of it
@@ -2284,10 +2472,10 @@ mod tests {
             }
         };
         assert!(
-            on_asphalt(&scene, &[0], at(total * 0.5)),
+            on_asphalt(&scene, &SolvedModel::empty(16), None, &[(0, vec![25.0])], at(total * 0.5)),
             "the fixture must lie on the asphalt, or it proves nothing"
         );
-        let hosts = crossed_hosts(&at, total, &scene, &grid, &edges, &mut scratch);
+        let hosts = crossed_hosts(&at, total, &scene, &SolvedModel::empty(16), None, &grid, &edges, &mut scratch);
         assert!(hosts.is_empty(), "a line beside the street crosses nothing: {hosts:?}");
     }
 
