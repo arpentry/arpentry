@@ -437,6 +437,19 @@ impl Check for Handoff {
                     * STEP_M;
                 let open = open.min(bare);
                 self.0.open.push(open);
+                // ARPT_DEBUG_BARE: the march's exact geometry at every open
+                // offender — start, outward direction, the last near-height
+                // asphalt and the deck — so a probe can stand *inside* the
+                // stretch instead of guessing its bearing.
+                if open > BARE_M && std::env::var_os("ARPT_DEBUG_BARE").is_some() {
+                    let (lon0, lat0) = tile.lonlat(px, py);
+                    let (lon1, lat1) = tile.lonlat(px + ux * deck_d, py + uy * deck_d);
+                    let (lonm, latm) =
+                        tile.lonlat(px + ux * 0.5 * (last_paved + deck_d), py + uy * 0.5 * (last_paved + deck_d));
+                    eprintln!(
+                        "[bare] {open:.1} m open of {bare:.1} bare: edge {lon0:.6},{lat0:.6} ->                          deck {lon1:.6},{lat1:.6} (last paved {last_paved:.1} m, mid                          {lonm:.6},{latm:.6})"
+                    );
+                }
                 if open > BARE_M {
                     let (lon, lat) = tile.lonlat(px, py);
                     self.0.open_worst.offer(Offender {
