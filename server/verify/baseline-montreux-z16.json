@@ -212,6 +212,79 @@
       "worst": 11.499999999999975
     },
     {
+      "id": "seam.band_deck_open",
+      "invariant": "I2",
+      "median": 0.006666666666667709,
+      "offenders": [
+        {
+          "lat": 46.43728491850197,
+          "lon": 6.931814979761839,
+          "note": "11.40 m of the 11.50 m between the asphalt band and the                              unclassified deck is open ground no road covers at any height",
+          "value": 11.4,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45347397774458,
+          "lon": 6.89659615047276,
+          "note": "11.40 m of the 11.50 m between the asphalt band and the                              motorway deck is open ground no road covers at any height",
+          "value": 11.4,
+          "zoom": 16
+        },
+        {
+          "lat": 46.469421638175845,
+          "lon": 6.868331786245108,
+          "note": "11.10 m of the 11.20 m between the ballast band and the                              narrow_gauge deck is open ground no road covers at any height",
+          "value": 11.100000000000001,
+          "zoom": 16
+        },
+        {
+          "lat": 46.453620116226375,
+          "lon": 6.897128904238343,
+          "note": "10.70 m of the 10.80 m between the asphalt band and the                              motorway deck is open ground no road covers at any height",
+          "value": 10.700000000000001,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45362854003906,
+          "lon": 6.897137789055705,
+          "note": "9.70 m of the 9.80 m between the asphalt band and the                              motorway deck is open ground no road covers at any height",
+          "value": 9.700000000000001,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45347770769149,
+          "lon": 6.896560862660408,
+          "note": "9.50 m of the 9.60 m between the asphalt band and the                              motorway deck is open ground no road covers at any height",
+          "value": 9.5,
+          "zoom": 16
+        },
+        {
+          "lat": 46.44366530701518,
+          "lon": 6.934486124664545,
+          "note": "8.70 m of the 8.80 m between the asphalt band and the                              unclassified deck is open ground no road covers at any height",
+          "value": 8.700000000000001,
+          "zoom": 16
+        },
+        {
+          "lat": 46.45363851450384,
+          "lon": 6.897148350253701,
+          "note": "8.70 m of the 8.80 m between the asphalt band and the                              motorway deck is open ground no road covers at any height",
+          "value": 8.700000000000001,
+          "zoom": 16
+        }
+      ],
+      "population": "Every boundary edge of a drawn at-grade surface band, inside the tile proper, that a solved bridge deck continues: marching out along the edge's own outward normal reaches a deck whose top is at the band's height there, within 1.0 m — at the *top*, because a band at soffit level is passing under a low bridge, not handing over to it. 802 edges on asphalt and 250 on ballast; 458 more were skipped because a deck already covers the band's edge in plan, which is an overlap rather than a handoff (`order.deck_above_carriageway`). One abutment contributes several edges, so the population is weighted by how wide the joint is. 171 of 172 drawn decks name the band they continue (`band_class`); the rest fall back to re-deriving the modality from the road class, which is what an archive tiled before that property gives. The band's *interior* mesh is an inset of the paved region and the outer 0.35 m is the separate rim, so the march anchors on the interior edge but counts interior and rim alike as surface: what is reported is the distance between the last drawn surface and the first drawn deck. Only surface within 2.5 m of the edge's own height, and of the band's own modality, counts as that band continuing — a region metres below is a road passing under the joint, and a road *approaching* its underpass passes through the height slab too, so without the modality test the march walks the step's reference down the other road's ramp. Counting either shrinks the gap it lies in and hands the step an unrelated height to compare against. Coverage limits, all of them silent otherwise: bores are excluded, since a bore's drawn top is its roof rather than a road surface — a portal needs its own instrument; fitted decks are excluded, since their ends are deliberately walked to seat them (`contact.deck_seat`); a joint that steps by more than a deck thickness plus the slack no longer reads as a handoff and drops out of the population rather than being counted as a huge one; and a deck whose approach band is missing altogether has no edge to anchor on and contributes nothing.",
+      "samples": 1052,
+      "sense": "higher_is_worse",
+      "skipped": null,
+      "tail": 11.406666666666666,
+      "threshold": 0.15,
+      "title": "The bare stretch no road covers at any height",
+      "violation_pct": 7.509505703422053,
+      "violations": 79,
+      "worst": 11.4
+    },
+    {
       "id": "seam.band_deck_step",
       "invariant": "I2",
       "median": 0.006666666666667709,
@@ -1129,24 +1202,24 @@
           "zoom": 16
         },
         {
+          "lat": 46.43946647644043,
+          "lon": 6.9158935546875,
+          "note": "2 neighbouring tiles read 34026/49676 sSome(3) 539.516 / 34027/49676 sSome(4) 539.556 (lattice 1114996736,1627786240)",
+          "value": 0.03997802734375,
+          "zoom": 16
+        },
+        {
           "lat": 46.44390377216041,
           "lon": 6.888427734375,
-          "note": "2 neighbouring tiles read 34021/49677 sSome(0) 402.363 / 34022/49677 sSome(0) 402.426 (lattice 1114832896,1627839179)",
-          "value": 0.063018798828125,
+          "note": "2 neighbouring tiles read 34021/49677 sSome(0) 402.391 / 34022/49677 sSome(0) 402.426 (lattice 1114832896,1627839179)",
+          "value": 0.035003662109375,
           "zoom": 16
         },
         {
           "lat": 46.443903939798474,
           "lon": 6.888427734375,
-          "note": "2 neighbouring tiles read 34021/49677 sSome(0) 402.362 / 34022/49677 sSome(0) 402.405 (lattice 1114832896,1627839181)",
-          "value": 0.042999267578125,
-          "zoom": 16
-        },
-        {
-          "lat": 46.43946647644043,
-          "lon": 6.9158935546875,
-          "note": "2 neighbouring tiles read 34026/49676 sSome(3) 539.516 / 34027/49676 sSome(4) 539.556 (lattice 1114996736,1627786240)",
-          "value": 0.03997802734375,
+          "note": "2 neighbouring tiles read 34021/49677 sSome(0) 402.390 / 34022/49677 sSome(0) 402.405 (lattice 1114832896,1627839181)",
+          "value": 0.0150146484375,
           "zoom": 16
         },
         {
@@ -1942,8 +2015,8 @@
       "tail": 0.6558333333333334,
       "threshold": 0.1,
       "title": "Cross-fall of a drawn pedestrian band",
-      "violation_pct": 2.0860646424388625,
-      "violations": 9547,
+      "violation_pct": 2.08584613771042,
+      "violations": 9546,
       "worst": 6.683951465794507
     },
     {
@@ -2645,7 +2718,7 @@
       6.9818115234375,
       46.47216796875
     ],
-    "commit": "3182f3b",
+    "commit": "4536ed9",
     "max_tiles": 4096,
     "spacing_m": 1.0,
     "tiles": 621,

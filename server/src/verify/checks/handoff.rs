@@ -147,6 +147,8 @@ const KERB_PROBE_FRAC: f64 = 0.5;
 /// One measured handoff.
 struct Handoffs {
     bare: Dist,
+    open: Dist,
+    open_worst: Worst,
     bare_worst: Worst,
     step: Dist,
     step_worst: Worst,
@@ -175,6 +177,8 @@ impl Handoff {
     pub fn new(opt: &Options) -> Handoff {
         Handoff(Handoffs {
             bare: Dist::metres(),
+            open: Dist::metres(),
+            open_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             bare_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             step: Dist::metres(),
             step_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
@@ -366,6 +370,11 @@ impl Check for Handoff {
 
                 let (mut last_paved, mut paved_h) = (0.0f64, h);
                 let mut found: Option<(f64, f64, &str)> = None;
+                // Which march steps any drawn road surface covers in plan at
+                // *any* height — the split between drawn ground the eye can
+                // see the world through and a stretch a grade-separated road
+                // closes from another rung (its own hole cut, its own aprons).
+                let mut covered: Vec<bool> = Vec::new();
                 let mut d = STEP_M;
                 while d <= REACH_M {
                     let q = (px + ux * d, py + uy * d);
@@ -379,6 +388,9 @@ impl Check for Handoff {
                         found = Some((d, top, class));
                         break;
                     }
+                    covered.push(
+                        tile.roads.iter().any(|m| m.mesh.height_at(q.0, q.1).is_some()),
+                    );
                     // Surface at this sample, but only surface that could be
                     // *this* band continuing. A drawn region metres below the
                     // edge is another road passing under the joint, and
@@ -413,6 +425,31 @@ impl Check for Handoff {
                 let step = (top - paved_h).abs();
                 self.0.bare.push(bare);
                 self.0.step.push(step);
+                // The open metres of the bare stretch: steps between the last
+                // near-height asphalt and the deck that no drawn road surface
+                // covers at any height.
+                let open = covered
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &c)| (STEP_M * (k + 1) as f64, c))
+                    .filter(|&(sd, c)| sd > last_paved && sd < deck_d && !c)
+                    .count() as f64
+                    * STEP_M;
+                let open = open.min(bare);
+                self.0.open.push(open);
+                if open > BARE_M {
+                    let (lon, lat) = tile.lonlat(px, py);
+                    self.0.open_worst.offer(Offender {
+                        lon,
+                        lat,
+                        zoom: tile.z,
+                        value: open,
+                        note: format!(
+                            "{open:.2} m of the {bare:.2} m between the {} band and the                              {class} deck is open ground no road covers at any height",
+                            if ballast { "ballast" } else { "asphalt" }
+                        ),
+                    });
+                }
                 // Is a kerb line drawn across this joint? The probe stands in
                 // the middle of the rim strip — between the interior mesh's
                 // inset edge, which is where this march started, and the band's
@@ -528,6 +565,32 @@ impl Check for Handoff {
                 worst: s.bare_worst.into_vec(),
             },
             Metric {
+                id: "seam.band_deck_open".into(),
+                invariant: Invariant::I2,
+                title: "The bare stretch no road covers at any height".into(),
+                population: population.clone(),
+                detail: format!(
+                    "The same march as seam.band_deck_bare, keeping only the metres no drawn \
+                     road surface covers in plan at *any* height. The bare metric's height \
+                     window is deliberate — a region metres below the edge is another road \
+                     passing under the joint — but at a grade-separated site that discipline \
+                     charges the senior road's own footprint as bare ground, although the \
+                     world there is closed by that road's surface, its hole and its aprons \
+                     (I9). This is the open-ground half: the stretch the eye genuinely sees \
+                     hillside through, and the population any mechanism should be judged on. \
+                     Diagnosed 2026-09-02 after three refuted fixes — the junction weld (its \
+                     sites are disjoint), the span partition (the union region covers the \
+                     worst site end to end), and the one-mesh (ARPT_NO_ONE_MESH reads the \
+                     same rate) — and the split is what says which family remains \
+                     ({BARE_M:.2} m gate)."
+                ),
+                sense: Sense::HigherIsWorse,
+                threshold: BARE_M,
+                skipped: skipped.clone(),
+                dist: s.open,
+                worst: s.open_worst.into_vec(),
+            },
+            Metric {
                 id: "seam.band_deck_step".into(),
                 invariant: Invariant::I2,
                 title: "Road surface stepping where the band hands over to the deck".into(),
@@ -628,7 +691,9 @@ mod tests {
         let mut c = Box::new(Handoff::new(&Options::default()));
         c.visit(&tile(roads), &Options::default());
         let m = c.finish();
-        (m[0].dist.max(), m[1].dist.max(), m[0].dist.count())
+        assert_eq!(m[1].id, "seam.band_deck_open");
+        assert_eq!(m[2].id, "seam.band_deck_step");
+        (m[0].dist.max(), m[2].dist.max(), m[0].dist.count())
     }
 
     /// Metres per unit of longitude on the test tile.
