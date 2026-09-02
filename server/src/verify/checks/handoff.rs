@@ -27,6 +27,22 @@
 //! band at soffit level is in an underpass whose clearance is somebody
 //! else's defect (`order.grade_stack`, `clearance.deck_over_ground`).
 //!
+//! Height alone is not enough to say "continues": the silhouette yields the
+//! band's *side* edges too, and a march off one of those runs transverse to
+//! the corridor — where twin alignments run side by side (the A9's two
+//! carriageways, paired rail tracks) it strikes the *neighbouring*
+//! alignment's own bridge, in reach and at matching height, and the
+//! never-paved median between the two reads as a handover gap; struck
+//! obliquely, the neighbour's deck *end* is even entered along its own axis.
+//! So the pairing tests the march's direction against both footprints
+//! ([`entry_extents`]): the band must be **left through an end** — its
+//! footprint extending behind the march at least half as far as it runs
+//! across it — and the deck **entered, not struck broadside** — its
+//! footprint continuing ahead at least half as far as it extends across.
+//! A near-square short span reads comparable extents both ways and stays
+//! paired; the band side of the test has no such case, because an approach
+//! band is corridor-shaped.
+//!
 //! Two quantities come out of that march, with different causes and different
 //! fixes:
 //!
@@ -144,6 +160,16 @@ const SLAB_MAX_M: f64 = crate::priors::DECK_THICKNESS_M + CARRIED_SLACK_M;
 /// boundaries' quantization.
 const KERB_PROBE_FRAC: f64 = 0.5;
 
+/// How far the entry probe follows the deck's footprint in each direction, in
+/// metres. Two reaches: enough to tell a structure running past from one
+/// being entered, local enough that a viaduct's curve half a bridge away has
+/// no vote.
+const AXIS_SPAN_M: f64 = 2.0 * REACH_M;
+
+/// Entry probe resolution, in metres. It measures extents that matter at the
+/// scale of a carriageway width, not a rim.
+const AXIS_STEP_M: f64 = 0.5;
+
 /// One measured handoff.
 struct Handoffs {
     bare: Dist,
@@ -211,6 +237,53 @@ fn grown_box(m: &SurfaceMesh, tile: &TileScene, pad_m: f64) -> [f64; 4] {
 
 fn in_box(b: &[f64; 4], x: f64, y: f64) -> bool {
     x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]
+}
+
+/// How far a mesh's drawn footprint keeps answering from `q` along a
+/// direction (`u`) versus across it (`perp`, probed both ways), in metres —
+/// the directional evidence behind both halves of the pairing.
+///
+/// The pairing rule that keeps a *parallel* structure out. A band's
+/// silhouette yields side edges as well as end edges, and a march off a side
+/// edge runs transverse to the corridor — across the A9's median it found the
+/// twin carriageway's own bridge within reach and at matching height, and
+/// charged the never-paved ground between the two alignments as an 11 m
+/// handover gap (the whole of the bare tail's worst; twin rail tracks scored
+/// the same way). So both footprints are asked about the march's direction:
+/// the *band* must extend behind the march — an edge the band runs beside
+/// rather than up to is a kerb line, not an abutment, whatever stands within
+/// reach of it — and the *deck* must continue ahead of the march, because a
+/// deck being continued onto extends ahead and one road-width across, while
+/// a parallel neighbour extends one road-width ahead and far to both sides.
+///
+/// The verdict is a ratio, not an angle: a pairing fails only when the
+/// across extent is more than twice the along extent. A genuine short span
+/// struck end-on — a 7 m bridge over a stream is one carriageway wide, so
+/// its footprint is near-square and says nothing about direction — reads
+/// comparable extents both ways and stays paired; an approach band is
+/// corridor-shaped and has no such case. The probe is the same
+/// point-in-footprint query the march itself trusts, so it holds for any
+/// mesh that answers one — a swept solid has no boundary silhouette to read
+/// an axis from.
+fn entry_extents(
+    m: &SurfaceMesh,
+    q: (f64, f64),
+    u: (f64, f64),
+    perp: (f64, f64),
+) -> (f64, f64) {
+    let extent = |dx: f64, dy: f64| -> f64 {
+        let mut d = AXIS_STEP_M;
+        while d <= AXIS_SPAN_M {
+            if m.height_range_at(q.0 + dx * d, q.1 + dy * d).is_none() {
+                break;
+            }
+            d += AXIS_STEP_M;
+        }
+        d - AXIS_STEP_M
+    };
+    let along = extent(u.0, u.1);
+    let across = extent(perp.0, perp.1) + extent(-perp.0, -perp.1);
+    (along, across)
 }
 
 /// Whether a drawn structure's class names a railway.
@@ -333,7 +406,22 @@ impl Check for Handoff {
                 let (ux, uy) = (nx / mx, ny / my);
                 let h = 0.5 * (az + bz);
 
-                let carried = |q: (f64, f64)| -> Option<(f64, &str)> {
+                // Left through an end, not walked out the side: the band's
+                // own footprint must extend *behind* the march. An edge the
+                // band runs beside is kerb, and whatever stands within reach
+                // of it — a twin alignment's bridge across the median — is a
+                // neighbour, not the surface this band becomes.
+                let behind = entry_extents(
+                    &band.mesh,
+                    (px - ux * OVERLAP_PROBE_M, py - uy * OVERLAP_PROBE_M),
+                    (-ux, -uy),
+                    (-ny / mx, nx / my),
+                );
+                if behind.1 > 2.0 * behind.0 {
+                    continue;
+                }
+
+                let carried = |q: (f64, f64)| -> Option<(f64, &str, (f64, f64))> {
                     for ((class, rail, m), b) in decks.iter().zip(&boxes) {
                         if !in_box(b, q.0, q.1) || *rail != ballast {
                             continue; // a road does not hand over to a railway
@@ -344,9 +432,17 @@ impl Check for Handoff {
                             }
                             // At the *top*: a band at soffit level is passing
                             // underneath, not handing over.
-                            if (h - hi).abs() <= CARRIED_SLACK_M {
-                                return Some((hi, class));
+                            if (h - hi).abs() > CARRIED_SLACK_M {
+                                continue;
                             }
+                            // Entered along the deck, not struck broadside:
+                            // a parallel structure across a median is not
+                            // the continuation of this band.
+                            let ext = entry_extents(m, q, (ux, uy), (-ny / mx, nx / my));
+                            if ext.1 > 2.0 * ext.0 {
+                                continue;
+                            }
+                            return Some((hi, class, ext));
                         }
                     }
                     None
@@ -369,7 +465,7 @@ impl Check for Handoff {
                 }
 
                 let (mut last_paved, mut paved_h) = (0.0f64, h);
-                let mut found: Option<(f64, f64, &str)> = None;
+                let mut found: Option<(f64, f64, &str, (f64, f64))> = None;
                 // Which march steps any drawn road surface covers in plan at
                 // *any* height — the split between drawn ground the eye can
                 // see the world through and a stretch a grade-separated road
@@ -384,8 +480,8 @@ impl Check for Handoff {
                     if !tile.owns(q.0, q.1) {
                         break;
                     }
-                    if let Some((top, class)) = carried(q) {
-                        found = Some((d, top, class));
+                    if let Some((top, class, ext)) = carried(q) {
+                        found = Some((d, top, class, ext));
                         break;
                     }
                     covered.push(
@@ -414,7 +510,7 @@ impl Check for Handoff {
                     }
                     d += STEP_M;
                 }
-                let Some((deck_d, top, class)) = found else { continue };
+                let Some((deck_d, top, class, (along, across))) = found else { continue };
                 if ballast {
                     self.0.ballast += 1;
                 } else {
@@ -447,7 +543,7 @@ impl Check for Handoff {
                     let (lonm, latm) =
                         tile.lonlat(px + ux * 0.5 * (last_paved + deck_d), py + uy * 0.5 * (last_paved + deck_d));
                     eprintln!(
-                        "[bare] {open:.1} m open of {bare:.1} bare: edge {lon0:.6},{lat0:.6} ->                          deck {lon1:.6},{lat1:.6} (last paved {last_paved:.1} m, mid                          {lonm:.6},{latm:.6})"
+                        "[bare] {open:.1} m open of {bare:.1} bare: edge {lon0:.6},{lat0:.6} ->                          deck {lon1:.6},{lat1:.6} (last paved {last_paved:.1} m, mid                          {lonm:.6},{latm:.6}, along {along:.1}, across {across:.1})"
                     );
                 }
                 if open > BARE_M {
@@ -541,7 +637,11 @@ impl Check for Handoff {
              joint, and a road *approaching* its underpass passes through the height slab too, \
              so without the modality test the march walks the step's reference down the other \
              road's ramp. Counting either shrinks the gap it lies in and hands the step an \
-             unrelated height to compare against. \
+             unrelated height to compare against. The deck must also be *entered* rather than \
+             struck broadside — its footprint continuing ahead of the march at least half as \
+             far as it extends across it — because a march off the band's *side* silhouette \
+             strikes a parallel twin alignment's bridge across the median, at matching height, \
+             and the never-paved median is not a handover gap. \
              \
              Coverage limits, all of them silent otherwise: bores are excluded, since a bore's \
              drawn top is its roof rather than a road surface — a portal needs its own \
@@ -709,9 +809,27 @@ mod tests {
         (m[0].dist.max(), m[2].dist.max(), m[0].dist.count())
     }
 
+    /// A flat quad with an explicit plan footprint, for geometry the east-west
+    /// `quad` cannot state: a parallel neighbour, a square span.
+    fn quad_at(class: &str, level: i64, x0: f64, x1: f64, y0: f64, y1: f64, h: f32) -> RoadMesh {
+        let mesh = SurfaceMesh::from_parts(
+            vec![x0 as f32, x1 as f32, x1 as f32, x0 as f32],
+            vec![y0 as f32, y0 as f32, y1 as f32, y1 as f32],
+            vec![h; 4],
+            vec![0, 1, 2, 0, 2, 3],
+        )
+        .expect("a quad meshes");
+        RoadMesh { class: class.to_string(), level, sheet: None, band: String::new(), fades: false, mesh }
+    }
+
     /// Metres per unit of longitude on the test tile.
     fn mx() -> f64 {
         Scale::of(&Bounds::of_tile(16, 34028, 49670)).mx
+    }
+
+    /// Metres per unit of latitude on the test tile.
+    fn my() -> f64 {
+        Scale::of(&Bounds::of_tile(16, 34028, 49670)).my
     }
 
     #[test]
@@ -750,6 +868,38 @@ mod tests {
         ]);
         let step = step.expect("step");
         assert!((step - 0.6).abs() < 0.05, "0.60 m step measured as {step}");
+    }
+
+    #[test]
+    fn a_parallel_deck_across_a_median_is_not_a_handover() {
+        // The twin-alignment shape: a band running east, and a long deck also
+        // running east a few metres to its north — one carriageway at grade,
+        // its twin on a bridge at the same height. The band's *side* edge
+        // marches north across the median and strikes the deck broadside; the
+        // axis test must refuse the pairing, or the never-paved median scores
+        // as a handover gap.
+        let gap = 4.0 / my();
+        let (bare, _, n) = measure(vec![
+            quad("road_surface", 0, 0.4, 0.5, 400.0),
+            quad_at("residential", 1, 0.3, 0.7, 0.51 + gap, 0.53 + gap, 400.0),
+        ]);
+        assert_eq!(n, 0, "a broadside strike was paired: bare {bare:?}");
+    }
+
+    #[test]
+    fn a_square_span_with_no_axis_is_still_paired() {
+        // A genuine short span — one carriageway wide, as long as it is wide —
+        // has a near-square footprint that cannot say which way "along" is.
+        // The axis test abstains and the flush joint pairs as before.
+        let edge = 0.5;
+        let (long, wide) = (20.0 / mx(), 10.0 / my());
+        let (bare, step, n) = measure(vec![
+            quad("road_surface", 0, 0.4, edge, 400.0),
+            quad_at("residential", 1, edge, edge + long, 0.5 - wide, 0.5 + wide, 400.0),
+        ]);
+        assert!(n > 0, "the square span was not paired at all");
+        assert!(bare.expect("bare") <= BARE_M, "flush square span read {bare:?} of bare");
+        assert!(step.expect("step") <= STEP_BREAK_M, "flush square span read {step:?} of step");
     }
 
     /// A quad with distinct top and soffit sheets, so `height_range_at`
