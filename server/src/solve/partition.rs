@@ -81,7 +81,7 @@ const FLANK_STEP_M: f64 = 16.0;
 /// the deck standoff below the road says the "ground" is the deck itself
 /// (§7's F4 family, measured 2026-08-30 as grade_stack 9.5 → 60.7 % when
 /// trimmed without this guard).
-fn dem_blind(
+pub(crate) fn dem_blind(
     profile: &Profile,
     a0: f64,
     a1: f64,

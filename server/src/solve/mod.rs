@@ -19,6 +19,7 @@
 pub mod consistency;
 pub mod crossings;
 pub mod graph;
+pub mod joints;
 pub mod partition;
 pub mod portals;
 pub mod profile;
@@ -255,6 +256,13 @@ fn reconcile_stratum(
             divergence.push(PartitionDivergence { corridor: c.id, lon: pt.x, lat: pt.y, d });
         }
         c.spans = reconciled;
+    }
+    // The junction-joint weld (§4.5: at a junction two corridors share, the
+    // span truth is joint): grow-only toward plan facts, profile mutations
+    // coupled, pass-1 only like the rest of the fold. Before the carry-stub
+    // weld, which a grow can only make more eligible.
+    if pass == 0 && std::env::var_os("ARPT_JOINT_WELD").is_some() {
+        joints::weld_junction_joints(scene, profiles, stratum, flank, debug_annex);
     }
     carry_stubs_welded_onto_decks(scene, profiles, stratum, debug_annex);
 }

@@ -508,7 +508,7 @@ pub fn carry_whole_corridor(
 /// Extends span `i` forward to `target`, eating the grade spans in the way.
 /// A mapped bridge or bore is a boundary the annex never moves. Returns
 /// whether the span's end actually shifted.
-fn grow_high(out: &mut [Span], i: usize, target: f64) -> bool {
+pub(crate) fn grow_high(out: &mut [Span], i: usize, target: f64) -> bool {
     if target <= out[i].arc1 {
         return false;
     }
@@ -534,7 +534,7 @@ fn grow_high(out: &mut [Span], i: usize, target: f64) -> bool {
 }
 
 /// [`grow_high`] mirrored onto the low side.
-fn grow_low(out: &mut [Span], i: usize, target: f64) -> bool {
+pub(crate) fn grow_low(out: &mut [Span], i: usize, target: f64) -> bool {
     if target >= out[i].arc0 {
         return false;
     }
