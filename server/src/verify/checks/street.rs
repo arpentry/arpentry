@@ -108,6 +108,13 @@ const WALK_STEP_M: f64 = 1.0;
 /// worth drawing at all.
 const WALK_RIM_M: f64 = 0.1;
 
+/// How far, in plan, an apron may stand from a walk rim it closes and still
+/// count as standing on it, and how far its span may fall short of the step —
+/// `contact.kerb_unwalled`'s own tolerances (`APRON_NEAR_M`, `APRON_SLOP_M`),
+/// restated here because the two checks live in different files.
+const WALK_APRON_NEAR_M: f64 = 1.5;
+const WALK_APRON_SLOP_M: f64 = 0.5;
+
 /// How far in from a band's edge the cross-fall is read, in metres, and how far
 /// in it must stop being the band for the sample to count as a *side* edge.
 ///
@@ -466,6 +473,10 @@ pub struct Street {
     rim: Dist,
     rim_signed: Dist,
     rim_worst: Worst,
+    /// Rim samples whose step a drawn apron wall spans — closed joints,
+    /// scored 0 (the drape guard chooses a wall over an over-tall bench on
+    /// purpose, and a walled rim is that choice drawn, not a gap).
+    rim_walled: usize,
     /// The band's cross-fall, as rise per metre across it.
     fall: Dist,
     fall_worst: Worst,
@@ -509,6 +520,7 @@ impl Street {
             rim: Dist::new(0.0, 64.0),
             rim_signed: Dist::metres(),
             rim_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            rim_walled: 0,
             fall: Dist::new(0.0, 8.0),
             fall_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             rim_by: [Dist::new(0.0, 64.0), Dist::new(0.0, 64.0)],
@@ -1019,6 +1031,32 @@ impl Street {
                 let rim_z = (az + bz) * 0.5;
                 let Some((band_z, material)) = band_at(mx, my, rim_z) else { continue };
                 let step = band_z - rim_z;
+                // A rim a drawn wall closes is a joint that holds. The drape
+                // guard refuses an over-tall bench and draws an apron down the
+                // face instead (`synth::walkway`), so band-at-the-wall-foot,
+                // terrain-at-its-top is that refusal drawn correctly — the
+                // same exemption `contact.kerb_unwalled` grants a carriageway,
+                // and any apron modality counts, because the wall a walkway
+                // runs under is as often the street's as its own.
+                let (lo_z, hi_z) = (band_z.min(rim_z), band_z.max(rim_z));
+                let walled = step.abs() > WALK_RIM_M
+                    && tile
+                        .roads
+                        .iter()
+                        .filter(|r| r.class.ends_with("_apron"))
+                        .filter_map(|r| {
+                            r.mesh.span_near(mx, my, &tile.scale, WALK_APRON_NEAR_M)
+                        })
+                        .any(|(lo, hi)| {
+                            hi >= hi_z - WALK_APRON_SLOP_M && lo <= lo_z + WALK_APRON_SLOP_M
+                        });
+                if walled {
+                    self.rim_walled += 1;
+                    self.rim.push(0.0);
+                    self.rim_signed.push(0.0);
+                    self.rim_by[material].push(0.0);
+                    continue;
+                }
                 self.rim.push(step.abs());
                 self.rim_signed.push(step);
                 self.rim_by[material].push(step.abs());
@@ -1158,6 +1196,7 @@ impl Check for Street {
                     100.0 - self.on_asphalt.pct_below(t)
                 );
             }
+            eprintln!("[street] contact.walk_rim walled rims scored 0: {}", self.rim_walled);
             report_population("contact.walk_rim |step|", &self.rim);
             report_population("contact.walk_rim signed", &self.rim_signed);
             eprintln!(
@@ -1372,7 +1411,15 @@ impl Check for Street {
                              outside it, which is where `contact.kerb_lip` reads a \
                              carriageway's: a metre out lands on the batter face, whose slope \
                              is legitimate, so it cannot separate a joint that holds from one \
-                             that does not. A rim with no band over it is a carriageway's and \
+                             that does not. A rim a drawn apron wall spans — top at the \
+                             ground, foot at the band, any modality — scores 0: the drape \
+                             guard refuses an over-tall bench and draws the wall instead \
+                             (`synth::walkway`), so band-at-the-wall-foot is that refusal \
+                             drawn correctly, the same exemption `contact.kerb_unwalled` \
+                             grants a carriageway; before it, the whole of this metric's tail \
+                             above a metre was 932 walled joints, worst 3.52 m at a terrace \
+                             wall its walkway runs under. A rim with no band over it is a \
+                             carriageway's and \
                              is `contact.kerb_unwalled`'s to score; the two populations do not \
                              overlap."
                     .into(),
@@ -1900,6 +1947,39 @@ mod tests {
         assert!(m[RIM].violations() > 0);
         let worst = m[RIM].worst_value().unwrap();
         assert!((worst - 1.5).abs() < 0.05, "a metre and a half of wall, got {worst}");
+    }
+
+    /// The same step with a drawn wall down its face is the drape guard's own
+    /// verdict — a bench refused, an apron drawn instead — and the joint holds.
+    #[test]
+    fn a_walled_rim_is_a_joint_that_holds() {
+        let s = Site::new();
+        let apron = {
+            let mesh = SurfaceMesh::from_parts(
+                vec![s.ux(10.5), s.ux(11.5), s.ux(11.5), s.ux(10.5)],
+                vec![s.uy(0.0), s.uy(0.0), s.uy(40.0), s.uy(40.0)],
+                vec![101.5, 100.0, 100.0, 101.5],
+                vec![0, 1, 2, 0, 2, 3],
+            )
+            .unwrap();
+            RoadMesh {
+                class: "walk_apron".into(),
+                level: 0,
+                band: String::new(),
+                fades: false,
+                sheet: None,
+                mesh,
+            }
+        };
+        let tile = s.scene(
+            vec![s.band("walk_surface", 0, (10.0, 24.0, 0.0, 40.0), 101.5), apron],
+            Vec::new(),
+            Vec::new(),
+            Some(s.slab(-20.0, 11.0, 0.0, 40.0, 100.0)),
+        );
+        let m = run(&tile);
+        assert!(m[RIM].dist.count() > 0, "the rim must be walked");
+        assert_eq!(m[RIM].violations(), 0, "a walled step is closed");
     }
 
     /// A path drawn on the drawn ground carries the hillside's cross-slope; the

@@ -1623,7 +1623,7 @@
       "invariant": "I1",
       "median": null,
       "offenders": [],
-      "population": "Every terrain-mesh boundary edge midpoint the tile owns that is not on the tile's own edge and has a level-0 pedestrian surface over it (`walk_surface`/`walk_rim` and `path_surface`/`path_rim` alike). The value is |band − rim|, unsigned: the ground standing above a band is the same missing earthwork as the ground falling away from it, and the offender note carries the side. Read at the rim rather than a metre outside it, which is where `contact.kerb_lip` reads a carriageway's: a metre out lands on the batter face, whose slope is legitimate, so it cannot separate a joint that holds from one that does not. A rim with no band over it is a carriageway's and is `contact.kerb_unwalled`'s to score; the two populations do not overlap.",
+      "population": "Every terrain-mesh boundary edge midpoint the tile owns that is not on the tile's own edge and has a level-0 pedestrian surface over it (`walk_surface`/`walk_rim` and `path_surface`/`path_rim` alike). The value is |band − rim|, unsigned: the ground standing above a band is the same missing earthwork as the ground falling away from it, and the offender note carries the side. Read at the rim rather than a metre outside it, which is where `contact.kerb_lip` reads a carriageway's: a metre out lands on the batter face, whose slope is legitimate, so it cannot separate a joint that holds from one that does not. A rim a drawn apron wall spans — top at the ground, foot at the band, any modality — scores 0: the drape guard refuses an over-tall bench and draws the wall instead (`synth::walkway`), so band-at-the-wall-foot is that refusal drawn correctly, the same exemption `contact.kerb_unwalled` grants a carriageway; before it, the whole of this metric's tail above a metre was 932 walled joints, worst 3.52 m at a terrace wall its walkway runs under. A rim with no band over it is a carriageway's and is `contact.kerb_unwalled`'s to score; the two populations do not overlap.",
       "samples": 0,
       "sense": "higher_is_worse",
       "skipped": "no drawn pedestrian band at this zoom (below WALK_SURFACE_MIN_ZOOM, or the archive carries no DEM)",
@@ -1805,7 +1805,7 @@
       6.9873046875,
       46.47216796875
     ],
-    "commit": "b518254",
+    "commit": "04efcf1",
     "max_tiles": 4096,
     "spacing_m": 1.0,
     "tiles": 222,
