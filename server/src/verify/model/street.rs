@@ -517,7 +517,7 @@ fn crossing_extent(m: &Model<'_>) -> Metric {
             hostless += 1;
             continue; // crosses nothing: no carriageway owes it a chord
         }
-        for &(a, b) in painted.iter() {
+        for &crate::synth::walkway::Chord { a, b, .. } in painted.iter() {
             if !m.bounds.contains(a.x, a.y) && !m.bounds.contains(b.x, b.y) {
                 continue;
             }
@@ -700,7 +700,7 @@ fn crossing_skew(m: &Model<'_>) -> Metric {
         let mut scored: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for &(tx, ty, at) in &hosts {
             let mut best: Option<(f64, f64, f64, Coord)> = None; // (dist, ux, uy, mid)
-            for &(a, b) in painted.iter() {
+            for &crate::synth::walkway::Chord { a, b, .. } in painted.iter() {
                 if !m.bounds.contains(a.x, a.y) && !m.bounds.contains(b.x, b.y) {
                     continue;
                 }
@@ -755,14 +755,16 @@ fn crossing_skew(m: &Model<'_>) -> Metric {
         ),
         detail: format!(
             "The angle between the chord and square-across the crossed centerline, in \
-             degrees. The bars are drawn perpendicular to the chord \
-             (`synth::markings::crossing_bars`), so this is exactly how far every bar in \
-             the ladder lies from longitudinal to traffic — the drawn symptom is a zebra \
-             rotated against its own street, unmistakable in plan. Obliquity can be real \
+             degrees. A registration metric, not a drawn one, since the R7 finish: the \
+             bars run along the crossed street's own tangent whatever the chord does \
+             (`synth::markings::crossing_bars`, shear bounded at 45°; \
+             `ARPT_NO_BAR_TRAFFIC` restores chord-square bars), so an oblique chord \
+             now draws a *sheared* ladder whose stripes still lie with traffic rather \
+             than a rotated one. Obliquity can be real \
              (a refuge island, a bent kerb), so the {CHORD_SKEW_DEG:.0}° gate is loose; \
              what it catches is the chord *derivation* pairing kerb points that are not \
-             opposite each other, which skews the whole ladder however faithfully the \
-             crosswalk was mapped."
+             opposite each other — which still misplaces the ladder in plan, however \
+             correctly its stripes now lean."
         ),
         sense: Sense::HigherIsWorse,
         threshold: CHORD_SKEW_DEG,

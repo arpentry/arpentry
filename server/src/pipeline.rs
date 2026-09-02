@@ -187,7 +187,7 @@ pub struct World {
     /// (`synth::walkway::crossings`): phase 1 paints the zebra ladder from
     /// these, and a crosswalk that registered keeps no stroke at the walk
     /// zooms — the ladder and its stub bands are the crossing.
-    pub crossings: std::collections::HashMap<u64, Vec<(Coord, Coord)>>,
+    pub crossings: std::collections::HashMap<u64, Vec<synth::walkway::Chord>>,
     /// The same chords, spatially indexed for the dash filter: markings are
     /// baked per feature, and each feature's dashes must yield to every
     /// ladder near them, not just to its own (`synth::markings::ChordIndex`).
@@ -471,10 +471,10 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // function of the solved model, so every worker and every tile must get
     // the same one (I5).
     let carriers = synth::carried::Carriers::build(&scene, &solved);
-    let crossings: std::collections::HashMap<u64, Vec<(Coord, Coord)>> =
+    let crossings: std::collections::HashMap<u64, Vec<synth::walkway::Chord>> =
         crossing_paints.into_iter().map(|c| (c.source, c.chords)).collect();
     let chord_index =
-        synth::markings::ChordIndex::build(crossings.values().flatten().copied());
+        synth::markings::ChordIndex::build(crossings.values().flatten().map(|c| (c.a, c.b)));
     let world = World {
         scene,
         solved,
@@ -2082,8 +2082,8 @@ fn process_feature(
         let registered_crossing = prop_id(&f.properties)
             .and_then(|id| world.crossings.get(&source_hash(&id)));
         if let Some(chords) = registered_crossing {
-            for &(a, b) in chords {
-                for m in synth::markings::crossing_bars(a, b) {
+            for ch in chords {
+                for m in synth::markings::crossing_bars(ch.a, ch.b, ch.traffic) {
                     emit_geometry(layer, &m.geometry, &m.properties(), synth, cfg, sorter, stats)?;
                 }
             }

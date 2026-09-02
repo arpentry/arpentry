@@ -185,12 +185,29 @@ pub fn for_line(
 /// this way the caps reach along the stripe's own length, where a rounded
 /// stripe end is how the paint actually wears. The pattern is centred on the
 /// chord — both kerbs get the same margin — and is a function of the chord
-/// alone (I5): every tile cuts identical bars.
+/// and its traffic direction alone (I5): every tile cuts identical bars.
+///
+/// `traffic` is the crossed street's own unit tangent (metric ENU) at the
+/// crossing (`walkway::Chord`), and each stripe runs along it: real stripes
+/// are longitudinal to traffic whatever the chord's obliquity, so an oblique
+/// crossing draws a *sheared* ladder rather than one rotated against its
+/// street — the drawn symptom `street.crossing_skew`'s faithful-obliquity
+/// tail used to carry (38.9° at a curving side-roadway mouth). A degenerate
+/// tangent — or `ARPT_NO_BAR_TRAFFIC`, the inertness A/B — falls back to
+/// square-across the chord, the pre-R7 finish.
+///
+/// The shear is bounded at 45°. The stripes step [`priors::CROSSING_BAR_M`]
+/// plus a gap *along the chord*, so their square-on spacing shrinks by the
+/// shear's cosine — past 45° a ladder is on its way to a smear, and the worst
+/// registered chord crosses its street 73° off square (a crosswalk mapped
+/// nearly along a curving mouth), where stripes truly along traffic would
+/// overlap themselves. Within the bound the stripe leans with traffic; at it,
+/// the stripe holds 45° off square toward traffic's side.
 ///
 /// Class `crossing`, not `marking`: colour is keyed by class, and the
 /// calibrated `paint.*` populations filter on the literal `"marking"` — a
 /// transverse ladder in them would poison the offset statistics.
-pub fn crossing_bars(a: Coord, b: Coord) -> Vec<Marking> {
+pub fn crossing_bars(a: Coord, b: Coord, traffic: (f64, f64)) -> Vec<Marking> {
     let cos_lat = ((a.y + b.y) * 0.5).to_radians().cos().max(0.1);
     let m_lon = DEG_M * cos_lat;
     let (dx, dy) = ((b.x - a.x) * m_lon, (b.y - a.y) * DEG_M);
@@ -202,9 +219,28 @@ pub fn crossing_bars(a: Coord, b: Coord) -> Vec<Marking> {
     }
     let pattern = n as f64 * priors::CROSSING_BAR_M + (n - 1) as f64 * priors::CROSSING_GAP_M;
     let start = (len - pattern) * 0.5;
-    // Unit vectors along the chord and across it (the road axis), in metres.
+    // Unit vectors in metres: along the chord for stripe placement, and the
+    // stripe's own direction — traffic where the registration knows it.
     let (ux, uy) = (dx / len, dy / len);
-    let (px, py) = (-uy, ux);
+    let tl = traffic.0.hypot(traffic.1);
+    let (px, py) = if tl > 0.0 && std::env::var_os("ARPT_NO_BAR_TRAFFIC").is_none() {
+        let (tx, ty) = (traffic.0 / tl, traffic.1 / tl);
+        // The chord normal, oriented to traffic's side of the chord.
+        let (mut nx, mut ny) = (-uy, ux);
+        if nx * tx + ny * ty < 0.0 {
+            (nx, ny) = (-nx, -ny);
+        }
+        let along = tx * ux + ty * uy; // sin of the shear, signed
+        if along.abs() <= std::f64::consts::FRAC_1_SQRT_2 {
+            (tx, ty)
+        } else {
+            let s = std::f64::consts::FRAC_1_SQRT_2.copysign(along);
+            let c = std::f64::consts::FRAC_1_SQRT_2;
+            (nx * c + ux * s, ny * c + uy * s)
+        }
+    } else {
+        (-uy, ux)
+    };
     let half = priors::CROSSING_WIDTH_M * 0.5;
     let bars: Vec<LineString> = (0..n)
         .map(|k| {
@@ -797,6 +833,63 @@ mod tests {
             crate::synth::area::Leg { e: 0.0, n: -1.0, half_w: half_m },
         ];
         Area::new(c, legs, half_m).expect("a square area")
+    }
+
+    /// R7's finish: stripes are longitudinal to traffic whatever the chord's
+    /// obliquity — an oblique crossing is a sheared ladder, not a rotated one.
+    #[test]
+    fn zebra_stripes_run_with_traffic_not_square_to_the_chord() {
+        let cy: f64 = 46.0;
+        let m_lon = DEG_M * cy.to_radians().cos();
+        let at = |de: f64, dn: f64| Coord { x: 7.0 + de / m_lon, y: cy + dn / DEG_M };
+        // A chord crossing a west→east street at ~34° off square.
+        let (a, b) = (at(0.0, -4.0), at(5.5, 4.0));
+        let east = (1.0, 0.0);
+        let out = crossing_bars(a, b, east);
+        assert_eq!(out.len(), 1);
+        let Geometry::MultiLineString(bars) = &out[0].geometry else { panic!("bars") };
+        assert!(bars.0.len() >= 2, "a ladder, not a stripe");
+        for bar in &bars.0 {
+            let (p, q) = (bar.0[0], bar.0[1]);
+            let (dx, dy) = ((q.x - p.x) * m_lon, (q.y - p.y) * DEG_M);
+            let len = dx.hypot(dy);
+            assert!((len - priors::CROSSING_WIDTH_M).abs() < 0.02, "stripe length {len}");
+            assert!(
+                dy.abs() / len < 1e-6,
+                "a stripe runs {:.1}° off traffic",
+                (dy / dx).atan().to_degrees()
+            );
+        }
+        // Past 45° of shear the stripe holds the bound: a chord crossing its
+        // street 73° off square gets 45°-leaning stripes, not a smear of
+        // near-chord-parallel ones.
+        let (a2, b2) = (at(20.0, -1.5), at(28.0, 1.5)); // ~69° off square vs east
+        let out = crossing_bars(a2, b2, east);
+        let Geometry::MultiLineString(bars) = &out[0].geometry else { panic!("bars") };
+        let (cx2, cy2) = ((b2.x - a2.x) * m_lon, (b2.y - a2.y) * DEG_M);
+        let clen2 = cx2.hypot(cy2);
+        for bar in &bars.0 {
+            let (p, q) = (bar.0[0], bar.0[1]);
+            let (dx, dy) = ((q.x - p.x) * m_lon, (q.y - p.y) * DEG_M);
+            let cosn = ((dx * cx2 + dy * cy2) / (dx.hypot(dy) * clen2)).abs();
+            assert!(
+                (cosn - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6,
+                "sheared stripe should hold 45° off the chord, reads cos {cosn:.3}"
+            );
+        }
+
+        // A degenerate tangent falls back to square-across the chord — the
+        // pre-R7 finish, and what ARPT_NO_BAR_TRAFFIC restores wholesale.
+        let out = crossing_bars(a, b, (0.0, 0.0));
+        let Geometry::MultiLineString(bars) = &out[0].geometry else { panic!("bars") };
+        let (cx, cyv) = ((b.x - a.x) * m_lon, (b.y - a.y) * DEG_M);
+        let clen = cx.hypot(cyv);
+        for bar in &bars.0 {
+            let (p, q) = (bar.0[0], bar.0[1]);
+            let (dx, dy) = ((q.x - p.x) * m_lon, (q.y - p.y) * DEG_M);
+            let dot = (dx * cx + dy * cyv) / (dx.hypot(dy) * clen);
+            assert!(dot.abs() < 1e-6, "fallback stripe not square to the chord");
+        }
     }
 
     #[test]

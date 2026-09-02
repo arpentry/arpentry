@@ -159,13 +159,28 @@ pub(crate) const CROSSING_ARC_WINDOW_M: f64 = 25.0;
 /// returned by [`crossings`] as ordinary band segments instead, because they
 /// are the strip of real sidewalk between the kerb and whatever the crossing
 /// joins.
+/// One kerb-to-kerb chord of a registered crossing, with the direction
+/// traffic runs where it is crossed.
+#[derive(Clone, Copy)]
+pub struct Chord {
+    pub a: Coord,
+    pub b: Coord,
+    /// Unit tangent (metric ENU) of the crossed centerline nearest the
+    /// chord's midpoint — the direction a zebra's stripes run
+    /// (docs/ROADS.md R7): stripes are longitudinal to traffic whatever the
+    /// chord's obliquity, so an oblique crossing is a sheared ladder, not a
+    /// rotated one. Falls back to square-across the chord where the hosts
+    /// offer no tangent, which is the pre-R7 finish.
+    pub traffic: (f64, f64),
+}
+
 pub struct CrossingPaint {
     /// Source hash of the crosswalk feature, for the phase-1 lookup.
     pub source: u64,
     /// Kerb-to-kerb chords over drawn asphalt, in walk order along the line.
     /// More than one where the crossing spans a divided carriageway: the gap
     /// between them is the refuge island, and it is not painted.
-    pub chords: Vec<(Coord, Coord)>,
+    pub chords: Vec<Chord>,
 }
 
 /// Registers every crosswalk line against the carriageways: the paint chords
@@ -295,9 +310,46 @@ pub fn crossings(
             cursor = e.max(cursor);
         }
         stub_band(&line.line, &arc, cursor.clamp(0.0, total), total, cos_lat, &mut stubs);
+        // The traffic direction per chord: the tangent of the crossed
+        // centerline at the registered intersection nearest the chord's
+        // midpoint. `hosts` carries the corridor arcs of every proper
+        // intersection, so this is the registration's own answer re-read,
+        // not a second derivation.
+        let traffic_at = |mid: Coord| -> Option<(f64, f64)> {
+            let mut best: Option<(f64, (f64, f64))> = None;
+            for (ci, arcs) in &hosts {
+                let c = &scene.corridors[*ci as usize];
+                for &sc in arcs {
+                    let k = c.arc.partition_point(|&x| x < sc).clamp(1, c.nodes.len() - 1);
+                    let (na, nb) = (c.nodes[k - 1], c.nodes[k]);
+                    let (a0, a1) = (c.arc[k - 1], c.arc[k]);
+                    let t = if a1 > a0 { ((sc - a0) / (a1 - a0)).clamp(0.0, 1.0) } else { 0.0 };
+                    let x = Coord { x: na.x + (nb.x - na.x) * t, y: na.y + (nb.y - na.y) * t };
+                    let (dx, dy) = ((x.x - mid.x) * c.cos_lat, x.y - mid.y);
+                    let d2 = dx * dx + dy * dy;
+                    let (tx, ty) = ((nb.x - na.x) * c.cos_lat, nb.y - na.y);
+                    let l = tx.hypot(ty);
+                    if l > 0.0 && best.is_none_or(|(bd, _)| d2 < bd) {
+                        best = Some((d2, (tx / l, ty / l)));
+                    }
+                }
+            }
+            best.map(|(_, t)| t)
+        };
         paints.push(CrossingPaint {
             source: line.source,
-            chords: merged.iter().map(|&(s, e)| (at(s), at(e))).collect(),
+            chords: merged
+                .iter()
+                .map(|&(s, e)| {
+                    let (a, b) = (at(s), at(e));
+                    let traffic = traffic_at(at(0.5 * (s + e))).unwrap_or_else(|| {
+                        let (dx, dy) = ((b.x - a.x) * cos_lat, b.y - a.y);
+                        let l = dx.hypot(dy).max(1e-12);
+                        (-dy / l, dx / l)
+                    });
+                    Chord { a, b, traffic }
+                })
+                .collect(),
         });
     }
     (paints, stubs)

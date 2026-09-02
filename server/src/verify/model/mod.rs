@@ -62,7 +62,7 @@ pub struct Model<'a> {
     /// "does this zebra lie on the street it crosses" is a question about the
     /// *registration*, and the archive carries the bars with no memory of which
     /// carriageway was supposed to have justified them (`street`).
-    pub crossings: &'a std::collections::HashMap<u64, Vec<(geo_types::Coord, geo_types::Coord)>>,
+    pub crossings: &'a std::collections::HashMap<u64, Vec<crate::synth::walkway::Chord>>,
     pub terrain: Option<&'a std::path::Path>,
     pub bounds: crate::project::Bounds,
     pub threads: usize,
