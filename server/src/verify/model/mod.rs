@@ -24,6 +24,7 @@ pub mod facade;
 pub mod footprint;
 pub mod grade;
 pub mod graph;
+pub mod joints;
 pub mod network;
 pub mod partition;
 pub mod relaxation;
@@ -77,6 +78,7 @@ pub fn run(m: &Model<'_>) -> Vec<Metric> {
     out.extend(footprint::check(m));
     out.extend(grade::check(m));
     out.extend(graph::check(m));
+    out.extend(joints::check(m));
     out.extend(network::check(m));
     out.extend(partition::check(m));
     out.extend(relaxation::check(m));
