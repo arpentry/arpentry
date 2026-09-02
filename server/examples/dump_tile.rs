@@ -49,6 +49,56 @@ fn main() {
             .unwrap_or_else(|| "-".into());
         println!("  layer[{i}] {:<16} features={n:<6} first_geom={kind}", layer.name());
 
+        // Transportation: dump every feature's class/level and plan bbox, so a
+        // structure solid's drawn extent can be compared with its span arcs.
+        if layer.name() == "transportation" {
+            if let Some(feats) = feats {
+                for j in 0..feats.len() {
+                    let f = feats.get(j);
+                    let mut cls = String::new();
+                    let mut level = String::new();
+                    let mut band = String::new();
+                    if let (Some(props), Some(keys), Some(vals)) = (f.properties(), tile.keys(), values) {
+                        for k in 0..props.len() {
+                            let pr = props.get(k);
+                            let key = keys.get(pr.key() as usize);
+                            let v = vals.get(pr.value() as usize);
+                            let vs = v.string_value().map(|s| s.to_string()).unwrap_or_else(|| v.int_value().to_string());
+                            match key {
+                                "class" => cls = vs,
+                                "level" => level = vs,
+                                "band_class" => band = vs,
+                                _ => {}
+                            }
+                        }
+                    }
+                    let (mut xmin, mut xmax, mut ymin, mut ymax, mut nv) = (u16::MAX, 0u16, u16::MAX, 0u16, 0);
+                    let mut push = |xs: flatbuffers::Vector<u16>, ys: flatbuffers::Vector<u16>| {
+                        for k in 0..xs.len() {
+                            xmin = xmin.min(xs.get(k)); xmax = xmax.max(xs.get(k));
+                            ymin = ymin.min(ys.get(k)); ymax = ymax.max(ys.get(k));
+                        }
+                        nv += xs.len();
+                    };
+                    let gt = format!("{:?}", f.geometry_type());
+                    if std::env::var("ARPT_DUMP_FEAT").ok().and_then(|v| v.parse::<usize>().ok()) == Some(j) {
+                        if let Some(g) = f.geometry_as_mesh_geometry() {
+                            let (xs, ys, zs) = (g.x(), g.y(), g.z());
+                            for k in 0..xs.len() {
+                                println!("      v[{k}] {} {} {}", xs.get(k), ys.get(k), zs.get(k));
+                            }
+                            let idx = g.indices();
+                            let tris: Vec<u32> = (0..idx.len()).map(|k| idx.get(k)).collect();
+                            println!("      indices ({}): {tris:?}", tris.len());
+                        }
+                    }
+                    if let Some(g) = f.geometry_as_mesh_geometry() { push(g.x(), g.y()); }
+                    if let Some(g) = f.geometry_as_line_geometry() { push(g.x(), g.y()); }
+                    println!("    feat[{j}] {gt} class={cls} level={level} band={band} verts={nv} x=[{xmin}..{xmax}] y=[{ymin}..{ymax}]");
+                }
+            }
+        }
+
         // For the first polygon feature, dump coordinate bbox + resolved class.
         if let Some(f) = feats.filter(|f| f.len() > 0).map(|f| f.get(0)) {
             if let Some(pg) = f.geometry_as_polygon_geometry() {

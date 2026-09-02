@@ -170,6 +170,27 @@ const AXIS_SPAN_M: f64 = 2.0 * REACH_M;
 /// scale of a carriageway width, not a rim.
 const AXIS_STEP_M: f64 = 0.5;
 
+/// Lateral slack for every march sample, in metres: a step counts a surface
+/// or deck that stands within this distance *across* the march, not only one
+/// exactly under it. A march anchored on a silhouette fragment can run
+/// centimetres outside and parallel to the deck's own side face — at
+/// 6.9318,46.4373 an anchor 8 cm west of a complete bridge grazed its edge
+/// for 11.5 m and reported the span itself as bare ground, and a section cut
+/// on the same line drew the same illusion. One rim width, the same scale the
+/// mesh boundary itself carries; the entry and end-edge tests keep a
+/// genuinely parallel neighbour from hiding inside the slack.
+const LATERAL_M: f64 = PAVE_RIM_M;
+
+/// Within this of the band's edge, a deck at matching height is the handover
+/// and the entry test does not second-guess it, in metres. The test exists to
+/// refuse a parallel neighbour struck across a median — a gap of one lane or
+/// more — but at a *flush oblique* joint the march (an edge fragment's
+/// normal) diverges from the corridor by tens of degrees, and the deck's
+/// acute corner sliver reads "across ≫ along" for the entirely correct
+/// strike one step out. An end-edge anchor plus a deck within arm's reach is
+/// evidence enough; the direction ratios take over past it.
+const NEAR_JOINT_M: f64 = 2.0;
+
 /// One measured handoff.
 struct Handoffs {
     bare: Dist,
@@ -421,7 +442,7 @@ impl Check for Handoff {
                     continue;
                 }
 
-                let carried = |q: (f64, f64)| -> Option<(f64, &str, (f64, f64))> {
+                let carried = |q: (f64, f64), d: f64| -> Option<(f64, &str, (f64, f64))> {
                     for ((class, rail, m), b) in decks.iter().zip(&boxes) {
                         if !in_box(b, q.0, q.1) || *rail != ballast {
                             continue; // a road does not hand over to a railway
@@ -437,9 +458,11 @@ impl Check for Handoff {
                             }
                             // Entered along the deck, not struck broadside:
                             // a parallel structure across a median is not
-                            // the continuation of this band.
+                            // the continuation of this band. Not asked of a
+                            // strike at the joint itself, where an oblique
+                            // deck's corner sliver reads broadside.
                             let ext = entry_extents(m, q, (ux, uy), (-ny / mx, nx / my));
-                            if ext.1 > 2.0 * ext.0 {
+                            if d > NEAR_JOINT_M && ext.1 > 2.0 * ext.0 {
                                 continue;
                             }
                             return Some((hi, class, ext));
@@ -455,7 +478,7 @@ impl Check for Handoff {
                 // and answers a point-in-triangle query there, so testing the
                 // edge itself would throw away the one case this check exists
                 // to confirm.
-                if carried((px - ux * OVERLAP_PROBE_M, py - uy * OVERLAP_PROBE_M)).is_some() {
+                if carried((px - ux * OVERLAP_PROBE_M, py - uy * OVERLAP_PROBE_M), 0.0).is_some() {
                     self.0.overlapped += 1;
                     if std::env::var_os("ARPT_DEBUG_OVERLAP").is_some() {
                         let (lon, lat) = tile.lonlat(px, py);
@@ -480,12 +503,18 @@ impl Check for Handoff {
                     if !tile.owns(q.0, q.1) {
                         break;
                     }
-                    if let Some((top, class, ext)) = carried(q) {
+                    // Each sample looks a rim's width to either side as well:
+                    // a march grazing along a face it never quite covers is
+                    // at the joint, not short of it.
+                    let lat = (-ny / mx * LATERAL_M, nx / my * LATERAL_M);
+                    let qs = [q, (q.0 + lat.0, q.1 + lat.1), (q.0 - lat.0, q.1 - lat.1)];
+                    if let Some((top, class, ext)) = qs.iter().find_map(|&q| carried(q, d)) {
                         found = Some((d, top, class, ext));
                         break;
                     }
-                    covered.push(
-                        tile.roads.iter().any(|m| m.mesh.height_at(q.0, q.1).is_some()),
+                    covered.push(tile.roads.iter().any(|m| {
+                        qs.iter().any(|&q| m.mesh.height_at(q.0, q.1).is_some())
+                    }),
                     );
                     // Surface at this sample, but only surface that could be
                     // *this* band continuing. A drawn region metres below the
@@ -501,7 +530,7 @@ impl Check for Handoff {
                     // same slab bound serves.
                     if let Some(z) = paved
                         .iter()
-                        .filter_map(|m| m.height_at(q.0, q.1))
+                        .flat_map(|m| qs.iter().filter_map(|&q| m.height_at(q.0, q.1)))
                         .filter(|z| (z - h).abs() <= SLAB_MAX_M)
                         .fold(None::<f64>, |acc, z| Some(acc.map_or(z, |a: f64| a.max(z))))
                     {
@@ -884,6 +913,38 @@ mod tests {
             quad_at("residential", 1, 0.3, 0.7, 0.51 + gap, 0.53 + gap, 400.0),
         ]);
         assert_eq!(n, 0, "a broadside strike was paired: bare {bare:?}");
+    }
+
+    #[test]
+    fn a_deck_a_hands_breadth_aside_still_pairs_flush() {
+        // The march runs a fraction of a rim outside and parallel to the
+        // deck's side face — the graze that once read a complete bridge as
+        // 11.5 m of bare ground. The lateral slack must find the deck at the
+        // first step and read the joint as flush.
+        let edge = 0.5;
+        let aside = 0.2 / my();
+        let (bare, _, n) = measure(vec![
+            quad("road_surface", 0, 0.4, edge, 400.0),
+            quad_at("residential", 1, edge, 0.6, 0.5 + aside, 0.52 + aside, 400.0),
+        ]);
+        assert!(n > 0, "the grazing joint was not paired at all");
+        assert!(bare.expect("bare") <= BARE_M, "grazing flush joint read {bare:?} of bare");
+    }
+
+    #[test]
+    fn a_deck_at_arms_reach_is_not_second_guessed() {
+        // A flush strike inside NEAR_JOINT_M skips the entry ratio: at an
+        // oblique joint the deck's acute corner sliver reads across ≫ along
+        // for an entirely correct strike one step out. Model the sliver with
+        // a deck much wider than it is long, flush at the band's end.
+        let edge = 0.5;
+        let (long, wide) = (6.0 / mx(), 24.0 / my());
+        let (bare, _, n) = measure(vec![
+            quad("road_surface", 0, 0.4, edge, 400.0),
+            quad_at("residential", 1, edge, edge + long, 0.5 - wide, 0.5 + wide, 400.0),
+        ]);
+        assert!(n > 0, "the flush wide deck was not paired at all");
+        assert!(bare.expect("bare") <= BARE_M, "flush near strike read {bare:?} of bare");
     }
 
     #[test]

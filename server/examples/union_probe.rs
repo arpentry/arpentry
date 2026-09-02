@@ -68,6 +68,23 @@ fn main() {
             .collect::<Vec<_>>()
             .join(" ")
     );
+    // Span boundaries in plan, so a drawn gap can be compared with where the
+    // partition believes the handover arcs are.
+    let plan_at = |a: f64| -> (f64, f64) {
+        let k = c.arc.partition_point(|&x| x < a).min(c.nodes.len() - 1).max(1);
+        let (a0, a1) = (c.arc[k - 1], c.arc[k]);
+        let t = if a1 > a0 { ((a - a0) / (a1 - a0)).clamp(0.0, 1.0) } else { 0.0 };
+        let (p0, p1) = (c.nodes[k - 1], c.nodes[k]);
+        (p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t)
+    };
+    for sp in &c.spans {
+        let (x0, y0) = plan_at(sp.arc0);
+        let (x1, y1) = plan_at(sp.arc1);
+        println!(
+            "  span {:?}[{:.1}..{:.1}] plan {:.6},{:.6} -> {:.6},{:.6}",
+            sp.kind, sp.arc0, sp.arc1, x0, y0, x1, y1
+        );
+    }
 
     // Every region key of the chunk under the site.
     let tile = solve::tile_containing(16, lon0, lat0);
