@@ -77,6 +77,14 @@ fn main() {
         let (p0, p1) = (c.nodes[k - 1], c.nodes[k]);
         (p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t)
     };
+    // Member segment windows, so a span that straddles a segment boundary —
+    // and therefore emits as more than one structure piece — is visible.
+    let segs: Vec<String> = c
+        .segments
+        .iter()
+        .map(|sg| format!("[{:.1}..{:.1}]", c.arc[sg.node0], c.arc[sg.node1]))
+        .collect();
+    println!("  segments: {}", segs.join(" "));
     for sp in &c.spans {
         let (x0, y0) = plan_at(sp.arc0);
         let (x1, y1) = plan_at(sp.arc1);

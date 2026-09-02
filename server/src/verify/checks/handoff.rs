@@ -191,6 +191,16 @@ const LATERAL_M: f64 = PAVE_RIM_M;
 /// evidence enough; the direction ratios take over past it.
 const NEAR_JOINT_M: f64 = 2.0;
 
+/// A march passing this close to the tile-proper boundary is skipped: meshes
+/// are clipped to the proper, so a joint the border splits *lengthwise* has
+/// its evidence divided between two tiles and neither side can read it whole.
+/// A rail viaduct whose axis ran 7 cm from a border — flush in the drawn
+/// world, band and an 11 m proper-clipped deck stub meeting exactly at the
+/// span arc — scored 11.2 m of bare from one tile because the deck's body
+/// lay across the line. Half a motorway cross-section: as far laterally as
+/// one joint's evidence extends.
+const BORDER_BLIND_M: f64 = 6.0;
+
 /// One measured handoff.
 struct Handoffs {
     bare: Dist,
@@ -210,6 +220,9 @@ struct Handoffs {
     ballast: usize,
     /// Band edges a deck already covers in plan: an overlap, not a handoff.
     overlapped: usize,
+    /// Marches skipped for running within [`BORDER_BLIND_M`] of the tile
+    /// proper's boundary, where the clip splits the joint's evidence.
+    border_blind: usize,
     /// Drawn decks, and how many of them name the band they continue
     /// (`band_class`). An archive tiled before that property states none, and
     /// the modality then falls back to re-deriving from the road class — so the
@@ -234,6 +247,7 @@ impl Handoff {
             asphalt: 0,
             ballast: 0,
             overlapped: 0,
+            border_blind: 0,
             decks: 0,
             decks_named: 0,
         })
@@ -423,24 +437,51 @@ impl Check for Handoff {
                     nx = -nx;
                     ny = -ny;
                 }
-                // Back to unit space, holding the metric step length.
-                let (ux, uy) = (nx / mx, ny / my);
                 let h = 0.5 * (az + bz);
 
+                // The march leaves the band along the band's *own* axis, not
+                // along a triangulation fragment's normal. The normal is
+                // quantized and, at an oblique joint, tens of degrees off the
+                // corridor — from the acute corner of a flush A9 abutment a
+                // 34°-oblique march wandered beside the deck for 10 m and
+                // scored a joint the axis-aligned section shows is exact.
+                // The anchor is judged on its own normal — rotations must not
+                // widen the population, only straighten accepted marches —
+                // and the march then takes, of the normal and six rotations,
+                // the *most end-like* direction: the best margin of
+                // band-behind depth over half the across extent, ties to the
+                // normal. A corner anchor whose straightened march parallels
+                // the deck then pairs with nothing, while the joint's
+                // mid-edge anchors measure it flush.
+                let band_ext = |d: (f64, f64)| -> (f64, f64) {
+                    let du = (d.0 / mx, d.1 / my);
+                    let start = (px - du.0 * OVERLAP_PROBE_M, py - du.1 * OVERLAP_PROBE_M);
+                    entry_extents(&band.mesh, start, (-du.0, -du.1), (-d.1 / mx, d.0 / my))
+                };
                 // Left through an end, not walked out the side: the band's
                 // own footprint must extend *behind* the march. An edge the
                 // band runs beside is kerb, and whatever stands within reach
                 // of it — a twin alignment's bridge across the median — is a
                 // neighbour, not the surface this band becomes.
-                let behind = entry_extents(
-                    &band.mesh,
-                    (px - ux * OVERLAP_PROBE_M, py - uy * OVERLAP_PROBE_M),
-                    (-ux, -uy),
-                    (-ny / mx, nx / my),
-                );
+                let behind = band_ext((nx, ny));
                 if behind.1 > 2.0 * behind.0 {
                     continue;
                 }
+                let (n0x, n0y) = (nx, ny);
+                let (mut nx, mut ny) = (nx, ny);
+                let mut margin = behind.0 - 0.5 * behind.1;
+                for k in [1i32, -1, 2, -2, 3, -3] {
+                    let a = f64::from(k) * 15f64.to_radians();
+                    let (ca, sa) = (a.cos(), a.sin());
+                    let d = (n0x * ca - n0y * sa, n0x * sa + n0y * ca);
+                    let ext = band_ext(d);
+                    let m = ext.0 - 0.5 * ext.1;
+                    if m > margin + 1e-9 {
+                        margin = m;
+                        (nx, ny) = d;
+                    }
+                }
+                let (ux, uy) = (nx / mx, ny / my);
 
                 let carried = |q: (f64, f64), d: f64| -> Option<(f64, &str, (f64, f64))> {
                     for ((class, rail, m), b) in decks.iter().zip(&boxes) {
@@ -489,6 +530,10 @@ impl Check for Handoff {
 
                 let (mut last_paved, mut paved_h) = (0.0f64, h);
                 let mut found: Option<(f64, f64, &str, (f64, f64))> = None;
+                let border_m = |q: (f64, f64)| -> f64 {
+                    (q.0.min(1.0 - q.0) * mx).min(q.1.min(1.0 - q.1) * my)
+                };
+                let mut nearest_border = border_m((px, py));
                 // Which march steps any drawn road surface covers in plan at
                 // *any* height — the split between drawn ground the eye can
                 // see the world through and a stretch a grade-separated road
@@ -503,6 +548,7 @@ impl Check for Handoff {
                     if !tile.owns(q.0, q.1) {
                         break;
                     }
+                    nearest_border = nearest_border.min(border_m(q));
                     // Each sample looks a rim's width to either side as well:
                     // a march grazing along a face it never quite covers is
                     // at the joint, not short of it.
@@ -540,6 +586,10 @@ impl Check for Handoff {
                     d += STEP_M;
                 }
                 let Some((deck_d, top, class, (along, across))) = found else { continue };
+                if nearest_border < BORDER_BLIND_M {
+                    self.0.border_blind += 1;
+                    continue;
+                }
                 if ballast {
                     self.0.ballast += 1;
                 } else {
@@ -651,7 +701,13 @@ impl Check for Handoff {
              under a low bridge, not handing over to it. {} edges on asphalt and {} on ballast; \
              {} more were skipped \
              because a deck already covers the band's edge in plan, which is an overlap rather \
-             than a handoff (`order.deck_above_carriageway`). One abutment contributes several \
+             than a handoff (`order.deck_above_carriageway`), and {} because the march ran \
+             within {BORDER_BLIND_M:.0} m of the tile-proper boundary — the clip splits a \
+             joint the border crosses lengthwise between two tiles, and neither side can read \
+             it whole. The march leaves the band along the band's own axis (the rotation of \
+             the anchoring edge's normal the band extends deepest behind), because a fragment \
+             normal at an oblique joint points tens of degrees off the corridor and wanders \
+             beside the deck it should meet. One abutment contributes several \
              edges, so the population is weighted by how wide the joint is. {} of {} drawn decks \
              name the band they continue (`band_class`); the rest fall back to re-deriving the \
              modality from the road class, which is what an archive tiled before that property \
@@ -679,7 +735,7 @@ impl Check for Handoff {
              plus the slack no longer reads as a handoff and drops out of the population rather \
              than being counted as a huge one; and a deck whose approach band is missing \
              altogether has no edge to anchor on and contributes nothing.",
-            s.asphalt, s.ballast, s.overlapped, s.decks_named, s.decks
+            s.asphalt, s.ballast, s.overlapped, s.border_blind, s.decks_named, s.decks
         );
         let skipped = (s.asphalt + s.ballast == 0)
             .then(|| "no at-grade band meets a solved deck at this zoom".to_string());
