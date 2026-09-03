@@ -55,7 +55,7 @@ impl Scale {
     }
 }
 
-const EXTENT: f64 = 32768.0;
+pub(crate) const EXTENT: f64 = 32768.0;
 const BUFFER: f64 = 16384.0;
 
 /// An undirected mesh edge, keyed by its two endpoints on the integer plan

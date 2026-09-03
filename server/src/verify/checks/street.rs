@@ -234,7 +234,7 @@ struct Footprint<'a> {
 /// rather than all of them. A dense tile carries fifty buildings and twenty-two
 /// million surface samples cross the extract, which is the difference between
 /// this check costing a second and costing minutes.
-struct Footprints<'a> {
+pub(crate) struct Footprints<'a> {
     items: Vec<Footprint<'a>>,
     cells: HashMap<(i32, i32), Vec<usize>>,
     /// Cell size in unit plan space, per axis — about 20 m.
@@ -243,7 +243,7 @@ struct Footprints<'a> {
 }
 
 impl<'a> Footprints<'a> {
-    fn build(tile: &'a TileScene) -> Footprints<'a> {
+    pub(crate) fn build(tile: &'a TileScene) -> Footprints<'a> {
         let (cw, ch) = (20.0 / tile.scale.mx, 20.0 / tile.scale.my);
         let mut items = Vec::with_capacity(tile.buildings.len());
         for (_relief, m) in &tile.buildings {
@@ -278,7 +278,7 @@ impl<'a> Footprints<'a> {
     /// How far inside a footprint a plan point stands, or `None` outside every
     /// one. Where footprints overlap the deepest answers, which is the one a
     /// viewer would see the asphalt disappear into.
-    fn depth(&self, px: f64, py: f64, scale: &Scale) -> Option<f64> {
+    pub(crate) fn depth(&self, px: f64, py: f64, scale: &Scale) -> Option<f64> {
         if self.items.is_empty() {
             return None;
         }
@@ -1124,6 +1124,13 @@ impl Street {
                 self.fall_by[usize::from(r.class.starts_with("path_"))].push(fall);
                 if fall > WALK_FALL {
                     let (lon, lat) = tile.lonlat(mx, my);
+                    // ARPT_DEBUG_FALL: every violation, for the anatomy.
+                    if std::env::var_os("ARPT_DEBUG_FALL").is_some() {
+                        eprintln!(
+                            "[fall] {lon:.6},{lat:.6} {} fall {fall:.3} edge {edge_z:.2} in {in_z:.2} run {run:.2} elen {elen:.2}",
+                            r.class
+                        );
+                    }
                     self.fall_worst.offer(Offender {
                         lon,
                         lat,

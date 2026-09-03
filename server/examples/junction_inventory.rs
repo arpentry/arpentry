@@ -67,6 +67,10 @@ fn main() {
                 if !inside(px, py) || !ts.owns(px, py) {
                     continue;
                 }
+                if std::env::var_os("ARPT_INV_VERTS").is_some() && r.class.starts_with("walk_") {
+                    let (lon, lat) = ts.lonlat(px, py);
+                    println!("  v {:<12} sheet={:?} {lon:.6},{lat:.6} z {pz:.2}", r.class, r.sheet);
+                }
                 lo = lo.min(pz);
                 hi = hi.max(pz);
                 bx0 = bx0.min(px);
