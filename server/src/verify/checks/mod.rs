@@ -22,6 +22,28 @@ pub mod water;
 use crate::verify::scene::{ArchiveScan, TileScene};
 use crate::verify::{Metric, Scorecard};
 
+/// How far, in plan, an apron may stand from the point it closes and still
+/// count as standing on it, and how far its vertical span may fall short of
+/// the step and still count as closing it. Shared by every walled-joint
+/// exemption — `contact.kerb_unwalled`, `contact.walk_rim`,
+/// `order.grade_stack` — so the three agree on what a wall is.
+pub(crate) const APRON_NEAR_M: f64 = 1.5;
+pub(crate) const APRON_SLOP_M: f64 = 0.5;
+
+/// Whether a drawn apron wall spans the vertical gap `[lo, hi]` at plan point
+/// `(px, py)` — the "something between them" every step-against-the-world
+/// metric owes a look before calling a step a gap. Any `*_apron` modality
+/// counts: the wall a band stands at the foot of is as often another
+/// feature's as its own (a walkway under a street's terrace wall, a rail
+/// portal under a road's embankment face).
+pub(crate) fn apron_spans(tile: &TileScene, px: f64, py: f64, lo: f64, hi: f64) -> bool {
+    tile.roads
+        .iter()
+        .filter(|r| r.class.ends_with("_apron"))
+        .filter_map(|r| r.mesh.span_near(px, py, &tile.scale, APRON_NEAR_M))
+        .any(|(alo, ahi)| ahi >= hi - APRON_SLOP_M && alo <= lo + APRON_SLOP_M)
+}
+
 /// How the pass is scoped.
 pub struct Options {
     /// Zooms to measure. Empty means "the archive's detail rung", which is

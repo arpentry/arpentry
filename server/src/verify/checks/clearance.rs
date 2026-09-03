@@ -240,6 +240,15 @@ impl Check for Clearance {
                 }
                 if below.is_finite() {
                     let v = own - below;
+                    // A stack a drawn wall closes is two grounds terraced on
+                    // purpose — a rail band meeting a road embankment's face
+                    // at its own portal is the drawn world holding, not a
+                    // band in the air. The same exemption the rim checks
+                    // grant (`checks::apron_spans`).
+                    if v > GRADE_STACK_M && super::apron_spans(tile, px, py, below, own) {
+                        self.stack.push(0.0);
+                        return;
+                    }
                     self.stack.push(v);
                     if v > GRADE_STACK_M {
                         let (lon, lat) = tile.lonlat(px, py);
@@ -406,7 +415,12 @@ impl Check for Clearance {
                      from the model side — the upper band is in the air over the lower with no \
                      structure between them. The class this exists to keep dead: a mapped \
                      bore's still-buried tail paved as open cut, sliding beneath the band of \
-                     the feature that crosses just past its portal."
+                     the feature that crosses just past its portal. A stack a drawn apron \
+                     wall spans scores 0 (`checks::apron_spans`, any modality): a band \
+                     meeting a road embankment's face at its own portal is two grounds \
+                     terraced on purpose — before the exemption the whole surviving tail was \
+                     one such face at Villeneuve, 11 samples of a rail band's last metres \
+                     under the crossing road's rim overhang, wall drawn and section-verified."
                 ),
                 sense: Sense::HigherIsWorse,
                 threshold: GRADE_STACK_M,
@@ -613,6 +627,42 @@ mod tests {
         assert!(stack.violations() > 0);
         assert!((stack.worst_value().unwrap() - 8.5).abs() < 1e-3);
         assert_eq!(stack.invariant, Invariant::I3);
+    }
+
+    /// The same stack with a drawn wall spanning it is two grounds terraced
+    /// on purpose — a rail band meeting a road embankment's face at its own
+    /// portal — and scores 0, like every walled joint. The fixture is shaped
+    /// like the real thing: a narrow overhang strip beside a vertical apron
+    /// ribbon, because `span_near` reads distance to a wall's *edges*, which
+    /// is exact for the degenerate strips real aprons are.
+    #[test]
+    fn a_walled_stack_is_two_terraces_not_a_band_in_the_air() {
+        let strip = SurfaceMesh::from_parts(
+            vec![0.498, 0.502, 0.502, 0.498],
+            vec![0.4, 0.4, 0.6, 0.6],
+            vec![532.5; 4],
+            vec![0, 1, 2, 0, 2, 3],
+        )
+        .unwrap();
+        let wall = SurfaceMesh::from_parts(
+            vec![0.5, 0.5, 0.5, 0.5],
+            vec![0.4, 0.6, 0.6, 0.4],
+            vec![532.5, 532.5, 524.0, 524.0],
+            vec![0, 1, 2, 0, 2, 3],
+        )
+        .unwrap();
+        let t = tile(
+            vec![
+                RoadMesh { class: "rail_surface".into(), level: 0, band: String::new(), fades: false, sheet: None, mesh: flat(524.0) },
+                RoadMesh { class: "road_surface".into(), level: 0, band: String::new(), fades: false, sheet: None, mesh: strip },
+                RoadMesh { class: "road_apron".into(), level: 0, band: String::new(), fades: false, sheet: None, mesh: wall },
+            ],
+            None,
+        );
+        let m = run(&t);
+        let stack = m.iter().find(|x| x.id == "order.grade_stack").unwrap();
+        assert_eq!(stack.violations(), 0, "a walled stack is closed");
+        assert!(!stack.dist.is_empty(), "and stays in the population");
     }
 
     #[test]

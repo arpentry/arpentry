@@ -108,13 +108,6 @@ const WALK_STEP_M: f64 = 1.0;
 /// worth drawing at all.
 const WALK_RIM_M: f64 = 0.1;
 
-/// How far, in plan, an apron may stand from a walk rim it closes and still
-/// count as standing on it, and how far its span may fall short of the step —
-/// `contact.kerb_unwalled`'s own tolerances (`APRON_NEAR_M`, `APRON_SLOP_M`),
-/// restated here because the two checks live in different files.
-const WALK_APRON_NEAR_M: f64 = 1.5;
-const WALK_APRON_SLOP_M: f64 = 0.5;
-
 /// How far in from a band's edge the cross-fall is read, in metres, and how far
 /// in it must stop being the band for the sample to count as a *side* edge.
 ///
@@ -1039,17 +1032,8 @@ impl Street {
                 // and any apron modality counts, because the wall a walkway
                 // runs under is as often the street's as its own.
                 let (lo_z, hi_z) = (band_z.min(rim_z), band_z.max(rim_z));
-                let walled = step.abs() > WALK_RIM_M
-                    && tile
-                        .roads
-                        .iter()
-                        .filter(|r| r.class.ends_with("_apron"))
-                        .filter_map(|r| {
-                            r.mesh.span_near(mx, my, &tile.scale, WALK_APRON_NEAR_M)
-                        })
-                        .any(|(lo, hi)| {
-                            hi >= hi_z - WALK_APRON_SLOP_M && lo <= lo_z + WALK_APRON_SLOP_M
-                        });
+                let walled =
+                    step.abs() > WALK_RIM_M && super::apron_spans(tile, mx, my, lo_z, hi_z);
                 if walled {
                     self.rim_walled += 1;
                     self.rim.push(0.0);

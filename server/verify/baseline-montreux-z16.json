@@ -323,20 +323,6 @@
       "median": 0.006666666666667709,
       "offenders": [
         {
-          "lat": 46.418659910559654,
-          "lon": 6.928409831598401,
-          "note": "asphalt 396.63 m, terrain rim 393.27 m, nothing between them",
-          "value": 3.3560651904157908,
-          "zoom": 16
-        },
-        {
-          "lat": 46.41865835990757,
-          "lon": 6.928410334512591,
-          "note": "asphalt 396.60 m, terrain rim 393.27 m, nothing between them",
-          "value": 3.3308096022208247,
-          "zoom": 16
-        },
-        {
           "lat": 46.448281053453684,
           "lon": 6.914467038586736,
           "note": "asphalt 745.79 m, terrain rim 742.91 m, nothing between them",
@@ -348,13 +334,6 @@
           "lon": 6.882536429911852,
           "note": "asphalt 489.08 m, terrain rim 487.09 m, nothing between them",
           "value": 1.9906085437991123,
-          "zoom": 16
-        },
-        {
-          "lat": 46.4186592400074,
-          "lon": 6.9284123461693525,
-          "note": "asphalt 397.15 m, terrain rim 395.33 m, nothing between them",
-          "value": 1.8229853596445196,
           "zoom": 16
         },
         {
@@ -377,6 +356,27 @@
           "note": "asphalt 714.65 m, terrain rim 713.00 m, nothing between them",
           "value": 1.653228571067757,
           "zoom": 16
+        },
+        {
+          "lat": 46.45359882619232,
+          "lon": 6.910453699529171,
+          "note": "asphalt 716.51 m, terrain rim 714.86 m, nothing between them",
+          "value": 1.650756647239632,
+          "zoom": 16
+        },
+        {
+          "lat": 46.42498099710792,
+          "lon": 6.9298595655709505,
+          "note": "asphalt 589.70 m, terrain rim 588.63 m, nothing between them",
+          "value": 1.06951107933412,
+          "zoom": 16
+        },
+        {
+          "lat": 46.42497860826552,
+          "lon": 6.929865684360266,
+          "note": "asphalt 591.44 m, terrain rim 590.37 m, nothing between them",
+          "value": 1.068503999255995,
+          "zoom": 16
         }
       ],
       "population": "Every terrain-mesh boundary edge midpoint that is not on the tile's own edge and has at-grade asphalt or rim over it. A cut edge carries no apron by design and is excluded with the tile edge. The apron is vertical, so its span is asked within 1.5 m of the rim rather than at it, with 0.5 m of slack at each end.",
@@ -386,9 +386,9 @@
       "tail": 0.006666666666667709,
       "threshold": 0.5,
       "title": "Gap at the hole's rim with nothing spanning it",
-      "violation_pct": 0.014155160425151485,
-      "violations": 57,
-      "worst": 3.3560651904157908
+      "violation_pct": 0.013410151981722459,
+      "violations": 54,
+      "worst": 2.8808759701242934
     },
     {
       "id": "contact.kerb_lip",
@@ -757,75 +757,18 @@
     {
       "id": "order.grade_stack",
       "invariant": "I3",
-      "median": 1.5,
-      "offenders": [
-        {
-          "lat": 46.402314277365804,
-          "lon": 6.9274466671049595,
-          "note": "at-grade road_surface at 383.15 m over at-grade rail_surface at 373.21 m, nothing between them",
-          "value": 9.936981201171875,
-          "zoom": 16
-        },
-        {
-          "lat": 46.40231276862323,
-          "lon": 6.927454378455877,
-          "note": "at-grade road_surface at 383.15 m over at-grade rail_surface at 373.21 m, nothing between them",
-          "value": 9.933486938476562,
-          "zoom": 16
-        },
-        {
-          "lat": 46.40231431927532,
-          "lon": 6.927446750923991,
-          "note": "at-grade road_surface at 383.15 m over at-grade rail_surface at 373.21 m, nothing between them",
-          "value": 9.933486938476562,
-          "zoom": 16
-        },
-        {
-          "lat": 46.40231125988066,
-          "lon": 6.927462089806795,
-          "note": "at-grade road_surface at 383.15 m over at-grade rail_surface at 373.22 m, nothing between them",
-          "value": 9.92999267578125,
-          "zoom": 16
-        },
-        {
-          "lat": 46.40231281053275,
-          "lon": 6.927454462274909,
-          "note": "at-grade road_surface at 383.15 m over at-grade rail_surface at 373.22 m, nothing between them",
-          "value": 9.92999267578125,
-          "zoom": 16
-        },
-        {
-          "lat": 46.402314361184835,
-          "lon": 6.927446834743023,
-          "note": "at-grade road_surface at 383.15 m over at-grade rail_surface at 373.22 m, nothing between them",
-          "value": 9.92999267578125,
-          "zoom": 16
-        },
-        {
-          "lat": 46.40233422629535,
-          "lon": 6.92749360576272,
-          "note": "at-grade road_surface at 383.15 m over at-grade rail_surface at 373.29 m, nothing between them",
-          "value": 9.864971306954544,
-          "zoom": 16
-        },
-        {
-          "lat": 46.40233422629535,
-          "lon": 6.92749360576272,
-          "note": "at-grade road_surface at 383.15 m over at-grade rail_surface at 373.29 m, nothing between them",
-          "value": 9.864971306954544,
-          "zoom": 16
-        }
-      ],
+      "median": 1.2866666666666688,
+      "offenders": [],
       "population": "Surface samples of every level-0 band (carriageway or rail formation) at 1.0 m plan spacing in the tile proper, where another level-0 band lies at or below the same plan position. Each stacked pair is measured once, from its upper side. Abutting regions meet at zero and sit in the population's floor.",
       "samples": 56,
       "sense": "higher_is_worse",
       "skipped": null,
-      "tail": 9.940000000000005,
+      "tail": 2.1400000000000006,
       "threshold": 3.0,
       "title": "At-grade band standing over another at-grade band",
-      "violation_pct": 19.642857142857142,
-      "violations": 11,
-      "worst": 9.936981201171875
+      "violation_pct": 0.0,
+      "violations": 0,
+      "worst": 2.14504962141109
     },
     {
       "id": "fabric.closure",
@@ -1155,15 +1098,15 @@
         {
           "lat": 46.44390377216041,
           "lon": 6.888427734375,
-          "note": "2 neighbouring tiles read 34021/49677 sSome(0) 402.391 / 34022/49677 sSome(0) 402.426 (lattice 1114832896,1627839179)",
-          "value": 0.035003662109375,
+          "note": "2 neighbouring tiles read 34021/49677 sSome(0) 402.391 / 34022/49677 sSome(0) 402.405 (lattice 1114832896,1627839179)",
+          "value": 0.014007568359375,
           "zoom": 16
         },
         {
           "lat": 46.443903939798474,
           "lon": 6.888427734375,
-          "note": "2 neighbouring tiles read 34021/49677 sSome(0) 402.390 / 34022/49677 sSome(0) 402.405 (lattice 1114832896,1627839181)",
-          "value": 0.0150146484375,
+          "note": "2 neighbouring tiles read 34021/49677 sSome(0) 402.390 / 34022/49677 sSome(0) 402.384 (lattice 1114832896,1627839181)",
+          "value": 0.0059814453125,
           "zoom": 16
         },
         {
@@ -1181,8 +1124,8 @@
       "tail": 0.0033333333333333335,
       "threshold": 0.005,
       "title": "Carriageway height disagreement across a tile border",
-      "violation_pct": 0.023345940141009477,
-      "violations": 5,
+      "violation_pct": 0.018676752112807584,
+      "violations": 4,
       "worst": 0.10400390625
     },
     {
@@ -1959,8 +1902,8 @@
       "tail": 0.6558333333333334,
       "threshold": 0.1,
       "title": "Cross-fall of a drawn pedestrian band",
-      "violation_pct": 2.0860646424388625,
-      "violations": 9547,
+      "violation_pct": 2.08584613771042,
+      "violations": 9546,
       "worst": 6.683951465794507
     },
     {
@@ -2662,7 +2605,7 @@
       6.9818115234375,
       46.47216796875
     ],
-    "commit": "04efcf1",
+    "commit": "ed4d130",
     "max_tiles": 4096,
     "spacing_m": 1.0,
     "tiles": 621,

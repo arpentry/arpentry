@@ -37,17 +37,6 @@ use super::{Check, Options};
 /// retaining wall costs.
 const LIP_M: f64 = 0.5;
 
-/// How far, in plan, an apron may stand from the kerb edge it closes and still
-/// count as standing on it. The apron sits on the silhouette the boundary edge
-/// was derived from, so this only absorbs quantization and the midpoint offset
-/// along a curving kerb.
-const APRON_NEAR_M: f64 = 1.5;
-
-/// How far an apron's span may fall short of the drop it is meant to close and
-/// still count as closing it: the kerb probe stands a metre out on ground that
-/// may be sloping, and both surfaces carry millimetre quantization.
-const APRON_SLOP_M: f64 = 0.5;
-
 /// How far outside the kerb, in metres, the ground is asked for. Far enough to
 /// clear the rounding on the shared boundary vertices, near enough that it is
 /// still the ground *at* the kerb and not the next thing along.
@@ -714,13 +703,7 @@ impl Check for Contact {
             };
             let gap = (road_z - rim_z).abs();
             let (lo_z, hi_z) = (road_z.min(rim_z), road_z.max(rim_z));
-            let walled = gap <= LIP_M
-                || tile
-                    .roads
-                    .iter()
-                    .filter(|r| r.is_apron())
-                    .filter_map(|r| r.mesh.span_near(mx, my, &tile.scale, APRON_NEAR_M))
-                    .any(|(lo, hi)| hi >= hi_z - APRON_SLOP_M && lo <= lo_z + APRON_SLOP_M);
+            let walled = gap <= LIP_M || super::apron_spans(tile, mx, my, lo_z, hi_z);
             self.unwalled.push(if walled { 0.0 } else { gap });
             if !walled {
                 let (lon, lat) = tile.lonlat(mx, my);
@@ -752,8 +735,10 @@ impl Check for Contact {
                     "Every terrain-mesh boundary edge midpoint that is not on the tile's own \
                      edge and has at-grade asphalt or rim over it. A cut edge carries no \
                      apron by design and is excluded with the tile edge. The apron is vertical, \
-                     so its span is asked within {APRON_NEAR_M:.1} m of the rim rather than at \
-                     it, with {APRON_SLOP_M:.1} m of slack at each end."
+                     so its span is asked within {:.1} m of the rim rather than at \
+                     it, with {:.1} m of slack at each end.",
+                    super::APRON_NEAR_M,
+                    super::APRON_SLOP_M
                 ),
                 detail: "Watertightness, walked along the terrain's own hole rim: at every \
                          terrain boundary edge that is not the tile's edge, the asphalt's height \
