@@ -560,10 +560,13 @@ fn bake_chunk(
             if raw.is_empty() {
                 continue;
             }
+            let t0 = std::time::Instant::now();
             let mut kerb = kerb_segments(&asphalt, &raw, &others);
             bridge_along_kerb(&mut kerb);
             let mask = kerb_mask(&kerb);
+            let t_kerb = t0.elapsed();
             let ring = sidewalk_ring(&asphalt, &ballast, &walls, &mask);
+            let t_ring = t0.elapsed() - t_kerb;
             if probe {
                 eprintln!(
                     "[ring]   ({level}, {layer}) walk {walk_layer}: asphalt {:.0} m2, bands {:.0} m2, raw mask {:.0} m2, \
@@ -597,13 +600,14 @@ fn bake_chunk(
             let half = priors::WALK_WIDTH_M * 0.5;
             let mut mine: Vec<SourceSeg> = Vec::new();
             let mut at: Vec<u64> = Vec::new();
+            let ring_r = Region::of(&ring);
             for (ki, k) in kerb.iter().enumerate() {
                 let mid = [
                     (k.p[0] + k.q[0]) * 0.5 + k.n[0] * half,
                     (k.p[1] + k.q[1]) * 0.5 + k.n[1] * half,
                 ];
                 let show = near_probe(mid);
-                let in_ring = inside(&ring, mid);
+                let in_ring = ring_r.inside(mid);
                 let a = frame.to_deg([k.p[0] + k.n[0] * half, k.p[1] + k.n[1] * half]);
                 let b = frame.to_deg([k.q[0] + k.n[0] * half, k.q[1] + k.n[1] * half]);
                 let ka = frame.to_deg([k.p[0] - k.n[0] * SEAT_INSET_M, k.p[1] - k.n[1] * SEAT_INSET_M]);
@@ -643,7 +647,7 @@ fn bake_chunk(
                 let mut probe_w = priors::WALK_WIDTH_STEP_M;
                 let kmid = [(k.p[0] + k.q[0]) * 0.5, (k.p[1] + k.q[1]) * 0.5];
                 while probe_w <= priors::WALK_WIDTH_M + 1e-9 {
-                    if !inside(&ring, [kmid[0] + k.n[0] * (probe_w - 0.05), kmid[1] + k.n[1] * (probe_w - 0.05)]) {
+                    if !ring_r.inside([kmid[0] + k.n[0] * (probe_w - 0.05), kmid[1] + k.n[1] * (probe_w - 0.05)]) {
                         break;
                     }
                     width = probe_w;
@@ -687,6 +691,7 @@ fn bake_chunk(
                 });
                 at.push(ki as u64);
             }
+            let t_seats = t0.elapsed() - t_kerb - t_ring;
             // **The ring is fitted to the ground before the ground is benched**
             // (docs/GROUND.md §2), by the band's own rule: a station whose
             // bench face would pass the cap is narrowed, and one no width can
@@ -731,6 +736,17 @@ fn bake_chunk(
                 }
                 None => ring,
             };
+            if probe && t0.elapsed().as_millis() > 500 {
+                eprintln!(
+                    "[ring]   ({level},{layer}) walk {walk_layer}: {} stations, {} benches: kerb {:?} ring {:?} seats {:?} fit+final {:?}",
+                    kerb.len(),
+                    mine.len(),
+                    t_kerb,
+                    t_ring,
+                    t_seats,
+                    t0.elapsed() - t_kerb - t_ring - t_seats
+                );
+            }
             if let Some(q) = probe_m {
                 eprintln!(
                     "[ring-at] ({level},{layer}) walk {walk_layer}: probe in final ring: {} (ring {:.0} m2, {} benches)",
@@ -1394,6 +1410,12 @@ fn sidewalk_ring(asphalt: &Shapes, ballast: &Shapes, walls: &Shapes, mask: &Shap
 /// read there: the ring's seat is the kerb the asphalt draws, plus the rise.
 const SEAT_INSET_M: f64 = 0.3;
 
+/// Cosine of the turn at a contour vertex past which a station may not
+/// straddle it: 20°. A fillet arc turns a few degrees per edge and is walked
+/// as chords; a junction mouth's corner or a building's corner in the kerb is
+/// a break.
+const RING_TURN_COS: f64 = 0.94;
+
 /// Spacing of the kerb stations the ring is walked at, metres — short enough
 /// that a bench seat interpolated between two stations stays on the road's
 /// profile across a grade change, long enough that the bench population stays
@@ -1411,6 +1433,50 @@ struct KerbSeg {
     arc: f64,
     contour: usize,
     masked: bool,
+}
+
+/// A region with its shapes' bounding boxes, for point tests over many
+/// points: a chunk's mask holds hundreds of shapes and a kerb has tens of
+/// thousands of stations, and the parity walk over every vertex of every
+/// shape was most of the ring's cost.
+struct Region<'a> {
+    shapes: &'a Shapes,
+    boxes: Vec<(f64, f64, f64, f64)>,
+}
+
+impl<'a> Region<'a> {
+    fn of(shapes: &'a Shapes) -> Region<'a> {
+        let boxes = shapes
+            .iter()
+            .map(|shape| {
+                shape.iter().flatten().fold((f64::MAX, f64::MAX, f64::MIN, f64::MIN), |b, q| {
+                    (b.0.min(q[0]), b.1.min(q[1]), b.2.max(q[0]), b.3.max(q[1]))
+                })
+            })
+            .collect();
+        Region { shapes, boxes }
+    }
+
+    fn inside(&self, p: Pt) -> bool {
+        let mut odd = false;
+        for (shape, b) in self.shapes.iter().zip(&self.boxes) {
+            if p[0] < b.0 || p[0] > b.2 || p[1] < b.1 || p[1] > b.3 {
+                continue;
+            }
+            for ring in shape {
+                let n = ring.len();
+                for i in 0..n {
+                    let (a, c) = (ring[i], ring[(i + 1) % n]);
+                    if (a[1] > p[1]) != (c[1] > p[1])
+                        && p[0] < a[0] + (c[0] - a[0]) * (p[1] - a[1]) / (c[1] - a[1])
+                    {
+                        odd = !odd;
+                    }
+                }
+            }
+        }
+        odd
+    }
 }
 
 /// Even-odd point-in-region over every contour of `shapes`; holes fall out of
@@ -1441,35 +1507,78 @@ fn inside(shapes: &Shapes, p: Pt) -> bool {
 fn kerb_segments(asphalt: &Shapes, raw: &Shapes, others: &Shapes) -> Vec<KerbSeg> {
     let mut out = Vec::new();
     let half = priors::WALK_WIDTH_M * 0.5;
+    let (raw, others) = (Region::of(raw), Region::of(others));
     let mut contour = 0usize;
     for shape in asphalt {
         for ring in shape {
             let n = ring.len();
-            let mut arc = 0.0;
+            if n < 3 {
+                continue;
+            }
+            // Cumulative arc round the contour, and the vertices where it
+            // turns sharply enough that a station may not straddle them: a
+            // station is a chord, and a chord across a corner offsets its
+            // bench off the kerb. Stations are otherwise cut by arc length,
+            // so a fillet drawn as a hundred centimetre edges is a few
+            // stations rather than a hundred.
+            let mut arc = vec![0.0f64; n + 1];
             for i in 0..n {
                 let (a, b) = (ring[i], ring[(i + 1) % n]);
-                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-                let len = (dx * dx + dy * dy).sqrt();
-                if len < 1e-6 {
+                arc[i + 1] = arc[i] + ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+            }
+            let total = arc[n];
+            if total < 1e-6 {
+                continue;
+            }
+            let point_at = |s: f64| -> Pt {
+                let s = s.clamp(0.0, total);
+                let i = arc.partition_point(|&a| a <= s).saturating_sub(1).min(n - 1);
+                let (a, b) = (ring[i], ring[(i + 1) % n]);
+                let seg = arc[i + 1] - arc[i];
+                let t = if seg > 1e-9 { (s - arc[i]) / seg } else { 0.0 };
+                [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+            };
+            let mut breaks: Vec<f64> = vec![0.0];
+            for i in 1..n {
+                let (p, c, q) = (ring[i - 1], ring[i], ring[(i + 1) % n]);
+                let (ux, uy) = (c[0] - p[0], c[1] - p[1]);
+                let (vx, vy) = (q[0] - c[0], q[1] - c[1]);
+                let (lu, lv) = (ux.hypot(uy), vx.hypot(vy));
+                if lu < 1e-9 || lv < 1e-9 {
                     continue;
                 }
-                let nrm = [dy / len, -dx / len];
-                let steps = (len / RING_STEP_M).ceil().max(1.0) as usize;
+                let cos = ((ux * vx + uy * vy) / (lu * lv)).clamp(-1.0, 1.0);
+                if cos < RING_TURN_COS {
+                    breaks.push(arc[i]);
+                }
+            }
+            breaks.push(total);
+            for w in breaks.windows(2) {
+                let (s0, s1) = (w[0], w[1]);
+                if s1 - s0 < 1e-6 {
+                    continue;
+                }
+                let steps = ((s1 - s0) / RING_STEP_M).ceil().max(1.0) as usize;
                 for k in 0..steps {
-                    let (t0, t1) = (k as f64 / steps as f64, (k + 1) as f64 / steps as f64);
-                    let p = [a[0] + dx * t0, a[1] + dy * t0];
-                    let q = [a[0] + dx * t1, a[1] + dy * t1];
+                    let a0 = s0 + (s1 - s0) * k as f64 / steps as f64;
+                    let a1 = s0 + (s1 - s0) * (k + 1) as f64 / steps as f64;
+                    let (p, q) = (point_at(a0), point_at(a1));
+                    let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
+                    let len = (dx * dx + dy * dy).sqrt();
+                    if len < 1e-6 {
+                        continue;
+                    }
+                    let nrm = [dy / len, -dx / len];
                     let mid = [(p[0] + q[0]) * 0.5 + nrm[0] * half, (p[1] + q[1]) * 0.5 + nrm[1] * half];
                     out.push(KerbSeg {
                         p,
                         q,
                         n: nrm,
-                        len: len / steps as f64,
-                        arc,
+                        len: a1 - a0,
+                        arc: a0,
                         contour,
-                        masked: inside(raw, mid) && !inside(others, mid),
+                        masked: raw.inside(mid) && !others.inside(mid),
                     });
-                    arc += len / steps as f64;
                 }
             }
             contour += 1;
@@ -1621,8 +1730,11 @@ fn fitted_mask(kerb: &[KerbSeg], benches: &[SourceSeg], at: &[u64]) -> Shapes {
         // A quad, not a stroke: a stroke's caps reach a full width past the
         // station's ends along the kerb, and two of them bridged the refused
         // station between them across a terrace wall (6.9151,46.4366).
+        // As wide as the bench, not wider: the ring is what the bench
+        // holds up, and half a metre of slack past a narrowed bench's edge
+        // is half a metre of pavement standing over the batter.
         let (ux, uy) = (dx / len * OVERRUN_M, dy / len * OVERRUN_M);
-        let w = 2.0 * b.drawn_half() + RING_MASK_SLACK_M;
+        let w = 2.0 * b.drawn_half() + OVERRUN_M;
         let (p, q) = ([k.p[0] - ux, k.p[1] - uy], [k.q[0] + ux, k.q[1] + uy]);
         let inset = RING_MASK_SLACK_M;
         shapes.push(vec![vec![
@@ -1699,6 +1811,10 @@ fn kerb_seat(
     for j in pins {
         let Some(height) = j.height() else { continue };
         if level != 0 || j.layer() != layer {
+            continue;
+        }
+        let (c, (rx, ry)) = (j.point(), j.area().reach_deg());
+        if (at.x - c.x).abs() > rx || (at.y - c.y).abs() > ry {
             continue;
         }
         let (de, dn) = j.area().offset_m(at);
