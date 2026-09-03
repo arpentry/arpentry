@@ -1046,6 +1046,13 @@ impl Street {
                 self.rim_by[material].push(step.abs());
                 if step.abs() > WALK_RIM_M {
                     let (lon, lat) = tile.lonlat(mx, my);
+                    // ARPT_DEBUG_RIM: every violation, for the anatomy.
+                    if std::env::var_os("ARPT_DEBUG_RIM").is_some() {
+                        eprintln!(
+                            "[rim] {lon:.6},{lat:.6} {} step {step:+.3} band {band_z:.2} ground {rim_z:.2}",
+                            if material == 0 { "walk" } else { "path" }
+                        );
+                    }
                     let side = if step > 0.0 { "above" } else { "below" };
                     self.rim_worst.offer(Offender {
                         lon,

@@ -466,6 +466,15 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         // The ring's bench segments are the ring's own walk sources: the
         // height field reads the ring's seats from them, on the ring's sheet.
         junctions.extend_sources(pavement.ring_benches().iter().cloned());
+        // The hosted bands are the ring's mask and nothing else now: not the
+        // field's sources (`HeightField::for_tile`) and not stratum D's
+        // benches either. Benched alongside the ring's own, the ground picked
+        // whichever was nearer, and where a band's seat (its leg's profile)
+        // and the ring's (the field's blend) disagree at a junction mouth the
+        // drawn ring stood 0.1–0.2 m off the ground it was given.
+        walk_bands.retain(|b| {
+            !(b.surface == crate::priors::Surface::Walkway && b.corridor != synth::walkway::NO_HOST)
+        });
         // ARPT_WALK_SHEET_AT=lon,lat — the ring benches within ~30 m of the
         // point, beside the bands `carriageway::bake` already printed.
         if let Some(at) = std::env::var_os("ARPT_WALK_SHEET_AT") {
