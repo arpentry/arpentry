@@ -321,6 +321,12 @@ impl Check for Kerb {
         let footprints = crate::verify::checks::street::Footprints::build(tile);
         let rims: Vec<&RoadMesh> = tile.roads.iter().filter(|r| is_road_rim(r)).collect();
         let on_edge = |v: f64| v.abs() < 1e-6 || (v - 1.0).abs() < 1e-6;
+        // ARPT_KERB_AT=lon,lat — every station within 10 m of the point,
+        // with the road mesh it lies on and what it read.
+        let probe_at: Option<(f64, f64)> = std::env::var("ARPT_KERB_AT").ok().and_then(|v| {
+            let (a, b) = v.split_once(',')?;
+            Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+        });
         for road in tile.roads.iter().filter(|r| is_road_surface(r)) {
             for chain in chains(&road.mesh, &tile.scale) {
                 let closed = chain.len() > 2 && chain.first().map(|p| p.0) == chain.last().map(|p| p.0);
@@ -356,6 +362,20 @@ impl Check for Kerb {
                         } else {
                             State::Bare
                         };
+                        if let Some((plon, plat)) = probe_at {
+                            let (lon, lat) = tile.lonlat(x, y);
+                            let dm = ((lon - plon) * tile.scale.mx * tile.bounds.width()
+                                / tile.bounds.width())
+                            .hypot((lat - plat) * tile.scale.my / tile.bounds.height() * tile.bounds.height());
+                            let _ = dm;
+                            if (lon - plon).abs() < 0.00015 && (lat - plat).abs() < 0.0001 {
+                                let (qlon, qlat) = tile.lonlat(px, py);
+                                eprintln!(
+                                    "[kerb-at] road sheet {:?} station {lon:.6},{lat:.6} probe {qlon:.6},{qlat:.6} {state:?}",
+                                    road.sheet
+                                );
+                            }
+                        }
                         stations.push(Station { x, y, state });
                     }
                 }
