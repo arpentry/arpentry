@@ -84,6 +84,15 @@ struct Src<'a> {
     /// graph solved (`synth::walkgraph`). A carriageway's height stays its
     /// profile — its seats are stamped *from* it and carry nothing more.
     seat: Option<(f64, f64)>,
+    /// Whether this is a carriageway — the one kind of source a kerb stands
+    /// beside. A rail formation shares the road sheet and must not answer for
+    /// the kerb of the road it runs above.
+    asphalt: bool,
+    /// Whether a pedestrian source is seated on a street's kerb (a hosted
+    /// band, a ring bench) rather than on the ground (a path). Where both
+    /// cover a point and disagree by a storey, the kerb-seated one is the
+    /// street's and wins.
+    hosted: bool,
 }
 
 /// Which sheet of the field a query is about: the level, the grade-separation
@@ -189,8 +198,22 @@ impl<'a> HeightField<'a> {
         let mut src_grid = GridIndex::new();
         let mut ids = Vec::new();
         junctions.sources_near(box_, &mut ids);
+        // With the sidewalk ring drawn, its bench segments are the walk
+        // sheet's kerb-seated sources and the hosted bands are only the
+        // ring's mask: a band seated on its own leg's profile beside a bench
+        // seated on the field's blend tilted the ring across its width by
+        // the decimetres a junction's arms disagree by.
+        let ring_from = crate::synth::pavement::walk_ring()
+            .then(|| junctions.ring_from())
+            .flatten();
         for &i in &ids {
             let s = *junctions.source(i);
+            if ring_from.is_some_and(|from| (i as usize) < from)
+                && s.surface == crate::priors::Surface::Walkway
+                && s.corridor != crate::synth::walkway::NO_HOST
+            {
+                continue;
+            }
             let pad_s = s.half_m / DEG_M;
             let bb = (
                 s.a.x.min(s.b.x) - pad_s,
@@ -209,6 +232,8 @@ impl<'a> HeightField<'a> {
                 corridor: s.corridor,
                 profile: solved.profile(s.corridor),
                 seat: s.surface.is_pedestrian().then_some((s.height_a, s.height_b)),
+                asphalt: s.surface == crate::priors::Surface::Asphalt,
+                hosted: s.corridor != crate::synth::walkway::NO_HOST,
             });
         }
 
@@ -314,6 +339,17 @@ impl<'a> HeightField<'a> {
         // curb-return fillet is paved but inside nobody's buffer. Bounded — see
         // `NEAR_M` — so it answers for the fillet and not for the whole tile.
         let mut best: Option<(f64, f64, f64)> = None; // (distance, reach, height)
+        // The nearest kerb-seated walk source, for the hand-back beside a
+        // kerb: a point of the sidewalk ring no bench covers must not ramp
+        // toward a path climbing the wall behind it.
+        let mut best_hosted: Option<(f64, f64, f64, crate::scene::CorridorId)> = None;
+        // The walk-sheet rules below exist for the sidewalk ring
+        // (`synth::pavement::walk_ring`) and are gated on it, so the field
+        // is bit-identical without it.
+        let ring = sheet.walk && crate::synth::pavement::walk_ring();
+        // The walk sources covering this point, `(distance, reach, height)`,
+        // held back until all are known — see the storey rule below.
+        let mut covering: Vec<(f64, f64, f64, bool)> = Vec::new();
 
         self.src_grid.query((lon, lat, lon, lat), scratch);
         for &i in scratch.iter() {
@@ -357,8 +393,56 @@ impl<'a> HeightField<'a> {
             if best.is_none_or(|(bd, _, _)| d < bd) {
                 best = Some((d, s.half_m, h));
             }
+            if s.hosted && best_hosted.is_none_or(|(bd, _, _, _)| d < bd) {
+                best_hosted = Some((d, s.half_m, h, s.corridor));
+            }
             if d <= s.half_m {
-                let w = kernel(d, s.half_m);
+                if ring {
+                    covering.push((d, s.half_m, h, s.hosted));
+                } else {
+                    let w = kernel(d, s.half_m);
+                    num += w * h;
+                    den += w;
+                }
+            }
+        }
+        // **Two walk sources a storey apart are two surfaces, not one to
+        // blend.** The sidewalk ring runs along the kerb at the foot of a
+        // terrace whose path band stands four metres up the wall, and both
+        // cover the same plan (`synth::sheets` placed the bands before the
+        // ring existed, so it never saw the overlap): blended, the ring
+        // climbed the wall over half a metre (`slope.walk_crossfall` 415 %).
+        // The ground already says how this is settled — benches win by
+        // proximity, never a mean of several (docs/GROUND.md §2) — so where
+        // the covering set disagrees by more than a kerb's worth of storey
+        // ([`crate::priors::WALK_ON_ASPHALT_M`]), the nearest source's
+        // height decides which surface this point is on and only sources
+        // within that band of it blend. Agreeing sources — a dropped kerb
+        // ramping a hosted seat into a path's — blend exactly as before.
+        // Which source anchors: the nearest **kerb-seated** one where any
+        // covers — a staircase leaving a sidewalk has its foot on the
+        // sidewalk, and a sidewalk under the foot of a staircase is still the
+        // sidewalk — else the nearest of the ground-seated ones.
+        if ring && !covering.is_empty() {
+            let (lo, hi) = covering.iter().fold((f64::MAX, f64::MIN), |(lo, hi), &(_, _, h, _)| {
+                (lo.min(h), hi.max(h))
+            });
+            let sep = crate::priors::WALK_ON_ASPHALT_M;
+            let anchor = if hi - lo > sep {
+                let pool: Vec<&(f64, f64, f64, bool)> = if covering.iter().any(|c| c.3) {
+                    covering.iter().filter(|c| c.3).collect()
+                } else {
+                    covering.iter().collect()
+                };
+                Some(pool.iter().fold(pool[0], |a, &b| if b.0 < a.0 { b } else { a }).2)
+            } else {
+                None
+            };
+            for &(d, half, h, _) in &covering {
+                if anchor.is_some_and(|a| (h - a).abs() > sep) {
+                    continue;
+                }
+                let w = kernel(d, half);
                 num += w * h;
                 den += w;
             }
@@ -452,13 +536,60 @@ impl<'a> HeightField<'a> {
             // straddling the threshold, one taking the road and one the ground,
             // 0.36 m apart in a metric that had been exactly zero. So the
             // hand-back ramps over the fillet's own width instead.
-            match best {
+            // What a walk point hands back to: the kerb beside it where a
+            // carriageway is within a pavement's reach, else the ground. And
+            // what ramps into it: beside a kerb only a kerb-seated source —
+            // the nearest source of any kind was the path up the terrace wall
+            // behind the sidewalk, and the ring climbed four metres toward it.
+            // Beside a kerb means: a kerb-seated source within a fillet's
+            // reach *and* a carriageway within a pavement's. A path in open
+            // ground near a road — no sidewalk between them — keeps handing
+            // back to the ground it stands on, as it always did.
+            // The kerb is the **host's**: the nearest kerb-seated source
+            // says which street this pavement belongs to, and the floor is
+            // that street's asphalt beside the point, whatever sheet it is on
+            // — the walk sheet's own ordinal can be another road's (a terrace
+            // street above a lower one shares its ordinal with the lower
+            // road's pavement), and reading that road's kerb dropped a
+            // sidewalk four metres down the bank.
+            let near_hosted =
+                best_hosted.filter(|(d, reach, _, _)| d - reach <= crate::priors::CURB_RETURN_M);
+            let kerb_floor = near_hosted.and_then(|(_, _, _, host)| {
+                // Over the pavement's reach, not the point: an asphalt
+                // source's index box is its own half-width, and a ring
+                // point two metres outside the kerb is outside every one.
+                let r_lat = crate::priors::WALK_KERB_REACH_M / DEG_M;
+                let r_lon = r_lat / lat.to_radians().cos().max(1e-6);
+                let mut near: Vec<u32> = Vec::new();
+                self.src_grid.query((lon - r_lon, lat - r_lat, lon + r_lon, lat + r_lat), &mut near);
+                let mut floor: Option<(f64, f64)> = None;
+                for &i in near.iter() {
+                    let s = &self.srcs[i as usize];
+                    if !s.asphalt || s.corridor != host || s.sheet.level != sheet.level {
+                        continue;
+                    }
+                    let (d, _) = point_to_segment_mt(lon, lat, s.a, s.b, s.cos_lat);
+                    let clear = d - s.half_m;
+                    if clear <= crate::priors::WALK_KERB_REACH_M
+                        && floor.is_none_or(|(fd, _)| clear < fd)
+                    {
+                        let h = road::on_ground(ground, s.profile, sampler, z, z_ref, lon, lat);
+                        floor = Some((clear, h + crate::priors::KERB_RISE_M));
+                    }
+                }
+                floor.map(|(_, h)| h)
+            });
+            let (from, floor) = match (ring, near_hosted, kerb_floor) {
+                (true, Some((d, r, h, _)), Some(k)) => (Some((d, r, h)), k),
+                _ => (best, ground),
+            };
+            match from {
                 Some((d, reach, h)) => {
                     let over = (d - reach).max(0.0);
                     let w = (1.0 - over / crate::priors::CURB_RETURN_M).clamp(0.0, 1.0);
-                    w * h + (1.0 - w) * ground
+                    w * h + (1.0 - w) * floor
                 }
-                None => ground,
+                None => floor,
             }
         };
         // The pin mixes over *that*, whether or not a carriageway covered the
@@ -500,7 +631,7 @@ fn r_of(p: &Pin, de: f64, dn: f64, d: f64) -> f64 {
 /// The plain compact bump blends across an overlap over its full width, is
 /// smooth in `d`, and still vanishes at the edge so a source joining or leaving
 /// the covering set changes nothing.
-fn kernel(d: f64, r: f64) -> f64 {
+pub(crate) fn kernel(d: f64, r: f64) -> f64 {
     if !(r > 0.0) {
         return 0.0;
     }
@@ -519,7 +650,7 @@ fn kernel(d: f64, r: f64) -> f64 {
 /// back at the boundary. With the corridor shape a pin was already 2 % diluted
 /// 5 cm from the centre and a quarter-strength at half its radius, which is no
 /// pin at all.
-fn pin_kernel(d: f64, r: f64) -> f64 {
+pub(crate) fn pin_kernel(d: f64, r: f64) -> f64 {
     if !(r > 0.0) {
         return 0.0;
     }

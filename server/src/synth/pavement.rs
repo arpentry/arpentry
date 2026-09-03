@@ -36,8 +36,11 @@ use geo_types::Coord;
 use crate::priors::{self, PAVE_BAKE_Z, PAVE_PAD_M};
 use crate::project::Bounds;
 use crate::scene::DEG_M;
-use crate::synth::carriageway::{Handover, CarriagewayModel};
-use crate::synth::poly::{self, MFrame, Shapes};
+use crate::assemble::facades::Facades;
+use crate::assemble::facades::Section;
+use crate::synth::carriageway::{CarriagewayModel, Handover, SourceSeg};
+use crate::synth::poly::{self, MFrame, Pt, Shapes};
+use crate::synth::walkway::NO_HOST;
 
 /// A chunk key: the `(x, y)` of its z13 tile.
 pub type ChunkKey = (u32, u32);
@@ -65,6 +68,14 @@ pub struct LevelShapes {
 /// through an `Arc`.
 pub struct PavementModel {
     chunks: HashMap<ChunkKey, Vec<LevelShapes>>,
+    /// The bench under the sidewalk ring ([`walk_ring`]): one band segment per
+    /// stretch of kerb the ring runs along, offset half a pavement out from
+    /// the kerb and seated at the kerb's road height plus the rise — what
+    /// stratum D benches, so the ring's outer edge meets the ground at its own
+    /// height (docs/GROUND.md §2, "the ground under a walkway is the
+    /// walkway"). One derivation, two readers: the drawn ring and its bench
+    /// are the same offset of the same kerb.
+    ring_benches: Vec<SourceSeg>,
     /// The abutment cuts ([`crate::synth::carriageway::Handover`]) reaching each
     /// chunk, so the mesher can tell the boundary where a deck takes over from
     /// the boundary where the ground does. Kept beside the shapes rather than
@@ -86,6 +97,11 @@ impl PavementModel {
     pub fn handovers_for(&self, bounds: &Bounds) -> &[Handover] {
         let c = chunk_of(bounds.west + 0.5 * bounds.width(), bounds.south + 0.5 * bounds.height());
         self.handovers.get(&c).map_or(&[], |v| v.as_slice())
+    }
+
+    /// The sidewalk ring's bench segments, in chunk order (invariant 5).
+    pub fn ring_benches(&self) -> &[SourceSeg] {
+        &self.ring_benches
     }
 
     /// Number of chunks carrying asphalt.
@@ -168,10 +184,53 @@ fn field_yields() -> bool {
     *ON.get_or_init(|| std::env::var_os("ARPT_FIELD_YIELDS").is_some())
 }
 
+/// Whether the sidewalk is drawn as the **ring** of the paved union rather
+/// than as a buffer of each street's own offset band (`ARPT_WALK_RING=1`,
+/// opt-in while it is measured; `data/plans/kerb-ring-2026-09-03.md`).
+///
+/// A hosted walk band is an offset of one street's centerline, so it ends
+/// where that street's arc ends: at a junction every leg's pavement stops
+/// short of the corner, and around a roundabout — a dozen ring arcs no
+/// attachment survives on — the whole outer kerb is bare. The union's boundary
+/// has none of those ends. Grown by a pavement's width, less the asphalt, less
+/// the buildings grown by their clearance, it is the kerb line's own sidewalk:
+/// continuous around a corner and a ring by construction, and its outer edge
+/// follows the facades as a curve instead of the width ladder's steps.
+///
+/// The bands are not discarded: they still carry the seats, the bench and the
+/// sheet of everything pedestrian. Here they become the **mask** that says
+/// where along the kerb the ring is pavement at all.
+pub fn walk_ring() -> bool {
+    std::env::var_os("ARPT_WALK_RING").is_some()
+}
+
+/// Slack around a hosted band's own drawn width when it masks the ring, metres
+/// — the smoothing displacement between the band's centerline and the union's
+/// kerb, so a band a hand's breadth off its kerb still masks the ring beside it.
+const RING_MASK_SLACK_M: f64 = 0.5;
+
+/// How far past its ends a band's mask reaches, metres: around the fillet a
+/// corner is cut at and the pavement's own width beyond it, so two legs' masks
+/// meet across the corner arc between them.
+const RING_CORNER_M: f64 = priors::CURB_RETURN_M + priors::WALK_WIDTH_M;
+
+/// What the sidewalk ring needs to fit itself to the ground: the senior strata
+/// (`ground::derive_seniors`) and the DEM the bands are fitted against, so the
+/// ring's bench is narrowed or refused by exactly the rule a band's is
+/// (`synth::walkway::fit_to_ground`) and the drawn ring follows the width that
+/// came out.
+pub struct RingContext<'a> {
+    pub seniors: &'a [crate::ground::GroundLayer],
+    pub terrain: Option<&'a std::path::Path>,
+    pub z_ref: u8,
+}
+
 pub fn bake(
     junctions: &CarriagewayModel,
     threads: usize,
     field: Option<&FieldYields>,
+    walls: Option<&Facades>,
+    ring: Option<&RingContext>,
 ) -> PavementModel {
     // Which chunks each carriageway segment can influence: its own extent plus
     // the pad, since a union boundary inside a chunk can be moved by geometry
@@ -208,7 +267,7 @@ pub fn bake(
     // Same fan-out shape as the solve (`solve/mod.rs`): a shared cursor, one
     // worker per thread, results collected under a mutex and reassembled by key.
     let next = std::sync::Mutex::new(0usize);
-    let out: std::sync::Mutex<Vec<(ChunkKey, Vec<LevelShapes>)>> =
+    let out: std::sync::Mutex<Vec<(ChunkKey, Vec<LevelShapes>, Vec<SourceSeg>)>> =
         std::sync::Mutex::new(Vec::new());
     let threads = threads.max(1).min(keys.len().max(1));
     let field = if field_yields() { field } else { None };
@@ -252,7 +311,7 @@ pub fn bake(
                     (Some(hf), Some(sm), Some(f)) => Some((hf, sm, f.z_ref)),
                     _ => None,
                 };
-                let levels = bake_chunk(junctions, k, &by_chunk[&k], &mut fy);
+                let (levels, benches) = bake_chunk(junctions, k, &by_chunk[&k], &mut fy, walls, ring);
                 if std::env::var_os("ARPT_PAVE_PROBE").is_some() && t.elapsed().as_millis() > 200 {
                     eprintln!(
                         "[pave] chunk {:?}: {} sources -> {} levels in {:?}",
@@ -262,16 +321,24 @@ pub fn bake(
                         t.elapsed()
                     );
                 }
-                if !levels.is_empty() {
-                    out.lock().expect("pavement results poisoned").push((k, levels));
+                if !levels.is_empty() || !benches.is_empty() {
+                    out.lock().expect("pavement results poisoned").push((k, levels, benches));
                 }
                 }
             });
         }
     });
 
-    let chunks: HashMap<ChunkKey, Vec<LevelShapes>> =
-        out.into_inner().expect("pavement results poisoned").into_iter().collect();
+    let mut baked = out.into_inner().expect("pavement results poisoned");
+    baked.sort_by_key(|(k, _, _)| *k);
+    let mut chunks: HashMap<ChunkKey, Vec<LevelShapes>> = HashMap::new();
+    let mut ring_benches: Vec<SourceSeg> = Vec::new();
+    for (k, levels, benches) in baked {
+        if !levels.is_empty() {
+            chunks.insert(k, levels);
+        }
+        ring_benches.extend(benches);
+    }
 
     // Abutment cuts, filed under every chunk they reach. A cut is a short
     // segment, so both its ends' chunks — and any between — are enough; the
@@ -289,7 +356,7 @@ pub fn bake(
             }
         }
     }
-    PavementModel { chunks, handovers }
+    PavementModel { chunks, handovers, ring_benches }
 }
 
 /// Bakes one chunk: buffer every source, union per level, round the curb returns
@@ -303,10 +370,22 @@ fn bake_chunk(
         &mut crate::ground::sampler::GroundSampler,
         u8,
     )>,
-) -> Vec<LevelShapes> {
+    walls: Option<&Facades>,
+    ring_ctx: Option<&RingContext>,
+) -> (Vec<LevelShapes>, Vec<SourceSeg>) {
     let (cx, cy) = key;
     let rect = chunk_bounds(cx, cy);
     let frame = MFrame::of(chunk_centre(cx, cy));
+    let ring_on = walk_ring();
+    // The hosted walk bands, buffered: the sidewalk ring's mask (see
+    // [`walk_ring`]). Keyed by the level and the sheet of the **asphalt the
+    // band borders** ([`host_layer`]) — that is the region the ring is cut
+    // from — and within that by the band's **own** walk sheet, which is the
+    // sheet the ring is drawn on: the walk placement (`sheets::assign_all`)
+    // separates a strip descending into a trench from the path on the rim
+    // above it, and a ring merged across that separation read the upper
+    // strip's seat beside the lower kerb.
+    let mut ring_mask: HashMap<(i64, u32), HashMap<u32, Shapes>> = HashMap::new();
 
     // Group the buffered carriageways by level — the partition that keeps a
     // viaduct from unioning with the street beneath it.
@@ -349,14 +428,32 @@ fn bake_chunk(
             }
             buffered = poly::difference(&buffered, &cut_beyond(&cut, &frame, outward));
         }
-        if !buffered.is_empty() {
-            // Keyed on the **drawn** material rather than the modelled one
-            // where [`drawn`] says so: a footway and the sidewalk it runs into
-            // would then be one region, unioning instead of the junior being
-            // subtracted under the senior and each wearing its own rim.
-            // Opt-in — see [`drawn`] for what the measurement said about it.
-            by_level.entry((run.level, run.layer, drawn(run.surface))).or_default().extend(buffered);
+        if buffered.is_empty() {
+            continue;
         }
+        if ring_on && run.hosted && run.surface == priors::Surface::Walkway {
+            // A hosted band is not drawn; it says where the ring is pavement.
+            let widened = if uniform {
+                poly::buffer_line(&line, run.half_m + RING_MASK_SLACK_M)
+            } else {
+                let wider: Vec<[f64; 2]> =
+                    run.section.iter().map(|&[l, r]| [l + RING_MASK_SLACK_M, r + RING_MASK_SLACK_M]).collect();
+                poly::buffer_section(&line, &wider)
+            };
+            ring_mask
+                .entry((run.level, host_layer(junctions, &run)))
+                .or_default()
+                .entry(run.layer)
+                .or_default()
+                .extend(widened);
+            continue;
+        }
+        // Keyed on the **drawn** material rather than the modelled one
+        // where [`drawn`] says so: a footway and the sidewalk it runs into
+        // would then be one region, unioning instead of the junior being
+        // subtracted under the senior and each wearing its own rim.
+        // Opt-in — see [`drawn`] for what the measurement said about it.
+        by_level.entry((run.level, run.layer, drawn(run.surface))).or_default().extend(buffered);
     }
     // Where two at-grade sheets stack past the grade-separation boundary, the
     // junior yields the contested plan space (docs/GENERATION.md I9).
@@ -372,15 +469,211 @@ fn bake_chunk(
     // the intersections near this chunk matter, and only their *shape* — the
     // fillet material is whatever the closing adds inside one of these.
     let pad = (PAVE_PAD_M + priors::CURB_RETURN_M) / DEG_M;
-    let masks = intersection_masks(junctions, &rect, pad, &frame);
+    let extents = intersection_shapes(junctions, &rect, pad, &frame);
+    let masks = if extents.is_empty() {
+        Vec::new()
+    } else {
+        poly::dilate(&poly::union_all(&extents), priors::CURB_RETURN_M)
+    };
+
+    // The closed regions, computed once: the ring below reads the asphalt's
+    // before the loop draws it, and the seniors' subtraction reads them again.
+    let mut closed_of: HashMap<(i64, u32, priors::Surface), Shapes> = HashMap::new();
+    let closing = |key: (i64, u32, priors::Surface),
+                       by_level: &HashMap<(i64, u32, priors::Surface), Shapes>,
+                       closed_of: &mut HashMap<(i64, u32, priors::Surface), Shapes>|
+     -> Shapes {
+        if let Some(c) = closed_of.get(&key) {
+            return c.clone();
+        }
+        let open = by_level.get(&key).map(|s| poly::union_all(s)).unwrap_or_default();
+        // The sidewalk ring inherits its curb returns from the asphalt it was
+        // cut from, and a closing of its own is worse than none: at the foot
+        // of a terrace it bridged the five metres between the ring and the
+        // path on the lower level, and the fused region climbed the bank
+        // between them (`slope.walk_crossfall` 415 % at 6.9093,46.4378).
+        let closed = if open.is_empty() || (ring_on && key.2.is_pedestrian()) {
+            open
+        } else {
+            poly::close_within(&open, priors::CURB_RETURN_M, &masks)
+        };
+        closed_of.insert(key, closed.clone());
+        closed
+    };
+
+    // The sidewalk ring, per asphalt region ([`walk_ring`]): drawn as the
+    // Walkway region of the same level and layer, alongside whatever free
+    // bands that key already holds; its bench goes back to the model.
+    let mut benches: Vec<SourceSeg> = Vec::new();
+    if ring_on {
+        let probe = std::env::var_os("ARPT_PAVE_PROBE").is_some();
+        let walls = wall_shapes(walls, &rect, &frame);
+        let cos_lat = chunk_centre(cx, cy).y.to_radians().cos();
+        let asphalt_keys: Vec<(i64, u32, priors::Surface)> =
+            levels.iter().copied().filter(|k| k.2 == priors::Surface::Asphalt).collect();
+        if probe {
+            let mut mk: Vec<_> = ring_mask
+                .iter()
+                .flat_map(|(k, g)| g.iter().map(move |(w, v)| ((k.0, k.1, *w), v.len())))
+                .collect();
+            mk.sort_unstable();
+            eprintln!(
+                "[ring] chunk {:?}: asphalt keys {:?}, band keys {:?}, walls {} shapes",
+                key,
+                asphalt_keys.iter().map(|k| (k.0, k.1)).collect::<Vec<_>>(),
+                mk,
+                walls.len()
+            );
+        }
+        let mut scratch: Vec<u32> = Vec::new();
+        // The intersections whose pins can reach a kerb in this chunk.
+        let pins: Vec<&crate::synth::carriageway::Intersection> = junctions.near((
+            rect.west - pad,
+            rect.south - pad,
+            rect.east + pad,
+            rect.north + pad,
+        ));
+        for key in &asphalt_keys {
+            let key = *key;
+            let (level, layer, _) = key;
+            let asphalt = closing(key, &by_level, &mut closed_of);
+            if asphalt.is_empty() {
+                continue;
+            }
+            let Some(groups) = ring_mask.get(&(level, layer)) else { continue };
+            // The other sheets' asphalt on this level. A region's boundary
+            // inside another region is not a kerb: a leg on one sheet joining
+            // a roundabout on another ends in a butt inside the plate, and a
+            // ring drawn round that end runs across the mouth on the plate's
+            // asphalt, seated on the leg's profile.
+            let others: Shapes = asphalt_keys
+                .iter()
+                .filter(|k| k.0 == level && k.1 != layer)
+                .flat_map(|&k| closing(k, &by_level, &mut closed_of))
+                .collect();
+            let mut walk_layers: Vec<u32> = groups.keys().copied().collect();
+            walk_layers.sort_unstable();
+            let ballast = closing((level, layer, priors::Surface::Ballast), &by_level, &mut closed_of);
+            for walk_layer in walk_layers {
+            let bands = &groups[&walk_layer];
+            let raw = ring_mask_of(bands, &extents);
+            if raw.is_empty() {
+                continue;
+            }
+            let mut kerb = kerb_segments(&asphalt, &raw, &others);
+            bridge_along_kerb(&mut kerb);
+            let mask = kerb_mask(&kerb);
+            let ring = sidewalk_ring(&asphalt, &ballast, &walls, &mask);
+            if probe {
+                eprintln!(
+                    "[ring]   ({level}, {layer}) walk {walk_layer}: asphalt {:.0} m2, bands {:.0} m2, raw mask {:.0} m2, \
+                     kerb {:.0} m of {:.0} masked, ring {:.0} m2",
+                    poly::area(&asphalt),
+                    poly::area(&poly::union_all(bands)),
+                    poly::area(&raw),
+                    kerb.iter().map(|k| k.len).sum::<f64>(),
+                    kerb.iter().filter(|k| k.masked).map(|k| k.len).sum::<f64>(),
+                    poly::area(&ring)
+                );
+            }
+            if ring.is_empty() {
+                continue;
+            }
+            // The ring's bench: one band segment per masked kerb station the
+            // ring actually covers, seated at the kerb. `at` carries the
+            // station index through the fit, which drops what it refuses.
+            let half = priors::WALK_WIDTH_M * 0.5;
+            let mut mine: Vec<SourceSeg> = Vec::new();
+            let mut at: Vec<u64> = Vec::new();
+            for (ki, k) in kerb.iter().enumerate().filter(|(_, k)| k.masked) {
+                let mid = [
+                    (k.p[0] + k.q[0]) * 0.5 + k.n[0] * half,
+                    (k.p[1] + k.q[1]) * 0.5 + k.n[1] * half,
+                ];
+                if !inside(&ring, mid) {
+                    continue;
+                }
+                let a = frame.to_deg([k.p[0] + k.n[0] * half, k.p[1] + k.n[1] * half]);
+                let b = frame.to_deg([k.q[0] + k.n[0] * half, k.q[1] + k.n[1] * half]);
+                let (Some((ha, corridor)), Some((hb, _))) = (
+                    kerb_seat(junctions, &pins, level, layer, a, cos_lat, &mut scratch),
+                    kerb_seat(junctions, &pins, level, layer, b, cos_lat, &mut scratch),
+                ) else {
+                    continue;
+                };
+                // **A station must be a station, not a wall** — the band's own
+                // rule (`walkway::fitted_half`). Where the union has merged two
+                // terraces into one region, the kerb walk follows its boundary
+                // over the wall between them, and a station there is seated on
+                // the lower road at one end and the upper street at the other:
+                // 4.7 m over 4 m at 6.9151,46.4366. No pavement descends a
+                // wall; the station is refused and the ring stops at it.
+                let allow = crate::synth::walkway::CORNER_STEP_M
+                    .max(k.len * crate::synth::walkway::WALK_WALL_GRADE);
+                if (ha - hb).abs() > allow {
+                    continue;
+                }
+                mine.push(SourceSeg {
+                    a,
+                    b,
+                    cos_lat,
+                    half_m: half,
+                    sect_a: Section::uniform(half),
+                    sect_b: Section::uniform(half),
+                    level,
+                    layer: walk_layer,
+                    cut_a: None,
+                    cut_b: None,
+                    height_a: ha,
+                    height_b: hb,
+                    corridor,
+                    surface: priors::Surface::Walkway,
+                    rise_m: priors::KERB_RISE_M,
+                    arc0: k.arc,
+                });
+                at.push(ki as u64);
+            }
+            // **The ring is fitted to the ground before the ground is benched**
+            // (docs/GROUND.md §2), by the band's own rule: a station whose
+            // bench face would pass the cap is narrowed, and one no width can
+            // carry is refused. The drawn ring then follows the width that came
+            // out — cut back to each station's fitted width — so the ring and
+            // its bench are one cross-section, and a refused station draws no
+            // pavement rather than a pavement standing on a hillside.
+            let ring = match ring_ctx {
+                Some(ctx) => {
+                    crate::synth::walkway::fit_to_ground(
+                        &mut mine, &mut at, ctx.seniors, ctx.terrain, ctx.z_ref,
+                    );
+                    let fitted = fitted_mask(&kerb, &mine, &at);
+                    if fitted.is_empty() {
+                        Vec::new()
+                    } else {
+                        sidewalk_ring(&asphalt, &ballast, &walls, &fitted)
+                    }
+                }
+                None => ring,
+            };
+            if ring.is_empty() {
+                continue;
+            }
+            benches.extend(mine);
+            let walk_key = (level, walk_layer, priors::Surface::Walkway);
+            if !levels.contains(&walk_key) {
+                levels.push(walk_key);
+            }
+            by_level.entry(walk_key).or_default().extend(ring);
+            }
+        }
+        levels.sort_unstable_by_key(|&(level, layer, surface)| (level, layer, material_rank(surface)));
+    }
 
     let mut out = Vec::new();
     for (level, layer, surface) in levels {
-        let open = poly::union_all(&by_level[&(level, layer, surface)]);
-        if open.is_empty() {
+        let mut closed = closing((level, layer, surface), &by_level, &mut closed_of);
+        if closed.is_empty() {
             continue;
         }
-        let mut closed = poly::close_within(&open, priors::CURB_RETURN_M, &masks);
         // Where two materials share a level and a layer their regions coincide
         // in plan at the same height and two coplanar surfaces z-fight. The
         // more physical one wins the fill and the junior region is trimmed
@@ -390,9 +683,10 @@ fn bake_chunk(
         // across the two sheet namespaces, where this key cannot reach — the
         // kerb-coincident yield in [`trench_yields`] speaks it instead.
         for &senior in seniors(surface) {
-            let Some(shapes) = by_level.get(&(level, layer, senior)) else { continue };
-            let senior_closed =
-                poly::close_within(&poly::union_all(shapes), priors::CURB_RETURN_M, &masks);
+            if !by_level.contains_key(&(level, layer, senior)) {
+                continue;
+            }
+            let senior_closed = closing((level, layer, senior), &by_level, &mut closed_of);
             closed = poly::difference(&closed, &senior_closed);
             if closed.is_empty() {
                 break;
@@ -432,7 +726,7 @@ fn bake_chunk(
             .collect();
         out.push(LevelShapes { level, layer, surface, shapes });
     }
-    out
+    (out, benches)
 }
 
 /// The material a run is drawn as.
@@ -794,6 +1088,44 @@ struct Run {
     /// its edge at an abutment is the deck's own end face.
     cut_start: Option<Handover>,
     cut_end: Option<Handover>,
+    /// Whether the run's segments ride a street (`corridor != NO_HOST`) — for
+    /// a pedestrian run, whether it is a sidewalk seated on a kerb or a path
+    /// across open ground. The sidewalk ring masks with the first and draws
+    /// the second, so the two never chain.
+    hosted: bool,
+    /// The corridor the run's segments belong to, and their latitude scale —
+    /// what a hosted walk run needs to find the asphalt it is the pavement of.
+    corridor: crate::scene::CorridorId,
+    cos_lat: f64,
+}
+
+/// The grade-separation layer of the asphalt a hosted walk run stands beside:
+/// the nearest carriageway stretch of the run's own host corridor.
+///
+/// Not the run's own layer. A walk sheet is placed in the unified namespace
+/// (`sheets::assign_all`) and may be lifted off its street's rung to keep
+/// walk-over-walk order — at the Avenue des Alpes roundabout 41 of 131 hosted
+/// bands sat on sheet 5 beside asphalt on sheet 4 — and a mask keyed by the
+/// band's own ordinal then finds no asphalt to be the pavement of. The ring
+/// belongs to the asphalt it borders, so it is keyed by that asphalt's sheet.
+fn host_layer(junctions: &CarriagewayModel, run: &Run) -> u32 {
+    let p = run.line[0];
+    let reach_lat = (run.half_m + priors::WALK_WIDTH_M + 2.0) / DEG_M;
+    let reach_lon = reach_lat / run.cos_lat.max(1e-6);
+    let mut ids = Vec::new();
+    junctions.sources_near((p.x - reach_lon, p.y - reach_lat, p.x + reach_lon, p.y + reach_lat), &mut ids);
+    let mut best: Option<(f64, u32)> = None;
+    for i in ids {
+        let s = junctions.source(i);
+        if s.corridor != run.corridor || s.surface.is_pedestrian() {
+            continue;
+        }
+        let (d, _) = crate::synth::sheets::point_to_segment(p, s.a, s.b, s.cos_lat);
+        if best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, s.layer));
+        }
+    }
+    best.map_or(run.layer, |(_, l)| l)
 }
 
 /// Everything on the far side of a structure's cross-section, as a shape in
@@ -867,6 +1199,7 @@ fn runs(junctions: &CarriagewayModel, source_ids: &[u32]) -> Vec<Run> {
                 && r.layer == s.layer
                 && r.surface == s.surface
                 && r.half_m == s.half_m
+                && r.hosted == (s.corridor != NO_HOST)
                 && last.x == s.a.x
                 && last.y == s.a.y
         });
@@ -888,16 +1221,392 @@ fn runs(junctions: &CarriagewayModel, source_ids: &[u32]) -> Vec<Run> {
                 surface: s.surface,
                 cut_start: s.cut_a,
                 cut_end: s.cut_b,
+                hosted: s.corridor != NO_HOST,
+                corridor: s.corridor,
+                cos_lat: s.cos_lat,
             });
         }
     }
     out
 }
 
-/// Every nearby intersection's extent as a shape in chunk metres, dilated by the
-/// curb-return radius so a fillet that reaches just outside the paved area is
-/// still inside its own mask.
-fn intersection_masks(
+/// The sidewalk ring of one asphalt region ([`walk_ring`]): the region grown
+/// by a pavement's width, less the asphalt itself, less the rail formation
+/// sharing its level and layer, less the buildings (already grown by their
+/// clearance), kept only where `mask` says the kerb carries pavement.
+///
+/// Then **opened on its outer side** at half the narrowest band worth
+/// drawing: a pinch between the kerb and a facade narrower than
+/// [`priors::WALK_MIN_WIDTH_M`] draws no pavement, which is the same sentence
+/// the band generator speaks about a street too narrow for a sidewalk. A plain
+/// opening (erode, then dilate by the same radius) would also round every
+/// convex corner of the *kerb* side, pulling the pavement off the kerb by the
+/// radius at each one; re-dilating a little wider and intersecting with the
+/// raw ring restores the kerb side exactly and opens only the outer side.
+fn sidewalk_ring(asphalt: &Shapes, ballast: &Shapes, walls: &Shapes, mask: &Shapes) -> Shapes {
+    let grown = poly::dilate(asphalt, priors::WALK_WIDTH_M);
+    let mut ring = poly::difference(&grown, asphalt);
+    if ring.is_empty() {
+        return ring;
+    }
+    ring = poly::difference(&ring, ballast);
+    ring = poly::difference(&ring, walls);
+    ring = poly::intersect(&ring, mask);
+    if ring.is_empty() {
+        return ring;
+    }
+    let r = priors::WALK_MIN_WIDTH_M * 0.5;
+    let opened = poly::dilate(&poly::erode(&ring, r), 2.0 * r);
+    if opened.is_empty() {
+        return Vec::new();
+    }
+    poly::intersect(&ring, &opened)
+}
+
+/// Spacing of the kerb stations the ring is walked at, metres — short enough
+/// that a bench seat interpolated between two stations stays on the road's
+/// profile across a grade change, long enough that the bench population stays
+/// in the hundreds of thousands.
+const RING_STEP_M: f64 = 4.0;
+
+/// One station-length of kerb: the asphalt boundary from `p` to `q` (chunk
+/// metres), the outward unit normal, its arc along its contour, and whether
+/// the pavement mask covers the ring beside it.
+struct KerbSeg {
+    p: Pt,
+    q: Pt,
+    n: [f64; 2],
+    len: f64,
+    arc: f64,
+    contour: usize,
+    masked: bool,
+}
+
+/// Even-odd point-in-region over every contour of `shapes`; holes fall out of
+/// the parity.
+fn inside(shapes: &Shapes, p: Pt) -> bool {
+    let mut odd = false;
+    for shape in shapes {
+        for ring in shape {
+            let n = ring.len();
+            for i in 0..n {
+                let (a, b) = (ring[i], ring[(i + 1) % n]);
+                if (a[1] > p[1]) != (b[1] > p[1])
+                    && p[0] < a[0] + (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1])
+                {
+                    odd = !odd;
+                }
+            }
+        }
+    }
+    odd
+}
+
+/// Every contour of `asphalt` cut into stations of at most [`RING_STEP_M`],
+/// each marked by whether `raw` covers the ring beside it and no other sheet's
+/// asphalt (`others`) stands there. Outward is the
+/// right-hand normal of the direction of travel, which is outward for a
+/// counter-clockwise outer boundary and a clockwise hole alike.
+fn kerb_segments(asphalt: &Shapes, raw: &Shapes, others: &Shapes) -> Vec<KerbSeg> {
+    let mut out = Vec::new();
+    let half = priors::WALK_WIDTH_M * 0.5;
+    let mut contour = 0usize;
+    for shape in asphalt {
+        for ring in shape {
+            let n = ring.len();
+            let mut arc = 0.0;
+            for i in 0..n {
+                let (a, b) = (ring[i], ring[(i + 1) % n]);
+                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                let len = (dx * dx + dy * dy).sqrt();
+                if len < 1e-6 {
+                    continue;
+                }
+                let nrm = [dy / len, -dx / len];
+                let steps = (len / RING_STEP_M).ceil().max(1.0) as usize;
+                for k in 0..steps {
+                    let (t0, t1) = (k as f64 / steps as f64, (k + 1) as f64 / steps as f64);
+                    let p = [a[0] + dx * t0, a[1] + dy * t0];
+                    let q = [a[0] + dx * t1, a[1] + dy * t1];
+                    let mid = [(p[0] + q[0]) * 0.5 + nrm[0] * half, (p[1] + q[1]) * 0.5 + nrm[1] * half];
+                    out.push(KerbSeg {
+                        p,
+                        q,
+                        n: nrm,
+                        len: len / steps as f64,
+                        arc,
+                        contour,
+                        masked: inside(raw, mid) && !inside(others, mid),
+                    });
+                    arc += len / steps as f64;
+                }
+            }
+            contour += 1;
+        }
+    }
+    out
+}
+
+/// The corner rule, applied along the kerb: a bare stretch of one contour
+/// shorter than [`priors::WALK_CORNER_MAX_M`] between two masked stretches is
+/// masked — the pavement wraps the corner. Exactly the rule
+/// `street.kerb_gap` scores, so the two agree on what a corner is; a contour
+/// with no masked station at all (an island, a street nobody paved) stays bare.
+fn bridge_along_kerb(kerb: &mut [KerbSeg]) {
+    let mut i = 0;
+    while i < kerb.len() {
+        let c = kerb[i].contour;
+        let mut j = i;
+        while j < kerb.len() && kerb[j].contour == c {
+            j += 1;
+        }
+        let ring = &mut kerb[i..j];
+        let n = ring.len();
+        if let Some(start) = ring.iter().position(|k| k.masked) {
+            // Runs of bare stations, in contour order from a masked one so a
+            // bare run wrapping the seam is one run.
+            let mut k = 0;
+            while k < n {
+                let idx = (start + k) % n;
+                if ring[idx].masked {
+                    k += 1;
+                    continue;
+                }
+                let (mut len, mut m) = (0.0, k);
+                while m < n && !ring[(start + m) % n].masked {
+                    len += ring[(start + m) % n].len;
+                    m += 1;
+                }
+                // Bounded by masked stations on both sides by construction
+                // (the walk started on one and the loop is closed).
+                if len < priors::WALK_CORNER_MAX_M {
+                    for t in k..m {
+                        ring[(start + t) % n].masked = true;
+                    }
+                }
+                k = m;
+            }
+        }
+        i = j;
+    }
+}
+
+/// The masked kerb stations as pavement mask: each masked run buffered as one
+/// polyline to a pavement's width and a little more, so the ring beside it is
+/// wholly inside; consecutive stations share their vertices, so a run is one
+/// stroke and not a row of butt-capped pieces.
+fn kerb_mask(kerb: &[KerbSeg]) -> Shapes {
+    let mut shapes: Shapes = Vec::new();
+    let w = priors::WALK_WIDTH_M + RING_MASK_SLACK_M;
+    let mut run: Vec<Pt> = Vec::new();
+    let mut prev: Option<(usize, Pt)> = None;
+    for k in kerb {
+        let continues = k.masked && prev.is_some_and(|(c, q)| c == k.contour && q == k.p);
+        if !continues {
+            if run.len() >= 2 {
+                shapes.extend(poly::buffer_line(&run, w));
+            }
+            run.clear();
+            if k.masked {
+                run.push(k.p);
+            }
+        }
+        if k.masked {
+            run.push(k.q);
+            prev = Some((k.contour, k.q));
+        } else {
+            prev = None;
+        }
+    }
+    if run.len() >= 2 {
+        shapes.extend(poly::buffer_line(&run, w));
+    }
+    if shapes.is_empty() {
+        return shapes;
+    }
+    poly::union_all(&shapes)
+}
+
+/// The pavement mask after the fit: every surviving bench station's stretch of
+/// kerb, buffered to twice the station's fitted half-width plus the slack, so
+/// the drawn ring is as wide as the bench under it and no wider. Each piece
+/// overruns its station's ends by a hair so neighbours overlap instead of
+/// touching — a boolean keeps merely-touching shapes apart, and a ring cut by
+/// a mask of separate pieces would draw as a row of slabs.
+fn fitted_mask(kerb: &[KerbSeg], benches: &[SourceSeg], at: &[u64]) -> Shapes {
+    const OVERRUN_M: f64 = 0.1;
+    let mut shapes: Shapes = Vec::new();
+    for (b, &ki) in benches.iter().zip(at) {
+        let k = &kerb[ki as usize];
+        let (dx, dy) = (k.q[0] - k.p[0], k.q[1] - k.p[1]);
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-9 {
+            continue;
+        }
+        let (ux, uy) = (dx / len * OVERRUN_M, dy / len * OVERRUN_M);
+        let line = [[k.p[0] - ux, k.p[1] - uy], [k.q[0] + ux, k.q[1] + uy]];
+        let w = 2.0 * b.drawn_half() + RING_MASK_SLACK_M;
+        shapes.extend(poly::buffer_line(&line, w));
+    }
+    if shapes.is_empty() {
+        return shapes;
+    }
+    poly::union_all(&shapes)
+}
+
+/// The kerb's seat at a point beside the asphalt of `(level, layer)`, and the
+/// corridor whose kerb it is: **the road height field's own answer** at the
+/// reference rung — the covering carriageway stretches blended by the same
+/// kernel `synth::height` uses, the junction pins overriding it the same way —
+/// plus the kerb rise. Read from the stamped profile heights rather than the
+/// engineered ground, which at the reference rung with the hole cut is what
+/// the field returns for asphalt anyway.
+///
+/// Not the nearest stretch's height alone: around a junction the legs'
+/// profiles disagree by decimetres and the plate is what the solve made them
+/// agree on, and a bench seated on whichever leg happened to be nearest
+/// stepped between stations all the way round a roundabout.
+///
+/// `None` where no asphalt of that sheet is within a pavement's reach — a
+/// ring station the mask admitted but nothing paved — and where the nearest
+/// carriageway has no solved profile (stamped at zero, it drapes on the
+/// ground and has no kerb height to give).
+fn kerb_seat(
+    junctions: &CarriagewayModel,
+    pins: &[&crate::synth::carriageway::Intersection],
+    level: i64,
+    layer: u32,
+    at: Coord,
+    cos_lat: f64,
+    scratch: &mut Vec<u32>,
+) -> Option<(f64, crate::scene::CorridorId)> {
+    let reach_lat = (priors::WALK_WIDTH_M + priors::CURB_RETURN_M + 4.0) / DEG_M;
+    let reach_lon = reach_lat / cos_lat.max(1e-6);
+    junctions.sources_near((at.x - reach_lon, at.y - reach_lat, at.x + reach_lon, at.y + reach_lat), scratch);
+    let mut best: Option<(f64, f64, crate::scene::CorridorId)> = None;
+    let (mut num, mut den) = (0.0f64, 0.0f64);
+    for &i in scratch.iter() {
+        let s = junctions.source(i);
+        if s.level != level || s.layer != layer || s.surface != priors::Surface::Asphalt {
+            continue;
+        }
+        if s.height_a == 0.0 && s.height_b == 0.0 {
+            continue;
+        }
+        let (d, t) = crate::synth::sheets::point_to_segment(at, s.a, s.b, s.cos_lat);
+        if d > s.half_m + priors::WALK_WIDTH_M + priors::CURB_RETURN_M {
+            continue;
+        }
+        let h = s.height_at(t);
+        if best.is_none_or(|(bd, _, _)| d < bd) {
+            best = Some((d, h, s.corridor));
+        }
+        if d <= s.half_m {
+            let w = crate::synth::height::kernel(d, s.half_m);
+            num += w * h;
+            den += w;
+        }
+    }
+    let (_, nearest, corridor) = best?;
+    let blended = if den > 0.0 { num / den } else { nearest };
+    // The pins, overriding as they do in the field: flat where authoritative,
+    // handing back at the paved boundary.
+    let (mut pin_num, mut pin_den, mut lambda) = (0.0f64, 0.0f64, 0.0f64);
+    for j in pins {
+        let Some(height) = j.height() else { continue };
+        if level != 0 || j.layer() != layer {
+            continue;
+        }
+        let (de, dn) = j.area().offset_m(at);
+        let d = (de * de + dn * dn).sqrt();
+        if d < 1e-9 {
+            return Some((height + priors::KERB_RISE_M, corridor));
+        }
+        let r = j.area().radius(de / d, dn / d);
+        if d <= r {
+            let w = crate::synth::height::pin_kernel(d, r);
+            pin_num += w * height;
+            pin_den += w;
+            lambda = lambda.max(w);
+        }
+    }
+    let h = if pin_den > 0.0 {
+        let l = lambda.clamp(0.0, 1.0);
+        l * (pin_num / pin_den) + (1.0 - l) * blended
+    } else {
+        blended
+    };
+    Some((h + priors::KERB_RISE_M, corridor))
+}
+
+/// Where along the kerb the ring is pavement, before the corner rule: the
+/// hosted bands' own extents grown past their ends by [`RING_CORNER_M`], so
+/// two legs' pavements meet across the corner between them; plus the whole
+/// extent of every intersection one of those bands reaches, grown the same —
+/// a junction whose legs carry pavement carries it round every mouth, and a
+/// roundabout is one such junction whose "mouths" are its ring arcs.
+fn ring_mask_of(bands: &Shapes, extents: &Shapes) -> Shapes {
+    if bands.is_empty() {
+        return Vec::new();
+    }
+    let along = poly::dilate(&poly::union_all(bands), RING_CORNER_M);
+    if along.is_empty() || extents.is_empty() {
+        return along;
+    }
+    let mut served: Shapes = Vec::new();
+    for extent in extents {
+        let one: Shapes = vec![extent.clone()];
+        if !poly::intersect(&one, &along).is_empty() {
+            served.push(extent.clone());
+        }
+    }
+    if served.is_empty() {
+        return along;
+    }
+    let mut all = along;
+    all.extend(poly::dilate(&poly::union_all(&served), RING_CORNER_M));
+    poly::union_all(&all)
+}
+
+/// The building footprints near a chunk, grown by [`priors::FACADE_CLEAR_M`],
+/// in chunk metres — what the sidewalk ring keeps out of. Empty with no
+/// building input, so the ring then runs to its full width everywhere, which
+/// is what an unsurveyed town looks like from the band generator's side too.
+fn wall_shapes(walls: Option<&Facades>, rect: &Bounds, frame: &MFrame) -> Shapes {
+    let Some(f) = walls else { return Vec::new() };
+    let pad = (PAVE_PAD_M + priors::WALK_WIDTH_M + priors::FACADE_CLEAR_M) / DEG_M;
+    let mut ids = Vec::new();
+    f.rings_near((rect.west - pad, rect.south - pad, rect.east + pad, rect.north + pad), &mut ids);
+    let mut shapes: Shapes = Vec::new();
+    for i in ids {
+        let r = f.ring(i);
+        let mut pts: Vec<[f64; 2]> = r.iter().map(|&c| frame.to_m(c)).collect();
+        if pts.len() > 1 && pts.first() == pts.last() {
+            pts.pop();
+        }
+        if pts.len() < 3 {
+            continue;
+        }
+        // Counter-clockwise, so it reads as filled area under the non-zero rule.
+        let twice_area: f64 =
+            pts.iter().zip(pts.iter().cycle().skip(1)).map(|(a, b)| a[0] * b[1] - b[0] * a[1]).sum();
+        if twice_area < 0.0 {
+            pts.reverse();
+        }
+        shapes.push(vec![pts]);
+    }
+    if shapes.is_empty() {
+        return shapes;
+    }
+    poly::dilate(&poly::union_all(&shapes), priors::FACADE_CLEAR_M)
+}
+
+/// Every nearby intersection's extent as one shape each, in chunk metres. The
+/// closing mask is their union dilated by the curb-return radius, so a fillet
+/// that reaches just outside the paved area is still inside its own mask; the
+/// sidewalk ring reads them one by one to ask which junctions a pavement
+/// reaches.
+fn intersection_shapes(
     junctions: &CarriagewayModel,
     rect: &Bounds,
     pad_deg: f64,
@@ -917,11 +1626,7 @@ fn intersection_masks(
             masks.push(vec![ring]);
         }
     }
-    if masks.is_empty() {
-        return masks;
-    }
-    let merged = poly::union_all(&masks);
-    poly::dilate(&merged, priors::CURB_RETURN_M)
+    masks
 }
 
 /// Puts a converted vertex exactly on the chunk rect where the metre-space clip
@@ -1014,7 +1719,7 @@ mod tests {
         let scene = SceneGraph::new(corridors);
         let solved = SolvedModel::from_profiles((0..scene.corridors.len()).map(|_| None).collect(), 15);
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
-        bake(&junctions, 1, None)
+        bake(&junctions, 1, None, None, None)
     }
 
     #[test]
@@ -1117,7 +1822,7 @@ mod tests {
         let scene = SceneGraph::new(vec![road]);
         let solved = SolvedModel::from_profiles(vec![None], 15);
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), vec![band]);
-        let model = bake(&junctions, 1, None);
+        let model = bake(&junctions, 1, None, None, None);
         assert_eq!(walk_shapes(&model), vec![2], "the band must be severed at the kerbs");
     }
 
@@ -1137,7 +1842,7 @@ mod tests {
         let scene = SceneGraph::new(vec![road]);
         let solved = SolvedModel::from_profiles(vec![None], 15);
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), vec![band]);
-        let model = bake(&junctions, 1, None);
+        let model = bake(&junctions, 1, None, None, None);
         assert_eq!(walk_shapes(&model), vec![1], "a stacked band is not on the plate");
     }
 
@@ -1183,8 +1888,8 @@ mod tests {
         let scene = SceneGraph::new(make());
         let solved = SolvedModel::from_profiles((0..2).map(|_| None).collect(), 15);
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
-        let one = bake(&junctions, 1, None);
-        let many = bake(&junctions, 8, None);
+        let one = bake(&junctions, 1, None, None, None);
+        let many = bake(&junctions, 8, None, None, None);
         assert_eq!(one.chunk_count(), many.chunk_count());
         let b = crate::solve::tile_containing(15, 6.0, LAT);
         let a = one.chunk_for(&b).expect("asphalt");
@@ -1276,7 +1981,7 @@ mod tests {
         let (scene, solved) = crossroads();
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
         assert_eq!(junctions.len(), 1, "the crossroads plates as one intersection");
-        let model = bake(&junctions, 1, None);
+        let model = bake(&junctions, 1, None, None, None);
         let filleted = model.area_m2();
 
         // The same network with the intersection extent withheld: no mask, so no
@@ -1289,7 +1994,7 @@ mod tests {
                 SolvedModel::from_profiles((0..4).map(|_| None).collect(), 15);
             let j = carriageway::bake(&bare_scene, &bare_solved, &Facades::empty(), Vec::new());
             assert_eq!(j.len(), 0, "no intersection extent without profiles");
-            bake(&j, 1, None).area_m2()
+            bake(&j, 1, None, None, None).area_m2()
         };
 
         assert!(filleted > bare, "the closing added no fillet area at all");
@@ -1342,7 +2047,7 @@ mod tests {
         );
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
 
-        let model = bake(&junctions, 1, None);
+        let model = bake(&junctions, 1, None, None, None);
         let levels =
             model.chunk_for(&crate::solve::tile_containing(15, 6.0, LAT)).expect("asphalt");
         assert_eq!(levels.len(), 2, "the two roads must be separate regions");
@@ -1382,7 +2087,7 @@ mod tests {
             15,
         );
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
-        let model = bake(&junctions, 1, None);
+        let model = bake(&junctions, 1, None, None, None);
         let levels =
             model.chunk_for(&crate::solve::tile_containing(15, 6.0, LAT)).expect("surfaces");
         let road_ls = levels

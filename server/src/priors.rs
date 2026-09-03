@@ -1270,6 +1270,14 @@ pub const KERB_RISE_M: f64 = 0.12;
 /// plate.
 pub const WALK_ON_ASPHALT_M: f64 = 1.0;
 
+/// How far outside a carriageway's own half-width a pedestrian point with no
+/// walk band under it still reads the kerb's height (road plus
+/// [`KERB_RISE_M`]) rather than the ground, in metres of clear distance from
+/// the carriageway's centerline less its half-width — i.e. the sidewalk ring's
+/// own width plus the curb-return fillet a corner wedge is cut inside of. Past
+/// it a pedestrian surface is a path across open ground and stands on it.
+pub const WALK_KERB_REACH_M: f64 = WALK_WIDTH_M + CURB_RETURN_M;
+
 /// Longest unattached stretch pinched between two street-claimed ones that
 /// still counts as *the sidewalk wrapping a corner*, in metres — kept in the
 /// sidewalk's own material at the kerb rise, at any length

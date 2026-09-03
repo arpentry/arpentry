@@ -65,7 +65,7 @@ const PATH_STATION_M: f64 = 8.0;
 /// the bench cliff between a switchback's two arms (6.9166,46.4338 is the type
 /// specimen). Higher than any kerb or corner ramp, lower than the arm
 /// separation of the shallowest switchback the extract holds (~5 m).
-const CORNER_STEP_M: f64 = 1.5;
+pub(crate) const CORNER_STEP_M: f64 = 1.5;
 
 /// Lateral sampling pitch of the bench-face probe, metres — fine enough that
 /// a wall inside the band's width cannot hide between two samples.
@@ -93,7 +93,7 @@ const CORNER_LINK_MAX_M: f64 = 4.0;
 /// `steps` way is excluded from Walkway bands by design (it draws as a free
 /// band until P5 gives it a profile). The ceiling refuses 215 m over the
 /// whole zone — 0.05 % of the drawn sidewalk length — all of it wall.
-const WALK_WALL_GRADE: f64 = 0.5;
+pub(crate) const WALK_WALL_GRADE: f64 = 0.5;
 
 /// How far a crossing's mapped line is extended past each end when it is
 /// registered against the carriageways, in metres. A crosswalk is mapped by

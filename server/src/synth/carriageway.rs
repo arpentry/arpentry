@@ -138,6 +138,11 @@ pub struct CarriagewayModel {
     /// knows it: the union that follows is a boolean over buffered polylines
     /// and dissolves which input each stretch of boundary came from.
     handovers: Vec<Handover>,
+    /// Index of the first source added after the bake by [`extend_sources`]
+    /// — the sidewalk ring's benches — or `None` if none were.
+    ///
+    /// [`extend_sources`]: CarriagewayModel::extend_sources
+    ring_from: Option<usize>,
 }
 
 /// The line across the band where an at-grade run ends at a span boundary — a
@@ -300,7 +305,34 @@ impl CarriagewayModel {
                 i as u32,
             );
         }
-        CarriagewayModel { junctions, grid, sources, source_grid, handovers }
+        CarriagewayModel { junctions, grid, sources, source_grid, handovers, ring_from: None }
+    }
+
+    /// Where the ring's sources begin in the source list, if any were added.
+    pub fn ring_from(&self) -> Option<usize> {
+        self.ring_from
+    }
+
+    /// Adds sources after the bake — the sidewalk ring's bench segments
+    /// (`synth::pavement::PavementModel::ring_benches`), which exist only once
+    /// the union has been baked from the sources already here, and which the
+    /// road height field then reads as the ring's own walk sources: seated at
+    /// the kerb they were offset from, on the ring's own sheet.
+    pub fn extend_sources(&mut self, extra: impl IntoIterator<Item = SourceSeg>) {
+        self.ring_from.get_or_insert(self.sources.len());
+        for s in extra {
+            let pad = s.half_m / crate::scene::DEG_M;
+            self.source_grid.insert(
+                (
+                    s.a.x.min(s.b.x) - pad,
+                    s.a.y.min(s.b.y) - pad,
+                    s.a.x.max(s.b.x) + pad,
+                    s.a.y.max(s.b.y) + pad,
+                ),
+                self.sources.len() as u32,
+            );
+            self.sources.push(s);
+        }
     }
 
     /// Every abutment cut in the extract. Few — one per structure span end —

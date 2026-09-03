@@ -139,6 +139,15 @@ pub struct Facades {
     edges: Vec<Edge>,
     grid: GridIndex,
     footprints: usize,
+    /// The footprint outlines themselves — every exterior ring kept, in
+    /// lon/lat as the input gave it (closed: the last point repeats the
+    /// first). The edges above answer the room question; the rings answer the
+    /// *area* one a boundary operation asks: the sidewalk ring
+    /// (`synth::pavement`) is the paved union grown by a pavement's width less
+    /// the buildings grown by [`priors::FACADE_CLEAR_M`], and a set of walls
+    /// cannot be dilated.
+    rings: Vec<Vec<Coord>>,
+    ring_grid: GridIndex,
     /// The box the footprints were read for, `(w, s, e, n)`.
     ///
     /// Carried because "no wall here" and "no building data here" are different
@@ -166,6 +175,8 @@ impl Facades {
             edges: Vec::new(),
             grid: GridIndex::with_cell_m(CELL_M),
             footprints: 0,
+            rings: Vec::new(),
+            ring_grid: GridIndex::with_cell_m(CELL_M),
             covers: None,
         }
     }
@@ -219,6 +230,7 @@ impl Facades {
     }
 
     fn push_polygon(&mut self, p: &Polygon, keep: &impl Fn(Coord) -> bool) {
+        let before = self.edges.len();
         let mut ring = |r: &[Coord]| {
             for e in r.windows(2) {
                 if keep(e[0]) || keep(e[1]) {
@@ -230,6 +242,42 @@ impl Facades {
         for hole in p.interiors() {
             ring(&hole.0);
         }
+        // The outline, for the area readers. The exterior only: a courtyard is
+        // open ground inside the building's outline, and a sidewalk ring
+        // subtracting the outline as an area keeps out of the courtyard too —
+        // which is the right answer for every footprint but the rare one with
+        // a street inside it, and that street has bigger problems.
+        if self.edges.len() > before {
+            self.push_ring(p.exterior().0.clone());
+        }
+    }
+
+    fn push_ring(&mut self, r: Vec<Coord>) {
+        if r.len() < 4 {
+            return;
+        }
+        let (mut w, mut s, mut e, mut n) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for c in &r {
+            w = w.min(c.x);
+            s = s.min(c.y);
+            e = e.max(c.x);
+            n = n.max(c.y);
+        }
+        self.ring_grid.insert((w, s, e, n), self.rings.len() as u32);
+        self.rings.push(r);
+    }
+
+    /// The outlines whose bounding box meets `bbox` (`(w, s, e, n)` in
+    /// degrees), as indices into [`Facades::ring`]. Sorted and deduplicated,
+    /// like every grid query, so a boolean built from them is a function of
+    /// the model and not of hashing.
+    pub fn rings_near(&self, bbox: (f64, f64, f64, f64), out: &mut Vec<u32>) {
+        self.ring_grid.query(bbox, out);
+    }
+
+    /// One footprint outline, closed (the last point repeats the first).
+    pub fn ring(&self, i: u32) -> &[Coord] {
+        &self.rings[i as usize]
     }
 
     /// An index over a given set of wall edges — the fixture entry point, and

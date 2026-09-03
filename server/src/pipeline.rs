@@ -445,26 +445,85 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     banded_walks.extend(
         scene.walks.lines().map(|(l, _)| l).filter(|l| l.is_wholly_indoor()).map(|l| l.source),
     );
-    let ground = Arc::new(ground::derive_draped(
-        seniors,
-        &walk_bands,
-        cfg.terrain.as_deref(),
-        solved.z_ref,
-    ));
-    // Junction plates: a paved area meshed across each corridor junction, baked
-    // once from the solved model and emitted by the tile that owns its centre.
-    let junctions = Arc::new(synth::carriageway::bake(&scene, &solved, &facades, walk_bands));
-    // The unioned road surface: one paved region per level per z13 chunk, baked
-    // once from the same carriageway sources the intersections came from.
+    // **The ring's bench comes from the ring.** With the sidewalk drawn as the
+    // ring of the paved union (`synth::pavement::walk_ring`) the drawn band is
+    // only known once the union is baked, and stratum D must bench *that* band
+    // — so the union bakes first and the draped ground after, from the bands
+    // plus the ring's own bench segments. The field yields read the derived
+    // ground and cannot run in that order; they are opt-in and the ring is
+    // opt-in, and the two are exclusive until the yields read the ring.
+    let ring = synth::pavement::walk_ring();
     let t_pave = Instant::now();
-    let field_ctx = synth::pavement::FieldYields {
-        solved: &solved,
-        ground: Arc::clone(&ground),
-        terrain: cfg.terrain.as_ref().map(std::path::PathBuf::from),
-        mesh: mesh_options(cfg),
-        z_ref: solved.z_ref,
+    let (ground, junctions, pavement) = if ring {
+        let mut junctions = synth::carriageway::bake(&scene, &solved, &facades, walk_bands.clone());
+        let ctx = synth::pavement::RingContext {
+            seniors: &seniors,
+            terrain: cfg.terrain.as_deref(),
+            z_ref: solved.z_ref,
+        };
+        let pavement =
+            Arc::new(synth::pavement::bake(&junctions, threads, None, Some(&facades), Some(&ctx)));
+        // The ring's bench segments are the ring's own walk sources: the
+        // height field reads the ring's seats from them, on the ring's sheet.
+        junctions.extend_sources(pavement.ring_benches().iter().cloned());
+        // ARPT_WALK_SHEET_AT=lon,lat — the ring benches within ~30 m of the
+        // point, beside the bands `carriageway::bake` already printed.
+        if let Some(at) = std::env::var_os("ARPT_WALK_SHEET_AT") {
+            if let Some((plon, plat)) = at
+                .to_str()
+                .and_then(|s| s.split_once(','))
+                .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))
+            {
+                for s in pavement.ring_benches() {
+                    let (d, _) = synth::sheets::point_to_segment(
+                        geo_types::Coord { x: plon, y: plat },
+                        s.a,
+                        s.b,
+                        s.cos_lat,
+                    );
+                    if d <= 30.0 {
+                        eprintln!(
+                            "[ring-bench] corridor {} layer {} level {} h {:.2}..{:.2} half {:.2} d {:.1} m at {:.6},{:.6}",
+                            s.corridor, s.layer, s.level, s.height_a, s.height_b, s.drawn_half(), d, s.a.x, s.a.y
+                        );
+                    }
+                }
+            }
+        }
+        let junctions = Arc::new(junctions);
+        walk_bands.extend(pavement.ring_benches().iter().cloned());
+        let ground = Arc::new(ground::derive_draped(
+            seniors,
+            &walk_bands,
+            cfg.terrain.as_deref(),
+            solved.z_ref,
+        ));
+        (ground, junctions, pavement)
+    } else {
+        let ground = Arc::new(ground::derive_draped(
+            seniors,
+            &walk_bands,
+            cfg.terrain.as_deref(),
+            solved.z_ref,
+        ));
+        // Junction plates: a paved area meshed across each corridor junction,
+        // baked once from the solved model and emitted by the tile that owns
+        // its centre.
+        let junctions = Arc::new(synth::carriageway::bake(&scene, &solved, &facades, walk_bands));
+        // The unioned road surface: one paved region per level per z13 chunk,
+        // baked once from the same carriageway sources the intersections came
+        // from.
+        let field_ctx = synth::pavement::FieldYields {
+            solved: &solved,
+            ground: Arc::clone(&ground),
+            terrain: cfg.terrain.as_ref().map(std::path::PathBuf::from),
+            mesh: mesh_options(cfg),
+            z_ref: solved.z_ref,
+        };
+        let pavement =
+            Arc::new(synth::pavement::bake(&junctions, threads, Some(&field_ctx), Some(&facades), None));
+        (ground, junctions, pavement)
     };
-    let pavement = Arc::new(synth::pavement::bake(&junctions, threads, Some(&field_ctx)));
     // Every solved bridge deck, indexed by plan position, so phase 1 can ask
     // whether a draped feature's elevated span is really the sidewalk on one
     // of them (`synth::carried`). Built once and shared: the answer is a
