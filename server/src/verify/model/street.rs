@@ -319,7 +319,7 @@ fn strip_covered(
     m.junctions.sources_near(bbox, scratch);
     scratch.iter().any(|&i| {
         let s = m.junctions.source(i);
-        if !matches!(s.surface, Surface::Walkway | Surface::Path) {
+        if !matches!(s.surface, Surface::Walkway | Surface::Path) || !m.junctions.drawn(i) {
             return false;
         }
         // The width the band is *drawn* at, at the point on it nearest the
@@ -348,7 +348,10 @@ fn kerb_join(m: &Model<'_>) -> Metric {
         // crossing's kerb stub — has no kerb to join, and asking it this
         // question would score the distance to whatever street it happens to
         // pass.
-        if band.surface != Surface::Walkway || band.corridor == crate::synth::walkway::NO_HOST {
+        if band.surface != Surface::Walkway
+            || band.corridor == crate::synth::walkway::NO_HOST
+            || !m.junctions.drawn(i)
+        {
             continue;
         }
         let mid = Coord { x: 0.5 * (band.a.x + band.b.x), y: 0.5 * (band.a.y + band.b.y) };
@@ -827,7 +830,10 @@ fn width_step(m: &Model<'_>) -> Metric {
     let mut pairs = 0u64;
     for i in 1..m.junctions.source_count() as u32 {
         let (prev, next) = (m.junctions.source(i - 1), m.junctions.source(i));
-        if !matches!(prev.surface, Surface::Walkway | Surface::Path) {
+        if !matches!(prev.surface, Surface::Walkway | Surface::Path)
+            || !m.junctions.drawn(i - 1)
+            || !m.junctions.drawn(i)
+        {
             continue;
         }
         // The same test `synth::pavement::runs` chains on, less `half_m` —

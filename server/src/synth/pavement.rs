@@ -185,8 +185,9 @@ fn field_yields() -> bool {
 }
 
 /// Whether the sidewalk is drawn as the **ring** of the paved union rather
-/// than as a buffer of each street's own offset band (`ARPT_WALK_RING=1`,
-/// opt-in while it is measured; `data/plans/kerb-ring-2026-09-03.md`).
+/// than as a buffer of each street's own offset band — the default since
+/// 2026-09-04; `ARPT_NO_WALK_RING=1` reverts to the bands for an A/B
+/// (`data/plans/kerb-ring-2026-09-03.md`).
 ///
 /// A hosted walk band is an offset of one street's centerline, so it ends
 /// where that street's arc ends: at a junction every leg's pavement stops
@@ -201,7 +202,8 @@ fn field_yields() -> bool {
 /// sheet of everything pedestrian. Here they become the **mask** that says
 /// where along the kerb the ring is pavement at all.
 pub fn walk_ring() -> bool {
-    std::env::var_os("ARPT_WALK_RING").is_some()
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("ARPT_NO_WALK_RING").is_none())
 }
 
 /// Slack around a hosted band's own drawn width when it masks the ring, metres
@@ -567,7 +569,7 @@ fn bake_chunk(
                 continue;
             }
             let t0 = std::time::Instant::now();
-            let mut kerb = kerb_segments(&asphalt, &raw, &others);
+            let mut kerb = kerb_segments(&asphalt, &raw, &others, &frame);
             bridge_along_kerb(&mut kerb);
             let mask = kerb_mask(&kerb);
             let t_kerb = t0.elapsed();
@@ -781,7 +783,27 @@ fn bake_chunk(
                     );
                 }
             }
-            benches.extend(mine);
+            // **A bench belongs to the chunk that owns its station.** The
+            // union is built over the chunk's pad, so its region ends in butt
+            // ends at the pad's edge, and the kerb walk wraps those ends with
+            // stations that are not kerbs — across the road, inside the
+            // neighbouring chunk, which draws the real kerb there. The ring
+            // itself is clipped to the rect below; its benches were not, and
+            // the strays put a bench across every road at every chunk border:
+            // `seam.terrain_shade` 0 → 0.069 % on the zone, creased 17°, every
+            // site on a chunk line.
+            let m_rect = (
+                frame.to_m(Coord { x: rect.west, y: rect.south })[0],
+                frame.to_m(Coord { x: rect.west, y: rect.south })[1],
+                frame.to_m(Coord { x: rect.east, y: rect.north })[0],
+                frame.to_m(Coord { x: rect.east, y: rect.north })[1],
+            );
+            let owned = |ki: u64| -> bool {
+                let k = &kerb[ki as usize];
+                let (mx, my) = ((k.p[0] + k.q[0]) * 0.5, (k.p[1] + k.q[1]) * 0.5);
+                mx >= m_rect.0 && mx < m_rect.2 && my >= m_rect.1 && my < m_rect.3
+            };
+            benches.extend(mine.iter().zip(&at).filter(|(_, &ki)| owned(ki)).map(|(b, _)| *b));
             for (sub, r) in rings_by_sub {
                 let walk_key = (level, walk_layer + sub, priors::Surface::Walkway);
                 if !levels.contains(&walk_key) {
@@ -1529,10 +1551,18 @@ fn inside(shapes: &Shapes, p: Pt) -> bool {
 /// asphalt (`others`) stands there. Outward is the
 /// right-hand normal of the direction of travel, which is outward for a
 /// counter-clockwise outer boundary and a clockwise hole alike.
-fn kerb_segments(asphalt: &Shapes, raw: &Shapes, others: &Shapes) -> Vec<KerbSeg> {
+fn kerb_segments(asphalt: &Shapes, raw: &Shapes, others: &Shapes, frame: &MFrame) -> Vec<KerbSeg> {
     let mut out = Vec::new();
     let half = priors::WALK_WIDTH_M * 0.5;
     let (raw, others) = (Region::of(raw), Region::of(others));
+    // The station lattice, in degrees: stations are cut where the contour
+    // crosses a line of it, so two chunks walking the same kerb either side
+    // of their border cut the same stations. Cut by arc from each chunk's own
+    // contour start, they did not, and the ring's edge — its fit, its mask's
+    // bridging — differed across every chunk line: `seam.terrain_shade`
+    // 0 → 0.069 % on the zone, creased 17°, every site on a chunk border.
+    let d_lat = RING_STEP_M / DEG_M;
+    let d_lon = RING_STEP_M / (DEG_M * frame.to_deg([0.0, 0.0]).y.to_radians().cos().max(1e-6));
     let mut contour = 0usize;
     for shape in asphalt {
         for ring in shape {
@@ -1577,13 +1607,40 @@ fn kerb_segments(asphalt: &Shapes, raw: &Shapes, others: &Shapes) -> Vec<KerbSeg
                     breaks.push(arc[i]);
                 }
             }
+            // The lattice crossings of every edge.
+            for i in 0..n {
+                let (a, b) = (ring[i], ring[(i + 1) % n]);
+                let (ga, gb) = (frame.to_deg(a), frame.to_deg(b));
+                let seg = arc[i + 1] - arc[i];
+                if seg < 1e-9 {
+                    continue;
+                }
+                for (va, vb, step) in [(ga.x, gb.x, d_lon), (ga.y, gb.y, d_lat)] {
+                    if (vb - va).abs() < 1e-12 {
+                        continue;
+                    }
+                    let (lo, hi) = (va.min(vb), va.max(vb));
+                    let mut k = (lo / step).ceil();
+                    while k * step < hi {
+                        let t = (k * step - va) / (vb - va);
+                        if t > 0.0 && t < 1.0 {
+                            breaks.push(arc[i] + seg * t);
+                        }
+                        k += 1.0;
+                    }
+                }
+            }
+            breaks.sort_by(f64::total_cmp);
+            breaks.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
             breaks.push(total);
             for w in breaks.windows(2) {
                 let (s0, s1) = (w[0], w[1]);
                 if s1 - s0 < 1e-6 {
                     continue;
                 }
-                let steps = ((s1 - s0) / RING_STEP_M).ceil().max(1.0) as usize;
+                // A lattice cell's diagonal bounds a station already; the
+                // arc cap only splits what a contour with no crossings left.
+                let steps = ((s1 - s0) / (2.0 * RING_STEP_M)).ceil().max(1.0) as usize;
                 for k in 0..steps {
                     let a0 = s0 + (s1 - s0) * k as f64 / steps as f64;
                     let a1 = s0 + (s1 - s0) * (k + 1) as f64 / steps as f64;

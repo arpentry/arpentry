@@ -219,30 +219,48 @@ either representation alone.
    switchback at 6.9189,46.4304 is the type specimen.
 
    **Two producers, because there are two things.** A way that runs beside a
-   street is a *side of that street* — one continuous strip per corridor side
-   over the merged extent of its claims, seated on the kerb, sized by
-   invariant 1's one allotment, and standing `KERB_RISE_M` above the
-   carriageway it belongs to. A way that runs beside nothing is a *free band*
-   on its own polyline, standing on the ground and belonging to nothing.
-   Neither is built per *attachment*, and that is the whole of the change:
-   `assemble::walks` breaks a run wherever a way turns across its host, so
-   building per attachment drew one mapped pavement as an alternating chain
-   of two materials on two curves — a lateral jump at every corner, a hole at
-   every stretch under a minimum length, and a silent nothing wherever a seat
-   ran out of room. **Continuity has to be structural, because no census can
-   see it**: the attach census read 98 % of claimed arc built while a third
-   of it drew as disjoint slabs, since a census counts arc that produced a
-   segment and cannot ask whether the segments join.
+   street is *that street's pavement*, and since 2026-09-04 it is drawn as
+   the **ring of the paved union** (`synth::pavement`,
+   `data/plans/kerb-ring-2026-09-03.md`): the closed asphalt region grown by
+   `WALK_WIDTH_M`, less the asphalt, less the rail formation, less the
+   footprints grown by `FACADE_CLEAR_M`, opened on its outer side at
+   `WALK_MIN_WIDTH_M`. Its inner edge is the kerb line itself — filleted
+   where the asphalt is, continuous round a corner and round a roundabout —
+   and its outer edge follows the facades as a curve. A way that runs beside
+   nothing is a *free band* on its own polyline, standing on the ground and
+   belonging to nothing. The hosted strips of `synth::walkway` are still
+   built, but as the ring's **mask** and nothing else: they say where along
+   the kerb the pavement exists (each keyed by the sheet of the asphalt it
+   borders, per segment), the kerb contour is walked at `RING_STEP_M`
+   stations, a bare stretch under `WALK_CORNER_MAX_M` between two masked ones
+   is masked — the rule `street.kerb_gap` scores, so check and model agree on
+   what a corner is — and a served intersection's whole extent masks too,
+   which is how a roundabout's ring arcs get their pavement. The plate's
+   fillet yield does not apply to the ring: what it would take is exactly
+   the corner the ring exists to wrap.
 
-   **A strip keeps one `half_m` and varies its `Section`.** `pavement::runs`
-   chains segments into one buffered polyline only while `half_m` matches,
-   and the union keeps merely-touching shapes apart, so a band that put its
-   width variation in `half_m` was drawn as one slab per 0.4 m rung. The
-   carriageway has always kept its class prior there and its drawn width in
-   `sect_*`; the pavement now does the same, and `SourceSeg::drawn_half_at`
-   is what every consumer of the drawn edge must read — the bench included,
-   since benching off the nominal would carve a terrace wider than the
-   pavement on it.
+   Before the ring, the strip was an offset of its own street's centerline,
+   and it ended where that street's arc ended: every leg's pavement stopped
+   short of the corner, a roundabout's dozen arcs carried none, and
+   `free_bands` drew nothing across a corner under the reach it merged. The
+   attach census read 98 % of claimed arc built while a third drew as
+   disjoint slabs. **Continuity has to be structural, because no census can
+   see it**; the union's boundary has no ends to get wrong.
+
+   **The ring's bench is the ring's own.** One band segment per masked kerb
+   station, offset half the ring's local width from the kerb, seated at the
+   road field's own answer a hand's breadth inside the kerb — the covering
+   stretches blended and the junction pins overriding, as the asphalt's rim
+   reads it — plus the rise; fitted to the senior ground by the band's rule
+   (`walkway::fit_to_ground`), with the drawn ring cut back to the width that
+   came out, refused across a wall (`CORNER_STEP_M`, `WALK_WALL_GRADE`), and
+   stacked by the band's sheet rule (`sheets::assign`) so two rings a storey
+   apart either side of a merged terrace are two sheets and not one mesh
+   with the wall inside it. Those segments are the walk sheet's only
+   kerb-seated sources in the height field and the only kerb-seated benches
+   in stratum D: a band's seat is its leg's profile, a ring's is the field's
+   blend, and where the two disagreed at a junction mouth the drawn ring
+   stood a kerb off the ground it was given.
 
    And, being a surface, each **benches the ground under it** exactly as a
    carriageway does (docs/GROUND.md §2): the strips are derived once and

@@ -313,6 +313,21 @@ impl CarriagewayModel {
         self.ring_from
     }
 
+    /// Whether source `i` is drawn. With the sidewalk ring
+    /// (`synth::pavement::walk_ring`) the hosted walk bands are the ring's
+    /// mask and nothing else — not drawn, not benched, not read by the
+    /// field — and a model check that scored them beside the ring's own
+    /// benches read every joint twice at two seats (`network.walk_joint`
+    /// 0.27 → 4.1 % on the zone). Everything else is drawn.
+    pub fn drawn(&self, i: u32) -> bool {
+        let Some(from) = self.ring_from else { return true };
+        if (i as usize) >= from || !crate::synth::pavement::walk_ring() {
+            return true;
+        }
+        let s = &self.sources[i as usize];
+        !(s.surface == priors::Surface::Walkway && s.corridor != crate::synth::walkway::NO_HOST)
+    }
+
     /// Adds sources after the bake — the sidewalk ring's bench segments
     /// (`synth::pavement::PavementModel::ring_benches`), which exist only once
     /// the union has been baked from the sources already here, and which the

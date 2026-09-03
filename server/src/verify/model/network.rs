@@ -218,7 +218,9 @@ pub fn check(m: &Model<'_>) -> Vec<Metric> {
                         let mut brute_c = u32::MAX;
                         for i in 0..m.junctions.source_count() as u32 {
                             let src = m.junctions.source(i);
-                            if !matches!(src.surface, Surface::Walkway | Surface::Path) {
+                            if !matches!(src.surface, Surface::Walkway | Surface::Path)
+                                || !m.junctions.drawn(i)
+                            {
                                 continue;
                             }
                             let (d0, t) = project_m(p, src.a, src.b, src.cos_lat);
@@ -517,6 +519,9 @@ fn cover_at(
     let mut hard = f64::MAX;
     let mut band = f64::MAX;
     for &i in scratch.iter() {
+        if !junctions.drawn(i) {
+            continue;
+        }
         let s = junctions.source(i);
         let (d0, t) = project_m(p, s.a, s.b, s.cos_lat);
         // The width the band is *drawn* at. `half_m` became the run's chaining
@@ -564,7 +569,7 @@ fn own_host_band_m(
     let mut best = f64::MAX;
     for &i in scratch.iter() {
         let s = junctions.source(i);
-        if s.surface != Surface::Walkway || s.corridor != host {
+        if s.surface != Surface::Walkway || s.corridor != host || !junctions.drawn(i) {
             continue;
         }
         let (d0, t) = project_m(p, s.a, s.b, s.cos_lat);
@@ -646,7 +651,10 @@ fn joint_heights(
     let mut bands: Vec<u32> = Vec::new();
     for &i in scratch.iter() {
         let src = junctions.source(i);
-        if src.level != 0 || !matches!(src.surface, Surface::Walkway | Surface::Path) {
+        if src.level != 0
+            || !matches!(src.surface, Surface::Walkway | Surface::Path)
+            || !junctions.drawn(i)
+        {
             continue;
         }
         let (d, t) = project_m(p, src.a, src.b, src.cos_lat);

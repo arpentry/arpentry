@@ -205,6 +205,12 @@ things distinguish it from a corridor bench, and each is the band being narrow:
   builds the bands once and the ground benches those same segments
   (`ground::walk_earthworks`). One derivation, two readers: a bench from a
   second construction of the same band is a bench that does not fit it.
+  Since the sidewalk is drawn as the ring of the paved union (ROADS.md
+  invariant 7), the hosted strips are only the ring's mask, and what D
+  benches beside a street is the ring's own segments
+  (`pavement::PavementModel::ring_benches`) — one per kerb station, as wide
+  as the ring is there, seated at the kerb the asphalt draws plus the rise.
+  The union bakes before this stratum for exactly that reason.
 - **Its target is its seat.** A sidewalk's is the host's road surface plus the
   kerb — the height the band is drawn at. A path's is the ground *beneath this
   stratum*, sampled at **both ends of each segment**, so the bench flattens the

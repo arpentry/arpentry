@@ -453,6 +453,9 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // ground and cannot run in that order; they are opt-in and the ring is
     // opt-in, and the two are exclusive until the yields read the ring.
     let ring = synth::pavement::walk_ring();
+    if ring && std::env::var_os("ARPT_FIELD_YIELDS").is_some() {
+        eprintln!("ARPT_FIELD_YIELDS: the field yields read the derived ground, which the sidewalk ring derives after the union; set ARPT_NO_WALK_RING=1 to measure them");
+    }
     let t_pave = Instant::now();
     let (ground, junctions, pavement) = if ring {
         let mut junctions = synth::carriageway::bake(&scene, &solved, &facades, walk_bands.clone());
