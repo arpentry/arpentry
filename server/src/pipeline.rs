@@ -460,6 +460,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             seniors: &seniors,
             terrain: cfg.terrain.as_deref(),
             z_ref: solved.z_ref,
+            scene: &scene,
         };
         let pavement =
             Arc::new(synth::pavement::bake(&junctions, threads, None, Some(&facades), Some(&ctx)));

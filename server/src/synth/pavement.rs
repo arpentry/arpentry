@@ -223,6 +223,12 @@ pub struct RingContext<'a> {
     pub seniors: &'a [crate::ground::GroundLayer],
     pub terrain: Option<&'a std::path::Path>,
     pub z_ref: u8,
+    /// For the sheet assignment over the ring's benches (`sheets::assign`
+    /// reads the junction ports): two rings a storey apart that meet in plan
+    /// — either side of a wall the union merged two terraces across — are
+    /// two sheets, or they fuse into one mesh with the wall drawn as a cliff
+    /// inside it (8 m at 6.9281,46.4177).
+    pub scene: &'a crate::scene::SceneGraph,
 }
 
 pub fn bake(
@@ -699,7 +705,11 @@ fn bake_chunk(
             // out — cut back to each station's fitted width — so the ring and
             // its bench are one cross-section, and a refused station draws no
             // pavement rather than a pavement standing on a hillside.
-            let ring = match ring_ctx {
+            // The fit, then the sheets: each surviving bench is fitted to the
+            // ground by the band's own rule, and the benches are then stacked
+            // by the band's own sheet rule, so the ring is drawn per sheet.
+            let mut rings_by_sub: Vec<(u32, Shapes)> = Vec::new();
+            match ring_ctx {
                 Some(ctx) => {
                     let before: Vec<u64> = at.clone();
                     crate::synth::walkway::fit_to_ground(
@@ -727,20 +737,35 @@ fn bake_chunk(
                             }
                         }
                     }
-                    let fitted = fitted_mask(&kerb, &mine, &at);
-                    if fitted.is_empty() {
-                        Vec::new()
-                    } else {
-                        sidewalk_ring(&asphalt, &ballast, &walls, &fitted)
+                    let subs = crate::synth::sheets::assign(ctx.scene, &mine);
+                    let mut sub_ids: Vec<u32> = subs.clone();
+                    sub_ids.sort_unstable();
+                    sub_ids.dedup();
+                    for sub in sub_ids {
+                        let idx: Vec<usize> = (0..mine.len()).filter(|&i| subs[i] == sub).collect();
+                        let part: Vec<SourceSeg> = idx.iter().map(|&i| mine[i]).collect();
+                        let part_at: Vec<u64> = idx.iter().map(|&i| at[i]).collect();
+                        let fitted = fitted_mask(&kerb, &part, &part_at);
+                        if fitted.is_empty() {
+                            continue;
+                        }
+                        let r = sidewalk_ring(&asphalt, &ballast, &walls, &fitted);
+                        if !r.is_empty() {
+                            rings_by_sub.push((sub, r));
+                        }
+                    }
+                    for (i, s) in mine.iter_mut().enumerate() {
+                        s.layer = walk_layer + subs[i];
                     }
                 }
-                None => ring,
+                None => rings_by_sub.push((0, ring)),
             };
             if probe && t0.elapsed().as_millis() > 500 {
                 eprintln!(
-                    "[ring]   ({level},{layer}) walk {walk_layer}: {} stations, {} benches: kerb {:?} ring {:?} seats {:?} fit+final {:?}",
+                    "[ring]   ({level},{layer}) walk {walk_layer}: {} stations, {} benches, {} sheets: kerb {:?} ring {:?} seats {:?} fit+final {:?}",
                     kerb.len(),
                     mine.len(),
+                    rings_by_sub.len(),
                     t_kerb,
                     t_ring,
                     t_seats,
@@ -748,22 +773,22 @@ fn bake_chunk(
                 );
             }
             if let Some(q) = probe_m {
-                eprintln!(
-                    "[ring-at] ({level},{layer}) walk {walk_layer}: probe in final ring: {} (ring {:.0} m2, {} benches)",
-                    inside(&ring, q),
-                    poly::area(&ring),
-                    mine.len()
-                );
-            }
-            if ring.is_empty() {
-                continue;
+                for (sub, r) in &rings_by_sub {
+                    eprintln!(
+                        "[ring-at] ({level},{layer}) walk {walk_layer}+{sub}: probe in final ring: {} (ring {:.0} m2)",
+                        inside(r, q),
+                        poly::area(r)
+                    );
+                }
             }
             benches.extend(mine);
-            let walk_key = (level, walk_layer, priors::Surface::Walkway);
-            if !levels.contains(&walk_key) {
-                levels.push(walk_key);
+            for (sub, r) in rings_by_sub {
+                let walk_key = (level, walk_layer + sub, priors::Surface::Walkway);
+                if !levels.contains(&walk_key) {
+                    levels.push(walk_key);
+                }
+                by_level.entry(walk_key).or_default().extend(r);
             }
-            by_level.entry(walk_key).or_default().extend(ring);
             }
         }
         levels.sort_unstable_by_key(|&(level, layer, surface)| (level, layer, material_rank(surface)));
