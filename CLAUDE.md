@@ -71,6 +71,66 @@ These are gotchas not documented elsewhere:
 - **Generated FlatBuffers headers** go to `${CMAKE_BINARY_DIR}/generated/flatcc/`. The `flatcc_generate` custom target compiles schemas.
 - **glfw3webgpu v1.2.0**: the surface function is `glfwGetWGPUSurface()` (not `glfwCreateWindowWGPUSurface`)
 
+## The Fast Development Loop
+
+By default a `--zone` preview still reads the full Switzerland inputs, because bbox
+pruning happens at parquet *row-group* granularity — a 25-tile zone still
+pulled 13 of 645 row groups of a 954 MB `segment.parquet`, read 165k features
+and built 23,611 corridors. The model stage (assemble + solve + ground) is
+therefore flat in the size of `--zone`: 51.6 s of a 74 s run. **Shrinking the
+bbox does not speed up the loop. Shrinking the input does.**
+
+Cut a zone once, then loop against it:
+
+```bash
+# Once per zone (~1.5 s; 2.6 GB of inputs -> 52 MB).
+./scripts/cut-zone.sh montreux 6.86,46.40,6.98,46.47
+
+# Every iteration after that.
+./scripts/run-overture-ch.sh --zone 6.86,46.40,6.98,46.47 \
+    --data data/zones/montreux --screenshot /tmp/claude/preview.png
+```
+
+`cut-zone.sh` filters each layer on the `bbox` struct Overture ships (column
+statistics, no WKB decoding) into small row groups, and cuts the DEM over the
+same bounds. `--data` points the run script at the result and implies
+`--skip-download`. `--margin` (default 0.05°, ~5.5 km) sets how much ground
+past the zone is cut; the calibration behind that default is in the script's
+header. `data/zones/<name>/zone.env` records the zone, the margin and the
+source mtimes, so a cut that has fallen behind its source is a diff.
+
+**Two rules follow from how the cut works:**
+
+- **Compare a cut zone's scorecard only against another run over the same
+  cut.** The committed baselines were taken over full inputs, which is a
+  different population *and* a differently-conditioned solve: the full-input
+  run admits corridors that reach past the DEM extract and solve against the
+  flat-0 fallback (it reports a 300.65 m clearance shortfall where the cuts
+  report ~3 m). Re-cut a baseline per zone, or diff cut against cut.
+- **The run summary's global stats are scene-wide, so the cut boundary
+  contaminates them even when the measured tiles are fine.** Trust
+  `arpentry_verify` over the zone proper for anything that must be comparable.
+
+### Reading the run summary
+
+Every tiling run ends with per-stage timings and counters. Two lines carry
+information no other tool can give you:
+
+```
+consistency  junction step max ..., clearance shortfall max ..., N demands dropped
+cdt          N tiles lost their breaklines, M fell back from the one mesh
+```
+
+The `cdt` line counts tiles the geometric kernel refused. Both fallbacks are
+correct (invariant 6: plain, not wrong) but silent everywhere else — the
+archive checks read a plain lattice as a plain lattice that was asked for, so
+a nonzero count is invisible to `arpentry_verify`. **A tile that lost its
+breaklines has no imprint creases; a tile that fell back from the one mesh was
+built by the pre-S5 construction the detail-rung baselines were not cut
+under.** Either way it does not match its neighbours, so check this line
+before attributing a seam or a step near that tile to the change you just
+made.
+
 ## Verifying Generated Geometry
 
 Before reaching for a screenshot, measure. `arpentry_verify` scores an emitted

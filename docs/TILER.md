@@ -274,9 +274,52 @@ Example:
   --input 3:data/naturalearth/lake.parquet
 ```
 
+### The run summary
+
 The run ends with a per-stage timing report (read / simplify / clip / sort and
 merge / decode / terrain / encode / write) plus row-group pruning and
 throughput counters — use it to spot the bottleneck before tuning anything.
+
+Two of its lines report things no other tool can see:
+
+```
+consistency  junction step max ..., clearance shortfall max ..., N demands dropped
+cdt          N tiles lost their breaklines, M fell back from the one mesh
+```
+
+`cdt` counts the tiles whose triangulation the geometric kernel refused.
+spade's constraint splitting asserts rather than returning on some
+nearly-degenerate configurations, so `terrain_cdt` catches the panic and takes
+the fallback each caller already promises: the plain lattice for
+`constrained_mesh`, the pre-S5 separate meshes for `one_mesh_full`. Both are
+the right answer for the tile that hit them (invariant 6: plain, not wrong)
+and both are invisible downstream — the archive checks read a plain lattice as
+a plain lattice that was asked for, so `arpentry_verify` cannot distinguish a
+refusal from a tile that never had breaklines. A nonzero count means those
+tiles were built by a different construction than their neighbours, which is
+worth knowing before blaming a seam near one on a code change.
+
+The line is printed on every run, zero included: a fallback is silent
+everywhere else, so a line that appeared only on failure would make its own
+absence unreadable.
+
+`consistency` is scene-wide, not zone-wide. With a cut input (below) the
+boundary contributes to it even when every measured tile is fine, so treat it
+as a smell rather than a metric; `arpentry_verify` is what compares.
+
+### Cutting the inputs to a zone
+
+Row-group pruning bounds what the tiler *reads*, not what the world model
+*solves*. One row group of a 954 MB `segment.parquet` is a large piece of the
+canton, so a small `--bbox` still assembles, solves and grounds every corridor
+in the groups it touched: measured at 23,611 corridors and 51.6 s of a 74 s
+run for a 25-tile bbox, and flat in the size of the bbox.
+
+`scripts/cut-zone.sh <name> <w,s,e,n> [--margin <deg>]` cuts every layer and
+the DEM to one zone plus a margin, once, and `run-overture-ch.sh --data <dir>`
+tiles from the cut. The same run then takes 45 s with the model stage at
+25.5 s. The script's header carries the margin calibration and the reason a
+cut zone's scorecard is not comparable to a baseline taken over full inputs.
 
 ---
 

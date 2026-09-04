@@ -815,6 +815,25 @@ The baseline this replaced recorded only an archive *filename*, which pointed at
 a throwaway A/B archive in a session scratchpad — no bbox, no zoom, no commit.
 Nothing about it could be reproduced or even located.
 
+**The one drift the scope block cannot see is the tiler's input.** Scope
+records what the *archive* covers — bbox, tiles, zooms, commit, spacing — and
+says nothing about what the tiler read to build it. Two archives over the same
+bbox, one tiled from the full Switzerland parquets and one from a zone cut by
+`scripts/cut-zone.sh`, therefore carry identical scope blocks and pass the
+drift check cleanly, while their geometry differs: measured on a 25-tile bbox,
+5 of 40 metrics moved, all in the structure and clearance families. The cut is
+not the inferior of the two — row-group granularity admits corridors that reach
+past the DEM extract and solve against the flat-0 fallback, so the full-input
+run is the one reporting a 300.65 m clearance shortfall against the cut's ~3 m —
+but they are different populations and a diff across them is meaningless in the
+usual way, without the usual warning.
+
+So this one is discipline rather than a guard: **compare a cut zone only against
+another run over the same cut**, and re-cut the baseline per zone rather than
+diffing a zone against the committed `baseline-montreux-*.json`, which were
+taken over full inputs. `data/zones/<name>/zone.env` records which cut an
+archive came from.
+
 ## 10. Adding a check
 
 A check is one file in `server/src/verify/checks/`, implementing `visit` and
