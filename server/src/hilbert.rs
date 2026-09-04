@@ -154,3 +154,29 @@ mod tests {
         assert!(tile_id(3, 7, 3) < tile_id(4, 0, 0));
     }
 }
+
+#[cfg(test)]
+mod cross_language_tests {
+    use super::*;
+
+    /// The C client reads `.arpa` archives directly (`client/src/tile/archive.c`),
+    /// so its Hilbert id must agree with the tiler's or every lookup misses. This
+    /// table is the contract: `client/tests/test_archive.c` asserts the same
+    /// values. Change one side and this test, or that one, goes red.
+    #[test]
+    fn tile_ids_match_the_c_client_table() {
+        let table: &[(u8, u32, u32, u64)] = &[
+            (0, 0, 0, 0),
+            (1, 0, 0, 4_398_046_511_104),
+            (1, 1, 0, 4_398_046_511_107),
+            (1, 0, 1, 4_398_046_511_105),
+            (1, 1, 1, 4_398_046_511_106),
+            (12, 2125, 3102, 52_776_567_574_951),
+            (15, 17013, 24837, 65_971_302_143_368),
+            (16, 34026, 49674, 70_371_162_084_898),
+        ];
+        for &(z, x, y, want) in table {
+            assert_eq!(tile_id(z, x, y), want, "z={z} x={x} y={y}");
+        }
+    }
+}

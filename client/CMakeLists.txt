@@ -119,6 +119,8 @@ add_executable(arpentry_client
     src/main.c
     src/present.c
     src/http.c
+    src/tile/source.c
+    src/tile/archive.c
     src/tile/fetch.c
     src/camera.c
     src/control.c
@@ -155,8 +157,8 @@ target_link_libraries(arpentry_client PRIVATE webgpu glfw3webgpu arpentry_common
 if(NOT EMSCRIPTEN)
     find_package(Threads REQUIRED)
 
-    add_executable(test_tile_fetch tests/test_tile_fetch.c src/tile/fetch.c src/http.c
-        tests/demo_tile.c)
+    add_executable(test_tile_fetch tests/test_tile_fetch.c src/tile/fetch.c
+        src/tile/source.c src/tile/archive.c src/http.c tests/demo_tile.c)
     add_dependencies(test_tile_fetch flatcc_generate)
     target_include_directories(test_tile_fetch PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -164,6 +166,12 @@ if(NOT EMSCRIPTEN)
     )
     target_link_libraries(test_tile_fetch PRIVATE unity arpentry_common Threads::Threads)
     add_test(NAME test_tile_fetch COMMAND test_tile_fetch)
+
+    add_executable(test_archive tests/test_archive.c src/tile/archive.c)
+    target_include_directories(test_archive PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_archive PRIVATE unity arpentry_common)
+    add_test(NAME test_archive COMMAND test_archive)
 endif()
 
 if(EMSCRIPTEN)

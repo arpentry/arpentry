@@ -49,9 +49,19 @@ struct State {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+
+    // `--bundle` writes the blobs the client cannot derive from an archive —
+    // the style and the model library — beside that archive, then exits. It is
+    // what lets `arpentry_client --archive` draw a scene with no server at all
+    // (docs/VIEWER.md "Headless capture"); the tileset needs no sidecar,
+    // because the tiler already wrote it into the archive's metadata.
+    let bundle = args.iter().any(|a| a == "--bundle");
+    args.retain(|a| a != "--bundle");
+
     if args.len() < 2 || args.len() > 4 {
         eprintln!("Usage: arpentry_server <tile_dir|archive.arpa> <style_file> [port] [threads]");
+        eprintln!("       arpentry_server <archive.arpa> <style_file> --bundle");
         exit(1);
     }
     let tile_dir = &args[0];
@@ -99,12 +109,18 @@ fn main() {
         Source::Procedural
     };
 
-    // Clamp advertised max level to the archive's range (matches resp_tileset.c).
-    let archive_max_zoom = match &source {
-        Source::Archive(a) => Some(a.max_zoom()),
-        Source::Procedural => None,
+    // An archive carries the tileset the tiler wrote for it. Serve that, rather
+    // than a synthesised description of it: the generated one hardcodes world
+    // bounds and root_error 400_000, so a client reading the archive directly
+    // (`arpentry_client --archive`) would size its LOD off 512_000 and could
+    // pick a different zoom for the same camera. The stored blob is already
+    // Brotli-compressed, which is what respond_blob requires.
+    //
+    // Only a procedural source needs a description invented for it.
+    let index_arpi = match &source {
+        Source::Archive(a) => a.metadata().to_vec(),
+        Source::Procedural => tileset::build(&generated_tileset(None)),
     };
-    let index_arpi = tileset::build(&generated_tileset(archive_max_zoom));
     let models_arpm = models::build();
 
     // Build the style once at startup: a bad style file fails fast here instead
@@ -116,6 +132,23 @@ fn main() {
             exit(1);
         }
     };
+
+    if bundle {
+        let dir = std::path::Path::new(tile_dir)
+            .parent()
+            .unwrap_or(std::path::Path::new("."));
+        for (name, blob) in
+            [("style.arps", &style_arps), ("models.arpm", &models_arpm)]
+        {
+            let path = dir.join(name);
+            if let Err(e) = std::fs::write(&path, blob) {
+                eprintln!("Failed to write {}: {e}", path.display());
+                exit(1);
+            }
+            println!("Wrote {} ({} bytes)", path.display(), blob.len());
+        }
+        return;
+    }
 
     let state = Arc::new(State { source, style_arps, index_arpi, models_arpm });
 

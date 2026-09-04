@@ -163,7 +163,9 @@ Uploaded once per tile, freed on eviction. No re-upload on camera movement.
 | `tile_manager` | Zoom level, tile state machine, loading, cache, model matrices |
 | `tile_visible` | Visible tile enumeration from camera frustum |
 | `tile_decode` | Extract raw FlatBuffer arrays (x/y/z, normals, indices) for GPU upload |
-| `tile_fetch` | HTTP tile fetching |
+| `tile_fetch` | Async tile fetching (thread pool / browser fetch) |
+| `tile_source` | Where bytes come from: an HTTP server or a local `.arpa` |
+| `tile_archive` | Read-only `.arpa`: header, Hilbert directory, blob lookup |
 | `renderer` | WebGPU pipeline, GPU buffers, draw calls, uniforms, depth buffer |
 | `ui` | WebGPU UI overlay (compass, zoom buttons, tilt controls) |
 | `http` | Low-level HTTP client (native sockets / Emscripten fetch) |
@@ -185,9 +187,30 @@ main
 
 `--headless --screenshot <path>` renders without a window, a surface, or a
 display: no `glfwInit`, no swapchain, frames land in an offscreen texture and
-are read back. The client becomes a measuring instrument that runs over ssh,
-in CI, and beside a tiling run — see `docs/VERIFICATION.md` and the isolation
-harness plan.
+are read back. `--archive <path.arpa>` then removes the other half — the
+client reads tiles and the tileset straight out of the archive, so there is no
+server, no port to bind and no failed-tile retry. The client becomes a
+measuring instrument that runs over ssh, in CI, and beside a tiling run — see
+`docs/VERIFICATION.md` and the isolation harness plan.
+
+```bash
+arpentry_server data/zone/preview.arpa style.json --bundle   # once per style
+arpentry_client --archive data/zone/preview.arpa \
+    --lon 6.929 --lat 46.420 --alt 900 --headless --screenshot out.png
+```
+
+The archive carries its own tileset (the tiler writes the `.arpi` into the
+metadata block) but not the style or the model library, which describe how to
+draw it rather than what it holds. `--bundle` writes those two beside the
+archive as `style.arps` and `models.arpm`; without them the client falls back
+to its built-in defaults and says so.
+
+**A served render and an archive render are not always the same image.** When
+the archive has no tile at an address, the server synthesises a flat sea-level
+one so the interactive viewer has a terrain layer everywhere; the archive path
+reports the miss and the tile manager falls back to a real ancestor. Near a cut
+zone's edge that is dozens of invented tiles — 66 at 8 km over the Montreux
+cut. Measure against `--archive`, which draws only what the tiler emitted.
 
 Two things differ from a windowed capture, both deliberate:
 

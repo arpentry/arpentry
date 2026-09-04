@@ -30,6 +30,7 @@
 #ifndef __EMSCRIPTEN__
 #include <unistd.h>
 #include "http.h"
+#include "tile/source.h"
 #include "tile.h"
 #endif
 
@@ -89,6 +90,7 @@ typedef struct {
     int height;
     bool ortho;
     bool headless;        /* no window, no surface, no display */
+    char archive[512];    /* .arpa read from disk instead of a server */
     char screenshot[512]; /* empty string = interactive mode */
 } cli_opts;
 
@@ -103,6 +105,7 @@ static cli_opts opts = {
     .height = WINDOW_H,
     .ortho = false,
     .headless = false,
+    .archive = "",
     .screenshot = "",
 };
 
@@ -126,6 +129,8 @@ static void parse_args(int argc, char **argv) {
             opts.height = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--ortho") == 0) {
             opts.ortho = true;
+        } else if (strcmp(argv[i], "--archive") == 0 && i + 1 < argc) {
+            snprintf(opts.archive, sizeof(opts.archive), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--headless") == 0) {
             opts.headless = true;
         } else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
@@ -136,7 +141,8 @@ static void parse_args(int argc, char **argv) {
                     "Usage: %s [--url <base>] [--lon <deg>] [--lat <deg>] "
                     "[--alt <m>] [--bearing <deg>] [--tilt <deg>] "
                     "[--width <px>] [--height <px>] [--ortho] "
-                    "[--headless] [--screenshot <path>]\n",
+                    "[--archive <path.arpa>] [--headless] "
+                    "[--screenshot <path>]\n",
                     argv[0]);
             exit(EXIT_FAILURE);
         }
@@ -607,26 +613,29 @@ static bool ui_event_filter(int button, int action, double sx, double sy,
 /* Fetch and parse index.arpi, filling config fields from the FlatBuffer.
    base_url, max_tiles, and max_concurrent must be set by the caller. */
 
+/* Fetch one of the viewer's metadata blobs by its server-relative name.
+   Absorbs the three ways bytes arrive — browser fetch, HTTP socket, local
+   archive — so the parsers below see only a buffer. Caller frees *buf. */
+
+static bool fetch_blob(const char *base_url, const char *name, uint8_t **buf,
+                       size_t *size) {
+    *buf = NULL;
+    *size = 0;
+#ifdef __EMSCRIPTEN__
+    char url[512];
+    int n = snprintf(url, sizeof(url), "%s%s", base_url, name);
+    if (n < 0 || (size_t)n >= sizeof(url)) return false;
+    return em_sync_get(url, buf, size) != 0;
+#else
+    return arpt_source_get(base_url, name, buf, size);
+#endif
+}
+
 static bool fetch_tileset(const char *base_url,
                           arpt_tile_manager_config *config) {
-    char url[512];
-    int n = snprintf(url, sizeof(url), "%s/index.arpi", base_url);
-    if (n < 0 || (size_t)n >= sizeof(url)) return false;
-
     uint8_t *buf = NULL;
     size_t buf_size = 0;
-
-#ifdef __EMSCRIPTEN__
-    if (!em_sync_get(url, &buf, &buf_size)) return false;
-#else
-    arpt_http_response resp = {0};
-    if (!arpt_http_get(url, &resp) || resp.status != 200) {
-        free(resp.body);
-        return false;
-    }
-    buf = resp.body;
-    buf_size = resp.body_size;
-#endif
+    if (!fetch_blob(base_url, "/index.arpi", &buf, &buf_size)) return false;
 
     int rc = arpentry_tiles_Tileset_verify_as_root_with_identifier(
         buf, buf_size, "arpi");
@@ -641,10 +650,12 @@ static bool fetch_tileset(const char *base_url,
     config->min_level = arpentry_tiles_Tileset_min_level(ts);
     config->max_level = arpentry_tiles_Tileset_max_level(ts);
 
+    /* The tiler writes no name into an archive's tileset, so print the levels
+       regardless: a line that disappears reads as a failed fetch. */
     flatbuffers_string_t name = arpentry_tiles_Tileset_name(ts);
-    if (name)
-        printf("Tileset: %s (levels %d-%d, root_error=%.0f)\n", name,
-               config->min_level, config->max_level, config->root_error);
+    printf("Tileset: %s (levels %d-%d, root_error=%.0f)\n",
+           name ? name : "unnamed", config->min_level, config->max_level,
+           config->root_error);
 
     free(buf);
     return true;
@@ -654,24 +665,10 @@ static bool fetch_tileset(const char *base_url,
    Returns true on success. */
 
 static bool fetch_style(const char *base_url, arpt_style *style) {
-    char url[512];
-    int n = snprintf(url, sizeof(url), "%s/style.arps", base_url);
-    if (n < 0 || (size_t)n >= sizeof(url)) return false;
 
     uint8_t *buf = NULL;
     size_t buf_size = 0;
-
-#ifdef __EMSCRIPTEN__
-    if (!em_sync_get(url, &buf, &buf_size)) return false;
-#else
-    arpt_http_response resp = {0};
-    if (!arpt_http_get(url, &resp) || resp.status != 200) {
-        free(resp.body);
-        return false;
-    }
-    buf = resp.body;
-    buf_size = resp.body_size;
-#endif
+    if (!fetch_blob(base_url, "/style.arps", &buf, &buf_size)) return false;
 
     int rc = arpentry_tiles_Style_verify_as_root_with_identifier(
         buf, buf_size, "arps");
@@ -860,24 +857,10 @@ static bool fetch_style(const char *base_url, arpt_style *style) {
 
 static int fetch_models(const char *base_url, arpt_model *models,
                         int max_models, uint8_t **model_buf_out) {
-    char url[512];
-    int n = snprintf(url, sizeof(url), "%s/models.arpm", base_url);
-    if (n < 0 || (size_t)n >= sizeof(url)) return 0;
 
     uint8_t *buf = NULL;
     size_t buf_size = 0;
-
-#ifdef __EMSCRIPTEN__
-    if (!em_sync_get(url, &buf, &buf_size)) return 0;
-#else
-    arpt_http_response resp = {0};
-    if (!arpt_http_get(url, &resp) || resp.status != 200) {
-        free(resp.body);
-        return 0;
-    }
-    buf = resp.body;
-    buf_size = resp.body_size;
-#endif
+    if (!fetch_blob(base_url, "/models.arpm", &buf, &buf_size)) return 0;
 
     int rc = arpentry_tiles_ModelLibrary_verify_as_root_with_identifier(
         buf, buf_size, "arpm");
@@ -1253,6 +1236,15 @@ int main(int argc, char **argv) {
     const bool headless = false;
 #endif
 
+#ifndef __EMSCRIPTEN__
+    /* Open the archive before the fetch pool starts: the workers read the
+       mapping without a lock, so nothing may open or close it under them. */
+    if (!arpt_source_open_archive(opts.archive[0] ? opts.archive : NULL)) {
+        fprintf(stderr, "Fatal: cannot read archive %s\n", opts.archive);
+        return EXIT_FAILURE;
+    }
+#endif
+
     if (!headless && !glfwInit()) {
         fprintf(stderr, "Failed to initialize GLFW\n");
         return EXIT_FAILURE;
@@ -1301,6 +1293,7 @@ int main(int argc, char **argv) {
     if (app.device) wgpuDeviceRelease(app.device);
     if (app.adapter) wgpuAdapterRelease(app.adapter);
     wgpuInstanceRelease(app.instance);
+    arpt_source_close();
     if (!headless) glfwTerminate();
 #endif
 

@@ -107,7 +107,7 @@ bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
-#include "http.h"
+#include "source.h"
 #include "tile_verifier.h"
 
 #include <pthread.h>
@@ -119,7 +119,8 @@ bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
 
 typedef struct fetch_job {
     struct fetch_job *next;
-    char url[768];
+    char base[256]; /* HTTP base URL; unused when reading an archive */
+    char name[64];  /* server-relative "/{z}/{x}/{y}.arpt" */
     arpt_tile_prepare_fn prepare;
     arpt_tile_finish_fn finish;
     void *userdata;
@@ -215,7 +216,7 @@ static void *worker_func(void *arg) {
 
         if (!job) continue;
 
-        /* HTTP + verify + prepare, all off the main thread. */
+        /* Fetch + verify + prepare, all off the main thread. */
         fetch_result *result = malloc(sizeof(*result));
         if (!result) {
             free(job);
@@ -227,27 +228,20 @@ static void *worker_func(void *arg) {
         result->payload = NULL;
         result->success = false;
 
-        arpt_http_response resp;
-        if (!arpt_http_get(job->url, &resp)) {
-            enqueue_result(result);
-            free(job);
-            continue;
-        }
-
-        if (resp.status != 200) {
-            fprintf(stderr, "tile_fetch: HTTP %d for %s\n", resp.status,
-                    job->url);
-            free(resp.body);
+        uint8_t *body = NULL;
+        size_t body_size = 0;
+        if (!arpt_source_get(job->base, job->name, &body, &body_size)) {
             enqueue_result(result);
             free(job);
             continue;
         }
 
         int rc = arpentry_tiles_Tile_verify_as_root_with_identifier(
-            resp.body, resp.body_size, "arpt");
+            body, body_size, "arpt");
         if (rc != 0) {
-            fprintf(stderr, "tile_fetch: verification failed (rc=%d)\n", rc);
-            free(resp.body);
+            fprintf(stderr, "tile_fetch: verification failed (rc=%d) for %s\n",
+                    rc, job->name);
+            free(body);
             enqueue_result(result);
             free(job);
             continue;
@@ -257,14 +251,13 @@ static void *worker_func(void *arg) {
            owns it from here) or pass it straight through if there is none.
            `success` is true only if we end up with a non-NULL payload. */
         if (job->prepare) {
-            result->payload = job->prepare(resp.body, resp.body_size,
-                                           job->userdata);
+            result->payload = job->prepare(body, body_size, job->userdata);
             result->success = result->payload != NULL;
         } else {
-            result->payload = resp.body;
+            result->payload = body;
             result->success = true;
         }
-        resp.body = NULL; /* ownership transferred to prepare or to result */
+        body = NULL; /* ownership transferred to prepare or to result */
 
         enqueue_result(result);
         free(job);
@@ -323,9 +316,11 @@ bool arpt_fetch_tile(const char *base_url, int level, int x, int y,
     fetch_job *job = malloc(sizeof(*job));
     if (!job) return false;
 
-    int n = snprintf(job->url, sizeof(job->url), "%s/%d/%d/%d.arpt", base_url,
-                     level, x, y);
-    if (n < 0 || (size_t)n >= sizeof(job->url)) {
+    int nb = snprintf(job->base, sizeof(job->base), "%s", base_url);
+    int n = snprintf(job->name, sizeof(job->name), "/%d/%d/%d.arpt", level, x,
+                     y);
+    if (nb < 0 || (size_t)nb >= sizeof(job->base) || n < 0 ||
+        (size_t)n >= sizeof(job->name)) {
         free(job);
         return false;
     }
