@@ -244,6 +244,17 @@ arpentry_tiler [options]
   --terrain <path>     Terrarium DEM PMTiles for per-tile elevation
   --threads <n>        Worker threads (default: detected CPU count)
   --brotli <q>         Brotli quality 0-11 for tile blobs (default: 7)
+  --dump <dir>         Write stage-artifact GeoJSON dumps (scene graph,
+                       solved profiles) for inspection in QGIS/kepler
+  --verify-model <p>   Write the model-side scorecard: the structural checks
+                       (I7 authority, I8 ground footprint, I5 determinism)
+                       that measure how the scene was computed rather than
+                       what was drawn. Re-solves the scene, so it is opt-in.
+                       Merge it with `arpentry_verify --model <p>`.
+  --no-breaklines      Plain lattice terrain: no bench contact lines, and no
+                       hole (there is no constrained mesh to cut)
+  --no-hole            Draw ground under the asphalt again, so an A/B re-tile
+                       of the hole is a flag rather than a patch
 ```
 
 Inputs are GeoParquet files keyed by layer index (see `layers`):

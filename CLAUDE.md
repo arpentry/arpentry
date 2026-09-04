@@ -76,7 +76,7 @@ These are gotchas not documented elsewhere:
 Before reaching for a screenshot, measure. `arpentry_verify` scores an emitted
 archive against the `docs/GENERATION.md` §7 invariants — asphalt buried by the
 drawn ground, level ordering inverted, tile-seam steps, manufactured retaining
-walls, structures drifting between zooms — in about 7 s over a city extract:
+walls, structures drifting between zooms — in about 40 s over a city extract:
 
 ```bash
 cd server && cargo build --release
