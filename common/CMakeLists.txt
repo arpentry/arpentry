@@ -1,4 +1,5 @@
-# ── arpentry_common: shared library for client & server ─────────────────
+# ── arpentry_common: shared library for the client and its tests ────────
+# (The server is the Rust reimplementation in server/ and links none of this.)
 
 add_library(arpentry_common STATIC
     src/coords.c
