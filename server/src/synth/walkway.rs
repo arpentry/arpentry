@@ -71,10 +71,6 @@ pub(crate) const CORNER_STEP_M: f64 = 1.5;
 /// a wall inside the band's width cannot hide between two samples.
 const FACE_STEP_M: f64 = 0.75;
 
-/// Longest hostless Walkway segment [`CORNER_STEP_M`] applies to, in metres —
-/// what counts as connective tissue rather than a way going somewhere.
-const CORNER_LINK_MAX_M: f64 = 4.0;
-
 /// Steepest end-to-end seat fall a hostless Walkway segment may carry, as a
 /// grade — past it the segment is draping a wall, whatever its length.
 ///

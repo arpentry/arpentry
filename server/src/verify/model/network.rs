@@ -692,16 +692,6 @@ fn project_m(p: Coord, a: Coord, b: Coord, cos_lat: f64) -> (f64, f64) {
     ((qx - ex * u).hypot(qy - ey * u), u)
 }
 
-fn point_to_segment_m(p: Coord, a: Coord, b: Coord, cos_lat: f64) -> f64 {
-    let m_lon = DEG_M * cos_lat;
-    let (ex, ey) = ((b.x - a.x) * m_lon, (b.y - a.y) * DEG_M);
-    let (qx, qy) = ((p.x - a.x) * m_lon, (p.y - a.y) * DEG_M);
-    let len2 = ex * ex + ey * ey;
-    let u = if len2 > 0.0 { ((qx * ex + qy * ey) / len2).clamp(0.0, 1.0) } else { 0.0 };
-    let (fx, fy) = (qx - ex * u, qy - ey * u);
-    fx.hypot(fy)
-}
-
 fn metric_close(a: Coord, b: Coord, cos_lat: f64, eps_m: f64) -> bool {
     let m_lon = DEG_M * cos_lat;
     let (dx, dy) = ((a.x - b.x) * m_lon, (a.y - b.y) * DEG_M);
@@ -727,7 +717,7 @@ mod tests {
         let b = Coord { x: 6.0 + 100.0 / (DEG_M * cos), y: 46.0 };
         let on = Coord { x: 6.0 + 50.0 / (DEG_M * cos), y: 46.0 };
         let off = Coord { x: 6.0 + 50.0 / (DEG_M * cos), y: 46.0 + 7.0 / DEG_M };
-        assert!(point_to_segment_m(on, a, b, cos) < 1e-6);
-        assert!((point_to_segment_m(off, a, b, cos) - 7.0).abs() < 0.01);
+        assert!(project_m(on, a, b, cos).0 < 1e-6);
+        assert!((project_m(off, a, b, cos).0 - 7.0).abs() < 0.01);
     }
 }

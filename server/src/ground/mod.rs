@@ -756,6 +756,10 @@ struct WalkBenchRules {
 
 impl WalkBenchRules {
     /// The shipped rule: the per-material cap, refusing rather than narrowing.
+    /// This is what [`from_env`](Self::from_env) yields with nothing set; the
+    /// tests name it directly so a stray switch in the environment cannot
+    /// quietly change what they assert.
+    #[cfg(test)]
     fn shipped() -> Self {
         WalkBenchRules { cap_m: None, fit: false, coplanar: false }
     }
@@ -3012,7 +3016,6 @@ mod tests {
     #[test]
     fn a_path_across_too_steep_a_flank_gets_no_bench() {
         let seg = band(0.0, 8.0, 1.0, CorridorId::MAX, (0.0, 0.0));
-        let cos_lat = seg.cos_lat;
         // A flank falling north at 200 %: the bench edge is 1.5 m out, so
         // holding the band flat would cut and fill 3 m — twice
         // WALK_MAX_FACE_M, so the margin survives a retune of the cap.

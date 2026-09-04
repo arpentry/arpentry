@@ -1262,10 +1262,6 @@ struct Run {
     /// across open ground. The sidewalk ring masks with the first and draws
     /// the second, so the two never chain.
     hosted: bool,
-    /// The corridor the run's segments belong to, and their latitude scale —
-    /// what a hosted walk run needs to find the asphalt it is the pavement of.
-    corridor: crate::scene::CorridorId,
-    cos_lat: f64,
     /// For a hosted walk run, the sheet of the asphalt it borders
     /// ([`host_layer`]), read per segment and chained only while it holds: a
     /// street's asphalt changes sheet along its length, and one key for a
@@ -1407,8 +1403,6 @@ fn runs(junctions: &CarriagewayModel, source_ids: &[u32]) -> Vec<Run> {
                 cut_start: s.cut_a,
                 cut_end: s.cut_b,
                 hosted: s.corridor != NO_HOST,
-                corridor: s.corridor,
-                cos_lat: s.cos_lat,
                 host,
             });
         }

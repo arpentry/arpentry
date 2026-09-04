@@ -1383,33 +1383,6 @@ mod tests {
         assert_eq!(super::super::relax::junction_heights(&g), vec![None]);
     }
 
-    /// An east-west corridor `off_m` metres north of lat 46, spanning `len_m`
-    /// from lon 6, entirely one bridge span.
-    fn bridge_corridor(id: u32, off_m: f64, len_m: f64, n: usize, paves: bool) -> Corridor {
-        let deg_x = len_m / (DEG_M * cos_lat());
-        let y = 46.0 + off_m / DEG_M;
-        let nodes: Vec<Coord> =
-            (0..n).map(|i| Coord { x: 6.0 + deg_x * i as f64 / (n - 1) as f64, y }).collect();
-        let arc: Vec<f64> = (0..n).map(|i| len_m * i as f64 / (n - 1) as f64).collect();
-        Corridor {
-            id,
-            nodes,
-            arc,
-            cos_lat: cos_lat(),
-            kind: if paves {
-                Kind::Road(RoadClass::Residential)
-            } else {
-                Kind::Road(RoadClass::Footway)
-            },
-            class_key: String::new(),
-            link: false,
-            width_m: Some(5.5),
-            spans: vec![Span { arc0: 0.0, arc1: len_m, level: 1, kind: SpanKind::Bridge }],
-            segments: vec![SegmentRef { source: id as u64, node0: 0, node1: n - 1, properties: vec![] }],
-            connectors: vec![],
-        }
-    }
-
     /// **I7, at unit scale.** A senior stratum's heights are a function of its
     /// own stratum and its seniors, and of nothing else — so deleting every
     /// junior feature must change no senior height, bit for bit.

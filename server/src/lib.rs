@@ -9,13 +9,10 @@
 //!      by a Hilbert-ordered tile id;
 //!   2. emit — read records back in tile order, group, encode, write the archive.
 //!
-//! Only the foundational, dependency-free modules are wired up so far. Heavier
-//! modules are added per milestone (see README.md).
-
-// During scaffolding, modules expose their public API (e.g. the archive reader)
-// ahead of the consumers — pipeline, server — that will exercise it. Remove this
-// once the pipeline wires everything together (milestone 5).
-#![allow(dead_code)]
+//! On top of that sit the world model the tiles carry — the constraint solve,
+//! the engineered ground, the drawn surfaces (`docs/GENERATION.md`,
+//! `docs/GROUND.md`, `docs/ROADS.md`) — and the verification harness that
+//! scores an emitted archive against the invariants (`docs/VERIFICATION.md`).
 
 pub mod archive;
 pub mod assemble;

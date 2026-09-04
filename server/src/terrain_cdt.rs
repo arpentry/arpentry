@@ -1050,19 +1050,19 @@ fn one_mesh_full_inner(
     let mut z: Vec<i32> = Vec::new();
     let (mut emin, mut emax) = (f64::INFINITY, f64::NEG_INFINITY);
     let mut sampled: std::collections::HashMap<(usize, usize), f64> = std::collections::HashMap::new();
-    let mut vid = |v: usize,
-                   cls: usize,
-                   toward: Option<(f64, f64)>,
-                   qpos: &Vec<(u16, u16)>,
-                   ground: &mut dyn FnMut(f64, f64) -> f64,
-                   asphalt: &mut dyn FnMut(usize, f64, f64) -> f64,
-                   x: &mut Vec<u16>,
-                   y: &mut Vec<u16>,
-                   z: &mut Vec<i32>,
-                   emin: &mut f64,
-                   emax: &mut f64,
-                   ids: &mut std::collections::HashMap<(usize, usize), u32>,
-                   sampled: &mut std::collections::HashMap<(usize, usize), f64>|
+    let vid = |v: usize,
+               cls: usize,
+               toward: Option<(f64, f64)>,
+               qpos: &Vec<(u16, u16)>,
+               ground: &mut dyn FnMut(f64, f64) -> f64,
+               asphalt: &mut dyn FnMut(usize, f64, f64) -> f64,
+               x: &mut Vec<u16>,
+               y: &mut Vec<u16>,
+               z: &mut Vec<i32>,
+               emin: &mut f64,
+               emax: &mut f64,
+               ids: &mut std::collections::HashMap<(usize, usize), u32>,
+               sampled: &mut std::collections::HashMap<(usize, usize), f64>|
      -> u32 {
         if let Some(&i) = ids.get(&(v, cls)) {
             return i;
@@ -1090,12 +1090,12 @@ fn one_mesh_full_inner(
                 let (dx, dy) = (cx - qx as f64, cy - qy as f64);
                 let len = (dx * dx + dy * dy).sqrt();
                 if len > 0.0 {
-                    let m_lon2 = crate::scene::DEG_M
-                        * ((bounds.south + bounds.north) * 0.5).to_radians().cos();
-                    let step_deg_x = 0.05 / m_lon2;
-                    let step_deg_y = 0.05 / crate::scene::DEG_M;
-                    slon = lon + dx / len * step_deg_x;
-                    slat = lat + dy / len * step_deg_y;
+                let m_lon2 = crate::scene::DEG_M
+                    * ((bounds.south + bounds.north) * 0.5).to_radians().cos();
+                let step_deg_x = 0.05 / m_lon2;
+                let step_deg_y = 0.05 / crate::scene::DEG_M;
+                slon = lon + dx / len * step_deg_x;
+                slat = lat + dy / len * step_deg_y;
                 }
             }
         }

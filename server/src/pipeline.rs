@@ -1447,10 +1447,10 @@ fn one_mesh_probe(
             let sheet = synth::height::Sheet::of(ls.level, ls.layer, ls.surface);
             let lo = 16384u16;
             let hi = 49152u16;
-            let mut note_h = |sampler: &mut GroundSampler,
-                              scratch: &mut Vec<u32>,
-                              om_heights: &mut std::collections::HashMap<(u16, u16), Vec<i32>>,
-                              c: geo_types::Coord| {
+            let note_h = |sampler: &mut GroundSampler,
+                          scratch: &mut Vec<u32>,
+                          om_heights: &mut std::collections::HashMap<(u16, u16), Vec<i32>>,
+                          c: geo_types::Coord| {
                 let qq = q(c);
                 if (qq.0 == lo || qq.0 == hi || qq.1 == lo || qq.1 == hi)
                     && (lo..=hi).contains(&qq.0)
