@@ -350,3 +350,75 @@ mod tests {
         assert_eq!(a.into_vec()[0].value, -8.0);
     }
 }
+
+/// Every metric the harness can emit has a row in `docs/VERIFICATION.md`.
+///
+/// §4 says of that table "every metric also states its own population; the
+/// table below is the summary", which is a promise the table is complete. It
+/// was not: thirteen metrics had shipped without one, because a check is one
+/// file plus a line in `checks::run` (§10) and nothing downstream noticed the
+/// doc had not moved. A metric with no row is a number that gates a commit and
+/// explains itself to nobody.
+///
+/// Two registries, because they fail at different moments. `checks::all`
+/// answers for the archive half *the instant a check is written*, before any
+/// archive exists to run it against. The committed scorecards answer for the
+/// model half — which needs a solved `Model` and cannot be conjured here — and
+/// for `lod`, which measures across zooms rather than per tile; those are
+/// re-cut whenever the checks change, so a new metric arrives in them at the
+/// commit that introduces it.
+#[cfg(test)]
+mod documented {
+    use std::collections::BTreeSet;
+
+    /// Row ids from the scorecard tables, `solve.residual_*` included: a
+    /// trailing `*` documents a family, which is how the eight relaxation
+    /// residuals earn one row between them.
+    fn rows() -> Vec<String> {
+        let doc = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/VERIFICATION.md"),
+        )
+        .expect("docs/VERIFICATION.md");
+        doc.lines()
+            .filter_map(|l| l.strip_prefix("| `"))
+            .filter_map(|l| l.split('`').next())
+            .filter(|id| id.contains('.'))
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn ids_in(scorecard: &str) -> BTreeSet<String> {
+        let text = std::fs::read_to_string(scorecard).expect(scorecard);
+        let card: serde_json::Value = serde_json::from_str(&text).expect(scorecard);
+        card["metrics"]
+            .as_array()
+            .expect("metrics")
+            .iter()
+            .filter_map(|m| m["id"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn every_metric_has_a_row_in_the_scorecard_table() {
+        let rows = rows();
+        let documented = |id: &str| {
+            rows.iter().any(|r| r == id || r.strip_suffix('*').is_some_and(|p| id.starts_with(p)))
+        };
+
+        let opt = super::checks::Options::default();
+        let mut ids: BTreeSet<String> = super::checks::all(&opt)
+            .into_iter()
+            .flat_map(|c| c.finish())
+            .map(|m| m.id)
+            .collect();
+        for card in ["/verify/baseline-montreux-z16.json", "/verify/model-montreux-z16.json"] {
+            ids.extend(ids_in(&format!("{}{card}", env!("CARGO_MANIFEST_DIR"))));
+        }
+
+        let undocumented: Vec<&String> = ids.iter().filter(|id| !documented(id)).collect();
+        assert!(
+            undocumented.is_empty(),
+            "no row in docs/VERIFICATION.md §4 for: {undocumented:?}"
+        );
+    }
+}

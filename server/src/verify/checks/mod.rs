@@ -76,11 +76,11 @@ pub trait Check {
     fn finish(self: Box<Self>) -> Vec<Metric>;
 }
 
-/// Runs every check over the archive and returns the scorecard.
-pub fn run(scan: &ArchiveScan<'_>, opt: &Options) -> Scorecard {
-    let zooms = if opt.zooms.is_empty() { vec![scan.max_zoom()] } else { opt.zooms.clone() };
-
-    let mut checks: Vec<Box<dyn Check>> = vec![
+/// Every archive-side check, constructed. One list, so anything that needs to
+/// know what the harness measures — `run`, and the guard that holds
+/// `docs/VERIFICATION.md`'s table to it — asks the same question.
+pub(super) fn all(opt: &Options) -> Vec<Box<dyn Check>> {
+    vec![
         Box::new(abutment::Abutment::new(opt)),
         Box::new(building::Building::new(opt)),
         Box::new(handoff::Handoff::new(opt)),
@@ -93,7 +93,14 @@ pub fn run(scan: &ArchiveScan<'_>, opt: &Options) -> Scorecard {
         Box::new(slope::Slope::new(opt)),
         Box::new(street::Street::new(opt)),
         Box::new(water::Water::new(opt)),
-    ];
+    ]
+}
+
+/// Runs every check over the archive and returns the scorecard.
+pub fn run(scan: &ArchiveScan<'_>, opt: &Options) -> Scorecard {
+    let zooms = if opt.zooms.is_empty() { vec![scan.max_zoom()] } else { opt.zooms.clone() };
+
+    let mut checks = all(opt);
 
     let mut visited = 0usize;
     let mut truncated = false;
