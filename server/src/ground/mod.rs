@@ -884,8 +884,35 @@ fn walk_edge(
         (rise_l, reach_l) = l;
         (rise_r, reach_r) = r;
     }
+    // **The ground yields to a street's pavement, not the other way round.**
+    // Refusing here leaves the band standing on the raw hillside, and the fit
+    // that runs before this (`walkway::fit_to_ground`) answers the same
+    // question by deleting the band outright — which is how a kerb comes to
+    // have no pavement for twenty metres at a terrace (6.9093,46.4379). For a
+    // *path* across open ground that refusal is right: the path is the visible
+    // ground there, and a two-metre ribbon cutting three metres into a flank
+    // is a retaining structure nobody built. A **sidewalk** is not that claim.
+    // It is a side of a street's cross-section, and where the ground beside it
+    // cannot be battered what is really there is a wall — which the drawn
+    // apron already draws, and which `contact.walk_rim` already exempts. So
+    // the bench holds its target and the face that cannot close gets no batter
+    // at all: the ground steps at the bench's own edge (docs/GROUND.md §2,
+    // "the bench stand retained at its own edge").
+    let walled = crate::synth::pavement::walk_ring()
+        && s.surface == crate::priors::Surface::Walkway
+        && s.corridor != CorridorId::MAX;
     if rise_l.abs().max(rise_r.abs()) > cap {
-        return None;
+        if !walled {
+            return None;
+        }
+        if rise_l.abs() > cap {
+            w_l = s.drawn_half();
+            reach_l = (0.0, crate::priors::WALL_BATTER);
+        }
+        if rise_r.abs() > cap {
+            w_r = s.drawn_half();
+            reach_r = (0.0, crate::priors::WALL_BATTER);
+        }
     }
     Some(EarthworkEdge {
         a: s.a,
@@ -3005,9 +3032,30 @@ mod tests {
         let mut ground = |_: Coord| 408.0;
         let e = walk_edge(&seg, 0, &WalkBenchRules::shipped(), &mut ground).expect("the street's own allowance");
         assert_eq!((e.target_a, e.target_b), (410.0, 411.0));
-        // Two metres above the hillside beside it — past a path's cap, inside
-        // the street's.
+        assert!(e.batter_m[0] > 0.0, "a face inside the cap keeps its batter");
+    }
+
+    /// Past that allowance the pavement does not go: the ground steps at its
+    /// edge instead, which is a wall and is what the apron draws.
+    #[test]
+    fn a_sidewalk_beside_a_face_too_deep_to_batter_stands_on_a_wall() {
+        let seg = band(0.0, 8.0, 1.0, 3, (410.0, 411.0));
+        // Five metres above the hillside beside it: past the street's own cap.
         let mut deeper = |_: Coord| 405.0;
-        assert!(walk_edge(&seg, 0, &WalkBenchRules::shipped(), &mut deeper).is_none(), "past the street's cap too");
+        let e = walk_edge(&seg, 0, &WalkBenchRules::shipped(), &mut deeper)
+            .expect("a street's pavement is not deleted by the ground beside it");
+        assert_eq!((e.target_a, e.target_b), (410.0, 411.0));
+        assert_eq!(e.batter_m, [0.0, 0.0], "no batter: the ground steps at the edge");
+        assert_eq!(e.half_width_m, [seg.drawn_half(), seg.drawn_half()]);
+    }
+
+    /// A *path* across open ground is the other claim, and it still refuses:
+    /// a two-metre ribbon cutting five metres into a flank is a retaining
+    /// structure nobody built.
+    #[test]
+    fn a_path_beside_a_face_too_deep_to_batter_is_still_refused() {
+        let seg = band(0.0, 8.0, 1.0, crate::scene::CorridorId::MAX, (410.0, 411.0));
+        let mut deeper = |_: Coord| 405.0;
+        assert!(walk_edge(&seg, 0, &WalkBenchRules::shipped(), &mut deeper).is_none());
     }
 }

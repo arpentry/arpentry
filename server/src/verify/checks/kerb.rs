@@ -98,16 +98,61 @@ enum State {
     Unknown,
 }
 
+/// How far outward the pavement is measured, and at what resolution: a
+/// bracket every [`WIDTH_STEP_M`] out to [`WIDTH_MAX_M`], then three
+/// bisections, so a width lands within a centimetre. Three metres is past
+/// anything a pavement is drawn at.
+///
+/// The resolution is load-bearing: the wander below sums differences over ten
+/// stations, so a measurement good to `e` carries `10·e` of its own noise into
+/// every sample. At 5 cm that noise was half the threshold and the metric
+/// mostly reported itself.
+const WIDTH_MAX_M: f64 = 3.0;
+const WIDTH_STEP_M: f64 = 0.4;
+const WIDTH_BISECTIONS: u32 = 6;
+
+/// Per-station change ignored before the wander is summed: twice the
+/// measurement's own resolution, so a straight edge reads zero rather than
+/// the march's rounding.
+const WIDTH_DEADBAND_M: f64 = 0.02;
+
+/// How far the pavement's edge may wander in and out over [`JOG_WINDOW`]
+/// metres of kerb before it reads as a sawtooth.
+///
+/// **The wander, not the change.** A facade approaching a street narrows the
+/// pavement monotonically over its own length, and a kerb turning a corner
+/// sweeps its own normal: both change the width steadily, and neither is a
+/// defect. What the eye reads as broken linework is the edge going out and
+/// coming back. Total variation less the net change over a window is exactly
+/// that quantity — zero for any monotone stretch however steep, and twice the
+/// excursion for an edge that jumps a rung and returns. It is the same
+/// reversal `slope.terrain_tearing` scores in the drawn ground, read along a
+/// line instead of across a lattice.
+const WIDTH_JOG_M: f64 = 0.25;
+
+/// The window the wander is read over, in stations (a station is a metre).
+/// Ten metres holds two full periods of the sawtooth a per-station width
+/// ladder makes, whose plateaus are one ring station long.
+const JOG_WINDOW: usize = 10;
+
 /// One station along a silhouette chain.
 struct Station {
     x: f64,
     y: f64,
     state: State,
+    /// How wide the drawn pavement is here, measured outward from the kerb.
+    /// `None` unless the station is [`State::Served`].
+    width: Option<f64>,
 }
 
 pub struct Kerb {
     gap: Dist,
     gap_worst: Worst,
+    /// The change in pavement width between neighbouring served stations —
+    /// the pavement's outer edge read as a line rather than as a set of
+    /// widths.
+    jog: Dist,
+    jog_worst: Worst,
     /// Kerb metres seen, served and bare, and the excluded remainder — the
     /// census `ARPT_DEBUG_KERB` prints before the metric is believed.
     kerb_m: f64,
@@ -126,6 +171,8 @@ impl Kerb {
         Kerb {
             gap: Dist::new(0.0, 64.0),
             gap_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
+            jog: Dist::new(0.0, 4.0),
+            jog_worst: Worst::new(Sense::HigherIsWorse, opt.worst_k),
             kerb_m: 0.0,
             served_m: 0.0,
             excluded_m: 0.0,
@@ -167,9 +214,21 @@ fn chains(m: &crate::verify::mesh::SurfaceMesh, scale: &crate::verify::mesh::Sca
         .map(|(a, b, opp)| {
             let (va, vb, vo) = (m.vertex(a), m.vertex(b), m.vertex(opp));
             let (mx, my) = ((va.0 + vb.0) * 0.5, (va.1 + vb.1) * 0.5);
-            let (dx, dy) = ((mx - vo.0) * scale.mx, (my - vo.1) * scale.my);
-            let len = (dx * dx + dy * dy).sqrt().max(1e-12);
-            ((va.0, va.1), (vb.0, vb.1), key(va), key(vb), (dx / len, dy / len))
+            // **The edge's own perpendicular**, turned away from the triangle
+            // that holds it — not the direction of that triangle's far
+            // vertex, which is only normal to the edge when the triangle is
+            // small. A surface meshed as two big triangles has its far vertex
+            // at the opposite corner, and a probe sent that way walks along
+            // the kerb instead of across it.
+            let (ex, ey) = ((vb.0 - va.0) * scale.mx, (vb.1 - va.1) * scale.my);
+            let elen = (ex * ex + ey * ey).sqrt().max(1e-12);
+            let (mut nx, mut ny) = (ey / elen, -ex / elen);
+            let (ox, oy) = ((mx - vo.0) * scale.mx, (my - vo.1) * scale.my);
+            if nx * ox + ny * oy < 0.0 {
+                nx = -nx;
+                ny = -ny;
+            }
+            ((va.0, va.1), (vb.0, vb.1), key(va), key(vb), (nx, ny))
         })
         .collect();
     let mut at: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
@@ -225,11 +284,116 @@ fn chains(m: &crate::verify::mesh::SurfaceMesh, scale: &crate::verify::mesh::Sca
     out
 }
 
+/// How wide the drawn pavement is outward of a kerb station: the last point
+/// along the outward normal still covered by a drawn pedestrian surface.
+///
+/// Marched, not queried, because the archive carries triangles and not the
+/// region they came from: there is nothing to ask for a boundary. Bracketed
+/// coarsely and then bisected, which costs about ten covering tests.
+fn pavement_width(
+    walks: &[&RoadMesh],
+    tile: &TileScene,
+    x: f64,
+    y: f64,
+    o: (f64, f64),
+) -> Option<f64> {
+    // **Containment, not proximity.** `span_near` measures the distance to a
+    // triangle's *edges*, so a point deep inside a large triangle reads as far
+    // from it — which is right for a wall and wrong for a floor. The width is
+    // a question about what covers a point, so the point-in-triangle test
+    // answers it.
+    let covered = |d: f64| {
+        let (px, py) = (x + o.0 * d / tile.scale.mx, y + o.1 * d / tile.scale.my);
+        walks.iter().any(|r| r.mesh.height_at(px, py).is_some())
+    };
+    if !covered(PROBE_M) {
+        return None;
+    }
+    let (mut lo, mut hi) = (PROBE_M, WIDTH_MAX_M);
+    let mut d = PROBE_M;
+    while d + WIDTH_STEP_M <= WIDTH_MAX_M {
+        let next = d + WIDTH_STEP_M;
+        if covered(next) {
+            d = next;
+        } else {
+            hi = next;
+            break;
+        }
+    }
+    lo = lo.max(d);
+    for _ in 0..WIDTH_BISECTIONS {
+        let mid = 0.5 * (lo + hi);
+        if covered(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    // **A ray that never left the pavement measured no width.** At a corner
+    // the outward normal of one kerb runs along the pavement wrapping it, and
+    // at a plaza there is no far edge at all: both return the cap, and both
+    // are a question about a cross-section that has none here.
+    (lo < WIDTH_MAX_M - 0.05).then_some(lo)
+}
+
 impl Kerb {
     fn score_chain(&mut self, tile: &TileScene, stations: &[Station], closed: bool) {
         let n = stations.len();
         if n == 0 {
             return;
+        }
+        // The outer edge, read along the kerb: how far it wanders in and out
+        // over a window, which is its total variation less its net change.
+        // Scored before the runs, because a chain with no pavement at all has
+        // none of this either way.
+        let ends = if closed { n } else { n.saturating_sub(1) };
+        let mut k = 0;
+        while k < ends {
+            // One maximal run of stations that all measured a width.
+            let mut run: Vec<(usize, f64)> = Vec::new();
+            while k < ends {
+                match stations[k % n].width {
+                    Some(w) => run.push((k % n, w)),
+                    None => break,
+                }
+                k += 1;
+            }
+            k += 1;
+            if run.len() < 3 {
+                continue;
+            }
+            for i in 0..run.len() {
+                let j = (i + JOG_WINDOW).min(run.len() - 1);
+                if j - i < 2 {
+                    break;
+                }
+                let tv: f64 = run[i..=j]
+                    .windows(2)
+                    .map(|w| ((w[1].1 - w[0].1).abs() - WIDTH_DEADBAND_M).max(0.0))
+                    .sum();
+                // Clamped, because the deadband is taken off the variation
+                // and not off the net: a monotone taper reads a shade under
+                // zero otherwise.
+                let wander = (tv - (run[j].1 - run[i].1).abs()).max(0.0);
+                self.jog.push(wander);
+                if wander > WIDTH_JOG_M {
+                    let s = &stations[run[i].0];
+                    let (lon, lat) = tile.lonlat(s.x, s.y);
+                    self.jog_worst.offer(Offender {
+                        lon,
+                        lat,
+                        zoom: tile.z,
+                        value: wander,
+                        note: format!(
+                            "the pavement's edge wanders {wander:.2} m in and out over \
+                             {} m of kerb ({:.2} m wide here, {:.2} m there)",
+                            j - i,
+                            run[i].1,
+                            run[j].1
+                        ),
+                    });
+                }
+            }
         }
         // Runs of one state, in chain order. A closed chain is rotated to
         // begin at a served station so a bare run wrapping its seam is one run.
@@ -368,15 +532,21 @@ impl Check for Kerb {
                                 / tile.bounds.width())
                             .hypot((lat - plat) * tile.scale.my / tile.bounds.height() * tile.bounds.height());
                             let _ = dm;
-                            if (lon - plon).abs() < 0.00015 && (lat - plat).abs() < 0.0001 {
-                                let (qlon, qlat) = tile.lonlat(px, py);
+                            if (lon - plon).abs() < 0.0004 && (lat - plat).abs() < 0.0003 {
+                                let w = (state == State::Served)
+                                    .then(|| pavement_width(&walks, tile, x, y, (ox, oy)))
+                                    .flatten();
                                 eprintln!(
-                                    "[kerb-at] road sheet {:?} station {lon:.6},{lat:.6} probe {qlon:.6},{qlat:.6} {state:?}",
-                                    road.sheet
+                                    "[kerb-at] {lon:.6},{lat:.6} sheet {:?} {state:?} width {}",
+                                    road.sheet,
+                                    w.map_or("-".to_string(), |w| format!("{w:.2}"))
                                 );
                             }
                         }
-                        stations.push(Station { x, y, state });
+                        let width = (state == State::Served)
+                            .then(|| pavement_width(&walks, tile, x, y, (ox, oy)))
+                            .flatten();
+                        stations.push(Station { x, y, state, width });
                     }
                 }
                 self.score_chain(tile, &stations, closed);
@@ -402,8 +572,56 @@ impl Check for Kerb {
             for t in [2.0, 5.0, 10.0, 15.0, 20.0, 25.0] {
                 eprintln!("    in a gap longer than {t:.0} m: {:.3} %", 100.0 - self.gap.pct_below(t));
             }
+            let q = |p: f64| self.jog.quantile(p).unwrap_or(f64::NAN);
+            eprintln!(
+                "[kerb] width jog: n={} p50 {:.2} p90 {:.2} p99 {:.2} max {:.2}",
+                self.jog.count(),
+                q(0.5),
+                q(0.9),
+                q(0.99),
+                self.jog.max().unwrap_or(f64::NAN),
+            );
+            for t in [0.1, 0.25, 0.4, 0.8] {
+                eprintln!("    jog over {t:.2} m: {:.3} %", 100.0 - self.jog.pct_below(t));
+            }
         }
-        vec![Metric {
+        vec![
+        Metric {
+            id: "street.walk_width_step".into(),
+            invariant: Invariant::I1,
+            title: "The pavement's outer edge stepping sideways along the kerb".into(),
+            population: "Every served one-metre kerb station (the `street.kerb_gap` walk) \
+                         that measured a pavement width, scored as the total variation \
+                         less the net change of that width over the next ten stations — \
+                         how far the pavement's outer edge wanders in and out over ten \
+                         metres of kerb. The width is marched outward from the kerb along \
+                         the edge's own perpendicular to the last point a drawn at-grade \
+                         pedestrian surface covers, out to 3 m and to about 5 cm: the \
+                         archive carries triangles, not the region they were cut from, so \
+                         there is no boundary to ask for. A station whose neighbours are \
+                         bare or excluded starts a new run, and a run under three stations \
+                         is out of the population; every other station scores, zeros \
+                         included, so the rate is the share of the drawn kerb that saws. A \
+                         taper and a corner sweep score zero by construction, being \
+                         monotone. Measured only from `WALK_SURFACE_MIN_ZOOM`."
+                .into(),
+            detail: "One cross-section per street (docs/ROADS.md invariant 1) is a claim \
+                     about the *line* a pavement's edge draws, not only about its width at \
+                     a station. On screen this is a sawtooth down an otherwise straight \
+                     pavement, and it is what a width ladder makes when it is resolved per \
+                     station instead of per run: neighbouring stations land on different \
+                     rungs and the edge jumps a rung out and back. The ring's own boundary \
+                     is smooth — the union offset, cut by the facades — so anything here \
+                     is something cutting it back station by station."
+                .into(),
+            sense: Sense::HigherIsWorse,
+            threshold: WIDTH_JOG_M,
+            skipped: (self.measured_tiles == 0)
+                .then(|| "no tile at a zoom that meshes pedestrian bands (z16+)".to_string()),
+            dist: self.jog,
+            worst: self.jog_worst.into_vec(),
+        },
+        Metric {
             id: "street.kerb_gap".into(),
             invariant: Invariant::I1,
             title: "Kerb between two pavements that neither reaches".into(),
@@ -517,10 +735,14 @@ mod tests {
     }
 
     fn run(tile: &TileScene) -> Metric {
+        by_id(tile, "street.kerb_gap")
+    }
+
+    fn by_id(tile: &TileScene, id: &str) -> Metric {
         let opt = Options { spacing_m: 1.0, ..Default::default() };
         let mut c = Box::new(Kerb::new(&opt));
         c.visit(tile, &opt);
-        c.finish().remove(0)
+        c.finish().into_iter().find(|m| m.id == id).expect("the metric is reported")
     }
 
     /// A street over x 10..18, y 10..90, with a rim all round it — so every
@@ -574,6 +796,59 @@ mod tests {
         let m = run(&street(&[(10.0, 30.0), (70.0, 90.0)]));
         assert_eq!(m.violations(), 0, "worst {:?}", m.worst_value());
         assert!(m.dist.count() >= 60);
+    }
+
+    #[test]
+    fn a_pavement_of_one_width_has_no_jog() {
+        let m = by_id(&street(&[(10.0, 90.0)]), "street.walk_width_step");
+        assert!(m.dist.count() >= 70, "pairs {}", m.dist.count());
+        assert_eq!(m.violations(), 0, "worst {:?}", m.worst_value());
+    }
+
+    #[test]
+    fn a_pavement_that_pulses_between_two_widths_saws() {
+        // Alternating 2 m and 1.2 m in four-metre blocks: every block boundary
+        // is an edge that goes out and comes back.
+        let s = Site::new();
+        let mut roads = vec![
+            s.band("road_surface", (10.0, 18.0, 10.0, 90.0)),
+            s.band("road_rim", (18.0, 18.35, 10.0, 90.0)),
+            s.band("road_rim", (9.65, 10.0, 10.0, 90.0)),
+            s.band("road_rim", (10.0, 18.0, 9.65, 10.0)),
+            s.band("road_rim", (10.0, 18.0, 90.0, 90.35)),
+        ];
+        let mut y = 10.0;
+        let mut wide = true;
+        while y < 90.0 {
+            let far = if wide { 20.35 } else { 19.55 };
+            roads.push(s.band("walk_surface", (18.35, far, y, (y + 4.0).min(90.0))));
+            y += 4.0;
+            wide = !wide;
+        }
+        let m = by_id(&s.scene(16, roads), "street.walk_width_step");
+        assert!(m.violations() >= 8, "violations {}", m.violations());
+        let worst = m.worst_value().unwrap();
+        assert!(worst >= 1.5, "wander {worst}");
+    }
+
+    #[test]
+    fn a_pavement_that_narrows_once_is_a_taper_and_not_a_jog() {
+        // Two m of pavement for half the street, then 1.2 m: one jog of
+        // 0.8 m where they meet, and nothing along either stretch.
+        let s = Site::new();
+        let mut roads = vec![
+            s.band("road_surface", (10.0, 18.0, 10.0, 90.0)),
+            s.band("road_rim", (18.0, 18.35, 10.0, 90.0)),
+            s.band("road_rim", (9.65, 10.0, 10.0, 90.0)),
+            s.band("road_rim", (10.0, 18.0, 9.65, 10.0)),
+            s.band("road_rim", (10.0, 18.0, 90.0, 90.35)),
+            s.band("walk_surface", (18.35, 20.35, 10.0, 50.0)),
+            s.band("walk_surface", (18.35, 19.55, 50.0, 90.0)),
+        ];
+        roads.push(s.band("walk_surface", (9.65 - 2.0, 9.65, 10.0, 90.0)));
+        let m = by_id(&s.scene(16, roads), "street.walk_width_step");
+        assert_eq!(m.violations(), 0, "worst {:?}", m.worst_value());
+        assert!(m.dist.count() >= 60, "triples {}", m.dist.count());
     }
 
     #[test]

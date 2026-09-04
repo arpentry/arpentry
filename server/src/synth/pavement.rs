@@ -206,6 +206,11 @@ pub fn walk_ring() -> bool {
     *ON.get_or_init(|| std::env::var_os("ARPT_NO_WALK_RING").is_none())
 }
 
+/// Bracket step for measuring the ring's own width outward from the kerb,
+/// metres. Bisected three times after the bracket, so a width lands within
+/// about 3 cm — a tenth of the ladder rung the measurement replaced.
+const RING_WIDTH_STEP_M: f64 = 0.25;
+
 /// Slack around a hosted band's own drawn width when it masks the ring, metres
 /// — the smoothing displacement between the band's centerline and the union's
 /// kerb, so a band a hand's breadth off its kerb still masks the ring beside it.
@@ -616,8 +621,6 @@ fn bake_chunk(
                 ];
                 let show = near_probe(mid);
                 let in_ring = ring_r.inside(mid);
-                let a = frame.to_deg([k.p[0] + k.n[0] * half, k.p[1] + k.n[1] * half]);
-                let b = frame.to_deg([k.q[0] + k.n[0] * half, k.q[1] + k.n[1] * half]);
                 let ka = frame.to_deg([k.p[0] - k.n[0] * SEAT_INSET_M, k.p[1] - k.n[1] * SEAT_INSET_M]);
                 let kb = frame.to_deg([k.q[0] - k.n[0] * SEAT_INSET_M, k.q[1] - k.n[1] * SEAT_INSET_M]);
                 let seats = (k.masked && in_ring).then(|| {
@@ -645,22 +648,39 @@ fn bake_chunk(
                 let (Some((ha, corridor)), Some((hb, _))) = seats.expect("computed for a masked station in the ring") else {
                     continue;
                 };
-                // **The bench is as wide as the ring is here.** Where a facade
-                // has narrowed the ring, a bench asked at the full width was
-                // refused by the ground fit at a wall the band, narrowed by
-                // the same room, had been kept at; the fit then starts from
-                // the width that is drawn. Read outward from the kerb at the
-                // station's midpoint, in steps of the width ladder.
-                let mut width = 0.0;
-                let mut probe_w = priors::WALK_WIDTH_STEP_M;
+                // **The bench is as wide as the ring is here, measured and
+                // not stepped.** The bench is as wide as the ring
+                // is here, read by bracketing outward and bisecting — a
+                // continuous number. Read in rungs of the width ladder it was
+                // the ladder that showed: the ring's own edge is the facade
+                // line, smooth, and two neighbouring stations either side of a
+                // rung cut it back by the rung, which drew as a sawtooth down
+                // an otherwise straight pavement (`street.walk_width_step`
+                // 23.3 % of the roundabout's kerb, wandering up to 3.4 m).
+                // The ladder exists to stop a *band* pulsing along a street,
+                // where the width is a claim re-derived per station; the ring
+                // has one edge already and only needs it measured.
                 let kmid = [(k.p[0] + k.q[0]) * 0.5, (k.p[1] + k.q[1]) * 0.5];
-                while probe_w <= priors::WALK_WIDTH_M + 1e-9 {
-                    if !ring_r.inside([kmid[0] + k.n[0] * (probe_w - 0.05), kmid[1] + k.n[1] * (probe_w - 0.05)]) {
-                        break;
-                    }
-                    width = probe_w;
-                    probe_w += priors::WALK_WIDTH_STEP_M;
+                let covered =
+                    |d: f64| ring_r.inside([kmid[0] + k.n[0] * d, kmid[1] + k.n[1] * d]);
+                let reach = priors::WALK_WIDTH_M + RING_MASK_SLACK_M;
+                let mut lo = 0.05;
+                if !covered(lo) {
+                    continue;
                 }
+                while lo + RING_WIDTH_STEP_M <= reach && covered(lo + RING_WIDTH_STEP_M) {
+                    lo += RING_WIDTH_STEP_M;
+                }
+                let mut hi = (lo + RING_WIDTH_STEP_M).min(reach);
+                for _ in 0..3 {
+                    let mid = 0.5 * (lo + hi);
+                    if covered(mid) {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                let width = lo;
                 if width < priors::WALK_MIN_WIDTH_M {
                     continue;
                 }
@@ -699,79 +719,61 @@ fn bake_chunk(
                 });
                 at.push(ki as u64);
             }
-            let t_seats = t0.elapsed() - t_kerb - t_ring;
-            // **The ring is fitted to the ground before the ground is benched**
-            // (docs/GROUND.md §2), by the band's own rule: a station whose
-            // bench face would pass the cap is narrowed, and one no width can
-            // carry is refused. The drawn ring then follows the width that came
-            // out — cut back to each station's fitted width — so the ring and
-            // its bench are one cross-section, and a refused station draws no
-            // pavement rather than a pavement standing on a hillside.
-            // The fit, then the sheets: each surviving bench is fitted to the
-            // ground by the band's own rule, and the benches are then stacked
-            // by the band's own sheet rule, so the ring is drawn per sheet.
+            // **The pavement does not yield to the ground; the ground yields
+            // to it** (docs/GROUND.md §2). The band's fit narrows a strip and
+            // then gives up on it where the earthwork beside it would be too
+            // deep, and for a *path* across open ground that is right — the
+            // path is the visible ground there. A street's pavement is not:
+            // where the ground beside it cannot be battered, what is really
+            // there is a retaining wall, and the drawn apron already draws
+            // one. So the ring is drawn at the width it has and stratum D
+            // holds it, stepping the ground at the pavement's own edge
+            // (`ground::walk_edge`). The stations that still go are the ones
+            // that are not pavement at all: a station spanning a wall along
+            // the kerb, refused above, and the orphan runs those leave.
+            drop_orphan_runs(&kerb, &mut mine, &mut at);
             let mut rings_by_sub: Vec<(u32, Shapes)> = Vec::new();
             match ring_ctx {
                 Some(ctx) => {
-                    let before: Vec<u64> = at.clone();
-                    crate::synth::walkway::fit_to_ground(
-                        &mut mine, &mut at, ctx.seniors, ctx.terrain, ctx.z_ref,
-                    );
-                    drop_orphan_runs(&kerb, &mut mine, &mut at);
-                    if probe_at.is_some() {
-                        for &ki in &before {
-                            let k = &kerb[ki as usize];
-                            let mid = [
-                                (k.p[0] + k.q[0]) * 0.5 + k.n[0] * half,
-                                (k.p[1] + k.q[1]) * 0.5 + k.n[1] * half,
-                            ];
-                            if !near_probe(mid) {
-                                continue;
-                            }
-                            match at.iter().position(|&x| x == ki) {
-                                Some(j) => eprintln!(
-                                    "[ring-at]   station {ki} fitted half {:.2} seat {:.2}..{:.2}",
-                                    mine[j].drawn_half(),
-                                    mine[j].height_a,
-                                    mine[j].height_b
-                                ),
-                                None => eprintln!("[ring-at]   station {ki} REFUSED by the fit"),
-                            }
-                        }
+                    let surviving = surviving_mask(&kerb, &at);
+                    let kept =
+                        if surviving.is_empty() { Vec::new() } else { sidewalk_ring(&asphalt, &ballast, &walls, &surviving) };
+                    if kept.is_empty() {
+                        continue;
                     }
                     let subs = crate::synth::sheets::assign(ctx.scene, &mine);
                     let mut sub_ids: Vec<u32> = subs.clone();
                     sub_ids.sort_unstable();
                     sub_ids.dedup();
                     for sub in sub_ids {
-                        let idx: Vec<usize> = (0..mine.len()).filter(|&i| subs[i] == sub).collect();
-                        let part: Vec<SourceSeg> = idx.iter().map(|&i| mine[i]).collect();
-                        let part_at: Vec<u64> = idx.iter().map(|&i| at[i]).collect();
-                        let fitted = fitted_mask(&kerb, &part, &part_at);
-                        if fitted.is_empty() {
+                        let part: Vec<u64> = (0..mine.len())
+                            .filter(|&i| subs[i] == sub)
+                            .map(|i| at[i])
+                            .collect();
+                        let mask = surviving_mask(&kerb, &part);
+                        if mask.is_empty() {
                             continue;
                         }
-                        let r = sidewalk_ring(&asphalt, &ballast, &walls, &fitted);
+                        let r = poly::intersect(&kept, &mask);
                         if !r.is_empty() {
                             rings_by_sub.push((sub, r));
                         }
                     }
-                    for (i, s) in mine.iter_mut().enumerate() {
-                        s.layer = walk_layer + subs[i];
+                    for (i, b) in mine.iter_mut().enumerate() {
+                        b.layer = walk_layer + subs[i];
                     }
                 }
                 None => rings_by_sub.push((0, ring)),
             };
             if probe && t0.elapsed().as_millis() > 500 {
                 eprintln!(
-                    "[ring]   ({level},{layer}) walk {walk_layer}: {} stations, {} benches, {} sheets: kerb {:?} ring {:?} seats {:?} fit+final {:?}",
+                    "[ring]   ({level},{layer}) walk {walk_layer}: {} stations, {} benches, {} sheets: kerb {:?} ring {:?} seats+cut {:?}",
                     kerb.len(),
                     mine.len(),
                     rings_by_sub.len(),
                     t_kerb,
                     t_ring,
-                    t_seats,
-                    t0.elapsed() - t_kerb - t_ring - t_seats
+                    t0.elapsed() - t_kerb - t_ring
                 );
             }
             if let Some(q) = probe_m {
@@ -1793,37 +1795,34 @@ fn drop_orphan_runs(kerb: &[KerbSeg], benches: &mut Vec<SourceSeg>, at: &mut Vec
     });
 }
 
-/// The pavement mask after the fit: every surviving bench station's stretch of
-/// kerb, buffered to twice the station's fitted half-width plus the slack, so
-/// the drawn ring is as wide as the bench under it and no wider. Each piece
-/// overruns its station's ends by a hair so neighbours overlap instead of
-/// touching — a boolean keeps merely-touching shapes apart, and a ring cut by
-/// a mask of separate pieces would draw as a row of slabs.
-fn fitted_mask(kerb: &[KerbSeg], benches: &[SourceSeg], at: &[u64]) -> Shapes {
+/// Where the ring survives: every station that kept a bench, as a quad from
+/// just inside the kerb to past a pavement's full reach, so the ring's own
+/// boundary is never cut back — only the stations that went are removed.
+///
+/// Quads, not a stroke: a stroke's caps reach a full width past a run's ends
+/// along the kerb, and two of them bridged the refused station between them
+/// across a terrace wall (6.9151,46.4366). Each quad overruns its station's
+/// ends by a hair so neighbours overlap instead of merely touching, which a
+/// boolean would keep apart.
+fn surviving_mask(kerb: &[KerbSeg], at: &[u64]) -> Shapes {
     const OVERRUN_M: f64 = 0.1;
+    let reach = priors::WALK_WIDTH_M + 2.0 * RING_MASK_SLACK_M;
     let mut shapes: Shapes = Vec::new();
-    for (b, &ki) in benches.iter().zip(at) {
+    for &ki in at {
         let k = &kerb[ki as usize];
         let (dx, dy) = (k.q[0] - k.p[0], k.q[1] - k.p[1]);
         let len = (dx * dx + dy * dy).sqrt();
         if len < 1e-9 {
             continue;
         }
-        // A quad, not a stroke: a stroke's caps reach a full width past the
-        // station's ends along the kerb, and two of them bridged the refused
-        // station between them across a terrace wall (6.9151,46.4366).
-        // As wide as the bench, not wider: the ring is what the bench
-        // holds up, and half a metre of slack past a narrowed bench's edge
-        // is half a metre of pavement standing over the batter.
         let (ux, uy) = (dx / len * OVERRUN_M, dy / len * OVERRUN_M);
-        let w = 2.0 * b.drawn_half() + OVERRUN_M;
         let (p, q) = ([k.p[0] - ux, k.p[1] - uy], [k.q[0] + ux, k.q[1] + uy]);
         let inset = RING_MASK_SLACK_M;
         shapes.push(vec![vec![
             [p[0] - k.n[0] * inset, p[1] - k.n[1] * inset],
             [q[0] - k.n[0] * inset, q[1] - k.n[1] * inset],
-            [q[0] + k.n[0] * w, q[1] + k.n[1] * w],
-            [p[0] + k.n[0] * w, p[1] + k.n[1] * w],
+            [q[0] + k.n[0] * reach, q[1] + k.n[1] * reach],
+            [p[0] + k.n[0] * reach, p[1] + k.n[1] * reach],
         ]]);
     }
     if shapes.is_empty() {
