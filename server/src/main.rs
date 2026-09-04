@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use arpentry_server::layers;
 use arpentry_server::pipeline::{self, Config};
 use arpentry_server::project::Bounds;
+use arpentry_server::terrain_cdt;
 
 const USAGE: &str = "\
 arpentry_tiler — generate a .arpa tile archive from GeoParquet inputs
@@ -161,6 +162,27 @@ fn report_timings(stats: &pipeline::Stats) {
         "dem     {:>8}  {} tile decodes",
         "",
         arpentry_server::dem::DECODES.load(std::sync::atomic::Ordering::Relaxed),
+    );
+    // The tiles the geometric kernel refused. Always printed, zero included:
+    // a fallback is silent everywhere else — the archive checks read a plain
+    // lattice as a plain lattice — so a line that appears only on failure
+    // would make its own absence unreadable.
+    let breaklines = terrain_cdt::BREAKLINES_LOST.load(std::sync::atomic::Ordering::Relaxed);
+    let one_mesh = terrain_cdt::ONE_MESH_LOST.load(std::sync::atomic::Ordering::Relaxed);
+    eprintln!(
+        "cdt     {:>8}  {} tiles lost their breaklines, {} fell back from the one mesh{}",
+        "",
+        breaklines,
+        one_mesh,
+        if breaklines + one_mesh > 0 {
+            format!(
+                " — {} of {} tiles built by a different construction than their neighbours",
+                breaklines + one_mesh,
+                stats.tiles_written,
+            )
+        } else {
+            String::new()
+        },
     );
 }
 

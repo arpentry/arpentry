@@ -22,6 +22,7 @@
 //! drawn ground cannot drift apart away from the benches.
 
 use std::f64::consts::PI;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use geo_types::Coord;
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
@@ -36,6 +37,49 @@ use crate::terrain::{encode_octahedral, TerrainMesh};
 /// batter regardless of how the triangulation fell.
 const NORMAL_STEP_M: f64 = 2.0;
 
+/// Tiles the geometric kernel refused, counted by what the refusal cost them.
+///
+/// Each fallback below is the right answer for the tile that took it
+/// (invariant 6: plain, not wrong), but it is *silent*: the tile is then
+/// built by a different construction than its neighbours, and nothing
+/// downstream can tell. The archive checks read the drawn world, where a
+/// plain lattice looks exactly like a plain lattice that was asked for. So
+/// the count is kept here and reported by the run, which is the only place
+/// that knows a fallback happened at all. A measured zone put it at 2 tiles
+/// in 25 — not a rounding error, and until now not visible anywhere.
+///
+/// Breaklines lost: the tile's engineered ground has no creases — every
+/// bench contact line the imprint computed was dropped, and the drawn
+/// ground is the bare lattice under the roads.
+pub static BREAKLINES_LOST: AtomicU64 = AtomicU64::new(0);
+/// One mesh lost: the tile fell back from S5's single classified
+/// triangulation to the pre-S5 path (separate terrain and surface meshes).
+/// The output is coherent — the caller keeps the group-0 surfaces it would
+/// otherwise withhold — but it is not the construction the detail-rung
+/// baselines were cut under.
+pub static ONE_MESH_LOST: AtomicU64 = AtomicU64::new(0);
+
+/// Runs `f`, turning a panic in the geometric kernel into the `None` the
+/// callers' contract already describes, and counting it.
+///
+/// spade's constraint splitting asserts rather than returning on some
+/// nearly-degenerate configurations, and an assertion in an emit worker
+/// takes the whole tiling run with it. One tile's constraints are not worth
+/// that. It is caught and not prevented because the trigger is upstream and
+/// configuration-dependent: the alternative is guessing at which
+/// degeneracies spade dislikes and silently dropping constraints that were
+/// fine. Only the panic is counted — a `None` the triangulation returned on
+/// purpose (nothing to constrain) is not a refusal.
+fn caught<T>(counter: &AtomicU64, f: impl FnOnce() -> Option<T>) -> Option<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(got) => got,
+        Err(_) => {
+            counter.fetch_add(1, Ordering::Relaxed);
+            None
+        }
+    }
+}
+
 /// Builds the constrained mesh for one tile: the `grid`×`grid` background
 /// lattice plus the breakline `segments` (in lon/lat, already filtered near
 /// the tile). `sample` is the engineered ground — vertex heights and the
@@ -44,15 +88,9 @@ const NORMAL_STEP_M: f64 = 2.0;
 /// when there is nothing to constrain or the triangulation fails — the
 /// caller falls back to the plain lattice (invariant 6: plain, not wrong).
 ///
-/// "The triangulation fails" includes the geometric kernel giving up: spade's
-/// constraint splitting asserts rather than returning on some
-/// nearly-degenerate configurations, and an assertion in an emit worker takes
-/// the whole tiling run with it. One tile's breaklines are not worth that, and
-/// the fallback this promises is exactly the right answer for them, so the
-/// panic is caught here and becomes the `None` the contract already describes.
-/// It is caught and not prevented because the trigger is upstream and
-/// configuration-dependent: the alternative is guessing at which degeneracies
-/// spade dislikes and silently dropping constraints that were fine.
+/// "The triangulation fails" includes the geometric kernel giving up, which
+/// [`caught`] turns into this `None` and counts in [`BREAKLINES_LOST`] — the
+/// tile keeps its ground, but without the creases the imprint computed.
 pub fn constrained_mesh(
     grid: u32,
     bounds: &Bounds,
@@ -60,10 +98,7 @@ pub fn constrained_mesh(
     regions: &[Region],
     sample: &mut dyn FnMut(f64, f64) -> f64,
 ) -> Option<(TerrainMesh, f64, f64)> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        constrained_mesh_inner(grid, bounds, segments, regions, sample)
-    }))
-    .unwrap_or(None)
+    caught(&BREAKLINES_LOST, || constrained_mesh_inner(grid, bounds, segments, regions, sample))
 }
 
 fn constrained_mesh_inner(
@@ -384,6 +419,32 @@ mod tests {
     use super::*;
     use crate::terrain::elevated_mesh;
 
+    /// The refusal path itself, which is the part that can regress: a panic
+    /// in the kernel must become the `None` every caller's contract already
+    /// handles *and* be counted. Counting it inside the `catch_unwind` arm
+    /// is the only place that can distinguish a refusal from a deliberate
+    /// `None`, and a silent fallback is exactly the defect this counter
+    /// exists to make visible.
+    #[test]
+    fn a_kernel_refusal_becomes_none_and_is_counted() {
+        static COUNT: AtomicU64 = AtomicU64::new(0);
+        // A panic is caught, counted, and read as "no mesh".
+        let hushed = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let got = caught(&COUNT, || -> Option<u8> { panic!("the kernel gives up") });
+        std::panic::set_hook(hushed);
+        assert!(got.is_none());
+        assert_eq!(COUNT.load(Ordering::Relaxed), 1);
+
+        // A `None` the triangulation returned on purpose is not a refusal.
+        assert!(caught(&COUNT, || -> Option<u8> { None }).is_none());
+        assert_eq!(COUNT.load(Ordering::Relaxed), 1, "a deliberate None is not counted");
+
+        // And a success passes through untouched.
+        assert_eq!(caught(&COUNT, || Some(7u8)), Some(7));
+        assert_eq!(COUNT.load(Ordering::Relaxed), 1);
+    }
+
     fn tile() -> Bounds {
         Bounds::of_tile(16, 34000, 23000)
     }
@@ -659,6 +720,8 @@ pub fn one_mesh_border_probe(
     asphalt_edges: &[((u16, u16), (u16, u16))],
     sample: &mut dyn FnMut(f64, f64) -> f64,
 ) -> Option<(Vec<(u16, u16, i32)>, Vec<(u16, u16)>)> {
+    // Uncounted: the probe draws nothing, so its refusal costs the tile
+    // nothing to report. Only the two paths that feed the archive are.
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         one_mesh_border_probe_inner(grid, bounds, segments, regions, asphalt_edges, sample)
     }))
@@ -882,10 +945,9 @@ pub fn one_mesh_full(
     ground: &mut dyn FnMut(f64, f64) -> f64,
     asphalt: &mut dyn FnMut(usize, f64, f64) -> f64,
 ) -> Option<(OneMesh, f64, f64)> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    caught(&ONE_MESH_LOST, || {
         one_mesh_full_inner(grid, bounds, segments, regions, voids, asphalt_edges, ground, asphalt)
-    }))
-    .unwrap_or(None)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
