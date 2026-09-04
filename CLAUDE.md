@@ -196,7 +196,10 @@ The client supports these CLI arguments (native only, not Emscripten):
 --tilt <deg>          Camera tilt in degrees
 --width <px>          Window width (default: 800)
 --height <px>         Window height (default: 600)
+--headless            No window, no surface, no display (requires --screenshot)
 --screenshot <path>   Capture a PNG after tiles load, then exit
 ```
 
 With `--screenshot`, the client waits for all visible tiles to load, captures one frame, prints `[SCREENSHOT] saved <path>`, and exits with code 0 on success.
+
+Add `--headless` when the capture is a measurement rather than a look. It needs no window and no display, so it runs over ssh and beside a tiling run, and `--width`/`--height` are then the image size exactly (a windowed capture inherits the display's pixel ratio, so `--width 800` writes 1600 px on a 2× screen). Headless captures are byte-identical across runs — see `docs/VIEWER.md` "Headless capture".

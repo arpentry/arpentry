@@ -167,7 +167,8 @@ Uploaded once per tile, freed on eviction. No re-upload on camera movement.
 | `renderer` | WebGPU pipeline, GPU buffers, draw calls, uniforms, depth buffer |
 | `ui` | WebGPU UI overlay (compass, zoom buttons, tilt controls) |
 | `http` | Low-level HTTP client (native sockets / Emscripten fetch) |
-| `main` | Window (GLFW/Emscripten), main loop, resize, module wiring |
+| `present` | Where a frame goes: window + surface, or an offscreen texture |
+| `main` | Main loop, resize, module wiring |
 
 ```
 main
@@ -179,5 +180,28 @@ main
 ```
 
 ### Platform
+
+### Headless capture
+
+`--headless --screenshot <path>` renders without a window, a surface, or a
+display: no `glfwInit`, no swapchain, frames land in an offscreen texture and
+are read back. The client becomes a measuring instrument that runs over ssh,
+in CI, and beside a tiling run — see `docs/VERIFICATION.md` and the isolation
+harness plan.
+
+Two things differ from a windowed capture, both deliberate:
+
+- **`--width`/`--height` are the image, not a window.** A windowed capture is
+  sized by the framebuffer, so on a 2× display `--width 800` writes a 1600 px
+  PNG. Headless has no display to inherit, so it writes exactly what was
+  asked for at a pixel ratio of 1.
+- **Time is counted, not read.** Headless advances a fixed 1/60 s per drawn
+  frame instead of sampling a clock, so a capture is a function of the scene
+  and not of how fast the machine that took it happened to be. The same
+  camera over the same archive is byte-identical across runs.
+
+The colour format is pinned to `BGRA8Unorm` (`HEADLESS_FORMAT`) because there
+is no surface to ask for a preferred one, and two captures only compare if
+they were rendered in the same format.
 
 Platform-specific code behind `#ifdef __EMSCRIPTEN__`: window (GLFW vs canvas), main loop (poll vs `emscripten_request_animation_frame_loop`), tile fetch (sockets vs `emscripten_fetch`), HiDPI (`glfwGetFramebufferSize` vs `emscripten_get_device_pixel_ratio`). Window is resizable with HiDPI support on both platforms.

@@ -5,7 +5,8 @@
 #include <string.h>
 #include <webgpu/webgpu.h>
 #include <GLFW/glfw3.h>
-#include "glfw3webgpu.h"
+
+#include "present.h"
 
 #include "camera.h"
 #include "control.h"
@@ -67,6 +68,10 @@ EM_JS(int, em_sync_get, (const char *url_ptr, void *out_buf_ptr,
 #define INITIAL_ALTITUDE 500000.0
 #define WINDOW_W 800
 #define WINDOW_H 600
+/* A headless run has no surface to ask for a preferred format, and a capture
+   is only comparable with a windowed one if both were rendered in the same
+   format. BGRA8Unorm is what every backend we target picks for a window. */
+#define HEADLESS_FORMAT WGPUTextureFormat_BGRA8Unorm
 /* Minimum clearance (meters) kept between the eye and terrain below it. */
 #define EYE_TERRAIN_MARGIN 10.0
 
@@ -83,6 +88,7 @@ typedef struct {
     int width;
     int height;
     bool ortho;
+    bool headless;        /* no window, no surface, no display */
     char screenshot[512]; /* empty string = interactive mode */
 } cli_opts;
 
@@ -96,6 +102,7 @@ static cli_opts opts = {
     .width = WINDOW_W,
     .height = WINDOW_H,
     .ortho = false,
+    .headless = false,
     .screenshot = "",
 };
 
@@ -119,6 +126,8 @@ static void parse_args(int argc, char **argv) {
             opts.height = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--ortho") == 0) {
             opts.ortho = true;
+        } else if (strcmp(argv[i], "--headless") == 0) {
+            opts.headless = true;
         } else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
             snprintf(opts.screenshot, sizeof(opts.screenshot), "%s",
                      argv[++i]);
@@ -127,10 +136,17 @@ static void parse_args(int argc, char **argv) {
                     "Usage: %s [--url <base>] [--lon <deg>] [--lat <deg>] "
                     "[--alt <m>] [--bearing <deg>] [--tilt <deg>] "
                     "[--width <px>] [--height <px>] [--ortho] "
-                    "[--screenshot <path>]\n",
+                    "[--headless] [--screenshot <path>]\n",
                     argv[0]);
             exit(EXIT_FAILURE);
         }
+    }
+
+    /* Headless renders to a file or to nothing at all, and nothing at all is
+       never what was meant. */
+    if (opts.headless && opts.screenshot[0] == '\0') {
+        fprintf(stderr, "--headless requires --screenshot <path>\n");
+        exit(EXIT_FAILURE);
     }
 }
 #endif /* __EMSCRIPTEN__ */
@@ -138,9 +154,8 @@ static void parse_args(int argc, char **argv) {
 /* App state */
 
 typedef struct {
-    GLFWwindow *window;
+    arpt_present *present;
     WGPUInstance instance;
-    WGPUSurface surface;
     WGPUAdapter adapter;
     WGPUDevice device;
     WGPUQueue queue;
@@ -198,7 +213,7 @@ static void on_framebuffer_resize(GLFWwindow *w, int width, int height) {
     /* On native: framebuffer pixels are physical; window pixels are logical
        and match glfwGetCursorPos. */
     int win_w, win_h;
-    glfwGetWindowSize(app.window, &win_w, &win_h);
+    arpt_present_window_size(app.present, &win_w, &win_h);
     arpt_camera_set_viewport(app.camera, win_w, win_h);
 
     float ratio = (win_w > 0) ? (float)width / (float)win_w : 1.0f;
@@ -209,16 +224,8 @@ static void on_framebuffer_resize(GLFWwindow *w, int width, int height) {
     if (app.info)
         arpt_info_resize(app.info, (uint32_t)width, (uint32_t)height, ratio);
 
-    WGPUSurfaceConfiguration cfg = {
-        .device = app.device,
-        .format = app.surface_format,
-        .usage = WGPUTextureUsage_RenderAttachment,
-        .width = (uint32_t)width,
-        .height = (uint32_t)height,
-        .presentMode = WGPUPresentMode_Fifo,
-        .alphaMode = WGPUCompositeAlphaMode_Auto,
-    };
-    wgpuSurfaceConfigure(app.surface, &cfg);
+    arpt_present_configure(app.present, app.device, app.surface_format,
+                           (uint32_t)width, (uint32_t)height);
 #endif
 }
 
@@ -254,7 +261,7 @@ static void sync_canvas_size(void) {
     if (s_css_w != css_w || s_css_h != css_h) {
         s_css_w = css_w;
         s_css_h = css_h;
-        glfwSetWindowSize(app.window, css_w, css_h);
+        glfwSetWindowSize(arpt_present_window(app.present), css_w, css_h);
     }
 
     /* Pin the canvas drawing buffer to physical pixels.  Browsers display the
@@ -290,16 +297,8 @@ static void sync_canvas_size(void) {
         if (app.ui)
             arpt_ui_resize(app.ui, (uint32_t)phys_w, (uint32_t)phys_h,
                            (float)dpr);
-        WGPUSurfaceConfiguration cfg = {
-            .device = app.device,
-            .format = app.surface_format,
-            .usage = WGPUTextureUsage_RenderAttachment,
-            .width = (uint32_t)phys_w,
-            .height = (uint32_t)phys_h,
-            .presentMode = WGPUPresentMode_Fifo,
-            .alphaMode = WGPUCompositeAlphaMode_Auto,
-        };
-        wgpuSurfaceConfigure(app.surface, &cfg);
+        arpt_present_configure(app.present, app.device, app.surface_format,
+                               (uint32_t)phys_w, (uint32_t)phys_h);
     }
 }
 #endif
@@ -313,14 +312,11 @@ static void render_frame(void) {
 #else
     /* When idle, block instead of spinning to save CPU/battery.
        The 100ms timeout ensures tile fetch completions are polled. */
-    if (app.needs_redraw)
-        glfwPollEvents();
-    else
-        glfwWaitEventsTimeout(0.1);
+    arpt_present_poll(app.present, !app.needs_redraw);
 #endif
 
     /* Compute dt and advance control */
-    double now = glfwGetTime();
+    double now = arpt_present_time(app.present);
     double dt = now - app.last_time;
     app.last_time = now;
     if (app.control) arpt_control_update(app.control, dt);
@@ -357,7 +353,7 @@ static void render_frame(void) {
         arpt_renderer_free(app.renderer);
 
         int fb_w, fb_h;
-        glfwGetFramebufferSize(app.window, &fb_w, &fb_h);
+        arpt_present_framebuffer_size(app.present, &fb_w, &fb_h);
         int rbci = arpt_style_class_index(&style, "building");
         const float *rbldg = style.colors[rbci];
         app.renderer =
@@ -375,7 +371,7 @@ static void render_frame(void) {
         /* Apply current pixel ratio so labels/icons are correctly sized */
         {
             int win_w2, win_h2;
-            glfwGetWindowSize(app.window, &win_w2, &win_h2);
+            arpt_present_window_size(app.present, &win_w2, &win_h2);
             float ratio = (win_w2 > 0) ? (float)fb_w / (float)win_w2 : 1.0f;
             arpt_renderer_resize(app.renderer, (uint32_t)fb_w, (uint32_t)fb_h,
                                  ratio);
@@ -437,9 +433,17 @@ static void render_frame(void) {
 
     if (!redraw) return;
 
-    WGPUSurfaceTexture st;
-    wgpuSurfaceGetCurrentTexture(app.surface, &st);
-    if (st.status != WGPUSurfaceGetCurrentTextureStatus_Success) return;
+#ifndef __EMSCRIPTEN__
+    bool capture = app.capture_next;
+    app.capture_next = false;
+#else
+    const bool capture = false;
+#endif
+
+    /* A capture must be copyable, which a swapchain texture is not; headless
+       has no swapchain at all. Both land offscreen — see present.h. */
+    WGPUTextureView view = arpt_present_acquire(app.present, capture);
+    if (!view) return;
 
     /* Update ground elevation from loaded tiles */
     if (app.tile_manager) {
@@ -501,49 +505,6 @@ static void render_frame(void) {
                                        cam_ecef.z);
     }
 
-#ifndef __EMSCRIPTEN__
-    /* Screenshot capture: render to an offscreen texture instead of the
-       surface, because wgpu-native doesn't support copying from surface
-       textures. */
-    if (app.capture_next) {
-        app.capture_next = false;
-        uint32_t tw = wgpuTextureGetWidth(st.texture);
-        uint32_t th = wgpuTextureGetHeight(st.texture);
-        WGPUTextureDescriptor offscreen_desc = {
-            .label = "screenshot_target",
-            .usage = WGPUTextureUsage_RenderAttachment |
-                     WGPUTextureUsage_CopySrc,
-            .dimension = WGPUTextureDimension_2D,
-            .size = {tw, th, 1},
-            .format = app.surface_format,
-            .mipLevelCount = 1,
-            .sampleCount = 1,
-        };
-        WGPUTexture offscreen = wgpuDeviceCreateTexture(app.device,
-                                                        &offscreen_desc);
-        WGPUTextureView offscreen_view =
-            wgpuTextureCreateView(offscreen, NULL);
-
-        arpt_renderer_begin_frame(app.renderer, offscreen_view);
-        if (app.tile_manager)
-            arpt_tile_manager_draw(app.tile_manager, app.renderer, app.camera);
-        arpt_renderer_end_frame(app.renderer);
-
-        app.screenshot_ok = arpt_screenshot_save(
-            app.instance, app.device, app.queue, offscreen,
-            app.surface_format, tw, th, opts.screenshot);
-        app.exit_code = app.screenshot_ok ? EXIT_SUCCESS : EXIT_FAILURE;
-
-        wgpuTextureViewRelease(offscreen_view);
-        wgpuTextureRelease(offscreen);
-        wgpuTextureRelease(st.texture);
-        glfwSetWindowShouldClose(app.window, GLFW_TRUE);
-        return;
-    }
-#endif
-
-    WGPUTextureView view = wgpuTextureCreateView(st.texture, NULL);
-
     arpt_renderer_begin_frame(app.renderer, view);
 
     /* Draw tiles from the tile manager (server-provided) */
@@ -553,7 +514,7 @@ static void render_frame(void) {
     /* Update UI state (draw happens via overlay callback in end_frame) */
     if (app.ui) {
         double cx, cy;
-        glfwGetCursorPos(app.window, &cx, &cy);
+        glfwGetCursorPos(arpt_present_window(app.present), &cx, &cy);
         arpt_ui_set_cursor(app.ui, (float)cx, (float)cy);
         arpt_ui_set_state(app.ui, (float)arpt_camera_bearing(app.camera),
                           (float)arpt_camera_tilt(app.camera),
@@ -576,11 +537,24 @@ static void render_frame(void) {
 
     arpt_renderer_end_frame(app.renderer);
 
-    wgpuTextureViewRelease(view);
 #ifndef __EMSCRIPTEN__
-    wgpuSurfacePresent(app.surface);
+    /* The capture is read back from the target that was just drawn, then the
+       run is over: a --screenshot client renders exactly one frame to keep. */
+    if (capture) {
+        int cap_w, cap_h;
+        arpt_present_framebuffer_size(app.present, &cap_w, &cap_h);
+        app.screenshot_ok = arpt_screenshot_save(
+            app.instance, app.device, app.queue,
+            arpt_present_texture(app.present), app.surface_format,
+            (uint32_t)cap_w, (uint32_t)cap_h, opts.screenshot);
+        app.exit_code = app.screenshot_ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        arpt_present_end(app.present);
+        arpt_present_close(app.present);
+        return;
+    }
 #endif
-    wgpuTextureRelease(st.texture);
+
+    arpt_present_end(app.present);
 }
 
 /* UI overlay callback (invoked by renderer at end of frame) */
@@ -995,9 +969,9 @@ static int fetch_models(const char *base_url, arpt_model *models,
 
 static void init_viewer(void) {
     int fb_w, fb_h;
-    glfwGetFramebufferSize(app.window, &fb_w, &fb_h);
+    arpt_present_framebuffer_size(app.present, &fb_w, &fb_h);
     int win_w, win_h;
-    glfwGetWindowSize(app.window, &win_w, &win_h);
+    arpt_present_window_size(app.present, &win_w, &win_h);
 
     app.camera = arpt_camera_create();
     if (!app.camera) {
@@ -1156,17 +1130,22 @@ static void init_viewer(void) {
         arpt_renderer_set_overlay(app.renderer, ui_overlay, NULL);
     }
 
-    /* Map control (mouse/keyboard/touch input) */
-    app.control = arpt_control_create(app.camera, app.window);
-    if (!app.control) {
-        fprintf(stderr, "Fatal: failed to create control\n");
-        return;
-    }
-    arpt_control_set_event_filter(app.control, ui_event_filter, NULL);
-    app.last_time = glfwGetTime();
+    /* Map control (mouse/keyboard/touch input). A headless run has no window
+       to install callbacks on and nobody to receive them; every consumer of
+       the control treats NULL as "no input". */
+    GLFWwindow *window = arpt_present_window(app.present);
+    if (window) {
+        app.control = arpt_control_create(app.camera, window);
+        if (!app.control) {
+            fprintf(stderr, "Fatal: failed to create control\n");
+            return;
+        }
+        arpt_control_set_event_filter(app.control, ui_event_filter, NULL);
 
-    /* Install GLFW callbacks (framebuffer resize is separate from input) */
-    glfwSetFramebufferSizeCallback(app.window, on_framebuffer_resize);
+        /* Install GLFW callbacks (framebuffer resize is separate from input) */
+        glfwSetFramebufferSizeCallback(window, on_framebuffer_resize);
+    }
+    app.last_time = arpt_present_time(app.present);
 
     app.needs_redraw = true; /* force first frame */
 }
@@ -1184,21 +1163,17 @@ static void on_device_done(WGPURequestDeviceStatus status, WGPUDevice device,
     wgpuDeviceSetUncapturedErrorCallback(device, on_device_error, NULL);
     app.queue = wgpuDeviceGetQueue(device);
 
-    /* Configure surface */
+    /* Settle the swapchain format. Headless was given one at creation, since
+       there is no surface to ask — see arpt_present_create_headless. */
     int fb_w, fb_h;
-    glfwGetFramebufferSize(app.window, &fb_w, &fb_h);
+    arpt_present_framebuffer_size(app.present, &fb_w, &fb_h);
 
-    WGPUSurfaceConfiguration cfg = {
-        .device = device,
-        .format = wgpuSurfaceGetPreferredFormat(app.surface, app.adapter),
-        .usage = WGPUTextureUsage_RenderAttachment,
-        .width = (uint32_t)fb_w,
-        .height = (uint32_t)fb_h,
-        .presentMode = WGPUPresentMode_Fifo,
-        .alphaMode = WGPUCompositeAlphaMode_Auto,
-    };
-    app.surface_format = cfg.format;
-    wgpuSurfaceConfigure(app.surface, &cfg);
+    WGPUSurface surface = arpt_present_surface(app.present);
+    app.surface_format =
+        surface ? wgpuSurfaceGetPreferredFormat(surface, app.adapter)
+                : arpt_present_format(app.present);
+    arpt_present_configure(app.present, device, app.surface_format,
+                           (uint32_t)fb_w, (uint32_t)fb_h);
 
     init_viewer();
 
@@ -1208,7 +1183,7 @@ static void on_device_done(WGPURequestDeviceStatus status, WGPUDevice device,
 #else
     if (opts.screenshot[0] != '\0') {
         /* Screenshot mode: render until tiles are loaded, then capture */
-        while (!glfwWindowShouldClose(app.window)) {
+        while (!arpt_present_should_close(app.present)) {
             render_frame();
 
             int active = app.tile_manager
@@ -1227,7 +1202,7 @@ static void on_device_done(WGPURequestDeviceStatus status, WGPUDevice device,
             }
         }
     } else {
-        while (!glfwWindowShouldClose(app.window))
+        while (!arpt_present_should_close(app.present))
             render_frame();
     }
 #endif
@@ -1269,44 +1244,46 @@ int main(int argc, char **argv) {
     (void)argv;
 #endif
 
-    if (!glfwInit()) {
-        fprintf(stderr, "Failed to initialize GLFW\n");
-        return EXIT_FAILURE;
-    }
-
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-
 #ifndef __EMSCRIPTEN__
-    app.window = glfwCreateWindow(opts.width, opts.height,
-                                  "Arpentry", NULL, NULL);
+    /* Headless never touches GLFW: no init, no window, no display. That is
+       the point — the run must work over ssh, in CI, and beside a tiler run
+       that has no business opening a window. */
+    const bool headless = opts.headless;
 #else
-    app.window = glfwCreateWindow(WINDOW_W, WINDOW_H, "Arpentry", NULL, NULL);
+    const bool headless = false;
 #endif
-    if (!app.window) {
-        fprintf(stderr, "Failed to create window\n");
-        glfwTerminate();
+
+    if (!headless && !glfwInit()) {
+        fprintf(stderr, "Failed to initialize GLFW\n");
         return EXIT_FAILURE;
     }
 
     app.instance = wgpuCreateInstance(NULL);
     if (!app.instance) {
         fprintf(stderr, "Failed to create WebGPU instance\n");
-        glfwDestroyWindow(app.window);
-        glfwTerminate();
+        if (!headless) glfwTerminate();
         return EXIT_FAILURE;
     }
 
-    app.surface = glfwGetWGPUSurface(app.instance, app.window);
-    if (!app.surface) {
-        fprintf(stderr, "Failed to create WebGPU surface\n");
+#ifndef __EMSCRIPTEN__
+    app.present =
+        headless ? arpt_present_create_headless((uint32_t)opts.width,
+                                                (uint32_t)opts.height,
+                                                HEADLESS_FORMAT)
+                 : arpt_present_create_window(app.instance, opts.width,
+                                              opts.height, "Arpentry");
+#else
+    app.present = arpt_present_create_window(app.instance, WINDOW_W, WINDOW_H,
+                                             "Arpentry");
+#endif
+    if (!app.present) {
         wgpuInstanceRelease(app.instance);
-        glfwDestroyWindow(app.window);
-        glfwTerminate();
+        if (!headless) glfwTerminate();
         return EXIT_FAILURE;
     }
 
     WGPURequestAdapterOptions adapter_opts = {0};
-    adapter_opts.compatibleSurface = app.surface;
+    adapter_opts.compatibleSurface = arpt_present_surface(app.present);
     wgpuInstanceRequestAdapter(app.instance, &adapter_opts, on_adapter_done,
                                NULL);
 
@@ -1319,14 +1296,12 @@ int main(int argc, char **argv) {
     free(app.model_buf);
     if (app.control) arpt_control_free(app.control);
     if (app.camera) arpt_camera_free(app.camera);
-    wgpuSurfaceUnconfigure(app.surface);
+    arpt_present_free(app.present);
     if (app.queue) wgpuQueueRelease(app.queue);
     if (app.device) wgpuDeviceRelease(app.device);
     if (app.adapter) wgpuAdapterRelease(app.adapter);
-    wgpuSurfaceRelease(app.surface);
     wgpuInstanceRelease(app.instance);
-    glfwDestroyWindow(app.window);
-    glfwTerminate();
+    if (!headless) glfwTerminate();
 #endif
 
 #ifndef __EMSCRIPTEN__

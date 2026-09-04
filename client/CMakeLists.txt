@@ -117,6 +117,7 @@ add_custom_target(embed_assets DEPENDS ${FONT_OUTPUT} ${ICON_OUTPUT})
 
 add_executable(arpentry_client
     src/main.c
+    src/present.c
     src/http.c
     src/tile/fetch.c
     src/camera.c
