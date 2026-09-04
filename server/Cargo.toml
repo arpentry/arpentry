@@ -16,6 +16,13 @@ path = "src/bin/server.rs"
 # Measures an emitted archive against the GENERATION.md invariants. Separate
 # from the tiler so it can be pointed at any archive, including one built by an
 # older revision, which is what makes a baseline diff meaningful.
+# Renders a corpus of views off an archive and diffs them against a baseline.
+# The pixels are the one thing arpentry_verify cannot see: it measures the model
+# an archive describes, not what a client draws from it.
+[[bin]]
+name = "arpentry_render"
+path = "src/bin/render.rs"
+
 [[bin]]
 name = "arpentry_verify"
 path = "src/bin/verify.rs"

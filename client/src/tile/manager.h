@@ -116,6 +116,18 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam);
 /** Returns the number of in-flight tile fetches. */
 int arpt_tile_manager_active_fetches(const arpt_tile_manager *tm);
 
+/**
+ * Visible tiles that are neither loaded nor given up on.
+ *
+ * `active_fetches` counts requests in flight, which is not the same question:
+ * the camera settles onto terrain as tiles land, and a settling camera makes
+ * new tiles visible after the queue has briefly emptied. A capture that fires
+ * on an empty queue can therefore catch an ancestor stand-in in place of a
+ * tile nobody had asked for yet — a few per cent of the pixels, subtly
+ * differently shaded, once in twenty runs. This counts the scene instead.
+ */
+int arpt_tile_manager_pending_tiles(const arpt_tile_manager *tm);
+
 /** Returns true (once) after a tile upload completes. Clear-on-read. */
 bool arpt_tile_manager_needs_redraw(arpt_tile_manager *tm);
 

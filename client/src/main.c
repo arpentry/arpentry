@@ -73,6 +73,10 @@ EM_JS(int, em_sync_get, (const char *url_ptr, void *out_buf_ptr,
    is only comparable with a windowed one if both were rendered in the same
    format. BGRA8Unorm is what every backend we target picks for a window. */
 #define HEADLESS_FORMAT WGPUTextureFormat_BGRA8Unorm
+/* Frames the scene must hold still before a capture is taken. Three is enough
+   for a tile that a settling camera newly made visible to be requested, to
+   arrive, and to be drawn. */
+#define CAPTURE_SETTLE_FRAMES 3
 /* Minimum clearance (meters) kept between the eye and terrain below it. */
 #define EYE_TERRAIN_MARGIN 10.0
 
@@ -182,7 +186,8 @@ typedef struct {
 #ifndef __EMSCRIPTEN__
     bool capture_next;
     bool screenshot_ok;
-    int idle_frames; /* consecutive frames with 0 active fetches */
+    int idle_frames;  /* consecutive frames with a settled scene */
+    uint64_t frames;  /* frames the loop has run, for capture diagnostics */
     int exit_code;
 #endif
 } App;
@@ -309,6 +314,27 @@ static void sync_canvas_size(void) {
 }
 #endif
 
+/* How many tiles may be in flight at once.
+ *
+ * Six workers keep an interactive session responsive, but they finish in
+ * whatever order they finish, and tiles are drained — and their labels placed
+ * — in completion order. The image that falls out is therefore one of a small
+ * family, and a capture picked from that family roughly one run in ten: a per
+ * cent or two of pixels, shaded slightly differently, which is exactly the
+ * size of a real regression.
+ *
+ * A capture is a measurement, and a measurement that changes when nothing did
+ * is worth nothing. One worker drains in the order tiles were asked for, which
+ * is the visible-tile order, which is the camera's. Slower, and the only
+ * ordering there is.
+ */
+static int capture_concurrency(void) {
+#ifndef __EMSCRIPTEN__
+    if (opts.screenshot[0] != '\0') return 1;
+#endif
+    return 6;
+}
+
 /* Render frame */
 
 static void render_frame(void) {
@@ -344,7 +370,7 @@ static void render_frame(void) {
             .min_level = 0,
             .max_level = 19,
             .max_tiles = 200,
-            .max_concurrent = 6,
+            .max_concurrent = capture_concurrency(),
         };
         fetch_tileset(app.base_url, &tm_config);
 
@@ -1064,7 +1090,7 @@ static void init_viewer(void) {
         .min_level = 0,
         .max_level = 19,
         .max_tiles = 200,
-        .max_concurrent = 6,
+        .max_concurrent = capture_concurrency(),
     };
     if (!fetch_tileset(base_url, &tm_config))
         fprintf(stderr, "Warning: index.arpi fetch failed, using defaults\n");
@@ -1165,20 +1191,40 @@ static void on_device_done(WGPURequestDeviceStatus status, WGPUDevice device,
     emscripten_set_main_loop(render_frame, 0, 0);
 #else
     if (opts.screenshot[0] != '\0') {
-        /* Screenshot mode: render until tiles are loaded, then capture */
+        /* Capture once the scene has settled: no visible tile still pending,
+           nothing in flight, and the ground the camera rides not moving. The
+           three go together — the camera settles onto terrain as tiles land,
+           and settling makes tiles visible that nothing had asked for yet, so
+           an empty fetch queue alone let a capture keep an ancestor stand-in
+           it would not have kept a frame later. */
+        double settled_elev = 0.0;
+        bool announced = false; /* render_frame clears capture_next itself */
         while (!arpt_present_should_close(app.present)) {
             render_frame();
+            app.frames++;
 
             int active = app.tile_manager
                              ? arpt_tile_manager_active_fetches(app.tile_manager)
                              : 0;
-            if (active == 0)
+            int pending = app.tile_manager
+                              ? arpt_tile_manager_pending_tiles(app.tile_manager)
+                              : 0;
+            bool ground_held =
+                fabs(app.smoothed_ground_elev - settled_elev) < 1e-6;
+            settled_elev = app.smoothed_ground_elev;
+
+            if (active == 0 && pending == 0 && ground_held)
                 app.idle_frames++;
             else
                 app.idle_frames = 0;
 
-            if (app.idle_frames >= 3 && !app.capture_next) {
-                printf("[READY] all visible tiles loaded\n");
+            if (app.idle_frames >= CAPTURE_SETTLE_FRAMES && !announced) {
+                announced = true;
+                /* Say which frame settled it. A capture that fires at a
+                   different frame than the last run is the first thing to
+                   check when an image moved and nothing was changed. */
+                printf("[READY] all visible tiles loaded (frame %llu)\n",
+                       (unsigned long long)app.frames);
                 app.capture_next = true;
                 /* Force one more redraw for capture */
                 app.needs_redraw = true;

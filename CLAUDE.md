@@ -170,6 +170,42 @@ threshold reports as a defect.
 it.** The render finds a class of defect once; the check keeps it dead. A defect
 that stays screenshot-only is one nobody can tell has come back.
 
+## Verifying the Render
+
+`arpentry_verify` measures the model an archive describes. `arpentry_render`
+measures what a client draws from it — the one subsystem the scorecard cannot
+see. It renders every corpus site twice (oblique and plan) with
+`--archive --headless`, so no server, no port and no window are involved, and
+diffs the images against a baseline:
+
+```bash
+cd server && cargo build --release
+
+# Cut a baseline before you change anything under it.
+./target/release/arpentry_render ../data/overture-ch/preview.arpa \
+    --baseline /tmp/claude/shots --update
+
+# Then ask what moved. Exits 1 on any confirmed change.
+./target/release/arpentry_render ../data/overture-ch/preview.arpa \
+    --baseline /tmp/claude/shots
+```
+
+**A baseline belongs to the machine that cut it** — the image depends on the
+GPU, the driver and the backend — so keep it out of the repo and re-cut it
+when the archive changes. Same discipline as a cut zone's scorecard.
+
+Two things worth knowing before reading its table:
+
+- **It confirms before it reports.** The client is not perfectly deterministic:
+  about one sweep in three, one view lands 1–3 % different for reasons outside
+  the scene. Anything that moves is rendered again, and what does not reproduce
+  is printed but not counted. Widening the tolerance instead would blind the
+  gate to a real defect of exactly that size.
+- **Read the shape, not just the count.** Harness noise is one or two views
+  moving a per cent or two. A real change is broad and often shallow: a 2 %
+  shift in one lighting term of `terrain.wgsl` moves 16 of 20 views, most of
+  them by a single channel step.
+
 ## Verifying Rendering Output
 
 You can visually verify rendering by capturing a screenshot and reading the PNG with the Read tool:

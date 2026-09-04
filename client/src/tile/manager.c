@@ -967,6 +967,20 @@ int arpt_tile_manager_active_fetches(const arpt_tile_manager *tm) {
     return tm ? tm->active_fetches : 0;
 }
 
+int arpt_tile_manager_pending_tiles(const arpt_tile_manager *tm) {
+    if (!tm) return 0;
+    int pending = 0;
+    for (int i = 0; i < tm->visible_count; i++) {
+        tile_entry lookup = {.key = tm->visible[i]};
+        const tile_entry *e = hashmap_get(tm->cache, &lookup);
+        /* A tile this session gave up on is not pending — it will never
+           arrive, and waiting for it would hang the capture instead of
+           reporting the stand-in. */
+        if (!e || e->state == TILE_LOADING) pending++;
+    }
+    return pending;
+}
+
 bool arpt_tile_manager_needs_redraw(arpt_tile_manager *tm) {
     if (!tm) return false;
     bool v = tm->needs_redraw;

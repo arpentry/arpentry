@@ -844,3 +844,29 @@ Before believing a new check's first number, measure its *anatomy* — histogram
 the population it is scoring and look for a second mode. Three of the metrics
 here changed shape after that step, and one was measuring something else
 entirely.
+
+## The render
+
+Every metric above scores the model an archive describes. None of them scores
+the pixels a client draws from it, which is why a renderer defect has been
+something you had to notice rather than something that stayed dead.
+
+`arpentry_render <archive> --baseline <dir>` closes that: it renders each
+corpus site obliquely and in plan through `arpentry_client --archive
+--headless` — no server, no port, no window — and diffs the images. It reports
+the share of pixels that moved, the worst single-channel delta, and the mean
+delta over what moved, worst first, and exits 1 on a confirmed change.
+
+Three things separate it from the scorecard, and each is deliberate:
+
+- **The baseline is not committed.** It depends on the GPU, the driver and the
+  backend, so a baseline in the repo would be red for everybody but its author.
+  Cut one locally, exactly as a cut zone's scorecard must be re-cut.
+- **A change is confirmed by re-rendering it.** The client is not perfectly
+  deterministic; roughly one sweep in three, one view lands 1-3 % different for
+  reasons outside the scene. What does not reproduce is printed and not
+  counted. The alternative — a tolerance wide enough to swallow it — would also
+  swallow a real defect of that size.
+- **The shape of the table is the signal.** Noise is one view, deep. A real
+  change is broad and shallow: a 2 % shift in one lighting term of
+  `terrain.wgsl` moves 16 of 20 views, most by a single channel step.
