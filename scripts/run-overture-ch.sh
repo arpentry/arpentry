@@ -15,6 +15,10 @@
 #                          downloaded parquets and local terrain (no network),
 #                          and centres the camera on the zone. The fast loop for
 #                          verifying a change: edit code, rerun with --zone.
+#   --data <dir>           Read the layer parquets and terrain from <dir> instead
+#                          of data/overture-ch — point it at a zone cut by
+#                          scripts/cut-zone.sh for a much faster loop. Implies
+#                          --skip-download.
 #   --skip-download        Don't fetch missing layers (use whatever is present)
 #   --skip-build           Don't rebuild the client / Rust binaries
 #   --skip-tile            Reuse the existing archive (implies --skip-download)
@@ -119,9 +123,36 @@ while [ $# -gt 0 ]; do
         --no-terrain)    USE_TERRAIN=false; shift ;;
         --terrain-file)  TERRAIN_FILE="$2"; shift 2 ;;
         --hires-terrain) HIRES_TERRAIN=true; shift ;;
+        --data)          DATA_DIR="$2"; DATA_DIR_SET=true; shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
+
+# ── Cut zone inputs (--data) ─────────────────────────────────────────────────
+# A directory written by scripts/cut-zone.sh: the same layer parquets and a
+# terrain.pmtiles, cut once to one zone plus a margin. The tiler's own bbox
+# pruning is at parquet row-group granularity, so a small --zone over the full
+# Switzerland inputs still reads most of a row group of a 954 MB file and still
+# assembles, solves and grounds every corridor in it — 51.6 s of a 74 s
+# 25-tile run, and flat in the size of the zone. Cutting the input is what
+# moves it.
+#
+# Nothing here is fetched: the cut is the source of truth, and a missing layer
+# is a re-cut, not a download.
+if [ "${DATA_DIR_SET:-false}" = true ]; then
+    if [ ! -d "$DATA_DIR" ]; then
+        echo "ERROR: --data $DATA_DIR does not exist (make it with scripts/cut-zone.sh)" >&2
+        exit 1
+    fi
+    ARCHIVE="$DATA_DIR/switzerland.arpa"
+    TERRAIN_PMTILES="$DATA_DIR/terrain.pmtiles"
+    SKIP_DOWNLOAD=true
+    if [ -f "$DATA_DIR/zone.env" ]; then
+        echo "Zone inputs: $DATA_DIR"
+        sed -n 's/^ZONE_\(BBOX\|CUT_BBOX\|MARGIN\)=/  \1 = /p' "$DATA_DIR/zone.env"
+        echo ""
+    fi
+fi
 
 # ── Preview zone ─────────────────────────────────────────────────────────────
 # --zone makes a fast verification loop: tile just the given bbox into its own
