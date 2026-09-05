@@ -17,6 +17,14 @@
 //! same archive: parallel workers walk neighbouring output tiles and keep
 //! needing the same source tiles, and sharing turns *threads × tiles* decodes
 //! into *tiles*.
+//!
+//! A `--terrain` value that is not a path is an analytic ground instead — see
+//! [`field`], the isolation harness's terrain dial. [`Dem`] is the seam that
+//! makes that free: it is one facade over two sources, so the fifteen places
+//! that open a DEM never learn which one they got.
+
+mod field;
+pub use field::Field;
 
 use std::collections::{HashMap, VecDeque};
 use std::f64::consts::PI;
@@ -110,10 +118,27 @@ impl DemCache {
     }
 }
 
+/// A ground the pipeline can sample: a Mapterhorn PMTiles archive, or an
+/// analytic [`Field`].
+///
+/// **One facade, two sources.** The alternative — an `Option<Field>` beside
+/// the `Option<PathBuf>` — would have reached every one of the fifteen places
+/// that open a DEM and every struct that carries one, and each would have had
+/// to decide what to do when both were set. Here the choice is made once, in
+/// [`Dem::open`], from the string the run was given.
+pub struct Dem {
+    source: Source,
+}
+
+enum Source {
+    Archive(Archive),
+    Field(Field),
+}
+
 /// A DEM sampler over an opened Mapterhorn PMTiles archive. Each handle owns
 /// its file descriptor (PMTiles reads seek); the decoded tiles live in the
 /// cache shared across all handles forked from the first.
-pub struct Dem {
+struct Archive {
     path: PathBuf,
     archive: Pmtiles,
     cache: Arc<DemCache>,
@@ -122,31 +147,42 @@ pub struct Dem {
 }
 
 impl Dem {
-    /// Opens a Terrarium PMTiles archive (WebP or PNG tile data).
+    /// Opens a Terrarium PMTiles archive, or builds the analytic ground a
+    /// terrain spec names (`flat`, `ramp`, `hill`, `step` — see [`field`]).
+    ///
+    /// A spec is recognised by its kind word, before the filesystem is
+    /// consulted, so a mistyped one fails here rather than reading as a
+    /// missing archive — which the callers that `.ok()` this would have turned
+    /// into a silent sea-level ground.
     pub fn open(path: &Path) -> io::Result<Dem> {
+        if let Some(spec) = path.to_str().filter(|s| Field::is_spec(s)) {
+            let field = Field::parse(spec)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+            return Ok(Dem { source: Source::Field(field) });
+        }
         Ok(Dem {
-            path: path.to_path_buf(),
-            archive: Pmtiles::open(path)?,
-            cache: Arc::new(DemCache { inner: Mutex::new(DemCacheInner::default()) }),
-            recent: Vec::new(),
+            source: Source::Archive(Archive {
+                path: path.to_path_buf(),
+                archive: Pmtiles::open(path)?,
+                cache: Arc::new(DemCache { inner: Mutex::new(DemCacheInner::default()) }),
+                recent: Vec::new(),
+            }),
         })
     }
 
-    /// Another handle onto the same archive — its own file descriptor,
-    /// sharing this handle's decoded-tile cache. One handle per worker.
+    /// Another handle onto the same ground — for an archive, its own file
+    /// descriptor sharing this handle's decoded-tile cache. One per worker.
     pub fn fork(&self) -> io::Result<Dem> {
-        Ok(Dem {
-            path: self.path.clone(),
-            archive: Pmtiles::open(&self.path)?,
-            cache: Arc::clone(&self.cache),
-            recent: Vec::new(),
-        })
-    }
-
-    /// Source zoom to sample for an output tile at zoom `out_zoom`: matched to
-    /// the output zoom but clamped to what the archive actually contains.
-    fn source_zoom(&self, out_zoom: u8) -> u8 {
-        out_zoom.clamp(self.archive.min_zoom, self.archive.max_zoom)
+        let source = match &self.source {
+            Source::Field(f) => Source::Field(*f),
+            Source::Archive(a) => Source::Archive(Archive {
+                path: a.path.clone(),
+                archive: Pmtiles::open(&a.path)?,
+                cache: Arc::clone(&a.cache),
+                recent: Vec::new(),
+            }),
+        };
+        Ok(Dem { source })
     }
 
     /// Elevation in metres above the ellipsoid at `(lon, lat)`, sampling the DEM
@@ -163,7 +199,26 @@ impl Dem {
     /// extract images only part of a big lake's shore, and a gap mistaken for
     /// sea level drags a low-percentile statistic to 0 — a 372 m cliff drawn
     /// along the waterline.
+    ///
+    /// A field has no gaps and no zoom: it answers everywhere, with the same
+    /// height at every zoom, which is one fewer thing that can move under a
+    /// measurement.
     pub fn imaged(&mut self, lon: f64, lat: f64, out_zoom: u8) -> Option<f64> {
+        match &mut self.source {
+            Source::Field(f) => Some(f.elevation(lon, lat)),
+            Source::Archive(a) => a.imaged(lon, lat, out_zoom),
+        }
+    }
+}
+
+impl Archive {
+    /// Source zoom to sample for an output tile at zoom `out_zoom`: matched to
+    /// the output zoom but clamped to what the archive actually contains.
+    fn source_zoom(&self, out_zoom: u8) -> u8 {
+        out_zoom.clamp(self.archive.min_zoom, self.archive.max_zoom)
+    }
+
+    fn imaged(&mut self, lon: f64, lat: f64, out_zoom: u8) -> Option<f64> {
         if !(-MERCATOR_LAT_LIMIT..=MERCATOR_LAT_LIMIT).contains(&lat) {
             return None;
         }

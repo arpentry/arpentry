@@ -834,6 +834,30 @@ diffing a zone against the committed `baseline-montreux-*.json`, which were
 taken over full inputs. `data/zones/<name>/zone.env` records which cut an
 archive came from.
 
+**The ground is now an input too.** `--terrain` takes an analytic surface as
+well as a DEM (`dem::Field`: `flat`, `ramp`, `hill`, `step`), and the scope
+block cannot see which one a run used any more than it can see the parquets.
+Two archives over one bbox, one on the real DEM and one on a plane, diff
+cleanly and mean nothing to each other. Used deliberately that is the point —
+`scripts/terrain-rungs.sh` holds the features fixed and moves only the ground,
+so a metric that is already off on a plane is off in the *construction* while
+one that only leaves zero on a hill is off in the ground, or in how the ground
+is read. The tiler prints the ground it was given on its `ground` line, and a
+resolved spec carries its own origin, so a rung is reproducible from that line
+alone. Two things to hold on to when reading such a table:
+
+- **The two halves have different populations.** The archive checks score the
+  tiles the bbox emitted; the model half merged in from `--verify-model` scores
+  the whole solved scene, which is every corridor the row groups admitted — at
+  the Montreux roundabout, 2 tiles against 8506 corridors. Its rung-to-rung
+  diff is honest, because the ground moved under all of it. Its rate is not
+  that site's.
+- **A synthetic rung is not a *smaller* version of the DEM.** A plane removes
+  the solve's whole reason for existing, and a 3 m cliff is a discontinuity no
+  real hillside offers. A metric can be worse on a plane than on real ground —
+  the roundabout's `solve.residual_rigidity` is — and that is a finding about
+  the construction, not a broken rung.
+
 ## 10. Adding a check
 
 A check is one file in `server/src/verify/checks/`, implementing `visit` and

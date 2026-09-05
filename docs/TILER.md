@@ -221,6 +221,17 @@ Terrain meshes for every tile: `flat_mesh` when no DEM is configured,
 `elevated_mesh` sampling a Terrarium PMTiles DEM (Mapterhorn) with per-vertex
 elevation and cross-tile-continuous normals.
 
+`dem` is one facade over two grounds. A `--terrain` value that names a kind
+word — `flat`, `ramp`, `hill`, `step` — builds an analytic `dem::Field` instead
+of opening an archive, and every one of the fifteen places that open a DEM gets
+it without learning which it holds. That is the isolation harness's terrain
+dial: hold the features fixed and move only the ground, and a defect present on
+a plane is in the construction while one that first appears on a hill is in the
+ground or in how the ground is read. A field also has no gaps, no zoom and no
+cache, so it answers the same height everywhere at every zoom — one fewer thing
+that can move under a measurement. `scripts/terrain-rungs.sh` runs one site
+across the whole dial and tabulates the scorecards.
+
 ### pipeline
 
 Top-level orchestration (`pipeline::run(&Config)`): the two parallel phases
@@ -241,7 +252,18 @@ arpentry_tiler [options]
   --max-zoom <z>       Maximum zoom level (default: 4)
   --tmp <dir>          Temp directory for sort runs (default: system temp)
   --mem <bytes>        Memory budget for external sort (default: 64 MiB)
-  --terrain <path>     Terrarium DEM PMTiles for per-tile elevation
+  --terrain <path|spec>
+                       Terrarium DEM PMTiles for per-tile elevation, or an
+                       analytic ground (the terrain dial):
+                         flat[?h=400]
+                         ramp?grade=0.03[&bearing=90][&h=][&at=lon,lat]
+                         hill?amp=60&radius=400[&h=][&at=]
+                         step?rise=3[&width=0][&bearing=90][&h=][&at=]
+                       `bearing` is compass degrees (0=N, 90=E) and names the
+                       direction the ground rises in; `at` is the origin of the
+                       local metric frame and defaults to the centre of --bbox,
+                       which the CLI writes back into the spec so the value the
+                       run records is self-contained
   --threads <n>        Worker threads (default: detected CPU count)
   --brotli <q>         Brotli quality 0-11 for tile blobs (default: 7)
   --dump <dir>         Write stage-artifact GeoJSON dumps (scene graph,

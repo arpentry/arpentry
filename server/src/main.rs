@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 
+use arpentry_server::dem::Field;
 use arpentry_server::layers;
 use arpentry_server::pipeline::{self, Config};
 use arpentry_server::project::Bounds;
@@ -23,8 +24,18 @@ OPTIONS:
   --max-zoom <z>       Maximum zoom level (default: 4)
   --tmp <dir>          Temp directory for external sort (default: system temp)
   --mem <bytes>        Memory budget for external sort (default: 64 MiB)
-  --terrain <path>     Terrarium DEM PMTiles (e.g. Mapterhorn planet.pmtiles);
-                       gives each tile real elevation instead of a flat mesh
+  --terrain <path|spec>
+                       Terrarium DEM PMTiles (e.g. Mapterhorn planet.pmtiles),
+                       giving each tile real elevation instead of a flat mesh;
+                       or an analytic ground, the isolation harness's terrain
+                       dial, held fixed while only the features vary:
+                         flat[?h=400]
+                         ramp?grade=0.03[&bearing=90][&h=][&at=lon,lat]
+                         hill?amp=60&radius=400[&h=][&at=]
+                         step?rise=3[&width=0][&bearing=90][&h=][&at=]
+                       `bearing` is compass degrees (0=N, 90=E) and names the
+                       direction the ground rises in; `at` is the origin, and
+                       defaults to the centre of --bbox
   --threads <n>        Worker threads (default: CPU count)
   --brotli <q>         Brotli quality 0-11 for tile blobs (default: 7)
   --dump <dir>         Write stage-artifact GeoJSON dumps (scene graph,
@@ -68,6 +79,18 @@ fn main() {
                 cfg.output.display()
             );
             report_timings(&stats);
+            // Which ground this scorecard was measured over. A terrain dial
+            // makes the archive's provenance a variable, and a number whose
+            // ground nobody can name is the thing this harness exists to stop
+            // producing.
+            eprintln!(
+                "ground  {:>8}  {}",
+                "",
+                match cfg.terrain.as_deref() {
+                    Some(t) => t.display().to_string(),
+                    None => "flat mesh (no --terrain)".to_string(),
+                }
+            );
         }
         Err(e) => {
             eprintln!("error: {e}");
@@ -240,6 +263,10 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
     if min_zoom > max_zoom {
         return Err(format!("--min-zoom ({min_zoom}) exceeds --max-zoom ({max_zoom})"));
     }
+    let terrain = match terrain {
+        Some(t) => Some(resolve_terrain(t, &bbox)?),
+        None => None,
+    };
     Ok(Config {
         output,
         inputs,
@@ -281,6 +308,30 @@ fn parse_input(s: &str) -> Result<(u8, PathBuf), String> {
     Ok((layer, PathBuf::from(path)))
 }
 
+/// Settles a `--terrain` value before the run sees it: a DEM path passes
+/// through untouched, and a terrain spec is parsed here — so a typo is a usage
+/// error rather than an archive that fails to open in fifteen places — and
+/// given the centre of `--bbox` as its origin when it named none.
+///
+/// **The resolved spec is what flows.** Every `Dem::open` downstream, and the
+/// `.model.json` the scorecard reads, then carry a self-contained string: the
+/// run is reproducible from what it recorded, not from the bbox it happened to
+/// be given alongside.
+fn resolve_terrain(terrain: PathBuf, bbox: &Bounds) -> Result<PathBuf, String> {
+    let Some(spec) = terrain.to_str().filter(|s| Field::is_spec(s)) else {
+        return Ok(terrain);
+    };
+    let field = Field::parse(spec).map_err(|e| format!("invalid --terrain: {e}"))?;
+    if field.has_origin() {
+        return Ok(terrain);
+    }
+    if *bbox == Bounds::WORLD {
+        return Err("--terrain needs `at=lon,lat`, or a --bbox to take its origin from".to_string());
+    }
+    let centre = field.at((bbox.west + bbox.east) / 2.0, (bbox.south + bbox.north) / 2.0);
+    Ok(PathBuf::from(centre.spec()))
+}
+
 fn parse_bbox(s: &str) -> Result<Bounds, String> {
     let parts: Vec<f64> = s
         .split(',')
@@ -291,4 +342,47 @@ fn parse_bbox(s: &str) -> Result<Bounds, String> {
         return Err(format!("--bbox needs 4 comma-separated values, got {}", parts.len()));
     }
     Ok(Bounds { west: parts[0], south: parts[1], east: parts[2], north: parts[3] })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bbox() -> Bounds {
+        Bounds { west: 6.9075, south: 46.4365, east: 6.9110, north: 46.4385 }
+    }
+
+    #[test]
+    fn a_dem_path_passes_through_untouched() {
+        let path = PathBuf::from("data/zones/montreux/terrain.pmtiles");
+        assert_eq!(resolve_terrain(path.clone(), &bbox()).unwrap(), path);
+    }
+
+    #[test]
+    fn a_spec_without_an_origin_takes_the_bbox_centre() {
+        let out = resolve_terrain(PathBuf::from("ramp?grade=0.03"), &bbox()).unwrap();
+        let spec = out.to_str().unwrap();
+        assert!(spec.contains("at=6.909250,46.437500"), "{spec}");
+        // …and what it wrote back is a spec the pipeline can read.
+        assert!(Field::parse(spec).is_ok(), "{spec}");
+    }
+
+    #[test]
+    fn an_explicit_origin_is_left_alone() {
+        let given = PathBuf::from("hill?amp=60&radius=400&at=6.9091,46.4374");
+        assert_eq!(resolve_terrain(given.clone(), &bbox()).unwrap(), given);
+    }
+
+    #[test]
+    fn a_mistyped_spec_fails_the_usage_check() {
+        // Not "a missing file" fifteen `Dem::open`s later, where every caller
+        // `.ok()`s it into a silent sea-level ground.
+        assert!(resolve_terrain(PathBuf::from("ramp?grade=steep"), &bbox()).is_err());
+        assert!(resolve_terrain(PathBuf::from("hill?amp=60"), &bbox()).is_err());
+    }
+
+    #[test]
+    fn a_spec_without_a_bbox_has_nowhere_to_stand() {
+        assert!(resolve_terrain(PathBuf::from("ramp?grade=0.03"), &Bounds::WORLD).is_err());
+    }
 }
