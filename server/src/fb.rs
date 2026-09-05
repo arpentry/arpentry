@@ -6,7 +6,8 @@
 //! Regenerate after a schema change (see `src/fb/README.md`):
 //! ```sh
 //! flatc --rust --filename-suffix _generated -o src/fb \
-//!     ../schemas/tile.fbs ../schemas/tileset.fbs ../schemas/style.fbs ../schemas/model.fbs
+//!     ../schemas/tile.fbs ../schemas/tileset.fbs ../schemas/style.fbs \
+//!     ../schemas/model.fbs ../schemas/stage.fbs
 //! ```
 //! Building does not require `flatc`; only regenerating does.
 //!
@@ -30,3 +31,10 @@ pub mod style;
 #[path = "fb/model_generated.rs"]
 #[allow(warnings, clippy::all)]
 pub mod model;
+
+/// Stage snapshots (`.arpw`): a pipeline stage's output, written so the stages
+/// after it can run without it. Unlike its neighbours here this one is never
+/// read by a client — it is the tiler talking to a later run of itself.
+#[path = "fb/stage_generated.rs"]
+#[allow(warnings, clippy::all)]
+pub mod stage;

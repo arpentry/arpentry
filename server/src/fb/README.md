@@ -6,7 +6,8 @@ not `flatc`. Regenerate after a schema change, from the crate root:
 
 ```sh
 flatc --rust --filename-suffix _generated -o src/fb \
-    ../schemas/tile.fbs ../schemas/tileset.fbs ../schemas/style.fbs ../schemas/model.fbs
+    ../schemas/tile.fbs ../schemas/tileset.fbs ../schemas/style.fbs \
+    ../schemas/model.fbs ../schemas/stage.fbs
 ```
 
 Generated with flatc 24.3.25 (keep the `flatbuffers` dependency in `Cargo.toml`
@@ -36,6 +37,11 @@ it) and add to each `impl flatbuffers::Push`:
 ```
 
 Currently patched: `Bounds` (8), `ElevationRange` (8) in `tileset_generated.rs`;
-`Part` (4), `Property` (4) in `tile_generated.rs`. `Color`/`RGBA` are alignment 1
+`Part` (4), `Property` (4) in `tile_generated.rs`; `Coord`, `Span`,
+`JunctionMember`, `Connector`, `Attachment`, `Census`, `InputStamp` (8 each) in
+`stage_generated.rs` — the last of those is read only by the Rust tiler, so the
+verifier that motivates the patch never sees it, but a generated file that
+follows a different rule from its neighbours is the kind of exception nobody
+remembers. `Color`/`RGBA` are alignment 1
 and need no change. (Upgrading flatc to a version that emits the override removes
 the need for this patch.)

@@ -1,0 +1,272 @@
+// Stage artifacts: a pipeline stage's output, written to disk and read back.
+//
+// The pipeline is assemble -> solve -> ground -> synth -> emit, and until now
+// only the last of those produced anything durable. `--dump` writes GeoJSON,
+// but one way: for a human to open in QGIS, never to be read back and never
+// compared to anything. So there was no way to run a stage without running
+// every stage before it, and no way to ask which stage a scorecard movement
+// came from.
+//
+// This is that boundary made real. A snapshot holds whichever artifacts the
+// run chose to keep; each is optional, so the scene can land before the solved
+// model and the ground without a format break.
+//
+// **Every table here is derived data, never a source.** A snapshot is a cache
+// of work the pipeline already did — it is not an input format, and nothing
+// should ever hand-author one. `Provenance` is what makes that safe: it
+// records what the snapshot was built from, so a stale one is a diff rather
+// than a silently wrong run.
+//
+// Generated with flatc 24.3.25; see src/fb/README.md, including the struct
+// alignment patch that generation needs.
+
+namespace arpentry.stage;
+
+// ── leaves ──────────────────────────────────────────────────────────────────
+
+// A WGS84 position in degrees. A struct, so a polyline is a flat vector of
+// them rather than a vector of offsets.
+struct Coord {
+  lon: double;
+  lat: double;
+}
+
+// `scene::SpanKind`.
+enum SpanKind : byte { Grade = 0, Bridge = 1, Tunnel = 2 }
+
+// `priors::Kind`, flattened: the class enums are dense small integers, so the
+// pair (family, class) round-trips without a union per family.
+enum KindFamily : byte { Road = 0, Rail = 1, Water = 2 }
+
+struct Kind {
+  family: KindFamily;
+  class: ubyte;
+}
+
+// `value::Value`, as a tag plus the one field the tag selects. A union would
+// cost an offset per property, and properties are the densest thing here.
+enum ValueKind : byte { String = 0, Int = 1, Double = 2, Bool = 3 }
+
+table Property {
+  key: string (required);
+  kind: ValueKind;
+  s: string;   // ValueKind.String
+  i: long;     // ValueKind.Int and Bool (0/1)
+  d: double;   // ValueKind.Double
+}
+
+// ── scene (stage 1: assemble) ───────────────────────────────────────────────
+
+struct Span {
+  arc0: double;
+  arc1: double;
+  level: long;
+  kind: SpanKind;
+}
+
+table SegmentRef {
+  source: ulong;
+  node0: uint;
+  node1: uint;
+  properties: [Property];
+}
+
+// `scene::Corridor`. `width_m` is optional in Rust and absent here as NaN:
+// a scalar with a default cannot express "absent", and a width of NaN is
+// unrepresentable in the source data, so it cannot collide with a real one.
+table Corridor {
+  id: uint;
+  nodes: [Coord];
+  arc: [double];
+  cos_lat: double;
+  kind: Kind;
+  class_key: string (required);
+  link: bool;
+  width_m: double = nan;
+  spans: [Span];
+  segments: [SegmentRef];
+  // (connector hash, arc) pairs, flattened into two parallel vectors so the
+  // pair costs no table.
+  connector_ids: [ulong];
+  connector_arcs: [double];
+}
+
+struct JunctionMember {
+  corridor: uint;
+  arc: double;
+}
+
+table Junction {
+  point: Coord;
+  connector: ulong;
+  members: [JunctionMember];
+}
+
+table Ring {
+  points: [Coord];
+}
+
+table WaterBody {
+  exterior: [Coord];
+  holes: [Ring];
+  bbox_west: double;
+  bbox_south: double;
+  bbox_east: double;
+  bbox_north: double;
+}
+
+table Polyline {
+  points: [Coord];
+}
+
+// A half-open stretch along a line, in metres from its first vertex.
+struct Range {
+  a: double;
+  b: double;
+}
+
+// `assemble::columns::Connector`.
+struct Connector {
+  source: ulong;
+  arc: double;
+}
+
+// `assemble::walks::WalkLine`.
+table WalkLine {
+  source: ulong;
+  line: [Coord];
+  kind: Kind;
+  tagged: bool;
+  crosswalk: bool;
+  connectors: [Connector];
+  // Stretches of the way's own length that are elevated, and that run inside
+  // a building. Both are read at draw time, so a snapshot that dropped them
+  // would put a footbridge on the ground and a corridor on the pavement.
+  spans: [Range];
+  indoor: [Range];
+}
+
+// `assemble::walks::Evidence`: what made this a sidewalk. The tag and the
+// geometry disagree often enough that which one spoke is worth keeping.
+enum Evidence : byte { Tag = 0, Alongside = 1, Both = 2 }
+
+// `assemble::walks::Attachment`.
+struct Attachment {
+  walk: ulong;
+  line: uint;
+  walk0: double;
+  walk1: double;
+  kind: Kind;
+  host: uint;
+  side: ubyte;
+  arc0: double;
+  arc1: double;
+  offset_m: double;
+  spread_m: double;
+  evidence: Evidence;
+}
+
+// `assemble::walks::Census` — counters, carried so a reloaded scene reports
+// the same sidewalk census the run that built it did.
+struct Census {
+  lines: uint;
+  line_m: double;
+  tagged_lines: uint;
+  tagged_m: double;
+  covered_m: double;
+  tagged_covered_m: double;
+  alongside_m: double;
+  attached_lines: uint;
+  attached_m: double;
+  host_arc_m: double;
+  tag_only: uint;
+  alongside_only: uint;
+  both: uint;
+  tagged_unhosted: uint;
+  joined_only: uint;
+  dropped_short: uint;
+  dropped_short_m: double;
+  broke_lost: uint;
+  broke_crossed: uint;
+  broke_host: uint;
+  broke_side: uint;
+  broke_turned: uint;
+}
+
+// `assemble::walks::Walks`.
+//
+// The two host/source indexes are **not** stored: they are a function of
+// `attachments`, and a stored index that disagreed with the data it indexes is
+// a defect no check would ever see. They are rebuilt on read.
+table Walks {
+  lines: [WalkLine];
+  // Half-open range into `attachments` for each line, as parallel vectors.
+  line_range_start: [uint];
+  line_range_end: [uint];
+  attachments: [Attachment];
+  census: Census;
+}
+
+table Scene {
+  corridors: [Corridor];
+  junctions: [Junction];
+  water: [WaterBody];
+  witnesses: [Polyline];
+  flows: [Polyline];
+  walks: Walks;
+}
+
+// ── provenance ──────────────────────────────────────────────────────────────
+
+// One input the snapshot was built from.
+struct InputStamp {
+  // Layer index (`layers::*`).
+  layer: ubyte;
+  // Size in bytes and modification time (seconds since the epoch) of the file
+  // as it was read. Cheaper than hashing a 954 MB parquet, and both move for
+  // every change that matters. Named `bytes` because `size` collides with the
+  // `Push` trait's own `size()` and flatc would emit `size_()`.
+  bytes: ulong;
+  mtime: long;
+}
+
+// What this snapshot was built from.
+//
+// **The stale-snapshot guard.** Reusing a cached stage is only safe while the
+// thing that produced it has not moved, and this project has been bitten by
+// exactly that before: a baseline re-cut against a binary that had not been
+// rebuilt. So the fingerprint covers the inputs *and* the binary — `built_by`
+// is the tiler's own mtime — and reading a snapshot whose fingerprint does not
+// match the current run is a loud refusal, not a silent reuse.
+table Provenance {
+  // Bounds the snapshot covers. A snapshot built for a smaller bbox is not a
+  // valid cache for a larger one, and the difference is invisible in the data.
+  bbox_west: double;
+  bbox_south: double;
+  bbox_east: double;
+  bbox_north: double;
+  // The `--terrain` value verbatim, DEM path or resolved field spec. The
+  // ground a stage was solved against is part of what it is.
+  terrain: string;
+  inputs: [InputStamp];
+  // Modification time of the tiler binary that wrote this, in seconds.
+  built_by: long;
+  // Wall-clock seconds the stage took, so a reload can report what it saved.
+  built_in_s: double;
+  // ISO-8601, for a human reading the file.
+  written_at: string;
+}
+
+// ── the snapshot ────────────────────────────────────────────────────────────
+
+table Snapshot {
+  provenance: Provenance (required);
+  // Whichever stages this snapshot kept. Absent means "not captured", which is
+  // different from "captured and empty" — an empty scene is a legitimate
+  // result for an extract with no transportation input.
+  scene: Scene;
+}
+
+root_type Snapshot;
+file_identifier "arpw";
+file_extension "arpw";
