@@ -205,6 +205,38 @@ draw it rather than what it holds. `--bundle` writes those two beside the
 archive as `style.arps` and `models.arpm`; without them the client falls back
 to its built-in defaults and says so.
 
+### Live reload
+
+An interactive `--archive` viewer watches the file and picks up a re-tile with
+no restart: re-run the tiler over the same path and the scene changes under the
+camera, which is the loop for judging a change by eye rather than by scorecard.
+
+```
+[SOURCE] archive reloaded: preview.arpa (2 tiles)
+[TILE] invalidated: 71 tiles dropped
+[TILE] 16/34025/49675 loaded: verts=20052 …      ← the new geometry
+```
+
+Two things make it safe, and both are constraints rather than features:
+
+- **The swap waits for the fetch workers.** The archive is mmapped and the
+  workers read it without a lock — that is what makes archive reads cheap —
+  so unmapping it under one is a use-after-free, not a stale read. The reload
+  happens only when `arpt_tile_manager_active_fetches() == 0`, and
+  `arpt_source_archive_changed()` (a stat, four times a second) is kept
+  separate from `arpt_source_reload_archive()` precisely so that asking is
+  always safe and acting is gated.
+- **A failed reopen keeps the old archive.** The new one is opened before the
+  old is released, so a tiler halfway through a run leaves the viewer drawing
+  what it was drawing rather than blanking it. The tiler's write-to-temp-then-
+  rename is the other half: the old mapping stays valid for whoever still
+  holds it.
+
+Invalidation clears the tile cache and lets the hashmap run its own element-free
+callback. Freeing the entries first and clearing afterwards double-frees every
+GPU handle — a crash at the reload rather than a leak, and the reason
+`arpt_tile_manager_invalidate` is three lines instead of a loop.
+
 **A served render and an archive render are not always the same image.** When
 the archive has no tile at an address, the server synthesises a flat sea-level
 one so the interactive viewer has a terrain layer everywhere; the archive path

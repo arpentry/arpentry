@@ -29,6 +29,32 @@ bool arpt_source_open_archive(const char *path);
 
 void arpt_source_close(void);
 
+/**
+ * Whether the open archive's file has changed on disk since it was opened.
+ *
+ * A stat, no side effect, cheap enough to ask every frame. False when no
+ * archive is open, so a served viewer never pays for it.
+ *
+ * Split from [`arpt_source_reload_archive`] deliberately: asking is always
+ * safe, acting is not.
+ */
+bool arpt_source_archive_changed(void);
+
+/**
+ * Reopen the archive, picking up whatever the tiler last wrote.
+ *
+ * **The caller must guarantee no fetch is in flight.** Workers read the mmap
+ * without a lock — that is the whole reason the archive is documented as
+ * immutable — so unmapping it under a worker is a use-after-free, not a stale
+ * read. `arpt_tile_manager_active_fetches() == 0` is the condition, and the
+ * tiler's write-to-temp-then-rename is what makes the old mapping stay valid
+ * for as long as anyone still holds it.
+ *
+ * Returns false and keeps the current archive if the new file cannot be read:
+ * a tiler halfway through a run should not blank the viewer.
+ */
+bool arpt_source_reload_archive(void);
+
 /** True once an archive is open — i.e. no server is involved. */
 bool arpt_source_is_archive(void);
 

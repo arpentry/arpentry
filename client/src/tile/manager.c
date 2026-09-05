@@ -681,6 +681,24 @@ void arpt_tile_manager_free(arpt_tile_manager *tm) {
     free(tm);
 }
 
+void arpt_tile_manager_invalidate(arpt_tile_manager *tm) {
+    if (!tm || !tm->cache) return;
+
+    /* The cache owns `tile_entry_free` as its element-free callback
+       (`hashmap_new` above), and `hashmap_clear` runs it on every element. So
+       clearing is the whole job: freeing the entries here first and clearing
+       after double-frees every GPU handle, which is a crash at the reload
+       rather than a leak. */
+    size_t dropped = hashmap_count(tm->cache);
+    hashmap_clear(tm->cache, false);
+    fprintf(stderr, "[TILE] invalidated: %zu tiles dropped\n", dropped);
+
+    /* The visible list indexes tiles that no longer exist; recomputed by the
+       next update, but never left pointing at a cleared cache in between. */
+    tm->visible_count = 0;
+    tm->needs_redraw = true;
+}
+
 /* Start a fetch for a tile key, inserting a LOADING entry into the cache.
    prev_retries is the retry count carried from a previous failed attempt (0 for
    new). */

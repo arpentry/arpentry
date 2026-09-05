@@ -113,6 +113,21 @@ void arpt_tile_manager_free(arpt_tile_manager *tm);
  */
 void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam);
 
+/**
+ * Drop every cached tile, so the next update re-fetches what is visible.
+ *
+ * For a live reload: the archive under the viewer has been rewritten, and
+ * every tile the manager holds describes the world as it was. Frees the GPU
+ * buffers and the terrain arrays with them — a reload that leaked one per tile
+ * would be a slow crash rather than a fast one.
+ *
+ * Call only with no fetch in flight. An in-flight fetch is about to insert a
+ * tile decoded from the *old* archive, and clearing the cache does not recall
+ * it; the caller that quiesces the workers before reloading the source has
+ * already established the condition this needs.
+ */
+void arpt_tile_manager_invalidate(arpt_tile_manager *tm);
+
 /** Returns the number of in-flight tile fetches. */
 int arpt_tile_manager_active_fetches(const arpt_tile_manager *tm);
 

@@ -8,6 +8,8 @@
 
 #ifndef __EMSCRIPTEN__
 
+#include <sys/stat.h>
+
 #include "archive.h"
 #include "http.h"
 
@@ -17,6 +19,26 @@
 static arpt_archive *g_archive;
 /* Directory holding the archive, where the style and model sidecars live. */
 static char g_archive_dir[512];
+/* The archive's own path, and the size and mtime it had when opened — what
+   `arpt_source_archive_changed` compares against so a re-tile is noticed. */
+static char g_archive_path[512];
+static long long g_archive_size;
+static long long g_archive_mtime;
+
+/* Stat the archive, or leave the outputs at zero when it cannot be read. A
+   file being rewritten is momentarily absent under some editors and tools;
+   reporting zero makes that "changed", and the reload that follows fails
+   safely rather than acting on half a file. */
+static void archive_stamp(const char *path, long long *size, long long *mtime) {
+    struct stat st;
+    if (path && *path && stat(path, &st) == 0) {
+        *size = (long long)st.st_size;
+        *mtime = (long long)st.st_mtime;
+    } else {
+        *size = 0;
+        *mtime = 0;
+    }
+}
 
 bool arpt_source_open_archive(const char *path) {
     if (!path || !*path) return true;
@@ -34,8 +56,38 @@ bool arpt_source_open_archive(const char *path) {
     memcpy(g_archive_dir, path, dir_len);
     g_archive_dir[dir_len] = '\0';
 
+    size_t path_len = strlen(path);
+    if (path_len >= sizeof(g_archive_path)) path_len = sizeof(g_archive_path) - 1;
+    memcpy(g_archive_path, path, path_len);
+    g_archive_path[path_len] = '\0';
+    archive_stamp(g_archive_path, &g_archive_size, &g_archive_mtime);
+
     printf("[SOURCE] archive %s (%llu tiles)\n", path,
            (unsigned long long)arpt_archive_tile_count(a));
+    return true;
+}
+
+bool arpt_source_archive_changed(void) {
+    if (!g_archive || !g_archive_path[0]) return false;
+    long long size = 0, mtime = 0;
+    archive_stamp(g_archive_path, &size, &mtime);
+    return size != g_archive_size || mtime != g_archive_mtime;
+}
+
+bool arpt_source_reload_archive(void) {
+    if (!g_archive || !g_archive_path[0]) return false;
+
+    /* Open the new one *before* releasing the old: a failed reopen must leave
+       the viewer drawing what it was drawing, not nothing. */
+    arpt_archive *fresh = arpt_archive_open(g_archive_path);
+    if (!fresh) return false;
+
+    arpt_archive_free(g_archive);
+    g_archive = fresh;
+    archive_stamp(g_archive_path, &g_archive_size, &g_archive_mtime);
+
+    printf("[SOURCE] archive reloaded: %s (%llu tiles)\n", g_archive_path,
+           (unsigned long long)arpt_archive_tile_count(g_archive));
     return true;
 }
 
@@ -43,6 +95,9 @@ void arpt_source_close(void) {
     if (!g_archive) return;
     arpt_archive_free(g_archive);
     g_archive = NULL;
+    g_archive_path[0] = '\0';
+    g_archive_size = 0;
+    g_archive_mtime = 0;
 }
 
 bool arpt_source_is_archive(void) { return g_archive != NULL; }
@@ -141,6 +196,8 @@ bool arpt_source_get(const char *base, const char *name, uint8_t **body,
 bool arpt_source_open_archive(const char *path) { return path == NULL; }
 void arpt_source_close(void) {}
 bool arpt_source_is_archive(void) { return false; }
+bool arpt_source_archive_changed(void) { return false; }
+bool arpt_source_reload_archive(void) { return false; }
 
 bool arpt_source_get(const char *base, const char *name, uint8_t **body,
                      size_t *size) {

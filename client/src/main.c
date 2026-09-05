@@ -178,6 +178,8 @@ typedef struct {
     arpt_ui *ui;
     arpt_info *info;
     double last_time;
+    /* When the archive was last stat'd for a live reload (see the loop). */
+    double last_archive_check;
     double smoothed_ground_elev;
     bool needs_redraw;
     char base_url[256];
@@ -352,6 +354,22 @@ static void render_frame(void) {
     double dt = now - app.last_time;
     app.last_time = now;
     if (app.control) arpt_control_update(app.control, dt);
+
+    /* Live reload: the archive under the viewer was re-tiled.
+       Three conditions, and the third is the load-bearing one — fetch workers
+       read the archive's mmap without a lock, so the swap may only happen when
+       none of them is inside a read. Checking at most four times a second
+       keeps a stat off the hot path without making the reload feel delayed. */
+    if (arpt_source_is_archive() && now - app.last_archive_check > 0.25) {
+        app.last_archive_check = now;
+        if (arpt_source_archive_changed() && app.tile_manager &&
+            arpt_tile_manager_active_fetches(app.tile_manager) == 0) {
+            if (arpt_source_reload_archive()) {
+                arpt_tile_manager_invalidate(app.tile_manager);
+                app.needs_redraw = true;
+            }
+        }
+    }
 
     /* Drain tile fetch callbacks (lightweight even when idle) */
     if (app.tile_manager)
