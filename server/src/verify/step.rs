@@ -15,6 +15,20 @@
 //! terrain. Where the dial and the semantics agree, the assignment below cites
 //! the measurement; where they disagree, the semantics win and the note says so.
 //!
+//! **A step is where the defect is, not what the metric can run without.**
+//! Measured, and it is not what you would guess: tiled with `ARPT_NO_SOLVE=1`
+//! — every corridor stripped of its profile — `street.kerb_gap` and
+//! `street.walk_width_step` report **zero samples**, not zero violations. Both
+//! are `Plan` here, and both are terrain-independent (identical violations on
+//! a plane, a ramp, a cliff and the real DEM). They still cannot be *measured*
+//! without the solve, because whether a pavement is drawn at all depends on
+//! its host having a height. `slope.walk_crossfall`'s population halves;
+//! `order.walk_on_asphalt` goes from 229 violations to 6935.
+//!
+//! So **terrain-independent is not solve-independent**, and `Plan` is a claim
+//! about where to go and read, never a claim that the stage is separable. The
+//! second would be a much stronger statement and the evidence is against it.
+//!
 //! **One table, not a field on every metric.** The alternative was a `step` on
 //! each of the 77 `Metric` literals, spread across 25 files, where no two
 //! assignments could ever be compared and the taxonomy would exist only as an
@@ -34,9 +48,10 @@ use std::fmt;
 pub enum Step {
     /// **Plan** — what is drawn where, seen from above. Corridor assembly,
     /// carriageway widths and the union, kerb lines, pavement attachment,
-    /// crossing registration, paint registration in plan. Nothing here is a
-    /// height question, and the terrain dial confirms it: these metrics read
-    /// the same on a plane and on a mountain.
+    /// crossing registration, paint registration in plan. The *defect* is a
+    /// plan-space one, and the terrain dial confirms it: these metrics read the
+    /// same on a plane and on a mountain. That is not the same as running
+    /// without heights — see the module note on `ARPT_NO_SOLVE`.
     Plan,
     /// **Height** — the vertical solve. Profiles, junction agreement,
     /// clearance and vertical order, the relaxation residuals, and which spans

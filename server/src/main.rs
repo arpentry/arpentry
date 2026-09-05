@@ -45,6 +45,11 @@ OPTIONS:
                        measure how the scene was computed rather than what was
                        drawn. Re-solves the scene, so it is opt-in. Merge it
                        into a scorecard with `arpentry_verify --model <p>`.
+                       (ARPT_NO_SOLVE=1 drops every profile after the solve:
+                       the plan step with no heights behind it. It runs, but
+                       it is not a smaller world — the kerb checks lose their
+                       population entirely, because a pavement is only drawn
+                       where its host has a height.)
   --stage-out <path>   Write the stages this run computed to a snapshot, so a
                        later run can skip them
   --stage-in <path>    Reuse the stages in a snapshot instead of computing

@@ -501,8 +501,26 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // (`solve::reconcile_short_spans`) is settled before anything downstream
     // reads the corridor spans.
     let t_solve = Instant::now();
-    let solved =
-        Arc::new(solve::run(&mut scene, cfg.terrain.as_deref(), cfg.max_zoom, threads)?);
+    let mut solved = solve::run(&mut scene, cfg.terrain.as_deref(), cfg.max_zoom, threads)?;
+    // **The features dial's other half (`ARPT_NO_SOLVE=1`): the plan step with
+    // no heights behind it.** The terrain dial answers "does this metric read
+    // the ground"; this answers "does it read the *solve*". A metric that is
+    // unchanged with every profile deleted is plan-space in the strongest
+    // sense available — not merely insensitive to the ground, but computed
+    // without ever asking how high anything is.
+    //
+    // The scene keeps whatever `solve::run` settled on it (short spans are
+    // reconciled before this), so only the heights go. Everything downstream
+    // already handles a corridor without a profile — invariant 6 says a
+    // generator degrades to something plain rather than failing — so this is
+    // the pipeline's own fallback path taken everywhere at once, not a new one.
+    if std::env::var_os("ARPT_NO_SOLVE").is_some() {
+        let z_ref = solved.z_ref;
+        let n = scene.corridors.len();
+        solved = solve::SolvedModel::from_profiles((0..n).map(|_| None).collect(), z_ref);
+        eprintln!("solve             ARPT_NO_SOLVE: {n} corridors left without a profile");
+    }
+    let solved = Arc::new(solved);
     let solve_took = t_solve.elapsed();
     // **The seniors, then the band, then the band's own ground.** A walkway is a
     // draped feature, and §4.2 defines one as sampling the *finished* ground —
