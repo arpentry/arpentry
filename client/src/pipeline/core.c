@@ -938,12 +938,14 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
     static int xray = -1;
     if (xray < 0)
         xray = getenv("ARPT_XRAY") ? 1 : 0;
-    wgpuRenderPassEncoderSetPipeline(
-        r->pass, xray ? r->terrain_xray_pipeline
-                      : tile->discard_mask ? r->terrain_masked_pipeline
-                                           : r->pipeline);
-    arpt__mesh_draw_terrain(r, tile);
-    arpt__mesh_draw_skirts(r, tile);
+    if (!r->hide_terrain) {
+        wgpuRenderPassEncoderSetPipeline(
+            r->pass, xray ? r->terrain_xray_pipeline
+                          : tile->discard_mask ? r->terrain_masked_pipeline
+                                               : r->pipeline);
+        arpt__mesh_draw_terrain(r, tile);
+        arpt__mesh_draw_skirts(r, tile);
+    }
     /* Back to the opaque pipeline for everything sitting on the surface. */
     restore_terrain_pipeline(r);
 
@@ -966,6 +968,10 @@ void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
     arpt__instance_draw(r, tile);
     arpt__label_collect(r, tile);
     arpt__line_label_collect(r, tile);
+}
+
+void arpt_renderer_set_hide_terrain(arpt_renderer *r, bool hide) {
+    if (r) r->hide_terrain = hide;
 }
 
 void arpt_renderer_set_overlay(arpt_renderer *r, arpt_overlay_fn fn,

@@ -307,6 +307,8 @@ arpentry_tiler [options]
                        hole (there is no constrained mesh to cut)
   --no-hole            Draw ground under the asphalt again, so an A/B re-tile
                        of the hole is a flag rather than a patch
+  --plan-lines         Also draw the plan-space network the surfaces were
+                       built from: the network view (below)
 ```
 
 Inputs are GeoParquet files keyed by layer index (see `layers`):
@@ -325,6 +327,53 @@ Example:
   --input 4:data/naturalearth/land.parquet \
   --input 3:data/naturalearth/lake.parquet
 ```
+
+### The network view
+
+At the surface zooms a tile carries the *result* of the network synthesis and
+nothing else: one unioned mesh per surface family, with the cartographic stroke
+of every way that fed it deleted, because a line painted over its own asphalt is
+a second coat of the same paint. That is right for a map and useless for anyone
+asking why the asphalt is *there*. The two things that question needs — the
+centreline the synthesis consumed and the edge the model says it paved — are
+exactly the two the tile does not carry, so a disagreement between plan and
+surface is invisible in the only place it could be seen.
+
+`--plan-lines` puts both back, as their own classes in the transportation
+layer, over the surface they produced (`server/src/synth/plan.rs`):
+
+| Class | What it is |
+|-------|-----------|
+| `plan_axis_*` | The source segment's centreline, at its solved surface height — where the surface is, according to the model |
+| `plan_edge_*` | The same segment offset to `sect_a`/`sect_b`, one line per side — where the model says its own surface *ends* |
+
+`*` is the surface family: `road`, `rail`, `walk`, `path`. The union buffers
+and dissolves these polylines, so a gap between `plan_edge_*` and the drawn rim
+beside it is the union's doing and nothing else's. It draws the `SourceSeg`
+population — the one input the drawn surface actually has — rather than the
+Overture geometry: a sidewalk has no source line at all (it is derived from the
+street it rides), and a corridor's line is several joined segments. What a
+reader compares against the mesh is what the mesher was given.
+
+Pair it with the client's `--hide-terrain` and `style-network.json`; the ground
+is the thing every other surface is drawn *against*, so hiding it is what makes
+a band left hanging in the air over the hole cut for it legible as such
+(`docs/VIEWER.md` "The network view").
+
+```bash
+arpentry_tiler --output /tmp/net.arpa --plan-lines ...        # tile it
+arpentry_server /tmp/net.arpa style-network.json --bundle     # style it
+arpentry_client --archive /tmp/net.arpa --hide-terrain \
+    --lon 6.929 --lat 46.420 --alt 560 --tilt 50 \
+    --headless --screenshot /tmp/net.png
+```
+
+**An archive carrying the plan lines is a debugging archive, not a map**, and
+the run summary says so on its `plan` line. It is safe to score — `verify::scene`
+drops every `plan_*` class on the way in, so a `--plan-lines` archive produces
+the same scorecard as the same cut without them, and no check can be fooled into
+measuring the machinery. It is not safe to *serve*: the transportation layer
+carries three features per source segment that no map style draws.
 
 ### The run summary
 

@@ -238,6 +238,8 @@ struct arpt_renderer {
     float pixel_ratio;
     float background[4];
     float building_color[4];
+    /* Network view: draw every tile without its terrain mesh and skirts. */
+    bool hide_terrain;
 
     WGPURenderPipeline pipeline;
     WGPURenderPipeline terrain_xray_pipeline;

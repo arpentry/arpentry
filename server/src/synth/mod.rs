@@ -21,6 +21,7 @@ pub mod height;
 pub mod markings;
 pub mod pave_mesh;
 pub mod pavement;
+pub mod plan;
 pub mod poly;
 pub mod region;
 pub mod sheets;

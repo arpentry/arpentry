@@ -1,0 +1,568 @@
+{
+  "version": 1,
+  "name": "Network view",
+  "background": [
+    18,
+    20,
+    24,
+    255
+  ],
+  "layers": [
+    {
+      "source_layer": "terrain",
+      "type": "terrain",
+      "paint": []
+    },
+    {
+      "source_layer": "transportation",
+      "type": "line",
+      "paint": [
+        {
+          "class": "motorway",
+          "color": [
+            255,
+            124,
+            64,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "trunk",
+          "color": [
+            255,
+            124,
+            64,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "primary",
+          "color": [
+            255,
+            124,
+            64,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "secondary",
+          "color": [
+            255,
+            124,
+            64,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "tertiary",
+          "color": [
+            255,
+            124,
+            64,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "unclassified",
+          "color": [
+            255,
+            124,
+            64,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "residential",
+          "color": [
+            255,
+            124,
+            64,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "living_street",
+          "color": [
+            255,
+            124,
+            64,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "service",
+          "color": [
+            255,
+            124,
+            64,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "pedestrian",
+          "color": [
+            255,
+            124,
+            64,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "track",
+          "color": [
+            255,
+            124,
+            64,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "standard_gauge",
+          "color": [
+            255,
+            124,
+            64,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "rail_line",
+          "color": [
+            255,
+            124,
+            64,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "road_surface",
+          "color": [
+            88,
+            96,
+            112,
+            255
+          ],
+          "width": 0,
+          "min_level": 13
+        },
+        {
+          "class": "road_rim",
+          "color": [
+            140,
+            152,
+            176,
+            255
+          ],
+          "width": 0,
+          "min_level": 13
+        },
+        {
+          "class": "road_apron",
+          "color": [
+            224,
+            84,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 13
+        },
+        {
+          "class": "rail_surface",
+          "color": [
+            96,
+            80,
+            104,
+            255
+          ],
+          "width": 0,
+          "min_level": 13
+        },
+        {
+          "class": "rail_rim",
+          "color": [
+            150,
+            126,
+            162,
+            255
+          ],
+          "width": 0,
+          "min_level": 13
+        },
+        {
+          "class": "rail_apron",
+          "color": [
+            224,
+            84,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 13
+        },
+        {
+          "class": "walk_surface",
+          "color": [
+            140,
+            124,
+            96,
+            255
+          ],
+          "width": 0,
+          "min_level": 16
+        },
+        {
+          "class": "walk_rim",
+          "color": [
+            196,
+            176,
+            138,
+            255
+          ],
+          "width": 0,
+          "min_level": 16
+        },
+        {
+          "class": "walk_apron",
+          "color": [
+            224,
+            84,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 16
+        },
+        {
+          "class": "path_surface",
+          "color": [
+            104,
+            116,
+            80,
+            255
+          ],
+          "width": 0,
+          "min_level": 16
+        },
+        {
+          "class": "path_rim",
+          "color": [
+            152,
+            168,
+            116,
+            255
+          ],
+          "width": 0,
+          "min_level": 16
+        },
+        {
+          "class": "path_apron",
+          "color": [
+            224,
+            84,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 16
+        },
+        {
+          "class": "marking",
+          "color": [
+            238,
+            238,
+            232,
+            255
+          ],
+          "width": 0,
+          "min_level": 15
+        },
+        {
+          "class": "crossing",
+          "color": [
+            238,
+            238,
+            232,
+            255
+          ],
+          "width": 0,
+          "min_level": 15
+        },
+        {
+          "class": "plan_edge_road",
+          "color": [
+            255,
+            86,
+            138,
+            255
+          ],
+          "width": 12,
+          "min_level": 13
+        },
+        {
+          "class": "plan_edge_rail",
+          "color": [
+            178,
+            104,
+            232,
+            255
+          ],
+          "width": 12,
+          "min_level": 13
+        },
+        {
+          "class": "plan_edge_walk",
+          "color": [
+            64,
+            142,
+            255,
+            255
+          ],
+          "width": 12,
+          "min_level": 13
+        },
+        {
+          "class": "plan_edge_path",
+          "color": [
+            56,
+            196,
+            104,
+            255
+          ],
+          "width": 12,
+          "min_level": 13
+        },
+        {
+          "class": "plan_axis_road",
+          "color": [
+            255,
+            206,
+            64,
+            255
+          ],
+          "width": 16,
+          "min_level": 13
+        },
+        {
+          "class": "plan_axis_rail",
+          "color": [
+            240,
+            150,
+            255,
+            255
+          ],
+          "width": 16,
+          "min_level": 13
+        },
+        {
+          "class": "plan_axis_walk",
+          "color": [
+            110,
+            224,
+            255,
+            255
+          ],
+          "width": 16,
+          "min_level": 13
+        },
+        {
+          "class": "plan_axis_path",
+          "color": [
+            160,
+            255,
+            120,
+            255
+          ],
+          "width": 16,
+          "min_level": 13
+        }
+      ]
+    },
+    {
+      "source_layer": "building",
+      "type": "building",
+      "paint": [
+        {
+          "class": "building",
+          "color": [
+            34,
+            37,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 14
+        },
+        {
+          "class": "residential",
+          "color": [
+            34,
+            37,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 14
+        },
+        {
+          "class": "outbuilding",
+          "color": [
+            34,
+            37,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 14
+        },
+        {
+          "class": "agricultural",
+          "color": [
+            34,
+            37,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 14
+        },
+        {
+          "class": "commercial",
+          "color": [
+            34,
+            37,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 14
+        },
+        {
+          "class": "industrial",
+          "color": [
+            34,
+            37,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 14
+        },
+        {
+          "class": "education",
+          "color": [
+            34,
+            37,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 14
+        },
+        {
+          "class": "religious",
+          "color": [
+            34,
+            37,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 14
+        },
+        {
+          "class": "service",
+          "color": [
+            34,
+            37,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 14
+        },
+        {
+          "class": "civic",
+          "color": [
+            34,
+            37,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 14
+        },
+        {
+          "class": "transportation",
+          "color": [
+            34,
+            37,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 14
+        },
+        {
+          "class": "entertainment",
+          "color": [
+            34,
+            37,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 14
+        },
+        {
+          "class": "medical",
+          "color": [
+            34,
+            37,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 14
+        },
+        {
+          "class": "military",
+          "color": [
+            34,
+            37,
+            44,
+            255
+          ],
+          "width": 0,
+          "min_level": 14
+        }
+      ]
+    }
+  ]
+}

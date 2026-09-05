@@ -205,6 +205,27 @@ draw it rather than what it holds. `--bundle` writes those two beside the
 archive as `style.arps` and `models.arpm`; without them the client falls back
 to its built-in defaults and says so.
 
+### The network view
+
+`--hide-terrain` draws every tile without its terrain mesh and its skirts. The
+ground is the one thing every other surface is drawn *against*, so hiding it is
+how a road, its pavement and the plan lines beside them stop being read as a
+cartographic map and start being read as geometry: nothing occludes them, and a
+band left hanging in the air over the hole cut for it says so. The skirts go
+with it — a skirt is the terrain's own silhouette, and keeping it would wall in
+a scene whose ground has been removed.
+
+It is a rendering switch and reads no new data, so it applies to any archive.
+It earns its name with one tiled with `--plan-lines`, which carries the
+plan-space network the surfaces were built from (`docs/TILER.md` "The network
+view"), and with `style-network.json`, which paints those classes.
+
+```bash
+arpentry_client --archive /tmp/net.arpa --hide-terrain \
+    --lon 6.929 --lat 46.420 --alt 560 --tilt 50 \
+    --headless --screenshot /tmp/net.png
+```
+
 ### Live reload
 
 An interactive `--archive` viewer watches the file and picks up a re-tile with

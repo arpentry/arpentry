@@ -93,6 +93,7 @@ typedef struct {
     int width;
     int height;
     bool ortho;
+    bool hide_terrain;    /* network view: draw the tiles without their ground */
     bool headless;        /* no window, no surface, no display */
     char archive[512];    /* .arpa read from disk instead of a server */
     char screenshot[512]; /* empty string = interactive mode */
@@ -108,6 +109,7 @@ static cli_opts opts = {
     .width = WINDOW_W,
     .height = WINDOW_H,
     .ortho = false,
+    .hide_terrain = false,
     .headless = false,
     .archive = "",
     .screenshot = "",
@@ -133,6 +135,8 @@ static void parse_args(int argc, char **argv) {
             opts.height = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--ortho") == 0) {
             opts.ortho = true;
+        } else if (strcmp(argv[i], "--hide-terrain") == 0) {
+            opts.hide_terrain = true;
         } else if (strcmp(argv[i], "--archive") == 0 && i + 1 < argc) {
             snprintf(opts.archive, sizeof(opts.archive), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--headless") == 0) {
@@ -145,6 +149,7 @@ static void parse_args(int argc, char **argv) {
                     "Usage: %s [--url <base>] [--lon <deg>] [--lat <deg>] "
                     "[--alt <m>] [--bearing <deg>] [--tilt <deg>] "
                     "[--width <px>] [--height <px>] [--ortho] "
+                    "[--hide-terrain] "
                     "[--archive <path.arpa>] [--headless] "
                     "[--screenshot <path>]\n",
                     argv[0]);
@@ -159,6 +164,11 @@ static void parse_args(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 }
+/* Whether this run draws the network view (no terrain mesh). A function
+   rather than a direct read of `opts`, because the web build has no CLI. */
+static bool hide_terrain_opt(void) { return opts.hide_terrain; }
+#else
+static bool hide_terrain_opt(void) { return false; }
 #endif /* __EMSCRIPTEN__ */
 
 /* App state */
@@ -417,6 +427,7 @@ static void render_frame(void) {
         arpt_renderer_set_line_label_style(app.renderer,
             style.line_text_size, style.line_text_color,
             style.line_text_halo_color, style.line_text_halo_width);
+        arpt_renderer_set_hide_terrain(app.renderer, hide_terrain_opt());
 
         /* Apply current pixel ratio so labels/icons are correctly sized */
         {
@@ -1071,6 +1082,7 @@ static void init_viewer(void) {
         arpt_renderer_set_line_label_style(app.renderer,
             style.line_text_size, style.line_text_color,
             style.line_text_halo_color, style.line_text_halo_width);
+        arpt_renderer_set_hide_terrain(app.renderer, hide_terrain_opt());
     }
     if (!app.renderer) {
         fprintf(stderr, "Fatal: failed to create renderer\n");

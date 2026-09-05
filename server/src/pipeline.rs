@@ -165,6 +165,12 @@ pub struct Config {
     /// the asphalt so an A/B re-tile is a flag rather than a patch. Implied off
     /// by `--no-breaklines`: there is no constrained mesh to cut.
     pub hole: bool,
+    /// Whether the surface zooms also carry the plan-space network as lines —
+    /// the centreline each drawn surface was built from, and the edge the
+    /// model says it paved (`synth::plan`). Off by default: it is a view of
+    /// the machinery, not part of the map, and an archive carrying it is a
+    /// debugging archive.
+    pub plan_lines: bool,
 }
 
 /// The run's detail-mesh options, in the shape every [`GroundSampler`] takes.
@@ -953,7 +959,12 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         };
         let mut sampler =
             GroundSampler::new(dem, Arc::clone(ground), solved.z_ref, mesh_options(cfg));
-        let tile_ctx = TileContext { flat: &flat, world: &world, quality: cfg.brotli_quality };
+        let tile_ctx = TileContext {
+            flat: &flat,
+            world: &world,
+            quality: cfg.brotli_quality,
+            plan_lines: cfg.plan_lines,
+        };
         let mut sorted = sorted;
         let mut current: Option<u64> = None;
         let mut buckets: Vec<Vec<EncoderFeature>> =
@@ -1021,6 +1032,8 @@ struct TileContext<'a> {
     flat: &'a TerrainMesh,
     world: &'a World,
     quality: i32,
+    /// Whether this run also draws the plan-space network (`synth::plan`).
+    plan_lines: bool,
 }
 
 /// One tile's worth of consecutive sorted records, ready to encode.
@@ -1160,7 +1173,12 @@ fn emit_parallel(
             workers.push(scope.spawn(move || -> Result<(), Error> {
                 let flat = terrain::flat_mesh(TERRAIN_GRID);
                 let tile_ctx =
-                    TileContext { flat: &flat, world, quality: cfg.brotli_quality };
+                    TileContext {
+                        flat: &flat,
+                        world,
+                        quality: cfg.brotli_quality,
+                        plan_lines: cfg.plan_lines,
+                    };
                 let mut sampler = GroundSampler::new(dem, ground, z_ref, mesh_options(cfg));
                 loop {
                     // Blocking recv under the lock serializes idle waits only;
@@ -1226,7 +1244,7 @@ fn encode_tile(
     tile: &TileContext<'_>,
     sampler: &mut GroundSampler,
 ) -> Result<TileResult, Error> {
-    let TileContext { flat, world, quality } = tile;
+    let TileContext { flat, world, quality, plan_lines } = tile;
     let World { solved, pavement, junctions, .. } = *world;
     let quality = *quality;
     let (z, x, y) = hilbert::tile_id_decode(job.tile_id);
@@ -1270,6 +1288,12 @@ fn encode_tile(
         // on whether to cut.
         add_road_surface(&mut buckets, pavement, &field, sampler, &bounds, z, solved.z_ref)
     };
+    // The plan-space network the drawn surface was built from, when the run
+    // asks for it (`synth::plan`): the centreline of every source segment and
+    // the edge the model says it paved, over the mesh they produced.
+    if *plan_lines {
+        synth::plan::lines(&mut buckets, junctions, z, &bounds);
+    }
     let mut t_terrain = t_stamp.elapsed();
 
     // Vector layers in decode-priority (index) order.
@@ -2755,7 +2779,7 @@ fn flush_tile(
     sampler: &mut GroundSampler,
     elevation: &mut (f64, f64),
 ) -> Result<(), Error> {
-    let TileContext { flat, world, quality } = tile;
+    let TileContext { flat, world, quality, plan_lines } = tile;
     let World { solved, pavement, junctions, .. } = *world;
     let quality = *quality;
     let (z, x, y) = hilbert::tile_id_decode(tile_id);
@@ -2765,6 +2789,13 @@ fn flush_tile(
     stamp_synth(buckets, &field, sampler, solved, world.walkgraph.as_deref(), z, &bounds);
     let cut_regions =
         add_road_surface(buckets, pavement, &field, sampler, &bounds, z, solved.z_ref);
+
+    // The plan-space network the drawn surface was built from, when the run
+    // asks for it (`synth::plan`): the centreline of every source segment and
+    // the edge the model says it paved, over the mesh they produced.
+    if *plan_lines {
+        synth::plan::lines(buckets, junctions, z, &bounds);
+    }
 
     // Vector layers in decode-priority (index) order.
     let mut enc_layers = Vec::new();
@@ -3290,6 +3321,7 @@ mod tests {
             stage_in: None,
             breaklines: true,
             hole: true,
+            plan_lines: false,
         };
         let stats = run(&cfg).expect("pipeline run");
         assert!(stats.tiles_written > 0, "expected some tiles");

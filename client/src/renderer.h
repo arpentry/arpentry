@@ -123,6 +123,14 @@ void arpt_tile_gpu_free(arpt_tile_gpu *tile);
 /** Overlay draw callback, invoked during end_frame before the pass closes. */
 typedef void (*arpt_overlay_fn)(WGPURenderPassEncoder pass, void *userdata);
 
+/** Draw the tiles without their terrain mesh: the network view. The ground is
+ *  the one thing every other surface is drawn *against*, so hiding it is how a
+ *  road, its pavement and the plan lines beside them stop being read as a
+ *  cartographic map and start being read as geometry — nothing occludes them,
+ *  and a band that hangs in the air over the hole cut for it says so. Skirts go
+ *  with it: a skirt is the terrain's own silhouette. */
+void arpt_renderer_set_hide_terrain(arpt_renderer *r, bool hide);
+
 /** Register an overlay callback (e.g. for UI drawing). */
 void arpt_renderer_set_overlay(arpt_renderer *r, arpt_overlay_fn fn,
                                void *userdata);

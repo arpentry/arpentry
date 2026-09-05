@@ -365,6 +365,20 @@ impl<'a> ArchiveScan<'a> {
                             }
                         }
                     }
+                    // A `--plan-lines` archive carries the plan-space network
+                    // beside the map (`synth::plan`): the centreline each
+                    // surface was built from and the edge the model says it
+                    // paved. That is a view of the machinery, not a feature of
+                    // the map, and admitting it here would score it — every
+                    // check reading `lines` would gain three lines per source
+                    // segment that no map draws. `paint.buried` did exactly
+                    // that, charging each plan edge running under the ground as
+                    // buried paint, which is the very thing the view exists to
+                    // *show*. Dropped on the way in, so a check cannot see one
+                    // whether or not it thought to filter.
+                    if crate::synth::plan::is_plan_class(&class) {
+                        continue;
+                    }
                     if let Some(g) = f.geometry_as_mesh_geometry() {
                         if let Some(mesh) = SurfaceMesh::from_geometry(&g) {
                             let fades = g

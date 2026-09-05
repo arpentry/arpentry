@@ -233,6 +233,7 @@ The client supports these CLI arguments (native only, not Emscripten):
 --width <px>          Window width (default: 800)
 --height <px>         Window height (default: 600)
 --archive <path>      Read tiles from a local .arpa instead of a server
+--hide-terrain        Draw the tiles without their ground: the network view
 --headless            No window, no surface, no display (requires --screenshot)
 --screenshot <path>   Capture a PNG after tiles load, then exit
 ```
@@ -253,3 +254,36 @@ For a capture that is a measurement rather than a look, use `--archive` and `--h
 **A served render and an archive render are not always the same image.** The server synthesises a flat sea-level tile for every archive miss so the interactive viewer has terrain everywhere; the archive path reports the miss and falls back to a real ancestor. At 8 km over the Montreux cut that is 66 invented tiles. Compare archive-to-archive, and treat `--archive` as the reference — it draws only what the tiler emitted.
 
 Add `--headless` when the capture is a measurement rather than a look. It needs no window and no display, so it runs over ssh and beside a tiling run, and `--width`/`--height` are then the image size exactly (a windowed capture inherits the display's pixel ratio, so `--width 800` writes 1600 px on a 2× screen). Headless captures are byte-identical across runs — see `docs/VIEWER.md` "Headless capture".
+
+## Asking Why the Asphalt Is There
+
+The scorecard says a surface is wrong; the render says where. Neither says
+*which construction put it there*. At the surface zooms a tile carries only the
+result of the network synthesis — one unioned mesh per family, every source
+stroke deleted — so a disagreement between the plan and the surface it produced
+is invisible in the one place it could be seen.
+
+`--plan-lines` (tiler) re-emits the plan-space network as lines, and
+`--hide-terrain` (client) removes the ground everything else is drawn against,
+so the geometry reads as geometry:
+
+```bash
+./server/target/release/arpentry_tiler --output /tmp/claude/net.arpa \
+    --plan-lines ...                                        # same args as usual
+./server/target/release/arpentry_server /tmp/claude/net.arpa \
+    style-network.json --bundle
+./build/client/arpentry_client --archive /tmp/claude/net.arpa --hide-terrain \
+    --lon 6.9290 --lat 46.4200 --alt 560 --bearing 30 --tilt 50 \
+    --headless --screenshot /tmp/claude/net.png              # then Read the PNG
+```
+
+`plan_axis_*` is where the model says the surface is; `plan_edge_*` is where the
+model says it ends. The gap between a `plan_edge_*` and the drawn rim beside it
+is the union's doing and nothing else's. Details in `docs/TILER.md` "The network
+view".
+
+**It is a debugging archive, not a map** — the run summary's `plan` line says so.
+Scoring one is safe (`verify::scene` drops every `plan_*` class, so it produces
+the same scorecard as the same cut without them); serving one to a map style is
+not. `scripts/run-overture-ch.sh` has no passthrough for the flag, so this loop
+means invoking the tiler directly.

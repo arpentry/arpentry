@@ -60,6 +60,13 @@ OPTIONS:
                        hole (there is no constrained mesh to cut)
   --no-hole            Draw ground under the asphalt again, so an A/B re-tile
                        of the hole is a flag rather than a patch
+  --plan-lines         Also draw the plan-space network the surfaces were
+                       built from: each source segment's centreline
+                       (`plan_axis_*`) and the edge the model says it paved
+                       (`plan_edge_*`), per surface family. The network view —
+                       what a tile normally deletes, because a line over its
+                       own asphalt is a second coat of the same paint. Style
+                       it with style-network.json
   -h, --help           Show this help
 
 Layer indices: 0=terrain 1=land_cover 2=bathymetry 3=water 4=land
@@ -102,6 +109,16 @@ fn main() {
                     None => "flat mesh (no --terrain)".to_string(),
                 }
             );
+            // An archive carrying the plan lines is a debugging archive: its
+            // transportation layer holds three features per source segment
+            // that no map style draws. Say so, because nothing downstream
+            // will: it is safe to *score* (`verify::scene` drops every
+            // `plan_*` class, so it produces the same scorecard as the same
+            // cut without them) and the only way to tell it from a map is to
+            // have been told.
+            if cfg.plan_lines {
+                eprintln!("plan    {:>8}  --plan-lines: network view archive, not a map", "");
+            }
         }
         Err(e) => {
             eprintln!("error: {e}");
@@ -278,6 +295,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
     let mut stage_in: Option<PathBuf> = None;
     let mut breaklines = true;
     let mut hole = true;
+    let mut plan_lines = false;
 
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
@@ -300,6 +318,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
             "--stage-in" => stage_in = Some(PathBuf::from(value(&mut it, "--stage-in")?)),
             "--no-breaklines" => breaklines = false,
             "--no-hole" => hole = false,
+            "--plan-lines" => plan_lines = true,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -332,6 +351,7 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
         stage_in,
         breaklines,
         hole: hole && breaklines,
+        plan_lines,
     })
 }
 
