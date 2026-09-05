@@ -26,7 +26,7 @@
 //!
 //! ```text
 //! flat[?h=400]
-//! ramp?grade=0.03[&bearing=90][&h=400][&at=6.909,46.437]
+//! ramp?grade=0.03[&bearing=90][&radius=400][&h=400][&at=6.909,46.437]
 //! hill?amp=60&radius=400[&h=400][&at=…]
 //! step?rise=3[&width=0][&bearing=90][&h=400][&at=…]
 //! ```
@@ -67,8 +67,16 @@ pub struct Field {
 enum Kind {
     /// A horizontal plane at `base`.
     Flat,
-    /// A plane of constant `grade` (rise over run) rising toward `bearing`.
-    Ramp { grade: f64, bearing: f64 },
+    /// A plane of constant `grade` (rise over run) rising toward `bearing`,
+    /// levelling off `radius` metres out.
+    ///
+    /// **The radius is why this rung is usable.** A plane has no extent of its
+    /// own, so an unbounded 3 % ramp over a 12 km cut spans ±350 m of height —
+    /// and the scene is the whole cut, not the bbox. Unbounded, this rung put
+    /// 622–748 m into `slope.terrain_face` and `slope.terrain_tearing` at every
+    /// site measured: the rung's own artifact, reported as the pipeline's.
+    /// `f64::INFINITY` keeps the unbounded plane for anyone who wants it.
+    Ramp { grade: f64, bearing: f64, radius: f64 },
     /// A raised cosine of height `amp` peaking at the origin and meeting the
     /// plane tangentially at `radius`. C¹ everywhere, so nothing downstream
     /// sees a crease that the author did not ask for.
@@ -147,7 +155,7 @@ impl Field {
 
         let known: &[&str] = match head {
             "flat" => &["h", "at"],
-            "ramp" => &["h", "at", "grade", "bearing"],
+            "ramp" => &["h", "at", "grade", "bearing", "radius"],
             "hill" => &["h", "at", "amp", "radius"],
             "step" => &["h", "at", "rise", "bearing", "width"],
             _ => &[],
@@ -159,7 +167,13 @@ impl Field {
 
         let kind = match head {
             "flat" => Kind::Flat,
-            "ramp" => Kind::Ramp { grade: need("grade")?, bearing: num("bearing", 90.0)? },
+            "ramp" => {
+                let radius = num("radius", f64::INFINITY)?;
+                if radius <= 0.0 {
+                    return Err(format!("terrain `ramp` needs a positive radius, got {radius}"));
+                }
+                Kind::Ramp { grade: need("grade")?, bearing: num("bearing", 90.0)?, radius }
+            }
             "hill" => {
                 let radius = need("radius")?;
                 if radius <= 0.0 {
@@ -198,7 +212,10 @@ impl Field {
         let north = (lat - self.lat0) * DEG_M;
         match self.kind {
             Kind::Flat => self.base,
-            Kind::Ramp { grade, bearing } => self.base + grade * along(east, north, bearing),
+            // Level beyond the radius: the ramp is a *site*, not a continent.
+            Kind::Ramp { grade, bearing, radius } => {
+                self.base + grade * along(east, north, bearing).clamp(-radius, radius)
+            }
             Kind::Hill { amp, radius } => {
                 let d = east.hypot(north);
                 if d >= radius {
@@ -232,8 +249,11 @@ impl Field {
         let h = format!("h={}", self.base);
         match self.kind {
             Kind::Flat => format!("flat?{h}{at}"),
-            Kind::Ramp { grade, bearing } => {
-                format!("ramp?grade={grade}&bearing={bearing}&{h}{at}")
+            Kind::Ramp { grade, bearing, radius } => {
+                // An infinite radius is the absence of one, and prints as such
+                // so a round-tripped spec reads the way it was written.
+                let r = if radius.is_finite() { format!("&radius={radius}") } else { String::new() };
+                format!("ramp?grade={grade}&bearing={bearing}{r}&{h}{at}")
             }
             Kind::Hill { amp, radius } => format!("hill?amp={amp}&radius={radius}&{h}{at}"),
             Kind::Step { rise, bearing, width } => {
@@ -288,6 +308,40 @@ mod tests {
         assert!((f.elevation(LON, LAT + 0.001) - 400.0).abs() < 1e-9);
     }
 
+    /// The radius is what keeps the rung a site rather than a continent: an
+    /// unbounded 3 % plane over a 12 km cut spans ±350 m, and that height was
+    /// read as the pipeline's rather than the rung's at three sites.
+    #[test]
+    fn a_ramp_levels_off_beyond_its_radius() {
+        let f = field("ramp?grade=0.03&radius=200&h=400").at(LON, LAT);
+        let east_m = |m: f64| LON + m / (DEG_M * LAT.to_radians().cos());
+
+        // Inside the radius it is the same ramp.
+        assert!((f.elevation(east_m(100.0), LAT) - 403.0).abs() < 1e-6);
+        // At the radius it reaches its full rise…
+        assert!((f.elevation(east_m(200.0), LAT) - 406.0).abs() < 1e-6);
+        // …and never exceeds it, however far out.
+        assert!((f.elevation(east_m(20_000.0), LAT) - 406.0).abs() < 1e-6);
+        assert!((f.elevation(east_m(-20_000.0), LAT) - 394.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_unbounded_ramp_is_still_available() {
+        let f = field("ramp?grade=0.03&h=400").at(LON, LAT);
+        let far = LON + 20_000.0 / (DEG_M * LAT.to_radians().cos());
+        assert!((f.elevation(far, LAT) - 1000.0).abs() < 1e-3, "{}", f.elevation(far, LAT));
+    }
+
+    /// `step` was never the unbounded one: its height range is exactly `rise`,
+    /// however far the ground extends, so it needs no radius.
+    #[test]
+    fn a_step_is_bounded_by_its_own_rise() {
+        let f = field("step?rise=3&h=390").at(LON, LAT);
+        let east_m = |m: f64| LON + m / (DEG_M * LAT.to_radians().cos());
+        assert_eq!(f.elevation(east_m(50_000.0), LAT), 393.0);
+        assert_eq!(f.elevation(east_m(-50_000.0), LAT), 390.0);
+    }
+
     #[test]
     fn a_ramp_bearing_turns_the_slope() {
         let f = field("ramp?grade=0.05&bearing=0").at(LON, LAT);
@@ -326,7 +380,13 @@ mod tests {
 
     #[test]
     fn a_spec_round_trips_through_its_string() {
-        for spec in ["flat", "ramp?grade=0.03", "hill?amp=60&radius=400", "step?rise=3&width=5"] {
+        for spec in [
+            "flat",
+            "ramp?grade=0.03",
+            "ramp?grade=0.03&radius=250",
+            "hill?amp=60&radius=400",
+            "step?rise=3&width=5",
+        ] {
             let f = field(spec).at(LON, LAT);
             let again = field(&f.spec());
             assert_eq!(f.kind, again.kind, "{spec}");
@@ -344,6 +404,7 @@ mod tests {
         assert!(Field::parse("ramp?gradient=0.03").is_err(), "a near-miss key must not be ignored");
         assert!(Field::parse("hill?amp=60").is_err(), "radius is not optional");
         assert!(Field::parse("hill?amp=60&radius=0").is_err());
+        assert!(Field::parse("ramp?grade=0.03&radius=0").is_err());
         assert!(Field::parse("flat?h").is_err());
         assert!(Field::parse("flat?at=6.9").is_err());
     }

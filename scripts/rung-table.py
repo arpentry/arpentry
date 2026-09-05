@@ -115,7 +115,9 @@ def main():
         f"{len(unmeasured)} unmeasured here ({', '.join(unmeasured[:6])}"
         f"{'…' if len(unmeasured) > 6 else ''})"
     )
-    print("cells are violation %, then the worst sample per rung in metres")
+    print("cells are violation %, then the worst sample per rung")
+    print("worst is in the metric's OWN units — metres for a step, a ratio for a")
+    print("face steepness, a percent for a grade. Check the scorecard before reading one.")
     print("* = model half (--verify-model): scored over the whole solved scene, not this bbox")
     return 0
 

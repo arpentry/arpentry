@@ -17,6 +17,7 @@
 #   --out <dir>       Where the archives and scorecards go (default $TMPDIR/rungs)
 #   --zoom <z>        Tile this zoom only (default 16, the detail rung)
 #   --base <m>        Height of the synthetic grounds at the site (default 400)
+#   --radius <m>      How far the ramp rises before levelling off (default 600)
 #   --rungs <list>    Comma-separated subset of: flat,ramp,hill,step,dem
 #   --at <lon,lat>    Score around this point instead of the bbox centre
 #   --no-model        Skip the model half (--verify-model). It is ~80 % of the
@@ -46,6 +47,7 @@ DATA_DIR="$ROOT_DIR/data/zones/montreux"
 OUT_DIR="${TMPDIR:-/tmp}/rungs"
 ZOOM=16
 BASE=400
+RADIUS=600
 RUNGS="flat,ramp,hill,step,dem"
 AT=""
 MODEL=true
@@ -56,6 +58,7 @@ while [ $# -gt 0 ]; do
         --out) OUT_DIR="$2"; shift 2 ;;
         --zoom) ZOOM="$2"; shift 2 ;;
         --base) BASE="$2"; shift 2 ;;
+        --radius) RADIUS="$2"; shift 2 ;;
         --rungs) RUNGS="$2"; shift 2 ;;
         --at) AT="$2"; shift 2 ;;
         --no-model) MODEL=false; shift ;;
@@ -79,14 +82,16 @@ CLAT=$(awk -F, '{printf "%.6f", ($2+$4)/2}' <<<"$BBOX")
 #         entirely and takes the flat-0 fallback, while `flat` walks the real
 #         sampling path and gets a constant back. This rung isolates the ground's
 #         *value*, not the code path — anything nonzero here is drawn wrong
-#   ramp  3 %: a street's own grade, the mildest ground that is not a plane
+#   ramp  3 %, levelling off at --radius. Bounded because a plane has no extent
+#         of its own: unbounded, a 3 % grade over a 12 km cut spans +-350 m and
+#         puts the rung's own height into slope.terrain_face as the pipeline's
 #   hill  60 m over 400: curvature, so cut and fill both appear on one site
 #   step  3 m cliff: the discontinuity every bench and batter rule is written for
 #   dem   the real ground, for scale
 spec_for() {
     case "$1" in
         flat) echo "flat?h=$BASE&at=$CLON,$CLAT" ;;
-        ramp) echo "ramp?grade=0.03&bearing=90&h=$BASE&at=$CLON,$CLAT" ;;
+        ramp) echo "ramp?grade=0.03&bearing=90&radius=$RADIUS&h=$BASE&at=$CLON,$CLAT" ;;
         hill) echo "hill?amp=60&radius=400&h=$BASE&at=$CLON,$CLAT" ;;
         step) echo "step?rise=3&bearing=90&h=$BASE&at=$CLON,$CLAT" ;;
         dem) echo "$DATA_DIR/terrain.pmtiles" ;;
