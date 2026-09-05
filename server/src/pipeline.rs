@@ -314,8 +314,18 @@ pub struct Timings {
     /// 16–46 s block, and a snapshot of the wrong stage saved 0.2 s of it.
     pub assemble: Duration,
     pub solve: Duration,
-    /// The remainder: seniors, walk bands, crossings, the drawn ground.
+    /// The remainder: seniors, walk bands, crossings, the walk fit, the walk
+    /// graph. Taken as `model - assemble - solve` so nothing between the five
+    /// below can hide in the gap between them.
     pub ground: Duration,
+    /// The five, individually. A snapshot is only worth building for a stage
+    /// that costs something, and the first one built here saved 0.2 s because
+    /// nothing measured which stage that was.
+    pub seniors: Duration,
+    pub walk_bands: Duration,
+    pub crossings_synth: Duration,
+    pub walk_fit: Duration,
+    pub walkgraph: Duration,
     /// Buffering and unioning the road surface into per-chunk regions.
     pub pavement: Duration,
     /// Parquet open + Arrow decode + WKB parse → in-memory features.
@@ -348,6 +358,36 @@ struct WorkItem {
     /// Index into the opened inputs.
     input: usize,
     row_group: usize,
+}
+
+/// How far past `bbox` the pavement bake must still produce chunks.
+///
+/// A tile reads past its own edge: the format buffer is half a tile per side
+/// (`clip::BUFFER_FRAC`), so a tile on the bbox edge draws surface from up to
+/// half a tile beyond it. On top of that a union boundary can be moved by
+/// geometry just outside the chunk it lands in (`PAVE_PAD_M`, plus the widest
+/// carriageway half-width the extract holds).
+///
+/// Grown at `min_zoom`, not `max_zoom`: the coarser the zoom the larger the
+/// tile, and it is the largest tile that reaches furthest.
+///
+/// The margin is deliberately generous — chunks are z13, roughly 3 km, so an
+/// extra hundred metres almost never adds one, and where it does the cost is a
+/// chunk nobody reads rather than a seam nobody can explain.
+fn pavement_reach(bbox: &Bounds, min_zoom: u8) -> Bounds {
+    let tile_lon = 360.0 / f64::from(1u32 << min_zoom);
+    let tile_lat = 180.0 / f64::from(1u32 << min_zoom);
+    // The pad in degrees, at the latitude where a degree of longitude is
+    // shortest — the worst case for the extract.
+    let cos = bbox.north.abs().max(bbox.south.abs()).to_radians().cos().max(1e-6);
+    let pad_lat = (crate::priors::PAVE_PAD_M + 64.0) / crate::scene::DEG_M;
+    let pad_lon = pad_lat / cos;
+    Bounds {
+        west: bbox.west - tile_lon * crate::clip::BUFFER_FRAC - pad_lon,
+        south: bbox.south - tile_lat * crate::clip::BUFFER_FRAC - pad_lat,
+        east: bbox.east + tile_lon * crate::clip::BUFFER_FRAC + pad_lon,
+        north: bbox.north + tile_lat * crate::clip::BUFFER_FRAC + pad_lat,
+    }
 }
 
 /// Stage 1 proper: the scene, assembled from the transportation input.
@@ -472,16 +512,22 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // stratum D benches the band that came out. Stage 4 draws that same band,
     // so the surface and the ground under it are one cross-section rather than
     // two constructions of one.
+    let t_seniors = Instant::now();
     let seniors =
         ground::derive_seniors(&scene, &solved, &facades, cfg.terrain.as_deref(), threads);
+    let seniors_took = t_seniors.elapsed();
+    let t_bands = Instant::now();
     let (mut walk_bands, mut walk_sources) = synth::walkway::bands(&scene, &solved, &facades);
+    let bands_took = t_bands.elapsed();
     // The crossings, registered once against the same carriageways the union
     // buffers: the kerb stubs join the bands — they are the strip of real
     // sidewalk between the kerb and whatever the crossing joins, so they are
     // fitted, benched and unioned like any band — and the paint chords ride to
     // phase 1, which draws the zebra ladder from them.
+    let t_crossings = Instant::now();
     let (crossing_paints, crossing_stubs) =
         synth::walkway::crossings(&scene, &solved, cfg.terrain.as_deref());
+    let crossings_took = t_crossings.elapsed();
     // A stub carries no source: whether a crossing was *drawn* is decided by
     // its registration (`crossing_drawn`), and its zebra survives even where
     // the fit declines the kerb stubs.
@@ -495,6 +541,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     if std::env::var_os("ARPT_NO_WALK_GRAPH").is_some() {
         synth::walkway::seat_stubs(&mut walk_bands, stub_from);
     }
+    let t_fit = Instant::now();
     synth::walkway::fit_to_ground(
         &mut walk_bands,
         &mut walk_sources,
@@ -502,6 +549,8 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         cfg.terrain.as_deref(),
         solved.z_ref,
     );
+    let fit_took = t_fit.elapsed();
+    let t_walkgraph = Instant::now();
     // The pedestrian joint graph: one node per joint of the drawn walk
     // network, one height per node — hosted seats and street connectors pin
     // it, free nodes relax toward their neighbours, and the free bands'
@@ -548,6 +597,10 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     if ring && std::env::var_os("ARPT_FIELD_YIELDS").is_some() {
         eprintln!("ARPT_FIELD_YIELDS: the field yields read the derived ground, which the sidewalk ring derives after the union; set ARPT_NO_WALK_RING=1 to measure them");
     }
+    let walkgraph_took = t_walkgraph.elapsed();
+    // The chunks any tile this run emits can read. Everything outside is
+    // surface nobody will draw — 71 of 73 chunks on a two-tile preview.
+    let pave_reach = pavement_reach(&cfg.bbox, cfg.min_zoom);
     let t_pave = Instant::now();
     let (ground, junctions, pavement) = if ring {
         let mut junctions = synth::carriageway::bake(&scene, &solved, &facades, walk_bands.clone());
@@ -558,7 +611,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             scene: &scene,
         };
         let pavement =
-            Arc::new(synth::pavement::bake(&junctions, threads, None, Some(&facades), Some(&ctx)));
+            Arc::new(synth::pavement::bake(&junctions, threads, None, Some(&facades), Some(&ctx), Some(&pave_reach)));
         // The ring's bench segments are the ring's own walk sources: the
         // height field reads the ring's seats from them, on the ring's sheet.
         junctions.extend_sources(pavement.ring_benches().iter().cloned());
@@ -626,7 +679,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
             z_ref: solved.z_ref,
         };
         let pavement =
-            Arc::new(synth::pavement::bake(&junctions, threads, Some(&field_ctx), Some(&facades), None));
+            Arc::new(synth::pavement::bake(&junctions, threads, Some(&field_ctx), Some(&facades), None, Some(&pave_reach)));
         (ground, junctions, pavement)
     };
     // Every solved bridge deck, indexed by plan position, so phase 1 can ask
@@ -679,12 +732,25 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         *slot = (r.name, r.dist.max().unwrap_or(0.0));
     }
     stats.timings.model = t_model.elapsed();
+    debug_assert!(
+        stats.timings.pavement <= stats.timings.model,
+        "the pavement bake runs inside the model stage",
+    );
     stats.timings.assemble = assemble_took;
     stats.timings.solve = solve_took;
-    // Whatever the model stage spent after the solve: the seniors, the walk
-    // bands, the crossings, the drawn ground. Taken as a remainder rather than
-    // summed from parts, so nothing between them can hide.
-    stats.timings.ground = stats.timings.model.saturating_sub(assemble_took + solve_took);
+    // Whatever the model stage spent that none of the named parts claim.
+    // **The pavement bake is subtracted because it is inside the model stage**,
+    // not beside it: reading its line as an addition to `model` is how a 13.6 s
+    // bake spent a session looking like a 2.1 s remainder. A remainder rather
+    // than a sum, so anything unaccounted for still shows up here.
+    stats.timings.ground = stats.timings.model.saturating_sub(
+        assemble_took + solve_took + stats.timings.pavement,
+    );
+    stats.timings.seniors = seniors_took;
+    stats.timings.walk_bands = bands_took;
+    stats.timings.crossings_synth = crossings_took;
+    stats.timings.walk_fit = fit_took;
+    stats.timings.walkgraph = walkgraph_took;
     if let Some(dir) = &cfg.dump {
         dump::write(dir, &scene, &solved, &ground)?;
     }

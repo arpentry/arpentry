@@ -42,6 +42,23 @@ Two derived models follow, both pure functions of the solve:
 extents the paved surface is built from) and `synth::pavement` (the unioned
 road surface itself).
 
+**The pavement bake is bounded by what the run will draw.** Its chunk map is
+built from every carriageway source in the model, and the model is everything
+the row groups admitted — not what `--bbox` asked for. Unbounded, a two-tile
+preview off the Montreux cut unioned all 73 z13 chunks to draw one: 13.6 s of a
+17.0 s model stage. `pipeline::pavement_reach` grows the bbox by half a tile per
+side (the format buffer, taken at `min_zoom` because the coarsest zoom has the
+largest tiles) plus `PAVE_PAD_M`, and chunks outside that are not baked —
+73 chunks to 1, and the model stage to 9.2 s.
+
+The bounds decide *which chunks are baked, never what one contains*: a chunk is
+baked whole, from every source that can influence it, or not at all. That is
+what makes a tile drawn in a preview identical to the same tile drawn in the
+full archive (invariant 5), and it is asserted rather than assumed —
+`bounds_drop_chunks_without_changing_the_ones_kept` compares a bounded bake's
+shared chunk ring-for-ring against an unbounded one. Measured end to end, the
+pruned and unpruned archives agree on all 44 scorecard metrics.
+
 All of it is bundled in `pipeline::World` and shared behind `Arc`s. **This is
 the load-bearing property of the whole design**: every height an emit worker
 writes is a function of the world model and the global terrain lattice, never

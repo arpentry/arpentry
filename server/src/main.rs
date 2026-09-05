@@ -127,13 +127,14 @@ fn report_timings(stats: &pipeline::Stats) {
         stats.intersections,
     );
     eprintln!(
-        "  of which        assemble {}, solve {}, ground {}",
+        "  of which        assemble {}, solve {}, pavement {}, other {}",
         secs(t.assemble),
         secs(t.solve),
+        secs(t.pavement),
         secs(t.ground),
     );
     eprintln!(
-        "  ground is       seniors {}, walk bands {}, crossings {}, walk fit {}, walk graph {}",
+        "  other is        seniors {}, walk bands {}, crossings {}, walk fit {}, walk graph {}",
         secs(t.seniors),
         secs(t.walk_bands),
         secs(t.crossings_synth),
@@ -150,7 +151,7 @@ fn report_timings(stats: &pipeline::Stats) {
         stats.walk_host_m / 1000.0,
     );
     eprintln!(
-        "pavement {:>7}  {} chunks, {:.0} m2 paved",
+        "pavement {:>7}  {} chunks, {:.0} m2 paved (inside the model stage above)",
         secs(t.pavement),
         stats.pave_chunks,
         stats.pave_area_m2,

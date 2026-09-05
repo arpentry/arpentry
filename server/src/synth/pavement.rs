@@ -238,12 +238,30 @@ pub struct RingContext<'a> {
     pub scene: &'a crate::scene::SceneGraph,
 }
 
+/// Bakes the unioned road surface, one region per level per z13 chunk.
+///
+/// `only` bounds the *work*, never a chunk's content: a chunk is baked whole
+/// or not at all, from every source that can influence it, so a chunk baked
+/// under a bbox is identical to the same chunk baked without one (invariant 5
+/// — a height may not depend on the window it was asked through). What the
+/// bounds decide is which chunks are worth baking at all.
+///
+/// **Why it matters.** The chunk map is built from every carriageway source in
+/// the model, and the model is everything the row groups admitted — not what
+/// the bbox asked for. A two-tile preview off the Montreux cut unioned all 73
+/// chunks to draw one, which was 13.6 s of a 17.0 s model stage. `None` keeps
+/// the old behaviour and is what a full run passes.
+///
+/// The caller owns the margin: a tile reads past its own edge (the buffer) and
+/// a union boundary is moved by geometry just outside it (the pad), and only
+/// the caller knows the zoom those are measured at.
 pub fn bake(
     junctions: &CarriagewayModel,
     threads: usize,
     field: Option<&FieldYields>,
     walls: Option<&Facades>,
     ring: Option<&RingContext>,
+    only: Option<&Bounds>,
 ) -> PavementModel {
     // Which chunks each carriageway segment can influence: its own extent plus
     // the pad, since a union boundary inside a chunk can be moved by geometry
@@ -263,6 +281,18 @@ pub fn bake(
     }
     let mut keys: Vec<ChunkKey> = by_chunk.keys().copied().collect();
     keys.sort_unstable();
+    // Drop the chunks no tile in `only` can read. Their sources stay in the
+    // map — a kept chunk still unions from everything that reaches it — so
+    // this changes which chunks exist, never what one contains.
+    if let Some(b) = only {
+        let before = keys.len();
+        let (x0, y0) = chunk_of(b.west, b.south);
+        let (x1, y1) = chunk_of(b.east, b.north);
+        keys.retain(|&(x, y)| x >= x0 && x <= x1 && y >= y0 && y <= y1);
+        if std::env::var_os("ARPT_PAVE_PROBE").is_some() {
+            eprintln!("[pave] {before} chunks in the model, {} within the bounds", keys.len());
+        }
+    }
     if std::env::var_os("ARPT_PAVE_PROBE").is_some() {
         let mut counts: Vec<usize> = keys.iter().map(|k| by_chunk[k].len()).collect();
         counts.sort_unstable();
@@ -2094,7 +2124,7 @@ mod tests {
         let scene = SceneGraph::new(corridors);
         let solved = SolvedModel::from_profiles((0..scene.corridors.len()).map(|_| None).collect(), 15);
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
-        bake(&junctions, 1, None, None, None)
+        bake(&junctions, 1, None, None, None, None)
     }
 
     #[test]
@@ -2197,7 +2227,7 @@ mod tests {
         let scene = SceneGraph::new(vec![road]);
         let solved = SolvedModel::from_profiles(vec![None], 15);
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), vec![band]);
-        let model = bake(&junctions, 1, None, None, None);
+        let model = bake(&junctions, 1, None, None, None, None);
         assert_eq!(walk_shapes(&model), vec![2], "the band must be severed at the kerbs");
     }
 
@@ -2217,7 +2247,7 @@ mod tests {
         let scene = SceneGraph::new(vec![road]);
         let solved = SolvedModel::from_profiles(vec![None], 15);
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), vec![band]);
-        let model = bake(&junctions, 1, None, None, None);
+        let model = bake(&junctions, 1, None, None, None, None);
         assert_eq!(walk_shapes(&model), vec![1], "a stacked band is not on the plate");
     }
 
@@ -2263,8 +2293,8 @@ mod tests {
         let scene = SceneGraph::new(make());
         let solved = SolvedModel::from_profiles((0..2).map(|_| None).collect(), 15);
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
-        let one = bake(&junctions, 1, None, None, None);
-        let many = bake(&junctions, 8, None, None, None);
+        let one = bake(&junctions, 1, None, None, None, None);
+        let many = bake(&junctions, 8, None, None, None, None);
         assert_eq!(one.chunk_count(), many.chunk_count());
         let b = crate::solve::tile_containing(15, 6.0, LAT);
         let a = one.chunk_for(&b).expect("asphalt");
@@ -2274,6 +2304,57 @@ mod tests {
             assert_eq!(x.level, y.level);
             assert_eq!(x.shapes, y.shapes, "rings differ with the worker count");
         }
+    }
+
+    /// Bounds decide which chunks are baked, never what one contains.
+    ///
+    /// This is the invariant-5 half of the pruning: a preview bakes one chunk
+    /// where a full run bakes 73, and the one they share has to be the same
+    /// asphalt — otherwise a tile drawn in a preview differs from the same tile
+    /// drawn in the full archive, which is the class of defect nobody can see
+    /// from inside either run.
+    #[test]
+    fn bounds_drop_chunks_without_changing_the_ones_kept() {
+        let scene = SceneGraph::new(vec![
+            corridor(0, 6.0 - 100.0 / m_lon(), LAT, 1.0, 0.0, 200.0, 11, 6.0),
+            corridor(1, 6.0, LAT - 100.0 / DEG_M, 0.0, 1.0, 200.0, 11, 4.0),
+            // Far enough east to land in a different z13 chunk.
+            corridor(2, 6.5, LAT, 1.0, 0.0, 200.0, 11, 6.0),
+        ]);
+        let solved = SolvedModel::from_profiles((0..3).map(|_| None).collect(), 15);
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
+
+        let all = bake(&junctions, 1, None, None, None, None);
+        let here = crate::solve::tile_containing(15, 6.0, LAT);
+        let only = Bounds { west: 5.99, south: LAT - 0.01, east: 6.01, north: LAT + 0.01 };
+        let some = bake(&junctions, 1, None, None, None, Some(&only));
+
+        assert!(all.chunk_count() > some.chunk_count(), "the far chunk was dropped");
+        assert!(some.chunk_count() >= 1, "the near chunk was kept");
+
+        let a = all.chunk_for(&here).expect("asphalt in the full bake");
+        let b = some.chunk_for(&here).expect("asphalt in the bounded bake");
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b) {
+            assert_eq!(x.level, y.level);
+            assert_eq!(x.shapes, y.shapes, "a kept chunk changed under bounds");
+        }
+    }
+
+    /// Bounds that cover everything are the same as no bounds at all — so a
+    /// full run cannot quietly take a different path from the one it took
+    /// before pruning existed.
+    #[test]
+    fn bounds_covering_the_world_prune_nothing() {
+        let scene = SceneGraph::new(vec![
+            corridor(0, 6.0 - 100.0 / m_lon(), LAT, 1.0, 0.0, 200.0, 11, 6.0),
+            corridor(1, 6.5, LAT, 1.0, 0.0, 200.0, 11, 6.0),
+        ]);
+        let solved = SolvedModel::from_profiles((0..2).map(|_| None).collect(), 15);
+        let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
+        let unbounded = bake(&junctions, 1, None, None, None, None);
+        let world = bake(&junctions, 1, None, None, None, Some(&Bounds::WORLD));
+        assert_eq!(unbounded.chunk_count(), world.chunk_count());
     }
 
     #[test]
@@ -2356,7 +2437,7 @@ mod tests {
         let (scene, solved) = crossroads();
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
         assert_eq!(junctions.len(), 1, "the crossroads plates as one intersection");
-        let model = bake(&junctions, 1, None, None, None);
+        let model = bake(&junctions, 1, None, None, None, None);
         let filleted = model.area_m2();
 
         // The same network with the intersection extent withheld: no mask, so no
@@ -2369,7 +2450,7 @@ mod tests {
                 SolvedModel::from_profiles((0..4).map(|_| None).collect(), 15);
             let j = carriageway::bake(&bare_scene, &bare_solved, &Facades::empty(), Vec::new());
             assert_eq!(j.len(), 0, "no intersection extent without profiles");
-            bake(&j, 1, None, None, None).area_m2()
+            bake(&j, 1, None, None, None, None).area_m2()
         };
 
         assert!(filleted > bare, "the closing added no fillet area at all");
@@ -2422,7 +2503,7 @@ mod tests {
         );
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
 
-        let model = bake(&junctions, 1, None, None, None);
+        let model = bake(&junctions, 1, None, None, None, None);
         let levels =
             model.chunk_for(&crate::solve::tile_containing(15, 6.0, LAT)).expect("asphalt");
         assert_eq!(levels.len(), 2, "the two roads must be separate regions");
@@ -2462,7 +2543,7 @@ mod tests {
             15,
         );
         let junctions = carriageway::bake(&scene, &solved, &Facades::empty(), Vec::new());
-        let model = bake(&junctions, 1, None, None, None);
+        let model = bake(&junctions, 1, None, None, None, None);
         let levels =
             model.chunk_for(&crate::solve::tile_containing(15, 6.0, LAT)).expect("surfaces");
         let road_ls = levels
