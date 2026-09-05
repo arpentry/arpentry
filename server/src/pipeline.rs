@@ -303,8 +303,8 @@ pub struct Stats {
 
 /// Time accumulated in each pipeline stage. Per-stage times are summed across
 /// worker threads, so with N workers they can exceed the phase wall time —
-/// read them as CPU seconds. The phase totals, `merge`, and `write` are
-/// wall-clock.
+/// read them as CPU seconds. `model`, the phase totals, `merge`, `write` and
+/// `wall` are wall-clock.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Timings {
     /// World-model stages before tiling: assemble + solve + ground (1–3).
@@ -349,6 +349,17 @@ pub struct Timings {
     /// End-to-end phase totals.
     pub phase1: Duration,
     pub phase2: Duration,
+    /// The whole run, measured once from the top of [`run`].
+    ///
+    /// **Not a sum of the fields above, on purpose.** `total` used to be
+    /// `phase1 + phase2`, which named 10.8 s of a 25.5 s run the day the model
+    /// stage was first measured, and 5.8 s of 27.2 s at `--min-zoom 13` — and
+    /// the throughput rates divided by it were overstated by the same factor.
+    /// Anything a future stage adds between the model stage and phase 1
+    /// (`--dump`, `--verify-model`, the probes) lands inside a wall clock and
+    /// outside any sum, so this is the one number that cannot fall behind the
+    /// pipeline.
+    pub wall: Duration,
 }
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -413,6 +424,9 @@ fn assemble_scene(
 /// sharing a sort key may interleave differently between runs (workers race),
 /// but tile contents are otherwise identical.
 pub fn run(cfg: &Config) -> Result<Stats, Error> {
+    // The whole run, started before anything else so no stage can be added
+    // outside it (`Timings::wall`).
+    let t_wall = Instant::now();
     let mut stats = Stats::default();
 
     let threads = match cfg.threads {
@@ -993,6 +1007,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     tmp_cleanup.armed = false;
     stats.timings.write += t_write.elapsed();
     stats.timings.phase2 = phase2_start.elapsed();
+    stats.timings.wall = t_wall.elapsed();
     Ok(stats)
 }
 

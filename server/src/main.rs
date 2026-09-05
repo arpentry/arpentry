@@ -113,7 +113,12 @@ fn main() {
 /// Prints the per-stage timing breakdown gathered by the pipeline.
 fn report_timings(stats: &pipeline::Stats) {
     let t = &stats.timings;
-    let total = t.phase1 + t.phase2;
+    // The whole run, not `phase1 + phase2`. The model stage runs before phase 1
+    // and the sum left it out entirely: on the day it was first measured that
+    // was 10.8 s named as the total of a 25.5 s run, and 5.8 s of 27.2 s at
+    // `--min-zoom 13`, with `features/s` and `tiles/s` overstated by the same
+    // factor because they divide by it.
+    let total = t.wall;
     eprintln!(
         "inputs: {}/{} row groups after bbox pruning, {} worker thread{}",
         stats.row_groups_read,
@@ -206,6 +211,19 @@ fn report_timings(stats: &pipeline::Stats) {
         stats.features_read as f64 / total_s,
         stats.tiles_written as f64 / total_s,
         mib(stats.record_bytes),
+    );
+    // What the three blocks above account for, and what they do not: the
+    // `--dump` write, `--verify-model` and the probes all run between the model
+    // stage and phase 1, inside a wall clock and outside every sum. Printed on
+    // every run, zero included, for the reason the `cdt` line below is — a
+    // remainder that appeared only when it was large would make its own
+    // absence unreadable.
+    eprintln!(
+        "  of which        model {}, phase 1 {}, phase 2 {}, outside them {}",
+        secs(t.model),
+        secs(t.phase1),
+        secs(t.phase2),
+        secs(total.saturating_sub(t.model + t.phase1 + t.phase2)),
     );
     eprintln!(
         "dem     {:>8}  {} tile decodes",

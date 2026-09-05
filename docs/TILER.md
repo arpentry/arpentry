@@ -49,7 +49,20 @@ preview off the Montreux cut unioned all 73 z13 chunks to draw one: 13.6 s of a
 17.0 s model stage. `pipeline::pavement_reach` grows the bbox by half a tile per
 side (the format buffer, taken at `min_zoom` because the coarsest zoom has the
 largest tiles) plus `PAVE_PAD_M`, and chunks outside that are not baked —
-73 chunks to 1, and the model stage to 9.2 s.
+73 chunks to 1, and the model stage to 9.2 s (measured in 8dd7fa1, whose zoom
+range is not the one the figures below are taken at — compare the ratios, not
+the seconds).
+
+**The pruning and the bake's parallelism pull against each other.** `bake` fans
+out over chunk keys — `threads.min(keys.len())`, and `bake_chunk` has no inner
+parallelism — so a preview pruned to one chunk runs the bake on one core, where
+it is the single largest thing in the run. Measured over the cut at the
+roundabout on ten threads: at `--min-zoom 16` the reach admits **1 chunk,
+803,957 m², 8.0 s** (9.9 µs/m², one thread); at `--min-zoom 13` it admits
+**5 chunks, 3,028,777 m², 15.1 s** (5.0 µs/m², five threads). Twice the
+throughput per square metre, still nearly twice the wall time — neither dial is
+free, and the fastest loop is the smaller one. A bake that split a chunk's work
+would be the change that makes the choice go away.
 
 The bounds decide *which chunks are baked, never what one contains*: a chunk is
 baked whole, from every source that can influence it, or not at all. That is
@@ -319,6 +332,16 @@ The run ends with a per-stage timing report (read / simplify / clip / sort and
 merge / decode / terrain / encode / write) plus row-group pruning and
 throughput counters — use it to spot the bottleneck before tuning anything.
 
+**`total` is the whole run, and its `of which` line says what the stages
+account for.** It has to be measured rather than summed: the model stage runs
+before phase 1, and `--dump`, `--verify-model` and the probes run between the
+two, so anything added there is inside a wall clock and outside every sum.
+`total` was `phase1 + phase2` until it was checked against one — it named
+10.8 s of a 25.5 s run at `--max-zoom 16`, and 5.8 s of 27.2 s once
+`--min-zoom 13` moved the work into the model stage, with `features/s` and
+`tiles/s` overstated by the same factor. The remainder is printed on every
+run, zero included, for the reason the `cdt` line below is.
+
 Two of its lines report things no other tool can see:
 
 ```
@@ -362,22 +385,32 @@ cut zone's scorecard is not comparable to a baseline taken over full inputs.
 
 ### Where the model stage actually goes
 
-The `of which` line under `model` splits it into assemble, solve and the
-remainder (seniors, walk bands, crossings, the drawn ground). It exists
-because "the model stage is slow" named no stage, and the obvious inference
-from the paragraph above — that a small bbox pays for assembling the whole row
-group — turns out to be the wrong lever. Over the Montreux cut at the
-roundabout: **assemble 0.3 s, solve 4.4 s, ground 47.7 s** of a 52.4 s model
-stage. Assembling 8506 corridors is not what the run spends its time on;
-grounding them is.
+The `of which` line under `model` splits it into assemble, solve, the pavement
+bake and the remainder (seniors, walk bands, crossings, the walk fit, the walk
+graph — itself split by the `other is` line). It exists because "the model
+stage is slow" named no stage, and the obvious inference from the paragraph
+above — that a small bbox pays for assembling the whole row group — turns out
+to be the wrong lever. Over the Montreux cut at the roundabout, two tiles at
+z16: **assemble 0.2 s, solve 3.1 s, pavement 8.0 s, other 2.7 s** of a 14.1 s
+model stage. Assembling 8506 corridors is not what the run spends its time on;
+paving them is.
+
+The split is a remainder, not a sum: `other` is `model − assemble − solve −
+pavement`, so a stage nobody has named yet still shows up in it. **The
+pavement bake is subtracted because it runs inside the model stage, not beside
+it** — reading its own line as an addition is how a 13.6 s bake once spent a
+session looking like a 2.1 s remainder.
 
 `--stage-out <path>` writes the assembled scene to a snapshot and `--stage-in
 <path>` reuses it, guarded by what it was built from — the bbox, the ground
 and every input's size and mtime refuse out loud, and a rebuilt tiler warns,
 since it cannot tell which stage the rebuild touched. A reused scene
-reproduces every archive metric exactly. It also saves 0.3 s, which is the
-above number and not a reason to use it yet: the snapshot format has room for
-the solved model and the ground, and those are the ones that would pay.
+reproduces every archive metric exactly. It also saves 0.2 s of 14.1 s, which
+is the above number and not a reason to use it yet. `Snapshot` holds a `scene`
+and nothing else; the solved model (3.1 s) and the ground are the ones that
+would pay, and each needs a table in `schemas/stage.fbs` plus its half of the
+codec — the format's room for them is FlatBuffers' additive fields, not
+declared structure.
 
 ---
 
