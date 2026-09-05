@@ -45,6 +45,12 @@ OPTIONS:
                        measure how the scene was computed rather than what was
                        drawn. Re-solves the scene, so it is opt-in. Merge it
                        into a scorecard with `arpentry_verify --model <p>`.
+  --stage-out <path>   Write the stages this run computed to a snapshot, so a
+                       later run can skip them
+  --stage-in <path>    Reuse the stages in a snapshot instead of computing
+                       them. Refused when the bbox, the ground or an input has
+                       moved; a rebuilt tiler only warns, since it cannot tell
+                       which stage the rebuild touched
   --no-breaklines      Plain lattice terrain: no bench contact lines, and no
                        hole (there is no constrained mesh to cut)
   --no-hole            Draw ground under the asphalt again, so an A/B re-tile
@@ -119,6 +125,20 @@ fn report_timings(stats: &pipeline::Stats) {
         stats.earthworks,
         stats.water,
         stats.intersections,
+    );
+    eprintln!(
+        "  of which        assemble {}, solve {}, ground {}",
+        secs(t.assemble),
+        secs(t.solve),
+        secs(t.ground),
+    );
+    eprintln!(
+        "  ground is       seniors {}, walk bands {}, crossings {}, walk fit {}, walk graph {}",
+        secs(t.seniors),
+        secs(t.walk_bands),
+        secs(t.crossings_synth),
+        secs(t.walk_fit),
+        secs(t.walkgraph),
     );
     eprintln!(
         "crests            {} segments, {} nodes pulled in by a contending bench, {} dropped",
@@ -230,6 +250,8 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
     let mut brotli_quality: i32 = arpentry_server::tile_build::DEFAULT_QUALITY;
     let mut dump: Option<PathBuf> = None;
     let mut verify_model: Option<PathBuf> = None;
+    let mut stage_out: Option<PathBuf> = None;
+    let mut stage_in: Option<PathBuf> = None;
     let mut breaklines = true;
     let mut hole = true;
 
@@ -250,6 +272,8 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
             "--verify-model" => {
                 verify_model = Some(PathBuf::from(value(&mut it, "--verify-model")?))
             }
+            "--stage-out" => stage_out = Some(PathBuf::from(value(&mut it, "--stage-out")?)),
+            "--stage-in" => stage_in = Some(PathBuf::from(value(&mut it, "--stage-in")?)),
             "--no-breaklines" => breaklines = false,
             "--no-hole" => hole = false,
             other => return Err(format!("unknown argument: {other}")),
@@ -280,6 +304,8 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
         brotli_quality,
         dump,
         verify_model,
+        stage_out,
+        stage_in,
         breaklines,
         hole: hole && breaklines,
     })

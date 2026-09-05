@@ -343,6 +343,25 @@ tiles from the cut. The same run then takes 45 s with the model stage at
 25.5 s. The script's header carries the margin calibration and the reason a
 cut zone's scorecard is not comparable to a baseline taken over full inputs.
 
+### Where the model stage actually goes
+
+The `of which` line under `model` splits it into assemble, solve and the
+remainder (seniors, walk bands, crossings, the drawn ground). It exists
+because "the model stage is slow" named no stage, and the obvious inference
+from the paragraph above — that a small bbox pays for assembling the whole row
+group — turns out to be the wrong lever. Over the Montreux cut at the
+roundabout: **assemble 0.3 s, solve 4.4 s, ground 47.7 s** of a 52.4 s model
+stage. Assembling 8506 corridors is not what the run spends its time on;
+grounding them is.
+
+`--stage-out <path>` writes the assembled scene to a snapshot and `--stage-in
+<path>` reuses it, guarded by what it was built from — the bbox, the ground
+and every input's size and mtime refuse out loud, and a rebuilt tiler warns,
+since it cannot tell which stage the rebuild touched. A reused scene
+reproduces every archive metric exactly. It also saves 0.3 s, which is the
+above number and not a reason to use it yet: the snapshot format has room for
+the solved model and the ground, and those are the ones that would pay.
+
 ---
 
 ## 5. Building and Testing

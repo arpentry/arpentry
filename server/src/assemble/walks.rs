@@ -534,6 +534,31 @@ impl Walks {
         &self.census
     }
 
+    /// The primary data, for a stage snapshot to write (`crate::stage`).
+    ///
+    /// The two indexes are deliberately absent: they are a function of
+    /// `attachments`, and a stored index that disagreed with the data it
+    /// indexes would be a defect no check could see.
+    pub(crate) fn parts(&self) -> (&[WalkLine], &[(u32, u32)], &[Attachment], &Census) {
+        (&self.lines, &self.line_ranges, &self.attachments, &self.census)
+    }
+
+    /// Rebuilds a `Walks` read back from a snapshot, re-deriving the host and
+    /// source indexes in attachment order — the same order [`Walks::push`]
+    /// builds them in, so a reloaded relation answers every query identically.
+    pub(crate) fn from_parts(
+        lines: Vec<WalkLine>,
+        line_ranges: Vec<(u32, u32)>,
+        attachments: Vec<Attachment>,
+        census: Census,
+    ) -> Walks {
+        let mut w = Walks { lines, line_ranges, attachments: Vec::new(), census, ..Walks::default() };
+        for a in attachments {
+            w.push(a);
+        }
+        w
+    }
+
     fn push(&mut self, a: Attachment) {
         let i = self.attachments.len() as u32;
         self.by_host.entry(a.host).or_default().push(i);

@@ -136,6 +136,26 @@ pub struct Config {
     /// structural checks), or `None` to skip them. They re-solve the scene, so
     /// they are opt-in rather than part of every run.
     pub verify_model: Option<PathBuf>,
+    /// Write the stages this run computed to a snapshot at this path
+    /// (`crate::stage`), so a later run can skip them.
+    pub stage_out: Option<PathBuf>,
+    /// Reuse the stages in this snapshot instead of computing them, when what
+    /// it was built from has not moved.
+    ///
+    /// **It does not yet buy a fast loop, and the timings above are why.**
+    /// This was built to skip the model stage, on the belief — CLAUDE.md's,
+    /// and this comment's until it was measured — that the model stage's 52 s
+    /// is what a change downstream of assemble pays for nothing. The
+    /// breakdown it landed with says otherwise: over the Montreux cut at the
+    /// roundabout, assemble is **0.3 s** of a 52.4 s model stage and the
+    /// ground stage is **47.7 s**. The snapshot is faithful (a reused scene
+    /// reproduces all 44 archive metrics exactly) and it saves 0.6 % of the
+    /// stage it was meant to eliminate, for an 11.5 MB file.
+    ///
+    /// So this is the boundary and its provenance guard, proven on the cheap
+    /// stage, and the format already has room for the ones that would pay:
+    /// the solved model and the ground. Snapshotting *those* is the fast loop.
+    pub stage_in: Option<PathBuf>,
     /// Whether detail-zoom terrain meshes are constrained by the bench
     /// contact lines (docs/GROUND.md §3). On by default; `--no-breaklines`
     /// is the escape hatch back to the plain lattice.
@@ -287,8 +307,15 @@ pub struct Stats {
 /// wall-clock.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Timings {
-    /// World-model stages before tiling: assemble + solve (stages 1–2).
+    /// World-model stages before tiling: assemble + solve + ground (1–3).
     pub model: Duration,
+    /// The three halves of it, so "the model stage is slow" names a stage.
+    /// Until these existed the only lever anyone could reach for was the whole
+    /// 16–46 s block, and a snapshot of the wrong stage saved 0.2 s of it.
+    pub assemble: Duration,
+    pub solve: Duration,
+    /// The remainder: seniors, walk bands, crossings, the drawn ground.
+    pub ground: Duration,
     /// Buffering and unioning the road surface into per-chunk regions.
     pub pavement: Duration,
     /// Parquet open + Arrow decode + WKB parse → in-memory features.
@@ -321,6 +348,22 @@ struct WorkItem {
     /// Index into the opened inputs.
     input: usize,
     row_group: usize,
+}
+
+/// Stage 1 proper: the scene, assembled from the transportation input.
+///
+/// Factored out because it now has three callers in one expression — the two
+/// ways a snapshot can decline to stand in for it, and the ordinary path.
+fn assemble_scene(
+    transportation: &Option<PathBuf>,
+    water: Option<&std::path::Path>,
+    bbox: &Bounds,
+) -> Result<SceneGraph, Error> {
+    match transportation {
+        Some(path) => assemble::run(path, water, bbox)
+            .map_err(|e| format!("{}: {e}", path.display()).into()),
+        None => Ok(SceneGraph::default()),
+    }
 }
 
 /// Runs the full pipeline, writing the `.arpa` archive to `cfg.output`.
@@ -362,16 +405,65 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         .map_err(|e| format!("{}: {e}", path.display()))?,
         None => assemble::facades::Facades::empty(),
     };
-    let mut scene = match &transportation {
-        Some(path) => assemble::run(path, water.as_deref(), &cfg.bbox)
-            .map_err(|e| format!("{}: {e}", path.display()))?,
-        None => SceneGraph::default(),
+    // **Assemble, or the snapshot of a run that already did.** The reuse is
+    // guarded by what the snapshot was built from, never by its mere presence:
+    // `Verdict::Refuse` means it is wrong for this run and the stage is
+    // computed, `Warn` means only that the binary has moved, which is the
+    // developer's call to make and is printed either way.
+    let want = crate::stage::Provenance::of_run(cfg.bbox, cfg.terrain.as_deref(), &cfg.inputs);
+    let t_assemble = Instant::now();
+    let mut scene = match cfg.stage_in.as_deref().map(|p| (p, crate::stage::read(p))) {
+        Some((path, Ok(snap))) => match (snap.provenance.verdict(&want), snap.scene) {
+            (crate::stage::Verdict::Refuse(why), _) => {
+                eprintln!("stage             {} not reused: {why}", path.display());
+                assemble_scene(&transportation, water.as_deref(), &cfg.bbox)?
+            }
+            (_, None) => {
+                eprintln!("stage             {} holds no scene; assembling", path.display());
+                assemble_scene(&transportation, water.as_deref(), &cfg.bbox)?
+            }
+            (verdict, Some(scene)) => {
+                if let crate::stage::Verdict::Warn(why) = verdict {
+                    eprintln!("stage             WARNING: {why}");
+                }
+                eprintln!(
+                    "stage             scene reused from {} ({} corridors, {:.1}s saved)",
+                    path.display(),
+                    scene.corridors.len(),
+                    snap.provenance.built_in_s,
+                );
+                scene
+            }
+        },
+        Some((path, Err(e))) => {
+            eprintln!("stage             {} unreadable ({e}); assembling", path.display());
+            assemble_scene(&transportation, water.as_deref(), &cfg.bbox)?
+        }
+        None => assemble_scene(&transportation, water.as_deref(), &cfg.bbox)?,
     };
+    let assemble_took = t_assemble.elapsed();
+    // Written before the solve mutates it: the snapshot is *assemble's* output,
+    // and a scene captured after `reconcile_short_spans` would be a different
+    // artifact wearing the same name.
+    if let Some(path) = &cfg.stage_out {
+        let mut prov = want.clone();
+        // What this stage cost, so the run that reuses it can say what it
+        // saved. Measured, not re-read from the clock, so a reused snapshot
+        // does not also claim the time spent writing it.
+        prov.built_in_s = assemble_took.as_secs_f64();
+        let snap = crate::stage::Snapshot { provenance: prov, scene: Some(scene) };
+        crate::stage::write(path, &snap)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        eprintln!("stage             scene written to {}", path.display());
+        scene = snap.scene.expect("the scene just written");
+    }
     // Solve mutates the scene once: the terrain fate of short structure spans
     // (`solve::reconcile_short_spans`) is settled before anything downstream
     // reads the corridor spans.
+    let t_solve = Instant::now();
     let solved =
         Arc::new(solve::run(&mut scene, cfg.terrain.as_deref(), cfg.max_zoom, threads)?);
+    let solve_took = t_solve.elapsed();
     // **The seniors, then the band, then the band's own ground.** A walkway is a
     // draped feature, and §4.2 defines one as sampling the *finished* ground —
     // so the strata that hold authority imprint first, the pedestrian band is
@@ -587,6 +679,12 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         *slot = (r.name, r.dist.max().unwrap_or(0.0));
     }
     stats.timings.model = t_model.elapsed();
+    stats.timings.assemble = assemble_took;
+    stats.timings.solve = solve_took;
+    // Whatever the model stage spent after the solve: the seniors, the walk
+    // bands, the crossings, the drawn ground. Taken as a remainder rather than
+    // summed from parts, so nothing between them can hide.
+    stats.timings.ground = stats.timings.model.saturating_sub(assemble_took + solve_took);
     if let Some(dir) = &cfg.dump {
         dump::write(dir, &scene, &solved, &ground)?;
     }
@@ -3089,6 +3187,8 @@ mod tests {
             brotli_quality: tile_build::DEFAULT_QUALITY,
             dump: None,
             verify_model: None,
+            stage_out: None,
+            stage_in: None,
             breaklines: true,
             hole: true,
         };

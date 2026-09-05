@@ -39,6 +39,7 @@ pub mod rules;
 pub mod scene;
 pub mod simplify;
 pub mod solve;
+pub mod stage;
 pub mod sort;
 pub mod style;
 pub mod synth;
