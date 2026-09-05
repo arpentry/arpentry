@@ -35,6 +35,7 @@ pub mod model;
 pub mod report;
 pub mod scene;
 pub mod section;
+pub mod step;
 
 use dist::Dist;
 

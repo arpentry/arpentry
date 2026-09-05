@@ -11,6 +11,7 @@
 
 use serde_json::{json, Value as Json};
 
+use super::step::Step;
 use super::{Metric, Offender, Scope, Scorecard, Sense};
 
 /// How a metric moved against a baseline.
@@ -300,6 +301,11 @@ pub fn metric_json(m: &Metric) -> Json {
     json!({
         "id": m.id,
         "invariant": m.invariant.as_str(),
+        // The pipeline step this metric can falsify (`verify::step`). Recorded
+        // rather than re-derived downstream: a scorecard read by a tool built
+        // at a different commit must group the way the run that wrote it did,
+        // or the grouping silently drifts from the table it came from.
+        "step": Step::of(&m.id).map(Step::as_str),
         "population": m.population,
         "title": m.title,
         "sense": match m.sense { Sense::LowerIsWorse => "lower_is_worse", _ => "higher_is_worse" },
@@ -332,6 +338,26 @@ fn scope_json(s: &Scope) -> Json {
 }
 
 /// The human-readable scorecard.
+/// One metric's line. Shared by the step groups and by the unassigned tail:
+/// a metric that fell out of the step table still has to print everything it
+/// would otherwise have printed — losing a skip reason there would make an
+/// unmeasured check read as a clean one, which is exactly the distinction the
+/// skipped line exists to preserve.
+fn row(m: &Metric) -> String {
+    match &m.skipped {
+        Some(why) => format!("{:<34} {:>3} {:>10}   {why}\n", m.id, m.invariant, "-"),
+        None => format!(
+            "{:<34} {:>3} {:>10} {:>10} {:>9} {:>8.3}%\n",
+            m.id,
+            m.invariant,
+            m.dist.count(),
+            fmt(m.worst_value()),
+            fmt(m.tail()),
+            m.violation_pct(),
+        ),
+    }
+}
+
 pub fn table(card: &Scorecard) -> String {
     let mut s = String::new();
     let zooms: Vec<String> = card.zooms.iter().map(|z| format!("z{z}")).collect();
@@ -342,20 +368,42 @@ pub fn table(card: &Scorecard) -> String {
     ));
     s.push_str(&"-".repeat(80));
     s.push('\n');
-    for m in &card.metrics {
-        if let Some(why) = &m.skipped {
-            s.push_str(&format!("{:<34} {:>3} {:>10}   {why}\n", m.id, m.invariant, "-"));
+    // Grouped by the pipeline step that owns the metric (`verify::step`), in
+    // pipeline order. A flat list of 77 says *that* something is wrong and
+    // leaves the first hour of every investigation to deciding which stage to
+    // go and read; grouped, the run says which one.
+    for step in Step::ALL {
+        let mut group: Vec<&Metric> =
+            card.metrics.iter().filter(|m| Step::of(&m.id) == Some(step)).collect();
+        if group.is_empty() {
             continue;
         }
+        group.sort_by(|a, b| b.violation_pct().total_cmp(&a.violation_pct()));
+        // The step's own headline: how much of it is measured, and how much of
+        // that is in violation. Worst-first inside the group, so the line to
+        // read next is the line under the heading.
+        let measured = group.iter().filter(|m| m.skipped.is_none()).count();
+        let over = group.iter().filter(|m| m.skipped.is_none() && m.violations() > 0).count();
         s.push_str(&format!(
-            "{:<34} {:>3} {:>10} {:>10} {:>9} {:>8.3}%\n",
-            m.id,
-            m.invariant,
-            m.dist.count(),
-            fmt(m.worst_value()),
-            fmt(m.tail()),
-            m.violation_pct(),
+            "\n{}  — {}  ({over}/{measured} metrics over threshold)\n",
+            step.as_str().to_uppercase(),
+            step.owns(),
         ));
+        for m in group {
+            s.push_str(&row(m));
+        }
+    }
+    // Anything the step table has never heard of. `Step::of` returns None
+    // rather than defaulting, and a metric that reached here unassigned would
+    // otherwise vanish from the scorecard entirely — silence being the one
+    // failure mode worse than a wrong heading.
+    let unassigned: Vec<&Metric> =
+        card.metrics.iter().filter(|m| Step::of(&m.id).is_none()).collect();
+    if !unassigned.is_empty() {
+        s.push_str("\nUNASSIGNED  — no row in verify::step; add one\n");
+        for m in unassigned {
+            s.push_str(&row(m));
+        }
     }
     s.push('\n');
     for m in &card.metrics {
@@ -682,6 +730,33 @@ mod tests {
     fn the_scope_survives_a_round_trip() {
         let c = card("m", Sense::LowerIsWorse, &[-1.0]);
         assert!(c.scope_drift(&c.to_json()).is_empty(), "a card must not drift from itself");
+    }
+
+    /// A metric with no row in `verify::step` still prints in full. The step
+    /// grouping must not be able to swallow a metric: silence reads as "no
+    /// defect", which is the one thing a scorecard must never say by accident.
+    #[test]
+    fn an_unassigned_metric_still_reaches_the_table() {
+        let c = card("not.in.the.step.table", Sense::LowerIsWorse, &[-3.0]);
+        let t = table(&c);
+        assert!(t.contains("UNASSIGNED"), "{t}");
+        assert!(t.contains("not.in.the.step.table"), "{t}");
+        assert!(t.contains("-3.000"), "its numbers too, not just its name:\n{t}");
+    }
+
+    /// The grouping is by step, and the steps come out in pipeline order —
+    /// which is the order to debug them in.
+    #[test]
+    fn the_table_groups_by_step_in_pipeline_order() {
+        let mut c = card("street.kerb_gap", Sense::HigherIsWorse, &[1.0]);
+        c.metrics.push(card("slope.walk_crossfall", Sense::HigherIsWorse, &[1.0]).metrics.remove(0));
+        c.metrics.push(card("seam.terrain_step", Sense::HigherIsWorse, &[1.0]).metrics.remove(0));
+        let t = table(&c);
+        let plan = t.find("PLAN").expect("a plan group");
+        let ground = t.find("GROUND").expect("a ground group");
+        let tile = t.find("TILE").expect("a tile group");
+        assert!(plan < ground && ground < tile, "pipeline order:\n{t}");
+        assert!(!t.contains("UNASSIGNED"), "these three are all assigned:\n{t}");
     }
 
     #[test]
