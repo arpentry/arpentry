@@ -232,10 +232,14 @@ so the geometry reads as geometry:
     --headless --screenshot /tmp/claude/net.png              # then Read the PNG
 ```
 
-`plan_axis_*` is where the model says the surface is; `plan_edge_*` is where the
-model says it ends. The gap between a `plan_edge_*` and the drawn rim beside it
-is the union's doing and nothing else's. Details in `docs/TILER.md` "The network
-view".
+`plan_axis_*` is where the model says the surface is. `plan_bound_*` is where it
+ends — the boundary of the buffered polygon the union actually consumes, from
+the bake's own `pavement::buffer_run`. `plan_edge_*` is the per-segment
+cross-section, and is **not** an outline: it steps at every vertex by
+construction, so its discontinuity is not a defect. The gap between a
+`plan_bound_*` and the drawn rim beside it is the union plus the curb-return
+closing — at an intersection that is most of the asphalt. Details in
+`docs/TILER.md` "The network view".
 
 **It is a debugging archive, not a map** — the run summary's `plan` line says so.
 Serving one to a map style draws three features per source segment that no

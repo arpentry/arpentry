@@ -317,45 +317,45 @@
         {
           "class": "plan_edge_road",
           "color": [
-            255,
-            86,
-            138,
+            150,
+            60,
+            90,
             255
           ],
-          "width": 12,
+          "width": 6,
           "min_level": 13
         },
         {
           "class": "plan_edge_rail",
           "color": [
-            178,
-            104,
-            232,
+            110,
+            70,
+            140,
             255
           ],
-          "width": 12,
+          "width": 6,
           "min_level": 13
         },
         {
           "class": "plan_edge_walk",
           "color": [
-            64,
-            142,
-            255,
+            50,
+            90,
+            150,
             255
           ],
-          "width": 12,
+          "width": 6,
           "min_level": 13
         },
         {
           "class": "plan_edge_path",
           "color": [
-            56,
-            196,
-            104,
+            46,
+            120,
+            70,
             255
           ],
-          "width": 12,
+          "width": 6,
           "min_level": 13
         },
         {
@@ -400,6 +400,50 @@
             255
           ],
           "width": 16,
+          "min_level": 13
+        },
+        {
+          "class": "plan_bound_road",
+          "color": [
+            255,
+            86,
+            138,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "plan_bound_rail",
+          "color": [
+            178,
+            104,
+            232,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "plan_bound_walk",
+          "color": [
+            64,
+            142,
+            255,
+            255
+          ],
+          "width": 14,
+          "min_level": 13
+        },
+        {
+          "class": "plan_bound_path",
+          "color": [
+            56,
+            196,
+            104,
+            255
+          ],
+          "width": 14,
           "min_level": 13
         }
       ]

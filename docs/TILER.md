@@ -339,11 +339,24 @@ layer, over the surface they produced (`server/src/synth/plan.rs`):
 | Class | What it is |
 |-------|-----------|
 | `plan_axis_*` | The source segment's centreline, at its solved surface height — where the surface is, according to the model |
-| `plan_edge_*` | The same segment offset to `sect_a`/`sect_b`, one line per side — where the model says its own surface *ends* |
+| `plan_edge_*` | The same segment offset to `sect_a`/`sect_b`, one line per side — what *one segment alone* claims, deliberately not a continuous curve |
+| `plan_bound_*` | The boundary of the polygon the union consumes: the whole run stroked by `pavement::buffer_run`, joins, mitres and abutment trim included, holes as their own contours — **where the model says its surface ends** |
 
-`*` is the surface family: `road`, `rail`, `walk`, `path`. The union buffers
-and dissolves these polylines, so a gap between `plan_edge_*` and the drawn rim
-beside it is the union's doing and nothing else's. It draws the `SourceSeg`
+`*` is the surface family: `road`, `rail`, `walk`, `path`.
+
+**Read `plan_edge_*` as a cross-section sampled along the way, not as an
+outline.** Consecutive segments' offsets step at every vertex and say nothing
+about the join, which is where a run's extent is actually decided; a reader who
+takes their discontinuity for a hole in the surface is reading a line that was
+never meant to close. `plan_bound_*` is the one that closes, and it is the same
+`buffer_run` call the bake makes rather than a second derivation of it — so a
+gap between `plan_bound_*` and the drawn rim beside it is the union and the
+curb-return closing, and nothing else. At an intersection that gap is most of
+the asphalt: the closing (`poly::close_within`, a 3 m morphological close
+masked to the intersection extents) is what fills a roundabout's body between
+its legs' buffers, and no plan line describes it.
+
+It draws the `SourceSeg`
 population — the one input the drawn surface actually has — rather than the
 Overture geometry: a sidewalk has no source line at all (it is derived from the
 street it rides), and a corridor's line is several joined segments. What a

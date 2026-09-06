@@ -18,15 +18,27 @@
 //! several joined segments. What a reader compares against the mesh is what
 //! the mesher was given.
 //!
-//! Two classes per surface family:
+//! Three classes per surface family:
 //!
 //! - `plan_axis_*` — the segment's centreline, at its solved surface height.
 //!   Where the surface is, according to the model.
 //! - `plan_edge_*` — the same segment offset to `sect_a`/`sect_b`, one line
-//!   per side. **Where the model says its own surface ends.** The union that
-//!   follows buffers these polylines and dissolves them, so the gap between
-//!   this line and the drawn rim beside it is the union's doing and nothing
-//!   else's.
+//!   per side. What one segment alone claims, and **deliberately not a
+//!   continuous curve**: consecutive segments' offsets step at every vertex
+//!   and say nothing about the join, which is where a run's extent is
+//!   actually decided. Read it as a cross-section sampled along the way, not
+//!   as an outline.
+//! - `plan_bound_*` — the boundary of the polygon the union actually
+//!   consumes: the whole run stroked by `pavement::buffer_run`, joins,
+//!   mitres, abutment trim and all, with holes as their own contours.
+//!   **This is the model's real statement of where its surface ends**, and it
+//!   is the same call the bake makes rather than a second derivation of it,
+//!   so the gap between this line and the drawn rim beside it is the union's
+//!   doing and nothing else's.
+//!
+//! The last two disagree wherever the join matters, and that disagreement is
+//! the point: `plan_edge_*` is the cross-section the model wrote down,
+//! `plan_bound_*` is the region that cross-section became.
 //!
 //! Nothing here infers: every number is read off the model. The module is a
 //! projection of `CarriagewayModel` into line features, and it runs only when
@@ -42,6 +54,7 @@ use crate::priors::Surface;
 use crate::project::Bounds;
 use crate::scene::DEG_M;
 use crate::synth::carriageway::{CarriagewayModel, SourceSeg};
+use crate::synth::pavement;
 use crate::tile_build::EncoderFeature;
 use crate::value::Value;
 
@@ -114,6 +127,113 @@ pub fn lines(
             );
         }
     }
+    bounds_lines(out, junctions, bounds, &(w, s, e, n));
+}
+
+/// Draws each run's buffered boundary — the polygon the union consumes.
+///
+/// **Runs are grouped over a padded query, not over the tile.** A run chains
+/// while consecutive sources meet end to end (`pavement::runs`), so grouping
+/// over the tile alone would break every run at the tile edge and draw the cut
+/// as if the model had put it there. The pad is the bake's own, so a run is
+/// grouped here exactly as the chunk grouped it; the contours are then clipped
+/// to the tile like every other line in this module.
+///
+/// The frame is the *chunk's*, not the tile's ([`pavement::chunk_frame_for`]),
+/// because `i_overlay` snaps to a fixed grid anchored on the frame origin: any
+/// other origin would put the boundary a fraction of a millimetre off the
+/// vertices the bake actually produced, which is exactly the kind of
+/// discrepancy this view exists to rule out rather than introduce.
+fn bounds_lines(
+    out: &mut Vec<EncoderFeature>,
+    junctions: &CarriagewayModel,
+    bounds: &Bounds,
+    box_: &(f64, f64, f64, f64),
+) {
+    let frame = pavement::chunk_frame_for(bounds);
+    let pad = crate::priors::PAVE_PAD_M / DEG_M;
+    let mut near = Vec::new();
+    junctions.sources_near(
+        (box_.0 - pad, box_.1 - pad, box_.2 + pad, box_.3 + pad),
+        &mut near,
+    );
+    near.retain(|&i| junctions.drawn(i));
+    // `pavement::runs` chains on the shared endpoint but walks the list in
+    // order, and the bake hands it a sorted one. A grid query does not.
+    near.sort_unstable();
+    for (r, run) in pavement::runs_of(junctions, &near).iter().enumerate() {
+        let line: Vec<[f64; 2]> = run.line().iter().map(|&c| frame.to_m(c)).collect();
+        let family = family(run.surface());
+        let class = format!("{CLASS_PREFIX}bound_{family}");
+        for (c, contour) in pavement::buffer_run_for_plan(run, &line, &frame).iter().flatten().enumerate() {
+            let ring: Vec<Coord<f64>> = contour.iter().map(|&pt| frame.to_deg(pt)).collect();
+            push_ring(out, (r as u32, c as u8), &ring, run, &class, box_);
+        }
+    }
+}
+
+/// Clips a closed contour to the tile and pushes what survives, as one feature
+/// per surviving stretch. A ring is drawn, not filled, so a stretch is a line;
+/// splitting at the tile edge is what keeps `project::quantize`'s clamp from
+/// inventing a chord across the tile.
+fn push_ring(
+    out: &mut Vec<EncoderFeature>,
+    id: (u32, u8),
+    ring: &[Coord<f64>],
+    run: &pavement::Run,
+    class: &str,
+    box_: &(f64, f64, f64, f64),
+) {
+    if ring.len() < 2 {
+        return;
+    }
+    let mut piece: Vec<(Coord<f64>, f64)> = Vec::new();
+    let mut part = 0u32;
+    let mut flush = |piece: &mut Vec<(Coord<f64>, f64)>, part: &mut u32| {
+        if piece.len() >= 2 {
+            out.push(EncoderFeature {
+                id: 0x0b_1b_00_00_00_00
+                    | u64::from(id.0) << 12
+                    | u64::from(id.1) << 8
+                    | u64::from(*part & 0xff),
+                geometry: Geometry::LineString(LineString(
+                    piece.iter().map(|&(c, _)| c).collect(),
+                )),
+                properties: vec![
+                    ("class".to_string(), Value::String(class.to_string())),
+                    ("level".to_string(), Value::Int(run.level())),
+                ],
+                elevation: None,
+                z: Some(piece.iter().map(|&(_, h)| (h * 1000.0).round() as i32).collect()),
+                mesh: None,
+                synth: crate::synth::Synth::None,
+            });
+            *part += 1;
+        }
+        piece.clear();
+    };
+    for k in 0..ring.len() {
+        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+        let Some((t0, t1)) = clip(a, b, box_) else {
+            flush(&mut piece, &mut part);
+            continue;
+        };
+        let at = |t: f64| Coord { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+        let (p0, p1) = (at(t0), at(t1));
+        // A stretch continues only while the clip kept both ends: a segment
+        // entering the box starts a new one.
+        if t0 > 0.0 {
+            flush(&mut piece, &mut part);
+        }
+        if piece.is_empty() {
+            piece.push((p0, run.height_at(p0)));
+        }
+        piece.push((p1, run.height_at(p1)));
+        if t1 < 1.0 {
+            flush(&mut piece, &mut part);
+        }
+    }
+    flush(&mut piece, &mut part);
 }
 
 /// The class suffix for a surface family. `Surface::None` lays no band, so a
@@ -230,6 +350,7 @@ mod tests {
             let f = family(surface);
             assert!(is_plan_class(&format!("{CLASS_PREFIX}axis_{f}")), "axis of {f}");
             assert!(is_plan_class(&format!("{CLASS_PREFIX}edge_{f}")), "edge of {f}");
+            assert!(is_plan_class(&format!("{CLASS_PREFIX}bound_{f}")), "bound of {f}");
         }
         // And it swallows nothing the map actually draws.
         for class in ["marking", "residential", "rail_line", "footway", "sidewalk", "crossing"] {

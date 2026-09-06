@@ -413,41 +413,13 @@ fn bake_chunk(
     let mut by_level: HashMap<(i64, u32, priors::Surface), Shapes> = HashMap::new();
     for run in runs(junctions, source_ids) {
         let line: Vec<[f64; 2]> = run.line.iter().map(|&c| frame.to_m(c)).collect();
-        // A run nothing crowds keeps the constant-width stroke it has always
-        // had — same joins, same vertices, so the change is confined to the
-        // streets a facade actually narrows.
-        let uniform = run.section.iter().all(|&[l, r]| l == run.half_m && r == run.half_m);
-        let mut buffered = if uniform {
-            poly::buffer_line(&line, run.half_m)
-        } else {
-            poly::buffer_section(&line, &run.section)
-        };
-        // Trim to the deck's face. This is the whole of the abutment fix: the
-        // band was generated past the boundary (`synth::carriageway`), and what a
-        // structure carries is removed from it by *that structure's own*
-        // cross-section, so the two share an edge rather than each construct
-        // one. Per run, before the union, because that is the last moment the
-        // model still knows which band this cut belongs to — afterwards the
-        // boolean has dissolved it into the region, and a cut applied there
-        // would just as happily take a bite out of the road passing underneath.
-        let n = line.len();
-        let ends = [
-            run.cut_start.map(|c| (c, [line[0][0] - line[1][0], line[0][1] - line[1][1]])),
-            run.cut_end
-                .map(|c| (c, [line[n - 1][0] - line[n - 2][0], line[n - 1][1] - line[n - 2][1]])),
-        ];
-        for (cut, outward) in ends.into_iter().flatten() {
-            if buffered.is_empty() {
-                break;
-            }
-            buffered = poly::difference(&buffered, &cut_beyond(&cut, &frame, outward));
-        }
+        let buffered = buffer_run(&run, &line, &frame);
         if buffered.is_empty() {
             continue;
         }
         if ring_on && run.hosted && run.surface == priors::Surface::Walkway {
             // A hosted band is not drawn; it says where the ring is pavement.
-            let widened = if uniform {
+            let widened = if run.uniform() {
                 poly::buffer_line(&line, run.half_m + RING_MASK_SLACK_M)
             } else {
                 let wider: Vec<[f64; 2]> =
@@ -1133,7 +1105,7 @@ fn material_rank(surface: priors::Surface) -> u8 {
 
 /// One carriageway run: a polyline of one class, level and surface, to be
 /// stroked in a single pass.
-struct Run {
+pub struct Run {
     line: Vec<Coord>,
     /// The class's own half-width — constant along the run, and what makes two
     /// segments part of the same run.
@@ -1155,6 +1127,13 @@ struct Run {
     /// across open ground. The sidewalk ring masks with the first and draws
     /// the second, so the two never chain.
     hosted: bool,
+    /// The latitude scale the centreline's degrees are compared in.
+    cos_lat: f64,
+    /// The plan height of each vertex, metres — the drawn surface's own, kerb
+    /// rise included. Same length as `line`. Read only by the network view
+    /// (`synth::plan`), which draws this run's boundary at the height of the
+    /// surface it bounds.
+    height: Vec<f64>,
     /// For a hosted walk run, the sheet of the asphalt it borders
     /// ([`host_layer`]), read per segment and chained only while it holds: a
     /// street's asphalt changes sheet along its length, and one key for a
@@ -1239,6 +1218,104 @@ fn cut_beyond(cut: &Handover, frame: &MFrame, outward: [f64; 2]) -> Shapes {
 /// edge can never fall inside the material it is there to remove.
 const CUT_REACH_M: f64 = 8.0;
 
+/// One run's paved region, in `frame` metres: the polygon the union consumes.
+///
+/// **The single construction of a run's paved extent.** The network view
+/// (`synth::plan`) draws this same polygon's boundary, so what a reader sees as
+/// "where the model says the surface ends" is not a second derivation that can
+/// drift from this one — it is this one. A per-segment offset is not a
+/// substitute: it says nothing about the joins, which is where the extent is
+/// actually decided.
+fn buffer_run(run: &Run, line: &[Pt], frame: &MFrame) -> Shapes {
+    if line.len() < 2 {
+        return Vec::new();
+    }
+    // A run nothing crowds keeps the constant-width stroke it has always
+    // had — same joins, same vertices, so the change is confined to the
+    // streets a facade actually narrows.
+    let mut buffered = if run.uniform() {
+        poly::buffer_line(line, run.half_m)
+    } else {
+        poly::buffer_section(line, &run.section)
+    };
+    // Trim to the deck's face. This is the whole of the abutment fix: the
+    // band was generated past the boundary (`synth::carriageway`), and what a
+    // structure carries is removed from it by *that structure's own*
+    // cross-section, so the two share an edge rather than each construct
+    // one. Per run, before the union, because that is the last moment the
+    // model still knows which band this cut belongs to — afterwards the
+    // boolean has dissolved it into the region, and a cut applied there
+    // would just as happily take a bite out of the road passing underneath.
+    let n = line.len();
+    let ends = [
+        run.cut_start.map(|c| (c, [line[0][0] - line[1][0], line[0][1] - line[1][1]])),
+        run.cut_end
+            .map(|c| (c, [line[n - 1][0] - line[n - 2][0], line[n - 1][1] - line[n - 2][1]])),
+    ];
+    for (cut, outward) in ends.into_iter().flatten() {
+        if buffered.is_empty() {
+            break;
+        }
+        buffered = poly::difference(&buffered, &cut_beyond(&cut, frame, outward));
+    }
+    buffered
+}
+
+impl Run {
+    /// Whether a facade has taken nothing back anywhere along it, so the
+    /// constant-width stroke applies.
+    fn uniform(&self) -> bool {
+        self.section.iter().all(|&[l, r]| l == self.half_m && r == self.half_m)
+    }
+
+    /// The level this run's surface is drawn at.
+    pub fn level(&self) -> i64 {
+        self.level
+    }
+
+    /// The surface family this run paves.
+    pub fn surface(&self) -> priors::Surface {
+        self.surface
+    }
+
+    /// This run's centreline, in degrees.
+    pub fn line(&self) -> &[Coord] {
+        &self.line
+    }
+
+    /// The drawn height at the point of the run's centreline nearest `p` — the
+    /// height to draw a boundary vertex at, since the boundary is this run's
+    /// own surface seen edge on. Nearest station rather than an interpolation
+    /// across the band: the two differ by the cross-fall over a half-width,
+    /// centimetres, and this is a debugging line.
+    pub fn height_at(&self, p: Coord) -> f64 {
+        let mut best = (f64::INFINITY, self.height.first().copied().unwrap_or(0.0));
+        for (i, &q) in self.line.iter().enumerate() {
+            let (dx, dy) = ((p.x - q.x) * self.cos_lat, p.y - q.y);
+            let d = dx * dx + dy * dy;
+            if d < best.0 {
+                best = (d, self.height[i]);
+            }
+        }
+        best.1
+    }
+}
+
+/// The runs `source_ids` chain into — the network view's own grouping, which
+/// has to be the bake's or the boundary it draws is not the one that was
+/// buffered. Debug-only; the bake calls [`runs`] directly.
+///
+/// `source_ids` must be sorted, for the reason [`runs`] gives.
+pub fn runs_of(junctions: &CarriagewayModel, source_ids: &[u32]) -> Vec<Run> {
+    runs(junctions, source_ids)
+}
+
+/// [`buffer_run`] for the network view. Debug-only, and deliberately the same
+/// function rather than a reimplementation of it.
+pub fn buffer_run_for_plan(run: &Run, line: &[Pt], frame: &MFrame) -> Shapes {
+    buffer_run(run, line, frame)
+}
+
 /// Chains a chunk's carriageway segments back into polylines.
 ///
 /// The model stores segments because the height field measures distance to each
@@ -1281,13 +1358,16 @@ fn runs(junctions: &CarriagewayModel, source_ids: &[u32]) -> Vec<Run> {
         if continues {
             let r = out.last_mut().expect("a run exists");
             r.line.push(s.b);
+            r.height.push(s.height_b + s.rise_m);
             // The shared vertex already carries its cross-section from the
             // previous segment; the two agree, being read at one station.
             r.section.push(sect(s.sect_b));
             r.cut_end = s.cut_b;
         } else {
             out.push(Run {
+                cos_lat: s.cos_lat,
                 line: vec![s.a, s.b],
+                height: vec![s.height_a + s.rise_m, s.height_b + s.rise_m],
                 half_m: s.half_m,
                 section: vec![sect(s.sect_a), sect(s.sect_b)],
                 level: s.level,

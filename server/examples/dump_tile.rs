@@ -58,6 +58,7 @@ fn main() {
                     let mut cls = String::new();
                     let mut level = String::new();
                     let mut band = String::new();
+                    let mut sheet = String::new();
                     if let (Some(props), Some(keys), Some(vals)) = (f.properties(), tile.keys(), values) {
                         for k in 0..props.len() {
                             let pr = props.get(k);
@@ -68,6 +69,7 @@ fn main() {
                                 "class" => cls = vs,
                                 "level" => level = vs,
                                 "band_class" => band = vs,
+                                "sheet" => sheet = vs,
                                 _ => {}
                             }
                         }
@@ -94,7 +96,7 @@ fn main() {
                     }
                     if let Some(g) = f.geometry_as_mesh_geometry() { push(g.x(), g.y()); }
                     if let Some(g) = f.geometry_as_line_geometry() { push(g.x(), g.y()); }
-                    println!("    feat[{j}] {gt} class={cls} level={level} band={band} verts={nv} x=[{xmin}..{xmax}] y=[{ymin}..{ymax}]");
+                    println!("    feat[{j}] {gt} class={cls} level={level} sheet={sheet} band={band} verts={nv} x=[{xmin}..{xmax}] y=[{ymin}..{ymax}]");
                 }
             }
         }
