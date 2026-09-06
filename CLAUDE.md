@@ -269,8 +269,13 @@ cargo build --release --manifest-path world/Cargo.toml
 The run prints one line per step. The output is byte-deterministic, so
 `cmp` between two runs over the same inputs is a regression gate; a
 difference means something moved. `--terrain 'ramp?grade=0.05'` (or `flat`,
-`hill`, `step`) swaps the DEM for a synthetic ground, where a step's output
-is an assertion rather than a look. `--until terrain` stops after a step.
+`hill`, `step`) swaps the DEM for a synthetic ground, and `--segments
+net:cross` (or `straight`, `tee`, `hairpin?angle=20`, `dual?gap=4`,
+`sidewalk?d=6`, `corner`, `crossing`) swaps the parquet for a synthetic
+network, where a step's output is an assertion rather than a look.
+`--until terrain` stops after a step; the steps so far are `terrain`,
+`drape`, `ribbon`, `surface`, `kerb`, `fillet`. The plan for the last one
+(mesh) is `data/plans/flat-network-2026-09-06.md`.
 
 To look without opening Blender:
 
@@ -281,3 +286,18 @@ blender -b --python scripts/world-render.py -- /tmp/claude/world.glb \
 
 It prints each layer's vertex and face counts and extents, which must match
 the run's summary, then renders from `eye` to `target` in local metres.
+
+For the 2D question — is the outline right — write the plan view instead of
+(or as well as) the GLB. It is one SVG group per step, every stroke width a
+width in metres, a function of the world alone so `diff` says what moved:
+
+```bash
+./world/target/release/arpentry_world --zone data/zones/montreux \
+    --bbox 6.89,46.41,6.96,46.45 --terrain flat --spacing 50 \
+    --svg /tmp/claude/plan.svg --view -1174,234,-974,434   # metres, x0,y0,x1,y1
+rsvg-convert -w 2000 /tmp/claude/plan.svg -o /tmp/claude/plan.png   # then Read
+```
+
+`--view` only changes the window (the clip still runs at the bbox), so a
+200 m window at 2000 px is 10 px per metre, enough to see a kerb. On a flat
+synthetic ground the whole run is under a second.

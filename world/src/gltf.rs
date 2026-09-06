@@ -14,7 +14,9 @@
 
 use serde_json::{json, Value};
 
-use crate::world::{Roads, Terrain, World};
+use crate::terrain::height_at;
+use crate::poly::Shapes;
+use crate::world::{Ribbons, Roads, Surface, Terrain, World};
 
 const MAGIC: u32 = 0x4654_6C67; // "glTF"
 const CHUNK_JSON: u32 = 0x4E4F_534A;
@@ -41,6 +43,27 @@ pub fn write_glb(world: &World) -> Vec<u8> {
     if let Some(r) = &world.roads {
         if !r.lines.is_empty() {
             doc.roads(r);
+        }
+    }
+    if let (Some(r), Some(t)) = (&world.ribbons, &world.terrain) {
+        if !r.ribbons.is_empty() {
+            doc.ribbons(r, t);
+        }
+    }
+    if let (Some(s), Some(t)) = (&world.surface, &world.terrain) {
+        if !s.carriageway.is_empty() || !s.walk.is_empty() {
+            doc.surface(s, t);
+        }
+    }
+    if let (Some(k), Some(t)) = (&world.kerb, &world.terrain) {
+        if !k.pavement.is_empty() {
+            doc.loops("kerb", &k.pavement, t, [0.9, 0.6, 0.3]);
+        }
+    }
+    if let (Some(f), Some(t)) = (&world.fillet, &world.terrain) {
+        let shapes: Shapes = f.carriageway.iter().chain(f.pavement.iter()).cloned().collect();
+        if !shapes.is_empty() {
+            doc.loops("fillet", &shapes, t, [0.3, 0.3, 0.35]);
         }
     }
     doc.pack()
@@ -90,6 +113,56 @@ impl Doc {
                 "attributes": { "POSITION": position, "NORMAL": normal, "COLOR_0": color },
                 "indices": indices,
                 "mode": TRIANGLES,
+                "material": material
+            }),
+        );
+    }
+
+    /// The ribbons' contours as closed line loops on the ground: an outline
+    /// a viewer can read until the mesh step fills it.
+    fn ribbons(&mut self, r: &Ribbons, t: &Terrain) {
+        let shapes: Shapes = r.ribbons.iter().flat_map(|x| x.shape.iter().cloned()).collect();
+        self.loops("ribbon", &shapes, t, [0.9, 0.55, 0.15]);
+    }
+
+    /// The surface's contours, both families in one node.
+    fn surface(&mut self, s: &Surface, t: &Terrain) {
+        let shapes: Shapes = s.carriageway.iter().chain(s.walk.iter()).cloned().collect();
+        self.loops("surface", &shapes, t, [0.2, 0.2, 0.25]);
+    }
+
+    /// A layer of closed line loops, one per contour, lying on the terrain.
+    fn loops(&mut self, name: &str, shapes: &Shapes, t: &Terrain, color: [f32; 3]) {
+        let mut positions = Vec::new();
+        let mut indices: Vec<u32> = Vec::new();
+        let mut base = 0u32;
+        for ring in shapes.iter().flatten() {
+            for p in ring {
+                let z = height_at(t, p[0], p[1]);
+                positions.extend_from_slice(&to_gltf([p[0] as f32, p[1] as f32, z as f32]));
+            }
+            let n = ring.len() as u32;
+            for k in 0..n {
+                indices.extend_from_slice(&[base + k, base + (k + 1) % n]);
+            }
+            base += n;
+        }
+        let position = self.vec3(&positions, true);
+        let indices = self.indices(&indices);
+        let material = self.material(json!({
+            "name": name,
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [color[0], color[1], color[2], 1.0],
+                "metallicFactor": 0.0,
+                "roughnessFactor": 1.0
+            }
+        }));
+        self.layer(
+            name,
+            json!({
+                "attributes": { "POSITION": position },
+                "indices": indices,
+                "mode": LINES,
                 "material": material
             }),
         );
@@ -255,10 +328,12 @@ mod tests {
         let line = Polyline2 {
             id: "r".into(),
             class: "residential".into(),
+            subclass: String::new(),
+            width_m: 5.5,
             pts: vec![[-600.0, -400.0], [0.0, 0.0], [500.0, 300.0]],
         };
         let draped = drape_line(w.terrain.as_ref().unwrap(), &line);
-        w.roads = Some(Roads { lines: vec![draped] });
+        w.roads = Some(Roads { plan: vec![line], lines: vec![draped] });
         w
     }
 

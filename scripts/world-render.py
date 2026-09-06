@@ -28,14 +28,20 @@ for o in bpy.data.objects:
 
 terrain = bpy.data.objects['terrain']
 terrain.color = (0.55, 0.65, 0.45, 1)
-roads = bpy.data.objects.get('roads')
-if roads:
+# Line layers (no faces) render invisible as meshes: bevel them as curves.
+LINE_LAYERS = {'roads': (1.2, (0.9, 0.05, 0.05, 1)), 'ribbon': (0.5, (0.9, 0.55, 0.15, 1)),
+               'surface': (0.6, (0.2, 0.2, 0.25, 1)), 'kerb': (0.6, (0.9, 0.6, 0.3, 1)),
+               'fillet': (0.6, (0.3, 0.3, 0.35, 1))}
+for name, (depth, color) in LINE_LAYERS.items():
+    obj = bpy.data.objects.get(name)
+    if obj is None:
+        continue
     bpy.ops.object.select_all(action='DESELECT')
-    roads.select_set(True)
-    bpy.context.view_layer.objects.active = roads
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
     bpy.ops.object.convert(target='CURVE')
-    roads.data.bevel_depth = 1.2
-    roads.color = (0.9, 0.05, 0.05, 1)
+    obj.data.bevel_depth = depth
+    obj.color = color
 
 scene = bpy.context.scene
 scene.render.engine = 'BLENDER_WORKBENCH'

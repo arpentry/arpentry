@@ -19,6 +19,9 @@ path = "src/main.rs"
 # model stages — this crate rebuilds the world from the ground up.
 arpentry-server = { path = "../server" }
 geo-types = "0.7"
+# The polygon kernel: buffers and booleans on a pinned integer lattice. Named
+# in src/poly.rs and nowhere else.
+i_overlay = "7.0.3"
 # The glTF JSON chunk. The writer is hand-rolled (src/gltf.rs); this only
 # serialises the document it builds.
 serde_json = "1"

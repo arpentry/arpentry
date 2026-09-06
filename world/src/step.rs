@@ -8,20 +8,33 @@ use std::str::FromStr;
 pub enum Step {
     /// The terrain mesh over the bbox, from the DEM.
     Terrain,
-    /// Road centrelines read from the transportation source, draped exactly
+    /// Way centrelines read from the transportation source, draped exactly
     /// onto the terrain mesh.
     Drape,
+    /// Every way buffered to its width: one polygon each, unmerged.
+    Ribbon,
+    /// The ribbons unioned per family, the asphalt subtracted from the walk.
+    Surface,
+    /// Sidewalks attached to their streets, the strip to the kerb filled.
+    Kerb,
+    /// The kerb returns: junction notches rounded by a masked closing.
+    Fillet,
 }
 
 impl Step {
     /// Every step, in the order the pipeline runs them.
-    pub const ALL: [Step; 2] = [Step::Terrain, Step::Drape];
+    pub const ALL: [Step; 6] =
+        [Step::Terrain, Step::Drape, Step::Ribbon, Step::Surface, Step::Kerb, Step::Fillet];
 
     /// The name the CLI prints and `--until` accepts.
     pub fn name(self) -> &'static str {
         match self {
             Step::Terrain => "terrain",
             Step::Drape => "drape",
+            Step::Ribbon => "ribbon",
+            Step::Surface => "surface",
+            Step::Kerb => "kerb",
+            Step::Fillet => "fillet",
         }
     }
 }
@@ -33,7 +46,10 @@ impl FromStr for Step {
         Step::ALL
             .into_iter()
             .find(|step| step.name() == s)
-            .ok_or_else(|| format!("unknown step `{s}` (expected one of: terrain, drape)"))
+            .ok_or_else(|| {
+                let names: Vec<&str> = Step::ALL.iter().map(|s| s.name()).collect();
+                format!("unknown step `{s}` (expected one of: {})", names.join(", "))
+            })
     }
 }
 

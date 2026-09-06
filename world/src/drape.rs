@@ -17,14 +17,20 @@ use std::path::Path;
 use arpentry_server::geoparquet::ReadError;
 
 use crate::grid::Grid;
+use crate::net;
 use crate::roads;
 use crate::step::Summary;
 use crate::terrain::height_at;
 use crate::world::{Polyline2, Polyline3, Roads, Terrain, World};
 
-/// Reads the roads of `segments` and drapes them onto the world's terrain.
-pub fn run(world: &mut World, segments: &Path) -> Result<Summary, ReadError> {
-    let read = roads::read(segments, &world.bbox, &world.frame, &world.rect)?;
+/// Reads the ways of `segments` — a parquet, or a [`net`] spec — and drapes
+/// them onto the world's terrain.
+pub fn run(world: &mut World, segments: &Path) -> Result<Summary, String> {
+    let read = match segments.to_str().filter(|s| net::is_spec(s)) {
+        Some(spec) => synthetic(spec, &world.rect)?,
+        None => roads::read(segments, &world.bbox, &world.frame, &world.rect)
+            .map_err(|e: ReadError| e.to_string())?,
+    };
     let terrain = world.terrain.as_ref().expect("the terrain step runs first");
     let mut roads = Roads::default();
     let (mut pieces, mut vertices) = (0usize, 0usize);
@@ -32,16 +38,46 @@ pub fn run(world: &mut World, segments: &Path) -> Result<Summary, ReadError> {
         let pts = drape(terrain, &line.pts);
         pieces += pts.len().saturating_sub(1);
         vertices += pts.len();
-        roads.lines.push(Polyline3 { id: line.id.clone(), class: line.class.clone(), pts });
+        roads.lines.push(Polyline3 {
+            id: line.id.clone(),
+            class: line.class.clone(),
+            subclass: line.subclass.clone(),
+            width_m: line.width_m,
+            pts,
+        });
     }
     let summary = Summary::new()
         .with("features", read.features)
-        .with("roads", read.kept)
+        .with("ways", read.kept)
+        .with("structures", format!("{} ({} off the ground entirely)", read.structures, read.dropped))
+        .with("measured", read.measured)
+        .with("oneway", read.oneway)
         .with("lines", roads.lines.len())
         .with("pieces", pieces)
         .with("vertices", vertices);
+    roads.plan = read.lines;
     world.roads = Some(roads);
     Ok(summary)
+}
+
+/// The ways of a synthetic network, clipped to the rect like a read one.
+fn synthetic(spec: &str, rect: &crate::frame::Rect) -> Result<roads::Read, String> {
+    let ways = net::parse(spec)?;
+    let mut out = roads::Read::default();
+    for way in ways {
+        out.features += 1;
+        out.kept += 1;
+        for run in roads::clip(&way.pts, rect) {
+            out.lines.push(Polyline2 {
+                id: way.id.clone(),
+                class: way.class.clone(),
+                subclass: way.subclass.clone(),
+                width_m: way.width_m,
+                pts: run,
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// `line` on the surface of `terrain`: split so every piece lies inside one
@@ -103,7 +139,13 @@ fn crossings(a: f64, b: f64, ts: &mut Vec<f64>) {
 /// Reads a `Polyline2` as the plan line it is; for tests and callers that
 /// already hold lines in the frame.
 pub fn drape_line(terrain: &Terrain, line: &Polyline2) -> Polyline3 {
-    Polyline3 { id: line.id.clone(), class: line.class.clone(), pts: drape(terrain, &line.pts) }
+    Polyline3 {
+        id: line.id.clone(),
+        class: line.class.clone(),
+        subclass: line.subclass.clone(),
+        width_m: line.width_m,
+        pts: drape(terrain, &line.pts),
+    }
 }
 
 #[cfg(test)]
