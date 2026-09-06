@@ -88,8 +88,7 @@ const SCALE: f64 = 1.0 / GRID_M;
 /// dilate/erode) take no adapter and keep their own; their outputs re-round
 /// once on the next pinned boolean.
 fn pin_lattice() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ARPT_NO_PIN_LATTICE").is_none())
+    true
 }
 
 /// Half-extent of the pinned adapter's rect, metres. Centred on the frame

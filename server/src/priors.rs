@@ -1118,9 +1118,7 @@ pub const WALK_MAX_FACE_M: f64 = 1.5;
 /// (`synth::walkway::fitted_half`) and the bench (`ground::walk_edge`) read it
 /// through [`bench_face_cap_m`], which is what keeps them from disagreeing.
 pub fn walk_max_face_m() -> f64 {
-    std::env::var_os("ARPT_WALK_FACE_CAP")
-        .and_then(|v| v.to_str()?.parse().ok())
-        .unwrap_or(WALK_MAX_FACE_M)
+    WALK_MAX_FACE_M
 }
 
 /// How deep a face the bench under a drawn surface may cut or fill before the

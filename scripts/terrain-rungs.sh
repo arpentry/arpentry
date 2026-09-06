@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Tile one site at every rung of the terrain dial, and score each.
+# Tile one site at every rung of the terrain dial.
 #
 # The isolation harness's one moving part (data/plans/isolation-harness-2026-09-04.md
 # §"The model"): hold the features fixed — real Overture geometry, one bbox, one
 # cut — and change only the ground under them, from a plane to the real DEM. A
-# metric that is already off at `flat` is off in the *construction*; one that
-# only leaves zero at `hill` or `step` is off in the ground, or in how the ground
+# defect that is already there at `flat` is in the *construction*; one that
+# only appears at `hill` or `step` is in the ground, or in how the ground
 # is read. Nothing that reads a single real extract can tell those apart, which
 # is why band_deck_bare and the structure_drift "regression" each cost days.
 #
@@ -14,25 +14,20 @@
 #
 # Options:
 #   --data <dir>      Layer parquets + terrain.pmtiles (default data/zones/montreux)
-#   --out <dir>       Where the archives and scorecards go (default $TMPDIR/rungs)
+#   --out <dir>       Where the archives go (default $TMPDIR/rungs)
 #   --zoom <z>        Tile this zoom only (default 16, the detail rung)
 #   --base <m>        Height of the synthetic grounds at the site (default 400)
 #   --radius <m>      How far the ramp rises before levelling off (default 600)
 #   --rungs <list>    Comma-separated subset of: flat,ramp,hill,step,dem
-#   --at <lon,lat>    Score around this point instead of the bbox centre
-#   --no-model        Skip the model half (--verify-model). It is ~80 % of the
-#                     wall time, and it scores the whole solved scene — every
-#                     corridor the row groups admitted — rather than the tiles
-#                     this bbox emitted, so its rate is not this site's.
 #
-# Each rung writes <out>/<name>-<rung>.arpa and <out>/<name>-<rung>.json, and the
-# run ends with the table that is the actual output: metric by rung.
+# Each rung writes <out>/<name>-<rung>.arpa and <out>/<name>-<rung>.log. What to
+# do with them is the open question the harness rebuild has to answer; until it
+# does, the run summary in each log is what there is to compare.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$SCRIPT_DIR/.."
 TILER="$ROOT_DIR/server/target/release/arpentry_tiler"
-VERIFY="$ROOT_DIR/server/target/release/arpentry_verify"
 
 if [ $# -lt 2 ]; then
     sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
@@ -49,8 +44,6 @@ ZOOM=16
 BASE=400
 RADIUS=600
 RUNGS="flat,ramp,hill,step,dem"
-AT=""
-MODEL=true
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -60,21 +53,17 @@ while [ $# -gt 0 ]; do
         --base) BASE="$2"; shift 2 ;;
         --radius) RADIUS="$2"; shift 2 ;;
         --rungs) RUNGS="$2"; shift 2 ;;
-        --at) AT="$2"; shift 2 ;;
-        --no-model) MODEL=false; shift ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
 
 mkdir -p "$OUT_DIR"
 
-# The site's centre, for the synthetic grounds' origin and for --at. Every rung
+# The site's centre, the synthetic grounds' origin. Every rung
 # is anchored at the same point, so `hill` peaks where `ramp` crosses its base
 # and the rungs differ only in shape.
 CLON=$(awk -F, '{printf "%.6f", ($1+$3)/2}' <<<"$BBOX")
 CLAT=$(awk -F, '{printf "%.6f", ($2+$4)/2}' <<<"$BBOX")
-# --at is left empty by default: the bbox *is* the site, so scoring the whole
-# archive keeps the cross-tile seam checks, which --at blinds.
 
 # The dial. Each is a pure function of position (server/src/dem/field.rs), so a
 # rung is reproducible from its string alone.
@@ -117,28 +106,17 @@ for rung in "${rungs[@]}"; do
     spec="$(spec_for "$rung")"
     echo ""
     echo "── $rung ── $spec"
-    rm -f "$arpa" "$OUT_DIR/$NAME-$rung.model.json"
-    model_arg=()
-    verify_model_arg=()
-    if [ "$MODEL" = true ]; then
-        model_arg=(--verify-model "$OUT_DIR/$NAME-$rung.model.json")
-        verify_model_arg=(--model "$OUT_DIR/$NAME-$rung.model.json")
-    fi
+    rm -f "$arpa"
     "$TILER" \
         --output "$arpa" \
         --bbox "$BBOX" \
         --min-zoom "$ZOOM" \
         --max-zoom "$ZOOM" \
         --mem $((256 * 1024 * 1024)) \
-        ${model_arg[@]+"${model_arg[@]}"} \
         --terrain "$spec" \
         "${inputs[@]}" >"$OUT_DIR/$NAME-$rung.log" 2>&1
     grep -E "^(model|ground|consistency|cdt|residuals|done)" "$OUT_DIR/$NAME-$rung.log" || true
-    "$VERIFY" "$arpa" ${AT:+--at "$AT"} \
-        ${verify_model_arg[@]+"${verify_model_arg[@]}"} \
-        --json "$OUT_DIR/$NAME-$rung.json" >/dev/null
 done
 
 echo ""
-echo "Scorecards: $OUT_DIR/$NAME-<rung>.json"
-"$ROOT_DIR/scripts/rung-table.py" "$OUT_DIR/$NAME" "${rungs[@]}"
+echo "Archives: $OUT_DIR/$NAME-<rung>.arpa"

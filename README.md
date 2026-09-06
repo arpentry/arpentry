@@ -6,7 +6,6 @@ tiler that builds the world it draws is Rust.
 - **Tile format** (`.arpt`) — Compact binary tiles using FlatBuffers (zero-copy) and Brotli (compression). Carries geometry and properties for client-side styling; meshes can embed lightweight materials. Tiles are shipped in a single `.arpa` archive.
 - **Tiler** (`arpentry_tiler`) — Builds archives from GeoParquet sources (Overture, Natural Earth) and DEM tiles. Tile generation is framed as a sort problem: clip, sort by a space-filling-curve key, group, encode, write.
 - **World model** — What makes the tiler more than a format converter: source data says a road is a bridge, not how high. A constraint solve derives the heights, an engineered ground is carved to meet them, and the paved surfaces are drawn as one fabric.
-- **Verification** (`arpentry_verify`) — Scores an emitted archive against the model's invariants and diffs it against a committed baseline, so a change is judged by a number rather than by a screenshot.
 - **Tile server** (`arpentry_server`) — Serves an archive over HTTP, or synthesises tiles procedurally.
 - **Tile viewer** (`arpentry_client`) — WebGPU 3D globe renderer. Native (macOS/Linux/Windows via GLFW) and WebAssembly (via Emscripten).
 
@@ -77,7 +76,6 @@ The web build is a cross-compilation. FlatBuffers schemas must be compiled by a 
 | `docs/GENERATION.md` | The vertical world model: feature strata and authority, the constraint solve, the engineered ground, the invariants |
 | `docs/GROUND.md` | The ground imprint and its per-zoom meshes |
 | `docs/ROADS.md` | The horizontal road surface: widths, junction areas, markings |
-| `docs/VERIFICATION.md` | Measuring an emitted archive against the invariants: the scorecard, its thresholds, the scenario corpus |
 | `docs/VIEWER.md` | Viewer specification: coordinate pipeline, tile management, rendering |
 | `docs/CONTROL.md` | Map control specification: camera parameters, input bindings, pan/zoom/rotate, inertia, fly-to |
 

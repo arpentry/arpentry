@@ -180,8 +180,7 @@ pub struct FieldYields<'a> {
 /// drapes, so the yield agrees with what is drawn. Off by default until the
 /// bake reorder is judged (`order.walk_on_asphalt`'s 0.42 % residue).
 fn field_yields() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ARPT_FIELD_YIELDS").is_some())
+    false
 }
 
 /// Whether the sidewalk is drawn as the **ring** of the paved union rather
@@ -202,8 +201,7 @@ fn field_yields() -> bool {
 /// sheet of everything pedestrian. Here they become the **mask** that says
 /// where along the kerb the ring is pavement at all.
 pub fn walk_ring() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ARPT_NO_WALK_RING").is_none())
+    true
 }
 
 /// Bracket step for measuring the ring's own width outward from the kerb,
@@ -285,26 +283,9 @@ pub fn bake(
     // map — a kept chunk still unions from everything that reaches it — so
     // this changes which chunks exist, never what one contains.
     if let Some(b) = only {
-        let before = keys.len();
         let (x0, y0) = chunk_of(b.west, b.south);
         let (x1, y1) = chunk_of(b.east, b.north);
         keys.retain(|&(x, y)| x >= x0 && x <= x1 && y >= y0 && y <= y1);
-        if std::env::var_os("ARPT_PAVE_PROBE").is_some() {
-            eprintln!("[pave] {before} chunks in the model, {} within the bounds", keys.len());
-        }
-    }
-    if std::env::var_os("ARPT_PAVE_PROBE").is_some() {
-        let mut counts: Vec<usize> = keys.iter().map(|k| by_chunk[k].len()).collect();
-        counts.sort_unstable();
-        let total: usize = counts.iter().sum();
-        eprintln!(
-            "[pave] {} chunks, {} source-refs, per-chunk min {} median {} max {}",
-            keys.len(),
-            total,
-            counts.first().copied().unwrap_or(0),
-            counts.get(counts.len() / 2).copied().unwrap_or(0),
-            counts.last().copied().unwrap_or(0),
-        );
     }
 
     // Same fan-out shape as the solve (`solve/mod.rs`): a shared cursor, one
@@ -341,7 +322,6 @@ pub fn bake(
                     *n += 1;
                     keys[i]
                 };
-                let t = std::time::Instant::now();
                 let chunk_field = field.map(|f| {
                     crate::synth::height::HeightField::for_tile(
                         junctions,
@@ -355,15 +335,6 @@ pub fn bake(
                     _ => None,
                 };
                 let (levels, benches) = bake_chunk(junctions, k, &by_chunk[&k], &mut fy, walls, ring);
-                if std::env::var_os("ARPT_PAVE_PROBE").is_some() && t.elapsed().as_millis() > 200 {
-                    eprintln!(
-                        "[pave] chunk {:?}: {} sources -> {} levels in {:?}",
-                        k,
-                        by_chunk[&k].len(),
-                        levels.len(),
-                        t.elapsed()
-                    );
-                }
                 if !levels.is_empty() || !benches.is_empty() {
                     out.lock().expect("pavement results poisoned").push((k, levels, benches));
                 }
@@ -549,25 +520,10 @@ fn bake_chunk(
     // bands that key already holds; its bench goes back to the model.
     let mut benches: Vec<SourceSeg> = Vec::new();
     if ring_on {
-        let probe = std::env::var_os("ARPT_PAVE_PROBE").is_some();
         let walls = wall_shapes(walls, &rect, &frame);
         let cos_lat = chunk_centre(cx, cy).y.to_radians().cos();
         let asphalt_keys: Vec<(i64, u32, priors::Surface)> =
             levels.iter().copied().filter(|k| k.2 == priors::Surface::Asphalt).collect();
-        if probe {
-            let mut mk: Vec<_> = ring_mask
-                .iter()
-                .flat_map(|(k, g)| g.iter().map(move |(w, v)| ((k.0, k.1, *w), v.len())))
-                .collect();
-            mk.sort_unstable();
-            eprintln!(
-                "[ring] chunk {:?}: asphalt keys {:?}, band keys {:?}, walls {} shapes",
-                key,
-                asphalt_keys.iter().map(|k| (k.0, k.1)).collect::<Vec<_>>(),
-                mk,
-                walls.len()
-            );
-        }
         let mut scratch: Vec<u32> = Vec::new();
         // The intersections whose pins can reach a kerb in this chunk.
         let pins: Vec<&crate::synth::carriageway::Intersection> = junctions.near((
@@ -603,25 +559,10 @@ fn bake_chunk(
             if raw.is_empty() {
                 continue;
             }
-            let t0 = std::time::Instant::now();
             let mut kerb = kerb_segments(&asphalt, &raw, &others, &frame);
             bridge_along_kerb(&mut kerb);
             let mask = kerb_mask(&kerb);
-            let t_kerb = t0.elapsed();
             let ring = sidewalk_ring(&asphalt, &ballast, &walls, &mask);
-            let t_ring = t0.elapsed() - t_kerb;
-            if probe {
-                eprintln!(
-                    "[ring]   ({level}, {layer}) walk {walk_layer}: asphalt {:.0} m2, bands {:.0} m2, raw mask {:.0} m2, \
-                     kerb {:.0} m of {:.0} masked, ring {:.0} m2",
-                    poly::area(&asphalt),
-                    poly::area(&poly::union_all(bands)),
-                    poly::area(&raw),
-                    kerb.iter().map(|k| k.len).sum::<f64>(),
-                    kerb.iter().filter(|k| k.masked).map(|k| k.len).sum::<f64>(),
-                    poly::area(&ring)
-                );
-            }
             if ring.is_empty() {
                 continue;
             }
@@ -629,14 +570,6 @@ fn bake_chunk(
             // point, with what became of it: masked, in the ring, its seat,
             // and after the fit its width or its refusal. The instrument for
             // a gap the mask cannot explain and a bump the seat can.
-            let probe_at: Option<Coord> = std::env::var("ARPT_RING_AT").ok().and_then(|v| {
-                let (a, b) = v.split_once(',')?;
-                Some(Coord { x: a.trim().parse().ok()?, y: b.trim().parse().ok()? })
-            });
-            let probe_m = probe_at.map(|c| frame.to_m(c));
-            let near_probe = |p: Pt| -> bool {
-                probe_m.is_some_and(|q| ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt() <= 15.0)
-            };
             // The ring's bench: one band segment per masked kerb station the
             // ring actually covers, seated at the kerb. `at` carries the
             // station index through the fit, which drops what it refuses.
@@ -649,7 +582,6 @@ fn bake_chunk(
                     (k.p[0] + k.q[0]) * 0.5 + k.n[0] * half,
                     (k.p[1] + k.q[1]) * 0.5 + k.n[1] * half,
                 ];
-                let show = near_probe(mid);
                 let in_ring = ring_r.inside(mid);
                 let ka = frame.to_deg([k.p[0] - k.n[0] * SEAT_INSET_M, k.p[1] - k.n[1] * SEAT_INSET_M]);
                 let kb = frame.to_deg([k.q[0] - k.n[0] * SEAT_INSET_M, k.q[1] - k.n[1] * SEAT_INSET_M]);
@@ -659,19 +591,6 @@ fn bake_chunk(
                         kerb_seat(junctions, &pins, level, layer, kb, cos_lat, &mut scratch),
                     )
                 });
-                if show {
-                    let c = frame.to_deg(mid);
-                    eprintln!(
-                        "[ring-at] ({level},{layer}) walk {walk_layer} station {ki} at {:.6},{:.6} len {:.1} \
-                         masked {} in_ring {} seats {:?}",
-                        c.x,
-                        c.y,
-                        k.len,
-                        k.masked,
-                        in_ring,
-                        seats.as_ref().map(|(x, y)| (x.map(|v| (v.0 * 100.0).round() / 100.0), y.map(|v| (v.0 * 100.0).round() / 100.0)))
-                    );
-                }
                 if !k.masked || !in_ring {
                     continue;
                 }
@@ -795,26 +714,6 @@ fn bake_chunk(
                 }
                 None => rings_by_sub.push((0, ring)),
             };
-            if probe && t0.elapsed().as_millis() > 500 {
-                eprintln!(
-                    "[ring]   ({level},{layer}) walk {walk_layer}: {} stations, {} benches, {} sheets: kerb {:?} ring {:?} seats+cut {:?}",
-                    kerb.len(),
-                    mine.len(),
-                    rings_by_sub.len(),
-                    t_kerb,
-                    t_ring,
-                    t0.elapsed() - t_kerb - t_ring
-                );
-            }
-            if let Some(q) = probe_m {
-                for (sub, r) in &rings_by_sub {
-                    eprintln!(
-                        "[ring-at] ({level},{layer}) walk {walk_layer}+{sub}: probe in final ring: {} (ring {:.0} m2)",
-                        inside(r, q),
-                        poly::area(r)
-                    );
-                }
-            }
             // **A bench belongs to the chunk that owns its station.** The
             // union is built over the chunk's pad, so its region ends in butt
             // ends at the pad's edge, and the kerb walk wraps those ends with
@@ -872,21 +771,11 @@ fn bake_chunk(
                 break;
             }
         }
-        let probe_m: Option<Pt> = std::env::var("ARPT_RING_AT").ok().and_then(|v| {
-            let (a, b) = v.split_once(',')?;
-            Some(frame.to_m(Coord { x: a.trim().parse().ok()?, y: b.trim().parse().ok()? }))
-        });
-        if let Some(q) = probe_m.filter(|_| surface.is_pedestrian()) {
-            eprintln!("[ring-at] key ({level},{layer},{surface:?}) after seniors: probe inside {}", inside(&closed, q));
-        }
         // The trench yield: the plan space another sheet's open band claims
         // more than a storey away vertically is not this surface's to pave
         // (`trench_yields`).
         if let Some(cuts) = yields.get(&(level, layer, surface)) {
             closed = poly::difference(&closed, &poly::union_all(cuts));
-        }
-        if let Some(q) = probe_m.filter(|_| surface.is_pedestrian()) {
-            eprintln!("[ring-at] key ({level},{layer},{surface:?}) after yields: probe inside {}", inside(&closed, q));
         }
         if closed.is_empty() {
             continue;
@@ -934,9 +823,6 @@ fn bake_chunk(
 /// `walk_*`'s colours; what stays unbought is the double rim where a
 /// path meets a pavement. `ARPT_WALK_MERGE=1` turns it on for the A/B.
 fn drawn(surface: priors::Surface) -> priors::Surface {
-    if std::env::var_os("ARPT_WALK_MERGE").is_some() {
-        return priors::drawn_material(surface);
-    }
     surface
 }
 
@@ -1032,7 +918,6 @@ fn trench_yields(
             // the plate displaced.
             let gap = match field {
                 Some((hf, sm, z_ref)) => {
-                    let chord = s.height_at(ts) - t.height_at(tt);
                     let mut scratch: Vec<u32> = Vec::new();
                     let ps = Coord {
                         x: s.a.x + (s.b.x - s.a.x) * ts,
@@ -1047,18 +932,6 @@ fn trench_yields(
                     let hs = hf.at(sm, sheet_s, *z_ref, *z_ref, rect, ps.x, ps.y, &mut scratch);
                     let ht = hf.at(sm, sheet_t, *z_ref, *z_ref, rect, pt.x, pt.y, &mut scratch);
                     let g = hs - ht;
-                    if std::env::var_os("ARPT_FIELD_YIELDS_CENSUS").is_some() {
-                        use crate::solve::crossings::SEPARATION_M;
-                        let flip_sep = (g.abs() <= SEPARATION_M) != (chord.abs() <= SEPARATION_M);
-                        let flip_kerb = (g.abs() <= priors::WALK_ON_ASPHALT_M)
-                            != (chord.abs() <= priors::WALK_ON_ASPHALT_M);
-                        if flip_sep || flip_kerb {
-                            eprintln!(
-                                "[fy] flip sep={flip_sep} kerb={flip_kerb} chord={chord:.2} field={g:.2} at {:.6},{:.6}",
-                                ps.x, ps.y
-                            );
-                        }
-                    }
                     g
                 }
                 None => s.height_at(ts) - t.height_at(tt),
@@ -1224,8 +1097,7 @@ fn stratum_rank(surface: priors::Surface) -> u8 {
 /// cross-namespace sentence is now spoken where heights exist to say it
 /// honestly: the kerb-coincident yield in [`trench_yields`].
 fn seniors(surface: priors::Surface) -> &'static [priors::Surface] {
-    // Under the one-ordinal namespace (the default; `ARPT_TWO_SHEETS`
-    // reverts) the cross-namespace
+    // Under the one-ordinal namespace the cross-namespace
     // sentence comes back to the region level, where it belongs: a coplanar
     // walk shares its street's (level, layer) **by construction** now, so the
     // key matches by meaning rather than accident — and a walk genuinely
@@ -1235,24 +1107,15 @@ fn seniors(surface: priors::Surface) -> &'static [priors::Surface] {
     // union's own shape — a footway lying 8 m inside a paved field at
     // 6.9130,46.4397 survived every segment cross-section cut and cannot
     // survive this one.
-    if std::env::var_os("ARPT_TWO_SHEETS").is_none() {
-        return match surface {
-            priors::Surface::Asphalt => &[],
-            priors::Surface::Ballast => &[priors::Surface::Asphalt],
-            priors::Surface::Walkway => &[priors::Surface::Asphalt, priors::Surface::Ballast],
-            priors::Surface::Path => &[
-                priors::Surface::Walkway,
-                priors::Surface::Asphalt,
-                priors::Surface::Ballast,
-            ],
-            priors::Surface::None => &[],
-        };
-    }
     match surface {
         priors::Surface::Asphalt => &[],
         priors::Surface::Ballast => &[priors::Surface::Asphalt],
-        priors::Surface::Walkway => &[],
-        priors::Surface::Path => &[priors::Surface::Walkway],
+        priors::Surface::Walkway => &[priors::Surface::Asphalt, priors::Surface::Ballast],
+        priors::Surface::Path => &[
+            priors::Surface::Walkway,
+            priors::Surface::Asphalt,
+            priors::Surface::Ballast,
+        ],
         priors::Surface::None => &[],
     }
 }
@@ -1554,23 +1417,6 @@ impl<'a> Region<'a> {
 
 /// Even-odd point-in-region over every contour of `shapes`; holes fall out of
 /// the parity.
-fn inside(shapes: &Shapes, p: Pt) -> bool {
-    let mut odd = false;
-    for shape in shapes {
-        for ring in shape {
-            let n = ring.len();
-            for i in 0..n {
-                let (a, b) = (ring[i], ring[(i + 1) % n]);
-                if (a[1] > p[1]) != (b[1] > p[1])
-                    && p[0] < a[0] + (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1])
-                {
-                    odd = !odd;
-                }
-            }
-        }
-    }
-    odd
-}
 
 /// Every contour of `asphalt` cut into stations of at most [`RING_STEP_M`],
 /// each marked by whether `raw` covers the ring beside it and no other sheet's

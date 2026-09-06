@@ -38,18 +38,6 @@ OPTIONS:
                        defaults to the centre of --bbox
   --threads <n>        Worker threads (default: CPU count)
   --brotli <q>         Brotli quality 0-11 for tile blobs (default: 7)
-  --dump <dir>         Write stage-artifact GeoJSON dumps (scene graph,
-                       solved profiles) for inspection in QGIS/kepler
-  --verify-model <p>   Write the model-side scorecard: the structural checks
-                       (I7 authority, I8 ground footprint, I5 determinism) that
-                       measure how the scene was computed rather than what was
-                       drawn. Re-solves the scene, so it is opt-in. Merge it
-                       into a scorecard with `arpentry_verify --model <p>`.
-                       (ARPT_NO_SOLVE=1 drops every profile after the solve:
-                       the plan step with no heights behind it. It runs, but
-                       it is not a smaller world — the kerb checks lose their
-                       population entirely, because a pavement is only drawn
-                       where its host has a height.)
   --stage-out <path>   Write the stages this run computed to a snapshot, so a
                        later run can skip them
   --stage-in <path>    Reuse the stages in a snapshot instead of computing
@@ -230,7 +218,7 @@ fn report_timings(stats: &pipeline::Stats) {
         mib(stats.record_bytes),
     );
     // What the three blocks above account for, and what they do not: the
-    // `--dump` write, `--verify-model` and the probes all run between the model
+    // The probes all run between the model
     // stage and phase 1, inside a wall clock and outside every sum. Printed on
     // every run, zero included, for the reason the `cdt` line below is — a
     // remainder that appeared only when it was large would make its own
@@ -289,8 +277,6 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
     let mut terrain: Option<PathBuf> = None;
     let mut threads: usize = 0;
     let mut brotli_quality: i32 = arpentry_server::tile_build::DEFAULT_QUALITY;
-    let mut dump: Option<PathBuf> = None;
-    let mut verify_model: Option<PathBuf> = None;
     let mut stage_out: Option<PathBuf> = None;
     let mut stage_in: Option<PathBuf> = None;
     let mut breaklines = true;
@@ -310,10 +296,6 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
             "--terrain" => terrain = Some(PathBuf::from(value(&mut it, "--terrain")?)),
             "--threads" => threads = parse_num(&value(&mut it, "--threads")?, "--threads")?,
             "--brotli" => brotli_quality = parse_num(&value(&mut it, "--brotli")?, "--brotli")?,
-            "--dump" => dump = Some(PathBuf::from(value(&mut it, "--dump")?)),
-            "--verify-model" => {
-                verify_model = Some(PathBuf::from(value(&mut it, "--verify-model")?))
-            }
             "--stage-out" => stage_out = Some(PathBuf::from(value(&mut it, "--stage-out")?)),
             "--stage-in" => stage_in = Some(PathBuf::from(value(&mut it, "--stage-in")?)),
             "--no-breaklines" => breaklines = false,
@@ -345,8 +327,6 @@ fn parse(args: Vec<String>) -> Result<Config, String> {
         terrain,
         threads,
         brotli_quality,
-        dump,
-        verify_model,
         stage_out,
         stage_in,
         breaklines,

@@ -226,18 +226,15 @@ impl Carriers {
             let Some(p) = solved.profile(d.corridor) else { continue };
             let corr = &scene.corridors[d.corridor as usize];
             let mut hits = 0usize;
-            let (mut past_end, mut too_far) = (0usize, 0usize);
             // The first and last samples that found this deck: where the run
             // enters and leaves it, in its own arc and in the carrier's.
             let (mut enter, mut leave) = (None, None);
             for &(s, c) in &pts {
                 let a = p.arc_of(c.x, c.y);
                 if a < d.arc0 - STEP_M || a > d.arc1 + STEP_M {
-                    past_end += 1;
                     continue;
                 }
                 if metric_len(c, p.point_at_arc(a), corr.cos_lat) > LATERAL_M {
-                    too_far += 1;
                     continue;
                 }
                 hits += 1;
@@ -249,24 +246,6 @@ impl Carriers {
             // `carries` decides on. The measurement (`verify::checks::contact`)
             // restates the rule against the *drawn* meshes rather than sharing
             // it, so when the two disagree this is where the disagreement is.
-            if std::env::var_os("ARPT_DEBUG_CARRY").is_some() {
-                let shared = leave.zip(enter).map(|(l, e)| l.0 - e.0).unwrap_or(0.0);
-                let advance = leave.zip(enter).map(|(l, e)| (l.1 - e.1).abs()).unwrap_or(0.0);
-                eprintln!(
-                    "[carry] run {:.6},{:.6} len {total:.1} vs deck #{} [{:.1}, {:.1}]: hits \
-                     {hits}/{} (past-end {past_end}, too-far {too_far}) shared {shared:.1} \
-                     advance {advance:.1} joins {:?} {:?} -> {}",
-                    nodes[0].x,
-                    nodes[0].y,
-                    d.corridor,
-                    d.arc0,
-                    d.arc1,
-                    pts.len(),
-                    enter.map(|e| (e.2 * 100.0).round() / 100.0),
-                    leave.map(|l| (l.2 * 100.0).round() / 100.0),
-                    carries(enter, leave, hits, pts.len())
-                );
-            }
             if !carries(enter, leave, hits, pts.len()) {
                 continue;
             }

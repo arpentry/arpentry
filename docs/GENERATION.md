@@ -8,8 +8,8 @@ which features are allowed to influence one another.
 
 Companions: `docs/ROADS.md` owns the horizontal road surface (widths, junction
 areas, markings) built on top of this; `docs/GROUND.md` details the ground
-imprint and its meshes; `docs/VERIFICATION.md` owns the harness that measures
-an emitted archive against §7.
+imprint and its meshes. §7's invariants are stated here; the harness that
+measures an emitted archive against them is being rebuilt (see §8).
 
 Every claim in §7 is stated as a predicate with a check in §8. A design
 statement with no check is a wish, not a specification.
@@ -697,9 +697,15 @@ epidemic of missing structures.)
 
 ## 8. Verification
 
-Per `docs/VERIFICATION.md`: write the check before the fix, and prefer a
-measurement to an impression. A defect found in a render is not fixed until a
-check exists that would have found it.
+The principle stands and the harness does not: the archive-wide scorecard
+that used to score §7 was removed in favour of verifying each pipeline step on
+its own, and its replacement is not yet designed. Until it is, §7 is a
+specification with no automatic enforcement.
+
+The discipline the old harness earned is worth carrying into the new one:
+write the check before the fix, prefer a measurement to an impression, and
+treat a defect found in a render as unfixed until a check exists that would
+have found it.
 
 | Invariant | Check | Population | Falsified by |
 |-----------|-------|------------|--------------|

@@ -166,18 +166,6 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
     // gets chorded away with it. Applied after them all, the equality holds at
     // the output, which is what I2 asks of a junction.
     contact_pass(g);
-    if let Some(dbg) = std::env::var_os("ARPT_DEBUG_BURY") {
-        if let Ok(want) = dbg.to_string_lossy().parse::<u32>() {
-            for c in g.corridors.iter().filter(|c| c.id == want) {
-                for (k, &v) in c.vars.iter().enumerate() {
-                    eprintln!(
-                        "[bury] exit corridor {} k={} h={:.2} slack=({:.2},{:.2})",
-                        c.id, k, g.h[v], g.slack[v].0, g.slack[v].1
-                    );
-                }
-            }
-        }
-    }
     Relaxed { sweeps: used, demands_dropped: dropped.count, worst_dropped_m: dropped.worst_m }
 }
 
@@ -191,8 +179,9 @@ pub fn solve(g: &mut SolveGraph) -> Relaxed {
 /// applied to measurement).
 pub struct PassResidual {
     pub name: &'static str,
-    /// Per-variable |move| of one further pass application, in metres.
-    pub dist: crate::verify::dist::Dist,
+    /// The largest |move| one further pass application would make, in metres.
+    /// Zero means this constraint family holds at the solved point.
+    pub max_m: f64,
 }
 
 /// Measures every constraint family's residual at the solved point — the
@@ -221,12 +210,14 @@ pub fn residuals(g: &mut SolveGraph) -> Vec<PassResidual> {
     let sites = var_sites(g);
     let point = g.h.clone();
     let mut measure = |g: &mut SolveGraph, name: &'static str| {
-        let mut dist = crate::verify::dist::Dist::metres();
-        for (a, b) in g.h.iter().zip(point.iter()) {
-            dist.push((a - b).abs());
-        }
+        let max_m = g
+            .h
+            .iter()
+            .zip(point.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
         g.h.copy_from_slice(&point);
-        out.push(PassResidual { name, dist });
+        out.push(PassResidual { name, max_m });
     };
     for _ in 0..GRADE_INNER {
         if grade_pass(g) < TOL_M {
@@ -312,14 +303,6 @@ fn seed_bore_ceilings(g: &mut SolveGraph, sites: &VarSites) {
             if let Some(surf) = c.lateral[k] {
                 slack[v].1 =
                     slack[v].1.min(surf.min(vars[v].terrain_m) - super::structures::BORE_COVER_M);
-            }
-            if let Some(dbg) = std::env::var_os("ARPT_DEBUG_BURY") {
-                if dbg.to_string_lossy().parse::<u32>() == Ok(c.id) {
-                    eprintln!(
-                        "[bury] seed corridor {} k={} covered={} lateral={:?} terrain={:.2} ceiling={:.2}",
-                        c.id, k, c.covered[k], c.lateral[k], vars[v].terrain_m, slack[v].1
-                    );
-                }
             }
         }
     }
@@ -512,22 +495,11 @@ fn grade_pass(g: &mut SolveGraph) -> f64 {
 /// constraint into a hope: clearance shortfall 51.93 → 293.61 m
 /// (docs/VERIFICATION.md §6).
 fn clearance_pass(g: &mut SolveGraph, sites: &VarSites, dropped: &mut Dropped, share: bool) {
-    let debug_id: Option<u32> = std::env::var("ARPT_DEBUG_CLEAR")
-        .ok()
-        .and_then(|s| s.parse().ok());
     for i in 0..g.crossings.len() {
         // By value: the passes below write `g.h`, and a crossing is four
         // numbers.
         let gc = g.crossings[i];
         let gc = &gc;
-        if debug_id == Some(g.corridors[gc.upper_ci].id) {
-            let c = &g.corridors[gc.upper_ci];
-            let span = structure_span_at(c, gc.upper_arc);
-            eprintln!(
-                "[clear] upper {} arc {:.1} lower {:?} extra {:.2} span {:?} deck {:.2} settle={}",
-                c.id, gc.upper_arc, gc.lower, gc.extra_m, span, upper_height(g, gc), !share
-            );
-        }
         let lower_h = match gc.lower {
             Lower::Var(v) => g.h[v],
             Lower::Constant(h) => h,

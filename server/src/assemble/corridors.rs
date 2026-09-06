@@ -80,13 +80,12 @@ pub fn build(segments: Vec<RawSegment>) -> (Vec<Corridor>, Vec<Junction>) {
     // `ARPT_NO_INTERIOR_PORTS=1` keeps the junctions end-only again, so an A/B
     // re-tile of the interior ports is a flag rather than a patch — the same
     // reason `ARPT_NO_ABUTMENT_CUT` exists.
-    let interior_ports = std::env::var_os("ARPT_NO_INTERIOR_PORTS").is_none();
     // Every corridor's connector ports (connector id → the corridor and the arc
     // it sits at), bucketed by connector so shared ones become junctions.
     let mut by_connector: HashMap<u64, Vec<(CorridorId, f64, Coord)>> = HashMap::new();
     for chain in chains {
         if let Some((c, ports)) =
-            build_corridor(corridors.len() as u32, &segments, &chain, interior_ports)
+            build_corridor(corridors.len() as u32, &segments, &chain)
         {
             for (conn, arc, point) in ports {
                 by_connector.entry(conn).or_default().push((c.id, arc, point));
@@ -291,7 +290,6 @@ fn build_corridor(
     id: u32,
     segments: &[RawSegment],
     chain: &[ChainLink],
-    interior_ports: bool,
 ) -> Option<(Corridor, Vec<(u64, f64, Coord)>)> {
     // Concatenate oriented nodes, remembering each segment's node range.
     let mut nodes: Vec<Coord> = Vec::new();
@@ -372,22 +370,20 @@ fn build_corridor(
             // An end connector sits exactly on its node — read the node's arc
             // rather than re-deriving it, so the two sides of a splice agree
             // bitwise and dedup to one entry.
-            let (carc, point, interior) = if c.at <= super::END_AT_EPS {
-                (arc[sc_node], nodes[sc_node], false)
+            let (carc, point) = if c.at <= super::END_AT_EPS {
+                (arc[sc_node], nodes[sc_node])
             } else if c.at >= 1.0 - super::END_AT_EPS {
-                (arc[ec_node], nodes[ec_node], false)
+                (arc[ec_node], nodes[ec_node])
             } else {
                 // `at` is a fraction of the segment's length, and the
                 // segment's span of corridor arc is its length, so the two
                 // scales agree by construction.
                 let frac = if forward { c.at } else { 1.0 - c.at };
                 let carc = a0 + frac * (a1 - a0);
-                (carc, point_at_arc(&nodes, &arc, carc), true)
+                (carc, point_at_arc(&nodes, &arc, carc))
             };
             connectors.push((c.id, carc));
-            if !interior || interior_ports {
-                ports.push((c.id, carc, point));
-            }
+            ports.push((c.id, carc, point));
         }
     }
     connectors.sort_unstable_by(|a, b| {

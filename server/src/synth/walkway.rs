@@ -201,9 +201,6 @@ pub fn crossings(
 ) -> (Vec<CrossingPaint>, Vec<SourceSeg>) {
     let mut paints = Vec::new();
     let mut stubs = Vec::new();
-    if std::env::var_os("ARPT_NO_CROSSING").is_some() {
-        return (paints, stubs);
-    }
     // The level gate's ground reference. Absent (a flat synthetic world, a
     // run without terrain) every level test passes and registration is the
     // plan-only one it always was.
@@ -584,9 +581,6 @@ fn stub_band(
     // The stub half of `ARPT_NO_CROSSING`, so the paint and the band it meets
     // at the kerb can be measured apart — they are one derivation with two
     // readers, and a metric that moves needs to say which reader moved it.
-    if std::env::var_os("ARPT_NO_CROSSING_STUB").is_some() {
-        return;
-    }
     // A sidewalk's width, not the crossing's. `CROSSING_WIDTH_M` is how deep
     // the *paint* is along the road axis; the stub is the piece of pavement
     // the crossing lands on, and drawing it wider than the band it joins put
@@ -767,9 +761,6 @@ pub fn bands(
 ) -> (Vec<SourceSeg>, Vec<u64>) {
     let mut out = Vec::new();
     let mut sources: Vec<u64> = Vec::new();
-    if std::env::var_os("ARPT_NO_WALK_BAND").is_some() {
-        return (out, sources);
-    }
     let mut census = AttachCensus::default();
     let claims = claims_by_side(scene);
     // **What was built, not what was claimed.** The free bands are the
@@ -782,7 +773,6 @@ pub fn bands(
     street_bands(scene, solved, facades, &claims, &mut built, &mut out, &mut sources, &mut census);
     free_bands(scene, &built, &mut out, &mut sources);
     census.report();
-    probe(scene, &claims, &built);
     (out, sources)
 }
 
@@ -884,9 +874,6 @@ pub(crate) fn pavement_sides(
     facades: &Facades,
 ) -> std::collections::HashSet<(u32, u8)> {
     let mut out = std::collections::HashSet::new();
-    if std::env::var_os("ARPT_NO_WALK_BAND").is_some() {
-        return out;
-    }
     for (line, attached) in scene.walks.lines() {
         if line.crosswalk || matches!(line.kind, Kind::Road(RoadClass::Steps)) {
             continue;
@@ -895,13 +882,11 @@ pub(crate) fn pavement_sides(
             out.insert((a.host, a.side));
         }
     }
-    if std::env::var_os("ARPT_NO_WALK_SYNTH").is_none() {
-        let mut scratch: Vec<u32> = Vec::new();
-        for c in &scene.corridors {
-            if priors::synthesizes_pavement(c.kind) && built_up(c, solved, facades, &mut scratch) {
-                out.insert((c.id, 0));
-                out.insert((c.id, 1));
-            }
+    let mut scratch: Vec<u32> = Vec::new();
+    for c in &scene.corridors {
+        if priors::synthesizes_pavement(c.kind) && built_up(c, solved, facades, &mut scratch) {
+            out.insert((c.id, 0));
+            out.insert((c.id, 1));
         }
     }
     out
@@ -1029,7 +1014,6 @@ fn street_bands(
     sources: &mut Vec<u64>,
     census: &mut AttachCensus,
 ) {
-    let no_room = std::env::var_os("ARPT_NO_FACADE_ROOM").is_some();
     let mut scratch: Vec<u32> = Vec::new();
     // **Where the data maps no pavement, the class and the facades decide.**
     // Overture carries no `sidewalk=*` on a road (docs/SOURCES.md §7), so a
@@ -1038,12 +1022,10 @@ fn street_bands(
     // residential streets bare. `priors::synthesizes_pavement` says which
     // classes could carry one and [`built_up`] says whether this street
     // actually is one. `ARPT_NO_WALK_SYNTH=1` withholds it, for the A/B.
-    let synthesize = std::env::var_os("ARPT_NO_WALK_SYNTH").is_none();
     for c in &scene.corridors {
         let sides: [Option<&SideClaims>; 2] =
             [claims.get(&(c.id, 0)), claims.get(&(c.id, 1))];
-        let synth = synthesize
-            && priors::synthesizes_pavement(c.kind)
+        let synth = priors::synthesizes_pavement(c.kind)
             && built_up(c, solved, facades, &mut scratch);
         if sides[0].is_none() && sides[1].is_none() && !synth {
             continue;
@@ -1119,7 +1101,7 @@ fn street_bands(
             // **One allotment for the whole street** (`synth::cross`): the same
             // call, the same query, the same room the asphalt was cut from.
             let sections = super::cross::sections_along(
-                c, &stops, &pts, half_m, &want, facades, no_room, &mut scratch,
+                c, &stops, &pts, half_m, &want, facades, false, &mut scratch,
             );
             let height = |arc: f64| profile.map_or(0.0, |p| p.road_at_arc(arc));
             for side in 0..2 {
@@ -1394,59 +1376,6 @@ const MIN_FREE_M: f64 = 0.4;
 /// pavement within `r_m` (default 30) of the point, print what the data claimed
 /// and what was built, so a bare spot in the render can be traced to the rule
 /// that made it.
-fn probe(
-    scene: &SceneGraph,
-    claims: &HashMap<(u32, u8), SideClaims>,
-    built: &HashMap<(u32, u8), Vec<(f64, f64)>>,
-) {
-    let Some((lon, lat, r)) = std::env::var("ARPT_PROBE_WALK").ok().and_then(|s| {
-        let v: Vec<f64> = s.split(',').filter_map(|t| t.trim().parse().ok()).collect();
-        match v.as_slice() {
-            [lon, lat] => Some((*lon, *lat, 30.0)),
-            [lon, lat, r] => Some((*lon, *lat, *r)),
-            _ => None,
-        }
-    }) else {
-        return;
-    };
-    let p = Coord { x: lon, y: lat };
-    let mut keys: Vec<(u32, u8)> = claims.keys().copied().collect();
-    keys.sort_unstable();
-    for key in keys {
-        let (host, side) = key;
-        let Some(c) = scene.corridors.get(host as usize) else { continue };
-        let near = c
-            .nodes
-            .windows(2)
-            .any(|w| probe_seg_dist_m(p, w[0], w[1], c.cos_lat) <= r);
-        if !near {
-            continue;
-        }
-        let cl = &claims[&key];
-        let none = Vec::new();
-        let made = built.get(&key).unwrap_or(&none);
-        let want: f64 = cl.spans.iter().map(|&(a, b)| b - a).sum();
-        let got: f64 = made.iter().map(|&(a, b)| b - a).sum();
-        eprintln!(
-            "[walk probe] corridor {host} ({}) side {side}: {} claims -> {} spans, \
-             {want:.0} m claimed, {got:.0} m built in {} runs\n              \
-             claimed {:?}\n              built   {:?}\n              at grade {:?}",
-            c.class_key,
-            cl.parts.len(),
-            cl.spans.len(),
-            made.len(),
-            cl.spans.iter().map(|&(a, b)| (a.round(), b.round())).collect::<Vec<_>>(),
-            made.iter().map(|&(a, b)| (a.round(), b.round())).collect::<Vec<_>>(),
-            // The level runs, because "the strip stops here" and "the host is
-            // on a bridge here" look identical from the outside.
-            level_runs(c)
-                .into_iter()
-                .filter(|&(_, _, _, k)| k == SpanKind::Grade)
-                .map(|(a, b, _, _)| (a.round(), b.round()))
-                .collect::<Vec<_>>(),
-        );
-    }
-}
 
 /// What became of the extent the data claimed — the census that says how much
 /// pavement the drawing lost after the relation was already won, and to which
@@ -1468,9 +1397,6 @@ struct AttachCensus {
 
 impl AttachCensus {
     fn report(&self) {
-        if std::env::var_os("ARPT_DEBUG_WALK").is_none() || !(self.claimed_m > 0.0) {
-            return;
-        }
         let pct = |v: f64| 100.0 * v / self.claimed_m;
         eprintln!(
             "[walk] claimed {:>8.2} km of host arc:   built {:>5.1} %   no-width {:>4.1} %   \
@@ -1533,7 +1459,6 @@ pub fn fit_to_ground(
     // The A/B control: bands sized from the plan alone, as before. The seat
     // heights below are still read and stamped — they are a fact about the
     // model, not a product of the fit.
-    let no_fit = std::env::var_os("ARPT_NO_WALK_FIT").is_some();
     // Only what is drawn at grade, matching the population the bench serves: a
     // band over a bridge is carried by the structure and has no ground under it
     // to be fitted to.
@@ -1556,33 +1481,19 @@ pub fn fit_to_ground(
             // (`synth::sheets`), the trench yields — needs the real seat, not
             // the zero.
             let ends = (s.corridor == NO_HOST).then(|| (sample(s.a), sample(s.b)));
-            let half = if no_fit { None } else { fitted_half(s, ends, sample) };
+            let half = fitted_half(s, ends, sample);
             (half, ends)
         },
     );
     let mut drop: Vec<bool> = vec![false; bands.len()];
-    let census = std::env::var_os("ARPT_DEBUG_WALK").is_some();
     // Length by what the fit did to it, so the cost of the rule is reported
     // rather than inferred: kept as it was, narrowed, or given up on.
     let mut by = [[0.0f64; 4]; 2]; // [path][kept, narrowed, sliver, dropped]
-    // The end-to-end fall of every hostless band's seat, as a grade — the
-    // population the wall-drape guard's ceiling is read off (see
-    // [`fitted_half`]'s link check and the census report below).
-    let mut falls: Vec<(f64, f64)> = Vec::new(); // (grade, len_m), Walkway only
     for (k, (half, ends)) in fitted.into_iter().enumerate() {
         let i = seats[k];
         if let Some((ha, hb)) = ends {
             bands[i].height_a = ha;
             bands[i].height_b = hb;
-            if census && bands[i].surface == priors::Surface::Walkway {
-                let len = crate::scene::metric_len(bands[i].a, bands[i].b, bands[i].cos_lat);
-                if len > 1.0 {
-                    falls.push(((ha - hb).abs() / len, len));
-                }
-            }
-        }
-        if no_fit {
-            continue; // seats stamped, widths untouched, nothing dropped
         }
         let len = crate::scene::metric_len(bands[i].a, bands[i].b, bands[i].cos_lat);
         let path = usize::from(bands[i].corridor == NO_HOST);
@@ -1616,9 +1527,6 @@ pub fn fit_to_ground(
             }
         }
     }
-    if no_fit {
-        return;
-    }
     let mut i = 0;
     bands.retain(|_| {
         i += 1;
@@ -1634,43 +1542,7 @@ pub fn fit_to_ground(
     // The joint weld is the walk graph's predecessor (`synth::walkgraph`
     // stamps every joint from one shared graph); it runs only under the
     // graph's revert switch so the two never fight over one seat.
-    if std::env::var_os("ARPT_NO_WALK_GRAPH").is_some() {
-        weld_joints(bands);
-    }
     width_census(bands, sources);
-    if census {
-        for (path, name) in [(0usize, "sidewalk"), (1, "path")] {
-            let t: f64 = by[path].iter().sum();
-            if t <= 0.0 {
-                continue;
-            }
-            eprintln!(
-                "[walk] {name:<9} fit: {:>8.2} km   full {:>5.1} %   narrowed {:>5.1} %   \
-                 hairline {:>4.1} %   dropped {:>4.1} %",
-                t / 1000.0,
-                100.0 * by[path][0] / t,
-                100.0 * by[path][1] / t,
-                100.0 * by[path][2] / t,
-                100.0 * by[path][3] / t,
-            );
-        }
-        if !falls.is_empty() {
-            falls.sort_by(|a, b| a.0.total_cmp(&b.0));
-            let q = |f: f64| falls[((falls.len() - 1) as f64 * f) as usize].0;
-            let steep_m: f64 = falls.iter().filter(|(g, _)| *g > 0.5).map(|(_, l)| l).sum();
-            eprintln!(
-                "[walk] hostless walkway seat fall  n={}  p50 {:.3}  p90 {:.3}  p99 {:.3}  \
-                 p999 {:.3}  max {:.3}   over 50 %: {:.0} m",
-                falls.len(),
-                q(0.50),
-                q(0.90),
-                q(0.99),
-                q(0.999),
-                q(1.0),
-                steep_m,
-            );
-        }
-    }
 }
 
 /// Makes the drawn width **continuous** along a run: a shared vertex takes the
@@ -1692,9 +1564,6 @@ pub fn fit_to_ground(
 /// less `half_m`, so exactly the vertices that will become interior vertices of
 /// one buffered polyline are the ones made continuous.
 fn taper_along_runs(bands: &mut [SourceSeg]) {
-    if std::env::var_os("ARPT_NO_WALK_TAPER").is_some() {
-        return; // the A/B control: one flat width per segment, as before
-    }
     // Resolved first, applied after: assigning in place would let a narrowed
     // vertex propagate down the run and thin a whole path to its worst segment.
     let joins: Vec<Option<f64>> = (0..bands.len())
@@ -1751,9 +1620,6 @@ fn taper_along_runs(bands: &mut [SourceSeg]) {
 /// Chosen by *length*, not by segment count, so a long uniform stretch is not
 /// outvoted by a scatter of short pinched ones.
 fn unify_width_along_ways(bands: &mut [SourceSeg], sources: &[u64]) {
-    if std::env::var_os("ARPT_NO_WALK_UNIFORM").is_some() {
-        return; // the A/B control: width resolved per segment, as before
-    }
     let key = |w: f64| (w * 1000.0).round() as u64;
     let mut by: HashMap<u64, HashMap<u64, f64>> = HashMap::new();
     for (s, &src) in bands.iter().zip(sources) {
@@ -1812,142 +1678,8 @@ fn unify_width_along_ways(bands: &mut [SourceSeg], sources: &[u64]) {
 /// its far end, which is the ramp a real path climbs an embankment with.
 ///
 /// `ARPT_NO_WALK_WELD=1` withholds it.
-fn weld_joints(bands: &mut [SourceSeg]) {
-    if std::env::var_os("ARPT_NO_WALK_WELD").is_some() {
-        return;
-    }
-    /// How far past a band's own drawn edge a free end still stands on it, in
-    /// metres: the boolean kernel, quantization, and an endpoint a vertex
-    /// short of the kerb line (`network.walk_joint` uses the same slack).
-    const ON_M: f64 = 0.25;
-    /// Past this the disagreement is a structure or a mismap, not a joint to
-    /// close — the same boundary `crossings::SEPARATION_M` draws.
-    const WELD_MAX_M: f64 = 3.0;
-    use crate::assemble::grid::GridIndex;
-    let mut grid = GridIndex::new();
-    for (i, s) in bands.iter().enumerate() {
-        if s.level != 0 {
-            continue;
-        }
-        let pad_lat = (s.half_m + ON_M) / DEG_M;
-        let pad_lon = pad_lat / s.cos_lat.max(1e-6);
-        grid.insert(
-            (
-                s.a.x.min(s.b.x) - pad_lon,
-                s.a.y.min(s.b.y) - pad_lat,
-                s.a.x.max(s.b.x) + pad_lon,
-                s.a.y.max(s.b.y) + pad_lat,
-            ),
-            i as u32,
-        );
-    }
-    // The free ends, gathered first: the weld reads heights while it decides,
-    // so it must not see its own writes (one pass, decisions from the
-    // pre-weld state, deterministic in band order).
-    struct Weld {
-        band: u32,
-        which: u8,
-        target: f64,
-    }
-    let mut welds: Vec<Weld> = Vec::new();
-    let mut cand: Vec<u32> = Vec::new();
-    for (i, s) in bands.iter().enumerate() {
-        if s.level != 0 || s.corridor != NO_HOST {
-            continue; // the street's side of the joint is the authority
-        }
-        for (which, p, h) in [(0u8, s.a, s.height_a), (1u8, s.b, s.height_b)] {
-            grid.query((p.x, p.y, p.x, p.y), &mut cand);
-            let (mut att_sum, mut att_n) = (0.0f64, 0u32);
-            let (mut oth_sum, mut oth_n) = (0.0f64, 0u32);
-            for &j in cand.iter() {
-                if j as usize == i {
-                    continue;
-                }
-                let t = &bands[j as usize];
-                // A chain-mate shares this exact endpoint bit-for-bit AND the
-                // height there — both computed it from the same station, so
-                // its vote is a no-op that dilutes the real neighbour's. A
-                // band at the same point with a *different* height is the
-                // opposite of a chain-mate: it is the joint itself. The
-                // coordinate-only test excluded exactly the partner whenever
-                // the map was clean — an attached walkway and a hostless path
-                // meeting at one mapped node — which is how a 0.35 m step
-                // survived the weld at 6.90932,46.43744 with att_n 0.
-                if (t.a == p && (t.height_a - h).abs() <= 0.02)
-                    || (t.b == p && (t.height_b - h).abs() <= 0.02)
-                {
-                    continue;
-                }
-                let (d, tt) = point_to_seg(p, t.a, t.b, s.cos_lat);
-                let half =
-                    t.sect_a.reach_m() + (t.sect_b.reach_m() - t.sect_a.reach_m()) * tt;
-                if d > half + ON_M {
-                    continue; // the end does not stand on this band
-                }
-                let th = t.height_at(tt);
-                if t.corridor != NO_HOST {
-                    att_sum += th;
-                    att_n += 1;
-                } else {
-                    oth_sum += th;
-                    oth_n += 1;
-                }
-            }
-            if let Some(at) = std::env::var_os("ARPT_WELD_AT") {
-                if let Some((plon, plat)) = at
-                    .to_str()
-                    .and_then(|v| v.split_once(','))
-                    .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))
-                {
-                    let d = crate::scene::metric_len(p, Coord { x: plon, y: plat }, s.cos_lat);
-                    if d < 3.0 {
-                        eprintln!(
-                            "[weld] end {which} of band {i} at {:.6},{:.6} h {h:.2} att_n {att_n} oth_n {oth_n}",
-                            p.x, p.y
-                        );
-                    }
-                }
-            }
-            // The joint's authority: the attached bands where any stands
-            // here — they ride their host street and the street is senior —
-            // the other bands' mean otherwise (a through band has no end
-            // here, keeps its height, and so becomes the authority of every
-            // T-joint by construction).
-            let target = if att_n > 0 {
-                att_sum / att_n as f64
-            } else if oth_n > 0 {
-                oth_sum / oth_n as f64
-            } else {
-                continue; // alone: a true dead end owes nothing
-            };
-            let delta = target - h;
-            if delta.abs() <= 0.02 || delta.abs() > WELD_MAX_M {
-                continue; // already agreed, or not a joint at all
-            }
-            welds.push(Weld { band: i as u32, which, target });
-        }
-    }
-    for w in &welds {
-        let b = &mut bands[w.band as usize];
-        // Every co-located end of the same chain must move with this one, or
-        // the chain steps against itself where the weld begins — handled by
-        // the caller order: consecutive segments share the endpoint
-        // bit-for-bit, so both ends produce the same weld independently.
-        if w.which == 0 {
-            b.height_a = w.target;
-        } else {
-            b.height_b = w.target;
-        }
-    }
-    if std::env::var_os("ARPT_DEBUG_WALK").is_some() {
-        eprintln!("[walk] joint weld: {} free ends welded", welds.len());
-    }
-}
 
 fn width_census(bands: &[SourceSeg], sources: &[u64]) {
-    if std::env::var_os("ARPT_DEBUG_WIDTH").is_none() {
-        return;
-    }
     let q = |v: &mut Vec<f64>, f: f64| -> f64 {
         if v.is_empty() {
             return 0.0;
@@ -2052,9 +1784,7 @@ fn width_census(bands: &[SourceSeg], sources: &[u64]) {
 /// offender set, and a fit that narrowed freely would have scored itself by
 /// deleting the evidence.
 fn min_width_m() -> f64 {
-    std::env::var_os("ARPT_WALK_FIT_MIN")
-        .and_then(|v| v.to_str()?.parse().ok())
-        .unwrap_or(priors::WALK_MIN_WIDTH_M)
+    priors::WALK_MIN_WIDTH_M
 }
 
 /// The half-width this segment's band can be given: the widest that keeps the

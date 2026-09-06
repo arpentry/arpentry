@@ -32,7 +32,6 @@ use crate::archive::{ArchiveMeta, ArchiveWriter};
 use crate::assemble;
 use crate::clip;
 use crate::dem::Dem;
-use crate::dump;
 use crate::geom::GeometryType;
 use crate::geoparquet::GeoParquet;
 use crate::ground::{self, sampler::GroundSampler, GroundStack};
@@ -129,13 +128,6 @@ pub struct Config {
     pub threads: usize,
     /// Brotli quality (0–11) for tile blobs.
     pub brotli_quality: i32,
-    /// Directory for stage-artifact GeoJSON dumps (scene graph, solved
-    /// profiles), for inspection in QGIS/kepler; `None` skips them.
-    pub dump: Option<PathBuf>,
-    /// Where to write the model-side scorecard (docs/GENERATION.md §8's
-    /// structural checks), or `None` to skip them. They re-solve the scene, so
-    /// they are opt-in rather than part of every run.
-    pub verify_model: Option<PathBuf>,
     /// Write the stages this run computed to a snapshot at this path
     /// (`crate::stage`), so a later run can skip them.
     pub stage_out: Option<PathBuf>,
@@ -362,7 +354,7 @@ pub struct Timings {
     /// stage was first measured, and 5.8 s of 27.2 s at `--min-zoom 13` — and
     /// the throughput rates divided by it were overstated by the same factor.
     /// Anything a future stage adds between the model stage and phase 1
-    /// (`--dump`, `--verify-model`, the probes) lands inside a wall clock and
+    /// (the probes) lands inside a wall clock and
     /// outside any sum, so this is the one number that cannot fall behind the
     /// pipeline.
     pub wall: Duration,
@@ -521,7 +513,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // (`solve::reconcile_short_spans`) is settled before anything downstream
     // reads the corridor spans.
     let t_solve = Instant::now();
-    let mut solved = solve::run(&mut scene, cfg.terrain.as_deref(), cfg.max_zoom, threads)?;
+    let solved = solve::run(&mut scene, cfg.terrain.as_deref(), cfg.max_zoom, threads)?;
     // **The features dial's other half (`ARPT_NO_SOLVE=1`): the plan step with
     // no heights behind it.** The terrain dial answers "does this metric read
     // the ground"; this answers "does it read the *solve*". A metric that is
@@ -534,12 +526,6 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // already handles a corridor without a profile — invariant 6 says a
     // generator degrades to something plain rather than failing — so this is
     // the pipeline's own fallback path taken everywhere at once, not a new one.
-    if std::env::var_os("ARPT_NO_SOLVE").is_some() {
-        let z_ref = solved.z_ref;
-        let n = scene.corridors.len();
-        solved = solve::SolvedModel::from_profiles((0..n).map(|_| None).collect(), z_ref);
-        eprintln!("solve             ARPT_NO_SOLVE: {n} corridors left without a profile");
-    }
     let solved = Arc::new(solved);
     let solve_took = t_solve.elapsed();
     // **The seniors, then the band, then the band's own ground.** A walkway is a
@@ -570,15 +556,11 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // its registration (`crossing_drawn`), and its zebra survives even where
     // the fit declines the kerb stubs.
     walk_sources.resize(walk_bands.len() + crossing_stubs.len(), 0);
-    let stub_from = walk_bands.len();
     walk_bands.extend(crossing_stubs);
     // …and a stub seats on the band it continues, not on the ground under
     // the kerb it stands at — via the walk graph's stub pins below. The
     // pre-graph mechanism survives only under the revert switch, so the two
     // never fight over one seat.
-    if std::env::var_os("ARPT_NO_WALK_GRAPH").is_some() {
-        synth::walkway::seat_stubs(&mut walk_bands, stub_from);
-    }
     let t_fit = Instant::now();
     synth::walkway::fit_to_ground(
         &mut walk_bands,
@@ -595,20 +577,12 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // seats are re-stamped from it. This replaces the weld
     // (`walkway::weld_joints`), whose joints were plan-proximity guesses at
     // the graph built here; `ARPT_NO_WALK_GRAPH` reverts to the weld.
-    let mut walkgraph: Option<Arc<synth::walkgraph::WalkGraph>> = None;
-    if std::env::var_os("ARPT_NO_WALK_GRAPH").is_none() {
-        let graph =
-            synth::walkgraph::WalkGraph::build(&scene, &solved, &walk_bands, &walk_sources);
-        graph.stamp(&mut walk_bands);
-        if std::env::var("ARPT_WALK_GRAPH").as_deref() == Ok("census") {
-            graph.census(walk_bands.len());
-        }
-        // The elevated spans read their end anchors from the same graph
-        // (`synth::draped`); `ARPT_NO_WALK_SPAN_GRAPH` reverts just that.
-        if std::env::var_os("ARPT_NO_WALK_SPAN_GRAPH").is_none() {
-            walkgraph = Some(Arc::new(graph));
-        }
-    }
+    let graph =
+        synth::walkgraph::WalkGraph::build(&scene, &solved, &walk_bands, &walk_sources);
+    graph.stamp(&mut walk_bands);
+    // The elevated spans read their end anchors from the same graph
+    // (`synth::draped`); `ARPT_NO_WALK_SPAN_GRAPH` reverts just that.
+    let walkgraph = Some(Arc::new(graph));
     // Which pedestrian ways survived as drawn surface. Anything not in here
     // keeps the cartographic stroke that is all it has: the surface model
     // declining to build a band must cost detail, never the feature (I6).
@@ -632,9 +606,6 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // ground and cannot run in that order; they are opt-in and the ring is
     // opt-in, and the two are exclusive until the yields read the ring.
     let ring = synth::pavement::walk_ring();
-    if ring && std::env::var_os("ARPT_FIELD_YIELDS").is_some() {
-        eprintln!("ARPT_FIELD_YIELDS: the field yields read the derived ground, which the sidewalk ring derives after the union; set ARPT_NO_WALK_RING=1 to measure them");
-    }
     let walkgraph_took = t_walkgraph.elapsed();
     // The chunks any tile this run emits can read. Everything outside is
     // surface nobody will draw — 71 of 73 chunks on a two-tile preview.
@@ -664,28 +635,6 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
         });
         // ARPT_WALK_SHEET_AT=lon,lat — the ring benches within ~30 m of the
         // point, beside the bands `carriageway::bake` already printed.
-        if let Some(at) = std::env::var_os("ARPT_WALK_SHEET_AT") {
-            if let Some((plon, plat)) = at
-                .to_str()
-                .and_then(|s| s.split_once(','))
-                .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))
-            {
-                for s in pavement.ring_benches() {
-                    let (d, _) = synth::sheets::point_to_segment(
-                        geo_types::Coord { x: plon, y: plat },
-                        s.a,
-                        s.b,
-                        s.cos_lat,
-                    );
-                    if d <= 30.0 {
-                        eprintln!(
-                            "[ring-bench] corridor {} layer {} level {} h {:.2}..{:.2} half {:.2} d {:.1} m at {:.6},{:.6}",
-                            s.corridor, s.layer, s.level, s.height_a, s.height_b, s.drawn_half(), d, s.a.x, s.a.y
-                        );
-                    }
-                }
-            }
-        }
         let junctions = Arc::new(junctions);
         walk_bands.extend(pavement.ring_benches().iter().cloned());
         let ground = Arc::new(ground::derive_draped(
@@ -767,7 +716,7 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     stats.clearance_demands_dropped = solved.relaxed.demands_dropped;
     stats.worst_dropped_demand_m = solved.relaxed.worst_dropped_m;
     for (slot, r) in stats.relax_residuals.iter_mut().zip(solved.residuals.iter()) {
-        *slot = (r.name, r.dist.max().unwrap_or(0.0));
+        *slot = (r.name, r.max_m);
     }
     stats.timings.model = t_model.elapsed();
     debug_assert!(
@@ -789,35 +738,6 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     stats.timings.crossings_synth = crossings_took;
     stats.timings.walk_fit = fit_took;
     stats.timings.walkgraph = walkgraph_took;
-    if let Some(dir) = &cfg.dump {
-        dump::write(dir, &scene, &solved, &ground)?;
-    }
-    // The structural half of the scorecard (§8): I7 and I8 are established by
-    // construction and falsified by a perturbation experiment, which needs the
-    // model and not the archive. Opt-in, because it re-solves the scene.
-    if let Some(path) = &cfg.verify_model {
-        let m = crate::verify::model::Model {
-            scene,
-            solved,
-            ground,
-            facades: &world.facades,
-            junctions,
-            crossings: &world.crossings,
-            terrain: cfg.terrain.as_deref(),
-            bounds: cfg.bbox,
-            threads,
-        };
-        let t_model_verify = Instant::now();
-        let metrics = crate::verify::model::run(&m);
-        let json = crate::verify::model::to_json(&metrics);
-        std::fs::write(path, serde_json::to_string_pretty(&json).unwrap_or_default())?;
-        eprintln!(
-            "model checks {:>5.1}s  {} metrics -> {}",
-            t_model_verify.elapsed().as_secs_f64(),
-            metrics.len(),
-            path.display()
-        );
-    }
 
     // Diagnostic probe (ARPT_PROBE="lon,lat"): at that point, for every corridor
     // whose centerline passes near it, print the deck-top height, the road
@@ -826,40 +746,6 @@ pub fn run(cfg: &Config) -> Result<Stats, Error> {
     // approach asphalt band actually drapes on). A gap between the deck height
     // and the rendered road surface is the visible bridge-end step, localised to
     // the earthwork/render layer rather than the solve.
-    if let Ok(spec) = std::env::var("ARPT_PROBE") {
-        if let Some((lon, lat)) = spec.split_once(',').and_then(|(a, b)| {
-            Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?))
-        }) {
-            let dem = cfg.terrain.as_deref().and_then(|p| Dem::open(p).ok());
-            let mut sampler =
-                GroundSampler::new(dem, Arc::clone(&ground), solved.z_ref, mesh_options(cfg));
-            let zref_bounds = solve::tile_containing(solved.z_ref, lon, lat);
-            let cos = lat.to_radians().cos();
-            eprintln!("PROBE {lon},{lat} (z_ref={})", solved.z_ref);
-            for c in &scene.corridors {
-                let Some(p) = solved.profile(c.id) else { continue };
-                let a = p.arc_of(lon, lat);
-                let pt = p.point_at_arc(a);
-                let d = ((pt.x - lon) * cos).hypot(pt.y - lat) * crate::scene::DEG_M;
-                if d > 8.0 {
-                    continue;
-                }
-                let road = p.height_at(lon, lat);
-                let deck = p.deck_height_at(lon, lat);
-                let terr = p.surface_at(lon, lat);
-                let band =
-                    synth::road::surface_height(Some(p), false, &mut sampler, solved.z_ref, solved.z_ref, &zref_bounds, lon, lat);
-                let ground_h = {
-                    let mut sc = Vec::new();
-                    ground.height(lon, lat, terr, 0.0, &mut sc)
-                };
-                eprintln!(
-                    "  corr {:>5} {:>4}m  road={:.1} deck={:.1} terr={:.1} rendered_road_surface={:.1} engineered_ground={:.1}  DECK-SURFACE_STEP={:.1}",
-                    c.id, d as i64, road, deck, terr, band, ground_h, deck - band
-                );
-            }
-        }
-    }
 
     // --- Phase 1: read → profile → simplify → clip → sort records ---
     // Open every input (footer only) and queue its bbox-intersecting row
@@ -1317,21 +1203,6 @@ fn encode_tile(
 
     // S5 prototype falsifier (`ARPT_ONE_MESH_PROBE=z/x/y`): the one-mesh
     // CDT's border per class against the old path's meshes for this tile.
-    if let Some(v) = std::env::var_os("ARPT_ONE_MESH_PROBE") {
-        let want = v.to_string_lossy().to_string();
-        if want == format!("{z}/{x}/{y}") {
-            one_mesh_probe(
-                &mut enc_layers,
-                sampler,
-                &bounds,
-                z,
-                solved.z_ref,
-                pavement,
-                &field,
-                &cut_regions,
-            );
-        }
-    }
 
     // S5: at the detail rungs this tile draws the one mesh — terrain,
     // group-0 asphalt and the walls between them as one classified
@@ -1345,7 +1216,7 @@ fn encode_tile(
     // built from an empty group 0 would classify everything as terrain while
     // the emit path below still withheld the old surfaces — a tile with the
     // asphalt deleted.
-    let one_mesh_full = (one_mesh_on(z, x, y, solved.z_ref) && sampler.cuts_hole(z))
+    let one_mesh_full = (one_mesh_on(z, solved.z_ref) && sampler.cuts_hole(z))
         .then(|| ())
         .and_then(|_| {
             let t = Instant::now();
@@ -1356,8 +1227,6 @@ fn encode_tile(
     // The budget's other side (`ARPT_TIME_TILE=z/x/y`): the old path's cost
     // for the same tile — surfaces + aprons (inside t_stamp..here) and the
     // terrain mesh, printed after both are done below.
-    let time_tile = std::env::var_os("ARPT_TIME_TILE")
-        .is_some_and(|v| v.to_string_lossy() == format!("{z}/{x}/{y}"));
     let one_mesh_full = if let Some((one, emin, emax, kinds, _, _)) = one_mesh_full {
         for l in enc_layers.iter_mut() {
             if l.name != "transportation" {
@@ -1441,13 +1310,6 @@ fn encode_tile(
         (blob, None, Duration::ZERO, t.elapsed())
     };
     t_terrain += t_mesh;
-    if time_tile {
-        eprintln!(
-            "[time-tile] {z}/{x}/{y}: stamp+surfaces {:?}, terrain mesh {:?}",
-            t_terrain - t_mesh,
-            t_mesh
-        );
-    }
     Ok(TileResult {
         seq: job.seq,
         z,
@@ -1473,20 +1335,9 @@ thread_local! {
 }
 
 /// Whether this tile draws the S5 one mesh. Default at the detail rungs
-/// (`z >= z_ref`, the same scope as the exact handover tags);
-/// `ARPT_NO_ONE_MESH` withholds it, `ARPT_ONE_MESH` pins an explicit
-/// tile (`z/x/y`) or zoom (`z`) scope instead.
-fn one_mesh_on(z: u8, x: u32, y: u32, z_ref: u8) -> bool {
-    if std::env::var_os("ARPT_NO_ONE_MESH").is_some() {
-        return false;
-    }
-    match std::env::var_os("ARPT_ONE_MESH") {
-        Some(v) => {
-            let v = v.to_string_lossy();
-            v == format!("{z}/{x}/{y}") || v == format!("{z}")
-        }
-        None => z >= z_ref,
-    }
+/// (`z >= z_ref`, the same scope as the exact handover tags).
+fn one_mesh_on(z: u8, z_ref: u8) -> bool {
+    z >= z_ref
 }
 
 /// Builds the S5 one-mesh for a tile: group-0 regions, the shared rings and
@@ -1590,30 +1441,6 @@ fn build_one_mesh(
         let s = unsafe { &mut *sampler_ptr };
         field.at(s, sheet, z, z_ref, bounds, lon, lat, &mut scratch)
     };
-    if let Some(pt) = std::env::var_os("ARPT_OM_DEBUG_PT") {
-        let v = pt.to_string_lossy();
-        if let Some((lon, lat)) = v.split_once(',').and_then(|(a, b)| {
-            Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))
-        }) {
-            if lon >= bounds.west && lon <= bounds.east && lat >= bounds.south && lat <= bounds.north {
-                let q = (
-                    crate::project::quantize_x(lon, bounds) as f64,
-                    crate::project::quantize_y(lat, bounds) as f64,
-                );
-                for (i, r) in g0.iter().enumerate() {
-                    if r.contains(q) {
-                        eprintln!("[om-pt] {z} g0[{i}] kind={:?} contains ({lon},{lat})", kinds[i]);
-                    }
-                }
-                for (i, r) in voids.iter().enumerate() {
-                    if r.contains(q) {
-                        eprintln!("[om-pt] {z} void[{i}] contains ({lon},{lat})");
-                    }
-                }
-                eprintln!("[om-pt] {z} g0={} voids={} checked", g0.len(), voids.len());
-            }
-        }
-    }
     let s2 = unsafe { &mut *sampler_ptr };
     let (m, emin, emax) = s2.one_mesh_full(bounds, z, &g0, &voids, &asphalt_edges, &mut asphalt)?;
     Some((m, emin, emax, kinds, emin, emax))
@@ -1624,233 +1451,6 @@ fn build_one_mesh(
 /// Terrain matched by position with the height diff in millimetres; asphalt
 /// by position only (heights agree by I5 once positions do — both sides
 /// sample one field at one point).
-fn one_mesh_probe(
-    enc_layers: &mut [EncoderLayer],
-    sampler: &mut GroundSampler,
-    bounds: &Bounds,
-    z: u8,
-    z_ref: u8,
-    pavement: &synth::pavement::PavementModel,
-    field: &synth::height::HeightField,
-    cut_regions: &[synth::region::Region],
-) {
-    // One-mesh asphalt heights at the border: the field, per sheet, at the
-    // shared vertex set — what the one-mesh's asphalt faces would carry.
-    let mut om_heights: std::collections::HashMap<(u16, u16), Vec<i32>> =
-        std::collections::HashMap::new();
-    let mut scratch: Vec<u32> = Vec::new();
-    // The paved boundary exactly as the paved mesher will state it: the
-    // shared preprocessing (`pave_mesh::prepare_rings`) plus the rim insets,
-    // for every group-0 level of the chunk.
-    let mut asphalt_edges: Vec<((u16, u16), (u16, u16))> = Vec::new();
-    let m_lon = crate::scene::DEG_M * ((bounds.south + bounds.north) * 0.5).to_radians().cos();
-    if let Some(levels) = pavement.chunk_for(bounds) {
-        for ls in levels {
-            if ls.level != 0 {
-                continue;
-            }
-            if ls.surface.is_pedestrian() && z < crate::priors::WALK_SURFACE_MIN_ZOOM {
-                continue;
-            }
-            // Stacked (layer > 0) levels contribute their silhouette as
-            // constraints — the void classification needs faces split along
-            // it — but no inset: a hole has no rim of this mesh's own.
-            let stacked = ls.layer != 0;
-            let rings = synth::pave_mesh::prepare_rings(
-                synth::pave_mesh::clip_to_tile(&ls.shapes, bounds),
-                bounds,
-                z,
-                z_ref,
-            );
-            let q = |c: geo_types::Coord| {
-                (crate::project::quantize_x(c.x, bounds), crate::project::quantize_y(c.y, bounds))
-            };
-            let sheet = synth::height::Sheet::of(ls.level, ls.layer, ls.surface);
-            let lo = 16384u16;
-            let hi = 49152u16;
-            let note_h = |sampler: &mut GroundSampler,
-                          scratch: &mut Vec<u32>,
-                          om_heights: &mut std::collections::HashMap<(u16, u16), Vec<i32>>,
-                          c: geo_types::Coord| {
-                let qq = q(c);
-                if (qq.0 == lo || qq.0 == hi || qq.1 == lo || qq.1 == hi)
-                    && (lo..=hi).contains(&qq.0)
-                    && (lo..=hi).contains(&qq.1)
-                {
-                    let h = field.at(sampler, sheet, z, z_ref, bounds, c.x, c.y, scratch);
-                    om_heights.entry(qq).or_default().push(crate::project::quantize_z(h));
-                }
-            };
-            for r in &rings {
-                let n = r.pts.len();
-                for k in 0..n {
-                    let (a, b) = (q(r.pts[k]), q(r.pts[(k + 1) % n]));
-                    if a != b {
-                        asphalt_edges.push((a, b));
-                    }
-                    note_h(sampler, &mut scratch, &mut om_heights, r.pts[k]);
-                }
-                if stacked {
-                    continue;
-                }
-                if let Some(inset) = synth::pave_mesh::inset_ring(r, m_lon) {
-                    let n = inset.len();
-                    for k in 0..n {
-                        let (a, b) = (q(inset[k]), q(inset[(k + 1) % n]));
-                        if a != b {
-                            asphalt_edges.push((a, b));
-                        }
-                        note_h(sampler, &mut scratch, &mut om_heights, inset[k]);
-                    }
-                }
-            }
-        }
-    }
-    // Group 0 only: terrain plus the sheet-0 at-grade regions. Stacked
-    // sheets keep their own meshes (S5), so they are out of the comparison
-    // on both sides.
-    let layers = PROBE_LAYERS.with(|l| std::mem::take(&mut *l.borrow_mut()));
-    let g0: Vec<&synth::region::Region> = cut_regions
-        .iter()
-        .zip(layers.iter().chain(std::iter::repeat(&(0, crate::priors::Surface::Asphalt))))
-        .filter(|(_, &(l, _))| l == 0)
-        .map(|(r, _)| r)
-        .collect();
-    let Some((om_terrain, om_asphalt)) =
-        sampler.one_mesh_border_probe(bounds, z, &g0, &asphalt_edges)
-    else {
-        eprintln!("[one-mesh] probe: CDT abstained");
-        return;
-    };
-    let lo = 16384u16;
-    let hi = 49152u16;
-    let border = |mx: &[u16], my: &[u16]| -> Vec<(u16, u16)> {
-        let mut out: Vec<(u16, u16)> = mx
-            .iter()
-            .zip(my)
-            .map(|(&a, &b)| (a, b))
-            .filter(|&(a, b)| (a == lo || a == hi || b == lo || b == hi)
-                && (lo..=hi).contains(&a) && (lo..=hi).contains(&b))
-            .collect();
-        out.sort_unstable();
-        out.dedup();
-        out
-    };
-    // Old terrain: rebuild it exactly as the emit will (same call, memoized).
-    let (old_terrain, _, _) = sampler.terrain_mesh(bounds, z, cut_regions);
-    let mut old_t: std::collections::HashMap<(u16, u16), i32> = std::collections::HashMap::new();
-    for i in 0..old_terrain.x.len() {
-        let key = (old_terrain.x[i], old_terrain.y[i]);
-        if (key.0 == lo || key.0 == hi || key.1 == lo || key.1 == hi)
-            && (lo..=hi).contains(&key.0) && (lo..=hi).contains(&key.1)
-        {
-            old_t.insert(key, old_terrain.z[i]);
-        }
-    }
-    let (mut matched, mut worst_mm, mut om_only) = (0usize, 0i64, 0usize);
-    for &(qx, qy, zmm) in &om_terrain {
-        match old_t.get(&(qx, qy)) {
-            Some(&oz) => {
-                matched += 1;
-                worst_mm = worst_mm.max((zmm as i64 - oz as i64).abs());
-            }
-            None => om_only += 1,
-        }
-    }
-    let old_only = old_t.len().saturating_sub(matched);
-    // Old paved borders, from the encoded features (every *_surface/_rim).
-    let mut old_a: Vec<(u16, u16)> = Vec::new();
-    for l in enc_layers.iter() {
-        if l.name != "transportation" {
-            continue;
-        }
-        for f in &l.features {
-            // Only the at-grade surface band and its rim — the region the
-            // one-mesh hosts. Aprons become walls-from-tags in S5, and
-            // structures keep their own meshes, so neither belongs to the
-            // border being compared.
-            let surface_or_rim = f.properties.iter().any(|(k, v)| {
-                k == "class"
-                    && matches!(v, Value::String(s)
-                        if s.ends_with("_surface") || s.ends_with("_rim"))
-            });
-            let sheet0 = f
-                .properties
-                .iter()
-                .any(|(k, v)| k == "sheet" && matches!(v, Value::Int(0)));
-            if !surface_or_rim || !sheet0 {
-                continue;
-            }
-            if let Some(m) = &f.mesh {
-                old_a.extend(border(&m.x, &m.y));
-            }
-        }
-    }
-    old_a.sort_unstable();
-    old_a.dedup();
-    let old_set: std::collections::HashSet<(u16, u16)> = old_a.iter().copied().collect();
-    let om_set: std::collections::HashSet<(u16, u16)> = om_asphalt.iter().copied().collect();
-    let a_matched = om_set.intersection(&old_set).count();
-    eprintln!(
-        "[one-mesh] terrain border: {} one-mesh vs {} old — matched {matched}, one-mesh-only          {om_only}, old-only {old_only}, worst |dz| {worst_mm} mm",
-        om_terrain.len(),
-        old_t.len(),
-    );
-    eprintln!(
-        "[one-mesh] asphalt border: {} one-mesh vs {} old — matched {a_matched}, one-mesh-only {},          old-only {}",
-        om_set.len(),
-        old_set.len(),
-        om_set.len() - a_matched,
-        old_set.len() - a_matched
-    );
-    // Heights at the matched asphalt border: old feature z vs the field.
-    let (mut h_cmp, mut h_worst) = (0usize, 0i64);
-    for l in enc_layers.iter() {
-        if l.name != "transportation" {
-            continue;
-        }
-        for feat in &l.features {
-            let ok = feat.properties.iter().any(|(k, v)| {
-                k == "class"
-                    && matches!(v, Value::String(s)
-                        if s.ends_with("_surface") || s.ends_with("_rim"))
-            }) && feat
-                .properties
-                .iter()
-                .any(|(k, v)| k == "sheet" && matches!(v, Value::Int(0)));
-            if !ok {
-                continue;
-            }
-            let Some(m) = &feat.mesh else { continue };
-            for i in 0..m.x.len() {
-                if let Some(hs) = om_heights.get(&(m.x[i], m.y[i])) {
-                    let best =
-                        hs.iter().map(|&h| (h as i64 - m.z[i] as i64).abs()).min().unwrap_or(0);
-                    h_cmp += 1;
-                    h_worst = h_worst.max(best);
-                }
-            }
-        }
-    }
-    eprintln!("[one-mesh] asphalt border heights: {h_cmp} samples, worst |dz| {h_worst} mm");
-    let only: std::collections::HashSet<(u16, u16)> =
-        old_set.difference(&om_set).copied().collect();
-    for l in enc_layers.iter() {
-        if l.name != "transportation" {
-            continue;
-        }
-        for f in &l.features {
-            let Some(m) = &f.mesh else { continue };
-            let hits = border(&m.x, &m.y).iter().filter(|q| only.contains(q)).count();
-            if hits > 0 {
-                eprintln!(
-                    "[one-mesh]   old-only owner: {:?} ({} border verts unmatched)",
-                    f.properties, hits
-                );
-            }
-        }
-    }
-}
 
 /// Tiler-computed property carrying a building's ground relief (highest minus
 /// lowest terrain under its footprint, whole metres). The building mesher sinks
@@ -2070,11 +1670,7 @@ fn add_road_surface(
     // edge is treated as kerb and the rim goes back to wrapping the whole
     // silhouette. The same reason `--no-hole` exists: an A/B re-tile of a
     // change to the drawn surface should be a flag rather than a patch.
-    let handovers = if std::env::var_os("ARPT_KERB_AT_HANDOVER").is_some() {
-        &[][..]
-    } else {
-        pavement.handovers_for(bounds)
-    };
+    let handovers = pavement.handovers_for(bounds);
     for paved in
         synth::pave_mesh::tile_meshes(levels, field, sampler, z, z_ref, bounds, hole, handovers)
     {
@@ -2119,11 +1715,7 @@ fn add_road_surface(
         // handed on are those whose asphalt was *actually meshed*, so a level
         // that failed to mesh leaves no hole with nothing over it (invariant 6).
         if paved.level == 0 && hole && !paved.region.is_empty() {
-            if std::env::var_os("ARPT_NO_ONE_MESH").is_none()
-                || std::env::var_os("ARPT_ONE_MESH_PROBE").is_some()
-            {
-                PROBE_LAYERS.with(|l| l.borrow_mut().push((paved.layer, paved.material)));
-            }
+            PROBE_LAYERS.with(|l| l.borrow_mut().push((paved.layer, paved.material)));
             cut.push(paved.region);
         }
         push(surface_class, paved.surface, 0);
@@ -3315,8 +2907,6 @@ mod tests {
             terrain: None,
             threads: 0,
             brotli_quality: tile_build::DEFAULT_QUALITY,
-            dump: None,
-            verify_model: None,
             stage_out: None,
             stage_in: None,
             breaklines: true,

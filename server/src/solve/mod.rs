@@ -19,7 +19,6 @@
 pub mod consistency;
 pub mod crossings;
 pub mod graph;
-pub mod joints;
 pub mod partition;
 pub mod portals;
 pub mod profile;
@@ -100,17 +99,13 @@ fn reconcile_stratum(
     sites: &[Vec<crossings::PlanCrossing>],
     daylight: &mut Vec<Daylight>,
     divergence: &mut Vec<PartitionDivergence>,
-    pass: usize,
     flank: &mut dyn FnMut(Coord) -> f64,
 ) {
-    // ARPT_DEBUG_ANNEX: one line per tunnel-bearing corridor with crossings —
-    // the tail bounds against the crossing arcs, and whether the annex took.
-    let debug_annex = std::env::var_os("ARPT_DEBUG_ANNEX").is_some();
     // The twin-bore entity (S8): computed before the per-corridor loop so the
     // windows read every sibling's annotation, spliced where a twin is at
     // grade, and held below against the shrink where it is not.
     let twins = twin_bore_windows(scene, profiles, stratum);
-    apply_twin_windows(scene, profiles, &twins, debug_annex);
+    apply_twin_windows(scene, profiles, &twins);
     for c in scene.corridors.iter_mut() {
         if c.kind.stratum() != stratum {
             continue;
@@ -119,19 +114,6 @@ fn reconcile_stratum(
             continue;
         };
         let reaches = reaches.get(c.id as usize).cloned().unwrap_or_default();
-        if debug_annex && c.spans.iter().any(|s| s.kind == SpanKind::Tunnel) {
-            for s in c.spans.iter().filter(|s| s.kind == SpanKind::Tunnel) {
-                let bounds = portals::span_bounds(p, s);
-                let near: Vec<&(f64, f64)> = reaches
-                    .iter()
-                    .filter(|(x, _)| *x > s.arc0 - 250.0 && *x < s.arc1 + 250.0)
-                    .collect();
-                eprintln!(
-                    "[annex] corridor {} {:?} tunnel [{:.1}, {:.1}] bounds {:?} crossings {:?}",
-                    c.id, c.kind, s.arc0, s.arc1, bounds, near
-                );
-            }
-        }
         // The deck contract mirrors `relax::reconstruct`: a monotone class's
         // deck is its line; everyone else refits per-run ramps.
         let deck_follows_road = c.kind.prior().monotone
@@ -139,23 +121,8 @@ fn reconcile_stratum(
         let mut spans = std::mem::take(&mut c.spans);
         // The spans as they enter the fold: the pure partition's input.
         let entering = spans.clone();
-        // **Pass 2 freezes the partition** (the quiet week's first lever,
-        // chosen from the two bba7dbd names): the structure predicates read
-        // pass 1's verdicts as settled — no annex, no absorb, no shrink —
-        // because they are not idempotent under the re-relax (graph-build ∘
-        // relax moves heights from its own output, approaches hang again,
-        // and the fold grew 1,834 m of bridge on identical profiles). Pass 1
-        // already wrote the reconciled truth; pass 2 re-solves heights
-        // against it and hands it back unchanged.
-        if pass > 0 {
-            c.spans = spans;
-            continue;
-        }
         let carried = carried.get(c.id as usize).cloned().unwrap_or_default();
         if let Some(annexed) = portals::annex_spans(p, &spans, &reaches, &carried) {
-            if debug_annex {
-                eprintln!("[annex] corridor {} {:?} annexed: {:?}", c.id, c.kind, annexed);
-            }
             for s in annexed.iter().filter(|s| s.kind != SpanKind::Grade) {
                 p.annex_structure(s.arc0, s.arc1, deck_follows_road);
             }
@@ -167,18 +134,6 @@ fn reconcile_stratum(
                 + crate::priors::TUNNEL_HEIGHT_M
                 + crate::priors::TUNNEL_COVER_M;
             let pt = p.point_at_arc(x.arc);
-            if let Some(dbg) = std::env::var_os("ARPT_DEBUG_BURY") {
-                if dbg.to_string_lossy().parse::<u32>() == Ok(c.id) {
-                    eprintln!(
-                        "[bury] daylight corridor {} arc={:.1} road={:.2} surface={:.2} deficit={:+.2}",
-                        c.id,
-                        x.arc,
-                        p.road_at_arc(x.arc),
-                        p.surface_at_arc(x.arc),
-                        roof - p.surface_at_arc(x.arc)
-                    );
-                }
-            }
             daylight.push(Daylight {
                 corridor: c.id,
                 arc: x.arc,
@@ -200,7 +155,7 @@ fn reconcile_stratum(
         // cannot see either (the twin-bore entity, [`twin_bore_windows`]).
         let covered = covered.get(c.id as usize).map(Vec::as_slice).unwrap_or(&[]);
         let twin: Vec<(f64, f64)> = twins[c.id as usize].iter().map(|&(a, b, _)| (a, b)).collect();
-        let mut reconciled = portals::reconcile_spans(p, &spans, covered, &twin);
+        let reconciled = portals::reconcile_spans(p, &spans, covered, &twin);
         // The bridge half of the pure partition, in the fold where every
         // consumer reads it (`ARPT_BRIDGE_TRIM=1`). The 2026-08-28 slice was
         // withdrawn because the trimmed stretches were never degraded: the
@@ -212,9 +167,6 @@ fn reconcile_stratum(
         // with its consumers" means here: the ramp refits to the trimmed
         // extent, and the cut, the sweep, the sheets and the benches all read
         // the same trimmed truth.
-        if std::env::var_os("ARPT_BRIDGE_TRIM").is_some() {
-            reconciled = partition::bridge_trim(p, &reconciled, c.kind.prior(), flank);
-        }
         for g in reconciled.iter().filter(|s| s.kind == SpanKind::Grade) {
             for t in spans.iter().filter(|s| s.kind != SpanKind::Grade) {
                 let (lo, hi) = (g.arc0.max(t.arc0), g.arc1.min(t.arc1));
@@ -229,17 +181,6 @@ fn reconcile_stratum(
         // step 3's blocker is a list of mechanisms instead of a total.
         // `entering` IS pass 1's reconciled spans on pass 2, so the divergence
         // between the passes is divergence(entering, reconciled) verbatim.
-        if pass > 0 && std::env::var_os("ARPT_TWO_PASS_DIVERGENCE").is_some() {
-            let d = partition::divergence(&entering, &reconciled);
-            if d.metres > 0.5 {
-                let pt = p.point_at_arc(d.worst_arc);
-                eprintln!(
-                    "[two-pass] corridor {} {:?} {:.1} m differ: b→g {:.1} g→b {:.1} t→g {:.1} g→t {:.1} other {:.1} at {:.6},{:.6} (longest {:.0} m)",
-                    c.id, c.kind, d.metres, d.bridge_to_grade, d.grade_to_bridge,
-                    d.tunnel_to_grade, d.grade_to_tunnel, d.other, pt.x, pt.y, d.worst_metres
-                );
-            }
-        }
         // The pure partition, computed from the same inputs and compared —
         // never written. Its distance from the fold is what the two-pass
         // switch is judged against before anything moves.
@@ -261,10 +202,7 @@ fn reconcile_stratum(
     // span truth is joint): grow-only toward plan facts, profile mutations
     // coupled, pass-1 only like the rest of the fold. Before the carry-stub
     // weld, which a grow can only make more eligible.
-    if pass == 0 && std::env::var_os("ARPT_JOINT_WELD").is_some() {
-        joints::weld_junction_joints(scene, profiles, stratum, flank, debug_annex);
-    }
-    carry_stubs_welded_onto_decks(scene, profiles, stratum, debug_annex);
+    carry_stubs_welded_onto_decks(scene, profiles, stratum);
 }
 
 /// S8's entity rule, applied to rail twins: where a corridor's twin runs in a
@@ -412,7 +350,6 @@ fn apply_twin_windows(
     scene: &mut SceneGraph,
     profiles: &mut [Option<Profile>],
     windows: &[Vec<(f64, f64, i64)>],
-    debug: bool,
 ) {
     const MIN_ADOPT_M: f64 = 2.0;
     for (cid, wins) in windows.iter().enumerate() {
@@ -425,12 +362,6 @@ fn apply_twin_windows(
             for (g0, g1) in grade_clip(&c.spans, lo, hi) {
                 if g1 - g0 < MIN_ADOPT_M {
                     continue;
-                }
-                if debug {
-                    eprintln!(
-                        "[annex] corridor {} {:?} adopts twin bore [{g0:.1}, {g1:.1}]",
-                        c.id, c.kind
-                    );
                 }
                 splice_tunnel(&mut c.spans, g0, g1, level);
                 let deck_follows_road = c.kind.prior().monotone
@@ -525,7 +456,6 @@ fn carry_stubs_welded_onto_decks(
     scene: &mut SceneGraph,
     profiles: &mut [Option<Profile>],
     stratum: Stratum,
-    debug: bool,
 ) {
     let mut candidates: Vec<CorridorId> = scene
         .corridors
@@ -562,9 +492,6 @@ fn carry_stubs_welded_onto_decks(
         let deck_follows_road = c.kind.prior().monotone
             && profile::monotone_direction(p.terrain_m()).is_some();
         c.spans = portals::carry_whole_corridor(p, &c.spans, deck_follows_road);
-        if debug {
-            eprintln!("[annex] corridor {id} {:?} carried whole: {:?}", c.kind, c.spans);
-        }
     }
 }
 
@@ -855,125 +782,110 @@ pub fn run_licensed(
     // step changes nothing where pass 1's partition was already the truth:
     // the residual rows and the scorecard must read the same, which is the
     // fixpoint claim (99b66e1) verified per run before the write-back moves.
+    let scene: &SceneGraph = &*scene_mut;
+// Every corridor in the scene is solved. The gate upstream admits only
+// strata that solve (`assemble::run`), so "does this need a profile" is no
+// longer a question asked here — a draped feature never reaches this point.
+let todo: Vec<usize> = (0..scene.corridors.len()).collect();
+// Pass 1 only: the per-corridor solve. Pass 2 keeps pass 1's profiles —
+// the ramps the fold's annex/absorb/degrade left behind — because spans
+// alone cannot seed a fixpoint: re-solving from them refits deck ramps,
+// their approaches hang, and absorb/grow extend the spans again
+// (grade→bridge 2,571 m of 3,250 m divergence, ARPT_TWO_PASS_DIVERGENCE).
+// This is §4's "seeded from pass 1's heights", taken literally.
     let mut profiles: Vec<Option<Profile>> = Vec::new();
-    let passes = if std::env::var_os("ARPT_TWO_PASS").is_some() { 2 } else { 1 };
-    for pass in 0..passes {
-        let scene: &SceneGraph = &*scene_mut;
-        if pass > 0 {
-            crossings.clear();
-            junction_h.iter_mut().for_each(|h| *h = None);
-            relaxed = relax::Relaxed::default();
-            residuals.clear();
-            daylight.clear();
-            partition_div.clear();
-        }
-    // Every corridor in the scene is solved. The gate upstream admits only
-    // strata that solve (`assemble::run`), so "does this need a profile" is no
-    // longer a question asked here — a draped feature never reaches this point.
-    let todo: Vec<usize> = (0..scene.corridors.len()).collect();
-    // Pass 1 only: the per-corridor solve. Pass 2 keeps pass 1's profiles —
-    // the ramps the fold's annex/absorb/degrade left behind — because spans
-    // alone cannot seed a fixpoint: re-solving from them refits deck ramps,
-    // their approaches hang, and absorb/grow extend the spans again
-    // (grade→bridge 2,571 m of 3,250 m divergence, ARPT_TWO_PASS_DIVERGENCE).
-    // This is §4's "seeded from pass 1's heights", taken literally.
-    if pass == 0 {
-        profiles = Vec::new();
-        profiles.resize_with(scene.corridors.len(), || None);
+    profiles.resize_with(scene.corridors.len(), || None);
 
-        let threads = threads.max(1).min(todo.len().max(1));
-        let next = Mutex::new(0usize);
-        let results: Mutex<&mut Vec<Option<Profile>>> = Mutex::new(&mut profiles);
-        std::thread::scope(|scope| -> Result<(), Error> {
-            let mut handles = Vec::with_capacity(threads);
-            for _ in 0..threads {
-                handles.push(scope.spawn(|| -> Result<(), Error> {
-                    let mut dem = primary_dem.fork()?;
-                    loop {
-                        let i = {
-                            let mut n = next.lock().expect("solve queue poisoned");
-                            if *n >= todo.len() {
-                                break;
-                            }
-                            let i = *n;
-                            *n += 1;
-                            i
-                        };
-                        let c = &scene.corridors[todo[i]];
-                        let mode = Mode::for_kind(c.kind);
-                        let solved = profile::solve(&c.nodes, &c.spans, mode, &mut |p| {
-                            reference_surface(&mut dem, z_ref, p.x, p.y)
-                        });
-                        results.lock().expect("solve results poisoned")[todo[i]] = solved;
-                    }
-                    Ok(())
-                }));
-            }
-            for handle in handles {
-                handle.join().map_err(|_| "solve worker panicked")??;
-            }
-            Ok(())
-        })?;
-    }
+    let threads = threads.max(1).min(todo.len().max(1));
+    let next = Mutex::new(0usize);
+    let results: Mutex<&mut Vec<Option<Profile>>> = Mutex::new(&mut profiles);
+    std::thread::scope(|scope| -> Result<(), Error> {
+        let mut handles = Vec::with_capacity(threads);
+        for _ in 0..threads {
+            handles.push(scope.spawn(|| -> Result<(), Error> {
+                let mut dem = primary_dem.fork()?;
+                loop {
+                    let i = {
+                        let mut n = next.lock().expect("solve queue poisoned");
+                        if *n >= todo.len() {
+                            break;
+                        }
+                        let i = *n;
+                        *n += 1;
+                        i
+                    };
+                    let c = &scene.corridors[todo[i]];
+                    let mode = Mode::for_kind(c.kind);
+                    let solved = profile::solve(&c.nodes, &c.spans, mode, &mut |p| {
+                        reference_surface(&mut dem, z_ref, p.x, p.y)
+                    });
+                    results.lock().expect("solve results poisoned")[todo[i]] = solved;
+                }
+                Ok(())
+            }));
+        }
+        for handle in handles {
+            handle.join().map_err(|_| "solve worker panicked")??;
+        }
+        Ok(())
+    })?;
 
-    for stratum in [Stratum::H, Stratum::R, Stratum::S, Stratum::D, Stratum::B] {
-        // Fresh immutable view per stratum: the write-back below needs the
-        // scene mutable, and each iteration's reads must see the seniors'
-        // reconciled truth, not the annotation they were assembled with.
-        let scene: &SceneGraph = scene_mut;
-        if !scene.corridors.iter().any(|c| c.kind.stratum() == stratum) {
-            continue;
-        }
-        let derived = crossings::derive(scene, &profiles, stratum);
-        let mut g = graph::build(scene, &profiles, &derived, stratum, &covered, &lateral);
-        let r = relax::solve(&mut g);
-        relax::reconstruct(&g, &mut profiles);
-        // Each stratum publishes the junction heights it owns; a junction
-        // belongs to exactly one, so the slots never contend.
-        for (ji, h) in relax::junction_heights(&g).into_iter().enumerate() {
-            if h.is_some() {
-                junction_h[ji] = h;
-            }
-        }
-        relaxed.sweeps = relaxed.sweeps.max(r.sweeps);
-        relaxed.demands_dropped += r.demands_dropped;
-        relaxed.worst_dropped_m = relaxed.worst_dropped_m.max(r.worst_dropped_m);
-        // Which constraints actually hold at this stratum's output — measured
-        // after the heights were read back, so a pass that perturbs ceilings
-        // while measuring can no longer influence anything.
-        for pr in relax::residuals(&mut g) {
-            match residuals.iter_mut().find(|p: &&mut relax::PassResidual| p.name == pr.name) {
-                Some(p) => p.dist.merge(&pr.dist),
-                None => residuals.push(pr),
-            }
-        }
-        crossings.extend(derived);
-        // **One truth per stratum** (§4.5): the annotation served as the
-        // solve's prior; what survives it is the *reconciled* partition —
-        // tunnels grown through the crossings their buried tails pass beneath
-        // (annex), then clamped to their buried runs, the freed slack
-        // re-covered as grade — written back before any junior stratum or any
-        // consumer reads the spans. A junior deciding "the senior is in a
-        // bore here" (`graph::in_immovable_bore`) then reads a bore that
-        // exists, and the bands, benches, sheets, paint and solids all cut
-        // one partition. The split this closes: paint reconciled privately at
-        // emit while the surfaces read the annotation, so a dismissed tunnel
-        // was stroked as a road over ground that never benched it.
-        reconcile_stratum(
-            scene_mut,
-            &mut profiles,
-            stratum,
-            &reaches,
-            &carried,
-            &covered,
-            &sites,
-            &mut daylight,
-            &mut partition_div,
-            pass,
-            &mut |c: Coord| reference_surface(&mut flank_dem, z_ref, c.x, c.y),
-        );
+for stratum in [Stratum::H, Stratum::R, Stratum::S, Stratum::D, Stratum::B] {
+    // Fresh immutable view per stratum: the write-back below needs the
+    // scene mutable, and each iteration's reads must see the seniors'
+    // reconciled truth, not the annotation they were assembled with.
+    let scene: &SceneGraph = scene_mut;
+    if !scene.corridors.iter().any(|c| c.kind.stratum() == stratum) {
+        continue;
     }
+    let derived = crossings::derive(scene, &profiles, stratum);
+    let mut g = graph::build(scene, &profiles, &derived, stratum, &covered, &lateral);
+    let r = relax::solve(&mut g);
+    relax::reconstruct(&g, &mut profiles);
+    // Each stratum publishes the junction heights it owns; a junction
+    // belongs to exactly one, so the slots never contend.
+    for (ji, h) in relax::junction_heights(&g).into_iter().enumerate() {
+        if h.is_some() {
+            junction_h[ji] = h;
+        }
     }
+    relaxed.sweeps = relaxed.sweeps.max(r.sweeps);
+    relaxed.demands_dropped += r.demands_dropped;
+    relaxed.worst_dropped_m = relaxed.worst_dropped_m.max(r.worst_dropped_m);
+    // Which constraints actually hold at this stratum's output — measured
+    // after the heights were read back, so a pass that perturbs ceilings
+    // while measuring can no longer influence anything.
+    for pr in relax::residuals(&mut g) {
+        match residuals.iter_mut().find(|p: &&mut relax::PassResidual| p.name == pr.name) {
+            Some(p) => p.max_m = p.max_m.max(pr.max_m),
+            None => residuals.push(pr),
+        }
+    }
+    crossings.extend(derived);
+    // **One truth per stratum** (§4.5): the annotation served as the
+    // solve's prior; what survives it is the *reconciled* partition —
+    // tunnels grown through the crossings their buried tails pass beneath
+    // (annex), then clamped to their buried runs, the freed slack
+    // re-covered as grade — written back before any junior stratum or any
+    // consumer reads the spans. A junior deciding "the senior is in a
+    // bore here" (`graph::in_immovable_bore`) then reads a bore that
+    // exists, and the bands, benches, sheets, paint and solids all cut
+    // one partition. The split this closes: paint reconciled privately at
+    // emit while the surfaces read the annotation, so a dismissed tunnel
+    // was stroked as a road over ground that never benched it.
+    reconcile_stratum(
+        scene_mut,
+        &mut profiles,
+        stratum,
+        &reaches,
+        &carried,
+        &covered,
+        &sites,
+        &mut daylight,
+        &mut partition_div,
+        &mut |c: Coord| reference_surface(&mut flank_dem, z_ref, c.x, c.y),
+    );
+}
 
     // The structures the result implies, derived once the heights are final.
     let structures = scene_mut
@@ -1461,7 +1373,7 @@ mod tests {
         let windows = twin_bore_windows(&scene, &profiles, stratum);
         assert!(!windows[1].is_empty(), "the twin must see its sibling's bore");
         assert!(windows[2].is_empty(), "30 m away is not a twin");
-        apply_twin_windows(&mut scene, &mut profiles, &windows, false);
+        apply_twin_windows(&mut scene, &mut profiles, &windows);
         let bored = |c: &Corridor| -> Vec<(f64, f64)> {
             c.spans
                 .iter()

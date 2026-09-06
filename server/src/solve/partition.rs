@@ -88,15 +88,6 @@ pub(crate) fn dem_blind(
     flank: &mut dyn FnMut(Coord) -> f64,
 ) -> bool {
     let ratio = dem_blind_ratio(profile, a0, a1, flank);
-    if std::env::var_os("ARPT_BRIDGE_TRIM_CENSUS").is_some() {
-        let pt = profile.point_at_arc(0.5 * (a0 + a1));
-        eprintln!(
-            "[trim-census] ratio {ratio:.2} len {:.0} m at {:.6},{:.6}",
-            a1 - a0,
-            pt.x,
-            pt.y
-        );
-    }
     2.0 * ratio > 1.0
 }
 

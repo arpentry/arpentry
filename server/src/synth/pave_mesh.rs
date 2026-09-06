@@ -157,25 +157,16 @@ pub fn tile_meshes(
             let h = field.at(sampler, sheet, z, z_ref, bounds, lon, lat, &mut scratch);
             project::quantize_z(h)
         };
-        let probe = std::env::var_os("ARPT_PAVE_PROBE").is_some();
-        let t = std::time::Instant::now();
-        let verts: usize = rings.iter().map(|r| r.pts.len()).sum();
         // The shadow census rides a thread-local for the duration of this
         // tile's meshing (a tile is meshed on one thread): the rim builder
         // records every verdict into it without the census threading through
         // every signature between here and there.
-        if std::env::var_os("ARPT_EXACT_HANDOVER").is_some() {
-            EXACT_CENSUS.with(|c| *c.borrow_mut() = Some(ExactCensus::new(bounds)));
-        }
         EXACT_ON.with(|e| e.set(exact_tags() && z >= z_ref));
         if exact_tags() {
             EXACT_FRAME.with(|f| f.set(crate::synth::pavement::chunk_frame_for(bounds)));
         }
         let meshed =
             mesh_rings(&rings, bounds, crate::terrain::grid_for(z, z_ref), hole, handovers, &mut height);
-        if let Some(c) = EXACT_CENSUS.with(|c| c.borrow_mut().take()) {
-            c.report(z, bounds);
-        }
         // The apron is the wall the hole exposes, so it is built only where the
         // hole is cut and only for the at-grade surface: a deck's silhouette is
         // its own edge over open air, not a kerb against the ground.
@@ -196,75 +187,10 @@ pub fn tile_meshes(
         } else {
             None
         };
-        if probe && t.elapsed().as_millis() > 100 {
-            eprintln!(
-                "[pave-mesh] z{} level {}: {} rings / {} ring-verts -> {} tris in {:?}",
-                z,
-                ls.level,
-                rings.len(),
-                verts,
-                meshed.as_ref().map_or(0, |(m, _, _)| m.indices.len() / 3),
-                t.elapsed()
-            );
-        }
         // ARPT_MESH_AT=lon,lat — one line per level entry of the tile holding
         // the point: where between the chunk region and the drawn mesh a
         // stretch of surface is lost. The instrument for a band with a hole
         // the union coverage cannot explain.
-        if let Some(at) = std::env::var_os("ARPT_MESH_AT") {
-            if let Some((plon, plat)) = at
-                .to_str()
-                .and_then(|s| s.split_once(','))
-                .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))
-            {
-                if bounds.contains(plon, plat) {
-                    let eo = |rings: &[TaggedRing]| -> bool {
-                        let mut inside = false;
-                        for r in rings {
-                            let n = r.pts.len();
-                            for i in 0..n {
-                                let (p, q) = (r.pts[i], r.pts[(i + 1) % n]);
-                                if (p.y > plat) != (q.y > plat)
-                                    && plon < p.x + (q.x - p.x) * (plat - p.y) / (q.y - p.y)
-                                {
-                                    inside = !inside;
-                                }
-                            }
-                        }
-                        inside
-                    };
-                    let pre = ls.shapes.iter().any(|sh| {
-                        let mut inside = false;
-                        for ring in sh {
-                            let n = ring.len();
-                            for i in 0..n {
-                                let (p, q) = (ring[i], ring[(i + 1) % n]);
-                                if (p.y > plat) != (q.y > plat)
-                                    && plon < p.x + (q.x - p.x) * (plat - p.y) / (q.y - p.y)
-                                {
-                                    inside = !inside;
-                                }
-                            }
-                        }
-                        inside
-                    });
-                    let qx = 16384.0 + (plon - bounds.west) / bounds.width() * 32768.0;
-                    let qy = 16384.0 + (plat - bounds.south) / bounds.height() * 32768.0;
-                    eprintln!(
-                        "[mesh-at] z{z} level {} layer {} {:?}: pre-clip in={pre}, \
-                         post-clip in={}, meshed={}, region in={}",
-                        ls.level,
-                        ls.layer,
-                        ls.surface,
-                        eo(&rings),
-                        meshed
-                            .as_ref()
-                            .map_or("NO".into(), |(m, _, _)| format!("{} tris", m.indices.len() / 3)),
-                        meshed.as_ref().is_some_and(|(_, _, r)| r.contains((qx, qy))),
-                    );
-                }
-            }
-        }
         if let Some((surface, rim, region)) = meshed {
             out.push(PavedMesh {
                 level: ls.level,
@@ -914,9 +840,6 @@ fn is_handover(a: Coord, b: Coord, handovers: &[Handover], m_lon: f64) -> bool {
 /// in the shadow of the tolerant test under `ARPT_EXACT_HANDOVER=1`, and the
 /// agreement between the two is what decides whether an edge's provenance can
 /// be carried exactly through the pipeline at all.
-fn is_handover_exact(a: Coord, b: Coord, handovers: &[Handover], frame: &MFrame) -> bool {
-    is_handover_within(a, b, handovers, frame, 1)
-}
 
 /// [`is_handover_exact`] with the collinearity budget in grid units. One unit
 /// is the census's exactness; the tagging path (`ARPT_EXACT_TAGS`) allows
@@ -964,14 +887,12 @@ const EXACT_TAG_UNITS: i64 = 4;
 /// instead of being drawn as bare handover interior; the full-zone A/B read
 /// `same` on every gated metric.
 fn exact_tags() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ARPT_NO_EXACT_TAGS").is_none())
+    true
 }
 
 thread_local! {
     /// The shadow census for the tile being meshed on this thread, if
     /// `ARPT_EXACT_HANDOVER` asked for one.
-    static EXACT_CENSUS: std::cell::RefCell<Option<ExactCensus>> = const { std::cell::RefCell::new(None) };
     /// The chunk frame of the tile being meshed on this thread, for the
     /// exact tagging path — set by `tile_meshes` before any ring walks.
     static EXACT_FRAME: std::cell::Cell<MFrame> =
@@ -987,129 +908,8 @@ thread_local! {
 /// The shadow census of `ARPT_EXACT_HANDOVER=1`: how often the tolerant and
 /// the exact handover tests agree, per tile, with the first few disagreements
 /// placed so they can be inspected.
-struct ExactCensus {
-    frame: MFrame,
-    both: u64,
-    tol_only: u64,
-    exact_only: u64,
-    neither: u64,
-    /// Every tolerant-true edge, bucketed by the farther of its two ends'
-    /// distance from the nearest cut's line, in grid units — the distribution
-    /// the exactness threshold has to be read off. Buckets: ≤1, ≤2, ≤4, ≤8,
-    /// ≤16, ≤100, ≤1000, beyond.
-    far: [u64; 8],
-    samples: Vec<String>,
-}
 
-const FAR_BUCKETS: [f64; 7] = [1.0, 2.0, 4.0, 8.0, 16.0, 100.0, 1000.0];
 
-impl ExactCensus {
-    fn new(bounds: &Bounds) -> ExactCensus {
-        ExactCensus {
-            frame: crate::synth::pavement::chunk_frame_for(bounds),
-            both: 0,
-            tol_only: 0,
-            exact_only: 0,
-            neither: 0,
-            far: [0; 8],
-            samples: Vec::new(),
-        }
-    }
-
-    fn record(&mut self, a: Coord, b: Coord, handovers: &[Handover], tolerant: bool) {
-        let exact = is_handover_exact(a, b, handovers, &self.frame);
-        match (tolerant, exact) {
-            (true, true) => self.both += 1,
-            (true, false) => self.tol_only += 1,
-            (false, true) => self.exact_only += 1,
-            (false, false) => self.neither += 1,
-        }
-        if tolerant || exact {
-            let g = |c: Coord| -> [f64; 2] {
-                let p = self.frame.to_m(c);
-                [p[0] / poly::GRID_M, p[1] / poly::GRID_M]
-            };
-            let dist = |p: [f64; 2]| -> f64 {
-                handovers
-                    .iter()
-                    .map(|h| {
-                        let (ha, hb) = (g(h.a), g(h.b));
-                        let (dx, dy) = (hb[0] - ha[0], hb[1] - ha[1]);
-                        let len = (dx * dx + dy * dy).sqrt().max(1e-9);
-                        ((p[0] - ha[0]) * dy - (p[1] - ha[1]) * dx).abs() / len
-                    })
-                    .fold(f64::INFINITY, f64::min)
-            };
-            let far = dist(g(a)).max(dist(g(b)));
-            let bucket = FAR_BUCKETS.iter().position(|&b| far <= b).unwrap_or(7);
-            self.far[bucket] += 1;
-        }
-        if tolerant != exact && self.samples.len() < 4 {
-            // How far the edge's ends sit from the nearest cut, in grid units,
-            // so a disagreement reads as "off by 3 units" or "off by 4 000".
-            let g = |c: Coord| -> [f64; 2] {
-                let p = self.frame.to_m(c);
-                [p[0] / poly::GRID_M, p[1] / poly::GRID_M]
-            };
-            let dist = |p: [f64; 2]| -> f64 {
-                handovers
-                    .iter()
-                    .map(|h| {
-                        let (ha, hb) = (g(h.a), g(h.b));
-                        let (dx, dy) = (hb[0] - ha[0], hb[1] - ha[1]);
-                        let len = (dx * dx + dy * dy).sqrt().max(1e-9);
-                        ((p[0] - ha[0]) * dy - (p[1] - ha[1]) * dx).abs() / len
-                    })
-                    .fold(f64::INFINITY, f64::min)
-            };
-            // And where along the nearest cut each end sits, as a fraction of
-            // its length: outside [0, 1] is "collinear but past the cut's end".
-            let along = |p: [f64; 2]| -> f64 {
-                handovers
-                    .iter()
-                    .map(|h| {
-                        let (ha, hb) = (g(h.a), g(h.b));
-                        let (dx, dy) = (hb[0] - ha[0], hb[1] - ha[1]);
-                        let len2 = (dx * dx + dy * dy).max(1e-9);
-                        let d = ((p[0] - ha[0]) * dy - (p[1] - ha[1]) * dx).abs() / len2.sqrt();
-                        (d, ((p[0] - ha[0]) * dx + (p[1] - ha[1]) * dy) / len2)
-                    })
-                    .fold((f64::INFINITY, f64::NAN), |best, c| if c.0 < best.0 { c } else { best })
-                    .1
-            };
-            self.samples.push(format!(
-                "{:.6},{:.6} tol={tolerant} exact={exact} line-dist {:.1}/{:.1} units along {:.3}/{:.3} len {:.2} m",
-                0.5 * (a.x + b.x),
-                0.5 * (a.y + b.y),
-                dist(g(a)),
-                dist(g(b)),
-                along(g(a)),
-                along(g(b)),
-                {
-                    let (pa, pb) = (self.frame.to_m(a), self.frame.to_m(b));
-                    ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2)).sqrt()
-                }
-            ));
-        }
-    }
-
-    fn report(&self, z: u8, bounds: &Bounds) {
-        if self.both + self.tol_only + self.exact_only == 0 {
-            return;
-        }
-        eprintln!(
-            "[exact-handover] z{z} {:.5},{:.5} both={} tol_only={} exact_only={} neither={} far={}{}",
-            bounds.west + 0.5 * bounds.width(),
-            bounds.south + 0.5 * bounds.height(),
-            self.both,
-            self.tol_only,
-            self.exact_only,
-            self.neither,
-            self.far.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("/"),
-            self.samples.iter().map(|s| format!("\n    {s}")).collect::<String>()
-        );
-    }
-}
 
 /// The rim: one quad per non-cut boundary edge, `edge_across` 127 on the
 /// silhouette pair and 0 on the inset pair, so the client fades the outer pixel.
@@ -1200,11 +1000,6 @@ fn build_rim(
             } else {
                 is_handover(r.pts[k], r.pts[k1], handovers, m_lon)
             };
-            EXACT_CENSUS.with(|c| {
-                if let Some(c) = c.borrow_mut().as_mut() {
-                    c.record(r.pts[k], r.pts[k1], handovers, handover);
-                }
-            });
             let out = if handover { &mut hand } else { &mut mesh };
             let base = out.x.len() as u32;
             for ((_, a), qc) in quad.iter().zip(across).zip(&q) {
@@ -1454,20 +1249,6 @@ mod tests {
             !is_handover(ring[0], ring[1], &handovers, m_lon),
             "the southern kerb only meets the cut at its corner"
         );
-        // The exact test agrees on both, on the boolean's own grid: the
-        // western kerb's two ends are the cut's own ends, the southern kerb's
-        // far end is 5 grid units short of nothing — it is metres off the line.
-        let frame = crate::synth::pavement::chunk_frame_for(&b);
-        assert!(is_handover_exact(ring[3], ring[0], &handovers, &frame));
-        assert!(!is_handover_exact(ring[0], ring[1], &handovers, &frame));
-        // A vertex one grid unit off the line still counts (the boolean rounds
-        // its intersections to the grid); ten units off does not.
-        let off = |units: f64| {
-            let p = frame.to_m(ring[0]);
-            frame.to_deg([p[0] + units * crate::synth::poly::GRID_M, p[1]])
-        };
-        assert!(is_handover_exact(ring[3], off(1.0), &handovers, &frame));
-        assert!(!is_handover_exact(ring[3], off(10.0), &handovers, &frame));
     }
 
     /// The silhouette is split at every lattice line it crosses, so no stretch

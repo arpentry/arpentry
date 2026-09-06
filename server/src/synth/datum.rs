@@ -34,8 +34,7 @@ use crate::solve;
 /// a flag rather than a patch — the same reason `--no-hole` and
 /// `ARPT_NO_ABUTMENT_CUT` exist. Read once: the shift runs per vertex.
 pub fn enabled() -> bool {
-    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    !*DISABLED.get_or_init(|| std::env::var_os("ARPT_NO_ZOOM_DATUM").is_some())
+    true
 }
 
 /// The datum shift at `(lon, lat)` for zoom `z`: drawn ground at `z` minus

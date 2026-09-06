@@ -259,7 +259,7 @@ impl<'a> HeightField<'a> {
             src_grid,
             pins,
             pin_grid,
-            seat_field: std::env::var_os("ARPT_NO_SEAT_FIELD").is_none(),
+            seat_field: true,
         }
     }
 

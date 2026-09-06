@@ -329,7 +329,6 @@ pub fn derive_seniors(
         let edges = derive_earthworks(
             scene,
             solved,
-            facades,
             &paves,
             &members,
             &layers,
@@ -426,9 +425,6 @@ fn walk_earthworks(
     terrain_path: Option<&Path>,
     z_ref: u8,
 ) -> Vec<EarthworkEdge> {
-    if std::env::var_os("ARPT_NO_WALK_BENCH").is_some() {
-        return Vec::new(); // the A/B control: bands drawn, ground unbenched
-    }
     // Only what is drawn at grade. A band over a bridge is carried by the
     // structure (`synth::carried`) and a band under one is not what the ground
     // there is; neither has a bench to lay.
@@ -466,19 +462,11 @@ fn walk_earthworks(
         chain_of.push(chain);
     }
 
-    let census = std::env::var_os("ARPT_DEBUG_WALK").is_some();
     let rules = WalkBenchRules::from_env();
-    let seated: Vec<(Option<EarthworkEdge>, Option<WalkCensusRow>)> =
+    let edges: Vec<Option<EarthworkEdge>> =
         over_senior_ground(seats.len(), beneath, terrain_path, z_ref, |k, sample| {
-            let s = &bands[seats[k]];
-            let e = walk_edge(s, chain_of[k], &rules, sample);
-            let row = census.then(|| walk_census_row(s, e.is_some(), sample));
-            (e, row)
+            walk_edge(&bands[seats[k]], chain_of[k], &rules, sample)
         });
-    let (edges, rows): (Vec<_>, Vec<_>) = seated.into_iter().unzip();
-    if census {
-        report_walk_census(&rows.into_iter().flatten().collect::<Vec<_>>());
-    }
     let mut edges: Vec<EarthworkEdge> = edges.into_iter().flatten().collect();
     // Back into band order whatever the threads did with them (invariant 5).
     edges.sort_by(|a, b| (a.chain, a.arc0).partial_cmp(&(b.chain, b.arc0)).expect("finite arcs"));
@@ -560,152 +548,10 @@ pub fn over_senior_ground<T: Send>(
 /// One band segment, as `ARPT_DEBUG_WALK` sees it: whether its bench was laid,
 /// how much cut or fill it asked for, and the cross-slope of the ground it was
 /// asked to lay it on.
-struct WalkCensusRow {
-    path: bool,
-    benched: bool,
-    len_m: f64,
-    /// The deeper of the two verge faces the bench would cut or fill — the
-    /// quantity [`walk_edge`]'s cap is read against.
-    face_m: f64,
-    /// The natural cross-slope across the band, rise per metre: the tilt the
-    /// drawn band inherits wherever no bench is laid, and what
-    /// `slope.walk_crossfall` reads.
-    fall: f64,
-    /// The half-width the bench asked its face at: the band's own plus the
-    /// verge.
-    bench_w_m: f64,
-}
 
 /// Reads one band segment for the census, sampling the same three points
 /// [`walk_edge`] does so the two agree by construction.
-fn walk_census_row(
-    s: &crate::synth::carriageway::SourceSeg,
-    benched: bool,
-    sample: &mut dyn FnMut(Coord) -> f64,
-) -> WalkCensusRow {
-    let cos_lat = s.cos_lat;
-    let (dx, dy) = ((s.b.x - s.a.x) * cos_lat, s.b.y - s.a.y);
-    let len = (dx * dx + dy * dy).sqrt();
-    let mid = Coord { x: (s.a.x + s.b.x) * 0.5, y: (s.a.y + s.b.y) * 0.5 };
-    let path = s.corridor == CorridorId::MAX;
-    let mut row = WalkCensusRow {
-        path,
-        benched,
-        len_m: len * DEG_M,
-        face_m: 0.0,
-        fall: 0.0,
-        bench_w_m: s.drawn_half() + EARTHWORK_MARGIN_M,
-    };
-    if !(len > 0.0) {
-        return row;
-    }
-    let (px, py) = (-dy / len, dx / len);
-    // The width the band is *drawn* at. `half_m` is the run's chaining key
-    // (`SourceSeg::drawn_half_at`) and is the class nominal however much the
-    // room took off, so benching off it would carve a terrace wider than the
-    // pavement standing on it.
-    let w = s.drawn_half() + EARTHWORK_MARGIN_M;
-    let target =
-        if path { (sample(s.a) + sample(s.b)) * 0.5 } else { (s.height_a + s.height_b) * 0.5 };
-    let at = |side: f64| Coord {
-        x: mid.x + side * px * w / (DEG_M * cos_lat),
-        y: mid.y + side * py * w / DEG_M,
-    };
-    let (l, r) = (sample(at(1.0)), sample(at(-1.0)));
-    row.face_m = (target - l).abs().max((target - r).abs());
-    row.fall = (l - r).abs() / (2.0 * w);
-    row
-}
 
-fn report_walk_census(rows: &[WalkCensusRow]) {
-    let q = |v: &mut Vec<f64>, f: f64| -> f64 {
-        if v.is_empty() {
-            return 0.0;
-        }
-        v.sort_by(f64::total_cmp);
-        v[((v.len() - 1) as f64 * f) as usize]
-    };
-    for (name, path) in [("sidewalk", false), ("path", true)] {
-        let mine: Vec<&WalkCensusRow> = rows.iter().filter(|r| r.path == path).collect();
-        if mine.is_empty() {
-            continue;
-        }
-        let total_m: f64 = mine.iter().map(|r| r.len_m).sum();
-        let refused: Vec<&&WalkCensusRow> = mine.iter().filter(|r| !r.benched).collect();
-        let refused_m: f64 = refused.iter().map(|r| r.len_m).sum();
-        eprintln!(
-            "[walk] {name:<9} {:>7} segments  {:>8.2} km   refused {:>6} ({:>5.2} %)  \
-             {:>7.2} km ({:>5.2} % of length)",
-            mine.len(),
-            total_m / 1000.0,
-            refused.len(),
-            100.0 * refused.len() as f64 / mine.len() as f64,
-            refused_m / 1000.0,
-            100.0 * refused_m / total_m.max(1e-9),
-        );
-        let mut face: Vec<f64> = mine.iter().map(|r| r.face_m).collect();
-        eprintln!(
-            "[walk]   face asked (m)   p50 {:.2}  p75 {:.2}  p90 {:.2}  p95 {:.2}  p99 {:.2}  \
-             max {:.2}",
-            q(&mut face, 0.50),
-            q(&mut face, 0.75),
-            q(&mut face, 0.90),
-            q(&mut face, 0.95),
-            q(&mut face, 0.99),
-            q(&mut face, 1.0),
-        );
-        let mut all_fall: Vec<f64> = mine.iter().map(|r| r.fall).collect();
-        let mut ref_fall: Vec<f64> = refused.iter().map(|r| r.fall).collect();
-        eprintln!(
-            "[walk]   ground fall      p50 {:.2}  p90 {:.2}  max {:.2}   \
-             (refused only: p50 {:.2}  p90 {:.2}  max {:.2})",
-            q(&mut all_fall, 0.50),
-            q(&mut all_fall, 0.90),
-            q(&mut all_fall, 1.0),
-            q(&mut ref_fall, 0.50),
-            q(&mut ref_fall, 0.90),
-            q(&mut ref_fall, 1.0),
-        );
-        // What a *lower* cap would refuse, and what a higher one would accept:
-        // the fraction of length on each side of a candidate face allowance.
-        let mut line = String::from("[walk]   length by face:");
-        for t in [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0] {
-            let over: f64 = mine.iter().filter(|r| r.face_m > t).map(|r| r.len_m).sum();
-            line.push_str(&format!("  >{t:.2}m {:.1} %", 100.0 * over / total_m.max(1e-9)));
-        }
-        eprintln!("{line}");
-        // **The band narrowed to what the allowance can bench**, estimated: the
-        // face grows with the bench's width, so the width whose face is the cap
-        // is the cap's share of the width this one asked at, and the band
-        // inside it is that less the verge. The question the estimate answers
-        // is whether a rule that narrows the surface instead of refusing its
-        // bench leaves a plausible world or deletes the mountain paths.
-        for cap in [crate::priors::walk_max_face_m(), 2.0] {
-            let cap_name = format!("{cap:.1} m");
-            let (mut full, mut narrowed, mut gone) = (0.0, 0.0, 0.0);
-            for r in &mine {
-                let w = r.bench_w_m;
-                let allow = if r.face_m > cap { w * cap / r.face_m } else { w };
-                let width = 2.0 * (allow - EARTHWORK_MARGIN_M);
-                if width >= 2.0 * (w - EARTHWORK_MARGIN_M) - 1e-9 {
-                    full += r.len_m;
-                } else if width >= crate::priors::WALK_MIN_WIDTH_M {
-                    narrowed += r.len_m;
-                } else {
-                    gone += r.len_m;
-                }
-            }
-            let t = total_m.max(1e-9);
-            eprintln!(
-                "[walk]   band at cap {cap_name}:  full width {:.1} %   narrowed {:.1} %   \
-                 under the minimum {:.1} %",
-                100.0 * full / t,
-                100.0 * narrowed / t,
-                100.0 * gone / t,
-            );
-        }
-    }
-}
 
 /// How much of the cap a narrowed bench aims at, so it lands inside it rather
 /// than on it.
@@ -765,11 +611,7 @@ impl WalkBenchRules {
     }
 
     fn from_env() -> Self {
-        WalkBenchRules {
-            cap_m: std::env::var_os("ARPT_WALK_CAP").and_then(|v| v.to_str()?.parse().ok()),
-            fit: std::env::var_os("ARPT_WALK_FIT").is_some(),
-            coplanar: std::env::var_os("ARPT_WALK_COPLANAR").is_some(),
-        }
+        WalkBenchRules { cap_m: None, fit: false, coplanar: false }
     }
 }
 
@@ -1140,7 +982,6 @@ fn span_bench_gaps(layers: Vec<GroundLayer>) -> Vec<GroundLayer> {
 fn derive_earthworks(
     scene: &SceneGraph,
     solved: &SolvedModel,
-    facades: &Facades,
     paves: &std::collections::HashSet<(u32, u8)>,
     members: &[usize],
     beneath: &[GroundLayer],
@@ -1158,7 +999,7 @@ fn derive_earthworks(
             .filter_map(|c| {
                 solved
                     .profile(c.id)
-                    .map(|p| corridor_earthworks(c, p, Some(facades), None, pavement_of(paves, c)))
+                    .map(|p| corridor_earthworks(c, p, None, pavement_of(paves, c)))
             })
             .flatten()
             .collect();
@@ -1203,7 +1044,7 @@ fn derive_earthworks(
                         h
                     };
                     let edges =
-                        corridor_earthworks(c, p, Some(facades), Some(&mut sample), pavement_of(paves, c));
+                        corridor_earthworks(c, p, Some(&mut sample), pavement_of(paves, c));
                     out.lock().expect("earthwork results poisoned")[i] = edges;
                 }
             });
@@ -1228,9 +1069,6 @@ fn pavement_of(
     paves: &std::collections::HashSet<(u32, u8)>,
     c: &crate::scene::Corridor,
 ) -> [f64; 2] {
-    if std::env::var_os("ARPT_NO_STREET_BENCH").is_some() {
-        return [0.0; 2];
-    }
     [0u8, 1].map(|side| {
         if paves.contains(&(c.id, side)) {
             crate::priors::WALK_WIDTH_M
@@ -1256,7 +1094,6 @@ fn pavement_of(
 fn corridor_earthworks(
     c: &crate::scene::Corridor,
     p: &crate::solve::Profile,
-    facades: Option<&Facades>,
     side: Option<&mut dyn FnMut(Coord) -> f64>,
     paves: [f64; 2],
 ) -> Vec<EarthworkEdge> {
@@ -1359,11 +1196,8 @@ fn corridor_earthworks(
         // the kerb and the facade*. That something is the walk band (the
         // plan's phase 5), riding the host's cross-section at `KERB_RISE_M`.
         // So the machinery lands and the switch waits for it.
-        let clips = std::env::var_os("ARPT_FACADE_BENCH")
-            .and(facades)
-            .filter(|_| c.kind.prior().surface == crate::priors::Surface::Asphalt)
-            .filter(|f| !f.is_empty());
-        let clip_batter = std::env::var_os("ARPT_FACADE_BATTER").is_some();
+        let clips: Option<&Facades> = None;
+        let clip_batter = false;
         // The drawn band this bench must hold whatever a wall says — phase 2's
         // own allocation, so bench and band come off one cross-section
         // (ROADS.md invariant 1). A bench narrower than its asphalt hangs the
@@ -1792,7 +1626,7 @@ fn channel_shave(
     terrain_path: Option<&Path>,
     threads: usize,
 ) -> Vec<EarthworkEdge> {
-    if scene.flows.is_empty() || std::env::var_os("ARPT_NO_CHANNEL_SHAVE").is_some() {
+    if scene.flows.is_empty() {
         return Vec::new();
     }
     let Some(path) = terrain_path else { return Vec::new() };
@@ -2480,18 +2314,6 @@ mod tests {
 
     /// The clip is off by default (see `corridor_earthworks`), so a test that
     /// wants it must say so. Serialized, because the environment is global.
-    fn with_clip<R>(batter: bool, f: impl FnOnce() -> R) -> R {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("ARPT_FACADE_BENCH", "1");
-        if batter {
-            std::env::set_var("ARPT_FACADE_BATTER", "1");
-        }
-        let out = f();
-        std::env::remove_var("ARPT_FACADE_BENCH");
-        std::env::remove_var("ARPT_FACADE_BATTER");
-        out
-    }
 
     /// A wall parallel to that street, `north_m` north of it.
     fn wall_north(north_m: f64) -> Facades {
@@ -2504,107 +2326,18 @@ mod tests {
     /// its full nominal width to the south, where nothing stands. Not a
     /// clearance short of the wall: `FACADE_CLEAR_M` keeps a drawn *surface*
     /// off a footprint, and a wall stands on ground.
-    #[test]
-    fn a_facade_clips_the_bench_on_its_own_side_only() {
-        let (c, p, ground) = cross_slope_street(12, 0.2);
-        let nominal = Kind::Road(RoadClass::Residential).prior().half_width_m(false).unwrap()
-            + EARTHWORK_SHOULDER_M
-            + EARTHWORK_MARGIN_M;
-        let mut side = |c: Coord| ground(c);
-        let edges =
-            with_clip(false, || corridor_earthworks(&c, &p, Some(&wall_north(3.0)), Some(&mut side), [0.0; 2]));
-        assert!(!edges.is_empty(), "the street must bench");
-        for e in edges.iter().filter(|e| !e.carve) {
-            // The corridor runs west→east, so north is its left.
-            assert!(
-                (e.half_width_m[LEFT] - 3.0).abs() < 1e-6,
-                "left bench {} does not stop at the 3 m wall",
-                e.half_width_m[LEFT]
-            );
-            assert_eq!(e.half_width_m[RIGHT], nominal, "the open side keeps its bench");
-        }
-    }
 
     /// Half of `authority.facade_ground`'s population is the *face* beyond the
     /// bench, so the batter is clipped to the same room: nothing this edge
     /// draws may reach the wall.
-    #[test]
-    fn a_facade_stops_the_batter_face_as_well_as_the_bench() {
-        let (c, p, ground) = cross_slope_street(12, 0.5);
-        let nominal = Kind::Road(RoadClass::Residential).prior().half_width_m(false).unwrap()
-            + EARTHWORK_SHOULDER_M
-            + EARTHWORK_MARGIN_M;
-        let mut side = |c: Coord| ground(c);
-        let open = corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]);
-        // The wall stands *outside* the bench (4.25 m) but inside the face's
-        // reach, so the bench itself fits and only the batter is cut short —
-        // the half of the population a bench-only fix would have made worse.
-        let clipped =
-            with_clip(true, || corridor_earthworks(&c, &p, Some(&wall_north(4.6)), Some(&mut side), [0.0; 2]));
-        let reach = |es: &[EarthworkEdge], s: usize| {
-            es.iter()
-                .filter(|e| !e.carve)
-                .map(|e| e.half_width_m[s] + e.batter_m[s])
-                .fold(0.0, f64::max)
-        };
-        assert!(
-            reach(&open, LEFT) > 4.6,
-            "the fixture must have a face worth clipping, got {}",
-            reach(&open, LEFT)
-        );
-        for e in clipped.iter().filter(|e| !e.carve) {
-            assert_eq!(e.half_width_m[LEFT], nominal, "the bench itself still fits");
-        }
-        assert!(
-            reach(&clipped, LEFT) <= 4.6 + 1e-6,
-            "nothing this edge draws may pass the 4.6 m wall, got {}",
-            reach(&clipped, LEFT)
-        );
-        assert_eq!(
-            reach(&open, RIGHT),
-            reach(&clipped, RIGHT),
-            "the side with no wall is untouched"
-        );
-    }
 
     /// The bench may give up its verge and no more: below the band it carries
     /// the drawn asphalt would hang over unbenched ground, which is what
     /// `carriageway_m` exists to prevent.
-    #[test]
-    fn a_clipped_bench_never_goes_below_the_band_it_carries() {
-        let (c, p, ground) = cross_slope_street(12, 0.2);
-        let mut side = |c: Coord| ground(c);
-        // A wall almost on the centerline: the room is gone entirely.
-        let edges =
-            with_clip(false, || corridor_earthworks(&c, &p, Some(&wall_north(0.2)), Some(&mut side), [0.0; 2]));
-        let band = 5.5 * 0.5 + crate::priors::STRUCTURE_SHOULDER_M;
-        let floor = crate::priors::MIN_CARRIAGEWAY_HALF_M.min(band);
-        for e in edges.iter().filter(|e| !e.carve) {
-            assert!(
-                e.half_width_m[LEFT] >= floor - 1e-9,
-                "bench {} fell below the band's own floor {floor}",
-                e.half_width_m[LEFT]
-            );
-        }
-    }
 
     /// A railway is out of this, for the reason `order.building_overlap`
     /// leaves it out: a station roof over its platforms is a level relation,
     /// and narrowing the formation there shaves the platform.
-    #[test]
-    fn a_facade_does_not_clip_a_rail_formation() {
-        let (mut c, p, ground) = cross_slope_street(12, 0.2);
-        c.kind = Kind::Rail(crate::priors::RailClass::StandardGauge);
-        let mut side = |c: Coord| ground(c);
-        let open = corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]);
-        let clipped =
-            with_clip(true, || corridor_earthworks(&c, &p, Some(&wall_north(2.0)), Some(&mut side), [0.0; 2]));
-        assert_eq!(open.len(), clipped.len());
-        for (a, b) in open.iter().zip(clipped.iter()) {
-            assert_eq!(a.half_width_m, b.half_width_m, "a platform is not a defect");
-            assert_eq!(a.batter_m, b.batter_m);
-        }
-    }
 
     /// A bench edge must carry the height of the place it actually stands, not
     /// of the raw node it was indexed by. Smoothing shortens a curved
@@ -2634,7 +2367,7 @@ mod tests {
         let (mut c, p) = street(&pts, &mut |c| ground(c));
         c.kind = Kind::Rail(crate::priors::RailClass::Funicular);
         let mut side = |c: Coord| ground(c);
-        let edges = corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]);
+        let edges = corridor_earthworks(&c, &p, Some(&mut side), [0.0; 2]);
         assert!(!edges.is_empty(), "a climbing alignment must bench");
         // Every bench target must match the profile at the arc its own
         // endpoint occupies. Paired with the raw node instead, these differ by
@@ -2664,7 +2397,7 @@ mod tests {
         let slope = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M * 0.5;
         let (c, p) = street(&pts, &mut |c| slope(c));
         let mut side = |c: Coord| slope(c);
-        let edges = corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]);
+        let edges = corridor_earthworks(&c, &p, Some(&mut side), [0.0; 2]);
         assert!(!edges.is_empty(), "the cross-slope must trigger a bench");
         assert!(edges.iter().all(|e| (e.target_a - 400.0).abs() < 1e-9));
 
@@ -2693,7 +2426,7 @@ mod tests {
         let (c, p) = street(&pts, &mut |c| cliff(c));
         let mut side = |c: Coord| cliff(c);
         assert!(
-            corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]).is_empty(),
+            corridor_earthworks(&c, &p, Some(&mut side), [0.0; 2]).is_empty(),
             "a terrace on a cliff is a fiction: no bench there"
         );
     }
@@ -2803,7 +2536,7 @@ mod tests {
         let gentle = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M * 0.15;
         let (c, p) = street(&pts, &mut |c| gentle(c));
         let mut side = |c: Coord| gentle(c);
-        let edges = corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]);
+        let edges = corridor_earthworks(&c, &p, Some(&mut side), [0.0; 2]);
         assert!(!edges.is_empty());
         let want = (0.15 * bench_half) / (1.0 / EARTHWORK_BATTER - 0.15);
         for e in &edges {
@@ -2822,7 +2555,7 @@ mod tests {
         let leaning = |c: Coord| 400.0 + (c.y - 46.0) * DEG_M * 0.3;
         let (c, p) = street(&pts, &mut |c| leaning(c));
         let mut side = |c: Coord| leaning(c);
-        let edges = corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]);
+        let edges = corridor_earthworks(&c, &p, Some(&mut side), [0.0; 2]);
         assert!(!edges.is_empty());
         for e in &edges {
             assert_eq!(e.batter_run[LEFT], WALL_BATTER, "the uphill face must be a wall");
@@ -2853,7 +2586,7 @@ mod tests {
         // target is the ground.
         let (c, p) = street(&pts, &mut |_| 400.0);
         let mut side = |_: Coord| 400.0;
-        let edges = corridor_earthworks(&c, &p, None, Some(&mut side), [0.0; 2]);
+        let edges = corridor_earthworks(&c, &p, Some(&mut side), [0.0; 2]);
         assert!(!edges.is_empty(), "every at-grade road benches its own band");
         assert!(edges.iter().all(|e| e.batter_m == [EARTHWORK_MIN_BATTER_M; 2]));
         let ew = Earthworks::new(edges);

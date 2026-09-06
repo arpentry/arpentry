@@ -223,7 +223,7 @@ pub fn crossing_bars(a: Coord, b: Coord, traffic: (f64, f64)) -> Vec<Marking> {
     // stripe's own direction — traffic where the registration knows it.
     let (ux, uy) = (dx / len, dy / len);
     let tl = traffic.0.hypot(traffic.1);
-    let (px, py) = if tl > 0.0 && std::env::var_os("ARPT_NO_BAR_TRAFFIC").is_none() {
+    let (px, py) = if tl > 0.0 {
         let (tx, ty) = (traffic.0 / tl, traffic.1 / tl);
         // The chord normal, oriented to traffic's side of the chord.
         let (mut nx, mut ny) = (-uy, ux);

@@ -272,24 +272,6 @@ fn constrained_mesh_inner(
             }
             // ARPT_CDT_AT=qx,qy — why did faces near this quantized point
             // survive the hole: the centroid and each region's winding verdict.
-            if let Some(at) = std::env::var_os("ARPT_CDT_AT") {
-                if let Some((px, py)) = at
-                    .to_str()
-                    .and_then(|s| s.split_once(','))
-                    .and_then(|(a, b)| {
-                        Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?))
-                    })
-                {
-                    if (cen.0 - px).abs() < 600.0 && (cen.1 - py).abs() < 600.0 {
-                        let verdicts: Vec<bool> =
-                            regions.iter().map(|r| r.contains(cen)).collect();
-                        eprintln!(
-                            "[cdt-at] face cen ({:.0},{:.0}) survives; regions contain: {verdicts:?}",
-                            cen.0, cen.1
-                        );
-                    }
-                }
-            }
         }
         let tri = if area2 > 0 { [a, b, c] } else { [a, c, b] };
         for &v in &tri {
@@ -1184,13 +1166,6 @@ fn one_mesh_full_inner(
                 asphalt(cls, lon, lat)
             }
         });
-        if let Some(dbg) = std::env::var_os("ARPT_OM_DEBUG_Q") {
-            let want = dbg.to_string_lossy().to_string();
-            let key = format!("{},{}", qx, qy);
-            if want.split(';').any(|w| w == key) {
-                eprintln!("[om-debug] q=({qx},{qy}) cls={cls} h={h:.3}");
-            }
-        }
         *emin = emin.min(h);
         *emax = emax.max(h);
         let i = x.len() as u32;
@@ -1372,20 +1347,6 @@ fn one_mesh_full_inner(
         }
         let gx = (uz2 * vy - vz2 * uy) / det;
         let gy = (ux * vz2 - vx * uz2) / det;
-        if let Some(th) = std::env::var_os("ARPT_OM_STEEP") {
-            if let Ok(th) = th.to_string_lossy().parse::<f64>() {
-                let sl = (gx * gx + gy * gy).sqrt();
-                if sl > th {
-                    eprintln!(
-                        "[om-steep] slope {:.1} q ({},{})z{} ({},{})z{} ({},{})z{}",
-                        sl,
-                        x[f[0] as usize], y[f[0] as usize], z[f[0] as usize],
-                        x[f[1] as usize], y[f[1] as usize], z[f[1] as usize],
-                        x[f[2] as usize], y[f[2] as usize], z[f[2] as usize],
-                    );
-                }
-            }
-        }
         let w = det.abs() * 0.5;
         for &vi in f {
             let g = &mut grad[vi as usize];

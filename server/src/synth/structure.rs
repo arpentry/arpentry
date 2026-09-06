@@ -421,22 +421,6 @@ fn sweep_bore(
         }
         _ => vec![(0, sections.len() - 1)],
     };
-    if std::env::var_os("ARPT_DEBUG_TUBE").is_some() {
-        if let Some(c) = &cover {
-            let bare = (0..sections.len())
-                .filter(|&i| c[i] < sections[i].top_mm as f64 / 1000.0)
-                .count();
-            eprintln!(
-                "[tube] {:.6},{:.6} n={} bare={} mouths={:?} runs={:?}",
-                sections[0].lon,
-                sections[0].lat,
-                sections.len(),
-                bare,
-                mouths,
-                runs,
-            );
-        }
-    }
 
     // Per-zoom datum: shift the drawn tube only, after the portals resolved.
     // `gap_m` and the cap placement keep reading the reference terrain, so

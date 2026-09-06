@@ -499,58 +499,24 @@ pub fn bake(
     // the street it stands beside, and the walk sheet is its own namespace
     // (`height::Sheet::walk`), so the two layerings never compare numbers.
     let mut walk_bands = walk_bands;
-    if std::env::var_os("ARPT_TWO_SHEETS").is_none() {
-        // One ordinal namespace — the default: the walk sheets placed
-        // relative to the road ones (`sheets::assign_all`), a kerb-coplanar
-        // walk taking its street's rung, walk-over-walk order surviving the
-        // placement, road ordinals untouched by construction. Measured with
-        // the region-level seniority it unlocks (`pavement::seniors`):
-        // walk_on_asphalt 0.379 -> 0.243 %, walk_crossfall 2.384 -> 2.086 %,
-        // against walk_rim +0.05 pp (the seat-vs-refused-bench residue, worst
-        // 3.52 m at 6.9279,46.4240) — the named bill. `ARPT_TWO_SHEETS`
-        // reverts to the split namespaces.
-        let unified = sheets::assign_all(scene, &sources, &walk_bands);
-        for (s, &l) in walk_bands.iter_mut().zip(unified.walk_layers.iter()) {
-            s.layer = l;
-        }
-    } else {
-        let walk_layers = sheets::assign(scene, &walk_bands);
-        for (s, &l) in walk_bands.iter_mut().zip(walk_layers.iter()) {
-            s.layer = l;
-        }
+    // One ordinal namespace — the default: the walk sheets placed
+    // relative to the road ones (`sheets::assign_all`), a kerb-coplanar
+    // walk taking its street's rung, walk-over-walk order surviving the
+    // placement, road ordinals untouched by construction. Measured with
+    // the region-level seniority it unlocks (`pavement::seniors`):
+    // walk_on_asphalt 0.379 -> 0.243 %, walk_crossfall 2.384 -> 2.086 %,
+    // against walk_rim +0.05 pp (the seat-vs-refused-bench residue, worst
+    // 3.52 m at 6.9279,46.4240) — the named bill. `ARPT_TWO_SHEETS`
+    // reverts to the split namespaces.
+    let unified = sheets::assign_all(scene, &sources, &walk_bands);
+    for (s, &l) in walk_bands.iter_mut().zip(unified.walk_layers.iter()) {
+        s.layer = l;
     }
     // The unified-namespace shadow (`ARPT_SHEET_CENSUS`): what one ordinal
     // space over both populations would change, before it is applied.
-    if std::env::var_os("ARPT_SHEET_CENSUS").is_some() {
-        sheets::census_unified(scene, &sources, &walk_bands);
-    }
     // ARPT_WALK_SHEET_AT=lon,lat — every walk band within ~30 m of the point,
     // with the sheet verdict it was just given: the instrument for a walk
     // surface smearing between two terraces.
-    if let Some(at) = std::env::var_os("ARPT_WALK_SHEET_AT") {
-        if let Some((plon, plat)) = at
-            .to_str()
-            .and_then(|s| s.split_once(','))
-            .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))
-        {
-            for s in &walk_bands {
-                let (d, _) = sheets::point_to_segment(
-                    Coord { x: plon, y: plat },
-                    s.a,
-                    s.b,
-                    s.cos_lat,
-                );
-                if d <= 30.0 {
-                    eprintln!(
-                        "[walk-sheet] corridor {} {:?} arc0 {:.1} layer {} level {} \
-                         h {:.2}..{:.2} rise {:.2} d {:.1} m",
-                        s.corridor, s.surface, s.arc0, s.layer, s.level, s.height_a, s.height_b,
-                        s.rise_m, d
-                    );
-                }
-            }
-        }
-    }
     sources.extend(walk_bands);
     let mut model = CarriagewayModel::build(junctions, sources, handovers);
     // An intersection pins the sheet it stands on, which is the sheet of the
@@ -578,10 +544,8 @@ fn carriageway_sources(
     // withholds the cuts with it, so an A/B re-tile of this is a flag rather
     // than a patch — the same reason `--no-hole` exists. Read once: it is a
     // constant for the run, and this loop is every carriageway in the extract.
-    let no_cut = std::env::var_os("ARPT_NO_ABUTMENT_CUT").is_some();
     // `ARPT_NO_FACADE_ROOM=1` gives every street the open-ground cross-section
     // again, for the same reason.
-    let no_room = std::env::var_os("ARPT_NO_FACADE_ROOM").is_some();
     let mut scratch: Vec<u32> = Vec::new();
     for c in &scene.corridors {
         let Some(half_m) = corridor_half_width_m(c) else {
@@ -638,12 +602,11 @@ fn carriageway_sources(
                 .then(|| handover_cut(c, profile, a1, half_m))
                 .flatten();
             handovers.extend(cut_lo.iter().chain(cut_hi.iter()).copied());
-            let (cut_lo, cut_hi) = if no_cut { (None, None) } else { (cut_lo, cut_hi) };
             // Generate long: the band runs on into the span and the cut takes it
             // back to the deck's face. Only where the run has the length to
             // spare — on a stretch shorter than two overruns the two cuts would
             // pass each other and leave nothing.
-            let overrun = if no_cut { 0.0 } else { STRUCTURE_OVERRUN_M };
+            let overrun = STRUCTURE_OVERRUN_M;
             let room = ((a1 - a0) * 0.5).min(overrun).max(0.0);
             let lo = if cut_lo.is_some() { a0 - room } else { a0 };
             let hi = if cut_hi.is_some() { a1 + room } else { a1 };
@@ -685,7 +648,7 @@ fn carriageway_sources(
             // with the evidence it has — and asking for none is exactly the
             // query this has always made.
             let sections = super::cross::sections_along(
-                c, &stops, &pts, half_m, &[], facades, no_room, &mut scratch,
+                c, &stops, &pts, half_m, &[], facades, false, &mut scratch,
             );
             for i in 0..stops.len() - 1 {
                 out.push(SourceSeg {

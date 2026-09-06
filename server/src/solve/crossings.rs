@@ -186,7 +186,6 @@ pub fn plan_index(scene: &SceneGraph) -> Vec<Vec<PlanCrossing>> {
     let clear = |c: &crate::scene::Corridor| {
         c.width_m.map_or(0.0, |w| w * 0.5) + ANNEX_SHOULDER_M
     };
-    let debug = std::env::var_os("ARPT_DEBUG_ANNEX").is_some();
     let mut out: Vec<Vec<PlanCrossing>> = vec![Vec::new(); scene.corridors.len()];
     let mut candidates: Vec<u32> = Vec::new();
     for c in &scene.corridors {
@@ -205,22 +204,10 @@ pub fn plan_index(scene: &SceneGraph) -> Vec<Vec<PlanCrossing>> {
                 };
                 let point = Coord { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
                 if meets_here(c, other, point, (a, b), (o_a, o_b)) {
-                    if debug {
-                        eprintln!(
-                            "[plan] meet {}x{} at {:.6},{:.6}",
-                            c.id, e.corridor, point.x, point.y
-                        );
-                    }
                     continue;
                 }
                 let arc_c = c.arc[i] + t * (c.arc[i + 1] - c.arc[i]);
                 let arc_o = other.arc[e.node] + u * (other.arc[e.node + 1] - other.arc[e.node]);
-                if debug {
-                    eprintln!(
-                        "[plan] cross {}x{} at {:.6},{:.6} arcs {:.1}/{:.1}",
-                        c.id, e.corridor, point.x, point.y, arc_c, arc_o
-                    );
-                }
                 out[c.id as usize].push(PlanCrossing {
                     arc: arc_c,
                     clear_m: clear(other),
@@ -306,7 +293,6 @@ pub fn covered_bores(scene: &SceneGraph, plan: &[Vec<PlanCrossing>]) -> Vec<Vec<
 /// ground the road has not yet dug. Crossings are kept when their band
 /// overlaps the span at all, because the ones that matter straddle its ends.
 pub fn carried_crossings(scene: &SceneGraph, plan: &[Vec<PlanCrossing>]) -> Vec<Vec<(f64, f64)>> {
-    let debug = std::env::var_os("ARPT_DEBUG_ANNEX").is_some();
     scene
         .corridors
         .iter()
@@ -319,22 +305,6 @@ pub fn carried_crossings(scene: &SceneGraph, plan: &[Vec<PlanCrossing>]) -> Vec<
                     }
                     if level_at(scene, x.other, x.other_arc) >= s.level {
                         continue;
-                    }
-                    if debug {
-                        eprintln!(
-                            "[carry] corridor {} {:?} bridge [{:.1}, {:.1}] level {} carries {} \
-                             ({:?} level {}) at {:.1} reach ±{:.1}",
-                            c.id,
-                            c.kind,
-                            s.arc0,
-                            s.arc1,
-                            s.level,
-                            x.other,
-                            kind_at(scene, x.other, x.other_arc),
-                            level_at(scene, x.other, x.other_arc),
-                            x.arc,
-                            x.clear_m
-                        );
                     }
                     out.push((x.arc, x.clear_m));
                 }
@@ -351,7 +321,6 @@ pub fn carried_crossings(scene: &SceneGraph, plan: &[Vec<PlanCrossing>]) -> Vec<
 /// `structure.bore_daylight` check so the measurement and the constraint can
 /// never drift apart.
 pub fn covered_sites(scene: &SceneGraph, plan: &[Vec<PlanCrossing>]) -> Vec<Vec<PlanCrossing>> {
-    let debug = std::env::var_os("ARPT_DEBUG_ANNEX").is_some();
     scene
         .corridors
         .iter()
@@ -363,23 +332,6 @@ pub fn covered_sites(scene: &SceneGraph, plan: &[Vec<PlanCrossing>]) -> Vec<Vec<
                         continue;
                     }
                     let above = level_at(scene, x.other, x.other_arc) > s.level;
-                    if debug {
-                        eprintln!(
-                            "[cover] corridor {} {:?} tunnel [{:.1}, {:.1}] level {} crossed at \
-                             {:.1} by {} ({:?} level {} at {:.1}){}",
-                            c.id,
-                            c.kind,
-                            s.arc0,
-                            s.arc1,
-                            s.level,
-                            x.arc,
-                            x.other,
-                            kind_at(scene, x.other, x.other_arc),
-                            level_at(scene, x.other, x.other_arc),
-                            x.other_arc,
-                            if above { " -> buried" } else { "" }
-                        );
-                    }
                     if !above {
                         continue;
                     }

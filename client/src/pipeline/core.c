@@ -843,9 +843,7 @@ void arpt_renderer_set_globals(arpt_renderer *r, arpt_mat4 projection,
     u.altitude = altitude;
     u.viewport_w = (float)r->width;
     u.viewport_h = (float)r->height;
-    static int show_sheets = -1;
-    if (show_sheets < 0) show_sheets = getenv("ARPT_SHOW_SHEETS") ? 1 : 0;
-    u.debug_sheets = (float)show_sheets;
+    u.debug_sheets = 0.0f;
 
     if (memcmp(&u, &r->prev_globals, sizeof(u)) == 0) return;
 
@@ -919,30 +917,11 @@ void arpt_renderer_begin_frame(arpt_renderer *r, WGPUTextureView target_view) {
 }
 
 void arpt_renderer_draw_tile(arpt_renderer *r, arpt_tile_gpu *tile) {
-    /* Diagnostic (env ARPT_ONLY_BRIDGE=1): draw nothing but the bridge prisms,
-       isolating their silhouette from road paint, terrain, and buildings. */
-    static int only_bridge = -1;
-    if (only_bridge < 0)
-        only_bridge = getenv("ARPT_ONLY_BRIDGE") ? 1 : 0;
-    if (only_bridge) {
-        arpt__mesh_draw_structure(r, &tile->bridge, r->bridge_pipeline);
-        return;
-    }
-
-    /* Terrain + edge skirts. The semi-transparent "x-ray" pipeline existed so a
-       tunnel drawn *before* the terrain could read through the ground; tunnels
-       now draw *after* it (below), so the transparency no longer reveals
-       anything — it only blends the whole map ~40% toward the sky, washing every
-       view out. Draw opaque by default; ARPT_XRAY=1 restores the see-through
-       terrain for debugging buried structures. */
-    static int xray = -1;
-    if (xray < 0)
-        xray = getenv("ARPT_XRAY") ? 1 : 0;
+    /* Terrain + edge skirts, drawn opaque: tunnels draw after the ground
+       (below), so nothing needs to read through it. */
     if (!r->hide_terrain) {
         wgpuRenderPassEncoderSetPipeline(
-            r->pass, xray ? r->terrain_xray_pipeline
-                          : tile->discard_mask ? r->terrain_masked_pipeline
-                                               : r->pipeline);
+            r->pass, tile->discard_mask ? r->terrain_masked_pipeline : r->pipeline);
         arpt__mesh_draw_terrain(r, tile);
         arpt__mesh_draw_skirts(r, tile);
     }

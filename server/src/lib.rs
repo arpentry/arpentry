@@ -19,7 +19,6 @@ pub mod assemble;
 pub mod building_mesh;
 pub mod clip;
 pub mod dem;
-pub mod dump;
 pub mod fb;
 pub mod gen;
 pub mod geom;
@@ -49,7 +48,6 @@ pub mod tile_build;
 pub mod tileid;
 pub mod tileset;
 pub mod value;
-pub mod verify;
 pub mod wkb;
 
 /// Re-export shim for `flatc`-generated code.

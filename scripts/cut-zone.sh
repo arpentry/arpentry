@@ -46,8 +46,8 @@
 # The rule that follows:
 #
 #   Tile the *zone*. Cut the *zone plus margin*. Compare a cut zone's
-#   scorecard only against another run over the same cut — the committed
-#   baselines were taken over full inputs and are a different population.
+#   numbers only against another run over the same cut — a run over full
+#   inputs is a different population and a differently-conditioned solve.
 #
 # `zone.env` records the zone, the margin and the source mtimes, so a stale
 # cut is a diff and not a mystery.

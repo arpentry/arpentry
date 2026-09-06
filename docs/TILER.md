@@ -70,7 +70,8 @@ what makes a tile drawn in a preview identical to the same tile drawn in the
 full archive (invariant 5), and it is asserted rather than assumed —
 `bounds_drop_chunks_without_changing_the_ones_kept` compares a bounded bake's
 shared chunk ring-for-ring against an unbounded one. Measured end to end, the
-pruned and unpruned archives agree on all 44 scorecard metrics.
+pruned and unpruned archives agreed on all 44 metrics of the scorecard then in
+place.
 
 All of it is bundled in `pipeline::World` and shared behind `Arc`s. **This is
 the load-bearing property of the whole design**: every height an emit worker
@@ -260,7 +261,7 @@ a plane is in the construction while one that first appears on a hill is in the
 ground or in how the ground is read. A field also has no gaps, no zoom and no
 cache, so it answers the same height everywhere at every zoom — one fewer thing
 that can move under a measurement. `scripts/terrain-rungs.sh` runs one site
-across the whole dial and tabulates the scorecards.
+across the whole dial.
 
 ### pipeline
 
@@ -296,13 +297,6 @@ arpentry_tiler [options]
                        run records is self-contained
   --threads <n>        Worker threads (default: detected CPU count)
   --brotli <q>         Brotli quality 0-11 for tile blobs (default: 7)
-  --dump <dir>         Write stage-artifact GeoJSON dumps (scene graph,
-                       solved profiles) for inspection in QGIS/kepler
-  --verify-model <p>   Write the model-side scorecard: the structural checks
-                       (I7 authority, I8 ground footprint, I5 determinism)
-                       that measure how the scene was computed rather than
-                       what was drawn. Re-solves the scene, so it is opt-in.
-                       Merge it with `arpentry_verify --model <p>`.
   --no-breaklines      Plain lattice terrain: no bench contact lines, and no
                        hole (there is no constrained mesh to cut)
   --no-hole            Draw ground under the asphalt again, so an A/B re-tile
@@ -369,11 +363,11 @@ arpentry_client --archive /tmp/net.arpa --hide-terrain \
 ```
 
 **An archive carrying the plan lines is a debugging archive, not a map**, and
-the run summary says so on its `plan` line. It is safe to score — `verify::scene`
-drops every `plan_*` class on the way in, so a `--plan-lines` archive produces
-the same scorecard as the same cut without them, and no check can be fooled into
-measuring the machinery. It is not safe to *serve*: the transportation layer
-carries three features per source segment that no map style draws.
+the run summary says so on its `plan` line. It is not safe to *serve*: the
+transportation layer carries three features per source segment that no map
+style draws. Any future check must drop every `plan_*` class on the way in, or
+it will measure the machinery instead of the map — the emission poisoned a
+surface metric exactly that way once.
 
 ### The run summary
 
@@ -383,7 +377,7 @@ throughput counters — use it to spot the bottleneck before tuning anything.
 
 **`total` is the whole run, and its `of which` line says what the stages
 account for.** It has to be measured rather than summed: the model stage runs
-before phase 1, and `--dump`, `--verify-model` and the probes run between the
+before phase 1, and the probes run between the
 two, so anything added there is inside a wall clock and outside every sum.
 `total` was `phase1 + phase2` until it was checked against one — it named
 10.8 s of a 25.5 s run at `--max-zoom 16`, and 5.8 s of 27.2 s once
@@ -404,9 +398,9 @@ nearly-degenerate configurations, so `terrain_cdt` catches the panic and takes
 the fallback each caller already promises: the plain lattice for
 `constrained_mesh`, the pre-S5 separate meshes for `one_mesh_full`. Both are
 the right answer for the tile that hit them (invariant 6: plain, not wrong)
-and both are invisible downstream — the archive checks read a plain lattice as
-a plain lattice that was asked for, so `arpentry_verify` cannot distinguish a
-refusal from a tile that never had breaklines. A nonzero count means those
+and both are invisible downstream — an archive reader cannot distinguish a
+refusal from a tile that never had breaklines, because a plain lattice is a
+plain lattice either way. A nonzero count means those
 tiles were built by a different construction than their neighbours, which is
 worth knowing before blaming a seam near one on a code change.
 
@@ -416,7 +410,7 @@ absence unreadable.
 
 `consistency` is scene-wide, not zone-wide. With a cut input (below) the
 boundary contributes to it even when every measured tile is fine, so treat it
-as a smell rather than a metric; `arpentry_verify` is what compares.
+as a smell rather than a metric.
 
 ### Cutting the inputs to a zone
 
@@ -430,7 +424,9 @@ run for a 25-tile bbox, and flat in the size of the bbox.
 the DEM to one zone plus a margin, once, and `run-overture-ch.sh --data <dir>`
 tiles from the cut. The same run then takes 45 s with the model stage at
 25.5 s. The script's header carries the margin calibration and the reason a
-cut zone's scorecard is not comparable to a baseline taken over full inputs.
+cut zone's numbers are not comparable to any taken over full inputs: the full
+run admits corridors that reach past the DEM extract and solve against the
+flat-0 fallback.
 
 ### Where the model stage actually goes
 

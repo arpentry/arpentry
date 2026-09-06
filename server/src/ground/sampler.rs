@@ -277,8 +277,7 @@ impl GroundSampler {
 /// profile plus the structure datum shift — the deck's own formula — with no
 /// clamp. Read once: the sampler asks per vertex.
 pub fn one_canvas() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ARPT_ONE_CANVAS").is_some())
+    false
 }
 
 impl GroundSampler {

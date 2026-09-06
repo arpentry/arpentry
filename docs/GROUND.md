@@ -249,12 +249,12 @@ Montreux zone, clustered on steep flanks, where a way came out as a row of
 disjoint slabs; nothing measured it while the pedestrian strokes were still
 being drawn over the holes. The face those segments needed is p50 1.18 m, p75
 1.42 m — they miss a metre by centimetres. Sweeping the cap
-(`ARPT_WALK_FACE_CAP`) puts the knee at 1.5 m: `slope.walk_crossfall` 3.034 →
+puts the knee at 1.5 m: `slope.walk_crossfall` 3.034 →
 2.530 % on a 17.7 % larger population with no other metric moving, against
 `clearance.bore_cover` +0.369 at 2.0 m for 2.2 % more population, and 3.0 m
-buying 0.6 % more than that for the same collateral. `ARPT_NO_WALK_BENCH=1`
-draws the bands and leaves the ground unbenched, which is the A/B control every
-number above was measured against.
+buying 0.6 % more than that for the same collateral. The A/B control every
+number above was measured against draws the bands and leaves the ground
+unbenched.
 
 ### The band is fitted to the ground before the ground is benched
 
@@ -295,8 +295,8 @@ terrace and holds the street's allowance, keeps full width over 96.6 % and is
 dropped over 3.0 %. Of the narrowed path length, 4.3 points fall under
 3 × `PAVE_RIM_M` — where the rim is most of the band and the interior
 reads as a hairline — which is the standing cost of this floor and the next
-thing to spend on. `ARPT_NO_WALK_FIT=1` sizes the bands from the plan alone,
-which is the A/B control; `ARPT_WALK_FIT_MIN=<m>` moves the floor.
+thing to spend on. The A/B control sizes the bands from the plan alone;
+`WALK_MIN_WIDTH_M` is the floor.
 
 Carves (portal cuts, under-deck daylighting) remain separate cut-only
 notches, bounding the benched ground from above — a carve is a hole, not a
@@ -389,8 +389,8 @@ Three rules make it safe rather than merely effective:
 
 What the hole does *not* do is make the road's height right. It removes the
 drawn ground that made a wrong height visible as burial, and the apron draws the
-difference instead of hiding it. Both are measured at the kerb
-(docs/VERIFICATION.md §4): `contact.kerb_lip` is how tall a wall the model
+difference instead of hiding it. Both were measured at the kerb:
+`contact.kerb_lip` is how tall a wall the model
 implies — 12.6 % of the carriageway's edge, reaching 14.8 m — and
 `contact.kerb_unwalled` is how much of that wall is missing, which the apron
 takes to **0.8 %**. The lip is not a defect to drive to zero; it is the honest
@@ -510,8 +510,7 @@ radius drop the inner contact line rather than emit a folded one.
   definition. A structure's *absolute* top therefore legitimately differs
   between rungs by the canvases' divergence — `lod.structure_drift`
   measures the height over each zoom's own drawn ground instead.
-  `ARPT_NO_ZOOM_DATUM=1` restores absolute structures for an A/B re-tile.
-- **`ARPT_ONE_CANVAS=1` (opt-in, measured 2026-08-30)** applies the one-canvas
+- **The one-canvas rule (built, measured 2026-08-30, left off)** applies
   rule at every asphalt rung (z ≥ 13): the hole is cut and the mesh
   constrained there with the ground unfiltered, and the at-grade band reads
   its profile plus the same `shift_at_arc` the deck is swept with — no clamp.
@@ -524,9 +523,10 @@ radius drop the inner contact line rather than emit a folded one.
   metres (`contact.building_seat` 0 → 10.7 % over, worst 58 m;
   `contact.kerb_lip` 11 → 27 %, worst 54 m; `lod.structure_drift` 0.7 →
   16 %). Bake 1.65×. It becomes the default only once `surface(z)` samples
-  the mesh the tile draws.
-  A second measurement (same day) closed the building half: under the
-  switch the tile's paved regions are cut first, the terrain drawn and
+  the mesh the tile draws. The opt-in switch was removed with the rest of the
+  toggle zoo; `ground::sampler::one_canvas` is the constant that held it off.
+  A second measurement (same day) closed the building half: with the rule
+  on, the tile's paved regions are cut first, the terrain drawn and
   remembered, and a building foot reads the drawn mesh
   (`GroundSampler::surface_drawn`) — `contact.building_seat` back to
   0.001 % (worst 3.1 m). The datum field must NOT read it: drawn stations

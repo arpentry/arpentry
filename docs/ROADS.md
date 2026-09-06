@@ -562,7 +562,7 @@ the scenario table (§4).
     as two lanes split by a dashed line inside its solid edges.
   - *Increment 4 — the paint is registered to its own asphalt again
     (done 2026-08-12).* Two independent losses of registration, both in
-    the emit stage, both invisible to every check in the scorecard
+    the emit stage, both invisible to every check then in place
     because a misregistered marking is still perfectly draped.
 
     **(a) The offset was projected away.** The baker's arithmetic was
@@ -600,8 +600,8 @@ the scenario table (§4).
     2.94), since paint pulled sideways onto another curve had been
     reading its height from ground it does not lie on, and the rail
     standoff population halved as rail strokes came back onto their own
-    ballast. Guarded by `paint.edge_line_inset` and
-    `paint.marking_offside` (docs/VERIFICATION.md).
+    ballast. Both were guarded by checks (`paint.edge_line_inset`,
+    `paint.marking_offside`) that the harness rebuild removed.
   - *Remaining:* symbols (arrows, chevrons — the MSDF atlas, P4);
     distance fade — sub-texel lines shimmer at grazing angles; stop
     lines; dividers on wide two-way roads (2×2 boulevards).
@@ -636,8 +636,8 @@ the scenario table (§4).
     registers one chord per roadway and the refuge island is unpainted.
     Registration is against raw centerlines, so it agrees with the drawn
     asphalt to the smoothing displacement (median ~0.5 m at junction
-    mouths); the decal bias absorbs it. Guarded by `network.walk_cover` /
-    `network.walk_reach` (docs/VERIFICATION.md): crossing-attributed bare
+    mouths); the decal bias absorbs it. Measured at the time by
+    `network.walk_cover` / `network.walk_reach`: crossing-attributed bare
     length on the Villeneuve cut went to zero.
 
     *Increment 4c — the corner is a sidewalk (done 2026-08-24).*
@@ -809,8 +809,8 @@ the scenario table (§4).
     the tone and the across-coordinate with it, so the asphalt runs into the
     deck unbroken.
 
-    Same bbox, A/B by `ARPT_KERB_AT_HANDOVER=1` (which withholds the cuts,
-    the way `--no-hole` withholds the hole): `seam.handover_kerb`
+    Same bbox, A/B against a build with the cuts withheld (the way
+    `--no-hole` withholds the hole): `seam.handover_kerb`
     98.5 % → **15.0 %**, and 37 of the 54 edges left are on joints
     `seam.band_deck_bare` also calls broken — where the band's edge is not
     at the span boundary at all, so no cut lies on it and the kerb line is
@@ -857,7 +857,7 @@ the scenario table (§4).
     The confirmation was in the samples the check was *dropping*: of 43
     gapping joints, 40 had an overlapping edge within 12 m of the same
     cap, and 441 edges archive-wide were already buried under their deck
-    (`ARPT_DEBUG_OVERLAP`). A signed defect hides half of itself in
+    (measured with a one-off probe). A signed defect hides half of itself in
     whatever exclusion the metric applies.
 
     Two patches were built and both are wrong in the same way. Making the
@@ -882,7 +882,7 @@ the scenario table (§4).
     region has dissolved it, and a cut applied there would as happily
     take a bite out of the road passing underneath.
 
-    Montreux z16, A/B by `ARPT_NO_ABUTMENT_CUT=1`: small gaps
+    Montreux z16, A/B against a build with the abutment cut withheld: small gaps
     (0.15-1 m) **31 → 7**, violations 59 → 32, and the site reported from
     the viewer 5 → 0 — the overlap's result without the overlap, and with
     the joint count held at 351 so the joints stay measurable. The ≥1 m
@@ -974,11 +974,12 @@ the scenario table (§4).
     off (2026-08-22).* `EarthworkEdge::half_width_m` is per side, the room
     is resolved once per profile node at derive time and baked onto each
     edge, and `Room::allot` is the one function the asphalt and the ground
-    both spend the room through (invariant 1). `ARPT_FACADE_BENCH=1` turns
-    the clip on; `ARPT_FACADE_BATTER=1` adds the face's.
+    both spend the room through (invariant 1).
 
-    **It is off because the measurement says it is not yet a net
-    improvement, and the reason is a phase that has not landed.** Tiled and
+    **It was off because the measurement said it was not yet a net
+    improvement, and the reason is a phase that has not landed.** The
+    switches that turned it on were removed with the rest of the toggle
+    zoo; the machinery below is described as it stood. Tiled and
     scored against the same control:
 
     | | bench clip | + batter clip |
@@ -1029,8 +1030,7 @@ the scenario table (§4).
     only what is mapped therefore draws a town whose arterials have pavements
     and whose residential streets do not, which is not a fact about the town.
 
-    Two switches, previously opt-in, are now the default and withheld by
-    `ARPT_NO_WALK_SYNTH=1` / `ARPT_NO_STREET_BENCH=1`:
+    Two rules, previously opt-in, are now unconditional:
     `priors::synthesizes_pavement` names the classes that could carry a
     pavement and `walkway::built_up` decides whether a given street is a **room
     between two walls** — facades within 25 m on *both* sides over half its

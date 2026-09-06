@@ -15,10 +15,9 @@ Read these docs before making changes to understand the design and conventions:
 | `docs/FORMAT.md` | Tile format specification: geometry model, coordinate space, properties, FlatBuffers schema |
 | `docs/VIEWER.md` | Viewer specification: coordinate pipeline, tile management, rendering |
 | `docs/CONTROL.md` | Map control specification: camera parameters, input bindings, pan/zoom/rotate, inertia, fly-to |
-| `docs/GENERATION.md` | **The vertical world model**: feature strata and authority, the constraint solve, the engineered ground, the invariants and their checks |
+| `docs/GENERATION.md` | **The vertical world model**: feature strata and authority, the constraint solve, the engineered ground, the invariants |
 | `docs/GROUND.md` | The ground imprint and its per-zoom meshes |
 | `docs/ROADS.md` | The horizontal road surface: widths, junction areas, markings |
-| `docs/VERIFICATION.md` | Measuring an emitted archive against the invariants: the scorecard, its thresholds, the scenario corpus |
 | `docs/TILER.md` | Tiler mechanics: the five stages, the sort key, the `.arpa` archive layout, the modules, the CLI |
 
 Follow `docs/DESIGN.md` principles and `docs/STYLE.md` conventions in all code.
@@ -109,7 +108,8 @@ source mtimes, so a cut that has fallen behind its source is a diff.
   report ~3 m). Re-cut a baseline per zone, or diff cut against cut.
 - **The run summary's global stats are scene-wide, so the cut boundary
   contaminates them even when the measured tiles are fine.** Trust
-  `arpentry_verify` over the zone proper for anything that must be comparable.
+  the zone proper for anything that must be comparable, not the scene-wide
+  line.
 
 ### Reading the run summary
 
@@ -123,88 +123,43 @@ cdt          N tiles lost their breaklines, M fell back from the one mesh
 
 The `cdt` line counts tiles the geometric kernel refused. Both fallbacks are
 correct (invariant 6: plain, not wrong) but silent everywhere else — the
-archive checks read a plain lattice as a plain lattice that was asked for, so
-a nonzero count is invisible to `arpentry_verify`. **A tile that lost its
-breaklines has no imprint creases; a tile that fell back from the one mesh was
-built by the pre-S5 construction the detail-rung baselines were not cut
-under.** Either way it does not match its neighbours, so check this line
+an archive reader sees a plain lattice either way, so a nonzero count is
+invisible downstream. **A tile that lost its breaklines has no imprint creases;
+a tile that fell back from the one mesh was built by the pre-S5
+construction.** Either way it does not match its neighbours, so check this line
 before attributing a seam or a step near that tile to the change you just
 made.
 
-## Verifying Generated Geometry
+## Verifying What the Tiler Produced
 
-Before reaching for a screenshot, measure. `arpentry_verify` scores an emitted
-archive against the `docs/GENERATION.md` §7 invariants — asphalt buried by the
-drawn ground, level ordering inverted, tile-seam steps, manufactured retaining
-walls, structures drifting between zooms — in about 40 s over a city extract:
+**There is no scorecard right now.** `arpentry_verify` (77 metrics over an
+emitted archive) and `arpentry_render` (a pixel-diff gate over a corpus of
+views) were both removed, along with their committed baselines and the
+scenario corpus, to make room for verifying each pipeline step on its own
+rather than scoring the finished archive. Nothing has replaced them yet.
 
-```bash
-cd server && cargo build --release
-./target/release/arpentry_verify ../data/overture-ch/preview.arpa
+What that leaves, and what to use meanwhile:
 
-# Judge a change by the diff, not by an impression. Exits 1 on any regression.
-./target/release/arpentry_verify ../data/overture-ch/preview.arpa \
-    --baseline verify/baseline-montreux-z16.json
+- **The run summary.** Every tiling run still prints per-stage timings and
+  counters, and two of its lines carry information nothing else gives you
+  (see "Reading the run summary" above). The `consistency` and `cdt` lines
+  are the only automatic statements about geometric quality left.
+- **The unit tests.** `cargo test` in `server/` (545 tests) and
+  `ctest --test-dir build` (83) still cover the geometry and format kernels.
+  They test constructions, not emitted archives.
+- **An A/B against a known-good build.** The archive is byte-nondeterministic,
+  so compare content, not bytes: build the reference revision in a worktree,
+  tile the same cut zone with both binaries, and diff tile by tile with
+  `cargo run --release --example adiff -- <a.arpa> <b.arpa>`. Run the
+  reference against *itself* first — the same-binary diff is the noise floor
+  (on the Montreux cut it is 207 of 866 tiles), and only a count above it
+  means something moved.
+- **A screenshot, knowing what it is.** `--archive --headless --screenshot`
+  is a look, not a measurement. It finds a class of defect once.
 
-# Scope to one place, or to one canonical situation from GENERATION.md §6.
-./target/release/arpentry_verify ../data/overture-ch/preview.arpa --at 6.9290,46.4200
-./target/release/arpentry_verify ../data/overture-ch/preview.arpa --scenario S5
-```
-
-When a metric names a place, cut a section there rather than flying a camera to
-it. A 3/4 perspective view is close to the worst possible image for judging
-heights; in section a 3 m step is a 3 m step:
-
-```bash
-./target/release/arpentry_verify ../data/overture-ch/preview.arpa \
-    --at 6.928167,46.426206 --bearing 90 --length 120 --section /tmp/claude/cut.svg
-rsvg-convert -w 1100 /tmp/claude/cut.svg -o /tmp/claude/cut.png   # then Read the PNG
-```
-
-Read `docs/VERIFICATION.md` before adding or interpreting a metric — in
-particular the section on where the thresholds come from, since every
-structure-versus-surface check has a legitimate contact band that a naive zero
-threshold reports as a defect.
-
-**Use a screenshot to discover a defect, then write the check before fixing
-it.** The render finds a class of defect once; the check keeps it dead. A defect
-that stays screenshot-only is one nobody can tell has come back.
-
-## Verifying the Render
-
-`arpentry_verify` measures the model an archive describes. `arpentry_render`
-measures what a client draws from it — the one subsystem the scorecard cannot
-see. It renders every corpus site twice (oblique and plan) with
-`--archive --headless`, so no server, no port and no window are involved, and
-diffs the images against a baseline:
-
-```bash
-cd server && cargo build --release
-
-# Cut a baseline before you change anything under it.
-./target/release/arpentry_render ../data/overture-ch/preview.arpa \
-    --baseline /tmp/claude/shots --update
-
-# Then ask what moved. Exits 1 on any confirmed change.
-./target/release/arpentry_render ../data/overture-ch/preview.arpa \
-    --baseline /tmp/claude/shots
-```
-
-**A baseline belongs to the machine that cut it** — the image depends on the
-GPU, the driver and the backend — so keep it out of the repo and re-cut it
-when the archive changes. Same discipline as a cut zone's scorecard.
-
-Two things worth knowing before reading its table:
-
-- **It confirms before it reports.** The client is not perfectly deterministic:
-  about one sweep in three, one view lands 1–3 % different for reasons outside
-  the scene. Anything that moves is rendered again, and what does not reproduce
-  is printed but not counted. Widening the tolerance instead would blind the
-  gate to a real defect of exactly that size.
-- **Read the shape, not just the count.** Harness noise is one or two views
-  moving a per cent or two. A real change is broad and often shallow: a 2 %
-  shift in one lighting term of `terrain.wgsl` moves 16 of 20 views, most of
-  them by a single channel step.
+**When the new step-verification lands, write the check before the fix.** That
+discipline is the one thing worth keeping from the harness that was removed: a
+defect that stays screenshot-only is one nobody can tell has come back.
 
 ## Verifying Rendering Output
 
@@ -283,7 +238,8 @@ is the union's doing and nothing else's. Details in `docs/TILER.md` "The network
 view".
 
 **It is a debugging archive, not a map** — the run summary's `plan` line says so.
-Scoring one is safe (`verify::scene` drops every `plan_*` class, so it produces
-the same scorecard as the same cut without them); serving one to a map style is
-not. `scripts/run-overture-ch.sh` has no passthrough for the flag, so this loop
-means invoking the tiler directly.
+Serving one to a map style draws three features per source segment that no
+style handles. `scripts/run-overture-ch.sh` has no passthrough for the flag, so
+this loop means invoking the tiler directly. Any future check must drop every
+`plan_*` class on the way in: this emission poisoned a surface metric exactly
+that way once, because the metric filtered on `level` rather than class.

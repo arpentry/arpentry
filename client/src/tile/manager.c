@@ -203,34 +203,6 @@ static int compare_line_cls(const void *a, const void *b) {
    Each vertex needs 4 bytes in the largest per-vertex buffer. */
 #define ARPT_MAX_BUFFER_BYTES (200u * 1024u * 1024u)
 
-/* Diagnostic (env ARPT_DUMP_BRIDGE=<path>): append a decoded bridge prim —
-   the exact vertex/index arrays uploaded to the GPU — as text, so the
-   client-side geometry can be rasterized offline and compared against the
-   archive. One "tile" header line per prim, then "v qx qy zmm" and
-   "t i0 i1 i2" lines. */
-static void dump_bridge_prim(arpt_tile_key key, const arpt_building_prim *p) {
-    const char *path = getenv("ARPT_DUMP_BRIDGE");
-    if (!path || !p || p->vertex_count == 0) return;
-    /* One file per tile: decode runs on concurrent worker threads, so a
-       shared append-mode file would interleave records. */
-    char full[1024];
-    int n = snprintf(full, sizeof(full), "%s.%d.%d.%d", path, key.level,
-                     key.x, key.y);
-    if (n < 0 || (size_t)n >= sizeof(full)) return;
-    FILE *f = fopen(full, "w");
-    if (!f) return;
-    arpt_bounds b = arpt_tile_bounds(key.level, key.x, key.y);
-    fprintf(f, "tile %d %d %d %.17g %.17g %.17g %.17g %zu %zu\n",
-            key.level, key.x, key.y, b.west, b.south, b.east, b.north,
-            p->vertex_count, p->index_count);
-    for (size_t v = 0; v < p->vertex_count; v++)
-        fprintf(f, "v %u %u %d\n", (unsigned)p->xy[2 * v],
-                (unsigned)p->xy[2 * v + 1], p->z[v]);
-    for (size_t k = 0; k + 2 < p->index_count; k += 3)
-        fprintf(f, "t %u %u %u\n", p->indices[k], p->indices[k + 1],
-                p->indices[k + 2]);
-    fclose(f);
-}
 
 /* Runs on a fetch worker thread: decode, prepare, and copy terrain into
    self-contained buffers. Returns a heap prepared_tile (NULL on failure).
@@ -336,7 +308,6 @@ static void *tile_prepare_worker(uint8_t *flatbuf, size_t size,
                                         tm->style.class_names,
                                         tm->style.class_count, tm->style.colors,
                                         &p->prims.bridges);
-                dump_bridge_prim(key, &p->prims.bridges);
             }
             if (p->prims.tunnels.vertex_count == 0)
                 arpt_decode_tunnel_mesh(flatbuf, size, le->source_layer,
@@ -932,23 +903,6 @@ void arpt_tile_manager_update(arpt_tile_manager *tm, const arpt_camera *cam) {
        fresh although it is not visible, so a --screenshot run — which zooms
        straight in and never caches the rungs above — can stage the frame an
        interactive zoom produces: a child's parent as its ready ancestor. */
-    static int preload = -2;
-    static arpt_tile_key pk;
-    if (preload == -2) {
-        const char *s = getenv("ARPT_PRELOAD");
-        preload = (s && sscanf(s, "%d/%d/%d", &pk.level, &pk.x, &pk.y) == 3) ? 1 : -1;
-    }
-    if (preload == 1) {
-        tile_entry lookup = {.key = pk};
-        const tile_entry *e = hashmap_get(tm->cache, &lookup);
-        if (!e) {
-            if (tm->active_fetches < tm->config.max_concurrent) start_fetch(tm, pk, 0);
-        } else if (e->state == TILE_READY) {
-            tile_entry updated = *e;
-            updated.last_used = tm->frame;
-            tm_hashmap_set(tm, &updated);
-        }
-    }
 
     evict_oldest(tm);
 
@@ -1024,16 +978,6 @@ bool arpt_tile_manager_sample_ground(const arpt_tile_manager *tm,
 static void draw_entry(arpt_renderer *r, const arpt_camera *cam,
                        const tile_entry *e, int max_level,
                        uint32_t discard_mask) {
-    /* Diagnostic (env ARPT_ONLY_TILE="level/x/y"): draw only that tile. */
-    static int only_tile = -2; /* -2 unparsed, -1 off */
-    static int oz, ox, oy;
-    if (only_tile == -2) {
-        const char *s = getenv("ARPT_ONLY_TILE");
-        only_tile = (s && sscanf(s, "%d/%d/%d", &oz, &ox, &oy) == 3) ? 1 : -1;
-    }
-    if (only_tile == 1 &&
-        (e->key.level != oz || e->key.x != ox || e->key.y != oy))
-        return;
 
     arpt_mat4 model =
         arpt_camera_tile_model(cam, e->center_lon_rad, e->center_lat_rad, 0.0);
@@ -1095,50 +1039,11 @@ void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
        ancestor drawn for one unready child would otherwise also draw under
        its ready siblings, and its coarser ground stabs through their roads
        wherever it runs higher (one frame per child load, at every tilt). */
-    /* Diagnostic (env ARPT_FORCE_UNREADY="level/x/y"): treat that visible tile
-       as not yet loaded, so the frame a child load produces — its ancestor
-       drawn under its ready siblings — can be captured on demand; and
-       ARPT_NO_QUAD_MASK=1 draws that ancestor unmasked, for the A/B. */
-    static int force = -2; /* -2 unparsed, -1 off */
-    static int fz, fx, fy;
-    static int no_mask = -1;
-    static int dbg = -1;
-    if (force == -2) {
-        const char *s = getenv("ARPT_FORCE_UNREADY");
-        force = (s && sscanf(s, "%d/%d/%d", &fz, &fx, &fy) == 3) ? 1 : -1;
-        no_mask = getenv("ARPT_NO_QUAD_MASK") ? 1 : 0;
-        dbg = getenv("ARPT_TILE_DEBUG") ? 1 : 0;
-    }
-    /* ARPT_TILE_DEBUG=1: once a second, say what every visible tile actually
-       is — ready, loading, failed (with retry count), or covered by which
-       ancestor stand-in. The session-state questions a screenshot cannot
-       answer ("is that wall a stand-in for a tile this session gave up
-       on?") become one glance at the log. */
-    bool dbg_now = dbg == 1 && (tm->frame % 60 == 0);
     bool ready[MAX_VISIBLE_TILES];
     for (int i = 0; i < tm->visible_count; i++) {
         tile_entry lookup = {.key = tm->visible[i]};
         const tile_entry *e = hashmap_get(tm->cache, &lookup);
         ready[i] = e && e->state == TILE_READY && e->gpu;
-        if (force == 1 && tm->visible[i].level == fz && tm->visible[i].x == fx &&
-            tm->visible[i].y == fy)
-            ready[i] = false;
-        if (dbg_now && !ready[i]) {
-            const char *st = !e                        ? "unrequested"
-                             : e->state == TILE_LOADING ? "loading"
-                             : e->state == TILE_FAILED  ? "FAILED"
-                                                        : "ready-no-gpu";
-            fprintf(stderr, "[tile-debug] %d/%d/%d %s retries=%d\n",
-                    tm->visible[i].level, tm->visible[i].x, tm->visible[i].y,
-                    st, e ? e->retries : 0);
-        }
-    }
-    if (dbg_now) {
-        int n_ready = 0;
-        for (int i = 0; i < tm->visible_count; i++)
-            if (ready[i]) n_ready++;
-        fprintf(stderr, "[tile-debug] frame %llu: %d visible, %d ready\n",
-                (unsigned long long)tm->frame, tm->visible_count, n_ready);
     }
 
     for (int i = 0; i < tm->visible_count; i++) {
@@ -1165,13 +1070,8 @@ void arpt_tile_manager_draw(arpt_tile_manager *tm, arpt_renderer *r,
                 }
             }
             if (!already) {
-                uint32_t mask = no_mask ? 0 : arpt_tile_covered_quadrants(
+                uint32_t mask = arpt_tile_covered_quadrants(
                     al, ax, ay, tm->visible, ready, tm->visible_count);
-                if (force == 1 || dbg_now)
-                    fprintf(stderr, "[%s] ancestor %d/%d/%d STANDS IN for %d/%d/%d mask=%u\n",
-                            force == 1 ? "quad-mask" : "tile-debug",
-                            al, ax, ay, tm->visible[i].level, tm->visible[i].x,
-                            tm->visible[i].y, mask);
                 draw_entry(r, cam, ancestor, tm->config.max_level, mask);
                 if (drawn_count < MAX_VISIBLE_TILES)
                     drawn_ancestors[drawn_count++] =

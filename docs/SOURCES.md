@@ -108,7 +108,7 @@ an unchanged distribution, not a new defect.
 
 ### The kerb stub was seated on the ground
 
-Isolating the stub from the paint (`ARPT_NO_CROSSING_STUB`) reproduced the
+Isolating the stub from the paint reproduced the
 stubs-off row exactly, so the paint contributes nothing to these metrics and
 the whole cost was the stub band. **22 % of stub samples violated cross-fall
 against a 2.4 % baseline.**
