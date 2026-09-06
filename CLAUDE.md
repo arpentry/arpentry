@@ -247,3 +247,37 @@ style handles. `scripts/run-overture-ch.sh` has no passthrough for the flag, so
 this loop means invoking the tiler directly. Any future check must drop every
 `plan_*` class on the way in: this emission poisoned a surface metric exactly
 that way once, because the metric filtered on `level` rather than class.
+
+## The World Crate
+
+`world/` builds a tile-free 3D world for one bounding box, one verifiable
+step at a time, and writes it as a binary glTF. It borrows only the source
+readers from `server/`; the model is rebuilt from the raw sources, step by
+step, each step with its own tests on synthetic ground. Nothing in it knows
+what a tile is, and that must stay true: the tiler is meant to become one
+more caller of it.
+
+```bash
+cargo test  --manifest-path world/Cargo.toml
+cargo build --release --manifest-path world/Cargo.toml
+
+# The loop box: the lake, the shore, the town and the mountain flank to 1639 m.
+./world/target/release/arpentry_world --zone data/zones/montreux \
+    --bbox 6.89,46.41,6.96,46.45 --output /tmp/claude/world.glb
+```
+
+The run prints one line per step. The output is byte-deterministic, so
+`cmp` between two runs over the same inputs is a regression gate; a
+difference means something moved. `--terrain 'ramp?grade=0.05'` (or `flat`,
+`hill`, `step`) swaps the DEM for a synthetic ground, where a step's output
+is an assertion rather than a look. `--until terrain` stops after a step.
+
+To look without opening Blender:
+
+```bash
+blender -b --python scripts/world-render.py -- /tmp/claude/world.glb \
+    /tmp/claude/world.png 0,-8500,5000 0,0,700        # then Read the PNG
+```
+
+It prints each layer's vertex and face counts and extents, which must match
+the run's summary, then renders from `eye` to `target` in local metres.
