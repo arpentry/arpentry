@@ -1,0 +1,29 @@
+[package]
+name = "arpentry-world"
+version = "0.1.0"
+edition = "2021"
+description = "A tile-free 3D world for one bounding box, built one verifiable step at a time"
+license = "MIT"
+
+[lib]
+name = "arpentry_world"
+path = "src/lib.rs"
+
+[[bin]]
+name = "arpentry_world"
+path = "src/main.rs"
+
+[dependencies]
+# The source readers only: the DEM (Mapterhorn PMTiles, or a synthetic
+# `flat|ramp|hill|step` field), GeoParquet, and the bbox type. None of the
+# model stages — this crate rebuilds the world from the ground up.
+arpentry-server = { path = "../server" }
+geo-types = "0.7"
+# The glTF JSON chunk. The writer is hand-rolled (src/gltf.rs); this only
+# serialises the document it builds.
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
