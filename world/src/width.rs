@@ -5,8 +5,16 @@
 //! all read that one number — so no two consumers can disagree about where
 //! a kerb is (docs/ROADS.md invariant 1).
 //!
-//! The width is the measured `width_rules` where a segment has one, else a
-//! class prior narrowed for a one-way carriageway. The priors were set
+//! A carriageway's width is the measured `width_rules` where a segment has
+//! one, else a class prior narrowed for a one-way. A walk's width is one
+//! constant, [`WALK_M`], whatever the class and whatever is mapped: the
+//! measured value covers 7 of the 1344 walk ways in the Montreux loop box,
+//! and every difference in width between two walks that meet is a shoulder
+//! in their union (a 3 m crossing ending on a 2 m sidewalk pokes its cap
+//! out the far side; a 1.2 m path joining a 2 m footway steps the outline)
+//! that no reader can see the source of. One width makes the kerb offset a
+//! constant too. The one exception is a pedestrianised street: an area
+//! drawn as a line, kept at a lane's width. The priors were set
 //! against the mapped widths of the Swiss extract (2026-09-06, 2.94 M road
 //! segments, `width_rules` on a few percent of them): per class, the median
 //! of the dominant rule, leaning to the upper quartile where the sample is
@@ -48,9 +56,15 @@ impl Family {
     }
 }
 
-/// Width in metres of a sidewalk or a cycle track: the Swiss norm's 2 m,
-/// the mapped upper quartile.
+/// Width in metres of every walk that is not a pedestrianised street — a
+/// sidewalk, a path, steps, a track, a cycle track, a crossing: the Swiss
+/// norm's 2 m for a sidewalk, the mapped upper quartile.
 pub const WALK_M: f64 = 2.0;
+
+/// Width in metres of a pedestrianised street (`class = pedestrian`): a
+/// lane's width with a pavement's use. An area mapped as a line, so a
+/// walk's width would be visibly wrong through it.
+pub const PEDESTRIAN_M: f64 = 4.0;
 
 /// Width in metres of a service way — a driveway, an alley: one car's track
 /// plus margins.
@@ -81,25 +95,27 @@ pub fn of(class: &str, subclass: &str) -> f64 {
         ("residential", _) => 5.5,
         ("unclassified", _) | ("living_street", _) => 4.5,
         ("service", "parking_aisle") => 4.0,
-        // A pedestrianised street: a lane's width with a pavement's use.
-        ("pedestrian", _) => 4.0,
-        ("footway", "crosswalk") => 3.0,
-        ("footway", _) | ("cycleway", _) => WALK_M,
-        ("track", _) => 2.5,
-        ("steps", _) | ("bridleway", _) => 1.5,
-        ("path", _) => 1.2,
+        ("pedestrian", _) => PEDESTRIAN_M,
+        _ if family(class) == Family::Walk => WALK_M,
         _ => SERVICE_M,
     }
 }
 
-/// The width of one way: `measured` when the segment carries a sane
-/// `width_rules`, else the prior, narrowed when `oneway` on the classes
-/// where the mapped one-way widths sit well below the two-way ones.
-pub fn of_way(class: &str, subclass: &str, oneway: bool, measured: Option<f64>) -> f64 {
-    if let Some(w) = measured.filter(|w| MEASURED_M.contains(w)) {
+/// The measured width of a way of `class` whose segment carries
+/// `width_rules`: the mapped value when it is sane and the way is a
+/// carriageway. A walk's width is never measured, whatever is mapped.
+pub fn measured(class: &str, width_rules: Option<f64>) -> Option<f64> {
+    width_rules.filter(|w| MEASURED_M.contains(w) && family(class) == Family::Carriageway)
+}
+
+/// The width of one way: [`measured`] where there is one, else the prior,
+/// narrowed when `oneway` on the classes where the mapped one-way widths
+/// sit well below the two-way ones.
+pub fn of_way(class: &str, subclass: &str, oneway: bool, width_rules: Option<f64>) -> f64 {
+    let prior = of(class, subclass);
+    if let Some(w) = measured(class, width_rules) {
         return w;
     }
-    let prior = of(class, subclass);
     if !oneway || subclass == "link" {
         return prior;
     }
@@ -154,9 +170,29 @@ mod tests {
         // A residential one-way is no narrower than a two-way one in the data.
         assert_eq!(of_way("residential", "", true, None), 5.5);
         // A typo'd width is ignored.
-        assert_eq!(of_way("footway", "", false, Some(0.3)), WALK_M);
-        assert_eq!(of_way("footway", "", false, Some(45.0)), WALK_M);
-        assert_eq!(of_way("footway", "sidewalk", false, Some(1.4)), 1.4);
+        assert_eq!(of_way("residential", "", false, Some(0.3)), 5.5);
+        assert_eq!(of_way("residential", "", false, Some(45.0)), 5.5);
+        assert_eq!(of_way("residential", "", false, Some(4.2)), 4.2);
+    }
+
+    #[test]
+    fn every_walk_is_one_width_but_a_pedestrian_street() {
+        for (class, subclass) in [
+            ("footway", ""),
+            ("footway", "sidewalk"),
+            ("footway", "crosswalk"),
+            ("path", ""),
+            ("steps", ""),
+            ("track", ""),
+            ("cycleway", ""),
+            ("bridleway", ""),
+        ] {
+            assert_eq!(of(class, subclass), WALK_M, "{class} {subclass}");
+            // Neither a mapped width nor oneway moves it.
+            assert_eq!(of_way(class, subclass, true, Some(1.4)), WALK_M, "{class} {subclass}");
+        }
+        assert_eq!(of("pedestrian", ""), PEDESTRIAN_M);
+        assert_eq!(of_way("pedestrian", "", false, Some(6.0)), PEDESTRIAN_M);
     }
 
     #[test]

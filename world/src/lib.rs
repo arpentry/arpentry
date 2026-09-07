@@ -20,6 +20,7 @@
 //! for that to stay true.
 
 pub mod drape;
+pub mod facade;
 pub mod fillet;
 pub mod frame;
 pub mod gltf;
@@ -29,6 +30,7 @@ pub mod net;
 pub mod poly;
 pub mod ribbon;
 pub mod roads;
+pub mod room;
 pub mod step;
 pub mod surface;
 pub mod svg;

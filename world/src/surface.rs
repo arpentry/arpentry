@@ -15,6 +15,13 @@
 //! a slab across the asphalt. What is bitten off is reported, because it is
 //! the first measure of how much the pedestrian network and the roads
 //! disagree about where the kerb is.
+//!
+//! And **the buildings win over both**: what the facade step refuses is
+//! subtracted from each family, so a prior width that runs into a wall
+//! stops at the wall — the asphalt at the closed facade
+//! ([`World::built`]), so its edge does not follow every notch, the walk
+//! at the walls themselves ([`World::solid`]). What each family lost to
+//! the buildings is reported beside what the walk lost to the asphalt.
 
 use crate::poly::{self, Shapes};
 use crate::step::Summary;
@@ -28,29 +35,30 @@ pub fn run(world: &mut World) -> Summary {
     for r in &ribbons.ribbons {
         per_family[r.family as usize].extend(r.shape.iter().cloned());
     }
-    let carriageway = poly::union_all(&per_family[Family::Carriageway as usize]);
+    let carriageway_open = poly::union_all(&per_family[Family::Carriageway as usize]);
+    let carriageway = world.asphalt(&carriageway_open);
+    let walled_carriageway = poly::area(&carriageway_open) - poly::area(&carriageway);
+    // [`World::pavement`]'s two cuts, made here one at a time so each is
+    // reported: what the walk lost to the asphalt, then to the walls.
     let walk_alone = poly::union_all(&per_family[Family::Walk as usize]);
-    let walk = poly::difference(&walk_alone, &carriageway);
-    let bitten = poly::area(&walk_alone) - poly::area(&walk);
+    let walk_open = poly::difference(&walk_alone, &carriageway);
+    let bitten = poly::area(&walk_alone) - poly::area(&walk_open);
+    let walk = poly::difference(&walk_open, world.solid());
+    let walled_walk = poly::area(&walk_open) - poly::area(&walk);
     let summary = Summary::new()
-        .with("carriageway", regions(&carriageway))
-        .with("carriageway_m2", format!("{:.0}", poly::area(&carriageway)))
-        .with("walk", regions(&walk))
-        .with("walk_m2", format!("{:.0}", poly::area(&walk)))
-        .with("walk_under_asphalt_m2", format!("{:.0}", bitten));
+        .with_regions("carriageway", &carriageway)
+        .with_m2("carriageway_m2", poly::area(&carriageway))
+        .with_regions("walk", &walk)
+        .with_m2("walk_m2", poly::area(&walk))
+        .with_m2("walk_under_asphalt_m2", bitten)
+        .with_m2("carriageway_in_building_m2", walled_carriageway)
+        .with_m2("walk_in_building_m2", walled_walk);
     world.surface = Some(Surface { carriageway, walk });
     summary
 }
 
-/// `regions/holes` of a set of shapes, for the summary line.
-fn regions(shapes: &Shapes) -> String {
-    let holes: usize = shapes.iter().map(|s| s.len() - 1).sum();
-    format!("{}/{}", shapes.len(), holes)
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::f64::consts::PI;
 
     use crate::ribbon;
 
@@ -63,22 +71,18 @@ pub(crate) mod tests {
         w
     }
 
-    /// The area of one round-capped straight.
-    fn straight(len: f64, w: f64) -> f64 {
-        len * w + PI * (w / 2.0) * (w / 2.0)
-    }
-
     #[test]
     fn a_cross_is_one_region_less_the_overlap() {
+        // Four legs square at their dead ends, joined by discs at the
+        // origin that lie inside the union: two straights less the overlap.
         let mut w = world("net:cross?len=200");
         run(&mut w);
         let s = w.surface.as_ref().unwrap();
         assert_eq!(s.carriageway.len(), 1);
         assert_eq!(s.carriageway[0].len(), 1, "no holes");
-        let exact = 2.0 * straight(200.0, 5.5) - 5.5 * 5.5;
+        let exact = 2.0 * 200.0 * 5.5 - 5.5 * 5.5;
         let a = poly::area(&s.carriageway);
-        let cap = PI * 2.75 * 2.75;
-        assert!(a <= exact + 1e-3 && a > exact - 0.02 * cap, "{a} vs {exact}");
+        assert!((a - exact).abs() < 1e-3, "{a} vs {exact}");
         assert!(s.walk.is_empty());
     }
 
@@ -114,15 +118,8 @@ pub(crate) mod tests {
         assert!(poly::contains(&surf.walk, [0.0, -4.0]));
         // Each sidewalk and its half of the stub is one region: two in all.
         assert_eq!(surf.walk.len(), 2, "{:?}", surf.walk.len());
-        // What was bitten off is the stub's 3 m × 5.5 m across the asphalt.
-        let bitten: f64 = s
-            .to_string()
-            .split("walk_under_asphalt_m2=")
-            .nth(1)
-            .and_then(|t| t.split(' ').next())
-            .and_then(|t| t.parse().ok())
-            .unwrap();
-        assert!((bitten - 16.5).abs() < 0.6, "{s}");
+        // What was bitten off is the stub's 2 m × 5.5 m across the asphalt.
+        assert!((s.num("walk_under_asphalt_m2") - 11.0).abs() < 0.6, "{s}");
         // Families never overlap.
         assert!(poly::intersect(&surf.walk, &surf.carriageway).is_empty());
     }

@@ -66,6 +66,16 @@ pub fn write_glb(world: &World) -> Vec<u8> {
             doc.loops("fillet", &shapes, t, [0.3, 0.3, 0.35]);
         }
     }
+    if let (Some(r), Some(t)) = (&world.room, &world.terrain) {
+        if !r.pavement.is_empty() {
+            doc.loops("room", &r.pavement, t, [0.85, 0.55, 0.25]);
+        }
+    }
+    if let (Some(f), Some(t)) = (&world.facade, &world.terrain) {
+        if !f.footprints.is_empty() {
+            doc.loops("facade", &f.footprints, t, [0.55, 0.45, 0.4]);
+        }
+    }
     doc.pack()
 }
 

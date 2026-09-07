@@ -4,7 +4,7 @@ use arpentry_server::project::Bounds;
 
 use crate::frame::{Frame, Rect};
 use crate::grid::Grid;
-use crate::poly::Shapes;
+use crate::poly::{self, Shapes};
 use crate::width::Family;
 
 /// The world for one bounding box. Every layer is `None` until its step has
@@ -20,10 +20,12 @@ pub struct World {
     pub rect: Rect,
     pub terrain: Option<Terrain>,
     pub roads: Option<Roads>,
+    pub facade: Option<Facade>,
     pub ribbons: Option<Ribbons>,
     pub surface: Option<Surface>,
     pub kerb: Option<Kerb>,
     pub fillet: Option<Fillet>,
+    pub room: Option<Room>,
 }
 
 impl World {
@@ -36,10 +38,12 @@ impl World {
             rect,
             terrain: None,
             roads: None,
+            facade: None,
             ribbons: None,
             surface: None,
             kerb: None,
             fillet: None,
+            room: None,
         }
     }
 }
@@ -85,6 +89,16 @@ pub struct Polyline2 {
     pub pts: Vec<[f64; 2]>,
 }
 
+/// Way ends closer than this, in metres, meet at one connector. The frame
+/// maps a shared source coordinate to one local point exactly; the slack
+/// is for hand-made specimens.
+const SNAP_M: f64 = 0.01;
+
+/// The connector at `p`: the key two way vertices share when they meet.
+pub fn connector(p: [f64; 2]) -> (i64, i64) {
+    ((p[0] / SNAP_M).round() as i64, (p[1] / SNAP_M).round() as i64)
+}
+
 /// A polyline with heights, in local metres.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Polyline3 {
@@ -102,6 +116,23 @@ pub struct Roads {
     pub plan: Vec<Polyline2>,
     /// The same lines draped exactly onto the terrain mesh.
     pub lines: Vec<Polyline3>,
+}
+
+/// The buildings: what nothing paved may enter.
+#[derive(Debug, Clone, Default)]
+pub struct Facade {
+    /// Every footprint touching the rect, clipped to it and unioned: two
+    /// houses sharing a wall are one region, a courtyard is a hole.
+    pub footprints: Shapes,
+    /// Where a way's axis runs inside a footprint, the corridor the
+    /// building yields to it ([`crate::facade::PASSAGE_M`]).
+    pub passages: Shapes,
+    /// `footprints − passages`: what nothing paved enters.
+    pub solid: Shapes,
+    /// The solid with the pockets — the notches and the gaps between
+    /// houses the closing filled, less the lanes ways run down — which the
+    /// asphalt keeps out of and the pavement may fill.
+    pub built: Shapes,
 }
 
 /// One way's polygon: its centreline buffered to its width.
@@ -150,24 +181,56 @@ pub struct Kerb {
     pub attached: Vec<crate::kerb::Attached>,
 }
 
-/// The junctions rounded: the carriageway with its kerb returns, and the
+/// The corners rounded: the carriageway with its kerb returns, and the
 /// pavement re-cut by them.
 #[derive(Debug, Clone, Default)]
 pub struct Fillet {
-    pub junctions: Vec<crate::fillet::Junction>,
+    pub corners: Vec<crate::fillet::Corner>,
     /// What the closing added, unioned.
     pub fillets: Shapes,
     pub carriageway: Shapes,
     pub pavement: Shapes,
 }
 
+/// The room filled: the pavement extended to every wall within reach.
+#[derive(Debug, Clone, Default)]
+pub struct Room {
+    /// The bands and rungs, unioned; kept for the plan view.
+    pub room: Shapes,
+    pub pavement: Shapes,
+    /// The kerb stations `kerb_gap` still counts as bare after this step,
+    /// for the plan view and for finding them.
+    pub gaps: Vec<[f64; 2]>,
+}
+
+static NONE: Shapes = Vec::new();
+
 impl World {
+    /// What the buildings refuse: empty before the facade step, and empty
+    /// when no building input was given — open ground everywhere, so no
+    /// step branches on whether buildings were read.
+    pub fn solid(&self) -> &Shapes {
+        self.facade.as_ref().map(|f| &f.solid).unwrap_or(&NONE)
+    }
+
+    /// The building footprints, on the same terms as [`World::solid`].
+    pub fn walls(&self) -> &Shapes {
+        self.facade.as_ref().map(|f| &f.footprints).unwrap_or(&NONE)
+    }
+
+    /// What the asphalt keeps out of: the solid with its pockets, on the
+    /// same terms as [`World::solid`].
+    pub fn built(&self) -> &Shapes {
+        self.facade.as_ref().map(|f| &f.built).unwrap_or(&NONE)
+    }
+
     /// The latest walk surface: the pavement once the kerb step has run,
     /// re-cut once the fillet has, the plain union before either.
     pub fn walk(&self) -> Option<&Shapes> {
-        self.fillet
+        self.room
             .as_ref()
-            .map(|f| &f.pavement)
+            .map(|r| &r.pavement)
+            .or_else(|| self.fillet.as_ref().map(|f| &f.pavement))
             .or_else(|| self.kerb.as_ref().map(|k| &k.pavement))
             .or_else(|| self.surface.as_ref().map(|s| &s.walk))
     }
@@ -175,5 +238,17 @@ impl World {
     /// The latest carriageway: filleted once the fillet step has run.
     pub fn carriageway(&self) -> Option<&Shapes> {
         self.fillet.as_ref().map(|f| &f.carriageway).or_else(|| self.surface.as_ref().map(|s| &s.carriageway))
+    }
+
+    /// `raw` as a carriageway: the buildings win, at the closed facade.
+    pub fn asphalt(&self, raw: &Shapes) -> Shapes {
+        poly::difference(raw, self.built())
+    }
+
+    /// `raw` as a pavement beside `carriageway`: the asphalt wins, and the
+    /// walls win. Every step that draws a pavement finishes it here, so
+    /// no two can disagree about where the kerb is or where a wall stands.
+    pub fn pavement(&self, raw: &Shapes, carriageway: &Shapes) -> Shapes {
+        poly::difference(&poly::difference(raw, carriageway), self.solid())
     }
 }

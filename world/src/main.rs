@@ -2,8 +2,8 @@
 //!
 //! ```text
 //! arpentry_world --bbox w,s,e,n --zone DIR [--output FILE.glb] [--svg FILE.svg]
-//!                [--terrain PATH|SPEC] [--segments PATH] [--view x0,y0,x1,y1]
-//!                [--spacing M] [--max-vertices N] [--until STEP]
+//!                [--terrain PATH|SPEC] [--segments PATH|SPEC] [--buildings PATH|SPEC|none]
+//!                [--view x0,y0,x1,y1] [--spacing M] [--max-vertices N] [--until STEP]
 //! ```
 //!
 //! Runs the steps in order, prints one line per step, stops after `--until`,
@@ -11,7 +11,7 @@
 //! The bbox is required and never inferred from the data: a cut zone holds
 //! the zone plus a margin.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -21,12 +21,14 @@ use arpentry_world::step::Step;
 use arpentry_world::world::World;
 use arpentry_world::frame::Rect;
 use arpentry_world::net;
-use arpentry_world::{drape, fillet, gltf, kerb, ribbon, surface, svg, terrain};
+use arpentry_world::{drape, facade, fillet, gltf, kerb, ribbon, room, surface, svg, terrain};
 
 struct Args {
     bbox: Bounds,
     terrain: PathBuf,
     segments: PathBuf,
+    /// `None` is no building input: open ground everywhere.
+    buildings: Option<PathBuf>,
     output: Option<PathBuf>,
     svg: Option<PathBuf>,
     view: Option<Rect>,
@@ -36,22 +38,27 @@ struct Args {
 }
 
 const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output FILE.glb] [--svg FILE.svg]
-       [--terrain PATH|SPEC] [--segments PATH] [--view x0,y0,x1,y1]
-       [--spacing M] [--max-vertices N] [--until STEP]
+       [--terrain PATH|SPEC] [--segments PATH|SPEC] [--buildings PATH|SPEC|none]
+       [--view x0,y0,x1,y1] [--spacing M] [--max-vertices N] [--until STEP]
 
   --bbox          the world's bounds in degrees (required; never inferred from the data)
-  --zone DIR      a cut zone: DIR/terrain.pmtiles and DIR/segment.parquet
+  --zone DIR      a cut zone: DIR/terrain.pmtiles, DIR/segment.parquet and, if present, DIR/building.parquet
   --terrain       a Mapterhorn PMTiles archive, or a synthetic ground:
                   flat[?h=400], ramp?grade=0.03[&bearing=90][&radius=400],
                   hill?amp=60&radius=400, step?rise=3[&width=0] (overrides --zone)
   --segments      an Overture segment.parquet, or a synthetic network:
-                  net:straight|tee|cross|hairpin?angle=20|dual?gap=4|
-                  sidewalk?d=6|corner?d=5|crossing?d=6 [&len=200&class=residential]
+                  net:straight|tee[?d=8][&hook=5]|cross|hairpin?angle=20|dual?gap=4|roundabout?r=15&d=5|
+                  sidewalk?d=6|corner?d=5[&split=1]|crossing?d=6|stub?d=0.5|
+                  driveway?d=6[&short=0] [&len=200&class=residential]
+                  (overrides --zone, and leaves the world without buildings unless --buildings says otherwise)
+  --buildings     an Overture building.parquet, `none`, or a synthetic house:
+                  house:beside?d=2[&x=0&l=10&w=10&side=1&notch=0&deep=1] | house:across[?x=0&l=10&w=12&rot=0] |
+                  house:row?d=2[&l=10&w=10&gap=2] | house:pair?gap=3[&l=10&w=10]
                   (overrides --zone)
   --spacing M     terrain lattice spacing in metres (default 2)
   --max-vertices  cap on terrain vertices; the spacing grows to fit (default 2000000)
-  --until STEP    stop after this step: terrain | drape | ribbon | surface | kerb | fillet
-                  (default fillet)
+  --until STEP    stop after this step: terrain | drape | facade | ribbon | surface | kerb | fillet | room
+                  (default room)
   --output FILE   the .glb to write
   --svg FILE      the plan view to write, one SVG group per step
   --view x0,y0,x1,y1  the window the plan shows, in local metres (default: the bbox)
@@ -84,10 +91,13 @@ fn run(args: &Args) -> Result<(), String> {
             Step::Terrain => terrain::run(&mut world, &mut dem, args.spacing, args.max_vertices),
             Step::Drape => drape::run(&mut world, &args.segments)
                 .map_err(|e| format!("{}: {e}", args.segments.display()))?,
+            Step::Facade => facade::run(&mut world, args.buildings.as_deref())
+                .map_err(|e| format!("{}: {e}", args.buildings.as_deref().unwrap_or(Path::new("")).display()))?,
             Step::Ribbon => ribbon::run(&mut world),
             Step::Surface => surface::run(&mut world),
             Step::Kerb => kerb::run(&mut world),
             Step::Fillet => fillet::run(&mut world),
+            Step::Room => room::run(&mut world),
         };
         println!("{:<8} {}  {:.2}s", step.name(), summary, t.elapsed().as_secs_f64());
         if step == args.until {
@@ -114,18 +124,20 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut zone: Option<PathBuf> = None;
     let mut terrain: Option<PathBuf> = None;
     let mut segments: Option<PathBuf> = None;
+    let mut buildings: Option<PathBuf> = None;
     let mut output = None;
     let mut svg = None;
     let mut view = None;
     let mut spacing = 2.0;
     let mut max_vertices = 2_000_000;
-    let mut until = Step::Fillet;
+    let mut until = Step::Room;
     while let Some(flag) = it.next() {
         match flag.as_str() {
             "--bbox" => bbox = Some(parse_bbox(&value(&mut it, "--bbox")?)?),
             "--zone" => zone = Some(PathBuf::from(value(&mut it, "--zone")?)),
             "--terrain" => terrain = Some(PathBuf::from(value(&mut it, "--terrain")?)),
             "--segments" => segments = Some(PathBuf::from(value(&mut it, "--segments")?)),
+            "--buildings" => buildings = Some(PathBuf::from(value(&mut it, "--buildings")?)),
             "--output" => output = Some(PathBuf::from(value(&mut it, "--output")?)),
             "--svg" => svg = Some(PathBuf::from(value(&mut it, "--svg")?)),
             "--view" => view = Some(parse_view(&value(&mut it, "--view")?)?),
@@ -150,10 +162,22 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         .or_else(|| from_zone("segment.parquet"))
         .ok_or("--segments or --zone is required")?;
     let terrain = resolve_terrain(terrain, &bbox)?;
-    if let Some(spec) = segments.to_str().filter(|s| net::is_spec(s)) {
+    let synthetic = segments.to_str().filter(|s| net::is_spec(s));
+    if let Some(spec) = synthetic {
         net::parse(spec).map_err(|e| format!("invalid --segments: {e}"))?;
     }
-    Ok(Args { bbox, terrain, segments, output, svg, view, spacing, max_vertices, until })
+    // A synthetic network has no buildings unless asked; a zone has its
+    // building.parquet if it was cut with one; `none` is explicit.
+    let buildings = match buildings {
+        Some(b) if b.as_os_str() == "none" => None,
+        Some(b) => Some(b),
+        None if synthetic.is_some() => None,
+        None => from_zone("building.parquet").filter(|p| p.exists()),
+    };
+    if let Some(spec) = buildings.as_ref().and_then(|b| b.to_str()).filter(|s| facade::is_spec(s)) {
+        facade::parse(spec).map_err(|e| format!("invalid --buildings: {e}"))?;
+    }
+    Ok(Args { bbox, terrain, segments, buildings, output, svg, view, spacing, max_vertices, until })
 }
 
 /// A synthetic terrain spec without an origin takes the bbox centre, and the

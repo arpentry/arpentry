@@ -23,9 +23,9 @@
 use std::fmt::Write;
 
 use crate::frame::Rect;
-use crate::poly::Shapes;
+use crate::poly::{self, Shapes};
 use crate::width::{self, Family};
-use crate::world::{Fillet, Kerb, Polyline3, Ribbon, Surface, World};
+use crate::world::{Facade, Fillet, Kerb, Polyline3, Ribbon, Room, Surface, World};
 
 /// Decimal places written per coordinate: a centimetre.
 const PRECISION: usize = 2;
@@ -33,8 +33,21 @@ const PRECISION: usize = 2;
 /// Width in metres of the axis drawn down the middle of each way's band.
 const AXIS_M: f64 = 0.3;
 
-/// Width in metres of a polygon's outline.
+/// The axis's colour: a blue no surface wears, so a centreline running
+/// inside the asphalt — Overture ends a sidewalk on the road's axis — is
+/// not mistaken for a hole in it, as a black one over a kerb was.
+const AXIS_COLOR: &str = "#2a5db0";
+
+/// Width in metres of a ribbon's outline. The ribbon layer is translucent
+/// and its fills overlap, so a contour needs a line to read; the opaque
+/// surfaces after it are drawn with no outline, because two outlines
+/// along the kerb where asphalt and pavement meet read as a gap between
+/// them.
 const EDGE_M: f64 = 0.1;
+
+/// Views narrower than this, in metres, are a debugging zoom and get the
+/// construction lines — pockets, the room's raw fill — drawn as well.
+const DEBUG_VIEW_M: f64 = 100.0;
 
 /// The SVG of `world`'s 2D layers over `view` (default: the whole rect).
 pub fn write_svg(world: &World, view: Option<Rect>) -> String {
@@ -71,6 +84,9 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
             drape(&mut s, &lines, world.ribbons.is_none());
         }
     }
+    if let Some(f) = &world.facade {
+        facade(&mut s, f, &view);
+    }
     if world.ribbons.is_some() {
         ribbon(&mut s, &ribbons);
     }
@@ -81,7 +97,10 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
         kerb(&mut s, k, world.fillet.is_none(), &view);
     }
     if let Some(f) = &world.fillet {
-        fillet(&mut s, f, &view);
+        fillet(&mut s, f, world.room.is_none(), &view);
+    }
+    if let Some(r) = &world.room {
+        room(&mut s, r, &view);
     }
     if let Some(roads) = &world.roads {
         let lines: Vec<&Polyline3> = roads.lines.iter().filter(|l| touches(&l.pts, &view)).collect();
@@ -141,7 +160,7 @@ fn ribbon(s: &mut String, ribbons: &[&Ribbon]) {
 /// replaced it: the walk by the kerb's pavement, the carriageway by the
 /// fillet's.
 fn surface(s: &mut String, surf: &Surface, carriageway: bool, walk: bool, view: &Rect) {
-    let _ = write!(s, "<g id=\"surface\" stroke=\"#000\" stroke-width=\"{}\">\n", num(EDGE_M));
+    s.push_str("<g id=\"surface\">\n");
     if carriageway {
         filled(s, "carriageway", "#8c8c94", &surf.carriageway, view);
     }
@@ -154,7 +173,7 @@ fn surface(s: &mut String, surf: &Surface, carriageway: bool, walk: bool, view: 
 /// The kerb layer: the pavement, its inner edge the kerb line, until the
 /// fillet re-cuts it.
 fn kerb(s: &mut String, k: &Kerb, pavement: bool, view: &Rect) {
-    let _ = write!(s, "<g id=\"kerb\" stroke=\"#000\" stroke-width=\"{}\">\n", num(EDGE_M));
+    s.push_str("<g id=\"kerb\">\n");
     if pavement {
         filled(s, "pavement", "#e0a050", &k.pavement, view);
     }
@@ -163,27 +182,83 @@ fn kerb(s: &mut String, k: &Kerb, pavement: bool, view: &Rect) {
 
 /// The fillet layer: the carriageway with its kerb returns, the pavement
 /// re-cut by them.
-fn fillet(s: &mut String, f: &Fillet, view: &Rect) {
-    let _ = write!(s, "<g id=\"fillet\" stroke=\"#000\" stroke-width=\"{}\">\n", num(EDGE_M));
+fn fillet(s: &mut String, f: &Fillet, pavement: bool, view: &Rect) {
+    s.push_str("<g id=\"fillet\">\n");
     filled(s, "carriageway", "#8c8c94", &f.carriageway, view);
-    filled(s, "pavement", "#e0a050", &f.pavement, view);
+    if pavement {
+        filled(s, "pavement", "#e0a050", &f.pavement, view);
+    }
+    s.push_str("</g>\n");
+}
+
+/// The room layer: the pavement extended to the walls.
+fn room(s: &mut String, r: &Room, view: &Rect) {
+    s.push_str("<g id=\"room\">\n");
+    filled(s, "pavement", "#e0a050", &r.pavement, view);
+    // The kerb stations still bare after everything: a dot each, at any
+    // zoom where a dot can be seen, so a gap is found by looking for the
+    // marker rather than for the gap.
+    if view.width() < 2000.0 {
+        for g in r.gaps.iter().filter(|g| view.contains(**g)) {
+            let _ = write!(s, "<circle cx=\"{}\" cy=\"{}\" r=\"0.5\" fill=\"#d0202a\"/>\n", num(g[0]), num(-g[1]));
+        }
+    }
+    // The bands and rungs before the asphalt and the walls were taken
+    // back out: outlined, so a fill that failed can be told from one that
+    // was taken away.
+    if view.width() < DEBUG_VIEW_M {
+        outlined(s, "room", "#b06030", 0.2, &r.room, view);
+    }
+    s.push_str("</g>\n");
+}
+
+/// The facade layer: the footprints, under every surface — nothing paved
+/// stands in one, and what does is a passage the building yielded, drawn
+/// over it by the surface that took it and outlined here. No footprints,
+/// no group.
+fn facade(s: &mut String, f: &Facade, view: &Rect) {
+    if f.footprints.is_empty() {
+        return;
+    }
+    s.push_str("<g id=\"facade\">\n");
+    filled(s, "footprint", "#c9bba9", &f.footprints, view);
+    // The pockets: what the closing added to the walls, which the
+    // asphalt keeps out of. Drawn only at a debugging zoom; a plan of a
+    // street or a town is a map.
+    if view.width() < DEBUG_VIEW_M {
+        filled(s, "pocket", "#e6ddd0", &poly::difference(&f.built, &f.solid), view);
+    }
+    outlined(s, "passage", "#8c6e50", 0.3, &f.passages, view);
     s.push_str("</g>\n");
 }
 
 /// One filled path of the regions of `shapes` that touch the view.
 fn filled(s: &mut String, id: &str, fill: &str, shapes: &Shapes, view: &Rect) {
-    let shown: Shapes = shapes.iter().filter(|shape| touches_shape(std::slice::from_ref(*shape), view)).cloned().collect();
-    if shown.is_empty() {
-        return;
+    if let Some(d) = shown(shapes, view) {
+        let _ = write!(s, "<path id=\"{id}\" fill=\"{fill}\" d=\"{d}\"/>\n");
     }
-    let _ = write!(s, "<path id=\"{id}\" fill=\"{fill}\" d=\"{}\"/>\n", shape_path(&shown));
+}
+
+/// One outlined path, `width_m` wide, of the regions of `shapes` that
+/// touch the view.
+fn outlined(s: &mut String, id: &str, stroke: &str, width_m: f64, shapes: &Shapes, view: &Rect) {
+    if let Some(d) = shown(shapes, view) {
+        let _ = write!(s, "<path id=\"{id}\" fill=\"none\" stroke=\"{stroke}\" stroke-width=\"{}\" d=\"{d}\"/>\n", num(width_m));
+    }
+}
+
+/// The path data of the regions of `shapes` that touch the view; `None`
+/// if none does.
+fn shown(shapes: &Shapes, view: &Rect) -> Option<String> {
+    let shown: Shapes = shapes.iter().filter(|shape| touches_shape(std::slice::from_ref(*shape), view)).cloned().collect();
+    (!shown.is_empty()).then(|| shape_path(&shown))
 }
 
 /// The mapped axis of every way, over whatever surface was drawn.
 fn axis(s: &mut String, lines: &[&Polyline3]) {
     let _ = write!(
         s,
-        "<g id=\"axis\" fill=\"none\" stroke=\"#000\" stroke-width=\"{}\" stroke-linecap=\"round\">\n",
+        "<g id=\"axis\" fill=\"none\" stroke=\"{AXIS_COLOR}\" stroke-width=\"{}\" stroke-linecap=\"round\">\n",
         num(AXIS_M)
     );
     for line in lines {
@@ -251,15 +326,7 @@ fn touches_shape(shapes: &[crate::poly::Shape], view: &Rect) -> bool {
 }
 
 fn overlaps(pts: impl Iterator<Item = [f64; 2]>, view: &Rect) -> bool {
-    let mut bbox: Option<Rect> = None;
-    for p in pts {
-        let b = bbox.get_or_insert(Rect { x0: p[0], y0: p[1], x1: p[0], y1: p[1] });
-        b.x0 = b.x0.min(p[0]);
-        b.y0 = b.y0.min(p[1]);
-        b.x1 = b.x1.max(p[0]);
-        b.y1 = b.y1.max(p[1]);
-    }
-    bbox.is_some_and(|b| b.x0 <= view.x1 && b.x1 >= view.x0 && b.y0 <= view.y1 && b.y1 >= view.y0)
+    poly::bounds(pts).is_some_and(|[x0, y0, x1, y1]| x0 <= view.x1 && x1 >= view.x0 && y0 <= view.y1 && y1 >= view.y0)
 }
 
 /// A number at [`PRECISION`], with the trailing zeros and a lone point

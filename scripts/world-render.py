@@ -31,7 +31,7 @@ terrain.color = (0.55, 0.65, 0.45, 1)
 # Line layers (no faces) render invisible as meshes: bevel them as curves.
 LINE_LAYERS = {'roads': (1.2, (0.9, 0.05, 0.05, 1)), 'ribbon': (0.5, (0.9, 0.55, 0.15, 1)),
                'surface': (0.6, (0.2, 0.2, 0.25, 1)), 'kerb': (0.6, (0.9, 0.6, 0.3, 1)),
-               'fillet': (0.6, (0.3, 0.3, 0.35, 1))}
+               'fillet': (0.6, (0.3, 0.3, 0.35, 1)), 'room': (0.6, (0.85, 0.55, 0.25, 1)), 'facade': (0.4, (0.55, 0.45, 0.4, 1))}
 for name, (depth, color) in LINE_LAYERS.items():
     obj = bpy.data.objects.get(name)
     if obj is None:

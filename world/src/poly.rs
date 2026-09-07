@@ -19,18 +19,23 @@
 //!    the SVG and the GLB functions of the world alone. At 0.1 mm over a
 //!    ±16 km world the `i64` engine uses ±1.6·10⁸ of its ±9·10¹⁸ range.
 //!
-//! 2. **Round caps and round joins.** The tiler buffered with butt ends and
-//!    miters because its band had to agree with a stroke the client drew at
-//!    coarse zooms (docs/ROADS.md invariant 5). This crate has no stroke to
-//!    agree with. A round cap is what a turning head looks like at a dead
-//!    end, and at a connector it is a disc that meets every leg whatever
-//!    the angle, where a butt cap leaves a notch at every leg that is not
-//!    collinear; a round join never spikes, however sharp the hairpin.
+//! 2. **Round joins, and round caps where legs join.** The tiler buffered
+//!    with butt ends and miters because its band had to agree with a stroke
+//!    the client drew at coarse zooms (docs/ROADS.md invariant 5). This
+//!    crate has no stroke to agree with. A round join never spikes, however
+//!    sharp the hairpin, and at a connector a round cap is a disc that
+//!    meets every leg whatever the angle, where a butt cap leaves a notch at
+//!    every leg that is not collinear. The cap is a join device and nothing
+//!    more: where an end joins nothing ([`crate::ribbon`] decides) it is
+//!    square, because nothing built ends in a semicircle of its own
+//!    half-width.
 //!
 //! Shapes are `i_overlay`'s own nesting rather than a wrapper struct: a shape
 //! is a list of contours whose first is the counter-clockwise outer boundary
 //! and whose rest are clockwise holes. Results feed straight back in as
 //! input.
+
+use std::collections::HashMap;
 
 use i_overlay::core::fill_rule::FillRule;
 use i_overlay::core::overlay::ShapeType;
@@ -89,6 +94,13 @@ pub fn union_all(shapes: &Shapes) -> Shapes {
     overlay(shapes, &Vec::new(), OverlayRule::Subject)
 }
 
+/// [`union_all`] over several sets at once: one pass over their
+/// concatenation.
+pub fn union_of(parts: &[&Shapes]) -> Shapes {
+    let all: Shapes = parts.iter().flat_map(|s| s.iter().cloned()).collect();
+    union_all(&all)
+}
+
 /// `a` minus `b`.
 pub fn difference(a: &Shapes, b: &Shapes) -> Shapes {
     if a.is_empty() || b.is_empty() {
@@ -115,12 +127,19 @@ pub const ARC_STEP: f64 = 0.2;
 /// disjoint regions. Empty for a degenerate line (under two points, or a
 /// non-positive width): a caller with nothing to buffer gets nothing.
 pub fn buffer_line(line: &[Pt], width_m: f64) -> Shapes {
+    buffer_line_capped(line, width_m, [true, true])
+}
+
+/// [`buffer_line`] with each end round (`true`) or squared off at the
+/// endpoint (`false`).
+pub fn buffer_line_capped(line: &[Pt], width_m: f64, round: [bool; 2]) -> Shapes {
     if line.len() < 2 || !(width_m > 0.0) {
         return Vec::new();
     }
+    let cap = |round: bool| if round { LineCap::Round(ARC_STEP) } else { LineCap::Butt };
     let style = StrokeStyle::new(width_m)
-        .start_cap(LineCap::Round(ARC_STEP))
-        .end_cap(LineCap::Round(ARC_STEP))
+        .start_cap(cap(round[0]))
+        .end_cap(cap(round[1]))
         .line_join(LineJoin::Round(ARC_STEP));
     line.stroke_fixed_scale_as::<i64>(style, false, SCALE).unwrap_or_default()
 }
@@ -156,10 +175,29 @@ fn offset(shapes: &Shapes, delta_m: f64, join: LineJoin<f64>) -> Shapes {
     shapes.outline_fixed_scale_as::<i64>(&style, SCALE).unwrap_or_default()
 }
 
+/// `shapes` with every hole under `min_m2` filled: a hole that small is a
+/// sliver a boolean left where two pieces met, not a feature the data
+/// could describe.
+pub fn fill_holes_under(shapes: Shapes, min_m2: f64) -> Shapes {
+    shapes
+        .into_iter()
+        .map(|shape| {
+            let mut it = shape.into_iter();
+            let outer = it.next();
+            outer.into_iter().chain(it.filter(|ring| -ring_area(ring) >= min_m2)).collect()
+        })
+        .collect()
+}
+
 /// Total area in square metres: outer contours positive, holes negative.
 pub fn area(shapes: &Shapes) -> f64 {
     // `Sum` for f64 starts from −0.0, which `{:.0}` prints as "-0".
     0.0 + shapes.iter().flatten().map(|r| ring_area(r)).sum::<f64>()
+}
+
+/// How many holes the regions of `shapes` have between them.
+pub fn holes(shapes: &Shapes) -> usize {
+    shapes.iter().map(|s| s.len() - 1).sum()
 }
 
 /// The signed area of one contour: positive counter-clockwise.
@@ -176,6 +214,101 @@ pub fn ring_area(ring: &Ring) -> f64 {
     acc * 0.5
 }
 
+/// `ring` wound counter-clockwise (`ccw`) or clockwise: reversed if it
+/// runs the other way, left alone if it has no area.
+pub fn oriented(mut ring: Ring, ccw: bool) -> Ring {
+    let a = ring_area(&ring);
+    if (ccw && a < 0.0) || (!ccw && a > 0.0) {
+        ring.reverse();
+    }
+    ring
+}
+
+/// `ring` counter-clockwise, or `None` if it has no area.
+pub fn ccw(ring: Ring) -> Option<Ring> {
+    (ring_area(&ring).abs() >= 1e-6).then(|| oriented(ring, true))
+}
+
+/// The convex hull of `pts`, counter-clockwise, or `None` if it has no
+/// area: fewer than three distinct points, or all on a line.
+pub fn convex_hull(mut pts: Vec<Pt>) -> Option<Ring> {
+    pts.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+    pts.dedup();
+    if pts.len() < 3 {
+        return None;
+    }
+    let cross = |o: Pt, a: Pt, b: Pt| (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    let mut hull: Vec<Pt> = Vec::new();
+    for &p in &pts {
+        while hull.len() >= 2 && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
+            hull.pop();
+        }
+        hull.push(p);
+    }
+    let lower = hull.len() + 1;
+    for &p in pts.iter().rev() {
+        while hull.len() >= lower && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
+            hull.pop();
+        }
+        hull.push(p);
+    }
+    hull.pop();
+    ccw(hull)
+}
+
+/// The axis-aligned box `[x0, y0, x1, y1]` as a counter-clockwise region.
+pub fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Shape {
+    vec![vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]]
+}
+
+/// The bounding box `[x0, y0, x1, y1]` of `pts`; `None` of nothing.
+pub fn bounds(pts: impl IntoIterator<Item = Pt>) -> Option<[f64; 4]> {
+    let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for p in pts {
+        b[0] = b[0].min(p[0]);
+        b[1] = b[1].min(p[1]);
+        b[2] = b[2].max(p[0]);
+        b[3] = b[3].max(p[1]);
+    }
+    (b[0] <= b[2]).then_some(b)
+}
+
+/// `v` scaled to unit length; the zero vector stays zero.
+pub fn unit(v: Pt) -> Pt {
+    let len = v[0].hypot(v[1]);
+    if len < 1e-12 {
+        [0.0, 0.0]
+    } else {
+        [v[0] / len, v[1] / len]
+    }
+}
+
+/// The length of the polyline `pts`, in metres.
+pub fn length(pts: &[Pt]) -> f64 {
+    pts.windows(2).map(|p| (p[1][0] - p[0][0]).hypot(p[1][1] - p[0][1])).sum()
+}
+
+/// How far the path `a → b → c` turns at `b`, in degrees: positive to the
+/// left, negative to the right.
+pub fn turn_deg(a: Pt, b: Pt, c: Pt) -> f64 {
+    let (u, v) = (unit([b[0] - a[0], b[1] - a[1]]), unit([c[0] - b[0], c[1] - b[1]]));
+    (u[0] * v[1] - u[1] * v[0]).atan2(u[0] * v[0] + u[1] * v[1]).to_degrees()
+}
+
+/// The point of the segment `ab` nearest `p`.
+pub fn nearest_on_segment(a: Pt, b: Pt, p: Pt) -> Pt {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 > 0.0 { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    [a[0] + dx * t, a[1] + dy * t]
+}
+
+/// The distance from `p` to the segment `ab`.
+pub fn segment_distance(a: Pt, b: Pt, p: Pt) -> f64 {
+    let f = nearest_on_segment(a, b, p);
+    (p[0] - f[0]).hypot(p[1] - f[1])
+}
+
 /// Whether `p` lies inside `shapes`: inside some region's outer boundary and
 /// outside its holes. Even-odd over each region's rings, which is the same
 /// answer as non-zero because a hole lies inside its outer boundary. A point
@@ -187,58 +320,120 @@ pub fn contains(shapes: &Shapes, p: Pt) -> bool {
     })
 }
 
-/// A set of regions with their bounding boxes, for many `contains` queries
-/// against the same shapes: a region whose box misses the point is not
-/// walked.
-pub struct Boxed<'a> {
-    shapes: &'a Shapes,
-    boxes: Vec<[f64; 4]>,
+/// Cell size of the region index, in metres: a few houses per cell, and a
+/// world-sized region in a few tens of thousands.
+pub const CELL_M: f64 = 32.0;
+
+/// The cell of `p` on a grid of `cell_m`.
+pub fn cell_of(p: Pt, cell_m: f64) -> (i32, i32) {
+    ((p[0] / cell_m).floor() as i32, (p[1] / cell_m).floor() as i32)
 }
 
-impl<'a> Boxed<'a> {
-    pub fn new(shapes: &'a Shapes) -> Boxed<'a> {
-        let boxes = shapes
-            .iter()
-            .map(|shape| {
-                let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-                for p in shape.iter().flatten() {
-                    b[0] = b[0].min(p[0]);
-                    b[1] = b[1].min(p[1]);
-                    b[2] = b[2].max(p[0]);
-                    b[3] = b[3].max(p[1]);
+/// Every cell of a grid of `cell_m` the box `b` (`[x0, y0, x1, y1]`)
+/// touches, column-major.
+pub fn cells_over(b: [f64; 4], cell_m: f64) -> impl Iterator<Item = (i32, i32)> {
+    let (c0, r0) = cell_of([b[0], b[1]], cell_m);
+    let (c1, r1) = cell_of([b[2], b[3]], cell_m);
+    (c0..=c1).flat_map(move |c| (r0..=r1).map(move |r| (c, r)))
+}
+
+/// Regions on a grid, for many `contains` queries from a point. Only the
+/// regions whose box covers the point's cell are asked, and each is asked
+/// over the edges that span the point's row alone: the ray toward +x is
+/// crossed by no other, so the parity — the answer — is [`contains`]'s
+/// exactly, at a few edges per query where a region the size of the world
+/// has tens of thousands.
+pub struct Indexed {
+    cells: HashMap<(i32, i32), Vec<usize>>,
+    /// The edges of region `i` spanning row `r`, keyed `(i, r)`.
+    edges: HashMap<(usize, i32), Vec<(Pt, Pt)>>,
+}
+
+impl Indexed {
+    pub fn new(shapes: &Shapes) -> Indexed {
+        let mut cells: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        let mut edges: HashMap<(usize, i32), Vec<(Pt, Pt)>> = HashMap::new();
+        for (i, shape) in shapes.iter().enumerate() {
+            let Some(b) = bounds(shape.iter().flatten().copied()) else {
+                continue;
+            };
+            for cell in cells_over(b, CELL_M) {
+                cells.entry(cell).or_default().push(i);
+            }
+            for ring in shape {
+                for k in 0..ring.len() {
+                    let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+                    let (r0, r1) = ((a[1].min(b[1]) / CELL_M).floor() as i32, (a[1].max(b[1]) / CELL_M).floor() as i32);
+                    for r in r0..=r1 {
+                        edges.entry((i, r)).or_default().push((a, b));
+                    }
                 }
-                b
-            })
-            .collect();
-        Boxed { shapes, boxes }
+            }
+        }
+        Indexed { cells, edges }
     }
 
-    /// [`contains`], skipping regions whose box misses `p`.
+    /// [`contains`], over the regions whose box covers `p`'s cell.
     pub fn contains(&self, p: Pt) -> bool {
-        self.shapes.iter().zip(&self.boxes).any(|(shape, b)| {
-            p[0] >= b[0]
-                && p[0] <= b[2]
-                && p[1] >= b[1]
-                && p[1] <= b[3]
-                && shape.iter().map(|ring| ring_crossings(ring, p)).sum::<usize>() % 2 == 1
+        let (c, r) = cell_of(p, CELL_M);
+        self.cells.get(&(c, r)).is_some_and(|v| {
+            v.iter().any(|&i| {
+                self.edges.get(&(i, r)).is_some_and(|es| es.iter().filter(|&&(a, b)| crosses(a, b, p)).count() % 2 == 1)
+            })
+        })
+    }
+
+    /// Whether any region is indexed at all.
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+}
+
+/// The edges of a set of regions, bucketed by cell, for many "is this point
+/// within `r` of the boundary" queries: a point is checked against the
+/// edges of its own cell and the eight around it, so `r` may not exceed
+/// the cell size.
+pub struct Edges {
+    cells: HashMap<(i32, i32), Vec<(Pt, Pt)>>,
+    cell_m: f64,
+}
+
+impl Edges {
+    pub fn new(shapes: &Shapes, cell_m: f64) -> Edges {
+        let mut cells: HashMap<(i32, i32), Vec<(Pt, Pt)>> = HashMap::new();
+        for ring in shapes.iter().flatten() {
+            for i in 0..ring.len() {
+                let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                for cell in cells_over([a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])], cell_m) {
+                    cells.entry(cell).or_default().push((a, b));
+                }
+            }
+        }
+        Edges { cells, cell_m }
+    }
+
+    /// Whether some edge passes within `r` of `p`.
+    pub fn within(&self, p: Pt, r: f64) -> bool {
+        debug_assert!(r <= self.cell_m, "a reach past the neighbouring cells is not searched");
+        let (c, row) = cell_of(p, self.cell_m);
+        (-1..=1).any(|dc| {
+            (-1..=1).any(|dr| {
+                self.cells
+                    .get(&(c + dc, row + dr))
+                    .is_some_and(|v| v.iter().any(|&(a, b)| segment_distance(a, b, p) <= r))
+            })
         })
     }
 }
 
+/// Whether the edge `ab` crosses the ray from `p` toward +x.
+fn crosses(a: Pt, b: Pt, p: Pt) -> bool {
+    (a[1] > p[1]) != (b[1] > p[1]) && a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) > p[0]
+}
+
 /// How many edges of `ring` a ray from `p` toward +x crosses.
 fn ring_crossings(ring: &Ring, p: Pt) -> usize {
-    let mut n = 0;
-    for i in 0..ring.len() {
-        let a = ring[i];
-        let b = ring[(i + 1) % ring.len()];
-        if (a[1] > p[1]) != (b[1] > p[1]) {
-            let x = a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
-            if x > p[0] {
-                n += 1;
-            }
-        }
-    }
-    n
+    (0..ring.len()).filter(|&i| crosses(ring[i], ring[(i + 1) % ring.len()], p)).count()
 }
 
 #[cfg(test)]
@@ -316,7 +511,7 @@ mod tests {
     }
 
     fn square(x: f64, y: f64, s: f64) -> Shape {
-        vec![vec![[x, y], [x + s, y], [x + s, y + s], [x, y + s]]]
+        rect(x, y, x + s, y + s)
     }
 
     #[test]
@@ -396,12 +591,39 @@ mod tests {
     }
 
     #[test]
-    fn boxed_agrees_with_contains() {
-        let shapes = buffer_line(&[[-100.0, 0.0], [0.0, 30.0], [100.0, 0.0]], 5.5);
-        let boxed = Boxed::new(&shapes);
-        for p in [[-50.0, 15.0], [-50.0, 20.0], [0.0, 30.0], [0.0, 40.0], [200.0, 0.0]] {
-            assert_eq!(boxed.contains(p), contains(&shapes, p), "{p:?}");
+    fn the_index_agrees_with_contains() {
+        // A bent road and a square with a hole: regions spanning many rows.
+        let mut shapes = buffer_line(&[[-100.0, 0.0], [0.0, 30.0], [100.0, 0.0]], 5.5);
+        shapes.push(vec![rect(-80.0, 40.0, 0.0, 120.0)[0].clone(), oriented(rect(-60.0, 60.0, -20.0, 100.0)[0].clone(), false)]);
+        let index = Indexed::new(&shapes);
+        assert!(!index.is_empty() && Indexed::new(&Vec::new()).is_empty());
+        for p in [[-50.0, 15.0], [-50.0, 20.0], [0.0, 30.0], [0.0, 40.0], [200.0, 0.0], [-40.0, 50.0], [-40.0, 80.0], [-70.0, 80.0]] {
+            assert_eq!(index.contains(p), contains(&shapes, p), "{p:?}");
         }
+        let mut y = -10.0;
+        while y < 130.0 {
+            let mut x = -110.0;
+            while x < 110.0 {
+                assert_eq!(index.contains([x, y]), contains(&shapes, [x, y]), "{x} {y}");
+                x += 3.7;
+            }
+            y += 2.9;
+        }
+    }
+
+    #[test]
+    fn a_convex_hull_is_counter_clockwise_and_minimal() {
+        let hull = convex_hull(vec![[0.0, 0.0], [2.0, 0.0], [1.0, 0.5], [2.0, 2.0], [0.0, 2.0], [0.0, 0.0]]).unwrap();
+        assert_eq!(hull, vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]);
+        assert!(convex_hull(vec![[1.0, 1.0], [1.0, 1.0]]).is_none());
+        assert!(convex_hull(vec![[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]).is_none(), "a line has no area");
+        assert_eq!(oriented(vec![[0.0, 0.0], [0.0, 1.0], [1.0, 0.0]], true), vec![[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]);
+        assert!((turn_deg([0.0, 0.0], [1.0, 0.0], [1.0, 1.0]) - 90.0).abs() < 1e-9);
+        assert!((turn_deg([0.0, 0.0], [1.0, 0.0], [1.0, -1.0]) + 90.0).abs() < 1e-9);
+        assert_eq!(bounds([[1.0, 2.0], [-1.0, 5.0]]), Some([-1.0, 2.0, 1.0, 5.0]));
+        assert_eq!(bounds([]), None);
+        assert!((segment_distance([0.0, 0.0], [2.0, 0.0], [3.0, 1.0]) - 2.0f64.sqrt()).abs() < 1e-12);
+        assert_eq!(nearest_on_segment([0.0, 0.0], [2.0, 0.0], [1.0, 1.0]), [1.0, 0.0]);
     }
 
     #[test]

@@ -110,7 +110,7 @@ pub fn read(path: &Path, bbox: &Bounds, frame: &Frame, rect: &Rect) -> Result<Re
         let id = str_of(&f.properties, "id").unwrap_or_default().to_string();
         let class = str_of(&f.properties, "class").unwrap_or_default().to_string();
         let subclass = str_of(&f.properties, "subclass").unwrap_or_default().to_string();
-        let measured = width_rules_m(&f.properties).filter(|w| width::MEASURED_M.contains(w));
+        let measured = width::measured(&class, width_rules_m(&f.properties));
         let oneway = f.properties.iter().any(|(k, v)| k == "oneway" && matches!(v, Value::Bool(true)));
         out.measured += measured.is_some() as usize;
         out.oneway += oneway as usize;

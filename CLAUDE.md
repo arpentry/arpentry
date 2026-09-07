@@ -271,11 +271,42 @@ The run prints one line per step. The output is byte-deterministic, so
 difference means something moved. `--terrain 'ramp?grade=0.05'` (or `flat`,
 `hill`, `step`) swaps the DEM for a synthetic ground, and `--segments
 net:cross` (or `straight`, `tee`, `hairpin?angle=20`, `dual?gap=4`,
-`sidewalk?d=6`, `corner`, `crossing`) swaps the parquet for a synthetic
+`tee?d=8&hook=5`, `sidewalk?d=6`, `corner[?split=1]`, `crossing`, `stub?d=0.5`,
+`driveway?d=6`, `roundabout`) swaps the parquet for a synthetic
 network, where a step's output is an assertion rather than a look.
 `--until terrain` stops after a step; the steps so far are `terrain`,
-`drape`, `ribbon`, `surface`, `kerb`, `fillet`. The plan for the last one
-(mesh) is `data/plans/flat-network-2026-09-06.md`.
+`drape`, `facade`, `ribbon`, `surface`, `kerb`, `fillet`, `room`. The plan
+for the next one (mesh) is `data/plans/flat-network-2026-09-06.md`.
+
+The `facade` step reads the zone's `building.parquet` (when it is there) and
+every surface step after it keeps out of the footprints: the pavement stops
+at the walls, the asphalt at the *closed* walls (notches and gaps between
+houses under 3 m are pockets it does not enter, so its edge does not zigzag
+with the building outline). A way whose axis runs through a footprint or a
+pocket keeps a corridor of at most 4 m (`facade::PASSAGE_M`) so the network
+is not cut in two. The `room` step then paves the kerbs that run along facades: where a wall
+face stands within 6 m (`room::WALL_REACH_M`) over at least 6 m of kerb,
+bridged across gaps under 10 m, a 2 m band runs along the kerb and rungs
+reach from it to the wall — the strip along a house front, the pocket a
+kerb return leaves at a house corner, a notch, an alley mouth. A corner
+that merely points at the road gets nothing. The probe stops at mapped
+pavement too, so a pocket between a kerb return and a sidewalk wrapping the
+corner, or a break in a sidewalk under 25 m, is paved at the sidewalk's own
+width. A hole in what is built, asphalt, pavement and
+buildings together, under 500 m² (`room::ISLAND_M2`) that borders asphalt
+or pavement and lies wholly within 10 m (`room::POCKET_REACH_M`) of the
+asphalt is paved too: a roundabout's centre, a traffic island, the pocket
+in a junction corner between a kerb, a footway and a house. A hole walled
+all round is a courtyard, and one that reaches farther from the asphalt is
+a lawn; both stay ground. The plan view marks every kerb
+station `kerb_gap` still counts with a red dot in any window under 2 km,
+so a gap is found by its marker.
+`--buildings none` runs without buildings; a synthetic network has none
+unless `--buildings house:beside?d=2` (a house `d` m off the axis, `notch=`
+for a notch in its facade), `house:across?rot=30` (one the way passes
+through), `house:row?gap=2` (two along the road) or `house:pair?gap=3` (two
+facing across it) says so. The `kerb_gap` and `wall_gap` checks know the
+walls: a kerb station with a facade outside it is walled, not bare.
 
 To look without opening Blender:
 

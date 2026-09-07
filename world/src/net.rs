@@ -8,13 +8,15 @@
 //!
 //! ```text
 //! net:straight[?len=200&class=residential]   one way along x
-//! net:tee                                     two halves of it and a leg from the north, meeting at the origin
+//! net:tee[?d=8][&hook=5]                      two halves of it and a leg from the north, meeting at the origin; with `d`, a sidewalk `d` m off both axes wrapping the north-west corner; with `hook`, road-e turns back north on that radius
 //! net:cross                                   four legs meeting at the origin
 //! net:hairpin?angle=20                        one way bent by `angle` degrees at the origin
 //! net:dual?gap=4                              two ways, their kerbs `gap` m apart
-//! net:sidewalk?d=6                            the way and a sidewalk `d` m off its axis
-//! net:corner?d=5                              the way turning north, a sidewalk wrapping the outside
-//! net:crossing?d=6                            sidewalks either side and a crosswalk between them
+//! net:sidewalk?d=6[&gap=0]                    the way and a sidewalk `d` m off its axis, in two halves `gap` m apart if `gap`
+//! net:corner?d=5[&split=1]                    the way turning north, a sidewalk wrapping the outside on a chamfer, cut at its midpoint if `split`
+//! net:stub?d=0.5                              the way and a footway from the north ending `d` m short of its kerb (under the asphalt if negative)
+//! net:driveway?d=6[&short=0]                  the way, a sidewalk `d` m off its axis in two halves, and a service way from the north ending on their joint, or `short` m before it
+//! net:crossing?d=6                            sidewalks either side, each cut at the connector, and a crosswalk between them
 //! net:roundabout?r=15&d=5                     a ring road in four arcs, four legs, a sidewalk ring `d` m outside its kerb
 //! ```
 //!
@@ -45,11 +47,37 @@ pub fn parse(spec: &str) -> Result<Vec<Polyline2>, String> {
     let x_road = |id: &str| road(id, vec![[-half, 0.0], [half, 0.0]]);
     let ways = match name {
         "straight" => vec![x_road("road")],
-        "tee" => vec![
-            road("road-w", vec![[-half, 0.0], [0.0, 0.0]]),
-            road("road-e", vec![[0.0, 0.0], [half, 0.0]]),
-            road("leg", vec![[0.0, 0.0], [0.0, half]]),
-        ],
+        "tee" => {
+            // With `hook`, road-e runs 10 m east then turns back on an arc
+            // of that radius and ends short of the leg: a bend within one
+            // leg whose inside lies in the junction's mask.
+            let east = match params.get("hook") {
+                None => vec![[0.0, 0.0], [half, 0.0]],
+                Some(r) => {
+                    let r: f64 = r.parse().map_err(|_| format!("invalid hook: {r}"))?;
+                    let mut pts = vec![[0.0, 0.0], [10.0, 0.0]];
+                    pts.extend((1..=12).map(|k| {
+                        let a = -std::f64::consts::FRAC_PI_2 + k as f64 * std::f64::consts::PI / 12.0;
+                        [10.0 + r * a.cos(), r + r * a.sin()]
+                    }));
+                    pts.push([6.0, 2.0 * r]);
+                    pts
+                }
+            };
+            let mut ways = vec![
+                road("road-w", vec![[-half, 0.0], [0.0, 0.0]]),
+                road("road-e", east),
+                road("leg", vec![[0.0, 0.0], [0.0, half]]),
+            ];
+            // A sidewalk wrapping the corner between road-w and the leg on
+            // a chamfer, `d` m off both axes: its stations either side of
+            // the chamfer project onto different legs.
+            if let Some(d) = params.get("d") {
+                let d: f64 = d.parse().map_err(|_| format!("invalid d: {d}"))?;
+                ways.push(walk("walk", "sidewalk", vec![[-half, d], [-1.5 * d, d], [-d, 1.5 * d], [-d, half]]));
+            }
+            ways
+        }
         "cross" => vec![
             road("road-w", vec![[-half, 0.0], [0.0, 0.0]]),
             road("road-e", vec![[0.0, 0.0], [half, 0.0]]),
@@ -70,22 +98,63 @@ pub fn parse(spec: &str) -> Result<Vec<Polyline2>, String> {
             ]
         }
         "sidewalk" => {
+            // With `gap`, the sidewalk is two halves that stop `gap` m
+            // short of each other at the origin: a break in the data.
             let d = params.num("d", 6.0)?;
-            vec![x_road("road"), walk("walk-n", "sidewalk", vec![[-half, d], [half, d]])]
+            let gap = params.num("gap", 0.0)?;
+            if gap > 0.0 {
+                vec![
+                    x_road("road"),
+                    walk("walk-w", "sidewalk", vec![[-half, d], [-gap / 2.0, d]]),
+                    walk("walk-e", "sidewalk", vec![[gap / 2.0, d], [half, d]]),
+                ]
+            } else {
+                vec![x_road("road"), walk("walk-n", "sidewalk", vec![[-half, d], [half, d]])]
+            }
         }
         "corner" => {
+            // The sidewalk cuts the corner on a chamfer from `(0, -d)` to
+            // `(d, 0)`, at 45° to both legs, as a mapper draws it round a
+            // building's corner; `split=1` cuts it at the chamfer's
+            // midpoint, where Overture would put the crossing's connector,
+            // into two ways that meet there.
             let d = params.num("d", 5.0)?;
+            let split = params.num("split", 0.0)? != 0.0;
+            let mid = [d / 2.0, -d / 2.0];
+            let mut ways = vec![road("road", vec![[-half, 0.0], [0.0, 0.0], [0.0, half]])];
+            if split {
+                ways.push(walk("walk-w", "sidewalk", vec![[-half, -d], [0.0, -d], mid]));
+                ways.push(walk("walk-n", "sidewalk", vec![mid, [d, 0.0], [d, half]]));
+            } else {
+                ways.push(walk("walk", "sidewalk", vec![[-half, -d], [0.0, -d], [d, 0.0], [d, half]]));
+            }
+            ways
+        }
+        "driveway" => {
+            let d = params.num("d", 6.0)?;
+            let short = params.num("short", 0.0)?;
             vec![
-                road("road", vec![[-half, 0.0], [0.0, 0.0], [0.0, half]]),
-                walk("walk", "sidewalk", vec![[-half, -d], [d, -d], [d, half]]),
+                x_road("road"),
+                walk("walk-w", "sidewalk", vec![[-half, d], [0.0, d]]),
+                walk("walk-e", "sidewalk", vec![[0.0, d], [half, d]]),
+                line("drive", "service", "driveway", vec![[0.0, 20.0], [0.0, d + short]]),
             ]
         }
+        "stub" => {
+            let d = params.num("d", 0.5)?;
+            let kerb = crate::width::of(class, "") / 2.0;
+            vec![x_road("road"), walk("stub", "", vec![[0.0, 20.0], [0.0, kerb + d]])]
+        }
         "crossing" => {
+            // Each sidewalk is cut at the crossing's connector, as Overture
+            // cuts a way at every connector.
             let d = params.num("d", 6.0)?;
             vec![
                 x_road("road"),
-                walk("walk-n", "sidewalk", vec![[-half, d], [half, d]]),
-                walk("walk-s", "sidewalk", vec![[-half, -d], [half, -d]]),
+                walk("walk-nw", "sidewalk", vec![[-half, d], [0.0, d]]),
+                walk("walk-ne", "sidewalk", vec![[0.0, d], [half, d]]),
+                walk("walk-sw", "sidewalk", vec![[-half, -d], [0.0, -d]]),
+                walk("walk-se", "sidewalk", vec![[0.0, -d], [half, -d]]),
                 walk("crossing", "crosswalk", vec![[0.0, -d], [0.0, d]]),
             ]
         }
@@ -129,10 +198,10 @@ fn line(id: &str, class: &str, subclass: &str, pts: Vec<[f64; 2]>) -> Polyline2 
 }
 
 /// The `k=v&k=v` part of a spec.
-struct Params(Vec<(String, String)>);
+pub(crate) struct Params(Vec<(String, String)>);
 
 impl Params {
-    fn parse(query: &str) -> Result<Params, String> {
+    pub(crate) fn parse(query: &str) -> Result<Params, String> {
         let mut out = Vec::new();
         for pair in query.split('&').filter(|s| !s.is_empty()) {
             let (k, v) = pair.split_once('=').ok_or_else(|| format!("expected k=v, got `{pair}`"))?;
@@ -141,11 +210,11 @@ impl Params {
         Ok(Params(out))
     }
 
-    fn get(&self, key: &str) -> Option<&str> {
+    pub(crate) fn get(&self, key: &str) -> Option<&str> {
         self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }
 
-    fn num(&self, key: &str, default: f64) -> Result<f64, String> {
+    pub(crate) fn num(&self, key: &str, default: f64) -> Result<f64, String> {
         match self.get(key) {
             None => Ok(default),
             Some(v) => v.parse().map_err(|_| format!("invalid {key}: {v}")),
@@ -167,7 +236,9 @@ mod tests {
             ("net:dual", 2),
             ("net:sidewalk", 2),
             ("net:corner", 2),
-            ("net:crossing", 4),
+            ("net:crossing", 6),
+            ("net:stub", 2),
+            ("net:driveway", 4),
             ("net:roundabout", 9),
         ] {
             let ways = parse(spec).unwrap();
@@ -181,6 +252,12 @@ mod tests {
         let ways = parse("net:straight?len=100&class=primary").unwrap();
         assert_eq!(ways[0].class, "primary");
         assert_eq!(ways[0].pts, vec![[-50.0, 0.0], [50.0, 0.0]]);
+        let ways = parse("net:corner?d=5&split=1").unwrap();
+        assert_eq!(ways.len(), 3);
+        assert_eq!(ways[1].pts.last(), ways[2].pts.first(), "the two halves meet");
+        assert_eq!(ways[1].pts.last(), Some(&[2.5, -2.5]), "at the chamfer's midpoint");
+        let ways = parse("net:stub?d=-1").unwrap();
+        assert_eq!(ways[1].pts[1], [0.0, 1.75], "a metre under the asphalt of a 5.5 m road");
         let ways = parse("net:sidewalk?d=3.5").unwrap();
         assert_eq!(ways[1].subclass, "sidewalk");
         assert_eq!(ways[1].pts[0][1], 3.5);
