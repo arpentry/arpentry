@@ -401,13 +401,26 @@ height at the outline, a face at `EARTHWORK_BATTER` out of it stopping
 exactly where it meets the natural ground, and the natural ground beyond.
 A face is at most `MAX_BENCH_FACE_M` tall, so it runs at most 7.5 m, and
 where the room stands further than one face from the ground at its own
-outline no batter is built at all: the bench is *walled* there and
-`walled` counts it. **The seam is read, not recomputed** — every outline
-vertex is a vertex of the room's own mesh, so the ground takes its height
-from there. On the loop box, 11.7 s: `cut` 9.8 m, `fill` 12.4 m, `step`
-0.40 %, `ground` 9.6 M triangles, `seam` 0/94 575, `contact` 2.5e-7 m,
-`walled` 1.45 %, `wall` 12.2 m, `touched` 8.9 % of lattice vertices,
-`off` 17 m.
+outline no batter is built at all: the bench is *walled* there, `walled`
+counts it, and **`wall_m2` of closing face is drawn between the two** — a
+step nothing spans is a hole you can see the world through, which is what
+invariant 9 forbids.
+
+**The seam is read, not recomputed, and it is read where both meshes cut
+their own edges.** Every outline vertex is a vertex of the room's mesh, so
+the ground takes its height from there; but a kerb may run fifty metres
+between two vertices of its ring while the profile under it does not run
+straight at all, so the ground samples the room's height — and the natural
+ground — **at every lattice crossing along the segment**, which is where
+both meshes put a vertex anyway. Read at the ring's own corners instead,
+the ground interpolated the room's height straight across those fifty
+metres and parted company with it in between: on one 400 m road over a
+60 m hill that is `contact` 60 m and 24 000 m² of gap, and `contact` could
+not see it because it was read at those same two corners. Both are now
+measured over the dense outline. On the loop box, 15.6 s: `cut` 9.8 m,
+`fill` 12.4 m, `step` 0.40 %, `ground` 9.6 M triangles, `seam` 0/409 895,
+`contact` 2.5e-7 m, `walled` 1.14 %, `wall` 12.2 m, `wall_m2` 20 162,
+`touched` 8.8 % of lattice vertices, `off` 17 m.
 
 The `structure` step builds what the solved profile implies, and nothing
 else: a mapped bridge whose chord never left the ground gets no deck.

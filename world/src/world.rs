@@ -378,6 +378,11 @@ pub struct Bench {
     /// The engineered ground: the terrain with the room cut out of it and
     /// a batter run from the room's outline down to the natural ground.
     pub ground: Tri,
+    /// The face that closes the step between the room's edge and the
+    /// ground beside it wherever a batter could not run: the retaining
+    /// wall, and the only thing standing between the two meshes and a
+    /// hole you can see the world through (I9).
+    pub wall: Tri,
     /// The midpoint of every mesh edge the height field steps across —
     /// the line between two carriageways whose domains meet at different
     /// heights, which is a retaining wall — for the plan view and for

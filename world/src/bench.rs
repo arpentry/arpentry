@@ -73,7 +73,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use crate::poly::{self, Pt, Shapes};
+use crate::poly::{self, Pt, Ring, Shapes};
 use crate::step::Summary;
 use crate::terrain::height_at;
 use crate::world::{Bench, Kind, Profile, Terrain, Tri, World};
@@ -370,21 +370,72 @@ fn ring(c0: i32, r0: i32, k: i32) -> Vec<(i32, i32)> {
 #[derive(Debug, Default)]
 pub struct Ground {
     at: Nearest,
-    /// Per outline segment, the room's height and the natural ground at
-    /// each of its two ends.
-    seg: Vec<(f64, f64, f64, f64)>,
+    seg: Vec<Seg>,
+}
+
+/// One outline segment: the room's height **sampled where the segment
+/// crosses the lattice** — the vertices both meshes put there themselves —
+/// and the natural ground at its two ends.
+///
+/// The samples are what makes the seam exact. A kerb may run fifty metres
+/// between two vertices of its ring while the profile under it does not
+/// run straight at all, so a height interpolated between the ring's own
+/// two ends is not the edge either mesh drew: that was a crack along 74 %
+/// of the loop box's outline, up to 9.6 m of it. Sampling at the crossings
+/// and interpolating between *them* is the mesh's own edge, and it costs
+/// one binary search rather than four times the index.
+#[derive(Debug, Default)]
+struct Seg {
+    /// One sample per lattice crossing, `[t, room, natural]`, ascending in
+    /// `t` from 0 to 1. Interleaved in one allocation because
+    /// [`Ground::at`] is asked seven million times over the loop box and
+    /// every one of them lands on a sample and its neighbour.
+    s: Vec<[f64; 3]>,
+}
+
+impl Seg {
+    /// The room's height and the natural ground at parameter `t`.
+    ///
+    /// **Both** are sampled, and they have to be: the batter is refused
+    /// where the two differ by more than one face, so a decision taken on
+    /// an interpolated ground and reported against the true one disagrees
+    /// by up to exactly [`MAX_BENCH_FACE_M`], which is what `contact` read
+    /// when only the room was sampled.
+    fn at(&self, t: f64) -> (f64, f64) {
+        let i = self.s.partition_point(|x| x[0] < t).clamp(1, self.s.len() - 1);
+        let (a, b) = (self.s[i - 1], self.s[i]);
+        let u = if b[0] > a[0] { ((t - a[0]) / (b[0] - a[0])).clamp(0.0, 1.0) } else { 0.0 };
+        (a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u)
+    }
 }
 
 impl Ground {
     /// The ground benched to `outline`, whose vertices stand at `room`
-    /// over a natural ground of `natural`.
-    pub fn new(outline: &Shapes, room: &dyn Fn(Pt) -> f64, natural: &dyn Fn(Pt) -> f64) -> Ground {
+    /// over a natural ground of `natural`, sampled along `grid`.
+    pub fn new(
+        outline: &Shapes,
+        grid: &crate::grid::Grid,
+        room: &dyn Fn(Pt) -> f64,
+        natural: &dyn Fn(Pt) -> f64,
+    ) -> Ground {
         let mut g = Ground::default();
         for ring in outline.iter().flatten() {
             for i in 0..ring.len() {
                 let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
                 g.at.push(a, b);
-                g.seg.push((room(a), room(b), natural(a), natural(b)));
+                let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+                let mut seg = Seg { s: vec![[0.0, room(a), natural(a)]] };
+                // `split` ends with `b` itself, so the last sample is at 1.
+                for q in crate::drape::split(grid, a, b) {
+                    let u = if len > 0.0 { ((q[0] - a[0]).hypot(q[1] - a[1]) / len).clamp(0.0, 1.0) } else { 1.0 };
+                    if u > seg.s.last().expect("seeded with 0")[0] {
+                        seg.s.push([u, room(q), natural(q)]);
+                    }
+                }
+                if seg.s.len() == 1 {
+                    seg.s.push([1.0, room(b), natural(b)]);
+                }
+                g.seg.push(seg);
             }
         }
         g
@@ -408,9 +459,7 @@ impl Ground {
         let Some((i, t, d)) = self.at.of(p, EARTHWORK_BATTER * MAX_BENCH_FACE_M) else {
             return natural;
         };
-        let (h0, h1, g0, g1) = self.seg[i];
-        let room = h0 + (h1 - h0) * t;
-        let edge = g0 + (g1 - g0) * t;
+        let (room, edge) = self.seg[i].at(t);
         if (edge - room).abs() > MAX_BENCH_FACE_M {
             return natural;
         }
@@ -493,15 +542,29 @@ pub fn run(world: &mut World) -> Summary {
                 None => natural(q),
             },
         };
-        let ground = Ground::new(&outline, &room, &natural);
-        let mut earth = Earth::new(&outline, &ground, &room, &natural, terrain);
+        // Both meshes cut their own boundary edges where the ring crosses
+        // the lattice, so those crossings are vertices of both, and between
+        // two of them each mesh's edge is a straight line in 3D. The ground
+        // samples the room's height *there* and the seam is measured and
+        // walled over the same points: read at the ring's own corners
+        // instead, the ground interpolated over a kerb that may run fifty
+        // metres while the profile under it did not, which was a crack
+        // along 74 % of the loop box's outline, up to 9.6 m of it, that
+        // `contact` could not see because it was measured at the corners
+        // too.
+        let edge = dense(&outline, &terrain.grid);
+        let ground = Ground::new(&outline, &terrain.grid, &room, &natural);
+        let mut earth = Earth::new(&edge, &ground, &room, &natural, terrain);
         let cut = poly::difference(&vec![poly::rect(world.rect.x0, world.rect.y0, world.rect.x1, world.rect.y1)], &outline);
         let (g, gs) = mesh::triangulate(&cut, &terrain.grid, &|q| ground.at(q, natural(q)));
+
         earth.triangles = g.indices.len() / 3;
         earth.vertices = g.positions.len();
         earth.off = gs.off_ground;
         earth.lossy = gs.failed + gs.lossy;
-        (Bench { carriageway: c, pavement: p, ground: g, steps }, stats, field.len(), earth)
+        let (wall, wall_m2) = wall(&edge, &ground, &room, &natural);
+        earth.wall_m2 = wall_m2;
+        (Bench { carriageway: c, pavement: p, ground: g, wall, steps }, stats, field.len(), earth)
     };
     let summary = Summary::new()
         .with("axes", axes)
@@ -517,11 +580,93 @@ pub fn run(world: &mut World) -> Summary {
         .with("contact", format!("{:.1e}", earth.contact))
         .with_share("walled", earth.walled, earth.outline)
         .with("wall", format!("{:.1}", earth.wall))
+        .with_m2("wall_m2", earth.wall_m2)
         .with_share("touched", earth.touched, earth.lattice)
         .with("off", format!("{:.1e}", earth.off))
         .with("lossy", earth.lossy);
     world.bench = Some(bench);
     summary
+}
+
+/// Below this height, in metres, a step between the room and the ground
+/// beside it is the seam's own rounding and not a wall. The seam reads
+/// 2.5e-7 m on the loop box, so a millimetre is four orders clear of it.
+const WALL_MIN_M: f64 = 1e-3;
+
+
+/// The face that closes the step between the room's edge and the ground
+/// outside it, and the area of it.
+///
+/// The two meshes meet exactly wherever a batter could run — the ground
+/// takes the room's own height at the outline, and `contact` measures that
+/// at 2.5e-7 m. Where the step is more than one face tall the batter is
+/// refused ([`Ground::at`] hands back the natural ground rather than
+/// manufacture a slope no hillside has), the two meshes part company by up
+/// to `wall` metres, and until now nothing spanned the gap: **a hole you
+/// could see the world through**, which is what invariant 9 forbids and
+/// what `walled` had been counting all along without drawing.
+///
+/// The face is subdivided at the same lattice crossings the two meshes cut
+/// their own edges at ([`drape::split`]), and its two rails are read from
+/// the same two functions those meshes were built from, so the closure is
+/// exact rather than near: no T-junction, no hairline. A segment whose
+/// ends both agree to [`WALL_MIN_M`] is not drawn at all, which is most of
+/// them.
+///
+/// The room's outer rings run counter-clockwise and its holes the other
+/// way, so `[top_a, bottom_a, bottom_b, top_b]` faces away from the room
+/// in both cases — outward at a kerb, into the courtyard at a hole.
+fn wall(edge: &Shapes, ground: &Ground, room: &dyn Fn(Pt) -> f64, natural: &dyn Fn(Pt) -> f64) -> (Tri, f64) {
+    let mut tri = Tri::default();
+    let mut m2 = 0.0;
+    let rail = |q: Pt| (room(q), ground.at(q, natural(q)));
+    for ring in edge.iter().flatten() {
+        for i in 0..ring.len() {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            let (p0, p1) = (rail(a), rail(b));
+            let (d0, d1) = ((p0.0 - p0.1).abs(), (p1.0 - p1.1).abs());
+            if d0 <= WALL_MIN_M && d1 <= WALL_MIN_M {
+                continue;
+            }
+            let base = tri.positions.len() as u32;
+            tri.positions.extend_from_slice(&[
+                [a[0], a[1], p0.0],
+                [a[0], a[1], p0.1],
+                [b[0], b[1], p1.1],
+                [b[0], b[1], p1.0],
+            ]);
+            tri.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+            m2 += (d0 + d1) / 2.0 * (b[0] - a[0]).hypot(b[1] - a[1]);
+        }
+    }
+    (tri, m2)
+}
+
+/// `outline` with every ring subdivided where it crosses the terrain
+/// lattice: the vertices the two meshes put there themselves. The seam is
+/// measured and the wall is built over these rather than over the ring's
+/// own corners, so that neither can miss what happens between two of them —
+/// which is where the crack was, and why `contact` could not see it.
+fn dense(outline: &Shapes, grid: &crate::grid::Grid) -> Shapes {
+    outline
+        .iter()
+        .map(|shape| {
+            shape
+                .iter()
+                .map(|ring| {
+                    let mut out: Ring = Vec::with_capacity(ring.len());
+                    for i in 0..ring.len() {
+                        let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                        out.push(a);
+                        let mut cut = crate::drape::split(grid, a, b);
+                        cut.pop();
+                        out.append(&mut cut);
+                    }
+                    out
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// The height the room's mesh gave every one of its vertices, keyed the
@@ -576,6 +721,8 @@ pub struct Earth {
     pub off: f64,
     /// Regions of the ground the ear clipper could not read.
     pub lossy: usize,
+    /// The area of the closing face, in square metres.
+    pub wall_m2: f64,
 }
 
 impl Earth {
@@ -874,7 +1021,7 @@ pub(crate) mod tests {
         let none = Shapes::new();
         let outline = poly::union_of(&[w.carriageway().unwrap_or(&none), w.walk().unwrap_or(&none)]);
         let room = |q: Pt| seam.get(&key(q)).copied().unwrap_or_else(|| natural(q));
-        (Ground::new(&outline, &room, &natural), natural)
+        (Ground::new(&outline, &terrain.grid, &room, &natural), natural)
     }
 
     #[test]
@@ -982,6 +1129,41 @@ pub(crate) mod tests {
         let (_, s) = world("flat", "net:underpass?len=300", None);
         assert!((s.num("cut") - 6.5).abs() < 1e-6, "{s}");
         assert_eq!(s.num("fill"), 0.0, "{s}");
+    }
+
+    #[test]
+    fn the_seam_holds_between_the_ring_s_own_vertices() {
+        // A straight road's kerb is one 400 m segment of its outline, and
+        // the hill under it is a cosine, so the room's height along that
+        // segment is not a straight line. Read at the segment's two ends
+        // alone, the ground missed it by metres in between — and `contact`
+        // could not see that, because it was read at those same two ends.
+        // Sampled where the lattice crosses, both meshes draw one edge and
+        // there is nothing left to close.
+        let (_, s) = world("hill?amp=60&radius=200", "net:straight?len=400", None);
+        assert!(s.num("contact") < 1e-6, "{s}");
+        assert_eq!(s.num("wall_m2"), 0.0, "a gentle hill has no step to close: {s}");
+    }
+
+    #[test]
+    fn a_step_no_batter_can_run_is_closed_by_a_wall() {
+        // The overpass's approach stands 6.5 m over the ground beside it,
+        // more than twice MAX_BENCH_FACE_M, so no batter may run and the
+        // ground keeps its own height. That is a step between the room's
+        // edge and the terrain, and until it was walled it was a hole you
+        // could see the world through (I9).
+        let (w, s) = world("flat", "net:overpass?len=300", None);
+        assert!(s.num("walled") > 0.0, "{s}");
+        assert!(s.num("wall_m2") > 500.0, "{s}");
+        let b = bench(&w);
+        assert!(!b.wall.indices.is_empty());
+        // It stands between the two surfaces it closes, and no further:
+        // its foot on the flat ground, its head at the road it retains.
+        let z: Vec<f64> = b.wall.positions.iter().map(|p| p[2]).collect();
+        let lo = z.iter().cloned().fold(f64::INFINITY, f64::min);
+        let hi = z.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        assert!((lo - 400.0).abs() < 1e-6, "the foot is off the ground: {lo}");
+        assert!((hi - 406.5).abs() < 0.01, "the head is not at the roadway: {hi}");
     }
 
     #[test]

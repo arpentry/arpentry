@@ -53,6 +53,7 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
     // the raw lattice before that. One ground either way.
     if let Some(b) = &world.bench {
         doc.triangles("ground", &b.ground, [0.52, 0.56, 0.44]);
+        doc.triangles("wall", &b.wall, [0.60, 0.58, 0.54]);
     } else if let Some(t) = &world.terrain {
         doc.terrain(t);
     }
