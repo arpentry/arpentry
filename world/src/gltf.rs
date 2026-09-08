@@ -14,7 +14,7 @@
 
 use serde_json::{json, Value};
 
-use crate::terrain::height_at;
+use crate::drape::drape;
 use crate::poly::Shapes;
 use crate::world::{Profiles, Ribbons, Roads, Surface, Terrain, Tri, World};
 
@@ -168,18 +168,33 @@ impl Doc {
     }
 
     /// A layer of closed line loops, one per contour, lying on the terrain.
+    ///
+    /// The ring is **draped**, not merely sampled at its own vertices: a
+    /// contour edge is as long as the straight road that made it, and the
+    /// box has 267 m of it. A single segment between two
+    /// [`crate::terrain::height_at`] samples that far apart goes in one
+    /// side of the flank and out the other, and the file read as a model
+    /// with straight lines shot through it — 970 such edges in the ribbon
+    /// layer alone. [`drape`] already answers this for the way
+    /// centrelines, by cutting at every lattice crossing, so it answers it
+    /// here.
     fn loops(&mut self, name: &str, shapes: &Shapes, t: &Terrain, color: [f32; 3]) {
         let mut positions = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
         let mut base = 0u32;
         for ring in shapes.iter().flatten() {
-            for p in ring {
-                let z = height_at(t, p[0], p[1]);
-                positions.extend_from_slice(&to_gltf([p[0] as f32, p[1] as f32, z as f32]));
+            let Some(&first) = ring.first() else {
+                continue;
+            };
+            let mut closed = ring.clone();
+            closed.push(first);
+            let pts = drape(t, &closed);
+            for p in &pts {
+                positions.extend_from_slice(&to_gltf([p[0] as f32, p[1] as f32, p[2] as f32]));
             }
-            let n = ring.len() as u32;
-            for k in 0..n {
-                indices.extend_from_slice(&[base + k, base + (k + 1) % n]);
+            let n = pts.len() as u32;
+            for k in 1..n {
+                indices.extend_from_slice(&[base + k - 1, base + k]);
             }
             base += n;
         }
