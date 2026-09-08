@@ -19,6 +19,7 @@
 //! becomes one more caller of this crate; nothing here must learn about tiles
 //! for that to stay true.
 
+pub mod bench;
 pub mod drape;
 pub mod facade;
 pub mod fillet;

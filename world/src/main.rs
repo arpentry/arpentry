@@ -21,7 +21,7 @@ use arpentry_world::step::Step;
 use arpentry_world::world::World;
 use arpentry_world::frame::Rect;
 use arpentry_world::net;
-use arpentry_world::{drape, facade, fillet, gltf, kerb, mesh, profile, ribbon, room, surface, svg, terrain};
+use arpentry_world::{bench, drape, facade, fillet, gltf, kerb, mesh, profile, ribbon, room, surface, svg, terrain};
 
 struct Args {
     bbox: Bounds,
@@ -58,8 +58,8 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
                   (overrides --zone)
   --spacing M     terrain lattice spacing in metres (default 2)
   --max-vertices  cap on terrain vertices; the spacing grows to fit (default 2000000)
-  --until STEP    stop after this step: terrain | drape | profile | facade | ribbon | surface | kerb | fillet | room | mesh
-                  (default mesh)
+  --until STEP    stop after this step: terrain | drape | profile | facade | ribbon | surface | kerb | fillet | room | mesh | bench
+                  (default bench)
   --output FILE   the .glb to write
   --svg FILE      the plan view to write, one SVG group per step
   --view x0,y0,x1,y1  the window the plan shows, in local metres (default: the bbox)
@@ -101,6 +101,7 @@ fn run(args: &Args) -> Result<(), String> {
             Step::Fillet => fillet::run(&mut world),
             Step::Room => room::run(&mut world),
             Step::Mesh => mesh::run(&mut world),
+            Step::Bench => bench::run(&mut world),
         };
         println!("{:<8} {}  {:.2}s", step.name(), summary, t.elapsed().as_secs_f64());
         if step == args.until {
@@ -133,7 +134,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut view = None;
     let mut spacing = 2.0;
     let mut max_vertices = 2_000_000;
-    let mut until = Step::Mesh;
+    let mut until = Step::Bench;
     while let Some(flag) = it.next() {
         match flag.as_str() {
             "--bbox" => bbox = Some(parse_bbox(&value(&mut it, "--bbox")?)?),

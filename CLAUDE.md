@@ -276,7 +276,7 @@ net:cross` (or `straight`, `tee`, `hairpin?angle=20`, `dual?gap=4`,
 network, where a step's output is an assertion rather than a look.
 `--until terrain` stops after a step; the steps so far are `terrain`,
 `drape`, `profile`, `facade`, `ribbon`, `surface`, `kerb`, `fillet`,
-`room`, `mesh`. The 2D plan is `data/plans/flat-network-2026-09-06.md`; the vertical
+`room`, `mesh`, `bench`. The 2D plan is `data/plans/flat-network-2026-09-06.md`; the vertical
 one (profile → mesh → bench → structure → crossing) is
 `data/plans/surface-leaves-the-plane-2026-09-08.md`.
 
@@ -302,9 +302,9 @@ The `mesh` step triangulates the carriageway and the pavement **conforming
 to the terrain lattice**: each region is ear-clipped and every ear cut by
 the lattice's columns, rows and cell diagonals, so every triangle lies in
 one terrain triangle and, with its vertices at `height_at`, on the ground
-to the ulp — the drape guarantee for areas. The surfaces are coplanar with
-the terrain until the bench step moves them, so they z-fight against the
-ground in any 3D viewer: hide the terrain to see them.
+to the ulp — the drape guarantee for areas. The bench step then moves
+them off it; on a flat ground the two stay coplanar and z-fight in any
+3D viewer, so hide the terrain to see them.
 Its summary line: `lost_m2` (region area the triangles miss), `off_ground`
 (the largest height a triangle's centroid stands off the terrain),
 `seam` (the mesh's one-sided edge length less the regions' perimeter: a
@@ -315,6 +315,37 @@ cleaned at the kernel's lattice (`COLLINEAR_M`, 0.1 mm) before clipping:
 the kernel leaves straight edges zigzagging by a few hundredths of a
 millimetre and spikes a lattice cell wide, and the clipper turns both into
 T-junctions. The plan view draws the wireframe in windows under 100 m.
+
+The `bench` step lifts the room off the ground onto the height the
+profile solved: a point of the room takes the profile height at the
+perpendicular foot on the nearest **ground** carriageway axis (a deck's
+chord is the structure step's), and the pavement stands `KERB_RISE_M`
+(0.12 m) above it. The road is level crosswise, so a 5.5 m residential
+along the contour of a 30 % slope is cut 0.825 m at its uphill kerb and
+filled 0.825 m at its downhill one, exactly. The cross-section is level
+for `ROOM_REACH_M` (6 m) past the asphalt — the room step's own wall
+reach — and past that the walk comes down a face at `EARTHWORK_BATTER`
+(1 in 2.5) and stops where it meets the ground. A band standing further
+than one face (`MAX_BENCH_FACE_M`, 3 m) from the road beside it is not
+that road's pavement and drapes: **without that test the loop box read
+225 m of cut**, the field having carried a road's height half a
+kilometre up the flank, because a face into a mountain steeper than
+1 in 2.5 never daylights. Its summary line: `lifted`/`battered`/`draped`
+(where the room's vertices stand), `walled` (vertices more than one face
+off the ground — where the ground's answer must be a wall, not a
+batter), `cut`/`fill` (the earthwork the ground still owes), and `step`
+(mesh edges the field is discontinuous across, over `KERB_RISE_M` and
+steeper than `STEP_GRADE`) with `worst`. On the loop box: `cut` 9.8 m,
+`fill` 12.4 m, `walled` 0.8 %, `step` 0.40 %. The plan view marks every
+step with a purple dot in any window under 2 km, like the room's bare
+kerb stations.
+
+**The ground does not answer yet.** The terrain is still the raw lattice,
+so the room stands in the air on its fill side and inside the hill on its
+cut side; nothing is benched or walled and the face the walk comes down is
+a surface of the walk's own rather than earth. The hole in the terrain,
+the real batter, and the `contact`, `batter`, `untouched` and `walled`
+checks are the second half of step 11 in the vertical plan.
 
 The `facade` step reads the zone's `building.parquet` (when it is there) and
 every surface step after it keeps out of the footprints: the pavement stops

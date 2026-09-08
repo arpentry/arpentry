@@ -25,7 +25,9 @@ use std::fmt::Write;
 use crate::frame::Rect;
 use crate::poly::{self, Shapes};
 use crate::width::{self, Family};
-use crate::world::{Facade, Fillet, Kerb, Kind, Polyline3, Profile, Profiles, Ribbon, Room, Solved, Surface, Tri, World};
+use crate::world::{
+    Bench, Facade, Fillet, Kerb, Kind, Polyline3, Profile, Profiles, Ribbon, Room, Solved, Surface, Tri, World,
+};
 
 /// Decimal places written per coordinate: a centimetre.
 const PRECISION: usize = 2;
@@ -105,7 +107,10 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
     if let Some(p) = &world.profile {
         profile(&mut s, p, &view);
     }
-    if let Some(m) = &world.mesh {
+    if let Some(b) = &world.bench {
+        mesh(&mut s, &[("carriageway", &b.carriageway), ("pavement", &b.pavement)], &view);
+        bench(&mut s, b, &view);
+    } else if let Some(m) = &world.mesh {
         mesh(&mut s, &[("carriageway", &m.carriageway), ("pavement", &m.pavement)], &view);
     }
     if let Some(roads) = &world.roads {
@@ -302,6 +307,21 @@ fn mesh(s: &mut String, layers: &[(&str, &Tri)], view: &Rect) {
             }
         }
         s.push_str("</g>\n");
+    }
+    s.push_str("</g>\n");
+}
+
+/// The bench layer: where the room's height field steps — the line
+/// between two carriageways whose domains meet at different heights, which
+/// the mesh draws as a retaining wall. A dot each, at any zoom where a dot
+/// can be seen, on the same terms as the room's bare kerb stations: a wall
+/// is found by looking for its marker rather than for the wall.
+fn bench(s: &mut String, b: &Bench, view: &Rect) {
+    s.push_str("<g id=\"bench\">\n");
+    if view.width() < 2000.0 {
+        for p in b.steps.iter().filter(|p| view.contains(**p)) {
+            let _ = write!(s, "<circle cx=\"{}\" cy=\"{}\" r=\"0.5\" fill=\"#7030a0\"/>\n", num(p[0]), num(-p[1]));
+        }
     }
     s.push_str("</g>\n");
 }

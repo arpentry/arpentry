@@ -50,9 +50,17 @@ pub fn write_glb(world: &World) -> Vec<u8> {
             doc.profile(p);
         }
     }
-    if let Some(m) = &world.mesh {
-        doc.triangles("carriageway", &m.carriageway, [0.30, 0.30, 0.33]);
-        doc.triangles("pavement", &m.pavement, [0.80, 0.66, 0.46]);
+    // The room at its solved height once the bench has run; on the raw
+    // ground before it. One pair of nodes either way, so a viewer opens
+    // the same file whichever step the run stopped after.
+    if let Some((c, p)) = world
+        .bench
+        .as_ref()
+        .map(|b| (&b.carriageway, &b.pavement))
+        .or_else(|| world.mesh.as_ref().map(|m| (&m.carriageway, &m.pavement)))
+    {
+        doc.triangles("carriageway", c, [0.30, 0.30, 0.33]);
+        doc.triangles("pavement", p, [0.80, 0.66, 0.46]);
     }
     if let (Some(r), Some(t)) = (&world.ribbons, &world.terrain) {
         if !r.ribbons.is_empty() {

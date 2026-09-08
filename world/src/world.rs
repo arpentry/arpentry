@@ -28,6 +28,7 @@ pub struct World {
     pub fillet: Option<Fillet>,
     pub room: Option<Room>,
     pub mesh: Option<Mesh>,
+    pub bench: Option<Bench>,
 }
 
 impl World {
@@ -48,6 +49,7 @@ impl World {
             fillet: None,
             room: None,
             mesh: None,
+            bench: None,
         }
     }
 }
@@ -322,6 +324,20 @@ pub struct Tri {
 pub struct Mesh {
     pub carriageway: Tri,
     pub pavement: Tri,
+}
+
+/// The room at the height the profile solved: the mesh step's triangles,
+/// every vertex of a paved region that runs beside a carriageway moved
+/// from the ground to the road's own surface.
+#[derive(Debug, Clone, Default)]
+pub struct Bench {
+    pub carriageway: Tri,
+    pub pavement: Tri,
+    /// The midpoint of every mesh edge the height field steps across —
+    /// the line between two carriageways whose domains meet at different
+    /// heights, which is a retaining wall — for the plan view and for
+    /// finding them.
+    pub steps: Vec<[f64; 2]>,
 }
 
 static NONE: Shapes = Vec::new();
