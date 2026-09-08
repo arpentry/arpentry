@@ -82,6 +82,7 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
         doc.triangles("roadway", &s.roadway, [0.30, 0.30, 0.33]);
         doc.triangles("deck", &s.deck, [0.62, 0.60, 0.56]);
         doc.triangles("bore", &s.bore, [0.35, 0.33, 0.30]);
+        doc.triangles("pier", &s.pier, [0.58, 0.56, 0.52]);
     }
     if let (Some(r), Some(t)) = (&world.ribbons, &world.terrain) {
         if outlines && !r.ribbons.is_empty() {

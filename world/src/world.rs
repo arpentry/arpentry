@@ -392,11 +392,20 @@ pub struct Bench {
 #[derive(Debug, Clone, Default)]
 pub struct Structure {
     pub roadway: Tri,
+    /// The solid under every deck run: the slab where its soffit clears
+    /// the ground and the abutment block where it does not, which is one
+    /// body and one surface.
     pub deck: Tri,
     pub bore: Tri,
+    /// The columns under the decks that fly high enough to need them.
+    pub pier: Tri,
     /// Every span's outline in plan, with the kind the source mapped it,
     /// for the plan view.
     pub plan: Vec<(Kind, Shapes)>,
+    /// Every pier's footprint in plan, for the plan view: where a column
+    /// stands is a 2D fact, and the one rule it has — that it may not
+    /// stand in the road it crosses — is a 2D rule.
+    pub piers: Vec<Shapes>,
 }
 
 static NONE: Shapes = Vec::new();

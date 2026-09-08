@@ -74,6 +74,19 @@ pub const WALK_DECK_M: f64 = 0.4;
 /// How high a bore is inside, in metres, from the roadway to the crown.
 pub const TUNNEL_HEIGHT_M: f64 = 5.0;
 
+/// How far apart a deck's piers stand, in metres: one bay of a viaduct.
+/// The run's own length is divided into whole bays as near this as it
+/// allows, so the last bay is not a stub.
+pub const PIER_SPACING_M: f64 = 45.0;
+
+/// How far the soffit must clear the ground, in metres, before a pier is
+/// drawn under it. Below this the deck is landing, and what carries it
+/// there is the abutment block, which is already under it.
+pub const PIER_MIN_M: f64 = 6.0;
+
+/// The side of a pier's square section, in metres.
+pub const PIER_M: f64 = 2.5;
+
 /// One span, with a height at every station: a carriageway piece as the
 /// profile solved it, or a pedestrian piece as this step fitted it.
 struct Span {
@@ -123,6 +136,19 @@ pub struct Stats {
     /// The largest disagreement, in metres, between a span's end height
     /// and the ground piece it lands on.
     pub abutment: f64,
+    /// Stations of a deck run seated on the ground rather than on a
+    /// soffit — the abutment block — out of every deck station.
+    pub blocks: usize,
+    pub deck_stations: usize,
+    /// Deck runs that got a block at one end or the other.
+    pub seated: usize,
+    /// Piers drawn, the tallest of them, and the ones a carriageway
+    /// underneath refused.
+    pub piers: usize,
+    pub tallest: f64,
+    pub skipped: usize,
+    /// The deepest a block had to rise above the soffit it replaced.
+    pub seat: f64,
 }
 
 /// Builds every structure the profile implies.
@@ -163,6 +189,11 @@ pub fn run(world: &mut World) -> Summary {
             }
         }
 
+        // What a pier may not stand in. Empty before the surface steps
+        // have run, which is what `--until structure` on a bare network
+        // gives: then no foot is refused and none needs to be.
+        let road = poly::Indexed::new(world.carriageway().unwrap_or(&Vec::new()));
+
         let mut s = Structure::default();
         let mut stats = Stats { spans: spans.len(), clear: f64::INFINITY, cover: f64::INFINITY, ..Stats::default() };
         for span in &spans {
@@ -185,14 +216,38 @@ pub fn run(world: &mut World) -> Summary {
             let t = span.thickness();
             for (a, b) in runs(&span.stations, Solved::Deck) {
                 stats.decks += 1;
-                box_under(&mut s.deck, &l[a..=b], &r[a..=b], -t);
-                let face: Vec<f64> = span.stations[a..=b].iter().map(|st| st.h - t - st.ground).collect();
-                match spanning(&face) {
-                    None => stats.grounded += 1,
-                    Some((f, g)) => {
-                        stats.clear = stats.clear.min(face[f..=g].iter().copied().fold(f64::INFINITY, f64::min));
-                        stats.buried += face[f..=g].iter().filter(|c| **c < 0.0).count();
+                let (lo_l, lo_r) = underside(&span.stations[a..=b], &l[a..=b], &r[a..=b], t, terrain);
+                box_under(&mut s.deck, &l[a..=b], &r[a..=b], &lo_l, &lo_r);
+                let (p, k, tall) = piers(&mut s.pier, &mut s.piers, &span.stations[a..=b], t, terrain, &road);
+                stats.piers += p;
+                stats.skipped += k;
+                stats.tallest = stats.tallest.max(tall);
+                // What the underside came to, station by station. A
+                // station is *blocked* where the seat stands above the
+                // soffit — that is the abutment — and the rest is slab.
+                // Three numbers follow, and two of them are guards: the
+                // solid is under the ground nowhere (`buried`), the slab
+                // clears it everywhere it is a slab (`clear`), and the
+                // deepest block says how much abutment the run needed
+                // (`seat`).
+                let mut blocked = 0usize;
+                for (i, st) in span.stations[a..=b].iter().enumerate() {
+                    let (soffit, seat) = (st.h - t, lo_l[i][2].min(lo_r[i][2]));
+                    stats.deck_stations += 1;
+                    if seat > soffit + 1e-9 {
+                        blocked += 1;
+                        stats.seat = stats.seat.max(seat - soffit);
+                    } else {
+                        stats.clear = stats.clear.min(soffit - st.ground);
                     }
+                    if lo_l[i][2].max(lo_r[i][2]) < st.ground - 1e-6 {
+                        stats.buried += 1;
+                    }
+                }
+                stats.blocks += blocked;
+                stats.seated += (blocked > 0) as usize;
+                if blocked == span.stations[a..=b].len() {
+                    stats.grounded += 1;
                 }
             }
             for (a, b) in runs(&span.stations, Solved::Bore) {
@@ -219,9 +274,22 @@ pub fn run(world: &mut World) -> Summary {
         .with("decks", stats.decks)
         .with("bores", stats.bores)
         .with_m2("roadway_m2", stats.roadway_m2)
-        .with("triangles", structure.roadway.indices.len() / 3 + structure.deck.indices.len() / 3 + structure.bore.indices.len() / 3)
+        .with(
+            "triangles",
+            (structure.roadway.indices.len()
+                + structure.deck.indices.len()
+                + structure.bore.indices.len()
+                + structure.pier.indices.len())
+                / 3,
+        )
         .with("clear", finite(stats.clear))
         .with("buried", stats.buried)
+        .with_share("blocks", stats.blocks, stats.deck_stations)
+        .with("seat", format!("{:.1}", stats.seat))
+        .with("seated", stats.seated)
+        .with("piers", stats.piers)
+        .with("pier", format!("{:.1}", stats.tallest))
+        .with("skipped", stats.skipped)
         .with("grounded", stats.grounded)
         .with("cover", finite(stats.cover))
         .with("open", stats.open)
@@ -353,18 +421,143 @@ fn strip(tri: &mut Tri, a: &[[f64; 3]], b: &[[f64; 3]]) {
     }
 }
 
-/// `l`/`r` dropped by `dz` (negative) and closed: the soffit, the two
-/// sides and the two end faces of a deck. The roadway above it was drawn
-/// once already and is not drawn again.
-fn box_under(tri: &mut Tri, l: &[[f64; 3]], r: &[[f64; 3]], dz: f64) {
-    let lower = |v: &[[f64; 3]]| -> Vec<[f64; 3]> { v.iter().map(|p| [p[0], p[1], p[2] + dz]).collect() };
-    let (lo_l, lo_r) = (lower(l), lower(r));
-    strip(tri, &lo_r, &lo_l);
-    strip(tri, &lo_l, l);
-    strip(tri, r, &lo_r);
+/// The underside of a deck: the soffit `t` below the roadway where it
+/// clears the ground, and the ground itself where it does not.
+///
+/// **This is the abutment block, and it is a consequence rather than a
+/// construction of its own.** A deck `t` thick cannot have its soffit out
+/// of the ground until its roadway is `t` over it, so every run begins and
+/// ends with a stretch whose slab would otherwise lie *inside* the hill —
+/// 18 stations of the loop box, and 24 whole runs of it where the roadway
+/// never got `t` clear at all. Seating the underside on the ground over
+/// exactly those stretches gives a deck the block it lands on at each end,
+/// gives a shallow run the embankment it always was (nothing else builds
+/// one: the surface steps read the ground pieces only), and makes `buried`
+/// zero by construction rather than by a check that steps around it.
+///
+/// The ground is read **across the section** — at the axis and at both
+/// edges — and each edge is seated on the highest of the three it needs to
+/// clear. Seating an edge on its own ground alone leaves the middle of the
+/// block inside a crown running down the road's centre, which is 19
+/// stations of the loop box; seating both edges level leaves the low side
+/// of a cross-slope floating, which is worse to look at and worse by I4.
+/// Taking the maximum of the edge's own ground and the axis's does
+/// neither, and what is left — a dip between the axis and an edge — is a
+/// quarter of a road's width wide.
+///
+/// The ground here is the natural terrain, which under a span is the
+/// engineered ground too: the room cuts no hole and builds no batter over
+/// one. Where an approach's own bench stands above it, near the abutment,
+/// the block runs on into that fill rather than stopping short of it — a
+/// foundation may be buried, and I4 asks only that nothing float. It is
+/// clamped at the roadway, so a cross-slope steeper than the deck is thick
+/// gives a block of no thickness rather than one turned inside out (I6).
+fn underside(
+    st: &[Station],
+    l: &[[f64; 3]],
+    r: &[[f64; 3]],
+    t: f64,
+    terrain: &Terrain,
+) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
+    let axis: Vec<f64> = st.iter().map(|x| height_at(terrain, x.p[0], x.p[1])).collect();
+    let seat = |v: &[[f64; 3]]| -> Vec<[f64; 3]> {
+        v.iter()
+            .zip(&axis)
+            .map(|(p, g)| [p[0], p[1], (p[2] - t).max(height_at(terrain, p[0], p[1])).max(*g).min(p[2])])
+            .collect()
+    };
+    (seat(l), seat(r))
+}
+
+/// The solid between a deck's roadway and its underside: the underside
+/// itself, the two sides and the two end faces. The roadway above it was
+/// drawn once already and is not drawn again.
+fn box_under(tri: &mut Tri, l: &[[f64; 3]], r: &[[f64; 3]], lo_l: &[[f64; 3]], lo_r: &[[f64; 3]]) {
+    strip(tri, lo_r, lo_l);
+    strip(tri, lo_l, l);
+    strip(tri, r, lo_r);
     let n = l.len() - 1;
     quad(tri, [l[0], r[0], lo_r[0], lo_l[0]]);
     quad(tri, [r[n], l[n], lo_l[n], lo_r[n]]);
+}
+
+/// Where a deck run's piers stand, and how tall each is: a column every
+/// [`PIER_SPACING_M`] of arc, from the soffit down to the ground under its
+/// foot, wherever the soffit clears the ground by [`PIER_MIN_M`].
+///
+/// Below that clearance a pier would be a stub under a deck that is
+/// already landing on its block, so none is drawn — the count of piers is
+/// therefore a statement about how much of the network really flies. The
+/// bays are the run's length divided into as many whole ones as come
+/// nearest the spacing, so the last bay is not a stub either.
+///
+/// **A pier may not stand in the road it crosses.** That is the one rule
+/// it has, and it is a plan rule: a foot whose square meets the
+/// carriageway is dropped and counted, never moved, because moving it is
+/// a design and this is a prior. The bay it leaves unsupported is the
+/// honest picture of what the model knows.
+fn piers(
+    tri: &mut Tri,
+    feet: &mut Vec<Shapes>,
+    st: &[Station],
+    t: f64,
+    terrain: &Terrain,
+    road: &poly::Indexed,
+) -> (usize, usize, f64) {
+    let (s0, s1) = (st[0].s, st[st.len() - 1].s);
+    let len = s1 - s0;
+    let bays = (len / PIER_SPACING_M).round().max(1.0) as usize;
+    let (mut placed, mut skipped, mut tallest) = (0usize, 0usize, 0.0f64);
+    for k in 1..bays {
+        let Some((p, dir, h)) = at_arc(st, s0 + len * k as f64 / bays as f64) else {
+            continue;
+        };
+        let soffit = h - t;
+        let half = PIER_M / 2.0;
+        let n = [-dir[1], dir[0]];
+        let corner = |a: f64, b: f64| [p[0] + dir[0] * a + n[0] * b, p[1] + dir[1] * a + n[1] * b];
+        let c = [corner(-half, -half), corner(half, -half), corner(half, half), corner(-half, half)];
+        if soffit - height_at(terrain, p[0], p[1]) < PIER_MIN_M {
+            continue;
+        }
+        if road.contains(p) || c.iter().any(|q| road.contains(*q)) {
+            skipped += 1;
+            continue;
+        }
+        let foot = c.iter().map(|q| height_at(terrain, q[0], q[1])).fold(f64::INFINITY, f64::min);
+        column(tri, c, soffit, foot);
+        feet.push(poly::ccw(c.to_vec()).map(|ring| vec![vec![ring]]).unwrap_or_default());
+        placed += 1;
+        tallest = tallest.max(soffit - foot);
+    }
+    (placed, skipped, tallest)
+}
+
+/// The axis point, unit heading and solved height at arc length `s` along
+/// `st`, interpolated between the two stations that bracket it.
+fn at_arc(st: &[Station], s: f64) -> Option<(Pt, Pt, f64)> {
+    let i = st.iter().position(|x| x.s >= s)?.max(1);
+    let (a, b) = (st[i - 1], st[i]);
+    let d = b.s - a.s;
+    let u = if d > 0.0 { (s - a.s) / d } else { 0.0 };
+    let dir = poly::unit([b.p[0] - a.p[0], b.p[1] - a.p[1]]);
+    Some((
+        [a.p[0] + (b.p[0] - a.p[0]) * u, a.p[1] + (b.p[1] - a.p[1]) * u],
+        if dir == [0.0, 0.0] { [1.0, 0.0] } else { dir },
+        a.h + (b.h - a.h) * u,
+    ))
+}
+
+/// A closed box on the four plan corners `c`, from `bottom` to `top`.
+fn column(tri: &mut Tri, c: [Pt; 4], top: f64, bottom: f64) {
+    let at = |z: f64| -> Vec<[f64; 3]> { c.iter().map(|p| [p[0], p[1], z]).collect() };
+    let (up, lo) = (at(top), at(bottom));
+    for i in 0..4 {
+        let j = (i + 1) % 4;
+        quad(tri, [up[i], lo[i], lo[j], up[j]]);
+    }
+    quad(tri, [up[3], up[2], up[1], up[0]]);
+    quad(tri, [lo[0], lo[1], lo[2], lo[3]]);
 }
 
 /// `l`/`r` raised by `dz` and walled: the crown and the two walls of a
@@ -545,7 +738,12 @@ mod tests {
         // between the ground at its own two ends, and it reads as a deck
         // by the same rule as a road. Its deck is a footbridge's, not a
         // road bridge's.
-        let (w, s) = world("hill?amp=-60&radius=300", "net:sidewalk?d=40&span=0.35,0.65");
+        // The 400 m road is what makes this a slab rather than a graze:
+        // over a 200 m one the chord's abutments sit inside the bowl and
+        // the soffit comes down onto the floor exactly, where the abutment
+        // block — rightly — seats it on the ground and there is no slab
+        // left to measure.
+        let (w, s) = world("hill?amp=-60&radius=300", "net:sidewalk?d=40&span=0.35,0.65&len=400");
         assert_eq!(s.num("carried"), 0.0, "{s}");
         assert_eq!(s.num("decks"), 2.0, "the road and the footbridge both fly: {s}");
         let b = built(&w);
@@ -589,6 +787,101 @@ mod tests {
         assert_eq!(s.num("decks"), 0.0, "{s}");
         assert_eq!(s.num("open"), 0.0, "{s}");
         assert!((s.num("cover") - DECK_THICKNESS_M).abs() < 1e-6, "{s}");
+    }
+
+    #[test]
+    fn a_deck_lands_on_a_block_where_its_soffit_cannot_clear() {
+        // A 3 m dip: the chord flies over the middle of it but only just,
+        // so the slab clears in the centre and cannot at the two ends —
+        // a deck `t` thick has no soffit out of the ground until its
+        // roadway is `t` over it, and that stretch is what an abutment is.
+        let (w, s) = world("hill?amp=-3&radius=40", "net:straight?len=200&span=0.35,0.65");
+        assert_eq!(s.num("decks"), 1.0, "{s}");
+        assert!(s.num("blocks") > 0.0, "no abutment at either end: {s}");
+        assert_eq!(s.num("seated"), 1.0, "{s}");
+        assert_eq!(s.num("grounded"), 0.0, "the middle of it flies: {s}");
+        // The two guards, and they are guards: nothing of the solid lies
+        // under the ground, and where it is a slab it clears.
+        assert_eq!(s.num("buried"), 0.0, "{s}");
+        assert!(s.num("clear") >= 0.0, "{s}");
+        // A block never has to rise further above the soffit than the
+        // slab is thick less the height that made the station a deck.
+        assert!(s.num("seat") <= DECK_THICKNESS_M - STRUCTURE_MIN_M + 1e-9, "{s}");
+        // And the block touches: the lowest point of the solid is on the
+        // ground under it, not in it.
+        let t = w.terrain.as_ref().unwrap();
+        for p in &built(&w).deck.positions {
+            assert!(p[2] >= crate::terrain::height_at(t, p[0], p[1]) - 1e-6, "buried at {p:?}");
+        }
+    }
+
+    #[test]
+    fn a_bridge_that_never_clears_is_drawn_as_the_embankment_it_is() {
+        // Half a metre off the ground makes a station a deck and the slab
+        // is three times that thick, so a mapped bridge over a shallow
+        // ditch is a slab buried end to end — 24 runs of the loop box.
+        // The underside seats on the ground instead: the embankment
+        // nothing else builds, because the surface steps read the ground
+        // pieces only.
+        let (w, s) = world("hill?amp=-1&radius=40", "net:straight?len=200&span=0.35,0.65");
+        assert_eq!(s.num("grounded"), 1.0, "{s}");
+        assert_eq!(s.num("buried"), 0.0, "{s}");
+        assert_eq!(s.num("piers"), 0.0, "an embankment needs no pier: {s}");
+        assert!(s.get("blocks").unwrap().ends_with("(100.00%)"), "not every station is a block: {s}");
+        let t = w.terrain.as_ref().unwrap();
+        for p in &built(&w).deck.positions {
+            assert!(p[2] >= crate::terrain::height_at(t, p[0], p[1]) - 1e-6, "buried at {p:?}");
+        }
+    }
+
+    #[test]
+    fn piers_stand_a_bay_apart_under_a_deck_that_flies() {
+        // A 240 m span over a 60 m valley: five bays as near
+        // PIER_SPACING_M as the length allows, so four piers, each from
+        // the soffit down to the ground under its own foot.
+        let (w, s) = world("hill?amp=-60&radius=300", "net:straight?len=400&span=0.2,0.8");
+        assert_eq!(s.num("piers"), 4.0, "{s}");
+        assert_eq!(s.num("skipped"), 0.0, "nothing to stand in: {s}");
+        assert!(s.num("pier") > PIER_MIN_M, "{s}");
+        let b = built(&w);
+        // Each pier is a closed box of 24 vertices, PIER_M square.
+        assert_eq!(b.pier.positions.len(), 4 * 24);
+        assert_eq!(b.piers.len(), 4);
+        let t = w.terrain.as_ref().unwrap();
+        let mut xs: Vec<f64> = Vec::new();
+        for k in 0..4 {
+            let blk = &b.pier.positions[k * 24..(k + 1) * 24];
+            let lo = blk.iter().map(|p| p[2]).fold(f64::INFINITY, f64::min);
+            let hi = blk.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max);
+            assert!(hi - lo >= PIER_MIN_M, "a pier under the minimum: {}", hi - lo);
+            // Its foot is on the ground, and its head is at the soffit.
+            let ground = blk.iter().map(|p| crate::terrain::height_at(t, p[0], p[1])).fold(f64::INFINITY, f64::min);
+            assert!((lo - ground).abs() < 1e-6, "the foot floats by {}", lo - ground);
+            let width = blk.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max)
+                - blk.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+            assert!((width - PIER_M).abs() < 1e-9, "{width}");
+            xs.push(blk.iter().map(|p| p[0]).sum::<f64>() / 24.0);
+        }
+        // Evenly spaced along the run — which is the stretch that is a
+        // deck, not the whole mapped span — and every bay near the
+        // spacing, so the last one is not a stub.
+        xs.sort_by(f64::total_cmp);
+        let bays: Vec<f64> = xs.windows(2).map(|p| p[1] - p[0]).collect();
+        for bay in &bays {
+            assert!((bay - bays[0]).abs() < 1e-6, "uneven: {bays:?}");
+            assert!((bay - PIER_SPACING_M).abs() < PIER_SPACING_M / 4.0, "{bay} is not a bay");
+        }
+    }
+
+    #[test]
+    fn a_pier_does_not_stand_in_the_road_it_crosses() {
+        // The overpass over a 40 m valley: the leg's chord flies 30 m over
+        // the road at the bottom, so the one bay it has puts a pier
+        // exactly where the road runs. It is dropped, not moved — moving
+        // it is a design and this is a prior — and counted.
+        let (_, s) = world("hill?amp=-40&radius=60", "net:overpass?len=300");
+        assert_eq!(s.num("skipped"), 1.0, "{s}");
+        assert_eq!(s.num("piers"), 0.0, "{s}");
     }
 
     #[test]

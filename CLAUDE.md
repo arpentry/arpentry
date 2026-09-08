@@ -427,19 +427,43 @@ deck rather than a road bridge's. **Unless the road already carries it** —
 a separated sidewalk mapped as its own bridge is one structure with the
 road, so a walk span within the room's reach of a road's span all along is
 *carried*: its height is that road's plus the kerb's rise and it builds no
-solid. Its summary line: `spans`, `fitted`, `carried`, `decks`, `bores`,
-`roadway_m2`, `clear`/`buried` (the soffit against the ground *between*
-the abutments), `cover`/`open` (the crown against the ground between the
-portals), `grounded` (runs whose face never left the ground at all) and
-`abutment` (a span's end height against the ground piece it lands on: 0 on
-the box, by construction). On the loop box: 174 spans, 116 fitted, 19
-carried, 65 decks, 29 bores, `abutment` 0.000, and `grounded` 25 —
-**a quarter of the box's structure runs are shallower than the deck they
-would need**, because `STRUCTURE_MIN_M` makes a piece a deck at 0.5 m off
-the ground while `DECK_THICKNESS_M` gives it a 1.5 m slab. That is what
-the abutment block, which the plan defers, is for. There are no piers, no
-abutment blocks and no portal faces: a deck ends in the air at its soffit
-and a bore's tube ends at its portal.
+solid.
+
+**The underside of a deck is the soffit where it clears the ground and the
+ground itself where it does not.** That one rule is the abutment block, and
+nothing was added for it: a slab `DECK_THICKNESS_M` thick has no soffit out
+of the ground until its roadway is that far over it, so every run begins
+and ends with a stretch whose slab would otherwise lie *inside* the hill.
+Seating the underside there gives a deck the block it lands on, and gives a
+run that never clears at all — 23 of the box's 65 — the embankment it
+always was, which nothing else builds, since the surface steps read the
+ground pieces only. The ground is read across the section, at the axis and
+both edges, so the block neither buries its middle in a crown nor floats
+its low side on a cross-slope. **Piers** stand a bay of `PIER_SPACING_M`
+(45 m) apart under every run whose soffit clears the ground by `PIER_MIN_M`
+(6 m): a `PIER_M` (2.5 m) square column from the soffit down to the ground
+under its own foot, the bays divided evenly so the last is not a stub. A
+foot whose square meets the carriageway is **dropped and counted, never
+moved** — moving it is a design and this is a prior — and the bay it leaves
+unsupported is the honest picture of what the model knows.
+
+Its summary line: `spans`, `fitted`, `carried`, `decks`, `bores`,
+`roadway_m2`, `clear` (the least a slab clears the ground, a guard: ≥ 0),
+`buried` (solid under the ground: 0 by construction), `blocks`/`seat`
+(stations seated on the ground, and the deepest such seat), `seated` (runs
+that got a block), `piers`/`pier`/`skipped`, `cover`/`open` (the crown
+against the ground between the portals), `grounded` (runs seated end to
+end) and `abutment` (a span's end height against the ground piece it lands
+on: 0 on the box, by construction). On the loop box: 174 spans, 116 fitted,
+19 carried, 65 decks, 29 bores, `abutment` 0.000, `clear` 0.01, `buried` 0,
+`blocks` 64/1381 with `seat` 1.0 — which is `DECK_THICKNESS_M` less
+`STRUCTURE_MIN_M` exactly, the deepest a block can ever need to rise — and
+75 piers, `skipped` 4. **The tallest pier is 81.3 m and the median 49 m,
+and that is the profile's `dangling` chord made visible**: the Viaduc de
+Chillon leaves the box on its deck, step 9 runs it level to its one anchor,
+and the flank falls away under a deck that does not. A pier is a look, and
+this is what a look is for. There are still no portal faces: a bore's tube
+ends at its portal.
 
 **What is still missing.** Neither the toe nor the wall is a breakline, so
 a lattice triangle may straddle one and stand off the engineered ground

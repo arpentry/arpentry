@@ -333,6 +333,11 @@ fn structure(s: &mut String, st: &Structure, view: &Rect) {
         };
         filled(s, id, fill, shapes, view);
     }
+    // Where a pier stands is a plan fact, and its one rule — that it may
+    // not stand in the road it crosses — is a plan rule, so the footprints
+    // are drawn where that can be read.
+    let feet: Shapes = st.piers.iter().flatten().cloned().collect();
+    filled(s, "pier", "#4a4640", &feet, view);
     s.push_str("</g>\n");
 }
 
