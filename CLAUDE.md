@@ -275,8 +275,46 @@ net:cross` (or `straight`, `tee`, `hairpin?angle=20`, `dual?gap=4`,
 `driveway?d=6`, `roundabout`) swaps the parquet for a synthetic
 network, where a step's output is an assertion rather than a look.
 `--until terrain` stops after a step; the steps so far are `terrain`,
-`drape`, `facade`, `ribbon`, `surface`, `kerb`, `fillet`, `room`. The plan
-for the next one (mesh) is `data/plans/flat-network-2026-09-06.md`.
+`drape`, `profile`, `facade`, `ribbon`, `surface`, `kerb`, `fillet`,
+`room`, `mesh`. The 2D plan is `data/plans/flat-network-2026-09-06.md`; the vertical
+one (profile → mesh → bench → structure → crossing) is
+`data/plans/surface-leaves-the-plane-2026-09-08.md`.
+
+The reader cuts every way at its bridge, tunnel and indoor span boundaries
+and keeps every piece with its `kind`: the ground pieces are `Roads.plan`,
+which every surface step builds from, and the rest are `Roads.spans`. The
+`profile` step gives every carriageway piece a height along its axis:
+connectors shared, engineered classes grade-limited inside a deviation box,
+streets on the ground exactly (a street mapped at 20 % climbs 20 %), and a
+mapped span a straight chord between its anchors. Its summary line is the
+first vertical check: `grade` (engineered pairs over the ceiling), `steep`
+(street pairs over 15 %, information), `float` (0 by construction), `step`
+(the largest height disagreement at a connector, 0 by construction),
+`decks`/`bores` (stations of mapped spans that stand off the ground by
+0.5 m), `degraded` (spans that never leave the ground), `dangling` (spans
+cut by the clip, held level to their anchor) and `unanchored`. On the loop
+box the Viaduc de Chillon is one 1.6 km deck and the Glion tunnel a 1.4 km
+bore. `net:straight?span=0.3,0.7[&kind=tunnel]` is the specimen; the plan
+view draws cut in blue and fill in red along the axis, a deck dashed and a
+bore dotted; the GLB gains a `profile` line node at the solved heights.
+
+The `mesh` step triangulates the carriageway and the pavement **conforming
+to the terrain lattice**: each region is ear-clipped and every ear cut by
+the lattice's columns, rows and cell diagonals, so every triangle lies in
+one terrain triangle and, with its vertices at `height_at`, on the ground
+to the ulp — the drape guarantee for areas. The surfaces are coplanar with
+the terrain until the bench step moves them, so they z-fight against the
+ground in any 3D viewer: hide the terrain to see them.
+Its summary line: `lost_m2` (region area the triangles miss), `off_ground`
+(the largest height a triangle's centroid stands off the terrain),
+`seam` (the mesh's one-sided edge length less the regions' perimeter: a
+crack or an overlap shows here, and it reads 6e-9 m on the box),
+`washed`/`lossy` (regions the ear clipper misread; a washed one was read
+right from the kernel's union of it), `slivers`, `welded`. The rings are
+cleaned at the kernel's lattice (`COLLINEAR_M`, 0.1 mm) before clipping:
+the kernel leaves straight edges zigzagging by a few hundredths of a
+millimetre and spikes a lattice cell wide, and the clipper turns both into
+T-junctions. The plan view draws the wireframe in windows under 100 m.
 
 The `facade` step reads the zone's `building.parquet` (when it is there) and
 every surface step after it keeps out of the footprints: the pavement stops
@@ -308,19 +346,9 @@ through), `house:row?gap=2` (two along the road) or `house:pair?gap=3` (two
 facing across it) says so. The `kerb_gap` and `wall_gap` checks know the
 walls: a kerb station with a facade outside it is walled, not bare.
 
-To look without opening Blender:
-
-```bash
-blender -b --python scripts/world-render.py -- /tmp/claude/world.glb \
-    /tmp/claude/world.png 0,-8500,5000 0,0,700        # then Read the PNG
-```
-
-It prints each layer's vertex and face counts and extents, which must match
-the run's summary, then renders from `eye` to `target` in local metres.
-
-For the 2D question — is the outline right — write the plan view instead of
-(or as well as) the GLB. It is one SVG group per step, every stroke width a
-width in metres, a function of the world alone so `diff` says what moved:
+To look at the world, write the plan view. It is one SVG group per step,
+every stroke width a width in metres, a function of the world alone so
+`diff` says what moved:
 
 ```bash
 ./world/target/release/arpentry_world --zone data/zones/montreux \

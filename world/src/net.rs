@@ -8,6 +8,7 @@
 //!
 //! ```text
 //! net:straight[?len=200&class=residential]   one way along x
+//!   [&span=0.35,0.65&kind=bridge|tunnel&level=1]  with a mapped span over that fraction of it
 //! net:tee[?d=8][&hook=5]                      two halves of it and a leg from the north, meeting at the origin; with `d`, a sidewalk `d` m off both axes wrapping the north-west corner; with `hook`, road-e turns back north on that radius
 //! net:cross                                   four legs meeting at the origin
 //! net:hairpin?angle=20                        one way bent by `angle` degrees at the origin
@@ -27,7 +28,7 @@
 //! is always a meeting of way ends and never a crossing of interiors — two
 //! ways whose interiors cross are a bridge over a road, not a junction.
 
-use crate::world::Polyline2;
+use crate::world::{Kind, Polyline2};
 
 /// Whether `s` is a spec rather than a path.
 pub fn is_spec(s: &str) -> bool {
@@ -46,7 +47,35 @@ pub fn parse(spec: &str) -> Result<Vec<Polyline2>, String> {
     let walk = |id: &str, subclass: &str, pts: Vec<[f64; 2]>| line(id, "footway", subclass, pts);
     let x_road = |id: &str| road(id, vec![[-half, 0.0], [half, 0.0]]);
     let ways = match name {
-        "straight" => vec![x_road("road")],
+        "straight" => match params.get("span") {
+            None => vec![x_road("road")],
+            Some(span) => {
+                // Three pieces sharing their ends, as the reader cuts them.
+                let (a, b) = span
+                    .split_once(',')
+                    .and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?)))
+                    .filter(|(a, b)| 0.0 <= *a && a < b && *b <= 1.0)
+                    .ok_or_else(|| format!("invalid span: {span}"))?;
+                let level = params.num("level", 1.0)? as i64;
+                let kind = match params.get("kind").unwrap_or("bridge") {
+                    "bridge" => Kind::Bridge(level.abs().max(1)),
+                    "tunnel" => Kind::Tunnel(-level.abs().max(1)),
+                    other => return Err(format!("invalid kind: {other}")),
+                };
+                let (x0, x1) = (-half + a * len, -half + b * len);
+                let mut ways = Vec::new();
+                if a > 0.0 {
+                    ways.push(road("road", vec![[-half, 0.0], [x0, 0.0]]));
+                }
+                let mut span = road("road", vec![[x0, 0.0], [x1, 0.0]]);
+                span.kind = kind;
+                ways.push(span);
+                if b < 1.0 {
+                    ways.push(road("road", vec![[x1, 0.0], [half, 0.0]]));
+                }
+                ways
+            }
+        },
         "tee" => {
             // With `hook`, road-e runs 10 m east then turns back on an arc
             // of that radius and ends short of the leg: a bend within one
@@ -193,6 +222,7 @@ fn line(id: &str, class: &str, subclass: &str, pts: Vec<[f64; 2]>) -> Polyline2 
         class: class.into(),
         subclass: subclass.into(),
         width_m: crate::width::of(class, subclass),
+        kind: Kind::Ground,
         pts,
     }
 }
@@ -265,6 +295,22 @@ mod tests {
         let ways = parse("net:dual?gap=4").unwrap();
         assert!((ways[0].pts[0][1] - 4.75).abs() < 1e-12);
         assert!((ways[1].pts[0][1] + 4.75).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_span_cuts_the_straight_into_three() {
+        let ways = parse("net:straight?len=200&span=0.35,0.65").unwrap();
+        assert_eq!(ways.len(), 3);
+        assert_eq!(ways.iter().map(|w| w.kind).collect::<Vec<_>>(), [Kind::Ground, Kind::Bridge(1), Kind::Ground]);
+        assert_eq!(ways[1].pts, vec![[-30.0, 0.0], [30.0, 0.0]]);
+        assert_eq!(ways[0].pts.last(), ways[1].pts.first(), "the pieces share their ends");
+        assert_eq!(ways[1].pts.last(), ways[2].pts.first());
+        assert!(ways.iter().all(|w| w.id == "road"), "one way, three pieces");
+        let ways = parse("net:straight?span=0,1&kind=tunnel&level=2").unwrap();
+        assert_eq!(ways.len(), 1);
+        assert_eq!(ways[0].kind, Kind::Tunnel(-2));
+        assert!(parse("net:straight?span=0.7,0.3").is_err());
+        assert!(parse("net:straight?span=0.3,0.7&kind=viaduct").is_err());
     }
 
     #[test]

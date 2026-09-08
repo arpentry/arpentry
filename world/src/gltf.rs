@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 use crate::terrain::height_at;
 use crate::poly::Shapes;
-use crate::world::{Ribbons, Roads, Surface, Terrain, World};
+use crate::world::{Profiles, Ribbons, Roads, Surface, Terrain, Tri, World};
 
 const MAGIC: u32 = 0x4654_6C67; // "glTF"
 const CHUNK_JSON: u32 = 0x4E4F_534A;
@@ -44,6 +44,15 @@ pub fn write_glb(world: &World) -> Vec<u8> {
         if !r.lines.is_empty() {
             doc.roads(r);
         }
+    }
+    if let Some(p) = &world.profile {
+        if !p.profiles.is_empty() {
+            doc.profile(p);
+        }
+    }
+    if let Some(m) = &world.mesh {
+        doc.triangles("carriageway", &m.carriageway, [0.30, 0.30, 0.33]);
+        doc.triangles("pavement", &m.pavement, [0.80, 0.66, 0.46]);
     }
     if let (Some(r), Some(t)) = (&world.ribbons, &world.terrain) {
         if !r.ribbons.is_empty() {
@@ -178,31 +187,78 @@ impl Doc {
         );
     }
 
+    /// The draped centrelines, as lines on the terrain.
     fn roads(&mut self, r: &Roads) {
-        let mut positions = Vec::new();
-        let mut indices: Vec<u32> = Vec::new();
-        let mut base = 0u32;
-        for line in &r.lines {
-            for p in &line.pts {
-                positions.extend_from_slice(&to_gltf([p[0] as f32, p[1] as f32, p[2] as f32]));
-            }
-            for k in 1..line.pts.len() as u32 {
-                indices.extend_from_slice(&[base + k - 1, base + k]);
-            }
-            base += line.pts.len() as u32;
+        let lines: Vec<&[[f64; 3]]> = r.lines.iter().map(|l| l.pts.as_slice()).collect();
+        self.polylines("roads", &lines, [0.9, 0.1, 0.1]);
+    }
+
+    /// The solved profiles, as lines at their heights: on the ground where
+    /// a piece is at grade, in the air across a valley, under a hill.
+    fn profile(&mut self, p: &Profiles) {
+        let owned: Vec<Vec<[f64; 3]>> = p.profiles.iter().map(|p| p.line()).collect();
+        let lines: Vec<&[[f64; 3]]> = owned.iter().map(|l| l.as_slice()).collect();
+        self.polylines("profile", &lines, [0.15, 0.35, 0.9]);
+    }
+
+    /// A layer of triangles with one colour; no normals, so a viewer shades
+    /// each face flat, which is what a mesh of planar pieces is.
+    fn triangles(&mut self, name: &str, tri: &Tri, color: [f32; 3]) {
+        if tri.indices.is_empty() {
+            return;
+        }
+        let mut positions = Vec::with_capacity(tri.positions.len() * 3);
+        for p in &tri.positions {
+            positions.extend_from_slice(&to_gltf([p[0] as f32, p[1] as f32, p[2] as f32]));
         }
         let position = self.vec3(&positions, true);
-        let indices = self.indices(&indices);
+        let indices = self.indices(&tri.indices);
         let material = self.material(json!({
-            "name": "roads",
+            "name": name,
+            "doubleSided": true,
             "pbrMetallicRoughness": {
-                "baseColorFactor": [0.9, 0.1, 0.1, 1.0],
+                "baseColorFactor": [color[0], color[1], color[2], 1.0],
                 "metallicFactor": 0.0,
                 "roughnessFactor": 1.0
             }
         }));
         self.layer(
-            "roads",
+            name,
+            json!({
+                "attributes": { "POSITION": position },
+                "indices": indices,
+                "mode": TRIANGLES,
+                "material": material
+            }),
+        );
+    }
+
+    /// A layer of open polylines.
+    fn polylines(&mut self, name: &str, lines: &[&[[f64; 3]]], color: [f32; 3]) {
+        let mut positions = Vec::new();
+        let mut indices: Vec<u32> = Vec::new();
+        let mut base = 0u32;
+        for line in lines {
+            for p in line.iter() {
+                positions.extend_from_slice(&to_gltf([p[0] as f32, p[1] as f32, p[2] as f32]));
+            }
+            for k in 1..line.len() as u32 {
+                indices.extend_from_slice(&[base + k - 1, base + k]);
+            }
+            base += line.len() as u32;
+        }
+        let position = self.vec3(&positions, true);
+        let indices = self.indices(&indices);
+        let material = self.material(json!({
+            "name": name,
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [color[0], color[1], color[2], 1.0],
+                "metallicFactor": 0.0,
+                "roughnessFactor": 1.0
+            }
+        }));
+        self.layer(
+            name,
             json!({
                 "attributes": { "POSITION": position },
                 "indices": indices,
@@ -340,10 +396,11 @@ mod tests {
             class: "residential".into(),
             subclass: String::new(),
             width_m: 5.5,
+            kind: crate::world::Kind::Ground,
             pts: vec![[-600.0, -400.0], [0.0, 0.0], [500.0, 300.0]],
         };
         let draped = drape_line(w.terrain.as_ref().unwrap(), &line);
-        w.roads = Some(Roads { plan: vec![line], lines: vec![draped] });
+        w.roads = Some(Roads { plan: vec![line], spans: Vec::new(), lines: vec![draped] });
         w
     }
 

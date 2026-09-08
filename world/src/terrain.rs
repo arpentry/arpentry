@@ -82,12 +82,16 @@ pub fn build(grid: &Grid, sample: &mut dyn FnMut(f64, f64) -> f64) -> Terrain {
 }
 
 /// The height of the mesh surface at local `(x, y)`: the plane of the triangle
-/// the point falls in, with the cell split on its SW→NE diagonal. Points
-/// outside the grid are read from the nearest edge cell's planes, extended.
+/// the point falls in, with the cell split on its SW→NE diagonal. Beyond the
+/// grid the ground holds its edge: the height of the nearest point of the
+/// grid, which keeps the surface continuous there (an edge cell's plane
+/// extended outward would jump at every column and row line), and keeps a
+/// piece of paving that pokes past the bbox by its half-width planar.
 ///
 /// This is the one definition of "on the ground" every later step is held to.
 pub fn height_at(t: &Terrain, x: f64, y: f64) -> f64 {
     let (u, v) = t.grid.to_uv(x, y);
+    let (u, v) = (u.clamp(0.0, t.grid.cols as f64), v.clamp(0.0, t.grid.rows as f64));
     let (c, r) = t.grid.cell(u, v);
     let (fu, fv) = (u - c as f64, v - r as f64);
     let z00 = t.z[t.grid.index(c, r)];
@@ -174,5 +178,19 @@ pub(crate) mod tests {
             }
         }
         assert!(t.zmax > 450.0 && t.zmin == 400.0, "{} {}", t.zmin, t.zmax);
+    }
+
+    #[test]
+    fn beyond_the_grid_the_ground_holds_its_edge() {
+        let mut w = world();
+        run(&mut w, &mut dem("ramp?grade=0.03&bearing=90&radius=100000"), 10.0, usize::MAX);
+        let t = w.terrain.as_ref().unwrap();
+        let [x1, y1] = t.grid.vertex(t.grid.cols, t.grid.rows);
+        // East of the grid the ramp stops rising; north of it nothing changes.
+        assert_eq!(height_at(t, x1 + 50.0, 0.0), height_at(t, x1, 0.0));
+        assert_eq!(height_at(t, 0.0, y1 + 50.0), height_at(t, 0.0, 0.0));
+        assert_eq!(height_at(t, x1 + 5.0, y1 + 5.0), height_at(t, x1, y1));
+        // And continuously: a step past the edge is no step.
+        assert!((height_at(t, x1 + 1e-9, 12.3) - height_at(t, x1, 12.3)).abs() < 1e-9);
     }
 }

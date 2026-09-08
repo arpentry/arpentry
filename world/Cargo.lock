@@ -99,6 +99,7 @@ name = "arpentry-world"
 version = "0.1.0"
 dependencies = [
  "arpentry-server",
+ "earcutr",
  "geo-types",
  "i_overlay",
  "serde_json",

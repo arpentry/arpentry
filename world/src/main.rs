@@ -21,7 +21,7 @@ use arpentry_world::step::Step;
 use arpentry_world::world::World;
 use arpentry_world::frame::Rect;
 use arpentry_world::net;
-use arpentry_world::{drape, facade, fillet, gltf, kerb, ribbon, room, surface, svg, terrain};
+use arpentry_world::{drape, facade, fillet, gltf, kerb, mesh, profile, ribbon, room, surface, svg, terrain};
 
 struct Args {
     bbox: Bounds,
@@ -47,7 +47,8 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
                   flat[?h=400], ramp?grade=0.03[&bearing=90][&radius=400],
                   hill?amp=60&radius=400, step?rise=3[&width=0] (overrides --zone)
   --segments      an Overture segment.parquet, or a synthetic network:
-                  net:straight|tee[?d=8][&hook=5]|cross|hairpin?angle=20|dual?gap=4|roundabout?r=15&d=5|
+                  net:straight[?span=0.35,0.65&kind=bridge|tunnel&level=1]|tee[?d=8][&hook=5]|cross|
+                  hairpin?angle=20|dual?gap=4|roundabout?r=15&d=5|
                   sidewalk?d=6|corner?d=5[&split=1]|crossing?d=6|stub?d=0.5|
                   driveway?d=6[&short=0] [&len=200&class=residential]
                   (overrides --zone, and leaves the world without buildings unless --buildings says otherwise)
@@ -57,8 +58,8 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
                   (overrides --zone)
   --spacing M     terrain lattice spacing in metres (default 2)
   --max-vertices  cap on terrain vertices; the spacing grows to fit (default 2000000)
-  --until STEP    stop after this step: terrain | drape | facade | ribbon | surface | kerb | fillet | room
-                  (default room)
+  --until STEP    stop after this step: terrain | drape | profile | facade | ribbon | surface | kerb | fillet | room | mesh
+                  (default mesh)
   --output FILE   the .glb to write
   --svg FILE      the plan view to write, one SVG group per step
   --view x0,y0,x1,y1  the window the plan shows, in local metres (default: the bbox)
@@ -91,6 +92,7 @@ fn run(args: &Args) -> Result<(), String> {
             Step::Terrain => terrain::run(&mut world, &mut dem, args.spacing, args.max_vertices),
             Step::Drape => drape::run(&mut world, &args.segments)
                 .map_err(|e| format!("{}: {e}", args.segments.display()))?,
+            Step::Profile => profile::run(&mut world),
             Step::Facade => facade::run(&mut world, args.buildings.as_deref())
                 .map_err(|e| format!("{}: {e}", args.buildings.as_deref().unwrap_or(Path::new("")).display()))?,
             Step::Ribbon => ribbon::run(&mut world),
@@ -98,6 +100,7 @@ fn run(args: &Args) -> Result<(), String> {
             Step::Kerb => kerb::run(&mut world),
             Step::Fillet => fillet::run(&mut world),
             Step::Room => room::run(&mut world),
+            Step::Mesh => mesh::run(&mut world),
         };
         println!("{:<8} {}  {:.2}s", step.name(), summary, t.elapsed().as_secs_f64());
         if step == args.until {
@@ -130,7 +133,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut view = None;
     let mut spacing = 2.0;
     let mut max_vertices = 2_000_000;
-    let mut until = Step::Room;
+    let mut until = Step::Mesh;
     while let Some(flag) = it.next() {
         match flag.as_str() {
             "--bbox" => bbox = Some(parse_bbox(&value(&mut it, "--bbox")?)?),

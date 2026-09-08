@@ -1,10 +1,10 @@
 //! The plan view: the world's 2D layers as an SVG, one group per step.
 //!
-//! The 3D look (`scripts/world-render.py`) answers "does it stand on the
-//! ground"; this answers "is the outline right", which is a 2D question — a
-//! fillet, a gap between a kerb and its pavement, a cap at a dead end are
-//! all invisible from a camera in the air and obvious from straight above at
-//! a metre per pixel. The file is text, opens in any browser at any zoom, and
+//! The GLB answers "does it stand on the ground"; this answers "is the
+//! outline right", which is a 2D question — a fillet, a gap between a kerb
+//! and its pavement, a cap at a dead end are all invisible from a camera in
+//! the air and obvious from straight above at a metre per pixel. The file
+//! is text, opens in any browser at any zoom, and
 //! is a function of the world alone (fixed precision, no ids invented here),
 //! so `diff` on two plans says what moved. Rasterise it for a look at a
 //! given scale:
@@ -25,7 +25,7 @@ use std::fmt::Write;
 use crate::frame::Rect;
 use crate::poly::{self, Shapes};
 use crate::width::{self, Family};
-use crate::world::{Facade, Fillet, Kerb, Polyline3, Ribbon, Room, Surface, World};
+use crate::world::{Facade, Fillet, Kerb, Kind, Polyline3, Profile, Profiles, Ribbon, Room, Solved, Surface, Tri, World};
 
 /// Decimal places written per coordinate: a centimetre.
 const PRECISION: usize = 2;
@@ -101,6 +101,12 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
     }
     if let Some(r) = &world.room {
         room(&mut s, r, &view);
+    }
+    if let Some(p) = &world.profile {
+        profile(&mut s, p, &view);
+    }
+    if let Some(m) = &world.mesh {
+        mesh(&mut s, &[("carriageway", &m.carriageway), ("pavement", &m.pavement)], &view);
     }
     if let Some(roads) = &world.roads {
         let lines: Vec<&Polyline3> = roads.lines.iter().filter(|l| touches(&l.pts, &view)).collect();
@@ -267,6 +273,97 @@ fn axis(s: &mut String, lines: &[&Polyline3]) {
     s.push_str("</g>\n");
 }
 
+/// The mesh layer: the wireframe of every triangle touching the view, in
+/// windows under [`DEBUG_VIEW_M`] only — a sliver is visible from above at
+/// that scale and nothing but noise at any other. The group is emitted
+/// empty otherwise, so a diff between two plans still finds it.
+fn mesh(s: &mut String, layers: &[(&str, &Tri)], view: &Rect) {
+    s.push_str("<g id=\"mesh\" fill=\"none\" stroke=\"#000\" stroke-opacity=\"0.5\" stroke-width=\"0.05\">\n");
+    for (name, tri) in layers {
+        let _ = write!(s, "<g id=\"{name}\">\n");
+        if view.width() < DEBUG_VIEW_M {
+            let mut d = String::new();
+            let mut seen: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+            for t in tri.indices.chunks_exact(3) {
+                let pts = [tri.positions[t[0] as usize], tri.positions[t[1] as usize], tri.positions[t[2] as usize]];
+                if !overlaps(pts.iter().map(|p| [p[0], p[1]]), view) {
+                    continue;
+                }
+                for e in 0..3 {
+                    let (a, b) = (t[e], t[(e + 1) % 3]);
+                    if seen.insert((a.min(b), a.max(b))) {
+                        let (p, q) = (tri.positions[a as usize], tri.positions[b as usize]);
+                        let _ = write!(d, "M{} {}L{} {}", num(p[0]), num(-p[1]), num(q[0]), num(-q[1]));
+                    }
+                }
+            }
+            if !d.is_empty() {
+                let _ = write!(s, "<path d=\"{d}\"/>\n");
+            }
+        }
+        s.push_str("</g>\n");
+    }
+    s.push_str("</g>\n");
+}
+
+/// A station this far off the ground, in metres, is drawn as cut or fill;
+/// nearer than that the axis over the asphalt says enough.
+const OFF_MIN_M: f64 = 0.3;
+
+/// The profile layer: along every ground piece, the stretches in cut
+/// (blue) and in fill (red) at the way's width, translucent over the
+/// surface; a deck dashed and a bore dotted, at their width, so a mapped
+/// span that degraded to ground is the one stretch left blank.
+fn profile(s: &mut String, p: &Profiles, view: &Rect) {
+    s.push_str("<g id=\"profile\" fill=\"none\" stroke-linecap=\"butt\" stroke-linejoin=\"round\">\n");
+    let shown: Vec<&Profile> = p.profiles.iter().filter(|p| touches(&p.line(), view)).collect();
+    for (id, color, side) in [("cut", "#3a6fd8", -1.0), ("fill", "#d84a3a", 1.0)] {
+        let _ = write!(s, "<g id=\"{id}\" stroke=\"{color}\" stroke-opacity=\"0.55\">\n");
+        for p in shown.iter().filter(|p| p.mapped == Kind::Ground) {
+            let mut run: Vec<[f64; 3]> = Vec::new();
+            let mut flush = |run: &mut Vec<[f64; 3]>| {
+                if run.len() >= 2 {
+                    let _ = write!(s, "<path stroke-width=\"{}\" d=\"{}\"><title>{}</title></path>\n", num(p.width_m), path(run), escape(&p.id));
+                }
+                run.clear();
+            };
+            for st in &p.stations {
+                if (st.h - st.ground) * side >= OFF_MIN_M {
+                    run.push([st.p[0], st.p[1], st.h]);
+                } else {
+                    flush(&mut run);
+                }
+            }
+            flush(&mut run);
+        }
+        s.push_str("</g>\n");
+    }
+    for (id, color, dash, solved) in
+        [("deck", "#20202c", "6 3", Solved::Deck), ("bore", "#7a3fb0", "1.5 3", Solved::Bore)]
+    {
+        let _ = write!(s, "<g id=\"{id}\" stroke=\"{color}\" stroke-opacity=\"0.9\" stroke-dasharray=\"{dash}\">\n");
+        for p in shown.iter().filter(|p| p.mapped != Kind::Ground) {
+            let mut run: Vec<[f64; 3]> = Vec::new();
+            let mut flush = |run: &mut Vec<[f64; 3]>| {
+                if run.len() >= 2 {
+                    let _ = write!(s, "<path stroke-width=\"{}\" d=\"{}\"><title>{} {}</title></path>\n", num(p.width_m), path(run), escape(&p.id), p.mapped.name());
+                }
+                run.clear();
+            };
+            for st in &p.stations {
+                if st.solved == solved {
+                    run.push([st.p[0], st.p[1], st.h]);
+                } else {
+                    flush(&mut run);
+                }
+            }
+            flush(&mut run);
+        }
+        s.push_str("</g>\n");
+    }
+    s.push_str("</g>\n");
+}
+
 /// The path data of a set of regions: every contour a closed subpath, holes
 /// included, which the non-zero rule fills correctly because a hole winds
 /// the other way.
@@ -371,12 +468,14 @@ mod tests {
                     class: class.into(),
                     subclass: subclass.into(),
                     width_m: width::of(class, subclass),
+                    kind: crate::world::Kind::Ground,
                     pts,
                 },
             )
         };
         w.roads = Some(Roads {
             plan: Vec::new(),
+            spans: Vec::new(),
             lines: vec![
                 line("r", "residential", "", vec![[-600.0, -400.0], [0.0, 0.0], [500.0, 300.0]]),
                 line("s", "footway", "sidewalk", vec![[-600.0, -395.0], [0.0, 5.0]]),

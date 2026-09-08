@@ -11,6 +11,9 @@ pub enum Step {
     /// Way centrelines read from the transportation source, draped exactly
     /// onto the terrain mesh.
     Drape,
+    /// One height along every carriageway axis: the ground, grade-limited
+    /// and boxed per class, chorded across the mapped spans.
+    Profile,
     /// Building footprints read from the buildings source: what nothing
     /// paved may enter, less the passages ways run through.
     Facade,
@@ -25,24 +28,39 @@ pub enum Step {
     /// The room between the facades filled: pavement from the kerb to
     /// every wall within reach.
     Room,
+    /// The paved surface as triangles, each inside one terrain triangle,
+    /// on the ground.
+    Mesh,
 }
 
 impl Step {
     /// Every step, in the order the pipeline runs them.
-    pub const ALL: [Step; 8] =
-        [Step::Terrain, Step::Drape, Step::Facade, Step::Ribbon, Step::Surface, Step::Kerb, Step::Fillet, Step::Room];
+    pub const ALL: [Step; 10] = [
+        Step::Terrain,
+        Step::Drape,
+        Step::Profile,
+        Step::Facade,
+        Step::Ribbon,
+        Step::Surface,
+        Step::Kerb,
+        Step::Fillet,
+        Step::Room,
+        Step::Mesh,
+    ];
 
     /// The name the CLI prints and `--until` accepts.
     pub fn name(self) -> &'static str {
         match self {
             Step::Terrain => "terrain",
             Step::Drape => "drape",
+            Step::Profile => "profile",
             Step::Facade => "facade",
             Step::Ribbon => "ribbon",
             Step::Surface => "surface",
             Step::Kerb => "kerb",
             Step::Fillet => "fillet",
             Step::Room => "room",
+            Step::Mesh => "mesh",
         }
     }
 }
@@ -109,7 +127,7 @@ impl Summary {
     #[cfg(test)]
     pub fn num(&self, label: &str) -> f64 {
         let v = self.get(label).unwrap_or_else(|| panic!("no `{label}` in {self}"));
-        let end = v.find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-')).unwrap_or(v.len());
+        let end = v.find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e'))).unwrap_or(v.len());
         v[..end].parse().unwrap_or_else(|_| panic!("`{label}={v}` is not a number"))
     }
 }

@@ -7,14 +7,17 @@
 //! ([`crate::width`]) is keyed on them, and `id` so a line in the output can
 //! be traced to its source feature.
 //!
-//! **Only the ground is read.** Overture encodes a bridge or a tunnel as a
+//! **Every way is cut by kind.** Overture encodes a bridge or a tunnel as a
 //! span of a segment — `level_rules`, or the `is_bridge`/`is_tunnel` flags in
 //! `road_flags`, over a `[start, end]` fraction of its length — and a way
-//! inside a building as an `is_indoor` span. The world is the ground first;
-//! what stands above it or runs below it is filtered out here, span by span,
-//! so a segment that climbs onto a viaduct keeps the stretch before the
-//! abutment and loses the deck. Everything after this reader can then union
-//! freely: nothing it sees crosses anything else at a different level.
+//! inside a building as an `is_indoor` span. The reader cuts the way at
+//! every span boundary and emits every piece with its [`Kind`]: the ground
+//! pieces into [`Read::lines`], from which every surface is built, and the
+//! rest into [`Read::spans`], which the profile chords across. A segment
+//! that climbs onto a viaduct keeps the stretch before the abutment on the
+//! ground and the deck off it, and the two share the abutment's vertex.
+//! The surface steps see only the ground, so they union freely: nothing
+//! they see crosses anything else at a different level.
 
 use std::path::Path;
 
@@ -26,7 +29,7 @@ use crate::width;
 use geo_types::{Geometry, LineString};
 
 use crate::frame::{Frame, Rect};
-use crate::world::Polyline2;
+use crate::world::{Kind, Polyline2};
 
 /// The columns read. `subtype` and `class` decide admission.
 ///
@@ -72,13 +75,16 @@ const CLASSES: &[&str] = &[
 /// What [`read`] found.
 #[derive(Debug, Default)]
 pub struct Read {
+    /// The pieces on the ground.
     pub lines: Vec<Polyline2>,
+    /// The pieces above or below it, or indoors.
+    pub spans: Vec<Polyline2>,
     /// Features decoded from the row groups touching the bbox.
     pub features: usize,
     /// Of those, the ways kept.
     pub kept: usize,
     /// Of the kept, the ways with a span above or below the ground, or
-    /// indoors, which was cut away.
+    /// indoors.
     pub structures: usize,
     /// Of those, the ways with no ground left at all.
     pub dropped: usize,
@@ -115,30 +121,36 @@ pub fn read(path: &Path, bbox: &Bounds, frame: &Frame, rect: &Rect) -> Result<Re
         out.measured += measured.is_some() as usize;
         out.oneway += oneway as usize;
         let width_m = width::of_way(&class, &subclass, oneway, measured);
-        let off: Vec<(f64, f64)> = f
+        let off: Vec<(f64, f64, Kind)> = f
             .level_runs
             .iter()
-            .map(|r| (r.start, r.end))
-            .chain(f.indoor_runs.iter().copied())
+            .map(|r| (r.start, r.end, if r.level > 0 { Kind::Bridge(r.level) } else { Kind::Tunnel(r.level) }))
+            .chain(f.indoor_runs.iter().map(|&(s, e)| (s, e, Kind::Indoor)))
             .collect();
-        let ground = ground_spans(&off);
+        let pieces = pieces_of(&off);
         if !off.is_empty() {
             out.structures += 1;
-            if ground.is_empty() {
+            if pieces.iter().all(|p| p.2 != Kind::Ground) {
                 out.dropped += 1;
             }
         }
         for line in lines_of(&f.geometry) {
             let pts: Vec<[f64; 2]> = line.0.iter().map(|c| frame.to_local(c.x, c.y)).collect();
-            for &(s, e) in &ground {
+            for &(s, e, kind) in &pieces {
                 for run in clip(&cut(&pts, s, e), rect) {
-                    out.lines.push(Polyline2 {
+                    let piece = Polyline2 {
                         id: id.clone(),
                         class: class.clone(),
                         subclass: subclass.clone(),
                         width_m,
+                        kind,
                         pts: run,
-                    });
+                    };
+                    if kind == Kind::Ground {
+                        out.lines.push(piece);
+                    } else {
+                        out.spans.push(piece);
+                    }
                 }
             }
         }
@@ -146,21 +158,29 @@ pub fn read(path: &Path, bbox: &Bounds, frame: &Frame, rect: &Rect) -> Result<Re
     Ok(out)
 }
 
-/// The fractions of a segment that are on the ground: `[0, 1]` less the
-/// spans in `off`, merged, with nothing shorter than [`SPAN_EPS`] kept.
-pub fn ground_spans(off: &[(f64, f64)]) -> Vec<(f64, f64)> {
-    let mut off: Vec<(f64, f64)> = off.iter().map(|&(s, e)| (s.clamp(0.0, 1.0), e.clamp(0.0, 1.0))).collect();
-    off.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+/// The pieces of a segment, as fractions of its length with their kind:
+/// `[0, 1]` partitioned by the spans in `off`, in order, with the ground
+/// between them. Where two spans overlap the earlier one holds the overlap
+/// (a mapper's slop, not a stacked structure); nothing shorter than
+/// [`SPAN_EPS`] is kept.
+pub fn pieces_of(off: &[(f64, f64, Kind)]) -> Vec<(f64, f64, Kind)> {
+    let mut off: Vec<(f64, f64, Kind)> =
+        off.iter().map(|&(s, e, k)| (s.clamp(0.0, 1.0), e.clamp(0.0, 1.0), k)).collect();
+    off.sort_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).expect("finite"));
     let mut out = Vec::new();
     let mut at = 0.0f64;
-    for (s, e) in off {
+    for (s, e, kind) in off {
         if s - at > SPAN_EPS {
-            out.push((at, s));
+            out.push((at, s, Kind::Ground));
+        }
+        let s = s.max(at);
+        if e - s > SPAN_EPS {
+            out.push((s, e, kind));
         }
         at = at.max(e);
     }
     if 1.0 - at > SPAN_EPS {
-        out.push((at, 1.0));
+        out.push((at, 1.0, Kind::Ground));
     }
     out
 }
@@ -357,13 +377,26 @@ mod tests {
     }
 
     #[test]
-    fn ground_is_what_the_spans_leave() {
-        assert_eq!(ground_spans(&[]), vec![(0.0, 1.0)]);
-        assert_eq!(ground_spans(&[(0.0, 1.0)]), vec![]);
-        assert_eq!(ground_spans(&[(0.3, 0.6)]), vec![(0.0, 0.3), (0.6, 1.0)]);
-        // Overlapping and touching spans merge; order does not matter.
-        assert_eq!(ground_spans(&[(0.5, 0.7), (0.2, 0.55), (0.9, 1.0)]), vec![(0.0, 0.2), (0.7, 0.9)]);
-        assert_eq!(ground_spans(&[(0.0, 0.5), (0.5, 1.0)]), vec![]);
+    fn a_way_is_cut_into_pieces_by_kind() {
+        use Kind::*;
+        assert_eq!(pieces_of(&[]), vec![(0.0, 1.0, Ground)]);
+        assert_eq!(pieces_of(&[(0.0, 1.0, Tunnel(-1))]), vec![(0.0, 1.0, Tunnel(-1))]);
+        assert_eq!(
+            pieces_of(&[(0.3, 0.6, Bridge(1))]),
+            vec![(0.0, 0.3, Ground), (0.3, 0.6, Bridge(1)), (0.6, 1.0, Ground)]
+        );
+        // Overlapping spans: the earlier holds the overlap; touching ones
+        // leave no ground between them; order does not matter.
+        assert_eq!(
+            pieces_of(&[(0.5, 0.7, Tunnel(-1)), (0.2, 0.55, Bridge(1)), (0.9, 1.0, Indoor)]),
+            vec![(0.0, 0.2, Ground), (0.2, 0.55, Bridge(1)), (0.55, 0.7, Tunnel(-1)), (0.7, 0.9, Ground), (0.9, 1.0, Indoor)]
+        );
+        assert_eq!(
+            pieces_of(&[(0.0, 0.5, Bridge(1)), (0.5, 1.0, Bridge(2))]),
+            vec![(0.0, 0.5, Bridge(1)), (0.5, 1.0, Bridge(2))]
+        );
+        // A span swallowed by an earlier one leaves no piece.
+        assert_eq!(pieces_of(&[(0.2, 0.8, Bridge(1)), (0.3, 0.4, Tunnel(-1))]).len(), 3);
     }
 
     #[test]

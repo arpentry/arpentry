@@ -20,12 +20,14 @@ pub struct World {
     pub rect: Rect,
     pub terrain: Option<Terrain>,
     pub roads: Option<Roads>,
+    pub profile: Option<Profiles>,
     pub facade: Option<Facade>,
     pub ribbons: Option<Ribbons>,
     pub surface: Option<Surface>,
     pub kerb: Option<Kerb>,
     pub fillet: Option<Fillet>,
     pub room: Option<Room>,
+    pub mesh: Option<Mesh>,
 }
 
 impl World {
@@ -38,12 +40,14 @@ impl World {
             rect,
             terrain: None,
             roads: None,
+            profile: None,
             facade: None,
             ribbons: None,
             surface: None,
             kerb: None,
             fillet: None,
             room: None,
+            mesh: None,
         }
     }
 }
@@ -75,7 +79,42 @@ impl Terrain {
     }
 }
 
-/// A plan-space polyline, in local metres.
+/// Where a piece of a way stands against the ground, as the source mapped
+/// it: Overture's `level_rules` (an ordinal: above, below), the
+/// `is_bridge`/`is_tunnel` flags, and `is_indoor`. A prior on the profile,
+/// never a command to build anything (docs/GENERATION.md §4.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Kind {
+    /// On the ground: what the surface is built from.
+    Ground,
+    /// Above it, at this level ordinal (positive).
+    Bridge(i64),
+    /// Below it, at this level ordinal (negative).
+    Tunnel(i64),
+    /// Inside a building.
+    Indoor,
+}
+
+impl Kind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Ground => "ground",
+            Kind::Bridge(_) => "bridge",
+            Kind::Tunnel(_) => "tunnel",
+            Kind::Indoor => "indoor",
+        }
+    }
+
+    /// A bridge or a tunnel: a piece the profile chords across.
+    pub fn is_structure(self) -> bool {
+        matches!(self, Kind::Bridge(_) | Kind::Tunnel(_))
+    }
+}
+
+/// A plan-space polyline, in local metres: one piece of a way, all of one
+/// [`Kind`]. Overture references a way's bridge, tunnel and indoor spans as
+/// fractions of its length, so the reader cuts every way at every span
+/// boundary; the pieces of one way share its `id` and their end vertices.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Polyline2 {
     pub id: String,
@@ -86,6 +125,7 @@ pub struct Polyline2 {
     /// The way's full width in metres ([`crate::width::of_way`]), decided
     /// once by the reader and read by every step after it.
     pub width_m: f64,
+    pub kind: Kind,
     pub pts: Vec<[f64; 2]>,
 }
 
@@ -109,13 +149,78 @@ pub struct Polyline3 {
     pub pts: Vec<[f64; 3]>,
 }
 
-/// Way centrelines — roads and pedestrian ways — lying on the terrain.
+/// Way centrelines — roads and pedestrian ways — as the source drew them,
+/// cut into pieces by kind.
 #[derive(Debug, Clone, Default)]
 pub struct Roads {
-    /// The mapped lines, clipped to the rect, as the source drew them.
+    /// The pieces on the ground, clipped to the rect: what every surface
+    /// step builds from. Nothing in it crosses anything else at another
+    /// level, so the steps after this one may union freely.
     pub plan: Vec<Polyline2>,
-    /// The same lines draped exactly onto the terrain mesh.
+    /// The pieces above or below the ground, or indoors, clipped likewise.
+    /// No surface step reads them; the profile chords across the bridges
+    /// and tunnels, and the structures are built from what it solves.
+    pub spans: Vec<Polyline2>,
+    /// The ground pieces draped exactly onto the terrain mesh.
     pub lines: Vec<Polyline3>,
+}
+
+impl Roads {
+    /// Every piece, on the ground or off it.
+    pub fn pieces(&self) -> impl Iterator<Item = &Polyline2> {
+        self.plan.iter().chain(self.spans.iter())
+    }
+}
+
+/// One station of a solved profile.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Station {
+    /// Arc length from the piece's start, in metres.
+    pub s: f64,
+    /// The plan position on the axis.
+    pub p: [f64; 2],
+    /// The ground there ([`crate::terrain::height_at`]).
+    pub ground: f64,
+    /// The solved height of the surface.
+    pub h: f64,
+    /// What the solved height makes of the station.
+    pub solved: Solved,
+}
+
+/// What a station is once solved: a consequence of the profile against the
+/// ground, never of the annotation alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Solved {
+    /// On the ground, within the bench's reach.
+    Grade,
+    /// Standing off the ground: a deck.
+    Deck,
+    /// Running under it: a bore.
+    Bore,
+}
+
+/// The solved profile of one carriageway piece.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Profile {
+    pub id: String,
+    pub class: String,
+    pub width_m: f64,
+    /// The kind the source mapped the piece as.
+    pub mapped: Kind,
+    pub stations: Vec<Station>,
+}
+
+impl Profile {
+    /// The profile as a 3D polyline, for the layers that draw it.
+    pub fn line(&self) -> Vec<[f64; 3]> {
+        self.stations.iter().map(|st| [st.p[0], st.p[1], st.h]).collect()
+    }
+}
+
+/// Every carriageway piece's profile: one height along every axis.
+#[derive(Debug, Clone, Default)]
+pub struct Profiles {
+    pub profiles: Vec<Profile>,
 }
 
 /// The buildings: what nothing paved may enter.
@@ -201,6 +306,22 @@ pub struct Room {
     /// The kerb stations `kerb_gap` still counts as bare after this step,
     /// for the plan view and for finding them.
     pub gaps: Vec<[f64; 2]>,
+}
+
+/// A triangle mesh: positions in local metres, indices in triples,
+/// counter-clockwise seen from above, vertices shared by position.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Tri {
+    pub positions: Vec<[f64; 3]>,
+    pub indices: Vec<u32>,
+}
+
+/// The paved surface as triangles, one mesh per family, every triangle
+/// inside one triangle of the terrain.
+#[derive(Debug, Clone, Default)]
+pub struct Mesh {
+    pub carriageway: Tri,
+    pub pavement: Tri,
 }
 
 static NONE: Shapes = Vec::new();

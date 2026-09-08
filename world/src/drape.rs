@@ -53,9 +53,11 @@ pub fn run(world: &mut World, segments: &Path) -> Result<Summary, String> {
         .with("measured", read.measured)
         .with("oneway", read.oneway)
         .with("lines", roads.lines.len())
+        .with("spans", read.spans.len())
         .with("pieces", pieces)
         .with("vertices", vertices);
     roads.plan = read.lines;
+    roads.spans = read.spans;
     world.roads = Some(roads);
     Ok(summary)
 }
@@ -68,13 +70,19 @@ fn synthetic(spec: &str, rect: &crate::frame::Rect) -> Result<roads::Read, Strin
         out.features += 1;
         out.kept += 1;
         for run in roads::clip(&way.pts, rect) {
-            out.lines.push(Polyline2 {
+            let piece = Polyline2 {
                 id: way.id.clone(),
                 class: way.class.clone(),
                 subclass: way.subclass.clone(),
                 width_m: way.width_m,
+                kind: way.kind,
                 pts: run,
-            });
+            };
+            if way.kind == crate::world::Kind::Ground {
+                out.lines.push(piece);
+            } else {
+                out.spans.push(piece);
+            }
         }
     }
     Ok(out)
