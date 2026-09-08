@@ -47,35 +47,7 @@ pub fn parse(spec: &str) -> Result<Vec<Polyline2>, String> {
     let walk = |id: &str, subclass: &str, pts: Vec<[f64; 2]>| line(id, "footway", subclass, pts);
     let x_road = |id: &str| road(id, vec![[-half, 0.0], [half, 0.0]]);
     let ways = match name {
-        "straight" => match params.get("span") {
-            None => vec![x_road("road")],
-            Some(span) => {
-                // Three pieces sharing their ends, as the reader cuts them.
-                let (a, b) = span
-                    .split_once(',')
-                    .and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?)))
-                    .filter(|(a, b)| 0.0 <= *a && a < b && *b <= 1.0)
-                    .ok_or_else(|| format!("invalid span: {span}"))?;
-                let level = params.num("level", 1.0)? as i64;
-                let kind = match params.get("kind").unwrap_or("bridge") {
-                    "bridge" => Kind::Bridge(level.abs().max(1)),
-                    "tunnel" => Kind::Tunnel(-level.abs().max(1)),
-                    other => return Err(format!("invalid kind: {other}")),
-                };
-                let (x0, x1) = (-half + a * len, -half + b * len);
-                let mut ways = Vec::new();
-                if a > 0.0 {
-                    ways.push(road("road", vec![[-half, 0.0], [x0, 0.0]]));
-                }
-                let mut span = road("road", vec![[x0, 0.0], [x1, 0.0]]);
-                span.kind = kind;
-                ways.push(span);
-                if b < 1.0 {
-                    ways.push(road("road", vec![[x1, 0.0], [half, 0.0]]));
-                }
-                ways
-            }
-        },
+        "straight" => spanned("road", class, "", 0.0, half, span_of(&params)?),
         "tee" => {
             // With `hook`, road-e runs 10 m east then turns back on an arc
             // of that radius and ends short of the leg: a bend within one
@@ -138,7 +110,14 @@ pub fn parse(spec: &str) -> Result<Vec<Polyline2>, String> {
                     walk("walk-e", "sidewalk", vec![[gap / 2.0, d], [half, d]]),
                 ]
             } else {
-                vec![x_road("road"), walk("walk-n", "sidewalk", vec![[-half, d], [half, d]])]
+                // With `span`, both the road and its separated sidewalk
+                // are mapped as their own bridge over the same stretch,
+                // which is how 22.7 % of the extract's footbridges are
+                // drawn: one structure, two ways on it.
+                let span = span_of(&params)?;
+                let mut ways = spanned("road", class, "", 0.0, half, span);
+                ways.extend(spanned("walk-n", "footway", "sidewalk", d, half, span));
+                ways
             }
         }
         "corner" => {
@@ -214,6 +193,49 @@ pub fn parse(spec: &str) -> Result<Vec<Polyline2>, String> {
         other => return Err(format!("unknown network `{other}` in {spec}")),
     };
     Ok(ways)
+}
+
+/// The mapped span of a spec, as `((from, to), kind)` over the way's
+/// length; `None` if it has none.
+fn span_of(params: &Params) -> Result<Option<((f64, f64), Kind)>, String> {
+    let Some(span) = params.get("span") else {
+        return Ok(None);
+    };
+    let (a, b) = span
+        .split_once(',')
+        .and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?)))
+        .filter(|(a, b)| 0.0 <= *a && a < b && *b <= 1.0)
+        .ok_or_else(|| format!("invalid span: {span}"))?;
+    let level = params.num("level", 1.0)? as i64;
+    let kind = match params.get("kind").unwrap_or("bridge") {
+        "bridge" => Kind::Bridge(level.abs().max(1)),
+        "tunnel" => Kind::Tunnel(-level.abs().max(1)),
+        other => return Err(format!("invalid kind: {other}")),
+    };
+    Ok(Some(((a, b), kind)))
+}
+
+/// A way along x at `y`, from `-half` to `half`, cut at the boundaries of
+/// its mapped span into the pieces the reader would produce: consecutive
+/// pieces share their end vertex and their id.
+fn spanned(id: &str, class: &str, subclass: &str, y: f64, half: f64, span: Option<((f64, f64), Kind)>) -> Vec<Polyline2> {
+    let piece = |x0: f64, x1: f64| line(id, class, subclass, vec![[x0, y], [x1, y]]);
+    let Some(((a, b), kind)) = span else {
+        return vec![piece(-half, half)];
+    };
+    let len = 2.0 * half;
+    let (x0, x1) = (-half + a * len, -half + b * len);
+    let mut out = Vec::new();
+    if a > 0.0 {
+        out.push(piece(-half, x0));
+    }
+    let mut mid = piece(x0, x1);
+    mid.kind = kind;
+    out.push(mid);
+    if b < 1.0 {
+        out.push(piece(x1, half));
+    }
+    out
 }
 
 fn line(id: &str, class: &str, subclass: &str, pts: Vec<[f64; 2]>) -> Polyline2 {

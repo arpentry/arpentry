@@ -26,7 +26,8 @@ use crate::frame::Rect;
 use crate::poly::{self, Shapes};
 use crate::width::{self, Family};
 use crate::world::{
-    Bench, Facade, Fillet, Kerb, Kind, Polyline3, Profile, Profiles, Ribbon, Room, Solved, Surface, Tri, World,
+    Bench, Facade, Fillet, Kerb, Kind, Polyline3, Profile, Profiles, Ribbon, Room, Solved, Structure, Surface,
+    Tri, World,
 };
 
 /// Decimal places written per coordinate: a centimetre.
@@ -106,6 +107,9 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
     }
     if let Some(p) = &world.profile {
         profile(&mut s, p, &view);
+    }
+    if let Some(st) = &world.structure {
+        structure(&mut s, st, &view);
     }
     if let Some(b) = &world.bench {
         mesh(&mut s, &[("carriageway", &b.carriageway), ("pavement", &b.pavement)], &view);
@@ -307,6 +311,21 @@ fn mesh(s: &mut String, layers: &[(&str, &Tri)], view: &Rect) {
             }
         }
         s.push_str("</g>\n");
+    }
+    s.push_str("</g>\n");
+}
+
+/// The structure layer: every span's own paving, which no surface step
+/// lays — a deck's outline in grey, a bore's dotted, drawn over the
+/// surface so the road reads as continuous across a viaduct.
+fn structure(s: &mut String, st: &Structure, view: &Rect) {
+    s.push_str("<g id=\"structure\">\n");
+    for (kind, shapes) in &st.plan {
+        let (id, fill) = match kind {
+            Kind::Tunnel(_) => ("bore", "#6b6560"),
+            _ => ("deck", "#9a948c"),
+        };
+        filled(s, id, fill, shapes, view);
     }
     s.push_str("</g>\n");
 }

@@ -31,13 +31,17 @@ pub enum Step {
     /// The paved surface as triangles, each inside one terrain triangle,
     /// on the ground.
     Mesh,
-    /// The room lifted off the ground onto the height its profile solved.
+    /// The room lifted off the ground onto the height its profile solved,
+    /// and cut into the ground.
     Bench,
+    /// The decks and bores the solved profile implies, and the roadway
+    /// over every span.
+    Structure,
 }
 
 impl Step {
     /// Every step, in the order the pipeline runs them.
-    pub const ALL: [Step; 11] = [
+    pub const ALL: [Step; 12] = [
         Step::Terrain,
         Step::Drape,
         Step::Profile,
@@ -49,6 +53,7 @@ impl Step {
         Step::Room,
         Step::Mesh,
         Step::Bench,
+        Step::Structure,
     ];
 
     /// The name the CLI prints and `--until` accepts.
@@ -65,6 +70,7 @@ impl Step {
             Step::Room => "room",
             Step::Mesh => "mesh",
             Step::Bench => "bench",
+            Step::Structure => "structure",
         }
     }
 }

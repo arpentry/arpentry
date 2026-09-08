@@ -66,6 +66,11 @@ pub fn write_glb(world: &World) -> Vec<u8> {
         doc.triangles("carriageway", c, [0.30, 0.30, 0.33]);
         doc.triangles("pavement", p, [0.80, 0.66, 0.46]);
     }
+    if let Some(s) = &world.structure {
+        doc.triangles("roadway", &s.roadway, [0.30, 0.30, 0.33]);
+        doc.triangles("deck", &s.deck, [0.62, 0.60, 0.56]);
+        doc.triangles("bore", &s.bore, [0.35, 0.33, 0.30]);
+    }
     if let (Some(r), Some(t)) = (&world.ribbons, &world.terrain) {
         if !r.ribbons.is_empty() {
             doc.ribbons(r, t);

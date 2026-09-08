@@ -276,7 +276,7 @@ net:cross` (or `straight`, `tee`, `hairpin?angle=20`, `dual?gap=4`,
 network, where a step's output is an assertion rather than a look.
 `--until terrain` stops after a step; the steps so far are `terrain`,
 `drape`, `profile`, `facade`, `ribbon`, `surface`, `kerb`, `fillet`,
-`room`, `mesh`, `bench`. The 2D plan is `data/plans/flat-network-2026-09-06.md`; the vertical
+`room`, `mesh`, `bench`, `structure`. The 2D plan is `data/plans/flat-network-2026-09-06.md`; the vertical
 one (profile → mesh → bench → structure → crossing) is
 `data/plans/surface-leaves-the-plane-2026-09-08.md`.
 
@@ -355,6 +355,38 @@ from there. On the loop box, 11.7 s: `cut` 9.8 m, `fill` 12.4 m, `step`
 0.40 %, `ground` 9.6 M triangles, `seam` 0/94 575, `contact` 2.5e-7 m,
 `walled` 1.45 %, `wall` 12.2 m, `touched` 8.9 % of lattice vertices,
 `off` 17 m.
+
+The `structure` step builds what the solved profile implies, and nothing
+else: a mapped bridge whose chord never left the ground gets no deck.
+**The roadway comes first** — the surface steps read the ground pieces
+only, so until this step a way's bridge and tunnel spans carried no paving
+at all (74 469 m² on the loop box). Every span piece is swept at its
+solved height across its own width, so the road is continuous over the
+Viaduc de Chillon and through the Glion bores. **The solid is only what is
+underneath**: over a deck run a soffit `DECK_THICKNESS_M` (1.5 m) below the
+roadway with its sides and end faces, over a bore run a crown
+`TUNNEL_HEIGHT_M` (5 m) above it with its walls, open at the portals — the
+roadway is the deck's top and the bore's floor, once, so no two surfaces
+of the step are coplanar. A **pedestrian span is fitted, not solved**
+(most of the box's spans are): a chord between the ground at its own two
+ends, no ceiling and no box, and a footbridge's own `WALK_DECK_M` (0.4 m)
+deck rather than a road bridge's. **Unless the road already carries it** —
+a separated sidewalk mapped as its own bridge is one structure with the
+road, so a walk span within the room's reach of a road's span all along is
+*carried*: its height is that road's plus the kerb's rise and it builds no
+solid. Its summary line: `spans`, `fitted`, `carried`, `decks`, `bores`,
+`roadway_m2`, `clear`/`buried` (the soffit against the ground *between*
+the abutments), `cover`/`open` (the crown against the ground between the
+portals), `grounded` (runs whose face never left the ground at all) and
+`abutment` (a span's end height against the ground piece it lands on: 0 on
+the box, by construction). On the loop box: 174 spans, 116 fitted, 19
+carried, 65 decks, 29 bores, `abutment` 0.000, and `grounded` 25 —
+**a quarter of the box's structure runs are shallower than the deck they
+would need**, because `STRUCTURE_MIN_M` makes a piece a deck at 0.5 m off
+the ground while `DECK_THICKNESS_M` gives it a 1.5 m slab. That is what
+the abutment block, which the plan defers, is for. There are no piers, no
+abutment blocks and no portal faces: a deck ends in the air at its soffit
+and a bore's tube ends at its portal.
 
 **What is still missing.** Neither the toe nor the wall is a breakline, so
 a lattice triangle may straddle one and stand off the engineered ground

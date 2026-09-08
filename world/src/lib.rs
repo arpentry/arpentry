@@ -36,6 +36,7 @@ pub mod ribbon;
 pub mod roads;
 pub mod room;
 pub mod step;
+pub mod structure;
 pub mod surface;
 pub mod svg;
 pub mod terrain;

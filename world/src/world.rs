@@ -29,6 +29,7 @@ pub struct World {
     pub room: Option<Room>,
     pub mesh: Option<Mesh>,
     pub bench: Option<Bench>,
+    pub structure: Option<Structure>,
 }
 
 impl World {
@@ -50,6 +51,7 @@ impl World {
             room: None,
             mesh: None,
             bench: None,
+            structure: None,
         }
     }
 }
@@ -341,6 +343,20 @@ pub struct Bench {
     /// heights, which is a retaining wall — for the plan view and for
     /// finding them.
     pub steps: Vec<[f64; 2]>,
+}
+
+/// The structures: what the solved profile implies where it left the
+/// ground. The roadway is every span piece's own paving, which no surface
+/// step lays; the deck is the solid under a deck run and the bore the
+/// tube over a bore run, so no two of the three are coplanar.
+#[derive(Debug, Clone, Default)]
+pub struct Structure {
+    pub roadway: Tri,
+    pub deck: Tri,
+    pub bore: Tri,
+    /// Every span's outline in plan, with the kind the source mapped it,
+    /// for the plan view.
+    pub plan: Vec<(Kind, Shapes)>,
 }
 
 static NONE: Shapes = Vec::new();

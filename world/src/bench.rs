@@ -283,8 +283,16 @@ impl Foot {
 impl Field {
     /// The field of `profiles`: the ground pieces' stations, in order.
     pub fn new(profiles: &[Profile]) -> Field {
+        Field::of(profiles.iter().filter(|p| p.mapped == Kind::Ground))
+    }
+
+    /// The field of whichever profiles are given. The bench reads the
+    /// ground pieces; the structure step reads the spans, to ask whether
+    /// a footway is carried on a road's deck rather than on one of its
+    /// own.
+    pub fn of<'a>(profiles: impl Iterator<Item = &'a Profile>) -> Field {
         let mut f = Field::default();
-        for p in profiles.iter().filter(|p| p.mapped == Kind::Ground) {
+        for p in profiles {
             let half_w = p.width_m / 2.0;
             for w in p.stations.windows(2) {
                 f.push(w[0].p, w[1].p, w[0].h, w[1].h, half_w);
