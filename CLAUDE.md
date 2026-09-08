@@ -335,17 +335,34 @@ kilometre up the flank, because a face into a mountain steeper than
 off the ground — where the ground's answer must be a wall, not a
 batter), `cut`/`fill` (the earthwork the ground still owes), and `step`
 (mesh edges the field is discontinuous across, over `KERB_RISE_M` and
-steeper than `STEP_GRADE`) with `worst`. On the loop box: `cut` 9.8 m,
-`fill` 12.4 m, `walled` 0.8 %, `step` 0.40 %. The plan view marks every
-step with a purple dot in any window under 2 km, like the room's bare
-kerb stations.
+steeper than `STEP_GRADE`) with `worst`. The plan view marks every step
+with a purple dot in any window under 2 km, like the room's bare kerb
+stations.
 
-**The ground does not answer yet.** The terrain is still the raw lattice,
-so the room stands in the air on its fill side and inside the hill on its
-cut side; nothing is benched or walled and the face the walk comes down is
-a surface of the walk's own rather than earth. The hole in the terrain,
-the real batter, and the `contact`, `batter`, `untouched` and `walled`
-checks are the second half of step 11 in the vertical plan.
+**And the ground answers.** The terrain is re-triangulated over
+`rect − room` on the same lattice by the same mesher, so **the ground
+stops at the kerb**: no triangle of it lies under the asphalt, which is
+where every artefact of a ground drawn beneath an opaque surface lives
+(`data/plans/terrain-hole-plan.md`). Outside the room it is the room's own
+height at the outline, a face at `EARTHWORK_BATTER` out of it stopping
+exactly where it meets the natural ground, and the natural ground beyond.
+A face is at most `MAX_BENCH_FACE_M` tall, so it runs at most 7.5 m, and
+where the room stands further than one face from the ground at its own
+outline no batter is built at all: the bench is *walled* there and
+`walled` counts it. **The seam is read, not recomputed** — every outline
+vertex is a vertex of the room's own mesh, so the ground takes its height
+from there. On the loop box, 11.7 s: `cut` 9.8 m, `fill` 12.4 m, `step`
+0.40 %, `ground` 9.6 M triangles, `seam` 0/94 575, `contact` 2.5e-7 m,
+`walled` 1.45 %, `wall` 12.2 m, `touched` 8.9 % of lattice vertices,
+`off` 17 m.
+
+**What is still missing.** Neither the toe nor the wall is a breakline, so
+a lattice triangle may straddle one and stand off the engineered ground
+between its vertices — that is `off`, and 17 m of it is a triangle
+spanning the tallest wall and the batter beside it. Nothing re-drapes yet:
+the free lines and bands still sample the raw terrain, so a footpath
+leaving a street does not run up the batter. And `height_at` is still the
+terrain's; the structure step is where that has to change.
 
 The `facade` step reads the zone's `building.parquet` (when it is there) and
 every surface step after it keeps out of the footprints: the pavement stops

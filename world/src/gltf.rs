@@ -37,7 +37,11 @@ const TERRAIN_COLOR: [f32; 3] = [0.55, 0.65, 0.45];
 /// empty, has no node.
 pub fn write_glb(world: &World) -> Vec<u8> {
     let mut doc = Doc::default();
-    if let Some(t) = &world.terrain {
+    // The engineered ground once the bench has cut the room out of it;
+    // the raw lattice before that. One ground either way.
+    if let Some(b) = &world.bench {
+        doc.triangles("ground", &b.ground, [0.52, 0.56, 0.44]);
+    } else if let Some(t) = &world.terrain {
         doc.terrain(t);
     }
     if let Some(r) = &world.roads {

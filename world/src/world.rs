@@ -333,6 +333,9 @@ pub struct Mesh {
 pub struct Bench {
     pub carriageway: Tri,
     pub pavement: Tri,
+    /// The engineered ground: the terrain with the room cut out of it and
+    /// a batter run from the room's outline down to the natural ground.
+    pub ground: Tri,
     /// The midpoint of every mesh edge the height field steps across —
     /// the line between two carriageways whose domains meet at different
     /// heights, which is a retaining wall — for the plan view and for

@@ -35,7 +35,7 @@ use crate::grid::Grid;
 use crate::poly::{self, Pt, Shapes};
 use crate::step::Summary;
 use crate::terrain::height_at;
-use crate::world::{Mesh, Terrain, Tri, World};
+use crate::world::{Mesh, Tri, World};
 
 /// A triangle under this many square metres is a sliver: kept, counted.
 pub const SLIVER_M2: f64 = 1e-6;
@@ -70,7 +70,7 @@ const DEGENERATE_M2: f64 = 1e-12;
 /// they are one vertex and the two ears meet; kept apart, every such
 /// crossing is a T-junction. A triangle two of whose vertices weld together
 /// is dropped.
-const WELD_M: f64 = 1e-6;
+pub const WELD_M: f64 = 1e-6;
 
 
 /// A vertex within this many lattice units of a cut line is on it: it goes
@@ -117,8 +117,9 @@ pub fn run(world: &mut World) -> Summary {
     let none = Shapes::new();
     let carriageway = world.carriageway().unwrap_or(&none);
     let pavement = world.walk().unwrap_or(&none);
-    let (c, cs) = triangulate(carriageway, terrain);
-    let (p, ps) = triangulate(pavement, terrain);
+    let ground = |p: Pt| height_at(terrain, p[0], p[1]);
+    let (c, cs) = triangulate(carriageway, &terrain.grid, &ground);
+    let (p, ps) = triangulate(pavement, &terrain.grid, &ground);
     let summary = Summary::new()
         .with("carriageway", format!("{}/{}", c.indices.len() / 3, c.positions.len()))
         .with("pavement", format!("{}/{}", p.indices.len() / 3, p.positions.len()))
@@ -136,15 +137,21 @@ pub fn run(world: &mut World) -> Summary {
     summary
 }
 
-/// `shapes` as triangles on `terrain`, every one inside one terrain
-/// triangle, vertices shared by position.
-pub fn triangulate(shapes: &Shapes, terrain: &Terrain) -> (Tri, Stats) {
+/// `shapes` as triangles conforming to `grid`, every one inside one of
+/// its cell triangles, each vertex at `height`, vertices shared by
+/// position.
+///
+/// The height comes in as a function rather than being read off the
+/// terrain, because the ground the surface stands on is not always the
+/// terrain: the bench step triangulates the engineered ground on the same
+/// lattice with the same guarantee.
+pub fn triangulate(shapes: &Shapes, grid: &Grid, height: &dyn Fn(Pt) -> f64) -> (Tri, Stats) {
     let mut tri = Tri::default();
     let mut stats = Stats { regions: shapes.len(), ..Stats::default() };
     let mut index: HashMap<[i64; 2], u32> = HashMap::new();
     let mut vertex = |p: Pt, tri: &mut Tri| -> u32 {
         *index.entry([(p[0] / WELD_M).round() as i64, (p[1] / WELD_M).round() as i64]).or_insert_with(|| {
-            tri.positions.push([p[0], p[1], height_at(terrain, p[0], p[1])]);
+            tri.positions.push([p[0], p[1], height(p)]);
             (tri.positions.len() - 1) as u32
         })
     };
@@ -161,7 +168,7 @@ pub fn triangulate(shapes: &Shapes, terrain: &Terrain) -> (Tri, Stats) {
             }
             let mut got = 0.0;
             for ear in ears {
-                for piece in split(ear.to_vec(), &terrain.grid) {
+                for piece in split(ear.to_vec(), grid) {
                     for t in fan(&piece, &mut stats) {
                         let a = tri_area(t);
                         if a < SLIVER_M2 {
@@ -183,7 +190,7 @@ pub fn triangulate(shapes: &Shapes, terrain: &Terrain) -> (Tri, Stats) {
                         // ill-conditioned on a sliver.
                         let c = [(t[0][0] + t[1][0] + t[2][0]) / 3.0, (t[0][1] + t[1][1] + t[2][1]) / 3.0];
                         let z = ids.iter().map(|&i| tri.positions[i as usize][2]).sum::<f64>() / 3.0;
-                        stats.off_ground = stats.off_ground.max((z - height_at(terrain, c[0], c[1])).abs());
+                        stats.off_ground = stats.off_ground.max((z - height(c)).abs());
                     }
                 }
             }
