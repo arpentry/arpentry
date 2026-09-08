@@ -35,7 +35,19 @@ const TERRAIN_COLOR: [f32; 3] = [0.55, 0.65, 0.45];
 
 /// Serialises the world's layers. A layer that has not been built, or is
 /// empty, has no node.
-pub fn write_glb(world: &World) -> Vec<u8> {
+///
+/// With `outlines`, the eight construction layers — the draped
+/// centrelines, the solved profiles and the six contour sets — are written
+/// too, as glTF `LINES`. They are **off by default**, because a viewer is
+/// not obliged to draw line topology and Apple's (Preview, Quick Look, and
+/// anything else on that pipeline) does not: it reads the line index
+/// buffer as triangles instead and invents a long straight shard between
+/// every pair of vertices that happen to be neighbours in the buffer, in
+/// the layer's own colour, right across the model. The file is valid
+/// either way — Blender draws it correctly — but the default has to be the
+/// one that opens anywhere, and the 2D question these layers answer
+/// belongs to the plan view ([`crate::svg`]) anyway.
+pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
     let mut doc = Doc::default();
     // The engineered ground once the bench has cut the room out of it;
     // the raw lattice before that. One ground either way.
@@ -45,12 +57,12 @@ pub fn write_glb(world: &World) -> Vec<u8> {
         doc.terrain(t);
     }
     if let Some(r) = &world.roads {
-        if !r.lines.is_empty() {
+        if outlines && !r.lines.is_empty() {
             doc.roads(r);
         }
     }
     if let Some(p) = &world.profile {
-        if !p.profiles.is_empty() {
+        if outlines && !p.profiles.is_empty() {
             doc.profile(p);
         }
     }
@@ -72,33 +84,33 @@ pub fn write_glb(world: &World) -> Vec<u8> {
         doc.triangles("bore", &s.bore, [0.35, 0.33, 0.30]);
     }
     if let (Some(r), Some(t)) = (&world.ribbons, &world.terrain) {
-        if !r.ribbons.is_empty() {
+        if outlines && !r.ribbons.is_empty() {
             doc.ribbons(r, t);
         }
     }
     if let (Some(s), Some(t)) = (&world.surface, &world.terrain) {
-        if !s.carriageway.is_empty() || !s.walk.is_empty() {
+        if outlines && (!s.carriageway.is_empty() || !s.walk.is_empty()) {
             doc.surface(s, t);
         }
     }
     if let (Some(k), Some(t)) = (&world.kerb, &world.terrain) {
-        if !k.pavement.is_empty() {
+        if outlines && !k.pavement.is_empty() {
             doc.loops("kerb", &k.pavement, t, [0.9, 0.6, 0.3]);
         }
     }
     if let (Some(f), Some(t)) = (&world.fillet, &world.terrain) {
         let shapes: Shapes = f.carriageway.iter().chain(f.pavement.iter()).cloned().collect();
-        if !shapes.is_empty() {
+        if outlines && !shapes.is_empty() {
             doc.loops("fillet", &shapes, t, [0.3, 0.3, 0.35]);
         }
     }
     if let (Some(r), Some(t)) = (&world.room, &world.terrain) {
-        if !r.pavement.is_empty() {
+        if outlines && !r.pavement.is_empty() {
             doc.loops("room", &r.pavement, t, [0.85, 0.55, 0.25]);
         }
     }
     if let (Some(f), Some(t)) = (&world.facade, &world.terrain) {
-        if !f.footprints.is_empty() {
+        if outlines && !f.footprints.is_empty() {
             doc.loops("facade", &f.footprints, t, [0.55, 0.45, 0.4]);
         }
     }
@@ -171,13 +183,12 @@ impl Doc {
     ///
     /// The ring is **draped**, not merely sampled at its own vertices: a
     /// contour edge is as long as the straight road that made it, and the
-    /// box has 267 m of it. A single segment between two
-    /// [`crate::terrain::height_at`] samples that far apart goes in one
-    /// side of the flank and out the other, and the file read as a model
-    /// with straight lines shot through it — 970 such edges in the ribbon
-    /// layer alone. [`drape`] already answers this for the way
-    /// centrelines, by cutting at every lattice crossing, so it answers it
-    /// here.
+    /// box has 267 m of it. A single segment between two [`crate::terrain::height_at`]
+    /// samples that far apart goes in one side of the flank and out the
+    /// other, and the file read as a model with straight lines shot
+    /// through it — 970 such edges in the ribbon layer alone. [`drape`]
+    /// already answers this for the way centrelines, by cutting at every
+    /// lattice crossing, so it answers it here.
     fn loops(&mut self, name: &str, shapes: &Shapes, t: &Terrain, color: [f32; 3]) {
         let mut positions = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
@@ -458,7 +469,7 @@ mod tests {
     #[test]
     fn container_and_document_agree() {
         let w = hill_world();
-        let glb = write_glb(&w);
+        let glb = write_glb(&w, true);
         let (doc, bin) = unpack(&glb);
         assert_eq!(doc["buffers"][0]["byteLength"].as_u64().unwrap() as usize, bin.len());
         let views = doc["bufferViews"].as_array().unwrap();
@@ -491,9 +502,25 @@ mod tests {
     }
 
     #[test]
+    fn the_outlines_are_the_only_lines_and_they_are_off_by_default() {
+        // Every layer a viewer is not obliged to draw is behind the flag,
+        // and what is left is triangles only: the file opens anywhere.
+        let w = hill_world();
+        let (doc, _) = unpack(&write_glb(&w, false));
+        let names: Vec<&str> = doc["nodes"].as_array().unwrap().iter().map(|n| n["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["terrain"]);
+        for mesh in doc["meshes"].as_array().unwrap() {
+            assert_eq!(mesh["primitives"][0]["mode"], TRIANGLES, "{mesh}");
+        }
+        let (doc, _) = unpack(&write_glb(&w, true));
+        let lines = doc["meshes"].as_array().unwrap().iter().filter(|m| m["primitives"][0]["mode"] == LINES).count();
+        assert_eq!(lines, 1, "the draped centrelines come back with the flag");
+    }
+
+    #[test]
     fn bytes_are_a_function_of_the_world() {
-        let a = write_glb(&hill_world());
-        let b = write_glb(&hill_world());
+        let a = write_glb(&hill_world(), true);
+        let b = write_glb(&hill_world(), true);
         assert_eq!(a, b);
     }
 
@@ -502,7 +529,7 @@ mod tests {
         let mut w = terrain::tests::world();
         terrain::run(&mut w, &mut dem("flat"), 100.0, usize::MAX);
         w.roads = Some(Roads::default());
-        let (doc, _) = unpack(&write_glb(&w));
+        let (doc, _) = unpack(&write_glb(&w, true));
         assert_eq!(doc["nodes"].as_array().unwrap().len(), 1);
     }
 }

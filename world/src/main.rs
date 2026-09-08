@@ -4,6 +4,7 @@
 //! arpentry_world --bbox w,s,e,n --zone DIR [--output FILE.glb] [--svg FILE.svg]
 //!                [--terrain PATH|SPEC] [--segments PATH|SPEC] [--buildings PATH|SPEC|none]
 //!                [--view x0,y0,x1,y1] [--spacing M] [--max-vertices N] [--until STEP]
+//!                [--outlines]
 //! ```
 //!
 //! Runs the steps in order, prints one line per step, stops after `--until`,
@@ -38,11 +39,13 @@ struct Args {
     spacing: f64,
     max_vertices: usize,
     until: Step,
+    /// Write the construction layers into the GLB as `LINES`.
+    outlines: bool,
 }
 
 const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output FILE.glb] [--svg FILE.svg]
        [--terrain PATH|SPEC] [--segments PATH|SPEC] [--buildings PATH|SPEC|none]
-       [--view x0,y0,x1,y1] [--spacing M] [--max-vertices N] [--until STEP]
+       [--view x0,y0,x1,y1] [--spacing M] [--max-vertices N] [--until STEP] [--outlines]
 
   --bbox          the world's bounds in degrees (required; never inferred from the data)
   --zone DIR      a cut zone: DIR/terrain.pmtiles, DIR/segment.parquet and, if present, DIR/building.parquet
@@ -51,10 +54,10 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
                   hill?amp=60&radius=400, step?rise=3[&width=0] (overrides --zone)
   --segments      an Overture segment.parquet, or a synthetic network:
                   net:straight[?span=0.35,0.65&kind=bridge|tunnel&level=1]|tee[?d=8][&hook=5]|cross|
+                  overpass[?span=0.35,0.65&level=1]|underpass|
                   hairpin?angle=20|dual?gap=4|roundabout?r=15&d=5|
                   sidewalk?d=6|corner?d=5[&split=1]|crossing?d=6|stub?d=0.5|
                   driveway?d=6[&short=0] [&len=200&class=residential]
-                  overpass[?span=0.35,0.65&level=1]|underpass|
                   (overrides --zone, and leaves the world without buildings unless --buildings says otherwise)
   --buildings     an Overture building.parquet, `none`, or a synthetic house:
                   house:beside?d=2[&x=0&l=10&w=10&side=1&notch=0&deep=1] | house:across[?x=0&l=10&w=12&rot=0] |
@@ -64,6 +67,11 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
   --max-vertices  cap on terrain vertices; the spacing grows to fit (default 2000000)
   --until STEP    stop after this step: terrain | drape | profile | crossing | facade | ribbon | surface | kerb | fillet | room | mesh | bench | structure
                   (default structure)
+  --outlines      add the construction layers to the .glb as glTF LINES: the draped
+                  centrelines, the solved profiles and the six contour sets. Off by
+                  default, because a viewer need not draw line topology and Apple's
+                  (Preview, Quick Look) draws it as triangles — long straight shards
+                  across the model. The plan view answers the same question in 2D.
   --output FILE   the .glb to write
   --svg FILE      the plan view to write, one SVG group per step
   --view x0,y0,x1,y1  the window the plan shows, in local metres (default: the bbox)
@@ -97,6 +105,7 @@ fn run(args: &Args) -> Result<(), String> {
             Step::Drape => drape::run(&mut world, &args.segments)
                 .map_err(|e| format!("{}: {e}", args.segments.display()))?,
             Step::Profile => profile::run(&mut world),
+            Step::Crossing => crossing::run(&mut world),
             Step::Facade => facade::run(&mut world, args.buildings.as_deref())
                 .map_err(|e| format!("{}: {e}", args.buildings.as_deref().unwrap_or(Path::new("")).display()))?,
             Step::Ribbon => ribbon::run(&mut world),
@@ -105,7 +114,6 @@ fn run(args: &Args) -> Result<(), String> {
             Step::Fillet => fillet::run(&mut world),
             Step::Room => room::run(&mut world),
             Step::Mesh => mesh::run(&mut world),
-            Step::Crossing => crossing::run(&mut world),
             Step::Bench => bench::run(&mut world),
             Step::Structure => structure::run(&mut world),
         };
@@ -116,7 +124,7 @@ fn run(args: &Args) -> Result<(), String> {
     }
     if let Some(output) = &args.output {
         let t = Instant::now();
-        let glb = gltf::write_glb(&world);
+        let glb = gltf::write_glb(&world, args.outlines);
         std::fs::write(output, &glb).map_err(|e| format!("{}: {e}", output.display()))?;
         println!("gltf     bytes={}  {:.2}s  {}", glb.len(), t.elapsed().as_secs_f64(), output.display());
     }
@@ -141,6 +149,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut spacing = 2.0;
     let mut max_vertices = 2_000_000;
     let mut until = Step::Structure;
+    let mut outlines = false;
     while let Some(flag) = it.next() {
         match flag.as_str() {
             "--bbox" => bbox = Some(parse_bbox(&value(&mut it, "--bbox")?)?),
@@ -156,6 +165,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
                 max_vertices = parse_num(&value(&mut it, "--max-vertices")?, "--max-vertices")?
             }
             "--until" => until = value(&mut it, "--until")?.parse()?,
+            "--outlines" => outlines = true,
             "-h" | "--help" => return Err("help".into()),
             other => return Err(format!("unknown flag {other}")),
         }
@@ -187,7 +197,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     if let Some(spec) = buildings.as_ref().and_then(|b| b.to_str()).filter(|s| facade::is_spec(s)) {
         facade::parse(spec).map_err(|e| format!("invalid --buildings: {e}"))?;
     }
-    Ok(Args { bbox, terrain, segments, buildings, output, svg, view, spacing, max_vertices, until })
+    Ok(Args { bbox, terrain, segments, buildings, output, svg, view, spacing, max_vertices, until, outlines })
 }
 
 /// A synthetic terrain spec without an origin takes the bbox centre, and the

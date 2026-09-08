@@ -266,6 +266,21 @@ cargo build --release --manifest-path world/Cargo.toml
     --bbox 6.89,46.41,6.96,46.45 --output /tmp/claude/world.glb
 ```
 
+**The GLB carries triangles only unless `--outlines` asks otherwise.** Six
+layers are the world — `ground`, `carriageway`, `pavement`, `roadway`,
+`deck`, `bore` — and eight are construction lines: the draped centrelines,
+the solved profiles, and the ribbon, surface, kerb, fillet, room and facade
+contours. Those eight are glTF `LINES`, and **a viewer is not obliged to
+draw line topology**: Apple's (Preview, Quick Look, anything on that
+pipeline) reads the line index buffer as triangles instead and invents a
+long straight shard between every pair of vertices that are neighbours in
+the buffer, in the layer's own colour, right across the model. That looks
+exactly like a geometry defect and is not one — the file is valid glTF and
+Blender draws it correctly. So they are off by default, `--outlines` puts
+them back, and the plan view answers the same 2D question anyway. When a
+straight line does cross the model *in Blender*, it is real: measure the
+edge lengths per node before believing a render.
+
 The run prints one line per step. The output is byte-deterministic, so
 `cmp` between two runs over the same inputs is a regression gate; a
 difference means something moved. `--terrain 'ramp?grade=0.05'` (or `flat`,
@@ -302,21 +317,6 @@ bore. `net:straight?span=0.3,0.7[&kind=tunnel]` is the specimen; the plan
 view draws cut in blue and fill in red along the axis, a deck dashed and a
 bore dotted; the GLB gains a `profile` line node at the solved heights.
 
-The `mesh` step triangulates the carriageway and the pavement **conforming
-to the terrain lattice**: each region is ear-clipped and every ear cut by
-the lattice's columns, rows and cell diagonals, so every triangle lies in
-one terrain triangle and, with its vertices at `height_at`, on the ground
-to the ulp — the drape guarantee for areas. The bench step then moves
-them off it; on a flat ground the two stay coplanar and z-fight in any
-3D viewer, so hide the terrain to see them.
-Its summary line: `lost_m2` (region area the triangles miss), `off_ground`
-(the largest height a triangle's centroid stands off the terrain),
-`seam` (the mesh's one-sided edge length less the regions' perimeter: a
-crack or an overlap shows here, and it reads 6e-9 m on the box),
-`washed`/`lossy` (regions the ear clipper misread; a washed one was read
-right from the kernel's union of it), `slivers`, `welded`. The rings are
-cleaned at the kernel's lattice (`COLLINEAR_M`, 0.1 mm) before clipping:
-the kernel leaves straight edges zigzagging by a few hundredths of a
 The `crossing` step is the only thing in the model that couples the
 height of one way to the height of another. Two carriageway axes whose
 **interiors** cross in plan with no connector between them are a grade
@@ -351,6 +351,21 @@ arrives, is senior and enters as a constant. The plan view rings every
 crossing green where the clearance was met and red where it was not, over
 everything else, with what was asked and what was got in its title.
 
+The `mesh` step triangulates the carriageway and the pavement **conforming
+to the terrain lattice**: each region is ear-clipped and every ear cut by
+the lattice's columns, rows and cell diagonals, so every triangle lies in
+one terrain triangle and, with its vertices at `height_at`, on the ground
+to the ulp — the drape guarantee for areas. The bench step then moves
+them off it; on a flat ground the two stay coplanar and z-fight in any
+3D viewer, so hide the terrain to see them.
+Its summary line: `lost_m2` (region area the triangles miss), `off_ground`
+(the largest height a triangle's centroid stands off the terrain),
+`seam` (the mesh's one-sided edge length less the regions' perimeter: a
+crack or an overlap shows here, and it reads 6e-9 m on the box),
+`washed`/`lossy` (regions the ear clipper misread; a washed one was read
+right from the kernel's union of it), `slivers`, `welded`. The rings are
+cleaned at the kernel's lattice (`COLLINEAR_M`, 0.1 mm) before clipping:
+the kernel leaves straight edges zigzagging by a few hundredths of a
 millimetre and spikes a lattice cell wide, and the clipper turns both into
 T-junctions. The plan view draws the wireframe in windows under 100 m.
 
