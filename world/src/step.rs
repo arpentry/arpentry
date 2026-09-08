@@ -14,6 +14,9 @@ pub enum Step {
     /// One height along every carriageway axis: the ground, grade-limited
     /// and boxed per class, chorded across the mapped spans.
     Profile,
+    /// The clearances a grade separation demands, spread along the network
+    /// as a floor the profile re-solves on.
+    Crossing,
     /// Building footprints read from the buildings source: what nothing
     /// paved may enter, less the passages ways run through.
     Facade,
@@ -41,10 +44,11 @@ pub enum Step {
 
 impl Step {
     /// Every step, in the order the pipeline runs them.
-    pub const ALL: [Step; 12] = [
+    pub const ALL: [Step; 13] = [
         Step::Terrain,
         Step::Drape,
         Step::Profile,
+        Step::Crossing,
         Step::Facade,
         Step::Ribbon,
         Step::Surface,
@@ -62,6 +66,7 @@ impl Step {
             Step::Terrain => "terrain",
             Step::Drape => "drape",
             Step::Profile => "profile",
+            Step::Crossing => "crossing",
             Step::Facade => "facade",
             Step::Ribbon => "ribbon",
             Step::Surface => "surface",

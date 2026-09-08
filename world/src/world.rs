@@ -21,6 +21,7 @@ pub struct World {
     pub terrain: Option<Terrain>,
     pub roads: Option<Roads>,
     pub profile: Option<Profiles>,
+    pub crossing: Option<Crossings>,
     pub facade: Option<Facade>,
     pub ribbons: Option<Ribbons>,
     pub surface: Option<Surface>,
@@ -43,6 +44,7 @@ impl World {
             terrain: None,
             roads: None,
             profile: None,
+            crossing: None,
             facade: None,
             ribbons: None,
             surface: None,
@@ -225,6 +227,44 @@ impl Profile {
 #[derive(Debug, Clone, Default)]
 pub struct Profiles {
     pub profiles: Vec<Profile>,
+}
+
+/// One place two carriageway axes cross in plan with no connector between
+/// them: a grade separation, and the only thing in the model that couples
+/// the height of one way to the height of another.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Crossing {
+    /// Where the two axes cross, in local metres.
+    pub at: [f64; 2],
+    /// The piece above, by the level ordinals, and the piece below: an
+    /// index into [`Profiles::profiles`], and the level the source mapped.
+    pub upper: (usize, i64),
+    pub lower: (usize, i64),
+    /// The separation the pair needs, in metres, between the two roadways.
+    pub need: f64,
+    /// What they had before the floor, and what they have after it.
+    pub had: f64,
+    pub have: f64,
+}
+
+impl Crossing {
+    /// What the crossing is short of, in metres, after the solve; zero or
+    /// less is met.
+    pub fn shortfall(&self) -> f64 {
+        self.need - self.have
+    }
+}
+
+/// Every crossing the network has, and what the floor spent on them.
+#[derive(Debug, Clone, Default)]
+pub struct Crossings {
+    pub crossings: Vec<Crossing>,
+    /// Two axes crossing at the same level with no connector between them:
+    /// a data error, counted and not solved.
+    pub same: Vec<[f64; 2]>,
+    /// The floor, in metres, at every station of every profile: what the
+    /// crossings asked the ground to become. Indexed as the profiles.
+    pub floor: Vec<Vec<f64>>,
 }
 
 /// The buildings: what nothing paved may enter.

@@ -11,6 +11,8 @@
 //!   [&span=0.35,0.65&kind=bridge|tunnel&level=1]  with a mapped span over that fraction of it
 //! net:tee[?d=8][&hook=5]                      two halves of it and a leg from the north, meeting at the origin; with `d`, a sidewalk `d` m off both axes wrapping the north-west corner; with `hook`, road-e turns back north on that radius
 //! net:cross                                   four legs meeting at the origin
+//! net:overpass[?span=0.35,0.65&level=1]       the way along x and a leg along y crossing it, mapped as a bridge over the crossing: interiors crossing, no shared connector
+//! net:underpass[?span=0.35,0.65&level=1]      the same with the leg mapped as a tunnel
 //! net:hairpin?angle=20                        one way bent by `angle` degrees at the origin
 //! net:dual?gap=4                              two ways, their kerbs `gap` m apart
 //! net:sidewalk?d=6[&gap=0]                    the way and a sidewalk `d` m off its axis, in two halves `gap` m apart if `gap`
@@ -76,6 +78,27 @@ pub fn parse(spec: &str) -> Result<Vec<Polyline2>, String> {
             if let Some(d) = params.get("d") {
                 let d: f64 = d.parse().map_err(|_| format!("invalid d: {d}"))?;
                 ways.push(walk("walk", "sidewalk", vec![[-half, d], [-1.5 * d, d], [-d, 1.5 * d], [-d, half]]));
+            }
+            ways
+        }
+        // The one pair of ways the model couples: their interiors cross,
+        // they share no connector, and the leg carries the level ordinal
+        // that says which of the two is meant to leave the ground. The
+        // span is the annotation, not the answer — on flat ground its
+        // chord starts at grade and the crossing step is what lifts it.
+        "overpass" | "underpass" => {
+            let level = params.num("level", 1.0)?.abs().max(1.0) as i64;
+            let kind = if name == "overpass" { Kind::Bridge(level) } else { Kind::Tunnel(-level) };
+            let span = match params.get("span") {
+                None => (0.35, 0.65),
+                Some(_) => span_of(&params)?.expect("span= is set").0,
+            };
+            let mut ways = vec![x_road("road")];
+            for mut w in spanned("leg", class, "", 0.0, half, Some((span, kind))) {
+                for p in &mut w.pts {
+                    *p = [p[1], p[0]];
+                }
+                ways.push(w);
             }
             ways
         }
@@ -284,6 +307,8 @@ mod tests {
             ("net:straight", 1),
             ("net:tee", 3),
             ("net:cross", 4),
+            ("net:overpass", 4),
+            ("net:underpass", 4),
             ("net:hairpin", 1),
             ("net:dual", 2),
             ("net:sidewalk", 2),
@@ -333,6 +358,22 @@ mod tests {
         assert_eq!(ways[0].kind, Kind::Tunnel(-2));
         assert!(parse("net:straight?span=0.7,0.3").is_err());
         assert!(parse("net:straight?span=0.3,0.7&kind=viaduct").is_err());
+    }
+
+    #[test]
+    fn an_overpass_crosses_the_road_without_meeting_it() {
+        let ways = parse("net:overpass?len=200").unwrap();
+        assert_eq!(ways[0].pts, vec![[-100.0, 0.0], [100.0, 0.0]], "the road along x");
+        let kinds = ways.iter().map(|w| w.kind).collect::<Vec<_>>();
+        assert_eq!(kinds, [Kind::Ground, Kind::Ground, Kind::Bridge(1), Kind::Ground]);
+        // The leg runs along y through the origin, in three pieces that
+        // share their ends and none of which ends on the road.
+        let leg: Vec<&Polyline2> = ways.iter().filter(|w| w.id == "leg").collect();
+        assert_eq!(leg[0].pts, vec![[0.0, -100.0], [0.0, -30.0]]);
+        assert_eq!(leg[1].pts, vec![[0.0, -30.0], [0.0, 30.0]]);
+        assert!(ways.iter().all(|w| w.pts.iter().all(|p| *p != [0.0, 0.0])), "no connector at the crossing");
+        let ways = parse("net:underpass?level=2").unwrap();
+        assert_eq!(ways.iter().find(|w| w.kind.is_structure()).unwrap().kind, Kind::Tunnel(-2));
     }
 
     #[test]

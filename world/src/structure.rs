@@ -398,7 +398,7 @@ mod tests {
     use std::path::Path;
 
     use crate::terrain::{self, tests::dem};
-    use crate::{bench, drape, facade, fillet, kerb, mesh, profile, ribbon, room, surface};
+    use crate::{bench, crossing, drape, facade, fillet, kerb, mesh, profile, ribbon, room, surface};
 
     use super::*;
 
@@ -408,6 +408,7 @@ mod tests {
         terrain::run(&mut w, &mut dem(ground), 5.0, usize::MAX);
         drape::run(&mut w, Path::new(net)).unwrap();
         profile::run(&mut w);
+        crossing::run(&mut w);
         facade::run(&mut w, None).unwrap();
         ribbon::run(&mut w);
         surface::run(&mut w);
@@ -559,6 +560,35 @@ mod tests {
         };
         assert!((under(-3.0, 3.0) - DECK_THICKNESS_M).abs() < 0.01, "{}", under(-3.0, 3.0));
         assert!((under(38.0, 42.0) - WALK_DECK_M).abs() < 0.01, "{}", under(38.0, 42.0));
+    }
+
+    #[test]
+    fn an_overpass_gets_its_embankment_and_its_deck_from_the_steps_it_already_had() {
+        // On flat ground the mapped span degrades in step 9 — a chord at
+        // grade is not a bridge — and the crossing step's floor is what
+        // makes it one. Neither the bench nor this step learns a rule:
+        // the fill is the embankment the approach now stands on, and the
+        // 5 m the soffit clears is exactly the headroom that was asked
+        // for, the 1.5 m slab having been the rest of the demand.
+        let (w, s) = world("flat", "net:overpass?len=300");
+        assert_eq!(s.num("decks"), 1.0, "{s}");
+        assert_eq!(s.num("bores"), 0.0, "{s}");
+        assert_eq!(s.num("grounded"), 0.0, "{s}");
+        assert_eq!(s.num("buried"), 0.0, "{s}");
+        assert!((s.num("clear") - crate::crossing::ROAD_CLEARANCE_M).abs() < 1e-6, "{s}");
+        // The approach is the bench's: its asphalt rides the fill all the
+        // way up to the abutment, and the deck's top is the same surface
+        // (the bench and this step read one profile).
+        let b = w.bench.as_ref().unwrap();
+        let top = b.carriageway.positions.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max);
+        assert!((top - 406.5).abs() < 1e-6, "{top}");
+        // The mirror: the leg is cut into the ground and the bore's crown
+        // carries the road above it on the slab's thickness.
+        let (_, s) = world("flat", "net:underpass?len=300");
+        assert_eq!(s.num("bores"), 1.0, "{s}");
+        assert_eq!(s.num("decks"), 0.0, "{s}");
+        assert_eq!(s.num("open"), 0.0, "{s}");
+        assert!((s.num("cover") - DECK_THICKNESS_M).abs() < 1e-6, "{s}");
     }
 
     #[test]

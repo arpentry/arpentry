@@ -21,7 +21,10 @@ use arpentry_world::step::Step;
 use arpentry_world::world::World;
 use arpentry_world::frame::Rect;
 use arpentry_world::net;
-use arpentry_world::{bench, drape, facade, fillet, gltf, kerb, mesh, profile, ribbon, room, structure, surface, svg, terrain};
+use arpentry_world::{
+    bench, crossing, drape, facade, fillet, gltf, kerb, mesh, profile, ribbon, room, structure, surface, svg,
+    terrain,
+};
 
 struct Args {
     bbox: Bounds,
@@ -51,6 +54,7 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
                   hairpin?angle=20|dual?gap=4|roundabout?r=15&d=5|
                   sidewalk?d=6|corner?d=5[&split=1]|crossing?d=6|stub?d=0.5|
                   driveway?d=6[&short=0] [&len=200&class=residential]
+                  overpass[?span=0.35,0.65&level=1]|underpass|
                   (overrides --zone, and leaves the world without buildings unless --buildings says otherwise)
   --buildings     an Overture building.parquet, `none`, or a synthetic house:
                   house:beside?d=2[&x=0&l=10&w=10&side=1&notch=0&deep=1] | house:across[?x=0&l=10&w=12&rot=0] |
@@ -58,7 +62,7 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
                   (overrides --zone)
   --spacing M     terrain lattice spacing in metres (default 2)
   --max-vertices  cap on terrain vertices; the spacing grows to fit (default 2000000)
-  --until STEP    stop after this step: terrain | drape | profile | facade | ribbon | surface | kerb | fillet | room | mesh | bench | structure
+  --until STEP    stop after this step: terrain | drape | profile | crossing | facade | ribbon | surface | kerb | fillet | room | mesh | bench | structure
                   (default structure)
   --output FILE   the .glb to write
   --svg FILE      the plan view to write, one SVG group per step
@@ -101,6 +105,7 @@ fn run(args: &Args) -> Result<(), String> {
             Step::Fillet => fillet::run(&mut world),
             Step::Room => room::run(&mut world),
             Step::Mesh => mesh::run(&mut world),
+            Step::Crossing => crossing::run(&mut world),
             Step::Bench => bench::run(&mut world),
             Step::Structure => structure::run(&mut world),
         };

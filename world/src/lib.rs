@@ -20,6 +20,7 @@
 //! for that to stay true.
 
 pub mod bench;
+pub mod crossing;
 pub mod drape;
 pub mod facade;
 pub mod fillet;

@@ -270,15 +270,19 @@ The run prints one line per step. The output is byte-deterministic, so
 `cmp` between two runs over the same inputs is a regression gate; a
 difference means something moved. `--terrain 'ramp?grade=0.05'` (or `flat`,
 `hill`, `step`) swaps the DEM for a synthetic ground, and `--segments
-net:cross` (or `straight`, `tee`, `hairpin?angle=20`, `dual?gap=4`,
-`tee?d=8&hook=5`, `sidewalk?d=6`, `corner[?split=1]`, `crossing`, `stub?d=0.5`,
-`driveway?d=6`, `roundabout`) swaps the parquet for a synthetic
+net:cross` (or `straight`, `tee`, `overpass`, `underpass`,
+`hairpin?angle=20`, `dual?gap=4`, `tee?d=8&hook=5`, `sidewalk?d=6`,
+`corner[?split=1]`, `crossing`, `stub?d=0.5`, `driveway?d=6`,
+`roundabout`) swaps the parquet for a synthetic
 network, where a step's output is an assertion rather than a look.
 `--until terrain` stops after a step; the steps so far are `terrain`,
-`drape`, `profile`, `facade`, `ribbon`, `surface`, `kerb`, `fillet`,
-`room`, `mesh`, `bench`, `structure`. The 2D plan is `data/plans/flat-network-2026-09-06.md`; the vertical
-one (profile → mesh → bench → structure → crossing) is
-`data/plans/surface-leaves-the-plane-2026-09-08.md`.
+`drape`, `profile`, `crossing`, `facade`, `ribbon`, `surface`, `kerb`,
+`fillet`, `room`, `mesh`, `bench`, `structure`. The 2D plan is
+`data/plans/flat-network-2026-09-06.md`; the vertical one (profile →
+mesh → bench → structure → crossing) is
+`data/plans/surface-leaves-the-plane-2026-09-08.md`. **The order the
+steps were written is not the order they run in**: `crossing` re-solves
+the profile, so it lands where the profile is read, fourth.
 
 The reader cuts every way at its bridge, tunnel and indoor span boundaries
 and keeps every piece with its `kind`: the ground pieces are `Roads.plan`,
@@ -313,6 +317,40 @@ crack or an overlap shows here, and it reads 6e-9 m on the box),
 right from the kernel's union of it), `slivers`, `welded`. The rings are
 cleaned at the kernel's lattice (`COLLINEAR_M`, 0.1 mm) before clipping:
 the kernel leaves straight edges zigzagging by a few hundredths of a
+The `crossing` step is the only thing in the model that couples the
+height of one way to the height of another. Two carriageway axes whose
+**interiors** cross in plan with no connector between them are a grade
+separation — Overture cuts a way at every connector, so a junction is
+always a meeting of way ends — and the upper must clear the lower by
+`ROAD_CLEARANCE_M` (5 m) plus the slab, or, over a bore, by the tunnel's
+own `TUNNEL_HEIGHT_M` plus the cover: 6.5 m either way today, because a
+tunnel is as high inside as a road is over a road. **What moves is the
+one further from the ground**: at a road over a road the bridge lifts, at
+a road over a tunnel the bore dips, by the level ordinals alone. The
+deficit is spread along the network by a Dijkstra decaying at the class's
+ramp grade — a *floor*, never a tent at one node — so 6.5 m of clearance
+buys 43 m of approach at a street's 15 %, and the profile re-solves with
+the floor added to the ground it solves against. Nothing downstream
+learns a rule: on flat ground `net:overpass` degrades in the profile step
+(a chord at grade is not a bridge), and after the floor the bench reads
+`fill` 6.5 m and the structure reads one deck whose soffit clears the
+ground by exactly 5 m; `net:underpass` reads `cut` 6.5 m and one bore
+whose crown lies exactly 1.5 m under it. **A chord is charged whole**: a
+span is solved as a straight line between its abutments, so the demand
+goes to every station of the chain rather than to the crossing, or the
+deck would be lifted at its ends and left under the road in the middle.
+Its summary line: `crossings`, `same` (two interiors at one level — a
+data error, counted and not solved), `orphan` (a demand with no solved
+piece on both sides: zero by construction, docs/GENERATION.md §4.5),
+`demands`, `lift` (the largest displacement spent), `ramped` (stations
+the floor moved), `clearance` (demands still short) and `short`. On the
+loop box: 39 crossings, 0 same, 0 orphan, **6 demands**, `lift` 4.61 m,
+`ramped` 0.47 %, `clearance` 0/39, in 0.01 s. Walks are not in it (the S
+stratum only, and a draped class never solves), and rail, when it
+arrives, is senior and enters as a constant. The plan view rings every
+crossing green where the clearance was met and red where it was not, over
+everything else, with what was asked and what was got in its title.
+
 millimetre and spikes a lattice cell wide, and the clipper turns both into
 T-junctions. The plan view draws the wireframe in windows under 100 m.
 

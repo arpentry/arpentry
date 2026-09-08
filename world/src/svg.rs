@@ -26,8 +26,8 @@ use crate::frame::Rect;
 use crate::poly::{self, Shapes};
 use crate::width::{self, Family};
 use crate::world::{
-    Bench, Facade, Fillet, Kerb, Kind, Polyline3, Profile, Profiles, Ribbon, Room, Solved, Structure, Surface,
-    Tri, World,
+    Bench, Crossings, Facade, Fillet, Kerb, Kind, Polyline3, Profile, Profiles, Ribbon, Room, Solved, Structure,
+    Surface, Tri, World,
 };
 
 /// Decimal places written per coordinate: a centimetre.
@@ -116,6 +116,12 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
         bench(&mut s, b, &view);
     } else if let Some(m) = &world.mesh {
         mesh(&mut s, &[("carriageway", &m.carriageway), ("pavement", &m.pavement)], &view);
+    }
+    // The crossings last of the layers: a mark, not a surface, and the
+    // one thing here drawn over the asphalt on purpose — a ring under an
+    // opaque roadway is a ring nobody finds.
+    if let Some(c) = &world.crossing {
+        crossing(&mut s, c, &view);
     }
     if let Some(roads) = &world.roads {
         let lines: Vec<&Polyline3> = roads.lines.iter().filter(|l| touches(&l.pts, &view)).collect();
@@ -399,6 +405,43 @@ fn profile(s: &mut String, p: &Profiles, view: &Rect) {
             flush(&mut run);
         }
         s.push_str("</g>\n");
+    }
+    s.push_str("</g>\n");
+}
+
+/// Radius in metres of a crossing's mark: wide enough to find at a town's
+/// zoom, narrow enough not to hide the two axes under it.
+const CROSSING_R_M: f64 = 3.0;
+
+/// The crossing layer: one ring per grade separation — green where the
+/// solve met the clearance, red where it did not — and an orange disc
+/// where two interiors cross at one level, which is a data error and the
+/// one thing here that is not solved. The mark carries what was asked and
+/// what was got, so a red one is read without re-deriving anything.
+fn crossing(s: &mut String, c: &Crossings, view: &Rect) {
+    s.push_str("<g id=\"crossing\" fill=\"none\">\n");
+    for x in c.crossings.iter().filter(|x| view.contains(x.at)) {
+        let met = x.shortfall() <= 0.0;
+        let _ = write!(
+            s,
+            "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" stroke=\"{}\" stroke-width=\"0.6\"><title>need {:.2} had {:.2} have {:.2}</title></circle>\n",
+            num(x.at[0]),
+            num(-x.at[1]),
+            num(CROSSING_R_M),
+            if met { "#2f8f4e" } else { "#d84a3a" },
+            x.need,
+            x.had,
+            x.have
+        );
+    }
+    for p in c.same.iter().filter(|p| view.contains(**p)) {
+        let _ = write!(
+            s,
+            "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"#e08a20\"><title>same level</title></circle>\n",
+            num(p[0]),
+            num(-p[1]),
+            num(CROSSING_R_M)
+        );
     }
     s.push_str("</g>\n");
 }

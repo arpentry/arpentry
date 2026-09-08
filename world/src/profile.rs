@@ -158,6 +158,22 @@ pub struct Loose {
 
 /// The profiles of `pieces` on `terrain`, and what could not be anchored.
 pub fn solve(terrain: &Terrain, pieces: &[&Polyline2]) -> (Vec<Profile>, Loose) {
+    solve_on(terrain, pieces, &[])
+}
+
+/// The same, over a *floor*: a displacement in metres the crossing step
+/// adds to the ground at each station, indexed as `pieces` and then by
+/// station, so an overpass's approach is built on the embankment its
+/// clearance demands rather than on the hillside underneath it. Empty is
+/// no floor, and [`solve`] is this with none.
+///
+/// The floor moves the **target**, not the answer: the anchor at a
+/// connector, the value the grade limiter smooths and the centre of the
+/// deviation box all read `ground + floor`, while [`Station::ground`]
+/// stays the natural ground the whole way down — so the consequence rule
+/// of step 9 still asks "how far off the *hill* does this stand", and an
+/// approach lifted past [`STRUCTURE_MIN_M`] reads as the deck it is.
+pub fn solve_on(terrain: &Terrain, pieces: &[&Polyline2], floor: &[Vec<f64>]) -> (Vec<Profile>, Loose) {
     // Stations and the ground under them.
     let stationed: Vec<Vec<Station>> = pieces
         .iter()
@@ -176,15 +192,32 @@ pub fn solve(terrain: &Terrain, pieces: &[&Polyline2]) -> (Vec<Profile>, Loose) 
         })
         .collect();
 
-    // Anchors: every connector a ground piece ends at takes the ground
+    // The target: the ground, raised or lowered by the floor. Two pieces
+    // meeting at one connector read one floor value there (the crossing
+    // step joins them at no cost), so the anchor below is the same number
+    // whichever of them inserts it.
+    let target: Vec<Vec<f64>> = stationed
+        .iter()
+        .enumerate()
+        .map(|(i, sts)| {
+            sts.iter()
+                .enumerate()
+                .map(|(k, st)| st.ground + floor.get(i).and_then(|f| f.get(k)).copied().unwrap_or(0.0))
+                .collect()
+        })
+        .collect();
+
+    // Anchors: every connector a ground piece ends at takes the target
     // there, once, and every piece ending there reads that one number.
     let mut anchors: HashMap<(i64, i64), f64> = HashMap::new();
-    for (w, sts) in pieces.iter().zip(&stationed) {
+    for (i, w) in pieces.iter().enumerate() {
         if w.kind != Kind::Ground {
             continue;
         }
-        for st in [sts.first(), sts.last()].into_iter().flatten() {
-            anchors.entry(connector(st.p)).or_insert(st.ground);
+        for k in [0, stationed[i].len().saturating_sub(1)] {
+            if let Some(st) = stationed[i].get(k) {
+                anchors.entry(connector(st.p)).or_insert(target[i][k]);
+            }
         }
     }
 
@@ -249,7 +282,7 @@ pub fn solve(terrain: &Terrain, pieces: &[&Polyline2]) -> (Vec<Profile>, Loose) 
             continue;
         }
         loose.unanchored += 1;
-        let grounds = stationed[i].iter().map(|st| st.ground);
+        let grounds = target[i].iter().copied();
         let flat = match pieces[i].kind {
             Kind::Tunnel(_) => grounds.fold(f64::INFINITY, f64::min),
             _ => grounds.fold(f64::NEG_INFINITY, f64::max),
@@ -262,15 +295,15 @@ pub fn solve(terrain: &Terrain, pieces: &[&Polyline2]) -> (Vec<Profile>, Loose) 
     let profiles = pieces
         .iter()
         .zip(stationed)
-        .map(|(w, mut sts)| {
+        .enumerate()
+        .map(|(i, (w, mut sts))| {
             let (a, b) = key_of(&sts);
             let (h0, h1) = (heights[&a], heights[&b]);
             if w.kind == Kind::Ground {
                 let g = grade::of(&w.class);
-                let ground: Vec<f64> = sts.iter().map(|st| st.ground).collect();
                 let arc: Vec<f64> = sts.iter().map(|st| st.s).collect();
                 let ceiling = if g.limited() { g.ceiling.unwrap_or(f64::INFINITY) } else { f64::INFINITY };
-                let h = limit(&ground, &arc, ceiling, g.deviation_m, (h0, h1));
+                let h = limit(&target[i], &arc, ceiling, g.deviation_m, (h0, h1));
                 for (st, h) in sts.iter_mut().zip(h) {
                     st.h = h;
                 }

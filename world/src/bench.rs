@@ -671,7 +671,7 @@ pub(crate) mod tests {
 
     use crate::terrain::{self, tests::dem};
     use crate::world::Solved;
-    use crate::{drape, facade, fillet, kerb, mesh, profile, ribbon, room, surface};
+    use crate::{crossing, drape, facade, fillet, kerb, mesh, profile, ribbon, room, surface};
 
     use super::*;
 
@@ -682,6 +682,7 @@ pub(crate) mod tests {
         terrain::run(&mut w, &mut dem(ground), 5.0, usize::MAX);
         drape::run(&mut w, Path::new(net)).unwrap();
         profile::run(&mut w);
+        crossing::run(&mut w);
         facade::run(&mut w, houses.map(Path::new)).unwrap();
         ribbon::run(&mut w);
         surface::run(&mut w);
@@ -962,6 +963,25 @@ pub(crate) mod tests {
         assert_eq!(s.num("cut"), 0.0, "{s}");
         assert!(s.num("touched") <= 0.0, "{s}");
         assert_eq!(s.num("walled"), 0.0, "{s}");
+    }
+
+    #[test]
+    fn an_overpass_stands_on_fill_the_ground_answers_with_a_wall() {
+        // The crossing step lifts the approach 6.5 m and the earthwork is
+        // this step's to owe: all fill, no cut, on flat ground. The ground
+        // cannot batter it — a 6.5 m face at 1 in 2.5 is more than twice
+        // MAX_BENCH_FACE_M — so it is *walled* at the kerb and counted,
+        // which is the abutment block the plan defers showing up as a
+        // number rather than as a defect nobody measured.
+        let (_, s) = world("flat", "net:overpass?len=300", None);
+        assert!((s.num("fill") - 6.5).abs() < 1e-6, "{s}");
+        assert_eq!(s.num("cut"), 0.0, "{s}");
+        assert!(s.num("walled") > 0.0, "{s}");
+        assert!((s.num("wall") - 6.5).abs() < 0.01, "{s}");
+        // The mirror digs the same 6.5 m out of the ground instead.
+        let (_, s) = world("flat", "net:underpass?len=300", None);
+        assert!((s.num("cut") - 6.5).abs() < 1e-6, "{s}");
+        assert_eq!(s.num("fill"), 0.0, "{s}");
     }
 
     #[test]
