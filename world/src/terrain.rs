@@ -12,15 +12,23 @@ use crate::grid::Grid;
 use crate::step::Summary;
 use crate::world::{Terrain, World};
 
-/// The DEM zoom every height is sampled at. Mapterhorn's z16 is ~0.8 m per
-/// pixel near 46°, finer than the default 2 m lattice; one fixed zoom means
-/// one ground, whatever the bbox size.
+/// The DEM zoom every height is *asked* for. One fixed zoom means one ground,
+/// whatever the bbox size.
+///
+/// It is not necessarily the zoom that answers: [`Dem`] clamps the request to
+/// the range its archive carries, and the clamp is silent. z16 is ~0.8 m per
+/// pixel near 46°, but the montreux extract — cut by `cut-zone.sh` asking for
+/// z13–18 — tops out at z14, ~3.3 m per pixel, because the `terrain-hires`
+/// source it was cut from has no more. So the run reports `dem_z`: what the
+/// ground can actually resolve, beside what the lattice was built at. Where
+/// the two disagree by much, the extra vertices are interpolation.
 pub const ZOOM: u8 = 16;
 
 /// Builds the terrain layer at about `spacing` metres, at most `cap`
 /// vertices (see [`Grid::fit`]).
 pub fn run(world: &mut World, dem: &mut Dem, spacing: f64, cap: usize) -> Summary {
     let grid = Grid::fit(&world.rect, spacing, cap);
+    let served = dem.served_zoom(ZOOM);
     let terrain = build(&grid, &mut |x, y| {
         let (lon, lat) = world.frame.to_geo(x, y);
         dem.elevation(lon, lat, ZOOM)
@@ -29,10 +37,27 @@ pub fn run(world: &mut World, dem: &mut Dem, spacing: f64, cap: usize) -> Summar
         .with("vertices", terrain.grid.vertex_count())
         .with("cells", format!("{}x{}", grid.cols, grid.rows))
         .with("spacing", format!("{:.2}x{:.2}", grid.dx, grid.dy))
+        .with("dem_z", dem_zoom(served, world, &grid))
         .with("zmin", format!("{:.1}", terrain.zmin))
         .with("zmax", format!("{:.1}", terrain.zmax));
     world.terrain = Some(terrain);
     summary
+}
+
+/// How the run reports the ground's own resolution: the zoom served, its
+/// pixel pitch in metres at this latitude, and a `!` when the request was
+/// clamped — the lattice is then finer than anything the DEM can say.
+/// A field answers everywhere at every zoom, and reports as `field`.
+fn dem_zoom(served: Option<u8>, world: &World, grid: &Grid) -> String {
+    let Some(z) = served else {
+        return "field".to_string();
+    };
+    // The pitch of one 512 px Terrarium tile's pixel at the world's latitude.
+    let (_, lat) = world.frame.to_geo(0.0, 0.0);
+    let pitch = 40_075_016.7 * lat.to_radians().cos() / ((1u64 << z as u32) as f64 * 512.0);
+    let clamped = if z < ZOOM { "!" } else { "" };
+    let coarse = if pitch > 1.5 * grid.dx.max(grid.dy) { " coarser-than-lattice" } else { "" };
+    format!("z{z}{clamped}/{pitch:.2}m{coarse}")
 }
 
 /// The mesh over `grid` with heights from `sample(x, y)` in local metres.
