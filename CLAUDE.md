@@ -404,7 +404,15 @@ where the room stands further than one face from the ground at its own
 outline no batter is built at all: the bench is *walled* there, `walled`
 counts it, and **`wall_m2` of closing face is drawn between the two** — a
 step nothing spans is a hole you can see the world through, which is what
-invariant 9 forbids.
+invariant 9 forbids. **The kerb gets the same face**: the pavement stands
+`KERB_RISE_M` over the road it runs beside, and the two meshes met in plan
+and nowhere at all in the vertical, so `kerb_m2` of it is now closed too —
+the same defect and the same invariant at a twentieth of the height and a
+hundred times the length. It is built off the carriageway mesh's **own rim**
+(its boundary edges), so its plan line is a mesh edge and its foot a mesh
+vertex, and both rails are read from the meshes rather than computed as
+road-plus-rise. `tapered` counts the faces that die away at one end because
+the pavement stops there.
 
 **The seam is read, not recomputed, and it is read where both meshes cut
 their own edges.** Every outline vertex is a vertex of the room's mesh, so
@@ -415,12 +423,32 @@ ground — **at every lattice crossing along the segment**, which is where
 both meshes put a vertex anyway. Read at the ring's own corners instead,
 the ground interpolated the room's height straight across those fifty
 metres and parted company with it in between: on one 400 m road over a
-60 m hill that is `contact` 60 m and 24 000 m² of gap, and `contact` could
-not see it because it was read at those same two corners. Both are now
-measured over the dense outline. On the loop box, 15.6 s: `cut` 9.8 m,
-`fill` 12.4 m, `step` 0.40 %, `ground` 9.6 M triangles, `seam` 0/409 895,
-`contact` 2.5e-7 m, `walled` 1.14 %, `wall` 12.2 m, `wall_m2` 20 162,
-`touched` 8.8 % of lattice vertices, `off` 17 m.
+60 m hill that is 60 m of gap and 24 000 m² of it, and `contact` could not
+see it because it was read at those same two corners.
+
+**Two of this step's own checks were saying nothing, and now say it.**
+`seam` was declared, reported and never incremented — it read `0/…`
+because nothing ever counted a miss; it now reads 12 % over the loop box,
+which is how often a point of the outline is not a vertex of the room's
+mesh. And `contact` compared the ground's height at a point with the room's
+at the same point, both from the same closure, which is circular: it is now
+**mesh against mesh** — at every vertex of the room's rim that is not a
+kerb, does the ground's mesh have a vertex there (`unmet`), and where it
+does, how far apart do they stand away from the walls (`contact`)? On the
+loop box, 14.0 s: `cut` 9.8 m, `fill` 12.4 m, `step` 0.40 %, `ground`
+9.6 M triangles, `seam` 12.2 %, **`unmet` 16.7 %**, `contact` 0.18 m,
+`walled` 1.14 %, `wall` 12.2 m, `wall_m2` 20 162, `kerb_m2` 5 462,
+`touched` 8.8 %, `off` 17 m.
+
+**`unmet` is the open one.** A sixth of the room's rim vertices have no
+vertex of the ground's mesh under them: both meshes are cut from the same
+outline by the same mesher, but the room's regions and the ground's
+`rect − room` are cleaned and ear-clipped apart, so they do not agree on
+where to subdivide a shared edge. That is a T-junction, and no closing
+face mends it — the wall spans the step, but its foot may land partway
+along a ground triangle's edge rather than on a vertex of it. Giving both
+meshes one pre-subdivided outline to cut from is the fix, and it is not
+written yet.
 
 The `structure` step builds what the solved profile implies, and nothing
 else: a mapped bridge whose chord never left the ground gets no deck.

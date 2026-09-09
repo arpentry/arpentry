@@ -383,6 +383,9 @@ pub struct Bench {
     /// wall, and the only thing standing between the two meshes and a
     /// hole you can see the world through (I9).
     pub wall: Tri,
+    /// The same closure along the kerb, where the pavement stands its
+    /// rise over the carriageway: the kerb's own face.
+    pub kerb: Tri,
     /// The midpoint of every mesh edge the height field steps across —
     /// the line between two carriageways whose domains meet at different
     /// heights, which is a retaining wall — for the plan view and for

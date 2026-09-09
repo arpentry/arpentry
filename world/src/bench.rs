@@ -534,13 +534,24 @@ pub fn run(world: &mut World) -> Summary {
         let none = Shapes::new();
         let outline = poly::union_of(&[world.carriageway().unwrap_or(&none), world.walk().unwrap_or(&none)]);
         let natural = |p: Pt| height_at(terrain, p[0], p[1]);
+        // Before `seam` the binding shadows `seam` the function.
+        let pave = seam(&[&p]);
         let seam = seam(&[&c, &p]);
-        let room = |q: Pt| match seam.get(&key(q)) {
-            Some(h) => *h,
-            None => match field.at(q) {
-                Some(foot) => foot.batter(foot.h + KERB_RISE_M, natural(q)),
-                None => natural(q),
-            },
+        // `seam` had been reported and never counted: the closure fell
+        // back silently and the line read 0 of however many. It counts now.
+        let (asked, missed) = (std::cell::Cell::new(0usize), std::cell::Cell::new(0usize));
+        let room = |q: Pt| {
+            asked.set(asked.get() + 1);
+            match seam.get(&key(q)) {
+                Some(h) => *h,
+                None => {
+                    missed.set(missed.get() + 1);
+                    match field.at(q) {
+                        Some(foot) => foot.batter(foot.h + KERB_RISE_M, natural(q)),
+                        None => natural(q),
+                    }
+                }
+            }
         };
         // Both meshes cut their own boundary edges where the ring crosses
         // the lattice, so those crossings are vertices of both, and between
@@ -562,9 +573,22 @@ pub fn run(world: &mut World) -> Summary {
         earth.vertices = g.positions.len();
         earth.off = gs.off_ground;
         earth.lossy = gs.failed + gs.lossy;
+        let (rim_n, unmet, contact) = meet(&c, &p, &g, &natural);
+        earth.rim = rim_n;
+        earth.unmet = unmet;
+        earth.contact = contact;
         let (wall, wall_m2) = wall(&edge, &ground, &room, &natural);
+        // The kerb's own face, along the boundary the two families share.
+        // Read off the carriageway mesh's own rim: its plan line is a mesh
+        // edge and its foot a mesh vertex, so the closure cannot leave a
+        // T-junction on the road's side however the rings were cleaned.
+        let (kerb, kerb_m2, tapered) = kerb(&c, &pave);
+        earth.kerb_m2 = kerb_m2;
+        earth.tapered = tapered;
+        earth.unseamed = missed.get();
+        earth.asked = asked.get();
         earth.wall_m2 = wall_m2;
-        (Bench { carriageway: c, pavement: p, ground: g, wall, steps }, stats, field.len(), earth)
+        (Bench { carriageway: c, pavement: p, ground: g, wall, kerb, steps }, stats, field.len(), earth)
     };
     let summary = Summary::new()
         .with("axes", axes)
@@ -576,11 +600,14 @@ pub fn run(world: &mut World) -> Summary {
         .with_share("step", stats.steps, stats.edges)
         .with("worst", format!("{:.3}", stats.worst))
         .with("ground", format!("{}/{}", earth.triangles, earth.vertices))
-        .with_share("seam", earth.unseamed, earth.outline)
-        .with("contact", format!("{:.1e}", earth.contact))
+        .with_share("seam", earth.unseamed, earth.asked)
+        .with_share("unmet", earth.unmet, earth.rim)
+        .with("contact", format!("{:.2}", earth.contact))
         .with_share("walled", earth.walled, earth.outline)
         .with("wall", format!("{:.1}", earth.wall))
         .with_m2("wall_m2", earth.wall_m2)
+        .with_m2("kerb_m2", earth.kerb_m2)
+        .with("tapered", earth.tapered)
         .with_share("touched", earth.touched, earth.lattice)
         .with("off", format!("{:.1e}", earth.off))
         .with("lossy", earth.lossy);
@@ -642,6 +669,104 @@ fn wall(edge: &Shapes, ground: &Ground, room: &dyn Fn(Pt) -> f64, natural: &dyn 
     (tri, m2)
 }
 
+/// The kerb's own face: the step between the carriageway and the pavement
+/// running beside it, closed.
+///
+/// The pavement stands [`KERB_RISE_M`] over the road it belongs to, and
+/// the two meshes meet along the kerb in plan and nowhere at all in the
+/// vertical — a 0.12 m gap on every kerb in the model, which is the same
+/// defect the retaining wall closes and the same invariant (I9) at a
+/// twentieth of the height and a hundred times the length.
+///
+/// Both rails are read from the meshes themselves rather than computed as
+/// the road plus the rise, so a station where the pavement was battered or
+/// draped instead of lifted closes at whatever height it actually took.
+/// Where a carriageway edge has no pavement beside it — the open side of a
+/// road, the mouth of a junction — nothing stands above it and no face is
+/// drawn: that step is the room's own outline, and the wall has it.
+/// `unkerbed` counts the segments where the two meshes had no shared
+/// vertex to close between, which is a seam failure and reads zero.
+fn kerb(road: &Tri, pave: &HashMap<[i64; 2], f64>) -> (Tri, f64, usize) {
+    let mut tri = Tri::default();
+    let (mut m2, mut tapered) = (0.0, 0usize);
+    for (i, j) in rim(road) {
+        let (a, b) = (road.positions[i as usize], road.positions[j as usize]);
+        let (pa, pb) = (pave.get(&key(a)).copied(), pave.get(&key(b)).copied());
+        let (ha, hb) = (pa.unwrap_or(a[2]).max(a[2]), pb.unwrap_or(b[2]).max(b[2]));
+        if ha - a[2] <= WALL_MIN_M && hb - b[2] <= WALL_MIN_M {
+            continue;
+        }
+        // A face with a pavement over one end and none over the other
+        // tapers to nothing rather than butting against the next one: the
+        // start and end of a kerb run, and wherever the two meshes did not
+        // put a vertex in the same place.
+        tapered += (pa.is_none() || pb.is_none()) as usize;
+        let base = tri.positions.len() as u32;
+        tri.positions.extend_from_slice(&[a, [a[0], a[1], ha], [b[0], b[1], hb], b]);
+        tri.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        m2 += (ha - a[2] + hb - b[2]) / 2.0 * (b[0] - a[0]).hypot(b[1] - a[1]);
+    }
+    (tri, m2, tapered)
+}
+
+/// How the room's meshes and the ground's actually meet — mesh against
+/// mesh, which is the only way the question can be asked.
+///
+/// `contact` used to compare the ground's height at a point with the
+/// room's at the same point, both read from the same closure: it answered
+/// 2.5e-7 m and it was circular, because a point the room's mesh had no
+/// vertex at fell back to a batter the ground had sampled from the same
+/// fallback. This asks the meshes instead. At every vertex of the room's
+/// rim that is not a kerb — the kerb has its own face — does the ground's
+/// mesh have a vertex there at all, and where it does, how far apart do
+/// the two stand away from the walls?
+///
+/// `unmet` is what no closing face can mend: a T-junction, where one mesh
+/// put a vertex on a shared edge and the other did not. Both are cut from
+/// the same outline by the same mesher, but the room's regions and the
+/// ground's `rect − room` are cleaned and ear-clipped apart, so they do
+/// not agree on where to subdivide it.
+fn meet(c: &Tri, p: &Tri, g: &Tri, natural: &dyn Fn(Pt) -> f64) -> (usize, usize, f64) {
+    let (gh, ph, ch) = (seam(&[g]), seam(&[p]), seam(&[c]));
+    let (mut n, mut unmet, mut worst) = (0usize, 0usize, 0.0f64);
+    for (tri, other) in [(c, &ph), (p, &ch)] {
+        for (i, j) in rim(tri) {
+            for v in [tri.positions[i as usize], tri.positions[j as usize]] {
+                if other.contains_key(&key(v)) {
+                    continue;
+                }
+                n += 1;
+                match gh.get(&key(v)) {
+                    None => unmet += 1,
+                    Some(h) if (natural([v[0], v[1]]) - v[2]).abs() <= MAX_BENCH_FACE_M => {
+                        worst = worst.max((h - v[2]).abs())
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+    }
+    (n, unmet, worst)
+}
+
+/// A mesh's boundary edges: the directed edges no triangle uses the other
+/// way round, in the winding the one triangle that owns them gave.
+///
+/// The triangles wind counter-clockwise seen from above, so a boundary
+/// edge has the mesh's interior on its left and the outside on its right —
+/// the same hand as a region's outer ring, and a hole's boundary comes out
+/// of it the same way with no case of its own.
+fn rim(tri: &Tri) -> Vec<(u32, u32)> {
+    let mut e: Vec<(u32, u32)> = Vec::with_capacity(tri.indices.len());
+    for t in tri.indices.chunks_exact(3) {
+        for k in 0..3 {
+            e.push((t[k], t[(k + 1) % 3]));
+        }
+    }
+    e.sort_unstable();
+    e.iter().copied().filter(|(a, b)| e.binary_search(&(*b, *a)).is_err()).collect()
+}
+
 /// `outline` with every ring subdivided where it crosses the terrain
 /// lattice: the vertices the two meshes put there themselves. The seam is
 /// measured and the wall is built over these rather than over the ring's
@@ -700,8 +825,13 @@ pub struct Earth {
     /// have: the seam is exact only for the ones it did.
     pub outline: usize,
     pub unseamed: usize,
-    /// The largest disagreement, in metres, between the ground and the
-    /// room at a vertex of the outline they share.
+    pub asked: usize,
+    /// The room's rim, and how much of it the ground's mesh has no vertex
+    /// under: a T-junction, and the one thing a closing face cannot mend.
+    pub rim: usize,
+    pub unmet: usize,
+    /// The largest step, in metres, between the room's mesh and the
+    /// ground's at a vertex they do share, away from the walls.
     pub contact: f64,
     /// Outline vertices standing more than one face from the ground,
     /// where the bench is walled rather than battered, and the tallest
@@ -723,6 +853,10 @@ pub struct Earth {
     pub lossy: usize,
     /// The area of the closing face, in square metres.
     pub wall_m2: f64,
+    /// The area of the kerb's own face, and the faces of it that taper to
+    /// nothing at one end because the pavement stops there.
+    pub kerb_m2: f64,
+    pub tapered: usize,
 }
 
 impl Earth {
@@ -739,8 +873,6 @@ impl Earth {
                 if (n - r).abs() > MAX_BENCH_FACE_M {
                     e.walled += 1;
                     e.wall = e.wall.max((n - r).abs());
-                } else {
-                    e.contact = e.contact.max((ground.at(q, n) - r).abs());
                 }
             }
         }
@@ -1164,6 +1296,27 @@ pub(crate) mod tests {
         let hi = z.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         assert!((lo - 400.0).abs() < 1e-6, "the foot is off the ground: {lo}");
         assert!((hi - 406.5).abs() < 0.01, "the head is not at the roadway: {hi}");
+    }
+
+    #[test]
+    fn the_kerb_stands_its_own_face_between_the_road_and_the_pavement() {
+        // The pavement stands KERB_RISE_M over the road beside it, and the
+        // two meshes met in plan and nowhere at all in the vertical: 0.12 m
+        // of gap along every kerb in the model. A 200 m road with one
+        // sidewalk is 200 m of kerb at 0.12 m, which is 24 m².
+        let (w, s) = world("flat", "net:sidewalk?d=6", None);
+        assert!((s.num("kerb_m2") - 24.0).abs() < 3.0, "{s}");
+        let b = bench(&w);
+        let z: Vec<f64> = b.kerb.positions.iter().map(|p| p[2]).collect();
+        let lo = z.iter().cloned().fold(f64::INFINITY, f64::min);
+        let hi = z.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        assert!((lo - 400.0).abs() < 1e-9, "the foot is off the road: {lo}");
+        assert!((hi - (400.0 + KERB_RISE_M)).abs() < 1e-9, "the head is not the pavement: {hi}");
+        // And only where a pavement stands: a road with nothing beside it
+        // has no kerb to draw, only the room's own outline, which is the
+        // wall's business and not this one's.
+        let (_, s) = world("flat", "net:straight", None);
+        assert_eq!(s.num("kerb_m2"), 0.0, "{s}");
     }
 
     #[test]

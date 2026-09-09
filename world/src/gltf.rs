@@ -54,6 +54,7 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
     if let Some(b) = &world.bench {
         doc.triangles("ground", &b.ground, [0.52, 0.56, 0.44]);
         doc.triangles("wall", &b.wall, [0.60, 0.58, 0.54]);
+        doc.triangles("kerb", &b.kerb, [0.72, 0.70, 0.66]);
     } else if let Some(t) = &world.terrain {
         doc.terrain(t);
     }
