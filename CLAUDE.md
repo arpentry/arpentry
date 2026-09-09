@@ -436,19 +436,25 @@ at the same point, both from the same closure, which is circular: it is now
 kerb, does the ground's mesh have a vertex there (`unmet`), and where it
 does, how far apart do they stand away from the walls (`contact`)? On the
 loop box, 14.0 s: `cut` 9.8 m, `fill` 12.4 m, `step` 0.40 %, `ground`
-9.6 M triangles, `seam` 12.2 %, **`unmet` 16.7 %**, `contact` 0.18 m,
-`walled` 1.14 %, `wall` 12.2 m, `wall_m2` 20 162, `kerb_m2` 5 462,
-`touched` 8.8 %, `off` 17 m.
+9.6 M triangles, `seam` 3.2 %, `unmet` 0.93 %, `contact` 0.12 m (a kerb's
+rise, and the kerb's own face closes it), `walled` 1.14 %, `wall` 12.2 m,
+`wall_m2` 20 171, `kerb_m2` 7 872, `touched` 8.8 %, `off` 17 m.
 
-**`unmet` is the open one.** A sixth of the room's rim vertices have no
-vertex of the ground's mesh under them: both meshes are cut from the same
-outline by the same mesher, but the room's regions and the ground's
-`rect − room` are cleaned and ear-clipped apart, so they do not agree on
-where to subdivide a shared edge. That is a T-junction, and no closing
-face mends it — the wall spans the step, but its foot may land partway
-along a ground triangle's edge rather than on a vertex of it. Giving both
-meshes one pre-subdivided outline to cut from is the fix, and it is not
-written yet.
+**Two meshes are the same one at the kernel's grid, not at the weld.**
+`unmet` first read 16.65 % and the cause was not the meshing at all: a
+mesh welds its own vertices at `mesh::WELD_M`, a micron, and within one
+mesh that is right — but the carriageway's regions, the walk's and their
+union each come out of the polygon kernel separately, and the kernel snaps
+to `poly::GRID_M`, a tenth of a millimetre, a hundred times the weld. A
+point that has been through one more boolean than its neighbour lands up
+to half a grid away and never welds to it, so at a micron the two meshes
+look like strangers along an edge they share. Cross-mesh lookups key at
+the kernel's grid and ask the eight cells around as well: `unmet` 16.65 %
+→ **0.93 %**, `seam` 12.2 % → 3.2 %, and `kerb_m2` rose 44 % as the kerb
+faces that had been tapering to nothing found their pavement. What is left
+is a real T-junction — one mesh subdivided a shared edge where the other
+did not — and one pre-subdivided outline given to all three meshes is the
+fix for that.
 
 The `structure` step builds what the solved profile implies, and nothing
 else: a mapped bridge whose chord never left the ground gets no deck.

@@ -542,8 +542,8 @@ pub fn run(world: &mut World) -> Summary {
         let (asked, missed) = (std::cell::Cell::new(0usize), std::cell::Cell::new(0usize));
         let room = |q: Pt| {
             asked.set(asked.get() + 1);
-            match seam.get(&key(q)) {
-                Some(h) => *h,
+            match at(&seam, q) {
+                Some(h) => h,
                 None => {
                     missed.set(missed.get() + 1);
                     match field.at(q) {
@@ -691,7 +691,7 @@ fn kerb(road: &Tri, pave: &HashMap<[i64; 2], f64>) -> (Tri, f64, usize) {
     let (mut m2, mut tapered) = (0.0, 0usize);
     for (i, j) in rim(road) {
         let (a, b) = (road.positions[i as usize], road.positions[j as usize]);
-        let (pa, pb) = (pave.get(&key(a)).copied(), pave.get(&key(b)).copied());
+        let (pa, pb) = (at(pave, a), at(pave, b));
         let (ha, hb) = (pa.unwrap_or(a[2]).max(a[2]), pb.unwrap_or(b[2]).max(b[2]));
         if ha - a[2] <= WALL_MIN_M && hb - b[2] <= WALL_MIN_M {
             continue;
@@ -701,8 +701,14 @@ fn kerb(road: &Tri, pave: &HashMap<[i64; 2], f64>) -> (Tri, f64, usize) {
         // start and end of a kerb run, and wherever the two meshes did not
         // put a vertex in the same place.
         tapered += (pa.is_none() || pb.is_none()) as usize;
+        // The higher rail first. A rim edge has the mesh's interior on its
+        // left, and `[a_hi, a_lo, b_lo, b_hi]` then faces away from it —
+        // which for the wall means the room's own height leads, and for
+        // the kerb the *pavement's*, because here it is the outside that
+        // stands higher. Put the road first, as the wall puts its room,
+        // and the face is built inside out.
         let base = tri.positions.len() as u32;
-        tri.positions.extend_from_slice(&[a, [a[0], a[1], ha], [b[0], b[1], hb], b]);
+        tri.positions.extend_from_slice(&[[a[0], a[1], ha], a, b, [b[0], b[1], hb]]);
         tri.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         m2 += (ha - a[2] + hb - b[2]) / 2.0 * (b[0] - a[0]).hypot(b[1] - a[1]);
     }
@@ -732,11 +738,11 @@ fn meet(c: &Tri, p: &Tri, g: &Tri, natural: &dyn Fn(Pt) -> f64) -> (usize, usize
     for (tri, other) in [(c, &ph), (p, &ch)] {
         for (i, j) in rim(tri) {
             for v in [tri.positions[i as usize], tri.positions[j as usize]] {
-                if other.contains_key(&key(v)) {
+                if at(other, v).is_some() {
                     continue;
                 }
                 n += 1;
-                match gh.get(&key(v)) {
+                match at(&gh, v) {
                     None => unmet += 1,
                     Some(h) if (natural([v[0], v[1]]) - v[2]).abs() <= MAX_BENCH_FACE_M => {
                         worst = worst.max((h - v[2]).abs())
@@ -811,9 +817,41 @@ fn seam(tris: &[&Tri]) -> HashMap<[i64; 2], f64> {
     out
 }
 
+/// Tolerance, in metres, at which two meshes' vertices are taken to be the
+/// same one.
+///
+/// **Not [`mesh::WELD_M`].** A mesh welds its own vertices at a micron, and
+/// within one mesh that is right; but the room's regions, the walk's and
+/// their union each come out of the polygon kernel separately, and the
+/// kernel snaps to [`poly::GRID_M`] — a tenth of a millimetre, a hundred
+/// times the weld. A point that has been through one more boolean than its
+/// neighbour lands up to half a grid away and never welds to it, so at a
+/// micron the two meshes look like strangers along an edge they share.
+/// This is the kernel's own grid, which is the finest tolerance at which
+/// the question can honestly be asked.
+const SEAM_M: f64 = poly::GRID_M;
+
 fn key(p: impl AsRef<[f64]>) -> [i64; 2] {
     let p = p.as_ref();
-    [(p[0] / mesh::WELD_M).round() as i64, (p[1] / mesh::WELD_M).round() as i64]
+    [(p[0] / SEAM_M).round() as i64, (p[1] / SEAM_M).round() as i64]
+}
+
+/// The height `map` holds at `p`, if either mesh put a vertex there.
+///
+/// Rounding to the kernel's grid is most of the answer and not all of it:
+/// two points half a grid apart may still fall either side of a cell's
+/// edge and key differently. The eight cells around are asked as well, in
+/// a fixed order, so the answer is a function of the meshes and not of a
+/// rounding. Any hit is within a grid and a half — a seventh of a
+/// millimetre — of the point, and what it carries is a height.
+fn at(map: &HashMap<[i64; 2], f64>, p: impl AsRef<[f64]>) -> Option<f64> {
+    let k = key(p);
+    if let Some(h) = map.get(&k) {
+        return Some(*h);
+    }
+    [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]]
+        .into_iter()
+        .find_map(|[dx, dy]| map.get(&[k[0] + dx, k[1] + dy]).copied())
 }
 
 /// What the ground's answer came to.
@@ -1152,7 +1190,7 @@ pub(crate) mod tests {
         let seam = seam(&[&b.carriageway, &b.pavement]);
         let none = Shapes::new();
         let outline = poly::union_of(&[w.carriageway().unwrap_or(&none), w.walk().unwrap_or(&none)]);
-        let room = |q: Pt| seam.get(&key(q)).copied().unwrap_or_else(|| natural(q));
+        let room = |q: Pt| at(&seam, q).unwrap_or_else(|| natural(q));
         (Ground::new(&outline, &terrain.grid, &room, &natural), natural)
     }
 
