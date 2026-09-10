@@ -303,6 +303,9 @@ pub(crate) mod tests {
             subclass: "sidewalk".into(),
             width_m: width::WALK_M,
             kind: crate::world::Kind::Ground,
+            way: usize::MAX,
+            a0: 0.0,
+            a1: 0.0,
             pts: vec![[-100.0, 3.75], [100.0, 3.75]],
         };
         w.roads.as_mut().unwrap().plan.push(walk);

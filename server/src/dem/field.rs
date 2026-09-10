@@ -29,7 +29,20 @@
 //! ramp?grade=0.03[&bearing=90][&radius=400][&h=400][&at=6.909,46.437]
 //! hill?amp=60&radius=400[&h=400][&at=…]
 //! step?rise=3[&width=0][&bearing=90][&h=400][&at=…]
+//! gorge?depth=30&width=40[&bearing=90][&h=400][&at=…]
+//! ridge?height=40&width=120[&bearing=90][&h=400][&at=…]
+//! shelf?drop=30&flank=8[&bearing=90][&h=400][&at=…]
 //! ```
+//!
+//! The last three are the *structure* rungs, and they exist because the four
+//! above them cannot state the question a structure asks. `gorge` and `ridge`
+//! put a linear feature **across** the way — a slot a road must be carried
+//! over, a mass it must pass under — so "is there a bridge here" has an answer
+//! the spec itself gives. `shelf` is the one that cannot be drawn any other
+//! way: ground level along the way and falling away beside it, which is a
+//! surface DEM that has imaged a viaduct as ground. A reader that trusts the
+//! height under the axis reads a road at grade; the ground 25 m to the side
+//! says it is thirty metres up on a deck.
 //!
 //! `at` is the origin the local metric frame is measured from and `h` the
 //! height there; `bearing` is a compass bearing in degrees (0 = north,
@@ -84,6 +97,27 @@ enum Kind {
     /// A rise of `rise` metres across the line through the origin normal to
     /// `bearing`, spread over `width` metres. `width = 0` is a true cliff.
     Step { rise: f64, bearing: f64, width: f64 },
+    /// A linear trench `width` metres across and `depth` metres deep, running
+    /// through the origin normal to `bearing` — so a way laid along `bearing`
+    /// crosses it square. A raised cosine, exactly [`Kind::Hill`]'s section
+    /// negated, so it meets the plane tangentially at its two rims and a
+    /// structure derived over it has an unambiguous place to land.
+    ///
+    /// A negative `depth` is a `ridge`: the same section the other way up, and
+    /// the specimen for the mirror question. One formula, so the two cannot
+    /// drift apart.
+    Trench { depth: f64, bearing: f64, width: f64 },
+    /// A [`Kind::Trench`] of `drop` and `width` **with a causeway across
+    /// it**: level ground for `flank` metres either side of the line through
+    /// the origin along `bearing`, at the height of the trench's own rims.
+    ///
+    /// The DEM-blindness rung: this is what a surface DEM makes of a viaduct.
+    /// Nothing on the axis says the road is not on the ground — it is level
+    /// from rim to rim — and the ground beside it says the "ground" under the
+    /// axis is the deck. The trench is what gives the causeway two rims to
+    /// land on: without them there is nothing to carry a reference across,
+    /// and a strip that is level for ever is a plateau rather than a bridge.
+    Shelf { drop: f64, bearing: f64, width: f64, flank: f64 },
 }
 
 impl Field {
@@ -95,7 +129,7 @@ impl Field {
     /// back to sea level.
     pub fn is_spec(s: &str) -> bool {
         let head = s.split('?').next().unwrap_or(s);
-        matches!(head, "flat" | "ramp" | "hill" | "step")
+        matches!(head, "flat" | "ramp" | "hill" | "step" | "gorge" | "ridge" | "shelf")
     }
 
     /// Parses a spec (see the module grammar).
@@ -108,7 +142,10 @@ impl Field {
             None => (s, ""),
         };
         if !Field::is_spec(head) {
-            return Err(format!("unknown terrain kind `{head}` (want flat, ramp, hill or step)"));
+            return Err(format!(
+                "unknown terrain kind `{head}` \
+                 (want flat, ramp, hill, step, gorge, ridge or shelf)"
+            ));
         }
 
         let mut params: Vec<(&str, &str)> = Vec::new();
@@ -158,6 +195,9 @@ impl Field {
             "ramp" => &["h", "at", "grade", "bearing", "radius"],
             "hill" => &["h", "at", "amp", "radius"],
             "step" => &["h", "at", "rise", "bearing", "width"],
+            "gorge" => &["h", "at", "depth", "bearing", "width"],
+            "ridge" => &["h", "at", "height", "bearing", "width"],
+            "shelf" => &["h", "at", "drop", "bearing", "width", "flank"],
             _ => &[],
         };
         if let Some((k, _)) = params.iter().find(|(k, _)| !known.contains(k)) {
@@ -187,6 +227,27 @@ impl Field {
                     return Err(format!("terrain `step` width cannot be negative: {width}"));
                 }
                 Kind::Step { rise: need("rise")?, bearing: num("bearing", 90.0)?, width }
+            }
+            "gorge" | "ridge" => {
+                let width = need("width")?;
+                if width <= 0.0 {
+                    return Err(format!("terrain `{head}` needs a positive width, got {width}"));
+                }
+                // A ridge is a gorge upside down, and says so in one place.
+                let depth =
+                    if head == "gorge" { need("depth")? } else { -need("height")? };
+                Kind::Trench { depth, bearing: num("bearing", 90.0)?, width }
+            }
+            "shelf" => {
+                let flank = need("flank")?;
+                if flank < 0.0 {
+                    return Err(format!("terrain `shelf` flank cannot be negative: {flank}"));
+                }
+                let width = need("width")?;
+                if width <= 0.0 {
+                    return Err(format!("terrain `shelf` needs a positive width, got {width}"));
+                }
+                Kind::Shelf { drop: need("drop")?, bearing: num("bearing", 90.0)?, width, flank }
             }
             _ => unreachable!("kind checked above"),
         };
@@ -238,6 +299,31 @@ impl Field {
                 };
                 self.base + rise * t
             }
+            // The hill's own section, across the way instead of around a
+            // point: `depth` at the axis, meeting the plane tangentially at
+            // `width / 2` either side.
+            Kind::Trench { depth, bearing, width } => {
+                let s = along(east, north, bearing);
+                let half = width * 0.5;
+                if s.abs() >= half {
+                    self.base
+                } else {
+                    self.base - depth * 0.5 * (1.0 + (PI * s / half).cos())
+                }
+            }
+            // The trench, except on the causeway: level from rim to rim for
+            // `flank` metres either side of the axis, then falling at 1 in 1
+            // into the trench it crosses.
+            Kind::Shelf { drop, bearing, width, flank } => {
+                let s = along(east, north, bearing);
+                let half = width * 0.5;
+                if s.abs() >= half {
+                    return self.base;
+                }
+                let floor = self.base - drop * 0.5 * (1.0 + (PI * s / half).cos());
+                let d = across(east, north, bearing).abs();
+                floor.max(self.base - (d - flank).max(0.0))
+            }
         }
     }
 
@@ -259,8 +345,26 @@ impl Field {
             Kind::Step { rise, bearing, width } => {
                 format!("step?rise={rise}&bearing={bearing}&width={width}&{h}{at}")
             }
+            Kind::Trench { depth, bearing, width } if depth < 0.0 => {
+                let height = -depth;
+                format!("ridge?height={height}&bearing={bearing}&width={width}&{h}{at}")
+            }
+            Kind::Trench { depth, bearing, width } => {
+                format!("gorge?depth={depth}&bearing={bearing}&width={width}&{h}{at}")
+            }
+            Kind::Shelf { drop, bearing, width, flank } => {
+                format!("shelf?drop={drop}&bearing={bearing}&width={width}&flank={flank}&{h}{at}")
+            }
         }
     }
+}
+
+/// Signed distance *across* `bearing`: the perpendicular offset from the line
+/// through the origin running along it. [`along`] rotated a quarter turn, so a
+/// feature laid out with one is square to a feature laid out with the other.
+fn across(east: f64, north: f64, bearing: f64) -> f64 {
+    let b = bearing.to_radians();
+    east * b.cos() - north * b.sin()
 }
 
 /// Distance along `bearing` (compass degrees, 0 = north) from a local offset
@@ -386,6 +490,9 @@ mod tests {
             "ramp?grade=0.03&radius=250",
             "hill?amp=60&radius=400",
             "step?rise=3&width=5",
+            "gorge?depth=30&width=40",
+            "ridge?height=40&width=120",
+            "shelf?drop=30&width=40&flank=8",
         ] {
             let f = field(spec).at(LON, LAT);
             let again = field(&f.spec());
@@ -407,5 +514,78 @@ mod tests {
         assert!(Field::parse("ramp?grade=0.03&radius=0").is_err());
         assert!(Field::parse("flat?h").is_err());
         assert!(Field::parse("flat?at=6.9").is_err());
+        assert!(Field::parse("gorge?depth=30").is_err(), "width is not optional");
+        assert!(Field::parse("gorge?depth=30&width=0").is_err());
+        assert!(Field::parse("ridge?depth=30&width=40").is_err(), "a ridge has a height");
+        assert!(Field::parse("shelf?drop=30&width=40").is_err(), "flank is not optional");
+        assert!(Field::parse("shelf?drop=30&flank=8").is_err(), "width is not optional");
+    }
+
+    /// The rung's own assertion: a gorge is `depth` deep on the axis, meets
+    /// the plane at its rims, and is level beyond them. The rims are where a
+    /// derived deck must land, so they have to be a number the spec states
+    /// rather than a place the section happens to reach.
+    #[test]
+    fn a_gorge_is_its_depth_at_the_axis_and_flat_at_its_rims() {
+        let f = field("gorge?depth=30&width=40&h=400").at(LON, LAT);
+        let east = |m: f64| LON + m / (DEG_M * LAT.to_radians().cos());
+        assert!((f.elevation(east(0.0), LAT) - 370.0).abs() < 1e-6, "the floor");
+        // The rims: tangential contact, so at ±20 m it is the plane exactly.
+        assert!((f.elevation(east(20.0), LAT) - 400.0).abs() < 1e-9, "the east rim");
+        assert!((f.elevation(east(-20.0), LAT) - 400.0).abs() < 1e-9, "the west rim");
+        assert!((f.elevation(east(60.0), LAT) - 400.0).abs() < 1e-9, "beyond it");
+        // Halfway down one wall is half the depth — the raised cosine, and
+        // the reason a threshold crossing has one solution per wall.
+        assert!((f.elevation(east(10.0), LAT) - 385.0).abs() < 1e-6, "the wall");
+        // Along the trench (north) nothing moves: it is a linear feature.
+        assert!((f.elevation(east(0.0), LAT + 0.001) - 370.0).abs() < 1e-6);
+    }
+
+    /// A ridge is the same section upside down, and the equality is the test:
+    /// the mirror question cannot be answered by a different formula.
+    #[test]
+    fn a_ridge_is_a_gorge_upside_down() {
+        let g = field("gorge?depth=40&width=120&h=400").at(LON, LAT);
+        let r = field("ridge?height=40&width=120&h=400").at(LON, LAT);
+        for m in [-80.0, -30.0, 0.0, 15.0, 55.0, 90.0] {
+            let lon = LON + m / (DEG_M * LAT.to_radians().cos());
+            let (down, up) = (g.elevation(lon, LAT), r.elevation(lon, LAT));
+            assert!((800.0 - down - up).abs() < 1e-9, "at {m} m: {down} vs {up}");
+        }
+        assert!((r.elevation(LON, LAT) - 440.0).abs() < 1e-6, "the crest");
+    }
+
+    /// The blindness rung: level along the way, falling away beside it. The
+    /// numbers a flank probe reads are the whole point, so they are asserted
+    /// at the probe's own reach.
+    #[test]
+    fn a_shelf_is_level_on_the_axis_and_falls_away_beside_it() {
+        // A 30 m trench 40 m across, carried by a causeway 8 m either side.
+        let f = field("shelf?drop=30&width=40&flank=8&h=400").at(LON, LAT);
+        let east = |m: f64| LON + m / (DEG_M * LAT.to_radians().cos());
+        let north = |m: f64| LAT + m / DEG_M;
+        // Along the axis: level from rim to rim, and level past them — the
+        // whole point is that nothing on the axis says there is a trench.
+        for m in [-60.0, -20.0, -10.0, 0.0, 10.0, 20.0, 60.0] {
+            assert!((f.elevation(east(m), LAT) - 400.0).abs() < 1e-9, "at {m} m along");
+        }
+        // Across the causeway, over the trench's middle: level to the flank,
+        // then 1 in 1 down to the trench floor.
+        assert!((f.elevation(LON, north(8.0)) - 400.0).abs() < 1e-6, "the causeway's edge");
+        assert!((f.elevation(LON, north(18.0)) - 390.0).abs() < 1e-6, "10 m out, 10 m down");
+        assert!((f.elevation(LON, north(25.0)) - 383.0).abs() < 1e-6, "at the flank probe");
+        assert!((f.elevation(LON, north(-25.0)) - 383.0).abs() < 1e-6, "and the other side");
+        // Deep enough out, the trench's own floor, which is 30 m down.
+        assert!((f.elevation(LON, north(200.0)) - 370.0).abs() < 1e-6, "the floor");
+        // Beyond the trench there is nothing to fall into: the causeway is
+        // level with the ground beside it, and no probe reads a deck.
+        assert!((f.elevation(east(60.0), north(25.0)) - 400.0).abs() < 1e-9, "past the rim");
+    }
+
+    #[test]
+    fn the_new_rungs_are_specs() {
+        assert!(Field::is_spec("gorge?depth=30&width=40"));
+        assert!(Field::is_spec("ridge?height=40&width=120"));
+        assert!(Field::is_spec("shelf?drop=30&flank=8"));
     }
 }

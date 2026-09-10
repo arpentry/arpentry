@@ -11,12 +11,20 @@ pub enum Step {
     /// Way centrelines read from the transportation source, draped exactly
     /// onto the terrain mesh.
     Drape,
+    /// The surface a way is solved against: the terrain with its blind runs
+    /// bridged, its narrow notches filled and its narrow bumps shaved, and
+    /// the runs the two passes refused — the terrain's own structure priors.
+    Reference,
     /// One height along every carriageway axis: the ground, grade-limited
     /// and boxed per class, chorded across the mapped spans.
     Profile,
     /// The clearances a grade separation demands, spread along the network
     /// as a floor the profile re-solves on.
     Crossing,
+    /// Where each way is a deck, a bore, or on the ground — and the one place
+    /// the geometry is cut. Runs after the heights are solved, because that
+    /// is what it reads.
+    Partition,
     /// Building footprints read from the buildings source: what nothing
     /// paved may enter, less the passages ways run through.
     Facade,
@@ -44,11 +52,13 @@ pub enum Step {
 
 impl Step {
     /// Every step, in the order the pipeline runs them.
-    pub const ALL: [Step; 13] = [
+    pub const ALL: [Step; 15] = [
         Step::Terrain,
         Step::Drape,
+        Step::Reference,
         Step::Profile,
         Step::Crossing,
+        Step::Partition,
         Step::Facade,
         Step::Ribbon,
         Step::Surface,
@@ -65,8 +75,10 @@ impl Step {
         match self {
             Step::Terrain => "terrain",
             Step::Drape => "drape",
+            Step::Reference => "reference",
             Step::Profile => "profile",
             Step::Crossing => "crossing",
+            Step::Partition => "partition",
             Step::Facade => "facade",
             Step::Ribbon => "ribbon",
             Step::Surface => "surface",

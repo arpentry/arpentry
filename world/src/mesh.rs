@@ -450,7 +450,7 @@ pub(crate) mod tests {
 
     use crate::frame::Rect;
     use crate::terrain::{self, tests::dem};
-    use crate::{drape, facade, fillet, kerb, profile, ribbon, room, surface};
+    use crate::{drape, facade, fillet, kerb, profile, reference, ribbon, room, surface};
 
     use super::*;
 
@@ -460,7 +460,9 @@ pub(crate) mod tests {
         let mut w = terrain::tests::world();
         terrain::run(&mut w, &mut dem(terrain_spec), 5.0, usize::MAX);
         drape::run(&mut w, Path::new(net)).unwrap();
+        reference::run(&mut w);
         profile::run(&mut w);
+        crate::partition::run(&mut w);
         facade::run(&mut w, None).unwrap();
         ribbon::run(&mut w);
         surface::run(&mut w);

@@ -30,15 +30,16 @@
 //! is always a meeting of way ends and never a crossing of interiors — two
 //! ways whose interiors cross are a bridge over a road, not a junction.
 
-use crate::world::{Kind, Polyline2};
+use crate::world::{Kind, Span, Way};
 
 /// Whether `s` is a spec rather than a path.
 pub fn is_spec(s: &str) -> bool {
     s.starts_with("net:")
 }
 
-/// The ways of `spec`, in local metres.
-pub fn parse(spec: &str) -> Result<Vec<Polyline2>, String> {
+/// The ways of `spec`, in local metres, each whole and carrying its own
+/// span table — the same shape the parquet reader hands on.
+pub fn parse(spec: &str) -> Result<Vec<Way>, String> {
     let rest = spec.strip_prefix("net:").ok_or_else(|| format!("not a network spec: {spec}"))?;
     let (name, query) = rest.split_once('?').unwrap_or((rest, ""));
     let params = Params::parse(query)?;
@@ -203,7 +204,7 @@ pub fn parse(spec: &str) -> Result<Vec<Polyline2>, String> {
             // Four arcs, split at the legs: Overture cuts a way at every
             // connector, so a junction is always a meeting of way ends.
             let full = ring(r);
-            let mut ways: Vec<Polyline2> = (0..4)
+            let mut ways: Vec<Way> = (0..4)
                 .map(|q| road(&format!("arc-{q}"), full[q * 9..=(q + 1) * 9].to_vec()))
                 .collect();
             for (id, dir) in [("leg-e", [1.0, 0.0]), ("leg-n", [0.0, 1.0]), ("leg-w", [-1.0, 0.0]), ("leg-s", [0.0, -1.0])] {
@@ -241,34 +242,38 @@ fn span_of(params: &Params) -> Result<Option<((f64, f64), Kind)>, String> {
 /// A way along x at `y`, from `-half` to `half`, cut at the boundaries of
 /// its mapped span into the pieces the reader would produce: consecutive
 /// pieces share their end vertex and their id.
-fn spanned(id: &str, class: &str, subclass: &str, y: f64, half: f64, span: Option<((f64, f64), Kind)>) -> Vec<Polyline2> {
-    let piece = |x0: f64, x1: f64| line(id, class, subclass, vec![[x0, y], [x1, y]]);
+/// One way along x at `y`, with `span` as its annotation: the fractions the
+/// spec speaks in, converted to arc, with the ground either side of them.
+/// The way is **not** cut — the partition step does that, once.
+fn spanned(id: &str, class: &str, subclass: &str, y: f64, half: f64, span: Option<((f64, f64), Kind)>) -> Vec<Way> {
+    let mut w = line(id, class, subclass, vec![[-half, y], [half, y]]);
     let Some(((a, b), kind)) = span else {
-        return vec![piece(-half, half)];
+        return vec![w];
     };
     let len = 2.0 * half;
-    let (x0, x1) = (-half + a * len, -half + b * len);
-    let mut out = Vec::new();
-    if a > 0.0 {
-        out.push(piece(-half, x0));
+    let (a0, a1) = (a * len, b * len);
+    let mut spans = Vec::new();
+    if a0 > 0.0 {
+        spans.push(Span { a0: 0.0, a1: a0, kind: Kind::Ground });
     }
-    let mut mid = piece(x0, x1);
-    mid.kind = kind;
-    out.push(mid);
-    if b < 1.0 {
-        out.push(piece(x1, half));
+    spans.push(Span { a0, a1, kind });
+    if a1 < len {
+        spans.push(Span { a0: a1, a1: len, kind: Kind::Ground });
     }
-    out
+    w.spans = spans;
+    vec![w]
 }
 
-fn line(id: &str, class: &str, subclass: &str, pts: Vec<[f64; 2]>) -> Polyline2 {
-    Polyline2 {
+/// A way on the ground end to end.
+fn line(id: &str, class: &str, subclass: &str, pts: Vec<[f64; 2]>) -> Way {
+    let len = crate::roads::length(&pts);
+    Way {
         id: id.into(),
         class: class.into(),
         subclass: subclass.into(),
         width_m: crate::width::of(class, subclass),
-        kind: Kind::Ground,
         pts,
+        spans: vec![Span { a0: 0.0, a1: len, kind: Kind::Ground }],
     }
 }
 
@@ -307,8 +312,10 @@ mod tests {
             ("net:straight", 1),
             ("net:tee", 3),
             ("net:cross", 4),
-            ("net:overpass", 4),
-            ("net:underpass", 4),
+            // Two ways, not four pieces: the leg carries its bridge or its
+            // bore as a span table, and the partition step is what cuts it.
+            ("net:overpass", 2),
+            ("net:underpass", 2),
             ("net:hairpin", 1),
             ("net:dual", 2),
             ("net:sidewalk", 2),
@@ -321,6 +328,12 @@ mod tests {
             let ways = parse(spec).unwrap();
             assert_eq!(ways.len(), n, "{spec}");
             assert!(ways.iter().all(|w| w.pts.len() >= 2), "{spec}");
+            // And every way arrives with a span table that partitions it.
+            for w in &ways {
+                assert!(!w.spans.is_empty(), "{spec}: {} has no spans", w.id);
+                assert!(w.spans[0].a0.abs() < 1e-9, "{spec}");
+                assert!((w.spans[w.spans.len() - 1].a1 - w.len()).abs() < 1e-6, "{spec}");
+            }
         }
     }
 
@@ -344,18 +357,29 @@ mod tests {
         assert!((ways[1].pts[0][1] + 4.75).abs() < 1e-12);
     }
 
+    /// A span is an *attribute* of one whole way, in arc — not a cut. The
+    /// way that used to arrive as three pieces arrives as one line with a
+    /// three-row table, and the partition step is what turns the table into
+    /// geometry.
     #[test]
-    fn a_span_cuts_the_straight_into_three() {
+    fn a_span_is_a_table_on_one_whole_way() {
         let ways = parse("net:straight?len=200&span=0.35,0.65").unwrap();
-        assert_eq!(ways.len(), 3);
-        assert_eq!(ways.iter().map(|w| w.kind).collect::<Vec<_>>(), [Kind::Ground, Kind::Bridge(1), Kind::Ground]);
-        assert_eq!(ways[1].pts, vec![[-30.0, 0.0], [30.0, 0.0]]);
-        assert_eq!(ways[0].pts.last(), ways[1].pts.first(), "the pieces share their ends");
-        assert_eq!(ways[1].pts.last(), ways[2].pts.first());
-        assert!(ways.iter().all(|w| w.id == "road"), "one way, three pieces");
+        assert_eq!(ways.len(), 1, "one way");
+        let w = &ways[0];
+        assert_eq!(w.id, "road");
+        assert_eq!(w.pts, vec![[-100.0, 0.0], [100.0, 0.0]], "uncut");
+        assert_eq!(w.spans.iter().map(|s| s.kind).collect::<Vec<_>>(), [
+            Kind::Ground,
+            Kind::Bridge(1),
+            Kind::Ground
+        ]);
+        // The table is in arc from the way's start, and partitions it.
+        let arcs: Vec<(f64, f64)> = w.spans.iter().map(|s| (s.a0, s.a1)).collect();
+        assert_eq!(arcs, vec![(0.0, 70.0), (70.0, 130.0), (130.0, 200.0)]);
         let ways = parse("net:straight?span=0,1&kind=tunnel&level=2").unwrap();
         assert_eq!(ways.len(), 1);
-        assert_eq!(ways[0].kind, Kind::Tunnel(-2));
+        assert_eq!(ways[0].spans.len(), 1, "no ground either side");
+        assert_eq!(ways[0].spans[0].kind, Kind::Tunnel(-2));
         assert!(parse("net:straight?span=0.7,0.3").is_err());
         assert!(parse("net:straight?span=0.3,0.7&kind=viaduct").is_err());
     }
@@ -363,17 +387,22 @@ mod tests {
     #[test]
     fn an_overpass_crosses_the_road_without_meeting_it() {
         let ways = parse("net:overpass?len=200").unwrap();
+        assert_eq!(ways.len(), 2, "the road and the leg, each whole");
         assert_eq!(ways[0].pts, vec![[-100.0, 0.0], [100.0, 0.0]], "the road along x");
-        let kinds = ways.iter().map(|w| w.kind).collect::<Vec<_>>();
-        assert_eq!(kinds, [Kind::Ground, Kind::Ground, Kind::Bridge(1), Kind::Ground]);
-        // The leg runs along y through the origin, in three pieces that
-        // share their ends and none of which ends on the road.
-        let leg: Vec<&Polyline2> = ways.iter().filter(|w| w.id == "leg").collect();
-        assert_eq!(leg[0].pts, vec![[0.0, -100.0], [0.0, -30.0]]);
-        assert_eq!(leg[1].pts, vec![[0.0, -30.0], [0.0, 30.0]]);
+        // The leg runs along y through the origin, with the bridge in the
+        // middle of its table — and neither way has a vertex at the crossing,
+        // which is what makes it a grade separation rather than a junction.
+        let leg = ways.iter().find(|w| w.id == "leg").expect("the leg");
+        assert_eq!(leg.pts, vec![[0.0, -100.0], [0.0, 100.0]]);
+        assert_eq!(leg.spans.iter().map(|s| s.kind).collect::<Vec<_>>(), [
+            Kind::Ground,
+            Kind::Bridge(1),
+            Kind::Ground
+        ]);
         assert!(ways.iter().all(|w| w.pts.iter().all(|p| *p != [0.0, 0.0])), "no connector at the crossing");
         let ways = parse("net:underpass?level=2").unwrap();
-        assert_eq!(ways.iter().find(|w| w.kind.is_structure()).unwrap().kind, Kind::Tunnel(-2));
+        let leg = ways.iter().find(|w| w.has_structure()).expect("the leg");
+        assert_eq!(leg.spans.iter().find(|s| s.kind != Kind::Ground).unwrap().kind, Kind::Tunnel(-2));
     }
 
     #[test]

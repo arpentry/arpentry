@@ -183,6 +183,10 @@ pub(crate) mod tests {
         let mut w = terrain::tests::world();
         terrain::run(&mut w, &mut dem("flat"), 100.0, usize::MAX);
         drape::run(&mut w, std::path::Path::new(spec)).unwrap();
+        // The surface steps read the ground pieces, and the partition is what
+        // cuts them. On a flat world with no heights to read it is the
+        // annotation's own cut, which is what these specimens want.
+        crate::partition::run(&mut w);
         crate::facade::run(&mut w, house.map(std::path::Path::new)).unwrap();
         w
     }

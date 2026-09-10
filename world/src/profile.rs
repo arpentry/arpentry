@@ -43,16 +43,27 @@
 
 use std::collections::HashMap;
 
-use crate::grade::{self, NODE_M, STRUCTURE_MIN_M};
+use crate::grade::{self, STRUCTURE_MIN_M};
 use crate::step::Summary;
-use crate::terrain::height_at;
-use crate::width::{self, Family};
-use crate::world::{connector, Kind, Polyline2, Profile, Profiles, Solved, Station, Terrain, World};
+use crate::world::{
+    connector, station_runs, Kind, Profile, Profiles, Reference, Solved, Station, Way, World,
+};
 
 /// Forward-and-back passes of the grade limiter. Eight is the server's;
 /// the passes converge geometrically and the box clamp after each keeps
 /// the result inside its budget whatever the count.
 const PASSES: usize = 8;
+
+/// Passes of the curvature clamp per pass of the limiter.
+///
+/// The grade limiter converges geometrically because it walks the array in
+/// both directions; the curvature clamp is local and Jacobi, so it *diffuses*
+/// — a broad kink flattens at about one station per pass. Swept over the loop
+/// box, `kink` (runs still bent tighter than their class allows) reads 39.9 %
+/// at one pass, 15.0 % at eight, **3.0 % at thirty-two** and 1.3 % at a
+/// hundred and twenty-eight. Thirty-two is where the curve flattens; the
+/// profile step still runs in under 0.01 s.
+const BEND_PASSES: usize = 32;
 
 /// Slack, in metres per metre, past the ceiling before a station pair
 /// counts as breaking grade: the limiter's own rounding.
@@ -60,19 +71,17 @@ const GRADE_EPS: f64 = 1e-9;
 
 /// Solves the profile of every carriageway piece of the world.
 pub fn run(world: &mut World) -> Summary {
-    let terrain = world.terrain.as_ref().expect("the terrain step runs first");
     let roads = world.roads.as_ref().expect("the drape step runs first");
-    let pieces: Vec<&Polyline2> = roads
-        .pieces()
-        .filter(|w| width::family(&w.class) == Family::Carriageway && w.kind != Kind::Indoor)
-        .filter(|w| grade::of(&w.class).solves())
-        .collect();
-    let (profiles, loose) = solve(terrain, &pieces);
+    let reference = world.reference.as_ref().expect("the reference step runs first");
+    let ways = crate::reference::solving(roads);
+    let (profiles, loose) = solve(reference, &ways);
 
     let mut stations = 0usize;
     let (mut pairs, mut steep) = (0usize, 0usize);
     let (mut street_pairs, mut street_steep) = (0usize, 0usize);
     let (mut grounded, mut floating) = (0usize, 0usize);
+    let (mut runs, mut kinked, mut tightest) = (0usize, 0usize, f64::INFINITY);
+    let (mut eng_runs, mut eng_short) = (0usize, 0usize);
     let mut off: Vec<f64> = Vec::new();
     let (mut deck, mut bridge) = (0usize, 0usize);
     let (mut bore, mut tunnel) = (0usize, 0usize);
@@ -86,35 +95,73 @@ pub fn run(world: &mut World) -> Summary {
             e.0 = e.0.min(st.h);
             e.1 = e.1.max(st.h);
         }
-        if p.mapped == Kind::Ground {
-            for pair in p.stations.windows(2) {
-                let ds = pair[1].s - pair[0].s;
-                if ds > 0.0 {
-                    let over = (pair[1].h - pair[0].h).abs() / ds > g.ceiling.unwrap_or(f64::INFINITY) + GRADE_EPS;
-                    if g.limited() {
-                        pairs += 1;
-                        steep += over as usize;
-                    } else {
-                        street_pairs += 1;
-                        street_steep += over as usize;
+        // Per *run* now, not per piece: one way carries its at-grade
+        // stretches and its spans together, and each is measured as what it
+        // is.
+        for (k0, k1, kind) in p.runs() {
+            if !kind.is_structure() {
+                for pair in p.stations[k0..=k1].windows(2) {
+                    let ds = pair[1].s - pair[0].s;
+                    if ds > 0.0 {
+                        let over = (pair[1].h - pair[0].h).abs() / ds
+                            > g.ceiling.unwrap_or(f64::INFINITY) + GRADE_EPS;
+                        if g.limited() {
+                            pairs += 1;
+                            steep += over as usize;
+                        } else {
+                            street_pairs += 1;
+                            street_steep += over as usize;
+                        }
                     }
                 }
-            }
-            for st in &p.stations {
-                grounded += 1;
-                let d = st.h - st.ground;
-                off.push(d.abs());
-                if d.abs() > g.deviation_m + 1e-9 {
-                    floating += 1;
+                // The tightest vertical curve this run actually holds,
+                // against the one its class allows: `bend`'s own guard.
+                if k1 > k0 + 1 {
+                    let arc: Vec<f64> = p.stations[k0..=k1].iter().map(|st| st.s).collect();
+                    let h: Vec<f64> = p.stations[k0..=k1].iter().map(|st| st.h).collect();
+                    let held = curvature_radius(&h, &arc);
+                    tightest = tightest.min(held);
+                    if let Some(want) = g.radius_m {
+                        // Split by mode, because the two failures mean
+                        // opposite things. A *street* that cannot hold its
+                        // radius is a road the model left undrivable. An
+                        // *engineered* one is the deviation box refusing to
+                        // pay for the earthwork a real motorway gets: a
+                        // motorway does hold a 4 km vertical curve, and on a
+                        // mountainside eight metres of box does not buy it.
+                        // Lowering the radius only reports fewer failures —
+                        // swept over the box, 4000/2000/1500 leaves 24 runs
+                        // short, and a sixteenth of that still leaves 7.
+                        if g.limited() {
+                            eng_runs += 1;
+                            eng_short += (held < want - 1e-6) as usize;
+                        } else {
+                            runs += 1;
+                            kinked += (held < want - 1e-6) as usize;
+                        }
+                    }
                 }
+                for st in &p.stations[k0..=k1] {
+                    grounded += 1;
+                    // `float` guards the limiter, so it is measured against
+                    // what the limiter was aimed at: the reference, and the
+                    // box is around that. `off` is the other question — how
+                    // far the solved surface ends up standing from the *raw*
+                    // DEM — and it is the number the departure criterion will
+                    // threshold.
+                    if (st.h - st.reference).abs() > g.deviation_m + 1e-9 {
+                        floating += 1;
+                    }
+                    off.push((st.h - st.ground).abs());
+                }
+                continue;
             }
-        } else {
             spans += 1;
-            if p.stations.iter().all(|st| st.solved == Solved::Grade) {
+            if p.stations[k0..=k1].iter().all(|st| st.solved == Solved::Grade) {
                 degraded += 1;
             }
-            for st in &p.stations {
-                match p.mapped {
+            for st in &p.stations[k0..=k1] {
+                match kind {
                     Kind::Bridge(_) => {
                         bridge += 1;
                         deck += (st.solved == Solved::Deck) as usize;
@@ -132,17 +179,21 @@ pub fn run(world: &mut World) -> Summary {
     off.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
     let q = |f: f64| off.get(((off.len() as f64 - 1.0) * f).round() as usize).copied().unwrap_or(0.0);
     let summary = Summary::new()
-        .with("pieces", profiles.len())
+        .with("ways", profiles.len())
         .with("stations", stations)
         .with_share("grade", steep, pairs)
         .with_share("steep", street_steep, street_pairs)
         .with_share("float", floating, grounded)
+        .with_share("kink", kinked, runs)
+        .with_share("boxed", eng_short, eng_runs)
+        .with("bend", if tightest.is_finite() { format!("{tightest:.0}") } else { "-".into() })
         .with("step", format!("{step:.3}"))
         .with("off", format!("{:.2}/{:.2}/{:.2}", q(0.5), q(0.9), q(1.0)))
         .with_share("decks", deck, bridge)
         .with_share("bores", bore, tunnel)
         .with_share("degraded", degraded, spans)
         .with("dangling", loose.dangling)
+        .with("clamped", loose.clamped)
         .with("unanchored", loose.unanchored);
     world.profile = Some(Profiles { profiles });
     summary
@@ -154,11 +205,16 @@ pub fn run(world: &mut World) -> Summary {
 pub struct Loose {
     pub dangling: usize,
     pub unanchored: usize,
+    /// Chord ends the geometry had to overrule: a bore's mouth standing above
+    /// the ground, or a deck's landing under it.
+    pub clamped: usize,
 }
 
-/// The profiles of `pieces` on `terrain`, and what could not be anchored.
-pub fn solve(terrain: &Terrain, pieces: &[&Polyline2]) -> (Vec<Profile>, Loose) {
-    solve_on(terrain, pieces, &[])
+/// The profiles of `ways` against `reference`, and what could not be
+/// anchored. `reference.axes[i]` is `ways[i]`'s, which is what
+/// [`crate::reference::solving`] guarantees for both callers.
+pub fn solve(reference: &Reference, ways: &[&Way]) -> (Vec<Profile>, Loose) {
+    solve_on(reference, ways, &[])
 }
 
 /// The same, over a *floor*: a displacement in metres the crossing step
@@ -173,144 +229,290 @@ pub fn solve(terrain: &Terrain, pieces: &[&Polyline2]) -> (Vec<Profile>, Loose) 
 /// stays the natural ground the whole way down — so the consequence rule
 /// of step 9 still asks "how far off the *hill* does this stand", and an
 /// approach lifted past [`STRUCTURE_MIN_M`] reads as the deck it is.
-pub fn solve_on(terrain: &Terrain, pieces: &[&Polyline2], floor: &[Vec<f64>]) -> (Vec<Profile>, Loose) {
-    // Stations and the ground under them.
-    let stationed: Vec<Vec<Station>> = pieces
+pub fn solve_on(
+    reference: &Reference,
+    ways: &[&Way],
+    floor: &[Vec<f64>],
+) -> (Vec<Profile>, Loose) {
+    assert_eq!(reference.axes.len(), ways.len(), "the reference was built for other ways");
+    // Stations, from the reference: it stationed these axes already — at the
+    // span boundaries too — so the profile and the surface it is solved
+    // against can never be sampled at different places.
+    let stationed: Vec<Vec<Station>> = reference
+        .axes
         .iter()
-        .map(|w| {
-            let pts = densify(&w.pts, NODE_M);
-            let mut s = 0.0;
-            let mut out = Vec::with_capacity(pts.len());
-            for (i, p) in pts.iter().enumerate() {
-                if i > 0 {
-                    s += (p[0] - pts[i - 1][0]).hypot(p[1] - pts[i - 1][1]);
-                }
-                let ground = height_at(terrain, p[0], p[1]);
-                out.push(Station { s, p: *p, ground, h: ground, solved: Solved::Grade });
-            }
-            out
+        .map(|a| {
+            (0..a.s.len())
+                .map(|k| Station {
+                    s: a.s[k],
+                    p: a.p[k],
+                    ground: a.ground[k],
+                    reference: a.h[k],
+                    h: a.h[k],
+                    solved: Solved::Grade,
+                })
+                .collect()
         })
         .collect();
 
-    // The target: the ground, raised or lowered by the floor. Two pieces
-    // meeting at one connector read one floor value there (the crossing
-    // step joins them at no cost), so the anchor below is the same number
-    // whichever of them inserts it.
+    // The target: the reference, raised or lowered by the floor. Two ways
+    // meeting at one connector read one floor value there, so the anchor
+    // below is the same number whichever of them inserts it.
     let target: Vec<Vec<f64>> = stationed
         .iter()
         .enumerate()
         .map(|(i, sts)| {
             sts.iter()
                 .enumerate()
-                .map(|(k, st)| st.ground + floor.get(i).and_then(|f| f.get(k)).copied().unwrap_or(0.0))
+                .map(|(k, st)| {
+                    st.reference + floor.get(i).and_then(|f| f.get(k)).copied().unwrap_or(0.0)
+                })
                 .collect()
         })
         .collect();
 
-    // Anchors: every connector a ground piece ends at takes the target
-    // there, once, and every piece ending there reads that one number.
+    let runs: Vec<Vec<(usize, usize, Kind)>> =
+        (0..ways.len()).map(|i| station_runs(&stationed[i], &ways[i].spans)).collect();
+    let last_of = |i: usize| stationed[i].len().saturating_sub(1);
+
+    // **Anchors.** A way *end* is an anchor where the way is on the ground
+    // there — not every span boundary, which is what the old per-piece solve
+    // pinned and what made a mapper's cut a survey point. A junction stands
+    // on the ground, and continuity across it is a property of the variables
+    // rather than a constraint that can fail.
     let mut anchors: HashMap<(i64, i64), f64> = HashMap::new();
-    for (i, w) in pieces.iter().enumerate() {
-        if w.kind != Kind::Ground {
+    for i in 0..ways.len() {
+        if stationed[i].is_empty() {
             continue;
         }
-        for k in [0, stationed[i].len().saturating_sub(1)] {
-            if let Some(st) = stationed[i].get(k) {
-                anchors.entry(connector(st.p)).or_insert(target[i][k]);
+        for (k, kind) in [
+            (0usize, runs[i].first().map(|r| r.2)),
+            (last_of(i), runs[i].last().map(|r| r.2)),
+        ] {
+            if kind.is_some_and(on_ground) {
+                anchors.entry(connector(stationed[i][k].p)).or_insert(target[i][k]);
             }
         }
     }
 
-    // Structure-only connectors: the harmonic solution over the structure
-    // pieces, with the anchors as boundary values — a chord across every
-    // chain, iterated (Jacobi, so the result is independent of order).
-    let structure: Vec<usize> = (0..pieces.len()).filter(|&i| pieces[i].kind.is_structure()).collect();
-    let key_of = |sts: &Vec<Station>| (connector(sts[0].p), connector(sts[sts.len() - 1].p));
-    let mut free: Vec<(i64, i64)> = Vec::new();
-    for &i in &structure {
-        let (a, b) = key_of(&stationed[i]);
-        for k in [a, b] {
-            if !anchors.contains_key(&k) && !free.contains(&k) {
-                free.push(k);
+    // **The at-grade runs solve first**, each held to its class's ceiling
+    // inside its box, pinned only where it reaches a way end that is an
+    // anchor. A run that ends against a structure is left free there: the
+    // chord will start from wherever the ground solve lands, which is the
+    // whole point.
+    let mut h: Vec<Vec<f64>> = target.clone();
+    for i in 0..ways.len() {
+        let g = grade::of(&ways[i].class);
+        let ceiling = if g.limited() { g.ceiling.unwrap_or(f64::INFINITY) } else { f64::INFINITY };
+        for &(k0, k1, kind) in &runs[i] {
+            if !on_ground(kind) {
+                continue;
             }
+            let arc: Vec<f64> = stationed[i][k0..=k1].iter().map(|st| st.s).collect();
+            let pin = (
+                (k0 == 0).then(|| anchors.get(&connector(stationed[i][k0].p)).copied()).flatten(),
+                (k1 == last_of(i))
+                    .then(|| anchors.get(&connector(stationed[i][k1].p)).copied())
+                    .flatten(),
+            );
+            let solved = limit(&target[i][k0..=k1], &arc, ceiling, g.deviation_m, g.radius_m, pin);
+            h[i][k0..=k1].copy_from_slice(&solved);
         }
     }
-    // A dangling end: a connector one piece alone reaches.
-    let mut degree: HashMap<(i64, i64), usize> = HashMap::new();
-    for sts in &stationed {
-        let (a, b) = key_of(sts);
-        *degree.entry(a).or_insert(0) += 1;
-        *degree.entry(b).or_insert(0) += 1;
-    }
-    let mut loose = Loose::default();
-    for &i in &structure {
-        let (a, b) = key_of(&stationed[i]);
-        if [a, b].iter().any(|k| degree[k] == 1 && !anchors.contains_key(k)) {
-            loose.dangling += 1;
-        }
-    }
-    let mut heights: HashMap<(i64, i64), f64> = anchors.clone();
-    for _ in 0..20_000 {
-        let mut next = heights.clone();
-        let mut moved = 0.0f64;
-        for k in &free {
-            let (mut num, mut den) = (0.0, 0.0);
-            for &i in &structure {
-                let (a, b) = key_of(&stationed[i]);
-                let far = if a == *k { b } else if b == *k { a } else { continue };
-                if let Some(&h) = heights.get(&far) {
-                    let len = stationed[i][stationed[i].len() - 1].s.max(1e-9);
-                    num += h / len;
-                    den += 1.0 / len;
+
+    // **The chords.** Every structure run's two ends are heights: the
+    // at-grade solve's, where the run meets ground inside its own way; the
+    // connector's, where it reaches a way end. A connector every incident way
+    // is a structure at has no height of its own, and those are solved
+    // together — a chain of chords across a bridge split at a junction is one
+    // chord, so the free connectors take the harmonic solution (Jacobi, so
+    // the result does not depend on the order).
+    let mut chords: Vec<Chord> = Vec::new();
+    // Per free connector: the ground there, and whether every chord meeting it
+    // is of one kind. A mouth shared by a bore and a deck is not overruled —
+    // there is no side of the ground both belong on.
+    let mut ground_at: HashMap<(i64, i64), (f64, bool, bool)> = HashMap::new();
+    for i in 0..ways.len() {
+        for &(k0, k1, kind) in &runs[i] {
+            if !kind.is_structure() {
+                continue;
+            }
+            // A chord runs between its **abutments**, and an abutment is the
+            // at-grade station just outside the run — not the run's own first
+            // station. Interpolating from the run's own ends would place the
+            // abutment height four metres inside the deck and leave a step at
+            // each end of it.
+            let (lo_k, hi_k) = (k0.saturating_sub(1), (k1 + 1).min(last_of(i)));
+            let end = |k: usize, terminal: bool, inward: usize| -> End {
+                if !terminal {
+                    return End::Known(h[i][inward]);
+                }
+                let key = connector(stationed[i][k].p);
+                match anchors.get(&key) {
+                    Some(&v) => End::Known(v),
+                    None => End::Free(key),
+                }
+            };
+            let (lo_at, hi_at) = (
+                if k0 == 0 { stationed[i][k0].s } else { stationed[i][lo_k].s },
+                if k1 == last_of(i) { stationed[i][k1].s } else { stationed[i][hi_k].s },
+            );
+            for (k, e) in [(k0, end(k0, k0 == 0, lo_k)), (k1, end(k1, k1 == last_of(i), hi_k))] {
+                if let End::Free(key) = e {
+                    let slot = ground_at.entry(key).or_insert((stationed[i][k].reference, true, true));
+                    slot.1 &= matches!(kind, Kind::Tunnel(_));
+                    slot.2 &= matches!(kind, Kind::Bridge(_));
                 }
             }
-            if den > 0.0 {
-                let h = num / den;
-                moved = moved.max((h - heights.get(k).copied().unwrap_or(h)).abs());
-                next.insert(*k, h);
+            chords.push(Chord {
+                way: i,
+                k0,
+                k1,
+                lo: end(k0, k0 == 0, lo_k),
+                hi: end(k1, k1 == last_of(i), hi_k),
+                lo_at,
+                hi_at,
+                len: (hi_at - lo_at).max(1e-9),
+            });
+        }
+    }
+
+    let mut loose = Loose::default();
+    let mut free: HashMap<(i64, i64), f64> = HashMap::new();
+    // A free connector's degree: how many chords reach it. One is dangling —
+    // the bbox cutting a viaduct — and it holds its chord's other end.
+    let mut degree: HashMap<(i64, i64), usize> = HashMap::new();
+    for c in &chords {
+        for e in [c.lo, c.hi] {
+            if let End::Free(k) = e {
+                *degree.entry(k).or_insert(0) += 1;
+                free.entry(k).or_insert(f64::NAN);
             }
         }
-        heights = next;
+    }
+    for _ in 0..20_000 {
+        let mut moved = 0.0f64;
+        let mut next = free.clone();
+        for (key, v) in next.iter_mut() {
+            let (mut num, mut den) = (0.0, 0.0);
+            for c in &chords {
+                let far = match (c.lo, c.hi) {
+                    (End::Free(a), other) if a == *key => other,
+                    (other, End::Free(b)) if b == *key => other,
+                    _ => continue,
+                };
+                let far = match far {
+                    End::Known(x) => x,
+                    End::Free(k) => match free.get(&k) {
+                        Some(x) if x.is_finite() => *x,
+                        _ => continue,
+                    },
+                };
+                num += far / c.len;
+                den += 1.0 / c.len;
+            }
+            if den > 0.0 {
+                let x = num / den;
+                if v.is_finite() {
+                    moved = moved.max((x - *v).abs());
+                }
+                *v = x;
+            }
+        }
+        free = next;
         if moved < 1e-12 {
             break;
         }
     }
-    // What no anchor reached: flat at the ground's extreme under the piece.
-    for &i in &structure {
-        let (a, b) = key_of(&stationed[i]);
-        if heights.contains_key(&a) && heights.contains_key(&b) {
+
+    // **Geometry wins over the tags** (docs/GENERATION.md §4.5). A connector
+    // no way is at grade at has no height of its own, so the chords meeting
+    // it inherit one from whatever they chain to — and a chain long enough
+    // inherits nonsense. A service road tagged `is_tunnel` end to end, with
+    // no at-grade station anywhere, came out 62 m *above* the hillside it
+    // bores through, because everything holding it down was several junctions
+    // away. A bore's mouth is where it meets the ground; it cannot be over
+    // it, and a deck's landing cannot be under it. Where the inheritance says
+    // otherwise the ground is believed and the move is counted.
+    for (key, v) in free.iter_mut() {
+        let Some(&(ground, all_bore, all_deck)) = ground_at.get(key) else {
+            continue;
+        };
+        if !v.is_finite() {
             continue;
         }
-        loose.unanchored += 1;
-        let grounds = target[i].iter().copied();
-        let flat = match pieces[i].kind {
-            Kind::Tunnel(_) => grounds.fold(f64::INFINITY, f64::min),
-            _ => grounds.fold(f64::NEG_INFINITY, f64::max),
-        };
-        for k in [a, b] {
-            heights.entry(k).or_insert(flat);
+        const SLACK_M: f64 = 1e-6;
+        // **A dangling deck holds its level; a dangling bore holds the
+        // ground.** A chord with one end anchored and the other reaching
+        // nothing runs level to the anchor, and for a deck that is the named
+        // deferral — the bbox cuts a viaduct and the descent to a lower
+        // ground waits for a site with data past it. For a bore it is not: a
+        // tunnel running level out of a hillside that falls away emerges into
+        // the air, and what the structure step then builds is a viaduct.
+        // Measured here: a service road tagged `is_tunnel` end to end, level
+        // from its one anchor high on the flank, ended 62 m over the ground
+        // on 130 m piers.
+        //
+        // A deck *below* the ground is overruled only where something did
+        // reach it, since there the inheritance is wrong rather than absent.
+        let dangling = degree.get(key) == Some(&1);
+        let bore_in_the_air = all_bore && *v > ground + SLACK_M;
+        let deck_underground = all_deck && !dangling && *v < ground - SLACK_M;
+        if bore_in_the_air || deck_underground {
+            *v = ground;
+            loose.clamped += 1;
         }
     }
 
-    let profiles = pieces
-        .iter()
-        .zip(stationed)
-        .enumerate()
-        .map(|(i, (w, mut sts))| {
-            let (a, b) = key_of(&sts);
-            let (h0, h1) = (heights[&a], heights[&b]);
-            if w.kind == Kind::Ground {
-                let g = grade::of(&w.class);
-                let arc: Vec<f64> = sts.iter().map(|st| st.s).collect();
-                let ceiling = if g.limited() { g.ceiling.unwrap_or(f64::INFINITY) } else { f64::INFINITY };
-                let h = limit(&target[i], &arc, ceiling, g.deviation_m, (h0, h1));
-                for (st, h) in sts.iter_mut().zip(h) {
-                    st.h = h;
+    for c in &chords {
+        let read = |e: End| match e {
+            End::Known(x) => Some(x),
+            End::Free(k) => free.get(&k).copied().filter(|x| x.is_finite()),
+        };
+        if matches!(c.lo, End::Free(k) if degree.get(&k) == Some(&1))
+            || matches!(c.hi, End::Free(k) if degree.get(&k) == Some(&1))
+        {
+            loose.dangling += 1;
+        }
+        let (a, b) = (read(c.lo), read(c.hi));
+        let (h0, h1) = match (a, b) {
+            (Some(a), Some(b)) => (a, b),
+            // Nothing reached it: flat at the target's extreme under the run,
+            // high for a deck and low for a bore, and counted.
+            _ => {
+                loose.unanchored += 1;
+                let vals = target[c.way][c.k0..=c.k1].iter().copied();
+                let kind = ways[c.way].spans.iter().find(|s| s.kind.is_structure()).map(|s| s.kind);
+                let flat = match kind {
+                    Some(Kind::Tunnel(_)) => vals.fold(f64::INFINITY, f64::min),
+                    _ => vals.fold(f64::NEG_INFINITY, f64::max),
+                };
+                let one = a.or(b).unwrap_or(flat);
+                (one, one)
+            }
+        };
+        let span = (c.hi_at - c.lo_at).max(1e-9);
+        for k in c.k0..=c.k1 {
+            let t = (stationed[c.way][k].s - c.lo_at) / span;
+            h[c.way][k] = h0 + (h1 - h0) * t;
+        }
+    }
+
+    let profiles = (0..ways.len())
+        .map(|i| {
+            let mut sts = stationed[i].clone();
+            for (k, st) in sts.iter_mut().enumerate() {
+                st.h = h[i][k];
+            }
+            // The consequence rule, at every station of a mapped span: a deck
+            // where the profile stands off the ground, a bore where it runs
+            // under, grade between. A ground station never becomes a
+            // structure here — that is the partition step's, once it derives.
+            for &(k0, k1, kind) in &runs[i] {
+                if !kind.is_structure() {
+                    continue;
                 }
-            } else {
-                let len = sts[sts.len() - 1].s;
-                for st in sts.iter_mut() {
-                    st.h = if len > 0.0 { h0 + (h1 - h0) * st.s / len } else { h0 };
+                for st in &mut sts[k0..=k1] {
                     st.solved = if st.h - st.ground >= STRUCTURE_MIN_M {
                         Solved::Deck
                     } else if st.ground - st.h >= STRUCTURE_MIN_M {
@@ -320,37 +522,97 @@ pub fn solve_on(terrain: &Terrain, pieces: &[&Polyline2], floor: &[Vec<f64>]) ->
                     };
                 }
             }
-            Profile { id: w.id.clone(), class: w.class.clone(), width_m: w.width_m, mapped: w.kind, stations: sts }
+            Profile {
+                id: ways[i].id.clone(),
+                class: ways[i].class.clone(),
+                width_m: ways[i].width_m,
+                spans: ways[i].spans.clone(),
+                stations: sts,
+            }
         })
         .collect();
     (profiles, loose)
 }
 
-/// The heights along one ground piece: the `ground` targets at arc lengths
+/// Whether a span's kind is one the profile follows the ground through. An
+/// indoor way is on the ground floor: it is kept out of the paved surface by
+/// the partition, but its height is the ground's, so the way's profile does
+/// not acquire a hole where a building is.
+fn on_ground(kind: Kind) -> bool {
+    !kind.is_structure()
+}
+
+/// One chord: a structure run and the two heights it runs between.
+struct Chord {
+    way: usize,
+    k0: usize,
+    k1: usize,
+    lo: End,
+    hi: End,
+    /// The arcs the two ends stand at: the abutment stations, which are
+    /// outside the run wherever the run has ground beside it.
+    lo_at: f64,
+    hi_at: f64,
+    len: f64,
+}
+
+/// One end of a chord: a height the at-grade solve or an anchor already
+/// fixed, or a connector with no ground at it that has to be solved for.
+#[derive(Clone, Copy, PartialEq)]
+enum End {
+    Known(f64),
+    Free((i64, i64)),
+}
+
+/// The heights along one at-grade run: the `ground` targets at arc lengths
 /// `arc`, held to `ceiling` where the box of `deviation` allows and pinned
-/// to `pin` at the two ends.
-pub fn limit(ground: &[f64], arc: &[f64], ceiling: f64, deviation: f64, pin: (f64, f64)) -> Vec<f64> {
+/// at each end the caller gives a pin for.
+pub fn limit(
+    ground: &[f64],
+    arc: &[f64],
+    ceiling: f64,
+    deviation: f64,
+    radius: Option<f64>,
+    pin: (Option<f64>, Option<f64>),
+) -> Vec<f64> {
     let n = ground.len();
     let mut h = ground.to_vec();
     if n == 0 {
         return h;
     }
+    // A run that ends against a structure has no pin there: the chord starts
+    // from wherever this solve lands, rather than from the ground at a
+    // mapper's cut.
     let pin_ends = |h: &mut Vec<f64>| {
-        h[0] = pin.0;
-        h[n - 1] = pin.1;
+        if let Some(v) = pin.0 {
+            h[0] = v;
+        }
+        if let Some(v) = pin.1 {
+            h[n - 1] = v;
+        }
     };
     pin_ends(&mut h);
-    if n < 2 || !ceiling.is_finite() {
+    // A street has no ceiling — the DEM under it *is* it (S9) — but it still
+    // has a vertical curve, so the early return has to ask about both. Asking
+    // about the ceiling alone skipped `bend` for every street on the box,
+    // which is most of the network: `kink` read 62.7 % and the tightest curve
+    // held was three metres.
+    if n < 2 || (!ceiling.is_finite() && radius.is_none()) {
         return h;
     }
     for _ in 0..PASSES {
-        for i in 1..n {
-            let c = ceiling * (arc[i] - arc[i - 1]);
-            h[i] = h[i].clamp(h[i - 1] - c, h[i - 1] + c);
+        if ceiling.is_finite() {
+            for i in 1..n {
+                let c = ceiling * (arc[i] - arc[i - 1]);
+                h[i] = h[i].clamp(h[i - 1] - c, h[i - 1] + c);
+            }
+            for i in (0..n - 1).rev() {
+                let c = ceiling * (arc[i + 1] - arc[i]);
+                h[i] = h[i].clamp(h[i + 1] - c, h[i + 1] + c);
+            }
         }
-        for i in (0..n - 1).rev() {
-            let c = ceiling * (arc[i + 1] - arc[i]);
-            h[i] = h[i].clamp(h[i + 1] - c, h[i + 1] + c);
+        for _ in 0..BEND_PASSES {
+            bend(&mut h, arc, radius);
         }
         for i in 0..n {
             h[i] = h[i].clamp(ground[i] - deviation, ground[i] + deviation);
@@ -359,6 +621,108 @@ pub fn limit(ground: &[f64], arc: &[f64], ceiling: f64, deviation: f64, pin: (f6
     }
     h
 }
+
+/// Holds the profile to its class's tightest **vertical curve**.
+///
+/// The ceiling bounds how steep a road is; this bounds how fast it may change
+/// how steep it is. A 20 % road is fine and Switzerland is full of them; a
+/// 20 % road meeting a flat one inside a metre is a ramp a car grounds on,
+/// and no ceiling forbids it because neither grade is over the limit.
+///
+/// A vertical curve of radius `R` bends by `1 / R` per metre, so over a
+/// station whose neighbours are `d1` and `d2` away the height may stand at
+/// most `d1 · d2 / (2 R)` off the chord between them — the sagitta of that
+/// curve. Clamping every interior station into that band is the second
+/// derivative's version of what the two passes above do to the first, and it
+/// composes with them the same way: the box still wins, and the pins still
+/// win over the box.
+///
+/// Jacobi — every station reads the same snapshot — so the result does not
+/// depend on the direction the array is walked, and repeated passes converge
+/// rather than drift.
+fn bend(h: &mut [f64], arc: &[f64], radius: Option<f64>) {
+    let Some(r) = radius.filter(|r| *r > 0.0) else {
+        return;
+    };
+    let n = h.len();
+    if n < 3 {
+        return;
+    }
+    let prev = h.to_vec();
+    for i in 1..n - 1 {
+        let (d1, d2) = (arc[i] - arc[i - 1], arc[i + 1] - arc[i]);
+        if !(d1 > 0.0 && d2 > 0.0) {
+            continue;
+        }
+        let t = d1 / (d1 + d2);
+        let chord = prev[i - 1] + (prev[i + 1] - prev[i - 1]) * t;
+        let sagitta = d1 * d2 / (2.0 * r);
+        h[i] = prev[i].clamp(chord - sagitta, chord + sagitta);
+    }
+}
+
+/// The tightest vertical curve a run of stations actually holds, as a radius
+/// in metres — `f64::INFINITY` for a straight one. What `bend` is asked to
+/// bound, measured back off the result.
+pub fn curvature_radius(h: &[f64], arc: &[f64]) -> f64 {
+    let mut worst = f64::INFINITY;
+    for i in 1..h.len().saturating_sub(1) {
+        let (d1, d2) = (arc[i] - arc[i - 1], arc[i + 1] - arc[i]);
+        if !(d1 > 0.0 && d2 > 0.0) {
+            continue;
+        }
+        let t = d1 / (d1 + d2);
+        let chord = h[i - 1] + (h[i + 1] - h[i - 1]) * t;
+        let off = (h[i] - chord).abs();
+        if off > 1e-12 {
+            worst = worst.min(d1 * d2 / (2.0 * off));
+        }
+    }
+    worst
+}
+
+/// `pts` with points inserted so no piece is longer than `step`, the
+/// original vertices kept **and a point at every arc in `at`**: the axis is
+/// not moved, only sampled. An arc outside the polyline is ignored, and one
+/// that lands within a millimetre of a point already there adds nothing.
+pub fn densify_at(pts: &[[f64; 2]], step: f64, at: &[f64]) -> Vec<[f64; 2]> {
+    let dense = densify(pts, step);
+    if at.is_empty() {
+        return dense;
+    }
+    let total = crate::roads::length(pts);
+    let mut cuts: Vec<f64> = at.iter().copied().filter(|s| *s > 0.0 && *s < total).collect();
+    cuts.sort_by(f64::total_cmp);
+    let mut out: Vec<[f64; 2]> = Vec::with_capacity(dense.len() + cuts.len());
+    let mut arc = 0.0f64;
+    let mut next = 0usize;
+    for (i, p) in dense.iter().enumerate() {
+        if i > 0 {
+            let prev = dense[i - 1];
+            let seg = (p[0] - prev[0]).hypot(p[1] - prev[1]);
+            while next < cuts.len() && cuts[next] < arc + seg - MERGE_M {
+                let t = if seg > 0.0 { ((cuts[next] - arc) / seg).clamp(0.0, 1.0) } else { 0.0 };
+                let q = [prev[0] + (p[0] - prev[0]) * t, prev[1] + (p[1] - prev[1]) * t];
+                if out.last().is_none_or(|l: &[f64; 2]| (q[0] - l[0]).hypot(q[1] - l[1]) > MERGE_M) {
+                    out.push(q);
+                }
+                next += 1;
+            }
+            arc += seg;
+            // A cut that lands on this vertex is served by the vertex.
+            while next < cuts.len() && cuts[next] <= arc + MERGE_M {
+                next += 1;
+            }
+        }
+        if out.last().is_none_or(|l: &[f64; 2]| (p[0] - l[0]).hypot(p[1] - l[1]) > MERGE_M) {
+            out.push(*p);
+        }
+    }
+    out
+}
+
+/// How near two stations must be, in metres, to count as the same one.
+const MERGE_M: f64 = 1e-3;
 
 /// `pts` with points inserted so no piece is longer than `step`, the
 /// original vertices kept: the axis is not moved, only sampled.
@@ -388,7 +752,7 @@ pub(crate) mod tests {
     use std::path::Path;
 
     use crate::drape;
-    use crate::terrain::{self, tests::dem};
+    use crate::terrain::{self, height_at, tests::dem};
 
     use super::*;
 
@@ -397,6 +761,7 @@ pub(crate) mod tests {
         let mut w = terrain::tests::world();
         terrain::run(&mut w, &mut dem(terrain_spec), 5.0, usize::MAX);
         drape::run(&mut w, Path::new(net)).unwrap();
+        crate::reference::run(&mut w);
         let s = run(&mut w);
         (w, s)
     }
@@ -475,6 +840,47 @@ pub(crate) mod tests {
         assert!((deepest - grade::of("motorway").deviation_m).abs() < 1e-9, "{deepest}");
     }
 
+    /// **A road may be steep; it may not change how steep it is too fast.**
+    /// Switzerland is full of 20 % roads and they are fine — what no car can
+    /// drive is a 20 % road meeting a flat one inside a metre, and no ceiling
+    /// forbids that because neither grade is over the limit.
+    ///
+    /// The specimen is a cliff: a 6 m step with no width at all, which the
+    /// raw ground crosses as a vertical break. The conditioning shaves what
+    /// it can, and the vertical curve holds what is left to the class's own
+    /// radius.
+    #[test]
+    fn a_road_holds_its_class_s_vertical_curve() {
+        for (class, want) in [
+            ("residential", grade::RADIUS_STREET_M),
+            ("secondary", grade::RADIUS_SECONDARY_M),
+            ("motorway", grade::RADIUS_MOTORWAY_M),
+        ] {
+            let (w, s) = world("step?rise=6&width=0", &format!("net:straight?len=400&class={class}"));
+            let p = &profiles(&w)[0];
+            let arc: Vec<f64> = p.stations.iter().map(|st| st.s).collect();
+            let h: Vec<f64> = p.stations.iter().map(|st| st.h).collect();
+            let held = curvature_radius(&h, &arc);
+            // The box and the pins may still force a tighter curve than the
+            // class would choose, so this is not an equality — but the road
+            // must be nowhere near the raw cliff it was solved from.
+            assert!(held > 20.0, "{class} holds a {held:.0} m curve: {s}");
+            let raw: Vec<f64> = p.stations.iter().map(|st| st.ground).collect();
+            let ground = curvature_radius(&raw, &arc);
+            assert!(held > ground * 4.0, "{class}: {held:.1} m against the ground's {ground:.1}");
+            assert!(want > 0.0);
+        }
+    }
+
+    /// And a *draped* class holds none: a stair is a sequence of vertical
+    /// breaks, and bounding them would be a lie about what steps are.
+    #[test]
+    fn a_draped_class_has_no_vertical_curve() {
+        assert_eq!(grade::of("steps").radius_m, None);
+        assert_eq!(grade::of("footway").radius_m, None);
+        assert!(grade::of("residential").radius_m.is_some());
+    }
+
     #[test]
     fn a_span_is_a_chord_between_its_abutments() {
         // A valley 30 m in radius, 40 m deep; a span from −40 to 40 chords
@@ -482,42 +888,47 @@ pub(crate) mod tests {
         // them at the origin.
         let (w, s) = world("hill?amp=-40&radius=30", "net:straight?len=200&span=0.3,0.7");
         let p = profiles(&w);
-        assert_eq!(p.len(), 3);
-        let span = p.iter().find(|p| p.mapped == Kind::Bridge(1)).unwrap();
-        assert_eq!(span.stations.len(), 21);
-        let (h0, h1) = (span.stations[0].h, span.stations[20].h);
+        assert_eq!(p.len(), 1, "one way, not three pieces");
+        let span = &p[0];
+        let (k0, k1, _) = span.runs().into_iter().find(|r| r.2.is_structure()).expect("a deck run");
+        let deck: Vec<Station> = span.stations[k0..=k1].to_vec();
+        assert_eq!(deck.len(), 19, "the deck's own stations, abutments excluded");
+        let (h0, h1) = (deck[0].h, deck[deck.len() - 1].h);
         assert!((h0 - 400.0).abs() < 1e-9 && (h1 - 400.0).abs() < 1e-9, "{h0} {h1}");
-        let len = span.stations[20].s;
-        for st in &span.stations {
-            let chord = h0 + (h1 - h0) * st.s / len;
+        // The chord is straight between its two abutments.
+        let (s0, s1) = (deck[0].s, deck[deck.len() - 1].s);
+        for st in &deck {
+            let chord = h0 + (h1 - h0) * (st.s - s0) / (s1 - s0);
             assert!((st.h - chord).abs() < 1e-9, "{st:?} vs {chord}");
         }
         let t = w.terrain.as_ref().unwrap();
-        let mid = span.stations[10];
-        assert_eq!(mid.p, [0.0, 0.0]);
+        let mid = deck.iter().find(|st| st.p == [0.0, 0.0]).expect("a station at the origin");
         let clearance = mid.h - height_at(t, 0.0, 0.0);
         assert!((clearance - (400.0 - height_at(t, 0.0, 0.0))).abs() < 1e-9 && clearance > 35.0, "{clearance}");
         // Deck wherever the valley is under it by the threshold: out to
-        // 24 m for sure (3.8 m deep there), never at the ends.
-        for st in &span.stations {
+        // 24 m for sure (3.8 m deep there), never at the abutments.
+        for st in &deck {
             if st.p[0].abs() <= 24.0 {
                 assert_eq!(st.solved, Solved::Deck, "{st:?}");
             }
         }
-        assert_eq!(span.stations[0].solved, Solved::Grade);
-        assert_eq!(span.stations[20].solved, Solved::Grade);
-        let decks = span.stations.iter().filter(|st| st.solved == Solved::Deck).count();
+        assert_eq!(deck[0].solved, Solved::Grade);
+        assert_eq!(deck[deck.len() - 1].solved, Solved::Grade);
+        let decks = deck.iter().filter(|st| st.solved == Solved::Deck).count();
         assert!(decks >= 13, "{decks}");
         assert_eq!(s.num("decks"), decks as f64, "{s}");
-        // The abutments are the ground pieces' ends: one height, no step.
+        // The abutment is where the at-grade solve landed: one height, no
+        // step, and no pin at the mapper's own cut.
         assert_eq!(s.num("step"), 0.0, "{s}");
         assert_eq!(s.num("degraded"), 0.0, "{s}");
         assert_eq!(s.num("unanchored"), 0.0, "{s}");
         assert_eq!(s.num("dangling"), 0.0, "{s}");
         // A tunnel through the hill is the mirror.
         let (w, s) = world("hill?amp=40&radius=30", "net:straight?len=200&span=0.3,0.7&kind=tunnel");
-        let span = profiles(&w).iter().find(|p| p.mapped == Kind::Tunnel(-1)).unwrap();
-        for st in &span.stations {
+        let p = profiles(&w);
+        let bore = &p[0];
+        let (k0, k1, _) = bore.runs().into_iter().find(|r| r.2.is_structure()).expect("a bore run");
+        for st in &bore.stations[k0..=k1] {
             if st.p[0].abs() <= 24.0 {
                 assert_eq!(st.solved, Solved::Bore, "{st:?}");
             }
@@ -528,10 +939,11 @@ pub(crate) mod tests {
     #[test]
     fn a_span_that_never_leaves_the_ground_degrades() {
         let (w, s) = world("flat", "net:straight?len=200&span=0.35,0.65");
-        let span = profiles(&w).iter().find(|p| p.mapped == Kind::Bridge(1)).unwrap();
+        let p = profiles(&w);
+        let span = &p[0];
         assert!(span.stations.iter().all(|st| st.solved == Solved::Grade && st.h == 400.0));
         assert_eq!(s.get("degraded"), Some("1/1 (100.00%)"), "{s}");
-        assert_eq!(s.get("decks"), Some("0/16 (0.00%)"), "{s}");
+        assert_eq!(s.get("decks"), Some("0/15 (0.00%)"), "{s}");
     }
 
     #[test]
@@ -558,55 +970,72 @@ pub(crate) mod tests {
         // 420: the connector between them lies on the one chord, at 415.
         let mut w = terrain::tests::world();
         terrain::run(&mut w, &mut dem("ramp?grade=0.5&bearing=90&radius=100000"), 5.0, usize::MAX);
-        let line = |id: &str, kind: Kind, pts: Vec<[f64; 2]>| Polyline2 {
-            id: id.into(),
-            class: "primary".into(),
-            subclass: String::new(),
-            width_m: 7.0,
-            kind,
-            pts,
-        };
-        let pieces = [
-            line("w", Kind::Ground, vec![[-20.0, 0.0], [0.0, 0.0]]),
-            line("a", Kind::Bridge(1), vec![[0.0, 0.0], [30.0, 0.0]]),
-            line("b", Kind::Bridge(1), vec![[30.0, 0.0], [40.0, 0.0]]),
-            line("e", Kind::Ground, vec![[40.0, 0.0], [60.0, 0.0]]),
+        // Two ways, each half ground and half bridge, meeting at a
+        // structure-only connector at x = 30. Nothing is at grade there, so
+        // that connector has no height of its own and the two chords are
+        // solved together as one.
+        let ways = [
+            way("a", vec![[-20.0, 0.0], [30.0, 0.0]], vec![
+                (0.0, 20.0, Kind::Ground),
+                (20.0, 50.0, Kind::Bridge(1)),
+            ]),
+            way("b", vec![[30.0, 0.0], [60.0, 0.0]], vec![
+                (0.0, 10.0, Kind::Bridge(1)),
+                (10.0, 30.0, Kind::Ground),
+            ]),
         ];
-        let refs: Vec<&Polyline2> = pieces.iter().collect();
-        let (profiles, loose) = solve(w.terrain.as_ref().unwrap(), &refs);
+        let refs: Vec<&Way> = ways.iter().collect();
+        let t = w.terrain.as_ref().unwrap();
+        let (profiles, loose) = solve(&crate::reference::of(&refs, t), &refs);
         assert_eq!(loose, Loose::default());
-        let a = &profiles[1];
-        let b = &profiles[2];
+        let (a, b) = (&profiles[0], &profiles[1]);
         let joint = a.stations[a.stations.len() - 1].h;
-        assert_eq!(joint, b.stations[0].h);
+        assert!((joint - b.stations[0].h).abs() < 1e-9, "{joint} vs {}", b.stations[0].h);
         assert!((joint - 415.0).abs() < 1e-6, "{joint}");
-        assert!((a.stations[0].h - 400.0).abs() < 1e-6);
-        assert!((b.stations[b.stations.len() - 1].h - 420.0).abs() < 1e-6);
+        // The way now starts at x = −20, where the ramp reads 390.
+        assert!((a.stations[0].h - 390.0).abs() < 1e-6, "{}", a.stations[0].h);
+        // Way b runs on to x = 60, where the ramp reads 430; its abutment at
+        // x = 40 is the 420 the chord climbs to.
+        assert!((b.stations[b.stations.len() - 1].h - 430.0).abs() < 1e-6);
+        let abut = b.stations.iter().find(|st| (st.p[0] - 40.0).abs() < 1e-6).expect("the abutment");
+        assert!((abut.h - 420.0).abs() < 1e-6, "{}", abut.h);
         // The ground at 30 m is 415 too, so the chord runs at grade there,
         // and the deck stands off the ground only where the ramp is not
         // the chord — which on a plane it is everywhere.
         assert!(a.stations.iter().all(|st| st.solved == Solved::Grade));
     }
 
+    /// A way from points and a span table in arc.
+    ///
+    /// A **street**: not grade-limited, so its at-grade stretches lie on the
+    /// ground exactly and what these tests measure is the chord rather than
+    /// the limiter. Under R1 an abutment is wherever the at-grade solve
+    /// lands, so a `primary` on one of these ramps spends its deviation box
+    /// before the chord even starts — true, and not what is being asked.
+    fn way(id: &str, pts: Vec<[f64; 2]>, spans: Vec<(f64, f64, Kind)>) -> Way {
+        Way {
+            id: id.into(),
+            class: "residential".into(),
+            subclass: String::new(),
+            width_m: 5.5,
+            pts,
+            spans: spans.into_iter().map(|(a0, a1, kind)| crate::world::Span { a0, a1, kind }).collect(),
+        }
+    }
+
     #[test]
     fn an_unreached_span_lies_flat_and_is_counted() {
         let mut w = terrain::tests::world();
         terrain::run(&mut w, &mut dem("hill?amp=-40&radius=30"), 5.0, usize::MAX);
-        let piece = Polyline2 {
-            id: "lone".into(),
-            class: "primary".into(),
-            subclass: String::new(),
-            width_m: 7.0,
-            kind: Kind::Bridge(1),
-            pts: vec![[-50.0, 0.0], [50.0, 0.0]],
-        };
-        let (profiles, loose) = solve(w.terrain.as_ref().unwrap(), &[&piece]);
-        assert_eq!(loose, Loose { dangling: 1, unanchored: 1 });
+        let bridge = way("lone", vec![[-50.0, 0.0], [50.0, 0.0]], vec![(0.0, 100.0, Kind::Bridge(1))]);
+        let t = w.terrain.as_ref().unwrap();
+        let (profiles, loose) = solve(&crate::reference::of(&[&bridge], t), &[&bridge]);
+        assert_eq!(loose, Loose { dangling: 1, unanchored: 1, clamped: 0 });
         let top = profiles[0].stations.iter().map(|st| st.ground).fold(f64::NEG_INFINITY, f64::max);
         assert!(profiles[0].stations.iter().all(|st| st.h == top));
-        let mut tunnel = piece.clone();
-        tunnel.kind = Kind::Tunnel(-1);
-        let (profiles, _) = solve(w.terrain.as_ref().unwrap(), &[&tunnel]);
+        let mut tunnel = bridge.clone();
+        tunnel.spans[0].kind = Kind::Tunnel(-1);
+        let (profiles, _) = solve(&crate::reference::of(&[&tunnel], t), &[&tunnel]);
         let floor = profiles[0].stations.iter().map(|st| st.ground).fold(f64::INFINITY, f64::min);
         assert!(profiles[0].stations.iter().all(|st| st.h == floor));
     }
@@ -618,25 +1047,59 @@ pub(crate) mod tests {
         // height and is counted.
         let mut w = terrain::tests::world();
         terrain::run(&mut w, &mut dem("ramp?grade=0.1&bearing=90&radius=100000"), 5.0, usize::MAX);
-        let line = |id: &str, kind: Kind, pts: Vec<[f64; 2]>| Polyline2 {
-            id: id.into(),
-            class: "primary".into(),
-            subclass: String::new(),
-            width_m: 7.0,
-            kind,
-            pts,
-        };
-        let pieces = [
-            line("w", Kind::Ground, vec![[-20.0, 0.0], [0.0, 0.0]]),
-            line("a", Kind::Bridge(1), vec![[0.0, 0.0], [60.0, 0.0]]),
-        ];
-        let refs: Vec<&Polyline2> = pieces.iter().collect();
-        let (profiles, loose) = solve(w.terrain.as_ref().unwrap(), &refs);
-        assert_eq!(loose, Loose { dangling: 1, unanchored: 0 });
-        let a = &profiles[1];
-        assert!(a.stations.iter().all(|st| (st.h - 400.0).abs() < 1e-6), "{:?}", a.stations[5]);
+        // One way: 20 m of ground, then 60 m of deck running off the world.
+        let ways = [way("a", vec![[-20.0, 0.0], [60.0, 0.0]], vec![
+            (0.0, 20.0, Kind::Ground),
+            (20.0, 80.0, Kind::Bridge(1)),
+        ])];
+        let refs: Vec<&Way> = ways.iter().collect();
+        let t = w.terrain.as_ref().unwrap();
+        let (profiles, loose) = solve(&crate::reference::of(&refs, t), &refs);
+        assert_eq!(loose, Loose { dangling: 1, unanchored: 0, clamped: 0 });
+        let a = &profiles[0];
+        let deck: Vec<&Station> = a.stations.iter().filter(|st| st.s >= 20.0).collect();
+        assert!(deck.iter().all(|st| (st.h - 400.0).abs() < 1e-6), "{:?}", deck[5]);
         // Level over rising ground: a bore, by consequence, past 5 m out.
-        assert_eq!(a.stations[a.stations.len() - 1].solved, Solved::Bore);
+        assert_eq!(deck[deck.len() - 1].solved, Solved::Bore);
+    }
+
+    /// **A dangling deck holds its level; a dangling bore holds the ground.**
+    ///
+    /// A chord with one end anchored and the other reaching nothing runs
+    /// level to the anchor. For a deck that is the named deferral — the bbox
+    /// cuts a viaduct and the descent to a lower ground waits for a site with
+    /// data past it. For a bore it is not: run level out of a hillside that
+    /// falls away, a tunnel emerges into the air, and what the structure step
+    /// then builds is a viaduct. Measured on the loop box before this rule: a
+    /// service road tagged `is_tunnel` end to end ended 62 m over the ground
+    /// on 130 m piers, and asked a motorway to climb 68 m out of its way.
+    #[test]
+    fn a_dangling_bore_holds_the_ground_and_a_dangling_deck_its_level() {
+        let mut w = terrain::tests::world();
+        // Falling ground: 10 % down toward the east.
+        terrain::run(&mut w, &mut dem("ramp?grade=-0.1&bearing=90&radius=100000"), 5.0, usize::MAX);
+        let t = w.terrain.as_ref().unwrap();
+        let mut check = |kind: Kind| -> Vec<Station> {
+            let ways = [
+                way("w", vec![[-20.0, 0.0], [0.0, 0.0]], vec![(0.0, 20.0, Kind::Ground)]),
+                way("a", vec![[0.0, 0.0], [200.0, 0.0]], vec![(0.0, 200.0, kind)]),
+            ];
+            let refs: Vec<&Way> = ways.iter().collect();
+            let (profiles, loose) = solve(&crate::reference::of(&refs, t), &refs);
+            assert_eq!(loose.dangling, 1, "{kind:?}");
+            profiles[1].stations.clone()
+        };
+        // The deck: level from its one anchor at 400, out over ground that
+        // has fallen to 380. Counted as dangling, and left alone.
+        let deck = check(Kind::Bridge(1));
+        assert!(deck.iter().all(|st| (st.h - 400.0).abs() < 1e-6), "{:?}", deck[10]);
+        assert_eq!(deck[deck.len() - 1].solved, Solved::Deck);
+        // The bore: the same chord would stand 20 m over the hillside, so the
+        // free end takes the ground instead and the tunnel follows it down.
+        let bore = check(Kind::Tunnel(-1));
+        let end = bore[bore.len() - 1];
+        assert!((end.h - end.ground).abs() < 1e-6, "the bore is in the air: {end:?}");
+        assert!(bore.iter().all(|st| st.h <= st.ground + 1e-6), "a bore over the ground");
     }
 
     #[test]

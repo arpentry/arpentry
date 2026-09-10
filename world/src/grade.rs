@@ -44,6 +44,22 @@ pub struct Grade {
     /// How far, in metres, the solved height may stand from the ground at
     /// an at-grade station; 0 for a draped class.
     pub deviation_m: f64,
+    /// The tightest **vertical curve** the alignment holds, as a radius in
+    /// metres; `None` for a class that holds none.
+    ///
+    /// The ceiling bounds how steep a road is; this bounds how fast it may
+    /// *change* how steep it is. Switzerland has roads at 20 %, and they are
+    /// fine — what no car can drive is a 20 % road meeting a flat one in a
+    /// metre, because the transition is a ramp the underbody grounds on. A
+    /// radius `R` lets the grade change by `1 / R` per metre, so a street at
+    /// [`RADIUS_STREET_M`] takes 20 m to go from level to 20 %, and a
+    /// motorway at [`RADIUS_MOTORWAY_M`] takes 240 m.
+    ///
+    /// Only the *engineered* radii are norm-shaped; the street's is a
+    /// drivability floor rather than a comfort figure, chosen to leave a real
+    /// hillside street alone (S9) while ironing the node-scale kinks a DEM
+    /// leaves behind.
+    pub radius_m: Option<f64>,
 }
 
 impl Grade {
@@ -69,15 +85,91 @@ pub const NODE_M: f64 = 4.0;
 /// leaves the ground by half a metre is a culvert, and a culvert is ground.
 pub const STRUCTURE_MIN_M: f64 = 0.5;
 
+/// How far a surface must stand **clear of** the ground, in metres, before a
+/// deck is the honest answer rather than an embankment.
+///
+/// It is [`crate::bench::MAX_BENCH_FACE_M`]: the tallest earthwork face the
+/// ground stage will build. Below it the ground closes the gap with a batter;
+/// above it the bench is *walled*, and a wall carrying a road across a gully
+/// is a deck drawn wrong. So the threshold is read off a construction that
+/// already exists rather than fitted to a population — and the server, which
+/// calibrated its own against 411 477 at-grade nodes and got 4.0 m, landing
+/// one metre away is the corroboration.
+///
+/// Distinct from [`STRUCTURE_MIN_M`], which is half a metre and answers a
+/// different question: that one flags a *station* of a run, this one decides
+/// whether the run is a structure at all.
+pub const DECK_STANDOFF_M: f64 = crate::bench::MAX_BENCH_FACE_M;
+
+/// The tightest vertical curve a motorway or trunk holds, in metres. A
+/// surveyed alignment at speed: 6 % to level takes 240 m.
+///
+/// **These three are design facts, not knobs, and the box is what cannot pay
+/// for them.** A third of the loop box's engineered runs fail to hold them
+/// (`boxed` 24/66), and lowering them only reports fewer failures without
+/// making anything truer: swept, a sixteenth of these values still leaves
+/// seven runs short. A real motorway gets the earthworks and structures its
+/// curve needs; this model gives it [`Grade::deviation_m`], and eight metres
+/// of box does not buy a 4 km curve on a mountainside. `boxed` is that
+/// deferral, named.
+pub const RADIUS_MOTORWAY_M: f64 = 4000.0;
+
+/// The same for a primary, and for a secondary at two thirds of it.
+pub const RADIUS_PRIMARY_M: f64 = 2000.0;
+pub const RADIUS_SECONDARY_M: f64 = 1500.0;
+
+/// The tightest vertical curve a street holds, in metres — a **drivability**
+/// floor, not a comfort figure. A car grounds out where a grade changes
+/// faster than its wheelbase can bridge; 100 m spends 20 m of road going from
+/// level to 20 %, which a hillside lane really does and a DEM kink does not.
+///
+/// **Calibrated, and it is the knee.** Swept over the loop box, the cost of a
+/// larger radius is nearly flat — the road stands 0.35 m off the DEM at p90
+/// at 25 m and 0.48 m at 400 m — so the choice is not made on cost. What
+/// makes it is whether the constraint can be *met*: `kink`, the share of
+/// street runs still bent tighter than their class allows, holds around 3 %
+/// up to 100 m and then falls apart, 11 % at 200 m and 27 % at 400 m, because
+/// smoothing that hard would take the road further from its reference than
+/// [`Grade::deviation_m`] permits. **100 m is the largest curve a street can
+/// actually hold inside its own budget**, and it buys `steep` 11.45 % → 10.33 %
+/// against 25 m.
+///
+/// It agrees with the physics from the other side: 0.3 g of vertical
+/// acceleration at 60 km/h — the fastest thing in this bucket, a tertiary —
+/// wants `v²/a` ≈ 96 m.
+pub const RADIUS_STREET_M: f64 = 100.0;
+
 /// The vertical prior of a way of `class`.
 pub fn of(class: &str) -> Grade {
     match class {
-        "motorway" | "trunk" => Grade { mode: Mode::Engineered, ceiling: Some(0.06), deviation_m: 8.0 },
-        "primary" => Grade { mode: Mode::Engineered, ceiling: Some(0.08), deviation_m: 4.0 },
-        "secondary" => Grade { mode: Mode::Engineered, ceiling: Some(0.10), deviation_m: 4.0 },
+        "motorway" | "trunk" => Grade {
+            mode: Mode::Engineered,
+            ceiling: Some(0.06),
+            deviation_m: 8.0,
+            radius_m: Some(RADIUS_MOTORWAY_M),
+        },
+        "primary" => Grade {
+            mode: Mode::Engineered,
+            ceiling: Some(0.08),
+            deviation_m: 4.0,
+            radius_m: Some(RADIUS_PRIMARY_M),
+        },
+        "secondary" => Grade {
+            mode: Mode::Engineered,
+            ceiling: Some(0.10),
+            deviation_m: 4.0,
+            radius_m: Some(RADIUS_SECONDARY_M),
+        },
         "tertiary" | "unclassified" | "residential" | "living_street" | "service" | "pedestrian"
-        | "unknown" => Grade { mode: Mode::Street, ceiling: Some(0.15), deviation_m: 2.5 },
-        _ => Grade { mode: Mode::Draped, ceiling: None, deviation_m: 0.0 },
+        | "unknown" => Grade {
+            mode: Mode::Street,
+            ceiling: Some(0.15),
+            deviation_m: 2.5,
+            radius_m: Some(RADIUS_STREET_M),
+        },
+        // A draped class holds nothing, and steps least of all: a stair is
+        // a sequence of vertical breaks and bounding them would be a lie.
+        _ => Grade { mode: Mode::Draped, ceiling: None, deviation_m: 0.0, radius_m: None },
     }
 }
 
@@ -107,7 +199,7 @@ mod tests {
         for class in ["footway", "steps", "path", "track", "cycleway", "bridleway"] {
             let g = of(class);
             assert!(!g.solves(), "{class}");
-            assert_eq!((g.ceiling, g.deviation_m), (None, 0.0), "{class}");
+            assert_eq!((g.ceiling, g.deviation_m, g.radius_m), (None, 0.0, None), "{class}");
         }
     }
 

@@ -74,6 +74,12 @@ pub const WALK_DECK_M: f64 = 0.4;
 /// How high a bore is inside, in metres, from the roadway to the crown.
 pub const TUNNEL_HEIGHT_M: f64 = 5.0;
 
+/// The same for a way a person walks through: a subway, a covered stair, a
+/// passage under a building. The mirror of [`WALK_DECK_M`], and needed for
+/// the same reason — most of the loop box's tunnel spans are footways, steps
+/// and paths, and five metres of tube is not what any of them is.
+pub const WALK_TUNNEL_M: f64 = 2.5;
+
 /// How far apart a deck's piers stand, in metres: one bay of a viaduct.
 /// The run's own length is divided into whole bays as near this as it
 /// allows, so the last bay is not a stub.
@@ -106,6 +112,18 @@ impl Span {
             WALK_DECK_M
         } else {
             DECK_THICKNESS_M
+        }
+    }
+
+    /// How high the bore is inside. A subway under a street is not a road
+    /// tunnel: a footway given the full [`TUNNEL_HEIGHT_M`] draws five metres
+    /// of tube for a passage a person walks through, and on the loop box most
+    /// of the tunnel spans are footways, steps and paths.
+    fn height(&self) -> f64 {
+        if width::family(&self.class) == Family::Walk {
+            WALK_TUNNEL_M
+        } else {
+            TUNNEL_HEIGHT_M
         }
     }
 }
@@ -158,20 +176,38 @@ pub fn run(world: &mut World) -> Summary {
         let profiles = world.profile.as_ref().expect("the profile step runs first");
         let roads = world.roads.as_ref().expect("the drape step runs first");
 
+        // One span per *structure run* of a way, not per profile: a way is
+        // one object now and may carry several decks along its length.
+        // A run **plus its abutments**: the boundary stations belong to the
+        // at-grade solve, and a deck runs from abutment to abutment. Without
+        // them the roadway stops one station short at each end and the ground
+        // pieces — cut at the annotation edge — do not reach it, so a station
+        // of paving is laid by nobody.
+        let runs_of = |p: &crate::world::Profile| -> Vec<(usize, usize, Kind)> {
+            let last = p.stations.len().saturating_sub(1);
+            p.runs()
+                .into_iter()
+                .filter(|r| r.2.is_structure())
+                .map(|(k0, k1, kind)| (k0.saturating_sub(1), (k1 + 1).min(last), kind))
+                .collect()
+        };
         let mut spans: Vec<Span> = profiles
             .profiles
             .iter()
-            .filter(|p| p.mapped.is_structure())
-            .map(|p| Span {
-                class: p.class.clone(),
-                width_m: p.width_m,
-                mapped: p.mapped,
-                stations: p.stations.clone(),
-                fitted: false,
-                carried: false,
+            .flat_map(|p| {
+                runs_of(p).into_iter().map(move |(k0, k1, kind)| Span {
+                    class: p.class.clone(),
+                    width_m: p.width_m,
+                    mapped: kind,
+                    stations: p.stations[k0..=k1].to_vec(),
+                    fitted: false,
+                    carried: false,
+                })
             })
             .collect();
-        let decks = Field::of(profiles.profiles.iter().filter(|p| p.mapped.is_structure()));
+        let decks = Field::of_stations(profiles.profiles.iter().map(|p| {
+            (p, runs_of(p).into_iter().map(|(k0, k1, _)| (k0, k1)).collect::<Vec<_>>())
+        }));
         spans.extend(
             roads
                 .spans
@@ -183,9 +219,16 @@ pub fn run(world: &mut World) -> Summary {
         // Every connector a ground piece ends at, and the height it took
         // there: what a span's own end must equal.
         let mut ends: HashMap<(i64, i64), f64> = HashMap::new();
-        for p in profiles.profiles.iter().filter(|p| p.mapped == Kind::Ground) {
-            for st in [p.stations.first(), p.stations.last()].into_iter().flatten() {
-                ends.entry(connector(st.p)).or_insert(st.h);
+        // A way end that is on the ground: what a span's own end must equal
+        // where it lands on one.
+        for p in &profiles.profiles {
+            let last = p.stations.len().saturating_sub(1);
+            for (k, high) in [(0usize, false), (last, true)] {
+                if !p.end_kind(high).is_structure() {
+                    if let Some(st) = p.stations.get(k) {
+                        ends.entry(connector(st.p)).or_insert(st.h);
+                    }
+                }
             }
         }
 
@@ -252,11 +295,23 @@ pub fn run(world: &mut World) -> Summary {
             }
             for (a, b) in runs(&span.stations, Solved::Bore) {
                 stats.bores += 1;
-                tube_over(&mut s.bore, &l[a..=b], &r[a..=b], TUNNEL_HEIGHT_M);
-                let face: Vec<f64> = span.stations[a..=b].iter().map(|st| st.ground - st.h - TUNNEL_HEIGHT_M).collect();
+                let high = span.height();
+                let face: Vec<f64> =
+                    span.stations[a..=b].iter().map(|st| st.ground - st.h - high).collect();
+                // **The tube is drawn between its portals and nowhere else.**
+                // A bore run is a stretch the road runs *under* the ground by
+                // `STRUCTURE_MIN_M`; the tube is a solid `high` tall, and
+                // half a metre of burial does not fit five metres of tunnel.
+                // Swept over the whole run regardless — which is what this
+                // did — 23 of the loop box's 29 bores drew a tube standing
+                // proud of the hillside end to end, and the rest poked out at
+                // their mouths. The portal is where the crown goes under, and
+                // that is exactly what `spanning` has always returned; it
+                // only fed the counters.
                 match spanning(&face) {
                     None => stats.grounded += 1,
                     Some((f, g)) => {
+                        tube_over(&mut s.bore, &l[a + f..=a + g], &r[a + f..=a + g], high);
                         stats.cover = stats.cover.min(face[f..=g].iter().copied().fold(f64::INFINITY, f64::min));
                         stats.open += face[f..=g].iter().filter(|c| **c < 0.0).count();
                     }
@@ -313,7 +368,10 @@ fn fit(w: &crate::world::Polyline2, terrain: &Terrain, decks: &Field) -> Span {
             s += (p[0] - pts[i - 1][0]).hypot(p[1] - pts[i - 1][1]);
         }
         let ground = height_at(terrain, p[0], p[1]);
-        stations.push(Station { s, p: *p, ground, h: ground, solved: Solved::Grade });
+        // A draped class samples the finished ground exactly (stratum D), so
+        // its reference is the ground: there is no surface it is solved
+        // toward, because it is not solved.
+        stations.push(Station { s, p: *p, ground, reference: ground, h: ground, solved: Solved::Grade });
     }
     // Carried, if a road's own span runs within the room's reach of every
     // one of its stations: the same structure, drawn twice by the source.
@@ -591,7 +649,9 @@ mod tests {
     use std::path::Path;
 
     use crate::terrain::{self, tests::dem};
-    use crate::{bench, crossing, drape, facade, fillet, kerb, mesh, profile, ribbon, room, surface};
+    use crate::{
+        bench, crossing, drape, facade, fillet, kerb, mesh, profile, reference, ribbon, room, surface,
+    };
 
     use super::*;
 
@@ -600,8 +660,10 @@ mod tests {
         let mut w = terrain::tests::world();
         terrain::run(&mut w, &mut dem(ground), 5.0, usize::MAX);
         drape::run(&mut w, Path::new(net)).unwrap();
+        reference::run(&mut w);
         profile::run(&mut w);
         crossing::run(&mut w);
+        crate::partition::run(&mut w);
         facade::run(&mut w, None).unwrap();
         ribbon::run(&mut w);
         surface::run(&mut w);
@@ -620,7 +682,9 @@ mod tests {
 
     #[test]
     fn runs_need_a_length() {
-        let st = |solved: Solved| Station { s: 0.0, p: [0.0, 0.0], ground: 0.0, h: 0.0, solved };
+        let st = |solved: Solved| {
+            Station { s: 0.0, p: [0.0, 0.0], ground: 0.0, reference: 0.0, h: 0.0, solved }
+        };
         let row = [Solved::Grade, Solved::Deck, Solved::Deck, Solved::Grade, Solved::Deck, Solved::Grade, Solved::Deck, Solved::Deck];
         let stations: Vec<Station> = row.iter().map(|s| st(*s)).collect();
         // The lone deck station at 4 is no run; the pair at 1..2 and the
@@ -773,20 +837,35 @@ mod tests {
         assert_eq!(s.num("bores"), 0.0, "{s}");
         assert_eq!(s.num("grounded"), 0.0, "{s}");
         assert_eq!(s.num("buried"), 0.0, "{s}");
-        assert!((s.num("clear") - crate::crossing::ROAD_CLEARANCE_M).abs() < 1e-6, "{s}");
-        // The approach is the bench's: its asphalt rides the fill all the
-        // way up to the abutment, and the deck's top is the same surface
-        // (the bench and this step read one profile).
+        // The deck reaches down the approach to where the road stands
+        // `DECK_STANDOFF_M` off the ground, so what its soffit clears at its
+        // own ends is that less the slab — the invariant a *derived* deck
+        // has, where a deck cut to the annotation had the full headroom.
+        let least = crate::grade::DECK_STANDOFF_M - DECK_THICKNESS_M;
+        assert!(s.num("clear") >= least - 1e-6, "clear {} < {least}: {s}", s.num("clear"));
+        assert!(s.num("clear") <= crate::crossing::ROAD_CLEARANCE_M + 1e-6, "{s}");
+        // The approach is the bench's up to the deck's foot, and the
+        // structure's above it: the two read one profile, so the roadway is
+        // continuous across the joint whichever side laid it.
         let b = w.bench.as_ref().unwrap();
         let top = b.carriageway.positions.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max);
-        assert!((top - 406.5).abs() < 1e-6, "{top}");
+        assert!(
+            (top - (400.0 + crate::grade::DECK_STANDOFF_M)).abs() < 0.5,
+            "the bench carried the road past the deck's foot: {top}"
+        );
         // The mirror: the leg is cut into the ground and the bore's crown
         // carries the road above it on the slab's thickness.
         let (_, s) = world("flat", "net:underpass?len=300");
         assert_eq!(s.num("bores"), 1.0, "{s}");
         assert_eq!(s.num("decks"), 0.0, "{s}");
         assert_eq!(s.num("open"), 0.0, "{s}");
-        assert!((s.num("cover") - DECK_THICKNESS_M).abs() < 1e-6, "{s}");
+        // The bore starts where the road runs `BORE_COVER_M` under the
+        // ground, so the ground over its crown at that end is that less the
+        // tube — the cover a *derived* bore has at its portal, where one cut
+        // to the annotation had the slab's own thickness.
+        let least = crate::partition::BORE_COVER_M - TUNNEL_HEIGHT_M;
+        assert!(s.num("cover") >= least - 1e-6, "cover {} < {least}: {s}", s.num("cover"));
+        assert!(s.num("cover") <= DECK_THICKNESS_M + 1e-6, "{s}");
     }
 
     #[test]
@@ -879,7 +958,14 @@ mod tests {
         // the road at the bottom, so the one bay it has puts a pier
         // exactly where the road runs. It is dropped, not moved — moving
         // it is a design and this is a prior — and counted.
-        let (_, s) = world("hill?amp=-40&radius=60", "net:overpass?len=300");
+        //
+        // The valley is 160 m across, which is past the reach of the
+        // closing's own window: the road descends into it, no notch is
+        // refused, and the road stays at the bottom where the test needs it.
+        // Narrower, the terrain implies a deck across the middle and the road
+        // rides over its own valley — which is the model working, and a
+        // different specimen.
+        let (_, s) = world("hill?amp=-40&radius=80", "net:overpass?len=300");
         assert_eq!(s.num("skipped"), 1.0, "{s}");
         assert_eq!(s.num("piers"), 0.0, "{s}");
     }

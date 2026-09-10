@@ -20,6 +20,7 @@ pub struct World {
     pub rect: Rect,
     pub terrain: Option<Terrain>,
     pub roads: Option<Roads>,
+    pub reference: Option<Reference>,
     pub profile: Option<Profiles>,
     pub crossing: Option<Crossings>,
     pub facade: Option<Facade>,
@@ -43,6 +44,7 @@ impl World {
             rect,
             terrain: None,
             roads: None,
+            reference: None,
             profile: None,
             crossing: None,
             facade: None,
@@ -93,9 +95,16 @@ impl Terrain {
 pub enum Kind {
     /// On the ground: what the surface is built from.
     Ground,
-    /// Above it, at this level ordinal (positive).
+    /// Above it, at this level ordinal — positive where the source gave one,
+    /// and **zero for a deck the terrain implied**: a refused notch says a
+    /// structure is needed here, and says nothing at all about who is on top
+    /// of whom. An ordinal is a claim about a *pair*, and the ground has no
+    /// opinion about pairs.
     Bridge(i64),
-    /// Below it, at this level ordinal (negative).
+    /// Below it, at this level ordinal — negative where the source gave one,
+    /// and **zero for a bore the terrain implied**, for the same reason a
+    /// promoted deck reads zero: the ground says a structure is needed and
+    /// says nothing about who is under whom.
     Tunnel(i64),
     /// Inside a building.
     Indoor,
@@ -117,6 +126,85 @@ impl Kind {
     }
 }
 
+/// One span of a way: an arc interval and what the source says the way is
+/// over it. A way's spans partition `[0, len]` — every arc named once,
+/// nothing overlapping, nothing dropped.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Span {
+    pub a0: f64,
+    pub a1: f64,
+    pub kind: Kind,
+}
+
+impl Span {
+    pub fn len(&self) -> f64 {
+        self.a1 - self.a0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !(self.len() > 0.0)
+    }
+}
+
+/// A whole way, clipped to the rect but **not cut at its annotation edges**.
+///
+/// The source encodes a bridge, a tunnel or an indoor stretch as a span of a
+/// segment, and the reader used to cut the way there and hand the pieces on
+/// as separate lines. That made a mapper's split point a survey point: the
+/// piece ends became connectors, and a connector is where the profile pins a
+/// height to the ground. A bridge annotated forty metres short of the gorge
+/// lip was pinned to the DEM forty metres inside the approach, and its deck
+/// ran down to meet it.
+///
+/// So a way stays whole, carries its spans as an *attribute* in arc, and is
+/// cut only once the heights are solved — by [`crate::partition`], which is
+/// where the annotation hands over to the geometry
+/// (`data/plans/spans-are-derived-2026-09-09.md` R1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Way {
+    pub id: String,
+    pub class: String,
+    pub subclass: String,
+    pub width_m: f64,
+    pub pts: Vec<[f64; 2]>,
+    /// The source's own spans, in arc along `pts`.
+    pub spans: Vec<Span>,
+}
+
+impl Way {
+    /// The way's length in metres.
+    pub fn len(&self) -> f64 {
+        self.pts.windows(2).map(|p| (p[1][0] - p[0][0]).hypot(p[1][1] - p[0][1])).sum()
+    }
+
+    /// Whether the way has no geometry.
+    pub fn is_empty(&self) -> bool {
+        self.pts.len() < 2
+    }
+
+    /// Whether any span of the way is off the ground or indoors.
+    pub fn has_structure(&self) -> bool {
+        self.spans.iter().any(|s| s.kind != Kind::Ground)
+    }
+
+    /// The kind the source mapped at arc `s`. Out of range reads as ground:
+    /// a span table partitions the way, and float slop at an end is not a
+    /// structure.
+    pub fn kind_at_arc(&self, s: f64) -> Kind {
+        self.spans.iter().find(|sp| s >= sp.a0 && s <= sp.a1).map_or(Kind::Ground, |sp| sp.kind)
+    }
+
+    /// The span containing arc `s`, as `(a0, a1)` — the window a consumer
+    /// holding one crossing needs, so a way that runs near a point twice is
+    /// read at the right place.
+    pub fn span_at_arc(&self, s: f64) -> (f64, f64) {
+        self.spans
+            .iter()
+            .find(|sp| s >= sp.a0 && s <= sp.a1)
+            .map_or((0.0, f64::INFINITY), |sp| (sp.a0, sp.a1))
+    }
+}
+
 /// A plan-space polyline, in local metres: one piece of a way, all of one
 /// [`Kind`]. Overture references a way's bridge, tunnel and indoor spans as
 /// fractions of its length, so the reader cuts every way at every span
@@ -132,6 +220,13 @@ pub struct Polyline2 {
     /// once by the reader and read by every step after it.
     pub width_m: f64,
     pub kind: Kind,
+    /// Which way of [`Roads::ways`] this piece was cut from, and the arc
+    /// range of the span it is: what a consumer holding a piece needs to
+    /// find the profile its way was solved into. `usize::MAX` for a piece
+    /// no partition made.
+    pub way: usize,
+    pub a0: f64,
+    pub a1: f64,
     pub pts: Vec<[f64; 2]>,
 }
 
@@ -159,6 +254,10 @@ pub struct Polyline3 {
 /// cut into pieces by kind.
 #[derive(Debug, Clone, Default)]
 pub struct Roads {
+    /// The whole ways, clipped to the rect and uncut: what the reference and
+    /// the profile read. A way is not split at its annotation edges, so no
+    /// mapper's cut is an anchor.
+    pub ways: Vec<Way>,
     /// The pieces on the ground, clipped to the rect: what every surface
     /// step builds from. Nothing in it crosses anything else at another
     /// level, so the steps after this one may union freely.
@@ -178,6 +277,13 @@ impl Roads {
     }
 }
 
+/// The conditioned surface along every solving axis, one [`Axis`] per piece
+/// in [`crate::reference::solving`]'s order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reference {
+    pub axes: Vec<crate::reference::Axis>,
+}
+
 /// One station of a solved profile.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Station {
@@ -185,8 +291,15 @@ pub struct Station {
     pub s: f64,
     /// The plan position on the axis.
     pub p: [f64; 2],
-    /// The ground there ([`crate::terrain::height_at`]).
+    /// The raw ground there ([`crate::terrain::height_at`]): what the bench
+    /// still owes its earthwork against, and what a departure is measured
+    /// from. **Not** what the profile is solved against.
     pub ground: f64,
+    /// The conditioned surface there ([`crate::reference::Axis::h`]): the
+    /// target the profile is solved toward, and the centre of the deviation
+    /// box. Equal to `ground` wherever the DEM needed nothing done to it,
+    /// which on flat ground is everywhere.
+    pub reference: f64,
     /// The solved height of the surface.
     pub h: f64,
     /// What the solved height makes of the station.
@@ -205,14 +318,19 @@ pub enum Solved {
     Bore,
 }
 
-/// The solved profile of one carriageway piece.
+/// The solved profile of one whole way.
+///
+/// One profile per way, not per piece: the way's annotation is carried in
+/// [`Profile::spans`] as a *prior*, and the heights are solved along the
+/// whole of it, so no mapper's split point is an anchor (R1).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Profile {
     pub id: String,
     pub class: String,
     pub width_m: f64,
-    /// The kind the source mapped the piece as.
-    pub mapped: Kind,
+    /// The spans the source mapped, in arc: a prior on the solve, never a
+    /// command. What the heights make of them is [`Station::solved`].
+    pub spans: Vec<Span>,
     pub stations: Vec<Station>,
 }
 
@@ -221,6 +339,73 @@ impl Profile {
     pub fn line(&self) -> Vec<[f64; 3]> {
         self.stations.iter().map(|st| [st.p[0], st.p[1], st.h]).collect()
     }
+
+    /// The kind the source mapped at arc `s`. Out of range reads as ground:
+    /// a span table partitions the way, and float slop at an end is not a
+    /// structure.
+    pub fn kind_at_arc(&self, s: f64) -> Kind {
+        self.spans
+            .iter()
+            .find(|sp| s >= sp.a0 && s <= sp.a1)
+            .map_or(Kind::Ground, |sp| sp.kind)
+    }
+
+    /// The kind mapped at station `k`.
+    pub fn kind_at(&self, k: usize) -> Kind {
+        self.stations.get(k).map_or(Kind::Ground, |st| self.kind_at_arc(st.s))
+    }
+
+    /// Whether any span of the way is off the ground or indoors.
+    pub fn has_structure(&self) -> bool {
+        self.spans.iter().any(|s| s.kind != Kind::Ground)
+    }
+
+    /// Whether any span is a bridge or a bore — a piece the profile chords
+    /// across, as against merely indoors.
+    pub fn has_chord(&self) -> bool {
+        self.spans.iter().any(|s| s.kind.is_structure())
+    }
+
+    /// The kind mapped at the way's low (`false`) or high (`true`) end.
+    pub fn end_kind(&self, high: bool) -> Kind {
+        let s = if high { self.spans.last() } else { self.spans.first() };
+        s.map_or(Kind::Ground, |s| s.kind)
+    }
+
+    /// The maximal runs of stations the source mapped the same, as inclusive
+    /// index pairs with their kind. The partition of the way, in stations.
+    pub fn runs(&self) -> Vec<(usize, usize, Kind)> {
+        station_runs(&self.stations, &self.spans)
+    }
+}
+
+/// The maximal runs of `stations` sharing one span's kind, as inclusive
+/// index pairs. Every station lands in exactly one run, so the result
+/// partitions the way however coarsely the stations sample it.
+pub fn station_runs(stations: &[Station], spans: &[Span]) -> Vec<(usize, usize, Kind)> {
+    // A station on a span boundary lies in two spans, and it is the
+    // **abutment**: it belongs to the ground, so a chord starts from a height
+    // the at-grade solve owns rather than from one of its own. Where both
+    // sides are structures — a deck running straight into a bore — the first
+    // takes it, and the two chords meet there.
+    let kind_at = |s: f64| {
+        let mut hit = spans.iter().filter(|sp| s >= sp.a0 && s <= sp.a1);
+        let first = hit.next();
+        match (first, hit.next()) {
+            (Some(a), Some(b)) if a.kind.is_structure() && !b.kind.is_structure() => b.kind,
+            (Some(a), _) => a.kind,
+            (None, _) => Kind::Ground,
+        }
+    };
+    let mut out: Vec<(usize, usize, Kind)> = Vec::new();
+    for (k, st) in stations.iter().enumerate() {
+        let kind = kind_at(st.s);
+        match out.last_mut() {
+            Some(run) if run.2 == kind => run.1 = k,
+            _ => out.push((k, k, kind)),
+        }
+    }
+    out
 }
 
 /// Every carriageway piece's profile: one height along every axis.

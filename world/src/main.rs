@@ -23,8 +23,8 @@ use arpentry_world::world::World;
 use arpentry_world::frame::Rect;
 use arpentry_world::net;
 use arpentry_world::{
-    bench, crossing, drape, facade, fillet, gltf, kerb, mesh, profile, ribbon, room, structure, surface, svg,
-    terrain,
+    bench, crossing, drape, facade, fillet, gltf, kerb, mesh, partition, profile, reference, ribbon, room,
+    structure, surface, svg, terrain,
 };
 
 struct Args {
@@ -51,7 +51,9 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
   --zone DIR      a cut zone: DIR/terrain.pmtiles, DIR/segment.parquet and, if present, DIR/building.parquet
   --terrain       a Mapterhorn PMTiles archive, or a synthetic ground:
                   flat[?h=400], ramp?grade=0.03[&bearing=90][&radius=400],
-                  hill?amp=60&radius=400, step?rise=3[&width=0] (overrides --zone)
+                  hill?amp=60&radius=400, step?rise=3[&width=0],
+                  gorge?depth=30&width=40, ridge?height=40&width=120,
+                  shelf?drop=30&flank=8 (overrides --zone)
   --segments      an Overture segment.parquet, or a synthetic network:
                   net:straight[?span=0.35,0.65&kind=bridge|tunnel&level=1]|tee[?d=8][&hook=5]|cross|
                   overpass[?span=0.35,0.65&level=1]|underpass|
@@ -65,7 +67,7 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
                   (overrides --zone)
   --spacing M     terrain lattice spacing in metres (default 2)
   --max-vertices  cap on terrain vertices; the spacing grows to fit (default 2000000)
-  --until STEP    stop after this step: terrain | drape | profile | crossing | facade | ribbon | surface | kerb | fillet | room | mesh | bench | structure
+  --until STEP    stop after this step: terrain | drape | reference | profile | crossing | partition | facade | ribbon | surface | kerb | fillet | room | mesh | bench | structure
                   (default structure)
   --outlines      add the construction layers to the .glb as glTF LINES: the draped
                   centrelines, the solved profiles and the six contour sets. Off by
@@ -104,8 +106,10 @@ fn run(args: &Args) -> Result<(), String> {
             Step::Terrain => terrain::run(&mut world, &mut dem, args.spacing, args.max_vertices),
             Step::Drape => drape::run(&mut world, &args.segments)
                 .map_err(|e| format!("{}: {e}", args.segments.display()))?,
+            Step::Reference => reference::run(&mut world),
             Step::Profile => profile::run(&mut world),
             Step::Crossing => crossing::run(&mut world),
+            Step::Partition => partition::run(&mut world),
             Step::Facade => facade::run(&mut world, args.buildings.as_deref())
                 .map_err(|e| format!("{}: {e}", args.buildings.as_deref().unwrap_or(Path::new("")).display()))?,
             Step::Ribbon => ribbon::run(&mut world),

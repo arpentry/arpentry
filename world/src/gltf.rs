@@ -443,10 +443,13 @@ mod tests {
             subclass: String::new(),
             width_m: 5.5,
             kind: crate::world::Kind::Ground,
+            way: usize::MAX,
+            a0: 0.0,
+            a1: 0.0,
             pts: vec![[-600.0, -400.0], [0.0, 0.0], [500.0, 300.0]],
         };
         let draped = drape_line(w.terrain.as_ref().unwrap(), &line);
-        w.roads = Some(Roads { plan: vec![line], spans: Vec::new(), lines: vec![draped] });
+        w.roads = Some(Roads { ways: Vec::new(), plan: vec![line], spans: Vec::new(), lines: vec![draped] });
         w
     }
 

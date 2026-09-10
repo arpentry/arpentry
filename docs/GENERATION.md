@@ -405,6 +405,21 @@ a dual carriageway on one viaduct come out as one structure (S8).
 
 ### 4.5 Structures are consequences, not inputs
 
+> **Where the tags and the geometry disagree, the geometry wins.**
+>
+> A level ordinal, a bridge flag, a tunnel flag are claims a mapper made about
+> a local situation, and on any given feature the claim may simply be wrong.
+> The terrain and the network are measurements. So an annotation is read as a
+> prior everywhere it is plausible and set aside where the solved geometry
+> contradicts it, and the model's job is a *plausible* world rather than a
+> faithful transcription of the tags. Three consequences are normative and are
+> stated where they are enforced: a chord's end may not stand on the wrong
+> side of the ground for its own kind (§4.5, `profile::solve_on`); no single
+> clearance may spend more than [`MAX_CLEARANCE_LIFT_M`] (§4.5, `crossing`);
+> and a level ordinal orders two surfaces only where they are close enough to
+> be stacked at all (§4.5, `crossing`). Each of the three is a place where
+> obeying the tag would have drawn something that cannot exist.
+
 > **Solve heights subject to constraints, then synthesize the structure the
 > result implies.**
 

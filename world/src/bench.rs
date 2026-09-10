@@ -76,7 +76,7 @@ use std::collections::HashSet;
 use crate::poly::{self, Pt, Ring, Shapes};
 use crate::step::Summary;
 use crate::terrain::height_at;
-use crate::world::{Bench, Kind, Profile, Terrain, Tri, World};
+use crate::world::{Bench, Profile, Terrain, Tri, World};
 use crate::mesh;
 
 /// How far, in metres, the pavement stands above the carriageway beside
@@ -281,9 +281,18 @@ impl Foot {
 }
 
 impl Field {
-    /// The field of `profiles`: the ground pieces' stations, in order.
+    /// The field of `profiles`: every station the source did **not** map as
+    /// a bridge or a bore, in order. A way is one profile now, so the filter
+    /// is per station rather than per piece — the at-grade stretches of a way
+    /// that also carries a deck are ground, and its deck is the structure
+    /// step's.
     pub fn new(profiles: &[Profile]) -> Field {
-        Field::of(profiles.iter().filter(|p| p.mapped == Kind::Ground))
+        Field::of_stations(profiles.iter().map(|p| {
+            let runs = p.runs();
+            let keep: Vec<(usize, usize)> =
+                runs.iter().filter(|r| !r.2.is_structure()).map(|r| (r.0, r.1)).collect();
+            (p, keep)
+        }))
     }
 
     /// The field of whichever profiles are given. The bench reads the
@@ -291,15 +300,34 @@ impl Field {
     /// a footway is carried on a road's deck rather than on one of its
     /// own.
     pub fn of<'a>(profiles: impl Iterator<Item = &'a Profile>) -> Field {
+        Field::of_stations(profiles.map(|p| {
+            let last = p.stations.len().saturating_sub(1);
+            (p, vec![(0usize, last)])
+        }))
+    }
+
+    /// The same, over named station ranges of each profile rather than all
+    /// of it: a way is one profile now, and a caller usually wants one kind
+    /// of its runs.
+    pub fn of_stations<'a>(
+        profiles: impl Iterator<Item = (&'a Profile, Vec<(usize, usize)>)>,
+    ) -> Field {
         let mut f = Field::default();
-        for p in profiles {
+        for (p, ranges) in profiles {
             let half_w = p.width_m / 2.0;
-            for w in p.stations.windows(2) {
-                f.push(w[0].p, w[1].p, w[0].h, w[1].h, half_w);
-            }
-            if p.stations.len() == 1 {
-                let st = p.stations[0];
-                f.push(st.p, st.p, st.h, st.h, half_w);
+            for (k0, k1) in ranges {
+                if p.stations.is_empty() {
+                    continue;
+                }
+                let (k0, k1) = (k0.min(p.stations.len() - 1), k1.min(p.stations.len() - 1));
+                if k1 == k0 {
+                    let st = p.stations[k0];
+                    f.push(st.p, st.p, st.h, st.h, half_w);
+                    continue;
+                }
+                for w in p.stations[k0..=k1].windows(2) {
+                    f.push(w[0].p, w[1].p, w[0].h, w[1].h, half_w);
+                }
             }
         }
         f
@@ -988,7 +1016,9 @@ pub(crate) mod tests {
 
     use crate::terrain::{self, tests::dem};
     use crate::world::Solved;
-    use crate::{crossing, drape, facade, fillet, kerb, mesh, profile, ribbon, room, surface};
+    use crate::{
+        crossing, drape, facade, fillet, kerb, mesh, profile, reference, ribbon, room, surface,
+    };
 
     use super::*;
 
@@ -998,8 +1028,10 @@ pub(crate) mod tests {
         let mut w = terrain::tests::world();
         terrain::run(&mut w, &mut dem(ground), 5.0, usize::MAX);
         drape::run(&mut w, Path::new(net)).unwrap();
+        reference::run(&mut w);
         profile::run(&mut w);
         crossing::run(&mut w);
+        crate::partition::run(&mut w);
         facade::run(&mut w, houses.map(Path::new)).unwrap();
         ribbon::run(&mut w);
         surface::run(&mut w);
@@ -1021,14 +1053,21 @@ pub(crate) mod tests {
         let stations: Vec<crate::world::Station> = (0..=10)
             .map(|k| {
                 let x = k as f64 * 10.0;
-                crate::world::Station { s: x, p: [x, 0.0], ground: 400.0, h: 400.0 + x / 10.0, solved: Solved::Grade }
+                crate::world::Station {
+                    s: x,
+                    p: [x, 0.0],
+                    ground: 400.0,
+                    reference: 400.0,
+                    h: 400.0 + x / 10.0,
+                    solved: Solved::Grade,
+                }
             })
             .collect();
         let p = Profile {
             id: "road".into(),
             class: "residential".into(),
             width_m: 5.5,
-            mapped: Kind::Ground,
+            spans: vec![crate::world::Span { a0: 0.0, a1: 100.0, kind: crate::world::Kind::Ground }],
             stations,
         };
         let f = Field::new(std::slice::from_ref(&p));
@@ -1064,7 +1103,7 @@ pub(crate) mod tests {
         // A span is not in the field: nothing but ground pieces sets a
         // height the surface reads.
         let mut deck = p.clone();
-        deck.mapped = Kind::Bridge(1);
+        deck.spans = vec![crate::world::Span { a0: 0.0, a1: 100.0, kind: crate::world::Kind::Bridge(1) }];
         assert!(Field::new(std::slice::from_ref(&deck)).at([0.0, 0.0]).is_none());
     }
 
@@ -1283,22 +1322,34 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_overpass_stands_on_fill_the_ground_answers_with_a_wall() {
+    fn an_overpass_stands_on_fill_only_as_far_as_a_fill_goes() {
         // The crossing step lifts the approach 6.5 m and the earthwork is
-        // this step's to owe: all fill, no cut, on flat ground. The ground
-        // cannot batter it — a 6.5 m face at 1 in 2.5 is more than twice
-        // MAX_BENCH_FACE_M — so it is *walled* at the kerb and counted,
-        // which is the abutment block the plan defers showing up as a
-        // number rather than as a defect nobody measured.
+        // this step's to owe: all fill, no cut, on flat ground.
+        //
+        // **But only up to `DECK_STANDOFF_M`.** Past the tallest face the
+        // ground stage will build, the partition calls the approach a deck
+        // and the structure step carries it, so the fill this step owes stops
+        // there instead of climbing to 6.5 m and being closed by a 6.5 m
+        // wall. That wall was the abutment block showing up as a number, and
+        // this is the model answering it with the thing it actually is.
         let (_, s) = world("flat", "net:overpass?len=300", None);
-        assert!((s.num("fill") - 6.5).abs() < 1e-6, "{s}");
         assert_eq!(s.num("cut"), 0.0, "{s}");
-        assert!(s.num("walled") > 0.0, "{s}");
-        assert!((s.num("wall") - 6.5).abs() < 0.01, "{s}");
-        // The mirror digs the same 6.5 m out of the ground instead.
+        assert!(s.num("fill") <= crate::grade::DECK_STANDOFF_M + 1e-6, "{s}");
+        assert!(s.num("fill") > 2.0, "the approach is on no fill at all: {s}");
+        assert_eq!(s.num("walled"), 0.0, "the ground still walls it: {s}");
+        // **The mirror is not symmetric, and that is the point.** The
+        // approach dips toward the bore and the ground owes the cut — but
+        // only as far as `BORE_COVER_M`, because a cutting stays a cutting
+        // until a tube fits under it, where a fill becomes a deck as soon as
+        // it passes the tallest face the ground will build. So the cut runs
+        // deeper than the fill did, and between the two thresholds it *is*
+        // walled: a cutting three metres deep is a real cutting with real
+        // walls, and a fill three metres tall is a deck drawn wrong.
         let (_, s) = world("flat", "net:underpass?len=300", None);
-        assert!((s.num("cut") - 6.5).abs() < 1e-6, "{s}");
         assert_eq!(s.num("fill"), 0.0, "{s}");
+        assert!(s.num("cut") <= crate::partition::BORE_COVER_M + 1e-6, "{s}");
+        assert!(s.num("cut") > crate::grade::DECK_STANDOFF_M, "{s}");
+        assert!(s.num("walled") > 0.0, "a cutting past one face is walled: {s}");
     }
 
     #[test]
@@ -1317,23 +1368,29 @@ pub(crate) mod tests {
 
     #[test]
     fn a_step_no_batter_can_run_is_closed_by_a_wall() {
-        // The overpass's approach stands 6.5 m over the ground beside it,
-        // more than twice MAX_BENCH_FACE_M, so no batter may run and the
-        // ground keeps its own height. That is a step between the room's
-        // edge and the terrain, and until it was walled it was a hole you
-        // could see the world through (I9).
-        let (w, s) = world("flat", "net:overpass?len=300", None);
+        // A road along the lip of a 10 m cliff: its room reaches six metres
+        // to each side, so one edge stands five metres over the ground and
+        // the other five under it — more than `MAX_BENCH_FACE_M` either way,
+        // so no batter may run and the ground keeps its own height. That is a
+        // step between the room's edge and the terrain, and until it was
+        // walled it was a hole you could see the world through (I9).
+        //
+        // The specimen is a cliff rather than an overpass because an
+        // overpass no longer walls: past `DECK_STANDOFF_M` its approach is a
+        // deck, which is what R2 is for. A wall is what the ground owes where
+        // the road is *not* a structure, and a cliff is that.
+        let (w, s) = world("step?rise=10&width=0&bearing=0", "net:straight?len=200", None);
         assert!(s.num("walled") > 0.0, "{s}");
         assert!(s.num("wall_m2") > 500.0, "{s}");
         let b = bench(&w);
         assert!(!b.wall.indices.is_empty());
-        // It stands between the two surfaces it closes, and no further:
-        // its foot on the flat ground, its head at the road it retains.
+        // It stands between the two surfaces it closes, and no further: the
+        // ground below at one end, the room's own edge at the other.
         let z: Vec<f64> = b.wall.positions.iter().map(|p| p[2]).collect();
         let lo = z.iter().cloned().fold(f64::INFINITY, f64::min);
         let hi = z.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        assert!((lo - 400.0).abs() < 1e-6, "the foot is off the ground: {lo}");
-        assert!((hi - 406.5).abs() < 0.01, "the head is not at the roadway: {hi}");
+        assert!(hi - lo > 4.0, "the wall closes nothing: {lo}..{hi}");
+        assert!(lo >= 400.0 - 1e-6 && hi <= 410.0 + 1e-6, "outside the step it closes: {lo}..{hi}");
     }
 
     #[test]

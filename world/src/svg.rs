@@ -369,7 +369,7 @@ fn profile(s: &mut String, p: &Profiles, view: &Rect) {
     let shown: Vec<&Profile> = p.profiles.iter().filter(|p| touches(&p.line(), view)).collect();
     for (id, color, side) in [("cut", "#3a6fd8", -1.0), ("fill", "#d84a3a", 1.0)] {
         let _ = write!(s, "<g id=\"{id}\" stroke=\"{color}\" stroke-opacity=\"0.55\">\n");
-        for p in shown.iter().filter(|p| p.mapped == Kind::Ground) {
+        for p in shown.iter().filter(|p| !p.has_chord()) {
             let mut run: Vec<[f64; 3]> = Vec::new();
             let mut flush = |run: &mut Vec<[f64; 3]>| {
                 if run.len() >= 2 {
@@ -392,11 +392,11 @@ fn profile(s: &mut String, p: &Profiles, view: &Rect) {
         [("deck", "#20202c", "6 3", Solved::Deck), ("bore", "#7a3fb0", "1.5 3", Solved::Bore)]
     {
         let _ = write!(s, "<g id=\"{id}\" stroke=\"{color}\" stroke-opacity=\"0.9\" stroke-dasharray=\"{dash}\">\n");
-        for p in shown.iter().filter(|p| p.mapped != Kind::Ground) {
+        for p in shown.iter().filter(|p| p.has_chord()) {
             let mut run: Vec<[f64; 3]> = Vec::new();
             let mut flush = |run: &mut Vec<[f64; 3]>| {
                 if run.len() >= 2 {
-                    let _ = write!(s, "<path stroke-width=\"{}\" d=\"{}\"><title>{} {}</title></path>\n", num(p.width_m), path(run), escape(&p.id), p.mapped.name());
+                    let _ = write!(s, "<path stroke-width=\"{}\" d=\"{}\"><title>{} {}</title></path>\n", num(p.width_m), path(run), escape(&p.id), p.spans.iter().find(|s| s.kind.is_structure()).map_or("span", |s| s.kind.name()));
                 }
                 run.clear();
             };
@@ -555,12 +555,16 @@ mod tests {
                     class: class.into(),
                     subclass: subclass.into(),
                     width_m: width::of(class, subclass),
+                    way: usize::MAX,
+                    a0: 0.0,
+                    a1: 0.0,
                     kind: crate::world::Kind::Ground,
                     pts,
                 },
             )
         };
         w.roads = Some(Roads {
+            ways: Vec::new(),
             plan: Vec::new(),
             spans: Vec::new(),
             lines: vec![

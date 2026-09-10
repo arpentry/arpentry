@@ -284,15 +284,149 @@ edge lengths per node before believing a render.
 The run prints one line per step. The output is byte-deterministic, so
 `cmp` between two runs over the same inputs is a regression gate; a
 difference means something moved. `--terrain 'ramp?grade=0.05'` (or `flat`,
-`hill`, `step`) swaps the DEM for a synthetic ground, and `--segments
+`hill`, `step`, and the three structure rungs `gorge?depth=30&width=40`,
+`ridge?height=40&width=120`, `shelf?drop=30&flank=8`) swaps the DEM for a
+synthetic ground, and `--segments
 net:cross` (or `straight`, `tee`, `overpass`, `underpass`,
 `hairpin?angle=20`, `dual?gap=4`, `tee?d=8&hook=5`, `sidewalk?d=6`,
 `corner[?split=1]`, `crossing`, `stub?d=0.5`, `driveway?d=6`,
 `roundabout`) swaps the parquet for a synthetic
 network, where a step's output is an assertion rather than a look.
 `--until terrain` stops after a step; the steps so far are `terrain`,
-`drape`, `profile`, `crossing`, `facade`, `ribbon`, `surface`, `kerb`,
-`fillet`, `room`, `mesh`, `bench`, `structure`. The 2D plan is
+`drape`, `partition`, `reference`, `profile`, `crossing`, `facade`, `ribbon`,
+`surface`, `kerb`, `fillet`, `room`, `mesh`, `bench`, `structure`.
+
+**A way is one profile, and a junction can fall in its interior.** Because a
+way is whole, another way can end *on it* — at a bridge abutment most often,
+which is exactly where a clearance lift has to travel. `crossing::Net` joins
+every station at a shared connector for that reason, not just each profile's
+two ends; joined at the ends alone, a deck rose and the street meeting it at
+the abutment stayed on the ground (`structure abutment` 5.380 m of joint that
+could not meet, against 0.000 before). **The base solve still anchors only way
+ends**, so `abutment` reads 0.217 rather than 0.000 — the same defect one
+level down, and its fix is a pin mid-run in the limiter.
+
+**The terrain writes bridges and bores the source never marked.** A notch the closing
+*refuses* — deeper than `NOTCH_FILL_MAX_M` under a line mapped level across
+it — is written into the way's span table as a prior (`reference::promote`,
+reported as `promoted`), and from there it is an annotation like any other:
+the profile chords across it, and §4.5's consequence rule reads a deck off
+the result. Nothing in the chain knows what a bridge is. The prior is not
+optional and not a shortcut — derived from the heights alone a gorge yields
+nothing, because a street is not grade-limited and follows the reference into
+the slot exactly. The mirror is gated harder: a refused **crest** becomes a tunnel prior only
+for a class whose ladder cannot climb it — grade-limited, and the crest's rise
+past that class's deviation box — because a street may climb anything (S9),
+and `a_street_climbs_the_ridge_it_is_mapped_over` is the guard on that. On the
+ridge specimen a motorway bores through 40 m of mass and `wall_m2` falls
+1 792 → 121. **Its approaches still break grade**: the portals land on the
+crest's shoulders, which is where the *terrain* says the mass is, not where a
+6 % class can reach — placing a portal the road can get to is a design this
+model has not made.
+
+**A prior that overlaps a structure the source already mapped extends it**
+(`reference::paint`), keeping the mapper's kind and ordinal: the annotation
+says there is a bridge here and the refusal says how wide the slot is. That is
+the only way a span grows past its annotation — growing on a bare *reach* was
+tried and reverted, because a flat-ground underpass whose approach cuttings
+are line-buried reads as one majority-fit run and the bore swallowed both
+approaches (6.5 m of honest open cutting became 0). Growing past a mapper's
+edge needs a reason; the terrain has one and nothing else here does.
+
+Two rules keep it honest: **a promoted deck claims level 0**
+(the terrain says a structure is needed, never that it is above anything —
+at level 1, two roads bridging one valley became peers and their crossing was
+filed as a data error), and **a notch has two rims** (`two_rimmed` — a valley
+wider than the window is refused along each flank rather than at its floor,
+and those fringes are the sides of a bowl, not slots to span).
+
+**A way is no longer cut at its annotation edges.** The reader converts
+Overture's bridge, tunnel and indoor fractions to *arc* and hands the way on
+whole, with its spans as an attribute (`world::Way`); the `partition` step is
+what cuts them into the ground pieces every surface step builds from and the
+pieces off it. It used to cut in the reader, and that made a mapper's split
+point a survey point: a piece end is a connector, and a connector is where
+the profile pins a height to the ground, so a bridge annotated short of a
+gorge lip had its deck pinned to the DEM inside the approach. The cut is now
+a step with one caller, and it is where the annotation will hand over to the
+solved geometry (`data/plans/spans-are-derived-2026-09-09.md` R1). Today it
+cuts exactly what the source said, and reproduces the reader's own piece
+list — `plan=2369 spans=181` on the loop box — so nothing downstream can yet
+tell that it moved. **The `reference` and `profile` steps still run on
+pieces, not ways**, which is why `short` still reads 47.8 %; moving them is
+the half of R1 that is not behaviour-neutral.
+
+The `reference` step is the surface every height in the model is solved
+against (migration steps 2–3 of
+`data/plans/spans-are-derived-2026-09-09.md`): the terrain with its blind
+runs bridged, its narrow notches filled and its narrow bumps shaved, plus
+the runs the two morphological passes **refused**, which are the terrain's
+own bridge and tunnel priors. A DEM is not a ground — it images a culvert as
+a slot the road dives through, canopy ripple as crests on the carriageway,
+and a viaduct as ground the road is already lying on — and until this step
+the world solved against it raw. Its summary line: `short` (pieces shorter
+than the 60 m window: a piece is not a corridor, and 47.8 % of the box's are,
+which is the argument for the reader keeping whole ways), `blind`/`blind_m`,
+`bridged`/`bridge`, `filled`/`fill`, `shaved`/`shave`, `notch`/`crest` and
+`off`. **The three passes are measured separately on purpose**: they move the
+surface for three different reasons, and a composite number belongs to none
+of them — read as one it showed a 13.26 m "shave" against a 4 m budget, which
+was the bridging setting a causeway down on its rims. On the loop box:
+`blind` 0.16 % / 150 m, `filled` 21.8 % to 14.09 m, `shaved` 9.7 % to 3.96 m,
+`notch` 1/43 m, `crest` 12/420 m.
+
+**One reference at a junction.** The conditioning is per axis, so a notch at
+a junction could be closed by one way and *refused* by its neighbour, and the
+two then stood a whole `NOTCH_FILL_MAX_M` apart at a point they share —
+15.103 m on the loop box. `reference::agree` gives every connector one value
+before any profile solves (the mean of what the incident axes made of it) and
+tapers the correction to nothing over the window that caused it, so the
+reference away from the ends is untouched. `junction` reports
+`before->after`, and the after must read 0.000.
+
+**The profile solves against it, and `Station` carries both surfaces.**
+`ground` is the raw DEM — what the bench owes its earthwork against and what
+a departure is measured from — and `reference` is what the limiter aims at
+and the deviation box is centred on. So `float` guards the limiter against
+the reference and `off` reports the distance from the DEM, which is the
+number the departure criterion will threshold; **`off` therefore means
+something different than it did before 2026-09-10 and is not comparable
+across that change.**
+
+**Solving against it made the road better and the ground worse, and that is
+one fact, not two.** On the loop box `grade` fell 0.34 → 0.25 % and `steep`
+15.30 → 14.80 %, while `fill` rose 12.476 → 13.319 and `wall_m2` 21 912 →
+23 291. The road no longer dives into a notch it was engineered across, so
+the bench must build the embankment that was always owed — and past
+`MAX_BENCH_FACE_M` the bench does not batter, it walls. Measured, not
+inferred: with the blindness mask forced off the box reads `wall_m2` 23 280,
+within 0.05 %, so the *closing* did all of it and the bridging did 11 m².
+That residue is what `DECK_STANDOFF_M` converts when the partition lands: a
+13.3 m fill drawn as a 13.3 m wall is a deck drawn wrong.
+
+Two things in it are not the server's. **The blind mask reads the higher
+flank, not the lower**: only a surface proud of the ground on *both* hands is
+standing on something, and read against the lower flank — which is what the
+server's own guard does inside its bridge trim — the mask fired on 70.6 % of
+the box's stations, every contour road above Montreux whose downhill side is
+metres below it by construction, and bridging those runs lifted the reference
+by 145 m. **And the morphological padding is one station spacing, not one
+node.** The erosion has to read the dilation at `arc − r` for every station,
+and one pad node supplies that for the first station only; from the second on
+the closing lifts the head of every rising axis by up to `r · grade` and
+reports it as a filled notch — 1.2 m over the first 30 m of a 5 % ramp, out
+of nothing but the edge. `closing_is_the_identity_on_a_ramp` is the check.
+
+**The three structure rungs and `world/src/spans.rs` are a plan, not a
+step.** `gorge`, `ridge` and `shelf` put a feature across the way, or level
+the ground along it while it falls away beside it, so "is there a bridge
+here" has an answer the spec itself gives. `spans.rs` holds eight
+`#[ignore]`d checks over them — the specification of the partition step
+`data/plans/spans-are-derived-2026-09-09.md` describes, written before the
+step. `cargo test -- --ignored` is that plan's to-do list; each failure names
+one rule and prints the summary the world reads today. **A check comes off
+`#[ignore]` when its rule lands and never before**, and the suite stays
+green meanwhile. The 2D plan is
 `data/plans/flat-network-2026-09-06.md`; the vertical one (profile →
 mesh → bench → structure → crossing) is
 `data/plans/surface-leaves-the-plane-2026-09-08.md`. **The order the
@@ -316,6 +450,93 @@ box the Viaduc de Chillon is one 1.6 km deck and the Glion tunnel a 1.4 km
 bore. `net:straight?span=0.3,0.7[&kind=tunnel]` is the specimen; the plan
 view draws cut in blue and fill in red along the axis, a deck dashed and a
 bore dotted; the GLB gains a `profile` line node at the solved heights.
+
+**A road may be steep; it may not change how steep it is too fast.** The
+class ladder now carries a third number beside the ceiling and the box: a
+**vertical curve radius** (`grade::Grade::radius_m`), because the ceiling
+bounds the first derivative and nothing bounded the second. Switzerland is
+full of 20 % roads and they are fine — what no car can drive is a 20 % road
+meeting a flat one inside a metre, and no ceiling forbids that because neither
+grade is over the limit. A radius `R` lets the grade change by `1 / R` per
+metre, so over a station whose neighbours are `d1` and `d2` away the height
+may stand at most `d1·d2/(2R)` off the chord between them, which is what
+`profile::bend` clamps. Motorway 4000 m, primary 2000, secondary 1500, street
+**100** — the last a drivability floor rather than a comfort figure. A draped
+class has none: a stair is a sequence of vertical breaks and bounding them
+would be a lie.
+
+**The street's 100 m is the knee, and it was measured.** The *cost* of a
+bigger radius is nearly flat (the road stands 0.35 m off the DEM at p90 at
+25 m, 0.48 m at 400 m), so the choice is not made on cost. What makes it is
+whether the constraint can be met: `kink` — street runs still bent tighter
+than allowed — holds near 3 % up to 100 m, then goes 11 % at 200 m and 27 % at
+400 m, because smoothing harder would take the road further from its reference
+than the deviation box permits. It agrees with the physics from the other
+side: 0.3 g at 60 km/h, the fastest thing in the bucket, wants ~96 m.
+
+**The engineered radii are design facts and the box is what cannot pay for
+them.** `boxed` (36 % of engineered runs on the box) is a separate counter
+for exactly that reason: a street that cannot hold its curve is a road left
+undrivable, while a motorway that cannot is eight metres of deviation box
+refusing the earthwork a real motorway gets. Lowering those radii only reports
+fewer failures — a sixteenth of them still leaves seven runs short.
+
+Two things about it. **The clamp diffuses**, unlike the grade limiter, which
+walks both directions and converges geometrically — a broad kink flattens at
+about one station per pass, so `BEND_PASSES` is 32 (`kink` reads 39.9 % at
+one pass, 15.0 % at eight, 3.0 % at thirty-two). And **a street has no
+ceiling but does have a curve**, so `limit`'s early return has to ask about
+both; asking about the ceiling alone skipped `bend` for most of the network.
+The profile step reports `kink` (runs still bent tighter than their class
+allows) and `bend` (the tightest radius held anywhere).
+
+**Where the tags and the geometry disagree, the geometry wins**
+(docs/GENERATION.md §4.5). Overture's level, bridge and tunnel tags are
+claims a mapper made about a local situation, and on any given feature the
+claim may be wrong; the terrain and the network are measurements. Three rules
+enforce it, each named where it lives:
+
+- **A dangling deck holds its level; a dangling bore holds the ground**
+  (`profile`, `clamped`). A chord with one end anchored and the other
+  reaching nothing runs level to the anchor — the named deferral for a deck
+  cut by the bbox. For a bore it is not: run level out of a hillside that
+  falls away, a tunnel emerges into the air, and the structure step builds a
+  viaduct. On the loop box a service road tagged `is_tunnel` end to end ended
+  62 m over the ground on **130 m piers**, and asked a motorway to climb 68 m
+  out of its way. One clamp fixes it: `lift` 68.19 → **5.16**, `pier`
+  130.5 → 82.1, `bores` 83.7 % → 89.9 %.
+- **No clearance may spend more than `MAX_CLEARANCE_LIFT_M`** (15 m, the
+  server's number and reasoning), and a demand past it is **dropped whole,
+  not capped** — spending fifteen of sixty-eight metres leaves the geometry
+  wrong *and* distorted. `unstacked` counts the drops, and they do not
+  inflate `clearance`, which counts what the model tried and failed to meet.
+  It reads 0 on the box now, because the clamp above removed its cause: it is
+  a backstop, not a workaround, and `a_demand_the_geometry_contradicts_is_dropped_not_spent`
+  is what keeps it honest.
+- **A span's own extent is the solved geometry's, not the annotation's** —
+  `partition::spans`, and it is now the one span truth: the pieces are cut
+  from it *and* the profiles are written back with it, so the surface steps,
+  the structure step and the bench all cut the same thing. A span the heights
+  bear out is trimmed and grown to the run they imply; a run the annotation
+  never had is added. **A span no derived run overlaps is kept whole** —
+  absence of evidence is not evidence of absence, and a 25 m bridge over a
+  stream is below what a 3.29 m DEM resolves. Degraded for want of evidence
+  instead, 37 of the box's structures became earthworks and the ground
+  answered with 28 902 m² of wall against 24 643.
+- **A bore's ends are elected by its own run** (`partition::bore_bounds`):
+  the interior by the line, the ends by the line's crossings where the tube
+  fits over the *majority* of the buried run — a real bore grazes only at its
+  mouths and those are the portal transition — and pulled back to the tube's
+  fit where it does not, which is a surface gallery rather than a bore with
+  shallow mouths. The seed is the run of greatest integrated burial, so a
+  graze of DEM noise cannot capture the solve from the deep run beside it.
+  Three things it is easy to get wrong and each costs a measurement: the fit
+  is judged against the **raw ground** (that is what is drawn, and what
+  `open`/`cover` measure), it applies to a **proven** bore only (applied to
+  what the whole-span guard holds, it degraded eleven of the box's tunnels),
+  and it is read from the **annotation's** window with the derived run as a
+  floor (clamped to the trim it can only shrink, and a 120 m ridge came out
+  with 96 m of tube and both portals buried).
 
 The `crossing` step is the only thing in the model that couples the
 height of one way to the height of another. Two carriageway axes whose

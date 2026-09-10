@@ -34,15 +34,18 @@ pub fn run(world: &mut World, segments: &Path) -> Result<Summary, String> {
     let terrain = world.terrain.as_ref().expect("the terrain step runs first");
     let mut roads = Roads::default();
     let (mut pieces, mut vertices) = (0usize, 0usize);
-    for line in &read.lines {
-        let pts = drape(terrain, &line.pts);
+    // The *whole* way is draped, spans and all: the drawn centreline is the
+    // way the source drew, and the cut into ground and structure pieces is
+    // the partition step's (R1).
+    for way in &read.ways {
+        let pts = drape(terrain, &way.pts);
         pieces += pts.len().saturating_sub(1);
         vertices += pts.len();
         roads.lines.push(Polyline3 {
-            id: line.id.clone(),
-            class: line.class.clone(),
-            subclass: line.subclass.clone(),
-            width_m: line.width_m,
+            id: way.id.clone(),
+            class: way.class.clone(),
+            subclass: way.subclass.clone(),
+            width_m: way.width_m,
             pts,
         });
     }
@@ -52,38 +55,26 @@ pub fn run(world: &mut World, segments: &Path) -> Result<Summary, String> {
         .with("structures", format!("{} ({} off the ground entirely)", read.structures, read.dropped))
         .with("measured", read.measured)
         .with("oneway", read.oneway)
-        .with("lines", roads.lines.len())
-        .with("spans", read.spans.len())
+        .with("clipped", read.ways.len())
+        .with("draped", roads.lines.len())
         .with("pieces", pieces)
         .with("vertices", vertices);
-    roads.plan = read.lines;
-    roads.spans = read.spans;
+    roads.ways = read.ways;
     world.roads = Some(roads);
     Ok(summary)
 }
 
-/// The ways of a synthetic network, clipped to the rect like a read one.
+/// The ways of a synthetic network, clipped to the rect like a read one —
+/// whole, with their span tables re-based on each clipped run.
 fn synthetic(spec: &str, rect: &crate::frame::Rect) -> Result<roads::Read, String> {
-    let ways = net::parse(spec)?;
     let mut out = roads::Read::default();
-    for way in ways {
+    for way in net::parse(spec)? {
         out.features += 1;
         out.kept += 1;
-        for run in roads::clip(&way.pts, rect) {
-            let piece = Polyline2 {
-                id: way.id.clone(),
-                class: way.class.clone(),
-                subclass: way.subclass.clone(),
-                width_m: way.width_m,
-                kind: way.kind,
-                pts: run,
-            };
-            if way.kind == crate::world::Kind::Ground {
-                out.lines.push(piece);
-            } else {
-                out.spans.push(piece);
-            }
+        if way.has_structure() {
+            out.structures += 1;
         }
+        out.ways.extend(roads::clip_way(&way, rect));
     }
     Ok(out)
 }

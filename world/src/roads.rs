@@ -7,17 +7,22 @@
 //! ([`crate::width`]) is keyed on them, and `id` so a line in the output can
 //! be traced to its source feature.
 //!
-//! **Every way is cut by kind.** Overture encodes a bridge or a tunnel as a
-//! span of a segment — `level_rules`, or the `is_bridge`/`is_tunnel` flags in
-//! `road_flags`, over a `[start, end]` fraction of its length — and a way
-//! inside a building as an `is_indoor` span. The reader cuts the way at
-//! every span boundary and emits every piece with its [`Kind`]: the ground
-//! pieces into [`Read::lines`], from which every surface is built, and the
-//! rest into [`Read::spans`], which the profile chords across. A segment
-//! that climbs onto a viaduct keeps the stretch before the abutment on the
-//! ground and the deck off it, and the two share the abutment's vertex.
-//! The surface steps see only the ground, so they union freely: nothing
-//! they see crosses anything else at a different level.
+//! **A way carries its spans; it is not cut by them.** Overture encodes a
+//! bridge or a tunnel as a span of a segment — `level_rules`, or the
+//! `is_bridge`/`is_tunnel` flags in `road_flags`, over a `[start, end]`
+//! fraction of its length — and a way inside a building as an `is_indoor`
+//! span. The reader converts those fractions to **arc** and hands the way on
+//! whole, with its spans as an attribute ([`Way::spans`]).
+//!
+//! It used to cut there, and that was the defect: a piece end is a connector,
+//! and a connector is where the profile pins a height to the ground, so a
+//! mapper's split point became a survey point. A bridge annotated short of
+//! the gorge lip had its deck pinned to the DEM inside the approach. The cut
+//! happens once the heights are solved instead
+//! (`data/plans/spans-are-derived-2026-09-09.md` R1), in
+//! [`crate::partition`], which is also where the surface steps get their
+//! ground pieces — so what they union is where the world says the ground is
+//! rather than where a segment was split.
 
 use std::path::Path;
 
@@ -29,7 +34,7 @@ use crate::width;
 use geo_types::{Geometry, LineString};
 
 use crate::frame::{Frame, Rect};
-use crate::world::{Kind, Polyline2};
+use crate::world::{Kind, Span, Way};
 
 /// The columns read. `subtype` and `class` decide admission.
 ///
@@ -75,10 +80,8 @@ const CLASSES: &[&str] = &[
 /// What [`read`] found.
 #[derive(Debug, Default)]
 pub struct Read {
-    /// The pieces on the ground.
-    pub lines: Vec<Polyline2>,
-    /// The pieces above or below it, or indoors.
-    pub spans: Vec<Polyline2>,
+    /// The whole ways, clipped to the rect, each with its span table.
+    pub ways: Vec<Way>,
     /// Features decoded from the row groups touching the bbox.
     pub features: usize,
     /// Of those, the ways kept.
@@ -86,7 +89,7 @@ pub struct Read {
     /// Of the kept, the ways with a span above or below the ground, or
     /// indoors.
     pub structures: usize,
-    /// Of those, the ways with no ground left at all.
+    /// Of those, the ways with no ground span left at all.
     pub dropped: usize,
     /// Of the kept, the ways whose width is measured (`width_rules`).
     pub measured: usize,
@@ -136,27 +139,61 @@ pub fn read(path: &Path, bbox: &Bounds, frame: &Frame, rect: &Rect) -> Result<Re
         }
         for line in lines_of(&f.geometry) {
             let pts: Vec<[f64; 2]> = line.0.iter().map(|c| frame.to_local(c.x, c.y)).collect();
-            for &(s, e, kind) in &pieces {
-                for run in clip(&cut(&pts, s, e), rect) {
-                    let piece = Polyline2 {
-                        id: id.clone(),
-                        class: class.clone(),
-                        subclass: subclass.clone(),
-                        width_m,
-                        kind,
-                        pts: run,
-                    };
-                    if kind == Kind::Ground {
-                        out.lines.push(piece);
-                    } else {
-                        out.spans.push(piece);
-                    }
-                }
-            }
+            let total = length(&pts);
+            // The fractions the source speaks in, as arc along this line.
+            let spans: Vec<Span> = pieces
+                .iter()
+                .map(|&(s, e, kind)| Span { a0: s * total, a1: e * total, kind })
+                .collect();
+            let way = Way { id: id.clone(), class: class.clone(), subclass: subclass.clone(), width_m, pts, spans };
+            out.ways.extend(clip_way(&way, rect));
         }
     }
     Ok(out)
 }
+
+/// The length of a polyline, in metres.
+pub fn length(pts: &[[f64; 2]]) -> f64 {
+    pts.windows(2).map(|p| (p[1][0] - p[0][0]).hypot(p[1][1] - p[0][1])).sum()
+}
+
+/// `way` clipped to `rect`: one way per run that survives, each carrying the
+/// part of the span table that falls inside it, re-based on the run's own
+/// start. A run with no span left is dropped — it has no geometry to name.
+///
+/// The clip only cuts, so a run's arc is the original's less its start, and a
+/// span's arc translates by the same amount. That is the whole of it, and it
+/// is why the span table is kept in arc rather than in fractions: a fraction
+/// is of a length that the clip changes.
+pub fn clip_way(way: &Way, rect: &Rect) -> Vec<Way> {
+    let mut out = Vec::new();
+    for (pts, at) in clip_runs(&way.pts, rect) {
+        let len = length(&pts);
+        let spans: Vec<Span> = way
+            .spans
+            .iter()
+            .filter_map(|s| {
+                let (a0, a1) = ((s.a0 - at).max(0.0), (s.a1 - at).min(len));
+                (a1 - a0 > SPAN_EPS_M).then_some(Span { a0, a1, kind: s.kind })
+            })
+            .collect();
+        if spans.is_empty() {
+            continue;
+        }
+        out.push(Way {
+            id: way.id.clone(),
+            class: way.class.clone(),
+            subclass: way.subclass.clone(),
+            width_m: way.width_m,
+            pts,
+            spans,
+        });
+    }
+    out
+}
+
+/// Shortest span worth keeping after a clip, in metres.
+const SPAN_EPS_M: f64 = 1e-9;
 
 /// The pieces of a segment, as fractions of its length with their kind:
 /// `[0, 1]` partitioned by the spans in `off`, in order, with the ground
@@ -250,41 +287,54 @@ pub fn lines_of(g: &Geometry) -> Vec<&LineString> {
     }
 }
 
-/// Clips a polyline to `rect`, returning the runs that remain inside. Each
-/// segment is clipped with Liang–Barsky; consecutive segments whose clipped
-/// parts meet are joined into one run.
+/// Clips a polyline to `rect`, returning the runs that remain inside.
 pub fn clip(pts: &[[f64; 2]], rect: &Rect) -> Vec<Vec<[f64; 2]>> {
-    let mut runs: Vec<Vec<[f64; 2]>> = Vec::new();
+    clip_runs(pts, rect).into_iter().map(|(run, _)| run).collect()
+}
+
+/// The same, with each run's **arc along the original polyline** at its first
+/// vertex — what a span table has to be re-based on. Each segment is clipped
+/// with Liang–Barsky; consecutive segments whose clipped parts meet are
+/// joined into one run.
+pub fn clip_runs(pts: &[[f64; 2]], rect: &Rect) -> Vec<(Vec<[f64; 2]>, f64)> {
+    let mut runs: Vec<(Vec<[f64; 2]>, f64)> = Vec::new();
     let mut run: Vec<[f64; 2]> = Vec::new();
-    let mut flush = |run: &mut Vec<[f64; 2]>| {
+    let mut run_at = 0.0f64;
+    let mut flush = |run: &mut Vec<[f64; 2]>, at: f64| {
         if run.len() >= 2 {
-            runs.push(std::mem::take(run));
+            runs.push((std::mem::take(run), at));
         } else {
             run.clear();
         }
     };
+    let mut at = 0.0f64; // arc at `p`, along the original
     for pair in pts.windows(2) {
         let (p, q) = (pair[0], pair[1]);
+        let seg = (q[0] - p[0]).hypot(q[1] - p[1]);
         let Some((t0, t1)) = liang_barsky(p, q, rect) else {
-            flush(&mut run);
+            flush(&mut run, run_at);
+            at += seg;
             continue;
         };
         let a = lerp(p, q, t0);
         let b = lerp(p, q, t1);
         if run.is_empty() {
+            run_at = at + t0 * seg;
             run.push(a);
         } else if t0 > 0.0 {
-            flush(&mut run);
+            flush(&mut run, run_at);
+            run_at = at + t0 * seg;
             run.push(a);
         }
         if a != b {
             run.push(b);
         }
         if t1 < 1.0 {
-            flush(&mut run);
+            flush(&mut run, run_at);
         }
+        at += seg;
     }
-    flush(&mut run);
+    flush(&mut run, run_at);
     runs
 }
 
