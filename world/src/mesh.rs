@@ -35,7 +35,7 @@ use crate::grid::Grid;
 use crate::poly::{self, Pt, Shapes};
 use crate::step::Summary;
 use crate::terrain::height_at;
-use crate::world::{Mesh, Tri, World};
+use crate::world::{Mesh, Paving, Terrain, Tri};
 
 /// A triangle under this many square metres is a sliver: kept, counted.
 pub const SLIVER_M2: f64 = 1e-6;
@@ -112,11 +112,8 @@ pub struct Stats {
 }
 
 /// Triangulates the world's carriageway and pavement on its terrain.
-pub fn run(world: &mut World) -> Summary {
-    let terrain = world.terrain.as_ref().expect("the terrain step runs first");
-    let none = Shapes::new();
-    let carriageway = world.carriageway().unwrap_or(&none);
-    let pavement = world.walk().unwrap_or(&none);
+pub fn run(terrain: &Terrain, paving: Paving) -> (Mesh, Summary) {
+    let Paving { carriageway, walk: pavement } = paving;
     let ground = |p: Pt| height_at(terrain, p[0], p[1]);
     let (c, cs) = triangulate(carriageway, &terrain.grid, &ground);
     let (p, ps) = triangulate(pavement, &terrain.grid, &ground);
@@ -133,8 +130,7 @@ pub fn run(world: &mut World) -> Summary {
         .with("lost_m2", format!("{:.1e}", cs.lost_m2 + ps.lost_m2))
         .with("off_ground", format!("{:.1e}", cs.off_ground.max(ps.off_ground)))
         .with("seam", format!("{:.1e}", cs.seam.max(ps.seam)));
-    world.mesh = Some(Mesh { carriageway: c, pavement: p });
-    summary
+    (Mesh { carriageway: c, pavement: p }, summary)
 }
 
 /// `shapes` as triangles conforming to `grid`, every one inside one of
@@ -446,31 +442,25 @@ fn crossing(a: Pt, b: Pt, f: &dyn Fn(Pt) -> f64, k: f64) -> Pt {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::path::Path;
+    use crate::world::World;
+    use crate::pipeline::tests::{built, upto, without};
+    use crate::step::Step;
+    
 
     use crate::frame::Rect;
-    use crate::terrain::{self, tests::dem};
-    use crate::{drape, facade, fillet, kerb, profile, reference, ribbon, room, surface};
+    
+    
 
     use super::*;
 
     /// A world on `terrain_spec` with the network of `net`, built through
     /// the room step and meshed.
     pub(crate) fn world(terrain_spec: &str, net: &str) -> (World, Summary) {
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem(terrain_spec), 5.0, usize::MAX);
-        drape::run(&mut w, Path::new(net)).unwrap();
-        reference::run(&mut w);
-        profile::run(&mut w);
-        crate::partition::run(&mut w);
-        facade::run(&mut w, None).unwrap();
-        ribbon::run(&mut w);
-        surface::run(&mut w);
-        kerb::run(&mut w);
-        fillet::run(&mut w);
-        room::run(&mut w);
-        let s = run(&mut w);
-        (w, s)
+        // No crossing: nothing here is a grade separation, and the mesh
+        // conforms to the terrain whatever the profile did.
+        let steps = without(upto(Step::Mesh), &[Step::Crossing]);
+        let (w, ran) = built(terrain_spec, net, None, 5.0, &steps);
+        (w, ran.last())
     }
 
     fn area_of(tri: &Tri) -> f64 {
@@ -575,7 +565,7 @@ pub(crate) mod tests {
     fn a_straight_on_flat_ground_meshes_to_its_area() {
         let (w, s) = world("flat", "net:straight?len=200");
         let m = w.mesh.as_ref().unwrap();
-        let want = poly::area(w.carriageway().unwrap());
+        let want = poly::area(&w.fillet.as_ref().expect("the fillet step ran").carriageway);
         assert!((area_of(&m.carriageway) - want).abs() / want < 1e-9, "{} vs {want}", area_of(&m.carriageway));
         assert!(m.carriageway.positions.iter().all(|p| p[2] == 400.0));
         assert!(m.pavement.indices.is_empty());
@@ -592,7 +582,7 @@ pub(crate) mod tests {
     #[test]
     fn a_mesh_on_a_hill_lies_on_the_ground() {
         let (w, s) = world("hill?amp=60&radius=400", "net:cross?len=400");
-        let t = w.terrain.as_ref().unwrap();
+        let t = w.terrain.as_ref().expect("the terrain step ran");
         let m = w.mesh.as_ref().unwrap();
         assert!(s.num("off_ground") < 1e-9 && s.num("seam") < 1e-9 && s.num("lost_m2") < 1e-9, "{s}");
         // Not only the centroid: points across every triangle.
@@ -613,7 +603,7 @@ pub(crate) mod tests {
     fn the_pavement_is_meshed_beside_the_road() {
         let (w, s) = world("flat", "net:sidewalk?d=6");
         let m = w.mesh.as_ref().unwrap();
-        let want = poly::area(w.walk().unwrap());
+        let want = poly::area(&w.room.as_ref().expect("the room step ran").pavement);
         assert!(want > 0.0);
         assert!((area_of(&m.pavement) - want).abs() / want < 1e-9, "{} vs {want}", area_of(&m.pavement));
         assert!(s.num("seam") < 1e-9, "{s}");

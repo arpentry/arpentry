@@ -257,6 +257,29 @@ step, each step with its own tests on synthetic ground. Nothing in it knows
 what a tile is, and that must stay true: the tiler is meant to become one
 more caller of it.
 
+**A step is a function of what it reads, and nothing else.** Every step is
+`fn run(inputs…) -> (Layer, Summary)` over the layers it needs — no step
+takes the world, and none can reach a layer it did not name. `World` is the
+record the layers land in, read only by the two renderers, which draw
+whatever has been built. All the wiring is `world/src/pipeline.rs`: the
+order (`Step::ALL`), which layer feeds which step, the three sources
+(`Sources` — only the terrain, the drape and the facade read anything
+outside), and the one place that unwraps a layer and can therefore assert
+its predecessor ran. **Adding a dependency between two steps is a diff in
+that file**, which is the whole point: it used to be an `expect("the drape
+step runs first")` inside the step, invisible from outside, and the paved
+surface's four re-cuttings were resolved at runtime by a `World::walk()`
+that returned whichever of four layers had been filled. `Paving` is that
+answer written down instead.
+
+The specimen ladders live there too (`pipeline::tests::built`), named as
+step lists: `upto(Step::Bench)` is the whole prefix, `plan(Step::Ribbon)`
+leaves out the three vertical steps a flat specimen has nothing for. They
+had been written out by hand in eight test modules and had drifted — the
+mesh's ladder still skips `crossing` where the bench's does not, and that
+divergence is now visible in one line rather than buried in a copied
+sequence.
+
 ```bash
 cargo test  --manifest-path world/Cargo.toml
 cargo build --release --manifest-path world/Cargo.toml

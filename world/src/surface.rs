@@ -26,24 +26,23 @@
 use crate::poly::{self, Shapes};
 use crate::step::Summary;
 use crate::width::Family;
-use crate::world::{Surface, World};
+use crate::world::{Facade, Ribbons, Surface};
 
 /// Unions the world's ribbons per family.
-pub fn run(world: &mut World) -> Summary {
-    let ribbons = world.ribbons.as_ref().expect("the ribbon step runs first");
+pub fn run(ribbons: &Ribbons, facade: &Facade) -> (Surface, Summary) {
     let mut per_family: [Shapes; 2] = [Vec::new(), Vec::new()];
     for r in &ribbons.ribbons {
         per_family[r.family as usize].extend(r.shape.iter().cloned());
     }
     let carriageway_open = poly::union_all(&per_family[Family::Carriageway as usize]);
-    let carriageway = world.asphalt(&carriageway_open);
+    let carriageway = facade.asphalt(&carriageway_open);
     let walled_carriageway = poly::area(&carriageway_open) - poly::area(&carriageway);
     // [`World::pavement`]'s two cuts, made here one at a time so each is
     // reported: what the walk lost to the asphalt, then to the walls.
     let walk_alone = poly::union_all(&per_family[Family::Walk as usize]);
     let walk_open = poly::difference(&walk_alone, &carriageway);
     let bitten = poly::area(&walk_alone) - poly::area(&walk_open);
-    let walk = poly::difference(&walk_open, world.solid());
+    let walk = poly::difference(&walk_open, &facade.solid);
     let walled_walk = poly::area(&walk_open) - poly::area(&walk);
     let summary = Summary::new()
         .with_regions("carriageway", &carriageway)
@@ -53,30 +52,30 @@ pub fn run(world: &mut World) -> Summary {
         .with_m2("walk_under_asphalt_m2", bitten)
         .with_m2("carriageway_in_building_m2", walled_carriageway)
         .with_m2("walk_in_building_m2", walled_walk);
-    world.surface = Some(Surface { carriageway, walk });
-    summary
+    (Surface { carriageway, walk }, summary)
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::world::World;
+    use crate::pipeline::tests::{built, plan};
+    use crate::step::Step;
 
-    use crate::ribbon;
+    
 
     use super::*;
 
     /// A flat world with the network of `spec`, ribboned.
-    pub(crate) fn world(spec: &str) -> World {
-        let mut w = ribbon::tests::world(spec);
-        ribbon::run(&mut w);
-        w
+    pub(crate) fn world(spec: &str) -> (World, Summary) {
+        let (w, ran) = built("flat", spec, None, 100.0, &plan(Step::Surface));
+        (w, ran.last())
     }
 
     #[test]
     fn a_cross_is_one_region_less_the_overlap() {
         // Four legs square at their dead ends, joined by discs at the
         // origin that lie inside the union: two straights less the overlap.
-        let mut w = world("net:cross?len=200");
-        run(&mut w);
+        let (w, _) = world("net:cross?len=200");
         let s = w.surface.as_ref().unwrap();
         assert_eq!(s.carriageway.len(), 1);
         assert_eq!(s.carriageway[0].len(), 1, "no holes");
@@ -88,16 +87,14 @@ pub(crate) mod tests {
 
     #[test]
     fn a_union_never_exceeds_its_ribbons_and_equals_them_when_disjoint() {
-        let mut w = world("net:dual?gap=4&len=200");
-        run(&mut w);
+        let (w, _) = world("net:dual?gap=4&len=200");
         let ribbons = poly::area(
             &w.ribbons.as_ref().unwrap().ribbons.iter().flat_map(|r| r.shape.iter().cloned()).collect(),
         );
         let s = w.surface.as_ref().unwrap();
         assert_eq!(s.carriageway.len(), 2, "a dual carriageway is two regions");
         assert!((poly::area(&s.carriageway) - ribbons).abs() < 1e-3);
-        let mut w = world("net:tee?len=200");
-        run(&mut w);
+        let (w, _) = world("net:tee?len=200");
         let ribbons = poly::area(
             &w.ribbons.as_ref().unwrap().ribbons.iter().flat_map(|r| r.shape.iter().cloned()).collect(),
         );
@@ -106,8 +103,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_asphalt_wins_where_a_crossing_meets_it() {
-        let mut w = world("net:crossing?d=6&len=100");
-        let s = run(&mut w);
+        let (w, s) = world("net:crossing?d=6&len=100");
         let surf = w.surface.as_ref().unwrap();
         // No walk point on the asphalt, and none of the asphalt is missing.
         assert!(!poly::contains(&surf.walk, [0.0, 0.0]));
@@ -126,8 +122,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_sidewalk_under_the_prior_width_is_cut_to_the_kerb() {
-        let mut w = world("net:sidewalk?d=2&len=100");
-        run(&mut w);
+        let (w, _) = world("net:sidewalk?d=2&len=100");
         let surf = w.surface.as_ref().unwrap();
         // Mapped at 2 m with a 1 m half-width: [1, 3]; the kerb is at 2.75.
         assert!(poly::contains(&surf.walk, [0.0, 2.9]));

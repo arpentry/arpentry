@@ -12,20 +12,17 @@
 //! The bbox is required and never inferred from the data: a cut zone holds
 //! the zone plus a margin.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
 use arpentry_server::dem::{Dem, Field};
 use arpentry_server::project::Bounds;
+use arpentry_world::frame::Rect;
+use arpentry_world::pipeline::{self, Sources};
 use arpentry_world::step::Step;
 use arpentry_world::world::World;
-use arpentry_world::frame::Rect;
-use arpentry_world::net;
-use arpentry_world::{
-    bench, crossing, drape, facade, fillet, gltf, kerb, mesh, partition, profile, reference, ribbon, room,
-    structure, surface, svg, terrain,
-};
+use arpentry_world::{facade, gltf, net, svg};
 
 struct Args {
     bbox: Bounds,
@@ -99,33 +96,20 @@ fn main() -> ExitCode {
 fn run(args: &Args) -> Result<(), String> {
     let mut dem = Dem::open(&args.terrain).map_err(|e| format!("{}: {e}", args.terrain.display()))?;
     let mut world = World::new(args.bbox);
-    println!("bbox     {:?} -> {:.0} x {:.0} m", args.bbox, world.rect.width(), world.rect.height());
-    for step in Step::ALL {
-        let t = Instant::now();
-        let summary = match step {
-            Step::Terrain => terrain::run(&mut world, &mut dem, args.spacing, args.max_vertices),
-            Step::Drape => drape::run(&mut world, &args.segments)
-                .map_err(|e| format!("{}: {e}", args.segments.display()))?,
-            Step::Reference => reference::run(&mut world),
-            Step::Profile => profile::run(&mut world),
-            Step::Crossing => crossing::run(&mut world),
-            Step::Partition => partition::run(&mut world),
-            Step::Facade => facade::run(&mut world, args.buildings.as_deref())
-                .map_err(|e| format!("{}: {e}", args.buildings.as_deref().unwrap_or(Path::new("")).display()))?,
-            Step::Ribbon => ribbon::run(&mut world),
-            Step::Surface => surface::run(&mut world),
-            Step::Kerb => kerb::run(&mut world),
-            Step::Fillet => fillet::run(&mut world),
-            Step::Room => room::run(&mut world),
-            Step::Mesh => mesh::run(&mut world),
-            Step::Bench => bench::run(&mut world),
-            Step::Structure => structure::run(&mut world),
-        };
+    let rect = world.extent.rect;
+    println!("bbox     {:?} -> {:.0} x {:.0} m", args.bbox, rect.width(), rect.height());
+    let mut src = Sources {
+        dem: &mut dem,
+        segments: &args.segments,
+        buildings: args.buildings.as_deref(),
+        spacing: args.spacing,
+        max_vertices: args.max_vertices,
+    };
+    let mut t = Instant::now();
+    pipeline::upto(&mut world, args.until, &mut src, &mut |step, summary| {
         println!("{:<8} {}  {:.2}s", step.name(), summary, t.elapsed().as_secs_f64());
-        if step == args.until {
-            break;
-        }
-    }
+        t = Instant::now();
+    })?;
     if let Some(output) = &args.output {
         let t = Instant::now();
         let glb = gltf::write_glb(&world, args.outlines);

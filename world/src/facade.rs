@@ -58,12 +58,12 @@ use arpentry_server::geoparquet::{GeoParquet, ReadError};
 use arpentry_server::project::Bounds;
 use geo_types::{Geometry, Polygon};
 
-use crate::frame::{Frame, Rect};
+use crate::frame::{Extent, Frame, Rect};
 use crate::kerb;
 use crate::net::Params;
 use crate::poly::{self, Indexed, Pt, Shape, Shapes};
 use crate::step::Summary;
-use crate::world::{Facade, Polyline2, World};
+use crate::world::{Facade, Polyline2, Roads};
 
 /// The widest corridor a building yields to a way running through it, in
 /// metres: a lane's worth. A way narrower than this keeps its own width.
@@ -86,13 +86,18 @@ pub fn is_spec(s: &str) -> bool {
 
 /// Reads the buildings and decides what they refuse. `None` is no
 /// building input at all: open ground everywhere.
-pub fn run(world: &mut World, buildings: Option<&Path>) -> Result<Summary, String> {
-    let roads = world.roads.as_ref().expect("the drape step runs first");
+pub fn run(
+    extent: &Extent,
+    roads: &Roads,
+    buildings: Option<&Path>,
+) -> Result<(Facade, Summary), String> {
     let read = match buildings {
         None => Read::default(),
         Some(p) => match p.to_str().filter(|s| is_spec(s)) {
-            Some(spec) => synthetic(spec, &world.rect)?,
-            None => read(p, &world.bbox, &world.frame, &world.rect).map_err(|e| e.to_string())?,
+            Some(spec) => synthetic(spec, &extent.rect)?,
+            None => {
+                read(p, &extent.bbox, &extent.frame, &extent.rect).map_err(|e| e.to_string())?
+            }
         },
     };
     let footprints = poly::union_all(&read.shapes);
@@ -130,8 +135,7 @@ pub fn run(world: &mut World, buildings: Option<&Path>) -> Result<Summary, Strin
         .with("lanes", lanes)
         .with_m2("solid_m2", poly::area(&solid))
         .with_m2("pocket_m2", poly::area(&built) - poly::area(&solid));
-    world.facade = Some(Facade { footprints, passages: passages_shapes, solid, built });
-    Ok(summary)
+    Ok((Facade { footprints, passages: passages_shapes, solid, built }, summary))
 }
 
 /// What the reader (or the dial) found.
@@ -337,20 +341,34 @@ fn synthetic(spec: &str, rect: &Rect) -> Result<Read, String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::ribbon::tests::{housed, world};
-    use crate::{fillet, ribbon, surface};
+    use crate::world::World;
+    use crate::pipeline::tests::{built, plan};
+    use crate::step::Step;
+    use crate::terrain::tests::extent;
 
     use super::*;
+
+    /// The same, surfaced, with the surface step's line.
+    fn surfaced(net: &str, house: Option<&str>) -> (World, Summary) {
+        let (w, ran) = built("flat", net, house, 100.0, &plan(Step::Surface));
+        (w, ran.last())
+    }
+
+    /// The ways of `net` on flat ground, cut: what this step reads.
+    fn roads(net: &str) -> Roads {
+        built("flat", net, None, 100.0, &plan(Step::Partition)).0.roads.expect("the drape step ran")
+    }
 
     /// The world of `net` with the house of `house`, paved to the fillet,
     /// with the surface step's line and the kerb step's.
     fn paved(net: &str, house: &str) -> (World, Summary, Summary) {
-        let mut w = housed(net, house);
-        ribbon::run(&mut w);
-        let s = surface::run(&mut w);
-        let k = kerb::run(&mut w);
-        fillet::run(&mut w);
-        (w, s, k)
+        let (w, ran) = built("flat", net, Some(house), 100.0, &plan(Step::Fillet));
+        (w, ran.of(Step::Surface), ran.of(Step::Kerb))
+    }
+
+    /// What the world's facade layer holds.
+    fn facade(w: &World) -> &Facade {
+        w.facade.as_ref().expect("the facade step ran")
     }
 
     #[test]
@@ -387,10 +405,9 @@ mod tests {
 
     #[test]
     fn no_building_input_is_open_ground() {
-        let mut w = world("net:straight?len=200");
-        assert!(w.solid().is_empty() && w.walls().is_empty());
-        ribbon::run(&mut w);
-        surface::run(&mut w);
+        let (w, _) = surfaced("net:straight?len=200", None);
+        let f = facade(&w);
+        assert!(f.solid.is_empty() && f.footprints.is_empty());
         let a = poly::area(&w.surface.as_ref().unwrap().carriageway);
         assert!((a - 1100.0).abs() < 1e-3, "{a}");
     }
@@ -411,22 +428,20 @@ mod tests {
         // The fillet does not put it back.
         let f = w.fillet.as_ref().unwrap();
         assert!(!poly::contains(&f.carriageway, [0.0, 2.1]));
-        assert!(poly::intersect(&f.carriageway, w.walls()).is_empty());
+        assert!(poly::intersect(&f.carriageway, &facade(&w).footprints).is_empty());
     }
 
     #[test]
     fn a_road_through_a_house_keeps_a_passage() {
         // The axis runs through the house for 10 m: the building yields a
         // 4 m corridor, the asphalt loses the 0.75 m either side of it.
-        let mut w = housed("net:straight?len=200", "house:across?l=10&w=12");
-        let f = w.facade.as_ref().unwrap();
+        let (w, _) = surfaced("net:straight?len=200", Some("house:across?l=10&w=12"));
+        let f = facade(&w);
         assert!((poly::area(&f.footprints) - 120.0).abs() < 1e-9);
         assert!(poly::contains(&f.passages, [0.0, 0.0]));
         assert!(poly::contains(&f.passages, [0.0, 1.9]));
         assert!(!poly::contains(&f.passages, [0.0, 2.1]));
         assert!(poly::contains(&f.solid, [0.0, 2.1]));
-        ribbon::run(&mut w);
-        surface::run(&mut w);
         let surf = w.surface.as_ref().unwrap();
         assert_eq!(surf.carriageway.len(), 1, "the passage keeps the road in one piece");
         let a = poly::area(&surf.carriageway);
@@ -454,13 +469,11 @@ mod tests {
         // pocketing, and the way's corridor opens the pocket again: the
         // asphalt is the 3 m room, not the 4 m corridor, and the houses are
         // whole.
-        let mut w = housed("net:straight?len=200", "house:pair?gap=3&l=10");
-        let f = w.facade.as_ref().unwrap();
+        let (w, s) = surfaced("net:straight?len=200", Some("house:pair?gap=3&l=10"));
+        let f = facade(&w);
         assert!(!poly::contains(&f.built, [0.0, 0.0]) && !poly::contains(&f.built, [0.0, 1.4]));
         assert!(poly::contains(&f.built, [0.0, 1.6]) && poly::contains(&f.solid, [0.0, 1.6]));
         assert!((poly::area(&f.solid) - 200.0).abs() < 1e-6);
-        ribbon::run(&mut w);
-        let s = surface::run(&mut w).to_string();
         let surf = w.surface.as_ref().unwrap();
         assert_eq!(surf.carriageway.len(), 1, "{s}");
         assert!(poly::contains(&surf.carriageway, [0.0, 1.4]));
@@ -473,29 +486,27 @@ mod tests {
         // A 2 m footway down a 1.5 m gap between two houses: the pocket is
         // closed for the asphalt, opened for the footway, and the footway
         // is cut to the gap.
-        let mut w = housed("net:stub?d=-2&len=100", "house:row?d=2&l=10&gap=1.5");
-        let built = w.built().clone();
-        assert!(!poly::contains(&built, [0.0, 5.0]), "the alley is opened for the footway");
-        assert!(poly::contains(&built, [3.0, 3.0]), "the houses stand");
-        ribbon::run(&mut w);
-        surface::run(&mut w);
+        let (w, _) = surfaced("net:stub?d=-2&len=100", Some("house:row?d=2&l=10&gap=1.5"));
+        let f = facade(&w);
+        assert!(!poly::contains(&f.built, [0.0, 5.0]), "the alley is opened for the footway");
+        assert!(poly::contains(&f.built, [3.0, 3.0]), "the houses stand");
         let surf = w.surface.as_ref().unwrap();
         assert!(poly::contains(&surf.walk, [0.0, 5.0]));
         assert!(!poly::contains(&surf.walk, [0.9, 5.0]), "cut to the 1.5 m gap");
-        assert!(poly::intersect(&surf.walk, w.solid()).is_empty());
+        assert!(poly::intersect(&surf.walk, &f.solid).is_empty());
     }
 
     #[test]
     fn the_passage_is_reported() {
-        let mut w = world("net:straight?len=200");
-        let s = run(&mut w, Some(Path::new("house:across?l=10&w=12"))).unwrap();
+        let roads = roads("net:straight?len=200");
+        let (_, s) = run(&extent(), &roads, Some(Path::new("house:across?l=10&w=12"))).unwrap();
         assert_eq!(s.num("footprints"), 1.0, "{s}");
         assert_eq!(s.num("passages"), 1.0, "{s}");
         // Ten metres of axis inside, give or take the samples on the walls.
         assert!((8.0..=10.0).contains(&s.num("passage_m")), "{s}");
         // The 4 m corridor across the 10 m house: 40 m² yielded.
         assert_eq!(s.num("solid_m2"), 80.0, "{s}");
-        let s = run(&mut w, Some(Path::new("house:beside?d=2&l=10"))).unwrap();
+        let (_, s) = run(&extent(), &roads, Some(Path::new("house:beside?d=2&l=10"))).unwrap();
         assert_eq!(s.num("passages"), 0.0, "{s}");
         assert_eq!(s.num("solid_m2"), 100.0, "{s}");
     }
@@ -525,7 +536,7 @@ mod tests {
         assert_eq!(k.num("kerb_gap"), 0.0, "{k}");
         let f = w.fillet.as_ref().unwrap();
         assert!(!poly::contains(&f.pavement, [0.0, 4.0]));
-        assert!(poly::intersect(&f.pavement, w.walls()).is_empty());
+        assert!(poly::intersect(&f.pavement, &facade(&w).footprints).is_empty());
     }
 
     #[test]
@@ -536,7 +547,7 @@ mod tests {
         let f = w.fillet.as_ref().unwrap();
         assert!(!poly::contains(&f.carriageway, [-3.5, 3.5]), "no return through the house");
         assert!(poly::contains(&f.carriageway, [-2.85, 2.85]), "the sliver before the wall is still returned");
-        assert!(poly::intersect(&f.carriageway, w.walls()).is_empty());
+        assert!(poly::intersect(&f.carriageway, &facade(&w).footprints).is_empty());
         // Without the house the same point is inside the return.
         let (w, _, _) = paved("net:tee?len=200", "house:beside?d=30&x=-8&l=10&w=10");
         assert!(poly::contains(&w.fillet.as_ref().unwrap().carriageway, [-3.5, 3.5]));
@@ -544,15 +555,16 @@ mod tests {
 
     #[test]
     fn a_footprint_is_clipped_to_the_world() {
-        let mut w = world("net:straight?len=200");
-        let x1 = w.rect.x1;
-        let s = run(&mut w, Some(Path::new(&format!("house:beside?d=0&x={x1}&l=10&w=10")))).unwrap();
-        let f = w.facade.as_ref().unwrap();
+        let roads = roads("net:straight?len=200");
+        let x1 = extent().rect.x1;
+        let spec = format!("house:beside?d=0&x={x1}&l=10&w=10");
+        let (f, s) = run(&extent(), &roads, Some(Path::new(&spec))).unwrap();
         assert!((poly::area(&f.footprints) - 50.0).abs() < 1e-6, "{s}");
         assert_eq!(s.num("clipped"), 1.0, "{s}");
-        let s = run(&mut w, Some(Path::new(&format!("house:beside?d=0&x={}&l=10&w=10", x1 + 100.0)))).unwrap();
+        let spec = format!("house:beside?d=0&x={}&l=10&w=10", x1 + 100.0);
+        let (f, s) = run(&extent(), &roads, Some(Path::new(&spec))).unwrap();
         assert_eq!(s.num("footprints"), 0.0, "{s}");
-        assert!(w.facade.as_ref().unwrap().footprints.is_empty());
+        assert!(f.footprints.is_empty());
     }
 
     #[test]

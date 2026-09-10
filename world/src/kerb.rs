@@ -87,7 +87,7 @@ use std::collections::{HashMap, HashSet};
 use crate::poly::{self, Indexed, Pt, Shape, Shapes};
 use crate::step::Summary;
 use crate::width::{self, Family};
-use crate::world::{connector, Kerb, Polyline2, World};
+use crate::world::{connector, Facade, Kerb, Polyline2, Roads, Surface};
 
 /// Sample spacing along a pedestrian way, in metres.
 pub const STATION_M: f64 = 1.0;
@@ -193,9 +193,7 @@ struct Stationed {
 }
 
 /// Attaches the world's pedestrian ways and fills the strips.
-pub fn run(world: &mut World) -> Summary {
-    let roads = world.roads.as_ref().expect("the drape step runs first");
-    let surface = world.surface.as_ref().expect("the surface step runs first");
+pub fn run(roads: &Roads, surface: &Surface, facade: &Facade) -> (Kerb, Summary) {
     let index = RoadIndex::build(roads.plan.iter().filter(|w| width::family(&w.class) == Family::Carriageway));
     // One union per run, then one of the runs: a run's few hundred pieces
     // overlap each other four or five deep, and a single union of every
@@ -240,9 +238,9 @@ pub fn run(world: &mut World) -> Summary {
     let q = |f: f64| gaps.get(((gaps.len() as f64 - 1.0) * f).round() as usize).copied().unwrap_or(0.0);
     let rungs = poly::union_all(&pieces);
     let u = poly::fill_holes_under(poly::union_of(&[&surface.walk, &rungs]), PAVEMENT_HOLE_M2);
-    let pavement = world.pavement(&u, &surface.carriageway);
+    let pavement = facade.pavement(&u, &surface.carriageway);
     let filled = poly::area(&pavement) - poly::area(&surface.walk);
-    let bare = Bare::new(&surface.carriageway, &pavement, world.walls());
+    let bare = Bare::new(&surface.carriageway, &pavement, &facade.footprints);
     let (gap_n, gap_of) = kerb_gap(&surface.carriageway, &bare, &attached_all);
     let summary = Summary::new()
         .with("stations", stations)
@@ -256,8 +254,7 @@ pub fn run(world: &mut World) -> Summary {
         .with_m2("pavement_m2", poly::area(&pavement))
         .with_m2("filled_m2", filled)
         .with_share("kerb_gap", gap_n, gap_of);
-    world.kerb = Some(Kerb { rungs, pavement, attached: attached_all });
-    summary
+    (Kerb { rungs, pavement, attached: attached_all }, summary)
 }
 
 /// One attached station.
@@ -943,15 +940,17 @@ impl RoadIndex {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::surface;
+    use crate::world::World;
+    use crate::pipeline::tests::{built, plan};
+    use crate::step::Step;
+    
 
     use super::*;
 
     /// A flat world with the network of `spec`, surfaced.
-    pub(crate) fn world(spec: &str) -> World {
-        let mut w = surface::tests::world(spec);
-        surface::run(&mut w);
-        w
+    pub(crate) fn world(spec: &str) -> (World, Summary) {
+        let (w, ran) = built("flat", spec, None, 100.0, &plan(Step::Kerb));
+        (w, ran.last())
     }
 
     #[test]
@@ -982,8 +981,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_sidewalk_six_metres_off_reaches_the_kerb() {
-        let mut w = world("net:sidewalk?d=6&len=100");
-        let s = run(&mut w);
+        let (w, s) = world("net:sidewalk?d=6&len=100");
         let k = w.kerb.as_ref().unwrap();
         assert_eq!(k.pavement.len(), 1, "{s}");
         for y in [2.85, 3.5, 4.5, 5.5, 6.9] {
@@ -1001,8 +999,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_sidewalk_under_the_asphalt_gets_the_minimum_pavement() {
-        let mut w = world("net:sidewalk?d=2&len=100");
-        run(&mut w);
+        let (w, _) = world("net:sidewalk?d=2&len=100");
         let k = w.kerb.as_ref().unwrap();
         assert!(poly::contains(&k.pavement, [0.0, 2.9]));
         assert!(poly::contains(&k.pavement, [0.0, 3.45]));
@@ -1012,8 +1009,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_pavement_wraps_a_corner_in_one_piece() {
-        let mut w = world("net:corner?d=5&len=200");
-        let s = run(&mut w);
+        let (w, s) = world("net:corner?d=5&len=200");
         let k = w.kerb.as_ref().unwrap();
         assert_eq!(k.pavement.len(), 1, "{s}");
         // Between the kerb and the mapped line, on both legs.
@@ -1030,8 +1026,7 @@ pub(crate) mod tests {
         // corner, so each half ends mid-arc, where its chord runs along
         // neither leg: the along test fails at both ends and nothing on the
         // same way is attached beyond them to bridge to.
-        let mut w = world("net:corner?d=8&split=1&len=200");
-        let s = run(&mut w);
+        let (w, s) = world("net:corner?d=8&split=1&len=200");
         let k = w.kerb.as_ref().unwrap();
         assert_eq!(k.pavement.len(), 1, "{s}");
         // From the kerb's corner out to the chamfer, along the diagonal.
@@ -1047,8 +1042,7 @@ pub(crate) mod tests {
         // The sidewalk wraps the corner 8 m off both axes; its chamfer's
         // stations project onto road-w and onto the leg, and the chord
         // between those feet passes 7 m from the notch's corner.
-        let mut w = world("net:tee?d=8&len=200");
-        let s = run(&mut w);
+        let (w, s) = world("net:tee?d=8&len=200");
         let k = w.kerb.as_ref().unwrap();
         for r in [3.2, 4.5, 6.0, 8.0] {
             assert!(poly::contains(&k.pavement, [-r, r]), "{r}: {s}");
@@ -1061,8 +1055,7 @@ pub(crate) mod tests {
     fn a_footway_ending_near_a_kerb_lands_on_it() {
         // Half a metre short of the kerb: the round cap alone would leave
         // a lens of bare ground between it and the asphalt.
-        let mut w = world("net:stub?d=0.5&len=100");
-        let s = run(&mut w);
+        let (w, s) = world("net:stub?d=0.5&len=100");
         assert!(s.to_string().contains("runs=0"), "{s}");
         assert!(s.to_string().contains("landed=2"), "{s}");
         let k = w.kerb.as_ref().unwrap();
@@ -1074,8 +1067,7 @@ pub(crate) mod tests {
         assert!(!poly::contains(&k.pavement, [1.3, 2.9]), "the landing is the footway's width");
         assert!(s.to_string().contains("kerb_gap=0/"), "{s}");
         // A metre under the asphalt, as Overture connects it: cut at the kerb.
-        let mut w = world("net:stub?d=-1&len=100");
-        let s = run(&mut w);
+        let (w, s) = world("net:stub?d=-1&len=100");
         let k = w.kerb.as_ref().unwrap();
         assert!(poly::contains(&k.pavement, [0.0, 2.85]), "{s}");
         assert!(!poly::contains(&k.pavement, [0.0, 2.6]));
@@ -1084,8 +1076,7 @@ pub(crate) mod tests {
 
     /// Every kerb station a sidewalk claims has pavement outside it.
     fn assert_no_kerb_gap(spec: &str) {
-        let mut w = world(spec);
-        let s = run(&mut w);
+        let (_w, s) = world(spec);
         assert!(s.to_string().contains("kerb_gap=0/"), "{spec}: {s}");
     }
 
@@ -1107,8 +1098,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_roundabout_keeps_its_pavement_round_every_leg() {
-        let mut w = world("net:roundabout?r=15&d=5&len=200");
-        let s = run(&mut w);
+        let (w, s) = world("net:roundabout?r=15&d=5&len=200");
         assert!(s.to_string().contains("kerb_gap=0/"), "{s}");
         let k = w.kerb.as_ref().unwrap();
         let carriageway = &w.surface.as_ref().unwrap().carriageway;
@@ -1128,8 +1118,7 @@ pub(crate) mod tests {
 
     #[test]
     fn far_ways_and_crossings_do_not_attach() {
-        let mut w = world("net:sidewalk?d=12&len=100");
-        let s = run(&mut w);
+        let (w, s) = world("net:sidewalk?d=12&len=100");
         assert!(s.to_string().contains("runs=0"), "{s}");
         let k = w.kerb.as_ref().unwrap();
         let walk = &w.surface.as_ref().unwrap().walk;
@@ -1137,8 +1126,7 @@ pub(crate) mod tests {
         // A crosswalk stub attaches to the road it crosses on distance
         // alone: a run of its own, from kerb to kerb, beside the four
         // sidewalk halves'.
-        let mut w = world("net:crossing?d=6&len=100");
-        let s = run(&mut w);
+        let (w, s) = world("net:crossing?d=6&len=100");
         assert!(s.to_string().contains("runs=5"), "{s}");
         assert!(s.to_string().contains("landed=0"), "{s}");
         let k = w.kerb.as_ref().unwrap();

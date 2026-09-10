@@ -31,7 +31,7 @@ use std::collections::{HashMap, HashSet};
 use crate::poly;
 use crate::step::Summary;
 use crate::structure::TUNNEL_HEIGHT_M;
-use crate::world::{Kind, Polyline2, Profile, Roads, Solved, Span, Way, World};
+use crate::world::{Kind, Polyline2, Profile, Profiles, Roads, Solved, Span, Way};
 
 /// Ground cover a bore keeps between its roof and the surface above it, in
 /// metres: enough that what rides over it has something to ride on.
@@ -62,9 +62,8 @@ pub const MIN_STRUCTURE_M: f64 = 40.0;
 pub const SHORT_STRUCTURE_DIP_M: f64 = 3.0;
 
 /// Cuts every way of the world at its span boundaries.
-pub fn run(world: &mut World) -> Summary {
-    let mut ways =
-        std::mem::take(&mut world.roads.as_mut().expect("the drape step runs first").ways);
+pub fn run(roads: &mut Roads, mut solved: Option<&mut Profiles>) -> Summary {
+    let mut ways = std::mem::take(&mut roads.ways);
     let annotated: Vec<Vec<Span>> = ways.iter().map(|w| w.spans.clone()).collect();
 
     // **The cut follows the geometry.** Every way's span table is replaced by
@@ -73,7 +72,7 @@ pub fn run(world: &mut World) -> Summary {
     // span truth and every consumer reads it.
     let over = crossed(&ways);
     let solving = crate::reference::solving_of(&ways);
-    let profiles = world.profile.as_ref().map(|s| s.profiles.as_slice());
+    let profiles = solved.as_ref().map(|s| s.profiles.as_slice());
     let derived: Vec<Vec<Span>> =
         profiles.map(|ps| ps.iter().map(derive).collect()).unwrap_or_default();
     let (mut found, mut lost, mut moved) = (0usize, 0usize, 0.0f64);
@@ -124,7 +123,7 @@ pub fn run(world: &mut World) -> Summary {
     // The per-station verdict is recomputed with them: a station the trim
     // freed is at grade now, and one a grow took in is a deck or a bore by
     // the same rule the solve applied (§4.5).
-    if let Some(solved) = world.profile.as_mut() {
+    if let Some(solved) = solved.as_deref_mut() {
         for (n, &w) in solving.iter().enumerate() {
             let Some(p) = solved.profiles.get_mut(n) else {
                 continue;
@@ -178,7 +177,6 @@ pub fn run(world: &mut World) -> Summary {
         .with("lost", lost)
         .with("witnessed", witnessed)
         .with("moved_m", format!("{moved:.0}"));
-    let roads = world.roads.as_mut().expect("the drape step runs first");
     roads.ways = ways;
     roads.plan = plan;
     roads.spans = spans;
@@ -676,31 +674,27 @@ pub fn pieces(roads: &Roads) -> impl Iterator<Item = &Polyline2> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use crate::world::World;
+    use crate::pipeline::tests::{built, plan, upto};
+    use crate::step::Step;
+    
 
-    use crate::terrain::{self, tests::dem};
-    use crate::{drape, world::World};
+    
+    
 
     use super::*;
 
     fn world(net: &str) -> (World, Summary) {
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem("flat?h=400"), 10.0, usize::MAX);
-        drape::run(&mut w, Path::new(net)).expect("the spec parses");
-        let s = run(&mut w);
-        (w, s)
+        // No profile: the cut is then the annotation's own, which is what a
+        // flat specimen is about.
+        let (w, ran) = built("flat?h=400", net, None, 10.0, &plan(Step::Partition));
+        (w, ran.last())
     }
 
     /// A world built to the partition step, heights and all.
     fn solved(ground: &str, net: &str) -> (World, Summary) {
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem(ground), 5.0, usize::MAX);
-        drape::run(&mut w, Path::new(net)).expect("the spec parses");
-        crate::reference::run(&mut w);
-        crate::profile::run(&mut w);
-        crate::crossing::run(&mut w);
-        let s = run(&mut w);
-        (w, s)
+        let (w, ran) = built(ground, net, None, 5.0, &upto(Step::Partition));
+        (w, ran.last())
     }
 
     /// The one derived run of a single-way specimen.

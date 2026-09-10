@@ -2,22 +2,23 @@
 
 use arpentry_server::project::Bounds;
 
-use crate::frame::{Frame, Rect};
+use crate::frame::Extent;
 use crate::grid::Grid;
 use crate::poly::{self, Shapes};
 use crate::width::Family;
 
-/// The world for one bounding box. Every layer is `None` until its step has
-/// run; a step reads the layers before it and fills its own.
+/// The world for one bounding box: the layers the steps build, each `None`
+/// until its step has run.
+///
+/// It is a record, not an object. No step reads it — every step takes the
+/// layers it needs as arguments and returns the one it makes — so the only
+/// code that knows what a layer depends on is [`crate::pipeline`], whose job
+/// that is, and the only code that reads a *partial* world is the two
+/// renderers, which draw whatever has been built.
 #[derive(Debug)]
 pub struct World {
-    /// The bounding box the world was asked for, in degrees. Never inferred
-    /// from the data: a cut zone holds the zone plus a margin.
-    pub bbox: Bounds,
-    /// The local metric frame, centred on the bbox.
-    pub frame: Frame,
-    /// The bbox in the local frame.
-    pub rect: Rect,
+    /// The patch of earth this world is.
+    pub extent: Extent,
     pub terrain: Option<Terrain>,
     pub roads: Option<Roads>,
     pub reference: Option<Reference>,
@@ -36,12 +37,8 @@ pub struct World {
 
 impl World {
     pub fn new(bbox: Bounds) -> World {
-        let frame = Frame::centred(&bbox);
-        let rect = frame.rect(&bbox);
         World {
-            bbox,
-            frame,
-            rect,
+            extent: Extent::of(bbox),
             terrain: None,
             roads: None,
             reference: None,
@@ -601,52 +598,31 @@ pub struct Structure {
     pub piers: Vec<Shapes>,
 }
 
-static NONE: Shapes = Vec::new();
-
-impl World {
-    /// What the buildings refuse: empty before the facade step, and empty
-    /// when no building input was given — open ground everywhere, so no
-    /// step branches on whether buildings were read.
-    pub fn solid(&self) -> &Shapes {
-        self.facade.as_ref().map(|f| &f.solid).unwrap_or(&NONE)
-    }
-
-    /// The building footprints, on the same terms as [`World::solid`].
-    pub fn walls(&self) -> &Shapes {
-        self.facade.as_ref().map(|f| &f.footprints).unwrap_or(&NONE)
-    }
-
-    /// What the asphalt keeps out of: the solid with its pockets, on the
-    /// same terms as [`World::solid`].
-    pub fn built(&self) -> &Shapes {
-        self.facade.as_ref().map(|f| &f.built).unwrap_or(&NONE)
-    }
-
-    /// The latest walk surface: the pavement once the kerb step has run,
-    /// re-cut once the fillet has, the plain union before either.
-    pub fn walk(&self) -> Option<&Shapes> {
-        self.room
-            .as_ref()
-            .map(|r| &r.pavement)
-            .or_else(|| self.fillet.as_ref().map(|f| &f.pavement))
-            .or_else(|| self.kerb.as_ref().map(|k| &k.pavement))
-            .or_else(|| self.surface.as_ref().map(|s| &s.walk))
-    }
-
-    /// The latest carriageway: filleted once the fillet step has run.
-    pub fn carriageway(&self) -> Option<&Shapes> {
-        self.fillet.as_ref().map(|f| &f.carriageway).or_else(|| self.surface.as_ref().map(|s| &s.carriageway))
-    }
-
-    /// `raw` as a carriageway: the buildings win, at the closed facade.
+impl Facade {
+    /// `raw` as a carriageway: the buildings win, at the **closed** facade,
+    /// so the asphalt's edge does not follow every notch of an outline.
     pub fn asphalt(&self, raw: &Shapes) -> Shapes {
-        poly::difference(raw, self.built())
+        poly::difference(raw, &self.built)
     }
 
     /// `raw` as a pavement beside `carriageway`: the asphalt wins, and the
-    /// walls win. Every step that draws a pavement finishes it here, so
-    /// no two can disagree about where the kerb is or where a wall stands.
+    /// walls win. Every step that draws a pavement finishes it here, so no
+    /// two can disagree about where the kerb is or where a wall stands.
     pub fn pavement(&self, raw: &Shapes, carriageway: &Shapes) -> Shapes {
-        poly::difference(&poly::difference(raw, carriageway), self.solid())
+        poly::difference(&poly::difference(raw, carriageway), &self.solid)
     }
+}
+
+/// The paved surface as it stands: the two families, whichever step laid
+/// them last.
+///
+/// The four steps that read a finished surface — the room, the mesh, the
+/// bench and the structure — take one of these, so each reads the surface
+/// it was handed rather than asking a world which of four layers is the
+/// latest. Which one it is handed is [`crate::pipeline`]'s to know, and it
+/// is written there as a literal.
+#[derive(Debug, Clone, Copy)]
+pub struct Paving<'a> {
+    pub carriageway: &'a Shapes,
+    pub walk: &'a Shapes,
 }

@@ -43,7 +43,7 @@ use std::collections::HashMap;
 use crate::poly;
 use crate::step::Summary;
 use crate::width::{self, Family};
-use crate::world::{connector, Polyline2, Ribbon, Ribbons, World};
+use crate::world::{connector, Polyline2, Ribbon, Ribbons, Roads};
 
 /// Two ways leaving a point at least this far apart, in degrees, run
 /// through it as one: a sidewalk cut at a crossing's connector. Less is a
@@ -56,8 +56,7 @@ pub const THROUGH_MIN_DEG: f64 = 135.0;
 type Leaving = HashMap<(i64, i64), Vec<(usize, [f64; 2])>>;
 
 /// Buffers every way of the world's network.
-pub fn run(world: &mut World) -> Summary {
-    let roads = world.roads.as_ref().expect("the drape step runs first");
+pub fn run(roads: &Roads) -> (Ribbons, Summary) {
     let mut out = Ribbons::default();
     let (mut contours, mut vertices, mut squared) = (0usize, 0usize, 0usize);
     let mut area = [0.0f64; 2];
@@ -89,8 +88,7 @@ pub fn run(world: &mut World) -> Summary {
         .with("squared_ends", squared)
         .with("carriageway_m2", format!("{:.0}", area[Family::Carriageway as usize]))
         .with("walk_m2", format!("{:.0}", area[Family::Walk as usize]));
-    world.ribbons = Some(out);
-    summary
+    (out, summary)
 }
 
 /// How many carriageway ends lie at each connector.
@@ -163,38 +161,28 @@ fn joins_at(leaving: &Leaving, p: [f64; 2], w: usize) -> bool {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::world::World;
+    use crate::pipeline::{self, tests::plan};
+    use crate::step::Step;
 
-    use crate::drape;
-    use crate::terrain::{self, tests::dem};
+    
+    
 
     use super::*;
 
-    /// A flat world with the network of `spec` and no buildings.
-    pub(crate) fn world(spec: &str) -> World {
-        built(spec, None)
-    }
-
-    /// A flat world with the network of `spec` and the buildings of `house`.
-    pub(crate) fn housed(spec: &str, house: &str) -> World {
-        built(spec, Some(house))
-    }
-
-    fn built(spec: &str, house: Option<&str>) -> World {
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem("flat"), 100.0, usize::MAX);
-        drape::run(&mut w, std::path::Path::new(spec)).unwrap();
+    /// A flat world with the network of `spec` and no buildings, ribboned.
+    pub(crate) fn world(spec: &str) -> (World, Summary) {
         // The surface steps read the ground pieces, and the partition is what
         // cuts them. On a flat world with no heights to read it is the
-        // annotation's own cut, which is what these specimens want.
-        crate::partition::run(&mut w);
-        crate::facade::run(&mut w, house.map(std::path::Path::new)).unwrap();
-        w
+        // annotation's own cut, which is what these specimens want — so the
+        // vertical steps are left out rather than run over nothing.
+        let (w, ran) = pipeline::tests::built("flat", spec, None, 100.0, &plan(Step::Ribbon));
+        (w, ran.last())
     }
 
     #[test]
     fn a_straight_has_its_area() {
-        let mut w = world("net:straight?len=200");
-        let s = run(&mut w);
+        let (w, s) = world("net:straight?len=200");
         let r = w.ribbons.as_ref().unwrap();
         assert_eq!(r.ribbons.len(), 1);
         assert_eq!(r.ribbons[0].family, Family::Carriageway);
@@ -207,8 +195,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_sidewalk_is_a_walk_ribbon_at_its_width() {
-        let mut w = world("net:sidewalk?d=6&len=100");
-        run(&mut w);
+        let (w, _) = world("net:sidewalk?d=6&len=100");
         let r = w.ribbons.as_ref().unwrap();
         let walk = r.ribbons.iter().find(|r| r.id == "walk-n").unwrap();
         assert_eq!(walk.family, Family::Walk);
@@ -224,8 +211,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_driveway_ends_flush_against_the_sidewalk() {
-        let mut w = world("net:driveway?d=6&len=100");
-        let s = run(&mut w);
+        let (w, s) = world("net:driveway?d=6&len=100");
         let r = w.ribbons.as_ref().unwrap();
         let drive = r.ribbons.iter().find(|r| r.id == "drive").unwrap();
         // Squared off at the sidewalk's axis, 1.5 m either side, and square
@@ -240,15 +226,13 @@ pub(crate) mod tests {
         assert!(s.to_string().contains("squared_ends=6"), "{s}");
         // Mapped to stop a step short of the sidewalk's axis: flush there
         // too, since no other road ends where it does.
-        let mut w = world("net:driveway?d=6&short=0.7&len=100");
-        let s = run(&mut w);
+        let (w, s) = world("net:driveway?d=6&short=0.7&len=100");
         let drive = w.ribbons.as_ref().unwrap().ribbons.iter().find(|r| r.id == "drive").unwrap();
         assert!(poly::contains(&drive.shape, [1.4, 6.8]));
         assert!(!poly::contains(&drive.shape, [0.0, 6.6]));
         assert!(s.to_string().contains("squared_ends=6"), "{s}");
         // A road meeting other roads keeps its disc: only the four far ends.
-        let mut w = world("net:cross?len=200");
-        let s = run(&mut w);
+        let (_w, s) = world("net:cross?len=200");
         assert!(s.to_string().contains("squared_ends=4"), "{s}");
     }
 
@@ -256,8 +240,7 @@ pub(crate) mod tests {
     fn a_crossing_ends_flush_on_the_sidewalk_it_meets() {
         // The sidewalks are cut at the crossing's connector, as Overture
         // cuts them; the crossing, a walk's 2 m wide, ends on their 2 m band.
-        let mut w = world("net:crossing?d=6&len=100");
-        let s = run(&mut w);
+        let (w, s) = world("net:crossing?d=6&len=100");
         let r = w.ribbons.as_ref().unwrap();
         let crossing = r.ribbons.iter().find(|r| r.id == "crossing").unwrap();
         assert!(!poly::contains(&crossing.shape, [0.0, 6.4]), "no ear past the axis: {s}");
@@ -272,8 +255,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_cross_is_four_ribbons_that_overlap() {
-        let mut w = world("net:cross?len=200");
-        run(&mut w);
+        let (w, _) = world("net:cross?len=200");
         let r = w.ribbons.as_ref().unwrap();
         assert_eq!(r.ribbons.len(), 4);
         assert!(r.ribbons.iter().all(|x| poly::contains(&x.shape, [0.0, 0.0])));

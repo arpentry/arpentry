@@ -76,7 +76,8 @@ use std::collections::HashSet;
 use crate::poly::{self, Pt, Ring, Shapes};
 use crate::step::Summary;
 use crate::terrain::height_at;
-use crate::world::{Bench, Profile, Terrain, Tri, World};
+use crate::frame::Rect;
+use crate::world::{Bench, Mesh, Paving, Profile, Profiles, Terrain, Tri};
 use crate::mesh;
 
 /// How far, in metres, the pavement stands above the carriageway beside
@@ -540,11 +541,14 @@ impl Stats {
 }
 
 /// Lifts the world's room onto the profile, and cuts it into the ground.
-pub fn run(world: &mut World) -> Summary {
+pub fn run(
+    rect: &Rect,
+    terrain: &Terrain,
+    profiles: &Profiles,
+    mesh: &Mesh,
+    paving: Paving,
+) -> (Bench, Summary) {
     let (bench, stats, axes, earth) = {
-        let terrain = world.terrain.as_ref().expect("the terrain step runs first");
-        let profiles = world.profile.as_ref().expect("the profile step runs first");
-        let mesh = world.mesh.as_ref().expect("the mesh step runs first");
         let field = Field::new(&profiles.profiles);
         // The asphalt is the road: it takes the whole of its own height
         // wherever it reaches. Only the walk beside it is asked how far
@@ -559,8 +563,7 @@ pub fn run(world: &mut World) -> Summary {
         // The ground answers. The outline is the room's own boundary and
         // its heights are read off the room's mesh, vertex for vertex, so
         // the two meet at the seam rather than near it.
-        let none = Shapes::new();
-        let outline = poly::union_of(&[world.carriageway().unwrap_or(&none), world.walk().unwrap_or(&none)]);
+        let outline = poly::union_of(&[paving.carriageway, paving.walk]);
         let natural = |p: Pt| height_at(terrain, p[0], p[1]);
         // Before `seam` the binding shadows `seam` the function.
         let pave = seam(&[&p]);
@@ -594,7 +597,7 @@ pub fn run(world: &mut World) -> Summary {
         let edge = dense(&outline, &terrain.grid);
         let ground = Ground::new(&outline, &terrain.grid, &room, &natural);
         let mut earth = Earth::new(&edge, &ground, &room, &natural, terrain);
-        let cut = poly::difference(&vec![poly::rect(world.rect.x0, world.rect.y0, world.rect.x1, world.rect.y1)], &outline);
+        let cut = poly::difference(&vec![poly::rect(rect.x0, rect.y0, rect.x1, rect.y1)], &outline);
         let (g, gs) = mesh::triangulate(&cut, &terrain.grid, &|q| ground.at(q, natural(q)));
 
         earth.triangles = g.indices.len() / 3;
@@ -639,8 +642,7 @@ pub fn run(world: &mut World) -> Summary {
         .with_share("touched", earth.touched, earth.lattice)
         .with("off", format!("{:.1e}", earth.off))
         .with("lossy", earth.lossy);
-    world.bench = Some(bench);
-    summary
+    (bench, summary)
 }
 
 /// Below this height, in metres, a step between the room and the ground
@@ -1012,35 +1014,22 @@ fn lift(tri: &Tri, field: &Field, rise: f64, walk: bool) -> (Tri, Stats) {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::path::Path;
+    use crate::world::World;
+    use crate::pipeline::tests::{built, upto};
+    use crate::step::Step;
+    
 
-    use crate::terrain::{self, tests::dem};
+    
     use crate::world::Solved;
-    use crate::{
-        crossing, drape, facade, fillet, kerb, mesh, profile, reference, ribbon, room, surface,
-    };
+    
 
     use super::*;
 
     /// A world on `ground` with the network of `net` and the buildings of
     /// `houses`, meshed and benched.
     pub(crate) fn world(ground: &str, net: &str, houses: Option<&str>) -> (World, Summary) {
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem(ground), 5.0, usize::MAX);
-        drape::run(&mut w, Path::new(net)).unwrap();
-        reference::run(&mut w);
-        profile::run(&mut w);
-        crossing::run(&mut w);
-        crate::partition::run(&mut w);
-        facade::run(&mut w, houses.map(Path::new)).unwrap();
-        ribbon::run(&mut w);
-        surface::run(&mut w);
-        kerb::run(&mut w);
-        fillet::run(&mut w);
-        room::run(&mut w);
-        mesh::run(&mut w);
-        let s = run(&mut w);
-        (w, s)
+        let (w, ran) = built(ground, net, houses, 5.0, &upto(Step::Bench));
+        (w, ran.last())
     }
 
     fn bench(w: &World) -> &Bench {
@@ -1145,7 +1134,7 @@ pub(crate) mod tests {
         let (w, s) = world("ramp?grade=0.3&bearing=90&radius=100000", "net:straight?len=200", None);
         assert!(s.num("cut") < 1e-9 && s.num("fill") < 1e-9, "{s}");
         let b = bench(&w);
-        let t = w.terrain.as_ref().unwrap();
+        let t = w.terrain.as_ref().expect("the terrain step ran");
         for p in &b.carriageway.positions {
             assert!((p[2] - crate::terrain::height_at(t, p[0], p[1])).abs() < 1e-9, "{p:?}");
         }
@@ -1213,7 +1202,7 @@ pub(crate) mod tests {
         let (w, s) = world("hill?amp=60&radius=400", "net:cross?len=400", None);
         assert_eq!(s.num("step"), 0.0, "{s}");
         let b = bench(&w);
-        let t = w.terrain.as_ref().unwrap();
+        let t = w.terrain.as_ref().expect("the terrain step ran");
         let centre: Vec<f64> =
             b.carriageway.positions.iter().filter(|p| p[0].hypot(p[1]) < 1.0).map(|p| p[2]).collect();
         assert!(!centre.is_empty());
@@ -1227,8 +1216,10 @@ pub(crate) mod tests {
         let natural = move |p: Pt| crate::terrain::height_at(terrain, p[0], p[1]);
         let b = w.bench.as_ref().unwrap();
         let seam = seam(&[&b.carriageway, &b.pavement]);
-        let none = Shapes::new();
-        let outline = poly::union_of(&[w.carriageway().unwrap_or(&none), w.walk().unwrap_or(&none)]);
+        let outline = poly::union_of(&[
+            &w.fillet.as_ref().expect("the fillet step ran").carriageway,
+            &w.room.as_ref().expect("the room step ran").pavement,
+        ]);
         let room = |q: Pt| at(&seam, q).unwrap_or_else(|| natural(q));
         (Ground::new(&outline, &terrain.grid, &room, &natural), natural)
     }
@@ -1292,7 +1283,7 @@ pub(crate) mod tests {
         let (w, s) = world("ramp?grade=0.3&bearing=0&radius=100000", "net:sidewalk?d=6", None);
         let b = w.bench.as_ref().unwrap();
         assert!(!b.ground.indices.is_empty());
-        let inside = poly::Indexed::new(w.carriageway().unwrap());
+        let inside = poly::Indexed::new(&w.fillet.as_ref().expect("the fillet step ran").carriageway);
         let n = b
             .ground
             .indices

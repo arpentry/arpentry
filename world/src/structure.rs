@@ -58,7 +58,7 @@ use crate::profile::densify;
 use crate::step::Summary;
 use crate::terrain::height_at;
 use crate::width::{self, Family};
-use crate::world::{connector, Kind, Solved, Station, Structure, Terrain, Tri, World};
+use crate::world::{connector, Kind, Profiles, Roads, Solved, Station, Structure, Terrain, Tri};
 
 /// How thick a road deck is, in metres
 /// (`data/plans/surface-leaves-the-plane-2026-09-08.md` §5): the slab, its
@@ -170,12 +170,13 @@ pub struct Stats {
 }
 
 /// Builds every structure the profile implies.
-pub fn run(world: &mut World) -> Summary {
+pub fn run(
+    terrain: &Terrain,
+    roads: &Roads,
+    profiles: &Profiles,
+    carriageway: &Shapes,
+) -> (Structure, Summary) {
     let (structure, stats) = {
-        let terrain = world.terrain.as_ref().expect("the terrain step runs first");
-        let profiles = world.profile.as_ref().expect("the profile step runs first");
-        let roads = world.roads.as_ref().expect("the drape step runs first");
-
         // One span per *structure run* of a way, not per profile: a way is
         // one object now and may carry several decks along its length.
         // A run **plus its abutments**: the boundary stations belong to the
@@ -235,7 +236,7 @@ pub fn run(world: &mut World) -> Summary {
         // What a pier may not stand in. Empty before the surface steps
         // have run, which is what `--until structure` on a bare network
         // gives: then no foot is refused and none needs to be.
-        let road = poly::Indexed::new(world.carriageway().unwrap_or(&Vec::new()));
+        let road = poly::Indexed::new(carriageway);
 
         let mut s = Structure::default();
         let mut stats = Stats { spans: spans.len(), clear: f64::INFINITY, cover: f64::INFINITY, ..Stats::default() };
@@ -349,8 +350,7 @@ pub fn run(world: &mut World) -> Summary {
         .with("cover", finite(stats.cover))
         .with("open", stats.open)
         .with("abutment", format!("{:.3}", stats.abutment));
-    world.structure = Some(structure);
-    summary
+    (structure, summary)
 }
 
 /// A pedestrian span, fitted: a chord between the ground at its two ends,
@@ -646,38 +646,24 @@ fn plan(span: &Span) -> (Kind, Shapes) {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use crate::world::World;
+    use crate::pipeline::tests::{built, upto};
+    use crate::step::Step;
+    
 
-    use crate::terrain::{self, tests::dem};
-    use crate::{
-        bench, crossing, drape, facade, fillet, kerb, mesh, profile, reference, ribbon, room, surface,
-    };
+    
+    
 
     use super::*;
 
     /// A world on `ground` with the network of `net`, built to the end.
     fn world(ground: &str, net: &str) -> (World, Summary) {
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem(ground), 5.0, usize::MAX);
-        drape::run(&mut w, Path::new(net)).unwrap();
-        reference::run(&mut w);
-        profile::run(&mut w);
-        crossing::run(&mut w);
-        crate::partition::run(&mut w);
-        facade::run(&mut w, None).unwrap();
-        ribbon::run(&mut w);
-        surface::run(&mut w);
-        kerb::run(&mut w);
-        fillet::run(&mut w);
-        room::run(&mut w);
-        mesh::run(&mut w);
-        bench::run(&mut w);
-        let s = run(&mut w);
-        (w, s)
+        let (w, ran) = built(ground, net, None, 5.0, &upto(Step::Structure));
+        (w, ran.last())
     }
 
-    fn built(w: &World) -> &Structure {
-        w.structure.as_ref().unwrap()
+    fn structure(w: &World) -> &Structure {
+        w.structure.as_ref().expect("the structure step ran")
     }
 
     #[test]
@@ -708,10 +694,10 @@ mod tests {
         // over the valley floor, which is 60 m under the rim the chord
         // runs between.
         assert!(s.num("clear") > 0.0, "{s}");
-        let t = w.terrain.as_ref().unwrap();
+        let t = w.terrain.as_ref().expect("the terrain step ran");
         let mid = crate::terrain::height_at(t, 0.0, 0.0);
         assert_eq!(s.num("abutment"), 0.0, "the deck does not land where the road is: {s}");
-        let b = built(&w);
+        let b = structure(&w);
         assert!(!b.roadway.indices.is_empty() && !b.deck.indices.is_empty() && b.bore.indices.is_empty());
         let deck_z = b.roadway.positions.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max);
         assert!(deck_z - DECK_THICKNESS_M - mid > 4.0, "over the floor it clears {}", deck_z - mid);
@@ -742,7 +728,7 @@ mod tests {
         assert_eq!(s.num("grounded"), 0.0, "{s}");
         assert!(s.num("cover") > 0.0, "{s}");
         assert_eq!(s.num("abutment"), 0.0, "{s}");
-        let b = built(&w);
+        let b = structure(&w);
         assert!(!b.bore.indices.is_empty() && b.deck.indices.is_empty());
         let road = b.roadway.positions.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max);
         let crown = b.bore.positions.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max);
@@ -750,7 +736,7 @@ mod tests {
         // The portals stand 160 m out on the flank, where the hill is
         // 26.9 m up; the crest is 60 m up. So the chord runs level under
         // 33 m of hill and the crown is some 28 m under the crest.
-        let t = w.terrain.as_ref().unwrap();
+        let t = w.terrain.as_ref().expect("the terrain step ran");
         let cover = crate::terrain::height_at(t, 0.0, 0.0) - crown;
         assert!((cover - 28.1).abs() < 0.2, "{cover}");
     }
@@ -765,7 +751,7 @@ mod tests {
         assert_eq!(s.num("decks"), 0.0, "{s}");
         assert_eq!(s.num("bores"), 0.0, "{s}");
         assert!((s.num("roadway_m2") - 660.0).abs() < 1.0, "{s}");
-        let b = built(&w);
+        let b = structure(&w);
         assert!(b.deck.indices.is_empty() && b.bore.indices.is_empty());
         assert!(b.roadway.positions.iter().all(|p| (p[2] - 400.0).abs() < 1e-9));
     }
@@ -780,7 +766,7 @@ mod tests {
         let (w, s) = world("hill?amp=-60&radius=300", "net:sidewalk?d=6&span=0.35,0.65");
         assert_eq!(s.num("carried"), 1.0, "{s}");
         assert_eq!(s.num("decks"), 1.0, "the walk built a second bridge: {s}");
-        let b = built(&w);
+        let b = structure(&w);
         // Both are paved, and the walk's paving stands one kerb over the
         // road's, all the way along.
         let of = |lo: f64, hi: f64| -> Vec<f64> {
@@ -810,7 +796,7 @@ mod tests {
         let (w, s) = world("hill?amp=-60&radius=300", "net:sidewalk?d=40&span=0.35,0.65&len=400");
         assert_eq!(s.num("carried"), 0.0, "{s}");
         assert_eq!(s.num("decks"), 2.0, "the road and the footbridge both fly: {s}");
-        let b = built(&w);
+        let b = structure(&w);
         // Two thicknesses in one mesh: 1.5 m under the road, 0.4 m under
         // the walk. Each chord tilts by a millimetre over its 120 m,
         // because the lattice is not symmetric about the origin and the
@@ -888,8 +874,8 @@ mod tests {
         assert!(s.num("seat") <= DECK_THICKNESS_M - STRUCTURE_MIN_M + 1e-9, "{s}");
         // And the block touches: the lowest point of the solid is on the
         // ground under it, not in it.
-        let t = w.terrain.as_ref().unwrap();
-        for p in &built(&w).deck.positions {
+        let t = w.terrain.as_ref().expect("the terrain step ran");
+        for p in &structure(&w).deck.positions {
             assert!(p[2] >= crate::terrain::height_at(t, p[0], p[1]) - 1e-6, "buried at {p:?}");
         }
     }
@@ -907,8 +893,8 @@ mod tests {
         assert_eq!(s.num("buried"), 0.0, "{s}");
         assert_eq!(s.num("piers"), 0.0, "an embankment needs no pier: {s}");
         assert!(s.get("blocks").unwrap().ends_with("(100.00%)"), "not every station is a block: {s}");
-        let t = w.terrain.as_ref().unwrap();
-        for p in &built(&w).deck.positions {
+        let t = w.terrain.as_ref().expect("the terrain step ran");
+        for p in &structure(&w).deck.positions {
             assert!(p[2] >= crate::terrain::height_at(t, p[0], p[1]) - 1e-6, "buried at {p:?}");
         }
     }
@@ -922,11 +908,11 @@ mod tests {
         assert_eq!(s.num("piers"), 4.0, "{s}");
         assert_eq!(s.num("skipped"), 0.0, "nothing to stand in: {s}");
         assert!(s.num("pier") > PIER_MIN_M, "{s}");
-        let b = built(&w);
+        let b = structure(&w);
         // Each pier is a closed box of 24 vertices, PIER_M square.
         assert_eq!(b.pier.positions.len(), 4 * 24);
         assert_eq!(b.piers.len(), 4);
-        let t = w.terrain.as_ref().unwrap();
+        let t = w.terrain.as_ref().expect("the terrain step ran");
         let mut xs: Vec<f64> = Vec::new();
         for k in 0..4 {
             let blk = &b.pier.positions[k * 24..(k + 1) * 24];
@@ -974,7 +960,7 @@ mod tests {
     fn the_structures_are_a_function_of_the_world() {
         let (a, _) = world("hill?amp=-60&radius=300", "net:straight?len=400&span=0.35,0.65");
         let (b, _) = world("hill?amp=-60&radius=300", "net:straight?len=400&span=0.35,0.65");
-        assert_eq!(built(&a).roadway.positions, built(&b).roadway.positions);
-        assert_eq!(built(&a).deck.indices, built(&b).deck.indices);
+        assert_eq!(structure(&a).roadway.positions, structure(&b).roadway.positions);
+        assert_eq!(structure(&a).deck.indices, structure(&b).deck.indices);
     }
 }

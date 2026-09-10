@@ -37,15 +37,14 @@
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use crate::pipeline::tests::{built, upto};
+    use crate::step::Step;
+    
 
     use crate::step::Summary;
-    use crate::terrain::{self, tests::dem};
-    use crate::world::World;
-    use crate::{
-        bench, crossing, drape, facade, fillet, kerb, mesh, profile, reference, ribbon, room,
-        structure, surface,
-    };
+    
+    
+    
 
     /// The width of a `residential` way, in metres: what a roadway area is
     /// divided by to read back a length.
@@ -64,23 +63,12 @@ mod tests {
 
     /// A world on `ground` with the network of `net`, built to the end.
     fn run(ground: &str, net: &str) -> Ran {
-        let mut w: World = terrain::tests::world();
-        terrain::run(&mut w, &mut dem(ground), 5.0, usize::MAX);
-        drape::run(&mut w, Path::new(net)).expect("the spec parses");
-        reference::run(&mut w);
-        let profile = profile::run(&mut w);
-        crossing::run(&mut w);
-        crate::partition::run(&mut w);
-        facade::run(&mut w, None).expect("no buildings");
-        ribbon::run(&mut w);
-        surface::run(&mut w);
-        kerb::run(&mut w);
-        fillet::run(&mut w);
-        room::run(&mut w);
-        mesh::run(&mut w);
-        let bench = bench::run(&mut w);
-        let structure = structure::run(&mut w);
-        Ran { profile, bench, structure }
+        let (_, ran) = built(ground, net, None, 5.0, &upto(Step::Structure));
+        Ran {
+            profile: ran.of(Step::Profile),
+            bench: ran.of(Step::Bench),
+            structure: ran.of(Step::Structure),
+        }
     }
 
     /// The length of roadway the structure step swept, in metres.

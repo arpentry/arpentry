@@ -10,9 +10,15 @@
 //! one more layer — testable on synthetic ground where its output is an
 //! assertion rather than a distribution.
 //!
-//! The steps run in a fixed order ([`step::Step::ALL`]) and the result is
-//! written as a binary glTF ([`gltf::write_glb`]) whose bytes are a function of
-//! the inputs alone, so two runs can be compared with `cmp`.
+//! Each step is a plain function of the layers it reads
+//! (`fn run(inputs…) -> (Layer, Summary)`), so its signature is the whole of
+//! its interface: nothing reaches into a shared world, and nothing can start
+//! depending on a neighbour without the change showing up in one place.
+//! That one place is [`pipeline`], which owns the order ([`step::Step::ALL`])
+//! and the wiring; [`world::World`] is the record the layers land in, read
+//! only by the two renderers. The result is written as a binary glTF
+//! ([`gltf::write_glb`]) whose bytes are a function of the inputs alone, so
+//! two runs can be compared with `cmp`.
 //!
 //! Only the source readers are borrowed from the server crate: the DEM, the
 //! GeoParquet reader and the bbox type. When the world is good, the tiler
@@ -32,6 +38,7 @@ pub mod kerb;
 pub mod mesh;
 pub mod net;
 pub mod partition;
+pub mod pipeline;
 pub mod poly;
 pub mod profile;
 pub mod reference;

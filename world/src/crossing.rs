@@ -63,7 +63,7 @@ use crate::profile;
 use crate::step::Summary;
 use crate::structure::{DECK_THICKNESS_M, TUNNEL_HEIGHT_M, WALK_DECK_M};
 use crate::width::{self, Family};
-use crate::world::{connector, Crossing, Crossings, Kind, Profile, Way, World};
+use crate::world::{connector, Crossing, Crossings, Kind, Profile, Profiles, Reference, Roads, Way};
 
 /// The headroom a roadway needs over the roadway beneath it, in metres:
 /// the Swiss norm's 4.5 m plus a construction margin, and the server's
@@ -95,11 +95,7 @@ const CLEARANCE_EPS: f64 = 1e-6;
 pub const MAX_CLEARANCE_LIFT_M: f64 = 15.0;
 
 /// Builds the floor every crossing demands and re-solves the profile on it.
-pub fn run(world: &mut World) -> Summary {
-    let roads = world.roads.as_ref().expect("the drape step runs first");
-    let reference = world.reference.as_ref().expect("the reference step runs first");
-    let solved = world.profile.as_ref().expect("the profile step runs first");
-
+pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossings, Profiles, Summary) {
     // A piece knows which way it was cut from; the profile step solved a
     // subset of the ways, in order. So a piece's profile is a lookup, not a
     // parallel walk — which is what lets the crossings be found on the
@@ -284,9 +280,7 @@ pub fn run(world: &mut World) -> Summary {
         .with_share("ramped", spent, stations)
         .with_share("clearance", short.len(), crossings.len() - unstacked)
         .with("short", format!("{:.2}", short.iter().fold(0.0f64, |m, s| m.max(*s))));
-    world.crossing = Some(Crossings { crossings, same, floor });
-    world.profile = Some(crate::world::Profiles { profiles });
-    summary
+    (Crossings { crossings, same, floor }, Profiles { profiles }, summary)
 }
 
 /// One axis in the crossing search: a carriageway piece, whatever its
@@ -668,11 +662,14 @@ pub(crate) fn cross(a: Pt, b: Pt, c: Pt, d: Pt) -> Option<Pt> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use crate::world::World;
+    use crate::pipeline::tests::{bbox, built, upto};
+    use crate::step::Step;
+    
 
-    use crate::reference;
-    use crate::drape;
-    use crate::terrain::{self, tests::dem};
+    
+    
+    use crate::terrain::{self, tests::{dem, extent}};
     use crate::world::Solved;
 
     use super::*;
@@ -680,13 +677,8 @@ mod tests {
     /// A world on the ground of `terrain_spec` with the network of `net`,
     /// profiled and crossed.
     fn world(terrain_spec: &str, net: &str) -> (World, Summary) {
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem(terrain_spec), 5.0, usize::MAX);
-        drape::run(&mut w, Path::new(net)).unwrap();
-        reference::run(&mut w);
-        profile::run(&mut w);
-        let s = run(&mut w);
-        (w, s)
+        let (w, ran) = built(terrain_spec, net, None, 5.0, &upto(Step::Crossing));
+        (w, ran.last())
     }
 
     /// The stations of `id`'s run of kind `mapped`. A way is one profile
@@ -833,8 +825,10 @@ mod tests {
         // Overture cuts a way at every connector, so this cannot come out
         // of the reader: it is a data error, and the step says so rather
         // than inventing a separation the source did not order.
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem("flat"), 5.0, usize::MAX);
+        let (ground, _) = terrain::run(&extent(), &mut dem("flat"), 5.0, usize::MAX);
+        let mut w = World::new(bbox());
+        w.terrain = Some(ground);
+
         // Two whole ways, cut by the partition step as the reader's would
         // be: a piece has to know which way it came from for the crossing
         // step to find the profile it was solved into.
@@ -853,13 +847,14 @@ mod tests {
             ],
             ..Default::default()
         });
-        reference::run(&mut w);
-        profile::run(&mut w);
-        let s = run(&mut w);
+        let roads = w.roads.as_mut().expect("just set");
+        let (reference, _) = crate::reference::run(w.terrain.as_ref().expect("just set"), roads);
+        let (profiles, _) = crate::profile::run(roads, &reference);
+        let (crossings, _, s) = run(roads, &reference, &profiles);
         assert_eq!(s.num("crossings"), 0.0, "{s}");
         assert_eq!(s.num("same"), 1.0, "{s}");
         assert_eq!(s.num("ramped"), 0.0, "{s}");
-        assert_eq!(w.crossing.as_ref().unwrap().same, vec![[0.0, 0.0]]);
+        assert_eq!(crossings.same, vec![[0.0, 0.0]]);
     }
 
     /// **Where the tags and the geometry disagree by more than a crossing

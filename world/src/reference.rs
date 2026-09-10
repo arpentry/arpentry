@@ -52,7 +52,7 @@ use crate::profile::densify_at;
 use crate::step::Summary;
 use crate::terrain::height_at;
 use crate::width::{self, Family};
-use crate::world::{connector, Kind, Reference, Roads, Span, Terrain, Way, World};
+use crate::world::{connector, Kind, Reference, Roads, Span, Terrain, Way};
 
 /// Widest DEM notch, in metres of arc, that a road is assumed to span on
 /// engineered fill rather than dive through. Gullies, stream cuts and shadow
@@ -115,9 +115,7 @@ pub fn solving_of(ways: &[Way]) -> Vec<usize> {
 }
 
 /// Builds the reference surface along every solving axis of the world.
-pub fn run(world: &mut World) -> Summary {
-    let terrain = world.terrain.as_ref().expect("the terrain step runs first");
-    let roads = world.roads.as_mut().expect("the drape step runs first");
+pub fn run(terrain: &Terrain, roads: &mut Roads) -> (Reference, Summary) {
     let ways = solving(roads);
     let Reference { axes } = of(&ways, terrain);
     // **The terrain's own priors, applied.** A refused notch is a slot the
@@ -180,8 +178,7 @@ pub fn run(world: &mut World) -> Summary {
         .with("off", format!("{off_max:.2}"))
         .with("junction", format!("{was:.3}->{:.3}", disagreement(&axes)))
         .with("promoted", promoted);
-    world.reference = Some(Reference { axes });
-    summary
+    (Reference { axes }, summary)
 }
 
 /// The terrain's refused notches written into the ways as bridge priors, and
@@ -767,20 +764,16 @@ fn window_fold(arc: &[f64], h: &[f64], r: f64, fold: fn(f64, f64) -> f64) -> Vec
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
-    use crate::terrain::{self, tests::dem};
-    use crate::{drape, world::World};
+    use crate::pipeline::tests::{built, upto};
+    use crate::step::Step;
+    use crate::world::World;
 
     use super::*;
 
     /// A world on `ground` with the network of `net`, referenced.
     fn world(ground: &str, net: &str) -> (World, Summary) {
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem(ground), 5.0, usize::MAX);
-        drape::run(&mut w, Path::new(net)).expect("the spec parses");
-        let s = run(&mut w);
-        (w, s)
+        let (w, ran) = built(ground, net, None, 5.0, &upto(Step::Reference));
+        (w, ran.last())
     }
 
     /// The one axis of a single-way specimen.
@@ -1077,7 +1070,8 @@ mod tests {
     fn the_reference_is_a_function_of_the_world() {
         let (mut w, _) = world("hill?amp=60&radius=400", "net:cross");
         let first = w.reference.clone().expect("built");
-        run(&mut w);
-        assert_eq!(Some(first), w.reference);
+        let terrain = w.terrain.clone().expect("built");
+        let (again, _) = run(&terrain, w.roads.as_mut().expect("built"));
+        assert_eq!(first, again);
     }
 }

@@ -46,7 +46,7 @@ use std::collections::HashMap;
 use crate::grade::{self, STRUCTURE_MIN_M};
 use crate::step::Summary;
 use crate::world::{
-    connector, station_runs, Kind, Profile, Profiles, Reference, Solved, Station, Way, World,
+    connector, station_runs, Kind, Profile, Profiles, Reference, Roads, Solved, Station, Way,
 };
 
 /// Forward-and-back passes of the grade limiter. Eight is the server's;
@@ -70,9 +70,7 @@ const BEND_PASSES: usize = 32;
 const GRADE_EPS: f64 = 1e-9;
 
 /// Solves the profile of every carriageway piece of the world.
-pub fn run(world: &mut World) -> Summary {
-    let roads = world.roads.as_ref().expect("the drape step runs first");
-    let reference = world.reference.as_ref().expect("the reference step runs first");
+pub fn run(roads: &Roads, reference: &Reference) -> (Profiles, Summary) {
     let ways = crate::reference::solving(roads);
     let (profiles, loose) = solve(reference, &ways);
 
@@ -195,8 +193,7 @@ pub fn run(world: &mut World) -> Summary {
         .with("dangling", loose.dangling)
         .with("clamped", loose.clamped)
         .with("unanchored", loose.unanchored);
-    world.profile = Some(Profiles { profiles });
-    summary
+    (Profiles { profiles }, summary)
 }
 
 /// What [`solve`] could not anchor: structure pieces with a dangling end,
@@ -749,21 +746,20 @@ pub fn densify(pts: &[[f64; 2]], step: f64) -> Vec<[f64; 2]> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::path::Path;
+    use crate::world::World;
+    use crate::pipeline::tests::{built, upto};
+    use crate::step::Step;
+    
 
-    use crate::drape;
-    use crate::terrain::{self, height_at, tests::dem};
+    
+    use crate::terrain::{self, height_at, tests::{dem, extent}};
 
     use super::*;
 
     /// A world on the ground of `terrain` with the network of `net`, profiled.
     pub(crate) fn world(terrain_spec: &str, net: &str) -> (World, Summary) {
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem(terrain_spec), 5.0, usize::MAX);
-        drape::run(&mut w, Path::new(net)).unwrap();
-        crate::reference::run(&mut w);
-        let s = run(&mut w);
-        (w, s)
+        let (w, ran) = built(terrain_spec, net, None, 5.0, &upto(Step::Profile));
+        (w, ran.last())
     }
 
     fn profiles(w: &World) -> &[Profile] {
@@ -901,7 +897,7 @@ pub(crate) mod tests {
             let chord = h0 + (h1 - h0) * (st.s - s0) / (s1 - s0);
             assert!((st.h - chord).abs() < 1e-9, "{st:?} vs {chord}");
         }
-        let t = w.terrain.as_ref().unwrap();
+        let t = w.terrain.as_ref().expect("the terrain step ran");
         let mid = deck.iter().find(|st| st.p == [0.0, 0.0]).expect("a station at the origin");
         let clearance = mid.h - height_at(t, 0.0, 0.0);
         assert!((clearance - (400.0 - height_at(t, 0.0, 0.0))).abs() < 1e-9 && clearance > 35.0, "{clearance}");
@@ -949,7 +945,7 @@ pub(crate) mod tests {
     #[test]
     fn a_junction_has_one_height() {
         let (w, s) = world("hill?amp=60&radius=400", "net:cross?len=400");
-        let t = w.terrain.as_ref().unwrap();
+        let t = w.terrain.as_ref().expect("the terrain step ran");
         let top = height_at(t, 0.0, 0.0);
         let mut at_origin = 0;
         for p in profiles(&w) {
@@ -968,8 +964,7 @@ pub(crate) mod tests {
     fn a_span_split_at_a_connector_is_one_chord() {
         // Two bridge pieces of 30 m and 10 m between anchors at 400 and
         // 420: the connector between them lies on the one chord, at 415.
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem("ramp?grade=0.5&bearing=90&radius=100000"), 5.0, usize::MAX);
+        let (ground, _) = terrain::run(&extent(), &mut dem("ramp?grade=0.5&bearing=90&radius=100000"), 5.0, usize::MAX);
         // Two ways, each half ground and half bridge, meeting at a
         // structure-only connector at x = 30. Nothing is at grade there, so
         // that connector has no height of its own and the two chords are
@@ -985,7 +980,7 @@ pub(crate) mod tests {
             ]),
         ];
         let refs: Vec<&Way> = ways.iter().collect();
-        let t = w.terrain.as_ref().unwrap();
+        let t = &ground;
         let (profiles, loose) = solve(&crate::reference::of(&refs, t), &refs);
         assert_eq!(loose, Loose::default());
         let (a, b) = (&profiles[0], &profiles[1]);
@@ -1025,10 +1020,9 @@ pub(crate) mod tests {
 
     #[test]
     fn an_unreached_span_lies_flat_and_is_counted() {
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem("hill?amp=-40&radius=30"), 5.0, usize::MAX);
+        let (ground, _) = terrain::run(&extent(), &mut dem("hill?amp=-40&radius=30"), 5.0, usize::MAX);
         let bridge = way("lone", vec![[-50.0, 0.0], [50.0, 0.0]], vec![(0.0, 100.0, Kind::Bridge(1))]);
-        let t = w.terrain.as_ref().unwrap();
+        let t = &ground;
         let (profiles, loose) = solve(&crate::reference::of(&[&bridge], t), &[&bridge]);
         assert_eq!(loose, Loose { dangling: 1, unanchored: 1, clamped: 0 });
         let top = profiles[0].stations.iter().map(|st| st.ground).fold(f64::NEG_INFINITY, f64::max);
@@ -1045,15 +1039,14 @@ pub(crate) mod tests {
         // A bridge leaving the world across a valley's far side: one
         // anchor, the other end dangling, so the deck holds the anchor's
         // height and is counted.
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem("ramp?grade=0.1&bearing=90&radius=100000"), 5.0, usize::MAX);
+        let (ground, _) = terrain::run(&extent(), &mut dem("ramp?grade=0.1&bearing=90&radius=100000"), 5.0, usize::MAX);
         // One way: 20 m of ground, then 60 m of deck running off the world.
         let ways = [way("a", vec![[-20.0, 0.0], [60.0, 0.0]], vec![
             (0.0, 20.0, Kind::Ground),
             (20.0, 80.0, Kind::Bridge(1)),
         ])];
         let refs: Vec<&Way> = ways.iter().collect();
-        let t = w.terrain.as_ref().unwrap();
+        let t = &ground;
         let (profiles, loose) = solve(&crate::reference::of(&refs, t), &refs);
         assert_eq!(loose, Loose { dangling: 1, unanchored: 0, clamped: 0 });
         let a = &profiles[0];
@@ -1075,11 +1068,10 @@ pub(crate) mod tests {
     /// on 130 m piers, and asked a motorway to climb 68 m out of its way.
     #[test]
     fn a_dangling_bore_holds_the_ground_and_a_dangling_deck_its_level() {
-        let mut w = terrain::tests::world();
         // Falling ground: 10 % down toward the east.
-        terrain::run(&mut w, &mut dem("ramp?grade=-0.1&bearing=90&radius=100000"), 5.0, usize::MAX);
-        let t = w.terrain.as_ref().unwrap();
-        let mut check = |kind: Kind| -> Vec<Station> {
+        let (ground, _) = terrain::run(&extent(), &mut dem("ramp?grade=-0.1&bearing=90&radius=100000"), 5.0, usize::MAX);
+        let t = &ground;
+        let check = |kind: Kind| -> Vec<Station> {
             let ways = [
                 way("w", vec![[-20.0, 0.0], [0.0, 0.0]], vec![(0.0, 20.0, Kind::Ground)]),
                 way("a", vec![[0.0, 0.0], [200.0, 0.0]], vec![(0.0, 200.0, kind)]),

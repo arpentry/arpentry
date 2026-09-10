@@ -429,14 +429,17 @@ fn to_gltf(v: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use crate::drape::drape_line;
-    use crate::terrain::{self, tests::dem};
+    use crate::terrain::{self, tests::{dem, extent}};
     use crate::world::{Polyline2, Roads};
+
+    use crate::pipeline::tests::bbox;
 
     use super::*;
 
     fn hill_world() -> World {
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem("hill?amp=60&radius=400"), 25.0, usize::MAX);
+        let (ground, _) = terrain::run(&extent(), &mut dem("hill?amp=60&radius=400"), 25.0, usize::MAX);
+        let mut w = World::new(bbox());
+        w.terrain = Some(ground);
         let line = Polyline2 {
             id: "r".into(),
             class: "residential".into(),
@@ -448,7 +451,7 @@ mod tests {
             a1: 0.0,
             pts: vec![[-600.0, -400.0], [0.0, 0.0], [500.0, 300.0]],
         };
-        let draped = drape_line(w.terrain.as_ref().unwrap(), &line);
+        let draped = drape_line(w.terrain.as_ref().expect("just set"), &line);
         w.roads = Some(Roads { ways: Vec::new(), plan: vec![line], spans: Vec::new(), lines: vec![draped] });
         w
     }
@@ -488,7 +491,7 @@ mod tests {
         let names: Vec<&str> = doc["nodes"].as_array().unwrap().iter().map(|n| n["name"].as_str().unwrap()).collect();
         assert_eq!(names, ["terrain", "roads"]);
 
-        let t = w.terrain.as_ref().unwrap();
+        let t = w.terrain.as_ref().expect("just set");
         let acc = doc["accessors"].as_array().unwrap();
         let prim = &doc["meshes"][0]["primitives"][0];
         let pos = prim["attributes"]["POSITION"].as_u64().unwrap() as usize;
@@ -532,8 +535,9 @@ mod tests {
 
     #[test]
     fn an_empty_layer_has_no_node() {
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem("flat"), 100.0, usize::MAX);
+        let (ground, _) = terrain::run(&extent(), &mut dem("flat"), 100.0, usize::MAX);
+        let mut w = World::new(bbox());
+        w.terrain = Some(ground);
         w.roads = Some(Roads::default());
         let (doc, _) = unpack(&write_glb(&w, true));
         assert_eq!(doc["nodes"].as_array().unwrap().len(), 1);

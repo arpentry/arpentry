@@ -16,22 +16,22 @@ use std::path::Path;
 
 use arpentry_server::geoparquet::ReadError;
 
+use crate::frame::Extent;
 use crate::grid::Grid;
 use crate::net;
 use crate::roads;
 use crate::step::Summary;
 use crate::terrain::height_at;
-use crate::world::{Polyline2, Polyline3, Roads, Terrain, World};
+use crate::world::{Polyline2, Polyline3, Roads, Terrain};
 
 /// Reads the ways of `segments` — a parquet, or a [`net`] spec — and drapes
 /// them onto the world's terrain.
-pub fn run(world: &mut World, segments: &Path) -> Result<Summary, String> {
+pub fn run(extent: &Extent, terrain: &Terrain, segments: &Path) -> Result<(Roads, Summary), String> {
     let read = match segments.to_str().filter(|s| net::is_spec(s)) {
-        Some(spec) => synthetic(spec, &world.rect)?,
-        None => roads::read(segments, &world.bbox, &world.frame, &world.rect)
+        Some(spec) => synthetic(spec, &extent.rect)?,
+        None => roads::read(segments, &extent.bbox, &extent.frame, &extent.rect)
             .map_err(|e: ReadError| e.to_string())?,
     };
-    let terrain = world.terrain.as_ref().expect("the terrain step runs first");
     let mut roads = Roads::default();
     let (mut pieces, mut vertices) = (0usize, 0usize);
     // The *whole* way is draped, spans and all: the drawn centreline is the
@@ -60,8 +60,7 @@ pub fn run(world: &mut World, segments: &Path) -> Result<Summary, String> {
         .with("pieces", pieces)
         .with("vertices", vertices);
     roads.ways = read.ways;
-    world.roads = Some(roads);
-    Ok(summary)
+    Ok((roads, summary))
 }
 
 /// The ways of a synthetic network, clipped to the rect like a read one —
@@ -150,7 +149,7 @@ pub fn drape_line(terrain: &Terrain, line: &Polyline2) -> Polyline3 {
 #[cfg(test)]
 mod tests {
     use crate::frame::Rect;
-    use crate::terrain::{self, tests::dem};
+    use crate::terrain::{self, tests::{dem, extent}};
 
     use super::*;
 
@@ -246,10 +245,8 @@ mod tests {
 
     #[test]
     fn a_ramp_drapes_to_a_straight_line() {
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem("ramp?grade=0.05&bearing=90&radius=100000"), 7.0, usize::MAX);
-        let t = w.terrain.as_ref().unwrap();
-        let pts = drape(t, &[[-500.0, -300.0], [400.0, 350.0]]);
+        let (t, _) = terrain::run(&extent(), &mut dem("ramp?grade=0.05&bearing=90&radius=100000"), 7.0, usize::MAX);
+        let pts = drape(&t, &[[-500.0, -300.0], [400.0, 350.0]]);
         for p in &pts {
             assert!((p[2] - (400.0 + 0.05 * p[0])).abs() < 1e-6, "{p:?}");
         }

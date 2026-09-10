@@ -82,7 +82,7 @@
 use crate::kerb::{self, Bare};
 use crate::poly::{self, Indexed, Pt, Shape, Shapes};
 use crate::step::Summary;
-use crate::world::{Room, World};
+use crate::world::{Facade, Paving, Room};
 
 /// How far outside the kerb a wall still bounds the street, in metres.
 /// Past this the ground in front of a house is its own. Four metres left
@@ -146,12 +146,13 @@ const EDGE_M: f64 = 0.05;
 const PROBE_M: f64 = 0.15;
 
 /// Paves the kerbs that run along facades, and the pockets.
-pub fn run(world: &mut World) -> Summary {
-    let carriageway = world.carriageway().expect("the surface step runs first");
-    let none = Shapes::new();
-    let before = world.walk().unwrap_or(&none);
-    let attached = world.kerb.as_ref().map_or(&[][..], |k| k.attached.as_slice());
-    let walls = Indexed::new(world.solid());
+pub fn run(
+    paving: Paving,
+    attached: &[kerb::Attached],
+    facade: &Facade,
+) -> (Room, Summary) {
+    let Paving { carriageway, walk: before } = paving;
+    let walls = Indexed::new(&facade.solid);
     let paved = Indexed::new(before);
     let mut hits: Vec<(Pt, Pt)> = Vec::new();
     let mut pieces: Shapes = Vec::new();
@@ -203,11 +204,11 @@ pub fn run(world: &mut World) -> Summary {
     }
     let room = poly::union_all(&pieces);
     let u = poly::fill_holes_under(poly::union_of(&[before, &room]), kerb::PAVEMENT_HOLE_M2);
-    let pockets = pockets(carriageway, &u, world.solid());
+    let pockets = pockets(carriageway, &u, &facade.solid);
     let (pocket_count, pocket_m2) = (pockets.len(), poly::area(&pockets));
-    let pavement = world.pavement(&poly::union_of(&[&u, &pockets]), carriageway);
+    let pavement = facade.pavement(&poly::union_of(&[&u, &pockets]), carriageway);
     let filled = poly::area(&pavement) - poly::area(before);
-    let bare = Bare::new(carriageway, &pavement, world.walls());
+    let bare = Bare::new(carriageway, &pavement, &facade.footprints);
     let (gap_n, gap_of) = wall_gap(&bare, &hits);
     let (gaps, kerb_of) = kerb::kerb_gaps(carriageway, &bare, attached);
     let kerb_n = gaps.len();
@@ -222,8 +223,7 @@ pub fn run(world: &mut World) -> Summary {
         .with_m2("filled_m2", filled)
         .with_share("wall_gap", gap_n, gap_of)
         .with_share("kerb_gap", kerb_n, kerb_of);
-    world.room = Some(Room { room, pavement, gaps });
-    summary
+    (Room { room, pavement, gaps }, summary)
 }
 
 /// What a probe met.
@@ -494,26 +494,30 @@ pub fn wall_gap(bare: &Bare, hits: &[(Pt, Pt)]) -> (usize, usize) {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::fillet::tests::pave;
-    use crate::ribbon::tests::{housed, world};
+    use crate::world::World;
+    use crate::pipeline::tests::{built, plan};
+    use crate::step::Step;
 
     use super::*;
 
     /// The world of `net` with the house of `house`, paved to the room.
     pub(crate) fn paved(net: &str, house: &str) -> (World, String) {
-        let mut w = housed(net, house);
-        pave(&mut w);
-        let s = run(&mut w).to_string();
+        let (w, ran) = built("flat", net, Some(house), 100.0, &plan(Step::Room));
+        let s = ran.last().to_string();
         (w, s)
     }
 
     /// The world of `net` with no house, paved to the fillet, and the
     /// pavement before the room step.
-    fn filleted(net: &str) -> (World, Shapes) {
-        let mut w = world(net);
-        pave(&mut w);
-        let before = w.walk().unwrap().clone();
-        (w, before)
+    fn roomed(net: &str) -> (World, String, Shapes) {
+        let (w, ran) = built("flat", net, None, 100.0, &plan(Step::Room));
+        let before = w.fillet.as_ref().expect("the fillet step ran").pavement.clone();
+        (w, ran.last().to_string(), before)
+    }
+
+    /// The building footprints of a world.
+    fn walls(w: &World) -> &Shapes {
+        &w.facade.as_ref().expect("the facade step ran").footprints
     }
 
     #[test]
@@ -569,7 +573,7 @@ pub(crate) mod tests {
         assert!(!poly::contains(p, [0.0, -3.0]), "nothing on the bare side");
         assert!(s.contains("wall_gap=0/"), "{s}");
         assert!(!s.contains("walled=0 "), "{s}");
-        assert!(poly::intersect(p, w.walls()).is_empty());
+        assert!(poly::intersect(p, walls(&w)).is_empty());
         assert!(poly::intersect(p, &w.fillet.as_ref().unwrap().carriageway).is_empty());
     }
 
@@ -621,7 +625,7 @@ pub(crate) mod tests {
         assert!(poly::contains(p, [0.0, 3.0]), "the mouth is banded");
         assert!(!poly::contains(p, [0.0, 6.0]), "the alley is not pavement");
         assert!(!poly::contains(p, [2.0, 3.0]), "the house is not");
-        assert!(poly::intersect(p, w.walls()).is_empty());
+        assert!(poly::intersect(p, walls(&w)).is_empty());
     }
 
     #[test]
@@ -664,8 +668,7 @@ pub(crate) mod tests {
         // Two sidewalk halves 6 m off the axis with a 6 m break between
         // them: the kerb step fills each half to the kerb, and the break
         // is paved across at the same width.
-        let (mut w, before) = filleted("net:sidewalk?d=6&gap=6&len=100");
-        let s = run(&mut w).to_string();
+        let (w, s, before) = roomed("net:sidewalk?d=6&gap=6&len=100");
         let p = &w.room.as_ref().unwrap().pavement;
         assert!(poly::contains(p, [-10.0, 4.0]) && poly::contains(p, [10.0, 4.0]), "the halves: {s}");
         assert!(poly::contains(p, [0.0, 4.0]), "the break: {s}");
@@ -677,8 +680,7 @@ pub(crate) mod tests {
     fn a_roundabout_island_is_paved() {
         // A ring road of radius 12 with a 5.5 m width leaves a 9.25 m
         // island: paved, up to the kerb, with no hole in it.
-        let (mut w, _) = filleted("net:roundabout?r=12&d=5&len=100");
-        let s = run(&mut w).to_string();
+        let (w, s, _) = roomed("net:roundabout?r=12&d=5&len=100");
         let p = &w.room.as_ref().unwrap().pavement;
         assert!(poly::contains(p, [0.0, 0.0]), "{s}");
         assert!(poly::contains(p, [9.0, 0.0]), "{s}");
@@ -686,8 +688,7 @@ pub(crate) mod tests {
         assert!(s.contains("islands=1 "), "{s}");
         // A block enclosed by roads is not an island: a 40 m cross' quadrants
         // stay ground.
-        let (mut w, _) = filleted("net:cross?len=200");
-        let s = run(&mut w).to_string();
+        let (_w, s, _) = roomed("net:cross?len=200");
         assert!(s.contains("islands=0 "), "{s}");
     }
 
@@ -754,8 +755,7 @@ pub(crate) mod tests {
 
     #[test]
     fn no_buildings_no_change() {
-        let (mut w, before) = filleted("net:sidewalk?d=6&len=100");
-        let s = run(&mut w).to_string();
+        let (w, s, before) = roomed("net:sidewalk?d=6&len=100");
         assert!(s.contains("walled=0 "), "{s}");
         // The probe meets the mapped sidewalk's own fill and adds nothing
         // but the half-rung past its last station at either end.

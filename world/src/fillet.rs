@@ -35,7 +35,7 @@ use crate::kerb::{self, RoadIndex};
 use crate::poly::{self, Pt, Shape, Shapes};
 use crate::step::Summary;
 use crate::width::{self, Family};
-use crate::world::{Fillet, Polyline2, World};
+use crate::world::{Facade, Fillet, Kerb, Polyline2, Roads, Surface};
 
 /// A vertex where the kerb turns inward by less than this, in degrees, is
 /// a bend drawn as a chain of turns, not a corner worth a return.
@@ -101,10 +101,7 @@ impl Corner {
 }
 
 /// Rounds the world's corners.
-pub fn run(world: &mut World) -> Summary {
-    let roads = world.roads.as_ref().expect("the drape step runs first");
-    let surface = world.surface.as_ref().expect("the surface step runs first");
-    let k = world.kerb.as_ref().expect("the kerb step runs first");
+pub fn run(roads: &Roads, surface: &Surface, k: &Kerb, facade: &Facade) -> (Fillet, Summary) {
     let ways: Vec<&Polyline2> = roads.plan.iter().filter(|w| width::family(&w.class) == Family::Carriageway).collect();
     let index = RoadIndex::build(ways.iter().copied());
     let corners = corners(&surface.carriageway, BEND_MIN_DEG, &ways, &index);
@@ -137,13 +134,13 @@ pub fn run(world: &mut World) -> Summary {
     let fillets = poly::union_all(&fillets);
     // The buildings win over the return as over the kerb it rounds.
     let carriageway =
-        world.asphalt(&poly::fill_holes_under(poly::union_of(&[&surface.carriageway, &fillets]), HOLE_MIN_M2));
+        facade.asphalt(&poly::fill_holes_under(poly::union_of(&[&surface.carriageway, &fillets]), HOLE_MIN_M2));
     // The pavement follows the kerb return: where a fillet ate into a
     // pavement, at least the narrowest pavement is laid back outside the
     // new kerb, so a sidewalk wraps the corner rather than ending at it.
     let laid_back = poly::dilate(&poly::intersect(&fillets, &k.pavement), kerb::WALK_MIN_M);
-    let pavement = world.pavement(&poly::union_of(&[&k.pavement, &laid_back]), &carriageway);
-    let bare = kerb::Bare::new(&carriageway, &pavement, world.walls());
+    let pavement = facade.pavement(&poly::union_of(&[&k.pavement, &laid_back]), &carriageway);
+    let bare = kerb::Bare::new(&carriageway, &pavement, &facade.footprints);
     let (gap_n, gap_of) = kerb::kerb_gap(&carriageway, &bare, &k.attached);
     let summary = Summary::new()
         .with("corners", corners.len())
@@ -152,8 +149,7 @@ pub fn run(world: &mut World) -> Summary {
         .with_regions("carriageway", &carriageway)
         .with_m2("pavement_m2", poly::area(&pavement))
         .with_share("kerb_gap", gap_n, gap_of);
-    world.fillet = Some(Fillet { corners, fillets, carriageway, pavement });
-    summary
+    (Fillet { corners, fillets, carriageway, pavement }, summary)
 }
 
 /// The corners of `carriageway`: every vertex of its rings where the
@@ -190,6 +186,9 @@ pub fn corners(carriageway: &Shapes, min_deg: f64, ways: &[&Polyline2], index: &
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::world::World;
+    use crate::pipeline::{self, tests::plan};
+    use crate::step::Step;
     use std::f64::consts::PI;
 
     use crate::kerb;
@@ -197,18 +196,36 @@ pub(crate) mod tests {
     use super::*;
 
     /// A flat world with the network of `spec`, kerbed.
-    pub(crate) fn world(spec: &str) -> World {
-        let mut w = kerb::tests::world(spec);
-        kerb::run(&mut w);
-        w
+    pub(crate) fn world(spec: &str) -> (World, Summary) {
+        let (w, ran) = pipeline::tests::built("flat", spec, None, 100.0, &plan(Step::Fillet));
+        (w, ran.last())
     }
 
     /// Runs `w` from the ribbon step through the fillet: the fillet's line.
-    pub(crate) fn pave(w: &mut World) -> Summary {
-        crate::ribbon::run(w);
-        crate::surface::run(w);
-        kerb::run(w);
-        run(w)
+    /// A flat world of `net`, built to the facade: what a specimen that
+    /// changes the network before paving it starts from.
+    fn facaded(spec: &str) -> World {
+        pipeline::tests::built("flat", spec, None, 100.0, &plan(Step::Facade)).0
+    }
+
+    /// The four surface steps over a world whose roads a specimen has
+    /// changed. They read no source, so they compose directly — which is
+    /// the whole of what a step's signature now promises.
+    fn pave(w: &mut World) -> Summary {
+        let (ribbons, surface, k, fillet, summary) = {
+            let roads = w.roads.as_ref().expect("the drape step ran");
+            let facade = w.facade.as_ref().expect("the facade step ran");
+            let (ribbons, _) = crate::ribbon::run(roads);
+            let (surface, _) = crate::surface::run(&ribbons, facade);
+            let (k, _) = kerb::run(roads, &surface, facade);
+            let (fillet, summary) = run(roads, &surface, &k, facade);
+            (ribbons, surface, k, fillet, summary)
+        };
+        w.ribbons = Some(ribbons);
+        w.surface = Some(surface);
+        w.kerb = Some(k);
+        w.fillet = Some(fillet);
+        summary
     }
 
     /// The area a closing of radius `r` adds to `n` right-angle notches.
@@ -223,8 +240,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_cross_gains_four_kerb_returns() {
-        let mut w = world("net:cross?len=200");
-        let s = run(&mut w);
+        let (w, s) = world("net:cross?len=200");
         let f = w.fillet.as_ref().unwrap();
         assert_eq!(f.corners.len(), 4, "{s}");
         assert!(f.corners.iter().all(|c| c.radius_m == 4.0 && (c.turn_deg - 90.0).abs() < 1e-6), "{:?}", f.corners);
@@ -241,13 +257,11 @@ pub(crate) mod tests {
 
     #[test]
     fn a_tee_gains_two_and_a_dual_none() {
-        let mut w = world("net:tee?len=200");
-        run(&mut w);
+        let (w, _) = world("net:tee?len=200");
         let gain = gain(&w);
         let exact = notch_gain(2, 4.0);
         assert!((gain - exact).abs() < 0.05 * exact, "{gain} vs {exact}");
-        let mut w = world("net:dual?gap=4&len=200");
-        let s = run(&mut w);
+        let (w, s) = world("net:dual?gap=4&len=200");
         let f = w.fillet.as_ref().unwrap();
         assert_eq!(f.corners.len(), 0, "{s}");
         assert_eq!(f.carriageway.len(), 2);
@@ -259,8 +273,7 @@ pub(crate) mod tests {
         // The road turns a right angle at one vertex: the round join
         // rounds the outside, and the inside is a corner like any other —
         // no real kerb turns sharp — that gets the road's own return.
-        let mut w = world("net:corner?d=5&len=200");
-        let s = run(&mut w);
+        let (w, s) = world("net:corner?d=5&len=200");
         let f = w.fillet.as_ref().unwrap();
         assert_eq!(f.corners.len(), 1, "{s}");
         assert_eq!(f.corners[0].radius_m, 4.0);
@@ -272,8 +285,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_roundabout_has_two_corners_per_leg_and_keeps_its_pavement() {
-        let mut w = world("net:roundabout?r=15&d=5&len=200");
-        let s = run(&mut w);
+        let (w, s) = world("net:roundabout?r=15&d=5&len=200");
         let f = w.fillet.as_ref().unwrap();
         assert_eq!(f.corners.len(), 8, "{s}");
         // Eight notches, each between a straight leg and the ring's convex
@@ -296,7 +308,7 @@ pub(crate) mod tests {
         // A sidewalk 3.75 m off the axis: a 1 m band from the kerb, thinner
         // than the 1.66 m a 4 m return reaches at a right angle. The
         // sidewalk crosses the leg, so the return north of the road eats it.
-        let mut w = world("net:tee?len=200");
+        let mut w = facaded("net:tee?len=200");
         let walk = crate::world::Polyline2 {
             id: "walk".into(),
             class: "footway".into(),
@@ -324,8 +336,7 @@ pub(crate) mod tests {
         // Road-e leaves the tee and hooks back on a 5 m radius: the two
         // straights' kerbs are 4.5 m apart, under `2r`, and a closing of
         // the junction's surroundings filled the whole inside.
-        let mut w = world("net:tee?hook=5&len=200");
-        let s = run(&mut w);
+        let (w, s) = world("net:tee?hook=5&len=200");
         let f = w.fillet.as_ref().unwrap();
         assert_eq!(f.corners.len(), 2, "{s}");
         assert!(!poly::contains(&f.carriageway, [10.0, 5.0]), "the inside of the hook: {s}");
@@ -342,7 +353,7 @@ pub(crate) mod tests {
     fn the_narrower_way_sets_the_radius() {
         // A service driveway on a primary: the corners between them get
         // the driveway's 3 m, not the primary's 8 m.
-        let mut w = world("net:tee?class=primary&len=200");
+        let mut w = facaded("net:tee?class=primary&len=200");
         let leg = w.roads.as_mut().unwrap().plan.iter_mut().find(|l| l.id == "leg").unwrap();
         leg.class = "service".into();
         leg.width_m = width::of("service", "");

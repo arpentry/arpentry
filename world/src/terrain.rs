@@ -8,9 +8,10 @@
 
 use arpentry_server::dem::Dem;
 
+use crate::frame::Extent;
 use crate::grid::Grid;
 use crate::step::Summary;
-use crate::world::{Terrain, World};
+use crate::world::Terrain;
 
 /// The DEM zoom every height is *asked* for. One fixed zoom means one ground,
 /// whatever the bbox size.
@@ -26,34 +27,33 @@ pub const ZOOM: u8 = 16;
 
 /// Builds the terrain layer at about `spacing` metres, at most `cap`
 /// vertices (see [`Grid::fit`]).
-pub fn run(world: &mut World, dem: &mut Dem, spacing: f64, cap: usize) -> Summary {
-    let grid = Grid::fit(&world.rect, spacing, cap);
+pub fn run(extent: &Extent, dem: &mut Dem, spacing: f64, cap: usize) -> (Terrain, Summary) {
+    let grid = Grid::fit(&extent.rect, spacing, cap);
     let served = dem.served_zoom(ZOOM);
     let terrain = build(&grid, &mut |x, y| {
-        let (lon, lat) = world.frame.to_geo(x, y);
+        let (lon, lat) = extent.frame.to_geo(x, y);
         dem.elevation(lon, lat, ZOOM)
     });
     let summary = Summary::new()
         .with("vertices", terrain.grid.vertex_count())
         .with("cells", format!("{}x{}", grid.cols, grid.rows))
         .with("spacing", format!("{:.2}x{:.2}", grid.dx, grid.dy))
-        .with("dem_z", dem_zoom(served, world, &grid))
+        .with("dem_z", dem_zoom(served, extent, &grid))
         .with("zmin", format!("{:.1}", terrain.zmin))
         .with("zmax", format!("{:.1}", terrain.zmax));
-    world.terrain = Some(terrain);
-    summary
+    (terrain, summary)
 }
 
 /// How the run reports the ground's own resolution: the zoom served, its
 /// pixel pitch in metres at this latitude, and a `!` when the request was
 /// clamped — the lattice is then finer than anything the DEM can say.
 /// A field answers everywhere at every zoom, and reports as `field`.
-fn dem_zoom(served: Option<u8>, world: &World, grid: &Grid) -> String {
+fn dem_zoom(served: Option<u8>, extent: &Extent, grid: &Grid) -> String {
     let Some(z) = served else {
         return "field".to_string();
     };
     // The pitch of one 512 px Terrarium tile's pixel at the world's latitude.
-    let (_, lat) = world.frame.to_geo(0.0, 0.0);
+    let (_, lat) = extent.frame.to_geo(0.0, 0.0);
     let pitch = 40_075_016.7 * lat.to_radians().cos() / ((1u64 << z as u32) as f64 * 512.0);
     let clamped = if z < ZOOM { "!" } else { "" };
     let coarse = if pitch > 1.5 * grid.dx.max(grid.dy) { " coarser-than-lattice" } else { "" };
@@ -134,13 +134,12 @@ pub fn height_at(t: &Terrain, x: f64, y: f64) -> f64 {
 pub(crate) mod tests {
     use std::path::Path;
 
-    use arpentry_server::project::Bounds;
-
     use super::*;
+    use crate::pipeline::tests::bbox;
 
-    /// The roundabout box: ~1.5 km × 1.1 km, centred on (6.92, 46.435).
-    pub(crate) fn world() -> World {
-        World::new(Bounds { west: 6.91, south: 46.43, east: 6.93, north: 46.44 })
+    /// The extent of the box the specimens are built in.
+    pub(crate) fn extent() -> Extent {
+        Extent::of(bbox())
     }
 
     /// A synthetic ground with its origin at the test bbox's centre.
@@ -151,9 +150,8 @@ pub(crate) mod tests {
 
     #[test]
     fn flat_is_flat() {
-        let mut w = world();
-        let s = run(&mut w, &mut dem("flat?h=400"), 10.0, usize::MAX);
-        let t = w.terrain.as_ref().unwrap();
+        let (t, s) = run(&extent(), &mut dem("flat?h=400"), 10.0, usize::MAX);
+        let t = &t;
         assert!(t.z.iter().all(|&z| z == 400.0));
         assert!(t.normals.iter().all(|&n| n == [0.0, 0.0, 1.0]));
         assert_eq!((t.zmin, t.zmax), (400.0, 400.0));
@@ -163,9 +161,8 @@ pub(crate) mod tests {
 
     #[test]
     fn ramp_matches_the_frame() {
-        let mut w = world();
-        run(&mut w, &mut dem("ramp?grade=0.03&bearing=90&radius=100000"), 5.0, usize::MAX);
-        let t = w.terrain.as_ref().unwrap();
+        let (t, _) = run(&extent(), &mut dem("ramp?grade=0.03&bearing=90&radius=100000"), 5.0, usize::MAX);
+        let t = &t;
         let want = [-0.03f64, 0.0, 1.0];
         let len = (1.0f64 + 0.03 * 0.03).sqrt();
         for i in 0..t.grid.vertex_count() {
@@ -179,19 +176,18 @@ pub(crate) mod tests {
 
     #[test]
     fn cap_clamps_and_spans() {
-        let mut w = world();
-        run(&mut w, &mut dem("flat"), 2.0, 500);
-        let t = w.terrain.as_ref().unwrap();
+        let (t, _) = run(&extent(), &mut dem("flat"), 2.0, 500);
+        let t = &t;
         assert!(t.grid.vertex_count() <= 500);
         let [x, y] = t.grid.vertex(t.grid.cols, t.grid.rows);
-        assert!((x - w.rect.x1).abs() < 1e-9 && (y - w.rect.y1).abs() < 1e-9);
+        let rect = extent().rect;
+        assert!((x - rect.x1).abs() < 1e-9 && (y - rect.y1).abs() < 1e-9);
     }
 
     #[test]
     fn height_at_matches_the_vertices() {
-        let mut w = world();
-        run(&mut w, &mut dem("hill?amp=60&radius=400"), 10.0, usize::MAX);
-        let t = w.terrain.as_ref().unwrap();
+        let (t, _) = run(&extent(), &mut dem("hill?amp=60&radius=400"), 10.0, usize::MAX);
+        let t = &t;
         for i in 0..t.grid.vertex_count() {
             let [x, y, z] = t.position(i);
             let (c, r) = t.grid.vertex_of(i);
@@ -207,9 +203,8 @@ pub(crate) mod tests {
 
     #[test]
     fn beyond_the_grid_the_ground_holds_its_edge() {
-        let mut w = world();
-        run(&mut w, &mut dem("ramp?grade=0.03&bearing=90&radius=100000"), 10.0, usize::MAX);
-        let t = w.terrain.as_ref().unwrap();
+        let (t, _) = run(&extent(), &mut dem("ramp?grade=0.03&bearing=90&radius=100000"), 10.0, usize::MAX);
+        let t = &t;
         let [x1, y1] = t.grid.vertex(t.grid.cols, t.grid.rows);
         // East of the grid the ramp stops rising; north of it nothing changes.
         assert_eq!(height_at(t, x1 + 50.0, 0.0), height_at(t, x1, 0.0));

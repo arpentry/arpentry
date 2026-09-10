@@ -75,6 +75,32 @@ impl Frame {
     }
 }
 
+/// The patch of earth one world is: the bounding box it was asked for, the
+/// local frame centred on it, and the box in that frame.
+///
+/// The three travel together — a step that reads geography needs all of them
+/// and none of them alone — and the last two are functions of the first, so
+/// they are built once here rather than derived again at each use.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Extent {
+    /// The bounding box the world was asked for, in degrees. Never inferred
+    /// from the data: a cut zone holds the zone plus a margin.
+    pub bbox: Bounds,
+    /// The local metric frame, centred on the bbox.
+    pub frame: Frame,
+    /// The bbox in the local frame.
+    pub rect: Rect,
+}
+
+impl Extent {
+    /// The extent of `bbox`.
+    pub fn of(bbox: Bounds) -> Extent {
+        let frame = Frame::centred(&bbox);
+        let rect = frame.rect(&bbox);
+        Extent { bbox, frame, rect }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

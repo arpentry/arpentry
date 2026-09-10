@@ -54,7 +54,7 @@ const DEBUG_VIEW_M: f64 = 100.0;
 
 /// The SVG of `world`'s 2D layers over `view` (default: the whole rect).
 pub fn write_svg(world: &World, view: Option<Rect>) -> String {
-    let view = view.unwrap_or(world.rect);
+    let view = view.unwrap_or(world.extent.rect);
     let mut s = String::new();
     let _ = write!(
         s,
@@ -67,10 +67,10 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
     let _ = write!(
         s,
         "<rect id=\"world\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#f4f1ea\"/>\n",
-        num(world.rect.x0),
-        num(-world.rect.y1),
-        num(world.rect.width()),
-        num(world.rect.height())
+        num(world.extent.rect.x0),
+        num(-world.extent.rect.y1),
+        num(world.extent.rect.width()),
+        num(world.extent.rect.height())
     );
     // The latest surface layer is the one drawn filled; the ones before it
     // are emitted as empty groups so a diff between two plans still finds
@@ -538,15 +538,18 @@ fn escape(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use crate::drape::drape_line;
-    use crate::terrain::{self, tests::dem};
+    use crate::terrain::{self, tests::{dem, extent}};
     use crate::world::{Polyline2, Roads};
+
+    use crate::pipeline::tests::bbox;
 
     use super::*;
 
     fn flat_world() -> World {
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem("flat"), 100.0, usize::MAX);
-        let t = w.terrain.as_ref().unwrap();
+        let (ground, _) = terrain::run(&extent(), &mut dem("flat"), 100.0, usize::MAX);
+        let mut w = World::new(bbox());
+        w.terrain = Some(ground);
+        let t = w.terrain.as_ref().expect("just set");
         let line = |id: &str, class: &str, subclass: &str, pts: Vec<[f64; 2]>| {
             drape_line(
                 t,
@@ -607,8 +610,9 @@ mod tests {
 
     #[test]
     fn an_empty_layer_has_no_group() {
-        let mut w = terrain::tests::world();
-        terrain::run(&mut w, &mut dem("flat"), 100.0, usize::MAX);
+        let (ground, _) = terrain::run(&extent(), &mut dem("flat"), 100.0, usize::MAX);
+        let mut w = World::new(bbox());
+        w.terrain = Some(ground);
         w.roads = Some(Roads::default());
         let svg = write_svg(&w, None);
         assert!(!svg.contains("id=\"drape\""));
@@ -622,8 +626,7 @@ mod tests {
 
     #[test]
     fn a_ribbon_replaces_the_band_under_the_axis() {
-        let mut w = crate::ribbon::tests::world("net:sidewalk?d=6&len=100");
-        crate::ribbon::run(&mut w);
+        let (w, _) = crate::ribbon::tests::world("net:sidewalk?d=6&len=100");
         let svg = write_svg(&w, None);
         assert_eq!(svg.matches("<path fill=").count(), 2, "{svg}");
         assert!(svg.contains("<title>walk-n footway/sidewalk</title>"));
@@ -638,8 +641,7 @@ mod tests {
 
     #[test]
     fn the_surface_replaces_the_ribbons() {
-        let mut w = crate::surface::tests::world("net:crossing?d=6&len=100");
-        crate::surface::run(&mut w);
+        let (w, _) = crate::surface::tests::world("net:crossing?d=6&len=100");
         let svg = write_svg(&w, None);
         assert!(svg.contains("<path id=\"carriageway\""));
         assert!(svg.contains("<path id=\"walk\""));
@@ -650,8 +652,7 @@ mod tests {
 
     #[test]
     fn the_pavement_replaces_the_walk() {
-        let mut w = crate::kerb::tests::world("net:sidewalk?d=6&len=100");
-        crate::kerb::run(&mut w);
+        let (w, _) = crate::kerb::tests::world("net:sidewalk?d=6&len=100");
         let svg = write_svg(&w, None);
         assert!(svg.contains("<path id=\"carriageway\""));
         assert!(svg.contains("<path id=\"pavement\""));
@@ -661,8 +662,7 @@ mod tests {
 
     #[test]
     fn the_fillet_replaces_both_surfaces() {
-        let mut w = crate::fillet::tests::world("net:crossing?d=6&len=100");
-        crate::fillet::run(&mut w);
+        let (w, _) = crate::fillet::tests::world("net:crossing?d=6&len=100");
         let svg = write_svg(&w, None);
         assert_eq!(svg.matches("<path id=\"carriageway\"").count(), 1, "{svg}");
         assert_eq!(svg.matches("<path id=\"pavement\"").count(), 1);
