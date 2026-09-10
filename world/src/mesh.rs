@@ -18,7 +18,11 @@
 //!   the edge's endpoints in one canonical order, so both ears get the same
 //!   point bit for bit, and vertices are shared by exact position. The
 //!   `seam` check reads the length of the mesh's one-sided edges against
-//!   the regions' perimeter; a crack would add to it.
+//!   the regions' perimeter; a crack would add to it. It is a difference of
+//!   two sums of the same size, so its value is all cancellation and its
+//!   last bits are the arithmetic's: both sums are therefore taken in an
+//!   order that is a function of the world, or the number jitters run to
+//!   run and reproduces nothing.
 //! - **Nothing is dropped but the degenerate.** A cut along an edge that
 //!   runs down a grid line leaves pieces of no area; those go. A sliver
 //!   under [`SLIVER_M2`] is kept and counted — dropping it would open the
@@ -193,11 +197,27 @@ pub fn triangulate(shapes: &Shapes, grid: &Grid, height: &dyn Fn(Pt) -> f64) -> 
             stats.lost_m2 += (got - want).abs();
         }
     }
-    let boundary: f64 = edges
+    // **The one-sided edges are summed in a defined order.** They were read
+    // straight off `edges`, and a `HashMap`'s iteration order is the
+    // hasher's, which `RandomState` reseeds per process — so a sum of ~10^5
+    // lengths at kilometre magnitudes came out differing in its last bits
+    // from one run to the next. `seam` is that sum *less a perimeter of the
+    // same size*, all cancellation, so the jitter was the whole of the
+    // reported number: 2.6e-9, 3.2e-9, 8.6e-9 over three runs of one binary
+    // on one input. The geometry never moved with it — the GLB is
+    // byte-identical across those runs — but a check nobody can reproduce is
+    // a check that cannot gate anything.
+    //
+    // Sorting by the edge's own key is enough, because the vertex indices
+    // are assigned in construction order and nothing else here reads a map:
+    // the map is a set of counts, and this is the one place it was iterated.
+    let mut boundary: Vec<(u32, u32)> =
+        edges.iter().filter(|(_, n)| **n == 1).map(|(e, _)| *e).collect();
+    boundary.sort_unstable();
+    let boundary: f64 = boundary
         .iter()
-        .filter(|(_, n)| **n == 1)
-        .map(|((a, b), _)| {
-            let (p, q) = (tri.positions[*a as usize], tri.positions[*b as usize]);
+        .map(|&(a, b)| {
+            let (p, q) = (tri.positions[a as usize], tri.positions[b as usize]);
             (q[0] - p[0]).hypot(q[1] - p[1])
         })
         .sum();

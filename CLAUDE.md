@@ -306,7 +306,14 @@ edge lengths per node before believing a render.
 
 The run prints one line per step. The output is byte-deterministic, so
 `cmp` between two runs over the same inputs is a regression gate; a
-difference means something moved. `--terrain 'ramp?grade=0.05'` (or `flat`,
+difference means something moved. **So is the summary itself** — every
+metric of every step reproduces exactly, so `diff` between two runs' lines
+is the same gate one level up, and cheaper: it needs no `--output`, and it
+says which step moved rather than only that something did. (It did not use
+to be. The mesh step's `seam` summed the one-sided edges in a `HashMap`'s
+iteration order, which `RandomState` reseeds per process, so one binary on
+one input reported 2.6e-9, 3.2e-9 and 8.6e-9 on three runs while the GLB
+stayed byte-identical.) `--terrain 'ramp?grade=0.05'` (or `flat`,
 `hill`, `step`, and the three structure rungs `gorge?depth=30&width=40`,
 `ridge?height=40&width=120`, `shelf?drop=30&flank=8`) swaps the DEM for a
 synthetic ground, and `--segments
@@ -605,7 +612,7 @@ them off it; on a flat ground the two stay coplanar and z-fight in any
 Its summary line: `lost_m2` (region area the triangles miss), `off_ground`
 (the largest height a triangle's centroid stands off the terrain),
 `seam` (the mesh's one-sided edge length less the regions' perimeter: a
-crack or an overlap shows here, and it reads 6e-9 m on the box),
+crack or an overlap shows here, and it reads 8.4e-10 m on the box),
 `washed`/`lossy` (regions the ear clipper misread; a washed one was read
 right from the kernel's union of it), `slivers`, `welded`. The rings are
 cleaned at the kernel's lattice (`COLLINEAR_M`, 0.1 mm) before clipping:
