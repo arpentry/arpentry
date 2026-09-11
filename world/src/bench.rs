@@ -77,7 +77,8 @@ use crate::poly::{self, Pt, Ring, Shapes};
 use crate::step::Summary;
 use crate::terrain::height_at;
 use crate::frame::Rect;
-use crate::world::{Bench, Mesh, Paving, Profile, Profiles, Terrain, Tri};
+use crate::width::{self, Family};
+use crate::world::{Bench, Kind, Mesh, Paving, Polyline2, Profile, Profiles, Terrain, Tri};
 use crate::mesh;
 
 /// How far, in metres, the pavement stands above the carriageway beside
@@ -288,7 +289,13 @@ impl Field {
     /// that also carries a deck are ground, and its deck is the structure
     /// step's.
     pub fn new(profiles: &[Profile]) -> Field {
-        Field::of_stations(profiles.iter().map(|p| {
+        Field::grounded(profiles.iter())
+    }
+
+    /// The same over whichever profiles are given: the roads' field and the
+    /// railways' are two, so a pavement beside a railway never rides it.
+    pub fn grounded<'a>(profiles: impl Iterator<Item = &'a Profile>) -> Field {
+        Field::of_stations(profiles.map(|p| {
             let runs = p.runs();
             let keep: Vec<(usize, usize)> =
                 runs.iter().filter(|r| !r.2.is_structure()).map(|r| (r.0, r.1)).collect();
@@ -420,6 +427,114 @@ struct Seg {
     /// [`Ground::at`] is asked seven million times over the loop box and
     /// every one of them lands on a sample and its neighbour.
     s: Vec<[f64; 3]>,
+    /// The segment lies across a tunnel's mouth: no batter runs off it.
+    mouth: bool,
+}
+
+/// How far, in metres, a point of the room's outline may stand off a
+/// portal's cap and still be on it: the polygon kernel's rounding and the
+/// booleans the cap has been through, far short of anything built.
+const MOUTH_EPS_M: f64 = 0.05;
+
+/// Where a ground piece ends against a tunnel: its square cap across the
+/// road, which the tube's mouth stands in. The cap is the room's outline
+/// there, and it must not be closed as if it were a cutting's end.
+#[derive(Debug, Clone, Copy)]
+pub struct Mouth {
+    at: Pt,
+    /// The unit direction into the tunnel.
+    into: Pt,
+    half: f64,
+    /// How high the tube is inside.
+    tube: f64,
+}
+
+/// Every mouth of the world's tunnel spans: both ends of each.
+pub fn mouths(spans: &[Polyline2]) -> Vec<Mouth> {
+    spans
+        .iter()
+        .filter(|w| matches!(w.kind, Kind::Tunnel(_)) && w.pts.len() >= 2)
+        .flat_map(|w| {
+            let n = w.pts.len();
+            let (half, tube) = (w.width_m / 2.0, crate::structure::tube_m(&w.class));
+            [(w.pts[0], w.pts[1]), (w.pts[n - 1], w.pts[n - 2])].map(|(at, q)| Mouth {
+                at,
+                into: poly::unit([q[0] - at[0], q[1] - at[1]]),
+                half,
+                tube,
+            })
+        })
+        .collect()
+}
+
+/// Everywhere the ground must leave a tube room: the mouths of the opened
+/// portals, and the galleries ([`crate::structure::is_gallery`]), whose
+/// footprints are cut out of the ground whole.
+#[derive(Debug, Default)]
+pub struct Portals {
+    mouths: Vec<Mouth>,
+    /// The galleries' axes, and per segment the roadway's height at its two
+    /// ends, the half-width of the tube and its height.
+    gallery: Nearest,
+    crowns: Vec<(f64, f64, f64, f64)>,
+}
+
+impl Portals {
+    /// The portals of `spans` and the galleries of `profiles`, and the
+    /// galleries' footprints — what the ground is to be opened over.
+    pub fn new(spans: &[Polyline2], profiles: &Profiles) -> (Portals, Shapes) {
+        let mut out = Portals { mouths: mouths(spans), ..Portals::default() };
+        let mut footprints: Shapes = Vec::new();
+        for p in &profiles.profiles {
+            let (half, tube) = (crate::structure::half_width_m(&p.class, p.width_m), crate::structure::tube_m(&p.class));
+            for (a, b) in crate::structure::gallery_runs(p) {
+                let st = &p.stations[a..=b];
+                for w in st.windows(2) {
+                    out.gallery.push(w[0].p, w[1].p);
+                    out.crowns.push((w[0].h, w[1].h, half, tube));
+                }
+                let axis: Vec<Pt> = st.iter().map(|x| x.p).collect();
+                footprints.extend(poly::buffer_line_capped(&axis, 2.0 * half, [false, false]));
+            }
+        }
+        (out, poly::union_all(&footprints))
+    }
+
+    /// The tube's section at `q`, as `(floor, roof)`, if `q` stands where a
+    /// tube opens: across a mouth, the room's own height there (`room_h`)
+    /// and a tube over it; on a gallery's footprint, its roadway and a tube
+    /// over that.
+    fn section(&self, q: Pt, room_h: f64) -> Option<(f64, f64)> {
+        if let Some(tube) = on_mouth(&self.mouths, q) {
+            return Some((room_h, room_h + tube));
+        }
+        let (i, t, d) = self.gallery.of(q, GALLERY_LIMIT_M)?;
+        let (ha, hb, half, tube) = self.crowns[i];
+        let floor = ha + (hb - ha) * t;
+        (d <= half + MOUTH_EPS_M).then_some((floor, floor + tube))
+    }
+
+    /// Whether `q` stands where a tube opens.
+    fn open(&self, q: Pt) -> bool {
+        self.section(q, 0.0).is_some()
+    }
+}
+
+/// How far from a gallery's axis, in metres, a point is asked about at all:
+/// past the widest structure's half-width nothing is a gallery's edge.
+const GALLERY_LIMIT_M: f64 = 8.0;
+
+/// The tube height of the mouth `q` lies across, if it lies across one.
+fn on_mouth(mouths: &[Mouth], q: Pt) -> Option<f64> {
+    mouths
+        .iter()
+        .find(|m| {
+            let d = [q[0] - m.at[0], q[1] - m.at[1]];
+            let along = d[0] * m.into[0] + d[1] * m.into[1];
+            let across = d[0] * m.into[1] - d[1] * m.into[0];
+            along.abs() <= MOUTH_EPS_M && across.abs() <= m.half + MOUTH_EPS_M
+        })
+        .map(|m| m.tube)
 }
 
 impl Seg {
@@ -446,6 +561,7 @@ impl Ground {
         grid: &crate::grid::Grid,
         room: &dyn Fn(Pt) -> f64,
         natural: &dyn Fn(Pt) -> f64,
+        portals: &Portals,
     ) -> Ground {
         let mut g = Ground::default();
         for ring in outline.iter().flatten() {
@@ -453,7 +569,8 @@ impl Ground {
                 let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
                 g.at.push(a, b);
                 let len = (b[0] - a[0]).hypot(b[1] - a[1]);
-                let mut seg = Seg { s: vec![[0.0, room(a), natural(a)]] };
+                let mouth = portals.open(a) && portals.open(b);
+                let mut seg = Seg { s: vec![[0.0, room(a), natural(a)]], mouth };
                 // `split` ends with `b` itself, so the last sample is at 1.
                 for q in crate::drape::split(grid, a, b) {
                     let u = if len > 0.0 { ((q[0] - a[0]).hypot(q[1] - a[1]) / len).clamp(0.0, 1.0) } else { 1.0 };
@@ -488,6 +605,14 @@ impl Ground {
         let Some((i, t, d)) = self.at.of(p, EARTHWORK_BATTER * MAX_BENCH_FACE_M) else {
             return natural;
         };
+        // **No batter runs into a tunnel's mouth.** Off a cap across a
+        // cutting's end a face would climb from the road into the hill — up
+        // the inside of the tube, across the opening — and shut the portal
+        // this cutting was opened for. The hill is the hill there, and the
+        // wall over the mouth closes it down to the tube's roof.
+        if self.seg[i].mouth {
+            return natural;
+        }
         let (room, edge) = self.seg[i].at(t);
         if (edge - room).abs() > MAX_BENCH_FACE_M {
             return natural;
@@ -547,27 +672,42 @@ pub fn run(
     profiles: &Profiles,
     mesh: &Mesh,
     paving: Paving,
+    spans: &[Polyline2],
 ) -> (Bench, Summary) {
+    // The tunnels' openings: the mouths of the portals the partition cut
+    // open, and the galleries, whose whole footprint the ground leaves to
+    // the tube standing in it.
+    let (portals, galleries) = Portals::new(spans, profiles);
     let (bench, stats, axes, earth) = {
-        let field = Field::new(&profiles.profiles);
+        // Two fields: the roads' and the railways'. A pavement is a road's
+        // cross-section and never a railway's, and the ballast rides its
+        // own track and nothing else — at a level crossing the asphalt is
+        // the road's and the bed either side of it the railway's, and the
+        // profile has already pinned the two to one height where they meet.
+        let rail = |p: &&Profile| width::family(&p.class) == Family::Rail;
+        let field = Field::grounded(profiles.profiles.iter().filter(|p| !rail(p)));
+        let rails = Field::grounded(profiles.profiles.iter().filter(rail));
         // The asphalt is the road: it takes the whole of its own height
         // wherever it reaches. Only the walk beside it is asked how far
         // out it lies.
         let (c, cs) = lift(&mesh.carriageway, &field, 0.0, false);
         let (p, ps) = lift(&mesh.pavement, &field, KERB_RISE_M, true);
+        let (b, bs) = lift(&mesh.ballast, &rails, 0.0, false);
         let mut stats = Stats::default();
         stats.merge(&cs);
         stats.merge(&ps);
+        stats.merge(&bs);
         let steps = std::mem::take(&mut stats.at);
 
         // The ground answers. The outline is the room's own boundary and
         // its heights are read off the room's mesh, vertex for vertex, so
         // the two meet at the seam rather than near it.
-        let outline = poly::union_of(&[paving.carriageway, paving.walk]);
+        let outline = poly::union_of(&[paving.carriageway, paving.walk, paving.ballast, &galleries]);
         let natural = |p: Pt| height_at(terrain, p[0], p[1]);
         // Before `seam` the binding shadows `seam` the function.
         let pave = seam(&[&p]);
-        let seam = seam(&[&c, &p]);
+        let beside = seam(&[&c, &p]);
+        let seam = seam(&[&c, &p, &b]);
         // `seam` had been reported and never counted: the closure fell
         // back silently and the line read 0 of however many. It counts now.
         let (asked, missed) = (std::cell::Cell::new(0usize), std::cell::Cell::new(0usize));
@@ -577,9 +717,13 @@ pub fn run(
                 Some(h) => h,
                 None => {
                     missed.set(missed.get() + 1);
-                    match field.at(q) {
-                        Some(foot) => foot.batter(foot.h + KERB_RISE_M, natural(q)),
-                        None => natural(q),
+                    // The nearer of the two fields answers: a road's
+                    // cross-section with its kerb, or a railway's bed.
+                    match (field.at(q), rails.at(q)) {
+                        (Some(r), Some(t)) if t.d < r.d => t.batter(t.h, natural(q)),
+                        (Some(r), _) => r.batter(r.h + KERB_RISE_M, natural(q)),
+                        (None, Some(t)) => t.batter(t.h, natural(q)),
+                        (None, None) => natural(q),
                     }
                 }
             }
@@ -595,7 +739,7 @@ pub fn run(
         // `contact` could not see because it was measured at the corners
         // too.
         let edge = dense(&outline, &terrain.grid);
-        let ground = Ground::new(&outline, &terrain.grid, &room, &natural);
+        let ground = Ground::new(&outline, &terrain.grid, &room, &natural, &portals);
         let mut earth = Earth::new(&edge, &ground, &room, &natural, terrain);
         let cut = poly::difference(&vec![poly::rect(rect.x0, rect.y0, rect.x1, rect.y1)], &outline);
         let (g, gs) = mesh::triangulate(&cut, &terrain.grid, &|q| ground.at(q, natural(q)));
@@ -604,22 +748,27 @@ pub fn run(
         earth.vertices = g.positions.len();
         earth.off = gs.off_ground;
         earth.lossy = gs.failed + gs.lossy;
-        let (rim_n, unmet, contact) = meet(&c, &p, &g, &natural);
+        let (rim_n, unmet, contact) = meet(&[&c, &p, &b], &g, &natural, &portals);
         earth.rim = rim_n;
         earth.unmet = unmet;
         earth.contact = contact;
-        let (wall, wall_m2) = wall(&edge, &ground, &room, &natural);
+        let (wall, wall_m2) = wall(&edge, &ground, &room, &natural, &portals);
         // The kerb's own face, along the boundary the two families share.
         // Read off the carriageway mesh's own rim: its plan line is a mesh
         // edge and its foot a mesh vertex, so the closure cannot leave a
         // T-junction on the road's side however the rings were cleaned.
         let (kerb, kerb_m2, tapered) = kerb(&c, &pave);
+        // And the ballast's, along its boundary with either of the others,
+        // read off the ballast's rim the same way.
+        let (rail_face, rail_m2) = rail_face(&b, &beside);
         earth.kerb_m2 = kerb_m2;
+        earth.rail_m2 = rail_m2;
         earth.tapered = tapered;
         earth.unseamed = missed.get();
         earth.asked = asked.get();
         earth.wall_m2 = wall_m2;
-        (Bench { carriageway: c, pavement: p, ground: g, wall, kerb, steps }, stats, field.len(), earth)
+        let axes = field.len() + rails.len();
+        (Bench { carriageway: c, pavement: p, ballast: b, rail: rail_face, ground: g, wall, kerb, steps }, stats, axes, earth)
     };
     let summary = Summary::new()
         .with("axes", axes)
@@ -638,6 +787,7 @@ pub fn run(
         .with("wall", format!("{:.1}", earth.wall))
         .with_m2("wall_m2", earth.wall_m2)
         .with_m2("kerb_m2", earth.kerb_m2)
+        .with_m2("rail_m2", earth.rail_m2)
         .with("tapered", earth.tapered)
         .with_share("touched", earth.touched, earth.lattice)
         .with("off", format!("{:.1e}", earth.off))
@@ -673,10 +823,33 @@ const WALL_MIN_M: f64 = 1e-3;
 /// The room's outer rings run counter-clockwise and its holes the other
 /// way, so `[top_a, bottom_a, bottom_b, top_b]` faces away from the room
 /// in both cases — outward at a kerb, into the courtyard at a hole.
-fn wall(edge: &Shapes, ground: &Ground, room: &dyn Fn(Pt) -> f64, natural: &dyn Fn(Pt) -> f64) -> (Tri, f64) {
+fn wall(
+    edge: &Shapes,
+    ground: &Ground,
+    room: &dyn Fn(Pt) -> f64,
+    natural: &dyn Fn(Pt) -> f64,
+    portals: &Portals,
+) -> (Tri, f64) {
     let mut tri = Tri::default();
     let mut m2 = 0.0;
-    let rail = |q: Pt| (room(q), ground.at(q, natural(q)));
+    // Across a tunnel's mouth, and along a gallery, the face closes the
+    // ground onto the **tube's section**, never onto the road across the
+    // opening. Where the hill stands over the roof it is the headwall, from
+    // the roof up; where the ground falls below the floor — the downhill
+    // side of a gallery on a flank — it is the footing, from the ground up
+    // to the floor, without which the terrain's edge and the tube's wall
+    // stood apart by the fall and the world showed through between them.
+    // Where the ground meets the tube's wall between the two, the wall is
+    // the closure and nothing is drawn.
+    let rail = |q: Pt| {
+        let (r, g) = (room(q), ground.at(q, natural(q)));
+        match portals.section(q, r) {
+            Some((_, roof)) if g > roof => (roof, g),
+            Some((floor, _)) if g < floor => (floor, g),
+            Some(_) => (g, g),
+            None => (r, g),
+        }
+    };
     for ring in edge.iter().flatten() {
         for i in 0..ring.len() {
             let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
@@ -745,6 +918,41 @@ fn kerb(road: &Tri, pave: &HashMap<[i64; 2], f64>) -> (Tri, f64, usize) {
     (tri, m2, tapered)
 }
 
+/// The face between the ballast and whatever surface of another family it
+/// meets, and its area: `other` is the carriageway's and the pavement's
+/// heights by vertex.
+///
+/// The kerb's face with the roles free. Where a kerb always stands the
+/// pavement *over* the road, a railway may be either side of its
+/// neighbour — in a cutting under a street terrace, on an embankment above
+/// a road — and the two are both the room, so the ground has a hole under
+/// their seam and the wall never reaches it. Unclosed, a railway and a
+/// road solved to different heights side by side are a slot you can see
+/// the world through (invariant 9). Built off the ballast's own rim, so its
+/// foot is a mesh vertex; a segment whose ends agree to [`WALL_MIN_M`] —
+/// a level crossing, where the profile pinned the two to one height — is
+/// not drawn.
+fn rail_face(ballast: &Tri, other: &HashMap<[i64; 2], f64>) -> (Tri, f64) {
+    let mut tri = Tri::default();
+    let mut m2 = 0.0;
+    for (i, j) in rim(ballast) {
+        let (a, b) = (ballast.positions[i as usize], ballast.positions[j as usize]);
+        let (oa, ob) = (at(other, a), at(other, b));
+        if oa.is_none() && ob.is_none() {
+            continue;
+        }
+        let (ha, hb) = (oa.unwrap_or(a[2]), ob.unwrap_or(b[2]));
+        if (ha - a[2]).abs() <= WALL_MIN_M && (hb - b[2]).abs() <= WALL_MIN_M {
+            continue;
+        }
+        let base = tri.positions.len() as u32;
+        tri.positions.extend_from_slice(&[a, b, [b[0], b[1], hb], [a[0], a[1], ha]]);
+        tri.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        m2 += ((ha - a[2]).abs() + (hb - b[2]).abs()) / 2.0 * (b[0] - a[0]).hypot(b[1] - a[1]);
+    }
+    (tri, m2)
+}
+
 /// How the room's meshes and the ground's actually meet — mesh against
 /// mesh, which is the only way the question can be asked.
 ///
@@ -762,13 +970,20 @@ fn kerb(road: &Tri, pave: &HashMap<[i64; 2], f64>) -> (Tri, f64, usize) {
 /// the same outline by the same mesher, but the room's regions and the
 /// ground's `rect − room` are cleaned and ear-clipped apart, so they do
 /// not agree on where to subdivide it.
-fn meet(c: &Tri, p: &Tri, g: &Tri, natural: &dyn Fn(Pt) -> f64) -> (usize, usize, f64) {
-    let (gh, ph, ch) = (seam(&[g]), seam(&[p]), seam(&[c]));
+fn meet(room: &[&Tri], g: &Tri, natural: &dyn Fn(Pt) -> f64, portals: &Portals) -> (usize, usize, f64) {
+    let gh = seam(&[g]);
     let (mut n, mut unmet, mut worst) = (0usize, 0usize, 0.0f64);
-    for (tri, other) in [(c, &ph), (p, &ch)] {
+    for (k, tri) in room.iter().enumerate() {
+        // The room's other surfaces: a rim vertex one of them shares is a
+        // seam inside the room, which has a face of its own.
+        let others: Vec<&Tri> = room.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, t)| *t).collect();
+        let other = seam(&others);
+        let other = &other;
         for (i, j) in rim(tri) {
             for v in [tri.positions[i as usize], tri.positions[j as usize]] {
-                if at(other, v).is_some() {
+                // A seam inside the room has its own face, and a tunnel's
+                // mouth is an opening: neither is a contact with the ground.
+                if at(other, v).is_some() || portals.open([v[0], v[1]]) {
                     continue;
                 }
                 n += 1;
@@ -925,6 +1140,8 @@ pub struct Earth {
     /// nothing at one end because the pavement stops there.
     pub kerb_m2: f64,
     pub tapered: usize,
+    /// The area of the face between the ballast and its neighbours.
+    pub rail_m2: f64,
 }
 
 impl Earth {
@@ -1221,7 +1438,7 @@ pub(crate) mod tests {
             &w.room.as_ref().expect("the room step ran").pavement,
         ]);
         let room = |q: Pt| at(&seam, q).unwrap_or_else(|| natural(q));
-        (Ground::new(&outline, &terrain.grid, &room, &natural), natural)
+        (Ground::new(&outline, &terrain.grid, &room, &natural, &Portals::default()), natural)
     }
 
     #[test]
@@ -1403,6 +1620,67 @@ pub(crate) mod tests {
         // wall's business and not this one's.
         let (_, s) = world("flat", "net:straight", None);
         assert_eq!(s.num("kerb_m2"), 0.0, "{s}");
+    }
+
+    /// **A gallery meets the ground on both sides.** A gallery on a flank:
+    /// its footprint is cut out of the ground, the ground at its uphill edge
+    /// stands between the floor and the roof, and at its downhill edge it
+    /// falls 1.375 m below the floor. The uphill side is closed by the
+    /// tube's own wall; the downhill one only by a footing from the ground
+    /// up to the floor, without which the terrain's edge and the tube stood
+    /// apart by the fall and the world showed through between them (seen on
+    /// the loop box as white slivers under a gallery along the flank).
+    ///
+    /// Read off the wall rule itself rather than a specimen: no single
+    /// synthetic ground puts a mound over a way *and* a cross-slope under
+    /// it, and on a mound the ground never falls below the chord a gallery
+    /// runs on.
+    #[test]
+    fn a_gallery_meets_the_ground_on_both_sides() {
+        let axis = [[-50.0, 0.0], [50.0, 0.0]];
+        let (half, tube, floor) = (2.75, 5.0, 400.0);
+        let mut portals = Portals::default();
+        portals.gallery.push(axis[0], axis[1]);
+        portals.crowns.push((floor, floor, half, tube));
+        let outline = poly::buffer_line_capped(&axis, 2.0 * half, [false, false]);
+        let grid = crate::grid::Grid::fit(&Rect { x0: -60.0, y0: -10.0, x1: 60.0, y1: 10.0 }, 1.0, usize::MAX);
+        // Falling 1 in 2 toward −y: 1.375 m under the floor at the downhill
+        // edge, 1.375 m over it — and under the roof — at the uphill one.
+        let natural = |q: Pt| floor + 0.5 * q[1];
+        let room = |_: Pt| floor;
+        let ground = Ground::new(&outline, &grid, &room, &natural, &portals);
+        let (tri, m2) = wall(&dense(&outline, &grid), &ground, &room, &natural, &portals);
+        // The downhill side's 100 m at 1.375 m, and the half of each end cap
+        // that falls below the floor, a triangle.
+        let expected = 100.0 * 1.375 + 2.0 * 0.5 * half * 1.375;
+        assert!((m2 - expected).abs() < 0.5, "footing {m2} m2 against {expected}");
+        // Nothing on the uphill side, where the tube's wall is the closure.
+        assert!(tri.positions.iter().all(|p| p[1] <= 1.5), "a face on the uphill side");
+    }
+
+    /// The track bed takes its railway's height at its foot, and nothing
+    /// else rides the railway: the asphalt crossing it is the road's.
+    #[test]
+    fn the_ballast_rides_its_railway_and_nothing_else_does() {
+        let (w, s) = world("hill?amp=20&radius=150", "net:level?len=300", None);
+        let b = bench(&w);
+        assert!(!b.ballast.indices.is_empty(), "{s}");
+        let profiles = &w.profile.as_ref().unwrap().profiles;
+        let rail = profiles.iter().find(|p| p.id == "rail").unwrap();
+        let road = profiles.iter().find(|p| p.id == "road").unwrap();
+        let (rails, roads) = (Field::new(std::slice::from_ref(rail)), Field::new(std::slice::from_ref(road)));
+        for v in &b.ballast.positions {
+            let foot = rails.at([v[0], v[1]]).expect("every bed vertex is beside its railway");
+            assert!((v[2] - foot.h).abs() < 1e-9, "{v:?} vs {}", foot.h);
+        }
+        for v in &b.carriageway.positions {
+            let foot = roads.at([v[0], v[1]]).expect("every asphalt vertex is beside its road");
+            assert!((v[2] - foot.h).abs() < 1e-9, "{v:?} vs {}", foot.h);
+        }
+        // Where the two meet they were pinned to one height, so the face
+        // between them is the few centimetres the road climbs across the
+        // bed's width, and no more.
+        assert!(s.num("rail_m2") < 5.0, "{s}");
     }
 
     #[test]

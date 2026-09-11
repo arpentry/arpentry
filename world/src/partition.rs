@@ -48,6 +48,14 @@ pub const TUNNEL_COVER_M: f64 = 0.5;
 /// under it.
 pub const BORE_COVER_M: f64 = TUNNEL_HEIGHT_M + TUNNEL_COVER_M;
 
+/// [`BORE_COVER_M`] for a way of `class`: its own tube and the cover over
+/// it. A standard-gauge railway needs a metre more than a road before a
+/// bore is what is there, because its tube is a metre taller
+/// ([`crate::structure::tube_m`]).
+pub fn bore_cover_m(class: &str) -> f64 {
+    crate::structure::tube_m(class) + TUNNEL_COVER_M
+}
+
 /// A grade sliver shorter than this, between two runs of one kind, is an edge
 /// mismatch rather than real at-grade road: one pier's ground reading coming
 /// up does not make a viaduct into two viaducts.
@@ -78,6 +86,7 @@ pub fn run(roads: &mut Roads, mut solved: Option<&mut Profiles>) -> Summary {
     let (mut found, mut lost, mut moved) = (0usize, 0usize, 0.0f64);
     let mut witnessed = 0usize;
     let (mut deck_m, mut bore_m) = (0.0f64, 0.0f64);
+    let mut portal_m = 0.0f64;
     let mut runs = 0usize;
     for (n, &w) in solving.iter().enumerate() {
         let Some(d) = derived.get(n) else {
@@ -101,6 +110,14 @@ pub fn run(roads: &mut Roads, mut solved: Option<&mut Profiles>) -> Summary {
             })
             .count();
         let out = spans(&ways[w], profiles.and_then(|ps| ps.get(n)), d, len);
+        let out = match profiles.and_then(|ps| ps.get(n)) {
+            Some(p) => {
+                let (out, opened) = open_portals(out, p);
+                portal_m += opened;
+                out
+            }
+            None => out,
+        };
         let structure = |list: &[Span]| -> Vec<Span> {
             list.iter().filter(|s| s.kind.is_structure()).copied().collect()
         };
@@ -176,7 +193,8 @@ pub fn run(roads: &mut Roads, mut solved: Option<&mut Profiles>) -> Summary {
         .with("found", found)
         .with("lost", lost)
         .with("witnessed", witnessed)
-        .with("moved_m", format!("{moved:.0}"));
+        .with("moved_m", format!("{moved:.0}"))
+        .with("portal_m", format!("{portal_m:.0}"));
     roads.ways = ways;
     roads.plan = plan;
     roads.spans = spans;
@@ -217,6 +235,79 @@ pub fn cut_at(way: &Way, index: usize) -> Vec<Polyline2> {
     out
 }
 
+/// `spans` with every bore's portal cutting given back to the ground, and
+/// how many metres of it there were.
+///
+/// **A portal is where the tube goes into the hill, not where the road
+/// does.** Between the two the road runs under the ground by less than its
+/// tube is tall: nothing fits over it, and until this the span piece carried
+/// it on, so no surface step paved it and the bench cut nothing — the
+/// terrain lay on the roadway, and the mouth a camera should see was hill.
+/// That stretch is an open cutting, and a cutting is ground: cut here, the
+/// surface steps pave it, the bench cuts it into the terrain and walls it
+/// where it is deeper than a face, and the tube starts where it fits.
+///
+/// The bore itself is not moved. Where it is — which runs are under the
+/// ground at all — is still [`spans`]'s and [`bore_bounds`]'s, elected on
+/// the line; this only says where along it the cut between a cutting and a
+/// tube falls, and it falls where the tube's roof first goes under the raw
+/// ground ([`roof_gap`]), interpolated between stations. Only an end that
+/// meets a ground piece is opened: a bore running on into a deck or off the
+/// way's end has no cutting in front of it.
+fn open_portals(spans: Vec<Span>, p: &Profile) -> (Vec<Span>, f64) {
+    let st = &p.stations;
+    let tube = crate::structure::tube_m(&p.class);
+    let gap = |k: usize| roof_gap(st[k].h, st[k].ground, tube);
+    // Where the roof crosses the ground between stations `i` (clear of it)
+    // and `j` (under it).
+    let fit = |i: usize, j: usize| {
+        let (gi, gj) = (gap(i), gap(j));
+        let t = if (gi - gj).abs() < f64::EPSILON { 0.0 } else { (gi / (gi - gj)).clamp(0.0, 1.0) };
+        st[i].s + (st[j].s - st[i].s) * t
+    };
+    let mut out: Vec<Span> = Vec::with_capacity(spans.len() + 2);
+    let mut opened = 0.0;
+    for (i, sp) in spans.iter().enumerate() {
+        if !matches!(sp.kind, Kind::Tunnel(_)) {
+            out.push(*sp);
+            continue;
+        }
+        let inside: Vec<usize> = (0..st.len()).filter(|&k| st[k].s > sp.a0 && st[k].s < sp.a1).collect();
+        let (Some(&f), Some(&l)) = (inside.iter().find(|&&k| gap(k) < 0.0), inside.iter().rev().find(|&&k| gap(k) < 0.0))
+        else {
+            out.push(*sp);
+            continue;
+        };
+        let before = i > 0 && spans[i - 1].kind == Kind::Ground;
+        let after = i + 1 < spans.len() && spans[i + 1].kind == Kind::Ground;
+        let t0 = if before && f > 0 { fit(f - 1, f).max(sp.a0) } else { sp.a0 };
+        let t1 = if after && l + 1 < st.len() { fit(l + 1, l).min(sp.a1) } else { sp.a1 };
+        let t0 = if t0 - sp.a0 > MIN_SPAN_M { t0 } else { sp.a0 };
+        let t1 = if sp.a1 - t1 > MIN_SPAN_M { t1 } else { sp.a1 };
+        if t1 - t0 < MIN_SPAN_M {
+            out.push(*sp);
+            continue;
+        }
+        if t0 > sp.a0 {
+            out.push(Span { a0: sp.a0, a1: t0, kind: Kind::Ground });
+        }
+        out.push(Span { a0: t0, a1: t1, kind: sp.kind });
+        if t1 < sp.a1 {
+            out.push(Span { a0: t1, a1: sp.a1, kind: Kind::Ground });
+        }
+        opened += (t0 - sp.a0) + (sp.a1 - t1);
+    }
+    // The cutting joins the approach it opens onto: one ground span.
+    let mut merged: Vec<Span> = Vec::with_capacity(out.len());
+    for sp in out {
+        match merged.last_mut() {
+            Some(last) if last.kind == Kind::Ground && sp.kind == Kind::Ground => last.a1 = sp.a1,
+            _ => merged.push(sp),
+        }
+    }
+    (merged, opened)
+}
+
 /// The signed daylight of the drawn tube at one station: how far a bore's
 /// **roof** stands above the reference. Negative is buried — the whole
 /// constant-section tube fits under the ground — and the zero crossing is
@@ -227,8 +318,8 @@ pub fn cut_at(way: &Way, index: usize) -> Vec<Polyline2> {
 /// is there at all. This asks whether the *thing that would be drawn* fits,
 /// and decides where it stops. A run can be deep enough to be a tunnel and
 /// still have tails the tube pokes out of.
-fn roof_gap(h: f64, ground: f64) -> f64 {
-    h + TUNNEL_HEIGHT_M - ground
+fn roof_gap(h: f64, ground: f64, tube: f64) -> f64 {
+    h + tube - ground
 }
 
 /// The bounds of a bore inside `[a0, a1]`: **its interior by the line, its
@@ -267,7 +358,8 @@ fn bore_bounds(p: &Profile, a0: f64, a1: f64) -> Option<(f64, f64)> {
     // checked.
     let st = &p.stations;
     let line = |k: usize| st[k].h - st[k].ground;
-    let roof = |k: usize| roof_gap(st[k].h, st[k].ground);
+    let tube = crate::structure::tube_m(&p.class);
+    let roof = |k: usize| roof_gap(st[k].h, st[k].ground, tube);
     let inside = |k: usize| st[k].s >= a0 - 1e-9 && st[k].s <= a1 + 1e-9;
 
     // The dominant buried run touching the window, scored over its whole
@@ -294,7 +386,7 @@ fn bore_bounds(p: &Profile, a0: f64, a1: f64) -> Option<(f64, f64)> {
 
     // Does the tube fit over the majority of that run?
     let fits = (f..=l).filter(|&k| roof(k) < 0.0).count();
-    let cross = |a: usize, b: usize, at: fn(&crate::world::Station) -> f64| {
+    let cross = |a: usize, b: usize, at: &dyn Fn(&crate::world::Station) -> f64| {
         let (ga, gb) = (at(&st[a]), at(&st[b]));
         if (ga - gb).abs() < f64::EPSILON {
             return st[a].s;
@@ -302,10 +394,10 @@ fn bore_bounds(p: &Profile, a0: f64, a1: f64) -> Option<(f64, f64)> {
         st[a].s + (st[b].s - st[a].s) * (ga / (ga - gb)).clamp(0.0, 1.0)
     };
     let line_of = |x: &crate::world::Station| x.h - x.ground;
-    let roof_of = |x: &crate::world::Station| roof_gap(x.h, x.ground);
+    let roof_of = |x: &crate::world::Station| roof_gap(x.h, x.ground, tube);
     if 2 * fits >= l - f + 1 {
-        let lo = if f > 0 { cross(f, f - 1, line_of) } else { st[f].s };
-        let hi = if l + 1 < st.len() { cross(l, l + 1, line_of) } else { st[l].s };
+        let lo = if f > 0 { cross(f, f - 1, &line_of) } else { st[f].s };
+        let hi = if l + 1 < st.len() { cross(l, l + 1, &line_of) } else { st[l].s };
         return Some((lo, hi));
     }
     // A surface gallery: pull each end back to the tube's own fit.
@@ -318,8 +410,8 @@ fn bore_bounds(p: &Profile, a0: f64, a1: f64) -> Option<(f64, f64)> {
     if f > l || roof(f) >= 0.0 {
         return None;
     }
-    let lo = if f > 0 && roof(f - 1) >= 0.0 { cross(f, f - 1, roof_of) } else { st[f].s };
-    let hi = if l + 1 < st.len() && roof(l + 1) >= 0.0 { cross(l, l + 1, roof_of) } else { st[l].s };
+    let lo = if f > 0 && roof(f - 1) >= 0.0 { cross(f, f - 1, &roof_of) } else { st[f].s };
+    let hi = if l + 1 < st.len() && roof(l + 1) >= 0.0 { cross(l, l + 1, &roof_of) } else { st[l].s };
     Some((lo, hi))
 }
 
@@ -517,10 +609,11 @@ pub fn derive(p: &Profile) -> Vec<Span> {
         return Vec::new();
     }
     let gap = |k: usize| st[k].h - st[k].reference;
+    let cover = bore_cover_m(&p.class);
     let kind_at = |k: usize| {
         if gap(k) > DECK_STANDOFF_M {
             Some(Kind::Bridge(1))
-        } else if gap(k) <= -BORE_COVER_M {
+        } else if gap(k) <= -cover {
             Some(Kind::Tunnel(-1))
         } else {
             None
@@ -548,7 +641,7 @@ pub fn derive(p: &Profile) -> Vec<Span> {
         while i + 1 < st.len() && kind_at(i + 1) == Some(kind) {
             i += 1;
         }
-        let level = if kind == Kind::Bridge(1) { DECK_STANDOFF_M } else { -BORE_COVER_M };
+        let level = if kind == Kind::Bridge(1) { DECK_STANDOFF_M } else { -cover };
         let a0 = if start == 0 { st[0].s } else { edge(start, start - 1, level) };
         let a1 = if i + 1 == st.len() { st[i].s } else { edge(i, i + 1, level) };
         if a1 > a0 {

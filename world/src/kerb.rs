@@ -238,9 +238,10 @@ pub fn run(roads: &Roads, surface: &Surface, facade: &Facade) -> (Kerb, Summary)
     let q = |f: f64| gaps.get(((gaps.len() as f64 - 1.0) * f).round() as usize).copied().unwrap_or(0.0);
     let rungs = poly::union_all(&pieces);
     let u = poly::fill_holes_under(poly::union_of(&[&surface.walk, &rungs]), PAVEMENT_HOLE_M2);
-    let pavement = facade.pavement(&u, &surface.carriageway);
+    let pavement = facade.pavement(&u, &surface.senior());
     let filled = poly::area(&pavement) - poly::area(&surface.walk);
-    let bare = Bare::new(&surface.carriageway, &pavement, &facade.footprints);
+    // A kerb against the track bed is not bare ground: the railway is there.
+    let bare = Bare::new(&surface.senior(), &pavement, &facade.footprints);
     let (gap_n, gap_of) = kerb_gap(&surface.carriageway, &bare, &attached_all);
     let summary = Summary::new()
         .with("stations", stations)

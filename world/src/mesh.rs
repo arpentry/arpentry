@@ -117,24 +117,29 @@ pub struct Stats {
 
 /// Triangulates the world's carriageway and pavement on its terrain.
 pub fn run(terrain: &Terrain, paving: Paving) -> (Mesh, Summary) {
-    let Paving { carriageway, walk: pavement } = paving;
+    let Paving { carriageway, walk: pavement, ballast } = paving;
     let ground = |p: Pt| height_at(terrain, p[0], p[1]);
     let (c, cs) = triangulate(carriageway, &terrain.grid, &ground);
     let (p, ps) = triangulate(pavement, &terrain.grid, &ground);
+    let (b, bs) = triangulate(ballast, &terrain.grid, &ground);
+    let all = [&cs, &ps, &bs];
+    let sum = |f: fn(&Stats) -> usize| all.iter().map(|s| f(s)).sum::<usize>();
+    let max = |f: fn(&Stats) -> f64| all.iter().map(|s| f(s)).fold(0.0f64, f64::max);
     let summary = Summary::new()
         .with("carriageway", format!("{}/{}", c.indices.len() / 3, c.positions.len()))
         .with("pavement", format!("{}/{}", p.indices.len() / 3, p.positions.len()))
-        .with("failed", cs.failed + ps.failed)
-        .with("washed", cs.washed + ps.washed)
-        .with("lossy", cs.lossy + ps.lossy)
-        .with("slivers", cs.slivers + ps.slivers)
-        .with("degenerate", cs.degenerate + ps.degenerate)
-        .with("centred", cs.centred + ps.centred)
-        .with("welded", cs.welded + ps.welded)
-        .with("lost_m2", format!("{:.1e}", cs.lost_m2 + ps.lost_m2))
-        .with("off_ground", format!("{:.1e}", cs.off_ground.max(ps.off_ground)))
-        .with("seam", format!("{:.1e}", cs.seam.max(ps.seam)));
-    (Mesh { carriageway: c, pavement: p }, summary)
+        .with("ballast", format!("{}/{}", b.indices.len() / 3, b.positions.len()))
+        .with("failed", sum(|s| s.failed))
+        .with("washed", sum(|s| s.washed))
+        .with("lossy", sum(|s| s.lossy))
+        .with("slivers", sum(|s| s.slivers))
+        .with("degenerate", sum(|s| s.degenerate))
+        .with("centred", sum(|s| s.centred))
+        .with("welded", sum(|s| s.welded))
+        .with("lost_m2", format!("{:.1e}", all.iter().map(|s| s.lost_m2).sum::<f64>()))
+        .with("off_ground", format!("{:.1e}", max(|s| s.off_ground)))
+        .with("seam", format!("{:.1e}", max(|s| s.seam)));
+    (Mesh { carriageway: c, pavement: p, ballast: b }, summary)
 }
 
 /// `shapes` as triangles conforming to `grid`, every one inside one of

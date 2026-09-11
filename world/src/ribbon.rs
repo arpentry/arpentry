@@ -59,7 +59,7 @@ type Leaving = HashMap<(i64, i64), Vec<(usize, [f64; 2])>>;
 pub fn run(roads: &Roads) -> (Ribbons, Summary) {
     let mut out = Ribbons::default();
     let (mut contours, mut vertices, mut squared) = (0usize, 0usize, 0usize);
-    let mut area = [0.0f64; 2];
+    let mut area = [0.0f64; 3];
     let road_ends = road_ends(&roads.plan);
     let leaving = leaving(&roads.plan);
     for (w, line) in roads.plan.iter().enumerate() {
@@ -87,37 +87,44 @@ pub fn run(roads: &Roads) -> (Ribbons, Summary) {
         .with("vertices", vertices)
         .with("squared_ends", squared)
         .with("carriageway_m2", format!("{:.0}", area[Family::Carriageway as usize]))
-        .with("walk_m2", format!("{:.0}", area[Family::Walk as usize]));
+        .with("walk_m2", format!("{:.0}", area[Family::Walk as usize]))
+        .with("rail_m2", format!("{:.0}", area[Family::Rail as usize]));
     (out, summary)
 }
 
-/// How many carriageway ends lie at each connector.
-fn road_ends(plan: &[Polyline2]) -> HashMap<(i64, i64), usize> {
-    let mut out: HashMap<(i64, i64), usize> = HashMap::new();
-    for way in plan.iter().filter(|w| width::family(&w.class) == Family::Carriageway) {
+/// How many ends of each family's ways lie at each connector: a carriageway
+/// or a railway joins only its own kind.
+fn road_ends(plan: &[Polyline2]) -> HashMap<(i64, i64), [usize; 3]> {
+    let mut out: HashMap<(i64, i64), [usize; 3]> = HashMap::new();
+    for way in plan {
         let n = way.pts.len();
         if n < 2 {
             continue;
         }
+        let family = width::family(&way.class);
         for p in [way.pts[0], way.pts[n - 1]] {
-            *out.entry(connector(p)).or_default() += 1;
+            out.entry(connector(p)).or_default()[family as usize] += 1;
         }
     }
     out
 }
 
 /// Whether each end of way `w` is round: only where the end is a joint the
-/// disc closes. A carriageway's where another carriageway ends there; a
-/// pedestrian way's where another way meets it at a corner. A dead end, a
-/// carriageway running into a pedestrian way, and a pedestrian way cut by
-/// one running through are square.
-fn caps(w: usize, way: &Polyline2, road_ends: &HashMap<(i64, i64), usize>, leaving: &Leaving) -> [bool; 2] {
+/// disc closes. A carriageway's where another carriageway ends there, a
+/// railway's where another railway does; a pedestrian way's where another
+/// way meets it at a corner. A dead end, a carriageway running into a
+/// pedestrian way, a buffer stop, and a pedestrian way cut by one running
+/// through are square.
+fn caps(w: usize, way: &Polyline2, road_ends: &HashMap<(i64, i64), [usize; 3]>, leaving: &Leaving) -> [bool; 2] {
     let n = way.pts.len();
     if n < 2 {
         return [true, true];
     }
-    let round = |p: [f64; 2]| match width::family(&way.class) {
-        Family::Carriageway => road_ends.get(&connector(p)).copied().unwrap_or(0) > 1,
+    let family = width::family(&way.class);
+    let round = |p: [f64; 2]| match family {
+        Family::Carriageway | Family::Rail => {
+            road_ends.get(&connector(p)).map_or(0, |e| e[family as usize]) > 1
+        }
         Family::Walk => joins_at(leaving, p, w),
     };
     [round(way.pts[0]), round(way.pts[n - 1])]

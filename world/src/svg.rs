@@ -112,10 +112,10 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
         structure(&mut s, st, &view);
     }
     if let Some(b) = &world.bench {
-        mesh(&mut s, &[("carriageway", &b.carriageway), ("pavement", &b.pavement)], &view);
+        mesh(&mut s, &[("carriageway", &b.carriageway), ("pavement", &b.pavement), ("ballast", &b.ballast)], &view);
         bench(&mut s, b, &view);
     } else if let Some(m) = &world.mesh {
-        mesh(&mut s, &[("carriageway", &m.carriageway), ("pavement", &m.pavement)], &view);
+        mesh(&mut s, &[("carriageway", &m.carriageway), ("pavement", &m.pavement), ("ballast", &m.ballast)], &view);
     }
     // The crossings last of the layers: a mark, not a surface, and the
     // one thing here drawn over the asphalt on purpose — a ring under an
@@ -179,9 +179,11 @@ fn ribbon(s: &mut String, ribbons: &[&Ribbon]) {
 /// The surface layer: one filled path per family, opaque, because nothing
 /// overlaps any more. Each family is drawn only until a later step has
 /// replaced it: the walk by the kerb's pavement, the carriageway by the
-/// fillet's.
+/// fillet's. The ballast is laid once and re-cut by nothing, so it is
+/// always drawn here.
 fn surface(s: &mut String, surf: &Surface, carriageway: bool, walk: bool, view: &Rect) {
     s.push_str("<g id=\"surface\">\n");
+    filled(s, "ballast", BALLAST_FILL, &surf.ballast, view);
     if carriageway {
         filled(s, "carriageway", "#8c8c94", &surf.carriageway, view);
     }
@@ -190,6 +192,9 @@ fn surface(s: &mut String, surf: &Surface, carriageway: bool, walk: bool, view: 
     }
     s.push_str("</g>\n");
 }
+
+/// The track bed's fill: the server's `rail_surface`.
+const BALLAST_FILL: &str = "#9e968a";
 
 /// The kerb layer: the pavement, its inner edge the kerb line, until the
 /// fillet re-cuts it.
@@ -485,6 +490,11 @@ pub fn color(class: &str, subclass: &str) -> &'static str {
             ("pedestrian", _) => "#d0a060",
             ("track", _) => "#907050",
             _ => "#5a9a48",
+        },
+        Family::Rail => match class {
+            "funicular" => "#7a6450",
+            "narrow_gauge" => "#857a6c",
+            _ => "#6f675c",
         },
     }
 }

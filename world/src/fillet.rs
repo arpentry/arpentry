@@ -139,8 +139,11 @@ pub fn run(roads: &Roads, surface: &Surface, k: &Kerb, facade: &Facade) -> (Fill
     // pavement, at least the narrowest pavement is laid back outside the
     // new kerb, so a sidewalk wraps the corner rather than ending at it.
     let laid_back = poly::dilate(&poly::intersect(&fillets, &k.pavement), kerb::WALK_MIN_M);
-    let pavement = facade.pavement(&poly::union_of(&[&k.pavement, &laid_back]), &carriageway);
-    let bare = kerb::Bare::new(&carriageway, &pavement, &facade.footprints);
+    // What the pavement stops at, and what is not bare ground beside a
+    // kerb: the asphalt and the track bed.
+    let senior = poly::union_of(&[&carriageway, &surface.ballast]);
+    let pavement = facade.pavement(&poly::union_of(&[&k.pavement, &laid_back]), &senior);
+    let bare = kerb::Bare::new(&senior, &pavement, &facade.footprints);
     let (gap_n, gap_of) = kerb::kerb_gap(&carriageway, &bare, &k.attached);
     let summary = Summary::new()
         .with("corners", corners.len())

@@ -50,10 +50,26 @@
 //! at a time, ascending, and the profile re-solves after each: when a piece
 //! at level ±2 asks for its clearance everything at ±1 is already final,
 //! which is what makes the lower side of a demand a constant rather than
-//! another unknown. Rail, when it arrives, is senior and enters here as a
-//! constant on both sides; a bore that belongs to it may not yield at all,
-//! and §4.5 drops the demand rather than lifting a road over a railway that
-//! is underground.
+//! another unknown.
+//!
+//! **A railway is senior, and enters as a constant on both sides.** Where a
+//! railway and a road cross, the road moves whatever the ordinals say: it
+//! lifts over the rails by [`RAIL_CLEARANCE_M`] and the slab, or dips under
+//! a rail deck by a road's headroom. A bore that belongs to a railway may
+//! not yield at all, and a road over one is not asked to clear it — §4.5
+//! drops the demand rather than lifting a road over a railway that is
+//! underground (`senior`; the server's `in_immovable_bore`, which it added
+//! after "a tertiary street ramped out of its own portal … on a 9 m
+//! embankment nobody built"). Nor does a road's floor travel into a railway
+//! through a connector they share: the network the floor spreads on joins a
+//! connector's stations only within one of the two, so a lift ramping
+//! along a street stops at the level crossing rather than humping the
+//! track — the server's "128 % hump in a cable railway" is what a junior
+//! charging a senior looks like. Two railways crossing are two peers, and
+//! the ordinals decide between them as between two roads.
+//!
+//! The level crossing is not here: it is a connector the two ways share,
+//! and the profile pins both to the railway's height there.
 
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
@@ -61,7 +77,7 @@ use crate::grade;
 use crate::poly::{self, Pt};
 use crate::profile;
 use crate::step::Summary;
-use crate::structure::{DECK_THICKNESS_M, TUNNEL_HEIGHT_M, WALK_DECK_M};
+use crate::structure::{DECK_THICKNESS_M, WALK_DECK_M};
 use crate::width::{self, Family};
 use crate::world::{connector, Crossing, Crossings, Kind, Profile, Profiles, Reference, Roads, Way};
 
@@ -69,6 +85,10 @@ use crate::world::{connector, Crossing, Crossings, Kind, Profile, Profiles, Refe
 /// the Swiss norm's 4.5 m plus a construction margin, and the server's
 /// number (`data/plans/surface-leaves-the-plane-2026-09-08.md` §5).
 pub const ROAD_CLEARANCE_M: f64 = 5.0;
+
+/// The headroom anything needs over a railway, in metres: more than a
+/// road's, for the catenary. The server's `priors::RAIL_CLEARANCE_M`.
+pub const RAIL_CLEARANCE_M: f64 = 7.0;
 
 /// Slack, in metres, before a clearance counts as short: the solve's own
 /// rounding along a chord and a ramp, not a budget.
@@ -111,7 +131,7 @@ pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossing
         .ways
         .iter()
         .enumerate()
-        .filter(|(_, w)| width::family(&w.class) == Family::Carriageway)
+        .filter(|(_, w)| width::family(&w.class).solves())
         .map(|(i, w)| {
             let mut arc = Vec::with_capacity(w.pts.len());
             let mut at = 0.0;
@@ -141,7 +161,10 @@ pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossing
         // An indoor stretch is not stacked against the ground and takes no
         // part in a demand, whatever its way solved.
         let indoor = a_kind == Kind::Indoor || b_kind == Kind::Indoor;
-        let (a_level, b_level) = (level_of(a_kind), level_of(b_kind));
+        // A level is read through the way: a structure's ordinal, or the
+        // layer of a stretch the source put at a level without one — a road
+        // under a viaduct is on the ground and still under it.
+        let (a_level, b_level) = (a.way.level_at_arc(a_arc), b.way.level_at_arc(b_arc));
         // An axis with no profile cannot take part in a demand at all, at
         // whatever level it was drawn: that is the orphan §4.5 requires to
         // read zero, and it is asked before the level, so an indoor way —
@@ -157,16 +180,22 @@ pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossing
             let (up_arc, low_arc) = if up_is_a { (a_arc, b_arc) } else { (b_arc, a_arc) };
             let (up_level, low_level) = if up_is_a { (a_level, b_level) } else { (b_level, a_level) };
             let low_kind = if up_is_a { b_kind } else { a_kind };
+            let (up_rail, low_rail) = (is_rail(&up.way.class), is_rail(&low.way.class));
             pairs.push(Pair {
                 upper: (up.profile.expect("solved"), up_level),
                 lower: (low.profile.expect("solved"), low_level),
                 up_at: up.way.span_at_arc(up_arc),
                 low_at: low.way.span_at_arc(low_arc),
-                need: need(&up.way.class, low_kind),
+                need: need(&up.way.class, &low.way.class, low_kind),
                 at,
                 had: 0.0,
                 demanded: false,
                 unstacked: false,
+                up_rail,
+                low_rail,
+                // A road over a railway's bore: the bore may not yield and
+                // the road is not asked to clear it.
+                senior: low_rail && !up_rail && matches!(low_kind, Kind::Tunnel(_)),
             });
         }
     }
@@ -206,7 +235,7 @@ pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossing
     let mut spent = 0usize;
     for m in magnitudes {
         let (mut up, mut down) = (Vec::new(), Vec::new());
-        for pair in pairs.iter_mut().filter(|p| p.magnitude() == m) {
+        for pair in pairs.iter_mut().filter(|p| p.magnitude() == m && !p.senior) {
             let short = pair.need - separation(&profiles, pair);
             if short <= CLEARANCE_EPS {
                 continue;
@@ -219,14 +248,12 @@ pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossing
                 continue;
             }
             pair.demanded = true;
-            let (a, b) = (pair.upper.1.abs(), pair.lower.1.abs());
-            // The heavier ordinal carries the whole demand; a tie — a deck
-            // over a bore — splits it, each moving away from the other.
-            if a >= b {
-                charge(&mut up, pair.upper.0, pair.at, pair.up_at, if a > b { short } else { short / 2.0 }, &profiles, &joins, &net);
+            let (lift, dip) = pair.shares(short);
+            if lift > 0.0 {
+                charge(&mut up, pair.upper.0, pair.at, pair.up_at, lift, &profiles, &joins, &net);
             }
-            if b >= a {
-                charge(&mut down, pair.lower.0, pair.at, pair.low_at, if b > a { short } else { short / 2.0 }, &profiles, &joins, &net);
+            if dip > 0.0 {
+                charge(&mut down, pair.lower.0, pair.at, pair.low_at, dip, &profiles, &joins, &net);
             }
         }
         if up.is_empty() && down.is_empty() {
@@ -258,13 +285,15 @@ pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossing
         .collect();
     let demands = pairs.iter().filter(|p| p.demanded).count();
     let unstacked = pairs.iter().filter(|p| p.unstacked).count();
+    let senior = pairs.iter().filter(|p| p.senior).count();
     // A pair the geometry overruled is not a clearance the model failed to
     // meet: it is one it declined to believe, and it is counted as such
-    // rather than left to inflate `clearance`.
+    // rather than left to inflate `clearance`. A road over a railway's
+    // bore is the same: a demand §4.5 does not make.
     let short: Vec<f64> = crossings
         .iter()
         .zip(pairs.iter())
-        .filter(|(_, p)| !p.unstacked)
+        .filter(|(_, p)| !p.unstacked && !p.senior)
         .map(|(c, _)| c.shortfall())
         .filter(|s| *s > CLEARANCE_EPS)
         .collect();
@@ -276,9 +305,10 @@ pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossing
         .with("orphan", orphan)
         .with("demands", demands)
         .with("unstacked", unstacked)
+        .with("senior", senior)
         .with("lift", format!("{lift:.2}"))
         .with_share("ramped", spent, stations)
-        .with_share("clearance", short.len(), crossings.len() - unstacked)
+        .with_share("clearance", short.len(), crossings.len() - unstacked - senior)
         .with("short", format!("{:.2}", short.iter().fold(0.0f64, |m, s| m.max(*s))));
     (Crossings { crossings, same, floor }, Profiles { profiles }, summary)
 }
@@ -317,15 +347,6 @@ struct Hit {
     at: Pt,
 }
 
-/// The level ordinal of a piece: an ordering against the ground, never a
-/// height. Indoor is not stacked against the ground at all and reads 0.
-fn level_of(kind: Kind) -> i64 {
-    match kind {
-        Kind::Bridge(n) | Kind::Tunnel(n) => n,
-        Kind::Ground | Kind::Indoor => 0,
-    }
-}
-
 /// One clearance demand: two solved pieces and what must separate them.
 ///
 /// A side is `(profile, arc window)`: the profile is the whole way now, and a
@@ -347,6 +368,11 @@ struct Pair {
     /// The ordinals ordered this pair and the geometry contradicted them by
     /// more than [`MAX_CLEARANCE_LIFT_M`]: not a stacked pair at all.
     unstacked: bool,
+    /// Which side is a railway.
+    up_rail: bool,
+    low_rail: bool,
+    /// A road over a railway's bore: no demand at all.
+    senior: bool,
 }
 
 impl Pair {
@@ -355,23 +381,49 @@ impl Pair {
     fn magnitude(&self) -> i64 {
         self.upper.1.abs().max(self.lower.1.abs())
     }
+
+    /// How a deficit of `short` is divided: what the upper side lifts and
+    /// what the lower side dips.
+    ///
+    /// Between a railway and a road the road takes all of it, whichever of
+    /// the two the ordinals put on top. Between peers the heavier ordinal
+    /// carries the whole demand, and a tie — a deck over a bore — splits
+    /// it, each moving away from the other.
+    fn shares(&self, short: f64) -> (f64, f64) {
+        if self.up_rail != self.low_rail {
+            return if self.up_rail { (0.0, short) } else { (short, 0.0) };
+        }
+        let (a, b) = (self.upper.1.abs(), self.lower.1.abs());
+        match a.cmp(&b) {
+            std::cmp::Ordering::Greater => (short, 0.0),
+            std::cmp::Ordering::Less => (0.0, short),
+            std::cmp::Ordering::Equal => (short / 2.0, short / 2.0),
+        }
+    }
+}
+
+/// Whether a way of `class` is a railway.
+fn is_rail(class: &str) -> bool {
+    width::family(class) == Family::Rail
 }
 
 /// What must separate the two roadways at a crossing, in metres.
 ///
 /// Over a road at grade the gap is the headroom the lower one needs plus
 /// the slab the upper one hangs into it — a road bridge's or, when the
-/// walks come to solve, a footbridge's. Over a road in a *bore* it is the
+/// walks come to solve, a footbridge's. Over a railway the headroom is the
+/// catenary's, [`RAIL_CLEARANCE_M`]. Over a road in a *bore* it is the
 /// bore's own section instead: the tube is already under the ground the
 /// upper road rides on, so what governs is the tunnel's headroom and the
 /// cover carrying the roadway above it (§4.5). The two read the same
 /// number today, because a tunnel is as high inside as a road is over a
 /// road; they are written apart because they are different quantities and
 /// will not stay equal.
-fn need(upper_class: &str, lower_kind: Kind) -> f64 {
+fn need(upper_class: &str, lower_class: &str, lower_kind: Kind) -> f64 {
     let slab = if width::family(upper_class) == Family::Walk { WALK_DECK_M } else { DECK_THICKNESS_M };
     match lower_kind {
-        Kind::Tunnel(_) => TUNNEL_HEIGHT_M + slab,
+        Kind::Tunnel(_) => crate::structure::tube_m(lower_class) + slab,
+        _ if is_rail(lower_class) => RAIL_CLEARANCE_M + slab,
         _ => ROAD_CLEARANCE_M + slab,
     }
 }
@@ -520,8 +572,15 @@ impl Net {
         }
         base.push(n);
         let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+        let rail: Vec<bool> = profiles.iter().map(|p| is_rail(&p.class)).collect();
         for (i, p) in profiles.iter().enumerate() {
-            let ramp = grade::of(&p.class).ceiling.unwrap_or(f64::INFINITY);
+            // The grade the way was held to: a railway's measured one.
+            let g = grade::of(&p.class);
+            let ramp = if g.limited() {
+                profile::ceiling(&p.class, &p.stations, &p.spans)
+            } else {
+                g.ceiling.unwrap_or(f64::INFINITY)
+            };
             for k in 1..p.stations.len() {
                 let w = ramp * (p.stations[k].s - p.stations[k - 1].s);
                 adj[base[i] + k - 1].push((base[i] + k, w));
@@ -534,16 +593,21 @@ impl Net {
         // travel. Joined at the ends alone, the deck rose and the street that
         // meets it at the abutment stayed on the ground: `structure abutment`
         // 5.380 m of joint that cannot meet.
-        let mut at: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+        //
+        // **Within one stratum only.** A railway and a road sharing a
+        // connector — a level crossing — are not joined here, so a floor
+        // spreading along either stops at the other: a junior never
+        // charges a senior, and a railway's own lift is the railway's.
+        let mut at: HashMap<(i64, i64), Vec<(usize, bool)>> = HashMap::new();
         for (i, p) in profiles.iter().enumerate() {
             for k in 0..p.stations.len() {
-                at.entry(connector(p.stations[k].p)).or_default().push(base[i] + k);
+                at.entry(connector(p.stations[k].p)).or_default().push((base[i] + k, rail[i]));
             }
         }
         for group in at.values() {
-            for &a in group {
-                for &b in group {
-                    if a != b {
+            for &(a, ra) in group {
+                for &(b, rb) in group {
+                    if a != b && ra == rb {
                         adj[a].push((b, 0.0));
                     }
                 }
@@ -838,6 +902,7 @@ mod tests {
             subclass: String::new(),
             width_m: 5.5,
             spans: vec![crate::world::Span { a0: 0.0, a1: crate::roads::length(&pts), kind: Kind::Ground }],
+            layers: Vec::new(),
             pts,
         };
         w.roads = Some(crate::world::Roads {
@@ -907,6 +972,45 @@ mod tests {
         let floor = &w.crossing.as_ref().unwrap().floor;
         assert!(floor.iter().flatten().any(|v| *v > 6.0), "nothing lifted");
         assert!(floor.iter().flatten().any(|v| *v == 0.0), "everything lifted");
+    }
+
+    /// A road bridge over a railway clears the catenary, and the railway
+    /// underneath it does not move at all.
+    #[test]
+    fn a_road_lifts_over_a_railway_by_the_catenary_s_headroom() {
+        let (w, s) = world("flat", "net:overpass?len=300&class=standard_gauge&leg=residential");
+        assert_eq!(s.num("demands"), 1.0, "{s}");
+        assert_eq!(s.num("clearance"), 0.0, "{s}");
+        assert!((s.num("lift") - (RAIL_CLEARANCE_M + DECK_THICKNESS_M)).abs() < 0.01, "{s}");
+        let rail = profile_of(&w, "road", Kind::Ground);
+        assert_eq!(rail.class, "standard_gauge");
+        assert!(rail.stations.iter().all(|st| st.h == 400.0), "{:?}", rail.stations[0]);
+    }
+
+    /// **A railway is never the one that moves.** A rail bridge over a road
+    /// on flat ground: the ordinals say the bridge lifts, the strata say the
+    /// railway is senior, and the road dips under it instead. And a road
+    /// over a railway's bore is not asked to clear it at all.
+    #[test]
+    fn a_railway_is_never_the_one_that_moves() {
+        let (w, s) = world("flat", "net:overpass?len=300&leg=standard_gauge");
+        assert_eq!(s.num("demands"), 1.0, "{s}");
+        let rail = profile_of(&w, "leg", Kind::Bridge(1));
+        assert!(rail.stations.iter().all(|st| st.h == 400.0), "the railway moved: {:?}", rail.stations[0]);
+        let road = profile_of(&w, "road", Kind::Ground);
+        let low = road.stations.iter().map(|st| st.h).fold(f64::INFINITY, f64::min);
+        assert!(low < 400.0 - ROAD_CLEARANCE_M, "the road did not dip: {low} {s}");
+        // The floor went down the road and nowhere else.
+        let floor = &w.crossing.as_ref().unwrap().floor;
+        let (ri, _) = w.profile.as_ref().unwrap().profiles.iter().enumerate().find(|(_, p)| p.id == "leg").unwrap();
+        assert!(floor[ri].iter().all(|v| *v == 0.0), "a floor on the railway");
+
+        let (w, s) = world("flat", "net:underpass?len=300&leg=standard_gauge");
+        assert_eq!(s.num("senior"), 1.0, "{s}");
+        assert_eq!(s.num("demands"), 0.0, "{s}");
+        assert_eq!(s.get("clearance"), Some("0/0 (0.00%)"), "{s}");
+        let road = profile_of(&w, "road", Kind::Ground);
+        assert!(road.stations.iter().all(|st| st.h == 400.0), "{:?}", road.stations[0]);
     }
 
     #[test]

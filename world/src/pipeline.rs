@@ -146,12 +146,15 @@ pub fn apply(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary
             summary
         }
         Step::Bench => {
+            // The span pieces too: where a ground piece ends against a
+            // tunnel is a mouth, and the bench must leave it open.
             let (b, summary) = bench::run(
                 &extent.rect,
                 terrain(world),
                 profiles(world),
                 mesh(world),
                 paving(world),
+                &roads(world).spans,
             );
             world.bench = Some(b);
             summary
@@ -193,6 +196,7 @@ fn paving(world: &World) -> Paving<'_> {
     Paving {
         carriageway: &fillet(world).carriageway,
         walk: world.room.as_ref().map_or(&fillet(world).pavement, |r| &r.pavement),
+        ballast: &surface(world).ballast,
     }
 }
 

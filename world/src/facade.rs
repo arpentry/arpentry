@@ -101,7 +101,17 @@ pub fn run(
         },
     };
     let footprints = poly::union_all(&read.shapes);
-    let (passage_corridors, passages, passage_m) = corridors(&roads.plan, &footprints);
+    // A railway asks nothing of a building: it runs under a station roof
+    // rather than through a passage the building yields, and its ballast
+    // does not stop at a wall. Given a corridor, a train shed's footprint
+    // shrank by the tracks' width and the pavement was let into the hall.
+    let plan: Vec<crate::world::Polyline2> = roads
+        .plan
+        .iter()
+        .filter(|w| crate::width::family(&w.class) != crate::width::Family::Rail)
+        .cloned()
+        .collect();
+    let (passage_corridors, passages, passage_m) = corridors(&plan, &footprints);
     // The solid is the footprints less the corridors themselves, whose
     // edges cross the walls at an angle. Subtracting the passages (the
     // corridors already cut to the footprints) instead left a hairline of
@@ -122,9 +132,9 @@ pub fn run(
     } else {
         poly::erode(&poly::dilate(&footprints, POCKET_M), POCKET_M)
     };
-    let (_, lanes_all, _) = corridors(&roads.plan, &closed);
+    let (_, lanes_all, _) = corridors(&plan, &closed);
     let lanes = lanes_all.saturating_sub(passages);
-    let open = poly::difference(&closed, &poly::union_all(&all_corridors(&roads.plan)));
+    let open = poly::difference(&closed, &poly::union_all(&all_corridors(&plan)));
     let built = poly::union_of(&[&open, &solid]);
     let summary = Summary::new()
         .with("footprints", read.count)

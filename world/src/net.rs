@@ -12,7 +12,9 @@
 //! net:tee[?d=8][&hook=5]                      two halves of it and a leg from the north, meeting at the origin; with `d`, a sidewalk `d` m off both axes wrapping the north-west corner; with `hook`, road-e turns back north on that radius
 //! net:cross                                   four legs meeting at the origin
 //! net:overpass[?span=0.35,0.65&level=1]       the way along x and a leg along y crossing it, mapped as a bridge over the crossing: interiors crossing, no shared connector
+//!   [&leg=CLASS]                              the leg of another class: `leg=standard_gauge` is a rail bridge over the road, `class=standard_gauge&leg=residential` a road bridge over the railway
 //! net:underpass[?span=0.35,0.65&level=1]      the same with the leg mapped as a tunnel
+//! net:level[?rail=standard_gauge]             the way along x and a railway along y through one connector in the interior of both: a level crossing, as Overture maps every one
 //! net:hairpin?angle=20                        one way bent by `angle` degrees at the origin
 //! net:dual?gap=4                              two ways, their kerbs `gap` m apart
 //! net:sidewalk?d=6[&gap=0]                    the way and a sidewalk `d` m off its axis, in two halves `gap` m apart if `gap`
@@ -95,13 +97,25 @@ pub fn parse(spec: &str) -> Result<Vec<Way>, String> {
                 Some(_) => span_of(&params)?.expect("span= is set").0,
             };
             let mut ways = vec![x_road("road")];
-            for mut w in spanned("leg", class, "", 0.0, half, Some((span, kind))) {
+            let leg = params.get("leg").unwrap_or(class);
+            for mut w in spanned("leg", leg, "", 0.0, half, Some((span, kind))) {
                 for p in &mut w.pts {
                     *p = [p[1], p[0]];
                 }
                 ways.push(w);
             }
             ways
+        }
+        // A railway crossing the road at grade. Overture does not cut
+        // either way at a level crossing's connector — every one of the
+        // loop box's 48 lies in the interior of both — so each way is
+        // whole and has a vertex there, which is all that joins them.
+        "level" => {
+            let rail = params.get("rail").unwrap_or("standard_gauge");
+            vec![
+                road("road", vec![[-half, 0.0], [0.0, 0.0], [half, 0.0]]),
+                line("rail", rail, "", vec![[0.0, -half], [0.0, 0.0], [0.0, half]]),
+            ]
         }
         "cross" => vec![
             road("road-w", vec![[-half, 0.0], [0.0, 0.0]]),
@@ -274,6 +288,7 @@ fn line(id: &str, class: &str, subclass: &str, pts: Vec<[f64; 2]>) -> Way {
         width_m: crate::width::of(class, subclass),
         pts,
         spans: vec![Span { a0: 0.0, a1: len, kind: Kind::Ground }],
+        layers: Vec::new(),
     }
 }
 
@@ -324,6 +339,7 @@ mod tests {
             ("net:stub", 2),
             ("net:driveway", 4),
             ("net:roundabout", 9),
+            ("net:level", 2),
         ] {
             let ways = parse(spec).unwrap();
             assert_eq!(ways.len(), n, "{spec}");

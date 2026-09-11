@@ -27,6 +27,7 @@
 use std::path::Path;
 
 use arpentry_server::geoparquet::{GeoParquet, ReadError};
+use arpentry_server::levels::LevelRun;
 use arpentry_server::project::Bounds;
 use arpentry_server::value::{str_of, width_rules_m, Props, Value};
 
@@ -50,13 +51,14 @@ pub const COLUMNS: &[&str] = &[
     "subclass",
     "level_rules",
     "road_flags",
+    "rail_flags",
     "width_rules",
     "access_restrictions",
 ];
 
-/// The way classes kept: every class [`crate::width::of`] gives a width. Rail
-/// and water are out, as is anything with no surface a person or a car
-/// stands on.
+/// The road classes kept: every class [`crate::width::of`] gives a width.
+/// Water is out, as is anything with no surface a person or a car stands on;
+/// the railways kept are [`width::RAIL_CLASSES`], under `subtype = rail`.
 const CLASSES: &[&str] = &[
     "motorway",
     "trunk",
@@ -95,12 +97,80 @@ pub struct Read {
     pub measured: usize,
     /// Of the kept, the one-way carriageways.
     pub oneway: usize,
+    /// Of the kept, the railways.
+    pub rail: usize,
+    /// Railways not kept: street-running rail and `unknown`, which have no
+    /// formation of their own ([`width::RAIL_CLASSES`]).
+    pub street_rail: usize,
+    /// Of the kept, the ways the source put at a level somewhere without a
+    /// bridge or a tunnel there: ordered, not raised or buried.
+    pub layered: usize,
 }
 
-/// Whether a feature's properties name a way with a surface.
+/// What the source's levels and flags make of a segment, as fractions of
+/// its length: the **structures** — every `is_bridge` or `is_tunnel` stretch,
+/// with the ordinal of the level rule of its own sign that overlaps it most,
+/// or ±1 where none does — and the **layers**: every stretch of a level
+/// rule no flag of its sign covers, with its level.
+///
+/// **A level is an ordering, not a structure.** Overture takes a segment's
+/// level from OSM's `layer`, which says only what is drawn over what, and its
+/// flags from `bridge` and `tunnel`. Read as one signal, a level −1 made a
+/// tunnel: Avenue de Naye is mapped at −1 for 500 m because it runs under the
+/// Viaduc de Chillon, with no tunnel flag, and the world buried it — first as
+/// a bore the terrain lay on, then as a 500 m gallery beside the lake. On the
+/// loop box the flags and the rules agree on 215 stretches; 23 carry a level
+/// and no flag (18 of them roads below the ground, 691 m), and those are what
+/// this makes ground. A structure the flags do not claim can still be one:
+/// the terrain derives it ([`crate::partition`]), and there the geometry is
+/// the evidence rather than the ordinal.
+pub fn structures(rules: &[LevelRun], flags: &[LevelRun]) -> (Vec<(f64, f64, Kind)>, Vec<(f64, f64, i64)>) {
+    let same = |a: i64, b: i64| (a > 0) == (b > 0);
+    let overlap = |a: &LevelRun, b: &LevelRun| (a.end.min(b.end) - a.start.max(b.start)).max(0.0);
+    let off = flags
+        .iter()
+        .filter(|f| f.level != 0)
+        .map(|f| {
+            let ordinal = rules
+                .iter()
+                .filter(|r| r.level != 0 && same(r.level, f.level) && overlap(r, f) > 0.0)
+                .max_by(|a, b| overlap(a, f).total_cmp(&overlap(b, f)))
+                .map_or(f.level, |r| r.level);
+            (f.start, f.end, if f.level > 0 { Kind::Bridge(ordinal) } else { Kind::Tunnel(ordinal) })
+        })
+        .collect();
+    let mut layers = Vec::new();
+    for r in rules.iter().filter(|r| r.level != 0) {
+        let mut cut: Vec<(f64, f64)> =
+            flags.iter().filter(|f| f.level != 0 && same(f.level, r.level)).map(|f| (f.start, f.end)).collect();
+        cut.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut at = r.start;
+        for (s, e) in cut {
+            if e <= at || s >= r.end {
+                continue;
+            }
+            if s - at > SPAN_EPS {
+                layers.push((at, s, r.level));
+            }
+            at = at.max(e);
+        }
+        if r.end - at > SPAN_EPS {
+            layers.push((at, r.end, r.level));
+        }
+    }
+    (off, layers)
+}
+
+/// Whether a feature's properties name a way with a surface: a road class
+/// under `subtype = road` (or none), or an independent railway under
+/// `subtype = rail`.
 pub fn keep(props: &Props) -> bool {
-    let subtype_ok = matches!(str_of(props, "subtype"), None | Some("road"));
-    subtype_ok && str_of(props, "class").is_some_and(|c| CLASSES.contains(&c))
+    let class = str_of(props, "class");
+    match str_of(props, "subtype") {
+        None | Some("road") => class.is_some_and(|c| CLASSES.contains(&c)),
+        Some("rail") => class.is_some_and(|c| width::RAIL_CLASSES.contains(&c)),
+        _ => false,
+    }
 }
 
 /// Reads the ways of `path` touching `bbox`, projected into `frame` and
@@ -113,6 +183,7 @@ pub fn read(path: &Path, bbox: &Bounds, frame: &Frame, rect: &Rect) -> Result<Re
         let f = feature?;
         out.features += 1;
         if !keep(&f.properties) {
+            out.street_rail += (str_of(&f.properties, "subtype") == Some("rail")) as usize;
             continue;
         }
         out.kept += 1;
@@ -123,11 +194,12 @@ pub fn read(path: &Path, bbox: &Bounds, frame: &Frame, rect: &Rect) -> Result<Re
         let oneway = f.properties.iter().any(|(k, v)| k == "oneway" && matches!(v, Value::Bool(true)));
         out.measured += measured.is_some() as usize;
         out.oneway += oneway as usize;
+        out.rail += (width::family(&class) == width::Family::Rail) as usize;
         let width_m = width::of_way(&class, &subclass, oneway, measured);
-        let off: Vec<(f64, f64, Kind)> = f
-            .level_runs
-            .iter()
-            .map(|r| (r.start, r.end, if r.level > 0 { Kind::Bridge(r.level) } else { Kind::Tunnel(r.level) }))
+        let (structures, layers) = structures(&f.rule_runs, &f.flag_runs);
+        out.layered += !layers.is_empty() as usize;
+        let off: Vec<(f64, f64, Kind)> = structures
+            .into_iter()
             .chain(f.indoor_runs.iter().map(|&(s, e)| (s, e, Kind::Indoor)))
             .collect();
         let pieces = pieces_of(&off);
@@ -145,7 +217,8 @@ pub fn read(path: &Path, bbox: &Bounds, frame: &Frame, rect: &Rect) -> Result<Re
                 .iter()
                 .map(|&(s, e, kind)| Span { a0: s * total, a1: e * total, kind })
                 .collect();
-            let way = Way { id: id.clone(), class: class.clone(), subclass: subclass.clone(), width_m, pts, spans };
+            let layers = layers.iter().map(|&(s, e, level)| (s * total, e * total, level)).collect();
+            let way = Way { id: id.clone(), class: class.clone(), subclass: subclass.clone(), width_m, pts, spans, layers };
             out.ways.extend(clip_way(&way, rect));
         }
     }
@@ -180,6 +253,14 @@ pub fn clip_way(way: &Way, rect: &Rect) -> Vec<Way> {
         if spans.is_empty() {
             continue;
         }
+        let layers = way
+            .layers
+            .iter()
+            .filter_map(|&(a0, a1, level)| {
+                let (a0, a1) = ((a0 - at).max(0.0), (a1 - at).min(len));
+                (a1 - a0 > SPAN_EPS_M).then_some((a0, a1, level))
+            })
+            .collect();
         out.push(Way {
             id: way.id.clone(),
             class: way.class.clone(),
@@ -187,6 +268,7 @@ pub fn clip_way(way: &Way, rect: &Rect) -> Vec<Way> {
             width_m: way.width_m,
             pts,
             spans,
+            layers,
         });
     }
     out
@@ -386,7 +468,44 @@ mod tests {
         assert!(keep(&props(&[("class", "steps"), ("subtype", "road")])));
         assert!(!keep(&props(&[("class", "rail"), ("subtype", "rail")])));
         assert!(!keep(&props(&[("subtype", "road")])));
+        // The independent railways are kept; street rail and an `unknown`
+        // railway are not, and a rail class is not a road class.
+        assert!(keep(&props(&[("class", "standard_gauge"), ("subtype", "rail")])));
+        assert!(keep(&props(&[("class", "funicular"), ("subtype", "rail")])));
+        assert!(!keep(&props(&[("class", "tram"), ("subtype", "rail")])));
+        assert!(!keep(&props(&[("class", "unknown"), ("subtype", "rail")])));
+        assert!(!keep(&props(&[("class", "narrow_gauge"), ("subtype", "road")])));
         assert!(!keep(&props(&[("class", "primary"), ("subtype", "water")])));
+    }
+
+    /// **A flag builds; a level orders.** Read off the loop box's own two
+    /// cases.
+    #[test]
+    fn a_flag_builds_and_a_level_orders() {
+        let run = |start: f64, end: f64, level: i64| LevelRun { start, end, level };
+        // Avenue de Naye: at +1 over a few metres and −1 for 500 m, under
+        // the Viaduc de Chillon, with no flag at all. No structure: two
+        // layers, which the crossing step reads and nothing else does.
+        let (off, layers) = structures(&[run(0.179, 0.188, 1), run(0.188, 1.0, -1)], &[]);
+        assert!(off.is_empty(), "{off:?}");
+        assert_eq!(layers, vec![(0.179, 0.188, 1), (0.188, 1.0, -1)]);
+        // The viaduct's Glion tunnel: flagged, and at level −5 by its rule —
+        // the flag builds the tunnel, the rule gives it its ordinal.
+        let (off, layers) = structures(&[run(0.058, 0.259, -5)], &[run(0.058, 0.259, -1)]);
+        assert_eq!(off, vec![(0.058, 0.259, Kind::Tunnel(-5))]);
+        assert!(layers.is_empty(), "{layers:?}");
+        // A flag with no rule is a structure at ±1, as before.
+        let (off, _) = structures(&[], &[run(0.2, 0.4, 1)]);
+        assert_eq!(off, vec![(0.2, 0.4, Kind::Bridge(1))]);
+        // A rule longer than its flag: the flag's stretch is the tunnel and
+        // the rest of the rule is a layer either side of it.
+        let (off, layers) = structures(&[run(0.0, 1.0, -1)], &[run(0.3, 0.6, -1)]);
+        assert_eq!(off, vec![(0.3, 0.6, Kind::Tunnel(-1))]);
+        assert_eq!(layers, vec![(0.0, 0.3, -1), (0.6, 1.0, -1)]);
+        // A bridge flag says nothing about a level below the ground.
+        let (off, layers) = structures(&[run(0.0, 1.0, -1)], &[run(0.3, 0.6, 1)]);
+        assert_eq!(off, vec![(0.3, 0.6, Kind::Bridge(1))]);
+        assert_eq!(layers, vec![(0.0, 1.0, -1)]);
     }
 
     #[test]

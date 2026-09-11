@@ -40,14 +40,79 @@
 //!    ground piece never becomes a structure here.
 //!
 //! Draped classes get no profile: a footpath samples the finished ground.
+//!
+//! **A railway's ceiling is measured** ([`ceiling`]): raised to the grade
+//! its own at-grade bed rides, because a rack railway is classed
+//! `narrow_gauge` and held to 7 % it dives under its own track. And **where
+//! a railway shares a connector with another way, both are at grade there**:
+//! a level crossing is at grade by definition, and so is a switch. Overture
+//! does not cut a way at such a connector — every one of the loop box's 48
+//! level crossings lies in the *interior* of both ways — so the shared
+//! station is pinned mid-run ([`Loose::contacts`]), both ways to the
+//! railway's reference. The railway is senior: the road meets the rails,
+//! never the other way round.
 
 use std::collections::HashMap;
 
 use crate::grade::{self, STRUCTURE_MIN_M};
 use crate::step::Summary;
+use crate::width::{self, Family};
 use crate::world::{
-    connector, station_runs, Kind, Profile, Profiles, Reference, Roads, Solved, Station, Way,
+    connector, station_runs, Kind, Profile, Profiles, Reference, Roads, Solved, Span, Station, Way,
 };
+
+/// Shortest length, in metres, of a way's at-grade stretches before its bed
+/// is read as its grade: under this the read means nothing, and the class
+/// ceiling stands. The server's `MEASURED_GRADE_MIN_M`.
+pub const MEASURED_MIN_M: f64 = 100.0;
+
+/// The percentile of the at-grade bed's station-to-station grades that is
+/// read as the grade the line rides: a *sustained* climb raises the ceiling,
+/// a local plunge at a structure end does not. The server's
+/// `MEASURED_GRADE_PCTL`, and per edge rather than windowed for the
+/// server's reason: a window over the notch span was censused there and
+/// deleted 22 of the 26 narrow-gauge escapes it was meant to tighten.
+pub const MEASURED_PCTL: f64 = 0.90;
+
+/// The ceiling a way of `class` holds along `stations`, whose mapped spans
+/// are `spans`: the class's own for an engineered road, the grade its bed
+/// is measured to ride for a railway ([`grade::Grade::measured`]) where
+/// that is steeper, within [`grade::measured_cap`]. Unbounded for a class
+/// that is not grade-limited.
+///
+/// Read off the **reference** of the at-grade stretches: the conditioned
+/// ground is the formation, cuttings and embankments included, and the
+/// railway is the reason that shape is there (§4.2). An edge into or out of
+/// a structure is a chord, and its pitch is the solve's, so it is not read.
+pub fn ceiling(class: &str, stations: &[Station], spans: &[Span]) -> f64 {
+    let g = grade::of(class);
+    let Some(c) = g.ceiling.filter(|_| g.limited()) else {
+        return f64::INFINITY;
+    };
+    if !g.measured {
+        return c;
+    }
+    let mut grades: Vec<f64> = Vec::new();
+    let mut spanned = 0.0;
+    for (k0, k1, kind) in station_runs(stations, spans) {
+        if kind.is_structure() {
+            continue;
+        }
+        for w in stations[k0..=k1].windows(2) {
+            let run = w[1].s - w[0].s;
+            if run > 0.0 {
+                spanned += run;
+                grades.push((w[1].reference - w[0].reference).abs() / run);
+            }
+        }
+    }
+    if spanned < MEASURED_MIN_M || grades.is_empty() {
+        return c;
+    }
+    grades.sort_by(f64::total_cmp);
+    let k = ((grades.len() - 1) as f64 * MEASURED_PCTL).round() as usize;
+    c.max(grades[k].min(grade::measured_cap(c)))
+}
 
 /// Forward-and-back passes of the grade limiter. Eight is the server's;
 /// the passes converge geometrically and the box clamp after each keeps
@@ -85,9 +150,37 @@ pub fn run(roads: &Roads, reference: &Reference) -> (Profiles, Summary) {
     let (mut bore, mut tunnel) = (0usize, 0usize);
     let (mut spans, mut degraded) = (0usize, 0usize);
     let mut ends: HashMap<(i64, i64), (f64, f64)> = HashMap::new();
+    let mut raised = 0usize;
+    // Every at-grade station, by connector: the lowest and highest height
+    // any way puts there, which way got there first, whether a second did,
+    // and whether a railway is one of them — `level` reads the spread
+    // wherever a railway meets another way on the ground, which is the
+    // claim the contacts make. A connector one of the two reaches on a
+    // structure is a road passing under a rail bridge the mapper happened
+    // to share a node with, and the heights there are meant to differ.
+    let mut meet: HashMap<(i64, i64), Meet> = HashMap::new();
+    for (n, p) in profiles.iter().enumerate() {
+        let rail = width::family(&p.class) == Family::Rail;
+        for (k0, k1, kind) in p.runs() {
+            if kind.is_structure() {
+                continue;
+            }
+            for st in &p.stations[k0..=k1] {
+                let m = meet.entry(connector(st.p)).or_insert(Meet { lo: st.h, hi: st.h, first: n, shared: false, rail });
+                m.lo = m.lo.min(st.h);
+                m.hi = m.hi.max(st.h);
+                m.shared |= m.first != n;
+                m.rail |= rail;
+            }
+        }
+    }
     for p in &profiles {
         stations += p.stations.len();
         let g = grade::of(&p.class);
+        // The ceiling this way was actually held to: a railway's measured
+        // one, which the class number alone would call broken.
+        let held = if g.limited() { ceiling(&p.class, &p.stations, &p.spans) } else { g.ceiling.unwrap_or(f64::INFINITY) };
+        raised += (held > g.ceiling.unwrap_or(f64::INFINITY)) as usize;
         for st in [p.stations.first(), p.stations.last()].into_iter().flatten() {
             let e = ends.entry(connector(st.p)).or_insert((st.h, st.h));
             e.0 = e.0.min(st.h);
@@ -101,8 +194,7 @@ pub fn run(roads: &Roads, reference: &Reference) -> (Profiles, Summary) {
                 for pair in p.stations[k0..=k1].windows(2) {
                     let ds = pair[1].s - pair[0].s;
                     if ds > 0.0 {
-                        let over = (pair[1].h - pair[0].h).abs() / ds
-                            > g.ceiling.unwrap_or(f64::INFINITY) + GRADE_EPS;
+                        let over = (pair[1].h - pair[0].h).abs() / ds > held + GRADE_EPS;
                         if g.limited() {
                             pairs += 1;
                             steep += over as usize;
@@ -174,6 +266,7 @@ pub fn run(roads: &Roads, reference: &Reference) -> (Profiles, Summary) {
         }
     }
     let step = ends.values().map(|(lo, hi)| hi - lo).fold(0.0f64, f64::max);
+    let level = meet.values().filter(|m| m.shared && m.rail).map(|m| m.hi - m.lo).fold(0.0f64, f64::max);
     off.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
     let q = |f: f64| off.get(((off.len() as f64 - 1.0) * f).round() as usize).copied().unwrap_or(0.0);
     let summary = Summary::new()
@@ -185,7 +278,10 @@ pub fn run(roads: &Roads, reference: &Reference) -> (Profiles, Summary) {
         .with_share("kink", kinked, runs)
         .with_share("boxed", eng_short, eng_runs)
         .with("bend", if tightest.is_finite() { format!("{tightest:.0}") } else { "-".into() })
+        .with("raised", raised)
         .with("step", format!("{step:.3}"))
+        .with("contacts", loose.contacts)
+        .with("level", format!("{level:.3}"))
         .with("off", format!("{:.2}/{:.2}/{:.2}", q(0.5), q(0.9), q(1.0)))
         .with_share("decks", deck, bridge)
         .with_share("bores", bore, tunnel)
@@ -194,6 +290,15 @@ pub fn run(roads: &Roads, reference: &Reference) -> (Profiles, Summary) {
         .with("clamped", loose.clamped)
         .with("unanchored", loose.unanchored);
     (Profiles { profiles }, summary)
+}
+
+/// One connector as the summary reads it: the heights the ways put there.
+struct Meet {
+    lo: f64,
+    hi: f64,
+    first: usize,
+    shared: bool,
+    rail: bool,
 }
 
 /// What [`solve`] could not anchor: structure pieces with a dangling end,
@@ -205,6 +310,9 @@ pub struct Loose {
     /// Chord ends the geometry had to overrule: a bore's mouth standing above
     /// the ground, or a deck's landing under it.
     pub clamped: usize,
+    /// Connectors where a railway meets another way on the ground — a level
+    /// crossing, a switch — each pinned at the railway's reference.
+    pub contacts: usize,
 }
 
 /// The profiles of `ways` against `reference`, and what could not be
@@ -272,11 +380,42 @@ pub fn solve_on(
         (0..ways.len()).map(|i| station_runs(&stationed[i], &ways[i].spans)).collect();
     let last_of = |i: usize| stationed[i].len().saturating_sub(1);
 
+    // **Contacts.** Where a railway shares a connector with another way and
+    // both are on the ground there, both pass through it at the railway's
+    // reference: a level crossing and a switch are at grade by definition,
+    // and the railway is senior, so the road meets the rails and not the
+    // other way round. Overture puts those connectors in the *interior* of
+    // both ways, which the anchors below never see — so they are pins of
+    // their own, mid-run. The first railway to reach a connector names its
+    // height, which is a function of the way order and nothing else.
+    let contacts: HashMap<(i64, i64), f64> = {
+        // Per connector: the first way at it, whether another way is, and
+        // the first railway's reference.
+        let mut at: HashMap<(i64, i64), (usize, bool, Option<f64>)> = HashMap::new();
+        for i in 0..ways.len() {
+            let rail = width::family(&ways[i].class) == Family::Rail;
+            for &(k0, k1, kind) in &runs[i] {
+                if !on_ground(kind) {
+                    continue;
+                }
+                for k in k0..=k1 {
+                    let e = at.entry(connector(stationed[i][k].p)).or_insert((i, false, None));
+                    e.1 |= e.0 != i;
+                    if rail && e.2.is_none() {
+                        e.2 = Some(stationed[i][k].reference);
+                    }
+                }
+            }
+        }
+        at.into_iter().filter_map(|(key, (_, shared, rail))| rail.filter(|_| shared).map(|v| (key, v))).collect()
+    };
+
     // **Anchors.** A way *end* is an anchor where the way is on the ground
     // there — not every span boundary, which is what the old per-piece solve
     // pinned and what made a mapper's cut a survey point. A junction stands
     // on the ground, and continuity across it is a property of the variables
-    // rather than a constraint that can fail.
+    // rather than a constraint that can fail. At a contact the railway's
+    // height is the junction's.
     let mut anchors: HashMap<(i64, i64), f64> = HashMap::new();
     for i in 0..ways.len() {
         if stationed[i].is_empty() {
@@ -287,7 +426,8 @@ pub fn solve_on(
             (last_of(i), runs[i].last().map(|r| r.2)),
         ] {
             if kind.is_some_and(on_ground) {
-                anchors.entry(connector(stationed[i][k].p)).or_insert(target[i][k]);
+                let key = connector(stationed[i][k].p);
+                anchors.entry(key).or_insert(contacts.get(&key).copied().unwrap_or(target[i][k]));
             }
         }
     }
@@ -300,20 +440,31 @@ pub fn solve_on(
     let mut h: Vec<Vec<f64>> = target.clone();
     for i in 0..ways.len() {
         let g = grade::of(&ways[i].class);
-        let ceiling = if g.limited() { g.ceiling.unwrap_or(f64::INFINITY) } else { f64::INFINITY };
+        let ceiling = ceiling(&ways[i].class, &stationed[i], &ways[i].spans);
+        // A pin at station `k`: the anchor at a way end, else a contact.
+        let pin_at = |k: usize| -> Option<f64> {
+            let key = connector(stationed[i][k].p);
+            (k == 0 || k == last_of(i)).then(|| anchors.get(&key).copied()).flatten().or_else(|| contacts.get(&key).copied())
+        };
         for &(k0, k1, kind) in &runs[i] {
             if !on_ground(kind) {
                 continue;
             }
-            let arc: Vec<f64> = stationed[i][k0..=k1].iter().map(|st| st.s).collect();
-            let pin = (
-                (k0 == 0).then(|| anchors.get(&connector(stationed[i][k0].p)).copied()).flatten(),
-                (k1 == last_of(i))
-                    .then(|| anchors.get(&connector(stationed[i][k1].p)).copied())
-                    .flatten(),
-            );
-            let solved = limit(&target[i][k0..=k1], &arc, ceiling, g.deviation_m, g.radius_m, pin);
-            h[i][k0..=k1].copy_from_slice(&solved);
+            // The run is cut at every contact inside it, and each piece is
+            // limited between its two pins: the limiter pins ends only, and
+            // a contact is an end of both pieces it separates.
+            let mut cuts: Vec<usize> = vec![k0];
+            cuts.extend((k0 + 1..k1).filter(|&k| contacts.contains_key(&connector(stationed[i][k].p))));
+            cuts.push(k1);
+            cuts.dedup();
+            for (a, b) in cuts.windows(2).map(|w| (w[0], w[1])).chain((cuts.len() == 1).then_some((k0, k1))) {
+                let arc: Vec<f64> = stationed[i][a..=b].iter().map(|st| st.s).collect();
+                // A run that ends against a structure is left free there,
+                // unless a contact stands on that very station.
+                let pin = (pin_at(a), pin_at(b));
+                let solved = limit(&target[i][a..=b], &arc, ceiling, g.deviation_m, g.radius_m, pin);
+                h[i][a..=b].copy_from_slice(&solved);
+            }
         }
     }
 
@@ -374,7 +525,7 @@ pub fn solve_on(
         }
     }
 
-    let mut loose = Loose::default();
+    let mut loose = Loose { contacts: contacts.len(), ..Loose::default() };
     let mut free: HashMap<(i64, i64), f64> = HashMap::new();
     // A free connector's degree: how many chords reach it. One is dangling —
     // the bbox cutting a viaduct — and it holds its chord's other end.
@@ -1015,6 +1166,7 @@ pub(crate) mod tests {
             width_m: 5.5,
             pts,
             spans: spans.into_iter().map(|(a0, a1, kind)| crate::world::Span { a0, a1, kind }).collect(),
+            layers: Vec::new(),
         }
     }
 
@@ -1024,7 +1176,7 @@ pub(crate) mod tests {
         let bridge = way("lone", vec![[-50.0, 0.0], [50.0, 0.0]], vec![(0.0, 100.0, Kind::Bridge(1))]);
         let t = &ground;
         let (profiles, loose) = solve(&crate::reference::of(&[&bridge], t), &[&bridge]);
-        assert_eq!(loose, Loose { dangling: 1, unanchored: 1, clamped: 0 });
+        assert_eq!(loose, Loose { dangling: 1, unanchored: 1, clamped: 0, contacts: 0 });
         let top = profiles[0].stations.iter().map(|st| st.ground).fold(f64::NEG_INFINITY, f64::max);
         assert!(profiles[0].stations.iter().all(|st| st.h == top));
         let mut tunnel = bridge.clone();
@@ -1048,7 +1200,7 @@ pub(crate) mod tests {
         let refs: Vec<&Way> = ways.iter().collect();
         let t = &ground;
         let (profiles, loose) = solve(&crate::reference::of(&refs, t), &refs);
-        assert_eq!(loose, Loose { dangling: 1, unanchored: 0, clamped: 0 });
+        assert_eq!(loose, Loose { dangling: 1, unanchored: 0, clamped: 0, contacts: 0 });
         let a = &profiles[0];
         let deck: Vec<&Station> = a.stations.iter().filter(|st| st.s >= 20.0).collect();
         assert!(deck.iter().all(|st| (st.h - 400.0).abs() < 1e-6), "{:?}", deck[5]);
@@ -1099,5 +1251,53 @@ pub(crate) mod tests {
         let (w, _) = world("flat", "net:sidewalk?d=6");
         assert_eq!(profiles(&w).len(), 1);
         assert_eq!(profiles(&w)[0].id, "road");
+    }
+
+    /// **A level crossing is one height, and it is the railway's.** The
+    /// connector lies in the interior of both ways, as every one of the loop
+    /// box's does, so no anchor sees it; a hill under it means a mainline
+    /// held to 3 % would cut the crest while the street followed it over,
+    /// and the two would cross each other a metre apart.
+    #[test]
+    fn a_level_crossing_is_one_height_and_it_is_the_railways() {
+        let (w, s) = world("hill?amp=20&radius=150", "net:level?len=400");
+        let at = |id: &str| {
+            let p = profiles(&w).iter().find(|p| p.id == id).unwrap_or_else(|| panic!("no {id}"));
+            *p.stations.iter().find(|st| st.p == [0.0, 0.0]).expect("a station at the connector")
+        };
+        let (road, rail) = (at("road"), at("rail"));
+        assert_eq!(road.h, rail.h, "{road:?} {rail:?}");
+        assert_eq!(rail.h, rail.reference, "the railway crosses at its own reference");
+        assert_eq!(s.num("contacts"), 1.0, "{s}");
+        assert_eq!(s.num("level"), 0.0, "{s}");
+        // Away from the crossing the railway is a railway again: it holds
+        // its grade where the street follows the hill.
+        assert_eq!(s.num("grade"), 0.0, "{s}");
+    }
+
+    /// **A railway rides the bed it is measured on.** Overture has no class
+    /// for a rack railway: the Glion–Rochers-de-Naye line is `narrow_gauge`,
+    /// whose adhesion prior is 7 %, and climbs at 20 %. Held to its class it
+    /// would dive under its own track bed and spend its whole box doing it.
+    #[test]
+    fn a_railway_rides_the_bed_it_is_measured_on() {
+        let (w, s) = world("ramp?grade=0.2&bearing=90&radius=100000", "net:straight?len=400&class=narrow_gauge");
+        let p = &profiles(&w)[0];
+        assert!(p.stations.iter().all(|st| (st.h - st.ground).abs() < 1e-6), "{:?}", p.stations[20]);
+        assert_eq!(s.num("raised"), 1.0, "{s}");
+        assert_eq!(s.num("grade"), 0.0, "{s}");
+        // Past the cap the ceiling holds: at 40 % the line climbs at 30 %,
+        // spends its box, and follows the hill beyond — a gentle class may
+        // not claim a cliff.
+        let (w, s) = world("ramp?grade=0.4&bearing=90&radius=100000", "net:straight?len=400&class=narrow_gauge");
+        let p = &profiles(&w)[0];
+        let (a, b) = (p.stations[0], p.stations[1]);
+        assert!(((b.h - a.h) / (b.s - a.s) - grade::MEASURED_FLOOR).abs() < 1e-9, "{a:?} {b:?}");
+        let deepest = p.stations.iter().map(|st| (st.h - st.ground).abs()).fold(0.0, f64::max);
+        assert!((deepest - grade::of("narrow_gauge").deviation_m).abs() < 1e-9, "{deepest}");
+        assert_eq!(s.num("float"), 0.0, "{s}");
+        // A road's class says how it climbs: nothing is raised for it.
+        let (_, s) = world("ramp?grade=0.2&bearing=90&radius=100000", "net:straight?len=400&class=primary");
+        assert_eq!(s.num("raised"), 0.0, "{s}");
     }
 }

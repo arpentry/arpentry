@@ -20,6 +20,14 @@
 //! - **Draped** classes hold nothing: a footpath, steps, a track sample the
 //!   finished ground exactly and never solve (stratum D). Their entry is
 //!   here so that the question "does this class solve?" has one answer.
+//! - **Railways** are engineered, and stiffer than any road: a mainline
+//!   holds 3 % on a 2 km vertical curve, metre gauge 7 % on 500 m, inside
+//!   the motorway's 8 m box. The terrain is a response to the railway, not
+//!   the other way round (§4.2). But a railway's class does not say how it
+//!   climbs — a rack railway is tagged `narrow_gauge` and runs at 20 %, a
+//!   funicular at 57 % — so a rail ceiling is [`Grade::measured`]: raised to
+//!   the bed the line actually rides where the ground earns it
+//!   ([`crate::profile::ceiling`]).
 
 /// How a class's alignment behaves along its length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +68,33 @@ pub struct Grade {
     /// hillside street alone (S9) while ironing the node-scale kinks a DEM
     /// leaves behind.
     pub radius_m: Option<f64>,
+    /// Whether the ceiling is a floor under the grade the line is measured
+    /// to ride rather than a limit on it: raised to the bed along the way's
+    /// own at-grade stretches, within [`MEASURED_CAP`]. Only a railway: a
+    /// road's class says how it climbs, and a railway's does not.
+    pub measured: bool,
 }
+
+/// The most a measured ceiling may rise to: `max(MEASURED_FLOOR, ceiling ×
+/// MEASURED_HEADROOM)`. The server's numbers
+/// (`solve::profile::MEASURED_GRADE_*`): the headroom is what lets a
+/// funicular classed at 70 % reach the 57 % it runs at when the DEM reads it
+/// steeper still, and the floor is what lets a rack railway classed at 7 %
+/// reach its 20 %.
+pub const MEASURED_FLOOR: f64 = 0.30;
+pub const MEASURED_HEADROOM: f64 = 1.5;
+
+/// The cap on a measured ceiling for a class of prior `ceiling`.
+pub fn measured_cap(ceiling: f64) -> f64 {
+    MEASURED_FLOOR.max(ceiling * MEASURED_HEADROOM)
+}
+
+/// The tightest vertical curve a mainline railway holds, in metres, and a
+/// metre-gauge one. The server declares these (`priors::MAINLINE`,
+/// `priors::NARROW`) and never reads them; here they are the same `bend`
+/// every road holds.
+pub const RADIUS_MAINLINE_M: f64 = 2000.0;
+pub const RADIUS_NARROW_M: f64 = 500.0;
 
 impl Grade {
     /// Whether the class solves a profile at all.
@@ -147,18 +181,21 @@ pub fn of(class: &str) -> Grade {
             ceiling: Some(0.06),
             deviation_m: 8.0,
             radius_m: Some(RADIUS_MOTORWAY_M),
+            measured: false,
         },
         "primary" => Grade {
             mode: Mode::Engineered,
             ceiling: Some(0.08),
             deviation_m: 4.0,
             radius_m: Some(RADIUS_PRIMARY_M),
+            measured: false,
         },
         "secondary" => Grade {
             mode: Mode::Engineered,
             ceiling: Some(0.10),
             deviation_m: 4.0,
             radius_m: Some(RADIUS_SECONDARY_M),
+            measured: false,
         },
         "tertiary" | "unclassified" | "residential" | "living_street" | "service" | "pedestrian"
         | "unknown" => Grade {
@@ -166,10 +203,45 @@ pub fn of(class: &str) -> Grade {
             ceiling: Some(0.15),
             deviation_m: 2.5,
             radius_m: Some(RADIUS_STREET_M),
+            measured: false,
+        },
+        // A surveyed alignment on its own formation, senior to every road
+        // and engineered like a motorway but tighter (server
+        // `priors::MAINLINE`).
+        "standard_gauge" | "broad_gauge" | "subway" => Grade {
+            mode: Mode::Engineered,
+            ceiling: Some(0.03),
+            deviation_m: 8.0,
+            radius_m: Some(RADIUS_MAINLINE_M),
+            measured: true,
+        },
+        // Built to reach places standard gauge could not: steeper, and
+        // tighter in its curves (`priors::NARROW`).
+        "narrow_gauge" => Grade {
+            mode: Mode::Engineered,
+            ceiling: Some(0.07),
+            deviation_m: 8.0,
+            radius_m: Some(RADIUS_NARROW_M),
+            measured: true,
+        },
+        // A funicular is laid *on* its hillside — no cuttings, no
+        // embankments, a pair of rails pinned to the slope — so its bed is
+        // the answer and its box is tight (`priors::FUNICULAR`). The ceiling
+        // is a class convention covering the steepest the class runs; a
+        // constant gradient was tried on the server and failed twice over,
+        // because the line arrives in fragments and a chord between fragment
+        // ends is neither the funicular's gradient nor the ground's. It
+        // holds no vertical curve: the bed is its curve.
+        "funicular" => Grade {
+            mode: Mode::Engineered,
+            ceiling: Some(0.70),
+            deviation_m: 2.5,
+            radius_m: None,
+            measured: true,
         },
         // A draped class holds nothing, and steps least of all: a stair is
         // a sequence of vertical breaks and bounding them would be a lie.
-        _ => Grade { mode: Mode::Draped, ceiling: None, deviation_m: 0.0, radius_m: None },
+        _ => Grade { mode: Mode::Draped, ceiling: None, deviation_m: 0.0, radius_m: None, measured: false },
     }
 }
 
@@ -212,5 +284,24 @@ mod tests {
         assert_eq!(m.mode, Mode::Engineered);
         assert_eq!(r.mode, Mode::Street);
         assert!(m.limited() && p.limited() && !r.limited() && !of("footway").limited());
+    }
+
+    #[test]
+    fn a_railway_is_stiffer_than_any_road_and_measured() {
+        let (main, narrow, funi) = (of("standard_gauge"), of("narrow_gauge"), of("funicular"));
+        for g in [main, narrow, funi] {
+            assert_eq!(g.mode, Mode::Engineered);
+            assert!(g.measured);
+        }
+        assert!(main.ceiling < of("motorway").ceiling && main.ceiling < narrow.ceiling);
+        assert!(main.radius_m < of("motorway").radius_m && narrow.radius_m < main.radius_m);
+        // The funicular's box is tight and it holds no curve: its bed is.
+        assert!(funi.deviation_m < main.deviation_m && funi.radius_m.is_none());
+        // Only a railway's ceiling is measured.
+        assert!(!of("motorway").measured && !of("residential").measured);
+        // The cap: a rack railway classed at 7 % may reach 30 %, a
+        // funicular classed at 70 % may reach 105 %.
+        assert!((measured_cap(0.07) - 0.30).abs() < 1e-12);
+        assert!((measured_cap(0.70) - 1.05).abs() < 1e-12);
     }
 }

@@ -57,6 +57,9 @@ mod tests {
     /// stated properly.
     struct Ran {
         profile: Summary,
+        /// Where the cut fell: how much of a bore went to its portal
+        /// cuttings, among the rest.
+        partition: Summary,
         bench: Summary,
         structure: Summary,
     }
@@ -66,6 +69,7 @@ mod tests {
         let (_, ran) = built(ground, net, None, 5.0, &upto(Step::Structure));
         Ran {
             profile: ran.of(Step::Profile),
+            partition: ran.of(Step::Partition),
             bench: ran.of(Step::Bench),
             structure: ran.of(Step::Structure),
         }
@@ -231,16 +235,27 @@ mod tests {
     /// Before it: `bores=1` of 200 m over a 120 m ridge (`roadway_m2 1100`),
     /// with 22 of 51 of the span's stations not reading as a bore at all.
     ///
-    /// The ends are the *line's* crossings here, not the roof's, because the
-    /// tube fits over the majority of the buried run: a real bore holds its
-    /// tube almost everywhere and grazes only at its mouths, and those
-    /// shallow mouths are the portal transition rather than open cutting.
+    /// The bore's ends are the *line's* crossings here, not the roof's,
+    /// because the tube fits over the majority of the buried run: a real bore
+    /// holds its tube almost everywhere and grazes only at its mouths.
+    ///
+    /// **Since 2026-09-11 those shallow mouths are open cutting.** Between
+    /// the line's crossing and the roof's fit the road runs under the ground
+    /// by less than its tube: the span carried it on with nothing over it but
+    /// the terrain, and the portal a camera should see was hill
+    /// (`structure covered`). The partition now gives that stretch back to
+    /// the ground ([`crate::partition`]'s `open_portals`), so the elected
+    /// bore is still trimmed to the mass, and it is the tube and its two
+    /// cuttings together that span it.
     #[test]
     fn a_generous_bore_is_trimmed_to_the_mass() {
         let r = run(RIDGE, "net:straight?len=400&span=0.25,0.75&kind=tunnel");
         assert_eq!(r.structure.num("bores"), 1.0, "one bore: {}", r.structure);
-        assert!((roadway_m(&r) - 120.0).abs() < 12.0, "trimmed to the mass: {}", r.structure);
+        let (tube, cutting) = (roadway_m(&r), r.partition.num("portal_m"));
+        assert!((tube + cutting - 120.0).abs() < 12.0, "trimmed to the mass: {tube} + {cutting}, {}", r.structure);
+        assert!(tube < 120.0 && cutting > 0.0, "the mouths are cut open: {tube} + {cutting}");
         assert_eq!(r.structure.num("open"), 0.0, "the tube breaks surface: {}", r.structure);
+        assert_eq!(r.structure.num("covered"), 0.0, "the terrain lies on the road: {}", r.structure);
     }
 
     // ------------------------------------------- the terrain prior's gate

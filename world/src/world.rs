@@ -166,9 +166,27 @@ pub struct Way {
     pub pts: Vec<[f64; 2]>,
     /// The source's own spans, in arc along `pts`.
     pub spans: Vec<Span>,
+    /// Stretches the source put at a level with no bridge or tunnel over
+    /// them, as `(a0, a1, level)` in arc: an **ordinal**, not a structure. A
+    /// road mapped at level −1 because it passes under a viaduct is on the
+    /// ground; the level says only which of the two is on top, and only the
+    /// crossing step asks.
+    pub layers: Vec<(f64, f64, i64)>,
 }
 
 impl Way {
+    /// The level of the way at arc `s`, as the crossing step reads it: the
+    /// ordinal of the structure the source mapped there, else the layer of
+    /// a stretch it put at a level without one, else the ground's zero.
+    /// Indoor is not stacked against the ground and reads zero.
+    pub fn level_at_arc(&self, s: f64) -> i64 {
+        match self.kind_at_arc(s) {
+            Kind::Bridge(n) | Kind::Tunnel(n) => n,
+            Kind::Indoor => 0,
+            Kind::Ground => self.layers.iter().find(|l| s >= l.0 && s <= l.1).map_or(0, |l| l.2),
+        }
+    }
+
     /// The way's length in metres.
     pub fn len(&self) -> f64 {
         self.pts.windows(2).map(|p| (p[1][0] - p[0][0]).hypot(p[1][1] - p[0][1])).sum()
@@ -482,12 +500,18 @@ pub struct Ribbons {
     pub ribbons: Vec<Ribbon>,
 }
 
-/// The paved surface: one set of disjoint regions per family, the two
-/// never overlapping — the asphalt has been subtracted from the walk.
+/// The paved surface: one set of disjoint regions per family, none
+/// overlapping another — the asphalt has been subtracted from the ballast
+/// and both from the walk.
 #[derive(Debug, Clone, Default)]
 pub struct Surface {
     pub carriageway: Shapes,
     pub walk: Shapes,
+    /// The railways' track bed. It stops at the asphalt (a level crossing
+    /// is the road's surface with the rails through it) and at nothing
+    /// else: not at a building, because a station roof over its platforms
+    /// is a level relation the model cannot state.
+    pub ballast: Shapes,
 }
 
 impl Surface {
@@ -496,7 +520,13 @@ impl Surface {
         match family {
             Family::Carriageway => &self.carriageway,
             Family::Walk => &self.walk,
+            Family::Rail => &self.ballast,
         }
+    }
+
+    /// What a pavement stops at: the asphalt and the ballast together.
+    pub fn senior(&self) -> Shapes {
+        poly::union_of(&[&self.carriageway, &self.ballast])
     }
 }
 
@@ -548,6 +578,7 @@ pub struct Tri {
 pub struct Mesh {
     pub carriageway: Tri,
     pub pavement: Tri,
+    pub ballast: Tri,
 }
 
 /// The room at the height the profile solved: the mesh step's triangles,
@@ -557,6 +588,13 @@ pub struct Mesh {
 pub struct Bench {
     pub carriageway: Tri,
     pub pavement: Tri,
+    /// The track bed at the height its railway solved.
+    pub ballast: Tri,
+    /// The face that closes the step between the ballast and a surface of
+    /// another family beside it: a street terrace above a cutting, a
+    /// railway on its embankment beside a road. Both are the room, so the
+    /// ground has a hole under the seam and the wall does not reach it.
+    pub rail: Tri,
     /// The engineered ground: the terrain with the room cut out of it and
     /// a batter run from the room's outline down to the natural ground.
     pub ground: Tri,
@@ -582,6 +620,9 @@ pub struct Bench {
 #[derive(Debug, Clone, Default)]
 pub struct Structure {
     pub roadway: Tri,
+    /// The same for a railway's spans: its track bed over a deck and
+    /// through a bore.
+    pub track: Tri,
     /// The solid under every deck run: the slab where its soffit clears
     /// the ground and the abutment block where it does not, which is one
     /// body and one surface.
@@ -625,4 +666,6 @@ impl Facade {
 pub struct Paving<'a> {
     pub carriageway: &'a Shapes,
     pub walk: &'a Shapes,
+    /// The track bed: laid once by the surface step and re-cut by nothing.
+    pub ballast: &'a Shapes,
 }

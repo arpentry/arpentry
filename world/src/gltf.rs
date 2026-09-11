@@ -33,6 +33,10 @@ const LINES: u32 = 1;
 /// viewer's solid shading.
 const TERRAIN_COLOR: [f32; 3] = [0.55, 0.65, 0.45];
 
+/// The track bed's colour, over a formation and over a structure alike: the
+/// server's `rail_surface` (158, 150, 138).
+const BALLAST_COLOR: [f32; 3] = [0.62, 0.59, 0.54];
+
 /// Serialises the world's layers. A layer that has not been built, or is
 /// empty, has no node.
 ///
@@ -55,6 +59,7 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
         doc.triangles("ground", &b.ground, [0.52, 0.56, 0.44]);
         doc.triangles("wall", &b.wall, [0.60, 0.58, 0.54]);
         doc.triangles("kerb", &b.kerb, [0.72, 0.70, 0.66]);
+        doc.triangles("rail", &b.rail, [0.50, 0.47, 0.42]);
     } else if let Some(t) = &world.terrain {
         doc.terrain(t);
     }
@@ -71,17 +76,19 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
     // The room at its solved height once the bench has run; on the raw
     // ground before it. One pair of nodes either way, so a viewer opens
     // the same file whichever step the run stopped after.
-    if let Some((c, p)) = world
+    if let Some((c, p, b)) = world
         .bench
         .as_ref()
-        .map(|b| (&b.carriageway, &b.pavement))
-        .or_else(|| world.mesh.as_ref().map(|m| (&m.carriageway, &m.pavement)))
+        .map(|b| (&b.carriageway, &b.pavement, &b.ballast))
+        .or_else(|| world.mesh.as_ref().map(|m| (&m.carriageway, &m.pavement, &m.ballast)))
     {
         doc.triangles("carriageway", c, [0.30, 0.30, 0.33]);
         doc.triangles("pavement", p, [0.80, 0.66, 0.46]);
+        doc.triangles("ballast", b, BALLAST_COLOR);
     }
     if let Some(s) = &world.structure {
         doc.triangles("roadway", &s.roadway, [0.30, 0.30, 0.33]);
+        doc.triangles("track", &s.track, BALLAST_COLOR);
         doc.triangles("deck", &s.deck, [0.62, 0.60, 0.56]);
         doc.triangles("bore", &s.bore, [0.35, 0.33, 0.30]);
         doc.triangles("pier", &s.pier, [0.58, 0.56, 0.52]);
@@ -92,7 +99,7 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
         }
     }
     if let (Some(s), Some(t)) = (&world.surface, &world.terrain) {
-        if outlines && (!s.carriageway.is_empty() || !s.walk.is_empty()) {
+        if outlines && (!s.carriageway.is_empty() || !s.walk.is_empty() || !s.ballast.is_empty()) {
             doc.surface(s, t);
         }
     }
@@ -176,9 +183,9 @@ impl Doc {
         self.loops("ribbon", &shapes, t, [0.9, 0.55, 0.15]);
     }
 
-    /// The surface's contours, both families in one node.
+    /// The surface's contours, every family in one node.
     fn surface(&mut self, s: &Surface, t: &Terrain) {
-        let shapes: Shapes = s.carriageway.iter().chain(s.walk.iter()).cloned().collect();
+        let shapes: Shapes = s.carriageway.iter().chain(s.walk.iter()).chain(s.ballast.iter()).cloned().collect();
         self.loops("surface", &shapes, t, [0.2, 0.2, 0.25]);
     }
 

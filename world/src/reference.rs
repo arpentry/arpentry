@@ -51,7 +51,7 @@ use crate::grade::{self, DECK_STANDOFF_M, NODE_M};
 use crate::profile::densify_at;
 use crate::step::Summary;
 use crate::terrain::height_at;
-use crate::width::{self, Family};
+use crate::width;
 use crate::world::{connector, Kind, Reference, Roads, Span, Terrain, Way};
 
 /// Widest DEM notch, in metres of arc, that a road is assumed to span on
@@ -91,8 +91,9 @@ pub const FLANK_M: f64 = 25.0;
 const EPS_M: f64 = 1e-6;
 
 /// The pieces a reference is built for, in the order the profile solves
-/// them: the carriageway pieces of a class that solves at all. Both steps
-/// call this, so the two lists are the same list by construction.
+/// them: the carriageway and rail pieces of a class that solves at all.
+/// Both steps call this, so the two lists are the same list by
+/// construction.
 pub fn solving<'a>(roads: &'a Roads) -> Vec<&'a Way> {
     solving_indices(roads).into_iter().map(|i| &roads.ways[i]).collect()
 }
@@ -109,7 +110,7 @@ pub fn solving_of(ways: &[Way]) -> Vec<usize> {
     (0..ways.len())
         .filter(|&i| {
             let w = &ways[i];
-            width::family(&w.class) == Family::Carriageway && grade::of(&w.class).solves()
+            width::family(&w.class).solves() && grade::of(&w.class).solves()
         })
         .collect()
 }

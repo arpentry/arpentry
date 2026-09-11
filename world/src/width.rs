@@ -37,6 +37,18 @@
 //! region. Asphalt joins asphalt at a junction; a pavement joins a pavement
 //! round a corner; the two never merge, and where they overlap the asphalt
 //! wins.
+//!
+//! **A railway is a third family, not a class of carriageway.** It solves a
+//! profile, lays a surface and gets structures the way a road does — the
+//! server learned that every mechanism that makes a road robust to a wrong
+//! height was missing for rail, "and rail paid the whole price in daylight"
+//! (`data/plans/rail-formation-surface.md`) — but it takes no kerb, no
+//! sidewalk, no kerb return and no room, and its ballast unions with ballast
+//! only. Only the independent classes are admitted (stratum R: the gauges,
+//! the subway, the funicular). Street-running rail — tram, light rail,
+//! monorail — lies *on* a carriageway and has no surface of its own, and
+//! an `unknown` railway is not granted a formation on the strength of a
+//! default (docs/GENERATION.md §4.6).
 
 /// The surface a way is part of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -45,16 +57,43 @@ pub enum Family {
     Carriageway,
     /// Where people walk: sidewalks, paths, steps, crossings, cycleways.
     Walk,
+    /// The track bed of an independent railway: ballast.
+    Rail,
 }
 
 impl Family {
+    /// Every family, in the order their regions are indexed.
+    pub const ALL: [Family; 3] = [Family::Carriageway, Family::Walk, Family::Rail];
+
     pub fn name(self) -> &'static str {
         match self {
             Family::Carriageway => "carriageway",
             Family::Walk => "walk",
+            Family::Rail => "rail",
         }
     }
+
+    /// Whether ways of this family solve a profile and lay a surface of
+    /// their own: the carriageway and the railway, not the walk.
+    pub fn solves(self) -> bool {
+        self != Family::Walk
+    }
 }
+
+/// The rail classes admitted: the independent ones, which hold a surveyed
+/// alignment on a formation of their own.
+pub const RAIL_CLASSES: &[&str] = &["standard_gauge", "broad_gauge", "subway", "narrow_gauge", "funicular"];
+
+/// Width in metres of a standard-gauge track's drawn bed: the *track zone*,
+/// a 2.6 m sleeper plus the tamped ballast shoulder, not the formation. The
+/// server drew the 5 m formation first and "the railway read as wide as a
+/// residential street" (`priors::MAINLINE`); the earthworks beyond the
+/// track zone are the bench's.
+pub const RAIL_M: f64 = 3.5;
+
+/// The same for metre gauge and a funicular: a 1.8 m sleeper plus the same
+/// shoulder.
+pub const NARROW_RAIL_M: f64 = 2.6;
 
 /// Width in metres of every walk that is not a pedestrianised street — a
 /// sidewalk, a path, steps, a track, a cycle track, a crossing: the Swiss
@@ -88,6 +127,8 @@ pub fn of(class: &str, subclass: &str) -> f64 {
         return LINK_M;
     }
     match (class, subclass) {
+        ("standard_gauge" | "broad_gauge" | "subway", _) => RAIL_M,
+        ("narrow_gauge" | "funicular", _) => NARROW_RAIL_M,
         ("motorway", _) => 9.0,
         ("trunk", _) => 8.0,
         ("primary", _) => 7.0,
@@ -144,6 +185,7 @@ pub fn family(class: &str) -> Family {
         "pedestrian" | "footway" | "path" | "steps" | "cycleway" | "bridleway" | "track" => {
             Family::Walk
         }
+        _ if RAIL_CLASSES.contains(&class) => Family::Rail,
         _ => Family::Carriageway,
     }
 }
@@ -221,5 +263,23 @@ mod tests {
         assert_eq!(family("residential"), Family::Carriageway);
         assert_eq!(family("footway"), Family::Walk);
         assert_eq!(family("service"), Family::Carriageway);
+    }
+
+    #[test]
+    fn a_railway_is_its_own_family_at_its_track_zone() {
+        for class in RAIL_CLASSES {
+            assert_eq!(family(class), Family::Rail, "{class}");
+            assert!(family(class).solves(), "{class}");
+            // A mapped width is a carriageway's alone, and a railway is not
+            // one-way narrowed: the track zone is the track zone.
+            assert_eq!(of_way(class, "", true, Some(8.0)), of(class, ""), "{class}");
+        }
+        assert_eq!(of("standard_gauge", ""), RAIL_M);
+        assert_eq!(of("narrow_gauge", ""), NARROW_RAIL_M);
+        assert_eq!(of("funicular", ""), NARROW_RAIL_M);
+        // Street rail is not admitted, so it has no family of its own: the
+        // question is never asked of it, and the fallback is the road's.
+        assert!(!RAIL_CLASSES.contains(&"tram") && !RAIL_CLASSES.contains(&"unknown"));
+        assert!(!Family::Walk.solves());
     }
 }

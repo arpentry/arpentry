@@ -22,37 +22,70 @@
 //! ([`World::built`]), so its edge does not follow every notch, the walk
 //! at the walls themselves ([`World::solid`]). What each family lost to
 //! the buildings is reported beside what the walk lost to the asphalt.
+//!
+//! **The railways' ballast is the third region**, and it stands between the
+//! other two: the asphalt wins over it — a level crossing is the road's
+//! surface with the rails running through it — and it wins over the walk.
+//! It does not stop at a building, because a station roof over its
+//! platforms is a level relation the model cannot state, and narrowing the
+//! formation there shaves the platform (the server's
+//! `a_rail_formation_is_not_narrowed_by_the_roof_over_it`). A double track
+//! is two ways a metre or less apart, and their beds are one bed: the
+//! ballast is closed across a gap under [`TWIN_GAP_M`].
 
 use crate::poly::{self, Shapes};
 use crate::step::Summary;
 use crate::width::Family;
 use crate::world::{Facade, Ribbons, Surface};
 
+/// The widest gap, in metres, between two tracks' beds that is closed into
+/// one: a double track's centres stand 3.8–4.5 m apart on the Swiss
+/// network, so two 3.5 m track zones leave a strip of 0.3–1 m between them
+/// that no real formation has. A siding further off keeps its own bed.
+pub const TWIN_GAP_M: f64 = 1.5;
+
 /// Unions the world's ribbons per family.
 pub fn run(ribbons: &Ribbons, facade: &Facade) -> (Surface, Summary) {
-    let mut per_family: [Shapes; 2] = [Vec::new(), Vec::new()];
+    let mut per_family: [Shapes; 3] = Default::default();
     for r in &ribbons.ribbons {
         per_family[r.family as usize].extend(r.shape.iter().cloned());
     }
     let carriageway_open = poly::union_all(&per_family[Family::Carriageway as usize]);
     let carriageway = facade.asphalt(&carriageway_open);
     let walled_carriageway = poly::area(&carriageway_open) - poly::area(&carriageway);
+    // The track bed: every rail ribbon, twin tracks closed into one bed,
+    // the asphalt taken out of it where a road crosses.
+    let rails = poly::union_all(&per_family[Family::Rail as usize]);
+    let ballast_open = if rails.is_empty() {
+        rails
+    } else {
+        poly::erode(&poly::dilate(&rails, TWIN_GAP_M / 2.0), TWIN_GAP_M / 2.0)
+    };
+    let ballast = poly::difference(&ballast_open, &carriageway);
+    let crossed = poly::area(&ballast_open) - poly::area(&ballast);
     // [`World::pavement`]'s two cuts, made here one at a time so each is
-    // reported: what the walk lost to the asphalt, then to the walls.
+    // reported: what the walk lost to the asphalt and the ballast, then to
+    // the walls.
     let walk_alone = poly::union_all(&per_family[Family::Walk as usize]);
     let walk_open = poly::difference(&walk_alone, &carriageway);
     let bitten = poly::area(&walk_alone) - poly::area(&walk_open);
-    let walk = poly::difference(&walk_open, &facade.solid);
-    let walled_walk = poly::area(&walk_open) - poly::area(&walk);
+    let walk_off = poly::difference(&walk_open, &ballast);
+    let on_rail = poly::area(&walk_open) - poly::area(&walk_off);
+    let walk = poly::difference(&walk_off, &facade.solid);
+    let walled_walk = poly::area(&walk_off) - poly::area(&walk);
     let summary = Summary::new()
         .with_regions("carriageway", &carriageway)
         .with_m2("carriageway_m2", poly::area(&carriageway))
         .with_regions("walk", &walk)
         .with_m2("walk_m2", poly::area(&walk))
+        .with_regions("ballast", &ballast)
+        .with_m2("ballast_m2", poly::area(&ballast))
         .with_m2("walk_under_asphalt_m2", bitten)
+        .with_m2("walk_on_ballast_m2", on_rail)
+        .with_m2("ballast_under_asphalt_m2", crossed)
         .with_m2("carriageway_in_building_m2", walled_carriageway)
         .with_m2("walk_in_building_m2", walled_walk);
-    (Surface { carriageway, walk }, summary)
+    (Surface { carriageway, walk, ballast }, summary)
 }
 
 #[cfg(test)]
@@ -128,5 +161,32 @@ pub(crate) mod tests {
         assert!(poly::contains(&surf.walk, [0.0, 2.9]));
         assert!(!poly::contains(&surf.walk, [0.0, 2.6]));
         assert!(!poly::contains(&surf.walk, [0.0, 3.1]));
+    }
+
+    /// A level crossing is the road's surface with the rails through it:
+    /// the bed stops at the asphalt, either side of it.
+    #[test]
+    fn the_asphalt_wins_over_the_ballast_at_a_level_crossing() {
+        let (w, s) = world("net:level?len=100");
+        let surf = w.surface.as_ref().unwrap();
+        assert_eq!(surf.ballast.len(), 2, "the bed either side of the road: {s}");
+        assert!(poly::intersect(&surf.ballast, &surf.carriageway).is_empty());
+        assert!(poly::contains(&surf.carriageway, [0.0, 0.0]));
+        assert!(poly::contains(&surf.ballast, [0.0, 10.0]));
+        assert!(!poly::contains(&surf.ballast, [0.0, 2.0]));
+        // The road's 5.5 m across the track zone's 3.5.
+        assert!((s.num("ballast_under_asphalt_m2") - 5.5 * crate::width::RAIL_M).abs() < 0.5, "{s}");
+    }
+
+    /// A double track is one bed; a siding further off keeps its own.
+    #[test]
+    fn a_double_track_is_one_bed() {
+        let (w, _) = world("net:dual?gap=0.8&len=100&class=standard_gauge");
+        let surf = w.surface.as_ref().unwrap();
+        assert!(surf.carriageway.is_empty());
+        assert_eq!(surf.ballast.len(), 1);
+        assert!(poly::contains(&surf.ballast, [0.0, 0.0]), "the strip between the tracks is bed");
+        let (w, _) = world("net:dual?gap=3&len=100&class=standard_gauge");
+        assert_eq!(w.surface.as_ref().unwrap().ballast.len(), 2);
     }
 }

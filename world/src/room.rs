@@ -151,7 +151,7 @@ pub fn run(
     attached: &[kerb::Attached],
     facade: &Facade,
 ) -> (Room, Summary) {
-    let Paving { carriageway, walk: before } = paving;
+    let Paving { carriageway, walk: before, ballast } = paving;
     let walls = Indexed::new(&facade.solid);
     let paved = Indexed::new(before);
     let mut hits: Vec<(Pt, Pt)> = Vec::new();
@@ -206,9 +206,13 @@ pub fn run(
     let u = poly::fill_holes_under(poly::union_of(&[before, &room]), kerb::PAVEMENT_HOLE_M2);
     let pockets = pockets(carriageway, &u, &facade.solid);
     let (pocket_count, pocket_m2) = (pockets.len(), poly::area(&pockets));
-    let pavement = facade.pavement(&poly::union_of(&[&u, &pockets]), carriageway);
+    // The ballast wins over the room as it does over every walk: a band
+    // probed to a wall across a railway stops at the track bed. And a kerb
+    // or a probe that meets the bed has not met bare ground.
+    let senior = poly::union_of(&[carriageway, ballast]);
+    let pavement = facade.pavement(&poly::union_of(&[&u, &pockets]), &senior);
     let filled = poly::area(&pavement) - poly::area(before);
-    let bare = Bare::new(carriageway, &pavement, &facade.footprints);
+    let bare = Bare::new(&senior, &pavement, &facade.footprints);
     let (gap_n, gap_of) = wall_gap(&bare, &hits);
     let (gaps, kerb_of) = kerb::kerb_gaps(carriageway, &bare, attached);
     let kerb_n = gaps.len();

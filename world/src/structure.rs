@@ -80,6 +80,81 @@ pub const TUNNEL_HEIGHT_M: f64 = 5.0;
 /// and paths, and five metres of tube is not what any of them is.
 pub const WALK_TUNNEL_M: f64 = 2.5;
 
+/// How high a standard-gauge railway's bore is inside, in metres, from the
+/// track to the crown: the loading gauge and the overhead line over it,
+/// which a road's [`TUNNEL_HEIGHT_M`] does not hold. The same headroom
+/// [`crate::crossing::RAIL_CLEARANCE_M`] asks of a road over the rails, less
+/// the margin a road bridge's soffit keeps.
+pub const RAIL_TUNNEL_M: f64 = 6.0;
+
+/// The same for metre gauge and a funicular: a smaller car under a lower
+/// wire, as high inside as a road tunnel.
+pub const NARROW_RAIL_TUNNEL_M: f64 = 5.0;
+
+/// How far a railway's structure reaches past its track zone on each side,
+/// in metres: the edge beam, the cable trough and the walkway a real deck
+/// carries, and the same clearance inside a bore. The server's
+/// `STRUCTURE_SHOULDER_M`, which its rail comments say the structure sweep
+/// adds back and its code never did. Without it a metre-gauge viaduct on a
+/// hillside is 2.6 m wide and 1.5 m deep, and reads as a wall rather than a
+/// bridge. The track bed over the structure is swept to the same width: on
+/// a deck the ballast runs to the parapet.
+pub const RAIL_SHOULDER_M: f64 = 1.0;
+
+/// How high a bore is inside for a way of `class`, in metres: a walk's
+/// passage, a railway's tube, or a road tunnel. One answer for the
+/// structure step, which draws the tube, the partition, which decides
+/// where a tube fits, and the crossing, which clears one.
+pub fn tube_m(class: &str) -> f64 {
+    match (width::family(class), class) {
+        (Family::Walk, _) => WALK_TUNNEL_M,
+        (Family::Rail, "narrow_gauge" | "funicular") => NARROW_RAIL_TUNNEL_M,
+        (Family::Rail, _) => RAIL_TUNNEL_M,
+        (Family::Carriageway, _) => TUNNEL_HEIGHT_M,
+    }
+}
+
+/// Whether a tunnel run of a way of `class`, over `stations`, is a
+/// **gallery**: the road goes under the ground somewhere, by more than
+/// [`STRUCTURE_MIN_M`], and its tube fits under it nowhere.
+///
+/// There is no hill to bore through, and still the source says the road is
+/// covered: a gallery against a slope, a covered cutting, a road under a
+/// deck or a building the terrain model does not have. Drawn as a bore it
+/// drew nothing — the tube never fitted, so no tube, and the terrain lay on
+/// the road end to end: a road that vanished into the ground with no
+/// entrance and no exit (`mouths`). Drawn as a gallery it is what it is: the
+/// ground is opened over it ([`crate::bench`]) and the tube stands in the
+/// trench, its roof out in the open where the ground is lower than it.
+///
+/// One rule for the bench, which opens the ground, and for this step, which
+/// draws the tube — over the same stations, the run and its abutments.
+pub fn is_gallery(class: &str, stations: &[Station]) -> bool {
+    let tube = tube_m(class);
+    stations.iter().any(|st| st.ground - st.h > STRUCTURE_MIN_M)
+        && stations.iter().all(|st| st.ground - st.h - tube < 0.0)
+}
+
+/// The station ranges of `p`'s galleries, abutments included: the tunnel
+/// runs [`is_gallery`] says are galleries. A walk's spans are not solved and
+/// are not here.
+pub fn gallery_runs(p: &crate::world::Profile) -> Vec<(usize, usize)> {
+    let last = p.stations.len().saturating_sub(1);
+    p.runs()
+        .into_iter()
+        .filter(|r| matches!(r.2, Kind::Tunnel(_)))
+        .map(|(k0, k1, _)| (k0.saturating_sub(1), (k1 + 1).min(last)))
+        .filter(|&(a, b)| b > a && is_gallery(&p.class, &p.stations[a..=b]))
+        .collect()
+}
+
+/// Half the width of the structure a way of `class` and `width_m` stands
+/// on or runs through: the way's own for a road or a walk, the track zone
+/// and [`RAIL_SHOULDER_M`] for a railway.
+pub fn half_width_m(class: &str, width_m: f64) -> f64 {
+    width_m / 2.0 + if width::family(class) == Family::Rail { RAIL_SHOULDER_M } else { 0.0 }
+}
+
 /// How far apart a deck's piers stand, in metres: one bay of a viaduct.
 /// The run's own length is divided into whole bays as near this as it
 /// allows, so the last bay is not a stub.
@@ -93,12 +168,27 @@ pub const PIER_MIN_M: f64 = 6.0;
 /// The side of a pier's square section, in metres.
 pub const PIER_M: f64 = 2.5;
 
+/// How far a tube reaches out of the hill past its portal, in metres: over
+/// the cutting in front of it, so the edge where the terrain was cut lies
+/// inside the tube rather than across its mouth, and the portal reads as a
+/// short hood under its headwall.
+pub const PORTAL_M: f64 = 2.0;
+
 /// One span, with a height at every station: a carriageway piece as the
 /// profile solved it, or a pedestrian piece as this step fitted it.
 struct Span {
     class: String,
     width_m: f64,
     mapped: Kind,
+    /// The arc range the span itself covers along its way. The stations
+    /// reach one further each side, to its abutments.
+    a0: f64,
+    a1: f64,
+    /// Whether each end meets more of its way — ground, or another span —
+    /// rather than being where the way itself ends (the bbox cutting it, a
+    /// span mapped to the way's end). Only such an end has an abutment, and
+    /// only it is a portal.
+    open_ends: [bool; 2],
     stations: Vec<Station>,
     /// Fitted here rather than solved in step 9: a draped class.
     fitted: bool,
@@ -118,13 +208,15 @@ impl Span {
     /// How high the bore is inside. A subway under a street is not a road
     /// tunnel: a footway given the full [`TUNNEL_HEIGHT_M`] draws five metres
     /// of tube for a passage a person walks through, and on the loop box most
-    /// of the tunnel spans are footways, steps and paths.
+    /// of the tunnel spans are footways, steps and paths. Nor is a railway's
+    /// bore: a standard-gauge one has a wire over the train ([`tube_m`]).
     fn height(&self) -> f64 {
-        if width::family(&self.class) == Family::Walk {
-            WALK_TUNNEL_M
-        } else {
-            TUNNEL_HEIGHT_M
-        }
+        tube_m(&self.class)
+    }
+
+    /// Half the width of the structure: [`half_width_m`].
+    fn half_w(&self) -> f64 {
+        half_width_m(&self.class, self.width_m)
     }
 }
 
@@ -167,7 +259,29 @@ pub struct Stats {
     pub skipped: usize,
     /// The deepest a block had to rise above the soffit it replaced.
     pub seat: f64,
+    /// Of the decks and bores, the railways'; and the track bed, in square
+    /// metres, the structures lay.
+    pub rail_decks: usize,
+    pub rail_bores: usize,
+    pub track_m2: f64,
+    /// Length of tunnel roadway, in metres, under the terrain with no tube
+    /// over it: the terrain lying on the road at a portal, where the mouth
+    /// should be.
+    pub covered_m: f64,
+    /// Road and rail tunnel ends the source mapped, and those a tube's
+    /// mouth stands at; and the same for the walks' underpasses.
+    pub ends: usize,
+    pub mouths: usize,
+    pub walk_ends: usize,
+    pub walk_mouths: usize,
+    /// Tunnel runs drawn as galleries ([`is_gallery`]).
+    pub galleries: usize,
 }
+
+/// How far under the terrain, in metres, a stretch of tunnel roadway with no
+/// tube over it has to lie to count as `covered`: past the lattice's own
+/// rounding, short of anything a camera would miss.
+const COVERED_EPS_M: f64 = 0.1;
 
 /// Builds every structure the profile implies.
 pub fn run(
@@ -184,30 +298,42 @@ pub fn run(
         // them the roadway stops one station short at each end and the ground
         // pieces — cut at the annotation edge — do not reach it, so a station
         // of paving is laid by nobody.
-        let runs_of = |p: &crate::world::Profile| -> Vec<(usize, usize, Kind)> {
+        let runs_of = |p: &crate::world::Profile| -> Vec<(usize, usize, Kind, [bool; 2])> {
             let last = p.stations.len().saturating_sub(1);
             p.runs()
                 .into_iter()
                 .filter(|r| r.2.is_structure())
-                .map(|(k0, k1, kind)| (k0.saturating_sub(1), (k1 + 1).min(last), kind))
+                .map(|(k0, k1, kind)| (k0.saturating_sub(1), (k1 + 1).min(last), kind, [k0 > 0, k1 < last]))
                 .collect()
         };
         let mut spans: Vec<Span> = profiles
             .profiles
             .iter()
             .flat_map(|p| {
-                runs_of(p).into_iter().map(move |(k0, k1, kind)| Span {
-                    class: p.class.clone(),
-                    width_m: p.width_m,
-                    mapped: kind,
-                    stations: p.stations[k0..=k1].to_vec(),
-                    fitted: false,
-                    carried: false,
+                runs_of(p).into_iter().map(move |(k0, k1, kind, open_ends)| {
+                    // The span the run's first station of its own lies in.
+                    let own = p.stations[(k0 + 1).min(k1)].s;
+                    let (a0, a1) = p
+                        .spans
+                        .iter()
+                        .find(|sp| sp.kind.is_structure() && own >= sp.a0 && own <= sp.a1)
+                        .map_or((p.stations[k0].s, p.stations[k1].s), |sp| (sp.a0, sp.a1));
+                    Span {
+                        class: p.class.clone(),
+                        width_m: p.width_m,
+                        mapped: kind,
+                        a0,
+                        a1,
+                        open_ends,
+                        stations: p.stations[k0..=k1].to_vec(),
+                        fitted: false,
+                        carried: false,
+                    }
                 })
             })
             .collect();
         let decks = Field::of_stations(profiles.profiles.iter().map(|p| {
-            (p, runs_of(p).into_iter().map(|(k0, k1, _)| (k0, k1)).collect::<Vec<_>>())
+            (p, runs_of(p).into_iter().map(|(k0, k1, _, _)| (k0, k1)).collect::<Vec<_>>())
         }));
         spans.extend(
             roads
@@ -246,9 +372,18 @@ pub fn run(
             if span.stations.len() < 2 {
                 continue;
             }
-            let (l, r) = edges(&span.stations, span.width_m / 2.0);
-            strip(&mut s.roadway, &l, &r);
-            stats.roadway_m2 += poly::length(&span.stations.iter().map(|st| st.p).collect::<Vec<Pt>>()) * span.width_m;
+            let (l, r) = edges(&span.stations, span.half_w());
+            // A railway's span lays its track bed, not a roadway: the same
+            // sweep in its own material, out to the structure's shoulders.
+            let rail = width::family(&span.class) == Family::Rail;
+            let bed = if rail { &mut s.track } else { &mut s.roadway };
+            strip(bed, &l, &r);
+            let m2 = poly::length(&span.stations.iter().map(|st| st.p).collect::<Vec<Pt>>()) * 2.0 * span.half_w();
+            if rail {
+                stats.track_m2 += m2;
+            } else {
+                stats.roadway_m2 += m2;
+            }
             for st in [&span.stations[0], &span.stations[span.stations.len() - 1]] {
                 if let Some(h) = ends.get(&connector(st.p)) {
                     stats.abutment = stats.abutment.max((st.h - h).abs());
@@ -257,9 +392,24 @@ pub fn run(
             if span.carried {
                 continue;
             }
+            // The arcs a tube is drawn over, for `mouths` and `covered` below.
+            let mut tubes: Vec<(f64, f64)> = Vec::new();
+            // **A gallery's tube stands over the whole of it**, abutment to
+            // abutment: it fits under the ground nowhere, and the bench has
+            // opened the ground over it for exactly this footprint.
+            let gallery = !span.fitted
+                && matches!(span.mapped, Kind::Tunnel(_))
+                && is_gallery(&span.class, &span.stations);
+            if gallery {
+                stats.galleries += 1;
+                stats.rail_bores += rail as usize;
+                tube_over(&mut s.bore, &l, &r, span.height());
+                tubes.push((span.stations[0].s, span.stations[span.stations.len() - 1].s));
+            }
             let t = span.thickness();
             for (a, b) in runs(&span.stations, Solved::Deck) {
                 stats.decks += 1;
+                stats.rail_decks += rail as usize;
                 let (lo_l, lo_r) = underside(&span.stations[a..=b], &l[a..=b], &r[a..=b], t, terrain);
                 box_under(&mut s.deck, &l[a..=b], &r[a..=b], &lo_l, &lo_r);
                 let (p, k, tall) = piers(&mut s.pier, &mut s.piers, &span.stations[a..=b], t, terrain, &road);
@@ -294,11 +444,15 @@ pub fn run(
                     stats.grounded += 1;
                 }
             }
-            for (a, b) in runs(&span.stations, Solved::Bore) {
+            for (a, b) in runs(&span.stations, Solved::Bore).into_iter().filter(|_| !gallery) {
                 stats.bores += 1;
+                stats.rail_bores += rail as usize;
                 let high = span.height();
                 let face: Vec<f64> =
                     span.stations[a..=b].iter().map(|st| st.ground - st.h - high).collect();
+                if let Some((f, g)) = spanning(&face) {
+                    tubes.push((span.stations[a + f].s, span.stations[a + g].s));
+                }
                 // **The tube is drawn between its portals and nowhere else.**
                 // A bore run is a stretch the road runs *under* the ground by
                 // `STRUCTURE_MIN_M`; the tube is a solid `high` tall, and
@@ -312,9 +466,92 @@ pub fn run(
                 match spanning(&face) {
                     None => stats.grounded += 1,
                     Some((f, g)) => {
-                        tube_over(&mut s.bore, &l[a + f..=a + g], &r[a + f..=a + g], high);
+                        // The tube reaches `PORTAL_M` out over the cutting at
+                        // a portal: where it starts at the span's first
+                        // station of its own, the span meets ground there and
+                        // the partition cut it where the tube fits.
+                        let n = span.stations.len();
+                        let (from, to) = (a + f, a + g);
+                        let out0 = (from == 1 && span.open_ends[0]).then_some(span.a0 - PORTAL_M);
+                        let out1 = (to + 2 == n && span.open_ends[1]).then_some(span.a1 + PORTAL_M);
+                        let mut hood: Vec<Station> = Vec::with_capacity(to - from + 5);
+                        if let Some(s0) = out0 {
+                            hood.push(station_at(&span.stations, s0));
+                            hood.extend(span.stations[..from].iter().filter(|st| st.s > s0).copied());
+                        }
+                        hood.extend_from_slice(&span.stations[from..=to]);
+                        if let Some(s1) = out1 {
+                            hood.extend(span.stations[to + 1..].iter().filter(|st| st.s < s1).copied());
+                            hood.push(station_at(&span.stations, s1));
+                        }
+                        let (hl, hr) = edges(&hood, span.half_w());
+                        tube_over(&mut s.bore, &hl, &hr, high);
                         stats.cover = stats.cover.min(face[f..=g].iter().copied().fold(f64::INFINITY, f64::min));
                         stats.open += face[f..=g].iter().filter(|c| **c < 0.0).count();
+                    }
+                }
+            }
+            // **A bore too short to have a run still has a tube.** A tunnel
+            // span of a few metres — a stub the portal cutting left, a way
+            // cut into short pieces — has one station of its own or none, so
+            // no run of two stations is solved a bore and nothing above drew
+            // anything, though the road is metres under the hill: a road
+            // that vanished into it. Such a span's tube stands over the whole
+            // of it, abutment to abutment, as a gallery's does; the hill
+            // covers it, so the ground is not opened.
+            if tubes.is_empty()
+                && !span.fitted
+                && matches!(span.mapped, Kind::Tunnel(_))
+                && span.stations.iter().any(|st| st.ground - st.h > STRUCTURE_MIN_M)
+            {
+                stats.bores += 1;
+                stats.rail_bores += rail as usize;
+                tube_over(&mut s.bore, &l, &r, span.height());
+                tubes.push((span.stations[0].s, span.stations[span.stations.len() - 1].s));
+            }
+            // **Every end of a tunnel is a mouth.** An end the source mapped
+            // — not one the bbox cut — where no tube stands is a road that
+            // disappears into the hill: the tube never fitted anywhere, or it
+            // starts somewhere inside and the terrain lies on the road
+            // before it. `mouths` counts the ends that do have one.
+            if matches!(span.mapped, Kind::Tunnel(_)) && !span.carried && span.stations.len() >= 2 {
+                let n = span.stations.len();
+                // A solved span carries its abutments, one station outside
+                // each end it meets ground at; a fitted one starts on its own
+                // ends, which are always a walk's meeting with the ground.
+                let (own0, own1) = if span.fitted {
+                    (span.stations[0].s, span.stations[n - 1].s)
+                } else {
+                    (span.stations[1.min(n - 1)].s, span.stations[n.saturating_sub(2)].s)
+                };
+                for (real, start) in [(span.open_ends[0], true), (span.open_ends[1], false)] {
+                    if !real {
+                        continue;
+                    }
+                    let open = tubes.iter().any(|&(t0, t1)| if start { t0 <= own0 + 1e-6 } else { t1 >= own1 - 1e-6 });
+                    // A walk's underpass and a road's or a railway's tunnel
+                    // are counted apart: the first passes under a way or a
+                    // building the terrain has not got, the second under the
+                    // hill.
+                    let (ends, mouths) =
+                        if span.fitted { (&mut stats.walk_ends, &mut stats.walk_mouths) } else { (&mut stats.ends, &mut stats.mouths) };
+                    *ends += 1;
+                    *mouths += open as usize;
+                }
+            }
+            // **A tunnel's roadway with the terrain on it.** Between a span's
+            // own stations — its abutments are the ground pieces' — any
+            // stretch the road runs under the terrain with no tube drawn over
+            // it is a road the hill lies on: the portal where the mouth
+            // should be, shut. Nothing else in the world covers a road, so
+            // this reads zero wherever the portals are open.
+            if matches!(span.mapped, Kind::Tunnel(_)) {
+                let n = span.stations.len();
+                for w in span.stations[1.min(n - 1)..n.saturating_sub(1).max(1)].windows(2) {
+                    let mid = (w[0].s + w[1].s) / 2.0;
+                    let under = w.iter().all(|st| st.ground - st.h > COVERED_EPS_M);
+                    if under && !tubes.iter().any(|&(t0, t1)| mid >= t0 && mid <= t1) {
+                        stats.covered_m += w[1].s - w[0].s;
                     }
                 }
             }
@@ -329,10 +566,14 @@ pub fn run(
         .with("carried", stats.carried)
         .with("decks", stats.decks)
         .with("bores", stats.bores)
+        .with("galleries", stats.galleries)
+        .with("rail", format!("{}/{}", stats.rail_decks, stats.rail_bores))
         .with_m2("roadway_m2", stats.roadway_m2)
+        .with_m2("track_m2", stats.track_m2)
         .with(
             "triangles",
             (structure.roadway.indices.len()
+                + structure.track.indices.len()
                 + structure.deck.indices.len()
                 + structure.bore.indices.len()
                 + structure.pier.indices.len())
@@ -349,6 +590,9 @@ pub fn run(
         .with("grounded", stats.grounded)
         .with("cover", finite(stats.cover))
         .with("open", stats.open)
+        .with("covered", format!("{:.1}", stats.covered_m))
+        .with("mouths", format!("{}/{}", stats.mouths, stats.ends))
+        .with("walk_mouths", format!("{}/{}", stats.walk_mouths, stats.walk_ends))
         .with("abutment", format!("{:.3}", stats.abutment));
     (structure, summary)
 }
@@ -390,7 +634,18 @@ fn fit(w: &crate::world::Polyline2, terrain: &Terrain, decks: &Field) -> Span {
             st.h = road.h + KERB_RISE_M;
             st.solved = Solved::Grade;
         }
-        return Span { class: w.class.clone(), width_m: w.width_m, mapped: w.kind, stations, fitted: true, carried };
+        let a1 = stations.last().map_or(0.0, |st| st.s);
+        return Span {
+            class: w.class.clone(),
+            width_m: w.width_m,
+            mapped: w.kind,
+            a0: 0.0,
+            a1,
+            open_ends: [true, true],
+            stations,
+            fitted: true,
+            carried,
+        };
     }
     let len = stations.last().map(|st| st.s).unwrap_or(0.0);
     let (h0, h1) = (stations[0].ground, stations[stations.len() - 1].ground);
@@ -404,7 +659,17 @@ fn fit(w: &crate::world::Polyline2, terrain: &Terrain, decks: &Field) -> Span {
             Solved::Grade
         };
     }
-    Span { class: w.class.clone(), width_m: w.width_m, mapped: w.kind, stations, fitted: true, carried }
+    Span {
+        class: w.class.clone(),
+        width_m: w.width_m,
+        mapped: w.kind,
+        a0: 0.0,
+        a1: len,
+        open_ends: [true, true],
+        stations,
+        fitted: true,
+        carried,
+    }
 }
 
 /// The stretch of a run over which the structure has actually left the
@@ -418,6 +683,26 @@ fn spanning(face: &[f64]) -> Option<(usize, usize)> {
     let f = face.iter().position(|c| *c >= 0.0)?;
     let g = face.iter().rposition(|c| *c >= 0.0)?;
     (g > f).then_some((f, g))
+}
+
+/// The station at arc `s` along `st`: interpolated between the two either
+/// side of it, or carried straight on from the nearest end segment where
+/// `s` lies past the ends — a hood a couple of metres out from its last
+/// station runs on along the road's own line.
+fn station_at(st: &[Station], s: f64) -> Station {
+    let n = st.len();
+    let k = st.partition_point(|x| x.s < s).clamp(1, n - 1);
+    let (a, b) = (st[k - 1], st[k]);
+    let t = if b.s > a.s { (s - a.s) / (b.s - a.s) } else { 0.0 };
+    let lerp = |x: f64, y: f64| x + (y - x) * t;
+    Station {
+        s,
+        p: [lerp(a.p[0], b.p[0]), lerp(a.p[1], b.p[1])],
+        ground: lerp(a.ground, b.ground),
+        reference: lerp(a.reference, b.reference),
+        h: lerp(a.h, b.h),
+        solved: a.solved,
+    }
 }
 
 /// The runs of consecutive stations solved `kind`, as inclusive index
@@ -638,7 +923,7 @@ fn quad(tri: &mut Tri, q: [[f64; 3]; 4]) {
 
 /// A span's outline in plan, for the plan view: its two edges, closed.
 fn plan(span: &Span) -> (Kind, Shapes) {
-    let (l, r) = edges(&span.stations, span.width_m / 2.0);
+    let (l, r) = edges(&span.stations, span.half_w());
     let mut ring: Vec<Pt> = l.iter().map(|p| [p[0], p[1]]).collect();
     ring.extend(r.iter().rev().map(|p| [p[0], p[1]]));
     (span.mapped, poly::ccw(ring).map(|ring| vec![vec![ring]]).unwrap_or_default())
@@ -954,6 +1239,94 @@ mod tests {
         let (_, s) = world("hill?amp=-40&radius=80", "net:overpass?len=300");
         assert_eq!(s.num("skipped"), 1.0, "{s}");
         assert_eq!(s.num("piers"), 0.0, "{s}");
+    }
+
+    /// A railway's span lays its track bed, not a roadway, and stands on
+    /// the same deck a road's would — wider than its track by a shoulder
+    /// each side, as a real single-track deck is.
+    #[test]
+    fn a_railway_bridge_lays_track_on_a_deck() {
+        let (w, s) = world("gorge?depth=30&width=40", "net:straight?len=400&span=0.4,0.6&class=standard_gauge");
+        let st = structure(&w);
+        assert!(!st.track.indices.is_empty(), "{s}");
+        assert!(st.roadway.indices.is_empty(), "{s}");
+        assert!(s.num("decks") >= 1.0, "{s}");
+        assert_eq!(s.get("rail"), Some("1/0"), "{s}");
+        assert_eq!(s.num("buried"), 0.0, "{s}");
+        // The track zone and a shoulder each side.
+        let y: Vec<f64> = st.track.positions.iter().map(|p| p[1]).collect();
+        let across = y.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - y.iter().cloned().fold(f64::INFINITY, f64::min);
+        assert!((across - (crate::width::RAIL_M + 2.0 * RAIL_SHOULDER_M)).abs() < 1e-9, "{across}");
+        // And the deck under it is a deck's thickness deep.
+        let top = st.track.positions.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max);
+        let bottom = st.deck.positions.iter().map(|p| p[2]).fold(f64::INFINITY, f64::min);
+        assert!(top - bottom >= DECK_THICKNESS_M - 1e-9, "{top} {bottom}");
+    }
+
+    /// **A railway's bore has room for the wire.** A standard-gauge line
+    /// through a ridge, flat either side so the railway's own grade has
+    /// nothing to do: the crown stands [`RAIL_TUNNEL_M`] over the track, a
+    /// metre more than a road tunnel's, and the ridge still covers it
+    /// between the portals. Metre gauge runs in a road tunnel's section.
+    #[test]
+    fn a_railway_bore_has_room_for_the_wire() {
+        let (w, s) = world("ridge?height=40&width=120", "net:straight?len=400&span=0.3,0.7&kind=tunnel&class=standard_gauge");
+        assert_eq!(s.num("bores"), 1.0, "{s}");
+        assert_eq!(s.get("rail"), Some("0/1"), "{s}");
+        assert_eq!(s.num("open"), 0.0, "the crown breaks surface between the portals: {s}");
+        let b = structure(&w);
+        let track = b.track.positions.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max);
+        let crown = b.bore.positions.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max);
+        assert!((crown - track - RAIL_TUNNEL_M).abs() < 1e-9, "{crown} {track}");
+        assert_eq!(tube_m("narrow_gauge"), NARROW_RAIL_TUNNEL_M);
+        assert_eq!(tube_m("residential"), TUNNEL_HEIGHT_M);
+        assert_eq!(tube_m("footway"), WALK_TUNNEL_M);
+        // The partition asks the same tube to fit before it calls a run a
+        // bore: a metre deeper for the railway than for a road.
+        assert!((crate::partition::bore_cover_m("standard_gauge") - crate::partition::BORE_COVER_M - 1.0).abs() < 1e-12);
+    }
+
+    /// **A tunnel too shallow for its tube is a gallery, with two mouths.**
+    /// A low hill over a mapped tunnel: the chord between the portals runs
+    /// 3 m under the crest at most, and a 5 m tube (6 m for a mainline) fits
+    /// nowhere. As a bore it drew no tube and the terrain lay on the road
+    /// end to end; as a gallery the tube stands over the whole span, both
+    /// ends are mouths, and the ground is opened for it.
+    #[test]
+    fn a_shallow_tunnel_is_a_gallery_with_two_mouths() {
+        for class in ["residential", "standard_gauge"] {
+            let (w, s) = world("hill?amp=3&radius=100", &format!("net:straight?len=400&span=0.3,0.7&kind=tunnel&class={class}"));
+            assert_eq!(s.num("galleries"), 1.0, "{class}: {s}");
+            assert_eq!(s.num("bores"), 0.0, "{class}: {s}");
+            assert_eq!(s.get("mouths"), Some("2/2"), "{class}: {s}");
+            assert_eq!(s.num("covered"), 0.0, "{class}: the terrain lies on the road: {s}");
+            assert!(!structure(&w).bore.indices.is_empty(), "{class}: no tube");
+            // The ground is opened under the tube: no terrain triangle has
+            // its centroid on the gallery's axis.
+            let g = &w.bench.as_ref().expect("the bench step ran").ground;
+            let on_axis = g.indices.chunks_exact(3).any(|t| {
+                let c = t.iter().fold([0.0, 0.0], |c, &i| {
+                    let p = g.positions[i as usize];
+                    [c[0] + p[0] / 3.0, c[1] + p[1] / 3.0]
+                });
+                c[0].abs() < 50.0 && c[1].abs() < 1.0
+            });
+            assert!(!on_axis, "{class}: terrain over the gallery");
+        }
+    }
+
+    /// **A portal is open.** A road and a railway through a ridge, flat
+    /// either side: the road meets the flank at grade, and between there and
+    /// where the tube first fits under the ground it runs under the hill with
+    /// nothing over it but the terrain. That stretch is the portal's cutting,
+    /// and no tunnel roadway may lie under the terrain uncovered by a tube.
+    #[test]
+    fn a_portal_is_open() {
+        for class in ["residential", "standard_gauge"] {
+            let (_, s) = world("ridge?height=40&width=120", &format!("net:straight?len=400&span=0.3,0.7&kind=tunnel&class={class}"));
+            assert_eq!(s.num("bores"), 1.0, "{class}: {s}");
+            assert_eq!(s.num("covered"), 0.0, "{class}: the terrain lies on the road at a portal: {s}");
+        }
     }
 
     #[test]

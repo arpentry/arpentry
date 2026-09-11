@@ -60,6 +60,14 @@ pub struct Feature {
     /// (empty for everything else); the assemble stage resolves these into
     /// corridor spans.
     pub level_runs: Vec<crate::levels::LevelRun>,
+    /// The two signals `level_runs` merges, kept apart for a reader that
+    /// must not merge them: `level_rules` alone (an ordinal — which of two
+    /// things is drawn over the other, OSM's `layer`), and the
+    /// `is_bridge`/`is_tunnel` flags alone (a structure). A road mapped at
+    /// level −1 because it passes under a viaduct is not a tunnel, and only
+    /// the second says whether it is one.
+    pub rule_runs: Vec<crate::levels::LevelRun>,
+    pub flag_runs: Vec<crate::levels::LevelRun>,
     /// Overture transportation `connectors` (empty for everything else); the
     /// assemble stage joins segments into corridors on these.
     pub connectors: Vec<crate::assemble::columns::Connector>,
@@ -321,11 +329,15 @@ impl Iterator for Features {
                 // `road_flags` carries the same structure signal as flags
                 // (`is_bridge`/`is_tunnel`); a substantial share of structures
                 // have only the flag, no `level_rules` (see `crate::levels`).
-                if name == "road_flags" {
-                    flag_runs = crate::levels::parse_flags(arr.as_ref(), row);
+                // A railway carries the same flags in `rail_flags`, over the
+                // same `between` referencing. A segment fills one of the two
+                // and leaves the other null, so the runs accumulate: read in
+                // either order, the null cell must not erase the other's.
+                if name == "road_flags" || name == "rail_flags" {
+                    flag_runs.extend(crate::levels::parse_flags(arr.as_ref(), row));
                     // The same cell also says whether the way is indoors,
                     // which is not a level and is dropped by the level parse.
-                    indoor_runs = crate::levels::indoor_runs(arr.as_ref(), row);
+                    indoor_runs.extend(crate::levels::indoor_runs(arr.as_ref(), row));
                     continue;
                 }
                 // `connectors` is likewise nested: the graph topology the
@@ -374,6 +386,7 @@ impl Iterator for Features {
             // Where `level_rules` said nothing, the flags stand in: a
             // flagged-only bridge still earns its structure span. Where both
             // exist the rules win — they carry real ordinals (stacked decks).
+            let (rule_runs, flags) = (level_runs.clone(), flag_runs.clone());
             if level_runs.is_empty() {
                 level_runs = flag_runs;
             }
@@ -381,6 +394,8 @@ impl Iterator for Features {
                 geometry,
                 properties,
                 level_runs,
+                rule_runs,
+                flag_runs: flags,
                 connectors,
                 subclass_runs,
                 indoor_runs,

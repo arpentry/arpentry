@@ -53,7 +53,7 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
                   shelf?drop=30&flank=8 (overrides --zone)
   --segments      an Overture segment.parquet, or a synthetic network:
                   net:straight[?span=0.35,0.65&kind=bridge|tunnel&level=1]|tee[?d=8][&hook=5]|cross|
-                  overpass[?span=0.35,0.65&level=1]|underpass|
+                  overpass[?span=0.35,0.65&level=1&leg=CLASS]|underpass[?leg=CLASS]|level[?rail=standard_gauge]|
                   hairpin?angle=20|dual?gap=4|roundabout?r=15&d=5|
                   sidewalk?d=6|corner?d=5[&split=1]|crossing?d=6|stub?d=0.5|
                   driveway?d=6[&short=0] [&len=200&class=residential]

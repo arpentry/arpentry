@@ -55,6 +55,8 @@ pub fn run(extent: &Extent, terrain: &Terrain, segments: &Path) -> Result<(Roads
         .with("structures", format!("{} ({} off the ground entirely)", read.structures, read.dropped))
         .with("measured", read.measured)
         .with("oneway", read.oneway)
+        .with("rail", format!("{} ({} street rail not kept)", read.rail, read.street_rail))
+        .with("layered", read.layered)
         .with("clipped", read.ways.len())
         .with("draped", roads.lines.len())
         .with("pieces", pieces)
@@ -70,6 +72,7 @@ fn synthetic(spec: &str, rect: &crate::frame::Rect) -> Result<roads::Read, Strin
     for way in net::parse(spec)? {
         out.features += 1;
         out.kept += 1;
+        out.rail += (crate::width::family(&way.class) == crate::width::Family::Rail) as usize;
         if way.has_structure() {
             out.structures += 1;
         }

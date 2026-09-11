@@ -289,9 +289,10 @@ cargo build --release --manifest-path world/Cargo.toml
     --bbox 6.89,46.41,6.96,46.45 --output /tmp/claude/world.glb
 ```
 
-**The GLB carries triangles only unless `--outlines` asks otherwise.** Six
-layers are the world — `ground`, `carriageway`, `pavement`, `roadway`,
-`deck`, `bore` — and eight are construction lines: the draped centrelines,
+**The GLB carries triangles only unless `--outlines` asks otherwise.** The
+world is `ground`, `wall`, `kerb`, `carriageway`, `pavement`, `ballast`,
+`rail` (the face between ballast and its neighbours), `roadway`, `track`,
+`deck`, `bore` and `pier`, and eight layers are construction lines: the draped centrelines,
 the solved profiles, and the ribbon, surface, kerb, fillet, room and facade
 contours. Those eight are glTF `LINES`, and **a viewer is not obliged to
 draw line topology**: Apple's (Preview, Quick Look, anything on that
@@ -320,7 +321,8 @@ synthetic ground, and `--segments
 net:cross` (or `straight`, `tee`, `overpass`, `underpass`,
 `hairpin?angle=20`, `dual?gap=4`, `tee?d=8&hook=5`, `sidewalk?d=6`,
 `corner[?split=1]`, `crossing`, `stub?d=0.5`, `driveway?d=6`,
-`roundabout`) swaps the parquet for a synthetic
+`roundabout`, `level[?rail=narrow_gauge]`, and `leg=CLASS` on `overpass` and
+`underpass` for a rail bridge or a rail bore) swaps the parquet for a synthetic
 network, where a step's output is an assertion rather than a look.
 `--until terrain` stops after a step; the steps so far are `terrain`,
 `drape`, `partition`, `reference`, `profile`, `crossing`, `facade`, `ribbon`,
@@ -602,6 +604,68 @@ arrives, is senior and enters as a constant. The plan view rings every
 crossing green where the clearance was met and red where it was not, over
 everything else, with what was asked and what was got in its title.
 
+**Railways are a third family, not a class of carriageway** (`width::Family::Rail`).
+The reader keeps the independent classes (`standard_gauge`, `broad_gauge`,
+`subway`, `narrow_gauge`, `funicular`) and drops street rail and `unknown`,
+which lie on a street or have no formation the model may grant them. A
+railway solves a profile, lays a surface (`ballast`, the 3.5 m / 2.6 m track
+zone, not the formation) and gets decks and bores exactly as a road does,
+and takes no kerb, sidewalk, fillet or room. What is the server's, ported
+with its reasons (`data/plans/rail-*.md`): the stiff engineered priors (3 %
+on a 2 km vertical curve, metre gauge 7 % on 500 m, the funicular 70 % in a
+2.5 m box — the server declared those radii and never read them; here they
+are `bend`'s); the **measured ceiling** (`profile::ceiling`: the p90 of the
+at-grade bed's grade, capped at `max(30 %, 1.5 × class)`, because a rack
+railway is tagged `narrow_gauge` and a funicular runs at 57 %); the
+**seniority** in `crossing` (a road always moves, over by `RAIL_CLEARANCE_M`
+7 m plus the slab or under a rail deck; a road over a rail bore is not asked
+— `senior` — and a road's floor never spreads into a railway through a
+connector they share); asphalt over ballast at a level crossing and ballast
+over the walk; a ballast bed that ignores buildings (a station roof), and
+buildings that yield no passage to a railway. Rail flags reach the reader
+because `geoparquet` now reads `rail_flags` beside `road_flags`.
+
+**A railway's structures are a railway's, not a road's.** The deck and the
+bore stand `RAIL_SHOULDER_M` (1 m, the server's `STRUCTURE_SHOULDER_M`)
+wider than the track zone each side, and the track bed runs to the parapet
+— at the bare track zone a metre-gauge viaduct on the flank was 2.6 m wide
+and read as a wall. A bore is `structure::tube_m(class)` high inside: 6 m
+for standard gauge, for the wire; 5 m for metre gauge and the funicular,
+like a road's. One function answers for the structure step, for the
+partition's bore test (`partition::bore_cover_m`: tube plus cover, so a
+standard-gauge run needs a metre more under the ground before it is a bore)
+and for the crossing's clearance over one. The structure line reports
+`rail=decks/bores` and `track_m2` beside the road's.
+
+**Overture does not cut a way at every connector**, whatever is said of
+junctions above: all 48 of the loop box's rail×road level crossings sit in
+the *interior* of both ways. So a level crossing is not found by `crossing`
+(it is not two interiors crossing) and not seen by the anchors (it is not a
+way end). The profile pins it instead (`contacts`): wherever a railway
+shares a connector with another solving way on the ground, **both are pinned
+mid-run to the railway's reference** — a level crossing and a switch are at
+grade by definition. The limiter pins ends only, so an at-grade run is cut
+at every contact and each piece limited between its pins. `level` in the
+profile line is the spread at those connectors and reads 0.000. The same
+pin mid-run is what `structure abutment` still needs for roads.
+
+On the loop box: 325 railways (139 street-rail features dropped), 87 321 m²
+of ballast, `raised` 17 (the rack railway and the funicular among them),
+`contacts` 91, `level` 0.000; `crossing` 107 crossings, 45 demands, `senior`
+9; 116 decks and 50 bores, of which the railways' are `rail=37/17` over
+14 596 m² of track. **What is still open:** `boxed` rose 24/66 →
+89/185, because a 2 km rail curve on a mountainside is what the 8 m box
+cannot pay for, as it is for a motorway; `clearance` 16/95 short — a road
+dipping under a rail deck is held by its own 100 m curve; `cover` −3.49 /
+`open` 21, shallow rail galleries whose 5 m tube stands out of the flank
+(the server has the same open problem, a per-class bore cover); a rail deck
+over a road lowered under it gets no slab where its chord sits at the
+*natural* ground, because the structure step reads that rather than the
+road's cutting; the funicular's monotone constraint, twin-track welding and
+twin bores are not ported; and bench `contact` reads 2.05 m at five
+pavement vertices where a pavement touches ballast only at a corner and the
+ground reads the ballast's outline there.
+
 The `mesh` step triangulates the carriageway and the pavement **conforming
 to the terrain lattice**: each region is ear-clipped and every ear cut by
 the lattice's columns, rows and cell diagonals, so every triangle lies in
@@ -760,8 +824,76 @@ on: 0 on the box, by construction). On the loop box: 174 spans, 116 fitted,
 and that is the profile's `dangling` chord made visible**: the Viaduc de
 Chillon leaves the box on its deck, step 9 runs it level to its one anchor,
 and the flank falls away under a deck that does not. A pier is a look, and
-this is what a look is for. There are still no portal faces: a bore's tube
-ends at its portal.
+this is what a look is for.
+
+**A portal is where the tube goes into the hill, and the ground in front of
+it is a cutting.** Between the line's crossing (where the road goes under
+the ground, and where the bore is still elected) and the roof's fit (where
+the tube first goes under it) the road runs under the terrain by less than
+its tube is tall. The span piece used to carry that stretch, so no surface
+step paved it and the bench cut nothing: the terrain lay on the roadway and
+the mouth was hill. `structure covered` measures it — tunnel roadway under
+the terrain with no tube over it — and it read 24 m on the ridge specimen.
+Three rules close it, each where it lives: the partition gives the stretch
+back to the ground (`open_portals`, reported as `portal_m`), so it is paved
+and benched and walled like any cutting; the tube reaches `PORTAL_M` (2 m)
+out over the cutting (`structure::PORTAL_M`), so the edge where the terrain
+was cut lies inside it; and across the cap where the cutting meets the
+tunnel the bench runs no batter and draws its wall only from the tube's
+roof up (`bench::Mouth`) — the headwall, with the opening left open.
+`a_portal_is_open` is the check, on a road and a railway.
+
+**A road or railway under the ground whose tube fits nowhere is a
+gallery** (`structure::is_gallery`: under the ground somewhere by
+`STRUCTURE_MIN_M`, tube under it nowhere). As a bore it drew no tube and
+the terrain lay on the road end to end — a road vanishing into the ground
+with no entrance. Now the bench cuts its whole footprint (abutment to
+abutment, at the structure's width) out of the ground (`bench::Portals`,
+which also carries the mouths) and the tube stands over it in the trench.
+On the footprint's edge the face closes the ground onto the **tube's
+section**, never onto the road: a headwall from the roof up where the hill
+is higher, a **footing** from the ground up to the floor where it falls
+below — the downhill side of a gallery on a flank, which without it showed
+the world through white slivers between the terrain and the tube
+(`a_gallery_meets_the_ground_on_both_sides`, read off the wall rule
+itself). A bore too short to have a solved run of its own — a stub of a
+few metres, deep under the hill — gets its tube over the whole span too,
+with the ground left alone.
+
+`structure mouths` counts, for every road and rail tunnel end the source
+mapped (not the bbox's cuts), whether a tube's mouth stands there;
+`walk_mouths` the same for walks. On the loop box: `covered` 953.1 →
+270.9 m, `portal_m` 172, 8 galleries, `mouths` 32/67 → 47/67 and
+`walk_mouths` 0/108, `wall_m2` 32 692 → 33 904. **The 20 road and rail
+ends still shut have no ground over them**: the way stays within 0.2 m of
+the terrain or above it the whole span — short service passages under
+buildings the terrain has not got, the funicular and a narrow-gauge line
+the model puts 3 m *over* it — and building a tube there would be a
+structure built from an annotation (§4.5). **The walks' 108 are the
+underpasses**: they pass under a road, a railway or a building rather than
+the hill, and a walk does not take part in the crossing step, so nothing
+dips it under what it crosses. That is the next step for them.
+
+**A flag builds a structure; a level only orders.** Overture takes a
+segment's `level_rules` from OSM's `layer` — what is drawn over what — and
+its `is_bridge`/`is_tunnel` flags from `bridge`/`tunnel`. The server's reader
+merged the two (the rules, else the flags) and every consumer read a
+negative level as a tunnel: Avenue de Naye is mapped at level −1 for 500 m
+because it runs under the Viaduc de Chillon, with no tunnel flag, and the
+world buried it — a bore the terrain lay on, then a 500 m gallery beside the
+lake. The world's reader (`roads::structures`) now builds a structure only
+from a flag, taking its ordinal from the level rule of its own sign that
+overlaps it; a level no flag covers is a **layer** on the way
+(`Way::layers`): ground, with an ordinal the crossing step still reads
+(`Way::level_at_arc`) so it knows which of two ways is on top. The
+geoparquet `Feature` carries the two signals apart (`rule_runs`,
+`flag_runs`); `level_runs` is unchanged and the server's own pipeline with
+it. On the loop box the flags and the rules agree on 215 stretches and 23
+carry a level alone (18 of them roads below the ground, 691 m); drape reads
+`layered` 58 ways, galleries 8 → 7, `mouths` 46/65 and `walk_mouths` 0/86 —
+22 of the walks' "underpasses" were a layer too. A structure the flags do
+not claim can still be one where the terrain derives it (`partition`),
+because there the geometry is the evidence rather than the ordinal.
 
 **What is still missing.** Neither the toe nor the wall is a breakline, so
 a lattice triangle may straddle one and stand off the engineered ground
