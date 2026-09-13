@@ -292,7 +292,7 @@ cargo build --release --manifest-path world/Cargo.toml
 **The GLB carries triangles only unless `--outlines` asks otherwise.** The
 world is `ground`, `wall`, `kerb`, `carriageway`, `pavement`, `ballast`,
 `rail` (the face between ballast and its neighbours), `roadway`, `track`,
-`deck`, `bore` and `pier`, and eight layers are construction lines: the draped centrelines,
+`deck`, `bore`, `pier`, `building` and `roof`, and eight layers are construction lines: the draped centrelines,
 the solved profiles, and the ribbon, surface, kerb, fillet, room and facade
 contours. Those eight are glTF `LINES`, and **a viewer is not obliged to
 draw line topology**: Apple's (Preview, Quick Look, anything on that
@@ -326,7 +326,7 @@ net:cross` (or `straight`, `tee`, `overpass`, `underpass`,
 network, where a step's output is an assertion rather than a look.
 `--until terrain` stops after a step; the steps so far are `terrain`,
 `drape`, `partition`, `reference`, `profile`, `crossing`, `facade`, `ribbon`,
-`surface`, `kerb`, `fillet`, `room`, `mesh`, `bench`, `structure`.
+`surface`, `kerb`, `fillet`, `room`, `mesh`, `bench`, `structure`, `building`.
 
 **A way is one profile, and a junction can fall in its interior.** Because a
 way is whole, another way can end *on it* — at a bridge abutment most often,
@@ -707,6 +707,31 @@ steeper than `STEP_GRADE`) with `worst`. The plan view marks every step
 with a purple dot in any window under 2 km, like the room's bare kerb
 stations.
 
+**A junction's legs are blended, and nothing else is.** Each leg is level
+crosswise, so on a flank the legs' cross-sections disagree everywhere off
+the connector they share — by `g·s` at `s` metres from it where a leg
+climbing a flank of grade `g` meets one along its contour — and the
+nearest-axis field stepped on the line where two legs are equidistant:
+0.875 m on a 15 % specimen flank, with kerb returns whose edges climbed
+100–220 %. That is the bumpy junction. So near a connector two or more
+axes share (`bench::JOINT_M`, 15 m, fading to nothing at `JOINT_FADE_M`,
+25 m) the legs meeting there are blended by how nearly each is the nearest
+(`BLEND_M`, 4 m), and the junction is one warped surface: the specimens
+read `step` 0 and a steepest edge of 0.33–0.42 against 1.01–2.19 before
+(`a_junction_on_a_slope_is_one_surface`), and the loop box reads `step`
+0.41 % → 0.35 % for 19.0 s against 17.4. The legs agree at the connector —
+the profile pins it — so what is blended is a disagreement that starts at
+nothing and grows: a warp, not a ramp between terraces. **Two roads that
+meet nowhere near are never blended**, so two terraces on a flank keep the
+wall between them (`a_step_no_batter_can_run_is_closed_by_a_wall`).
+
+**The blend width is not settled.** 3 m reads 0.42 on those specimens and
+8 m reads 0.31, so the band barely moves them and 4 m is chosen rather
+than measured. What is left in the corners is a real twist — a level road
+meeting a 15 % side street must warp through its returns — and the worst
+edge is always one of those, ~6 m from the connector. `worst` is untouched
+by any of it (15.401 m on the box, a cliff the ground walls).
+
 **And the ground answers.** The terrain is re-triangulated over
 `rect − room` on the same lattice by the same mesher, so **the ground
 stops at the kerb**: no triangle of it lies under the asphalt, which is
@@ -932,6 +957,37 @@ for a notch in its facade), `house:across?rot=30` (one the way passes
 through), `house:row?gap=2` (two along the road) or `house:pair?gap=3` (two
 facing across it) says so. The `kerb_gap` and `wall_gap` checks know the
 walls: a kerb station with a facade outside it is walled, not bare.
+
+The `building` step stands every footprint up, one building at a time.
+The facade reader keeps each building beside the masks, with its height
+(measured, else floors × 3 m, else a 5 m guess — the facade line's
+`guessed`) and its roof (`roof_shape`, `roof_height`), and **drops what the
+source flags `is_underground`** (`underground`): the Veytaux power
+station's caverns are mapped on the flank above them, and stood up they
+were a 5 m box 105 m in the air on its low side. The construction is the
+tiler's `server/src/building_mesh.rs` in metres: a building stands on the
+highest ground along its outline and sinks `FOUNDATION_M` (2 m) past the
+lowest; `height` is ground to top, so a pitched roof fits under it; a gable
+needs a convex quad and a pyramid a convex outline, and a roof the outline
+cannot carry is flat (`degraded`). Three things are not the tiler's: the
+ground is read where the outline crosses the lattice rather than at its
+corners, the walls rise to the roof's rim (the tiler left a skillion open
+above its low eave; a gable end is now a wall), and an unmapped rise is half
+the short side measured across the longest edge, so a turned house gets the
+same roof. `lost_m2` is the roofs' plan area against the footprints'.
+`house:beside?d=20&h=10&roof=gabled&rise=3` is the specimen. On the loop
+box: 3 223 buildings, 1 219 guessed, 6 underground, 201 gabled, 2 skillion,
+170 degraded, `relief` 39.0 m, `lost_m2` 2.8e-7, in 0.01 s.
+
+**`perched` is the rule's cost, and it is 19 % of the loop box**: buildings
+whose ground falls away under them by more than their own height, where
+standing on the highest ground puts a downhill facade that is more
+foundation than building. Montreux is a hillside town and the rule is the
+tiler's; a better one needs to know which side a building's height was
+measured from. Two more things it does not know: it reads the natural
+terrain, not the bench's engineered ground, so a building within a batter's
+reach of a road in cutting may show its foundation; and a building a way
+runs through is walled to the ground across the passage.
 
 To look at the world, write the plan view. It is one SVG group per step,
 every stroke width a width in metres, a function of the world alone so

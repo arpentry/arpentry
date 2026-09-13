@@ -33,6 +33,7 @@ pub struct World {
     pub mesh: Option<Mesh>,
     pub bench: Option<Bench>,
     pub structure: Option<Structure>,
+    pub buildings: Option<Buildings>,
 }
 
 impl World {
@@ -53,6 +54,7 @@ impl World {
             mesh: None,
             bench: None,
             structure: None,
+            buildings: None,
         }
     }
 }
@@ -467,9 +469,24 @@ pub struct Crossings {
     pub floor: Vec<Vec<f64>>,
 }
 
+/// One building as the source mapped it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Building {
+    /// Its footprint, clipped to the rect and oriented: several shapes for
+    /// a multipolygon, or for one the rect cut in two.
+    pub footprint: Shapes,
+    /// The ground to the top of its roof, in metres
+    /// ([`crate::building::mapped_height`]), decided once by the reader.
+    pub height_m: f64,
+    pub roof: crate::building::Roof,
+}
+
 /// The buildings: what nothing paved may enter.
 #[derive(Debug, Clone, Default)]
 pub struct Facade {
+    /// Every building touching the rect, one by one: what the building step
+    /// stands up. The masks below are their footprints unioned.
+    pub buildings: Vec<Building>,
     /// Every footprint touching the rect, clipped to it and unioned: two
     /// houses sharing a wall are one region, a courtyard is a hole.
     pub footprints: Shapes,
@@ -572,6 +589,23 @@ pub struct Tri {
     pub indices: Vec<u32>,
 }
 
+impl Tri {
+    /// One triangle, in the order given, on vertices of its own.
+    pub fn triangle(&mut self, t: [[f64; 3]; 3]) {
+        let base = self.positions.len() as u32;
+        self.positions.extend_from_slice(&t);
+        self.indices.extend_from_slice(&[base, base + 1, base + 2]);
+    }
+
+    /// One quad, as two triangles, in the order given, on vertices of its
+    /// own.
+    pub fn quad(&mut self, q: [[f64; 3]; 4]) {
+        let base = self.positions.len() as u32;
+        self.positions.extend_from_slice(&q);
+        self.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+}
+
 /// The paved surface as triangles, one mesh per family, every triangle
 /// inside one triangle of the terrain.
 #[derive(Debug, Clone, Default)]
@@ -637,6 +671,15 @@ pub struct Structure {
     /// stands is a 2D fact, and the one rule it has — that it may not
     /// stand in the road it crosses — is a 2D rule.
     pub piers: Vec<Shapes>,
+}
+
+/// The buildings standing on the terrain.
+#[derive(Debug, Clone, Default)]
+pub struct Buildings {
+    /// Every footprint's walls, from under the lowest ground along its
+    /// outline up to its roof's rim: gable ends and courtyards included.
+    pub walls: Tri,
+    pub roofs: Tri,
 }
 
 impl Facade {

@@ -331,7 +331,7 @@ pub const COLLINEAR_M: f64 = 1e-4;
 /// is two boundary edges a micron apart that weld into one. A spike of
 /// several vertices collapses from its tip. The ring's area and perimeter
 /// move by less than the lattice per vertex removed.
-fn cleaned(ring: &[Pt]) -> Vec<Pt> {
+pub(crate) fn cleaned(ring: &[Pt]) -> Vec<Pt> {
     let mut out: Vec<Pt> = ring.to_vec();
     loop {
         let n = out.len();
@@ -366,7 +366,7 @@ fn ears(shape: &poly::Shape, want: f64) -> Result<Vec<[Pt; 3]>, Option<Vec<[Pt; 
 }
 
 /// The clipper's ears, counter-clockwise, or `None` if it refused.
-fn ear_clip(shape: &poly::Shape) -> Option<Vec<[Pt; 3]>> {
+pub(crate) fn ear_clip(shape: &poly::Shape) -> Option<Vec<[Pt; 3]>> {
     let mut coords: Vec<f64> = Vec::new();
     let mut holes: Vec<usize> = Vec::new();
     for (i, ring) in shape.iter().enumerate() {

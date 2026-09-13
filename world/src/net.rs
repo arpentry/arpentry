@@ -310,10 +310,12 @@ impl Params {
     }
 
     pub(crate) fn num(&self, key: &str, default: f64) -> Result<f64, String> {
-        match self.get(key) {
-            None => Ok(default),
-            Some(v) => v.parse().map_err(|_| format!("invalid {key}: {v}")),
-        }
+        Ok(self.opt(key)?.unwrap_or(default))
+    }
+
+    /// The number under `key`, or `None` where the spec does not say.
+    pub(crate) fn opt(&self, key: &str) -> Result<Option<f64>, String> {
+        self.get(key).map(|v| v.parse().map_err(|_| format!("invalid {key}: {v}"))).transpose()
     }
 }
 

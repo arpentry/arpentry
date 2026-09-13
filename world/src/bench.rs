@@ -42,6 +42,20 @@
 //! between two terraces, which is spectacle (invariant 6). The `step`
 //! check counts those edges and the plan view marks them.
 //!
+//! **Except where they meet.** Every leg of a junction is level
+//! crosswise, so on a flank the legs' cross-sections disagree everywhere
+//! off the connector they share — by `g·s` at `s` metres from it where a
+//! leg climbing a flank of grade `g` meets one along its contour — and the
+//! nearest axis alone stepped on the line where two legs are equidistant:
+//! up to 0.875 m on a 15 % flank, with junction corners whose edges
+//! climbed 100 to 220 %, and a bump in every junction on the box's
+//! hillside. So near a connector two or more axes share, the legs meeting
+//! there are blended ([`Field::at`]). The legs agree at the connector — the
+//! profile pins it — so what is blended is a disagreement that starts at
+//! nothing and grows: a warp in the junction, not a ramp between terraces.
+//! And a road that meets another nowhere near is never blended with it,
+//! so the terraces keep their wall.
+//!
 //! **And the ground answers.** [`Ground`] is the terrain with the room cut
 //! out of it: the room's own height at its outline, a face at
 //! [`EARTHWORK_BATTER`] out of it — cut uphill, fill downhill — stopping
@@ -78,7 +92,7 @@ use crate::step::Summary;
 use crate::terrain::height_at;
 use crate::frame::Rect;
 use crate::width::{self, Family};
-use crate::world::{Bench, Kind, Mesh, Paving, Polyline2, Profile, Profiles, Terrain, Tri};
+use crate::world::{connector, Bench, Kind, Mesh, Paving, Polyline2, Profile, Profiles, Terrain, Tri};
 use crate::mesh;
 
 /// How far, in metres, the pavement stands above the carriageway beside
@@ -148,6 +162,23 @@ const CELL_M: f64 = 16.0;
 /// whole world to find out.
 const FIELD_LIMIT_M: f64 = 4.5 + ROOM_REACH_M + EARTHWORK_BATTER * MAX_BENCH_FACE_M;
 
+/// How much farther than the nearest axis, in metres, another leg of the
+/// same junction may run from a point and still have a say in its height:
+/// the width of the band over which two legs' cross-sections are blended
+/// either side of the line where they are equidistant. A disagreement of
+/// `Δ` across the line is spread over it, so it adds about `Δ / BLEND_M`
+/// of grade there.
+pub const BLEND_M: f64 = 4.0;
+
+/// Within this many metres of a connector two or more axes share, the legs
+/// meeting there are blended in full: a street's half-width and the room's
+/// reach, out along the bisector of a square corner, with a margin.
+pub const JOINT_M: f64 = 15.0;
+
+/// Past this many metres from the connector the blend has faded into the
+/// nearest axis's own cross-section, and a leg is its own road again.
+pub const JOINT_FADE_M: f64 = 25.0;
+
 /// The room's height field: the solved profile of every carriageway axis
 /// on the ground, indexed for the nearest-axis query every vertex makes.
 ///
@@ -155,13 +186,23 @@ const FIELD_LIMIT_M: f64 = 4.5 + ROOM_REACH_M + EARTHWORK_BATTER * MAX_BENCH_FAC
 /// a piece's own ribbon that is the piece's own axis, since no other axis
 /// comes within its half-width without their ribbons overlapping; in the
 /// pavement and the kerb returns it is the nearest road, which is the one
-/// the pavement belongs to.
+/// the pavement belongs to — except near a junction, where the legs that
+/// meet there are blended ([`Field::at`]).
 #[derive(Debug, Default)]
 pub struct Field {
     at: Nearest,
     /// Per segment, the solved heights of its two ends and the half-width
     /// of the road it belongs to.
     seg: Vec<(f64, f64, f64)>,
+    /// Per segment, the axis it belongs to: the profile's place among the
+    /// ones the field was built from.
+    axis: Vec<u32>,
+    /// Every connector two or more axes share, with the axes meeting
+    /// there, in connector order so a blend sums in an order that is a
+    /// function of the world.
+    joints: Vec<(Pt, Vec<u32>)>,
+    /// The joints on a grid of [`JOINT_FADE_M`] cells.
+    joint_cells: HashMap<(i32, i32), Vec<u32>>,
 }
 
 /// Segments on a grid of [`CELL_M`] cells, for many nearest-segment
@@ -206,6 +247,11 @@ impl Nearest {
     /// them; with a limit the search stops at the first ring that cannot
     /// hold an answer.
     fn of(&self, p: Pt, limit: f64) -> Option<(usize, f64, f64)> {
+        self.of_where(p, limit, |_| true)
+    }
+
+    /// The same, among the segments `keep` accepts.
+    fn of_where(&self, p: Pt, limit: f64, keep: impl Fn(usize) -> bool) -> Option<(usize, f64, f64)> {
         let (c0, r0) = poly::cell_of(p, CELL_M);
         let (bc0, br0, bc1, br1) = self.span?;
         let rings = (c0 - bc0).abs().max((bc1 - c0).abs()).max((r0 - br0).abs()).max((br1 - r0).abs());
@@ -215,7 +261,7 @@ impl Nearest {
                 let Some(ids) = self.cells.get(&(c, r)) else {
                     continue;
                 };
-                for &i in ids {
+                for &i in ids.iter().filter(|&&i| keep(i as usize)) {
                     let (a, b) = self.seg[i as usize];
                     let f = poly::nearest_on_segment(a, b, p);
                     let d = (p[0] - f[0]).hypot(p[1] - f[1]);
@@ -321,29 +367,47 @@ impl Field {
         profiles: impl Iterator<Item = (&'a Profile, Vec<(usize, usize)>)>,
     ) -> Field {
         let mut f = Field::default();
-        for (p, ranges) in profiles {
+        // A station keeps its way's own vertices, so wherever ways meet
+        // every one of them has a station there: a joint is a connector
+        // the stations of two axes share.
+        let mut meets: HashMap<(i64, i64), (Pt, Vec<u32>)> = HashMap::new();
+        for (axis, (p, ranges)) in profiles.enumerate() {
+            let axis = axis as u32;
             let half_w = p.width_m / 2.0;
             for (k0, k1) in ranges {
                 if p.stations.is_empty() {
                     continue;
                 }
                 let (k0, k1) = (k0.min(p.stations.len() - 1), k1.min(p.stations.len() - 1));
+                for st in &p.stations[k0..=k1] {
+                    let m = meets.entry(connector(st.p)).or_insert((st.p, Vec::new()));
+                    if !m.1.contains(&axis) {
+                        m.1.push(axis);
+                    }
+                }
                 if k1 == k0 {
                     let st = p.stations[k0];
-                    f.push(st.p, st.p, st.h, st.h, half_w);
+                    f.push(st.p, st.p, st.h, st.h, half_w, axis);
                     continue;
                 }
                 for w in p.stations[k0..=k1].windows(2) {
-                    f.push(w[0].p, w[1].p, w[0].h, w[1].h, half_w);
+                    f.push(w[0].p, w[1].p, w[0].h, w[1].h, half_w, axis);
                 }
             }
+        }
+        let mut joints: Vec<_> = meets.into_iter().filter(|(_, (_, m))| m.len() > 1).collect();
+        joints.sort_unstable_by_key(|(key, _)| *key);
+        for (_, (c, members)) in joints {
+            f.joint_cells.entry(poly::cell_of(c, JOINT_FADE_M)).or_default().push(f.joints.len() as u32);
+            f.joints.push((c, members));
         }
         f
     }
 
-    fn push(&mut self, a: Pt, b: Pt, ha: f64, hb: f64, half_w: f64) {
+    fn push(&mut self, a: Pt, b: Pt, ha: f64, hb: f64, half_w: f64, axis: u32) {
         self.at.push(a, b);
         self.seg.push((ha, hb, half_w));
+        self.axis.push(axis);
     }
 
     /// How many axis pieces the field holds.
@@ -355,13 +419,73 @@ impl Field {
         self.seg.is_empty()
     }
 
-    /// What the nearest carriageway axis says about `p`. `None` if the
-    /// field is empty.
+    /// What the nearest carriageway axis says about `p`, its height blended
+    /// with the other legs of any junction that axis meets near `p`. `None`
+    /// if the field is empty.
     pub fn at(&self, p: Pt) -> Option<Foot> {
         let (i, t, d) = self.at.of(p, FIELD_LIMIT_M)?;
-        let (ha, hb, half_w) = self.seg[i];
-        Some(Foot { h: ha + (hb - ha) * t, d, half_w })
+        let near = self.axis[i];
+        Some(Foot { h: self.joined(p, near, self.height(i, t), d), d, half_w: self.seg[i].2 })
     }
+
+    /// The solved height `t` of the way along segment `i`.
+    fn height(&self, i: usize, t: f64) -> f64 {
+        let (ha, hb, _) = self.seg[i];
+        ha + (hb - ha) * t
+    }
+
+    /// `h`, the height the nearest axis `near` gives `p` from `d` metres
+    /// away, blended with the other legs of every joint of `near` within
+    /// [`JOINT_FADE_M`] of `p`.
+    ///
+    /// Within one joint each leg weighs by how nearly it is the nearest —
+    /// in full at the line where two legs are equidistant, nothing once it
+    /// runs [`BLEND_M`] farther than the nearest — so the blend is
+    /// symmetric in the legs and continuous across that line, where the
+    /// nearest axis alone stepped. The joints then weigh by their distance
+    /// from `p`, in full within [`JOINT_M`] and fading to nothing at
+    /// [`JOINT_FADE_M`], and whatever weight they leave is the nearest
+    /// axis's own. An axis no joint near `p` holds is never asked: two
+    /// roads that meet nowhere near keep the step between them.
+    fn joined(&self, p: Pt, near: u32, h: f64, d: f64) -> f64 {
+        let (c0, r0) = poly::cell_of(p, JOINT_FADE_M);
+        let (mut sum, mut weight, mut most) = (0.0, 0.0, 0.0f64);
+        for (c, r) in (-1..=1).flat_map(|dc| (-1..=1).map(move |dr| (c0 + dc, r0 + dr))) {
+            for &j in self.joint_cells.get(&(c, r)).into_iter().flatten() {
+                let (at, members) = &self.joints[j as usize];
+                let reach = fade(((p[0] - at[0]).hypot(p[1] - at[1]) - JOINT_M) / (JOINT_FADE_M - JOINT_M));
+                if reach <= 0.0 || !members.contains(&near) {
+                    continue;
+                }
+                let (mut hs, mut ws) = (0.0, 0.0);
+                for &m in members {
+                    let (hm, dm) = if m == near {
+                        (h, d)
+                    } else {
+                        match self.at.of_where(p, d + BLEND_M, |k| self.axis[k] == m) {
+                            Some((k, t, dm)) => (self.height(k, t), dm),
+                            None => continue,
+                        }
+                    };
+                    let w = fade((dm - d) / BLEND_M);
+                    hs += w * hm;
+                    ws += w;
+                }
+                sum += reach * hs / ws;
+                weight += reach;
+                most = most.max(reach);
+            }
+        }
+        (sum + (1.0 - most) * h) / (weight + (1.0 - most))
+    }
+}
+
+/// A weight falling smoothly from 1 at `t ≤ 0` to 0 at `t ≥ 1`, with no
+/// slope at either end, so a blend faded by it has no crease where it
+/// starts or stops.
+fn fade(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - t * t * (3.0 - 2.0 * t)
 }
 
 /// The cells exactly `k` away from `(c0, r0)` in the Chebyshev metric, in
@@ -1425,6 +1549,59 @@ pub(crate) mod tests {
         assert!(!centre.is_empty());
         let top = crate::terrain::height_at(t, 0.0, 0.0);
         assert!(centre.iter().all(|h| (h - top).abs() < 1e-9), "the junction is not at the ground's height");
+    }
+
+    /// The three steepest edges of `tri` — rise over run, and where the
+    /// edge lies — over the edges long enough for a grade to mean
+    /// something. Where the worst edge is says which rule made it: a
+    /// junction's own corner, or the ring where the blend hands back.
+    fn steepest(tri: &Tri) -> Vec<(f64, Pt)> {
+        let mut edges: Vec<(f64, Pt)> = tri
+            .indices
+            .chunks_exact(3)
+            .flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])])
+            .map(|(a, b)| {
+                let (p, q) = (tri.positions[a as usize], tri.positions[b as usize]);
+                let run = (q[0] - p[0]).hypot(q[1] - p[1]);
+                let grade = if run < 0.1 { 0.0 } else { (q[2] - p[2]).abs() / run };
+                (grade, [(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0])
+            })
+            .collect();
+        edges.sort_by(|a, b| b.0.total_cmp(&a.0));
+        edges.truncate(3);
+        edges
+    }
+
+    #[test]
+    fn a_junction_on_a_slope_is_one_surface() {
+        // Every leg of a junction is level crosswise, so on a flank the
+        // legs' cross-sections disagree everywhere off the connector: by
+        // g·s where a leg climbing the flank meets one along its contour,
+        // by twice that where two legs climb it at 45°. Asked of the
+        // nearest axis alone, the room stepped on the line where two legs
+        // are equidistant — 0.875 m on a 15 % flank — and every junction
+        // on the box's hillside read as a bump.
+        let mut got = Vec::new();
+        for ground in ["ramp?grade=0.15&bearing=0&radius=100000", "ramp?grade=0.15&bearing=45&radius=100000"] {
+            for net in ["net:tee", "net:cross"] {
+                let (w, s) = world(ground, net, None);
+                let worst = steepest(&bench(&w).carriageway);
+                let from_joint = worst[0].1[0].hypot(worst[0].1[1]);
+                eprintln!("{ground} {net}: step={} worst={worst:.3?} at {from_joint:.1} m from the joint", s.num("step"));
+                got.push((ground, net, s.num("step"), worst[0].0));
+            }
+        }
+        // What is left in the corners is a twist, not a step: a level road
+        // meeting a 15 % side street has to warp through its kerb returns,
+        // and every worst edge is one of those, ~6 m from the connector.
+        // Measured 0.33 to 0.42 over the four, against 1.01 to 2.19 from
+        // the nearest axis alone. The bound is where those sit, not where
+        // the band was tuned: at BLEND_M 3 m they read 0.42 and at 8 m
+        // 0.31, so the width barely moves them.
+        for (ground, net, step, steep) in got {
+            assert_eq!(step, 0.0, "{ground} {net}");
+            assert!(steep < 0.5, "{ground} {net}: an edge of the junction climbs {steep:.3}");
+        }
     }
 
     /// The engineered ground of a world, and its natural one.

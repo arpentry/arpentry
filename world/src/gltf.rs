@@ -29,13 +29,38 @@ const UNSIGNED_INT: u32 = 5125;
 const TRIANGLES: u32 = 4;
 const LINES: u32 = 1;
 
-/// The terrain's vertex colour, a muted green that reads as ground in a
-/// viewer's solid shading.
-const TERRAIN_COLOR: [f32; 3] = [0.55, 0.65, 0.45];
+/// The palette: Apple Maps' light mode, as sRGB hex. Pale warm land, white
+/// roads, grey walks, off-white buildings whose roofs are a shade lighter
+/// than their walls. The colours carry the family and the viewer's
+/// shading carries the form, so every one stays pale and they differ by
+/// little — a dark colour here reads as a hole in the model, not a surface.
+mod palette {
+    pub const GROUND: u32 = 0xE9E6DD;
+    /// Retaining walls and the ballast's closing face: dressed stone.
+    pub const WALL: u32 = 0xD6D2C9;
+    pub const KERB: u32 = 0xD0CDC6;
+    pub const CARRIAGEWAY: u32 = 0xFCFCFA;
+    pub const PAVEMENT: u32 = 0xDEDBD4;
+    /// The track bed, over a formation and over a structure alike.
+    pub const BALLAST: u32 = 0xCBC6BE;
+    pub const DECK: u32 = 0xE0DDD7;
+    /// The inside of a tube: the one dark surface, because it is in shadow.
+    pub const BORE: u32 = 0x9C988F;
+    pub const PIER: u32 = 0xD8D5CF;
+    pub const BUILDING: u32 = 0xE3E0DA;
+    pub const ROOF: u32 = 0xF3F1ED;
+}
 
-/// The track bed's colour, over a formation and over a structure alike: the
-/// server's `rail_surface` (158, 150, 138).
-const BALLAST_COLOR: [f32; 3] = [0.62, 0.59, 0.54];
+/// An sRGB hex colour as the linear factors glTF's `baseColorFactor` and
+/// `COLOR_0` are defined in. Written as a factor directly, a colour renders
+/// darker and more saturated than the hex it was picked from.
+fn linear(hex: u32) -> [f32; 3] {
+    let channel = |shift: u32| {
+        let s = ((hex >> shift) & 0xFF) as f32 / 255.0;
+        if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+    };
+    [channel(16), channel(8), channel(0)]
+}
 
 /// Serialises the world's layers. A layer that has not been built, or is
 /// empty, has no node.
@@ -56,10 +81,10 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
     // The engineered ground once the bench has cut the room out of it;
     // the raw lattice before that. One ground either way.
     if let Some(b) = &world.bench {
-        doc.triangles("ground", &b.ground, [0.52, 0.56, 0.44]);
-        doc.triangles("wall", &b.wall, [0.60, 0.58, 0.54]);
-        doc.triangles("kerb", &b.kerb, [0.72, 0.70, 0.66]);
-        doc.triangles("rail", &b.rail, [0.50, 0.47, 0.42]);
+        doc.triangles("ground", &b.ground, linear(palette::GROUND));
+        doc.triangles("wall", &b.wall, linear(palette::WALL));
+        doc.triangles("kerb", &b.kerb, linear(palette::KERB));
+        doc.triangles("rail", &b.rail, linear(palette::WALL));
     } else if let Some(t) = &world.terrain {
         doc.terrain(t);
     }
@@ -82,16 +107,20 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
         .map(|b| (&b.carriageway, &b.pavement, &b.ballast))
         .or_else(|| world.mesh.as_ref().map(|m| (&m.carriageway, &m.pavement, &m.ballast)))
     {
-        doc.triangles("carriageway", c, [0.30, 0.30, 0.33]);
-        doc.triangles("pavement", p, [0.80, 0.66, 0.46]);
-        doc.triangles("ballast", b, BALLAST_COLOR);
+        doc.triangles("carriageway", c, linear(palette::CARRIAGEWAY));
+        doc.triangles("pavement", p, linear(palette::PAVEMENT));
+        doc.triangles("ballast", b, linear(palette::BALLAST));
     }
     if let Some(s) = &world.structure {
-        doc.triangles("roadway", &s.roadway, [0.30, 0.30, 0.33]);
-        doc.triangles("track", &s.track, BALLAST_COLOR);
-        doc.triangles("deck", &s.deck, [0.62, 0.60, 0.56]);
-        doc.triangles("bore", &s.bore, [0.35, 0.33, 0.30]);
-        doc.triangles("pier", &s.pier, [0.58, 0.56, 0.52]);
+        doc.triangles("roadway", &s.roadway, linear(palette::CARRIAGEWAY));
+        doc.triangles("track", &s.track, linear(palette::BALLAST));
+        doc.triangles("deck", &s.deck, linear(palette::DECK));
+        doc.triangles("bore", &s.bore, linear(palette::BORE));
+        doc.triangles("pier", &s.pier, linear(palette::PIER));
+    }
+    if let Some(b) = &world.buildings {
+        doc.triangles("building", &b.walls, linear(palette::BUILDING));
+        doc.triangles("roof", &b.roofs, linear(palette::ROOF));
     }
     if let (Some(r), Some(t)) = (&world.ribbons, &world.terrain) {
         if outlines && !r.ribbons.is_empty() {
@@ -145,12 +174,13 @@ impl Doc {
         let mut positions = Vec::with_capacity(n * 3);
         let mut normals = Vec::with_capacity(n * 3);
         let mut colors = Vec::with_capacity(n * 3);
+        let ground = linear(palette::GROUND);
         for i in 0..n {
             let [x, y, z] = t.position(i);
             positions.extend_from_slice(&to_gltf([x as f32, y as f32, z as f32]));
             let nrm = t.normals[i];
             normals.extend_from_slice(&to_gltf(nrm));
-            colors.extend_from_slice(&TERRAIN_COLOR);
+            colors.extend_from_slice(&ground);
         }
         let position = self.vec3(&positions, true);
         let normal = self.vec3(&normals, false);

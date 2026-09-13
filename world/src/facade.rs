@@ -51,19 +51,30 @@
 //! house:row?d=2[&l=10&w=10&gap=2]           two houses side by side along the axis, `gap` m apart, facades `d` m off it
 //! house:pair?gap=3[&l=10&w=10]              two houses facing each other across the axis, their facades `gap` m apart
 //! ```
+//!
+//! Every spec also takes `h=` (the houses' height; absent, they are stood at
+//! the guess a source without one gets), `roof=` (Overture's `roof_shape`)
+//! and `rise=` (its `roof_height`): what the building step reads.
+//!
+//! **One building at a time is kept too.** The masks are a union and forget
+//! which footprint was which; the building step needs each one's own height
+//! and roof, so the reader hands the buildings on as it read them, and
+//! `guessed` counts those whose height the source never gave.
 
 use std::path::Path;
 
 use arpentry_server::geoparquet::{GeoParquet, ReadError};
 use arpentry_server::project::Bounds;
+use arpentry_server::value::{f64_of, str_of, Value};
 use geo_types::{Geometry, Polygon};
 
+use crate::building::{self, Roof, RoofShape, DEFAULT_HEIGHT_M};
 use crate::frame::{Extent, Frame, Rect};
 use crate::kerb;
 use crate::net::Params;
 use crate::poly::{self, Indexed, Pt, Shape, Shapes};
 use crate::step::Summary;
-use crate::world::{Facade, Polyline2, Roads};
+use crate::world::{Building, Facade, Polyline2, Roads};
 
 /// The widest corridor a building yields to a way running through it, in
 /// metres: a lane's worth. A way narrower than this keeps its own width.
@@ -100,7 +111,7 @@ pub fn run(
             }
         },
     };
-    let footprints = poly::union_all(&read.shapes);
+    let footprints = poly::union_all(&read.buildings.iter().flat_map(|b| b.footprint.iter().cloned()).collect());
     // A railway asks nothing of a building: it runs under a station roof
     // rather than through a passage the building yields, and its ballast
     // does not stop at a wall. Given a corridor, a train shed's footprint
@@ -137,42 +148,49 @@ pub fn run(
     let open = poly::difference(&closed, &poly::union_all(&all_corridors(&plan)));
     let built = poly::union_of(&[&open, &solid]);
     let summary = Summary::new()
-        .with("footprints", read.count)
+        .with("footprints", read.buildings.len())
         .with("clipped", read.clipped)
+        .with("guessed", read.guessed)
+        .with("underground", read.underground)
         .with_m2("footprint_m2", poly::area(&footprints))
         .with("passages", passages)
         .with_m2("passage_m", passage_m)
         .with("lanes", lanes)
         .with_m2("solid_m2", poly::area(&solid))
         .with_m2("pocket_m2", poly::area(&built) - poly::area(&solid));
-    Ok((Facade { footprints, passages: passages_shapes, solid, built }, summary))
+    Ok((Facade { buildings: read.buildings, footprints, passages: passages_shapes, solid, built }, summary))
 }
 
 /// What the reader (or the dial) found.
 #[derive(Debug, Default)]
 pub struct Read {
-    /// The footprints touching the rect, clipped to it and oriented, not
-    /// yet unioned.
-    pub shapes: Shapes,
-    /// Footprints with any part inside the rect.
-    pub count: usize,
-    /// Of those, the ones the rect cut.
+    /// The buildings with any part inside the rect, their footprints
+    /// clipped to it and oriented, not yet unioned.
+    pub buildings: Vec<Building>,
+    /// Pieces the rect cut.
     pub clipped: usize,
+    /// Buildings the source gave no height, stood at [`DEFAULT_HEIGHT_M`].
+    pub guessed: usize,
+    /// Buildings the source flags `is_underground`, dropped.
+    pub underground: usize,
 }
 
 impl Read {
-    /// Adds one footprint, the `shapes` of a feature (several for a
-    /// multipolygon), clipped to `rect`: counted once if any part of it
-    /// is inside, and once more for every piece the rect cut.
-    fn add(&mut self, shapes: impl IntoIterator<Item = Shape>, rect: &Rect) {
-        let mut kept = false;
+    /// Adds one building, the `shapes` of a feature (several for a
+    /// multipolygon) clipped to `rect`, if any part of it is inside;
+    /// counts every piece the rect cut.
+    fn add(&mut self, shapes: impl IntoIterator<Item = Shape>, rect: &Rect, height_m: Option<f64>, roof: Roof) {
+        let mut footprint = Shapes::new();
         for shape in shapes {
             let (clipped, cut) = clip(shape, rect);
-            kept |= !clipped.is_empty();
             self.clipped += cut as usize;
-            self.shapes.extend(clipped);
+            footprint.extend(clipped);
         }
-        self.count += kept as usize;
+        if footprint.is_empty() {
+            return;
+        }
+        self.guessed += height_m.is_none() as usize;
+        self.buildings.push(Building { footprint, height_m: height_m.unwrap_or(DEFAULT_HEIGHT_M), roof });
     }
 }
 
@@ -182,14 +200,27 @@ pub fn read(path: &Path, bbox: &Bounds, frame: &Frame, rect: &Rect) -> Result<Re
     let gp = GeoParquet::open(path)?;
     let row_groups = gp.row_groups_intersecting((bbox.west, bbox.south, bbox.east, bbox.north));
     let mut out = Read::default();
-    for feature in gp.features(row_groups, &[])? {
+    let attrs = ["height", "num_floors", "roof_shape", "roof_height", "is_underground"];
+    for feature in gp.features(row_groups, &attrs)? {
         let f = feature?;
         let polygons: Vec<&Polygon> = match &f.geometry {
             Geometry::Polygon(p) => vec![p],
             Geometry::MultiPolygon(m) => m.0.iter().collect(),
             _ => continue,
         };
-        out.add(polygons.into_iter().map(|p| local(p, frame)), rect);
+        let props = &f.properties;
+        // A building the source puts under the ground is no facade: nothing
+        // paved stops at it and nothing stands up for it. The Veytaux
+        // power station's caverns are mapped as footprints on the flank
+        // above them, and stood on the highest ground there they were a
+        // 5 m box a hundred metres in the air on its low side.
+        if props.iter().any(|(k, v)| k == "is_underground" && matches!(v, Value::Bool(true))) {
+            out.underground += 1;
+            continue;
+        }
+        let height = building::mapped_height(f64_of(props, "height"), f64_of(props, "num_floors"));
+        let roof = Roof::mapped(str_of(props, "roof_shape"), f64_of(props, "roof_height"));
+        out.add(polygons.into_iter().map(|p| local(p, frame)), rect, height, roof);
     }
     Ok(out)
 }
@@ -280,8 +311,18 @@ fn turned(mut shape: Shape, cx: f64, cy: f64, deg: f64) -> Shape {
     shape
 }
 
-/// The footprints of a `house:` spec, in local metres, unclipped.
-pub fn parse(spec: &str) -> Result<Shapes, String> {
+/// What a `house:` spec draws: its footprints, in local metres, unclipped,
+/// and what every house of it stands to.
+#[derive(Debug)]
+pub struct Houses {
+    pub shapes: Shapes,
+    /// `None` where the spec gives no `h`: the guess, as for a source.
+    pub height_m: Option<f64>,
+    pub roof: Roof,
+}
+
+/// The houses of a `house:` spec.
+pub fn parse(spec: &str) -> Result<Houses, String> {
     let rest = spec.strip_prefix("house:").ok_or_else(|| format!("not a building spec: {spec}"))?;
     let (name, query) = rest.split_once('?').unwrap_or((rest, ""));
     let params = Params::parse(query)?;
@@ -336,15 +377,17 @@ pub fn parse(spec: &str) -> Result<Shapes, String> {
         }
         other => return Err(format!("unknown building `{other}` in {spec}")),
     };
-    Ok(shapes)
+    let roof = Roof { shape: params.get("roof").map_or(RoofShape::Flat, RoofShape::parse), rise_m: params.opt("rise")? };
+    Ok(Houses { shapes, height_m: building::mapped_height(params.opt("h")?, None), roof })
 }
 
-/// The footprints of a spec, clipped to the rect like read ones: every
-/// house of the spec is one footprint.
+/// The buildings of a spec, clipped to the rect like read ones: every
+/// house of the spec is one building.
 fn synthetic(spec: &str, rect: &Rect) -> Result<Read, String> {
+    let houses = parse(spec)?;
     let mut out = Read::default();
-    for shape in parse(spec)? {
-        out.add([shape], rect);
+    for shape in houses.shapes {
+        out.add([shape], rect, houses.height_m, houses.roof);
     }
     Ok(out)
 }
@@ -392,19 +435,19 @@ mod tests {
             ("house:row", 2, 200.0),
             ("house:pair", 2, 200.0),
         ] {
-            let shapes = parse(spec).unwrap();
+            let shapes = parse(spec).unwrap().shapes;
             assert_eq!(shapes.len(), n, "{spec}");
             assert!((poly::area(&shapes) - m2).abs() < 1e-9, "{spec}: {}", poly::area(&shapes));
             assert!(shapes.iter().all(|s| poly::ring_area(&s[0]) > 0.0), "{spec}: counter-clockwise");
         }
-        let notched = parse("house:beside?d=2&notch=2").unwrap();
+        let notched = parse("house:beside?d=2&notch=2").unwrap().shapes;
         assert!(!poly::contains(&notched, [0.0, 2.5]), "the notch is open");
         assert!(poly::contains(&notched, [0.0, 3.5]) && poly::contains(&notched, [2.0, 2.5]));
-        let row = parse("house:row?d=2&l=10&gap=2").unwrap();
+        let row = parse("house:row?d=2&l=10&gap=2").unwrap().shapes;
         assert!(!poly::contains(&row, [0.0, 5.0]) && poly::contains(&row, [2.0, 5.0]));
-        let pair = parse("house:pair?gap=3").unwrap();
+        let pair = parse("house:pair?gap=3").unwrap().shapes;
         assert!(poly::contains(&pair, [0.0, 2.0]) && poly::contains(&pair, [0.0, -2.0]) && !poly::contains(&pair, [0.0, 0.0]));
-        let south = parse("house:beside?d=3&side=-1").unwrap();
+        let south = parse("house:beside?d=3&side=-1").unwrap().shapes;
         assert!(poly::contains(&south, [0.0, -5.0]));
         assert!(!poly::contains(&south, [0.0, 5.0]));
         assert!(parse("house:castle").is_err());

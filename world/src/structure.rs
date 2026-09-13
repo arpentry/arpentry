@@ -820,8 +820,8 @@ fn box_under(tri: &mut Tri, l: &[[f64; 3]], r: &[[f64; 3]], lo_l: &[[f64; 3]], l
     strip(tri, lo_l, l);
     strip(tri, r, lo_r);
     let n = l.len() - 1;
-    quad(tri, [l[0], r[0], lo_r[0], lo_l[0]]);
-    quad(tri, [r[n], l[n], lo_l[n], lo_r[n]]);
+    tri.quad([l[0], r[0], lo_r[0], lo_l[0]]);
+    tri.quad([r[n], l[n], lo_l[n], lo_r[n]]);
 }
 
 /// Where a deck run's piers stand, and how tall each is: a column every
@@ -897,10 +897,10 @@ fn column(tri: &mut Tri, c: [Pt; 4], top: f64, bottom: f64) {
     let (up, lo) = (at(top), at(bottom));
     for i in 0..4 {
         let j = (i + 1) % 4;
-        quad(tri, [up[i], lo[i], lo[j], up[j]]);
+        tri.quad([up[i], lo[i], lo[j], up[j]]);
     }
-    quad(tri, [up[3], up[2], up[1], up[0]]);
-    quad(tri, [lo[0], lo[1], lo[2], lo[3]]);
+    tri.quad([up[3], up[2], up[1], up[0]]);
+    tri.quad([lo[0], lo[1], lo[2], lo[3]]);
 }
 
 /// `l`/`r` raised by `dz` and walled: the crown and the two walls of a
@@ -912,13 +912,6 @@ fn tube_over(tri: &mut Tri, l: &[[f64; 3]], r: &[[f64; 3]], dz: f64) {
     strip(tri, &up_r, &up_l);
     strip(tri, l, &up_l);
     strip(tri, &up_r, r);
-}
-
-/// One quad, as two triangles, in the order given.
-fn quad(tri: &mut Tri, q: [[f64; 3]; 4]) {
-    let base = tri.positions.len() as u32;
-    tri.positions.extend_from_slice(&q);
-    tri.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
 /// A span's outline in plan, for the plan view: its two edges, closed.

@@ -48,11 +48,13 @@ pub enum Step {
     /// The decks and bores the solved profile implies, and the roadway
     /// over every span.
     Structure,
+    /// Every building stood on the ground, walled to its roof, and roofed.
+    Building,
 }
 
 impl Step {
     /// Every step, in the order the pipeline runs them.
-    pub const ALL: [Step; 15] = [
+    pub const ALL: [Step; 16] = [
         Step::Terrain,
         Step::Drape,
         Step::Reference,
@@ -68,6 +70,7 @@ impl Step {
         Step::Mesh,
         Step::Bench,
         Step::Structure,
+        Step::Building,
     ];
 
     /// The name the CLI prints and `--until` accepts.
@@ -88,6 +91,7 @@ impl Step {
             Step::Mesh => "mesh",
             Step::Bench => "bench",
             Step::Structure => "structure",
+            Step::Building => "building",
         }
     }
 }

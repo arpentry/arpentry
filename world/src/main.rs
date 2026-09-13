@@ -60,12 +60,12 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
                   (overrides --zone, and leaves the world without buildings unless --buildings says otherwise)
   --buildings     an Overture building.parquet, `none`, or a synthetic house:
                   house:beside?d=2[&x=0&l=10&w=10&side=1&notch=0&deep=1] | house:across[?x=0&l=10&w=12&rot=0] |
-                  house:row?d=2[&l=10&w=10&gap=2] | house:pair?gap=3[&l=10&w=10]
+                  house:row?d=2[&l=10&w=10&gap=2] | house:pair?gap=3[&l=10&w=10], each [&h=M&roof=SHAPE&rise=M]
                   (overrides --zone)
   --spacing M     terrain lattice spacing in metres (default 2)
   --max-vertices  cap on terrain vertices; the spacing grows to fit (default 2000000)
-  --until STEP    stop after this step: terrain | drape | reference | profile | crossing | partition | facade | ribbon | surface | kerb | fillet | room | mesh | bench | structure
-                  (default structure)
+  --until STEP    stop after this step: terrain | drape | reference | profile | crossing | partition | facade | ribbon | surface | kerb | fillet | room | mesh | bench | structure | building
+                  (default building)
   --outlines      add the construction layers to the .glb as glTF LINES: the draped
                   centrelines, the solved profiles and the six contour sets. Off by
                   default, because a viewer need not draw line topology and Apple's
@@ -136,7 +136,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut view = None;
     let mut spacing = 2.0;
     let mut max_vertices = 2_000_000;
-    let mut until = Step::Structure;
+    let mut until = Step::Building;
     let mut outlines = false;
     while let Some(flag) = it.next() {
         match flag.as_str() {
