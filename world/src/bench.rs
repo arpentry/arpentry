@@ -304,10 +304,44 @@ impl Foot {
     /// stopping exactly where it meets it.
     ///
     /// The face is a function of the point alone, which is what makes it
-    /// cheap and continuous: at `d` metres out it may have closed
-    /// `(d − reach) / 2.5` of the difference and no more, so it is the
-    /// ground wherever it has daylighted and the room's height wherever
-    /// it has not left the reach.
+    /// cheap: at `d` metres out it may have closed `(d − reach) / 2.5` of
+    /// the difference and no more, so it is the ground wherever it has
+    /// daylighted and the room's height wherever it has not left the reach.
+    ///
+    /// **It is not continuous, and the drape branch is where it breaks.**
+    /// At `out = 0⁻` this returns `room_h`; at `out = 0⁺` with a drop past
+    /// [`MAX_BENCH_FACE_M`] it returns `ground`, so the surface jumps by the
+    /// whole drop — 15.641 m on the loop box — along the locus
+    /// `d = half_w + ROOM_REACH_M`. The stretched pavement triangles sit
+    /// exactly there: p25/p50/p75 of their distance from the carriageway is
+    /// 5.67/6.11/6.75 m with 76 % inside 5–8 m, against a p50 of 4.13 m for
+    /// the pavement at large. (A second, smaller one of the same kind sits
+    /// at [`FIELD_LIMIT_M`], where `Field::at` goes `None` and the vertex
+    /// drapes: 8 % of them.)
+    ///
+    /// The step is not itself the defect — a walk at road height by the
+    /// kerb, with the ground fifteen metres down six metres out, *is* a
+    /// retaining wall, and `a_footway_leaving_the_room_leaves_it_over_one_face`
+    /// says so. The defect is that nothing draws it: every face this step
+    /// builds comes off a *rim* (`wall` off the room's outline, `kerb` and
+    /// `rail_face` off a mesh's boundary edges), and **1 599 of the box's
+    /// 1 801 stretched triangles are fully interior**. A narrow band puts
+    /// the step on its own edge, which is a rim — which is why the specimen
+    /// corpus is green and only a band wide enough to be probed out to a
+    /// facade shows it.
+    ///
+    /// Two ways out are already ruled out by measurement. Deciding per run
+    /// instead of per point is guarded against three lines into that same
+    /// test — it dragged the far end of the stub footway 5.88 m into the
+    /// air, because one band is legitimately pavement at the kerb and not
+    /// pavement twenty metres up the hill. And cutting the band at the
+    /// reach so the step falls on a rim does nothing on its own: this
+    /// function is positional, so a vertex on the cut and its twin on the
+    /// far sheet share `d` and come out at the *same height*, leaving
+    /// nothing between them to close (`wall_m2` unmoved at 12 036, interior
+    /// stretched triangles 1 599 → 1 856, `unmet` 1.66 % → 6.96 % for the
+    /// extra boolean). The cut only pays if each sheet is lifted by its own
+    /// rule, which means carrying the split through `Mesh` and `Bench`.
     pub fn batter(&self, room_h: f64, ground: f64) -> f64 {
         let out = self.d - self.half_w - ROOM_REACH_M;
         if out <= 0.0 {
@@ -324,6 +358,32 @@ impl Foot {
             return ground;
         }
         let slack = out / EARTHWORK_BATTER;
+        room_h + drop.clamp(-slack, slack)
+    }
+
+    /// [`Foot::batter`] as the *limit from outside the reach*: the same
+    /// face, with no plateau however small `out` is.
+    ///
+    /// This is the far sheet's rule, and the difference between the two is
+    /// the whole point of meshing the walk in two parts. `batter` returns
+    /// `room_h` at `out = 0` while its limit from the right is `ground`
+    /// wherever the drop is past [`MAX_BENCH_FACE_M`] — that gap is the
+    /// step, and asked positionally both sheets sit exactly at `out = 0`
+    /// on the cut, read `room_h`, and agree. Then there is nothing for a
+    /// face to close and the step reappears one lattice vertex further
+    /// out, inside the far sheet, which is where it already was.
+    ///
+    /// Deciding by sheet instead puts the step on the cut by construction,
+    /// wherever the bench's own `d = half_w + ROOM_REACH_M` locus falls
+    /// against the room's polygon-based band. What is left inside the far
+    /// sheet is the `|drop| = MAX_BENCH_FACE_M` crossing, which is bounded
+    /// by one face rather than by the drop.
+    pub fn face(&self, room_h: f64, ground: f64) -> f64 {
+        let drop = ground - room_h;
+        if drop.abs() > MAX_BENCH_FACE_M {
+            return ground;
+        }
+        let slack = (self.d - self.half_w - ROOM_REACH_M).max(0.0) / EARTHWORK_BATTER;
         room_h + drop.clamp(-slack, slack)
     }
 }
@@ -814,9 +874,9 @@ pub fn run(
         // The asphalt is the road: it takes the whole of its own height
         // wherever it reaches. Only the walk beside it is asked how far
         // out it lies.
-        let (c, cs) = lift(&mesh.carriageway, &field, 0.0, false);
-        let (p, ps) = lift(&mesh.pavement, &field, KERB_RISE_M, true);
-        let (b, bs) = lift(&mesh.ballast, &rails, 0.0, false);
+        let (c, cs) = lift(&mesh.carriageway, &field, 0.0, false, 0);
+        let (p, ps) = lift(&mesh.pavement, &field, KERB_RISE_M, true, mesh.walk_split);
+        let (b, bs) = lift(&mesh.ballast, &rails, 0.0, false, 0);
         let mut stats = Stats::default();
         stats.merge(&cs);
         stats.merge(&ps);
@@ -872,11 +932,21 @@ pub fn run(
         earth.vertices = g.positions.len();
         earth.off = gs.off_ground;
         earth.lossy = gs.failed + gs.lossy;
-        let (rim_n, unmet, contact) = meet(&[&c, &p, &b], &g, &natural, &portals);
+        let walk_cut = cut_seam(&p, mesh.walk_split);
+        let (rim_n, unmet, contact) = meet(&[&c, &p, &b], &g, &walk_cut, &natural, &portals);
         earth.rim = rim_n;
         earth.unmet = unmet;
         earth.contact = contact;
-        let (wall, wall_m2) = wall(&edge, &ground, &room, &natural, &portals);
+        let (mut wall, mut wall_m2) = wall(&edge, &ground, &room, &natural, &portals);
+        // The walk's own retaining face, along the cut the mesh step made
+        // at the room's reach. It is the room's wall by the rule the
+        // ground's is — a step nothing spans is a hole you can see the
+        // world through — so it joins `wall` and counts in `wall_m2`.
+        let (face, face_m2) = walk_face(&p, mesh.walk_split);
+        let base = wall.positions.len() as u32;
+        wall.positions.extend(face.positions);
+        wall.indices.extend(face.indices.iter().map(|i| i + base));
+        wall_m2 += face_m2;
         // The kerb's own face, along the boundary the two families share.
         // Read off the carriageway mesh's own rim: its plan line is a mesh
         // edge and its foot a mesh vertex, so the closure cannot leave a
@@ -1056,6 +1126,47 @@ fn kerb(road: &Tri, pave: &HashMap<[i64; 2], f64>) -> (Tri, f64, usize) {
 /// foot is a mesh vertex; a segment whose ends agree to [`WALL_MIN_M`] —
 /// a level crossing, where the profile pinned the two to one height — is
 /// not drawn.
+/// The face that closes the step *within* the pavement, where the mesh
+/// step cut the band at the room's reach and the bench lifted the near
+/// sheet to the road while the far one took the face.
+///
+/// Both ends are read off this one mesh, but never off the same sheet:
+/// the lookup holds the far sheet's heights alone and only the near
+/// sheet's rim edges are walked, so a vertex can never answer for itself.
+/// That is what the first attempt at this got wrong — it keyed one map
+/// over every pavement vertex, every rim vertex found its own height
+/// first, and the closure drew exactly nothing.
+fn walk_face(pave: &Tri, split: usize) -> (Tri, f64) {
+    let split = split.min(pave.positions.len());
+    let mut far: HashMap<[i64; 2], f64> = HashMap::new();
+    for p in &pave.positions[split..] {
+        far.entry(key(*p)).and_modify(|h| *h = h.min(p[2])).or_insert(p[2]);
+    }
+    let mut tri = Tri::default();
+    let mut m2 = 0.0;
+    for (i, j) in rim(pave) {
+        if i as usize >= split || j as usize >= split {
+            continue;
+        }
+        let (a, b) = (pave.positions[i as usize], pave.positions[j as usize]);
+        let (Some(la), Some(lb)) = (at(&far, a), at(&far, b)) else {
+            continue;
+        };
+        let (da, db) = (a[2] - la, b[2] - lb);
+        if da.abs() <= WALL_MIN_M && db.abs() <= WALL_MIN_M {
+            continue;
+        }
+        // The near sheet's own height leads, as [`wall`] leads with the
+        // room's: a rim edge has its mesh's interior on the left, so
+        // `[a_hi, a_lo, b_lo, b_hi]` faces away from the sheet that stands.
+        let base = tri.positions.len() as u32;
+        tri.positions.extend_from_slice(&[a, [a[0], a[1], la], [b[0], b[1], lb], b]);
+        tri.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        m2 += (da.abs() + db.abs()) / 2.0 * (b[0] - a[0]).hypot(b[1] - a[1]);
+    }
+    (tri, m2)
+}
+
 fn rail_face(ballast: &Tri, other: &HashMap<[i64; 2], f64>) -> (Tri, f64) {
     let mut tri = Tri::default();
     let mut m2 = 0.0;
@@ -1094,7 +1205,40 @@ fn rail_face(ballast: &Tri, other: &HashMap<[i64; 2], f64>) -> (Tri, f64) {
 /// the same outline by the same mesher, but the room's regions and the
 /// ground's `rect − room` are cleaned and ear-clipped apart, so they do
 /// not agree on where to subdivide it.
-fn meet(room: &[&Tri], g: &Tri, natural: &dyn Fn(Pt) -> f64, portals: &Portals) -> (usize, usize, f64) {
+/// The plan positions the walk's two sheets share: the cut at the room's
+/// reach and nothing else, since only there does one position carry a
+/// vertex on both sides of it.
+///
+/// [`meet`] needs it because the cut is a seam *inside a single mesh*. The
+/// check already skips a rim vertex another room surface shares — that is a
+/// seam with a face of its own — but it finds those by looking in the
+/// *other* meshes, and this one is in the pavement's own. Left in, every
+/// cut vertex is measured against a ground that was never meant to reach
+/// it: the ground stops at the room's outline and the cut is well inside
+/// it, so `unmet` read 1.66 % → 6.96 % with the numerator rising by 11 460
+/// against 11 392 new rim vertices — all of them, which is the signature of
+/// a miscounted question rather than a geometry that moved. `walk_face`
+/// draws this seam, exactly as the other in-room seams have their faces.
+fn cut_seam(pave: &Tri, split: usize) -> HashMap<[i64; 2], f64> {
+    let split = split.min(pave.positions.len());
+    let near: HashSet<[i64; 2]> = pave.positions[..split].iter().map(|p| key(*p)).collect();
+    let mut out = HashMap::new();
+    for p in &pave.positions[split..] {
+        let k = key(*p);
+        if near.contains(&k) {
+            out.insert(k, p[2]);
+        }
+    }
+    out
+}
+
+fn meet(
+    room: &[&Tri],
+    g: &Tri,
+    walk_cut: &HashMap<[i64; 2], f64>,
+    natural: &dyn Fn(Pt) -> f64,
+    portals: &Portals,
+) -> (usize, usize, f64) {
     let gh = seam(&[g]);
     let (mut n, mut unmet, mut worst) = (0usize, 0usize, 0.0f64);
     for (k, tri) in room.iter().enumerate() {
@@ -1107,7 +1251,12 @@ fn meet(room: &[&Tri], g: &Tri, natural: &dyn Fn(Pt) -> f64, portals: &Portals) 
             for v in [tri.positions[i as usize], tri.positions[j as usize]] {
                 // A seam inside the room has its own face, and a tunnel's
                 // mouth is an opening: neither is a contact with the ground.
-                if at(other, v).is_some() || portals.open([v[0], v[1]]) {
+                // The walk's cut is the third of those — a seam within one
+                // mesh rather than between two ([`cut_seam`]).
+                if at(other, v).is_some()
+                    || at(walk_cut, v).is_some()
+                    || portals.open([v[0], v[1]])
+                {
                     continue;
                 }
                 n += 1;
@@ -1305,7 +1454,7 @@ impl Earth {
 /// was cut from or filled to is the height it arrives with: this reads it
 /// there rather than sampling the terrain again, and the two cannot drift
 /// apart.
-fn lift(tri: &Tri, field: &Field, rise: f64, walk: bool) -> (Tri, Stats) {
+fn lift(tri: &Tri, field: &Field, rise: f64, walk: bool, split: usize) -> (Tri, Stats) {
     let mut out = tri.clone();
     let mut stats = Stats { vertices: tri.positions.len(), ..Stats::default() };
     for (i, p) in tri.positions.iter().enumerate() {
@@ -1314,12 +1463,17 @@ fn lift(tri: &Tri, field: &Field, rise: f64, walk: bool) -> (Tri, Stats) {
             continue;
         };
         let room_h = foot.h + rise;
-        let h = if walk { foot.batter(room_h, p[2]) } else { room_h };
+        // The sheet decides, not the distance ([`Foot::face`]): the walk's
+        // near part is the room's plateau outright and its far part the
+        // face, so the two disagree on the cut itself and the step is a
+        // rim rather than a stretch across a triangle.
+        let near = !walk || i < split;
+        let h = if near { room_h } else { foot.face(room_h, p[2]) };
         out.positions[i][2] = h;
         // Where the vertex stands, not whether the height moved: on flat
         // ground the room's height *is* the ground, and a road there is
         // still a road.
-        if !walk || foot.d <= foot.half_w + ROOM_REACH_M {
+        if near {
             stats.lifted += 1;
         } else if h == p[2] {
             stats.draped += 1;
@@ -1524,8 +1678,14 @@ pub(crate) mod tests {
         let (w, s) = world("ramp?grade=0.3&bearing=0&radius=100000", "net:stub?d=0.5", None);
         let b = bench(&w);
         assert!(s.num("lifted") > 0.0 && s.num("draped") > 0.0, "{s}");
-        // Bounded: the plateau is 2.51 m of cut and nothing else is.
-        assert!((s.num("cut") - 2.481).abs() < 0.01, "{s}");
+        // Bounded: the plateau is 2.51 m of cut and nothing else is — and
+        // it is now *exactly* that. The mesh step cuts the walk at the
+        // room's reach, so a vertex lands on the plateau's own edge 8.75 m
+        // out instead of at whichever lattice crossing fell just inside it,
+        // and the measurement reaches the figure this comment always
+        // described: 8.75 m of 30 % slope less the kerb's rise, 2.505. It
+        // read 2.481 while that edge was only ever approached.
+        assert!((s.num("cut") - 2.505).abs() < 0.01, "{s}");
         // Where asking per region dragged the far end of this same
         // footway 5.88 m into the air.
         assert!(s.num("cut") < 3.0, "{s}");
@@ -1533,6 +1693,63 @@ pub(crate) mod tests {
         // The wall stands where the hill outruns the face, not at the
         // kerb: every step is out beyond the plateau.
         assert!(b.steps.iter().all(|p| p[1] > 2.75 + ROOM_REACH_M), "{:?}", b.steps);
+    }
+
+    /// A band whose lift/drape boundary falls in its own **interior**,
+    /// which is the case the rest of this corpus cannot express.
+    ///
+    /// A mapped sidewalk is centred on the cut: 2.75 m of half-width plus
+    /// the room's 6 m reach puts it 8.75 m off the axis, and the band is
+    /// [`crate::width::WALK_M`] wide, so half lies within the reach and half
+    /// beyond. On a 50 % flank the ground there stands 4.255 m over the road
+    /// — 8.75 × 0.5 less the kerb's rise, past one face — so the far half
+    /// drapes to the ground while the near half rides the road.
+    ///
+    /// **Every other specimen puts that boundary on a band's own edge**,
+    /// where it is already a rim, and every face this step draws is built
+    /// off a rim. That is why 232 tests stayed green while 1 599 of the loop
+    /// box's 1 801 stretched pavement triangles were interior: a narrow band
+    /// cannot reach across the reach, and only a mapped walk can. Both ways
+    /// this can regress are caught here — merge the sheets and an edge spans
+    /// the step; give the far sheet `batter` instead of `face` and the two
+    /// agree on the cut, putting the step back one vertex out, inside the
+    /// far sheet.
+    ///
+    /// It was falsified rather than merely written: handing the far sheet
+    /// `batter` instead of `face` takes this specimen to `step` 168/2643,
+    /// `worst` 4.755 and `wall_m2` 890 → 22 — the face stops being drawn
+    /// and the drop goes back to being spanned by mesh edges, which is the
+    /// defect exactly.
+    #[test]
+    fn a_band_across_the_reach_steps_on_a_rim_not_inside_itself() {
+        let (w, s) = world("ramp?grade=0.5&bearing=0&radius=100000", "net:sidewalk?d=8.75", None);
+        let b = bench(&w);
+        assert!(!b.pavement.positions.is_empty(), "{s}");
+        // Not vacuous: the band straddles, so both rules fire on it, and
+        // the drop it straddles is the one a face cannot follow.
+        assert!(s.num("lifted") > 0.0 && s.num("draped") > 0.0, "the band must straddle: {s}");
+        assert!((s.num("cut") - 4.255).abs() < 0.01, "{s}");
+        assert!(s.num("cut") > MAX_BENCH_FACE_M, "the drop must be past one face: {s}");
+        // The property: no mesh edge spans the step. The sheets share no
+        // vertex along the cut, so the drop is a face and not a stretch.
+        assert_eq!(s.num("step"), 0.0, "an edge spans the walk's own step: {s}");
+        assert_eq!(s.num("worst"), 0.0, "{s}");
+        // And nothing in the pavement stands up: the tallest triangle is
+        // lattice relief, not the 4.255 m the field steps by.
+        let tallest = b
+            .pavement
+            .indices
+            .chunks_exact(3)
+            .map(|t| {
+                let z = [
+                    b.pavement.positions[t[0] as usize][2],
+                    b.pavement.positions[t[1] as usize][2],
+                    b.pavement.positions[t[2] as usize][2],
+                ];
+                z.iter().copied().fold(f64::MIN, f64::max) - z.iter().copied().fold(f64::MAX, f64::min)
+            })
+            .fold(0.0f64, f64::max);
+        assert!(tallest < 1.0, "a pavement triangle spans {tallest:.3} m of the step: {s}");
     }
 
     #[test]

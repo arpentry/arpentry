@@ -613,6 +613,17 @@ pub struct Mesh {
     pub carriageway: Tri,
     pub pavement: Tri,
     pub ballast: Tri,
+    /// Where the pavement's *far* sheet begins in [`Mesh::pavement`]'s
+    /// positions: the walk is meshed in two parts, within the room's reach
+    /// and beyond it, and joined without welding the two together.
+    ///
+    /// The bench lifts the near part to the road and drapes the far part,
+    /// and the two rules disagree by up to one drop. Meshed as one sheet
+    /// that disagreement falls *inside* a triangle and is drawn as a
+    /// stretched sliver; split here it falls on a rim of each part, where a
+    /// face can close it. Positions `..walk_split` are the near sheet and
+    /// `walk_split..` the far one.
+    pub walk_split: usize,
 }
 
 /// The room at the height the profile solved: the mesh step's triangles,

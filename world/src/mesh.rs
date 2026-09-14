@@ -74,6 +74,29 @@ const DEGENERATE_M2: f64 = 1e-12;
 /// they are one vertex and the two ears meet; kept apart, every such
 /// crossing is a T-junction. A triangle two of whose vertices weld together
 /// is dropped.
+///
+/// **A needle is not this constant's to fix, and two tries measured it.** A
+/// needle — a triangle of a few square microns whose long edge is a metre —
+/// is harmless in f64, and every check here is in f64, so nothing sees it;
+/// then the glTF writer rounds positions to `f32`, whose ulp at a few
+/// hundred metres is ~30 µm, wider than the needle, and the triangle
+/// collapses or *inverts*. On the Montreux cut that is 0.20 % of
+/// carriageway edges creasing past 60° and four at exactly 180°.
+///
+/// Welding at [`poly::GRID_M`] does remove them — folds gone, duplicate
+/// vertex-triples 14 → 0 — but it drops each needle *after* it exists, and
+/// the long edge it drops was interior: `seam` went 6.4e-11 → **16 m** with
+/// `lost_m2` unchanged, the area still there as slits. Widening the cut
+/// tolerance so the needle is never cut (`ON_LINE` at the kernel's grid,
+/// per family) does not even do that: needles 0.204 % → 0.201 %, folds
+/// still at 180°, and `seam` 1.7e-10 → 0.82 m for it. So the needles are
+/// not made by the cut. What is left is the rings: [`ear_clip`] adds no
+/// vertices, so a needle's three corners are all ring corners, and the two
+/// 68 µm apart are a neck the kernel's own grid cannot resolve — [`cleaned`]
+/// only ever compares a vertex with its *neighbours*, so a neck between two
+/// parts of a ring walks straight through it. Counting needle ears before
+/// [`split`] runs is the measurement that would settle it; closing the neck
+/// in the ring, before the clipper, is the fix it would justify.
 pub const WELD_M: f64 = 1e-6;
 
 
@@ -82,6 +105,9 @@ pub const WELD_M: f64 = 1e-6;
 /// crossings in a row is on the diagonal by construction and off it by an
 /// ulp in arithmetic; without the tolerance that ulp is a triangle of no
 /// area whose dropping leaves a T-junction.
+///
+/// Widening it to the kernel's grid, per family, was tried against the
+/// needles [`WELD_M`] describes and bought nothing for 0.82 m of `seam`.
 const ON_LINE: f64 = 1e-9;
 
 /// What one family's triangulation found.
@@ -120,14 +146,40 @@ pub fn run(terrain: &Terrain, paving: Paving) -> (Mesh, Summary) {
     let Paving { carriageway, walk: pavement, ballast } = paving;
     let ground = |p: Pt| height_at(terrain, p[0], p[1]);
     let (c, cs) = triangulate(carriageway, &terrain.grid, &ground);
-    let (p, ps) = triangulate(pavement, &terrain.grid, &ground);
+    // **The walk is meshed in two parts, cut at the room's reach.** The
+    // bench lifts a band to the road's height within
+    // [`crate::room::WALL_REACH_M`] of the asphalt and drapes it beyond,
+    // and where the ground has fallen more than one face the two rules
+    // disagree by the whole drop — 15.6 m on the loop box. Every face the
+    // bench draws is built off a *rim*, so meshed as one sheet that
+    // disagreement has nothing to close it and is drawn as a stretched
+    // sliver instead: 1 599 of the box's 1 801 were fully interior.
+    //
+    // The cut is the room's own construction, not an approximation of it —
+    // `room::run` marches its probe from the carriageway ring, so the band
+    // is bounded by distance from the *polygon*, which is what `dilate`
+    // gives. Splitting alone is inert (both sheets would read one
+    // positional rule and agree); it pays only because the bench then
+    // lifts each sheet by its own, which is `Foot::face`.
+    let reach = poly::dilate(carriageway, crate::room::WALL_REACH_M);
+    let (near, far) = (poly::intersect(pavement, &reach), poly::difference(pavement, &reach));
+    let (pn, pns) = triangulate(&near, &terrain.grid, &ground);
+    let (pf, pfs) = triangulate(&far, &terrain.grid, &ground);
+    let walk_split = pn.positions.len();
+    let p = join(pn, pf);
     let (b, bs) = triangulate(ballast, &terrain.grid, &ground);
-    let all = [&cs, &ps, &bs];
+    let all = [&cs, &pns, &pfs, &bs];
     let sum = |f: fn(&Stats) -> usize| all.iter().map(|s| f(s)).sum::<usize>();
     let max = |f: fn(&Stats) -> f64| all.iter().map(|s| f(s)).fold(0.0f64, f64::max);
     let summary = Summary::new()
         .with("carriageway", format!("{}/{}", c.indices.len() / 3, c.positions.len()))
         .with("pavement", format!("{}/{}", p.indices.len() / 3, p.positions.len()))
+        // Where the walk's far sheet begins: the near part is the room's
+        // plateau and the far part the face, and the two are meshed apart
+        // so the step between them is a rim. Reported because it is the
+        // only thing that says how the band divided, and a run where it is
+        // 0 or the whole mesh is a run where the cut found nothing.
+        .with("walk_split", walk_split)
         .with("ballast", format!("{}/{}", b.indices.len() / 3, b.positions.len()))
         .with("failed", sum(|s| s.failed))
         .with("washed", sum(|s| s.washed))
@@ -139,7 +191,18 @@ pub fn run(terrain: &Terrain, paving: Paving) -> (Mesh, Summary) {
         .with("lost_m2", format!("{:.1e}", all.iter().map(|s| s.lost_m2).sum::<f64>()))
         .with("off_ground", format!("{:.1e}", max(|s| s.off_ground)))
         .with("seam", format!("{:.1e}", max(|s| s.seam)));
-    (Mesh { carriageway: c, pavement: p, ballast: b }, summary)
+    (Mesh { carriageway: c, pavement: p, ballast: b, walk_split }, summary)
+}
+
+/// Two meshes as one, with their vertices kept apart: `b`'s indices are
+/// shifted past `a`'s positions rather than welded into them, so a
+/// boundary they share in plan is a rim of each and a step across it is
+/// something a face can span.
+fn join(mut a: Tri, b: Tri) -> Tri {
+    let base = a.positions.len() as u32;
+    a.positions.extend(b.positions);
+    a.indices.extend(b.indices.iter().map(|i| i + base));
+    a
 }
 
 /// `shapes` as triangles conforming to `grid`, every one inside one of
@@ -566,8 +629,9 @@ pub(crate) mod tests {
         let grid = Grid::fit(&Rect { x0: 0.0, y0: 0.0, x1: 10.0, y1: 10.0 }, 1.0, usize::MAX);
         let tri = vec![[0.3, 0.2], [7.9, 1.4], [3.1, 8.6]];
         let pieces = split(tri.clone(), &grid);
+        let tol = 1e-9;
         let total: f64 = pieces.iter().map(|p| poly::ring_area(p)).sum();
-        assert!((total - tri_area([tri[0], tri[1], tri[2]])).abs() < 1e-9, "{total}");
+        assert!((total - tri_area([tri[0], tri[1], tri[2]])).abs() < tol, "{total}");
         assert!(pieces.len() > 40, "{}", pieces.len());
         for piece in &pieces {
             assert!(poly::ring_area(piece) > 0.0, "{piece:?}");
@@ -576,11 +640,11 @@ pub(crate) mod tests {
             let upper = u.iter().zip(&v).map(|(u, v)| (u - cu as f64) - (v - cv as f64)).sum::<f64>() >= 0.0;
             for (u, v) in u.iter().zip(&v) {
                 let (fu, fv) = (u - cu as f64, v - cv as f64);
-                assert!((-1e-9..=1.0 + 1e-9).contains(&fu) && (-1e-9..=1.0 + 1e-9).contains(&fv), "{piece:?}");
+                assert!((-tol..=1.0 + tol).contains(&fu) && (-tol..=1.0 + tol).contains(&fv), "{piece:?}");
                 if upper {
-                    assert!(fu >= fv - 1e-9, "{piece:?} straddles the diagonal");
+                    assert!(fu >= fv - tol, "{piece:?} straddles the diagonal");
                 } else {
-                    assert!(fu <= fv + 1e-9, "{piece:?} straddles the diagonal");
+                    assert!(fu <= fv + tol, "{piece:?} straddles the diagonal");
                 }
             }
         }
