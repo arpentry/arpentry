@@ -180,6 +180,22 @@ pub fn run(roads: &mut Roads, mut solved: Option<&mut Profiles>) -> Summary {
             }
         }
     }
+    let (group, linked, largest, crossings) = groups(&plan, &spans);
+    let grouped: std::collections::HashSet<usize> = group.iter().copied().collect();
+    // **How many groups hold both kinds of piece.** Those are the ones with
+    // a handover inside them — where the surface steps' refined ground
+    // region and `structure`'s swept span meet, and where the seam is. It
+    // sizes what steps 4 and 5 have to migrate: a group of spans alone can
+    // be meshed and lifted on its own, but a mixed one has to carry the
+    // kerb, fillet and room work through with it.
+    let mixed = {
+        let mut ground: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut over: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (i, g) in group.iter().enumerate() {
+            if i < plan.len() { ground.insert(*g); } else { over.insert(*g); }
+        }
+        ground.intersection(&over).count()
+    };
     let summary = Summary::new()
         .with("ways", ways.len())
         .with("structures", ways.iter().filter(|w| w.has_structure()).count())
@@ -194,7 +210,11 @@ pub fn run(roads: &mut Roads, mut solved: Option<&mut Profiles>) -> Summary {
         .with("lost", lost)
         .with("witnessed", witnessed)
         .with("moved_m", format!("{moved:.0}"))
-        .with("portal_m", format!("{portal_m:.0}"));
+        .with("portal_m", format!("{portal_m:.0}"))
+        .with("linked", format!("{linked}/{largest}"))
+        .with("crossings", crossings)
+        .with("groups", grouped.len())
+        .with("mixed", mixed);
     roads.ways = ways;
     roads.plan = plan;
     roads.spans = spans;
@@ -430,6 +450,168 @@ fn bore_bounds(p: &Profile, a0: f64, a1: f64) -> Option<(f64, f64)> {
 /// under a road bridge is exactly the evidence wanted. A meeting at a shared
 /// end is a junction, not a passage, and [`crate::crossing::cross`] reports
 /// proper crossings only.
+/// **Step 1 of `data/plans/one-surface-at-a-junction-2026-09-14.md`**: what a
+/// grouping of the pieces has to work with, measured before anything is
+/// grouped. Returns `(components, largest, crossings)` — the pieces'
+/// connected components by shared connector, the biggest of them, and the
+/// number of pairs whose interiors cross with no connector between them.
+///
+/// The two numbers answer two different questions, and the plan needed both.
+/// `linked` says whether *connectivity* can be the grouping: it cannot if the
+/// largest component is most of the network, because then a viaduct shares a
+/// component with the street it flies over and a union by component would
+/// merge them. `crossings` says how much work the real rule has to do — those
+/// are the pairs that must be kept apart, and the model already names them:
+/// two interiors crossing with no connector between them is a grade
+/// separation, never a junction.
+///
+/// Returns the group of every piece, in [`Roads::pieces`]'s order — `plan`
+/// then `spans` — alongside the three counts.
+///
+/// **The group is the surface a piece belongs to.** Two pieces may be unioned
+/// into one region exactly when they share a group, and the rule is the
+/// plan's: they merge where they *meet* and stay apart where they *cross*.
+/// So the group starts as the connected component and is then split wherever
+/// a component holds a crossing pair — the structure side of it, with the run
+/// of structure pieces it is joined to, moves out on its own.
+///
+/// That the split is over the *structure* side is not a preference. A
+/// crossing is a grade separation, which is to say one of the two is carried
+/// over or under the other, and the one that is carried is the one that left
+/// the ground. On the loop box 55 pairs need it; on a junction standing on a
+/// deck, none do, and its ground legs and its spans come out as one group —
+/// which is the whole point.
+///
+/// It is a pure function of the pieces, so nothing needs to store it.
+pub fn groups(plan: &[Polyline2], spans: &[Polyline2]) -> (Vec<usize>, usize, usize, usize) {
+    let pieces: Vec<&Polyline2> = plan.iter().chain(spans.iter()).collect();
+    let fam = |p: &Polyline2| crate::width::family(&p.class) as usize;
+
+    // Path-halved union-find over pieces joined at a shared connector.
+    let mut parent: Vec<usize> = (0..pieces.len()).collect();
+    fn root(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    let mut at: HashMap<(usize, (i64, i64)), usize> = HashMap::new();
+    for (i, p) in pieces.iter().enumerate() {
+        if p.pts.len() < 2 {
+            continue;
+        }
+        for e in [p.pts[0], p.pts[p.pts.len() - 1]] {
+            let key = (fam(p), crate::world::connector(e));
+            match at.entry(key) {
+                std::collections::hash_map::Entry::Occupied(o) => {
+                    let (a, b) = (root(&mut parent, i), root(&mut parent, *o.get()));
+                    if a != b {
+                        parent[a] = b;
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(i);
+                }
+            }
+        }
+    }
+    let mut size: HashMap<usize, usize> = HashMap::new();
+    for i in 0..pieces.len() {
+        *size.entry(root(&mut parent, i)).or_default() += 1;
+    }
+
+    // Interiors that cross with no connector between them, bucketed by cell
+    // the way `crossed` does, and counted once per pair of pieces.
+    let mut cells: HashMap<(i32, i32), Vec<(usize, usize)>> = HashMap::new();
+    for (i, p) in pieces.iter().enumerate() {
+        for k in 1..p.pts.len() {
+            let (a, b) = (p.pts[k - 1], p.pts[k]);
+            let box_ = [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])];
+            for cell in poly::cells_over(box_, poly::CELL_M) {
+                cells.entry(cell).or_default().push((i, k - 1));
+            }
+        }
+    }
+    let ends = |p: &Polyline2| {
+        [crate::world::connector(p.pts[0]), crate::world::connector(p.pts[p.pts.len() - 1])]
+    };
+    let mut crossings: HashSet<(usize, usize)> = HashSet::new();
+    for bucket in cells.values() {
+        for x in 0..bucket.len() {
+            for y in x + 1..bucket.len() {
+                let (a, b) = (bucket[x], bucket[y]);
+                if a.0 == b.0 || fam(pieces[a.0]) != fam(pieces[b.0]) {
+                    continue;
+                }
+                let (lo, hi) = (a.0.min(b.0), a.0.max(b.0));
+                if crossings.contains(&(lo, hi)) {
+                    continue;
+                }
+                // Sharing a connector makes them a junction, whatever their
+                // axes do near it.
+                let (ea, eb) = (ends(pieces[a.0]), ends(pieces[b.0]));
+                if ea.iter().any(|x| eb.contains(x)) {
+                    continue;
+                }
+                let (u, v) = (&pieces[a.0].pts, &pieces[b.0].pts);
+                if crate::crossing::cross(u[a.1], u[a.1 + 1], v[b.1], v[b.1 + 1]).is_some() {
+                    crossings.insert((lo, hi));
+                }
+            }
+        }
+    }
+    let (components, largest) = (size.len(), size.values().copied().max().unwrap_or(0));
+
+    // The split. A component holding a crossing pair cannot be one surface:
+    // its two sides overlap in plan at heights that differ by the whole
+    // clearance, and a union would merge them into one sheet at one height.
+    let mut group: Vec<usize> = (0..pieces.len()).map(|i| root(&mut parent, i)).collect();
+    let mut next = pieces.len();
+    // **Sorted, because the group ids are an output.** Walking the set in
+    // its hash order would number the groups differently from run to run,
+    // and a `HashMap`'s order is reseeded per process — the world is
+    // byte-deterministic and every id downstream would jitter with it.
+    let mut pairs: Vec<(usize, usize)> = crossings.iter().copied().collect();
+    pairs.sort_unstable();
+    for &(a, b) in &pairs {
+        if group[a] != group[b] {
+            continue;
+        }
+        // The carried side leaves: of two pieces that cross, the structure
+        // is the one that left the ground. Two ground pieces crossing share
+        // no connector and are a data error the `crossing` step counts as
+        // `same`; neither moves, and the union draws what the data says.
+        let Some(off) = [a, b].into_iter().find(|&i| pieces[i].kind.is_structure()) else {
+            continue;
+        };
+        // With the run it is joined to, so a viaduct does not come apart at
+        // its own piece boundaries.
+        let mut stack = vec![off];
+        let was = group[off];
+        while let Some(i) = stack.pop() {
+            if group[i] != was {
+                continue;
+            }
+            group[i] = next;
+            for (j, p) in pieces.iter().enumerate() {
+                if group[j] != was || !p.kind.is_structure() || p.pts.len() < 2 {
+                    continue;
+                }
+                let (u, v) = (pieces[i], *p);
+                let ends = |p: &Polyline2| {
+                    [crate::world::connector(p.pts[0]), crate::world::connector(p.pts[p.pts.len() - 1])]
+                };
+                if ends(u).iter().any(|e| ends(v).contains(e)) {
+                    stack.push(j);
+                }
+            }
+        }
+        next += 1;
+    }
+    (group, components, largest, crossings.len())
+}
+
 pub fn crossed(ways: &[Way]) -> Vec<Vec<f64>> {
     let mut cells: HashMap<(i32, i32), Vec<(usize, usize)>> = HashMap::new();
     for (i, w) in ways.iter().enumerate() {

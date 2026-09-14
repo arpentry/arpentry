@@ -35,6 +35,7 @@ pub mod frame;
 pub mod gltf;
 pub mod grade;
 pub mod grid;
+pub mod junction;
 pub mod kerb;
 pub mod mesh;
 pub mod net;

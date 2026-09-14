@@ -10,6 +10,7 @@
 //! net:straight[?len=200&class=residential]   one way along x
 //!   [&span=0.35,0.65&kind=bridge|tunnel&level=1]  with a mapped span over that fraction of it
 //! net:tee[?d=8][&hook=5]                      two halves of it and a leg from the north, meeting at the origin; with `d`, a sidewalk `d` m off both axes wrapping the north-west corner; with `hook`, road-e turns back north on that radius
+//!   [&span=0.3&kind=bridge|tunnel&level=1]    the fraction of every leg nearest the origin mapped as a structure: the junction itself stands on one
 //! net:cross                                   four legs meeting at the origin
 //! net:overpass[?span=0.35,0.65&level=1]       the way along x and a leg along y crossing it, mapped as a bridge over the crossing: interiors crossing, no shared connector
 //!   [&leg=CLASS]                              the leg of another class: `leg=standard_gauge` is a rail bridge over the road, `class=standard_gauge&leg=residential` a road bridge over the railway
@@ -75,6 +76,33 @@ pub fn parse(spec: &str) -> Result<Vec<Way>, String> {
                 road("road-e", east),
                 road("leg", vec![[0.0, 0.0], [0.0, half]]),
             ];
+            // **With `span`, the junction itself stands on a structure.** The
+            // fraction of every leg nearest the origin is mapped as one, so
+            // the three legs meet *on* the deck and each handover to the
+            // ground falls out along its own leg.
+            //
+            // No other spec states that, which is why this one exists
+            // (`data/plans/one-surface-at-a-junction-2026-09-14.md`, step 0):
+            // `straight?span=` is a span with no junction on it, `tee` a
+            // junction with no span, and `overpass`/`underpass` two interiors
+            // crossing with **no connector between them** — the case the
+            // surface rule deliberately keeps apart. Every leg takes the same
+            // ordinal, because they meet: a level orders what crosses.
+            if let Some(f) = params.get("span") {
+                let f: f64 = f.parse().map_err(|_| format!("invalid span: {f}"))?;
+                if !(0.0..=1.0).contains(&f) {
+                    return Err(format!("invalid span: {f}, expected a fraction of a leg"));
+                }
+                let kind = kind_of(&params)?;
+                ways = ways
+                    .into_iter()
+                    // road-w ends at the origin; the other two begin there.
+                    .map(|w| {
+                        let at_start = w.id != "road-w";
+                        spanned_at(w, f, kind, at_start)
+                    })
+                    .collect();
+            }
             // A sidewalk wrapping the corner between road-w and the leg on
             // a chamfer, `d` m off both axes: its stations either side of
             // the chamfer project onto different legs.
@@ -244,13 +272,44 @@ fn span_of(params: &Params) -> Result<Option<((f64, f64), Kind)>, String> {
         .and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?)))
         .filter(|(a, b)| 0.0 <= *a && a < b && *b <= 1.0)
         .ok_or_else(|| format!("invalid span: {span}"))?;
+    Ok(Some(((a, b), kind_of(params)?)))
+}
+
+/// The structure a spec's `kind` and `level` name.
+fn kind_of(params: &Params) -> Result<Kind, String> {
     let level = params.num("level", 1.0)? as i64;
-    let kind = match params.get("kind").unwrap_or("bridge") {
+    Ok(match params.get("kind").unwrap_or("bridge") {
         "bridge" => Kind::Bridge(level.abs().max(1)),
         "tunnel" => Kind::Tunnel(-level.abs().max(1)),
         other => return Err(format!("invalid kind: {other}")),
-    };
-    Ok(Some(((a, b), kind)))
+    })
+}
+
+/// `w` with a mapped span of `kind` over the fraction `f` of its length
+/// nearest one end — the end its points begin at when `at_start`.
+///
+/// [`spanned`] does the same for the x-aligned specs, from the pair of
+/// fractions they take. This one measures from a *chosen end*, which is what
+/// a junction needs: its legs run away from the connector they share in as
+/// many directions as there are legs, so one pair of fractions cannot say
+/// "the part next to the junction" for all of them.
+fn spanned_at(mut w: Way, f: f64, kind: Kind, at_start: bool) -> Way {
+    let len = crate::roads::length(&w.pts);
+    if f <= 0.0 || len <= 0.0 {
+        return w;
+    }
+    let (a0, a1) =
+        if at_start { (0.0, (f * len).min(len)) } else { (((1.0 - f).max(0.0)) * len, len) };
+    let mut spans = Vec::new();
+    if a0 > 0.0 {
+        spans.push(Span { a0: 0.0, a1: a0, kind: Kind::Ground });
+    }
+    spans.push(Span { a0, a1, kind });
+    if a1 < len {
+        spans.push(Span { a0: a1, a1: len, kind: Kind::Ground });
+    }
+    w.spans = spans;
+    w
 }
 
 /// A way along x at `y`, from `-half` to `half`, cut at the boundaries of

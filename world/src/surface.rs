@@ -45,6 +45,65 @@ use crate::world::{Facade, Ribbons, Surface};
 pub const TWIN_GAP_M: f64 = 1.5;
 
 /// Unions the world's ribbons per family.
+/// One region per `(family, group)`: **step 3 of
+/// `data/plans/one-surface-at-a-junction-2026-09-14.md`**, as a function.
+///
+/// [`run`] unions the *ground* pieces alone, because that is all the surface
+/// steps have ever read — a span's paving is swept by `structure` afterwards,
+/// and the two meet neither in plan nor in height. This unions **every**
+/// piece, ground and span alike, within the group
+/// [`crate::partition::groups`] puts it in. So a junction standing on a deck
+/// comes out as one region together with its approaches, and a viaduct stays
+/// off the street it flies over because the grouping has already split them.
+///
+/// The caps are `ribbon`'s own rule, which needs no change here: a round cap
+/// is a disc that closes a joint whatever the angle, and a free end is
+/// square.
+///
+/// It is a pure function of the roads and stores nothing. Steps 4 and 5 are
+/// its consumers; until they land, [`run`] and `Surface` are untouched and
+/// nothing downstream moves.
+pub fn grouped(roads: &crate::world::Roads) -> Vec<(Family, usize, Shapes)> {
+    let (group, ..) = crate::partition::groups(&roads.plan, &roads.spans);
+    let pieces: Vec<&crate::world::Polyline2> = roads.pieces().collect();
+    let fam_of = |p: &crate::world::Polyline2| crate::width::family(&p.class) as usize;
+
+    let mut ends: std::collections::HashMap<(usize, (i64, i64)), usize> = std::collections::HashMap::new();
+    for p in &pieces {
+        if p.pts.len() < 2 {
+            continue;
+        }
+        for e in [p.pts[0], p.pts[p.pts.len() - 1]] {
+            *ends.entry((fam_of(p), crate::world::connector(e))).or_default() += 1;
+        }
+    }
+
+    // A `BTreeMap`, so the regions come out in the world's order and not a
+    // hasher's: these are an output.
+    let mut by: std::collections::BTreeMap<(usize, usize), Shapes> = std::collections::BTreeMap::new();
+    for (i, p) in pieces.iter().enumerate() {
+        if p.pts.len() < 2 {
+            continue;
+        }
+        let n = p.pts.len();
+        let round = |e: [f64; 2]| ends.get(&(fam_of(p), crate::world::connector(e))).copied().unwrap_or(0) > 1;
+        let caps = [round(p.pts[0]), round(p.pts[n - 1])];
+        by.entry((fam_of(p), group[i]))
+            .or_default()
+            .extend(poly::buffer_line_capped(&p.pts, p.width_m, caps));
+    }
+    by.into_iter()
+        .map(|((fam, g), parts)| {
+            let family = match fam {
+                0 => Family::Carriageway,
+                1 => Family::Walk,
+                _ => Family::Rail,
+            };
+            (family, g, poly::union_all(&parts))
+        })
+        .collect()
+}
+
 pub fn run(ribbons: &Ribbons, facade: &Facade) -> (Surface, Summary) {
     let mut per_family: [Shapes; 3] = Default::default();
     for r in &ribbons.ribbons {
