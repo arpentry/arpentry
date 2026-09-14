@@ -1,0 +1,234 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>arpentry world preview</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+               font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  canvas { display: block; }
+  #hud { position: fixed; top: 10px; left: 10px; padding: 8px 10px; border-radius: 6px;
+         background: rgba(20,20,22,.82); color: #e8e6e1; max-width: 250px;
+         backdrop-filter: blur(6px); }
+  #status { white-space: pre-wrap; }
+  #status.err { color: #ff8a7a; }
+  #layers { margin-top: 8px; max-height: 60vh; overflow-y: auto;
+            border-top: 1px solid rgba(255,255,255,.14); padding-top: 6px; }
+  #layers label { display: block; cursor: pointer; opacity: .85; }
+  #layers label:hover { opacity: 1; }
+  #layers input { vertical-align: -1px; margin-right: 5px; }
+  .row { display: flex; gap: 6px; margin-top: 6px; }
+  button { flex: 1; font: inherit; color: inherit; cursor: pointer; padding: 3px 6px;
+           background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.16);
+           border-radius: 4px; }
+  button:hover { background: rgba(255,255,255,.16); }
+  .dim { opacity: .55; }
+</style>
+
+<div id="hud">
+  <div id="status">starting…</div>
+  <div class="row">
+    <button id="frame">frame</button>
+    <button id="watch">watching</button>
+  </div>
+  <div id="layers"></div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MapControls } from 'three/addons/controls/MapControls.js';
+
+// `?src=` lets one server preview several files; the script symlinks the
+// chosen .glb to model.glb, so that is the default.
+const SRC = new URLSearchParams(location.search).get('src') || 'model.glb';
+const POLL_MS = 1500;
+
+const statusEl = document.getElementById('status');
+const layersEl = document.getElementById('layers');
+const say = (t, err = false) => { statusEl.textContent = t; statusEl.classList.toggle('err', err); };
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a2b2e);
+
+// The world is metres and the model spans kilometres, so the far plane is
+// generous and the near plane is not a centimetre — a tight near plane at
+// this range is where z-fighting comes from, and this model already has
+// surfaces that sit millimetres apart.
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 1, 200000);
+
+const controls = new MapControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.maxPolarAngle = Math.PI / 2 - 0.02;   // never below the horizon
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x5a5348, 2.2));
+const sun = new THREE.DirectionalLight(0xfff6e8, 2.0);
+sun.position.set(-0.4, 1, 0.6);
+scene.add(sun);
+
+let root = null;
+
+/// Free the GPU memory of the model being replaced. Without this a reload
+/// every few seconds walks the process up through gigabytes: the geometry
+/// of the loop box alone is a quarter of a gigabyte on disk.
+function dispose(obj) {
+  obj.traverse(o => {
+    o.geometry?.dispose();
+    for (const m of [o.material].flat()) m?.dispose?.();
+  });
+}
+
+function frame() {
+  if (!root) return;
+  const box = new THREE.Box3().setFromObject(root);
+  if (box.isEmpty()) return;
+  const size = box.getSize(new THREE.Vector3());
+  const mid = box.getCenter(new THREE.Vector3());
+  const reach = Math.max(size.x, size.z) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+  controls.target.copy(mid);
+  camera.position.set(mid.x, mid.y + reach * 0.75, mid.z + reach * 0.9);
+  camera.updateProjectionMatrix();
+  controls.update();
+}
+
+function layers(model) {
+  const seen = new Map();
+  for (const child of model.children) if (child.name) seen.set(child.name, child);
+  layersEl.innerHTML = '';
+  for (const [name, node] of [...seen].sort()) {
+    const label = document.createElement('label');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = shown.get(name) ?? true;
+    node.visible = box.checked;
+    box.onchange = () => { node.visible = box.checked; shown.set(name, box.checked); };
+    const n = countTriangles(node);
+    label.append(box, `${name} `);
+    const dim = document.createElement('span');
+    dim.className = 'dim';
+    dim.textContent = n ? `${n.toLocaleString()}` : '';
+    label.append(dim);
+    layersEl.append(label);
+  }
+}
+const shown = new Map();   // survives reloads, so a hidden layer stays hidden
+
+function countTriangles(node) {
+  let n = 0;
+  node.traverse(o => {
+    if (!o.isMesh) return;
+    const g = o.geometry;
+    n += (g.index ? g.index.count : g.attributes.position.count) / 3;
+  });
+  return Math.round(n);
+}
+
+const loader = new GLTFLoader();
+
+function load(tag) {
+  return new Promise((resolve, reject) => {
+    loader.load(
+      `${SRC}?v=${encodeURIComponent(tag)}`,
+      gltf => {
+        // `gltf::triangles` writes POSITION alone and leans on the
+        // material's baseColorFactor, so most layers arrive with no
+        // normals at all and would shade flat black. The ground is the
+        // exception — it carries NORMAL and COLOR_0.
+        let computed = 0;
+        gltf.scene.traverse(o => {
+          if (o.isMesh && !o.geometry.attributes.normal) { o.geometry.computeVertexNormals(); computed++; }
+          if (o.isMesh) for (const m of [o.material].flat()) if (m) m.side = THREE.DoubleSide;
+        });
+        resolve({ model: gltf.scene, computed });
+      },
+      p => { if (p.total) say(`loading ${(100 * p.loaded / p.total).toFixed(0)} %`); },
+      reject,
+    );
+  });
+}
+
+async function swap(tag, why) {
+  const t0 = performance.now();
+  say(`${why}…`);
+  const { model, computed } = await load(tag);
+  const keep = root ? { pos: camera.position.clone(), aim: controls.target.clone() } : null;
+  if (root) { scene.remove(root); dispose(root); }
+  root = model;
+  scene.add(root);
+  layers(root);
+  if (keep) { camera.position.copy(keep.pos); controls.target.copy(keep.aim); controls.update(); }
+  else frame();
+  const secs = ((performance.now() - t0) / 1000).toFixed(1);
+  say(`${SRC}\n${countTriangles(root).toLocaleString()} triangles, ${secs}s`
+      + `\nnormals computed for ${computed} meshes`
+      + `\nreloaded ${new Date().toLocaleTimeString()}`);
+}
+
+/// The file's identity as the server reports it. Content-Length is in it
+/// as well as the timestamp because a rebuild that takes under a second
+/// can land on the same mtime.
+async function signature() {
+  const r = await fetch(SRC, { method: 'HEAD', cache: 'no-store' });
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return `${r.headers.get('last-modified')}|${r.headers.get('content-length')}`;
+}
+
+let current = null;
+let watching = true;
+let pending = null;      // a change seen once but not yet stable
+
+async function poll() {
+  if (!watching) return;
+  try {
+    const sig = await signature();
+    if (sig === current) { pending = null; return; }
+    // **Wait for it to stop moving.** The world writes the .glb with one
+    // truncate-then-write, so a poll landing mid-write sees a short file
+    // and would load a truncated model. Two identical readings in a row
+    // mean the writer has finished.
+    if (sig !== pending) { pending = sig; return; }
+    current = sig;
+    pending = null;
+    await swap(sig, 'file changed, reloading');
+  } catch (e) {
+    say(`${e.message}\nis scripts/preview-world.sh still running?`, true);
+  }
+}
+
+document.getElementById('frame').onclick = frame;
+const watchBtn = document.getElementById('watch');
+watchBtn.onclick = () => {
+  watching = !watching;
+  watchBtn.textContent = watching ? 'watching' : 'paused';
+};
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+
+(async () => {
+  try {
+    current = await signature();
+    await swap(current, 'loading');
+  } catch (e) {
+    say(`${e.message}\ncould not read ${SRC}`, true);
+  }
+  setInterval(poll, POLL_MS);
+})();
+</script>
