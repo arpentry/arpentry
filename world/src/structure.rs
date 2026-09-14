@@ -53,6 +53,7 @@ use std::collections::HashMap;
 
 use crate::bench::{Field, KERB_RISE_M, ROOM_REACH_M};
 use crate::grade::{NODE_M, STRUCTURE_MIN_M};
+use crate::mesh;
 use crate::poly::{self, Pt, Shapes};
 use crate::profile::densify;
 use crate::step::Summary;
@@ -231,6 +232,25 @@ pub struct Stats {
     pub bores: usize,
     /// Roadway area, in square metres, that no surface step laid.
     pub roadway_m2: f64,
+    /// What the span regions' own meshing came to: the area, in square
+    /// metres, by which their triangles disagree with the regions they were
+    /// cut from, and the regions the ear clipper misread. A union is only
+    /// worth having if it meshes honestly — double-covered triangles are
+    /// indistinguishable from an un-unioned overlap in anything drawn.
+    pub span_lost_m2: f64,
+    pub span_lossy: usize,
+    /// Length of that roadway, in metres, drawn over ground the carriageway
+    /// also paves: the abutment margin `runs_of` adds, wherever a ground
+    /// piece reaches the same stretch.
+    ///
+    /// Both surfaces are right to be there — the deck must reach its rims
+    /// and the piece is cut at `a0` — but they are two sheets flush to
+    /// `abutment`, and that is what reads from above as overlapping
+    /// objects. So this is not a defect one of them should give up; it is
+    /// the measure of the **shared boundary they do not have**, and the
+    /// before/after for giving them one. Trimming it away instead is what
+    /// `runs_of` rules out, with the numbers.
+    pub lap_m: f64,
     /// The least a deck's soffit clears the ground under it, between its
     /// abutments, and how many stations in there it does not clear.
     pub clear: f64,
@@ -298,6 +318,27 @@ pub fn run(
         // them the roadway stops one station short at each end and the ground
         // pieces — cut at the annotation edge — do not reach it, so a station
         // of paving is laid by nobody.
+        //
+        // **The margin is also where two surfaces claim the same ground, and
+        // it may not be trimmed away.** Where a ground piece *does* reach,
+        // the swept ribbon lies on the unioned carriageway flush to the
+        // 2 mm `abutment` reports, and two coincident sheets are what reads
+        // from above as overlapping objects: on the loop box 1.17 % of the
+        // drawn roadway sits within 0.2 m of carriageway and 0.69 % within
+        // 0.05 m. Dropping the margin wherever `carriageway` already covers
+        // it takes those to 0.20 % and 0.08 % — and takes the gorge
+        // specimen's deck from 40 m to **32 m**, because the derived span is
+        // narrower than the slot and the margin is what carries the deck out
+        // to the rims (`a_gorge_is_a_bridge_without_being_told`). The
+        // roadway then ends over the void while the soffit spans on, which
+        // is a worse defect than the overlap it removes.
+        //
+        // Neither surface is the one to yield: the deck must reach its rims
+        // and the ground piece is cut at `a0`. They need a *shared*
+        // boundary — the partition cutting the ground piece where the deck's
+        // drawn edge falls, rather than one station inside it — or the spans
+        // brought into the ribbon/union path so the handover is an internal
+        // edge of one region.
         let runs_of = |p: &crate::world::Profile| -> Vec<(usize, usize, Kind, [bool; 2])> {
             let last = p.stations.len().saturating_sub(1);
             p.runs()
@@ -364,9 +405,54 @@ pub fn run(
         // gives: then no foot is refused and none needs to be.
         let road = poly::Indexed::new(carriageway);
 
+        // How many span ends of each family meet at each connector, which is
+        // [`crate::ribbon`]'s rule for a ground piece applied here: a round
+        // cap is a disc that closes a *joint* whatever the angle, and a free
+        // end is square. Capped round at both ends instead, every deck grew
+        // a half-disc of its own half-width past each abutment — `roadway_m2`
+        // 72 131 → 73 647 on the loop box, area no road has.
+        let mut span_ends: HashMap<(usize, (i64, i64)), usize> = HashMap::new();
+        // **Spans that share a connector are one surface, whatever their
+        // level ordinals say.** A level orders what *crosses*: the crossing
+        // step reads it for two interiors that cross with no connector
+        // between them, which is the only place a mapper's `layer` is a
+        // claim about who is over whom. Two pieces that share a connector
+        // meet at one point in the ground truth, and no tag makes them
+        // otherwise — grouped by ordinal instead, the legs of a junction
+        // whose mapper tagged them differently never merged, which is the
+        // defect this replaced.
+        let mut parent: Vec<usize> = (0..spans.len()).collect();
+        let mut meet: HashMap<(usize, (i64, i64)), usize> = HashMap::new();
+        for (i, span) in spans.iter().enumerate() {
+            let n = span.stations.len();
+            if n < 2 || width::family(&span.class) == Family::Walk {
+                continue;
+            }
+            let fam = width::family(&span.class) as usize;
+            for st in [&span.stations[0], &span.stations[n - 1]] {
+                *span_ends.entry((fam, connector(st.p))).or_default() += 1;
+                match meet.entry((fam, connector(st.p))) {
+                    std::collections::hash_map::Entry::Occupied(e) => {
+                        let (a, b) = (root(&mut parent, i), root(&mut parent, *e.get()));
+                        if a != b {
+                            parent[a] = b;
+                        }
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(i);
+                    }
+                }
+            }
+        }
+
         let mut s = Structure::default();
+        // The spans' footprints, by family and connected group, unioned
+        // after the loop. Keyed in a `BTreeMap` rather than a hash so the
+        // order the regions are built in is the world's and not the
+        // hasher's.
+        let mut foot: std::collections::BTreeMap<(usize, usize), Shapes> = std::collections::BTreeMap::new();
         let mut stats = Stats { spans: spans.len(), clear: f64::INFINITY, cover: f64::INFINITY, ..Stats::default() };
-        for span in &spans {
+        for (i, span) in spans.iter().enumerate() {
             stats.fitted += span.fitted as usize;
             stats.carried += span.carried as usize;
             if span.stations.len() < 2 {
@@ -374,15 +460,44 @@ pub fn run(
             }
             let (l, r) = edges(&span.stations, span.half_w());
             // A railway's span lays its track bed, not a roadway: the same
-            // sweep in its own material, out to the structure's shoulders.
-            let rail = width::family(&span.class) == Family::Rail;
-            let bed = if rail { &mut s.track } else { &mut s.roadway };
-            strip(bed, &l, &r);
-            let m2 = poly::length(&span.stations.iter().map(|st| st.p).collect::<Vec<Pt>>()) * 2.0 * span.half_w();
-            if rail {
-                stats.track_m2 += m2;
+            // surface in its own material, out to the structure's shoulders.
+            let fam = width::family(&span.class);
+            let rail = fam == Family::Rail;
+            // Only the road's lap is measurable here: `carriageway` is the
+            // road surface, and a railway's bed laps its ballast, which this
+            // step is not given.
+            if !rail {
+                stats.lap_m += lap_m(span, &road);
+            }
+            if fam == Family::Walk {
+                // A walk span keeps the sweep. The `decks` field the union
+                // below takes its heights from is built from the profiles,
+                // and a footbridge is not one of them — asked about itself
+                // it would answer with the nearest *road* deck.
+                strip(&mut s.roadway, &l, &r);
+                stats.roadway_m2 +=
+                    poly::length(&span.stations.iter().map(|st| st.p).collect::<Vec<Pt>>()) * 2.0 * span.half_w();
             } else {
-                stats.roadway_m2 += m2;
+                // **A span's surface is a region, not a ribbon.** Swept one
+                // span at a time and unioned with nothing, the legs of a
+                // junction that happens to stand on a structure overlap each
+                // other instead of merging, and leave notches at the corners
+                // where the ribbons cross. Measured on the loop box:
+                // `roadway` covered 1.43 % of its own area twice, half of
+                // that within half a metre — while the unioned `carriageway`
+                // covered 0.00 % of its 637 000 m² twice. The union is the
+                // whole difference.
+                //
+                // Buffered the way a ground ribbon is, so the silhouette on
+                // a bend is the same arc the carriageway would draw rather
+                // than the chord `edges` steps through.
+                let axis: Vec<Pt> = span.stations.iter().map(|st| st.p).collect();
+                let n = span.stations.len();
+                let joint = |p: Pt| span_ends.get(&(fam as usize, connector(p))).copied().unwrap_or(0) > 1;
+                let caps = [joint(span.stations[0].p), joint(span.stations[n - 1].p)];
+                foot.entry((fam as usize, root(&mut parent, i)))
+                    .or_default()
+                    .extend(poly::buffer_line_capped(&axis, 2.0 * span.half_w(), caps));
             }
             for st in [&span.stations[0], &span.stations[span.stations.len() - 1]] {
                 if let Some(h) = ends.get(&connector(st.p)) {
@@ -556,6 +671,40 @@ pub fn run(
                 }
             }
         }
+        // **The spans' surface, unioned per connected group.** One region
+        // for each family and group of spans that share connectors, meshed
+        // on the terrain's lattice like every other surface and lifted by
+        // the `decks` field — which blends at a shared connector, so two
+        // legs meeting on a structure come out as one warped surface rather
+        // than two ribbons lying on each other.
+        //
+        // Groups, not levels: a viaduct and the deck it flies over share no
+        // connector, so they fall in different groups and stay apart on
+        // their own. What that does not separate is two decks of one
+        // interchange that are joined by a ramp *and* cross each other — a
+        // stacked junction. There is none in the loop box; `roadway`'s
+        // self-overlap is where one would show.
+        for ((fam, _group), parts) in &foot {
+            let region = poly::union_all(parts);
+            if region.is_empty() {
+                continue;
+            }
+            let height = |p: Pt| decks.at(p).map_or_else(|| height_at(terrain, p[0], p[1]), |f| f.h);
+            let (tri, ms) = mesh::triangulate(&region, &terrain.grid, &height);
+            stats.span_lost_m2 += ms.lost_m2;
+            stats.span_lossy += ms.failed + ms.lossy;
+            let rail = *fam == Family::Rail as usize;
+            let bed = if rail { &mut s.track } else { &mut s.roadway };
+            let base = bed.positions.len() as u32;
+            bed.positions.extend(tri.positions);
+            bed.indices.extend(tri.indices.iter().map(|i| i + base));
+            let m2 = poly::area(&region);
+            if rail {
+                stats.track_m2 += m2;
+            } else {
+                stats.roadway_m2 += m2;
+            }
+        }
         s.plan = spans.iter().filter(|s| s.stations.len() > 1).map(|s| plan(s)).collect();
         (s, stats)
     };
@@ -569,6 +718,9 @@ pub fn run(
         .with("galleries", stats.galleries)
         .with("rail", format!("{}/{}", stats.rail_decks, stats.rail_bores))
         .with_m2("roadway_m2", stats.roadway_m2)
+        .with("lap", format!("{:.0}", stats.lap_m))
+        .with("span_lost_m2", format!("{:.1e}", stats.span_lost_m2))
+        .with("span_lossy", stats.span_lossy)
         .with_m2("track_m2", stats.track_m2)
         .with(
             "triangles",
@@ -728,6 +880,34 @@ fn runs(stations: &[Station], kind: Solved) -> Vec<(usize, usize)> {
         }
     }
     out
+}
+
+/// Union-find root, path-halved: which group of connected spans `x` is in.
+fn root(parent: &mut [usize], mut x: usize) -> usize {
+    while parent[x] != x {
+        parent[x] = parent[parent[x]];
+        x = parent[x];
+    }
+    x
+}
+
+/// How much of `span`'s roadway is drawn over ground the carriageway also
+/// paves: [`Stats::lap_m`]. At most one station an end, because that is all
+/// the margin `runs_of` adds, and only counted where the ground piece
+/// actually reaches it.
+fn lap_m(span: &Span, road: &poly::Indexed) -> f64 {
+    let n = span.stations.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let mut m = 0.0;
+    if span.stations[0].s < span.a0 && road.contains(span.stations[0].p) {
+        m += span.a0 - span.stations[0].s;
+    }
+    if span.stations[n - 1].s > span.a1 && road.contains(span.stations[n - 1].p) {
+        m += span.stations[n - 1].s - span.a1;
+    }
+    m
 }
 
 /// The left and right edge of a piece `half_w` from its axis, at the
