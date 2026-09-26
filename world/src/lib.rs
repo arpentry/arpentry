@@ -25,6 +25,7 @@
 //! becomes one more caller of this crate; nothing here must learn about tiles
 //! for that to stay true.
 
+pub mod arrangement;
 pub mod bench;
 pub mod building;
 pub mod crossing;
@@ -35,6 +36,7 @@ pub mod frame;
 pub mod gltf;
 pub mod grade;
 pub mod grid;
+pub mod ground;
 pub mod junction;
 pub mod kerb;
 pub mod mesh;
@@ -44,9 +46,11 @@ pub mod pipeline;
 pub mod poly;
 pub mod profile;
 pub mod reference;
+pub mod relax;
 pub mod ribbon;
 pub mod roads;
 pub mod room;
+pub mod sheet;
 pub mod spans;
 pub mod step;
 pub mod structure;

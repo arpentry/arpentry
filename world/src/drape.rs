@@ -1,4 +1,4 @@
-//! Step 2: road centrelines draped exactly onto the terrain mesh.
+//! The drape: road centrelines laid exactly onto the terrain mesh.
 //!
 //! "Exactly" means the drawn line lies *on* the drawn surface, not near it: a
 //! chord between two points of one plane lies in that plane, so a polyline
@@ -9,7 +9,7 @@
 //! diagonal makes — so the split runs at the diagonals too.
 //!
 //! What this step does *not* do is engineer anything: the line follows every
-//! wrinkle of the raw ground. That is the point of step 2. The steps after it
+//! wrinkle of the raw ground. That is the point of this step. The steps after it
 //! will have to earn every metre they move the ground by.
 
 use std::path::Path;

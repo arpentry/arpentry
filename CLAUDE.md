@@ -259,18 +259,47 @@ more caller of it.
 
 **A step is a function of what it reads, and nothing else.** Every step is
 `fn run(inputs…) -> (Layer, Summary)` over the layers it needs — no step
-takes the world, and none can reach a layer it did not name. `World` is the
-record the layers land in, read only by the two renderers, which draw
-whatever has been built. All the wiring is `world/src/pipeline.rs`: the
-order (`Step::ALL`), which layer feeds which step, the three sources
-(`Sources` — only the terrain, the drape and the facade read anything
-outside), and the one place that unwraps a layer and can therefore assert
-its predecessor ran. **Adding a dependency between two steps is a diff in
-that file**, which is the whole point: it used to be an `expect("the drape
-step runs first")` inside the step, invisible from outside, and the paved
-surface's four re-cuttings were resolved at runtime by a `World::walk()`
-that returned whichever of four layers had been filled. `Paving` is that
-answer written down instead.
+takes the world, none can reach a layer it did not name, and **none writes
+to one**. `World` is the record the layers land in, read only by the two
+renderers, which draw whatever has been built. All the wiring is
+`world/src/pipeline.rs`: the order (`Step::ALL`), which layer feeds which
+step, the three sources (`Sources` — only the terrain, the drape and the
+facade read anything outside), and the one place that unwraps a layer and
+can therefore assert its predecessor ran. **Adding a dependency between two
+steps is a diff in that file**, which is the whole point: it used to be an
+`expect("the drape step runs first")` inside the step, invisible from
+outside.
+
+Three things that rule cost, each one a defect it had let stand:
+
+- **Three steps took `&mut` and rewrote their predecessors.** `reference`
+  promoted the terrain's bridge and tunnel priors onto the ways; `crossing`
+  replaced the profiles; `partition` rewrote every way's span table, both
+  piece lists, every profile's table and every station's verdict — while
+  returning nothing but a `Summary`, which made the most important step in
+  the pipeline the one whose signature said least. Between them a way's span
+  table was a field three steps wrote to and no signature admitted. They
+  return those tables now and the `match` arms install them.
+- **The paved surface had no single answer.** It is re-cut four times
+  (`surface`, `kerb`, `fillet`, `room`), and "the latest" was resolved at
+  runtime by a `World::walk()` over four layers, then by a literal in the
+  pipeline assembled field by field — still with a branch in it, because
+  `room` itself reads the paving before it has run. All four steps now hand
+  back a whole `world::Surface`: what they changed and what they passed
+  through. The latest paving is the last layer that laid any, and
+  `&room(world).surface` is a lookup like every other. `Paving<'a>` is gone.
+- **Which way a profile belongs to was re-derived four times.** `Profiles`
+  and `Reference` are subsets of `Roads::ways` in their order, and every
+  step holding one recovered the way by re-running the selection predicate
+  and inverting it into a `HashMap`, with an `assert_eq!` standing in for
+  the type that should have said it. `Profile::way` and
+  `reference::Axis::way` record it; `reference::solving_of` is now asked
+  once, where the reference is built.
+
+**The order is `Step::ALL`'s and is written nowhere else.** The step modules
+used to open with "Step 7: …" in their headers and eleven of the seventeen
+had drifted — `crossing` said 13 and runs 5th, `partition` said 3 and runs
+6th. The ordinals are gone; a module header says what the step makes.
 
 The specimen ladders live there too (`pipeline::tests::built`), named as
 step lists: `upto(Step::Bench)` is the whole prefix, `plan(Step::Ribbon)`
@@ -291,7 +320,9 @@ cargo build --release --manifest-path world/Cargo.toml
 
 **The GLB carries triangles only unless `--outlines` asks otherwise.** The
 world is `ground`, `wall`, `kerb`, `carriageway`, `pavement`, `ballast`,
-`rail` (the face between ballast and its neighbours), `roadway`, `track`,
+`rail` (the face between ballast and its neighbours), `roadway` (a
+footbridge's paving, and nothing else's — a road's or a railway's span is
+part of `carriageway` or `ballast`), `track`,
 `deck`, `bore`, `pier`, `building` and `roof`, and eight layers are construction lines: the draped centrelines,
 the solved profiles, and the ribbon, surface, kerb, fillet, room and facade
 contours. Those eight are glTF `LINES`, and **a viewer is not obliged to
@@ -324,9 +355,251 @@ net:cross` (or `straight`, `tee`, `overpass`, `underpass`,
 `roundabout`, `level[?rail=narrow_gauge]`, and `leg=CLASS` on `overpass` and
 `underpass` for a rail bridge or a rail bore) swaps the parquet for a synthetic
 network, where a step's output is an assertion rather than a look.
-`--until terrain` stops after a step; the steps so far are `terrain`,
-`drape`, `partition`, `reference`, `profile`, `crossing`, `facade`, `ribbon`,
-`surface`, `kerb`, `fillet`, `room`, `mesh`, `bench`, `structure`, `building`.
+**The world crate has a plan of its own open**:
+`data/plans/one-ground-2026-09-16.md`, with its checks in `world/src/ground.rs`
+in the shape `spans.rs` and `junction.rs` use — `#[ignore]`d against today's
+tree, so `cargo test -- --ignored` is the to-do list. Its rule is *one
+arrangement, one height per vertex, a step is an edge you declare; and the DEM
+is a measurement, so a standard is a floor on what it cannot see and never a
+correction to what it can*. Step 0 (`dem_residual`) has landed and answered the
+question the plan opened with; §1.2 is what it found.
+
+`--until terrain` stops after a step; the eighteen, in order, are
+`terrain`, `drape`, `reference`, `profile`, `crossing`, `partition`,
+`facade`, `ribbon`, `surface`, `kerb`, `fillet`, `room`, `sheet`,
+`arrangement`, `mesh`, `bench`, `structure`, `building`.
+
+The `arrangement` step is **step 1 of
+`data/plans/one-ground-2026-09-16.md`, landed and not yet wired**: it cuts
+the rect into faces along every material boundary at once
+(`poly::slice`, one pass) and tags each face by a single interior point
+(`poly::inside`), so the ground and the paving beside it share their
+boundary instead of each computing it. Its line reports `unshared` — face
+vertices off the rect's edge that only one face carries, which is the
+defect, and reads **0** on every specimen — and `closure`, the partition
+drift as a multiple of what snapping the rect's own corners to the lattice
+can explain (1.0 is that bound; it reads 0.063). `unprobed` counts faces
+too thin to name a point inside; they are taken as ground, and on
+`house:across` there are 4 of them totalling **0.000 m²** — slivers where a
+passage corridor meets a wall.
+
+`poly::slice` costs 0.01–0.03 s at 7 872 rings — 20 to 100× less than the
+`union_all` already in the chain — so the cost is the tagging, which is
+indexed.
+
+**A partition has one face per point, and a grade separation has two
+surfaces there** (`Arrangement::decks`). Where a sheet's span paving lies
+over another sheet's *ground* paving, the partition's face is the ground's:
+it cuts the terrain and meets its own kerbs. The deck gets a second face of
+the same shape, from the same slice, so it still welds to the rest of its
+sheet (`mesh::by_sheet` reads `layered`). Before this, the face went to
+whichever sheet the index named first. At the Viaduc de Chillon that was the
+deck, so the streets under it showed bare terrain. On `net:overpass` it was
+the street, so the deck had a hole over it. Three rules go with it, each
+fixing a defect that was visible at Chillon:
+
+- **An apart sheet takes its approaches' ground axes, not its parent
+  sheet's** (`sheet.rs`). It used to take all 973 profiles of the town's
+  connected paving, including the streets it flies over. `bench::by_sheet`
+  believes a chord only where it is no farther in plan than the nearest
+  ground axis, so over every street under the deck the asphalt hung 44 m
+  down in a curtain (bench `worst` 46.632 → 11.846). An approach is a ground
+  piece sharing a vertex with the span. An apart deck also gives up the
+  approach's ground paving under its round cap, so the two do not lie
+  coplanar at the abutment.
+- **The edge rule draws no face taller than the slab next to a span face**
+  (`edge_faces`). The partition is flat, so a deck's rim and the sidewalk of
+  the street below share edges in plan. The slab closes a deck's side, and
+  below the slab is air. `kerb_m2` 19 268 → 10 850 on the loop box, of which
+  8 082 m² were Chillon's curtains (up to 63 m) and the rest the same case at
+  other overbridges and rail crossings, 5–12 m tall. The rule reads *either*
+  face spanned, because the street's own sidewalk within 6 m of a deck is
+  claimed as walk the deck carries.
+- `arrangement` reports `decks`/`deck_m2` (49 / 1 414 m² on the loop box).
+  `world/examples/curtain_probe.rs` lists the surfaces over any point, and
+  with `decks` the height gap at every deck face. A gap near 0 would be two
+  coplanar sheets; the box has three slivers under 0.2 m² in total.
+
+**`net:overpass` at its default 200 m does not separate the two roads.**
+Both ways are densified every 4 m and so both have a station exactly at the
+crossing. `crossing::Net` joins stations by position, reads that point as a
+shared connector, and spreads the leg's floor into the street. The result is
+two decks and `clearance` short by 5.38 m, and it is the same at `b74a8b2`.
+`net:overpass?len=201` is the honest specimen. The rule that joins by
+position is fragile and is not fixed.
+
+**`mesh` and `bench` read it** (step 1b): the mesher triangulates the faces
+of each material, grouped by sheet; the bench takes the hole and the ground
+from the faces rather than from `union_of([on_ground, walk − spanned,
+galleries])` and `rect − outline`. The two regions were measured against
+each other first and agreed to **0.000 m²** on every specimen, so what
+changed is the boundary and not the geometry. Over the corpus `bench seam`
+went **285 → 40 misses, 9 specimens → 1**; every specimen reads exactly 0
+except `house:across`. `unmet` is 0 throughout.
+
+**What is left is buildings, and it is four slivers.** `house:across` — a
+way passing through a house, so `facade.passages` cuts a corridor — is the
+only specimen in the corpus with `unprobed > 0`: four faces of 2.2e-7 to
+4.4e-5 m² where the corridor's edge crosses a wall a lattice step off it
+(`ARPENTRY_SLIVERS=1` prints them). A degenerate face called *ground* while
+it sits inside paving punches a ring into the hole's outline that no paved
+mesh has a vertex for, and `dense` subdivides that ring at every lattice
+crossing — four slivers, forty misses. So a face too thin to probe adopts
+the material of the neighbour it shares the most **vertices** with
+(`arrangement::adopt`), and the union absorbs it: corpus `seam` **285 → 50
+→ 20**, `house:across` alone.
+
+**And `poly::slice` must be pinned like every other boolean.**
+`slice_by_fixed_scale` takes a scale but builds its adapter from the *input's
+own bounds*, so its origin moves with the data and its output floats land
+between `poly::overlay`'s. The faces agreed among themselves — they come from
+one slice — so `unshared` read 0 throughout and nothing showed it; what
+showed it was unioning the faces and finding the union had **invented all 27
+of its vertices**, not one of them a face vertex. `slice` goes through
+`FloatStringOverlay::with_adapter` on the same pinned rect now, and the union
+invents none. This was latent everywhere a sliced result met an overlaid one,
+and it is the reason to distrust any new kernel entry point that does not
+take the adapter.
+
+**Three things were measured on the way and are not it.** Adding both
+facade masks as cuts: `seam` 25 → 20 but `unmet` 4 → 8. Matching the
+neighbour by shared *edges* rather than vertices, counted or weighted by
+length: 25 either way — a sliver's neighbour has usually subdivided the
+edge they share, which is the same hairline that made the sliver. And
+preferring a neighbour that **cuts**, which is the rule the failure mode
+argues for: also 25. That last one is the useful finding — the twenty that
+remain are not a sliver landing on the wrong side, so a fifth tie-break
+will not move them. They have not yet been read directly, the way the four
+slivers were, and until they are this is calibration rather than a rule.
+
+Two rules the rewire established, each bought with a measurement. **The
+walk's near/far split is a cut, not a boolean** — found with
+`dilate`/`intersect` it put vertices on the pavement no other mesh had — and
+the ring is clipped to the walk, because cut over the whole rect it splits
+the ground where it means nothing and took `cut` 4.255 → 4.755 m on a 50 %
+ramp. **And `bench`'s `outline` is unioned while the faces are not**: the
+faces are what the meshes are built from and must stay apart, but `outline`
+is only walked for its edges, and the edge between two adjacent paved faces
+is not boundary — walked as faces it put 10 interior edges into `seam` on
+`house:row` out of nothing.
+
+**The step also reports `edges` and `dangling`** — the adjacency
+`data/plans/one-ground-2026-09-16.md` step 2 needs, and whether it exists.
+`dangling` counts segments carried by one face alone away from the rect's
+border, and reads **96 over 8 of the 41 specimens**. They are real
+T-junctions: on `net:level` the carriageway's edge along `y = 2.75` is one
+200 m segment while the ground's side is three — ground, ballast, ground —
+because the railway cuts the ground there and nothing cuts the road.
+`poly::conform` subdivides every ring at every vertex lying on it and takes
+that to 3 — **landed**, `seam` cost accepted (corpus 20 → 65).
+
+**The edge rule is `bench::edge_faces`** (§3.3): one function over the
+subdivision's edges — welded where the two faces answer with one height,
+split where they do not, and then the quad is drawn — replacing `kerb`,
+`rail_face` and `walk_face`, each of which walked one mesh's rim and looked
+the other side up. `wall` stays, because it sweeps the room's outline
+against the *ground*, the one boundary whose far side is not a face of the
+paving.
+
+**It does not zero `step`, and cannot.** §3.3 reads "an edge either shares
+its vertices or is spanned by a quad, so `step` has nothing left to count".
+`step` counts triangle edges *inside* one lifted mesh, and the new
+`step_on_edge` says how many of those lie on an arrangement edge at all: on
+the junction with houses, **729 of 2333 (31 %)**. The other 69 % are in the
+middle of one material's region, where there is no face boundary for a quad
+to attach to. Giving them one means cutting the arrangement where the
+**height field** steps, which needs the field — plan §3.2, ordered *after*
+this. So step 3 comes before step 2, or step 2's target is `step_on_edge`
+rather than `step`. `step` is unmoved at 2333/6392, exactly as that
+predicts.
+
+**The solve is `world/src/relax.rs`, built and not wired** (plan step 3a).
+§3.2's energy `Σ w(z−dem)² + Σ‖∇z−∇dem‖²` is, in terms of the residual
+`e = z − dem`, exactly `eᵀ(W + L)e` — a damped Laplacian on the residual with
+`e` pinned at the paved vertices. So **ground no pin reaches is the DEM to the
+bit** (`e = 0` solves it there), which is what makes `FIELD_LIMIT_M`, the
+taper and the handover unnecessary rather than merely replaced; and the batter
+is `e` falling to nothing, shaped by the energy instead of by
+`EARTHWORK_BATTER`. Conjugate gradients, four properties checked, including
+that the decay on a chain matches the closed-form root of
+`r² − (2+w)r + 1 = 0` and that a symmetric pin on a grid gives a symmetric
+field — which the nearest-axis rule never managed at a junction. `WEIGHT` is
+chosen rather than measured: it sets a *decay* where the old constant set a
+*slope*, and the two do not convert.
+
+Wiring it needs one mesh over the whole rect — the ground and each material
+are separate `Tri`s today, sharing boundary positions but not indices — and
+that is also what unblocks step 2's remaining 70 %. `mesh::triangulate`
+already welds by position across everything in one call, so that part is
+passing every face at once rather than per material; what it lacks is
+per-triangle provenance.
+
+**`wall` can mostly retire into the edge rule, but not the portals.** Given
+the ground mesh as its height source `edge_faces` draws the paving|ground
+face itself: on `step?rise=10` it is **2055 m²** against `wall`'s **2030**,
+the same face within 1.2 %, and removing `wall` breaks one test and only
+because the geometry changes field. What it does *not* absorb is the portal
+headwall and footing — `ridge` falls 737 → 660 m² and a tunnelled `gorge`
+421 → 390 — because that closes the ground onto the **tube's section**, which
+is not a paving|ground edge and has no arrangement face. So `wall` shrinks to
+the mouths rather than going, unless the tube's footprint becomes a face
+(`Face::gallery` is half of that).
+
+**Shrinking it was tried and reverted.** Restricting `wall` to its portal
+branch cleared the cliff's double-draw and left `gorge` alone, but `ridge`
+fell 737 → 665 m²: `wall` sweeps the outline **densified at lattice
+crossings** while `edge_faces` emits one quad per arrangement edge, and over
+varying ground a chord misses area and leaves a gap per cell. Subdividing the
+edge rule to match moved three specimens by hundreds of m² with no
+predictable sign (`gorge` 390 → **31**, which is lookup failure, not
+geometry), so all of it went back. The swap needs the rule to read its rails
+*by position on the mesh* rather than by a lookup at a recomputed crossing —
+which is what meshing once gives, so 3b comes first. Not committed: the
+ground is still `wall`'s and the two do not double-draw.
+
+**`mesh seam` is invalidated by the arrangement — the metric, not the
+geometry.** It reads `|one-sided edge length − perimeter|`, and it was
+designed for a sheet that is one region: 8.4e-10 m on the loop box. The
+arrangement splits a sheet into faces (a span face beside a ground face, the
+walk's near beside its far), and adjacent faces of one sheet share an edge
+that is properly two-sided in the mesh — no crack — while the perimeter term
+counts it once per face. So `seam ≈ 2 ×` the internal shared length: **22 m**
+on a gorge specimen whose sheet holds a ground face and a span face, and
+**2.8e3** on the loop box against the 8.4e-10 recorded here. Nothing is
+cracked; the check has to measure the *outer* boundary of a face group before
+it means anything again, and until it does it gates nothing.
+
+**The one mesh is `Arrangement::mesh`** (`mesh::tagged` = `triangulate` plus
+the region each triangle came from): every face triangulated in one pass, so
+the materials share boundary vertices **by index** rather than by position.
+Nothing consumes it yet.
+
+**And the solve is measured against the case-function it would replace.**
+`bench` pins that mesh's paved vertices at the lift's heights, relaxes, and
+reports `relax_vs_cases` — p50/p90/max over the free vertices. **p50 and p90
+are 0.00 on every specimen**, which is §3.2's prediction holding: `e = 0`
+away from every pin, so both fields are the DEM over the bulk and the swap
+cannot move it. The maxima are where the cases bite — 1.70 m on a ramp,
+3.00 on the cliff, 10.38 at the junction, 12.58 in the gorge — and the
+cliff's 3.00 is `MAX_BENCH_FACE_M` to the centimetre, the wall threshold the
+relax has no equivalent of. 0.25–0.32 s for the bench step at 73–86 k
+vertices, CG included.
+
+**"One height per vertex" (§3.2) and "an edge is split" (§3.3) contradict
+each other**, because a kerb vertex has two heights a kerb's rise apart. The
+arrangement's `split_vertices` sizes it: **331** on the junction with houses
+against that mesh's **84 783** ground vertices, 0.4 %. (Against the
+arrangement's own 345 it reads 96 %, which is nearly a tautology — its
+vertices *are* the cut points.) So the rule is one vertex per position
+**except across a split edge**, and the exception costs a few hundred
+vertices.
+
+One trap in `poly::inside`, worth knowing before reusing it: a probe must be
+**strictly** interior. Preferring the largest inward step picked a point
+lying exactly on the opposite edge of a one-metre band, `contains` said yes,
+and every pavement face came back tagged `near` — `walk_far_m2` read 0 and
+the bench lifted a band it should have draped. The probe now checks four
+neighbours a millimetre out as well.
 
 **A way is one profile, and a junction can fall in its interior.** Because a
 way is whole, another way can end *on it* — at a bridge abutment most often,
@@ -399,13 +672,64 @@ and a viaduct as ground the road is already lying on — and until this step
 the world solved against it raw. Its summary line: `short` (pieces shorter
 than the 60 m window: a piece is not a corridor, and 47.8 % of the box's are,
 which is the argument for the reader keeping whole ways), `blind`/`blind_m`,
-`bridged`/`bridge`, `filled`/`fill`, `shaved`/`shave`, `notch`/`crest` and
-`off`. **The three passes are measured separately on purpose**: they move the
-surface for three different reasons, and a composite number belongs to none
-of them — read as one it showed a 13.26 m "shave" against a 4 m budget, which
+`spanned`, `bridged`/`bridge`, `filled`/`fill`, `shaved`/`shave`,
+`notch`/`crest` and `dem_residual`. **The three passes are measured separately on
+purpose**: they move the surface for three different reasons, and a composite
+number belongs to none of them — read as one it showed a 13.26 m "shave"
+against a 4 m budget, which
 was the bridging setting a causeway down on its rims. On the loop box:
 `blind` 0.16 % / 150 m, `filled` 21.8 % to 14.09 m, `shaved` 9.7 % to 3.96 m,
 `notch` 1/43 m, `crest` 12/420 m.
+
+**A mapped span is bridged like a blind run, and for the same reason**
+(`reference::spanned_mask`, `spanned`). The blind mask asks the DEM whether it
+is standing on the way's deck; the span table says the way has left the ground
+here, and a terrain model with its bridges taken out answers with the slot
+underneath — the railway in its cutting, the stream in its bed. Read as ground
+that slot is the far shoulder of the approach embankment's crest, and the
+opening shaves the embankment away as a false bump: at the Montreux rail
+overbridge (46.430890, 6.914780) **3.00 m of it** over the last 40 m of
+approach, the reference flattened to 398.20 where the DEM climbs to 401.20.
+Three things make the rule work, and each cost a measurement:
+
+- **It reaches down the abutment, not only to the annotation's edge.** A span
+  boundary is where a mapper clicked; the slot begins where the ground falls
+  away, metres earlier. The mask finds the **rim** — the highest ground within
+  `ABUTMENT_M` (10 m) of the edge, taken as a rim only where the climb to it
+  is steeper than `ABUTMENT_GRADE` (half, which no road in the model is built
+  at) — and masks what lies between. The rim itself stays sighted: it is what
+  the carry reads from. Walked station by station instead of found, the rule
+  ate ten metres of honest approach wherever a deck springs from the *inside*
+  of a bowl, and it turned on the grade across the two stations a span
+  boundary leaves within millimetres of each other.
+- **The passes run twice and are glued at the span boundaries.** Every ground
+  station takes the carried pass, so no window reaches into a slot; a station
+  *inside* a mapped span keeps the plain one, because there the reference is
+  not a target — the profile chords across — but it **is** the evidence
+  `partition::derive` reads. Carried across there too, a deck over a 30 m
+  gorge reads no departure from the surface it is 30 m above, and an 80 m
+  annotation over a 40 m slot stopped being trimmed to it.
+- **The source's spans only, never the terrain's own priors.** A promoted span
+  is a notch the closing *refused*, and claims level 0 saying so; carried
+  across as if a mapper had drawn it, the refusal would be spent twice and
+  `NOTCH_FILL_MAX_M` would buy nothing.
+
+On the loop box the conditioning barely moves (`shave` 3.86, `fill` 14.53,
+`off` 17.09, all unchanged) because the rule is local to a span's two ends,
+and what moves is downstream: bench `contact` 3.78 → 2.89 and `worst`
+29.541 → 28.487, `structure mouths` 44/63 → 46/63, profile `bores` 86.71 →
+87.55 %, crossing `lift` 14.76 → 14.33.
+
+**It is not what makes a bridged junction look wrong, though.** At the site it
+was found on, the road's reference is now the DEM to within 0.25 m and the
+solved height at the junction is unchanged: the crossing step's clearance
+demand is an *absolute* target (rail + `RAIL_CLEARANCE_M` + the slab, 8.5 m),
+so whatever the conditioning gives back the lift takes away. The DEM puts that
+road 6.6 m over the rails, the model insists on 8.5, and the 1.9 m difference
+is the plinth the junction and its two service roads stand on. That number is
+a design standard applied to a structure that already exists, and it tracks
+the constant one for one — at 6.0 the plinth is 0.9 m — so it is a decision
+about the model, not a defect in it.
 
 **One reference at a junction.** The conditioning is per axis, so a notch at
 a junction could be closed by one way and *refused* by its neighbour, and the
@@ -420,10 +744,31 @@ reference away from the ends is untouched. `junction` reports
 `ground` is the raw DEM — what the bench owes its earthwork against and what
 a departure is measured from — and `reference` is what the limiter aims at
 and the deviation box is centred on. So `float` guards the limiter against
-the reference and `off` reports the distance from the DEM, which is the
-number the departure criterion will threshold; **`off` therefore means
-something different than it did before 2026-09-10 and is not comparable
-across that change.**
+the reference and `dem_residual` reports the distance from the DEM, which is
+the number the departure criterion will threshold.
+
+**That metric is now the run's, not the step's** (`data/plans/one-ground-2026-09-16.md`
+§7 step 0). `reference`, `profile`, `crossing`, `partition` and `bench` each
+report `dem_residual` as p50/p90/max, **against the same baseline** —
+`terrain::height_at`, never the step's own input — so the lines are comparable
+down a run and a height is attributable to the step that made it rather than
+the step that pays for it. It replaced `reference`'s and `profile`'s `off`,
+which were this quantity under a name `bench` uses for a different one (how far
+a lattice triangle stands off the *engineered* ground). The numbers are
+absolute rather than per-step increments, because a step that undoes its
+predecessor's move shows as a smaller number and an increment would hide it.
+
+The population is `Solved::Grade` stations along an axis
+(`crossing::residual_of`, one function so every step counts the same thing) and
+the drawn ground's own vertices for `bench` (`bench::drawn_residual`).
+Deliberately two populations: "how far has the road left the DEM" and "how far
+has the ground" are different questions, and **their difference is the
+finding**. On the loop box the road reads 0.03/0.40/9.17 and the drawn ground
+reads 0.00/0.91/24.63 — an earthwork 2.7× the departure of what it carries,
+which is the cost of holding the paved surface level crosswise and is not any
+road's solved height. On flat ground the whole departure is `crossing`'s
+(`reference` and `profile` read 0.00/0.00/0.00, `crossing` 0.00/1.73/8.50) and
+`bench` tops out at 2.99 — `MAX_BENCH_FACE_M` to the centimetre.
 
 **Solving against it made the road better and the ground worse, and that is
 one fact, not two.** On the loop box `grade` fell 0.34 → 0.25 % and `steep`
@@ -707,6 +1052,70 @@ steeper than `STEP_GRADE`) with `worst`. The plan view marks every step
 with a purple dot in any window under 2 km, like the room's bare kerb
 stations.
 
+**A walk a deck carries is over a span, and does not cut the ground.**
+Invariant I3 — only ground-level paving cuts the terrain's hole — was
+enforced for the asphalt (`on_ground = paved − spanned`) and for the walk
+not at all: `paving.walk` went into the outline whole. So a sidewalk running
+along a bridge, which the mapper never tagged as a bridge, opened a hole in
+the ground **eight metres under itself**. At the Montreux overbridge the
+chain read `room.pavement` true and everything else false, with the pavement
+at **404.13** beside a carriageway at 403.65 over a terrain at 395.52 — the
+sidewalk is on the deck, exactly where it belongs, and the ground beneath it
+had been cut away. `structure::carried` is the same rule one level up and
+could not reach it: that asks whether a walk **span** runs along a road's
+deck, and this walk has no span to ask about. The walk within
+`ROOM_REACH_M` of a span is now folded into the span mask itself, so every
+consumer agrees — the hole, the earthwork, and `unmet`, which must not look
+for ground under something in the air. `carried` is the area: **1 658 m²**
+on the loop box, 67 at the junction. `wall_m2` 41 392 → **40 933** and the
+tallest wall 16.2 → 15.7 m; `seam` 4.23 % → 4.73 %, which is the cost — the
+carried walk's rim has no ground to meet, by construction.
+
+**`hole_probe` is how that was found, and it is the tool to reach for.** It
+walks the bench's own three lines over a grid and prints one character per
+metre — `.` ground, `#` asphalt hole, `o` ballast, `w` pavement, `D` deck,
+`C` a walk a deck carries — then the full set membership of one named point.
+A hole is exactly a point in `outline`, so the map says which term put it
+there and the point says it in words.
+
+**Three of its numbers are guards on the walk.** `flown` — walk vertices
+whose nearest road stands more than one bench face above the natural ground
+under the vertex itself — reads **22 760** on the loop box. `free`, of the
+`draped` the ones no road answered for at all, reads **401 327 (88.4 %)**.
+`regrade` — pavement left on the raw DEM where the bench's own engineered
+ground says something else — reads **157 727 to 4.40 m**. All three are the
+docs' open item, "a footpath leaving a street does not run up the batter",
+with numbers on it.
+
+**Two of those read 0 for an afternoon, and the cause is worth keeping.**
+`Stats::merge` sums the fields the lift reports, and a counter added to
+`Stats` but not to `merge` is collected per family and thrown away. `flown`
+and `free` were both reported as 0 and both believed, until the geometry at
+one point contradicted them. **A new counter is not measured until `merge`
+carries it**, and the cheapest check is to read it at a place where the
+answer is known by hand.
+
+**A chord answers only where it is.** A vertex over a span is answered by
+its sheet's *chords* field and one on the ground by its ground field, and
+which it is comes from `Sheets::spanned()` — a mask the polygon kernel
+builds, and a kernel's answer has **threads** in it. At the Montreux
+overbridge two of them, 0.3 and 0.8 m², lay seven metres from any chord in
+the middle of a junction; every vertex they caught went to the chords'
+field, which reaches `FIELD_LIMIT_M` (18 m) and clamps to its nearest
+station, so it handed back the chord's *end* height. The asphalt stood up
+in a **2.4 m vertical fin** along each sliver's edge — 61 near-vertical
+carriageway triangles around that one junction. So the chord is believed
+only where it is **no further off than the ground the same sheet holds**,
+which is a fact about the geometry and one the mask cannot get wrong: on a
+deck the chord is underfoot and the approach is a span away, and in a
+sliver it is the other way round. Where the mask is right the two are one
+profile through one connector and agree anyway, so nothing else moves.
+`a_sliver_in_the_span_mask_does_not_lift_the_asphalt` is the check, and it
+guards the earthwork too — a sliver was also excusing the `cut` and `fill`
+under it as a deck's standoff. On the loop box **`worst` 28.487 → 10.186**
+and `step` 0.32 % → 0.31 %, everything else to the unit; near the junction,
+3 near-vertical triangles rising at most 0.59 m against 61 and 2.40.
+
 **A junction's legs are blended, and nothing else is.** Each leg is level
 crosswise, so on a flank the legs' cross-sections disagree everywhere off
 the connector they share — by `g·s` at `s` metres from it where a leg
@@ -730,7 +1139,7 @@ wall between them (`a_step_no_batter_can_run_is_closed_by_a_wall`).
 than measured. What is left in the corners is a real twist — a level road
 meeting a 15 % side street must warp through its returns — and the worst
 edge is always one of those, ~6 m from the connector. `worst` is untouched
-by any of it (15.401 m on the box, a cliff the ground walls).
+by any of it (10.186 m on the box, a cliff the ground walls).
 
 **And the ground answers.** The terrain is re-triangulated over
 `rect − room` on the same lattice by the same mesher, so **the ground
@@ -753,6 +1162,44 @@ hundred times the length. It is built off the carriageway mesh's **own rim**
 vertex, and both rails are read from the meshes rather than computed as
 road-plus-rise. `tapered` counts the faces that die away at one end because
 the pavement stops there.
+
+**An abutment is a line across the road, so the mask that ends the hole is
+capped square.** The hole is `paving − spanned` (invariant I3: a viaduct
+must not punch one in the ground it flies over), and `spanned` used to be
+the span's own paving — which is capped **round**, a disc of half the road's
+width centred on the connector. Two things followed and both were visible at
+the Montreux overbridge: the hole ended in a half-disc, so the retaining
+wall wrapped the bridge's nose in a semicircle where an abutment is a
+straight face; and the disc reached 2.75 m *back* over the approach, so the
+last stretch of embankment stood on terrain nobody had cut and was excused
+its own earthwork. `surface::spans_masked` is the same footprint capped
+square wherever a span hands over to a ground piece, and `surface::
+spans_grouped` — the *paving* — keeps its round cap, because that cap is
+what welds the span's ribbon to the approach and a boolean union keeps
+touching shapes apart. The two answer different questions and want different
+ends. On the loop box: bench `seam` 5.11 % → **4.50 %**, `walled` 1.99 % →
+1.87 %, ten thousand fewer ground triangles; nothing else moves.
+
+**And a face of no width is not a face.** The wall is swept along the
+outline subdivided at every lattice crossing (`dense`), and some of those
+vertices are the same point twice: over 25 m of the Montreux cutting, **9 of
+314** wall triangles had no area at all and **92 of 628** plan edges were
+under a centimetre. A zero-area triangle has no normal, so a viewer that
+computes its own — which the glTF spec requires when a mesh ships none —
+shades the wall from a vector that does not exist. Only the exactly
+degenerate are dropped; **thinning the rest is a simplification of the
+outline and is still to do**, with `wall_m2` as its guard. The sawtooth
+still visible along a deep cutting is that outline plus the wall's foot
+following the terrain sample by sample.
+
+**And `scripts/preview/index.html` de-indexes before computing normals.**
+`gltf::triangles` writes no `NORMAL` and leans on the spec — "when normals
+are not specified, client implementations MUST calculate flat normals" —
+which is right for a mesh of planar pieces. Three.js `computeVertexNormals()`
+on an *indexed* geometry averages across every face sharing a vertex
+instead, so a swept wall came out smeared and read as a defect it was not.
+**It was not the whole of it**: with flat normals the sawtooth is still
+there, which is how we know it is geometry.
 
 **The seam is read, not recomputed, and it is read where both meshes cut
 their own edges.** Every outline vertex is a vertex of the room's mesh, so
@@ -783,31 +1230,43 @@ rise, and the kerb's own face closes it), `walled` 1.14 %, `wall` 12.2 m,
 **Two meshes are the same one at the kernel's grid, not at the weld.**
 `unmet` first read 16.65 % and the cause was not the meshing at all: a
 mesh welds its own vertices at `mesh::WELD_M`, a micron, and within one
-mesh that is right — but the carriageway's regions, the walk's and their
-union each come out of the polygon kernel separately, and the kernel snaps
-to `poly::GRID_M`, a tenth of a millimetre, a hundred times the weld. A
-point that has been through one more boolean than its neighbour lands up
-to half a grid away and never welds to it, so at a micron the two meshes
-look like strangers along an edge they share. Cross-mesh lookups key at
-the kernel's grid and ask the eight cells around as well: `unmet` 16.65 %
-→ **0.93 %**, `seam` 12.2 % → 3.2 %, and `kerb_m2` rose 44 % as the kerb
-faces that had been tapering to nothing found their pavement. What is left
-is a real T-junction — one mesh subdivided a shared edge where the other
-did not — and one pre-subdivided outline given to all three meshes is the
-fix for that.
+mesh that is right, while the regions it meshes come out of the polygon
+kernel snapped to `poly::GRID_M`, a tenth of a millimetre and a hundred
+times the weld. Cross-mesh lookups key at the kernel's grid and ask the
+eight cells around as well: `unmet` 16.65 % → **0.93 %**, `seam` 12.2 % →
+3.2 %, and `kerb_m2` rose 44 % as the kerb faces that had been tapering to
+nothing found their pavement.
+
+**But the story told about *why* was wrong, and it was wrong in the plan
+too.** It read: "a point that has been through one more boolean than its
+neighbour lands up to half a grid away and never welds to it." It cannot.
+`poly::overlay` pins its adapter, so every output point is an exact
+multiple of `GRID_M` and feeding one back in maps to the same integer —
+**snapping is idempotent, and re-rounding is the identity**
+(`poly::tests::a_boolean_over_a_snapped_operand_is_idempotent` asserts it;
+an extra union on each operand moves not one bit). What actually makes two
+boundaries is **two different regions**: `mesh::by_sheet` meshes each sheet
+on its own, while the ground is cut from `union_all(sheets.shapes()) −
+spanned`, and a union dissolves the edge where two pieces touch and puts
+vertices where they crossed. The separately meshed pieces keep that edge
+and have no such vertices
+(`poly::tests::a_union_dissolves_the_edge_the_mesher_kept`). The
+eight-cell search is therefore compensating for something that was never a
+rounding error, which is worth knowing before it is retired: no care with
+the lattice reconciles two different regions, and only one arrangement
+does.
 
 The `structure` step builds what the solved profile implies, and nothing
 else: a mapped bridge whose chord never left the ground gets no deck.
-**The roadway comes first** — the surface steps read the ground pieces
-only, so until this step a way's bridge and tunnel spans carried no paving
-at all (74 469 m² on the loop box). Every span piece is swept at its
-solved height across its own width, so the road is continuous over the
-Viaduc de Chillon and through the Glion bores. **The solid is only what is
-underneath**: over a deck run a soffit `DECK_THICKNESS_M` (1.5 m) below the
-roadway with its sides and end faces, over a bore run a crown
-`TUNNEL_HEIGHT_M` (5 m) above it with its walls, open at the portals — the
-roadway is the deck's top and the bore's floor, once, so no two surfaces
-of the step are coplanar. A **pedestrian span is fitted, not solved**
+**It no longer owns a surface.** A road's or a railway's span is paved by
+the `sheet` step, in one polygon with the ground it runs onto, so the
+handover at an abutment is a place inside one surface rather than a
+boundary between two. **The solid is what is underneath**: over a deck run
+a soffit `DECK_THICKNESS_M` (1.5 m) below the roadway with its sides and
+end faces, over a bore run a crown `TUNNEL_HEIGHT_M` (5 m) above it with
+its walls, open at the portals. What is still swept here is the *walk* —
+`Field` is built from `Profile`s and a footbridge is not one, so a walk
+span has no field to be lifted by and no sheet to join. A **pedestrian span is fitted, not solved**
 (most of the box's spans are): a chord between the ground at its own two
 ends, no ceiling and no box, and a footbridge's own `WALK_DECK_M` (0.4 m)
 deck rather than a road bridge's. **Unless the road already carries it** —
@@ -948,9 +1407,103 @@ or pavement and lies wholly within 10 m (`room::POCKET_REACH_M`) of the
 asphalt is paved too: a roundabout's centre, a traffic island, the pocket
 in a junction corner between a kerb, a footway and a house. A hole walled
 all round is a courtyard, and one that reaches farther from the asphalt is
-a lawn; both stay ground. The plan view marks every kerb
+a lawn; both stay ground. **And a hole too narrow to pave is not an island
+either** (`room::PAVEMENT_MIN_M`, `kerb::WALK_MIN_M`): `ISLAND_M2` bounded a
+hole from above and nothing bounded it from below, so a boolean's leftover
+between two ribbons passed every test — small, near a kerb, bordering
+asphalt — and was paved. The test is an **erosion** and not an area, because
+a scrap is thin rather than small: a three-square-metre refuge is a place
+and a forty-metre thread of the same area is not. On the loop box `islands`
+**899 → 390** for 161 m² of the 32 472, bench `seam` 4.50 % → 4.25 %.
+The plan view marks every kerb
 station `kerb_gap` still counts with a red dot in any window under 2 km,
 so a gap is found by its marker.
+
+**The step's own constructions are kept apart, and `scraps` is what they
+came to.** The pavement leaves this step as one set of regions and five
+constructions feed it — the walk the chain handed over, the `band` along a
+facade, the `rung` reaching to one, the small holes the union `closed`, and
+the `island` in a pocket — and while they were unioned on the way in,
+nothing could say which had made any part of the result. They are now
+collected separately, and every region too narrow to hold a pavement
+([`room::wide_enough`]) is counted against whichever made most of it:
+`scraps=907 (293.8 m2) walk:27 band:655 rung:222 island:2` on the loop box,
+17 of them at the Montreux junction.
+
+**And a pavement is bigger than the smallest one this step would draw.**
+That is a band of `PAVEMENT_MIN_M` over `RUN_MIN_M` — the narrowest strip
+over the shortest run of kerb it will start one for, 4.8 m² — and nothing
+under it was drawn on purpose. What is under it is what a boolean left: at
+the Montreux abutment a 2.84 m² lobe that is the **round cap** of a footway
+ribbon, its body cut away by the asphalt and the cap left sitting in the
+kerb line, detached from every other piece of pavement. **Unless a wall
+explains it** (`WALLED_SHARE`, a quarter): the one pavement drawn smaller
+than that is the strip against a facade — a notch, the pocket a kerb return
+leaves at a house corner — and `a_notch_in_the_facade_is_pavement_not_asphalt`'s
+*whole* pavement is three such regions totalling 1.8 m². A strip squeezed
+between a kerb and a wall has the wall along one of its two long sides, so
+the specimens read **45 %**; the abutment's lobe reads **0 %**. `loose`
+counts what goes: **132 regions, 101.1 m² of 446 030** on the loop box,
+9 at the junction. Bench `seam` 4.25 % → 4.23 %, `wall_m2` 41 527 → 41 392,
+seven thousand fewer ground triangles — and `wall_gap` 1 → 33 of 69 470,
+`kerb_gap` 12 → 38 of 32 557, which is the honest cost: in 32 places the
+only pavement beside a kerb *was* one of those orphans.
+
+**Five candidate rules were tried first and every one either broke a
+specimen or measured zero.** They are worth knowing because each looks
+right:
+
+- a **minimum width** fails `a_notch_in_the_facade_is_pavement_not_asphalt`,
+  where the strip between a kerb and a wall two metres off the axis is a
+  decimetre wide for twenty metres and is a pavement;
+- exempting anything **against a wall** keeps both scraps, which graze one;
+- **narrow and short** fails the same notch, a 2 m² isolated patch;
+- **provenance alone** fails it too — that specimen's *whole* pavement is
+  `band:1 rung:2`, the same constructions the scraps are made of;
+- **beside nothing** measured zero, and the boundary probe that had said
+  otherwise was sampling the *inside* of each region: outside a
+  counter-clockwise ring is to the **right** of each edge.
+
+Two of those five rested on a broken instrument and one on a broken
+measurement, and both are worth remembering. The boundary probe was
+sampling the **inside** of each region, so everything read "nothing there";
+and a probe disc of 25 m around a point *clips* the regions it returns, so
+a long region reaching past it came back as a 1.03 m² scrap that does not
+exist. **Clip your probe and you will measure your clip.** With a 70 m
+radius it is not there, and the one real defect was the 2.84 m² cap.
+
+**The asphalt is complete before the walk is laid, and a span is part of
+it.** The three families' paving is mutually disjoint by construction —
+`surface` cuts the walk to the carriageway and the ballast, `fillet` to its
+own returns, `room` to both — and the `sheet` step then unioned a group's
+**span** ribbons into its paving, which none of them had ever been shown. A
+sidewalk at an abutment came out inside the road, and 0.12 m over it once
+the bench had put the kerb's rise on it: 30 m² on the Montreux junction
+model. **Cutting it back there does not work** — by then the two polygons
+share a boundary, and a difference along a shared boundary leaves rings the
+lattice mesher cannot close (three variants tried, each taking the loop
+box's `mesh seam` from 2.7e-9 to **0.74 m**). So the span ribbons are
+carried as `Surface::spanned` instead: not paving — `carriageway` stays the
+ground pieces' alone, so a viaduct is no part of the street beneath it —
+but senior to the walk exactly as the carriageway is. `Surface::senior()`
+returns `carriageway ∪ ballast ∪ spanned`, `surface` cuts the walk by it
+while both are still raw ribbons that *overlap by an area*, and `kerb`,
+`fillet` and `room` read it too, because they are where the pavement
+**grows** (`room`'s pockets and islands alone are 60 % of the finished
+pavement, and a hole bounded by a deck is not a pocket to pave). The
+junction rounding moves with it: `fillet` now closes the corners of a
+junction that stands on a structure, per group, with that group's spans
+merged in and `SPAN_CORNER_M` of ground asphalt around them — so
+`laid_back` re-lays the pavement outside the new kerb and `senior` cuts it,
+as for every other return. `sheet` reports **`on_walk`**, the area of the
+finished sheets lying on the pavement; it is the invariant of the whole
+chain and **zero is the only acceptable reading**. 30 m² → 0.00 on the
+junction model and 0.00 on the loop box, with `mesh seam` 2.7e-9 → 2.6e-9,
+bench `unmet` 2.59 % → 1.39 % and `seam` 5.51 % → 5.11 %. It costs the walk
+998 m² to the spans (`walk_under_asphalt_m2` 11 342 → 12 340) while `room`'s
+pavement comes out larger overall, and bench `worst` 10.186 → 15.497 at one
+place — the Territet funicular, which climbs its own slope at 60 % and whose
+derived deck stands 29.5 m over its own bed.
 `--buildings none` runs without buildings; a synthetic network has none
 unless `--buildings house:beside?d=2` (a house `d` m off the axis, `notch=`
 for a notch in its facade), `house:across?rot=30` (one the way passes

@@ -64,7 +64,7 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
                   (overrides --zone)
   --spacing M     terrain lattice spacing in metres (default 2)
   --max-vertices  cap on terrain vertices; the spacing grows to fit (default 2000000)
-  --until STEP    stop after this step: terrain | drape | reference | profile | crossing | partition | facade | ribbon | surface | kerb | fillet | room | mesh | bench | structure | building
+  --until STEP    stop after this step: terrain | drape | reference | profile | crossing | partition | facade | ribbon | surface | kerb | fillet | room | sheet | arrangement | mesh | bench | structure | building
                   (default building)
   --outlines      add the construction layers to the .glb as glTF LINES: the draped
                   centrelines, the solved profiles and the six contour sets. Off by

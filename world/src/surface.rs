@@ -1,4 +1,4 @@
-//! Step 4: one region per family.
+//! The surface: one region per family.
 //!
 //! The ribbons unioned per [`Family`]: every carriageway into one set of
 //! disjoint regions with their holes, every pedestrian way into another. A
@@ -64,17 +64,113 @@ pub const TWIN_GAP_M: f64 = 1.5;
 /// its consumers; until they land, [`run`] and `Surface` are untouched and
 /// nothing downstream moves.
 pub fn grouped(roads: &crate::world::Roads) -> Vec<(Family, usize, Shapes)> {
-    let (group, ..) = crate::partition::groups(&roads.plan, &roads.spans);
-    let pieces: Vec<&crate::world::Polyline2> = roads.pieces().collect();
-    let fam_of = |p: &crate::world::Polyline2| crate::width::family(&p.class) as usize;
+    regions_of(roads, false, |_| true)
+}
 
-    let mut ends: std::collections::HashMap<(usize, (i64, i64)), usize> = std::collections::HashMap::new();
-    for p in &pieces {
+/// The same over the span pieces alone.
+///
+/// The [`crate::sheet`] step has the ground half of every group already,
+/// refined by the kerb, the fillet and the room; what it needs from here is
+/// the spans to union into it.
+pub fn spans_grouped(roads: &crate::world::Roads) -> Vec<(Family, usize, Shapes)> {
+    spans_of(roads, false)
+}
+
+/// The same footprints, **capped square where a span hands over to the
+/// ground** rather than round.
+///
+/// The two answer different questions and want different ends. A round cap
+/// is what *welds* a span's ribbon to the approach it runs onto: it is a
+/// disc of half the road's width centred on the connector, it laps 2.75 m
+/// back over the ground ribbon, and a boolean union keeps touching shapes
+/// apart — so butting them would risk a hairline where the paving must be
+/// continuous. That is [`spans_grouped`], and nothing about it changes.
+///
+/// But the same shape is also the **mask** that says which paving is over a
+/// deck, and `bench` cuts the terrain's hole as `paving − mask` (invariant
+/// I3: a viaduct must not punch a hole in the ground it flies over). Read
+/// there, the cap is wrong twice. The hole ends in a **half-disc**, so the
+/// retaining wall the bench draws round it is a semicircle wrapping the
+/// bridge's nose, where an abutment is a straight face across the road. And
+/// the disc reaches *back* over the on-ground paving, so the last 2.75 m of
+/// approach — which is embankment, not deck — stands on terrain nobody cut
+/// and is excused its own earthwork.
+///
+/// An abutment is a line across the road. Square is that line.
+pub fn spans_masked(roads: &crate::world::Roads) -> Vec<(Family, usize, Shapes)> {
+    spans_of(roads, true)
+}
+
+fn spans_of(roads: &crate::world::Roads, butt: bool) -> Vec<(Family, usize, Shapes)> {
+    let ground = roads.plan.len();
+    regions_of(roads, butt, |i| {
+        // **Decks only. A bore is never continuous with the ground.**
+        // A deck and the road that runs onto it are one surface — that is
+        // the whole point. A bore's roadway is under the hill, and the only
+        // place it meets the surface is its portal, which `open_portals`
+        // has already given back to the ground as an open cutting. Merged
+        // anyway, its chord joined the sheet's field and answered for the
+        // road above it: on the loop box a vertex read 155 m below its
+        // neighbour 1.8 m away, because a field reaches eighteen metres in
+        // plan and a hairpin over its own tunnel is nearer than that.
+        i >= ground && matches!(roads.spans[i - ground].kind, crate::world::Kind::Bridge(_))
+    })
+}
+
+
+/// How many pieces of a family touch each connector — **at a vertex, not
+/// only at an end**.
+///
+/// More than one is a joint: a cap is round where a piece's end meets
+/// something and square where it is free, and an end that lands on another
+/// piece's interior has met something. Counted by ends alone it read as
+/// free and squared off inside the junction it opens onto — which is also
+/// why [`crate::sheet`] asks it here rather than counting again: a span may
+/// lie over paving at any connector a family shares, and the two steps must
+/// not disagree about which those are.
+pub fn joints(roads: &crate::world::Roads) -> std::collections::HashMap<(usize, (i64, i64)), usize> {
+    let mut at: std::collections::HashMap<(usize, (i64, i64)), usize> = std::collections::HashMap::new();
+    for p in roads.pieces() {
         if p.pts.len() < 2 {
             continue;
         }
-        for e in [p.pts[0], p.pts[p.pts.len() - 1]] {
-            *ends.entry((fam_of(p), crate::world::connector(e))).or_default() += 1;
+        let fam = crate::width::family(&p.class) as usize;
+        let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+        for e in p.pts.iter().copied() {
+            let key = crate::world::connector(e);
+            if seen.insert(key) {
+                *at.entry((fam, key)).or_default() += 1;
+            }
+        }
+    }
+    at
+}
+
+/// One region per `(family, group)` over the pieces `keep` admits, by index
+/// into [`Roads::pieces`].
+///
+/// **The caps are decided over every piece, not the kept ones.** A round cap
+/// closes a joint and a square one ends a free run, and which a piece's end
+/// is depends on whether anything else of its family meets it there —
+/// which is a fact about the network, not about the subset being asked for.
+/// Counted over a subset instead, a span's abutment would read as a free
+/// end and square off inside the junction it opens onto.
+fn regions_of(
+    roads: &crate::world::Roads,
+    butt: bool,
+    keep: impl Fn(usize) -> bool,
+) -> Vec<(Family, usize, Shapes)> {
+    let group = crate::partition::groups(&roads.plan, &roads.spans).of;
+    let pieces: Vec<&crate::world::Polyline2> = roads.pieces().collect();
+    let fam_of = |p: &crate::world::Polyline2| crate::width::family(&p.class) as usize;
+
+    let ends = joints(roads);
+    // The same count over the **ground** pieces alone, so a span can tell a
+    // joint with another span from a handover to the road it runs onto.
+    let mut on_ground: std::collections::HashSet<(usize, (i64, i64))> = std::collections::HashSet::new();
+    for p in pieces.iter().take(roads.plan.len()) {
+        for e in p.pts.iter().copied() {
+            on_ground.insert((fam_of(p), crate::world::connector(e)));
         }
     }
 
@@ -82,11 +178,17 @@ pub fn grouped(roads: &crate::world::Roads) -> Vec<(Family, usize, Shapes)> {
     // hasher's: these are an output.
     let mut by: std::collections::BTreeMap<(usize, usize), Shapes> = std::collections::BTreeMap::new();
     for (i, p) in pieces.iter().enumerate() {
-        if p.pts.len() < 2 {
+        if p.pts.len() < 2 || !keep(i) {
             continue;
         }
         let n = p.pts.len();
-        let round = |e: [f64; 2]| ends.get(&(fam_of(p), crate::world::connector(e))).copied().unwrap_or(0) > 1;
+        let round = |e: [f64; 2]| {
+            let key = (fam_of(p), crate::world::connector(e));
+            if butt && on_ground.contains(&key) {
+                return false;
+            }
+            ends.get(&key).copied().unwrap_or(0) > 1
+        };
         let caps = [round(p.pts[0]), round(p.pts[n - 1])];
         by.entry((fam_of(p), group[i]))
             .or_default()
@@ -104,7 +206,7 @@ pub fn grouped(roads: &crate::world::Roads) -> Vec<(Family, usize, Shapes)> {
         .collect()
 }
 
-pub fn run(ribbons: &Ribbons, facade: &Facade) -> (Surface, Summary) {
+pub fn run(roads: &crate::world::Roads, ribbons: &Ribbons, facade: &Facade) -> (Surface, Summary) {
     let mut per_family: [Shapes; 3] = Default::default();
     for r in &ribbons.ribbons {
         per_family[r.family as usize].extend(r.shape.iter().cloned());
@@ -122,11 +224,34 @@ pub fn run(ribbons: &Ribbons, facade: &Facade) -> (Surface, Summary) {
     };
     let ballast = poly::difference(&ballast_open, &carriageway);
     let crossed = poly::area(&ballast_open) - poly::area(&ballast);
+    // **The walk is cut to every ribbon the asphalt will ever hold, spans
+    // included.** The `sheet` step unions a group's span ribbons into its
+    // paving, and until this cut the walk had never been shown them — so a
+    // sidewalk at an abutment ended up inside the road and, once the bench
+    // had put the kerb's rise on it, 0.12 m over it. The cut cannot be made
+    // there: by then the two polygons share a boundary, and a difference
+    // along a shared boundary leaves rings the lattice mesher cannot close
+    // (three variants tried, each taking the loop box's `mesh seam` from
+    // 2.7e-9 to 0.74 m — `one-surface-at-a-junction-2026-09-14.md` §6).
+    // Here the span ribbon *laps over* the walk's by an area, which is the
+    // case this step's differences already handle, and after it nothing
+    // ever differences the two again.
+    //
+    // It is a seniority mask and not paving: `carriageway` is untouched, so
+    // the chain that follows sees the ground asphalt it has always seen and
+    // a viaduct is still no part of the street beneath it.
+    let spans: Shapes = poly::union_all(
+        &spans_grouped(roads)
+            .into_iter()
+            .filter(|(f, ..)| *f != Family::Walk)
+            .flat_map(|(.., s)| s)
+            .collect(),
+    );
     // [`World::pavement`]'s two cuts, made here one at a time so each is
     // reported: what the walk lost to the asphalt and the ballast, then to
     // the walls.
     let walk_alone = poly::union_all(&per_family[Family::Walk as usize]);
-    let walk_open = poly::difference(&walk_alone, &carriageway);
+    let walk_open = poly::difference(&walk_alone, &poly::union_of(&[&carriageway, &spans]));
     let bitten = poly::area(&walk_alone) - poly::area(&walk_open);
     let walk_off = poly::difference(&walk_open, &ballast);
     let on_rail = poly::area(&walk_open) - poly::area(&walk_off);
@@ -144,7 +269,7 @@ pub fn run(ribbons: &Ribbons, facade: &Facade) -> (Surface, Summary) {
         .with_m2("ballast_under_asphalt_m2", crossed)
         .with_m2("carriageway_in_building_m2", walled_carriageway)
         .with_m2("walk_in_building_m2", walled_walk);
-    (Surface { carriageway, walk, ballast }, summary)
+    (Surface { carriageway, walk, ballast, spanned: spans }, summary)
 }
 
 #[cfg(test)]
@@ -181,14 +306,14 @@ pub(crate) mod tests {
     fn a_union_never_exceeds_its_ribbons_and_equals_them_when_disjoint() {
         let (w, _) = world("net:dual?gap=4&len=200");
         let ribbons = poly::area(
-            &w.ribbons.as_ref().unwrap().ribbons.iter().flat_map(|r| r.shape.iter().cloned()).collect(),
+            &w.ribbons.as_ref().unwrap().ribbons.iter().flat_map(|r| r.shape.iter().cloned()).collect::<Shapes>(),
         );
         let s = w.surface.as_ref().unwrap();
         assert_eq!(s.carriageway.len(), 2, "a dual carriageway is two regions");
         assert!((poly::area(&s.carriageway) - ribbons).abs() < 1e-3);
         let (w, _) = world("net:tee?len=200");
         let ribbons = poly::area(
-            &w.ribbons.as_ref().unwrap().ribbons.iter().flat_map(|r| r.shape.iter().cloned()).collect(),
+            &w.ribbons.as_ref().unwrap().ribbons.iter().flat_map(|r| r.shape.iter().cloned()).collect::<Shapes>(),
         );
         assert!(poly::area(&w.surface.as_ref().unwrap().carriageway) < ribbons - 1.0);
     }

@@ -7,7 +7,7 @@
 //! cannot quietly start depending on a neighbour — its signature is the
 //! whole of its interface, and changing it is a diff here.
 //!
-//! Two things used to live in the steps and live here now.
+//! Three things used to live in the steps and live here now.
 //!
 //! **"The drape step runs first."** Fifteen steps each opened with an
 //! `expect` naming a predecessor: a runtime assertion that the caller had
@@ -20,13 +20,21 @@
 //! — the surface step lays it, the kerb fills its strips, the fillet rounds
 //! its corners, the room paves its edges — and the steps downstream used to
 //! ask the world for "the latest", a resolver on `World` that walked those
-//! four layers and returned whichever had been filled. The room, the mesh,
-//! the bench and the structure each called it, so each one's real input was
-//! "whatever ran", decided at runtime, invisible in its signature. Here the
-//! answer is written down ([`paving`]): the fillet's carriageway and the
-//! room's pavement, because those are what have run by the time anything
-//! asks. A resolver hides the order in the data; a literal puts it in the
-//! module whose subject the order is.
+//! four layers and returned whichever had been filled. Then it was a literal
+//! here, assembled field by field out of two of them. Now there is nothing
+//! to resolve or assemble: all four steps hand back a whole
+//! [`crate::world::Surface`] — what they changed, and what they passed
+//! through — so the latest paving is the last layer that laid any, and
+//! `&room(world).surface` is a lookup like every other.
+//!
+//! **Writing into a layer somebody else built.** Three steps used to take
+//! `&mut` and rewrite their predecessors: the reference promoted the
+//! terrain's priors onto the ways, the partition rewrote every span table
+//! and every profile with it, and between them the way's span table was a
+//! field three steps wrote to and no signature admitted. They return those
+//! tables now, and the two `match` arms below install them — which is the
+//! same rule as everything else here, that a step is a function and the
+//! wiring is this file's.
 //!
 //! The renderers are the exception, and they never used the resolver: they
 //! walk the layers themselves and draw the last one filled, because what has
@@ -37,15 +45,15 @@ use std::path::Path;
 use arpentry_server::dem::Dem;
 
 use crate::step::{Step, Summary};
-use crate::world::{Paving, World};
+use crate::world::World;
 use crate::{
-    bench, building, crossing, drape, facade, fillet, kerb, mesh, partition, profile, reference, ribbon,
-    room, structure, surface, terrain,
+    arrangement, bench, building, crossing, drape, facade, fillet, kerb, mesh, partition, profile, reference, ribbon,
+    room, sheet, structure, surface, terrain,
 };
 
 /// The three sources a run reads, and the two knobs the terrain takes.
 ///
-/// Thirteen of the sixteen steps read nothing but the layers before them;
+/// Fifteen of the eighteen steps read nothing but the layers before them;
 /// only the terrain, the drape and the facade reach outside, so only they
 /// take anything from here. The two networks come in as paths because that
 /// is what the CLI has, and each of those steps decides for itself whether
@@ -82,9 +90,16 @@ pub fn apply(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary
             summary
         }
         Step::Reference => {
-            let terrain = world.terrain.as_ref().expect("the terrain step runs first");
-            let roads = world.roads.as_mut().expect("the drape step runs first");
-            let (reference, summary) = reference::run(terrain, roads);
+            let (reference, spans, summary) = reference::run(terrain(world), roads(world));
+            // The terrain's own bridge and tunnel priors, installed. The step
+            // derived them and the profile has to chord across them, so they
+            // belong on the ways before it runs — and the install is here,
+            // because writing into a layer another step built is wiring and
+            // wiring lives in this file.
+            let ways = &mut world.roads.as_mut().expect("the drape step runs first").ways;
+            for (way, spans) in ways.iter_mut().zip(spans) {
+                way.spans = spans;
+            }
             world.reference = Some(reference);
             summary
         }
@@ -105,8 +120,21 @@ pub fn apply(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary
             // a partition with no profile cuts what the source annotated,
             // which is what a flat specimen wants and what the world had
             // before the heights were solved.
-            let (roads, profiles) = (world.roads.as_mut(), world.profile.as_mut());
-            partition::run(roads.expect("the drape step runs first"), profiles)
+            let (cut, summary) = partition::run(roads(world), world.profile.as_ref());
+            // The cut, installed. The pieces and the derived span tables are
+            // the road network as it now stands; the profiles are rewritten
+            // with the same tables, so nothing downstream can read one span
+            // truth from the ways and a different one from the heights.
+            let roads = world.roads.as_mut().expect("the drape step runs first");
+            for (way, spans) in roads.ways.iter_mut().zip(cut.ways) {
+                way.spans = spans;
+            }
+            roads.plan = cut.plan;
+            roads.spans = cut.spans;
+            if let Some(profiles) = cut.profiles {
+                world.profile = Some(profiles);
+            }
+            summary
         }
         Step::Facade => {
             let (facade, summary) = facade::run(&extent, roads(world), src.buildings)
@@ -120,7 +148,7 @@ pub fn apply(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary
             summary
         }
         Step::Surface => {
-            let (surface, summary) = surface::run(ribbons(world), facade(world));
+            let (surface, summary) = surface::run(roads(world), ribbons(world), facade(world));
             world.surface = Some(surface);
             summary
         }
@@ -136,12 +164,28 @@ pub fn apply(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary
             summary
         }
         Step::Room => {
-            let (r, summary) = room::run(paving(world), &kerb(world).attached, facade(world));
+            let (r, summary) = room::run(&fillet(world).surface, &kerb(world).attached, facade(world));
             world.room = Some(r);
             summary
         }
+        Step::Sheet => {
+            let (s, summary) = sheet::run(roads(world), profiles(world), &room(world).surface);
+            world.sheets = Some(s);
+            summary
+        }
+        Step::Arrangement => {
+            let (a, summary) = arrangement::run(
+                &extent,
+                &roads(world).spans,
+                profiles(world),
+                &room(world).surface,
+                sheets(world),
+            );
+            world.arrangement = Some(a);
+            summary
+        }
         Step::Mesh => {
-            let (m, summary) = mesh::run(terrain(world), paving(world));
+            let (m, summary) = mesh::run(terrain(world), arrangement(world));
             world.mesh = Some(m);
             summary
         }
@@ -149,19 +193,24 @@ pub fn apply(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary
             // The span pieces too: where a ground piece ends against a
             // tunnel is a mouth, and the bench must leave it open.
             let (b, summary) = bench::run(
-                &extent.rect,
                 terrain(world),
                 profiles(world),
                 mesh(world),
-                paving(world),
+                sheets(world),
                 &roads(world).spans,
+                arrangement(world),
             );
             world.bench = Some(b);
             summary
         }
         Step::Structure => {
-            let (s, summary) =
-                structure::run(terrain(world), roads(world), profiles(world), paving(world).carriageway);
+            let (s, summary) = structure::run(
+                terrain(world),
+                roads(world),
+                profiles(world),
+                sheets(world),
+                bench(world),
+            );
             world.structure = Some(s);
             summary
         }
@@ -191,20 +240,6 @@ pub fn upto(
     Ok(())
 }
 
-/// The paved surface as it stands: whichever of the four layers that lay
-/// or re-cut it has run last.
-///
-/// Unlike the accessors below this is not a lookup of one layer, so it is
-/// written as one — the steps that read it (room, mesh, bench, structure)
-/// all run after the fillet, and the room after itself.
-fn paving(world: &World) -> Paving<'_> {
-    Paving {
-        carriageway: &fillet(world).carriageway,
-        walk: world.room.as_ref().map_or(&fillet(world).pavement, |r| &r.pavement),
-        ballast: &surface(world).ballast,
-    }
-}
-
 macro_rules! layer {
     ($name:ident, $field:ident, $ty:ty, $built_by:literal) => {
         fn $name(world: &World) -> &$ty {
@@ -222,7 +257,11 @@ layer!(ribbons, ribbons, crate::world::Ribbons, "ribbon");
 layer!(surface, surface, crate::world::Surface, "surface");
 layer!(kerb, kerb, crate::world::Kerb, "kerb");
 layer!(fillet, fillet, crate::world::Fillet, "fillet");
+layer!(room, room, crate::world::Room, "room");
+layer!(sheets, sheets, crate::world::Sheets, "sheet");
+layer!(arrangement, arrangement, crate::arrangement::Arrangement, "arrangement");
 layer!(mesh, mesh, crate::world::Mesh, "mesh");
+layer!(bench, bench, crate::world::Bench, "bench");
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -310,6 +349,14 @@ pub(crate) mod tests {
     }
 
     /// The flat plan's ladder up to `until`: [`upto`] without [`VERTICAL`].
+    ///
+    /// **It stops short of [`Step::Sheet`].** From there on the steps read
+    /// the profiles — the sheet writes profile indices into every sheet, and
+    /// the bench lifts by them — so a ladder with no heights in it has
+    /// nothing for them to read. A specimen that needs to reach the sheet,
+    /// the arrangement or beyond takes [`upto`], flat ground and all: the
+    /// three vertical steps run and report zero, which is what flat ground
+    /// means.
     pub(crate) fn plan(until: Step) -> Vec<Step> {
         without(upto(until), &VERTICAL)
     }

@@ -41,6 +41,8 @@ use i_overlay::core::fill_rule::FillRule;
 use i_overlay::core::overlay::ShapeType;
 use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::float::overlay::FloatOverlay;
+use i_overlay::float::string_overlay::FloatStringOverlay;
+use i_overlay::string::rule::StringRule;
 use i_overlay::i_float::adapter::FloatPointAdapter;
 use i_overlay::i_float::float::rect::FloatRect;
 use i_overlay::mesh::outline::offset::OutlineOffset;
@@ -117,6 +119,224 @@ pub fn intersect(a: &Shapes, b: &Shapes) -> Shapes {
     overlay(a, b, OverlayRule::Intersect)
 }
 
+/// `outer` cut into faces by `cuts`: **one planar subdivision**, in one pass.
+///
+/// Every returned face is a region of `outer`, the faces are disjoint, and
+/// together they are `outer` — but the point of the operation is what they
+/// share rather than what they cover. A boolean expression computes each face
+/// separately and snaps *each* result to the lattice, so the same conceptual
+/// edge computed two ways lands on two sets of points up to half a grid
+/// apart: that is the whole of `bench`'s `seam` and `unmet`, and it is why a
+/// cross-mesh lookup has to ask the eight cells around a key
+/// (`data/plans/one-ground-2026-09-16.md` §3.1, §4.2). Sliced instead, every
+/// face's boundary is built from **one** set of split points, so a vertex on
+/// a shared edge is the same `Pt` — bit for bit — in both faces that carry
+/// it.
+///
+/// `cuts` are open or closed lines, not regions: a ring passed here is a
+/// *cut*, and which side of it is which is not asked. Tagging the faces is
+/// the caller's, and is a point-in-region test per face rather than another
+/// boolean.
+///
+/// The scale is the pinned one [`overlay`] uses, so a slice and a boolean
+/// over the same world land on the same lattice.
+pub fn slice(outer: &Shapes, cuts: &[Ring]) -> Shapes {
+    if outer.is_empty() {
+        return Vec::new();
+    }
+    if cuts.is_empty() {
+        return outer.clone();
+    }
+    // **On the pinned lattice, like every other boolean here.**
+    // `slice_by_fixed_scale` takes a scale but builds its adapter from the
+    // *input's own bounds*, so its origin moves with the data and its output
+    // floats land between [`overlay`]'s. Measured on `house:across`: the
+    // union of faces cut that way invented **all 27** of its vertices —
+    // not one of them was a face vertex — because every one of them was off
+    // this lattice. Built through the same adapter, a sliced vertex and an
+    // overlaid one are the same `f64`.
+    let rect = FloatRect::new(-PIN_M, PIN_M, -PIN_M, PIN_M);
+    let adapter = FloatPointAdapter::<Pt, i64>::with_scale(rect, SCALE);
+    let cap = outer.iter().flatten().map(Vec::len).sum::<usize>()
+        + cuts.iter().map(Vec::len).sum::<usize>();
+    FloatStringOverlay::<Pt, i64>::with_adapter(adapter, cap)
+        .unsafe_add_shapes(outer)
+        .unsafe_add_string_lines(&cuts.to_vec())
+        .build_graph_view(FillRule::NonZero)
+        .map(|graph| graph.extract_shapes(StringRule::Slice))
+        .unwrap_or_default()
+}
+
+/// `shapes` with every ring subdivided at every vertex of `shapes` that lies
+/// on it: one **edge-consistent** subdivision.
+///
+/// A slice gives faces that share their *split points*, which is enough for a
+/// mesh to weld — but not enough for a rule about edges. Where a boundary is
+/// cut on one side and not on the other the two disagree segment for segment:
+/// on `net:level` the carriageway's edge along `y = 2.75` is one 200 m
+/// segment, while the ground's side of the same line is three, because the
+/// railway crosses there and cuts the ground but not the road. That is a real
+/// T-junction, and `data/plans/one-ground-2026-09-16.md` §3.3's rule — an
+/// edge is welded or split, and the mesher emits the quad — cannot be written
+/// over one.
+///
+/// After this every segment away from the outer border is carried by exactly
+/// two rings, which is what `dangling` measures.
+///
+/// A vertex counts as lying on a segment when it is within [`GRID_M`] of it
+/// and is not one of its ends — the points are all on one lattice already, so
+/// the test is about *which* lattice point, not about a tolerance.
+pub fn conform(shapes: &Shapes) -> Shapes {
+    let mut index: HashMap<(i32, i32), Vec<Pt>> = HashMap::new();
+    for p in shapes.iter().flatten().flatten() {
+        index.entry(cell_of(*p, CELL_M)).or_default().push(*p);
+    }
+    let same = |a: Pt, b: Pt| (a[0] - b[0]).abs() < GRID_M && (a[1] - b[1]).abs() < GRID_M;
+    shapes
+        .iter()
+        .map(|shape| {
+            shape
+                .iter()
+                .map(|ring| {
+                    let mut out: Ring = Vec::with_capacity(ring.len());
+                    for k in 0..ring.len() {
+                        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+                        out.push(a);
+                        let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+                        if !(len > 0.0) {
+                            continue;
+                        }
+                        let bbox = [
+                            a[0].min(b[0]) - GRID_M,
+                            a[1].min(b[1]) - GRID_M,
+                            a[0].max(b[0]) + GRID_M,
+                            a[1].max(b[1]) + GRID_M,
+                        ];
+                        let mut on: Vec<(f64, Pt)> = Vec::new();
+                        for cell in cells_over(bbox, CELL_M) {
+                            for &p in index.get(&cell).into_iter().flatten() {
+                                if same(p, a) || same(p, b) || segment_distance(a, b, p) > GRID_M {
+                                    continue;
+                                }
+                                let s = ((p[0] - a[0]) * (b[0] - a[0])
+                                    + (p[1] - a[1]) * (b[1] - a[1]))
+                                    / (len * len);
+                                on.push((s, p));
+                            }
+                        }
+                        on.sort_by(|x, y| x.0.total_cmp(&y.0));
+                        on.dedup_by(|x, y| same(x.1, y.1));
+                        out.extend(on.into_iter().map(|(_, p)| p));
+                    }
+                    out
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Every ring of `shapes`, outer boundaries and holes alike, as cut lines for
+/// [`slice`].
+///
+/// **Closed explicitly.** A [`Ring`] does not repeat its first point, and a
+/// cut is a *string* — an open polyline. Passed as it is stored, every ring
+/// loses the edge from its last vertex back to its first, so the cut does not
+/// close and the region it was meant to separate stays joined to its
+/// neighbour. Measured on `net:roundabout`: 6 rings of 376 vertices cut the
+/// rect into 3 faces with the carriageway missing entirely, against 8 faces
+/// with the rings closed.
+pub fn rings(shapes: &Shapes) -> Vec<Ring> {
+    shapes
+        .iter()
+        .flatten()
+        .filter(|r| r.len() >= 3)
+        .map(|r| {
+            let mut closed = r.clone();
+            closed.push(r[0]);
+            closed
+        })
+        .collect()
+}
+
+/// A point strictly inside `shape`, for asking a face what material it is.
+///
+/// Steps inward from the midpoint of each edge of the outer ring — the
+/// interior of a counter-clockwise ring is to the left of every directed edge
+/// — and takes the point that stands furthest from a boundary. **Tested
+/// against the whole shape**, holes included, so a probe never lands in a
+/// courtyard and reports the material of the thing around it.
+///
+/// A diagonal between a vertex and the one two along is the textbook answer
+/// and is wrong here: it is inside any *simple* polygon, and a face with
+/// holes is not one. The rect's own face is the case — four corners, every
+/// ear midpoint the rect's centre, and the centre is in the roundabout. It
+/// returned `None` for the 1.7 km² ground face of `net:roundabout`.
+///
+/// `None` for a degenerate ring, and for a face thinner than
+/// [`PROBE_MIN_M`] — which has no inside this can name, and which a caller
+/// must not tag by guessing.
+pub fn inside(shape: &Shape) -> Option<Pt> {
+    let ring = shape.first()?;
+    let n = ring.len();
+    if n < 3 {
+        return None;
+    }
+    let one = vec![shape.clone()];
+    // **Strictly inside, and provably so.** `contains` on a point that lies
+    // *on* a boundary may answer either way, and the answer it gives is the
+    // one that matters here: the tag. So a candidate is accepted only if it
+    // and its four neighbours a [`PROBE_MIN_M`] away are all inside, which
+    // puts it at least that far from any edge.
+    //
+    // Without it the preference for the largest step picks the ambiguous
+    // point: on a band a metre wide, stepping 1.0 m in from one long edge
+    // lands exactly on the other, `contains` said yes, and the probe for the
+    // *far* half of a sidewalk sat on the line dividing it from the near
+    // half. Every face came back tagged near, `walk_far_m2` read 0, and the
+    // bench lifted a band it should have draped.
+    let strict = |q: Pt| {
+        contains(&one, q)
+            && [[PROBE_MIN_M, 0.0], [-PROBE_MIN_M, 0.0], [0.0, PROBE_MIN_M], [0.0, -PROBE_MIN_M]]
+                .iter()
+                .all(|d| contains(&one, [q[0] + d[0], q[1] + d[1]]))
+    };
+    let mut best: Option<(f64, Pt)> = None;
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx.hypot(dy);
+        if !(len > 0.0) {
+            continue;
+        }
+        let inward = [-dy / len, dx / len];
+        let m = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+        // Furthest first: a probe well clear of the boundary is one the
+        // lattice cannot make ambiguous. Half the edge's own length is as
+        // far as a triangle could ever allow.
+        for step in [0.5 * len, 1.0, 0.1, 0.01, 2.0 * PROBE_MIN_M] {
+            if step < 2.0 * PROBE_MIN_M {
+                continue;
+            }
+            let q = [m[0] + inward[0] * step, m[1] + inward[1] * step];
+            if strict(q) {
+                if best.is_none_or(|(w, _)| step > w) {
+                    best = Some((step, q));
+                }
+                break;
+            }
+        }
+    }
+    best.map(|(_, q)| q)
+}
+
+/// How far inside a face [`inside`] must reach before it will name a point,
+/// in metres: ten lattice steps, a millimetre.
+///
+/// Under this the answer is not wrong so much as unasked — `contains` at the
+/// lattice cannot separate just-inside from just-outside — and a face this
+/// thin carries no area worth tagging.
+pub const PROBE_MIN_M: f64 = 10.0 * GRID_M;
+
 /// Arc resolution for round caps and joins, as `L/R` (segment length over
 /// radius). At a 2.75 m half-width this puts a vertex every 0.55 m round a
 /// cap, fine enough to read as a curve from above at a metre per pixel.
@@ -190,7 +410,11 @@ pub fn fill_holes_under(shapes: Shapes, min_m2: f64) -> Shapes {
 }
 
 /// Total area in square metres: outer contours positive, holes negative.
-pub fn area(shapes: &Shapes) -> f64 {
+///
+/// Taken by slice so the area of a single region is
+/// `area(std::slice::from_ref(&shape))` rather than a `vec![shape.clone()]`
+/// that deep-copies every ring to ask.
+pub fn area(shapes: &[Shape]) -> f64 {
     // `Sum` for f64 starts from −0.0, which `{:.0}` prints as "-0".
     0.0 + shapes.iter().flatten().map(|r| ring_area(r)).sum::<f64>()
 }
@@ -375,12 +599,36 @@ impl Indexed {
 
     /// [`contains`], over the regions whose box covers `p`'s cell.
     pub fn contains(&self, p: Pt) -> bool {
+        self.which(p).is_some()
+    }
+
+    /// The same, answering *which* region holds `p` — the lowest index of
+    /// them, though the regions of a `Shapes` are disjoint so there is at
+    /// most one. A caller that has to attribute a point to the region it
+    /// fell in wants this; one that only asks whether it fell in any wants
+    /// [`Indexed::contains`].
+    pub fn which(&self, p: Pt) -> Option<usize> {
         let (c, r) = cell_of(p, CELL_M);
-        self.cells.get(&(c, r)).is_some_and(|v| {
-            v.iter().any(|&i| {
+        self.cells.get(&(c, r))?.iter().copied().find(|&i| {
+            self.edges.get(&(i, r)).is_some_and(|es| es.iter().filter(|&&(a, b)| crosses(a, b, p)).count() % 2 == 1)
+        })
+    }
+
+    /// Every region holding `p`, lowest index first: for regions that are
+    /// *not* disjoint — the paving of two sheets, one flying over the other
+    /// — where [`Indexed::which`] would name only the first.
+    pub fn all(&self, p: Pt) -> Vec<usize> {
+        let (c, r) = cell_of(p, CELL_M);
+        let Some(cands) = self.cells.get(&(c, r)) else {
+            return Vec::new();
+        };
+        cands
+            .iter()
+            .copied()
+            .filter(|&i| {
                 self.edges.get(&(i, r)).is_some_and(|es| es.iter().filter(|&&(a, b)| crosses(a, b, p)).count() % 2 == 1)
             })
-        })
+            .collect()
     }
 
     /// Whether any region is indexed at all.
@@ -624,6 +872,162 @@ mod tests {
         assert_eq!(bounds([]), None);
         assert!((segment_distance([0.0, 0.0], [2.0, 0.0], [3.0, 1.0]) - 2.0f64.sqrt()).abs() < 1e-12);
         assert_eq!(nearest_on_segment([0.0, 0.0], [2.0, 0.0], [1.0, 1.0]), [1.0, 0.0]);
+    }
+
+    /// Every vertex of `shapes`, as the exact bits it is stored as.
+    fn keys(shapes: &Shapes) -> std::collections::HashSet<(u64, u64)> {
+        shapes.iter().flatten().flatten().map(|p| (p[0].to_bits(), p[1].to_bits())).collect()
+    }
+
+    /// The specimen: a square, and two crossing strokes at angles that put
+    /// every intersection off the lattice.
+    fn cut_square() -> (Shapes, Shapes, Shapes) {
+        let square = vec![rect(-50.0, -50.0, 50.0, 50.0)];
+        let a = buffer_line(&[[-60.0, -13.0], [60.0, 17.0]], 7.3);
+        let b = buffer_line(&[[-11.0, -60.0], [19.0, 60.0]], 5.1);
+        (square, a, b)
+    }
+
+    /// Vertices of `ground` that lie on no vertex of `paved` and are not on
+    /// the square's own edge: the ones a cross-mesh lookup cannot weld, which
+    /// is what `bench`'s `seam` and `unmet` count.
+    fn orphans(ground: &Shapes, paved: &Shapes) -> usize {
+        let pk = keys(paved);
+        ground
+            .iter()
+            .flatten()
+            .flatten()
+            .filter(|p| p[0].abs() < 50.0 - 1e-9 && p[1].abs() < 50.0 - 1e-9)
+            .filter(|p| !pk.contains(&(p[0].to_bits(), p[1].to_bits())))
+            .count()
+    }
+
+    /// **An extra boolean over the same operands moves nothing**, and that is
+    /// worth knowing, because it is not what CLAUDE.md and
+    /// `data/plans/one-ground-2026-09-16.md` say the defect is.
+    ///
+    /// The stated mechanism is that "a point that has been through one more
+    /// boolean than its neighbour lands up to half a grid away". It cannot:
+    /// [`overlay`] pins the adapter, so every output point is an exact
+    /// multiple of [`GRID_M`], and feeding one back in maps to the same
+    /// integer. **Snapping is idempotent, and re-rounding is the identity.**
+    #[test]
+    fn a_boolean_over_a_snapped_operand_is_idempotent() {
+        let (square, a, b) = cut_square();
+        let once = difference(&square, &union_of(&[&a, &b]));
+        let twice = difference(&square, &union_of(&[&union_all(&a), &union_all(&b)]));
+        assert_eq!(keys(&once), keys(&twice), "a second snap moved a point");
+        assert_eq!(orphans(&once, &twice), 0);
+    }
+
+    /// **What does make two boundaries is two different regions**, which is
+    /// what the chain actually builds.
+    ///
+    /// The mesher is handed the paved pieces *separately* — `mesh::by_sheet`
+    /// meshes one sheet at a time — while the hole is cut from their
+    /// **union** (`bench`: `union_all(sheets.shapes()) − spanned`). Where two
+    /// pieces touch, the union dissolves the edge between them and puts
+    /// vertices where they crossed; the separately meshed pieces keep that
+    /// edge and have no such vertices. The two are not one boundary rounded
+    /// twice. They are two boundaries, and no amount of care with the lattice
+    /// reconciles them.
+    #[test]
+    fn a_union_dissolves_the_edge_the_mesher_kept() {
+        let (square, a, b) = cut_square();
+        // As the mesher gets it: two overlapping pieces, each on its own.
+        let pieces: Shapes = a.iter().chain(b.iter()).cloned().collect();
+        // As the hole gets it: their union.
+        let ground = difference(&square, &union_of(&[&a, &b]));
+
+        let orphaned = orphans(&ground, &pieces);
+        assert!(
+            orphaned > 0,
+            "the specimen no longer states the defect: the union and the pieces \
+             already agree, so the slice below is not being asked anything"
+        );
+        println!("union vs pieces: {orphaned} ground vertices weld to nothing");
+    }
+
+    /// **One slice gives one set of split points.**
+    ///
+    /// The property §3.1 needs, and the answer to the test above: cut the
+    /// square by the paving's own rings and the ground's boundary *is* those
+    /// rings — every vertex of it, away from the square's edge, is a vertex
+    /// of the paved faces, bit for bit. `seam` and `unmet` then have no
+    /// subject rather than a smaller value.
+    #[test]
+    fn one_slice_gives_one_set_of_split_points() {
+        let (square, a, b) = cut_square();
+        let paving = union_of(&[&a, &b]);
+
+        let faces = slice(&square, &rings(&paving));
+        assert!(faces.len() >= 2, "the cuts divide the square: {}", faces.len());
+        // A partition: the faces cover the square exactly and do not overlap.
+        let total: f64 = faces.iter().map(|f| area(std::slice::from_ref(f))).sum();
+        assert!((total - 100.0 * 100.0).abs() < 1e-6, "{total}");
+
+        // Tagged by asking one interior point of each face — no boolean.
+        let (mut paved, mut ground): (Shapes, Shapes) = (Vec::new(), Vec::new());
+        for f in faces {
+            let probe = inside(&f).expect("a face has an inside");
+            if contains(&paving, probe) { paved.push(f) } else { ground.push(f) }
+        }
+        assert!(!paved.is_empty() && !ground.is_empty(), "both materials are there");
+        // The areas are the two sides of the same boundary.
+        let want = area(&intersect(&square, &paving));
+        assert!((area(&paved) - want).abs() < 1e-6, "{} vs {want}", area(&paved));
+
+        assert_eq!(orphans(&ground, &paved), 0, "every shared vertex is one vertex");
+    }
+
+    /// **A T-junction is a segment cut on one side and not the other**, and
+    /// [`conform`] removes it.
+    ///
+    /// The case `net:level` states: one face's edge runs the length of a
+    /// road, while the faces on the other side of the same line are three,
+    /// because a railway crosses there and cuts one side only.
+    #[test]
+    fn conform_gives_both_sides_of_an_edge_the_same_vertices() {
+        // A long face below the line y = 0, and three short ones above it,
+        // meeting it end to end.
+        let long: Shape = vec![vec![[0.0, -1.0], [9.0, -1.0], [9.0, 0.0], [0.0, 0.0]]];
+        let short = |x0: f64, x1: f64| -> Shape {
+            vec![vec![[x0, 0.0], [x1, 0.0], [x1, 1.0], [x0, 1.0]]]
+        };
+        let faces: Shapes = vec![long, short(0.0, 3.0), short(3.0, 6.0), short(6.0, 9.0)];
+
+        let segs = |s: &Shapes| -> std::collections::HashMap<((u64, u64), (u64, u64)), usize> {
+            let mut out = std::collections::HashMap::new();
+            for ring in s.iter().flatten() {
+                for k in 0..ring.len() {
+                    let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+                    let (ka, kb) = ((a[0].to_bits(), a[1].to_bits()), (b[0].to_bits(), b[1].to_bits()));
+                    *out.entry(if ka <= kb { (ka, kb) } else { (kb, ka) }).or_default() += 1;
+                }
+            }
+            out
+        };
+        // The property is about the shared line: how many segments lying on
+        // y = 0 are carried by one face alone.
+        let on_line = |s: &Shapes| -> usize {
+            segs(s)
+                .iter()
+                .filter(|(_, n)| **n == 1)
+                .filter(|((a, b), _)| {
+                    f64::from_bits(a.1) == 0.0 && f64::from_bits(b.1) == 0.0
+                })
+                .count()
+        };
+        // Before: the long face's 9 m edge and the three short faces' 3 m
+        // edges are four different segments, and no two of them match.
+        assert_eq!(on_line(&faces), 4, "the shared line is four unmatched segments");
+
+        let done = conform(&faces);
+        // After: the long edge is split at x = 3 and x = 6, so each piece is
+        // carried by both the face below it and the face above.
+        assert_eq!(on_line(&done), 0, "the shared line is shared segment for segment");
+        // Nothing moved and nothing was lost.
+        assert!((area(&done) - area(&faces)).abs() < 1e-12);
     }
 
     #[test]

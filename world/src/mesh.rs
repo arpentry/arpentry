@@ -39,7 +39,8 @@ use crate::grid::Grid;
 use crate::poly::{self, Pt, Shapes};
 use crate::step::Summary;
 use crate::terrain::height_at;
-use crate::world::{Mesh, Paving, Terrain, Tri};
+use crate::arrangement::{Arrangement, Material};
+use crate::world::{Mesh, Terrain, Tri};
 
 /// A triangle under this many square metres is a sliver: kept, counted.
 pub const SLIVER_M2: f64 = 1e-6;
@@ -141,11 +142,39 @@ pub struct Stats {
     pub seam: f64,
 }
 
+impl Stats {
+    /// Adds `s` in: the counts and `lost_m2` sum, `off_ground` and `seam`
+    /// take the larger. A field added to [`Stats`] is not reported until it
+    /// is merged here.
+    fn merge(&mut self, s: &Stats) {
+        self.regions += s.regions;
+        self.failed += s.failed;
+        self.washed += s.washed;
+        self.lossy += s.lossy;
+        self.slivers += s.slivers;
+        self.degenerate += s.degenerate;
+        self.centred += s.centred;
+        self.welded += s.welded;
+        self.lost_m2 += s.lost_m2;
+        self.off_ground = self.off_ground.max(s.off_ground);
+        self.seam = self.seam.max(s.seam);
+    }
+}
+
 /// Triangulates the world's carriageway and pavement on its terrain.
-pub fn run(terrain: &Terrain, paving: Paving) -> (Mesh, Summary) {
-    let Paving { carriageway, walk: pavement, ballast } = paving;
+///
+/// **The two families that solve are meshed one sheet at a time**, and the
+/// sheets joined. A sheet is what may merge ([`crate::sheet`]), so it is
+/// also what the bench lifts by one field; meshing each on its own is what
+/// lets a vertex say which. The regions of one family are disjoint, so
+/// triangulating them in groups rather than all at once is the same
+/// triangles either way — the weld interns by position and no two sheets
+/// share one.
+pub fn run(terrain: &Terrain, arrangement: &Arrangement) -> (Mesh, Summary) {
     let ground = |p: Pt| height_at(terrain, p[0], p[1]);
-    let (c, cs) = triangulate(carriageway, &terrain.grid, &ground);
+    let (c, carriageway_sheet, cs) =
+        by_sheet(arrangement, Material::Carriageway, &terrain.grid, &ground);
+    let (b, ballast_sheet, bs) = by_sheet(arrangement, Material::Ballast, &terrain.grid, &ground);
     // **The walk is meshed in two parts, cut at the room's reach.** The
     // bench lifts a band to the road's height within
     // [`crate::room::WALL_REACH_M`] of the asphalt and drapes it beyond,
@@ -157,20 +186,33 @@ pub fn run(terrain: &Terrain, paving: Paving) -> (Mesh, Summary) {
     //
     // The cut is the room's own construction, not an approximation of it —
     // `room::run` marches its probe from the carriageway ring, so the band
-    // is bounded by distance from the *polygon*, which is what `dilate`
-    // gives. Splitting alone is inert (both sheets would read one
-    // positional rule and agree); it pays only because the bench then
-    // lifts each sheet by its own, which is `Foot::face`.
-    let reach = poly::dilate(carriageway, crate::room::WALL_REACH_M);
-    let (near, far) = (poly::intersect(pavement, &reach), poly::difference(pavement, &reach));
+    // is bounded by distance from the *polygon*. Splitting alone is inert
+    // (both sheets would read one positional rule and agree); it pays only
+    // because the bench then lifts each sheet by its own, which is
+    // `Foot::face`.
+    //
+    // **The line is a cut of the arrangement, not a boolean here.** Found
+    // with `dilate`/`intersect` over the walk it put vertices on the
+    // pavement that no other mesh had, which is the whole disease this chain
+    // is being moved off ([`crate::arrangement`]). `Face::near` says which
+    // side a face is on, and both sides are already faces of one
+    // subdivision.
+    let faces = |near: bool| -> Shapes {
+        arrangement
+            .of(Material::Pavement)
+            .filter(|f| f.near == near)
+            .map(|f| f.shape.clone())
+            .collect()
+    };
+    let (near, far) = (faces(true), faces(false));
     let (pn, pns) = triangulate(&near, &terrain.grid, &ground);
     let (pf, pfs) = triangulate(&far, &terrain.grid, &ground);
     let walk_split = pn.positions.len();
     let p = join(pn, pf);
-    let (b, bs) = triangulate(ballast, &terrain.grid, &ground);
-    let all = [&cs, &pns, &pfs, &bs];
-    let sum = |f: fn(&Stats) -> usize| all.iter().map(|s| f(s)).sum::<usize>();
-    let max = |f: fn(&Stats) -> f64| all.iter().map(|s| f(s)).fold(0.0f64, f64::max);
+    let mut all = Stats::default();
+    for s in [&cs, &pns, &pfs, &bs] {
+        all.merge(s);
+    }
     let summary = Summary::new()
         .with("carriageway", format!("{}/{}", c.indices.len() / 3, c.positions.len()))
         .with("pavement", format!("{}/{}", p.indices.len() / 3, p.positions.len()))
@@ -181,17 +223,58 @@ pub fn run(terrain: &Terrain, paving: Paving) -> (Mesh, Summary) {
         // 0 or the whole mesh is a run where the cut found nothing.
         .with("walk_split", walk_split)
         .with("ballast", format!("{}/{}", b.indices.len() / 3, b.positions.len()))
-        .with("failed", sum(|s| s.failed))
-        .with("washed", sum(|s| s.washed))
-        .with("lossy", sum(|s| s.lossy))
-        .with("slivers", sum(|s| s.slivers))
-        .with("degenerate", sum(|s| s.degenerate))
-        .with("centred", sum(|s| s.centred))
-        .with("welded", sum(|s| s.welded))
-        .with("lost_m2", format!("{:.1e}", all.iter().map(|s| s.lost_m2).sum::<f64>()))
-        .with("off_ground", format!("{:.1e}", max(|s| s.off_ground)))
-        .with("seam", format!("{:.1e}", max(|s| s.seam)));
-    (Mesh { carriageway: c, pavement: p, ballast: b, walk_split }, summary)
+        .with("failed", all.failed)
+        .with("washed", all.washed)
+        .with("lossy", all.lossy)
+        .with("slivers", all.slivers)
+        .with("degenerate", all.degenerate)
+        .with("centred", all.centred)
+        .with("welded", all.welded)
+        .with("lost_m2", format!("{:.1e}", all.lost_m2))
+        .with("off_ground", format!("{:.1e}", all.off_ground))
+        .with("seam", format!("{:.1e}", all.seam));
+    (
+        Mesh { carriageway: c, pavement: p, ballast: b, walk_split, carriageway_sheet, ballast_sheet },
+        summary,
+    )
+}
+
+/// One family's sheets, meshed one at a time and joined, with the sheet
+/// every vertex came from.
+///
+/// The stats are merged the way [`run`]'s four families are: the counts
+/// sum, `lost_m2` sums, and `off_ground` and `seam` take the largest. A
+/// `seam` per sheet is a better number than one over the whole family —
+/// the figure is pure cancellation between a mesh's one-sided edges and
+/// its regions' perimeter, and the smaller the population the less of it
+/// there is to hide in.
+fn by_sheet(
+    arrangement: &Arrangement,
+    material: Material,
+    grid: &Grid,
+    height: &dyn Fn(Pt) -> f64,
+) -> (Tri, Vec<u32>, Stats) {
+    // The faces of this material, gathered by the sheet each belongs to. A
+    // sheet's faces are meshed together — they were one region before the
+    // arrangement cut them and they weld as they always did — and two sheets
+    // are joined without welding, so a boundary they share is a rim of each.
+    //
+    // **Both layers.** A deck face over another sheet's ground is its own
+    // sheet's paving like any other face of it, cut by the same slice, so it
+    // welds into that sheet's mesh; the ground face under it is meshed with
+    // the ground's sheet, apart.
+    let mut by: std::collections::BTreeMap<Option<usize>, Shapes> = Default::default();
+    for f in arrangement.layered(material) {
+        by.entry(f.sheet).or_default().push(f.shape.clone());
+    }
+    let (mut out, mut of, mut stats) = (Tri::default(), Vec::new(), Stats::default());
+    for (sheet, shapes) in &by {
+        let (tri, s) = triangulate(shapes, grid, height);
+        of.resize(of.len() + tri.positions.len(), sheet.map_or(u32::MAX, |i| i as u32));
+        out = join(out, tri);
+        stats.merge(&s);
+    }
+    (out, of, stats)
 }
 
 /// Two meshes as one, with their vertices kept apart: `b`'s indices are
@@ -199,9 +282,7 @@ pub fn run(terrain: &Terrain, paving: Paving) -> (Mesh, Summary) {
 /// boundary they share in plan is a rim of each and a step across it is
 /// something a face can span.
 fn join(mut a: Tri, b: Tri) -> Tri {
-    let base = a.positions.len() as u32;
-    a.positions.extend(b.positions);
-    a.indices.extend(b.indices.iter().map(|i| i + base));
+    a.append(b);
     a
 }
 
@@ -214,6 +295,26 @@ fn join(mut a: Tri, b: Tri) -> Tri {
 /// terrain: the bench step triangulates the engineered ground on the same
 /// lattice with the same guarantee.
 pub fn triangulate(shapes: &Shapes, grid: &Grid, height: &dyn Fn(Pt) -> f64) -> (Tri, Stats) {
+    let (tri, _, stats) = tagged(shapes, grid, height);
+    (tri, stats)
+}
+
+/// The same, with the region every triangle came from: one entry per
+/// triangle, indexing `shapes`.
+///
+/// **This is what lets the whole rect be meshed at once.** `triangulate`
+/// already welds by position across everything it is given, so passing every
+/// face of the arrangement in one call gives one vertex array with the
+/// materials sharing their boundary vertices — which is `data/plans/
+/// one-ground-2026-09-16.md` §3.1's "one mesh" and §3.2's prerequisite.
+/// What was missing was knowing which triangle is which material afterwards,
+/// and that is all this adds.
+pub fn tagged(
+    shapes: &Shapes,
+    grid: &Grid,
+    height: &dyn Fn(Pt) -> f64,
+) -> (Tri, Vec<u32>, Stats) {
+    let mut of_region: Vec<u32> = Vec::new();
     let mut tri = Tri::default();
     let mut stats = Stats { regions: shapes.len(), ..Stats::default() };
     let mut index: HashMap<[i64; 2], u32> = HashMap::new();
@@ -225,9 +326,9 @@ pub fn triangulate(shapes: &Shapes, grid: &Grid, height: &dyn Fn(Pt) -> f64) -> 
     };
     let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
     let mut perimeter = 0.0;
-    for shape in shapes {
+    for (region, shape) in shapes.iter().enumerate() {
         for (shape, ears) in read(shape, &mut stats) {
-            let want = poly::area(&vec![shape.clone()]);
+            let want = poly::area(std::slice::from_ref(&shape));
             for ring in &shape {
                 for i in 0..ring.len() {
                     let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
@@ -263,6 +364,7 @@ pub fn triangulate(shapes: &Shapes, grid: &Grid, height: &dyn Fn(Pt) -> f64) -> 
                 }
             }
             stats.lost_m2 += (got - want).abs();
+            of_region.resize(tri.indices.len() / 3, region as u32);
         }
     }
     // **The one-sided edges are summed in a defined order.** They were read
@@ -290,7 +392,7 @@ pub fn triangulate(shapes: &Shapes, grid: &Grid, height: &dyn Fn(Pt) -> f64) -> 
         })
         .sum();
     stats.seam = (boundary - perimeter).abs();
-    (tri, stats)
+    (tri, of_region, stats)
 }
 
 /// The regions the clipper reads for `shape`, each with its ears: the
@@ -305,7 +407,7 @@ fn read(shape: &poly::Shape, stats: &mut Stats) -> Vec<(poly::Shape, Vec<[Pt; 3]
     let Some(shape) = readable(shape) else {
         return Vec::new();
     };
-    let want = poly::area(&vec![shape.clone()]);
+    let want = poly::area(std::slice::from_ref(&shape));
     match ears(&shape, want) {
         Ok(e) => vec![(shape, e)],
         Err(None) => {
@@ -317,7 +419,7 @@ fn read(shape: &poly::Shape, stats: &mut Stats) -> Vec<(poly::Shape, Vec<[Pt; 3]
                 .iter()
                 .filter_map(readable)
                 .map(|s| {
-                    let e = ears(&s, poly::area(&vec![s.clone()])).ok();
+                    let e = ears(&s, poly::area(std::slice::from_ref(&s))).ok();
                     (s, e)
                 })
                 .collect();
@@ -342,7 +444,7 @@ fn readable(shape: &poly::Shape) -> Option<poly::Shape> {
         .filter(|(i, r)| r.len() >= 3 && (*i == 0 || poly::ring_area(r).abs() >= HOLE_MIN_M2))
         .map(|(_, r)| r)
         .collect();
-    (!out.is_empty() && poly::area(&vec![out.clone()]) > 0.0).then_some(out)
+    (!out.is_empty() && poly::area(std::slice::from_ref(&out)) > 0.0).then_some(out)
 }
 
 /// The triangles of one convex piece. A fan from its first vertex, unless
@@ -654,7 +756,7 @@ pub(crate) mod tests {
     fn a_straight_on_flat_ground_meshes_to_its_area() {
         let (w, s) = world("flat", "net:straight?len=200");
         let m = w.mesh.as_ref().unwrap();
-        let want = poly::area(&w.fillet.as_ref().expect("the fillet step ran").carriageway);
+        let want = poly::area(&w.fillet.as_ref().expect("the fillet step ran").surface.carriageway);
         assert!((area_of(&m.carriageway) - want).abs() / want < 1e-9, "{} vs {want}", area_of(&m.carriageway));
         assert!(m.carriageway.positions.iter().all(|p| p[2] == 400.0));
         assert!(m.pavement.indices.is_empty());
@@ -692,7 +794,7 @@ pub(crate) mod tests {
     fn the_pavement_is_meshed_beside_the_road() {
         let (w, s) = world("flat", "net:sidewalk?d=6");
         let m = w.mesh.as_ref().unwrap();
-        let want = poly::area(&w.room.as_ref().expect("the room step ran").pavement);
+        let want = poly::area(&w.room.as_ref().expect("the room step ran").surface.walk);
         assert!(want > 0.0);
         assert!((area_of(&m.pavement) - want).abs() / want < 1e-9, "{} vs {want}", area_of(&m.pavement));
         assert!(s.num("seam") < 1e-9, "{s}");

@@ -1,4 +1,4 @@
-//! Step 8: the street fills the room between the facades.
+//! The room: the street fills the space between the facades.
 //!
 //! The facade step said where the paved surface stops; this one says it
 //! goes all the way there. A street in a town is the whole room between
@@ -82,7 +82,7 @@
 use crate::kerb::{self, Bare};
 use crate::poly::{self, Indexed, Pt, Shape, Shapes};
 use crate::step::Summary;
-use crate::world::{Facade, Paving, Room};
+use crate::world::{Facade, Room, Surface};
 
 /// How far outside the kerb a wall still bounds the street, in metres.
 /// Past this the ground in front of a house is its own. Four metres left
@@ -128,6 +128,102 @@ pub const ISLAND_M2: f64 = 500.0;
 /// 15 m a third of the box's pavement would have been lawn.
 pub const POCKET_REACH_M: f64 = 10.0;
 
+/// The narrowest hole worth paving, in metres: [`kerb::WALK_MIN_M`], the
+/// narrowest pavement the model draws anywhere.
+///
+/// [`ISLAND_M2`] bounds a hole from above — past it the hole is a lawn or a
+/// courtyard rather than a traffic island — and nothing bounded it from
+/// below, so a boolean's leftover between two ribbons passed every test
+/// (small, near a kerb, bordering asphalt) and was paved as an island. On
+/// the Montreux junction that was **29 of 40 islands**, and all of them
+/// together were 10 m² of the 986.
+///
+/// **It governs a hole and not the finished pavement.** The same test at
+/// the end of the chain is wrong, and four specimens say so: the strip
+/// along a house front is deliberately narrow — squeezed between the kerb
+/// and a wall two metres off the axis it can be a decimetre wide — and a
+/// notch in a facade is a small isolated patch by construction. Narrow,
+/// short and isolated are all shapes a *real* pavement takes here, so
+/// telling a scrap from a place needs to know which construction made it —
+/// which `scraps` on the summary line now records, per source.
+///
+/// The same missing bound shows at the other end of the box. A
+/// boolean between two ribbons leaves scraps, and at the Montreux
+/// overbridge two of them, **1.03 m² and 2.84 m², 0.41 m and 0.71 m
+/// wide**, sat between the deck's ribbon and the ballast, passed every test
+/// (small, near a kerb, bordering asphalt) and were paved as traffic
+/// islands. They are not islands: they are places a person could not stand,
+/// and up at road level over a cutting the ground then had to wall a square
+/// metre of pavement all the way round.
+///
+/// The test is an **erosion**, not an area: a scrap is thin, not small, and
+/// a hole that does not survive being cut back by half the narrowest
+/// pavement has no pavement in it to draw.
+pub const PAVEMENT_MIN_M: f64 = kerb::WALK_MIN_M;
+
+/// Whether `region` can hold a pavement at all: whether anything of it
+/// survives being cut back by half [`PAVEMENT_MIN_M`].
+///
+/// A scrap is **thin, not small** — a traffic island of three square metres
+/// is a place and a forty-metre thread of the same area is not — so the
+/// test is an erosion and not an area. The cheap ratio first: `2A/P` is a
+/// region's width where it is thin, and nothing twice the minimum wide by
+/// that measure has ever failed the erosion, so only the suspicious ones
+/// cost a boolean.
+fn wide_enough(region: &poly::Shape) -> bool {
+    let area = poly::area(std::slice::from_ref(region));
+    let perimeter: f64 = region
+        .iter()
+        .flat_map(|ring| {
+            (0..ring.len()).map(move |i| {
+                let (u, v) = (ring[i], ring[(i + 1) % ring.len()]);
+                (v[0] - u[0]).hypot(v[1] - u[1])
+            })
+        })
+        .sum();
+    if perimeter > 0.0 && 2.0 * area / perimeter >= 2.0 * PAVEMENT_MIN_M {
+        return true;
+    }
+    !poly::erode(&vec![region.clone()], PAVEMENT_MIN_M / 2.0).is_empty()
+}
+
+/// How much of `region`'s boundary has a wall [`EDGE_M`] outside it.
+///
+/// Outside an outer (counter-clockwise) ring is to the **right** of each
+/// edge. Probing the left samples the region itself, which reads "nothing
+/// there" everywhere — the measurement that sent four candidate rules the
+/// wrong way before it was caught.
+fn walled_share(region: &poly::Shape, walls: &Indexed) -> f64 {
+    let (mut against, mut total) = (0.0f64, 0.0f64);
+    for ring in region {
+        for i in 0..ring.len() {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            let d = (b[0] - a[0]).hypot(b[1] - a[1]);
+            if d <= 0.0 {
+                continue;
+            }
+            total += d;
+            let t = [(b[0] - a[0]) / d, (b[1] - a[1]) / d];
+            let m = [(a[0] + b[0]) * 0.5 + t[1] * EDGE_M, (a[1] + b[1]) * 0.5 - t[0] * EDGE_M];
+            if walls.contains(m) {
+                against += d;
+            }
+        }
+    }
+    if total > 0.0 { against / total } else { 0.0 }
+}
+
+/// How much of a small region's boundary must be against a wall for it to
+/// be the strip this step drew there rather than something a cut left.
+///
+/// A quarter, and the margin is wide rather than the number fine. A strip
+/// squeezed between a kerb and a wall has the wall along one of its two
+/// long sides and the asphalt along the other, so it measures near a half
+/// and the specimens read **45 %**; the scraps beside the Montreux abutment
+/// read **1 % and 0 %**. Anything between those is a shape neither
+/// specimen nor site has yet produced.
+const WALLED_SHARE: f64 = 0.25;
+
 /// The probe's step, in metres: fine enough that a wall's position is
 /// known to within the width of a kerb stone.
 const MARCH_M: f64 = 0.25;
@@ -147,15 +243,21 @@ const PROBE_M: f64 = 0.15;
 
 /// Paves the kerbs that run along facades, and the pockets.
 pub fn run(
-    paving: Paving,
+    paving: &Surface,
     attached: &[kerb::Attached],
     facade: &Facade,
 ) -> (Room, Summary) {
-    let Paving { carriageway, walk: before, ballast } = paving;
+    let Surface { carriageway, walk: before, spanned, .. } = paving;
     let walls = Indexed::new(&facade.solid);
     let paved = Indexed::new(before);
     let mut hits: Vec<(Pt, Pt)> = Vec::new();
     let mut pieces: Shapes = Vec::new();
+    // **Kept apart, so a region can be asked what made it.** The pavement
+    // comes out of this step as one set of regions and the constructions
+    // that feed it are several; a scrap of one is a defect and the same
+    // shape drawn by another is a place, and nothing could tell them apart
+    // while they were unioned on the way in.
+    let (mut bands, mut rungs): (Shapes, Shapes) = (Vec::new(), Vec::new());
     let (mut stations, mut runs, mut walled, mut kerbed) = (0usize, 0usize, 0usize, 0usize);
     let min = (RUN_MIN_M / kerb::STATION_M) as usize;
     if !walls.is_empty() || !paved.is_empty() {
@@ -185,7 +287,9 @@ pub fn run(
                 // one that only fronts a mapped sidewalk keeps that
                 // sidewalk's own width.
                 let wall_faces = run.iter().filter(|&&i| kind[i] == Some(true)).count();
-                let mut run_pieces: Shapes = if wall_faces >= min { band(&run_pts, whole) } else { Vec::new() };
+                let of_band: Shapes = if wall_faces >= min { band(&run_pts, whole) } else { Vec::new() };
+                let mut run_pieces: Shapes = of_band.clone();
+                bands.extend(of_band);
                 let reach = bridged(&run, &hit, &kind, &pts, &normals);
                 for (k, &i) in run.iter().enumerate() {
                     if let Some((h, wall)) = reach[k].filter(|_| kind[i].is_some()) {
@@ -197,20 +301,111 @@ pub fn run(
                         }
                     }
                 }
-                run_pieces.extend(strip(&run, &reach, &pts, &normals, whole));
+                let of_rung = strip(&run, &reach, &pts, &normals, whole);
+                rungs.extend(of_rung.iter().cloned());
+                run_pieces.extend(of_rung);
                 pieces.extend(poly::union_all(&run_pieces));
             }
         }
     }
     let room = poly::union_all(&pieces);
-    let u = poly::fill_holes_under(poly::union_of(&[before, &room]), kerb::PAVEMENT_HOLE_M2);
-    let pockets = pockets(carriageway, &u, &facade.solid);
+    let grown = poly::union_of(&[before, &room]);
+    let u = poly::fill_holes_under(grown.clone(), kerb::PAVEMENT_HOLE_M2);
+    let pockets = pockets(&poly::union_of(&[carriageway, spanned]), &u, &facade.solid);
     let (pocket_count, pocket_m2) = (pockets.len(), poly::area(&pockets));
     // The ballast wins over the room as it does over every walk: a band
     // probed to a wall across a railway stops at the track bed. And a kerb
     // or a probe that meets the bed has not met bare ground.
-    let senior = poly::union_of(&[carriageway, ballast]);
-    let pavement = facade.pavement(&poly::union_of(&[&u, &pockets]), &senior);
+    let senior = paving.senior();
+    // **And the pavement holds its own minimum width.** The rule is the
+    // chain's, applied once where the chain ends: every boolean before this
+    // leaves scraps, and a region of pavement narrower than
+    // [`PAVEMENT_MIN_M`] is not a pavement — it is the leftover of one. At
+    // the Montreux overbridge two of them, 1.03 m² and 2.84 m², 0.41 m and
+    // 0.71 m wide, sat beside the abutment; the first came out of
+    // `surface`'s own cut and the second out of this step's bands, so no
+    // one step could have caught them and the finished surface is the only
+    // place that can. The ground pays for them twice over: each is a hole
+    // in the terrain with a wall round all of it, up at road level over a
+    // cutting.
+    // **A pavement is bigger than the smallest one this step would draw.**
+    // That is a band of [`PAVEMENT_MIN_M`] over [`RUN_MIN_M`] — the
+    // narrowest strip over the shortest run of kerb it will start one for —
+    // and nothing under it was drawn on purpose. What is under it is what a
+    // boolean left: at the Montreux abutment a 1.03 m² scrap of footway
+    // ribbon standing in the open, and a 2.84 m² lobe that is the *round
+    // cap* of another, its body cut away by the asphalt and the cap left
+    // sitting in the kerb line. Each is a hole in the terrain with a wall
+    // round the whole of it, up at road level over a cutting.
+    //
+    // **Unless a wall explains it** ([`WALLED_SHARE`]). The one pavement
+    // this step draws smaller than that is the strip against a facade — a
+    // notch, the pocket a kerb return leaves at a house corner — and the
+    // notch specimen's *whole* pavement is three such regions totalling
+    // 1.8 m². They are bounded by the wall they were drawn for. The two
+    // scraps are not: 1 % and 0 %.
+    let paved = facade.pavement(&poly::union_of(&[&u, &pockets]), &senior);
+    let (pavement, loose): (Shapes, Shapes) = paved.into_iter().partition(|r| {
+        poly::area(std::slice::from_ref(r)) >= RUN_MIN_M * PAVEMENT_MIN_M
+            || walled_share(r, &walls) >= WALLED_SHARE
+    });
+    let (loose_n, loose_m2) = (loose.len(), poly::area(&loose));
+    // **What each scrap was made by.** A region too narrow to hold a
+    // pavement ([`wide_enough`]) is not a defect on its own — the strip
+    // between a kerb and a wall two metres off the axis is a decimetre wide
+    // for the length of the house, and a notch in a facade is a small
+    // isolated patch by construction. So the question is not its shape but
+    // its provenance, and this is the measurement that makes provenance a
+    // thing the model knows rather than a thing a reader guesses.
+    const SOURCES: [&str; 5] = ["walk", "band", "rung", "closed", "island"];
+    // **Each source is asked once, for every scrap at once.** A scrap is a
+    // square metre; the sources run to hundreds of thousands of them, and
+    // `poly::intersect` feeds both operands to the overlay whole with no
+    // spatial culling — so asked scrap by scrap this was five full-surface
+    // booleans per scrap, and more than half of the world build. A scrap is
+    // contained in `scraps`, so intersecting it against what a source put
+    // under *any* scrap is the same area as against the whole source.
+    let scraps: Shapes = pavement.iter().filter(|r| !wide_enough(r)).cloned().collect();
+    let scrap_n = scraps.len();
+    let scrap_m2 = poly::area(&scraps);
+    let mut by_source = [0usize; 5];
+    if scrap_n > 0 {
+        // Built only when there is a scrap to attribute, in [`SOURCES`]'s
+        // order.
+        let sources: [&Shapes; 5] = [
+            before,
+            &poly::union_all(&bands),
+            &poly::union_all(&rungs),
+            &poly::difference(&u, &grown),
+            &pockets,
+        ];
+        let under: Vec<Shapes> =
+            sources.iter().map(|shape| poly::intersect(&scraps, shape)).collect();
+        for region in &scraps {
+            let one = vec![region.clone()];
+            // The source it draws most of its area from: a scrap is small
+            // enough that one construction almost always made all of it, and
+            // "most" says so without pretending the overlaps are disjoint.
+            // Ties go to the earlier source, as they did when this counted
+            // up from zero.
+            let mut best: Option<(f64, usize)> = None;
+            for (k, u) in under.iter().enumerate() {
+                let share = poly::area(&poly::intersect(&one, u));
+                if share > 0.0 && best.is_none_or(|(b, _)| share > b) {
+                    best = Some((share, k));
+                }
+            }
+            if let Some((_, k)) = best {
+                by_source[k] += 1;
+            }
+        }
+    }
+    let scrap_of: String = SOURCES
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| by_source[*k] > 0)
+        .map(|(k, name)| format!(" {name}:{}", by_source[k]))
+        .collect();
     let filled = poly::area(&pavement) - poly::area(before);
     let bare = Bare::new(&senior, &pavement, &facade.footprints);
     let (gap_n, gap_of) = wall_gap(&bare, &hits);
@@ -222,12 +417,17 @@ pub fn run(
         .with("kerbed", kerbed)
         .with("runs", runs)
         .with("islands", format!("{pocket_count} ({pocket_m2:.0} m2)"))
+        .with("scraps", format!("{scrap_n} ({scrap_m2:.1} m2){scrap_of}"))
+        .with("loose", format!("{loose_n} ({loose_m2:.1} m2)"))
         .with_regions("pavement", &pavement)
         .with_m2("pavement_m2", poly::area(&pavement))
         .with_m2("filled_m2", filled)
         .with_share("wall_gap", gap_n, gap_of)
         .with_share("kerb_gap", kerb_n, kerb_of);
-    (Room { room, pavement, gaps }, summary)
+    // The last step that lays any paving, so this is the paved surface as it
+    // finally stands: everything downstream reads this one layer.
+    let surface = Surface { walk: pavement, ..paving.clone() };
+    (Room { surface, room, gaps }, summary)
 }
 
 /// What a probe met.
@@ -310,7 +510,11 @@ fn pockets(carriageway: &Shapes, pavement: &Shapes, solid: &Shapes) -> Shapes {
                 asphalt.contains(m) || paved.contains(m)
             })
         })
-        .map(|ring| vec![ring.iter().rev().copied().collect()])
+        .map(|ring| vec![ring.iter().rev().copied().collect::<Vec<_>>()])
+        // **A hole too narrow to pave is not a place** ([`wide_enough`]).
+        // Last, because it is the only test here that can run the polygon
+        // kernel, and by now there are few rings left to run it on.
+        .filter(|region| wide_enough(region))
         .collect()
 }
 
@@ -515,7 +719,7 @@ pub(crate) mod tests {
     /// pavement before the room step.
     fn roomed(net: &str) -> (World, String, Shapes) {
         let (w, ran) = built("flat", net, None, 100.0, &plan(Step::Room));
-        let before = w.fillet.as_ref().expect("the fillet step ran").pavement.clone();
+        let before = w.fillet.as_ref().expect("the fillet step ran").surface.walk.clone();
         (w, ran.last().to_string(), before)
     }
 
@@ -568,7 +772,7 @@ pub(crate) mod tests {
         // The facade at y = 4 stands 1.25 m outside the kerb at 2.75: the
         // strip between them is pavement over the house's length.
         let (w, s) = paved("net:straight?len=200", "house:beside?d=4&l=20");
-        let p = &w.room.as_ref().unwrap().pavement;
+        let p = &w.room.as_ref().unwrap().surface.walk;
         assert!(poly::contains(p, [0.0, 3.0]), "{s}");
         assert!(poly::contains(p, [0.0, 3.9]), "{s}");
         assert!(poly::contains(p, [9.0, 3.5]), "{s}");
@@ -578,13 +782,13 @@ pub(crate) mod tests {
         assert!(s.contains("wall_gap=0/"), "{s}");
         assert!(!s.contains("walled=0 "), "{s}");
         assert!(poly::intersect(p, walls(&w)).is_empty());
-        assert!(poly::intersect(p, &w.fillet.as_ref().unwrap().carriageway).is_empty());
+        assert!(poly::intersect(p, &w.fillet.as_ref().unwrap().surface.carriageway).is_empty());
     }
 
     #[test]
     fn a_wall_beyond_reach_keeps_its_garden() {
         let (w, s) = paved("net:straight?len=200", "house:beside?d=10&l=20");
-        assert!(w.room.as_ref().unwrap().pavement.is_empty(), "{s}");
+        assert!(w.room.as_ref().unwrap().surface.walk.is_empty(), "{s}");
         assert!(s.contains("walled=0 "), "{s}");
     }
 
@@ -593,7 +797,7 @@ pub(crate) mod tests {
         // The facade 3.5 m off the kerb, within reach: paved to the wall
         // over the house, and nothing on the bare side.
         let (w, s) = paved("net:straight?len=200", "house:beside?d=6.25&l=20");
-        let p = &w.room.as_ref().unwrap().pavement;
+        let p = &w.room.as_ref().unwrap().surface.walk;
         assert!(poly::contains(p, [0.0, 3.5]) && poly::contains(p, [0.0, 6.0]), "{s}");
         assert!(!poly::contains(p, [0.0, 6.5]) && !poly::contains(p, [0.0, -3.5]));
         assert!(s.contains("wall_gap=0/"), "{s}");
@@ -606,11 +810,11 @@ pub(crate) mod tests {
         // along y = 2 — the notch is closed for it — and the notch itself
         // is paved by the rungs that reach into it.
         let (w, s) = paved("net:straight?len=200", "house:beside?d=2&l=20&notch=2");
-        let c = &w.fillet.as_ref().unwrap().carriageway;
+        let c = &w.fillet.as_ref().unwrap().surface.carriageway;
         assert!(poly::contains(c, [0.0, 1.9]));
         assert!(!poly::contains(c, [0.0, 2.5]), "no asphalt in the notch");
         assert!(poly::contains(c, [5.0, 1.9]) && !poly::contains(c, [5.0, 2.1]));
-        let p = &w.room.as_ref().unwrap().pavement;
+        let p = &w.room.as_ref().unwrap().surface.walk;
         assert!(poly::contains(p, [0.0, 2.5]), "the notch is pavement: {s}");
         assert!(!poly::contains(p, [0.0, 3.1]), "not the house");
         assert!(s.contains("wall_gap=0/"), "{s}");
@@ -622,10 +826,10 @@ pub(crate) mod tests {
         // straight edge along the closed facade; the band bridges the
         // alley's mouth and stops there; the houses are never paved.
         let (w, _) = paved("net:straight?len=200", "house:row?d=2&l=10&gap=2");
-        let c = &w.fillet.as_ref().unwrap().carriageway;
+        let c = &w.fillet.as_ref().unwrap().surface.carriageway;
         assert!(poly::contains(c, [0.0, 1.9]));
         assert!(!poly::contains(c, [0.0, 2.5]), "no asphalt into the gap");
-        let p = &w.room.as_ref().unwrap().pavement;
+        let p = &w.room.as_ref().unwrap().surface.walk;
         assert!(poly::contains(p, [0.0, 3.0]), "the mouth is banded");
         assert!(!poly::contains(p, [0.0, 6.0]), "the alley is not pavement");
         assert!(!poly::contains(p, [2.0, 3.0]), "the house is not");
@@ -638,8 +842,8 @@ pub(crate) mod tests {
         // corner: the strips along both walls and the pocket between the
         // return and the corner are paved.
         let (w, s) = paved("net:tee?len=200", "house:beside?d=3&x=-8&l=10&w=10");
-        let p = &w.room.as_ref().unwrap().pavement;
-        let c = &w.fillet.as_ref().unwrap().carriageway;
+        let p = &w.room.as_ref().unwrap().surface.walk;
+        let c = &w.fillet.as_ref().unwrap().surface.carriageway;
         for q in [[-8.0, 2.9], [-2.9, 8.0], [-2.85, 2.85], [-4.0, 2.9], [-2.9, 4.0]] {
             assert!(poly::contains(p, q) || poly::contains(c, q), "{q:?} is bare: {s}");
         }
@@ -653,7 +857,7 @@ pub(crate) mod tests {
         // sees a wall for eight metres of kerb, but never a face, and the
         // kerb stays bare rather than webbed.
         let (w, s) = paved("net:straight?len=200", "house:beside?d=5&rot=45");
-        assert!(w.room.as_ref().unwrap().pavement.is_empty(), "{s}");
+        assert!(w.room.as_ref().unwrap().surface.walk.is_empty(), "{s}");
         assert!(s.contains("walled=0 "), "{s}");
         assert!(s.contains("runs=0 "), "{s}");
     }
@@ -661,9 +865,9 @@ pub(crate) mod tests {
     #[test]
     fn a_short_facade_is_not_a_pavement() {
         let (w, s) = paved("net:straight?len=200", "house:beside?d=4&l=4");
-        assert!(w.room.as_ref().unwrap().pavement.is_empty(), "{s}");
+        assert!(w.room.as_ref().unwrap().surface.walk.is_empty(), "{s}");
         let (w, s) = paved("net:straight?len=200", "house:beside?d=4&l=8");
-        assert!(!w.room.as_ref().unwrap().pavement.is_empty(), "{s}");
+        assert!(!w.room.as_ref().unwrap().surface.walk.is_empty(), "{s}");
         assert!(s.contains("runs=1 "), "{s}");
     }
 
@@ -673,7 +877,7 @@ pub(crate) mod tests {
         // them: the kerb step fills each half to the kerb, and the break
         // is paved across at the same width.
         let (w, s, before) = roomed("net:sidewalk?d=6&gap=6&len=100");
-        let p = &w.room.as_ref().unwrap().pavement;
+        let p = &w.room.as_ref().unwrap().surface.walk;
         assert!(poly::contains(p, [-10.0, 4.0]) && poly::contains(p, [10.0, 4.0]), "the halves: {s}");
         assert!(poly::contains(p, [0.0, 4.0]), "the break: {s}");
         assert!(poly::area(p) > poly::area(&before) + 1.0, "{s}");
@@ -685,7 +889,7 @@ pub(crate) mod tests {
         // A ring road of radius 12 with a 5.5 m width leaves a 9.25 m
         // island: paved, up to the kerb, with no hole in it.
         let (w, s, _) = roomed("net:roundabout?r=12&d=5&len=100");
-        let p = &w.room.as_ref().unwrap().pavement;
+        let p = &w.room.as_ref().unwrap().surface.walk;
         assert!(poly::contains(p, [0.0, 0.0]), "{s}");
         assert!(poly::contains(p, [9.0, 0.0]), "{s}");
         assert!(!poly::contains(p, [9.5, 0.0]), "the asphalt");
@@ -763,6 +967,6 @@ pub(crate) mod tests {
         assert!(s.contains("walled=0 "), "{s}");
         // The probe meets the mapped sidewalk's own fill and adds nothing
         // but the half-rung past its last station at either end.
-        assert!((poly::area(&w.room.as_ref().unwrap().pavement) - poly::area(&before)).abs() < 1.0, "{s}");
+        assert!((poly::area(&w.room.as_ref().unwrap().surface.walk) - poly::area(&before)).abs() < 1.0, "{s}");
     }
 }

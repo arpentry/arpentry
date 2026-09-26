@@ -43,10 +43,10 @@ mod palette {
     pub const PAVEMENT: u32 = 0xDEDBD4;
     /// The track bed, over a formation and over a structure alike.
     pub const BALLAST: u32 = 0xCBC6BE;
-    pub const DECK: u32 = 0xE0DDD7;
     /// The inside of a tube: the one dark surface, because it is in shadow.
     pub const BORE: u32 = 0x9C988F;
-    pub const PIER: u32 = 0xD8D5CF;
+    /// The underside of a deck: concrete.
+    pub const DECK: u32 = 0xC7C2B8;
     pub const BUILDING: u32 = 0xE3E0DA;
     pub const ROOF: u32 = 0xF3F1ED;
 }
@@ -84,7 +84,6 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
         doc.triangles("ground", &b.ground, linear(palette::GROUND));
         doc.triangles("wall", &b.wall, linear(palette::WALL));
         doc.triangles("kerb", &b.kerb, linear(palette::KERB));
-        doc.triangles("rail", &b.rail, linear(palette::WALL));
     } else if let Some(t) = &world.terrain {
         doc.terrain(t);
     }
@@ -112,11 +111,24 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
         doc.triangles("ballast", b, linear(palette::BALLAST));
     }
     if let Some(s) = &world.structure {
+        // **`roadway` is a walk's now, and nothing else's.** A road's or a
+        // railway's span is paved by the sheet step, in one polygon with
+        // the ground it runs onto, and comes out of `carriageway` or
+        // `ballast` above — which is the whole point: a bridge top and the
+        // road that runs onto it were two objects here and are one there.
+        // A footbridge has no profile and so no field to be lifted by, so
+        // its sweep is what is left, and it keeps the node it had.
         doc.triangles("roadway", &s.roadway, linear(palette::CARRIAGEWAY));
         doc.triangles("track", &s.track, linear(palette::BALLAST));
+        // **The deck solid is built from the sheet's own span region**
+        // ([`crate::structure::solid_under`]) — the same watertight polygon
+        // the road surface was cut from — so a vertex of its rim is the
+        // road's own point, not a second guess at where that was. It is a
+        // slab of constant thickness under the roadway, full length: a
+        // continuous surface in the air, with no abutment block and no
+        // pier.
         doc.triangles("deck", &s.deck, linear(palette::DECK));
         doc.triangles("bore", &s.bore, linear(palette::BORE));
-        doc.triangles("pier", &s.pier, linear(palette::PIER));
     }
     if let Some(b) = &world.buildings {
         doc.triangles("building", &b.walls, linear(palette::BUILDING));
@@ -133,19 +145,19 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
         }
     }
     if let (Some(k), Some(t)) = (&world.kerb, &world.terrain) {
-        if outlines && !k.pavement.is_empty() {
-            doc.loops("kerb", &k.pavement, t, [0.9, 0.6, 0.3]);
+        if outlines && !k.surface.walk.is_empty() {
+            doc.loops("kerb", &k.surface.walk, t, [0.9, 0.6, 0.3]);
         }
     }
     if let (Some(f), Some(t)) = (&world.fillet, &world.terrain) {
-        let shapes: Shapes = f.carriageway.iter().chain(f.pavement.iter()).cloned().collect();
+        let shapes: Shapes = f.surface.carriageway.iter().chain(f.surface.walk.iter()).cloned().collect();
         if outlines && !shapes.is_empty() {
             doc.loops("fillet", &shapes, t, [0.3, 0.3, 0.35]);
         }
     }
     if let (Some(r), Some(t)) = (&world.room, &world.terrain) {
-        if outlines && !r.pavement.is_empty() {
-            doc.loops("room", &r.pavement, t, [0.85, 0.55, 0.25]);
+        if outlines && !r.surface.walk.is_empty() {
+            doc.loops("room", &r.surface.walk, t, [0.85, 0.55, 0.25]);
         }
     }
     if let (Some(f), Some(t)) = (&world.facade, &world.terrain) {

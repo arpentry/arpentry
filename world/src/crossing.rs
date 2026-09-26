@@ -1,4 +1,4 @@
-//! Step 13: the crossings — the one thing that couples two ways.
+//! The crossings: the one thing that couples the height of two ways.
 //!
 //! Every height so far has been solved along one axis alone. The profile
 //! reads the ground under a piece and the anchors at its ends, the bench
@@ -33,12 +33,12 @@
 //! displacement added to the ground the profile solves against
 //! ([`crate::profile::solve_on`]), and everything after it follows with no
 //! rule of its own: an approach that ends up [`crate::grade::STRUCTURE_MIN_M`]
-//! off the ground reads as a deck by step 9's consequence rule, the bench
-//! builds the embankment under the rest of it, and the structure step lays
-//! the slab.
+//! off the ground reads as a deck by the profile's consequence rule, the
+//! bench builds the embankment under the rest of it, and the structure step
+//! lays the slab.
 //!
 //! **A chord is charged whole.** The piece that lifts is always a mapped
-//! span (a level ordinal is what makes it the mover), and step 9 solves a
+//! span (a level ordinal is what makes it the mover), and the profile solves a
 //! span as a straight chord between the anchors at its ends — a chain of
 //! them as *one* chord. A chord cannot be bent up over the road it crosses,
 //! so the demand is charged to every station of the chain: the deck rises
@@ -76,10 +76,10 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use crate::grade;
 use crate::poly::{self, Pt};
 use crate::profile;
-use crate::step::Summary;
+use crate::step::{Residual, Summary};
 use crate::structure::{DECK_THICKNESS_M, WALK_DECK_M};
 use crate::width::{self, Family};
-use crate::world::{connector, Crossing, Crossings, Kind, Profile, Profiles, Reference, Roads, Way};
+use crate::world::{connector, Crossing, Crossings, Kind, Profile, Profiles, Reference, Roads, Solved, Way};
 
 /// The headroom a roadway needs over the roadway beneath it, in metres:
 /// the Swiss norm's 4.5 m plus a construction margin, and the server's
@@ -116,17 +116,18 @@ pub const MAX_CLEARANCE_LIFT_M: f64 = 15.0;
 
 /// Builds the floor every crossing demands and re-solves the profile on it.
 pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossings, Profiles, Summary) {
-    // A piece knows which way it was cut from; the profile step solved a
-    // subset of the ways, in order. So a piece's profile is a lookup, not a
-    // parallel walk — which is what lets the crossings be found on the
-    // *pieces*, where the level ordinals are, while the heights are read on
-    // the *ways*, where they are solved.
-    let solving = crate::reference::solving_indices(roads);
-    assert_eq!(solving.len(), solved.profiles.len(), "the profile step took another set of ways");
-    let mut of_way: HashMap<usize, usize> = HashMap::new();
-    for (i, &w) in solving.iter().enumerate() {
-        of_way.insert(w, i);
-    }
+    // **Crossings are found on the whole ways, not on the pieces.** This step
+    // runs before the partition, so there are no pieces yet — and it wants
+    // none: a way is one object with one profile, and a crossing is a place
+    // in its interior. The level ordinal there is the way's own
+    // ([`Way::level_at_arc`]), which reads the source's structure spans and
+    // its bare layers alike.
+    //
+    // Not every way solves a profile ([`Profile::way`] says which did), so an
+    // axis carries `profile: Option<usize>` and one that has none is an
+    // orphan rather than a demand.
+    let of_way: HashMap<usize, usize> =
+        solved.profiles.iter().enumerate().map(|(i, p)| (p.way, i)).collect();
     let axes: Vec<Axis> = roads
         .ways
         .iter()
@@ -144,7 +145,6 @@ pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossing
             Axis { way: w, arc, profile: of_way.get(&i).copied() }
         })
         .collect();
-    let ways = crate::reference::solving(roads);
 
     let mut profiles = solved.profiles.clone();
     let net = Net::new(&profiles);
@@ -235,6 +235,7 @@ pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossing
     let mut spent = 0usize;
     for m in magnitudes {
         let (mut up, mut down) = (Vec::new(), Vec::new());
+        let (mut up_h, mut down_h) = (Vec::new(), Vec::new());
         for pair in pairs.iter_mut().filter(|p| p.magnitude() == m && !p.senior) {
             let short = pair.need - separation(&profiles, pair);
             if short <= CLEARANCE_EPS {
@@ -250,22 +251,31 @@ pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossing
             pair.demanded = true;
             let (lift, dip) = pair.shares(short);
             if lift > 0.0 {
-                charge(&mut up, pair.upper.0, pair.at, pair.up_at, lift, &profiles, &joins, &net);
+                charge(&mut up, &mut up_h, pair.upper.0, pair.at, pair.up_at, lift, 1.0, &profiles, &joins, &net);
             }
             if dip > 0.0 {
-                charge(&mut down, pair.lower.0, pair.at, pair.low_at, dip, &profiles, &joins, &net);
+                charge(&mut down, &mut down_h, pair.lower.0, pair.at, pair.low_at, dip, -1.0, &profiles, &joins, &net);
             }
         }
         if up.is_empty() && down.is_empty() {
             continue;
         }
-        let (up, down) = (net.spread(&up), net.spread(&down));
+        let none = f64::NEG_INFINITY;
+        let (up, down) = (net.spread(&up, 0.0), net.spread(&down, 0.0));
+        let (up_h, down_h) = (net.spread(&up_h, none), net.spread(&down_h, none));
+        // What the corridor still asks of the floor at a node: whatever the
+        // reference does not already give, and never more than the ramp
+        // itself allows ([`charge`]).
+        let needs = |corridor: f64, ground: f64| {
+            if corridor.is_finite() { (corridor - ground).max(0.0) } else { 0.0 }
+        };
         for (i, f) in floor.iter_mut().enumerate() {
             for (k, v) in f.iter_mut().enumerate() {
-                *v += up[net.base[i] + k] - down[net.base[i] + k];
+                let (n, r) = (net.base[i] + k, reference.axes[i].h[k]);
+                *v += up[n].min(needs(up_h[n], r)) - down[n].min(needs(r, -down_h[n]));
             }
         }
-        let (re, _) = profile::solve_on(reference, &ways, &floor);
+        let (re, _) = profile::solve_on(reference, &roads.ways, &floor);
         profiles = re;
     }
     for f in &floor {
@@ -309,8 +319,32 @@ pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossing
         .with("lift", format!("{lift:.2}"))
         .with_share("ramped", spent, stations)
         .with_share("clearance", short.len(), crossings.len() - unstacked - senior)
-        .with("short", format!("{:.2}", short.iter().fold(0.0f64, |m, s| m.max(*s))));
+        .with("short", format!("{:.2}", short.iter().fold(0.0f64, |m, s| m.max(*s))))
+        .with_residual(residual_of(&profiles));
     (Crossings { crossings, same, floor }, Profiles { profiles }, summary)
+}
+
+/// The solved surface against the raw DEM, over every **at-grade** station of
+/// every profile: [`crate::step::Residual`], read off the profiles a step
+/// hands on.
+///
+/// The population is `Solved::Grade` alone, and that is the whole reason this
+/// is one function rather than a loop in each step. A chord standing thirty
+/// metres over a gorge is not a departure from the ground — it is a bridge,
+/// and the structure step answers for it — so counting it would swamp the
+/// number that matters with the number that does not. It is also what the
+/// bench actually benches, which is what makes the lines comparable: every
+/// step reports the same quantity over the same population against the same
+/// baseline, so the differences down a run attribute a height to the step
+/// that made it.
+pub(crate) fn residual_of(profiles: &[Profile]) -> Residual {
+    let mut r = Residual::new();
+    for p in profiles {
+        for st in p.stations.iter().filter(|st| st.solved == Solved::Grade) {
+            r.push(st.h, st.ground);
+        }
+    }
+    r
 }
 
 /// One axis in the crossing search: a carriageway piece, whatever its
@@ -477,12 +511,39 @@ fn anchor_connectors(profiles: &[Profile]) -> impl Iterator<Item = (i64, i64)> +
 /// Adds the seeds one demand of `amount` puts on the piece `mover`: every
 /// station of the chord it belongs to, so the chord rises level, or the
 /// two stations either side of `at` where the mover is not a span at all.
+/// Seeds the corridor a demand asks for.
+///
+/// **Two readings of the same demand, and the floor is the lesser.**
+///
+/// `seeds` is the displacement the demand asks for, decaying with network
+/// distance: the rule the step has always had. It is right where the ground
+/// falls away — the road ramps down at the class's grade and the decay is
+/// that ramp — and wrong where the ground *climbs*, because it pushes the
+/// road up on top of a climbing ground. South of the Clarens railway the
+/// decay was exactly the street's 15 % while the reference under the same
+/// nine metres fell 73 % (the DEM samples the cutting the road bridges):
+/// the road came out at 58 %, three metres over its reference, and that is
+/// what made every leg of the junction a derived deck.
+///
+/// `heights` is the same demand as an absolute corridor — a height the road
+/// must reach — which stops applying the moment the ground is high enough
+/// on its own. Alone it is wrong the other way: where the ground falls
+/// faster than the corridor decays it holds a road up far from any
+/// crossing, and the loop box read a 78 m lift.
+///
+/// So each node takes the **smaller** of the two, which is the honest
+/// reading of both: lift by no more than the ramp allows, and by no more
+/// than the clearance actually needs here. `sign` is +1 for a lift and −1
+/// for a dip; a dip's corridor is negated so the same max-decay walk gives
+/// the *lowest* ceiling reaching a node.
 fn charge(
     seeds: &mut Vec<(usize, f64)>,
+    heights: &mut Vec<(usize, f64)>,
     mover: usize,
     at: Pt,
     window: (f64, f64),
     amount: f64,
+    sign: f64,
     profiles: &[Profile],
     joins: &HashMap<(i64, i64), Vec<Node>>,
     net: &Net,
@@ -509,6 +570,7 @@ fn charge(
     let Some(r) = at_run.filter(|&r| runs[r].2.is_structure()) else {
         for k in [near.saturating_sub(1), near, (near + 1).min(p.stations.len().saturating_sub(1))] {
             seeds.push((net.base[mover] + k, amount));
+            heights.push((net.base[mover] + k, sign * (p.stations[k].h + sign * amount)));
         }
         return;
     };
@@ -544,6 +606,7 @@ fn charge(
         let last = profiles[i].stations.len().saturating_sub(1);
         for k in k0.saturating_sub(1)..=(k1 + 1).min(last) {
             seeds.push((net.base[i] + k, amount));
+            heights.push((net.base[i] + k, sign * (profiles[i].stations[k].h + sign * amount)));
         }
     }
 }
@@ -620,8 +683,8 @@ impl Net {
     /// still has something left of it when it arrives, and zero where none
     /// does. A max-Dijkstra, so a node is settled once and the answer does
     /// not depend on the order the seeds were found in.
-    fn spread(&self, seeds: &[(usize, f64)]) -> Vec<f64> {
-        let mut val = vec![0.0f64; self.adj.len()];
+    fn spread(&self, seeds: &[(usize, f64)], init: f64) -> Vec<f64> {
+        let mut val = vec![init; self.adj.len()];
         let mut heap: BinaryHeap<Reach> = BinaryHeap::new();
         for &(node, v) in seeds {
             if v > val[node] {
@@ -913,7 +976,13 @@ mod tests {
             ..Default::default()
         });
         let roads = w.roads.as_mut().expect("just set");
-        let (reference, _) = crate::reference::run(w.terrain.as_ref().expect("just set"), roads);
+        let terrain = w.terrain.as_ref().expect("just set");
+        // The step hands its priors back; the pipeline installs them, and so
+        // does a specimen that stands in for it.
+        let (reference, spans, _) = crate::reference::run(terrain, roads);
+        for (way, spans) in roads.ways.iter_mut().zip(spans) {
+            way.spans = spans;
+        }
         let (profiles, _) = crate::profile::run(roads, &reference);
         let (crossings, _, s) = run(roads, &reference, &profiles);
         assert_eq!(s.num("crossings"), 0.0, "{s}");

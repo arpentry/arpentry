@@ -1,4 +1,4 @@
-//! Step 16: the buildings — every footprint stood on the ground, walled,
+//! The buildings: every footprint stood on the ground, walled,
 //! and roofed.
 //!
 //! The facade step reads the footprints as a mask: the ground nothing paved
@@ -160,7 +160,7 @@ pub fn run(terrain: &Terrain, facade: &Facade) -> (Buildings, Summary) {
                 n.failed += 1;
                 continue;
             }
-            n.lost_m2 += (plan_area(&out.roofs, from) - poly::area(&vec![shape])).abs();
+            n.lost_m2 += (plan_area(&out.roofs, from) - poly::area(std::slice::from_ref(&shape))).abs();
         }
     }
     let [flat, gabled, pyramidal, skillion] = n.built;

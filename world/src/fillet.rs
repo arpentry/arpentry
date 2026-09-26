@@ -1,4 +1,4 @@
-//! Step 6: the kerb returns.
+//! The fillets: the kerb returns.
 //!
 //! At a junction the concave corner between two legs is rounded: the curb
 //! return, the fillet that a real kerb wears because a vehicle cannot turn a
@@ -64,6 +64,17 @@ const OVERLAP_M: f64 = 0.01;
 /// a fillet meets the triangle's edge, and it is filled.
 pub const HOLE_MIN_M2: f64 = 0.5;
 
+/// How much ground asphalt a span's corner closing is given around it, in
+/// metres.
+///
+/// The closing reads `2r` of context past a corner and the widest return
+/// radius the priors carry is 8 m ([`crate::width::fillet_m`]), so twenty
+/// covers it. Given the group's whole ground asphalt instead, the pass
+/// would re-close every corner of every leg out to the far end of the
+/// network for no gain; given none, a deck's corner would have nothing to
+/// be rounded against.
+const SPAN_CORNER_M: f64 = 20.0;
+
 /// Slack on a corner's triangle, in metres: the closing's polygonal arc
 /// and the opening's regrowth reach a little past the exact tangent
 /// points, and a little outside the kerbs.
@@ -104,8 +115,91 @@ impl Corner {
 pub fn run(roads: &Roads, surface: &Surface, k: &Kerb, facade: &Facade) -> (Fillet, Summary) {
     let ways: Vec<&Polyline2> = roads.plan.iter().filter(|w| width::family(&w.class) == Family::Carriageway).collect();
     let index = RoadIndex::build(ways.iter().copied());
-    let corners = corners(&surface.carriageway, BEND_MIN_DEG, &ways, &index);
+    let (corners, mut fillets) = returns(&surface.carriageway, &ways, &index);
+    // **And the corners of the junctions that stand on a structure.** A
+    // span's ribbon is no part of `surface.carriageway`, so the closing
+    // above cannot see a junction all of whose legs are decks: it reached
+    // the viewer as raw ribbons with a notch between every pair. The `sheet`
+    // step used to round those itself, after `room` had finished — and an
+    // asphalt that grows after the pavement is laid simply overlaps it, 25
+    // of the junction model's 30 m² of `on_walk`. Rounded here instead, the
+    // pavement answers the way it answers every other return: `laid_back`
+    // below re-lays it outside the new kerb and `senior` cuts it, and the
+    // whole of `room` then runs on the result.
+    //
+    // **Per group, and that is what makes it safe to do early.** The
+    // closing is a local operation over the shapes it is given; given the
+    // family's asphalt with every span in it, it would close the gap
+    // between a viaduct and the street beneath it. `partition::groups` is a
+    // pure function of the pieces, so the grouping is available here as
+    // readily as in `sheet` — what `sheet` has that this step does not is
+    // the *assembly* of finished paving into connected sheets, which is a
+    // later question and not this one.
+    let grouped = crate::partition::groups(&roads.plan, &roads.spans).of;
+    for (family, group, span) in crate::surface::spans_grouped(roads) {
+        if family != Family::Carriageway {
+            continue;
+        }
+        let legs: Vec<&Polyline2> = roads
+            .plan
+            .iter()
+            .zip(&grouped)
+            .filter(|(w, g)| width::family(&w.class) == Family::Carriageway && **g == group)
+            .map(|(w, _)| w)
+            .collect();
+        if legs.is_empty() {
+            continue;
+        }
+        let ground: Shapes = poly::intersect(&surface.carriageway, &poly::dilate(&span, SPAN_CORNER_M));
+        let whole = poly::union_of(&[&ground, &span]);
+        let legs_index = RoadIndex::build(legs.iter().copied());
+        fillets.extend(returns(&whole, &legs, &legs_index).1);
+    }
+    let fillets = poly::union_all(&fillets);
+    // The buildings win over the return as over the kerb it rounds.
+    let carriageway =
+        facade.asphalt(&poly::fill_holes_under(poly::union_of(&[&surface.carriageway, &fillets]), HOLE_MIN_M2));
+    // The pavement follows the kerb return: where a fillet ate into a
+    // pavement, at least the narrowest pavement is laid back outside the
+    // new kerb, so a sidewalk wraps the corner rather than ending at it.
+    let laid_back = poly::dilate(&poly::intersect(&fillets, &k.surface.walk), kerb::WALK_MIN_M);
+    // What the pavement stops at, and what is not bare ground beside a
+    // kerb: the asphalt and the track bed.
+    let mut out = Surface {
+        carriageway,
+        walk: Vec::new(),
+        spanned: surface.spanned.clone(),
+        ballast: surface.ballast.clone(),
+    };
+    let senior = out.senior();
+    let pavement = facade.pavement(&poly::union_of(&[&k.surface.walk, &laid_back]), &senior);
+    let bare = kerb::Bare::new(&senior, &pavement, &facade.footprints);
+    let (gap_n, gap_of) = kerb::kerb_gap(&out.carriageway, &bare, &k.attached);
+    let summary = Summary::new()
+        .with("corners", corners.len())
+        .with("fillets", fillets.len())
+        .with_m2("fillet_m2", poly::area(&fillets))
+        .with_regions("carriageway", &out.carriageway)
+        .with_m2("pavement_m2", poly::area(&pavement))
+        .with_share("kerb_gap", gap_n, gap_of);
+    out.walk = pavement;
+    (Fillet { surface: out, corners, fillets }, summary)
+}
 
+/// The kerb returns of `carriageway`, and the corners they were found at.
+///
+/// Named so [`run`] can ask it twice: once over the family's whole surface,
+/// and once per span group. A span's paving joins its sheet after this step
+/// has run, so a junction all of whose legs are decks — and there is one at
+/// 46.4312, 6.9150 — reached the viewer as raw ribbons with a notch between
+/// every pair. The closing is the same closing; what changes is only which
+/// regions and which ways it is given.
+fn returns(
+    carriageway: &Shapes,
+    ways: &[&Polyline2],
+    index: &RoadIndex,
+) -> (Vec<Corner>, Shapes) {
+    let corners = corners(carriageway, BEND_MIN_DEG, ways, index);
     // One closing per radius, over the carriageway near that radius's
     // triangles: the closing is a local operation, and `2r` of context
     // past a triangle is all it can see from inside it.
@@ -120,7 +214,7 @@ pub fn run(roads: &Roads, surface: &Surface, k: &Kerb, facade: &Facade) -> (Fill
         let r = f64::from_bits(bits);
         let wedges: Shapes = by_radius[&bits].iter().filter_map(|c| c.wedge()).collect();
         let wedges = poly::union_all(&wedges);
-        let context = poly::intersect(&surface.carriageway, &poly::dilate(&wedges, 2.0 * r));
+        let context = poly::intersect(carriageway, &poly::dilate(&wedges, 2.0 * r));
         let closed = poly::erode(&poly::dilate(&context, r), r);
         // The opening: cut back from the kerb, then grown again — sharp, so
         // the notch's own corner is reached, and a little past, so the
@@ -131,28 +225,7 @@ pub fn run(roads: &Roads, surface: &Surface, k: &Kerb, facade: &Facade) -> (Fill
         let gained = poly::intersect(&grown, &closed);
         fillets.extend(poly::intersect(&gained, &wedges));
     }
-    let fillets = poly::union_all(&fillets);
-    // The buildings win over the return as over the kerb it rounds.
-    let carriageway =
-        facade.asphalt(&poly::fill_holes_under(poly::union_of(&[&surface.carriageway, &fillets]), HOLE_MIN_M2));
-    // The pavement follows the kerb return: where a fillet ate into a
-    // pavement, at least the narrowest pavement is laid back outside the
-    // new kerb, so a sidewalk wraps the corner rather than ending at it.
-    let laid_back = poly::dilate(&poly::intersect(&fillets, &k.pavement), kerb::WALK_MIN_M);
-    // What the pavement stops at, and what is not bare ground beside a
-    // kerb: the asphalt and the track bed.
-    let senior = poly::union_of(&[&carriageway, &surface.ballast]);
-    let pavement = facade.pavement(&poly::union_of(&[&k.pavement, &laid_back]), &senior);
-    let bare = kerb::Bare::new(&senior, &pavement, &facade.footprints);
-    let (gap_n, gap_of) = kerb::kerb_gap(&carriageway, &bare, &k.attached);
-    let summary = Summary::new()
-        .with("corners", corners.len())
-        .with("fillets", fillets.len())
-        .with_m2("fillet_m2", poly::area(&fillets))
-        .with_regions("carriageway", &carriageway)
-        .with_m2("pavement_m2", poly::area(&pavement))
-        .with_share("kerb_gap", gap_n, gap_of);
-    (Fillet { corners, fillets, carriageway, pavement }, summary)
+    (corners, poly::union_all(&fillets))
 }
 
 /// The corners of `carriageway`: every vertex of its rings where the
@@ -219,7 +292,7 @@ pub(crate) mod tests {
             let roads = w.roads.as_ref().expect("the drape step ran");
             let facade = w.facade.as_ref().expect("the facade step ran");
             let (ribbons, _) = crate::ribbon::run(roads);
-            let (surface, _) = crate::surface::run(&ribbons, facade);
+            let (surface, _) = crate::surface::run(roads, &ribbons, facade);
             let (k, _) = kerb::run(roads, &surface, facade);
             let (fillet, summary) = run(roads, &surface, &k, facade);
             (ribbons, surface, k, fillet, summary)
@@ -238,7 +311,7 @@ pub(crate) mod tests {
 
     /// What the fillet step added to the carriageway.
     fn gain(w: &World) -> f64 {
-        poly::area(&w.fillet.as_ref().unwrap().carriageway) - poly::area(&w.surface.as_ref().unwrap().carriageway)
+        poly::area(&w.fillet.as_ref().unwrap().surface.carriageway) - poly::area(&w.surface.as_ref().unwrap().carriageway)
     }
 
     #[test]
@@ -250,12 +323,12 @@ pub(crate) mod tests {
         let gain = gain(&w);
         let exact = notch_gain(4, 4.0);
         assert!((gain - exact).abs() < 0.05 * exact, "{gain} vs {exact}: {s}");
-        assert_eq!(f.carriageway.len(), 1);
-        assert_eq!(f.carriageway[0].len(), 1, "no holes: {s}");
+        assert_eq!(f.surface.carriageway.len(), 1);
+        assert_eq!(f.surface.carriageway[0].len(), 1, "no holes: {s}");
         // The corner point of a notch is now asphalt; a point well outside is not.
         let c = 2.75 + 4.0 * (1.0 - 1.0 / 2.0f64.sqrt()) - 0.05;
-        assert!(poly::contains(&f.carriageway, [c, c]), "{c}");
-        assert!(!poly::contains(&f.carriageway, [2.75 + 4.0, 2.75 + 4.0]));
+        assert!(poly::contains(&f.surface.carriageway, [c, c]), "{c}");
+        assert!(!poly::contains(&f.surface.carriageway, [2.75 + 4.0, 2.75 + 4.0]));
     }
 
     #[test]
@@ -267,7 +340,7 @@ pub(crate) mod tests {
         let (w, s) = world("net:dual?gap=4&len=200");
         let f = w.fillet.as_ref().unwrap();
         assert_eq!(f.corners.len(), 0, "{s}");
-        assert_eq!(f.carriageway.len(), 2);
+        assert_eq!(f.surface.carriageway.len(), 2);
         assert_eq!(poly::area(&f.fillets), 0.0);
     }
 
@@ -296,14 +369,14 @@ pub(crate) mod tests {
         // eight right-angle returns, and well over half of them.
         let g = gain(&w);
         assert!(g > 0.5 * notch_gain(8, 4.0) && g < notch_gain(8, 4.0), "{g}: {s}");
-        assert_eq!(f.carriageway.len(), 1, "{s}");
-        assert_eq!(f.carriageway[0].len(), 2, "the island is the only hole: {s}");
+        assert_eq!(f.surface.carriageway.len(), 1, "{s}");
+        assert_eq!(f.surface.carriageway[0].len(), 2, "the island is the only hole: {s}");
         assert!(s.to_string().contains("kerb_gap=0/"), "{s}");
         // The pavement lost what the fillets took; with a 5 m sidewalk ring
         // there was pavement past every return already, so nothing is added.
-        let before = poly::area(&w.kerb.as_ref().unwrap().pavement);
-        let taken = poly::area(&poly::intersect(&w.kerb.as_ref().unwrap().pavement, &f.fillets));
-        assert!((poly::area(&f.pavement) - (before - taken)).abs() < 1e-3);
+        let before = poly::area(&w.kerb.as_ref().unwrap().surface.walk);
+        let taken = poly::area(&poly::intersect(&w.kerb.as_ref().unwrap().surface.walk, &f.fillets));
+        assert!((poly::area(&f.surface.walk) - (before - taken)).abs() < 1e-3);
     }
 
     #[test]
@@ -329,8 +402,8 @@ pub(crate) mod tests {
         // Just outside the return's arc there is pavement.
         let c = 2.75 + 4.0 * (1.0 - 1.0 / 2.0f64.sqrt());
         let probe = [c + 0.2, c + 0.2];
-        assert!(!poly::contains(&f.carriageway, probe));
-        assert!(poly::contains(&f.pavement, probe), "{s}");
+        assert!(!poly::contains(&f.surface.carriageway, probe));
+        assert!(poly::contains(&f.surface.walk, probe), "{s}");
         assert!(s.to_string().contains("kerb_gap=0/"), "{s}");
     }
 
@@ -342,14 +415,14 @@ pub(crate) mod tests {
         let (w, s) = world("net:tee?hook=5&len=200");
         let f = w.fillet.as_ref().unwrap();
         assert_eq!(f.corners.len(), 2, "{s}");
-        assert!(!poly::contains(&f.carriageway, [10.0, 5.0]), "the inside of the hook: {s}");
-        assert!(!poly::contains(&f.carriageway, [8.0, 5.0]), "{s}");
+        assert!(!poly::contains(&f.surface.carriageway, [10.0, 5.0]), "the inside of the hook: {s}");
+        assert!(!poly::contains(&f.surface.carriageway, [8.0, 5.0]), "{s}");
         // Nor the half-metre between the hook's end and the leg's kerb.
-        assert!(!poly::contains(&f.carriageway, [3.0, 10.0]), "{s}");
+        assert!(!poly::contains(&f.surface.carriageway, [3.0, 10.0]), "{s}");
         // The tee's own returns are still there.
         let c = 2.75 + 4.0 * (1.0 - 1.0 / 2.0f64.sqrt()) - 0.05;
-        assert!(poly::contains(&f.carriageway, [-c, c]), "{s}");
-        assert!(poly::contains(&f.carriageway, [c, c]), "{s}");
+        assert!(poly::contains(&f.surface.carriageway, [-c, c]), "{s}");
+        assert!(poly::contains(&f.surface.carriageway, [c, c]), "{s}");
     }
 
     #[test]

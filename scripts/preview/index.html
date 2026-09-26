@@ -148,7 +148,18 @@ function load(tag) {
         // exception — it carries NORMAL and COLOR_0.
         let computed = 0;
         gltf.scene.traverse(o => {
-          if (o.isMesh && !o.geometry.attributes.normal) { o.geometry.computeVertexNormals(); computed++; }
+          // glTF: "when normals are not specified, client implementations
+          // MUST calculate flat normals", and `gltf::triangles` leans on
+          // that — a mesh of planar pieces wants its faces flat. Three.js
+          // computeVertexNormals() on an *indexed* geometry averages across
+          // every face sharing a vertex instead, so a wall swept along an
+          // outline came out smeared and read as a defect it is not. The
+          // de-index is what makes the page show what the file says.
+          if (o.isMesh && !o.geometry.attributes.normal) {
+            if (o.geometry.index) o.geometry = o.geometry.toNonIndexed();
+            o.geometry.computeVertexNormals();
+            computed++;
+          }
           if (o.isMesh) for (const m of [o.material].flat()) if (m) m.side = THREE.DoubleSide;
         });
         resolve({ model: gltf.scene, computed });

@@ -40,33 +40,11 @@
 mod tests {
     use crate::pipeline::tests::{built, upto};
     use crate::step::Step;
-    use crate::world::{Tri, World};
+    use crate::world::World;
 
     /// A world built through the structure step.
     fn world(ground: &str, net: &str) -> World {
         built(ground, net, None, 5.0, &upto(Step::Structure)).0
-    }
-
-    /// The worst height disagreement, in metres, where two meshes put a
-    /// vertex at the same plan position.
-    ///
-    /// This is the question the seam asks, and `abutment` does not: that
-    /// compares one point on the axis — a span's end *station* against the
-    /// ground piece's — before any blending, and says nothing about the
-    /// surface across its width.
-    fn seam(a: &Tri, b: &Tri) -> f64 {
-        let key = |p: &[f64; 3]| [(p[0] / 1e-3).round() as i64, (p[1] / 1e-3).round() as i64];
-        let mut at: std::collections::HashMap<[i64; 2], f64> = std::collections::HashMap::new();
-        for p in &b.positions {
-            at.entry(key(p)).and_modify(|h| *h = h.min(p[2])).or_insert(p[2]);
-        }
-        let mut worst = 0.0f64;
-        for p in &a.positions {
-            if let Some(h) = at.get(&key(p)) {
-                worst = worst.max((h - p[2]).abs());
-            }
-        }
-        worst
     }
 
     /// **Step 0 — the specimen.** Both checks below are blocked on the same
@@ -118,25 +96,42 @@ mod tests {
         assert_eq!(car[0].2.len(), 1, "and one region, not {}", car[0].2.len());
     }
 
-    /// **I2 — two groups that share a connector agree at it.** The surface
-    /// must cross a handover with no step: one function, evaluated once, for
-    /// both sides.
+    /// **I2 — the handover is not a boundary at all.** The surface must
+    /// cross it with no step, and the way it does is that there is nothing
+    /// to cross: the deck and its approaches are one polygon of one sheet,
+    /// meshed once and lifted by one field.
     ///
-    /// Today they are two functions, and on the loop box the seam reads p90
-    /// 0.432 m, max 2.79 m, with 28.6 % of seams over 10 cm.
+    /// The check `seam` was written for compared two meshes and asked how
+    /// far apart they stood — p90 0.432 m, max 2.79 m on the loop box, 28.6
+    /// % of seams over 10 cm. There is no second mesh to compare against
+    /// now, so what is asserted is that there is only one, that it is one
+    /// region, and that its rim closes.
     #[test]
-    #[ignore = "step 0: `net:` cannot put a span on a junction yet"]
     fn a_junction_on_a_structure_is_one_surface() {
-        let w = world(GORGE, JUNCTION_ON_A_DECK);
-        let b = w.bench.as_ref().expect("the bench step ran");
-        let s = w.structure.as_ref().expect("the structure step ran");
+        let (w, ran) = built(GORGE, JUNCTION_ON_A_DECK, None, 5.0, &upto(Step::Structure));
+        let s = ran.last();
+        let bench = w.bench.as_ref().expect("the bench step ran");
+        let st = w.structure.as_ref().expect("the structure step ran");
         assert!(
-            !s.roadway.positions.is_empty(),
-            "the specimen must put a span on the junction, and `{JUNCTION_ON_A_DECK}` does not build one: \
-             that is plan step 0, and until it exists this check states nothing"
+            st.roadway.positions.is_empty(),
+            "the structure step still lays a roadway: {s}"
         );
-        let step = seam(&s.roadway, &b.carriageway);
-        assert!(step < 1e-6, "the seam steps by {step:.3} m: the two sides are two functions");
+        assert!(!bench.carriageway.positions.is_empty(), "and the bench lays one: {s}");
+        // One sheet, one region: the tee's three ground legs and its three
+        // spans, with no boundary anywhere in it.
+        let sheets = w.sheets.as_ref().expect("the sheet step ran");
+        let car: Vec<&crate::world::Sheet> =
+            sheets.of(crate::width::Family::Carriageway).collect();
+        assert_eq!(car.len(), 1, "one sheet: {s}");
+        assert_eq!(car[0].shapes.len(), 1, "and one region: {s}");
+        assert!(car[0].spanning && !car[0].spans.is_empty(), "holding the spans: {s}");
+        // And the rim closes. `unmet` counts rim vertices of the paved
+        // mesh that neither meet the ground nor are excluded as a deck's
+        // own edge, a portal or a seam inside the room — which is what a
+        // handover between two constructions showed up as. There is one
+        // construction, and it reads zero.
+        let b = ran.of(Step::Bench);
+        assert_eq!(b.num("unmet"), 0.0, "the surface does not close: {b}");
     }
 
     /// **The lap goes to zero by construction.** `structure` reports `lap` —
@@ -147,12 +142,18 @@ mod tests {
     /// while the soffit spanned on. It measures a boundary two constructions
     /// do not share, so after step 5 there is nothing left to measure.
     #[test]
-    #[ignore = "step 0: `net:` cannot put a span on a junction yet"]
     fn the_lap_is_gone() {
-        let (_, ran) =
+        let (w, ran) =
             built(GORGE, JUNCTION_ON_A_DECK, None, 5.0, &upto(Step::Structure));
         let s = ran.last();
         assert!(s.num("decks") > 0.0, "the specimen must build a deck on the junction: plan step 0 — {s}");
-        assert_eq!(s.num("lap"), 0.0, "{s}");
+        // `lap` measured roadway drawn over ground the carriageway also
+        // paved: a boundary two constructions did not share. There is one
+        // construction now, so what it measured cannot be measured — the
+        // number is gone from the summary rather than reading zero, which
+        // is the honest way for a measurement to end.
+        assert_eq!(s.get("lap"), None, "`lap` still has a subject: {s}");
+        let st = w.structure.as_ref().expect("the structure step ran");
+        assert!(st.roadway.positions.is_empty(), "there is a roadway to lap with: {s}");
     }
 }

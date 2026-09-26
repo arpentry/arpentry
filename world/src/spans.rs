@@ -77,7 +77,7 @@ mod tests {
 
     /// The length of roadway the structure step swept, in metres.
     fn roadway_m(r: &Ran) -> f64 {
-        r.structure.num("roadway_m2") / W
+        r.structure.num("span_m2") / W
     }
 
     /// A 30 m slot 40 m across, at the middle of a 200 m way: the way is
@@ -177,8 +177,6 @@ mod tests {
         let r = run(GORGE, "net:straight?span=0.30,0.70&kind=bridge");
         assert_eq!(r.structure.num("decks"), 1.0, "still one deck: {}", r.structure);
         assert!((roadway_m(&r) - 40.0).abs() < 6.0, "trimmed to the rims: {}", r.structure);
-        // Every station of what is left is a deck, so nothing is seated.
-        assert_eq!(r.structure.num("blocks"), 0.0, "seated on a block: {}", r.structure);
     }
 
     /// **A short annotation grows to the rims.** The mapper's span is 20 m

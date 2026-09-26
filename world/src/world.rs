@@ -30,6 +30,8 @@ pub struct World {
     pub kerb: Option<Kerb>,
     pub fillet: Option<Fillet>,
     pub room: Option<Room>,
+    pub sheets: Option<Sheets>,
+    pub arrangement: Option<crate::arrangement::Arrangement>,
     pub mesh: Option<Mesh>,
     pub bench: Option<Bench>,
     pub structure: Option<Structure>,
@@ -51,6 +53,8 @@ impl World {
             kerb: None,
             fillet: None,
             room: None,
+            sheets: None,
+            arrangement: None,
             mesh: None,
             bench: None,
             structure: None,
@@ -342,6 +346,16 @@ pub enum Solved {
 /// whole of it, so no mapper's split point is an anchor (R1).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Profile {
+    /// The way this profile is of: an index into [`Roads::ways`].
+    ///
+    /// Not every way solves one ([`crate::reference::solving_of`]), so the
+    /// profiles are a *subset* of the ways in their order, and every step
+    /// holding a profile needs the way behind it — the crossing for the
+    /// level ordinals, the partition to write the cut back, the sheet to
+    /// group the pieces. They each used to recover it by re-running the
+    /// filter and inverting it, which made a predicate in one module an
+    /// invariant in four. It is recorded here instead.
+    pub way: usize,
     pub id: String,
     pub class: String,
     pub width_m: f64,
@@ -520,10 +534,31 @@ pub struct Ribbons {
 /// The paved surface: one set of disjoint regions per family, none
 /// overlapping another — the asphalt has been subtracted from the ballast
 /// and both from the walk.
+///
+/// **Four steps produce one of these, and each is the surface as it stood
+/// when that step finished**: the surface step lays it, the kerb fills the
+/// strip to every attached sidewalk, the fillet rounds the junction corners,
+/// the room paves the edges. A step passes through what it did not change,
+/// so the last one to run holds the whole of the paving and "which layer is
+/// the latest" is not a question anything has to answer — it is the last
+/// layer that laid any. There used to be a `Paving<'a>` beside this: the
+/// same four fields, borrowed, assembled by the pipeline out of whichever
+/// layer had filled which, with a runtime branch in it for the one caller
+/// that ran before the room did.
 #[derive(Debug, Clone, Default)]
 pub struct Surface {
     pub carriageway: Shapes,
     pub walk: Shapes,
+    /// The asphalt that is there but not on the ground: every solving
+    /// family's **span** ribbons, grouped and unioned.
+    ///
+    /// Not paving — `carriageway` is the ground pieces' and stays so, which
+    /// is what keeps a viaduct no part of the street beneath it until
+    /// [`crate::sheet`] has grouped them. This is the *seniority* half of
+    /// the same fact: a pavement may not be laid where a deck already is,
+    /// and every step that decides where the walk may go has to be able to
+    /// ask. Read through [`Surface::senior`].
+    pub spanned: Shapes,
     /// The railways' track bed. It stops at the asphalt (a level crossing
     /// is the road's surface with the rails through it) and at nothing
     /// else: not at a building, because a station roof over its platforms
@@ -541,9 +576,10 @@ impl Surface {
         }
     }
 
-    /// What a pavement stops at: the asphalt and the ballast together.
+    /// What a pavement stops at: the asphalt, the track bed and the spans
+    /// together.
     pub fn senior(&self) -> Shapes {
-        poly::union_of(&[&self.carriageway, &self.ballast])
+        poly::union_of(&[&self.carriageway, &self.ballast, &self.spanned])
     }
 }
 
@@ -551,10 +587,12 @@ impl Surface {
 /// sidewalk and its kerb filled, so its inner edge is the kerb.
 #[derive(Debug, Clone, Default)]
 pub struct Kerb {
+    /// The paved surface as this step leaves it: `walk` is now
+    /// `(walk ∪ rungs) − carriageway`, and the other three are the surface
+    /// step's, untouched.
+    pub surface: Surface,
     /// The ladder that filled the strips, unioned; kept for the plan view.
     pub rungs: Shapes,
-    /// `(walk ∪ rungs) − carriageway`.
-    pub pavement: Shapes,
     /// Every attached station, for the kerb-gap check downstream.
     pub attached: Vec<crate::kerb::Attached>,
 }
@@ -563,19 +601,22 @@ pub struct Kerb {
 /// pavement re-cut by them.
 #[derive(Debug, Clone, Default)]
 pub struct Fillet {
+    /// The paved surface as this step leaves it: the carriageway with its
+    /// returns, and the pavement re-cut by them.
+    pub surface: Surface,
     pub corners: Vec<crate::fillet::Corner>,
     /// What the closing added, unioned.
     pub fillets: Shapes,
-    pub carriageway: Shapes,
-    pub pavement: Shapes,
 }
 
 /// The room filled: the pavement extended to every wall within reach.
 #[derive(Debug, Clone, Default)]
 pub struct Room {
+    /// The paved surface as this step leaves it — and, since this is the
+    /// last step that lays any, as it finally stands.
+    pub surface: Surface,
     /// The bands and rungs, unioned; kept for the plan view.
     pub room: Shapes,
-    pub pavement: Shapes,
     /// The kerb stations `kerb_gap` still counts as bare after this step,
     /// for the plan view and for finding them.
     pub gaps: Vec<[f64; 2]>,
@@ -604,6 +645,14 @@ impl Tri {
         self.positions.extend_from_slice(&q);
         self.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
+
+    /// `other`'s triangles added on vertices of their own: its indices are
+    /// shifted past this mesh's positions, never welded into them.
+    pub fn append(&mut self, other: Tri) {
+        let base = self.positions.len() as u32;
+        self.positions.extend(other.positions);
+        self.indices.extend(other.indices.iter().map(|i| i + base));
+    }
 }
 
 /// The paved surface as triangles, one mesh per family, every triangle
@@ -624,6 +673,17 @@ pub struct Mesh {
     /// face can close it. Positions `..walk_split` are the near sheet and
     /// `walk_split..` the far one.
     pub walk_split: usize,
+    /// Which [`Sheet`] each carriageway vertex came from, as an index into
+    /// [`Sheets::sheets`] (`u32::MAX` for a face in no sheet); the same for
+    /// the ballast.
+    ///
+    /// The same device as `walk_split` and for the same reason: the bench
+    /// lifts each sheet by its own field, so it has to know which vertex
+    /// belongs to which, and a parallel array says so without splitting
+    /// [`Tri`] into one buffer per sheet. Sheets are meshed one at a time
+    /// and joined, so a vertex belongs to exactly one.
+    pub carriageway_sheet: Vec<u32>,
+    pub ballast_sheet: Vec<u32>,
 }
 
 /// The room at the height the profile solved: the mesh step's triangles,
@@ -635,11 +695,6 @@ pub struct Bench {
     pub pavement: Tri,
     /// The track bed at the height its railway solved.
     pub ballast: Tri,
-    /// The face that closes the step between the ballast and a surface of
-    /// another family beside it: a street terrace above a cutting, a
-    /// railway on its embankment beside a road. Both are the room, so the
-    /// ground has a hole under the seam and the wall does not reach it.
-    pub rail: Tri,
     /// The engineered ground: the terrain with the room cut out of it and
     /// a batter run from the room's outline down to the natural ground.
     pub ground: Tri,
@@ -668,20 +723,13 @@ pub struct Structure {
     /// The same for a railway's spans: its track bed over a deck and
     /// through a bore.
     pub track: Tri,
-    /// The solid under every deck run: the slab where its soffit clears
-    /// the ground and the abutment block where it does not, which is one
-    /// body and one surface.
+    /// The solid under every deck run: a slab of constant thickness under
+    /// the roadway, full length — a continuous surface in the air.
     pub deck: Tri,
     pub bore: Tri,
-    /// The columns under the decks that fly high enough to need them.
-    pub pier: Tri,
     /// Every span's outline in plan, with the kind the source mapped it,
     /// for the plan view.
     pub plan: Vec<(Kind, Shapes)>,
-    /// Every pier's footprint in plan, for the plan view: where a column
-    /// stands is a 2D fact, and the one rule it has — that it may not
-    /// stand in the road it crosses — is a 2D rule.
-    pub piers: Vec<Shapes>,
 }
 
 /// The buildings standing on the terrain.
@@ -708,18 +756,94 @@ impl Facade {
     }
 }
 
-/// The paved surface as it stands: the two families, whichever step laid
-/// them last.
+/// One paved sheet: every piece of one group of the piece graph, as one
+/// set of regions.
 ///
-/// The four steps that read a finished surface — the room, the mesh, the
-/// bench and the structure — take one of these, so each reads the surface
-/// it was handed rather than asking a world which of four layers is the
-/// latest. Which one it is handed is [`crate::pipeline`]'s to know, and it
-/// is written there as a literal.
-#[derive(Debug, Clone, Copy)]
-pub struct Paving<'a> {
-    pub carriageway: &'a Shapes,
-    pub walk: &'a Shapes,
-    /// The track bed: laid once by the surface step and re-cut by nothing.
-    pub ballast: &'a Shapes,
+/// **Two sheets are never unioned.** That is the whole reason they exist:
+/// a viaduct and the street it flies over are two groups, they overlap in
+/// plan, and merging them would draw one surface where there are two. Two
+/// pieces that share a connector are one group, and within a group the
+/// ground and the spans are one polygon with no boundary between them —
+/// which is what makes the seam vanish rather than get smaller
+/// (`data/plans/one-surface-at-a-junction-2026-09-14.md`).
+///
+/// Only the families that solve a profile get sheets
+/// ([`Family::solves`]): a footbridge has no profile, so a walk span has
+/// no field to be lifted by and keeps the structure step's sweep for now.
+/// The pavement is one sheet's worth of regions and is not partitioned.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sheet {
+    pub family: Family,
+    /// The group of [`crate::partition::groups`] this sheet is.
+    pub group: usize,
+    pub shapes: Shapes,
+    /// The part of `shapes` that is over a span, kept apart from the whole
+    /// because the ground steps have to be able to tell.
+    ///
+    /// A deck is paved but it is not *earthwork*: the fill under a road is
+    /// the bench's to owe and the standoff under a deck is the structure's,
+    /// so `cut`, `fill` and `walled` count a vertex here and read the
+    /// deck's own clearance as a six-metre embankment nobody built. Nor
+    /// does a deck's rim meet the ground — its soffit closes it — so
+    /// `unmet` must not look for the ground under it either.
+    pub spans: Shapes,
+    /// The axes this sheet is lifted by: an index into
+    /// [`Profiles::profiles`] and the arc range of one of that way's
+    /// pieces. The bench builds one height field per sheet from exactly
+    /// these, so a vertex is a function of its own sheet's stations and of
+    /// nothing else (invariant I1).
+    ///
+    /// A *profile* index rather than a way index, because the bench holds
+    /// the profiles and not the roads, and which ways solve is the
+    /// reference step's answer ([`crate::reference::solving_indices`]) —
+    /// resolved here, where the roads are, rather than carried as a
+    /// question for a step that cannot answer it.
+    pub axes: Vec<(usize, f64, f64)>,
+    /// The same for the stretches that are over a span: the chords of the
+    /// decks in `spans`.
+    ///
+    /// The bench builds a field from each and asks the one belonging to
+    /// the surface the vertex is on. **The two overlap by a station at
+    /// every boundary between them** ([`crate::bench`] extends both), and
+    /// that is what makes the handover continuous: the profile is one
+    /// curve through its own abutment, so two fields that both sample it
+    /// there agree there — and both see the connector, so both blend at
+    /// the junction. Built flush instead, the ground's axes stopped short
+    /// of the connector, only the chords' field had a joint to blend at,
+    /// and the surface creased along the mask's edge.
+    pub chords: Vec<(usize, f64, f64)>,
+    /// Whether the group holds any piece off the ground. A sheet that
+    /// spans is the one with a handover in it.
+    pub spanning: bool,
+}
+
+/// The paved surface as sheets that may merge.
+#[derive(Debug, Clone, Default)]
+pub struct Sheets {
+    pub sheets: Vec<Sheet>,
+}
+
+/// Every sheet's regions, flattened and not unioned: the paved surface as
+/// the sheets drew it. Taken by slice so a step can ask it of the sheets it
+/// is still building, before they are a [`Sheets`].
+pub fn shapes(sheets: &[Sheet]) -> Shapes {
+    sheets.iter().flat_map(|s| s.shapes.iter().cloned()).collect()
+}
+
+impl Sheets {
+    /// The sheets of `family`, in the order they were built.
+    pub fn of(&self, family: Family) -> impl Iterator<Item = &Sheet> {
+        self.sheets.iter().filter(move |s| s.family == family)
+    }
+
+    /// Every sheet's regions, flattened and not unioned.
+    pub fn shapes(&self) -> Shapes {
+        shapes(&self.sheets)
+    }
+
+    /// Everywhere the paving is over a span rather than on the ground:
+    /// what the earthwork stages must not read as earthwork.
+    pub fn spanned(&self) -> Shapes {
+        poly::union_all(&self.sheets.iter().flat_map(|s| s.spans.iter().cloned()).collect())
+    }
 }

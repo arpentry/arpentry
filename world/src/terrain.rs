@@ -1,4 +1,4 @@
-//! Step 1: the terrain mesh.
+//! The terrain: a mesh over the bbox, one height per vertex from the DEM.
 //!
 //! A regular lattice over the bbox, one height per vertex from the DEM, two
 //! triangles per cell. Nothing engineered yet — no benches, no breaklines —

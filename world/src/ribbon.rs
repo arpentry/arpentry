@@ -1,4 +1,4 @@
-//! Step 3: every way is a polygon.
+//! The ribbons: every way as a polygon.
 //!
 //! The mapped centreline, buffered to the width the reader gave it
 //! ([`crate::width::of_way`]), with round joins ([`crate::poly`] says why

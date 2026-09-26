@@ -136,16 +136,26 @@ const GRADE_EPS: f64 = 1e-9;
 
 /// Solves the profile of every carriageway piece of the world.
 pub fn run(roads: &Roads, reference: &Reference) -> (Profiles, Summary) {
-    let ways = crate::reference::solving(roads);
-    let (profiles, loose) = solve(reference, &ways);
+    let (profiles, loose) = solve(reference, &roads.ways);
+    let summary = measure(&profiles, loose);
+    (Profiles { profiles }, summary)
+}
 
+/// What the solve came to, as the run's one line.
+///
+/// Kept apart from [`run`] because it is the larger half by an order of
+/// magnitude — nineteen counters over every station of every profile, against
+/// two lines that do the work — and reading `run` should say what the step
+/// makes, not how it is scored. Nothing here decides anything: it is a
+/// function of the profiles alone, so a metric can be added, moved or read
+/// without going near the solve.
+fn measure(profiles: &[Profile], loose: Loose) -> Summary {
     let mut stations = 0usize;
     let (mut pairs, mut steep) = (0usize, 0usize);
     let (mut street_pairs, mut street_steep) = (0usize, 0usize);
     let (mut grounded, mut floating) = (0usize, 0usize);
     let (mut runs, mut kinked, mut tightest) = (0usize, 0usize, f64::INFINITY);
     let (mut eng_runs, mut eng_short) = (0usize, 0usize);
-    let mut off: Vec<f64> = Vec::new();
     let (mut deck, mut bridge) = (0usize, 0usize);
     let (mut bore, mut tunnel) = (0usize, 0usize);
     let (mut spans, mut degraded) = (0usize, 0usize);
@@ -174,7 +184,7 @@ pub fn run(roads: &Roads, reference: &Reference) -> (Profiles, Summary) {
             }
         }
     }
-    for p in &profiles {
+    for p in profiles {
         stations += p.stations.len();
         let g = grade::of(&p.class);
         // The ceiling this way was actually held to: a railway's measured
@@ -242,7 +252,6 @@ pub fn run(roads: &Roads, reference: &Reference) -> (Profiles, Summary) {
                     if (st.h - st.reference).abs() > g.deviation_m + 1e-9 {
                         floating += 1;
                     }
-                    off.push((st.h - st.ground).abs());
                 }
                 continue;
             }
@@ -267,9 +276,7 @@ pub fn run(roads: &Roads, reference: &Reference) -> (Profiles, Summary) {
     }
     let step = ends.values().map(|(lo, hi)| hi - lo).fold(0.0f64, f64::max);
     let level = meet.values().filter(|m| m.shared && m.rail).map(|m| m.hi - m.lo).fold(0.0f64, f64::max);
-    off.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
-    let q = |f: f64| off.get(((off.len() as f64 - 1.0) * f).round() as usize).copied().unwrap_or(0.0);
-    let summary = Summary::new()
+    Summary::new()
         .with("ways", profiles.len())
         .with("stations", stations)
         .with_share("grade", steep, pairs)
@@ -282,14 +289,13 @@ pub fn run(roads: &Roads, reference: &Reference) -> (Profiles, Summary) {
         .with("step", format!("{step:.3}"))
         .with("contacts", loose.contacts)
         .with("level", format!("{level:.3}"))
-        .with("off", format!("{:.2}/{:.2}/{:.2}", q(0.5), q(0.9), q(1.0)))
         .with_share("decks", deck, bridge)
         .with_share("bores", bore, tunnel)
         .with_share("degraded", degraded, spans)
         .with("dangling", loose.dangling)
         .with("clamped", loose.clamped)
-        .with("unanchored", loose.unanchored);
-    (Profiles { profiles }, summary)
+        .with("unanchored", loose.unanchored)
+        .with_residual(crate::crossing::residual_of(profiles))
 }
 
 /// One connector as the summary reads it: the heights the ways put there.
@@ -315,10 +321,13 @@ pub struct Loose {
     pub contacts: usize,
 }
 
-/// The profiles of `ways` against `reference`, and what could not be
-/// anchored. `reference.axes[i]` is `ways[i]`'s, which is what
-/// [`crate::reference::solving`] guarantees for both callers.
-pub fn solve(reference: &Reference, ways: &[&Way]) -> (Vec<Profile>, Loose) {
+/// The profiles of the ways `reference` was built for, and what could not be
+/// anchored.
+///
+/// `ways` is the world's whole list; `reference.axes[i].way` indexes it, so
+/// the caller neither filters nor orders anything and the correspondence
+/// cannot be got wrong.
+pub fn solve(reference: &Reference, ways: &[Way]) -> (Vec<Profile>, Loose) {
     solve_on(reference, ways, &[])
 }
 
@@ -332,14 +341,17 @@ pub fn solve(reference: &Reference, ways: &[&Way]) -> (Vec<Profile>, Loose) {
 /// connector, the value the grade limiter smooths and the centre of the
 /// deviation box all read `ground + floor`, while [`Station::ground`]
 /// stays the natural ground the whole way down — so the consequence rule
-/// of step 9 still asks "how far off the *hill* does this stand", and an
+/// of this step still asks "how far off the *hill* does this stand", and an
 /// approach lifted past [`STRUCTURE_MIN_M`] reads as the deck it is.
 pub fn solve_on(
     reference: &Reference,
-    ways: &[&Way],
+    ways: &[Way],
     floor: &[Vec<f64>],
 ) -> (Vec<Profile>, Loose) {
-    assert_eq!(reference.axes.len(), ways.len(), "the reference was built for other ways");
+    // The axes *are* the list of what solves, in order; `way(i)` is the way
+    // the i-th of them is of.
+    let n = reference.axes.len();
+    let way = |i: usize| &ways[reference.axes[i].way];
     // Stations, from the reference: it stationed these axes already — at the
     // span boundaries too — so the profile and the surface it is solved
     // against can never be sampled at different places.
@@ -377,7 +389,7 @@ pub fn solve_on(
         .collect();
 
     let runs: Vec<Vec<(usize, usize, Kind)>> =
-        (0..ways.len()).map(|i| station_runs(&stationed[i], &ways[i].spans)).collect();
+        (0..n).map(|i| station_runs(&stationed[i], &way(i).spans)).collect();
     let last_of = |i: usize| stationed[i].len().saturating_sub(1);
 
     // **Contacts.** Where a railway shares a connector with another way and
@@ -392,8 +404,8 @@ pub fn solve_on(
         // Per connector: the first way at it, whether another way is, and
         // the first railway's reference.
         let mut at: HashMap<(i64, i64), (usize, bool, Option<f64>)> = HashMap::new();
-        for i in 0..ways.len() {
-            let rail = width::family(&ways[i].class) == Family::Rail;
+        for i in 0..n {
+            let rail = width::family(&way(i).class) == Family::Rail;
             for &(k0, k1, kind) in &runs[i] {
                 if !on_ground(kind) {
                     continue;
@@ -417,7 +429,7 @@ pub fn solve_on(
     // rather than a constraint that can fail. At a contact the railway's
     // height is the junction's.
     let mut anchors: HashMap<(i64, i64), f64> = HashMap::new();
-    for i in 0..ways.len() {
+    for i in 0..n {
         if stationed[i].is_empty() {
             continue;
         }
@@ -438,9 +450,9 @@ pub fn solve_on(
     // chord will start from wherever the ground solve lands, which is the
     // whole point.
     let mut h: Vec<Vec<f64>> = target.clone();
-    for i in 0..ways.len() {
-        let g = grade::of(&ways[i].class);
-        let ceiling = ceiling(&ways[i].class, &stationed[i], &ways[i].spans);
+    for i in 0..n {
+        let g = grade::of(&way(i).class);
+        let ceiling = ceiling(&way(i).class, &stationed[i], &way(i).spans);
         // A pin at station `k`: the anchor at a way end, else a contact.
         let pin_at = |k: usize| -> Option<f64> {
             let key = connector(stationed[i][k].p);
@@ -480,7 +492,7 @@ pub fn solve_on(
     // is of one kind. A mouth shared by a bore and a deck is not overruled —
     // there is no side of the ground both belong on.
     let mut ground_at: HashMap<(i64, i64), (f64, bool, bool)> = HashMap::new();
-    for i in 0..ways.len() {
+    for i in 0..n {
         for &(k0, k1, kind) in &runs[i] {
             if !kind.is_structure() {
                 continue;
@@ -630,7 +642,7 @@ pub fn solve_on(
             _ => {
                 loose.unanchored += 1;
                 let vals = target[c.way][c.k0..=c.k1].iter().copied();
-                let kind = ways[c.way].spans.iter().find(|s| s.kind.is_structure()).map(|s| s.kind);
+                let kind = way(c.way).spans.iter().find(|s| s.kind.is_structure()).map(|s| s.kind);
                 let flat = match kind {
                     Some(Kind::Tunnel(_)) => vals.fold(f64::INFINITY, f64::min),
                     _ => vals.fold(f64::NEG_INFINITY, f64::max),
@@ -646,7 +658,7 @@ pub fn solve_on(
         }
     }
 
-    let profiles = (0..ways.len())
+    let profiles = (0..n)
         .map(|i| {
             let mut sts = stationed[i].clone();
             for (k, st) in sts.iter_mut().enumerate() {
@@ -671,10 +683,11 @@ pub fn solve_on(
                 }
             }
             Profile {
-                id: ways[i].id.clone(),
-                class: ways[i].class.clone(),
-                width_m: ways[i].width_m,
-                spans: ways[i].spans.clone(),
+                way: reference.axes[i].way,
+                id: way(i).id.clone(),
+                class: way(i).class.clone(),
+                width_m: way(i).width_m,
+                spans: way(i).spans.clone(),
                 stations: sts,
             }
         })
@@ -941,7 +954,7 @@ pub(crate) mod tests {
         assert_eq!(s.num("grade"), 0.0);
         assert_eq!(s.num("float"), 0.0);
         assert_eq!(s.num("step"), 0.0);
-        assert_eq!(s.get("off"), Some("0.00/0.00/0.00"));
+        assert_eq!(s.get("dem_residual"), Some("0.00/0.00/0.00"));
     }
 
     #[test]
@@ -1130,9 +1143,8 @@ pub(crate) mod tests {
                 (10.0, 30.0, Kind::Ground),
             ]),
         ];
-        let refs: Vec<&Way> = ways.iter().collect();
         let t = &ground;
-        let (profiles, loose) = solve(&crate::reference::of(&refs, t), &refs);
+        let (profiles, loose) = solved(&ways, t);
         assert_eq!(loose, Loose::default());
         let (a, b) = (&profiles[0], &profiles[1]);
         let joint = a.stations[a.stations.len() - 1].h;
@@ -1170,18 +1182,24 @@ pub(crate) mod tests {
         }
     }
 
+    /// The profiles of a hand-made way list over `t`, the way the pipeline
+    /// gets them: a reference for the ways that solve, then the solve.
+    fn solved(ways: &[Way], t: &crate::world::Terrain) -> (Vec<Profile>, Loose) {
+        solve(&crate::reference::of(ways, &crate::reference::solving_of(ways), t), ways)
+    }
+
     #[test]
     fn an_unreached_span_lies_flat_and_is_counted() {
         let (ground, _) = terrain::run(&extent(), &mut dem("hill?amp=-40&radius=30"), 5.0, usize::MAX);
         let bridge = way("lone", vec![[-50.0, 0.0], [50.0, 0.0]], vec![(0.0, 100.0, Kind::Bridge(1))]);
         let t = &ground;
-        let (profiles, loose) = solve(&crate::reference::of(&[&bridge], t), &[&bridge]);
+        let (profiles, loose) = solved(&[bridge.clone()], t);
         assert_eq!(loose, Loose { dangling: 1, unanchored: 1, clamped: 0, contacts: 0 });
         let top = profiles[0].stations.iter().map(|st| st.ground).fold(f64::NEG_INFINITY, f64::max);
         assert!(profiles[0].stations.iter().all(|st| st.h == top));
         let mut tunnel = bridge.clone();
         tunnel.spans[0].kind = Kind::Tunnel(-1);
-        let (profiles, _) = solve(&crate::reference::of(&[&tunnel], t), &[&tunnel]);
+        let (profiles, _) = solved(&[tunnel], t);
         let floor = profiles[0].stations.iter().map(|st| st.ground).fold(f64::INFINITY, f64::min);
         assert!(profiles[0].stations.iter().all(|st| st.h == floor));
     }
@@ -1197,9 +1215,8 @@ pub(crate) mod tests {
             (0.0, 20.0, Kind::Ground),
             (20.0, 80.0, Kind::Bridge(1)),
         ])];
-        let refs: Vec<&Way> = ways.iter().collect();
         let t = &ground;
-        let (profiles, loose) = solve(&crate::reference::of(&refs, t), &refs);
+        let (profiles, loose) = solved(&ways, t);
         assert_eq!(loose, Loose { dangling: 1, unanchored: 0, clamped: 0, contacts: 0 });
         let a = &profiles[0];
         let deck: Vec<&Station> = a.stations.iter().filter(|st| st.s >= 20.0).collect();
@@ -1228,8 +1245,7 @@ pub(crate) mod tests {
                 way("w", vec![[-20.0, 0.0], [0.0, 0.0]], vec![(0.0, 20.0, Kind::Ground)]),
                 way("a", vec![[0.0, 0.0], [200.0, 0.0]], vec![(0.0, 200.0, kind)]),
             ];
-            let refs: Vec<&Way> = ways.iter().collect();
-            let (profiles, loose) = solve(&crate::reference::of(&refs, t), &refs);
+            let (profiles, loose) = solved(&ways, t);
             assert_eq!(loose.dangling, 1, "{kind:?}");
             profiles[1].stations.clone()
         };

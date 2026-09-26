@@ -25,7 +25,7 @@ use std::fmt::Write;
 use crate::frame::Rect;
 use crate::poly::{self, Shapes};
 use crate::width::{self, Family};
-use crate::world::{
+use crate::world::{Sheets, 
     Bench, Crossings, Facade, Fillet, Kerb, Kind, Polyline3, Profile, Profiles, Ribbon, Room, Solved, Structure,
     Surface, Tri, World,
 };
@@ -104,6 +104,9 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
     }
     if let Some(r) = &world.room {
         room(&mut s, r, &view);
+    }
+    if let Some(sh) = &world.sheets {
+        sheets(&mut s, sh, &view);
     }
     if let Some(p) = &world.profile {
         profile(&mut s, p, &view);
@@ -201,7 +204,7 @@ const BALLAST_FILL: &str = "#9e968a";
 fn kerb(s: &mut String, k: &Kerb, pavement: bool, view: &Rect) {
     s.push_str("<g id=\"kerb\">\n");
     if pavement {
-        filled(s, "pavement", "#e0a050", &k.pavement, view);
+        filled(s, "pavement", "#e0a050", &k.surface.walk, view);
     }
     s.push_str("</g>\n");
 }
@@ -210,9 +213,9 @@ fn kerb(s: &mut String, k: &Kerb, pavement: bool, view: &Rect) {
 /// re-cut by them.
 fn fillet(s: &mut String, f: &Fillet, pavement: bool, view: &Rect) {
     s.push_str("<g id=\"fillet\">\n");
-    filled(s, "carriageway", "#8c8c94", &f.carriageway, view);
+    filled(s, "carriageway", "#8c8c94", &f.surface.carriageway, view);
     if pavement {
-        filled(s, "pavement", "#e0a050", &f.pavement, view);
+        filled(s, "pavement", "#e0a050", &f.surface.walk, view);
     }
     s.push_str("</g>\n");
 }
@@ -220,7 +223,7 @@ fn fillet(s: &mut String, f: &Fillet, pavement: bool, view: &Rect) {
 /// The room layer: the pavement extended to the walls.
 fn room(s: &mut String, r: &Room, view: &Rect) {
     s.push_str("<g id=\"room\">\n");
-    filled(s, "pavement", "#e0a050", &r.pavement, view);
+    filled(s, "pavement", "#e0a050", &r.surface.walk, view);
     // The kerb stations still bare after everything: a dot each, at any
     // zoom where a dot can be seen, so a gap is found by looking for the
     // marker rather than for the gap.
@@ -235,6 +238,24 @@ fn room(s: &mut String, r: &Room, view: &Rect) {
     if view.width() < DEBUG_VIEW_M {
         outlined(s, "room", "#b06030", 0.2, &r.room, view);
     }
+    s.push_str("</g>\n");
+}
+
+/// The sheets layer: the outline of every paved sheet, and the part of it
+/// that is over a span filled.
+///
+/// A sheet is what may merge, so its outline is the answer to "is this one
+/// surface or two" in the place that question is decided — the plan. Drawn
+/// as an outline rather than a fill because the surfaces below it are
+/// filled and the point is to see the *boundary*: a sheet whose junction
+/// is one clean ring has merged, and one with a notch at every leg has
+/// not.
+fn sheets(s: &mut String, sh: &Sheets, view: &Rect) {
+    s.push_str("<g id=\"sheet\">\n");
+    let spans: Shapes = sh.sheets.iter().flat_map(|x| x.spans.iter().cloned()).collect();
+    filled(s, "span", "#c86432", &spans, view);
+    let all: Shapes = sh.shapes();
+    outlined(s, "sheet_edge", "#20a0c0", 0.4, &all, view);
     s.push_str("</g>\n");
 }
 
@@ -327,22 +348,25 @@ fn mesh(s: &mut String, layers: &[(&str, &Tri)], view: &Rect) {
 }
 
 /// The structure layer: every span's own paving, which no surface step
-/// lays — a deck's outline in grey, a bore's dotted, drawn over the
-/// surface so the road reads as continuous across a viaduct.
+/// lays.
+///
+/// **Outlined, and off the carriageway's own palette on purpose.** A deck
+/// used to fill at `#9a948c` against a carriageway of `#8c8c94` and ballast
+/// of `#9e968a` — three greys within ten units of each other, no stroke
+/// between any of them — so a viaduct painted no differently from the road
+/// it carries. A deck and a bore now get their own hue (slate blue, darker
+/// underground than aloft — elevated reads lighter) and the group's own
+/// outline, the same device [`ribbon`] uses to keep an opaque fill legible
+/// against its neighbours.
 fn structure(s: &mut String, st: &Structure, view: &Rect) {
-    s.push_str("<g id=\"structure\">\n");
+    let _ = write!(s, "<g id=\"structure\" stroke=\"#20202c\" stroke-width=\"{}\">\n", num(1.0));
     for (kind, shapes) in &st.plan {
         let (id, fill) = match kind {
-            Kind::Tunnel(_) => ("bore", "#6b6560"),
-            _ => ("deck", "#9a948c"),
+            Kind::Tunnel(_) => ("bore", "#3d5266"),
+            _ => ("deck", "#5c7a94"),
         };
         filled(s, id, fill, shapes, view);
     }
-    // Where a pier stands is a plan fact, and its one rule — that it may
-    // not stand in the road it crosses — is a plan rule, so the footprints
-    // are drawn where that can be read.
-    let feet: Shapes = st.piers.iter().flatten().cloned().collect();
-    filled(s, "pier", "#4a4640", &feet, view);
     s.push_str("</g>\n");
 }
 

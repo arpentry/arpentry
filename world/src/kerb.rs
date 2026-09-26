@@ -1,4 +1,4 @@
-//! Step 5: a mapped sidewalk stands against its street.
+//! The kerb: a mapped sidewalk stands against its street.
 //!
 //! Overture maps the footway beside a street as an independent line with
 //! its own id, one to four metres off the road's axis, and nothing in the
@@ -238,10 +238,11 @@ pub fn run(roads: &Roads, surface: &Surface, facade: &Facade) -> (Kerb, Summary)
     let q = |f: f64| gaps.get(((gaps.len() as f64 - 1.0) * f).round() as usize).copied().unwrap_or(0.0);
     let rungs = poly::union_all(&pieces);
     let u = poly::fill_holes_under(poly::union_of(&[&surface.walk, &rungs]), PAVEMENT_HOLE_M2);
-    let pavement = facade.pavement(&u, &surface.senior());
+    let senior = surface.senior();
+    let pavement = facade.pavement(&u, &senior);
     let filled = poly::area(&pavement) - poly::area(&surface.walk);
     // A kerb against the track bed is not bare ground: the railway is there.
-    let bare = Bare::new(&surface.senior(), &pavement, &facade.footprints);
+    let bare = Bare::new(&senior, &pavement, &facade.footprints);
     let (gap_n, gap_of) = kerb_gap(&surface.carriageway, &bare, &attached_all);
     let summary = Summary::new()
         .with("stations", stations)
@@ -255,7 +256,10 @@ pub fn run(roads: &Roads, surface: &Surface, facade: &Facade) -> (Kerb, Summary)
         .with_m2("pavement_m2", poly::area(&pavement))
         .with_m2("filled_m2", filled)
         .with_share("kerb_gap", gap_n, gap_of);
-    (Kerb { rungs, pavement, attached: attached_all }, summary)
+    // The surface as this step leaves it: the pavement is the walk now,
+    // and the other three are the surface step's, carried through untouched.
+    let surface = Surface { walk: pavement, ..surface.clone() };
+    (Kerb { surface, rungs, attached: attached_all }, summary)
 }
 
 /// One attached station.
@@ -984,16 +988,16 @@ pub(crate) mod tests {
     fn a_sidewalk_six_metres_off_reaches_the_kerb() {
         let (w, s) = world("net:sidewalk?d=6&len=100");
         let k = w.kerb.as_ref().unwrap();
-        assert_eq!(k.pavement.len(), 1, "{s}");
+        assert_eq!(k.surface.walk.len(), 1, "{s}");
         for y in [2.85, 3.5, 4.5, 5.5, 6.9] {
-            assert!(poly::contains(&k.pavement, [0.0, y]), "{y}");
-            assert!(poly::contains(&k.pavement, [-45.0, y]), "{y}");
+            assert!(poly::contains(&k.surface.walk, [0.0, y]), "{y}");
+            assert!(poly::contains(&k.surface.walk, [-45.0, y]), "{y}");
         }
-        assert!(!poly::contains(&k.pavement, [0.0, 2.6]));
-        assert!(!poly::contains(&k.pavement, [0.0, 7.1]));
+        assert!(!poly::contains(&k.surface.walk, [0.0, 2.6]));
+        assert!(!poly::contains(&k.surface.walk, [0.0, 7.1]));
         // Kerb 2.75 to the mapped outer edge 7: 4.25 m over 100 m, plus the
         // sidewalk's own caps and the last rungs' width past the ends.
-        let a = poly::area(&k.pavement);
+        let a = poly::area(&k.surface.walk);
         assert!(a > 425.0 && a < 445.0, "{a}");
         assert!(s.to_string().contains("runs=1"), "{s}");
     }
@@ -1002,23 +1006,23 @@ pub(crate) mod tests {
     fn a_sidewalk_under_the_asphalt_gets_the_minimum_pavement() {
         let (w, _) = world("net:sidewalk?d=2&len=100");
         let k = w.kerb.as_ref().unwrap();
-        assert!(poly::contains(&k.pavement, [0.0, 2.9]));
-        assert!(poly::contains(&k.pavement, [0.0, 3.45]));
-        assert!(!poly::contains(&k.pavement, [0.0, 3.65]));
-        assert!(!poly::contains(&k.pavement, [0.0, 2.6]));
+        assert!(poly::contains(&k.surface.walk, [0.0, 2.9]));
+        assert!(poly::contains(&k.surface.walk, [0.0, 3.45]));
+        assert!(!poly::contains(&k.surface.walk, [0.0, 3.65]));
+        assert!(!poly::contains(&k.surface.walk, [0.0, 2.6]));
     }
 
     #[test]
     fn a_pavement_wraps_a_corner_in_one_piece() {
         let (w, s) = world("net:corner?d=5&len=200");
         let k = w.kerb.as_ref().unwrap();
-        assert_eq!(k.pavement.len(), 1, "{s}");
+        assert_eq!(k.surface.walk.len(), 1, "{s}");
         // Between the kerb and the mapped line, on both legs.
-        assert!(poly::contains(&k.pavement, [-40.0, -3.5]));
-        assert!(poly::contains(&k.pavement, [3.5, 40.0]));
+        assert!(poly::contains(&k.surface.walk, [-40.0, -3.5]));
+        assert!(poly::contains(&k.surface.walk, [3.5, 40.0]));
         // And round the corner itself.
-        assert!(poly::contains(&k.pavement, [3.0, -3.0]));
-        assert!(!poly::contains(&k.pavement, [-40.0, 3.5]), "the inner side has no sidewalk");
+        assert!(poly::contains(&k.surface.walk, [3.0, -3.0]));
+        assert!(!poly::contains(&k.surface.walk, [-40.0, 3.5]), "the inner side has no sidewalk");
     }
 
     #[test]
@@ -1029,11 +1033,11 @@ pub(crate) mod tests {
         // same way is attached beyond them to bridge to.
         let (w, s) = world("net:corner?d=8&split=1&len=200");
         let k = w.kerb.as_ref().unwrap();
-        assert_eq!(k.pavement.len(), 1, "{s}");
+        assert_eq!(k.surface.walk.len(), 1, "{s}");
         // From the kerb's corner out to the chamfer, along the diagonal.
         for r in [4.2, 5.0, 5.5] {
             let p = [r / 2.0f64.sqrt(), -r / 2.0f64.sqrt()];
-            assert!(poly::contains(&k.pavement, p), "{p:?}: {s}");
+            assert!(poly::contains(&k.surface.walk, p), "{p:?}: {s}");
         }
         assert!(s.to_string().contains("kerb_gap=0/"), "{s}");
     }
@@ -1046,9 +1050,9 @@ pub(crate) mod tests {
         let (w, s) = world("net:tee?d=8&len=200");
         let k = w.kerb.as_ref().unwrap();
         for r in [3.2, 4.5, 6.0, 8.0] {
-            assert!(poly::contains(&k.pavement, [-r, r]), "{r}: {s}");
+            assert!(poly::contains(&k.surface.walk, [-r, r]), "{r}: {s}");
         }
-        assert!(!poly::contains(&k.pavement, [-2.6, 2.6]), "the notch's corner is asphalt");
+        assert!(!poly::contains(&k.surface.walk, [-2.6, 2.6]), "the notch's corner is asphalt");
         assert!(s.to_string().contains("kerb_gap=0/"), "{s}");
     }
 
@@ -1061,17 +1065,17 @@ pub(crate) mod tests {
         assert!(s.to_string().contains("landed=2"), "{s}");
         let k = w.kerb.as_ref().unwrap();
         for y in [2.85, 3.0, 3.2, 4.0] {
-            assert!(poly::contains(&k.pavement, [0.0, y]), "{y}: {s}");
-            assert!(poly::contains(&k.pavement, [0.9, y]), "{y}: {s}");
+            assert!(poly::contains(&k.surface.walk, [0.0, y]), "{y}: {s}");
+            assert!(poly::contains(&k.surface.walk, [0.9, y]), "{y}: {s}");
         }
-        assert!(!poly::contains(&k.pavement, [0.0, 2.6]));
-        assert!(!poly::contains(&k.pavement, [1.3, 2.9]), "the landing is the footway's width");
+        assert!(!poly::contains(&k.surface.walk, [0.0, 2.6]));
+        assert!(!poly::contains(&k.surface.walk, [1.3, 2.9]), "the landing is the footway's width");
         assert!(s.to_string().contains("kerb_gap=0/"), "{s}");
         // A metre under the asphalt, as Overture connects it: cut at the kerb.
         let (w, s) = world("net:stub?d=-1&len=100");
         let k = w.kerb.as_ref().unwrap();
-        assert!(poly::contains(&k.pavement, [0.0, 2.85]), "{s}");
-        assert!(!poly::contains(&k.pavement, [0.0, 2.6]));
+        assert!(poly::contains(&k.surface.walk, [0.0, 2.85]), "{s}");
+        assert!(!poly::contains(&k.surface.walk, [0.0, 2.6]));
         assert!(s.to_string().contains("kerb_gap=0/"), "{s}");
     }
 
@@ -1108,12 +1112,12 @@ pub(crate) mod tests {
         for deg in (0..360).step_by(5) {
             let a = (deg as f64).to_radians();
             let p = [18.1 * a.cos(), 18.1 * a.sin()];
-            assert!(poly::contains(carriageway, p) || poly::contains(&k.pavement, p), "{deg}°");
+            assert!(poly::contains(carriageway, p) || poly::contains(&k.surface.walk, p), "{deg}°");
         }
         // And beside each leg, out to the sidewalk ring.
         for x in [19.0, 21.0, 22.9] {
-            assert!(poly::contains(&k.pavement, [x, 3.0]), "{x}");
-            assert!(poly::contains(&k.pavement, [3.0, x]), "{x}");
+            assert!(poly::contains(&k.surface.walk, [x, 3.0]), "{x}");
+            assert!(poly::contains(&k.surface.walk, [3.0, x]), "{x}");
         }
     }
 
@@ -1123,7 +1127,7 @@ pub(crate) mod tests {
         assert!(s.to_string().contains("runs=0"), "{s}");
         let k = w.kerb.as_ref().unwrap();
         let walk = &w.surface.as_ref().unwrap().walk;
-        assert!((poly::area(&k.pavement) - poly::area(walk)).abs() < 1e-6);
+        assert!((poly::area(&k.surface.walk) - poly::area(walk)).abs() < 1e-6);
         // A crosswalk stub attaches to the road it crosses on distance
         // alone: a run of its own, from kerb to kerb, beside the four
         // sidewalk halves'.
@@ -1131,8 +1135,8 @@ pub(crate) mod tests {
         assert!(s.to_string().contains("runs=5"), "{s}");
         assert!(s.to_string().contains("landed=0"), "{s}");
         let k = w.kerb.as_ref().unwrap();
-        assert!(!poly::contains(&k.pavement, [0.0, 0.0]));
-        assert!(poly::contains(&k.pavement, [0.0, 4.0]));
-        assert!(poly::contains(&k.pavement, [0.0, -4.0]));
+        assert!(!poly::contains(&k.surface.walk, [0.0, 0.0]));
+        assert!(poly::contains(&k.surface.walk, [0.0, 4.0]));
+        assert!(poly::contains(&k.surface.walk, [0.0, -4.0]));
     }
 }
