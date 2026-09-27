@@ -250,6 +250,11 @@ that way once, because the metric filtered on `level` rather than class.
 
 ## The World Crate
 
+**Next: review step 5, the plan chain from explicit geometry.** The hand-over
+is `docs/plans/plan-chain-from-legs.md` — read it first; it has the
+baseline counters, the first slice (junction polygons, measured and not
+wired) and the tools (`scripts/world-corpus.sh`, `scripts/world-sdiff.py`).
+
 `world/` builds a tile-free 3D world for one bounding box, one verifiable
 step at a time, and writes it as a binary glTF. It borrows only the source
 readers from `server/`; the model is rebuilt from the raw sources, step by
