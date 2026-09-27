@@ -289,8 +289,23 @@ pub fn run(
         ballast: surface.ballast.clone(),
     };
     let laid_back = poly::dilate(&poly::intersect(&out.carriageway, &k.surface.walk), crate::kerb::WALK_MIN_M);
+    // **And forward, where the asphalt drew back from it.** The old surface
+    // was ribbons with round caps unioned; where the explicit kerb stands
+    // inside the old one — a cap's lobe the legs do not draw, a return
+    // smaller than the closing's — a sidewalk the kerb step stood against
+    // the old kerb now stands off the new one, and the strip between is
+    // bare ground. What the old asphalt covered within the narrowest
+    // pavement of the walk is the walk's.
+    let drawn_back = poly::difference(&surface.carriageway, &out.carriageway);
+    // Lapped by [`LAP_M`]: the strip meets the walk along the old kerb, and
+    // a union keeps shapes that only touch apart — as loose lobes. The
+    // asphalt cut below takes back what laps onto the road.
+    let followed = poly::dilate(
+        &poly::intersect(&drawn_back, &poly::dilate(&k.surface.walk, crate::kerb::WALK_MIN_M)),
+        LAP_M,
+    );
     let senior = out.senior();
-    let pavement = facade.pavement(&poly::union_of(&[&k.surface.walk, &laid_back]), &senior);
+    let pavement = facade.pavement(&poly::union_of(&[&k.surface.walk, &laid_back, &followed]), &senior);
     let bare = crate::kerb::Bare::new(&senior, &pavement, &facade.footprints);
     let (gaps, gap_of) = crate::kerb::kerb_gaps(&out.carriageway, &bare, &k.attached);
     let gap_n = gaps.len();
@@ -359,6 +374,7 @@ pub fn run(
         .with("islands", filled)
         .with_regions("carriageway", carriageway)
         .with_m2("pavement_m2", poly::area(&out.walk))
+        .with_m2("followed_m2", poly::area(&followed))
         .with_share("kerb_gap", gap_n, gap_of)
         .with("extra_m2", format!("{:.1}", poly::area(&extra)))
         .with("missing_m2", format!("{:.1}", poly::area(&missing)))
