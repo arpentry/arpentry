@@ -164,7 +164,8 @@ pub fn apply(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary
             summary
         }
         Step::Legs => {
-            let (l, summary) = legs::run(roads(world), &fillet(world).surface, facade(world));
+            let (l, summary) =
+                legs::run(roads(world), surface(world), kerb(world), facade(world), &fillet(world).surface);
             world.legs = Some(l);
             summary
         }

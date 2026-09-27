@@ -236,6 +236,12 @@ fn legs(s: &mut String, l: &crate::legs::Legs, view: &Rect) {
     filled(s, "missing", "#d0202a", &l.missing, view);
     let junctions: Shapes = l.junctions.iter().flat_map(|j| j.shape.iter().cloned()).collect();
     outlined(s, "junction", "#2040d0", 0.1, &junctions, view);
+    if view.width() < DEBUG_VIEW_M {
+        outlined(s, "pavement", "#8020c0", 0.08, &l.surface.walk, view);
+    }
+    for g in l.gaps.iter().filter(|g| view.contains(**g)) {
+        let _ = write!(s, "<circle cx=\"{}\" cy=\"{}\" r=\"0.5\" fill=\"#8020c0\"/>\n", num(g[0]), num(-g[1]));
+    }
     s.push_str("</g>\n");
 }
 

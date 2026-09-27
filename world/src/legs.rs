@@ -13,9 +13,19 @@
 //! This step builds the same carriageway from what is known before any
 //! boolean runs:
 //!
+//! - **The pieces** are the ground carriageways and the **bridge** spans, so
+//!   a junction standing on a deck is built like any other: a deck and the
+//!   road that runs onto it are one surface. A span edge shapes the
+//!   junctions it meets but is not paved here — the `sheet` step unions the
+//!   span ribbons in. A bore is never continuous with the ground, and is
+//!   left out as [`crate::surface::spans_grouped`] leaves it out.
 //! - **A node** is a connector where two or more leg ends meet: two pieces,
 //!   a piece's end on another's interior vertex, or a closed way meeting
 //!   itself. A piece is cut into **edges** at every node it passes.
+//! - **An end that lands on another road** — free, and inside that road's
+//!   width, with no vertex there — is a junction the source did not connect
+//!   ([`land`]). The host is given a vertex at the end's foot and the end is
+//!   carried to it, so the two meet at a node like any other.
 //! - **Each junction is one polygon.** Its legs are sorted by bearing, and
 //!   between each consecutive pair the facing kerbs — the left kerb of one,
 //!   the right kerb of the next — are intersected. A corner turning at least
@@ -26,6 +36,11 @@
 //! - **A leg's mouth** is where the farther of its two sides stops, and the
 //!   edge is trimmed to it with a square end. No round cap is drawn at any
 //!   connector, so none can survive as a lobe.
+//!
+//! The step hands back a whole [`Surface`], as `fillet` does: the explicit
+//! carriageway, and the pavement laid back outside wherever that carriageway
+//! grew into it (`fillet`'s `laid_back`, the same rule), so it can stand in
+//! for `fillet`'s once it measures better.
 //!
 //! The comparison is against [`crate::world::Fillet`]'s carriageway, over
 //! the same facade cut: what the explicit construction has that today's
@@ -116,6 +131,9 @@ pub struct Edge {
     pub trim: [f64; 2],
     /// Whether each end is a node.
     pub node: [bool; 2],
+    /// Whether the edge is on the ground, and so paved here: a deck's edge
+    /// shapes its junctions and is paved by the `sheet` step.
+    pub ground: bool,
 }
 
 /// What the step built.
@@ -123,12 +141,15 @@ pub struct Edge {
 pub struct Legs {
     pub junctions: Vec<Junction>,
     pub edges: Vec<Edge>,
-    /// The explicit carriageway, facade-cut: every junction and every
-    /// trimmed edge.
-    pub carriageway: Shapes,
+    /// The paved surface as this step would leave it: the explicit
+    /// carriageway, facade-cut — every junction and every trimmed ground
+    /// edge — and the pavement laid back outside it.
+    pub surface: Surface,
     /// What it has that the fillet's lacks, and what it lacks.
     pub extra: Shapes,
     pub missing: Shapes,
+    /// The kerb stations `kerb_gap` counts as bare on this surface.
+    pub gaps: Vec<Pt>,
 }
 
 /// What building one side of a junction found.
@@ -142,22 +163,33 @@ struct Tally {
     clamped: usize,
     bent: usize,
     short: usize,
+    landed: usize,
 }
 
-pub fn run(roads: &Roads, fillet: &Surface, facade: &Facade) -> (Legs, Summary) {
-    let pieces: Vec<(usize, Vec<Pt>)> = roads
-        .plan
+pub fn run(
+    roads: &Roads,
+    surface: &Surface,
+    k: &crate::world::Kerb,
+    facade: &Facade,
+    fillet: &Surface,
+) -> (Legs, Summary) {
+    let all: Vec<&Polyline2> = roads.pieces().collect();
+    let ground = roads.plan.len();
+    let mut pieces: Vec<(usize, Vec<Pt>)> = all
         .iter()
         .enumerate()
-        .filter(|(_, p)| width::family(&p.class) == Family::Carriageway)
+        .filter(|&(i, p)| {
+            width::family(&p.class) == Family::Carriageway
+                && (i < ground || matches!(p.kind, crate::world::Kind::Bridge(_)))
+        })
         .map(|(i, p)| (i, dedup(&p.pts)))
         .filter(|(_, pts)| pts.len() >= 2)
         .collect();
-    let mut tally = Tally::default();
-    let (mut edges, nodes) = cut(&roads.plan, &pieces);
+    let mut tally = Tally { landed: land(&all, &mut pieces), ..Tally::default() };
+    let (mut edges, nodes) = cut(&all, ground, &pieces);
     let mut junctions: Vec<Junction> = nodes
         .values()
-        .map(|ends| junction(ends, &edges, &roads.plan, &mut tally))
+        .map(|ends| junction(ends, &edges, &all, &mut tally))
         .collect();
     // The nodes come out of a hash map; the output is sorted by position.
     junctions.sort_by(|a, b| a.at.partial_cmp(&b.at).expect("finite"));
@@ -169,8 +201,20 @@ pub fn run(roads: &Roads, fillet: &Surface, facade: &Facade) -> (Legs, Summary) 
             }
         }
     }
-    let mut parts: Shapes = junctions.iter().flat_map(|j| j.shape.iter().cloned()).collect();
-    for e in &edges {
+    // A junction with a deck among its legs is paved only where the span
+    // ribbons do not already pave it: its returns, as the fillet paves
+    // them. The rest is the deck's, and the `sheet` step unions it in —
+    // paved here too, it is ground asphalt under a bridge that no piece of
+    // the ground claims.
+    let mut parts: Shapes = Vec::new();
+    for j in &junctions {
+        if j.legs.iter().all(|g| edges[g.edge].ground) {
+            parts.extend(j.shape.iter().cloned());
+        } else {
+            parts.extend(poly::difference(&j.shape, &surface.spanned));
+        }
+    }
+    for e in edges.iter().filter(|e| e.ground) {
         let len = poly::length(&e.pts);
         let a = if e.node[0] { e.trim[0] - LAP_M } else { 0.0 };
         let b = if e.node[1] { len - e.trim[1] + LAP_M } else { len };
@@ -181,12 +225,30 @@ pub fn run(roads: &Roads, fillet: &Surface, facade: &Facade) -> (Legs, Summary) 
         parts.extend(poly::buffer_line_capped(&between(&e.pts, a, b), e.width_m, [false, false]));
     }
     let carriageway = facade.asphalt(&poly::union_all(&parts));
-    let extra = poly::difference(&carriageway, &fillet.carriageway);
-    let missing = poly::difference(&fillet.carriageway, &carriageway);
+    // The pavement, laid back outside wherever the asphalt grew into it —
+    // `fillet`'s rule, read off the result rather than off what a closing
+    // added: the walk the kerb step left was already cut by the old asphalt,
+    // so what the new asphalt covers of it is exactly what it took.
+    let mut out = Surface {
+        carriageway,
+        walk: Vec::new(),
+        spanned: surface.spanned.clone(),
+        ballast: surface.ballast.clone(),
+    };
+    let laid_back = poly::dilate(&poly::intersect(&out.carriageway, &k.surface.walk), crate::kerb::WALK_MIN_M);
+    let senior = out.senior();
+    let pavement = facade.pavement(&poly::union_of(&[&k.surface.walk, &laid_back]), &senior);
+    let bare = crate::kerb::Bare::new(&senior, &pavement, &facade.footprints);
+    let (gaps, gap_of) = crate::kerb::kerb_gaps(&out.carriageway, &bare, &k.attached);
+    let gap_n = gaps.len();
+    out.walk = pavement;
+    let carriageway = &out.carriageway;
+    let extra = poly::difference(carriageway, &fillet.carriageway);
+    let missing = poly::difference(&fillet.carriageway, carriageway);
 
     // Attribute every difference region to a junction, and read how far
     // apart the two boundaries stand along it.
-    let ours = Boundary::new(&carriageway);
+    let ours = Boundary::new(carriageway);
     let theirs = Boundary::new(&fillet.carriageway);
     let near = Nodes::new(&junctions);
     let mut apart = vec![0.0f64; junctions.len()];
@@ -238,8 +300,12 @@ pub fn run(roads: &Roads, fillet: &Surface, facade: &Facade) -> (Legs, Summary) 
         .with("bent", tally.bent)
         .with("short", tally.short)
         .with("tangled", tally.tangled)
+        .with("landed", tally.landed)
+
         .with_m2("junction_m2", junctions.iter().map(|j| poly::area(&j.shape)).sum::<f64>() + 0.0)
-        .with_regions("carriageway", &carriageway)
+        .with_regions("carriageway", carriageway)
+        .with_m2("pavement_m2", poly::area(&out.walk))
+        .with_share("kerb_gap", gap_n, gap_of)
         .with("extra_m2", format!("{:.1}", poly::area(&extra)))
         .with("missing_m2", format!("{:.1}", poly::area(&missing)))
         .with("near_m2", format!("{near_m2:.1}"))
@@ -247,7 +313,7 @@ pub fn run(roads: &Roads, fillet: &Surface, facade: &Facade) -> (Legs, Summary) 
         .with("elsewhere_apart", format!("{elsewhere_apart:.2}"))
         .with_share("disagree", disagree, junctions.len())
         .with_quantiles("apart", spread);
-    (Legs { junctions, edges, carriageway, extra, missing }, summary)
+    (Legs { junctions, edges, surface: out, extra, missing, gaps }, summary)
 }
 
 /// `pts` without consecutive repeats.
@@ -267,7 +333,7 @@ type End = (usize, bool);
 
 /// The pieces cut at their nodes, and every node's leg ends, keyed by
 /// connector.
-fn cut(plan: &[Polyline2], pieces: &[(usize, Vec<Pt>)]) -> (Vec<Edge>, HashMap<(i64, i64), Vec<End>>) {
+fn cut(all: &[&Polyline2], ground: usize, pieces: &[(usize, Vec<Pt>)]) -> (Vec<Edge>, HashMap<(i64, i64), Vec<End>>) {
     // A connector two piece vertices share is a node: two pieces, an end on
     // another's interior, or a closed way meeting itself. The interior
     // vertex of one piece alone is only a bend.
@@ -298,14 +364,116 @@ fn cut(plan: &[Polyline2], pieces: &[(usize, Vec<Pt>)]) -> (Vec<Edge>, HashMap<(
             edges.push(Edge {
                 piece: *piece,
                 pts: pts[start..=i].to_vec(),
-                width_m: plan[*piece].width_m,
+                width_m: all[*piece].width_m,
                 trim: [0.0, 0.0],
                 node,
+                ground: *piece < ground,
             });
             start = i;
         }
     }
     (edges, nodes)
+}
+
+/// A landed end this close to one of its host's vertices goes to that
+/// vertex rather than to a new one, in metres: two nodes a few centimetres
+/// apart would make two junctions of one.
+const LAND_SNAP_M: f64 = 0.5;
+
+/// The cell of the segment grid [`land`] searches, in metres: past the
+/// widest half-width a road takes, so a host is found in the nine cells
+/// round the end.
+const LAND_CELL_M: f64 = 16.0;
+
+/// Carries every end that lands on another road to it, and returns how many
+/// did.
+///
+/// An end *lands* when it is free — no other piece has a vertex at its
+/// connector — and lies within the half-width of another piece's
+/// centreline. Overture connects most junctions, but not all: a service
+/// road mapped to stop on the side of the street it leaves. The union of
+/// ribbons makes that a junction anyway, with notches the fillet then
+/// rounds, and a construction from legs has to make it one too. So the
+/// host gets a vertex at the end's foot — or its nearest vertex, within
+/// [`LAND_SNAP_M`] — and the end is carried there, and from then on the two
+/// share a connector like any other junction. Ends are matched against the
+/// pieces as they came, so two ends landing on each other both land.
+fn land(all: &[&Polyline2], pieces: &mut [(usize, Vec<Pt>)]) -> usize {
+    let mut incidences: HashMap<(i64, i64), usize> = HashMap::new();
+    for (_, pts) in pieces.iter() {
+        for &p in pts {
+            *incidences.entry(connector(p)).or_default() += 1;
+        }
+    }
+    let mut grid: HashMap<(i32, i32), Vec<(usize, usize)>> = HashMap::new();
+    for (k, (_, pts)) in pieces.iter().enumerate() {
+        for i in 0..pts.len() - 1 {
+            let (a, b) = (pts[i], pts[i + 1]);
+            for c in poly::cells_over([a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])], LAND_CELL_M) {
+                grid.entry(c).or_default().push((k, i));
+            }
+        }
+    }
+    // (host, segment, t) → the foot, and (piece, at its start) → the foot.
+    let mut inserts: Vec<(usize, usize, f64, Pt)> = Vec::new();
+    let mut carried: Vec<(usize, bool, Pt)> = Vec::new();
+    for (k, (_, pts)) in pieces.iter().enumerate() {
+        let n = pts.len();
+        for (at_start, p) in [(true, pts[0]), (false, pts[n - 1])] {
+            if incidences[&connector(p)] != 1 {
+                continue;
+            }
+            let (c, r) = poly::cell_of(p, LAND_CELL_M);
+            let mut best: Option<(f64, usize, usize)> = None;
+            for dc in -1..=1 {
+                for dr in -1..=1 {
+                    for &(h, i) in grid.get(&(c + dc, r + dr)).into_iter().flatten() {
+                        if h == k {
+                            continue;
+                        }
+                        let q = &pieces[h].1;
+                        let d = poly::segment_distance(q[i], q[i + 1], p);
+                        if d <= all[pieces[h].0].width_m / 2.0 && best.is_none_or(|(b, ..)| d < b) {
+                            best = Some((d, h, i));
+                        }
+                    }
+                }
+            }
+            let Some((_, h, i)) = best else {
+                continue;
+            };
+            let q = &pieces[h].1;
+            let foot = poly::nearest_on_segment(q[i], q[i + 1], p);
+            let near = |v: Pt| (v[0] - foot[0]).hypot(v[1] - foot[1]) <= LAND_SNAP_M;
+            let to = if near(q[i]) {
+                q[i]
+            } else if near(q[i + 1]) {
+                q[i + 1]
+            } else {
+                let l = seg(q, i);
+                let t = ((foot[0] - q[i][0]).hypot(foot[1] - q[i][1]) / l).clamp(0.0, 1.0);
+                inserts.push((h, i, t, foot));
+                foot
+            };
+            carried.push((k, at_start, to));
+        }
+    }
+    // Insert from the back, so the segment indices still name the segments
+    // they were found on.
+    inserts.sort_by(|a, b| (b.0, b.1).cmp(&(a.0, a.1)).then(b.2.partial_cmp(&a.2).expect("finite")));
+    for (h, i, _, foot) in inserts {
+        pieces[h].1.insert(i + 1, foot);
+    }
+    for &(k, at_start, to) in &carried {
+        let pts = &mut pieces[k].1;
+        if at_start {
+            pts.insert(0, to);
+        } else {
+            pts.push(to);
+        }
+        *pts = dedup(pts);
+    }
+    carried.len()
 }
 
 /// The length of the segment `i` of `pts`.
@@ -462,7 +630,7 @@ fn meet(a: &Kerb, b: &Kerb) -> Option<(f64, f64, Pt)> {
 }
 
 /// The junction from its leg ends.
-fn junction(ends: &[End], edges: &[Edge], plan: &[Polyline2], tally: &mut Tally) -> Junction {
+fn junction(ends: &[End], edges: &[Edge], all: &[&Polyline2], tally: &mut Tally) -> Junction {
     let mut legs: Vec<Leg> = ends
         .iter()
         .map(|&(e, at_start)| {
@@ -475,7 +643,7 @@ fn junction(ends: &[End], edges: &[Edge], plan: &[Polyline2], tally: &mut Tally)
                 at_start,
                 u: poly::unit([line[1][0] - line[0][0], line[1][1] - line[0][1]]),
                 half_m: edges[e].width_m / 2.0,
-                class: plan[edges[e].piece].class.clone(),
+                class: all[edges[e].piece].class.clone(),
                 mouth_m: 0.0,
                 line,
             }
@@ -767,10 +935,10 @@ mod tests {
         // The same area the closing gives: two straights less the overlap,
         // plus four r²(1 − π/4).
         let exact = 2.0 * 200.0 * 5.5 - 5.5 * 5.5 + 4.0 * 16.0 * (1.0 - std::f64::consts::PI / 4.0);
-        let a = poly::area(&l.carriageway);
+        let a = poly::area(&l.surface.carriageway);
         assert!((a - exact).abs() < 0.01 * exact, "{a} vs {exact}: {s}");
-        assert_eq!(l.carriageway.len(), 1, "{s}");
-        assert_eq!(l.carriageway[0].len(), 1, "no holes: {s}");
+        assert_eq!(l.surface.carriageway.len(), 1, "{s}");
+        assert_eq!(l.surface.carriageway[0].len(), 1, "no holes: {s}");
         assert!(s.num("near_m2") < 1.0, "{s}");
         assert_eq!(s.num("elsewhere_m2"), 0.0, "{s}");
     }
@@ -783,6 +951,65 @@ mod tests {
         assert_eq!(s.num("returns"), 2.0, "{s}");
         assert_eq!(s.num("rounds"), 1.0, "{s}");
         assert!(s.num("near_m2") < 1.0, "{s}");
+    }
+
+    /// **A junction standing on a deck is a junction.** The three legs of
+    /// `tee?span=` meet on a bridge, so the node's legs are all span edges:
+    /// they shape the polygon, and are left to the `sheet` step to pave.
+    #[test]
+    fn a_junction_on_a_deck_is_built_from_its_spans() {
+        let (w, s) = world("net:tee?span=0.3&kind=bridge&len=200");
+        let l = w.legs.as_ref().unwrap();
+        assert_eq!(l.junctions.len(), 4, "the deck junction and three handovers: {s}");
+        let deck = l.junctions.iter().find(|j| j.at == [0.0, 0.0]).expect("the node at the origin");
+        assert_eq!(deck.legs.len(), 3, "{s}");
+        assert!(deck.legs.iter().all(|g| !l.edges[g.edge].ground), "{s}");
+        assert_eq!(s.num("returns"), 2.0, "{s}");
+        // Its returns are paved as the fillet paves them: into the carriageway.
+        let c = 2.75 + 4.0 * (1.0 - 1.0 / 2.0f64.sqrt()) - 0.05;
+        assert!(poly::contains(&l.surface.carriageway, [c, c]), "{s}");
+        // And the deck itself is not: it is the sheet's.
+        assert!(!poly::contains(&l.surface.carriageway, [0.0, 20.0]), "{s}");
+    }
+
+    /// **An end on the side of a road is a junction the source did not
+    /// connect.** A service road stops a metre into the street, with no
+    /// vertex there: it is carried to its foot, the street is given one,
+    /// and the two meet in a tee with its two returns.
+    #[test]
+    fn an_end_that_lands_on_a_road_is_a_junction() {
+        let mut w = built("flat", "net:straight?len=200", None, 100.0, &plan(Step::Facade)).0;
+        let mut drive = w.roads.as_ref().unwrap().plan[0].clone();
+        drive.id = "drive".into();
+        drive.class = "service".into();
+        drive.width_m = width::of("service", "");
+        drive.pts = vec![[5.0, 60.0], [5.0, 1.0]];
+        w.roads.as_mut().unwrap().plan.push(drive);
+        let roads = w.roads.as_ref().unwrap();
+        let facade = w.facade.as_ref().unwrap();
+        let (ribbons, _) = crate::ribbon::run(roads);
+        let (surface, _) = crate::surface::run(roads, &ribbons, facade);
+        let (k, _) = crate::kerb::run(roads, &surface, facade);
+        let (f, _) = crate::fillet::run(roads, &surface, &k, facade);
+        let (l, s) = run(roads, &surface, &k, facade, &f.surface);
+        assert_eq!(s.num("landed"), 1.0, "{s}");
+        assert_eq!(l.junctions.len(), 1, "{s}");
+        assert_eq!(l.junctions[0].at, [5.0, 0.0], "{s}");
+        assert_eq!(l.junctions[0].legs.len(), 3, "{s}");
+        assert_eq!(s.num("returns"), 2.0, "{s}");
+        // The service road's 3 m return, at the corner west of it.
+        let c = 2.75 + 3.0 * (1.0 - 1.0 / 2.0f64.sqrt()) - 0.05;
+        assert!(poly::contains(&l.surface.carriageway, [5.0 - 1.5 - c + 2.75, c]), "{s}");
+    }
+
+    /// A pavement a return eats into is laid back outside it, as the fillet
+    /// lays it back, so the sidewalk wraps the corner.
+    #[test]
+    fn the_pavement_wraps_a_return() {
+        let (w, s) = world("net:tee?d=8&len=200");
+        let l = w.legs.as_ref().unwrap();
+        assert!(poly::intersect(&l.surface.walk, &l.surface.carriageway).is_empty(), "{s}");
+        assert!(s.to_string().contains("kerb_gap=0/"), "{s}");
     }
 
     #[test]
