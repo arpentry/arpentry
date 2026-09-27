@@ -75,6 +75,11 @@ pub const HOLE_MIN_M2: f64 = 0.5;
 /// be rounded against.
 const SPAN_CORNER_M: f64 = 20.0;
 
+/// How much wider than a group's own pieces its ground asphalt is read, in
+/// metres: enough that the kernel's rounding does not shave the kerb, far
+/// less than any gap between two roads.
+const OWN_SLACK_M: f64 = 0.02;
+
 /// Slack on a corner's triangle, in metres: the closing's polygonal arc
 /// and the opening's regrowth reach a little past the exact tangent
 /// points, and a little outside the kerbs.
@@ -150,7 +155,16 @@ pub fn run(roads: &Roads, surface: &Surface, k: &Kerb, facade: &Facade) -> (Fill
         if legs.is_empty() {
             continue;
         }
-        let ground: Shapes = poly::intersect(&surface.carriageway, &poly::dilate(&span, SPAN_CORNER_M));
+        // **The group's own ground asphalt, not all of it.** A street a deck
+        // flies over is another group's, and given to the closing it made a
+        // notch of every corner where the deck's ribbon crosses it: four
+        // kerb returns on the street under the bridge (`net:overpass` read
+        // 8 m² of them) and wedges beside every abutment of a motorway
+        // viaduct over the streets it clears. A ribbon of the group's own
+        // pieces, a hair wide, says which asphalt is the group's.
+        let own: Shapes = legs.iter().flat_map(|w| poly::buffer_line(&w.pts, w.width_m + OWN_SLACK_M)).collect();
+        let near = poly::intersect(&poly::union_all(&own), &poly::dilate(&span, SPAN_CORNER_M));
+        let ground: Shapes = poly::intersect(&surface.carriageway, &near);
         let whole = poly::union_of(&[&ground, &span]);
         let legs_index = RoadIndex::build(legs.iter().copied());
         fillets.extend(returns(&whole, &legs, &legs_index).1);
