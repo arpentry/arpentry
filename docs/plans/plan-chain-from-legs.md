@@ -127,6 +127,80 @@ says so.**
    `fillet`'s closing machinery (`OPEN_M`, `OVERLAP_M`, `kerbs_at`) should
    have nothing left to do, which is the proof.
 
+## First slice: status (2026-09-27)
+
+**Built, measured, not wired.** `world/src/legs.rs` is the `legs` step,
+after `fillet`; nothing reads its layer, and every GLB in the corpus is
+byte-identical with it in. The plan view draws it (`legs` group: junctions
+outlined blue, `extra` green, `missing` red).
+
+The construction, and the three things the first version got wrong:
+
+- **A node** is a connector two piece vertices share. A piece is cut into
+  edges at every node it passes, so an end on another's interior vertex is
+  a junction too.
+- **Kerbs are offset polylines, not rays.** Built on the first segment's
+  ray, every curved leg disagreed: the roundabout read 2.44 m at all four
+  junctions. The return's centre is where the two kerbs offset by `h + r`
+  cross, and its tangent points stand beside it on each kerb, which is exact
+  on a curve. Roundabout: **0.04 m**.
+- **A kerb point at an arc is square off the centreline there**
+  (`Kerb::at`), because that is where the edge's butt end puts its corner.
+  Interpolated between mitred vertices, every curved mouth left a hairline.
+- **The clamp reads the tangent point's real reach** (≤ `RETURN_MAX_RADII`
+  radii along either kerb from the corner) and shrinks the radius by
+  bisection. Read off the turn at the corner, a leg that bends a few metres
+  out made a 104° corner of a 19° fork, and the return sat 6 m up the V.
+
+**Measured beside `fillet`:**
+
+| | junction box | loop box |
+|---|---|---|
+| junctions / legs | 60 / 184 | 829 / 2 494 |
+| `extra` / `missing` m² | 17.5 / 103.1 | 340 / 3 434 |
+| `apart` p50/p90/max | 0.16 / 2.36 / 3.41 | 0.18 / 2.70 / 7.81 |
+| `far` / `short` / `tangled` | 5 / 7 / 2 | 96 / 96 / 45 |
+
+**The temporary A/B** (not committed): `room` fed the explicit carriageway,
+with the walk cut by it. Loop box:
+
+- **Better:** `scraps` 895 → 669, `loose` 110.1 → 87.1 m², `unprobed`
+  1 813 → 1 561, `wall_gap` 28 → 17, `wall_m2` 10 886 → 10 112,
+  `kerb_m2` 32 715 → 30 702, `split_m2` 19 550 → 17 569. The junction box
+  agrees (`scraps` 101 → 83, `unprobed` 198 → 147); the roundabout's `step`
+  went 3 → 1.
+- **Worse:** `kerb_gap` 29 → 44, mesh `slivers` 70 089 → 70 546, `crack`
+  21 → 22 m, `unmet` 0 → 2, `orphan` 7 → 8, galleries 20 → 25, decks
+  49 → 46.
+
+So it is not yet "at least as good everywhere". What blocks wiring, each
+seen at a site:
+
+1. **Junctions on a deck.** The step reads ground pieces only; `fillet`
+   also rounds per span group. That is the likeliest cause of the deck and
+   gallery counts moving.
+2. **The pavement is not laid back** outside a new return (`fillet`'s
+   `laid_back`); the swap only cut the walk. This is `kerb_gap`.
+3. **An end that lands on another road with no shared vertex** (junction
+   box, near −105, −91): no node, so no junction and no returns, while the
+   union leaves notches `fillet` rounds. It needs a node at the end's foot
+   on the host road. Not counted yet.
+4. **`fillet`'s wedge slack.** At an acute fork the closing reaches
+   `CORNER_SLACK_M` past the clamped tangent point. That is fuzz, not a
+   defect; decide whether the explicit rule should match it.
+5. `far`, `short` and `tangled` on the loop box have not been looked at.
+   The junction box's two `tangled` are zero-area nodes: a collinear
+   continuation, and an edge of zero length.
+
+**A defect of today's `fillet`, found by the comparison.** Its span-group
+closing takes all ground asphalt within `SPAN_CORNER_M` of a span, not only
+its own group's. So where a deck flies over a street with no connector, the
+street gets four kerb returns under the deck: `net:overpass?len=201` reads
+8.1 m² of `missing` and no junction at all. The explicit construction does
+not make them. The loop box's `elsewhere_m2` (667) is probably mostly this.
+The fix is local to `fillet` (clip the closing's context to the group's own
+ground asphalt). It is not made yet, because it moves the baseline.
+
 ## After the first slice, in order
 
 1. **Sidewalks as bands from their attachments** (`kerb::Attached` already

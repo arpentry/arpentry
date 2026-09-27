@@ -105,6 +105,9 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
     if let Some(r) = &world.room {
         room(&mut s, r, &view);
     }
+    if let Some(l) = &world.legs {
+        legs(&mut s, l, &view);
+    }
     if let Some(sh) = &world.sheets {
         sheets(&mut s, sh, &view);
     }
@@ -220,6 +223,19 @@ fn fillet(s: &mut String, f: &Fillet, pavement: bool, view: &Rect) {
     if pavement {
         filled(s, "pavement", "#e0a050", &f.surface.walk, view);
     }
+    s.push_str("</g>\n");
+}
+
+/// The legs layer: the explicit junctions outlined, and where the explicit
+/// carriageway disagrees with the fillet's — green what it has that the
+/// fillet's lacks, red what it lacks. Drawn over the surfaces, because it is
+/// a comparison and not one.
+fn legs(s: &mut String, l: &crate::legs::Legs, view: &Rect) {
+    s.push_str("<g id=\"legs\">\n");
+    filled(s, "extra", "#20a040", &l.extra, view);
+    filled(s, "missing", "#d0202a", &l.missing, view);
+    let junctions: Shapes = l.junctions.iter().flat_map(|j| j.shape.iter().cloned()).collect();
+    outlined(s, "junction", "#2040d0", 0.1, &junctions, view);
     s.push_str("</g>\n");
 }
 

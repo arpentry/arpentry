@@ -84,7 +84,7 @@ const CORNER_SLACK_M: f64 = 0.5;
 /// tangent points recede as `tan(τ/2)`, without bound as the kerbs come
 /// to meet head-on: a corner sharper than about 143° is two kerbs grazing
 /// each other, and its return stops here.
-const RETURN_MAX_RADII: f64 = 3.0;
+pub const RETURN_MAX_RADII: f64 = 3.0;
 
 /// A corner of the kerb: a vertex where the carriageway's boundary turns
 /// inward, by how much, the directions the two kerbs leave it in, and the

@@ -250,10 +250,14 @@ that way once, because the metric filtered on `level` rather than class.
 
 ## The World Crate
 
-**Next: review step 5, the plan chain from explicit geometry.** The hand-over
+**Now: review step 5, the plan chain from explicit geometry.** The hand-over
 is `docs/plans/plan-chain-from-legs.md` — read it first; it has the
-baseline counters, the first slice (junction polygons, measured and not
-wired) and the tools (`scripts/world-corpus.sh`, `scripts/world-sdiff.py`).
+baseline counters, the first slice and the tools (`scripts/world-corpus.sh`,
+`scripts/world-sdiff.py`). The first slice is built and **measured, not
+wired**: the `legs` step (`world/src/legs.rs`) builds one polygon per
+junction from its legs and reports how it disagrees with `fillet`; nothing
+reads it. Its "First slice: status" section says what the A/B found and
+what blocks wiring.
 
 `world/` builds a tile-free 3D world for one bounding box, one verifiable
 step at a time, and writes it as a binary glTF. It borrows only the source
@@ -369,9 +373,9 @@ is a measurement, so a standard is a floor on what it cannot see and never a
 correction to what it can*. Step 0 (`dem_residual`) has landed and answered the
 question the plan opened with; §1.2 is what it found.
 
-`--until terrain` stops after a step; the eighteen, in order, are
+`--until terrain` stops after a step; the nineteen, in order, are
 `terrain`, `drape`, `reference`, `profile`, `crossing`, `partition`,
-`facade`, `ribbon`, `surface`, `kerb`, `fillet`, `room`, `sheet`,
+`facade`, `ribbon`, `surface`, `kerb`, `fillet`, `legs`, `room`, `sheet`,
 `arrangement`, `mesh`, `bench`, `structure`, `building`.
 
 The `arrangement` step is **step 1 of

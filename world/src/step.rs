@@ -47,6 +47,10 @@ pub enum Step {
     Kerb,
     /// The kerb returns: junction notches rounded by a masked closing.
     Fillet,
+    /// The junctions built from the legs meeting there, and measured
+    /// against the fillet's carriageway. Nothing reads it yet
+    /// (`docs/plans/plan-chain-from-legs.md`, first slice).
+    Legs,
     /// The room between the facades filled: pavement from the kerb to
     /// every wall within reach.
     Room,
@@ -74,7 +78,7 @@ pub enum Step {
 
 impl Step {
     /// Every step, in the order the pipeline runs them.
-    pub const ALL: [Step; 18] = [
+    pub const ALL: [Step; 19] = [
         Step::Terrain,
         Step::Drape,
         Step::Reference,
@@ -86,6 +90,7 @@ impl Step {
         Step::Surface,
         Step::Kerb,
         Step::Fillet,
+        Step::Legs,
         Step::Room,
         Step::Sheet,
         Step::Arrangement,
@@ -109,6 +114,7 @@ impl Step {
             Step::Surface => "surface",
             Step::Kerb => "kerb",
             Step::Fillet => "fillet",
+            Step::Legs => "legs",
             Step::Room => "room",
             Step::Sheet => "sheet",
             Step::Arrangement => "arrangement",

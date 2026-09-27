@@ -47,13 +47,13 @@ use arpentry_server::dem::Dem;
 use crate::step::{Step, Summary};
 use crate::world::World;
 use crate::{
-    arrangement, bench, building, crossing, drape, facade, fillet, kerb, mesh, partition, profile, reference, ribbon,
+    arrangement, bench, building, crossing, drape, facade, fillet, kerb, legs, mesh, partition, profile, reference, ribbon,
     room, sheet, structure, surface, terrain,
 };
 
 /// The three sources a run reads, and the two knobs the terrain takes.
 ///
-/// Fifteen of the eighteen steps read nothing but the layers before them;
+/// Sixteen of the nineteen steps read nothing but the layers before them;
 /// only the terrain, the drape and the facade reach outside, so only they
 /// take anything from here. The two networks come in as paths because that
 /// is what the CLI has, and each of those steps decides for itself whether
@@ -161,6 +161,11 @@ pub fn apply(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary
             let (f, summary) =
                 fillet::run(roads(world), surface(world), kerb(world), facade(world));
             world.fillet = Some(f);
+            summary
+        }
+        Step::Legs => {
+            let (l, summary) = legs::run(roads(world), &fillet(world).surface, facade(world));
+            world.legs = Some(l);
             summary
         }
         Step::Room => {

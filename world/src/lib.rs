@@ -39,6 +39,7 @@ pub mod grid;
 pub mod ground;
 pub mod junction;
 pub mod kerb;
+pub mod legs;
 pub mod mesh;
 pub mod net;
 pub mod partition;
