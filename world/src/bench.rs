@@ -197,6 +197,10 @@ pub const PART_M: f64 = 20.0;
 /// axis hands over to the foot on the next ([`Field::along`]).
 pub const SEGMENT_BLEND_M: f64 = 1.0;
 
+/// How far along its own axis, in metres of arc, [`Field::along`] looks for
+/// a second foot: two stations' spacing, far short of a hairpin's other leg.
+pub const ALONG_ARC_M: f64 = 8.0;
+
 /// How much farther than the nearest axis, in metres, another leg of the
 /// same junction may run from a point and still have a say in its height:
 /// the width of the band over which two legs' cross-sections are blended
@@ -231,6 +235,9 @@ pub struct Field {
     seg: Vec<(f64, f64, f64)>,
     /// Per segment, the arc along its profile of its two ends.
     arc: Vec<(f64, f64)>,
+    /// Per segment, the other end of its axis where the axis closes on
+    /// itself — a ring whose last segment ends where its first begins.
+    wrap: HashMap<u32, u32>,
     /// Per segment, the axis it belongs to: the profile's place among the
     /// ones the field was built from.
     axis: Vec<u32>,
@@ -515,6 +522,19 @@ impl Field {
                 }
             }
         }
+        // Every axis's first and last segment, and whether it closes.
+        let mut ends: std::collections::BTreeMap<u32, (u32, u32)> = Default::default();
+        for (i, &a) in f.axis.iter().enumerate() {
+            let e = ends.entry(a).or_insert((i as u32, i as u32));
+            e.1 = i as u32;
+        }
+        for (first, last) in ends.into_values() {
+            let (s0, s1) = (f.at.seg[first as usize], f.at.seg[last as usize]);
+            if first != last && connector(s1.1) == connector(s0.0) {
+                f.wrap.insert(first, last);
+                f.wrap.insert(last, first);
+            }
+        }
         let mut joints: Vec<_> = meets.into_iter().filter(|(_, (_, m))| m.len() > 1).collect();
         joints.sort_unstable_by_key(|(key, _)| *key);
         for (_, (c, members)) in joints {
@@ -595,13 +615,27 @@ impl Field {
     fn along(&self, p: Pt, i: usize, t: f64, d: f64) -> f64 {
         let h = self.height(i, t);
         let (mut hs, mut ws) = (h, 1.0);
-        for j in [i.wrapping_sub(1), i + 1] {
-            // A neighbour of the same axis that meets this segment end to end.
-            let Some(&axis) = self.axis.get(j) else { continue };
-            let touching = if j < i { self.arc[j].1 == self.arc[i].0 } else { self.arc[i].1 == self.arc[j].0 };
-            if axis != self.axis[i] || !touching {
-                continue;
-            }
+        // The segments of the same axis within [`ALONG_ARC_M`] of this one,
+        // walked end to end both ways — not just the two neighbours: a
+        // profile has a station at every span edge, so a segment may be
+        // centimetres long and the foot jump clean over it to the next — and
+        // across a ring's seam, where the arc restarts but the road does not.
+        let mut others: Vec<usize> = Vec::new();
+        let (s0, s1) = self.arc[i];
+        let mut j = i;
+        while j > 0 && self.axis[j - 1] == self.axis[i] && self.arc[j - 1].1 == self.arc[j].0 && s0 - self.arc[j - 1].1 < ALONG_ARC_M {
+            j -= 1;
+            others.push(j);
+        }
+        let mut j = i;
+        while j + 1 < self.axis.len() && self.axis[j + 1] == self.axis[i] && self.arc[j].1 == self.arc[j + 1].0 && self.arc[j + 1].0 - s1 < ALONG_ARC_M {
+            j += 1;
+            others.push(j);
+        }
+        if let Some(&w) = self.wrap.get(&(i as u32)) {
+            others.push(w as usize);
+        }
+        for j in others {
             let (a, b) = self.at.seg[j];
             let len2 = (b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2);
             if len2 <= 0.0 {
