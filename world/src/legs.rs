@@ -99,6 +99,9 @@ pub struct Leg {
     pub mouth_m: f64,
     /// The edge's centreline, oriented away from the node.
     pub line: Vec<Pt>,
+    /// The kerb walk past the edge's far node on the left side and on the
+    /// right ([`walk`]): points, each with its stretch's half-width.
+    pub ahead: [Vec<(Pt, f64)>; 2],
 }
 
 /// One junction: the node, its legs in counter-clockwise order, and the
@@ -185,11 +188,12 @@ pub fn run(
         .map(|(i, p)| (i, dedup(&p.pts)))
         .filter(|(_, pts)| pts.len() >= 2)
         .collect();
+    close_twins(&mut pieces);
     let mut tally = Tally { landed: land(&all, &mut pieces), ..Tally::default() };
     let (mut edges, nodes) = cut(&all, ground, &pieces);
     let mut junctions: Vec<Junction> = nodes
         .values()
-        .map(|ends| junction(ends, &edges, &all, &mut tally))
+        .map(|ends| junction(ends, &edges, &nodes, &all, &mut tally))
         .collect();
     // The nodes come out of a hash map; the output is sorted by position.
     junctions.sort_by(|a, b| a.at.partial_cmp(&b.at).expect("finite"));
@@ -201,25 +205,47 @@ pub fn run(
             }
         }
     }
-    // A junction with a deck among its legs is paved only where the span
-    // ribbons do not already pave it: its returns, as the fillet paves
-    // them. The rest is the deck's, and the `sheet` step unions it in —
+    // A junction with a deck among its legs is paved only off the deck: its
+    // returns, and the round of its node the ground ribbons would have
+    // paved, as the fillet paves them. The deck is the `sheet` step's —
     // paved here too, it is ground asphalt under a bridge that no piece of
     // the ground claims.
+    //
+    // **Off the deck is off the square footprint** ([`surface::spans_masked`],
+    // the mask the bench cuts the ground's hole by), not off the round-capped
+    // ribbon: taken by the ribbon, the disc at the node went with it. And
+    // the remainder is **opened by [`LAP_M`]**: the junction's kerbs and
+    // the deck's are two constructions of one line, and a difference along
+    // it leaves hairline fragments no piece claims — they were most of the
+    // `sheet` step's orphans.
+    let decks: Shapes = poly::union_all(
+        &crate::surface::spans_masked(roads)
+            .into_iter()
+            .filter(|(f, ..)| *f == Family::Carriageway)
+            .flat_map(|(.., s)| s)
+            .collect(),
+    );
     let mut parts: Shapes = Vec::new();
     for j in &junctions {
         if j.legs.iter().all(|g| edges[g.edge].ground) {
             parts.extend(j.shape.iter().cloned());
         } else {
-            parts.extend(poly::difference(&j.shape, &surface.spanned));
+            let off = poly::difference(&j.shape, &decks);
+            parts.extend(poly::dilate_sharp(&poly::erode(&off, LAP_M), LAP_M));
         }
     }
     for e in edges.iter().filter(|e| e.ground) {
         let len = poly::length(&e.pts);
         let a = if e.node[0] { e.trim[0] - LAP_M } else { 0.0 };
         let b = if e.node[1] { len - e.trim[1] + LAP_M } else { len };
+        // **An edge its two mouths overrun is paved whole.** Its junctions
+        // were meant to pave it between them, but a return whose tangent
+        // point the kerb walk found past the far node leaves a ring that
+        // runs out along the next edge and back, and the edge itself can
+        // fall outside it. The union makes paving it twice free.
         if e.trim[0] + e.trim[1] >= len {
             tally.short += 1;
+            parts.extend(poly::buffer_line_capped(&e.pts, e.width_m, [false, false]));
             continue;
         }
         parts.extend(poly::buffer_line_capped(&between(&e.pts, a, b), e.width_m, [false, false]));
@@ -325,6 +351,41 @@ fn dedup(pts: &[Pt]) -> Vec<Pt> {
         }
     }
     out
+}
+
+/// Two consecutive vertices of a piece closer than this are one, in metres:
+/// the connector snap. The source carries such twins — `689f09` on the loop
+/// box has two vertices 3 mm apart that round to two connectors — and
+/// between them is an edge whose direction is noise, which the kerb walk
+/// followed back up the road it came from.
+const TWIN_M: f64 = 0.01;
+
+/// Collapses every pair of consecutive twins in `pieces` to one vertex:
+/// the one more pieces share, so a node survives it, else the first.
+fn close_twins(pieces: &mut [(usize, Vec<Pt>)]) {
+    let mut shared: HashMap<(i64, i64), usize> = HashMap::new();
+    for (_, pts) in pieces.iter() {
+        for &p in pts {
+            *shared.entry(connector(p)).or_default() += 1;
+        }
+    }
+    for (_, pts) in pieces.iter_mut() {
+        let mut out: Vec<Pt> = Vec::with_capacity(pts.len());
+        for &p in pts.iter() {
+            match out.last_mut() {
+                Some(q) if (q[0] - p[0]).hypot(q[1] - p[1]) < TWIN_M => {
+                    if shared[&connector(p)] > shared[&connector(*q)] {
+                        *q = p;
+                    }
+                }
+                _ => out.push(p),
+            }
+        }
+        // A piece that collapsed to one point keeps its two ends apart.
+        if out.len() >= 2 {
+            *pts = out;
+        }
+    }
 }
 
 /// A leg end at a node: which edge, and whether the edge leaves the node at
@@ -508,16 +569,28 @@ struct Side {
 }
 
 /// One side of a leg: its centreline oriented away from the node, extended
-/// straight back past the node by [`BACK_M`], offset by `d` (to the left
-/// where positive), with each vertex's arc along the centreline — so a
-/// point of the kerb and the centreline point it stands beside share an arc,
-/// and a trim at that arc cuts both.
+/// straight back past the node by [`BACK_M`] and carried on past its far node
+/// by the kerb walk ([`walk`]), offset to the left where `side` is positive by
+/// each stretch's own half-width plus `extra` — with each vertex's arc along
+/// the centreline, so a point of the kerb and the centreline point it stands
+/// beside share an arc, and a trim at that arc cuts both.
 struct Kerb {
+    /// The offset polyline, with each vertex's arc: what two kerbs are
+    /// crossed on. Where two stretches of different widths meet, the vertex
+    /// is doubled, both copies at one arc.
     pts: Vec<Pt>,
     arc: Vec<f64>,
-    /// The centreline the kerb is offset from, extended likewise, and by
-    /// how much.
-    base: Vec<Pt>,
+    /// The centreline stretches, each from arc `s0` to `s1` and offset by
+    /// `d`: what a point at an arc is read from.
+    segs: Vec<Stretch>,
+}
+
+/// One segment of a kerb's centreline and how far the kerb stands off it.
+struct Stretch {
+    a: Pt,
+    b: Pt,
+    s0: f64,
+    s1: f64,
     d: f64,
 }
 
@@ -534,36 +607,55 @@ const CLAMP_STEPS: usize = 14;
 const MITRE_MAX: f64 = 4.0;
 
 impl Kerb {
-    fn new(line: &[Pt], d: f64) -> Kerb {
-        let u0 = poly::unit([line[1][0] - line[0][0], line[1][1] - line[0][1]]);
-        let mut base = vec![add(line[0], u0, -BACK_M)];
-        base.extend_from_slice(line);
-        let mut arc = vec![-BACK_M, 0.0];
-        for i in 1..line.len() {
-            arc.push(arc[i] + seg(line, i - 1));
+    /// The kerb along `path` — the centreline from the node, each point
+    /// after the first with the half-width of the stretch that ends there.
+    fn new(path: &[(Pt, f64)], side: f64, extra: f64) -> Kerb {
+        let u0 = poly::unit([path[1].0[0] - path[0].0[0], path[1].0[1] - path[0].0[1]]);
+        let mut segs = vec![Stretch {
+            a: add(path[0].0, u0, -BACK_M),
+            b: path[0].0,
+            s0: -BACK_M,
+            s1: 0.0,
+            d: side * (path[1].1 + extra),
+        }];
+        for k in 1..path.len() {
+            let (a, b) = (path[k - 1].0, path[k].0);
+            let s0 = segs[k - 1].s1;
+            segs.push(Stretch { a, b, s0, s1: s0 + (b[0] - a[0]).hypot(b[1] - a[1]), d: side * (path[k].1 + extra) });
         }
-        let n = base.len();
-        let normal = |i: usize| left(poly::unit([base[i + 1][0] - base[i][0], base[i + 1][1] - base[i][1]]));
-        let pts = (0..n)
-            .map(|i| {
-                if i == 0 {
-                    return add(base[0], normal(0), d);
-                }
-                if i == n - 1 {
-                    return add(base[i], normal(i - 1), d);
-                }
-                let (a, b) = (normal(i - 1), normal(i));
-                let m = poly::unit([a[0] + b[0], a[1] + b[1]]);
-                let scale = 1.0 / dot(m, b).max(1.0 / MITRE_MAX);
-                add(base[i], m, d * scale)
-            })
-            .collect();
-        Kerb { pts, arc, base, d }
+        let off = |g: &Stretch, p: Pt| add(p, left(poly::unit([g.b[0] - g.a[0], g.b[1] - g.a[1]])), g.d);
+        let mut pts = vec![off(&segs[0], segs[0].a)];
+        let mut arc = vec![segs[0].s0];
+        for k in 1..segs.len() {
+            let (g, h) = (&segs[k - 1], &segs[k]);
+            let (na, nb) = (
+                left(poly::unit([g.b[0] - g.a[0], g.b[1] - g.a[1]])),
+                left(poly::unit([h.b[0] - h.a[0], h.b[1] - h.a[1]])),
+            );
+            if (g.d - h.d).abs() < 1e-9 {
+                // One offset: the mitre, clamped.
+                let m = poly::unit([na[0] + nb[0], na[1] + nb[1]]);
+                let scale = 1.0 / dot(m, nb).max(1.0 / MITRE_MAX);
+                pts.push(add(h.a, m, h.d * scale));
+                arc.push(h.s0);
+            } else {
+                // Two: where the width changes the kerb steps, both ends at
+                // one arc.
+                pts.push(off(g, g.b));
+                pts.push(off(h, h.a));
+                arc.extend([h.s0, h.s0]);
+            }
+        }
+        let last = segs.last().expect("a kerb has a stretch");
+        pts.push(off(last, last.b));
+        arc.push(last.s1);
+        Kerb { pts, arc, segs }
     }
 
-    /// The segment `s` falls on, the first or the last extended.
-    fn segment(&self, s: f64) -> usize {
-        (1..self.arc.len() - 1).take_while(|&i| self.arc[i] < s).count()
+    /// The stretch `s` falls on, the first or the last extended.
+    fn stretch(&self, s: f64) -> &Stretch {
+        let i = self.segs.iter().take_while(|g| g.s1 < s).count().min(self.segs.len() - 1);
+        &self.segs[i]
     }
 
     /// The kerb at `s`: square off the centreline from the point at that
@@ -572,18 +664,17 @@ impl Kerb {
     /// leg was skewed against the square end of the edge it hands over to,
     /// and the two left a hairline between them.
     fn at(&self, s: f64) -> Pt {
-        let i = self.segment(s);
-        let l = self.arc[i + 1] - self.arc[i];
-        let f = if l > 0.0 { (s - self.arc[i]) / l } else { 0.0 };
-        let (a, b) = (self.base[i], self.base[i + 1]);
-        let n = left(poly::unit([b[0] - a[0], b[1] - a[1]]));
-        add([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f], n, self.d)
+        let g = self.stretch(s);
+        let l = g.s1 - g.s0;
+        let f = if l > 0.0 { (s - g.s0) / l } else { 0.0 };
+        let n = left(poly::unit([g.b[0] - g.a[0], g.b[1] - g.a[1]]));
+        add([g.a[0] + (g.b[0] - g.a[0]) * f, g.a[1] + (g.b[1] - g.a[1]) * f], n, g.d)
     }
 
     /// The unit direction of the kerb at `s`, away from the node.
     fn direction(&self, s: f64) -> Pt {
-        let i = self.segment(s);
-        poly::unit([self.pts[i + 1][0] - self.pts[i][0], self.pts[i + 1][1] - self.pts[i][1]])
+        let g = self.stretch(s);
+        poly::unit([g.b[0] - g.a[0], g.b[1] - g.a[1]])
     }
 
     /// The kerb from `s0` to `s1`, either way: its two ends and every vertex
@@ -598,6 +689,111 @@ impl Kerb {
         let mut out = vec![self.at(s0)];
         out.extend(inner);
         out.push(self.at(s1));
+        out
+    }
+}
+
+/// How far a kerb is walked past its leg's far node, in metres: past the
+/// longest return (`RETURN_MAX_RADII` of the widest radius) and a road's
+/// width.
+const WALK_M: f64 = 40.0;
+
+/// A turn this close to none or a full turn, in radians, is an edge doubling
+/// back on the one the walk arrived by.
+const BACK_TURN: f64 = 0.02;
+
+/// The most nodes a kerb walk passes through.
+const WALK_HOPS: usize = 4;
+
+/// The kerb of leg `(e, at_start)` on one side, walked on past the leg's far
+/// node: the points after the leg's own, each with the half-width of the
+/// stretch ending there.
+///
+/// **A kerb does not stop at the next node.** Two nodes a few metres apart
+/// each build their junction alone, and the corner between a leg of one and
+/// a leg of the other — a V whose two kerbs belong to different junctions —
+/// has a return only if one junction can see the other's kerb. So a leg's
+/// kerb goes on as the boundary of the face on that side does: at each node
+/// it takes the edge first clockwise from the one it arrived on (a left
+/// kerb) or first counter-clockwise (a right kerb), which is the kerb that
+/// turns the way the face turns. It stops at a free end, after
+/// [`WALK_HOPS`] nodes, or past [`WALK_M`].
+///
+/// Merging the two nodes into one junction was tried first: the link
+/// between them stops being a leg, and the return between it and an outer
+/// leg is lost instead.
+fn walk(
+    (mut e, mut from_start): End,
+    left_side: bool,
+    edges: &[Edge],
+    nodes: &HashMap<(i64, i64), Vec<End>>,
+) -> Vec<(Pt, f64)> {
+    let mut out = Vec::new();
+    let mut walked = 0.0;
+    for _ in 0..WALK_HOPS {
+        let pts = &edges[e].pts;
+        let n = pts.len();
+        let (end, back) = if from_start { (pts[n - 1], pts[n - 2]) } else { (pts[0], pts[1]) };
+        let Some(ends) = nodes.get(&connector(end)) else {
+            break;
+        };
+        let r = poly::unit([back[0] - end[0], back[1] - end[1]]);
+        let ra = r[1].atan2(r[0]);
+        let turn = |v: Pt| {
+            // Clockwise from `r` for a left kerb, counter-clockwise for a
+            // right one, in (0, 2π].
+            let a = v[1].atan2(v[0]);
+            let mut d = if left_side { ra - a } else { a - ra };
+            while d <= 1e-12 {
+                d += 2.0 * std::f64::consts::PI;
+            }
+            while d > 2.0 * std::f64::consts::PI {
+                d -= 2.0 * std::f64::consts::PI;
+            }
+            d
+        };
+        let next = ends
+            .iter()
+            .copied()
+            .filter(|&(f, s)| (f, s) != (e, !from_start))
+            .map(|(f, s)| {
+                let q = &edges[f].pts;
+                let v = if s { [q[1][0] - q[0][0], q[1][1] - q[0][1]] } else {
+                    let m = q.len();
+                    [q[m - 2][0] - q[m - 1][0], q[m - 2][1] - q[m - 1][1]]
+                };
+                (turn(poly::unit(v)), f, s)
+            })
+            // An edge leaving along the one arrived on doubles back up the
+            // same road: a duplicate way, not a kerb that turns.
+            .filter(|&(a, ..)| a > BACK_TURN && a < 2.0 * std::f64::consts::PI - BACK_TURN)
+            .min_by(|a, b| a.0.partial_cmp(&b.0).expect("finite").then((a.1, a.2).cmp(&(b.1, b.2))));
+        let Some((_, f, s)) = next else {
+            break;
+        };
+        let mut line = edges[f].pts.clone();
+        if !s {
+            line.reverse();
+        }
+        let half = edges[f].width_m / 2.0;
+        for k in 1..line.len() {
+            walked += seg(&line, k - 1);
+            out.push((line[k], half));
+            if walked >= WALK_M {
+                return out;
+            }
+        }
+        (e, from_start) = (f, s);
+    }
+    out
+}
+
+impl Leg {
+    /// The centreline a kerb on one side is offset from: the leg's own line
+    /// and the walk past it.
+    fn path(&self, left_side: bool) -> Vec<(Pt, f64)> {
+        let mut out: Vec<(Pt, f64)> = self.line.iter().map(|&p| (p, self.half_m)).collect();
+        out.extend(self.ahead[if left_side { 0 } else { 1 }].iter().copied());
         out
     }
 }
@@ -630,7 +826,13 @@ fn meet(a: &Kerb, b: &Kerb) -> Option<(f64, f64, Pt)> {
 }
 
 /// The junction from its leg ends.
-fn junction(ends: &[End], edges: &[Edge], all: &[&Polyline2], tally: &mut Tally) -> Junction {
+fn junction(
+    ends: &[End],
+    edges: &[Edge],
+    nodes: &HashMap<(i64, i64), Vec<End>>,
+    all: &[&Polyline2],
+    tally: &mut Tally,
+) -> Junction {
     let mut legs: Vec<Leg> = ends
         .iter()
         .map(|&(e, at_start)| {
@@ -646,6 +848,7 @@ fn junction(ends: &[End], edges: &[Edge], all: &[&Polyline2], tally: &mut Tally)
                 class: all[edges[e].piece].class.clone(),
                 mouth_m: 0.0,
                 line,
+                ahead: [walk((e, at_start), true, edges, nodes), walk((e, at_start), false, edges, nodes)],
             }
         })
         .collect();
@@ -657,7 +860,7 @@ fn junction(ends: &[End], edges: &[Edge], all: &[&Polyline2], tally: &mut Tally)
     let n = legs.len();
     // Each leg's two kerbs, left and right.
     let kerbs: Vec<[Kerb; 2]> =
-        legs.iter().map(|l| [Kerb::new(&l.line, l.half_m), Kerb::new(&l.line, -l.half_m)]).collect();
+        legs.iter().map(|l| [Kerb::new(&l.path(true), 1.0, 0.0), Kerb::new(&l.path(false), -1.0, 0.0)]).collect();
     // Each side between leg `i` and leg `i + 1`.
     let sides: Vec<Side> = (0..n)
         .map(|i| {
@@ -672,13 +875,19 @@ fn junction(ends: &[End], edges: &[Edge], all: &[&Polyline2], tally: &mut Tally)
     // The ring, counter-clockwise: at each leg its mouth from right to left,
     // then in along its left kerb to the side, the side, and out along the
     // next leg's right kerb to its mouth.
+    //
+    // **A mouth past the leg's own end is drawn at its far node.** The two
+    // kerbs walk on into different edges there, so a line across them at
+    // the mouth's arc would cut across whatever lies between those edges;
+    // across the leg at its end it lies in the far junction, which paves it.
+    let mouth: Vec<f64> = legs.iter().map(|l| l.mouth_m.min(poly::length(&l.line))).collect();
     let mut ring: Ring = Vec::new();
     for i in 0..n {
         let j = (i + 1) % n;
-        ring.push(kerbs[i][1].at(legs[i].mouth_m));
-        ring.extend(kerbs[i][0].between(legs[i].mouth_m, sides[i].s));
+        ring.push(kerbs[i][1].at(mouth[i]));
+        ring.extend(kerbs[i][0].between(mouth[i], sides[i].s));
         ring.extend(sides[i].arc.iter().copied());
-        ring.extend(kerbs[j][1].between(sides[i].t, legs[j].mouth_m));
+        ring.extend(kerbs[j][1].between(sides[i].t, mouth[j]));
     }
     let ring = dedup(&ring);
     let signed = poly::ring_area(&ring);
@@ -689,7 +898,8 @@ fn junction(ends: &[End], edges: &[Edge], all: &[&Polyline2], tally: &mut Tally)
     let reach_m = legs
         .iter()
         .zip(&kerbs)
-        .flat_map(|(l, k)| k.iter().map(move |k| k.at(l.mouth_m)))
+        .zip(&mouth)
+        .flat_map(|((_, k), &m)| k.iter().map(move |k| k.at(m)))
         .map(|p| (p[0] - at[0]).hypot(p[1] - at[1]))
         .fold(0.0, f64::max);
     Junction { at, legs, shape, reach_m, apart_m: 0.0, extra_m2: 0.0, missing_m2: 0.0 }
@@ -721,6 +931,14 @@ fn side(at: Pt, a: &Leg, b: &Leg, ka: &Kerb, kb: &Kerb, tally: &mut Tally) -> Si
     let turn = std::f64::consts::PI - cross(da, db).atan2(dot(da, db));
     let mitre = Side { s, t, arc: vec![corner] };
     if turn.to_degrees() < fillet::BEND_MIN_DEG {
+        // A mitre is where the kerbs barely turn, so its corner stands about
+        // a half-width from the node. One further off is two kerbs of
+        // different widths meeting at a grazing angle — at worst a stub the
+        // clip left a few centimetres long — and drawn, it is a spike.
+        if (corner[0] - at[0]).hypot(corner[1] - at[1]) > MITRE_MAX * a.half_m.max(b.half_m) {
+            tally.far += 1;
+            return round(tally);
+        }
         tally.mitres += 1;
         return mitre;
     }
@@ -729,7 +947,8 @@ fn side(at: Pt, a: &Leg, b: &Leg, ka: &Kerb, kb: &Kerb, tally: &mut Tally) -> Si
     // its tangent points stand beside the centre on each kerb — which holds
     // on a curved leg as on a straight one.
     let r0 = width::fillet_m(&a.class).min(width::fillet_m(&b.class));
-    let centre = |r: f64| meet(&Kerb::new(&a.line, a.half_m + r), &Kerb::new(&b.line, -(b.half_m + r)));
+    let (pa, pb) = (a.path(true), b.path(false));
+    let centre = |r: f64| meet(&Kerb::new(&pa, 1.0, r), &Kerb::new(&pb, -1.0, r));
     // **A return runs at most [`fillet::RETURN_MAX_RADII`] radii along
     // either kerb from the corner**, and past that the radius shrinks until
     // it fits. The reach is read off the tangent points themselves, not off
@@ -1000,6 +1219,34 @@ mod tests {
         // The service road's 3 m return, at the corner west of it.
         let c = 2.75 + 3.0 * (1.0 - 1.0 / 2.0f64.sqrt()) - 0.05;
         assert!(poly::contains(&l.surface.carriageway, [5.0 - 1.5 - c + 2.75, c]), "{s}");
+    }
+
+    /// **A return reaches past the next node.** The tee's east leg is cut
+    /// 3 m out, as a mapper cuts a way at a driveway: the return between it
+    /// and the north leg is 4 m, so its tangent point lies on the next edge.
+    /// The kerb walks on through the cut, and the return is the tee's.
+    #[test]
+    fn a_return_reaches_past_the_next_node() {
+        let mut w = built("flat", "net:tee?len=200", None, 100.0, &plan(Step::Facade)).0;
+        let plan_ = &mut w.roads.as_mut().unwrap().plan;
+        let i = plan_.iter().position(|p| p.id == "road-e").unwrap();
+        let mut far = plan_[i].clone();
+        far.id = "road-e2".into();
+        far.pts = vec![[3.0, 0.0], [100.0, 0.0]];
+        plan_[i].pts = vec![[0.0, 0.0], [3.0, 0.0]];
+        plan_.push(far);
+        let roads = w.roads.as_ref().unwrap();
+        let facade = w.facade.as_ref().unwrap();
+        let (ribbons, _) = crate::ribbon::run(roads);
+        let (surface, _) = crate::surface::run(roads, &ribbons, facade);
+        let (k, _) = crate::kerb::run(roads, &surface, facade);
+        let (f, _) = crate::fillet::run(roads, &surface, &k, facade);
+        let (l, s) = run(roads, &surface, &k, facade, &f.surface);
+        assert_eq!(s.num("returns"), 2.0, "{s}");
+        let c = 2.75 + 4.0 * (1.0 - 1.0 / 2.0f64.sqrt()) - 0.05;
+        assert!(poly::contains(&l.surface.carriageway, [c, c]), "the east return: {s}");
+        assert!(poly::contains(&l.surface.carriageway, [-c, c]), "the west return: {s}");
+        assert!(s.num("near_m2") < 1.0, "{s}");
     }
 
     /// A pavement a return eats into is laid back outside it, as the fillet

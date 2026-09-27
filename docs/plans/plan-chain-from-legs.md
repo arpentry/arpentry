@@ -202,34 +202,70 @@ And `fillet`'s span-group closing now reads its own group's asphalt
   `slivers` 70 096 → 70 701, decks 49 → 46, galleries 20 → 25, `unmet`
   0 → 2.
 
-Still not wired. What is left, each seen at a site or measured:
+**Then the kerb walk (close junctions).** A leg's kerb no longer stops at
+its far node: it goes on as the boundary of the face on that side — at each
+node the edge first clockwise from the one it arrived on (left kerb) or
+first counter-clockwise (right kerb), up to `WALK_M` or `WALK_HOPS` — so the
+return between a leg of one junction and a leg of the next is found from
+either. A mouth past the leg's own end is drawn across the leg at its far
+node, and an edge its mouths overrun is paved whole.
+`a_return_reaches_past_the_next_node` is the specimen, and fails with the
+walk off. **Merging the two nodes into one junction was tried first and
+reverted**: the link between them stops being a leg, and the return between
+it and an outer leg is lost instead.
 
-1. **Close junctions** — the largest share of `missing` (3 473 m² on the
-   loop box). Two nodes a few metres apart each build their junction
-   alone, so the return between a leg of one and a leg of the other is
-   never built (`short` counts 96 such links). **Merging the two nodes was
-   tried and reverted**: rebuilt from the legs leaving the pair, the link
-   between them is no longer a leg, so the return between the link and an
-   outer leg is lost instead, and the junction box read worse (`missing`
-   96 → 113). The construction that states it is a kerb walked *through*
-   the next node — the boundary of the face on that side of the leg, taking
-   at each node the first edge clockwise (left kerb) or counter-clockwise
-   (right kerb) from the reverse of the one arriving. That is the planar
-   face walk the labelled slice needs anyway.
-2. **`kerb_gap` is partly the measure's.** `kerb::attached` placed its
-   stations on the kerb before either construction ran. Where the explicit
-   return is smaller than the closing's (the clamp's slack, and close
-   junctions), stations sit in a crescent neither surface paves — at the
-   junction box's (−288, 125) the pavement does wrap the explicit arc.
-   Whether the fix is the stations or the pavement is not decided.
-3. **`fillet`'s main closing crosses grade separations.** At the loop box's
-   viaduct abutments the ramp's ground approach overlaps the road it flies
-   over, the union makes notches of that, and `fillet` rounds them. The
-   explicit construction does not, so those wedges read as `missing` though
-   they are `fillet`'s defect. Not fixed: it is the machinery this step
-   replaces.
-4. `orphan` 7 → 18, decks/galleries and `unmet` 0 → 2 have not been read at
-   a site. The deck-junction paving and the landed ends are the suspects.
+Three defects the walk exposed, fixed where they live:
+
+- **Vertex twins.** `689f09` on the loop box has two vertices 3 mm apart
+  that round to two connectors; the edge between them has a direction that
+  is noise, and the walk followed it back up the road. Consecutive vertices
+  under the connector snap collapse to the one another piece shares
+  (`close_twins`), and a walk never takes an edge doubling back on the one
+  it arrived by.
+- **Deck junctions** pave off the *square* deck footprint
+  (`surface::spans_masked`, the bench's mask), so the round of the node the
+  ground ribbons paved survives, and the remainder is opened by `LAP_M`:
+  a difference along the deck's kerb left hairline fragments that were most
+  of `sheet`'s new orphans.
+- **A mitre corner far from its node** (two kerbs of different widths at a
+  grazing angle, often a stub the clip left) falls back to the round join.
+
+**The A/B now**, loop box, against `b8f3c23`:
+
+| | fillet | legs |
+|---|---|---|
+| `scraps` | 895 | 661 |
+| `loose` | 145 (110.1 m²) | 157 (104.8 m²) |
+| `unprobed` | 1 813 | 1 644 |
+| `kerb_gap` | 29 | 43 |
+| `wall_gap` | 28 | 64 |
+| `orphan` | 7 | 13 |
+| mesh `crack` | 21 m | 8.4 m |
+| mesh `slivers` | 70 096 | 71 090 |
+| decks / galleries | 49 / 20 | 47 / 25 |
+| `unmet` | 0 | 2 |
+| `wall_m2` / `kerb_m2` / `split_m2` | 10 886 / 32 715 / 19 550 | 10 249 / 31 281 / 18 122 |
+| carriageway regions/holes | 60 / 160 | 73 / 188 |
+
+`missing` 3 473 → 3 021 m², `extra` 390 → 582 m². Still not wired. What is
+left:
+
+1. **The explicit returns fill more than the closing does**: small islands
+   between three roads, and narrow forks whose V the clamp fills to 3 r.
+   That is `extra`, and plausibly the new holes (188 against 160) and
+   `wall_gap` — a return reaching toward a wall. It is a rule, not a bug:
+   decide what a fork's gore and a small island should be before tuning.
+2. **`kerb_gap` is partly the measure's**: `kerb::attached` placed its
+   stations on the kerb before either construction ran, and where the
+   explicit return is smaller than the closing's they sit in a crescent
+   neither surface paves.
+3. **`fillet`'s main closing crosses grade separations** at viaduct
+   abutments; those wedges read as `missing` though they are its defect.
+4. **Galleries 20 → 25, decks 49 → 47, `unmet` 0 → 2** have not been read
+   at a site; they moved with the deck junctions and have not moved since.
+5. A dozen sub-square-metre fragments remain, most at the bbox edge (stubs
+   the clip left) and at hairpin bends inside a mouth (a mitred outer kerb
+   where the ribbon has a round join).
 
 ## After the first slice, in order
 
