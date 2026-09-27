@@ -250,11 +250,22 @@ Three defects the walk exposed, fixed where they live:
 `missing` 3 473 → 3 021 m², `extra` 390 → 582 m². Still not wired. What is
 left:
 
-1. **The explicit returns fill more than the closing does**: small islands
-   between three roads, and narrow forks whose V the clamp fills to 3 r.
-   That is `extra`, and plausibly the new holes (188 against 160) and
-   `wall_gap` — a return reaching toward a wall. It is a rule, not a bug:
-   decide what a fork's gore and a small island should be before tuning.
+1. **Narrow forks and small islands are paved — decided (2026-09-27).**
+   The explicit returns pave a fork up to the return's reach (3 radii along
+   either kerb) and an island's corners; what is left of an island `room`
+   paves as a traffic island if it can hold the narrowest pavement, and
+   `legs` now fills every hole of the carriageway that cannot
+   (`room::wide_enough`, shared) — `98cae84`: holes 188 → 156 (fillet 160),
+   `loose` 157 → 144 (fillet 145), `kerb_gap` 43 → 39, `wall_gap` 64 → 55.
+   A closing by half the pavement width over the whole surface was tried
+   first and reverted: it re-rounded every kerb (mesh slivers 71 k → 110 k,
+   crack 8 → 93 m). **Still open: how far a fork between two long parallel
+   roads is paved.** At a garage court on the loop box (−2675, 1280) three
+   service lanes run 3 m apart; the explicit returns pave each fork 9–15 m
+   in, the fillet's overlapping wedges pave further, and the ground left
+   between the lanes is most of the new `wall_gap` there. Past a reach, a
+   gore between parallel roads is either a paved court or a median, and the
+   geometry alone cannot tell them apart.
 2. **`kerb_gap` is partly the measure's**: `kerb::attached` placed its
    stations on the kerb before either construction ran, and where the
    explicit return is smaller than the closing's they sit in a crescent
