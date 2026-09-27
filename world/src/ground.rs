@@ -94,22 +94,32 @@ mod tests {
         built(ground, net, houses, 5.0, &upto(Step::Bench)).1.of(Step::Bench)
     }
 
-    /// **Step 2 — every drawn edge is welded or walled.**
+    /// **Step 2 — every drawn edge is welded or walled. Built 2026-09-27;
+    /// 26 left, and this stays ignored until they are.**
     ///
-    /// `step` counts mesh edges the height field is discontinuous across:
-    /// over `KERB_RISE_M` and steeper than `STEP_GRADE`. Today a
-    /// discontinuity is an accident of where a positional case-function
-    /// changes branch, and a face is drawn for it only where that locus
-    /// happens to fall on a rim — 1 599 of the loop box's 1 801 stretched
-    /// triangles are fully interior, so nothing draws them at all.
+    /// `step` counts drawn edges the heights **jump** across: over
+    /// `KERB_RISE_M`, steeper than `STEP_GRADE`, and with a midpoint the
+    /// edge's own rule does not put near the mean of its ends. It used to
+    /// count every edge over the grade, which on this 150 % flank is most of
+    /// a street that follows the ground; those are `steep` now, and the
+    /// raw DEM's own cliffs are `dem_steep`.
     ///
-    /// With the step declared on the edge instead there is no third case: an
-    /// edge either shares its vertices or is spanned by a quad, so `step` has
-    /// nothing left to count. This is invariant J2.
+    /// Built: a paved triangle takes one rule at its centroid
+    /// (`bench::Rule` — the field, the axis, the stretch of it, the face or
+    /// the drape) and all three corners are answered by it; a vertex two
+    /// rules answer differently is two copies, welded within a kerb's rise
+    /// and split with a face between them otherwise. A foot on a polyline
+    /// axis is blended with its neighbour's on the inside of a bend, and two
+    /// legs of a junction weigh against the nearer leg. Loop box `step`
+    /// **18 408 → 144**, worst 11.85 → 3.74 m; the Montreux junction box and
+    /// every other specimen read 0.
     ///
-    /// Today: **2304 of 6368**, worst 15.432 m.
+    /// Today: **26 of 6 644**, worst 10.794 m, on the carriageway's inner edge
+    /// where the ring's axis closes on itself (its first and last segments
+    /// do not meet in arc, so the bend's blend does not hand over there) and
+    /// on its outer sidewalk. Was 2 304 of 6 368, worst 15.432 m.
     #[test]
-    #[ignore = "welded-or-split (plan §3.3, step 2) is not built"]
+    #[ignore = "26 steps left on the ring's seam (plan §3.3, step 2)"]
     fn every_drawn_edge_is_welded_or_walled() {
         let s = bench(FLANK, JUNCTION, None);
         assert_eq!(s.num("step"), 0.0, "the field is discontinuous across a drawn edge: {s}");

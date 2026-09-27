@@ -502,17 +502,12 @@ the other side up. `wall` stays, because it sweeps the room's outline
 against the *ground*, the one boundary whose far side is not a face of the
 paving.
 
-**It does not zero `step`, and cannot.** §3.3 reads "an edge either shares
-its vertices or is spanned by a quad, so `step` has nothing left to count".
-`step` counts triangle edges *inside* one lifted mesh, and the new
-`step_on_edge` says how many of those lie on an arrangement edge at all: on
-the junction with houses, **729 of 2333 (31 %)**. The other 69 % are in the
-middle of one material's region, where there is no face boundary for a quad
-to attach to. Giving them one means cutting the arrangement where the
-**height field** steps, which needs the field — plan §3.2, ordered *after*
-this. So step 3 comes before step 2, or step 2's target is `step_on_edge`
-rather than `step`. `step` is unmoved at 2333/6392, exactly as that
-predicts.
+**The edge rule alone did not zero `step` — and step 2 did not need the
+field first.** `step` counted triangle edges *inside* one lifted mesh, 69 %
+of them away from any arrangement edge, and the plan read that as needing
+the arrangement cut where the height field steps (§3.2 before §3.3). The
+one mesh gave a cheaper route: declare the step on the mesh's own edges.
+See "Step 2 is built" below.
 
 **The solve is `world/src/relax.rs`, built and not wired** (plan step 3a).
 §3.2's energy `Σ w(z−dem)² + Σ‖∇z−∇dem‖²` is, in terms of the residual
@@ -606,6 +601,52 @@ where the walk past the room's reach drapes — and 40 m² between two
 carriageway sheets. The old rule read both sides by position and dropped any
 quad with a missed end. The edge rule now reports `kerb_max` (the tallest
 face) and `sheet_m2` so a curtain has a number to show up in.
+
+**Step 2 is built (2026-09-27): every drawn edge is welded or walled.**
+Measured first, and the measurement moved the target: of the loop box's
+18 408 `step` edges, **10 028 were the raw DEM's own steepness** under a
+draped pavement (both ends at the natural ground), ~8 400 were the lift's
+case function switching between two vertices of one triangle, and of those
+only ~1 400 were the carriageway's nearest axis — the pavement's nearest
+road (3 491) and its face/drape threshold (2 757) were most of it. So the
+fix is general rather than per material:
+
+- **A triangle takes one rule** (`bench::Rule`: chord or ground field, the
+  axis, the `PART_M` stretch of it, face or drape), chosen at its centroid,
+  and all three corners are answered by it (`Lift::height`, `Field::on_axis`).
+- **A vertex two rules answer is two copies**, keyed `(Surface, Rule)`:
+  welded at their mean within `KERB_RISE_M` (`Copies::weld`), split
+  otherwise, and the edge rule draws the face across the split (`split_m2`).
+- **Two things made the rules agree where they should.** A junction's legs
+  weigh against the *nearest* leg's distance, not the answering one's (with a
+  forced axis the blend was asymmetric and two legs of one junction split at
+  their shared corners — caught by `a_junction_on_a_slope_is_one_surface`).
+  And a foot on a polyline axis blends with the neighbouring segment's
+  *interior* foot (`Field::along`, `SEGMENT_BLEND_M`): on the inside of a bend
+  the nearest foot jumps a station's spacing along the axis, a step of metres
+  on a steep street. Blended with the neighbour's shared *vertex* instead, it
+  flattened every straight road off its axis — interior feet only.
+- **`step` now counts only a jump within one rule**: an edge over the grade
+  whose midpoint, asked of its own triangle's rule, is off the mean of its
+  ends by more than a quarter of the rise. Continuous steep edges are
+  `steep`; both ends on the DEM, `dem_steep`.
+
+Loop box: `step` **18 408 → 144** (worst 11.85 → 3.74 m), `steep` 514,
+`dem_steep` 10 070, `welded` 168 558 copies, `contact` 0.00. Every synthetic
+specimen with nothing to fix is unchanged from step 1 to the bit; the
+Montreux junction box and `ridge` read `step` 0.
+`ground::tests::every_drawn_edge_is_welded_or_walled` stays `#[ignore]`d at
+**26** on its 150 % flank, where the roundabout ring's axis closes on itself
+and the bend blend does not hand over across the seam.
+
+**The cost is 22 340 m² of `split_m2`** — faces inside a surface where the
+old code left stretched triangles: 11 k m² in the near pavement between two
+roads more than a metre apart (a sidewalk between two terraced streets gets a
+wall in its middle), 4.4 k m² where the far pavement stops standing on its
+face and drapes, 2.4 k m² in the carriageway, 1.8 k m² in the ballast. A wall
+is the model's honest answer to its case functions; whether a pavement
+between two terraces should instead be a ramp is the relax's question
+(step 3), and `split_m2` is the number that will say what it changes.
 
 **And the solve is measured against the case-function it would replace.**
 `bench` pins that mesh's paved vertices at the lift's heights, relaxes, and

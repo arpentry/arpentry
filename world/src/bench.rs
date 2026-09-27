@@ -36,11 +36,21 @@
 //!
 //! **Where two carriageways' domains meet at different heights** — two
 //! terraces on a flank, two one-way carriageways across a slope — the
-//! field steps on the line between them, and the mesh draws a face there:
-//! a retaining wall, which is what the hillside physically has. The
+//! heights step on the line between them, and a face is drawn there: a
+//! retaining wall, which is what the hillside physically has. The
 //! alternative, a blend between the two, would ramp a pavement at 60 %
-//! between two terraces, which is spectacle (invariant 6). The `step`
-//! check counts those edges and the plan view marks them.
+//! between two terraces, which is spectacle (invariant 6).
+//!
+//! **That face is drawn because the step is declared** ([`Rule`]). A paved
+//! triangle takes one rule at its centroid — which field, which axis, which
+//! stretch of it, and for the far pavement the face or the drape — and all
+//! three of its corners are answered by it; a vertex two triangles answer
+//! differently is two copies, welded where they agree within a kerb's rise
+//! and split otherwise, and the edge rule draws the face across the split
+//! (`split_m2`). It used to be decided per vertex, so the switch fell inside
+//! whichever triangle straddled it and was drawn as a stretched triangle
+//! that nothing closed: 8 400 of them on the loop box. `step` now counts
+//! only a jump *within* one rule, and reads 144 there.
 //!
 //! **Except where they meet.** Every leg of a junction is level
 //! crosswise, so on a flank the legs' cross-sections disagree everywhere
@@ -177,6 +187,21 @@ const CELL_M: f64 = 16.0;
 /// whole world to find out.
 const FIELD_LIMIT_M: f64 = 4.5 + ROOM_REACH_M + EARTHWORK_BATTER * MAX_BENCH_FACE_M;
 
+/// How far past [`FIELD_LIMIT_M`], in metres, [`Field::on_axis`] still looks:
+/// more than any paved triangle is wide, so a corner is never left without
+/// the axis its triangle's centroid found.
+const ON_AXIS_SLACK_M: f64 = 10.0;
+
+/// The length of a stretch of axis a [`Rule`] names, in metres. Two stretches
+/// that meet give their shared boundary the same foot, so they weld; two legs
+/// of a hairpin lie more than this apart along it, so they cannot be taken
+/// for each other.
+pub const PART_M: f64 = 20.0;
+
+/// The band, in metres of distance, over which a foot on one segment of an
+/// axis hands over to the foot on the next ([`Field::along`]).
+pub const SEGMENT_BLEND_M: f64 = 1.0;
+
 /// How much farther than the nearest axis, in metres, another leg of the
 /// same junction may run from a point and still have a say in its height:
 /// the width of the band over which two legs' cross-sections are blended
@@ -209,6 +234,8 @@ pub struct Field {
     /// Per segment, the solved heights of its two ends and the half-width
     /// of the road it belongs to.
     seg: Vec<(f64, f64, f64)>,
+    /// Per segment, the arc along its profile of its two ends.
+    arc: Vec<(f64, f64)>,
     /// Per segment, the axis it belongs to: the profile's place among the
     /// ones the field was built from.
     axis: Vec<u32>,
@@ -310,6 +337,10 @@ pub struct Foot {
     pub d: f64,
     /// Half the width of that road: where its asphalt ends.
     pub half_w: f64,
+    /// Which axis of the field answered, in the field's own numbering.
+    pub axis: u32,
+    /// How far along that axis the foot lies, in metres of its profile.
+    pub s: f64,
 }
 
 impl Foot {
@@ -462,11 +493,11 @@ impl Field {
                 }
                 if k1 == k0 {
                     let st = p.stations[k0];
-                    f.push(st.p, st.p, st.h, st.h, half_w, axis);
+                    f.push(st.p, st.p, st.h, st.h, half_w, axis, (st.s, st.s));
                     continue;
                 }
                 for w in p.stations[k0..=k1].windows(2) {
-                    f.push(w[0].p, w[1].p, w[0].h, w[1].h, half_w, axis);
+                    f.push(w[0].p, w[1].p, w[0].h, w[1].h, half_w, axis, (w[0].s, w[1].s));
                 }
             }
         }
@@ -479,7 +510,9 @@ impl Field {
         f
     }
 
-    fn push(&mut self, a: Pt, b: Pt, ha: f64, hb: f64, half_w: f64, axis: u32) {
+    #[allow(clippy::too_many_arguments)]
+    fn push(&mut self, a: Pt, b: Pt, ha: f64, hb: f64, half_w: f64, axis: u32, arc: (f64, f64)) {
+        self.arc.push(arc);
         self.at.push(a, b);
         self.seg.push((ha, hb, half_w));
         self.axis.push(axis);
@@ -500,13 +533,85 @@ impl Field {
     pub fn at(&self, p: Pt) -> Option<Foot> {
         let (i, t, d) = self.at.of(p, FIELD_LIMIT_M)?;
         let near = self.axis[i];
-        Some(Foot { h: self.joined(p, near, self.height(i, t), d), d, half_w: self.seg[i].2 })
+        Some(Foot { h: self.joined(p, near, self.along(p, i, t, d), d), d, half_w: self.seg[i].2, axis: near, s: self.arc_at(i, t) })
+    }
+
+    /// The arc of segment `i` at `t`.
+    fn arc_at(&self, i: usize, t: f64) -> f64 {
+        let (a, b) = self.arc[i];
+        a + (b - a) * t
+    }
+
+    /// What axis `axis` says about `p`, whether or not it is the nearest:
+    /// the height a triangle's rule gives a corner another axis is nearer
+    /// to ([`Rule`]). Asked a little past [`FIELD_LIMIT_M`], because a corner
+    /// can be a triangle's width farther than the centroid that chose it.
+    ///
+    /// **And only the stretch of it within `part`** ([`PART_M`], with half a
+    /// part either side). A way is one axis however it winds, and beside a
+    /// hairpin — or inside a roundabout's ring — the nearest foot on it can
+    /// jump from one leg to the other, metres apart in height: a switch
+    /// within one rule, which no split could see.
+    pub fn on_axis(&self, p: Pt, axis: u32, part: i32) -> Option<Foot> {
+        let (lo, hi) = ((part as f64 - 0.5) * PART_M, (part as f64 + 1.5) * PART_M);
+        let (i, t, d) = self.at.of_where(p, FIELD_LIMIT_M + ON_AXIS_SLACK_M, |k| {
+            let (a, b) = self.arc[k];
+            self.axis[k] == axis && a.max(b) >= lo && a.min(b) <= hi
+        })?;
+        Some(Foot { h: self.joined(p, axis, self.along(p, i, t, d), d), d, half_w: self.seg[i].2, axis, s: self.arc_at(i, t) })
     }
 
     /// The solved height `t` of the way along segment `i`.
     fn height(&self, i: usize, t: f64) -> f64 {
         let (ha, hb, _) = self.seg[i];
         ha + (hb - ha) * t
+    }
+
+    /// The axis's height for `p`, whose nearest foot is `t` along segment
+    /// `i`, `d` away: that foot blended with the feet on the segments either
+    /// side of it, by how nearly each is the nearest ([`SEGMENT_BLEND_M`]).
+    ///
+    /// **The nearest point of a polyline jumps on the inside of a bend.**
+    /// Past the bisector of a vertex the foot moves from one segment to the
+    /// next, and on the concave side the two feet stand apart along the axis
+    /// — by up to a station's spacing — so the height jumps by the grade
+    /// times that. On a 15 % street it is under a kerb's rise; on the loop
+    /// box's steepest streets, and round a roundabout climbing a flank, it
+    /// was a step of metres inside a single triangle's rule.
+    fn along(&self, p: Pt, i: usize, t: f64, d: f64) -> f64 {
+        let h = self.height(i, t);
+        let (mut hs, mut ws) = (h, 1.0);
+        for j in [i.wrapping_sub(1), i + 1] {
+            // A neighbour of the same axis that meets this segment end to end.
+            let Some(&axis) = self.axis.get(j) else { continue };
+            let touching = if j < i { self.arc[j].1 == self.arc[i].0 } else { self.arc[i].1 == self.arc[j].0 };
+            if axis != self.axis[i] || !touching {
+                continue;
+            }
+            let (a, b) = self.at.seg[j];
+            let len2 = (b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2);
+            if len2 <= 0.0 {
+                continue;
+            }
+            // **Only a foot inside the neighbour is a second answer.** On the
+            // outside of a bend, or along a straight run, the neighbour's
+            // nearest point is the vertex the two share, which the nearest
+            // foot already accounts for; blended in, it flattened the height
+            // near every station for a point off the axis.
+            let tj = ((p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])) / len2;
+            if !(tj > 0.0 && tj < 1.0) {
+                continue;
+            }
+            let f = [a[0] + (b[0] - a[0]) * tj, a[1] + (b[1] - a[1]) * tj];
+            let dj = (p[0] - f[0]).hypot(p[1] - f[1]);
+            let w = fade((dj - d) / SEGMENT_BLEND_M);
+            if w <= 0.0 {
+                continue;
+            }
+            hs += w * self.height(j, tj);
+            ws += w;
+        }
+        hs / ws
     }
 
     /// `h`, the height the nearest axis `near` gives `p` from `d` metres
@@ -532,17 +637,26 @@ impl Field {
                 if reach <= 0.0 || !members.contains(&near) {
                     continue;
                 }
-                let (mut hs, mut ws) = (0.0, 0.0);
-                for &m in members {
-                    let (hm, dm) = if m == near {
-                        (h, d)
-                    } else {
-                        match self.at.of_where(p, d + BLEND_M, |k| self.axis[k] == m) {
-                            Some((k, t, dm)) => (self.height(k, t), dm),
-                            None => continue,
+                // Each leg weighs by how nearly it is the *nearest* leg — not
+                // the answering one. The two are the same when the nearest
+                // axis answers; when a triangle's rule makes another answer a
+                // corner ([`Rule`]), weighing against the answering axis
+                // gave it full weight and the nearer leg less, so two legs
+                // of one junction disagreed at the corners they share.
+                let legs: Vec<(f64, f64)> = members
+                    .iter()
+                    .filter_map(|&m| {
+                        if m == near {
+                            return Some((h, d));
                         }
-                    };
-                    let w = fade((dm - d) / BLEND_M);
+                        let (k, t, dm) = self.at.of_where(p, d + BLEND_M, |k| self.axis[k] == m)?;
+                        Some((self.along(p, k, t, dm), dm))
+                    })
+                    .collect();
+                let nearest = legs.iter().map(|l| l.1).fold(d, f64::min);
+                let (mut hs, mut ws) = (0.0, 0.0);
+                for (hm, dm) in legs {
+                    let w = fade((dm - nearest) / BLEND_M);
                     hs += w * hm;
                     ws += w;
                 }
@@ -839,25 +953,12 @@ pub struct Stats {
     pub worst: f64,
     /// Where they are.
     pub at: Vec<[f64; 2]>,
+    /// Edges as steep as a step with both ends on the raw DEM.
+    pub dem_steep: usize,
+    /// Edges as steep as a step that their rule is continuous along.
+    pub steep: usize,
 }
 
-impl Stats {
-    fn merge(&mut self, o: &Stats) {
-        self.vertices += o.vertices;
-        self.flown += o.flown;
-        self.free += o.free;
-        self.lifted += o.lifted;
-        self.battered += o.battered;
-        self.draped += o.draped;
-        self.walled += o.walled;
-        self.cut = self.cut.max(o.cut);
-        self.fill = self.fill.max(o.fill);
-        self.edges += o.edges;
-        self.steps += o.steps;
-        self.worst = self.worst.max(o.worst);
-        self.at.extend_from_slice(&o.at);
-    }
-}
 
 /// The **drawn ground** against the raw DEM: [`crate::step::Residual`] over
 /// every vertex of the terrain this step re-meshes.
@@ -879,12 +980,11 @@ fn drawn_residual(terrain: &Terrain, ground: &Tri) -> Residual {
     r
 }
 
-/// No copy: a vertex this surface does not reach.
+/// No copy: a vertex this surface does not reach, or a rule no axis answers.
 const NONE: u32 = u32::MAX;
 
-/// Which surface a triangle of the one mesh is drawn in, and so which copy
-/// of its vertices it takes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Which surface a triangle of the one mesh is drawn in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum Surface {
     /// The engineered ground: every partition face that does not cut the
     /// terrain, the ground under a deck included.
@@ -912,184 +1012,352 @@ impl Surface {
     }
 }
 
-/// The one mesh's vertices, copied once per surface that reaches them, and
-/// the four meshes the copies make.
+/// How one paved triangle's height is decided: which of its surface's two
+/// fields answered, which axis of that field, and — for the pavement past
+/// the room's reach — whether it stands on the face or drapes.
+///
+/// **A triangle takes one rule, at all three of its corners.** The height of
+/// a paved point used to be decided per vertex: the nearest axis, the chord
+/// or the ground, the face or the drape, whichever the vertex's own position
+/// chose. Where two neighbouring vertices chose differently the triangle
+/// between them was stretched across the switch — 8 400 of them on the loop
+/// box, 80 % inside one material where no face was drawn to close them,
+/// which is plan §3.3's "a discontinuity is an accident of where a positional
+/// case-function changes branch". Now the triangle's centroid chooses, every
+/// corner is answered by that choice, and a vertex two triangles answer
+/// differently is two copies: welded where they agree, and a declared edge
+/// with a face on it where they do not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct Rule {
+    /// The chords' field answered, rather than the ground's.
+    pub chord: bool,
+    /// The answering axis, or [`NONE`] where no axis reaches.
+    pub axis: u32,
+    /// Which stretch of that axis, in [`PART_M`] parts of its arc.
+    pub part: i32,
+    /// The far pavement drapes to the natural ground here rather than
+    /// standing on the face.
+    pub drape: bool,
+}
+
+impl Rule {
+    const FREE: Rule = Rule { chord: false, axis: NONE, part: 0, drape: false };
+}
+
+/// The fields one paved surface is lifted by, and how.
+pub(crate) struct Lift<'a> {
+    pub grounded: &'a Field,
+    pub chords: Option<&'a Field>,
+    /// Where the paving is over a span, so the chords may answer.
+    pub over: Option<&'a poly::Indexed>,
+    /// What the surface stands above the road: a kerb for the pavement.
+    pub rise: f64,
+    /// The pavement: past the room's reach it stands on a face.
+    pub walk: bool,
+    /// Within the room's reach: the road's height outright.
+    pub near: bool,
+}
+
+impl Lift<'_> {
+    /// The rule at `p`, whose natural ground is `natural`.
+    ///
+    /// **And the mask is asked, not believed.** It is a boolean kernel's
+    /// answer to "which paving is over a deck", and a kernel's answer has
+    /// threads in it: at the Montreux overbridge two of them, 0.3 and 0.8 m²,
+    /// lay seven metres from any chord in the middle of a junction, and every
+    /// vertex they caught was answered by the chords' field — which reaches
+    /// [`FIELD_LIMIT_M`] and clamps to the nearest station, so it handed back
+    /// the chord's *end* height, a 2.4 m fin. So the chord answers only where
+    /// it is **no further away than the ground the sheet also holds**: on a
+    /// deck the chord is underfoot and the approach a span away, and in a
+    /// sliver it is the other way round.
+    pub fn rule(&self, p: Pt, natural: f64) -> Rule {
+        let ask = |f: &Field| if f.is_empty() { None } else { f.at(p) };
+        let grounded = ask(self.grounded);
+        let chord = if self.over.is_some_and(|o| o.contains(p)) { self.chords.and_then(ask) } else { None }
+            .filter(|c| grounded.is_none_or(|g| c.d <= g.d));
+        let (foot, chord) = match (chord, grounded) {
+            (Some(c), _) => (c, true),
+            (None, Some(g)) => (g, false),
+            (None, None) => return Rule::FREE,
+        };
+        // Past the reach, a band standing more than one face from the road
+        // beside it is not that road's pavement at all and drapes.
+        let drape = self.walk && !self.near && (natural - (foot.h + self.rise)).abs() > MAX_BENCH_FACE_M;
+        Rule { chord, axis: foot.axis, part: (foot.s / PART_M).floor() as i32, drape }
+    }
+
+    /// The height `rule` gives `p`, and the foot it read there.
+    ///
+    /// The rule's own axis is asked even where another is nearer, and the
+    /// face is not switched to a drape by the point's own drop: a corner is
+    /// answered as its triangle was, which is what keeps the triangle whole.
+    pub fn height(&self, p: Pt, natural: f64, rule: Rule) -> (f64, Option<Foot>) {
+        if rule.axis == NONE {
+            return (natural, None);
+        }
+        let field = if rule.chord { self.chords.unwrap_or(self.grounded) } else { self.grounded };
+        let Some(foot) = field.on_axis(p, rule.axis, rule.part) else {
+            return (natural, None);
+        };
+        let room_h = foot.h + self.rise;
+        let h = if !self.walk || self.near {
+            room_h
+        } else if rule.drape {
+            natural
+        } else {
+            let slack = (foot.d - foot.half_w - ROOM_REACH_M).max(0.0) / EARTHWORK_BATTER;
+            room_h + (natural - room_h).clamp(-slack, slack)
+        };
+        (h, Some(foot))
+    }
+
+    /// What a vertex lifted by `rule` to `h` counts as.
+    fn account(&self, stats: &mut Stats, rule: Rule, h: f64, natural: f64, foot: Option<Foot>) {
+        stats.vertices += 1;
+        let Some(foot) = foot else {
+            stats.draped += 1;
+            stats.free += 1;
+            return;
+        };
+        // **A walk takes a road's height only where that road is on the
+        // ground the walk is on**; one bench face over is the threshold.
+        stats.flown += (self.walk && foot.h - natural > MAX_BENCH_FACE_M) as usize;
+        if !self.walk || self.near {
+            stats.lifted += 1;
+        } else if h == natural {
+            stats.draped += 1;
+        } else {
+            stats.battered += 1;
+        }
+        // **A deck is paved, not banked.** The standoff under a span is the
+        // structure's, and counted here it reads as an embankment nobody
+        // built.
+        if rule.chord {
+            return;
+        }
+        if (h - natural).abs() > MAX_BENCH_FACE_M {
+            stats.walled += 1;
+        }
+        stats.cut = stats.cut.max(natural - h);
+        stats.fill = stats.fill.max(h - natural);
+    }
+}
+
+/// A paved surface and the rule its triangle took: what a vertex is copied
+/// per.
+type Key = (Surface, Rule);
+
+/// One mesh of copies: the positions, and per copy the one-mesh vertex it is
+/// a copy of, its key, and the natural ground under it.
+#[derive(Default)]
+struct Part {
+    tri: Tri,
+    of: Vec<u32>,
+    key: Vec<Key>,
+    natural: Vec<f64>,
+    /// Per triangle, the key it was answered by.
+    face_key: Vec<Key>,
+}
+
+impl Part {
+    /// The copy of `v` under `key`, made the first time it is asked for.
+    fn copy(&mut self, slot: &mut u32, pos: &[[f64; 3]], v: u32, key: Key) -> u32 {
+        if *slot == NONE {
+            let q = pos[v as usize];
+            self.tri.positions.push(q);
+            self.of.push(v);
+            self.key.push(key);
+            self.natural.push(q[2]);
+            *slot = (self.tri.positions.len() - 1) as u32;
+        }
+        *slot
+    }
+}
+
+/// The one mesh's vertices, copied once per surface and rule that reaches
+/// them, and the four meshes the copies make.
 ///
 /// **This is the whole of the seam.** A kerb vertex is on the carriageway
 /// and on the pavement, and the two answer a kerb's rise apart; an outline
-/// vertex is on the paving and on the ground, and where the bench is walled
-/// they answer metres apart. So a vertex cannot be one height — but it is
+/// vertex is on the paving and on the ground; a vertex between two roads'
+/// domains is answered by each. So a vertex cannot be one height — but it is
 /// one *position*, one index of [`Mesh::tri`], and every copy of it is found
-/// from that index rather than from where it lies. The position-keyed lookup
-/// this replaces, with its eight-cell search for the vertices a key missed,
-/// was how two separately built meshes had been reconciled after the fact:
-/// `seam` 3.70 % and `unmet` 1.28 % on the loop box were its misses.
+/// from that index rather than from where it lies.
 struct Copies {
-    carriageway: Tri,
-    /// Per carriageway copy, its sheet; the same for the ballast.
-    carriageway_sheet: Vec<u32>,
-    ballast: Tri,
-    ballast_sheet: Vec<u32>,
-    /// The near pavement's copies first, then the far's, so the lift can
-    /// tell them apart by position in the array.
-    pavement: Tri,
-    walk_split: usize,
-    ground: Tri,
-    /// Per copy, the one-mesh vertex it is a copy of, one list per mesh.
-    carriageway_of: Vec<u32>,
-    ballast_of: Vec<u32>,
-    pavement_of: Vec<u32>,
-    ground_of: Vec<u32>,
-    /// Per one-mesh vertex, its copy in the ground and in each half of the
-    /// pavement; the sheeted surfaces, of which a vertex may be on several,
-    /// in a map.
+    carriageway: Part,
+    ballast: Part,
+    pavement: Part,
+    ground: Part,
+    /// Per one-mesh vertex, its copy in the ground.
     in_ground: Vec<u32>,
-    near: Vec<u32>,
-    far: Vec<u32>,
-    sheeted: HashMap<(u32, Surface), u32>,
+    /// The paved copies, by vertex and key: which part, and which copy.
+    paved: HashMap<(u32, Key), u32>,
 }
 
 impl Copies {
-    fn new(mesh: &Mesh, arrangement: &Arrangement) -> Copies {
+    fn new(mesh: &Mesh, arrangement: &Arrangement, rules: &[Rule]) -> Copies {
         let n = mesh.tri.positions.len();
         let mut c = Copies {
-            carriageway: Tri::default(),
-            carriageway_sheet: Vec::new(),
-            ballast: Tri::default(),
-            ballast_sheet: Vec::new(),
-            pavement: Tri::default(),
-            walk_split: 0,
-            ground: Tri::default(),
-            carriageway_of: Vec::new(),
-            ballast_of: Vec::new(),
-            pavement_of: Vec::new(),
-            ground_of: Vec::new(),
+            carriageway: Part::default(),
+            ballast: Part::default(),
+            pavement: Part::default(),
+            ground: Part::default(),
             in_ground: vec![NONE; n],
-            near: vec![NONE; n],
-            far: vec![NONE; n],
-            sheeted: HashMap::new(),
+            paved: HashMap::new(),
         };
         let pos = &mesh.tri.positions;
-        let tris = || mesh.tri.indices.chunks_exact(3).zip(&mesh.of_face);
-        // The copy of `v` in `out`, made the first time it is asked for.
-        fn copy(out: &mut Tri, of: &mut Vec<u32>, slot: &mut u32, pos: &[[f64; 3]], v: u32) -> u32 {
-            if *slot == NONE {
-                out.positions.push(pos[v as usize]);
-                of.push(v);
-                *slot = (out.positions.len() - 1) as u32;
-            }
-            *slot
-        }
-        // The pavement's near half first, so `walk_split` divides it.
-        for half in [Surface::Near, Surface::Far] {
-            for (t, &f) in tris() {
-                if Surface::paved(arrangement.face(f)) != Some(half) {
-                    continue;
-                }
-                let slots = if half == Surface::Near { &mut c.near } else { &mut c.far };
-                for &v in t {
-                    let id = copy(&mut c.pavement, &mut c.pavement_of, &mut slots[v as usize], pos, v);
-                    c.pavement.indices.push(id);
-                }
-            }
-            if half == Surface::Near {
-                c.walk_split = c.pavement.positions.len();
-            }
-        }
-        for (t, &f) in tris() {
+        for (i, (t, &f)) in mesh.tri.indices.chunks_exact(3).zip(&mesh.of_face).enumerate() {
             let face = arrangement.face(f);
             if arrangement.in_partition(f) && !face.cuts() {
                 for &v in t {
-                    let id = copy(&mut c.ground, &mut c.ground_of, &mut c.in_ground[v as usize], pos, v);
-                    c.ground.indices.push(id);
+                    let id = c.ground.copy(&mut c.in_ground[v as usize], pos, v, (Surface::Ground, Rule::FREE));
+                    c.ground.tri.indices.push(id);
                 }
             }
-            let surface = Surface::paved(face);
-            let (out, of, sheet_of, sheet) = match surface {
-                Some(Surface::Carriageway(s)) => (&mut c.carriageway, &mut c.carriageway_of, &mut c.carriageway_sheet, s),
-                Some(Surface::Ballast(s)) => (&mut c.ballast, &mut c.ballast_of, &mut c.ballast_sheet, s),
-                _ => continue,
-            };
-            let surface = surface.expect("matched above");
+            let Some(surface) = Surface::paved(face) else { continue };
+            let key = (surface, rules[i]);
             for &v in t {
-                let slot = c.sheeted.entry((v, surface)).or_insert(NONE);
-                let before = out.positions.len();
-                let id = copy(out, of, slot, pos, v);
-                if out.positions.len() > before {
-                    sheet_of.push(sheet);
-                }
-                out.indices.push(id);
+                let slot = c.paved.entry((v, key)).or_insert(NONE);
+                let part = match surface {
+                    Surface::Carriageway(_) => &mut c.carriageway,
+                    Surface::Ballast(_) => &mut c.ballast,
+                    _ => &mut c.pavement,
+                };
+                let id = part.copy(slot, pos, v, key);
+                part.tri.indices.push(id);
+            }
+            match surface {
+                Surface::Carriageway(_) => c.carriageway.face_key.push(key),
+                Surface::Ballast(_) => c.ballast.face_key.push(key),
+                _ => c.pavement.face_key.push(key),
             }
         }
         c
     }
 
-    /// The copy of one-mesh vertex `v` in `surface`, and which mesh holds it.
-    fn of(&self, v: u32, surface: Surface) -> Option<u32> {
-        let id = match surface {
-            Surface::Ground => self.in_ground[v as usize],
-            Surface::Near => self.near[v as usize],
-            Surface::Far => self.far[v as usize],
-            s => *self.sheeted.get(&(v, s))?,
+    fn part(&self, surface: Surface) -> &Part {
+        match surface {
+            Surface::Ground => &self.ground,
+            Surface::Carriageway(_) => &self.carriageway,
+            Surface::Ballast(_) => &self.ballast,
+            Surface::Near | Surface::Far => &self.pavement,
+        }
+    }
+
+    /// The height of `v`'s copy under `key`, as the parts now hold it.
+    fn height(&self, v: u32, key: Key) -> Option<f64> {
+        let id = if key.0 == Surface::Ground { self.in_ground[v as usize] } else { *self.paved.get(&(v, key))? };
+        (id != NONE).then(|| self.part(key.0).tri.positions[id as usize][2])
+    }
+
+    /// **Welds the copies of one vertex in one surface that agree.**
+    ///
+    /// Two triangles either side of the line where two roads' domains meet
+    /// answer their shared corner each by its own road. Where the two agree
+    /// within a kerb's rise — two legs of one junction, whose blend is
+    /// continuous across the line between them — they are one vertex again,
+    /// at their mean: a slope that small across a triangle is not a step. Where they do not, they stay two, and the edge between
+    /// them is a declared step with a face on it ([`edge_faces`]).
+    ///
+    /// Returns how many copies went.
+    fn weld(&mut self) -> usize {
+        let mut groups: std::collections::BTreeMap<(u32, Surface), Vec<(Rule, u32)>> = Default::default();
+        for (&(v, (surface, rule)), &id) in &self.paved {
+            groups.entry((v, surface)).or_default().push((rule, id));
+        }
+        let mut into: [HashMap<u32, u32>; 3] = Default::default();
+        let which = |s: Surface| match s {
+            Surface::Carriageway(_) => 0,
+            Surface::Ballast(_) => 1,
+            _ => 2,
         };
-        (id != NONE).then_some(id)
-    }
-
-    /// The height of `v`'s copy in `surface`, read from the lifted meshes.
-    fn height(&self, lifted: &Lifted, v: u32, surface: Surface) -> Option<f64> {
-        let id = self.of(v, surface)? as usize;
-        Some(match surface {
-            Surface::Ground => lifted.ground.positions[id][2],
-            Surface::Carriageway(_) => lifted.carriageway.positions[id][2],
-            Surface::Ballast(_) => lifted.ballast.positions[id][2],
-            Surface::Near | Surface::Far => lifted.pavement.positions[id][2],
-        })
+        let mut gone = 0usize;
+        for ((_, surface), mut copies) in groups {
+            if copies.len() < 2 {
+                continue;
+            }
+            let k = which(surface);
+            let part = match k {
+                0 => &mut self.carriageway,
+                1 => &mut self.ballast,
+                _ => &mut self.pavement,
+            };
+            let z = |id: u32, part: &Part| part.tri.positions[id as usize][2];
+            copies.sort_by(|a, b| z(a.1, part).total_cmp(&z(b.1, part)).then(a.0.cmp(&b.0)));
+            // Runs whose neighbours agree within a kerb's rise, and whose
+            // spread does too, are one.
+            let mut start = 0;
+            while start < copies.len() {
+                let mut end = start + 1;
+                while end < copies.len() && z(copies[end].1, part) - z(copies[start].1, part) <= KERB_RISE_M {
+                    end += 1;
+                }
+                if end - start > 1 {
+                    let run = &copies[start..end];
+                    let mean = run.iter().map(|c| z(c.1, part)).sum::<f64>() / run.len() as f64;
+                    let keep = run.iter().map(|c| c.1).min().expect("a run");
+                    part.tri.positions[keep as usize][2] = mean;
+                    for c in run.iter().filter(|c| c.1 != keep) {
+                        into[k].insert(c.1, keep);
+                        gone += 1;
+                    }
+                }
+                start = end;
+            }
+        }
+        for (k, part) in [&mut self.carriageway, &mut self.ballast, &mut self.pavement].into_iter().enumerate() {
+            for i in part.tri.indices.iter_mut() {
+                if let Some(&j) = into[k].get(i) {
+                    *i = j;
+                }
+            }
+        }
+        for (&(_, (surface, _)), id) in self.paved.iter_mut() {
+            if let Some(&j) = into[which(surface)].get(id) {
+                *id = j;
+            }
+        }
+        gone
     }
 }
 
-/// The four meshes at their heights.
-struct Lifted<'a> {
-    carriageway: &'a Tri,
-    pavement: &'a Tri,
-    ballast: &'a Tri,
-    ground: &'a Tri,
-}
-
-/// One edge of the one mesh where two surfaces meet: the vertices, in the
-/// winding of the triangle on `a`'s side, and the two faces.
+/// One edge of the one mesh where the partition's triangles change surface
+/// or rule: the vertices, in the winding of the triangle on `a`'s side, the
+/// two faces and the two keys.
 struct Boundary<'a> {
     u: u32,
     v: u32,
     a: &'a Face,
     b: &'a Face,
+    ka: Option<Key>,
+    kb: Option<Key>,
     /// Whether the far side is not there at all: a crack, or the rect's own
     /// edge.
     open: bool,
 }
 
-/// Every edge of the one mesh across which the partition's faces change
-/// surface, found without building the whole mesh's adjacency.
+/// Every edge of the one mesh across which the partition's triangles change
+/// what they are, found without building the whole mesh's adjacency.
 ///
 /// Over the loop box the one mesh is 14 M triangles, and a table of all of
 /// their edges is most of a gigabyte to find the few hundred thousand that
 /// matter. An edge can only be a boundary if both its ends are vertices where
-/// two surfaces meet, so only the triangles with two such vertices are
-/// indexed, and only their edges between two of them.
-fn boundaries<'a>(mesh: &Mesh, arrangement: &'a Arrangement) -> Vec<Boundary<'a>> {
-    // The key a partition triangle is told apart by: whether its face cuts,
-    // and which paved surface it is drawn in.
-    let key = |f: u32| {
-        let face = arrangement.face(f);
-        (face.cuts(), Surface::paved(face))
+/// two keys meet, so only those are indexed.
+fn boundaries<'a>(mesh: &Mesh, arrangement: &'a Arrangement, rules: &[Rule]) -> Vec<Boundary<'a>> {
+    let key = |i: usize| {
+        let face = arrangement.face(mesh.of_face[i]);
+        (face.cuts(), Surface::paved(face).map(|s| (s, rules[i])))
     };
     let n = mesh.tri.positions.len();
-    let mut first: Vec<Option<(bool, Option<Surface>)>> = vec![None; n];
+    let mut first: Vec<Option<(bool, Option<Key>)>> = vec![None; n];
     let mut mixed = vec![false; n];
-    let partition = || {
-        mesh.tri.indices.chunks_exact(3).zip(&mesh.of_face).filter(|(_, &f)| arrangement.in_partition(f))
-    };
-    for (t, &f) in partition() {
-        let k = key(f);
+    let partition = |i: usize| arrangement.in_partition(mesh.of_face[i]);
+    for (i, t) in mesh.tri.indices.chunks_exact(3).enumerate() {
+        if !partition(i) {
+            continue;
+        }
+        let k = key(i);
         for &v in t {
             match first[v as usize] {
                 None => first[v as usize] = Some(k),
@@ -1099,8 +1367,8 @@ fn boundaries<'a>(mesh: &Mesh, arrangement: &'a Arrangement) -> Vec<Boundary<'a>
         }
     }
     let mut edges: Vec<(u32, u32, u32)> = Vec::new();
-    for (i, (t, _)) in mesh.tri.indices.chunks_exact(3).zip(&mesh.of_face).enumerate() {
-        if !arrangement.in_partition(mesh.of_face[i]) {
+    for (i, t) in mesh.tri.indices.chunks_exact(3).enumerate() {
+        if !partition(i) {
             continue;
         }
         for k in 0..3 {
@@ -1120,12 +1388,13 @@ fn boundaries<'a>(mesh: &Mesh, arrangement: &'a Arrangement) -> Vec<Boundary<'a>
         let (lo, hi, t0) = group[0];
         let (u, v) = if winding(t0, lo, hi) { (lo, hi) } else { (hi, lo) };
         let a = arrangement.face(mesh.of_face[t0 as usize]);
+        let ka = key(t0 as usize).1;
         match group {
-            [_] => out.push(Boundary { u, v, a, b: a, open: true }),
+            [_] => out.push(Boundary { u, v, a, b: a, ka, kb: ka, open: true }),
             [_, (.., t1)] => {
-                let b = arrangement.face(mesh.of_face[*t1 as usize]);
-                if key(mesh.of_face[t0 as usize]) != key(mesh.of_face[*t1 as usize]) {
-                    out.push(Boundary { u, v, a, b, open: false });
+                if key(t0 as usize) != key(*t1 as usize) {
+                    let b = arrangement.face(mesh.of_face[*t1 as usize]);
+                    out.push(Boundary { u, v, a, b, ka, kb: key(*t1 as usize).1, open: false });
                 }
             }
             // Three triangles on one edge is not a partition; `crack` in the
@@ -1165,17 +1434,84 @@ pub fn run(
     // that sheet's own axes and nothing else.
     let (car, car_over) = fields(sheets, Family::Carriageway, profiles);
     let (beds, beds_over) = fields(sheets, Family::Rail, profiles);
-
-    let copies = Copies::new(mesh, arrangement);
+    let empty = Field::default();
+    let natural = |q: Pt| height_at(terrain, q[0], q[1]);
     // The asphalt is the road: it takes the whole of its own height wherever
     // it reaches. Only the walk beside it is asked how far out it lies.
-    let (c, cs) = by_sheet(&copies.carriageway, &car, &car_over, &copies.carriageway_sheet, Some(&over), 0.0, false, 0);
-    let (p, ps) = lift(&copies.pavement, &field, KERB_RISE_M, true, copies.walk_split);
-    let (b, bs) = by_sheet(&copies.ballast, &beds, &beds_over, &copies.ballast_sheet, Some(&over), 0.0, false, 0);
+    let lift_of = |s: Surface| -> Lift {
+        fn sheeted<'a>(fs: &'a [Field], k: u32, empty: &'a Field) -> &'a Field {
+            fs.get(k as usize).unwrap_or(empty)
+        }
+        match s {
+            Surface::Carriageway(k) => Lift {
+                grounded: sheeted(&car, k, &empty),
+                chords: Some(sheeted(&car_over, k, &empty)),
+                over: Some(&over),
+                rise: 0.0,
+                walk: false,
+                near: true,
+            },
+            Surface::Ballast(k) => Lift {
+                grounded: sheeted(&beds, k, &empty),
+                chords: Some(sheeted(&beds_over, k, &empty)),
+                over: Some(&over),
+                rise: 0.0,
+                walk: false,
+                near: true,
+            },
+            Surface::Near | Surface::Far => Lift {
+                grounded: &field,
+                chords: None,
+                over: None,
+                rise: KERB_RISE_M,
+                walk: true,
+                near: s == Surface::Near,
+            },
+            Surface::Ground => unreachable!("the ground is benched, not lifted"),
+        }
+    };
+
+    // **Every paved triangle's rule, at its centroid.**
+    let rules: Vec<Rule> = mesh
+        .tri
+        .indices
+        .chunks_exact(3)
+        .zip(&mesh.of_face)
+        .map(|(t, &f)| {
+            let Some(surface) = Surface::paved(arrangement.face(f)) else { return Rule::FREE };
+            let c = [0usize, 1].map(|k| t.iter().map(|&v| mesh.tri.positions[v as usize][k]).sum::<f64>() / 3.0);
+            lift_of(surface).rule(c, natural(c))
+        })
+        .collect();
+    let mut copies = Copies::new(mesh, arrangement, &rules);
+    let mut feet: [Vec<Option<Foot>>; 3] = Default::default();
+    for (part, feet) in [&mut copies.carriageway, &mut copies.ballast, &mut copies.pavement].into_iter().zip(&mut feet) {
+        for i in 0..part.tri.positions.len() {
+            let (surface, rule) = part.key[i];
+            let q = part.tri.positions[i];
+            let (h, foot) = lift_of(surface).height([q[0], q[1]], part.natural[i], rule);
+            part.tri.positions[i][2] = h;
+            feet.push(foot);
+        }
+    }
+    let welded = copies.weld();
+    // Counted once welded, over the copies a triangle still names: a copy
+    // merged into its twin is not a vertex of the world.
     let mut stats = Stats::default();
-    stats.merge(&cs);
-    stats.merge(&ps);
-    stats.merge(&bs);
+    for (part, feet) in [&copies.carriageway, &copies.ballast, &copies.pavement].into_iter().zip(&feet) {
+        let mut used = vec![false; part.tri.positions.len()];
+        for &i in &part.tri.indices {
+            used[i as usize] = true;
+        }
+        for i in (0..used.len()).filter(|&i| used[i]) {
+            let (surface, rule) = part.key[i];
+            lift_of(surface).account(&mut stats, rule, part.tri.positions[i][2], part.natural[i], feet[i]);
+        }
+    }
+    let at = |q: Pt, (surface, rule): Key| lift_of(surface).height(q, natural(q), rule).0;
+    for part in [&copies.carriageway, &copies.ballast, &copies.pavement] {
+        steps_of(part, &at, &mut stats);
+    }
     let steps = std::mem::take(&mut stats.at);
 
     // **The room's height at a vertex is its lowest paved copy's**, read by
@@ -1184,16 +1520,23 @@ pub fn run(
     // asphalt rather than standing a kerb over it.
     let n = mesh.tri.positions.len();
     let mut room_at = vec![f64::INFINITY; n];
-    // How many paved surfaces reach each vertex: where two do, the seam
-    // between them is the edge rule's, not a contact with the ground.
-    let mut paved_by = vec![0u8; n];
-    for (tri, of) in [(&c, &copies.carriageway_of), (&p, &copies.pavement_of), (&b, &copies.ballast_of)] {
-        for (q, &v) in tri.positions.iter().zip(of) {
-            room_at[v as usize] = room_at[v as usize].min(q[2]);
-            paved_by[v as usize] = paved_by[v as usize].saturating_add(1);
+    for part in [&copies.carriageway, &copies.pavement, &copies.ballast] {
+        for (i, &v) in part.of.iter().enumerate() {
+            room_at[v as usize] = room_at[v as usize].min(part.tri.positions[i][2]);
         }
     }
-    let natural = |q: Pt| height_at(terrain, q[0], q[1]);
+    // How many paved copies each vertex has once welded: where there are two
+    // — two surfaces, or two rules of one — the seam between them is the edge
+    // rule's, not a contact with the ground.
+    let mut paved_by = vec![0u8; n];
+    {
+        let mut seen: std::collections::HashSet<(u32, Surface, u32)> = Default::default();
+        for (&(v, (surface, _)), &id) in &copies.paved {
+            if seen.insert((v, surface, id)) {
+                paved_by[v as usize] = paved_by[v as usize].saturating_add(1);
+            }
+        }
+    }
     let plan = |v: u32| {
         let q = mesh.tri.positions[v as usize];
         [q[0], q[1]]
@@ -1218,11 +1561,11 @@ pub fn run(
     // **The outline is the one mesh's own edges** between a face that cuts
     // and one that does not, each in the winding of the cutting side so the
     // room lies on its left. Both meshes that meet there are the one mesh, so
-    // these edges are already split at every lattice crossing — which is what
-    // `dense` used to recompute, and what `Ground` used to sample a room's
-    // height at through the position lookup.
-    let bounds = boundaries(mesh, arrangement);
+    // these edges are already split at every lattice crossing.
+    let bounds = boundaries(mesh, arrangement, &rules);
     let mut outline: Vec<(u32, u32)> = Vec::new();
+    // The key on the cutting side of each outline edge.
+    let mut cutting: Vec<Option<Key>> = Vec::new();
     let mut unmet = 0usize;
     let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
     for q in &mesh.tri.positions {
@@ -1245,49 +1588,61 @@ pub fn run(
             continue;
         }
         match (e.a.cuts(), e.b.cuts()) {
-            (true, false) => outline.push((e.u, e.v)),
-            (false, true) => outline.push((e.v, e.u)),
+            (true, false) => {
+                outline.push((e.u, e.v));
+                cutting.push(e.ka);
+            }
+            (false, true) => {
+                outline.push((e.v, e.u));
+                cutting.push(e.kb);
+            }
             _ => {}
         }
     }
 
+    // **The room's height along an outline edge is its cutting side's own
+    // copy**, not the lowest copy at the vertex: where two rules of one
+    // surface split a vertex, the lower belongs to the other side's edge.
+    let top: Vec<[f64; 2]> = outline
+        .iter()
+        .zip(&cutting)
+        .map(|(&(u, v), key)| [u, v].map(|w| key.and_then(|k| copies.height(w, k)).unwrap_or_else(|| room(w))))
+        .collect();
     let segments: Vec<(Pt, Pt, [f64; 2], [f64; 2])> = outline
         .iter()
-        .map(|&(u, v)| {
+        .zip(&top)
+        .map(|(&(u, v), t)| {
             let (a, b) = (plan(u), plan(v));
-            (a, b, [room(u), natural(a)], [room(v), natural(b)])
+            (a, b, [t[0], natural(a)], [t[1], natural(b)])
         })
         .collect();
     let ground = Ground::of_edges(&segments, &portals);
     // The ground's copies at the engineered ground. The one mesh was built
     // at the natural ground, which is exactly [`Ground::at`]'s second
     // argument.
-    let mut g = copies.ground.clone();
-    for q in g.positions.iter_mut() {
+    for q in copies.ground.tri.positions.iter_mut() {
         q[2] = ground.at([q[0], q[1]], q[2]);
     }
-    let lifted = Lifted { carriageway: &c, pavement: &p, ballast: &b, ground: &g };
 
     // How the paving and the ground meet at the outline: whether every
     // outline vertex has a paved copy on its cutting side (`seam`), and how
     // far apart the two stand where a batter runs (`contact`). Both are
     // constructions now rather than searches, so both are checks.
     let (mut asked, mut missed, mut contact) = (0usize, 0usize, 0.0f64);
-    for (e, &(u, v)) in bounds.iter().filter(|e| !e.open && e.a.cuts() != e.b.cuts()).zip(&outline) {
-        let cut = if e.a.cuts() { e.a } else { e.b };
+    for (&(u, v), key) in outline.iter().zip(&cutting) {
         for w in [u, v] {
             let q = plan(w);
-            if cut.gallery || portals.open(q) || over.contains(q) {
+            let Some(key) = *key else { continue };
+            if portals.open(q) || over.contains(q) {
                 continue;
             }
             asked += 1;
-            let Some(s) = Surface::paved(cut) else { continue };
-            let Some(h) = copies.height(&lifted, w, s) else {
+            let Some(h) = copies.height(w, key) else {
                 missed += 1;
                 continue;
             };
             if paved_by[w as usize] == 1 && (natural(q) - h).abs() <= MAX_BENCH_FACE_M {
-                if let Some(gh) = copies.height(&lifted, w, Surface::Ground) {
+                if let Some(gh) = copies.height(w, (Surface::Ground, Rule::FREE)) {
                     contact = contact.max((gh - h).abs());
                 }
             }
@@ -1299,19 +1654,22 @@ pub fn run(
     earth.unmet = unmet;
     earth.rim = asked;
     earth.contact = contact;
-    earth.triangles = g.indices.len() / 3;
-    earth.vertices = g.positions.len();
+    earth.welded = welded;
+    let g = &copies.ground;
+    earth.triangles = g.tri.indices.len() / 3;
+    earth.vertices = g.tri.positions.len();
     // Only a triangle the bench moved can stand off the ground it benched:
     // one whose three vertices it left at the natural ground is the
     // terrain's own, and asking it cost 7.5 s of the loop box's bench.
-    let moved = |v: u32| g.positions[v as usize][2] != copies.ground.positions[v as usize][2];
+    let moved = |v: u32| g.tri.positions[v as usize][2] != g.natural[v as usize];
     earth.off = g
+        .tri
         .indices
         .chunks_exact(3)
         .filter(|t| t.iter().any(|&v| moved(v)))
         .map(|t| {
-            let c3 = [0usize, 1].map(|k| t.iter().map(|&v| g.positions[v as usize][k]).sum::<f64>() / 3.0);
-            let plane = t.iter().map(|&v| g.positions[v as usize][2]).sum::<f64>() / 3.0;
+            let c3 = [0usize, 1].map(|k| t.iter().map(|&v| g.tri.positions[v as usize][k]).sum::<f64>() / 3.0);
+            let plane = t.iter().map(|&v| g.tri.positions[v as usize][2]).sum::<f64>() / 3.0;
             (plane - ground.at(c3, natural(c3))).abs()
         })
         .fold(0.0, f64::max);
@@ -1323,33 +1681,31 @@ pub fn run(
     // (7.5 m) from the outline and is the natural ground beyond, so the count
     // is exact: ask it, and see where it answers something else.
     let (mut reached, mut reach_m) = (0usize, 0.0f64);
-    for q in p.positions.iter() {
-        let (at, nat) = ([q[0], q[1]], natural([q[0], q[1]]));
+    for (q, &nat) in copies.pavement.tri.positions.iter().zip(&copies.pavement.natural) {
         if (q[2] - nat).abs() > 1e-9 {
             continue;
         }
-        let engineered = ground.at(at, nat);
+        let engineered = ground.at([q[0], q[1]], nat);
         if (engineered - nat).abs() > 1e-6 {
             reached += 1;
             reach_m = reach_m.max((engineered - nat).abs());
         }
     }
 
-    let ground_h = |v: u32| copies.height(&lifted, v, Surface::Ground).unwrap_or_else(|| ground.at(plan(v), natural(plan(v))));
-    let (wall, wall_m2) = wall(&outline, &mesh.tri.positions, &room, &ground_h, &portals);
+    let ground_h = |v: u32| {
+        copies.height(v, (Surface::Ground, Rule::FREE)).unwrap_or_else(|| ground.at(plan(v), natural(plan(v))))
+    };
+    let (wall, wall_m2) = wall(&outline, &top, &mesh.tri.positions, &ground_h, &portals);
     // **One edge rule for every boundary inside the paving** (§3.3), over
-    // the one mesh's own edges and read by index.
-    let (kerb, edges) = edge_faces(&bounds, &mesh.tri.positions, &|v, f| {
-        Surface::paved(f).and_then(|s| copies.height(&lifted, v, s))
-    });
+    // the one mesh's own edges and read by index — between two surfaces, and
+    // between two rules of one surface that did not weld.
+    let (kerb, edges) = edge_faces(&bounds, &mesh.tri.positions, &|v, k| copies.height(v, k));
     earth.kerb_m2 = edges.m2;
     earth.wall_m2 = wall_m2;
 
     // **Where the steps are.** §3.3 says an edge is welded or spanned by a
-    // quad, "so `step` has nothing left to count". That holds only if every
-    // discontinuity falls on a *face boundary* — and `step` counts triangle
-    // edges inside one lifted mesh. This is the share of them that lie on an
-    // arrangement edge at all: what the edge rule could ever reach.
+    // quad, "so `step` has nothing left to count". This is the share of the
+    // steps that lie on an arrangement edge at all.
     earth.on_edge = {
         const NEAR_M: f64 = 0.05;
         let mut index: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
@@ -1407,7 +1763,7 @@ pub fn run(
             }
             let at = match copies.in_ground[v] {
                 NONE => ground.at([q[0], q[1]], q[2]),
-                r => g.positions[r as usize][2],
+                r => g.tri.positions[r as usize][2],
             };
             against.push(at, q[2] + e[v]);
         }
@@ -1417,7 +1773,16 @@ pub fn run(
     }
 
     let axes = field.len() + rails.len();
-    let bench = Bench { carriageway: c, pavement: p, ballast: b, ground: g, wall, kerb, steps };
+    let Copies { carriageway, ballast, pavement, ground: earthwork, .. } = copies;
+    let bench = Bench {
+        carriageway: compact(carriageway.tri),
+        pavement: compact(pavement.tri),
+        ballast: compact(ballast.tri),
+        ground: earthwork.tri,
+        wall,
+        kerb,
+        steps,
+    };
     let summary = Summary::new()
         .with("axes", axes)
         .with_part("lifted", stats.lifted, stats.vertices)
@@ -1427,6 +1792,13 @@ pub fn run(
         .with("fill", format!("{:.3}", stats.fill))
         .with_share("step", stats.steps, stats.edges)
         .with("worst", format!("{:.3}", stats.worst))
+        // Edges steeper than a step whose both ends are on the raw DEM: the
+        // terrain's own steepness under a draped pavement — a retaining wall
+        // the DEM images — and not a discontinuity the lift made. They were
+        // 10 028 of the loop box's 18 408 `step` before they were told apart.
+        .with("steep", stats.steep)
+        .with("dem_steep", stats.dem_steep)
+        .with("welded", earth.welded)
         .with("ground", format!("{}/{}", earth.triangles, earth.vertices))
         .with_share("seam", earth.unseamed, earth.asked)
         .with_share("unmet", earth.unmet, earth.rim)
@@ -1442,6 +1814,7 @@ pub fn run(
         .with_m2("kerb_m2", earth.kerb_m2)
         .with("kerb_max", format!("{:.2}", edges.max))
         .with_m2("sheet_m2", edges.sheet_m2)
+        .with_m2("split_m2", edges.split_m2)
         .with_share("touched", earth.touched, earth.lattice)
         .with("off", format!("{:.1e}", earth.off))
         .with("flown", stats.flown)
@@ -1450,6 +1823,69 @@ pub fn run(
         .with_m2("carried", carried_m2)
         .with_residual(drawn_residual(terrain, &bench.ground));
     (bench, summary)
+}
+
+/// Counts the steps of one part: edges its heights **jump** across.
+///
+/// An edge over [`KERB_RISE_M`] and steeper than [`STEP_GRADE`] is asked
+/// what its own rule gives its midpoint. A rule that is continuous along the
+/// edge puts the midpoint near the mean of its ends, however steep the edge;
+/// a jump puts it on one side, half the rise off the mean. Only the second
+/// is a step. The first is `steep`: a street following a 150 % flank, a
+/// junction warping between two legs, or — `dem_steep`, both ends on the
+/// raw DEM — a pavement draped over a retaining wall the DEM images.
+///
+/// It used to count every edge over the grade and call it a discontinuity,
+/// which it was only while a vertex could be answered by a different rule
+/// from its neighbour; 10 028 of the loop box's 18 408 were the DEM's own
+/// steepness.
+fn steps_of(part: &Part, at: &dyn Fn(Pt, Key) -> f64, stats: &mut Stats) {
+    let tri = &part.tri;
+    let mut seen: HashSet<(u32, u32)> = HashSet::new();
+    for (t, &key) in tri.indices.chunks_exact(3).zip(&part.face_key) {
+        for e in 0..3 {
+            let (a, b) = (t[e], t[(e + 1) % 3]);
+            if !seen.insert((a.min(b), a.max(b))) {
+                continue;
+            }
+            stats.edges += 1;
+            let (p, q) = (tri.positions[a as usize], tri.positions[b as usize]);
+            let dh = (q[2] - p[2]).abs();
+            let len = (q[0] - p[0]).hypot(q[1] - p[1]);
+            if !(dh > KERB_RISE_M + STEP_SLACK_M && dh > STEP_GRADE * len) {
+                continue;
+            }
+            if p[2] == part.natural[a as usize] && q[2] == part.natural[b as usize] {
+                stats.dem_steep += 1;
+                continue;
+            }
+            let mid = [(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0];
+            if (at(mid, key) - (p[2] + q[2]) / 2.0).abs() <= dh / 4.0 {
+                stats.steep += 1;
+                continue;
+            }
+            stats.steps += 1;
+            stats.worst = stats.worst.max(dh);
+            stats.at.push(mid);
+        }
+    }
+}
+
+/// `tri` with the positions no triangle names dropped: a copy welded into
+/// another leaves its slot behind, and a glTF's vertex buffer pays for every
+/// slot whether a triangle names it or not.
+fn compact(mut tri: Tri) -> Tri {
+    let mut remap = vec![NONE; tri.positions.len()];
+    let mut positions = Vec::with_capacity(tri.positions.len());
+    for i in tri.indices.iter_mut() {
+        if remap[*i as usize] == NONE {
+            remap[*i as usize] = positions.len() as u32;
+            positions.push(tri.positions[*i as usize]);
+        }
+        *i = remap[*i as usize];
+    }
+    tri.positions = positions;
+    tri
 }
 
 /// Below this height, in metres, a step between two surfaces is rounding
@@ -1474,8 +1910,8 @@ const WALL_MIN_M: f64 = 1e-3;
 /// into the courtyard at a hole, because the winding says which is which.
 fn wall(
     outline: &[(u32, u32)],
+    top: &[[f64; 2]],
     positions: &[[f64; 3]],
-    room: &dyn Fn(u32) -> f64,
     ground: &dyn Fn(u32) -> f64,
     portals: &Portals,
 ) -> (Tri, f64) {
@@ -1490,9 +1926,9 @@ fn wall(
     // stood apart by the fall and the world showed through between them.
     // Where the ground meets the tube's wall between the two, the wall is
     // the closure and nothing is drawn.
-    let rail = |v: u32| {
+    let rail = |v: u32, r: f64| {
         let q = [positions[v as usize][0], positions[v as usize][1]];
-        let (r, g) = (room(v), ground(v));
+        let g = ground(v);
         match portals.section(q, r) {
             Some((_, roof)) if g > roof => (roof, g),
             Some((floor, _)) if g < floor => (floor, g),
@@ -1500,13 +1936,13 @@ fn wall(
             None => (r, g),
         }
     };
-    for &(u, v) in outline {
+    for (&(u, v), t) in outline.iter().zip(top) {
         let (a, b) = (positions[u as usize], positions[v as usize]);
         let run = (b[0] - a[0]).hypot(b[1] - a[1]);
         if run <= f64::EPSILON {
             continue;
         }
-        let (p0, p1) = (rail(u), rail(v));
+        let (p0, p1) = (rail(u, t[0]), rail(v, t[1]));
         let (d0, d1) = ((p0.0 - p0.1).abs(), (p1.0 - p1.1).abs());
         if d0 <= WALL_MIN_M && d1 <= WALL_MIN_M {
             continue;
@@ -1549,19 +1985,19 @@ fn wall(
 fn edge_faces(
     bounds: &[Boundary],
     positions: &[[f64; 3]],
-    height: &dyn Fn(u32, &Face) -> Option<f64>,
+    height: &dyn Fn(u32, Key) -> Option<f64>,
 ) -> (Tri, EdgeFaces) {
     let mut tri = Tri::default();
     let mut out = EdgeFaces::default();
     for e in bounds.iter().filter(|e| !e.open) {
-        let (Some(aa), Some(ab), Some(ba), Some(bb)) =
-            (height(e.u, e.a), height(e.v, e.a), height(e.u, e.b), height(e.v, e.b))
+        let (Some(ka), Some(kb)) = (e.ka, e.kb) else { continue };
+        if ka == kb {
+            continue;
+        }
+        let (Some(aa), Some(ab), Some(ba), Some(bb)) = (height(e.u, ka), height(e.v, ka), height(e.u, kb), height(e.v, kb))
         else {
             continue;
         };
-        if Surface::paved(e.a) == Surface::paved(e.b) {
-            continue;
-        }
         if (aa - ba).abs() <= WALL_MIN_M && (ab - bb).abs() <= WALL_MIN_M {
             continue;
         }
@@ -1590,11 +2026,22 @@ fn edge_faces(
         } else {
             (q, p, ab.max(bb), ab.min(bb), aa.max(ba), aa.min(ba))
         };
-        tri.quad([[p[0], p[1], ph], [p[0], p[1], pl], [q[0], q[1], ql], [q[0], q[1], qh]]);
+        // Where the two sides meet at one end the face tapers to it, and the
+        // half that would be a line is left out rather than drawn flat.
+        let base = tri.positions.len() as u32;
+        tri.positions.extend_from_slice(&[[p[0], p[1], ph], [p[0], p[1], pl], [q[0], q[1], ql], [q[0], q[1], qh]]);
+        if ph - pl > f64::EPSILON {
+            tri.indices.extend_from_slice(&[base, base + 1, base + 2]);
+        }
+        if qh - ql > f64::EPSILON {
+            tri.indices.extend_from_slice(&[base, base + 2, base + 3]);
+        }
         let m2 = (ph - pl + qh - ql) / 2.0 * (q[0] - p[0]).hypot(q[1] - p[1]);
         out.m2 += m2;
         out.max = out.max.max(ph - pl).max(qh - ql);
-        if e.a.material == e.b.material && e.a.sheet != e.b.sheet {
+        if ka.0 == kb.0 {
+            out.split_m2 += m2;
+        } else if e.a.material == e.b.material && e.a.sheet != e.b.sheet {
             out.sheet_m2 += m2;
         }
     }
@@ -1613,6 +2060,11 @@ struct EdgeFaces {
     /// that meet at different heights. The position lookup this replaced
     /// read both from one map and so never drew these at all.
     sheet_m2: f64,
+    /// The area drawn inside one surface, between two rules that did not
+    /// weld: the retaining face where two roads' domains meet at different
+    /// heights, or where the far pavement stops standing on its face and
+    /// drapes. A step there used to be a stretched triangle nothing closed.
+    split_m2: f64,
 }
 
 /// The height the lifted meshes gave every one of their vertices, keyed by
@@ -1716,6 +2168,8 @@ pub struct Earth {
     pub wall_m2: f64,
     /// The area of the faces the edge rule draws between paved surfaces.
     pub kerb_m2: f64,
+    /// Copies of one vertex under two rules that agreed and were welded.
+    pub welded: usize,
 }
 
 impl Earth {
@@ -1749,19 +2203,6 @@ impl Earth {
         }
         e
     }
-}
-
-/// `tri` at the field's height plus `rise`, and what that did. The
-/// asphalt (`walk` false) takes the road's height wherever it reaches,
-/// being the road; the walk beside it is asked how far out it lies, and
-/// past the room's reach stands on [`Foot::batter`]'s face instead.
-///
-/// The mesh step left every vertex at the ground, so the ground a vertex
-/// was cut from or filled to is the height it arrives with: this reads it
-/// there rather than sampling the terrain again, and the two cannot drift
-/// apart.
-fn lift(tri: &Tri, field: &Field, rise: f64, walk: bool, split: usize) -> (Tri, Stats) {
-    by_sheet(tri, std::slice::from_ref(field), &[], &[], None, rise, walk, split)
 }
 
 /// One height field per sheet of `family`, in the sheets' own order — the
@@ -1824,144 +2265,6 @@ fn of_axes(sheets: &Sheets, family: Family, profiles: &Profiles, chords: bool) -
             Field::of_stations(ranges.into_iter().filter_map(|(i, r)| Some((profiles.profiles.get(i)?, r))))
         })
         .collect()
-}
-
-/// The same, with a field per sheet and the sheet of every vertex.
-///
-/// **A vertex's height is a function of its own sheet's field alone**
-/// (invariant I1 of `one-surface-at-a-junction-2026-09-14.md`). One field
-/// over the whole family answers a vertex from whatever axis is nearest
-/// within [`FIELD_LIMIT_M`], and across a grade separation that is the
-/// wrong axis: a deck's vertex takes the height of the street eighteen
-/// metres below it because the street's axis happened to be nearer in
-/// plan. Asked of its own sheet the question cannot be got wrong, because
-/// the other surface's axes are not in the field to be found.
-///
-/// `of` empty means one field for every vertex, which is what the walk and
-/// anything else unpartitioned wants.
-fn by_sheet(
-    tri: &Tri,
-    fields: &[Field],
-    chords: &[Field],
-    of: &[u32],
-    over: Option<&poly::Indexed>,
-    rise: f64,
-    walk: bool,
-    split: usize,
-) -> (Tri, Stats) {
-    let mut out = tri.clone();
-    let mut stats = Stats { vertices: tri.positions.len(), ..Stats::default() };
-    for (i, p) in tri.positions.iter().enumerate() {
-        // **The surface the vertex is on answers for it** (invariant I1).
-        // The two fields overlap by a station at every abutment, so they
-        // agree where the mask's edge falls.
-        //
-        // **And the mask is asked, not believed.** It is a boolean kernel's
-        // answer to "which paving is over a deck", and a kernel's answer has
-        // threads in it: at the Montreux overbridge two of them, 0.3 and
-        // 0.8 m², lay seven metres from any chord in the middle of a
-        // junction, and every vertex they caught was answered by the chords'
-        // field — which reaches [`FIELD_LIMIT_M`] and clamps to the nearest
-        // station, so it handed back the chord's *end* height. The asphalt
-        // stood up in a 2.4 m fin along each sliver's edge. So the chord
-        // answers only where it is **no further away than the ground the
-        // sheet also holds**, which is a fact about the geometry and one the
-        // mask cannot get wrong: on a deck the chord is underfoot and the
-        // approach is a span away, and in a sliver it is the other way
-        // round. Where the mask is right the two are the same profile
-        // through one connector and agree anyway.
-        let masked = over.is_some_and(|o| o.contains([p[0], p[1]]));
-        // Which field answers for this vertex: its own sheet's, or the one
-        // whole field there is when the paving was never partitioned.
-        let k = if of.is_empty() { 0 } else { of.get(i).copied().unwrap_or(0) as usize };
-        let ask = |v: &[Field]| v.get(k).filter(|f| f.len() > 0).and_then(|f| f.at([p[0], p[1]]));
-        let grounded = ask(fields);
-        let chord = masked
-            .then(|| ask(chords))
-            .flatten()
-            .filter(|c| grounded.is_none_or(|g| c.d <= g.d));
-        // Whether this vertex stands on a span, which the earthwork numbers
-        // below need and the height does not: a deck's chord and its
-        // approach's grade are one field, continuous through the connector
-        // they share.
-        let on = chord.is_some();
-        let Some(foot) = chord.or(grounded) else {
-            stats.draped += 1;
-            stats.free += 1;
-            continue;
-        };
-        let room_h = foot.h + rise;
-        // **A walk takes a road's height only where that road is on the
-        // ground the walk is on.** `p[2]` is the natural terrain at this
-        // vertex — the mesh was cut on the lattice with every vertex at
-        // `height_at` — so the comparison is exact and costs nothing.
-        //
-        // The walk has no profile and no sheets: it takes whatever road
-        // axis is nearest within [`FIELD_LIMIT_M`], with no test that the
-        // road is anywhere near it in *height*. Traced along the Chemin du
-        // National at Montreux, a hundred metres of footway sits within
-        // 13 cm of the ground and then its last vertex lands on the road's
-        // axis at a bridge abutment, where the clearance plinth puts the
-        // road 8.54 m up — so the pavement goes with it, the terrain opens
-        // a hole for it, and the bench walls what it cannot batter.
-        //
-        // One bench face is the threshold because it is already the rule
-        // one level out: a band standing further than [`MAX_BENCH_FACE_M`]
-        // from the road beside it is not that road's pavement and drapes.
-        // This is the same sentence with the height in it rather than the
-        // plan distance. A sidewalk on a genuine embankment keeps its road,
-        // which is within a face of the ground beside it by construction.
-        let flown = walk && foot.h - p[2] > MAX_BENCH_FACE_M;
-        stats.flown += flown as usize;
-        // The sheet decides, not the distance ([`Foot::face`]): the walk's
-        // near part is the room's plateau outright and its far part the
-        // face, so the two disagree on the cut itself and the step is a
-        // rim rather than a stretch across a triangle.
-        let near = !walk || i < split;
-        let h = if near { room_h } else { foot.face(room_h, p[2]) };
-        out.positions[i][2] = h;
-        // Where the vertex stands, not whether the height moved: on flat
-        // ground the room's height *is* the ground, and a road there is
-        // still a road.
-        if near {
-            stats.lifted += 1;
-        } else if h == p[2] {
-            stats.draped += 1;
-        } else {
-            stats.battered += 1;
-        }
-        // **A deck is paved, not banked.** The earthwork numbers are what
-        // the ground stage owes; the standoff under a span is the
-        // structure's, and counted here it reads as an embankment nobody
-        // built — 6.5 m of it under the overpass specimen alone.
-        if on {
-            continue;
-        }
-        if (h - p[2]).abs() > MAX_BENCH_FACE_M {
-            stats.walled += 1;
-        }
-        stats.cut = stats.cut.max(p[2] - h);
-        stats.fill = stats.fill.max(h - p[2]);
-    }
-    let mut seen: HashSet<(u32, u32)> = HashSet::new();
-    for t in out.indices.chunks_exact(3) {
-        for e in 0..3 {
-            let (a, b) = (t[e], t[(e + 1) % 3]);
-            if !seen.insert((a.min(b), a.max(b))) {
-                continue;
-            }
-            stats.edges += 1;
-            let (p, q) = (out.positions[a as usize], out.positions[b as usize]);
-            let dh = (q[2] - p[2]).abs();
-            let len = (q[0] - p[0]).hypot(q[1] - p[1]);
-            if dh > KERB_RISE_M + STEP_SLACK_M && dh > STEP_GRADE * len {
-                stats.steps += 1;
-                stats.worst = stats.worst.max(dh);
-                stats.at.push([(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0]);
-            }
-        }
-    }
-    (out, stats)
 }
 
 #[cfg(test)]
@@ -2028,7 +2331,7 @@ pub(crate) mod tests {
         // out, a 1 m drop 2.5 m out, and inside the reach there is no
         // face at all.
         let reach = 2.75 + ROOM_REACH_M;
-        let batter = |d: f64, ground: f64| Foot { h: 0.0, d, half_w: 2.75 }.batter(0.0, ground);
+        let batter = |d: f64, ground: f64| Foot { h: 0.0, d, half_w: 2.75, axis: 0, s: 0.0 }.batter(0.0, ground);
         assert_eq!(batter(0.0, 2.0), 0.0);
         assert_eq!(batter(reach, 2.0), 0.0);
         assert_eq!(batter(reach + 2.5, 2.0), 1.0);
@@ -2097,17 +2400,18 @@ pub(crate) mod tests {
         // The ground axis is 6 m away and says 405.6; the chord is 9.2 m
         // away — inside the field's reach — and, clamped to its own first
         // station, says 407.0.
-        let mut tri = Tri::default();
-        tri.triangle([[88.0, 6.0, 0.0], [88.0, 6.5, 0.0], [88.5, 6.0, 0.0]]);
         assert!((chord.at([88.0, 6.0]).expect("the chord reaches it").h - 407.0).abs() < 1e-9);
         // The mask lies about it — a sliver of a deck that is not there.
         let over = poly::Indexed::new(&vec![poly::rect(87.0, 5.0, 90.0, 7.0)]);
 
-        let (out, stats) = by_sheet(&tri, &[ground], &[chord], &[0, 0, 0], Some(&over), 0.0, false, 0);
-        let h = out.positions[0][2];
+        let lift = Lift { grounded: &ground, chords: Some(&chord), over: Some(&over), rise: 0.0, walk: false, near: true };
+        let rule = lift.rule([88.0, 6.0], 0.0);
+        let (h, foot) = lift.height([88.0, 6.0], 0.0, rule);
         assert!((h - 405.6).abs() < 1e-9, "the sliver handed the vertex the chord's end height: {h}");
         // And the earthwork under it is the ground's to owe, not a deck's.
-        assert!(stats.fill > 0.0, "the sliver excused the fill under it too");
+        let mut stats = Stats::default();
+        lift.account(&mut stats, rule, h, 0.0, foot);
+        assert!(!rule.chord && stats.fill > 0.0, "the sliver excused the fill under it too");
     }
 
     #[test]
@@ -2252,10 +2556,19 @@ pub(crate) mod tests {
         // Where asking per region dragged the far end of this same
         // footway 5.88 m into the air.
         assert!(s.num("cut") < 3.0, "{s}");
-        assert!(s.num("step") > 0.0 && s.num("worst") < 4.0, "{s}");
-        // The wall stands where the hill outruns the face, not at the
-        // kerb: every step is out beyond the plateau.
-        assert!(b.steps.iter().all(|p| p[1] > 2.75 + ROOM_REACH_M), "{:?}", b.steps);
+        // And it is **drawn**: the band's triangles on the face and those
+        // that drape take two rules, and the edge between them is split with
+        // a face on it rather than stretched across — so it is a wall and
+        // not a step.
+        assert_eq!(s.num("step"), 0.0, "{s}");
+        assert!(s.num("split_m2") > 0.0 && s.num("kerb_max") < 4.0, "{s}");
+        // The wall stands where the hill outruns the face, not at the kerb:
+        // every face taller than a kerb is out beyond the plateau.
+        for q in b.kerb.positions.chunks_exact(4) {
+            if (q[0][2] - q[1][2]).abs().max((q[3][2] - q[2][2]).abs()) > 2.0 * KERB_RISE_M {
+                assert!(q[0][1] > 2.75 + ROOM_REACH_M, "a wall at the kerb: {q:?}");
+            }
+        }
     }
 
     /// A band whose lift/drape boundary falls in its own **interior**,
@@ -2645,8 +2958,8 @@ pub(crate) mod tests {
         let ground = ground_on(&outline, &grid, &room, &natural, &portals);
         let (pos, edges) = outline_of(&outline, &grid);
         let xy = |v: u32| [pos[v as usize][0], pos[v as usize][1]];
-        let (tri, m2) =
-            wall(&edges, &pos, &|v| room(xy(v)), &|v| ground.at(xy(v), natural(xy(v))), &portals);
+        let top: Vec<[f64; 2]> = edges.iter().map(|&(u, v)| [room(xy(u)), room(xy(v))]).collect();
+        let (tri, m2) = wall(&edges, &top, &pos, &|v| ground.at(xy(v), natural(xy(v))), &portals);
         // The downhill side's 100 m at 1.375 m, and the half of each end cap
         // that falls below the floor, a triangle.
         let expected = 100.0 * 1.375 + 2.0 * 0.5 * half * 1.375;
