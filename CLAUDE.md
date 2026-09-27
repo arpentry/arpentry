@@ -663,9 +663,11 @@ box). `bench::Ground` takes §3.2's residual `e = z − dem` and gives it a
 slope instead: pinned at every outline edge to the room's height less the
 natural ground, **clamped to one face** (`MAX_BENCH_FACE_M`) with a wall for
 the rest, falling to nothing at 1 in `EARTHWORK_BATTER` perpendicular to its
-segment, and blended over `EARTH_BLEND_M` where the nearest segment changes.
-Outline vertices take their own pin exactly. What that removes, each a
-discontinuity of the nearest-segment rule it replaces:
+segment, and blended over `EARTH_BLEND_M` where the nearest segment changes
+— a band that narrows to nothing at the outline, so there the field is the
+pins' own interpolation and every ground vertex, pinned or not, takes one
+function. What that removes, each a discontinuity of the nearest-segment rule
+it replaces:
 
 - the step where two outline segments are equidistant and answer differently;
 - the all-or-nothing wall: a drop past one face used to refuse the batter
@@ -677,6 +679,29 @@ discontinuity of the nearest-segment rule it replaces:
 changes; across a 30 % hill the cut face stands at 70 % and meets the ground
 2 m out. A batter also does not cross the room: a point on the paving's side
 of a segment is not that segment's to answer.
+
+**A footpath runs up the batter now** (2026-09-27). Pavement no road
+answers for, or that drapes past one (`Rule::drape`, `Rule::FREE`), is
+*passive*: its edges with the ground pin nothing and draw no wall, and its
+vertices take the same `natural + residual` the ground does, so a footway
+leaving a street runs up the street's batter instead of standing on the raw
+terrain beside it — the docs' long-open item. Loop box: `regraded` 18 625
+vertices (up to 3.00 m), `wall_m2` 11 972 → 10 886, `kerb_m2` 37 615 →
+32 715, `split_m2` 22 333 → 19 550. **What it costs, and why**: `step` 72 →
+391, nearly all centimetre-long footpath edges at an outline vertex where
+two paved surfaces meet the ground at different heights — a *split* — and
+the ground has one copy there, so the earthwork is two-valued at that point
+(the ground's own triangles had the same jump since step 3; nothing counted
+them). Continuing a paving split into the ground is what removes them, and
+is the next item. `off` 3.0 → 3.8 m for the band narrowing at the outline.
+
+**`step` asks the residual, and samples the rule.** An edge whose residual
+(`h − natural`) barely changes is the DEM's own steepness (`dem_steep`),
+draped or regraded or a street following a flank. Otherwise its rule is read
+at 16 points (`STEP_SAMPLES`): a continuous rule moves a sixteenth between
+samples however steep or curved (`steep`), a jump puts half the rise between
+two. A single midpoint called the DEM's bicubic curvature a jump; with the
+samples the 150 % flank roundabout reads 3 steps, not 26.
 
 **The steepest-allowed extension was tried first and is worse.** A cone from
 every pin (`e = max(L, min(0, U))`) is continuous, but it couples the pins

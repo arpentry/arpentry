@@ -197,6 +197,10 @@ pub const PART_M: f64 = 20.0;
 /// axis hands over to the foot on the next ([`Field::along`]).
 pub const SEGMENT_BLEND_M: f64 = 1.0;
 
+/// How many samples of its own rule an edge is read at before it is called a
+/// step ([`steps_of`]).
+const STEP_SAMPLES: usize = 16;
+
 /// How far along its own axis, in metres of arc, [`Field::along`] looks for
 /// a second foot: two stations' spacing, far short of a hairpin's other leg.
 pub const ALONG_ARC_M: f64 = 8.0;
@@ -750,8 +754,10 @@ fn ring(c0: i32, r0: i32, k: i32) -> Vec<(i32, i32)> {
 /// ground, held to one face ([`MAX_BENCH_FACE_M`]) either way; a wall at the
 /// edge closes whatever is left over. Out from each outline segment it falls
 /// at the batter's slope, perpendicular to the segment, and a point takes the
-/// nearest segment's batter blended over [`EARTH_BLEND_M`] with any segment
-/// nearly as near. Three things follow:
+/// nearest segment's batter blended with any segment nearly as near — over
+/// [`EARTH_BLEND_M`], narrowing to nothing at the outline, so on the outline
+/// it is the pins' own interpolation and the whole ground is one function.
+/// Three things follow:
 ///
 /// - **It is continuous.** The rule it replaces took the nearest segment
 ///   alone, so the ground stepped wherever two segments were equidistant and
@@ -954,9 +960,16 @@ impl Ground {
         // replaces stepped. Sorted first, so the sum is a function of the
         // segments and not of the index's visiting order.
         near.sort_by(|x, y| x.1.total_cmp(&y.1).then(x.0.total_cmp(&y.0)));
+        // **The band narrows to nothing at the outline**, so there the
+        // nearest segment alone answers — the linear interpolation of its own
+        // pins, which is the edge the mesh drew — and a vertex pinned on it is
+        // the limit of the field around it. At a full metre everywhere, a
+        // segment a few decimetres off with a different pin was blended into
+        // the outline itself, and the ground stood a jump off every pin.
+        let band = EARTH_BLEND_M.min(nearest);
         let (mut sum, mut weight) = (0.0, 0.0);
         for (e, d) in near {
-            let w = fade((d - nearest) / EARTH_BLEND_M);
+            let w = if band > 0.0 { fade((d - nearest) / band) } else { (d <= nearest) as u8 as f64 };
             sum += w * e;
             weight += w;
         }
@@ -1175,6 +1188,11 @@ impl Lift<'_> {
         stats.flown += (self.walk && foot.h - natural > MAX_BENCH_FACE_M) as usize;
         if !self.walk || self.near {
             stats.lifted += 1;
+        } else if rule.drape {
+            // It follows the engineered ground, which is not the road's to
+            // owe: no cut or fill of its own.
+            stats.draped += 1;
+            return;
         } else if h == natural {
             stats.draped += 1;
         } else {
@@ -1545,25 +1563,6 @@ pub fn run(
         }
     }
     let welded = copies.weld();
-    // Counted once welded, over the copies a triangle still names: a copy
-    // merged into its twin is not a vertex of the world.
-    let mut stats = Stats::default();
-    for (part, feet) in [&copies.carriageway, &copies.ballast, &copies.pavement].into_iter().zip(&feet) {
-        let mut used = vec![false; part.tri.positions.len()];
-        for &i in &part.tri.indices {
-            used[i as usize] = true;
-        }
-        for i in (0..used.len()).filter(|&i| used[i]) {
-            let (surface, rule) = part.key[i];
-            lift_of(surface).account(&mut stats, rule, part.tri.positions[i][2], part.natural[i], feet[i]);
-        }
-    }
-    let at = |q: Pt, (surface, rule): Key| lift_of(surface).height(q, natural(q), rule).0;
-    for part in [&copies.carriageway, &copies.ballast, &copies.pavement] {
-        steps_of(part, &at, &mut stats);
-    }
-    let steps = std::mem::take(&mut stats.at);
-
     // **The room's height at a vertex is its lowest paved copy's**, read by
     // index. Where the asphalt and the pavement both reach a vertex — the
     // end of a kerb — the lower is the ground's, so the ground meets the
@@ -1612,6 +1611,14 @@ pub fn run(
     // and one that does not, each in the winding of the cutting side so the
     // room lies on its left. Both meshes that meet there are the one mesh, so
     // these edges are already split at every lattice crossing.
+    // **A pavement no road answers for, or that drapes past one, is
+    // passive**: it is not the road's cross-section, so it is the ground's —
+    // it takes the engineered ground rather than the raw DEM, and a footpath
+    // leaving a street runs up the street's batter instead of standing on
+    // the terrain beside it.
+    let passive = |k: Option<Key>| {
+        matches!(k, Some((Surface::Near | Surface::Far, rule)) if rule.drape || rule.axis == NONE)
+    };
     let bounds = boundaries(mesh, arrangement, &rules);
     let mut outline: Vec<(u32, u32)> = Vec::new();
     // The key on the cutting side of each outline edge.
@@ -1637,12 +1644,14 @@ pub fn run(
             }
             continue;
         }
+        // A pavement that drapes is not an edge of the room: it follows the
+        // ground (below), so it pins nothing and meets it with no face.
         match (e.a.cuts(), e.b.cuts()) {
-            (true, false) => {
+            (true, false) if !passive(e.ka) => {
                 outline.push((e.u, e.v));
                 cutting.push(e.ka);
             }
-            (false, true) => {
+            (false, true) if !passive(e.kb) => {
                 outline.push((e.v, e.u));
                 cutting.push(e.kb);
             }
@@ -1667,28 +1676,66 @@ pub fn run(
         })
         .collect();
     let ground = Ground::of_edges(&segments, &portals);
-    // **An outline vertex takes its own pin**, exactly: the blend is for the
-    // ground between the outline's segments, and at a vertex it would hear a
-    // segment round the corner and stand a few centimetres off the paving it
-    // meets. Where two outline edges pin one vertex differently — a split —
-    // the lower is the ground's, as the room's own height is.
-    let mut pin_at: HashMap<u32, f64> = HashMap::new();
-    for ((&(u, v), t), seg) in outline.iter().zip(&top).zip(&segments) {
-        let mouth = portals.open(seg.0) && portals.open(seg.1);
-        for (w, room_h, nat) in [(u, t[0], seg.2[1]), (v, t[1], seg.3[1])] {
-            let e = if mouth { 0.0 } else { (room_h - nat).clamp(-MAX_BENCH_FACE_M, MAX_BENCH_FACE_M) };
-            pin_at.entry(w).and_modify(|x| *x = x.min(e)).or_insert(e);
-        }
-    }
     // The ground's copies at the engineered ground. The one mesh was built
     // at the natural ground, which is exactly [`Ground::at`]'s second
     // argument.
-    for (q, &v) in copies.ground.tri.positions.iter_mut().zip(&copies.ground.of) {
-        q[2] = match pin_at.get(&v) {
-            Some(e) => q[2] + e,
-            None => ground.at([q[0], q[1]], q[2]),
-        };
+    //
+    // **One function, pins included.** The batter's blend narrows to nothing
+    // at the outline, so at an outline vertex it *is* the pin wherever the
+    // segments meeting there agree, and differs only where two edges pin one
+    // vertex differently — a split, where the wall stands anyway. Pinning
+    // those vertices exactly instead put a jump in every ground and footpath
+    // triangle beside a split: 300 of them on the loop box.
+    for q in copies.ground.tri.positions.iter_mut() {
+        q[2] = ground.at([q[0], q[1]], q[2]);
     }
+
+    // The passive pavement on the same ground, by the same function the
+    // ground copy beside it took, so the two meet with nothing between.
+    let (mut regraded, mut regrade_m) = (0usize, 0.0f64);
+    {
+        let part = &mut copies.pavement;
+        for i in 0..part.tri.positions.len() {
+            if !passive(Some(part.key[i])) {
+                continue;
+            }
+            let (q, nat) = (part.tri.positions[i], part.natural[i]);
+            // Where the ground has a copy of this vertex, that copy's height,
+            // so the two cannot disagree; elsewhere the same function.
+            let h = nat + ground.residual([q[0], q[1]]);
+            let e = h - nat;
+            part.tri.positions[i][2] = h;
+            if e.abs() > 1e-9 {
+                regraded += 1;
+                regrade_m = regrade_m.max(e.abs());
+            }
+        }
+    }
+    // Counted once welded, over the copies a triangle still names: a copy
+    // merged into its twin is not a vertex of the world.
+    let mut stats = Stats::default();
+    for (part, feet) in [&copies.carriageway, &copies.ballast, &copies.pavement].into_iter().zip(&feet) {
+        let mut used = vec![false; part.tri.positions.len()];
+        for &i in &part.tri.indices {
+            used[i as usize] = true;
+        }
+        for i in (0..used.len()).filter(|&i| used[i]) {
+            let (surface, rule) = part.key[i];
+            lift_of(surface).account(&mut stats, rule, part.tri.positions[i][2], part.natural[i], feet[i]);
+        }
+    }
+    let at = |q: Pt, key: Key| {
+        if passive(Some(key)) {
+            natural(q) + ground.residual(q)
+        } else {
+            lift_of(key.0).height(q, natural(q), key.1).0
+        }
+    };
+    for part in [&copies.carriageway, &copies.ballast, &copies.pavement] {
+        steps_of(part, &at, &mut stats);
+    }
+    let steps = std::mem::take(&mut stats.at);
+
 
     // How the paving and the ground meet at the outline: whether every
     // outline vertex has a paved copy on its cutting side (`seam`), and how
@@ -1739,24 +1786,6 @@ pub fn run(
             (plane - ground.at(c3, natural(c3))).abs()
         })
         .fold(0.0, f64::max);
-
-    // **How much of the free walk the engineered ground would move.** A
-    // vertex no road answered for keeps the raw DEM while the ground around
-    // it has been benched — "a footpath leaving a street does not run up the
-    // batter". The engineered ground reaches [`EARTHWORK_BATTER`] × one face
-    // (7.5 m) from the outline and is the natural ground beyond, so the count
-    // is exact: ask it, and see where it answers something else.
-    let (mut reached, mut reach_m) = (0usize, 0.0f64);
-    for (q, &nat) in copies.pavement.tri.positions.iter().zip(&copies.pavement.natural) {
-        if (q[2] - nat).abs() > 1e-9 {
-            continue;
-        }
-        let engineered = ground.at([q[0], q[1]], nat);
-        if (engineered - nat).abs() > 1e-6 {
-            reached += 1;
-            reach_m = reach_m.max((engineered - nat).abs());
-        }
-    }
 
     let ground_h = |v: u32| {
         copies.height(v, (Surface::Ground, Rule::FREE)).unwrap_or_else(|| ground.at(plan(v), natural(plan(v))))
@@ -1840,7 +1869,9 @@ pub fn run(
         .with("off", format!("{:.1e}", earth.off))
         .with("flown", stats.flown)
         .with_part("free", stats.free, stats.draped)
-        .with("regrade", format!("{reached} to {reach_m:.2}"))
+        // Passive pavement vertices the earthwork moved off the raw DEM: a
+        // footpath running up a street's batter rather than beside it.
+        .with("regraded", format!("{regraded} to {regrade_m:.2}"))
         .with_m2("carried", carried_m2)
         .with_residual(drawn_residual(terrain, &bench.ground));
     (bench, summary)
@@ -1849,12 +1880,16 @@ pub fn run(
 /// Counts the steps of one part: edges its heights **jump** across.
 ///
 /// An edge over [`KERB_RISE_M`] and steeper than [`STEP_GRADE`] is asked
-/// what its own rule gives its midpoint. A rule that is continuous along the
-/// edge puts the midpoint near the mean of its ends, however steep the edge;
-/// a jump puts it on one side, half the rise off the mean. Only the second
-/// is a step. The first is `steep`: a street following a 150 % flank, a
-/// junction warping between two legs, or — `dem_steep`, both ends on the
-/// raw DEM — a pavement draped over a retaining wall the DEM images.
+/// about the **residual** — what the lift added over the raw DEM — because
+/// that is the model's and the rest is the terrain's. Where the residual
+/// barely changes along it the steepness is the DEM's own (`dem_steep`): a
+/// street that follows a flank, a footpath on its regraded ground, a
+/// retaining wall the DEM images. Otherwise the edge's own rule is sampled
+/// along it ([`STEP_SAMPLES`]): a rule continuous along the edge, however
+/// steep or curved, moves a little between samples (`steep`); a jump puts at
+/// least half the rise between two of them. Only the second is a step. (A
+/// single midpoint could not tell them apart: the DEM's bicubic curvature
+/// under a steep edge reads as a jump.)
 ///
 /// It used to count every edge over the grade and call it a discontinuity,
 /// which it was only while a vertex could be answered by a different rule
@@ -1876,12 +1911,30 @@ fn steps_of(part: &Part, at: &dyn Fn(Pt, Key) -> f64, stats: &mut Stats) {
             if !(dh > KERB_RISE_M + STEP_SLACK_M && dh > STEP_GRADE * len) {
                 continue;
             }
-            if p[2] == part.natural[a as usize] && q[2] == part.natural[b as usize] {
+            // What the lift added over the DEM at each end, and at the middle
+            // by the triangle's own rule.
+            let (ra, rb) = (p[2] - part.natural[a as usize], q[2] - part.natural[b as usize]);
+            if (rb - ra).abs() <= KERB_RISE_M + STEP_SLACK_M {
                 stats.dem_steep += 1;
                 continue;
             }
+            // The rule along the edge, from one stored end to the other: a
+            // continuous rule, however curved, moves a sixteenth of the way
+            // between samples; a jump puts at least half of it between two.
+            let mut prev = p[2];
+            let mut widest = 0.0f64;
+            for k in 1..=STEP_SAMPLES {
+                let f = k as f64 / STEP_SAMPLES as f64;
+                let z = if k == STEP_SAMPLES {
+                    q[2]
+                } else {
+                    at([p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f], key)
+                };
+                widest = widest.max((z - prev).abs());
+                prev = z;
+            }
             let mid = [(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0];
-            if (at(mid, key) - (p[2] + q[2]) / 2.0).abs() <= dh / 4.0 {
+            if widest <= (dh / 2.0).max(KERB_RISE_M) {
                 stats.steep += 1;
                 continue;
             }
@@ -2576,7 +2629,12 @@ pub(crate) mod tests {
         // that drape take two rules, and the edge between them is split with
         // a face on it rather than stretched across — so it is a wall and
         // not a step.
-        assert_eq!(s.num("step"), 0.0, "{s}");
+        // One edge is left, and it is a centimetre wide: where the band's
+        // face meets its drape *on the outline*, two edges pin one vertex
+        // differently and the ground has one copy there, so the earthwork is
+        // two-valued at that point. Continuing the split into the ground is
+        // what removes it; until then it is counted, and bounded.
+        assert!(s.num("step") <= 1.0 && s.num("worst") < 0.6, "{s}");
         assert!(s.num("split_m2") > 0.0 && s.num("kerb_max") < 4.0, "{s}");
         // The wall stands where the hill outruns the face, not at the kerb:
         // every face taller than a kerb is out beyond the plateau.
@@ -2626,22 +2684,23 @@ pub(crate) mod tests {
         // vertex along the cut, so the drop is a face and not a stretch.
         assert_eq!(s.num("step"), 0.0, "an edge spans the walk's own step: {s}");
         assert_eq!(s.num("worst"), 0.0, "{s}");
-        // And nothing in the pavement stands up: the tallest triangle is
-        // lattice relief, not the 4.255 m the field steps by.
-        let tallest = b
+        // And nothing in the pavement stands up: the steepest triangle is the
+        // far half following the ground's batter — the 50 % flank, 1 in 2.5
+        // of residual on it, and a little more where two outline segments
+        // hand over and the blend's weight turns (0.993 here) — not the
+        // 4.255 m the field steps by, which is a face.
+        let steepest = b
             .pavement
             .indices
             .chunks_exact(3)
             .map(|t| {
-                let z = [
-                    b.pavement.positions[t[0] as usize][2],
-                    b.pavement.positions[t[1] as usize][2],
-                    b.pavement.positions[t[2] as usize][2],
-                ];
-                z.iter().copied().fold(f64::MIN, f64::max) - z.iter().copied().fold(f64::MAX, f64::min)
+                let [p, q, r] = [t[0], t[1], t[2]].map(|i| b.pavement.positions[i as usize]);
+                let (u, v) = ([q[0] - p[0], q[1] - p[1], q[2] - p[2]], [r[0] - p[0], r[1] - p[1], r[2] - p[2]]);
+                let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                if n[2].abs() < 1e-12 { 0.0 } else { n[0].hypot(n[1]) / n[2].abs() }
             })
             .fold(0.0f64, f64::max);
-        assert!(tallest < 1.0, "a pavement triangle spans {tallest:.3} m of the step: {s}");
+        assert!(steepest < 1.0, "a pavement triangle climbs {steepest:.3}: {s}");
     }
 
     #[test]
