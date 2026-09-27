@@ -498,13 +498,28 @@ fn region_of(of: &[(Family, usize, Shapes)], family: Family, group: usize) -> Op
     of.iter().find(|(f, g, _)| *f == family && *g == group).map(|(.., s)| s)
 }
 
-/// Up to [`SAMPLES`] points along a piece, its own vertices, ends first:
-/// an end is where a piece meets its neighbours and is the likeliest to be
-/// paved, and the middle is the likeliest to have been bitten by a wall.
+/// Up to [`SAMPLES`] of a piece's own vertices, ends first — an end is where
+/// a piece meets its neighbours and is the likeliest to be paved, and the
+/// middle is the likeliest to have been bitten by a wall — each with the
+/// midpoint of the segment after it.
+///
+/// **A vertex alone can lie on its own region's boundary**, and a parity
+/// test there is a coin toss. A piece with a square end stops exactly where
+/// its ribbon does: `net:underpass`'s approach is two vertices, one on the
+/// butt end at the rect's edge and one on the butt end at the portal, and
+/// which side of each the lattice rounded decided whether the region had any
+/// piece in it at all. A midpoint is on the axis half a segment from either
+/// end, so strictly inside the ribbon unless a wall has bitten it there.
 fn sample(p: &Polyline2) -> impl Iterator<Item = [f64; 2]> + '_ {
     let n = p.pts.len();
     let step = n.div_ceil(SAMPLES).max(1);
-    (0..n).step_by(step).chain(std::iter::once(n.saturating_sub(1))).map(move |k| p.pts[k])
+    let mid = move |k: usize| {
+        p.pts.get(k + 1).map(|b| [(p.pts[k][0] + b[0]) / 2.0, (p.pts[k][1] + b[1]) / 2.0])
+    };
+    (0..n)
+        .step_by(step)
+        .chain(std::iter::once(n.saturating_sub(1)))
+        .flat_map(move |k| std::iter::once(p.pts[k]).chain(mid(k)))
 }
 
 /// The group of the piece nearest to `region`, by the distance from the

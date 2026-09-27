@@ -7,13 +7,13 @@
 //! an annotation** (docs/GENERATION.md §4.5). A mapped bridge whose chord
 //! never left the ground got no deck in the profile and gets no solid here.
 //!
-//! **The roadway comes first.** The surface steps read the ground pieces
-//! only, so until now a way's bridge and tunnel spans carried no paving at
-//! all — 66 000 m² of the loop box's carriageway, and the network split
-//! into twice as many regions where a deck used to join it. Every span
-//! piece is now swept at its solved height across its own width, so the
-//! road is continuous over the Viaduc de Chillon and through the Glion
-//! bores whether or not either turned out to be a structure.
+//! **It does not pave a road's or a railway's span.** The `sheet` step does,
+//! in one polygon with the ground the span runs onto, so the handover at an
+//! abutment is a place inside one surface rather than a boundary between
+//! two. What this step still paves is a bore's floor — a sheet's field
+//! reaches far enough in plan that a hairpin over its own tunnel read the
+//! road above — and the walk span, which has no profile to be lifted by; and
+//! it builds the solid under or over everything else.
 //!
 //! **A deck is a continuous surface in the air, nothing more.** Over a
 //! deck run this step adds a soffit [`DECK_THICKNESS_M`] straight below the
@@ -49,11 +49,13 @@
 //! kerb's rise, exactly as a pavement's is over the ground, and it builds
 //! no solid of its own. `carried` counts them.
 //!
-//! **What this step does not do.** No portal face is cut into the
-//! terrain's rim: a bore's tube ends at its portal and the ground there is
-//! not opened, which is not right, and `cover` counts the stations where a
-//! bore's roof stands above the ground — a cutting the terrain does not
-//! yet have.
+//! **The portal is the bench's.** The partition gives the stretch between a
+//! bore's line crossing and its roof's fit back to the ground, the bench cuts
+//! it as a cutting and draws the headwall ([`crate::bench::Mouth`]), and this
+//! step reaches the tube [`PORTAL_M`] out over it. `covered` measures tunnel
+//! roadway still under the terrain with no tube over it, and `clear` the
+//! least a slab clears the ground: it goes negative where a deck runs close
+//! to its abutment, since there is no seat under a slab any more.
 
 use std::collections::HashMap;
 

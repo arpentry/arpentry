@@ -655,35 +655,25 @@ impl Tri {
     }
 }
 
-/// The paved surface as triangles, one mesh per family, every triangle
-/// inside one triangle of the terrain.
+/// The whole rect as **one** triangulation: every face of the arrangement,
+/// both layers, every triangle inside one triangle of the terrain, and one
+/// vertex per plan position, at the natural ground.
+///
+/// It used to be one mesh per family, with the pavement joined from two
+/// halves and a parallel array naming each vertex's sheet, while the bench
+/// triangulated the ground again on its own; the two met at coincident
+/// positions and were matched afterwards at the kernel's grid, with an
+/// eight-cell search for the ones that did not. Here the paving and the
+/// ground share their boundary vertices **by index**, and which surface a
+/// triangle belongs to is its face's to say ([`Mesh::of_face`]), so a
+/// vertex's sheet, its side of the room's reach and its material are all
+/// read off the face rather than carried beside it.
 #[derive(Debug, Clone, Default)]
 pub struct Mesh {
-    pub carriageway: Tri,
-    pub pavement: Tri,
-    pub ballast: Tri,
-    /// Where the pavement's *far* sheet begins in [`Mesh::pavement`]'s
-    /// positions: the walk is meshed in two parts, within the room's reach
-    /// and beyond it, and joined without welding the two together.
-    ///
-    /// The bench lifts the near part to the road and drapes the far part,
-    /// and the two rules disagree by up to one drop. Meshed as one sheet
-    /// that disagreement falls *inside* a triangle and is drawn as a
-    /// stretched sliver; split here it falls on a rim of each part, where a
-    /// face can close it. Positions `..walk_split` are the near sheet and
-    /// `walk_split..` the far one.
-    pub walk_split: usize,
-    /// Which [`Sheet`] each carriageway vertex came from, as an index into
-    /// [`Sheets::sheets`] (`u32::MAX` for a face in no sheet); the same for
-    /// the ballast.
-    ///
-    /// The same device as `walk_split` and for the same reason: the bench
-    /// lifts each sheet by its own field, so it has to know which vertex
-    /// belongs to which, and a parallel array says so without splitting
-    /// [`Tri`] into one buffer per sheet. Sheets are meshed one at a time
-    /// and joined, so a vertex belongs to exactly one.
-    pub carriageway_sheet: Vec<u32>,
-    pub ballast_sheet: Vec<u32>,
+    pub tri: Tri,
+    /// The face each triangle came from, as [`crate::arrangement::Arrangement::face`]
+    /// numbers them: the partition's faces first, then the decks over them.
+    pub of_face: Vec<u32>,
 }
 
 /// The room at the height the profile solved: the mesh step's triangles,
@@ -714,11 +704,13 @@ pub struct Bench {
 }
 
 /// The structures: what the solved profile implies where it left the
-/// ground. The roadway is every span piece's own paving, which no surface
-/// step lays; the deck is the solid under a deck run and the bore the
-/// tube over a bore run, so no two of the three are coplanar.
+/// ground. The deck is the solid under a deck run and the bore the tube over
+/// a bore run. A road's or a railway's *deck* is paved by its [`Sheet`]; the
+/// paving here is what no sheet lays — a bore's floor, which a sheet's field
+/// would read from the road above it, and a footbridge, which has no profile.
 #[derive(Debug, Clone, Default)]
 pub struct Structure {
+    /// The paving of every bore and every walk span.
     pub roadway: Tri,
     /// The same for a railway's spans: its track bed over a deck and
     /// through a bore.

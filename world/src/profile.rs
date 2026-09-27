@@ -532,6 +532,7 @@ pub fn solve_on(
                 hi: end(k1, k1 == last_of(i), hi_k),
                 lo_at,
                 hi_at,
+                kind,
                 len: (hi_at - lo_at).max(1e-9),
             });
         }
@@ -642,9 +643,8 @@ pub fn solve_on(
             _ => {
                 loose.unanchored += 1;
                 let vals = target[c.way][c.k0..=c.k1].iter().copied();
-                let kind = way(c.way).spans.iter().find(|s| s.kind.is_structure()).map(|s| s.kind);
-                let flat = match kind {
-                    Some(Kind::Tunnel(_)) => vals.fold(f64::INFINITY, f64::min),
+                let flat = match c.kind {
+                    Kind::Tunnel(_) => vals.fold(f64::INFINITY, f64::min),
                     _ => vals.fold(f64::NEG_INFINITY, f64::max),
                 };
                 let one = a.or(b).unwrap_or(flat);
@@ -715,6 +715,11 @@ struct Chord {
     lo_at: f64,
     hi_at: f64,
     len: f64,
+    /// What the source mapped over the run: the extreme a chord nothing
+    /// anchors lies flat at. (Only a chord over the whole way can be
+    /// unanchored, so this is also its way's one structure kind — asked of
+    /// the chord because that is what it is about.)
+    kind: Kind,
 }
 
 /// One end of a chord: a height the at-grade solve or an anchor already

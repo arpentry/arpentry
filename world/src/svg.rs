@@ -117,8 +117,11 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
     if let Some(b) = &world.bench {
         mesh(&mut s, &[("carriageway", &b.carriageway), ("pavement", &b.pavement), ("ballast", &b.ballast)], &view);
         bench(&mut s, b, &view);
-    } else if let Some(m) = &world.mesh {
-        mesh(&mut s, &[("carriageway", &m.carriageway), ("pavement", &m.pavement), ("ballast", &m.ballast)], &view);
+    } else if let (Some(m), Some(a)) = (&world.mesh, &world.arrangement) {
+        use crate::arrangement::Material;
+        let of = |x: Material| crate::mesh::view(m, a, |f| f.material == x);
+        let (c, p, b) = (of(Material::Carriageway), of(Material::Pavement), of(Material::Ballast));
+        mesh(&mut s, &[("carriageway", &c), ("pavement", &p), ("ballast", &b)], &view);
     }
     // The crossings last of the layers: a mark, not a surface, and the
     // one thing here drawn over the asphalt on purpose — a ring under an

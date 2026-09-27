@@ -43,7 +43,10 @@ fn main() {
 
     let profiles: &Profiles = world.profile.as_ref().unwrap();
     let sheets = world.sheets.as_ref().unwrap();
-    let mesh = world.mesh.as_ref().unwrap();
+    // Which sheet holds a point: asked of the sheets' own regions, since the
+    // one mesh carries no per-vertex sheet.
+    let held: Vec<poly::Indexed> = sheets.sheets.iter().map(|s| poly::Indexed::new(&s.shapes)).collect();
+    let sheet_at = |p: [f64; 3]| held.iter().position(|i| i.contains([p[0], p[1]])).map_or(u32::MAX, |k| k as u32);
     let bench = world.bench.as_ref().unwrap();
     let over = poly::Indexed::new(&world.arrangement.as_ref().unwrap().over);
     let inside = |p: [f64; 3]| p[0] >= w[0] && p[0] <= w[2] && p[1] >= w[1] && p[1] <= w[3];
@@ -126,7 +129,7 @@ fn main() {
         }
         tris += 1;
         for &i in t {
-            let s = mesh.carriageway_sheet[i as usize];
+            let s = sheet_at(c.positions[i as usize]);
             low.entry(s).or_default().push(i as usize);
         }
     }
@@ -134,7 +137,7 @@ fn main() {
     for (s, mut vs) in low {
         vs.sort();
         vs.dedup();
-        let sh = &sheets.sheets[s as usize];
+        let Some(sh) = sheets.sheets.get(s as usize) else { continue };
         let ax: std::collections::BTreeSet<usize> = sh.axes.iter().map(|x| x.0).collect();
         let ch: std::collections::BTreeSet<usize> = sh.chords.iter().map(|x| x.0).collect();
         println!(

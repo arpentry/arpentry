@@ -1,6 +1,6 @@
 //! One ground — the checks, ahead of the steps.
 //!
-//! **Step 0 is built and the rest is not.** This module is the specification of
+//! **Steps 0 and 1 are built and the rest is not.** This module is the specification of
 //! `data/plans/one-ground-2026-09-16.md`, written as the checks that plan has
 //! to pass, ahead of the steps themselves. Every check below is `#[ignore]`d
 //! with the rule it names and the number the world reads today, so
@@ -46,20 +46,13 @@
 //! arrives at by another road.
 //!
 //! **The other half took three tries to reach, and one combination reaches
-//! it.** `seam` and `unmet` — the two numbers that measure the two-mesh
-//! reconciliation, and the whole subject of the plan's step 1 — read exactly 0
-//! on `cross`, `sidewalk`, `crossing` and `corner[&split=1]`, at every grade,
-//! with and without houses. They need an outline a boolean has been through
-//! several times: many regions, rings crowded by facades. [`JUNCTION`] with
-//! `house:row?gap=2` on [`FLANK`] is the first thing in the corpus that makes
-//! one, and it reads `seam` **30/2150** and `unmet` **2/984**.
-//!
-//! Small, and enough — a check that can fail is the whole requirement. It is
-//! also fragile by construction, so [`tests::the_corpus_states_the_seam`] is
-//! **live** rather than `#[ignore]`d: it is the guard that the specimen goes
-//! on stating the defect, and if a change to the mesher or the room quietly
-//! takes it back to zero, the check that step 1 is measured against would
-//! start passing for the wrong reason and nobody would see it.
+//! it.** `seam` and `unmet` — the two numbers that measured the two-mesh
+//! reconciliation — read exactly 0 on `cross`, `sidewalk`, `crossing` and
+//! `corner[&split=1]` at every grade, with and without houses. [`JUNCTION`]
+//! with `house:row?gap=2` on [`FLANK`] was the first thing in the corpus that
+//! stated them (`seam` 30/2150, `unmet` 2/984). Step 1 has landed since, and
+//! both read zero there by construction; see
+//! `tests::the_ground_and_the_surface_share_their_boundary`.
 //!
 //! ## And the earthwork is not the road's
 //!
@@ -122,75 +115,24 @@ mod tests {
         assert_eq!(s.num("step"), 0.0, "the field is discontinuous across a drawn edge: {s}");
     }
 
-    /// **The corpus states the seam — live, and it is a guard on the corpus
-    /// rather than on the world.**
+    /// **Step 1 — the ground and the surface share their boundary. Landed
+    /// 2026-09-27, and live.**
     ///
-    /// `seam` is how often a point of the room's outline is not a vertex of
-    /// the room's own mesh; `unmet` is how often a rim vertex of the paved
-    /// mesh has no vertex of the ground's mesh at its position. Both exist
-    /// only because `mesh` triangulates `room` and `bench::Ground`
-    /// re-triangulates `rect − room` separately, and the two are reconciled
-    /// afterwards at `poly::GRID_M` with an eight-neighbour search.
+    /// `seam` is how often an outline vertex has no copy on the paving's
+    /// side; `unmet` how many paved rim edges have nothing beyond them. Both
+    /// used to exist because `mesh` triangulated the room and `bench::Ground`
+    /// re-triangulated `rect − room` apart, and the two were reconciled at
+    /// `poly::GRID_M` with an eight-neighbour search: this specimen read
+    /// `seam` **30/2150** and `unmet` **2/984**, Montreux 4.95 % and 3.46 %.
     ///
-    /// Montreux reads 4.95 % and 3.46 %. Nothing in the corpus read anything
-    /// but zero until this combination — see the module's note for what was
-    /// tried — and it reads `seam` 30/2150, `unmet` 2/984.
-    ///
-    /// That is a thin margin, and thin is why this is live. The check below
-    /// asserts the two are zero after step 1; if the specimen drifted back to
-    /// zero on its own, that check would start passing for the wrong reason
-    /// and be counted as a guard. This one fails first and says so.
+    /// There is one mesh now (`mesh::run`), and the bench copies each of its
+    /// vertices once per surface that reaches it, so an outline vertex's
+    /// paved copy and its ground copy are the same index. Both read
+    /// **exactly** zero, which is the difference between a construction and a
+    /// repair — and why this asserts `== 0.0` and not a tolerance. (Its guard,
+    /// `the_corpus_states_the_seam`, kept the specimen stating the defect
+    /// until this landed, and went with it.)
     #[test]
-    fn the_corpus_states_the_seam() {
-        let s = bench(FLANK, JUNCTION, Some("house:row?gap=2"));
-        assert!(
-            s.num("seam") > 0.0 && s.num("unmet") > 0.0,
-            "the specimen no longer states the defect step 1 removes, so the check \
-             on it would pass for the wrong reason: {s}"
-        );
-    }
-
-    /// **Step 1 — the ground and the surface share their boundary.**
-    ///
-    /// With one arrangement there is one vertex at a shared position, so
-    /// `seam` and `unmet` are **exactly** zero rather than small — which is
-    /// the difference between a construction and a repair, and why this
-    /// asserts `== 0.0` and not a tolerance.
-    ///
-    /// Today: `seam` **30/2150**, `unmet` **2/984**, on the one specimen that
-    /// states it — which [`the_corpus_states_the_seam`] keeps honest.
-    ///
-    /// **`unmet` is one disease in three places** (plan §4.2). Of the junction
-    /// box's 928: **680** lie on the outline itself — the shared boundary,
-    /// meshed twice and subdivided differently; **200** are a free rim between
-    /// two families, where the carriageway ends and no pavement vertex is
-    /// close enough for the cross-mesh key; **48** are an unwelded twin inside
-    /// one family's own mesh. None is outside the outline. The step is the
-    /// arrangement because a repair at any one of the three leaves the other
-    /// two.
-    ///
-    /// **Five routes to it were measured and none is it** (plan §4.3):
-    /// conforming the ground's rings, widening that conform, widening the
-    /// mesher's own weld, conforming the outline, building the cut without a
-    /// boolean, and conforming both sides at once. The best of them reads
-    /// `seam` 3.41 %, `unmet` 850 and `contact` **0.00** for **32 % more
-    /// ground triangles** — an improvement, and not the zero this check
-    /// asserts. They are all repairs downstream of the boolean that re-rounds
-    /// the boundary, and the step is the arrangement upstream of it.
-    ///
-    /// **A conform pass is not the way, and it was measured rather than
-    /// argued** (plan §4.1). Snapping the ground's rings onto the room's
-    /// vertices and inserting the ones that lie on its edges took the junction
-    /// box's `unmet` 928 → 740 for 32 % more ground triangles and `contact`
-    /// 0.12 → 2.78, with `seam` unmoved — and *widening* the tolerance made
-    /// `unmet` worse at every step (740 / 746 / 774 / 842 at 0.1 mm / 1 mm /
-    /// 1 cm / 5 cm). A wider tolerance finding fewer vertices means they are
-    /// not near a cut edge at all, so no tolerance reaches them: the two are
-    /// not one boundary rounded twice but two region sets, `paving.*` against
-    /// `union_of([on_ground, walk − spanned, galleries])`. The step is one
-    /// ring set, not two reconciled.
-    #[test]
-    #[ignore = "one arrangement (plan §3.1, step 1) is not built"]
     fn the_ground_and_the_surface_share_their_boundary() {
         let s = bench(FLANK, JUNCTION, Some("house:row?gap=2"));
         assert_eq!(s.num("seam"), 0.0, "the outline is not the mesh's: {s}");

@@ -11,11 +11,11 @@
 //! 1. **One fixed float→integer grid, [`GRID_M`], for every operation.**
 //!    `i_overlay` works on an integer lattice and by default derives it from
 //!    the input's bounding box, so the same road would snap differently
-//!    depending on what it was batched with. The `_fixed_scale` entry points
-//!    take the scale explicitly, and the booleans go further and share one
-//!    adapter centred on the frame origin ([`PIN_M`]), so an integer in is
-//!    an integer out and only newly created intersection vertices round —
-//!    once. Identical input yields identical output, which is what makes
+//!    depending on what it was batched with. Every operation here — the
+//!    booleans, the slice, the buffers and the offsets — runs on one adapter
+//!    centred on the frame origin ([`PIN_M`]; the last two by way of
+//!    [`SENTINELS`], having no entry point that takes one), so an integer in
+//!    is an integer out and only newly created vertices round — once. Identical input yields identical output, which is what makes
 //!    the SVG and the GLB functions of the world alone. At 0.1 mm over a
 //!    ±16 km world the `i64` engine uses ±1.6·10⁸ of its ±9·10¹⁸ range.
 //!
@@ -361,8 +361,25 @@ pub fn buffer_line_capped(line: &[Pt], width_m: f64, round: [bool; 2]) -> Shapes
         .start_cap(cap(round[0]))
         .end_cap(cap(round[1]))
         .line_join(LineJoin::Round(ARC_STEP));
-    line.stroke_fixed_scale_as::<i64>(style, false, SCALE).unwrap_or_default()
+    let paths = [line.to_vec(), vec![SENTINELS[0]], vec![SENTINELS[1]]];
+    paths.stroke_fixed_scale_as::<i64>(style, false, SCALE).expect("the pinned rect admits GRID_M")
 }
+
+/// Two one-point paths at the corners of the pinned rect, which pin a stroke
+/// or an outline to [`overlay`]'s lattice.
+///
+/// `i_overlay` has no entry point that takes an adapter for either: both
+/// build one from the *input's* bounding box, centred on its middle, so a
+/// buffered line landed on a lattice of its own — every vertex of a plain
+/// ribbon up to 1.5e-5 m off [`GRID_M`], and a `dilate` of a shape already
+/// on it up to 5e-5 m, half a step. Every closing in the plan chain then fed
+/// the next boolean points it had to re-round, and the same piece buffered
+/// alone and buffered in a group came out on different lattices. With the
+/// sentinels in, the bounding box is `[-PIN_M, PIN_M]` about the origin, its
+/// centre is exactly zero, and the adapter is [`overlay`]'s. A one-point path
+/// strokes to nothing and a one-point contour outlines to nothing, so they
+/// add no geometry.
+const SENTINELS: [Pt; 2] = [[-PIN_M, -PIN_M], [PIN_M, PIN_M]];
 
 /// `shapes` grown by `r_m` on every side, corners arced.
 pub fn dilate(shapes: &Shapes, r_m: f64) -> Shapes {
@@ -392,7 +409,9 @@ fn offset(shapes: &Shapes, delta_m: f64, join: LineJoin<f64>) -> Shapes {
         return shapes.clone();
     }
     let style = OutlineStyle::new(delta_m).line_join(join);
-    shapes.outline_fixed_scale_as::<i64>(&style, SCALE).unwrap_or_default()
+    let mut pinned = shapes.clone();
+    pinned.extend(SENTINELS.map(|p| vec![vec![p]]));
+    pinned.outline_fixed_scale_as::<i64>(&style, SCALE).expect("the pinned rect admits GRID_M")
 }
 
 /// `shapes` with every hole under `min_m2` filled: a hole that small is a
@@ -749,6 +768,34 @@ mod tests {
                 assert!((v - k * GRID_M).abs() < 1e-9, "{v}");
             }
         }
+    }
+
+    /// The test above passes by accident of its line: its bounding box is
+    /// centred on (0, 15), which is a lattice point, so even an adapter
+    /// built from the input's own box lands on [`GRID_M`]. A line whose box
+    /// is centred anywhere else did not — every vertex of this buffer read up
+    /// to 1.5e-5 m off the grid, and its dilation 5e-5 m — until the stroke
+    /// and the outline were pinned by [`SENTINELS`].
+    #[test]
+    fn buffers_and_offsets_land_on_the_booleans_lattice() {
+        let on_grid = |shapes: &Shapes| {
+            shapes.iter().flatten().flatten().flatten().all(|v| (v - (v / GRID_M).round() * GRID_M).abs() < 1e-9)
+        };
+        let line = [[123.45678, 987.65432], [240.12345, 1011.98765]];
+        let band = buffer_line_capped(&line, 5.5, [true, false]);
+        assert!(!band.is_empty() && on_grid(&band), "the stroke is off the lattice");
+        for (name, grown) in [
+            ("dilate", dilate(&band, 1.37)),
+            ("dilate_sharp", dilate_sharp(&band, 1.37)),
+            ("erode", erode(&band, 0.77)),
+        ] {
+            assert!(!grown.is_empty() && on_grid(&grown), "{name} is off the lattice");
+        }
+        // And a sentinel is no geometry: the band's area is the stroke's.
+        // (The round cap is a polygon at `ARC_STEP`, a few hundredths short.)
+        let len = (line[1][0] - line[0][0]).hypot(line[1][1] - line[0][1]);
+        let expected = 5.5 * len + PI * 2.75f64.powi(2) / 2.0;
+        assert!((area(&band) - expected).abs() < 0.2, "{} against {expected}", area(&band));
     }
 
     #[test]

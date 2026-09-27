@@ -140,6 +140,24 @@ impl Arrangement {
         self.faces.iter().filter(move |f| f.material == material)
     }
 
+    /// Face `i` of both layers: the partition's faces are `0..faces.len()`,
+    /// and the decks over them follow — the numbering [`crate::world::Mesh`]
+    /// tags its triangles with.
+    pub fn face(&self, i: u32) -> &Face {
+        let i = i as usize;
+        self.faces.get(i).unwrap_or_else(|| &self.decks[i - self.faces.len()])
+    }
+
+    /// Whether face `i` is of the partition rather than a deck over it.
+    pub fn in_partition(&self, i: u32) -> bool {
+        (i as usize) < self.faces.len()
+    }
+
+    /// Every face of both layers, in [`Arrangement::face`]'s order.
+    pub fn all(&self) -> impl Iterator<Item = &Face> {
+        self.faces.iter().chain(&self.decks)
+    }
+
     /// The same over both layers: every face of `material` a mesh must
     /// draw, the ground's and the decks' over it.
     pub fn layered(&self, material: Material) -> impl Iterator<Item = &Face> {
@@ -230,43 +248,6 @@ impl Arrangement {
             (x.a[0], x.a[1], x.b[0], x.b[1]).partial_cmp(&(y.a[0], y.a[1], y.b[0], y.b[1])).unwrap()
         });
         out
-    }
-}
-
-/// The whole rect as **one mesh**: every face triangulated in a single pass,
-/// so the materials share their boundary vertices by index and not merely by
-/// position.
-///
-/// §3.1's "one mesh" and the thing §3.2's solve needs — it wants one vertex
-/// set to relax over, and today the ground and each material are separate
-/// `Tri`s that meet only at coincident positions. `of_face` is the face each
-/// triangle came from, so a material is a filter over the triangles rather
-/// than a mesh of its own.
-///
-/// **A vertex here is one height, and some vertices need two.** Where a kerb
-/// splits, the road and the pavement answer 0.12 m apart and one vertex
-/// cannot carry both (§3.2 against §3.3). `split_vertices` in the step's line
-/// counts them — 331 against ~85 000 on the junction with houses — and
-/// duplicating them is what a caller must do before lifting. This function
-/// does not: it is the arrangement meshed, and what heights go on it is the
-/// bench's.
-pub struct OneMesh {
-    pub tri: crate::world::Tri,
-    /// The face each triangle came from, indexing [`Arrangement::faces`].
-    pub of_face: Vec<u32>,
-    pub stats: crate::mesh::Stats,
-}
-
-impl Arrangement {
-    /// Triangulates every face at once over `grid`, each vertex at `height`.
-    pub fn mesh(
-        &self,
-        grid: &crate::grid::Grid,
-        height: &dyn Fn(poly::Pt) -> f64,
-    ) -> OneMesh {
-        let shapes: Shapes = self.faces.iter().map(|f| f.shape.clone()).collect();
-        let (tri, of_face, stats) = crate::mesh::tagged(&shapes, grid, height);
-        OneMesh { tri, of_face, stats }
     }
 }
 
@@ -730,42 +711,6 @@ mod tests {
             assert!(d.spanned, "a deck face is over a span");
             let probe = poly::inside(&d.shape).expect("a deck face has an inside");
             assert!(poly::contains(&hole, probe), "the street under the deck does not cut the ground: {s}");
-        }
-    }
-
-    /// **One mesh: the materials share their vertices by index.**
-    ///
-    /// The property §3.2 needs and the separate `Tri`s never had. A kerb
-    /// vertex is one entry in one array, reached from a carriageway triangle
-    /// and from a pavement triangle alike — so a solve over this graph has
-    /// one unknown there, not two that must find each other at the kernel's
-    /// grid afterwards.
-    #[test]
-    fn one_mesh_shares_its_vertices_between_materials() {
-        let (w, _) = built("flat?h=400", "net:sidewalk?d=6", None, 10.0, &upto(Step::Arrangement));
-        let a = w.arrangement.as_ref().expect("built");
-        let terrain = w.terrain.as_ref().expect("built");
-        let m = a.mesh(&terrain.grid, &|p| crate::terrain::height_at(terrain, p[0], p[1]));
-        assert!(!m.tri.indices.is_empty(), "the rect meshed to nothing");
-        assert_eq!(m.of_face.len(), m.tri.indices.len() / 3, "one tag per triangle");
-
-        // The materials each triangle at a vertex belongs to.
-        let mut at: std::collections::HashMap<u32, std::collections::BTreeSet<&str>> =
-            Default::default();
-        for (t, face) in m.tri.indices.chunks_exact(3).zip(&m.of_face) {
-            let name = a.faces[*face as usize].material.name();
-            for &v in t {
-                at.entry(v).or_default().insert(name);
-            }
-        }
-        let shared = at.values().filter(|s| s.len() > 1).count();
-        assert!(shared > 0, "no vertex is reached from two materials: not one mesh");
-        // And the tags are real: every material of the arrangement that has
-        // a face is reachable through the triangles.
-        let meshed: std::collections::BTreeSet<&str> =
-            m.of_face.iter().map(|f| a.faces[*f as usize].material.name()).collect();
-        for want in ["ground", "carriageway", "pavement"] {
-            assert!(meshed.contains(want), "{want} has no triangles: {meshed:?}");
         }
     }
 

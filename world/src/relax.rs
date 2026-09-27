@@ -63,13 +63,6 @@ pub enum Pin {
 /// keeps this honest while it is chosen rather than measured.
 pub const WEIGHT: f64 = 1.0;
 
-/// [`WEIGHT`], or whatever `ARPENTRY_WEIGHT` says — the sweep hook, because
-/// this is the solve's one free parameter and it has to be fitted to
-/// something rather than chosen.
-pub fn weight() -> f64 {
-    std::env::var("ARPENTRY_WEIGHT").ok().and_then(|s| s.parse().ok()).unwrap_or(WEIGHT)
-}
-
 /// Slack on the residual, in metres, at which conjugate gradients stop.
 ///
 /// Far under anything geometric on purpose: it is not a tolerance on the

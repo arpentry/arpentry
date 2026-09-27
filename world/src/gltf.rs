@@ -100,11 +100,19 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
     // The room at its solved height once the bench has run; on the raw
     // ground before it. One pair of nodes either way, so a viewer opens
     // the same file whichever step the run stopped after.
+    let unlifted = match (&world.bench, &world.mesh, &world.arrangement) {
+        (None, Some(m), Some(a)) => {
+            let of = |x: crate::arrangement::Material| crate::mesh::view(m, a, |f| f.material == x);
+            use crate::arrangement::Material;
+            Some((of(Material::Carriageway), of(Material::Pavement), of(Material::Ballast)))
+        }
+        _ => None,
+    };
     if let Some((c, p, b)) = world
         .bench
         .as_ref()
         .map(|b| (&b.carriageway, &b.pavement, &b.ballast))
-        .or_else(|| world.mesh.as_ref().map(|m| (&m.carriageway, &m.pavement, &m.ballast)))
+        .or(unlifted.as_ref().map(|(c, p, b)| (c, p, b)))
     {
         doc.triangles("carriageway", c, linear(palette::CARRIAGEWAY));
         doc.triangles("pavement", p, linear(palette::PAVEMENT));

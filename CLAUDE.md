@@ -319,11 +319,11 @@ cargo build --release --manifest-path world/Cargo.toml
 ```
 
 **The GLB carries triangles only unless `--outlines` asks otherwise.** The
-world is `ground`, `wall`, `kerb`, `carriageway`, `pavement`, `ballast`,
-`rail` (the face between ballast and its neighbours), `roadway` (a
-footbridge's paving, and nothing else's — a road's or a railway's span is
-part of `carriageway` or `ballast`), `track`,
-`deck`, `bore`, `pier`, `building` and `roof`, and eight layers are construction lines: the draped centrelines,
+world is `ground`, `wall`, `kerb` (every edge face of the edge rule, the
+ballast's included), `carriageway`, `pavement`, `ballast`, `roadway` (a
+bore's floor and a footbridge's paving — a road's or a railway's deck is
+part of `carriageway` or `ballast`), `track` (a railway bore's floor),
+`deck`, `bore`, `building` and `roof`, and eight layers are construction lines: the draped centrelines,
 the solved profiles, and the ribbon, surface, kerb, fillet, room and facade
 contours. Those eight are glTF `LINES`, and **a viewer is not obliged to
 draw line topology**: Apple's (Preview, Quick Look, anything on that
@@ -370,7 +370,8 @@ question the plan opened with; §1.2 is what it found.
 `arrangement`, `mesh`, `bench`, `structure`, `building`.
 
 The `arrangement` step is **step 1 of
-`data/plans/one-ground-2026-09-16.md`, landed and not yet wired**: it cuts
+`data/plans/one-ground-2026-09-16.md`, landed and wired** — the mesh step
+triangulates its faces as one mesh (see "The one mesh is wired" below): it cuts
 the rect into faces along every material boundary at once
 (`poly::slice`, one pass) and tags each face by a single interior point
 (`poly::inside`), so the ground and the paving beside it share their
@@ -527,12 +528,9 @@ field — which the nearest-axis rule never managed at a junction. `WEIGHT` is
 chosen rather than measured: it sets a *decay* where the old constant set a
 *slope*, and the two do not convert.
 
-Wiring it needs one mesh over the whole rect — the ground and each material
-are separate `Tri`s today, sharing boundary positions but not indices — and
-that is also what unblocks step 2's remaining 70 %. `mesh::triangulate`
-already welds by position across everything in one call, so that part is
-passing every face at once rather than per material; what it lacks is
-per-triangle provenance.
+Wiring it needed one mesh over the whole rect, and that has landed (below):
+the relax can now be given the one mesh's own vertex graph, which is also
+what unblocks step 2's remaining 70 %.
 
 **`wall` can mostly retire into the edge rule, but not the portals.** Given
 the ground mesh as its height source `edge_faces` draws the paving|ground
@@ -557,22 +555,57 @@ geometry), so all of it went back. The swap needs the rule to read its rails
 which is what meshing once gives, so 3b comes first. Not committed: the
 ground is still `wall`'s and the two do not double-draw.
 
-**`mesh seam` is invalidated by the arrangement — the metric, not the
-geometry.** It reads `|one-sided edge length − perimeter|`, and it was
-designed for a sheet that is one region: 8.4e-10 m on the loop box. The
-arrangement splits a sheet into faces (a span face beside a ground face, the
-walk's near beside its far), and adjacent faces of one sheet share an edge
-that is properly two-sided in the mesh — no crack — while the perimeter term
-counts it once per face. So `seam ≈ 2 ×` the internal shared length: **22 m**
-on a gorge specimen whose sheet holds a ground face and a span face, and
-**2.8e3** on the loop box against the 8.4e-10 recorded here. Nothing is
-cracked; the check has to measure the *outer* boundary of a face group before
-it means anything again, and until it does it gates nothing.
+**The one mesh is wired (2026-09-27).** The `mesh` step triangulates every
+face of the arrangement, both layers, in one `mesh::tagged` call, so the
+paving and the ground share every boundary vertex **by index**; `Mesh` is
+that one `Tri` and the face each triangle came from, and `walk_split` and
+the per-vertex sheet arrays are gone. The bench copies each vertex once per
+surface that reaches it (`bench::Copies`: the ground, each carriageway and
+ballast sheet, the near and far pavement), lifts the copies by the rules it
+always had, and reads every seam by index: the outline is the one mesh's
+own edges between a face that cuts and one that does not, `Ground` is built
+from those edges, and `wall` and the edge rule draw one quad per mesh edge.
+The eight-cell position lookup, `meet`, `cut_seam`, `rim`, `dense` and the
+second ground triangulation are gone. On the loop box `seam` **3.70 % → 0**,
+`unmet` **1.28 % → 42 edges of 884 k**, `contact` **2.85 → 0.00**; every
+synthetic specimen reads all three at exactly zero, and
+`ground::tests::the_ground_and_the_surface_share_their_boundary` is live.
+The paved heights did not move — `lifted`/`battered`/`draped`/`cut`/`fill`/
+`step`/`worst` were identical on every specimen at the first switch-over.
 
-**The one mesh is `Arrangement::mesh`** (`mesh::tagged` = `triangulate` plus
-the region each triangle came from): every face triangulated in one pass, so
-the materials share boundary vertices **by index** rather than by position.
-Nothing consumes it yet.
+**Meshing the faces together found cracks that meshing them apart hid**,
+and the mesh step's `crack` (the partition's one-sided edges off the rect's
+border — replacing the old `seam`, which the arrangement had invalidated)
+is how. Three causes, each fixed where it lives:
+
+- **Rings were cleaned one at a time** (`mesh::cleaned`): a vertex that is a
+  corner of one face and collinear in its neighbour went from one ring only.
+  `mesh::cleaned_together` decides per vertex over every ring that carries
+  it, first dropping any face of no area (a slice needle `A, B, C, B` must not
+  veto its neighbours) and collapsing a ring's doubled-back `A, B, A`. That
+  alone took the Montreux junction box from **13 km** of crack to 75 m.
+- **A degenerate ear left a T-junction** (`mesh::close_t_junctions`):
+  `earcutr` bridges a hole along the line its edge runs on and cuts a flat
+  ear, and the far-side triangle then skips the ear's middle corner.
+- **Twin corners a grid step apart** (`mesh::weld_open`): where the slice
+  leaves a needle, two neighbours start one edge from two corners 2e-4 m
+  apart and cut it at the lattice ~1e-5 m apart all along. Merged at
+  `GRID_M`, **open edges only**.
+
+What is left — 200 m of crack on the loop box, 15 m on the junction box, at
+four or five junctions each — is the arrangement's own degeneracy: sub-mm
+needle faces where cut lines nearly coincide (`dangling` 142, `unprobed`
+1 813). No mesher can recover a boundary the two sides never shared; that is
+the plan chain's to stop producing (review step 5). A CDT would remove the
+degenerate-ear case outright, and `spade` is already the server's.
+
+**`kerb_m2` rose 10 850 → 15 023 on the loop box**, and it is closure that was
+missing rather than curtains: 8 017 m² of kerbs (0.12 m over ~67 km),
+6 319 m² between the near and far pavement — the designed retaining face
+where the walk past the room's reach drapes — and 40 m² between two
+carriageway sheets. The old rule read both sides by position and dropped any
+quad with a missed end. The edge rule now reports `kerb_max` (the tallest
+face) and `sheet_m2` so a curtain has a number to show up in.
 
 **And the solve is measured against the case-function it would replace.**
 `bench` pins that mesh's paved vertices at the lift's heights, relaxes, and
@@ -1018,16 +1051,16 @@ one terrain triangle and, with its vertices at `height_at`, on the ground
 to the ulp — the drape guarantee for areas. The bench step then moves
 them off it; on a flat ground the two stay coplanar and z-fight in any
 3D viewer, so hide the terrain to see them.
-Its summary line: `lost_m2` (region area the triangles miss), `off_ground`
-(the largest height a triangle's centroid stands off the terrain),
-`seam` (the mesh's one-sided edge length less the regions' perimeter: a
-crack or an overlap shows here, and it reads 8.4e-10 m on the box),
-`washed`/`lossy` (regions the ear clipper misread; a washed one was read
-right from the kernel's union of it), `slivers`, `welded`. The rings are
-cleaned at the kernel's lattice (`COLLINEAR_M`, 0.1 mm) before clipping:
-the kernel leaves straight edges zigzagging by a few hundredths of a
-millimetre and spikes a lattice cell wide, and the clipper turns both into
-T-junctions. The plan view draws the wireframe in windows under 100 m.
+Its summary line: `triangles`/`vertices` and the triangles per material,
+`lost_m2` (face area the triangles miss), `off_ground` (the largest height a
+triangle's centroid stands off the terrain), `washed`/`lossy` (faces the ear
+clipper misread; a washed one was read right from the kernel's union of it),
+`slivers`, `welded`, `joined` and `junctions` (the two crack repairs above),
+and `crack`, which must read 0. The rings are cleaned together at the
+kernel's lattice (`COLLINEAR_M`, 0.1 mm) before clipping: the kernel leaves
+straight edges zigzagging by a few hundredths of a millimetre and spikes a
+lattice cell wide, and the clipper turns both into T-junctions. The plan view
+draws the wireframe in windows under 100 m.
 
 The `bench` step lifts the room off the ground onto the height the
 profile solved: a point of the room takes the profile height at the
@@ -1201,60 +1234,20 @@ instead, so a swept wall came out smeared and read as a defect it was not.
 **It was not the whole of it**: with flat normals the sawtooth is still
 there, which is how we know it is geometry.
 
-**The seam is read, not recomputed, and it is read where both meshes cut
-their own edges.** Every outline vertex is a vertex of the room's mesh, so
-the ground takes its height from there; but a kerb may run fifty metres
-between two vertices of its ring while the profile under it does not run
-straight at all, so the ground samples the room's height — and the natural
-ground — **at every lattice crossing along the segment**, which is where
-both meshes put a vertex anyway. Read at the ring's own corners instead,
-the ground interpolated the room's height straight across those fifty
-metres and parted company with it in between: on one 400 m road over a
-60 m hill that is 60 m of gap and 24 000 m² of it, and `contact` could not
-see it because it was read at those same two corners.
-
-**Two of this step's own checks were saying nothing, and now say it.**
-`seam` was declared, reported and never incremented — it read `0/…`
-because nothing ever counted a miss; it now reads 12 % over the loop box,
-which is how often a point of the outline is not a vertex of the room's
-mesh. And `contact` compared the ground's height at a point with the room's
-at the same point, both from the same closure, which is circular: it is now
-**mesh against mesh** — at every vertex of the room's rim that is not a
-kerb, does the ground's mesh have a vertex there (`unmet`), and where it
-does, how far apart do they stand away from the walls (`contact`)? On the
-loop box, 14.0 s: `cut` 9.8 m, `fill` 12.4 m, `step` 0.40 %, `ground`
-9.6 M triangles, `seam` 3.2 %, `unmet` 0.93 %, `contact` 0.12 m (a kerb's
-rise, and the kerb's own face closes it), `walled` 1.14 %, `wall` 12.2 m,
-`wall_m2` 20 171, `kerb_m2` 7 872, `touched` 8.8 %, `off` 17 m.
-
-**Two meshes are the same one at the kernel's grid, not at the weld.**
-`unmet` first read 16.65 % and the cause was not the meshing at all: a
-mesh welds its own vertices at `mesh::WELD_M`, a micron, and within one
-mesh that is right, while the regions it meshes come out of the polygon
-kernel snapped to `poly::GRID_M`, a tenth of a millimetre and a hundred
-times the weld. Cross-mesh lookups key at the kernel's grid and ask the
-eight cells around as well: `unmet` 16.65 % → **0.93 %**, `seam` 12.2 % →
-3.2 %, and `kerb_m2` rose 44 % as the kerb faces that had been tapering to
-nothing found their pavement.
-
-**But the story told about *why* was wrong, and it was wrong in the plan
-too.** It read: "a point that has been through one more boolean than its
-neighbour lands up to half a grid away and never welds to it." It cannot.
-`poly::overlay` pins its adapter, so every output point is an exact
-multiple of `GRID_M` and feeding one back in maps to the same integer —
-**snapping is idempotent, and re-rounding is the identity**
-(`poly::tests::a_boolean_over_a_snapped_operand_is_idempotent` asserts it;
-an extra union on each operand moves not one bit). What actually makes two
-boundaries is **two different regions**: `mesh::by_sheet` meshes each sheet
-on its own, while the ground is cut from `union_all(sheets.shapes()) −
-spanned`, and a union dissolves the edge where two pieces touch and puts
-vertices where they crossed. The separately meshed pieces keep that edge
-and have no such vertices
-(`poly::tests::a_union_dissolves_the_edge_the_mesher_kept`). The
-eight-cell search is therefore compensating for something that was never a
-rounding error, which is worth knowing before it is retired: no care with
-the lattice reconciles two different regions, and only one arrangement
-does.
+**The seam is an index now, and its history is worth one paragraph.** The
+ground used to be triangulated apart from the room and take the room's
+height at the outline by a lookup keyed at the kernel's grid, with an
+eight-cell search for keys a rounding had split; `seam` and `unmet` were that
+lookup's misses and `contact` its disagreements. The long-standing
+explanation — "a point through one more boolean lands half a grid away" — was
+wrong for the booleans, which pin their adapter
+(`poly::tests::a_boolean_over_a_snapped_operand_is_idempotent`): the misses
+came from **two different regions**, `mesh::by_sheet`'s pieces against the
+union the ground was cut from, and no care with the lattice reconciles those.
+It was *right* for the buffers and offsets, though, which were not pinned
+until 2026-09-27 (`poly::SENTINELS`: a plain ribbon read up to 1.5e-5 m off
+the grid, a `dilate` 5e-5 m). Both are gone now: one arrangement, one mesh,
+copies by index.
 
 The `structure` step builds what the solved profile implies, and nothing
 else: a mapped bridge whose chord never left the ground gets no deck.
@@ -1264,9 +1257,10 @@ handover at an abutment is a place inside one surface rather than a
 boundary between two. **The solid is what is underneath**: over a deck run
 a soffit `DECK_THICKNESS_M` (1.5 m) below the roadway with its sides and
 end faces, over a bore run a crown `TUNNEL_HEIGHT_M` (5 m) above it with
-its walls, open at the portals. What is still swept here is the *walk* —
-`Field` is built from `Profile`s and a footbridge is not one, so a walk
-span has no field to be lifted by and no sheet to join. A **pedestrian span is fitted, not solved**
+its walls, open at the portals. What is still paved here is a bore's
+floor (a sheet's field would read the road above a hairpin's own tunnel)
+and the *walk* — `Field` is built from `Profile`s and a footbridge is not
+one, so a walk span has no field to be lifted by and no sheet to join. A **pedestrian span is fitted, not solved**
 (most of the box's spans are): a chord between the ground at its own two
 ends, no ceiling and no box, and a footbridge's own `WALK_DECK_M` (0.4 m)
 deck rather than a road bridge's. **Unless the road already carries it** —
@@ -1275,40 +1269,20 @@ road, so a walk span within the room's reach of a road's span all along is
 *carried*: its height is that road's plus the kerb's rise and it builds no
 solid.
 
-**The underside of a deck is the soffit where it clears the ground and the
-ground itself where it does not.** That one rule is the abutment block, and
-nothing was added for it: a slab `DECK_THICKNESS_M` thick has no soffit out
-of the ground until its roadway is that far over it, so every run begins
-and ends with a stretch whose slab would otherwise lie *inside* the hill.
-Seating the underside there gives a deck the block it lands on, and gives a
-run that never clears at all — 23 of the box's 65 — the embankment it
-always was, which nothing else builds, since the surface steps read the
-ground pieces only. The ground is read across the section, at the axis and
-both edges, so the block neither buries its middle in a crown nor floats
-its low side on a cross-slope. **Piers** stand a bay of `PIER_SPACING_M`
-(45 m) apart under every run whose soffit clears the ground by `PIER_MIN_M`
-(6 m): a `PIER_M` (2.5 m) square column from the soffit down to the ground
-under its own foot, the bays divided evenly so the last is not a stub. A
-foot whose square meets the carriageway is **dropped and counted, never
-moved** — moving it is a design and this is a prior — and the bay it leaves
-unsupported is the honest picture of what the model knows.
+**There is no abutment block and no pier** — both went in `e8a5b54`. A deck
+is a slab of constant thickness full length, so where its roadway runs
+closer to the ground than `DECK_THICKNESS_M` the slab passes into the hill,
+and `clear` (the least a slab clears the ground) goes negative there: it is
+a guard that currently fails, not a number that reads 0.
 
 Its summary line: `spans`, `fitted`, `carried`, `decks`, `bores`,
-`roadway_m2`, `clear` (the least a slab clears the ground, a guard: ≥ 0),
-`buried` (solid under the ground: 0 by construction), `blocks`/`seat`
-(stations seated on the ground, and the deepest such seat), `seated` (runs
-that got a block), `piers`/`pier`/`skipped`, `cover`/`open` (the crown
-against the ground between the portals), `grounded` (runs seated end to
-end) and `abutment` (a span's end height against the ground piece it lands
-on: 0 on the box, by construction). On the loop box: 174 spans, 116 fitted,
-19 carried, 65 decks, 29 bores, `abutment` 0.000, `clear` 0.01, `buried` 0,
-`blocks` 64/1381 with `seat` 1.0 — which is `DECK_THICKNESS_M` less
-`STRUCTURE_MIN_M` exactly, the deepest a block can ever need to rise — and
-75 piers, `skipped` 4. **The tallest pier is 81.3 m and the median 49 m,
-and that is the profile's `dangling` chord made visible**: the Viaduc de
-Chillon leaves the box on its deck, step 9 runs it level to its one anchor,
-and the flank falls away under a deck that does not. A pier is a look, and
-this is what a look is for.
+`galleries`, `rail` (decks/bores), `span_m2`, `bed_m2`, `clear`,
+`grounded` (runs that never clear the ground), `cover`/`open` (the crown
+against the ground between the portals), `covered`, `mouths`/`walk_mouths`
+and `abutment` (a span's end height against the ground piece it lands on).
+On the loop box (2026-09-27): 214 spans, 100 fitted, 19 carried, 95 decks,
+44 bores, 6 galleries, `rail` 30/18, `clear` −0.99, `grounded` 15,
+`covered` 303.0 m, `mouths` 43/58, `abutment` 0.000.
 
 **A portal is where the tube goes into the hill, and the ground in front of
 it is a cutting.** Between the line's crossing (where the road goes under
