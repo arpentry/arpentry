@@ -170,7 +170,7 @@ pub const PAVEMENT_MIN_M: f64 = kerb::WALK_MIN_M;
 /// region's width where it is thin, and nothing twice the minimum wide by
 /// that measure has ever failed the erosion, so only the suspicious ones
 /// cost a boolean.
-fn wide_enough(region: &poly::Shape) -> bool {
+pub(crate) fn wide_enough(region: &poly::Shape) -> bool {
     let area = poly::area(std::slice::from_ref(region));
     let perimeter: f64 = region
         .iter()

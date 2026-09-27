@@ -250,7 +250,34 @@ pub fn run(
         }
         parts.extend(poly::buffer_line_capped(&between(&e.pts, a, b), e.width_m, [false, false]));
     }
-    let carriageway = facade.asphalt(&poly::union_all(&parts));
+    // **A hole in the asphalt that no pavement fits in is asphalt.** The
+    // remnant of a small island the returns did not quite close, a narrow
+    // fork closed at both ends: `room` paves a hole as a traffic island
+    // only if it can hold the narrowest pavement ([`crate::room::wide_enough`],
+    // the same test), so anything thinner was left bare ground between two
+    // carriageways. Filled before the facade cut, so a building standing in
+    // it still wins. Only the hole goes; no other boundary moves — a closing
+    // over the whole surface did the same and re-rounded every kerb in the
+    // box (mesh slivers 71 k → 110 k, crack 8 → 93 m).
+    let mut filled = 0usize;
+    let open: Shapes = poly::union_all(&parts)
+        .into_iter()
+        .map(|shape| {
+            let mut rings = shape.into_iter();
+            let outer = rings.next().expect("a region has an outer ring");
+            let mut kept = vec![outer];
+            for hole in rings {
+                let island = vec![poly::oriented(hole.clone(), true)];
+                if crate::room::wide_enough(&island) {
+                    kept.push(hole);
+                } else {
+                    filled += 1;
+                }
+            }
+            kept
+        })
+        .collect();
+    let carriageway = facade.asphalt(&open);
     // The pavement, laid back outside wherever the asphalt grew into it —
     // `fillet`'s rule, read off the result rather than off what a closing
     // added: the walk the kerb step left was already cut by the old asphalt,
@@ -329,6 +356,7 @@ pub fn run(
         .with("landed", tally.landed)
 
         .with_m2("junction_m2", junctions.iter().map(|j| poly::area(&j.shape)).sum::<f64>() + 0.0)
+        .with("islands", filled)
         .with_regions("carriageway", carriageway)
         .with_m2("pavement_m2", poly::area(&out.walk))
         .with_share("kerb_gap", gap_n, gap_of)
