@@ -251,32 +251,71 @@ Three defects the walk exposed, fixed where they live:
 left:
 
 1. **Narrow forks and small islands are paved — decided (2026-09-27).**
-   The explicit returns pave a fork up to the return's reach (3 radii along
-   either kerb) and an island's corners; what is left of an island `room`
-   paves as a traffic island if it can hold the narrowest pavement, and
-   `legs` now fills every hole of the carriageway that cannot
-   (`room::wide_enough`, shared) — `98cae84`: holes 188 → 156 (fillet 160),
-   `loose` 157 → 144 (fillet 145), `kerb_gap` 43 → 39, `wall_gap` 64 → 55.
-   A closing by half the pavement width over the whole surface was tried
-   first and reverted: it re-rounded every kerb (mesh slivers 71 k → 110 k,
-   crack 8 → 93 m). **Still open: how far a fork between two long parallel
-   roads is paved.** At a garage court on the loop box (−2675, 1280) three
-   service lanes run 3 m apart; the explicit returns pave each fork 9–15 m
-   in, the fillet's overlapping wedges pave further, and the ground left
-   between the lanes is most of the new `wall_gap` there. Past a reach, a
-   gore between parallel roads is either a paved court or a median, and the
-   geometry alone cannot tell them apart.
-2. **`kerb_gap` is partly the measure's**: `kerb::attached` placed its
-   stations on the kerb before either construction ran, and where the
-   explicit return is smaller than the closing's they sit in a crescent
-   neither surface paves.
-3. **`fillet`'s main closing crosses grade separations** at viaduct
-   abutments; those wedges read as `missing` though they are its defect.
-4. **Galleries 20 → 25, decks 49 → 47, `unmet` 0 → 2** have not been read
-   at a site; they moved with the deck junctions and have not moved since.
-5. A dozen sub-square-metre fragments remain, most at the bbox edge (stubs
-   the clip left) and at hairpin bends inside a mouth (a mitred outer kerb
-   where the ribbon has a round join).
+   The returns pave a fork up to their reach (3 radii along either kerb)
+   and an island's corners; `room` paves what is left of an island as a
+   traffic island if it can hold the narrowest pavement, and `legs` fills
+   every hole of the carriageway that cannot (`room::wide_enough`, shared;
+   `98cae84`). A closing by half the pavement width over the whole surface
+   was tried first and reverted: it re-rounded every kerb (mesh slivers
+   71 k → 110 k, crack 8 → 93 m).
+
+**Then, 2026-09-28, the open items:**
+
+- **The pavement follows the kerb inward** (`3ae8f1f`): where the explicit
+  kerb stands inside the old one, what the old asphalt covered within the
+  narrowest pavement of the walk is the walk's, lapped by a centimetre so
+  it joins. `kerb_gap` 39 → 30.
+- **A junction is one region** (`6265611`): where its ring crosses itself
+  the union handed back lobes of a few square centimetres, or three
+  coincident points — asphalt no piece claims. `orphan` 13 → 4.
+- **`fillet`'s closing across grade separations is not fixed in `fillet`.**
+  Run per group (`partition::groups`), it stopped crossing grade
+  separations but also lost the returns at ends that land on a road with
+  no shared vertex — different groups — and `kerb_gap` rose 29 → 40.
+  Reverted: telling the two apart is what `legs` does, and wiring it is the
+  fix.
+- **Gores between parallel minor roads were tried and reverted.** Paved
+  past the return while narrower than the narrower road, stopped at walks
+  and buildings: `loose` 145 → 167 (97 → 145 m²), `orphan` 13 → 15, holes
+  156 → 173, and `wall_gap` did not move — the garage court's strips lie
+  between lanes of *different* junctions, which a gore at one node does
+  not reach. The fork rule stays: paved to the return's reach.
+- **Decks 49 → 45 and galleries 20 → 25 are face counts, not structures.**
+  `deck_m2` falls 22 m², which is the fillet's ground asphalt under decks —
+  its defect, which the explicit construction does not have; `spanned`
+  and gallery faces are the same area cut into more pieces.
+- **`unmet` 2** is one 1.2 m open mesh edge where a building corner cuts the
+  explicit carriageway (loop box 837, 1371): a residual crack, while the
+  box's total `crack` falls 21 → 8.4 m.
+
+**The A/B at `6265611`**, loop box, `room` fed the explicit surface:
+
+| | fillet | legs |
+|---|---|---|
+| `scraps` | 895 (268.9 m²) | 661 (265.8 m²) |
+| `loose` | 145 (110.1 m²) | 142 (92.0 m²) |
+| `unprobed` | 1 813 | 1 632 |
+| `kerb_gap` | 29 | 27 |
+| `wall_gap` | 28 | 35 |
+| `orphan` | 7 | 4 |
+| carriageway regions/holes | 60 / 160 | 64 / 155 |
+| mesh `crack` | 21 m | 8.4 m |
+| mesh `slivers` | 70 096 | 71 274 |
+| `unmet` | 0 | 2 |
+| `wall_m2` / `kerb_m2` / `split_m2` | 10 886 / 32 715 / 19 550 | 10 225 / 31 393 / 18 240 |
+
+What is left, all read at a site:
+
+1. **`wall_gap` 35 against 28** is three sites; the explicit surface also
+   clears 16 of the fillet's own. The garage court (−2675, 1280): bare
+   strips between lanes of different junctions, which is the parallel-road
+   question. Two parallel carriageways converging into one without a shared
+   vertex (308.5, −1122): no node, so no junction, and a thin wedge of
+   ground stays between them — the converging cousin of a landed end. And a
+   span leaving a junction (−643, 425): the stretch before the deck is the
+   span's footprint, paved by `sheet`, and the room's wall probe runs before
+   `sheet`.
+2. **Mesh slivers +1.7 %.** Not read yet.
 
 ## After the first slice, in order
 
