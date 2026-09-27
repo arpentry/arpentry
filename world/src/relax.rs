@@ -1,5 +1,13 @@
 //! The solve: one height per vertex, from one linear system.
 //!
+//! **Not called by the pipeline.** Plan §3.2's solve, built and measured
+//! against the bench's case functions (`relax_vs_cases`, now retired). The
+//! ground went the same way in residual form but with a *slope* rather than
+//! a decay — [`crate::bench::Ground`]: the residual falls to nothing at the
+//! batter's slope, so the constant keeps its engineering meaning and the
+//! ground always meets the terrain within one face's run. This module stays
+//! for the pavement between terraces, which is the solve's next candidate.
+//!
 //! §3.2 of `data/plans/one-ground-2026-09-16.md`. The ground's height is a
 //! case-function today — `Foot`, `Field::joined`, `Ground::at`, a batter, a
 //! fade at a junction, a taper at a field limit, a handover at an abutment —

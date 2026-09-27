@@ -509,7 +509,8 @@ the arrangement cut where the height field steps (§3.2 before §3.3). The
 one mesh gave a cheaper route: declare the step on the mesh's own edges.
 See "Step 2 is built" below.
 
-**The solve is `world/src/relax.rs`, built and not wired** (plan step 3a).
+**The solve is `world/src/relax.rs`, built and not wired** (plan step 3a) —
+and the ground went the residual way without it; see "Step 3 is built" below.
 §3.2's energy `Σ w(z−dem)² + Σ‖∇z−∇dem‖²` is, in terms of the residual
 `e = z − dem`, exactly `eᵀ(W + L)e` — a damped Laplacian on the residual with
 `e` pinned at the paved vertices. So **ground no pin reaches is the DEM to the
@@ -648,16 +649,41 @@ is the model's honest answer to its case functions; whether a pavement
 between two terraces should instead be a ramp is the relax's question
 (step 3), and `split_m2` is the number that will say what it changes.
 
-**And the solve is measured against the case-function it would replace.**
-`bench` pins that mesh's paved vertices at the lift's heights, relaxes, and
-reports `relax_vs_cases` — p50/p90/max over the free vertices. **p50 and p90
-are 0.00 on every specimen**, which is §3.2's prediction holding: `e = 0`
-away from every pin, so both fields are the DEM over the bulk and the swap
-cannot move it. The maxima are where the cases bite — 1.70 m on a ramp,
-3.00 on the cliff, 10.38 at the junction, 12.58 in the gorge — and the
-cliff's 3.00 is `MAX_BENCH_FACE_M` to the centimetre, the wall threshold the
-relax has no equivalent of. 0.25–0.32 s for the bench step at 73–86 k
-vertices, CG included.
+**Step 3 is built (2026-09-27), and it is not the relax.** The relax sets a
+*decay rate*, so it has no batter slope to keep: a 10 m fill falls away at
+whatever the weight makes of it (`relax_vs_cases` max read 49 m on the loop
+box). `bench::Ground` takes §3.2's residual `e = z − dem` and gives it a
+slope instead: pinned at every outline edge to the room's height less the
+natural ground, **clamped to one face** (`MAX_BENCH_FACE_M`) with a wall for
+the rest, falling to nothing at 1 in `EARTHWORK_BATTER` perpendicular to its
+segment, and blended over `EARTH_BLEND_M` where the nearest segment changes.
+Outline vertices take their own pin exactly. What that removes, each a
+discontinuity of the nearest-segment rule it replaces:
+
+- the step where two outline segments are equidistant and answer differently;
+- the all-or-nothing wall: a drop past one face used to refuse the batter
+  outright, so the ground stepped between a walled segment and a battered one;
+- the lip: a face at an *absolute* 1 in 2.5 never met a hill steeper than that
+  and was cut off at 7.5 m standing in it.
+
+**The batter is now relative to the natural ground.** On flat ground nothing
+changes; across a 30 % hill the cut face stands at 70 % and meets the ground
+2 m out. A batter also does not cross the room: a point on the paving's side
+of a segment is not that segment's to answer.
+
+**The steepest-allowed extension was tried first and is worse.** A cone from
+every pin (`e = max(L, min(0, U))`) is continuous, but it couples the pins
+*along* the kerb: wherever a road's cut changes faster than the batter's slope
+along its own length, one pin's cone overrides the next and each override is
+a wall at the kerb — `wall_m2` 43 k against 18 k on the loop box.
+
+Loop box: `wall_m2` **33 091 → 11 979**, the tallest wall 14.8 → 11.8 m (a wall
+is now the drop past one face), `off` **21 → 3.0 m**, the drawn ground's
+`dem_residual` 0.00/0.89/30.84 → **0.00/0.14/3.00**, `touched` 8.6 → 3.5 %,
+`regrade` 143 k → 6.5 k, `contact` 0.00; bench 32 → 18 s, the run 72 → 42 s.
+The `relax_vs_cases` diagnostic is retired (it cost ~12 s a run against a
+case function that is gone); `relax.rs` stays for the pavement between two
+terraces, which is the next place a solve would earn its keep.
 
 **"One height per vertex" (§3.2) and "an edge is split" (§3.3) contradict
 each other**, because a kerb vertex has two heights a kerb's rise apart. The
@@ -1215,27 +1241,20 @@ meeting a 15 % side street must warp through its returns — and the worst
 edge is always one of those, ~6 m from the connector. `worst` is untouched
 by any of it (10.186 m on the box, a cliff the ground walls).
 
-**And the ground answers.** The terrain is re-triangulated over
-`rect − room` on the same lattice by the same mesher, so **the ground
-stops at the kerb**: no triangle of it lies under the asphalt, which is
-where every artefact of a ground drawn beneath an opaque surface lives
-(`data/plans/terrain-hole-plan.md`). Outside the room it is the room's own
-height at the outline, a face at `EARTHWORK_BATTER` out of it stopping
-exactly where it meets the natural ground, and the natural ground beyond.
-A face is at most `MAX_BENCH_FACE_M` tall, so it runs at most 7.5 m, and
-where the room stands further than one face from the ground at its own
-outline no batter is built at all: the bench is *walled* there, `walled`
-counts it, and **`wall_m2` of closing face is drawn between the two** — a
-step nothing spans is a hole you can see the world through, which is what
-invariant 9 forbids. **The kerb gets the same face**: the pavement stands
-`KERB_RISE_M` over the road it runs beside, and the two meshes met in plan
-and nowhere at all in the vertical, so `kerb_m2` of it is now closed too —
-the same defect and the same invariant at a twentieth of the height and a
-hundred times the length. It is built off the carriageway mesh's **own rim**
-(its boundary edges), so its plan line is a mesh edge and its foot a mesh
-vertex, and both rails are read from the meshes rather than computed as
-road-plus-rise. `tapered` counts the faces that die away at one end because
-the pavement stops there.
+**And the ground answers.** The ground is the one mesh's faces that do not
+cut, so **the ground stops at the kerb**: no triangle of it lies under the
+asphalt, which is where every artefact of a ground drawn beneath an opaque
+surface lives (`data/plans/terrain-hole-plan.md`). Outside the room it is the
+natural ground plus the earthwork residual (see "Step 3 is built"): the
+room's own height at the outline, a batter falling from it at 1 in
+`EARTHWORK_BATTER` of the natural ground, and the natural ground beyond. A
+drop past `MAX_BENCH_FACE_M` gets one face of batter and a wall for the rest:
+`walled` counts those outline vertices, `wall` the tallest, and **`wall_m2`
+of closing face is drawn between the two** — a step nothing spans is a hole
+you can see the world through, which is what invariant 9 forbids. **The kerb
+gets the same face**: the pavement stands `KERB_RISE_M` over the road it runs
+beside, and the edge rule draws that face along the one mesh's own edges,
+both rails read by index.
 
 **An abutment is a line across the road, so the mask that ends the hole is
 capped square.** The hole is `paving − spanned` (invariant I3: a viaduct
