@@ -935,7 +935,18 @@ fn junction(
     }
     let ring = dedup(&ring);
     let signed = poly::ring_area(&ring);
-    let shape = if ring.len() >= 3 { poly::union_all(&vec![vec![ring]]) } else { Vec::new() };
+    // **A junction is one region.** Where the ring crosses itself — a kerb
+    // walking round a bend right at the node, a mitre touching the ring —
+    // the union hands back a second region: a lobe of a few square
+    // centimetres outside every ribbon, or three coincident points. Each was
+    // a fragment of asphalt no piece claims. The junction is the largest.
+    let shape: Shapes = if ring.len() >= 3 { poly::union_all(&vec![vec![ring]]) } else { Vec::new() }
+        .into_iter()
+        .max_by(|a, b| {
+            poly::area(std::slice::from_ref(a)).partial_cmp(&poly::area(std::slice::from_ref(b))).expect("finite")
+        })
+        .into_iter()
+        .collect();
     if (poly::area(&shape) - signed).abs() > 1e-3 * signed.abs().max(1.0) {
         tally.tangled += 1;
     }
