@@ -215,18 +215,101 @@ pub fn conform(shapes: &Shapes) -> Shapes {
                         let mut on: Vec<(f64, Pt)> = Vec::new();
                         for cell in cells_over(bbox, CELL_M) {
                             for &p in index.get(&cell).into_iter().flatten() {
-                                if same(p, a) || same(p, b) || segment_distance(a, b, p) > GRID_M {
+                                // Only the ends themselves are not on the segment: a
+                                // neighbour's corner a grid step from an end is a
+                                // vertex of its own, and skipped as if it were the
+                                // end it left a T-junction the mesh cracked along.
+                                if p == a || p == b || segment_distance(a, b, p) > GRID_M {
                                     continue;
                                 }
                                 let s = ((p[0] - a[0]) * (b[0] - a[0])
                                     + (p[1] - a[1]) * (b[1] - a[1]))
                                     / (len * len);
+                                if !(s > 0.0 && s < 1.0) {
+                                    continue;
+                                }
                                 on.push((s, p));
                             }
                         }
                         on.sort_by(|x, y| x.0.total_cmp(&y.0));
                         on.dedup_by(|x, y| same(x.1, y.1));
                         out.extend(on.into_iter().map(|(_, p)| p));
+                    }
+                    out
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// `shapes` with every cluster of vertices within `tol` of each other — in
+/// any ring, of any shape — moved onto one of them, and the repeats that
+/// leaves in a ring dropped.
+///
+/// **A slice leaves twins.** Where cut lines nearly coincide the kernel puts
+/// two corners a grid step or two apart, one in each face that meets there,
+/// and they are one point. Neither [`conform`] nor the mesher can pair them:
+/// the first splits a segment only at a vertex *on* it and the neighbour's
+/// edge ends at the twin, the second welds at a micron. Over the loop box that
+/// was 35 of the arrangement's 40 T-junctions and most of the mesh's cracks.
+/// The representative is the least by coordinates, so the answer does not
+/// depend on the order the faces come in.
+pub fn snap_twins(shapes: &Shapes, tol: f64) -> Shapes {
+    let key = |p: &Pt| (p[0].to_bits(), p[1].to_bits());
+    let cell = |p: &Pt| ((p[0] / tol).floor() as i64, (p[1] / tol).floor() as i64);
+    let mut points: Vec<Pt> = shapes.iter().flatten().flatten().copied().collect();
+    points.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    points.dedup();
+    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (i, p) in points.iter().enumerate() {
+        grid.entry(cell(p)).or_default().push(i);
+    }
+    // Union-find over the points within `tol`, rooted at the least index,
+    // which is the least point: `points` is sorted.
+    let mut parent: Vec<usize> = (0..points.len()).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for (i, p) in points.iter().enumerate() {
+        let (cx, cy) = cell(p);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for &j in grid.get(&(cx + dx, cy + dy)).into_iter().flatten() {
+                    let q = points[j];
+                    if j != i && (q[0] - p[0]).abs() <= tol && (q[1] - p[1]).abs() <= tol {
+                        let (a, b) = (root(&mut parent, i), root(&mut parent, j));
+                        if a != b {
+                            parent[a.max(b)] = a.min(b);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut onto: HashMap<(u64, u64), Pt> = HashMap::new();
+    for i in 0..points.len() {
+        let r = root(&mut parent, i);
+        if r != i {
+            onto.insert(key(&points[i]), points[r]);
+        }
+    }
+    if onto.is_empty() {
+        return shapes.clone();
+    }
+    shapes
+        .iter()
+        .map(|shape| {
+            shape
+                .iter()
+                .map(|ring| {
+                    let mut out: Ring = ring.iter().map(|p| *onto.get(&key(p)).unwrap_or(p)).collect();
+                    out.dedup();
+                    while out.len() > 1 && out.first() == out.last() {
+                        out.pop();
                     }
                     out
                 })

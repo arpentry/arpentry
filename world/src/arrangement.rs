@@ -44,6 +44,11 @@ use crate::poly::{self, Indexed, Pt, Shape, Shapes};
 use crate::step::Summary;
 use crate::world::{Polyline2, Profiles, Sheets, Surface};
 
+/// How close, in metres, two corners of the slice are one point
+/// ([`poly::snap_twins`]): a couple of the kernel's grid steps, the most a
+/// near-coincidence of two cut lines puts between them.
+const TWIN_M: f64 = 3.0 * poly::GRID_M;
+
 /// What a face of the arrangement is made of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Material {
@@ -302,7 +307,7 @@ pub fn run(
     // 45 on `house:across` — and is landed anyway: an edge rule that cannot
     // be written is worth more than a diagnostic of the two-mesh world it
     // replaces.
-    let faces = poly::conform(&poly::slice(&outer, &cuts));
+    let faces = poly::conform(&poly::snap_twins(&poly::slice(&outer, &cuts), TWIN_M));
 
     // The tags, by one interior point per face. Indexed because there are as
     // many queries as faces and as many regions as the world has paving.
@@ -522,11 +527,15 @@ fn measure(
     // edge is carried by at least two faces — the two that meet along it. A
     // vertex belonging to one face alone is a boundary that was built twice,
     // which is the defect this step exists to remove, and it must read 0.
+    // To the kernel's grid: the rect's own corners are snapped to it on the
+    // way in, so its edge stands up to a grid step off `extent.rect`. At
+    // 1e-9 the rect's own border read as 100 dangling segments on the loop
+    // box, which is to say `dangling` counted the rect.
     let on_border = |p: &Pt| {
-        (p[0] - r.x0).abs() < 1e-9
-            || (p[0] - r.x1).abs() < 1e-9
-            || (p[1] - r.y0).abs() < 1e-9
-            || (p[1] - r.y1).abs() < 1e-9
+        (p[0] - r.x0).abs() <= poly::GRID_M
+            || (p[0] - r.x1).abs() <= poly::GRID_M
+            || (p[1] - r.y0).abs() <= poly::GRID_M
+            || (p[1] - r.y1).abs() <= poly::GRID_M
     };
     let mut seen: std::collections::HashMap<(u64, u64), usize> = std::collections::HashMap::new();
     for p in a.faces.iter().flat_map(|f| f.shape.iter().flatten()) {

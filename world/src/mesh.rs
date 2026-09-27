@@ -452,7 +452,9 @@ fn weld_open(tri: &mut Tri, of_region: &mut Vec<u32>) -> usize {
 /// untouched, and so does a single region meshed on its own, whose boundary
 /// has no stranger's vertex on it.
 fn close_t_junctions(tri: &mut Tri, of_region: &mut Vec<u32>) -> usize {
-    const ON_M: f64 = WELD_M;
+    // The kernel's grid, not the weld: a crossing the far side computed off a
+    // twin of this edge lies a few 1e-5 m off it, and is on it.
+    const ON_M: f64 = poly::GRID_M;
     const CELL: f64 = 1.0;
     let mut closed = 0usize;
     // A few passes: a triangle split along one edge may carry a second.

@@ -588,12 +588,19 @@ is how. Three causes, each fixed where it lives:
   apart and cut it at the lattice ~1e-5 m apart all along. Merged at
   `GRID_M`, **open edges only**.
 
-What is left — 200 m of crack on the loop box, 15 m on the junction box, at
-four or five junctions each — is the arrangement's own degeneracy: sub-mm
-needle faces where cut lines nearly coincide (`dangling` 142, `unprobed`
-1 813). No mesher can recover a boundary the two sides never shared; that is
-the plan chain's to stop producing (review step 5). A CDT would remove the
-degenerate-ear case outright, and `spade` is already the server's.
+**And two more, found by the loop box's own cracks** (2026-09-27): the slice
+leaves **twin corners** a grid step or two apart where cut lines nearly
+coincide, and neither `conform` (which splits a segment at a vertex *on* it,
+while the neighbour's edge ends at the twin) nor the mesher's micron weld
+could pair them — `poly::snap_twins` merges them across every face before
+`conform`, and the arrangement's interior T-junctions went 40 → **0**. And a
+lattice crossing the far side computed off such a twin lies ~1e-5 m off this
+side's edge, so `close_t_junctions` now takes a vertex as on an edge within
+the kernel's grid rather than the weld. Loop box `crack` 200 → **21 m**, over
+45 faces — zero-area single-triangle slivers and a few edges whose two sides
+genuinely disagree by decimetres, which is the plan chain's to stop
+producing (review step 5). `unmet` 0; the junction box's `dangling` 50 → 0
+(its counter had also been counting the rect's own snapped border).
 
 **`kerb_m2` rose 10 850 → 15 023 on the loop box**, and it is closure that was
 missing rather than curtains: 8 017 m² of kerbs (0.12 m over ~67 km),
