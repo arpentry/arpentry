@@ -95,7 +95,7 @@ mod tests {
     }
 
     /// **Step 2 — every drawn edge is welded or walled. Built 2026-09-27;
-    /// 26 left, and this stays ignored until they are.**
+    /// live since 2026-09-28.**
     ///
     /// `step` counts drawn edges the heights **jump** across: over
     /// `KERB_RISE_M`, steeper than `STEP_GRADE`, and with a midpoint the
@@ -114,12 +114,12 @@ mod tests {
     /// **18 408 → 144**, worst 11.85 → 3.74 m; the Montreux junction box and
     /// every other specimen read 0.
     ///
-    /// Today: **26 of 6 644**, worst 10.794 m, on the carriageway's inner edge
-    /// where the ring's axis closes on itself (its first and last segments
-    /// do not meet in arc, so the bend's blend does not hand over there) and
-    /// on its outer sidewalk. Was 2 304 of 6 368, worst 15.432 m.
+    /// It read 26 of 6 644 on the ring's seam (its axis closes on itself, so
+    /// the bend's blend did not hand over there), then 2 once the blend
+    /// walked the seam. With the carriageway built from its legs rather than
+    /// by the fillet's closing (`legs`, wired 2026-09-28) it reads 0; which
+    /// of the fillet's returns the two were was not read.
     #[test]
-    #[ignore = "26 steps left on the ring's seam (plan §3.3, step 2)"]
     fn every_drawn_edge_is_welded_or_walled() {
         let s = bench(FLANK, JUNCTION, None);
         assert_eq!(s.num("step"), 0.0, "the field is discontinuous across a drawn edge: {s}");

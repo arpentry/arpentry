@@ -607,7 +607,7 @@ mod tests {
     fn the_sheets_are_the_paving_partitioned() {
         let (w, s) = world("flat", "net:cross?len=200");
         let sheets = w.sheets.as_ref().expect("the sheet step ran");
-        let paved = poly::area(&w.fillet.as_ref().unwrap().surface.carriageway);
+        let paved = poly::area(&w.room.as_ref().unwrap().surface.carriageway);
         let sheeted: f64 =
             sheets.of(Family::Carriageway).map(|sh| poly::area(&sh.shapes)).sum();
         assert!((paved - sheeted).abs() < 1e-6, "{paved} vs {sheeted}: {s}");

@@ -178,7 +178,7 @@ pub fn apply(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary
                 .flat_map(|(.., s)| s)
                 .collect();
             let (r, summary) =
-                room::run(&fillet(world).surface, &walk_spans, &kerb(world).attached, facade(world));
+                room::run(&legs(world).surface, &walk_spans, &kerb(world).attached, facade(world));
             world.room = Some(r);
             summary
         }
@@ -271,6 +271,7 @@ layer!(ribbons, ribbons, crate::world::Ribbons, "ribbon");
 layer!(surface, surface, crate::world::Surface, "surface");
 layer!(kerb, kerb, crate::world::Kerb, "kerb");
 layer!(fillet, fillet, crate::world::Fillet, "fillet");
+layer!(legs, legs, crate::legs::Legs, "legs");
 layer!(room, room, crate::world::Room, "room");
 layer!(sheets, sheets, crate::world::Sheets, "sheet");
 layer!(arrangement, arrangement, crate::arrangement::Arrangement, "arrangement");

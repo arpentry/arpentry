@@ -129,10 +129,10 @@ says so.**
 
 ## First slice: status (2026-09-27)
 
-**Built, measured, not wired.** `world/src/legs.rs` is the `legs` step,
-after `fillet`; nothing reads its layer, and every GLB in the corpus is
-byte-identical with it in. The plan view draws it (`legs` group: junctions
-outlined blue, `extra` green, `missing` red).
+**Wired 2026-09-28** (see the end of this section); what follows is the
+history of getting there. `world/src/legs.rs` is the `legs` step, after
+`fillet`. Until it was wired nothing read its layer. The plan view draws
+it (`legs` group: junctions outlined blue, `extra` green, `missing` red).
 
 The construction, and the three things the first version got wrong:
 
@@ -336,9 +336,48 @@ construction's:
 | mesh `slivers` | 70 116 | 71 212 |
 | `unmet` | 0 | 2 |
 
-What is left before wiring: **mesh slivers +1.6 %** (not read yet) and
-**`unmet` 2**, one 1.2 m open mesh edge where a building corner cuts the
-explicit carriageway (loop box 837, 1371).
+**The last two, read (2026-09-28), and the slice wired.**
+
+- **`unmet` 2 was `poly::conform`, not a building** (`8ceb3bf`). It tested
+  each vertex against the segment as it was before the pass, but a vertex
+  put on a segment bends it by up to a grid step: at (979, 163) the next
+  vertex lay 8.8e-5 m off the new piece and 1.3e-4 m off the old edge, and
+  was skipped. It now repeats until nothing is inserted. Legs `unmet`
+  2 → 0, `crack` 8.4 → 3.2 m; the fillet's 21 m did not move.
+- **Mesh slivers are systematic but the mesher's.** 88 % lie on a face
+  boundary: a kerb vertex or segment a hair off a lattice line. Legs − fillet
+  is +1.6 / +0.8 / +0.8 / +1.6 % at spacings 3.45 / 3.6 / 3.9 / 4.3 m —
+  never the other sign, so not lattice-phase noise, and not a site: +9 076
+  / −7 980 over ~3 000 20 m cells. They are fixed where they are made
+  (below), not in the construction. **Vary `--spacing` above the vertex
+  cap** (≈3.45 m on the loop box): below it every spacing is the same run.
+  At 4.3 m the legs' `crack` is 8.9 m against the fillet's 8.0, which the
+  one-lattice A/B had hidden.
+
+**Wired**: `room` reads `legs.surface`. Loop box against `8ceb3bf`:
+`scraps` 895 → 670, `loose` 138 → 130, `unprobed` 1 817 → 1 632,
+`wall_gap` 22 → 12, `kerb_gap` 22 → 21, `orphan` 7 → 4, mesh `crack` 21 →
+3.2 m, `unmet` 0, `wall_m2` 10 884 → 10 223, `kerb_m2` 32 724 → 31 669,
+`split_m2` 19 553 → 18 559; slivers 70 127 → 71 171. The flank roundabout's
+last 2 steps go, and `ground::tests::every_drawn_edge_is_welded_or_walled`
+is live. The junction box's `kerb_gap` is 4 → 5.
+
+**Bench `fill` rose 15.59 → 19.76 m, and it is not a new defect.** It is a
+facade band `room` draws from the ground carriageway's kerb at the deck
+approach at (−639, 413) to a house 5 m off; the approach itself stands
+17.6 m over the natural ground there, and the fillet's build had the same
+case 4 m away at 13.8 m. Where a band lands beside a tall approach
+embankment is the maximum, and the embankment is the span's extent, not the
+junction's.
+
+**Tried and reverted: a pocket that borders a span is not a pocket.**
+`room::pockets` takes `carriageway ∪ spanned` as what encloses a hole, so
+a deck's side bounds islands. Refusing every hole with a span-bordered edge
+removed 11 islands (1 897 m²) but did not touch the site above (a band, not
+a pocket), and refused a 381 m² hole at (456, −889) with 1 of 35 edges on a
+span — an abutment's round cap grazing a real pocket. A rule here needs the
+deck's height or its square footprint (`surface::spans_masked`), not any
+contact.
 
 ## After the first slice, in order
 

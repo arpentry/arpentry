@@ -253,11 +253,11 @@ that way once, because the metric filtered on `level` rather than class.
 **Now: review step 5, the plan chain from explicit geometry.** The hand-over
 is `docs/plans/plan-chain-from-legs.md` — read it first; it has the
 baseline counters, the first slice and the tools (`scripts/world-corpus.sh`,
-`scripts/world-sdiff.py`). The first slice is built and **measured, not
-wired**: the `legs` step (`world/src/legs.rs`) builds one polygon per
-junction from its legs and reports how it disagrees with `fillet`; nothing
-reads it. Its "First slice: status" section says what the A/B found and
-what blocks wiring.
+`scripts/world-sdiff.py`). The first slice is **wired** (2026-09-28): the
+`legs` step (`world/src/legs.rs`) builds one polygon per junction from its
+legs, and `room` reads its surface. `fillet` still runs, only as what
+`legs` reports against. Its "First slice: status" section has the A/B and
+what comes next.
 
 `world/` builds a tile-free 3D world for one bounding box, one verifiable
 step at a time, and writes it as a binary glTF. It borrows only the source

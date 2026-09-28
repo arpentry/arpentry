@@ -1,14 +1,14 @@
-//! The junctions, built from the legs that meet there — **measured, not
-//! wired**.
+//! The junctions, built from the legs that meet there. **Wired
+//! (2026-09-28)**: `room` reads this step's surface.
 //!
-//! Review step 5 (`docs/plans/plan-chain-from-legs.md`), first slice. Today
-//! a junction is not an object: it is where ribbons overlap, the surface
-//! step unions them, and the fillet step finds the notches the union left
-//! and rounds them with a masked closing. Every fact about the junction —
-//! which legs meet, which kerbs face each other, what radius the return
-//! takes — is recovered afterwards from the union by sampling
-//! ([`crate::fillet`]'s `kerbs_at`), and the closing leaves hairlines that
-//! `OPEN_M`, `OVERLAP_M` and `fill_holes_under` then clean away.
+//! Review step 5 (`docs/plans/plan-chain-from-legs.md`), first slice. Before
+//! it a junction was not an object: it was where ribbons overlap, the
+//! surface step unioned them, and the fillet step found the notches the
+//! union left and rounded them with a masked closing. Every fact about the
+//! junction — which legs meet, which kerbs face each other, what radius the
+//! return takes — was recovered afterwards from the union by sampling
+//! ([`crate::fillet`]'s `kerbs_at`), and the closing left hairlines that
+//! `OPEN_M`, `OVERLAP_M` and `fill_holes_under` then cleaned away.
 //!
 //! This step builds the same carriageway from what is known before any
 //! boolean runs:
@@ -37,17 +37,19 @@
 //!   edge is trimmed to it with a square end. No round cap is drawn at any
 //!   connector, so none can survive as a lobe.
 //!
-//! The step hands back a whole [`Surface`], as `fillet` does: the explicit
+//! The step hands back a whole [`Surface`], as `fillet` did: the explicit
 //! carriageway, and the pavement laid back outside wherever that carriageway
-//! grew into it (`fillet`'s `laid_back`, the same rule), so it can stand in
-//! for `fillet`'s once it measures better.
+//! grew into it (`fillet`'s `laid_back`, the same rule), and it stands in
+//! for `fillet`'s: it measured better on every counter of the A/B in the
+//! plan but mesh slivers, which are the mesher's (+0.8–1.6 % across four
+//! lattice spacings, never the other sign).
 //!
-//! The comparison is against [`crate::world::Fillet`]'s carriageway, over
-//! the same facade cut: what the explicit construction has that today's
-//! lacks (`extra`) and what it lacks (`missing`), each region attributed to
-//! the nearest junction whose reach holds it or else to `elsewhere`, and
-//! per junction the farthest the two boundaries stand apart (`apart`). It
-//! stores the result for the plan view and nothing downstream reads it.
+//! It still reports against [`crate::world::Fillet`]'s carriageway, over
+//! the same facade cut, until that step is deleted: what the explicit
+//! construction has that the fillet's lacks (`extra`) and what it lacks
+//! (`missing`), each region attributed to the nearest junction whose reach
+//! holds it or else to `elsewhere`, and per junction the farthest the two
+//! boundaries stand apart (`apart`).
 
 use std::collections::HashMap;
 
