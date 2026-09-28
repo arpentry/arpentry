@@ -344,21 +344,35 @@ construction's:
   vertex lay 8.8e-5 m off the new piece and 1.3e-4 m off the old edge, and
   was skipped. It now repeats until nothing is inserted. Legs `unmet`
   2 → 0, `crack` 8.4 → 3.2 m; the fillet's 21 m did not move.
-- **Mesh slivers are systematic but the mesher's.** 88 % lie on a face
-  boundary: a kerb vertex or segment a hair off a lattice line. Legs − fillet
-  is +1.6 / +0.8 / +0.8 / +1.6 % at spacings 3.45 / 3.6 / 3.9 / 4.3 m —
-  never the other sign, so not lattice-phase noise, and not a site: +9 076
-  / −7 980 over ~3 000 20 m cells. They are fixed where they are made
-  (below), not in the construction. **Vary `--spacing` above the vertex
-  cap** (≈3.45 m on the loop box): below it every spacing is the same run.
-  At 4.3 m the legs' `crack` is 8.9 m against the fillet's 8.0, which the
-  one-lattice A/B had hidden.
+- **Mesh slivers are systematic, and the mesher's.** Legs − fillet is
+  +1.6 / +0.8 / +0.8 / +1.6 % at spacings 3.45 / 3.6 / 3.9 / 4.3 m — never
+  the other sign, so not lattice-phase noise, and not a site: +9 076 /
+  −7 980 over ~3 000 20 m cells. It goes with +48 k carriageway triangles
+  over *less* area and boundary: fewer, larger faces. **Vary `--spacing`
+  above the vertex cap** (≈3.45 m on the loop box): below it every spacing
+  is the same run. At 4.3 m the legs' `crack` is 8.9 m against the fillet's
+  8.0, which the one-lattice A/B had hidden.
+- **Where slivers come from (read on the wired loop box, 57 888 of them).**
+  52 % are *interior* (centroid more than 1 µm off every ring) with **no
+  ring vertex among their corners**, and 62 % have an edge under 10 µm:
+  the clipper's diagonals crossing the lattice near a lattice vertex, where
+  column, row and diagonal cut within microns. Only 13 % sit on a boundary
+  with no ring vertex. (A 1 mm "on the boundary" test read 88 %, which is
+  every thin sliver beside a kerb, and is wrong.) **Two boundary fixes were
+  built and measured, and reverted:** snapping ring vertices within 1e-4 m
+  of a lattice line onto it (−4.5 %; 1e-3 barely more), and putting a lattice
+  vertex into any segment passing within 1e-4 m of one (−5 slivers). Neither
+  moved `crack`, `unmet`, `seam` or `lost_m2`. Welding wider is the refuted
+  route in `mesh::WELD_M`'s doc. **The root fix is to cut first and
+  triangulate after**: split each face by the lattice into pieces inside one
+  lattice triangle, then triangulate each piece, so no clipper diagonal ever
+  crosses a lattice line. That is a mesher redesign, not a threshold.
 
 **Wired**: `room` reads `legs.surface`. Loop box against `8ceb3bf`:
 `scraps` 895 → 670, `loose` 138 → 130, `unprobed` 1 817 → 1 632,
 `wall_gap` 22 → 12, `kerb_gap` 22 → 21, `orphan` 7 → 4, mesh `crack` 21 →
 3.2 m, `unmet` 0, `wall_m2` 10 884 → 10 223, `kerb_m2` 32 724 → 31 669,
-`split_m2` 19 553 → 18 559; slivers 70 127 → 71 171. The flank roundabout's
+`split_m2` 19 553 → 18 559; slivers 70 127 → 71 171 (the mesher's, below). The flank roundabout's
 last 2 steps go, and `ground::tests::every_drawn_edge_is_welded_or_walled`
 is live. The junction box's `kerb_gap` is 4 → 5.
 
