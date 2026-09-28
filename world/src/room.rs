@@ -213,6 +213,18 @@ fn walled_share(region: &poly::Shape, walls: &Indexed) -> f64 {
     if total > 0.0 { against / total } else { 0.0 }
 }
 
+/// Whether every edge of `region` has `by` [`EDGE_M`] outside it.
+fn enclosed(region: &poly::Shape, by: &Indexed) -> bool {
+    region.iter().all(|ring| {
+        (0..ring.len()).all(|i| {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            let t = poly::unit([b[0] - a[0], b[1] - a[1]]);
+            let m = [(a[0] + b[0]) * 0.5 + t[1] * EDGE_M, (a[1] + b[1]) * 0.5 - t[0] * EDGE_M];
+            by.contains(m)
+        })
+    })
+}
+
 /// Whether `region` reaches a footbridge: a vertex of it inside one, or an
 /// edge with one [`EDGE_M`] outside it.
 fn onto(region: &poly::Shape, bridges: &Indexed) -> bool {
@@ -368,10 +380,19 @@ pub fn run(
     // it bare and the footbridge landing on nothing. No surface step paves a
     // walk span, so nothing here could see the bridge it belongs to.
     let bridges = Indexed::new(walk_spans);
+    // **Nor a court.** A small region with asphalt or walls all round it
+    // and no bare ground at its edge is a place the street encloses — the
+    // strip between two garage lanes and the garage they end at, four square
+    // metres — whichever construction paved it; dropped as a scrap, it left
+    // both kerbs facing bare ground. A scrap is what a cut left, and a cut
+    // leaves it standing in the open: the round cap in the kerb line has
+    // bare ground along most of it.
+    let closed_by = Indexed::new(&poly::union_of(&[&senior, &facade.solid]));
     let (pavement, loose): (Shapes, Shapes) = paved.into_iter().partition(|r| {
         poly::area(std::slice::from_ref(r)) >= RUN_MIN_M * PAVEMENT_MIN_M
             || walled_share(r, &walls) >= WALLED_SHARE
             || onto(r, &bridges)
+            || enclosed(r, &closed_by)
     });
     let (loose_n, loose_m2) = (loose.len(), poly::area(&loose));
     // **What each scrap was made by.** A region too narrow to hold a
@@ -767,6 +788,25 @@ pub(crate) mod tests {
         // Without the bridge it is the scrap it looks like.
         let (r, s) = run(&f.surface, &Vec::new(), &k.attached, facade);
         assert!(!poly::contains(&r.surface.walk, [0.0, 4.0]), "{s}");
+    }
+
+    /// **A court is kept however small.** Two garage lanes leave a service
+    /// road side by side and end at the garage across them: the court
+    /// between is 3.75 m², under the smallest pavement this step draws, and
+    /// the garage bounds a fifth of it, not the quarter that would have
+    /// excused it. It is enclosed all round, and was dropped as a scrap.
+    #[test]
+    fn a_small_court_is_kept() {
+        let w = built("flat", "net:straight?len=200&class=service", Some("house:beside?d=4&x=2.25&l=12&w=6"), 100.0, &plan(Step::Facade)).0;
+        let facade = w.facade.as_ref().unwrap();
+        let carriageway = poly::union_all(&vec![
+            poly::rect(-10.0, -1.5, 15.0, 1.5),
+            poly::rect(-1.5, -1.5, 1.5, 4.0),
+            poly::rect(3.0, -1.5, 6.0, 4.0),
+        ]);
+        let paving = Surface { carriageway, walk: Vec::new(), spanned: Vec::new(), ballast: Vec::new() };
+        let (r, s) = run(&paving, &Vec::new(), &[], facade);
+        assert!(poly::contains(&r.surface.walk, [2.25, 2.75]), "{s}");
     }
 
     /// The world of `net` with the house of `house`, paved to the room.
