@@ -260,7 +260,12 @@ pub fn run(
     // over the whole surface did the same and re-rounded every kerb in the
     // box (mesh slivers 71 k → 110 k, crack 8 → 93 m).
     let mut filled = 0usize;
-    let open: Shapes = poly::union_all(&parts)
+    // The narrow gaps first: an open gap closes into a hole as often as not
+    // once they are paved, and the holes are asked next.
+    let joined = poly::union_all(&parts);
+    let gaps = narrow_gaps(&joined);
+    let gap_m2 = poly::area(&poly::difference(&poly::union_all(&gaps), &joined));
+    let open: Shapes = poly::union_of(&[&joined, &gaps])
         .into_iter()
         .map(|shape| {
             let mut rings = shape.into_iter();
@@ -372,6 +377,7 @@ pub fn run(
 
         .with_m2("junction_m2", junctions.iter().map(|j| poly::area(&j.shape)).sum::<f64>() + 0.0)
         .with("islands", filled)
+        .with_m2("gap_m2", gap_m2)
         .with_regions("carriageway", carriageway)
         .with_m2("pavement_m2", poly::area(&out.walk))
         .with_m2("followed_m2", poly::area(&followed))
@@ -478,6 +484,97 @@ fn cut(all: &[&Polyline2], ground: usize, pieces: &[(usize, Vec<Pt>)]) -> (Vec<E
         }
     }
     (edges, nodes)
+}
+
+/// The step the carriageway's edge is walked in for [`narrow_gaps`], in
+/// metres.
+const GAP_STEP_M: f64 = 0.25;
+
+/// **A gap between two carriageways that no pavement fits in is asphalt**,
+/// as quads: from every station on the edge of `carriageway`, a ray out to
+/// [`crate::room::PAVEMENT_MIN_M`]; where two consecutive stations both
+/// meet the carriageway again, the quad between their chords, lapped by
+/// [`LAP_M`] at both ends so the union joins it.
+///
+/// It is the open cousin of the narrow hole. Two carriageways that converge
+/// without ever sharing a vertex — a pair of one-way streets that run into
+/// one — leave a thin V between them with no junction to pave it, and a
+/// crossing mapped across it is left a scrap a hand wide, which `room`
+/// drops and the kerbs beside it read as bare ground. Only the gap is
+/// paved; no other boundary moves, which is what a closing over the whole
+/// surface could not promise.
+fn narrow_gaps(carriageway: &Shapes) -> Shapes {
+    let reach = crate::room::PAVEMENT_MIN_M;
+    // Every edge on a grid, for the rays.
+    let cell = 2.0;
+    let mut grid: HashMap<(i32, i32), Vec<(Pt, Pt)>> = HashMap::new();
+    for ring in carriageway.iter().flatten() {
+        for i in 0..ring.len() {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            for c in poly::cells_over([a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])], cell) {
+                grid.entry(c).or_default().push((a, b));
+            }
+        }
+    }
+    let hit = |p: Pt, n: Pt| -> Option<Pt> {
+        let o = add(p, n, 1e-3);
+        let e = add(p, n, reach);
+        let mut best: Option<(f64, Pt)> = None;
+        for c in poly::cells_over([o[0].min(e[0]), o[1].min(e[1]), o[0].max(e[0]), o[1].max(e[1])], cell) {
+            for &(a, b) in grid.get(&c).into_iter().flatten() {
+                let (r, v) = ([e[0] - o[0], e[1] - o[1]], [b[0] - a[0], b[1] - a[1]]);
+                let den = cross(r, v);
+                if den.abs() < 1e-12 {
+                    continue;
+                }
+                let w = [a[0] - o[0], a[1] - o[1]];
+                let (t, u) = (cross(w, v) / den, cross(w, r) / den);
+                if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) && best.is_none_or(|(bt, _)| t < bt) {
+                    best = Some((t, add(o, r, t)));
+                }
+            }
+        }
+        best.map(|(_, q)| q)
+    };
+    let mut quads: Shapes = Vec::new();
+    for ring in carriageway.iter().flatten() {
+        let n = ring.len();
+        // Stations along the ring, each with its outward normal: the region
+        // lies left of every ring, so outward is the right-hand normal.
+        let mut stations: Vec<(Pt, Pt)> = Vec::new();
+        for i in 0..n {
+            let (a, b) = (ring[i], ring[(i + 1) % n]);
+            let l = (b[0] - a[0]).hypot(b[1] - a[1]);
+            if l <= 0.0 {
+                continue;
+            }
+            let t = [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+            let out = [t[1], -t[0]];
+            let k = (l / GAP_STEP_M).ceil() as usize;
+            for j in 0..k {
+                stations.push((add(a, t, l * (j as f64 + 0.5) / k as f64), out));
+            }
+        }
+        let chords: Vec<Option<Pt>> = stations.iter().map(|&(p, out)| hit(p, out)).collect();
+        let m = stations.len();
+        for i in 0..m {
+            let j = (i + 1) % m;
+            let (Some(hi), Some(hj)) = (chords[i], chords[j]) else {
+                continue;
+            };
+            // Two chords landing far apart are not one gap: a ray past a
+            // corner of the far side.
+            if (hi[0] - hj[0]).hypot(hi[1] - hj[1]) > 4.0 * GAP_STEP_M {
+                continue;
+            }
+            let ((pi, ni), (pj, nj)) = (stations[i], stations[j]);
+            let quad = vec![add(pi, ni, -LAP_M), add(pj, nj, -LAP_M), add(hj, nj, LAP_M), add(hi, ni, LAP_M)];
+            if let Some(q) = poly::ccw(quad) {
+                quads.push(vec![q]);
+            }
+        }
+    }
+    poly::union_all(&quads)
 }
 
 /// A landed end this close to one of its host's vertices goes to that
@@ -1302,6 +1399,29 @@ mod tests {
         assert!(poly::contains(&l.surface.carriageway, [c, c]), "the east return: {s}");
         assert!(poly::contains(&l.surface.carriageway, [-c, c]), "the west return: {s}");
         assert!(s.num("near_m2") < 1.0, "{s}");
+    }
+
+    /// **A gap between two carriageways that no pavement fits in is
+    /// asphalt.** A second street converges on the first without ever
+    /// sharing a vertex: the ground between their kerbs narrows from 2.5 m to
+    /// 0.3 m, and where it is under the narrowest pavement it is paved.
+    #[test]
+    fn a_gap_no_pavement_fits_in_is_asphalt() {
+        let mut w = built("flat", "net:straight?len=200", None, 100.0, &plan(Step::Facade)).0;
+        let plan_ = &mut w.roads.as_mut().unwrap().plan;
+        let mut other = plan_[0].clone();
+        other.id = "other".into();
+        other.pts = vec![[-100.0, 8.0], [100.0, 5.8]];
+        plan_.push(other);
+        let roads = w.roads.as_ref().unwrap();
+        let facade = w.facade.as_ref().unwrap();
+        let (ribbons, _) = crate::ribbon::run(roads);
+        let (surface, _) = crate::surface::run(roads, &ribbons, facade);
+        let (k, _) = crate::kerb::run(roads, &surface, facade);
+        let (f, _) = crate::fillet::run(roads, &surface, &k, facade);
+        let (l, s) = run(roads, &surface, &k, facade, &f.surface);
+        assert!(poly::contains(&l.surface.carriageway, [80.0, 3.0]), "{s}");
+        assert!(!poly::contains(&l.surface.carriageway, [-50.0, 3.7]), "wide enough to stay ground: {s}");
     }
 
     /// A pavement a return eats into is laid back outside it, as the fillet
