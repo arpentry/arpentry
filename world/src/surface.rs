@@ -70,7 +70,7 @@ pub fn grouped(roads: &crate::world::Roads) -> Vec<(Family, usize, Shapes)> {
 /// The same over the span pieces alone.
 ///
 /// The [`crate::sheet`] step has the ground half of every group already,
-/// refined by the kerb, the fillet and the room; what it needs from here is
+/// refined by the kerb, the legs and the room; what it needs from here is
 /// the spans to union into it.
 pub fn spans_grouped(roads: &crate::world::Roads) -> Vec<(Family, usize, Shapes)> {
     spans_of(roads, false)

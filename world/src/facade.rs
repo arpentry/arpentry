@@ -7,7 +7,7 @@
 //! street straight through the row of houses between them. Nothing paved
 //! stands inside a building, so the footprints are read here, once, and
 //! every surface step after this one subtracts them — the surface union,
-//! the pavement the kerb step fills, the returns the fillet adds. The
+//! the pavement the kerb step fills, the junctions the legs build. The
 //! `kerb_gap` check reads them too: bare ground outside a kerb and a wall
 //! outside it are different answers.
 //!
@@ -412,10 +412,10 @@ mod tests {
         built("flat", net, None, 100.0, &plan(Step::Partition)).0.roads.expect("the drape step ran")
     }
 
-    /// The world of `net` with the house of `house`, paved to the fillet,
+    /// The world of `net` with the house of `house`, paved to the junctions,
     /// with the surface step's line and the kerb step's.
     fn paved(net: &str, house: &str) -> (World, Summary, Summary) {
-        let (w, ran) = built("flat", net, Some(house), 100.0, &plan(Step::Fillet));
+        let (w, ran) = built("flat", net, Some(house), 100.0, &plan(Step::Legs));
         (w, ran.of(Step::Surface), ran.of(Step::Kerb))
     }
 
@@ -478,8 +478,8 @@ mod tests {
         assert!(!poly::contains(&surf.carriageway, [0.0, 2.1]));
         assert!(poly::contains(&surf.carriageway, [20.0, 2.5]));
         assert!((7.0..=8.0).contains(&s.num("carriageway_in_building_m2")), "{s}");
-        // The fillet does not put it back.
-        let f = w.fillet.as_ref().unwrap();
+        // The junctions do not put it back.
+        let f = w.legs.as_ref().unwrap();
         assert!(!poly::contains(&f.surface.carriageway, [0.0, 2.1]));
         assert!(poly::intersect(&f.surface.carriageway, &facade(&w).footprints).is_empty());
     }
@@ -511,7 +511,7 @@ mod tests {
         let (w, _, _) = paved("net:straight?len=200", "house:across?l=10&w=12&rot=30");
         let surf = w.surface.as_ref().unwrap();
         assert_eq!(surf.carriageway.len(), 1, "{:?}", surf.carriageway.iter().map(|s| poly::ring_area(&s[0])).collect::<Vec<_>>());
-        let f = w.fillet.as_ref().unwrap();
+        let f = w.legs.as_ref().unwrap();
         assert_eq!(f.surface.carriageway.len(), 1);
         assert!(poly::contains(&f.surface.carriageway, [0.0, 1.9]));
     }
@@ -587,7 +587,7 @@ mod tests {
         assert!(poly::contains(pav, [0.0, 2.85]), "the strip between kerb and wall is paved");
         assert!(poly::contains(pav, [20.0, 4.0]), "past the house the fill reaches the kerb");
         assert_eq!(k.num("kerb_gap"), 0.0, "{k}");
-        let f = w.fillet.as_ref().unwrap();
+        let f = w.legs.as_ref().unwrap();
         assert!(!poly::contains(&f.surface.walk, [0.0, 4.0]));
         assert!(poly::intersect(&f.surface.walk, &facade(&w).footprints).is_empty());
     }
@@ -597,13 +597,13 @@ mod tests {
         // The house's corner stands 0.25 m off both kerbs of the tee's
         // north-west corner, inside the 4 m return's triangle.
         let (w, _, _) = paved("net:tee?len=200", "house:beside?d=3&x=-8&l=10&w=10");
-        let f = w.fillet.as_ref().unwrap();
+        let f = w.legs.as_ref().unwrap();
         assert!(!poly::contains(&f.surface.carriageway, [-3.5, 3.5]), "no return through the house");
         assert!(poly::contains(&f.surface.carriageway, [-2.85, 2.85]), "the sliver before the wall is still returned");
         assert!(poly::intersect(&f.surface.carriageway, &facade(&w).footprints).is_empty());
         // Without the house the same point is inside the return.
         let (w, _, _) = paved("net:tee?len=200", "house:beside?d=30&x=-8&l=10&w=10");
-        assert!(poly::contains(&w.fillet.as_ref().unwrap().surface.carriageway, [-3.5, 3.5]));
+        assert!(poly::contains(&w.legs.as_ref().unwrap().surface.carriageway, [-3.5, 3.5]));
     }
 
     #[test]

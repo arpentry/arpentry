@@ -1,7 +1,7 @@
 //! The sheets: which paved regions may merge, and which may not.
 //!
 //! The paved surface has been built twice. The ground pieces go through
-//! `ribbon → surface → kerb → fillet → room` and come out as one unioned,
+//! `ribbon → surface → kerb → legs → room` and come out as one unioned,
 //! refined region set per family; the span pieces go through `structure`,
 //! which sweeps each run on its own and lifts it afterwards by a field of
 //! its own. The two meet neither in plan nor in height, and where they hand
@@ -405,7 +405,7 @@ pub fn run(roads: &Roads, profiles: &Profiles, paving: &Surface) -> (Sheets, Sum
                 mine.extend(chords.iter().copied());
             }
             tidy(&mut axes);
-            // **The junction is rounded by the fillet step, not here.** A
+            // **The junction is rounded upstream, not here.** A
             // span's paving arrives as a raw ribbon with a round cap, so a
             // junction all of whose legs are decks has a notch between
             // every pair — and this step used to close them itself, with
@@ -414,10 +414,11 @@ pub fn run(roads: &Roads, profiles: &Profiles, paving: &Surface) -> (Sheets, Sum
             // It was the wrong place, and the measurement is `on_walk`: an
             // asphalt that grows *after* `room` has finished overlaps the
             // pavement, and nothing downstream can take it back. 25 of the
-            // junction model's 30 m² came from here. `fillet` now does the
-            // same closing per group with the span ribbons merged in, where
-            // `laid_back` re-lays the pavement outside the new kerb and
-            // `senior` cuts it, exactly as for every other return.
+            // junction model's 30 m² came from here. `fillet` then did the
+            // same closing per group with the span ribbons merged in, and
+            // `legs`, which replaced it, builds a deck junction from its
+            // spans; either way the pavement is laid back outside the new
+            // kerb and `senior` cuts it, exactly as for every other return.
             //
             // **And the mask is the span ribbons, full stop.** It used to
             // take in the return wedges beside a deck as well, so the
@@ -450,8 +451,8 @@ pub fn run(roads: &Roads, profiles: &Profiles, paving: &Surface) -> (Sheets, Sum
     // **The walk is under the asphalt this step adds, and the number says
     // how much.** Every step before this one leaves the three families'
     // paving mutually disjoint — `surface` cuts the walk to the
-    // carriageway and the ballast, `fillet` to its own returns, `room` to
-    // both, and `fillet.carriageway ∩ room.pavement` reads 0.00 m². This
+    // carriageway and the ballast, `legs` to its own junctions, `room` to
+    // both, and `legs.carriageway ∩ room.pavement` reads 0.00 m². This
     // step then adds asphalt none of them ever saw, and nothing takes the
     // pavement back from under it: a sidewalk inside the road, and 0.12 m
     // over it once the bench has put the kerb's rise on it.

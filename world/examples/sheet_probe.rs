@@ -91,8 +91,8 @@ fn main() {
         );
     }
 
-    println!("\nthe surface's own regions near the probe (fillet carriageway):");
-    let f = world.fillet.as_ref().unwrap();
+    println!("\nthe surface's own regions near the probe (the legs carriageway):");
+    let f = world.legs.as_ref().unwrap();
     for (k, region) in f.surface.carriageway.iter().enumerate() {
         if region.iter().any(|ring| near(ring)) {
             println!("  region {k}: rings={} m2={:.0}", region.len(), arpentry_world::poly::area(&vec![region.clone()]));

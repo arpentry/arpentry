@@ -31,7 +31,6 @@ pub mod building;
 pub mod crossing;
 pub mod drape;
 pub mod facade;
-pub mod fillet;
 pub mod frame;
 pub mod gltf;
 pub mod grade;

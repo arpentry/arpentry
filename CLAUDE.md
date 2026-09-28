@@ -255,9 +255,10 @@ is `docs/plans/plan-chain-from-legs.md` — read it first; it has the
 baseline counters, the first slice and the tools (`scripts/world-corpus.sh`,
 `scripts/world-sdiff.py`). The first slice is **wired** (2026-09-28): the
 `legs` step (`world/src/legs.rs`) builds one polygon per junction from its
-legs, and `room` reads its surface. `fillet` still runs, only as what
-`legs` reports against. Its "First slice: status" section has the A/B and
-what comes next.
+legs, and `room` reads its surface. The `fillet` step is **deleted**:
+`legs` also gives a way's own sharp vertex the return `fillet` gave it
+(`bends`). Its "First slice: status" section has the A/B and what comes
+next.
 
 `world/` builds a tile-free 3D world for one bounding box, one verifiable
 step at a time, and writes it as a binary glTF. It borrows only the source
@@ -290,7 +291,7 @@ Three things that rule cost, each one a defect it had let stand:
   table was a field three steps wrote to and no signature admitted. They
   return those tables now and the `match` arms install them.
 - **The paved surface had no single answer.** It is re-cut four times
-  (`surface`, `kerb`, `fillet`, `room`), and "the latest" was resolved at
+  (`surface`, `kerb`, `legs`, `room`), and "the latest" was resolved at
   runtime by a `World::walk()` over four layers, then by a literal in the
   pipeline assembled field by field — still with a branch in it, because
   `room` itself reads the paving before it has run. All four steps now hand
@@ -333,7 +334,7 @@ ballast's included), `carriageway`, `pavement`, `ballast`, `roadway` (a
 bore's floor and a footbridge's paving — a road's or a railway's deck is
 part of `carriageway` or `ballast`), `track` (a railway bore's floor),
 `deck`, `bore`, `building` and `roof`, and eight layers are construction lines: the draped centrelines,
-the solved profiles, and the ribbon, surface, kerb, fillet, room and facade
+the solved profiles, and the ribbon, surface, kerb, legs, room and facade
 contours. Those eight are glTF `LINES`, and **a viewer is not obliged to
 draw line topology**: Apple's (Preview, Quick Look, anything on that
 pipeline) reads the line index buffer as triangles instead and invents a
@@ -373,9 +374,9 @@ is a measurement, so a standard is a floor on what it cannot see and never a
 correction to what it can*. Step 0 (`dem_residual`) has landed and answered the
 question the plan opened with; §1.2 is what it found.
 
-`--until terrain` stops after a step; the nineteen, in order, are
+`--until terrain` stops after a step; the eighteen, in order, are
 `terrain`, `drape`, `reference`, `profile`, `crossing`, `partition`,
-`facade`, `ribbon`, `surface`, `kerb`, `fillet`, `legs`, `room`, `sheet`,
+`facade`, `ribbon`, `surface`, `kerb`, `legs`, `room`, `sheet`,
 `arrangement`, `mesh`, `bench`, `structure`, `building`.
 
 The `arrangement` step is **step 1 of
@@ -1566,9 +1567,10 @@ while both are still raw ribbons that *overlap by an area*, and `kerb`,
 `fillet` and `room` read it too, because they are where the pavement
 **grows** (`room`'s pockets and islands alone are 60 % of the finished
 pavement, and a hole bounded by a deck is not a pocket to pave). The
-junction rounding moves with it: `fillet` now closes the corners of a
+junction rounding moved with it: `fillet` closed the corners of a
 junction that stands on a structure, per group, with that group's spans
-merged in and `SPAN_CORNER_M` of ground asphalt around them — so
+merged in and `SPAN_CORNER_M` of ground asphalt around them (`legs`, which
+replaced it, builds a deck junction from its spans instead) — so
 `laid_back` re-lays the pavement outside the new kerb and `senior` cuts it,
 as for every other return. `sheet` reports **`on_walk`**, the area of the
 finished sheets lying on the pavement; it is the invariant of the whole

@@ -2816,7 +2816,7 @@ pub(crate) mod tests {
         let b = w.bench.as_ref().unwrap();
         let seam = seam(&[&b.carriageway, &b.pavement]);
         let outline = poly::union_of(&[
-            &w.fillet.as_ref().expect("the fillet step ran").surface.carriageway,
+            &w.legs.as_ref().expect("the legs step ran").surface.carriageway,
             &w.room.as_ref().expect("the room step ran").surface.walk,
         ]);
         let room = |q: Pt| at(&seam, q).unwrap_or_else(|| natural(q));
@@ -2900,7 +2900,7 @@ pub(crate) mod tests {
         let (w, s) = world("ramp?grade=0.3&bearing=0&radius=100000", "net:sidewalk?d=6", None);
         let b = w.bench.as_ref().unwrap();
         assert!(!b.ground.indices.is_empty());
-        let inside = poly::Indexed::new(&w.fillet.as_ref().expect("the fillet step ran").surface.carriageway);
+        let inside = poly::Indexed::new(&w.legs.as_ref().expect("the legs step ran").surface.carriageway);
         let n = b
             .ground
             .indices

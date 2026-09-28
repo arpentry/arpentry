@@ -1203,6 +1203,18 @@ mod tests {
     }
 
     #[test]
+    fn small_holes_are_filled() {
+        let shapes: Shapes = vec![vec![
+            vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            vec![[4.0, 4.0], [4.0, 4.5], [4.5, 4.5], [4.5, 4.0]],
+            vec![[6.0, 6.0], [6.0, 8.0], [8.0, 8.0], [8.0, 6.0]],
+        ]];
+        let out = fill_holes_under(shapes, 0.5);
+        assert_eq!(out[0].len(), 2);
+        assert!((area(&out) - 96.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn a_hole_is_outside() {
         // A square with a square hole, by hand.
         let shapes: Shapes = vec![vec![

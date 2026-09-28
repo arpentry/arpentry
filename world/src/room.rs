@@ -777,7 +777,7 @@ pub(crate) mod tests {
         let (ribbons, _) = crate::ribbon::run(roads);
         let (surface, _) = crate::surface::run(roads, &ribbons, facade);
         let (k, _) = kerb::run(roads, &surface, facade);
-        let (f, _) = crate::fillet::run(roads, &surface, &k, facade);
+        let (f, _) = crate::legs::run(roads, &surface, &k, facade);
         let bridges: Shapes = crate::surface::spans_grouped(roads)
             .into_iter()
             .filter(|(fam, ..)| *fam == crate::width::Family::Walk)
@@ -816,11 +816,11 @@ pub(crate) mod tests {
         (w, s)
     }
 
-    /// The world of `net` with no house, paved to the fillet, and the
+    /// The world of `net` with no house, paved to the junctions, and the
     /// pavement before the room step.
     fn roomed(net: &str) -> (World, String, Shapes) {
         let (w, ran) = built("flat", net, None, 100.0, &plan(Step::Room));
-        let before = w.fillet.as_ref().expect("the fillet step ran").surface.walk.clone();
+        let before = w.legs.as_ref().expect("the legs step ran").surface.walk.clone();
         (w, ran.last().to_string(), before)
     }
 
@@ -883,7 +883,7 @@ pub(crate) mod tests {
         assert!(s.contains("wall_gap=0/"), "{s}");
         assert!(!s.contains("walled=0 "), "{s}");
         assert!(poly::intersect(p, walls(&w)).is_empty());
-        assert!(poly::intersect(p, &w.fillet.as_ref().unwrap().surface.carriageway).is_empty());
+        assert!(poly::intersect(p, &w.legs.as_ref().unwrap().surface.carriageway).is_empty());
     }
 
     #[test]
@@ -911,7 +911,7 @@ pub(crate) mod tests {
         // along y = 2 — the notch is closed for it — and the notch itself
         // is paved by the rungs that reach into it.
         let (w, s) = paved("net:straight?len=200", "house:beside?d=2&l=20&notch=2");
-        let c = &w.fillet.as_ref().unwrap().surface.carriageway;
+        let c = &w.legs.as_ref().unwrap().surface.carriageway;
         assert!(poly::contains(c, [0.0, 1.9]));
         assert!(!poly::contains(c, [0.0, 2.5]), "no asphalt in the notch");
         assert!(poly::contains(c, [5.0, 1.9]) && !poly::contains(c, [5.0, 2.1]));
@@ -927,7 +927,7 @@ pub(crate) mod tests {
         // straight edge along the closed facade; the band bridges the
         // alley's mouth and stops there; the houses are never paved.
         let (w, _) = paved("net:straight?len=200", "house:row?d=2&l=10&gap=2");
-        let c = &w.fillet.as_ref().unwrap().surface.carriageway;
+        let c = &w.legs.as_ref().unwrap().surface.carriageway;
         assert!(poly::contains(c, [0.0, 1.9]));
         assert!(!poly::contains(c, [0.0, 2.5]), "no asphalt into the gap");
         let p = &w.room.as_ref().unwrap().surface.walk;
@@ -944,7 +944,7 @@ pub(crate) mod tests {
         // return and the corner are paved.
         let (w, s) = paved("net:tee?len=200", "house:beside?d=3&x=-8&l=10&w=10");
         let p = &w.room.as_ref().unwrap().surface.walk;
-        let c = &w.fillet.as_ref().unwrap().surface.carriageway;
+        let c = &w.legs.as_ref().unwrap().surface.carriageway;
         for q in [[-8.0, 2.9], [-2.9, 8.0], [-2.85, 2.85], [-4.0, 2.9], [-2.9, 4.0]] {
             assert!(poly::contains(p, q) || poly::contains(c, q), "{q:?} is bare: {s}");
         }

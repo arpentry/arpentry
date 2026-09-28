@@ -280,8 +280,8 @@ pub fn run(
 
     // **The asphalt is cut by the sheets, not by `surface.carriageway`.** A
     // sheet holds paving the surface does not — the span ribbons merged into
-    // its group, and the kerb returns the fillet added once a junction's
-    // decks had joined it — and the sheets are what `mesh` triangulates. Cut
+    // its group, and a deck junction's returns, which `legs` paves off the
+    // deck — and the sheets are what `mesh` triangulates. Cut
     // by the surface instead, a face would end where no mesh does.
     let (mut paved, mut paved_family): (Shapes, Vec<crate::width::Family>) = (Vec::new(), Vec::new());
     for s in &sheets.sheets {

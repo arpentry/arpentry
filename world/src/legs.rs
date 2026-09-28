@@ -7,7 +7,7 @@
 //! union left and rounded them with a masked closing. Every fact about the
 //! junction — which legs meet, which kerbs face each other, what radius the
 //! return takes — was recovered afterwards from the union by sampling
-//! ([`crate::fillet`]'s `kerbs_at`), and the closing left hairlines that
+//! (`fillet`'s `kerbs_at`), and the closing left hairlines that
 //! `OPEN_M`, `OVERLAP_M` and `fill_holes_under` then cleaned away.
 //!
 //! This step builds the same carriageway from what is known before any
@@ -29,9 +29,9 @@
 //! - **Each junction is one polygon.** Its legs are sorted by bearing, and
 //!   between each consecutive pair the facing kerbs — the left kerb of one,
 //!   the right kerb of the next — are intersected. A corner turning at least
-//!   [`fillet::BEND_MIN_DEG`] is replaced by a tangent arc of the narrower
-//!   leg's [`width::fillet_m`], its tangent length clamped at
-//!   [`fillet::RETURN_MAX_RADII`] radii; a shallower one is a mitre; a
+//!   [`BEND_MIN_DEG`] is replaced by a tangent arc of the narrower leg's
+//!   [`width::fillet_m`], its tangent length clamped at
+//!   [`RETURN_MAX_RADII`] radii; a shallower one is a mitre; a
 //!   sector of half a turn or more is the round join a ribbon has there.
 //! - **A leg's mouth** is where the farther of its two sides stops, and the
 //!   edge is trimmed to it with a square end. No round cap is drawn at any
@@ -39,23 +39,14 @@
 //!
 //! The step hands back a whole [`Surface`], as `fillet` did: the explicit
 //! carriageway, and the pavement laid back outside wherever that carriageway
-//! grew into it (`fillet`'s `laid_back`, the same rule), and it stands in
-//! for `fillet`'s: it measured better on every counter of the A/B in the
-//! plan but mesh slivers, which are the mesher's (+0.8–1.6 % across four
-//! lattice spacings, never the other sign).
-//!
-//! It still reports against [`crate::world::Fillet`]'s carriageway, over
-//! the same facade cut, until that step is deleted: what the explicit
-//! construction has that the fillet's lacks (`extra`) and what it lacks
-//! (`missing`), each region attributed to the nearest junction whose reach
-//! holds it or else to `elsewhere`, and per junction the farthest the two
-//! boundaries stand apart (`apart`).
+//! grew into it. It replaced `fillet` (deleted 2026-09-28) after measuring
+//! better on every counter of the A/B in the plan but mesh slivers, which
+//! are the mesher's (+0.8–1.6 % across four lattice spacings).
 
 use std::collections::HashMap;
 
-use crate::fillet;
 use crate::poly::{self, Pt, Ring, Shapes};
-use crate::step::{Residual, Summary};
+use crate::step::Summary;
 use crate::width::{self, Family};
 use crate::world::{connector, Facade, Polyline2, Roads, Surface};
 
@@ -65,26 +56,21 @@ use crate::world::{connector, Facade, Polyline2, Roads, Surface};
 /// differently; lapped by a centimetre, they overlap instead of touching.
 const LAP_M: f64 = 0.01;
 
+/// A kerb corner turning inward by less than this, in degrees, is a bend
+/// drawn as a chain of turns, not a corner worth a return: it is mitred.
+pub const BEND_MIN_DEG: f64 = 30.0;
+
+/// The longest a return runs along a kerb from its corner, in radii. The
+/// tangent points recede as `tan(τ/2)`, without bound as the kerbs come
+/// to meet head-on: a corner sharper than about 143° is two kerbs grazing
+/// each other, and its return stops here.
+pub const RETURN_MAX_RADII: f64 = 3.0;
+
 /// A kerb corner farther from the node than this many summed half-widths is
 /// not a corner: the two legs are near-collinear and of different widths,
 /// so their kerbs meet far off or behind the node. The side is joined as if
 /// it were convex, and counted as `far`.
 const FAR_HALF_WIDTHS: f64 = 4.0;
-
-/// The widest a junction's reach is taken to be past its farthest mouth, in
-/// metres: a difference region further from every junction than its reach
-/// plus this is `elsewhere`.
-const REACH_SLACK_M: f64 = 2.0;
-
-/// How far the boundary search looks, in metres: a disagreement larger than
-/// this reads as this.
-const SEARCH_M: f64 = 10.0;
-
-/// A disagreement at a junction larger than this, in metres, is counted.
-/// The arcs are drawn at the same angular step as the kernel's, but not at
-/// the same angles, so every return disagrees by its chord sagitta — a
-/// couple of centimetres at an 8 m radius.
-const APART_M: f64 = 0.1;
 
 /// One leg of a junction: an edge leaving the node.
 #[derive(Debug, Clone, PartialEq)]
@@ -116,13 +102,6 @@ pub struct Junction {
     /// How far the junction reaches from its node: the farthest mouth
     /// corner.
     pub reach_m: f64,
-    /// The farthest the explicit boundary and the fillet's stand apart in
-    /// the difference regions attributed to this junction, in metres.
-    pub apart_m: f64,
-    /// The area of those regions: what the explicit carriageway has there
-    /// that the fillet's lacks, and what it lacks.
-    pub extra_m2: f64,
-    pub missing_m2: f64,
 }
 
 /// A piece cut at the nodes it passes: what a junction's legs trim.
@@ -150,9 +129,6 @@ pub struct Legs {
     /// carriageway, facade-cut — every junction and every trimmed ground
     /// edge — and the pavement laid back outside it.
     pub surface: Surface,
-    /// What it has that the fillet's lacks, and what it lacks.
-    pub extra: Shapes,
-    pub missing: Shapes,
     /// The kerb stations `kerb_gap` counts as bare on this surface.
     pub gaps: Vec<Pt>,
 }
@@ -169,6 +145,7 @@ struct Tally {
     bent: usize,
     short: usize,
     landed: usize,
+    bends: usize,
 }
 
 pub fn run(
@@ -176,7 +153,6 @@ pub fn run(
     surface: &Surface,
     k: &crate::world::Kerb,
     facade: &Facade,
-    fillet: &Surface,
 ) -> (Legs, Summary) {
     let all: Vec<&Polyline2> = roads.pieces().collect();
     let ground = roads.plan.len();
@@ -245,12 +221,15 @@ pub fn run(
         // point the kerb walk found past the far node leaves a ring that
         // runs out along the next edge and back, and the edge itself can
         // fall outside it. The union makes paving it twice free.
+        let r0 = width::fillet_m(&all[e.piece].class);
         if e.trim[0] + e.trim[1] >= len {
             tally.short += 1;
             parts.extend(poly::buffer_line_capped(&e.pts, e.width_m, [false, false]));
+            parts.extend(bend_returns(&e.pts, e.width_m / 2.0, r0, 0.0, len, &mut tally));
             continue;
         }
         parts.extend(poly::buffer_line_capped(&between(&e.pts, a, b), e.width_m, [false, false]));
+        parts.extend(bend_returns(&e.pts, e.width_m / 2.0, r0, a, b, &mut tally));
     }
     // **A hole in the asphalt that no pavement fits in is asphalt.** The
     // remnant of a small island the returns did not quite close, a narrow
@@ -318,51 +297,6 @@ pub fn run(
     let gap_n = gaps.len();
     out.walk = pavement;
     let carriageway = &out.carriageway;
-    let extra = poly::difference(carriageway, &fillet.carriageway);
-    let missing = poly::difference(&fillet.carriageway, carriageway);
-
-    // Attribute every difference region to a junction, and read how far
-    // apart the two boundaries stand along it.
-    let ours = Boundary::new(carriageway);
-    let theirs = Boundary::new(&fillet.carriageway);
-    let near = Nodes::new(&junctions);
-    let mut apart = vec![0.0f64; junctions.len()];
-    let mut diff = vec![[0.0f64; 2]; junctions.len()];
-    let (mut near_m2, mut elsewhere_m2, mut elsewhere_apart) = (0.0, 0.0, 0.0f64);
-    let tagged = extra.iter().map(|s| (0, s)).chain(missing.iter().map(|s| (1, s)));
-    for (which, shape) in tagged {
-        let a = poly::area(std::slice::from_ref(shape));
-        let far = shape
-            .iter()
-            .flatten()
-            .filter_map(|&p| {
-                let (d0, d1) = (ours.distance(p), theirs.distance(p));
-                // A vertex of a difference lies on one of the two boundaries;
-                // the other is how far off the second one is.
-                (d0.min(d1) < 1e-3).then_some(d0.max(d1))
-            })
-            .fold(0.0, f64::max);
-        match near.of(shape) {
-            Some(j) => {
-                near_m2 += a;
-                apart[j] = apart[j].max(far);
-                diff[j][which] += a;
-            }
-            None => {
-                elsewhere_m2 += a;
-                elsewhere_apart = elsewhere_apart.max(far);
-            }
-        }
-    }
-    let mut spread = Residual::new();
-    for &d in &apart {
-        spread.push(d, 0.0);
-    }
-    let disagree = apart.iter().filter(|&&d| d > APART_M).count();
-    for ((j, d), m2) in junctions.iter_mut().zip(&apart).zip(&diff) {
-        j.apart_m = *d;
-        [j.extra_m2, j.missing_m2] = *m2;
-    }
     let summary = Summary::new()
         .with("junctions", junctions.len())
         .with("legs", junctions.iter().map(|j| j.legs.len()).sum::<usize>())
@@ -376,6 +310,7 @@ pub fn run(
         .with("short", tally.short)
         .with("tangled", tally.tangled)
         .with("landed", tally.landed)
+        .with("bends", tally.bends)
 
         .with_m2("junction_m2", junctions.iter().map(|j| poly::area(&j.shape)).sum::<f64>() + 0.0)
         .with("islands", filled)
@@ -383,15 +318,8 @@ pub fn run(
         .with_regions("carriageway", carriageway)
         .with_m2("pavement_m2", poly::area(&out.walk))
         .with_m2("followed_m2", poly::area(&followed))
-        .with_share("kerb_gap", gap_n, gap_of)
-        .with("extra_m2", format!("{:.1}", poly::area(&extra)))
-        .with("missing_m2", format!("{:.1}", poly::area(&missing)))
-        .with("near_m2", format!("{near_m2:.1}"))
-        .with("elsewhere_m2", format!("{elsewhere_m2:.1}"))
-        .with("elsewhere_apart", format!("{elsewhere_apart:.2}"))
-        .with_share("disagree", disagree, junctions.len())
-        .with_quantiles("apart", spread);
-    (Legs { junctions, edges, surface: out, extra, missing, gaps }, summary)
+        .with_share("kerb_gap", gap_n, gap_of);
+    (Legs { junctions, edges, surface: out, gaps }, summary)
 }
 
 /// `pts` without consecutive repeats.
@@ -1056,7 +984,7 @@ fn junction(
         .flat_map(|((_, k), &m)| k.iter().map(move |k| k.at(m)))
         .map(|p| (p[0] - at[0]).hypot(p[1] - at[1]))
         .fold(0.0, f64::max);
-    Junction { at, legs, shape, reach_m, apart_m: 0.0, extra_m2: 0.0, missing_m2: 0.0 }
+    Junction { at, legs, shape, reach_m }
 }
 
 /// The side between leg `a`'s left kerb `ka` and leg `b`'s right kerb `kb`,
@@ -1084,7 +1012,7 @@ fn side(at: Pt, a: &Leg, b: &Leg, ka: &Kerb, kb: &Kerb, tally: &mut Tally) -> Si
     let (da, db) = (ka.direction(s), kb.direction(t));
     let turn = std::f64::consts::PI - cross(da, db).atan2(dot(da, db));
     let mitre = Side { s, t, arc: vec![corner] };
-    if turn.to_degrees() < fillet::BEND_MIN_DEG {
+    if turn.to_degrees() < BEND_MIN_DEG {
         // A mitre is where the kerbs barely turn, so its corner stands about
         // a half-width from the node. One further off is two kerbs of
         // different widths meeting at a grazing angle — at worst a stub the
@@ -1103,13 +1031,13 @@ fn side(at: Pt, a: &Leg, b: &Leg, ka: &Kerb, kb: &Kerb, tally: &mut Tally) -> Si
     let r0 = width::fillet_m(&a.class).min(width::fillet_m(&b.class));
     let (pa, pb) = (a.path(true), b.path(false));
     let centre = |r: f64| meet(&Kerb::new(&pa, 1.0, r), &Kerb::new(&pb, -1.0, r));
-    // **A return runs at most [`fillet::RETURN_MAX_RADII`] radii along
+    // **A return runs at most [`RETURN_MAX_RADII`] radii along
     // either kerb from the corner**, and past that the radius shrinks until
     // it fits. The reach is read off the tangent points themselves, not off
     // the turn at the corner: a leg that bends a few metres out turns a
     // right-angled corner into a sliver of a fork, and the turn at the
     // corner cannot see that.
-    let reach = fillet::RETURN_MAX_RADII * r0;
+    let reach = RETURN_MAX_RADII * r0;
     let fits = |c: Option<(f64, f64, Pt)>| c.is_some_and(|(sc, tc, _)| sc - s <= reach && tc - t <= reach);
     let mut r = r0;
     let mut found = centre(r);
@@ -1133,6 +1061,71 @@ fn side(at: Pt, a: &Leg, b: &Leg, ka: &Kerb, kb: &Kerb, tally: &mut Tally) -> Si
     };
     tally.returns += 1;
     Side { s: sc, t: tc, arc: arc(c, r, ka.at(sc), kb.at(tc)) }
+}
+
+/// **A way that turns sharply at one of its own vertices gets a return
+/// there too.** No junction is there, so nothing above rounds it, and the
+/// ribbon's inner kerbs meet in a sharp corner no real kerb has: a street
+/// turning a right angle at a vertex, a hairpin drawn as one. The inside of
+/// every vertex of `pts` between arc `a` and `b` that turns at least
+/// [`BEND_MIN_DEG`] gets the return a junction corner of that turn would get
+/// — radius `r0`, the way's own [`width::fillet_m`], tangent to both inner
+/// kerbs, its tangent length at most [`RETURN_MAX_RADII`] radii and at most
+/// the kerb the vertex has to itself, shrinking the radius to fit. The
+/// outside is the ribbon's round join, as before.
+///
+/// Each return laps [`LAP_M`] into the road, so the union joins it to the
+/// ribbon rather than leaving the kerb line between them.
+fn bend_returns(pts: &[Pt], h: f64, r0: f64, a: f64, b: f64, tally: &mut Tally) -> Shapes {
+    let n = pts.len();
+    let mut at = vec![0.0; n];
+    for i in 1..n {
+        at[i] = at[i - 1] + seg(pts, i - 1);
+    }
+    let mut out: Shapes = Vec::new();
+    for i in 1..n.saturating_sub(1) {
+        if !(at[i] > a && at[i] < b) {
+            continue;
+        }
+        let (l1, l2) = (seg(pts, i - 1), seg(pts, i));
+        if !(l1 > 0.0 && l2 > 0.0) {
+            continue;
+        }
+        let u1 = [(pts[i][0] - pts[i - 1][0]) / l1, (pts[i][1] - pts[i - 1][1]) / l1];
+        let u2 = [(pts[i + 1][0] - pts[i][0]) / l2, (pts[i + 1][1] - pts[i][1]) / l2];
+        let turn = cross(u1, u2).atan2(dot(u1, u2));
+        if turn.abs().to_degrees() < BEND_MIN_DEG {
+            continue;
+        }
+        // The inside of the turn is the side it turns to; its kerbs' outward
+        // normals point into the ground there.
+        let sigma = turn.signum();
+        let (n1, n2) = (add([0.0, 0.0], left(u1), sigma), add([0.0, 0.0], left(u2), sigma));
+        let half_tan = (turn.abs() / 2.0).tan();
+        // The kerb this vertex has to itself on either side: the whole
+        // segment at an end, half of it where the next vertex may bend too,
+        // and never past the trims; less what the inner corner itself takes.
+        let before = if i == 1 { at[i] - a.max(0.0) } else { (0.5 * l1).min(at[i] - a) };
+        let after = if i + 2 == n { b.min(at[n - 1]) - at[i] } else { (0.5 * l2).min(b - at[i]) };
+        let room = before.min(after) - h * half_tan;
+        let reach = (RETURN_MAX_RADII * r0).min(room);
+        if !(reach > 0.0) {
+            continue;
+        }
+        let r = r0.min(reach / half_tan);
+        let len = r * half_tan;
+        // The inner corner, where the two inner kerbs meet.
+        let corner = add(pts[i], add(n1, n2, 1.0), h / (1.0 + dot(n1, n2)));
+        let (t1, t2) = (add(corner, u1, -len), add(corner, u2, len));
+        let centre = add(t1, n1, r);
+        let lap = |p: Pt, n: Pt| add(p, n, -LAP_M);
+        let mut ring = vec![lap(corner, add(n1, n2, 1.0)), lap(t1, n1)];
+        ring.extend(arc(centre, r, t1, t2));
+        ring.push(lap(t2, n2));
+        out.push(vec![poly::oriented(ring, true)]);
+        tally.bends += 1;
+    }
+    out
 }
 
 /// The round join between leg `a`'s left foot and leg `b`'s right foot, about
@@ -1199,77 +1192,6 @@ fn between(pts: &[Pt], a: f64, b: f64) -> Vec<Pt> {
     dedup(&out)
 }
 
-/// The edges of a set of regions on a grid, for "how far is the boundary
-/// from here" queries capped at [`SEARCH_M`].
-struct Boundary {
-    cells: HashMap<(i32, i32), Vec<(Pt, Pt)>>,
-}
-
-/// The boundary grid's cell, in metres.
-const CELL_M: f64 = 8.0;
-
-impl Boundary {
-    fn new(shapes: &Shapes) -> Boundary {
-        let mut cells: HashMap<(i32, i32), Vec<(Pt, Pt)>> = HashMap::new();
-        for ring in shapes.iter().flatten() {
-            for i in 0..ring.len() {
-                let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
-                for c in poly::cells_over([a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])], CELL_M) {
-                    cells.entry(c).or_default().push((a, b));
-                }
-            }
-        }
-        Boundary { cells }
-    }
-
-    fn distance(&self, p: Pt) -> f64 {
-        let b = [p[0] - SEARCH_M, p[1] - SEARCH_M, p[0] + SEARCH_M, p[1] + SEARCH_M];
-        poly::cells_over(b, CELL_M)
-            .filter_map(|c| self.cells.get(&c))
-            .flatten()
-            .map(|&(a, b)| poly::segment_distance(a, b, p))
-            .fold(SEARCH_M, f64::min)
-    }
-}
-
-/// The junctions on a grid, for "which junction's reach is this region in".
-struct Nodes<'a> {
-    junctions: &'a [Junction],
-    cells: HashMap<(i32, i32), Vec<usize>>,
-}
-
-/// The node grid's cell, in metres.
-const NODE_CELL_M: f64 = 32.0;
-
-impl<'a> Nodes<'a> {
-    fn new(junctions: &'a [Junction]) -> Nodes<'a> {
-        let mut cells: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
-        for (i, j) in junctions.iter().enumerate() {
-            let r = j.reach_m + REACH_SLACK_M;
-            for c in poly::cells_over([j.at[0] - r, j.at[1] - r, j.at[0] + r, j.at[1] + r], NODE_CELL_M) {
-                cells.entry(c).or_default().push(i);
-            }
-        }
-        Nodes { junctions, cells }
-    }
-
-    /// The junction whose reach holds most of `shape`'s vertices: the one
-    /// nearest, relative to its reach, to any of them.
-    fn of(&self, shape: &poly::Shape) -> Option<usize> {
-        let mut best: Option<(f64, usize)> = None;
-        for &p in shape.iter().flatten() {
-            for &j in self.cells.get(&poly::cell_of(p, NODE_CELL_M)).into_iter().flatten() {
-                let jn = &self.junctions[j];
-                let d = (p[0] - jn.at[0]).hypot(p[1] - jn.at[1]) - (jn.reach_m + REACH_SLACK_M);
-                if d <= 0.0 && best.is_none_or(|(b, _)| d < b) {
-                    best = Some((d, j));
-                }
-            }
-        }
-        best.map(|(_, j)| j)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::pipeline::tests::{built, plan};
@@ -1312,8 +1234,6 @@ mod tests {
         assert!((a - exact).abs() < 0.01 * exact, "{a} vs {exact}: {s}");
         assert_eq!(l.surface.carriageway.len(), 1, "{s}");
         assert_eq!(l.surface.carriageway[0].len(), 1, "no holes: {s}");
-        assert!(s.num("near_m2") < 1.0, "{s}");
-        assert_eq!(s.num("elsewhere_m2"), 0.0, "{s}");
     }
 
     #[test]
@@ -1323,7 +1243,11 @@ mod tests {
         assert_eq!(l.junctions.len(), 1, "{s}");
         assert_eq!(s.num("returns"), 2.0, "{s}");
         assert_eq!(s.num("rounds"), 1.0, "{s}");
-        assert!(s.num("near_m2") < 1.0, "{s}");
+        // The corner point of each notch is asphalt, and past the arc is not.
+        let c = 2.75 + 4.0 * (1.0 - 1.0 / 2.0f64.sqrt()) - 0.05;
+        assert!(poly::contains(&l.surface.carriageway, [c, c]), "{s}");
+        assert!(poly::contains(&l.surface.carriageway, [-c, c]), "{s}");
+        assert!(!poly::contains(&l.surface.carriageway, [6.75, 6.75]), "{s}");
     }
 
     /// **A junction standing on a deck is a junction.** The three legs of
@@ -1363,8 +1287,7 @@ mod tests {
         let (ribbons, _) = crate::ribbon::run(roads);
         let (surface, _) = crate::surface::run(roads, &ribbons, facade);
         let (k, _) = crate::kerb::run(roads, &surface, facade);
-        let (f, _) = crate::fillet::run(roads, &surface, &k, facade);
-        let (l, s) = run(roads, &surface, &k, facade, &f.surface);
+        let (l, s) = run(roads, &surface, &k, facade);
         assert_eq!(s.num("landed"), 1.0, "{s}");
         assert_eq!(l.junctions.len(), 1, "{s}");
         assert_eq!(l.junctions[0].at, [5.0, 0.0], "{s}");
@@ -1394,13 +1317,11 @@ mod tests {
         let (ribbons, _) = crate::ribbon::run(roads);
         let (surface, _) = crate::surface::run(roads, &ribbons, facade);
         let (k, _) = crate::kerb::run(roads, &surface, facade);
-        let (f, _) = crate::fillet::run(roads, &surface, &k, facade);
-        let (l, s) = run(roads, &surface, &k, facade, &f.surface);
+        let (l, s) = run(roads, &surface, &k, facade);
         assert_eq!(s.num("returns"), 2.0, "{s}");
         let c = 2.75 + 4.0 * (1.0 - 1.0 / 2.0f64.sqrt()) - 0.05;
         assert!(poly::contains(&l.surface.carriageway, [c, c]), "the east return: {s}");
         assert!(poly::contains(&l.surface.carriageway, [-c, c]), "the west return: {s}");
-        assert!(s.num("near_m2") < 1.0, "{s}");
     }
 
     /// **A gap between two carriageways that no pavement fits in is
@@ -1420,8 +1341,7 @@ mod tests {
         let (ribbons, _) = crate::ribbon::run(roads);
         let (surface, _) = crate::surface::run(roads, &ribbons, facade);
         let (k, _) = crate::kerb::run(roads, &surface, facade);
-        let (f, _) = crate::fillet::run(roads, &surface, &k, facade);
-        let (l, s) = run(roads, &surface, &k, facade, &f.surface);
+        let (l, s) = run(roads, &surface, &k, facade);
         assert!(poly::contains(&l.surface.carriageway, [80.0, 3.0]), "{s}");
         assert!(!poly::contains(&l.surface.carriageway, [-50.0, 3.7]), "wide enough to stay ground: {s}");
     }
@@ -1438,8 +1358,78 @@ mod tests {
 
     #[test]
     fn a_dual_carriageway_has_no_junction() {
-        let (_, s) = world("net:dual?gap=4&len=200");
+        let (w, s) = world("net:dual?gap=4&len=200");
         assert_eq!(s.num("junctions"), 0.0, "{s}");
-        assert_eq!(s.num("extra_m2") + s.num("missing_m2"), 0.0, "{s}");
+        assert_eq!(w.legs.as_ref().unwrap().surface.carriageway.len(), 2, "the median stays: {s}");
+    }
+
+    // The fillet's specimens, carried over when it was deleted: what its
+    // tests held of the kerb returns, asked of the junctions built from
+    // their legs.
+
+    /// The four surface steps over a world whose roads a specimen changed.
+    fn pave(w: &World) -> (Legs, Summary) {
+        let roads = w.roads.as_ref().expect("the drape step ran");
+        let facade = w.facade.as_ref().expect("the facade step ran");
+        let (ribbons, _) = crate::ribbon::run(roads);
+        let (surface, _) = crate::surface::run(roads, &ribbons, facade);
+        let (k, _) = crate::kerb::run(roads, &surface, facade);
+        run(roads, &surface, &k, facade)
+    }
+
+    #[test]
+    fn a_bend_within_one_way_rounds_its_inner_side_only() {
+        // The road turns a right angle at one vertex: the round join rounds
+        // the outside, and the inside is a corner like any other — no real
+        // kerb turns sharp — that gets the road's own return.
+        let (w, s) = world("net:corner?d=5&len=200");
+        let l = w.legs.as_ref().unwrap();
+        let c = 2.75 + 4.0 * (1.0 - 1.0 / 2.0f64.sqrt()) - 0.05;
+        let inner = [[c, c], [-c, c], [c, -c], [-c, -c]];
+        assert_eq!(inner.iter().filter(|&&p| poly::contains(&l.surface.carriageway, p)).count(), 1, "one inner return: {s}");
+        assert!(s.to_string().contains("kerb_gap=0/"), "{s}");
+    }
+
+    #[test]
+    fn a_roundabout_keeps_its_island_and_its_pavement() {
+        let (w, s) = world("net:roundabout?r=15&d=5&len=200");
+        let l = w.legs.as_ref().unwrap();
+        assert_eq!(l.surface.carriageway.len(), 1, "{s}");
+        assert_eq!(l.surface.carriageway[0].len(), 2, "the island is the only hole: {s}");
+        assert!(s.to_string().contains("kerb_gap=0/"), "{s}");
+    }
+
+    #[test]
+    fn a_hook_is_not_filled_to_a_disc() {
+        // Road-e leaves the tee and hooks back on a 5 m radius: the two
+        // straights' kerbs are 4.5 m apart, under `2r`, and a closing of the
+        // junction's surroundings filled the whole inside.
+        let (w, s) = world("net:tee?hook=5&len=200");
+        let l = w.legs.as_ref().unwrap();
+        assert!(!poly::contains(&l.surface.carriageway, [10.0, 5.0]), "the inside of the hook: {s}");
+        assert!(!poly::contains(&l.surface.carriageway, [8.0, 5.0]), "{s}");
+        // Nor the half-metre between the hook's end and the leg's kerb.
+        assert!(!poly::contains(&l.surface.carriageway, [3.0, 10.0]), "{s}");
+        let c = 2.75 + 4.0 * (1.0 - 1.0 / 2.0f64.sqrt()) - 0.05;
+        assert!(poly::contains(&l.surface.carriageway, [-c, c]), "{s}");
+        assert!(poly::contains(&l.surface.carriageway, [c, c]), "{s}");
+    }
+
+    #[test]
+    fn the_narrower_way_sets_the_radius() {
+        // A service driveway on a primary: the corners between them get the
+        // driveway's 3 m, not the primary's 8 m. A 3 m return reaches past a
+        // point 2.2 m off both kerbs' corner; an 8 m one would reach past
+        // 5.8 m, and a 3 m one leaves that ground.
+        let mut w = built("flat", "net:tee?class=primary&len=200", None, 100.0, &plan(Step::Facade)).0;
+        let leg = w.roads.as_mut().unwrap().plan.iter_mut().find(|l| l.id == "leg").unwrap();
+        leg.class = "service".into();
+        leg.width_m = width::of("service", "");
+        let (l, s) = pave(&w);
+        assert_eq!(s.num("returns"), 2.0, "{s}");
+        let (hp, hs) = (width::of("primary", "") / 2.0, width::of("service", "") / 2.0);
+        let near = |r: f64| r * (1.0 - 1.0 / 2.0f64.sqrt()) - 0.05;
+        assert!(poly::contains(&l.surface.carriageway, [hs + near(3.0), hp + near(3.0)]), "{s}");
+        assert!(!poly::contains(&l.surface.carriageway, [hs + near(8.0), hp + near(8.0)]), "{s}");
     }
 }

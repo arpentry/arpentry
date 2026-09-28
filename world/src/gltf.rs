@@ -157,10 +157,10 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
             doc.loops("kerb", &k.surface.walk, t, [0.9, 0.6, 0.3]);
         }
     }
-    if let (Some(f), Some(t)) = (&world.fillet, &world.terrain) {
-        let shapes: Shapes = f.surface.carriageway.iter().chain(f.surface.walk.iter()).cloned().collect();
+    if let (Some(l), Some(t)) = (&world.legs, &world.terrain) {
+        let shapes: Shapes = l.surface.carriageway.iter().chain(l.surface.walk.iter()).cloned().collect();
         if outlines && !shapes.is_empty() {
-            doc.loops("fillet", &shapes, t, [0.3, 0.3, 0.35]);
+            doc.loops("legs", &shapes, t, [0.3, 0.3, 0.35]);
         }
     }
     if let (Some(r), Some(t)) = (&world.room, &world.terrain) {

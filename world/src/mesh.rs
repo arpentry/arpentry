@@ -1012,7 +1012,7 @@ pub(crate) mod tests {
     fn a_straight_on_flat_ground_meshes_to_its_area() {
         let (w, s) = world("flat", "net:straight?len=200");
         let c = of(&w, Material::Carriageway);
-        let want = poly::area(&w.fillet.as_ref().expect("the fillet step ran").surface.carriageway);
+        let want = poly::area(&w.legs.as_ref().expect("the legs step ran").surface.carriageway);
         assert!((area_of(&c) - want).abs() / want < 1e-9, "{} vs {want}", area_of(&c));
         assert!(c.positions.iter().all(|p| p[2] == 400.0));
         assert!(of(&w, Material::Pavement).indices.is_empty());

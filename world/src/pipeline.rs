@@ -17,8 +17,8 @@
 //! made where it is decided rather than where it is relied on.
 //!
 //! **Which surface is the latest.** The paved surface is re-cut four times
-//! — the surface step lays it, the kerb fills its strips, the fillet rounds
-//! its corners, the room paves its edges — and the steps downstream used to
+//! — the surface step lays it, the kerb fills its strips, the legs build
+//! its junctions, the room paves its edges — and the steps downstream used to
 //! ask the world for "the latest", a resolver on `World` that walked those
 //! four layers and returned whichever had been filled. Then it was a literal
 //! here, assembled field by field out of two of them. Now there is nothing
@@ -47,7 +47,7 @@ use arpentry_server::dem::Dem;
 use crate::step::{Step, Summary};
 use crate::world::World;
 use crate::{
-    arrangement, bench, building, crossing, drape, facade, fillet, kerb, legs, mesh, partition, profile, reference, ribbon,
+    arrangement, bench, building, crossing, drape, facade, kerb, legs, mesh, partition, profile, reference, ribbon,
     room, sheet, structure, surface, terrain,
 };
 
@@ -157,15 +157,8 @@ pub fn apply(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary
             world.kerb = Some(k);
             summary
         }
-        Step::Fillet => {
-            let (f, summary) =
-                fillet::run(roads(world), surface(world), kerb(world), facade(world));
-            world.fillet = Some(f);
-            summary
-        }
         Step::Legs => {
-            let (l, summary) =
-                legs::run(roads(world), surface(world), kerb(world), facade(world), &fillet(world).surface);
+            let (l, summary) = legs::run(roads(world), surface(world), kerb(world), facade(world));
             world.legs = Some(l);
             summary
         }
@@ -270,7 +263,6 @@ layer!(facade, facade, crate::world::Facade, "facade");
 layer!(ribbons, ribbons, crate::world::Ribbons, "ribbon");
 layer!(surface, surface, crate::world::Surface, "surface");
 layer!(kerb, kerb, crate::world::Kerb, "kerb");
-layer!(fillet, fillet, crate::world::Fillet, "fillet");
 layer!(legs, legs, crate::legs::Legs, "legs");
 layer!(room, room, crate::world::Room, "room");
 layer!(sheets, sheets, crate::world::Sheets, "sheet");

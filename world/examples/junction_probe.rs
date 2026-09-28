@@ -153,7 +153,7 @@ fn main() {
 
     // Does the pavement cross the asphalt, as polygons?
     let room = world.room.as_ref().unwrap();
-    let fillet = world.fillet.as_ref().unwrap();
+    let fillet = world.legs.as_ref().unwrap();
     let surface = world.surface.as_ref().unwrap();
     let sheet_car: Vec<Vec<Vec<[f64; 2]>>> = sheets
         .sheets
@@ -168,7 +168,7 @@ fn main() {
     println!("\npavement against asphalt, as polygons:");
     println!("  room.pavement          m2={:.1}", a(&room.surface.walk));
     println!("  surface.carriageway    m2={:.1}  overlap={:.2}", a(&surface.carriageway), x(&surface.carriageway, &room.surface.walk));
-    println!("  fillet.carriageway     m2={:.1}  overlap={:.2}", a(&fillet.surface.carriageway), x(&fillet.surface.carriageway, &room.surface.walk));
+    println!("  legs.carriageway       m2={:.1}  overlap={:.2}", a(&fillet.surface.carriageway), x(&fillet.surface.carriageway, &room.surface.walk));
     println!("  sheets' carriageway    m2={:.1}  overlap={:.2}", a(&sheet_car), x(&sheet_car, &room.surface.walk));
     println!("  surface.ballast        m2={:.1}  overlap={:.2}", a(&surface.ballast), x(&surface.ballast, &room.surface.walk));
 
@@ -193,7 +193,7 @@ fn main() {
         println!("\npaved area within {r} m of the probe, stage by stage:");
         println!("  surface.walk      {:8.1}", a(&surface.walk));
         println!("  kerb.pavement     {:8.1}", a(&kerb.surface.walk));
-        println!("  fillet.pavement   {:8.1}", a(&fillet.surface.walk));
+        println!("  legs.pavement     {:8.1}", a(&fillet.surface.walk));
         println!("  room.pavement     {:8.1}", a(&room.surface.walk));
         println!("  surface.carriage  {:8.1}", a(&surface.carriageway));
         println!("  surface.ballast   {:8.1}", a(&surface.ballast));
@@ -201,7 +201,7 @@ fn main() {
         for (name, s) in [
             ("surface.walk", &surface.walk),
             ("kerb.pavement", &kerb.surface.walk),
-            ("fillet.pavement", &fillet.surface.walk),
+            ("legs.pavement", &fillet.surface.walk),
             ("room.pavement", &room.surface.walk),
         ] {
             let near = arpentry_world::poly::intersect(s, &disc);

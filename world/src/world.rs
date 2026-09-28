@@ -28,7 +28,6 @@ pub struct World {
     pub ribbons: Option<Ribbons>,
     pub surface: Option<Surface>,
     pub kerb: Option<Kerb>,
-    pub fillet: Option<Fillet>,
     pub legs: Option<crate::legs::Legs>,
     pub room: Option<Room>,
     pub sheets: Option<Sheets>,
@@ -52,7 +51,6 @@ impl World {
             ribbons: None,
             surface: None,
             kerb: None,
-            fillet: None,
             legs: None,
             room: None,
             sheets: None,
@@ -539,7 +537,7 @@ pub struct Ribbons {
 ///
 /// **Four steps produce one of these, and each is the surface as it stood
 /// when that step finished**: the surface step lays it, the kerb fills the
-/// strip to every attached sidewalk, the fillet rounds the junction corners,
+/// strip to every attached sidewalk, the legs build the junction corners,
 /// the room paves the edges. A step passes through what it did not change,
 /// so the last one to run holds the whole of the paving and "which layer is
 /// the latest" is not a question anything has to answer — it is the last
@@ -597,18 +595,6 @@ pub struct Kerb {
     pub rungs: Shapes,
     /// Every attached station, for the kerb-gap check downstream.
     pub attached: Vec<crate::kerb::Attached>,
-}
-
-/// The corners rounded: the carriageway with its kerb returns, and the
-/// pavement re-cut by them.
-#[derive(Debug, Clone, Default)]
-pub struct Fillet {
-    /// The paved surface as this step leaves it: the carriageway with its
-    /// returns, and the pavement re-cut by them.
-    pub surface: Surface,
-    pub corners: Vec<crate::fillet::Corner>,
-    /// What the closing added, unioned.
-    pub fillets: Shapes,
 }
 
 /// The room filled: the pavement extended to every wall within reach.

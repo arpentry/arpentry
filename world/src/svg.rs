@@ -26,7 +26,7 @@ use crate::frame::Rect;
 use crate::poly::{self, Shapes};
 use crate::width::{self, Family};
 use crate::world::{Sheets, 
-    Bench, Crossings, Facade, Fillet, Kerb, Kind, Polyline3, Profile, Profiles, Ribbon, Room, Solved, Structure,
+    Bench, Crossings, Facade, Kerb, Kind, Polyline3, Profile, Profiles, Ribbon, Room, Solved, Structure,
     Surface, Tri, World,
 };
 
@@ -94,19 +94,16 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
         ribbon(&mut s, &ribbons);
     }
     if let Some(surf) = &world.surface {
-        surface(&mut s, surf, world.fillet.is_none(), world.kerb.is_none(), &view);
+        surface(&mut s, surf, world.legs.is_none(), world.kerb.is_none(), &view);
     }
     if let Some(k) = &world.kerb {
-        kerb(&mut s, k, world.fillet.is_none(), &view);
+        kerb(&mut s, k, world.legs.is_none(), &view);
     }
-    if let Some(f) = &world.fillet {
-        fillet(&mut s, f, world.room.is_none(), &view);
+    if let Some(l) = &world.legs {
+        legs(&mut s, l, world.room.is_none(), &view);
     }
     if let Some(r) = &world.room {
         room(&mut s, r, &view);
-    }
-    if let Some(l) = &world.legs {
-        legs(&mut s, l, &view);
     }
     if let Some(sh) = &world.sheets {
         sheets(&mut s, sh, &view);
@@ -206,7 +203,7 @@ fn surface(s: &mut String, surf: &Surface, carriageway: bool, walk: bool, view: 
 const BALLAST_FILL: &str = "#9e968a";
 
 /// The kerb layer: the pavement, its inner edge the kerb line, until the
-/// fillet re-cuts it.
+/// junctions re-cut it.
 fn kerb(s: &mut String, k: &Kerb, pavement: bool, view: &Rect) {
     s.push_str("<g id=\"kerb\">\n");
     if pavement {
@@ -215,30 +212,17 @@ fn kerb(s: &mut String, k: &Kerb, pavement: bool, view: &Rect) {
     s.push_str("</g>\n");
 }
 
-/// The fillet layer: the carriageway with its kerb returns, the pavement
-/// re-cut by them.
-fn fillet(s: &mut String, f: &Fillet, pavement: bool, view: &Rect) {
-    s.push_str("<g id=\"fillet\">\n");
-    filled(s, "carriageway", "#8c8c94", &f.surface.carriageway, view);
-    if pavement {
-        filled(s, "pavement", "#e0a050", &f.surface.walk, view);
-    }
-    s.push_str("</g>\n");
-}
-
-/// The legs layer: the explicit junctions outlined, and where the explicit
-/// carriageway disagrees with the fillet's — green what it has that the
-/// fillet's lacks, red what it lacks. Drawn over the surfaces, because it is
-/// a comparison and not one.
-fn legs(s: &mut String, l: &crate::legs::Legs, view: &Rect) {
+/// The legs layer: the carriageway built from the junctions' legs, the
+/// pavement laid back outside it until the room takes over, each junction
+/// outlined, and the kerb stations still bare.
+fn legs(s: &mut String, l: &crate::legs::Legs, pavement: bool, view: &Rect) {
     s.push_str("<g id=\"legs\">\n");
-    filled(s, "extra", "#20a040", &l.extra, view);
-    filled(s, "missing", "#d0202a", &l.missing, view);
+    filled(s, "carriageway", "#8c8c94", &l.surface.carriageway, view);
+    if pavement {
+        filled(s, "pavement", "#e0a050", &l.surface.walk, view);
+    }
     let junctions: Shapes = l.junctions.iter().flat_map(|j| j.shape.iter().cloned()).collect();
     outlined(s, "junction", "#2040d0", 0.1, &junctions, view);
-    if view.width() < DEBUG_VIEW_M {
-        outlined(s, "pavement", "#8020c0", 0.08, &l.surface.walk, view);
-    }
     for g in l.gaps.iter().filter(|g| view.contains(**g)) {
         let _ = write!(s, "<circle cx=\"{}\" cy=\"{}\" r=\"0.5\" fill=\"#8020c0\"/>\n", num(g[0]), num(-g[1]));
     }
@@ -720,12 +704,12 @@ mod tests {
     }
 
     #[test]
-    fn the_fillet_replaces_both_surfaces() {
-        let (w, _) = crate::fillet::tests::world("net:crossing?d=6&len=100");
+    fn the_junctions_replace_both_surfaces() {
+        let (w, _) = crate::pipeline::tests::built("flat", "net:crossing?d=6&len=100", None, 100.0, &crate::pipeline::tests::plan(crate::step::Step::Legs));
         let svg = write_svg(&w, None);
         assert_eq!(svg.matches("<path id=\"carriageway\"").count(), 1, "{svg}");
         assert_eq!(svg.matches("<path id=\"pavement\"").count(), 1);
-        assert!(svg.find("id=\"axis\"").unwrap() > svg.find("id=\"fillet\"").unwrap());
+        assert!(svg.find("id=\"axis\"").unwrap() > svg.find("id=\"legs\"").unwrap());
     }
 
     #[test]

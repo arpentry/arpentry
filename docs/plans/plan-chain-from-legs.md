@@ -393,6 +393,23 @@ span — an abutment's round cap grazing a real pocket. A rule here needs the
 deck's height or its square footprint (`surface::spans_masked`), not any
 contact.
 
+**`fillet` is deleted (2026-09-28).** `legs::run` no longer takes the
+fillet's surface, and its comparison counters (`extra`, `missing`, `apart`,
+`near_m2`, `elsewhere_*`, `disagree`) went with it. Porting the fillet's
+tests found one thing the wiring had dropped: **a way that turns sharply at
+one of its own vertices got no return**, because `legs` rounds corners only
+at junctions and `fillet` found them in the union's boundary.
+`legs::bend_returns` gives the inside of every vertex turning at least
+`BEND_MIN_DEG` the return a junction corner of that turn gets, at the way's
+own radius, shrunk to fit the kerb the vertex has to itself: `bends` 311 on
+the loop box, carriageway +98 m², `kerb_m2` 31 669 → 31 561, `split_m2`
+18 559 → 18 455. The cost is `wall_gap` 12 → 18 and `scraps` 670 → 683, and
+the six gaps are one site (−365, 1018): a return 1.3 m past a junction eats
+a footway's round cap, and the laid-back pavement leaves a C-shaped scrap
+across bare ground from the kerb. The laid-back rule is the one to fix there,
+not the return. The ported specimens are `legs::tests`' bend, roundabout,
+hook and narrower-way tests.
+
 ## After the first slice, in order
 
 1. **Sidewalks as bands from their attachments** (`kerb::Attached` already
