@@ -213,6 +213,22 @@ fn walled_share(region: &poly::Shape, walls: &Indexed) -> f64 {
     if total > 0.0 { against / total } else { 0.0 }
 }
 
+/// Whether `region` reaches a footbridge: a vertex of it inside one, or an
+/// edge with one [`EDGE_M`] outside it.
+fn onto(region: &poly::Shape, bridges: &Indexed) -> bool {
+    if bridges.is_empty() {
+        return false;
+    }
+    region.iter().any(|ring| {
+        (0..ring.len()).any(|i| {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            let t = poly::unit([b[0] - a[0], b[1] - a[1]]);
+            let m = [(a[0] + b[0]) * 0.5 + t[1] * EDGE_M, (a[1] + b[1]) * 0.5 - t[0] * EDGE_M];
+            bridges.contains(a) || bridges.contains(m)
+        })
+    })
+}
+
 /// How much of a small region's boundary must be against a wall for it to
 /// be the strip this step drew there rather than something a cut left.
 ///
@@ -244,6 +260,7 @@ const PROBE_M: f64 = 0.15;
 /// Paves the kerbs that run along facades, and the pockets.
 pub fn run(
     paving: &Surface,
+    walk_spans: &Shapes,
     attached: &[kerb::Attached],
     facade: &Facade,
 ) -> (Room, Summary) {
@@ -345,9 +362,16 @@ pub fn run(
     // 1.8 m². They are bounded by the wall they were drawn for. The two
     // scraps are not: 1 % and 0 %.
     let paved = facade.pavement(&poly::union_of(&[&u, &pockets]), &senior);
+    // **Nor a piece that runs onto a footbridge.** A footway's ground stub
+    // between the kerb and the bridge it climbs onto is a few square metres
+    // and has no wall, and was dropped as a scrap — leaving the kerb beside
+    // it bare and the footbridge landing on nothing. No surface step paves a
+    // walk span, so nothing here could see the bridge it belongs to.
+    let bridges = Indexed::new(walk_spans);
     let (pavement, loose): (Shapes, Shapes) = paved.into_iter().partition(|r| {
         poly::area(std::slice::from_ref(r)) >= RUN_MIN_M * PAVEMENT_MIN_M
             || walled_share(r, &walls) >= WALLED_SHARE
+            || onto(r, &bridges)
     });
     let (loose_n, loose_m2) = (loose.len(), poly::area(&loose));
     // **What each scrap was made by.** A region too narrow to hold a
@@ -707,6 +731,43 @@ pub(crate) mod tests {
     use crate::step::Step;
 
     use super::*;
+
+    /// **A footway's stub onto a footbridge is kept.** A footway leaves the
+    /// street's kerb and climbs onto a bridge 2.25 m out: the stub between is
+    /// 4.5 m², under the smallest pavement this step draws, has no wall, and
+    /// was dropped as a scrap — the bridge landing on bare ground.
+    #[test]
+    fn a_stub_onto_a_footbridge_is_kept() {
+        let mut w = built("flat", "net:straight?len=200", None, 100.0, &plan(Step::Facade)).0;
+        let roads = w.roads.as_mut().unwrap();
+        let mut stub = roads.plan[0].clone();
+        stub.id = "stub".into();
+        stub.class = "footway".into();
+        stub.width_m = crate::width::WALK_M;
+        stub.pts = vec![[0.0, 0.0], [0.0, 5.0]];
+        let mut deck = stub.clone();
+        deck.id = "deck".into();
+        deck.kind = crate::world::Kind::Bridge(1);
+        deck.pts = vec![[0.0, 5.0], [0.0, 40.0]];
+        roads.plan.push(stub);
+        roads.spans.push(deck);
+        let roads = w.roads.as_ref().unwrap();
+        let facade = w.facade.as_ref().unwrap();
+        let (ribbons, _) = crate::ribbon::run(roads);
+        let (surface, _) = crate::surface::run(roads, &ribbons, facade);
+        let (k, _) = kerb::run(roads, &surface, facade);
+        let (f, _) = crate::fillet::run(roads, &surface, &k, facade);
+        let bridges: Shapes = crate::surface::spans_grouped(roads)
+            .into_iter()
+            .filter(|(fam, ..)| *fam == crate::width::Family::Walk)
+            .flat_map(|(.., s)| s)
+            .collect();
+        let (r, s) = run(&f.surface, &bridges, &k.attached, facade);
+        assert!(poly::contains(&r.surface.walk, [0.0, 4.0]), "{s}");
+        // Without the bridge it is the scrap it looks like.
+        let (r, s) = run(&f.surface, &Vec::new(), &k.attached, facade);
+        assert!(!poly::contains(&r.surface.walk, [0.0, 4.0]), "{s}");
+    }
 
     /// The world of `net` with the house of `house`, paved to the room.
     pub(crate) fn paved(net: &str, house: &str) -> (World, String) {

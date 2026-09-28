@@ -170,7 +170,15 @@ pub fn apply(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary
             summary
         }
         Step::Room => {
-            let (r, summary) = room::run(&fillet(world).surface, &kerb(world).attached, facade(world));
+            // The footbridges: no surface step paves a walk span, and the
+            // room has to know one is there to keep the stub that climbs it.
+            let walk_spans: crate::poly::Shapes = surface::spans_grouped(roads(world))
+                .into_iter()
+                .filter(|(f, ..)| *f == crate::width::Family::Walk)
+                .flat_map(|(.., s)| s)
+                .collect();
+            let (r, summary) =
+                room::run(&fillet(world).surface, &walk_spans, &kerb(world).attached, facade(world));
             world.room = Some(r);
             summary
         }
