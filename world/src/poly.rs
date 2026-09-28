@@ -186,7 +186,32 @@ pub fn slice(outer: &Shapes, cuts: &[Ring]) -> Shapes {
 /// A vertex counts as lying on a segment when it is within [`GRID_M`] of it
 /// and is not one of its ends — the points are all on one lattice already, so
 /// the test is about *which* lattice point, not about a tolerance.
+///
+/// **Repeated until nothing is inserted.** A vertex put on a segment bends it
+/// by up to a grid step, and a vertex within a grid step of the bent piece
+/// need not be within one of the straight segment it came from: on the loop
+/// box a carriageway's 9.3 m edge took a corner 4.5e-5 m off it, and the
+/// pavement's next corner lay 8.8e-5 m off the new piece but 1.3e-4 m off the
+/// old edge. Tested once against the old edge it was skipped, and the mesh
+/// cracked there (`unmet`). Each pass tests the pieces the last one made.
 pub fn conform(shapes: &Shapes) -> Shapes {
+    let count = |s: &Shapes| s.iter().flatten().map(Vec::len).sum::<usize>();
+    let mut out = conform_once(shapes);
+    // A pass only inserts, so the count settling is the fixpoint. Two passes
+    // settle every case the loop box has; the cap is a guard, not a budget.
+    for _ in 0..8 {
+        let next = conform_once(&out);
+        if count(&next) == count(&out) {
+            break;
+        }
+        out = next;
+    }
+    out
+}
+
+/// One pass of [`conform`]: every segment tested against the vertices as
+/// they were when the pass began.
+fn conform_once(shapes: &Shapes) -> Shapes {
     let mut index: HashMap<(i32, i32), Vec<Pt>> = HashMap::new();
     for p in shapes.iter().flatten().flatten() {
         index.entry(cell_of(*p, CELL_M)).or_default().push(*p);
@@ -1158,6 +1183,23 @@ mod tests {
         assert_eq!(on_line(&done), 0, "the shared line is shared segment for segment");
         // Nothing moved and nothing was lost.
         assert!((area(&done) - area(&faces)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_vertex_on_a_piece_conform_made_is_on_it() {
+        // The loop box's site, to the digit. The carriageway's edge runs
+        // straight from (980.0734, 165.6236) to (976.9768, 156.7938); the
+        // pavement beside it has two corners on that line, the first 4.5e-5 m
+        // off it and the second 1.3e-4 m off it but 8.8e-5 m off the piece
+        // the first one makes. Both are on the carriageway's edge.
+        let road: Shape = vec![vec![[980.0734, 165.6236], [976.9768, 156.7938], [970.0, 160.0]]];
+        let walk: Shape = vec![vec![[978.9151, 162.3209], [979.0420, 162.6830], [980.0734, 165.6236], [990.0, 160.0]]];
+        let done = conform(&vec![road, walk]);
+        let ring = &done[0][0];
+        for p in [[978.9151, 162.3209], [979.0420, 162.6830]] {
+            assert!(ring.contains(&p), "{p:?} is a vertex of the road's edge: {ring:?}");
+        }
+        assert_eq!(ring.len(), 5);
     }
 
     #[test]
