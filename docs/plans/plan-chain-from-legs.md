@@ -304,18 +304,41 @@ left:
 | `unmet` | 0 | 2 |
 | `wall_m2` / `kerb_m2` / `split_m2` | 10 886 / 32 715 / 19 550 | 10 225 / 31 393 / 18 240 |
 
-What is left, all read at a site:
+**The three wall-gap sites, fixed (2026-09-28).** Each was read with a
+coverage grid of the site, and two of the three were `room`'s, not the
+construction's:
 
-1. **`wall_gap` 35 against 28** is three sites; the explicit surface also
-   clears 16 of the fillet's own. The garage court (−2675, 1280): bare
-   strips between lanes of different junctions, which is the parallel-road
-   question. Two parallel carriageways converging into one without a shared
-   vertex (308.5, −1122): no node, so no junction, and a thin wedge of
-   ground stays between them — the converging cousin of a landed end. And a
-   span leaving a junction (−643, 425): the stretch before the deck is the
-   span's footprint, paved by `sheet`, and the room's wall probe runs before
-   `sheet`.
-2. **Mesh slivers +1.7 %.** Not read yet.
+- **A footbridge's stub** (`f2c46d7`, `room`): a footway's ground piece
+  between the kerb and the footbridge it climbs is a few square metres with
+  no wall, and was dropped as a scrap. `room` now gets the walk spans and
+  keeps a piece that reaches one. Under the fillet too: `wall_gap` 28 → 22,
+  `kerb_gap` 29 → 22.
+- **A small court** (`1ba1da2`, `room`): the strip between two garage lanes
+  and the garage they end at is enclosed on every side, and was dropped as
+  a scrap. A region with asphalt, ballast, a span or a wall just outside
+  every edge is now kept.
+- **Converging carriageways** (`legs`): a gap between two carriageways that
+  no pavement fits in is asphalt, paved as quads between rays from the
+  carriageway's own edge — only the gap moves.
+
+**The A/B now**, loop box, against the fillet at `1ba1da2`:
+
+| | fillet | legs |
+|---|---|---|
+| `scraps` | 895 | 670 |
+| `loose` | 138 (87.8 m²) | 130 (83.7 m²) |
+| `unprobed` | 1 817 | 1 632 |
+| `kerb_gap` | 22 | 21 |
+| `wall_gap` | 22 | 12 (none new) |
+| `orphan` | 7 | 4 |
+| carriageway regions/holes | 60 / 160 | 58 / 161 |
+| mesh `crack` | 21 m | 8.4 m |
+| mesh `slivers` | 70 116 | 71 212 |
+| `unmet` | 0 | 2 |
+
+What is left before wiring: **mesh slivers +1.6 %** (not read yet) and
+**`unmet` 2**, one 1.2 m open mesh edge where a building corner cuts the
+explicit carriageway (loop box 837, 1371).
 
 ## After the first slice, in order
 
