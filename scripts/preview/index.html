@@ -26,6 +26,7 @@
 
 <div id="hud">
   <div id="status">starting…</div>
+  <div id="cam" class="dim"></div>
   <div class="row">
     <button id="frame">frame</button>
     <button id="watch">watching</button>
@@ -52,9 +53,12 @@ const POLL_MS = 1500;
 
 const statusEl = document.getElementById('status');
 const layersEl = document.getElementById('layers');
+const camEl = document.getElementById('cam');
 const say = (t, err = false) => { statusEl.textContent = t; statusEl.classList.toggle('err', err); };
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+// A logarithmic depth buffer, so the near plane can follow the camera down
+// to a kerb's height without the far terrain z-fighting (see `track`).
+const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
@@ -63,15 +67,17 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x2a2b2e);
 
 // The world is metres and the model spans kilometres, so the far plane is
-// generous and the near plane is not a centimetre — a tight near plane at
-// this range is where z-fighting comes from, and this model already has
-// surfaces that sit millimetres apart.
+// generous. The near plane follows the distance to what is looked at
+// (`track`): a metre is too far to stand beside a 12 cm kerb, and a
+// centimetre is too near for a view of the whole valley.
 const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 1, 200000);
 
 const controls = new MapControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.maxPolarAngle = Math.PI / 2 - 0.02;   // never below the horizon
+controls.zoomToCursor = true;                    // toward what the cursor is over
+controls.minDistance = 0.5;                      // an eye's height, not inside the ground
 
 scene.add(new THREE.HemisphereLight(0xffffff, 0x5a5348, 2.2));
 const sun = new THREE.DirectionalLight(0xfff6e8, 2.0);
@@ -79,6 +85,107 @@ sun.position.set(-0.4, 1, 0.6);
 scene.add(sun);
 
 let root = null;
+
+// **The orbit point stays on the surface.** The controls zoom toward their
+// target by a fraction of the distance per step, so they can only get as
+// close as the target is: left at the model's centre it floats hundreds of
+// metres over the valley, and panning keeps it at that height. So a height
+// grid of the model is built once per load, and every wheel step first
+// drops the target onto the surface along the view axis.
+let surface = null;
+
+function buildSurface(model) {
+  const box = new THREE.Box3().setFromObject(model);
+  if (box.isEmpty()) return null;
+  // About two million cells at most: 4 m on the loop box.
+  const span = Math.max(box.max.x - box.min.x, box.max.z - box.min.z);
+  const cell = Math.max(1, span / 1400);
+  const nx = Math.ceil((box.max.x - box.min.x) / cell) + 1;
+  const nz = Math.ceil((box.max.z - box.min.z) / cell) + 1;
+  const h = new Float32Array(nx * nz).fill(-Infinity);
+  const v = new THREE.Vector3();
+  model.updateMatrixWorld(true);
+  model.traverse(o => {
+    if (!o.isMesh) return;
+    const p = o.geometry.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld);
+      const k = Math.floor((v.z - box.min.z) / cell) * nx + Math.floor((v.x - box.min.x) / cell);
+      if (v.y > h[k]) h[k] = v.y;
+    }
+  });
+  return { x0: box.min.x, z0: box.min.z, cell, nx, nz, h, top: box.max.y };
+}
+
+/// The height of the surface at `(x, z)`, or `null` off the model.
+function heightAt(x, z) {
+  const s = surface;
+  const c = Math.floor((x - s.x0) / s.cell), r = Math.floor((z - s.z0) / s.cell);
+  if (c < 0 || r < 0 || c >= s.nx || r >= s.nz) return null;
+  const y = s.h[r * s.nx + c];
+  return y === -Infinity ? null : y;
+}
+
+/// Where the ray through `ndc` (the screen's centre by default) first meets
+/// the surface.
+const ray = new THREE.Raycaster();
+function pick(ndc = new THREE.Vector2(0, 0)) {
+  if (!surface) return null;
+  ray.setFromCamera(ndc, camera);
+  const { origin, direction } = ray.ray;
+  const above = t => {
+    const x = origin.x + direction.x * t, z = origin.z + direction.z * t;
+    const g = heightAt(x, z);
+    return g === null ? null : origin.y + direction.y * t - g;
+  };
+  // March out in steps that grow with the distance, then bisect the step
+  // that went under.
+  let t = 0, prev = 0;
+  for (let i = 0; i < 20000; i++) {
+    const step = Math.max(surface.cell / 2, t * 0.004);
+    prev = t;
+    t += step;
+    const a = above(t);
+    if (a !== null && a <= 0) {
+      let lo = prev, hi = t;
+      for (let k = 0; k < 30; k++) {
+        const mid = (lo + hi) / 2, m = above(mid);
+        if (m !== null && m <= 0) hi = mid; else lo = mid;
+      }
+      return origin.clone().addScaledVector(direction, hi);
+    }
+    // Past the model's top and climbing: nothing below will be met.
+    if (direction.y >= 0 && origin.y + direction.y * t > surface.top) return null;
+  }
+  return null;
+}
+
+// Before the controls see the wheel: the target moves to the surface along
+// the view axis — under the screen's centre, so nothing on screen moves —
+// and `zoomToCursor` then zooms toward the cursor at that depth.
+renderer.domElement.addEventListener('wheel', () => {
+  const hit = pick();
+  if (hit) controls.target.copy(hit);
+}, { capture: true, passive: true });
+
+/// The near plane at a thousandth of the distance to the orbit point,
+/// between a centimetre and a metre, and the camera's readout.
+let shownAt = 0;
+function track() {
+  const d = camera.position.distanceTo(controls.target);
+  const near = THREE.MathUtils.clamp(d / 1000, 0.01, 1);
+  if (Math.abs(near - camera.near) > near * 0.1) {
+    camera.near = near;
+    camera.updateProjectionMatrix();
+  }
+  const now = performance.now();
+  if (now - shownAt > 200) {
+    shownAt = now;
+    const g = surface && heightAt(camera.position.x, camera.position.z);
+    const agl = g === null || g === undefined ? '' : `, ${(camera.position.y - g).toFixed(1)} m above the surface`;
+    camEl.textContent = `${d < 10 ? d.toFixed(2) : d.toFixed(0)} m to the orbit point${agl}`;
+  }
+}
 
 /// Free the GPU memory of the model being replaced. Without this a reload
 /// every few seconds walks the process up through gigabytes: the geometry
@@ -98,6 +205,9 @@ function frame() {
   const mid = box.getCenter(new THREE.Vector3());
   const reach = Math.max(size.x, size.z) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
   controls.target.copy(mid);
+  // On the surface, not at the box's centre in the air.
+  const ground = surface && heightAt(mid.x, mid.z);
+  if (ground !== null && ground !== undefined) controls.target.y = ground;
   camera.position.set(mid.x, mid.y + reach * 0.75, mid.z + reach * 0.9);
   camera.updateProjectionMatrix();
   controls.update();
@@ -178,6 +288,7 @@ async function swap(tag, why) {
   if (root) { scene.remove(root); dispose(root); }
   root = model;
   scene.add(root);
+  surface = buildSurface(root);
   layers(root);
   if (keep) { camera.position.copy(keep.pos); controls.target.copy(keep.aim); controls.update(); }
   else frame();
@@ -231,7 +342,7 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
-renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+renderer.setAnimationLoop(() => { controls.update(); track(); renderer.render(scene, camera); });
 
 (async () => {
   try {
