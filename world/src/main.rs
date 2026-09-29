@@ -4,11 +4,14 @@
 //! arpentry_world --bbox w,s,e,n --zone DIR [--output FILE.glb] [--svg FILE.svg]
 //!                [--terrain PATH|SPEC] [--segments PATH|SPEC] [--buildings PATH|SPEC|none]
 //!                [--view x0,y0,x1,y1] [--spacing M] [--max-vertices N] [--until STEP]
-//!                [--outlines]
+//!                [--outlines] [--dump DIR] [--from STEP --load DIR]
 //! ```
 //!
 //! Runs the steps in order, prints one line per step, stops after `--until`,
-//! and writes what was built: the 3D world as glTF, the plan as SVG, or both.
+//! and writes what was built: the 3D world as glTF, the plan as SVG, both,
+//! or neither — the lines alone are a gate. `--dump` keeps every layer it
+//! builds, and `--from` starts at one step with the layers before it read
+//! back from `--load`.
 //! The bbox is required and never inferred from the data: a cut zone holds
 //! the zone plus a margin.
 
@@ -19,7 +22,7 @@ use std::time::Instant;
 use arpentry_server::dem::{Dem, Field};
 use arpentry_server::project::Bounds;
 use arpentry_world::frame::Rect;
-use arpentry_world::pipeline::{self, Sources};
+use arpentry_world::pipeline::{self, Ran, Range, Sources};
 use arpentry_world::step::Step;
 use arpentry_world::world::World;
 use arpentry_world::{facade, gltf, net, svg};
@@ -36,6 +39,12 @@ struct Args {
     spacing: f64,
     max_vertices: usize,
     until: Step,
+    /// The first step built; the ones before it are read from `load`.
+    from: Step,
+    /// Where each built step's layer is written.
+    dump: Option<PathBuf>,
+    /// Where the layers before `from` are read from.
+    load: Option<PathBuf>,
     /// Write the construction layers into the GLB as `LINES`.
     outlines: bool,
 }
@@ -43,6 +52,7 @@ struct Args {
 const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output FILE.glb] [--svg FILE.svg]
        [--terrain PATH|SPEC] [--segments PATH|SPEC] [--buildings PATH|SPEC|none]
        [--view x0,y0,x1,y1] [--spacing M] [--max-vertices N] [--until STEP] [--outlines]
+       [--dump DIR] [--from STEP --load DIR]
 
   --bbox          the world's bounds in degrees (required; never inferred from the data)
   --zone DIR      a cut zone: DIR/terrain.pmtiles, DIR/segment.parquet and, if present, DIR/building.parquet
@@ -64,8 +74,12 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
                   (overrides --zone)
   --spacing M     terrain lattice spacing in metres (default 2)
   --max-vertices  cap on terrain vertices; the spacing grows to fit (default 2000000)
-  --until STEP    stop after this step: terrain | drape | reference | profile | crossing | partition | facade | ribbon | surface | kerb | fillet | legs | room | sheet | arrangement | mesh | bench | structure | building
+  --until STEP    stop after this step: terrain | drape | reference | profile | crossing | partition | facade | ribbon |
+                  surface | kerb | legs | room | sheet | arrangement | mesh | lift | earthwork | bench | structure | building
                   (default building)
+  --dump DIR      write every layer the run builds into DIR, one file per step
+  --from STEP     start at this step, reading the layers of every step before it from --load
+  --load DIR      where --from reads its layers: a --dump of the same bbox
   --outlines      add the construction layers to the .glb as glTF LINES: the draped
                   centrelines, the solved profiles and the six contour sets. Off by
                   default, because a viewer need not draw line topology and Apple's
@@ -74,7 +88,7 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
   --output FILE   the .glb to write
   --svg FILE      the plan view to write, one SVG group per step
   --view x0,y0,x1,y1  the window the plan shows, in local metres (default: the bbox)
-At least one of --output and --svg is required.";
+Without --output or --svg the run prints its lines and writes nothing else.";
 
 fn main() -> ExitCode {
     let args = match parse_args(std::env::args().skip(1)) {
@@ -105,9 +119,13 @@ fn run(args: &Args) -> Result<(), String> {
         spacing: args.spacing,
         max_vertices: args.max_vertices,
     };
+    let range = Range { from: args.from, until: args.until, dump: args.dump.as_deref(), load: args.load.as_deref() };
     let mut t = Instant::now();
-    pipeline::upto(&mut world, args.until, &mut src, &mut |step, summary| {
-        println!("{:<8} {}  {:.2}s", step.name(), summary, t.elapsed().as_secs_f64());
+    pipeline::run(&mut world, &range, &mut src, &mut |step, ran| {
+        match ran {
+            Ran::Built(summary) => println!("{:<8} {}  {:.2}s", step.name(), summary, t.elapsed().as_secs_f64()),
+            Ran::Loaded(line) => println!("{:<8} {}  loaded", step.name(), line),
+        }
         t = Instant::now();
     })?;
     if let Some(output) = &args.output {
@@ -137,6 +155,9 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut spacing = 2.0;
     let mut max_vertices = 2_000_000;
     let mut until = Step::Building;
+    let mut from = Step::ALL[0];
+    let mut dump = None;
+    let mut load = None;
     let mut outlines = false;
     while let Some(flag) = it.next() {
         match flag.as_str() {
@@ -153,14 +174,17 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
                 max_vertices = parse_num(&value(&mut it, "--max-vertices")?, "--max-vertices")?
             }
             "--until" => until = value(&mut it, "--until")?.parse()?,
+            "--from" => from = value(&mut it, "--from")?.parse()?,
+            "--dump" => dump = Some(PathBuf::from(value(&mut it, "--dump")?)),
+            "--load" => load = Some(PathBuf::from(value(&mut it, "--load")?)),
             "--outlines" => outlines = true,
             "-h" | "--help" => return Err("help".into()),
             other => return Err(format!("unknown flag {other}")),
         }
     }
     let bbox = bbox.ok_or("--bbox is required")?;
-    if output.is_none() && svg.is_none() {
-        return Err("one of --output and --svg is required".into());
+    if from != Step::ALL[0] && load.is_none() {
+        return Err("--from needs --load: the layers of the steps before it".into());
     }
     let from_zone = |name: &str| zone.as_ref().map(|z| z.join(name));
     let terrain = terrain
@@ -185,7 +209,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     if let Some(spec) = buildings.as_ref().and_then(|b| b.to_str()).filter(|s| facade::is_spec(s)) {
         facade::parse(spec).map_err(|e| format!("invalid --buildings: {e}"))?;
     }
-    Ok(Args { bbox, terrain, segments, buildings, output, svg, view, spacing, max_vertices, until, outlines })
+    Ok(Args { bbox, terrain, segments, buildings, output, svg, view, spacing, max_vertices, until, from, dump, load, outlines })
 }
 
 /// A synthetic terrain spec without an origin takes the bbox centre, and the

@@ -50,8 +50,10 @@
 //! an `unknown` railway is not granted a formation on the strength of a
 //! default (docs/GENERATION.md §4.6).
 
+use serde::{Deserialize, Serialize};
+
 /// The surface a way is part of.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Family {
     /// The drivable surface: every road class, however minor.
     Carriageway,

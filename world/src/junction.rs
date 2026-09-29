@@ -79,7 +79,7 @@ mod tests {
     const GORGE: &str = "gorge?depth=30&width=40";
 
     /// **Step 3 — the junction and its spans are one region.** Not one
-    /// *surface* yet: `surface::grouped` says what the regions are, and
+    /// *surface* yet: `ribbon::grouped` says what the regions are, and
     /// steps 4 and 5 are what mesh and lift them. But two regions where
     /// there should be one is what the seam is a symptom of, and that much
     /// can be checked now — so this one is live rather than `#[ignore]`d,
@@ -87,8 +87,9 @@ mod tests {
     #[test]
     fn a_junction_on_a_structure_is_one_region() {
         let w = world(GORGE, JUNCTION_ON_A_DECK);
-        let roads = w.roads.as_ref().expect("the reader ran");
-        let car: Vec<(crate::width::Family, usize, crate::poly::Shapes)> = crate::surface::grouped(roads)
+        let net = w.network().expect("the partition ran");
+        let groups = &w.partition.as_ref().expect("the partition ran").groups;
+        let car: Vec<(crate::width::Family, usize, crate::poly::Shapes)> = crate::ribbon::grouped(net, &groups.of)
             .into_iter()
             .filter(|(f, ..)| *f == crate::width::Family::Carriageway)
             .collect();
@@ -130,7 +131,7 @@ mod tests {
         // own edge, a portal or a seam inside the room — which is what a
         // handover between two constructions showed up as. There is one
         // construction, and it reads zero.
-        let b = ran.of(Step::Bench);
+        let b = ran.merged(&crate::pipeline::tests::BENCH);
         assert_eq!(b.num("unmet"), 0.0, "the surface does not close: {b}");
     }
 

@@ -18,7 +18,7 @@
 //!   road that runs onto it are one surface. A span edge shapes the
 //!   junctions it meets but is not paved here — the `sheet` step unions the
 //!   span ribbons in. A bore is never continuous with the ground, and is
-//!   left out as [`crate::surface::spans_grouped`] leaves it out.
+//!   left out as [`crate::ribbon::spans_grouped`] leaves it out.
 //! - **A node** is a connector where two or more leg ends meet: two pieces,
 //!   a piece's end on another's interior vertex, or a closed way meeting
 //!   itself. A piece is cut into **edges** at every node it passes.
@@ -48,7 +48,7 @@ use std::collections::HashMap;
 use crate::poly::{self, Pt, Ring, Shapes};
 use crate::step::Summary;
 use crate::width::{self, Family};
-use crate::world::{connector, Facade, Polyline2, Roads, Surface};
+use crate::world::{connector, Facade, Junction, Leg, Legs, PieceEdge, Polyline2, Network, Surface};
 
 /// How far a trimmed edge laps back into its junction, in metres. A boolean
 /// union keeps shapes that only touch apart, and the junction's mouth and
@@ -72,67 +72,6 @@ pub const RETURN_MAX_RADII: f64 = 3.0;
 /// it were convex, and counted as `far`.
 const FAR_HALF_WIDTHS: f64 = 4.0;
 
-/// One leg of a junction: an edge leaving the node.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Leg {
-    /// Which edge, and whether it leaves the node at its start.
-    pub edge: usize,
-    pub at_start: bool,
-    /// Unit direction from the node along the edge's first segment: what the
-    /// legs are ordered by.
-    pub u: Pt,
-    pub half_m: f64,
-    pub class: String,
-    /// Where the leg's mouth lies, in metres of arc from the node.
-    pub mouth_m: f64,
-    /// The edge's centreline, oriented away from the node.
-    pub line: Vec<Pt>,
-    /// The kerb walk past the edge's far node on the left side and on the
-    /// right ([`walk`]): points, each with its stretch's half-width.
-    pub ahead: [Vec<(Pt, f64)>; 2],
-}
-
-/// One junction: the node, its legs in counter-clockwise order, and the
-/// polygon between their mouths.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Junction {
-    pub at: Pt,
-    pub legs: Vec<Leg>,
-    pub shape: Shapes,
-    /// How far the junction reaches from its node: the farthest mouth
-    /// corner.
-    pub reach_m: f64,
-}
-
-/// A piece cut at the nodes it passes: what a junction's legs trim.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Edge {
-    pub piece: usize,
-    pub pts: Vec<Pt>,
-    pub width_m: f64,
-    /// Where the edge is trimmed at each end, in metres of arc: the mouth of
-    /// the junction there, or 0 at a free end.
-    pub trim: [f64; 2],
-    /// Whether each end is a node.
-    pub node: [bool; 2],
-    /// Whether the edge is on the ground, and so paved here: a deck's edge
-    /// shapes its junctions and is paved by the `sheet` step.
-    pub ground: bool,
-}
-
-/// What the step built.
-#[derive(Debug, Clone, Default)]
-pub struct Legs {
-    pub junctions: Vec<Junction>,
-    pub edges: Vec<Edge>,
-    /// The paved surface as this step would leave it: the explicit
-    /// carriageway, facade-cut — every junction and every trimmed ground
-    /// edge — and the pavement laid back outside it.
-    pub surface: Surface,
-    /// The kerb stations `kerb_gap` counts as bare on this surface.
-    pub gaps: Vec<Pt>,
-}
-
 /// What building one side of a junction found.
 #[derive(Debug, Default)]
 struct Tally {
@@ -149,10 +88,11 @@ struct Tally {
 }
 
 pub fn run(
-    roads: &Roads,
+    roads: &Network,
     surface: &Surface,
     k: &crate::world::Kerb,
     facade: &Facade,
+    masks: &[(Family, usize, Shapes)],
 ) -> (Legs, Summary) {
     let all: Vec<&Polyline2> = roads.pieces().collect();
     let ground = roads.plan.len();
@@ -189,7 +129,7 @@ pub fn run(
     // paved here too, it is ground asphalt under a bridge that no piece of
     // the ground claims.
     //
-    // **Off the deck is off the square footprint** ([`surface::spans_masked`],
+    // **Off the deck is off the square footprint** ([`crate::ribbon::spans_masked`],
     // the mask the bench cuts the ground's hole by), not off the round-capped
     // ribbon: taken by the ribbon, the disc at the node went with it. And
     // the remainder is **opened by [`LAP_M`]**: the junction's kerbs and
@@ -197,10 +137,10 @@ pub fn run(
     // it leaves hairline fragments no piece claims — they were most of the
     // `sheet` step's orphans.
     let decks: Shapes = poly::union_all(
-        &crate::surface::spans_masked(roads)
-            .into_iter()
+        &masks
+            .iter()
             .filter(|(f, ..)| *f == Family::Carriageway)
-            .flat_map(|(.., s)| s)
+            .flat_map(|(.., s)| s.iter().cloned())
             .collect(),
     );
     let mut parts: Shapes = Vec::new();
@@ -234,7 +174,7 @@ pub fn run(
     // **A hole in the asphalt that no pavement fits in is asphalt.** The
     // remnant of a small island the returns did not quite close, a narrow
     // fork closed at both ends: `room` paves a hole as a traffic island
-    // only if it can hold the narrowest pavement ([`crate::room::wide_enough`],
+    // only if it can hold the narrowest pavement ([`crate::standard::wide_enough`],
     // the same test), so anything thinner was left bare ground between two
     // carriageways. Filled before the facade cut, so a building standing in
     // it still wins. Only the hole goes; no other boundary moves — a closing
@@ -254,7 +194,7 @@ pub fn run(
             let mut kept = vec![outer];
             for hole in rings {
                 let island = vec![poly::oriented(hole.clone(), true)];
-                if crate::room::wide_enough(&island) {
+                if crate::standard::wide_enough(&island) {
                     kept.push(hole);
                 } else {
                     filled += 1;
@@ -274,7 +214,7 @@ pub fn run(
         spanned: surface.spanned.clone(),
         ballast: surface.ballast.clone(),
     };
-    let laid_back = poly::dilate(&poly::intersect(&out.carriageway, &k.surface.walk), crate::kerb::WALK_MIN_M);
+    let laid_back = poly::dilate(&poly::intersect(&out.carriageway, &k.surface.walk), crate::standard::WALK_MIN_M);
     // **And forward, where the asphalt drew back from it.** The old surface
     // was ribbons with round caps unioned; where the explicit kerb stands
     // inside the old one — a cap's lobe the legs do not draw, a return
@@ -287,13 +227,13 @@ pub fn run(
     // a union keeps shapes that only touch apart — as loose lobes. The
     // asphalt cut below takes back what laps onto the road.
     let followed = poly::dilate(
-        &poly::intersect(&drawn_back, &poly::dilate(&k.surface.walk, crate::kerb::WALK_MIN_M)),
+        &poly::intersect(&drawn_back, &poly::dilate(&k.surface.walk, crate::standard::WALK_MIN_M)),
         LAP_M,
     );
     let senior = out.senior();
     let pavement = facade.pavement(&poly::union_of(&[&k.surface.walk, &laid_back, &followed]), &senior);
-    let bare = crate::kerb::Bare::new(&senior, &pavement, &facade.footprints);
-    let (gaps, gap_of) = crate::kerb::kerb_gaps(&out.carriageway, &bare, &k.attached);
+    let bare = crate::gap::Bare::new(&senior, &pavement, &facade.footprints);
+    let (gaps, gap_of) = crate::gap::kerb_gaps(&out.carriageway, &bare, &k.attached);
     let gap_n = gaps.len();
     out.walk = pavement;
     let carriageway = &out.carriageway;
@@ -374,7 +314,7 @@ type End = (usize, bool);
 
 /// The pieces cut at their nodes, and every node's leg ends, keyed by
 /// connector.
-fn cut(all: &[&Polyline2], ground: usize, pieces: &[(usize, Vec<Pt>)]) -> (Vec<Edge>, HashMap<(i64, i64), Vec<End>>) {
+fn cut(all: &[&Polyline2], ground: usize, pieces: &[(usize, Vec<Pt>)]) -> (Vec<PieceEdge>, HashMap<(i64, i64), Vec<End>>) {
     // A connector two piece vertices share is a node: two pieces, an end on
     // another's interior, or a closed way meeting itself. The interior
     // vertex of one piece alone is only a bend.
@@ -402,7 +342,7 @@ fn cut(all: &[&Polyline2], ground: usize, pieces: &[(usize, Vec<Pt>)]) -> (Vec<E
             if node[1] {
                 nodes.entry(connector(pts[i])).or_default().push((e, false));
             }
-            edges.push(Edge {
+            edges.push(PieceEdge {
                 piece: *piece,
                 pts: pts[start..=i].to_vec(),
                 width_m: all[*piece].width_m,
@@ -422,7 +362,7 @@ const GAP_STEP_M: f64 = 0.25;
 
 /// **A gap between two carriageways that no pavement fits in is asphalt**,
 /// as quads: from every station on the edge of `carriageway`, a ray out to
-/// [`crate::room::PAVEMENT_MIN_M`]; where two consecutive stations both
+/// [`crate::standard::PAVEMENT_MIN_M`]; where two consecutive stations both
 /// meet the carriageway again, the quad between their chords, lapped by
 /// [`LAP_M`] at both ends so the union joins it.
 ///
@@ -434,7 +374,7 @@ const GAP_STEP_M: f64 = 0.25;
 /// paved; no other boundary moves, which is what a closing over the whole
 /// surface could not promise.
 fn narrow_gaps(carriageway: &Shapes) -> Shapes {
-    let reach = crate::room::PAVEMENT_MIN_M;
+    let reach = crate::standard::PAVEMENT_MIN_M;
     // Every edge on a grid, for the rays.
     let cell = 2.0;
     let mut grid: HashMap<(i32, i32), Vec<(Pt, Pt)>> = HashMap::new();
@@ -796,7 +736,7 @@ const WALK_HOPS: usize = 4;
 fn walk(
     (mut e, mut from_start): End,
     left_side: bool,
-    edges: &[Edge],
+    edges: &[PieceEdge],
     nodes: &HashMap<(i64, i64), Vec<End>>,
 ) -> Vec<(Pt, f64)> {
     let mut out = Vec::new();
@@ -899,7 +839,7 @@ fn meet(a: &Kerb, b: &Kerb) -> Option<(f64, f64, Pt)> {
 /// The junction from its leg ends.
 fn junction(
     ends: &[End],
-    edges: &[Edge],
+    edges: &[PieceEdge],
     nodes: &HashMap<(i64, i64), Vec<End>>,
     all: &[&Polyline2],
     tally: &mut Tally,
@@ -1276,18 +1216,13 @@ mod tests {
     #[test]
     fn an_end_that_lands_on_a_road_is_a_junction() {
         let mut w = built("flat", "net:straight?len=200", None, 100.0, &plan(Step::Facade)).0;
-        let mut drive = w.roads.as_ref().unwrap().plan[0].clone();
+        let mut drive = w.network().unwrap().plan[0].clone();
         drive.id = "drive".into();
         drive.class = "service".into();
         drive.width_m = width::of("service", "");
         drive.pts = vec![[5.0, 60.0], [5.0, 1.0]];
-        w.roads.as_mut().unwrap().plan.push(drive);
-        let roads = w.roads.as_ref().unwrap();
-        let facade = w.facade.as_ref().unwrap();
-        let (ribbons, _) = crate::ribbon::run(roads);
-        let (surface, _) = crate::surface::run(roads, &ribbons, facade);
-        let (k, _) = crate::kerb::run(roads, &surface, facade);
-        let (l, s) = run(roads, &surface, &k, facade);
+        w.partition.as_mut().unwrap().network.plan.push(drive);
+        let (l, s) = pave(&w);
         assert_eq!(s.num("landed"), 1.0, "{s}");
         assert_eq!(l.junctions.len(), 1, "{s}");
         assert_eq!(l.junctions[0].at, [5.0, 0.0], "{s}");
@@ -1305,19 +1240,14 @@ mod tests {
     #[test]
     fn a_return_reaches_past_the_next_node() {
         let mut w = built("flat", "net:tee?len=200", None, 100.0, &plan(Step::Facade)).0;
-        let plan_ = &mut w.roads.as_mut().unwrap().plan;
+        let plan_ = &mut w.partition.as_mut().unwrap().network.plan;
         let i = plan_.iter().position(|p| p.id == "road-e").unwrap();
         let mut far = plan_[i].clone();
         far.id = "road-e2".into();
         far.pts = vec![[3.0, 0.0], [100.0, 0.0]];
         plan_[i].pts = vec![[0.0, 0.0], [3.0, 0.0]];
         plan_.push(far);
-        let roads = w.roads.as_ref().unwrap();
-        let facade = w.facade.as_ref().unwrap();
-        let (ribbons, _) = crate::ribbon::run(roads);
-        let (surface, _) = crate::surface::run(roads, &ribbons, facade);
-        let (k, _) = crate::kerb::run(roads, &surface, facade);
-        let (l, s) = run(roads, &surface, &k, facade);
+        let (l, s) = pave(&w);
         assert_eq!(s.num("returns"), 2.0, "{s}");
         let c = 2.75 + 4.0 * (1.0 - 1.0 / 2.0f64.sqrt()) - 0.05;
         assert!(poly::contains(&l.surface.carriageway, [c, c]), "the east return: {s}");
@@ -1331,17 +1261,12 @@ mod tests {
     #[test]
     fn a_gap_no_pavement_fits_in_is_asphalt() {
         let mut w = built("flat", "net:straight?len=200", None, 100.0, &plan(Step::Facade)).0;
-        let plan_ = &mut w.roads.as_mut().unwrap().plan;
+        let plan_ = &mut w.partition.as_mut().unwrap().network.plan;
         let mut other = plan_[0].clone();
         other.id = "other".into();
         other.pts = vec![[-100.0, 8.0], [100.0, 5.8]];
         plan_.push(other);
-        let roads = w.roads.as_ref().unwrap();
-        let facade = w.facade.as_ref().unwrap();
-        let (ribbons, _) = crate::ribbon::run(roads);
-        let (surface, _) = crate::surface::run(roads, &ribbons, facade);
-        let (k, _) = crate::kerb::run(roads, &surface, facade);
-        let (l, s) = run(roads, &surface, &k, facade);
+        let (l, s) = pave(&w);
         assert!(poly::contains(&l.surface.carriageway, [80.0, 3.0]), "{s}");
         assert!(!poly::contains(&l.surface.carriageway, [-50.0, 3.7]), "wide enough to stay ground: {s}");
     }
@@ -1367,14 +1292,16 @@ mod tests {
     // tests held of the kerb returns, asked of the junctions built from
     // their legs.
 
-    /// The four surface steps over a world whose roads a specimen changed.
+    /// The four surface steps over a world whose network a specimen changed,
+    /// its pieces grouped again as the partition would have grouped them.
     fn pave(w: &World) -> (Legs, Summary) {
-        let roads = w.roads.as_ref().expect("the drape step ran");
+        let net = w.network().expect("the partition ran");
         let facade = w.facade.as_ref().expect("the facade step ran");
-        let (ribbons, _) = crate::ribbon::run(roads);
-        let (surface, _) = crate::surface::run(roads, &ribbons, facade);
-        let (k, _) = crate::kerb::run(roads, &surface, facade);
-        run(roads, &surface, &k, facade)
+        let groups = crate::partition::groups(&net.plan, &net.spans);
+        let (ribbons, _) = crate::ribbon::run(net, &groups);
+        let (surface, _) = crate::surface::run(&ribbons, facade);
+        let (k, _) = crate::kerb::run(net, &surface, facade);
+        run(net, &surface, &k, facade, &ribbons.masks)
     }
 
     #[test]
@@ -1422,7 +1349,7 @@ mod tests {
         // point 2.2 m off both kerbs' corner; an 8 m one would reach past
         // 5.8 m, and a 3 m one leaves that ground.
         let mut w = built("flat", "net:tee?class=primary&len=200", None, 100.0, &plan(Step::Facade)).0;
-        let leg = w.roads.as_mut().unwrap().plan.iter_mut().find(|l| l.id == "leg").unwrap();
+        let leg = w.partition.as_mut().unwrap().network.plan.iter_mut().find(|l| l.id == "leg").unwrap();
         leg.class = "service".into();
         leg.width_m = width::of("service", "");
         let (l, s) = pave(&w);

@@ -91,7 +91,7 @@ mod tests {
 
     /// The world through the bench step — the last one that moves the ground.
     fn bench(ground: &str, net: &str, houses: Option<&str>) -> Summary {
-        built(ground, net, houses, 5.0, &upto(Step::Bench)).1.of(Step::Bench)
+        built(ground, net, houses, 5.0, &upto(Step::Bench)).1.merged(&crate::pipeline::tests::BENCH)
     }
 
     /// **Step 2 — every drawn edge is welded or walled. Built 2026-09-27;
@@ -105,7 +105,7 @@ mod tests {
     /// raw DEM's own cliffs are `dem_steep`.
     ///
     /// Built: a paved triangle takes one rule at its centroid
-    /// (`bench::Rule` — the field, the axis, the stretch of it, the face or
+    /// (`copies::Rule` — the field, the axis, the stretch of it, the face or
     /// the drape) and all three corners are answered by it; a vertex two
     /// rules answer differently is two copies, welded within a kerb's rise
     /// and split with a face between them otherwise. A foot on a polyline
@@ -130,7 +130,7 @@ mod tests {
     ///
     /// `seam` is how often an outline vertex has no copy on the paving's
     /// side; `unmet` how many paved rim edges have nothing beyond them. Both
-    /// used to exist because `mesh` triangulated the room and `bench::Ground`
+    /// used to exist because `mesh` triangulated the room and `field::Ground`
     /// re-triangulated `rect − room` apart, and the two were reconciled at
     /// `poly::GRID_M` with an eight-neighbour search: this specimen read
     /// `seam` **30/2150** and `unmet` **2/984**, Montreux 4.95 % and 3.46 %.
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn the_earthwork_is_attributable() {
         let (_, ran) = built(FLANK, JUNCTION, None, 5.0, &upto(Step::Bench));
-        for step in [Step::Reference, Step::Profile, Step::Partition, Step::Bench] {
+        for step in [Step::Reference, Step::Profile, Step::Partition, Step::Earthwork] {
             let s = ran.of(step);
             assert!(
                 s.get("dem_residual").is_some(),

@@ -26,7 +26,7 @@ fn main() {
     };
     pipeline::upto(&mut world, Step::Reference, &mut src, &mut |_, _| {}).unwrap();
 
-    let roads = world.roads.as_ref().unwrap();
+    let roads = world.network().unwrap();
     let axes = &world.reference.as_ref().unwrap().axes;
     for ax in axes {
         let w = &roads.ways[ax.way];

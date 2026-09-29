@@ -70,7 +70,7 @@ mod tests {
         Ran {
             profile: ran.of(Step::Profile),
             partition: ran.of(Step::Partition),
-            bench: ran.of(Step::Bench),
+            bench: ran.merged(&crate::pipeline::tests::BENCH),
             structure: ran.of(Step::Structure),
         }
     }

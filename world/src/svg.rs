@@ -108,7 +108,7 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
     if let Some(sh) = &world.sheets {
         sheets(&mut s, sh, &view);
     }
-    if let Some(p) = &world.profile {
+    if let Some(p) = world.solved() {
         profile(&mut s, p, &view);
     }
     if let Some(st) = &world.structure {
@@ -118,7 +118,7 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
         mesh(&mut s, &[("carriageway", &b.carriageway), ("pavement", &b.pavement), ("ballast", &b.ballast)], &view);
         bench(&mut s, b, &view);
     } else if let (Some(m), Some(a)) = (&world.mesh, &world.arrangement) {
-        use crate::arrangement::Material;
+        use crate::world::Material;
         let of = |x: Material| crate::mesh::view(m, a, |f| f.material == x);
         let (c, p, b) = (of(Material::Carriageway), of(Material::Pavement), of(Material::Ballast));
         mesh(&mut s, &[("carriageway", &c), ("pavement", &p), ("ballast", &b)], &view);
@@ -215,7 +215,7 @@ fn kerb(s: &mut String, k: &Kerb, pavement: bool, view: &Rect) {
 /// The legs layer: the carriageway built from the junctions' legs, the
 /// pavement laid back outside it until the room takes over, each junction
 /// outlined, and the kerb stations still bare.
-fn legs(s: &mut String, l: &crate::legs::Legs, pavement: bool, view: &Rect) {
+fn legs(s: &mut String, l: &crate::world::Legs, pavement: bool, view: &Rect) {
     s.push_str("<g id=\"legs\">\n");
     filled(s, "carriageway", "#8c8c94", &l.surface.carriageway, view);
     if pavement {
@@ -580,7 +580,7 @@ fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::drape::drape_line;
+    use crate::lattice::drape_line;
     use crate::terrain::{self, tests::{dem, extent}};
     use crate::world::{Polyline2, Roads};
 
@@ -611,8 +611,6 @@ mod tests {
         };
         w.roads = Some(Roads {
             ways: Vec::new(),
-            plan: Vec::new(),
-            spans: Vec::new(),
             lines: vec![
                 line("r", "residential", "", vec![[-600.0, -400.0], [0.0, 0.0], [500.0, 300.0]]),
                 line("s", "footway", "sidewalk", vec![[-600.0, -395.0], [0.0, 5.0]]),

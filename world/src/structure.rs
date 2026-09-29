@@ -51,7 +51,7 @@
 //!
 //! **The portal is the bench's.** The partition gives the stretch between a
 //! bore's line crossing and its roof's fit back to the ground, the bench cuts
-//! it as a cutting and draws the headwall ([`crate::bench::Mouth`]), and this
+//! it as a cutting and draws the headwall ([`crate::portal::Mouth`]), and this
 //! step reaches the tube [`PORTAL_M`] out over it. `covered` measures tunnel
 //! roadway still under the terrain with no tube over it, and `clear` the
 //! least a slab clears the ground: it goes negative where a deck runs close
@@ -59,19 +59,15 @@
 
 use std::collections::HashMap;
 
-use crate::bench::{Field, KERB_RISE_M, ROOM_REACH_M};
+use crate::field::Field;
 use crate::grade::{NODE_M, STRUCTURE_MIN_M};
 use crate::poly::{self, Pt, Shapes};
-use crate::profile::densify;
+use crate::solve::densify;
 use crate::step::Summary;
-use crate::terrain::height_at;
+use crate::lattice::height_at;
 use crate::width::{self, Family};
-use crate::world::{connector, Kind, Profiles, Roads, Sheets, Solved, Station, Structure, Terrain, Tri};
-
-/// How thick a road deck is, in metres
-/// (`data/plans/surface-leaves-the-plane-2026-09-08.md` §5): the slab, its
-/// beams and its bearings, as one number.
-pub const DECK_THICKNESS_M: f64 = 1.5;
+use crate::world::{connector, Kind, Profiles, Network, Sheets, Solved, Station, Structure, Terrain, Tri};
+use crate::standard::{half_width_m, is_gallery, tube_m, DECK_THICKNESS_M, KERB_RISE_M, RAIL_SHOULDER_M, ROOM_REACH_M, WALK_DECK_M};
 
 /// How far a bench-mesh lookup may disagree with this run's own chord and
 /// still be believed, in metres. Wide enough to absorb a real kerb/pavement
@@ -79,96 +75,6 @@ pub const DECK_THICKNESS_M: f64 = 1.5;
 /// that no genuine grade separation (metres, by [`crate::grade::STRUCTURE_MIN_M`]
 /// at the very least) is ever mistaken for one.
 const TOP_AGREE_M: f64 = 1.0;
-
-/// How thick a footbridge is. The plan carries one deck thickness, and it
-/// is a road bridge's: 1.5 m of beam under a 3 m footway is not a
-/// footbridge but a wall with a path on it, and most of the box's spans
-/// are pedestrian. A prior of this step's own, named here.
-pub const WALK_DECK_M: f64 = 0.4;
-
-/// How high a bore is inside, in metres, from the roadway to the crown.
-pub const TUNNEL_HEIGHT_M: f64 = 5.0;
-
-/// The same for a way a person walks through: a subway, a covered stair, a
-/// passage under a building. The mirror of [`WALK_DECK_M`], and needed for
-/// the same reason — most of the loop box's tunnel spans are footways, steps
-/// and paths, and five metres of tube is not what any of them is.
-pub const WALK_TUNNEL_M: f64 = 2.5;
-
-/// How high a standard-gauge railway's bore is inside, in metres, from the
-/// track to the crown: the loading gauge and the overhead line over it,
-/// which a road's [`TUNNEL_HEIGHT_M`] does not hold. The same headroom
-/// [`crate::crossing::RAIL_CLEARANCE_M`] asks of a road over the rails, less
-/// the margin a road bridge's soffit keeps.
-pub const RAIL_TUNNEL_M: f64 = 6.0;
-
-/// The same for metre gauge and a funicular: a smaller car under a lower
-/// wire, as high inside as a road tunnel.
-pub const NARROW_RAIL_TUNNEL_M: f64 = 5.0;
-
-/// How far a railway's structure reaches past its track zone on each side,
-/// in metres: the edge beam, the cable trough and the walkway a real deck
-/// carries, and the same clearance inside a bore. The server's
-/// `STRUCTURE_SHOULDER_M`, which its rail comments say the structure sweep
-/// adds back and its code never did. Without it a metre-gauge viaduct on a
-/// hillside is 2.6 m wide and 1.5 m deep, and reads as a wall rather than a
-/// bridge. The track bed over the structure is swept to the same width: on
-/// a deck the ballast runs to the parapet.
-pub const RAIL_SHOULDER_M: f64 = 1.0;
-
-/// How high a bore is inside for a way of `class`, in metres: a walk's
-/// passage, a railway's tube, or a road tunnel. One answer for the
-/// structure step, which draws the tube, the partition, which decides
-/// where a tube fits, and the crossing, which clears one.
-pub fn tube_m(class: &str) -> f64 {
-    match (width::family(class), class) {
-        (Family::Walk, _) => WALK_TUNNEL_M,
-        (Family::Rail, "narrow_gauge" | "funicular") => NARROW_RAIL_TUNNEL_M,
-        (Family::Rail, _) => RAIL_TUNNEL_M,
-        (Family::Carriageway, _) => TUNNEL_HEIGHT_M,
-    }
-}
-
-/// Whether a tunnel run of a way of `class`, over `stations`, is a
-/// **gallery**: the road goes under the ground somewhere, by more than
-/// [`STRUCTURE_MIN_M`], and its tube fits under it nowhere.
-///
-/// There is no hill to bore through, and still the source says the road is
-/// covered: a gallery against a slope, a covered cutting, a road under a
-/// deck or a building the terrain model does not have. Drawn as a bore it
-/// drew nothing — the tube never fitted, so no tube, and the terrain lay on
-/// the road end to end: a road that vanished into the ground with no
-/// entrance and no exit (`mouths`). Drawn as a gallery it is what it is: the
-/// ground is opened over it ([`crate::bench`]) and the tube stands in the
-/// trench, its roof out in the open where the ground is lower than it.
-///
-/// One rule for the bench, which opens the ground, and for this step, which
-/// draws the tube — over the same stations, the run and its abutments.
-pub fn is_gallery(class: &str, stations: &[Station]) -> bool {
-    let tube = tube_m(class);
-    stations.iter().any(|st| st.ground - st.h > STRUCTURE_MIN_M)
-        && stations.iter().all(|st| st.ground - st.h - tube < 0.0)
-}
-
-/// The station ranges of `p`'s galleries, abutments included: the tunnel
-/// runs [`is_gallery`] says are galleries. A walk's spans are not solved and
-/// are not here.
-pub fn gallery_runs(p: &crate::world::Profile) -> Vec<(usize, usize)> {
-    let last = p.stations.len().saturating_sub(1);
-    p.runs()
-        .into_iter()
-        .filter(|r| matches!(r.2, Kind::Tunnel(_)))
-        .map(|(k0, k1, _)| (k0.saturating_sub(1), (k1 + 1).min(last)))
-        .filter(|&(a, b)| b > a && is_gallery(&p.class, &p.stations[a..=b]))
-        .collect()
-}
-
-/// Half the width of the structure a way of `class` and `width_m` stands
-/// on or runs through: the way's own for a road or a walk, the track zone
-/// and [`RAIL_SHOULDER_M`] for a railway.
-pub fn half_width_m(class: &str, width_m: f64) -> f64 {
-    width_m / 2.0 + if width::family(class) == Family::Rail { RAIL_SHOULDER_M } else { 0.0 }
-}
 
 /// How far a tube reaches out of the hill past its portal, in metres: over
 /// the cutting in front of it, so the edge where the terrain was cut lies
@@ -289,7 +195,7 @@ const COVERED_EPS_M: f64 = 0.1;
 /// Builds every structure the profile implies.
 pub fn run(
     terrain: &Terrain,
-    roads: &Roads,
+    roads: &Network,
     profiles: &Profiles,
     sheets: &Sheets,
     bench: &crate::world::Bench,
@@ -404,7 +310,7 @@ pub fn run(
         // sitting there. Read from the bench's own mesh instead, the
         // solid's rim is not a second guess at the road's height, the
         // same reason its plan is not a second guess at the road's edge.
-        let paved_h = crate::bench::seam(&[&bench.carriageway, &bench.ballast]);
+        let paved_h = crate::field::seam(&[&bench.carriageway, &bench.ballast]);
 
         // How many span ends of each family meet at each connector, which is
         // [`crate::ribbon`]'s rule for a ground piece applied here: a round
@@ -568,8 +474,8 @@ pub fn run(
                     // The old sweep is still the honest answer there.
                     box_under(&mut s.deck, &l[a..=b], &r[a..=b], t);
                 } else {
-                    // **`bench::at` can answer confidently and wrongly, not
-                    // only miss.** `paved_h` (`bench::seam`) keys purely by
+                    // **`crate::field::at` can answer confidently and wrongly, not
+                    // only miss.** `paved_h` (`crate::field::seam`) keys purely by
                     // (x, y) and, where two vertices share a key, keeps the
                     // *lower* — right for a kerb a few centimetres above the
                     // carriageway beside it, wrong at a grade separation:
@@ -589,12 +495,12 @@ pub fn run(
                     // Either way `axis_height` cannot answer wrong, because
                     // it knows nothing but this run's own stations — unlike
                     // `paved_h` or the old world-wide `decks` field, which
-                    // is exactly the defect `bench::by_sheet` guards against
+                    // is exactly the defect `copies::Fields` guards against
                     // for the asphalt
                     // (`a_sliver_in_the_span_mask_does_not_lift_the_asphalt`).
                     let top = |p: Pt| {
                         let local = axis_height(&span.stations[a..=b], p);
-                        crate::bench::at(&paved_h, p).filter(|h| (h - local).abs() <= TOP_AGREE_M).unwrap_or(local)
+                        crate::field::at(&paved_h, p).filter(|h| (h - local).abs() <= TOP_AGREE_M).unwrap_or(local)
                     };
                     solid_under(&mut s.deck, &region, &terrain.grid, &top, t);
                 }
@@ -753,7 +659,7 @@ pub fn run(
                 continue;
             }
             let height = |p: Pt| decks.at(p).map_or_else(|| height_at(terrain, p[0], p[1]), |f| f.h);
-            let (tri, ms) = crate::mesh::triangulate(&region, &terrain.grid, &height);
+            let (tri, ms) = crate::triangulate::triangulate(&region, &terrain.grid, &height);
             stats.span_lost_m2 += ms.lost_m2;
             stats.span_lossy += ms.failed + ms.lossy;
             let rail = *fam == Family::Rail as usize;
@@ -1030,10 +936,10 @@ fn box_under(tri: &mut Tri, l: &[[f64; 3]], r: &[[f64; 3]], t: f64) {
 /// the ground.
 fn solid_under(tri: &mut Tri, region: &Shapes, grid: &crate::grid::Grid, top: &dyn Fn(Pt) -> f64, t: f64) {
     let floor = |p: Pt| -> f64 { top(p) - t };
-    // The underside, facing down: `mesh::triangulate` winds a surface to
+    // The underside, facing down: `triangulate::triangulate` winds a surface to
     // face up (counter-clockwise seen from above), so its trailing two
     // indices swap per triangle to turn it the other way.
-    let (mut under, _) = crate::mesh::triangulate(region, grid, &floor);
+    let (mut under, _) = crate::triangulate::triangulate(region, grid, &floor);
     for t3 in under.indices.chunks_exact_mut(3) {
         t3.swap(1, 2);
     }
@@ -1082,6 +988,7 @@ mod tests {
     
 
     use super::*;
+    use crate::standard::{NARROW_RAIL_TUNNEL_M, RAIL_TUNNEL_M, TUNNEL_HEIGHT_M, WALK_TUNNEL_M};
 
     /// A world on `ground` with the network of `net`, built to the end.
     fn world(ground: &str, net: &str) -> (World, Summary) {
@@ -1109,7 +1016,7 @@ mod tests {
         let tri = if rail { &bench.ballast } else { &bench.carriageway };
         let over: crate::poly::Shapes =
             structure(w).plan.iter().flat_map(|(_, s)| s.iter().cloned()).collect();
-        let index = crate::poly::Indexed::new(&poly::dilate(&over, crate::bench::OVER_RIM_M));
+        let index = crate::poly::Indexed::new(&poly::dilate(&over, crate::standard::OVER_RIM_M));
         tri.positions.iter().copied().filter(|p| index.contains([p[0], p[1]])).collect()
     }
 
@@ -1146,7 +1053,7 @@ mod tests {
         // runs between.
         assert!(s.num("clear") > 0.0, "{s}");
         let t = w.terrain.as_ref().expect("the terrain step ran");
-        let mid = crate::terrain::height_at(t, 0.0, 0.0);
+        let mid = crate::lattice::height_at(t, 0.0, 0.0);
         assert_eq!(s.num("abutment"), 0.0, "the deck does not land where the road is: {s}");
         let b = structure(&w);
         assert!(b.roadway.indices.is_empty(), "the span's paving is the sheet's now: {s}");
@@ -1193,7 +1100,7 @@ mod tests {
         // 26.9 m up; the crest is 60 m up. So the chord runs level under
         // 33 m of hill and the crown is some 28 m under the crest.
         let t = w.terrain.as_ref().expect("the terrain step ran");
-        let cover = crate::terrain::height_at(t, 0.0, 0.0) - crown;
+        let cover = crate::lattice::height_at(t, 0.0, 0.0) - crown;
         assert!((cover - 28.1).abs() < 0.2, "{cover}");
     }
 

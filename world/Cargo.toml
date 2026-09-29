@@ -28,6 +28,12 @@ earcutr = "0.4"
 # The glTF JSON chunk. The writer is hand-rolled (src/gltf.rs); this only
 # serialises the document it builds.
 serde_json = "1"
+# A layer written to disk and read back (src/dump.rs): `--dump` after a step,
+# `--from` to start at one, so a step can be run again without the steps
+# before it. `serde` is already in the tree through `serde_json`; `postcard`
+# is the byte format, compact and fast over millions of floats.
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
 
 [profile.release]
 opt-level = 3

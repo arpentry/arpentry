@@ -1,5 +1,6 @@
 //! The terrain lattice: a regular grid of cells spanning a rectangle exactly.
 
+use serde::{Deserialize, Serialize};
 use crate::frame::Rect;
 
 /// A regular lattice of `cols × rows` cells. Vertices are `(cols+1) × (rows+1)`,
@@ -8,9 +9,9 @@ use crate::frame::Rect;
 ///
 /// Each cell is two triangles split on its SW→NE diagonal — the same
 /// convention as the server's lattice (`terrain.rs`), which is what makes a
-/// drape and a mesh agree: [`crate::terrain::height_at`] and the triangle
+/// drape and a mesh agree: [`crate::lattice::height_at`] and the triangle
 /// list read the same rule.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Grid {
     pub x0: f64,
     pub y0: f64,

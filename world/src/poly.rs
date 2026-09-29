@@ -811,6 +811,44 @@ fn ring_crossings(ring: &Ring, p: Pt) -> usize {
     (0..ring.len()).filter(|&i| crosses(ring[i], ring[(i + 1) % ring.len()], p)).count()
 }
 
+/// Where the segments `ab` and `cd` properly cross — each strictly
+/// separating the other's ends — or `None`. A touch at an endpoint is not
+/// a crossing: that is how a junction is drawn, and how two pieces of one
+/// way meet.
+pub fn proper_crossing(a: Pt, b: Pt, c: Pt, d: Pt) -> Option<Pt> {
+    let side = |p: Pt, q: Pt, r: Pt| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    let (s1, s2) = (side(a, b, c), side(a, b, d));
+    let (s3, s4) = (side(c, d, a), side(c, d, b));
+    if !(s1 * s2 < 0.0 && s3 * s4 < 0.0) {
+        return None;
+    }
+    let t = s3 / (s3 - s4);
+    Some([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
+}
+
+/// `pts` resampled every `step` metres, the original vertices kept, the
+/// last point always present.
+pub fn resample(pts: &[Pt], step: f64) -> Vec<Pt> {
+    let mut out: Vec<Pt> = Vec::new();
+    let Some(&first) = pts.first() else {
+        return out;
+    };
+    out.push(first);
+    for pair in pts.windows(2) {
+        let (p, q) = (pair[0], pair[1]);
+        let len = (q[0] - p[0]).hypot(q[1] - p[1]);
+        let n = (len / step).floor() as usize;
+        for k in 1..=n {
+            let t = k as f64 * step / len;
+            if t < 1.0 - 1e-9 {
+                out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
+            }
+        }
+        out.push(q);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use std::f64::consts::PI;

@@ -8,10 +8,11 @@
 
 use arpentry_server::dem::Dem;
 use arpentry_server::project::Bounds;
-use arpentry_world::bench::{Field, KERB_RISE_M, ROOM_REACH_M};
+use arpentry_world::field::Field;
+use arpentry_world::standard::{KERB_RISE_M, ROOM_REACH_M};
 use arpentry_world::pipeline::{self, Sources};
 use arpentry_world::step::Step;
-use arpentry_world::terrain::height_at;
+use arpentry_world::lattice::height_at;
 use arpentry_world::width::{self, Family};
 use arpentry_world::world::World;
 
@@ -38,11 +39,11 @@ fn main() {
     let near = |q: &[f64; 2]| (q[0] - p[0]).hypot(q[1] - p[1]) < r;
 
     let terrain = world.terrain.as_ref().unwrap();
-    let profiles = world.profile.as_ref().unwrap();
+    let profiles = world.solved().unwrap();
     let rail = |q: &&arpentry_world::world::Profile| width::family(&q.class) == Family::Rail;
     let field = Field::grounded(profiles.profiles.iter().filter(|q| !rail(q)));
 
-    let roads = world.roads.as_ref().unwrap();
+    let roads = world.network().unwrap();
     println!(
         "\n{:<38} {:<10} {:>7} {:>9} {:>9} {:>7} {:>7} {:>8}",
         "walk piece", "class", "s", "terrain", "road h", "dist", "half_w", "room h"

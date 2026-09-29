@@ -27,7 +27,7 @@
 //!   climbs — a rack railway is tagged `narrow_gauge` and runs at 20 %, a
 //!   funicular at 57 % — so a rail ceiling is [`Grade::measured`]: raised to
 //!   the bed the line actually rides where the ground earns it
-//!   ([`crate::profile::ceiling`]).
+//!   ([`crate::solve::ceiling`]).
 
 /// How a class's alignment behaves along its length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,7 +122,7 @@ pub const STRUCTURE_MIN_M: f64 = 0.5;
 /// How far a surface must stand **clear of** the ground, in metres, before a
 /// deck is the honest answer rather than an embankment.
 ///
-/// It is [`crate::bench::MAX_BENCH_FACE_M`]: the tallest earthwork face the
+/// It is [`crate::standard::MAX_BENCH_FACE_M`]: the tallest earthwork face the
 /// ground stage will build. Below it the ground closes the gap with a batter;
 /// above it the bench is *walled*, and a wall carrying a road across a gully
 /// is a deck drawn wrong. So the threshold is read off a construction that
@@ -133,7 +133,7 @@ pub const STRUCTURE_MIN_M: f64 = 0.5;
 /// Distinct from [`STRUCTURE_MIN_M`], which is half a metre and answers a
 /// different question: that one flags a *station* of a run, this one decides
 /// whether the run is a structure at all.
-pub const DECK_STANDOFF_M: f64 = crate::bench::MAX_BENCH_FACE_M;
+pub const DECK_STANDOFF_M: f64 = crate::standard::MAX_BENCH_FACE_M;
 
 /// The tightest vertical curve a motorway or trunk holds, in metres. A
 /// surveyed alignment at speed: 6 % to level takes 240 m.

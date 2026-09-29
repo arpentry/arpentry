@@ -3,8 +3,8 @@
 //!
 //! The reader hands on whole ways with their spans as an attribute
 //! ([`crate::world::Way`]). This step turns that attribute into geometry: one
-//! [`Polyline2`] per span, the ground pieces into [`Roads::plan`] — which
-//! every surface step builds from — and the rest into [`Roads::spans`].
+//! [`Polyline2`] per span, the ground pieces into [`Network::plan`] — which
+//! every surface step builds from — and the rest into [`Network::spans`].
 //!
 //! **Today it cuts exactly what the source said**, which is what makes the
 //! move safe: the pieces are the ones the reader used to emit, so nothing
@@ -30,8 +30,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::poly;
 use crate::step::{Residual, Summary};
-use crate::structure::TUNNEL_HEIGHT_M;
-use crate::world::{Kind, Polyline2, Profile, Profiles, Roads, Solved, Span, Way};
+use crate::standard::TUNNEL_HEIGHT_M;
+use crate::world::{Kind, Polyline2, Profile, Profiles, Network, Solved, Span, Way};
+use crate::world::{Groups, Partition};
 
 /// Ground cover a bore keeps between its roof and the surface above it, in
 /// metres: enough that what rides over it has something to ride on.
@@ -51,9 +52,9 @@ pub const BORE_COVER_M: f64 = TUNNEL_HEIGHT_M + TUNNEL_COVER_M;
 /// [`BORE_COVER_M`] for a way of `class`: its own tube and the cover over
 /// it. A standard-gauge railway needs a metre more than a road before a
 /// bore is what is there, because its tube is a metre taller
-/// ([`crate::structure::tube_m`]).
+/// ([`crate::standard::tube_m`]).
 pub fn bore_cover_m(class: &str) -> f64 {
-    crate::structure::tube_m(class) + TUNNEL_COVER_M
+    crate::standard::tube_m(class) + TUNNEL_COVER_M
 }
 
 /// A grade sliver shorter than this, between two runs of one kind, is an edge
@@ -69,34 +70,11 @@ pub const MIN_STRUCTURE_M: f64 = 40.0;
 /// dives the road through the gorge it crosses.
 pub const SHORT_STRUCTURE_DIP_M: f64 = 3.0;
 
-/// What the cut came to: the pieces, and the span tables behind them.
-///
-/// **The step returns this rather than writing it.** It used to take
-/// `&mut Roads` and `Option<&mut Profiles>` and rewrite four things in
-/// place — every way's span table, the two piece lists, every profile's
-/// table and every station's verdict — while returning nothing but a
-/// `Summary`. That made the most important step in the pipeline the one
-/// whose signature said least, and it made the span table a field three
-/// steps wrote to. Installing these is [`crate::pipeline`]'s, which is
-/// where every other layer lands.
-#[derive(Debug, Clone, Default)]
-pub struct Partition {
-    /// The pieces on the ground: what every surface step builds from.
-    pub plan: Vec<Polyline2>,
-    /// The pieces above or below it, or indoors.
-    pub spans: Vec<Polyline2>,
-    /// Every way's span table as the cut derived it, indexed as
-    /// [`Roads::ways`].
-    pub ways: Vec<Vec<Span>>,
-    /// The profiles with that table written back and every station's verdict
-    /// recomputed from it. `None` where the step was given no heights to
-    /// read — a flat specimen, or the world before the solve.
-    pub profiles: Option<Profiles>,
-}
-
-/// Cuts every way of the world at its span boundaries.
-pub fn run(roads: &Roads, solved: Option<&Profiles>) -> (Partition, Summary) {
-    let mut ways = roads.ways.clone();
+/// Cuts every way of `ways` at its span boundaries: the tables the solved
+/// heights imply where there are `solved` profiles, the annotation's where
+/// there are none.
+pub fn run(ways: &[Way], solved: Option<&Profiles>) -> (Partition, Summary) {
+    let mut ways = ways.to_vec();
     let annotated: Vec<Vec<Span>> = ways.iter().map(|w| w.spans.clone()).collect();
 
     // **The cut follows the geometry.** Every way's span table is replaced by
@@ -210,7 +188,8 @@ pub fn run(roads: &Roads, solved: Option<&Profiles>) -> (Partition, Summary) {
             }
         }
     }
-    let Groups { of: group, components: linked, largest, crossings, .. } = groups(&plan, &spans);
+    let grouping = groups(&plan, &spans);
+    let Groups { of: group, components: linked, largest, crossings, .. } = &grouping;
     let grouped: std::collections::HashSet<usize> = group.iter().copied().collect();
     // **How many groups hold both kinds of piece.** Those are the ones with
     // a handover inside them — where the surface steps' refined ground
@@ -244,18 +223,22 @@ pub fn run(roads: &Roads, solved: Option<&Profiles>) -> (Partition, Summary) {
         .with("linked", format!("{linked}/{largest}"))
         .with("crossings", crossings)
         .with("groups", grouped.len())
-        .with("mixed", mixed)
-        // The step rewrites the span table and the profiles are written back
-        // with it, so a station that was a chord can become at-grade and the
-        // population itself moves. That is exactly what wants reporting: a
-        // residual that jumps here is a span the partition gave back to the
-        // ground.
-        .with_residual(match &cut {
-            Some(p) => crate::crossing::residual_of(&p.profiles),
-            None => Residual::new(),
-        });
-    let tables = ways.into_iter().map(|w| w.spans).collect();
-    (Partition { plan, spans, ways: tables, profiles: cut }, summary)
+        .with("mixed", mixed);
+    (Partition { network: Network { ways, plan, spans }, profiles: cut, groups: grouping }, summary)
+}
+
+/// How far the profiles stand off the raw DEM, at grade, once the cut is
+/// written back into them.
+///
+/// The step rewrites the span table and the profiles with it, so a station
+/// that was a chord can become at-grade and the population itself moves.
+/// That is exactly what wants reporting: a residual that jumps here is a
+/// span the partition gave back to the ground.
+pub fn check(partition: &Partition) -> Summary {
+    Summary::new().with_residual(match &partition.profiles {
+        Some(p) => crate::step::residual_of(&p.profiles),
+        None => Residual::new(),
+    })
 }
 
 /// The pieces of one way: its polyline cut at every span boundary, each
@@ -268,7 +251,7 @@ pub fn cut(way: &Way) -> Vec<Polyline2> {
 }
 
 /// The same, stamping each piece with `way` as its index into
-/// [`crate::world::Roads::ways`] — how a consumer holding a piece finds the
+/// [`Network::ways`] — how a consumer holding a piece finds the
 /// profile its way was solved into.
 pub fn cut_at(way: &Way, index: usize) -> Vec<Polyline2> {
     let mut out = Vec::with_capacity(way.spans.len());
@@ -313,7 +296,7 @@ pub fn cut_at(way: &Way, index: usize) -> Vec<Polyline2> {
 /// way's end has no cutting in front of it.
 fn open_portals(spans: Vec<Span>, p: &Profile) -> (Vec<Span>, f64) {
     let st = &p.stations;
-    let tube = crate::structure::tube_m(&p.class);
+    let tube = crate::standard::tube_m(&p.class);
     let gap = |k: usize| roof_gap(st[k].h, st[k].ground, tube);
     // Where the roof crosses the ground between stations `i` (clear of it)
     // and `j` (under it).
@@ -415,7 +398,7 @@ fn bore_bounds(p: &Profile, a0: f64, a1: f64) -> Option<(f64, f64)> {
     // checked.
     let st = &p.stations;
     let line = |k: usize| st[k].h - st[k].ground;
-    let tube = crate::structure::tube_m(&p.class);
+    let tube = crate::standard::tube_m(&p.class);
     let roof = |k: usize| roof_gap(st[k].h, st[k].ground, tube);
     let inside = |k: usize| st[k].s >= a0 - 1e-9 && st[k].s <= a1 + 1e-9;
 
@@ -472,32 +455,6 @@ fn bore_bounds(p: &Profile, a0: f64, a1: f64) -> Option<(f64, f64)> {
     Some((lo, hi))
 }
 
-/// What [`groups`] found: the grouping itself and what it took to get it.
-#[derive(Debug, Clone, Default)]
-pub struct Groups {
-    /// The group of every piece, in [`Roads::pieces`]'s order.
-    pub of: Vec<usize>,
-    /// How many connected components the piece graph had, before any split.
-    pub components: usize,
-    /// How many pieces the largest of them held.
-    pub largest: usize,
-    /// How many crossing pairs were found: the work the rule had to do.
-    pub crossings: usize,
-    /// The group pairs that may never be one surface, as `(min, max)` — one
-    /// per crossing pair, including those that needed no split.
-    pub rivals: Vec<(usize, usize)>,
-    /// Every group the split created, and the group it was carried out of —
-    /// `(new, was)`. The split moves a structure run's pieces to a fresh id
-    /// so it is never unioned with what it crosses, but `was` is exactly
-    /// the id its own ground pieces kept, so this is the one thing that
-    /// still says a peeled span belongs with its own approach rather than
-    /// with nothing at all. [`crate::sheet`] is the reader: without it, a
-    /// span the split ever touched has no ground piece anywhere sharing its
-    /// group, so nothing can claim it — not "kept apart", which the model
-    /// has a rule for, but unreachable, which it does not.
-    pub parent: Vec<(usize, usize)>,
-}
-
 /// **Step 1 of `data/plans/one-surface-at-a-junction-2026-09-14.md`**: what a
 /// grouping of the pieces has to work with, measured before anything is
 /// grouped. Returns `(components, largest, crossings)` — the pieces'
@@ -513,7 +470,7 @@ pub struct Groups {
 /// two interiors crossing with no connector between them is a grade
 /// separation, never a junction.
 ///
-/// Returns the group of every piece, in [`Roads::pieces`]'s order — `plan`
+/// Returns the group of every piece, in [`Network::pieces`]'s order — `plan`
 /// then `spans` — alongside the three counts, as [`Groups`].
 ///
 /// **The group is the surface a piece belongs to.** Two pieces may be unioned
@@ -617,7 +574,7 @@ pub fn groups(plan: &[Polyline2], spans: &[Polyline2]) -> Groups {
                     continue;
                 }
                 let (u, v) = (&pieces[a.0].pts, &pieces[b.0].pts);
-                if crate::crossing::cross(u[a.1], u[a.1 + 1], v[b.1], v[b.1 + 1]).is_some() {
+                if poly::proper_crossing(u[a.1], u[a.1 + 1], v[b.1], v[b.1 + 1]).is_some() {
                     crossings.insert((lo, hi));
                 }
             }
@@ -701,7 +658,7 @@ pub fn groups(plan: &[Polyline2], spans: &[Polyline2]) -> Groups {
 ///
 /// Every way is a witness, not only the ones that solve: a footway crossing
 /// under a road bridge is exactly the evidence wanted. A meeting at a shared
-/// end is a junction, not a passage, and [`crate::crossing::cross`] reports
+/// end is a junction, not a passage, and [`crate::poly::proper_crossing`] reports
 /// proper crossings only.
 pub fn crossed(ways: &[Way]) -> Vec<Vec<f64>> {
     let mut cells: HashMap<(i32, i32), Vec<(usize, usize)>> = HashMap::new();
@@ -730,7 +687,7 @@ pub fn crossed(ways: &[Way]) -> Vec<Vec<f64>> {
                     continue;
                 }
                 let (u, v) = (&ways[a.0].pts, &ways[b.0].pts);
-                let Some(p) = crate::crossing::cross(u[a.1], u[a.1 + 1], v[b.1], v[b.1 + 1]) else {
+                let Some(p) = poly::proper_crossing(u[a.1], u[a.1 + 1], v[b.1], v[b.1 + 1]) else {
                     continue;
                 };
                 for (w, seg) in [(a.0, a.1), (b.0, b.1)] {
@@ -1034,7 +991,7 @@ fn lerp(p: [f64; 2], q: [f64; 2], t: f64) -> [f64; 2] {
 
 /// Every piece of `roads`, on the ground or off it — the order the reference
 /// and the profile take them in.
-pub fn pieces(roads: &Roads) -> impl Iterator<Item = &Polyline2> {
+pub fn pieces(roads: &Network) -> impl Iterator<Item = &Polyline2> {
     roads.pieces()
 }
 
@@ -1065,7 +1022,7 @@ mod tests {
 
     /// The one derived run of a single-way specimen.
     fn only_run(w: &World) -> Span {
-        let p = &w.profile.as_ref().unwrap().profiles;
+        let p = &w.solved().unwrap().profiles;
         assert_eq!(p.len(), 1, "one way");
         let runs = derive(&p[0]);
         assert_eq!(runs.len(), 1, "one run, got {runs:?}");
@@ -1096,7 +1053,7 @@ mod tests {
     #[test]
     fn a_filled_culvert_derives_nothing() {
         let (w, s) = solved("gorge?depth=4&width=20", "net:straight");
-        let p = &w.profile.as_ref().unwrap().profiles;
+        let p = &w.solved().unwrap().profiles;
         assert!(derive(&p[0]).is_empty(), "{s}");
         assert_eq!(s.num("derived"), 0.0, "{s}");
     }
@@ -1124,7 +1081,7 @@ mod tests {
     #[test]
     fn an_unannotated_way_is_one_ground_piece() {
         let (w, s) = world("net:straight");
-        let r = w.roads.as_ref().unwrap();
+        let r = w.network().unwrap();
         assert_eq!(r.ways.len(), 1, "{s}");
         assert_eq!(r.plan.len(), 1, "{s}");
         assert!(r.spans.is_empty(), "{s}");
@@ -1137,7 +1094,7 @@ mod tests {
     #[test]
     fn a_mapped_span_cuts_its_way_into_three() {
         let (w, s) = world("net:straight?span=0.35,0.65&kind=bridge");
-        let r = w.roads.as_ref().unwrap();
+        let r = w.network().unwrap();
         assert_eq!(r.ways.len(), 1, "still one way: {s}");
         assert_eq!(r.plan.len(), 2, "{s}");
         assert_eq!(r.spans.len(), 1, "{s}");
@@ -1162,7 +1119,7 @@ mod tests {
             "net:roundabout?r=15&d=5",
         ] {
             let (w, s) = world(net);
-            let r = w.roads.as_ref().unwrap();
+            let r = w.network().unwrap();
             for way in &r.ways {
                 let cut: f64 = cut(way).iter().map(|p| crate::roads::length(&p.pts)).sum();
                 assert!((cut - way.len()).abs() < 1e-6, "{net}: {cut} vs {} — {s}", way.len());
@@ -1175,7 +1132,7 @@ mod tests {
     fn the_span_table_is_a_partition() {
         for net in ["net:straight?span=0.35,0.65&kind=bridge", "net:underpass", "net:sidewalk?d=6"] {
             let (w, _) = world(net);
-            for way in &w.roads.as_ref().unwrap().ways {
+            for way in &w.network().unwrap().ways {
                 assert!(!way.spans.is_empty(), "{net}: a way with no spans");
                 assert!((way.spans[0].a0).abs() < 1e-9, "{net}: does not start at 0");
                 let last = way.spans[way.spans.len() - 1].a1;

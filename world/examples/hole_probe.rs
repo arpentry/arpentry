@@ -13,7 +13,8 @@
 
 use arpentry_server::dem::Dem;
 use arpentry_server::project::Bounds;
-use arpentry_world::bench::{Portals, OVER_RIM_M};
+use arpentry_world::portal::Portals;
+use arpentry_world::standard::OVER_RIM_M;
 use arpentry_world::pipeline::{self, Sources};
 use arpentry_world::poly;
 use arpentry_world::step::Step;
@@ -40,8 +41,8 @@ fn main() {
 
     let sheets = world.sheets.as_ref().unwrap();
     let room = world.room.as_ref().unwrap();
-    let roads = world.roads.as_ref().unwrap();
-    let profiles = world.profile.as_ref().unwrap();
+    let roads = world.network().unwrap();
+    let profiles = world.solved().unwrap();
 
     // Exactly the bench's own three lines.
     let paved: poly::Shapes = sheets.sheets.iter().flat_map(|s| s.shapes.iter().cloned()).collect();
@@ -49,7 +50,7 @@ fn main() {
     let spanned = poly::dilate(&sheets.spanned(), OVER_RIM_M);
     let (_, galleries) = Portals::new(&roads.spans, profiles);
     let on_ground = poly::difference(&paved, &spanned);
-    let carried = poly::intersect(&room.surface.walk, &poly::dilate(&sheets.spanned(), arpentry_world::bench::ROOM_REACH_M));
+    let carried = poly::intersect(&room.surface.walk, &poly::dilate(&sheets.spanned(), arpentry_world::standard::ROOM_REACH_M));
     let walk_on_ground = poly::difference(&room.surface.walk, &carried);
     let outline = poly::union_of(&[&on_ground, &walk_on_ground, &galleries]);
 
@@ -111,7 +112,7 @@ fn main() {
         // And what the bench actually put there.
         let bench = world.bench.as_ref().unwrap();
         let terrain = world.terrain.as_ref().unwrap();
-        let nat = arpentry_world::terrain::height_at(terrain, p[0], p[1]);
+        let nat = arpentry_world::lattice::height_at(terrain, p[0], p[1]);
         let nearest = |t: &arpentry_world::world::Tri| {
             t.positions
                 .iter()

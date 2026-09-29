@@ -1,10 +1,11 @@
 //! The world: what the steps build, in local metres.
 
+use serde::{Deserialize, Serialize};
 use arpentry_server::project::Bounds;
 
 use crate::frame::Extent;
 use crate::grid::Grid;
-use crate::poly::{self, Shapes};
+use crate::poly::{self, Pt, Shape, Shapes};
 use crate::width::Family;
 
 /// The world for one bounding box: the layers the steps build, each `None`
@@ -24,15 +25,18 @@ pub struct World {
     pub reference: Option<Reference>,
     pub profile: Option<Profiles>,
     pub crossing: Option<Crossings>,
+    pub partition: Option<Partition>,
     pub facade: Option<Facade>,
     pub ribbons: Option<Ribbons>,
     pub surface: Option<Surface>,
     pub kerb: Option<Kerb>,
-    pub legs: Option<crate::legs::Legs>,
+    pub legs: Option<Legs>,
     pub room: Option<Room>,
     pub sheets: Option<Sheets>,
-    pub arrangement: Option<crate::arrangement::Arrangement>,
+    pub arrangement: Option<Arrangement>,
     pub mesh: Option<Mesh>,
+    pub lift: Option<Lifted>,
+    pub earthwork: Option<Earthwork>,
     pub bench: Option<Bench>,
     pub structure: Option<Structure>,
     pub buildings: Option<Buildings>,
@@ -47,6 +51,7 @@ impl World {
             reference: None,
             profile: None,
             crossing: None,
+            partition: None,
             facade: None,
             ribbons: None,
             surface: None,
@@ -56,19 +61,43 @@ impl World {
             sheets: None,
             arrangement: None,
             mesh: None,
+            lift: None,
+            earthwork: None,
             bench: None,
             structure: None,
             buildings: None,
         }
+    }
+
+    /// The network the partition cut, once it has run.
+    ///
+    /// For the renderers and the probes, which read whatever has been built.
+    /// No step calls it: a step is given its layers by [`crate::pipeline`].
+    pub fn network(&self) -> Option<&Network> {
+        self.partition.as_ref().map(|p| &p.network)
+    }
+
+    /// The latest solved profiles: the partition's, else the crossing's
+    /// re-solve, else the profile step's first solve.
+    ///
+    /// For the renderers and the probes, like [`World::network`]. Each of the
+    /// three is still its own step's layer, so a probe that wants to compare
+    /// them reads the fields.
+    pub fn solved(&self) -> Option<&Profiles> {
+        self.partition
+            .as_ref()
+            .and_then(|p| p.profiles.as_ref())
+            .or(self.crossing.as_ref().map(|c| &c.profiles))
+            .or(self.profile.as_ref())
     }
 }
 
 /// The terrain mesh: a regular lattice over the bbox with a height per vertex.
 ///
 /// Positions are derived from the grid and `z`, never stored twice, so the
-/// mesh a viewer draws and the surface [`crate::terrain::height_at`] evaluates
+/// mesh a viewer draws and the surface [`crate::lattice::height_at`] evaluates
 /// read one array.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Terrain {
     pub grid: Grid,
     /// Height per lattice vertex, indexed by [`Grid::index`].
@@ -94,7 +123,7 @@ impl Terrain {
 /// it: Overture's `level_rules` (an ordinal: above, below), the
 /// `is_bridge`/`is_tunnel` flags, and `is_indoor`. A prior on the profile,
 /// never a command to build anything (docs/GENERATION.md §4.5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Kind {
     /// On the ground: what the surface is built from.
     Ground,
@@ -132,7 +161,7 @@ impl Kind {
 /// One span of a way: an arc interval and what the source says the way is
 /// over it. A way's spans partition `[0, len]` — every arc named once,
 /// nothing overlapping, nothing dropped.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Span {
     pub a0: f64,
     pub a1: f64,
@@ -163,7 +192,7 @@ impl Span {
 /// cut only once the heights are solved — by [`crate::partition`], which is
 /// where the annotation hands over to the geometry
 /// (`data/plans/spans-are-derived-2026-09-09.md` R1).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Way {
     pub id: String,
     pub class: String,
@@ -230,7 +259,7 @@ impl Way {
 /// [`Kind`]. Overture references a way's bridge, tunnel and indoor spans as
 /// fractions of its length, so the reader cuts every way at every span
 /// boundary; the pieces of one way share its `id` and their end vertices.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Polyline2 {
     pub id: String,
     pub class: String,
@@ -262,7 +291,7 @@ pub fn connector(p: [f64; 2]) -> (i64, i64) {
 }
 
 /// A polyline with heights, in local metres.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Polyline3 {
     pub id: String,
     pub class: String,
@@ -271,13 +300,29 @@ pub struct Polyline3 {
     pub pts: Vec<[f64; 3]>,
 }
 
-/// Way centrelines — roads and pedestrian ways — as the source drew them,
-/// cut into pieces by kind.
-#[derive(Debug, Clone, Default)]
+/// Way centrelines — roads and pedestrian ways — as the source drew them:
+/// what the drape step reads and leaves.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Roads {
-    /// The whole ways, clipped to the rect and uncut: what the reference and
-    /// the profile read. A way is not split at its annotation edges, so no
+    /// The whole ways, clipped to the rect and uncut, with the spans the
+    /// source mapped. A way is not split at its annotation edges, so no
     /// mapper's cut is an anchor.
+    pub ways: Vec<Way>,
+    /// Every way draped exactly onto the terrain mesh.
+    pub lines: Vec<Polyline3>,
+}
+
+/// The network as the partition cut it: what every step after the heights
+/// builds from.
+///
+/// A separate type from [`Roads`] because it is a separate layer. The span
+/// tables here are the partition's, not the source's, and the pieces exist
+/// only once the cut has been made; when one `Roads` held both, the drape's
+/// layer was rewritten by two later steps and nothing could show what the
+/// source had said.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Network {
+    /// The whole ways, with the span table the cut derived.
     pub ways: Vec<Way>,
     /// The pieces on the ground, clipped to the rect: what every surface
     /// step builds from. Nothing in it crosses anything else at another
@@ -287,11 +332,9 @@ pub struct Roads {
     /// No surface step reads them; the profile chords across the bridges
     /// and tunnels, and the structures are built from what it solves.
     pub spans: Vec<Polyline2>,
-    /// The ground pieces draped exactly onto the terrain mesh.
-    pub lines: Vec<Polyline3>,
 }
 
-impl Roads {
+impl Network {
     /// Every piece, on the ground or off it.
     pub fn pieces(&self) -> impl Iterator<Item = &Polyline2> {
         self.plan.iter().chain(self.spans.iter())
@@ -300,23 +343,26 @@ impl Roads {
 
 /// The conditioned surface along every solving axis, one [`Axis`] per piece
 /// in [`crate::reference::solving`]'s order.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Reference {
-    pub axes: Vec<crate::reference::Axis>,
+    pub axes: Vec<Axis>,
+    /// The ways with the terrain's own bridge and tunnel priors written into
+    /// their span tables: the network the profile solves.
+    pub ways: Vec<Way>,
 }
 
 /// One station of a solved profile.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Station {
     /// Arc length from the piece's start, in metres.
     pub s: f64,
     /// The plan position on the axis.
     pub p: [f64; 2],
-    /// The raw ground there ([`crate::terrain::height_at`]): what the bench
+    /// The raw ground there ([`crate::lattice::height_at`]): what the bench
     /// still owes its earthwork against, and what a departure is measured
     /// from. **Not** what the profile is solved against.
     pub ground: f64,
-    /// The conditioned surface there ([`crate::reference::Axis::h`]): the
+    /// The conditioned surface there ([`Axis::h`]): the
     /// target the profile is solved toward, and the centre of the deviation
     /// box. Equal to `ground` wherever the DEM needed nothing done to it,
     /// which on flat ground is everywhere.
@@ -329,7 +375,7 @@ pub struct Station {
 
 /// What a station is once solved: a consequence of the profile against the
 /// ground, never of the annotation alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Solved {
     /// On the ground, within the bench's reach.
     Grade,
@@ -344,7 +390,7 @@ pub enum Solved {
 /// One profile per way, not per piece: the way's annotation is carried in
 /// [`Profile::spans`] as a *prior*, and the heights are solved along the
 /// whole of it, so no mapper's split point is an anchor (R1).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Profile {
     /// The way this profile is of: an index into [`Roads::ways`].
     ///
@@ -440,7 +486,7 @@ pub fn station_runs(stations: &[Station], spans: &[Span]) -> Vec<(usize, usize, 
 }
 
 /// Every carriageway piece's profile: one height along every axis.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Profiles {
     pub profiles: Vec<Profile>,
 }
@@ -448,7 +494,7 @@ pub struct Profiles {
 /// One place two carriageway axes cross in plan with no connector between
 /// them: a grade separation, and the only thing in the model that couples
 /// the height of one way to the height of another.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Crossing {
     /// Where the two axes cross, in local metres.
     pub at: [f64; 2],
@@ -472,7 +518,7 @@ impl Crossing {
 }
 
 /// Every crossing the network has, and what the floor spent on them.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Crossings {
     pub crossings: Vec<Crossing>,
     /// Two axes crossing at the same level with no connector between them:
@@ -481,22 +527,25 @@ pub struct Crossings {
     /// The floor, in metres, at every station of every profile: what the
     /// crossings asked the ground to become. Indexed as the profiles.
     pub floor: Vec<Vec<f64>>,
+    /// The profiles re-solved over that floor. The profile step's own layer
+    /// is left as it solved, so the two can be compared.
+    pub profiles: Profiles,
 }
 
 /// One building as the source mapped it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Building {
     /// Its footprint, clipped to the rect and oriented: several shapes for
     /// a multipolygon, or for one the rect cut in two.
     pub footprint: Shapes,
     /// The ground to the top of its roof, in metres
-    /// ([`crate::building::mapped_height`]), decided once by the reader.
+    /// ([`crate::facade::mapped_height`]), decided once by the reader.
     pub height_m: f64,
-    pub roof: crate::building::Roof,
+    pub roof: crate::world::Roof,
 }
 
 /// The buildings: what nothing paved may enter.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Facade {
     /// Every building touching the rect, one by one: what the building step
     /// stands up. The masks below are their footprints unioned.
@@ -516,7 +565,7 @@ pub struct Facade {
 }
 
 /// One way's polygon: its centreline buffered to its width.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ribbon {
     pub id: String,
     pub class: String,
@@ -525,10 +574,21 @@ pub struct Ribbon {
     pub shape: Shapes,
 }
 
-/// Every way as a polygon, unmerged.
-#[derive(Debug, Clone, Default)]
+/// Every way as a polygon, unmerged, and the span pieces as the regions the
+/// later steps need of them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Ribbons {
     pub ribbons: Vec<Ribbon>,
+    /// Every deck's ribbons unioned per `(family, group)`, capped round
+    /// where a span meets another piece: the paving a sheet welds onto its
+    /// approach ([`crate::ribbon::spans_grouped`]).
+    pub spans: Vec<(Family, usize, Shapes)>,
+    /// The same, capped square where a span hands over to the ground: the
+    /// mask of what is over a deck ([`crate::ribbon::spans_masked`]).
+    pub masks: Vec<(Family, usize, Shapes)>,
+    /// How many pieces of a family touch each connector, at a vertex and
+    /// not only at an end ([`crate::ribbon::joints`]).
+    pub joints: std::collections::BTreeMap<(usize, (i64, i64)), usize>,
 }
 
 /// The paved surface: one set of disjoint regions per family, none
@@ -545,7 +605,7 @@ pub struct Ribbons {
 /// same four fields, borrowed, assembled by the pipeline out of whichever
 /// layer had filled which, with a runtime branch in it for the one caller
 /// that ran before the room did.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Surface {
     pub carriageway: Shapes,
     pub walk: Shapes,
@@ -585,7 +645,7 @@ impl Surface {
 
 /// The pavement: the walk surface with the strip between every attached
 /// sidewalk and its kerb filled, so its inner edge is the kerb.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Kerb {
     /// The paved surface as this step leaves it: `walk` is now
     /// `(walk ∪ rungs) − carriageway`, and the other three are the surface
@@ -594,11 +654,11 @@ pub struct Kerb {
     /// The ladder that filled the strips, unioned; kept for the plan view.
     pub rungs: Shapes,
     /// Every attached station, for the kerb-gap check downstream.
-    pub attached: Vec<crate::kerb::Attached>,
+    pub attached: Vec<Attached>,
 }
 
 /// The room filled: the pavement extended to every wall within reach.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Room {
     /// The paved surface as this step leaves it — and, since this is the
     /// last step that lays any, as it finally stands.
@@ -612,7 +672,7 @@ pub struct Room {
 
 /// A triangle mesh: positions in local metres, indices in triples,
 /// counter-clockwise seen from above, vertices shared by position.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Tri {
     pub positions: Vec<[f64; 3]>,
     pub indices: Vec<u32>,
@@ -656,18 +716,60 @@ impl Tri {
 /// triangle belongs to is its face's to say ([`Mesh::of_face`]), so a
 /// vertex's sheet, its side of the room's reach and its material are all
 /// read off the face rather than carried beside it.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Mesh {
     pub tri: Tri,
-    /// The face each triangle came from, as [`crate::arrangement::Arrangement::face`]
+    /// The face each triangle came from, as [`Arrangement::face`]
     /// numbers them: the partition's faces first, then the decks over them.
     pub of_face: Vec<u32>,
+}
+
+/// The room lifted onto the solved profile: every paved copy of the one mesh
+/// at its surface's height, welded where two rules agree. No ground yet.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Lifted {
+    /// The height fields the copies were lifted by, and which the earthwork
+    /// asks again along every edge it checks.
+    pub fields: crate::copies::Fields,
+    /// Per triangle of the one mesh, the rule that answered it.
+    pub rules: Vec<crate::copies::Rule>,
+    /// The paved copies at their lifted heights.
+    pub copies: crate::copies::Copies,
+    /// Per paved copy — the carriageway's, the ballast's, the pavement's —
+    /// the foot its rule read.
+    pub feet: [Vec<Option<crate::field::Foot>>; 3],
+    /// Every edge of the one mesh across which the surface or the rule
+    /// changes: the outline, the kerbs and the splits.
+    pub bounds: Vec<crate::copies::Boundary>,
+    /// Copies of one vertex under two rules that agreed and were welded.
+    pub welded: usize,
+}
+
+/// The ground benched to the lifted room.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Earthwork {
+    /// The lift's copies with the ground's added at the engineered ground,
+    /// and the passive pavement regraded onto it.
+    pub copies: crate::copies::Copies,
+    /// The room's outline: every one-mesh edge between a face that cuts and
+    /// one that does not, the room on its left.
+    pub outline: Vec<(u32, u32)>,
+    /// The key on each outline edge's cutting side: which paved surface, by
+    /// which rule, the room is there.
+    pub cutting: Vec<Option<crate::copies::Key>>,
+    /// The room's height at the two ends of each outline edge, on its
+    /// cutting side.
+    pub top: Vec<[f64; 2]>,
+    /// The engineered ground, as a function of the point.
+    pub ground: crate::field::Ground,
+    /// The midpoint of every edge the height field steps across.
+    pub steps: Vec<[f64; 2]>,
 }
 
 /// The room at the height the profile solved: the mesh step's triangles,
 /// every vertex of a paved region that runs beside a carriageway moved
 /// from the ground to the road's own surface.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Bench {
     pub carriageway: Tri,
     pub pavement: Tri,
@@ -696,7 +798,7 @@ pub struct Bench {
 /// a bore run. A road's or a railway's *deck* is paved by its [`Sheet`]; the
 /// paving here is what no sheet lays — a bore's floor, which a sheet's field
 /// would read from the road above it, and a footbridge, which has no profile.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Structure {
     /// The paving of every bore and every walk span.
     pub roadway: Tri,
@@ -713,7 +815,7 @@ pub struct Structure {
 }
 
 /// The buildings standing on the terrain.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Buildings {
     /// Every footprint's walls, from under the lowest ground along its
     /// outline up to its roof's rim: gable ends and courtyards included.
@@ -751,7 +853,7 @@ impl Facade {
 /// ([`Family::solves`]): a footbridge has no profile, so a walk span has
 /// no field to be lifted by and keeps the structure step's sweep for now.
 /// The pavement is one sheet's worth of regions and is not partitioned.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sheet {
     pub family: Family,
     /// The group of [`crate::partition::groups`] this sheet is.
@@ -798,7 +900,7 @@ pub struct Sheet {
 }
 
 /// The paved surface as sheets that may merge.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Sheets {
     pub sheets: Vec<Sheet>,
 }
@@ -826,4 +928,382 @@ impl Sheets {
     pub fn spanned(&self) -> Shapes {
         poly::union_all(&self.sheets.iter().flat_map(|s| s.spans.iter().cloned()).collect())
     }
+}
+
+/// The roof shapes this step builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RoofShape {
+    #[default]
+    Flat,
+    /// A ridge along the long axis of a quad, over the midpoints of its
+    /// short edges.
+    Gabled,
+    /// An apex over the centroid of a convex outline.
+    Pyramidal,
+    /// One plane rising from the south edge to the north.
+    Skillion,
+}
+
+impl RoofShape {
+    /// Overture's `roof_shape`, as one of the four. A hip is built as a gable
+    /// (a true hip needs a straight skeleton) and a dome as a pyramid; what
+    /// is unknown is flat.
+    pub fn parse(s: &str) -> RoofShape {
+        match s {
+            "gabled" | "hipped" | "half_hipped" | "round" | "gambrel" | "mansard" => RoofShape::Gabled,
+            "pyramidal" | "dome" | "onion" | "cone" => RoofShape::Pyramidal,
+            "skillion" | "lean_to" | "mono_pitch" | "shed" => RoofShape::Skillion,
+            _ => RoofShape::Flat,
+        }
+    }
+}
+
+/// A roof as the source mapped it: a prior, which the outline may refuse
+/// ([`form`]).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Roof {
+    pub shape: RoofShape,
+    /// Eave to ridge, in metres, where the source gives it.
+    pub rise_m: Option<f64>,
+}
+
+impl Roof {
+    /// The roof of a source's `roof_shape` and `roof_height`, either absent;
+    /// a rise that is not positive is no rise.
+    pub fn mapped(shape: Option<&str>, rise_m: Option<f64>) -> Roof {
+        Roof { shape: shape.map_or(RoofShape::Flat, RoofShape::parse), rise_m: rise_m.filter(|h| *h > 0.0) }
+    }
+}
+
+/// What a face of the arrangement is made of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Material {
+    /// Not paved: the terrain, and the only material the ground mesh draws.
+    Ground,
+    Carriageway,
+    Pavement,
+    Ballast,
+}
+
+impl Material {
+    pub fn name(self) -> &'static str {
+        match self {
+            Material::Ground => "ground",
+            Material::Carriageway => "carriageway",
+            Material::Pavement => "pavement",
+            Material::Ballast => "ballast",
+        }
+    }
+}
+
+/// One face of the subdivision: a region of the rect, and what it is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Face {
+    pub shape: Shape,
+    pub material: Material,
+    /// The sheet this face belongs to, for the families that have them
+    /// ([`crate::width::Family::solves`]). `None` for ground, for the
+    /// pavement — which is not partitioned — and for a paved face no sheet
+    /// claims.
+    pub sheet: Option<usize>,
+    /// Over a span rather than on the ground. Paved, and **it does not cut
+    /// the ground**: a viaduct flies over terrain that is still there
+    /// (invariant I3), and the soffit is what closes under it.
+    pub spanned: bool,
+    /// Inside a gallery's footprint — a road under the ground whose tube
+    /// fits nowhere. Ground, and it *does* cut: the tube stands in the
+    /// trench the bench digs for it.
+    pub gallery: bool,
+    /// Within [`crate::standard::WALL_REACH_M`] of the asphalt: the band the
+    /// bench lifts to the road's height, against the part beyond it that
+    /// drapes.
+    ///
+    /// **A cut, not a boolean.** The two rules disagree by up to the whole
+    /// drop — 15.6 m on the loop box — and every face the bench draws is
+    /// built off a *rim*, so the walk has to be meshed in two parts with the
+    /// step between them on an edge of each. `mesh` used to `dilate` and
+    /// `intersect` to find that line, which put vertices on the walk that no
+    /// other mesh had. Here it is one more boundary where the ground does
+    /// something different on each side, which is exactly what a cut is.
+    pub near: bool,
+}
+
+impl Face {
+    /// Whether this face cuts the terrain's hole.
+    ///
+    /// Paving on the ground does; paving over a span does not (invariant I3:
+    /// a viaduct flies over ground that is still there, and the soffit closes
+    /// under it); a gallery does, though it is ground — the tube stands in
+    /// the trench the bench digs for it.
+    pub fn cuts(&self) -> bool {
+        self.gallery || (self.material != Material::Ground && !self.spanned)
+    }
+}
+
+/// The rect, partitioned.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Arrangement {
+    pub faces: Vec<Face>,
+    /// **The second layer: paving over a span that lies over other paving.**
+    ///
+    /// The partition has one face per point, and it is the *ground's*: where
+    /// a deck crosses a street in plan, the face under it is the street's,
+    /// which cuts the terrain and meets its own kerbs. The deck's paving
+    /// over that face is here instead — the same shape, from the same slice,
+    /// so it welds to the rest of its sheet by position exactly as the faces
+    /// do. Never in [`Arrangement::edges`] and never in the hole: a deck's
+    /// side is closed by its slab, and the ground under it is the street's.
+    pub decks: Vec<Face>,
+    /// The paving over a span that `Face::spanned` was tagged by
+    /// ([`over_spans`]), kept so that `bench` reads the one mask rather
+    /// than rebuilding it: the hole and the lift must agree on it.
+    pub over: Shapes,
+    /// The area of the walk a deck carries, the part of `over` the sheets
+    /// alone do not hold.
+    pub carried_m2: f64,
+    /// [`Arrangement::edges`], computed once.
+    pub edges: Vec<FaceEdge>,
+    /// The tunnels' mouths and the galleries' footprints
+    /// ([`crate::portal::Portals`]): the arrangement cuts a face for each
+    /// gallery, and the earthwork and the bench leave each mouth open.
+    pub portals: crate::portal::Portals,
+}
+
+impl Arrangement {
+    /// The faces of `material`.
+    pub fn of(&self, material: Material) -> impl Iterator<Item = &Face> {
+        self.faces.iter().filter(move |f| f.material == material)
+    }
+
+    /// Face `i` of both layers: the partition's faces are `0..faces.len()`,
+    /// and the decks over them follow — the numbering [`crate::world::Mesh`]
+    /// tags its triangles with.
+    pub fn face(&self, i: u32) -> &Face {
+        let i = i as usize;
+        self.faces.get(i).unwrap_or_else(|| &self.decks[i - self.faces.len()])
+    }
+
+    /// Whether face `i` is of the partition rather than a deck over it.
+    pub fn in_partition(&self, i: u32) -> bool {
+        (i as usize) < self.faces.len()
+    }
+
+    /// Every face of both layers, in [`Arrangement::face`]'s order.
+    pub fn all(&self) -> impl Iterator<Item = &Face> {
+        self.faces.iter().chain(&self.decks)
+    }
+
+    /// The same over both layers: every face of `material` a mesh must
+    /// draw, the ground's and the decks' over it.
+    pub fn layered(&self, material: Material) -> impl Iterator<Item = &Face> {
+        self.faces.iter().chain(&self.decks).filter(move |f| f.material == material)
+    }
+
+    /// The regions that cut the terrain's hole: every paved face on the
+    /// ground, and every gallery's. The arrangement's answer to `bench`'s
+    /// `outline`, as faces rather than as an expression.
+    pub fn hole(&self) -> Shapes {
+        self.faces.iter().filter(|f| f.cuts()).map(|f| f.shape.clone()).collect()
+    }
+}
+
+/// One edge of the subdivision: a segment, and the faces on each side.
+///
+/// The unit [`crate::bench`]'s rule works on — "an arrangement edge is either
+/// *welded*, its two faces sharing vertices and one height, or *split*, each
+/// face taking its own and the mesher emitting the quad between them"
+/// (`data/plans/one-ground-2026-09-16.md` §3.3). A segment rather than a
+/// maximal shared boundary, because that is what a mesher emits a quad
+/// across.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FaceEdge {
+    pub a: Pt,
+    pub b: Pt,
+    /// The faces either side. `right` is `None` on the rect's own boundary,
+    /// where there is nothing on the far side.
+    pub left: usize,
+    pub right: Option<usize>,
+}
+
+/// The reference along one axis, at the stations the profile will solve it
+/// at ([`NODE_M`] apart, the piece's own vertices kept).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Axis {
+    /// The way this axis is of: an index into [`Roads::ways`]. Every step
+    /// that holds a profile needs it, and it is known here and nowhere
+    /// cheaper.
+    pub way: usize,
+    /// Arc length at each station, from the piece's start.
+    pub s: Vec<f64>,
+    /// The plan position of each station.
+    pub p: Vec<[f64; 2]>,
+    /// The raw terrain there: what the bench still owes its earthwork
+    /// against, and what a departure is still measured from.
+    pub ground: Vec<f64>,
+    /// The conditioned surface: blind runs bridged, notches filled, bumps
+    /// shaved. What a profile is solved against.
+    pub h: Vec<f64>,
+    /// Where the ground under the axis is a structure's own top.
+    pub blind: Vec<bool>,
+    /// Where the ground under the axis is a mapped structure's slot or mass
+    /// rather than the way's own ground ([`spanned_mask`]).
+    pub spanned: Vec<bool>,
+    /// Notches the closing refused, as `(arc, arc)`: the terrain's bridge
+    /// priors.
+    pub refused_notch: Vec<(f64, f64)>,
+    /// Crests the opening refused: the terrain's tunnel priors, for the
+    /// classes whose ladder cannot climb them.
+    pub refused_crest: Vec<(f64, f64)>,
+    /// What each of the three passes moved, separately.
+    pub moved: Moved,
+}
+
+/// How far each pass moved the surface, and at how many stations.
+///
+/// Kept per pass rather than as one composite, because the composite cannot
+/// be read: the bridging lowers a causeway onto its rims, the closing lifts a
+/// notch and the opening shaves a crest, and a station that has been through
+/// two of them reports a number belonging to neither. Measured against the
+/// caps, a composite `shave` of 13.26 m looked like the opening exceeding its
+/// own 4 m budget when it was the bridging doing its job.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct Moved {
+    pub bridged: usize,
+    pub bridge_m: f64,
+    pub filled: usize,
+    pub fill_m: f64,
+    pub shaved: usize,
+    pub shave_m: f64,
+}
+
+/// One leg of a junction: an edge leaving the node.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Leg {
+    /// Which edge, and whether it leaves the node at its start.
+    pub edge: usize,
+    pub at_start: bool,
+    /// Unit direction from the node along the edge's first segment: what the
+    /// legs are ordered by.
+    pub u: Pt,
+    pub half_m: f64,
+    pub class: String,
+    /// Where the leg's mouth lies, in metres of arc from the node.
+    pub mouth_m: f64,
+    /// The edge's centreline, oriented away from the node.
+    pub line: Vec<Pt>,
+    /// The kerb walk past the edge's far node on the left side and on the
+    /// right ([`walk`]): points, each with its stretch's half-width.
+    pub ahead: [Vec<(Pt, f64)>; 2],
+}
+
+/// One junction: the node, its legs in counter-clockwise order, and the
+/// polygon between their mouths.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Junction {
+    pub at: Pt,
+    pub legs: Vec<Leg>,
+    pub shape: Shapes,
+    /// How far the junction reaches from its node: the farthest mouth
+    /// corner.
+    pub reach_m: f64,
+}
+
+/// A piece cut at the nodes it passes: what a junction's legs trim.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PieceEdge {
+    pub piece: usize,
+    pub pts: Vec<Pt>,
+    pub width_m: f64,
+    /// Where the edge is trimmed at each end, in metres of arc: the mouth of
+    /// the junction there, or 0 at a free end.
+    pub trim: [f64; 2],
+    /// Whether each end is a node.
+    pub node: [bool; 2],
+    /// Whether the edge is on the ground, and so paved here: a deck's edge
+    /// shapes its junctions and is paved by the `sheet` step.
+    pub ground: bool,
+}
+
+/// What the step built.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Legs {
+    pub junctions: Vec<Junction>,
+    pub edges: Vec<PieceEdge>,
+    /// The paved surface as this step would leave it: the explicit
+    /// carriageway, facade-cut — every junction and every trimmed ground
+    /// edge — and the pavement laid back outside it.
+    pub surface: Surface,
+    /// The kerb stations `kerb_gap` counts as bare on this surface.
+    pub gaps: Vec<Pt>,
+}
+
+/// One attached station.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Attached {
+    /// The station on the pedestrian way.
+    pub station: Pt,
+    /// Its foot on the road's axis.
+    pub foot: Pt,
+    /// The road's half-width there.
+    pub half_m: f64,
+    /// The axis segment the foot lies on.
+    pub seg: [Pt; 2],
+    /// The road the foot is on, in the index's order.
+    pub road: usize,
+    /// How far from the foot, toward the station, the asphalt ends: the
+    /// attached road's own half-width on a straight, farther where the
+    /// rung crosses another road's ribbon on the way out, as it does in
+    /// the notch between two legs.
+    pub exit_m: f64,
+    /// Landed rather than attached: a footway's end on a kerb, not a
+    /// pavement running along it, so no stretch of kerb is claimed from it.
+    pub landed: bool,
+}
+
+/// What the cut came to: the network, the profiles written back with it, and
+/// the groups its pieces fall into.
+///
+/// **A layer of its own, not an install into earlier ones.** The step used
+/// to rewrite the drape's span tables and the profile step's profiles in
+/// place — first through `&mut`, then through the pipeline — so after a run
+/// neither of those layers held what its own step had made. Now each step's
+/// layer is what that step returned, and this one is the partition's.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Partition {
+    /// The network as the cut leaves it: every way's span table as the cut
+    /// derived it, and the pieces cut from it.
+    pub network: Network,
+    /// The profiles with that table written back and every station's verdict
+    /// recomputed from it. `None` where the step was given no heights to
+    /// read — a flat specimen, or the world before the solve.
+    pub profiles: Option<Profiles>,
+    /// The pieces grouped into the surfaces that may merge
+    /// ([`crate::partition::groups`]).
+    pub groups: Groups,
+}
+
+/// What [`groups`] found: the grouping itself and what it took to get it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Groups {
+    /// The group of every piece, in [`Roads::pieces`]'s order.
+    pub of: Vec<usize>,
+    /// How many connected components the piece graph had, before any split.
+    pub components: usize,
+    /// How many pieces the largest of them held.
+    pub largest: usize,
+    /// How many crossing pairs were found: the work the rule had to do.
+    pub crossings: usize,
+    /// The group pairs that may never be one surface, as `(min, max)` — one
+    /// per crossing pair, including those that needed no split.
+    pub rivals: Vec<(usize, usize)>,
+    /// Every group the split created, and the group it was carried out of —
+    /// `(new, was)`. The split moves a structure run's pieces to a fresh id
+    /// so it is never unioned with what it crosses, but `was` is exactly
+    /// the id its own ground pieces kept, so this is the one thing that
+    /// still says a peeled span belongs with its own approach rather than
+    /// with nothing at all. [`crate::sheet`] is the reader: without it, a
+    /// span the split ever touched has no ground piece anywhere sharing its
+    /// group, so nothing can claim it — not "kept apart", which the model
+    /// has a rule for, but unreachable, which it does not.
+    pub parent: Vec<(usize, usize)>,
 }

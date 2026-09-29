@@ -3,6 +3,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::world::{Profile, Solved};
+
 /// One step of the pipeline.
 ///
 /// Each is a function of the layers it reads, returning what it makes
@@ -64,8 +66,13 @@ pub enum Step {
     /// The paved surface as triangles, each inside one terrain triangle,
     /// on the ground.
     Mesh,
-    /// The room lifted off the ground onto the height its profile solved,
-    /// and cut into the ground.
+    /// The room lifted off the ground onto the height its profile solved.
+    Lift,
+    /// The ground benched to the lifted room, and the footpaths regraded
+    /// onto it.
+    Earthwork,
+    /// The faces that close the room onto the ground and onto itself: the
+    /// walls and the kerbs.
     Bench,
     /// The decks and bores the solved profile implies, and the roadway
     /// over every span.
@@ -76,7 +83,7 @@ pub enum Step {
 
 impl Step {
     /// Every step, in the order the pipeline runs them.
-    pub const ALL: [Step; 18] = [
+    pub const ALL: [Step; 20] = [
         Step::Terrain,
         Step::Drape,
         Step::Reference,
@@ -92,6 +99,8 @@ impl Step {
         Step::Sheet,
         Step::Arrangement,
         Step::Mesh,
+        Step::Lift,
+        Step::Earthwork,
         Step::Bench,
         Step::Structure,
         Step::Building,
@@ -115,6 +124,8 @@ impl Step {
             Step::Sheet => "sheet",
             Step::Arrangement => "arrangement",
             Step::Mesh => "mesh",
+            Step::Lift => "lift",
+            Step::Earthwork => "earthwork",
             Step::Bench => "bench",
             Step::Structure => "structure",
             Step::Building => "building",
@@ -146,6 +157,13 @@ pub struct Summary {
 impl Summary {
     pub fn new() -> Summary {
         Summary::default()
+    }
+
+    /// This line followed by `other`'s: a step's build tallies and then
+    /// what its check measured of the layer.
+    pub fn and(mut self, other: Summary) -> Summary {
+        self.counts.extend(other.counts);
+        self
     }
 
     /// Appends one labelled value.
@@ -212,7 +230,7 @@ impl Summary {
 /// stands off the engineered ground" in `bench`, so a reader had to know which
 /// step's line they were on before they knew what they were reading.
 ///
-/// **The baseline is the same for every step** — [`crate::terrain::height_at`],
+/// **The baseline is the same for every step** — [`crate::lattice::height_at`],
 /// never the step's own input — which is the whole point: it makes the lines
 /// comparable down a run, so a height can be attributed to the step that made
 /// it rather than to the step that paid for it. The numbers are absolute
@@ -266,4 +284,27 @@ impl fmt::Display for Summary {
         }
         Ok(())
     }
+}
+
+/// The solved surface against the raw DEM, over every **at-grade** station of
+/// every profile: [`crate::step::Residual`], read off the profiles a step
+/// hands on.
+///
+/// The population is `Solved::Grade` alone, and that is the whole reason this
+/// is one function rather than a loop in each step. A chord standing thirty
+/// metres over a gorge is not a departure from the ground — it is a bridge,
+/// and the structure step answers for it — so counting it would swamp the
+/// number that matters with the number that does not. It is also what the
+/// bench actually benches, which is what makes the lines comparable: every
+/// step reports the same quantity over the same population against the same
+/// baseline, so the differences down a run attribute a height to the step
+/// that made it.
+pub fn residual_of(profiles: &[Profile]) -> Residual {
+    let mut r = Residual::new();
+    for p in profiles {
+        for st in p.stations.iter().filter(|st| st.solved == Solved::Grade) {
+            r.push(st.h, st.ground);
+        }
+    }
+    r
 }

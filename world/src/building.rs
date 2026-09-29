@@ -32,19 +32,11 @@
 //!   axes: the tiler's bounding box gave a house turned 45° a steeper roof
 //!   than the same house square to north.
 
-use crate::drape::drape;
-use crate::mesh;
+use crate::lattice::drape;
+use crate::triangulate;
 use crate::poly::{self, Pt, Ring, Shape, Shapes};
 use crate::step::Summary;
-use crate::world::{Buildings, Facade, Terrain, Tri};
-
-/// A storey, in metres, where the source gives floors and no height.
-pub const FLOOR_M: f64 = 3.0;
-
-/// A building's height, in metres, where the source gives neither height
-/// nor floors — which in Overture is most of them. Without it a town reads
-/// as a few tall buildings on open ground.
-pub const DEFAULT_HEIGHT_M: f64 = 5.0;
+use crate::world::{Buildings, Facade, RoofShape, Terrain, Tri};
 
 /// How far below the lowest ground along its outline a wall's foot stands,
 /// in metres: past the ground's rounding and the DEM's jitter.
@@ -56,58 +48,6 @@ pub const FOUNDATION_M: f64 = 2.0;
 const RISE_FRACTION: f64 = 0.5;
 pub const MIN_RISE_M: f64 = 1.0;
 pub const MAX_RISE_M: f64 = 6.0;
-
-/// The roof shapes this step builds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RoofShape {
-    #[default]
-    Flat,
-    /// A ridge along the long axis of a quad, over the midpoints of its
-    /// short edges.
-    Gabled,
-    /// An apex over the centroid of a convex outline.
-    Pyramidal,
-    /// One plane rising from the south edge to the north.
-    Skillion,
-}
-
-impl RoofShape {
-    /// Overture's `roof_shape`, as one of the four. A hip is built as a gable
-    /// (a true hip needs a straight skeleton) and a dome as a pyramid; what
-    /// is unknown is flat.
-    pub fn parse(s: &str) -> RoofShape {
-        match s {
-            "gabled" | "hipped" | "half_hipped" | "round" | "gambrel" | "mansard" => RoofShape::Gabled,
-            "pyramidal" | "dome" | "onion" | "cone" => RoofShape::Pyramidal,
-            "skillion" | "lean_to" | "mono_pitch" | "shed" => RoofShape::Skillion,
-            _ => RoofShape::Flat,
-        }
-    }
-}
-
-/// A roof as the source mapped it: a prior, which the outline may refuse
-/// ([`form`]).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Roof {
-    pub shape: RoofShape,
-    /// Eave to ridge, in metres, where the source gives it.
-    pub rise_m: Option<f64>,
-}
-
-impl Roof {
-    /// The roof of a source's `roof_shape` and `roof_height`, either absent;
-    /// a rise that is not positive is no rise.
-    pub fn mapped(shape: Option<&str>, rise_m: Option<f64>) -> Roof {
-        Roof { shape: shape.map_or(RoofShape::Flat, RoofShape::parse), rise_m: rise_m.filter(|h| *h > 0.0) }
-    }
-}
-
-/// The height, in metres, a source gives a building: measured, else its
-/// floors at [`FLOOR_M`]. `None` when it gives neither, and the reader
-/// stands it at [`DEFAULT_HEIGHT_M`].
-pub fn mapped_height(height: Option<f64>, floors: Option<f64>) -> Option<f64> {
-    height.filter(|h| *h > 0.0).or_else(|| floors.map(|n| n * FLOOR_M).filter(|h| *h > 0.0))
-}
 
 /// What the step built, and what it had to refuse.
 #[derive(Debug, Default)]
@@ -204,7 +144,7 @@ fn ground(terrain: &Terrain, footprint: &Shapes) -> Option<(f64, f64)> {
 /// quad drawn with a fifth vertex along one side is a quad), the outer
 /// counter-clockwise and the holes clockwise; `None` if the outer is gone.
 fn readable(shape: &Shape) -> Option<Shape> {
-    let mut rings = shape.iter().map(|r| mesh::cleaned(r)).filter(|r| r.len() >= 3);
+    let mut rings = shape.iter().map(|r| triangulate::cleaned(r)).filter(|r| r.len() >= 3);
     let outer = poly::oriented(rings.next()?, true);
     Some(std::iter::once(outer).chain(rings.map(|r| poly::oriented(r, false))).collect())
 }
@@ -266,7 +206,7 @@ fn stand(out: &mut Buildings, shape: &Shape, form: RoofShape, foot: f64, eave: f
             for ring in shape {
                 walls(&mut out.walls, &ring.iter().map(|&p| at(p, z(p))).collect::<Vec<_>>(), foot);
             }
-            let Some(ears) = mesh::ear_clip(shape) else {
+            let Some(ears) = triangulate::ear_clip(shape) else {
                 return false;
             };
             for ear in ears {
@@ -324,10 +264,13 @@ fn plan_area(tri: &Tri, from: usize) -> f64 {
 mod tests {
     use crate::pipeline::tests::{built, plan};
     use crate::step::Step;
-    use crate::terrain::{self, height_at, tests::{dem, extent}};
+    use crate::lattice::height_at;
+    use crate::terrain::{self, tests::{dem, extent}};
     use crate::world::{Building, World};
 
     use super::*;
+    use crate::facade::{mapped_height, DEFAULT_HEIGHT_M};
+    use crate::world::Roof;
 
     /// A straight road on `ground` with the houses of `house`, stood up.
     fn stood(ground: &str, house: &str) -> (World, Summary) {

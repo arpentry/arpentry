@@ -64,7 +64,7 @@ use std::collections::{BTreeMap, HashMap};
 use crate::poly::{self, Shapes};
 use crate::step::Summary;
 use crate::width::{self, Family};
-use crate::world::{Polyline2, Profiles, Roads, Sheet, Sheets, Surface};
+use crate::world::{Groups, Network, Polyline2, Profiles, Ribbons, Sheet, Sheets, Surface};
 
 /// How many points along a piece are asked which region they fell in.
 ///
@@ -124,9 +124,14 @@ fn tidy(v: &mut Vec<(usize, f64, f64)>) {
 }
 
 /// The sheets of the paved surface: one per connected region of paving.
-pub fn run(roads: &Roads, profiles: &Profiles, paving: &Surface) -> (Sheets, Summary) {
-    let crate::partition::Groups { of: group, rivals, parent, .. } =
-        crate::partition::groups(&roads.plan, &roads.spans);
+pub fn run(
+    roads: &Network,
+    profiles: &Profiles,
+    paving: &Surface,
+    groups: &Groups,
+    ribbons: &Ribbons,
+) -> (Sheets, Summary) {
+    let Groups { of: group, rivals, parent, .. } = groups;
     let pieces: Vec<&Polyline2> = roads.pieces().collect();
     // A piece knows the way it was cut from and a profile knows the way it
     // is of ([`Profile::way`]), so the grouping — which is on the pieces —
@@ -142,14 +147,13 @@ pub fn run(roads: &Roads, profiles: &Profiles, paving: &Surface) -> (Sheets, Sum
     // The spans to merge in — and, separately, the mask that says which
     // paving is over one. A round cap welds the span's ribbon to the
     // approach; a square one is the abutment the terrain's hole must end
-    // on (`surface::spans_masked`).
-    let spans = crate::surface::spans_grouped(roads);
-    let masks = crate::surface::spans_masked(roads);
+    // on ([`crate::ribbon::spans_masked`]).
+    let (spans, masks) = (&ribbons.spans, &ribbons.masks);
 
     // Which groups may never be one surface: the pairs whose interiors
     // cross with no connector between them.
     let mut rival: HashMap<usize, std::collections::HashSet<usize>> = HashMap::new();
-    for &(a, b) in &rivals {
+    for &(a, b) in rivals {
         rival.entry(a).or_default().insert(b);
         rival.entry(b).or_default().insert(a);
     }
@@ -157,7 +161,7 @@ pub fn run(roads: &Roads, profiles: &Profiles, paving: &Surface) -> (Sheets, Sum
     // Which connectors more than one piece of a family meets: a span may
     // lie over paving at any of them, because that is a junction. The same
     // count `surface` caps on, asked once so the two cannot drift.
-    let shared = crate::surface::joints(roads);
+    let shared = &ribbons.joints;
 
     let mut sheets: Vec<Sheet> = Vec::new();
     let (mut orphans, mut merged, mut grouped) = (0usize, 0usize, 0usize);
@@ -186,7 +190,7 @@ pub fn run(roads: &Roads, profiles: &Profiles, paving: &Surface) -> (Sheets, Sum
         // gives the span back the sheet it lands on without ever touching
         // what it flies over: `rival` still keeps that apart below,
         // computed independently of this union.
-        for &(child, was) in &parent {
+        for &(child, was) in parent {
             union.join(child, was);
         }
         let mut seen: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
@@ -270,7 +274,7 @@ pub fn run(roads: &Roads, profiles: &Profiles, paving: &Surface) -> (Sheets, Sum
                 // ground around its portal and cut the approach 0.25 m
                 // deeper than a cutting goes.
                 if i >= roads.plan.len() {
-                    // A bore is not a sheet's: see `surface::spans_grouped`.
+                    // A bore is not a sheet's: see `ribbon::spans_grouped`.
                     if !matches!(p.kind, crate::world::Kind::Bridge(_)) {
                         continue;
                     }
@@ -352,7 +356,7 @@ pub fn run(roads: &Roads, profiles: &Profiles, paving: &Surface) -> (Sheets, Sum
                     // ground axis of the sheet it was kept out of, the field
                     // held the very roads the span flies over — 973 profiles
                     // for the Viaduc de Chillon, the whole connected paving
-                    // of the town — and `bench::by_sheet` believes a chord
+                    // of the town — and `copies::Fields` believes a chord
                     // only where it is no further off in plan than the
                     // nearest ground axis. Over every street passing under
                     // the deck that street's axis was the nearer, and the
@@ -382,7 +386,7 @@ pub fn run(roads: &Roads, profiles: &Profiles, paving: &Surface) -> (Sheets, Sum
                     // is in this sheet too, and the deck over it stays.
                     let reach: Shapes = approaches
                         .iter()
-                        .flat_map(|(p, _)| poly::buffer_line(&p.pts, p.width_m + 2.0 * crate::bench::ROOM_REACH_M))
+                        .flat_map(|(p, _)| poly::buffer_line(&p.pts, p.width_m + 2.0 * crate::standard::ROOM_REACH_M))
                         .collect();
                     let landing = poly::intersect(&shapes, &poly::union_all(&reach));
                     let deck = if landing.is_empty() { span.clone() } else { poly::difference(span, &landing) };
@@ -426,7 +430,7 @@ pub fn run(roads: &Roads, profiles: &Profiles, paving: &Surface) -> (Sheets, Sum
             // under them. Two things retired that. A return stands at a
             // junction, and a junction on a deck is at its abutment, where
             // the standoff is nothing — so there was little to protect. And
-            // `bench::by_sheet` no longer believes this mask for the
+            // `copies::Fields` no longer believes this mask for the
             // *height*: a chord answers only where it is no further off
             // than the ground the sheet also holds, which is why a 0.8 m²
             // sliver of it stopped standing the asphalt up in a 2.4 m fin.
@@ -448,30 +452,8 @@ pub fn run(roads: &Roads, profiles: &Profiles, paving: &Surface) -> (Sheets, Sum
     }
 
     let spanning = sheets.iter().filter(|s| s.spanning).count();
-    // **The walk is under the asphalt this step adds, and the number says
-    // how much.** Every step before this one leaves the three families'
-    // paving mutually disjoint — `surface` cuts the walk to the
-    // carriageway and the ballast, `legs` to its own junctions, `room` to
-    // both, and `legs.carriageway ∩ room.pavement` reads 0.00 m². This
-    // step then adds asphalt none of them ever saw, and nothing takes the
-    // pavement back from under it: a sidewalk inside the road, and 0.12 m
-    // over it once the bench has put the kerb's rise on it.
-    //
-    // It is the invariant of the whole chain, so it is measured where the
-    // asphalt is finally complete rather than assumed anywhere earlier.
-    // **Zero is the only acceptable reading**; it is 29.9 m² on the
-    // junction model today (`one-surface-at-a-junction-2026-09-14.md` §6).
-    let on_walk = poly::area(&poly::intersect(
-        &poly::union_all(&crate::world::shapes(&sheets)),
-        &paving.walk,
-    ));
     let summary = Summary::new()
-        .with("sheets", sheets.len())
-        .with("carriageway", sheets.iter().filter(|s| s.family == Family::Carriageway).count())
-        .with("ballast", sheets.iter().filter(|s| s.family == Family::Rail).count())
         .with("spanning", spanning)
-        .with("regions", sheets.iter().map(|s| s.shapes.len()).sum::<usize>())
-        .with("axes", sheets.iter().map(|s| s.axes.len()).sum::<usize>())
         // `groups` against `sheets` is how much coarser the paving is than
         // the piece graph, and `merged` is how many joins it took to get
         // there. Neither is a defect: both are the measurement that says a
@@ -486,14 +468,36 @@ pub fn run(roads: &Roads, profiles: &Profiles, paving: &Surface) -> (Sheets, Sum
         // sheet, and a seam, of their own. `apart` is the residual this
         // step does not fix, and it is meant to stay small.
         .with("joined", joined)
-        .with("apart", apart)
-        .with_m2("sheet_m2", sheets.iter().map(|s| poly::area(&s.shapes)).sum::<f64>())
-        .with_m2("on_walk", on_walk);
+        .with("apart", apart);
     (Sheets { sheets }, summary)
 }
 
+/// The sheets' size, and the invariant of the whole plan chain.
+///
+/// **The walk is under the asphalt this step adds, and `on_walk` says how
+/// much.** Every step before this one leaves the three families' paving
+/// mutually disjoint — `surface` cuts the walk to the carriageway and the
+/// ballast, `legs` to its own junctions, `room` to both. This step then adds
+/// asphalt none of them ever saw, and nothing takes the pavement back from
+/// under it: a sidewalk inside the road, and 0.12 m over it once the lift
+/// has put the kerb's rise on it. It is measured where the asphalt is
+/// finally complete rather than assumed anywhere earlier, and **zero is the
+/// only acceptable reading**.
+pub fn check(sheets: &Sheets, paving: &Surface) -> Summary {
+    let sheets = &sheets.sheets;
+    let on_walk = poly::area(&poly::intersect(&poly::union_all(&crate::world::shapes(sheets)), &paving.walk));
+    Summary::new()
+        .with("sheets", sheets.len())
+        .with("carriageway", sheets.iter().filter(|s| s.family == Family::Carriageway).count())
+        .with("ballast", sheets.iter().filter(|s| s.family == Family::Rail).count())
+        .with("regions", sheets.iter().map(|s| s.shapes.len()).sum::<usize>())
+        .with("axes", sheets.iter().map(|s| s.axes.len()).sum::<usize>())
+        .with_m2("sheet_m2", sheets.iter().map(|s| poly::area(&s.shapes)).sum::<f64>())
+        .with_m2("on_walk", on_walk)
+}
 
-/// One group's regions out of what [`crate::surface::spans_grouped`]
+
+/// One group's regions out of what [`crate::ribbon::spans_grouped`]
 /// returns.
 fn region_of(of: &[(Family, usize, Shapes)], family: Family, group: usize) -> Option<&Shapes> {
     of.iter().find(|(f, g, _)| *f == family && *g == group).map(|(.., s)| s)

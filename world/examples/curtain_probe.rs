@@ -5,13 +5,13 @@
 
 use arpentry_server::dem::Dem;
 use arpentry_server::project::Bounds;
-use arpentry_world::bench::Field;
+use arpentry_world::field::Field;
 use arpentry_world::pipeline::{self, Sources};
 use arpentry_world::poly;
 use arpentry_world::step::Step;
 use arpentry_world::world::{Profiles, World};
 
-/// The same ranges `bench::of_axes` builds a sheet's field from, one profile per call.
+/// The same ranges `copies::of_axes` builds a sheet's field from, one profile per call.
 fn ranges(p: &arpentry_world::world::Profile, spans: &[(usize, f64, f64)], pi: usize) -> Vec<(usize, usize)> {
     let mut r = Vec::new();
     for &(profile, a0, a1) in spans {
@@ -41,7 +41,7 @@ fn main() {
     let mut src = Sources { dem: &mut dem, segments: &seg, buildings: Some(&bld), spacing: 1.0, max_vertices: 2_000_000 };
     pipeline::upto(&mut world, Step::Bench, &mut src, &mut |s, sum| eprintln!("{s:?} {sum}")).unwrap();
 
-    let profiles: &Profiles = world.profile.as_ref().unwrap();
+    let profiles: &Profiles = world.solved().unwrap();
     let sheets = world.sheets.as_ref().unwrap();
     // Which sheet holds a point: asked of the sheets' own regions, since the
     // one mesh carries no per-vertex sheet.

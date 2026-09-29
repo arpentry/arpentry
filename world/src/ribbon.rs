@@ -38,12 +38,12 @@
 //! way at every grid line and diagonal, and though collinear vertices do not
 //! change a buffer's shape they would triple its vertex count.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use crate::poly;
+use crate::poly::{self, Shapes};
 use crate::step::Summary;
 use crate::width::{self, Family};
-use crate::world::{connector, Polyline2, Ribbon, Ribbons, Roads};
+use crate::world::{connector, Groups, Network, Polyline2, Ribbon, Ribbons};
 
 /// Two ways leaving a point at least this far apart, in degrees, run
 /// through it as one: a sidewalk cut at a crossing's connector. Less is a
@@ -55,9 +55,21 @@ pub const THROUGH_MIN_DEG: f64 = 135.0;
 /// interior vertex.
 type Leaving = HashMap<(i64, i64), Vec<(usize, [f64; 2])>>;
 
-/// Buffers every way of the world's network.
-pub fn run(roads: &Roads) -> (Ribbons, Summary) {
-    let mut out = Ribbons::default();
+/// Buffers every way of the world's network, and every deck span within the
+/// group the partition put it in.
+///
+/// **The span regions are built here, once.** The surface, the legs, the
+/// room and the sheet all need them, and each used to buffer and union them
+/// again from the pieces — the sheet also re-running the partition's
+/// grouping to do it. Built once they are one answer, and the steps that
+/// read them say so in their signatures.
+pub fn run(roads: &Network, groups: &Groups) -> (Ribbons, Summary) {
+    let mut out = Ribbons {
+        spans: spans_grouped(roads, &groups.of),
+        masks: spans_masked(roads, &groups.of),
+        joints: joints(roads),
+        ..Ribbons::default()
+    };
     let (mut contours, mut vertices, mut squared) = (0usize, 0usize, 0usize);
     let mut area = [0.0f64; 3];
     let road_ends = road_ends(&roads.plan);
@@ -164,6 +176,167 @@ fn joins_at(leaving: &Leaving, p: [f64; 2], w: usize) -> bool {
     let limit = THROUGH_MIN_DEG.to_radians().cos();
     let through = others.iter().enumerate().any(|(i, a)| others[i + 1..].iter().any(|b| a[0] * b[0] + a[1] * b[1] < limit));
     !others.is_empty() && !through
+}
+
+/// Unions the world's ribbons per family.
+/// One region per `(family, group)`: **step 3 of
+/// `data/plans/one-surface-at-a-junction-2026-09-14.md`**, as a function.
+///
+/// [`run`] unions the *ground* pieces alone, because that is all the surface
+/// steps have ever read — a span's paving is swept by `structure` afterwards,
+/// and the two meet neither in plan nor in height. This unions **every**
+/// piece, ground and span alike, within the group
+/// [`crate::partition::groups`] puts it in. So a junction standing on a deck
+/// comes out as one region together with its approaches, and a viaduct stays
+/// off the street it flies over because the grouping has already split them.
+///
+/// The caps are `ribbon`'s own rule, which needs no change here: a round cap
+/// is a disc that closes a joint whatever the angle, and a free end is
+/// square.
+///
+/// It is a pure function of the roads and stores nothing. Steps 4 and 5 are
+/// its consumers; until they land, [`run`] and `Surface` are untouched and
+/// nothing downstream moves.
+pub fn grouped(roads: &Network, group: &[usize]) -> Vec<(Family, usize, Shapes)> {
+    regions_of(roads, group, false, |_| true)
+}
+
+/// The same over the span pieces alone.
+///
+/// The [`crate::sheet`] step has the ground half of every group already,
+/// refined by the kerb, the legs and the room; what it needs from here is
+/// the spans to union into it.
+pub fn spans_grouped(roads: &Network, group: &[usize]) -> Vec<(Family, usize, Shapes)> {
+    spans_of(roads, group, false)
+}
+
+/// The same footprints, **capped square where a span hands over to the
+/// ground** rather than round.
+///
+/// The two answer different questions and want different ends. A round cap
+/// is what *welds* a span's ribbon to the approach it runs onto: it is a
+/// disc of half the road's width centred on the connector, it laps 2.75 m
+/// back over the ground ribbon, and a boolean union keeps touching shapes
+/// apart — so butting them would risk a hairline where the paving must be
+/// continuous. That is [`spans_grouped`], and nothing about it changes.
+///
+/// But the same shape is also the **mask** that says which paving is over a
+/// deck, and `bench` cuts the terrain's hole as `paving − mask` (invariant
+/// I3: a viaduct must not punch a hole in the ground it flies over). Read
+/// there, the cap is wrong twice. The hole ends in a **half-disc**, so the
+/// retaining wall the bench draws round it is a semicircle wrapping the
+/// bridge's nose, where an abutment is a straight face across the road. And
+/// the disc reaches *back* over the on-ground paving, so the last 2.75 m of
+/// approach — which is embankment, not deck — stands on terrain nobody cut
+/// and is excused its own earthwork.
+///
+/// An abutment is a line across the road. Square is that line.
+pub fn spans_masked(roads: &Network, group: &[usize]) -> Vec<(Family, usize, Shapes)> {
+    spans_of(roads, group, true)
+}
+
+fn spans_of(roads: &Network, group: &[usize], butt: bool) -> Vec<(Family, usize, Shapes)> {
+    let ground = roads.plan.len();
+    regions_of(roads, group, butt, |i| {
+        // **Decks only. A bore is never continuous with the ground.**
+        // A deck and the road that runs onto it are one surface — that is
+        // the whole point. A bore's roadway is under the hill, and the only
+        // place it meets the surface is its portal, which `open_portals`
+        // has already given back to the ground as an open cutting. Merged
+        // anyway, its chord joined the sheet's field and answered for the
+        // road above it: on the loop box a vertex read 155 m below its
+        // neighbour 1.8 m away, because a field reaches eighteen metres in
+        // plan and a hairpin over its own tunnel is nearer than that.
+        i >= ground && matches!(roads.spans[i - ground].kind, crate::world::Kind::Bridge(_))
+    })
+}
+
+/// How many pieces of a family touch each connector — **at a vertex, not
+/// only at an end**.
+///
+/// More than one is a joint: a cap is round where a piece's end meets
+/// something and square where it is free, and an end that lands on another
+/// piece's interior has met something. Counted by ends alone it read as
+/// free and squared off inside the junction it opens onto — which is also
+/// why [`crate::sheet`] asks it here rather than counting again: a span may
+/// lie over paving at any connector a family shares, and the two steps must
+/// not disagree about which those are.
+pub fn joints(roads: &Network) -> BTreeMap<(usize, (i64, i64)), usize> {
+    let mut at: BTreeMap<(usize, (i64, i64)), usize> = BTreeMap::new();
+    for p in roads.pieces() {
+        if p.pts.len() < 2 {
+            continue;
+        }
+        let fam = crate::width::family(&p.class) as usize;
+        let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+        for e in p.pts.iter().copied() {
+            let key = crate::world::connector(e);
+            if seen.insert(key) {
+                *at.entry((fam, key)).or_default() += 1;
+            }
+        }
+    }
+    at
+}
+
+/// One region per `(family, group)` over the pieces `keep` admits, by index
+/// into [`Network::pieces`].
+///
+/// **The caps are decided over every piece, not the kept ones.** A round cap
+/// closes a joint and a square one ends a free run, and which a piece's end
+/// is depends on whether anything else of its family meets it there —
+/// which is a fact about the network, not about the subset being asked for.
+/// Counted over a subset instead, a span's abutment would read as a free
+/// end and square off inside the junction it opens onto.
+fn regions_of(
+    roads: &Network,
+    group: &[usize],
+    butt: bool,
+    keep: impl Fn(usize) -> bool,
+) -> Vec<(Family, usize, Shapes)> {
+    let pieces: Vec<&crate::world::Polyline2> = roads.pieces().collect();
+    let fam_of = |p: &crate::world::Polyline2| crate::width::family(&p.class) as usize;
+
+    let ends = joints(roads);
+    // The same count over the **ground** pieces alone, so a span can tell a
+    // joint with another span from a handover to the road it runs onto.
+    let mut on_ground: std::collections::HashSet<(usize, (i64, i64))> = std::collections::HashSet::new();
+    for p in pieces.iter().take(roads.plan.len()) {
+        for e in p.pts.iter().copied() {
+            on_ground.insert((fam_of(p), crate::world::connector(e)));
+        }
+    }
+
+    // A `BTreeMap`, so the regions come out in the world's order and not a
+    // hasher's: these are an output.
+    let mut by: std::collections::BTreeMap<(usize, usize), Shapes> = std::collections::BTreeMap::new();
+    for (i, p) in pieces.iter().enumerate() {
+        if p.pts.len() < 2 || !keep(i) {
+            continue;
+        }
+        let n = p.pts.len();
+        let round = |e: [f64; 2]| {
+            let key = (fam_of(p), crate::world::connector(e));
+            if butt && on_ground.contains(&key) {
+                return false;
+            }
+            ends.get(&key).copied().unwrap_or(0) > 1
+        };
+        let caps = [round(p.pts[0]), round(p.pts[n - 1])];
+        by.entry((fam_of(p), group[i]))
+            .or_default()
+            .extend(poly::buffer_line_capped(&p.pts, p.width_m, caps));
+    }
+    by.into_iter()
+        .map(|((fam, g), parts)| {
+            let family = match fam {
+                0 => Family::Carriageway,
+                1 => Family::Walk,
+                _ => Family::Rail,
+            };
+            (family, g, poly::union_all(&parts))
+        })
+        .collect()
 }
 
 #[cfg(test)]

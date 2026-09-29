@@ -106,35 +106,12 @@ pub fn build(grid: &Grid, sample: &mut dyn FnMut(f64, f64) -> f64) -> Terrain {
     Terrain { grid: *grid, z, normals, indices, zmin, zmax }
 }
 
-/// The height of the mesh surface at local `(x, y)`: the plane of the triangle
-/// the point falls in, with the cell split on its SW→NE diagonal. Beyond the
-/// grid the ground holds its edge: the height of the nearest point of the
-/// grid, which keeps the surface continuous there (an edge cell's plane
-/// extended outward would jump at every column and row line), and keeps a
-/// piece of paving that pokes past the bbox by its half-width planar.
-///
-/// This is the one definition of "on the ground" every later step is held to.
-pub fn height_at(t: &Terrain, x: f64, y: f64) -> f64 {
-    let (u, v) = t.grid.to_uv(x, y);
-    let (u, v) = (u.clamp(0.0, t.grid.cols as f64), v.clamp(0.0, t.grid.rows as f64));
-    let (c, r) = t.grid.cell(u, v);
-    let (fu, fv) = (u - c as f64, v - r as f64);
-    let z00 = t.z[t.grid.index(c, r)];
-    let z10 = t.z[t.grid.index(c + 1, r)];
-    let z11 = t.z[t.grid.index(c + 1, r + 1)];
-    let z01 = t.z[t.grid.index(c, r + 1)];
-    if fu >= fv {
-        z00 + fu * (z10 - z00) + fv * (z11 - z10)
-    } else {
-        z00 + fv * (z01 - z00) + fu * (z11 - z01)
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::lattice::height_at;
     use crate::pipeline::tests::bbox;
 
     /// The extent of the box the specimens are built in.

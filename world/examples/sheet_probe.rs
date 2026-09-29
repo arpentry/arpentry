@@ -28,8 +28,8 @@ fn main() {
 
     let p = world.extent.frame.to_local(at[0], at[1]);
     println!("probe [{:.1},{:.1}] r={r}\n", p[0], p[1]);
-    let roads = world.roads.as_ref().unwrap();
-    let group = arpentry_world::partition::groups(&roads.plan, &roads.spans).of;
+    let roads = world.network().unwrap();
+    let group = &world.partition.as_ref().unwrap().groups.of;
     let near = |pts: &[[f64; 2]]| pts.iter().any(|q| (q[0] - p[0]).hypot(q[1] - p[1]) < r);
 
     println!("{:<5} {:<38} {:<12} {:<9} {:>5} {:>6} {:>6}", "idx", "id", "class", "kind", "grp", "len", "width");

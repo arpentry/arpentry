@@ -68,13 +68,11 @@ use arpentry_server::project::Bounds;
 use arpentry_server::value::{f64_of, str_of, Value};
 use geo_types::{Geometry, Polygon};
 
-use crate::building::{self, Roof, RoofShape, DEFAULT_HEIGHT_M};
 use crate::frame::{Extent, Frame, Rect};
-use crate::kerb;
 use crate::net::Params;
 use crate::poly::{self, Indexed, Pt, Shape, Shapes};
 use crate::step::Summary;
-use crate::world::{Building, Facade, Polyline2, Roads};
+use crate::world::{Building, Facade, Polyline2, Network, Roof, RoofShape};
 
 /// The widest corridor a building yields to a way running through it, in
 /// metres: a lane's worth. A way narrower than this keeps its own width.
@@ -99,7 +97,7 @@ pub fn is_spec(s: &str) -> bool {
 /// building input at all: open ground everywhere.
 pub fn run(
     extent: &Extent,
-    roads: &Roads,
+    roads: &Network,
     buildings: Option<&Path>,
 ) -> Result<(Facade, Summary), String> {
     let read = match buildings {
@@ -218,7 +216,7 @@ pub fn read(path: &Path, bbox: &Bounds, frame: &Frame, rect: &Rect) -> Result<Re
             out.underground += 1;
             continue;
         }
-        let height = building::mapped_height(f64_of(props, "height"), f64_of(props, "num_floors"));
+        let height = mapped_height(f64_of(props, "height"), f64_of(props, "num_floors"));
         let roof = Roof::mapped(str_of(props, "roof_shape"), f64_of(props, "roof_height"));
         out.add(polygons.into_iter().map(|p| local(p, frame)), rect, height, roof);
     }
@@ -273,7 +271,7 @@ fn corridors(ways: &[Polyline2], footprints: &Shapes) -> (Shapes, usize, f64) {
         return (out, n, metres);
     }
     for w in ways {
-        let pts = kerb::resample(&w.pts, SAMPLE_M);
+        let pts = crate::poly::resample(&w.pts, SAMPLE_M);
         if pts.len() < 2 {
             continue;
         }
@@ -378,7 +376,7 @@ pub fn parse(spec: &str) -> Result<Houses, String> {
         other => return Err(format!("unknown building `{other}` in {spec}")),
     };
     let roof = Roof { shape: params.get("roof").map_or(RoofShape::Flat, RoofShape::parse), rise_m: params.opt("rise")? };
-    Ok(Houses { shapes, height_m: building::mapped_height(params.opt("h")?, None), roof })
+    Ok(Houses { shapes, height_m: mapped_height(params.opt("h")?, None), roof })
 }
 
 /// The buildings of a spec, clipped to the rect like read ones: every
@@ -390,6 +388,21 @@ fn synthetic(spec: &str, rect: &Rect) -> Result<Read, String> {
         out.add([shape], rect, houses.height_m, houses.roof);
     }
     Ok(out)
+}
+
+/// A storey, in metres, where the source gives floors and no height.
+pub const FLOOR_M: f64 = 3.0;
+
+/// A building's height, in metres, where the source gives neither height
+/// nor floors — which in Overture is most of them. Without it a town reads
+/// as a few tall buildings on open ground.
+pub const DEFAULT_HEIGHT_M: f64 = 5.0;
+
+/// The height, in metres, a source gives a building: measured, else its
+/// floors at [`FLOOR_M`]. `None` when it gives neither, and the reader
+/// stands it at [`DEFAULT_HEIGHT_M`].
+pub fn mapped_height(height: Option<f64>, floors: Option<f64>) -> Option<f64> {
+    height.filter(|h| *h > 0.0).or_else(|| floors.map(|n| n * FLOOR_M).filter(|h| *h > 0.0))
 }
 
 #[cfg(test)]
@@ -408,8 +421,8 @@ mod tests {
     }
 
     /// The ways of `net` on flat ground, cut: what this step reads.
-    fn roads(net: &str) -> Roads {
-        built("flat", net, None, 100.0, &plan(Step::Partition)).0.roads.expect("the drape step ran")
+    fn roads(net: &str) -> Network {
+        built("flat", net, None, 100.0, &plan(Step::Partition)).0.partition.expect("the partition step ran").network
     }
 
     /// The world of `net` with the house of `house`, paved to the junctions,

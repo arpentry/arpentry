@@ -270,7 +270,8 @@ more caller of it.
 **A step is a function of what it reads, and nothing else.** Every step is
 `fn run(inputs…) -> (Layer, Summary)` over the layers it needs — no step
 takes the world, none can reach a layer it did not name, and **none writes
-to one**. `World` is the record the layers land in, read only by the two
+to one, nor has anything written into its own afterwards**: every layer is
+its own step's output and nothing else's. `World` is the record the layers land in, read only by the two
 renderers, which draw whatever has been built. All the wiring is
 `world/src/pipeline.rs`: the order (`Step::ALL`), which layer feeds which
 step, the three sources (`Sources` — only the terrain, the drape and the
@@ -288,8 +289,12 @@ Three things that rule cost, each one a defect it had let stand:
   piece lists, every profile's table and every station's verdict — while
   returning nothing but a `Summary`, which made the most important step in
   the pipeline the one whose signature said least. Between them a way's span
-  table was a field three steps wrote to and no signature admitted. They
-  return those tables now and the `match` arms install them.
+  table was a field three steps wrote to and no signature admitted. Each
+  returns a layer of its own now (`Reference::ways`, `Crossings::profiles`,
+  `Partition { network, profiles, groups }`), so after a run the drape's
+  ways are still the source's and the profile step's profiles still its
+  first solve. Downstream of the cut a step reads `world::Network`, not
+  `Roads`: the drape's layer holds the ways and the draped lines only.
 - **The paved surface had no single answer.** It is re-cut four times
   (`surface`, `kerb`, `legs`, `room`), and "the latest" was resolved at
   runtime by a `World::walk()` over four layers, then by a literal in the
@@ -306,6 +311,55 @@ Three things that rule cost, each one a defect it had let stand:
   `reference::Axis::way` record it; `reference::solving_of` is now asked
   once, where the reference is built.
 
+**Debugging one step on its own** (2026-09-29). Four rules make a step
+something you can run, measure and feed by itself:
+
+- **A step module imports no other step module**
+  (`pipeline::tests::no_step_imports_another`). What several steps share is
+  a module of its own — `standard` (the shared dimensions: deck, tube, kerb
+  rise, reaches), `solve` (the profile solver the crossing re-runs), `field`
+  (the height fields and the engineered `Ground`), `portal`, `gap` (the
+  kerb-gap check), `copies` (the bench's per-surface vertex copies),
+  `triangulate`, `lattice` — and what one step computes and another reads is
+  a layer, passed in `pipeline.rs`. The span ribbons are the `ribbon` step's
+  (`Ribbons::spans`/`masks`/`joints`) and the piece groups the
+  `partition`'s, each built once where four steps used to rebuild them.
+- **A step's build and its check are two functions.** `run` returns the
+  layer and the tallies only the build knows (what it dropped, clamped or
+  squared); `check(inputs…, &layer) -> Summary` measures the finished layer
+  (`dem_residual`, `junction`, `crack`, `unshared`, `on_walk`, `seam`,
+  `unmet`, `contact`, `kerb_gap`, …). `pipeline::apply` prints both on one
+  line; `pipeline::check(world, step)` asks the check alone, of any world.
+  `structure` still measures inside its construction loop.
+- **The bench is three steps**: `lift` (every paved copy onto its profile,
+  the rules and the welds — `axes`, `welded`), `earthwork` (the outline, the
+  engineered ground, the regraded footpaths, and nearly all of the old bench
+  line: `step`, `seam`, `unmet`, `contact`, `walled`, `touched`, `off`,
+  `dem_residual`…) and `bench` (the walls and the edge faces — `wall_m2`,
+  `kerb_m2`, `split_m2`…). A number this file quotes as "bench `seam`" is on
+  the `earthwork` line now. On the loop box: lift 6.4 s, earthwork 8.5 s,
+  bench 0.3 s.
+- **A layer can be written and read back.** `--dump DIR` writes every layer
+  the run builds (1.7 GB for the loop box); `--from STEP --load DIR` reads
+  the layers before `STEP` and builds from there, printing each loaded
+  step's original line with `loaded`. A dump is refused by a world over
+  another bbox. From `earthwork` the loop box takes 10 s instead of 38, from
+  `bench` 2.5 s, and the GLB is byte-identical to a full run.
+  `world/src/fixture.rs` builds a step's inputs by hand (a street and a house
+  as rectangles) for a test that runs no step before the one it is about.
+
+```bash
+./world/target/release/arpentry_world --zone data/zones/montreux \
+    --bbox 6.89,46.41,6.96,46.45 --dump /tmp/claude/layers      # once
+./world/target/release/arpentry_world --zone data/zones/montreux \
+    --bbox 6.89,46.41,6.96,46.45 --load /tmp/claude/layers \
+    --from earthwork --until earthwork                           # every iteration
+```
+
+Across this change `scripts/world-sdiff.py` compares a step's keys to the
+same step's, so a corpus taken before it reads the old bench's keys as moved
+to `lift`/`earthwork`; compare the values, not the lines.
+
 **The order is `Step::ALL`'s and is written nowhere else.** The step modules
 used to open with "Step 7: …" in their headers and eleven of the seventeen
 had drifted — `crossing` said 13 and runs 5th, `partition` said 3 and runs
@@ -313,11 +367,11 @@ had drifted — `crossing` said 13 and runs 5th, `partition` said 3 and runs
 
 The specimen ladders live there too (`pipeline::tests::built`), named as
 step lists: `upto(Step::Bench)` is the whole prefix, `plan(Step::Ribbon)`
-leaves out the three vertical steps a flat specimen has nothing for. They
-had been written out by hand in eight test modules and had drifted — the
-mesh's ladder still skips `crossing` where the bench's does not, and that
-divergence is now visible in one line rather than buried in a copied
-sequence.
+leaves out the three vertical steps a flat specimen has nothing for. The
+three run together or not at all — the partition asserts it — so the mesh
+ladder that skipped `crossing` alone takes the whole prefix now.
+`Summaries::merged(&BENCH)` is the old bench line, for a specimen written
+against it.
 
 ```bash
 cargo test  --manifest-path world/Cargo.toml
@@ -374,10 +428,12 @@ is a measurement, so a standard is a floor on what it cannot see and never a
 correction to what it can*. Step 0 (`dem_residual`) has landed and answered the
 question the plan opened with; §1.2 is what it found.
 
-`--until terrain` stops after a step; the eighteen, in order, are
+`--until terrain` stops after a step; the twenty, in order, are
 `terrain`, `drape`, `reference`, `profile`, `crossing`, `partition`,
 `facade`, `ribbon`, `surface`, `kerb`, `legs`, `room`, `sheet`,
-`arrangement`, `mesh`, `bench`, `structure`, `building`.
+`arrangement`, `mesh`, `lift`, `earthwork`, `bench`, `structure`,
+`building`. Without `--output` or `--svg` a run prints its lines and
+writes nothing else.
 
 The `arrangement` step is **step 1 of
 `data/plans/one-ground-2026-09-16.md`, landed and wired** — the mesh step

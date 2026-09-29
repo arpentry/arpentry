@@ -14,7 +14,7 @@
 
 use serde_json::{json, Value};
 
-use crate::drape::drape;
+use crate::lattice::drape;
 use crate::poly::Shapes;
 use crate::world::{Profiles, Ribbons, Roads, Surface, Terrain, Tri, World};
 
@@ -92,7 +92,7 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
             doc.roads(r);
         }
     }
-    if let Some(p) = &world.profile {
+    if let Some(p) = world.solved() {
         if outlines && !p.profiles.is_empty() {
             doc.profile(p);
         }
@@ -102,8 +102,8 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
     // the same file whichever step the run stopped after.
     let unlifted = match (&world.bench, &world.mesh, &world.arrangement) {
         (None, Some(m), Some(a)) => {
-            let of = |x: crate::arrangement::Material| crate::mesh::view(m, a, |f| f.material == x);
-            use crate::arrangement::Material;
+            let of = |x: crate::world::Material| crate::mesh::view(m, a, |f| f.material == x);
+            use crate::world::Material;
             Some((of(Material::Carriageway), of(Material::Pavement), of(Material::Ballast)))
         }
         _ => None,
@@ -243,7 +243,7 @@ impl Doc {
     ///
     /// The ring is **draped**, not merely sampled at its own vertices: a
     /// contour edge is as long as the straight road that made it, and the
-    /// box has 267 m of it. A single segment between two [`crate::terrain::height_at`]
+    /// box has 267 m of it. A single segment between two [`crate::lattice::height_at`]
     /// samples that far apart goes in one side of the flank and out the
     /// other, and the file read as a model with straight lines shot
     /// through it — 970 such edges in the ribbon layer alone. [`drape`]
@@ -485,7 +485,7 @@ fn to_gltf(v: [f32; 3]) -> [f32; 3] {
 
 #[cfg(test)]
 mod tests {
-    use crate::drape::drape_line;
+    use crate::lattice::drape_line;
     use crate::terrain::{self, tests::{dem, extent}};
     use crate::world::{Polyline2, Roads};
 
@@ -509,7 +509,7 @@ mod tests {
             pts: vec![[-600.0, -400.0], [0.0, 0.0], [500.0, 300.0]],
         };
         let draped = drape_line(w.terrain.as_ref().expect("just set"), &line);
-        w.roads = Some(Roads { ways: Vec::new(), plan: vec![line], spans: Vec::new(), lines: vec![draped] });
+        w.roads = Some(Roads { ways: Vec::new(), lines: vec![draped] });
         w
     }
 

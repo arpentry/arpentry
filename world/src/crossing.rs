@@ -31,7 +31,7 @@
 //! 6.5 m of clearance buys 43 m of approach each side and the ramp is the
 //! *result* rather than a construction of its own. The floor is then a
 //! displacement added to the ground the profile solves against
-//! ([`crate::profile::solve_on`]), and everything after it follows with no
+//! ([`crate::solve::solve_on`]), and everything after it follows with no
 //! rule of its own: an approach that ends up [`crate::grade::STRUCTURE_MIN_M`]
 //! off the ground reads as a deck by the profile's consequence rule, the
 //! bench builds the embankment under the rest of it, and the structure step
@@ -75,11 +75,11 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use crate::grade;
 use crate::poly::{self, Pt};
-use crate::profile;
-use crate::step::{Residual, Summary};
-use crate::structure::{DECK_THICKNESS_M, WALK_DECK_M};
+use crate::solve;
+use crate::step::Summary;
+use crate::standard::{DECK_THICKNESS_M, WALK_DECK_M};
 use crate::width::{self, Family};
-use crate::world::{connector, Crossing, Crossings, Kind, Profile, Profiles, Reference, Roads, Solved, Way};
+use crate::world::{connector, Crossing, Crossings, Kind, Profile, Profiles, Reference, Way};
 
 /// The headroom a roadway needs over the roadway beneath it, in metres:
 /// the Swiss norm's 4.5 m plus a construction margin, and the server's
@@ -115,7 +115,7 @@ const CLEARANCE_EPS: f64 = 1e-6;
 pub const MAX_CLEARANCE_LIFT_M: f64 = 15.0;
 
 /// Builds the floor every crossing demands and re-solves the profile on it.
-pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossings, Profiles, Summary) {
+pub fn run(reference: &Reference, solved: &Profiles) -> (Crossings, Summary) {
     // **Crossings are found on the whole ways, not on the pieces.** This step
     // runs before the partition, so there are no pieces yet — and it wants
     // none: a way is one object with one profile, and a crossing is a place
@@ -128,7 +128,7 @@ pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossing
     // orphan rather than a demand.
     let of_way: HashMap<usize, usize> =
         solved.profiles.iter().enumerate().map(|(i, p)| (p.way, i)).collect();
-    let axes: Vec<Axis> = roads
+    let axes: Vec<Axis> = reference
         .ways
         .iter()
         .enumerate()
@@ -275,7 +275,7 @@ pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossing
                 *v += up[n].min(needs(up_h[n], r)) - down[n].min(needs(r, -down_h[n]));
             }
         }
-        let (re, _) = profile::solve_on(reference, &roads.ways, &floor);
+        let (re, _) = solve::solve_on(reference, &reference.ways, &floor);
         profiles = re;
     }
     for f in &floor {
@@ -319,32 +319,13 @@ pub fn run(roads: &Roads, reference: &Reference, solved: &Profiles) -> (Crossing
         .with("lift", format!("{lift:.2}"))
         .with_share("ramped", spent, stations)
         .with_share("clearance", short.len(), crossings.len() - unstacked - senior)
-        .with("short", format!("{:.2}", short.iter().fold(0.0f64, |m, s| m.max(*s))))
-        .with_residual(residual_of(&profiles));
-    (Crossings { crossings, same, floor }, Profiles { profiles }, summary)
+        .with("short", format!("{:.2}", short.iter().fold(0.0f64, |m, s| m.max(*s))));
+    (Crossings { crossings, same, floor, profiles: Profiles { profiles } }, summary)
 }
 
-/// The solved surface against the raw DEM, over every **at-grade** station of
-/// every profile: [`crate::step::Residual`], read off the profiles a step
-/// hands on.
-///
-/// The population is `Solved::Grade` alone, and that is the whole reason this
-/// is one function rather than a loop in each step. A chord standing thirty
-/// metres over a gorge is not a departure from the ground — it is a bridge,
-/// and the structure step answers for it — so counting it would swamp the
-/// number that matters with the number that does not. It is also what the
-/// bench actually benches, which is what makes the lines comparable: every
-/// step reports the same quantity over the same population against the same
-/// baseline, so the differences down a run attribute a height to the step
-/// that made it.
-pub(crate) fn residual_of(profiles: &[Profile]) -> Residual {
-    let mut r = Residual::new();
-    for p in profiles {
-        for st in p.stations.iter().filter(|st| st.solved == Solved::Grade) {
-            r.push(st.h, st.ground);
-        }
-    }
-    r
+/// How far the re-solved profiles stand off the raw DEM, at grade.
+pub fn check(crossings: &Crossings) -> Summary {
+    Summary::new().with_residual(crate::step::residual_of(&crossings.profiles.profiles))
 }
 
 /// One axis in the crossing search: a carriageway piece, whatever its
@@ -456,7 +437,7 @@ fn is_rail(class: &str) -> bool {
 fn need(upper_class: &str, lower_class: &str, lower_kind: Kind) -> f64 {
     let slab = if width::family(upper_class) == Family::Walk { WALK_DECK_M } else { DECK_THICKNESS_M };
     match lower_kind {
-        Kind::Tunnel(_) => crate::structure::tube_m(lower_class) + slab,
+        Kind::Tunnel(_) => crate::standard::tube_m(lower_class) + slab,
         _ if is_rail(lower_class) => RAIL_CLEARANCE_M + slab,
         _ => ROAD_CLEARANCE_M + slab,
     }
@@ -640,7 +621,7 @@ impl Net {
             // The grade the way was held to: a railway's measured one.
             let g = grade::of(&p.class);
             let ramp = if g.limited() {
-                profile::ceiling(&p.class, &p.stations, &p.spans)
+                solve::ceiling(&p.class, &p.stations, &p.spans)
             } else {
                 g.ceiling.unwrap_or(f64::INFINITY)
             };
@@ -760,7 +741,7 @@ fn found(axes: &[Axis]) -> Vec<Hit> {
                     continue;
                 }
                 let (u, v) = (&axes[a.0].way.pts, &axes[b.0].way.pts);
-                if let Some(p) = cross(u[a.1], u[a.1 + 1], v[b.1], v[b.1 + 1]) {
+                if let Some(p) = poly::proper_crossing(u[a.1], u[a.1 + 1], v[b.1], v[b.1 + 1]) {
                     out.push(Hit { a: a.0, a_seg: a.1, b: b.0, b_seg: b.1, at: p });
                 }
             }
@@ -770,21 +751,6 @@ fn found(axes: &[Axis]) -> Vec<Hit> {
         (x.a, x.b).cmp(&(y.a, y.b)).then(x.at[0].total_cmp(&y.at[0])).then(x.at[1].total_cmp(&y.at[1]))
     });
     out
-}
-
-/// Where the segments `ab` and `cd` properly cross — each strictly
-/// separating the other's ends — or `None`. A touch at an endpoint is not
-/// a crossing: that is how a junction is drawn, and how two pieces of one
-/// way meet.
-pub(crate) fn cross(a: Pt, b: Pt, c: Pt, d: Pt) -> Option<Pt> {
-    let side = |p: Pt, q: Pt, r: Pt| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
-    let (s1, s2) = (side(a, b, c), side(a, b, d));
-    let (s3, s4) = (side(c, d, a), side(c, d, b));
-    if !(s1 * s2 < 0.0 && s3 * s4 < 0.0) {
-        return None;
-    }
-    let t = s3 / (s3 - s4);
-    Some([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
 }
 
 #[cfg(test)]
@@ -827,8 +793,7 @@ mod tests {
     }
 
     fn profile_of<'a>(w: &'a World, id: &str, mapped: Kind) -> &'a Profile {
-        w.profile
-            .as_ref()
+        w.solved()
             .unwrap()
             .profiles
             .iter()
@@ -975,16 +940,11 @@ mod tests {
             ],
             ..Default::default()
         });
-        let roads = w.roads.as_mut().expect("just set");
+        let roads = w.roads.as_ref().expect("just set");
         let terrain = w.terrain.as_ref().expect("just set");
-        // The step hands its priors back; the pipeline installs them, and so
-        // does a specimen that stands in for it.
-        let (reference, spans, _) = crate::reference::run(terrain, roads);
-        for (way, spans) in roads.ways.iter_mut().zip(spans) {
-            way.spans = spans;
-        }
-        let (profiles, _) = crate::profile::run(roads, &reference);
-        let (crossings, _, s) = run(roads, &reference, &profiles);
+        let (reference, _) = crate::reference::run(terrain, roads);
+        let (profiles, _) = crate::profile::run(&reference);
+        let (crossings, s) = run(&reference, &profiles);
         assert_eq!(s.num("crossings"), 0.0, "{s}");
         assert_eq!(s.num("same"), 1.0, "{s}");
         assert_eq!(s.num("ramped"), 0.0, "{s}");
@@ -1018,13 +978,13 @@ mod tests {
 
     #[test]
     fn a_proper_cross_is_the_only_cross() {
-        assert_eq!(cross([-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]), Some([0.0, 0.0]));
+        assert_eq!(crate::poly::proper_crossing([-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]), Some([0.0, 0.0]));
         // A touch at an endpoint, a T, a shared vertex and two parallels
         // are all not crossings.
-        assert_eq!(cross([-1.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 1.0]), None);
-        assert_eq!(cross([0.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 1.0]), None);
-        assert_eq!(cross([0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]), None);
-        assert_eq!(cross([0.0, 0.0], [1.0, 0.0], [2.0, -1.0], [2.0, 1.0]), None);
+        assert_eq!(crate::poly::proper_crossing([-1.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 1.0]), None);
+        assert_eq!(crate::poly::proper_crossing([0.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 1.0]), None);
+        assert_eq!(crate::poly::proper_crossing([0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]), None);
+        assert_eq!(crate::poly::proper_crossing([0.0, 0.0], [1.0, 0.0], [2.0, -1.0], [2.0, 1.0]), None);
     }
 
     #[test]
@@ -1071,7 +1031,7 @@ mod tests {
         assert!(low < 400.0 - ROAD_CLEARANCE_M, "the road did not dip: {low} {s}");
         // The floor went down the road and nowhere else.
         let floor = &w.crossing.as_ref().unwrap().floor;
-        let (ri, _) = w.profile.as_ref().unwrap().profiles.iter().enumerate().find(|(_, p)| p.id == "leg").unwrap();
+        let (ri, _) = w.solved().unwrap().profiles.iter().enumerate().find(|(_, p)| p.id == "leg").unwrap();
         assert!(floor[ri].iter().all(|v| *v == 0.0), "a floor on the railway");
 
         let (w, s) = world("flat", "net:underpass?len=300&leg=standard_gauge");

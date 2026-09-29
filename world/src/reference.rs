@@ -56,11 +56,12 @@
 use std::collections::HashMap;
 
 use crate::grade::{self, DECK_STANDOFF_M, NODE_M};
-use crate::profile::densify_at;
+use crate::solve::densify_at;
 use crate::step::{Residual, Summary};
-use crate::terrain::height_at;
+use crate::lattice::height_at;
 use crate::width;
 use crate::world::{connector, Kind, Reference, Roads, Span, Terrain, Way};
+use crate::world::{Axis, Moved};
 
 /// Widest DEM notch, in metres of arc, that a road is assumed to span on
 /// engineered fill rather than dive through. Gullies, stream cuts and shadow
@@ -113,7 +114,7 @@ pub const ABUTMENT_M: f64 = 10.0;
 /// ground the way descends.
 ///
 /// Half. No road in the model is built at 50 % — the steepest street
-/// Switzerland has is under 30 %, and [`crate::bench::EARTHWORK_BATTER`]
+/// Switzerland has is under 30 %, and [`crate::standard::EARTHWORK_BATTER`]
 /// battens at 40 % — so a drop that steep at a span's edge is the abutment
 /// the DEM could not resolve. Grown on the fall alone the rule ate ten
 /// metres of honest approach wherever a deck springs from the *inside* of a
@@ -163,18 +164,31 @@ pub fn solving_of(ways: &[Way]) -> Vec<usize> {
 /// `match` away from the order that makes it safe. This step used to take
 /// `&mut Roads` and do it here, which made the way's span table a thing three
 /// steps wrote to and no signature admitted.
-pub fn run(terrain: &Terrain, roads: &Roads) -> (Reference, Vec<Vec<Span>>, Summary) {
+pub fn run(terrain: &Terrain, roads: &Roads) -> (Reference, Summary) {
     let solving = solving_of(&roads.ways);
-    let Reference { axes } = of(&roads.ways, &solving, terrain);
+    let axes = over(&roads.ways, &tables_of(&roads.ways), &solving, terrain);
     let (tables, promoted) = promote(&roads.ways, &axes);
     // The tables changed, so the axes are rebuilt over them: a boundary is a
     // station ([`Axis::of`]), and a chord has to start on one.
-    let Reference { mut axes } = over(&roads.ways, &tables, &solving, terrain);
+    let mut axes = over(&roads.ways, &tables, &solving, terrain);
     // One value per junction, before any profile solves.
     let was = disagreement(&axes);
     agree(&mut axes);
-    let summary = measure(&axes, was, promoted);
-    (Reference { axes }, tables, summary)
+    let summary = Summary::new()
+        .with("junction", format!("{was:.3}->{:.3}", disagreement(&axes)))
+        .with("promoted", promoted);
+    // The priors, written into the ways this step hands on. The drape's
+    // layer keeps the source's own tables.
+    let mut ways = roads.ways.clone();
+    for (way, spans) in ways.iter_mut().zip(tables) {
+        way.spans = spans;
+    }
+    (Reference { axes, ways }, summary)
+}
+
+/// Every way's span table as it stands.
+fn tables_of(ways: &[Way]) -> Vec<Vec<Span>> {
+    ways.iter().map(|w| w.spans.clone()).collect()
 }
 
 /// What the conditioning came to, as the run's one line: a function of the
@@ -184,7 +198,10 @@ pub fn run(terrain: &Terrain, roads: &Roads) -> (Reference, Vec<Vec<Span>>, Summ
 /// Apart from [`run`] for the same reason the profile's is: seventeen
 /// counters against six lines of work, and a step's entry point should read
 /// as what it makes.
-fn measure(axes: &[Axis], was: f64, promoted: usize) -> Summary {
+/// What the conditioning came to, per pass, and how far it moved the
+/// surface off the raw DEM: a function of the axes alone.
+pub fn check(reference: &Reference) -> Summary {
+    let axes = &reference.axes[..];
     let mut stations = 0usize;
     let (mut blind, mut spanned) = (0usize, 0usize);
     let mut m = Moved::default();
@@ -207,7 +224,7 @@ fn measure(axes: &[Axis], was: f64, promoted: usize) -> Summary {
         // conditioning deliberately carries the pass across the slot
         // underneath ([`spanned_mask`]), so its residual is the height of the
         // structure and not a departure at all — and the steps after this one
-        // exclude it too (`Solved::Grade`, `crossing::residual_of`). Counting
+        // exclude it too (`Solved::Grade`, `crate::step::residual_of`). Counting
         // it here reported 17.09 m against the profile's 8.45 and read as a
         // conditioning that moves the surface twice as far as the road
         // follows it. There was no such thing: it was this loop, comparing
@@ -238,8 +255,6 @@ fn measure(axes: &[Axis], was: f64, promoted: usize) -> Summary {
         .with("shave", format!("{:.2}", m.shave_m))
         .with("notch", format!("{notches}/{notch_m:.0}m"))
         .with("crest", format!("{crests}/{crest_m:.0}m"))
-        .with("junction", format!("{was:.3}->{:.3}", disagreement(axes)))
-        .with("promoted", promoted)
         .with_residual(residual)
 }
 
@@ -440,11 +455,10 @@ pub fn agree(axes: &mut [Axis]) {
 ///
 /// `solving` indexes `ways` ([`solving_of`]), and each axis keeps the index
 /// it was built for in [`Axis::way`] — so the correspondence
-/// [`crate::profile::solve_on`] relies on is carried in the data rather than
+/// [`crate::solve::solve_on`] relies on is carried in the data rather than
 /// re-derived by every caller.
 pub fn of(ways: &[Way], solving: &[usize], terrain: &Terrain) -> Reference {
-    let tables: Vec<Vec<Span>> = ways.iter().map(|w| w.spans.clone()).collect();
-    over(ways, &tables, solving, terrain)
+    Reference { axes: over(ways, &tables_of(ways), solving, terrain), ways: ways.to_vec() }
 }
 
 /// The same, reading `tables[w]` as way `w`'s span table instead of the
@@ -453,61 +467,10 @@ pub fn of(ways: &[Way], solving: &[usize], terrain: &Terrain) -> Reference {
 /// A span boundary is a station ([`Axis::of`]), so the axes have to be built
 /// again once the priors are promoted — and this is how that second pass
 /// sees them **without anything having been written to the world**. The step
-/// hands the tables back to [`crate::pipeline`] instead, which is the only
-/// place that may install a layer.
-fn over(ways: &[Way], tables: &[Vec<Span>], solving: &[usize], terrain: &Terrain) -> Reference {
-    Reference { axes: solving.iter().map(|&w| Axis::of(w, &ways[w], &tables[w], terrain)).collect() }
-}
-
-/// The reference along one axis, at the stations the profile will solve it
-/// at ([`NODE_M`] apart, the piece's own vertices kept).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Axis {
-    /// The way this axis is of: an index into [`Roads::ways`]. Every step
-    /// that holds a profile needs it, and it is known here and nowhere
-    /// cheaper.
-    pub way: usize,
-    /// Arc length at each station, from the piece's start.
-    pub s: Vec<f64>,
-    /// The plan position of each station.
-    pub p: Vec<[f64; 2]>,
-    /// The raw terrain there: what the bench still owes its earthwork
-    /// against, and what a departure is still measured from.
-    pub ground: Vec<f64>,
-    /// The conditioned surface: blind runs bridged, notches filled, bumps
-    /// shaved. What a profile is solved against.
-    pub h: Vec<f64>,
-    /// Where the ground under the axis is a structure's own top.
-    pub blind: Vec<bool>,
-    /// Where the ground under the axis is a mapped structure's slot or mass
-    /// rather than the way's own ground ([`spanned_mask`]).
-    pub spanned: Vec<bool>,
-    /// Notches the closing refused, as `(arc, arc)`: the terrain's bridge
-    /// priors.
-    pub refused_notch: Vec<(f64, f64)>,
-    /// Crests the opening refused: the terrain's tunnel priors, for the
-    /// classes whose ladder cannot climb them.
-    pub refused_crest: Vec<(f64, f64)>,
-    /// What each of the three passes moved, separately.
-    pub moved: Moved,
-}
-
-/// How far each pass moved the surface, and at how many stations.
-///
-/// Kept per pass rather than as one composite, because the composite cannot
-/// be read: the bridging lowers a causeway onto its rims, the closing lifts a
-/// notch and the opening shaves a crest, and a station that has been through
-/// two of them reports a number belonging to neither. Measured against the
-/// caps, a composite `shave` of 13.26 m looked like the opening exceeding its
-/// own 4 m budget when it was the bridging doing its job.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Moved {
-    pub bridged: usize,
-    pub bridge_m: f64,
-    pub filled: usize,
-    pub fill_m: f64,
-    pub shaved: usize,
-    pub shave_m: f64,
+/// writes them into the ways it returns ([`Reference::ways`]), and the drape's
+/// layer keeps the source's own.
+fn over(ways: &[Way], tables: &[Vec<Span>], solving: &[usize], terrain: &Terrain) -> Vec<Axis> {
+    solving.iter().map(|&w| Axis::of(w, &ways[w], &tables[w], terrain)).collect()
 }
 
 impl Moved {
@@ -1334,7 +1297,7 @@ mod tests {
         let mut raw = axes.clone();
         // Undo the agreement by rebuilding without it.
         let terrain = w.terrain.as_ref().unwrap();
-        let ways = &w.roads.as_ref().unwrap().ways;
+        let ways = &w.reference.as_ref().unwrap().ways;
         raw.clone_from(&of(ways, &solving_of(ways), terrain).axes);
         for (a, b) in axes.iter().zip(raw.iter()) {
             for k in 0..a.s.len() {
@@ -1357,7 +1320,7 @@ mod tests {
         let (w, _) = world("hill?amp=60&radius=400", "net:cross");
         let first = w.reference.clone().expect("built");
         let terrain = w.terrain.clone().expect("built");
-        let (again, _, _) = run(&terrain, w.roads.as_ref().expect("built"));
+        let (again, _) = run(&terrain, w.roads.as_ref().expect("built"));
         assert_eq!(first, again);
     }
 }

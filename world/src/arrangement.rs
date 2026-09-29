@@ -38,144 +38,17 @@
 //! each material, and the bench takes the hole, the span mask and the edges
 //! from here rather than building its own.
 
-use crate::bench::{Portals, OVER_RIM_M, ROOM_REACH_M};
+use crate::portal::Portals;
+use crate::standard::{OVER_RIM_M, ROOM_REACH_M};
 use crate::frame::Extent;
-use crate::poly::{self, Indexed, Pt, Shape, Shapes};
+use crate::poly::{self, Indexed, Pt, Shapes};
 use crate::step::Summary;
-use crate::world::{Polyline2, Profiles, Sheets, Surface};
+use crate::world::{Arrangement, Face, FaceEdge, Material, Polyline2, Profiles, Sheets, Surface};
 
 /// How close, in metres, two corners of the slice are one point
 /// ([`poly::snap_twins`]): a couple of the kernel's grid steps, the most a
 /// near-coincidence of two cut lines puts between them.
 const TWIN_M: f64 = 3.0 * poly::GRID_M;
-
-/// What a face of the arrangement is made of.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Material {
-    /// Not paved: the terrain, and the only material the ground mesh draws.
-    Ground,
-    Carriageway,
-    Pavement,
-    Ballast,
-}
-
-impl Material {
-    pub fn name(self) -> &'static str {
-        match self {
-            Material::Ground => "ground",
-            Material::Carriageway => "carriageway",
-            Material::Pavement => "pavement",
-            Material::Ballast => "ballast",
-        }
-    }
-}
-
-/// One face of the subdivision: a region of the rect, and what it is.
-#[derive(Debug, Clone)]
-pub struct Face {
-    pub shape: Shape,
-    pub material: Material,
-    /// The sheet this face belongs to, for the families that have them
-    /// ([`crate::width::Family::solves`]). `None` for ground, for the
-    /// pavement — which is not partitioned — and for a paved face no sheet
-    /// claims.
-    pub sheet: Option<usize>,
-    /// Over a span rather than on the ground. Paved, and **it does not cut
-    /// the ground**: a viaduct flies over terrain that is still there
-    /// (invariant I3), and the soffit is what closes under it.
-    pub spanned: bool,
-    /// Inside a gallery's footprint — a road under the ground whose tube
-    /// fits nowhere. Ground, and it *does* cut: the tube stands in the
-    /// trench the bench digs for it.
-    pub gallery: bool,
-    /// Within [`crate::room::WALL_REACH_M`] of the asphalt: the band the
-    /// bench lifts to the road's height, against the part beyond it that
-    /// drapes.
-    ///
-    /// **A cut, not a boolean.** The two rules disagree by up to the whole
-    /// drop — 15.6 m on the loop box — and every face the bench draws is
-    /// built off a *rim*, so the walk has to be meshed in two parts with the
-    /// step between them on an edge of each. `mesh` used to `dilate` and
-    /// `intersect` to find that line, which put vertices on the walk that no
-    /// other mesh had. Here it is one more boundary where the ground does
-    /// something different on each side, which is exactly what a cut is.
-    pub near: bool,
-}
-
-impl Face {
-    /// Whether this face cuts the terrain's hole.
-    ///
-    /// Paving on the ground does; paving over a span does not (invariant I3:
-    /// a viaduct flies over ground that is still there, and the soffit closes
-    /// under it); a gallery does, though it is ground — the tube stands in
-    /// the trench the bench digs for it.
-    pub fn cuts(&self) -> bool {
-        self.gallery || (self.material != Material::Ground && !self.spanned)
-    }
-}
-
-/// The rect, partitioned.
-#[derive(Debug, Clone, Default)]
-pub struct Arrangement {
-    pub faces: Vec<Face>,
-    /// **The second layer: paving over a span that lies over other paving.**
-    ///
-    /// The partition has one face per point, and it is the *ground's*: where
-    /// a deck crosses a street in plan, the face under it is the street's,
-    /// which cuts the terrain and meets its own kerbs. The deck's paving
-    /// over that face is here instead — the same shape, from the same slice,
-    /// so it welds to the rest of its sheet by position exactly as the faces
-    /// do. Never in [`Arrangement::edges`] and never in the hole: a deck's
-    /// side is closed by its slab, and the ground under it is the street's.
-    pub decks: Vec<Face>,
-    /// The paving over a span that `Face::spanned` was tagged by
-    /// ([`over_spans`]), kept so that `bench` reads the one mask rather
-    /// than rebuilding it: the hole and the lift must agree on it.
-    pub over: Shapes,
-    /// The area of the walk a deck carries, the part of `over` the sheets
-    /// alone do not hold.
-    pub carried_m2: f64,
-    /// [`Arrangement::edges`], computed once.
-    pub edges: Vec<Edge>,
-}
-
-impl Arrangement {
-    /// The faces of `material`.
-    pub fn of(&self, material: Material) -> impl Iterator<Item = &Face> {
-        self.faces.iter().filter(move |f| f.material == material)
-    }
-
-    /// Face `i` of both layers: the partition's faces are `0..faces.len()`,
-    /// and the decks over them follow — the numbering [`crate::world::Mesh`]
-    /// tags its triangles with.
-    pub fn face(&self, i: u32) -> &Face {
-        let i = i as usize;
-        self.faces.get(i).unwrap_or_else(|| &self.decks[i - self.faces.len()])
-    }
-
-    /// Whether face `i` is of the partition rather than a deck over it.
-    pub fn in_partition(&self, i: u32) -> bool {
-        (i as usize) < self.faces.len()
-    }
-
-    /// Every face of both layers, in [`Arrangement::face`]'s order.
-    pub fn all(&self) -> impl Iterator<Item = &Face> {
-        self.faces.iter().chain(&self.decks)
-    }
-
-    /// The same over both layers: every face of `material` a mesh must
-    /// draw, the ground's and the decks' over it.
-    pub fn layered(&self, material: Material) -> impl Iterator<Item = &Face> {
-        self.faces.iter().chain(&self.decks).filter(move |f| f.material == material)
-    }
-
-    /// The regions that cut the terrain's hole: every paved face on the
-    /// ground, and every gallery's. The arrangement's answer to `bench`'s
-    /// `outline`, as faces rather than as an expression.
-    pub fn hole(&self) -> Shapes {
-        self.faces.iter().filter(|f| f.cuts()).map(|f| f.shape.clone()).collect()
-    }
-}
 
 /// The paving that is **over a span**, as `bench` has always drawn it: the
 /// sheets' own span regions, the walk a deck carries, and a centimetre of
@@ -195,65 +68,45 @@ pub fn over_spans(surface: &Surface, sheets: &Sheets) -> (Shapes, f64) {
     (poly::dilate(&poly::union_of(&[&on_spans, &carried]), OVER_RIM_M), carried_m2)
 }
 
-/// One edge of the subdivision: a segment, and the faces on each side.
+/// Every edge of the subdivision, with the faces it separates.
 ///
-/// The unit [`crate::bench`]'s rule works on — "an arrangement edge is either
-/// *welded*, its two faces sharing vertices and one height, or *split*, each
-/// face taking its own and the mesher emitting the quad between them"
-/// (`data/plans/one-ground-2026-09-16.md` §3.3). A segment rather than a
-/// maximal shared boundary, because that is what a mesher emits a quad
-/// across.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Edge {
-    pub a: Pt,
-    pub b: Pt,
-    /// The faces either side. `right` is `None` on the rect's own boundary,
-    /// where there is nothing on the far side.
-    pub left: usize,
-    pub right: Option<usize>,
-}
-
-impl Arrangement {
-    /// Every edge of the subdivision, with the faces it separates.
-    ///
-    /// **This is only meaningful if the faces share their segments exactly**,
-    /// which is what one slice is supposed to give and what `edges` /
-    /// `dangling` in the step's line measure. A segment carried by three
-    /// faces, or by one away from the rect's border, is a subdivision that is
-    /// not one, and no edge rule can be written over it.
-    fn edges_of(faces: &[Face]) -> Vec<Edge> {
-        let key = |p: &Pt| (p[0].to_bits(), p[1].to_bits());
-        let mut at: std::collections::HashMap<((u64, u64), (u64, u64)), Vec<usize>> =
-            Default::default();
-        let mut seg: std::collections::HashMap<((u64, u64), (u64, u64)), (Pt, Pt)> =
-            Default::default();
-        for (i, f) in faces.iter().enumerate() {
-            for ring in &f.shape {
-                for k in 0..ring.len() {
-                    let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
-                    let (ka, kb) = (key(&a), key(&b));
-                    if ka == kb {
-                        continue;
-                    }
-                    let e = if ka <= kb { (ka, kb) } else { (kb, ka) };
-                    at.entry(e).or_default().push(i);
-                    seg.entry(e).or_insert((a, b));
+/// **This is only meaningful if the faces share their segments exactly**,
+/// which is what one slice is supposed to give and what `edges` /
+/// `dangling` in the step's line measure. A segment carried by three
+/// faces, or by one away from the rect's border, is a subdivision that is
+/// not one, and no edge rule can be written over it.
+fn edges_of(faces: &[Face]) -> Vec<FaceEdge> {
+    let key = |p: &Pt| (p[0].to_bits(), p[1].to_bits());
+    let mut at: std::collections::HashMap<((u64, u64), (u64, u64)), Vec<usize>> =
+        Default::default();
+    let mut seg: std::collections::HashMap<((u64, u64), (u64, u64)), (Pt, Pt)> =
+        Default::default();
+    for (i, f) in faces.iter().enumerate() {
+        for ring in &f.shape {
+            for k in 0..ring.len() {
+                let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+                let (ka, kb) = (key(&a), key(&b));
+                if ka == kb {
+                    continue;
                 }
+                let e = if ka <= kb { (ka, kb) } else { (kb, ka) };
+                at.entry(e).or_default().push(i);
+                seg.entry(e).or_insert((a, b));
             }
         }
-        let mut out: Vec<Edge> = at
-            .into_iter()
-            .map(|(e, faces)| {
-                let (a, b) = seg[&e];
-                Edge { a, b, left: faces[0], right: faces.get(1).copied() }
-            })
-            .collect();
-        // A function of the faces, not of a hash order.
-        out.sort_by(|x, y| {
-            (x.a[0], x.a[1], x.b[0], x.b[1]).partial_cmp(&(y.a[0], y.a[1], y.b[0], y.b[1])).unwrap()
-        });
-        out
     }
+    let mut out: Vec<FaceEdge> = at
+        .into_iter()
+        .map(|(e, faces)| {
+            let (a, b) = seg[&e];
+            FaceEdge { a, b, left: faces[0], right: faces.get(1).copied() }
+        })
+        .collect();
+    // A function of the faces, not of a hash order.
+    out.sort_by(|x, y| {
+        (x.a[0], x.a[1], x.b[0], x.b[1]).partial_cmp(&(y.a[0], y.a[1], y.b[0], y.b[1])).unwrap()
+    });
+    out
 }
 
 /// Cuts the rect into faces along every material boundary, and tags them.
@@ -267,7 +120,7 @@ pub fn run(
     let r = &extent.rect;
     let outer = vec![poly::rect(r.x0, r.y0, r.x1, r.y1)];
     let (spanned, carried_m2) = over_spans(surface, sheets);
-    let (_, galleries) = Portals::new(spans, profiles);
+    let (portals, galleries) = Portals::new(spans, profiles);
     // **Clipped to the walk.** The reach means one thing only — which side
     // of it a *pavement* face is on — and the ring itself runs on through
     // open ground where the walk is narrower than it. Cut over the whole
@@ -276,7 +129,7 @@ pub fn run(
     // and on a 50 % ramp one of them found a deeper place than any vertex
     // before it and took `cut` from 4.255 m to 4.755. A cut is for a
     // boundary something differs across.
-    let reach = poly::intersect(&poly::dilate(&surface.carriageway, crate::room::WALL_REACH_M), &surface.walk);
+    let reach = poly::intersect(&poly::dilate(&surface.carriageway, crate::standard::WALL_REACH_M), &surface.walk);
 
     // **The asphalt is cut by the sheets, not by `surface.carriageway`.** A
     // sheet holds paving the surface does not — the span ribbons merged into
@@ -430,9 +283,11 @@ pub fn run(
     }
 
     adopt(&mut out, &unprobed);
-    let edges = Arrangement::edges_of(&out);
-    let arrangement = Arrangement { faces: out, decks, over: spanned, carried_m2, edges };
-    let summary = measure(&arrangement, extent, ring_count, unprobed.len(), unprobed_m2);
+    let edges = edges_of(&out);
+    let arrangement = Arrangement { faces: out, decks, over: spanned, carried_m2, edges, portals };
+    let summary = Summary::new()
+        .with("cuts", ring_count)
+        .with("unprobed", format!("{} ({unprobed_m2:.3} m2)", unprobed.len()));
     (arrangement, summary)
 }
 
@@ -493,13 +348,7 @@ fn adopt(faces: &mut [Face], orphans: &[usize]) {
 
 /// What the subdivision came to: its size, its materials, and the two
 /// properties it exists for.
-fn measure(
-    a: &Arrangement,
-    extent: &Extent,
-    rings: usize,
-    unprobed: usize,
-    unprobed_m2: f64,
-) -> Summary {
+pub fn check(a: &Arrangement, extent: &Extent) -> Summary {
     // `+ 0.0` normalises the negative zero an empty sum can carry, so a
     // material that is not there reads `0` rather than `-0`.
     let m2 = |m: Material| -> f64 {
@@ -591,7 +440,6 @@ fn measure(
     };
     let (near, far) = (walk_m2(true), walk_m2(false));
     Summary::new()
-        .with("cuts", rings)
         .with("faces", a.faces.len())
         .with("vertices", seen.len())
         .with("edges", edges.len())
@@ -622,7 +470,6 @@ fn measure(
         .with_m2("walk_far_m2", far)
         .with("closure", format!("{closure:.3}"))
         .with_share("unshared", lone, seen.len())
-        .with("unprobed", format!("{unprobed} ({unprobed_m2:.3} m2)"))
 }
 
 #[cfg(test)]
@@ -729,11 +576,11 @@ mod tests {
         let steps = upto(Step::Arrangement);
         let (w, _) = built("flat?h=400", "net:tee?d=8&hook=5", None, 10.0, &steps);
         let a = w.arrangement.as_ref().expect("built");
-        let roads = w.roads.as_ref().expect("built");
+        let net = w.network().expect("built");
         let (again, _) = run(
             &w.extent,
-            &roads.spans,
-            w.profile.as_ref().expect("built"),
+            &net.spans,
+            w.solved().expect("built"),
             &w.room.as_ref().expect("built").surface,
             w.sheets.as_ref().expect("built"),
         );

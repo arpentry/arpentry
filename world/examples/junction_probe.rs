@@ -31,7 +31,7 @@ fn main() {
     println!("\nprobe [{:.1},{:.1}] r={r}\n", p[0], p[1]);
     let near = |q: &[f64; 2]| (q[0] - p[0]).hypot(q[1] - p[1]) < r;
 
-    for pr in &world.profile.as_ref().unwrap().profiles {
+    for pr in &world.solved().unwrap().profiles {
         if !pr.stations.iter().any(|st| near(&st.p)) {
             continue;
         }
@@ -58,7 +58,7 @@ fn main() {
     println!("\nshared connectors near the probe:");
     let mut by: std::collections::HashMap<(i64, i64), Vec<(String, String, f64, f64, bool, bool)>> =
         Default::default();
-    for pr in &world.profile.as_ref().unwrap().profiles {
+    for pr in &world.solved().unwrap().profiles {
         let runs = pr.runs();
         for (k, st) in pr.stations.iter().enumerate() {
             if !near(&st.p) {
@@ -272,8 +272,8 @@ fn main() {
 
     // Where does a span's ribbon stick out past the ground asphalt?
     println!("\nspan ribbon against the ground asphalt:");
-    let roads0 = world.roads.as_ref().unwrap();
-    for (fam, group, span) in arpentry_world::surface::spans_grouped(roads0) {
+    let ribbons = world.ribbons.as_ref().unwrap();
+    for (fam, group, span) in ribbons.spans.iter().cloned() {
         if fam != arpentry_world::width::Family::Carriageway {
             continue;
         }
@@ -281,8 +281,10 @@ fn main() {
         if arpentry_world::poly::area(&over) < 0.01 {
             continue;
         }
-        let masked = arpentry_world::surface::spans_masked(roads0)
-            .into_iter()
+        let masked = ribbons
+            .masks
+            .iter()
+            .cloned()
             .find(|(f, g, _)| *f == fam && *g == group)
             .map(|(.., s)| s)
             .unwrap_or_default();
@@ -306,7 +308,7 @@ fn main() {
         }
     }
 
-    let roads = world.roads.as_ref().unwrap();
+    let roads = world.network().unwrap();
     println!("\npieces near the probe:");
     for (i, pc) in roads.pieces().enumerate() {
         if !pc.pts.iter().any(near) {

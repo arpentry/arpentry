@@ -3,7 +3,7 @@
 //! **Not called by the pipeline.** Plan §3.2's solve, built and measured
 //! against the bench's case functions (`relax_vs_cases`, now retired). The
 //! ground went the same way in residual form but with a *slope* rather than
-//! a decay — [`crate::bench::Ground`]: the residual falls to nothing at the
+//! a decay — [`crate::field::Ground`]: the residual falls to nothing at the
 //! batter's slope, so the constant keeps its engineering meaning and the
 //! ground always meets the terrain within one face's run. This module stays
 //! for the pavement between terraces, which is the solve's next candidate.
@@ -66,7 +66,7 @@ pub enum Pin {
 /// earthwork three or four cells wide. Smaller `w` reaches further.
 ///
 /// **Not yet calibrated against the ground.** The number the batter used was
-/// [`crate::bench::EARTHWORK_BATTER`], a slope; this is a decay, and the two
+/// [`crate::standard::EARTHWORK_BATTER`], a slope; this is a decay, and the two
 /// are not the same shape. `relax_decays_at_the_rate_the_weight_sets` is what
 /// keeps this honest while it is chosen rather than measured.
 pub const WEIGHT: f64 = 1.0;

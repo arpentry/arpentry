@@ -9,7 +9,7 @@ fn main() {
     let (seg, bld) = (std::path::PathBuf::from("../data/zones/montreux/segment.parquet"), std::path::PathBuf::from("../data/zones/montreux/building.parquet"));
     let mut src = Sources { dem: &mut dem, segments: &seg, buildings: Some(&bld), spacing: 1.0, max_vertices: 2_000_000 };
     pipeline::upto(&mut w, Step::Partition, &mut src, &mut |_, _| {}).unwrap();
-    for p in &w.profile.as_ref().unwrap().profiles {
+    for p in &w.solved().unwrap().profiles {
         if !p.id.starts_with("f4667303") && !p.id.starts_with("9083e905") { continue; }
         println!("{} [{}]", p.id, p.class);
         for st in &p.stations {

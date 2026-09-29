@@ -22,7 +22,7 @@
 //! A run may also *bridge* a short break: where a sidewalk wraps a corner
 //! or rounds a roundabout its chord briefly fails [`ALONG`] against every
 //! leg, and a break there left a wedge of bare ground at exactly the place
-//! a pavement is continuous. A break under [`BRIDGE_M`] between two
+//! a pavement is continuous. A break under [`SIDEWALK_BRIDGE_M`] between two
 //! attached stretches is attached on distance alone, and to a kerb up to
 //! [`BRIDGE_REACH_M`] away rather than [`ATTACH_M`], because a sidewalk
 //! cutting a corner on the diagonal is farther from both kerbs there than
@@ -84,13 +84,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::poly::{self, Indexed, Pt, Shape, Shapes};
+use crate::gap::{kerb_gap, Bare};
+use crate::poly::{self, resample, Pt, Shape, Shapes};
+use crate::standard::{PAVEMENT_HOLE_M2, RUNG_HALF_M, SIDEWALK_BRIDGE_M, STATION_M, WALK_MIN_M};
 use crate::step::Summary;
 use crate::width::{self, Family};
-use crate::world::{connector, Facade, Kerb, Polyline2, Roads, Surface};
-
-/// Sample spacing along a pedestrian way, in metres.
-pub const STATION_M: f64 = 1.0;
+use crate::world::{connector, Attached, Facade, Kerb, Polyline2, Network, Surface};
 
 /// How far from a carriageway's kerb a station may lie and still be that
 /// street's pavement. The server's `WALK_ATTACH_M`: eight metres keeps the
@@ -107,11 +106,6 @@ pub const TANGENT_HALF_M: f64 = 2.5;
 
 /// Shortest run of attached stations that is a pavement, in metres.
 pub const RUN_MIN_M: f64 = 10.0;
-
-/// Longest break between two attached stretches that is bridged on
-/// distance alone, in metres: the corner a pavement wraps, the arc between
-/// two legs of a roundabout (the server's `WALK_CORNER_MAX_M`).
-pub const BRIDGE_M: f64 = 25.0;
 
 /// How far from a kerb a station in a bridged break may stand, in
 /// metres: a sidewalk cutting the corner between two legs on the diagonal
@@ -138,42 +132,12 @@ const RUNG_MIN_M: f64 = 0.5;
 /// pieces is a few long.
 const WELD_PASSES: usize = 8;
 
-/// How far outside a kerb station the pavement is probed for `kerb_gap`,
-/// in metres: inside the narrowest pavement drawn.
-const PROBE_M: f64 = 0.3;
-
-/// A kerb stretch turning by this much, in degrees, is a road's end cap
-/// (180°), not a corner between two legs (a right angle inward) — see
-/// [`kerb_gap`].
-const CAP_TURN_DEG: f64 = 135.0;
-
-/// A rung meeting the kerb at less than this, in degrees, runs along it
-/// rather than across it and claims nothing there: the last rung of a
-/// sidewalk that ends where its road does lies along the road's square end
-/// face, which is not a kerb the sidewalk owns — see [`kerb_gap`].
-const CLAIM_MIN_DEG: f64 = 30.0;
-
-/// The narrowest pavement drawn, in metres: what a sidewalk mapped under the
-/// asphalt still gets outside the kerb.
-pub const WALK_MIN_M: f64 = 0.8;
-
-/// A hole in the pavement smaller than this, in square metres, is a notch
-/// between two rungs whose feet jumped from one road to another, or the
-/// hairline where two pieces of the ladder met — not a courtyard the
-/// footways enclose, which is tens of square metres — and it is filled.
-pub const PAVEMENT_HOLE_M2: f64 = 2.0;
-
 /// How far from a foot its axis segment's end may lie and still be a
 /// vertex of the fan, in metres. A sidewalk wrapping an acute corner at
 /// the full attachment reach has its feet `(reach + half) / tan(θ/2)`
 /// from the corner, twenty metres at 40°; the far end of a long segment
 /// past that is not the corner.
 const FAN_REACH_M: f64 = 3.0 * ATTACH_M;
-
-/// Half-width of a rung, in metres. A full metre either side of the station
-/// so that consecutive rungs overlap even on the outside of a bend of eight
-/// metres radius at the full reach.
-const RUNG_HALF_M: f64 = 1.0;
 
 /// Cell size of the road index, in metres: one query reaches the widest
 /// half-width plus [`ATTACH_M`].
@@ -193,7 +157,7 @@ struct Stationed {
 }
 
 /// Attaches the world's pedestrian ways and fills the strips.
-pub fn run(roads: &Roads, surface: &Surface, facade: &Facade) -> (Kerb, Summary) {
+pub fn run(roads: &Network, surface: &Surface, facade: &Facade) -> (Kerb, Summary) {
     let index = RoadIndex::build(roads.plan.iter().filter(|w| width::family(&w.class) == Family::Carriageway));
     // One union per run, then one of the runs: a run's few hundred pieces
     // overlap each other four or five deep, and a single union of every
@@ -241,9 +205,6 @@ pub fn run(roads: &Roads, surface: &Surface, facade: &Facade) -> (Kerb, Summary)
     let senior = surface.senior();
     let pavement = facade.pavement(&u, &senior);
     let filled = poly::area(&pavement) - poly::area(&surface.walk);
-    // A kerb against the track bed is not bare ground: the railway is there.
-    let bare = Bare::new(&senior, &pavement, &facade.footprints);
-    let (gap_n, gap_of) = kerb_gap(&surface.carriageway, &bare, &attached_all);
     let summary = Summary::new()
         .with("stations", stations)
         .with_part("attached", attached, stations)
@@ -252,64 +213,28 @@ pub fn run(roads: &Roads, surface: &Surface, facade: &Facade) -> (Kerb, Summary)
         .with("joints", joints_n)
         .with("landed", landed)
         .with("gap_m", format!("p50={:.1} p90={:.1} max={:.1}", q(0.5), q(0.9), q(1.0)))
-        .with_regions("pavement", &pavement)
-        .with_m2("pavement_m2", poly::area(&pavement))
-        .with_m2("filled_m2", filled)
-        .with_share("kerb_gap", gap_n, gap_of);
+        .with_m2("filled_m2", filled);
     // The surface as this step leaves it: the pavement is the walk now,
     // and the other three are the surface step's, carried through untouched.
     let surface = Surface { walk: pavement, ..surface.clone() };
     (Kerb { surface, rungs, attached: attached_all }, summary)
 }
 
-/// One attached station.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Attached {
-    /// The station on the pedestrian way.
-    pub station: Pt,
-    /// Its foot on the road's axis.
-    pub foot: Pt,
-    /// The road's half-width there.
-    pub half_m: f64,
-    /// The axis segment the foot lies on.
-    pub seg: [Pt; 2],
-    /// The road the foot is on, in the index's order.
-    pub road: usize,
-    /// How far from the foot, toward the station, the asphalt ends: the
-    /// attached road's own half-width on a straight, farther where the
-    /// rung crosses another road's ribbon on the way out, as it does in
-    /// the notch between two legs.
-    pub exit_m: f64,
-    /// Landed rather than attached: a footway's end on a kerb, not a
-    /// pavement running along it, so no stretch of kerb is claimed from it.
-    pub landed: bool,
-}
-
-/// `pts` resampled every `step` metres, the original vertices kept, the
-/// last point always present.
-pub fn resample(pts: &[Pt], step: f64) -> Vec<Pt> {
-    let mut out: Vec<Pt> = Vec::new();
-    let Some(&first) = pts.first() else {
-        return out;
-    };
-    out.push(first);
-    for pair in pts.windows(2) {
-        let (p, q) = (pair[0], pair[1]);
-        let len = (q[0] - p[0]).hypot(q[1] - p[1]);
-        let n = (len / step).floor() as usize;
-        for k in 1..=n {
-            let t = k as f64 * step / len;
-            if t < 1.0 - 1e-9 {
-                out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
-            }
-        }
-        out.push(q);
-    }
-    out
+/// The pavement the step leaves, and the kerb stations a sidewalk claims
+/// with bare ground outside them ([`crate::gap::kerb_gap`]). A kerb against
+/// the track bed is not bare ground: the railway is there.
+pub fn check(kerb: &Kerb, facade: &Facade) -> Summary {
+    let pavement = &kerb.surface.walk;
+    let bare = Bare::new(&kerb.surface.senior(), pavement, &facade.footprints);
+    let (gap_n, gap_of) = kerb_gap(&kerb.surface.carriageway, &bare, &kerb.attached);
+    Summary::new()
+        .with_regions("pavement", pavement)
+        .with_m2("pavement_m2", poly::area(pavement))
+        .with_share("kerb_gap", gap_n, gap_of)
 }
 
 /// Every station attached under the full rule — on distance alone if the
-/// way `crosses` — then every break shorter than [`BRIDGE_M`] between two
+/// way `crosses` — then every break shorter than [`SIDEWALK_BRIDGE_M`] between two
 /// attached stations attached on distance alone.
 fn attach_stations(pts: &[Pt], index: &RoadIndex, crosses: bool) -> Vec<Option<Attached>> {
     let reach = (TANGENT_HALF_M / STATION_M).round() as usize;
@@ -355,10 +280,10 @@ fn runs_of(at: &[Option<Attached>], keep_start: bool, keep_end: bool) -> Vec<Vec
 }
 
 /// Attaches, on distance alone, the stations of every break shorter than
-/// [`BRIDGE_M`] that lies between two attached stations. A station in the
+/// [`SIDEWALK_BRIDGE_M`] that lies between two attached stations. A station in the
 /// break with no road within reach at all keeps the break open.
 fn bridge(pts: &[Pt], at: &mut [Option<Attached>], index: &RoadIndex) {
-    let max = (BRIDGE_M / STATION_M) as usize;
+    let max = (SIDEWALK_BRIDGE_M / STATION_M) as usize;
     let mut i = 0;
     while i < at.len() {
         if at[i].is_some() {
@@ -424,12 +349,12 @@ fn welds(ways: &[Stationed]) -> HashSet<((i64, i64), usize)> {
 /// `t` stations is one break with the break of the way it meets there
 /// (`u` stations from the shared end to that way's nearest attached
 /// station), and is attached on distance alone when `t + u` is under
-/// [`BRIDGE_M`]; a whole way short enough to be a break is attached when
+/// [`SIDEWALK_BRIDGE_M`]; a whole way short enough to be a break is attached when
 /// that holds at both its ends. Repeated while it changes anything, up to
 /// [`WELD_PASSES`], because each pass attaches ends the next can reach.
 /// How many stations it attached.
 fn weld(ways: &mut [Stationed], index: &RoadIndex) -> usize {
-    let max = (BRIDGE_M / STATION_M) as usize;
+    let max = (SIDEWALK_BRIDGE_M / STATION_M) as usize;
     let mut total = 0;
     for _ in 0..WELD_PASSES {
         let ends = ends(ways);
@@ -519,13 +444,13 @@ fn fan(p: &Attached, q: &Attached) -> Option<Shape> {
 }
 
 /// The fans across welds: where two pedestrian ways meet, for every road
-/// both stand on within [`BRIDGE_M`] of the meeting, the fan between the
+/// both stand on within [`SIDEWALK_BRIDGE_M`] of the meeting, the fan between the
 /// station of each nearest the meeting that stands on it. A sidewalk
 /// ending on a crossing's corner and the crossing leaving it may both
 /// stand on the road the crossing crosses, a few stations from the
 /// corner, and the wedge between those two rungs is nobody's else.
 fn weld_fans(ways: &[Stationed]) -> Shapes {
-    let max = (BRIDGE_M / STATION_M) as usize;
+    let max = (SIDEWALK_BRIDGE_M / STATION_M) as usize;
     let ends = ends(ways);
     // Per way end: the station nearest the end standing on each road.
     let nearest = |i: usize, at_start: bool| -> Vec<(usize, Attached)> {
@@ -572,175 +497,6 @@ fn corner_end(a: &Attached, toward: Pt) -> Option<Pt> {
     let d = |p: Pt, q: Pt| (p[0] - q[0]).hypot(p[1] - q[1]);
     let end = if d(a.seg[0], toward) < d(a.seg[1], toward) { a.seg[0] } else { a.seg[1] };
     (d(end, a.foot) > 1e-9 && d(end, a.foot) <= FAN_REACH_M).then_some(end)
-}
-
-/// One station of a kerb ring: where it is, the unit tangent there
-/// (averaged over the segments either side), and how far the kerb turns
-/// at it, in degrees.
-#[derive(Debug, Clone, Copy)]
-pub struct Station {
-    pub at: Pt,
-    pub tangent: Pt,
-    pub turn_deg: f64,
-}
-
-/// The stations of one kerb ring, [`STATION_M`] apart, once round it (the
-/// closing point is not repeated).
-pub fn stations(ring: &[Pt]) -> Vec<Station> {
-    let mut closed = ring.to_vec();
-    closed.push(ring[0]);
-    let mut pts = resample(&closed, STATION_M);
-    pts.pop();
-    let n = pts.len();
-    (0..n)
-        .map(|i| {
-            let (a, b, c) = (pts[(i + n - 1) % n], pts[i], pts[(i + 1) % n]);
-            let (u, v) = (poly::unit([b[0] - a[0], b[1] - a[1]]), poly::unit([c[0] - b[0], c[1] - b[1]]));
-            Station { at: b, tangent: poly::unit([u[0] + v[0], u[1] + v[1]]), turn_deg: poly::turn_deg(a, b, c) }
-        })
-        .collect()
-}
-
-/// Where a probe finds bare ground: outside the asphalt, the pavement and
-/// the walls, the three indexed once for the many probes of a check.
-pub struct Bare {
-    asphalt: Indexed,
-    pavement: Indexed,
-    walls: Indexed,
-}
-
-impl Bare {
-    pub fn new(carriageway: &Shapes, pavement: &Shapes, walls: &Shapes) -> Bare {
-        Bare { asphalt: Indexed::new(carriageway), pavement: Indexed::new(pavement), walls: Indexed::new(walls) }
-    }
-
-    /// Whether `p` is bare ground: on none of the three. A probe inside a
-    /// wall is a facade standing on the kerb, which is not bare.
-    pub fn at(&self, p: Pt) -> bool {
-        !self.pavement.contains(p) && !self.asphalt.contains(p) && !self.walls.contains(p)
-    }
-}
-
-/// The share of kerb stations a sidewalk claims that have bare ground just
-/// outside them, as `(gaps, stations)`. A kerb station is claimed when some
-/// attached station's rung — the segment from its foot on the axis to the
-/// station — passes within the rung's half-width less the probe's reach of
-/// it, which is the same side of the same road, and not the far kerb
-/// across it; and a stretch of
-/// kerb shorter than [`BRIDGE_M`] between two stations that a *run's*
-/// rung claims is claimed with them, because a pavement that stands
-/// against the kerb on both sides of a corner stands against the corner
-/// (a landing is a footway's end, not a pavement, and claims nothing
-/// beyond its own rung). A rung claims the kerb it crosses, not one it
-/// runs along ([`CLAIM_MIN_DEG`]): a road's square end face, with the
-/// sidewalk's last rung lying along it, is nobody's. A stretch that long
-/// without a rung is a side road's mouth, whose kerb runs away down the
-/// leg and back, and is not claimed; nor is a stretch that turns back on
-/// itself by [`CAP_TURN_DEG`] or more, which is the road's end — nothing
-/// says the two pavements of a road join round its turning head.
-pub fn kerb_gap(carriageway: &Shapes, bare: &Bare, attached: &[Attached]) -> (usize, usize) {
-    let (gaps, n) = kerb_gaps(carriageway, bare, attached);
-    (gaps.len(), n)
-}
-
-/// The kerb stations [`kerb_gap`] counts as gaps, and the claimed count.
-pub fn kerb_gaps(carriageway: &Shapes, bare: &Bare, attached: &[Attached]) -> (Vec<Pt>, usize) {
-    // Every rung's direction, once, and the rungs by cell.
-    let dirs: Vec<Pt> =
-        attached.iter().map(|a| poly::unit([a.station[0] - a.foot[0], a.station[1] - a.foot[1]])).collect();
-    let mut cells: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
-    for (i, a) in attached.iter().enumerate() {
-        let b = [a.foot[0].min(a.station[0]), a.foot[1].min(a.station[1]), a.foot[0].max(a.station[0]), a.foot[1].max(a.station[1])];
-        for cell in poly::cells_over(b, CELL_M) {
-            cells.entry(cell).or_default().push(i);
-        }
-    }
-    // A kerb station this close to a rung's segment has its probe inside
-    // the rung's quad whatever the angle between them: the probe sits
-    // `PROBE_M` past the kerb and the rung reaches `WALK_MIN_M` past it.
-    let reach = RUNG_HALF_M - PROBE_M;
-    let min_sin = CLAIM_MIN_DEG.to_radians().sin();
-    // Whether a rung claims `p`, where the kerb runs along `t`: any rung,
-    // and a run's rung.
-    let claims = |p: Pt, t: Pt| -> (bool, bool) {
-        let (c, r) = poly::cell_of(p, CELL_M);
-        let mut any = false;
-        for dc in -1..=1 {
-            for dr in -1..=1 {
-                let Some(v) = cells.get(&(c + dc, r + dr)) else {
-                    continue;
-                };
-                for &i in v {
-                    let (a, u) = (&attached[i], dirs[i]);
-                    if (u[0] * t[1] - u[1] * t[0]).abs() < min_sin || poly::segment_distance(a.foot, a.station, p) >= reach {
-                        continue;
-                    }
-                    if !a.landed {
-                        return (true, true);
-                    }
-                    any = true;
-                }
-            }
-        }
-        (any, false)
-    };
-    let (mut gaps, mut n) = (Vec::new(), 0usize);
-    for ring in carriageway.iter().flatten() {
-        let stations = stations(ring);
-        let claimed: Vec<(bool, bool)> = stations.iter().map(|s| claims(s.at, s.tangent)).collect();
-        let turn: Vec<f64> = stations.iter().map(|s| s.turn_deg).collect();
-        let by_run =
-            claim_between(claimed.iter().map(|c| c.1).collect(), &turn, (BRIDGE_M / STATION_M) as usize, CAP_TURN_DEG);
-        for (i, s) in stations.iter().enumerate() {
-            if !(by_run[i] || claimed[i].0) {
-                continue;
-            }
-            let q = stations[(i + 1) % stations.len()].at;
-            let d = poly::unit([q[0] - s.at[0], q[1] - s.at[1]]);
-            // The region is on the left of every ring, outer or hole, so
-            // outward is the right-hand normal.
-            let probe = [s.at[0] + d[1] * PROBE_M, s.at[1] - d[0] * PROBE_M];
-            n += 1;
-            if bare.at(probe) {
-                gaps.push(s.at);
-            }
-        }
-    }
-    (gaps, n)
-}
-
-/// `claimed` with every circular stretch of at most `max` unclaimed
-/// stations between two claimed ones claimed as well, unless the stretch
-/// turns (the sum of `turn` over it, in degrees) by `cap_deg` or more
-/// either way.
-fn claim_between(mut claimed: Vec<bool>, turn: &[f64], max: usize, cap_deg: f64) -> Vec<bool> {
-    let n = claimed.len();
-    let Some(first) = claimed.iter().position(|&c| c) else {
-        return claimed;
-    };
-    let mut fill: Vec<usize> = Vec::new();
-    let mut run: Vec<usize> = Vec::new();
-    let mut flush = |run: &mut Vec<usize>| {
-        let total: f64 = run.iter().map(|&i| turn[i]).sum();
-        if run.len() <= max && total.abs() < cap_deg {
-            fill.extend(run.drain(..));
-        }
-        run.clear();
-    };
-    let mut i = (first + 1) % n;
-    while i != first {
-        if claimed[i] {
-            flush(&mut run);
-        } else {
-            run.push(i);
-        }
-        i = (i + 1) % n;
-    }
-    flush(&mut run);
-    for i in fill {
-        claimed[i] = true;
-    }
-    claimed
 }
 
 impl Attached {
@@ -951,6 +707,7 @@ pub(crate) mod tests {
     
 
     use super::*;
+    use crate::gap::claim_between;
 
     /// A flat world with the network of `spec`, surfaced.
     pub(crate) fn world(spec: &str) -> (World, Summary) {
