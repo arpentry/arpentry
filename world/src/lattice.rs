@@ -6,7 +6,7 @@
 //! and nothing else, and what several steps share is a module of its own.
 
 use crate::grid::Grid;
-use crate::world::{Polyline2, Polyline3, Terrain};
+use crate::world::Terrain;
 
 /// The height of the mesh surface at local `(x, y)`: the plane of the triangle
 /// the point falls in, with the cell split on its SW→NE diagonal. Beyond the
@@ -85,18 +85,6 @@ fn crossings(a: f64, b: f64, ts: &mut Vec<f64>) {
     let (k0, k1) = (lo.ceil() as i64, hi.floor() as i64);
     for k in k0..=k1 {
         ts.push((k as f64 - a) / (b - a));
-    }
-}
-
-/// Reads a `Polyline2` as the plan line it is; for tests and callers that
-/// already hold lines in the frame.
-pub fn drape_line(terrain: &Terrain, line: &Polyline2) -> Polyline3 {
-    Polyline3 {
-        id: line.id.clone(),
-        class: line.class.clone(),
-        subclass: line.subclass.clone(),
-        width_m: line.width_m,
-        pts: drape(terrain, &line.pts),
     }
 }
 

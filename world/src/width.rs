@@ -1,25 +1,24 @@
 //! The cross-section function: what a way is, and how wide it is.
 //!
 //! One function, read once per way by the reader and carried on the line —
-//! the plan preview's stroke, the ribbon, the kerb's index and the fillet
-//! all read that one number — so no two consumers can disagree about where
-//! a kerb is (docs/ROADS.md invariant 1).
+//! the plan preview's stroke, the ribbon, the kerb's index and the kerb
+//! returns `legs` builds all read that one number — so no two consumers can
+//! disagree about where a kerb is (docs/ROADS.md invariant 1).
 //!
 //! A carriageway's width is the measured `width_rules` where a segment has
 //! one, else a class prior narrowed for a one-way. A walk's width is one
-//! constant, [`WALK_M`], whatever the class and whatever is mapped: the
-//! measured value covers 7 of the 1344 walk ways in the Montreux loop box,
-//! and every difference in width between two walks that meet is a shoulder
-//! in their union (a 3 m crossing ending on a 2 m sidewalk pokes its cap
-//! out the far side; a 1.2 m path joining a 2 m footway steps the outline)
-//! that no reader can see the source of. One width makes the kerb offset a
-//! constant too. The one exception is a pedestrianised street: an area
-//! drawn as a line, kept at a lane's width. The priors were set
-//! against the mapped widths of the Swiss extract (2026-09-06, 2.94 M road
-//! segments, `width_rules` on a few percent of them): per class, the median
-//! of the dominant rule, leaning to the upper quartile where the sample is
-//! large, because people tag a width when it is notable and the sample runs
-//! narrow. Measured medians, one-way in brackets:
+//! constant, [`WALK_M`], whatever the class and whatever is mapped: a
+//! measured walk width is rare, and every difference in width between two
+//! walks that meet is a shoulder in their union (a 3 m crossing ending on a
+//! 2 m sidewalk pokes its cap out the far side; a 1.2 m path joining a 2 m
+//! footway steps the outline) that no reader can see the source of. One
+//! width makes the kerb offset a constant too. The one exception is a
+//! pedestrianised street: an area drawn as a line, kept at a lane's width.
+//! The priors were set against the mapped widths of the Swiss extract
+//! (`width_rules` is on a few percent of its road segments): per class, the
+//! median of the dominant rule, leaning to the upper quartile where the
+//! sample is large, because people tag a width when it is notable and the
+//! sample runs narrow. Measured medians, one-way in brackets:
 //!
 //! ```text
 //! motorway 7.5 (p75 11)   trunk 8.0        primary 7.0 (5.0)   secondary 6.0 (5.0)
@@ -39,12 +38,10 @@
 //! wins.
 //!
 //! **A railway is a third family, not a class of carriageway.** It solves a
-//! profile, lays a surface and gets structures the way a road does — the
-//! server learned that every mechanism that makes a road robust to a wrong
-//! height was missing for rail, "and rail paid the whole price in daylight"
-//! (`data/plans/rail-formation-surface.md`) — but it takes no kerb, no
-//! sidewalk, no kerb return and no room, and its ballast unions with ballast
-//! only. Only the independent classes are admitted (stratum R: the gauges,
+//! profile, lays a surface and gets structures the way a road does, because
+//! every mechanism that makes a road robust to a wrong height is needed for
+//! rail too — but it takes no kerb, no sidewalk, no kerb return and no
+//! room, and its ballast unions with ballast only. Only the independent classes are admitted (stratum R: the gauges,
 //! the subway, the funicular). Street-running rail — tram, light rail,
 //! monorail — lies *on* a carriageway and has no surface of its own, and
 //! an `unknown` railway is not granted a formation on the strength of a
@@ -88,14 +85,13 @@ pub const RAIL_CLASSES: &[&str] = &["standard_gauge", "broad_gauge", "subway", "
 
 /// Width in metres of a standard-gauge track's drawn bed: the *track zone*,
 /// a 2.6 m sleeper plus the tamped ballast shoulder, not the formation. The
-/// server drew the 5 m formation first and "the railway read as wide as a
-/// residential street" (`priors::MAINLINE`); the earthworks beyond the
-/// track zone are the bench's.
+/// 5 m formation drawn as the bed reads as wide as a residential street;
+/// the earthworks beyond the track zone are the bench's.
 pub const RAIL_M: f64 = 3.5;
 
 /// The same for metre gauge and a funicular: a 1.8 m sleeper plus the same
 /// shoulder.
-pub const NARROW_RAIL_M: f64 = 2.6;
+const NARROW_RAIL_M: f64 = 2.6;
 
 /// Width in metres of every walk that is not a pedestrianised street — a
 /// sidewalk, a path, steps, a track, a cycle track, a crossing: the Swiss
@@ -105,20 +101,20 @@ pub const WALK_M: f64 = 2.0;
 /// Width in metres of a pedestrianised street (`class = pedestrian`): a
 /// lane's width with a pavement's use. An area mapped as a line, so a
 /// walk's width would be visibly wrong through it.
-pub const PEDESTRIAN_M: f64 = 4.0;
+const PEDESTRIAN_M: f64 = 4.0;
 
 /// Width in metres of a service way — a driveway, an alley: one car's track
 /// plus margins.
-pub const SERVICE_M: f64 = 3.0;
+const SERVICE_M: f64 = 3.0;
 
 /// Width in metres of a ramp (`subclass = link`), whatever class it carries:
 /// a single lane plus shoulders.
-pub const LINK_M: f64 = 5.0;
+const LINK_M: f64 = 5.0;
 
 /// A measured width outside this range, in metres, is a typo (a whole
 /// right-of-way on a footpath, a lane count in the width field) and the
 /// prior stands.
-pub const MEASURED_M: std::ops::RangeInclusive<f64> = 1.0..=30.0;
+const MEASURED_M: std::ops::RangeInclusive<f64> = 1.0..=30.0;
 
 /// The full width in metres of a way of `class` and `subclass`: the prior
 /// for a two-way carriageway. Every class [`crate::roads`] admits has an
@@ -170,10 +166,10 @@ pub fn of_way(class: &str, subclass: &str, oneway: bool, width_rules: Option<f64
     }
 }
 
-/// The kerb-return radius in metres at a junction whose widest leg is of
-/// `class`: what a vehicle turning out of it needs. A prior; nothing in the
-/// data says it.
-pub fn fillet_m(class: &str) -> f64 {
+/// The kerb-return radius in metres of a way of `class`: what a vehicle
+/// turning out of it needs. A junction's return takes the smaller of its two
+/// legs'. A prior; nothing in the data says it.
+pub fn return_radius_m(class: &str) -> f64 {
     match class {
         "motorway" | "trunk" | "primary" | "secondary" => 8.0,
         "tertiary" | "residential" | "unclassified" | "living_street" => 4.0,

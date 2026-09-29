@@ -1,16 +1,15 @@
 //! The sheets: which paved regions may merge, and which may not.
 //!
-//! The paved surface has been built twice. The ground pieces go through
-//! `ribbon → surface → kerb → legs → room` and come out as one unioned,
-//! refined region set per family; the span pieces go through `structure`,
-//! which sweeps each run on its own and lifts it afterwards by a field of
-//! its own. The two meet neither in plan nor in height, and where they hand
-//! over the surface steps 0.43 m at p90 and 2.79 m at worst. A junction
-//! whose legs stand on a structure is drawn as separate objects with
-//! vertical lips between them
-//! (`data/plans/one-surface-at-a-junction-2026-09-14.md`).
+//! The ground pieces go through `ribbon → surface → kerb → legs → room` and
+//! come out as one unioned, refined region set per family; the deck spans
+//! are ribbons of their own ([`crate::ribbon::run`]). Paved and
+//! lifted apart, the two would meet neither in plan nor in height, and a
+//! junction whose legs stand on a structure would be separate objects with
+//! vertical lips between them. This step joins them where they are one
+//! surface, so a deck and the road running onto it are one polygon lifted
+//! by one field, and keeps them apart where they are not.
 //!
-//! The rule that makes the two into one:
+//! The rule:
 //!
 //! > **Regions merge where they meet. They stay apart where they cross.**
 //!
@@ -18,10 +17,9 @@
 //! pieces — the connected components of the piece graph by shared
 //! connector, split wherever a component holds a crossing pair.
 //!
-//! **A sheet is not a group, and the measurement is why.** The plan reads
-//! "one region per group", and run against the refined asphalt that is not
-//! a partition at all: the loop box has **521** carriageway and rail groups
-//! and the asphalt they lie in has **39** connected regions. The asphalt is
+//! **A sheet is not a group.** "One region per group", run against the
+//! refined asphalt, is not a partition at all: the asphalt has far fewer
+//! connected regions than there are carriageway and rail groups. It is
 //! coarser than the piece graph, and it has to be — a driveway that shares
 //! no connector with the street it runs onto is its own component of the
 //! piece graph, and its ribbon still overlaps the street's once both are
@@ -37,27 +35,25 @@
 //! and the span has to be kept out of it by the overlap test rather than
 //! by the grouping. That residual is counted, never assumed away.
 //!
-//! **Why the grouping lands here and not in the chain.** The plan's step 4
-//! reads "run the refinement chain per group". It is wrong by those steps'
-//! own design, and the measurement that says so is that group ids partition
-//! *per family* ([`crate::partition::groups`] keys on `(family,
+//! **Why the grouping is applied here and not in the chain.** Group ids
+//! partition *per family* ([`crate::partition::groups`] keys on `(family,
 //! connector)`): a sidewalk is never in the group of the road it is the
-//! pavement of, and relating the two is the whole job of `kerb`, `fillet`
-//! and `room`. Each of the three is deliberately cross-region as well — a
-//! kerb rung stops at *any* road rather than its own, the fillet's closing
-//! is bucketed by radius and reaches other regions on purpose, and a room's
-//! pocket is a hole of asphalt *and* pavement *and* buildings taken
-//! together. Run per group, all three would answer differently and worse.
+//! pavement of, and relating the two is the job of `kerb`, `legs` and
+//! `room`. Each of the three is deliberately cross-region as well — a kerb
+//! rung stops at *any* road rather than its own, the legs pave a gap
+//! between two carriageways that never share a vertex, and a room's pocket
+//! is a hole of asphalt *and* pavement *and* buildings taken together. Run
+//! per group, all three would answer differently and worse.
 //!
-//! So the chain stays family-wide over the ground pieces, exactly as it
-//! was, and the grouping is applied once, after it. What a span group
-//! forgoes by arriving late is the chain itself — a bridge gets no kerb
-//! return — and that is the right answer anyway: a bridge has a parapet.
+//! So the chain runs family-wide over the ground pieces, and the grouping is
+//! applied once, after it. What a span forgoes by arriving late is the rest
+//! of the chain — a deck gets no kerb ladder and no room — and that is the
+//! right answer anyway: a bridge has a parapet.
 //!
 //! **Only the families that solve** ([`crate::width::Family::solves`]) get
 //! sheets. A footbridge has no profile, so a walk span has no field to be
-//! lifted by; the pavement is left whole and the structure step keeps
-//! sweeping the walk spans until there is a field they can be lifted by.
+//! lifted by; the pavement is left whole and the structure step paves the
+//! walk spans.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -76,8 +72,6 @@ use crate::world::{Groups, Network, Polyline2, Profiles, Ribbons, Sheet, Sheets,
 /// almost nothing unattributed.
 const SAMPLES: usize = 5;
 
-
-
 /// How much of a span may lie over the sheet's own ground ribbons away from
 /// a connector, in square metres, before it is flying rather than joining.
 ///
@@ -90,16 +84,16 @@ const FOREIGN_M2: f64 = 0.01;
 /// How far from a connector on a span, in metres, paving under it is a
 /// junction rather than something the span flies over.
 ///
-/// `structure::runs_of` widens every structure run by one station each side
-/// — [`crate::grade::NODE_M`], 4 m — so a span's footprint reaches that far
-/// back onto the ground piece it hands over to, and the cap adds its own
-/// half-disc past that. Twelve metres covers both with room to spare.
+/// A span's ribbon and its approach's are both capped round where they
+/// meet, so each laps half its width — at most 4.5 m — over the other, and
+/// a leg joining the span laps it by as much again. Twelve metres covers
+/// that with room to spare.
 ///
 /// **Every connector on the span, not only its two ends.** Overture does not
 /// cut a way at its connectors, so a way's bridge piece can carry junctions
-/// in its interior — south of the Clarens railway two service roads join a
-/// residential way inside its deck, and measured from the ends alone those
-/// two junctions read as paving the deck flew over.
+/// in its interior — a service road joining a way inside its deck — and
+/// measured from the ends alone such a junction would read as paving the
+/// deck flies over.
 const ABUTMENT_REACH_M: f64 = 12.0;
 
 /// A disc of [`ABUTMENT_REACH_M`] about each point, unioned: where a span
@@ -139,15 +133,15 @@ pub fn run(
     //
     // The profiles are an argument for that reason: this step writes profile
     // indices into every sheet ([`Sheet::axes`]), so it depends on which ways
-    // solved, and a signature that did not say so was the dependency the
-    // pipeline exists to make visible.
+    // solved, and a signature that did not say so would hide a dependency
+    // the pipeline exists to make visible.
     let of_way: HashMap<usize, usize> =
         profiles.profiles.iter().enumerate().map(|(i, p)| (p.way, i)).collect();
 
     // The spans to merge in — and, separately, the mask that says which
     // paving is over one. A round cap welds the span's ribbon to the
     // approach; a square one is the abutment the terrain's hole must end
-    // on ([`crate::ribbon::spans_masked`]).
+    // on ([`crate::ribbon::run`]).
     let (spans, masks) = (&ribbons.spans, &ribbons.masks);
 
     // Which groups may never be one surface: the pairs whose interiors
@@ -160,7 +154,8 @@ pub fn run(
 
     // Which connectors more than one piece of a family meets: a span may
     // lie over paving at any of them, because that is a junction. The same
-    // count `surface` caps on, asked once so the two cannot drift.
+    // count the ribbons are capped by ([`crate::ribbon::joints`]), asked
+    // once so the two cannot drift.
     let shared = &ribbons.joints;
 
     let mut sheets: Vec<Sheet> = Vec::new();
@@ -214,7 +209,7 @@ pub fn run(
             }
         }
         grouped += seen.len();
-        // A region no piece fell in: a fillet's corner left standing on its
+        // A region no piece fell in: a kerb return left standing on its
         // own, or asphalt whose every sample landed in a building. It still
         // has to be meshed and lifted, so it joins the sheet of the nearest
         // piece rather than being dropped.
@@ -270,12 +265,12 @@ pub fn run(
                 // **An axis is in a sheet's field exactly when its surface
                 // is in that sheet.** A span's paving is the sheet's only
                 // once the span's region has joined it — and included
-                // before that, a bore's chord went into the field of the
-                // ground around its portal and cut the approach 0.25 m
-                // deeper than a cutting goes.
+                // before that, a bore's chord would go into the field of the
+                // ground around its portal and cut the approach deeper than
+                // a cutting goes.
                 if i >= roads.plan.len() {
-                    // A bore is not a sheet's: see `ribbon::spans_grouped`.
-                    if !matches!(p.kind, crate::world::Kind::Bridge(_)) {
+                    // A bore is not a sheet's: the ribbon step unions decks only.
+                    if !p.kind.is_deck() {
                         continue;
                     }
                     spanning = true;
@@ -283,7 +278,7 @@ pub fn run(
                         aside.entry(group[i]).or_default().push((profile, p.a0, p.a1));
                     }
                     touch.entry(group[i]).or_default().extend(p.pts.iter().map(|&e| crate::world::connector(e)));
-                    let fam = width::family(&p.class) as usize;
+                    let fam = width::family(&p.class);
                     let ends = hands.entry(group[i]).or_default();
                     for e in p.pts.iter().copied() {
                         if shared.get(&(fam, crate::world::connector(e))).copied().unwrap_or(0) > 1 {
@@ -321,9 +316,10 @@ pub fn run(
                 // **What a span may legitimately cover is its own
                 // abutments.** Tested against its whole group's ground
                 // instead, a mountain road that tunnels under its own
-                // hairpin passed — same group, so the hairpin counted as
-                // the span's own — and the union welded a roadway at 514 m
-                // to one at 669 m, two metres apart in plan.
+                // hairpin passes — same group, so the hairpin counts as the
+                // span's own — and the union welds two roadways a hundred
+                // metres apart in height that lie a few metres apart in
+                // plan.
                 //
                 // **Two questions, and either one keeps a span out.**
                 //
@@ -331,18 +327,18 @@ pub fn run(
                 // pair of interiors that cross with no connector between
                 // them, and a span may not join a sheet holding a group it
                 // crosses that way. Not "does it overlap" — it must overlap,
-                // at every junction it opens onto, and on the loop box the
-                // threshold that let two service roads join a deck also let
-                // a viaduct weld to the road beneath it, 29.5 m down.
+                // at every junction it opens onto, and an area threshold
+                // loose enough to let two service roads join a deck also
+                // lets a viaduct weld to the road beneath it.
                 //
                 // The second is geometric, and it catches what the first
-                // cannot — a way that flies over *itself*. The Territet
-                // funicular climbs its own slope at 60 %, its derived deck
-                // stands 29.5 m over its own bed, and the two are one group
-                // so no crossing pair names them. Measured against the
-                // sheet's **raw ribbons** rather than its finished surface,
-                // because the surface carries kerb returns the ribbons do
-                // not and a sliver of filleted corner is not a fly-over.
+                // cannot — a way that flies over *itself*: a funicular
+                // climbing its own slope, whose derived deck stands metres
+                // over its own bed, is one group, so no crossing pair names
+                // the two. Measured against the sheet's **raw ribbons**
+                // rather than its finished surface, because the surface
+                // carries kerb returns the ribbons do not and a sliver of a
+                // return is not a fly-over.
                 let flies = held.iter().any(|h| rival.get(gg).is_some_and(|r| r.contains(h)));
                 let ends = hands.get(gg).cloned().unwrap_or_default();
                 let lies = poly::difference(&poly::intersect(span, &raw), &discs(&ends));
@@ -354,15 +350,14 @@ pub fn run(
                     //
                     // **Its approaches', not the sheet's.** Given every
                     // ground axis of the sheet it was kept out of, the field
-                    // held the very roads the span flies over — 973 profiles
-                    // for the Viaduc de Chillon, the whole connected paving
-                    // of the town — and `copies::Fields` believes a chord
-                    // only where it is no further off in plan than the
-                    // nearest ground axis. Over every street passing under
-                    // the deck that street's axis was the nearer, and the
-                    // asphalt hung 44 m down onto it in a curtain. An
-                    // approach is a ground piece sharing a vertex with the
-                    // span; a road that passes under shares none.
+                    // would hold the very roads the span flies over, and
+                    // `copies::Fields` believes a chord only where it is no
+                    // further off in plan than the nearest ground axis: over
+                    // every street passing under the deck that street's axis
+                    // is the nearer, and the asphalt would hang down onto it
+                    // in a curtain. An approach is a ground piece sharing a
+                    // vertex with the span; a road that passes under shares
+                    // none.
                     apart += 1;
                     let mut own = chords.clone();
                     tidy(&mut own);
@@ -409,34 +404,25 @@ pub fn run(
                 mine.extend(chords.iter().copied());
             }
             tidy(&mut axes);
-            // **The junction is rounded upstream, not here.** A
-            // span's paving arrives as a raw ribbon with a round cap, so a
-            // junction all of whose legs are decks has a notch between
-            // every pair — and this step used to close them itself, with
-            // the fillet's own closing over the merged region.
+            // **The junction is rounded upstream, not here.** A span's
+            // paving arrives as a raw ribbon with a round cap, so a junction
+            // all of whose legs are decks has a notch between every pair.
+            // The `legs` step builds that junction from its spans, and the
+            // pavement is laid back outside its kerb and cut by `senior` as
+            // for every other return. Closed here instead, the asphalt would
+            // grow *after* `room` has finished and overlap the pavement,
+            // which nothing downstream can take back (`on_walk`).
             //
-            // It was the wrong place, and the measurement is `on_walk`: an
-            // asphalt that grows *after* `room` has finished overlaps the
-            // pavement, and nothing downstream can take it back. 25 of the
-            // junction model's 30 m² came from here. `fillet` then did the
-            // same closing per group with the span ribbons merged in, and
-            // `legs`, which replaced it, builds a deck junction from its
-            // spans; either way the pavement is laid back outside the new
-            // kerb and `senior` cuts it, exactly as for every other return.
-            //
-            // **And the mask is the span ribbons, full stop.** It used to
-            // take in the return wedges beside a deck as well, so the
-            // earthwork would not read a deck's standoff as an embankment
-            // under them. Two things retired that. A return stands at a
+            // **And the mask is the span ribbons, nothing more.** The return
+            // wedges beside a deck are not in it: a return stands at a
             // junction, and a junction on a deck is at its abutment, where
-            // the standoff is nothing — so there was little to protect. And
-            // `copies::Fields` no longer believes this mask for the
-            // *height*: a chord answers only where it is no further off
-            // than the ground the sheet also holds, which is why a 0.8 m²
-            // sliver of it stopped standing the asphalt up in a 2.4 m fin.
-            // What a wrong mask can still cost is a vertex's `cut`/`fill`,
-            // and that is worth less than another boolean between two
-            // polygons that share a boundary.
+            // the standoff is nothing. Nor does `copies::Fields` believe the
+            // mask for the *height* — a chord answers only where it is no
+            // further off than the ground the sheet also holds, so a sliver
+            // of mask cannot stand the asphalt up in a fin. What a wrong mask
+            // can cost is a vertex's `cut`/`fill`, and that is worth less
+            // than another boolean between two polygons that share a
+            // boundary.
             let spans_over = poly::union_all(&over);
             tidy(&mut mine);
             sheets.push(Sheet {
@@ -496,8 +482,7 @@ pub fn check(sheets: &Sheets, paving: &Surface) -> Summary {
         .with_m2("on_walk", on_walk)
 }
 
-
-/// One group's regions out of what [`crate::ribbon::spans_grouped`]
+/// One group's regions out of what [`crate::ribbon::run`]
 /// returns.
 fn region_of(of: &[(Family, usize, Shapes)], family: Family, group: usize) -> Option<&Shapes> {
     of.iter().find(|(f, g, _)| *f == family && *g == group).map(|(.., s)| s)
@@ -512,7 +497,7 @@ fn region_of(of: &[(Family, usize, Shapes)], family: Family, group: usize) -> Op
 /// test there is a coin toss. A piece with a square end stops exactly where
 /// its ribbon does: `net:underpass`'s approach is two vertices, one on the
 /// butt end at the rect's edge and one on the butt end at the portal, and
-/// which side of each the lattice rounded decided whether the region had any
+/// which side of each the lattice rounds decides whether the region has any
 /// piece in it at all. A midpoint is on the axis half a segment from either
 /// end, so strictly inside the ribbon unless a wall has bitten it there.
 fn sample(p: &Polyline2) -> impl Iterator<Item = [f64; 2]> + '_ {
@@ -611,7 +596,7 @@ mod tests {
     #[test]
     fn the_sheets_are_the_paving_partitioned() {
         let (w, s) = world("flat", "net:cross?len=200");
-        let sheets = w.sheets.as_ref().expect("the sheet step ran");
+        let sheets = w.sheet.as_ref().expect("the sheet step ran");
         let paved = poly::area(&w.room.as_ref().unwrap().surface.carriageway);
         let sheeted: f64 =
             sheets.of(Family::Carriageway).map(|sh| poly::area(&sh.shapes)).sum();
@@ -625,7 +610,7 @@ mod tests {
     #[test]
     fn a_cross_is_one_sheet() {
         let (w, s) = world("flat", "net:cross?len=200");
-        let sheets = w.sheets.as_ref().unwrap();
+        let sheets = w.sheet.as_ref().unwrap();
         let car: Vec<&Sheet> = sheets.of(Family::Carriageway).collect();
         assert_eq!(car.len(), 1, "{s}");
         assert_eq!(car[0].shapes.len(), 1, "one region: {s}");
@@ -639,7 +624,7 @@ mod tests {
     #[test]
     fn an_overpass_and_the_road_under_it_are_two_sheets() {
         let (w, s) = world("flat", "net:overpass?span=0.35,0.65&level=1&len=200");
-        let sheets = w.sheets.as_ref().unwrap();
+        let sheets = w.sheet.as_ref().unwrap();
         let car: Vec<&Sheet> = sheets.of(Family::Carriageway).collect();
         assert!(car.len() >= 2, "the two must not be one sheet: {s}");
         for a in 0..car.len() {
@@ -651,11 +636,10 @@ mod tests {
 
     /// A junction standing on a structure is one group, and every one of
     /// its pieces — the ground legs and the spans — names the same sheet.
-    /// The regions do not merge until step 3; the grouping does now.
     #[test]
     fn a_junction_on_a_structure_is_one_sheet() {
         let (w, s) = world("gorge?depth=30&width=40", "net:tee?span=0.3&kind=bridge");
-        let sheets = w.sheets.as_ref().unwrap();
+        let sheets = w.sheet.as_ref().unwrap();
         let car: Vec<&Sheet> = sheets.of(Family::Carriageway).collect();
         assert_eq!(car.len(), 1, "the tee is one sheet: {s}");
         assert!(car[0].spanning, "and it stands on a structure: {s}");

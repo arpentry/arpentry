@@ -1,10 +1,10 @@
 //! The terrain: a mesh over the bbox, one height per vertex from the DEM.
 //!
-//! A regular lattice over the bbox, one height per vertex from the DEM, two
-//! triangles per cell. Nothing engineered yet — no benches, no breaklines —
-//! just the ground the next steps stand on, in a form whose surface can be
-//! evaluated analytically ([`height_at`]) so a later layer can be *proven* to
-//! lie on it rather than looked at.
+//! A regular lattice, two triangles per cell. Nothing engineered — no
+//! benches, no breaklines — just the ground the next steps stand on, in a
+//! form whose surface can be evaluated analytically
+//! ([`crate::lattice::height_at`]) so a later layer can be *proven* to lie
+//! on it rather than looked at.
 
 use arpentry_server::dem::Dem;
 
@@ -18,12 +18,12 @@ use crate::world::Terrain;
 ///
 /// It is not necessarily the zoom that answers: [`Dem`] clamps the request to
 /// the range its archive carries, and the clamp is silent. z16 is ~0.8 m per
-/// pixel near 46°, but the montreux extract — cut by `cut-zone.sh` asking for
-/// z13–18 — tops out at z14, ~3.3 m per pixel, because the `terrain-hires`
-/// source it was cut from has no more. So the run reports `dem_z`: what the
-/// ground can actually resolve, beside what the lattice was built at. Where
-/// the two disagree by much, the extra vertices are interpolation.
-pub const ZOOM: u8 = 16;
+/// pixel near 46°, but an extract is only as fine as the source it was cut
+/// from, and may top out at z14, ~3.3 m per pixel. So the run reports
+/// `dem_z`: what the ground can actually resolve, beside what the lattice was
+/// built at. Where the two disagree by much, the extra vertices are
+/// interpolation.
+const ZOOM: u8 = 16;
 
 /// Builds the terrain layer at about `spacing` metres, at most `cap`
 /// vertices (see [`Grid::fit`]).

@@ -7,42 +7,29 @@
 //! cannot quietly start depending on a neighbour — its signature is the
 //! whole of its interface, and changing it is a diff here.
 //!
-//! Three things used to live in the steps and live here now.
+//! **The order is asserted where it is decided.** [`apply`] unwraps each
+//! layer a step reads exactly once, through the one accessor per step, so a
+//! step never has to check that its predecessors ran.
 //!
-//! **"The drape step runs first."** Fifteen steps each opened with an
-//! `expect` naming a predecessor: a runtime assertion that the caller had
-//! done its job, repeated once per dependency, checked on every run and
-//! true by construction every time. [`apply`] unwraps each layer exactly
-//! once, at the one call site that can know the order, so the assertion is
-//! made where it is decided rather than where it is relied on.
-//!
-//! **Which surface is the latest.** The paved surface is re-cut four times
-//! — the surface step lays it, the kerb fills its strips, the legs build
-//! its junctions, the room paves its edges — and the steps downstream used to
-//! ask the world for "the latest", a resolver on `World` that walked those
-//! four layers and returned whichever had been filled. Then it was a literal
-//! here, assembled field by field out of two of them. Now there is nothing
-//! to resolve or assemble: all four steps hand back a whole
-//! [`crate::world::Surface`] — what they changed, and what they passed
-//! through — so the latest paving is the last layer that laid any, and
-//! `&room(world).surface` is a lookup like every other.
-//!
-//! **Writing into a layer somebody else built.** Three steps used to rewrite
-//! their predecessors — first through `&mut`, then through installs in this
-//! file: the reference promoted the terrain's priors onto the drape's ways,
-//! the crossing replaced the profile step's profiles, and the partition
-//! rewrote both again. After a run no layer but the last held what its own
-//! step had made, so a step could not be looked at on its own. Now **every
-//! layer is written once, by its own step**: the reference returns the ways
-//! with its priors ([`crate::world::Reference::ways`]), the crossing its
-//! re-solved profiles ([`crate::world::Crossings::profiles`]) and the
-//! partition the network it cut ([`crate::world::Partition`]).
+//! **Every layer is written once, by its own step**, and nothing writes into
+//! it afterwards. A step that refines an earlier answer returns its own
+//! version: the reference returns the ways with its priors
+//! ([`crate::world::Reference::ways`]), the crossing its re-solved profiles
+//! ([`crate::world::Crossings::profiles`]) and the partition the network it
+//! cut ([`crate::world::Partition`]). After a run every layer still holds
+//! what its own step made, so any step can be looked at on its own. The
+//! paved surface follows the same rule: the surface, kerb, legs and room
+//! steps each hand back a whole [`crate::world::Surface`] — what they
+//! changed and what they passed through — so the latest paving is the last
+//! layer that laid any, and `&room(world).surface` is a lookup like every
+//! other.
 //!
 //! **Which step reads what is this file's alone.** A step module imports no
 //! other step module (`tests::no_step_imports_another`): what several of
-//! them share is a module of its own ([`crate::standard`],
-//! [`crate::solve`], [`crate::field`], [`crate::portal`], [`crate::gap`],
-//! [`crate::copies`], [`crate::triangulate`], [`crate::lattice`]), and what
+//! them share is a module of its own ([`crate::standard`], [`crate::grade`],
+//! [`crate::solve`], [`crate::line`], [`crate::field`], [`crate::ground`],
+//! [`crate::portal`], [`crate::gap`], [`crate::copies`],
+//! [`crate::triangulate`], [`crate::lattice`]), and what
 //! one step computes and another reads is a layer, passed here.
 //!
 //! **A step's build and its check are two functions** ([`apply`] runs both):
@@ -50,9 +37,9 @@
 //! measures the layer it made, so it can be asked again of a world loaded
 //! from disk ([`run`], [`crate::dump`]) or put together by hand.
 //!
-//! The renderers are the exception: they walk the layers themselves and draw
-//! the last one filled ([`World::network`], [`World::solved`]), because what
-//! has been built is genuinely not known until the run stops.
+//! The renderers read partial worlds: they walk the layers themselves and
+//! draw the last one filled ([`World::network`], [`World::solved`]), because
+//! what has been built is not known until the run stops.
 
 use std::path::Path;
 
@@ -67,9 +54,9 @@ use crate::{
 
 /// The three sources a run reads, and the two knobs the terrain takes.
 ///
-/// Fifteen of the eighteen steps read nothing but the layers before them;
-/// only the terrain, the drape and the facade reach outside, so only they
-/// take anything from here. The two networks come in as paths because that
+/// Every step but three reads nothing but the layers before it; only the
+/// terrain, the drape and the facade reach outside, so only they take
+/// anything from here. The two networks come in as paths because that
 /// is what the CLI has, and each of those steps decides for itself whether
 /// its path is a file or a synthetic spec — which is why no reader appears
 /// in this module.
@@ -107,11 +94,11 @@ fn build(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary, St
         Step::Drape => {
             let (roads, summary) = drape::run(&extent, terrain(world), src.segments)
                 .map_err(|e| format!("{}: {e}", src.segments.display()))?;
-            world.roads = Some(roads);
+            world.drape = Some(roads);
             summary
         }
         Step::Reference => {
-            let (reference, summary) = reference::run(terrain(world), roads(world));
+            let (reference, summary) = reference::run(terrain(world), drape(world));
             world.reference = Some(reference);
             summary
         }
@@ -121,23 +108,14 @@ fn build(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary, St
             summary
         }
         Step::Crossing => {
-            let (crossings, summary) = crossing::run(reference(world), profiles(world));
+            let (crossings, summary) = crossing::run(reference(world), profile(world));
             world.crossing = Some(crossings);
             summary
         }
         Step::Partition => {
-            // **The one optional input in the chain.** The three vertical
-            // steps run together or not at all: a flat specimen leaves them
-            // out, and a partition with no heights cuts what the source
-            // annotated — the drape's ways, as mapped. With them, it cuts
-            // the ways the reference promoted, by the heights the crossing
-            // re-solved.
-            let (ways, solved) = match (&world.reference, &world.profile, &world.crossing) {
-                (Some(r), Some(_), Some(c)) => (&r.ways[..], Some(&c.profiles)),
-                (None, None, None) => (&roads(world).ways[..], None),
-                _ => panic!("the reference, profile and crossing steps run together or not at all"),
-            };
-            let (cut, summary) = partition::run(ways, solved);
+            // The ways the reference promoted, cut by the heights the
+            // crossing re-solved.
+            let (cut, summary) = partition::run(&reference(world).ways, &crossing(world).profiles);
             world.partition = Some(cut);
             summary
         }
@@ -149,11 +127,11 @@ fn build(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary, St
         }
         Step::Ribbon => {
             let (ribbons, summary) = ribbon::run(network(world), &partition(world).groups);
-            world.ribbons = Some(ribbons);
+            world.ribbon = Some(ribbons);
             summary
         }
         Step::Surface => {
-            let (surface, summary) = surface::run(ribbons(world), facade(world));
+            let (surface, summary) = surface::run(ribbon(world), facade(world));
             world.surface = Some(surface);
             summary
         }
@@ -164,13 +142,13 @@ fn build(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary, St
         }
         Step::Legs => {
             let (l, summary) =
-                legs::run(network(world), surface(world), kerb(world), facade(world), &ribbons(world).masks);
+                legs::run(network(world), kerb(world), facade(world), &ribbon(world).masks);
             world.legs = Some(l);
             summary
         }
         Step::Room => {
             let (r, summary) =
-                room::run(&legs(world).surface, &ribbons(world).spans, &kerb(world).attached, facade(world));
+                room::run(&legs(world).surface, &ribbon(world).spans, facade(world));
             world.room = Some(r);
             summary
         }
@@ -180,9 +158,9 @@ fn build(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary, St
                 solved(world),
                 &room(world).surface,
                 &partition(world).groups,
-                ribbons(world),
+                ribbon(world),
             );
-            world.sheets = Some(s);
+            world.sheet = Some(s);
             summary
         }
         Step::Arrangement => {
@@ -191,7 +169,7 @@ fn build(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary, St
                 &network(world).spans,
                 solved(world),
                 &room(world).surface,
-                sheets(world),
+                sheet(world),
             );
             world.arrangement = Some(a);
             summary
@@ -202,7 +180,7 @@ fn build(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary, St
             summary
         }
         Step::Lift => {
-            let (l, summary) = lift::run(terrain(world), solved(world), mesh(world), sheets(world), arrangement(world));
+            let (l, summary) = lift::run(terrain(world), solved(world), mesh(world), sheet(world), arrangement(world));
             world.lift = Some(l);
             summary
         }
@@ -222,7 +200,7 @@ fn build(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary, St
                 terrain(world),
                 network(world),
                 solved(world),
-                sheets(world),
+                sheet(world),
                 bench(world),
             );
             world.structure = Some(s);
@@ -230,7 +208,7 @@ fn build(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary, St
         }
         Step::Building => {
             let (b, summary) = building::run(terrain(world), facade(world));
-            world.buildings = Some(b);
+            world.building = Some(b);
             summary
         }
     })
@@ -243,21 +221,31 @@ fn build(world: &mut World, step: Step, src: &mut Sources) -> Result<Summary, St
 /// of a world the build did not make in this process — one loaded from a
 /// dump, or a layer edited by hand — and it cannot steer the build. The steps
 /// with nothing to check against their output report their build tallies
-/// alone.
+/// alone, and are named so that a new step has to say which it is.
 pub fn check(world: &World, step: Step) -> Summary {
     match step {
         Step::Reference => reference::check(reference(world)),
-        Step::Profile => profile::check(profiles(world)),
-        Step::Crossing => crossing::check(world.crossing.as_ref().expect("the crossing step ran")),
+        Step::Profile => profile::check(profile(world)),
+        Step::Crossing => crossing::check(crossing(world)),
         Step::Partition => partition::check(partition(world)),
         Step::Kerb => kerb::check(kerb(world), facade(world)),
-        Step::Sheet => sheet::check(sheets(world), &room(world).surface),
+        Step::Legs => legs::check(legs(world), kerb(world), facade(world)),
+        Step::Room => room::check(room(world), &kerb(world).attached, facade(world)),
+        Step::Sheet => sheet::check(sheet(world), &room(world).surface),
         Step::Arrangement => arrangement::check(arrangement(world), &world.extent),
         Step::Mesh => mesh::check(mesh(world), arrangement(world)),
+        Step::Lift => lift::check(arrangement(world), lift(world)),
         Step::Earthwork => {
             earthwork::check(terrain(world), mesh(world), arrangement(world), lift(world), earthwork(world))
         }
-        _ => Summary::new(),
+        Step::Terrain
+        | Step::Drape
+        | Step::Facade
+        | Step::Ribbon
+        | Step::Surface
+        | Step::Bench
+        | Step::Structure
+        | Step::Building => Summary::new(),
     }
 }
 
@@ -311,12 +299,11 @@ pub fn run(
     src: &mut Sources,
     report: &mut dyn FnMut(Step, &Ran),
 ) -> Result<(), String> {
-    let at = |step: Step| Step::ALL.iter().position(|&s| s == step).expect("a step of ALL");
-    if at(range.from) > at(range.until) {
+    if range.from > range.until {
         return Err(format!("--from {} comes after --until {}", range.from.name(), range.until.name()));
     }
-    for step in Step::ALL {
-        if at(step) < at(range.from) {
+    for &step in Step::ALL {
+        if step < range.from {
             let dir = range.load.ok_or("starting past the first step needs the layers before it (--load)")?;
             let line = crate::dump::load(world, step, dir)?;
             report(step, &Ran::Loaded(line));
@@ -334,31 +321,19 @@ pub fn run(
     Ok(())
 }
 
-macro_rules! layer {
-    ($name:ident, $field:ident, $ty:ty, $built_by:literal) => {
-        fn $name(world: &World) -> &$ty {
-            world.$field.as_ref().expect(concat!("the ", $built_by, " step runs first"))
-        }
+/// One accessor per step, named after its field: the layer, which a step
+/// reading it asserts has been built.
+macro_rules! accessors {
+    ($($(#[$doc:meta])* $step:ident => $field:ident: $layer:ty,)*) => {
+        $(
+            #[allow(dead_code)]
+            fn $field(world: &World) -> &$layer {
+                world.$field.as_ref().expect(concat!("the ", stringify!($field), " step runs first"))
+            }
+        )*
     };
 }
-
-layer!(terrain, terrain, crate::world::Terrain, "terrain");
-layer!(roads, roads, crate::world::Roads, "drape");
-layer!(reference, reference, crate::world::Reference, "reference");
-layer!(profiles, profile, crate::world::Profiles, "profile");
-layer!(partition, partition, crate::world::Partition, "partition");
-layer!(facade, facade, crate::world::Facade, "facade");
-layer!(ribbons, ribbons, crate::world::Ribbons, "ribbon");
-layer!(surface, surface, crate::world::Surface, "surface");
-layer!(kerb, kerb, crate::world::Kerb, "kerb");
-layer!(legs, legs, crate::world::Legs, "legs");
-layer!(room, room, crate::world::Room, "room");
-layer!(sheets, sheets, crate::world::Sheets, "sheet");
-layer!(arrangement, arrangement, crate::world::Arrangement, "arrangement");
-layer!(mesh, mesh, crate::world::Mesh, "mesh");
-layer!(lift, lift, crate::world::Lifted, "lift");
-layer!(earthwork, earthwork, crate::world::Earthwork, "earthwork");
-layer!(bench, bench, crate::world::Bench, "bench");
+crate::step::steps!(accessors);
 
 /// The network every step after the partition builds from: its cut.
 fn network(world: &World) -> &crate::world::Network {
@@ -366,9 +341,9 @@ fn network(world: &World) -> &crate::world::Network {
 }
 
 /// The profiles every step after the partition reads: the partition's, with
-/// its span table written back. They exist only where the vertical steps ran.
+/// its span table written back.
 fn solved(world: &World) -> &crate::world::Profiles {
-    partition(world).profiles.as_ref().expect("the vertical steps run before a step that reads the heights")
+    &partition(world).profiles
 }
 
 #[cfg(test)]
@@ -390,11 +365,9 @@ pub(crate) mod tests {
     /// each step reported.
     ///
     /// The steps are named rather than taken as a prefix of [`Step::ALL`]
-    /// because several specimens want one left out: a flat world has no
-    /// heights to read, and a partition with no profile cuts what the
-    /// source annotated, which is what those specimens are about. Saying so
-    /// in a list is the point — the ladders used to be written out step by
-    /// step in eight test modules and had drifted apart unremarked.
+    /// so a specimen can leave out what it has nothing for — the buildings
+    /// stand up straight after the facade, with no surface between — and
+    /// says so in one list. [`upto`] is the whole prefix.
     pub(crate) fn built(
         ground: &str,
         net: &str,
@@ -428,9 +401,8 @@ pub(crate) mod tests {
             self.0.last().expect("a step ran").1.clone()
         }
 
-        /// The lines of `steps` as one: what a specimen written against a
-        /// step that has since been split reads, the three halves of the old
-        /// bench among them ([`BENCH`]).
+        /// The lines of `steps` as one: what a specimen reads that measures
+        /// several steps together ([`STAND`]).
         pub(crate) fn merged(&self, steps: &[Step]) -> Summary {
             let mut out = Summary::new();
             for &step in steps {
@@ -451,37 +423,21 @@ pub(crate) mod tests {
         }
     }
 
-    /// The three steps that solve heights. A specimen on flat ground leaves
-    /// them out: there is nothing to solve, and a partition with no profile
-    /// cuts what the source annotated.
-    pub(crate) const VERTICAL: [Step; 3] = [Step::Reference, Step::Profile, Step::Crossing];
+    /// The three steps that stand the paved room on the ground: the lift,
+    /// the earthwork, and the faces that close them.
+    pub(crate) const STAND: [Step; 3] = [Step::Lift, Step::Earthwork, Step::Bench];
 
-    /// The three steps the bench used to be: the lift, the earthwork, and
-    /// the faces that close them.
-    pub(crate) const BENCH: [Step; 3] = [Step::Lift, Step::Earthwork, Step::Bench];
+    /// A world on `ground` with the network of `net` and the buildings of
+    /// `houses`, built through the bench on a five-metre lattice, and the
+    /// lines of the three [`STAND`] steps as one.
+    pub(crate) fn stood(ground: &str, net: &str, houses: Option<&str>) -> (World, Summary) {
+        let (w, ran) = built(ground, net, houses, 5.0, &upto(Step::Bench));
+        (w, ran.merged(&STAND))
+    }
 
     /// The steps up to and including `until`, in order.
     pub(crate) fn upto(until: Step) -> Vec<Step> {
-        let n = Step::ALL.iter().position(|&s| s == until).expect("a step of ALL") + 1;
-        Step::ALL[..n].to_vec()
-    }
-
-    /// The same, less `drop`: how a specimen says what it leaves out.
-    pub(crate) fn without(steps: Vec<Step>, drop: &[Step]) -> Vec<Step> {
-        steps.into_iter().filter(|s| !drop.contains(s)).collect()
-    }
-
-    /// The flat plan's ladder up to `until`: [`upto`] without [`VERTICAL`].
-    ///
-    /// **It stops short of [`Step::Sheet`].** From there on the steps read
-    /// the profiles — the sheet writes profile indices into every sheet, and
-    /// the bench lifts by them — so a ladder with no heights in it has
-    /// nothing for them to read. A specimen that needs to reach the sheet,
-    /// the arrangement or beyond takes [`upto`], flat ground and all: the
-    /// three vertical steps run and report zero, which is what flat ground
-    /// means.
-    pub(crate) fn plan(until: Step) -> Vec<Step> {
-        without(upto(until), &VERTICAL)
+        Step::ALL.iter().copied().filter(|&s| s <= until).collect()
     }
 
     /// The step modules, by the name each step has on the command line.
@@ -501,9 +457,8 @@ pub(crate) mod tests {
     /// **A step module imports no other step module.** What a step reads from
     /// another is a layer, and which layer goes where is this file's; what
     /// several steps share is a module of its own. A step that reached into
-    /// another's code for a constant or a helper depended on it where
-    /// nothing here could see it — twenty such reaches were found and moved
-    /// out, and this is what keeps them out.
+    /// another's code for a constant or a helper would depend on it where
+    /// nothing here could see it.
     #[test]
     fn no_step_imports_another() {
         let steps = step_modules();

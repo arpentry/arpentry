@@ -8,7 +8,7 @@
 //! and it keeps that module's three rules:
 //!
 //! - **A building stands on the highest ground along its outline and sinks
-//!   [`FOUNDATION_M`] past the lowest**, so no flank swallows a wall and no
+//!   `FOUNDATION_M` past the lowest**, so no flank swallows a wall and no
 //!   valley shows daylight under one. The buried part is under the ground,
 //!   which is opaque.
 //! - **`height` is the ground to the top of the roof.** A pitched roof fits
@@ -18,7 +18,7 @@
 //!   flat and skillion roofs are planes, and a plane triangulates any
 //!   outline, holes and all.
 //!
-//! Three things differ, each where the tiler's answer was wrong:
+//! Three things differ, each where the tiler's answer is wrong:
 //!
 //! - **The ground is read where the outline crosses the lattice**, not at
 //!   its corners only. The terrain is linear inside each of its triangles,
@@ -26,12 +26,13 @@
 //!   outline, and a forty-metre facade on a flank has corners that say
 //!   nothing about its middle.
 //! - **The walls rise to the roof, not to the eave.** Every wall's top edge
-//!   is the roof's own rim, so a building is closed. The tiler walled a
-//!   skillion to its low eave and left three sides open above it.
+//!   is the roof's own rim, so a building is closed. The tiler walls a
+//!   skillion to its low eave and leaves three sides open above it.
 //! - **The short side is measured across the longest edge**, not across the
-//!   axes: the tiler's bounding box gave a house turned 45° a steeper roof
+//!   axes: the tiler's bounding box gives a house turned 45° a steeper roof
 //!   than the same house square to north.
 
+use crate::line;
 use crate::lattice::drape;
 use crate::triangulate;
 use crate::poly::{self, Pt, Ring, Shape, Shapes};
@@ -40,14 +41,14 @@ use crate::world::{Buildings, Facade, RoofShape, Terrain, Tri};
 
 /// How far below the lowest ground along its outline a wall's foot stands,
 /// in metres: past the ground's rounding and the DEM's jitter.
-pub const FOUNDATION_M: f64 = 2.0;
+const FOUNDATION_M: f64 = 2.0;
 
 /// A pitched roof's rise where the source gives none: this fraction of the
 /// footprint's short side, held between the two bounds. Overture rarely
 /// carries `roof_height`, so this is most pitched roofs.
 const RISE_FRACTION: f64 = 0.5;
-pub const MIN_RISE_M: f64 = 1.0;
-pub const MAX_RISE_M: f64 = 6.0;
+const MIN_RISE_M: f64 = 1.0;
+const MAX_RISE_M: f64 = 6.0;
 
 /// What the step built, and what it had to refuse.
 #[derive(Debug, Default)]
@@ -180,7 +181,7 @@ fn short_side(ring: &Ring) -> f64 {
     let Some((a, b)) = (0..ring.len()).map(edge).max_by(|x, y| len(*x).total_cmp(&len(*y))) else {
         return 0.0;
     };
-    let u = poly::unit([b[0] - a[0], b[1] - a[1]]);
+    let u = line::unit([b[0] - a[0], b[1] - a[1]]);
     let extent = |d: Pt| {
         let s = ring.iter().map(|p| p[0] * d[0] + p[1] * d[1]);
         s.clone().fold(f64::NEG_INFINITY, f64::max) - s.fold(f64::INFINITY, f64::min)
@@ -262,7 +263,7 @@ fn plan_area(tri: &Tri, from: usize) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::pipeline::tests::{built, plan};
+    use crate::pipeline::tests::{built, upto};
     use crate::step::Step;
     use crate::lattice::height_at;
     use crate::terrain::{self, tests::{dem, extent}};
@@ -274,14 +275,14 @@ mod tests {
 
     /// A straight road on `ground` with the houses of `house`, stood up.
     fn stood(ground: &str, house: &str) -> (World, Summary) {
-        let mut steps = plan(Step::Facade);
+        let mut steps = upto(Step::Facade);
         steps.push(Step::Building);
         let (w, ran) = built(ground, "net:straight?len=200", Some(house), 10.0, &steps);
         (w, ran.last())
     }
 
     fn buildings(w: &World) -> &Buildings {
-        w.buildings.as_ref().expect("the building step ran")
+        w.building.as_ref().expect("the building step ran")
     }
 
     fn zs(t: &Tri) -> (f64, f64) {
@@ -406,9 +407,9 @@ mod tests {
         let (w, _) = stood("flat", "house:beside?d=20");
         let g = ground_at(&w, [0.0, 25.0]);
         assert_eq!(zs(&buildings(&w).roofs).1, g + DEFAULT_HEIGHT_M);
-        let (_, ran) = built("flat", "net:straight?len=200", Some("house:row?d=20"), 10.0, &plan(Step::Facade));
+        let (_, ran) = built("flat", "net:straight?len=200", Some("house:row?d=20"), 10.0, &upto(Step::Facade));
         assert_eq!(ran.last().num("guessed"), 2.0);
-        let (_, ran) = built("flat", "net:straight?len=200", Some("house:row?d=20&h=9"), 10.0, &plan(Step::Facade));
+        let (_, ran) = built("flat", "net:straight?len=200", Some("house:row?d=20&h=9"), 10.0, &upto(Step::Facade));
         assert_eq!(ran.last().num("guessed"), 0.0);
         assert_eq!(mapped_height(None, Some(4.0)), Some(12.0));
         assert_eq!(mapped_height(Some(0.0), None), None);

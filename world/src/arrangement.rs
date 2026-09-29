@@ -1,23 +1,15 @@
 //! The arrangement: the rect as one planar subdivision, every face tagged.
 //!
-//! Step 1 of `data/plans/one-ground-2026-09-16.md`. Until now the paved
-//! surface and the hole under it were two regions built by two expressions:
-//! `mesh::by_sheet` meshes each sheet on its own, while the ground is cut from
-//! `union_all(sheets.shapes()) − spanned`. A union dissolves the edge where
-//! two pieces touch and puts vertices where they crossed; the separately
-//! meshed pieces keep that edge and have no such vertices. The two boundaries
-//! are then *different*, and a vertex of one has no counterpart in the other
-//! — which is what `bench`'s `seam` and `unmet` count, and what the cross-mesh
-//! lookup's eight-cell search was added to paper over.
-//!
-//! **It was never a rounding problem.** The plan and CLAUDE.md both say the
-//! cause is that "a point that has been through one more boolean than its
-//! neighbour lands up to half a grid away". It cannot be: [`crate::poly`]
-//! pins its adapter, so every output point is an exact multiple of
-//! [`poly::GRID_M`] and feeding one back in is the identity
-//! (`poly::tests::a_boolean_over_a_snapped_operand_is_idempotent`). Two
-//! different regions is the whole of it, and no care with the lattice
-//! reconciles two different regions.
+//! The paved surface and the hole it cuts in the ground must have **one**
+//! boundary. Built by two expressions — the paving piece by piece, the hole
+//! as a union of the pieces — they have two: a union dissolves the edge where
+//! two pieces touch and puts vertices where they cross, while the pieces keep
+//! that edge and have no such vertices, so a vertex of one boundary has no
+//! counterpart in the other. The polygon kernel pins its adapter, so every
+//! output point is an exact multiple of [`poly::GRID_M`] and feeding one back
+//! in is the identity (`poly::tests::a_boolean_over_a_snapped_operand_is_idempotent`);
+//! the disagreement is between two different regions, not a rounding, and no
+//! care with the lattice reconciles two different regions.
 //!
 //! So the rect is cut **once**, by every material boundary at once
 //! ([`poly::slice`]), and what comes back is a set of faces that partition it
@@ -26,17 +18,14 @@
 //! is by a single interior point ([`poly::inside`]) — a tag, not another
 //! boolean.
 //!
-//! **The walls are not cuts, and that was measured.** The asphalt stops at
-//! the *closed* facade (`facade.built`) and the pavement at the open one
-//! (`facade.solid`), so adding both as cuts looks obviously right. On the
-//! junction-with-houses specimen it takes `seam` 25 → 20 and `unmet` **4 →
-//! 8**: it moves one number the right way and the other the wrong way, which
-//! is not a fix. Whatever the residual there is, it is not a wall the faces
-//! have not been told about.
+//! **The walls are not cuts.** The asphalt stops at the *closed* facade
+//! (`facade.built`) and the pavement at the open one (`facade.solid`), and
+//! both are already in the paving's own outline; cutting by the facades as
+//! well adds boundaries across which no material changes.
 //!
-//! **The mesher and the bench read it**: the mesh triangulates the faces of
-//! each material, and the bench takes the hole, the span mask and the edges
-//! from here rather than building its own.
+//! **The mesh, the lift, the earthwork and the bench read it**: the mesh
+//! triangulates its faces, and the others take the hole, the span mask, the
+//! portals and the edges from here rather than building their own.
 
 use crate::portal::Portals;
 use crate::standard::{OVER_RIM_M, ROOM_REACH_M};
@@ -50,15 +39,16 @@ use crate::world::{Arrangement, Face, FaceEdge, Material, Polyline2, Profiles, S
 /// near-coincidence of two cut lines puts between them.
 const TWIN_M: f64 = 3.0 * poly::GRID_M;
 
-/// The paving that is **over a span**, as `bench` has always drawn it: the
-/// sheets' own span regions, the walk a deck carries, and a centimetre of
-/// rim so that a vertex *on* a span's edge reads as over it.
+/// The paving that is **over a span**: the sheets' own span regions, the walk
+/// a deck carries, and a centimetre of rim so that a vertex *on* a span's
+/// edge reads as over it.
 ///
-/// A deck's free edge is the highest thing on it, and left out of the mask it
-/// put the whole standoff back into `fill`. The carried walk is here for the
-/// reason `structure::carried` cannot reach: a sidewalk running along a
-/// bridge the mapper never tagged is over a span with no span of its own to
-/// ask about, and it opened a hole in the ground eight metres beneath itself.
+/// A deck's free edge is the highest thing on it; left out of the mask, the
+/// whole standoff would be read as `fill`. The carried walk is here for the
+/// case `structure::carried` cannot reach: a sidewalk running along a bridge
+/// the mapper never tagged is over a span with no span of its own to ask
+/// about, and without it the sidewalk would open a hole in the ground under
+/// itself.
 ///
 /// Returns the mask and the carried walk's area.
 pub fn over_spans(surface: &Surface, sheets: &Sheets) -> (Shapes, f64) {
@@ -124,11 +114,9 @@ pub fn run(
     // **Clipped to the walk.** The reach means one thing only — which side
     // of it a *pavement* face is on — and the ring itself runs on through
     // open ground where the walk is narrower than it. Cut over the whole
-    // rect it splits the ground there too, which is not wrong but is a
-    // boundary that says nothing: it put extra vertices in the ground mesh,
-    // and on a 50 % ramp one of them found a deeper place than any vertex
-    // before it and took `cut` from 4.255 m to 4.755. A cut is for a
-    // boundary something differs across.
+    // rect it would split the ground there too, a boundary that says nothing
+    // and puts vertices in the ground mesh that can reach deeper than the
+    // earthwork should. A cut is for a boundary something differs across.
     let reach = poly::intersect(&poly::dilate(&surface.carriageway, crate::standard::WALL_REACH_M), &surface.walk);
 
     // **The asphalt is cut by the sheets, not by `surface.carriageway`.** A
@@ -136,13 +124,7 @@ pub fn run(
     // its group, and a deck junction's returns, which `legs` paves off the
     // deck — and the sheets are what `mesh` triangulates. Cut
     // by the surface instead, a face would end where no mesh does.
-    let (mut paved, mut paved_family): (Shapes, Vec<crate::width::Family>) = (Vec::new(), Vec::new());
-    for s in &sheets.sheets {
-        for shape in &s.shapes {
-            paved.push(shape.clone());
-            paved_family.push(s.family);
-        }
-    }
+    let paved: Shapes = sheets.sheets.iter().flat_map(|s| s.shapes.iter().cloned()).collect();
 
     // Every boundary that matters, as cut lines. The span mask and the
     // galleries are among them: each says the ground does something different
@@ -156,10 +138,7 @@ pub fn run(
     // **Sliced, then conformed.** The slice gives faces that share their
     // split points, which is what a mesh needs to weld; [`poly::conform`]
     // makes them agree *segment for segment*, which is what an edge rule
-    // needs (§3.3) and what `dangling` measures. It costs `bench seam` — 20 →
-    // 45 on `house:across` — and is landed anyway: an edge rule that cannot
-    // be written is worth more than a diagnostic of the two-mesh world it
-    // replaces.
+    // needs and what `dangling` measures.
     let faces = poly::conform(&poly::snap_twins(&poly::slice(&outer, &cuts), TWIN_M));
 
     // The tags, by one interior point per face. Indexed because there are as
@@ -188,11 +167,7 @@ pub fn run(
         .flat_map(|(i, s)| std::iter::repeat_n(i, s.spans.len()))
         .collect();
     let span_index = Indexed::new(&span_paving);
-    let family_of = |i: usize| match sheets.sheets[i].family {
-        crate::width::Family::Rail => Material::Ballast,
-        crate::width::Family::Walk => Material::Pavement,
-        crate::width::Family::Carriageway => Material::Carriageway,
-    };
+    let family_of = |i: usize| Material::of(sheets.sheets[i].family);
 
     let mut out = Vec::with_capacity(faces.len());
     let mut decks: Vec<Face> = Vec::new();
@@ -200,14 +175,10 @@ pub fn run(
     let mut unprobed_m2 = 0.0f64;
     for shape in faces {
         // A face too thin to name a point inside takes its neighbour's
-        // material below. Calling it ground instead is what a first cut did,
-        // and on `house:across` it cost 40 of the corpus's 40 remaining
-        // `seam` misses: four sub-millimetre slivers — the hairline the
-        // facade's own docs warn of, where a passage corridor's edge crosses
-        // a wall a lattice step off it — sat *inside* the asphalt, and a
-        // ground face inside the paving punches a ring into the hole's
-        // outline that no paved mesh has a vertex for. `dense` then
-        // subdivides that ring at every lattice crossing.
+        // material below ([`adopt`]). Called ground, a sub-millimetre sliver
+        // inside the asphalt — where a passage corridor's edge crosses a wall
+        // a lattice step off it — would punch a ring into the hole's outline
+        // that no paved face has a vertex for.
         let Some(p) = poly::inside(&shape) else {
             unprobed.push(out.len());
             unprobed_m2 += poly::area(std::slice::from_ref(&shape));
@@ -227,8 +198,8 @@ pub fn run(
         // is over it, and a sheet whose ground paving does is under it. The
         // one under keeps the face — it is on the ground, cuts the terrain
         // and meets its own kerbs — and every one over it gets a deck face
-        // of the same shape. With one sheet, or none on the ground, nothing
-        // changes: the partition's face is the first sheet's, as it was.
+        // of the same shape. With one sheet, or none on the ground, the
+        // partition's face is the first sheet's.
         let mut holders: Vec<usize> = Vec::new();
         for r in sheet_paving.all(p) {
             if !holders.iter().any(|&h| sheet_of[h] == sheet_of[r]) {
@@ -265,10 +236,8 @@ pub fn run(
         // what is paved and in no sheet, because the pavement is not
         // partitioned.
         let region = sheet_paving.which(p);
-        let material = match region.map(|i| paved_family[i]) {
-            Some(crate::width::Family::Carriageway) => Material::Carriageway,
-            Some(crate::width::Family::Rail) => Material::Ballast,
-            Some(crate::width::Family::Walk) => Material::Pavement,
+        let material = match region {
+            Some(i) => family_of(sheet_of[i]),
             None if walk.contains(p) => Material::Pavement,
             None => Material::Ground,
         };
@@ -296,11 +265,9 @@ pub fn run(
 ///
 /// A face too thin to hold a probe is too thin to be anything of its own: it
 /// is a lattice artefact of two cut lines running a hair apart, and the
-/// honest answer is that it belongs to whatever is around it. Doing this
-/// rather than calling them ground is what lets `outline`'s union absorb
-/// them — a sliver that is asphalt like the face beside it has no boundary
-/// of its own left — and on `house:across` it is 40 of the corpus's 40
-/// remaining `seam` misses.
+/// honest answer is that it belongs to whatever is around it. A sliver that
+/// is asphalt like the face beside it has no boundary of its own left, so the
+/// earthwork's outline absorbs it.
 fn adopt(faces: &mut [Face], orphans: &[usize]) {
     if orphans.is_empty() {
         return;
@@ -310,8 +277,7 @@ fn adopt(faces: &mut [Face], orphans: &[usize]) {
     // Keyed on **vertices**, not on edges. A sliver's neighbour may have
     // subdivided the edge they share — the whole reason the sliver exists is
     // that two cut lines ran a hair apart — so an edge-for-edge match finds
-    // the wrong neighbours, or none. Measured on the corpus: shared vertices
-    // 20 misses, shared edges 25 either as a count or weighted by length.
+    // the wrong neighbours, or none.
     let mut at: std::collections::HashMap<Key, Vec<usize>> = Default::default();
     for (i, f) in faces.iter().enumerate() {
         for p in f.shape.iter().flatten() {
@@ -329,13 +295,6 @@ fn adopt(faces: &mut [Face], orphans: &[usize]) {
         }
         // Most shared vertices wins, ties to the lowest index so the answer
         // is a function of the faces and not of a hash order.
-        //
-        // **Preferring a neighbour that *cuts* was tried and is worse**, at
-        // 25 misses against 20 — which is worth recording, because it is the
-        // rule the failure mode argues for: a non-cutting face inside paving
-        // that cuts is exactly what punches a spurious ring into the hole, so
-        // sending every sliver into the hole ought to help. It does not, and
-        // that says the remaining misses are not this.
         let Some((&j, _)) = shared.iter().max_by_key(|(j, n)| (**n, std::cmp::Reverse(**j))) else {
             continue;
         };
@@ -364,11 +323,10 @@ pub fn check(a: &Arrangement, extent: &Extent) -> Summary {
     //
     // Reported **against the lattice**, not in bare square metres. The rect's
     // own corners are snapped to [`poly::GRID_M`] on the way in, which moves
-    // its area by up to half a grid step along each side of its perimeter —
-    // 0.033 m² on the loop box's 1.5 km × 1.1 km, which is 2e-8 of it and not
-    // a face going missing. `closure` is the drift as a multiple of that
-    // bound, so 1.0 is the most the snapping can explain and anything above
-    // it is the kernel.
+    // its area by up to half a grid step along each side of its perimeter,
+    // which is not a face going missing. `closure` is the drift as a multiple
+    // of that bound, so 1.0 is the most the snapping can explain and anything
+    // above it is the kernel.
     let perimeter = 2.0 * (r.width() + r.height());
     let closure = (total - r.width() * r.height()).abs() / (perimeter * poly::GRID_M);
 
@@ -377,9 +335,8 @@ pub fn check(a: &Arrangement, extent: &Extent) -> Summary {
     // vertex belonging to one face alone is a boundary that was built twice,
     // which is the defect this step exists to remove, and it must read 0.
     // To the kernel's grid: the rect's own corners are snapped to it on the
-    // way in, so its edge stands up to a grid step off `extent.rect`. At
-    // 1e-9 the rect's own border read as 100 dangling segments on the loop
-    // box, which is to say `dangling` counted the rect.
+    // way in, so its edge stands up to a grid step off `extent.rect`, and a
+    // tighter tolerance would count the rect's own border as dangling.
     let on_border = |p: &Pt| {
         (p[0] - r.x0).abs() <= poly::GRID_M
             || (p[0] - r.x1).abs() <= poly::GRID_M
@@ -398,7 +355,7 @@ pub fn check(a: &Arrangement, extent: &Extent) -> Summary {
         .filter(|p| seen[&(p[0].to_bits(), p[1].to_bits())] == 1)
         .count();
 
-    // The adjacency step 2's edge rule needs, and the check that it exists:
+    // The adjacency the bench's edge rule needs, and the check that it exists:
     // every segment away from the rect's own border must be carried by
     // exactly two faces.
     let edges = &a.edges;
@@ -406,19 +363,17 @@ pub fn check(a: &Arrangement, extent: &Extent) -> Summary {
         .iter()
         .filter(|e| e.right.is_none() && !(on_border(&e.a) && on_border(&e.b)))
         .count();
-    // **How many vertices carry more than one answer.** §3.2 wants one height
-    // per vertex and §3.3 wants a kerb edge *split* — and a kerb vertex has
-    // two heights, a kerb's rise apart. So a single mesh over the whole rect
+    // **How many vertices carry more than one answer.** A kerb vertex has
+    // two heights, a kerb's rise apart, so a single mesh over the whole rect
     // cannot be one vertex per position: it has to duplicate wherever the
     // faces meeting at a vertex do not all agree.
     //
     // **Read it against the mesh, not against this step.** Nearly every
     // vertex *here* is on a boundary — the arrangement's vertices are the
-    // cut points, so 96 % of them meeting two materials is close to a
+    // cut points, so most of them meeting two materials is close to a
     // tautology. The mesh adds a vertex at every lattice crossing inside a
-    // face, tens of thousands of them, and the count below is the numerator
-    // over that: on the junction with houses, 331 against the ground mesh's
-    // ~85 000. Duplicating them is cheap, and the single mesh is practical.
+    // face, and against that count the split vertices are a small fraction,
+    // which is what makes duplicating them cheap.
     let mut mats: std::collections::HashMap<(u64, u64), std::collections::BTreeSet<u8>> =
         Default::default();
     for f in &a.faces {
@@ -448,9 +403,8 @@ pub fn check(a: &Arrangement, extent: &Extent) -> Summary {
         // it. Must read 0.
         .with("dangling", dangling)
         // Vertices where two materials meet, which a single mesh must carry
-        // twice: the numerator of the one-height-per-vertex problem (§3.2
-        // against §3.3). The denominator is the *mesh's* vertex count, which
-        // this step does not have — see the note above.
+        // twice. The denominator that makes it meaningful is the *mesh's*
+        // vertex count, which this step does not have — see the note above.
         .with("split_vertices", split_vertices)
         .with_m2("ground_m2", m2(Material::Ground))
         .with_m2("carriageway_m2", m2(Material::Carriageway))
@@ -462,10 +416,9 @@ pub fn check(a: &Arrangement, extent: &Extent) -> Summary {
         .with("decks", a.decks.len())
         .with_m2("deck_m2", a.decks.iter().map(|f| poly::area(std::slice::from_ref(&f.shape))).sum::<f64>() + 0.0)
         .with("gallery", gallery)
-        // How the walk divided at the room's reach — the near band the bench
-        // lifts against the far part it drapes. `mesh::walk_split` is the
-        // same fact in vertices; this is it in area, and a run where either
-        // is zero is a run where the cut found nothing.
+        // How the walk divided at the room's reach — the near band the lift
+        // stands on its face against the far part it drapes. A run where
+        // either is zero is a run where the cut found nothing.
         .with_m2("walk_near_m2", near)
         .with_m2("walk_far_m2", far)
         .with("closure", format!("{closure:.3}"))
@@ -535,13 +488,11 @@ mod tests {
     /// **A deck over another road does not take that road's ground.**
     ///
     /// The partition has one face per point, and where an overpass's deck
-    /// lies over the street beneath it in plan that face used to go to
-    /// whichever sheet the index named first: the street lost its paving
-    /// under the deck — 30 m² of the specimen's 2 200 — and at the Viaduc de
-    /// Chillon the roads below showed bare terrain for the width of the
-    /// viaduct. The street keeps its face; the deck's paving is a second
-    /// layer. So every sheet's paving is in the arrangement area for area,
-    /// and the street's is in the *partition*, where it cuts the ground.
+    /// lies over the street beneath it in plan, giving that face to the deck
+    /// would leave the street with bare terrain under the viaduct. The street
+    /// keeps its face; the deck's paving is a second layer. So every sheet's
+    /// paving is in the arrangement area for area, and the street's is in the
+    /// *partition*, where it cuts the ground.
     #[test]
     fn a_deck_over_a_road_leaves_the_road_its_ground() {
         // `len=201`: at 200 m both ways have a station at the crossing
@@ -550,7 +501,7 @@ mod tests {
         let (w, all) = built("flat?h=400", "net:overpass?len=201", None, 10.0, &upto(Step::Arrangement));
         let s = all.last();
         let a = w.arrangement.as_ref().expect("built");
-        let sheets = w.sheets.as_ref().expect("built");
+        let sheets = w.sheet.as_ref().expect("built");
         let rect = &w.extent.rect;
         let outer = vec![poly::rect(rect.x0, rect.y0, rect.x1, rect.y1)];
         let area = |f: &Face| poly::area(std::slice::from_ref(&f.shape));
@@ -582,7 +533,7 @@ mod tests {
             &net.spans,
             w.solved().expect("built"),
             &w.room.as_ref().expect("built").surface,
-            w.sheets.as_ref().expect("built"),
+            w.sheet.as_ref().expect("built"),
         );
         assert_eq!(a.faces.len(), again.faces.len());
         for (x, y) in a.faces.iter().zip(&again.faces) {

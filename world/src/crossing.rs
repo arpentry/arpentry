@@ -1,13 +1,12 @@
 //! The crossings: the one thing that couples the height of two ways.
 //!
-//! Every height so far has been solved along one axis alone. The profile
-//! reads the ground under a piece and the anchors at its ends, the bench
-//! reads the profile, the structure reads the bench: nothing anywhere has
-//! asked what another way is doing. A grade separation is the one place
-//! where it must. Two carriageway axes whose *interiors* cross in plan
-//! with no connector between them are not a junction — Overture cuts a way
-//! at every connector, so a junction is always a meeting of way ends — and
-//! the upper of the two has to clear the lower.
+//! Every other height is solved along one axis alone: the profile reads the
+//! reference under a way and the anchors at its ends, and nothing in it asks
+//! what another way is doing. A grade separation is the one place where it
+//! must. Two solving axes that cross in plan with no vertex between them are
+//! not a junction — a junction is a connector the two ways share, at their
+//! ends or in their interiors — and the upper of the two has to clear the
+//! lower.
 //!
 //! The demand is derived, never stored (docs/GENERATION.md §4.5): the
 //! crossings are re-found from the axes on every run, so there is no such
@@ -15,14 +14,14 @@
 //! to exist. `orphan` measures that the derivation is total.
 //!
 //! **What moves is the one further from the ground.** A level ordinal is
-//! an ordering, not a height, and the piece the source annotated is the
-//! piece that is meant to leave the ground: at a road over a road the
-//! bridge lifts, at a road over a tunnel the bore dips (S4 and S6, the
-//! same rule read twice). Where the two ordinals are the same magnitude
-//! and opposite in sign the deficit is split between them. Two axes at the
-//! *same* level with no connector between them is a data error, counted in
-//! `same` and not solved — the level crossing §4.5 names, an equality
-//! rather than an inequality, belongs to rail and waits for it.
+//! an ordering, not a height, and the way the source annotated is the one
+//! that is meant to leave the ground: at a road over a road the bridge
+//! lifts, at a road over a tunnel the bore dips — the same rule read twice.
+//! Where the two ordinals are the same magnitude and opposite in sign the
+//! deficit is split between them. Two axes at the *same* level with no
+//! connector between them is a data error, counted in `same` and not
+//! solved; a level crossing, which is an equality rather than an
+//! inequality, is a shared connector and the profile's (below).
 //!
 //! **The lift is a floor, not a tent.** A clearance charged at one node and
 //! nowhere else would draw a spike in the roadway. The deficit is spread
@@ -30,24 +29,24 @@
 //! ramp grade ([`crate::grade`]) — 15 % on a street, 6 % on a motorway — so
 //! 6.5 m of clearance buys 43 m of approach each side and the ramp is the
 //! *result* rather than a construction of its own. The floor is then a
-//! displacement added to the ground the profile solves against
+//! displacement added to the reference the profile solves against
 //! ([`crate::solve::solve_on`]), and everything after it follows with no
-//! rule of its own: an approach that ends up [`crate::grade::STRUCTURE_MIN_M`]
+//! rule of its own: an approach that ends up [`crate::standard::STRUCTURE_MIN_M`]
 //! off the ground reads as a deck by the profile's consequence rule, the
 //! bench builds the embankment under the rest of it, and the structure step
 //! lays the slab.
 //!
-//! **A chord is charged whole.** The piece that lifts is always a mapped
-//! span (a level ordinal is what makes it the mover), and the profile solves a
-//! span as a straight chord between the anchors at its ends — a chain of
-//! them as *one* chord. A chord cannot be bent up over the road it crosses,
+//! **A chord is charged whole.** The run that lifts is usually a mapped
+//! span (a level ordinal is what makes it the mover), and the profile solves
+//! a span as a straight chord between its abutments — a chain of them as
+//! *one* chord. A chord cannot be bent up over the road it crosses,
 //! so the demand is charged to every station of the chain: the deck rises
 //! level and the approaches carry the ramp. Charging the crossing station
 //! alone would lift the abutments by a fraction of what the middle needed
 //! and leave the roadway underneath.
 //!
 //! **Levels solve in order.** The floors are spread one ordinal magnitude
-//! at a time, ascending, and the profile re-solves after each: when a piece
+//! at a time, ascending, and the profile re-solves after each: when a way
 //! at level ±2 asks for its clearance everything at ±1 is already final,
 //! which is what makes the lower side of a demand a constant rather than
 //! another unknown.
@@ -56,39 +55,28 @@
 //! railway and a road cross, the road moves whatever the ordinals say: it
 //! lifts over the rails by [`RAIL_CLEARANCE_M`] and the slab, or dips under
 //! a rail deck by a road's headroom. A bore that belongs to a railway may
-//! not yield at all, and a road over one is not asked to clear it — §4.5
-//! drops the demand rather than lifting a road over a railway that is
-//! underground (`senior`; the server's `in_immovable_bore`, which it added
-//! after "a tertiary street ramped out of its own portal … on a 9 m
-//! embankment nobody built"). Nor does a road's floor travel into a railway
-//! through a connector they share: the network the floor spreads on joins a
-//! connector's stations only within one of the two, so a lift ramping
-//! along a street stops at the level crossing rather than humping the
-//! track — the server's "128 % hump in a cable railway" is what a junior
-//! charging a senior looks like. Two railways crossing are two peers, and
-//! the ordinals decide between them as between two roads.
+//! not yield at all, and a road over one is not asked to clear it: the
+//! demand is dropped (`senior`) rather than lifting a road onto an
+//! embankment over a railway that is underground. Nor does a road's floor
+//! travel into a railway through a connector they share: the network the
+//! floor spreads on joins a connector's stations only within one of the
+//! two, so a lift ramping along a street stops at the level crossing rather
+//! than humping the track. Two railways crossing are two peers, and the
+//! ordinals decide between them as between two roads.
 //!
 //! The level crossing is not here: it is a connector the two ways share,
 //! and the profile pins both to the railway's height there.
 
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
+use crate::line;
 use crate::grade;
-use crate::poly::{self, Pt};
+use crate::poly::Pt;
 use crate::solve;
 use crate::step::Summary;
-use crate::standard::{DECK_THICKNESS_M, WALK_DECK_M};
+use crate::standard::{DECK_THICKNESS_M, RAIL_CLEARANCE_M, ROAD_CLEARANCE_M};
 use crate::width::{self, Family};
 use crate::world::{connector, Crossing, Crossings, Kind, Profile, Profiles, Reference, Way};
-
-/// The headroom a roadway needs over the roadway beneath it, in metres:
-/// the Swiss norm's 4.5 m plus a construction margin, and the server's
-/// number (`data/plans/surface-leaves-the-plane-2026-09-08.md` §5).
-pub const ROAD_CLEARANCE_M: f64 = 5.0;
-
-/// The headroom anything needs over a railway, in metres: more than a
-/// road's, for the catenary. The server's `priors::RAIL_CLEARANCE_M`.
-pub const RAIL_CLEARANCE_M: f64 = 7.0;
 
 /// Slack, in metres, before a clearance counts as short: the solve's own
 /// rounding along a chord and a ramp, not a budget.
@@ -100,49 +88,37 @@ const CLEARANCE_EPS: f64 = 1e-6;
 /// (docs/GENERATION.md §4.5). A real overpass clears the road beneath it by
 /// 6.5–10 m, and ~13 m where it stacks over a deck that is itself lifted. A
 /// demand far past that is not a crossing the model got wrong by a little; it
-/// is a level ordinal that does not describe this pair at all — a service
-/// road tagged `is_tunnel` end to end whose plan line happens to cross a
-/// motorway viaduct sixty metres below it on the flank. Honouring one such
-/// demand moves a kilometre of road to satisfy a tag about something else.
+/// is a level ordinal that does not describe this pair at all — a way
+/// tagged `is_tunnel` end to end whose plan line happens to cross a viaduct
+/// tens of metres below it on a flank. Honouring one such demand moves a
+/// kilometre of road to satisfy a tag about something else.
 ///
-/// So a demand past this is **dropped, not capped**: spending fifteen of the
-/// sixty-eight metres would leave the geometry wrong *and* distorted, where
-/// spending none leaves it merely as the profile solved it. The drop is
+/// So a demand past this is **dropped, not capped**: spending fifteen metres
+/// of it would leave the geometry wrong *and* distorted, where spending none
+/// leaves it merely as the profile solved it. The drop is
 /// counted (`unstacked`), never silent.
 ///
 /// The number is the server's, with the same reasoning behind it
 /// (`priors::MAX_CLEARANCE_LIFT_M`).
-pub const MAX_CLEARANCE_LIFT_M: f64 = 15.0;
+const MAX_CLEARANCE_LIFT_M: f64 = 15.0;
 
 /// Builds the floor every crossing demands and re-solves the profile on it.
 pub fn run(reference: &Reference, solved: &Profiles) -> (Crossings, Summary) {
-    // **Crossings are found on the whole ways, not on the pieces.** This step
-    // runs before the partition, so there are no pieces yet — and it wants
-    // none: a way is one object with one profile, and a crossing is a place
-    // in its interior. The level ordinal there is the way's own
+    // **Crossings are found on the whole ways.** This step runs before the
+    // partition, and needs no pieces: a way is one object with one profile,
+    // and a crossing is a place in its interior. The level ordinal there is the way's own
     // ([`Way::level_at_arc`]), which reads the source's structure spans and
     // its bare layers alike.
     //
-    // Not every way solves a profile ([`Profile::way`] says which did), so an
-    // axis carries `profile: Option<usize>` and one that has none is an
-    // orphan rather than a demand.
-    let of_way: HashMap<usize, usize> =
-        solved.profiles.iter().enumerate().map(|(i, p)| (p.way, i)).collect();
+    // The solving ways are the reference's axes, and the profiles are solved
+    // along them in their order: axis `i` is profile `i`.
     let axes: Vec<Axis> = reference
-        .ways
+        .axes
         .iter()
         .enumerate()
-        .filter(|(_, w)| width::family(&w.class).solves())
-        .map(|(i, w)| {
-            let mut arc = Vec::with_capacity(w.pts.len());
-            let mut at = 0.0;
-            for (k, p) in w.pts.iter().enumerate() {
-                if k > 0 {
-                    at += (p[0] - w.pts[k - 1][0]).hypot(p[1] - w.pts[k - 1][1]);
-                }
-                arc.push(at);
-            }
-            Axis { way: w, arc, profile: of_way.get(&i).copied() }
+        .map(|(i, a)| {
+            let way = &reference.ways[a.way];
+            Axis { way, arc: line::arcs(&way.pts), profile: i }
         })
         .collect();
 
@@ -170,7 +146,7 @@ pub fn run(reference: &Reference, solved: &Profiles) -> (Crossings, Summary) {
         // read zero, and it is asked before the level, so an indoor way —
         // which is not stacked against the ground and reads level 0 — is
         // not filed as a data error in the road network.
-        if a.profile.is_none() || b.profile.is_none() || indoor {
+        if indoor {
             orphan += 1;
         } else if a_level == b_level {
             same.push(at);
@@ -182,11 +158,11 @@ pub fn run(reference: &Reference, solved: &Profiles) -> (Crossings, Summary) {
             let low_kind = if up_is_a { b_kind } else { a_kind };
             let (up_rail, low_rail) = (is_rail(&up.way.class), is_rail(&low.way.class));
             pairs.push(Pair {
-                upper: (up.profile.expect("solved"), up_level),
-                lower: (low.profile.expect("solved"), low_level),
+                upper: (up.profile, up_level),
+                lower: (low.profile, low_level),
                 up_at: up.way.span_at_arc(up_arc),
                 low_at: low.way.span_at_arc(low_arc),
-                need: need(&up.way.class, &low.way.class, low_kind),
+                need: need(&low.way.class, low_kind),
                 at,
                 had: 0.0,
                 demanded: false,
@@ -206,7 +182,7 @@ pub fn run(reference: &Reference, solved: &Profiles) -> (Crossings, Summary) {
     // The anchored connectors and the structure runs at each free one: what
     // a chord runs between, and what it runs across. A *way end* is anchored
     // where the way is on the ground there — the same test the profile step
-    // anchors on, and no longer every annotation edge.
+    // anchors on.
     let anchored: HashSet<(i64, i64)> = anchor_connectors(&profiles).collect();
     let mut joins: HashMap<(i64, i64), Vec<Node>> = HashMap::new();
     for (i, p) in profiles.iter().enumerate() {
@@ -275,7 +251,7 @@ pub fn run(reference: &Reference, solved: &Profiles) -> (Crossings, Summary) {
                 *v += up[n].min(needs(up_h[n], r)) - down[n].min(needs(r, -down_h[n]));
             }
         }
-        let (re, _) = solve::solve_on(reference, &reference.ways, &floor);
+        let (re, _) = solve::solve_on(reference, &floor);
         profiles = re;
     }
     for f in &floor {
@@ -325,24 +301,19 @@ pub fn run(reference: &Reference, solved: &Profiles) -> (Crossings, Summary) {
 
 /// How far the re-solved profiles stand off the raw DEM, at grade.
 pub fn check(crossings: &Crossings) -> Summary {
-    Summary::new().with_residual(crate::step::residual_of(&crossings.profiles.profiles))
+    Summary::new().with_residual(crossings.profiles.residual())
 }
 
-/// One axis in the crossing search: a carriageway piece, whatever its
-/// class, with the level the source mapped it at and the profile that
-/// solved it — `None` for a piece no profile covers, which is an indoor
-/// way and, later, whatever else stops solving. A crossing on one of those
-/// is an `orphan`: a demand with no solved feature on both sides, which
-/// §4.5 requires to read zero.
-/// One way, with the arc of each of its vertices and the profile it was
-/// solved into. The crossings are found on the **ways** now, not on pieces:
-/// the partition runs *after* this step, so there are no pieces yet, and the
-/// span table carries the level ordinals just as well.
+/// One solving way in the crossing search, with the arc of each of its
+/// vertices and the profile it was solved into — `None` for a way no
+/// profile covers. A crossing on one of those is an `orphan`: a demand with
+/// no solved feature on both sides, which §4.5 requires to read zero.
 struct Axis<'a> {
     way: &'a Way,
     /// Arc at each vertex of `way.pts`.
     arc: Vec<f64>,
-    profile: Option<usize>,
+    /// The profile solved along this way.
+    profile: usize,
 }
 
 impl Axis<'_> {
@@ -353,27 +324,18 @@ impl Axis<'_> {
     }
 }
 
-/// One plan crossing: two ways, the segment of each it falls on, and where.
-struct Hit {
-    a: usize,
-    a_seg: usize,
-    b: usize,
-    b_seg: usize,
-    at: Pt,
-}
-
-/// One clearance demand: two solved pieces and what must separate them.
+/// One clearance demand: two solved ways and what must separate them.
 ///
-/// A side is `(profile, arc window)`: the profile is the whole way now, and a
+/// A side is `(profile, arc window)`: the profile is the whole way, and a
 /// way may pass near one point more than once — a hairpin, a loop, a road
 /// that comes back along the shore. Reading its height at "the nearest
 /// station" then answers about the wrong stretch, and the demand that follows
-/// is nonsense. The window is the crossing *piece's* own arc range, which is
-/// where the crossing actually is.
+/// is nonsense. The window is the arc range of the span the crossing falls
+/// in ([`Way::span_at_arc`]), which is where the crossing actually is.
 struct Pair {
     upper: (usize, i64),
     lower: (usize, i64),
-    /// The arc window of the upper and lower pieces along their ways.
+    /// The arc window of the crossing on the upper and the lower way.
     up_at: (f64, f64),
     low_at: (f64, f64),
     need: f64,
@@ -425,21 +387,18 @@ fn is_rail(class: &str) -> bool {
 /// What must separate the two roadways at a crossing, in metres.
 ///
 /// Over a road at grade the gap is the headroom the lower one needs plus
-/// the slab the upper one hangs into it — a road bridge's or, when the
-/// walks come to solve, a footbridge's. Over a railway the headroom is the
+/// the slab the upper one hangs into it. Over a railway the headroom is the
 /// catenary's, [`RAIL_CLEARANCE_M`]. Over a road in a *bore* it is the
 /// bore's own section instead: the tube is already under the ground the
 /// upper road rides on, so what governs is the tunnel's headroom and the
-/// cover carrying the roadway above it (§4.5). The two read the same
-/// number today, because a tunnel is as high inside as a road is over a
-/// road; they are written apart because they are different quantities and
-/// will not stay equal.
-fn need(upper_class: &str, lower_class: &str, lower_kind: Kind) -> f64 {
-    let slab = if width::family(upper_class) == Family::Walk { WALK_DECK_M } else { DECK_THICKNESS_M };
+/// cover carrying the roadway above it (§4.5). For a road the two read the
+/// same number, because a tunnel is as high inside as a road is over a
+/// road; they are written apart because they are different quantities.
+fn need(lower_class: &str, lower_kind: Kind) -> f64 {
     match lower_kind {
-        Kind::Tunnel(_) => crate::standard::tube_m(lower_class) + slab,
-        _ if is_rail(lower_class) => RAIL_CLEARANCE_M + slab,
-        _ => ROAD_CLEARANCE_M + slab,
+        Kind::Tunnel(_) => crate::standard::tube_m(lower_class) + DECK_THICKNESS_M,
+        _ if is_rail(lower_class) => RAIL_CLEARANCE_M + DECK_THICKNESS_M,
+        _ => ROAD_CLEARANCE_M + DECK_THICKNESS_M,
     }
 }
 
@@ -460,7 +419,7 @@ fn height_on(p: &Profile, at: Pt, window: (f64, f64)) -> f64 {
         if w[1].s < window.0 - 1e-6 || w[0].s > window.1 + 1e-6 {
             continue;
         }
-        let f = poly::nearest_on_segment(w[0].p, w[1].p, at);
+        let f = line::nearest_on_segment(w[0].p, w[1].p, at);
         let d = (f[0] - at[0]).hypot(f[1] - at[1]);
         if d >= best.0 {
             continue;
@@ -489,28 +448,26 @@ fn anchor_connectors(profiles: &[Profile]) -> impl Iterator<Item = (i64, i64)> +
     })
 }
 
-/// Adds the seeds one demand of `amount` puts on the piece `mover`: every
+/// Adds the seeds one demand of `amount` puts on the way `mover`: every
 /// station of the chord it belongs to, so the chord rises level, or the
-/// two stations either side of `at` where the mover is not a span at all.
-/// Seeds the corridor a demand asks for.
+/// station nearest `at` and its two neighbours where the mover is not a
+/// span at all.
 ///
 /// **Two readings of the same demand, and the floor is the lesser.**
 ///
 /// `seeds` is the displacement the demand asks for, decaying with network
-/// distance: the rule the step has always had. It is right where the ground
-/// falls away — the road ramps down at the class's grade and the decay is
-/// that ramp — and wrong where the ground *climbs*, because it pushes the
-/// road up on top of a climbing ground. South of the Clarens railway the
-/// decay was exactly the street's 15 % while the reference under the same
-/// nine metres fell 73 % (the DEM samples the cutting the road bridges):
-/// the road came out at 58 %, three metres over its reference, and that is
-/// what made every leg of the junction a derived deck.
+/// distance. It is right where the ground falls away — the road ramps down
+/// at the class's grade and the decay is that ramp — and wrong where the
+/// ground *climbs*, because it pushes the road up on top of a climbing
+/// ground: where the reference under an approach falls faster than the
+/// class's ramp (a DEM sampling the cutting the road bridges), the road
+/// comes out steeper than its class and metres over its reference.
 ///
 /// `heights` is the same demand as an absolute corridor — a height the road
 /// must reach — which stops applying the moment the ground is high enough
 /// on its own. Alone it is wrong the other way: where the ground falls
 /// faster than the corridor decays it holds a road up far from any
-/// crossing, and the loop box read a 78 m lift.
+/// crossing.
 ///
 /// So each node takes the **smaller** of the two, which is the honest
 /// reading of both: lift by no more than the ramp allows, and by no more
@@ -530,8 +487,8 @@ fn charge(
     net: &Net,
 ) {
     let p = &profiles[mover];
-    // The nearest station *inside the crossing piece's own window*, for the
-    // same reason [`height_on`] takes one.
+    // The nearest station *inside the crossing's own window*, for the same
+    // reason `height_on` takes one.
     let inside = |k: usize| {
         p.stations[k].s >= window.0 - 1e-6 && p.stations[k].s <= window.1 + 1e-6
     };
@@ -544,9 +501,8 @@ fn charge(
         })
         .unwrap_or(0);
     let runs = p.runs();
-    // The run the crossing falls in — not the whole way. A way is one object
-    // now, and charging all of it would lift a kilometre of street for a
-    // twenty-metre deck.
+    // The run the crossing falls in — not the whole way: charging all of it
+    // would lift a kilometre of street for a twenty-metre deck.
     let at_run = runs.iter().position(|&(k0, k1, _)| near >= k0 && near <= k1);
     let Some(r) = at_run.filter(|&r| runs[r].2.is_structure()) else {
         for k in [near.saturating_sub(1), near, (near + 1).min(p.stations.len().saturating_sub(1))] {
@@ -584,8 +540,8 @@ fn charge(
         // heights and nothing else, so lifting only its interior stations
         // moves nothing at all — the chord is re-interpolated between the
         // abutments the moment the profile re-solves.
-        let last = profiles[i].stations.len().saturating_sub(1);
-        for k in k0.saturating_sub(1)..=(k1 + 1).min(last) {
+        let (a, b) = profiles[i].with_abutments(k0, k1);
+        for k in a..=b {
             seeds.push((net.base[i] + k, amount));
             heights.push((net.base[i] + k, sign * (profiles[i].stations[k].h + sign * amount)));
         }
@@ -597,11 +553,11 @@ fn dist2(a: Pt, b: Pt) -> f64 {
 }
 
 /// The network as a graph over the profiles' stations: consecutive
-/// stations of a piece joined at the height the class's ramp grade buys
+/// stations of a way joined at the height the class's ramp grade buys
 /// between them, and every station at one connector joined at no cost at
 /// all. A demand travels it and decays, and that decay *is* the approach.
 struct Net {
-    /// The first node of each piece; `base[n]` is the node count.
+    /// The first node of each profile; `base[n]` is the node count.
     base: Vec<usize>,
     adj: Vec<Vec<(usize, f64)>>,
 }
@@ -619,12 +575,7 @@ impl Net {
         let rail: Vec<bool> = profiles.iter().map(|p| is_rail(&p.class)).collect();
         for (i, p) in profiles.iter().enumerate() {
             // The grade the way was held to: a railway's measured one.
-            let g = grade::of(&p.class);
-            let ramp = if g.limited() {
-                solve::ceiling(&p.class, &p.stations, &p.spans)
-            } else {
-                g.ceiling.unwrap_or(f64::INFINITY)
-            };
+            let ramp = grade::held(&p.class, &p.stations, &p.spans);
             for k in 1..p.stations.len() {
                 let w = ramp * (p.stations[k].s - p.stations[k - 1].s);
                 adj[base[i] + k - 1].push((base[i] + k, w));
@@ -632,11 +583,10 @@ impl Net {
             }
         }
         // **Every** station at a shared connector, not only a way's two ends.
-        // A way is whole now, so another way can end on its *interior* — at a
+        // A way is whole, so another way can end on its *interior* — at a
         // bridge abutment, most often, which is exactly where a lift has to
-        // travel. Joined at the ends alone, the deck rose and the street that
-        // meets it at the abutment stayed on the ground: `structure abutment`
-        // 5.380 m of joint that cannot meet.
+        // travel. Joined at the ends alone, the deck would rise and the
+        // street meeting it at the abutment would stay on the ground.
         //
         // **Within one stratum only.** A railway and a road sharing a
         // connector — a level crossing — are not joined here, so a floor
@@ -712,41 +662,11 @@ impl PartialOrd for Reach {
     }
 }
 
-/// Every place two axes' interiors cross, as `(i, j, point)` with `i < j`,
-/// in an order that is a function of the axes alone.
-fn found(axes: &[Axis]) -> Vec<Hit> {
-    let mut cells: HashMap<(i32, i32), Vec<(usize, usize)>> = HashMap::new();
-    for (i, a) in axes.iter().enumerate() {
-        for k in 1..a.way.pts.len() {
-            let (p, q) = (a.way.pts[k - 1], a.way.pts[k]);
-            let box_ = [p[0].min(q[0]), p[1].min(q[1]), p[0].max(q[0]), p[1].max(q[1])];
-            for cell in poly::cells_over(box_, poly::CELL_M) {
-                cells.entry(cell).or_default().push((i, k - 1));
-            }
-        }
-    }
-    let mut seen: HashSet<(usize, usize, usize, usize)> = HashSet::new();
-    let mut out: Vec<Hit> = Vec::new();
-    for bucket in cells.values() {
-        for x in 0..bucket.len() {
-            for y in x + 1..bucket.len() {
-                let (mut a, mut b) = (bucket[x], bucket[y]);
-                if a.0 == b.0 {
-                    continue;
-                }
-                if a.0 > b.0 {
-                    std::mem::swap(&mut a, &mut b);
-                }
-                if !seen.insert((a.0, a.1, b.0, b.1)) {
-                    continue;
-                }
-                let (u, v) = (&axes[a.0].way.pts, &axes[b.0].way.pts);
-                if let Some(p) = poly::proper_crossing(u[a.1], u[a.1 + 1], v[b.1], v[b.1 + 1]) {
-                    out.push(Hit { a: a.0, a_seg: a.1, b: b.0, b_seg: b.1, at: p });
-                }
-            }
-        }
-    }
+/// Every place two axes' interiors cross, in an order that is a function of
+/// the axes alone.
+fn found(axes: &[Axis]) -> Vec<line::Crossing> {
+    let lines: Vec<&[Pt]> = axes.iter().map(|a| a.way.pts.as_slice()).collect();
+    let mut out = line::crossings(&lines);
     out.sort_by(|x, y| {
         (x.a, x.b).cmp(&(y.a, y.b)).then(x.at[0].total_cmp(&y.at[0])).then(x.at[1].total_cmp(&y.at[1]))
     });
@@ -758,10 +678,7 @@ mod tests {
     use crate::world::World;
     use crate::pipeline::tests::{bbox, built, upto};
     use crate::step::Step;
-    
 
-    
-    
     use crate::terrain::{self, tests::{dem, extent}};
     use crate::world::Solved;
 
@@ -774,11 +691,10 @@ mod tests {
         (w, ran.last())
     }
 
-    /// The stations of `id`'s run of kind `mapped`. A way is one profile
-    /// now, so a test that used to hold a piece holds a range of one.
+    /// The stations of `id`'s run of kind `mapped`: a way is one profile,
+    /// and a run is a range of its stations.
     fn run_of(w: &World, id: &str, mapped: Kind) -> Vec<crate::world::Station> {
         let p = profile_of(w, id, mapped);
-        let last = p.stations.len().saturating_sub(1);
         let (k0, k1, _) = p
             .runs()
             .into_iter()
@@ -788,7 +704,6 @@ mod tests {
         // at-grade solve, and carries its flag — the structure step widens to
         // reach it when it builds the solid, but `solved` is the annotation's
         // own stations.
-        let _ = last;
         p.stations[k0..=k1].to_vec()
     }
 
@@ -854,7 +769,7 @@ mod tests {
             assert!(rise <= ceiling + 1e-9, "{pair:?}");
         }
         let at = |y: f64| height_on(up, [0.0, y], (0.0, f64::INFINITY));
-        // The toe is a *curve* now, not a corner: the class's vertical radius
+        // The toe is a *curve*, not a corner: the class's vertical radius
         // spreads the last of the ramp over about `ceiling × radius / 2`,
         // which for a street's 15 % and 100 m is 7.5 m. So the profile meets
         // the ground later than the straight ramp's 43.3 m would put it, and
@@ -914,33 +829,32 @@ mod tests {
 
     #[test]
     fn two_interiors_crossing_at_one_level_are_counted_not_solved() {
-        // Overture cuts a way at every connector, so this cannot come out
-        // of the reader: it is a data error, and the step says so rather
-        // than inventing a separation the source did not order.
+        // Two ways crossing at one level share a connector in the source, so
+        // this is a data error, and the step says so rather than inventing a
+        // separation the source did not order.
         let (ground, _) = terrain::run(&extent(), &mut dem("flat"), 5.0, usize::MAX);
         let mut w = World::new(bbox());
         w.terrain = Some(ground);
 
-        // Two whole ways, cut by the partition step as the reader's would
-        // be: a piece has to know which way it came from for the crossing
-        // step to find the profile it was solved into.
+        // Two whole ways, each on the ground end to end, crossing at their
+        // midpoints with no vertex there.
         let way = |id: &str, pts: Vec<[f64; 2]>| crate::world::Way {
             id: id.into(),
             class: "residential".into(),
             subclass: String::new(),
             width_m: 5.5,
-            spans: vec![crate::world::Span { a0: 0.0, a1: crate::roads::length(&pts), kind: Kind::Ground }],
+            spans: vec![crate::world::Span { a0: 0.0, a1: crate::line::length(&pts), kind: Kind::Ground }],
             layers: Vec::new(),
             pts,
         };
-        w.roads = Some(crate::world::Roads {
+        w.drape = Some(crate::world::Roads {
             ways: vec![
                 way("a", vec![[-50.0, 0.0], [50.0, 0.0]]),
                 way("b", vec![[0.0, -50.0], [0.0, 50.0]]),
             ],
             ..Default::default()
         });
-        let roads = w.roads.as_ref().expect("just set");
+        let roads = w.drape.as_ref().expect("just set");
         let terrain = w.terrain.as_ref().expect("just set");
         let (reference, _) = crate::reference::run(terrain, roads);
         let (profiles, _) = crate::profile::run(&reference);
@@ -978,13 +892,13 @@ mod tests {
 
     #[test]
     fn a_proper_cross_is_the_only_cross() {
-        assert_eq!(crate::poly::proper_crossing([-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]), Some([0.0, 0.0]));
+        assert_eq!(crate::line::proper_crossing([-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]), Some([0.0, 0.0]));
         // A touch at an endpoint, a T, a shared vertex and two parallels
         // are all not crossings.
-        assert_eq!(crate::poly::proper_crossing([-1.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 1.0]), None);
-        assert_eq!(crate::poly::proper_crossing([0.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 1.0]), None);
-        assert_eq!(crate::poly::proper_crossing([0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]), None);
-        assert_eq!(crate::poly::proper_crossing([0.0, 0.0], [1.0, 0.0], [2.0, -1.0], [2.0, 1.0]), None);
+        assert_eq!(crate::line::proper_crossing([-1.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 1.0]), None);
+        assert_eq!(crate::line::proper_crossing([0.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 1.0]), None);
+        assert_eq!(crate::line::proper_crossing([0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]), None);
+        assert_eq!(crate::line::proper_crossing([0.0, 0.0], [1.0, 0.0], [2.0, -1.0], [2.0, 1.0]), None);
     }
 
     #[test]

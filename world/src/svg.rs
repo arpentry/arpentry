@@ -1,7 +1,7 @@
 //! The plan view: the world's 2D layers as an SVG, one group per step.
 //!
 //! The GLB answers "does it stand on the ground"; this answers "is the
-//! outline right", which is a 2D question — a fillet, a gap between a kerb
+//! outline right", which is a 2D question — a kerb return, a gap between a kerb
 //! and its pavement, a cap at a dead end are all invisible from a camera in
 //! the air and obvious from straight above at a metre per pixel. The file
 //! is text, opens in any browser at any zoom, and
@@ -25,8 +25,8 @@ use std::fmt::Write;
 use crate::frame::Rect;
 use crate::poly::{self, Shapes};
 use crate::width::{self, Family};
-use crate::world::{Sheets, 
-    Bench, Crossings, Facade, Kerb, Kind, Polyline3, Profile, Profiles, Ribbon, Room, Solved, Structure,
+use crate::world::{
+    Crossings, Earthwork, Facade, Kerb, Kind, Polyline3, Profile, Profiles, Ribbon, Room, Sheets, Solved, Structure,
     Surface, Tri, World,
 };
 
@@ -38,7 +38,7 @@ const AXIS_M: f64 = 0.3;
 
 /// The axis's colour: a blue no surface wears, so a centreline running
 /// inside the asphalt — Overture ends a sidewalk on the road's axis — is
-/// not mistaken for a hole in it, as a black one over a kerb was.
+/// not mistaken for a hole in it, as a black one over a kerb would be.
 const AXIS_COLOR: &str = "#2a5db0";
 
 /// Width in metres of a ribbon's outline. The ribbon layer is translucent
@@ -76,21 +76,21 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
     // are emitted as empty groups so a diff between two plans still finds
     // them. The axis is always on top, whichever surface is under it.
     let ribbons: Vec<&Ribbon> = world
-        .ribbons
+        .ribbon
         .iter()
         .flat_map(|r| r.ribbons.iter())
         .filter(|r| world.surface.is_none() && touches_shape(&r.shape, &view))
         .collect();
-    if let Some(roads) = &world.roads {
+    if let Some(roads) = &world.drape {
         let lines: Vec<&Polyline3> = roads.lines.iter().filter(|l| touches(&l.pts, &view)).collect();
         if !lines.is_empty() {
-            drape(&mut s, &lines, world.ribbons.is_none());
+            drape(&mut s, &lines, world.ribbon.is_none());
         }
     }
     if let Some(f) = &world.facade {
         facade(&mut s, f, &view);
     }
-    if world.ribbons.is_some() {
+    if world.ribbon.is_some() {
         ribbon(&mut s, &ribbons);
     }
     if let Some(surf) = &world.surface {
@@ -99,13 +99,19 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
     if let Some(k) = &world.kerb {
         kerb(&mut s, k, world.legs.is_none(), &view);
     }
+    // The kerb stations still bare on a surface, asked of it here: a check,
+    // not a layer.
+    let bare = |surface: &Surface| match (&world.kerb, &world.facade) {
+        (Some(k), Some(f)) => crate::gap::kerb_gaps(surface, &k.attached, &f.footprints).0,
+        _ => Vec::new(),
+    };
     if let Some(l) = &world.legs {
-        legs(&mut s, l, world.room.is_none(), &view);
+        legs(&mut s, l, &bare(&l.surface), world.room.is_none(), &view);
     }
     if let Some(r) = &world.room {
-        room(&mut s, r, &view);
+        room(&mut s, r, &bare(&r.surface), &view);
     }
-    if let Some(sh) = &world.sheets {
+    if let Some(sh) = &world.sheet {
         sheets(&mut s, sh, &view);
     }
     if let Some(p) = world.solved() {
@@ -114,14 +120,11 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
     if let Some(st) = &world.structure {
         structure(&mut s, st, &view);
     }
-    if let Some(b) = &world.bench {
-        mesh(&mut s, &[("carriageway", &b.carriageway), ("pavement", &b.pavement), ("ballast", &b.ballast)], &view);
-        bench(&mut s, b, &view);
-    } else if let (Some(m), Some(a)) = (&world.mesh, &world.arrangement) {
-        use crate::world::Material;
-        let of = |x: Material| crate::mesh::view(m, a, |f| f.material == x);
-        let (c, p, b) = (of(Material::Carriageway), of(Material::Pavement), of(Material::Ballast));
+    if let Some([c, p, b]) = world.paving() {
         mesh(&mut s, &[("carriageway", &c), ("pavement", &p), ("ballast", &b)], &view);
+    }
+    if let Some(e) = &world.earthwork {
+        earthwork(&mut s, e, &view);
     }
     // The crossings last of the layers: a mark, not a surface, and the
     // one thing here drawn over the asphalt on purpose — a ring under an
@@ -129,7 +132,7 @@ pub fn write_svg(world: &World, view: Option<Rect>) -> String {
     if let Some(c) = &world.crossing {
         crossing(&mut s, c, &view);
     }
-    if let Some(roads) = &world.roads {
+    if let Some(roads) = &world.drape {
         let lines: Vec<&Polyline3> = roads.lines.iter().filter(|l| touches(&l.pts, &view)).collect();
         if !lines.is_empty() {
             axis(&mut s, &lines);
@@ -182,11 +185,11 @@ fn ribbon(s: &mut String, ribbons: &[&Ribbon]) {
     s.push_str("</g>\n");
 }
 
-/// The surface layer: one filled path per family, opaque, because nothing
-/// overlaps any more. Each family is drawn only until a later step has
-/// replaced it: the walk by the kerb's pavement, the carriageway by the
-/// fillet's. The ballast is laid once and re-cut by nothing, so it is
-/// always drawn here.
+/// The surface layer: one filled path per family, opaque, because the
+/// families do not overlap. Each family is drawn only until a later step
+/// has replaced it: the walk by the kerb's pavement, the carriageway by the
+/// legs'. The ballast is laid once and re-cut by nothing, so it is always
+/// drawn here.
 fn surface(s: &mut String, surf: &Surface, carriageway: bool, walk: bool, view: &Rect) {
     s.push_str("<g id=\"surface\">\n");
     filled(s, "ballast", BALLAST_FILL, &surf.ballast, view);
@@ -215,7 +218,7 @@ fn kerb(s: &mut String, k: &Kerb, pavement: bool, view: &Rect) {
 /// The legs layer: the carriageway built from the junctions' legs, the
 /// pavement laid back outside it until the room takes over, each junction
 /// outlined, and the kerb stations still bare.
-fn legs(s: &mut String, l: &crate::world::Legs, pavement: bool, view: &Rect) {
+fn legs(s: &mut String, l: &crate::world::Legs, gaps: &[[f64; 2]], pavement: bool, view: &Rect) {
     s.push_str("<g id=\"legs\">\n");
     filled(s, "carriageway", "#8c8c94", &l.surface.carriageway, view);
     if pavement {
@@ -223,21 +226,21 @@ fn legs(s: &mut String, l: &crate::world::Legs, pavement: bool, view: &Rect) {
     }
     let junctions: Shapes = l.junctions.iter().flat_map(|j| j.shape.iter().cloned()).collect();
     outlined(s, "junction", "#2040d0", 0.1, &junctions, view);
-    for g in l.gaps.iter().filter(|g| view.contains(**g)) {
+    for g in gaps.iter().filter(|g| view.contains(**g)) {
         let _ = write!(s, "<circle cx=\"{}\" cy=\"{}\" r=\"0.5\" fill=\"#8020c0\"/>\n", num(g[0]), num(-g[1]));
     }
     s.push_str("</g>\n");
 }
 
 /// The room layer: the pavement extended to the walls.
-fn room(s: &mut String, r: &Room, view: &Rect) {
+fn room(s: &mut String, r: &Room, gaps: &[[f64; 2]], view: &Rect) {
     s.push_str("<g id=\"room\">\n");
     filled(s, "pavement", "#e0a050", &r.surface.walk, view);
     // The kerb stations still bare after everything: a dot each, at any
     // zoom where a dot can be seen, so a gap is found by looking for the
     // marker rather than for the gap.
     if view.width() < 2000.0 {
-        for g in r.gaps.iter().filter(|g| view.contains(**g)) {
+        for g in gaps.iter().filter(|g| view.contains(**g)) {
             let _ = write!(s, "<circle cx=\"{}\" cy=\"{}\" r=\"0.5\" fill=\"#d0202a\"/>\n", num(g[0]), num(-g[1]));
         }
     }
@@ -356,14 +359,12 @@ fn mesh(s: &mut String, layers: &[(&str, &Tri)], view: &Rect) {
     s.push_str("</g>\n");
 }
 
-/// The structure layer: every span's own paving, which no surface step
-/// lays.
+/// The structure layer: every span's outline in plan, as a deck or a bore.
 ///
-/// **Outlined, and off the carriageway's own palette on purpose.** A deck
-/// used to fill at `#9a948c` against a carriageway of `#8c8c94` and ballast
-/// of `#9e968a` — three greys within ten units of each other, no stroke
-/// between any of them — so a viaduct painted no differently from the road
-/// it carries. A deck and a bore now get their own hue (slate blue, darker
+/// **Outlined, and off the carriageway's own palette on purpose.** The
+/// carriageway and the ballast are greys within ten units of each other, and
+/// a deck in a third such grey would paint a viaduct no differently from the
+/// road it carries. A deck and a bore get their own hue (slate blue, darker
 /// underground than aloft — elevated reads lighter) and the group's own
 /// outline, the same device [`ribbon`] uses to keep an opaque fill legible
 /// against its neighbours.
@@ -379,15 +380,14 @@ fn structure(s: &mut String, st: &Structure, view: &Rect) {
     s.push_str("</g>\n");
 }
 
-/// The bench layer: where the room's height field steps — the line
-/// between two carriageways whose domains meet at different heights, which
-/// the mesh draws as a retaining wall. A dot each, at any zoom where a dot
-/// can be seen, on the same terms as the room's bare kerb stations: a wall
-/// is found by looking for its marker rather than for the wall.
-fn bench(s: &mut String, b: &Bench, view: &Rect) {
-    s.push_str("<g id=\"bench\">\n");
+/// The earthwork layer: every edge a lifted surface's height jumps across
+/// within one rule. A dot each, at any zoom where a dot can be seen, on the
+/// same terms as the room's bare kerb stations: a step is found by looking
+/// for its marker rather than for the step.
+fn earthwork(s: &mut String, e: &Earthwork, view: &Rect) {
+    s.push_str("<g id=\"earthwork\">\n");
     if view.width() < 2000.0 {
-        for p in b.steps.iter().filter(|p| view.contains(**p)) {
+        for p in e.steps.iter().filter(|p| view.contains(**p)) {
             let _ = write!(s, "<circle cx=\"{}\" cy=\"{}\" r=\"0.5\" fill=\"#7030a0\"/>\n", num(p[0]), num(-p[1]));
         }
     }
@@ -580,9 +580,9 @@ fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::lattice::drape_line;
+    use crate::lattice;
     use crate::terrain::{self, tests::{dem, extent}};
-    use crate::world::{Polyline2, Roads};
+    use crate::world::{Polyline3, Roads};
 
     use crate::pipeline::tests::bbox;
 
@@ -593,23 +593,14 @@ mod tests {
         let mut w = World::new(bbox());
         w.terrain = Some(ground);
         let t = w.terrain.as_ref().expect("just set");
-        let line = |id: &str, class: &str, subclass: &str, pts: Vec<[f64; 2]>| {
-            drape_line(
-                t,
-                &Polyline2 {
-                    id: id.into(),
-                    class: class.into(),
-                    subclass: subclass.into(),
-                    width_m: width::of(class, subclass),
-                    way: usize::MAX,
-                    a0: 0.0,
-                    a1: 0.0,
-                    kind: crate::world::Kind::Ground,
-                    pts,
-                },
-            )
+        let line = |id: &str, class: &str, subclass: &str, pts: Vec<[f64; 2]>| Polyline3 {
+            id: id.into(),
+            class: class.into(),
+            subclass: subclass.into(),
+            width_m: width::of(class, subclass),
+            pts: lattice::drape(t, &pts),
         };
-        w.roads = Some(Roads {
+        w.drape = Some(Roads {
             ways: Vec::new(),
             lines: vec![
                 line("r", "residential", "", vec![[-600.0, -400.0], [0.0, 0.0], [500.0, 300.0]]),
@@ -654,7 +645,7 @@ mod tests {
         let (ground, _) = terrain::run(&extent(), &mut dem("flat"), 100.0, usize::MAX);
         let mut w = World::new(bbox());
         w.terrain = Some(ground);
-        w.roads = Some(Roads::default());
+        w.drape = Some(Roads::default());
         let svg = write_svg(&w, None);
         assert!(!svg.contains("id=\"drape\""));
         assert!(svg.contains("id=\"world\""));
@@ -703,7 +694,7 @@ mod tests {
 
     #[test]
     fn the_junctions_replace_both_surfaces() {
-        let (w, _) = crate::pipeline::tests::built("flat", "net:crossing?d=6&len=100", None, 100.0, &crate::pipeline::tests::plan(crate::step::Step::Legs));
+        let (w, _) = crate::pipeline::tests::built("flat", "net:crossing?d=6&len=100", None, 100.0, &crate::pipeline::tests::upto(crate::step::Step::Legs));
         let svg = write_svg(&w, None);
         assert_eq!(svg.matches("<path id=\"carriageway\"").count(), 1, "{svg}");
         assert_eq!(svg.matches("<path id=\"pavement\"").count(), 1);

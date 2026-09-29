@@ -29,9 +29,10 @@
 //! Every parameter has a default, so `net:cross` is a complete spec. The
 //! way is `residential` unless `class=` says otherwise, and a specimen's
 //! ids are stable words (`road`, `walk-n`, …) so a test can pick one out.
-//! Ways meet the way Overture's do: cut at every connector, so a junction
-//! is always a meeting of way ends and never a crossing of interiors — two
-//! ways whose interiors cross are a bridge over a road, not a junction.
+//! Ways meet the way Overture's do: a road junction is a meeting of way
+//! ends, a level crossing is a vertex shared by the interiors of both ways
+//! (`net:level`), and two ways whose interiors cross with no vertex between
+//! them are a grade separation, not a junction.
 
 use crate::world::{Kind, Span, Way};
 
@@ -53,7 +54,7 @@ pub fn parse(spec: &str) -> Result<Vec<Way>, String> {
     let walk = |id: &str, subclass: &str, pts: Vec<[f64; 2]>| line(id, "footway", subclass, pts);
     let x_road = |id: &str| road(id, vec![[-half, 0.0], [half, 0.0]]);
     let ways = match name {
-        "straight" => spanned("road", class, "", 0.0, half, span_of(&params)?),
+        "straight" => vec![spanned("road", class, "", 0.0, half, span_of(&params)?)],
         "tee" => {
             // With `hook`, road-e runs 10 m east then turns back on an arc
             // of that radius and ends short of the leg: a bend within one
@@ -81,9 +82,8 @@ pub fn parse(spec: &str) -> Result<Vec<Way>, String> {
             // the three legs meet *on* the deck and each handover to the
             // ground falls out along its own leg.
             //
-            // No other spec states that, which is why this one exists
-            // (`data/plans/one-surface-at-a-junction-2026-09-14.md`, step 0):
-            // `straight?span=` is a span with no junction on it, `tee` a
+            // No other spec states that: `straight?span=` is a span with no
+            // junction on it, `tee` a
             // junction with no span, and `overpass`/`underpass` two interiors
             // crossing with **no connector between them** — the case the
             // surface rule deliberately keeps apart. Every leg takes the same
@@ -126,17 +126,15 @@ pub fn parse(spec: &str) -> Result<Vec<Way>, String> {
             };
             let mut ways = vec![x_road("road")];
             let leg = params.get("leg").unwrap_or(class);
-            for mut w in spanned("leg", leg, "", 0.0, half, Some((span, kind))) {
-                for p in &mut w.pts {
-                    *p = [p[1], p[0]];
-                }
-                ways.push(w);
+            let mut w = spanned("leg", leg, "", 0.0, half, Some((span, kind)));
+            for p in &mut w.pts {
+                *p = [p[1], p[0]];
             }
+            ways.push(w);
             ways
         }
         // A railway crossing the road at grade. Overture does not cut
-        // either way at a level crossing's connector — every one of the
-        // loop box's 48 lies in the interior of both — so each way is
+        // either way at a level crossing's connector, so each way is
         // whole and has a vertex there, which is all that joins them.
         "level" => {
             let rail = params.get("rail").unwrap_or("standard_gauge");
@@ -178,12 +176,10 @@ pub fn parse(spec: &str) -> Result<Vec<Way>, String> {
             } else {
                 // With `span`, both the road and its separated sidewalk
                 // are mapped as their own bridge over the same stretch,
-                // which is how 22.7 % of the extract's footbridges are
-                // drawn: one structure, two ways on it.
+                // which is how the source draws many footbridges: one
+                // structure, two ways on it.
                 let span = span_of(&params)?;
-                let mut ways = spanned("road", class, "", 0.0, half, span);
-                ways.extend(spanned("walk-n", "footway", "sidewalk", d, half, span));
-                ways
+                vec![spanned("road", class, "", 0.0, half, span), spanned("walk-n", "footway", "sidewalk", d, half, span)]
             }
         }
         "corner" => {
@@ -221,7 +217,7 @@ pub fn parse(spec: &str) -> Result<Vec<Way>, String> {
         }
         "crossing" => {
             // Each sidewalk is cut at the crossing's connector, as Overture
-            // cuts a way at every connector.
+            // cuts it.
             let d = params.num("d", 6.0)?;
             vec![
                 x_road("road"),
@@ -243,8 +239,8 @@ pub fn parse(spec: &str) -> Result<Vec<Way>, String> {
                     })
                     .collect()
             };
-            // Four arcs, split at the legs: Overture cuts a way at every
-            // connector, so a junction is always a meeting of way ends.
+            // Four arcs, split at the legs: a road junction is a meeting of
+            // way ends.
             let full = ring(r);
             let mut ways: Vec<Way> = (0..4)
                 .map(|q| road(&format!("arc-{q}"), full[q * 9..=(q + 1) * 9].to_vec()))
@@ -294,7 +290,7 @@ fn kind_of(params: &Params) -> Result<Kind, String> {
 /// many directions as there are legs, so one pair of fractions cannot say
 /// "the part next to the junction" for all of them.
 fn spanned_at(mut w: Way, f: f64, kind: Kind, at_start: bool) -> Way {
-    let len = crate::roads::length(&w.pts);
+    let len = crate::line::length(&w.pts);
     if f <= 0.0 || len <= 0.0 {
         return w;
     }
@@ -312,16 +308,13 @@ fn spanned_at(mut w: Way, f: f64, kind: Kind, at_start: bool) -> Way {
     w
 }
 
-/// A way along x at `y`, from `-half` to `half`, cut at the boundaries of
-/// its mapped span into the pieces the reader would produce: consecutive
-/// pieces share their end vertex and their id.
-/// One way along x at `y`, with `span` as its annotation: the fractions the
-/// spec speaks in, converted to arc, with the ground either side of them.
-/// The way is **not** cut — the partition step does that, once.
-fn spanned(id: &str, class: &str, subclass: &str, y: f64, half: f64, span: Option<((f64, f64), Kind)>) -> Vec<Way> {
+/// One way along x at `y`, from `-half` to `half`, with `span` as its
+/// annotation: the fractions the spec speaks in, converted to arc, with the
+/// ground either side of them.
+fn spanned(id: &str, class: &str, subclass: &str, y: f64, half: f64, span: Option<((f64, f64), Kind)>) -> Way {
     let mut w = line(id, class, subclass, vec![[-half, y], [half, y]]);
     let Some(((a, b), kind)) = span else {
-        return vec![w];
+        return w;
     };
     let len = 2.0 * half;
     let (a0, a1) = (a * len, b * len);
@@ -334,12 +327,12 @@ fn spanned(id: &str, class: &str, subclass: &str, y: f64, half: f64, span: Optio
         spans.push(Span { a0: a1, a1: len, kind: Kind::Ground });
     }
     w.spans = spans;
-    vec![w]
+    w
 }
 
 /// A way on the ground end to end.
 fn line(id: &str, class: &str, subclass: &str, pts: Vec<[f64; 2]>) -> Way {
-    let len = crate::roads::length(&pts);
+    let len = crate::line::length(&pts);
     Way {
         id: id.into(),
         class: class.into(),
@@ -434,10 +427,9 @@ mod tests {
         assert!((ways[1].pts[0][1] + 4.75).abs() < 1e-12);
     }
 
-    /// A span is an *attribute* of one whole way, in arc — not a cut. The
-    /// way that used to arrive as three pieces arrives as one line with a
-    /// three-row table, and the partition step is what turns the table into
-    /// geometry.
+    /// A span is an *attribute* of one whole way, in arc — not a cut. A way
+    /// with a bridge in its middle arrives as one line with a three-row
+    /// table, and the partition step is what turns the table into geometry.
     #[test]
     fn a_span_is_a_table_on_one_whole_way() {
         let ways = parse("net:straight?len=200&span=0.35,0.65").unwrap();

@@ -6,25 +6,25 @@
 //! three line families (the grid's columns, its rows, and the SW→NE
 //! diagonals of its cells) into convex pieces, so that every triangle
 //! written lies inside one triangle of the terrain. A vertex at
-//! [`height_at`] then puts the whole triangle on the ground to the ulp — the
-//! `drape` step's guarantee for lines, for areas. No profile is applied yet:
-//! the bench step moves the paving off the ground and benches the ground.
+//! [`crate::lattice::height_at`] then puts the whole triangle on the ground to the ulp — the
+//! `drape` step's guarantee for lines, for areas. No profile is applied here:
+//! the `lift` step moves the paving off the ground and the `earthwork` step
+//! benches the ground.
 //!
 //! **One vertex per position, and no crack.** Vertices are welded by exact
 //! position across every face, so two faces that share an edge share its
 //! vertices by index, and `crack` — the partition's one-sided edges away
-//! from the rect's border — must read 0. Three things make it so, each found
-//! by the check once the faces were meshed together rather than apart:
+//! from the rect's border — must read 0. Three things make it so:
 //!
-//! - **Rings are cleaned together** ([`cleaned_together`]): a vertex that is
+//! - **Rings are cleaned together** (`cleaned_together`): a vertex that is
 //!   a corner of one face and collinear in its neighbour stays in both.
-//! - **A degenerate ear leaves no T-junction** ([`close_t_junctions`]).
-//! - **Twin corners a grid step apart are one** ([`weld_open`]), along open
+//! - **A degenerate ear leaves no T-junction** (`close_t_junctions`).
+//! - **Twin corners a grid step apart are one** (`weld_open`), along open
 //!   edges only.
 //!
 //! A cut point on an edge two ears share is computed from the edge's
 //! endpoints in one canonical order, so both ears get the same point bit for
-//! bit. A sliver under [`SLIVER_M2`] is kept and counted — dropping it would
+//! bit. A sliver under `SLIVER_M2` is kept and counted — dropping it would
 //! open the crack its long edge spans.
 //!
 //! The kernel is `earcutr` (the server's dependency) for the ears and a
@@ -33,19 +33,20 @@
 
 use std::collections::HashMap;
 
+use crate::line;
 use crate::grid::Grid;
 use crate::poly::{self, Pt, Shapes};
 use crate::world::Tri;
 
 /// A triangle under this many square metres is a sliver: kept, counted.
-pub const SLIVER_M2: f64 = 1e-6;
+const SLIVER_M2: f64 = 1e-6;
 
 /// A hole under this many square metres — a square centimetre — is not a
 /// hole but a kernel artefact (three lattice points a hair apart, sharing
 /// their vertices with the hole beside them), and the ear clipper
 /// double-covers the region around it. Dropped before clipping; the
 /// region's area is read after.
-pub const HOLE_MIN_M2: f64 = 1e-4;
+const HOLE_MIN_M2: f64 = 1e-4;
 
 /// How far, in square metres, the ears may disagree with their region
 /// before the region counts as misread: a floor, plus this much per ear —
@@ -71,45 +72,32 @@ const DEGENERATE_M2: f64 = 1e-12;
 /// crossing is a T-junction. A triangle two of whose vertices weld together
 /// is dropped.
 ///
-/// **A needle is not this constant's to fix, and two tries measured it.** A
-/// needle — a triangle of a few square microns whose long edge is a metre —
-/// is harmless in f64, and every check here is in f64, so nothing sees it;
-/// then the glTF writer rounds positions to `f32`, whose ulp at a few
-/// hundred metres is ~30 µm, wider than the needle, and the triangle
-/// collapses or *inverts*. On the Montreux cut that is 0.20 % of
-/// carriageway edges creasing past 60° and four at exactly 180°.
-///
-/// Welding at [`poly::GRID_M`] does remove them — folds gone, duplicate
-/// vertex-triples 14 → 0 — but it drops each needle *after* it exists, and
-/// the long edge it drops was interior: `seam` went 6.4e-11 → **16 m** with
-/// `lost_m2` unchanged, the area still there as slits. Widening the cut
-/// tolerance so the needle is never cut (`ON_LINE` at the kernel's grid,
-/// per family) does not even do that: needles 0.204 % → 0.201 %, folds
-/// still at 180°, and `seam` 1.7e-10 → 0.82 m for it. So the needles are
-/// not made by the cut. What is left is the rings: [`ear_clip`] adds no
-/// vertices, so a needle's three corners are all ring corners, and the two
-/// 68 µm apart are a neck the kernel's own grid cannot resolve — [`cleaned`]
-/// only ever compares a vertex with its *neighbours*, so a neck between two
-/// parts of a ring walks straight through it. Counting needle ears before
-/// [`split`] runs is the measurement that would settle it; closing the neck
-/// in the ring, before the clipper, is the fix it would justify.
+/// **A needle is not this constant's to fix.** A needle — a triangle of a
+/// few square microns whose long edge is a metre — is harmless in f64, where
+/// every check here runs, but the glTF writer rounds positions to `f32`,
+/// whose ulp at a few hundred metres is wider than the needle, and the
+/// triangle collapses or *inverts*. Welding at [`poly::GRID_M`] would drop
+/// each needle only after it exists, leaving its long interior edge open as
+/// a slit, and the needles are not made by the lattice cut either. They come
+/// from the rings: [`ear_clip`] adds no vertices, so a needle's three
+/// corners are all ring corners, two of them a neck the kernel's own grid
+/// cannot resolve — [`cleaned`] only ever compares a vertex with its
+/// *neighbours*, so a neck between two parts of a ring walks straight
+/// through it. Closing the neck in the ring, before the clipper, is where
+/// the fix belongs.
 pub const WELD_M: f64 = 1e-6;
-
 
 /// A vertex within this many lattice units of a cut line is on it: it goes
 /// to both sides and spawns no crossing. A cell corner reached by two
 /// crossings in a row is on the diagonal by construction and off it by an
 /// ulp in arithmetic; without the tolerance that ulp is a triangle of no
-/// area whose dropping leaves a T-junction.
-///
-/// Widening it to the kernel's grid, per family, was tried against the
-/// needles [`WELD_M`] describes and bought nothing for 0.82 m of `seam`.
+/// area whose dropping leaves a T-junction. It is not what makes the needles
+/// [`WELD_M`] describes, so it is not widened for them.
 const ON_LINE: f64 = 1e-9;
 
-/// What one family's triangulation found.
+/// What a triangulation found.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Stats {
-    pub regions: usize,
     /// Regions the ear clipper refused.
     pub failed: usize,
     /// Regions the clipper misread at first and read right once the
@@ -127,10 +115,10 @@ pub struct Stats {
     /// Triangles dropped because two of their vertices welded into one.
     pub welded: usize,
     /// T-junctions closed: a triangle edge split at a vertex that lay on it
-    /// ([`close_t_junctions`]).
+    /// (`close_t_junctions`).
     pub junctions: usize,
     /// Vertices of open edges merged into a twin within the kernel's grid
-    /// ([`weld_open`]).
+    /// (`weld_open`).
     pub joined: usize,
     /// The area, in square metres, by which the triangles disagree with
     /// their regions, summed over regions.
@@ -138,9 +126,6 @@ pub struct Stats {
     /// The largest height, in metres, by which a triangle's plane stands
     /// off the terrain at its centroid.
     pub off_ground: f64,
-    /// The mesh's one-sided edge length less the regions' perimeter, in
-    /// metres: a crack shows here.
-    pub seam: f64,
 }
 
 /// `shapes` as triangles conforming to `grid`, every one inside one of
@@ -148,9 +133,8 @@ pub struct Stats {
 /// position.
 ///
 /// The height comes in as a function rather than being read off the
-/// terrain, because the ground the surface stands on is not always the
-/// terrain: the bench step triangulates the engineered ground on the same
-/// lattice with the same guarantee.
+/// terrain, because what a region stands on is not always the terrain: the
+/// structure step meshes a bore's floor at the road's own height.
 pub fn triangulate(shapes: &Shapes, grid: &Grid, height: &dyn Fn(Pt) -> f64) -> (Tri, Stats) {
     let (tri, _, stats) = tagged(shapes, grid, height);
     (tri, stats)
@@ -159,13 +143,11 @@ pub fn triangulate(shapes: &Shapes, grid: &Grid, height: &dyn Fn(Pt) -> f64) -> 
 /// The same, with the region every triangle came from: one entry per
 /// triangle, indexing `shapes`.
 ///
-/// **This is what lets the whole rect be meshed at once.** `triangulate`
-/// already welds by position across everything it is given, so passing every
-/// face of the arrangement in one call gives one vertex array with the
-/// materials sharing their boundary vertices — which is `data/plans/
-/// one-ground-2026-09-16.md` §3.1's "one mesh" and §3.2's prerequisite.
-/// What was missing was knowing which triangle is which material afterwards,
-/// and that is all this adds.
+/// **This is what lets the whole rect be meshed at once.** Vertices are
+/// welded by position across everything given, so passing every face of the
+/// arrangement in one call gives one vertex array with the materials sharing
+/// their boundary vertices; the tag says which face, and so which material,
+/// each triangle is.
 pub fn tagged(
     shapes: &Shapes,
     grid: &Grid,
@@ -173,7 +155,7 @@ pub fn tagged(
 ) -> (Tri, Vec<u32>, Stats) {
     let mut of_region: Vec<u32> = Vec::new();
     let mut tri = Tri::default();
-    let mut stats = Stats { regions: shapes.len(), ..Stats::default() };
+    let mut stats = Stats::default();
     let mut index: HashMap<[i64; 2], u32> = HashMap::new();
     let mut vertex = |p: Pt, tri: &mut Tri| -> u32 {
         *index.entry([(p[0] / WELD_M).round() as i64, (p[1] / WELD_M).round() as i64]).or_insert_with(|| {
@@ -181,17 +163,10 @@ pub fn tagged(
             (tri.positions.len() - 1) as u32
         })
     };
-    let mut perimeter = 0.0;
     let shapes = cleaned_together(shapes);
     for (region, shape) in shapes.iter().enumerate() {
         for (shape, ears) in read(shape, &mut stats) {
             let want = poly::area(std::slice::from_ref(&shape));
-            for ring in &shape {
-                for i in 0..ring.len() {
-                    let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
-                    perimeter += (b[0] - a[0]).hypot(b[1] - a[1]);
-                }
-            }
             let mut got = 0.0;
             for ear in ears {
                 for piece in split(ear.to_vec(), grid) {
@@ -222,37 +197,15 @@ pub fn tagged(
     }
     stats.joined = weld_open(&mut tri, &mut of_region);
     stats.junctions = close_t_junctions(&mut tri, &mut of_region);
-    // **The one-sided edges are summed in a defined order.** They were read
-    // straight off `edges`, and a `HashMap`'s iteration order is the
-    // hasher's, which `RandomState` reseeds per process — so a sum of ~10^5
-    // lengths at kilometre magnitudes came out differing in its last bits
-    // from one run to the next. `seam` is that sum *less a perimeter of the
-    // same size*, all cancellation, so the jitter was the whole of the
-    // reported number: 2.6e-9, 3.2e-9, 8.6e-9 over three runs of one binary
-    // on one input. The geometry never moved with it — the GLB is
-    // byte-identical across those runs — but a check nobody can reproduce is
-    // a check that cannot gate anything.
-    //
-    // Sorting by the edge's own key is enough, because the vertex indices
-    // are assigned in construction order and nothing else here reads a map:
-    // the map is a set of counts, and this is the one place it was iterated.
-    let boundary: f64 = one_sided(&tri.indices, |_| true)
-        .iter()
-        .map(|&(a, b)| {
-            let (p, q) = (tri.positions[a as usize], tri.positions[b as usize]);
-            (q[0] - p[0]).hypot(q[1] - p[1])
-        })
-        .sum();
-    stats.seam = (boundary - perimeter).abs();
     (tri, of_region, stats)
 }
 
 /// Every edge that exactly one of the triangles `keep` accepts uses, as
 /// `(low, high)` vertex pairs in ascending order.
 ///
-/// Counted by sorting packed keys rather than in a map: over the loop box
-/// the one mesh has 42 M edge uses, and a hash map of them was most of the
-/// mesh step's time.
+/// Counted by sorting packed keys rather than in a map: the one mesh has
+/// tens of millions of edge uses, and a hash map of them would be most of
+/// the mesh step's time.
 pub fn one_sided(indices: &[u32], keep: impl Fn(usize) -> bool) -> Vec<(u32, u32)> {
     let mut keys: Vec<u64> = Vec::with_capacity(indices.len());
     for (i, t) in indices.chunks_exact(3).enumerate() {
@@ -280,8 +233,8 @@ pub fn one_sided(indices: &[u32], keep: impl Fn(usize) -> bool) -> Vec<(u32, u32
 /// them, the edge one neighbour runs from the first and the other from the
 /// second. Each neighbour then cuts that edge at the lattice from its own
 /// start, and the two sets of crossings land ~1e-5 m apart along the whole
-/// of it: at a Montreux junction a carriageway and the ground shared a 10 m
-/// kerb line and not one vertex along it. Only open edges are asked, so a
+/// of it: a carriageway and the ground then share a kerb line and not one
+/// vertex along it. Only open edges are asked, so a
 /// mesh with none is untouched; a triangle two of whose corners merge is
 /// dropped, as a weld drops it.
 fn weld_open(tri: &mut Tri, of_region: &mut Vec<u32>) -> usize {
@@ -342,11 +295,11 @@ fn weld_open(tri: &mut Tri, of_region: &mut Vec<u32>) -> usize {
 ///
 /// **A degenerate ear leaves one.** The ear clipper, bridging a hole to
 /// the next along the line a ring's own edge runs on, cuts an ear whose
-/// three corners are collinear — `ridge`'s portal, where the carriageway's
-/// end and the ground's hole corner meet a bridge running on along the
-/// same kerb line. The ear has no area and is dropped, and the triangle on
-/// the far side of the ring's edge is left spanning two of its corners with
-/// the third lying on it: a crack along that edge, 10 m of it on `ridge`.
+/// three corners are collinear — at a portal, for one, where the
+/// carriageway's end and the ground's hole corner meet a bridge running on
+/// along the same kerb line. The ear has no area and is dropped, and the
+/// triangle on the far side of the ring's edge is left spanning two of its
+/// corners with the third lying on it: a crack along that edge.
 /// Every vertex involved is already a vertex of the mesh, so the repair adds
 /// none; it only fans the one triangle out from the vertex that was skipped.
 ///
@@ -452,9 +405,9 @@ fn close_t_junctions(tri: &mut Tri, of_region: &mut Vec<u32>) -> usize {
 /// touching another, a spike a lattice cell wide) — the shapes the
 /// kernel's union of it separates into, each cleaned and gated again.
 /// What cannot be read either way is meshed as the clipper had it, and
-/// counted. Every check downstream reads the rings returned here, never
-/// the ones passed in, so the seam is measured against the boundary that
-/// was actually triangulated.
+/// counted. `lost_m2` reads the rings returned here, never the ones passed
+/// in, so it is measured against the boundary that was actually
+/// triangulated.
 fn read(shape: &poly::Shape, stats: &mut Stats) -> Vec<(poly::Shape, Vec<[Pt; 3]>)> {
     let Some(shape) = readable(shape, false) else {
         return Vec::new();
@@ -543,10 +496,10 @@ fn tri_area(t: [Pt; 3]) -> f64 {
 /// the ear clipper reads each triple as a sliver ear and, stuck on the
 /// next, cures itself by dropping a vertex some other ear still uses — a
 /// T-junction on the boundary at every second vertex.
-pub const COLLINEAR_M: f64 = 1e-4;
+const COLLINEAR_M: f64 = 1e-4;
 
 /// `ring` without the vertices that add no shape: a repeated point, a point
-/// within [`COLLINEAR_M`] of the segment between its neighbours, and the
+/// within `COLLINEAR_M` of the segment between its neighbours, and the
 /// tip of a spike — a vertex the ring doubles back at, one neighbour lying
 /// on the segment to the other within the same tolerance — which the
 /// kernel leaves a lattice cell wide along a boundary and which, meshed,
@@ -563,9 +516,9 @@ pub fn cleaned(ring: &[Pt]) -> Vec<Pt> {
         let Some(i) = (0..n).find(|&i| {
             let (a, b, c) = (out[(i + n - 1) % n], out[i], out[(i + 1) % n]);
             a == b
-                || poly::segment_distance(a, c, b) < COLLINEAR_M
-                || poly::segment_distance(a, b, c) < COLLINEAR_M
-                || poly::segment_distance(b, c, a) < COLLINEAR_M
+                || line::segment_distance(a, c, b) < COLLINEAR_M
+                || line::segment_distance(a, b, c) < COLLINEAR_M
+                || line::segment_distance(b, c, a) < COLLINEAR_M
         }) else {
             return out;
         };
@@ -581,22 +534,20 @@ pub fn cleaned(ring: &[Pt]) -> Vec<Pt> {
 /// a straight edge of one ring can be a corner of the next. Where a road's
 /// butt end meets the ground and a pavement, the point they meet at is a
 /// corner of both and a point on the carriageway's straight end; cleaned
-/// ring by ring it went from the carriageway alone, and the one mesh had a
-/// T-junction there — 10 m of crack on `net:sidewalk`, 13 km over the
-/// Montreux junction box. Each mesh used to be triangulated on its own, so
-/// nothing ever set the two sides of such an edge against each other.
+/// ring by ring it would go from the carriageway alone, and the one mesh
+/// would have a T-junction there.
 ///
 /// Two neighbours never go in one pass, so a chain of near-collinear
 /// vertices drifts off its line by at most one [`COLLINEAR_M`] per vertex
 /// removed, as it does one ring at a time.
-pub fn cleaned_together(shapes: &Shapes) -> Shapes {
+fn cleaned_together(shapes: &Shapes) -> Shapes {
     type Key = (u64, u64);
     let key = |p: &Pt| (p[0].to_bits(), p[1].to_bits());
     let removable = |a: Pt, b: Pt, c: Pt| {
         a == b
-            || poly::segment_distance(a, c, b) < COLLINEAR_M
-            || poly::segment_distance(a, b, c) < COLLINEAR_M
-            || poly::segment_distance(b, c, a) < COLLINEAR_M
+            || line::segment_distance(a, c, b) < COLLINEAR_M
+            || line::segment_distance(a, b, c) < COLLINEAR_M
+            || line::segment_distance(b, c, a) < COLLINEAR_M
     };
     // **A face of no area has no say.** The slice leaves needles where cut
     // lines nearly coincide — a ring `A, B, C, B`, which bounds nothing — and
@@ -612,9 +563,8 @@ pub fn cleaned_together(shapes: &Shapes) -> Shapes {
     // a ring reads `A, B, A` it has walked out along a segment and back, which
     // bounds nothing; `B, A` goes, whatever any other ring thinks of `A` and
     // `B`, because both are still in the ring once. The collinear test below
-    // cannot do it when both are corners of a neighbour, and at a Montreux
-    // junction that left a carriageway ring tracing one 0.5 mm segment three
-    // times beside a ground ring that traced it once.
+    // cannot do it when both are corners of a neighbour, and a ring tracing a
+    // segment three times beside a neighbour that traces it once is a crack.
     for ring in out.iter_mut().flatten() {
         loop {
             let n = ring.len();
@@ -750,10 +700,10 @@ pub fn split(poly: Vec<Pt>, grid: &Grid) -> Vec<Vec<Pt>> {
 
 /// `piece` cut by the line `f = k`: the part with `f ≤ k` and the part
 /// with `f ≥ k`, in the piece's winding. A vertex on the line (within
-/// [`ON_LINE`]) belongs to both; a crossing point is computed from the
+/// `ON_LINE`) belongs to both; a crossing point is computed from the
 /// edge's endpoints in lexicographic order, so the two pieces of an edge
 /// two polygons share agree bit for bit.
-pub fn halve(piece: &[Pt], f: &dyn Fn(Pt) -> f64, k: f64) -> (Vec<Pt>, Vec<Pt>) {
+fn halve(piece: &[Pt], f: &dyn Fn(Pt) -> f64, k: f64) -> (Vec<Pt>, Vec<Pt>) {
     let (mut below, mut above) = (Vec::new(), Vec::new());
     let n = piece.len();
     for i in 0..n {
@@ -789,19 +739,13 @@ pub(crate) mod tests {
     use crate::world::World;
     use crate::pipeline::tests::{built, upto};
     use crate::step::Step;
-    
-
     use crate::frame::Rect;
-    
-    
-
     use super::*;
     use crate::lattice::height_at;
-    use crate::mesh::view;
     use crate::step::Summary;
 
     /// A world on `terrain_spec` with the network of `net`, built through
-    /// the room step and meshed.
+    /// the mesh step.
     pub(crate) fn world(terrain_spec: &str, net: &str) -> (World, Summary) {
         let (w, ran) = built(terrain_spec, net, None, 5.0, &upto(Step::Mesh));
         (w, ran.last())
@@ -809,7 +753,7 @@ pub(crate) mod tests {
 
     /// The unlifted triangles of one material.
     fn of(w: &World, material: Material) -> Tri {
-        view(w.mesh.as_ref().unwrap(), w.arrangement.as_ref().unwrap(), |f| f.material == material)
+        w.mesh.as_ref().unwrap().view(w.arrangement.as_ref().unwrap(), |f| f.material == material)
     }
 
     fn area_of(tri: &Tri) -> f64 {
@@ -920,8 +864,8 @@ pub(crate) mod tests {
         assert!(c.positions.iter().all(|p| p[2] == 400.0));
         assert!(of(&w, Material::Pavement).indices.is_empty());
         assert_eq!(s.get("failed"), Some("0"), "{s}");
-        // Over the whole rect now, the ground with its holes included: 3.3e-6
-        // m² of 1.7 km² is the ear sums' rounding, 2e-12 of what was meshed.
+        // Over the whole rect, the ground with its holes included: what is
+        // lost is the ear sums' rounding.
         assert!(s.num("lost_m2") < 1e-5 && s.num("off_ground") < 1e-9, "{s}");
         assert_eq!(s.num("crack"), 0.0, "{s}");
         // Every triangle counter-clockwise, seen from above.
@@ -966,8 +910,8 @@ pub(crate) mod tests {
     /// **One mesh: the materials share their vertices by index.** A kerb
     /// vertex is one entry of one array, reached from a carriageway triangle
     /// and from a pavement triangle alike, and an outline vertex likewise
-    /// from the paving and the ground — so the bench finds every copy of it
-    /// from that index and never by where it lies.
+    /// from the paving and the ground — so the lift and the earthwork find
+    /// every copy of it from that index and never by where it lies.
     #[test]
     fn one_mesh_shares_its_vertices_between_materials() {
         let (w, _) = world("flat", "net:sidewalk?d=6");

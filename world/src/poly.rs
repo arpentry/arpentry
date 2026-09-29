@@ -13,10 +13,11 @@
 //!    the input's bounding box, so the same road would snap differently
 //!    depending on what it was batched with. Every operation here — the
 //!    booleans, the slice, the buffers and the offsets — runs on one adapter
-//!    centred on the frame origin ([`PIN_M`]; the last two by way of
-//!    [`SENTINELS`], having no entry point that takes one), so an integer in
-//!    is an integer out and only newly created vertices round — once. Identical input yields identical output, which is what makes
-//!    the SVG and the GLB functions of the world alone. At 0.1 mm over a
+//!    centred on the frame origin (`PIN_M`; the last two by way of
+//!    `SENTINELS`, having no entry point that takes one), so an integer in
+//!    is an integer out and only newly created vertices round — once.
+//!    Identical input yields identical output, which is what makes the SVG
+//!    and the GLB functions of the world alone. At 0.1 mm over a
 //!    ±16 km world the `i64` engine uses ±1.6·10⁸ of its ±9·10¹⁸ range.
 //!
 //! 2. **Round joins, and round caps where legs join.** The tiler buffered
@@ -123,22 +124,20 @@ pub fn intersect(a: &Shapes, b: &Shapes) -> Shapes {
 ///
 /// Every returned face is a region of `outer`, the faces are disjoint, and
 /// together they are `outer` — but the point of the operation is what they
-/// share rather than what they cover. A boolean expression computes each face
-/// separately and snaps *each* result to the lattice, so the same conceptual
-/// edge computed two ways lands on two sets of points up to half a grid
-/// apart: that is the whole of `bench`'s `seam` and `unmet`, and it is why a
-/// cross-mesh lookup has to ask the eight cells around a key
-/// (`data/plans/one-ground-2026-09-16.md` §3.1, §4.2). Sliced instead, every
-/// face's boundary is built from **one** set of split points, so a vertex on
-/// a shared edge is the same `Pt` — bit for bit — in both faces that carry
-/// it.
+/// share rather than what they cover. Boolean expressions compute each face
+/// separately, and two expressions that share an edge in concept need not
+/// share its vertices: a union dissolves the edge where two pieces touch and
+/// adds points where they cross, and a piece computed on its own does
+/// neither. Sliced instead, every face's boundary is built from **one** set
+/// of split points, so a vertex on a shared edge is the same `Pt` — bit for
+/// bit — in both faces that carry it.
 ///
 /// `cuts` are open or closed lines, not regions: a ring passed here is a
 /// *cut*, and which side of it is which is not asked. Tagging the faces is
 /// the caller's, and is a point-in-region test per face rather than another
 /// boolean.
 ///
-/// The scale is the pinned one [`overlay`] uses, so a slice and a boolean
+/// The scale is the pinned one `overlay` uses, so a slice and a boolean
 /// over the same world land on the same lattice.
 pub fn slice(outer: &Shapes, cuts: &[Ring]) -> Shapes {
     if outer.is_empty() {
@@ -150,11 +149,9 @@ pub fn slice(outer: &Shapes, cuts: &[Ring]) -> Shapes {
     // **On the pinned lattice, like every other boolean here.**
     // `slice_by_fixed_scale` takes a scale but builds its adapter from the
     // *input's own bounds*, so its origin moves with the data and its output
-    // floats land between [`overlay`]'s. Measured on `house:across`: the
-    // union of faces cut that way invented **all 27** of its vertices —
-    // not one of them was a face vertex — because every one of them was off
-    // this lattice. Built through the same adapter, a sliced vertex and an
-    // overlaid one are the same `f64`.
+    // floats land between [`overlay`]'s: a union of faces cut that way
+    // invents vertices none of the faces has. Built through the same adapter,
+    // a sliced vertex and an overlaid one are the same `f64`.
     let rect = FloatRect::new(-PIN_M, PIN_M, -PIN_M, PIN_M);
     let adapter = FloatPointAdapter::<Pt, i64>::with_scale(rect, SCALE);
     let cap = outer.iter().flatten().map(Vec::len).sum::<usize>()
@@ -176,9 +173,8 @@ pub fn slice(outer: &Shapes, cuts: &[Ring]) -> Shapes {
 /// on `net:level` the carriageway's edge along `y = 2.75` is one 200 m
 /// segment, while the ground's side of the same line is three, because the
 /// railway crosses there and cuts the ground but not the road. That is a real
-/// T-junction, and `data/plans/one-ground-2026-09-16.md` §3.3's rule — an
-/// edge is welded or split, and the mesher emits the quad — cannot be written
-/// over one.
+/// T-junction, and an edge rule — an edge is welded or split, with a face
+/// drawn across the split — cannot be written over one.
 ///
 /// After this every segment away from the outer border is carried by exactly
 /// two rings, which is what `dangling` measures.
@@ -189,16 +185,14 @@ pub fn slice(outer: &Shapes, cuts: &[Ring]) -> Shapes {
 ///
 /// **Repeated until nothing is inserted.** A vertex put on a segment bends it
 /// by up to a grid step, and a vertex within a grid step of the bent piece
-/// need not be within one of the straight segment it came from: on the loop
-/// box a carriageway's 9.3 m edge took a corner 4.5e-5 m off it, and the
-/// pavement's next corner lay 8.8e-5 m off the new piece but 1.3e-4 m off the
-/// old edge. Tested once against the old edge it was skipped, and the mesh
-/// cracked there (`unmet`). Each pass tests the pieces the last one made.
+/// need not be within one of the straight segment it came from, and tested
+/// only against the old edge it would be skipped and the mesh would crack
+/// there. Each pass tests the pieces the last one made.
 pub fn conform(shapes: &Shapes) -> Shapes {
     let count = |s: &Shapes| s.iter().flatten().map(Vec::len).sum::<usize>();
     let mut out = conform_once(shapes);
     // A pass only inserts, so the count settling is the fixpoint. Two passes
-    // settle every case the loop box has; the cap is a guard, not a budget.
+    // settle it in practice; the cap is a guard, not a budget.
     for _ in 0..8 {
         let next = conform_once(&out);
         if count(&next) == count(&out) {
@@ -243,8 +237,8 @@ fn conform_once(shapes: &Shapes) -> Shapes {
                                 // Only the ends themselves are not on the segment: a
                                 // neighbour's corner a grid step from an end is a
                                 // vertex of its own, and skipped as if it were the
-                                // end it left a T-junction the mesh cracked along.
-                                if p == a || p == b || segment_distance(a, b, p) > GRID_M {
+                                // end it would leave a T-junction in the mesh.
+                                if p == a || p == b || crate::line::segment_distance(a, b, p) > GRID_M {
                                     continue;
                                 }
                                 let s = ((p[0] - a[0]) * (b[0] - a[0])
@@ -275,9 +269,7 @@ fn conform_once(shapes: &Shapes) -> Shapes {
 /// two corners a grid step or two apart, one in each face that meets there,
 /// and they are one point. Neither [`conform`] nor the mesher can pair them:
 /// the first splits a segment only at a vertex *on* it and the neighbour's
-/// edge ends at the twin, the second welds at a micron. Over the loop box that
-/// was 35 of the arrangement's 40 T-junctions and most of the mesh's cracks.
-/// The representative is the least by coordinates, so the answer does not
+/// edge ends at the twin, the second welds at a micron. The representative is the least by coordinates, so the answer does not
 /// depend on the order the faces come in.
 pub fn snap_twins(shapes: &Shapes, tol: f64) -> Shapes {
     let key = |p: &Pt| (p[0].to_bits(), p[1].to_bits());
@@ -344,15 +336,13 @@ pub fn snap_twins(shapes: &Shapes, tol: f64) -> Shapes {
 }
 
 /// Every ring of `shapes`, outer boundaries and holes alike, as cut lines for
-/// [`slice`].
+/// [`crate::poly::slice`].
 ///
 /// **Closed explicitly.** A [`Ring`] does not repeat its first point, and a
 /// cut is a *string* — an open polyline. Passed as it is stored, every ring
 /// loses the edge from its last vertex back to its first, so the cut does not
 /// close and the region it was meant to separate stays joined to its
-/// neighbour. Measured on `net:roundabout`: 6 rings of 376 vertices cut the
-/// rect into 3 faces with the carriageway missing entirely, against 8 faces
-/// with the rings closed.
+/// neighbour: a roundabout's carriageway would not be a face at all.
 pub fn rings(shapes: &Shapes) -> Vec<Ring> {
     shapes
         .iter()
@@ -377,11 +367,10 @@ pub fn rings(shapes: &Shapes) -> Vec<Ring> {
 /// A diagonal between a vertex and the one two along is the textbook answer
 /// and is wrong here: it is inside any *simple* polygon, and a face with
 /// holes is not one. The rect's own face is the case — four corners, every
-/// ear midpoint the rect's centre, and the centre is in the roundabout. It
-/// returned `None` for the 1.7 km² ground face of `net:roundabout`.
+/// such midpoint the rect's centre, and the centre may be in a roundabout.
 ///
 /// `None` for a degenerate ring, and for a face thinner than
-/// [`PROBE_MIN_M`] — which has no inside this can name, and which a caller
+/// `PROBE_MIN_M` — which has no inside this can name, and which a caller
 /// must not tag by guessing.
 pub fn inside(shape: &Shape) -> Option<Pt> {
     let ring = shape.first()?;
@@ -398,10 +387,9 @@ pub fn inside(shape: &Shape) -> Option<Pt> {
     //
     // Without it the preference for the largest step picks the ambiguous
     // point: on a band a metre wide, stepping 1.0 m in from one long edge
-    // lands exactly on the other, `contains` said yes, and the probe for the
-    // *far* half of a sidewalk sat on the line dividing it from the near
-    // half. Every face came back tagged near, `walk_far_m2` read 0, and the
-    // bench lifted a band it should have draped.
+    // lands exactly on the other, and the probe for the *far* half of a
+    // sidewalk would sit on the line dividing it from the near half, tag it
+    // near, and have the lift raise a band it should drape.
     let strict = |q: Pt| {
         contains(&one, q)
             && [[PROBE_MIN_M, 0.0], [-PROBE_MIN_M, 0.0], [0.0, PROBE_MIN_M], [0.0, -PROBE_MIN_M]]
@@ -443,7 +431,7 @@ pub fn inside(shape: &Shape) -> Option<Pt> {
 /// Under this the answer is not wrong so much as unasked — `contains` at the
 /// lattice cannot separate just-inside from just-outside — and a face this
 /// thin carries no area worth tagging.
-pub const PROBE_MIN_M: f64 = 10.0 * GRID_M;
+const PROBE_MIN_M: f64 = 10.0 * GRID_M;
 
 /// Arc resolution for round caps and joins, as `L/R` (segment length over
 /// radius). At a 2.75 m half-width this puts a vertex every 0.55 m round a
@@ -477,12 +465,11 @@ pub fn buffer_line_capped(line: &[Pt], width_m: f64, round: [bool; 2]) -> Shapes
 /// or an outline to [`overlay`]'s lattice.
 ///
 /// `i_overlay` has no entry point that takes an adapter for either: both
-/// build one from the *input's* bounding box, centred on its middle, so a
-/// buffered line landed on a lattice of its own — every vertex of a plain
-/// ribbon up to 1.5e-5 m off [`GRID_M`], and a `dilate` of a shape already
-/// on it up to 5e-5 m, half a step. Every closing in the plan chain then fed
-/// the next boolean points it had to re-round, and the same piece buffered
-/// alone and buffered in a group came out on different lattices. With the
+/// build one from the *input's* bounding box, centred on its middle, so
+/// without the sentinels a buffered line lands on a lattice of its own, up
+/// to half a step off [`GRID_M`]. Every closing would then feed the next
+/// boolean points it has to re-round, and the same piece buffered alone and
+/// buffered in a group would come out on different lattices. With the
 /// sentinels in, the bounding box is `[-PIN_M, PIN_M]` about the origin, its
 /// centre is exactly zero, and the adapter is [`overlay`]'s. A one-point path
 /// strokes to nothing and a one-point contour outlines to nothing, so they
@@ -624,42 +611,6 @@ pub fn bounds(pts: impl IntoIterator<Item = Pt>) -> Option<[f64; 4]> {
     (b[0] <= b[2]).then_some(b)
 }
 
-/// `v` scaled to unit length; the zero vector stays zero.
-pub fn unit(v: Pt) -> Pt {
-    let len = v[0].hypot(v[1]);
-    if len < 1e-12 {
-        [0.0, 0.0]
-    } else {
-        [v[0] / len, v[1] / len]
-    }
-}
-
-/// The length of the polyline `pts`, in metres.
-pub fn length(pts: &[Pt]) -> f64 {
-    pts.windows(2).map(|p| (p[1][0] - p[0][0]).hypot(p[1][1] - p[0][1])).sum()
-}
-
-/// How far the path `a → b → c` turns at `b`, in degrees: positive to the
-/// left, negative to the right.
-pub fn turn_deg(a: Pt, b: Pt, c: Pt) -> f64 {
-    let (u, v) = (unit([b[0] - a[0], b[1] - a[1]]), unit([c[0] - b[0], c[1] - b[1]]));
-    (u[0] * v[1] - u[1] * v[0]).atan2(u[0] * v[0] + u[1] * v[1]).to_degrees()
-}
-
-/// The point of the segment `ab` nearest `p`.
-pub fn nearest_on_segment(a: Pt, b: Pt, p: Pt) -> Pt {
-    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-    let len2 = dx * dx + dy * dy;
-    let t = if len2 > 0.0 { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
-    [a[0] + dx * t, a[1] + dy * t]
-}
-
-/// The distance from `p` to the segment `ab`.
-pub fn segment_distance(a: Pt, b: Pt, p: Pt) -> f64 {
-    let f = nearest_on_segment(a, b, p);
-    (p[0] - f[0]).hypot(p[1] - f[1])
-}
-
 /// Whether `p` lies inside `shapes`: inside some region's outer boundary and
 /// outside its holes. Even-odd over each region's rings, which is the same
 /// answer as non-zero because a hole lies inside its outer boundary. A point
@@ -795,7 +746,7 @@ impl Edges {
             (-1..=1).any(|dr| {
                 self.cells
                     .get(&(c + dc, row + dr))
-                    .is_some_and(|v| v.iter().any(|&(a, b)| segment_distance(a, b, p) <= r))
+                    .is_some_and(|v| v.iter().any(|&(a, b)| crate::line::segment_distance(a, b, p) <= r))
             })
         })
     }
@@ -809,44 +760,6 @@ fn crosses(a: Pt, b: Pt, p: Pt) -> bool {
 /// How many edges of `ring` a ray from `p` toward +x crosses.
 fn ring_crossings(ring: &Ring, p: Pt) -> usize {
     (0..ring.len()).filter(|&i| crosses(ring[i], ring[(i + 1) % ring.len()], p)).count()
-}
-
-/// Where the segments `ab` and `cd` properly cross — each strictly
-/// separating the other's ends — or `None`. A touch at an endpoint is not
-/// a crossing: that is how a junction is drawn, and how two pieces of one
-/// way meet.
-pub fn proper_crossing(a: Pt, b: Pt, c: Pt, d: Pt) -> Option<Pt> {
-    let side = |p: Pt, q: Pt, r: Pt| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
-    let (s1, s2) = (side(a, b, c), side(a, b, d));
-    let (s3, s4) = (side(c, d, a), side(c, d, b));
-    if !(s1 * s2 < 0.0 && s3 * s4 < 0.0) {
-        return None;
-    }
-    let t = s3 / (s3 - s4);
-    Some([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
-}
-
-/// `pts` resampled every `step` metres, the original vertices kept, the
-/// last point always present.
-pub fn resample(pts: &[Pt], step: f64) -> Vec<Pt> {
-    let mut out: Vec<Pt> = Vec::new();
-    let Some(&first) = pts.first() else {
-        return out;
-    };
-    out.push(first);
-    for pair in pts.windows(2) {
-        let (p, q) = (pair[0], pair[1]);
-        let len = (q[0] - p[0]).hypot(q[1] - p[1]);
-        let n = (len / step).floor() as usize;
-        for k in 1..=n {
-            let t = k as f64 * step / len;
-            if t < 1.0 - 1e-9 {
-                out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
-            }
-        }
-        out.push(q);
-    }
-    out
 }
 
 #[cfg(test)]
@@ -918,10 +831,9 @@ mod tests {
 
     /// The test above passes by accident of its line: its bounding box is
     /// centred on (0, 15), which is a lattice point, so even an adapter
-    /// built from the input's own box lands on [`GRID_M`]. A line whose box
-    /// is centred anywhere else did not — every vertex of this buffer read up
-    /// to 1.5e-5 m off the grid, and its dilation 5e-5 m — until the stroke
-    /// and the outline were pinned by [`SENTINELS`].
+    /// built from the input's own box lands on [`GRID_M`]. This line's box
+    /// is centred elsewhere, so only the [`SENTINELS`] put its stroke and
+    /// its offsets on the grid.
     #[test]
     fn buffers_and_offsets_land_on_the_booleans_lattice() {
         let on_grid = |shapes: &Shapes| {
@@ -1059,12 +971,8 @@ mod tests {
         assert!(convex_hull(vec![[1.0, 1.0], [1.0, 1.0]]).is_none());
         assert!(convex_hull(vec![[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]).is_none(), "a line has no area");
         assert_eq!(oriented(vec![[0.0, 0.0], [0.0, 1.0], [1.0, 0.0]], true), vec![[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]);
-        assert!((turn_deg([0.0, 0.0], [1.0, 0.0], [1.0, 1.0]) - 90.0).abs() < 1e-9);
-        assert!((turn_deg([0.0, 0.0], [1.0, 0.0], [1.0, -1.0]) + 90.0).abs() < 1e-9);
         assert_eq!(bounds([[1.0, 2.0], [-1.0, 5.0]]), Some([-1.0, 2.0, 1.0, 5.0]));
         assert_eq!(bounds([]), None);
-        assert!((segment_distance([0.0, 0.0], [2.0, 0.0], [3.0, 1.0]) - 2.0f64.sqrt()).abs() < 1e-12);
-        assert_eq!(nearest_on_segment([0.0, 0.0], [2.0, 0.0], [1.0, 1.0]), [1.0, 0.0]);
     }
 
     /// Every vertex of `shapes`, as the exact bits it is stored as.
@@ -1082,8 +990,8 @@ mod tests {
     }
 
     /// Vertices of `ground` that lie on no vertex of `paved` and are not on
-    /// the square's own edge: the ones a cross-mesh lookup cannot weld, which
-    /// is what `bench`'s `seam` and `unmet` count.
+    /// the square's own edge: the ones a lookup by position could not weld
+    /// to the paving.
     fn orphans(ground: &Shapes, paved: &Shapes) -> usize {
         let pk = keys(paved);
         ground
@@ -1095,15 +1003,11 @@ mod tests {
             .count()
     }
 
-    /// **An extra boolean over the same operands moves nothing**, and that is
-    /// worth knowing, because it is not what CLAUDE.md and
-    /// `data/plans/one-ground-2026-09-16.md` say the defect is.
-    ///
-    /// The stated mechanism is that "a point that has been through one more
-    /// boolean than its neighbour lands up to half a grid away". It cannot:
-    /// [`overlay`] pins the adapter, so every output point is an exact
-    /// multiple of [`GRID_M`], and feeding one back in maps to the same
-    /// integer. **Snapping is idempotent, and re-rounding is the identity.**
+    /// **An extra boolean over the same operands moves nothing.** [`overlay`]
+    /// pins the adapter, so every output point is an exact multiple of
+    /// [`GRID_M`], and feeding one back in maps to the same integer: snapping
+    /// is idempotent, and re-rounding is the identity. A point that has been
+    /// through one more boolean than its neighbour does not land elsewhere.
     #[test]
     fn a_boolean_over_a_snapped_operand_is_idempotent() {
         let (square, a, b) = cut_square();
@@ -1113,23 +1017,21 @@ mod tests {
         assert_eq!(orphans(&once, &twice), 0);
     }
 
-    /// **What does make two boundaries is two different regions**, which is
-    /// what the chain actually builds.
+    /// **What does make two boundaries is two different regions.**
     ///
-    /// The mesher is handed the paved pieces *separately* — `mesh::by_sheet`
-    /// meshes one sheet at a time — while the hole is cut from their
-    /// **union** (`bench`: `union_all(sheets.shapes()) − spanned`). Where two
-    /// pieces touch, the union dissolves the edge between them and puts
-    /// vertices where they crossed; the separately meshed pieces keep that
-    /// edge and have no such vertices. The two are not one boundary rounded
-    /// twice. They are two boundaries, and no amount of care with the lattice
-    /// reconciles them.
+    /// Paved pieces taken *separately*, against a hole cut from their
+    /// **union**: where two pieces touch, the union dissolves the edge
+    /// between them and puts vertices where they cross; the separate pieces
+    /// keep that edge and have no such vertices. The two are not one boundary
+    /// rounded twice. They are two boundaries, and no amount of care with the
+    /// lattice reconciles them — which is why the arrangement slices the rect
+    /// once ([`slice`]).
     #[test]
     fn a_union_dissolves_the_edge_the_mesher_kept() {
         let (square, a, b) = cut_square();
-        // As the mesher gets it: two overlapping pieces, each on its own.
+        // Piece by piece: two overlapping pieces, each on its own.
         let pieces: Shapes = a.iter().chain(b.iter()).cloned().collect();
-        // As the hole gets it: their union.
+        // As a hole: their union.
         let ground = difference(&square, &union_of(&[&a, &b]));
 
         let orphaned = orphans(&ground, &pieces);
@@ -1143,11 +1045,10 @@ mod tests {
 
     /// **One slice gives one set of split points.**
     ///
-    /// The property §3.1 needs, and the answer to the test above: cut the
-    /// square by the paving's own rings and the ground's boundary *is* those
-    /// rings — every vertex of it, away from the square's edge, is a vertex
-    /// of the paved faces, bit for bit. `seam` and `unmet` then have no
-    /// subject rather than a smaller value.
+    /// The answer to the test above: cut the square by the paving's own
+    /// rings and the ground's boundary *is* those rings — every vertex of it,
+    /// away from the square's edge, is a vertex of the paved faces, bit for
+    /// bit, so a lookup by position has nothing left to miss.
     #[test]
     fn one_slice_gives_one_set_of_split_points() {
         let (square, a, b) = cut_square();
@@ -1225,7 +1126,7 @@ mod tests {
 
     #[test]
     fn a_vertex_on_a_piece_conform_made_is_on_it() {
-        // The loop box's site, to the digit. The carriageway's edge runs
+        // A real site, to the digit. The carriageway's edge runs
         // straight from (980.0734, 165.6236) to (976.9768, 156.7938); the
         // pavement beside it has two corners on that line, the first 4.5e-5 m
         // off it and the second 1.3e-4 m off it but 8.8e-5 m off the piece

@@ -4,8 +4,8 @@
 //! height — the same formula, and the same constant, as the synthetic ground
 //! in `arpentry_server::dem::Field`, so a ramp of grade `g` is exactly
 //! `g·east` in this frame and a test can assert it to the ulp. One shared
-//! `DEG_M` is the point: the server once carried three competing constants and
-//! measured a 0.70 % north–south bias between them (`scene.rs`).
+//! `DEG_M` is the point: two frames built on different constants disagree by
+//! a north–south bias that no single step can see.
 //!
 //! For a box under ~15 km the projection error is well below anything a step
 //! will ever assert on, and the frame is trivially invertible, which the DEM

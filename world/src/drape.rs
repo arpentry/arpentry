@@ -35,7 +35,7 @@ pub fn run(extent: &Extent, terrain: &Terrain, segments: &Path) -> Result<(Roads
     let (mut pieces, mut vertices) = (0usize, 0usize);
     // The *whole* way is draped, spans and all: the drawn centreline is the
     // way the source drew, and the cut into ground and structure pieces is
-    // the partition step's (R1).
+    // the partition step's.
     for way in &read.ways {
         let pts = drape(terrain, &way.pts);
         pieces += pts.len().saturating_sub(1);
@@ -51,7 +51,7 @@ pub fn run(extent: &Extent, terrain: &Terrain, segments: &Path) -> Result<(Roads
     let summary = Summary::new()
         .with("features", read.features)
         .with("ways", read.kept)
-        .with("structures", format!("{} ({} off the ground entirely)", read.structures, read.dropped))
+        .with("structures", format!("{} ({} off the ground entirely)", read.structures, read.aloft))
         .with("measured", read.measured)
         .with("oneway", read.oneway)
         .with("rail", format!("{} ({} street rail not kept)", read.rail, read.street_rail))

@@ -4,21 +4,21 @@
 //! goes all the way there. A street in a town is the whole room between
 //! the buildings either side of it: asphalt in the middle at its prior
 //! width, and whatever is left up to the walls is pavement, whether or not
-//! a mapper drew a sidewalk line down it. Before this step that remainder
-//! was bare ground — a metre or two of nothing between the kerb and a
-//! house front down every lane in the box, and a pocket of nothing in
-//! every junction corner a building stands near.
+//! a mapper drew a sidewalk line down it. Without this step that remainder
+//! is bare ground — a metre or two of nothing between the kerb and a house
+//! front down every lane, and a pocket of nothing in every junction corner
+//! a building stands near.
 //!
 //! The rule is the one a town follows. **A sidewalk runs along the kerb
 //! wherever the kerb runs along a facade.** Every metre along the
 //! carriageway's boundary a probe marches outward, normal to the kerb, for
 //! at most [`WALL_REACH_M`]; where it meets a wall, and the wall is a
 //! *face* — its distance changes between neighbouring stations by less
-//! than [`FACE_MAX_GRADE`], a wall within thirty degrees of the kerb —
+//! than `FACE_MAX_GRADE`, a wall within thirty degrees of the kerb —
 //! the station is walled. Walled stations form runs, bridged across
-//! breaks under [`BRIDGE_M`] (a gap between two houses, a driveway, a
+//! breaks under `BRIDGE_M` (a gap between two houses, a driveway, a
 //! notch) and dropped under [`RUN_MIN_M`]. Each run is paved as a band
-//! [`BAND_M`] wide along the kerb, with flat ends, plus a strip from the
+//! `BAND_M` wide along the kerb, with flat ends, plus a strip from the
 //! kerb to the wall over every station of the run that saw one: a facade a
 //! metre off gets a metre of pavement, one three metres off gets pavement
 //! to its wall, an alley mouth gets the band across it and nothing
@@ -28,13 +28,12 @@
 //! to the house.
 //!
 //! A house corner that merely points at the road fails the face test at
-//! every station but one and gets nothing. That is the case the first
-//! construction got wrong: a morphological closing of asphalt and walls
-//! together filled every pinch a 2 m disc could not enter, which is the
-//! strip along a facade and the pocket at a junction corner, but also a
-//! lens of pavement bounded by arcs at every lone corner within reach —
-//! shapes nobody would pave, and the plan view was full of them. A
-//! closing does not know which wall it is closing against; the probe does.
+//! every station but one and gets nothing. A morphological closing of
+//! asphalt and walls together would fill every pinch a 2 m disc cannot
+//! enter — the strip along a facade and the pocket at a junction corner,
+//! but also a lens of pavement bounded by arcs at every lone corner within
+//! reach, a shape nobody would pave. A closing does not know which wall it
+//! is closing against; the probe does.
 //!
 //! **A mapped sidewalk is a wall to the kerb as well.** The kerb step
 //! attaches a sidewalk to its street and fills the strip between them,
@@ -49,17 +48,16 @@
 //! either side of it, and where a pavement runs on past the reach the
 //! nearer edge of the other side says how far.
 //!
-//! **The strip is one polygon per stretch, not a rung per station.** The
-//! first drawing was a 1.2 m rectangle per station, and along any reach
-//! that is not a wall — a pavement met obliquely, a bridge between two
-//! depths — the rectangles' flat ends stood out of the slanted edge
-//! between them as a row of teeth a metre apart. The quads between
-//! consecutive stations, closed half a station past either end, have the
-//! edge the reach points draw and nothing else.
+//! **The strip is one polygon per stretch, not a rung per station.** Along
+//! any reach that is not a wall — a pavement met obliquely, a bridge
+//! between two depths — a rectangle per station stands its flat ends out of
+//! the slanted edge between them as a row of teeth a metre apart. The quads
+//! between consecutive stations, closed half a station past either end,
+//! have the edge the reach points draw and nothing else.
 //!
 //! **A pocket is paved.** A hole in what is built — the asphalt, the
 //! pavement and the buildings together — under [`ISLAND_M2`], bordering
-//! asphalt or pavement and lying wholly within [`POCKET_REACH_M`] of the
+//! asphalt or pavement and lying wholly within `POCKET_REACH_M` of the
 //! asphalt, is pavement too: a roundabout's centre, a traffic island, the
 //! median between two carriageways, and the pocket of ground in a junction
 //! corner between a kerb, a footway and a house front, which no probe from
@@ -73,12 +71,16 @@
 //! enclosed by walls alone is a courtyard and stays what it is.
 //!
 //! The pavement is then the earlier pavement with the bands, strips and
-//! pockets, less the carriageway and less the walls.
+//! pockets, less the carriageway and less the walls, and less the scraps
+//! the booleans left: a region smaller than the smallest pavement this step
+//! draws that no wall, footbridge or enclosure explains.
 //!
-//! **The check.** `wall_gap` on the summary line is the share of stations
-//! in kept runs that face a wall or a pavement and have bare ground just
-//! outside them.
+//! **The checks.** The build's line reports `wall_gap`, the share of
+//! stations in kept runs that face a wall or a pavement and have bare
+//! ground just outside them. [`check`] reports `kerb_gap`
+//! ([`crate::gap::kerb_gaps`]) on the paved surface as it finally stands.
 
+use crate::line;
 use crate::gap::Bare;
 use crate::poly::{self, Indexed, Pt, Shape, Shapes};
 use crate::standard::{wide_enough, PAVEMENT_MIN_M, SIDEWALK_BRIDGE_M, STATION_M, WALL_REACH_M};
@@ -87,44 +89,42 @@ use crate::width::Family;
 use crate::world::{Facade, Room, Surface};
 
 /// The pavement's width along a built-up kerb, in metres: the norm.
-pub const BAND_M: f64 = crate::width::WALK_M;
+const BAND_M: f64 = crate::width::WALK_M;
 
 /// The most a wall's distance may change per metre of kerb for the wall
 /// to be a face the kerb runs along: `tan 30°`.
-pub const FACE_MAX_GRADE: f64 = 0.5774;
+const FACE_MAX_GRADE: f64 = 0.5774;
 
 /// A break between two walled stretches shorter than this, in metres, is
 /// bridged: a gap between two houses, a driveway, a notch.
-pub const BRIDGE_M: f64 = 10.0;
+const BRIDGE_M: f64 = 10.0;
 
 /// The shortest run of walled stations that is a pavement, in metres: a
 /// house front, not a corner glimpsed in passing.
 pub const RUN_MIN_M: f64 = 6.0;
 
 /// A hole in what is built smaller than this, in square metres, is an
-/// island or a pocket and is paved: a disc of 12.6 m radius, which takes
-/// every roundabout centre, traffic island and junction pocket in the
-/// loop box and leaves the smallest block, a 630 m² car-park loop, alone.
+/// island or a pocket and is paved: a disc of 12.6 m radius. Chosen to take
+/// every roundabout centre, traffic island and junction pocket of the
+/// Montreux loop box and leave its smallest block, a 630 m² car-park loop,
+/// alone.
 pub const ISLAND_M2: f64 = 500.0;
 
 /// How far from the asphalt every point of a pocket may lie for it to be
-/// the street's, in metres. Measured over the loop box, holes under the
-/// area sorted by how far they reach from the asphalt: within 6 m they
-/// are kerb-to-house strips and junction corners, but the two pockets a
-/// plan of the roundabout showed bare — a corner cut by a footway, a wedge
-/// between a house, a road and a footway — have far corners 8.5 m out;
-/// within 10 m the yards between the houses along two parallel streets
-/// join them, which in a town this dense are paved; past 10 m the holes
-/// are lawns between footpaths and blocks with no street in them, and at
-/// 15 m a third of the box's pavement would have been lawn.
-pub const POCKET_REACH_M: f64 = 10.0;
+/// the street's, in metres. Chosen from the holes under [`ISLAND_M2`]
+/// sorted by how far they reach from the asphalt: within 6 m they are
+/// kerb-to-house strips and junction corners; a corner cut by a footway,
+/// or a wedge between a house, a road and a footway, reaches 8.5 m; within
+/// 10 m the yards between the houses along two parallel streets join them,
+/// which in a dense town are paved; past 10 m the holes are lawns between
+/// footpaths and blocks with no street in them.
+const POCKET_REACH_M: f64 = 10.0;
 
 /// How much of `region`'s boundary has a wall [`EDGE_M`] outside it.
 ///
 /// Outside an outer (counter-clockwise) ring is to the **right** of each
 /// edge. Probing the left samples the region itself, which reads "nothing
-/// there" everywhere — the measurement that sent four candidate rules the
-/// wrong way before it was caught.
+/// there" everywhere.
 fn walled_share(region: &poly::Shape, walls: &Indexed) -> f64 {
     let (mut against, mut total) = (0.0f64, 0.0f64);
     for ring in region {
@@ -150,7 +150,7 @@ fn enclosed(region: &poly::Shape, by: &Indexed) -> bool {
     region.iter().all(|ring| {
         (0..ring.len()).all(|i| {
             let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
-            let t = poly::unit([b[0] - a[0], b[1] - a[1]]);
+            let t = line::unit([b[0] - a[0], b[1] - a[1]]);
             let m = [(a[0] + b[0]) * 0.5 + t[1] * EDGE_M, (a[1] + b[1]) * 0.5 - t[0] * EDGE_M];
             by.contains(m)
         })
@@ -166,7 +166,7 @@ fn onto(region: &poly::Shape, bridges: &Indexed) -> bool {
     region.iter().any(|ring| {
         (0..ring.len()).any(|i| {
             let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
-            let t = poly::unit([b[0] - a[0], b[1] - a[1]]);
+            let t = line::unit([b[0] - a[0], b[1] - a[1]]);
             let m = [(a[0] + b[0]) * 0.5 + t[1] * EDGE_M, (a[1] + b[1]) * 0.5 - t[0] * EDGE_M];
             bridges.contains(a) || bridges.contains(m)
         })
@@ -178,10 +178,8 @@ fn onto(region: &poly::Shape, bridges: &Indexed) -> bool {
 ///
 /// A quarter, and the margin is wide rather than the number fine. A strip
 /// squeezed between a kerb and a wall has the wall along one of its two
-/// long sides and the asphalt along the other, so it measures near a half
-/// and the specimens read **45 %**; the scraps beside the Montreux abutment
-/// read **1 % and 0 %**. Anything between those is a shape neither
-/// specimen nor site has yet produced.
+/// long sides and the asphalt along the other, so it measures near a half;
+/// a scrap a cut left standing in the open measures near nothing.
 const WALLED_SHARE: f64 = 0.25;
 
 /// The probe's step, in metres: fine enough that a wall's position is
@@ -209,7 +207,6 @@ const PROBE_M: f64 = 0.15;
 pub fn run(
     paving: &Surface,
     spans: &[(Family, usize, Shapes)],
-    attached: &[crate::world::Attached],
     facade: &Facade,
 ) -> (Room, Summary) {
     let Surface { carriageway, walk: before, spanned, .. } = paving;
@@ -220,8 +217,8 @@ pub fn run(
     // **Kept apart, so a region can be asked what made it.** The pavement
     // comes out of this step as one set of regions and the constructions
     // that feed it are several; a scrap of one is a defect and the same
-    // shape drawn by another is a place, and nothing could tell them apart
-    // while they were unioned on the way in.
+    // shape drawn by another is a place, and unioned on the way in nothing
+    // could tell them apart.
     let (mut bands, mut rungs): (Shapes, Shapes) = (Vec::new(), Vec::new());
     let (mut stations, mut runs, mut walled, mut kerbed) = (0usize, 0usize, 0usize, 0usize);
     let min = (RUN_MIN_M / STATION_M) as usize;
@@ -282,47 +279,35 @@ pub fn run(
     // probed to a wall across a railway stops at the track bed. And a kerb
     // or a probe that meets the bed has not met bare ground.
     let senior = paving.senior();
-    // **And the pavement holds its own minimum width.** The rule is the
-    // chain's, applied once where the chain ends: every boolean before this
-    // leaves scraps, and a region of pavement narrower than
-    // [`PAVEMENT_MIN_M`] is not a pavement — it is the leftover of one. At
-    // the Montreux overbridge two of them, 1.03 m² and 2.84 m², 0.41 m and
-    // 0.71 m wide, sat beside the abutment; the first came out of
-    // `surface`'s own cut and the second out of this step's bands, so no
-    // one step could have caught them and the finished surface is the only
-    // place that can. The ground pays for them twice over: each is a hole
-    // in the terrain with a wall round all of it, up at road level over a
-    // cutting.
     // **A pavement is bigger than the smallest one this step would draw.**
     // That is a band of [`PAVEMENT_MIN_M`] over [`RUN_MIN_M`] — the
     // narrowest strip over the shortest run of kerb it will start one for —
-    // and nothing under it was drawn on purpose. What is under it is what a
-    // boolean left: at the Montreux abutment a 1.03 m² scrap of footway
-    // ribbon standing in the open, and a 2.84 m² lobe that is the *round
-    // cap* of another, its body cut away by the asphalt and the cap left
-    // sitting in the kerb line. Each is a hole in the terrain with a wall
-    // round the whole of it, up at road level over a cutting.
+    // and nothing under it is drawn on purpose. What is under it is what a
+    // boolean left: a scrap of footway ribbon standing in the open, or the
+    // *round cap* of one whose body the asphalt cut away, left sitting in
+    // the kerb line. Each would be a hole in the terrain with a wall round
+    // the whole of it, up at road level over a cutting. Every boolean in the
+    // chain leaves such scraps, so the rule is applied once, where the chain
+    // ends.
     //
     // **Unless a wall explains it** ([`WALLED_SHARE`]). The one pavement
     // this step draws smaller than that is the strip against a facade — a
-    // notch, the pocket a kerb return leaves at a house corner — and the
-    // notch specimen's *whole* pavement is three such regions totalling
-    // 1.8 m². They are bounded by the wall they were drawn for. The two
-    // scraps are not: 1 % and 0 %.
+    // notch, the pocket a kerb return leaves at a house corner — and such a
+    // strip is bounded by the wall it was drawn for; a scrap is not.
     let paved = facade.pavement(&poly::union_of(&[&u, &pockets]), &senior);
     // **Nor a piece that runs onto a footbridge.** A footway's ground stub
     // between the kerb and the bridge it climbs onto is a few square metres
-    // and has no wall, and was dropped as a scrap — leaving the kerb beside
-    // it bare and the footbridge landing on nothing. No surface step paves a
-    // walk span, so nothing here could see the bridge it belongs to.
+    // and has no wall; dropped as a scrap, it would leave the kerb beside it
+    // bare and the footbridge landing on nothing. No surface step paves a
+    // walk span, so the bridge is asked for here.
     let walk_spans: Shapes =
         spans.iter().filter(|(f, ..)| *f == Family::Walk).flat_map(|(.., s)| s.iter().cloned()).collect();
     let bridges = Indexed::new(&walk_spans);
     // **Nor a court.** A small region with asphalt or walls all round it
     // and no bare ground at its edge is a place the street encloses — the
     // strip between two garage lanes and the garage they end at, four square
-    // metres — whichever construction paved it; dropped as a scrap, it left
-    // both kerbs facing bare ground. A scrap is what a cut left, and a cut
+    // metres — whichever construction paved it; dropped as a scrap, it would
+    // leave both kerbs facing bare ground. A scrap is what a cut left, and a cut
     // leaves it standing in the open: the round cap in the kerb line has
     // bare ground along most of it.
     let closed_by = Indexed::new(&poly::union_of(&[&senior, &facade.solid]));
@@ -344,8 +329,8 @@ pub fn run(
     // **Each source is asked once, for every scrap at once.** A scrap is a
     // square metre; the sources run to hundreds of thousands of them, and
     // `poly::intersect` feeds both operands to the overlay whole with no
-    // spatial culling — so asked scrap by scrap this was five full-surface
-    // booleans per scrap, and more than half of the world build. A scrap is
+    // spatial culling — so asked scrap by scrap it would be five
+    // full-surface booleans per scrap. A scrap is
     // contained in `scraps`, so intersecting it against what a source put
     // under *any* scrap is the same area as against the whole source.
     let scraps: Shapes = pavement.iter().filter(|r| !wide_enough(r)).cloned().collect();
@@ -369,8 +354,7 @@ pub fn run(
             // The source it draws most of its area from: a scrap is small
             // enough that one construction almost always made all of it, and
             // "most" says so without pretending the overlaps are disjoint.
-            // Ties go to the earlier source, as they did when this counted
-            // up from zero.
+            // Ties go to the earlier source.
             let mut best: Option<(f64, usize)> = None;
             for (k, u) in under.iter().enumerate() {
                 let share = poly::area(&poly::intersect(&one, u));
@@ -392,8 +376,6 @@ pub fn run(
     let filled = poly::area(&pavement) - poly::area(before);
     let bare = Bare::new(&senior, &pavement, &facade.footprints);
     let (gap_n, gap_of) = wall_gap(&bare, &hits);
-    let (gaps, kerb_of) = crate::gap::kerb_gaps(carriageway, &bare, attached);
-    let kerb_n = gaps.len();
     let summary = Summary::new()
         .with("stations", stations)
         .with_part("walled", walled, stations)
@@ -405,12 +387,18 @@ pub fn run(
         .with_regions("pavement", &pavement)
         .with_m2("pavement_m2", poly::area(&pavement))
         .with_m2("filled_m2", filled)
-        .with_share("wall_gap", gap_n, gap_of)
-        .with_share("kerb_gap", kerb_n, kerb_of);
+        .with_share("wall_gap", gap_n, gap_of);
     // The last step that lays any paving, so this is the paved surface as it
     // finally stands: everything downstream reads this one layer.
     let surface = Surface { walk: pavement, ..paving.clone() };
-    (Room { surface, room, gaps }, summary)
+    (Room { surface, room }, summary)
+}
+
+/// The kerb stations a sidewalk claims with bare ground outside them, on the
+/// paved surface as it finally stands ([`crate::gap::kerb_gaps`]).
+pub fn check(room: &Room, attached: &[crate::world::Attached], facade: &Facade) -> Summary {
+    let (gaps, of) = crate::gap::kerb_gaps(&room.surface, attached, &facade.footprints);
+    Summary::new().with_share("kerb_gap", gaps.len(), of)
 }
 
 /// What a probe met.
@@ -488,7 +476,7 @@ fn pockets(carriageway: &Shapes, pavement: &Shapes, solid: &Shapes) -> Shapes {
             // being clockwise.
             (0..ring.len()).any(|i| {
                 let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
-                let t = poly::unit([b[0] - a[0], b[1] - a[1]]);
+                let t = line::unit([b[0] - a[0], b[1] - a[1]]);
                 let m = [(a[0] + b[0]) * 0.5 - t[1] * EDGE_M, (a[1] + b[1]) * 0.5 + t[0] * EDGE_M];
                 asphalt.contains(m) || paved.contains(m)
             })
@@ -672,10 +660,10 @@ fn hull(pts: Vec<Pt>) -> Option<Shape> {
 /// The share of walled stations with bare ground just outside them, and
 /// their number: for every `(station, hit)`, the probe a step outside the
 /// station toward its hit.
-pub fn wall_gap(bare: &Bare, hits: &[(Pt, Pt)]) -> (usize, usize) {
+fn wall_gap(bare: &Bare, hits: &[(Pt, Pt)]) -> (usize, usize) {
     let mut gaps = 0usize;
     for &(s, h) in hits {
-        let n = poly::unit([h[0] - s[0], h[1] - s[1]]);
+        let n = line::unit([h[0] - s[0], h[1] - s[1]]);
         if bare.at([s[0] + n[0] * PROBE_M, s[1] + n[1] * PROBE_M]) {
             gaps += 1;
         }
@@ -686,18 +674,18 @@ pub fn wall_gap(bare: &Bare, hits: &[(Pt, Pt)]) -> (usize, usize) {
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::world::World;
-    use crate::pipeline::tests::{built, plan};
+    use crate::pipeline::tests::{built, upto};
     use crate::step::Step;
 
     use super::*;
 
     /// **A footway's stub onto a footbridge is kept.** A footway leaves the
     /// street's kerb and climbs onto a bridge 2.25 m out: the stub between is
-    /// 4.5 m², under the smallest pavement this step draws, has no wall, and
-    /// was dropped as a scrap — the bridge landing on bare ground.
+    /// 4.5 m², under the smallest pavement this step draws, and has no wall;
+    /// dropped as a scrap, it would leave the bridge landing on bare ground.
     #[test]
     fn a_stub_onto_a_footbridge_is_kept() {
-        let mut w = built("flat", "net:straight?len=200", None, 100.0, &plan(Step::Facade)).0;
+        let mut w = built("flat", "net:straight?len=200", None, 100.0, &upto(Step::Facade)).0;
         let net = &mut w.partition.as_mut().unwrap().network;
         let mut stub = net.plan[0].clone();
         stub.id = "stub".into();
@@ -712,26 +700,26 @@ pub(crate) mod tests {
         net.spans.push(deck);
         let net = w.network().unwrap();
         let facade = w.facade.as_ref().unwrap();
-        let groups = crate::partition::groups(&net.plan, &net.spans);
+        let (groups, _) = crate::partition::groups(&net.plan, &net.spans);
         let (ribbons, _) = crate::ribbon::run(net, &groups);
         let (surface, _) = crate::surface::run(&ribbons, facade);
         let (k, _) = crate::kerb::run(net, &surface, facade);
-        let (f, _) = crate::legs::run(net, &surface, &k, facade, &ribbons.masks);
-        let (r, s) = run(&f.surface, &ribbons.spans, &k.attached, facade);
+        let (f, _) = crate::legs::run(net, &k, facade, &ribbons.masks);
+        let (r, s) = run(&f.surface, &ribbons.spans, facade);
         assert!(poly::contains(&r.surface.walk, [0.0, 4.0]), "{s}");
         // Without the bridge it is the scrap it looks like.
-        let (r, s) = run(&f.surface, &[], &k.attached, facade);
+        let (r, s) = run(&f.surface, &[], facade);
         assert!(!poly::contains(&r.surface.walk, [0.0, 4.0]), "{s}");
     }
 
     /// **A court is kept however small.** Two garage lanes leave a service
     /// road side by side and end at the garage across them: the court
     /// between is 3.75 m², under the smallest pavement this step draws, and
-    /// the garage bounds a fifth of it, not the quarter that would have
-    /// excused it. It is enclosed all round, and was dropped as a scrap.
+    /// the garage bounds a fifth of it, short of the quarter that would
+    /// excuse it. It is kept because it is enclosed all round.
     #[test]
     fn a_small_court_is_kept() {
-        let w = built("flat", "net:straight?len=200&class=service", Some("house:beside?d=4&x=2.25&l=12&w=6"), 100.0, &plan(Step::Facade)).0;
+        let w = built("flat", "net:straight?len=200&class=service", Some("house:beside?d=4&x=2.25&l=12&w=6"), 100.0, &upto(Step::Facade)).0;
         let facade = w.facade.as_ref().unwrap();
         let carriageway = poly::union_all(&vec![
             poly::rect(-10.0, -1.5, 15.0, 1.5),
@@ -739,13 +727,13 @@ pub(crate) mod tests {
             poly::rect(3.0, -1.5, 6.0, 4.0),
         ]);
         let paving = Surface { carriageway, walk: Vec::new(), spanned: Vec::new(), ballast: Vec::new() };
-        let (r, s) = run(&paving, &Vec::new(), &[], facade);
+        let (r, s) = run(&paving, &Vec::new(), facade);
         assert!(poly::contains(&r.surface.walk, [2.25, 2.75]), "{s}");
     }
 
     /// The world of `net` with the house of `house`, paved to the room.
     pub(crate) fn paved(net: &str, house: &str) -> (World, String) {
-        let (w, ran) = built("flat", net, Some(house), 100.0, &plan(Step::Room));
+        let (w, ran) = built("flat", net, Some(house), 100.0, &upto(Step::Room));
         let s = ran.last().to_string();
         (w, s)
     }
@@ -753,7 +741,7 @@ pub(crate) mod tests {
     /// The world of `net` with no house, paved to the junctions, and the
     /// pavement before the room step.
     fn roomed(net: &str) -> (World, String, Shapes) {
-        let (w, ran) = built("flat", net, None, 100.0, &plan(Step::Room));
+        let (w, ran) = built("flat", net, None, 100.0, &upto(Step::Room));
         let before = w.legs.as_ref().expect("the legs step ran").surface.walk.clone();
         (w, ran.last().to_string(), before)
     }
@@ -977,8 +965,8 @@ pub(crate) mod tests {
         // Stations along y = 0 a metre apart, walked toward −x so the
         // region on their left is below and outward is +y, reaching to
         // y = 1 + x / 2: the strip's edge is that line, sampled between
-        // the stations, where a rung per station stood out of it by half
-        // a rung.
+        // the stations, where a rung per station would stand out of it by
+        // half a rung.
         let n = 11;
         let pts: Vec<Pt> = (0..n).rev().map(|i| [i as f64, 0.0]).collect();
         let normals = vec![[0.0, 1.0]; n];

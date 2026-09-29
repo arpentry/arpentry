@@ -1,12 +1,13 @@
 //! The portals: where a tube opens, and the galleries whose footprint the
 //! ground is opened over.
 //!
-//! The arrangement cuts a face for every gallery and the bench leaves every
-//! mouth open, so both read one [`Portals`], built once from the partition's
-//! span pieces and profiles.
+//! The arrangement builds one [`Portals`] from the partition's span pieces
+//! and profiles, cuts a face for every gallery's footprint and hands it on:
+//! the earthwork runs no batter across a mouth, and the bench closes the
+//! ground onto the tube's section there rather than onto the road.
 
 use serde::{Deserialize, Serialize};
-use crate::field::Nearest;
+use crate::line::{self, Nearest};
 use crate::poly::{self, Pt, Shapes};
 use crate::standard::{gallery_runs, half_width_m, tube_m};
 use crate::world::{Kind, Polyline2, Profiles};
@@ -39,7 +40,7 @@ pub fn mouths(spans: &[Polyline2]) -> Vec<Mouth> {
             let (half, tube) = (w.width_m / 2.0, tube_m(&w.class));
             [(w.pts[0], w.pts[1]), (w.pts[n - 1], w.pts[n - 2])].map(|(at, q)| Mouth {
                 at,
-                into: poly::unit([q[0] - at[0], q[1] - at[1]]),
+                into: line::unit([q[0] - at[0], q[1] - at[1]]),
                 half,
                 tube,
             })

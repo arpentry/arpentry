@@ -1,7 +1,7 @@
 //! The reference: the surface a way is solved against.
 //!
-//! Every height in the model is solved against *something*, and until this
-//! step that something was the raw DEM. A surface DEM is not a ground: it
+//! Every height in the model is solved against *something*, and the raw DEM
+//! is the wrong something. A surface DEM is not a ground: it
 //! images a culvert as a slot the road dives through, canopy shadow and
 //! upsampling ripple as crests on the carriageway, and a viaduct as ground
 //! the road is already lying on. Solved against it a street dives into a
@@ -11,14 +11,14 @@
 //! So the reference is the terrain with three things done to it, in order:
 //!
 //! 1. **Blind runs bridged.** Where the ground under the axis stands more
-//!    than [`crate::grade::DECK_STANDOFF_M`] above the ground [`FLANK_M`] to
+//!    than [`crate::standard::DECK_STANDOFF_M`] above the ground `FLANK_M` to
 //!    both sides, the DEM under the axis is a structure's own top. It is not
 //!    evidence, and the reference is carried straight across it from the two
 //!    rims. This is the one thing no reader downstream can recover: on a
 //!    `shelf` specimen every instrument in the run reads zero, because a road
 //!    solved onto its own deck has no defect to show.
 //!
-//!    **A mapped span is bridged for the same reason** ([`spanned_mask`]).
+//!    **A mapped span is bridged for the same reason** (`spanned_mask`).
 //!    The blind mask asks the DEM whether it is standing on the way's deck;
 //!    the span table says the way has left the ground here, and a terrain
 //!    model that has had its bridges taken out answers with the slot
@@ -39,24 +39,28 @@
 //! over; a crest too high to shave under a class that cannot climb it is a
 //! mass the way goes through. [`Axis::refused_notch`] and
 //! [`Axis::refused_crest`] are those two lists, and they are the terrain's
-//! own bridge and tunnel priors
-//! (`data/plans/spans-are-derived-2026-09-09.md` §4).
+//! own bridge and tunnel priors: [`run`] writes them into the ways' span
+//! tables.
 //!
-//! **Nothing reads this yet.** The step computes the reference, reports what
-//! it came to, and is consumed by no one: migration step 2 of the plan, whose
-//! whole job is to put a number on how far the conditioned surface stands
-//! from the raw one before anything depends on the answer.
+//! **One value at a junction.** The conditioning is per axis, so the ends of
+//! the axes meeting at a connector are agreed before anything reads them
+//! ([`agree`]).
 //!
-//! **A piece is not a corridor.** The reader cuts every way at every
-//! annotation edge, so a 40 m bridge piece is conditioned with a 60 m window
-//! and its two ends are the whole of it. `short` counts the pieces this is
-//! true of, and that count is the argument for R1 — the reader keeping whole
-//! ways — rather than a defect of the conditioning.
+//! **The profile solves against it** ([`crate::solve`]): the limiter aims at
+//! the reference and the deviation box is centred on it, while
+//! [`crate::world::Station::ground`] keeps the raw DEM, which is what the
+//! earthwork is owed against and what a departure is measured from.
+//!
+//! **A way is a corridor.** An axis is a whole way, spans included, so a
+//! bridge is conditioned together with its approaches and the window has
+//! ground either side of it to read. `short` counts the axes shorter than
+//! the window itself, whose two ends are nearly the whole of them.
 
 use std::collections::HashMap;
 
-use crate::grade::{self, DECK_STANDOFF_M, NODE_M};
-use crate::solve::densify_at;
+use crate::grade;
+use crate::standard::{DECK_STANDOFF_M, NODE_M};
+use crate::line::{arcs, densify_at};
 use crate::step::{Residual, Summary};
 use crate::lattice::height_at;
 use crate::width;
@@ -80,19 +84,19 @@ pub const NOTCH_FILL_MAX_M: f64 = 15.0;
 /// The opening dual of [`NOTCH_SPAN_M`], sized under it: filling across an
 /// engineered culvert is cheaper to assume than cutting through a crest that
 /// is really there.
-pub const BUMP_SPAN_M: f64 = 50.0;
+const BUMP_SPAN_M: f64 = 50.0;
 
 /// Deepest per-bump shave the opening may take, in metres. Far tighter than
 /// [`NOTCH_FILL_MAX_M`], because false crests are shallow while false notches
 /// can be deep. A crest that would need a deeper cut is genuine relief, and
 /// is reported as a tunnel prior for the classes that cannot climb it.
-pub const BUMP_SHAVE_MAX_M: f64 = 4.0;
+const BUMP_SHAVE_MAX_M: f64 = 4.0;
 
 /// How far to the side of an axis the ground is asked whether the ground
 /// *under* the axis is really ground, in metres. Wide enough to step off a
 /// deck as a surface DEM rasterised it, narrow enough to stay inside the
 /// gorge that deck spans.
-pub const FLANK_M: f64 = 25.0;
+const FLANK_M: f64 = 25.0;
 
 /// How far past a mapped bridge's own edge the DEM's slot is allowed to
 /// reach, in metres of arc.
@@ -102,12 +106,10 @@ pub const FLANK_M: f64 = 25.0;
 /// metres between them are the abutment, which a terrain model images as a
 /// cliff. Read as ground they are the far shoulder of every crest the
 /// approach embankment makes, so the opening shaves the embankment as a
-/// false bump — measured at the Montreux rail overbridge, **3.00 m** of it
-/// over the last 40 m of approach, the road's reference flattened to 398.20
-/// where the DEM climbs to 401.20.
+/// false bump, metres of it over the last tens of metres of approach.
 ///
 /// Three DEM cells, which is as far as a raster smears an edge.
-pub const ABUTMENT_M: f64 = 10.0;
+const ABUTMENT_M: f64 = 10.0;
 
 /// How steeply the terrain must fall into a mapped span, in metres per
 /// metre, before the fall is read as the span's own wall rather than as
@@ -115,12 +117,13 @@ pub const ABUTMENT_M: f64 = 10.0;
 ///
 /// Half. No road in the model is built at 50 % — the steepest street
 /// Switzerland has is under 30 %, and [`crate::standard::EARTHWORK_BATTER`]
-/// battens at 40 % — so a drop that steep at a span's edge is the abutment
-/// the DEM could not resolve. Grown on the fall alone the rule ate ten
+/// batters at 40 % — so a drop that steep at a span's edge is the abutment
+/// the DEM could not resolve. Grown on the fall alone, the mask would eat ten
 /// metres of honest approach wherever a deck springs from the *inside* of a
-/// bowl, where the ground beyond the abutment is lower still:
-/// `a_span_that_already_clears_asks_for_nothing` is the check that said so.
-pub const ABUTMENT_GRADE: f64 = 0.5;
+/// bowl, where the ground beyond the abutment is lower still
+/// (`crossing::tests::a_span_that_already_clears_asks_for_nothing` is the
+/// check).
+const ABUTMENT_GRADE: f64 = 0.5;
 
 /// Slack on a morphological comparison, in metres: the passes are a max and
 /// a min of the same numbers, so "unchanged" has to mean unchanged to the
@@ -130,14 +133,10 @@ const EPS_M: f64 = 1e-6;
 /// Which of `ways` get a reference, and so a profile: the carriageway and
 /// rail ways of a class that solves at all, as indices into `ways`.
 ///
-/// **This is the only place the question is asked.** It used to be asked
-/// again by every step that held a profile and wanted the way behind it —
-/// the crossing, the partition and the sheet each re-ran the filter and two
-/// of them inverted it into a `HashMap` — so a predicate in one module was
-/// an invariant in four, with a runtime `assert_eq!` standing in for the
-/// type that should have said it. Now the answer is recorded where it is
-/// used: [`Axis::way`] and [`crate::world::Profile::way`] carry it, and a
-/// caller holding either knows the way it belongs to without asking.
+/// **This is the only place the question is asked.** The answer is recorded
+/// where it is used: [`Axis::way`] and [`crate::world::Profile::way`] carry
+/// it, so a caller holding either knows the way it belongs to without
+/// re-running the filter.
 pub fn solving_of(ways: &[Way]) -> Vec<usize> {
     (0..ways.len())
         .filter(|&i| {
@@ -160,10 +159,9 @@ pub fn solving_of(ways: &[Way]) -> Vec<usize> {
 /// is a prior and not a command: §4.5 still decides what is built, and a
 /// chord that never leaves the ground still degrades.
 ///
-/// Installing them on [`Roads::ways`] is [`crate::pipeline`]'s, one arm of a
-/// `match` away from the order that makes it safe. This step used to take
-/// `&mut Roads` and do it here, which made the way's span table a thing three
-/// steps wrote to and no signature admitted.
+/// They are written into the ways the step returns ([`Reference::ways`]);
+/// the drape's layer keeps the source's own tables, so the way's span table
+/// is never a thing one step writes into another's layer.
 pub fn run(terrain: &Terrain, roads: &Roads) -> (Reference, Summary) {
     let solving = solving_of(&roads.ways);
     let axes = over(&roads.ways, &tables_of(&roads.ways), &solving, terrain);
@@ -191,15 +189,12 @@ fn tables_of(ways: &[Way]) -> Vec<Vec<Span>> {
     ways.iter().map(|w| w.spans.clone()).collect()
 }
 
-/// What the conditioning came to, as the run's one line: a function of the
-/// finished axes, `was` (the junction disagreement before [`agree`]) and how
-/// many priors were promoted.
-///
-/// Apart from [`run`] for the same reason the profile's is: seventeen
-/// counters against six lines of work, and a step's entry point should read
-/// as what it makes.
 /// What the conditioning came to, per pass, and how far it moved the
 /// surface off the raw DEM: a function of the axes alone.
+///
+/// Apart from [`run`] for the same reason the profile's is: many counters
+/// against a few lines of work, and a step's entry point should read as what
+/// it makes.
 pub fn check(reference: &Reference) -> Summary {
     let axes = &reference.axes[..];
     let mut stations = 0usize;
@@ -224,11 +219,10 @@ pub fn check(reference: &Reference) -> Summary {
         // conditioning deliberately carries the pass across the slot
         // underneath ([`spanned_mask`]), so its residual is the height of the
         // structure and not a departure at all — and the steps after this one
-        // exclude it too (`Solved::Grade`, `crate::step::residual_of`). Counting
-        // it here reported 17.09 m against the profile's 8.45 and read as a
-        // conditioning that moves the surface twice as far as the road
-        // follows it. There was no such thing: it was this loop, comparing
-        // one population against another.
+        // exclude it too (`Solved::Grade`, `Profiles::residual`). Counted
+        // here, it would read as a conditioning that moves the surface much
+        // further than the road follows it, which is only one population
+        // compared against another.
         for k in 0..a.s.len() {
             if !a.spanned[k] {
                 residual.push(a.h[k], a.ground[k]);
@@ -258,14 +252,14 @@ pub fn check(reference: &Reference) -> Summary {
         .with_residual(residual)
 }
 
-/// The terrain's refused notches written into the ways as bridge priors, and
-/// how many were taken.
+/// The terrain's refusals written into the ways' span tables — a refused
+/// notch as a bridge prior, a refused crest as a tunnel prior — and how many
+/// were taken.
 ///
-/// A notch is promoted only where it lies **strictly inside one ground span**
-/// of the way: a refusal overlapping a mapped structure is that structure's
-/// business, and one reaching a way's end has no rim on that side to land on.
-/// The span table stays a partition — the ground span is split in three and
-/// the prior takes the middle.
+/// A refusal never reaches its axis's end (`two_rimmed`), so it always has a
+/// rim on each side to land on. In open ground it becomes a span of its own;
+/// overlapping a structure the source mapped, it extends that structure
+/// ([`paint`]). The span table stays a partition.
 fn promote(ways: &[Way], axes: &[Axis]) -> (Vec<Vec<Span>>, usize) {
     let mut tables: Vec<Vec<Span>> = ways.iter().map(|w| w.spans.clone()).collect();
     let mut taken = 0usize;
@@ -276,7 +270,7 @@ fn promote(ways: &[Way], axes: &[Axis]) -> (Vec<Vec<Span>>, usize) {
         // the way would have to cut through — but only a class whose ladder
         // cannot climb it is owed a bore. A street may climb anything: the
         // DEM under a street *is* the street, and a lane mapped at 26 % up
-        // the old town really climbs 26 % (S9). A motorway held to 6 % inside
+        // the old town really climbs 26 %. A motorway held to 6 % inside
         // an 8 m box cannot, and where the box cannot reach the crest's own
         // rise, what is there is a mass the road goes through.
         //
@@ -285,18 +279,17 @@ fn promote(ways: &[Way], axes: &[Axis]) -> (Vec<Vec<Span>>, usize) {
         // the road goes through rather than over, and the terrain is only
         // saying how far. So a refused crest that overlaps a mapped structure
         // is painted whatever the class; one in open ground needs the ladder
-        // test. Gated both ways, a street's tunnel mapped forty metres under a
-        // hundred-and-twenty-metre ridge kept the forty and climbed the rest.
-        // **A blind run is not promoted, and it was worth finding out why.**
-        // Where the DEM under the axis is a structure's own top, what it has
-        // imaged is a deck — but saying so in the span table buys nothing,
-        // because the consequence rule reads `h − ground` and on a causeway
-        // the ground *is* the deck: the chord and the DEM agree exactly and
-        // no departure exists to find. Tried on the loop box, seventeen
-        // promotions produced eight spans that built no geometry at all
-        // (`grounded` 20 → 28) and counted as bores, for half a percent of
-        // wall. What the case actually needs is the **terrain** to lose the
-        // causeway, which is the ground stage's and not a span table's.
+        // test. Gated both ways, a street's tunnel mapped short of its ridge
+        // would keep its mapped length and climb the rest.
+        //
+        // **A blind run is not promoted.** Where the DEM under the axis is a
+        // structure's own top, what it has imaged is a deck — but saying so in
+        // the span table buys nothing, because the consequence rule reads
+        // `h − ground` and on a causeway the ground *is* the deck: the chord
+        // and the DEM agree exactly, no departure exists to find, and the
+        // span builds no geometry at all. What the case needs is the
+        // **terrain** to lose the causeway, which is the ground's business
+        // and not a span table's.
         let sites: Vec<((f64, f64), Kind, bool)> = a
             .refused_notch
             .iter()
@@ -306,10 +299,10 @@ fn promote(ways: &[Way], axes: &[Axis]) -> (Vec<Vec<Span>>, usize) {
             }))
             .collect();
         // Level 0 on a promoted site: the terrain says a structure is needed,
-        // not that it is above anything. Promoted at level 1 instead, two
-        // roads bridging one valley became peers at the same ordinal and
-        // their crossing was filed as a data error, when the source had said
-        // plainly which of them was over the other.
+        // not that it is above anything. At level 1, two roads bridging one
+        // valley would become peers at the same ordinal and their crossing
+        // would be filed as a data error, when the source says plainly which
+        // of them is over the other.
         let len = ways[w].len();
         for ((n0, n1), kind, may_invent) in sites {
             // One station of margin each side lands the edge on the rim
@@ -330,11 +323,10 @@ fn promote(ways: &[Way], axes: &[Axis]) -> (Vec<Vec<Span>>, usize) {
 /// A site that **overlaps a structure the source already mapped extends that
 /// structure** to cover it, keeping the mapper's own kind and ordinal: the
 /// annotation says *there is a bridge here* and the terrain says *the slot is
-/// this wide*, and together they say how long the bridge is. Skipped instead
-/// — the first rule, which took only sites strictly inside a ground span — a
-/// gorge mapped with twenty metres of bridge over its middle kept the twenty
-/// metres, and its two approaches dived thirty metres to the floor and
-/// climbed out again.
+/// this wide*, and together they say how long the bridge is. Were such a
+/// site skipped, a gorge mapped with twenty metres of bridge over its middle
+/// would keep the twenty metres, and its two approaches would dive to the
+/// floor and climb out again.
 ///
 /// The table stays a partition: the painted extent is one span, and ground
 /// fills what is left either side of it.
@@ -384,7 +376,7 @@ fn paint(
 }
 
 /// How far apart two axes' references stand at a junction they share, at
-/// worst — the instrument that found the defect [`agree`] closes.
+/// worst: what [`agree`] closes, reported before and after it.
 pub fn disagreement(axes: &[Axis]) -> f64 {
     let mut at: HashMap<(i64, i64), (f64, f64)> = HashMap::new();
     for a in axes.iter().filter(|a| !a.is_empty()) {
@@ -402,14 +394,13 @@ pub fn disagreement(axes: &[Axis]) -> f64 {
 /// The conditioning is per axis, and two ways meeting at a point can fill a
 /// notch there differently — one closes it, its neighbour *refuses* the same
 /// notch as too deep and keeps the raw terrain, and the two then stand a
-/// whole [`NOTCH_FILL_MAX_M`] apart at a point they share. Measured on the
-/// loop box: **15.103 m**.
+/// whole [`NOTCH_FILL_MAX_M`] apart at a point they share.
 ///
 /// Nothing downstream survives that. The profile anchors a junction on
-/// whichever way it reaches first, so the others are pinned that far off
-/// their own target — a step the limiter cannot see, an abutment that does
-/// not meet the ground way beside it (`structure abutment` 5.380), and a
-/// clearance demand of 68 m where a bridge read sixty metres below a bore.
+/// whichever way it reaches first, so the others would be pinned that far
+/// off their own target — a step the limiter cannot see, an abutment that
+/// does not meet the ground way beside it, and a clearance demand read off a
+/// height that is not the way's.
 ///
 /// So the ends are agreed before any profile solves: every axis at one
 /// connector takes the **mean** of what they each made of it — neither
@@ -451,13 +442,15 @@ pub fn agree(axes: &mut [Axis]) {
     }
 }
 
-/// The reference along each way of `solving`, in that order.
+/// The reference along each way of `solving`, in that order, with no
+/// priors promoted: what a test that builds its own ways solves against.
 ///
 /// `solving` indexes `ways` ([`solving_of`]), and each axis keeps the index
 /// it was built for in [`Axis::way`] — so the correspondence
 /// [`crate::solve::solve_on`] relies on is carried in the data rather than
 /// re-derived by every caller.
-pub fn of(ways: &[Way], solving: &[usize], terrain: &Terrain) -> Reference {
+#[cfg(test)]
+pub(crate) fn of(ways: &[Way], solving: &[usize], terrain: &Terrain) -> Reference {
     Reference { axes: over(ways, &tables_of(ways), solving, terrain), ways: ways.to_vec() }
 }
 
@@ -506,14 +499,7 @@ impl Axis {
     pub fn of(way: usize, w: &Way, spans: &[Span], terrain: &Terrain) -> Axis {
         let cuts: Vec<f64> = spans.iter().flat_map(|s| [s.a0, s.a1]).collect();
         let pts = densify_at(&w.pts, NODE_M, &cuts);
-        let mut s = Vec::with_capacity(pts.len());
-        let mut at = 0.0;
-        for (i, p) in pts.iter().enumerate() {
-            if i > 0 {
-                at += (p[0] - pts[i - 1][0]).hypot(p[1] - pts[i - 1][1]);
-            }
-            s.push(at);
-        }
+        let s = arcs(&pts);
         let ground: Vec<f64> = pts.iter().map(|p| height_at(terrain, p[0], p[1])).collect();
         let blind = blind_mask(&pts, &ground, terrain);
         let (inside, spanned) = spanned_mask(&s, &ground, spans);
@@ -536,10 +522,10 @@ impl Axis {
         // because there the reference is not a target — the profile chords
         // across and solves against nothing — but it is still the evidence
         // `partition::derive` reads to decide whether the mapper's span is a
-        // structure at all. Carried across there too, a deck over a 30 m
-        // gorge reads no departure from the surface it is 30 m above, and an
-        // 80 m annotation over a 40 m slot stopped being trimmed to it
-        // (`spans::a_generous_annotation_is_trimmed_to_the_gorge`).
+        // structure at all. Carried across there too, a deck over a gorge
+        // would read no departure from the surface it stands high above, and
+        // an annotation longer than its slot could not be trimmed to it
+        // (`specs::spans::a_generous_annotation_is_trimmed_to_the_gorge`).
         let pass = |mask: &[bool]| {
             let bridged = bridge_blind(&s, &ground, mask);
             let closed = close_notches(&s, &bridged);
@@ -605,14 +591,12 @@ impl Axis {
 /// Both sides, and therefore the **higher** of them. One flank below the axis
 /// is a hillside — a road benched into a slope has a bank above it and a fall
 /// below — and only a surface proud of the ground on both hands is standing
-/// on something. Read against the *lower* flank instead, which is what the
-/// server's own guard does inside its bridge trim, the mask fired on 70.6 %
-/// of the loop box's stations: every contour road on the flank above
-/// Montreux, whose downhill side is metres below it by construction. Bridging
-/// those runs then drew the reference straight across the valleys they
-/// overlook and lifted it by 145 m. The server can afford the loose reading
-/// because it only ever asks inside an already-annotated bridge span; a mask
-/// the whole pipeline leans on cannot.
+/// on something. Read against the *lower* flank instead, the mask would fire
+/// on every contour road on a hillside, whose downhill side is metres below
+/// it by construction, and bridging those runs would draw the reference
+/// straight across the valleys they overlook. The server's own guard reads
+/// the lower flank and can afford to, because it only ever asks inside an
+/// already-annotated bridge span; a mask the whole pipeline leans on cannot.
 ///
 /// The road's own height is not consulted — it does not exist yet, and it
 /// does not need to: the question is about the DEM.
@@ -648,9 +632,9 @@ fn blind_mask(pts: &[[f64; 2]], ground: &[f64], terrain: &Terrain) -> Vec<bool> 
 /// whether the way has left the ground at all. Both answers mean the same
 /// thing to the passes that follow — the height here is not evidence about
 /// where the way's ground is — and both are carried across by
-/// [`bridge_blind`]. Read as ground instead, a 15 m bridge span put a 6 m
-/// slot at the end of its own way's profile, and the opening then shaved
-/// 3 m off the approach embankment beside it as a false crest.
+/// [`bridge_blind`]. Read as ground instead, the slot under a short bridge
+/// span sits at the end of its approach's profile, and the opening shaves
+/// the approach embankment beside it as a false crest.
 ///
 /// **A bridge's mask grows to the rim and a bore's does not.** Under a deck
 /// the annotation's edge is short of the slot by an abutment, and the
@@ -679,9 +663,9 @@ fn spanned_mask(arc: &[f64], ground: &[f64], spans: &[Span]) -> (Vec<bool>, Vec<
         // and the station *is* the boundary, put there by [`Axis::of`], so
         // the comparison is against a float the arc was summed to rather than
         // against a distinct place. Read exactly, the last station of a way
-        // that ends on its own deck fell outside its span by half an ulp,
-        // stayed sighted six metres down in the cutting, and the carry ran
-        // down to meet it — which is the whole defect, unfixed.
+        // that ends on its own deck can fall outside its span by half an ulp
+        // and stay sighted down in the slot, and the carry then runs down to
+        // meet it.
         let lo = arc.partition_point(|&a| a < span.a0 - EPS_M);
         let hi = arc.partition_point(|&a| a <= span.a1 + EPS_M);
         if lo >= hi {
@@ -750,8 +734,8 @@ fn bridge_blind(arc: &[f64], h: &[f64], blind: &[bool]) -> Vec<f64> {
                 (_, Some(b)) => h[b],
                 // The whole axis is blind: nothing to carry across from, so
                 // the raw heights stand and `blind` says they are not to be
-                // trusted. A caller that needs a rim has to look wider than
-                // this piece, which is R1's business.
+                // trusted. A caller that needs a rim has to look beyond the
+                // way.
                 (None, None) => h[k],
             };
         }
@@ -782,15 +766,6 @@ pub fn open_bumps(arc: &[f64], h: &[f64]) -> Vec<f64> {
     opened
 }
 
-/// The conditioned surface: notches filled, then bumps shaved. Symmetric by
-/// construction, so DEM noise enters the profile in neither direction and
-/// genuine relief passes through in both. The closing runs first, so a
-/// notch-and-bump pair — one signal ringing both ways — resolves toward the
-/// engineered fill rather than toward the artifact.
-pub fn condition(arc: &[f64], h: &[f64]) -> Vec<f64> {
-    open_bumps(arc, &close_notches(arc, h))
-}
-
 /// Bounded closing, plus the runs it refused: the closed heights, and one
 /// `(arc_first, arc_last)` per contiguous run whose fill exceeded `cap`.
 ///
@@ -806,13 +781,13 @@ fn close_bounded_runs(arc: &[f64], h: &[f64], span: f64, cap: f64) -> (Vec<f64>,
     let r = span * 0.5;
     // One edge-replicated station at ±r, so the erosion pass has a *dilation*
     // to read in the extension rather than a copy of the first real one.
-    // Extending the dilated array by its own edge value instead says the
-    // dilation is already `h(r)` at `−r`, and the erosion can then never come
-    // back down: the head of a rising axis lifts by `r · grade`, which on a
-    // 5 % ramp is 1.5 m of invented fill at the first station.
+    // Extending the dilated array by its own edge value instead would say the
+    // dilation is already `h(r)` at `−r`, and the erosion could then never
+    // come back down: the head of a rising axis would lift by `r · grade`,
+    // which on a 5 % ramp is 1.5 m of invented fill at the first station.
     //
     // One node is enough *because* the fold reads its window's edges
-    // ([`window_fold`]): between the pad and the first real station the
+    // (`window_fold`): between the pad and the first real station the
     // interpolation is the true dilation wherever the ground is linear, which
     // is what the extension of a linear head is.
     let mut pa = Vec::with_capacity(n + 2);
@@ -860,9 +835,9 @@ fn close_bounded_runs(arc: &[f64], h: &[f64], span: f64, cap: f64) -> (Vec<f64>,
 /// window lies wholly inside it and the closing meets the terrain — but it is
 /// refused along each flank, where the window reaches over the rim and wants
 /// to fill down to it. Those two fringes are not slots the road spans; they
-/// are the sides of a valley the road descends into. Told otherwise, a road
-/// across a 120 m bowl was given two short decks on its shoulders and none
-/// over the middle.
+/// are the sides of a valley the road descends into. Read as notches, they
+/// would give a road across a wide bowl two short decks on its shoulders and
+/// none over the middle.
 ///
 /// The rims are the stations just outside the run, where the closing already
 /// meets the terrain. A run touching either end of the axis has no rim on
@@ -888,12 +863,13 @@ fn two_rimmed(h: &[f64], start: usize, end: usize, cap: f64) -> bool {
 /// not — the stations are `NODE_M` apart *except* where a span boundary or a
 /// way vertex sits between two of them — and then the erosion cannot undo the
 /// dilation: **closing stops being the identity on monotone ground and lifts
-/// it by about one station spacing times the slope.** Measured on a 50 % ramp
-/// with a boundary station 0.77 m from its neighbour, that was 0.385 m of
-/// invented fill, which the profile then chorded from.
+/// it by about one station spacing times the slope** — invented fill the
+/// profile would then chord from.
 ///
-/// Reading the edges also removes the need to pad: the extension is constant,
-/// so `at()` answers for it directly.
+/// Beyond the ends the signal is extended by its edge value, which `at()`
+/// answers directly. Where the extension has to be something else — the
+/// erosion reading the dilation past an axis's head — the caller pads one
+/// station ([`close_bounded_runs`]).
 fn window_fold(arc: &[f64], h: &[f64], r: f64, fold: fn(f64, f64) -> f64) -> Vec<f64> {
     let n = h.len();
     let at = |x: f64| -> f64 {
@@ -935,6 +911,15 @@ mod tests {
 
     use super::*;
 
+    /// The conditioned surface: notches filled, then bumps shaved. Symmetric by
+    /// construction, so DEM noise enters the profile in neither direction and
+    /// genuine relief passes through in both. The closing runs first, so a
+    /// notch-and-bump pair — one signal ringing both ways — resolves toward the
+    /// engineered fill rather than toward the artifact.
+    fn condition(arc: &[f64], h: &[f64]) -> Vec<f64> {
+        open_bumps(arc, &close_notches(arc, h))
+    }
+
     /// A world on `ground` with the network of `net`, referenced.
     fn world(ground: &str, net: &str) -> (World, Summary) {
         let (w, ran) = built(ground, net, None, 5.0, &upto(Step::Reference));
@@ -960,14 +945,14 @@ mod tests {
     /// **Closing is the identity on monotone ground, right up to the ends
     /// and at any sampling.**
     ///
-    /// Two boundary bugs meet here. Padded with a single virtual station —
-    /// the server's construction — the erosion window loses the pad from the
-    /// second station on, and the head of every rising axis is lifted by up
-    /// to `NOTCH_SPAN_M / 2 · grade`: 1.2 m over the first 30 m of a 5 %
-    /// ramp, out of nothing but the edge. And reading only the *samples*
-    /// inside the window, the erosion can undo the dilation only where a
-    /// station happens to land at `arc − r`; it usually does not, and the
-    /// lift is then about one spacing times the slope.
+    /// Two boundary effects meet here. With a single padding station read
+    /// only as a sample, the erosion window loses the pad from the second
+    /// station on, and the head of every rising axis is lifted by up to
+    /// `NOTCH_SPAN_M / 2 · grade`, out of nothing but the edge. And reading
+    /// only the *samples* inside the window, the erosion can undo the
+    /// dilation only where a station happens to land at `arc − r`; it
+    /// usually does not, and the lift is then about one spacing times the
+    /// slope.
     ///
     /// The stations are deliberately uneven below, because that is what a
     /// real axis is: `NODE_M` apart except where a span boundary or a way
@@ -985,8 +970,7 @@ mod tests {
             assert!((cond[k] - h[k]).abs() < 1e-9, "station {k}: {} vs {}", cond[k], h[k]);
         }
         // Unevenly stationed — a boundary 0.77 m from its neighbour, on a
-        // 50 % ramp, which is where this was found — it is still the
-        // identity.
+        // 50 % ramp — it is still the identity.
         let mut arc: Vec<f64> = (0..14).map(|i| i as f64 * 50.0 / 13.0).collect();
         arc.push(20.0);
         arc.sort_by(f64::total_cmp);
@@ -1068,8 +1052,8 @@ mod tests {
         assert!(a.blind[at(0.0)], "the middle of the causeway is sighted: {s}");
         assert!(!a.blind[at(60.0)], "the ground past the rim reads blind: {s}");
         // The DEM says the axis is level; the reference agrees, because the
-        // rims it is carried between are level too. What has changed is that
-        // the stretch is now *marked*, which is what the derivation needs.
+        // rims it is carried between are level too. What the step adds is
+        // that the stretch is *marked*, which is what the derivation needs.
         assert!(a.blind_m() > 30.0, "blind_m {} of a 40 m trench", a.blind_m());
     }
 
@@ -1141,9 +1125,9 @@ mod tests {
 
     /// **Each pass is measured against its own cap.** The three of them move
     /// the surface for three different reasons, and a composite number
-    /// belongs to none of them: on the loop box the composite read a 13.26 m
-    /// "shave" against a 4 m budget, which was the bridging setting a
-    /// causeway down on its rims.
+    /// belongs to none of them: a composite "shave" can read far past its
+    /// budget when it is really the bridging setting a causeway down on its
+    /// rims.
     #[test]
     fn each_pass_stays_inside_its_own_budget() {
         for ground in [
@@ -1182,8 +1166,8 @@ mod tests {
 
     // ------------------------------------------- a mapped span is not ground
 
-    /// One way, in the shape the Montreux rail overbridge has: a 5 %
-    /// embankment climbing 160 m to a bridge, under which a terrain model
+    /// One way, in the shape of a rail overbridge: a 5 % embankment
+    /// climbing 160 m to a bridge, under which a terrain model
     /// with its bridges taken out shows the railway six metres down in its
     /// cutting — and the way ends on the deck, at the connector where the
     /// street on the far side takes over.
@@ -1209,13 +1193,10 @@ mod tests {
     /// **The terrain under a mapped span is not the far shoulder of a
     /// crest.** The DEM dives into the slot the deck spans, so the last
     /// forty metres of the approach stand above their own surroundings and
-    /// the opening shaves the embankment away as a false bump — 3.00 m of it
-    /// at the site this specimen is drawn from, the reference flattened to
-    /// 398.20 where the terrain climbs to 401.20. Every consumer paid: the
-    /// road solved three metres into its own embankment, the crossing step
-    /// then bought the clearance back as a ramp the service roads beside it
-    /// dropped five metres off, and the partition derived a bore out of the
-    /// hill the shave had invented.
+    /// the opening shaves the embankment away as a false bump. Every consumer
+    /// pays: the road solves metres into its own embankment, the crossing
+    /// step buys the clearance back as a ramp the roads beside it drop off,
+    /// and the partition derives a bore out of the hill the shave invented.
     #[test]
     fn the_terrain_under_a_mapped_span_is_not_a_crest_s_shoulder() {
         let (arc, ground, spans) = overbridge();
@@ -1269,10 +1250,9 @@ mod tests {
     /// **Two ways meeting at a point make one ground of it.** The
     /// conditioning is per axis, so a notch at a junction can be closed by
     /// one way and refused by its neighbour, and the two then stand a whole
-    /// `NOTCH_FILL_MAX_M` apart at a point they share. On the loop box that
-    /// was 15.103 m, and it reached every consumer: the profile anchors a
-    /// junction on whichever way it sees first, so the others were pinned
-    /// that far off their own target.
+    /// `NOTCH_FILL_MAX_M` apart at a point they share, and the profile, which
+    /// anchors a junction on whichever way it sees first, would pin the
+    /// others that far off their own target.
     #[test]
     fn ways_meeting_at_a_junction_agree_about_the_ground() {
         for (ground, net) in [
@@ -1320,7 +1300,7 @@ mod tests {
         let (w, _) = world("hill?amp=60&radius=400", "net:cross");
         let first = w.reference.clone().expect("built");
         let terrain = w.terrain.clone().expect("built");
-        let (again, _) = run(&terrain, w.roads.as_ref().expect("built"));
+        let (again, _) = run(&terrain, w.drape.as_ref().expect("built"));
         assert_eq!(first, again);
     }
 }

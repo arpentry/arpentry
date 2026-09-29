@@ -1,35 +1,23 @@
-//! Scratch probe: what each conditioning pass did along one way's axis.
+//! Probe: the reference along every solving way whose id starts with one of
+//! the prefixes — at each station the ground, what the closing and the
+//! opening made of it, the conditioned height, and the blind and spanned
+//! masks.
 //!
 //!   cargo run --release --example ref_probe -- ZONE w,s,e,n ID_PREFIX...
 
-use arpentry_server::dem::Dem;
-use arpentry_server::project::Bounds;
-use arpentry_world::pipeline::{self, Sources};
+mod common;
+
 use arpentry_world::reference;
 use arpentry_world::step::Step;
-use arpentry_world::world::World;
 
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
-    let zone = std::path::PathBuf::from(&a[0]);
-    let b: Vec<f64> = a[1].split(',').map(|s| s.parse().unwrap()).collect();
     let want: Vec<&str> = a[2..].iter().map(|s| s.as_str()).collect();
-    let mut dem = Dem::open(&zone.join("terrain.pmtiles")).unwrap();
-    let mut world = World::new(Bounds { west: b[0], south: b[1], east: b[2], north: b[3] });
-    let (seg, bld) = (zone.join("segment.parquet"), zone.join("building.parquet"));
-    let mut src = Sources {
-        dem: &mut dem,
-        segments: &seg,
-        buildings: Some(&bld),
-        spacing: 1.0,
-        max_vertices: 2_000_000,
-    };
-    pipeline::upto(&mut world, Step::Reference, &mut src, &mut |_, _| {}).unwrap();
+    let world = common::world(std::path::Path::new(&a[0]), &a[1], Step::Reference);
 
-    let roads = world.network().unwrap();
-    let axes = &world.reference.as_ref().unwrap().axes;
-    for ax in axes {
-        let w = &roads.ways[ax.way];
+    let reference = world.reference.as_ref().unwrap();
+    for ax in &reference.axes {
+        let w = &reference.ways[ax.way];
         if !want.iter().any(|p| w.id.starts_with(p)) {
             continue;
         }

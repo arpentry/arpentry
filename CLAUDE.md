@@ -360,18 +360,24 @@ Across this change `scripts/world-sdiff.py` compares a step's keys to the
 same step's, so a corpus taken before it reads the old bench's keys as moved
 to `lift`/`earthwork`; compare the values, not the lines.
 
-**The order is `Step::ALL`'s and is written nowhere else.** The step modules
-used to open with "Step 7: …" in their headers and eleven of the seventeen
-had drifted — `crossing` said 13 and runs 5th, `partition` said 3 and runs
-6th. The ordinals are gone; a module header says what the step makes.
+**The steps are one table** (`steps!` in `world/src/step.rs`): each step's
+name, the `World` field its layer lands in (named after the step: `drape`,
+`ribbon`, `sheet`, `building`, …) and the layer's type. The `Step` enum and
+its order (`Step::ALL`), the `World` struct, the dump's save/load and the
+pipeline's accessors are all expanded from it, so adding a step is one row
+there plus its wiring in `pipeline.rs`. `pipeline::check` names every step,
+so a new one has to say whether it has a check. A module header says what the
+step makes, never its ordinal.
 
-The specimen ladders live there too (`pipeline::tests::built`), named as
-step lists: `upto(Step::Bench)` is the whole prefix, `plan(Step::Ribbon)`
-leaves out the three vertical steps a flat specimen has nothing for. The
-three run together or not at all — the partition asserts it — so the mesh
-ladder that skipped `crossing` alone takes the whole prefix now.
-`Summaries::merged(&BENCH)` is the old bench line, for a specimen written
-against it.
+The specimen ladders live in `pipeline::tests`: `built(ground, net, houses,
+spacing, &upto(Step::X))` runs the prefix (the vertical steps always run — on
+flat ground they report zero), and `stood(ground, net, houses)` builds
+through the bench and merges the `lift`, `earthwork` and `bench` lines
+(`STAND`). The kerb-gap check is one function, `gap::kerb_gaps(surface,
+attached, footprints)`, asked by `kerb`, `legs` and `room`'s `check`.
+Polylines, `Nearest` and `line::crossings` are `line.rs`; the engineered
+ground is `ground.rs`; the cross-step specifications are test-only modules
+under `world/src/specs/`.
 
 ```bash
 cargo test  --manifest-path world/Cargo.toml
@@ -420,8 +426,8 @@ net:cross` (or `straight`, `tee`, `overpass`, `underpass`,
 `underpass` for a rail bridge or a rail bore) swaps the parquet for a synthetic
 network, where a step's output is an assertion rather than a look.
 **The world crate has a plan of its own open**:
-`data/plans/one-ground-2026-09-16.md`, with its checks in `world/src/ground.rs`
-in the shape `spans.rs` and `junction.rs` use — `#[ignore]`d against today's
+`data/plans/one-ground-2026-09-16.md`, with its checks in `world/src/specs/ground.rs`
+in the shape `specs/spans.rs` and `specs/junction.rs` use — `#[ignore]`d against today's
 tree, so `cargo test -- --ignored` is the to-do list. Its rule is *one
 arrangement, one height per vertex, a step is an edge you declare; and the DEM
 is a measurement, so a standard is a floor on what it cannot see and never a
@@ -575,7 +581,9 @@ the arrangement cut where the height field steps (§3.2 before §3.3). The
 one mesh gave a cheaper route: declare the step on the mesh's own edges.
 See "Step 2 is built" below.
 
-**The solve is `world/src/relax.rs`, built and not wired** (plan step 3a) —
+**The solve was `world/src/relax.rs`, built and never wired, and deleted in
+the 2026-09-29 cleanup; recover it from `5870bc8` if the pavement between two
+terraces ever wants it** (plan step 3a) —
 and the ground went the residual way without it; see "Step 3 is built" below.
 §3.2's energy `Σ w(z−dem)² + Σ‖∇z−∇dem‖²` is, in terms of the residual
 `e = z − dem`, exactly `eᵀ(W + L)e` — a damped Laplacian on the residual with
@@ -727,7 +735,7 @@ between two terraces should instead be a ramp is the relax's question
 whatever the weight makes of it (`relax_vs_cases` max read 49 m on the loop
 box). `bench::Ground` takes §3.2's residual `e = z − dem` and gives it a
 slope instead: pinned at every outline edge to the room's height less the
-natural ground, **clamped to one face** (`MAX_BENCH_FACE_M`) with a wall for
+natural ground, **clamped to one face** (`MAX_BATTER_FACE_M`) with a wall for
 the rest, falling to nothing at 1 in `EARTHWORK_BATTER` perpendicular to its
 segment, and blended over `EARTH_BLEND_M` where the nearest segment changes
 — a band that narrows to nothing at the outline, so there the field is the
@@ -780,8 +788,8 @@ is now the drop past one face), `off` **21 → 3.0 m**, the drawn ground's
 `dem_residual` 0.00/0.89/30.84 → **0.00/0.14/3.00**, `touched` 8.6 → 3.5 %,
 `regrade` 143 k → 6.5 k, `contact` 0.00; bench 32 → 18 s, the run 72 → 42 s.
 The `relax_vs_cases` diagnostic is retired (it cost ~12 s a run against a
-case function that is gone); `relax.rs` stays for the pavement between two
-terraces, which is the next place a solve would earn its keep.
+case function that is gone); `relax.rs` (deleted, in `5870bc8`) was the
+candidate for the pavement between two terraces.
 
 **"One height per vertex" (§3.2) and "an edge is split" (§3.3) contradict
 each other**, because a kerb vertex has two heights a kerb's rise apart. The
@@ -966,14 +974,14 @@ reads 0.00/0.91/24.63 — an earthwork 2.7× the departure of what it carries,
 which is the cost of holding the paved surface level crosswise and is not any
 road's solved height. On flat ground the whole departure is `crossing`'s
 (`reference` and `profile` read 0.00/0.00/0.00, `crossing` 0.00/1.73/8.50) and
-`bench` tops out at 2.99 — `MAX_BENCH_FACE_M` to the centimetre.
+`bench` tops out at 2.99 — `MAX_BATTER_FACE_M` to the centimetre.
 
 **Solving against it made the road better and the ground worse, and that is
 one fact, not two.** On the loop box `grade` fell 0.34 → 0.25 % and `steep`
 15.30 → 14.80 %, while `fill` rose 12.476 → 13.319 and `wall_m2` 21 912 →
 23 291. The road no longer dives into a notch it was engineered across, so
 the bench must build the embankment that was always owed — and past
-`MAX_BENCH_FACE_M` the bench does not batter, it walls. Measured, not
+`MAX_BATTER_FACE_M` the bench does not batter, it walls. Measured, not
 inferred: with the blindness mask forced off the box reads `wall_m2` 23 280,
 within 0.05 %, so the *closing* did all of it and the bridging did 11 m².
 That residue is what `DECK_STANDOFF_M` converts when the partition lands: a
@@ -992,7 +1000,7 @@ the closing lifts the head of every rising axis by up to `r · grade` and
 reports it as a filled notch — 1.2 m over the first 30 m of a 5 % ramp, out
 of nothing but the edge. `closing_is_the_identity_on_a_ramp` is the check.
 
-**The three structure rungs and `world/src/spans.rs` are a plan, not a
+**The three structure rungs and `world/src/specs/spans.rs` are a plan, not a
 step.** `gorge`, `ridge` and `shelf` put a feature across the way, or level
 the ground along it while it falls away beside it, so "is there a bridge
 here" has an answer the spec itself gives. `spans.rs` holds eight
@@ -1237,7 +1245,7 @@ filled 0.825 m at its downhill one, exactly. The cross-section is level
 for `ROOM_REACH_M` (6 m) past the asphalt — the room step's own wall
 reach — and past that the walk comes down a face at `EARTHWORK_BATTER`
 (1 in 2.5) and stops where it meets the ground. A band standing further
-than one face (`MAX_BENCH_FACE_M`, 3 m) from the road beside it is not
+than one face (`MAX_BATTER_FACE_M`, 3 m) from the road beside it is not
 that road's pavement and drapes: **without that test the loop box read
 225 m of cut**, the field having carried a road's height half a
 kilometre up the flank, because a face into a mountain steeper than
@@ -1269,12 +1277,10 @@ on the loop box, 67 at the junction. `wall_m2` 41 392 → **40 933** and the
 tallest wall 16.2 → 15.7 m; `seam` 4.23 % → 4.73 %, which is the cost — the
 carried walk's rim has no ground to meet, by construction.
 
-**`hole_probe` is how that was found, and it is the tool to reach for.** It
-walks the bench's own three lines over a grid and prints one character per
-metre — `.` ground, `#` asphalt hole, `o` ballast, `w` pavement, `D` deck,
-`C` a walk a deck carries — then the full set membership of one named point.
-A hole is exactly a point in `outline`, so the map says which term put it
-there and the point says it in words.
+**`hole_probe` is how that was found** (deleted since: the hole is now the
+arrangement's faces that cut, `Arrangement::hole`, so a probe reads the face
+under a point). It walked the old bench's outline expression over a grid and
+printed one character per metre, then the full set membership of one point.
 
 **Three of its numbers are guards on the walk.** `flown` — walk vertices
 whose nearest road stands more than one bench face above the natural ground
@@ -1346,7 +1352,7 @@ surface lives (`data/plans/terrain-hole-plan.md`). Outside the room it is the
 natural ground plus the earthwork residual (see "Step 3 is built"): the
 room's own height at the outline, a batter falling from it at 1 in
 `EARTHWORK_BATTER` of the natural ground, and the natural ground beyond. A
-drop past `MAX_BENCH_FACE_M` gets one face of batter and a wall for the rest:
+drop past `MAX_BATTER_FACE_M` gets one face of batter and a wall for the rest:
 `walled` counts those outline vertices, `wall` the tallest, and **`wall_m2`
 of closing face is drawn between the two** — a step nothing spans is a hole
 you can see the world through, which is what invariant 9 forbids. **The kerb

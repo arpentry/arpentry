@@ -2,129 +2,75 @@
 //! and the one place the geometry is cut.
 //!
 //! The reader hands on whole ways with their spans as an attribute
-//! ([`crate::world::Way`]). This step turns that attribute into geometry: one
-//! [`Polyline2`] per span, the ground pieces into [`Network::plan`] — which
-//! every surface step builds from — and the rest into [`Network::spans`].
+//! ([`crate::world::Way`]), and the reference, the profile and the crossing
+//! steps all work on those whole ways — so the reference has a corridor to
+//! condition and the profile has no pin at a mapper's split point. This step
+//! runs after them, with the solved heights in hand, and does two things:
 //!
-//! **Today it cuts exactly what the source said**, which is what makes the
-//! move safe: the pieces are the ones the reader used to emit, so nothing
-//! downstream can tell that the cut has moved. What it buys is that the cut
-//! is now a *step*, with one caller and one place to change, and that the
-//! way it cuts from is still whole — so the reference has a corridor to
-//! condition and the profile has no pin at a mapper's split point.
+//! - **It decides the spans** ([`spans`]): the annotation trimmed and grown
+//!   to the runs the solved heights imply ([`derive()`]), kept whole where the
+//!   heights have nothing to say, and with runs the annotation never had
+//!   added. That table is written back into the ways *and* the profiles, so
+//!   it is the one span truth every later step reads.
+//! - **It cuts the geometry**: one [`Polyline2`] per span, the ground pieces
+//!   into [`Network::plan`] — which every surface step builds from — and the
+//!   rest into [`Network::spans`], grouped into the surfaces that may merge
+//!   ([`groups`]).
 //!
-//! **What it will be.** The spans it cuts are to become a function of the
-//! solved heights rather than a copy of the annotation
-//! (`data/plans/spans-are-derived-2026-09-09.md`):
-//!
-//! ```text
-//! spans(profile, annotated, licenses, prior) -> Vec<Span>
-//! ```
-//!
-//! computed once, never mutated, and the step then moves after `crossing` so
-//! it has heights to read. The checks that specification has to pass are in
-//! [`crate::spans`], written before it.
+//! The rules the spans follow on the structure specimens are checked in
+//! `specs::spans`.
 
-use crate::grade::{DECK_STANDOFF_M, STRUCTURE_MIN_M};
+use crate::standard::{bore_cover_m, DECK_STANDOFF_M};
 use std::collections::{HashMap, HashSet};
 
-use crate::poly;
-use crate::step::{Residual, Summary};
-use crate::standard::TUNNEL_HEIGHT_M;
-use crate::world::{Kind, Polyline2, Profile, Profiles, Network, Solved, Span, Way};
+use crate::line;
+use crate::poly::Pt;
+use crate::step::Summary;
+use crate::world::{Kind, Polyline2, Profile, Profiles, Network, Span, Way};
 use crate::world::{Groups, Partition};
-
-/// Ground cover a bore keeps between its roof and the surface above it, in
-/// metres: enough that what rides over it has something to ride on.
-pub const TUNNEL_COVER_M: f64 = 0.5;
-
-/// How far a surface must run **below** the reference before a bore is the
-/// honest answer rather than a cutting: the road, the tube over it, and the
-/// cover over that. Shallower than their sum there is nothing to drive
-/// through, and a cutting is what is there.
-///
-/// The mirror of [`DECK_STANDOFF_M`], and asymmetric with it *for a reason*
-/// rather than by calibration: a fill becomes a wall at the tallest face the
-/// ground stage will build, while a cut stays a cutting until a tube fits
-/// under it.
-pub const BORE_COVER_M: f64 = TUNNEL_HEIGHT_M + TUNNEL_COVER_M;
-
-/// [`BORE_COVER_M`] for a way of `class`: its own tube and the cover over
-/// it. A standard-gauge railway needs a metre more than a road before a
-/// bore is what is there, because its tube is a metre taller
-/// ([`crate::standard::tube_m`]).
-pub fn bore_cover_m(class: &str) -> f64 {
-    crate::standard::tube_m(class) + TUNNEL_COVER_M
-}
 
 /// A grade sliver shorter than this, between two runs of one kind, is an edge
 /// mismatch rather than real at-grade road: one pier's ground reading coming
 /// up does not make a viaduct into two viaducts.
-pub const SNAP_RUN_M: f64 = 10.0;
+const SNAP_RUN_M: f64 = 10.0;
 
 /// Shortest run that is a structure on its length alone, in metres.
-pub const MIN_STRUCTURE_M: f64 = 40.0;
+const MIN_STRUCTURE_M: f64 = 40.0;
 
 /// Smallest mid-run departure that makes a shorter run a structure anyway: a
 /// 25 m span over a 30 m stream cut is a real bridge, and demoting it blindly
 /// dives the road through the gorge it crosses.
-pub const SHORT_STRUCTURE_DIP_M: f64 = 3.0;
+const SHORT_STRUCTURE_DIP_M: f64 = 3.0;
 
-/// Cuts every way of `ways` at its span boundaries: the tables the solved
-/// heights imply where there are `solved` profiles, the annotation's where
-/// there are none.
-pub fn run(ways: &[Way], solved: Option<&Profiles>) -> (Partition, Summary) {
+/// Cuts every way of `ways` at the span boundaries the `solved` heights
+/// imply, and writes that table back into the profiles.
+pub fn run(ways: &[Way], solved: &Profiles) -> (Partition, Summary) {
     let mut ways = ways.to_vec();
     let annotated: Vec<Vec<Span>> = ways.iter().map(|w| w.spans.clone()).collect();
 
-    // **The cut follows the geometry.** Every way's span table is replaced by
-    // what the solved heights, the annotation and the plan evidence together
-    // say it is, and the pieces are cut from that. After this there is one
-    // span truth and every consumer reads it.
-    let over = crossed(&ways);
-    // Every profile says which way it is of ([`Profile::way`]), so the walk
-    // below is over the profiles themselves: a way that solved none is a way
-    // this step has no heights for, and it keeps the table the source gave
-    // it. That is also what a run with no profiles at all is — a flat
-    // specimen, or the world before the heights are solved.
-    let profiles: &[Profile] = solved.map_or(&[], |s| s.profiles.as_slice());
-    let solving: Vec<usize> = profiles.iter().map(|p| p.way).collect();
-    let derived: Vec<Vec<Span>> = profiles.iter().map(derive).collect();
+    // **The cut follows the geometry.** Every solved way's span table is
+    // replaced by what the solved heights and the annotation together say it
+    // is, and the pieces are cut from that. After this there is one span
+    // truth and every consumer reads it. A way that solved no profile keeps
+    // the table the source gave it: this step has no heights for it.
     let (mut found, mut lost, mut moved) = (0usize, 0usize, 0.0f64);
-    let mut witnessed = 0usize;
     let (mut deck_m, mut bore_m) = (0.0f64, 0.0f64);
     let mut portal_m = 0.0f64;
     let mut runs = 0usize;
-    for (n, &w) in solving.iter().enumerate() {
-        let Some(d) = derived.get(n) else {
-            continue;
-        };
-        runs += d.len();
-        for r in d {
-            if matches!(r.kind, Kind::Bridge(_)) {
+    for p in &solved.profiles {
+        let w = p.way;
+        let derived = derive(p);
+        runs += derived.len();
+        for r in &derived {
+            if r.kind.is_deck() {
                 deck_m += r.len();
             } else {
                 bore_m += r.len();
             }
         }
         let len = ways[w].len();
-        witnessed += ways[w]
-            .spans
-            .iter()
-            .filter(|a| {
-                a.kind.is_structure()
-                    && over.get(w).is_some_and(|x| x.iter().any(|&p| p > a.a0 && p < a.a1))
-            })
-            .count();
-        let out = spans(&ways[w], profiles.get(n), d, len);
-        let out = match profiles.get(n) {
-            Some(p) => {
-                let (out, opened) = open_portals(out, p);
-                portal_m += opened;
-                out
-            }
-            None => out,
-        };
+        let (out, opened) = open_portals(spans(&ways[w], p, &derived, len), p);
+        portal_m += opened;
         let structure = |list: &[Span]| -> Vec<Span> {
             list.iter().filter(|s| s.kind.is_structure()).copied().collect()
         };
@@ -138,47 +84,25 @@ pub fn run(ways: &[Way], solved: Option<&Profiles>) -> (Partition, Summary) {
 
     // **One span truth.** The profiles carry the annotation they were solved
     // against; from here they carry the partition instead, so the structure
-    // step, the bench and the plan view cut the same thing the surface steps
-    // do. Correcting the cut and leaving one consumer on the old table is the
-    // failure the server measured and withdrew a release for: the paint and
-    // the solids disagreed about where a deck was, and every trimmed bridge
-    // gained a joint that could not meet.
+    // step, the lift and the plan view cut the same thing the surface steps
+    // do. Correcting the cut and leaving one consumer on the annotation's table would
+    // put a joint that cannot meet at every trimmed bridge: the paving and
+    // the solids would disagree about where a deck is.
     //
     // The per-station verdict is recomputed with them: a station the trim
-    // freed is at grade now, and one a grow took in is a deck or a bore by
+    // freed is at grade, and one a grow took in is a deck or a bore by
     // the same rule the solve applied (§4.5).
-    let mut cut: Option<Profiles> = solved.cloned();
-    if let Some(solved) = cut.as_mut() {
-        for (n, &w) in solving.iter().enumerate() {
-            let Some(p) = solved.profiles.get_mut(n) else {
-                continue;
-            };
-            p.spans = ways[w].spans.clone();
-            for st in p.stations.iter_mut() {
-                st.solved = Solved::Grade;
-            }
-            for (k0, k1, kind) in p.runs() {
-                if !kind.is_structure() {
-                    continue;
-                }
-                for st in &mut p.stations[k0..=k1] {
-                    st.solved = if st.h - st.ground >= STRUCTURE_MIN_M {
-                        Solved::Deck
-                    } else if st.ground - st.h >= STRUCTURE_MIN_M {
-                        Solved::Bore
-                    } else {
-                        Solved::Grade
-                    };
-                }
-            }
-        }
+    let mut profiles = solved.clone();
+    for p in &mut profiles.profiles {
+        p.spans = ways[p.way].spans.clone();
+        p.classify();
     }
 
     let (mut plan, mut spans) = (Vec::new(), Vec::new());
     let (mut ground_m, mut span_m) = (0.0f64, 0.0f64);
     for (i, way) in ways.iter().enumerate() {
         for piece in cut_at(way, i) {
-            let m = crate::roads::length(&piece.pts);
+            let m = line::length(&piece.pts);
             if piece.kind == Kind::Ground {
                 ground_m += m;
                 plan.push(piece);
@@ -188,15 +112,12 @@ pub fn run(ways: &[Way], solved: Option<&Profiles>) -> (Partition, Summary) {
             }
         }
     }
-    let grouping = groups(&plan, &spans);
-    let Groups { of: group, components: linked, largest, crossings, .. } = &grouping;
+    let (grouping, linkage) = groups(&plan, &spans);
+    let group = &grouping.of;
     let grouped: std::collections::HashSet<usize> = group.iter().copied().collect();
     // **How many groups hold both kinds of piece.** Those are the ones with
-    // a handover inside them — where the surface steps' refined ground
-    // region and `structure`'s swept span meet, and where the seam is. It
-    // sizes what steps 4 and 5 have to migrate: a group of spans alone can
-    // be meshed and lifted on its own, but a mixed one has to carry the
-    // kerb, fillet and room work through with it.
+    // a handover inside them — where a ground piece and a span of one
+    // surface meet at an abutment — and where the seam between them lies.
     let mixed = {
         let mut ground: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let mut over: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -217,46 +138,35 @@ pub fn run(ways: &[Way], solved: Option<&Profiles>) -> (Partition, Summary) {
         .with("bore_m", format!("{bore_m:.0}"))
         .with("found", found)
         .with("lost", lost)
-        .with("witnessed", witnessed)
         .with("moved_m", format!("{moved:.0}"))
         .with("portal_m", format!("{portal_m:.0}"))
-        .with("linked", format!("{linked}/{largest}"))
-        .with("crossings", crossings)
+        .with("linked", format!("{}/{}", linkage.components, linkage.largest))
+        .with("crossings", linkage.crossings)
         .with("groups", grouped.len())
         .with("mixed", mixed);
-    (Partition { network: Network { ways, plan, spans }, profiles: cut, groups: grouping }, summary)
+    (Partition { network: Network { ways, plan, spans }, profiles, groups: grouping }, summary)
 }
 
 /// How far the profiles stand off the raw DEM, at grade, once the cut is
 /// written back into them.
 ///
 /// The step rewrites the span table and the profiles with it, so a station
-/// that was a chord can become at-grade and the population itself moves.
+/// that was a chord can become at-grade and the population itself changes.
 /// That is exactly what wants reporting: a residual that jumps here is a
 /// span the partition gave back to the ground.
 pub fn check(partition: &Partition) -> Summary {
-    Summary::new().with_residual(match &partition.profiles {
-        Some(p) => crate::step::residual_of(&p.profiles),
-        None => Residual::new(),
-    })
+    Summary::new().with_residual(partition.profiles.residual())
 }
 
 /// The pieces of one way: its polyline cut at every span boundary, each
-/// piece carrying that span's [`Kind`].
-///
-/// Two neighbouring pieces share the boundary vertex exactly, so the pieces
-/// still meet where they used to — the cut moved steps, not places.
-pub fn cut(way: &Way) -> Vec<Polyline2> {
-    cut_at(way, usize::MAX)
-}
-
-/// The same, stamping each piece with `way` as its index into
-/// [`Network::ways`] — how a consumer holding a piece finds the
-/// profile its way was solved into.
+/// piece carrying that span's [`Kind`] and `index`, the way's own place in
+/// [`Network::ways`] — how a consumer holding a piece finds the profile its
+/// way was solved into. Two neighbouring pieces share the boundary vertex
+/// exactly.
 pub fn cut_at(way: &Way, index: usize) -> Vec<Polyline2> {
     let mut out = Vec::with_capacity(way.spans.len());
     for span in &way.spans {
-        let pts = between(&way.pts, span.a0, span.a1);
+        let pts = line::between(&way.pts, span.a0, span.a1);
         if pts.len() < 2 {
             continue;
         }
@@ -280,15 +190,15 @@ pub fn cut_at(way: &Way, index: usize) -> Vec<Polyline2> {
 ///
 /// **A portal is where the tube goes into the hill, not where the road
 /// does.** Between the two the road runs under the ground by less than its
-/// tube is tall: nothing fits over it, and until this the span piece carried
-/// it on, so no surface step paved it and the bench cut nothing — the
-/// terrain lay on the roadway, and the mouth a camera should see was hill.
-/// That stretch is an open cutting, and a cutting is ground: cut here, the
+/// tube is tall: nothing fits over it, and if the span piece carried
+/// it on, no surface step would pave it and the bench would cut nothing —
+/// the terrain would lie on the roadway, and the mouth would be hill. That
+/// stretch is an open cutting, and a cutting is ground: cut here, the
 /// surface steps pave it, the bench cuts it into the terrain and walls it
 /// where it is deeper than a face, and the tube starts where it fits.
 ///
 /// The bore itself is not moved. Where it is — which runs are under the
-/// ground at all — is still [`spans`]'s and [`bore_bounds`]'s, elected on
+/// ground at all — is [`spans`]'s and [`bore_bounds`]'s, elected on
 /// the line; this only says where along it the cut between a cutting and a
 /// tube falls, and it falls where the tube's roof first goes under the raw
 /// ground ([`roof_gap`]), interpolated between stations. Only an end that
@@ -349,7 +259,7 @@ fn open_portals(spans: Vec<Span>, p: &Profile) -> (Vec<Span>, f64) {
 }
 
 /// The signed daylight of the drawn tube at one station: how far a bore's
-/// **roof** stands above the reference. Negative is buried — the whole
+/// **roof** stands above the raw ground. Negative is buried — the whole
 /// constant-section tube fits under the ground — and the zero crossing is
 /// where a portal can be.
 ///
@@ -372,12 +282,12 @@ fn roof_gap(h: f64, ground: f64, tube: f64) -> f64 {
 ///
 /// The **ends** follow the majority. A real bore holds its tube almost
 /// everywhere and grazes only at its mouths, so its shallow ends are the
-/// portal transition they have always been and the bounds are the line's own
-/// crossings. A run that fits the tube only in a *minority* is not a bore
-/// with shallow mouths but a surface gallery with one deep spot: its ends
-/// pull back to where the tube fits, and the freed tails are the open cutting
-/// they are. Judged by the roof alone every real portal moved into the hill;
-/// judged by the line alone a gallery drew its roof proud of the hillside.
+/// portal transition and the bounds are the line's own crossings. A run
+/// that fits the tube only in a *minority* is not a bore with shallow mouths
+/// but a surface gallery with one deep spot: its ends pull back to where the
+/// tube fits, and the freed tails are the open cutting they are. Judged by
+/// the roof alone every real portal would move into the hill; judged by the
+/// line alone a gallery would draw its roof proud of the hillside.
 ///
 /// The seed is the run of greatest **integrated burial**, so a half-metre
 /// graze of DEM noise on the approach cannot capture the solve from the deep
@@ -393,9 +303,8 @@ fn bore_bounds(p: &Profile, a0: f64, a1: f64) -> Option<(f64, f64)> {
     // under the drawn ground, and the ground that is drawn is the terrain
     // itself — which is also what `structure`'s own `open` and `cover`
     // measure the tube against. Elected against the reference instead, the
-    // two disagreed wherever the conditioning had moved the surface, and
-    // eleven tunnels were pulled back for a fit that was never the one being
-    // checked.
+    // two would disagree wherever the conditioning moved the surface, and a
+    // tunnel would be pulled back for a fit that is never the one checked.
     let st = &p.stations;
     let line = |k: usize| st[k].h - st[k].ground;
     let tube = crate::standard::tube_m(&p.class);
@@ -455,23 +364,22 @@ fn bore_bounds(p: &Profile, a0: f64, a1: f64) -> Option<(f64, f64)> {
     Some((lo, hi))
 }
 
-/// **Step 1 of `data/plans/one-surface-at-a-junction-2026-09-14.md`**: what a
-/// grouping of the pieces has to work with, measured before anything is
-/// grouped. Returns `(components, largest, crossings)` — the pieces'
-/// connected components by shared connector, the biggest of them, and the
-/// number of pairs whose interiors cross with no connector between them.
+/// What the grouping had to work with: the pieces' connected components by
+/// shared connector, the biggest of them, and the pairs whose interiors cross
+/// with no connector between them.
 ///
-/// The two numbers answer two different questions, and the plan needed both.
-/// `linked` says whether *connectivity* can be the grouping: it cannot if the
-/// largest component is most of the network, because then a viaduct shares a
-/// component with the street it flies over and a union by component would
-/// merge them. `crossings` says how much work the real rule has to do — those
-/// are the pairs that must be kept apart, and the model already names them:
-/// two interiors crossing with no connector between them is a grade
-/// separation, never a junction.
-///
-/// Returns the group of every piece, in [`Network::pieces`]'s order — `plan`
-/// then `spans` — alongside the three counts, as [`Groups`].
+/// `linked` says whether *connectivity* alone could be the grouping: it
+/// cannot where the largest component is most of the network, because then a
+/// viaduct shares a component with the street it flies over. `crossings` says
+/// how much work the split has to do.
+pub struct Linkage {
+    pub components: usize,
+    pub largest: usize,
+    pub crossings: usize,
+}
+
+/// The group of every piece, in [`Network::pieces`]'s order — `plan` then
+/// `spans` — and what it took to find it.
 ///
 /// **The group is the surface a piece belongs to.** Two pieces may be unioned
 /// into one region exactly when they share a group, and the rule is the
@@ -483,12 +391,13 @@ fn bore_bounds(p: &Profile, a0: f64, a1: f64) -> Option<(f64, f64)> {
 /// That the split is over the *structure* side is not a preference. A
 /// crossing is a grade separation, which is to say one of the two is carried
 /// over or under the other, and the one that is carried is the one that left
-/// the ground. On the loop box 55 pairs need it; on a junction standing on a
-/// deck, none do, and its ground legs and its spans come out as one group —
-/// which is the whole point.
+/// the ground. On a junction standing on a deck nothing crosses, and its
+/// ground legs and its spans come out as one group — which is the whole
+/// point.
 ///
-/// It is a pure function of the pieces, so nothing needs to store it.
-pub fn groups(plan: &[Polyline2], spans: &[Polyline2]) -> Groups {
+/// It is a pure function of the pieces, computed once here and carried in
+/// the partition's layer so no later step re-derives it.
+pub fn groups(plan: &[Polyline2], spans: &[Polyline2]) -> (Groups, Linkage) {
     let pieces: Vec<&Polyline2> = plan.iter().chain(spans.iter()).collect();
     let fam = |p: &Polyline2| crate::width::family(&p.class) as usize;
 
@@ -501,20 +410,15 @@ pub fn groups(plan: &[Polyline2], spans: &[Polyline2]) -> Groups {
         }
         x
     }
-    // **Every vertex, not only the two ends.** The model says elsewhere
-    // that Overture cuts a way at every connector, so a junction is always
-    // a meeting of way ends. The data says otherwise: one residential way
-    // south of the Clarens railway carries ten connectors at interior arc
-    // positions, and two service roads end on points that are *interior
-    // vertices* of its bridge piece. Unioned by ends alone they fell in
-    // three different groups, so three sheets met at one junction and none
-    // of them merged — which is what a junction drawn as separate objects
-    // looks like from above.
+    // **Every vertex, not only the two ends.** Overture does not cut a way
+    // at every connector: a way can carry connectors at interior vertices,
+    // and another way can end on one of them — on an interior vertex of a
+    // bridge piece, say. Unioned by ends alone those fall in different
+    // groups, and a junction is drawn as separate sheets that never merge.
     //
     // A shared vertex is a shared connector: two ways that cross without
-    // one do not share a point, which is what `crossed` is for. So the key
-    // is every vertex of every piece, and the cost is the vertices rather
-    // than the pieces.
+    // one do not share a point. So the key is every vertex of every piece,
+    // and the cost is the vertices rather than the pieces.
     let mut at: HashMap<(usize, (i64, i64)), usize> = HashMap::new();
     for (i, p) in pieces.iter().enumerate() {
         if p.pts.len() < 2 {
@@ -540,44 +444,19 @@ pub fn groups(plan: &[Polyline2], spans: &[Polyline2]) -> Groups {
         *size.entry(root(&mut parent, i)).or_default() += 1;
     }
 
-    // Interiors that cross with no connector between them, bucketed by cell
-    // the way `crossed` does, and counted once per pair of pieces.
-    let mut cells: HashMap<(i32, i32), Vec<(usize, usize)>> = HashMap::new();
-    for (i, p) in pieces.iter().enumerate() {
-        for k in 1..p.pts.len() {
-            let (a, b) = (p.pts[k - 1], p.pts[k]);
-            let box_ = [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])];
-            for cell in poly::cells_over(box_, poly::CELL_M) {
-                cells.entry(cell).or_default().push((i, k - 1));
-            }
-        }
-    }
+    // Interiors that cross with no connector between them, counted once per
+    // pair of pieces of one family.
     let ends = |p: &Polyline2| {
         [crate::world::connector(p.pts[0]), crate::world::connector(p.pts[p.pts.len() - 1])]
     };
+    let lines: Vec<&[Pt]> = pieces.iter().map(|p| p.pts.as_slice()).collect();
     let mut crossings: HashSet<(usize, usize)> = HashSet::new();
-    for bucket in cells.values() {
-        for x in 0..bucket.len() {
-            for y in x + 1..bucket.len() {
-                let (a, b) = (bucket[x], bucket[y]);
-                if a.0 == b.0 || fam(pieces[a.0]) != fam(pieces[b.0]) {
-                    continue;
-                }
-                let (lo, hi) = (a.0.min(b.0), a.0.max(b.0));
-                if crossings.contains(&(lo, hi)) {
-                    continue;
-                }
-                // Sharing a connector makes them a junction, whatever their
-                // axes do near it.
-                let (ea, eb) = (ends(pieces[a.0]), ends(pieces[b.0]));
-                if ea.iter().any(|x| eb.contains(x)) {
-                    continue;
-                }
-                let (u, v) = (&pieces[a.0].pts, &pieces[b.0].pts);
-                if poly::proper_crossing(u[a.1], u[a.1 + 1], v[b.1], v[b.1 + 1]).is_some() {
-                    crossings.insert((lo, hi));
-                }
-            }
+    for c in line::crossings(&lines) {
+        let (a, b) = (pieces[c.a], pieces[c.b]);
+        // Sharing a connector makes them a junction, whatever their axes do
+        // near it.
+        if fam(a) == fam(b) && !ends(a).iter().any(|x| ends(b).contains(x)) {
+            crossings.insert((c.a, c.b));
         }
     }
     let (components, largest) = (size.len(), size.values().copied().max().unwrap_or(0));
@@ -593,7 +472,7 @@ pub fn groups(plan: &[Polyline2], spans: &[Polyline2]) -> Groups {
     // byte-deterministic and every id downstream would jitter with it.
     let mut pairs: Vec<(usize, usize)> = crossings.iter().copied().collect();
     pairs.sort_unstable();
-    let mut parent: Vec<(usize, usize)> = Vec::new();
+    let mut split: Vec<(usize, usize)> = Vec::new();
     for &(a, b) in &pairs {
         if group[a] != group[b] {
             continue;
@@ -609,7 +488,7 @@ pub fn groups(plan: &[Polyline2], spans: &[Polyline2]) -> Groups {
         // its own piece boundaries.
         let mut stack = vec![off];
         let was = group[off];
-        parent.push((next, was));
+        split.push((next, was));
         while let Some(i) = stack.pop() {
             if group[i] != was {
                 continue;
@@ -620,9 +499,6 @@ pub fn groups(plan: &[Polyline2], spans: &[Polyline2]) -> Groups {
                     continue;
                 }
                 let (u, v) = (pieces[i], *p);
-                let ends = |p: &Polyline2| {
-                    [crate::world::connector(p.pts[0]), crate::world::connector(p.pts[p.pts.len() - 1])]
-                };
                 if ends(u).iter().any(|e| ends(v).contains(e)) {
                     stack.push(j);
                 }
@@ -642,75 +518,12 @@ pub fn groups(plan: &[Polyline2], spans: &[Polyline2]) -> Groups {
     // and must still never be joined.
     let rivals: Vec<(usize, usize)> =
         pairs.iter().map(|&(a, b)| (group[a].min(group[b]), group[a].max(group[b]))).collect();
-    Groups { of: group, components, largest, crossings: crossings.len(), rivals, parent }
-}
-
-/// Per way, the arcs at which **another mapped way's line crosses it** — the
-/// evidence that a span is a structure whatever the ground says.
-///
-/// A short bridge over a stream, a footpath or a service road is the case no
-/// DEM settles: at 3.29 m a pixel the cut beneath it is not there to be seen,
-/// so the heights depart by nothing and the derivation finds no structure.
-/// What makes it one is the thing underneath, and the annotation is the only
-/// thing in the data that says which of the two is on top. So a span that
-/// passes over another alignment keeps its annotation, whatever the
-/// derivation says (docs/GENERATION.md §4.5).
-///
-/// Every way is a witness, not only the ones that solve: a footway crossing
-/// under a road bridge is exactly the evidence wanted. A meeting at a shared
-/// end is a junction, not a passage, and [`crate::poly::proper_crossing`] reports
-/// proper crossings only.
-pub fn crossed(ways: &[Way]) -> Vec<Vec<f64>> {
-    let mut cells: HashMap<(i32, i32), Vec<(usize, usize)>> = HashMap::new();
-    for (i, w) in ways.iter().enumerate() {
-        for k in 1..w.pts.len() {
-            let (p, q) = (w.pts[k - 1], w.pts[k]);
-            let box_ = [p[0].min(q[0]), p[1].min(q[1]), p[0].max(q[0]), p[1].max(q[1])];
-            for cell in poly::cells_over(box_, poly::CELL_M) {
-                cells.entry(cell).or_default().push((i, k - 1));
-            }
-        }
-    }
-    let mut arc: Vec<Vec<f64>> = vec![Vec::new(); ways.len()];
-    let mut seen: HashSet<(usize, usize, usize, usize)> = HashSet::new();
-    for bucket in cells.values() {
-        for x in 0..bucket.len() {
-            for y in x + 1..bucket.len() {
-                let (mut a, mut b) = (bucket[x], bucket[y]);
-                if a.0 == b.0 {
-                    continue;
-                }
-                if a.0 > b.0 {
-                    std::mem::swap(&mut a, &mut b);
-                }
-                if !seen.insert((a.0, a.1, b.0, b.1)) {
-                    continue;
-                }
-                let (u, v) = (&ways[a.0].pts, &ways[b.0].pts);
-                let Some(p) = poly::proper_crossing(u[a.1], u[a.1 + 1], v[b.1], v[b.1 + 1]) else {
-                    continue;
-                };
-                for (w, seg) in [(a.0, a.1), (b.0, b.1)] {
-                    let at = &ways[w].pts[seg];
-                    let mut s = 0.0;
-                    for k in 1..=seg {
-                        s += (ways[w].pts[k][0] - ways[w].pts[k - 1][0])
-                            .hypot(ways[w].pts[k][1] - ways[w].pts[k - 1][1]);
-                    }
-                    arc[w].push(s + (p[0] - at[0]).hypot(p[1] - at[1]));
-                }
-            }
-        }
-    }
-    for list in &mut arc {
-        list.sort_by(f64::total_cmp);
-    }
-    arc
+    let linkage = Linkage { components, largest, crossings: crossings.len() };
+    (Groups { of: group, rivals, parent: split }, linkage)
 }
 
 /// The spans of one way as the model believes them: **the annotation where
-/// the geometry cannot see, the geometry everywhere else**
-/// (`spans-are-derived-2026-09-09.md` R2/R3).
+/// the geometry cannot see, the geometry everywhere else**.
 ///
 /// - An annotated structure the heights bear out is **trimmed and grown to
 ///   the run they imply**: the mapper's edge is where a segment was split,
@@ -718,20 +531,19 @@ pub fn crossed(ways: &[Way]) -> Vec<Vec<f64>> {
 /// - An annotated structure **no** derived run overlaps is **kept whole**.
 ///   This is the whole-span guard, and it is the difference between the
 ///   geometry *contradicting* a tag and the geometry having nothing to say:
-///   a 25 m bridge over a stream is below the resolution of a 3.29 m DEM, so
-///   the heights depart by nothing and no derivation could ever see it.
-///   Degraded for want of evidence, 37 of the loop box's annotated structures
-///   became earthworks instead, and the ground stage answered them with
-///   19.8 m of fill and 28 902 m² of wall where 24 643 m² had been — worse
-///   than the bridges they replaced. **Absence of evidence is not evidence of
-///   absence**, and a tag is overruled only where the geometry positively
-///   says otherwise (`unstacked`, `clamped`, and the trim above).
+///   a 25 m bridge over a stream is below the resolution of a DEM of a few
+///   metres, so the heights depart by nothing and no derivation could ever
+///   see it. Degraded for want of evidence, such a bridge becomes an
+///   earthwork the ground must wall — worse than the bridge it replaces.
+///   **Absence of evidence is not evidence of absence**, and a tag is
+///   overruled only where the geometry positively says otherwise
+///   (`unstacked`, `clamped`, and the trim above).
 /// - A run the heights imply that no annotation covers is **added**.
 ///
 /// The result is a partition of `[0, len]`: the arcs are collected, sorted,
 /// and one span emitted per gap, so nothing overlaps and nothing is dropped
 /// however the three sources overlap.
-pub fn spans(way: &Way, profile: Option<&Profile>, derived: &[Span], len: f64) -> Vec<Span> {
+pub fn spans(way: &Way, profile: &Profile, derived: &[Span], len: f64) -> Vec<Span> {
     let overlaps = |a: &Span, b: &Span| b.a1 > a.a0 && b.a0 < a.a1;
     let mut kept: Vec<Span> = Vec::new();
     for a in way.spans.iter().filter(|s| s.kind != Kind::Ground) {
@@ -745,27 +557,24 @@ pub fn spans(way: &Way, profile: Option<&Profile>, derived: &[Span], len: f64) -
             let a1 = hits.iter().map(|d| d.a1).fold(f64::NEG_INFINITY, f64::max);
             Span { a0: a0.max(0.0), a1: a1.min(len), kind: a.kind }
         };
-        // **A bore's ends are the run's own** ([`bore_bounds`]), between the
-        // annotation and the proof.
+        // **A bore's ends are the run's own** (`bore_bounds`), between the
+        // annotation and the proof, within three bounds:
         //
-        // Three bounds, each of which cost a measurement to find. It applies
-        // to a **proven** bore only: run over spans the whole-span guard is
-        // holding, it pulled back or degraded eleven of the loop box's
-        // tunnels for a fit the DEM was never going to show. It is read from
-        // the **annotation's** window, not the trimmed span: clamped to the
-        // trim it can only shrink, and a 120 m ridge came out with 96 m of
-        // tube and both portals buried in the hillside. And it may not grow
-        // **past** the annotation: given a free reach instead, a flat-ground
-        // underpass whose ramps are cut into the ground read as one
-        // line-buried run that fits the tube over its majority, and the bore
-        // swallowed both approaches whole — `cut` 6.5 m of honest open
-        // cutting became 0. Growing past a mapper's edge needs a *reason*
-        // (the server's licence: a crossing the buried tail passes beneath),
-        // and this model has none yet. What grows a span here is the terrain,
-        // in `reference::paint`, which has one.
+        // - It applies to a **proven** bore only. Over a span the whole-span
+        //   guard is holding, it would pull back or degrade a tunnel for a
+        //   fit the DEM was never going to show.
+        // - It is read from the **annotation's** window, not the trimmed
+        //   span: clamped to the trim it could only shrink, and leave a
+        //   tube short of its ridge with both portals buried.
+        // - It may not grow **past** the annotation. A flat-ground underpass
+        //   whose ramps are cut into the ground reads as one line-buried run
+        //   that fits the tube over its majority, and a free reach would let
+        //   the bore swallow both approaches. Growing past a mapper's edge
+        //   needs a *reason*; what grows a span here is the terrain, in
+        //   `reference::paint`, which has one.
         if matches!(out.kind, Kind::Tunnel(_)) && !hits.is_empty() {
             let proved = (out.a0, out.a1);
-            if let Some((e0, e1)) = profile.and_then(|p| bore_bounds(p, a.a0, a.a1)) {
+            if let Some((e0, e1)) = bore_bounds(profile, a.a0, a.a1) {
                 // The derived run may itself reach past the annotation, so
                 // the bounds are ordered before they are clamped between.
                 out.a0 = e0.clamp(a.a0.min(proved.0), proved.0);
@@ -786,7 +595,7 @@ pub fn spans(way: &Way, profile: Option<&Profile>, derived: &[Span], len: f64) -
 
 /// A set of possibly-overlapping structure spans, resolved into a partition
 /// of `[0, len]` with ground between them. Where two overlap the earlier one
-/// holds the overlap, exactly as the reader's own `pieces_of` does.
+/// holds the overlap, exactly as the reader's `crate::roads::pieces_of` does.
 fn partition_of(mut kept: Vec<Span>, len: f64) -> Vec<Span> {
     kept.sort_by(|a, b| a.a0.total_cmp(&b.a0).then(a.a1.total_cmp(&b.a1)));
     let mut out: Vec<Span> = Vec::new();
@@ -817,10 +626,10 @@ fn partition_of(mut kept: Vec<Span>, len: f64) -> Vec<Span> {
 const MIN_SPAN_M: f64 = 0.25;
 
 /// The runs of one way the **solved heights** imply, whatever the source
-/// said (docs/GENERATION.md §4.5, and `spans-are-derived-2026-09-09.md` R2).
+/// said (docs/GENERATION.md §4.5).
 ///
 /// One signed gap is the whole signal: past [`DECK_STANDOFF_M`] over the
-/// reference is a deck, past [`BORE_COVER_M`] under it is a bore, and the
+/// reference is a deck, past [`bore_cover_m`] under it is a bore, and the
 /// threshold crossing *is* the abutment or the portal — the mouth sits where
 /// the road actually leaves the ground, not where a mapper split the way.
 ///
@@ -922,7 +731,7 @@ fn at_arc(p: &Profile, a: f64) -> (f64, f64) {
 }
 
 /// Where two partitions of one way name different kinds, in metres.
-pub fn divergence(a: &[Span], b: &[Span]) -> f64 {
+fn divergence(a: &[Span], b: &[Span]) -> f64 {
     let mut cuts: Vec<f64> = a.iter().chain(b.iter()).flat_map(|s| [s.a0, s.a1]).collect();
     cuts.sort_by(f64::total_cmp);
     cuts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
@@ -941,76 +750,18 @@ pub fn divergence(a: &[Span], b: &[Span]) -> f64 {
     m
 }
 
-/// The part of `pts` between arc `a0` and arc `a1`, the interior vertices
-/// kept and the two ends interpolated onto the polyline.
-pub fn between(pts: &[[f64; 2]], a0: f64, a1: f64) -> Vec<[f64; 2]> {
-    if pts.len() < 2 || !(a1 > a0) {
-        return Vec::new();
-    }
-    let mut out: Vec<[f64; 2]> = Vec::new();
-    let mut at = 0.0f64;
-    for pair in pts.windows(2) {
-        let (p, q) = (pair[0], pair[1]);
-        let len = (q[0] - p[0]).hypot(q[1] - p[1]);
-        let next = at + len;
-        if next < a0 - 1e-12 {
-            at = next;
-            continue;
-        }
-        if at > a1 + 1e-12 {
-            break;
-        }
-        if out.is_empty() {
-            let t = if len > 0.0 { ((a0 - at) / len).clamp(0.0, 1.0) } else { 0.0 };
-            out.push(lerp(p, q, t));
-        }
-        if next <= a1 + 1e-12 {
-            if out.last() != Some(&q) {
-                out.push(q);
-            }
-        } else {
-            let t = if len > 0.0 { ((a1 - at) / len).clamp(0.0, 1.0) } else { 1.0 };
-            let end = lerp(p, q, t);
-            if out.last() != Some(&end) {
-                out.push(end);
-            }
-            break;
-        }
-        at = next;
-    }
-    if out.len() < 2 {
-        Vec::new()
-    } else {
-        out
-    }
-}
-
-fn lerp(p: [f64; 2], q: [f64; 2], t: f64) -> [f64; 2] {
-    [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]
-}
-
-/// Every piece of `roads`, on the ground or off it — the order the reference
-/// and the profile take them in.
-pub fn pieces(roads: &Network) -> impl Iterator<Item = &Polyline2> {
-    roads.pieces()
-}
-
 #[cfg(test)]
 mod tests {
     use crate::world::World;
-    use crate::pipeline::tests::{built, plan, upto};
+    use crate::pipeline::tests::{built, upto};
     use crate::step::Step;
-    
-
-    
-    
 
     use super::*;
 
     fn world(net: &str) -> (World, Summary) {
-        // No profile: the cut is then the annotation's own, which is what a
-        // flat specimen is about.
-        let (w, ran) = built("flat?h=400", net, None, 10.0, &plan(Step::Partition));
+        // Flat ground: nothing departs from it, so the cut is the
+        // annotation's own, which is what a flat specimen is about.
+        let (w, ran) = built("flat?h=400", net, None, 10.0, &upto(Step::Partition));
         (w, ran.last())
     }
 
@@ -1040,7 +791,7 @@ mod tests {
         // The rims are 40 m apart and the deck starts where the gap crosses
         // 3 m, a little inside each of them.
         assert!(r.len() > 20.0 && r.len() < 40.0, "deck {:.1} m: {s}", r.len());
-        // `found` is 0 because by now the way *is* annotated — by the terrain
+        // `found` is 0 because by this step the way *is* annotated — by the terrain
         // itself, in the reference step. What the source said is nothing.
         assert_eq!(s.num("found"), 0.0, "{s}");
         assert_eq!(s.num("spans"), 1.0, "one span piece, cut from the prior: {s}");
@@ -1063,11 +814,8 @@ mod tests {
     ///
     /// This is the whole-span guard, and it is the difference between the
     /// geometry contradicting a tag and the geometry having nothing to say. A
-    /// 25 m bridge over a stream is below what a 3.29 m DEM resolves, so no
-    /// derivation could ever see it. Degraded for want of evidence, 37 of the
-    /// loop box's annotated structures became earthworks and the ground stage
-    /// answered them with 19.8 m of fill and 28 902 m² of wall against
-    /// 24 643 — worse than the bridges they replaced.
+    /// 25 m bridge over a stream is below what a DEM of a few metres
+    /// resolves, so no derivation could ever see it.
     #[test]
     fn a_mapped_bridge_that_never_departs_keeps_its_annotation() {
         let (_, s) = solved("flat?h=400", "net:straight?span=0.35,0.65&kind=bridge");
@@ -1086,11 +834,11 @@ mod tests {
         assert_eq!(r.plan.len(), 1, "{s}");
         assert!(r.spans.is_empty(), "{s}");
         assert_eq!(r.plan[0].kind, Kind::Ground);
-        assert!((crate::roads::length(&r.plan[0].pts) - 200.0).abs() < 1e-9, "{s}");
+        assert!((line::length(&r.plan[0].pts) - 200.0).abs() < 1e-9, "{s}");
     }
 
     /// A mapped span cuts its way into three, and the pieces meet exactly at
-    /// the two boundaries: the cut moved steps, not places.
+    /// the two boundaries.
     #[test]
     fn a_mapped_span_cuts_its_way_into_three() {
         let (w, s) = world("net:straight?span=0.35,0.65&kind=bridge");
@@ -1100,7 +848,7 @@ mod tests {
         assert_eq!(r.spans.len(), 1, "{s}");
         let deck = &r.spans[0];
         assert_eq!(deck.kind, Kind::Bridge(1));
-        assert!((crate::roads::length(&deck.pts) - 60.0).abs() < 1e-6, "{s}");
+        assert!((line::length(&deck.pts) - 60.0).abs() < 1e-6, "{s}");
         // The abutments are shared vertices, not merely nearby ones.
         let ends: Vec<[f64; 2]> = r.plan.iter().flat_map(|p| [p.pts[0], p.pts[p.pts.len() - 1]]).collect();
         assert!(ends.contains(&deck.pts[0]), "the west abutment is not shared");
@@ -1121,7 +869,7 @@ mod tests {
             let (w, s) = world(net);
             let r = w.network().unwrap();
             for way in &r.ways {
-                let cut: f64 = cut(way).iter().map(|p| crate::roads::length(&p.pts)).sum();
+                let cut: f64 = cut_at(way, 0).iter().map(|p| line::length(&p.pts)).sum();
                 assert!((cut - way.len()).abs() < 1e-6, "{net}: {cut} vs {} — {s}", way.len());
             }
         }

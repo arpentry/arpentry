@@ -7,7 +7,7 @@
 //! ground, and blended where the nearest outline segment changes, so it is
 //! continuous and always meets the ground within 7.5 m. No triangle of the
 //! ground lies under the asphalt, which is where every artefact of a ground
-//! drawn beneath an opaque surface lives (`data/plans/terrain-hole-plan.md`).
+//! drawn beneath an opaque surface lives.
 //!
 //! The outline is the one mesh's own edges between a face that cuts and one
 //! that does not, and the ground's segments are those edges, every height
@@ -22,25 +22,26 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::copies::{Copies, Fields, Key, Part, Rule, Stats, Surface, NONE};
-use crate::field::Ground;
+use crate::line;
+use crate::copies::{Copies, Fields, Key, Part, Rule, Surface, NONE};
+use crate::ground::Ground;
 use crate::lattice::height_at;
 use crate::poly::{self, Pt};
-use crate::standard::{KERB_RISE_M, MAX_BENCH_FACE_M};
+use crate::standard::{KERB_RISE_M, MAX_BATTER_FACE_M};
 use crate::step::{Residual, Summary};
 use crate::world::{Arrangement, Earthwork, Lifted, Mesh, Terrain, Tri};
 
 /// Slack, in metres, on the kerb's own rise before an edge counts as a
 /// step. The rise arrives as a sum of floats and lands a hair either
-/// side of itself: without the slack, a flat ground reported two steps,
-/// and both were an edge between a lifted pavement and the free band
-/// beside it — the kerb, exactly, and no more.
-pub const STEP_SLACK_M: f64 = 1e-6;
+/// side of itself: without the slack, the edge between a lifted pavement
+/// and the free band beside it — the kerb, exactly, and no more — would
+/// count as a step on flat ground.
+const STEP_SLACK_M: f64 = 1e-6;
 
 /// A mesh edge whose ends differ in height by more than [`KERB_RISE_M`]
 /// *and* by more than this many metres per metre of its own length is a
 /// step: the field is discontinuous across it. Both conditions are needed
-/// and neither alone would do. A street on the box's flank climbs 30 %, so
+/// and neither alone would do. A street on a mountain flank climbs 30 %, so
 /// a plain gradient test would call every one of its edges a step; a kerb
 /// return a centimetre across can drop a metre, so a plain height test
 /// would miss nothing but would also flag a long edge on a steep street.
@@ -58,12 +59,11 @@ const STEP_SAMPLES: usize = 16;
 /// This is where the run's residual chain ends, and it is the only link in it
 /// measured over an area rather than along an axis. The steps before it report
 /// the same quantity over their at-grade stations
-/// ([`crate::step::residual_of`]), so the two are not the same population
-/// and are not meant to be: an axis says how far the *road* has left the DEM,
-/// and this says how far the *ground* has, which is the earthwork. A run where
-/// the second is much the larger is a run whose earthwork is not the road's —
-/// which is the question `data/plans/one-ground-2026-09-16.md` §1.1 could not
-/// answer by sweeping constants.
+/// ([`crate::world::Profiles::residual`]), so the two are not the same
+/// population and are not meant to be: an axis says how far the *road* has
+/// left the DEM, and this says how far the *ground* has, which is the
+/// earthwork. A run where the second is much the larger is a run whose
+/// earthwork is not the road's.
 fn drawn_residual(terrain: &Terrain, ground: &Tri) -> Residual {
     let mut r = Residual::new();
     for v in &ground.positions {
@@ -85,12 +85,7 @@ fn drawn_residual(terrain: &Terrain, ground: &Tri) -> Residual {
 /// least half the rise between two of them. Only the second is a step. (A
 /// single midpoint could not tell them apart: the DEM's bicubic curvature
 /// under a steep edge reads as a jump.)
-///
-/// It used to count every edge over the grade and call it a discontinuity,
-/// which it was only while a vertex could be answered by a different rule
-/// from its neighbour; 10 028 of the loop box's 18 408 were the DEM's own
-/// steepness.
-fn steps_of(part: &Part, at: &dyn Fn(Pt, Key) -> f64, stats: &mut Stats) {
+fn steps_of(part: &Part, at: &dyn Fn(Pt, Key) -> f64, stats: &mut Steps) {
     let tri = &part.tri;
     let mut seen: HashSet<(u32, u32)> = HashSet::new();
     for (t, &key) in tri.indices.chunks_exact(3).zip(&part.face_key) {
@@ -140,84 +135,21 @@ fn steps_of(part: &Part, at: &dyn Fn(Pt, Key) -> f64, stats: &mut Stats) {
     }
 }
 
-/// What the ground's answer came to.
+/// The edges the lifted surfaces' heights jump across ([`steps_of`]).
 #[derive(Debug, Default, Clone)]
-pub struct Earth {
-    pub triangles: usize,
-    pub vertices: usize,
-    /// Outline vertices, counted once per outline edge end.
-    pub outline: usize,
-    /// Outline vertices away from a mouth, a gallery or a span, and those of
-    /// them with no copy on the paving's side: the seam is a construction
-    /// now, so this is a check that it still is one.
-    pub asked: usize,
-    pub unseamed: usize,
-    /// Steps lying on an arrangement edge: what §3.3's rule can reach.
-    pub on_edge: usize,
-    /// The paving's rim, and the edges of it with nothing on the far side
-    /// away from the rect's border: a crack, and the one thing a closing
-    /// face cannot mend.
-    pub rim: usize,
-    pub unmet: usize,
-    /// The largest step, in metres, between a paved copy of an outline
-    /// vertex and its ground copy, where a batter runs.
-    pub contact: f64,
-    /// Outline vertices standing more than one face from the ground, where
-    /// the batter takes one face and a wall the rest, and the tallest of
-    /// those walls in metres.
-    pub walled: usize,
-    pub wall: f64,
-    /// Lattice vertices, and those the bench moved. Invariant 8 — the
-    /// ground outside every toe is the DEM's, bit for bit — holds by
-    /// construction, since a point further from the outline than a face
-    /// may run is never asked about; the count says how much ground the
-    /// bench actually moved.
-    pub lattice: usize,
-    pub touched: usize,
-    /// How far, in metres, the ground mesh's triangles stand off the
-    /// engineered ground at their centroids — the batter's crease, which
-    /// no breakline resolves yet.
-    pub off: f64,
-    /// The area of the closing face, in square metres.
-    pub wall_m2: f64,
-    /// The area of the faces the edge rule draws between paved surfaces.
-    pub kerb_m2: f64,
-    /// Copies of one vertex under two rules that agreed and were welded.
-    pub welded: usize,
-}
-
-impl Earth {
-    /// Measures the ground against the room it was cut for, over the
-    /// outline's own edges.
-    fn new(
-        outline: &[(u32, u32)],
-        room: &dyn Fn(u32) -> f64,
-        natural: &dyn Fn(u32) -> f64,
-        ground: &Ground,
-        t: &Terrain,
-    ) -> Earth {
-        let mut e = Earth::default();
-        for &(u, _) in outline {
-            e.outline += 1;
-            let (r, n) = (room(u), natural(u));
-            // A walled vertex has no contact to measure: the ground there is
-            // the natural ground and the wall between them is the answer, so
-            // it is counted rather than averaged in.
-            if (n - r).abs() > MAX_BENCH_FACE_M {
-                e.walled += 1;
-                // The batter takes one face of the drop; the wall the rest.
-                e.wall = e.wall.max((n - r).abs() - MAX_BENCH_FACE_M);
-            }
-        }
-        e.lattice = t.grid.vertex_count();
-        for i in 0..e.lattice {
-            let [x, y, z] = t.position(i);
-            if ground.at([x, y], z) != z {
-                e.touched += 1;
-            }
-        }
-        e
-    }
+struct Steps {
+    edges: usize,
+    /// Edges the height field jumps across within one rule.
+    steps: usize,
+    /// The largest of those jumps, in metres.
+    worst: f64,
+    /// Where they are.
+    at: Vec<[f64; 2]>,
+    /// Edges as steep as a step whose residual over the DEM barely changes:
+    /// the terrain's own steepness.
+    dem_steep: usize,
+    /// Edges as steep as a step that their rule is continuous along.
+    steep: usize,
 }
 
 /// The room's height at every vertex of the one mesh: its lowest paved
@@ -227,8 +159,7 @@ impl Earth {
 /// kerb — the lower is the ground's, so the ground meets the asphalt rather
 /// than standing a kerb over it. A vertex no paving reaches has no room
 /// height of its own: a gallery's rim, whose footprint the arrangement cuts
-/// but nothing paves. The nearer field's cross-section answers there, as it
-/// always has.
+/// but nothing paves. The nearer field's cross-section answers there.
 fn room_of<'a>(
     mesh: &'a Mesh,
     copies: &Copies,
@@ -260,22 +191,6 @@ fn room_of<'a>(
 /// it takes the engineered ground, and pins nothing.
 fn passive(k: Option<Key>) -> bool {
     matches!(k, Some((Surface::Near | Surface::Far, rule)) if rule.drape || rule.axis == NONE)
-}
-
-/// Whether one-mesh vertex `v` is on the rect's own border, to the kernel's
-/// grid.
-fn on_border(mesh: &Mesh) -> impl Fn(u32) -> bool + '_ {
-    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
-    for q in &mesh.tri.positions {
-        for k in 0..2 {
-            lo[k] = lo[k].min(q[k]);
-            hi[k] = hi[k].max(q[k]);
-        }
-    }
-    move |v: u32| {
-        let q = mesh.tri.positions[v as usize];
-        (0..2).any(|k| (q[k] - lo[k]).abs() <= poly::GRID_M || (q[k] - hi[k]).abs() <= poly::GRID_M)
-    }
 }
 
 /// Benches the ground to the lifted room, and regrades the passive
@@ -344,8 +259,8 @@ pub fn run(terrain: &Terrain, mesh: &Mesh, arrangement: &Arrangement, lifted: &L
     // at the outline, so at an outline vertex it *is* the pin wherever the
     // segments meeting there agree, and differs only where two edges pin one
     // vertex differently — a split, where the wall stands anyway. Pinning
-    // those vertices exactly instead put a jump in every ground and footpath
-    // triangle beside a split: 300 of them on the loop box.
+    // those vertices exactly instead would put a jump in every ground and
+    // footpath triangle beside a split.
     for q in copies.ground.tri.positions.iter_mut() {
         q[2] = ground.at([q[0], q[1]], q[2]);
     }
@@ -372,12 +287,12 @@ pub fn run(terrain: &Terrain, mesh: &Mesh, arrangement: &Arrangement, lifted: &L
 
     // **Where the steps are**: edges the height field jumps across within one
     // rule, kept as marks for the plan view.
-    let mut stats = Stats::default();
+    let mut stats = Steps::default();
     let at = |q: Pt, key: Key| {
         if passive(Some(key)) {
             natural(q) + ground.residual(q)
         } else {
-            fields.lift(key.0, Some(&over)).height(q, natural(q), key.1).0
+            fields.lift(key.0, &over).height(q, natural(q), key.1).0
         }
     };
     for part in [&copies.carriageway, &copies.ballast, &copies.pavement] {
@@ -387,10 +302,11 @@ pub fn run(terrain: &Terrain, mesh: &Mesh, arrangement: &Arrangement, lifted: &L
     let summary = Summary::new()
         .with_share("step", stats.steps, stats.edges)
         .with("worst", format!("{:.3}", stats.worst))
-        // Edges steeper than a step whose both ends are on the raw DEM: the
-        // terrain's own steepness under a draped pavement — a retaining wall
-        // the DEM images — and not a discontinuity the lift made. They were
-        // 10 028 of the loop box's 18 408 `step` before they were told apart.
+        // Edges as steep as a step that their own rule is continuous along,
+        // and edges as steep as a step whose residual over the DEM barely
+        // changes — the terrain's own steepness under a draped or regraded
+        // surface, a retaining wall the DEM images. Neither is a
+        // discontinuity the lift made.
         .with("steep", stats.steep)
         .with("dem_steep", stats.dem_steep)
         // Passive pavement vertices the earthwork moved off the raw DEM: a
@@ -399,44 +315,28 @@ pub fn run(terrain: &Terrain, mesh: &Mesh, arrangement: &Arrangement, lifted: &L
     (Earthwork { copies, outline, cutting, top, ground, steps }, summary)
 }
 
-/// What the room and the ground came to: where the room's vertices stand,
-/// how the two meet at the outline, how much ground was moved, and how far
-/// the drawn ground stands off the raw DEM.
+/// How the ground meets the room: whether every outline vertex has a paved
+/// copy on its cutting side (`seam`), whether any paved rim has nothing
+/// beyond it (`unmet`), how far the two stand apart where a batter runs
+/// (`contact`), where a wall stands instead, how much ground was moved, and
+/// how far the drawn ground stands off the raw DEM.
 pub fn check(terrain: &Terrain, mesh: &Mesh, arrangement: &Arrangement, lifted: &Lifted, earthwork: &Earthwork) -> Summary {
     let (copies, ground) = (&earthwork.copies, &earthwork.ground);
     let portals = &arrangement.portals;
     let over = poly::Indexed::new(&arrangement.over);
-    let fields = &lifted.fields;
     let natural = |q: Pt| height_at(terrain, q[0], q[1]);
-    let room = room_of(mesh, copies, fields, &natural);
+    let room = room_of(mesh, copies, &lifted.fields, &natural);
     let plan = |v: u32| {
         let q = mesh.tri.positions[v as usize];
         [q[0], q[1]]
     };
 
-    // Where the room's vertices stand. Counted once welded, over the copies
-    // a triangle still names: a copy merged into its twin is not a vertex of
-    // the world.
-    let mut stats = Stats::default();
-    for (part, feet) in [&copies.carriageway, &copies.ballast, &copies.pavement].into_iter().zip(&lifted.feet) {
-        let mut used = vec![false; part.tri.positions.len()];
-        for &i in &part.tri.indices {
-            used[i as usize] = true;
-        }
-        for i in (0..used.len()).filter(|&i| used[i]) {
-            let (surface, rule) = part.key[i];
-            fields.lift(surface, Some(&over)).account(&mut stats, rule, part.tri.positions[i][2], part.natural[i], feet[i]);
-        }
-    }
-
-    // A paved rim with nothing beyond it, away from the rect's edge: a crack
-    // in the one mesh, and the one thing no face can close.
-    let border = on_border(mesh);
-    let unmet = lifted
-        .bounds
-        .iter()
-        .filter(|e| e.open && arrangement.face(e.a).cuts() && !(border(e.u) && border(e.v)))
-        .count();
+    // The paving's rim, and the edges of it with nothing beyond them away
+    // from the rect's edge: a crack in the one mesh, and the one thing no
+    // face can close.
+    let border = mesh.on_border();
+    let rim: Vec<_> = lifted.bounds.iter().filter(|e| arrangement.face(e.a).cuts()).collect();
+    let unmet = rim.iter().filter(|e| e.open && !(border(e.u) && border(e.v))).count();
 
     // How many paved copies each vertex has once welded: where there are two
     // — two surfaces, or two rules of one — the seam between them is the edge
@@ -450,11 +350,7 @@ pub fn check(terrain: &Terrain, mesh: &Mesh, arrangement: &Arrangement, lifted: 
             }
         }
     }
-    // How the paving and the ground meet at the outline: whether every
-    // outline vertex has a paved copy on its cutting side (`seam`), and how
-    // far apart the two stand where a batter runs (`contact`). Both are
-    // constructions now rather than searches, so both are checks.
-    let (mut asked, mut missed, mut contact) = (0usize, 0usize, 0.0f64);
+    let (mut asked, mut unseamed, mut contact) = (0usize, 0usize, 0.0f64);
     for (&(u, v), key) in earthwork.outline.iter().zip(&earthwork.cutting) {
         for w in [u, v] {
             let q = plan(w);
@@ -464,30 +360,48 @@ pub fn check(terrain: &Terrain, mesh: &Mesh, arrangement: &Arrangement, lifted: 
             }
             asked += 1;
             let Some(h) = copies.height(w, key) else {
-                missed += 1;
+                unseamed += 1;
                 continue;
             };
-            if paved_by[w as usize] == 1 && (natural(q) - h).abs() <= MAX_BENCH_FACE_M {
+            if paved_by[w as usize] == 1 && (natural(q) - h).abs() <= MAX_BATTER_FACE_M {
                 if let Some(gh) = copies.height(w, (Surface::Ground, Rule::FREE)) {
                     contact = contact.max((gh - h).abs());
                 }
             }
         }
     }
-    let mut earth = Earth::new(&earthwork.outline, &room, &|v| natural(plan(v)), ground, terrain);
-    earth.asked = asked;
-    earth.unseamed = missed;
-    earth.unmet = unmet;
-    earth.rim = asked;
-    earth.contact = contact;
+
+    // Outline vertices standing more than one face from the ground, where
+    // the batter takes one face and a wall the rest, and the tallest wall.
+    let (mut walled, mut wall) = (0usize, 0.0f64);
+    for &(u, _) in &earthwork.outline {
+        let drop = (natural(plan(u)) - room(u)).abs();
+        if drop > MAX_BATTER_FACE_M {
+            walled += 1;
+            wall = wall.max(drop - MAX_BATTER_FACE_M);
+        }
+    }
+
+    // Lattice vertices the earthwork moved. Invariant I8 of
+    // docs/GENERATION.md §7 — the ground outside
+    // every toe is the DEM's, bit for bit — holds by construction, since a
+    // point further from the outline than a face may run is never asked
+    // about; the count says how much ground was actually moved.
+    let lattice = terrain.grid.vertex_count();
+    let touched = (0..lattice)
+        .filter(|&i| {
+            let [x, y, z] = terrain.position(i);
+            ground.at([x, y], z) != z
+        })
+        .count();
+
+    // How far the ground mesh's triangles stand off the engineered ground at
+    // their centroids — the batter's crease, which no breakline resolves.
+    // Only a triangle the earthwork moved can: one whose three vertices it
+    // left at the natural ground is the terrain's own.
     let g = &copies.ground;
-    earth.triangles = g.tri.indices.len() / 3;
-    earth.vertices = g.tri.positions.len();
-    // Only a triangle the earthwork moved can stand off the ground it
-    // benched: one whose three vertices it left at the natural ground is the
-    // terrain's own, and asking it cost 7.5 s of the loop box's bench.
     let moved = |v: u32| g.tri.positions[v as usize][2] != g.natural[v as usize];
-    earth.off = g
+    let off = g
         .tri
         .indices
         .chunks_exact(3)
@@ -499,10 +413,9 @@ pub fn check(terrain: &Terrain, mesh: &Mesh, arrangement: &Arrangement, lifted: 
         })
         .fold(0.0, f64::max);
 
-    // §3.3 says an edge is welded or spanned by a quad, "so `step` has
-    // nothing left to count". This is the share of the steps that lie on an
-    // arrangement edge at all.
-    earth.on_edge = {
+    // The share of the steps that lie on an arrangement edge at all: the
+    // ones a face across the edge could close.
+    let on_edge = {
         const NEAR_M: f64 = 0.05;
         let mut index: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
         for (i, e) in arrangement.edges.iter().enumerate() {
@@ -522,29 +435,224 @@ pub fn check(terrain: &Terrain, mesh: &Mesh, arrangement: &Arrangement, lifted: 
             .filter(|m| {
                 index.get(&poly::cell_of(**m, poly::CELL_M)).into_iter().flatten().any(|&i| {
                     let e = &arrangement.edges[i];
-                    poly::segment_distance(e.a, e.b, **m) < NEAR_M
+                    line::segment_distance(e.a, e.b, **m) < NEAR_M
                 })
             })
             .count()
     };
 
     Summary::new()
-        .with_part("lifted", stats.lifted, stats.vertices)
-        .with("battered", stats.battered)
-        .with("draped", stats.draped)
-        .with("cut", format!("{:.3}", stats.cut))
-        .with("fill", format!("{:.3}", stats.fill))
-        .with("ground", format!("{}/{}", earth.triangles, earth.vertices))
-        .with_share("seam", earth.unseamed, earth.asked)
-        .with_share("unmet", earth.unmet, earth.rim)
-        .with("contact", format!("{:.2}", earth.contact))
-        .with_share("step_on_edge", earth.on_edge, earthwork.steps.len())
-        .with_share("walled", earth.walled, earth.outline)
-        .with("wall", format!("{:.1}", earth.wall))
-        .with_share("touched", earth.touched, earth.lattice)
-        .with("off", format!("{:.1e}", earth.off))
-        .with("flown", stats.flown)
-        .with_part("free", stats.free, stats.draped)
+        .with("ground", format!("{}/{}", g.tri.indices.len() / 3, g.tri.positions.len()))
+        .with_share("seam", unseamed, asked)
+        .with_share("unmet", unmet, rim.len())
+        .with("contact", format!("{contact:.2}"))
+        .with_share("step_on_edge", on_edge, earthwork.steps.len())
+        .with_share("walled", walled, earthwork.outline.len())
+        .with("wall", format!("{wall:.1}"))
+        .with_share("touched", touched, lattice)
+        .with("off", format!("{off:.1e}"))
         .with_m2("carried", arrangement.carried_m2)
         .with_residual(drawn_residual(terrain, &copies.ground.tri))
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::pipeline::tests::stood as world;
+    use crate::poly::Shapes;
+    use crate::portal::Portals;
+    use crate::standard::EARTHWORK_BATTER;
+    use crate::world::World;
+
+    /// A polygon outline as the one mesh hands it to the earthwork: every ring
+    /// split where it crosses the lattice, as directed edges over one list
+    /// of positions.
+    pub(crate) fn outline_of(outline: &Shapes, grid: &crate::grid::Grid) -> (Vec<[f64; 3]>, Vec<(u32, u32)>) {
+        let (mut pos, mut edges) = (Vec::new(), Vec::new());
+        for ring in outline.iter().flatten() {
+            let start = pos.len() as u32;
+            for i in 0..ring.len() {
+                let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                pos.push([a[0], a[1], 0.0]);
+                let mut cut = crate::lattice::split(grid, a, b);
+                cut.pop();
+                pos.extend(cut.into_iter().map(|q| [q[0], q[1], 0.0]));
+            }
+            let end = pos.len() as u32;
+            edges.extend((start..end).map(|k| (k, if k + 1 == end { start } else { k + 1 })));
+        }
+        (pos, edges)
+    }
+
+    /// The ground benched to `outline` at `room` over `natural`.
+    pub(crate) fn ground_on(
+        outline: &Shapes,
+        grid: &crate::grid::Grid,
+        room: &dyn Fn(Pt) -> f64,
+        natural: &dyn Fn(Pt) -> f64,
+        portals: &Portals,
+    ) -> Ground {
+        let (pos, edges) = outline_of(outline, grid);
+        let xy = |v: u32| [pos[v as usize][0], pos[v as usize][1]];
+        let segs: Vec<_> = edges
+            .iter()
+            .map(|&(u, v)| (xy(u), xy(v), [room(xy(u)), natural(xy(u))], [room(xy(v)), natural(xy(v))]))
+            .collect();
+        Ground::of_edges(&segs, portals)
+    }
+
+    /// The engineered ground of a world, and its natural one.
+    fn grounds(w: &World) -> (&Ground, impl Fn(Pt) -> f64 + '_) {
+        let terrain = w.terrain.as_ref().unwrap();
+        let natural = move |p: Pt| crate::lattice::height_at(terrain, p[0], p[1]);
+        (&w.earthwork.as_ref().unwrap().ground, natural)
+    }
+
+    #[test]
+    fn the_batter_is_one_in_two_and_a_half_and_stops_at_the_ground() {
+        // A 5.5 m road along the
+        // contour of a 30 % slope is level at 400 m; the ground at its uphill
+        // kerb stands 0.825 m over it and at its downhill kerb 0.825 m under.
+        // The residual — cut there, fill here — falls to nothing at 1 in 2.5
+        // of the natural ground: 0.4 m per metre out, so it meets the ground
+        // 2.0625 m from either kerb.
+        let (w, s) = world("ramp?grade=0.3&bearing=0&radius=100000", "net:straight?len=200", None);
+        let (g, natural) = grounds(&w);
+        let at = |y: f64| g.at([0.0, y], natural([0.0, y]));
+        let toe = 0.825 * EARTHWORK_BATTER;
+        for d in [0.25, 0.5, 1.0, 2.0] {
+            let (up, down) = (at(2.75 + d), at(-2.75 - d));
+            let e = 0.825 - d / EARTHWORK_BATTER;
+            assert!((up - (natural([0.0, 2.75 + d]) - e)).abs() < 1e-9, "cut at {d}: {up}");
+            assert!((down - (natural([0.0, -2.75 - d]) + e)).abs() < 1e-9, "fill at {d}: {down}");
+        }
+        // It daylights, and there is no lip: a face at an absolute 1 in 2.5
+        // would close only 0.1 m per metre up this hill, never meet the
+        // ground within the 7.5 m a face may run, and leave 0.075 m standing
+        // where it stopped.
+        for d in [toe + 1e-6, toe + 1.0, EARTHWORK_BATTER * MAX_BATTER_FACE_M, 100.0] {
+            assert_eq!(at(2.75 + d), natural([0.0, 2.75 + d]), "not daylighted at {d}");
+            assert_eq!(at(-2.75 - d), natural([0.0, -2.75 - d]), "not daylighted at -{d}");
+        }
+        // And the ground meets the room at the kerb, exactly.
+        assert!(s.num("contact") < 1e-9, "{s}");
+        assert_eq!(s.num("walled"), 0.0, "{s}");
+        assert_eq!(s.num("wall_m2"), 0.0, "{s}");
+    }
+
+    #[test]
+    fn a_gentler_hill_daylights_where_the_batter_meets_it() {
+        // On a 10 % ramp the same road is cut 0.275 m at its uphill kerb, and
+        // the residual closes 0.4 m of it per metre: 0.6875 m of batter.
+        let (w, _) = world("ramp?grade=0.1&bearing=0&radius=100000", "net:straight?len=200", None);
+        let (g, natural) = grounds(&w);
+        let at = |y: f64| g.at([0.0, y], natural([0.0, y]));
+        let toe = 0.275 * EARTHWORK_BATTER;
+        assert!((toe - 0.6875).abs() < 1e-9, "{toe}");
+        let half = [0.0, 2.75 + toe / 2.0];
+        assert!((at(half[1]) - (natural(half) - 0.275 / 2.0)).abs() < 1e-9);
+        for d in [toe + 1e-6, toe + 1.0, 20.0] {
+            let (p, n) = ([0.0, 2.75 + d], natural([0.0, 2.75 + d]));
+            assert_eq!(g.at(p, n), n, "daylighted at {d}");
+        }
+    }
+
+    /// **A drop past one face is a face of batter and a wall for the rest.**
+    /// Refusing the batter outright once the room stands more than one face
+    /// off the ground would leave the natural ground beside a walled stretch
+    /// and the batter beside the next battered one — a step in the ground on
+    /// the line between them. Clamped, the pin moves with the drop and the
+    /// ground with it.
+    #[test]
+    fn a_deep_cut_is_battered_one_face_and_walled_for_the_rest() {
+        let edges = [([-50.0, 0.0], [50.0, 0.0], [400.0, 405.0], [400.0, 405.0])];
+        // The room on the left of the edge, the ground to the south of it
+        // standing 5 m over the road.
+        let g = Ground::of_edges(&edges, &Portals::default());
+        let natural = |_: Pt| 405.0;
+        assert!((g.at([0.0, -1e-9], natural([0.0, 0.0])) - 402.0).abs() < 1e-6, "one face of cut at the edge");
+        assert!((g.at([0.0, -3.75], 405.0) - 403.5).abs() < 1e-9, "half way down the batter");
+        assert_eq!(g.at([0.0, -7.5 - 1e-6], 405.0), 405.0, "daylighted after one face's run");
+        // Across the room, north of the edge, the batter does not reach.
+        assert_eq!(g.at([0.0, 3.0], 405.0), 405.0);
+    }
+
+    #[test]
+    fn the_ground_stops_at_the_kerb() {
+        // The room is cut out of the ground: no ground triangle has its
+        // centroid inside the asphalt, and the ground's own vertices on
+        // the outline are the room's, at the room's height.
+        let (w, s) = world("ramp?grade=0.3&bearing=0&radius=100000", "net:sidewalk?d=6", None);
+        let b = w.bench.as_ref().unwrap();
+        assert!(!b.ground.indices.is_empty());
+        let inside = poly::Indexed::new(&w.legs.as_ref().expect("the legs step ran").surface.carriageway);
+        let n = b
+            .ground
+            .indices
+            .chunks_exact(3)
+            .filter(|t| {
+                let p = |i: u32| b.ground.positions[i as usize];
+                let (a, b2, c) = (p(t[0]), p(t[1]), p(t[2]));
+                inside.contains([(a[0] + b2[0] + c[0]) / 3.0, (a[1] + b2[1] + c[1]) / 3.0])
+            })
+            .count();
+        assert_eq!(n, 0, "{n} ground triangles under the asphalt");
+        assert!(s.num("contact") < 1e-9, "{s}");
+        assert_eq!(s.num("seam"), 0.0, "every outline vertex is a room vertex: {s}");
+        // The ground reaches the kerb: some ground vertex stands at the
+        // pavement's own height, which on this slope is not the ground's.
+        assert!(b.ground.positions.iter().any(|p| (p[2] - 400.12).abs() < 1e-9));
+    }
+
+    #[test]
+    fn a_flat_world_is_left_alone() {
+        // Nothing to bench: every lattice vertex keeps the DEM's height
+        // (invariant I8) and the only earth moved is the kerb's own rise.
+        let (_, s) = world("flat", "net:sidewalk?d=6", None);
+        assert_eq!(s.num("cut"), 0.0, "{s}");
+        assert!(s.num("touched") <= 0.0, "{s}");
+        assert_eq!(s.num("walled"), 0.0, "{s}");
+    }
+
+    #[test]
+    fn an_overpass_stands_on_fill_only_as_far_as_a_fill_goes() {
+        // The crossing step lifts the approach 6.5 m and the earthwork is
+        // this step's to owe: all fill, no cut, on flat ground.
+        //
+        // **But only up to `DECK_STANDOFF_M`.** Past the tallest face the
+        // ground will build, the partition calls the approach a deck and the
+        // structure step carries it, so the fill this step owes stops there
+        // instead of climbing to 6.5 m and being closed by a 6.5 m wall.
+        let (_, s) = world("flat", "net:overpass?len=300", None);
+        assert_eq!(s.num("cut"), 0.0, "{s}");
+        assert!(s.num("fill") <= crate::standard::DECK_STANDOFF_M + 1e-6, "{s}");
+        assert!(s.num("fill") > 2.0, "the approach is on no fill at all: {s}");
+        assert_eq!(s.num("walled"), 0.0, "the ground still walls it: {s}");
+        // **The mirror is not symmetric, and that is the point.** The
+        // approach dips toward the bore and the ground owes the cut — but
+        // only as far as `bore_cover_m`, because a cutting stays a cutting
+        // until a tube fits under it, where a fill becomes a deck as soon as
+        // it passes the tallest face the ground will build. So the cut runs
+        // deeper than the fill did, and between the two thresholds it *is*
+        // walled: a cutting three metres deep is a real cutting with real
+        // walls, and a fill three metres tall is a deck drawn wrong.
+        let (_, s) = world("flat", "net:underpass?len=300", None);
+        assert_eq!(s.num("fill"), 0.0, "{s}");
+        assert!(s.num("cut") <= crate::standard::bore_cover_m("residential") + 1e-6, "{s}");
+        assert!(s.num("cut") > crate::standard::DECK_STANDOFF_M, "{s}");
+        assert!(s.num("walled") > 0.0, "a cutting past one face is walled: {s}");
+    }
+
+    #[test]
+    fn the_seam_holds_between_the_ring_s_own_vertices() {
+        // A straight road's kerb is one 400 m segment of its outline, and
+        // the hill under it is a cosine, so the room's height along that
+        // segment is not a straight line. Read at the segment's two ends
+        // alone, the ground would miss it by metres in between. The outline
+        // is split where the lattice crosses it, so both meshes draw one edge
+        // and there is nothing left to close.
+        let (_, s) = world("hill?amp=60&radius=200", "net:straight?len=400", None);
+        assert!(s.num("contact") < 1e-6, "{s}");
+        assert_eq!(s.num("wall_m2"), 0.0, "a gentle hill has no step to close: {s}");
+    }
 }

@@ -1,32 +1,19 @@
-//! Scratch probe: which sheet the pieces near a point are in, and why.
+//! Probe: the pieces near a point, where they meet one another (at an end or
+//! in the interior), the sheets that hold them, and the legs carriageway's
+//! regions there.
 //!
 //!   cargo run --release --example sheet_probe -- ZONE w,s,e,n lon,lat [r]
 
-use arpentry_server::dem::Dem;
-use arpentry_server::project::Bounds;
-use arpentry_world::pipeline::{self, Sources};
+mod common;
+
 use arpentry_world::step::Step;
-use arpentry_world::world::{Kind, World};
+use arpentry_world::world::Kind;
 
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
-    let zone = std::path::PathBuf::from(&a[0]);
-    let b: Vec<f64> = a[1].split(',').map(|s| s.parse().unwrap()).collect();
-    let at: Vec<f64> = a[2].split(',').map(|s| s.parse().unwrap()).collect();
     let r: f64 = a.get(3).map(|s| s.parse().unwrap()).unwrap_or(25.0);
-    let mut dem = Dem::open(&zone.join("terrain.pmtiles")).unwrap();
-    let mut world = World::new(Bounds { west: b[0], south: b[1], east: b[2], north: b[3] });
-    let (seg, bld) = (zone.join("segment.parquet"), zone.join("building.parquet"));
-    let mut src = Sources {
-        dem: &mut dem,
-        segments: &seg,
-        buildings: Some(&bld),
-        spacing: 1.0,
-        max_vertices: 2_000_000,
-    };
-    pipeline::upto(&mut world, Step::Sheet, &mut src, &mut |_, _| {}).unwrap();
-
-    let p = world.extent.frame.to_local(at[0], at[1]);
+    let world = common::world(std::path::Path::new(&a[0]), &a[1], Step::Sheet);
+    let p = common::point(&world, &a[2]);
     println!("probe [{:.1},{:.1}] r={r}\n", p[0], p[1]);
     let roads = world.network().unwrap();
     let group = &world.partition.as_ref().unwrap().groups.of;
@@ -75,7 +62,7 @@ fn main() {
     }
 
     println!("\nsheets near the probe:");
-    let sheets = world.sheets.as_ref().unwrap();
+    let sheets = world.sheet.as_ref().unwrap();
     for (k, sh) in sheets.sheets.iter().enumerate() {
         if !sh.shapes.iter().flatten().any(|ring| near(ring)) {
             continue;

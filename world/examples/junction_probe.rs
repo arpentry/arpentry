@@ -1,33 +1,21 @@
-//! Scratch probe: the solved profile of every way near a point.
+//! Probe: everything about the paving within `r` m (30 by default) of a
+//! point — the solved profile of every way through it, the connectors they
+//! share and the height each puts there, the sheets and their span masks,
+//! the pavement against the asphalt as polygons and step by step, where a
+//! span's ribbon sticks out past the ground asphalt, and the pieces there.
 //!
 //!   cargo run --release --example junction_probe -- ZONE w,s,e,n lon,lat [r]
 
-use arpentry_server::dem::Dem;
-use arpentry_server::project::Bounds;
-use arpentry_world::pipeline::{self, Sources};
+mod common;
+
 use arpentry_world::step::Step;
-use arpentry_world::world::{connector, Kind, World};
+use arpentry_world::world::{connector, Kind};
 
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
-    let zone = std::path::PathBuf::from(&a[0]);
-    let b: Vec<f64> = a[1].split(',').map(|s| s.parse().unwrap()).collect();
-    let at: Vec<f64> = a[2].split(',').map(|s| s.parse().unwrap()).collect();
     let r: f64 = a.get(3).map(|s| s.parse().unwrap()).unwrap_or(30.0);
-    let mut dem = Dem::open(&zone.join("terrain.pmtiles")).unwrap();
-    let mut world = World::new(Bounds { west: b[0], south: b[1], east: b[2], north: b[3] });
-    let (seg, bld) = (zone.join("segment.parquet"), zone.join("building.parquet"));
-    let mut src = Sources {
-        dem: &mut dem,
-        segments: &seg,
-        buildings: Some(&bld),
-        spacing: 1.0,
-        max_vertices: 2_000_000,
-    };
-    pipeline::upto(&mut world, Step::Crossing, &mut src, &mut |s, sum| println!("{s:?} {sum}"))
-        .unwrap();
-
-    let p = world.extent.frame.to_local(at[0], at[1]);
+    let world = common::world(std::path::Path::new(&a[0]), &a[1], Step::Sheet);
+    let p = common::point(&world, &a[2]);
     println!("\nprobe [{:.1},{:.1}] r={r}\n", p[0], p[1]);
     let near = |q: &[f64; 2]| (q[0] - p[0]).hypot(q[1] - p[1]) < r;
 
@@ -101,9 +89,8 @@ fn main() {
         }
     }
 
-    // The span mask the bench reads, and what it covers near the probe.
-    pipeline::upto(&mut world, Step::Sheet, &mut src, &mut |_, _| {}).unwrap();
-    let sheets = world.sheets.as_ref().unwrap();
+    // The span mask the lift reads, and what it covers near the probe.
+    let sheets = world.sheet.as_ref().unwrap();
     println!("\nsheets and their span masks:");
     for (k, sh) in sheets.sheets.iter().enumerate() {
         let bbox = |regions: &Vec<Vec<Vec<[f64; 2]>>>| {
@@ -153,7 +140,7 @@ fn main() {
 
     // Does the pavement cross the asphalt, as polygons?
     let room = world.room.as_ref().unwrap();
-    let fillet = world.legs.as_ref().unwrap();
+    let legs = world.legs.as_ref().unwrap();
     let surface = world.surface.as_ref().unwrap();
     let sheet_car: Vec<Vec<Vec<[f64; 2]>>> = sheets
         .sheets
@@ -168,7 +155,7 @@ fn main() {
     println!("\npavement against asphalt, as polygons:");
     println!("  room.pavement          m2={:.1}", a(&room.surface.walk));
     println!("  surface.carriageway    m2={:.1}  overlap={:.2}", a(&surface.carriageway), x(&surface.carriageway, &room.surface.walk));
-    println!("  legs.carriageway       m2={:.1}  overlap={:.2}", a(&fillet.surface.carriageway), x(&fillet.surface.carriageway, &room.surface.walk));
+    println!("  legs.carriageway       m2={:.1}  overlap={:.2}", a(&legs.surface.carriageway), x(&legs.surface.carriageway, &room.surface.walk));
     println!("  sheets' carriageway    m2={:.1}  overlap={:.2}", a(&sheet_car), x(&sheet_car, &room.surface.walk));
     println!("  surface.ballast        m2={:.1}  overlap={:.2}", a(&surface.ballast), x(&surface.ballast, &room.surface.walk));
 
@@ -193,7 +180,7 @@ fn main() {
         println!("\npaved area within {r} m of the probe, stage by stage:");
         println!("  surface.walk      {:8.1}", a(&surface.walk));
         println!("  kerb.pavement     {:8.1}", a(&kerb.surface.walk));
-        println!("  legs.pavement     {:8.1}", a(&fillet.surface.walk));
+        println!("  legs.pavement     {:8.1}", a(&legs.surface.walk));
         println!("  room.pavement     {:8.1}", a(&room.surface.walk));
         println!("  surface.carriage  {:8.1}", a(&surface.carriageway));
         println!("  surface.ballast   {:8.1}", a(&surface.ballast));
@@ -201,7 +188,7 @@ fn main() {
         for (name, s) in [
             ("surface.walk", &surface.walk),
             ("kerb.pavement", &kerb.surface.walk),
-            ("legs.pavement", &fillet.surface.walk),
+            ("legs.pavement", &legs.surface.walk),
             ("room.pavement", &room.surface.walk),
         ] {
             let near = arpentry_world::poly::intersect(s, &disc);
@@ -229,8 +216,8 @@ fn main() {
                 }
                 // What lies just outside each stretch of its boundary.
                 // Outside an outer (counter-clockwise) ring is to the
-                // RIGHT of each edge. Taking the left samples the region
-                // itself, which reads "open" everywhere and is a lie.
+                // RIGHT of each edge; the left would sample the region
+                // itself.
                 let outside = |q: [f64; 2], t: [f64; 2]| {
                     [q[0] + t[1] * 0.05, q[1] - t[0] * 0.05]
                 };
@@ -246,7 +233,7 @@ fn main() {
                         let m = outside([(u[0] + v[0]) / 2.0, (u[1] + v[1]) / 2.0], t);
                         let hit = if arpentry_world::poly::contains(&facade.solid, m) {
                             0
-                        } else if arpentry_world::poly::contains(&fillet.surface.carriageway, m) {
+                        } else if arpentry_world::poly::contains(&legs.surface.carriageway, m) {
                             1
                         } else if arpentry_world::poly::contains(&surface.ballast, m) {
                             2
@@ -272,7 +259,7 @@ fn main() {
 
     // Where does a span's ribbon stick out past the ground asphalt?
     println!("\nspan ribbon against the ground asphalt:");
-    let ribbons = world.ribbons.as_ref().unwrap();
+    let ribbons = world.ribbon.as_ref().unwrap();
     for (fam, group, span) in ribbons.spans.iter().cloned() {
         if fam != arpentry_world::width::Family::Carriageway {
             continue;

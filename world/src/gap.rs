@@ -1,15 +1,16 @@
 //! The kerb-gap check: a stretch of kerb a sidewalk claims with bare ground
 //! just outside it.
 //!
-//! Three steps ask it of the surface they leave — the kerb, the legs and the
-//! room — so it is a module of its own rather than the kerb step's: a check
+//! The kerb, the legs and the room each lay a pavement, and each is checked
+//! against it, so the check is a module of its own rather than one step's: it
 //! is a function of a surface, and any step's surface can be asked.
 
 use std::collections::HashMap;
 
+use crate::line;
 use crate::poly::{self, Indexed, Pt, Shapes};
 use crate::standard::{RUNG_HALF_M, SIDEWALK_BRIDGE_M, STATION_M};
-use crate::world::Attached;
+use crate::world::{Attached, Surface};
 
 /// The side of the index's cells, in metres: a bucket for the rungs, and
 /// nothing about the answer.
@@ -21,13 +22,13 @@ const PROBE_M: f64 = 0.3;
 
 /// A kerb stretch turning by this much, in degrees, is a road's end cap
 /// (180°), not a corner between two legs (a right angle inward) — see
-/// [`kerb_gap`].
+/// [`kerb_gaps`].
 const CAP_TURN_DEG: f64 = 135.0;
 
 /// A rung meeting the kerb at less than this, in degrees, runs along it
 /// rather than across it and claims nothing there: the last rung of a
 /// sidewalk that ends where its road does lies along the road's square end
-/// face, which is not a kerb the sidewalk owns — see [`kerb_gap`].
+/// face, which is not a kerb the sidewalk owns — see [`kerb_gaps`].
 const CLAIM_MIN_DEG: f64 = 30.0;
 
 /// One station of a kerb ring: where it is, the unit tangent there
@@ -45,14 +46,14 @@ pub struct Station {
 pub fn stations(ring: &[Pt]) -> Vec<Station> {
     let mut closed = ring.to_vec();
     closed.push(ring[0]);
-    let mut pts = poly::resample(&closed, STATION_M);
+    let mut pts = line::resample(&closed, STATION_M);
     pts.pop();
     let n = pts.len();
     (0..n)
         .map(|i| {
             let (a, b, c) = (pts[(i + n - 1) % n], pts[i], pts[(i + 1) % n]);
-            let (u, v) = (poly::unit([b[0] - a[0], b[1] - a[1]]), poly::unit([c[0] - b[0], c[1] - b[1]]));
-            Station { at: b, tangent: poly::unit([u[0] + v[0], u[1] + v[1]]), turn_deg: poly::turn_deg(a, b, c) }
+            let (u, v) = (line::unit([b[0] - a[0], b[1] - a[1]]), line::unit([c[0] - b[0], c[1] - b[1]]));
+            Station { at: b, tangent: line::unit([u[0] + v[0], u[1] + v[1]]), turn_deg: line::turn_deg(a, b, c) }
         })
         .collect()
 }
@@ -82,28 +83,28 @@ impl Bare {
 /// attached station's rung — the segment from its foot on the axis to the
 /// station — passes within the rung's half-width less the probe's reach of
 /// it, which is the same side of the same road, and not the far kerb
-/// across it; and a stretch of
-/// kerb shorter than [`SIDEWALK_BRIDGE_M`] between two stations that a *run's*
-/// rung claims is claimed with them, because a pavement that stands
-/// against the kerb on both sides of a corner stands against the corner
+/// across it; and a stretch of kerb shorter than [`SIDEWALK_BRIDGE_M`]
+/// between two stations that a *run's* rung claims is claimed with them,
+/// because a pavement that stands against the kerb on both sides of a
+/// corner stands against the corner
 /// (a landing is a footway's end, not a pavement, and claims nothing
 /// beyond its own rung). A rung claims the kerb it crosses, not one it
-/// runs along ([`CLAIM_MIN_DEG`]): a road's square end face, with the
+/// runs along (`CLAIM_MIN_DEG`): a road's square end face, with the
 /// sidewalk's last rung lying along it, is nobody's. A stretch that long
 /// without a rung is a side road's mouth, whose kerb runs away down the
 /// leg and back, and is not claimed; nor is a stretch that turns back on
-/// itself by [`CAP_TURN_DEG`] or more, which is the road's end — nothing
+/// itself by `CAP_TURN_DEG` or more, which is the road's end — nothing
 /// says the two pavements of a road join round its turning head.
-pub fn kerb_gap(carriageway: &Shapes, bare: &Bare, attached: &[Attached]) -> (usize, usize) {
-    let (gaps, n) = kerb_gaps(carriageway, bare, attached);
-    (gaps.len(), n)
+pub fn kerb_gaps(surface: &Surface, attached: &[Attached], footprints: &Shapes) -> (Vec<Pt>, usize) {
+    let bare = Bare::new(&surface.senior(), &surface.walk, footprints);
+    gaps_on(&surface.carriageway, &bare, attached)
 }
 
-/// The kerb stations [`kerb_gap`] counts as gaps, and the claimed count.
-pub fn kerb_gaps(carriageway: &Shapes, bare: &Bare, attached: &[Attached]) -> (Vec<Pt>, usize) {
+/// The same over one carriageway and one reading of what is bare.
+fn gaps_on(carriageway: &Shapes, bare: &Bare, attached: &[Attached]) -> (Vec<Pt>, usize) {
     // Every rung's direction, once, and the rungs by cell.
     let dirs: Vec<Pt> =
-        attached.iter().map(|a| poly::unit([a.station[0] - a.foot[0], a.station[1] - a.foot[1]])).collect();
+        attached.iter().map(|a| line::unit([a.station[0] - a.foot[0], a.station[1] - a.foot[1]])).collect();
     let mut cells: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
     for (i, a) in attached.iter().enumerate() {
         let b = [a.foot[0].min(a.station[0]), a.foot[1].min(a.station[1]), a.foot[0].max(a.station[0]), a.foot[1].max(a.station[1])];
@@ -128,7 +129,7 @@ pub fn kerb_gaps(carriageway: &Shapes, bare: &Bare, attached: &[Attached]) -> (V
                 };
                 for &i in v {
                     let (a, u) = (&attached[i], dirs[i]);
-                    if (u[0] * t[1] - u[1] * t[0]).abs() < min_sin || poly::segment_distance(a.foot, a.station, p) >= reach {
+                    if (u[0] * t[1] - u[1] * t[0]).abs() < min_sin || line::segment_distance(a.foot, a.station, p) >= reach {
                         continue;
                     }
                     if !a.landed {
@@ -152,7 +153,7 @@ pub fn kerb_gaps(carriageway: &Shapes, bare: &Bare, attached: &[Attached]) -> (V
                 continue;
             }
             let q = stations[(i + 1) % stations.len()].at;
-            let d = poly::unit([q[0] - s.at[0], q[1] - s.at[1]]);
+            let d = line::unit([q[0] - s.at[0], q[1] - s.at[1]]);
             // The region is on the left of every ring, outer or hole, so
             // outward is the right-hand normal.
             let probe = [s.at[0] + d[1] * PROBE_M, s.at[1] - d[0] * PROBE_M];

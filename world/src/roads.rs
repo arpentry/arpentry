@@ -1,11 +1,11 @@
 //! Way centrelines from the transportation source — roads and pedestrian
 //! ways alike — in the local frame, clipped to the bbox.
 //!
-//! This is a reader, not a model: no joining into corridors, no widths.
-//! Those are later steps, each of which will be built against what this one
-//! returns. It carries `class` and `subclass` because the width function
-//! ([`crate::width`]) is keyed on them, and `id` so a line in the output can
-//! be traced to its source feature.
+//! This is a reader, not a model: no joining into corridors, no heights.
+//! It decides each way's width once, from its `class`, `subclass`, one-way
+//! flag and measured width ([`crate::width::of_way`]), and carries `class`
+//! and `subclass` on for the steps keyed on them, and `id` so a line in the
+//! output can be traced to its source feature.
 //!
 //! **A way carries its spans; it is not cut by them.** Overture encodes a
 //! bridge or a tunnel as a span of a segment — `level_rules`, or the
@@ -14,15 +14,13 @@
 //! span. The reader converts those fractions to **arc** and hands the way on
 //! whole, with its spans as an attribute ([`Way::spans`]).
 //!
-//! It used to cut there, and that was the defect: a piece end is a connector,
-//! and a connector is where the profile pins a height to the ground, so a
-//! mapper's split point became a survey point. A bridge annotated short of
-//! the gorge lip had its deck pinned to the DEM inside the approach. The cut
-//! happens once the heights are solved instead
-//! (`data/plans/spans-are-derived-2026-09-09.md` R1), in
-//! [`crate::partition`], which is also where the surface steps get their
-//! ground pieces — so what they union is where the world says the ground is
-//! rather than where a segment was split.
+//! Cut there, a mapper's split point would become a survey point: a piece
+//! end is a connector, and a connector is where the profile pins a height to
+//! the ground, so a bridge annotated short of the gorge lip would have its
+//! deck pinned to the DEM inside the approach. The cut happens once the
+//! heights are solved, in [`crate::partition`], which is also where the
+//! surface steps get their ground pieces — so what they union is where the
+//! world says the ground is rather than where a segment was split.
 
 use std::path::Path;
 
@@ -31,7 +29,7 @@ use arpentry_server::levels::LevelRun;
 use arpentry_server::project::Bounds;
 use arpentry_server::value::{str_of, width_rules_m, Props, Value};
 
-use crate::width;
+use crate::{line, width};
 use geo_types::{Geometry, LineString};
 
 use crate::frame::{Frame, Rect};
@@ -42,9 +40,8 @@ use crate::world::{Kind, Span, Way};
 /// `subclass` is the scalar column, which Overture fills only when the value
 /// is uniform along the segment: a footway that is a sidewalk over part of its
 /// length and a crossing over the rest has `subclass = NULL` (docs/SOURCES.md).
-/// Reading `subclass_rules` is a later step; until then such a way is an
-/// anonymous footway.
-pub const COLUMNS: &[&str] = &[
+/// `subclass_rules` is not read, so such a way is an anonymous footway.
+const COLUMNS: &[&str] = &[
     "id",
     "class",
     "subtype",
@@ -91,8 +88,9 @@ pub struct Read {
     /// Of the kept, the ways with a span above or below the ground, or
     /// indoors.
     pub structures: usize,
-    /// Of those, the ways with no ground span left at all.
-    pub dropped: usize,
+    /// Of those, the ways off the ground or indoors end to end, with no
+    /// ground span at all: kept whole, like every other.
+    pub aloft: usize,
     /// Of the kept, the ways whose width is measured (`width_rules`).
     pub measured: usize,
     /// Of the kept, the one-way carriageways.
@@ -115,15 +113,12 @@ pub struct Read {
 ///
 /// **A level is an ordering, not a structure.** Overture takes a segment's
 /// level from OSM's `layer`, which says only what is drawn over what, and its
-/// flags from `bridge` and `tunnel`. Read as one signal, a level −1 made a
-/// tunnel: Avenue de Naye is mapped at −1 for 500 m because it runs under the
-/// Viaduc de Chillon, with no tunnel flag, and the world buried it — first as
-/// a bore the terrain lay on, then as a 500 m gallery beside the lake. On the
-/// loop box the flags and the rules agree on 215 stretches; 23 carry a level
-/// and no flag (18 of them roads below the ground, 691 m), and those are what
-/// this makes ground. A structure the flags do not claim can still be one:
-/// the terrain derives it ([`crate::partition`]), and there the geometry is
-/// the evidence rather than the ordinal.
+/// flags from `bridge` and `tunnel`. Read as one signal, a level −1 would
+/// make a tunnel: a street mapped at −1 because it runs under a viaduct, with
+/// no tunnel flag, would be buried. A stretch with a level and no flag is
+/// therefore ground. A structure the flags do not
+/// claim can still be one: the terrain derives it ([`crate::partition`]), and
+/// there the geometry is the evidence rather than the ordinal.
 pub fn structures(rules: &[LevelRun], flags: &[LevelRun]) -> (Vec<(f64, f64, Kind)>, Vec<(f64, f64, i64)>) {
     let same = |a: i64, b: i64| (a > 0) == (b > 0);
     let overlap = |a: &LevelRun, b: &LevelRun| (a.end.min(b.end) - a.start.max(b.start)).max(0.0);
@@ -206,12 +201,12 @@ pub fn read(path: &Path, bbox: &Bounds, frame: &Frame, rect: &Rect) -> Result<Re
         if !off.is_empty() {
             out.structures += 1;
             if pieces.iter().all(|p| p.2 != Kind::Ground) {
-                out.dropped += 1;
+                out.aloft += 1;
             }
         }
         for line in lines_of(&f.geometry) {
             let pts: Vec<[f64; 2]> = line.0.iter().map(|c| frame.to_local(c.x, c.y)).collect();
-            let total = length(&pts);
+            let total = line::length(&pts);
             // The fractions the source speaks in, as arc along this line.
             let spans: Vec<Span> = pieces
                 .iter()
@@ -225,11 +220,6 @@ pub fn read(path: &Path, bbox: &Bounds, frame: &Frame, rect: &Rect) -> Result<Re
     Ok(out)
 }
 
-/// The length of a polyline, in metres.
-pub fn length(pts: &[[f64; 2]]) -> f64 {
-    pts.windows(2).map(|p| (p[1][0] - p[0][0]).hypot(p[1][1] - p[0][1])).sum()
-}
-
 /// `way` clipped to `rect`: one way per run that survives, each carrying the
 /// part of the span table that falls inside it, re-based on the run's own
 /// start. A run with no span left is dropped — it has no geometry to name.
@@ -241,7 +231,7 @@ pub fn length(pts: &[[f64; 2]]) -> f64 {
 pub fn clip_way(way: &Way, rect: &Rect) -> Vec<Way> {
     let mut out = Vec::new();
     for (pts, at) in clip_runs(&way.pts, rect) {
-        let len = length(&pts);
+        let len = line::length(&pts);
         let spans: Vec<Span> = way
             .spans
             .iter()
@@ -281,7 +271,7 @@ const SPAN_EPS_M: f64 = 1e-9;
 /// `[0, 1]` partitioned by the spans in `off`, in order, with the ground
 /// between them. Where two spans overlap the earlier one holds the overlap
 /// (a mapper's slop, not a stacked structure); nothing shorter than
-/// [`SPAN_EPS`] is kept.
+/// `SPAN_EPS` is kept.
 pub fn pieces_of(off: &[(f64, f64, Kind)]) -> Vec<(f64, f64, Kind)> {
     let mut off: Vec<(f64, f64, Kind)> =
         off.iter().map(|&(s, e, k)| (s.clamp(0.0, 1.0), e.clamp(0.0, 1.0), k)).collect();
@@ -307,61 +297,8 @@ pub fn pieces_of(off: &[(f64, f64, Kind)]) -> Vec<(f64, f64, Kind)> {
 /// Shortest fraction of a segment worth a run.
 const SPAN_EPS: f64 = 1e-6;
 
-/// The part of `pts` between the fractions `s` and `e` of its length: the
-/// linear referencing Overture's `between` speaks in, measured along the
-/// polyline. The whole line for `[0, 1]`; empty for an empty span.
-pub fn cut(pts: &[[f64; 2]], s: f64, e: f64) -> Vec<[f64; 2]> {
-    if pts.len() < 2 || e - s <= SPAN_EPS {
-        return Vec::new();
-    }
-    if s <= 0.0 && e >= 1.0 {
-        return pts.to_vec();
-    }
-    let lens: Vec<f64> = pts.windows(2).map(|p| (p[1][0] - p[0][0]).hypot(p[1][1] - p[0][1])).collect();
-    let total: f64 = lens.iter().sum();
-    if total <= 0.0 {
-        return Vec::new();
-    }
-    let (d0, d1) = (s * total, e * total);
-    let mut out: Vec<[f64; 2]> = Vec::new();
-    let mut at = 0.0;
-    for (i, &len) in lens.iter().enumerate() {
-        let (p, q) = (pts[i], pts[i + 1]);
-        let next = at + len;
-        if next < d0 - 1e-12 {
-            at = next;
-            continue;
-        }
-        if at > d1 + 1e-12 {
-            break;
-        }
-        if out.is_empty() {
-            let t = if len > 0.0 { ((d0 - at) / len).clamp(0.0, 1.0) } else { 0.0 };
-            out.push(lerp(p, q, t));
-        }
-        if next <= d1 + 1e-12 {
-            if out.last() != Some(&q) {
-                out.push(q);
-            }
-        } else {
-            let t = if len > 0.0 { ((d1 - at) / len).clamp(0.0, 1.0) } else { 1.0 };
-            let end = lerp(p, q, t);
-            if out.last() != Some(&end) {
-                out.push(end);
-            }
-            break;
-        }
-        at = next;
-    }
-    if out.len() < 2 {
-        Vec::new()
-    } else {
-        out
-    }
-}
-
 /// The line strings of a geometry; anything else is not a centreline.
-pub fn lines_of(g: &Geometry) -> Vec<&LineString> {
+fn lines_of(g: &Geometry) -> Vec<&LineString> {
     match g {
         Geometry::LineString(l) => vec![l],
         Geometry::MultiLineString(m) => m.0.iter().collect(),
@@ -369,16 +306,11 @@ pub fn lines_of(g: &Geometry) -> Vec<&LineString> {
     }
 }
 
-/// Clips a polyline to `rect`, returning the runs that remain inside.
-pub fn clip(pts: &[[f64; 2]], rect: &Rect) -> Vec<Vec<[f64; 2]>> {
-    clip_runs(pts, rect).into_iter().map(|(run, _)| run).collect()
-}
-
-/// The same, with each run's **arc along the original polyline** at its first
-/// vertex — what a span table has to be re-based on. Each segment is clipped
+/// `pts` clipped to `rect`: the runs that remain inside, each with its **arc
+/// along the original polyline** at its first vertex — what a span table has to be re-based on. Each segment is clipped
 /// with Liang–Barsky; consecutive segments whose clipped parts meet are
 /// joined into one run.
-pub fn clip_runs(pts: &[[f64; 2]], rect: &Rect) -> Vec<(Vec<[f64; 2]>, f64)> {
+fn clip_runs(pts: &[[f64; 2]], rect: &Rect) -> Vec<(Vec<[f64; 2]>, f64)> {
     let mut runs: Vec<(Vec<[f64; 2]>, f64)> = Vec::new();
     let mut run: Vec<[f64; 2]> = Vec::new();
     let mut run_at = 0.0f64;
@@ -398,8 +330,8 @@ pub fn clip_runs(pts: &[[f64; 2]], rect: &Rect) -> Vec<(Vec<[f64; 2]>, f64)> {
             at += seg;
             continue;
         };
-        let a = lerp(p, q, t0);
-        let b = lerp(p, q, t1);
+        let a = line::lerp(p, q, t0);
+        let b = line::lerp(p, q, t1);
         if run.is_empty() {
             run_at = at + t0 * seg;
             run.push(a);
@@ -446,10 +378,6 @@ fn liang_barsky(p: [f64; 2], q: [f64; 2], rect: &Rect) -> Option<(f64, f64)> {
     (t0 <= t1).then_some((t0, t1))
 }
 
-fn lerp(p: [f64; 2], q: [f64; 2], t: f64) -> [f64; 2] {
-    [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]
-}
-
 #[cfg(test)]
 mod tests {
     use arpentry_server::value::Value;
@@ -478,8 +406,9 @@ mod tests {
         assert!(!keep(&props(&[("class", "primary"), ("subtype", "water")])));
     }
 
-    /// **A flag builds; a level orders.** Read off the loop box's own two
-    /// cases.
+    /// **A flag builds; a level orders**: a street mapped under a viaduct
+    /// is two layers and no structure, and the viaduct's tunnel is a tunnel
+    /// at its rule's ordinal.
     #[test]
     fn a_flag_builds_and_a_level_orders() {
         let run = |start: f64, end: f64, level: i64| LevelRun { start, end, level };
@@ -494,7 +423,7 @@ mod tests {
         let (off, layers) = structures(&[run(0.058, 0.259, -5)], &[run(0.058, 0.259, -1)]);
         assert_eq!(off, vec![(0.058, 0.259, Kind::Tunnel(-5))]);
         assert!(layers.is_empty(), "{layers:?}");
-        // A flag with no rule is a structure at ±1, as before.
+        // A flag with no rule is a structure at ±1.
         let (off, _) = structures(&[], &[run(0.2, 0.4, 1)]);
         assert_eq!(off, vec![(0.2, 0.4, Kind::Bridge(1))]);
         // A rule longer than its flag: the flag's stretch is the tunnel and
@@ -519,6 +448,11 @@ mod tests {
 
     fn unit() -> Rect {
         Rect { x0: 0.0, y0: 0.0, x1: 10.0, y1: 10.0 }
+    }
+
+    /// The runs of `pts` inside `rect`, without their arcs.
+    fn clip(pts: &[[f64; 2]], rect: &Rect) -> Vec<Vec<[f64; 2]>> {
+        clip_runs(pts, rect).into_iter().map(|(run, _)| run).collect()
     }
 
     #[test]
@@ -566,19 +500,6 @@ mod tests {
         );
         // A span swallowed by an earlier one leaves no piece.
         assert_eq!(pieces_of(&[(0.2, 0.8, Bridge(1)), (0.3, 0.4, Tunnel(-1))]).len(), 3);
-    }
-
-    #[test]
-    fn a_cut_measures_along_the_line() {
-        // Two legs of 10 m: fractions are of the 20 m total.
-        let pts = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]];
-        assert_eq!(cut(&pts, 0.0, 1.0), pts.to_vec());
-        assert_eq!(cut(&pts, 0.25, 0.75), vec![[5.0, 0.0], [10.0, 0.0], [10.0, 5.0]]);
-        assert_eq!(cut(&pts, 0.0, 0.5), vec![[0.0, 0.0], [10.0, 0.0]]);
-        assert_eq!(cut(&pts, 0.5, 1.0), vec![[10.0, 0.0], [10.0, 10.0]]);
-        assert_eq!(cut(&pts, 0.6, 0.8), vec![[10.0, 2.0], [10.0, 6.0]]);
-        assert!(cut(&pts, 0.5, 0.5).is_empty());
-        assert!(cut(&[[0.0, 0.0]], 0.0, 1.0).is_empty());
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::width::Family;
 use crate::world::{Facade, Profiles, Sheet, Sheets, Surface};
 
 /// Rectangles `[x0, y0, x1, y1]`, as regions.
-pub fn rects(rs: &[[f64; 4]]) -> Shapes {
+fn rects(rs: &[[f64; 4]]) -> Shapes {
     poly::union_all(&rs.iter().map(|r| poly::rect(r[0], r[1], r[2], r[3])).collect())
 }
 
@@ -81,7 +81,7 @@ mod tests {
     fn the_room_paves_to_a_wall_it_is_given() {
         let paving = surface(&[[-50.0, -3.0, 50.0, 3.0]], &[]);
         let houses = facade(&[[-10.0, 5.0, 10.0, 15.0]]);
-        let (room, s) = crate::room::run(&paving, &[], &[], &houses);
+        let (room, s) = crate::room::run(&paving, &[], &houses);
         assert!(contains(&room.surface.walk, [0.0, 4.0]), "the strip to the wall: {s}");
         assert!(!contains(&room.surface.walk, [0.0, -4.0]), "nothing on the open side: {s}");
         assert!(!contains(&room.surface.walk, [0.0, 6.0]), "nothing inside the house: {s}");

@@ -19,8 +19,9 @@
 //! And **the buildings win over both**: what the facade step refuses is
 //! subtracted from each family, so a prior width that runs into a wall
 //! stops at the wall — the asphalt at the closed facade
-//! ([`World::built`]), so its edge does not follow every notch, the walk
-//! at the walls themselves ([`World::solid`]). What each family lost to
+//! ([`crate::world::Facade::built`]), so its edge does not follow every
+//! notch, the walk at the walls themselves
+//! ([`crate::world::Facade::solid`]). What each family lost to
 //! the buildings is reported beside what the walk lost to the asphalt.
 //!
 //! **The railways' ballast is the third region**, and it stands between the
@@ -31,7 +32,7 @@
 //! formation there shaves the platform (the server's
 //! `a_rail_formation_is_not_narrowed_by_the_roof_over_it`). A double track
 //! is two ways a metre or less apart, and their beds are one bed: the
-//! ballast is closed across a gap under [`TWIN_GAP_M`].
+//! ballast is closed across a gap under `TWIN_GAP_M`.
 
 use crate::poly::{self, Shapes};
 use crate::step::Summary;
@@ -42,8 +43,7 @@ use crate::world::{Facade, Ribbons, Surface};
 /// one: a double track's centres stand 3.8–4.5 m apart on the Swiss
 /// network, so two 3.5 m track zones leave a strip of 0.3–1 m between them
 /// that no real formation has. A siding further off keeps its own bed.
-pub const TWIN_GAP_M: f64 = 1.5;
-
+const TWIN_GAP_M: f64 = 1.5;
 
 pub fn run(ribbons: &Ribbons, facade: &Facade) -> (Surface, Summary) {
     let mut per_family: [Shapes; 3] = Default::default();
@@ -65,20 +65,17 @@ pub fn run(ribbons: &Ribbons, facade: &Facade) -> (Surface, Summary) {
     let crossed = poly::area(&ballast_open) - poly::area(&ballast);
     // **The walk is cut to every ribbon the asphalt will ever hold, spans
     // included.** The `sheet` step unions a group's span ribbons into its
-    // paving, and until this cut the walk had never been shown them — so a
-    // sidewalk at an abutment ended up inside the road and, once the bench
-    // had put the kerb's rise on it, 0.12 m over it. The cut cannot be made
-    // there: by then the two polygons share a boundary, and a difference
-    // along a shared boundary leaves rings the lattice mesher cannot close
-    // (three variants tried, each taking the loop box's `mesh seam` from
-    // 2.7e-9 to 0.74 m — `one-surface-at-a-junction-2026-09-14.md` §6).
-    // Here the span ribbon *laps over* the walk's by an area, which is the
-    // case this step's differences already handle, and after it nothing
-    // ever differences the two again.
+    // paving; a walk never cut by them puts a sidewalk at an abutment inside
+    // the road, and the kerb's rise then stands it 0.12 m over it. The cut
+    // cannot wait for the sheet: by then the two polygons share a boundary,
+    // and a difference along a shared boundary leaves rings the lattice
+    // mesher cannot close. Here the span ribbon *laps over* the walk's by an
+    // area, which is the case this step's differences handle, and after it
+    // nothing differences the two again.
     //
     // It is a seniority mask and not paving: `carriageway` is untouched, so
-    // the chain that follows sees the ground asphalt it has always seen and
-    // a viaduct is still no part of the street beneath it.
+    // the chain that follows sees only the ground asphalt and a viaduct is
+    // no part of the street beneath it.
     let spans: Shapes = poly::union_all(
         &ribbons
             .spans
@@ -87,7 +84,7 @@ pub fn run(ribbons: &Ribbons, facade: &Facade) -> (Surface, Summary) {
             .flat_map(|(.., s)| s.iter().cloned())
             .collect(),
     );
-    // [`World::pavement`]'s two cuts, made here one at a time so each is
+    // `Facade::pavement`'s two cuts, made here one at a time so each is
     // reported: what the walk lost to the asphalt and the ballast, then to
     // the walls.
     let walk_alone = poly::union_all(&per_family[Family::Walk as usize]);
@@ -115,16 +112,14 @@ pub fn run(ribbons: &Ribbons, facade: &Facade) -> (Surface, Summary) {
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::world::World;
-    use crate::pipeline::tests::{built, plan};
+    use crate::pipeline::tests::{built, upto};
     use crate::step::Step;
-
-    
 
     use super::*;
 
     /// A flat world with the network of `spec`, ribboned.
     pub(crate) fn world(spec: &str) -> (World, Summary) {
-        let (w, ran) = built("flat", spec, None, 100.0, &plan(Step::Surface));
+        let (w, ran) = built("flat", spec, None, 100.0, &upto(Step::Surface));
         (w, ran.last())
     }
 
@@ -146,14 +141,14 @@ pub(crate) mod tests {
     fn a_union_never_exceeds_its_ribbons_and_equals_them_when_disjoint() {
         let (w, _) = world("net:dual?gap=4&len=200");
         let ribbons = poly::area(
-            &w.ribbons.as_ref().unwrap().ribbons.iter().flat_map(|r| r.shape.iter().cloned()).collect::<Shapes>(),
+            &w.ribbon.as_ref().unwrap().ribbons.iter().flat_map(|r| r.shape.iter().cloned()).collect::<Shapes>(),
         );
         let s = w.surface.as_ref().unwrap();
         assert_eq!(s.carriageway.len(), 2, "a dual carriageway is two regions");
         assert!((poly::area(&s.carriageway) - ribbons).abs() < 1e-3);
         let (w, _) = world("net:tee?len=200");
         let ribbons = poly::area(
-            &w.ribbons.as_ref().unwrap().ribbons.iter().flat_map(|r| r.shape.iter().cloned()).collect::<Shapes>(),
+            &w.ribbon.as_ref().unwrap().ribbons.iter().flat_map(|r| r.shape.iter().cloned()).collect::<Shapes>(),
         );
         assert!(poly::area(&w.surface.as_ref().unwrap().carriageway) < ribbons - 1.0);
     }

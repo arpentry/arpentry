@@ -74,9 +74,7 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
                   (overrides --zone)
   --spacing M     terrain lattice spacing in metres (default 2)
   --max-vertices  cap on terrain vertices; the spacing grows to fit (default 2000000)
-  --until STEP    stop after this step: terrain | drape | reference | profile | crossing | partition | facade | ribbon |
-                  surface | kerb | legs | room | sheet | arrangement | mesh | lift | earthwork | bench | structure | building
-                  (default building)
+  --until STEP    stop after this step (default: the last): STEPS
   --dump DIR      write every layer the run builds into DIR, one file per step
   --from STEP     start at this step, reading the layers of every step before it from --load
   --load DIR      where --from reads its layers: a --dump of the same bbox
@@ -94,7 +92,8 @@ fn main() -> ExitCode {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(args) => args,
         Err(e) => {
-            eprintln!("error: {e}\n\n{USAGE}");
+            let steps: Vec<&str> = Step::ALL.iter().map(|s| s.name()).collect();
+            eprintln!("error: {e}\n\n{}", USAGE.replace("STEPS", &steps.join(" | ")));
             return ExitCode::from(2);
         }
     };
@@ -154,7 +153,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut view = None;
     let mut spacing = 2.0;
     let mut max_vertices = 2_000_000;
-    let mut until = Step::Building;
+    let mut until = *Step::ALL.last().expect("a step");
     let mut from = Step::ALL[0];
     let mut dump = None;
     let mut load = None;

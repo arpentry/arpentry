@@ -4,8 +4,8 @@
 //! document is a page of JSON, and a dependency would only hide which bytes
 //! are written. The output is a function of the world alone — no timestamps,
 //! no hash maps, sorted keys — so two runs over the same inputs are
-//! byte-identical and `cmp` is a regression check. The tiler's archive never
-//! had that property.
+//! byte-identical and `cmp` is a regression check. The tiler's archive does
+//! not have that property.
 //!
 //! One node per layer, named after its step. Axes: glTF is Y-up, so local
 //! `(east, north, up)` becomes `(east, up, −north)`, a rotation (determinant
@@ -87,7 +87,7 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
     } else if let Some(t) = &world.terrain {
         doc.terrain(t);
     }
-    if let Some(r) = &world.roads {
+    if let Some(r) = &world.drape {
         if outlines && !r.lines.is_empty() {
             doc.roads(r);
         }
@@ -97,39 +97,24 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
             doc.profile(p);
         }
     }
-    // The room at its solved height once the bench has run; on the raw
-    // ground before it. One pair of nodes either way, so a viewer opens
-    // the same file whichever step the run stopped after.
-    let unlifted = match (&world.bench, &world.mesh, &world.arrangement) {
-        (None, Some(m), Some(a)) => {
-            let of = |x: crate::world::Material| crate::mesh::view(m, a, |f| f.material == x);
-            use crate::world::Material;
-            Some((of(Material::Carriageway), of(Material::Pavement), of(Material::Ballast)))
-        }
-        _ => None,
-    };
-    if let Some((c, p, b)) = world
-        .bench
-        .as_ref()
-        .map(|b| (&b.carriageway, &b.pavement, &b.ballast))
-        .or(unlifted.as_ref().map(|(c, p, b)| (c, p, b)))
-    {
-        doc.triangles("carriageway", c, linear(palette::CARRIAGEWAY));
-        doc.triangles("pavement", p, linear(palette::PAVEMENT));
-        doc.triangles("ballast", b, linear(palette::BALLAST));
+    if let Some([c, p, b]) = world.paving() {
+        doc.triangles("carriageway", &c, linear(palette::CARRIAGEWAY));
+        doc.triangles("pavement", &p, linear(palette::PAVEMENT));
+        doc.triangles("ballast", &b, linear(palette::BALLAST));
     }
     if let Some(s) = &world.structure {
-        // **`roadway` is a walk's now, and nothing else's.** A road's or a
-        // railway's span is paved by the sheet step, in one polygon with
-        // the ground it runs onto, and comes out of `carriageway` or
-        // `ballast` above — which is the whole point: a bridge top and the
-        // road that runs onto it were two objects here and are one there.
-        // A footbridge has no profile and so no field to be lifted by, so
-        // its sweep is what is left, and it keeps the node it had.
+        // **`roadway` is a bore's floor and a footbridge's paving, and
+        // `track` a railway bore's floor.** A road's or a railway's deck is
+        // paved by the sheet step, in one polygon with the ground it runs
+        // onto, and comes out of `carriageway` or `ballast` above, so a
+        // bridge top and the road that runs onto it are one object. A
+        // footbridge has no profile and so no field to be lifted by, and a
+        // bore meets the surface only at its portals, so both keep this
+        // step's sweep.
         doc.triangles("roadway", &s.roadway, linear(palette::CARRIAGEWAY));
         doc.triangles("track", &s.track, linear(palette::BALLAST));
         // **The deck solid is built from the sheet's own span region**
-        // ([`crate::structure::solid_under`]) — the same watertight polygon
+        // (`structure::solid_under`) — the same watertight polygon
         // the road surface was cut from — so a vertex of its rim is the
         // road's own point, not a second guess at where that was. It is a
         // slab of constant thickness under the roadway, full length: a
@@ -138,11 +123,11 @@ pub fn write_glb(world: &World, outlines: bool) -> Vec<u8> {
         doc.triangles("deck", &s.deck, linear(palette::DECK));
         doc.triangles("bore", &s.bore, linear(palette::BORE));
     }
-    if let Some(b) = &world.buildings {
+    if let Some(b) = &world.building {
         doc.triangles("building", &b.walls, linear(palette::BUILDING));
         doc.triangles("roof", &b.roofs, linear(palette::ROOF));
     }
-    if let (Some(r), Some(t)) = (&world.ribbons, &world.terrain) {
+    if let (Some(r), Some(t)) = (&world.ribbon, &world.terrain) {
         if outlines && !r.ribbons.is_empty() {
             doc.ribbons(r, t);
         }
@@ -242,13 +227,12 @@ impl Doc {
     /// A layer of closed line loops, one per contour, lying on the terrain.
     ///
     /// The ring is **draped**, not merely sampled at its own vertices: a
-    /// contour edge is as long as the straight road that made it, and the
-    /// box has 267 m of it. A single segment between two [`crate::lattice::height_at`]
-    /// samples that far apart goes in one side of the flank and out the
-    /// other, and the file read as a model with straight lines shot
-    /// through it — 970 such edges in the ribbon layer alone. [`drape`]
-    /// already answers this for the way centrelines, by cutting at every
-    /// lattice crossing, so it answers it here.
+    /// contour edge is as long as the straight road that made it, and a
+    /// single segment between two [`crate::lattice::height_at`] samples
+    /// hundreds of metres apart goes in one side of a flank and out the
+    /// other, a straight line shot through the model. [`drape`] answers this
+    /// for the way centrelines, by cutting at every lattice crossing, so it
+    /// answers it here.
     fn loops(&mut self, name: &str, shapes: &Shapes, t: &Terrain, color: [f32; 3]) {
         let mut positions = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
@@ -485,9 +469,9 @@ fn to_gltf(v: [f32; 3]) -> [f32; 3] {
 
 #[cfg(test)]
 mod tests {
-    use crate::lattice::drape_line;
+    use crate::lattice;
     use crate::terrain::{self, tests::{dem, extent}};
-    use crate::world::{Polyline2, Roads};
+    use crate::world::{Polyline3, Roads};
 
     use crate::pipeline::tests::bbox;
 
@@ -497,19 +481,14 @@ mod tests {
         let (ground, _) = terrain::run(&extent(), &mut dem("hill?amp=60&radius=400"), 25.0, usize::MAX);
         let mut w = World::new(bbox());
         w.terrain = Some(ground);
-        let line = Polyline2 {
+        let draped = Polyline3 {
             id: "r".into(),
             class: "residential".into(),
             subclass: String::new(),
             width_m: 5.5,
-            kind: crate::world::Kind::Ground,
-            way: usize::MAX,
-            a0: 0.0,
-            a1: 0.0,
-            pts: vec![[-600.0, -400.0], [0.0, 0.0], [500.0, 300.0]],
+            pts: lattice::drape(w.terrain.as_ref().expect("just set"), &[[-600.0, -400.0], [0.0, 0.0], [500.0, 300.0]]),
         };
-        let draped = drape_line(w.terrain.as_ref().expect("just set"), &line);
-        w.roads = Some(Roads { ways: Vec::new(), lines: vec![draped] });
+        w.drape = Some(Roads { ways: Vec::new(), lines: vec![draped] });
         w
     }
 
@@ -560,7 +539,7 @@ mod tests {
         let max_y = acc[pos]["max"][1].as_f64().unwrap();
         assert!((min_y - t.zmin).abs() < 1e-3 && (max_y - t.zmax).abs() < 1e-3);
 
-        let roads = w.roads.as_ref().unwrap();
+        let roads = w.drape.as_ref().unwrap();
         let prim = &doc["meshes"][1]["primitives"][0];
         assert_eq!(prim["mode"], LINES);
         let idx = prim["indices"].as_u64().unwrap() as usize;
@@ -595,7 +574,7 @@ mod tests {
         let (ground, _) = terrain::run(&extent(), &mut dem("flat"), 100.0, usize::MAX);
         let mut w = World::new(bbox());
         w.terrain = Some(ground);
-        w.roads = Some(Roads::default());
+        w.drape = Some(Roads::default());
         let (doc, _) = unpack(&write_glb(&w, true));
         assert_eq!(doc["nodes"].as_array().unwrap().len(), 1);
     }

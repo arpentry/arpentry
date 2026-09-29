@@ -1,117 +1,66 @@
-//! The profile solve: one height along every carriageway axis.
+//! The profile solve: one height along every solving way's axis.
 //!
 //! Overture gives a way no height anywhere, and a deck is nothing but a
 //! height: the chord of the way's profile across the span, between the
-//! ground at its two abutments. The street on the hill is the same profile
-//! with the terrain as its anchors. So the height comes first, as a
-//! function along the axis, and every surface and every structure after
-//! this step reads it (docs/GENERATION.md §4.4, §4.5).
+//! at-grade heights at its two abutments. The street on the hill is the
+//! same profile with the terrain as its anchors. So the height comes first,
+//! as a function along the axis, and every surface and every structure
+//! reads it (docs/GENERATION.md §4.4, §4.5).
 //!
-//! The solve is per piece and in one dimension, in this order:
+//! A profile is one whole way, spans included, solved in one dimension in
+//! this order:
 //!
-//! 1. **The target** is the ground at every station ([`height_at`]).
-//! 2. **Connectors are shared.** Every way end at a connector takes one
-//!    height, the same for every piece that ends there: the ground at the
-//!    connector. A junction stands on the ground, and continuity across it
-//!    is a property of the variables rather than a constraint that can
-//!    fail. Only where nothing but structure pieces meet — a bridge split
-//!    mid-span — is the connector's height the chords'.
-//! 3. **Grade and the box**, for the engineered classes only. Per class a
-//!    ceiling and a deviation budget ([`crate::grade`]). Forward and
-//!    backward passes limit the rise between stations to the ceiling; a
+//! 1. **The target** is the reference at every station
+//!    ([`crate::world::Reference`]: the conditioned terrain), plus the
+//!    crossing step's floor where it has one ([`solve_on`]).
+//! 2. **Way ends are anchors.** A way end on the ground takes one height
+//!    at its connector, the same for every way that ends there: the target,
+//!    which the reference step makes one value per connector. A junction
+//!    stands on the ground, and continuity across it is a property of the
+//!    variables rather than a constraint that can fail. A span boundary is
+//!    not an anchor: a mapper's cut is not a survey point.
+//! 3. **Grade, curve and box.** Per class a ceiling, a vertical curve and a
+//!    deviation budget ([`crate::grade`]). For the engineered classes,
+//!    forward and backward passes limit the rise between stations to the
+//!    ceiling; for every solving class `bend` holds the vertical curve; a
 //!    clamp to `target ± deviation` is applied last, so the box wins: a
 //!    primary on a slope steeper than 8 % holds 8 % while its 4 m last and
-//!    follows the hill beyond. A street is not limited: the ground under
-//!    it is the street (S9), and its profile is the ground through the
-//!    pinned ends.
-//! 4. **Spans.** A bridge or tunnel piece is a straight chord between its
-//!    two end heights; its ends are anchors where they meet a ground piece.
-//!    Pieces meeting at structure-only connectors form one chord across
-//!    all of them; a dangling end — one nothing else meets, the bbox's edge
-//!    cutting a viaduct — holds the anchored end's height, so a deck cut
-//!    by the clip runs level to it (counted, as `dangling`: the descent to
-//!    a lower ground is named and waits for a site with data past it); a
-//!    piece no anchor reaches at all lies flat at the highest ground under
-//!    it (a bridge) or the lowest (a tunnel), and is counted too.
+//!    follows the hill beyond. A street has no ceiling — the ground under
+//!    it is the street — so only its curve is smoothed, inside its box.
+//! 4. **Spans.** A structure run is a straight chord between its two
+//!    **abutments**, the at-grade stations just outside it, at the heights
+//!    the at-grade solve gave them; where the run reaches a way end, its end
+//!    is the anchor there. Runs meeting at a connector no way is at grade at
+//!    are solved together as one chain of chords. A dangling end — one
+//!    nothing else meets, the bbox's edge cutting a viaduct — holds the
+//!    anchored end's height, so a deck cut by the clip runs level to it
+//!    (counted as `dangling`); a run no anchor reaches at all lies flat at
+//!    the highest target under it (a bridge) or the lowest (a tunnel), and
+//!    is counted too.
 //! 5. **The solved kind.** At every station of a mapped span: a deck where
-//!    the profile stands [`STRUCTURE_MIN_M`] off the ground, a bore where
-//!    it runs that far under, grade between. A span that reads grade end
-//!    to end has degraded to ground (invariant 6: plain, not wrong). A
-//!    ground piece never becomes a structure here.
+//!    the profile stands [`crate::standard::STRUCTURE_MIN_M`] off the
+//!    ground, a bore where it runs that far under, grade between. A span
+//!    that reads grade end to end has degraded to ground (invariant 6:
+//!    plain, not wrong). A ground station never becomes a structure here;
+//!    deriving one is the partition step's.
 //!
 //! Draped classes get no profile: a footpath samples the finished ground.
 //!
-//! **A railway's ceiling is measured** ([`ceiling`]): raised to the grade
+//! **A railway's ceiling is measured** ([`grade::limit`]): raised to the grade
 //! its own at-grade bed rides, because a rack railway is classed
 //! `narrow_gauge` and held to 7 % it dives under its own track. And **where
 //! a railway shares a connector with another way, both are at grade there**:
 //! a level crossing is at grade by definition, and so is a switch. Overture
-//! does not cut a way at such a connector — every one of the loop box's 48
-//! level crossings lies in the *interior* of both ways — so the shared
-//! station is pinned mid-run ([`Loose::contacts`]), both ways to the
-//! railway's reference. The railway is senior: the road meets the rails,
-//! never the other way round.
+//! puts such a connector in the *interior* of both ways, where no anchor
+//! sees it, so the shared station is pinned mid-run ([`Loose::contacts`]),
+//! both ways to the railway's reference. The railway is senior: the road
+//! meets the rails, never the other way round.
 
 use std::collections::HashMap;
 
-use crate::grade::{self, STRUCTURE_MIN_M};
+use crate::grade;
 use crate::width::{self, Family};
-use crate::world::{
-    connector, station_runs, Kind, Profile, Reference, Solved, Span, Station, Way,
-};
-
-/// Shortest length, in metres, of a way's at-grade stretches before its bed
-/// is read as its grade: under this the read means nothing, and the class
-/// ceiling stands. The server's `MEASURED_GRADE_MIN_M`.
-pub const MEASURED_MIN_M: f64 = 100.0;
-
-/// The percentile of the at-grade bed's station-to-station grades that is
-/// read as the grade the line rides: a *sustained* climb raises the ceiling,
-/// a local plunge at a structure end does not. The server's
-/// `MEASURED_GRADE_PCTL`, and per edge rather than windowed for the
-/// server's reason: a window over the notch span was censused there and
-/// deleted 22 of the 26 narrow-gauge escapes it was meant to tighten.
-pub const MEASURED_PCTL: f64 = 0.90;
-
-/// The ceiling a way of `class` holds along `stations`, whose mapped spans
-/// are `spans`: the class's own for an engineered road, the grade its bed
-/// is measured to ride for a railway ([`grade::Grade::measured`]) where
-/// that is steeper, within [`grade::measured_cap`]. Unbounded for a class
-/// that is not grade-limited.
-///
-/// Read off the **reference** of the at-grade stretches: the conditioned
-/// ground is the formation, cuttings and embankments included, and the
-/// railway is the reason that shape is there (§4.2). An edge into or out of
-/// a structure is a chord, and its pitch is the solve's, so it is not read.
-pub fn ceiling(class: &str, stations: &[Station], spans: &[Span]) -> f64 {
-    let g = grade::of(class);
-    let Some(c) = g.ceiling.filter(|_| g.limited()) else {
-        return f64::INFINITY;
-    };
-    if !g.measured {
-        return c;
-    }
-    let mut grades: Vec<f64> = Vec::new();
-    let mut spanned = 0.0;
-    for (k0, k1, kind) in station_runs(stations, spans) {
-        if kind.is_structure() {
-            continue;
-        }
-        for w in stations[k0..=k1].windows(2) {
-            let run = w[1].s - w[0].s;
-            if run > 0.0 {
-                spanned += run;
-                grades.push((w[1].reference - w[0].reference).abs() / run);
-            }
-        }
-    }
-    if spanned < MEASURED_MIN_M || grades.is_empty() {
-        return c;
-    }
-    grades.sort_by(f64::total_cmp);
-    let k = ((grades.len() - 1) as f64 * MEASURED_PCTL).round() as usize;
-    c.max(grades[k].min(grade::measured_cap(c)))
-}
+use crate::world::{connector, station_runs, Kind, Profile, Reference, Solved, Station};
 
 /// Forward-and-back passes of the grade limiter. Eight is the server's;
 /// the passes converge geometrically and the box clamp after each keeps
@@ -122,19 +71,17 @@ const PASSES: usize = 8;
 ///
 /// The grade limiter converges geometrically because it walks the array in
 /// both directions; the curvature clamp is local and Jacobi, so it *diffuses*
-/// — a broad kink flattens at about one station per pass. Swept over the loop
-/// box, `kink` (runs still bent tighter than their class allows) reads 39.9 %
-/// at one pass, 15.0 % at eight, **3.0 % at thirty-two** and 1.3 % at a
-/// hundred and twenty-eight. Thirty-two is where the curve flattens; the
-/// profile step still runs in under 0.01 s.
+/// — a broad kink flattens at about one station per pass. Thirty-two is
+/// where the share of runs still bent tighter than their class allows
+/// (`kink`) stops falling quickly, and the solve stays cheap.
 const BEND_PASSES: usize = 32;
 
 /// Slack, in metres per metre, past the ceiling before a station pair
 /// counts as breaking grade: the limiter's own rounding.
 pub const GRADE_EPS: f64 = 1e-9;
 
-/// What [`solve`] could not anchor: structure pieces with a dangling end,
-/// and structure pieces no anchor reached at all.
+/// What [`solve`] could not anchor — structure runs with a dangling end, and
+/// structure runs no anchor reached at all — and what it pinned or overruled.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Loose {
     pub dangling: usize,
@@ -148,32 +95,27 @@ pub struct Loose {
 }
 
 /// The profiles of the ways `reference` was built for, and what could not be
-/// anchored.
-///
-/// `ways` is the world's whole list; `reference.axes[i].way` indexes it, so
-/// the caller neither filters nor orders anything and the correspondence
-/// cannot be got wrong.
-pub fn solve(reference: &Reference, ways: &[Way]) -> (Vec<Profile>, Loose) {
-    solve_on(reference, ways, &[])
+/// anchored. `reference.axes[i].way` indexes `reference.ways`, so the caller
+/// neither filters nor orders anything and the correspondence cannot be got
+/// wrong.
+pub fn solve(reference: &Reference) -> (Vec<Profile>, Loose) {
+    solve_on(reference, &[])
 }
 
 /// The same, over a *floor*: a displacement in metres the crossing step
-/// adds to the ground at each station, indexed as `pieces` and then by
-/// station, so an overpass's approach is built on the embankment its
-/// clearance demands rather than on the hillside underneath it. Empty is
-/// no floor, and [`solve`] is this with none.
+/// adds to the reference at each station, indexed as `reference.axes` and
+/// then by station, so an overpass's approach is built on the embankment
+/// its clearance demands rather than on the hillside underneath it. Empty
+/// is no floor, and [`solve`] is this with none.
 ///
 /// The floor moves the **target**, not the answer: the anchor at a
 /// connector, the value the grade limiter smooths and the centre of the
-/// deviation box all read `ground + floor`, while [`Station::ground`]
+/// deviation box all read `reference + floor`, while [`Station::ground`]
 /// stays the natural ground the whole way down — so the consequence rule
-/// of this step still asks "how far off the *hill* does this stand", and an
-/// approach lifted past [`STRUCTURE_MIN_M`] reads as the deck it is.
-pub fn solve_on(
-    reference: &Reference,
-    ways: &[Way],
-    floor: &[Vec<f64>],
-) -> (Vec<Profile>, Loose) {
+/// still asks "how far off the *hill* does this stand", and an approach
+/// lifted past [`crate::standard::STRUCTURE_MIN_M`] reads as the deck it is.
+pub fn solve_on(reference: &Reference, floor: &[Vec<f64>]) -> (Vec<Profile>, Loose) {
+    let ways = &reference.ways;
     // The axes *are* the list of what solves, in order; `way(i)` is the way
     // the i-th of them is of.
     let n = reference.axes.len();
@@ -249,8 +191,8 @@ pub fn solve_on(
     };
 
     // **Anchors.** A way *end* is an anchor where the way is on the ground
-    // there — not every span boundary, which is what the old per-piece solve
-    // pinned and what made a mapper's cut a survey point. A junction stands
+    // there — not a span boundary, which would make a mapper's cut a survey
+    // point. A junction stands
     // on the ground, and continuity across it is a property of the variables
     // rather than a constraint that can fail. At a contact the railway's
     // height is the junction's.
@@ -278,7 +220,7 @@ pub fn solve_on(
     let mut h: Vec<Vec<f64>> = target.clone();
     for i in 0..n {
         let g = grade::of(&way(i).class);
-        let ceiling = ceiling(&way(i).class, &stationed[i], &way(i).spans);
+        let ceiling = grade::limit(&way(i).class, &stationed[i], &way(i).spans);
         // A pin at station `k`: the anchor at a way end, else a contact.
         let pin_at = |k: usize| -> Option<f64> {
             let key = connector(stationed[i][k].p);
@@ -415,9 +357,9 @@ pub fn solve_on(
     // **Geometry wins over the tags** (docs/GENERATION.md §4.5). A connector
     // no way is at grade at has no height of its own, so the chords meeting
     // it inherit one from whatever they chain to — and a chain long enough
-    // inherits nonsense. A service road tagged `is_tunnel` end to end, with
-    // no at-grade station anywhere, came out 62 m *above* the hillside it
-    // bores through, because everything holding it down was several junctions
+    // inherits nonsense: a way tagged `is_tunnel` end to end, with no
+    // at-grade station anywhere, can come out far *above* the hillside it
+    // bores through when everything holding it down is several junctions
     // away. A bore's mouth is where it meets the ground; it cannot be over
     // it, and a deck's landing cannot be under it. Where the inheritance says
     // otherwise the ground is believed and the move is counted.
@@ -436,9 +378,6 @@ pub fn solve_on(
         // ground waits for a site with data past it. For a bore it is not: a
         // tunnel running level out of a hillside that falls away emerges into
         // the air, and what the structure step then builds is a viaduct.
-        // Measured here: a service road tagged `is_tunnel` end to end, level
-        // from its one anchor high on the flank, ended 62 m over the ground
-        // on 130 m piers.
         //
         // A deck *below* the ground is overruled only where something did
         // reach it, since there the inheritance is wrong rather than absent.
@@ -490,32 +429,18 @@ pub fn solve_on(
             for (k, st) in sts.iter_mut().enumerate() {
                 st.h = h[i][k];
             }
-            // The consequence rule, at every station of a mapped span: a deck
-            // where the profile stands off the ground, a bore where it runs
-            // under, grade between. A ground station never becomes a
-            // structure here — that is the partition step's, once it derives.
-            for &(k0, k1, kind) in &runs[i] {
-                if !kind.is_structure() {
-                    continue;
-                }
-                for st in &mut sts[k0..=k1] {
-                    st.solved = if st.h - st.ground >= STRUCTURE_MIN_M {
-                        Solved::Deck
-                    } else if st.ground - st.h >= STRUCTURE_MIN_M {
-                        Solved::Bore
-                    } else {
-                        Solved::Grade
-                    };
-                }
-            }
-            Profile {
+            let mut p = Profile {
                 way: reference.axes[i].way,
                 id: way(i).id.clone(),
                 class: way(i).class.clone(),
                 width_m: way(i).width_m,
                 spans: way(i).spans.clone(),
                 stations: sts,
-            }
+            };
+            // A ground station never becomes a structure here — deriving one
+            // is the partition step's.
+            p.classify();
+            p
         })
         .collect();
     (profiles, loose)
@@ -557,8 +482,9 @@ enum End {
 }
 
 /// The heights along one at-grade run: the `ground` targets at arc lengths
-/// `arc`, held to `ceiling` where the box of `deviation` allows and pinned
-/// at each end the caller gives a pin for.
+/// `arc`, held to `ceiling` and to a vertical curve of `radius` where the
+/// box of `deviation` allows, and pinned at each end the caller gives a pin
+/// for.
 pub fn limit(
     ground: &[f64],
     arc: &[f64],
@@ -584,11 +510,10 @@ pub fn limit(
         }
     };
     pin_ends(&mut h);
-    // A street has no ceiling — the DEM under it *is* it (S9) — but it still
-    // has a vertical curve, so the early return has to ask about both. Asking
-    // about the ceiling alone skipped `bend` for every street on the box,
-    // which is most of the network: `kink` read 62.7 % and the tightest curve
-    // held was three metres.
+    // A street has no ceiling — the DEM under it *is* it — but it still has a
+    // vertical curve, so the early return has to ask about both: asking about
+    // the ceiling alone would skip `bend` for every street, which is most of
+    // the network.
     if n < 2 || (!ceiling.is_finite() && radius.is_none()) {
         return h;
     }
@@ -673,83 +598,16 @@ pub fn curvature_radius(h: &[f64], arc: &[f64]) -> f64 {
     worst
 }
 
-/// `pts` with points inserted so no piece is longer than `step`, the
-/// original vertices kept **and a point at every arc in `at`**: the axis is
-/// not moved, only sampled. An arc outside the polyline is ignored, and one
-/// that lands within a millimetre of a point already there adds nothing.
-pub fn densify_at(pts: &[[f64; 2]], step: f64, at: &[f64]) -> Vec<[f64; 2]> {
-    let dense = densify(pts, step);
-    if at.is_empty() {
-        return dense;
-    }
-    let total = crate::roads::length(pts);
-    let mut cuts: Vec<f64> = at.iter().copied().filter(|s| *s > 0.0 && *s < total).collect();
-    cuts.sort_by(f64::total_cmp);
-    let mut out: Vec<[f64; 2]> = Vec::with_capacity(dense.len() + cuts.len());
-    let mut arc = 0.0f64;
-    let mut next = 0usize;
-    for (i, p) in dense.iter().enumerate() {
-        if i > 0 {
-            let prev = dense[i - 1];
-            let seg = (p[0] - prev[0]).hypot(p[1] - prev[1]);
-            while next < cuts.len() && cuts[next] < arc + seg - MERGE_M {
-                let t = if seg > 0.0 { ((cuts[next] - arc) / seg).clamp(0.0, 1.0) } else { 0.0 };
-                let q = [prev[0] + (p[0] - prev[0]) * t, prev[1] + (p[1] - prev[1]) * t];
-                if out.last().is_none_or(|l: &[f64; 2]| (q[0] - l[0]).hypot(q[1] - l[1]) > MERGE_M) {
-                    out.push(q);
-                }
-                next += 1;
-            }
-            arc += seg;
-            // A cut that lands on this vertex is served by the vertex.
-            while next < cuts.len() && cuts[next] <= arc + MERGE_M {
-                next += 1;
-            }
-        }
-        if out.last().is_none_or(|l: &[f64; 2]| (p[0] - l[0]).hypot(p[1] - l[1]) > MERGE_M) {
-            out.push(*p);
-        }
-    }
-    out
-}
-
-/// How near two stations must be, in metres, to count as the same one.
-const MERGE_M: f64 = 1e-3;
-
-/// `pts` with points inserted so no piece is longer than `step`, the
-/// original vertices kept: the axis is not moved, only sampled.
-pub fn densify(pts: &[[f64; 2]], step: f64) -> Vec<[f64; 2]> {
-    let mut out: Vec<[f64; 2]> = Vec::new();
-    let Some(&first) = pts.first() else {
-        return out;
-    };
-    out.push(first);
-    for pair in pts.windows(2) {
-        let (p, q) = (pair[0], pair[1]);
-        let len = (q[0] - p[0]).hypot(q[1] - p[1]);
-        let n = (len / step).ceil().max(1.0) as usize;
-        for k in 1..n {
-            let t = k as f64 / n as f64;
-            out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
-        }
-        if len > 0.0 {
-            out.push(q);
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::world::World;
     use crate::pipeline::tests::{built, upto};
     use crate::step::{Step, Summary};
-    
 
-    
     use crate::lattice::height_at;
     use crate::terrain::{self, tests::{dem, extent}};
 
+    use crate::world::Way;
     use super::*;
 
     /// A world on the ground of `terrain` with the network of `net`, profiled.
@@ -760,20 +618,6 @@ pub(crate) mod tests {
 
     fn profiles(w: &World) -> &[Profile] {
         &w.profile.as_ref().unwrap().profiles
-    }
-
-    #[test]
-    fn densify_keeps_the_vertices_and_bounds_the_step() {
-        let pts = densify(&[[0.0, 0.0], [10.0, 0.0], [10.0, 3.0]], 4.0);
-        assert_eq!(pts.len(), 5, "{pts:?}");
-        assert_eq!(pts[0], [0.0, 0.0]);
-        assert_eq!(pts[3], [10.0, 0.0]);
-        assert_eq!(pts[4], [10.0, 3.0]);
-        for pair in pts.windows(2) {
-            let d = (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]);
-            assert!(d <= 4.0 + 1e-12 && d > 0.0, "{pair:?}");
-        }
-        assert_eq!(densify(&[[1.0, 1.0]], 4.0), vec![[1.0, 1.0]]);
     }
 
     #[test]
@@ -805,7 +649,7 @@ pub(crate) mod tests {
     #[test]
     fn a_street_follows_its_hill_and_an_engineered_road_holds_its_grade() {
         // A residential on a 30 % slope is a residential on a 30 % slope:
-        // the ground, exactly, and the summary says how steep (S9).
+        // the ground, exactly, and the summary says how steep.
         let (w, s) = world("ramp?grade=0.3&bearing=90&radius=100000", "net:straight?len=200");
         let p = &profiles(&w)[0];
         assert!(p.stations.iter().all(|st| st.h == st.ground), "{:?}", p.stations[10]);
@@ -958,7 +802,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_span_split_at_a_connector_is_one_chord() {
-        // Two bridge pieces of 30 m and 10 m between anchors at 400 and
+        // Two bridge runs of 30 m and 10 m between anchors at 400 and
         // 420: the connector between them lies on the one chord, at 415.
         let (ground, _) = terrain::run(&extent(), &mut dem("ramp?grade=0.5&bearing=90&radius=100000"), 5.0, usize::MAX);
         // Two ways, each half ground and half bridge, meeting at a
@@ -982,7 +826,7 @@ pub(crate) mod tests {
         let joint = a.stations[a.stations.len() - 1].h;
         assert!((joint - b.stations[0].h).abs() < 1e-9, "{joint} vs {}", b.stations[0].h);
         assert!((joint - 415.0).abs() < 1e-6, "{joint}");
-        // The way now starts at x = −20, where the ramp reads 390.
+        // The way starts at x = −20, where the ramp reads 390.
         assert!((a.stations[0].h - 390.0).abs() < 1e-6, "{}", a.stations[0].h);
         // Way b runs on to x = 60, where the ramp reads 430; its abutment at
         // x = 40 is the 420 the chord climbs to.
@@ -999,9 +843,9 @@ pub(crate) mod tests {
     ///
     /// A **street**: not grade-limited, so its at-grade stretches lie on the
     /// ground exactly and what these tests measure is the chord rather than
-    /// the limiter. Under R1 an abutment is wherever the at-grade solve
-    /// lands, so a `primary` on one of these ramps spends its deviation box
-    /// before the chord even starts — true, and not what is being asked.
+    /// the limiter. An abutment is wherever the at-grade solve lands, so a
+    /// `primary` on one of these ramps spends its deviation box before the
+    /// chord even starts — true, and not what is being asked.
     fn way(id: &str, pts: Vec<[f64; 2]>, spans: Vec<(f64, f64, Kind)>) -> Way {
         Way {
             id: id.into(),
@@ -1017,7 +861,7 @@ pub(crate) mod tests {
     /// The profiles of a hand-made way list over `t`, the way the pipeline
     /// gets them: a reference for the ways that solve, then the solve.
     fn solved(ways: &[Way], t: &crate::world::Terrain) -> (Vec<Profile>, Loose) {
-        solve(&crate::reference::of(ways, &crate::reference::solving_of(ways), t), ways)
+        solve(&crate::reference::of(ways, &crate::reference::solving_of(ways), t))
     }
 
     #[test]
@@ -1064,9 +908,7 @@ pub(crate) mod tests {
     /// cuts a viaduct and the descent to a lower ground waits for a site with
     /// data past it. For a bore it is not: run level out of a hillside that
     /// falls away, a tunnel emerges into the air, and what the structure step
-    /// then builds is a viaduct. Measured on the loop box before this rule: a
-    /// service road tagged `is_tunnel` end to end ended 62 m over the ground
-    /// on 130 m piers, and asked a motorway to climb 68 m out of its way.
+    /// then builds is a viaduct.
     #[test]
     fn a_dangling_bore_holds_the_ground_and_a_dangling_deck_its_level() {
         // Falling ground: 10 % down toward the east.
@@ -1102,8 +944,8 @@ pub(crate) mod tests {
     }
 
     /// **A level crossing is one height, and it is the railway's.** The
-    /// connector lies in the interior of both ways, as every one of the loop
-    /// box's does, so no anchor sees it; a hill under it means a mainline
+    /// connector lies in the interior of both ways, as Overture's level
+    /// crossings do, so no anchor sees it; a hill under it means a mainline
     /// held to 3 % would cut the crest while the street followed it over,
     /// and the two would cross each other a metre apart.
     #[test]

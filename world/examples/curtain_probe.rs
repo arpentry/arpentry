@@ -1,15 +1,20 @@
-//! Scratch probe: which field answered for the asphalt triangles that stand
-//! up as vertical curtains (carriageway triangles spanning more than `dz` m).
+//! Probe: the carriageway triangles inside a window that stand up as
+//! curtains (spanning more than `dz` m, 8 by default), grouped by sheet, and
+//! which axis's field — the ground's or the chords' — answered for each of
+//! their vertices.
 //!
-//!   cargo run --release --example curtain_probe -- ZONE w,s,e,n x0,y0,x1,y1 [dz]
+//!   cargo run --release --example curtain_probe -- ZONE w,s,e,n x0,y0,x1,y1 [dz] [decks | x,y[;x,y…]]
+//!
+//! With `decks`, the height gap between every deck face of the
+//! arrangement's second layer and the paving under it instead; with points,
+//! every surface and arrangement face covering each point.
 
-use arpentry_server::dem::Dem;
-use arpentry_server::project::Bounds;
+mod common;
+
 use arpentry_world::field::Field;
-use arpentry_world::pipeline::{self, Sources};
 use arpentry_world::poly;
 use arpentry_world::step::Step;
-use arpentry_world::world::{Profiles, World};
+use arpentry_world::world::Profiles;
 
 /// The same ranges `copies::of_axes` builds a sheet's field from, one profile per call.
 fn ranges(p: &arpentry_world::world::Profile, spans: &[(usize, f64, f64)], pi: usize) -> Vec<(usize, usize)> {
@@ -31,18 +36,12 @@ fn ranges(p: &arpentry_world::world::Profile, spans: &[(usize, f64, f64)], pi: u
 
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
-    let zone = std::path::PathBuf::from(&a[0]);
-    let b: Vec<f64> = a[1].split(',').map(|s| s.parse().unwrap()).collect();
     let w: Vec<f64> = a[2].split(',').map(|s| s.parse().unwrap()).collect();
     let dz: f64 = a.get(3).map(|s| s.parse().unwrap()).unwrap_or(8.0);
-    let mut dem = Dem::open(&zone.join("terrain.pmtiles")).unwrap();
-    let mut world = World::new(Bounds { west: b[0], south: b[1], east: b[2], north: b[3] });
-    let (seg, bld) = (zone.join("segment.parquet"), zone.join("building.parquet"));
-    let mut src = Sources { dem: &mut dem, segments: &seg, buildings: Some(&bld), spacing: 1.0, max_vertices: 2_000_000 };
-    pipeline::upto(&mut world, Step::Bench, &mut src, &mut |s, sum| eprintln!("{s:?} {sum}")).unwrap();
+    let world = common::world(std::path::Path::new(&a[0]), &a[1], Step::Bench);
 
     let profiles: &Profiles = world.solved().unwrap();
-    let sheets = world.sheets.as_ref().unwrap();
+    let sheets = world.sheet.as_ref().unwrap();
     // Which sheet holds a point: asked of the sheets' own regions, since the
     // one mesh carries no per-vertex sheet.
     let held: Vec<poly::Indexed> = sheets.sheets.iter().map(|s| poly::Indexed::new(&s.shapes)).collect();
@@ -84,7 +83,6 @@ fn main() {
       for q in qs.split(';') {
         let q: Vec<f64> = q.split(',').map(|s| s.parse().unwrap()).collect();
         println!("== {q:?}");
-        let st = world.structure.as_ref();
         let layers: Vec<(&str, &arpentry_world::world::Tri)> = vec![
             ("carriageway", &bench.carriageway),
             ("pavement", &bench.pavement),
@@ -93,7 +91,6 @@ fn main() {
             ("kerb", &bench.kerb),
             ("wall", &bench.wall),
         ];
-        let _ = st;
         for (name, t) in layers {
             for tr in t.indices.chunks_exact(3) {
                 let v: Vec<[f64; 3]> = tr.iter().map(|&i| t.positions[i as usize]).collect();

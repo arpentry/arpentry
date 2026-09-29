@@ -7,20 +7,16 @@
 //! one per surface that reaches a vertex (the ground, each carriageway and
 //! ballast sheet, the pavement's near and far halves) and per [`Rule`] that
 //! answers it — and every seam between two surfaces is found by index rather
-//! than by where it lies. It used to be two meshes built apart and matched
-//! by position at the kernel's grid with an eight-cell search: `seam` and
-//! `unmet` were that search's misses, 3.70 % and 1.28 % on the loop box, and
-//! both read exactly zero now on every specimen.
+//! than by where it lies, so no seam can be missed.
 //!
 //! **A step is declared, not stumbled on.** A paved triangle takes one rule
 //! at its centroid — which field, which axis, which stretch of it, and for
 //! the far pavement the face or the drape — and all three of its corners are
 //! answered by it; a vertex two triangles answer differently is two copies,
 //! welded where they agree within a kerb's rise and split otherwise, and the
-//! edge rule draws the face across the split (`split_m2`). It used to be
-//! decided per vertex, so the switch fell inside whichever triangle
-//! straddled it and was drawn as a stretched triangle that nothing closed:
-//! 8 400 of them on the loop box.
+//! edge rule draws the face across the split (`split_m2`). Decided per
+//! vertex instead, the switch would fall inside whichever triangle straddled
+//! it and be drawn as a stretched triangle that nothing closes.
 //!
 //! This module is the machinery the three steps share. Which of them builds
 //! what is theirs: the lift makes the paved copies, the earthwork the
@@ -31,11 +27,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::field::{Field, Foot, PART_M};
 use crate::poly::{self, Pt};
-use crate::standard::{EARTHWORK_BATTER, KERB_RISE_M, MAX_BENCH_FACE_M, ROOM_REACH_M};
+use crate::standard::{EARTHWORK_BATTER, KERB_RISE_M, MAX_BATTER_FACE_M, ROOM_REACH_M};
 use crate::width::{self, Family};
-use crate::world::{Arrangement, Face, Material, Mesh, Profile, Profiles, Sheets, Tri};
+use crate::world::{Arrangement, Face, Material, Mesh, Profile, Profiles, Sheet, Sheets, Tri};
 
-/// What the lift did to one family.
+/// Where the lifted room's vertices stand against the natural ground.
 #[derive(Debug, Default, Clone)]
 pub struct Stats {
     pub vertices: usize,
@@ -47,32 +43,15 @@ pub struct Stats {
     pub lifted: usize,
     /// Vertices on a batter face between the room's reach and the ground.
     pub battered: usize,
-    /// Vertices left where the mesh step put them: the free bands.
+    /// Vertices at the natural ground: the free bands.
     pub draped: usize,
-    /// Of those, the ones **no road answered for at all** — nothing within
-    /// [`FIELD_LIMIT_M`] — as against the ones whose batter simply
-    /// daylighted, which is the face doing its job. A free vertex keeps the
-    /// raw DEM, and the ground around it has been benched.
+    /// Of those, the ones **no road answered for at all**, as against the
+    /// ones whose batter simply daylighted, which is the face doing its job.
     pub free: usize,
-    /// Vertices standing more than one face ([`MAX_BENCH_FACE_M`]) off
-    /// the ground: where the ground's answer must be a wall rather than
-    /// a batter.
-    pub walled: usize,
     /// The deepest a vertex was let into the ground, in metres.
     pub cut: f64,
     /// The highest a vertex was raised above it.
     pub fill: f64,
-    pub edges: usize,
-    /// Edges the field steps across.
-    pub steps: usize,
-    /// The largest of those steps, in metres.
-    pub worst: f64,
-    /// Where they are.
-    pub at: Vec<[f64; 2]>,
-    /// Edges as steep as a step with both ends on the raw DEM.
-    pub dem_steep: usize,
-    /// Edges as steep as a step that their rule is continuous along.
-    pub steep: usize,
 }
 
 /// No copy: a vertex this surface does not reach, or a rule no axis answers.
@@ -84,8 +63,8 @@ pub enum Surface {
     /// The engineered ground: every partition face that does not cut the
     /// terrain, the ground under a deck included.
     Ground,
-    /// A carriageway sheet, by its index into [`Sheets::sheets`] —
-    /// `u32::MAX` for paving no sheet claims — and the same for the ballast.
+    /// A carriageway sheet, by its index into [`Sheets::sheets`], and the
+    /// same for the ballast.
     Carriageway(u32),
     Ballast(u32),
     /// The pavement within the room's reach, and past it.
@@ -96,11 +75,13 @@ pub enum Surface {
 impl Surface {
     /// The paved surface `face` is drawn in, if it is paved.
     pub fn paved(face: &Face) -> Option<Surface> {
-        let sheet = face.sheet.map_or(u32::MAX, |s| s as u32);
+        // The asphalt and the track bed are cut by the sheets, so every face
+        // of theirs is some sheet's.
+        let sheet = || face.sheet.expect("a carriageway or ballast face is a sheet's") as u32;
         match face.material {
             Material::Ground => None,
-            Material::Carriageway => Some(Surface::Carriageway(sheet)),
-            Material::Ballast => Some(Surface::Ballast(sheet)),
+            Material::Carriageway => Some(Surface::Carriageway(sheet())),
+            Material::Ballast => Some(Surface::Ballast(sheet())),
             Material::Pavement if face.near => Some(Surface::Near),
             Material::Pavement => Some(Surface::Far),
         }
@@ -111,17 +92,16 @@ impl Surface {
 /// fields answered, which axis of that field, and — for the pavement past
 /// the room's reach — whether it stands on the face or drapes.
 ///
-/// **A triangle takes one rule, at all three of its corners.** The height of
-/// a paved point used to be decided per vertex: the nearest axis, the chord
-/// or the ground, the face or the drape, whichever the vertex's own position
-/// chose. Where two neighbouring vertices chose differently the triangle
-/// between them was stretched across the switch — 8 400 of them on the loop
-/// box, 80 % inside one material where no face was drawn to close them,
-/// which is plan §3.3's "a discontinuity is an accident of where a positional
-/// case-function changes branch". Now the triangle's centroid chooses, every
-/// corner is answered by that choice, and a vertex two triangles answer
-/// differently is two copies: welded where they agree, and a declared edge
-/// with a face on it where they do not.
+/// **A triangle takes one rule, at all three of its corners.** Decided per
+/// vertex — the nearest axis, the chord or the ground, the face or the
+/// drape, whichever the vertex's own position chose — two neighbouring
+/// vertices that chose differently would stretch the triangle between them
+/// across the switch, inside one material where no face closes it: a
+/// discontinuity that is an accident of where a positional case function
+/// changes branch. So the triangle's centroid chooses, every corner is
+/// answered by that choice, and a vertex two triangles answer differently is
+/// two copies: welded where they agree, and a declared edge with a face on
+/// it where they do not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Rule {
     /// The chords' field answered, rather than the ground's.
@@ -156,16 +136,15 @@ pub struct Lift<'a> {
 impl Lift<'_> {
     /// The rule at `p`, whose natural ground is `natural`.
     ///
-    /// **And the mask is asked, not believed.** It is a boolean kernel's
+    /// **The span mask is asked, not believed.** It is a boolean kernel's
     /// answer to "which paving is over a deck", and a kernel's answer has
-    /// threads in it: at the Montreux overbridge two of them, 0.3 and 0.8 m²,
-    /// lay seven metres from any chord in the middle of a junction, and every
-    /// vertex they caught was answered by the chords' field — which reaches
-    /// [`FIELD_LIMIT_M`] and clamps to the nearest station, so it handed back
-    /// the chord's *end* height, a 2.4 m fin. So the chord answers only where
-    /// it is **no further away than the ground the sheet also holds**: on a
-    /// deck the chord is underfoot and the approach a span away, and in a
-    /// sliver it is the other way round.
+    /// threads in it: a sliver of mask metres from any chord would hand every
+    /// vertex it catches to the chords' field, which reaches `FIELD_LIMIT_M`
+    /// and clamps to the nearest station, so it would give back the chord's
+    /// *end* height and stand the asphalt up in a fin. So the chord answers
+    /// only where it is **no further away than the ground the sheet also
+    /// holds**: on a deck the chord is underfoot and the approach a span away,
+    /// and in a sliver it is the other way round.
     pub fn rule(&self, p: Pt, natural: f64) -> Rule {
         let ask = |f: &Field| if f.is_empty() { None } else { f.at(p) };
         let grounded = ask(self.grounded);
@@ -178,7 +157,7 @@ impl Lift<'_> {
         };
         // Past the reach, a band standing more than one face from the road
         // beside it is not that road's pavement at all and drapes.
-        let drape = self.walk && !self.near && (natural - (foot.h + self.rise)).abs() > MAX_BENCH_FACE_M;
+        let drape = self.walk && !self.near && (natural - (foot.h + self.rise)).abs() > MAX_BATTER_FACE_M;
         Rule { chord, axis: foot.axis, part: (foot.s / PART_M).floor() as i32, drape }
     }
 
@@ -217,7 +196,7 @@ impl Lift<'_> {
         };
         // **A walk takes a road's height only where that road is on the
         // ground the walk is on**; one bench face over is the threshold.
-        stats.flown += (self.walk && foot.h - natural > MAX_BENCH_FACE_M) as usize;
+        stats.flown += (self.walk && foot.h - natural > MAX_BATTER_FACE_M) as usize;
         if !self.walk || self.near {
             stats.lifted += 1;
         } else if rule.drape {
@@ -235,9 +214,6 @@ impl Lift<'_> {
         // built.
         if rule.chord {
             return;
-        }
-        if (h - natural).abs() > MAX_BENCH_FACE_M {
-            stats.walled += 1;
         }
         stats.cut = stats.cut.max(natural - h);
         stats.fill = stats.fill.max(h - natural);
@@ -307,20 +283,13 @@ impl Copies {
             let Some(surface) = Surface::paved(face) else { continue };
             let key = (surface, rules[i]);
             for &v in t {
-                let slot = c.paved.entry((v, key)).or_insert(NONE);
-                let part = match surface {
-                    Surface::Carriageway(_) => &mut c.carriageway,
-                    Surface::Ballast(_) => &mut c.ballast,
-                    _ => &mut c.pavement,
-                };
-                let id = part.copy(slot, pos, v, key);
+                let mut slot = c.paved.get(&(v, key)).copied().unwrap_or(NONE);
+                let part = c.part_mut(surface);
+                let id = part.copy(&mut slot, pos, v, key);
                 part.tri.indices.push(id);
+                c.paved.insert((v, key), slot);
             }
-            match surface {
-                Surface::Carriageway(_) => c.carriageway.face_key.push(key),
-                Surface::Ballast(_) => c.ballast.face_key.push(key),
-                _ => c.pavement.face_key.push(key),
-            }
+            c.part_mut(surface).face_key.push(key);
         }
         c
     }
@@ -341,12 +310,22 @@ impl Copies {
         }
     }
 
+    /// The part `surface`'s copies are in.
     pub fn part(&self, surface: Surface) -> &Part {
         match surface {
             Surface::Ground => &self.ground,
             Surface::Carriageway(_) => &self.carriageway,
             Surface::Ballast(_) => &self.ballast,
             Surface::Near | Surface::Far => &self.pavement,
+        }
+    }
+
+    fn part_mut(&mut self, surface: Surface) -> &mut Part {
+        match surface {
+            Surface::Ground => &mut self.ground,
+            Surface::Carriageway(_) => &mut self.carriageway,
+            Surface::Ballast(_) => &mut self.ballast,
+            Surface::Near | Surface::Far => &mut self.pavement,
         }
     }
 
@@ -362,8 +341,9 @@ impl Copies {
     /// answer their shared corner each by its own road. Where the two agree
     /// within a kerb's rise — two legs of one junction, whose blend is
     /// continuous across the line between them — they are one vertex again,
-    /// at their mean: a slope that small across a triangle is not a step. Where they do not, they stay two, and the edge between
-    /// them is a declared step with a face on it ([`edge_faces`]).
+    /// at their mean: a slope that small across a triangle is not a step.
+    /// Where they do not, they stay two, and the edge between them is a
+    /// declared step with a face on it (`bench::edge_faces`).
     ///
     /// Returns how many copies went.
     pub fn weld(&mut self) -> usize {
@@ -383,11 +363,7 @@ impl Copies {
                 continue;
             }
             let k = which(surface);
-            let part = match k {
-                0 => &mut self.carriageway,
-                1 => &mut self.ballast,
-                _ => &mut self.pavement,
-            };
+            let part = self.part_mut(surface);
             let z = |id: u32, part: &Part| part.tri.positions[id as usize][2];
             copies.sort_by(|a, b| z(a.1, part).total_cmp(&z(b.1, part)).then(a.0.cmp(&b.0)));
             // Runs whose neighbours agree within a kerb's rise, and whose
@@ -447,10 +423,10 @@ pub struct Boundary {
 /// Every edge of the one mesh across which the partition's triangles change
 /// what they are, found without building the whole mesh's adjacency.
 ///
-/// Over the loop box the one mesh is 14 M triangles, and a table of all of
-/// their edges is most of a gigabyte to find the few hundred thousand that
-/// matter. An edge can only be a boundary if both its ends are vertices where
-/// two keys meet, so only those are indexed.
+/// The one mesh runs to millions of triangles, and a table of all their
+/// edges would cost most of a gigabyte to find the few that matter. An edge
+/// can only be a boundary if both its ends are vertices where two keys meet,
+/// so only those are indexed.
 pub fn boundaries(mesh: &Mesh, arrangement: &Arrangement, rules: &[Rule]) -> Vec<Boundary> {
     let key = |i: usize| {
         let face = arrangement.face(mesh.of_face[i]);
@@ -512,26 +488,6 @@ pub fn boundaries(mesh: &Mesh, arrangement: &Arrangement, rules: &[Rule]) -> Vec
     out
 }
 
-/// One height field per sheet of `family`, in the sheets' own order — the
-/// index a face's `sheet` carries, so a copy's sheet id indexes this
-/// directly.
-///
-/// A sheet names its axes as profile indices with an arc range, and the
-/// ranges of one profile are gathered into one entry: a profile is one
-/// axis, and [`Field::of_stations`] numbers axes by entry, so splitting a
-/// way across two entries would make the blend treat it as two ways
-/// meeting itself.
-///
-/// **Both the ground and the structure stations**, unlike
-/// [`Field::grounded`]. A sheet that holds a span holds it because the
-/// span shares a connector with the sheet's ground pieces, and the
-/// profile is continuous through that connector — so the chord is the
-/// honest answer over the deck, and asking the ground runs alone would
-/// leave the deck to be answered by an approach eighteen metres away.
-fn fields(sheets: &Sheets, family: Family, profiles: &Profiles) -> (Vec<Field>, Vec<Field>) {
-    (of_axes(sheets, family, profiles, false), of_axes(sheets, family, profiles, true))
-}
-
 /// The height fields the paved copies are lifted by: built once by the lift
 /// and read again by the earthwork, which asks the same rules of the same
 /// fields along every edge it checks.
@@ -539,33 +495,28 @@ fn fields(sheets: &Sheets, family: Family, profiles: &Profiles) -> (Vec<Field>, 
 /// Two for what has no sheet — the roads' and the railways' ground axes. A
 /// pavement is a road's cross-section and never a railway's; the railways'
 /// whole field is here because a gallery's rim, which no paving reaches,
-/// asks which of the two is nearer. And one per sheet of each family that
-/// has sheets, of its ground axes and of its chords ([`fields`]).
+/// asks which of the two is nearer. And two per sheet, in the sheets' own
+/// order — the index a paved face carries — of its ground axes and of its
+/// chords.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Fields {
     pub roads: Field,
     pub rails: Field,
-    pub car: Vec<Field>,
-    pub car_over: Vec<Field>,
-    pub beds: Vec<Field>,
-    pub beds_over: Vec<Field>,
-    /// What a copy no sheet claims is lifted by: nothing.
-    empty: Field,
+    /// Per sheet, its ground field and its chords' field.
+    pub sheets: Vec<(Field, Field)>,
 }
 
 impl Fields {
     pub fn new(profiles: &Profiles, sheets: &Sheets) -> Fields {
         let rail = |p: &&Profile| width::family(&p.class) == Family::Rail;
-        let (car, car_over) = fields(sheets, Family::Carriageway, profiles);
-        let (beds, beds_over) = fields(sheets, Family::Rail, profiles);
         Fields {
             roads: Field::grounded(profiles.profiles.iter().filter(|p| !rail(p))),
             rails: Field::grounded(profiles.profiles.iter().filter(rail)),
-            car,
-            car_over,
-            beds,
-            beds_over,
-            empty: Field::default(),
+            sheets: sheets
+                .sheets
+                .iter()
+                .map(|s| (of_axes(s, profiles, false), of_axes(s, profiles, true)))
+                .collect(),
         }
     }
 
@@ -579,25 +530,12 @@ impl Fields {
     /// asked how far out it lies. `over` is the span mask a chord is believed
     /// within ([`Lift::rule`]); a caller asking the height of a rule already
     /// chosen does not need it.
-    pub fn lift<'a>(&'a self, surface: Surface, over: Option<&'a poly::Indexed>) -> Lift<'a> {
-        let sheeted = |fs: &'a [Field], k: u32| fs.get(k as usize).unwrap_or(&self.empty);
+    pub fn lift<'a>(&'a self, surface: Surface, over: &'a poly::Indexed) -> Lift<'a> {
         match surface {
-            Surface::Carriageway(k) => Lift {
-                grounded: sheeted(&self.car, k),
-                chords: Some(sheeted(&self.car_over, k)),
-                over,
-                rise: 0.0,
-                walk: false,
-                near: true,
-            },
-            Surface::Ballast(k) => Lift {
-                grounded: sheeted(&self.beds, k),
-                chords: Some(sheeted(&self.beds_over, k)),
-                over,
-                rise: 0.0,
-                walk: false,
-                near: true,
-            },
+            Surface::Carriageway(k) | Surface::Ballast(k) => {
+                let (grounded, chords) = &self.sheets[k as usize];
+                Lift { grounded, chords: Some(chords), over: Some(over), rise: 0.0, walk: false, near: true }
+            }
             Surface::Near | Surface::Far => Lift {
                 grounded: &self.roads,
                 chords: None,
@@ -611,44 +549,100 @@ impl Fields {
     }
 }
 
-/// One field per sheet of [`Sheets::sheets`], indexed as the mesh's sheet
-/// tags are; a sheet of another family has an empty one.
-fn of_axes(sheets: &Sheets, family: Family, profiles: &Profiles, chords: bool) -> Vec<Field> {
-    sheets
-        .sheets
-        .iter()
-        .map(|sheet| {
-            if sheet.family != family {
-                return Field::default();
+/// The height field of one sheet: of its ground axes, or of its chords.
+///
+/// A sheet names its axes as profile indices with an arc range, and the
+/// ranges of one profile are gathered into one entry: a profile is one
+/// axis, and [`Field::of_stations`] numbers axes by entry, so splitting a
+/// way across two entries would make the blend treat it as two ways
+/// meeting itself. **Both the ground and the structure stations**, unlike
+/// [`Field::grounded`]: a sheet holds a span because the span shares a
+/// connector with the sheet's ground pieces, and the profile is continuous
+/// through that connector, so the chord is the honest answer over the deck.
+fn of_axes(sheet: &Sheet, profiles: &Profiles, chords: bool) -> Field {
+    let mut ranges: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
+    for &(profile, a0, a1) in if chords { &sheet.chords } else { &sheet.axes } {
+        let Some(p) = profiles.profiles.get(profile) else {
+            continue;
+        };
+        // Inclusive at both ends: the station on a piece boundary is
+        // the abutment and belongs to both sides, which is what
+        // carries the field across it without a gap.
+        let first = p.stations.iter().position(|st| st.s >= a0 - 1e-9);
+        let last = p.stations.iter().rposition(|st| st.s <= a1 + 1e-9);
+        if let (Some(k0), Some(k1)) = (first, last) {
+            if k0 <= k1 {
+                // **A station past each end** ([`Profile::with_abutments`]).
+                // The two fields have to overlap where they hand over, or
+                // the ground's axes stop short of the connector, only the
+                // chords' field has a joint to blend at, and the surface
+                // creases along the mask's edge.
+                ranges.entry(profile).or_default().push(p.with_abutments(k0, k1));
             }
-            let mut ranges: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
-            for &(profile, a0, a1) in if chords { &sheet.chords } else { &sheet.axes } {
-                let Some(p) = profiles.profiles.get(profile) else {
-                    continue;
-                };
-                // Inclusive at both ends: the station on a piece boundary is
-                // the abutment and belongs to both sides, which is what
-                // carries the field across it without a gap.
-                let first = p.stations.iter().position(|st| st.s >= a0 - 1e-9);
-                let last = p.stations.iter().rposition(|st| st.s <= a1 + 1e-9);
-                if let (Some(k0), Some(k1)) = (first, last) {
-                    if k0 <= k1 {
-                        // **A station past each end.** The two fields have
-                        // to overlap where they hand over, or the ground's
-                        // axes stop short of the connector, only the
-                        // chords' field has a joint to blend at, and the
-                        // surface creases along the mask's edge. One
-                        // station is `structure::runs_of`'s own abutment
-                        // margin, read here for the same reason.
-                        let last = p.stations.len() - 1;
-                        ranges
-                            .entry(profile)
-                            .or_default()
-                            .push((k0.saturating_sub(1), (k1 + 1).min(last)));
-                    }
-                }
-            }
-            Field::of_stations(ranges.into_iter().filter_map(|(i, r)| Some((profiles.profiles.get(i)?, r))))
-        })
-        .collect()
+        }
+    }
+    Field::of_stations(ranges.into_iter().filter_map(|(i, r)| Some((profiles.profiles.get(i)?, r))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::Solved;
+
+    /// **A chord answers only where it is.** A sliver of the span mask lying
+    /// metres from any chord, near a junction, must not hand the vertices it
+    /// catches to the chords' field, which reaches `FIELD_LIMIT_M` and clamps
+    /// to its nearest station and would give back the chord's *end* height.
+    /// The chord is believed only where it is no further off than the ground
+    /// the same sheet holds, which the mask cannot get wrong.
+    #[test]
+    fn a_sliver_in_the_span_mask_does_not_lift_the_asphalt() {
+        // One way: 100 m of ground along x, level to x = 60 and then
+        // climbing its abutment at 20 %, and a deck that turns away from it
+        // at the abutment and runs 40 m level — the shape the road has where
+        // it leaves a junction onto a bridge.
+        let at = |x: f64, y: f64, s: f64, h: f64| crate::world::Station {
+            s,
+            p: [x, y],
+            ground: 400.0,
+            reference: 400.0,
+            h,
+            solved: Solved::Grade,
+        };
+        let mut stations: Vec<crate::world::Station> =
+            (0..=20).map(|k| k as f64 * 5.0).map(|x| at(x, 0.0, x, 400.0 + 0.2 * (x - 60.0).max(0.0))).collect();
+        stations.extend((1..=4).map(|k| k as f64 * 10.0).map(|y| at(100.0, y, 100.0 + y, 408.0)));
+        let p = Profile {
+            way: 0,
+            id: "road".into(),
+            class: "residential".into(),
+            width_m: 5.5,
+            spans: vec![
+                crate::world::Span { a0: 0.0, a1: 100.0, kind: crate::world::Kind::Ground },
+                crate::world::Span { a0: 100.0, a1: 140.0, kind: crate::world::Kind::Bridge(1) },
+            ],
+            stations,
+        };
+        // The two fields the sheet would build, overlapping by one station
+        // at the abutment exactly as `of_axes` makes them.
+        let ground = Field::of_stations(std::iter::once((&p, vec![(0usize, 20usize)])));
+        let chord = Field::of_stations(std::iter::once((&p, vec![(19usize, 24usize)])));
+
+        // A vertex six metres off the axis and twelve short of the abutment.
+        // The ground axis is 6 m away and says 405.6; the chord is 9.2 m
+        // away — inside the field's reach — and, clamped to its own first
+        // station, says 407.0.
+        assert!((chord.at([88.0, 6.0]).expect("the chord reaches it").h - 407.0).abs() < 1e-9);
+        // The mask lies about it — a sliver of a deck that is not there.
+        let over = poly::Indexed::new(&vec![poly::rect(87.0, 5.0, 90.0, 7.0)]);
+
+        let lift = Lift { grounded: &ground, chords: Some(&chord), over: Some(&over), rise: 0.0, walk: false, near: true };
+        let rule = lift.rule([88.0, 6.0], 0.0);
+        let (h, foot) = lift.height([88.0, 6.0], 0.0, rule);
+        assert!((h - 405.6).abs() < 1e-9, "the sliver handed the vertex the chord's end height: {h}");
+        // And the earthwork under it is the ground's to owe, not a deck's.
+        let mut stats = Stats::default();
+        lift.account(&mut stats, rule, h, 0.0, foot);
+        assert!(!rule.chord && stats.fill > 0.0, "the sliver excused the fill under it too");
+    }
 }

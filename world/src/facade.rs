@@ -15,8 +15,7 @@
 //! overlap. Where a way's *axis* runs inside a footprint the data says the
 //! way goes through — an arcade, a porch, a garage, a footprint drawn over
 //! the lane — and cutting the way there would split the network in two,
-//! trading a measured defect for an unmeasured one (the server's
-//! `MIN_CARRIAGEWAY_HALF_M` was that lesson). Along that stretch of axis
+//! trading a measured defect for an unmeasured one. Along that stretch of axis
 //! the building yields a corridor of the way's own width, at most
 //! [`PASSAGE_M`]. What it refuses is `solid = footprints − passages`.
 //!
@@ -24,7 +23,7 @@
 //! metre deep, and the next house stands two metres along. A kerb that
 //! followed every one of them would zigzag, and no kerb does — the asphalt
 //! runs along the *closed* facade, the walls with every notch and gap
-//! narrower than `2·POCKET_M` filled ([`POCKET_M`]), and what the closing
+//! narrower than `2·POCKET_M` filled (`POCKET_M`), and what the closing
 //! added is a pocket the asphalt keeps out of but the pavement (the room
 //! step) may fill. A way whose axis runs through a closed gap — a footway
 //! down an alley between two houses, a lane between facades closer than
@@ -32,8 +31,8 @@
 //! taken out of the pockets, not only the corridors of ways found inside
 //! them: a pocket is the closing's addition and never a wall, so opening it
 //! along a way that does not need it costs nothing, where sampling the axis
-//! for the ways that do missed a lens thinner than a sample step and cut a
-//! road at it. So there are two masks: `solid`, the walls less the
+//! for the ways that do would miss a lens thinner than a sample step and
+//! cut a road at it. So there are two masks: `solid`, the walls less the
 //! passages, which nothing paved enters; and `built`, the solid with the
 //! pockets less every corridor, which the asphalt does not.
 //!
@@ -68,6 +67,7 @@ use arpentry_server::project::Bounds;
 use arpentry_server::value::{f64_of, str_of, Value};
 use geo_types::{Geometry, Polygon};
 
+use crate::line;
 use crate::frame::{Extent, Frame, Rect};
 use crate::net::Params;
 use crate::poly::{self, Indexed, Pt, Shape, Shapes};
@@ -86,7 +86,7 @@ const SAMPLE_M: f64 = 1.0;
 /// between houses narrower than twice this is a pocket the asphalt keeps
 /// out of. Three metres is under the narrowest lane a car is driven down,
 /// and over the widest notch a facade is drawn with.
-pub const POCKET_M: f64 = 1.5;
+const POCKET_M: f64 = 1.5;
 
 /// Whether `s` is a spec rather than a path.
 pub fn is_spec(s: &str) -> bool {
@@ -113,7 +113,7 @@ pub fn run(
     // A railway asks nothing of a building: it runs under a station roof
     // rather than through a passage the building yields, and its ballast
     // does not stop at a wall. Given a corridor, a train shed's footprint
-    // shrank by the tracks' width and the pavement was let into the hall.
+    // would shrink by the tracks' width and let the pavement into the hall.
     let plan: Vec<crate::world::Polyline2> = roads
         .plan
         .iter()
@@ -123,10 +123,10 @@ pub fn run(
     let (passage_corridors, passages, passage_m) = corridors(&plan, &footprints);
     // The solid is the footprints less the corridors themselves, whose
     // edges cross the walls at an angle. Subtracting the passages (the
-    // corridors already cut to the footprints) instead left a hairline of
-    // solid along every wall a corridor crossed — the cut's vertices on
-    // the wall are lattice-rounded, so its edge and the wall's no longer
-    // coincide — and that hairline split a road at every wall it passed.
+    // corridors already cut to the footprints) instead leaves a hairline of
+    // solid along every wall a corridor crosses — the cut's vertices on the
+    // wall are lattice-rounded, so its edge and the wall's do not coincide —
+    // and that hairline splits a road at every wall it passes.
     let passage_corridors = poly::union_all(&passage_corridors);
     let solid = poly::difference(&footprints, &passage_corridors);
     let passages_shapes = poly::intersect(&passage_corridors, &footprints);
@@ -134,7 +134,7 @@ pub fn run(
     // then the solid put back — a corridor opens the pocket a way runs
     // down and never the walls beside it. The union tolerates the
     // closing's lattice-rounded edges lying a hair off the walls', where
-    // a difference would have left a sliver. `lanes` counts the ways the
+    // a difference would leave a sliver. `lanes` counts the ways the
     // pockets would otherwise have cut: an observation, not the mask.
     let closed = if footprints.is_empty() {
         Vec::new()
@@ -208,10 +208,9 @@ pub fn read(path: &Path, bbox: &Bounds, frame: &Frame, rect: &Rect) -> Result<Re
         };
         let props = &f.properties;
         // A building the source puts under the ground is no facade: nothing
-        // paved stops at it and nothing stands up for it. The Veytaux
-        // power station's caverns are mapped as footprints on the flank
-        // above them, and stood on the highest ground there they were a
-        // 5 m box a hundred metres in the air on its low side.
+        // paved stops at it and nothing stands up for it. A cavern is mapped
+        // as a footprint on the flank above it, and stood on the highest
+        // ground there it is a box in the air on its low side.
         if props.iter().any(|(k, v)| k == "is_underground" && matches!(v, Value::Bool(true))) {
             out.underground += 1;
             continue;
@@ -271,7 +270,7 @@ fn corridors(ways: &[Polyline2], footprints: &Shapes) -> (Shapes, usize, f64) {
         return (out, n, metres);
     }
     for w in ways {
-        let pts = crate::poly::resample(&w.pts, SAMPLE_M);
+        let pts = crate::line::resample(&w.pts, SAMPLE_M);
         if pts.len() < 2 {
             continue;
         }
@@ -286,7 +285,7 @@ fn corridors(ways: &[Polyline2], footprints: &Shapes) -> (Shapes, usize, f64) {
             let (a, b) = (i.saturating_sub(1), (j + 1).min(pts.len() - 1));
             out.extend(poly::buffer_line(&pts[a..=b], w.width_m.min(PASSAGE_M)));
             n += 1;
-            metres += poly::length(&pts[i..=j]);
+            metres += line::length(&pts[i..=j]);
             i = j + 1;
         }
     }
@@ -391,7 +390,7 @@ fn synthetic(spec: &str, rect: &Rect) -> Result<Read, String> {
 }
 
 /// A storey, in metres, where the source gives floors and no height.
-pub const FLOOR_M: f64 = 3.0;
+const FLOOR_M: f64 = 3.0;
 
 /// A building's height, in metres, where the source gives neither height
 /// nor floors — which in Overture is most of them. Without it a town reads
@@ -399,7 +398,7 @@ pub const FLOOR_M: f64 = 3.0;
 pub const DEFAULT_HEIGHT_M: f64 = 5.0;
 
 /// The height, in metres, a source gives a building: measured, else its
-/// floors at [`FLOOR_M`]. `None` when it gives neither, and the reader
+/// floors at `FLOOR_M`. `None` when it gives neither, and the reader
 /// stands it at [`DEFAULT_HEIGHT_M`].
 pub fn mapped_height(height: Option<f64>, floors: Option<f64>) -> Option<f64> {
     height.filter(|h| *h > 0.0).or_else(|| floors.map(|n| n * FLOOR_M).filter(|h| *h > 0.0))
@@ -408,7 +407,7 @@ pub fn mapped_height(height: Option<f64>, floors: Option<f64>) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use crate::world::World;
-    use crate::pipeline::tests::{built, plan};
+    use crate::pipeline::tests::{built, upto};
     use crate::step::Step;
     use crate::terrain::tests::extent;
 
@@ -416,19 +415,19 @@ mod tests {
 
     /// The same, surfaced, with the surface step's line.
     fn surfaced(net: &str, house: Option<&str>) -> (World, Summary) {
-        let (w, ran) = built("flat", net, house, 100.0, &plan(Step::Surface));
+        let (w, ran) = built("flat", net, house, 100.0, &upto(Step::Surface));
         (w, ran.last())
     }
 
     /// The ways of `net` on flat ground, cut: what this step reads.
     fn roads(net: &str) -> Network {
-        built("flat", net, None, 100.0, &plan(Step::Partition)).0.partition.expect("the partition step ran").network
+        built("flat", net, None, 100.0, &upto(Step::Partition)).0.partition.expect("the partition step ran").network
     }
 
     /// The world of `net` with the house of `house`, paved to the junctions,
     /// with the surface step's line and the kerb step's.
     fn paved(net: &str, house: &str) -> (World, Summary, Summary) {
-        let (w, ran) = built("flat", net, Some(house), 100.0, &plan(Step::Legs));
+        let (w, ran) = built("flat", net, Some(house), 100.0, &upto(Step::Legs));
         (w, ran.of(Step::Surface), ran.of(Step::Kerb))
     }
 

@@ -3,10 +3,9 @@
 //!
 //! `--dump DIR` writes every layer a run builds, one file per step; `--from
 //! STEP --load DIR` reads the layers of every step before `STEP` from `DIR`
-//! and runs from there. So a step is debugged without the steps before it:
-//! the earthwork is 8.5 s of the loop box, and running it used to cost the
-//! 25 s before it as well. A layer on disk is also an input a specimen can
-//! be given by hand.
+//! and runs from there. So a step is debugged without paying for the steps
+//! before it. A layer on disk is also an input a specimen can be given by
+//! hand.
 //!
 //! Each file carries the bbox it was built for, and is refused by a world
 //! over any other: a layer is in the local metres of its own frame, and read
@@ -26,7 +25,7 @@ use crate::world::World;
 
 /// The first bytes of every layer file, and the format's version: a file
 /// written by another layout of the layers is refused, not misread.
-const MAGIC: &[u8; 8] = b"ARPWLY01";
+const MAGIC: &[u8; 8] = b"ARPWLY02";
 
 /// What a layer file says about itself.
 #[derive(Serialize, Deserialize)]
@@ -39,7 +38,7 @@ struct Header {
 }
 
 /// The file `step`'s layer is kept in under `dir`.
-pub fn path_of(dir: &Path, step: Step) -> PathBuf {
+fn path_of(dir: &Path, step: Step) -> PathBuf {
     dir.join(format!("{}.layer", step.name()))
 }
 
@@ -79,35 +78,6 @@ fn read<T: DeserializeOwned>(path: &Path, world: &World, step: Step) -> Result<(
     Ok((header.summary, layer))
 }
 
-/// Every step and the field of [`World`] its layer lands in, once: what the
-/// save and the load both walk, so the two cannot disagree about a step.
-macro_rules! layers {
-    ($m:ident) => {
-        $m! {
-            Terrain => terrain,
-            Drape => roads,
-            Reference => reference,
-            Profile => profile,
-            Crossing => crossing,
-            Partition => partition,
-            Facade => facade,
-            Ribbon => ribbons,
-            Surface => surface,
-            Kerb => kerb,
-            Legs => legs,
-            Room => room,
-            Sheet => sheets,
-            Arrangement => arrangement,
-            Mesh => mesh,
-            Lift => lift,
-            Earthwork => earthwork,
-            Bench => bench,
-            Structure => structure,
-            Building => buildings
-        }
-    };
-}
-
 /// Writes the layer `step` built into `dir`, with the line it printed.
 ///
 /// Panics if the step has not run: a dump is taken right after it.
@@ -116,13 +86,13 @@ pub fn save(world: &World, step: Step, summary: &Summary, dir: &Path) -> Result<
     let path = path_of(dir, step);
     let header = Header { step: step.name().into(), bbox: bbox_of(world), summary: summary.to_string() };
     macro_rules! save {
-        ($($s:ident => $f:ident),*) => {
+        ($($(#[$doc:meta])* $s:ident => $f:ident: $t:ty,)*) => {
             match step {
                 $(Step::$s => write(&path, &header, world.$f.as_ref().expect("a step's layer is saved after it runs")),)*
             }
         };
     }
-    layers!(save)
+    crate::step::steps!(save)
 }
 
 /// Reads `step`'s layer from `dir` into `world`, and returns the line the
@@ -130,7 +100,7 @@ pub fn save(world: &World, step: Step, summary: &Summary, dir: &Path) -> Result<
 pub fn load(world: &mut World, step: Step, dir: &Path) -> Result<String, String> {
     let path = path_of(dir, step);
     macro_rules! load {
-        ($($s:ident => $f:ident),*) => {
+        ($($(#[$doc:meta])* $s:ident => $f:ident: $t:ty,)*) => {
             match step {
                 $(Step::$s => {
                     let (summary, layer) = read(&path, world, step)?;
@@ -140,7 +110,7 @@ pub fn load(world: &mut World, step: Step, dir: &Path) -> Result<String, String>
             }
         };
     }
-    Ok(layers!(load))
+    Ok(crate::step::steps!(load))
 }
 
 #[cfg(test)]
@@ -158,11 +128,11 @@ mod tests {
         let (ground, net, houses) = ("ramp?grade=0.15&bearing=45", "net:tee?d=8&hook=5", Some("house:beside?d=12"));
         let (w, ran) = built(ground, net, houses, 5.0, &upto(Step::Building));
         let dir = std::env::temp_dir().join(format!("arpentry-dump-test-{}", std::process::id()));
-        for &step in &Step::ALL {
+        for &step in Step::ALL {
             save(&w, step, &ran.of(step), &dir).expect("a layer writes");
         }
         let mut back = World::new(bbox());
-        for &step in &Step::ALL {
+        for &step in Step::ALL {
             let line = load(&mut back, step, &dir).expect("a layer reads");
             assert_eq!(line, ran.of(step).to_string(), "the {} step's line", step.name());
             assert_eq!(

@@ -7,15 +7,15 @@
 use std::collections::HashMap;
 
 use crate::grade;
-use crate::solve::{ceiling, curvature_radius, solve, Loose, GRADE_EPS};
+use crate::solve::{curvature_radius, solve, Loose, GRADE_EPS};
 use crate::step::Summary;
 use crate::width::{self, Family};
 use crate::world::{connector, Kind, Profiles, Reference, Solved};
 
-/// Solves the profile of every carriageway piece of the world, and says what
-/// it could not anchor.
+/// Solves the profile of every solving way of the world (the carriageways
+/// and the railways), and says what it could not anchor.
 pub fn run(reference: &Reference) -> (Profiles, Summary) {
-    let (profiles, Loose { dangling, unanchored, clamped, contacts }) = solve(reference, &reference.ways);
+    let (profiles, Loose { dangling, unanchored, clamped, contacts }) = solve(reference);
     let summary = Summary::new()
         .with("contacts", contacts)
         .with("dangling", dangling)
@@ -27,14 +27,14 @@ pub fn run(reference: &Reference) -> (Profiles, Summary) {
 /// What the solve came to: a function of the profiles alone.
 ///
 /// Kept apart from [`run`] because it is the larger half by an order of
-/// magnitude — nineteen counters over every station of every profile, against
-/// two lines that do the work — and reading `run` should say what the step
+/// magnitude — a score of counters over every station of every profile,
+/// against two lines that do the work — and reading `run` should say what the step
 /// makes, not how it is scored. Nothing here decides anything, so a metric
 /// can be added, moved or read without going near the solve, and asked of
 /// profiles from anywhere: a dump, a hand-made specimen, the crossing's
 /// re-solve.
-pub fn check(profiles: &Profiles) -> Summary {
-    let profiles = &profiles.profiles[..];
+pub fn check(solved: &Profiles) -> Summary {
+    let profiles = &solved.profiles[..];
     let mut stations = 0usize;
     let (mut pairs, mut steep) = (0usize, 0usize);
     let (mut street_pairs, mut street_steep) = (0usize, 0usize);
@@ -74,16 +74,15 @@ pub fn check(profiles: &Profiles) -> Summary {
         let g = grade::of(&p.class);
         // The ceiling this way was actually held to: a railway's measured
         // one, which the class number alone would call broken.
-        let held = if g.limited() { ceiling(&p.class, &p.stations, &p.spans) } else { g.ceiling.unwrap_or(f64::INFINITY) };
+        let held = grade::held(&p.class, &p.stations, &p.spans);
         raised += (held > g.ceiling.unwrap_or(f64::INFINITY)) as usize;
         for st in [p.stations.first(), p.stations.last()].into_iter().flatten() {
             let e = ends.entry(connector(st.p)).or_insert((st.h, st.h));
             e.0 = e.0.min(st.h);
             e.1 = e.1.max(st.h);
         }
-        // Per *run* now, not per piece: one way carries its at-grade
-        // stretches and its spans together, and each is measured as what it
-        // is.
+        // Per *run*: one way carries its at-grade stretches and its spans
+        // together, and each is measured as what it is.
         for (k0, k1, kind) in p.runs() {
             if !kind.is_structure() {
                 for pair in p.stations[k0..=k1].windows(2) {
@@ -114,9 +113,8 @@ pub fn check(profiles: &Profiles) -> Summary {
                         // pay for the earthwork a real motorway gets: a
                         // motorway does hold a 4 km vertical curve, and on a
                         // mountainside eight metres of box does not buy it.
-                        // Lowering the radius only reports fewer failures —
-                        // swept over the box, 4000/2000/1500 leaves 24 runs
-                        // short, and a sixteenth of that still leaves 7.
+                        // Lowering the radius would only report fewer
+                        // failures.
                         if g.limited() {
                             eng_runs += 1;
                             eng_short += (held < want - 1e-6) as usize;
@@ -130,10 +128,9 @@ pub fn check(profiles: &Profiles) -> Summary {
                     grounded += 1;
                     // `float` guards the limiter, so it is measured against
                     // what the limiter was aimed at: the reference, and the
-                    // box is around that. `off` is the other question — how
-                    // far the solved surface ends up standing from the *raw*
-                    // DEM — and it is the number the departure criterion will
-                    // threshold.
+                    // box is around that. How far the solved surface ends up
+                    // standing from the *raw* DEM is the other question, and
+                    // `dem_residual` answers it.
                     if (st.h - st.reference).abs() > g.deviation_m + 1e-9 {
                         floating += 1;
                     }
@@ -176,7 +173,7 @@ pub fn check(profiles: &Profiles) -> Summary {
         .with_share("decks", deck, bridge)
         .with_share("bores", bore, tunnel)
         .with_share("degraded", degraded, spans)
-        .with_residual(crate::step::residual_of(profiles))
+        .with_residual(solved.residual())
 }
 
 /// One connector as the summary reads it: the heights the ways put there.
