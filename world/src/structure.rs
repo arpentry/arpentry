@@ -98,6 +98,9 @@ struct Span {
     /// only it is a portal.
     open_ends: [bool; 2],
     stations: Vec<Station>,
+    /// The profile the stations were taken from and their range in it,
+    /// abutments included: `None` for a fitted span, which has none.
+    solved: Option<(usize, (usize, usize))>,
     /// Fitted here rather than solved in the profile step: a draped class.
     fitted: bool,
     /// Carried on a road's own deck: paved, but no structure of its own.
@@ -223,7 +226,8 @@ pub fn run(
     let mut spans: Vec<Span> = profiles
         .profiles
         .iter()
-        .flat_map(|p| {
+        .enumerate()
+        .flat_map(|(pi, p)| {
             runs_of(p).into_iter().map(move |(k0, k1, kind, open_ends)| {
                 // The span the run's first station of its own lies in.
                 let own = p.stations[(k0 + 1).min(k1)].s;
@@ -240,6 +244,7 @@ pub fn run(
                     a1,
                     open_ends,
                     stations: p.stations[k0..=k1].to_vec(),
+                    solved: Some((pi, (k0, k1))),
                     fitted: false,
                     carried: false,
                 }
@@ -340,6 +345,9 @@ pub fn run(
     let mut foot: std::collections::BTreeMap<(usize, usize), Shapes> = std::collections::BTreeMap::new();
     // The bores, kept apart: their roadway is this step's.
     let mut bores: std::collections::BTreeMap<(usize, usize), Shapes> = std::collections::BTreeMap::new();
+    // And the spans each group's floor was laid along, whose own profiles
+    // are all that may lift it.
+    let mut floors: std::collections::BTreeMap<(usize, usize), Vec<usize>> = std::collections::BTreeMap::new();
     let mut stats = Stats { spans: spans.len(), clear: f64::INFINITY, cover: f64::INFINITY, ..Stats::default() };
     for (i, span) in spans.iter().enumerate() {
         stats.fitted += span.fitted as usize;
@@ -375,10 +383,14 @@ pub fn run(
             let n = span.stations.len();
             let joint = |p: Pt| span_ends.get(&(fam as usize, connector(p))).copied().unwrap_or(0) > 1;
             let caps = [joint(span.stations[0].p), joint(span.stations[n - 1].p)];
-            let into = if matches!(span.mapped, Kind::Tunnel(_)) { &mut bores } else { &mut foot };
-            into.entry((fam as usize, root(&mut parent, i)))
-                .or_default()
-                .extend(poly::buffer_line_capped(&axis, 2.0 * span.half_w(), caps));
+            let group = (fam as usize, root(&mut parent, i));
+            let shape = poly::buffer_line_capped(&axis, 2.0 * span.half_w(), caps);
+            if matches!(span.mapped, Kind::Tunnel(_)) {
+                bores.entry(group).or_default().extend(shape);
+                floors.entry(group).or_default().push(i);
+            } else {
+                foot.entry(group).or_default().extend(shape);
+            }
         }
         for st in [&span.stations[0], &span.stations[span.stations.len() - 1]] {
             if let Some(h) = ends.get(&connector(st.p)) {
@@ -626,18 +638,34 @@ pub fn run(
             stats.span_m2 += m2;
         }
     }
-    // The bores' roadway, meshed here and lifted by the deck runs'
-    // field.
-    for ((fam, _group), parts) in &bores {
+    // The bores' roadway, meshed here and lifted by **its own group's
+    // field**, for the same reason: a field of every structure run in the
+    // world answers a floor point with whichever axis is nearest, and
+    // wherever another way's structure passes within a floor's footprint
+    // — the railway a road dips under, a deck climbing over the ridge the
+    // bore runs through, the second track — that is not the floor's own.
+    // At site `gap-roadway-1` it lifted a floor 30.3 m to a crossing
+    // motorway's deck; on the loop box it was ~23 400 m² of fin. A group's
+    // spans share their connectors, so one field over them still blends a
+    // junction inside a tunnel.
+    for (group, parts) in &bores {
         let region = poly::union_all(parts);
         if region.is_empty() {
             continue;
         }
-        let height = |p: Pt| decks.at(p).map_or_else(|| height_at(terrain, p[0], p[1]), |f| f.h);
+        let fam = group.0;
+        let mut ranges: std::collections::BTreeMap<usize, Vec<(usize, usize)>> = std::collections::BTreeMap::new();
+        for &i in floors.get(group).into_iter().flatten() {
+            if let Some((p, range)) = spans[i].solved {
+                ranges.entry(p).or_default().push(range);
+            }
+        }
+        let own = Field::of_stations(ranges.into_iter().map(|(p, r)| (&profiles.profiles[p], r)));
+        let height = |p: Pt| own.at(p).map_or_else(|| height_at(terrain, p[0], p[1]), |f| f.h);
         let (tri, ms) = crate::triangulate::triangulate(&region, &terrain.grid, &height);
         stats.span_lost_m2 += ms.lost_m2;
         stats.span_lossy += ms.failed + ms.lossy;
-        let rail = *fam == Family::Rail as usize;
+        let rail = fam == Family::Rail as usize;
         let bed = if rail { &mut s.track } else { &mut s.roadway };
         bed.append(tri);
         let m2 = poly::area(&region);
@@ -724,6 +752,7 @@ fn fit(w: &crate::world::Polyline2, terrain: &Terrain, decks: &Field) -> Span {
             a1,
             open_ends: [true, true],
             stations,
+            solved: None,
             fitted: true,
             carried,
         };
@@ -742,6 +771,7 @@ fn fit(w: &crate::world::Polyline2, terrain: &Terrain, decks: &Field) -> Span {
         a1: len,
         open_ends: [true, true],
         stations,
+        solved: None,
         fitted: true,
         carried,
     }
@@ -1365,6 +1395,77 @@ mod tests {
             let (_, s) = world("ridge?height=40&width=120", &format!("net:straight?len=400&span=0.3,0.7&kind=tunnel&class={class}"));
             assert_eq!(s.num("bores"), 1.0, "{class}: {s}");
             assert_eq!(s.num("covered"), 0.0, "{class}: the terrain lies on the road at a portal: {s}");
+        }
+    }
+
+    /// Every vertex of the bores' floors — the roadway and the track —
+    /// with what the tunnels passing under it say about it: for each tunnel
+    /// span whose axis lies within its half-width of the vertex in plan, the
+    /// solved height and the arc at the nearest point of the axis, and the
+    /// span itself. Two tunnels may cross, and there a floor vertex lies over
+    /// both; what it may not do is stand at a height no tunnel under it has.
+    fn floor_over_tunnels(w: &World) -> Vec<([f64; 3], Vec<(f64, f64, (f64, f64))>)> {
+        let profiles = &w.partition.as_ref().expect("the partition step ran").profiles.profiles;
+        let st = structure(w);
+        let mut out = Vec::new();
+        for q in st.roadway.positions.iter().chain(&st.track.positions) {
+            let mut under = Vec::new();
+            for p in profiles {
+                let reach = half_width_m(&p.class, p.width_m) + 0.01;
+                for sp in p.spans.iter().filter(|sp| matches!(sp.kind, Kind::Tunnel(_))) {
+                    // The tunnel's stations and one past each end, so a
+                    // point over the abutment finds the chord it hangs on.
+                    let k0 = p.stations.iter().position(|x| x.s >= sp.a0).unwrap_or(0).saturating_sub(1);
+                    let k1 = p.stations.iter().rposition(|x| x.s <= sp.a1).map_or(0, |k| (k + 1).min(p.stations.len() - 1));
+                    let mut best: Option<(f64, f64, f64)> = None;
+                    for win in p.stations[k0..=k1].windows(2) {
+                        let (a, b) = (win[0].p, win[1].p);
+                        let d = [b[0] - a[0], b[1] - a[1]];
+                        let len2 = d[0] * d[0] + d[1] * d[1];
+                        let t = if len2 > 0.0 {
+                            (((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        let dist = (q[0] - a[0] - d[0] * t).hypot(q[1] - a[1] - d[1] * t);
+                        if dist <= reach && best.is_none_or(|b| dist < b.0) {
+                            best = Some((dist, win[0].h + (win[1].h - win[0].h) * t, win[0].s + (win[1].s - win[0].s) * t));
+                        }
+                    }
+                    if let Some((_, h, s)) = best {
+                        under.push((h, s, (sp.a0, sp.a1)));
+                    }
+                }
+            }
+            out.push((*q, under));
+        }
+        out
+    }
+
+    /// A floor vertex against the tunnels under it.
+    type Over = ([f64; 3], Vec<(f64, f64, (f64, f64))>);
+
+    /// **A bore's floor stands on its own profile, whatever else is near.**
+    /// The floor used to be lifted by one field of every structure run in
+    /// the world, so wherever another way's structure came within a floor's
+    /// footprint — a railway the road dips under, a deck climbing over the
+    /// ridge the bore runs through, a second track — the floor took *its*
+    /// height at the points nearer to it: a fin of six metres under a
+    /// flat-ground rail crossing, twenty-seven metres at the ridge.
+    #[test]
+    fn a_bores_floor_stands_on_its_own_profile() {
+        for (ground, net) in [
+            ("flat", "net:overpass?len=201&leg=standard_gauge"),
+            ("ridge?height=40&width=120", "net:underpass?class=motorway"),
+            ("ridge?height=40&width=120", "net:underpass?class=motorway&leg=standard_gauge"),
+            ("ridge?height=40&width=120", "net:underpass?class=standard_gauge&leg=narrow_gauge"),
+        ] {
+            let (w, s) = world(ground, net);
+            let floor = floor_over_tunnels(&w);
+            assert!(!floor.is_empty(), "{ground} {net}: no floor: {s}");
+            let off = |(q, under): &Over| under.iter().map(|(h, _, _)| (q[2] - h).abs()).fold(f64::INFINITY, f64::min);
+            let worst = floor.iter().map(off).fold(0.0, f64::max);
+            assert!(worst < 0.01, "{ground} {net}: a floor vertex stands {worst:.2} m off every tunnel under it: {s}");
         }
     }
 
