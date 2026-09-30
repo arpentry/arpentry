@@ -23,7 +23,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::line;
-use crate::copies::{Copies, Fields, Key, Part, Rule, Surface, NONE};
+use crate::copies::{self, Copies, Fields, Key, Part, Rule, Surface};
 use crate::ground::Ground;
 use crate::lattice::height_at;
 use crate::poly::{self, Pt};
@@ -187,10 +187,9 @@ fn room_of<'a>(
     }
 }
 
-/// **A pavement no road answers for, or that drapes past one, is passive**:
-/// it takes the engineered ground, and pins nothing.
+/// A side of an edge that is paved, and passive ([`crate::copies::passive`]).
 fn passive(k: Option<Key>) -> bool {
-    matches!(k, Some((Surface::Near | Surface::Far, rule)) if rule.drape || rule.axis == NONE)
+    k.is_some_and(copies::passive)
 }
 
 /// Benches the ground to the lifted room, and regrades the passive
