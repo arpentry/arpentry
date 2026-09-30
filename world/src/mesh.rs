@@ -36,6 +36,7 @@ pub fn run(terrain: &Terrain, arrangement: &Arrangement) -> (Mesh, Summary) {
         .with("slivers", stats.slivers)
         .with("degenerate", stats.degenerate)
         .with("centred", stats.centred)
+        .with("unmerged", stats.unmerged)
         .with("welded", stats.welded)
         .with("joined", stats.joined)
         .with("junctions", stats.junctions)

@@ -2,14 +2,17 @@
 //!
 //! Every face of the arrangement — the paving, the ground, and the decks
 //! over them — is triangulated **conforming to the terrain lattice** in one
-//! pass: each face is ear-clipped, and each ear is then cut by the lattice's
-//! three line families (the grid's columns, its rows, and the SW→NE
-//! diagonals of its cells) into convex pieces, so that every triangle
-//! written lies inside one triangle of the terrain. A vertex at
-//! [`crate::lattice::height_at`] then puts the whole triangle on the ground to the ulp — the
-//! `drape` step's guarantee for lines, for areas. No profile is applied here:
-//! the `lift` step moves the paving off the ground and the `earthwork` step
-//! benches the ground.
+//! pass, and **cut first, triangulated after** ([`cut_first`]): the face's
+//! part in each terrain triangle — bounded by the lattice's three line
+//! families (the grid's columns, its rows, and the SW→NE diagonals of its
+//! cells) and by the face's own rings — is found, and only then
+//! triangulated, inside that one terrain triangle. So every triangle written
+//! lies inside one triangle of the terrain, and none has an edge drawn across
+//! a lattice line near a lattice vertex, which is where the needles came
+//! from. A vertex at [`crate::lattice::height_at`] then puts the whole
+//! triangle on the ground to the ulp — the `drape` step's guarantee for
+//! lines, for areas. No profile is applied here: the `lift` step moves the
+//! paving off the ground and the `earthwork` step benches the ground.
 //!
 //! **One vertex per position, and no crack.** Vertices are welded by exact
 //! position across every face, so two faces that share an edge share its
@@ -25,11 +28,15 @@
 //! A cut point on an edge two ears share is computed from the edge's
 //! endpoints in one canonical order, so both ears get the same point bit for
 //! bit. A sliver under `SLIVER_M2` is kept and counted — dropping it would
-//! open the crack its long edge spans.
+//! open the crack its long edge spans. What slivers are left are the rings'
+//! own: a ring vertex or a ring edge within microns of a lattice line or a
+//! lattice vertex, which no triangulation inside the terrain triangle can
+//! avoid.
 //!
-//! The kernel is `earcutr` (the server's dependency) for the ears and a
-//! Sutherland–Hodgman halving for the cuts; both are named in this file and
-//! nowhere else.
+//! The kernel is `earcutr` (the server's dependency) for the ears — of the
+//! face, which the cut is found through, and of each terrain triangle's
+//! part — a Sutherland–Hodgman halving for the cuts, and Lawson's flips for
+//! the shape; all are named in this file and nowhere else.
 
 use std::collections::HashMap;
 
@@ -84,7 +91,9 @@ const DEGENERATE_M2: f64 = 1e-12;
 /// cannot resolve — [`cleaned`] only ever compares a vertex with its
 /// *neighbours*, so a neck between two parts of a ring walks straight
 /// through it. Closing the neck in the ring, before the clipper, is where
-/// the fix belongs.
+/// the fix belongs. (Those are the ring's needles. The far more numerous
+/// ones the lattice cut made across the clipper's own diagonals are gone
+/// since the face is cut first: [`cut_first`].)
 pub const WELD_M: f64 = 1e-6;
 
 /// A vertex within this many lattice units of a cut line is on it: it goes
@@ -112,6 +121,9 @@ pub struct Stats {
     /// Pieces fanned from their centroid because three of their vertices
     /// in a row were collinear.
     pub centred: usize,
+    /// Terrain triangles whose pieces did not merge into an outline, and
+    /// were fanned piece by piece ([`cut_first`]).
+    pub unmerged: usize,
     /// Triangles dropped because two of their vertices welded into one.
     pub welded: usize,
     /// T-junctions closed: a triangle edge split at a vertex that lay on it
@@ -168,28 +180,24 @@ pub fn tagged(
         for (shape, ears) in read(shape, &mut stats) {
             let want = poly::area(std::slice::from_ref(&shape));
             let mut got = 0.0;
-            for ear in ears {
-                for piece in split(ear.to_vec(), grid) {
-                    for t in fan(&piece, &mut stats) {
-                        let a = tri_area(t);
-                        if a < SLIVER_M2 {
-                            stats.slivers += 1;
-                        }
-                        got += a;
-                        let ids = [vertex(t[0], &mut tri), vertex(t[1], &mut tri), vertex(t[2], &mut tri)];
-                        if ids[0] == ids[1] || ids[1] == ids[2] || ids[0] == ids[2] {
-                            stats.welded += 1;
-                            continue;
-                        }
-                        tri.indices.extend_from_slice(&ids);
-                        // The centroid's height on the triangle's plane is
-                        // the vertex mean, exactly; a plane solve there is
-                        // ill-conditioned on a sliver.
-                        let c = [(t[0][0] + t[1][0] + t[2][0]) / 3.0, (t[0][1] + t[1][1] + t[2][1]) / 3.0];
-                        let z = ids.iter().map(|&i| tri.positions[i as usize][2]).sum::<f64>() / 3.0;
-                        stats.off_ground = stats.off_ground.max((z - height(c)).abs());
-                    }
+            for t in cut_first(&shape, &ears, grid, &mut stats) {
+                let a = tri_area(t);
+                if a < SLIVER_M2 {
+                    stats.slivers += 1;
                 }
+                got += a;
+                let ids = [vertex(t[0], &mut tri), vertex(t[1], &mut tri), vertex(t[2], &mut tri)];
+                if ids[0] == ids[1] || ids[1] == ids[2] || ids[0] == ids[2] {
+                    stats.welded += 1;
+                    continue;
+                }
+                tri.indices.extend_from_slice(&ids);
+                // The centroid's height on the triangle's plane is the vertex
+                // mean, exactly; a plane solve there is ill-conditioned on a
+                // sliver.
+                let c = [(t[0][0] + t[1][0] + t[2][0]) / 3.0, (t[0][1] + t[1][1] + t[2][1]) / 3.0];
+                let z = ids.iter().map(|&i| tri.positions[i as usize][2]).sum::<f64>() / 3.0;
+                stats.off_ground = stats.off_ground.max((z - height(c)).abs());
             }
             stats.lost_m2 += (got - want).abs();
             of_region.resize(tri.indices.len() / 3, region as u32);
@@ -455,6 +463,409 @@ fn readable(shape: &poly::Shape, clean: bool) -> Option<poly::Shape> {
         .map(|(_, r)| r)
         .collect();
     (!out.is_empty() && poly::area(std::slice::from_ref(&out)) > 0.0).then_some(out)
+}
+
+/// One terrain triangle, named by the integer band of each of the lattice's
+/// three line families it lies in: its column, its row, and its diagonal
+/// band (which of the cell's two halves).
+type Cell = [i64; 3];
+
+/// A vertex's identity: its position rounded to [`WELD_M`], as the mesh
+/// welds it.
+type Key = [i64; 2];
+
+fn weld_key(p: Pt) -> Key {
+    [(p[0] / WELD_M).round() as i64, (p[1] / WELD_M).round() as i64]
+}
+
+/// The lattice's three line families at `p`, in lattice units, exactly as
+/// [`split`] cuts by them: the column coordinate, the row coordinate, and
+/// their difference, whose integer levels are the cell diagonals.
+fn families(p: Pt, grid: &Grid) -> [f64; 3] {
+    let u = (p[0] - grid.x0) / grid.dx;
+    let v = (p[1] - grid.y0) / grid.dy;
+    [u, v, u - v]
+}
+
+/// The terrain triangle a piece of [`split`] lies in. Read from the piece's
+/// highest value of each family rather than from its centroid, so a piece a
+/// hair wide along a lattice line is not handed to the triangle across it.
+fn cell_of(piece: &[Pt], grid: &Grid) -> Cell {
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for &p in piece {
+        let f = families(p, grid);
+        for i in 0..3 {
+            hi[i] = hi[i].max(f[i]);
+        }
+    }
+    hi.map(|h| (h - ON_LINE).ceil() as i64 - 1)
+}
+
+/// For each family, the lattice line `p` lies on, if any.
+fn on_lines(p: Pt, grid: &Grid) -> [Option<i64>; 3] {
+    families(p, grid).map(|f| {
+        let k = f.round();
+        ((f - k).abs() < ON_LINE).then_some(k as i64)
+    })
+}
+
+/// A region's triangles, **cut first and triangulated after**: every
+/// triangle lies inside one terrain triangle, and none has an edge the ear
+/// clipper drew across a lattice line.
+///
+/// **Why not the ears themselves.** The clipper's ears are cut to the
+/// lattice ([`split`]) and each convex piece fanned; but an ear's diagonal
+/// crosses the lattice wherever it happens to, and where it passes within
+/// microns of a lattice vertex the column, the row and the diagonal cut it
+/// within microns of each other — a needle a millimetre wide and a metre
+/// long, whose corners are none of them the region's. On the loop box 52 %
+/// of the mesh's slivers were those, and a needle is what the lift's curved
+/// field tips on end: 20 % of the carriageway's triangles had an altitude
+/// under a centimetre, and they were most of the census's fins. Cut first,
+/// 2.9 % do, nearly all with a corner of the region's own, and the loop box
+/// reads 5 227 slivers against 71 157 and 430 fins against 4 463.
+///
+/// So the pieces are only the way to the region's part in each terrain
+/// triangle: the pieces one terrain triangle holds are merged back into
+/// their outline ([`outline`]), every point where an ear's diagonal crossed
+/// the lattice is taken off it ([`mesh_cell`]) — it lies inside the region,
+/// on a straight run of lattice line, and nothing needs it — and what is
+/// left, the region's own corners, its edges' crossings with the lattice and
+/// the lattice vertices inside it, is triangulated and flipped towards
+/// Delaunay inside that one triangle. A terrain triangle the region covers
+/// whole comes back as itself.
+///
+/// **A cell that cannot be read keeps its pieces**: pieces that do not
+/// close into rings (a pinch, an overlap the clipper left), or rings the
+/// clipper misreads, are fanned as before (`unmerged`), and every vertex
+/// they carry is kept by the cells around them too, so the two sides of a
+/// lattice line keep agreeing on its vertices.
+fn cut_first(shape: &poly::Shape, ears: &[[Pt; 3]], grid: &Grid, stats: &mut Stats) -> Vec<[Pt; 3]> {
+    let mut cells: std::collections::BTreeMap<Cell, Vec<Vec<Pt>>> = Default::default();
+    for ear in ears {
+        for piece in split(ear.to_vec(), grid) {
+            if local_area(&piece) < DEGENERATE_M2 {
+                stats.degenerate += 1;
+                continue;
+            }
+            cells.entry(cell_of(&piece, grid)).or_default().push(piece);
+        }
+    }
+    let cells: Vec<Vec<Vec<Pt>>> = cells.into_values().collect();
+    let corners: std::collections::HashSet<Key> = shape.iter().flatten().map(|&p| weld_key(p)).collect();
+    let mut outlines: Vec<Option<Outline>> = cells.iter().map(|pieces| outline(pieces)).collect();
+    let mut pinned: std::collections::HashSet<Key> = Default::default();
+    for (pieces, o) in cells.iter().zip(&outlines) {
+        if o.is_none() {
+            pinned.extend(pieces.iter().flatten().map(|&p| weld_key(p)));
+        }
+    }
+    // A cell that fails once its points are dropped keeps its pieces, so its
+    // points are pinned and every cell that carries one is asked again.
+    let mut meshed: Vec<Option<Vec<[Pt; 3]>>> = vec![None; cells.len()];
+    let mut ask: Vec<usize> = (0..cells.len()).filter(|&i| outlines[i].is_some()).collect();
+    while !ask.is_empty() {
+        let mut fresh: std::collections::HashSet<Key> = Default::default();
+        for &i in &ask {
+            let Some(o) = outlines[i].as_ref() else {
+                continue;
+            };
+            meshed[i] = mesh_cell(o, &corners, &pinned, grid);
+            if meshed[i].is_none() {
+                outlines[i] = None;
+                for p in cells[i].iter().flatten() {
+                    if pinned.insert(weld_key(*p)) {
+                        fresh.insert(weld_key(*p));
+                    }
+                }
+            }
+        }
+        if fresh.is_empty() {
+            break;
+        }
+        ask = (0..cells.len())
+            .filter(|&i| outlines[i].as_ref().is_some_and(|o| o.pts.iter().any(|&p| fresh.contains(&weld_key(p)))))
+            .collect();
+    }
+    let mut out = Vec::new();
+    for (pieces, m) in cells.iter().zip(meshed) {
+        match m {
+            Some(ts) => out.extend(ts),
+            None => {
+                stats.unmerged += 1;
+                for piece in pieces {
+                    out.extend(fan(piece, stats));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The region's part in one terrain triangle, as closed rings over its own
+/// vertex table, with the area of the pieces it was merged from.
+struct Outline {
+    pts: Vec<Pt>,
+    rings: Vec<Vec<usize>>,
+    area: f64,
+}
+
+/// A point within this many metres of an edge, between its ends, is on it:
+/// the pieces of one cell meet along an edge one of them may carry a vertex
+/// of the other on — a degenerate piece dropped, or a T-junction the
+/// clipper's rounding left. Far below the weld, so it joins only what the
+/// arithmetic split.
+const ON_EDGE_M: f64 = 1e-9;
+
+/// The pieces' outline: their edges, each met by its reverse cancelled, and
+/// what is left chained into rings. `None` if what is left does not chain —
+/// a vertex two rings pass through, or an edge two pieces both claim.
+fn outline(pieces: &[Vec<Pt>]) -> Option<Outline> {
+    let mut pts: Vec<Pt> = Vec::new();
+    let mut keys: Vec<Key> = Vec::new();
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    for piece in pieces {
+        let ids: Vec<usize> = piece
+            .iter()
+            .map(|&p| {
+                let k = weld_key(p);
+                keys.iter().position(|&q| q == k).unwrap_or_else(|| {
+                    pts.push(p);
+                    keys.push(k);
+                    pts.len() - 1
+                })
+            })
+            .collect();
+        for k in 0..ids.len() {
+            let (a, b) = (ids[k], ids[(k + 1) % ids.len()]);
+            if a != b {
+                edges.push((a, b));
+            }
+        }
+    }
+    let area = pieces.iter().map(|p| local_area(p)).sum();
+    let rings = chain(&edges, pts.len()).or_else(|| chain(&split_at_vertices(&edges, &pts), pts.len()))?;
+    Some(Outline { pts, rings, area })
+}
+
+/// Every edge split at every vertex lying on it.
+fn split_at_vertices(edges: &[(usize, usize)], pts: &[Pt]) -> Vec<(usize, usize)> {
+    let mut out = Vec::with_capacity(edges.len());
+    for &(a, b) in edges {
+        let (p, q) = (pts[a], pts[b]);
+        let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
+        let len2 = dx * dx + dy * dy;
+        let mut on: Vec<(f64, usize)> = (0..pts.len())
+            .filter(|&v| v != a && v != b)
+            .filter_map(|v| {
+                let r = pts[v];
+                let s = ((r[0] - p[0]) * dx + (r[1] - p[1]) * dy) / len2;
+                (s > 0.0 && s < 1.0 && line::segment_distance(p, q, r) < ON_EDGE_M).then_some((s, v))
+            })
+            .collect();
+        on.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let mut from = a;
+        for (_, v) in on {
+            out.push((from, v));
+            from = v;
+        }
+        out.push((from, b));
+    }
+    out
+}
+
+/// Directed edges, each cancelled against its reverse, chained into rings;
+/// `None` unless every vertex left has one edge in and one out.
+fn chain(edges: &[(usize, usize)], n: usize) -> Option<Vec<Vec<usize>>> {
+    let mut sorted: Vec<(usize, usize, i32)> =
+        edges.iter().map(|&(a, b)| if a < b { (a, b, 1) } else { (b, a, -1) }).collect();
+    sorted.sort_unstable();
+    let mut next: Vec<usize> = vec![usize::MAX; n];
+    let mut into: Vec<bool> = vec![false; n];
+    for run in sorted.chunk_by(|x, y| x.0 == y.0 && x.1 == y.1) {
+        let net: i32 = run.iter().map(|e| e.2).sum();
+        let (a, b) = match net {
+            0 => continue,
+            1 => (run[0].0, run[0].1),
+            -1 => (run[0].1, run[0].0),
+            _ => return None,
+        };
+        if next[a] != usize::MAX || into[b] {
+            return None;
+        }
+        next[a] = b;
+        into[b] = true;
+    }
+    let mut seen = vec![false; n];
+    let mut rings = Vec::new();
+    for start in 0..n {
+        if next[start] == usize::MAX || seen[start] {
+            continue;
+        }
+        let mut ring = Vec::new();
+        let mut v = start;
+        while !seen[v] {
+            seen[v] = true;
+            ring.push(v);
+            v = next[v];
+            if v == usize::MAX {
+                return None;
+            }
+        }
+        if v != start || ring.len() < 3 {
+            return None;
+        }
+        rings.push(ring);
+    }
+    (!rings.is_empty()).then_some(rings)
+}
+
+/// One cell's outline as triangles, or `None` if it cannot be read.
+///
+/// A vertex goes if it is not a corner of the region, not pinned, lies on
+/// exactly one lattice line — so not a lattice vertex — and both its
+/// neighbours lie on that line too: a point where an ear's diagonal crossed
+/// the lattice. The same point is taken off the cell across the line, whose
+/// outline runs straight through it as well. What is left is ear-clipped,
+/// checked against the pieces' area, and flipped towards Delaunay.
+fn mesh_cell(
+    o: &Outline,
+    corners: &std::collections::HashSet<Key>,
+    pinned: &std::collections::HashSet<Key>,
+    grid: &Grid,
+) -> Option<Vec<[Pt; 3]>> {
+    let lines: Vec<[Option<i64>; 3]> = o.pts.iter().map(|&p| on_lines(p, grid)).collect();
+    let goes = |prev: usize, v: usize, next: usize| {
+        let key = weld_key(o.pts[v]);
+        if corners.contains(&key) || pinned.contains(&key) {
+            return false;
+        }
+        let on: Vec<usize> = (0..3).filter(|&i| lines[v][i].is_some()).collect();
+        on.len() == 1 && {
+            let i = on[0];
+            lines[prev][i] == lines[v][i] && lines[next][i] == lines[v][i]
+        }
+    };
+    let mut rings: Vec<Vec<Pt>> = Vec::with_capacity(o.rings.len());
+    for ring in &o.rings {
+        let n = ring.len();
+        let kept: Vec<Pt> = (0..n)
+            .filter(|&i| !goes(ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]))
+            .map(|i| o.pts[ring[i]])
+            .collect();
+        if kept.len() < 3 || local_area(&kept).abs() < DEGENERATE_M2 {
+            return None;
+        }
+        rings.push(kept);
+    }
+    // The outer rings wind counter-clockwise, the holes clockwise; each hole
+    // goes with the outer ring around it.
+    let (outers, holes): (Vec<Vec<Pt>>, Vec<Vec<Pt>>) = rings.into_iter().partition(|r| local_area(r) > 0.0);
+    let mut groups: Vec<poly::Shape> = outers.into_iter().map(|r| vec![r]).collect();
+    for hole in holes {
+        let around: Vec<usize> = (0..groups.len()).filter(|&g| inside_ring(&groups[g][0], hole[0])).collect();
+        match around.as_slice() {
+            [g] => groups[*g].push(hole),
+            _ if groups.len() == 1 => groups[0].push(hole),
+            _ => return None,
+        }
+    }
+    let mut out: Vec<[Pt; 3]> = Vec::new();
+    for group in &groups {
+        if group.len() == 1 && group[0].len() == 3 {
+            out.push([group[0][0], group[0][1], group[0][2]]);
+            continue;
+        }
+        let mut ts = ear_clip(group)?;
+        delaunay(&mut ts);
+        out.extend(ts);
+    }
+    let got: f64 = out.iter().map(|t| tri_area(*t)).sum();
+    ((got - o.area).abs() <= CELL_TOLERANCE_M2 && out.iter().all(|t| tri_area(*t) >= 0.0)).then_some(out)
+}
+
+/// How far, in square metres, one cell's triangles may disagree with the
+/// pieces they replace: a point dropped within [`ON_LINE`] of its line moves
+/// the outline by a few nanometres over a few metres, and the areas are
+/// read relative to a corner ([`local_area`]), so a cell read right agrees
+/// to 1e-10 m² and one misread loses a triangle.
+const CELL_TOLERANCE_M2: f64 = 1e-8;
+
+/// A ring's signed area, summed as triangles from its first vertex rather
+/// than by the shoelace over absolute coordinates, which at a few kilometres
+/// from the origin rounds by 1e-9 m² a vertex — far above the cell's own
+/// disagreements, and above [`DEGENERATE_M2`].
+fn local_area(ring: &[Pt]) -> f64 {
+    (1..ring.len().saturating_sub(1)).map(|k| tri_area([ring[0], ring[k], ring[k + 1]])).sum()
+}
+
+/// Whether `p` lies inside `ring`, by the crossing count.
+fn inside_ring(ring: &[Pt], p: Pt) -> bool {
+    let mut inside = false;
+    let n = ring.len();
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+/// How much, in radians, a flip must raise the smaller of two triangles'
+/// least angles before it is made: the rounding of an angle, so a flip and
+/// its reverse can never both be taken.
+const FLIP_GAIN: f64 = 1e-9;
+
+/// `ts`, counter-clockwise triangles of one polygon, with every interior
+/// edge flipped while that raises the least angle of the two triangles
+/// beside it (Lawson's flips, which end at the constrained Delaunay
+/// triangulation). A flip replaces one diagonal of a convex quad with the
+/// other, so it stays inside the quad and the polygon's boundary is never
+/// touched. The clipper leaves the thinnest triangle it can; this leaves
+/// the fattest.
+fn delaunay(ts: &mut [[Pt; 3]]) {
+    if ts.len() < 2 {
+        return;
+    }
+    let least = |t: [Pt; 3]| {
+        (0..3)
+            .map(|k| {
+                let (p, q, r) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+                let (u, v) = ([q[0] - p[0], q[1] - p[1]], [r[0] - p[0], r[1] - p[1]]);
+                (u[0] * v[1] - u[1] * v[0]).abs().atan2(u[0] * v[0] + u[1] * v[1])
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    // Enough for any polygon a terrain triangle holds; each flip raises the
+    // sorted angle vector, so the loop ends long before.
+    for _ in 0..4 * ts.len() * ts.len() {
+        let mut flipped = false;
+        for i in 0..ts.len() {
+            for k in 0..3 {
+                let t = ts[i];
+                let (a, b, c) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+                let Some((j, m)) =
+                    (0..ts.len()).filter(|&j| j != i).find_map(|j| (0..3).find(|&m| ts[j][m] == b && ts[j][(m + 1) % 3] == a).map(|m| (j, m)))
+                else {
+                    continue;
+                };
+                let d = ts[j][(m + 2) % 3];
+                let (u, w) = ([a, d, c], [d, b, c]);
+                if tri_area(u) <= 0.0 || tri_area(w) <= 0.0 {
+                    continue;
+                }
+                if least(u).min(least(w)) > least(t).min(least(ts[j])) + FLIP_GAIN {
+                    ts[i] = u;
+                    ts[j] = w;
+                    flipped = true;
+                }
+            }
+        }
+        if !flipped {
+            return;
+        }
+    }
 }
 
 /// The triangles of one convex piece. A fan from its first vertex, unless
@@ -853,6 +1264,44 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    /// **No needle the region does not force.** A quad on a 1 m lattice
+    /// whose corners and edges keep a few centimetres clear of every
+    /// lattice vertex, but either of whose diagonals passes within two
+    /// microns of one: at (2, 2) for A–C, at (3, 1) for B–D. Cut as the ear
+    /// clipper's ears, the column, the row and the diagonal through that
+    /// vertex cut the diagonal within microns of each other, and the pieces
+    /// between are needles a micron wide (9.6e-7 m here). Cut first, the
+    /// diagonal is never drawn, and nothing is thinner than the quad's own
+    /// geometry makes it.
+    #[test]
+    fn a_diagonal_near_a_lattice_vertex_leaves_no_needle() {
+        let grid = Grid::fit(&Rect { x0: 0.0, y0: 0.0, x1: 5.0, y1: 5.0 }, 1.0, usize::MAX);
+        let quad = vec![[0.4, 0.7], [3.440003, 0.54], [3.92, 3.560003], [0.8, 3.3]];
+        let (tri, stats) = triangulate(&vec![vec![quad.clone()]], &grid, &|_| 0.0);
+        let corners = |t: &[u32]| [t[0], t[1], t[2]].map(|i| [tri.positions[i as usize][0], tri.positions[i as usize][1]]);
+        let altitude = |c: [Pt; 3]| {
+            let long = (0..3).map(|k| (c[(k + 1) % 3][0] - c[k][0]).hypot(c[(k + 1) % 3][1] - c[k][1])).fold(0.0, f64::max);
+            2.0 * tri_area(c).abs() / long
+        };
+        let thinnest = tri.indices.chunks_exact(3).map(|t| altitude(corners(t))).fold(f64::INFINITY, f64::min);
+        assert!(thinnest > 1e-3, "a needle {thinnest:.1e} m wide: {stats:?}");
+        // Still the quad, and still on the lattice: every triangle in one
+        // terrain triangle, and together they are the quad's area.
+        let area: f64 = tri.indices.chunks_exact(3).map(|t| tri_area(corners(t))).sum();
+        assert!((area - poly::ring_area(&quad)).abs() < 1e-9, "{area}");
+        for t in tri.indices.chunks_exact(3) {
+            let c = corners(t);
+            let cell = cell_of(&c, &grid);
+            for p in c {
+                let f = families(p, &grid);
+                for i in 0..3 {
+                    assert!(f[i] >= cell[i] as f64 - 1e-9 && f[i] <= cell[i] as f64 + 1.0 + 1e-9, "{c:?} leaves its terrain triangle");
+                }
+            }
+        }
+        assert_eq!(stats.unmerged, 0, "{stats:?}");
     }
 
     #[test]

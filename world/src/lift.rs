@@ -275,13 +275,13 @@ mod tests {
         // that drape take two rules, and the edge between them is split with
         // a face on it rather than stretched across — so it is a wall and
         // not a step.
-        // One edge is left, and it is a centimetre wide: where the band's
-        // face meets its drape *on the outline*, two edges pin one vertex
-        // differently and the ground has one copy there, so the earthwork is
-        // two-valued at that point. Continuing the split into the ground
-        // would remove it; it is counted, and bounded.
-        assert!(s.num("step") <= 1.0 && s.num("worst") < 0.6, "{s}");
-        assert!(s.num("split_m2") > 0.0 && s.num("kerb_max") < 4.0, "{s}");
+        // Meshed cut-first, the band has no needle across the place where
+        // its face meets its drape on the outline, and the two meet within a
+        // kerb's rise and weld: no edge steps and none is split. (Meshed from
+        // the clipper's ears, a needle there read one step of 0.55 m, a
+        // square metre of split and a 0.68 m face.)
+        assert!(s.num("step") == 0.0 && s.num("worst") == 0.0, "{s}");
+        assert!(s.num("kerb_max") < 4.0, "{s}");
         // The wall stands where the hill outruns the face, not at the kerb:
         // every face taller than a kerb is out beyond the plateau.
         for q in b.kerb.positions.chunks_exact(4) {
@@ -351,11 +351,33 @@ mod tests {
         assert_eq!(s.num("step"), 0.0, "{s}");
         let b = bench(&w);
         let t = w.terrain.as_ref().expect("the terrain step ran");
-        let centre: Vec<f64> =
-            b.carriageway.positions.iter().filter(|p| p[0].hypot(p[1]) < 1.0).map(|p| p[2]).collect();
-        assert!(!centre.is_empty());
         let top = crate::lattice::height_at(t, 0.0, 0.0);
-        assert!(centre.iter().all(|h| (h - top).abs() < 1e-9), "the junction is not at the ground's height");
+        // The connector is no vertex of the mesh — it lies inside one terrain
+        // triangle, and the mesh has a vertex only where the paving's outline
+        // or the lattice puts one — so every copy of a vertex within a cell of
+        // it has one height, whichever leg's rule answered it,
+        let mut near: std::collections::BTreeMap<[i64; 2], Vec<f64>> = Default::default();
+        for p in b.carriageway.positions.iter().filter(|p| p[0].hypot(p[1]) < 5.0) {
+            near.entry([(p[0] * 1e6).round() as i64, (p[1] * 1e6).round() as i64]).or_default().push(p[2]);
+        }
+        assert!(!near.is_empty());
+        for hs in near.values() {
+            assert!(hs.iter().all(|h| (h - hs[0]).abs() < 1e-9), "the legs disagree at a junction vertex: {hs:?}");
+        }
+        // and the drawn surface over the connector stands on the hill's top
+        // within what the profile's curve makes of half a cell (3 cm here).
+        let over: Vec<f64> = b
+            .carriageway
+            .indices
+            .chunks_exact(3)
+            .filter_map(|t| {
+                let [p, q, r] = [t[0], t[1], t[2]].map(|i| b.carriageway.positions[i as usize]);
+                let d = (q[0] - p[0]) * (r[1] - p[1]) - (r[0] - p[0]) * (q[1] - p[1]);
+                let (wq, wr) = ((-p[0] * (r[1] - p[1]) + p[1] * (r[0] - p[0])) / d, ((q[0] - p[0]) * -p[1] + (q[1] - p[1]) * p[0]) / d);
+                (d != 0.0 && wq >= 0.0 && wr >= 0.0 && wq + wr <= 1.0).then(|| p[2] + wq * (q[2] - p[2]) + wr * (r[2] - p[2]))
+            })
+            .collect();
+        assert!(!over.is_empty() && over.iter().all(|h| (h - top).abs() < 0.05), "the junction is not at the ground's height: {over:?} vs {top}");
     }
 
     /// The three steepest edges of `tri` — rise over run, and where the

@@ -62,17 +62,22 @@ mod tests {
         clean("hill?amp=20&radius=300", "net:tee", Some("house:across?rot=30"));
     }
 
-    /// Two fins of 0.23 m² in the junction's corners.
+    /// Clean since the mesher cuts to the lattice before it triangulates:
+    /// meshed from the clipper's ears it read two fins of 0.23 m² in the
+    /// junction's corners, needles the lift's blend tipped on end.
     #[test]
-    #[ignore = "fin 2"]
     fn a_crossroads_on_a_slope() {
         clean("ramp?grade=0.15&bearing=45", "net:cross", None);
     }
 
     /// Paved triangles 45° steeper than a 150 % flank, up to 13 m tall:
-    /// the ring and its legs pulled apart where the rules meet.
+    /// the ring and its legs pulled apart where the rules meet. The four
+    /// gaps are kerb faces whose two rails cross in height along a cell's
+    /// diagonal, each rail paired with the other surface's (86 fins and no
+    /// gap meshed from the clipper's ears, whose needles chopped those
+    /// edges short).
     #[test]
-    #[ignore = "fin 86"]
+    #[ignore = "fin 44, gap 4"]
     fn a_roundabout_on_a_flank() {
         clean("ramp?grade=1.5&bearing=45&radius=100000", "net:roundabout", Some("house:row?gap=2"));
     }

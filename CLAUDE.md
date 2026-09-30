@@ -1262,18 +1262,26 @@ pavement vertices where a pavement touches ballast only at a corner and the
 ground reads the ballast's outline there.
 
 The `mesh` step triangulates the carriageway and the pavement **conforming
-to the terrain lattice**: each region is ear-clipped and every ear cut by
-the lattice's columns, rows and cell diagonals, so every triangle lies in
-one terrain triangle and, with its vertices at `height_at`, on the ground
-to the ulp — the drape guarantee for areas. The bench step then moves
+to the terrain lattice**, **cut first and triangulated after**
+(`triangulate::cut_first`): a region's part in each terrain triangle is found
+— through its ear-clipped pieces, merged back per terrain triangle with the
+points where a clipper diagonal crossed the lattice taken off — and
+triangulated inside that triangle, flipped towards Delaunay. So every
+triangle lies in one terrain triangle and, with its vertices at `height_at`,
+on the ground to the ulp — the drape guarantee for areas — and no clipper
+diagonal crosses a lattice line near a lattice vertex, which is what made
+the needles the lift's curved field tipped into fins (loop box: carriageway
+triangles under 1 cm of altitude 19.8 % → 2.9 %, census `fin` 4 463 → 430).
+The bench step then moves
 them off it; on a flat ground the two stay coplanar and z-fight in any
 3D viewer, so hide the terrain to see them.
 Its summary line: `triangles`/`vertices` and the triangles per material,
 `lost_m2` (face area the triangles miss), `off_ground` (the largest height a
 triangle's centroid stands off the terrain), `washed`/`lossy` (faces the ear
 clipper misread; a washed one was read right from the kernel's union of it),
-`slivers`, `welded`, `joined` and `junctions` (the two crack repairs above),
-and `crack`, which must read 0. The rings are cleaned together at the
+`slivers`, `unmerged` (terrain triangles whose pieces did not close into an
+outline and were fanned as pieces), `welded`, `joined` and `junctions` (the
+two crack repairs above), and `crack`, which must read 0. The rings are cleaned together at the
 kernel's lattice (`COLLINEAR_M`, 0.1 mm) before clipping: the kernel leaves
 straight edges zigzagging by a few hundredths of a millimetre and spikes a
 lattice cell wide, and the clipper turns both into T-junctions. The plan view
