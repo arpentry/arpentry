@@ -27,6 +27,9 @@
 //!    primary on a slope steeper than 8 % holds 8 % while its 4 m last and
 //!    follows the hill beyond. A street has no ceiling — the ground under
 //!    it is the street — so only its curve is smoothed, inside its box.
+//!    The pins land after the box, and where one would put its segment
+//!    over the ceiling, what it moves is spread along the run instead of
+//!    standing in that one segment (`spread`).
 //! 4. **Spans.** A structure run is a straight chord between its two
 //!    **abutments**, the at-grade stations just outside it, at the heights
 //!    the at-grade solve gave them; where the run reaches a way end, its end
@@ -517,7 +520,7 @@ pub fn limit(
     if n < 2 || (!ceiling.is_finite() && radius.is_none()) {
         return h;
     }
-    for _ in 0..PASSES {
+    for pass in 0..PASSES {
         if ceiling.is_finite() {
             for i in 1..n {
                 let c = ceiling * (arc[i] - arc[i - 1]);
@@ -534,9 +537,54 @@ pub fn limit(
         for i in 0..n {
             h[i] = h[i].clamp(ground[i] - deviation, ground[i] + deviation);
         }
-        pin_ends(&mut h);
+        if pass + 1 < PASSES {
+            pin_ends(&mut h);
+        }
     }
+    spread(&mut h, arc, ceiling, pin);
     h
+}
+
+/// Lands the solve on its pins, spreading over the run what the last
+/// segment cannot carry.
+///
+/// **The pins win over the box, and the box over the ceiling**, so where
+/// the three cannot all hold the ceiling breaks — and it used to break in
+/// one place. The limiter holds the ceiling out of the first pin, spends
+/// its box, and follows the hill; the second pin then lands last, and
+/// whatever the box had spent stands in the final segment. On a 50 % flank
+/// held to 30 % in an 8 m box that is 8 m over one 4 m station: a grade of
+/// 2.5 in a track bed on a slope of one half, which is a fin, not a
+/// railway (`fin-ballast-1`: 2.83 m over the last 1.03 m of a 12.4 m way).
+///
+/// So where a pin would put its segment over the ceiling, the difference
+/// between each pin and where the solve left that end is added along the
+/// run instead, falling linearly to nothing at the other end: the run's
+/// every segment steepens by `jump / length`, which is the least any
+/// correction that lands on both pins can add to the steepest one. The box
+/// is what gives way, and only near the pin — which is where the pin had
+/// already broken it. A run whose pins land within the ceiling is pinned as
+/// it always was, to the bit.
+fn spread(h: &mut [f64], arc: &[f64], ceiling: f64, pin: (Option<f64>, Option<f64>)) {
+    let n = h.len();
+    let jump = (pin.0.map_or(0.0, |v| v - h[0]), pin.1.map_or(0.0, |v| v - h[n - 1]));
+    let length = arc[n - 1] - arc[0];
+    let over = |a: usize, b: usize, ha: f64, hb: f64| (hb - ha).abs() > ceiling * (arc[b] - arc[a]) + GRADE_EPS;
+    let breaks = ceiling.is_finite()
+        && length > 0.0
+        && (pin.0.is_some_and(|v| over(0, 1, v, h[1])) || pin.1.is_some_and(|v| over(n - 2, n - 1, h[n - 2], v)));
+    if breaks {
+        for k in 0..n {
+            let t = (arc[k] - arc[0]) / length;
+            h[k] += jump.0 * (1.0 - t) + jump.1 * t;
+        }
+    }
+    if let Some(v) = pin.0 {
+        h[0] = v;
+    }
+    if let Some(v) = pin.1 {
+        h[n - 1] = v;
+    }
 }
 
 /// Holds the profile to its class's tightest **vertical curve**.
@@ -657,23 +705,29 @@ pub(crate) mod tests {
         assert_eq!(s.num("steep"), 50.0, "{s}");
         assert_eq!(s.num("float"), 0.0, "{s}");
         // A primary holds 8 % and may leave the ground by 4 m: it leaves
-        // at its ceiling, spends its box, and follows the hill beyond.
+        // at its ceiling, spends its box, and follows the hill beyond. Its
+        // two ends are pinned to the ground 60 m apart, which no 8 % road
+        // 200 m long reaches, so the 4 m the box spent is taken back along
+        // the run ([`spread`]): 2 % on every segment, not 100 % on the last.
         let (w, s) = world("ramp?grade=0.3&bearing=90&radius=100000", "net:straight?len=200&class=primary");
         let g = grade::of("primary");
         let p = &profiles(&w)[0];
+        let share = g.deviation_m / 200.0;
         assert!(s.num("grade") > 0.0, "{s}");
         assert_eq!(s.num("float"), 0.0, "{s}");
         let (a, b) = (p.stations[0], p.stations[1]);
         assert_eq!(a.h, a.ground);
-        assert!(((b.h - a.h) / (b.s - a.s) - 0.08).abs() < 1e-9, "{a:?} {b:?}");
+        assert!(((b.h - a.h) / (b.s - a.s) - (0.08 + share)).abs() < 1e-9, "{a:?} {b:?}");
         let deepest = p.stations.iter().map(|st| (st.h - st.ground).abs()).fold(0.0, f64::max);
-        assert!((deepest - g.deviation_m).abs() < 1e-9, "{deepest}");
+        assert!(deepest > g.deviation_m * 0.75 && deepest <= g.deviation_m + 1e-9, "{deepest}");
+        let steepest = p.stations.windows(2).map(|w| (w[1].h - w[0].h) / (w[1].s - w[0].s)).fold(0.0, f64::max);
+        assert!(steepest < 0.3 + share + 1e-9, "{steepest}");
         // A motorway's box is wider: it is out of the ground by more, and
         // still never past its budget.
         let (w, s) = world("ramp?grade=0.3&bearing=90&radius=100000", "net:straight?len=200&class=motorway");
         assert_eq!(s.num("float"), 0.0, "{s}");
-        let deepest = profiles(&w)[0].stations.iter().map(|st| (st.h - st.ground).abs()).fold(0.0, f64::max);
-        assert!((deepest - grade::of("motorway").deviation_m).abs() < 1e-9, "{deepest}");
+        let wider = profiles(&w)[0].stations.iter().map(|st| (st.h - st.ground).abs()).fold(0.0, f64::max);
+        assert!(wider > deepest && wider <= grade::of("motorway").deviation_m + 1e-9, "{wider} against {deepest}");
     }
 
     /// **A road may be steep; it may not change how steep it is too fast.**
@@ -706,6 +760,37 @@ pub(crate) mod tests {
             assert!(held > ground * 4.0, "{class}: {held:.1} m against the ground's {ground:.1}");
             assert!(want > 0.0);
         }
+    }
+
+    /// **A run that cannot hold its ceiling breaks grade along its length,
+    /// not in its last segment.** A railway 100 m long on a 50 % flank, held
+    /// to 30 % inside an 8 m box and pinned to the ground at both ends,
+    /// cannot meet all three: the pins are 50 m apart and the ceiling and the
+    /// box together climb 38. The limiter holds its ceiling out of the first
+    /// pin, spends its box and follows the hill — and then the second pin
+    /// used to land last, over the box, and the whole 8 m the box had spent
+    /// stood in the final 4 m segment: a grade of 2.5, a fin in the track bed
+    /// on a slope of one half (the census's `fin-ballast-1`, 2.75 over its
+    /// last metre). Spread over the run, the same 8 m costs 0.08 of grade.
+    #[test]
+    fn an_infeasible_run_spreads_what_it_cannot_hold() {
+        let arc: Vec<f64> = (0..=25).map(|k| k as f64 * 4.0).collect();
+        let ground: Vec<f64> = arc.iter().map(|s| 400.0 + 0.5 * s).collect();
+        let pins = (Some(ground[0]), Some(ground[25]));
+        let h = limit(&ground, &arc, 0.3, 8.0, Some(500.0), pins);
+        assert_eq!((h[0], h[25]), (ground[0], ground[25]), "the pins hold");
+        let grades: Vec<f64> = h.windows(2).zip(arc.windows(2)).map(|(h, s)| (h[1] - h[0]) / (s[1] - s[0])).collect();
+        let worst = grades.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        assert!(worst < 0.5 + 8.0 / 100.0 + 1e-9, "a segment climbs {worst:.3}: {grades:.3?}");
+        // A run the three can all hold is untouched, to the bit: the same
+        // flank at a ceiling over it is the ground.
+        assert_eq!(limit(&ground, &arc, 0.6, 8.0, Some(500.0), pins), ground);
+        // And in the world: the rack railway across the street on that
+        // flank, pinned at its two ends and at the level crossing.
+        let (w, s) = world("ramp?grade=0.5&bearing=0&radius=100000", "net:level?rail=narrow_gauge");
+        let rail = profiles(&w).iter().find(|p| p.id == "rail").expect("the railway solves");
+        let worst = rail.stations.windows(2).map(|w| (w[1].h - w[0].h).abs() / (w[1].s - w[0].s)).fold(0.0, f64::max);
+        assert!(worst < 0.6, "the railway climbs {worst:.3} somewhere: {s}");
     }
 
     /// And a *draped* class holds none: a stair is a sequence of vertical
@@ -978,13 +1063,19 @@ pub(crate) mod tests {
         assert_eq!(s.num("grade"), 0.0, "{s}");
         // Past the cap the ceiling holds: at 40 % the line climbs at 30 %,
         // spends its box, and follows the hill beyond — a gentle class may
-        // not claim a cliff.
+        // not claim a cliff. The far pin takes back what the box spent over
+        // the whole run ([`spread`]), so every segment carries a share of
+        // it and none carries it all.
         let (w, s) = world("ramp?grade=0.4&bearing=90&radius=100000", "net:straight?len=400&class=narrow_gauge");
         let p = &profiles(&w)[0];
+        let box_m = grade::of("narrow_gauge").deviation_m;
+        let share = box_m / 400.0;
         let (a, b) = (p.stations[0], p.stations[1]);
-        assert!(((b.h - a.h) / (b.s - a.s) - grade::MEASURED_FLOOR).abs() < 1e-9, "{a:?} {b:?}");
+        assert!(((b.h - a.h) / (b.s - a.s) - (grade::MEASURED_FLOOR + share)).abs() < 1e-9, "{a:?} {b:?}");
         let deepest = p.stations.iter().map(|st| (st.h - st.ground).abs()).fold(0.0, f64::max);
-        assert!((deepest - grade::of("narrow_gauge").deviation_m).abs() < 1e-9, "{deepest}");
+        assert!(deepest > box_m * 0.75 && deepest <= box_m + 1e-9, "{deepest}");
+        let steepest = p.stations.windows(2).map(|w| (w[1].h - w[0].h) / (w[1].s - w[0].s)).fold(0.0, f64::max);
+        assert!(steepest < 0.4 + share + 1e-9, "{steepest}");
         assert_eq!(s.num("float"), 0.0, "{s}");
         // A road's class says how it climbs: nothing is raised for it.
         let (_, s) = world("ramp?grade=0.2&bearing=90&radius=100000", "net:straight?len=400&class=primary");
