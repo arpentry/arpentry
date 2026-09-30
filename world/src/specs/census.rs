@@ -70,14 +70,14 @@ mod tests {
         clean("ramp?grade=0.15&bearing=45", "net:cross", None);
     }
 
-    /// Paved triangles 45° steeper than a 150 % flank, up to 13 m tall:
-    /// the ring and its legs pulled apart where the rules meet. The four
-    /// gaps are kerb faces whose two rails cross in height along a cell's
-    /// diagonal, each rail paired with the other surface's (86 fins and no
-    /// gap meshed from the clipper's ears, whose needles chopped those
-    /// edges short).
+    /// Paved triangles 45° steeper than a 150 % flank, up to 7.7 m tall. The
+    /// ring and its legs are two rules where their blend would climb past
+    /// one in one (`field::Joint::apart`: 86 fins, 197 m², to 13.5 m before, 20 and
+    /// 13.7 m² with the mesher cutting first);
+    /// what is left is a rule's own field bending across a triangle whose
+    /// corners lie nearer another road.
     #[test]
-    #[ignore = "fin 44, gap 4"]
+    #[ignore = "fin 20"]
     fn a_roundabout_on_a_flank() {
         clean("ramp?grade=1.5&bearing=45&radius=100000", "net:roundabout", Some("house:row?gap=2"));
     }
@@ -102,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "gap 5, fin 1"]
+    #[ignore = "gap 6, fight 1"]
     fn a_motorway_through_a_ridge() {
         clean("ridge?height=40&width=120", "net:straight?class=motorway", None);
     }

@@ -39,7 +39,8 @@ const ALONG_ARC_M: f64 = 8.0;
 /// the width of the band over which two legs' cross-sections are blended
 /// either side of the line where they are equidistant. A disagreement of
 /// `Δ` across the line is spread over it, so it adds about `Δ / BLEND_M`
-/// of grade there.
+/// of grade there — and past one in one the two legs are not blended at all
+/// ([`Joint::apart`]).
 pub const BLEND_M: f64 = 4.0;
 
 /// Within this many metres of a connector two or more axes share, the legs
@@ -50,6 +51,22 @@ const JOINT_M: f64 = 15.0;
 /// Past this many metres from the connector the blend has faded into the
 /// nearest axis's own cross-section, and a leg is its own road again.
 const JOINT_FADE_M: f64 = 25.0;
+
+/// How much steeper than the steeper of two legs, in rise over run, their
+/// blend may climb and still be one surface: one in one. Past it the band
+/// stands the paving up at more than 45° over the grade the legs themselves
+/// hold, which is the census's `fin`, and the two legs are two rules instead
+/// ([`Joint::apart`]).
+const APART_GRADE: f64 = 1.0;
+
+/// The steepest a leg's share of a two-leg blend turns, per unit of the
+/// difference in distance over [`BLEND_M`]: `max fade'(u) / (1 + fade(u))²`,
+/// at `u ≈ 0.72`.
+const BLEND_PEAK: f64 = 0.85;
+
+/// How far along a leg, in metres, its direction out of a joint is read: past
+/// the centimetre segments a span edge leaves beside a station.
+const RAY_M: f64 = 2.0;
 
 /// The room's height field: the solved profile of every carriageway axis
 /// on the ground, indexed for the nearest-axis query every vertex makes.
@@ -74,12 +91,46 @@ pub struct Field {
     /// Per segment, the axis it belongs to: the profile's place among the
     /// ones the field was built from.
     axis: Vec<u32>,
-    /// Every connector two or more axes share, with the axes meeting
-    /// there, in connector order so a blend sums in an order that is a
-    /// function of the world.
-    joints: Vec<(Pt, Vec<u32>)>,
+    /// Every connector two or more axes share, in connector order so a
+    /// blend sums in an order that is a function of the world.
+    joints: Vec<Joint>,
     /// The joints on a grid of [`JOINT_FADE_M`] cells.
     joint_cells: HashMap<(i32, i32), Vec<u32>>,
+}
+
+/// A connector two or more axes of a [`Field`] share.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct Joint {
+    at: Pt,
+    /// The axes meeting there.
+    members: Vec<u32>,
+    /// The pairs of them, lower axis first, that are **not** blended: legs
+    /// whose blend would climb past [`APART_GRADE`] over their own grade.
+    ///
+    /// **A blend is a warp, not a wall laid flat.** Both legs pass through
+    /// the connector, so they agree there and disagree off it, and the blend
+    /// spreads the disagreement over [`BLEND_M`] either side of the line
+    /// where the two are equidistant. At 15 % that is a twist in the kerb
+    /// returns. Where a service road lifted by the crossing toward its deck
+    /// meets a street on the ground (`fin-carriageway-1`, legs 4–5 m apart),
+    /// or a ring on a 150 % flank meets its legs, it stood the paving up
+    /// steeper than 45° over the ground — a fin. Such legs are two rules:
+    /// each answers its own cross-section, a vertex they share is two copies
+    /// that split wherever they differ by more than a kerb, and the edge rule
+    /// draws the face between them, which is the retaining wall the hillside
+    /// has there.
+    ///
+    /// Decided once per pair and not per point, so each rule is continuous:
+    /// a leg dropped from the blend where its disagreement crossed a
+    /// threshold would put a step inside the one rule that had kept it.
+    apart: Vec<(u32, u32)>,
+}
+
+impl Joint {
+    /// Whether axes `a` and `b` are blended here.
+    fn blends(&self, a: u32, b: u32) -> bool {
+        !self.apart.contains(&(a.min(b), a.max(b)))
+    }
 }
 
 /// What the nearest axis says about a point.
@@ -214,9 +265,166 @@ impl Field {
         joints.sort_unstable_by_key(|(key, _)| *key);
         for (_, (c, members)) in joints {
             f.joint_cells.entry(poly::cell_of(c, JOINT_FADE_M)).or_default().push(f.joints.len() as u32);
-            f.joints.push((c, members));
+            f.joints.push(Joint { at: c, members, apart: Vec::new() });
+        }
+        for j in 0..f.joints.len() {
+            f.joints[j].apart = f.apart(&f.joints[j]);
         }
         f
+    }
+
+    /// The pairs of `joint`'s legs the blend cannot carry ([`Joint::apart`]).
+    ///
+    /// Read where the blend mixes them: out along the bisector of every two
+    /// directions the legs leave the connector in, a metre at a time to
+    /// [`JOINT_FADE_M`], wherever both are within [`BLEND_M`] of the nearest
+    /// leg and a leg of this joint is the nearest road at all.
+    ///
+    /// **What the blend adds is the disagreement over the band's width**, and
+    /// the band is [`BLEND_M`] of *difference* in distance, not of plan: it is
+    /// narrow where the two distances part quickly — beside a square corner,
+    /// `|n_a − n_b| = √2` for the unit normals from the two feet — and as wide
+    /// as a ring's island where the two arcs meeting at a connector stand at
+    /// nearly one distance from everything (`n_a ≈ n_b`). So the grade the
+    /// blend adds over the legs' own is `Δ · |n_a − n_b| / BLEND_M` times the
+    /// steepest the blend's weight turns ([`BLEND_PEAK`]), scaled by the
+    /// joint's reach, which fades the blend out past [`JOINT_M`]. Read as a
+    /// disagreement alone, the ring on a 150 % flank parted from itself at
+    /// every connector.
+    fn apart(&self, joint: &Joint) -> Vec<(u32, u32)> {
+        let c = joint.at;
+        // Each leg's own segments near the connector: a point within
+        // `JOINT_FADE_M` of it, which the connector's own leg passes through,
+        // has its foot on that leg within twice that, and its blend with the
+        // neighbouring feet reaches [`ALONG_ARC_M`] further. Searched by
+        // hand, they are a dozen segments where the index would scan every
+        // cell.
+        let near: Vec<(u32, Vec<usize>, f64, f64)> = joint
+            .members
+            .iter()
+            .map(|&m| {
+                let (lo, hi) = (self.axis.partition_point(|&x| x < m), self.axis.partition_point(|&x| x <= m));
+                let ks: Vec<usize> = (lo..hi)
+                    .filter(|&k| {
+                        let (a, b) = self.at.seg[k];
+                        let f = crate::line::nearest_on_segment(a, b, c);
+                        (f[0] - c[0]).hypot(f[1] - c[1]) <= 2.0 * JOINT_FADE_M + ALONG_ARC_M
+                    })
+                    .collect();
+                // The heights those segments span, and along them a foot's
+                // blend with its neighbours cannot leave.
+                let (lo_h, hi_h) = ks.iter().flat_map(|&k| [self.seg[k].0, self.seg[k].1]).fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), z| (l.min(z), h.max(z)));
+                (m, ks, lo_h, hi_h)
+            })
+            .collect();
+        let leg = |m: u32| near.iter().find(|l| l.0 == m).expect("a member");
+        let foot = |q: Pt, ks: &[usize]| -> Option<(usize, f64, f64)> {
+            let mut best: Option<(usize, f64, f64)> = None;
+            for &k in ks {
+                let (a, b) = self.at.seg[k];
+                let f = crate::line::nearest_on_segment(a, b, q);
+                let d = (q[0] - f[0]).hypot(q[1] - f[1]);
+                if best.is_some_and(|(_, _, bd)| d >= bd) {
+                    continue;
+                }
+                let len2 = (b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2);
+                let t = if len2 > 0.0 { ((f[0] - a[0]) * (b[0] - a[0]) + (f[1] - a[1]) * (b[1] - a[1])) / len2 } else { 0.0 };
+                best = Some((k, t, d));
+            }
+            best
+        };
+        let rays: Vec<(u32, Pt)> = joint.members.iter().flat_map(|&m| self.rays(c, m).into_iter().map(move |r| (m, r))).collect();
+        let mut apart: Vec<(u32, u32)> = Vec::new();
+        for (x, &(a, ra)) in rays.iter().enumerate() {
+            for &(b, rb) in &rays[x + 1..] {
+                let pair = (a.min(b), a.max(b));
+                if a == b || apart.contains(&pair) {
+                    continue;
+                }
+                // The most the two can disagree anywhere near, against the
+                // most a blend of them could add for it (normals at most
+                // opposite, `|n_a − n_b| ≤ 2`): most pairs are settled here.
+                let (la, lb) = (leg(a), leg(b));
+                let most = (la.3 - lb.2).max(lb.3 - la.2);
+                if most * 2.0 / BLEND_M * BLEND_PEAK <= APART_GRADE {
+                    continue;
+                }
+                let v = [ra[0] + rb[0], ra[1] + rb[1]];
+                let n = v[0].hypot(v[1]);
+                if n < 1e-6 {
+                    continue;
+                }
+                for s in 1..=JOINT_FADE_M as i32 {
+                    let s = s as f64;
+                    let p = [c[0] + v[0] / n * s, c[1] + v[1] / n * s];
+                    // The joint speaks only for its own legs' rules: a point
+                    // another road answers is never asked what two legs of
+                    // this one would make of it.
+                    if !self.at.of(p, FIELD_LIMIT_M).is_some_and(|(k, _, _)| joint.members.contains(&self.axis[k])) {
+                        break;
+                    }
+                    // Each leg's height, distance and unit normal at `p`.
+                    let legs: Vec<(u32, f64, f64, Pt)> = near
+                        .iter()
+                        .filter_map(|(m, ks, _, _)| {
+                            let (k, t, d) = foot(p, ks)?;
+                            let m = *m;
+                            let (sa, sb) = self.at.seg[k];
+                            let f = [sa[0] + (sb[0] - sa[0]) * t, sa[1] + (sb[1] - sa[1]) * t];
+                            let normal = if d > 1e-9 { [(p[0] - f[0]) / d, (p[1] - f[1]) / d] } else { [0.0, 0.0] };
+                            Some((m, self.along(p, k, t, d), d, normal))
+                        })
+                        .collect();
+                    let nearest = legs.iter().map(|l| l.2).fold(f64::INFINITY, f64::min);
+                    let mixed = |m: u32| legs.iter().find(|l| l.0 == m).filter(|l| l.2 - nearest < BLEND_M).copied();
+                    let (Some((_, ha, _, na)), Some((_, hb, _, nb))) = (mixed(a), mixed(b)) else { continue };
+                    let reach = fade((s - JOINT_M) / (JOINT_FADE_M - JOINT_M));
+                    let added = (ha - hb).abs() * (na[0] - nb[0]).hypot(na[1] - nb[1]) / BLEND_M * BLEND_PEAK;
+                    if reach * added > APART_GRADE {
+                        apart.push(pair);
+                        break;
+                    }
+                }
+            }
+        }
+        apart.sort_unstable();
+        apart
+    }
+
+    /// The directions axis `m` leaves connector `c` in: one per end of its
+    /// that meets `c`, two where it passes through. Each is read [`RAY_M`]
+    /// out along the axis, walking its segments end to end.
+    fn rays(&self, c: Pt, m: u32) -> Vec<Pt> {
+        let key = connector(c);
+        let mut out = Vec::new();
+        // An axis's segments are pushed together, in axis order.
+        debug_assert!(self.axis.windows(2).all(|w| w[0] <= w[1]));
+        let (lo, hi) = (self.axis.partition_point(|&x| x < m), self.axis.partition_point(|&x| x <= m));
+        for i in lo..hi {
+            for forward in [true, false] {
+                let (a, b) = self.at.seg[i];
+                if connector(if forward { a } else { b }) != key {
+                    continue;
+                }
+                let (mut j, mut far) = (i, if forward { b } else { a });
+                while (far[0] - c[0]).hypot(far[1] - c[1]) < RAY_M {
+                    let next = if forward { j + 1 } else { j.wrapping_sub(1) };
+                    let joined = next < self.axis.len()
+                        && self.axis[next] == m
+                        && if forward { self.arc[next].0 == self.arc[j].1 } else { self.arc[next].1 == self.arc[j].0 };
+                    if !joined {
+                        break;
+                    }
+                    j = next;
+                    far = if forward { self.at.seg[j].1 } else { self.at.seg[j].0 };
+                }
+                let d = (far[0] - c[0]).hypot(far[1] - c[1]);
+                if d > 1e-6 {
+                    out.push([(far[0] - c[0]) / d, (far[1] - c[1]) / d]);
+                }
+            }
+        }
+        out
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -239,10 +447,16 @@ impl Field {
     /// What the nearest carriageway axis says about `p`, its height blended
     /// with the other legs of any junction that axis meets near `p`. `None`
     /// if the field is empty.
+    ///
+    /// **Every leg, the ones apart included** ([`Joint::apart`]): this is a
+    /// function of position alone, and a positional function cannot draw a
+    /// step — a triangle whose corners fell either side of it would stretch
+    /// across it. Legs the blend cannot carry are parted by the rules
+    /// ([`Field::on_axis`]), which declare the step as an edge.
     pub fn at(&self, p: Pt) -> Option<Foot> {
         let (i, t, d) = self.at.of(p, FIELD_LIMIT_M)?;
         let near = self.axis[i];
-        Some(Foot { h: self.joined(p, near, self.along(p, i, t, d), d), d, half_w: self.seg[i].2, axis: near, s: self.arc_at(i, t) })
+        Some(Foot { h: self.joined(p, near, self.along(p, i, t, d), d, false), d, half_w: self.seg[i].2, axis: near, s: self.arc_at(i, t) })
     }
 
     /// The arc of segment `i` at `t`.
@@ -261,13 +475,17 @@ impl Field {
     /// hairpin — or inside a roundabout's ring — the nearest foot on it can
     /// jump from one leg to the other, metres apart in height: a switch
     /// within one rule, which no split could see.
+    ///
+    /// A leg the axis is apart from at a joint ([`Joint::apart`]) has no say
+    /// in the answer: the two legs are two rules, and a vertex both reach is
+    /// two copies the edge rule closes with a face.
     pub fn on_axis(&self, p: Pt, axis: u32, part: i32) -> Option<Foot> {
         let (lo, hi) = ((part as f64 - 0.5) * PART_M, (part as f64 + 1.5) * PART_M);
         let (i, t, d) = self.at.of_where(p, FIELD_LIMIT_M + ON_AXIS_SLACK_M, |k| {
             let (a, b) = self.arc[k];
             self.axis[k] == axis && a.max(b) >= lo && a.min(b) <= hi
         })?;
-        Some(Foot { h: self.joined(p, axis, self.along(p, i, t, d), d), d, half_w: self.seg[i].2, axis, s: self.arc_at(i, t) })
+        Some(Foot { h: self.joined(p, axis, self.along(p, i, t, d), d, true), d, half_w: self.seg[i].2, axis, s: self.arc_at(i, t) })
     }
 
     /// The solved height `t` of the way along segment `i`.
@@ -349,13 +567,15 @@ impl Field {
     /// from `p`, in full within [`JOINT_M`] and fading to nothing at
     /// [`JOINT_FADE_M`], and whatever weight they leave is the nearest
     /// axis's own. An axis no joint near `p` holds is never asked: two
-    /// roads that meet nowhere near keep the step between them.
-    fn joined(&self, p: Pt, near: u32, h: f64, d: f64) -> f64 {
+    /// roads that meet nowhere near keep the step between them. With `parted`
+    /// neither is a leg `near` is apart from ([`Joint::apart`]).
+    fn joined(&self, p: Pt, near: u32, h: f64, d: f64, parted: bool) -> f64 {
         let (c0, r0) = poly::cell_of(p, JOINT_FADE_M);
         let (mut sum, mut weight, mut most) = (0.0, 0.0, 0.0f64);
         for (c, r) in (-1..=1).flat_map(|dc| (-1..=1).map(move |dr| (c0 + dc, r0 + dr))) {
             for &j in self.joint_cells.get(&(c, r)).into_iter().flatten() {
-                let (at, members) = &self.joints[j as usize];
+                let joint = &self.joints[j as usize];
+                let (at, members) = (joint.at, &joint.members);
                 let reach = fade(((p[0] - at[0]).hypot(p[1] - at[1]) - JOINT_M) / (JOINT_FADE_M - JOINT_M));
                 if reach <= 0.0 || !members.contains(&near) {
                     continue;
@@ -367,11 +587,16 @@ impl Field {
                 // answering axis would give it full weight and the nearer leg
                 // less, so two legs of one junction would disagree at the
                 // corners they share.
+                // A leg this one is apart from has no say in its rule
+                // ([`Joint::apart`]).
                 let legs: Vec<(f64, f64)> = members
                     .iter()
                     .filter_map(|&m| {
                         if m == near {
                             return Some((h, d));
+                        }
+                        if parted && !joint.blends(near, m) {
+                            return None;
                         }
                         let (k, t, dm) = self.at.of_where(p, d + BLEND_M, |k| self.axis[k] == m)?;
                         Some((self.along(p, k, t, dm), dm))
@@ -464,5 +689,99 @@ mod tests {
         let mut deck = p.clone();
         deck.spans = vec![crate::world::Span { a0: 0.0, a1: 100.0, kind: crate::world::Kind::Bridge(1) }];
         assert!(Field::new(std::slice::from_ref(&deck)).at([0.0, 0.0]).is_none());
+    }
+
+    /// A way of `grade` leaving the origin along `dir`, stationed every 4 m.
+    fn leg(id: &str, dir: Pt, grade: f64) -> Profile {
+        let stations = (0..=10)
+            .map(|k| {
+                let s = k as f64 * 4.0;
+                crate::world::Station {
+                    s,
+                    p: [dir[0] * s, dir[1] * s],
+                    ground: 400.0,
+                    reference: 400.0,
+                    h: 400.0 + grade * s,
+                    solved: Solved::Grade,
+                }
+            })
+            .collect();
+        Profile {
+            way: 0,
+            id: id.into(),
+            class: "residential".into(),
+            width_m: 5.5,
+            spans: vec![crate::world::Span { a0: 0.0, a1: 40.0, kind: crate::world::Kind::Ground }],
+            stations,
+        }
+    }
+
+    /// The steepest the rule of `axis` stands anywhere in the corner the two
+    /// legs of [`leg`] make, by central differences on a half-metre grid.
+    fn steepest_rule(f: &Field, axis: u32) -> (f64, Pt) {
+        let h = |p: Pt| f.on_axis(p, axis, 0).map(|foot| foot.h);
+        let mut worst = (0.0, [0.0, 0.0]);
+        for i in 1..50 {
+            for j in 1..50 {
+                let p = [i as f64 * 0.5, j as f64 * 0.5];
+                let e = 0.05;
+                let (Some(x0), Some(x1), Some(y0), Some(y1)) =
+                    (h([p[0] - e, p[1]]), h([p[0] + e, p[1]]), h([p[0], p[1] - e]), h([p[0], p[1] + e]))
+                else {
+                    continue;
+                };
+                let g = ((x1 - x0) / (2.0 * e)).hypot((y1 - y0) / (2.0 * e));
+                if g > worst.0 {
+                    worst = (g, p);
+                }
+            }
+        }
+        worst
+    }
+
+    /// **A junction's blend is a warp, never a wall laid down flat.** Two
+    /// legs meeting at a connector agree there and disagree off it, and the
+    /// blend spreads what they disagree by across [`BLEND_M`] either side of
+    /// the line where they are equidistant — so it adds about `Δ / BLEND_M`
+    /// of grade there. At 15 % that is a twist in the kerb returns; where one
+    /// leg climbs at 80 % beside a level one — a service road lifted by the
+    /// crossing toward its deck, a ring on a 150 % flank — it was a paved
+    /// surface standing up at 45° over the ground under it, which the census
+    /// reads as a `fin` (`fin-carriageway-1`: legs 4–5 m apart blended over
+    /// four). Legs the band cannot carry at one in one are two rules: each
+    /// answers its own cross-section, the copies split, and the edge rule
+    /// draws the face.
+    #[test]
+    fn a_blend_is_never_steeper_than_one_in_one_past_its_legs() {
+        let (steep, level) = (leg("steep", [1.0, 0.0], 0.8), leg("level", [0.0, 1.0], 0.0));
+        let f = Field::new(&[steep, level]);
+        for axis in [0, 1] {
+            let (g, at) = steepest_rule(&f, axis);
+            assert!(g <= 0.8 + 1.0 + 0.05, "the rule of axis {axis} climbs {g:.3} at {at:?}");
+        }
+        // Off the connector the two rules answer apart: that is the split.
+        let q = [12.0, 12.0];
+        let (a, b) = (f.on_axis(q, 0, 0).unwrap().h, f.on_axis(q, 1, 0).unwrap().h);
+        assert!((a - b).abs() > 1.0, "{a} {b}");
+    }
+
+    /// **And legs that agree are still one surface.** At 15 % the same
+    /// corner is a twist the band carries at a fraction of one in one, so
+    /// both rules answer every point of it alike within [`JOINT_M`] — past
+    /// it the blend fades into each leg's own — and a vertex they share
+    /// welds.
+    #[test]
+    fn legs_that_agree_are_still_blended() {
+        let f = Field::new(&[leg("climb", [1.0, 0.0], 0.15), leg("level", [0.0, 1.0], 0.0)]);
+        for s in 1..=JOINT_M as i32 {
+            let q = [s as f64 * 0.7071, s as f64 * 0.7071];
+            let (a, b) = (f.on_axis(q, 0, 0).unwrap().h, f.on_axis(q, 1, 0).unwrap().h);
+            assert!((a - b).abs() < 1e-9, "{q:?}: {a} against {b}");
+        }
+        // The twist: 0.65 where the corner is steepest.
+        for axis in [0, 1] {
+            let (g, at) = steepest_rule(&f, axis);
+            assert!(g < 0.7, "the rule of axis {axis} climbs {g:.3} at {at:?}");
+        }
     }
 }
