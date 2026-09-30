@@ -88,10 +88,7 @@ mod tests {
         clean("flat", "net:overpass?len=201", None);
     }
 
-    /// The bore's floor and the cutting's carriageway coplanar over the
-    /// tube's reach past the portal.
     #[test]
-    #[ignore = "fight 2"]
     fn an_underpass() {
         clean("flat", "net:underpass", None);
     }
@@ -105,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "gap 5, fin 1, fight 2"]
+    #[ignore = "gap 5, fin 1"]
     fn a_motorway_through_a_ridge() {
         clean("ridge?height=40&width=120", "net:straight?class=motorway", None);
     }
