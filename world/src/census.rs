@@ -245,6 +245,10 @@ pub struct Tally {
 /// The census of one world.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Census {
+    /// The world's bounding box in degrees, `[west, south, east, north]`:
+    /// what a reader needs to tell a defect of the clip from one of the
+    /// model.
+    pub bbox: [f64; 4],
     /// Every defect, by species and then largest first (a gap by its
     /// length times its width).
     pub defects: Vec<Defect>,
@@ -652,7 +656,8 @@ impl Census {
     /// The census of `world`'s drawn layers. Empty until the bench has run:
     /// before that there is no drawn ground to close anything onto.
     pub fn take(world: &World) -> Census {
-        let mut census = Census::default();
+        let b = world.extent.bbox;
+        let mut census = Census { bbox: [b.west, b.south, b.east, b.north], ..Census::default() };
         if world.bench.is_none() {
             return census;
         }

@@ -283,6 +283,27 @@ specimen or box it is about; after it, the census line in
 `world-sdiff.py` says what moved everywhere else. 16 s on the loop box,
 0.2 s on a specimen, byte-deterministic.
 
+**Work on sites, not on the loop box.** `world/sites/montreux.tsv` is 48
+windows of 300 m, one per defect signature (species + layers) of the loop
+box's census, each kept only because its defect came back in the window —
+a window is a different world (the clip ends ways, and a small bbox gets
+the 2 m lattice). One site runs in ~0.5 s; all 48 in 10 s in parallel.
+Iterate a fix on its site (`--zone data/zones/montreux --bbox <the site's
+bbox>`), look at it with `preview-world.sh OUT/NAME.glb`, then gate:
+
+```bash
+scripts/world-sites.py run world/sites/montreux.tsv /tmp/claude/before  # the old binary
+scripts/world-sites.py run world/sites/montreux.tsv /tmp/claude/after   # the new one
+scripts/world-sites.py gate /tmp/claude/before /tmp/claude/after        # exit 1 if any species rose
+```
+
+The gate reads any directory of `*.census.json`, so the corpus's
+(`world-corpus.sh`) gates the same way. Defects within 25 m of a window's
+border are the clip's and are left out. Two runs of one binary gate at
+exactly 0 better / 0 worse, so anything it reports moved.
+`world-sites.py extract CENSUS.json SITES.tsv` cuts new sites from any
+census.
+
 `world/` builds a tile-free 3D world for one bounding box, one verifiable
 step at a time, and writes it as a binary glTF. It borrows only the source
 readers from `server/`; the model is rebuilt from the raw sources, step by
