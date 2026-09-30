@@ -356,6 +356,9 @@ pub fn run(
             continue;
         }
         let (l, r) = edges(&span.stations, span.half_w());
+        // A bore's floor, held until its tubes are known below: a tunnel
+        // with no tube over it has no floor.
+        let mut floor: Option<Shapes> = None;
         // A railway's span lays its track bed, not a roadway: the same
         // surface in its own material, out to the structure's shoulders.
         let fam = width::family(&span.class);
@@ -381,7 +384,6 @@ pub fn run(
             // than the chord `edges` steps through.
             let n = span.stations.len();
             let joint = |p: Pt| span_ends.get(&(fam as usize, connector(p))).copied().unwrap_or(0) > 1;
-            let group = (fam as usize, root(&mut parent, i));
             if matches!(span.mapped, Kind::Tunnel(_)) {
                 // **A bore's floor is the span's own arc** ([`own_axis`]),
                 // capped square where it was cut short of its abutment:
@@ -389,11 +391,11 @@ pub fn run(
                 // sheet paves up to the same line.
                 let (axis, cut) = own_axis(span);
                 let caps = [joint(span.stations[0].p) && !cut[0], joint(span.stations[n - 1].p) && !cut[1]];
-                bores.entry(group).or_default().extend(poly::buffer_line_capped(&axis, 2.0 * span.half_w(), caps));
-                floors.entry(group).or_default().push(i);
+                floor = Some(poly::buffer_line_capped(&axis, 2.0 * span.half_w(), caps));
             } else {
                 let axis: Vec<Pt> = span.stations.iter().map(|st| st.p).collect();
                 let caps = [joint(span.stations[0].p), joint(span.stations[n - 1].p)];
+                let group = (fam as usize, root(&mut parent, i));
                 foot.entry(group).or_default().extend(poly::buffer_line_capped(&axis, 2.0 * span.half_w(), caps));
             }
         }
@@ -566,6 +568,17 @@ pub fn run(
             stats.rail_bores += rail as usize;
             tube_over(&mut s.bore, &l, &r, span.height());
             tubes.push((span.stations[0].s, span.stations[span.stations.len() - 1].s));
+        }
+        // **A floor only where there is a tunnel.** A tunnel run that
+        // never goes under the ground — mapped over flat ground, or over a
+        // passage under a building the terrain has not got — has no tube,
+        // no gallery and no opened ground, so a floor laid over it is a
+        // second surface on the terrain, coplanar with it the length of the
+        // span (440 m² on `flat` + `net:straight?span=0.3,0.7&kind=tunnel`).
+        if let Some(f) = floor.filter(|_| !tubes.is_empty()) {
+            let group = (fam as usize, root(&mut parent, i));
+            bores.entry(group).or_default().extend(f);
+            floors.entry(group).or_default().push(i);
         }
         // **Every end of a tunnel is a mouth.** An end the source mapped
         // — not one the bbox cut — where no tube stands is a road that
@@ -1525,6 +1538,19 @@ mod tests {
             let past = floor.iter().map(past).fold(f64::NEG_INFINITY, f64::max);
             assert!(past < 0.01, "{ground} {net}: the floor runs {past:.2} m past its span: {s}");
         }
+    }
+
+    /// **A tunnel that never goes under has no floor.** Mapped over flat
+    /// ground, the chord is the ground and nothing is a bore: there is no
+    /// tube, the ground is not opened, and a floor laid anyway is a second
+    /// surface coplanar with the terrain the whole length of the span.
+    #[test]
+    fn a_tunnel_that_never_goes_under_has_no_floor() {
+        let (w, s) = world("flat", "net:straight?span=0.3,0.7&kind=tunnel");
+        assert_eq!(s.num("bores"), 0.0, "{s}");
+        assert_eq!(s.num("galleries"), 0.0, "{s}");
+        let st = structure(&w);
+        assert!(st.roadway.indices.is_empty() && st.bore.indices.is_empty(), "{s}");
     }
 
     #[test]
