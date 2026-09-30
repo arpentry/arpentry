@@ -367,6 +367,14 @@ construction's:
   triangulate after**: split each face by the lattice into pieces inside one
   lattice triangle, then triangulate each piece, so no clipper diagonal ever
   crosses a lattice line. That is a mesher redesign, not a threshold.
+  **Landed (2026-09-30, `triangulate::cut_first`)**: the ears' pieces are
+  merged back per terrain triangle, the diagonals' lattice crossings taken
+  off, and each part ear-clipped and flipped towards Delaunay inside its
+  terrain triangle. Loop box: `slivers` 71 157 → 5 227 (what is left is the
+  rings' own: an edge within microns of a lattice vertex), triangles 14.2 M
+  → 5.1 M, `crack` 3.2 → 0.51 m, carriageway triangles under 1 cm of
+  altitude 19.8 % → 2.9 %, census `fin` 4 463 → 430; `unmerged` 22 cells
+  fall back to the pieces.
 
 **Wired**: `room` reads `legs.surface`. Loop box against `8ceb3bf`:
 `scraps` 895 → 670, `loose` 138 → 130, `unprobed` 1 817 → 1 632,
