@@ -379,17 +379,22 @@ pub fn run(
             // Buffered the way a ground ribbon is, so the silhouette on
             // a bend is the same arc the carriageway would draw rather
             // than the chord `edges` steps through.
-            let axis: Vec<Pt> = span.stations.iter().map(|st| st.p).collect();
             let n = span.stations.len();
             let joint = |p: Pt| span_ends.get(&(fam as usize, connector(p))).copied().unwrap_or(0) > 1;
-            let caps = [joint(span.stations[0].p), joint(span.stations[n - 1].p)];
             let group = (fam as usize, root(&mut parent, i));
-            let shape = poly::buffer_line_capped(&axis, 2.0 * span.half_w(), caps);
             if matches!(span.mapped, Kind::Tunnel(_)) {
-                bores.entry(group).or_default().extend(shape);
+                // **A bore's floor is the span's own arc** ([`own_axis`]),
+                // capped square where it was cut short of its abutment:
+                // that end is a handover to the portal cutting, which the
+                // sheet paves up to the same line.
+                let (axis, cut) = own_axis(span);
+                let caps = [joint(span.stations[0].p) && !cut[0], joint(span.stations[n - 1].p) && !cut[1]];
+                bores.entry(group).or_default().extend(poly::buffer_line_capped(&axis, 2.0 * span.half_w(), caps));
                 floors.entry(group).or_default().push(i);
             } else {
-                foot.entry(group).or_default().extend(shape);
+                let axis: Vec<Pt> = span.stations.iter().map(|st| st.p).collect();
+                let caps = [joint(span.stations[0].p), joint(span.stations[n - 1].p)];
+                foot.entry(group).or_default().extend(poly::buffer_line_capped(&axis, 2.0 * span.half_w(), caps));
             }
         }
         for st in [&span.stations[0], &span.stations[span.stations.len() - 1]] {
@@ -808,6 +813,35 @@ fn station_at(st: &[Station], s: f64) -> Station {
         h: lerp(a.h, b.h),
         solved: a.solved,
     }
+}
+
+/// How near, in metres along the axis, a station may lie to an end of
+/// [`own_axis`] and be taken as that end rather than as a vertex of its own:
+/// a centimetre, far below a station's spacing and far above rounding.
+const OWN_AXIS_M: f64 = 0.01;
+
+/// The axis a bore's floor is laid along: the span's own arc, `a0` to `a1`,
+/// and whether each end was cut short of the abutment station there.
+///
+/// **A span's stations reach one past each end** — the abutment, where the
+/// at-grade solve hands over — and the partition cuts the span where the
+/// heights say, between stations, so the abutment lies up to a station's
+/// spacing *outside* the span. That stretch is the portal's cutting, which
+/// the partition gave to the ground and the sheet paves, square, up to the
+/// span's edge. A floor swept to the abutment lay over it, coplanar: 44
+/// fights on the loop box, 3.33 m × 5.5 m at each end of the flat-ground
+/// underpass. The tube's hood is cut the same way ([`station_at`]).
+fn own_axis(span: &Span) -> (Vec<Pt>, [bool; 2]) {
+    let st = &span.stations;
+    let n = st.len();
+    let (s0, s1) = (span.a0.max(st[0].s), span.a1.min(st[n - 1].s));
+    if s1 - s0 <= OWN_AXIS_M {
+        return (st.iter().map(|x| x.p).collect(), [false, false]);
+    }
+    let mut axis = vec![station_at(st, s0).p];
+    axis.extend(st.iter().filter(|x| x.s > s0 + OWN_AXIS_M && x.s < s1 - OWN_AXIS_M).map(|x| x.p));
+    axis.push(station_at(st, s1).p);
+    (axis, [s0 > st[0].s + OWN_AXIS_M, s1 < st[n - 1].s - OWN_AXIS_M])
 }
 
 /// The runs of consecutive stations solved `kind`, as inclusive index
@@ -1466,6 +1500,30 @@ mod tests {
             let off = |(q, under): &Over| under.iter().map(|(h, _, _)| (q[2] - h).abs()).fold(f64::INFINITY, f64::min);
             let worst = floor.iter().map(off).fold(0.0, f64::max);
             assert!(worst < 0.01, "{ground} {net}: a floor vertex stands {worst:.2} m off every tunnel under it: {s}");
+        }
+    }
+
+    /// **A bore's floor ends where its span does.** The span's own arc is
+    /// where the tunnel is; past it, up to one station, lies the portal
+    /// cutting the partition gave back to the ground and the sheet paves.
+    /// Swept to the abutment station instead, the floor lay over the
+    /// cutting's carriageway, coplanar with it — 3.33 m × 5.5 m at each end
+    /// of the flat-ground underpass.
+    #[test]
+    fn a_bores_floor_ends_where_its_span_does() {
+        for (ground, net) in [
+            ("flat", "net:underpass"),
+            ("ridge?height=40&width=120", "net:straight?span=0.3,0.7&kind=tunnel"),
+            ("ridge?height=40&width=120", "net:straight?span=0.3,0.7&kind=tunnel&class=standard_gauge"),
+        ] {
+            let (w, s) = world(ground, net);
+            let floor = floor_over_tunnels(&w);
+            assert!(!floor.is_empty(), "{ground} {net}: no floor: {s}");
+            // How far past the span of the tunnel under it a vertex lies; one
+            // with no tunnel under it at all is past every span.
+            let past = |(_, under): &Over| under.iter().map(|(_, a, (a0, a1))| (a0 - a).max(a - a1)).fold(f64::INFINITY, f64::min);
+            let past = floor.iter().map(past).fold(f64::NEG_INFINITY, f64::max);
+            assert!(past < 0.01, "{ground} {net}: the floor runs {past:.2} m past its span: {s}");
         }
     }
 
