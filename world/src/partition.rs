@@ -548,6 +548,25 @@ pub fn spans(way: &Way, profile: &Profile, derived: &[Span], len: f64) -> Vec<Sp
     let mut kept: Vec<Span> = Vec::new();
     for a in way.spans.iter().filter(|s| s.kind != Kind::Ground) {
         let hits: Vec<&Span> = derived.iter().filter(|d| overlaps(a, d)).collect();
+        // **A tunnel whose road never goes under the ground is ground.**
+        // The whole-span guard keeps an annotation the heights cannot see,
+        // and a bridge too short for the DEM is that case; a tunnel whose
+        // every station, an abutment either side included, stands within
+        // `STRUCTURE_MIN_M` of the ground or above it is not — the geometry
+        // says positively that nothing is over the road. On the loop box
+        // these are eight covered passages among buildings (the DEM is bare
+        // earth), and as spans they got a floor over uncut ground (a 3 cm
+        // z-fight) or, with no floor, no paving at all. Given back, each is
+        // a street through its building's passage corridor, which is how
+        // any other way through a footprint is paved (`facade::PASSAGE_M`).
+        if hits.is_empty() && matches!(a.kind, Kind::Tunnel(_)) {
+            let st = &profile.stations;
+            let k0 = st.iter().position(|x| x.s >= a.a0).unwrap_or(0).saturating_sub(1);
+            let k1 = st.iter().rposition(|x| x.s <= a.a1).map_or(0, |k| (k + 1).min(st.len() - 1));
+            if !st[k0..=k1].iter().any(|x| x.ground - x.h > crate::standard::STRUCTURE_MIN_M) {
+                continue;
+            }
+        }
         let mut out = if hits.is_empty() {
             *a
         } else {
@@ -778,6 +797,18 @@ mod tests {
         let runs = derive(&p[0]);
         assert_eq!(runs.len(), 1, "one run, got {runs:?}");
         runs[0]
+    }
+
+    /// **A tunnel whose road never goes under the ground is a street.** On
+    /// flat ground a mapped tunnel is a covered passage the DEM cannot see
+    /// the cover of: no station goes under, so the geometry contradicts the
+    /// tag, and the way is one ground piece paved end to end.
+    #[test]
+    fn a_tunnel_that_never_goes_under_is_ground() {
+        let (w, s) = solved("flat", "net:straight?span=0.3,0.7&kind=tunnel");
+        let p = w.partition.as_ref().expect("the partition ran");
+        assert!(p.network.spans.is_empty(), "the tunnel is kept as a span: {s}");
+        assert_eq!(p.network.plan.len(), 1, "one ground piece end to end: {s}");
     }
 
     /// **A bridge from the terrain.** The source says nothing; the closing
