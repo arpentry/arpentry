@@ -224,6 +224,13 @@ impl Lift<'_> {
 /// per.
 pub type Key = (Surface, Rule);
 
+/// **A pavement no road answers for, or that drapes past one, is passive**:
+/// it is not a road's cross-section, so the earthwork regrades it onto the
+/// engineered ground, and it pins nothing.
+pub fn passive(key: Key) -> bool {
+    matches!(key, (Surface::Near | Surface::Far, rule) if rule.drape || rule.axis == NONE)
+}
+
 /// One mesh of copies: the positions, and per copy the one-mesh vertex it is
 /// a copy of, its key, and the natural ground under it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -249,7 +256,39 @@ impl Part {
         }
         *slot
     }
+
+    /// Per copy, how far a weld may move it: [`WELD_GRADE`] times the least
+    /// plan altitude of the triangles it is a corner of, so that none of them
+    /// tilts by more than that grade however it is moved.
+    fn give(&self) -> Vec<f64> {
+        let mut give = vec![f64::INFINITY; self.tri.positions.len()];
+        for t in self.tri.indices.chunks_exact(3) {
+            let p = [0, 1, 2].map(|k| self.tri.positions[t[k] as usize]);
+            let twice = ((p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1])).abs();
+            for k in 0..3 {
+                let (a, b) = (p[(k + 1) % 3], p[(k + 2) % 3]);
+                let base = (b[0] - a[0]).hypot(b[1] - a[1]);
+                let altitude = if base > 0.0 { twice / base } else { 0.0 };
+                let g = &mut give[t[k] as usize];
+                *g = g.min(WELD_GRADE * altitude);
+            }
+        }
+        give
+    }
 }
+
+/// The grade, as rise over run, a weld may add to any triangle it moves a
+/// corner of: a quarter of the census's `fin`, so a triangle's three corners
+/// moved together still leave it short of standing up.
+///
+/// Measured on the two roundabouts the weld tipped most (a 30 % ramp and a
+/// 60 m hill), as paved triangles the weld stood up that their own rule left
+/// lying: unbounded 31 and 56, at 1 2 and 21, at ½ 0 and 3, at ¼ 0 and 1 (a
+/// triangle already at 1.256 where a fin starts at 1.263), at 0.1 none. The price is
+/// the copies left apart, each a face the edge rule draws: `split_m2` 9 → 10
+/// and 5 → 8 at ¼, 13 and 11 at 0.1, and over the Montreux sites 0.1 left
+/// more kerb faces open than ¼ for no fewer fins.
+const WELD_GRADE: f64 = 0.25;
 
 /// The one mesh's vertices, copied once per surface and rule that reaches
 /// them, and the four meshes the copies make.
@@ -341,16 +380,34 @@ impl Copies {
     /// answer their shared corner each by its own road. Where the two agree
     /// within a kerb's rise — two legs of one junction, whose blend is
     /// continuous across the line between them — they are one vertex again,
-    /// at their mean: a slope that small across a triangle is not a step.
+    /// near their mean: a slope that small across a triangle is not a step.
     /// Where they do not, they stay two, and the edge between them is a
     /// declared step with a face on it (`bench::edge_faces`).
     ///
+    /// Two things bound it, each a triangle the weld used to stand on end:
+    ///
+    /// - **A weld does not cross the passive line** ([`passive`]). The
+    ///   earthwork regrades a passive copy onto the engineered ground by
+    ///   its own key, and leaves a lifted one where the lift put it, so a
+    ///   copy welded across the two is moved by whichever key it kept: on
+    ///   the loop box 5 572 corners of triangles of the other passivity,
+    ///   standing up to 2.61 m off their rule. They stay two, and the edge
+    ///   rule draws the face between them where the earthwork parts them.
+    /// - **A weld moves no copy further than its triangles can take**
+    ///   ([`Part::give`]). Copies a few centimetres apart welded at their
+    ///   mean tipped every triangle a few millimetres across that met one
+    ///   of them — 31 on a 30 % flank's roundabout, and 15 % of the loop
+    ///   box's fins. The weld goes to the mean clamped to what every copy
+    ///   in the run can take, and a copy that cannot meet the others there
+    ///   starts a run of its own.
+    ///
     /// Returns how many copies went.
     pub fn weld(&mut self) -> usize {
-        let mut groups: std::collections::BTreeMap<(u32, Surface), Vec<(Rule, u32)>> = Default::default();
-        for (&(v, (surface, rule)), &id) in &self.paved {
-            groups.entry((v, surface)).or_default().push((rule, id));
+        let mut groups: std::collections::BTreeMap<(u32, Surface, bool), Vec<(Rule, u32)>> = Default::default();
+        for (&(v, key @ (surface, rule)), &id) in &self.paved {
+            groups.entry((v, surface, passive(key))).or_default().push((rule, id));
         }
+        let give: [Vec<f64>; 3] = [&self.carriageway, &self.ballast, &self.pavement].map(Part::give);
         let mut into: [HashMap<u32, u32>; 3] = Default::default();
         let which = |s: Surface| match s {
             Surface::Carriageway(_) => 0,
@@ -358,25 +415,33 @@ impl Copies {
             _ => 2,
         };
         let mut gone = 0usize;
-        for ((_, surface), mut copies) in groups {
+        for ((_, surface, _), mut copies) in groups {
             if copies.len() < 2 {
                 continue;
             }
             let k = which(surface);
+            let give = &give[k];
             let part = self.part_mut(surface);
             let z = |id: u32, part: &Part| part.tri.positions[id as usize][2];
             copies.sort_by(|a, b| z(a.1, part).total_cmp(&z(b.1, part)).then(a.0.cmp(&b.0)));
-            // Runs whose neighbours agree within a kerb's rise, and whose
-            // spread does too, are one.
+            // Runs whose neighbours agree within a kerb's rise, whose spread
+            // does too, and that one height is within reach of for all.
             let mut start = 0;
             while start < copies.len() {
+                let reach = |c: &(Rule, u32)| (z(c.1, part) - give[c.1 as usize], z(c.1, part) + give[c.1 as usize]);
+                let (mut lo, mut hi) = reach(&copies[start]);
                 let mut end = start + 1;
                 while end < copies.len() && z(copies[end].1, part) - z(copies[start].1, part) <= KERB_RISE_M {
+                    let (l, h) = reach(&copies[end]);
+                    if l.max(lo) > h.min(hi) {
+                        break;
+                    }
+                    (lo, hi) = (l.max(lo), h.min(hi));
                     end += 1;
                 }
                 if end - start > 1 {
                     let run = &copies[start..end];
-                    let mean = run.iter().map(|c| z(c.1, part)).sum::<f64>() / run.len() as f64;
+                    let mean = (run.iter().map(|c| z(c.1, part)).sum::<f64>() / run.len() as f64).clamp(lo, hi);
                     let keep = run.iter().map(|c| c.1).min().expect("a run");
                     part.tri.positions[keep as usize][2] = mean;
                     for c in run.iter().filter(|c| c.1 != keep) {
@@ -644,5 +709,99 @@ mod tests {
         let mut stats = Stats::default();
         lift.account(&mut stats, rule, h, 0.0, foot);
         assert!(!rule.chord && stats.fill > 0.0, "the sliver excused the fill under it too");
+    }
+
+    use crate::lattice::height_at;
+    use crate::pipeline::tests::{built, upto};
+    use crate::step::Step;
+    use crate::world::World;
+
+    /// The height `key`'s rule gives the plan point `q`: the lift's answer,
+    /// or, once the earthwork has run, the engineered ground's for a passive
+    /// pavement, which the earthwork regrades onto it.
+    fn own(w: &World, q: Pt, key: Key) -> f64 {
+        let terrain = w.terrain.as_ref().expect("the terrain step ran");
+        let natural = height_at(terrain, q[0], q[1]);
+        match &w.earthwork {
+            Some(e) if passive(key) => natural + e.ground.residual(q),
+            _ => {
+                let over = poly::Indexed::new(&w.arrangement.as_ref().expect("the arrangement ran").over);
+                w.lift.as_ref().expect("the lift ran").fields.lift(key.0, &over).height(q, natural, key.1).0
+            }
+        }
+    }
+
+    /// The paved parts as the last step built holds them.
+    fn parts(w: &World) -> [&Part; 3] {
+        let c = w.earthwork.as_ref().map_or_else(|| &w.lift.as_ref().expect("the lift ran").copies, |e| &e.copies);
+        [&c.carriageway, &c.ballast, &c.pavement]
+    }
+
+    /// Whether the triangle `c` stands up the way the census's `fin` reads
+    /// it: steeper than one in one, and steeper than the natural ground
+    /// under it by as much again.
+    fn stands_up(w: &World, c: [[f64; 3]; 3]) -> bool {
+        let terrain = w.terrain.as_ref().expect("the terrain step ran");
+        let u = [c[1][0] - c[0][0], c[1][1] - c[0][1], c[1][2] - c[0][2]];
+        let v = [c[2][0] - c[0][0], c[2][1] - c[0][1], c[2][2] - c[0][2]];
+        let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+        if (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() / 2.0 < 1e-10 {
+            return false;
+        }
+        let (x, y) = ((c[0][0] + c[1][0] + c[2][0]) / 3.0, (c[0][1] + c[1][1] + c[2][1]) / 3.0);
+        let h = |x: f64, y: f64| height_at(terrain, x, y);
+        let natural = ((h(x + 0.25, y) - h(x - 0.25, y)) / 0.5).hypot((h(x, y + 0.25) - h(x, y - 0.25)) / 0.5);
+        let s = n[0].hypot(n[1]);
+        s > n[2].abs() && s > (natural + 1.0) * n[2].abs()
+    }
+
+    /// **A weld does not cross the passive line.** A passive pavement's copy
+    /// is regraded by the earthwork onto the engineered ground, and a lifted
+    /// one keeps the road's cross-section. Welded into one copy, whichever
+    /// the weld kept is moved by its own key, and the triangles of the other
+    /// take a corner their rule never gave them: 0.61 m off where a sidewalk
+    /// ring leaves a roundabout's room on a 20 % flank, and on the loop box
+    /// 5 572 corners, up to 2.61 m off. So every drawn paved corner is a copy
+    /// of its own triangle's passivity, and stands within the weld's reach —
+    /// a kerb's rise — of the height its own triangle's rule gives it.
+    #[test]
+    fn a_weld_does_not_cross_the_passive_line() {
+        let (w, _) =
+            built("ramp?grade=0.2&bearing=30&radius=100000", "net:roundabout?d=10", None, 5.0, &upto(Step::Earthwork));
+        let (mut crossed, mut worst, mut regraded) = (0usize, 0.0f64, 0usize);
+        for part in parts(&w) {
+            for (t, &key) in part.tri.indices.chunks_exact(3).zip(&part.face_key) {
+                regraded += passive(key) as usize;
+                for &i in t {
+                    let q = part.tri.positions[i as usize];
+                    crossed += (passive(part.key[i as usize]) != passive(key)) as usize;
+                    worst = worst.max((q[2] - own(&w, [q[0], q[1]], key)).abs());
+                }
+            }
+        }
+        assert!(regraded > 0, "the specimen has no passive pavement to weld across");
+        assert_eq!(crossed, 0, "corners copied across the passive line, the worst {worst:.3} m off its rule");
+        assert!(worst <= KERB_RISE_M, "a corner stands {worst:.3} m off its own triangle's rule");
+    }
+
+    /// **A weld stands no triangle up.** Two copies of one vertex that agree
+    /// within a kerb's rise are welded, and the weld moves each; a triangle a
+    /// few millimetres across whose corner moves a few centimetres is tipped
+    /// on end. On a 30 % flank the roundabout had 31 paved triangles its own
+    /// rule left lying that the weld stood past one in one.
+    #[test]
+    fn a_weld_stands_no_triangle_up() {
+        let (w, _) = built("ramp?grade=0.3&bearing=0&radius=100000", "net:roundabout", None, 5.0, &upto(Step::Lift));
+        let (mut moved, mut tipped) = (0usize, 0usize);
+        for part in parts(&w) {
+            for (t, &key) in part.tri.indices.chunks_exact(3).zip(&part.face_key) {
+                let drawn = [0, 1, 2].map(|k| part.tri.positions[t[k] as usize]);
+                let ruled = drawn.map(|q| [q[0], q[1], own(&w, [q[0], q[1]], key)]);
+                moved += (0..3).any(|k| drawn[k][2] != ruled[k][2]) as usize;
+                tipped += (stands_up(&w, drawn) && !stands_up(&w, ruled)) as usize;
+            }
+        }
+        assert!(moved > 0, "the specimen welds nothing");
+        assert_eq!(tipped, 0, "triangles the weld stood up, of {moved} it moved");
     }
 }
