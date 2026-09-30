@@ -290,9 +290,15 @@ impl Soup {
                 let corners = [0, 1, 2].map(|i| tri.positions[t[i] as usize]);
                 soup.tris.push([0, 1, 2].map(|i| ids[t[i] as usize]));
                 soup.layer.push(k as u8);
+                // Only the ground and the bench's paving are the mesh's
+                // triangles. A structure's floor is triangulated on its own,
+                // and where it covers a lattice cell whole it has the same
+                // plan — the same centroid — as the paving over it, so asked
+                // by position it would take that paving's face and read as
+                // the partition overlapping itself.
                 let face = match role {
-                    Role::Other => None,
-                    _ => faces.as_ref().and_then(|f| f.at(corners)),
+                    Role::Ground | Role::Paved => faces.as_ref().and_then(|f| f.at(corners)),
+                    Role::Floor | Role::Other => None,
                 };
                 soup.face.push(face);
             }
