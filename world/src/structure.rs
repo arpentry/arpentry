@@ -913,12 +913,23 @@ fn solid_under(tri: &mut Tri, region: &Shapes, grid: &crate::grid::Grid, top: &d
     // `bench::wall` closes a step between two surfaces with. A region's
     // outer ring runs counter-clockwise and a hole the other way, so this
     // faces outward in both cases without a case of its own.
+    //
+    // **Swept at every lattice crossing, not only at the ring's corners.**
+    // The underside above is triangulated conforming to the lattice, and so
+    // is the roadway the side meets, so both rims have a vertex wherever
+    // the ring crosses a grid line or a diagonal and follow the profile
+    // between. One quad per ring segment is a chord under that: on a
+    // straight deck over a crest the ring is four corners, and the census
+    // read a slit of sky 3.5 m tall between the road's edge and the side.
     for ring in region.iter().flatten() {
         for i in 0..ring.len() {
-            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
-            let (ta, tb) = (top(a), top(b));
-            let (fa, fb) = (floor(a), floor(b));
-            tri.quad([[a[0], a[1], ta], [a[0], a[1], fa], [b[0], b[1], fb], [b[0], b[1], tb]]);
+            let mut a = ring[i];
+            for b in crate::lattice::split(grid, a, ring[(i + 1) % ring.len()]) {
+                let (ta, tb) = (top(a), top(b));
+                let (fa, fb) = (floor(a), floor(b));
+                tri.quad([[a[0], a[1], ta], [a[0], a[1], fa], [b[0], b[1], fb], [b[0], b[1], tb]]);
+                a = b;
+            }
         }
     }
 }
