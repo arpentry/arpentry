@@ -8,10 +8,13 @@
 //!   edge that is declared.
 //! - [`junction`]: pieces merge into one surface where they meet and stay
 //!   apart where they cross.
+//! - [`census`]: what all of them owe together — nothing drawn is open,
+//!   stands up, folds, fights or is buried.
 //!
 //! A check whose rule is not built yet is `#[ignore]`d with the rule it
 //! names, so `cargo test -- --ignored` is the list of what is still open.
 
+mod census;
 mod ground;
 mod junction;
 mod spans;

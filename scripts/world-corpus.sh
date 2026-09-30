@@ -1,6 +1,9 @@
 #!/bin/bash
 # Runs the world crate's specimen corpus and the Montreux junction box, and
-# writes one summary line file (and one .glb) per specimen into OUTDIR.
+# writes one summary line file, one .glb and one census per specimen into
+# OUTDIR. The census line is the last of each .txt, so world-sdiff.py reads
+# what a viewer would see move beside what each step reports; the
+# .census.json locates every defect (scripts/preview-world.sh draws it).
 #
 #   scripts/world-corpus.sh [BIN] OUTDIR
 #
@@ -23,7 +26,7 @@ mkdir -p "$OUT"
 BB=6.91,46.43,6.93,46.44
 run() {
     name=$1; shift
-    "$BIN" --bbox $BB --spacing 5 --output "$OUT/$name.glb" "$@" 2>&1 \
+    "$BIN" --bbox $BB --spacing 5 --output "$OUT/$name.glb" --census "$OUT/$name.census.json" "$@" 2>&1 \
         | sed -E 's/  [0-9.]+s$//; s/  [0-9.]+s  .*//' > "$OUT/$name.txt"
 }
 run cross       --terrain 'ramp?grade=0.15&bearing=45' --segments net:cross

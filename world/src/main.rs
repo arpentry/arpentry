@@ -4,14 +4,16 @@
 //! arpentry_world --bbox w,s,e,n --zone DIR [--output FILE.glb] [--svg FILE.svg]
 //!                [--terrain PATH|SPEC] [--segments PATH|SPEC] [--buildings PATH|SPEC|none]
 //!                [--view x0,y0,x1,y1] [--spacing M] [--max-vertices N] [--until STEP]
-//!                [--outlines] [--dump DIR] [--from STEP --load DIR]
+//!                [--outlines] [--dump DIR] [--from STEP --load DIR] [--census FILE.json]
 //! ```
 //!
 //! Runs the steps in order, prints one line per step, stops after `--until`,
 //! and writes what was built: the 3D world as glTF, the plan as SVG, both,
 //! or neither — the lines alone are a gate. `--dump` keeps every layer it
 //! builds, and `--from` starts at one step with the layers before it read
-//! back from `--load`.
+//! back from `--load`. Once the bench has run the last line is the
+//! census ([`arpentry_world::census`]): what a viewer of the drawn world
+//! would see wrong, by species; `--census` writes every defect, located.
 //! The bbox is required and never inferred from the data: a cut zone holds
 //! the zone plus a margin.
 
@@ -25,6 +27,7 @@ use arpentry_world::frame::Rect;
 use arpentry_world::pipeline::{self, Ran, Range, Sources};
 use arpentry_world::step::Step;
 use arpentry_world::world::World;
+use arpentry_world::census::Census;
 use arpentry_world::{facade, gltf, net, svg};
 
 struct Args {
@@ -47,12 +50,14 @@ struct Args {
     load: Option<PathBuf>,
     /// Write the construction layers into the GLB as `LINES`.
     outlines: bool,
+    /// Where the census writes every defect it found, as JSON.
+    census: Option<PathBuf>,
 }
 
 const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output FILE.glb] [--svg FILE.svg]
        [--terrain PATH|SPEC] [--segments PATH|SPEC] [--buildings PATH|SPEC|none]
        [--view x0,y0,x1,y1] [--spacing M] [--max-vertices N] [--until STEP] [--outlines]
-       [--dump DIR] [--from STEP --load DIR]
+       [--dump DIR] [--from STEP --load DIR] [--census FILE.json]
 
   --bbox          the world's bounds in degrees (required; never inferred from the data)
   --zone DIR      a cut zone: DIR/terrain.pmtiles, DIR/segment.parquet and, if present, DIR/building.parquet
@@ -85,6 +90,8 @@ const USAGE: &str = "usage: arpentry_world --bbox w,s,e,n --zone DIR [--output F
                   across the model. The plan view answers the same question in 2D.
   --output FILE   the .glb to write
   --svg FILE      the plan view to write, one SVG group per step
+  --census FILE   every defect the census found in the drawn world, located, as JSON
+                  (the census line itself is printed whenever the bench has run)
   --view x0,y0,x1,y1  the window the plan shows, in local metres (default: the bbox)
 Without --output or --svg the run prints its lines and writes nothing else.";
 
@@ -127,6 +134,15 @@ fn run(args: &Args) -> Result<(), String> {
         }
         t = Instant::now();
     })?;
+    if world.bench.is_some() {
+        let t = Instant::now();
+        let census = Census::take(&world);
+        println!("{:<8} {}  {:.2}s", "census", census.summary(), t.elapsed().as_secs_f64());
+        if let Some(path) = &args.census {
+            let text = serde_json::to_string_pretty(&census).map_err(|e| e.to_string())?;
+            std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+    }
     if let Some(output) = &args.output {
         let t = Instant::now();
         let glb = gltf::write_glb(&world, args.outlines);
@@ -158,6 +174,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut dump = None;
     let mut load = None;
     let mut outlines = false;
+    let mut census = None;
     while let Some(flag) = it.next() {
         match flag.as_str() {
             "--bbox" => bbox = Some(parse_bbox(&value(&mut it, "--bbox")?)?),
@@ -177,6 +194,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--dump" => dump = Some(PathBuf::from(value(&mut it, "--dump")?)),
             "--load" => load = Some(PathBuf::from(value(&mut it, "--load")?)),
             "--outlines" => outlines = true,
+            "--census" => census = Some(PathBuf::from(value(&mut it, "--census")?)),
             "-h" | "--help" => return Err("help".into()),
             other => return Err(format!("unknown flag {other}")),
         }
@@ -208,7 +226,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     if let Some(spec) = buildings.as_ref().and_then(|b| b.to_str()).filter(|s| facade::is_spec(s)) {
         facade::parse(spec).map_err(|e| format!("invalid --buildings: {e}"))?;
     }
-    Ok(Args { bbox, terrain, segments, buildings, output, svg, view, spacing, max_vertices, until, from, dump, load, outlines })
+    Ok(Args { bbox, terrain, segments, buildings, output, svg, view, spacing, max_vertices, until, from, dump, load, outlines, census })
 }
 
 /// A synthetic terrain spec without an origin takes the bbox centre, and the

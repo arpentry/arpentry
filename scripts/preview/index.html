@@ -22,6 +22,18 @@
            border-radius: 4px; }
   button:hover { background: rgba(255,255,255,.16); }
   .dim { opacity: .55; }
+  #census { position: fixed; top: 10px; right: 10px; width: 340px; padding: 8px 10px;
+            border-radius: 6px; background: rgba(20,20,22,.82); color: #e8e6e1;
+            backdrop-filter: blur(6px); display: none; }
+  #species label { display: inline-block; margin-right: 8px; cursor: pointer; }
+  #species i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; }
+  #defects { margin-top: 6px; max-height: 45vh; overflow-y: auto;
+             border-top: 1px solid rgba(255,255,255,.14); padding-top: 4px; }
+  #defects div { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .85; }
+  #defects div:hover { opacity: 1; background: rgba(255,255,255,.06); }
+  #defects div.on { background: rgba(255,255,255,.14); opacity: 1; }
+  #defects .real { color: #ff9d8a; } #defects .fine { color: #8fd694; }
+  #detail { margin-top: 6px; white-space: pre-wrap; border-top: 1px solid rgba(255,255,255,.14); padding-top: 4px; user-select: text; }
 </style>
 
 <div id="hud">
@@ -32,6 +44,20 @@
     <button id="watch">watching</button>
   </div>
   <div id="layers"></div>
+</div>
+
+<!-- The census (world/src/census.rs): every defect the drawn world has, to
+     look at. n/p step through the list, r and f record a verdict — real, or
+     fine — kept in this browser, c clears the selected one's, `verdicts`
+     saves them for the census's calibration and `clear` forgets them all. -->
+<div id="census">
+  <div id="csum"></div>
+  <div id="species"></div>
+  <div class="row">
+    <button id="cprev">prev (p)</button><button id="cnext">next (n)</button><button id="cexport">verdicts</button><button id="cclear">clear</button>
+  </div>
+  <div id="defects"></div>
+  <div id="detail" class="dim"></div>
 </div>
 
 <script type="importmap">
@@ -49,6 +75,8 @@ import { MapControls } from 'three/addons/controls/MapControls.js';
 // `?src=` lets one server preview several files; the script symlinks the
 // chosen .glb to model.glb, so that is the default.
 const SRC = new URLSearchParams(location.search).get('src') || 'model.glb';
+// The census the run wrote beside it (`--census`); the page does without.
+const CENSUS = new URLSearchParams(location.search).get('census') || 'census.json';
 const POLL_MS = 1500;
 
 const statusEl = document.getElementById('status');
@@ -280,6 +308,203 @@ function load(tag) {
   });
 }
 
+// ---------------------------------------------------------------- census
+
+const SPECIES = {
+  gap:     { color: 0xff4d4d, on: true },
+  fin:     { color: 0xffa600, on: true },
+  flip:    { color: 0xe052ff, on: true },
+  buried:  { color: 0xffd23f, on: true },
+  fight:   { color: 0x3fd8ff, on: true },
+  overlap: { color: 0x5a7dff, on: true },
+  crack:   { color: 0x9a9a9a, on: false },
+};
+const censusEl = document.getElementById('census');
+const defectsEl = document.getElementById('defects');
+const detailEl = document.getElementById('detail');
+let census = null, overlay = null, marker = null, list = [], at = -1;
+// Verdicts by a defect's identity: its species and where it is, to the
+// centimetre, so a verdict survives a rebuild that did not move it.
+const idOf = d => `${d.species}@${d.at.map(v => v.toFixed(2)).join(',')}`;
+const verdicts = JSON.parse(localStorage.getItem('census-verdicts') || '{}');
+const saveVerdicts = () => localStorage.setItem('census-verdicts', JSON.stringify(verdicts));
+
+// glTF is Y-up: local (east, north, up) is drawn at (east, up, -north).
+const v3 = p => new THREE.Vector3(p[0], p[2], -p[1]);
+
+function drawCensus() {
+  if (overlay) { scene.remove(overlay); dispose(overlay); }
+  overlay = new THREE.Group();
+  if (!census) return;
+  for (const [name, sp] of Object.entries(SPECIES)) {
+    if (!sp.on) continue;
+    const ds = census.defects.filter(d => d.species === name);
+    const seg = [], tri = [], pts = [];
+    for (const d of ds) {
+      for (const [a, b] of d.lines) seg.push(...v3(a).toArray(), ...v3(b).toArray());
+      for (const t of d.triangles) for (const c of t) tri.push(...v3(c).toArray());
+      pts.push(...v3(d.at).toArray());
+    }
+    // Drawn through everything: a defect behind a wall is still a defect,
+    // and the list says where to stand to see it.
+    const mat = { color: sp.color, depthTest: false, transparent: true };
+    if (seg.length) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(seg, 3));
+      overlay.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial(mat)));
+    }
+    if (tri.length) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(tri, 3));
+      overlay.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ ...mat, opacity: 0.55, side: THREE.DoubleSide })));
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    overlay.add(new THREE.Points(g, new THREE.PointsMaterial({ ...mat, size: 6, sizeAttenuation: false })));
+  }
+  overlay.renderOrder = 10;
+  overlay.traverse(o => { o.renderOrder = 10; });
+  scene.add(overlay);
+}
+
+function describe(d) {
+  const unit = d.species === 'gap' || d.species === 'crack' ? 'm' : 'm²';
+  const w = d.species === 'gap' ? `  width ${d.width.toFixed(3)} m` : '';
+  return `${d.species}  ${d.size.toFixed(3)} ${unit}  rise ${d.rise.toFixed(2)} m${w}`;
+}
+
+function listCensus() {
+  if (!census) return;
+  censusEl.style.display = 'block';
+  const counts = {};
+  for (const d of census.defects) counts[d.species] = (counts[d.species] || 0) + 1;
+  const judged = Object.keys(verdicts).length;
+  document.getElementById('csum').textContent =
+    `census: ${census.defects.length} defects, ${census.tally.triangles.toLocaleString()} triangles, ${judged} judged`;
+  const speciesEl = document.getElementById('species');
+  speciesEl.innerHTML = '';
+  for (const [name, sp] of Object.entries(SPECIES)) {
+    const label = document.createElement('label');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = sp.on;
+    box.onchange = () => { sp.on = box.checked; drawCensus(); listCensus(); };
+    const sw = document.createElement('i');
+    sw.style.background = '#' + sp.color.toString(16).padStart(6, '0');
+    label.append(box, sw, `${name} ${counts[name] || 0}`);
+    speciesEl.append(label);
+  }
+  list = census.defects.filter(d => SPECIES[d.species]?.on);
+  defectsEl.innerHTML = '';
+  // The first few hundred: the list is sorted largest first, and a DOM row
+  // per crack of the loop box would cost more than it shows.
+  list.slice(0, 400).forEach((d, i) => {
+    const row = document.createElement('div');
+    row.textContent = `${describe(d)}  ${d.layers.join('+')}`;
+    const v = verdicts[idOf(d)];
+    if (v) row.className = v === 'real' ? 'real' : 'fine';
+    row.onclick = () => select(i);
+    defectsEl.append(row);
+  });
+  if (at >= list.length) at = -1;
+  if (at >= 0) highlight();
+}
+
+function highlight() {
+  [...defectsEl.children].forEach((row, i) => row.classList.toggle('on', i === at));
+  defectsEl.children[at]?.scrollIntoView({ block: 'nearest' });
+  const d = list[at];
+  if (!d) return;
+  const v = verdicts[idOf(d)];
+  detailEl.textContent = `${describe(d)}\n${d.layers.join(' + ')}  (${d.parts} parts)`
+    + `\nfaces ${d.faces.slice(0, 8).join(' ') || '-'}`
+    + `\nlocal ${d.at.map(v => v.toFixed(2)).join(', ')}`
+    + `\n${d.lat.toFixed(6)}, ${d.lon.toFixed(6)}`
+    + `\nverdict: ${v || 'none'}  (r real, f fine, c clear)`;
+  if (marker) { scene.remove(marker); dispose(marker); }
+  const g = new THREE.BufferGeometry().setFromPoints([v3(d.at)]);
+  marker = new THREE.Points(g, new THREE.PointsMaterial({ color: 0xffffff, size: 16, sizeAttenuation: false, depthTest: false }));
+  marker.renderOrder = 11;
+  scene.add(marker);
+}
+
+/// Stand where the defect fills a good part of the view, looking at it
+/// from the side the camera already faces.
+function select(i) {
+  if (!list.length) return;
+  at = (i + list.length) % list.length;
+  const d = list[at];
+  const reach = d.species === 'gap' || d.species === 'crack' ? Math.min(d.size, 60) : Math.sqrt(d.size) * 3;
+  const dist = THREE.MathUtils.clamp(reach * 1.5, 4, 400);
+  const aim = v3(d.at);
+  const dir = camera.position.clone().sub(controls.target).normalize();
+  if (dir.y < 0.35) { dir.y = 0.35; dir.normalize(); }
+  controls.target.copy(aim);
+  camera.position.copy(aim).addScaledVector(dir, dist);
+  controls.update();
+  highlight();
+}
+
+function judge(v) {
+  const d = list[at];
+  if (!d) return;
+  if (v) verdicts[idOf(d)] = v; else delete verdicts[idOf(d)];
+  saveVerdicts();
+  listCensus();
+  highlight();
+}
+
+// Forgetting every verdict takes two clicks: the first arms the button for
+// a few seconds, the second clears. No browser dialog.
+const clearBtn = document.getElementById('cclear');
+let clearArmed = null;
+clearBtn.onclick = () => {
+  if (!clearArmed) {
+    clearBtn.textContent = 'sure?';
+    clearArmed = setTimeout(() => { clearArmed = null; clearBtn.textContent = 'clear'; }, 3000);
+    return;
+  }
+  clearTimeout(clearArmed);
+  clearArmed = null;
+  clearBtn.textContent = 'clear';
+  for (const id of Object.keys(verdicts)) delete verdicts[id];
+  saveVerdicts();
+  listCensus();
+  highlight();
+};
+
+document.getElementById('cnext').onclick = () => select(at + 1);
+document.getElementById('cprev').onclick = () => select(at - 1);
+document.getElementById('cexport').onclick = () => {
+  // Every verdict with the defect it was given to, as the census wrote it.
+  const byId = new Map(census ? census.defects.map(d => [idOf(d), d]) : []);
+  const out = Object.entries(verdicts).map(([id, v]) => {
+    const d = byId.get(id);
+    return { id, verdict: v, ...(d ? { species: d.species, at: d.at, size: d.size, rise: d.rise, width: d.width, layers: d.layers, faces: d.faces } : {}) };
+  });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1)], { type: 'application/json' }));
+  a.download = 'census-verdicts.json';
+  a.click();
+};
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'n') select(at + 1);
+  else if (e.key === 'p') select(at - 1);
+  else if (e.key === 'r') judge('real');
+  else if (e.key === 'f') judge('fine');
+  else if (e.key === 'c') judge(null);
+});
+
+async function loadCensus(tag) {
+  try {
+    const r = await fetch(`${CENSUS}?v=${encodeURIComponent(tag)}`, { cache: 'no-store' });
+    census = r.ok ? await r.json() : null;
+  } catch { census = null; }
+  drawCensus();
+  listCensus();
+}
+
 async function swap(tag, why) {
   const t0 = performance.now();
   say(`${why}…`);
@@ -292,6 +517,8 @@ async function swap(tag, why) {
   layers(root);
   if (keep) { camera.position.copy(keep.pos); controls.target.copy(keep.aim); controls.update(); }
   else frame();
+  // The run writes the census before the .glb, so it is current by now.
+  await loadCensus(tag);
   const secs = ((performance.now() - t0) / 1000).toFixed(1);
   say(`${SRC}\n${countTriangles(root).toLocaleString()} triangles, ${secs}s`
       + `\nnormals computed for ${computed} meshes`

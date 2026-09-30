@@ -28,6 +28,7 @@
 
 pub mod arrangement;
 pub mod bench;
+pub mod census;
 pub mod building;
 pub mod copies;
 pub mod crossing;

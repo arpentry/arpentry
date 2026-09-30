@@ -260,6 +260,29 @@ legs, and `room` reads its surface. The `fillet` step is **deleted**:
 (`bends`). Its "First slice: status" section has the A/B and what comes
 next.
 
+**The census is the check every change answers to** (`world/src/census.rs`,
+2026-09-30). Each step checks the layer it built; the census checks the
+triangles a viewer draws, which is where a fix that is right for one step
+and moves the defect into the next shows up. It runs after every world that
+reached the bench, prints the `census` line last, and `--census FILE.json`
+writes every defect, located (local metres and lat/lon), with its layers,
+its arrangement faces and its edges or triangles. Species: `gap` (an open
+edge you can see through, with its `width`), `fin` (paved, 45° steeper than
+the terrain under it), `flip`, `buried` (ground over paving), `fight`
+(two surfaces within 5 cm), `overlap`; `crack` (T-junctions) is counted,
+not charged, and anything under 0.01 m² is a `speck`. **Read a defect's
+coordinates, not its count**: the loop box reads ~1 000 gaps and ~4 500
+fins, most of them unexamined. `scripts/preview-world.sh X.glb` draws
+`X.census.json` over the model with a list to step through (n/p) and a
+verdict per defect (r real, f fine, c clears it; `verdicts` saves them,
+`clear` forgets them all) — **judging
+what a defect looks like is the human's job**; the model's vision misses
+detail at this scale. `specs/census.rs` asserts the corpus specimens read
+clean, with the open ones `#[ignore]`d. Before a fix, run the census on the
+specimen or box it is about; after it, the census line in
+`world-sdiff.py` says what moved everywhere else. 16 s on the loop box,
+0.2 s on a specimen, byte-deterministic.
+
 `world/` builds a tile-free 3D world for one bounding box, one verifiable
 step at a time, and writes it as a binary glTF. It borrows only the source
 readers from `server/`; the model is rebuilt from the raw sources, step by

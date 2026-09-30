@@ -4,6 +4,12 @@
 #   ./scripts/preview-world.sh                       # /tmp/claude/world.glb
 #   ./scripts/preview-world.sh /tmp/claude/town.glb
 #   ./scripts/preview-world.sh out.glb --port 9000
+#   ./scripts/preview-world.sh out.glb --census out.census.json
+#
+# A run's `--census FILE` (by default the .glb's name with .census.json) is
+# drawn over the model: every defect in its species' colour, a list to step
+# through (n / p), and a verdict per defect (r real, f fine, c clear) kept
+# in the browser, saved with the `verdicts` button and forgotten with `clear`.
 #
 # Leave the page open. Rebuild the .glb in another shell and it reloads by
 # itself, keeping the camera where you left it:
@@ -29,11 +35,13 @@
 set -euo pipefail
 
 GLB=""
+CENSUS=""
 PORT=8777
 OPEN=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --port)    PORT="${2:?--port needs a number}"; shift 2;;
+    --census)  CENSUS="${2:?--census needs a path}"; shift 2;;
     --no-open) OPEN=0; shift;;                      # over ssh, or under a test
     -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0;;
     -*)        echo "error: unknown flag $1" >&2; exit 2;;
@@ -56,6 +64,12 @@ SERVE="$(mktemp -d "${TMPDIR:-/tmp}/arpentry-preview.XXXXXX")"
 trap 'rm -rf "$SERVE"' EXIT
 ln -s "$PAGE" "$SERVE/index.html"
 ln -s "$GLB"  "$SERVE/model.glb"
+# The census the run wrote with `--census`: by default the .glb's name with
+# .census.json for .glb. Linked whether or not it exists yet; the page draws
+# it when it is there and does without when it is not.
+CENSUS="${CENSUS:-${GLB%.glb}.census.json}"
+case "$CENSUS" in /*) ;; *) CENSUS="$PWD/$CENSUS";; esac
+ln -s "$CENSUS" "$SERVE/census.json"
 
 URL="http://localhost:$PORT/"
 echo "serving $(basename "$GLB") at $URL  (ctrl-c to stop)"
