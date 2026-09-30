@@ -275,13 +275,17 @@ mod tests {
         // that drape take two rules, and the edge between them is split with
         // a face on it rather than stretched across — so it is a wall and
         // not a step.
-        // Meshed cut-first, the band has no needle across the place where
-        // its face meets its drape on the outline, and the two meet within a
-        // kerb's rise and weld: no edge steps and none is split. (Meshed from
-        // the clipper's ears, a needle there read one step of 0.55 m, a
-        // square metre of split and a 0.68 m face.)
+        // The face and the drape meet at one height, with no step and no
+        // split face between them, for two reasons that each had to go. The
+        // drape is passive, so it takes the engineered ground, and behind the
+        // plateau's outline that is the face's own pin spent at 1 in 1
+        // (`ground::BEHIND_M`) — while the batter was refused outright behind
+        // the outline, the two stood apart there. And meshed cut-first, no
+        // needle crosses the place where they meet. Before either, one edge a
+        // centimetre wide stepped 0.55 m there, and a square metre of split
+        // face and a 0.68 m face closed the rest.
         assert!(s.num("step") == 0.0 && s.num("worst") == 0.0, "{s}");
-        assert!(s.num("kerb_max") < 4.0, "{s}");
+        assert!(s.num("split_m2") < 0.5 && s.num("kerb_max") < 4.0, "{s}");
         // The wall stands where the hill outruns the face, not at the kerb:
         // every face taller than a kerb is out beyond the plateau.
         for q in b.kerb.positions.chunks_exact(4) {

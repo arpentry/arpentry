@@ -64,6 +64,13 @@ const EARTH_REACH_M: f64 = EARTHWORK_BATTER * MAX_BATTER_FACE_M;
 /// segment hands over to the next where the nearest changes ([`Ground`]).
 const EARTH_BLEND_M: f64 = 1.0;
 
+/// What a metre behind an outline segment, across the room from it, adds to
+/// the distance its batter is read at ([`Ground::residual`]): enough that the
+/// batter falls there at 1 in 1 — the steepest face the lift lets a surface
+/// stand ([`crate::earthwork::STEP_GRADE`]) — instead of 1 in
+/// [`EARTHWORK_BATTER`], so a pin of one face is spent one face behind.
+const BEHIND_M: f64 = EARTHWORK_BATTER - 1.0;
+
 impl Ground {
     /// The ground benched to the room's outline: one segment per outline
     /// edge of the one mesh, as `(a, b, [room, natural] at a, the same at
@@ -98,13 +105,28 @@ impl Ground {
             // **A batter does not cross the room.** The outline runs with the
             // room on its left, so a point whose foot is inside a segment and
             // which lies on the segment's left is across the paving from it.
-            // Beyond a segment's end its batter is its end vertex's, which a
-            // neighbouring segment shares, so a corner stays continuous.
+            // How deep it is, `behind`, is the least of its distance off the
+            // segment's line and its distance in from either end, so it is
+            // nothing on the segment, on its right and beyond its ends — where
+            // the batter is its end vertex's, which a neighbouring segment
+            // shares — and grows continuously from there. The segment's batter
+            // is spent across the room at 1 in 1 rather than 1 in
+            // `EARTHWORK_BATTER` ([`BEHIND_M`]), which reaches nothing past one
+            // face.
+            //
+            // **It was a hard cut**, and a cut is a jump for any point on the
+            // room's side of a segment that asks the ground at all: passive
+            // pavement, which is paving but takes this field, lies there
+            // wherever it meets the room beyond a kerb's end. On `net:stub`
+            // over a 30 % ramp two corners of one footway triangle, 0.46 m
+            // apart either side of the line through a kerb's end, read -1.63
+            // and -2.28, and the census charged the triangle as a fin
+            // (0.70 m²).
             let (a, b) = self.at.seg[i];
+            let len = (b[0] - a[0]).hypot(b[1] - a[1]);
             let left = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
-            if t > 0.0 && t < 1.0 && left > 0.0 {
-                return;
-            }
+            let behind = if len > 0.0 { (left / len).min(t.min(1.0 - t) * len).max(0.0) } else { 0.0 };
+            let d = d + BEHIND_M * behind;
             let (ea, eb) = self.e[i];
             let e = ea + (eb - ea) * t;
             near.push((e.signum() * (e.abs() - d / EARTHWORK_BATTER).max(0.0), d));
@@ -137,6 +159,69 @@ impl Ground {
     /// The engineered height at `p`, whose natural ground is `natural`.
     pub fn at(&self, p: Pt, natural: f64) -> f64 {
         natural + self.residual(p)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::portal::Portals;
+
+    /// A ground of one segment per edge, `(a, b, pin at a, pin at b)`, over
+    /// a natural ground at 0.
+    fn ground(edges: &[(Pt, Pt, f64, f64)]) -> Ground {
+        let edges: Vec<_> = edges.iter().map(|&(a, b, ea, eb)| (a, b, [ea, 0.0], [eb, 0.0])).collect();
+        Ground::of_edges(&edges, &Portals::default())
+    }
+
+    /// **The residual is continuous on the room's side of a segment too.**
+    /// Passive pavement is paving that takes the ground's field, so it asks
+    /// the field on the room's side of the outline: the footway beyond the
+    /// end of a stub's kerb, where the kerb runs on and the footway turns in
+    /// behind it. A batter simply refused there steps on the line through
+    /// the kerb's end — 2 m across a fifth of a millimetre here, and a fin
+    /// wherever a footway's triangle straddled it.
+    #[test]
+    fn the_residual_does_not_step_behind_a_kerb_s_end() {
+        // A kerb along y = 0 ending at x = 10, the room north of it, pinned
+        // two metres of fill.
+        let g = ground(&[([0.0, 0.0], [10.0, 0.0], 2.0, 2.0)]);
+        for y in [0.0, 1e-3, 0.3, 0.5, 1.0, 2.0] {
+            let (before, after) = (g.residual([10.0 - 1e-4, y]), g.residual([10.0 + 1e-4, y]));
+            assert!((before - after).abs() < 1e-3, "at y = {y}: {before:.4} before the kerb's end, {after:.4} past it");
+        }
+        // And across the segment's own line, inside its ends.
+        for x in [0.01, 0.3, 5.0, 9.7, 9.99] {
+            let (room, ground) = (g.residual([x, 1e-4]), g.residual([x, -1e-4]));
+            assert!((room - ground).abs() < 1e-3, "at x = {x}: {room:.4} on the room's side, {ground:.4} on the ground's");
+        }
+    }
+
+    /// Nowhere about a kerb's end does the residual climb faster than one
+    /// in one: in front of it the batter falls at 1 in `EARTHWORK_BATTER`,
+    /// behind it at 1 in 1, and between the two it is continuous. Sampled
+    /// on a grid 5 cm apart.
+    #[test]
+    fn the_residual_about_a_kerb_s_end_is_no_steeper_than_one_in_one() {
+        let g = ground(&[([0.0, 0.0], [10.0, 0.0], 3.0, 3.0)]);
+        let h = 0.05;
+        let mut worst = (0.0f64, [0.0, 0.0]);
+        for i in 0..=200 {
+            for j in 0..=200 {
+                let p = [5.0 + i as f64 * h, -5.0 + j as f64 * h];
+                let r = g.residual(p);
+                for q in [[p[0] + h, p[1]], [p[0], p[1] + h]] {
+                    let grade = (g.residual(q) - r).abs() / h;
+                    if grade > worst.0 {
+                        worst = (grade, p);
+                    }
+                }
+            }
+        }
+        assert!(worst.0 <= 1.0 + 1e-6, "the residual climbs {:.3} m/m at {:?}", worst.0, worst.1);
+        // Behind the kerb the pin is spent one face in, not a batter's run.
+        assert_eq!(g.residual([5.0, 3.0]), 0.0);
+        assert!((g.residual([5.0, 1.0]) - 2.0).abs() < 1e-9);
     }
 }
 
