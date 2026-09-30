@@ -5,6 +5,11 @@
 #   ./scripts/preview-world.sh /tmp/claude/town.glb
 #   ./scripts/preview-world.sh out.glb --port 9000
 #   ./scripts/preview-world.sh out.glb --census out.census.json
+#   ./scripts/preview-world.sh base.glb --compare ramp=a/x.glb --compare wall=b/x.glb
+#
+# `--compare LABEL=GLB` loads another build of the same place beside the
+# watched one (its census is GLB's name with .census.json); `x` cycles the
+# builds in place, same camera, and the census follows the build shown.
 #
 # A run's `--census FILE` (by default the .glb's name with .census.json) is
 # drawn over the model: every defect in its species' colour, a list to step
@@ -36,12 +41,16 @@ set -euo pipefail
 
 GLB=""
 CENSUS=""
+COMPARE=()
+LABEL="current"
 PORT=8777
 OPEN=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --port)    PORT="${2:?--port needs a number}"; shift 2;;
     --census)  CENSUS="${2:?--census needs a path}"; shift 2;;
+    --compare) COMPARE+=("${2:?--compare needs LABEL=GLB}"); shift 2;;
+    --label)   LABEL="${2:?--label needs a name}"; shift 2;;
     --no-open) OPEN=0; shift;;                      # over ssh, or under a test
     -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0;;
     -*)        echo "error: unknown flag $1" >&2; exit 2;;
@@ -70,6 +79,24 @@ ln -s "$GLB"  "$SERVE/model.glb"
 CENSUS="${CENSUS:-${GLB%.glb}.census.json}"
 case "$CENSUS" in /*) ;; *) CENSUS="$PWD/$CENSUS";; esac
 ln -s "$CENSUS" "$SERVE/census.json"
+
+# models.json lists the watched build first, then the ones to compare.
+if [ ${#COMPARE[@]} -gt 0 ]; then
+  {
+    printf '[{"label":"%s","glb":"model.glb","census":"census.json"}' "$LABEL"
+    i=0
+    for pair in "${COMPARE[@]}"; do
+      label="${pair%%=*}"; glb="${pair#*=}"
+      case "$glb" in /*) ;; *) glb="$PWD/$glb";; esac
+      [ -e "$glb" ] || { echo "error: $glb does not exist" >&2; exit 1; }
+      ln -s "$glb" "$SERVE/compare-$i.glb"
+      ln -s "${glb%.glb}.census.json" "$SERVE/compare-$i.census.json"
+      printf ',{"label":"%s","glb":"compare-%s.glb","census":"compare-%s.census.json"}' "$label" "$i" "$i"
+      i=$((i + 1))
+    done
+    printf ']\n'
+  } > "$SERVE/models.json"
+fi
 
 URL="http://localhost:$PORT/"
 echo "serving $(basename "$GLB") at $URL  (ctrl-c to stop)"

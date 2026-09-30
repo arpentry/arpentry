@@ -10,6 +10,7 @@
          background: rgba(20,20,22,.82); color: #e8e6e1; max-width: 250px;
          backdrop-filter: blur(6px); }
   #status { white-space: pre-wrap; }
+  #variant { margin-top: 6px; font-weight: 600; color: #ffd27a; cursor: pointer; }
   #status.err { color: #ff8a7a; }
   #layers { margin-top: 8px; max-height: 60vh; overflow-y: auto;
             border-top: 1px solid rgba(255,255,255,.14); padding-top: 6px; }
@@ -39,6 +40,7 @@
 <div id="hud">
   <div id="status">starting…</div>
   <div id="cam" class="dim"></div>
+  <div id="variant"></div>
   <div class="row">
     <button id="frame">frame</button>
     <button id="watch">watching</button>
@@ -275,17 +277,15 @@ function countTriangles(node) {
 
 const loader = new GLTFLoader();
 
-function load(tag) {
-  return new Promise((resolve, reject) => {
-    loader.load(
-      `${SRC}?v=${encodeURIComponent(tag)}`,
-      gltf => {
-        // `gltf::triangles` writes POSITION alone and leans on the
-        // material's baseColorFactor, so most layers arrive with no
-        // normals at all and would shade flat black. The ground is the
-        // exception — it carries NORMAL and COLOR_0.
-        let computed = 0;
-        gltf.scene.traverse(o => {
+/// Makes a loaded model show what the file says; how many meshes had their
+/// normals computed.
+function prepare(model) {
+  // `gltf::triangles` writes POSITION alone and leans on the material's
+  // baseColorFactor, so most layers arrive with no normals at all and
+  // would shade flat black. The ground is the exception — it carries
+  // NORMAL and COLOR_0.
+  let computed = 0;
+  model.traverse(o => {
           // glTF: "when normals are not specified, client implementations
           // MUST calculate flat normals", and `gltf::triangles` leans on
           // that — a mesh of planar pieces wants its faces flat. Three.js
@@ -293,15 +293,21 @@ function load(tag) {
           // every face sharing a vertex instead, so a wall swept along an
           // outline came out smeared and read as a defect it is not. The
           // de-index is what makes the page show what the file says.
-          if (o.isMesh && !o.geometry.attributes.normal) {
-            if (o.geometry.index) o.geometry = o.geometry.toNonIndexed();
-            o.geometry.computeVertexNormals();
-            computed++;
-          }
-          if (o.isMesh) for (const m of [o.material].flat()) if (m) m.side = THREE.DoubleSide;
-        });
-        resolve({ model: gltf.scene, computed });
-      },
+    if (o.isMesh && !o.geometry.attributes.normal) {
+      if (o.geometry.index) o.geometry = o.geometry.toNonIndexed();
+      o.geometry.computeVertexNormals();
+      computed++;
+    }
+    if (o.isMesh) for (const m of [o.material].flat()) if (m) m.side = THREE.DoubleSide;
+  });
+  return computed;
+}
+
+function load(tag) {
+  return new Promise((resolve, reject) => {
+    loader.load(
+      `${SRC}?v=${encodeURIComponent(tag)}`,
+      gltf => resolve({ model: gltf.scene, computed: prepare(gltf.scene) }),
       p => { if (p.total) say(`loading ${(100 * p.loaded / p.total).toFixed(0)} %`); },
       reject,
     );
@@ -323,11 +329,70 @@ const censusEl = document.getElementById('census');
 const defectsEl = document.getElementById('defects');
 const detailEl = document.getElementById('detail');
 let census = null, overlay = null, marker = null, list = [], at = -1;
+// ------------------------------------------------------------- compare
+//
+// `preview-world.sh X.glb --compare ramp=A.glb --compare wall=B.glb` writes
+// models.json: the watched model first, then the builds to compare with it,
+// each with its census. All are loaded, one is shown, and `x` cycles them
+// in place — same camera, same place — so the difference is what changes
+// on screen. The census overlay and list follow the build shown.
+let variants = [];          // [{ label, root, census }] after the first
+let mainLabel = '';
+let mainCensus = null;
+let showing = 0;            // 0 is the watched model
+const variantEl = document.getElementById('variant');
+variantEl.onclick = () => show(showing + 1);
+
+async function loadVariants() {
+  let m;
+  try {
+    const r = await fetch('models.json', { cache: 'no-store' });
+    if (!r.ok) return;
+    m = await r.json();
+  } catch { return; }
+  mainLabel = m[0].label;
+  for (const v of m.slice(1)) {
+    const gltf = await new Promise((res, rej) => loader.load(`${v.glb}?v=${Date.now()}`, res, undefined, rej));
+    prepare(gltf.scene);
+    gltf.scene.visible = false;
+    scene.add(gltf.scene);
+    let c = null;
+    try {
+      const rc = await fetch(v.census, { cache: 'no-store' });
+      if (rc.ok) c = await rc.json();
+    } catch {}
+    variants.push({ label: v.label, root: gltf.scene, census: c });
+  }
+  show(0);
+}
+
+function show(i) {
+  const n = variants.length + 1;
+  showing = ((i % n) + n) % n;
+  if (root) root.visible = showing === 0;
+  variants.forEach((v, k) => {
+    v.root.visible = showing === k + 1;
+    // The layer toggles are the watched model's; mirror them.
+    for (const child of v.root.children) if (child.name && shown.has(child.name)) child.visible = shown.get(child.name);
+  });
+  census = showing === 0 ? mainCensus : variants[showing - 1].census;
+  if (variants.length) {
+    const names = [mainLabel, ...variants.map(v => v.label)];
+    variantEl.textContent = `${names[showing]}   (x: ${names.join(' / ')})`;
+  }
+  drawCensus();
+  listCensus();
+}
+
 // Verdicts by a defect's identity: its species and where it is, to the
 // centimetre, so a verdict survives a rebuild that did not move it.
 // The world is part of the identity: local metres mean nothing without the
 // bbox they are measured in, and one browser keeps verdicts for many sites.
-const worldOf = () => census ? census.bbox.map(v => v.toFixed(6)).join(',') : '';
+const worldOf = () => {
+  if (!census) return '';
+  const label = variants.length ? `${[mainLabel, ...variants.map(v => v.label)][showing]}@` : '';
+  return label + census.bbox.map(v => v.toFixed(6)).join(',');
+};
 const idOf = d => `${worldOf()}|${d.species}@${d.at.map(v => v.toFixed(2)).join(',')}`;
 const verdicts = JSON.parse(localStorage.getItem('census-verdicts') || '{}');
 const saveVerdicts = () => localStorage.setItem('census-verdicts', JSON.stringify(verdicts));
@@ -503,13 +568,15 @@ addEventListener('keydown', e => {
   else if (e.key === 'r') judge('real');
   else if (e.key === 'f') judge('fine');
   else if (e.key === 'c') judge(null);
+  else if (e.key === 'x') show(showing + 1);
 });
 
 async function loadCensus(tag) {
   try {
     const r = await fetch(`${CENSUS}?v=${encodeURIComponent(tag)}`, { cache: 'no-store' });
-    census = r.ok ? await r.json() : null;
-  } catch { census = null; }
+    mainCensus = r.ok ? await r.json() : null;
+  } catch { mainCensus = null; }
+  census = showing === 0 ? mainCensus : variants[showing - 1].census;
   drawCensus();
   listCensus();
 }
@@ -528,6 +595,7 @@ async function swap(tag, why) {
   else frame();
   // The run writes the census before the .glb, so it is current by now.
   await loadCensus(tag);
+  show(showing);
   const secs = ((performance.now() - t0) / 1000).toFixed(1);
   say(`${SRC}\n${countTriangles(root).toLocaleString()} triangles, ${secs}s`
       + `\nnormals computed for ${computed} meshes`
@@ -584,6 +652,7 @@ renderer.setAnimationLoop(() => { controls.update(); track(); renderer.render(sc
   try {
     current = await signature();
     await swap(current, 'loading');
+    await loadVariants();
   } catch (e) {
     say(`${e.message}\ncould not read ${SRC}`, true);
   }
