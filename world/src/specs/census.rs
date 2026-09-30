@@ -69,10 +69,13 @@ mod tests {
         clean("ramp?grade=0.15&bearing=45", "net:cross", None);
     }
 
-    /// Paved triangles 45° steeper than a 150 % flank, up to 13 m tall:
-    /// the ring and its legs pulled apart where the rules meet.
+    /// Paved triangles 45° steeper than a 150 % flank, up to 7.7 m tall. The
+    /// ring and its legs are two rules where their blend would climb past
+    /// one in one (`field::Joint::apart`: 86 fins, 197 m², to 13.5 m before);
+    /// what is left is a rule's own field bending across a triangle whose
+    /// corners lie nearer another road.
     #[test]
-    #[ignore = "fin 86"]
+    #[ignore = "fin 57"]
     fn a_roundabout_on_a_flank() {
         clean("ramp?grade=1.5&bearing=45&radius=100000", "net:roundabout", Some("house:row?gap=2"));
     }

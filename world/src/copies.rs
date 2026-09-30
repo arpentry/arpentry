@@ -155,10 +155,17 @@ impl Lift<'_> {
             (None, Some(g)) => (g, false),
             (None, None) => return Rule::FREE,
         };
+        let (axis, part) = (foot.axis, (foot.s / PART_M).floor() as i32);
         // Past the reach, a band standing more than one face from the road
-        // beside it is not that road's pavement at all and drapes.
-        let drape = self.walk && !self.near && (natural - (foot.h + self.rise)).abs() > MAX_BATTER_FACE_M;
-        Rule { chord, axis: foot.axis, part: (foot.s / PART_M).floor() as i32, drape }
+        // beside it is not that road's pavement at all and drapes — asked of
+        // the height this rule will give it, which parts the legs of a joint
+        // the positional blend still mixes ([`Field::on_axis`]).
+        let drape = self.walk && !self.near && {
+            let field = if chord { self.chords.unwrap_or(self.grounded) } else { self.grounded };
+            let h = field.on_axis(p, axis, part).map_or(foot.h, |f| f.h);
+            (natural - (h + self.rise)).abs() > MAX_BATTER_FACE_M
+        };
+        Rule { chord, axis, part, drape }
     }
 
     /// The height `rule` gives `p`, and the foot it read there.

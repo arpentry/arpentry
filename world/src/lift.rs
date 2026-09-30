@@ -44,7 +44,9 @@
 //! connector two or more axes share, the legs meeting there are blended
 //! ([`crate::field::Field::at`]): a warp in the junction, not a ramp between
 //! terraces. A road that meets another nowhere near is never blended with
-//! it, so the terraces keep their wall.
+//! it, so the terraces keep their wall; and two legs whose blend would stand
+//! the paving up steeper than one in one over their own grade are two rules
+//! with a face between them, not a warp (`field::Joint::apart`).
 
 use crate::copies::{boundaries, Copies, Fields, Rule, Stats, Surface};
 use crate::field::Foot;
