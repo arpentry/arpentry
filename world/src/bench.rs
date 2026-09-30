@@ -189,12 +189,37 @@ fn edge_faces(
         // Faced toward the lower side: `u → v` runs with `a` on its left, so
         // the edge is walked the other way when `b` is the higher.
         let (p, q) = (positions[e.u as usize], positions[e.v as usize]);
-        let (p, q, ph, pl, qh, ql) = if aa + ab >= ba + bb {
-            (p, q, aa.max(ba), aa.min(ba), ab.max(bb), ab.min(bb))
+        // **Where the two sides cross, the face is two triangles meeting at
+        // the crossing.** One quad from the higher to the lower height at
+        // each end has rails that are neither surface's rim when `a` is the
+        // higher at one end and `b` at the other: its top rail runs from
+        // one surface to the other, and both rims were left open — a bowtie
+        // of sky along the edge, up to 0.85 m wide, and 128 of the loop
+        // box's 145 `gap`s in the kerb layer. At the crossing the two rims
+        // are at one height, so each half closes its own step and faces its
+        // own lower side.
+        let (da, db) = (aa - ba, ab - bb);
+        let m2 = if da * db < 0.0 {
+            let t = da / (da - db);
+            let m = [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, 0.0];
+            let hm = aa + (ab - aa) * t;
+            let half = |tri: &mut Tri, s: [f64; 3], hi: f64, lo: f64, high_on_left: bool| {
+                if high_on_left {
+                    tri.face(s, m, [hi, lo], [hm, hm])
+                } else {
+                    tri.face(m, s, [hm, hm], [hi, lo])
+                }
+            };
+            half(&mut tri, p, aa.max(ba), aa.min(ba), da > 0.0) + half(&mut tri, q, ab.max(bb), ab.min(bb), db < 0.0)
         } else {
-            (q, p, ab.max(bb), ab.min(bb), aa.max(ba), aa.min(ba))
+            let (p, q, ph, pl, qh, ql) = if aa + ab >= ba + bb {
+                (p, q, aa.max(ba), aa.min(ba), ab.max(bb), ab.min(bb))
+            } else {
+                (q, p, ab.max(bb), ab.min(bb), aa.max(ba), aa.min(ba))
+            };
+            tri.face(p, q, [ph, pl], [qh, ql])
         };
-        let m2 = tri.face(p, q, [ph, pl], [qh, ql]);
+        let (ph, pl, qh, ql) = (aa.max(ba), aa.min(ba), ab.max(bb), ab.min(bb));
         out.m2 += m2;
         out.max = out.max.max(ph - pl).max(qh - ql);
         if ka.0 == kb.0 {

@@ -105,9 +105,10 @@ mod tests {
         clean("ridge?height=40&width=120", "net:straight?class=motorway", None);
     }
 
-    /// The kerb faces across the level crossing float off both surfaces.
+    /// The carriageway and the ballast cross in height across the level
+    /// crossing: the kerb face between them closes both rims only because
+    /// the edge rule splits it where they cross.
     #[test]
-    #[ignore = "gap 4"]
     fn a_level_crossing() {
         clean("ramp?grade=0.05", "net:level", None);
     }
