@@ -325,7 +325,10 @@ const detailEl = document.getElementById('detail');
 let census = null, overlay = null, marker = null, list = [], at = -1;
 // Verdicts by a defect's identity: its species and where it is, to the
 // centimetre, so a verdict survives a rebuild that did not move it.
-const idOf = d => `${d.species}@${d.at.map(v => v.toFixed(2)).join(',')}`;
+// The world is part of the identity: local metres mean nothing without the
+// bbox they are measured in, and one browser keeps verdicts for many sites.
+const worldOf = () => census ? census.bbox.map(v => v.toFixed(6)).join(',') : '';
+const idOf = d => `${worldOf()}|${d.species}@${d.at.map(v => v.toFixed(2)).join(',')}`;
 const verdicts = JSON.parse(localStorage.getItem('census-verdicts') || '{}');
 const saveVerdicts = () => localStorage.setItem('census-verdicts', JSON.stringify(verdicts));
 
@@ -477,10 +480,16 @@ document.getElementById('cnext').onclick = () => select(at + 1);
 document.getElementById('cprev').onclick = () => select(at - 1);
 document.getElementById('cexport').onclick = () => {
   // Every verdict with the defect it was given to, as the census wrote it.
+  // Verdicts from other worlds are kept with their id alone, which names
+  // their bbox; this world's carry the defect as the census wrote it, and
+  // its lat/lon, which any world can find again.
   const byId = new Map(census ? census.defects.map(d => [idOf(d), d]) : []);
   const out = Object.entries(verdicts).map(([id, v]) => {
     const d = byId.get(id);
-    return { id, verdict: v, ...(d ? { species: d.species, at: d.at, size: d.size, rise: d.rise, width: d.width, layers: d.layers, faces: d.faces } : {}) };
+    const [bbox] = id.includes('|') ? id.split('|') : [''];
+    return { id, verdict: v, bbox, source: d ? SRC : undefined,
+             ...(d ? { species: d.species, at: d.at, lat: d.lat, lon: d.lon, size: d.size, rise: d.rise,
+                       width: d.width, layers: d.layers, faces: d.faces } : {}) };
   });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1)], { type: 'application/json' }));
