@@ -58,6 +58,7 @@ pub mod poly;
 pub mod portal;
 pub mod profile;
 pub mod reference;
+pub mod relax;
 pub mod solve;
 pub mod ribbon;
 pub mod roads;

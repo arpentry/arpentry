@@ -15,7 +15,11 @@
 //! or that drapes past one, is passive**: it is not the road's
 //! cross-section, so it is the ground's — it takes the engineered ground,
 //! and a footpath leaving a street runs up the street's batter instead of
-//! standing on the terrain beside it (`regraded`).
+//! standing on the terrain beside it (`regraded`). Where two pins that
+//! disagree face each other across such a footpath, the batters fold into
+//! each other under it, and there the ground is relaxed into a ramp from one
+//! pin to the other instead ([`Ground::ramp`]; `ramps`, `ramp_grade`,
+//! `path_grade`).
 //!
 //! The faces that close what the ground cannot — the walls and the kerbs —
 //! are the bench step's.
@@ -249,7 +253,8 @@ pub fn run(terrain: &Terrain, mesh: &Mesh, arrangement: &Arrangement, lifted: &L
             (a, b, [t[0], natural(a)], [t[1], natural(b)])
         })
         .collect();
-    let ground = Ground::of_edges(&segments, portals);
+    let mut ground = Ground::of_edges(&segments, portals);
+    let ramps = ramp(mesh, arrangement, &copies, &mut ground);
     // The ground's copies at the engineered ground. The one mesh was built
     // at the natural ground, which is exactly [`Ground::at`]'s second
     // argument.
@@ -311,7 +316,159 @@ pub fn run(terrain: &Terrain, mesh: &Mesh, arrangement: &Arrangement, lifted: &L
         // Passive pavement vertices the earthwork moved off the raw DEM: a
         // footpath running up a street's batter rather than beside it.
         .with("regraded", format!("{regraded} to {regrade_m:.2}"));
+    let summary = ramps.report(summary, mesh, &ground);
     (Earthwork { copies, outline, cutting, top, ground, steps }, summary)
+}
+
+/// The ramps the ground was relaxed over, as the one mesh's triangles, and
+/// which of those are passive pavement.
+struct Ramps {
+    tris: Vec<[u32; 3]>,
+    path: Vec<bool>,
+    ramps: Vec<Vec<usize>>,
+    /// The vertices the ramps solved for, in order.
+    free: Vec<u32>,
+}
+
+/// Relaxes the ground where two of its batters fold into each other under a
+/// footpath ([`Ground::ramp`]): over every partition triangle that takes the
+/// engineered ground — the ground's own and the passive pavement's — holding
+/// the batter wherever the ground itself meets anything else, which is where
+/// its copy must stay the pin, and on the rect's border.
+fn ramp(mesh: &Mesh, arrangement: &Arrangement, copies: &Copies, ground: &mut Ground) -> Ramps {
+    let n = mesh.tri.positions.len();
+    let plan: Vec<Pt> = mesh.tri.positions.iter().map(|q| [q[0], q[1]]).collect();
+    let (mut tris, mut path) = (Vec::new(), Vec::new());
+    // Whether a vertex touches a triangle outside the field, and whether it
+    // has a ground copy at all ([`Copies::add_ground`]).
+    let mut held = vec![false; n];
+    let mut grounded = vec![false; n];
+    // The pavement's triangles are its part's in the one mesh's order, so the
+    // key a pavement triangle took is the next of its part's.
+    let mut paved = 0usize;
+    for (t, &f) in mesh.tri.indices.chunks_exact(3).zip(&mesh.of_face) {
+        let face = arrangement.face(f);
+        let surface = Surface::paved(face);
+        let passive = match surface {
+            Some(Surface::Near | Surface::Far) => {
+                paved += 1;
+                copies::passive(copies.pavement.face_key[paved - 1])
+            }
+            _ => false,
+        };
+        let t = [t[0], t[1], t[2]];
+        if arrangement.in_partition(f) && !face.cuts() {
+            for v in t {
+                grounded[v as usize] = true;
+            }
+        }
+        // A paved face that does not cut — a deck's, over the ground it
+        // spans — is paving all the same, and the ground under it is held;
+        // so is a gallery's, which cuts and is not paved.
+        if arrangement.in_partition(f) && ((surface.is_none() && !face.cuts()) || passive) {
+            tris.push(t);
+            path.push(passive);
+        } else {
+            for v in t {
+                held[v as usize] = true;
+            }
+        }
+    }
+    // A footpath's copy beside other paving is a split, with a face between
+    // the two, and is the ramp's to move; the ground's copy beside it is a
+    // pin.
+    let border = mesh.on_border();
+    for (v, h) in held.iter_mut().enumerate() {
+        *h = (*h && grounded[v]) || border(v as u32);
+    }
+    let (ramps, free) = ground.ramp(&crate::ground::Domain { plan: &plan, tris: &tris, path: &path, held: &held });
+    Ramps { tris, path, ramps, free }
+}
+
+impl Ramps {
+    /// How many ramps there are, how many of them carry a footpath, how many
+    /// vertices were relaxed, and how steep each footpath came out: the
+    /// residual's own grade across it (`ramp_grade`, the ramp) and the drawn
+    /// path's (`path_grade`, the natural ground and the ramp). A ramp's grade
+    /// is the one nine tenths of its footpath's area is no steeper than, over
+    /// its triangles larger than the census's speck with two corners the ramp
+    /// solved for; and the summary gives the median, the ninetieth percentile
+    /// and the steepest of those over the ramps.
+    ///
+    /// **Not the steepest triangle**: a triangle with a corner on a pin is
+    /// that pin's, and where two pins split one vertex — a paved corner the
+    /// ground meets at two heights — no ramp makes the triangles fanned round
+    /// it less steep than the split. Its steepest sliver read 64 m/m on
+    /// `net:driveway?d=9`, 1.4 m² of fin, and 75 m/m over the Montreux sites;
+    /// counted that way, the ramps' grade would be the splits'.
+    ///
+    /// **A steep ramp is the honest cost of this rule**: two pins three
+    /// metres apart in height and two apart in plan leave no surface between
+    /// them gentler than 1.5, and the ramp is the least steep of them.
+    fn report(&self, summary: Summary, mesh: &Mesh, ground: &Ground) -> Summary {
+        const SPECK_M2: f64 = 0.01;
+        let pos = &mesh.tri.positions;
+        let (mut grades, mut paths): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
+        let verbose = std::env::var_os("ARPENTRY_RAMPS").is_some();
+        // The grade nine tenths of `(grade, area)` is no steeper than.
+        let p90 = |mut v: Vec<(f64, f64)>| {
+            v.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let total: f64 = v.iter().map(|x| x.1).sum();
+            let mut seen = 0.0;
+            v.iter().find(|x| {
+                seen += x.1;
+                seen >= 0.9 * total
+            })
+            .map_or(0.0, |x| x.0)
+        };
+        for ramp in &self.ramps {
+            let (mut residual, mut drawn, mut at, mut steepest) = (Vec::new(), Vec::new(), [0.0; 2], 0.0f64);
+            for &t in ramp.iter().filter(|&&t| self.path[t]) {
+                let solved = self.tris[t].iter().filter(|v| self.free.binary_search(v).is_ok()).count();
+                let p = self.tris[t].map(|v| [pos[v as usize][0], pos[v as usize][1]]);
+                let area = ((p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0])).abs() / 2.0;
+                if area < SPECK_M2 || solved < 2 {
+                    continue;
+                }
+                let e = p.map(|q| ground.residual(q));
+                let z = [0, 1, 2].map(|k| pos[self.tris[t][k] as usize][2] + e[k]);
+                let s = crate::ground::grade_of(p, z).unwrap_or(0.0);
+                residual.push((crate::ground::grade_of(p, e).unwrap_or(0.0), area));
+                drawn.push((s, area));
+                if s > steepest {
+                    steepest = s;
+                    at = [(p[0][0] + p[1][0] + p[2][0]) / 3.0, (p[0][1] + p[1][1] + p[2][1]) / 3.0];
+                }
+            }
+            if drawn.is_empty() {
+                continue;
+            }
+            let (grade, path) = (p90(residual), p90(drawn));
+            grades.push(grade);
+            paths.push(path);
+            if verbose {
+                println!(
+                    "ramp tris={} grade={grade:.3} path={path:.3} steepest={steepest:.3} at {:.1},{:.1}",
+                    ramp.len(),
+                    at[0],
+                    at[1]
+                );
+            }
+        }
+        let quantiles = |mut r: Vec<f64>| {
+            if r.is_empty() {
+                return "-".to_string();
+            }
+            r.sort_by(f64::total_cmp);
+            let q = |f: f64| r[((r.len() as f64 - 1.0) * f).round() as usize];
+            format!("{:.2}/{:.2}/{:.2}", q(0.5), q(0.9), q(1.0))
+        };
+        summary
+            .with("ramps", format!("{} ({} paths)", self.ramps.len(), paths.len()))
+            .with("ramped", self.free.len())
+            .with("ramp_grade", quantiles(grades))
+            .with("path_grade", quantiles(paths))
+    }
 }
 
 /// How the ground meets the room: whether every outline vertex has a paved
