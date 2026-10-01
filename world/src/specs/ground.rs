@@ -116,6 +116,103 @@ mod tests {
         }
     }
 
+    /// **A footpath between two pins that disagree is a ramp, not a fold.**
+    ///
+    /// Passive pavement takes the ground's residual, and where two outline
+    /// pins that disagree face each other across it the batter's blend
+    /// hands one over to the other in a metre: the path folds at two to four
+    /// metres per metre. The rule: no footpath triangle stands on a residual
+    /// steeper than the steepest batter (1 in 1) *or* than the pins it lies
+    /// between make necessary — their difference over their distance, for
+    /// every two pins within a batter's reach whose way through the triangle
+    /// is hardly longer than the straight one. A corner at a split, where the
+    /// ground meets two surfaces at one point at two heights, is exempt: no
+    /// surface through it is gentler than the split, and that is the edge
+    /// rule's face, not a ramp's.
+    ///
+    /// The specimen: a sidewalk and a driveway beside a row of houses on a
+    /// 60 % flank. Past the room's reach the sidewalk drapes, and it runs
+    /// between the natural ground uphill (pinned at none) and the corner of
+    /// a cutting pinned three metres down. Before the ramp a footway triangle
+    /// there stood on 2.21 m/m where its pins needed 1.34, and the census
+    /// read two pavement fins of 17.6 m², up to 4.2 m tall; after it, one of
+    /// 1.4 m², the sliver fanned round the split.
+    #[test]
+    fn a_footpath_between_two_pins_is_a_ramp_not_a_fold() {
+        let (w, _) = built(
+            "ramp?grade=0.6&bearing=0&radius=100000",
+            "net:driveway?d=9",
+            Some("house:row?gap=2"),
+            5.0,
+            &upto(Step::Earthwork),
+        );
+        let (terrain, mesh, e) = (w.terrain.as_ref().unwrap(), w.mesh.as_ref().unwrap(), w.earthwork.as_ref().unwrap());
+        let natural = |q: [f64; 2]| crate::lattice::height_at(terrain, q[0], q[1]);
+        let clamp = crate::standard::MAX_BATTER_FACE_M;
+        // Every pin: where the outline meets the ground, and at what residual.
+        let mut pins: Vec<([f64; 2], f64)> = Vec::new();
+        for (&(u, v), top) in e.outline.iter().zip(&e.top) {
+            for (w, h) in [(u, top[0]), (v, top[1])] {
+                let q = mesh.tri.positions[w as usize];
+                let q = [q[0], q[1]];
+                pins.push((q, (h - natural(q)).clamp(-clamp, clamp)));
+            }
+        }
+        let reach = crate::standard::EARTHWORK_BATTER * clamp + 1.0;
+        let part = &e.copies.pavement;
+        let (mut paths, mut worst) = (0, (0.0f64, 0.0f64, [0.0; 2]));
+        for (t, &key) in part.tri.indices.chunks_exact(3).zip(&part.face_key) {
+            if !crate::copies::passive(key) {
+                continue;
+            }
+            let c = [0, 1, 2].map(|k| part.tri.positions[t[k] as usize]);
+            let p = c.map(|q| [q[0], q[1]]);
+            let twice = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0]);
+            if twice.abs() < 0.02 {
+                continue;
+            }
+            paths += 1;
+            let r = [0, 1, 2].map(|k| c[k][2] - part.natural[t[k] as usize]);
+            let (d1, d2) = (r[1] - r[0], r[2] - r[0]);
+            let (ux, uy, vx, vy) = (p[1][0] - p[0][0], p[1][1] - p[0][1], p[2][0] - p[0][0], p[2][1] - p[0][1]);
+            let grade = ((d1 * vy - d2 * uy) / twice).hypot((ux * d2 - vx * d1) / twice);
+            let at = [(p[0][0] + p[1][0] + p[2][0]) / 3.0, (p[0][1] + p[1][1] + p[2][1]) / 3.0];
+            let near: Vec<&([f64; 2], f64)> =
+                pins.iter().filter(|(q, _)| (q[0] - at[0]).hypot(q[1] - at[1]) <= reach).collect();
+            // Two pins face each other across the triangle when it lies
+            // between them: the way from one to the other through it is
+            // hardly longer than the straight one.
+            let dist = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
+            let mut need = 1.0f64;
+            for (i, a) in near.iter().enumerate() {
+                for b in &near[i + 1..] {
+                    let d = dist(a.0, b.0);
+                    if d >= 0.5 && dist(a.0, at) + dist(at, b.0) <= 1.2 * d {
+                        need = need.max((a.1 - b.1).abs() / d);
+                    }
+                }
+            }
+            // A corner at a split: pins the ground meets at two heights a
+            // metre apart, within a hand's breadth of each other.
+            let split = p.iter().any(|q| {
+                let at_q: Vec<f64> =
+                    pins.iter().filter(|(x, _)| (x[0] - q[0]).hypot(x[1] - q[1]) < 0.25).map(|x| x.1).collect();
+                at_q.iter().any(|a| at_q.iter().any(|b| (a - b).abs() > 1.0))
+            });
+            if !split && grade - need > worst.0 - worst.1 {
+                worst = (grade, need, at);
+            }
+        }
+        assert!(paths > 0, "the specimen has no footpath to fold");
+        let (grade, need, at) = worst;
+        assert!(
+            grade <= need + 0.1,
+            "a footpath at {:.1},{:.1} stands on a residual {grade:.2} m/m steep where its pins need {need:.2}",
+            at[0],
+            at[1]
+        );
+    }
+
     /// **A measured crossing spends no standard.**
     ///
     /// The rule: where the DEM resolves both sides of a crossing the measured
