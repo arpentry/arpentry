@@ -653,6 +653,17 @@ renderer.setAnimationLoop(() => { controls.update(); track(); renderer.render(sc
     current = await signature();
     await swap(current, 'loading');
     await loadVariants();
+    // `?at=x,y[,dist]` in local metres: start looking at that point, so a
+    // place reported by coordinates is one link away.
+    const at = new URLSearchParams(location.search).get('at');
+    if (at) {
+      const [x, y, dist = 40] = at.split(',').map(Number);
+      const g = surface && heightAt(x, -y);
+      const aim = new THREE.Vector3(x, g ?? 0, -y);
+      controls.target.copy(aim);
+      camera.position.set(x + dist * 0.5, (g ?? 0) + dist * 0.7, -y + dist * 0.5);
+      controls.update();
+    }
   } catch (e) {
     say(`${e.message}\ncould not read ${SRC}`, true);
   }
