@@ -625,10 +625,11 @@ the arrangement cut where the height field steps (§3.2 before §3.3). The
 one mesh gave a cheaper route: declare the step on the mesh's own edges.
 See "Step 2 is built" below.
 
-**The solve was `world/src/relax.rs`, built and never wired, and deleted in
-the 2026-09-29 cleanup; recover it from `5870bc8` if the pavement between two
-terraces ever wants it** (plan step 3a) —
-and the ground went the residual way without it; see "Step 3 is built" below.
+**The solve is `world/src/relax.rs`** (plan step 3a): built, never wired,
+deleted in the 2026-09-29 cleanup, and brought back on 2026-10-01 for one job
+only — the ramp between two pins that disagree (see "The pavement between two
+terraces is a ramp" below). The ground at large went the residual way without
+it; see "Step 3 is built" below.
 §3.2's energy `Σ w(z−dem)² + Σ‖∇z−∇dem‖²` is, in terms of the residual
 `e = z − dem`, exactly `eᵀ(W + L)e` — a damped Laplacian on the residual with
 `e` pinned at the paved vertices. So **ground no pin reaches is the DEM to the
@@ -832,8 +833,27 @@ is now the drop past one face), `off` **21 → 3.0 m**, the drawn ground's
 `dem_residual` 0.00/0.89/30.84 → **0.00/0.14/3.00**, `touched` 8.6 → 3.5 %,
 `regrade` 143 k → 6.5 k, `contact` 0.00; bench 32 → 18 s, the run 72 → 42 s.
 The `relax_vs_cases` diagnostic is retired (it cost ~12 s a run against a
-case function that is gone); `relax.rs` (deleted, in `5870bc8`) was the
-candidate for the pavement between two terraces.
+case function that is gone).
+
+**The pavement between two terraces is a ramp, not a wall** (2026-10-01,
+`Ground::ramp`). Where two outline pins that disagree face each other across a
+narrow strip — a kerb pinned 3 m up and ballast at 0 across 4.5 m of footpath —
+the residual's blend squeezed the whole difference into a metre, and the
+footpath folded at 2–4 m/m: after the mesh fixes it was 94 % of the census's
+remaining fin area. Around each fold the residual is now the harmonic surface
+(the relax with no pull to the DEM, cotangent weights), held at today's batter
+on the outline pins and the region's rim and at 0 where no pin reaches, so the
+ground and the footpath still read one field. Over the 48 sites pavement fin
+area 320 → 125 m². **A wall was built too and lost on sight**: a rule split
+that let each side keep its own batter and closed the step with a face removed
+more fin (46 m²) but drew 38 km of wall over the 48 windows, stepping cell by
+cell along the lattice, and the user, comparing now / ramp / wall in place,
+judged the ramp better almost everywhere and the wall the worst of the three.
+The ramp's cost is steepness: of 111 ramps the median is 0.59 m/m and 16 are
+past 1:1 (worst 3.5 m/m at `fin-carriageway-1`). What is left is mostly a
+paved corner two pins meet at two heights, which no ramp can soften. The wall
+prototype is branch `worktree-agent-a43f2b3d5b74b5310` (`4313ce3`) if a tall
+step ever wants one.
 
 **"One height per vertex" (§3.2) and "an edge is split" (§3.3) contradict
 each other**, because a kerb vertex has two heights a kerb's rise apart. The
